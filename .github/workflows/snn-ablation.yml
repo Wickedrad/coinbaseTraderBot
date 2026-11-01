@@ -468,8 +468,9 @@ jobs:
           python3 -c 'import sys,datetime as d; a=d.date.fromisoformat(sys.argv[1]); b=d.date.fromisoformat(sys.argv[2]); n=(b-a).days+3; [print("/KX*/%s.jsonl" % (a+d.timedelta(days=i-1)).isoformat()) for i in range(n)]' "$HFROM" "$HTO" > "$RUNNER_TEMP/kdays.txt"
           rsync -a --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --include='/KX*/' --include-from="$RUNNER_TEMP/kdays.txt" --exclude='*' --prune-empty-dirs bot:bot/data/history/kalshi/ "$K/"
           echo "Kalshi day files: $(find "$K" -type f | wc -l) in $(ls "$K" | wc -l) series, $(du -sh "$K" | cut -f1)"
+          MB=$(du -sm "$K" | cut -f1); echo "KCACHE_OK=$([ "$MB" -le 3500 ] && echo true || echo false)" >> "$GITHUB_ENV"
       - name: Save the Kalshi history to the cache (right away, so a cancelled training still keeps it)
-        if: steps.khist.outputs.cache-hit != 'true' && !contains(inputs.hist_args, 'synthetic')
+        if: steps.khist.outputs.cache-hit != 'true' && !contains(inputs.hist_args, 'synthetic') && env.KCACHE_OK == 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/hist/history/kalshi
