@@ -1,4 +1,4 @@
-# Scaling history lab, round 1 (2026-11-01): the recorded-day winner (e_novol) against today's bot and the two strongest
+# Scaling history lab, round 1 (2026-11-01, rerun on the new repo with the taker-depletion fill fix): the recorded-day winner (e_novol) against today's bot and the two strongest
 # adversarial controls, on 120 history days (Jul-Oct, several regimes), one replay at a time (shared runner cap).
 #  - adv_placebo: same distribution of edge adds, drawn from earlier moments (does the market reading matter?)
 #  - adv_bias2: a flat 2c raise with no reading (does it only trade less?)
