@@ -55,6 +55,7 @@ import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { EquityGuard } from '../bot/risk/equityGuard';
 import { RiskGateway } from '../bot/risk/riskGateway';
+import { QuoteLagHold } from '../bot/strategy/quoteLagHold';
 import { applyFvGate, decide, loserNoEntry, trainingCount, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { ComponentTrials, type TrialName } from '../bot/strategy/componentTrials';
 import { activeRuleBook, RuleBook, setRuleBook } from '../bot/strategy/ruleBook';
@@ -442,6 +443,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const firstEntry = new Map<string, { sec: number; train: boolean; side: 'yes' | 'no'; cost: number; fv?: number; how: 'quote' | 'entry' | 'train' }>(); // lab: each market's first entry or quote fill
   const trainIds = new Set<string>(); // lab: the training trades' order ids
   const lastFair = new Map<string, number>(); // the exit audit: each market's last spot fair value (YES)
+  // QUOTE_LAG_HOLD as the engine (bot/strategy/quoteLagHold.ts): per-market fair/mid history, holds counted for the report.
+  const qlh = strategy.loserExits?.quoteLagHold ? new QuoteLagHold(strategy.loserExits.quoteLagHold) : undefined;
+  let qlhHeld = 0; const qlhMarkets = new Set<string>();
   const ratchets = new Map<string, LiquidityRatchet>();
   const hunts = new Map<string, ConfluenceRatchetExit>();
   const pending = new Map<string, { side: 'bid' | 'ask'; price: number; count: number; kind: 'fv' | 'tp' | 'rt' | 'snipe' | 'floor' | 'cut' | 'wcut'; stop?: number }>();
@@ -1027,6 +1031,11 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           }
         }
       }
+      if (qlh) {
+        qlh.record(m.ticker, st.now, fv.pYes, mid);
+        const n = qlh.apply(plan, m.ticker, st.now, view.position);
+        if (n) { qlhHeld += n; qlhMarkets.add(m.ticker); }
+      }
       // FV_ENTRY_GATE on the finished plan, as the engine: the fill model's crosses and paper's training trades open positions too.
       applyFvGate(plan, fv.pYes, view.position, DEFAULT_FEES, strategy, loserNoEntry(view, strategy));
       for (const c of plan.cancel) if (!cancelInFlight.has(c.clientOrderId)) await send(m.ticker, 'cancel', () => cancelNow(c.clientOrderId), c.clientOrderId);
@@ -1089,6 +1098,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   res.takerThin = ex.takerStats;
   res.vaultEnd = vault?.vaultTotal ?? 0;
   res.pocketEnd = vault?.pocketTotal ?? 0;
+  if (qlh) console.log(`quote-lag hold: ${qlhHeld} orders held, ${qlhMarkets.size} markets`);
   return res;
 }
 
