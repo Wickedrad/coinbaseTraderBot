@@ -82,3 +82,14 @@ test('quote lag: bias cells key by mid band and time to close and average mid - 
   assert.ok(c.n > 0 && Math.abs(c.sum / c.n) < 0.01, 'mid tracks fair on average');
   assert.ok(Math.abs(c.spread / c.n - 0.02) < 1e-9, '2c spread');
 });
+
+test('timing filter adversaries: the favoured side costs and the placebo needs no gap', () => {
+  const close = 400 * S + 120 * S;
+  const fav = contractTimingGains(lagged(10), close, 5, 0.04, 10, undefined, 'favoured');
+  const dis = contractTimingGains(lagged(10), close, 5, 0.04, 10);
+  if (dis.length && fav.length) assert.ok(fav.reduce((s, x) => s + x.pnl, 0) / fav.length < dis.reduce((s, x) => s + x.pnl, 0) / dis.length);
+  const flat: Tick[] = Array.from({ length: 400 }, (_, i) => ({ t: i * S, fair: 0.5, bid: 0.49, ask: 0.51 }));
+  const pl = contractTimingGains(flat, 400 * S, 5, 0.04, 10, undefined, 'placebo');
+  assert.ok(pl.length > 0);
+  assert.ok(pl.every((x) => Math.abs(x.pnl) < 1e-9));
+});

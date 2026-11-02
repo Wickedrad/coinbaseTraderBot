@@ -135,21 +135,25 @@ export function contractMakerTrades(ticks: Tick[], closeTime: number, w: number,
 
 /** Entry-timing filter: what a trader who wants the side the gap disfavours saves by waiting H seconds for the quote to
  *  move before entering, per contract (cents of entry price; fees are the same either way). Positive = waiting helped. */
-export function contractTimingGains(ticks: Tick[], closeTime: number, w: number, theta: number, H: number, adv: Adversary = ADVERSARIES[0]): { t: number; pnl: number }[] {
+export type TimingMode = 'disfavoured' | 'favoured' | 'placebo';
+/** mode 'favoured' (adversary): the same wait before buying the side the gap FAVOURS, which should cost; 'placebo': the
+ *  same wait at moments with no gap (|gap| and |fair move| under 1c, side alternating), the drift of the quote alone. */
+export function contractTimingGains(ticks: Tick[], closeTime: number, w: number, theta: number, H: number, adv: Adversary = ADVERSARIES[0], mode: TimingMode = 'disfavoured'): { t: number; pnl: number }[] {
   const out: { t: number; pnl: number }[] = [];
   let busyUntil = -Infinity;
   for (let i = 0; i < ticks.length; i++) {
     const t = ticks[i].t;
     if (t < busyUntil || closeTime - t < 60 * S) continue;
     const g = gapAt(ticks, i, w);
-    if (g === undefined || Math.abs(g) < theta) continue;
     const f = fairMove(ticks, i, w);
-    if (f === undefined || Math.sign(f) !== Math.sign(g) || Math.abs(f) < theta) continue;
+    if (g === undefined || f === undefined) continue;
+    if (mode === 'placebo') { if (Math.abs(g) >= 0.01 || Math.abs(f) >= 0.01) continue; }
+    else if (Math.abs(g) < theta || Math.sign(f) !== Math.sign(g) || Math.abs(f) < theta) continue;
     const e = at(ticks, t + adv.latency * S, i);
     if (e <= i || ticks[e].t - t > (adv.latency + 2) * S) continue;
     const l = at(ticks, Math.min(ticks[e].t + H * S, closeTime - S), e);
     if (l <= e) continue;
-    const wantsNo = g > 0; // the gap says the mid rises, so the disfavoured buyer wants NO
+    const wantsNo = mode === 'placebo' ? out.length % 2 === 0 : mode === 'favoured' ? g < 0 : g > 0; // gap says the mid rises: the disfavoured buyer wants NO
     const now = wantsNo ? 1 - ticks[e].bid : ticks[e].ask, later = wantsNo ? 1 - ticks[l].bid : ticks[l].ask;
     out.push({ t, pnl: now - later });
     busyUntil = ticks[l].t;
@@ -206,6 +210,11 @@ async function main() {
   const bias = new Map<string, BiasCell>();
   const makers = new Map<string, Cell>(), timings = new Map<string, { trades: { t: number; pnl: number }[] }>();
   for (const adv of ADVERSARIES) for (const w of WINDOWS) for (const th of THETAS) for (const H of HORIZONS) cells.set(`${w}|${th}|${H}|${adv.latency}|${adv.slip}`, { trades: [] });
+  // Adversaries of the timing filter, under the hardest latency/slip only: the favoured side (should cost) and no gap.
+  const favoured = new Map<string, { trades: { t: number; pnl: number }[] }>(), placebo = new Map<string, { trades: { t: number; pnl: number }[] }>();
+  const hard = ADVERSARIES[ADVERSARIES.length - 1];
+  for (const w of WINDOWS) for (const th of THETAS) for (const H of HORIZONS) favoured.set(`${w}|${th}|${H}|${hard.latency}|${hard.slip}`, { trades: [] });
+  for (const w of WINDOWS) for (const H of HORIZONS) placebo.set(`${w}|0|${H}|${hard.latency}|${hard.slip}`, { trades: [] });
   for (const adv of ADVERSARIES) for (const w of WINDOWS) for (const th of THETAS) for (const H of HORIZONS) { makers.set(`${w}|${th}|${H}|${adv.latency}|${adv.slip}`, { trades: [] }); timings.set(`${w}|${th}|${H}|${adv.latency}|${adv.slip}`, { trades: [] }); }
   for (const w of WINDOWS) for (const H of HORIZONS) preds.set(`${w}|${H}`, { n: 0, sxy: 0, sxx: 0, big: 0, bigToward: 0 });
   let first = Infinity, last = -Infinity, contracts = 0, nextSec = 0;
@@ -219,6 +228,8 @@ async function main() {
     addBias(bias, tk, m.closeTime);
     for (const [k, c] of makers) { const [w, th, H, lat, slip] = k.split('|').map(Number); for (const x of contractMakerTrades(tk, m.closeTime, w, th, H, count, { latency: lat, slip })) c.trades.push(x); }
     for (const [k, c] of timings) { const [w, th, H, lat, slip] = k.split('|').map(Number); for (const x of contractTimingGains(tk, m.closeTime, w, th, H, { latency: lat, slip })) c.trades.push(x); }
+    for (const [k, c] of favoured) { const [w, th, H, lat, slip] = k.split('|').map(Number); for (const x of contractTimingGains(tk, m.closeTime, w, th, H, { latency: lat, slip }, 'favoured')) c.trades.push(x); }
+    for (const [k, c] of placebo) { const [w, th, H, lat, slip] = k.split('|').map(Number); for (const x of contractTimingGains(tk, m.closeTime, w, th, H, { latency: lat, slip }, 'placebo')) c.trades.push(x); }
     for (const [k, p] of preds) {
       const [w, H] = k.split('|').map(Number);
       for (let i = 0; i < tk.length; i += 5) {
@@ -263,8 +274,8 @@ async function main() {
     console.log(`[quote-lag]   w ${w}s H ${H}s: slope ${(p.sxy / Math.max(1e-12, p.sxx)).toFixed(2)} over ${p.n}; big gaps ${p.big}, toward ${p.big ? ((100 * p.bigToward) / p.big).toFixed(1) : '-'}%`);
   }
   const summary: unknown[] = [];
-  const table = (title: string, kind: string, map: Map<string, { trades: { t: number; pnl: number }[] }>, dollars: boolean) => {
-    for (const adv of ADVERSARIES) {
+  const table = (title: string, kind: string, map: Map<string, { trades: { t: number; pnl: number }[] }>, dollars: boolean, advs: Adversary[] = ADVERSARIES) => {
+    for (const adv of advs) {
       console.log(`[quote-lag] ${title}, latency ${adv.latency} s, slip ${(adv.slip * 100).toFixed(0)}c (cents per contract, hour-block 95% CI${dollars ? '; $/h at the count above' : ''}):`);
       const rows = [...map].filter(([k]) => k.endsWith(`|${adv.latency}|${adv.slip}`)).map(([k, c]) => ({ k, c, ci: hourBlockCi(c.trades) })).sort((a, b) => (b.ci.mean || -1e9) - (a.ci.mean || -1e9));
       for (const { k, c, ci } of rows) {
@@ -292,6 +303,8 @@ async function main() {
   table('trading the gap as a taker', 'taker', cells, true);
   table('resting a maker bid on the gap\'s side (fills only when the market crosses to it within H; maker fee in, taker out)', 'maker', makers, true);
   table('entry-timing filter: cents saved by waiting H before buying the side the gap disfavours', 'timing', timings, false);
+  table('ADVERSARY timing filter on the side the gap FAVOURS (should be negative)', 'timing-favoured', favoured, false, [hard]);
+  table('PLACEBO timing filter at moments with no gap (quote drift alone; theta 0)', 'timing-placebo', placebo, false, [hard]);
   const out = arg('out');
   if (out) fs.writeFileSync(out, JSON.stringify({ contracts, hours, count, preds: Object.fromEntries(preds), bias: biasOut, cells: summary }, null, 1));
 }
