@@ -1162,6 +1162,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       window: num(env, 'MARKET_ANCHOR_WINDOW', 400, 20, 5000),
       maxW: num(env, 'MARKET_ANCHOR_MAX_W', 1.5, 0, 3),
       shuffle: bool(env, 'MARKET_ANCHOR_SHUFFLE', false),
+      bySeries: bool(env, 'MARKET_ANCHOR_BY_SERIES', false),
     },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
     kappa: num(env, 'STRATEGY_KAPPA', 0.5, 0, 1),
