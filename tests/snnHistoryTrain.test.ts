@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import assert from 'node:assert/strict';
-import { kalshiDays, monthChunks, resumeDay, trainChunks, trainParams } from '../research/snnHistoryTrain';
+import { kalshiDays, monthChunks, recDays, resumeDay, trainChunks, trainParams } from '../research/snnHistoryTrain';
 
 test('history training: month chunks cover the range exactly, in order, split at month ends', () => {
   assert.deepEqual(monthChunks('2026-01-15', '2026-03-02'), [['2026-01-15', '2026-01-31'], ['2026-02-01', '2026-02-28'], ['2026-03-01', '2026-03-02']]);
@@ -32,4 +32,13 @@ test('history training: days without a Kalshi day file are counted out (skipped 
   assert.equal(kalshiDays(dir, '2026-07-25', '2026-07-31'), 0);
   assert.equal(kalshiDays(dir, '2026-08-01', '2026-08-07'), 1);
   assert.equal(kalshiDays(path.join(dir, 'none'), '2026-08-01', '2026-08-07'), 0);
+});
+
+test('history training: recorded days follow the Kalshi days, one per chunk, and a resumed run picks up the next one', () => {
+  assert.deepEqual(recDays('2026-10-30', '2026-11-01'), ['2026-10-30', '2026-10-31', '2026-11-01']);
+  assert.deepEqual(recDays('2026-11-02', '2026-11-01'), []);
+  // A checkpoint whose last moment is still in the Kalshi days starts the recordings at their first day.
+  assert.equal(resumeDay('2026-10-21', Date.parse('2026-10-20T23:50:00Z')), '2026-10-21');
+  // One that stopped inside the recordings continues the day after.
+  assert.equal(resumeDay('2026-10-21', Date.parse('2026-10-25T23:59:00Z')), '2026-10-26');
 });

@@ -460,8 +460,6 @@ jobs:
     environment: production
     timeout-minutes: 350
     env:
-      HFROM: ${{ inputs.hist_from }}
-      HTO: ${{ inputs.hist_to }}
       HARGS: ${{ inputs.hist_args }}
     steps:
       - uses: actions/checkout@v5
@@ -482,11 +480,37 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
+      - name: The range as given
+        if: inputs.hist_from != 'all'
+        env:
+          F: ${{ inputs.hist_from }}
+          T: ${{ inputs.hist_to }}
+        run: '{ echo "HFROM=$F"; echo "HTO=$T"; } >> "$GITHUB_ENV"'
+      - name: All of Drive's history (hist_from=all) - every Kalshi day with contracts, then every recorded day; Drive only, no server read
+        if: inputs.hist_from == 'all'
+        run: |
+          set -euo pipefail
+          D=gdrive:kalshi-bot-archive
+          # The Drive mirror of the server's history first (Drive to Drive), so raw/kalshi-history holds every day there is.
+          if [ -n "$(rclone lsf "$D/raw/server-history/kalshi" --max-depth 1 2>/dev/null | head -1)" ]; then
+            rclone copy "$D/raw/server-history/kalshi" "$D/raw/kalshi-history" --include '/KX*/*.jsonl' --transfers 8
+          fi
+          # Days with contracts: a crypto series' day file over 2 KB (Kalshi's history before Aug 2026 holds empty days).
+          rclone lsf -R --files-only --format sp "$D/raw/kalshi-history" --include '/KX*/*.jsonl' | awk -F';' '$1 > 2048 { n=split($2,a,"/"); sub(/\.jsonl$/,"",a[n]); print a[n] }' | sort -u > "$RUNNER_TEMP/kalshi-days.txt"
+          bash deploy/drive_lab.sh days > "$RUNNER_TEMP/rec-days.txt"
+          RF=$(head -1 "$RUNNER_TEMP/rec-days.txt"); RT=$(tail -1 "$RUNNER_TEMP/rec-days.txt")
+          KF=$(head -1 "$RUNNER_TEMP/kalshi-days.txt"); KL=$(tail -1 "$RUNNER_TEMP/kalshi-days.txt")
+          # Kalshi's minute candles up to the day before the first recorded day; the recorded books (truer) from then on.
+          KT=$(python3 -c 'import sys,datetime as d; print(min(d.date.fromisoformat(sys.argv[1]), d.date.fromisoformat(sys.argv[2])-d.timedelta(days=1)))' "$KL" "$RF")
+          echo "Kalshi days with contracts on Drive: $(wc -l < "$RUNNER_TEMP/kalshi-days.txt") ($KF..$KL); recorded days on Drive: $(wc -l < "$RUNNER_TEMP/rec-days.txt") ($RF..$RT)"
+          echo "training order: Kalshi $KF..$KT, then recorded $RF..$RT"
+          { echo "HFROM=$KF"; echo "HTO=$KT"; echo "RFROM=$RF"; echo "RTO=$RT"; } >> "$GITHUB_ENV"
+          echo "HMODE=all" >> "$GITHUB_ENV"
       - name: Check the range
         run: |
-          [[ "$HFROM" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "$HTO" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "hist_from / hist_to must be YYYY-MM-DD"; exit 1; }
+          [[ "$HFROM" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "$HTO" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "hist_from / hist_to must be YYYY-MM-DD (or hist_from=all)"; exit 1; }
       - name: SSH to the server
-        if: "!contains(inputs.hist_args, 'synthetic')"
+        if: "!contains(inputs.hist_args, 'synthetic') && inputs.hist_from != 'all'"
         env:
           SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           HOST: ${{ secrets.LIGHTSAIL_HOST }}
@@ -506,9 +530,18 @@ jobs:
           python3 -c 'import sys,datetime as d; a=d.date.fromisoformat(sys.argv[1]); b=d.date.fromisoformat(sys.argv[2]); n=(b-a).days+3; [print("/KX*/%s.jsonl" % (a+d.timedelta(days=i-1)).isoformat()) for i in range(n)]' "$HFROM" "$HTO" > "$RUNNER_TEMP/kdays.txt"
           rclone copy gdrive:kalshi-bot-archive/raw/kalshi-history "$K/" --include-from "$RUNNER_TEMP/kdays.txt" --transfers 8 || true
           echo "from Drive: $(find "$K" -type f | wc -l) day file(s)"
-          rsync -a --ignore-existing --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --include='/KX*/' --include-from="$RUNNER_TEMP/kdays.txt" --exclude='*' --prune-empty-dirs bot:bot/data/history/kalshi/ "$K/"
-          bash deploy/drive_lab.sh put raw/kalshi-history "$K"
+          if [ "${HMODE:-}" != all ]; then
+            rsync -a --ignore-existing --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --include='/KX*/' --include-from="$RUNNER_TEMP/kdays.txt" --exclude='*' --prune-empty-dirs bot:bot/data/history/kalshi/ "$K/"
+            bash deploy/drive_lab.sh put raw/kalshi-history "$K"
+          fi
           echo "Kalshi day files: $(find "$K" -type f | wc -l) in $(ls "$K" | wc -l) series, $(du -sh "$K" | cut -f1)"
+      - name: Spot history already on Drive (raw/binance-vision), so only what is missing downloads
+        if: "!contains(inputs.hist_args, 'synthetic')"
+        run: |
+          # Bounded by the runner's disk (the recorded days need room too): above 6 GiB the rest downloads from Binance.
+          B=$(rclone size --json gdrive:kalshi-bot-archive/raw/binance-vision 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("bytes",0))' || echo 0)
+          echo "raw/binance-vision on Drive: $((B / 1048576)) MiB"
+          if [ "$B" -gt 0 ] && [ "$B" -lt 6442450944 ]; then bash deploy/drive_lab.sh get raw/binance-vision "$RUNNER_TEMP/hist/history" || true; fi
       - uses: actions/download-artifact@v4
         # Continue an earlier history training from its checkpoint (it resumes the day after the checkpoint's last one).
         if: inputs.hist_resume_from != ''
@@ -526,7 +559,8 @@ jobs:
           export TRADING_MODE=paper AUTO_TRAIN=off NODE_OPTIONS="--max-old-space-size=6144"
           EXTRA=$(printf '%s' "$HARGS" | tr -cd 'a-zA-Z0-9 .-')
           PREV=""; [ -f research/out/prev/snn-history-checkpoint.json ] && PREV="--checkpoint-in research/out/prev/snn-history-checkpoint.json"
-          node --import tsx research/snnHistoryTrain.ts --from "$HFROM" --to "$HTO" --history "$RUNNER_TEMP/hist/history" --work "$RUNNER_TEMP/hist" --minutes 285 --checkpoint-out research/out/snn-history-checkpoint.json $PREV $EXTRA 2>&1 | grep --line-buffered -E '^\[hist-train\]|failed|FATAL|heap' | stdbuf -oL cut -c1-260 | tee research/out/hist-train.log
+          REC=""; [ -n "${RFROM:-}" ] && REC="--rec-from $RFROM --rec-to $RTO --rec-dir $RUNNER_TEMP/rec --rec-fetch deploy/drive_lab.sh"
+          node --import tsx research/snnHistoryTrain.ts --from "$HFROM" --to "$HTO" --history "$RUNNER_TEMP/hist/history" --work "$RUNNER_TEMP/hist" --minutes 285 --checkpoint-out research/out/snn-history-checkpoint.json $PREV $REC $EXTRA 2>&1 | grep --line-buffered -E '^\[hist-train\]|failed|FATAL|heap' | stdbuf -oL cut -c1-260 | tee research/out/hist-train.log
           if grep -q 'time is up' research/out/hist-train.log; then echo "more=true" >> "$GITHUB_OUTPUT"; else echo "more=false" >> "$GITHUB_OUTPUT"; fi
       - name: Keep the raw spot history and the simulated contracts on Drive
         if: always()
@@ -546,7 +580,7 @@ jobs:
         if: steps.train.outputs.more == 'true' && inputs.hist_chain == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run snn-ablation.yml --ref "$GITHUB_REF_NAME" -f hist_from="$HFROM" -f hist_to="$HTO" -f hist_args="$HARGS" -f hist_resume_from="${{ github.run_id }}" -f hist_chain=true
+        run: gh workflow run snn-ablation.yml --ref "$GITHUB_REF_NAME" -f hist_from="${{ inputs.hist_from }}" -f hist_to="${{ inputs.hist_to }}" -f hist_args="$HARGS" -f hist_resume_from="${{ github.run_id }}" -f hist_chain=true
 
   # One-off (Steven, Nov 2: all history on Drive): an existing Kalshi history cache to Drive raw/kalshi-history.
   drive-backfill:

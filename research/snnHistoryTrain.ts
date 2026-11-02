@@ -11,7 +11,14 @@
 //
 //   node --import tsx research/snnHistoryTrain.ts --from 2026-01-01 --to 2026-09-30 --history <dir with kalshi/> \
 //     --work <scratch> [--checkpoint-in in.json] --checkpoint-out out.json [--minutes 330] [--vol-norm 1] [--synthetic true]
+//     [--rec-from DAY --rec-to DAY --rec-dir <dir> [--rec-fetch deploy/drive_lab.sh]]
+//
+// All history (Steven, Nov 2: "learn on the entirety of history we have available on Google Drive"): after the Kalshi
+// days, the same network continues day by day through the recorded days (the bot's own books, md-DAY.jsonl.gz), in
+// time order. With --rec-fetch each recorded day is pulled from Drive just before it is replayed and deleted after the
+// next one (two days on disk at a time; a day is 1-2 GB).
 
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { loadConfig, paperEnv } from '../bot/config';
@@ -67,6 +74,13 @@ export function kalshiDays(kalshiDir: string, a: string, b: string): number {
   return n;
 }
 
+/** Recorded days a..b, one chunk per day (each day replays with the day before it as warm-up). */
+export function recDays(a: string, b: string): string[] {
+  const out: string[] = [];
+  for (let d = a; d <= b; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
 export function trainParams(stage: Stage, volNorm?: number, soft = false): SnnParams {
   return domainParams('crypto', { ...DEFAULT_SNN, anchorMid: true, ...(volNorm ? { volNorm } : {}), ...(soft ? { softLabel: { lagSec: 300, etaScale: 0.3 } } : {}), flags: { ...stageFlags(stage) } });
 }
@@ -104,9 +118,14 @@ async function main() {
   console.log(`[hist-train] anchored crypto SNN, stage ${stage}${volNorm ? `, volNorm ${volNorm}` : ''}${soft ? ', soft labels' : ''}${synthetic ? ', synthetic contracts where Kalshi has none' : ''}${requote ? ', ADVERSARY: quotes requoted between candles' : ''}, ${from}..${to}, ${assets.join(',')}`);
 
   const f5 = (x: { mean: number; lo: number; hi: number }) => `${x.mean.toFixed(5)} [${x.lo.toFixed(5)}, ${x.hi.toFixed(5)}]`;
-  if (start > to) { console.log(`[hist-train] the checkpoint already covers ${from}..${to}`); if (checkpoint) { fs.mkdirSync(path.dirname(ckOut), { recursive: true }); fs.writeFileSync(ckOut, JSON.stringify(checkpoint)); } return; }
-  for (const [a, b] of trainChunks(start, to)) {
-    if (Date.now() > deadline) { console.log(`[hist-train] time is up before ${a}: the next run continues from the checkpoint`); break; }
+  const recFrom = arg('rec-from'), recTo = arg('rec-to'), recDir = arg('rec-dir', path.join(work, 'recordings')), recFetch = arg('rec-fetch');
+  const withRec = /^\d{4}-\d{2}-\d{2}$/.test(recFrom) && /^\d{4}-\d{2}-\d{2}$/.test(recTo) && recFrom <= recTo;
+  const save = () => { if (checkpoint) { fs.mkdirSync(path.dirname(ckOut), { recursive: true }); fs.writeFileSync(ckOut, JSON.stringify(checkpoint)); } };
+  if (start > to && !withRec) { console.log(`[hist-train] the checkpoint already covers ${from}..${to}`); save(); return; }
+  if (start > to) console.log(`[hist-train] the checkpoint already covers the Kalshi days ${from}..${to}; on to the recorded days`);
+  let timeUp = false;
+  for (const [a, b] of start > to ? [] : trainChunks(start, to)) {
+    if (Date.now() > deadline) { console.log(`[hist-train] time is up before ${a}: the next run continues from the checkpoint`); timeUp = true; break; }
     const warm = addDays(a, -1), t0 = Date.now();
     if (!synthetic && !kalshiDays(path.join(hist, 'kalshi'), a, b)) { console.log(`[hist-train] ${a}..${b}: no Kalshi history on these days, skipped`); continue; }
     console.log(`[hist-train] ${a}..${b}: building and replaying`);
@@ -129,6 +148,33 @@ async function main() {
     // Rows of this month are not needed any more (memory over months).
     res.rows.length = 0;
   }
+  if (withRec && !timeUp) {
+    const recStart = resumeDay(recFrom, checkpoint?.lastTs);
+    const fetchDay = (d: string) => {
+      const f = path.join(recDir, `md-${d}.jsonl.gz`);
+      if (fs.existsSync(f) || !recFetch) return fs.existsSync(f);
+      try { execFileSync('bash', [recFetch, 'recording', d, recDir], { stdio: 'ignore' }); } catch { return false; }
+      return fs.existsSync(f);
+    };
+    fs.mkdirSync(recDir, { recursive: true });
+    for (const d of recDays(recStart, recTo)) {
+      if (Date.now() > deadline) { console.log(`[hist-train] time is up before recorded day ${d}: the next run continues from the checkpoint`); break; }
+      const warm = addDays(d, -1), t0 = Date.now();
+      if (!fetchDay(d)) { console.log(`[hist-train] recorded ${d}: not on Drive, skipped`); continue; }
+      fetchDay(warm);
+      // Only the warm-up day and this day on disk.
+      for (const f of fs.readdirSync(recDir)) { const m = /^md-(\d{4}-\d{2}-\d{2})\.jsonl\.gz$/.exec(f); if (recFetch && m && m[1] < warm) fs.rmSync(path.join(recDir, f)); }
+      const res = await replaySnn(recDir, { params, from: Date.parse(`${d}T00:00:00Z`), to: Date.parse(`${d}T23:59:59Z`), fromDay: warm, toDay: d, calendar, domain: 'crypto', checkpoint, skipModel: true });
+      checkpoint = res.net.serialize();
+      save();
+      const windows = new Set(res.rows.map((r) => r.eventKey)).size;
+      if (!res.rows.length) { console.log(`[hist-train] recorded ${d}: no contracts scored`); continue; }
+      const vm = vsMarket(res.rows, 1000), c = correctionStats(res.rows);
+      console.log(`[hist-train] recorded ${d}: ${windows} windows, vs market ${f5(vm)} ${vm.hi < 0 ? 'BEATS the market' : vm.lo > 0 ? 'worse' : 'undecided'}; correction size ${c.sizeCents.toFixed(2)}c edge ${c.edgeCents.toFixed(2)}c b ${c.slope.toFixed(2)}; ${((Date.now() - t0) / 60000).toFixed(1)} min`);
+      res.rows.length = 0;
+    }
+  }
+  save();
   console.log(`[hist-train] checkpoint -> ${ckOut}`);
 }
 
