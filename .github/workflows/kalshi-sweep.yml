@@ -75,7 +75,18 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
-      - name: Restore the Kalshi history and its replay
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      # The Kalshi history and its replay live on Drive (derived/kalshi-replay), so a new run downloads only what is new.
+      - name: Restore the Kalshi history and its replay from Drive
+        id: drive
+        run: |
+          if bash deploy/drive_lab.sh get derived/kalshi-replay data; then echo "hit=true" >> "$GITHUB_OUTPUT"; du -sh data/history data/history-replay 2>/dev/null | cat
+          else echo "nothing on Drive yet: falling back to the newest cache"; fi
+      - name: Restore the Kalshi history and its replay (cache fallback)
+        if: steps.drive.outputs.hit != 'true'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -88,6 +99,10 @@ jobs:
           node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$RS_DAYS" --budget-min 100 2>&1 \
             | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -40
           du -sh data/history data/history-replay | cat
+      - name: Keep the Kalshi history and its replay on Drive
+        # The data job's data folder holds only these two.
+        run: bash deploy/drive_lab.sh put derived/kalshi-replay data
+      # Hands them to this run's search jobs (a cache inside one run).
       - name: Save the Kalshi history and its replay
         if: always()
         uses: actions/cache/save@v4
