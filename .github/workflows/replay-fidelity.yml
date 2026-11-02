@@ -30,6 +30,10 @@ on:
         description: 'Replay the days an earlier run copied (its run id; its cache is kept 7 days unused): no server copy at all'
         required: false
         default: ''
+      check_copy:
+        description: 'Take the compared days from a Kalshi replay check copy (its run id: cache replay-check-copy-<id>, saved on main); only the fit days and nothing else are copied from the server (Nov 2: the 10 GB cache cap holds one full copy at most)'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -72,12 +76,37 @@ jobs:
             data/models
           key: fidelity-data-${{ inputs.reuse_run }}-1
           fail-on-cache-miss: true
+      - name: The replay check's copy (check_copy)
+        if: inputs.check_copy != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: replay-check-copy-${{ inputs.check_copy }}
+          fail-on-cache-miss: true
       - name: Pick the days
         id: pick
         env:
           REUSE: ${{ inputs.reuse_run }}
+          CHECK: ${{ inputs.check_copy }}
         run: |
           set -euo pipefail
+          if [ -n "$CHECK" ]; then
+            [[ "$CHECK" =~ ^[0-9]+$ ]] || { echo "check_copy must be a run id"; exit 1; }
+            [[ "$DAYS" =~ ^[0-9]+$ ]] && [ "$DAYS" -ge 2 ] || { echo "days must be a whole number of at least 2"; exit 1; }
+            # The copy's whole days (today's file, still being recorded when it was copied, is left out), newest DAYS + the day before.
+            TODAY=$(date -u +%F)
+            WHOLE=$(ls -1 data/recordings | grep -E '^md-[0-9]{4}-[0-9]{2}-[0-9]{2}\.jsonl' | sort | awk -v t="md-$TODAY" '$0 < t' | awk -v last="md-$(cut -c1-10 data/sweeps/check-to.txt 2>/dev/null)" 'substr($0,1,13) != last')
+            FILES=$(echo "$WHOLE" | tail -n $((DAYS + 1)) | tr '\n' ' ')
+            [ "$(echo $FILES | wc -w)" -ge 3 ] || { echo "the copy has too few whole days: $FILES"; exit 1; }
+            FIRST=$(echo $FILES | cut -d' ' -f1 | cut -c1-13)
+            ALL=$(ssh bot "cd ~/bot/data/recordings && ls -1 md-*.jsonl*" | sort | awk -v f="$FIRST" 'substr($0,1,13) < f')
+            FIT=$(echo "$ALL" | tail -n "$FIT_DAYS" | tr '\n' ' ')
+            echo "files=$FILES" >> "$GITHUB_OUTPUT"
+            echo "fit=$FIT" >> "$GITHUB_OUTPUT"
+            echo "key=fidelity-fit-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+            echo "days from replay check copy $CHECK: $FILES | depth fitted on (copied): $FIT"
+            exit 0
+          fi
           if [ -n "$REUSE" ]; then
             [[ "$REUSE" =~ ^[0-9]+$ ]] || { echo "reuse_run must be a run id"; exit 1; }
             echo "files=$(ls -1 data/recordings | sort | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
@@ -97,8 +126,25 @@ jobs:
           echo "files=$FILES" >> "$GITHUB_OUTPUT"
           echo "fit=$FIT" >> "$GITHUB_OUTPUT"
           echo "days: $FILES | depth fitted on: $FIT"
+      - name: Copy only the fit days (check_copy), capped at 8 MB/s
+        if: inputs.check_copy != ''
+        env:
+          FIT: ${{ steps.pick.outputs.fit }}
+        run: |
+          set -euo pipefail
+          rm -rf "$GITHUB_WORKSPACE/fitcopy"; mkdir -p "$GITHUB_WORKSPACE/fitcopy/data/fit"
+          printf '%s\n' $FIT > "$RUNNER_TEMP/fit.txt"
+          rsync -a --bwlimit=8000 --rsync-path="nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/fit.txt" bot:bot/data/recordings/ "$GITHUB_WORKSPACE/fitcopy/data/fit/"
+          rm -rf data/fit && mv "$GITHUB_WORKSPACE/fitcopy/data/fit" data/fit
+          [ -f data/models/model.json ] || { echo "no decision model in the replay check copy"; exit 1; }
+          echo "copied $(ls data/fit | wc -l) fit day(s), $(du -sm data/fit | cut -f1) MB"
+      - uses: actions/cache/save@v4
+        if: inputs.check_copy != ''
+        with:
+          path: data/fit
+          key: fidelity-fit-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Copy the days and the models once, capped at 8 MB/s (read-only, so the server is never burdened)
-        if: inputs.reuse_run == ''
+        if: inputs.reuse_run == '' && inputs.check_copy == ''
         env:
           FILES: ${{ steps.pick.outputs.files }}
           FIT: ${{ steps.pick.outputs.fit }}
@@ -117,7 +163,7 @@ jobs:
       # Shared with this run's backtest runners through the Actions cache (never an artifact: no recordings leave the
       # server's and runners' disks), so the server is read once a run instead of once a runner.
       - uses: actions/cache/save@v4
-        if: inputs.reuse_run == ''
+        if: inputs.reuse_run == '' && inputs.check_copy == ''
         with:
           path: |
             data/recordings
@@ -174,7 +220,12 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
           printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
           ssh bot true && echo "connected"
+      - name: This part has days? (fewer days than parts)
+        id: part
+        run: |
+          if [ "${{ matrix.part }}" -lt "$DAYS" ]; then echo "go=yes" >> "$GITHUB_OUTPUT"; else echo "part ${{ matrix.part }} has no day ($DAYS day(s))"; fi
       - uses: actions/cache/restore@v4
+        if: inputs.check_copy == '' && steps.part.outputs.go == 'yes'
         with:
           path: |
             data/recordings
@@ -182,17 +233,33 @@ jobs:
             data/models
           key: ${{ needs.pick.outputs.key }}
           fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        if: inputs.check_copy != '' && steps.part.outputs.go == 'yes'
+        with:
+          path: data
+          key: replay-check-copy-${{ inputs.check_copy }}
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        if: inputs.check_copy != '' && steps.part.outputs.go == 'yes'
+        with:
+          path: data/fit
+          key: ${{ needs.pick.outputs.key }}
+          fail-on-cache-miss: true
       - name: The settings (read-only)
+        if: steps.part.outputs.go == 'yes'
         run: |
           set -euo pipefail
           DATA="$GITHUB_WORKSPACE/data"; mkdir -p "$DATA/recordings" "$DATA/models"
           printf '%s\n' $FILES > "$RUNNER_TEMP/recordings.txt"
+          # Only the picked days stay (a replay check copy also holds its partial last day).
+          for f in "$DATA"/recordings/*; do grep -qxF "$(basename "$f")" "$RUNNER_TEMP/recordings.txt" || rm -f "$f"; done
           # The days and the models come from the pick job's single copy (the cache above): nothing more is copied here.
           [ -f "$DATA/models/model.json" ] || { echo "no decision model in the copy"; exit 1; }
           echo "restored $(ls "$DATA/recordings" | wc -l) recording file(s)"
           # The server's settings without any credential, and without server paths (as Remote training copies them).
           ssh bot "grep -E '^[A-Z][A-Z0-9_]*=' ~/bot/bot.env" | grep -vE 'KEY|SECRET|TOKEN|PASSWORD|PRIVATE|PEM|CREDENTIAL|^BIND_HOST=|^ALLOW_NON_LOOPBACK|^PORT=' | grep -vE '^[A-Z0-9_]+=["'"'"']?(/|~)' > "$RUNNER_TEMP/train.env" || true
       - name: Backtest (${{ matrix.group }})
+        if: steps.part.outputs.go == 'yes'
         run: |
           set -euo pipefail
           DATA="$GITHUB_WORKSPACE/data"; WORK="$DATA/fidelity"
@@ -229,6 +296,7 @@ jobs:
           fi
           if [ -f "$WORK/meta.json" ]; then cp "$WORK/meta.json" "$RUNNER_TEMP/out/meta-p${{ matrix.part }}.json"; fi
       - uses: actions/upload-artifact@v4
+        if: steps.part.outputs.go == 'yes'
         with:
           name: fidelity-${{ matrix.group }}-p${{ matrix.part }}
           path: ${{ runner.temp }}/out/
