@@ -393,7 +393,7 @@ def main():
         if nulls is None and name == "hazard":
             nulls = inp.get(name, "null/W:k5:full/auc26/n", None, quiet=True)
         gated = inp.get(name, "criteria/verdictGated/printed", None, quiet=True)
-        own_note = any("required before any number enters the forecast stack" in str(n) for n in (inp.get(name, "notes", [], quiet=True) or []))
+        own_note = bool(fast) and any("required before any number enters the forecast stack" in str(n) for n in (inp.get(name, "notes", [], quiet=True) or []))  # the note is static text in the module; it disqualifies a --fast run only
         reasons = [r for r, ok in (("fast=True", bool(fast)), (f"nulls {nulls} < {MIN_NULLS}", nulls is not None and nulls < MIN_NULLS),
                                    ("module's own verdict gate not printed", gated is False), (f"read from folder '{folder}' not the plan's", folder != name),
                                    ("module's notes say its --fast output must not enter the stack", own_note)) if ok]
