@@ -146,13 +146,20 @@ jobs:
       - name: Refresh the forecast object on the latest data (weekly)
         if: ${{ env.ROUND == 'refresh' }}
         run: |
-          mkdir -p research/btcd_fractal/out8 research/btcd_fractal/out9
-          for m in baselines honest forecast; do
+          # research/btcd_fractal/refresh mirrors the out8/out9 layout so study8_forecast (--in) and study9_checks (../out8) read the
+          # refreshed honest/forecast objects; out8/ and out9/ stay the archival full-null runs. Modules that are not refitted weekly
+          # (multiscale, regime, hazard, tda_sig) are copied in frozen for the forecast stack.
+          R=research/btcd_fractal/refresh; mkdir -p "$R/out8" "$R/out9"
+          for m in multiscale regime hazard tda_sig; do mkdir -p "$R/out8/$m"; cp "research/btcd_fractal/out8/$m/results.json" "$R/out8/$m/" 2>/dev/null || true; done
+          for m in baselines honest; do
             echo "=== $m ==="
-            python3 research/btcd_fractal/study8_$m.py --data research/btcd_fractal/data --out research/btcd_fractal/out8/$m --nulls 50 2>&1 | tee research/btcd_fractal/out8/$m.log | tail -8 | cut -c1-400
+            python3 research/btcd_fractal/study8_$m.py --data research/btcd_fractal/data --out "$R/out8/$m" --nulls 50 2>&1 | tee "$R/out8/$m.log" | tail -8 | cut -c1-400
           done
-          python3 research/btcd_fractal/study9_checks.py --data research/btcd_fractal/data --out research/btcd_fractal/out9/checks --nulls 50 2>&1 | tee research/btcd_fractal/out9/checks.log | tail -8 | cut -c1-400
-          python3 research/btcd_fractal/log_reading.py --root research/btcd_fractal --log research/btcd_fractal/forecast_log.csv | tail -3
+          echo "=== forecast ==="
+          python3 research/btcd_fractal/study8_forecast.py --data research/btcd_fractal/data --out "$R/out8/forecast" --in "$R/out8" --nulls 50 2>&1 | tee "$R/out8/forecast.log" | tail -8 | cut -c1-400
+          echo "=== checks ==="
+          python3 research/btcd_fractal/study9_checks.py --data research/btcd_fractal/data --out "$R/out9/checks" --nulls 50 2>&1 | tee "$R/out9/checks.log" | tail -8 | cut -c1-400
+          python3 research/btcd_fractal/log_reading.py --root "$R" --log research/btcd_fractal/forecast_log.csv | tail -3
       - name: Commit results to the branch
         if: always()
         run: |
@@ -164,6 +171,6 @@ jobs:
           mkdir -p research/btcd_fractal/out4; cp "$RUNNER_TEMP/study4.log" research/btcd_fractal/out4/study4.log 2>/dev/null || true
           mkdir -p research/btcd_fractal/out5; cp "$RUNNER_TEMP/study5.log" research/btcd_fractal/out5/study5.log 2>/dev/null || true
           mkdir -p research/btcd_fractal/out6 research/btcd_fractal/out7; cp "$RUNNER_TEMP/study6.log" research/btcd_fractal/out6/study6.log 2>/dev/null || true; cp "$RUNNER_TEMP/study7.log" research/btcd_fractal/out7/study7.log 2>/dev/null || true
-          for d in data out out2 out3 out4 out5 out6 out7 out8 out9 out10 forecast_log.csv; do [ -e "research/btcd_fractal/$d" ] && git add -f "research/btcd_fractal/$d"; done; true
+          for d in data out out2 out3 out4 out5 out6 out7 out8 out9 out10 refresh forecast_log.csv; do [ -e "research/btcd_fractal/$d" ] && git add -f "research/btcd_fractal/$d"; done; true
           git commit -q -m "BTC.D fractal study results (run ${{ github.run_id }}) [skip ci]" || { echo "nothing to commit"; exit 0; }
           for i in 1 2 3 4; do git pull -q --rebase origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && break; sleep $((2**i)); done

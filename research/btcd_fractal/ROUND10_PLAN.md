@@ -102,9 +102,11 @@ permutations). TODAY: fixed5 + C2b reading, the gate state, the clock's phase.
 
 ## [4] refresh: the forecast object as a living reading (no module; .github/workflows/btcd-fractal.yml round "refresh")
 Every Monday 01:20 UTC (Sunday 8:20 PM EST) the workflow fetches the latest history and re-runs baselines, honest, forecast and
-study9_checks with 50 nulls, commits out8/out9 and appends one line to research/btcd_fractal/forecast_log.csv (log_reading.py: date,
+study9_checks with 50 nulls into research/btcd_fractal/refresh/ (a mirror of the out8/out9 layout; out8/ and out9/ stay the archival
+full-null runs), commits it and appends one line to research/btcd_fractal/forecast_log.csv (log_reading.py: date,
 BTC.D, BTC.D ex-stablecoins, inputs, fixed5 / M2-only / M2+ETH/BTC readings, honest's in-support spread, the stack, readiness gate
-and distance, falsifier states). No criteria; the log is read in the thread when the owner asks.
+and distance, falsifier states). No criteria; the log is read in the thread when the owner asks. A `schedule` trigger fires only from the repository's default branch, so
+the Monday run starts once this branch is merged; until then the refresh is dispatched by hand (round=refresh) on the branch.
 
 ## What round 10 does not do
 No new model families; no change to study8_*.py or study9_*.py; no re-specification of earlier criteria; nothing touches the bot.

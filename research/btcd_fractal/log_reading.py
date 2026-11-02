@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Append one line per run to forecast_log.csv from the committed results (round-10 refresh; no fitting, no network).
 
-  python3 research/btcd_fractal/log_reading.py --root research/btcd_fractal --log research/btcd_fractal/forecast_log.csv
+  python3 research/btcd_fractal/log_reading.py --root research/btcd_fractal/refresh --log research/btcd_fractal/forecast_log.csv
+  (--root holds out8/honest, out8/forecast and out9/checks results.json; the weekly refresh folder mirrors that layout)
 """
 import argparse
 import csv
