@@ -198,7 +198,8 @@ test('profit rules on tennis (Steven, Oct 30): the quota snipe sells a position 
 });
 
 test('tennis loser window cut (LOSER_WINDOW_CUT, Steven Oct 31): in the last 30% of the match a position not in profit is sold at the bid; one in profit rides', () => {
-  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.loserExits?.window, true);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.loserExits?.window, false, 'off by default since Nov 2 (under study)');
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), LOSER_WINDOW_CUT: 'true' }).strategy.loserExits?.window, true);
   const fav = (prog: number, bid: number, net: number | undefined, r: { pacerUsd?: number; settleFrac?: number; loserWindow?: boolean }) => {
     const tr = new MatchTracker('P', T);
     tr.progress = () => prog;

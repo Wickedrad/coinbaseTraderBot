@@ -11,6 +11,8 @@ const cfg: StrategyConfig = {
   style: 'both', series: ['KXBTC15M'], kellyFraction: 0.25, minEdge: 0.02, takerBuffer: 0.01,
   inventorySkewPerContract: 0.002, requoteThreshold: 0.01, fastMoveSigmas: 3, fastMoveWindowSec: 5, orderTtlSec: 60,
   exitPolicy: 'fair_value', sessionRisk: {},
+  // The rules under test on (the cut and the window cut are off by default since Nov 2) and the quote cushion at the gate's 6c.
+  loserExits: { ...base.loserExits!, cut: true, window: true, gateQuoteMargin: undefined },
 };
 const off: StrategyConfig = { ...cfg, loserExits: { ...cfg.loserExits!, gate: false, cut: false, window: false } };
 
@@ -23,11 +25,11 @@ const view = (o: Partial<MarketView> = {}): MarketView => ({
 const long = (o: Partial<MarketView> = {}) => view({ position: 10, entrySidePrice: 0.55, entryFeePerContract: 0.0175, ...o });
 const ioc = (out: StrategyOutput) => out.place.filter((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
 
-test('loser rules: on by default (gate 6c, cut 3c, window), each off by its flag', () => {
-  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, cut: true, cutMargin: 0.03, window: true, windowJudge: 'bid', windowShare: 0, noEntryShare: 0 });
-  const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE: 'false', LOSER_CUT: 'false', LOSER_WINDOW_CUT: 'false', FV_ENTRY_GATE_MARGIN: '0.09', LOSER_CUT_MARGIN: '0.05',
-    LOSER_WINDOW_JUDGE: 'cost', LOSER_WINDOW_SHARE: '0.25', LOSER_NO_ENTRY_SHARE: '0.2' }).strategy;
-  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: false, cutMargin: 0.05, window: false, windowJudge: 'cost', windowShare: 0.25, noEntryShare: 0.2 });
+test('loser rules: gate 6c + 12c quote cushion on by default, cut and window cut off (8 recorded days), each by its flag', () => {
+  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, window: false, windowJudge: 'bid', windowShare: 0, noEntryShare: 0 });
+  const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE: 'false', LOSER_CUT: 'true', LOSER_WINDOW_CUT: 'true', FV_ENTRY_GATE_MARGIN: '0.09', LOSER_CUT_MARGIN: '0.05',
+    FV_ENTRY_GATE_QUOTE_MARGIN: '', LOSER_WINDOW_JUDGE: 'cost', LOSER_WINDOW_SHARE: '0.25', LOSER_NO_ENTRY_SHARE: '0.2' }).strategy;
+  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, window: true, windowJudge: 'cost', windowShare: 0.25, noEntryShare: 0.2 });
 });
 
 test('loser window cut: in the last share of the window or the final minute a position not in profit is sold at the bid; one in profit rides', () => {
@@ -157,12 +159,13 @@ test('fair value gate: new risk only where the spot fair value of the side bough
   assert.equal(fvGatePasses(0.3, 'no', 0.6, 0.02, cfg), true); // NO worth 0.70 against 0.68
   assert.equal(fvGatePasses(undefined, 'yes', 0.6, 0.02, cfg), true);
   assert.equal(fvGatePasses(0.5, 'yes', 0.6, 0.02, off), true);
-  // FV_ENTRY_GATE_QUOTE_MARGIN: a resting maker quote can need a wider cushion than a taker entry; unset, both use 6c.
+  // FV_ENTRY_GATE_QUOTE_MARGIN: a resting maker quote needs a wider cushion than a taker entry (12c by default; '' = the gate's 6c).
   const wide: StrategyConfig = { ...cfg, loserExits: { ...cfg.loserExits!, gateQuoteMargin: 0.1 } };
   assert.equal(fvGatePasses(0.7, 'yes', 0.6, 0.02, cfg, true), true);
   assert.equal(fvGatePasses(0.7, 'yes', 0.6, 0.02, wide, true), false); // a quote needs 0.60 + 0.02 + 0.10 = 0.72 with the wider margin
   assert.equal(fvGatePasses(0.7, 'yes', 0.6, 0.02, wide, false), true); // a taker entry still needs only 6c
-  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.loserExits?.gateQuoteMargin, undefined);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.loserExits?.gateQuoteMargin, 0.12);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_QUOTE_MARGIN: '' }).strategy.loserExits?.gateQuoteMargin, undefined);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_QUOTE_MARGIN: '0.1' }).strategy.loserExits?.gateQuoteMargin, 0.1);
   // A taker YES the model wants (q 0.75 against a 0.60 ask): taken only when the spot fair value clears the gate.
   const taker = (pFair?: number) => decide(view({ pYes: 0.75, pFair }), { ...cfg, style: 'taker' });
