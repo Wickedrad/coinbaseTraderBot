@@ -134,6 +134,7 @@ export async function runWholeBot(D: WholeBotData, window: string, s: WholeBotSe
       const { runBacktest } = await import('./backtest');
       const S = s.strategy;
       const res = await runBacktest(D.dirs[window], D.model, { ...S }, D.cfg.risk, kalshiUsd0, {
+        snnPrice: D.cfg.snn.price,
         sessionRisk: S.sessionRisk, huntSessionGuard: S.huntSessionGuard, huntTransitionBufferMin: S.huntTransitionBufferMin,
         vault: D.cfg.vault.enabled ? D.cfg.vault : undefined, sizingTiers: s.tierScale && s.tierScale !== 1 && D.cfg.sizingTiers ? scaledTiers(D.cfg.sizingTiers, s.tierScale) : D.cfg.sizingTiers,
         tape: D.tape ? { file: path.join(D.tape.dir, `bot-${window}-${D.tape.sig.slice(0, 16)}.tape`), sig: `${D.tape.sig}|${window}|${D.days[window]?.map(dayOf).join(',')}` } : undefined,

@@ -55,6 +55,7 @@ import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { EquityGuard } from '../bot/risk/equityGuard';
 import { RiskGateway } from '../bot/risk/riskGateway';
+import { snnPrice, VolRef, type SnnPriceConfig } from '../bot/snn/priceAdjust';
 import { QuoteLagHold } from '../bot/strategy/quoteLagHold';
 import { applyFvGate, decide, loserNoEntry, trainingCount, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { ComponentTrials, type TrialName } from '../bot/strategy/componentTrials';
@@ -210,7 +211,7 @@ export interface BacktestResult {
  */
 export interface BacktestLatency { orderMs: number; cancelMs?: number; jitterMs?: number }
 
-export interface BacktestOpts { exitPolicy?: ExitPolicyName; ratchet?: RatchetParams; hunt?: HuntParams; volProfile?: VolProfile; applyVolSeasonality?: boolean; volModel?: VolModel; fillModel?: FillModel; sessionRisk?: SessionRiskProfile; huntSessionGuard?: boolean; huntTransitionBufferMin?: number; vault?: VaultConfig; calendar?: MacroEvent[]; sizingTiers?: TierPoint[]; latency?: BacktestLatency;
+export interface BacktestOpts { snnPrice?: SnnPriceConfig; exitPolicy?: ExitPolicyName; ratchet?: RatchetParams; hunt?: HuntParams; volProfile?: VolProfile; applyVolSeasonality?: boolean; volModel?: VolModel; fillModel?: FillModel; sessionRisk?: SessionRiskProfile; huntSessionGuard?: boolean; huntTransitionBufferMin?: number; vault?: VaultConfig; calendar?: MacroEvent[]; sizingTiers?: TierPoint[]; latency?: BacktestLatency;
   /** Record the model calls to this tape on the first run, play them back on later ones (research/callTape.ts). `sig`
    *  must change with anything the calls depend on (the days, the model, the vol settings, the risk limits). Not used
    *  with a fill model (it reads features the tape does not keep). */
@@ -444,6 +445,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const trainIds = new Set<string>(); // lab: the training trades' order ids
   const lastFair = new Map<string, number>(); // the exit audit: each market's last spot fair value (YES)
   // QUOTE_LAG_HOLD as the engine (bot/strategy/quoteLagHold.ts): per-market fair/mid history, holds counted for the report.
+  const snnVol = new VolRef(); let snnPriced = 0, snnPriceEvals = 0, snnShiftSum = 0;
   const qlh = strategy.loserExits?.quoteLagHold ? new QuoteLagHold(strategy.loserExits.quoteLagHold) : undefined;
   let qlhHeld = 0; const qlhMarkets = new Set<string>();
   const ratchets = new Map<string, LiquidityRatchet>();
@@ -784,7 +786,14 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         const tilted = priceContract(terms, { spot: spot.value * Math.exp(w * k * sigmaFv * Math.sqrt(tauSec)), sigmaPerSqrtSec: sigmaFv, tauSec, observedAvg: observed, observedCount, nu: model.params.tNu });
         return tilted ? Math.max(-strategy.taPricingMaxShift, Math.min(strategy.taPricingMaxShift, tilted.pYes - fv.pYes)) : 0;
       };
-      const pModel = opts.paper && opts.trials && !trialOn('mlp') ? fv.pYes : pred.p;
+      const pModel0 = opts.paper && opts.trials && !trialOn('mlp') ? fv.pYes : pred.p;
+      // SNN_PRICE (bot/snn/priceAdjust.ts): the SNN's logged contract call, pulled toward the mid by volatility regime.
+      let pModel = pModel0;
+      if (opts.snnPrice) {
+        snnPriceEvals++;
+        const sp = snnPrice(pModel0, st.snnContext(m.asset, m.ticker)?.pContract, mid, snnVol.ratio(m.asset, vol.sigmaPerSqrtSec, st.now), terms.kind, opts.snnPrice);
+        if (sp.p !== pModel0) { snnPriced++; snnShiftSum += Math.abs(sp.p - pModel0); pModel = sp.p; }
+      }
       const modelReadsTa = model.params.kind !== 'identity' && model.params.features.some((f) => f.startsWith('tanet_up'));
       const taPricing = Boolean(opts.taNet) && strategy.taPricing && strategy.taPricingWeight > 0 && !modelReadsTa;
       const drift = taPricing ? taDrift(taView, tauSec, { maxZ: strategy.taPricingMaxZ, live: false }) : undefined;
@@ -1098,6 +1107,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   res.takerThin = ex.takerStats;
   res.vaultEnd = vault?.vaultTotal ?? 0;
   res.pocketEnd = vault?.pocketTotal ?? 0;
+  if (opts.snnPrice) console.log(`snn price: moved ${snnPriced} of ${snnPriceEvals} evaluations, mean |shift| ${(snnPriced ? (snnShiftSum / snnPriced) * 100 : 0).toFixed(2)}c`);
   if (qlh) { const q = qlh.stats; console.log(`quote-lag hold: ${qlhHeld} orders held, ${qlhMarkets.size} markets | evals ${q.evals}, with gap ${q.withGap}, max |gap| ${(q.maxAbsGap * 100).toFixed(1)}c, triggered ${q.triggered}, plan entries while triggered: against ${q.againstEntries}, favoured ${q.favouredEntries}, resting quotes pulled ${q.restingCancelled}`); }
   return res;
 }

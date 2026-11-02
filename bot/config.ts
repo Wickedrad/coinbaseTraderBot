@@ -17,6 +17,7 @@ import type { VaultConfig } from './vault/vault';
 import { DEFAULT_LIVE_LINE } from './strategy/liveLine';
 import { DEFAULT_TRIALS, TRIAL_NAMES, type TrialName, type TrialParams } from './strategy/componentTrials';
 import { DEFAULT_SCOREBOARD, type ScoreboardParams } from './health/scoreboard';
+import { DEFAULT_SNN_PRICE, type SnnPriceConfig } from './snn/priceAdjust';
 import os from 'os';
 import path from 'path';
 
@@ -686,6 +687,8 @@ export interface SnnConfig {
   seed: number;
   /** Conservative-only dynamic target scaling (hunt take-profit distance), one step per 15 min. */
   targetScaling: boolean;
+  /** SNN_PRICE (off): the SNN's contract call in the price, pulled toward the mid by volatility regime (bot/snn/priceAdjust.ts). */
+  price?: SnnPriceConfig;
   deferred: { wilsonCowan: boolean; gapJunctions: boolean; izhikevichCH: boolean; dcaap: boolean };
   /** SNN_ANCHOR_MID: the contract readouts start from the market's mid and learn the correction (bot/snn/network.ts
    *  anchorLogit). Default on (Steven, Oct 30); crypto network only (params.ts anchorFor). A new version hash, so the
@@ -1571,6 +1574,13 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       readoutEta: num(env, 'SNN_READOUT_ETA', 1e-4, 0, 0.1),
       seed: num(env, 'SNN_SEED', 20260601, 0, 2 ** 31),
       targetScaling: bool(env, 'SNN_TARGET_SCALING', true),
+      ...(bool(env, 'SNN_PRICE', false) ? { price: {
+        alpha: num(env, 'SNN_PRICE_ALPHA', DEFAULT_SNN_PRICE.alpha, 0, 0.5),
+        kLow: num(env, 'SNN_PRICE_K_LOW', DEFAULT_SNN_PRICE.kLow, 0, 1),
+        kNormal: num(env, 'SNN_PRICE_K_NORMAL', DEFAULT_SNN_PRICE.kNormal, 0, 1),
+        kHigh: num(env, 'SNN_PRICE_K_HIGH', DEFAULT_SNN_PRICE.kHigh, 0, 1),
+        offKinds: (env.SNN_PRICE_OFF_KINDS ?? DEFAULT_SNN_PRICE.offKinds.join(',')).split(',').map((x) => x.trim()).filter(Boolean),
+      } } : {}),
       tennisPopulation: bool(env, 'SNN_TENNIS_POPULATION', true),
       tennisPopulationSettles: num(env, 'SNN_TENNIS_POPULATION_SETTLES', 30, 3, 10_000),
       domains: (() => {

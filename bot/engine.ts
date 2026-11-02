@@ -32,6 +32,7 @@ import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
 import { QuoteLagHold } from './strategy/quoteLagHold';
+import { snnPrice, VolRef } from './snn/priceAdjust';
 import { applyFvGate, decide, loserNoEntry, trainingCount, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
@@ -865,6 +866,8 @@ export class Engine {
   private readonly trainTicker = new Map<string, number>();
   /** QUOTE_LAG_HOLD (cfg.strategy.loserExits.quoteLagHold): per-market fair/mid history and running holds. */
   private quoteLagHold?: QuoteLagHold;
+  /** SNN_PRICE's per-asset one-day volatility reference. */
+  private snnVolRef = new VolRef();
   /** Training-trade budget: TRAINING_TRADES_PER_HOUR, spread evenly (no bursts), one per contract. */
   private trainBudget(now: number, ticker: string): boolean {
     const perHour = this.d.cfg.strategy.trainTrades;
@@ -2025,7 +2028,12 @@ export class Engine {
     const blended = this.snnBlend(m, st, pModel, tauSec > R.noEntryBeforeCloseSec, now);
     // The SNN's trial blend of a price: (1 - a) p + a p_snn.
     const snnTrial = (p: number) => (blended.a !== undefined && blended.pSnn !== undefined ? (1 - blended.a) * p + blended.a * blended.pSnn : undefined);
-    const pBase = trialOn('snn') && blended.a !== undefined ? snnTrial(pModel)! : blended.p;
+    const pBase0 = trialOn('snn') && blended.a !== undefined ? snnTrial(pModel)! : blended.p;
+    // SNN_PRICE (bot/snn/priceAdjust.ts): the SNN's contract call (the same one the replay reads from the log), pulled
+    // toward the mid by volatility regime and gated by contract kind.
+    const snnPx = cfg.snn.price ? snnPrice(pBase0, this.snnContext(m.asset, m.ticker)?.pContract, mid, this.snnVolRef.ratio(m.asset, vol.sigmaPerSqrtSec, now), terms.kind, cfg.snn.price) : undefined;
+    const pBase = snnPx ? snnPx.p : pBase0;
+    if (snnPx && snnPx.p !== pBase0) st.snnShadow = `SNN_PRICE: ${snnPx.why}`;
     const why = explain(model, features, fv.pYes);
     st.modelShift = why.shiftFromFairValue;
     st.drivers = why.drivers;
