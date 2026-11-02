@@ -1098,7 +1098,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   res.takerThin = ex.takerStats;
   res.vaultEnd = vault?.vaultTotal ?? 0;
   res.pocketEnd = vault?.pocketTotal ?? 0;
-  if (qlh) console.log(`quote-lag hold: ${qlhHeld} orders held, ${qlhMarkets.size} markets`);
+  if (qlh) { const q = qlh.stats; console.log(`quote-lag hold: ${qlhHeld} orders held, ${qlhMarkets.size} markets | evals ${q.evals}, with gap ${q.withGap}, max |gap| ${(q.maxAbsGap * 100).toFixed(1)}c, triggered ${q.triggered}, plan entries while triggered: against ${q.againstEntries}, favoured ${q.favouredEntries}`); }
   return res;
 }
 

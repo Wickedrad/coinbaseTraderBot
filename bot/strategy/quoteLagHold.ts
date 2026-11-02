@@ -17,6 +17,8 @@ interface Sample { t: number; fair: number; mid: number }
 export class QuoteLagHold {
   private hist = new Map<string, Sample[]>();
   private since = new Map<string, { side: 'yes' | 'no'; t: number }>();
+  /** Diagnostics: evaluations seen, with a gap reading, with the hold triggered, and entries on each side while triggered. */
+  readonly stats = { evals: 0, withGap: 0, triggered: 0, againstEntries: 0, favouredEntries: 0, maxAbsGap: 0 };
   constructor(readonly cfg: QuoteLagHoldConfig) {}
 
   /** Record one evaluation's fair value and quote mid for a market. */
@@ -50,8 +52,15 @@ export class QuoteLagHold {
 
   /** Drop the plan's orders that open or add to the side the gap is against, within maxSec of the hold starting. */
   apply(plan: StrategyOutput, ticker: string, t: number, position: number): number {
+    this.stats.evals++;
+    const g = this.gap(ticker, t);
+    if (g) { this.stats.withGap++; this.stats.maxAbsGap = Math.max(this.stats.maxAbsGap, Math.abs(g.gap)); }
     const side = this.against(ticker, t);
     if (!side) { this.since.delete(ticker); return 0; }
+    this.stats.triggered++;
+    for (const p of plan.place) if (!p.reduceOnly && p.purpose !== 'exit' && p.count > 0) {
+      if ((p.side === 'bid' ? 'yes' : 'no') === side) this.stats.againstEntries++; else this.stats.favouredEntries++;
+    }
     let s = this.since.get(ticker);
     if (!s || s.side !== side) this.since.set(ticker, (s = { side, t }));
     if (t - s.t >= this.cfg.maxSec * 1000) return 0; // waited long enough: let it through until the gap clears
