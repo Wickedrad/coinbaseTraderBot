@@ -311,6 +311,40 @@ export async function snnAblationMain(argOf: (k: string, d: string) => string = 
           const ul = late.length ? vsMarket(late.map((r) => ({ ...r, pSnn: r.mid + k * (r.pSnn - r.mid) }))) : null;
           console.log(`        CONTROL uniform shrink x${k} (no band): vs market ${f5(u)}${ul ? `; days >= ${cut}: ${f5(ul)}` : ''}`);
         }
+        // DYNAMICS (Steven, Nov 2): the shrink conditioned on a regime. Per slice (vol regime, asset x horizon, mid
+        // distance, UTC hour block) the factor k is picked on the early days, then applied on the later days and judged
+        // against the uniform x0.5. Adversary: the same per-slice picks with the slice labels shuffled across events.
+        if (early.length && late.length) {
+          const KS = [0, 0.25, 0.5, 0.75, 1];
+          const shr = (r: (typeof late)[number], k: number) => ({ ...r, pSnn: r.mid + k * (r.pSnn - r.mid) });
+          const sse = (rows: typeof late) => rows.reduce((a, r) => a + (r.pSnn - r.y) ** 2, 0);
+          const slicers: Record<string, (r: (typeof late)[number]) => string> = {
+            vol: (r) => (r.volRatio < 0.8 ? 'low' : r.volRatio < 1.25 ? 'normal' : 'high'),
+            column: (r) => r.column,
+            mid: (r) => { const d = Math.abs(r.mid - 0.5); return d < 0.1 ? '40-60' : d < 0.25 ? '25-40' : d < 0.4 ? '10-25' : 'edge'; },
+            hour: (r) => String(Math.floor(new Date(r.ts).getUTCHours() / 4) * 4),
+          };
+          const uLate = vsMarket(late.map((r) => shr(r, 0.5)));
+          for (const [name, f] of Object.entries(slicers)) {
+            const pickK = (rows: typeof early, lab: (r: (typeof early)[number]) => string) => {
+              const g = new Map<string, typeof early>();
+              for (const r of rows) { const k = lab(r); const a = g.get(k); if (a) a.push(r); else g.set(k, [r]); }
+              const ks = new Map<string, number>();
+              for (const [sl, rs] of g) ks.set(sl, rs.length < 500 ? 0.5 : KS.reduce((b, k) => (sse(rs.map((r) => shr(r, k))) < sse(rs.map((r) => shr(r, b))) ? k : b), 0.5));
+              return ks;
+            };
+            const ks = pickK(early, f);
+            const lc = vsMarket(late.map((r) => shr(r, ks.get(f(r)) ?? 0.5)));
+            // Placebo: each event gets a random slice label (same label mix), picks made and applied the same way.
+            const labs = [...ks.keys()], ev = new Map<string, string>();
+            let seed = 7; const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+            const plab = (r: (typeof late)[number]) => { let l = ev.get(r.eventKey); if (!l) ev.set(r.eventKey, (l = labs[Math.floor(rnd() * labs.length)] ?? '')); return l; };
+            const pks = pickK(early, plab);
+            const pc = vsMarket(late.map((r) => shr(r, pks.get(plab(r)) ?? 0.5)));
+            const kTxt = [...ks].map(([a, b]) => `${a} x${b}`).join(', ');
+            console.log(`        REGIME SHRINK by ${name} (${kTxt}): days >= ${cut} vs market ${f5(lc)} | uniform x0.5 ${f5(uLate)} | placebo labels ${f5(pc)}; ${lc.mean < uLate.mean && lc.mean < pc.mean ? 'beats uniform and placebo' : 'no gain over uniform/placebo'}`);
+          }
+        }
         if (pick && late.length) {
           const l = vsMarket(cc(late, pick.o)), lr = vsMarket(late);
           console.log(`        conditional correction HELD-OUT: picked on days < ${cut} (${tag(pick.o)}), on days >= ${cut}: vs market ${f5(l)} (SNN as is ${f5(lr)}); ${l.hi < 0 ? 'BEATS the market' : l.lo > 0 ? 'worse' : 'undecided'}`);
