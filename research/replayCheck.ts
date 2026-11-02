@@ -50,6 +50,8 @@ import type { Config } from '../bot/config';
 import type { EvalReading } from './backtest';
 
 export interface SideSummary {
+  /** Settled P&L by market (the worst-losers line). */
+  byTicker?: Record<string, number>;
   fills: number; contracts: number; fees: number; pnl: number; markets: number;
   /** Exit contracts by kind (take-profit, model exit, ratchet stop, cross, other). */
   exits: Record<string, number>;
@@ -163,7 +165,7 @@ export const foldReason = (r: string) => r.replace(/[-+]?\$?\d[\d.,]*%?/g, '#');
 const empty = (): SideSummary => ({ fills: 0, contracts: 0, fees: 0, pnl: 0, markets: 0, exits: {}, byHour: {}, byPurpose: {}, contractsByHour: {}, bySeries: {} });
 /** One market the take-profit bench scored: what its sales made against holding to settlement, the contracts sold, when. */
 export interface TakeProfitMarket { usd: number; contracts: number; t: number }
-const addSeries = (s: SideSummary, ticker: string, pnl: number) => { const x = (s.bySeries[ticker.split('-')[0]] ??= { markets: 0, pnl: 0 }); x.markets++; x.pnl += pnl; };
+const addSeries = (s: SideSummary, ticker: string, pnl: number) => { const x = (s.bySeries[ticker.split('-')[0]] ??= { markets: 0, pnl: 0 }); x.markets++; x.pnl += pnl; const t = (s.byTicker ??= {}); t[ticker] = (t[ticker] ?? 0) + pnl; };
 export type PaperSide = SideSummary & {
   gateShare: number | null; edgeShare?: number | null; lastFillAt: string | null;
   /** Fills of paper's own extra entries: training trades and exploration entries. */
@@ -813,6 +815,10 @@ async function main(): Promise<void> {
   const X = res.replay.extra, rej = Object.entries(X.rejected).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, n]) => `${k} x${n}`).join('; ');
   const TT = (res.replay as { takerThin?: { asked: number; filled: number; blocked: number; bySeries: Record<string, { asked: number; filled: number; blocked: number }> } }).takerThin;
   if (TT) console.log(`thin books: replay taker contracts asked ${TT.asked.toFixed(0)}, filled ${TT.filled.toFixed(0)}, refused because its own earlier takes emptied the level ${TT.blocked.toFixed(0)} | by series (asked/filled/refused): ${Object.entries(TT.bySeries).sort((a, b) => b[1].blocked - a[1].blocked).slice(0, 8).map(([k, v]) => `${k} ${v.asked.toFixed(0)}/${v.filled.toFixed(0)}/${v.blocked.toFixed(0)}`).join(' | ') || 'none'}`);
+  // Paper's worst losers (full-stake, -$9 or worse) and what the replay did in the same markets: 0 = it never traded them.
+  const PT = res.paper.byTicker ?? {}, RT = res.replay.byTicker ?? {};
+  const worst = Object.entries(PT).filter(([, v]) => v <= -9).sort((a, b) => a[1] - b[1]);
+  if (worst.length) console.log(`paper's worst losers (<= -$9): ${worst.length}, $${worst.reduce((a, [, v]) => a + v, 0).toFixed(2)} | replay in the same markets: $${worst.reduce((a, [k]) => a + (RT[k] ?? 0), 0).toFixed(2)}, not traded ${worst.filter(([k]) => RT[k] === undefined).length}, lost $9+ ${worst.filter(([k]) => (RT[k] ?? 0) <= -9).length} | ${worst.slice(0, 12).map(([k, v]) => `${k} ${v.toFixed(2)}/${RT[k] === undefined ? '-' : RT[k].toFixed(2)}`).join(', ')}`);
   const MA = (res.replay as { marketAnchor?: { scored: number; llAnchored: number | null; llRaw: number | null; llMarket: number | null; groups: Record<string, Array<{ lo: number; hi: number; n: number; w: number }>> } }).marketAnchor;
   if (MA) console.log(`market anchor: ${MA.scored} snapshots scored, log loss anchored ${MA.llAnchored} raw ${MA.llRaw} market ${MA.llMarket} | w by bucket: ${Object.entries(MA.groups).map(([g, bs]) => `${g} ${bs.map((b) => `${b.lo}-${b.hi}s ${b.w} (n ${b.n})`).join(', ')}`).join(' | ')}`);
   console.log(`paper's extra entries: training trades replay ${X.train} planned, paper ${res.paper.extra.train} filled | exploration replay ${X.explore} planned, paper ${res.paper.extra.explore} filled | replay sent ${X.sent} past the risk gateway${rej ? `, turned down: ${rej}` : ''}`);
