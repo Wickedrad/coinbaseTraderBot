@@ -258,11 +258,11 @@ function realDir(rec: string, work: string, meta: FidelityMeta): string {
   return dir;
 }
 
-type Windows = Awaited<ReturnType<typeof backtestMain>>['windows'];
+export type Windows = Awaited<ReturnType<typeof backtestMain>>['windows'];
 
 /** The decision model's backtest on one folder of days, as the pipeline runs it for the decision model
  *  (research/pipeline.ts, mlp): the production exit settings, the vol forecast and the fill model next to the model. */
-async function backtestDir(dir: string, model: string): Promise<Windows> {
+export async function backtestDir(dir: string, model: string, extra: Record<string, string> = {}): Promise<Windows> {
   const cfg = loadConfig(paperEnv(process.env));
   const models = path.dirname(model);
   const opt = (f: string) => (fs.existsSync(path.join(models, f)) ? path.join(models, f) : '');
@@ -273,6 +273,7 @@ async function backtestDir(dir: string, model: string): Promise<Windows> {
     // The paper bot's pool is topped back up when it runs dry (bot/training/supervisor.ts): without it a losing replay goes
     // broke on its first day ($10-$20 orders on a $200 pool) and trades nothing after.
     refill: String(cfg.paperBankrollUsd),
+    ...extra,
   };
   const t0 = Date.now();
   const { windows: w, result: r } = await backtestMain((k, d) => (k === 'recordings' ? dir : k in fixed ? fixed[k] : d), false);
@@ -286,6 +287,9 @@ async function backtestDir(dir: string, model: string): Promise<Windows> {
   const byHour = Object.entries(r.contractsByHour ?? {}).sort(([a], [b]) => a.localeCompare(b));
   console.log(`[fidelity] ${path.basename(dir)}: ${r.trades.length} settled positions; traded hours ${byHour.length ? `${byHour[0][0]}h to ${byHour[byHour.length - 1][0]}h` : 'none'} (${byHour.map(([h, n]) => `${h.slice(11)}:${Math.round(n)}`).join(' ')})`);
   console.log(`[fidelity] ${path.basename(dir)} windows: ${[...w].filter(([, x]) => x.contracts > 0).slice(0, 30).map(([k, x]) => `${Number.isFinite(k) ? new Date(k).toISOString().slice(5, 16) : String(k)} ${Math.round(x.contracts)}ct $${x.pnl.toFixed(2)}`).join('; ')}`);
+  const rej = Object.entries(r.exchangeRejected ?? {}).map(([k, n]) => `${k} x${n}`).join('; ');
+  console.log(`[fidelity] ${path.basename(dir)} at the end: cash $${r.end?.balance.toFixed(2)}, ${r.end?.openPositions} open positions (worst loss $${r.end?.openMaxLoss.toFixed(2)}), ${r.end?.openOrders} resting orders${rej ? ` | exchange refused: ${rej}` : ''}${r.makerMarkout ? ` | maker fills' 60 s markout ${(r.makerMarkout.mean * 100).toFixed(2)}c a contract (${r.makerMarkout.n})` : ''}`);
+  console.log(`[fidelity] ${path.basename(dir)} entry funnel: ${Object.entries(r.funnel ?? {}).map(([k, n]) => `${k} ${n}`).join('; ')}`);
   return w;
 }
 

@@ -55,6 +55,14 @@ export interface SideSummary {
   exits: Record<string, number>;
   /** confluence_ratchet: what hunt mode did in the replay (activations, stop triggers, lock sale judgements, wall asks). */
   hunt?: string;
+  /** The exit audit by kind (backtest ExitStats.byKind): sold after fees, held to settlement, the best later bid. */
+  exitAudit?: string;
+  /** Lab: the entry rules, and settled markets / P&L by the first entry fill's seconds to the close, 15m and hourly apart. */
+  entryTiming?: string;
+  /** Lab (Nov 1): each underlying's spot inside the stretch (first, last, high, low), the day's regime for a sweep over many days. */
+  regime?: string;
+  /** Lab: settled markets / P&L by the first entry's side, price, fair value edge, outcome, origin and exit, 15m and hourly apart. */
+  anatomy?: string;
   /** Settled P&L by UTC hour (YYYY-MM-DDTHH). */
   byHour: Record<string, number>;
   /** Fills and contracts by order purpose (quote, entry, exit; other: an order the log does not name). */
@@ -63,6 +71,8 @@ export interface SideSummary {
   contractsByHour: Record<string, number>;
   /** Settled markets and P&L by series (the ticker before its first dash: KXBTC15M, KXETHD, ...). */
   bySeries: Record<string, { markets: number; pnl: number }>;
+  /** Settled P&L by market ticker (lab: the per-market bootstrap reads it). */
+  byMarket?: Record<string, number>;
 }
 /** The two sides' prices at the paper bot's decision records (the replay's evaluation of the market within 1 s). */
 export interface PriceMatch {
@@ -157,13 +167,13 @@ const HOUR = 3_600_000;
 const hourOf = (ms: number) => new Date(ms).toISOString().slice(0, 13);
 const isTennis = (t: string) => t.startsWith('KXATP') || t.startsWith('KXWTA');
 // The model exit names its prices ("bid 0.55 - fee > q 0.520 + 0.02", "NO bid 0.45 - fee > q + 0.02").
-const exitKind = (why: string) => /^quota snipe/.test(why) ? 'quota snipe' : /^profit mandate/.test(why) ? 'profit mandate' : /^take-profit/.test(why) ? 'take-profit' : /ratchet|stop/i.test(why) ? 'ratchet' : /cross|curve/i.test(why) ? 'cross' : /exit|fair|model|- fee > q/i.test(why) ? 'model exit' : 'other';
+const exitKind = (why: string) => /^loser window cut/.test(why) ? 'loser window cut' : /^loser cut/.test(why) ? 'loser cut' : /^quota snipe/.test(why) ? 'quota snipe' : /^profit mandate/.test(why) ? 'profit mandate' : /^take-profit/.test(why) ? 'take-profit' : /ratchet|stop/i.test(why) ? 'ratchet' : /cross|curve/i.test(why) ? 'cross' : /exit|fair|model|- fee > q/i.test(why) ? 'model exit' : 'other';
 /** A rejection reason with its numbers folded, so the same kind counts together (as research/backtest.ts folds them). */
 export const foldReason = (r: string) => r.replace(/[-+]?\$?\d[\d.,]*%?/g, '#');
-const empty = (): SideSummary => ({ fills: 0, contracts: 0, fees: 0, pnl: 0, markets: 0, exits: {}, byHour: {}, byPurpose: {}, contractsByHour: {}, bySeries: {} });
+const empty = (): SideSummary => ({ fills: 0, contracts: 0, fees: 0, pnl: 0, markets: 0, exits: {}, byHour: {}, byPurpose: {}, contractsByHour: {}, bySeries: {}, byMarket: {} });
 /** One market the take-profit bench scored: what its sales made against holding to settlement, the contracts sold, when. */
 export interface TakeProfitMarket { usd: number; contracts: number; t: number }
-const addSeries = (s: SideSummary, ticker: string, pnl: number) => { const x = (s.bySeries[ticker.split('-')[0]] ??= { markets: 0, pnl: 0 }); x.markets++; x.pnl += pnl; };
+const addSeries = (s: SideSummary, ticker: string, pnl: number) => { const x = (s.bySeries[ticker.split('-')[0]] ??= { markets: 0, pnl: 0 }); x.markets++; x.pnl += pnl; (s.byMarket ??= {})[ticker] = (s.byMarket[ticker] ?? 0) + pnl; };
 export type PaperSide = SideSummary & {
   gateShare: number | null; edgeShare?: number | null; lastFillAt: string | null;
   /** Fills of paper's own extra entries: training trades and exploration entries. */
@@ -222,9 +232,9 @@ export async function readAudit(auditDir: string, days: string[], prices?: { fro
     for await (const line of rl) {
       const head = line.slice(0, 160);
       const decision = head.includes('"kind":"decision"');
-      // The decision that planned an exit names why (deploy/pnl_report.py reads it the same way); so does paper's training
-      // trade or exploration entry.
-      const exitPlan = decision && (line.includes('"purpose":"exit"') || line.includes('"why":"train (paper)') || line.includes('"why":"explore'));
+      // The decision that planned an exit names why (deploy/pnl_report.py reads it the same way); so does a training
+      // trade ("train (paper)" until Oct 31, "train:" since) or paper's exploration entry.
+      const exitPlan = decision && (line.includes('"purpose":"exit"') || line.includes('"why":"train (paper)') || line.includes('"why":"train:') || line.includes('"why":"explore'));
       const diagnosis = decision && head.includes('"event":"entry_diagnosis"');
       const swap = head.includes('"kind":"config"') && head.includes('"event":"model_swapped"');
       const hotSwap = head.includes('"kind":"config"') && head.includes('"event":"hot_swap"');
@@ -677,6 +687,17 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     seeded.push(`optimal f (${ofSeed.length} settled entries before the stretch)`);
   }
   const match = priceMatcher(audit.prices, from, to);
+  // Lab (Nov 1): the day's regime for the sweep over many days: each underlying's spot inside the stretch.
+  const regime = new Map<string, { first: number; last: number; hi: number; lo: number }>();
+  const underlyingOf = (ticker: string) => ticker.slice(0, Math.max(0, ticker.indexOf('-'))).replace(/^KX/, '').replace(/(15M|D)$/, '');
+  const onEval = (e: EvalReading) => {
+    match.onEval(e);
+    if (e.spot !== undefined && Number.isFinite(e.spot) && e.now >= from && e.now <= to) {
+      const u = underlyingOf(e.ticker), g = regime.get(u);
+      if (!g) regime.set(u, { first: e.spot, last: e.spot, hi: e.spot, lo: e.spot });
+      else { g.last = e.spot; if (e.spot > g.hi) g.hi = e.spot; if (e.spot < g.lo) g.lo = e.spot; }
+    }
+  };
   const r = await runBacktest(dir, model, S, cfg.risk, bankroll, {
     // The hunt and the ratchet as the engine builds them from the settings (bot/engine.ts), so HUNT_* and RATCHET_* overrides
     // reach the replay; before this the replay hunted with the code defaults whatever the settings said.
@@ -686,7 +707,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     sizingTiers: cfg.sizingTiers, paper: { orderFrac: S.paperOrderFrac, orderUsd: S.paperOrderUsd }, accuracyGate: S.accuracyGate,
     optimalF: { ...cfg.optimalF, ...(ofSeed ? { seed: ofSeed } : {}) },
     takeProfitBench: { enforce: S.takeProfitBench, rule: curveBench, stateFile: benchFile, ...(follow ? { follow } : {}) }, accuracyGateFile: gateFile, startMs, tradeFromMs: from,
-    dailyGoalUsd: cfg.vault.dailyGoalUsd, equityGuardFile: guardFile, killOverride, refillUsd: cfg.paperBankrollUsd, sessionEdge: cfg.sessionEdge, onEval: match.onEval, makerMarkouts: o.makerMarkouts,
+    dailyGoalUsd: cfg.vault.dailyGoalUsd, equityGuardFile: guardFile, killOverride, refillUsd: cfg.paperBankrollUsd, sessionEdge: cfg.sessionEdge, onEval, makerMarkouts: o.makerMarkouts,
     volProfile: models.volProfile, applyVolSeasonality: Boolean(models.volProfile), volModel: models.volModel, fillModel: models.fillModel, calendar: models.calendar,
     taNet: true, trials: models.trials, marketContext: true, ...(o.tickPhaseMs !== undefined ? { tickPhaseMs: o.tickPhaseMs } : {}), ...(seed ? { seedCandles: seed } : {}),
   });
@@ -696,14 +717,37 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   const replay = {
     ...empty(), accuracyBlocks: r.paper?.accuracyBlocks ?? 0, sessionEdgeBlocks: r.paper?.sessionEdgeBlocks ?? 0, entryEvaluations: r.entryEvaluations,
     takeProfitBenchedAt: r.paper?.takeProfitBenchedAt ? new Date(r.paper.takeProfitBenchedAt).toISOString() : null, takeProfitScored: r.paper?.takeProfitScored ?? 0, takeProfitNetUsd: r.paper?.takeProfitNetUsd ?? 0, takeProfitByMarket: r.paper?.takeProfitByMarket ?? {}, rejected: r.paper?.rejected ?? {}, sizeScaleMin: r.sizeScaleMin ?? 1,
-    makerBufferEnd: r.makerBufferEnd ?? null, extra: { train: r.paper?.trainTrades ?? 0, explore: r.paper?.exploreEntries ?? 0, sent: r.paper?.extraSent ?? 0, rejected: r.paper?.extraRejected ?? {} },
+    makerBufferEnd: r.makerBufferEnd ?? null, takerThin: r.takerThin, extra: { train: r.paper?.trainTrades ?? 0, explore: r.paper?.exploreEntries ?? 0, sent: r.paper?.extraSent ?? 0, rejected: r.paper?.extraRejected ?? {} },
   };
   const mk = (o.makerMarkouts ?? []).slice(-2000);
   const makerBufferPaper = mk.length >= 30 ? Math.min(S.makerBufferRange[1], Math.max(S.makerBufferRange[0], -mk.reduce((a, x) => a + x, 0) / mk.length)) : null;
   const inside = (t: number) => t >= from && t < to;
   for (const [w, b] of r.windows) if (inside(w)) { replay.fills += b.fills ?? 0; replay.contracts += b.contracts; replay.fees += b.fees; }
+  const timing: Record<string, Record<number, { n: number; pnl: number; train: number; trainPnl: number }>> = { '15m': {}, hourly: {} };
+  const anat: Record<string, Record<string, Record<string, { n: number; pnl: number }>>> = { '15m': {}, hourly: {} };
+  const addA = (k: string, dim: string, key: string, pnl: number) => { const b = ((anat[k][dim] ??= {})[key] ??= { n: 0, pnl: 0 }); b.n++; b.pnl += pnl; };
   for (const t of r.trades) {
     if (!inside(t.closeTs)) continue;
+    if (t.entrySec !== undefined) {
+      const k = t.kind === 'updown' ? '15m' : 'hourly', step = k === '15m' ? 60 : 300, lo = Math.floor(Math.max(0, t.entrySec) / step) * step;
+      const b = (timing[k][lo] ??= { n: 0, pnl: 0, train: 0, trainPnl: 0 });
+      b.n++; b.pnl += t.pnl;
+      if (t.entryTrain) { b.train++; b.trainPnl += t.pnl; }
+      if (t.entrySide) {
+        const c = t.entryCost ?? 0, e = t.entryFv !== undefined ? t.entryFv - c : undefined;
+        addA(k, 'side', t.entrySide.toUpperCase(), t.pnl);
+        addA(k, 'price', c < 0.25 ? '<25c' : c < 0.45 ? '25-45c' : c < 0.55 ? '45-55c' : c < 0.75 ? '55-75c' : '75c+', t.pnl);
+        const eb = e === undefined ? 'n/a' : e < 0 ? '<0' : e < 0.03 ? '0-3c' : e < 0.06 ? '3-6c' : e < 0.1 ? '6-10c' : '10c+';
+        addA(k, 'fv edge', eb, t.pnl);
+        // Lab (Nov 1): which way in and how much edge it had at the fill, together (a quote fills after the price moves).
+        addA(k, 'bought by x fv edge', `${t.entryHow ?? 'n/a'} ${eb}`, t.pnl);
+        addA(k, 'bought by x side', `${t.entryHow ?? 'n/a'} ${t.entrySide.toUpperCase()} ${t.won ? 'won' : 'lost'}`, t.pnl);
+        addA(k, 'side bought', t.won ? 'won' : 'lost', t.pnl);
+        addA(k, 'bought by', t.entryHow ?? 'n/a', t.pnl);
+        addA(k, 'exit', t.exitKind ?? 'n/a', t.pnl);
+        addA(k, 'side x outcome', `${t.entrySide.toUpperCase()} ${t.won ? 'won' : 'lost'}`, t.pnl);
+      }
+    }
     replay.pnl += t.pnl; replay.markets++;
     const h = hourOf(t.closeTs);
     replay.byHour[h] = (replay.byHour[h] ?? 0) + t.pnl;
@@ -716,7 +760,25 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   if (tpContracts) replay.exits['take-profit'] = +tpContracts.toFixed(2);
   if (r.exits.contracts - tpContracts > 1e-9) replay.exits['model exit / ratchet'] = +(r.exits.contracts - tpContracts).toFixed(2);
   const x = r.exits;
-  if (x.huntActivations || x.wallAsks || x.quotaSnipes) replay.hunt = `hunt mode in the replay: ${x.huntActivations} activations, ${x.ratchetTriggers} stop triggers, ${x.gaps} gaps, ${x.huntProfitTakes} profit takes, ${x.lockSales} lock sales, ${x.lockHolds} lock holds, ${x.wallAsks} wall asks (${x.wallFills.toFixed(0)} contracts filled on them), ${x.quotaSnipes} quota snipes (${x.quotaSnipeContracts.toFixed(0)} contracts)${x.floorArms || x.floorSales ? `, ${x.floorArms ?? 0} quota floors armed, ${x.floorSales ?? 0} floor sale calls` : ''}`;
+  if (x.huntActivations || x.wallAsks || x.quotaSnipes) replay.hunt = `hunt mode in the replay: ${x.huntActivations} activations, ${x.ratchetTriggers} stop triggers, ${x.gaps} gaps, ${x.huntProfitTakes} profit takes, ${x.lockSales} lock sales, ${x.lockHolds} lock holds, ${x.wallAsks} wall asks (${x.wallFills.toFixed(0)} contracts filled on them), ${x.quotaSnipes} quota snipes (${x.quotaSnipeContracts.toFixed(0)} contracts)${x.floorArms || x.floorSales ? `, ${x.floorArms ?? 0} quota floors armed, ${x.floorSales ?? 0} floor sale calls` : ''}${x.floorHolds ? `, ${x.floorHolds} floor holds by the model` : ''}`;
+  {
+    const g = (x: number) => (x >= 0 ? '+' : '') + x.toFixed(2);
+    const kinds = (['15m', 'hourly'] as const).map((k) => {
+      const step = k === '15m' ? 60 : 300;
+      const rows = Object.entries(timing[k]).map(([lo, b]) => [Number(lo), b] as const).sort((a, b) => b[0] - a[0]);
+      const tot = rows.reduce((a, [, b]) => ({ n: a.n + b.n, pnl: a.pnl + b.pnl }), { n: 0, pnl: 0 });
+      return `${k} ${tot.n} / ${g(tot.pnl)}: ${rows.map(([lo, b]) => `${lo + step}-${lo} s ${b.n} / ${g(b.pnl)}${b.train ? ` (train ${b.train} / ${g(b.trainPnl)})` : ''}`).join(', ') || 'none'}`;
+    });
+    const L = S.loserExits;
+    replay.anatomy = `trade anatomy (settled markets / P&L by the first entry fill): ${(['15m', 'hourly'] as const).map((k) => `${k}: ${Object.entries(anat[k]).map(([dim, xs]) => `${dim} ${Object.entries(xs).sort((a, b) => b[1].n - a[1].n).map(([key, b]) => `${key} ${b.n} / ${g(b.pnl)}`).join(', ')}`).join('; ') || 'none'}`).join(' | ')}`;
+    replay.entryTiming = `entry timing (15m window ${S.entryWindowUpdown.join('-')} s, hourly ${S.entryWindowHourly.join('-')} s, cadence ${S.cadence}, training ${S.trainTrades}/h, gate ${L?.gate ? `on ${L.gateMargin}` : 'off'}, cut ${L?.cut ? 'on' : 'off'}, window cut ${L?.window ? `${L.windowJudge ?? 'bid'}${L.windowShare ? ` from ${L.windowShare}` : ''}` : 'off'}, no entry ${L?.noEntryShare ?? 0}, share window ${S.shareWindowMaxSec > 0 ? `max ${S.shareWindowMaxSec} s` : 'the listing'}, floor ticks ${S.pacer.floorTicks ?? 0}; settled markets / P&L by the first entry fill's seconds to the close): ${kinds.join(' | ')}`;
+    const fmtSpot = (x: number) => x >= 1000 ? x.toFixed(0) : x >= 10 ? x.toFixed(2) : x.toFixed(4);
+    replay.regime = `regime (spot inside the stretch, first -> last, high/low range): ${[...regime].sort().map(([u, g]) => `${u} ${fmtSpot(g.first)} -> ${fmtSpot(g.last)} (${((g.last / g.first - 1) * 100).toFixed(1)}%), range ${((g.hi / g.lo - 1) * 100).toFixed(1)}%`).join(' | ') || 'none'}`;
+  }
+  if (x.byKind) replay.exitAudit = `exit audit${x.lateFills ? ` (entry and quote fills in the last 10% of the window: ${x.lateFills} fills ${(x.lateContracts ?? 0).toFixed(0)} c)` : ''}, sold after fees / held to settlement / best later bid after fees: ${Object.entries(x.byKind).sort((a, b) => b[1].contracts - a[1].contracts)
+    .map(([k, v]) => `${k} ${v.fills} fills ${v.contracts.toFixed(0)} c $${v.proceeds.toFixed(2)} / $${v.settled.toFixed(2)} / $${v.best.toFixed(2)}`
+      + (v.fv !== undefined ? `, fair value at the sale $${v.fv.toFixed(2)}` : '') + (v.tauC !== undefined && v.contracts > 0 ? ` ${(v.tauC / v.contracts).toFixed(0)} s to the close` : '')
+      + (v.underC ? `, sold under fair value ${v.underC.toFixed(0)} c $${(v.underProceeds ?? 0).toFixed(2)} / $${(v.underSettled ?? 0).toFixed(2)} (fair $${(v.underFv ?? 0).toFixed(2)})` : '')).join(' | ')}`;
   const paper = paperSummary(audit, from, to);
   const minHours = o.minHours ?? 3;
   const checked = hours >= minHours;
@@ -808,9 +870,15 @@ async function main(): Promise<void> {
   row('replay', res.replay);
   row('paper', res.paper);
   if (res.replay.hunt) console.log(res.replay.hunt);
+  if (res.replay.exitAudit) console.log(res.replay.exitAudit);
+  if (res.replay.entryTiming) console.log(res.replay.entryTiming);
+  if (res.replay.regime) console.log(res.replay.regime);
+  if (res.replay.anatomy) console.log(res.replay.anatomy);
   const purposes = (s: SideSummary) => Object.entries(s.byPurpose).sort().map(([k, x]) => `${k} ${x.fills}/${x.contracts.toFixed(0)}`).join(', ') || 'none';
   console.log(`fills/contracts by order purpose: replay ${purposes(res.replay)} | paper ${purposes(res.paper)}`);
   const X = res.replay.extra, rej = Object.entries(X.rejected).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, n]) => `${k} x${n}`).join('; ');
+  const TT = (res.replay as { takerThin?: { asked: number; filled: number; blocked: number; bySeries: Record<string, { asked: number; filled: number; blocked: number }> } }).takerThin;
+  if (TT) console.log(`thin books: replay taker contracts asked ${TT.asked.toFixed(0)}, filled ${TT.filled.toFixed(0)}, refused because its own earlier takes emptied the level ${TT.blocked.toFixed(0)} | by series (asked/filled/refused): ${Object.entries(TT.bySeries).sort((a, b) => b[1].blocked - a[1].blocked).slice(0, 8).map(([k, v]) => `${k} ${v.asked.toFixed(0)}/${v.filled.toFixed(0)}/${v.blocked.toFixed(0)}`).join(' | ') || 'none'}`);
   console.log(`paper's extra entries: training trades replay ${X.train} planned, paper ${res.paper.extra.train} filled | exploration replay ${X.explore} planned, paper ${res.paper.extra.explore} filled | replay sent ${X.sent} past the risk gateway${rej ? `, turned down: ${rej}` : ''}`);
   console.log('hour (UTC)      replay contracts  paper contracts   replay P&L   paper P&L');
   for (const h of [...new Set([...Object.keys(res.replay.contractsByHour), ...Object.keys(res.paper.contractsByHour), ...Object.keys(res.replay.byHour), ...Object.keys(res.paper.byHour)])].sort()) {
@@ -819,6 +887,14 @@ async function main(): Promise<void> {
   console.log(`paper's last fill in the stretch: ${res.paper.lastFillAt ? hm(res.paper.lastFillAt) : 'none'}`);
   const series = [...new Set([...Object.keys(res.replay.bySeries), ...Object.keys(res.paper.bySeries)])].sort((x, y) => (res.paper.bySeries[y]?.markets ?? 0) - (res.paper.bySeries[x]?.markets ?? 0));
   console.log(`settled markets / P&L by series: ${series.map((k) => `${k} replay ${res.replay.bySeries[k]?.markets ?? 0} / ${f(res.replay.bySeries[k]?.pnl ?? 0)}, paper ${res.paper.bySeries[k]?.markets ?? 0} / ${f(res.paper.bySeries[k]?.pnl ?? 0)}`).join(' | ') || 'none'}`);
+  { // the workflow's comment cuts lines at 900 characters: chunks of at most 800
+    const items = Object.entries(res.replay.byMarket ?? {}).filter(([, v]) => Math.abs(v) >= 0.005).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${f(v)}`);
+    const chunks: string[] = []; let cur = '';
+    for (const it of items) { if (cur && cur.length + it.length + 1 > 800) { chunks.push(cur); cur = ''; } cur = cur ? `${cur} ${it}` : it; }
+    if (cur) chunks.push(cur);
+    if (!chunks.length) console.log('replay settled P&L by market (1/1): none');
+    chunks.forEach((c, i) => console.log(`replay settled P&L by market (${i + 1}/${chunks.length}): ${c}`));
+  }
   const top = (r: Record<string, number>) => Object.entries(r).filter(([k]) => k !== 'quoting').sort((x, y) => y[1] - x[1]).slice(0, 4).map(([k, n]) => `${k} x${n}`).join('; ');
   for (const [h, r] of Object.entries(res.paper.quietHours).sort()) console.log(`paper filled nothing in ${h.replace('T', ' ')}:00; its entry diagnoses then, markets by reason: ${top(r)}`);
   if (res.paper.quiet.diagnoses) console.log(`after it, ${res.paper.quiet.diagnoses} entry diagnoses (the last ${hm(res.paper.quiet.lastAt!)}), markets by reason summed over them: ${top(res.paper.quiet.reasons)}`);
