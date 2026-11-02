@@ -55,7 +55,7 @@ import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { EquityGuard } from '../bot/risk/equityGuard';
 import { RiskGateway } from '../bot/risk/riskGateway';
-import { applyFvGate, decide, loserNoEntry, trainingCount, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, type MarketView } from '../bot/strategy/fairValueStrategy';
+import { applyFvGate, decide, loserNoEntry, trainingCount, trainingOrder, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { ComponentTrials, type TrialName } from '../bot/strategy/componentTrials';
 import { activeRuleBook, RuleBook, setRuleBook } from '../bot/strategy/ruleBook';
 import { altcoinRiskOn, confluenceBreadth, orientedSignals, selectionPriority, taDrift, taNetDirection } from '../bot/strategy/taConviction';
@@ -768,7 +768,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         tierLimits.maxWindowRiskFrac = Math.max(tier.windowFrac, (PAPER_WINDOW_ORDERS * fitUsd) / bankroll);
         tierLimits.maxTotalRiskFrac = Math.max(tier.totalFrac, (PAPER_TOTAL_ORDERS * fitUsd) / bankroll);
       }
-      const q = (side: 'bid' | 'ask') => { const o = open.find((x) => x.side === side); return o ? { clientOrderId: o.orderId, price: o.price, remaining: o.remainingCount } : undefined; };
+      // The quote slots hold quotes and resting exits, as the engine's (a resting training entry, TRAINING_MODE=maker, is not one).
+      const q = (side: 'bid' | 'ask') => { const o = open.find((x) => x.side === side && purposeOf(x.clientOrderId) !== 'entry'); return o ? { clientOrderId: o.orderId, price: o.price, remaining: o.remainingCount } : undefined; };
       // An exit queued on an evaluation goes out on the next one, a second later (the live bot's reaction); with the paper
       // options it goes out at the end of the same evaluation, as the paper bot sends it to its in-process exchange.
       const fireExit = async () => {
@@ -960,13 +961,16 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         const perHour = strategy.trainTrades;
         if (perHour > 0 && !trainTicker.has(m.ticker) && trainTs.length < perHour && st.now - (trainTs[trainTs.length - 1] ?? 0) >= (3_600_000 / perHour) * 0.5) {
           const buyYes = qDecision >= mid;
-          const cost = buyYes ? ask.price : Math.round((1 - bid.price) * 10000) / 10000;
+          // TRAINING_MODE=maker: the side rests at its own touch (as the engine places it).
+          const maker = strategy.trainMode === 'maker';
+          const cost = maker ? (buyYes ? bid.price : Math.round((1 - ask.price) * 10000) / 10000) : buyYes ? ask.price : Math.round((1 - bid.price) * 10000) / 10000;
           if (cost >= limits.minSidePrice && cost <= 1 - limits.minSidePrice && ask.price - bid.price <= 0.08 && !fastMove && tauSec > limits.noEntryBeforeCloseSec) {
             trainTs.push(st.now);
             trainTicker.add(m.ticker);
             res.paper!.trainTrades!++;
-            plan.place.push({ side: buyYes ? 'bid' : 'ask', price: buyYes ? ask.price : bid.price, count: trainingCount(cost, view), timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry',
-              edge: buyYes ? qDecision - ask.price : (1 - qDecision) - cost, why: `train: ${buyYes ? 'YES' : 'NO'} at ${cost.toFixed(2)}` });
+            const expiry = Math.min(Math.floor(st.now / 1000) + strategy.orderTtlSec, Math.floor(m.closeTime / 1000) - Math.max(1, Math.floor(limits.noEntryBeforeCloseSec)));
+            plan.place.push(trainingOrder(buyYes, bid.price, ask.price, trainingCount(cost, view), buyYes ? qDecision - cost : (1 - qDecision) - cost, maker ? 'maker' : 'taker', expiry,
+              `train: ${buyYes ? 'YES' : 'NO'} at ${cost.toFixed(2)}`));
           }
         }
       }
