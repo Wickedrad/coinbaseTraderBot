@@ -109,11 +109,11 @@ jobs:
   run:
     needs: [data]
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 360
     strategy:
       fail-fast: false
-      # The account's runners are shared by every thread (Nov 1: ~4 at once for the whole project): one replay at a time.
-      max-parallel: 1
+      # The account's runners are shared by every thread (Nov 1: ~4 at once for the whole project): two replays at a time.
+      max-parallel: 2
       matrix:
         variant: ${{ fromJson(needs.data.outputs.variants) }}
     steps:
@@ -132,13 +132,22 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
-      - uses: actions/cache/restore@v4
+      - id: replay
+        uses: actions/cache/restore@v4
         with:
           path: |
             data/history
             data/history-replay
           key: benched-jobs-replay-${{ github.run_id }}
-          fail-on-cache-miss: true
+          # Nov 2: the run's own copy was evicted after ~4 h (the project shares the 10 GB cache), failing six variants.
+          # Fall back to any later copy and top it up below; the report pairs days, so a missing day only drops out.
+          restore-keys: |
+            benched-jobs-replay-
+            kalshi-replay-
+      - name: Top up the history when the run's copy was evicted
+        if: steps.replay.outputs.cache-matched-key != format('benched-jobs-replay-{0}', github.run_id)
+        run: |
+          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 120 2>&1 | tail -5
       - name: Restore the server's model and settings (the sweep's copy on main)
         id: server
         uses: actions/cache/restore@v4
@@ -147,7 +156,11 @@ jobs:
             data/models
             data/sweep-env
           key: benched-jobs-server-${{ github.run_id }}
-          fail-on-cache-miss: true
+          restore-keys: |
+            benched-jobs-server-
+            kalshi-server-
+      - name: Stop when no copy of the server's model is cached
+        run: '[ -f data/models/model.json ] || { echo "::error::no server copy cached"; exit 1; }'
       - name: Replay ${{ matrix.variant }}
         env:
           NODE_OPTIONS: --max-old-space-size=12288
