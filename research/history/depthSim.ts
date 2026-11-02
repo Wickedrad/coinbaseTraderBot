@@ -148,8 +148,36 @@ export class DepthSim {
     const tradeRate = byMove ? Math.max(0, byMove.tradesPerSec) : Math.max(0, cell.tradesPerMin?.mean ?? 0) / 60;
     const yesShare = (byMove ? byMove.takerYesShare : undefined) ?? cell.takerYesShare ?? 0.5;
     const best = (side: Side) => { const m = b![side]; let top = side === 'bid' ? -Infinity : Infinity; for (const p of m.keys()) if (side === 'bid' ? p > top : p < top) top = p; return top; };
+    // The walk to the next quote (Nov 2): a price that moves goes THROUGH the levels in its way, each taken by trades,
+    // spread evenly over the interval. Before this the levels the next quote moved past were just deleted at the
+    // anchor, so a resting order there never filled on the way down: history makers escaped the moves that pick off
+    // real ones (60 s markout at the touch -0.07c in the fill-in vs -1.14c on the real books, Oct 30 - Nov 1).
+    const sweeps: Array<{ at: number; side: Side }> = [];
+    if (nextMid !== undefined && Number.isFinite(nextMid)) {
+      const half = (bA - bB) / 2, tgt = Math.round(nextMid * PX);
+      const side: Side | undefined = tgt - half < bB ? 'bid' : tgt + half > bA ? 'ask' : undefined;
+      if (side) {
+        const edge = side === 'bid' ? tgt - half : tgt + half;
+        const n = [...b[side].keys()].filter((p) => (side === 'bid' ? p > edge : p < edge)).length;
+        for (let i = 0; i < n; i++) sweeps.push({ at: t + Math.floor(((i + 1) * (until - t)) / (n + 1)), side });
+      }
+    }
+    let sw = 0;
     for (let sec = t; sec < until; sec += 1000) {
       const end = Math.min(sec + 1000, until);
+      // The walk's sweeps due in this second: the whole best level traded away, and the other side follows one level.
+      for (; sw < sweeps.length && sweeps[sw].at < end; sw++) {
+        const { at, side } = sweeps[sw], m = b[side], top = best(side);
+        if (!Number.isFinite(top)) continue;
+        const q = m.get(top)!, yes = side === 'ask';
+        out.push({ t: at, k: 'trade', ticker, price: top / PX, count: q, takerSide: yes ? 'yes' : 'no', ts: at, sim: 1 });
+        m.delete(top);
+        out.push({ t: at, k: 'delta', ticker, side, price: top / PX, delta: -q, ts: at, sim: 1 });
+        // The far side moves up behind the price (a down move: a new ask at the level just taken).
+        const other: Side = side === 'bid' ? 'ask' : 'bid', om = b[other];
+        if (!om.has(top)) { const sz = lognormal(u, cell.levelFilledP50[0], cell.levelFilledP90[0]); om.set(top, sz); out.push({ t: at, k: 'delta', ticker, side: other, price: top / PX, delta: sz, ts: at, sim: 1 }); }
+        for (const p of [...om.keys()]) if (ticksFrom(p, top) >= DEPTH_LEVELS) { const d = om.get(p)!; om.delete(p); out.push({ t: at, k: 'delta', ticker, side: other, price: p / PX, delta: -d, ts: at, sim: 1 }); }
+      }
       // The trades in this second, spread through it, each on the book as it stands.
       const nTr = poisson(u, tradeRate * ((end - sec) / 1000));
       for (let i = 0; i < nTr; i++) {

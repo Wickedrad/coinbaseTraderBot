@@ -30,6 +30,10 @@ on:
         description: 'Replay the days an earlier run copied (its run id; its cache is kept 7 days unused): no server copy at all'
         required: false
         default: ''
+      fit_run:
+        description: 'With check_copy: reuse the fit days an earlier check_copy run cached (its run id: fidelity-fit-<id>-1), no server copy at all'
+        required: false
+        default: ''
       check_copy:
         description: 'Take the compared days from a Kalshi replay check copy (its run id: cache replay-check-copy-<id>, saved on main); only the fit days and nothing else are copied from the server (Nov 2: the 10 GB cache cap holds one full copy at most)'
         required: false
@@ -88,6 +92,7 @@ jobs:
         env:
           REUSE: ${{ inputs.reuse_run }}
           CHECK: ${{ inputs.check_copy }}
+          FIT_RUN: ${{ inputs.fit_run }}
         run: |
           set -euo pipefail
           if [ -n "$CHECK" ]; then
@@ -103,7 +108,7 @@ jobs:
             FIT=$(echo "$ALL" | tail -n "$FIT_DAYS" | tr '\n' ' ')
             echo "files=$FILES" >> "$GITHUB_OUTPUT"
             echo "fit=$FIT" >> "$GITHUB_OUTPUT"
-            echo "key=fidelity-fit-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+            if [ -n "$FIT_RUN" ]; then echo "key=fidelity-fit-$FIT_RUN-1" >> "$GITHUB_OUTPUT"; else echo "key=fidelity-fit-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"; fi
             echo "days from replay check copy $CHECK: $FILES | depth fitted on (copied): $FIT"
             exit 0
           fi
@@ -127,7 +132,7 @@ jobs:
           echo "fit=$FIT" >> "$GITHUB_OUTPUT"
           echo "days: $FILES | depth fitted on: $FIT"
       - name: Copy only the fit days (check_copy), capped at 8 MB/s
-        if: inputs.check_copy != ''
+        if: inputs.check_copy != '' && inputs.fit_run == ''
         env:
           FIT: ${{ steps.pick.outputs.fit }}
         run: |
@@ -139,7 +144,7 @@ jobs:
           [ -f data/models/model.json ] || { echo "no decision model in the replay check copy"; exit 1; }
           echo "copied $(ls data/fit | wc -l) fit day(s), $(du -sm data/fit | cut -f1) MB"
       - uses: actions/cache/save@v4
-        if: inputs.check_copy != ''
+        if: inputs.check_copy != '' && inputs.fit_run == ''
         with:
           path: data/fit
           key: fidelity-fit-${{ github.run_id }}-${{ github.run_attempt }}
