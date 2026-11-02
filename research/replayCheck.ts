@@ -887,7 +887,14 @@ async function main(): Promise<void> {
   console.log(`paper's last fill in the stretch: ${res.paper.lastFillAt ? hm(res.paper.lastFillAt) : 'none'}`);
   const series = [...new Set([...Object.keys(res.replay.bySeries), ...Object.keys(res.paper.bySeries)])].sort((x, y) => (res.paper.bySeries[y]?.markets ?? 0) - (res.paper.bySeries[x]?.markets ?? 0));
   console.log(`settled markets / P&L by series: ${series.map((k) => `${k} replay ${res.replay.bySeries[k]?.markets ?? 0} / ${f(res.replay.bySeries[k]?.pnl ?? 0)}, paper ${res.paper.bySeries[k]?.markets ?? 0} / ${f(res.paper.bySeries[k]?.pnl ?? 0)}`).join(' | ') || 'none'}`);
-  console.log(`replay settled P&L by market: ${Object.entries(res.replay.byMarket ?? {}).filter(([, v]) => Math.abs(v) >= 0.005).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${f(v)}`).join(' ') || 'none'}`);
+  { // the workflow's comment cuts lines at 900 characters: chunks of at most 800
+    const items = Object.entries(res.replay.byMarket ?? {}).filter(([, v]) => Math.abs(v) >= 0.005).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${f(v)}`);
+    const chunks: string[] = []; let cur = '';
+    for (const it of items) { if (cur && cur.length + it.length + 1 > 800) { chunks.push(cur); cur = ''; } cur = cur ? `${cur} ${it}` : it; }
+    if (cur) chunks.push(cur);
+    if (!chunks.length) console.log('replay settled P&L by market (1/1): none');
+    chunks.forEach((c, i) => console.log(`replay settled P&L by market (${i + 1}/${chunks.length}): ${c}`));
+  }
   const top = (r: Record<string, number>) => Object.entries(r).filter(([k]) => k !== 'quoting').sort((x, y) => y[1] - x[1]).slice(0, 4).map(([k, n]) => `${k} x${n}`).join('; ');
   for (const [h, r] of Object.entries(res.paper.quietHours).sort()) console.log(`paper filled nothing in ${h.replace('T', ' ')}:00; its entry diagnoses then, markets by reason: ${top(r)}`);
   if (res.paper.quiet.diagnoses) console.log(`after it, ${res.paper.quiet.diagnoses} entry diagnoses (the last ${hm(res.paper.quiet.lastAt!)}), markets by reason summed over them: ${top(res.paper.quiet.reasons)}`);
