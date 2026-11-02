@@ -1365,7 +1365,17 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
         if carry_path and os.path.exists(carry_path):
             try: carry = json.load(open(carry_path))
             except Exception: carry = []
-        mine = [[pathsB[s]['c_sec'], per[s], kT(s)] for s in per]
+        def feats(s):
+            p = pathsB[s]; q = baseR(dict(p, src=s)) or p
+            ser = re.sub(r'-.*', '', p['ep']['ticker'])
+            c = q['costF']; pb = 'px<20c' if c < 0.2 else 'px20-35c' if c < 0.35 else 'px35-65c' if c < 0.65 else 'px65-80c' if c < 0.8 else 'px>80c'
+            tl = p['c_sec'] - p['s0']; tb = 'left<5m' if tl < 300 else 'left5-15m' if tl < 900 else 'left15-30m' if tl < 1800 else 'left30-60m' if tl < 3600 else 'left>60m'
+            v = q['fv'][0] if q.get('fv') else None
+            e = None if v is None else v - c
+            eb = 'edge n/a' if e is None else 'edge<9c' if e < 0.09 else 'edge9-12c' if e < 0.12 else 'edge12-20c' if e < 0.20 else 'edge>20c'
+            return {'series': ser, 'price': pb, 'left': tb, 'edge': eb, 'trend': kT(s) or 'no regime'}
+        F = {s: feats(s) for s in per}
+        mine = [[pathsB[s]['c_sec'], per[s], kT(s), F[s]] for s in per]
         allc = carry + mine
         allc.sort(key=lambda c: c[0])
         csecs = [c[0] for c in allc]
@@ -1394,6 +1404,47 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
             rr = _rd.Random(100 + sd); kp = {s: rr.random() < dsh for s in per}
             rowsR.append((f'ADV DAY placebo: x2 on a random {100 * dsh:.0f}% (seed {sd})', scaled(2, lambda s, kp=kp: kp.get(s, False)), lambda s, kp=kp: kp.get(s, False)))
         rowsR.append(('ADV DAY 24 h x2 + 1c worse entry fill', scaled(2, d24, 0.01), d24))
+        # ---- refinement (Steven, Nov 2: where it still fails, add slight dynamics there): the gated trades by condition, and a
+        # causal nuance: an entry whose condition (series / price / time left / edge) lost over the last 72 h of gated trades
+        # (earlier windows included) is skipped or taken at half stake. Rows judged against gated x1 and its placebo.
+        print('     refinement: gated x1 trades by condition (this window)')
+        for fk in ('series', 'price', 'left', 'edge'):
+            agg = collections.defaultdict(lambda: [0, 0, 0.0])
+            for s_ in per:
+                g = agg[F[s_][fk]]; g[0] += 1; g[1] += per[s_] > 0; g[2] += per[s_]
+            print('       ' + fk + ': ' + '; '.join(f'{b} {g[0]} trades {100 * g[1] / g[0]:.0f}% {g[2]:+.2f}' for b, g in sorted(agg.items())))
+        def condpick(fks, H=259200, nmin=8):
+            memo = {}
+            def bad(s_):
+                if s_ in memo: return memo[s_]
+                t = pathsB[s_]['s0']
+                i0 = bisect.bisect_left(csecs, t - H); i1 = bisect.bisect_left(csecs, t)
+                out = False
+                for fk in fks:
+                    xs = [c[1] for c in allc[i0:i1] if len(c) > 3 and c[3].get(fk) == F[s_][fk]]
+                    if len(xs) >= nmin and sum(xs) < 0: out = True
+                memo[s_] = out
+                return out
+            return bad
+        def nuance(bad, k):
+            def f(p):
+                q = baseR(p)
+                if q is None or not bad(p['src']): return q
+                return None if k == 0 else dict(q, n=k * q['n'])
+            return f
+        rowsF = []
+        for fks, nm in ((('series',), 'series'), (('price',), 'price'), (('left',), 'time left'), (('edge',), 'edge'), (('series', 'price', 'left', 'edge'), 'any of them')):
+            b = condpick(fks)
+            rowsF += [(f'NUANCE skip where {nm} lost (72 h)', nuance(b, 0), b), (f'NUANCE half stake where {nm} lost (72 h)', nuance(b, 0.5), b)]
+        ball = condpick(('series', 'price', 'left', 'edge'))
+        sh = sum(1 for s_ in per if ball(s_)) / max(1, len(per))
+        import random as _rf
+        for sd in (1, 2, 3):
+            rr = _rf.Random(200 + sd); kp = {s_: rr.random() < sh for s_ in per}
+            bp = lambda s_, kp=kp: kp.get(s_, False)
+            rowsF.append((f'ADV NUANCE placebo: skip a random {100 * sh:.0f}% (seed {sd})', nuance(bp, 0), bp))
+        b1 = condpick(('series', 'price', 'left', 'edge')); rowsF.append(('ADV NUANCE skip any-of + 1c worse entry', (lambda p, b1=b1: (lambda q: None if q is None or b1(p['src']) else dict(q, costF=q['costF'] + 0.01))(baseR(p))), b1))
+        rowsR += rowsF
         if carry_path:
             try: json.dump(carry + mine, open(carry_path, 'w'))
             except Exception as e: print(f'     (carry not saved: {e})')
