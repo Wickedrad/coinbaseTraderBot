@@ -972,7 +972,10 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
 
       for (const p of plan.place) {
         if (opts.tradeFromMs !== undefined && st.now < opts.tradeFromMs) break;
-        if (p.purpose === 'exit') {
+        // A resting exit (the exit curve's post-only sell, the wall ask: good-till-cancelled) rests on the book as it does
+        // in paper (bot/engine.ts) and on Kalshi, through the same path as any order (Nov 2: queued as an IOC at its
+        // price it never rested, so every replay filled 0 contracts on wall asks). Immediate exits queue for next tick.
+        if (p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel') {
           // Queue for next tick, like every other exit (a take-profit keeps its name: its fills feed the bench).
           if (!pending.has(m.ticker)) pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: p.why.startsWith('take-profit') ? 'tp' : p.why.startsWith('quota snipe') ? 'snipe' : 'fv' });
           continue;
@@ -1011,7 +1014,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           continue;
         }
         if (/^(train|explore)/.test(p.why)) res.paper!.extraSent = (res.paper!.extraSent ?? 0) + 1;
-        const clientOrderId = `${m.ticker}-${st.now}-${p.side}-${p.purpose}${p.why.startsWith('take-profit') ? '-tp' : p.why.startsWith('confluence ratchet wall ask') ? '-wall' : ''}`;
+        const clientOrderId = `${m.ticker}-${st.now}-${p.side}-${p.purpose}${p.why.startsWith('take-profit') ? '-tp' : p.why.startsWith('confluence ratchet wall ask') ? '-wall' : p.purpose === 'exit' ? '-rest' : ''}`;
         await send(m.ticker, 'order', async () => {
           try {
             await ex.createOrder({ ticker: m.ticker, side: p.side, count: p.count, price: p.price, timeInForce: p.timeInForce, postOnly: p.postOnly, reduceOnly: p.reduceOnly, selfTradePrevention: 'taker_at_cross', clientOrderId, expirationTime: p.expirationTime });
