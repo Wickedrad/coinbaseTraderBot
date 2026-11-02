@@ -29,6 +29,10 @@ on:
         description: 'With exit_runner: never copy a day file from the server (only cached copies are read; a missing file is listed and skipped)'
         type: boolean
         default: false
+      exit_drive:
+        description: "With exit_runner: pull the windows' day files from the Google Drive archive (gdrive:kalshi-bot-archive) first, no server read for those"
+        type: boolean
+        default: false
       exit_save:
         description: 'With exit_runner: save the files this run copied from the server as an Actions cache (off keeps the 10 GB cache cap free)'
         type: boolean
@@ -268,6 +272,34 @@ jobs:
       - name: Move copy B's day files into the lab cache
         if: ${{ inputs.exit_runner && steps.reuse.outputs.b != '' }}
         run: mkdir -p labcache && find data/audit data/recordings -maxdepth 1 -type f \( -name 'audit-*.jsonl*' -o -name 'md-*.jsonl.gz' \) -exec mv -n {} labcache/ \; 2>/dev/null || true; rm -rf data; ls labcache | wc -l
+      - name: Pull the windows' day files from the Drive archive
+        if: ${{ inputs.exit_runner && inputs.exit_drive }}
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          WINDOWS: ${{ inputs.exit_windows }}
+          HOURS: ${{ inputs.exit_hours }}
+          UNTIL: ${{ inputs.exit_until || 'now' }}
+        run: |
+          [ -n "$RCLONE_CONF" ] || { echo "::error::RCLONE_CONF secret is not set"; exit 1; }
+          sudo apt-get install -y -qq rclone >/dev/null
+          mkdir -p ~/.config/rclone labcache && printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
+          [ -n "$WINDOWS" ] || WINDOWS="$HOURS@$UNTIL"
+          [[ "$WINDOWS" =~ ^[0-9.]+@[0-9TZ:a-z-]+(,[0-9.]+@[0-9TZ:a-z-]+)*$ ]] || { echo "windows must be HOURS@UNTIL,..."; exit 1; }
+          days=$(python3 -c "
+          import datetime as d
+          out = set()
+          for w in '$WINDOWS'.split(','):
+              h, u = w.split('@')
+              e = d.datetime.now(d.timezone.utc) if u == 'now' else d.datetime.strptime(u, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=d.timezone.utc)
+              a = (e - d.timedelta(hours=float(h) + 3)).date(); b = (e + d.timedelta(hours=3)).date()
+              while a <= b: out.add(a.isoformat()); a += d.timedelta(days=1)
+          print(' '.join(sorted(out)))")
+          for day in $days; do
+            [ -s "labcache/md-$day.jsonl.gz" ] || rclone copy "gdrive:kalshi-bot-archive/recordings" labcache --include "md-$day.jsonl.gz" || true
+            rclone copy "gdrive:kalshi-bot-archive/audit" labcache --include "audit-$day*" || true
+            echo "$day: $(ls labcache | grep -c "$day") file(s) from Drive"
+          done
+          du -sh labcache
       - name: Copy each window's files to the runner (read-only on the server) and run the study here
         if: ${{ inputs.exit_runner }}
         env:
