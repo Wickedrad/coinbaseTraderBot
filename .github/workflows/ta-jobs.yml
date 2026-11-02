@@ -69,7 +69,9 @@ jobs:
             data/history
             data/history-replay
           key: ta-jobs-replay-${{ github.run_id }}
+          # The shared copy on main first (Nov 2: the coordinator's kalshi-replay-41353229892), then this branch's.
           restore-keys: |
+            kalshi-replay-41353229892
             ta-jobs-replay-
             kalshi-replay-
       - name: Repair stored quotes, download what is new, rebuild the replay
@@ -84,6 +86,17 @@ jobs:
             data/history
             data/history-replay
           key: ta-jobs-replay-${{ github.run_id }}
+      # Round 4 lost its last six replays when the cache above was evicted mid-run (Nov 2, 06:05 UTC): the replays read the
+      # same public market data from this run's artifact instead (Kalshi and Binance history only, never a server copy).
+      - name: Hand the market data to the replays
+        uses: actions/upload-artifact@v4
+        with:
+          name: ta-jobs-data
+          path: |
+            data/history
+            data/history-replay
+          retention-days: 2
+          compression-level: 1
       # Pin one copy of the server's model and settings for every replay of this run: the daily sweep on main saves a new
       # copy, and replays that start hours apart would otherwise compare different models (round 3, Oct 31).
       - name: Restore the server's model and settings (the sweep's copy on main)
@@ -136,13 +149,11 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
-      - uses: actions/cache/restore@v4
+      - name: The market data (this run's artifact)
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            data/history
-            data/history-replay
-          key: ta-jobs-replay-${{ github.run_id }}
-          fail-on-cache-miss: true
+          name: ta-jobs-data
+          path: data
       - name: Restore the server's model and settings (the sweep's copy on main)
         id: server
         uses: actions/cache/restore@v4
@@ -198,13 +209,11 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
-      - uses: actions/cache/restore@v4
+      - name: The market data (this run's artifact)
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            data/history
-            data/history-replay
-          key: ta-jobs-replay-${{ github.run_id }}
-          fail-on-cache-miss: true
+          name: ta-jobs-data
+          path: data
       - name: Restore the server's model and settings (the sweep's copy on main)
         id: server
         uses: actions/cache/restore@v4

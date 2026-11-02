@@ -28,8 +28,22 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 // j4_v2 +0.17 [-0.08,+0.43] (job 4 no longer loses). Its gate replays started hours after its baseline and restored a
 // newer copy of the server's model, so round 4 pins one copy for every replay and repeats the margins with the stacks.
 // No job is switched off (Steven, Oct 31).
+// Round 4 (run 41351252668, 240 days Mar-Oct, Nov 2): g_m3 +0.05/h [-0.01,+0.12] vs baseline +0.62/h (adv_placebo +0.01),
+// flip had no effect, full stack -0.02. The baseline's own entries lost when the TA signals agreed with them (order flow
+// 30 s -27.8 c/ct, confluence -18.7, busy tape -16.2): round 5 tests them as a contrarian veto (job 6, bot/model/taVeto.ts).
+// Thresholds are round 4's medians over the baseline's fills (ofi 0, confluence 0, intensity 10.6).
+const VETO = { TA_VETO_OFI: '0', TA_VETO_CONF: '0', TA_VETO_INTENSITY: '10.6' };
 export const VARIANTS: Record<string, Record<string, string>> = {
   baseline: {},
+  veto_ofi: { TA_VETO_OFI: '0' },
+  veto_conf: { TA_VETO_CONF: '0' },
+  veto_int: { TA_VETO_INTENSITY: '10.6' },
+  veto_two: { ...VETO, TA_VETO_MIN: '2' },
+  veto_any: { ...VETO },
+  // Adversaries: the same veto on signals AGAINST the side (should hurt if the contrarian read is real), and random skips
+  // near veto_two's expected share (about half of the fills had two signals for the side in round 4).
+  adv_veto_reverse: { ...VETO, TA_VETO_MIN: '2', TA_VETO_REVERSE: 'true' },
+  adv_veto_random: { TA_VETO_RANDOM: '0.45' },
 };
 // Job 4, second iteration: sell on the stretch only near the fair value and for half of what is left to make (round 3:
 // +0.17/h alone; here only in the full stack, since runners are scarce).
@@ -41,15 +55,8 @@ const LEANS = { TA_LEAN_MAKER: '0.01', TA_LEAN_PRICE: '0.005' };
 const LAG = { DYN_EDGE_VOL: '-0.02', DYN_EDGE_MAX_DOWN: '0.02' };
 const gate = (m: string) => ({ TAKE_MID_GATE: GATE_FILE, TAKE_MID_MARGIN: m });
 export const GATE_VARIANTS: Record<string, Record<string, string>> = {
-  g_m3: gate('0.03'),
-  g_m3_full: { ...gate('0.03'), ...LEANS, ...LAG, ...J4_V2 },
-  // The skipped maker quotes lost 3c a contract: buy their other side instead when the gate favours it.
-  g_m3_flip: { ...gate('0.03'), TAKE_MID_FLIP: 'true' },
-  // Adversaries for the 3c gate (train-gate writes their files beside the gate's): see train-gate.
-  adv_placebo: { ...gate('0.03'), TAKE_MID_GATE: GATE_FILE.replace('.json', '_placebo.json') },
-  adv_midonly: { ...gate('0.03'), TAKE_MID_GATE: GATE_FILE.replace('.json', '_midonly.json') },
-  adv_random: { ...gate('0.03'), TAKE_MID_GATE: GATE_FILE.replace('.json', '_random.json') },
-  adv_reverse: { ...gate('0.03'), TAKE_MID_GATE: GATE_FILE.replace('.json', '_reverse.json') },
+  // Job 3 with job 6 on top (the gate alone and its adversaries ran in round 4).
+  g_m3_veto2: { ...gate('0.03'), ...VETO, TA_VETO_MIN: '2' },
 };
 
 function dayList(days: string, out: string): string[] {

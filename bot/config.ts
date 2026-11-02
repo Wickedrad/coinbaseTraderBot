@@ -14,6 +14,7 @@ import { DEFAULT_SINUOUS_ENTRY, type SinuousEntryParams } from './strategy/sinuo
 import { DEFAULT_SINUOUS_EXIT, type SinuousExitParams } from './strategy/sinuousExit';
 import { defaultTiers, validateTiers, type TierPoint } from './risk/sizingTiers';
 import type { AccuracyGateConfig } from './strategy/accuracyGate';
+import type { TaVetoConfig } from './model/taVeto';
 import type { VaultConfig } from './vault/vault';
 import { DEFAULT_LIVE_LINE } from './strategy/liveLine';
 import { DEFAULT_TRIALS, TRIAL_NAMES, type TrialName, type TrialParams } from './strategy/componentTrials';
@@ -294,6 +295,8 @@ export interface StrategyConfig {
   takeMidMargin: number;
   /** Buy the other side of an entry the mid gate skips when the gate favours it (bot/model/midTakeGate.ts; TAKE_MID_FLIP). */
   takeMidFlip: boolean;
+  /** The TA rework's contrarian entry veto (bot/model/taVeto.ts; TA_VETO_OFI / TA_VETO_CONF / TA_VETO_INTENSITY, unset = off). */
+  taVeto: TaVetoConfig;
 }
 
 export interface Config {
@@ -873,6 +876,11 @@ const DEFAULT_INDEX_IDS: Record<string, string> = {
 
 type Env = Record<string, string | undefined>;
 
+/** An optional number: NaN when unset (the setting is off). */
+function optNum(env: Env, key: string, lo: number, hi: number): number {
+  return env[key] === undefined || env[key] === '' ? NaN : num(env, key, 0, lo, hi);
+}
+
 function num(env: Env, key: string, def: number, lo: number, hi: number): number {
   const raw = env[key];
   const v = raw === undefined || raw === '' ? def : Number(raw);
@@ -1233,6 +1241,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     takeMidGate: (env.TAKE_MID_GATE ?? '').trim(),
     takeMidMargin: num(env, 'TAKE_MID_MARGIN', 0, 0, 0.2),
     takeMidFlip: bool(env, 'TAKE_MID_FLIP', false),
+    taVeto: { ofi: optNum(env, 'TA_VETO_OFI', -100, 100), conf: optNum(env, 'TA_VETO_CONF', -50, 50), intensity: optNum(env, 'TA_VETO_INTENSITY', 0, 50), min: num(env, 'TA_VETO_MIN', 1, 1, 3), reverse: bool(env, 'TA_VETO_REVERSE', false), random: optNum(env, 'TA_VETO_RANDOM', 0, 1) },
   };
 
   const dataDir = path.resolve(env.DATA_DIR ?? './data');
