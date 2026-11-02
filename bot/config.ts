@@ -65,6 +65,9 @@ export interface LoserExitConfig {
    *  position needs. A quote fills later than it is placed, mostly when the price has moved through it, so it can need a
    *  wider cushion than a taker entry, which fills at the price the gate saw. */
   gateQuoteMargin?: number;
+  /** QUOTE_LAG_HOLD (off): hold entries on the side a lagging quote is about to move toward (bot/strategy/quoteLagHold.ts);
+   *  QUOTE_LAG_HOLD_THETA (0.10), QUOTE_LAG_HOLD_WINDOW_SEC (10), QUOTE_LAG_HOLD_MAX_SEC (60). */
+  quoteLagHold?: { theta: number; windowSec: number; maxSec: number };
   /** LOSER_CUT (on): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
    *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
   cut: boolean;
@@ -1190,6 +1193,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       windowJudge: oneOf(env, 'LOSER_WINDOW_JUDGE', 'bid', ['bid', 'fair', 'cost'] as const),
       windowShare: num(env, 'LOSER_WINDOW_SHARE', 0, 0, 0.9),
       noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
+      ...(bool(env, 'QUOTE_LAG_HOLD', false) ? { quoteLagHold: { theta: num(env, 'QUOTE_LAG_HOLD_THETA', 0.10, 0.01, 0.5), windowSec: num(env, 'QUOTE_LAG_HOLD_WINDOW_SEC', 10, 1, 120), maxSec: num(env, 'QUOTE_LAG_HOLD_MAX_SEC', 60, 1, 600) } } : {}),
     },
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),

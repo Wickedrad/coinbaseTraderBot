@@ -31,6 +31,7 @@ import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
+import { QuoteLagHold } from './strategy/quoteLagHold';
 import { applyFvGate, decide, loserNoEntry, trainingCount, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
@@ -862,6 +863,8 @@ export class Engine {
 
   private readonly trainTs: number[] = [];
   private readonly trainTicker = new Map<string, number>();
+  /** QUOTE_LAG_HOLD (cfg.strategy.loserExits.quoteLagHold): per-market fair/mid history and running holds. */
+  private quoteLagHold?: QuoteLagHold;
   /** Training-trade budget: TRAINING_TRADES_PER_HOUR, spread evenly (no bursts), one per contract. */
   private trainBudget(now: number, ticker: string): boolean {
     const perHour = this.d.cfg.strategy.trainTrades;
@@ -1906,6 +1909,7 @@ export class Engine {
         this.lastDecisionAudit.delete(t);
         this.lastFeatureAudit.delete(t);
         this.trainTicker.delete(t);
+        this.quoteLagHold?.forget(t);
       }
     }
     for (const [k, ts] of this.lastRejectAudit) if (ts < cutoff) this.lastRejectAudit.delete(k);
@@ -2357,6 +2361,13 @@ export class Engine {
           why: `train: ${buyYes ? 'YES' : 'NO'} at ${cost.toFixed(2)}, model q ${q.toFixed(3)} vs mid ${mid.toFixed(3)}` });
         plan.notes.push(`training trade (${count} contract${count === 1 ? '' : 's'})`);
       }
+    }
+    // QUOTE_LAG_HOLD on the finished plan: hold entries on the side a lagging quote is about to move toward.
+    const qlh = S.loserExits?.quoteLagHold;
+    if (qlh) {
+      if (!this.quoteLagHold || this.quoteLagHold.cfg !== qlh) this.quoteLagHold = new QuoteLagHold(qlh);
+      this.quoteLagHold.record(m.ticker, now, fv.pYes, mid);
+      this.quoteLagHold.apply(plan, m.ticker, now, view.position);
     }
     // FV_ENTRY_GATE on the finished plan: the fill model's crosses and paper's training trades open positions too.
     applyFvGate(plan, fv.pYes, view.position, view.fees, S, loserNoEntry(view, S));
