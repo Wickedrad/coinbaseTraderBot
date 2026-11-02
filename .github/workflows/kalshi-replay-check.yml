@@ -60,7 +60,7 @@ on:
         required: false
         default: ''
       from_drive:
-        description: 'Read the recordings and audit log of days already in the Google Drive archive (drive-archive.yml) from Drive, and only the rest from the server (true/false). The small state files and settings still come from the server.'
+        description: 'Google Drive instead of Actions caches (true/false): days already in the Drive archive (drive-archive.yml) are read from Drive, only the rest from the server; a comparison run keeps its copy on Drive (lab-copies/kalshi-replay-check/<run id>) instead of a cache, and reuse_run restores from Drive (any branch), falling back to the cache'
         required: false
         default: 'false'
   push:
@@ -111,7 +111,7 @@ jobs:
           printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
           ssh bot true && echo "connected"
       - name: Set up rclone with the Drive archive's token (from_drive)
-        if: ${{ !inputs.reuse_run && inputs.from_drive == 'true' }}
+        if: ${{ inputs.from_drive == 'true' }}
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
         run: |
@@ -248,18 +248,43 @@ jobs:
             if [ -e "$RUNNER_TEMP/$f" ]; then cp -p "$RUNNER_TEMP/$f" "$DATA/runner-temp/"; fi
           done
       - name: Keep the copy for reruns of the same stretch (reuse_run)
-        if: ${{ !inputs.reuse_run && github.event_name == 'workflow_dispatch' && inputs.overrides }}
+        if: ${{ !inputs.reuse_run && github.event_name == 'workflow_dispatch' && inputs.overrides && inputs.from_drive != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: data
           key: replay-check-copy-${{ github.run_id }}
+      - name: Keep the copy on Drive for reruns (reuse_run, from_drive)
+        # Everything but the days the archive already holds (those are pulled from recordings/ and audit/ on reuse).
+        if: ${{ !inputs.reuse_run && github.event_name == 'workflow_dispatch' && inputs.overrides && inputs.from_drive == 'true' }}
+        run: |
+          set -euo pipefail
+          X="$RUNNER_TEMP/copy-exclude.txt"; : > "$X"
+          while read -r d; do [ -n "$d" ] && printf '/recordings/md-%s.jsonl.gz\n/audit/audit-%s*\n' "$d" "$d" >> "$X"; done < "$RUNNER_TEMP/drive-days.txt"
+          rclone copy data "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$GITHUB_RUN_ID" --exclude-from "$X" --transfers 4
+          echo "copy kept on Drive: lab-copies/kalshi-replay-check/$GITHUB_RUN_ID ($(rclone size "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$GITHUB_RUN_ID" | tail -1 | sed 's/^ *//'))"
       - name: Restore an earlier run's copy (reuse_run)
+        id: reuse_cache
         if: ${{ inputs.reuse_run }}
         uses: actions/cache/restore@v4
         with:
           path: data
           key: replay-check-copy-${{ inputs.reuse_run }}
-          fail-on-cache-miss: true
+          fail-on-cache-miss: ${{ inputs.from_drive != 'true' }}
+      - name: Restore an earlier run's copy from Drive (reuse_run, from_drive)
+        if: ${{ inputs.reuse_run && inputs.from_drive == 'true' && steps.reuse_cache.outputs.cache-hit != 'true' }}
+        env:
+          REUSE: ${{ inputs.reuse_run }}
+        run: |
+          set -euo pipefail
+          [[ "$REUSE" =~ ^[0-9]+$ ]] || { echo "reuse_run must be a run id"; exit 1; }
+          rclone copy "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$REUSE" data --transfers 4
+          [ -s data/sweeps/check-days.txt ] || { echo "::error::no copy of run $REUSE on Drive or in the cache"; exit 1; }
+          for d in $(tr ',' ' ' < data/sweeps/check-days.txt); do
+            grep -qx "$d" "$RUNNER_TEMP/drive-days.txt" || continue
+            ls data/recordings/md-$d.jsonl* >/dev/null 2>&1 || { rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.jsonl.gz" data/recordings/ && gzip -t "data/recordings/md-$d.jsonl.gz"; }
+            ls data/audit/audit-$d* >/dev/null 2>&1 || rclone copy gdrive:kalshi-bot-archive/audit data/audit/ --include "audit-$d*" --transfers 4
+            echo "$d: from Drive"
+          done
       - name: Put that run's paper state back (reuse_run)
         if: ${{ inputs.reuse_run }}
         env:
