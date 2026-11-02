@@ -1464,6 +1464,47 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
                 if r is None: continue
                 lb = lab + ('; depth' if dp else '')
                 print(f"    {lb:68s} {r['real']:+10.2f}  {r['real'] / max(r['span_h'], 1e-9):+6.2f}  {nsc:6d}  {r['snipe']:6d}  {r['cut']:5d}  {r['cap_peak']:14.2f}  {r['thin_usd']:7.2f}")
+        # ---- the size module alone (Steven, Nov 2: modules first, everything else at today's settings): today's entries and
+        # exits (normal entries, $10-$20 per order, slices pacer, no gate, no loser cut), only the stake rule changes.
+        r0 = pacer_run(pathsB, baseG, SL, remap=bando)
+        if r0 is not None:
+            per0 = r0['per']
+            cp0 = (carry_path + '.today') if carry_path else None
+            c0 = []
+            if cp0 and os.path.exists(cp0):
+                try: c0 = json.load(open(cp0))
+                except Exception: c0 = []
+            m0 = [[pathsB[s_]['c_sec'], per0[s_]] for s_ in per0]
+            a0 = sorted(c0 + m0); t0s = [c[0] for c in a0]
+            def dp0(H, nmin=5):
+                memo = {}
+                def pick(s_):
+                    if s_ not in memo:
+                        t = pathsB[s_]['s0']; i0 = bisect.bisect_left(t0s, t - H); i1 = bisect.bisect_left(t0s, t)
+                        xs = [c[1] for c in a0[i0:i1]]
+                        memo[s_] = len(xs) >= nmin and sum(xs) > 0
+                    return memo[s_]
+                return pick
+            def sc0(k, pick):
+                return lambda p: (lambda q: None if q is None else (dict(q, n=k * q['n']) if pick(p['src']) else q))(bando(p))
+            d0 = dp0(86400); sh0 = sum(1 for s_ in per0 if d0(s_)) / max(1, len(per0))
+            import random as _r0
+            rr0 = _r0.Random(300); kp0 = {s_: rr0.random() < sh0 for s_ in per0}
+            rows0 = [('TODAY x1 (today\'s bot)', bando, None), ('TODAY x2 everywhere', sc0(2, lambda s_: True), lambda s_: True),
+                     ('TODAY DAY: x2 while the last 24 h is in profit', sc0(2, d0), d0), ('TODAY DAY: x3 while the last 24 h is in profit', sc0(3, d0), d0),
+                     ('TODAY DAY 12 h: x2', sc0(2, dp0(43200)), dp0(43200)),
+                     (f'ADV TODAY placebo: x2 on a random {100 * sh0:.0f}%', sc0(2, lambda s_: kp0.get(s_, False)), lambda s_: kp0.get(s_, False))]
+            print(f'     size module alone on today\'s rules ({sum(1 for c in c0 if c[0] < min((m[0] for m in m0), default=0))} trades carried)')
+            for lab, rm, pk in rows0:
+                nsc = sum(1 for s_ in per0 if pk(s_)) if pk else 0
+                for dp in (False, True):
+                    r = pacer_run(pathsB, baseG, SL, remap=rm, depth=dp, depth_px=0.04 if (dp and lab.startswith('ADV')) else 0.02)
+                    if r is None: continue
+                    lb = lab + ('; depth' if dp else '')
+                    print(f"    {lb:68s} {r['real']:+10.2f}  {r['real'] / max(r['span_h'], 1e-9):+6.2f}  {nsc:6d}  {r['snipe']:6d}  {r['cut']:5d}  {r['cap_peak']:14.2f}  {r['thin_usd']:7.2f}")
+            if cp0:
+                try: json.dump(c0 + m0, open(cp0, 'w'))
+                except Exception: pass
 
     # ---- C. what separates the right stop sales from the wrong ones (at the 1-tick trail's trigger, from the locks) --
     print('  C. at the 1-tick trail\'s trigger (from the actual locks): the sale against settlement by what the rule could see')
