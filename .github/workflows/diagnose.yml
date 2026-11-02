@@ -291,12 +291,14 @@ jobs:
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
-      # The 1-minute history and the built replay days live on Drive (derived/ta-study); each run adds what is new.
+      # The raw history (raw/history, shared with the Kalshi sweep) and the built replay days (simulated/ta-study) live on
+      # Drive; each run adds what is new.
       - name: Restore the 1-minute history and the replay days from Drive
         id: drive
         run: |
-          if bash deploy/drive_lab.sh get derived/ta-study data; then echo "hit=true" >> "$GITHUB_OUTPUT"; du -sh data/history data/ta-study-replay 2>/dev/null | cat
-          else echo "nothing on Drive yet: falling back to the newest cache"; fi
+          if bash deploy/drive_lab.sh get raw/history data/history --include '/binance-1m/**' --include '/binance/**' --include '/kalshi/**' && bash deploy/drive_lab.sh get simulated/ta-study data/ta-study-replay; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"; du -sh data/history data/ta-study-replay 2>/dev/null | cat
+          else echo "not all on Drive yet: falling back to the newest cache"; fi
       - name: Restore the 1-minute history and the replay days (cache fallback)
         if: steps.drive.outputs.hit != 'true'
         uses: actions/cache/restore@v4
@@ -347,10 +349,8 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/ta/history"
-          for d in binance-1m binance kalshi; do [ ! -d "data/history/$d" ] || cp -al "data/history/$d" "$RUNNER_TEMP/ta/history/"; done
-          [ ! -d data/ta-study-replay ] || cp -al data/ta-study-replay "$RUNNER_TEMP/ta/"
-          bash deploy/drive_lab.sh put derived/ta-study "$RUNNER_TEMP/ta"
+          bash deploy/drive_lab.sh put raw/history data/history --include '/binance-1m/**' --include '/binance/**' --include '/kalshi/**'
+          [ ! -d data/ta-study-replay ] || bash deploy/drive_lab.sh put simulated/ta-study data/ta-study-replay
       - name: Post the log's tail on the commit
         if: always()
         env:
