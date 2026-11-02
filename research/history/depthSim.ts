@@ -165,6 +165,10 @@ export class DepthSim {
       }
     }
     let sw = 0;
+    // Where the quote stands (tenths of a cent): the anchor's bid and ask, moved only by the walk. The book's levels are
+    // placed and refilled around it, not around whatever best a cancel left (Nov 2 twin: drifting off the quote, the
+    // fill-in's mid stopped following the index, 0.05 against 0.77 real and 0.66 for the quotes it was built on).
+    let refB = bB, refA = bA;
     const inf = this.model.informed, informedP = inf && inf.n >= 1000 ? Math.min(1, Math.max(0, 2 * (inf.agree - 0.5))) : 0;
     const dir = nextMid !== undefined && Number.isFinite(nextMid) ? Math.sign(Math.round(nextMid * PX) - (bB + bA) / 2) : 0;
     for (let sec = t; sec < until; sec += 1000) {
@@ -179,6 +183,7 @@ export class DepthSim {
         out.push({ t: at, k: 'delta', ticker, side, price: top / PX, delta: -q, ts: at, sim: 1 });
         // The far side moves up behind the price (a down move: a new ask at the level just taken).
         const other: Side = side === 'bid' ? 'ask' : 'bid', om = b[other];
+        if (side === 'bid') { refA = top; refB = top - tickAt(top); } else { refB = top; refA = top + tickAt(top); }
         if (!om.has(top)) { const sz = lognormal(u, cell.levelFilledP50[0], cell.levelFilledP90[0]); om.set(top, sz); out.push({ t: at, k: 'delta', ticker, side: other, price: top / PX, delta: sz, ts: at, sim: 1 }); }
         for (const p of [...om.keys()]) if (ticksFrom(p, top) >= DEPTH_LEVELS) { const d = om.get(p)!; om.delete(p); out.push({ t: at, k: 'delta', ticker, side: other, price: p / PX, delta: -d, ts: at, sim: 1 }); }
       }
@@ -199,15 +204,16 @@ export class DepthSim {
       // Then each level's net change over the second.
       const at = end - 1, frac = (end - sec) / 1000;
       for (const side of ['bid', 'ask'] as Side[]) {
-        const m = b[side], top = best(side);
-        if (!Number.isFinite(top)) continue;
+        const m = b[side], top = side === 'bid' ? refB : refA;
         const tick = tickAt(top);
         for (let off = 0; off < DEPTH_LEVELS; off++) {
           const p = side === 'bid' ? top - off * tick : top + off * tick;
           if (p < 1 || p > PX - 1) continue;
           const q = m.get(p) ?? 0, f = this.rates(off, q);
           if (!f) continue;
-          const added = sumOf(u, poisson(u, f.addPerSec * frac), f.addSize.p50, f.addSize.p90);
+          let added = sumOf(u, poisson(u, f.addPerSec * frac), f.addSize.p50, f.addSize.p90);
+          // The quote's own level, emptied by trades or cancels, is quoted again as often as the real books quote it.
+          if (off === 0 && q === 0 && added === 0 && u() < (cell.levelQuoted[0] ?? 1)) added = lognormal(u, cell.levelFilledP50[0], cell.levelFilledP90[0]);
           const cancelled = q > 0 ? Math.min(q, sumOf(u, poisson(u, f.cancelPerSec * frac), f.cancelSize.p50, f.cancelSize.p90)) : 0;
           // Adds and cancels netted per second drift up with nothing to pull a queue back (Nov 2 twin: the fill-in's top
           // level ~16x the real one's, its depth ~35x): a level stays within twice its measured 90th percentile.
