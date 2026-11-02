@@ -16,9 +16,13 @@ test('a quote that moves down walks through the bids in its way, each taken by N
   const t = 1_000_000 * MIN;
   const ev = sim.play('T', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.47);
   const trades = ev.filter((e) => e.k === 'trade');
-  // From bid 50c / ask 52c to a mid of 47c (bid ~46c): the bids at 50, 49, 48 and 47c go, each in full.
-  assert.deepEqual(trades.map((e) => Math.round((e.price as number) * 100)), [50, 49, 48, 47]);
-  assert.ok(trades.every((e) => e.takerSide === 'no' && (e.count as number) === 100 && e.t > t && e.t < t + MIN));
+  // From bid 50c / ask 52c to a mid of 47c (bid ~46c): the bids at 50, 49, 48 and 47c go, each in full, in trade-sized
+  // prints (at most 25 a level, the last taking the rest).
+  const prices = trades.map((e) => Math.round((e.price as number) * 100));
+  assert.deepEqual([...new Set(prices)], [50, 49, 48, 47]);
+  for (const c of [50, 49, 48, 47]) assert.equal(trades.filter((e) => Math.round((e.price as number) * 100) === c).reduce((a, e) => a + (e.count as number), 0), 100);
+  assert.ok(trades.length > 4 && trades.length <= 100);
+  assert.ok(trades.every((e) => e.takerSide === 'no' && e.t > t && e.t < t + MIN));
   // A flat next quote walks nowhere.
   const flat = new DepthSim(model).play('U', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.51);
   assert.equal(flat.filter((e) => e.k === 'trade').length, 0);
@@ -31,4 +35,19 @@ test('informed flow: with every measured trade on the side the price went, the t
   const trades = ev.filter((e) => e.k === 'trade');
   assert.ok(trades.length > 20);
   assert.ok(trades.every((e) => e.takerSide === 'no'));
+});
+
+test('sizes go back to the measured shape and the best price flickers at the measured rate', () => {
+  const t = 1_000_000 * MIN;
+  // Adds far outpacing cancels at the top used to drift the queue up to the cap; the pull keeps it near its draw.
+  const flow = [0, 1, 2, 3, 4, 5].map((qi) => ({ offset: 0, qi, seconds: 1000, addPerSec: 2, cancelPerSec: 0.1, addSize: { n: 1, mean: 50, p10: 50, p50: 50, p90: 50 }, cancelSize: q }));
+  const busy: DepthModel = { ...model, shape: [{ ...model.shape[0], topChangesPerMin: { n: 1, mean: 300, p10: 300, p50: 300, p90: 300 } }], flow };
+  const sim = new DepthSim(busy);
+  const ev = sim.play('W', t, 0.5, 0.52, t + 15_000, t + 30 * MIN, 0.51);
+  const top = new Map<number, number>();
+  for (const e of ev) if (e.k === 'book') for (const l of e.bids as Array<{ price: number; size: number }>) top.set(Math.round(l.price * 1000), l.size);
+  else if (e.k === 'delta' && e.side === 'bid') { const p = Math.round((e.price as number) * 1000); top.set(p, (top.get(p) ?? 0) + (e.delta as number)); }
+  assert.ok((top.get(500) ?? 0) < 400, `top bid ${top.get(500)}`);
+  // ~(300/60 - 0.9)/2 = 2 flickers a second over 15 s.
+  assert.ok(sim.stats.flickers >= 15 && sim.stats.flickers <= 50, `flickers ${sim.stats.flickers}`);
 });

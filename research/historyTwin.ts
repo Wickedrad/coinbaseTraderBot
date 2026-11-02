@@ -344,7 +344,7 @@ async function stageBacktest(): Promise<void> {
 
 /** The twin's days through the tally's fill-in (research/goLiveTally.ts fillDayFile), as the deep history plays them. */
 async function stageFill(): Promise<void> {
-  const { fillDayFile } = await import('./goLiveTally');
+  const { fillDayFile, depthSims } = await import('./goLiveTally');
   const { readDepthModel } = await import('./history/depthSim');
   const src = arg('src'), dst = arg('dst'), how = arg('how', 'depth') as 'depth' | 'worst' | 'hold' | 'requote';
   const depth = arg('depth-model') ? readDepthModel(arg('depth-model')) : undefined;
@@ -352,6 +352,11 @@ async function stageFill(): Promise<void> {
   fs.mkdirSync(dst, { recursive: true });
   for (const f of fs.readdirSync(src).filter((x) => x.startsWith('md-'))) await fillDayFile(path.join(src, f), path.join(dst, f), { how }, depth);
   console.log(`[twin] ${how} fill-in written for ${fs.readdirSync(dst).length} day(s)`);
+  if (depthSims.length) {
+    const t = depthSims.reduce((a, x) => ({ seconds: a.seconds + x.stats.seconds, trades: a.trades + x.stats.trades, sweepPrints: a.sweepPrints + x.stats.sweepPrints, flickers: a.flickers + x.stats.flickers }), { seconds: 0, trades: 0, sweepPrints: 0, flickers: 0 });
+    const perMin = (n: number) => (t.seconds ? ((60 * n) / t.seconds).toFixed(1) : '0');
+    console.log(`[twin] ${arg('dst')} simulator: ${Math.round(t.seconds / 60)} contract-minutes, trades ${perMin(t.trades)}/min (sweep prints ${perMin(t.sweepPrints)}), flickers ${perMin(t.flickers)}/min`);
+  }
 }
 
 async function stageVerdict(): Promise<void> {

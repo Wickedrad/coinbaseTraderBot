@@ -34,7 +34,7 @@ const bucket = (edges: number[], x: number) => { const i = edges.findIndex((e) =
 type Quant = { n: number; mean: number; p10: number; p50: number; p90: number };
 /** The trade flow over a quarter-minute by where the mid went (research/depthStudy.ts byMove: down, flat, up). */
 export interface MoveFlow { segs: number; tradesPerSec: number; takerYesShare: number | null }
-export interface ShapeCell { ti: number; mi: number; samples: number; levelQuoted: number[]; levelFilledP50: number[]; levelFilledP90: number[]; tradesPerMin: Quant; tradeSize: Quant; takerYesShare: number | null; byMove?: MoveFlow[] }
+export interface ShapeCell { ti: number; mi: number; samples: number; levelQuoted: number[]; levelFilledP50: number[]; levelFilledP90: number[]; tradesPerMin: Quant; tradeSize: Quant; takerYesShare: number | null; byMove?: MoveFlow[]; topChangesPerMin?: Quant }
 /** Fewest quarter-minutes a cell's flow by move needs before it is used (else the cell's flow over all moves). */
 export const MOVE_MIN_SEGS = 20;
 /** Where the mid goes: 0 down, 1 flat (within half a tick), 2 up. Mids in cents (as research/depthStudy.ts moveOf). */
@@ -89,7 +89,16 @@ interface SimBook { bid: Map<number, number>; ask: Map<number, number> } // pric
 
 export type DepthEv = { t: number; k: string; ticker: string; [key: string]: unknown };
 
+/** How fast a level's size goes back to its drawn size (seconds). */
+const REVERT_S = 20;
+/** The fill-in's own best-price changes a second before flicker (Nov 2 twin: ~55 a minute). */
+const FLICK_BASE_PER_SEC = 0.9;
+/** Most prints a sweep of one level is split into (the last takes the rest). */
+const SWEEP_PRINTS = 25;
+
 export class DepthSim {
+  /** What the fill-in emitted (a run's diagnostics): seconds simulated, trades (sweep prints among them), flickers. */
+  readonly stats = { seconds: 0, trades: 0, sweepPrints: 0, flickers: 0 };
   private readonly shape = new Map<string, ShapeCell>();
   private readonly flow = new Map<string, FlowCell>();
   private readonly books = new Map<string, SimBook>();
@@ -171,35 +180,82 @@ export class DepthSim {
     let refB = bB, refA = bA;
     const inf = this.model.informed, informedP = inf && inf.n >= 1000 ? Math.min(1, Math.max(0, 2 * (inf.agree - 0.5))) : 0;
     const dir = nextMid !== undefined && Number.isFinite(nextMid) ? Math.sign(Math.round(nextMid * PX) - (bB + bA) / 2) : 0;
+    // Each level's size for this quarter-minute, drawn from the measured shape (quoted or not, its size): the adds and
+    // cancels pull a queue around it, and it pulls back (REVERT_S). Without the pull the netted flow drifted up to the
+    // cap (Nov 2 twin, run 41496163760: the top ~25x the real one's, so a sweep traded thousands at once).
+    const target: Record<Side, number[]> = { bid: [], ask: [] };
+    for (const side of ['bid', 'ask'] as Side[]) for (let off = 0; off < DEPTH_LEVELS; off++) {
+      const p50 = cell.levelFilledP50[off], p90 = cell.levelFilledP90[off];
+      target[side][off] = p50 && (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) ? lognormal(u, p50, p90 ?? p50) : 0;
+    }
+    const pull = 1 - Math.exp(-1 / REVERT_S);
+    // Flicker (Nov 2 twin: the real best price changes ~324 times a minute, the fill-in's 55): a best level pulled and put
+    // back within the second, as the real books' makers do; a trade in that moment takes the next level.
+    const realTops = cell.topChangesPerMin?.mean;
+    const flickPerSec = realTops !== undefined && Number.isFinite(realTops) ? Math.max(0, realTops / 60 - FLICK_BASE_PER_SEC) / 2 : 0;
+    // Trades a sweep printed come out of the interval's measured count (the real count includes them).
+    let owe = 0;
+    const tradeSz = () => lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90);
     for (let sec = t; sec < until; sec += 1000) {
       const end = Math.min(sec + 1000, until);
-      // The walk's sweeps due in this second: the whole best level traded away, and the other side follows one level.
+      this.stats.seconds += (end - sec) / 1000;
+      // The walk's sweeps due in this second: the best level traded away in trade-sized prints, the other side follows.
       for (; sw < sweeps.length && sweeps[sw].at < end; sw++) {
         const { at, side } = sweeps[sw], m = b[side], top = best(side);
         if (!Number.isFinite(top)) continue;
-        const q = m.get(top)!, yes = side === 'ask';
-        out.push({ t: at, k: 'trade', ticker, price: top / PX, count: q, takerSide: yes ? 'yes' : 'no', ts: at, sim: 1 });
+        let q = m.get(top)!, k = 0;
+        const yes = side === 'ask';
+        while (q > 0 && k < SWEEP_PRINTS) {
+          const n = k === SWEEP_PRINTS - 1 ? q : Math.min(q, tradeSz());
+          out.push({ t: at, k: 'trade', ticker, price: top / PX, count: n, takerSide: yes ? 'yes' : 'no', ts: at, sim: 1 });
+          out.push({ t: at, k: 'delta', ticker, side, price: top / PX, delta: -n, ts: at, sim: 1 });
+          q -= n; k++;
+        }
         m.delete(top);
-        out.push({ t: at, k: 'delta', ticker, side, price: top / PX, delta: -q, ts: at, sim: 1 });
+        owe += k; this.stats.sweepPrints += k; this.stats.trades += k;
         // The far side moves up behind the price (a down move: a new ask at the level just taken).
         const other: Side = side === 'bid' ? 'ask' : 'bid', om = b[other];
         if (side === 'bid') { refA = top; refB = top - tickAt(top); } else { refB = top; refA = top + tickAt(top); }
         if (!om.has(top)) { const sz = lognormal(u, cell.levelFilledP50[0], cell.levelFilledP90[0]); om.set(top, sz); out.push({ t: at, k: 'delta', ticker, side: other, price: top / PX, delta: sz, ts: at, sim: 1 }); }
         for (const p of [...om.keys()]) if (ticksFrom(p, top) >= DEPTH_LEVELS) { const d = om.get(p)!; om.delete(p); out.push({ t: at, k: 'delta', ticker, side: other, price: p / PX, delta: -d, ts: at, sim: 1 }); }
       }
-      // The trades in this second, spread through it, each on the book as it stands.
-      const nTr = poisson(u, tradeRate * ((end - sec) / 1000));
-      for (let i = 0; i < nTr; i++) {
-        const at = sec + Math.floor(((i + 1) * (end - sec)) / (nTr + 1));
-        // A YES taker buys at the best ask; a NO taker sells YES at the best bid.
-        // Informed flow (Nov 2): a measured share of the trades takes the side the price is going (the next quote),
-        // the rest are blind; the real books' share is what picks resting orders off before a move.
-        const yes = informedP > 0 && dir !== 0 && u() < informedP ? dir > 0 : u() < yesShare, side: Side = yes ? 'ask' : 'bid', m = b[side], top = best(side);
-        if (!Number.isFinite(top)) continue;
-        const q = m.get(top)!, n = Math.min(q, lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90));
-        out.push({ t: at, k: 'trade', ticker, price: top / PX, count: n, takerSide: yes ? 'yes' : 'no', ts: at, sim: 1 });
-        if (q - n > 0) m.set(top, q - n); else m.delete(top);
-        out.push({ t: at, k: 'delta', ticker, side, price: top / PX, delta: -n, ts: at, sim: 1 });
+      // The second's trades and flickers in time order, each on the book as it stands then.
+      let nTr = poisson(u, tradeRate * ((end - sec) / 1000));
+      const paid = Math.min(nTr, owe); nTr -= paid; owe -= paid;
+      const room = end - 1 - sec;
+      type Step = { at: number; kind: 'trade' } | { at: number; kind: 'pull'; side: Side; back: number } | { at: number; kind: 'back'; side: Side; price: number; size: number };
+      const steps: Step[] = [];
+      for (let i = 0; i < nTr; i++) steps.push({ at: sec + Math.floor(((i + 1) * room) / (nTr + 1)), kind: 'trade' });
+      if (room > 40) { const nF = poisson(u, flickPerSec * ((end - sec) / 1000)); for (let i = 0; i < nF; i++) { const at = sec + Math.floor(u() * (room - 30)); steps.push({ at, kind: 'pull', side: u() < 0.5 ? 'bid' : 'ask', back: Math.min(end - 2, at + 20 + Math.floor(u() * 600)) }); } }
+      steps.sort((x, y) => x.at - y.at);
+      for (let i = 0; i < steps.length; i++) {
+        const st = steps[i], at = st.at;
+        if (st.kind === 'trade') {
+          // A YES taker buys at the best ask; a NO taker sells YES at the best bid.
+          // Informed flow (Nov 2): a measured share of the trades takes the side the price is going (the next quote),
+          // the rest are blind; the real books' share is what picks resting orders off before a move.
+          const yes = informedP > 0 && dir !== 0 && u() < informedP ? dir > 0 : u() < yesShare, side: Side = yes ? 'ask' : 'bid', m = b[side], top = best(side);
+          if (!Number.isFinite(top)) continue;
+          const q = m.get(top)!, n = Math.min(q, tradeSz());
+          out.push({ t: at, k: 'trade', ticker, price: top / PX, count: n, takerSide: yes ? 'yes' : 'no', ts: at, sim: 1 });
+          if (q - n > 0) m.set(top, q - n); else m.delete(top);
+          out.push({ t: at, k: 'delta', ticker, side, price: top / PX, delta: -n, ts: at, sim: 1 });
+          this.stats.trades++;
+        } else if (st.kind === 'pull') {
+          const m = b[st.side], top = best(st.side);
+          if (!Number.isFinite(top) || m.size < 2) continue;
+          const q = m.get(top)!;
+          m.delete(top);
+          out.push({ t: at, k: 'delta', ticker, side: st.side, price: top / PX, delta: -q, ts: at, sim: 1 });
+          const back: Step = { at: st.back, kind: 'back', side: st.side, price: top, size: q };
+          let j = i + 1; while (j < steps.length && steps[j].at <= back.at) j++;
+          steps.splice(j, 0, back);
+          this.stats.flickers++;
+        } else {
+          const m = b[st.side];
+          m.set(st.price, (m.get(st.price) ?? 0) + st.size);
+          out.push({ t: at, k: 'delta', ticker, side: st.side, price: st.price / PX, delta: st.size, ts: at, sim: 1 });
+        }
       }
       // Then each level's net change over the second.
       const at = end - 1, frac = (end - sec) / 1000;
@@ -215,12 +271,16 @@ export class DepthSim {
           // The quote's own level, emptied by trades or cancels, is quoted again as often as the real books quote it.
           if (off === 0 && q === 0 && added === 0 && u() < (cell.levelQuoted[0] ?? 1)) added = lognormal(u, cell.levelFilledP50[0], cell.levelFilledP90[0]);
           const cancelled = q > 0 ? Math.min(q, sumOf(u, poisson(u, f.cancelPerSec * frac), f.cancelSize.p50, f.cancelSize.p90)) : 0;
-          // Adds and cancels netted per second drift up with nothing to pull a queue back (Nov 2 twin: the fill-in's top
-          // level ~16x the real one's, its depth ~35x): a level stays within twice its measured 90th percentile.
-          const cap = 2 * Math.max(1, cell.levelFilledP90[off] ?? cell.levelFilledP90[cell.levelFilledP90.length - 1] ?? 1);
-          const d = Math.min(added - cancelled, Math.max(0, cap - q)) - Math.max(0, q - cap);
+          // The flow's own drift is taken out (its adds and cancels, netted per second, only move a queue about); the
+          // measured shape is where it rests, and the pull takes it back there.
+          const drift = f.addPerSec * (f.addSize.mean || f.addSize.p50 || 0) - f.cancelPerSec * (f.cancelSize.mean || f.cancelSize.p50 || 0);
+          let next = q + added - cancelled - Math.round(drift * frac);
+          next += Math.round(pull * frac * (target[side][off] - next));
+          const cap = 4 * Math.max(1, cell.levelFilledP90[off] ?? cell.levelFilledP90[cell.levelFilledP90.length - 1] ?? 1);
+          next = Math.max(0, Math.min(cap, next));
+          const d = next - q;
           if (d === 0) continue;
-          if (q + d > 0) m.set(p, q + d); else m.delete(p);
+          if (next > 0) m.set(p, next); else m.delete(p);
           out.push({ t: at, k: 'delta', ticker, side, price: p / PX, delta: d, ts: at, sim: 1 });
         }
       }

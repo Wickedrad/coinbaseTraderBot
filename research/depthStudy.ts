@@ -45,18 +45,20 @@ class Dist {
 interface Cell {
   samples: number; spread: Dist; quotedLevels: Dist; depth10: Dist; wallSize: Dist; wallRatio: Dist; wallOffset: Dist;
   levelSize: Dist[]; levelFilled: Dist[]; tradesPerMin: Dist; tradeSize: Dist; takerYes: number; trades: number; deltasPerMin: Dist;
+  /** How often a minute the best bid's or ask's PRICE changes (Nov 2 twin: real 324 a minute, the fill-in 55). */
+  topChangesPerMin: Dist;
   /** Per quarter-minute, by where the mid went over it (0 down, 1 flat, 2 up): how many, their trades and YES takers. */
   byMove: Array<{ segs: number; trades: number; yes: number }>;
 }
 const newCell = (): Cell => ({ samples: 0, spread: new Dist(), quotedLevels: new Dist(), depth10: new Dist(), wallSize: new Dist(), wallRatio: new Dist(), wallOffset: new Dist(),
-  levelSize: Array.from({ length: LEVELS }, () => new Dist()), levelFilled: Array.from({ length: LEVELS }, () => new Dist()), tradesPerMin: new Dist(), tradeSize: new Dist(), takerYes: 0, trades: 0, deltasPerMin: new Dist(),
+  levelSize: Array.from({ length: LEVELS }, () => new Dist()), levelFilled: Array.from({ length: LEVELS }, () => new Dist()), tradesPerMin: new Dist(), tradeSize: new Dist(), takerYes: 0, trades: 0, deltasPerMin: new Dist(), topChangesPerMin: new Dist(),
   byMove: [0, 1, 2].map(() => ({ segs: 0, trades: 0, yes: 0 })) });
 
 /** Queue-reactive counts: per (distance from best in ticks, queue size bucket), events and seconds spent there. */
 interface Qr { seconds: number; add: number; cancel: number; trade: number; addSize: Dist; cancelSize: Dist }
 const newQr = (): Qr => ({ seconds: 0, add: 0, cancel: 0, trade: 0, addSize: new Dist(), cancelSize: new Dist() });
 
-interface Contract { ticker: string; close: number; book: OrderBook; lastSample: number; minute: number; deltas: number; trades: number; seen: Set<string>;
+interface Contract { ticker: string; close: number; book: OrderBook; lastSample: number; minute: number; deltas: number; trades: number; seen: Set<string>; tops?: number; lastTop?: string;
   /** The quarter-minute since the last sample: where the mid stood and its cell, and its trades so far. */
   seg?: { mid: number; cell: Cell }; segTrades: number; segYes: number;
   /** Trades waiting for the mid a minute later (informed flow): time, YES taker, the mid at the trade. */
@@ -118,10 +120,11 @@ async function run(files: string[]) {
       cell.wallSize.add(wall[1]); cell.wallRatio.add(wall[1] / med); cell.wallOffset.add(ticksFrom(wall[0], best));
     }
   };
+  const touchTop = (c: Contract) => { const b = c.book.bestBid(), a = c.book.bestAsk(); const k = `${b?.price}|${a?.price}`; if (k !== c.lastTop) { c.tops = (c.tops ?? 0) + 1; c.lastTop = k; } };
   const minuteEnd = (c: Contract, t: number) => {
     const s = state(c, t);
-    if (s && s.tau >= 0) { const cell = cellOf(s.tau, s.mid); cell.tradesPerMin.add(c.trades); cell.deltasPerMin.add(c.deltas); }
-    c.trades = 0; c.deltas = 0; c.seen.clear();
+    if (s && s.tau >= 0) { const cell = cellOf(s.tau, s.mid); cell.tradesPerMin.add(c.trades); cell.deltasPerMin.add(c.deltas); cell.topChangesPerMin.add(c.tops ?? 0); }
+    c.trades = 0; c.deltas = 0; c.tops = 0; c.seen.clear();
   };
 
   for (const file of files) {
@@ -155,6 +158,7 @@ async function run(files: string[]) {
       c.minute = m;
       if (e.k === 'book') {
         c.book.applySnapshot({ bids: e.bids ?? [], asks: e.asks ?? [] }, t);
+        touchTop(c);
         if (!c.lastSample) c.lastSample = Math.ceil(t / SAMPLE_MS) * SAMPLE_MS - SAMPLE_MS;
       } else if (e.k === 'delta' && (e.side === 'bid' || e.side === 'ask')) {
         const side = e.side as Side;
@@ -170,6 +174,7 @@ async function run(files: string[]) {
         }
         c.book.applyDelta(side, Number(e.price), d, t);
         c.deltas++;
+        touchTop(c);
       } else if (e.k === 'trade') {
         const id = String(e.trade_id ?? `${e.ts}|${e.price}|${e.count}|${e.takerSide}`);
         tradeCount.all++;
@@ -203,7 +208,7 @@ function report(cells: Map<string, Cell>, qr: Map<string, Qr>) {
       // Where a level is quoted: how often, and its size's median and 90th percentile (the simulator draws from these).
       levelQuoted: c.levelFilled.map((d) => +(d.xs.length / Math.max(1, c.levelSize[0].xs.length)).toFixed(3)),
       levelFilledP50: c.levelFilled.map((d) => d.q(0.5)), levelFilledP90: c.levelFilled.map((d) => d.q(0.9)),
-      tradesPerMin: c.tradesPerMin.summary(), deltasPerMin: c.deltasPerMin.summary(), tradeSize: c.tradeSize.summary(),
+      tradesPerMin: c.tradesPerMin.summary(), deltasPerMin: c.deltasPerMin.summary(), topChangesPerMin: c.topChangesPerMin.summary(), tradeSize: c.tradeSize.summary(),
       takerYesShare: c.trades ? +(c.takerYes / c.trades).toFixed(3) : null,
       // The trade flow by where the mid goes over the quarter-minute (down, flat, up): its rate and its YES takers.
       byMove: c.byMove.map((m) => ({ segs: m.segs, tradesPerSec: m.segs ? +(m.trades / (m.segs * (SAMPLE_MS / 1000))).toFixed(4) : 0, takerYesShare: m.trades ? +(m.yes / m.trades).toFixed(3) : null })),
@@ -235,7 +240,7 @@ async function main() {
   console.log(`[depth] ${all.reduce((a, m) => a + m.segs, 0)} quarter-minutes, by the mid's move over them (down / flat / up): share ${all.map((m) => (m.segs / Math.max(1, all.reduce((a, x) => a + x.segs, 0))).toFixed(2)).join(' / ')}, trades/s ${all.map((m) => (m.trades / Math.max(1, m.segs * (SAMPLE_MS / 1000))).toFixed(2)).join(' / ')}, YES takers ${all.map((m) => (m.yes / Math.max(1, m.trades)).toFixed(2)).join(' / ')}`);
   console.log('[depth] shape by minutes to close and mid (each side; sizes in contracts, spread and offsets in ticks: 1c, or 0.1c below 10c and above 90c)');
   for (const s of r.shape) {
-    console.log(`  ${s.tau.padEnd(9)} ${s.mid.padEnd(7)} n=${String(s.samples).padStart(6)}  spread p50 ${s.spread.p50} p90 ${s.spread.p90} | levels in 10 ticks ${s.quotedLevels.p50} | depth10 p50 ${s.depth10.p50} | wall ${s.wallSize.p50} (x${(+s.wallRatio.p50).toFixed(1)} median, ${s.wallOffset.p50} ticks back) | lvl0-4 quoted ${s.levelQuoted.slice(0, 5).join('/')} size p50 ${s.levelFilledP50.slice(0, 5).join('/')} p90 ${s.levelFilledP90.slice(0, 5).join('/')} | trades/min ${s.tradesPerMin.mean} size p50 ${s.tradeSize.p50} | changes/min ${s.deltasPerMin.mean}`);
+    console.log(`  ${s.tau.padEnd(9)} ${s.mid.padEnd(7)} n=${String(s.samples).padStart(6)}  spread p50 ${s.spread.p50} p90 ${s.spread.p90} | levels in 10 ticks ${s.quotedLevels.p50} | depth10 p50 ${s.depth10.p50} | wall ${s.wallSize.p50} (x${(+s.wallRatio.p50).toFixed(1)} median, ${s.wallOffset.p50} ticks back) | lvl0-4 quoted ${s.levelQuoted.slice(0, 5).join('/')} size p50 ${s.levelFilledP50.slice(0, 5).join('/')} p90 ${s.levelFilledP90.slice(0, 5).join('/')} | trades/min ${s.tradesPerMin.mean} size p50 ${s.tradeSize.p50} | changes/min ${s.deltasPerMin.mean} | top moves/min ${s.topChangesPerMin?.mean}`);
   }
   console.log(`[depth] informed flow: ${r.informed.n} trades after which the mid had moved a minute later, ${(100 * r.informed.agree).toFixed(1)}% took the side it went`);
   console.log(`[depth] trades: ${tradeCount.all} recorded, ${tradeCount.repeated} repeated (${tradeCount.all ? ((100 * tradeCount.repeated) / tradeCount.all).toFixed(1) : 0}%, kept: whole-second stamps, no trade id)`);
