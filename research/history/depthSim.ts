@@ -209,7 +209,10 @@ export class DepthSim {
           if (!f) continue;
           const added = sumOf(u, poisson(u, f.addPerSec * frac), f.addSize.p50, f.addSize.p90);
           const cancelled = q > 0 ? Math.min(q, sumOf(u, poisson(u, f.cancelPerSec * frac), f.cancelSize.p50, f.cancelSize.p90)) : 0;
-          const d = added - cancelled;
+          // Adds and cancels netted per second drift up with nothing to pull a queue back (Nov 2 twin: the fill-in's top
+          // level ~16x the real one's, its depth ~35x): a level stays within twice its measured 90th percentile.
+          const cap = 2 * Math.max(1, cell.levelFilledP90[off] ?? cell.levelFilledP90[cell.levelFilledP90.length - 1] ?? 1);
+          const d = Math.min(added - cancelled, Math.max(0, cap - q)) - Math.max(0, q - cap);
           if (d === 0) continue;
           if (q + d > 0) m.set(p, q + d); else m.delete(p);
           out.push({ t: at, k: 'delta', ticker, side, price: p / PX, delta: d, ts: at, sim: 1 });
