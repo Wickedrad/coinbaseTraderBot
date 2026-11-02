@@ -181,12 +181,20 @@ export function compareProbes(real: AdversaryDay[], fills: Record<string, Advers
     const rs = probeStats(real.filter((d) => days.includes(d.day))), ss = probeStats(sim.filter((d) => days.includes(d.day)));
     for (const probe of PROBES) {
       const a = rs.find((x) => x.probe === probe)!, b = ss.find((x) => x.probe === probe)!;
+      // The bootstrap draws days; each day's sums are taken once (re-scoring every fill per draw timed out, Nov 2).
+      const sums = (set: AdversaryDay[], day: string) => {
+        const fs = set.find((x) => x.day === day)!.fills.filter((f) => f.probe === probe);
+        let mc = 0, mv = 0, sc = 0, sv = 0;
+        for (const f of fs) { if (f.markout !== undefined) { mc += f.count; mv += (f.markout - f.fee / f.count) * f.count; } if (f.settled !== undefined) { sc += f.count; sv += f.settled * f.count; } }
+        return { mc, mv, sc, sv };
+      };
+      const R = new Map(days.map((d) => [d, sums(real, d)])), S = new Map(days.map((d) => [d, sums(sim, d)]));
+      const score = (m: Map<string, ReturnType<typeof sums>>, pick: string[]) => { let mc = 0, mv = 0, sc = 0, sv = 0; for (const d of pick) { const x = m.get(d)!; mc += x.mc; mv += x.mv; sc += x.sc; sv += x.sv; } return { mk: mc ? (100 * mv) / mc : 0, se: sc ? (100 * sv) / sc : 0 }; };
       const diffs: number[] = [], mks: number[] = [];
       for (let i = 0; i < draws; i++) {
         const pick = days.map(() => days[Math.floor(u() * days.length)]);
-        const ra = probeStats(pick.map((d) => real.find((x) => x.day === d)!)).find((x) => x.probe === probe)!;
-        const rb = probeStats(pick.map((d) => sim.find((x) => x.day === d)!)).find((x) => x.probe === probe)!;
-        diffs.push(rb.settledC - ra.settledC); mks.push(rb.markoutC - ra.markoutC);
+        const ra = score(R, pick), rb = score(S, pick);
+        diffs.push(rb.se - ra.se); mks.push(rb.mk - ra.mk);
       }
       const band = (xs: number[]) => { xs.sort((x, y) => x - y); return [xs[Math.floor(0.05 * xs.length)] ?? 0, xs[Math.min(xs.length - 1, Math.floor(0.95 * xs.length))] ?? 0]; };
       const [lo, hi] = band(diffs), [mkLo, mkHi] = band(mks);
