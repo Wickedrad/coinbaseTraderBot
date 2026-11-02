@@ -325,3 +325,195 @@ if __name__ == "__main__":
         Y = targets(P, freq)
         ev = events(P["BTC.D"], 5.0, freq=freq)
         print(freq, P.shape, X.shape, Y.shape, "events5:", len(ev), "fall5_26w base (2019+):", round(float(Y.loc["2019":, "fall5_26w"].mean()), 3))
+
+
+# ------------------------------------------------------------------------------------------------- round-8 shared additions (plan: honest module)
+def fresh_mask(P, freq, pts=2.0, weeks=13):
+    """Fresh-start weeks: BTC.D within `pts` points of its trailing `weeks`-week high (inclusive of today)."""
+    b = P["BTC.D"].astype(float)
+    return (b >= b.rolling(bars(weeks, freq), min_periods=1).max() - pts)
+
+
+def extra_targets(P, Y, freq):
+    """Adds onset targets (fall AND fresh start) and the BTC.D-ex-stablecoin variant of the 26-week falls."""
+    Y = Y.copy()
+    fr = fresh_mask(P, freq).astype(float)
+    for c in [c for c in Y.columns if c.startswith("fall")]:
+        Y["onset" + c[4:]] = (Y[c] * fr).where(Y[c].notna())
+    if "USDT.D" in P:
+        ex = P["BTC.D"] / (1 - P["USDT.D"] / 100.0)
+        Y["btcd_exstable"] = ex
+        for h in (26,):
+            hb = bars(h, freq)
+            fut = pd.concat([ex.shift(-k) for k in range(1, hb + 1)], axis=1)
+            mn = fut.min(axis=1).where(fut.notna().all(axis=1))
+            for k in (5.0, 10.0):
+                Y[f"exstable_fall{int(k)}_{h}w"] = ((mn - ex) <= -k).astype(float).where(mn.notna())
+    return Y
+
+
+def episodes(y):
+    """Runs of consecutive 1s in a binary series (NaN breaks a run). Returns [(start_pos, end_pos_inclusive)]."""
+    v = np.asarray(y, float)
+    out, start = [], None
+    for i, x in enumerate(v):
+        if x == 1 and start is None:
+            start = i
+        elif x != 1 and start is not None:
+            out.append((start, i - 1))
+            start = None
+    if start is not None:
+        out.append((start, len(v) - 1))
+    return out
+
+
+def episode_loo(pred, y, metric="auc"):
+    """Headline metric with each positive episode (its rows) removed. Returns {all, min, minEpisode, perEpisode}."""
+    p, yy = np.asarray(pred, float), np.asarray(y, float)
+    m = np.isfinite(p) & np.isfinite(yy)
+    f = auc if metric == "auc" else spearman
+    eps = episodes(np.where(m, yy, np.nan))
+    per = {}
+    idx = pred.index if hasattr(pred, "index") else np.arange(len(p))
+    for s, e in eps:
+        keep = m.copy()
+        keep[s:e + 1] = False
+        v = f(p[keep], yy[keep])
+        per[f"{idx[s].date() if hasattr(idx[s], 'date') else s}..{idx[e].date() if hasattr(idx[e], 'date') else e}"] = (None if v is None else round(v, 3))
+    vals = {k: v for k, v in per.items() if v is not None}
+    allv = f(p[m], yy[m])
+    return {"all": (None if allv is None else round(allv, 3)), "nEpisodes": len(eps),
+            "min": (min(vals.values()) if vals else None), "minEpisode": (min(vals, key=vals.get) if vals else None), "perEpisode": per}
+
+
+def block_boot(pred, y, n=1000, block_weeks=26, freq="W", rng=None, metric="auc"):
+    """Circular block bootstrap of the rows (keeps the autocorrelation of overlapping labels). Returns quantiles."""
+    rng = rng or np.random.default_rng(0)
+    p, yy = np.asarray(pred, float), np.asarray(y, float)
+    m = np.isfinite(p) & np.isfinite(yy)
+    p, yy = p[m], yy[m]
+    N, bl = len(p), bars(block_weeks, freq)
+    f = auc if metric == "auc" else spearman
+    vals = []
+    for _ in range(n):
+        starts = rng.integers(0, N, size=int(np.ceil(N / bl)))
+        ii = np.concatenate([(np.arange(s, s + bl) % N) for s in starts])[:N]
+        v = f(p[ii], yy[ii])
+        if v is not None:
+            vals.append(v)
+    v = np.array(vals)
+    return {"n": len(v), "q05": round(float(np.quantile(v, 0.05)), 3), "q50": round(float(np.quantile(v, 0.5)), 3), "q95": round(float(np.quantile(v, 0.95)), 3)} if len(v) else {"n": 0}
+
+
+def episode_boot(pred, y, n=1000, runup_weeks=26, freq="W", rng=None, metric="auc"):
+    """Bootstrap over label episodes: the series is cut into blocks = each positive episode with its run-up, and
+    the negative stretches between them; blocks are resampled with replacement. Returns quantiles."""
+    rng = rng or np.random.default_rng(0)
+    p, yy = np.asarray(pred, float), np.asarray(y, float)
+    m = np.isfinite(p) & np.isfinite(yy)
+    pos = np.where(m)[0]
+    p, yy = p[pos], yy[pos]
+    N, ru = len(p), bars(runup_weeks, freq)
+    cuts = [0]
+    for s, e in episodes(yy):
+        cuts += [max(0, s - ru), e + 1]
+    cuts = sorted(set(c for c in cuts if 0 <= c <= N)) + [N]
+    blocks = [np.arange(a, b) for a, b in zip(cuts[:-1], cuts[1:]) if b > a]
+    f = auc if metric == "auc" else spearman
+    vals = []
+    for _ in range(n):
+        pick = rng.integers(0, len(blocks), size=len(blocks))
+        ii = np.concatenate([blocks[k] for k in pick])
+        v = f(p[ii], yy[ii])
+        if v is not None:
+            vals.append(v)
+    v = np.array(vals)
+    return {"n": len(v), "nBlocks": len(blocks), "q05": round(float(np.quantile(v, 0.05)), 3), "q50": round(float(np.quantile(v, 0.5)), 3), "q95": round(float(np.quantile(v, 0.95)), 3)} if len(v) else {"n": 0}
+
+
+def shift_exog(X, cols, k):
+    """Circularly shift the named covariate columns by k bars (keeps BTC.D and its own targets in place)."""
+    Xs = X.copy()
+    for c in cols:
+        Xs[c] = np.roll(X[c].values, k)
+    return Xs
+
+
+def within_era_null(run, Y, era, n, rng, freq="W", min_shift_weeks=26):
+    """Shift the targets only inside one era's rows (era = (name, from, to)); run(Y_shifted) -> metric for that era."""
+    name, fr, to = era
+    m = (Y.index >= pd.Timestamp(fr)) & (Y.index < pd.Timestamp(to))
+    pos = np.where(m)[0]
+    lo = bars(min_shift_weeks, freq)
+    vals = []
+    for _ in range(n):
+        if len(pos) <= 2 * lo:
+            break
+        k = int(rng.integers(lo, len(pos) - lo))
+        Ys = Y.copy()
+        for c in Y.columns:
+            v = Y[c].values.copy()
+            v[pos] = np.roll(v[pos], k)
+            Ys[c] = v
+        v = run(Ys)
+        if v is not None:
+            vals.append(float(v))
+    return vals
+
+
+def iaaft(x, rng, it=50):
+    """Iterated amplitude-adjusted Fourier transform surrogate: same amplitude distribution and power spectrum."""
+    x = np.asarray(x, float)
+    n = len(x)
+    sorted_x = np.sort(x)
+    amp = np.abs(np.fft.rfft(x))
+    s = rng.permutation(x)
+    for _ in range(it):
+        ph = np.angle(np.fft.rfft(s))
+        s = np.fft.irfft(amp * np.exp(1j * ph), n=n)
+        ranks = np.argsort(np.argsort(s))
+        s = sorted_x[ranks]
+    return s
+
+
+def matched_rw(x, rng, block_weeks=13, freq="W"):
+    """Random walk with the series' own increments resampled in blocks (keeps vol clustering, kills the path)."""
+    x = np.asarray(x, float)
+    d = np.diff(x)
+    bl = bars(block_weeks, freq)
+    starts = rng.integers(0, max(1, len(d) - bl), size=int(np.ceil(len(d) / bl)) + 1)
+    inc = np.concatenate([d[s:s + bl] for s in starts])[:len(d)]
+    inc = inc * rng.choice([-1.0, 1.0], size=len(inc))
+    return np.r_[x[0], x[0] + np.cumsum(inc)]
+
+
+def truncation_test(series_fn, n_points, n=20, rng=None, tol=1e-9):
+    """series_fn(end_pos) -> 1-D array of a filtered/state series computed on the panel truncated at end_pos
+    (inclusive). Asserts the value at end_pos equals the full-series value at end_pos for n random points.
+    Returns {ok, maxAbsDiff, tested}."""
+    rng = rng or np.random.default_rng(0)
+    full = np.asarray(series_fn(n_points - 1), float)
+    worst, tested = 0.0, 0
+    for t in rng.integers(max(1, n_points // 4), n_points - 1, size=n):
+        part = np.asarray(series_fn(int(t)), float)
+        if not np.isfinite(full[t]) or not np.isfinite(part[t]):
+            continue
+        worst = max(worst, float(abs(part[t] - full[t])))
+        tested += 1
+    return {"ok": bool(worst <= tol), "maxAbsDiff": worst, "tested": tested}
+
+
+def params_report(k_params, n_episodes=12, n_big=3):
+    return {"parameters": int(k_params), "labelEpisodes": int(n_episodes), "bigEvents": int(n_big),
+            "note": ("more parameters than label episodes" if k_params > n_episodes else "fewer parameters than label episodes")}
+
+
+def refit_jump_report(series, refit_dates):
+    """Max absolute change of a state/score series at refit dates vs elsewhere (label switching / refit artefacts)."""
+    s = pd.Series(series).dropna()
+    d = s.diff().abs()
+    rd = pd.DatetimeIndex([pd.Timestamp(x) for x in refit_dates])
+    at = d[d.index.isin(rd)]
+    off = d[~d.index.isin(rd)]
+    return {"maxJumpAtRefit": (round(float(at.max()), 4) if len(at) else None), "maxJumpElsewhere": (round(float(off.max()), 4) if len(off) else None),
+            "medianJumpAtRefit": (round(float(at.median()), 4) if len(at) else None), "medianJumpElsewhere": (round(float(off.median()), 4) if len(off) else None)}
