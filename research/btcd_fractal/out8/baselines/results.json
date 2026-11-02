@@ -69,7 +69,7 @@
      "nullP05": 0.3139,
      "p": 0.0
     },
-    "today": 0.0377,
+    "today": 0.0378,
     "refits": 31,
     "series": [
      {
@@ -866,7 +866,7 @@
      },
      {
       "t": "2026-11-08",
-      "v": 0.0377
+      "v": 0.0378
      }
     ]
    },
@@ -1741,7 +1741,7 @@
      "nullP05": -0.188,
      "p": 0.0
     },
-    "today": 0.0293,
+    "today": 0.0301,
     "refits": 32,
     "series": [
      {
@@ -4308,7 +4308,7 @@
      },
      "2023-2026": {
       "n": 189,
-      "ic": 0.005,
+      "ic": 0.006,
       "hit": 0.248
      },
      "pooled": {
@@ -5185,11 +5185,11 @@
      "n": 40,
      "real": 0.345,
      "nullMedian": 0.5375,
-     "nullP95": 0.6231,
+     "nullP95": 0.624,
      "nullP05": 0.3202,
      "p": 0.925
     },
-    "today": 0.022,
+    "today": 0.021,
     "refits": 27,
     "series": null
    },
@@ -5250,7 +5250,7 @@
      },
      "2023-2026": {
       "n": 189,
-      "ic": 0.005,
+      "ic": 0.006,
       "hit": 0.451
      },
      "pooled": {
@@ -5267,7 +5267,7 @@
      "nullP05": -0.2895,
      "p": 0.575
     },
-    "today": -0.0444,
+    "today": -0.0403,
     "refits": 28,
     "series": null
    }
@@ -5277,11 +5277,11 @@
    "btcd_ret13w": -0.027,
    "btcd_ret26w": -0.004,
    "btcd_vsma30w": -0.026,
-   "btcd_fromhi52w": -0.043,
+   "btcd_fromhi52w": -0.044,
    "btcd_vol13w": -0.022,
    "usdtd_ret4w": -0.038,
    "usdtd_ret13w": -0.052,
-   "usdtd_ret26w": -0.036,
+   "usdtd_ret26w": -0.037,
    "usdtd_vsma30w": -0.037,
    "usdtd_fromhi52w": -0.103,
    "usdtd_vol13w": 0.054,
@@ -5308,7 +5308,7 @@
    "btcusd_ret26w": -0.055,
    "btcusd_vsma30w": -0.063,
    "btcusd_fromhi52w": 0.113,
-   "btcusd_vol13w": -0.19,
+   "btcusd_vol13w": -0.191,
    "dxy_ret4w": 0.027,
    "dxy_ret13w": -0.051,
    "dxy_ret26w": -0.086,
@@ -5396,7 +5396,7 @@
      "nullP05": 0.4066,
      "p": 0.0
     },
-    "today": 0.0524,
+    "today": 0.0525,
     "refits": 32,
     "series": [
      {
@@ -7116,7 +7116,7 @@
      "nullP05": -0.1966,
      "p": 0.0
     },
-    "today": 0.0242,
+    "today": 0.0252,
     "refits": 32,
     "series": [
      {
@@ -10642,7 +10642,7 @@
      "nullP05": -0.166,
      "p": 0.75
     },
-    "today": -0.0097,
+    "today": -0.0078,
     "refits": 32,
     "series": null
    }
