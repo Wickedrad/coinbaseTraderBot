@@ -14,6 +14,7 @@ import { DEFAULT_SINUOUS_EXIT, type SinuousExitParams } from './strategy/sinuous
 import { defaultTiers, validateTiers, type TierPoint } from './risk/sizingTiers';
 import type { AccuracyGateConfig } from './strategy/accuracyGate';
 import type { TaVetoConfig } from './model/taVeto';
+import type { MarketAnchorConfig } from './model/marketAnchor';
 import type { VaultConfig } from './vault/vault';
 import { DEFAULT_LIVE_LINE } from './strategy/liveLine';
 import { DEFAULT_TRIALS, TRIAL_NAMES, type TrialName, type TrialParams } from './strategy/componentTrials';
@@ -227,6 +228,9 @@ export interface StrategyConfig {
    *  than the bot's (temperature-calibrated) probability over the last settled markets (bot/strategy/accuracyGate.ts;
    *  the owner's choice on Oct 23). Live never blocks on it. */
   accuracyGate: AccuracyGateConfig;
+  /** The bot's price anchored on the calibrated market mid, its disagreement weighted by its track record per
+   *  time-to-close bucket (bot/model/marketAnchor.ts). Paper, live and the backtester alike. */
+  marketAnchor: MarketAnchorConfig;
   /** kelly = fractional Kelly on the model probability; target_ev = spec sizing (shrink to market, $ target, min EV). */
   sizing: 'kelly' | 'target_ev';
   kappa: number;
@@ -1237,6 +1241,16 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
     orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
     accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
+    marketAnchor: {
+      enabled: bool(env, 'MARKET_ANCHOR', false),
+      fixedW: env.MARKET_ANCHOR_W !== undefined && env.MARKET_ANCHOR_W !== '' ? num(env, 'MARKET_ANCHOR_W', 0.5, 0, 2) : undefined,
+      prior: num(env, 'MARKET_ANCHOR_PRIOR', 0.5, 0, 1.5),
+      priorSd: num(env, 'MARKET_ANCHOR_PRIOR_SD', 0.5, 0.01, 10),
+      window: num(env, 'MARKET_ANCHOR_WINDOW', 400, 20, 5000),
+      maxW: num(env, 'MARKET_ANCHOR_MAX_W', 1.5, 0, 3),
+      shuffle: bool(env, 'MARKET_ANCHOR_SHUFFLE', false),
+      bySeries: bool(env, 'MARKET_ANCHOR_BY_SERIES', false),
+    },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
     kappa: num(env, 'STRATEGY_KAPPA', 0.5, 0, 1),
     targetEvUsd: num(env, 'STRATEGY_TARGET_EV_USD', 10, 0, 10000),

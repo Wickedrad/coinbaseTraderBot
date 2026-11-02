@@ -71,6 +71,7 @@ import { ConfluenceRatchetExit, DEFAULT_HUNT, DEFAULT_RATCHET, EXIT_POLICIES, Ex
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from '../bot/risk/quotaPacer';
 import { readRecordings, ReplayState } from './replay';
 import { AccuracyGate, type AccuracyGateConfig } from '../bot/strategy/accuracyGate';
+import { MarketAnchor } from '../bot/model/marketAnchor';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
 import { compactReading, MarketState, observeMarket } from '../bot/marketdata/marketState';
 import { dynamicEdge } from '../bot/strategy/dynamicEdge';
@@ -172,6 +173,8 @@ export interface BacktestResult {
   exchangeRejected?: Record<string, number>;
   /** Taker contracts asked for / filled / refused because our own earlier takes had emptied the level (bot/paper/paperExchange.ts TAKEN_REPLENISH_MS), by series too. */
   takerThin?: PaperExchange['takerStats'];
+  /** The market anchor's weights and prequential log losses (bot/model/marketAnchor.ts), when it is on. */
+  marketAnchor?: ReturnType<MarketAnchor['status']>;
   /** The paper maker fills' 60 s markouts over the whole replay (mid then less the fill price, signed for the fill's
    *  side, in dollars a contract): negative when the price moved against the resting order once it filled. */
   makerMarkout?: { n: number; mean: number };
@@ -442,6 +445,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const exitLedger = new Map<string, Array<{ sideSign: number; n: number; proceeds: number }>>();
   let slipSum = 0, slipN = 0;
   const gate = opts.accuracyGate?.enabled ? new AccuracyGate(opts.accuracyGate, opts.accuracyGateFile, () => st.now) : undefined;
+  const anchor = strategy.marketAnchor?.enabled ? new MarketAnchor(strategy.marketAnchor, undefined, () => st.now) : undefined;
   // The bench's markets scored from the first trading moment on (the replay check sets them beside paper's).
   const tpScored = (e: { event: string; ticker?: string; usd?: unknown; contracts?: unknown }) => {
     if (e.event !== 'scored' || st.now < (opts.tradeFromMs ?? -Infinity)) return;
@@ -610,6 +614,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           for (const x of ofOpen.get(m.ticker) ?? []) ofRows.push({ ts: st.now, ticker: m.ticker, cost: x.cost, count: x.count, won: (x.side === 'bid') === (result === 'yes') });
           ofOpen.delete(m.ticker);
           if (!(opts.accuracyGateFile && opts.tradeFromMs !== undefined && st.now < opts.tradeFromMs)) gate?.settle(m.ticker, result);
+          anchor?.settle(m.ticker, result);
           if (tpBench) { tpBench.settled(m.ticker, result, st.now); if (res.paper!.takeProfitBenchedAt === undefined && ownBenched()) res.paper!.takeProfitBenchedAt = st.now; }
           for (const x of exitLedger.get(m.ticker) ?? []) {
             const won = (x.sideSign > 0) === (result === 'yes');
@@ -740,6 +745,12 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         const rb = activeRuleBook()?.trialRead(taSnapOf(m.asset), tauSec, ctx?.character(m.asset)?.cls, strategy.taPricingMaxZ);
         ruleShift = rb ? tilt(rb.k, 1) : 0;
         if (ruleShift) pYes = Math.max(0.001, Math.min(0.999, pYes + ruleShift));
+      }
+      // The market anchor, as the engine applies it (bot/model/marketAnchor.ts).
+      if (anchor) {
+        const pMkt = model.marketProbability(mid);
+        anchor.observe(m.ticker, tauSec, pMkt, pYes);
+        pYes = anchor.price(m.ticker, tauSec, pMkt, pYes);
       }
       const mRead = observeMarket(mstate, { asset: m.asset, ticker: m.ticker, index: idx!, now: st.now, bid, ask, trades: st.features.micro.get(m.ticker)?.tradesIn(st.now, 300_000) });
       opts.onEval?.({ ticker: m.ticker, now: st.now, pYes, fv: fv.pYes, bid: bid.price, ask: ask.price, position: pos.position(m.ticker), spot: spot.value, strike: terms.strike, sigma: vol.sigmaPerSqrtSec, sigmaPricing: sigmaFv,
@@ -1036,6 +1047,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   res.end = { balance: await ex.getBalance(), openPositions: pos.open().length, openMaxLoss: pos.open().reduce((a, p) => a + PositionBook.maxLoss(p), 0), openOrders: (await ex.getOpenOrders()).length };
   res.days = Math.max(1 / 24, (st.now - firstTs) / 86_400_000);
   res.takerThin = ex.takerStats;
+  res.marketAnchor = anchor?.status();
   res.vaultEnd = vault?.vaultTotal ?? 0;
   res.pocketEnd = vault?.pocketTotal ?? 0;
   return res;
