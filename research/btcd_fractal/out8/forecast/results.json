@@ -7,16 +7,16 @@
   "2026-11-08"
  ],
  "fast": false,
- "runtimeSec": 1.1,
+ "runtimeSec": 1.6,
  "inputs": {
-  "root": "/home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8",
+  "root": "/home/user/coinbaseTraderBot/research/btcd_fractal/out8",
   "found": {
-   "honest": "/home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/honest/results.json",
-   "multiscale": "/home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/multiscale/results.json",
-   "regime": "/home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/regime/results.json",
-   "hazard": "/home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/hazard/results.json",
-   "tda_sig": "/home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/tda_sig/results.json",
-   "baselines": "/home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/baselines/results.json"
+   "honest": "/home/user/coinbaseTraderBot/research/btcd_fractal/out8/honest/results.json",
+   "multiscale": "/home/user/coinbaseTraderBot/research/btcd_fractal/out8/multiscale/results.json",
+   "regime": "/home/user/coinbaseTraderBot/research/btcd_fractal/out8/regime/results.json",
+   "hazard": "/home/user/coinbaseTraderBot/research/btcd_fractal/out8/hazard/results.json",
+   "tda_sig": "/home/user/coinbaseTraderBot/research/btcd_fractal/out8/tda_sig/results.json",
+   "baselines": "/home/user/coinbaseTraderBot/research/btcd_fractal/out8/baselines/results.json"
   },
   "moduleAsOf": {
    "honest": "2026-11-01",
@@ -41,13 +41,11 @@
     "reasons": []
    },
    "regime": {
-    "smoke": true,
+    "smoke": false,
     "fast": false,
     "nulls": 200,
     "folder": "regime",
-    "reasons": [
-     "module's notes say its --fast output must not enter the stack"
-    ]
+    "reasons": []
    },
    "hazard": {
     "smoke": false,
@@ -71,7 +69,7 @@
     "reasons": []
    }
   },
-  "provisional": true
+  "provisional": false
  },
  "design": {
   "stack5": [
@@ -1702,8 +1700,8 @@
   }
  },
  "success": {
-  "provisional": true,
-  "provisionalReason": "SMOKE ONLY: stack inputs are smoke-sized runs; re-read after the full module runs",
+  "provisional": false,
+  "provisionalReason": null,
   "perInputSmoke": {
    "honest": {
     "smoke": false,
@@ -1720,13 +1718,11 @@
     "reasons": []
    },
    "regime": {
-    "smoke": true,
+    "smoke": false,
     "fast": false,
     "nulls": 200,
     "folder": "regime",
-    "reasons": [
-     "module's notes say its --fast output must not enter the stack"
-    ]
+    "reasons": []
    },
    "hazard": {
     "smoke": false,
@@ -9016,13 +9012,12 @@
   ]
  },
  "notes": [
-  "input honest: /home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/honest/results.json (module run 2026-11-02 12:52 UTC; fast=False; nulls 100; smoke-sized: False [])",
-  "input multiscale: /home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/multiscale/results.json (module run 2026-11-02 12:58:25; fast=None; nulls 100; smoke-sized: False [])",
-  "input regime: /home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/regime/results.json (module run 2026-11-02 12:58 UTC; fast=False; nulls 200; smoke-sized: True [\"module's notes say its --fast output must not enter the stack\"])",
-  "input hazard: /home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/hazard/results.json (module run 2026-11-02 12:51 UTC; fast=False; nulls 200; smoke-sized: False [])",
-  "input tda_sig: /home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/tda_sig/results.json (module run 2026-11-02 13:01:30; fast=False; nulls None; smoke-sized: False [])",
-  "input baselines: /home/runner/work/coinbaseTraderBot/coinbaseTraderBot/research/btcd_fractal/out8/baselines/results.json (module run None; fast=None; nulls 200; smoke-sized: False [])",
-  "SMOKE ONLY: at least one stack input is a smoke-sized run (regime: [\"module's notes say its --fast output must not enter the stack\"]). Every STACK / SUCCESS / VERDICT number below is provisional and must be re-read after the full module runs exist under the plan's folder names.",
+  "input honest: /home/user/coinbaseTraderBot/research/btcd_fractal/out8/honest/results.json (module run 2026-11-02 12:52 UTC; fast=False; nulls 100; smoke-sized: False [])",
+  "input multiscale: /home/user/coinbaseTraderBot/research/btcd_fractal/out8/multiscale/results.json (module run 2026-11-02 12:58:25; fast=None; nulls 100; smoke-sized: False [])",
+  "input regime: /home/user/coinbaseTraderBot/research/btcd_fractal/out8/regime/results.json (module run 2026-11-02 12:58 UTC; fast=False; nulls 200; smoke-sized: False [])",
+  "input hazard: /home/user/coinbaseTraderBot/research/btcd_fractal/out8/hazard/results.json (module run 2026-11-02 12:51 UTC; fast=False; nulls 200; smoke-sized: False [])",
+  "input tda_sig: /home/user/coinbaseTraderBot/research/btcd_fractal/out8/tda_sig/results.json (module run 2026-11-02 13:01:30; fast=False; nulls None; smoke-sized: False [])",
+  "input baselines: /home/user/coinbaseTraderBot/research/btcd_fractal/out8/baselines/results.json (module run None; fast=None; nulls 200; smoke-sized: False [])",
   "Regime component: the plan names it twice ([6] 'TVTP V2 P(fall5_26w) incl. occupancy' = series V2_pFall5_26w; Layer 5 'TVTP hazard incl. occupancy' = series V2_hazard26). The headline follows section [6]; the Layer-5 reading is scored side by side as stack_regimeHazard26_altReading. The reader should know the [6] reading is the better-scoring of the two.",
   "regime wrote no P(fall10_26w) series: the 10-point stack uses {strat, hazard, fixed5} over the OOS rows; the regime module's own 10-point reading today is shown in the spread only",
   "Alignment: component values at Sunday d are the module's own value at d, else its value at d-7 (never later); exact shares {'strat': 0.503, 'hazard': 0.503, 'regime': 0.5, 'fixed5': 0.503}; the stack's headline rows are the 396 Sundays with every component present; the modules' full weekly series exist only inside the modules.",
