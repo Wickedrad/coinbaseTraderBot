@@ -173,7 +173,7 @@ jobs:
 
   # One mechanism: its baseline and candidate replay on two runners at once (each ~2-3 h), then one judge.
   quote-lag:
-    if: inputs.only == 'quote-lag' && inputs.hist_from == ''
+    if: inputs.only == 'quote-lag' && inputs.hist_from == '' && inputs.drive_backfill_cache == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
@@ -274,7 +274,7 @@ jobs:
           if-no-files-found: ignore
 
   side:
-    if: inputs.only != '' && inputs.only != 'quote-lag' && inputs.from_run == '' && inputs.hist_from == ''
+    if: inputs.only != '' && inputs.only != 'quote-lag' && inputs.from_run == '' && inputs.hist_from == '' && inputs.drive_backfill_cache == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
