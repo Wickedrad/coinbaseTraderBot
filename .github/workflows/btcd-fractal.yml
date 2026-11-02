@@ -16,7 +16,7 @@ on:
         description: 'set to 1 for the smoke-test sizes'
         default: ''
       round:
-        description: 'study round: 1 (study.py), 2 (study2.py), 3 (study3.py, time dilation), 4 (study4.py, waterfall readiness), 5 (study5.py, dilation drivers), 6 (study6.py four series + study7.py oracle trial) 8 (every study8_*.py module through the shared harness) 9 (every study9_*.py iteration module), 10 (every study10_*.py module), fetch (history only) or refresh (fetch + baselines, honest, forecast, checks with small nulls + a line in forecast_log.csv; the Monday schedule)'
+        description: 'study round: 1 (study.py), 2 (study2.py), 3 (study3.py, time dilation), 4 (study4.py, waterfall readiness), 5 (study5.py, dilation drivers), 6 (study6.py four series + study7.py oracle trial) 8 (every study8_*.py module through the shared harness) 9 (every study9_*.py iteration module), 10 (every study10_*.py module), 11 (re-anchored 2016-17 parent: fetch_caps.py + studies 1-3 on the rebuilt series), caps (fetch_caps.py only), fetch (history only) or refresh (fetch + baselines, honest, forecast, checks with small nulls + a line in forecast_log.csv; the Monday schedule)'
         default: '8'
   schedule:
     - cron: '20 1 * * 1'   # Mondays 01:20 UTC (Sunday 8:20 PM EST): refresh the forecast object on the latest data
@@ -143,6 +143,23 @@ jobs:
             python3 "$f" --data research/btcd_fractal/data --out "research/btcd_fractal/out10/$name" ${FAST:+--fast} 2>&1 | tee "research/btcd_fractal/out10/$name.log" | tail -60 | cut -c1-400
             echo "=== $name done in $(( $(date +%s) - start ))s ==="
           done
+      - name: Rebuild 2016-17 dominance from per-coin market caps (Coin Metrics + CoinMarketCap; the 2016 waterfall)
+        if: ${{ env.ROUND == 'caps' || env.ROUND == '11' }}
+        run: |
+          python3 research/btcd_fractal/fetch_caps.py --out research/btcd_fractal/data 2>&1 | tee "$RUNNER_TEMP/caps.log" | tail -40 | cut -c1-700
+          mkdir -p research/btcd_fractal/out11; cp "$RUNNER_TEMP/caps.log" research/btcd_fractal/out11/caps.log
+      - name: "Study round 11 (studies 1-3 on the rebuilt series, parent anchored at the 2016 waterfall bottom; old anchor as the control)"
+        if: ${{ env.ROUND == '11' }}
+        run: |
+          D=research/btcd_fractal/data; R=research/btcd_fractal/out11; mkdir -p "$R"
+          PS=$(python3 -c "import json;print(json.load(open('$D/caps_report.json')).get('parentStart',''))")
+          [ -n "$PS" ] || { echo "no parent start: the rebuild failed"; exit 1; }
+          [ -f "$D/BTCD_SPLICED_1d.csv" ] || { echo "no spliced series"; exit 1; }
+          echo "parent start $PS"
+          python3 research/btcd_fractal/study.py --data $D --out $R/study --series BTCD_SPLICED --parent-start "$PS" 2>&1 | tee $R/study.log | tail -30 | cut -c1-400
+          python3 research/btcd_fractal/study.py --data $D --out $R/study_oldanchor --series BTCD_SPLICED --parent-start 2016-01-01 2>&1 | tee $R/study_oldanchor.log | tail -12 | cut -c1-400
+          python3 research/btcd_fractal/study2.py --data $D --out $R/study2 --series BTCD_SPLICED --parent-start "$PS" 2>&1 | tee $R/study2.log | tail -25 | cut -c1-400
+          python3 research/btcd_fractal/study3.py --data $D --out $R/study3 --series BTCD_SPLICED --parent-start "$PS" 2>&1 | tee $R/study3.log | tail -20 | cut -c1-400
       - name: Refresh the forecast object on the latest data (weekly)
         if: ${{ env.ROUND == 'refresh' }}
         run: |
@@ -171,6 +188,6 @@ jobs:
           mkdir -p research/btcd_fractal/out4; cp "$RUNNER_TEMP/study4.log" research/btcd_fractal/out4/study4.log 2>/dev/null || true
           mkdir -p research/btcd_fractal/out5; cp "$RUNNER_TEMP/study5.log" research/btcd_fractal/out5/study5.log 2>/dev/null || true
           mkdir -p research/btcd_fractal/out6 research/btcd_fractal/out7; cp "$RUNNER_TEMP/study6.log" research/btcd_fractal/out6/study6.log 2>/dev/null || true; cp "$RUNNER_TEMP/study7.log" research/btcd_fractal/out7/study7.log 2>/dev/null || true
-          for d in data out out2 out3 out4 out5 out6 out7 out8 out9 out10 refresh forecast_log.csv; do [ -e "research/btcd_fractal/$d" ] && git add -f "research/btcd_fractal/$d"; done; true
+          for d in data out out2 out3 out4 out5 out6 out7 out8 out9 out10 out11 refresh forecast_log.csv; do [ -e "research/btcd_fractal/$d" ] && git add -f "research/btcd_fractal/$d"; done; true
           git commit -q -m "BTC.D fractal study results (run ${{ github.run_id }}) [skip ci]" || { echo "nothing to commit"; exit 0; }
           for i in 1 2 3 4; do git pull -q --rebase origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && break; sleep $((2**i)); done
