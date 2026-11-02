@@ -34,6 +34,10 @@ on:
         description: 'With check_copy: reuse the fit days an earlier check_copy run cached (its run id: fidelity-fit-<id>-1), no server copy at all'
         required: false
         default: ''
+      fit_in_copy:
+        description: 'With check_copy: fit the depth model on the copy''s own older whole days (yes), no server read at all'
+        required: false
+        default: ''
       check_copy:
         description: 'Take the compared days from a Kalshi replay check copy (its run id: cache replay-check-copy-<id>, saved on main); only the fit days and nothing else are copied from the server (Nov 2: the 10 GB cache cap holds one full copy at most)'
         required: false
@@ -93,6 +97,7 @@ jobs:
           REUSE: ${{ inputs.reuse_run }}
           CHECK: ${{ inputs.check_copy }}
           FIT_RUN: ${{ inputs.fit_run }}
+          FIT_IN_COPY: ${{ inputs.fit_in_copy }}
         run: |
           set -euo pipefail
           if [ -n "$CHECK" ]; then
@@ -104,8 +109,13 @@ jobs:
             FILES=$(echo "$WHOLE" | tail -n $((DAYS + 1)) | tr '\n' ' ')
             [ "$(echo $FILES | wc -w)" -ge 3 ] || { echo "the copy has too few whole days: $FILES"; exit 1; }
             FIRST=$(echo $FILES | cut -d' ' -f1 | cut -c1-13)
-            ALL=$(ssh bot "cd ~/bot/data/recordings && ls -1 md-*.jsonl*" | sort | awk -v f="$FIRST" 'substr($0,1,13) < f')
-            FIT=$(echo "$ALL" | tail -n "$FIT_DAYS" | tr '\n' ' ')
+            if [ "$FIT_IN_COPY" = yes ]; then
+              FIT=$(echo "$WHOLE" | awk -v f="$FIRST" 'substr($0,1,13) < f' | tail -n "$FIT_DAYS" | tr '\n' ' ')
+              [ "$(echo $FIT | wc -w)" -ge 1 ] || { echo "the copy has no whole day before $FIRST to fit on"; exit 1; }
+            else
+              ALL=$(ssh bot "cd ~/bot/data/recordings && ls -1 md-*.jsonl*" | sort | awk -v f="$FIRST" 'substr($0,1,13) < f')
+              FIT=$(echo "$ALL" | tail -n "$FIT_DAYS" | tr '\n' ' ')
+            fi
             echo "files=$FILES" >> "$GITHUB_OUTPUT"
             echo "fit=$FIT" >> "$GITHUB_OUTPUT"
             if [ -n "$FIT_RUN" ]; then echo "key=fidelity-fit-$FIT_RUN-1" >> "$GITHUB_OUTPUT"; else echo "key=fidelity-fit-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"; fi
@@ -132,7 +142,7 @@ jobs:
           echo "fit=$FIT" >> "$GITHUB_OUTPUT"
           echo "days: $FILES | depth fitted on: $FIT"
       - name: Copy only the fit days (check_copy), capped at 8 MB/s
-        if: inputs.check_copy != '' && inputs.fit_run == ''
+        if: inputs.check_copy != '' && inputs.fit_run == '' && inputs.fit_in_copy != 'yes'
         env:
           FIT: ${{ steps.pick.outputs.fit }}
         run: |
@@ -144,7 +154,7 @@ jobs:
           [ -f data/models/model.json ] || { echo "no decision model in the replay check copy"; exit 1; }
           echo "copied $(ls data/fit | wc -l) fit day(s), $(du -sm data/fit | cut -f1) MB"
       - uses: actions/cache/save@v4
-        if: inputs.check_copy != '' && inputs.fit_run == ''
+        if: inputs.check_copy != '' && inputs.fit_run == '' && inputs.fit_in_copy != 'yes'
         with:
           path: data/fit
           key: fidelity-fit-${{ github.run_id }}-${{ github.run_attempt }}
@@ -245,7 +255,7 @@ jobs:
           key: replay-check-copy-${{ inputs.check_copy }}
           fail-on-cache-miss: true
       - uses: actions/cache/restore@v4
-        if: inputs.check_copy != '' && steps.part.outputs.go == 'yes'
+        if: inputs.check_copy != '' && inputs.fit_in_copy != 'yes' && steps.part.outputs.go == 'yes'
         with:
           path: data/fit
           key: ${{ needs.pick.outputs.key }}
@@ -256,6 +266,8 @@ jobs:
           set -euo pipefail
           DATA="$GITHUB_WORKSPACE/data"; mkdir -p "$DATA/recordings" "$DATA/models"
           printf '%s\n' $FILES > "$RUNNER_TEMP/recordings.txt"
+          # Fit days taken from the copy itself (fit_in_copy) move to the fit folder first.
+          if [ "${{ inputs.fit_in_copy }}" = yes ]; then mkdir -p "$DATA/fit"; for f in $FIT; do [ -f "$DATA/recordings/$f" ] && mv "$DATA/recordings/$f" "$DATA/fit/"; done; fi
           # Only the picked days stay (a replay check copy also holds its partial last day).
           for f in "$DATA"/recordings/*; do grep -qxF "$(basename "$f")" "$RUNNER_TEMP/recordings.txt" || rm -f "$f"; done
           # The days and the models come from the pick job's single copy (the cache above): nothing more is copied here.
