@@ -25,6 +25,10 @@ on:
         description: "With exit_runner: up to two cached copies (path data) that supply the days first, space separated: a replay-check run id (key replay-check-copy-<id>) or a full cache key"
         required: false
         default: ''
+      exit_noserver:
+        description: 'With exit_runner: never copy a day file from the server (only cached copies are read; a missing file is listed and skipped)'
+        type: boolean
+        default: false
       exit_save:
         description: 'With exit_runner: save the files this run copied from the server as an Actions cache (off keeps the 10 GB cache cap free)'
         type: boolean
@@ -270,6 +274,7 @@ jobs:
           HOURS: ${{ inputs.exit_hours }}
           UNTIL: ${{ inputs.exit_until || 'now' }}
           WINDOWS: ${{ inputs.exit_windows }}
+          NOSERVER: ${{ inputs.exit_noserver }}
         run: |
           [[ "$HOURS" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "hours must be a number"; exit 1; }
           multi=1; [ -n "$WINDOWS" ] || { WINDOWS="$HOURS@$UNTIL"; multi=0; }
@@ -295,6 +300,7 @@ jobs:
                 # a finished day (not today's growing file) is reused from the cache
                 if [ -s "labcache/$f.gz" ] && [ "$day" \< "$(date -u +%F)" ] && [ ! -s "data/$dir/$f.gz" ]; then cp "labcache/$f.gz" "data/$dir/$f.gz"
                 elif [ -s "labcache/$f" ] && [ "$day" \< "$(date -u +%F)" ]; then cp "labcache/$f" "data/$dir/$f"
+                elif [ "$NOSERVER" = true ]; then echo "not in the cached copies, skipped (no server read): $f"
                 else scp -q -l 64000 "bot:bot/data/$dir/$f" "data/$dir/$f"
                   if [ "$day" \< "$(date -u +%F)" ]; then mkdir -p labcache && cp "data/$dir/$f" "labcache/$f"; fi
                 fi
