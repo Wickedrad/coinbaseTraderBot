@@ -17,3 +17,9 @@ test('VolRef is time-based', () => {
   assert.ok(v.ratio('BTC', 2, 1000) > 1.99); // one second later the one-day reference has barely moved
   assert.ok(v.ratio('BTC', 2, 1000 + 86_400_000 * 5) < 1.05);
 });
+
+test('vetoOnly keeps only moves toward the mid', () => {
+  const c = { ...DEFAULT_SNN_PRICE, vetoOnly: true };
+  assert.equal(snnPrice(0.6, 0.9, 0.5, 1, 'between', c).p, 0.6); // pushes away from mid: dropped
+  assert.ok(snnPrice(0.6, 0.3, 0.5, 1, 'between', c).p < 0.6); // pulls toward mid: kept
+});

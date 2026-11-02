@@ -8,7 +8,10 @@
  * The regime is the asset's volatility over its own one-day EWMA (time-based, so the engine's 1 s and the replay's
  * evaluations agree). Same code in paper, live and the replay.
  */
-export interface SnnPriceConfig { alpha: number; kLow: number; kNormal: number; kHigh: number; offKinds: string[] }
+/** vetoOnly (SNN_PRICE_VETO_ONLY): apply the SNN only where it moves the price toward the mid (less edge, fewer or
+ *  smaller trades), never where it would add edge. Oct 29-31 replays: the two-sided blend traded ~10% more contracts
+ *  and lost $72.68 over two days against today's settings. */
+export interface SnnPriceConfig { alpha: number; kLow: number; kNormal: number; kHigh: number; offKinds: string[]; vetoOnly?: boolean }
 
 export const DEFAULT_SNN_PRICE: SnnPriceConfig = { alpha: 0.25, kLow: 0.5, kNormal: 0.25, kHigh: 0.5, offKinds: ['greater'] };
 
@@ -39,5 +42,6 @@ export function snnPrice(pModel: number, pSnn: number | undefined, mid: number, 
   if (!(k > 0) || !(cfg.alpha > 0)) return { p: pModel, why: `off in ${reg} vol` };
   const adj = mid + k * (pSnn - mid);
   const p = Math.max(0.001, Math.min(0.999, (1 - cfg.alpha) * pModel + cfg.alpha * adj));
+  if (cfg.vetoOnly && Math.abs(p - mid) >= Math.abs(pModel - mid)) return { p: pModel, why: `${reg} vol: SNN would add edge (veto only)` };
   return { p, why: `${reg} vol: k ${k}, alpha ${cfg.alpha}, shift ${((p - pModel) * 100).toFixed(2)}c` };
 }

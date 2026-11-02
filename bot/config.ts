@@ -1579,6 +1579,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         kLow: num(env, 'SNN_PRICE_K_LOW', DEFAULT_SNN_PRICE.kLow, 0, 1),
         kNormal: num(env, 'SNN_PRICE_K_NORMAL', DEFAULT_SNN_PRICE.kNormal, 0, 1),
         kHigh: num(env, 'SNN_PRICE_K_HIGH', DEFAULT_SNN_PRICE.kHigh, 0, 1),
+        vetoOnly: bool(env, 'SNN_PRICE_VETO_ONLY', false),
         offKinds: (env.SNN_PRICE_OFF_KINDS ?? DEFAULT_SNN_PRICE.offKinds.join(',')).split(',').map((x) => x.trim()).filter(Boolean),
       } } : {}),
       tennisPopulation: bool(env, 'SNN_TENNIS_POPULATION', true),
