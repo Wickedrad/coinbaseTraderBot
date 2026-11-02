@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig, type StrategyConfig } from '../bot/config';
 import { DEFAULT_FEES, orderFee } from '../bot/fees';
-import { decide, MarketView, shareWindowSec, trainingCount, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
+import { decide, MarketView, shareWindowSec, trainingCount, trainingOrder, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
 import { ProfitPeaks } from '../bot/strategy/profitPeaks';
 
 // Continuous cadence + Kelly sizing (the pre-relaxed behaviour these tests pin down).
@@ -468,4 +468,16 @@ test('share window: the last share of the window is measured on at most the last
   // The default cap is one hour, and the env key moves it.
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.shareWindowMaxSec, 3600);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_SHARE_WINDOW_MAX_SEC: '1800' }).strategy.shareWindowMaxSec, 1800);
+});
+
+test('trainingOrder (TRAINING_MODE): taker crosses at the touch; maker rests post-only at the side\'s own touch', () => {
+  // YES favoured, book 0.48 / 0.52.
+  assert.deepEqual(trainingOrder(true, 0.48, 0.52, 10, 0.03, 'taker', 2000, 'train: YES'),
+    { side: 'bid', price: 0.52, count: 10, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge: 0.03, why: 'train: YES' });
+  const yes = trainingOrder(true, 0.48, 0.52, 10, 0.07, 'maker', 2000, 'train: YES');
+  assert.deepEqual([yes.side, yes.price, yes.timeInForce, yes.postOnly, yes.expirationTime, yes.why], ['bid', 0.48, 'good_till_canceled', true, 2000, 'train: YES (maker at 0.48)']);
+  // NO favoured: the taker sells YES at the bid (NO at 0.52); the maker rests the YES ask (NO at 0.48).
+  assert.deepEqual([trainingOrder(false, 0.48, 0.52, 10, 0, 'taker', 2000, 'x').side, trainingOrder(false, 0.48, 0.52, 10, 0, 'taker', 2000, 'x').price], ['ask', 0.48]);
+  const no = trainingOrder(false, 0.48, 0.52, 10, 0, 'maker', 2000, 'train: NO');
+  assert.deepEqual([no.side, no.price, no.postOnly, no.why], ['ask', 0.52, true, 'train: NO (maker at 0.48)']);
 });

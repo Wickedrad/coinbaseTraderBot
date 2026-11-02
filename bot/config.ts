@@ -248,6 +248,11 @@ export interface StrategyConfig {
    *  trades to learn from (0 = off). Steven's pick on Oct 31 (sizing thread): back on, in paper and live alike, each
    *  sized at the order band's minimum ($10) and screened by the fair value gate (FV_ENTRY_GATE) like every entry. */
   trainTrades: number;
+  /** TRAINING_MODE (taker): how a training trade is placed. taker: bought at the touch, immediate-or-cancel (as built Oct 31;
+   *  on the 8 recorded days Oct 25 to Nov 2 they lost about $1 a trade, mostly the spread and the taker fee). maker: the
+   *  same side rests post-only at its own touch (the YES bid, or the NO bid via the YES ask), for orderTtlSec, screened by
+   *  the gate's quote margin (FV_ENTRY_GATE_QUOTE_MARGIN) as any resting quote that opens a position. */
+  trainMode: 'taker' | 'maker';
   /** Markets with no position and no resting order are fully re-evaluated at most every idleEvalSec
    *  (1 s otherwise): most of the bot's CPU is the per-second evaluation of markets it is not in. */
   idleEvalSec: number;
@@ -1229,6 +1234,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     exploreBand: num(env, 'PAPER_EXPLORE_BAND', 0.02, 0, 0.1),
     exploreMaxPerHour: num(env, 'PAPER_EXPLORE_MAX_PER_HOUR', 6, 0, 120),
     trainTrades: num(env, 'TRAINING_TRADES_PER_HOUR', 12, 0, 120),
+    trainMode: oneOf(env, 'TRAINING_MODE', 'taker', ['taker', 'maker'] as const),
     idleEvalSec: num(env, 'EVAL_IDLE_SEC', 5, 0, 60),
     outsidePriceFallback: bool(env, 'PAPER_OUTSIDE_PRICE_FALLBACK', false),
     adversarialBoost: bool(env, 'ADVERSARIAL_BOOST', true),

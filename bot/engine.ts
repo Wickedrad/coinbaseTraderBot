@@ -31,7 +31,7 @@ import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
-import { applyFvGate, decide, loserNoEntry, trainingCount, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
+import { applyFvGate, decide, loserNoEntry, trainingCount, trainingOrder, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
@@ -2347,14 +2347,17 @@ export class Engine {
     if (reason && entryWindowOpen && st.position === 0 && !plan.place.some((p) => p.purpose === 'entry') && this.trainBudget(now, m.ticker)) {
       const q = st.q ?? pYes;
       const buyYes = q >= mid;
-      const cost = buyYes ? ask.price : Math.round((1 - bid.price) * 10000) / 10000;
+      // TRAINING_MODE=maker: the side rests at its own touch (YES at the bid, NO at 1 - the ask) instead of crossing.
+      const maker = S.trainMode === 'maker';
+      const cost = maker ? (buyYes ? bid.price : Math.round((1 - ask.price) * 10000) / 10000) : buyYes ? ask.price : Math.round((1 - bid.price) * 10000) / 10000;
       if (cost >= R.minSidePrice && cost <= 1 - R.minSidePrice && ask.price - bid.price <= 0.08 && !fastMove && tauSec > R.noEntryBeforeCloseSec) {
         this.trainTs.push(now);
         this.trainTicker.set(m.ticker, m.closeTime);
-        const edge = buyYes ? q - ask.price : (1 - q) - cost;
+        const edge = buyYes ? q - cost : (1 - q) - cost;
         const count = trainingCount(cost, view);
-        plan.place.push({ side: buyYes ? 'bid' : 'ask', price: buyYes ? ask.price : bid.price, count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge,
-          why: `train: ${buyYes ? 'YES' : 'NO'} at ${cost.toFixed(2)}, model q ${q.toFixed(3)} vs mid ${mid.toFixed(3)}` });
+        const expiry = Math.min(Math.floor(now / 1000) + S.orderTtlSec, Math.floor(m.closeTime / 1000) - Math.max(1, Math.floor(R.noEntryBeforeCloseSec)));
+        plan.place.push(trainingOrder(buyYes, bid.price, ask.price, count, edge, maker ? 'maker' : 'taker', expiry,
+          `train: ${buyYes ? 'YES' : 'NO'} at ${cost.toFixed(2)}, model q ${q.toFixed(3)} vs mid ${mid.toFixed(3)}`));
         plan.notes.push(`training trade (${count} contract${count === 1 ? '' : 's'})`);
       }
     }

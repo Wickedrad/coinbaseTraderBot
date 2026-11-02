@@ -250,6 +250,17 @@ export function trainingCount(cost: number, v: Pick<MarketView, 'orderBandUsd' |
   return Math.max(n, 0.01);
 }
 
+/** A training trade's order (TRAINING_TRADES_PER_HOUR; the engine and the backtester place the same one): the side the
+ *  model favours, `count` contracts. taker (TRAINING_MODE): at the touch, immediate-or-cancel. maker: post-only at the
+ *  side's own touch (YES at the YES bid; NO at the NO bid, the YES ask) until `expirationTime`. */
+export function trainingOrder(buyYes: boolean, bid: number, ask: number, count: number, edge: number, mode: 'taker' | 'maker', expirationTime: number, why: string): OrderPlan {
+  if (mode === 'maker') {
+    return { side: buyYes ? 'bid' : 'ask', price: buyYes ? bid : ask, count, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'entry', expirationTime, edge,
+      why: `${why} (maker at ${buyYes ? bid.toFixed(2) : round(1 - ask, 4).toFixed(2)})` };
+  }
+  return { side: buyYes ? 'bid' : 'ask', price: buyYes ? ask : bid, count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge, why };
+}
+
 /** Where the loser window cut runs: the last share of the window (settleShare), the final minute, and from LOSER_WINDOW_SHARE
  *  of the window left when that is set. */
 export function inLoserWindow(v: Pick<MarketView, 'settleShare' | 'exitWindowOpen' | 'tauSec' | 'windowSec'>, L: LoserExitConfig): boolean {
