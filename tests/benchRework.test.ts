@@ -58,3 +58,22 @@ test('probation GP vote: an unvalidated formula votes at gpMult^level, full at l
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PROBATION_GP_MULT: '0.25' });
   assert.equal(cfg.probation.gpMult, 0.25);
 });
+
+test('model skill weight: the calm-market cap applies only while volatility is calming, inside its band, never loosens', () => {
+  const p = { on: true, min: 0.25, calm: 0.75 };
+  const calm = { rv1h: 0.4e-4, volRatio: 0.8 }, rising = { rv1h: 0.4e-4, volRatio: 1.3 };
+  assert.equal(modelSkillWeight({ pWorse: null }, p, calm), 0.75, 'calming: capped');
+  assert.equal(modelSkillWeight({ pWorse: null }, p, rising), 1, 'rising: the measured weight');
+  assert.equal(modelSkillWeight({ pWorse: null }, p, { rv1h: null, volRatio: null }), 1, 'unknown state: untouched');
+  assert.equal(modelSkillWeight({ pWorse: null }, p), 1, 'no state: untouched');
+  assert.equal(modelSkillWeight({ pWorse: 0.05, drift: { alarm: true } }, p, calm), 0.25, 'never looser than the measured weight');
+  assert.equal(modelSkillWeight({ pWorse: null }, { ...p, on: false }, calm), 0.75, 'applies with MODEL_SKILL=false too');
+  const band = { ...p, calmRvBp: [0.18, 0.71] as [number, number] };
+  assert.equal(modelSkillWeight({ pWorse: null }, band, calm), 0.75, 'inside the band');
+  assert.equal(modelSkillWeight({ pWorse: null }, band, { rv1h: 1e-4, volRatio: 0.8 }), 1, 'outside the band');
+  assert.equal(modelSkillWeight({ pWorse: null }, { ...p, pinned: 0.4 }, calm), 0.4, 'a pin wins');
+  const off = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.modelSkill;
+  assert.deepEqual([off.calm, off.calmRvBp], [-1, undefined], 'off by default');
+  const on = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.18,0.71' }).strategy.modelSkill;
+  assert.deepEqual([on.calm, on.calmRvBp], [0.75, [0.18, 0.71]]);
+});

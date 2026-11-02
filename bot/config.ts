@@ -232,7 +232,7 @@ export interface StrategyConfig {
   modelHealthHalt: boolean;
   /** In place of the halt (Oct 31, never bench): the decision price leans toward the market by the model's measured skill
    *  (MODEL_SKILL, MODEL_SKILL_MIN; MODEL_SKILL_W pins the weight). */
-  modelSkill: { on: boolean; min: number; pinned?: number };
+  modelSkill: { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number] };
   /** Paper exploration: occasionally enter a borderline opportunity (edge within exploreBand below the
    *  threshold, still fee-net positive) at minimum size, logged with its probability, so the fill model
    *  and the edge threshold get data near the boundary. Paper mode only. */
@@ -1221,7 +1221,12 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
     // Never bench (Oct 31): the model-vs-market check no longer halts entries; the skill weight below replaces it.
     modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', false),
-    modelSkill: { on: bool(env, 'MODEL_SKILL', true), min: num(env, 'MODEL_SKILL_MIN', 0.25, 0.05, 1), pinned: num(env, 'MODEL_SKILL_W', -1, -1, 1) },
+    modelSkill: {
+      on: bool(env, 'MODEL_SKILL', true), min: num(env, 'MODEL_SKILL_MIN', 0.25, 0.05, 1), pinned: num(env, 'MODEL_SKILL_W', -1, -1, 1),
+      // Calm-market cap (bot/model/modelHealth.ts): off (-1) until it proves itself on calming days.
+      calm: num(env, 'MODEL_SKILL_W_CALM', -1, -1, 1),
+      ...((b) => (b.length === 2 && b.every(Number.isFinite) && b[0] <= b[1] ? { calmRvBp: [b[0], b[1]] as [number, number] } : {}))((env.MODEL_SKILL_W_CALM_RV ?? '').split(',').filter((x) => x.trim() !== '').map(Number)),
+    },
     paperExplore: bool(env, 'PAPER_EXPLORE', false),
     exploreRate: num(env, 'PAPER_EXPLORE_RATE', 0.1, 0, 1),
     exploreBand: num(env, 'PAPER_EXPLORE_BAND', 0.02, 0, 0.1),

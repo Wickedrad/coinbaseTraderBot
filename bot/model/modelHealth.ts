@@ -75,7 +75,7 @@ export class ModelHealth {
   forget(ticker: string): void { this.snaps.delete(ticker); }
 
   /** The model's skill weight (modelSkillWeight) from the current status. */
-  skillWeight(p: SkillParams): number { return modelSkillWeight(this.status(), p); }
+  skillWeight(p: SkillParams, st?: SkillState | null): number { return modelSkillWeight(this.status(), p, st); }
 }
 
 // Skill weight (Steven, Oct 31: "Anything benched needs to be reworked ... rather than bench them"). In place of halting new
@@ -84,11 +84,28 @@ export class ModelHealth {
 // w = 1 while the evidence does not lean worse (pWorse >= 0.5, or under 10 windows); it falls linearly toward MODEL_SKILL_MIN
 // as pWorse falls to 0 (at the old halt's p = 0.05: about 0.33 with the 0.25 floor); a drift alarm (the model recently worse
 // than its own record) halves it. Never 0: the model keeps a say, and keeps being scored. MODEL_SKILL_W pins it (the lab).
-export interface SkillParams { on: boolean; min: number; pinned?: number }
-export function modelSkillWeight(h: { pWorse: number | null; drift?: { alarm: boolean } }, p: SkillParams): number {
+// Calm-market cap (Steven, Nov 1-2: a setting that wins only in some conditions gets the condition built in). On 189 days
+// (Apr 15 - Oct 31) a 0.75 weight won in calming markets (15-min vol below the hour's) and lost in rising ones, so
+// MODEL_SKILL_W_CALM caps the weight only while the asset's volatility is calming, optionally only inside an hourly-vol band
+// (MODEL_SKILL_W_CALM_RV, basis points per minute, "lo,hi"). Rising or unknown volatility keeps the measured weight.
+export interface SkillParams { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number] }
+export interface SkillState { rv1h: number | null; volRatio: number | null }
+export function modelSkillWeight(h: { pWorse: number | null; drift?: { alarm: boolean } }, p: SkillParams, st?: SkillState | null): number {
   if (p.pinned !== undefined && p.pinned >= 0) return Math.min(1, p.pinned);
-  if (!p.on) return 1;
-  let w = h.pWorse === null || h.pWorse >= 0.5 ? 1 : p.min + (1 - p.min) * (h.pWorse / 0.5);
-  if (h.drift?.alarm) w *= 0.5;
-  return Math.max(p.min, Math.min(1, w));
+  let w = 1;
+  if (p.on) {
+    w = h.pWorse === null || h.pWorse >= 0.5 ? 1 : p.min + (1 - p.min) * (h.pWorse / 0.5);
+    if (h.drift?.alarm) w *= 0.5;
+    w = Math.max(p.min, Math.min(1, w));
+  }
+  if (p.calm !== undefined && p.calm >= 0 && calmIn(st, p.calmRvBp)) w = Math.min(w, p.calm);
+  return w;
+}
+/** True while `st` is a calming market (15-min vol below the hour's) inside the optional hourly-vol band (bp). */
+export function calmIn(st: SkillState | null | undefined, band?: [number, number]): boolean {
+  if (!st || st.volRatio == null || !(st.volRatio < 1)) return false;
+  if (!band) return true;
+  if (st.rv1h == null || !(st.rv1h > 0)) return false;
+  const bp = st.rv1h * 1e4;
+  return bp >= band[0] && bp <= band[1];
 }

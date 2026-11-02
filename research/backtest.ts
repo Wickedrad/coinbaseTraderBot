@@ -76,6 +76,7 @@ import { readRecordings, ReplayState } from './replay';
 import { AccuracyGate, type AccuracyGateConfig } from '../bot/strategy/accuracyGate';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
 import { compactReading, MarketState, observeMarket } from '../bot/marketdata/marketState';
+import { modelSkillWeight } from '../bot/model/modelHealth';
 import { dynamicEdge } from '../bot/strategy/dynamicEdge';
 import { otherCoinsHeld, regimeScale } from '../bot/strategy/regimeScale';
 import { gatePasses, probationGpMult, probationLevel, type ProbationParams } from '../bot/risk/probation';
@@ -969,8 +970,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         minSidePrice: limits.minSidePrice,
         ...(() => { const b = tpBenched(); return b ? { takeProfitBenched: b } : {}; })(),
         ...(tpBench ? { takeProfitLevel: tpBench.level } : {}),
-        // The model's skill weight: the replay keeps no model-health record, so only a pinned one (MODEL_SKILL_W) applies.
-        ...(strategy.modelSkill && (strategy.modelSkill.pinned ?? -1) >= 0 && strategy.modelSkill.pinned! < 1 ? { modelSkillWeight: strategy.modelSkill.pinned } : {}),
+        // The model's skill weight: the replay keeps no model-health record, so only a pinned one (MODEL_SKILL_W) and the
+        // calm-market cap (MODEL_SKILL_W_CALM, from the market state as the engine reads it) apply.
+        ...((w) => (w < 1 ? { modelSkillWeight: w } : {}))(strategy.modelSkill ? modelSkillWeight({ pWorse: null }, strategy.modelSkill, lastState.get(m.ticker)) : 1),
         newRiskRoomUsd,
         tauSec, noEntryBeforeCloseSec: limits.noEntryBeforeCloseSec, fastMove, tickSize: m.tickSize, fees: DEFAULT_FEES,
         restingBid: rb, restingAsk: ra, nowSec: Math.floor(st.now / 1000), closeSec: Math.floor(m.closeTime / 1000),

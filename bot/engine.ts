@@ -2185,7 +2185,7 @@ export class Engine {
       profitPeakSidePrice: this.profitPeaks.update(m.ticker, st.position, st.position > 0 ? bid.price : st.position < 0 ? Math.round((1 - ask.price) * 1e4) / 1e4 : undefined),
       ...(this.d.takeProfitBench?.benched ? { takeProfitBenched: this.d.takeProfitBench.benched } : {}),
       ...(this.d.takeProfitBench ? { takeProfitLevel: this.d.takeProfitBench.level } : {}),
-      ...(() => { const w = this.d.modelHealth?.skillWeight(cfg.strategy.modelSkill) ?? modelSkillWeight({ pWorse: null }, cfg.strategy.modelSkill); return w < 1 ? { modelSkillWeight: w } : {}; })(),
+      ...(() => { const w = this.d.modelHealth?.skillWeight(cfg.strategy.modelSkill, mState) ?? modelSkillWeight({ pWorse: null }, cfg.strategy.modelSkill, mState); return w < 1 ? { modelSkillWeight: w } : {}; })(),
       entryWindowOpen, exitWindowOpen: tauSec > S.noExitBeforeCloseSec,
       ...((w) => ({ settleShare: w !== undefined && tauSec <= S.noExitBeforeCloseFrac * w, ...(w !== undefined ? { windowSec: w } : {}) }))(shareWindowSec(m.openTime, m.closeTime, S.shareWindowMaxSec)),
     };

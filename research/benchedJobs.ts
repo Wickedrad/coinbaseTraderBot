@@ -29,7 +29,11 @@ export const VARIANTS: Record<string, Record<string, string>> = {
   skill_w75: { MODEL_SKILL_W: '0.75' },
   tp_l0: { TP_LEVEL: '0' },
   tp_l1: { TP_LEVEL: '1' },
-  skill_off: { MODEL_SKILL: 'false' },
+  // Nov 2 (dynamics rule): skill_w75 won in calming markets and lost in rising ones on 189 days, so the weight is capped
+  // only while volatility is calming (bot/model/modelHealth.ts calmIn), and in a second arm only in the 0.25-0.5 bp bands
+  // where it won. Its by-condition line must show +0.00 in every rising condition (untouched).
+  skill_calm75: { MODEL_SKILL_W_CALM: '0.75' },
+  skill_calm75_mid: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.18,0.71' },
   dip8: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08' },
   cross_l3: { SINUOUS_CROSS: 'true', SINUOUS_CROSS_LEVEL: '3' },
   gp_full: { PROBATION_GP_MULT: '1' },
@@ -37,6 +41,8 @@ export const VARIANTS: Record<string, Record<string, string>> = {
 
 /** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
 export const LATER: Record<string, Record<string, string>> = {
+  // The replay keeps no model-health record, so the measured weight is always 1 there: skill_off == baseline (moved here).
+  skill_off: { MODEL_SKILL: 'false' },
   base_lat500: { RS_LATENCY_MS: '500' },
   tp_l2: { TP_LEVEL: '2' },
   skill_w50: { MODEL_SKILL_W: '0.5' },
