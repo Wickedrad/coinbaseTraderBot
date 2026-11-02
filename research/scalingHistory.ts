@@ -17,6 +17,15 @@ import { parseCandleCsv } from './history/csvFormats';
 /** BTC's daily range (high - low) / open by UTC day, from a daily candle CSV. */
 export function dailyRange(csv: string): Record<string, number> {
   const out: Record<string, number> = {};
+  const lines = csv.split(/\r?\n/).filter((l) => l.trim() !== '');
+  // The history store's own format (bot/marketdata/historyStore.ts): `ts,o,h,l,c,v[,tb]`, ts in ms.
+  if (/^ts,o,h,l,c\b/.test(lines[0] ?? '')) {
+    for (const l of lines.slice(1)) {
+      const [ts, o, h, lo] = l.split(',').map(Number);
+      if (o > 0 && Number.isFinite(ts)) out[new Date(ts).toISOString().slice(0, 10)] = (h - lo) / o;
+    }
+    return out;
+  }
   for (const c of parseCandleCsv(csv, '1d.csv', { asset: 'BTC', tf: '1d' }).candles) if (c.o > 0) out[new Date(c.ts).toISOString().slice(0, 10)] = (c.h - c.l) / c.o;
   return out;
 }

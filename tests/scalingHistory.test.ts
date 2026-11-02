@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseEnv, regimeGroups, reportLines } from '../research/scalingHistory';
+import { dailyRange, parseEnv, regimeGroups, reportLines } from '../research/scalingHistory';
 import type { TrialResult } from '../research/randomSweep';
 
 test('parseEnv reads K=V overrides and refuses anything else', () => {
@@ -24,4 +24,8 @@ test('report: paired difference against base, per regime $/h', () => {
   assert.match(lines[0], /^base\s+\+0\.00\/h over 2 d \(1 up\)/);
   assert.match(lines[2], /arm\s+\+2\.00\/h over 2 d \(2 up\).*vs base \+2\.00\/h/);
   assert.match(lines[3], /2026-09 \+2\.00/);
+});
+
+test('dailyRange reads the history store format (ts,o,h,l,c,v)', () => {
+  assert.deepEqual(dailyRange('ts,o,h,l,c,v\n1751673600000,100,110,95,105,1\n'), { '2025-07-05': 0.15 });
 });
