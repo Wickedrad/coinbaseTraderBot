@@ -1266,8 +1266,8 @@ def charts(out_dir, idx, y, preds, names, io_all, io_extra=None):
     H2 = 0.62 * nr + 2.95
     fig, axes = plt.subplots(1, 2, figsize=(12, H2), sharey=True, gridspec_kw={"wspace": 0.06})
     fig.subplots_adjust(top=1 - 1.15 / H2, bottom=1.4 / H2, left=0.2, right=0.99)
-    for ax, side, col, thr, ttl in ((axes[0], "inside", BLUE, CRIT["inside"], "Inside the target weeks (criterion: at least +0.01, block q05 > 0)"),
-                                     (axes[1], "outside", ORANGE, CRIT["outside"], "Outside the target weeks (criterion: no worse than -0.003)")):
+    for ax, side, col, thr, ttl in ((axes[0], "inside", BLUE, CRIT["inside"], "Inside the target weeks\n(criterion: at least +0.01, block q05 > 0)"),
+                                     (axes[1], "outside", ORANGE, CRIT["outside"], "Outside the target weeks\n(criterion: no worse than -0.003)")):
         for k, (lab_, io_, diag_) in enumerate(entries):
             r = io_[side]
             yk = nr - 1 - k
