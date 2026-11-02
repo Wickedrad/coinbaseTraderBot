@@ -46,7 +46,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 200
+    timeout-minutes: 340
     permissions:
       contents: write
     outputs:
@@ -181,12 +181,14 @@ jobs:
         run: |
           set -euo pipefail
           T=data/twin
+          echo "[twin] match from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
           node --import tsx research/historyTwin.ts --stage match --real data/recordings --twin data/history-replay --days "$WARM,$DAYS" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]' || { echo "match failed"; exit 1; }
           node --import tsx research/depthStudy.ts --recordings data/fit --out data/models/depth_model.json 2>&1 | grep -E '^\[depth\] [0-9]' | tail -3 || true
           [ -s data/models/depth_model.json ] || { echo "no depth model"; exit 1; }
           node --import tsx research/historyTwin.ts --stage fill --src $T/requote --dst $T/depth --how depth --depth-model data/models/depth_model.json 2>&1 | grep '^\[twin\]'
           mkdir -p $T/lag; for d in ${WARM} ${DAYS//,/ }; do if [ -f data/history-replay-lag/md-$d.jsonl.gz ]; then cp data/history-replay-lag/md-$d.jsonl.gz $T/lag/; fi; done
           node --import tsx research/historyTwin.ts --stage fill --src $T/lag --dst $T/lagdepth --how depth --depth-model data/models/depth_model.json 2>&1 | grep '^\[twin\]'
+          echo "[twin] features from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
           node --import tsx research/historyTwin.ts --stage features --dirs real=$T/real,requote=$T/requote,depth=$T/depth,lag=$T/lag,lagdepth=$T/lagdepth --days "$DAYS" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]'
           du -sh $T/* | cat
       # Only a dispatch runs the backtests that read it (a push builds and judges alone: nothing big is cached).

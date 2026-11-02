@@ -60,7 +60,11 @@ async function writeGz(file: string, lines: AsyncIterable<string>): Promise<void
 /** The tickers a day file lists (market records), with their series. */
 async function tickersOf(file: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  for await (const e of events(file)) if (e.k === 'market' && e.ticker) out.set(e.ticker, e.series ?? '');
+  // Only market records are parsed (a real day is tens of millions of book lines: parsing them all took hours, Nov 2).
+  for await (const line of recordingLines(file)) {
+    if (!line || !line.includes('"k":"market"')) continue;
+    try { const e = JSON.parse(line); if (e.k === 'market' && e.ticker) out.set(e.ticker, e.series ?? ''); } catch { /* a cut line */ }
+  }
   return out;
 }
 
@@ -72,11 +76,15 @@ export interface Paired { day: string; realContracts: number; twinContracts: num
 
 /** The real day with every contract the twin lacks taken out (its market, book, delta, trade, result records; alive
  *  marks keep only the twin's tickers). */
+const TICKER_RE = /"ticker":"([^"]+)"/;
 async function restrictDay(src: string, dst: string, keep: Set<string>): Promise<void> {
   async function* lines(): AsyncGenerator<string> {
     for await (const line of recordingLines(src)) {
       if (!line) continue;
-      if (line.includes('"ticker"') || line.includes('"tickers"')) {
+      // The ticker read straight off the line (no parse): only the rare lines listing several tickers are parsed.
+      const m = TICKER_RE.exec(line);
+      if (m && !keep.has(m[1])) continue;
+      if (line.includes('"tickers"')) {
         let e: Record<string, any>;
         try { e = JSON.parse(line); } catch { continue; }
         if (e.ticker && !keep.has(e.ticker)) continue;
@@ -154,7 +162,8 @@ async function stageMatch(): Promise<void> {
     if (prev) for (const t of (await tickersOf(prev)).keys()) keep.add(t);
     await restrictDay(rf, path.join(out, 'real', `md-${day}.jsonl.gz`), keep);
     fs.copyFileSync(tf, path.join(out, 'requote', path.basename(tf)));
-    const p = await pairDay(day, rf, tf, realT, twinT);
+    // Paired on the restricted day (the twin's contracts only): the same records for those contracts, far fewer lines.
+    const p = await pairDay(day, path.join(out, 'real', `md-${day}.jsonl.gz`), tf, realT, twinT);
     paired.push(p);
     console.log(`[twin] ${day}: contracts real ${p.realContracts} / twin ${p.twinContracts} / both ${p.both} (real 15m missing from the twin ${p.onlyReal15m}, twin-only ${p.onlyTwin}); minute quote vs real mid: ${p.quoteN} pts, off ${p.quoteMaeC.toFixed(2)}c (bias ${p.quoteBiasC.toFixed(2)}c), spread real ${p.spreadRealC.toFixed(2)}c twin ${p.spreadTwinC.toFixed(2)}c; index ${p.indexN} pts off ${p.indexMaeBps.toFixed(1)} bps (bias ${p.indexBiasBps.toFixed(1)}); results agree ${p.resultsAgree}/${p.results}`);
   }
@@ -236,7 +245,7 @@ export async function dayRows(file: string, day: string, src: string, results: R
 
 async function resultsOf(dir: string, days: string[]): Promise<Map<string, string>> {
   const r = new Map<string, string>();
-  for (const d of days) { const f = dayFile(dir, d); if (f) for await (const e of events(f)) if (e.k === 'result' && e.ticker && e.result) r.set(e.ticker, String(e.result)); }
+  for (const d of days) { const f = dayFile(dir, d); if (f) for await (const line of recordingLines(f)) { if (!line || !line.includes('"k":"result"')) continue; try { const e = JSON.parse(line); if (e.ticker && e.result) r.set(e.ticker, String(e.result)); } catch { /* a cut line */ } } }
   return r;
 }
 
