@@ -1,0 +1,398 @@
+{
+ "runUTC": "2026-11-02 17:26 UTC",
+ "coinmetrics": {
+  "catalog": "ok",
+  "requested": 62,
+  "firstDates": {
+   "ada": "2017-12-01",
+   "ae_eth": "2017-09-02",
+   "aion_eth": "2017-12-22",
+   "ant": "2017-08-29",
+   "bat": "2017-10-06",
+   "bch": "2017-08-01",
+   "bnb": "2017-07-15",
+   "bnb_eth": "2017-07-15",
+   "btc": "2010-07-18",
+   "btg": "2017-10-25",
+   "btm_eth": "2017-10-02",
+   "cvc": "2017-09-11",
+   "dash": "2014-02-08",
+   "dcr": "2016-05-17",
+   "dgb": "2015-02-10",
+   "doge": "2014-01-23",
+   "drgn": "2018-01-03",
+   "elf": "2017-12-22",
+   "eos_eth": "2017-06-29",
+   "etc": "2016-07-25",
+   "eth": "2015-08-08",
+   "fun": "2017-09-02",
+   "gas": "2017-08-08",
+   "gno": "2017-05-02",
+   "gnt": "2017-02-19",
+   "icx_eth": "2017-09-23",
+   "knc": "2017-09-27",
+   "lend": "2017-12-09",
+   "link": "2017-09-29",
+   "lrc_eth": "2017-09-02",
+   "ltc": "2013-04-01",
+   "maid": "2014-07-10",
+   "mana": "2017-08-25",
+   "mkr": "2017-12-26",
+   "nas_eth": "2017-12-26",
+   "neo": "2017-07-15",
+   "omg": "2017-07-15",
+   "pay": "2017-10-03",
+   "poly": "2018-06-15",
+   "powr": "2017-11-02",
+   "ppt": "2017-09-20",
+   "qash": "2017-11-06",
+   "qtum_eth": "2017-07-28",
+   "rep": "2016-10-04",
+   "sai": "2017-12-23",
+   "snt": "2017-06-19",
+   "trx_eth": "2017-10-07",
+   "usdt": "2014-10-06",
+   "usdt_eth": "2017-11-28",
+   "usdt_omni": "2014-10-06",
+   "vtc": "2014-01-29",
+   "weth": "2017-12-12",
+   "wtc": "2017-08-28",
+   "xem": "2015-04-01",
+   "xlm": "2015-09-30",
+   "xmr": "2014-05-20",
+   "xrp": "2014-08-15",
+   "xtz": "2018-06-30",
+   "xvg": "2017-09-30",
+   "zec": "2016-10-29",
+   "zil_eth": "2018-01-27",
+   "zrx": "2017-08-11"
+  },
+  "status": "ok",
+  "assetsWithData": [
+   "ada",
+   "ae_eth",
+   "aion_eth",
+   "ant",
+   "bat",
+   "bch",
+   "bnb",
+   "bnb_eth",
+   "btc",
+   "btg",
+   "btm_eth",
+   "cvc",
+   "dash",
+   "dcr",
+   "dgb",
+   "doge",
+   "drgn",
+   "elf",
+   "eos_eth",
+   "etc",
+   "eth",
+   "fun",
+   "gas",
+   "gno",
+   "gnt",
+   "icx_eth",
+   "knc",
+   "lend",
+   "link",
+   "lrc_eth",
+   "ltc",
+   "maid",
+   "mana",
+   "mkr",
+   "nas_eth",
+   "neo",
+   "omg",
+   "pay",
+   "poly",
+   "powr",
+   "ppt",
+   "qash",
+   "qtum_eth",
+   "rep",
+   "sai",
+   "snt",
+   "trx_eth",
+   "usdt",
+   "usdt_eth",
+   "usdt_omni",
+   "vtc",
+   "weth",
+   "wtc",
+   "xem",
+   "xlm",
+   "xmr",
+   "xrp",
+   "xtz",
+   "xvg",
+   "zec",
+   "zil_eth",
+   "zrx"
+  ],
+  "coverageCount": {
+   "2015-01-01": 10,
+   "2016-01-01": 14,
+   "2016-07-01": 15,
+   "2017-01-01": 18,
+   "2017-07-01": 22,
+   "2018-01-01": 58,
+   "2018-07-01": 60
+  },
+  "topShareByYear": {
+   "2015": {
+    "top10": [
+     "xrp",
+     "xlm",
+     "ltc",
+     "eth",
+     "dash",
+     "doge",
+     "maid",
+     "xmr",
+     "xem",
+     "vtc"
+    ],
+    "top10ShareOfAlts": 0.9989045517449991
+   },
+   "2016": {
+    "top10": [
+     "eth",
+     "xrp",
+     "xlm",
+     "ltc",
+     "etc",
+     "dash",
+     "rep",
+     "xmr",
+     "maid",
+     "xem"
+    ],
+    "top10ShareOfAlts": 0.9783657415029299
+   },
+   "2017": {
+    "top10": [
+     "eth",
+     "xrp",
+     "bch",
+     "ada",
+     "btg",
+     "xlm",
+     "neo",
+     "ltc",
+     "aion_eth",
+     "eos_eth"
+    ],
+    "top10ShareOfAlts": 0.782757704354273
+   },
+   "2018": {
+    "top10": [
+     "xrp",
+     "eth",
+     "xlm",
+     "bch",
+     "eos_eth",
+     "ada",
+     "trx_eth",
+     "ltc",
+     "neo",
+     "dash"
+    ],
+    "top10ShareOfAlts": 0.8371484319251593
+   }
+  }
+ },
+ "cmc": {
+  "status": "ok",
+  "days": 4929,
+  "first": "2013-04-29",
+  "last": "2026-11-02"
+ },
+ "waterfall2016": {
+  "cap": {
+   "peak": "2015-11-29",
+   "peakValue": 86.54,
+   "trough": "2016-03-13",
+   "troughValue": 71.88,
+   "fallPoints": 14.66,
+   "weeks": 15
+  },
+  "cmc": {
+   "peak": "2015-12-20",
+   "peakValue": 91.64,
+   "trough": "2016-03-13",
+   "troughValue": 76.89,
+   "fallPoints": 14.75,
+   "weeks": 12
+  },
+  "tradingview": {
+   "peak": "2015-12-20",
+   "peakValue": 99.13,
+   "trough": "2016-12-18",
+   "troughValue": 95.11,
+   "fallPoints": 4.02,
+   "weeks": 52
+  }
+ },
+ "gapVsTradingViewByYear": {
+  "cap": {
+   "2014": {
+    "meanGap": -9.48,
+    "maxAbsGap": 35.58,
+    "weeks": 39
+   },
+   "2015": {
+    "meanGap": -20.94,
+    "maxAbsGap": 34.8,
+    "weeks": 52
+   },
+   "2016": {
+    "meanGap": -16.87,
+    "maxAbsGap": 26.33,
+    "weeks": 52
+   },
+   "2017": {
+    "meanGap": -15.17,
+    "maxAbsGap": 34.73,
+    "weeks": 53
+   },
+   "2018": {
+    "meanGap": -9.5,
+    "maxAbsGap": 13.31,
+    "weeks": 52
+   },
+   "2019": {
+    "meanGap": -5.27,
+    "maxAbsGap": 10.93,
+    "weeks": 52
+   },
+   "2020": {
+    "meanGap": -1.27,
+    "maxAbsGap": 3.15,
+    "weeks": 52
+   },
+   "2021": {
+    "meanGap": 5.91,
+    "maxAbsGap": 10.83,
+    "weeks": 52
+   },
+   "2022": {
+    "meanGap": 8.96,
+    "maxAbsGap": 10.83,
+    "weeks": 52
+   },
+   "2023": {
+    "meanGap": 5.44,
+    "maxAbsGap": 8.58,
+    "weeks": 53
+   },
+   "2024": {
+    "meanGap": 7.91,
+    "maxAbsGap": 9.55,
+    "weeks": 52
+   },
+   "2025": {
+    "meanGap": 5.22,
+    "maxAbsGap": 6.06,
+    "weeks": 52
+   },
+   "2026": {
+    "meanGap": 5.65,
+    "maxAbsGap": 6.58,
+    "weeks": 44
+   }
+  },
+  "cmc": {
+   "2014": {
+    "meanGap": -8.33,
+    "maxAbsGap": 20.17,
+    "weeks": 39
+   },
+   "2015": {
+    "meanGap": -12.58,
+    "maxAbsGap": 19.56,
+    "weeks": 52
+   },
+   "2016": {
+    "meanGap": -14.63,
+    "maxAbsGap": 21.32,
+    "weeks": 52
+   },
+   "2017": {
+    "meanGap": -12.2,
+    "maxAbsGap": 31.14,
+    "weeks": 53
+   },
+   "2018": {
+    "meanGap": -3.52,
+    "maxAbsGap": 4.96,
+    "weeks": 52
+   },
+   "2019": {
+    "meanGap": -2.45,
+    "maxAbsGap": 3.66,
+    "weeks": 52
+   },
+   "2020": {
+    "meanGap": -0.83,
+    "maxAbsGap": 2.65,
+    "weeks": 52
+   },
+   "2021": {
+    "meanGap": -0.38,
+    "maxAbsGap": 2.15,
+    "weeks": 52
+   },
+   "2022": {
+    "meanGap": -1.04,
+    "maxAbsGap": 2.45,
+    "weeks": 52
+   },
+   "2023": {
+    "meanGap": -1.44,
+    "maxAbsGap": 2.1,
+    "weeks": 53
+   },
+   "2024": {
+    "meanGap": -1.37,
+    "maxAbsGap": 1.99,
+    "weeks": 52
+   },
+   "2025": {
+    "meanGap": -0.88,
+    "maxAbsGap": 2.18,
+    "weeks": 52
+   },
+   "2026": {
+    "meanGap": -0.57,
+    "maxAbsGap": 1.03,
+    "weeks": 45
+   }
+  }
+ },
+ "cmcVsCapByYear": {
+  "2013": -2.86,
+  "2014": -0.56,
+  "2015": 8.36,
+  "2016": 2.24,
+  "2017": 2.97,
+  "2018": 5.98,
+  "2019": 2.82,
+  "2020": 0.45,
+  "2021": -6.28,
+  "2022": -10.0,
+  "2023": -6.88,
+  "2024": -9.29,
+  "2025": -6.11,
+  "2026": -6.23
+ },
+ "primary": "cmc",
+ "splice": {
+  "week": "2018-06-03",
+  "gapAtSplice": 2.84,
+  "rule": "weekly close nearest between the rebuild and TradingView in [splice-from, splice-to)"
+ },
+ "parentStart": "2016-03-13"
+}
