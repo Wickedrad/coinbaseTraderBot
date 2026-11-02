@@ -23,3 +23,12 @@ test('a quote that moves down walks through the bids in its way, each taken by N
   const flat = new DepthSim(model).play('U', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.51);
   assert.equal(flat.filter((e) => e.k === 'trade').length, 0);
 });
+
+test('informed flow: with every measured trade on the side the price went, the trades before a fall are NO takers', () => {
+  const busy: DepthModel = { ...model, shape: [{ ...model.shape[0], tradesPerMin: { n: 1, mean: 60, p10: 60, p50: 60, p90: 60 } }], informed: { n: 5000, agree: 1 } };
+  const t = 1_000_000 * MIN;
+  const ev = new DepthSim(busy).play('V', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.5);
+  const trades = ev.filter((e) => e.k === 'trade');
+  assert.ok(trades.length > 20);
+  assert.ok(trades.every((e) => e.takerSide === 'no'));
+});

@@ -41,7 +41,9 @@ export const MOVE_MIN_SEGS = 20;
 export const moveOf = (from: number, to: number): 0 | 1 | 2 => { const half = from < 10 || from > 90 ? 0.05 : 0.5, d = to - from; return d < -half ? 0 : d > half ? 2 : 1; };
 export interface FlowCell { offset: number; qi: number; seconds: number; addPerSec: number; cancelPerSec: number; addSize: Quant; cancelSize: Quant }
 /** research/depthStudy.ts's --out: the depth model. */
-export interface DepthModel { days: string[]; shape: ShapeCell[]; flow: FlowCell[] }
+export interface DepthModel { days: string[]; shape: ShapeCell[]; flow: FlowCell[];
+  /** research/depthStudy.ts informed flow: the share of trades that took the side the mid went over the next minute. */
+  informed?: { n: number; agree: number } }
 
 export function readDepthModel(file: string): DepthModel | undefined {
   try {
@@ -163,6 +165,8 @@ export class DepthSim {
       }
     }
     let sw = 0;
+    const inf = this.model.informed, informedP = inf && inf.n >= 1000 ? Math.min(1, Math.max(0, 2 * (inf.agree - 0.5))) : 0;
+    const dir = nextMid !== undefined && Number.isFinite(nextMid) ? Math.sign(Math.round(nextMid * PX) - (bB + bA) / 2) : 0;
     for (let sec = t; sec < until; sec += 1000) {
       const end = Math.min(sec + 1000, until);
       // The walk's sweeps due in this second: the whole best level traded away, and the other side follows one level.
@@ -183,7 +187,9 @@ export class DepthSim {
       for (let i = 0; i < nTr; i++) {
         const at = sec + Math.floor(((i + 1) * (end - sec)) / (nTr + 1));
         // A YES taker buys at the best ask; a NO taker sells YES at the best bid.
-        const yes = u() < yesShare, side: Side = yes ? 'ask' : 'bid', m = b[side], top = best(side);
+        // Informed flow (Nov 2): a measured share of the trades takes the side the price is going (the next quote),
+        // the rest are blind; the real books' share is what picks resting orders off before a move.
+        const yes = informedP > 0 && dir !== 0 && u() < informedP ? dir > 0 : u() < yesShare, side: Side = yes ? 'ask' : 'bid', m = b[side], top = best(side);
         if (!Number.isFinite(top)) continue;
         const q = m.get(top)!, n = Math.min(q, lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90));
         out.push({ t: at, k: 'trade', ticker, price: top / PX, count: n, takerSide: yes ? 'yes' : 'no', ts: at, sim: 1 });

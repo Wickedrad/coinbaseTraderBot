@@ -58,10 +58,16 @@ const newQr = (): Qr => ({ seconds: 0, add: 0, cancel: 0, trade: 0, addSize: new
 
 interface Contract { ticker: string; close: number; book: OrderBook; lastSample: number; minute: number; deltas: number; trades: number; seen: Set<string>;
   /** The quarter-minute since the last sample: where the mid stood and its cell, and its trades so far. */
-  seg?: { mid: number; cell: Cell }; segTrades: number; segYes: number }
+  seg?: { mid: number; cell: Cell }; segTrades: number; segYes: number;
+  /** Trades waiting for the mid a minute later (informed flow): time, YES taker, the mid at the trade. */
+  waiting?: Array<{ t: number; yes: boolean; mid: number }> }
 /** Trades alike to one already seen in the same second (time, price, size and side; the recordings keep no trade id). Kept:
  *  trades are stamped in whole seconds, so on a busy book most are separate trades, not the recorder counting one twice. */
 export const tradeCount = { all: 0, repeated: 0 };
+/** Informed flow (Nov 2): of the trades after which the mid had moved a minute later, how many took the side the price
+ *  went (a YES taker before a rise, a NO taker before a fall). Half is blind flow; the depth fill-in plays the excess. */
+export const informed = { n: 0, agree: 0 };
+const INFORMED_MS = 60_000;
 
 type Side = 'bid' | 'ask';
 /** The book's levels on one side, best first, as [price in tenths of a cent, size]. */
@@ -133,6 +139,17 @@ async function run(files: string[]) {
       if (t > c.close) { if (c.minute) minuteEnd(c, c.close - 1); contracts.delete(c.ticker); continue; }
       // The contract's samples and minutes up to this event, on the book as it stood.
       while (c.lastSample && c.lastSample + SAMPLE_MS <= t) { c.lastSample += SAMPLE_MS; sample(c, c.lastSample); }
+      // The trades a minute old: did the mid go the taker's way?
+      if (c.waiting?.length && c.waiting[0].t + INFORMED_MS <= t) {
+        const bb = c.book.bestBid(), ba = c.book.bestAsk();
+        while (c.waiting.length && c.waiting[0].t + INFORMED_MS <= t) {
+          const w = c.waiting.shift()!;
+          if (!bb || !ba || !(ba.price > bb.price)) continue;
+          const d = (bb.price + ba.price) / 2 - w.mid;
+          if (Math.abs(d) < 0.0049) continue;
+          informed.n++; if ((d > 0) === w.yes) informed.agree++;
+        }
+      }
       const m = Math.floor(t / MIN);
       if (c.minute && m > c.minute) minuteEnd(c, c.minute * MIN + MIN - 1);
       c.minute = m;
@@ -161,6 +178,7 @@ async function run(files: string[]) {
         const s = state(c, t);
         if (s) { const cell = cellOf(s.tau, s.mid); cell.trades++; cell.tradeSize.add(Number(e.count)); if (e.takerSide === 'yes') cell.takerYes++; }
         c.segTrades++; if (e.takerSide === 'yes') c.segYes++;
+        { const bb = c.book.bestBid(), ba = c.book.bestAsk(); if (bb && ba && ba.price > bb.price && (e.takerSide === 'yes' || e.takerSide === 'no')) (c.waiting ??= []).push({ t, yes: e.takerSide === 'yes', mid: (bb.price + ba.price) / 2 }); }
         // The trade takes the best level on the side it hits: the queue-reactive model's market orders.
         const side: Side = e.takerSide === 'yes' ? 'ask' : 'bid';
         const best = side === 'ask' ? c.book.bestAsk() : c.book.bestBid();
@@ -197,7 +215,7 @@ function report(cells: Map<string, Cell>, qr: Map<string, Qr>) {
     return { offset: off, qi, queue: label(Q_EDGES, qi), seconds: Math.round(q.seconds), addPerSec: per(q.add), cancelPerSec: per(q.cancel), tradePerSec: per(q.trade),
       addSize: q.addSize.summary(), cancelSize: q.cancelSize.summary() };
   }).sort((a, b) => a.offset - b.offset || a.queue.localeCompare(b.queue));
-  return { shape, flow };
+  return { shape, flow, informed: { n: informed.n, agree: informed.n ? +(informed.agree / informed.n).toFixed(4) : 0.5 } };
 }
 
 function cliArg(k: string, d: string): string { const i = process.argv.indexOf(`--${k}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; }
@@ -219,6 +237,7 @@ async function main() {
   for (const s of r.shape) {
     console.log(`  ${s.tau.padEnd(9)} ${s.mid.padEnd(7)} n=${String(s.samples).padStart(6)}  spread p50 ${s.spread.p50} p90 ${s.spread.p90} | levels in 10 ticks ${s.quotedLevels.p50} | depth10 p50 ${s.depth10.p50} | wall ${s.wallSize.p50} (x${(+s.wallRatio.p50).toFixed(1)} median, ${s.wallOffset.p50} ticks back) | lvl0-4 quoted ${s.levelQuoted.slice(0, 5).join('/')} size p50 ${s.levelFilledP50.slice(0, 5).join('/')} p90 ${s.levelFilledP90.slice(0, 5).join('/')} | trades/min ${s.tradesPerMin.mean} size p50 ${s.tradeSize.p50} | changes/min ${s.deltasPerMin.mean}`);
   }
+  console.log(`[depth] informed flow: ${r.informed.n} trades after which the mid had moved a minute later, ${(100 * r.informed.agree).toFixed(1)}% took the side it went`);
   console.log(`[depth] trades: ${tradeCount.all} recorded, ${tradeCount.repeated} repeated (${tradeCount.all ? ((100 * tradeCount.repeated) / tradeCount.all).toFixed(1) : 0}%, kept: whole-second stamps, no trade id)`);
   console.log('[depth] queue-reactive flow (per second at each distance from best and queue size)');
   for (const f of r.flow) console.log(`  off ${String(f.offset).padStart(2)}t q ${f.queue.padEnd(9)} ${String(f.seconds).padStart(8)} s  add ${f.addPerSec} (p50 ${f.addSize.p50})  cancel ${f.cancelPerSec} (p50 ${f.cancelSize.p50})  trade ${f.tradePerSec}`);
