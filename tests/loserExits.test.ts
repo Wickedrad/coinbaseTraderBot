@@ -251,3 +251,14 @@ test('loser window rest (LOSER_WINDOW_MODE=rest): the window cut rests at the sp
   assert.deepEqual(re.cancel.map((c) => c.clientOrderId), ['a1']);
   assert.equal(gtc(re)[0]?.price, 0.57);
 });
+
+test('TRAINING_GATE_MARGIN: training trades take their own gate margin; other orders keep theirs', () => {
+  const tm: StrategyConfig = { ...cfg, loserExits: { ...cfg.loserExits!, gateQuoteMargin: 0.12, trainMargin: 0.03 } };
+  // A resting YES at 0.50 (maker fee 0), fair value 0.56: a quote needs 0.62 (dropped); a training trade needs 0.53 (kept).
+  const plan = (why: string): StrategyOutput => ({ place: [{ side: 'bid', price: 0.5, count: 10, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: why.startsWith('train') ? 'entry' : 'quote', edge: 0, why }], cancel: [], notes: [] });
+  const q = plan('maker bid'); applyFvGate(q, 0.56, 0, DEFAULT_FEES, tm); assert.equal(q.place.length, 0);
+  const t = plan('train: YES at 0.50 (maker at 0.50)'); applyFvGate(t, 0.56, 0, DEFAULT_FEES, tm); assert.equal(t.place.length, 1);
+  const t2 = plan('train: YES at 0.50 (maker at 0.50)'); applyFvGate(t2, 0.52, 0, DEFAULT_FEES, tm); assert.equal(t2.place.length, 0);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.loserExits?.trainMargin, undefined);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TRAINING_GATE_MARGIN: '0.03' }).strategy.loserExits?.trainMargin, 0.03);
+});

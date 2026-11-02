@@ -307,8 +307,11 @@ export function applyFvGate(plan: StrategyOutput, pFair: number | undefined, pos
       return false;
     }
     if (!cfg.loserExits?.gate || pFair === undefined) return true;
-    const ok = fvGatePasses(pFair, buysYes ? 'yes' : 'no', cost, orderFee(p.count, cost, !p.postOnly, fees) / p.count, cfg, p.postOnly);
-    if (!ok) plan.notes.push(`fair value gate: dropped ${p.purpose} ${buysYes ? 'YES' : 'NO'} at ${cost.toFixed(2)} (fair value ${(buysYes ? pFair : 1 - pFair).toFixed(3)} under cost + fee + ${gateMarginFor(cfg, p.postOnly)})`);
+    // A training trade takes TRAINING_GATE_MARGIN when one is set; every other order the margin of its type.
+    const train = p.why.startsWith('train:') && cfg.loserExits.trainMargin !== undefined;
+    const gcfg = train ? { loserExits: { ...cfg.loserExits, gateMargin: cfg.loserExits.trainMargin!, gateQuoteMargin: cfg.loserExits.trainMargin } } : cfg;
+    const ok = fvGatePasses(pFair, buysYes ? 'yes' : 'no', cost, orderFee(p.count, cost, !p.postOnly, fees) / p.count, gcfg, p.postOnly);
+    if (!ok) plan.notes.push(`fair value gate: dropped ${p.purpose} ${buysYes ? 'YES' : 'NO'} at ${cost.toFixed(2)} (fair value ${(buysYes ? pFair : 1 - pFair).toFixed(3)} under cost + fee + ${gateMarginFor(gcfg, p.postOnly)})`);
     return ok;
   });
   return before - plan.place.length;

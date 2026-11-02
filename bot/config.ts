@@ -66,6 +66,10 @@ export interface LoserExitConfig {
    *  or adds to a position needs. A quote fills later than it is placed, mostly when the price has moved through it, so it
    *  needs a wider cushion than a taker entry, which fills at the price the gate saw. An empty value = FV_ENTRY_GATE_MARGIN. */
   gateQuoteMargin?: number;
+  /** TRAINING_GATE_MARGIN (unset: a training trade takes the margin of its order type, the gate's for a taker one and the
+   *  quote margin for a resting one): the gate's margin for training trades alone. Under TRAINING_MODE=maker the 12c quote
+   *  cushion let no training trade through on the recorded days, so the maker mode is judged with its own margin. */
+  trainMargin?: number;
   /** LOSER_CUT (off: it lost on 6 of 8 recorded days next to the gate; studied for the condition under which it wins): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
    *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
   cut: boolean;
@@ -1198,6 +1202,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       gate: bool(env, 'FV_ENTRY_GATE', true),
       gateMargin: num(env, 'FV_ENTRY_GATE_MARGIN', 0.06, 0, 0.5),
       ...(env.FV_ENTRY_GATE_QUOTE_MARGIN !== '' ? { gateQuoteMargin: num(env, 'FV_ENTRY_GATE_QUOTE_MARGIN', 0.12, 0, 0.5) } : {}),
+      ...(env.TRAINING_GATE_MARGIN !== undefined && env.TRAINING_GATE_MARGIN !== '' ? { trainMargin: num(env, 'TRAINING_GATE_MARGIN', 0.06, 0, 0.5) } : {}),
       cut: bool(env, 'LOSER_CUT', false),
       cutMargin: num(env, 'LOSER_CUT_MARGIN', 0.03, 0, 0.5),
       window: bool(env, 'LOSER_WINDOW_CUT', false),
