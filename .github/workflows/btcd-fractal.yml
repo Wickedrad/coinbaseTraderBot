@@ -16,7 +16,7 @@ on:
         description: 'set to 1 for the smoke-test sizes'
         default: ''
       round:
-        description: 'study round: 1 (study.py), 2 (study2.py), 3 (study3.py, time dilation), 4 (study4.py, waterfall readiness), 5 (study5.py, dilation drivers), 6 (study6.py four series + study7.py oracle trial) 8 (every study8_*.py module through the shared harness) 9 (every study9_*.py iteration module), 10 (every study10_*.py module), 12 (study12_hs.py, head-and-shoulders timing), 13 (study13_refine.py, the refinement stage), 11 (re-anchored 2016-17 parent: fetch_caps.py + studies 1-3 on the rebuilt series), caps (fetch_caps.py only), fetch (history only) or refresh (fetch + baselines, honest, forecast, checks with small nulls + a line in forecast_log.csv; the Monday schedule)'
+        description: 'study round: 1 (study.py), 2 (study2.py), 3 (study3.py, time dilation), 4 (study4.py, waterfall readiness), 5 (study5.py, dilation drivers), 6 (study6.py four series + study7.py oracle trial) 8 (every study8_*.py module through the shared harness) 9 (every study9_*.py iteration module), 10 (every study10_*.py module), 12 (study12_hs.py, head-and-shoulders timing), 13 (study13_refine.py, the refinement stage), 14 (study14_july2016.py, the July-2016 fractal), 11 (re-anchored 2016-17 parent: fetch_caps.py + studies 1-3 on the rebuilt series), caps (fetch_caps.py only), fetch (history only) or refresh (fetch + baselines, honest, forecast, checks with small nulls + a line in forecast_log.csv; the Monday schedule)'
         default: '8'
   schedule:
     - cron: '20 1 * * 1'   # Mondays 01:20 UTC (Sunday 8:20 PM EST): refresh the forecast object on the latest data
@@ -175,6 +175,12 @@ jobs:
           pip install -q --disable-pip-version-check hmmlearn ripser 2>&1 | tail -2 || true
           R=research/btcd_fractal/out13/refine; mkdir -p "$R"
           python3 research/btcd_fractal/study13_refine.py --data research/btcd_fractal/data --out "$R" --nulls 200 --boots 1000 2>&1 | tee "$R/study13.log" | tail -40 | cut -c1-500
+      - name: "Study round 14 (ROUND14_PLAN.md - Steven's July-2016 fractal: anchored placement, shape and walk-forward tests)"
+        if: ${{ env.ROUND == '14' }}
+        run: |
+          pip install -q --disable-pip-version-check numba 2>&1 | tail -2 || true
+          R=research/btcd_fractal/out14/july2016; mkdir -p "$R"
+          python3 research/btcd_fractal/study14_july2016.py --data research/btcd_fractal/data --out "$R" --placebos 200 --wf-placebos 40 2>&1 | tee "$R/study14.log" | tail -40 | cut -c1-500
       - name: Refresh the forecast object on the latest data (weekly)
         if: ${{ env.ROUND == 'refresh' }}
         run: |
@@ -203,6 +209,6 @@ jobs:
           mkdir -p research/btcd_fractal/out4; cp "$RUNNER_TEMP/study4.log" research/btcd_fractal/out4/study4.log 2>/dev/null || true
           mkdir -p research/btcd_fractal/out5; cp "$RUNNER_TEMP/study5.log" research/btcd_fractal/out5/study5.log 2>/dev/null || true
           mkdir -p research/btcd_fractal/out6 research/btcd_fractal/out7; cp "$RUNNER_TEMP/study6.log" research/btcd_fractal/out6/study6.log 2>/dev/null || true; cp "$RUNNER_TEMP/study7.log" research/btcd_fractal/out7/study7.log 2>/dev/null || true
-          for d in data out out2 out3 out4 out5 out6 out7 out8 out9 out10 out11 out12 out13 refresh forecast_log.csv; do [ -e "research/btcd_fractal/$d" ] && git add -f "research/btcd_fractal/$d"; done; true
+          for d in data out out2 out3 out4 out5 out6 out7 out8 out9 out10 out11 out12 out13 out14 refresh forecast_log.csv; do [ -e "research/btcd_fractal/$d" ] && git add -f "research/btcd_fractal/$d"; done; true
           git commit -q -m "BTC.D fractal study results (run ${{ github.run_id }}) [skip ci]" || { echo "nothing to commit"; exit 0; }
           for i in 1 2 3 4; do git pull -q --rebase origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && break; sleep $((2**i)); done
