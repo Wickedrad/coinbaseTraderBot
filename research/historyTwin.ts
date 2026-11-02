@@ -395,6 +395,7 @@ async function stageVerdict(): Promise<void> {
     report.twins[src] = { auc: +a.toFixed(3), features: each, regimes, outcome: o, checks, pass };
     console.log(`[twin] ${src}: adversary AUC ${a.toFixed(3)} (0.5 = can't tell; pass <= 0.60) over ${real.length} real / ${tw.length} twin contract lives`);
     console.log(`[twin] ${src}: gives it away most: ${each.slice(0, 5).map((e) => `${e.name} ${e.auc} (real ${e.real}, twin ${e.twin})`).join('; ')}`);
+    console.log(`[twin] ${src}: every feature (AUC, real vs twin mean): ${each.map((e) => `${e.name} ${e.auc} ${e.real}/${e.twin}`).join('; ')}`);
     if (o) console.log(`[twin] ${src}: backtest P&L $${o.pnl.toFixed(2)} vs real $${o.realPnl.toFixed(2)}; windows ${o.traded} vs ${o.realTraded}; per-window diff $${o.meanDiff.toFixed(3)} [${o.lo.toFixed(3)}, ${o.hi.toFixed(3)}]; error $${o.rmse.toFixed(2)} (placebo $${placebo?.rmse.toFixed(2) ?? '?'}); corr ${o.corr.toFixed(2)}`);
     console.log(`[twin] ${src}: ${pass ? 'PASS' : 'FAIL'} (${Object.entries(checks).map(([k, v]) => `${k} ${v ? 'ok' : 'no'}`).join(', ')})`);
   }

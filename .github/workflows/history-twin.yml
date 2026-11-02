@@ -20,6 +20,10 @@ on:
         description: 'Replay fidelity run whose cached days (recordings, older fit days, models) are the real side'
         required: true
         default: '41351064742'
+      reverdict_run:
+        description: 'Only the verdict again, on the judged features an earlier push build cached (its run id); nothing else runs'
+        required: false
+        default: ''
       parts:
         description: 'Runners per backtest (the compared days split into this many runs)'
         required: false
@@ -44,6 +48,7 @@ env:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.reverdict_run == '' }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 340
@@ -346,3 +351,43 @@ jobs:
         run: |
           { echo "History twin verdict, run ${{ github.run_id }} (${{ job.status }})"; echo; echo '```'; cut -c1-500 "$RUNNER_TEMP/verdict.log" 2>/dev/null | grep -v '^\[twin\] features'; echo '```'; } > "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+
+  reverdict:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reverdict_run != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/cache/restore@v4
+        with:
+          path: data/twinlite
+          key: history-twin-lite-${{ inputs.reverdict_run }}
+          fail-on-cache-miss: true
+      - name: Verdict
+        run: |
+          set -euo pipefail
+          mkdir -p data/twin && cp data/twinlite/* data/twin/
+          node --import tsx research/historyTwin.ts --stage verdict --out data/twin 2>&1 | tee "$RUNNER_TEMP/verdict.log" | grep '^\[twin\]'
+      - name: Report (commit comment)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "History twin re-verdict of run ${{ inputs.reverdict_run }} (run ${{ github.run_id }}, ${{ job.status }})"; echo; echo '```'; cut -c1-1500 "$RUNNER_TEMP/verdict.log" 2>/dev/null | grep -v '^\[twin\] features'; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
