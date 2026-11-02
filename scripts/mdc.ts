@@ -47,7 +47,10 @@ async function encode(src: string, dst = outName(src, '.mdc'), o = opts()) {
   return { ...r, ms: Date.now() - t0, dst };
 }
 
-async function decode(src: string, dst = outName(src, '.jsonl.gz')) {
+/** md-DAY.mdc -> md-DAY.jsonl.gz; any other x.mdc -> x.gz (x.csv.mdc -> x.csv.gz). */
+const decodedName = (f: string) => (/(^|\/)md-\d{4}-\d{2}-\d{2}\.mdc$/.test(f) ? outName(f, '.jsonl.gz') : f.replace(/\.mdc$/, '') + '.gz');
+
+async function decode(src: string, dst = decodedName(src)) {
   async function* text() { for await (const l of recordingLines(src)) yield l + '\n'; }
   const tmp = `${dst}.tmp`;
   await pipeline(Readable.from(text()), zlib.createGzip({ level: 6 }), fs.createWriteStream(tmp, { mode: 0o600 }));

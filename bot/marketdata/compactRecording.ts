@@ -12,7 +12,8 @@
 //   varint nLines, byte endsWithNewline, varint nShapes, shapes (length-prefixed JSON [keys, types]),
 //   shape id per line (varint; 0 = a raw line kept verbatim), raw lines (length-prefixed), then per shape, per key, a
 //   column: tag 0 number (varint scale, byte delta?, zigzag varints), 1 string dictionary (varint n, entries,
-//   indices), 2 JSON text (length-prefixed). Any line that would not come back identical is stored raw, and
+//   indices), 2 JSON text (length-prefixed). Plain CSV rows (no quotes) are columns too: their shape is
+//   [null, types] and a row is its values joined by commas, so candle and funding CSVs shrink the same way. Any line that would not come back identical is stored raw, and
 //   encodeDay() checks the round trip of every block before it writes it.
 
 import fs from 'fs';
@@ -128,22 +129,30 @@ function readColumn(r: R, n: number): unknown[] {
 }
 
 // ---------- blocks ----------
+/** A CSV row's fields: numbers where the text is exactly how JS prints that number, else strings. */
+function csvRow(line: string): unknown[] {
+  return line.split(',').map((f) => { const x = f === '' ? NaN : Number(f); return Number.isFinite(x) && String(x) === f ? x : f; });
+}
+
 /** One block's payload (before zstd) from lines without their newlines. */
 export function encodeBlock(lines: string[], endsWithNewline: boolean): Buffer {
   const shapes = new Map<string, number>(); // shape JSON -> id (1-based)
-  const shapeKeys: string[][] = [], shapeTypes: Ty[][] = [];
+  const shapeTypes: Ty[][] = [];
   const rows: unknown[][][] = []; // per shape: per key column values
   const ids: number[] = new Array(lines.length);
   const raw: string[] = [];
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li];
     let o: unknown;
-    try { o = JSON.parse(line); } catch { o = undefined; }
-    if (!o || typeof o !== 'object' || Array.isArray(o) || JSON.stringify(o) !== line) { ids[li] = 0; raw.push(line); continue; }
-    const keys = Object.keys(o as object), vals = Object.values(o as object), types = vals.map(typeOf);
+    try { o = line[0] === '{' ? JSON.parse(line) : undefined; } catch { o = undefined; }
+    let keys: string[] | null, vals: unknown[];
+    if (o && typeof o === 'object' && !Array.isArray(o) && JSON.stringify(o) === line) { keys = Object.keys(o); vals = Object.values(o); }
+    else if (line.length && !/["{\[\r]/.test(line)) { keys = null; vals = csvRow(line); }
+    else { ids[li] = 0; raw.push(line); continue; }
+    const types = vals.map(typeOf);
     const sig = JSON.stringify([keys, types]);
     let id = shapes.get(sig);
-    if (id === undefined) { id = shapes.size + 1; shapes.set(sig, id); shapeKeys.push(keys); shapeTypes.push(types); rows.push(keys.map(() => [])); }
+    if (id === undefined) { id = shapes.size + 1; shapes.set(sig, id); shapeTypes.push(types); rows.push(vals.map(() => [])); }
     ids[li] = id;
     const cols = rows[id - 1];
     for (let c = 0; c < vals.length; c++) cols[c].push(vals[c]);
@@ -162,19 +171,20 @@ export function encodeBlock(lines: string[], endsWithNewline: boolean): Buffer {
 export function decodeBlock(payload: Buffer): { lines: string[]; endsWithNewline: boolean } {
   const r = new R(payload);
   const n = r.uv(), endsWithNewline = r.byte() === 1;
-  const sigs: [string[], Ty[]][] = [];
+  const sigs: [string[] | null, Ty[]][] = [];
   for (let i = r.uv(); i > 0; i--) sigs.push(JSON.parse(r.str()));
   const ids = new Array<number>(n), count = new Array<number>(sigs.length + 1).fill(0);
   for (let i = 0; i < n; i++) { ids[i] = r.uv(); count[ids[i]]++; }
   const raw: string[] = [];
   for (let i = 0; i < count[0]; i++) raw.push(r.str());
-  const cols: unknown[][][] = sigs.map(([keys], s) => keys.map(() => readColumn(r, count[s + 1])));
+  const cols: unknown[][][] = sigs.map(([, types], s) => types.map(() => readColumn(r, count[s + 1])));
   const at = new Array<number>(sigs.length + 1).fill(0);
   const lines = new Array<string>(n);
   for (let i = 0; i < n; i++) {
     const id = ids[i], j = at[id]++;
     if (id === 0) { lines[i] = raw[j]; continue; }
     const keys = sigs[id - 1][0], c = cols[id - 1];
+    if (!keys) { const f = new Array<unknown>(c.length); for (let k = 0; k < c.length; k++) f[k] = c[k][j]; lines[i] = f.join(','); continue; }
     const o: Record<string, unknown> = {};
     for (let k = 0; k < keys.length; k++) o[keys[k]] = c[k][j];
     lines[i] = JSON.stringify(o);

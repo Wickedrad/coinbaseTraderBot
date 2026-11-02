@@ -41,3 +41,8 @@ test('mdc file: recordingLines reads it like the gzip, and recordingFiles prefer
   capRecordings(dir, 2);
   assert.ok(!fs.existsSync(mdc));
 });
+
+test('mdc block: CSV rows (candles, funding) round trip, odd fields kept', () => {
+  const csv = ['ts,o,h,l,c,v', '1500000000000,4261.48,4261.48,4261.48,4261.48,1.775183', '1500000060000,4261.5,4280,4261.48,4270.01,0', '1500000120000,01.50,,x,-0,1e-7', 'a,"b,c",d', '1500000180000,4270.01,4271,4269,4270,12.5'];
+  assert.deepEqual(decodeBlock(encodeBlock(csv, true)).lines, csv);
+});
