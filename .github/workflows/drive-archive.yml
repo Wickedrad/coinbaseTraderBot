@@ -31,6 +31,10 @@ on:
         description: 'Copy a day again even if Drive already has it (true/false)'
         required: false
         default: 'false'
+      history:
+        description: 'Also mirror the server''s raw market history (bot/data/history -> raw/server-history) and model work (models/archive, models/work -> models/server) to Drive, only files Drive lacks (true/false; the schedule does it on Sundays)'
+        required: false
+        default: 'false'
 
 permissions:
   contents: read
@@ -131,9 +135,31 @@ jobs:
           done
           rclone copy "$RUNNER_TEMP/paper" "$DRIVE_ROOT/paper"
           echo "paper state: $(ls "$S" | wc -l) file(s)"
+      - name: Mirror the raw history and the model work (Sundays, or history=true)
+        if: ${{ github.event_name == 'schedule' || inputs.history == 'true' }}
+        env:
+          HIST: ${{ inputs.history || 'false' }}
+        run: |
+          set -euo pipefail
+          [ "$HIST" = true ] || [ "$(date -u +%u)" = 7 ] || { echo "not Sunday: skipped"; exit 0; }
+          mirror() { # <server dir under ~/bot/data> <Drive path>
+            local src=$1 dst=$2 L="$RUNNER_TEMP/m-$(echo "$1" | tr / -)"
+            ssh -n bot "cd ~/bot/data/$src 2>/dev/null && find . -type f -printf '%P\t%s\n'" | sort > "$L.server" || { echo "$src: not on the server"; return 0; }
+            rclone lsf -R --files-only --format ps --separator $'\t' "$DRIVE_ROOT/$dst" 2>/dev/null | sort > "$L.drive" || true
+            comm -23 "$L.server" "$L.drive" | cut -f1 > "$L.todo"
+            echo "$src: $(wc -l < "$L.server") file(s) on the server, $(wc -l < "$L.todo") new or changed"
+            [ -s "$L.todo" ] || return 0
+            mkdir -p "$RUNNER_TEMP/m/$src"
+            rsync -a --bwlimit=8000 --rsync-path="nice -n 19 rsync" --files-from="$L.todo" "bot:bot/data/$src/" "$RUNNER_TEMP/m/$src/" || [ $? -eq 24 ]
+            rclone copy "$RUNNER_TEMP/m/$src" "$DRIVE_ROOT/$dst" --transfers 8
+            rm -rf "$RUNNER_TEMP/m/$src"
+          }
+          mirror history raw/server-history
+          mirror models/archive models/server/archive
+          mirror models/work models/server/work
       - name: Drive totals
         if: always()
         run: |
           [ -f ~/.config/rclone/rclone.conf ] || exit 0
-          for p in recordings audit paper; do echo "$p: $(rclone size "$DRIVE_ROOT/$p" 2>/dev/null | tr '\n' ' ')"; done
+          for p in recordings audit paper raw simulated models lab-copies; do echo "$p: $(rclone size "$DRIVE_ROOT/$p" 2>/dev/null | tr '\n' ' ')"; done
           rclone about gdrive: 2>/dev/null | head -4 || true

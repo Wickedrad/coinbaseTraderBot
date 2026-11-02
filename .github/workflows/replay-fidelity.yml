@@ -176,7 +176,7 @@ jobs:
           key: fidelity-data-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Keep the copy on Drive for reruns (from_drive)
         if: inputs.reuse_run == '' && inputs.from_drive != 'false'
-        run: bash deploy/drive_lab.sh put "lab-copies/replay-fidelity/$GITHUB_RUN_ID" data "$RUNNER_TEMP/from-drive.txt"
+        run: bash deploy/drive_lab.sh put "lab-copies/replay-fidelity/$GITHUB_RUN_ID" data --exclude-from "$RUNNER_TEMP/from-drive.txt"
 
   backtest:
     needs: pick
