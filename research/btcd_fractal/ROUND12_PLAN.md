@@ -1,4 +1,4 @@
-# Round 12: head-and-shoulders timing (pre-registered 2026-11-02 17:33 UTC / 12:33 PM EST)
+# Round 12: head-and-shoulders timing (pre-registered 2026-11-02 17:27 UTC / 12:27 PM EST)
 
 Steven (17:21 UTC / 12:21 PM EST): "look at the head and shoulders on BTC.D from 2024-25 to now as well as an inverse
 head and shoulders around the same time on USDT.D, both of which the right shoulder is still in play; it may help with
