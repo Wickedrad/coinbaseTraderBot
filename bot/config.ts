@@ -55,6 +55,58 @@ export interface RiskLimits {
   maxConsecutiveOrderErrors: number;
 }
 
+/** Steven's settlement rule and the loser exits that enforce it (bot/strategy/fairValueStrategy.ts decide). */
+export interface LoserExitConfig {
+  /** FV_ENTRY_GATE (on): a crypto entry is taken only when the spot fair value of the side bought (the contract priced off the
+   *  index, before the model, the SNN, the TA and the rules) is at least its cost with the fee plus FV_ENTRY_GATE_MARGIN. */
+  gate: boolean;
+  /** FV_ENTRY_GATE_MARGIN (0.06 a contract, the lab's best of 0, 3, 6, 9 and 12 cents). */
+  gateMargin: number;
+  /** FV_ENTRY_GATE_QUOTE_MARGIN (0.12 a contract; 8 recorded days Oct 25 to Nov 2: the gate alone +$338, with this cushion
+   *  and hourly entries until 420 s before the close +$961, today's rules +$59): the margin a resting maker quote that opens
+   *  or adds to a position needs. A quote fills later than it is placed, mostly when the price has moved through it, so it
+   *  needs a wider cushion than a taker entry, which fills at the price the gate saw. An empty value = FV_ENTRY_GATE_MARGIN. */
+  gateQuoteMargin?: number;
+  /** TRAINING_GATE_MARGIN (unset: a training trade takes the margin of its order type, the gate's for a taker one and the
+   *  quote margin for a resting one): the gate's margin for training trades alone. Under TRAINING_MODE=maker the 12c quote
+   *  cushion let no training trade through on the recorded days, so the maker mode is judged with its own margin. */
+  trainMargin?: number;
+  /** GATED_STAKE_MULT (1 = off): an entry or maker quote that passes the gate (fair value known, gate on) is sized this many
+   *  times its count, so a $10-$20 order becomes $20-$40 at 2. Sizing lab Nov 2 (shared book depth, gate + 3c cut): x2 made
+   *  +$13.43/h against +$8.08/h on Oct 24-28 and +$1.22/h against -$0.10/h on Oct 29-Nov 1; it loses on thin days and never
+   *  applies to ungated entries (x2 there lost $5-8/h more) or training trades. Same in paper and live. */
+  gatedStakeMult?: number;
+  /** LOSER_CUT (off: it lost on 6 of 8 recorded days next to the gate; studied for the condition under which it wins): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
+   *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
+  cut: boolean;
+  /** LOSER_CUT_MARGIN (0.03 a contract; the lab: 3c beat 5, 8 and 12c, and waiting 10-30 s lost). */
+  cutMargin: number;
+  /** LOSER_WINDOW_CUT (off: it lost on most of the 8 recorded days; studied for its winning condition): inside the last share of the window (STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC) or the final
+   *  STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC, a position not in profit after fees is sold at the bid (Steven's rule); only a
+   *  position in profit rides to settlement. Tennis: its last share of the match (TENNIS_NO_EXIT_BEFORE_END_FRAC). */
+  window: boolean;
+  /** LOSER_WINDOW_JUDGE (bid): how the window cut tells a loser it sells. bid: not in profit after fees at the bid (as first
+   *  built). fair: that, and the spot fair value of the side under the bid less the taker fee a contract (selling beats
+   *  holding: a bid that has fallen under fair value near the close is not hit). cost: that, and the spot fair value of the
+   *  side under its cost with the entry fee (in profit judged by the coin's price instead of a thin closing bid). */
+  windowJudge: 'bid' | 'fair' | 'cost';
+  /** LOSER_WINDOW_MODE (bid): how the window cut sells. bid: an immediate-or-cancel sale into the bid (as first built: on
+   *  the 8 recorded days Oct 25 to Nov 2 it sold 250-310 s before the close into bids at about half the spot fair value,
+   *  and the bid came back above the settlement value on every day). rest: the sale rests post-only at the spot fair
+   *  value of the side (never below the bid plus a tick), sized to the position, in the held side's quote slot; from
+   *  LOSER_WINDOW_REST_FINAL_SEC before the close, or with no fair value, it sells into the bid as `bid` does. */
+  windowMode: 'bid' | 'rest';
+  /** LOSER_WINDOW_REST_FINAL_SEC (60): the resting window cut's last chance; inside it the position is sold into the bid. */
+  windowRestFinalSec: number;
+  /** LOSER_WINDOW_SHARE (0: off): the window cut also runs once this share of the contract's window is left, when that is
+   *  earlier than the last share (STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC), while the books are still deep. */
+  windowShare: number;
+  /** LOSER_NO_ENTRY_SHARE (0: off): no new risk (entries, quotes that add, fill-model crosses, training trades) once this
+   *  share of the contract's window is left, nor anywhere the loser window cut runs: a position opened there is under water
+   *  by the spread and fees at once, and the window cut would sell it straight back into a thin closing bid. */
+  noEntryShare: number;
+}
+
 export interface StrategyConfig {
   style: StrategyStyle;
   /** Series to trade, e.g. KXBTC15M (with seriesAuto: the fallback list). */
@@ -125,10 +177,11 @@ export interface StrategyConfig {
    *  6 min of an hourly one) a position in profit after fees rides to settlement, no exit selling it (Steven's rule, Oct 29); a
    *  position that is not in profit keeps its exits until STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC. */
   noExitBeforeCloseFrac: number;
-  /** STRATEGY_SHARE_WINDOW_MAX_SEC (3600; 0 = no cap): the window that last share measures is open to close, at most this long
-   *  (shareWindowSec). Kalshi lists the hourly and daily ladders and the range brackets hours or a day before they close, and the
-   *  bot trades them in their last hour: measured on the listing, their "last 10%" covered the whole entry window, so every
-   *  winner rode to settlement from the moment it was bought (Nov 1 replays: winners held from entry, exits idle). */
+  /** STRATEGY_SHARE_WINDOW_MAX_SEC (3600; 0 = no cap): the window the share rules measure (that last share, LOSER_WINDOW_SHARE,
+   *  LOSER_NO_ENTRY_SHARE) is open to close, at most this long (shareWindowSec). Kalshi lists the hourly and daily ladders and
+   *  the range brackets hours or a day before they close, and the bot trades them in their last hour: measured on the listing,
+   *  their "last 10%" covered the whole entry window, so every winner rode to settlement and the loser window cut sold every
+   *  new buy straight back into the bid (Nov 1 replay: window cut sales on average 1,828 s before the close). */
   shareWindowMaxSec: number;
   /** PACER (Steven's spec, Oct 29 23:35 UTC): the hourly quota pacer (bot/risk/quotaPacer.ts). A 24-hour profit clock anchored
    *  to 10:00 AM New York time at PACER_HOURLY_USD (4.50) an hour; the strategy sells a position at once (the "quota snipe") when
@@ -139,6 +192,10 @@ export interface StrategyConfig {
    *  window a position in profit rides to settlement instead, and a hunted position is never held for settlement
    *  (HUNT_LOCK_SALE_ELSE=exit). */
   pacer: PacerConfig;
+  /** Steven's settlement rule (Oct 31: nothing rides to settlement unless it is in the last share of its window and in profit)
+   *  and the sizing lab's loser exits (section L, Oct 31), the same in paper and live. Unset: off (views and tests built
+   *  outside the loader). */
+  loserExits?: LoserExitConfig;
   /** PROFIT_MANDATE (off by default; Steven's first wording, Oct 29 23:22 UTC): outside that final share of the window a position
    *  whose side bid net of the exit fee clears its entry cost (entry fee in) by PROFIT_MANDATE_MIN is sold at the bid whatever the
    *  exit policy or the model says, a hunt trailing its stop excepted. On, a penny of profit sells before the pacer's threshold is
@@ -196,9 +253,16 @@ export interface StrategyConfig {
   exploreRate: number;
   exploreBand: number;
   exploreMaxPerHour: number;
-  /** Paper only: guaranteed 1-contract training trades per hour on the side the model favours, taken when
-   *  nothing qualifies on edge, so the bot always produces trades to learn from and to watch (0 = off). */
-  paperTrainTrades: number;
+  /** TRAINING_TRADES_PER_HOUR (12; the old paper-only PAPER_TRAINING_TRADES_PER_HOUR is no longer read): training
+   *  trades an hour on the side the model favours, taken when nothing qualifies on edge, so the bot keeps producing
+   *  trades to learn from (0 = off). Steven's pick on Oct 31 (sizing thread): back on, in paper and live alike, each
+   *  sized at the order band's minimum ($10) and screened by the fair value gate (FV_ENTRY_GATE) like every entry. */
+  trainTrades: number;
+  /** TRAINING_MODE (taker): how a training trade is placed. taker: bought at the touch, immediate-or-cancel (as built Oct 31;
+   *  on the 8 recorded days Oct 25 to Nov 2 they lost about $1 a trade, mostly the spread and the taker fee). maker: the
+   *  same side rests post-only at its own touch (the YES bid, or the NO bid via the YES ask), for orderTtlSec, screened by
+   *  the gate's quote margin (FV_ENTRY_GATE_QUOTE_MARGIN) as any resting quote that opens a position. */
+  trainMode: 'taker' | 'maker';
   /** Markets with no position and no resting order are fully re-evaluated at most every idleEvalSec
    *  (1 s otherwise): most of the bot's CPU is the per-second evaluation of markets it is not in. */
   idleEvalSec: number;
@@ -1139,14 +1203,29 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     evalFvMove: num(env, 'STRATEGY_EVAL_FV_MOVE', 0.015, 0.001, 0.2),
     repriceSec: num(env, 'STRATEGY_REPRICE_SEC', 10, 5, 600),
     minEvalIntervalSec: num(env, 'STRATEGY_MIN_EVAL_INTERVAL_SEC', 10, 0, 120),
-    // No new entries in a 15-minute contract's last 5 minutes or an hourly one's last 10: time to sell before the final minute.
+    // No new entries in a 15-minute contract's last 5 minutes or an hourly one's last 7 (8 recorded days: 420 s beat 600 s on both regimes): time to sell before the final minute.
     entryWindowUpdown: window(env, 'ENTRY_WINDOW_15M', relaxed ? [840, 300] : [900, 15]),
-    entryWindowHourly: window(env, 'ENTRY_WINDOW_HOURLY', relaxed ? [3300, 600] : [3600, 15]),
+    entryWindowHourly: window(env, 'ENTRY_WINDOW_HOURLY', relaxed ? [3300, 420] : [3600, 15]),
     hourlyMidBand: band(env, 'HOURLY_MID_BAND', [0.1, 0.9]),
     noExitBeforeCloseSec: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC', relaxed ? 60 : 0, 0, 600),
     noExitBeforeCloseFrac: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC', 0.10, 0, 0.9),
     shareWindowMaxSec: num(env, 'STRATEGY_SHARE_WINDOW_MAX_SEC', 3600, 0, 7 * 86_400),
     pacer: pacerConfig(env),
+    loserExits: {
+      gate: bool(env, 'FV_ENTRY_GATE', true),
+      gateMargin: num(env, 'FV_ENTRY_GATE_MARGIN', 0.06, 0, 0.5),
+      ...(env.FV_ENTRY_GATE_QUOTE_MARGIN !== '' ? { gateQuoteMargin: num(env, 'FV_ENTRY_GATE_QUOTE_MARGIN', 0.12, 0, 0.5) } : {}),
+      ...(env.TRAINING_GATE_MARGIN !== undefined && env.TRAINING_GATE_MARGIN !== '' ? { trainMargin: num(env, 'TRAINING_GATE_MARGIN', 0.06, 0, 0.5) } : {}),
+      cut: bool(env, 'LOSER_CUT', false),
+      cutMargin: num(env, 'LOSER_CUT_MARGIN', 0.03, 0, 0.5),
+      window: bool(env, 'LOSER_WINDOW_CUT', false),
+      windowJudge: oneOf(env, 'LOSER_WINDOW_JUDGE', 'bid', ['bid', 'fair', 'cost'] as const),
+      windowMode: oneOf(env, 'LOSER_WINDOW_MODE', 'bid', ['bid', 'rest'] as const),
+      windowRestFinalSec: num(env, 'LOSER_WINDOW_REST_FINAL_SEC', 60, 0, 3600),
+      windowShare: num(env, 'LOSER_WINDOW_SHARE', 0, 0, 0.9),
+      noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
+      gatedStakeMult: num(env, 'GATED_STAKE_MULT', 1, 1, 5),
+    },
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),
     // Maker discount for the measured adverse move a minute after a fill: at least 1.5c, up to 3c.
@@ -1173,7 +1252,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     exploreRate: num(env, 'PAPER_EXPLORE_RATE', 0.1, 0, 1),
     exploreBand: num(env, 'PAPER_EXPLORE_BAND', 0.02, 0, 0.1),
     exploreMaxPerHour: num(env, 'PAPER_EXPLORE_MAX_PER_HOUR', 6, 0, 120),
-    paperTrainTrades: num(env, 'PAPER_TRAINING_TRADES_PER_HOUR', 0, 0, 120),
+    trainTrades: num(env, 'TRAINING_TRADES_PER_HOUR', 12, 0, 120),
+    trainMode: oneOf(env, 'TRAINING_MODE', 'taker', ['taker', 'maker'] as const),
     idleEvalSec: num(env, 'EVAL_IDLE_SEC', 5, 0, 60),
     outsidePriceFallback: bool(env, 'PAPER_OUTSIDE_PRICE_FALLBACK', false),
     adversarialBoost: bool(env, 'ADVERSARIAL_BOOST', true),

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig, type StrategyConfig } from '../bot/config';
-import { DEFAULT_FEES } from '../bot/fees';
-import { decide, MarketView, shareWindowSec, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
+import { DEFAULT_FEES, orderFee } from '../bot/fees';
+import { decide, MarketView, shareWindowSec, trainingCount, trainingOrder, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
 import { ProfitPeaks } from '../bot/strategy/profitPeaks';
 
 // Continuous cadence + Kelly sizing (the pre-relaxed behaviour these tests pin down).
@@ -438,6 +438,19 @@ test('exit curve rest mode: a NO position rests a YES bid at 1 - target, and the
   assert.equal(out.place.find((p) => p.side === 'bid' && p.purpose === 'exit')!.count, 6);
 });
 
+test('trainingCount: a training trade buys the order band\'s minimum with fees, within the band and the contract cap', () => {
+  const band = { min: 10, max: 20 };
+  // 60c plus the 1.68c taker fee a contract: 16.21 contracts reach $10 (contracts in 0.01 steps, as the strategy sizes).
+  assert.equal(trainingCount(0.6, { orderBandUsd: band, maxContracts: 1000, fees: DEFAULT_FEES }), 16.21);
+  // Cheap sides take many contracts, never past the contract cap.
+  assert.equal(trainingCount(0.05, { orderBandUsd: band, maxContracts: 100, fees: DEFAULT_FEES }), 100);
+  // A fixed order size wins over the band and is a cap: $20 at 60c with the fee rounded up on the whole order stays <= $20.
+  const n = trainingCount(0.6, { fixedOrderUsd: 20, orderBandUsd: band, maxContracts: 1000, fees: DEFAULT_FEES });
+  assert.ok(n > 32 && n * 0.6 + orderFee(n, 0.6, true) <= 20 + 1e-9, `${n}`);
+  // No size at all keeps the old single contract.
+  assert.equal(trainingCount(0.5, { maxContracts: 1000, fees: DEFAULT_FEES }), 1);
+});
+
 test('share window: the last share of the window is measured on at most the last hour, not on the whole listing', () => {
   const t0 = Date.parse('2026-10-30T12:00:00Z');
   const min = 60_000;
@@ -455,4 +468,16 @@ test('share window: the last share of the window is measured on at most the last
   // The default cap is one hour, and the env key moves it.
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.shareWindowMaxSec, 3600);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_SHARE_WINDOW_MAX_SEC: '1800' }).strategy.shareWindowMaxSec, 1800);
+});
+
+test('trainingOrder (TRAINING_MODE): taker crosses at the touch; maker rests post-only at the side\'s own touch', () => {
+  // YES favoured, book 0.48 / 0.52.
+  assert.deepEqual(trainingOrder(true, 0.48, 0.52, 10, 0.03, 'taker', 2000, 'train: YES'),
+    { side: 'bid', price: 0.52, count: 10, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge: 0.03, why: 'train: YES' });
+  const yes = trainingOrder(true, 0.48, 0.52, 10, 0.07, 'maker', 2000, 'train: YES');
+  assert.deepEqual([yes.side, yes.price, yes.timeInForce, yes.postOnly, yes.expirationTime, yes.why], ['bid', 0.48, 'good_till_canceled', true, 2000, 'train: YES (maker at 0.48)']);
+  // NO favoured: the taker sells YES at the bid (NO at 0.52); the maker rests the YES ask (NO at 0.48).
+  assert.deepEqual([trainingOrder(false, 0.48, 0.52, 10, 0, 'taker', 2000, 'x').side, trainingOrder(false, 0.48, 0.52, 10, 0, 'taker', 2000, 'x').price], ['ask', 0.48]);
+  const no = trainingOrder(false, 0.48, 0.52, 10, 0, 'maker', 2000, 'train: NO');
+  assert.deepEqual([no.side, no.price, no.postOnly, no.why], ['ask', 0.52, true, 'train: NO (maker at 0.48)']);
 });
