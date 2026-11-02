@@ -119,3 +119,34 @@ Halvings: 2012-11-28, 2016-07-09, 2020-05-11, 2024-04-20 (next assumed 2028-04-1
 - numpy / pandas / numba / matplotlib are on the runner; `hmmlearn` and `ripser` are pip-installable there; anything
   else must have a numpy fallback. No network access inside a module.
 - Never use the future: see rule 1. Reviewers will look for it specifically.
+
+## Addendum (2026-11-02 09:40 UTC): the baselines through the shared harness change the bar
+
+`study8_baselines.py` (weekly, out of sample 2019-2026, expanding window, refit every 13 weeks, labels withheld
+until known; 20 shifted-target nulls in the smoke test, 200 in the full run):
+
+| Model (no selection, long-window fit) | P(5+ pt fall in 26w) AUC | P(10+ pt fall in 26w) AUC | 13-week direction IC / hit | Today |
+| --- | --- | --- | --- | --- |
+| Five fixed signals: usdtd_vsma30w, ethbtc_fromhi52w, btc_dd_ath, btcusd_ret13w, m2_yoy | 0.92 (null p95 0.61) | 0.89 | 0.38 / 62% | 3.9% / 0.06% / +0.03 |
+| M2 y/y alone | 0.84 | 0.90 | 0.43 / 49% | 32% / 14% / -0.07 |
+| All 58 harness features (ridge/logistic, no selection) | 0.35 | 0.03 | -0.01 | |
+| Readiness rule (BTC within 5% of ATH and M2 y/y > 0), 52 weeks on | precision 54% on / 22% off | 29% on / 3.6% off | | off |
+
+So: round 7's failure was its rapid-fire SELECTION (greedy over 23 signals, validated on the last 3 years), not the
+signals. A long-window fit of a few liquidity + BTC signals forecasts well; throwing in everything destroys it
+(58 features, ~140 training weeks at the first refit). The direction model works too when kept to those signals.
+The strongest single forecaster of an alt season in this data is M2 growth; today it says 32% within 26 weeks,
+while BTC's 37% drawdown from its high pulls the combined model down to 4%.
+
+Single-signal direction ICs out of sample (ridge on one feature, sign learned in the training window): the most
+INVERTED signals are total3_ret13w -0.43, total3_ret26w -0.42, total3_vsma30w -0.39, spx_fromhi52w -0.38,
+ethbtc_fromhi52w -0.37: their learned sign (2016-18: alt momentum then BTC.D up, mean reversion) is wrong after
+2019 (alt momentum then BTC.D down, continuation). That sign switch is exactly what a Markov-switching regression
+should capture, and what a plain fit must not be trusted with. Best: m2_yoy +0.43, btc_dd_ath +0.23.
+
+Implications for the trials: (1) every model must report the five-signal logistic as its comparator, not round 7;
+(2) the question for regime models is whether a regime variable ADDS to M2 + BTC drawdown (incremental AUC/IC,
+and calibration via Brier), and whether it fixes the sign-switching signals; (3) multi-scale and hazard models
+must show something the weekly fixed model cannot: a duration distribution, a transfer across scales, or a
+calibrated hazard that moves inside a cycle rather than once per cycle (M2 moves once per cycle, so the pooled AUC
+over 2019-2026 rests on about two liquidity swings; say so, and test within-era).
