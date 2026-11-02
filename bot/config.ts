@@ -80,6 +80,14 @@ export interface LoserExitConfig {
    *  holding: a bid that has fallen under fair value near the close is not hit). cost: that, and the spot fair value of the
    *  side under its cost with the entry fee (in profit judged by the coin's price instead of a thin closing bid). */
   windowJudge: 'bid' | 'fair' | 'cost';
+  /** LOSER_WINDOW_MODE (bid): how the window cut sells. bid: an immediate-or-cancel sale into the bid (as first built: on
+   *  the 8 recorded days Oct 25 to Nov 2 it sold 250-310 s before the close into bids at about half the spot fair value,
+   *  and the bid came back above the settlement value on every day). rest: the sale rests post-only at the spot fair
+   *  value of the side (never below the bid plus a tick), sized to the position, in the held side's quote slot; from
+   *  LOSER_WINDOW_REST_FINAL_SEC before the close, or with no fair value, it sells into the bid as `bid` does. */
+  windowMode: 'bid' | 'rest';
+  /** LOSER_WINDOW_REST_FINAL_SEC (60): the resting window cut's last chance; inside it the position is sold into the bid. */
+  windowRestFinalSec: number;
   /** LOSER_WINDOW_SHARE (0: off): the window cut also runs once this share of the contract's window is left, when that is
    *  earlier than the last share (STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC), while the books are still deep. */
   windowShare: number;
@@ -1189,6 +1197,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       cutMargin: num(env, 'LOSER_CUT_MARGIN', 0.03, 0, 0.5),
       window: bool(env, 'LOSER_WINDOW_CUT', false),
       windowJudge: oneOf(env, 'LOSER_WINDOW_JUDGE', 'bid', ['bid', 'fair', 'cost'] as const),
+      windowMode: oneOf(env, 'LOSER_WINDOW_MODE', 'bid', ['bid', 'rest'] as const),
+      windowRestFinalSec: num(env, 'LOSER_WINDOW_REST_FINAL_SEC', 60, 0, 3600),
       windowShare: num(env, 'LOSER_WINDOW_SHARE', 0, 0, 0.9),
       noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
     },
