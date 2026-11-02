@@ -26,10 +26,10 @@ const long = (o: Partial<MarketView> = {}) => view({ position: 10, entrySidePric
 const ioc = (out: StrategyOutput) => out.place.filter((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
 
 test('loser rules: gate 6c + 12c quote cushion on by default, cut and window cut off (8 recorded days), each by its flag', () => {
-  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, window: false, windowJudge: 'bid', windowShare: 0, noEntryShare: 0 });
+  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, window: false, windowJudge: 'bid', windowMode: 'bid', windowRestFinalSec: 60, windowShare: 0, noEntryShare: 0 });
   const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE: 'false', LOSER_CUT: 'true', LOSER_WINDOW_CUT: 'true', FV_ENTRY_GATE_MARGIN: '0.09', LOSER_CUT_MARGIN: '0.05',
-    FV_ENTRY_GATE_QUOTE_MARGIN: '', LOSER_WINDOW_JUDGE: 'cost', LOSER_WINDOW_SHARE: '0.25', LOSER_NO_ENTRY_SHARE: '0.2' }).strategy;
-  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, window: true, windowJudge: 'cost', windowShare: 0.25, noEntryShare: 0.2 });
+    FV_ENTRY_GATE_QUOTE_MARGIN: '', LOSER_WINDOW_JUDGE: 'cost', LOSER_WINDOW_MODE: 'rest', LOSER_WINDOW_REST_FINAL_SEC: '90', LOSER_WINDOW_SHARE: '0.25', LOSER_NO_ENTRY_SHARE: '0.2' }).strategy;
+  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, window: true, windowJudge: 'cost', windowMode: 'rest', windowRestFinalSec: 90, windowShare: 0.25, noEntryShare: 0.2 });
 });
 
 test('loser window cut: in the last share of the window or the final minute a position not in profit is sold at the bid; one in profit rides', () => {
@@ -220,4 +220,34 @@ test('shareWindowSec: the share rules measure a contract\'s own hour, not a ladd
   const at = (maxSec: number) => inLoserWindow({ settleShare: false, exitWindowOpen: true, tauSec: 1800, windowSec: shareWindowSec(close - 20 * 3_600_000, close, maxSec) }, L);
   assert.equal(at(3600), false);
   assert.equal(at(0), true);
+});
+
+test('loser window rest (LOSER_WINDOW_MODE=rest): the window cut rests at the spot fair value of the side until the final seconds, then sells into the bid', () => {
+  const rest: StrategyConfig = { ...cfg, loserExits: { ...cfg.loserExits!, windowMode: 'rest' } };
+  const gtc = (out: StrategyOutput) => out.place.filter((p) => p.purpose === 'exit' && p.timeInForce === 'good_till_canceled');
+  // Long 10 YES at 0.55 + fee, bid 0.50, fair value 0.57, 300 s to the close in the last share: a post-only ask for all 10 at 0.57.
+  const r = decide(long({ settleShare: true, tauSec: 300, pFair: 0.57 }), rest);
+  assert.equal(ioc(r).length, 0);
+  assert.deepEqual(gtc(r).map((p) => [p.side, p.price, p.count, p.postOnly, p.reduceOnly, p.expirationTime]), [['ask', 0.57, 10, true, false, 1399]]);
+  assert.match(gtc(r)[0]!.why, /^loser window rest: -0\.\d\d net after fees on 10 at bid 0\.50, sell rests at 0\.57 \(fair value 0\.570\), 300 s to the close/);
+  assert.ok(r.notes.some((n) => n.startsWith('loser window rest')));
+  // Fair value at or under the bid: the sell rests a tick over the bid, never in it.
+  assert.equal(gtc(decide(long({ settleShare: true, tauSec: 300, pFair: 0.45 }), rest))[0]?.price, 0.51);
+  // The final 60 s (LOSER_WINDOW_REST_FINAL_SEC): sold into the bid as the bid mode does; so is a position with no fair value.
+  assert.match(ioc(decide(long({ settleShare: true, tauSec: 50, pFair: 0.57 }), rest))[0]?.why ?? '', /^loser window cut: /);
+  assert.match(ioc(decide(long({ settleShare: true, tauSec: 300 }), rest))[0]?.why ?? '', /^loser window cut: /);
+  assert.match(ioc(decide(long({ settleShare: true, tauSec: 80, pFair: 0.57 }), { ...rest, loserExits: { ...rest.loserExits!, windowRestFinalSec: 90 } }))[0]?.why ?? '', /^loser window cut: /);
+  // In profit after fees: it rides, nothing rests.
+  const ride = decide(long({ settleShare: true, tauSec: 300, pFair: 0.57, bestBid: { price: 0.7, size: 20 } }), rest);
+  assert.equal(gtc(ride).length + ioc(ride).length, 0);
+  // The NO side: 10 NO at 0.40 + fee, NO bid 0.35 (YES ask 0.65), NO fair value 0.42: the buy-back rests at YES 0.58 (= 1 - 0.42).
+  const no = gtc(decide(view({ position: -10, entrySidePrice: 0.4, entryFeePerContract: 0.0175, bestBid: { price: 0.6, size: 20 }, bestAsk: { price: 0.65, size: 20 }, settleShare: true, tauSec: 300, pFair: 0.58 }), rest))[0];
+  assert.deepEqual([no?.side, no?.price, no?.count], ['bid', 0.58, 10]);
+  assert.match(no!.why, /on 10 NO at bid 0\.35, sell rests at 0\.42 \(fair value 0\.420\)/);
+  // A style that never quotes sells into the bid instead (the rest needs the quote slot).
+  assert.match(ioc(decide(long({ settleShare: true, tauSec: 300, pFair: 0.57 }), { ...rest, style: 'taker' }))[0]?.why ?? '', /^loser window cut: /);
+  // The rest replaces any resting ask already in the slot at another price.
+  const re = decide(long({ settleShare: true, tauSec: 300, pFair: 0.57, restingAsk: { clientOrderId: 'a1', price: 0.62, remaining: 10 } }), rest);
+  assert.deepEqual(re.cancel.map((c) => c.clientOrderId), ['a1']);
+  assert.equal(gtc(re)[0]?.price, 0.57);
 });

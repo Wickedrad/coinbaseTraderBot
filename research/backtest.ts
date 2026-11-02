@@ -1033,8 +1033,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
 
       for (const p of plan.place) {
         if (opts.tradeFromMs !== undefined && st.now < opts.tradeFromMs) break;
-        if (p.purpose === 'exit') {
-          // Queue for next tick, like every other exit (a take-profit keeps its name: its fills feed the bench).
+        if (p.purpose === 'exit' && !(p.timeInForce === 'good_till_canceled' && p.why.startsWith('loser window rest'))) {
+          // Queue for next tick, like every other exit (a take-profit keeps its name: its fills feed the bench). The resting
+          // window cut (LOSER_WINDOW_MODE=rest) instead rests on the exchange below, post-only, as the engine rests it.
           if (!pending.has(m.ticker)) pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: p.why.startsWith('take-profit') ? 'tp' : p.why.startsWith('quota snipe (floor)') ? 'floor' : p.why.startsWith('quota snipe') ? 'snipe' : p.why.startsWith('loser window cut') ? 'wcut' : p.why.startsWith('loser cut') ? 'cut' : 'fv' });
           continue;
         }
@@ -1072,7 +1073,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           continue;
         }
         if (/^(train|explore)/.test(p.why)) res.paper!.extraSent = (res.paper!.extraSent ?? 0) + 1;
-        const clientOrderId = `${m.ticker}-${st.now}-${p.side}-${p.purpose}${p.why.startsWith('take-profit') ? '-tp' : p.why.startsWith('confluence ratchet wall ask') ? '-wall' : ''}`;
+        const clientOrderId = `${m.ticker}-${st.now}-${p.side}-${p.purpose}${p.why.startsWith('take-profit') ? '-tp' : p.why.startsWith('confluence ratchet wall ask') ? '-wall' : p.why.startsWith('loser window rest') ? '-wrest' : ''}`;
         if (p.why.startsWith('train:')) trainIds.add(clientOrderId);
         await send(m.ticker, 'order', async () => {
           try {

@@ -212,6 +212,21 @@ export function loserExit(v: MarketView, cfg: Pick<StrategyConfig, 'loserExits'>
     const sells = judge === 'bid' || fvSide === undefined ? true : judge === 'fair' ? fvSide < sideBid - fee - 1e-9 : fvSide < cost - 1e-9;
     const fair = judge === 'bid' || fvSide === undefined ? '' : judge === 'fair' ? `, fair value ${fvSide.toFixed(3)} < bid less fee ${(sideBid - fee).toFixed(3)}` : `, fair value ${fvSide.toFixed(3)} < cost ${cost.toFixed(3)}`;
     if (sells) why = `loser window cut: ${net.toFixed(2)} net after fees on ${held} at bid ${sideBid.toFixed(2)}${fair}, ${Math.round(v.tauSec)} s to the close (only a position in profit rides to settlement)`;
+    // LOSER_WINDOW_MODE=rest: until the final seconds the sale rests at the spot fair value of the side (never below the
+    // bid plus a tick), the whole position, post-only, in the held side's quote slot (decide puts it there; the engine and
+    // the backtester requote it as they do the exit curve's sell). Inside LOSER_WINDOW_REST_FINAL_SEC it sells into the bid.
+    if (sells && L.windowMode === 'rest' && fvSide !== undefined && v.tauSec > (L.windowRestFinalSec ?? 60) && v.tickSize > 0) {
+      const all = round(Math.abs(v.position), 2);
+      const tick = v.tickSize;
+      const restWhy = (px: number) => `loser window rest: ${net.toFixed(2)} net after fees on ${held} at bid ${sideBid.toFixed(2)}, sell rests at ${px.toFixed(2)} (fair value ${fvSide.toFixed(3)}), ${Math.round(v.tauSec)} s to the close`;
+      if (long) {
+        const ap = Math.min(round(1 - tick, 4), Math.max(ceilToTick(fvSide, tick), round(top.price + tick, 4)));
+        return { side: 'ask', price: ap, count: all, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'exit', expirationTime: v.closeSec - 1, edge: ap - fvSide, why: restWhy(ap) };
+      }
+      // Short: the NO side's fair value is fvSide; the buy-back rests at the YES price 1 - fvSide, never above the ask less a tick.
+      const bp = Math.max(tick, Math.min(floorToTick(1 - fvSide, tick), round(top.price - tick, 4)));
+      return { side: 'bid', price: bp, count: all, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'exit', expirationTime: v.closeSec - 1, edge: fvSide - (1 - bp), why: restWhy(round(1 - bp, 4)) };
+    }
   }
   if (!why && L.cut && fvSide !== undefined && fvSide < sideBid - fee - L.cutMargin - 1e-9) {
     why = `loser cut: fair value ${fvSide.toFixed(3)} < bid ${sideBid.toFixed(2)} - fee ${fee.toFixed(3)} - ${L.cutMargin}, ${net.toFixed(2)} net after fees on ${held}`;
@@ -346,9 +361,16 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   // The final minute and the last share of the window (settleShare) hold a position in profit after fees; under the loser exits
   // (cfg.loserExits, Steven's rule of Oct 31) one that is not is sold, and the loser cut sells one the index has turned on.
   const riding = ridesToSettlement(v);
-  const cut = loserExit(v, cfg);
-  if (cut) out.place.push(cut);
-  const exitWindow = v.exitWindowOpen !== false && !riding && !cut;
+  // A resting window cut (LOSER_WINDOW_MODE=rest) needs the quote slots: a style that never quotes, or a one-sided book,
+  // sells into the bid instead.
+  const canRest = (cfg.style === 'maker' || cfg.style === 'both') && bid && ask;
+  const cut0 = loserExit(v, cfg);
+  const cut = cut0 && cut0.timeInForce === 'good_till_canceled' && !canRest ? loserExit(v, { loserExits: { ...cfg.loserExits!, windowMode: 'bid' } }) : cut0;
+  const restCut = cut && cut.timeInForce === 'good_till_canceled' ? cut : undefined;
+  const iocCut = cut && !restCut ? cut : undefined;
+  if (iocCut) out.place.push(iocCut);
+  if (restCut) out.notes.push(restCut.why);
+  const exitWindow = v.exitWindowOpen !== false && !riding && !iocCut;
   if (v.exitWindowOpen === false && v.position !== 0 && !cut) out.notes.push('final minute: riding to settlement');
   if (riding) out.notes.push('final share of the window, in profit after fees: riding to settlement');
   const exits = opts.exits !== false && exitWindow;
@@ -555,6 +577,11 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   if (opts.blockReductions) {
     if (v.position > 0) desiredAsk = undefined;
     if (v.position < 0) desiredBid = undefined;
+  }
+  // The resting window cut (LOSER_WINDOW_MODE=rest) takes the held side's quote slot over the exit curve's sell and the
+  // hunt's wall ask (a loser exit outranks the hunt, as its bid sale does): nothing not in profit rides to settlement.
+  if (restCut && quoting && v.position !== 0 && !out.place.some((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel')) {
+    if (v.position > 0) { desiredAsk = restCut; restSide = 'ask'; } else { desiredBid = restCut; restSide = 'bid'; }
   }
   // Hunt mode's sell-wall ask (HUNT_WALL_ASK, bot/strategy/exitPolicies.ts): the hunted position's sell rests at the sell
   // wall's price (joined behind it, post-only, sized to the position) in the held side's quote slot, the one reduction a hunt
