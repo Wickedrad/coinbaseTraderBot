@@ -33,7 +33,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: history-twin
+  # A re-verdict (minutes, no data) never waits behind a build (hours).
+  group: history-twin-${{ inputs.reverdict_run || 'build' }}
   cancel-in-progress: false
 
 env:
