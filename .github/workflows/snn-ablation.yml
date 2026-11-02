@@ -68,6 +68,10 @@ on:
         description: 'One-off: an Actions cache key of Kalshi history (e.g. kalshi-history-2026-01-01-2026-09-30) to copy to Drive raw/kalshi-history; nothing else runs'
         required: false
         default: ''
+      drive_backfill_range:
+        description: 'One-off: FROM..TO (YYYY-MM-DD..YYYY-MM-DD) of Kalshi day files to copy from the server to Drive raw/kalshi-history (needs the server copy slot); nothing else runs'
+        required: false
+        default: ''
       fidelity_cache:
         description: 'quote-lag only: an Actions cache key saved by Replay fidelity on main (e.g. fidelity-data-41351064742-1); its recorded days are used and the server is not read'
         required: false
@@ -84,7 +88,7 @@ concurrency:
 jobs:
   # Every mechanism in one job (a dispatch with an empty "only"; hours).
   ablate:
-    if: inputs.only == '' && inputs.from_run == '' && inputs.hist_from == '' && inputs.drive_backfill_cache == ''
+    if: inputs.only == '' && inputs.from_run == '' && inputs.hist_from == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
@@ -173,7 +177,7 @@ jobs:
 
   # One mechanism: its baseline and candidate replay on two runners at once (each ~2-3 h), then one judge.
   quote-lag:
-    if: inputs.only == 'quote-lag' && inputs.hist_from == '' && inputs.drive_backfill_cache == ''
+    if: inputs.only == 'quote-lag' && inputs.hist_from == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
@@ -274,7 +278,7 @@ jobs:
           if-no-files-found: ignore
 
   side:
-    if: inputs.only != '' && inputs.only != 'quote-lag' && inputs.from_run == '' && inputs.hist_from == '' && inputs.drive_backfill_cache == ''
+    if: inputs.only != '' && inputs.only != 'quote-lag' && inputs.from_run == '' && inputs.hist_from == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
@@ -546,7 +550,7 @@ jobs:
 
   # One-off (Steven, Nov 2: all history on Drive): an existing Kalshi history cache to Drive raw/kalshi-history.
   drive-backfill:
-    if: inputs.drive_backfill_cache != ''
+    if: inputs.drive_backfill_cache != '' || inputs.drive_backfill_range != ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 60
@@ -556,10 +560,36 @@ jobs:
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
       - uses: actions/cache/restore@v4
+        if: inputs.drive_backfill_cache != ''
         with:
           path: ${{ runner.temp }}/hist/history/kalshi
           key: ${{ inputs.drive_backfill_cache }}
           fail-on-cache-miss: true
+      - name: SSH to the server (drive_backfill_range)
+        if: inputs.drive_backfill_range != ''
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER_NAME: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          PORT: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
+          printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
+          ssh bot true && echo "connected"
+      - name: Kalshi day files from the server, those Drive lacks (read-only, throttled, one copy at a time)
+        if: inputs.drive_backfill_range != ''
+        env:
+          RANGE: ${{ inputs.drive_backfill_range }}
+        run: |
+          set -euo pipefail
+          [[ "$RANGE" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})\.\.([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] || { echo "range must be YYYY-MM-DD..YYYY-MM-DD"; exit 1; }
+          A=${BASH_REMATCH[1]} B=${BASH_REMATCH[2]}
+          K="$RUNNER_TEMP/hist/history/kalshi"; mkdir -p "$K"
+          python3 -c 'import sys,datetime as d; a=d.date.fromisoformat(sys.argv[1]); b=d.date.fromisoformat(sys.argv[2]); n=(b-a).days+3; [print("/KX*/%s.jsonl" % (a+d.timedelta(days=i-1)).isoformat()) for i in range(n)]' "$A" "$B" > "$RUNNER_TEMP/kdays.txt"
+          rclone copy gdrive:kalshi-bot-archive/raw/kalshi-history "$K/" --include-from "$RUNNER_TEMP/kdays.txt" --transfers 8 || true
+          echo "already on Drive: $(find "$K" -type f | wc -l) day file(s)"
+          rsync -a --ignore-existing --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --include='/KX*/' --include-from="$RUNNER_TEMP/kdays.txt" --exclude='*' --prune-empty-dirs bot:bot/data/history/kalshi/ "$K/"
       - run: |
           K="$RUNNER_TEMP/hist/history/kalshi"
           echo "cache: $(find "$K" -type f | wc -l) file(s), $(du -sh "$K" | cut -f1)"
