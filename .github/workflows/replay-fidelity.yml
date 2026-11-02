@@ -27,9 +27,13 @@ on:
         required: false
         default: '3'
       reuse_run:
-        description: 'Replay the days an earlier run copied (its run id; its cache is kept 7 days unused): no server copy at all'
+        description: 'Replay the days an earlier run copied (its run id; kept on Drive, or in a cache 7 days unused): no server copy at all'
         required: false
         default: ''
+      from_drive:
+        description: 'Google Drive instead of the server and Actions caches (true/false): archived days come from Drive, and the copy is kept on Drive (lab-copies/replay-fidelity/<run id>) for reuse_run from any branch'
+        required: false
+        default: 'true'
 
 permissions:
   contents: read
@@ -44,8 +48,8 @@ jobs:
     environment: production
     timeout-minutes: 90
     outputs:
-      files: ${{ steps.pick.outputs.files }}
-      fit: ${{ steps.pick.outputs.fit }}
+      files: ${{ steps.copy.outputs.files || steps.pick.outputs.files }}
+      fit: ${{ steps.copy.outputs.fit || steps.pick.outputs.fit }}
       key: ${{ steps.pick.outputs.key }}
     env:
       DAYS: ${{ inputs.days || '4' }}
@@ -62,7 +66,15 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
           printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
           ssh bot true && echo "connected"
+      - uses: actions/checkout@v5
+        if: inputs.from_drive != 'false'
+      - name: Drive setup (from_drive)
+        if: inputs.from_drive != 'false'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
       - name: The earlier run's days (reuse_run)
+        id: reuse_cache
         if: inputs.reuse_run != ''
         uses: actions/cache/restore@v4
         with:
@@ -71,7 +83,32 @@ jobs:
             data/fit
             data/models
           key: fidelity-data-${{ inputs.reuse_run }}-1
-          fail-on-cache-miss: true
+          fail-on-cache-miss: ${{ inputs.from_drive == 'false' }}
+      - name: The earlier run's days from Drive (reuse_run, from_drive)
+        id: reuse_drive
+        if: inputs.reuse_run != '' && inputs.from_drive != 'false' && steps.reuse_cache.outputs.cache-hit != 'true'
+        env:
+          REUSE: ${{ inputs.reuse_run }}
+        run: |
+          set -euo pipefail
+          [[ "$REUSE" =~ ^[0-9]+$ ]] || { echo "reuse_run must be a run id"; exit 1; }
+          bash deploy/drive_lab.sh get "lab-copies/replay-fidelity/$REUSE" data || { echo "::error::no copy of run $REUSE on Drive or in the cache"; exit 1; }
+          for dir in recordings fit; do
+            for f in $(cat "data/$dir.txt" 2>/dev/null); do
+              d=$(echo "$f" | sed -nE 's/^md-([0-9-]{10})\.jsonl(\.gz)?$/\1/p')
+              ls data/$dir/md-$d.jsonl* >/dev/null 2>&1 || bash deploy/drive_lab.sh recording "$d" "data/$dir"
+            done
+          done
+          echo "restored from Drive: $(ls data/recordings | wc -l) day(s), $(ls data/fit 2>/dev/null | wc -l) fit day(s)"
+      - name: Hand the Drive copy to this run's backtest jobs (reuse_run, from_drive)
+        if: steps.reuse_drive.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/recordings
+            data/fit
+            data/models
+          key: fidelity-data-${{ inputs.reuse_run }}-1
       - name: Pick the days
         id: pick
         env:
@@ -98,24 +135,37 @@ jobs:
           echo "fit=$FIT" >> "$GITHUB_OUTPUT"
           echo "days: $FILES | depth fitted on: $FIT"
       - name: Copy the days and the models once, capped at 8 MB/s (read-only, so the server is never burdened)
+        id: copy
         if: inputs.reuse_run == ''
         env:
           FILES: ${{ steps.pick.outputs.files }}
           FIT: ${{ steps.pick.outputs.fit }}
+          FROM_DRIVE: ${{ inputs.from_drive || 'true' }}
         run: |
           set -euo pipefail
           DATA="$GITHUB_WORKSPACE/data"; mkdir -p "$DATA/recordings" "$DATA/fit" "$DATA/models"
-          printf '%s\n' $FILES > "$RUNNER_TEMP/recordings.txt"
-          rsync -a --bwlimit=8000 --rsync-path="nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/recordings.txt" bot:bot/data/recordings/ "$DATA/recordings/"
-          if [ -n "$FIT" ]; then
-            printf '%s\n' $FIT > "$RUNNER_TEMP/fit.txt"
-            rsync -a --bwlimit=8000 --rsync-path="nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/fit.txt" bot:bot/data/recordings/ "$DATA/fit/"
-          fi
+          # Archived days from Drive (from_drive), the rest from the server.
+          : > "$RUNNER_TEMP/recordings.txt"; : > "$RUNNER_TEMP/fit.txt"; : > "$RUNNER_TEMP/from-drive.txt"
+          for pair in "recordings:$FILES" "fit:$FIT"; do
+            dir=${pair%%:*}
+            for f in ${pair#*:}; do
+              d=$(echo "$f" | sed -nE 's/^md-([0-9-]{10})\.jsonl(\.gz)?$/\1/p')
+              if [ "$FROM_DRIVE" != false ] && grep -qx "$d" "$RUNNER_TEMP/drive-days.txt" && bash deploy/drive_lab.sh recording "$d" "$DATA/$dir"; then
+                echo "/$dir/md-$d.jsonl.gz" >> "$RUNNER_TEMP/from-drive.txt"; echo "$d ($dir): from Drive"
+              else echo "$f" >> "$RUNNER_TEMP/$dir.txt"; fi
+            done
+          done
+          [ ! -s "$RUNNER_TEMP/recordings.txt" ] || rsync -a --bwlimit=8000 --rsync-path="nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/recordings.txt" bot:bot/data/recordings/ "$DATA/recordings/"
+          [ ! -s "$RUNNER_TEMP/fit.txt" ] || rsync -a --bwlimit=8000 --rsync-path="nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/fit.txt" bot:bot/data/recordings/ "$DATA/fit/"
+          echo "files=$(ls -1 "$DATA/recordings" | sort | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+          echo "fit=$(ls -1 "$DATA/fit" | sort | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+          ls -1 "$DATA/recordings" > "$DATA/recordings.txt"; ls -1 "$DATA/fit" > "$DATA/fit.txt"
           for f in model.json vol_model.json fill_model.json; do rsync -a --bwlimit=8000 --rsync-path="nice -n 19 rsync" "bot:bot/data/models/$f" "$DATA/models/" 2>/dev/null || echo "$f: not on the server"; done
           [ -f "$DATA/models/model.json" ] || { echo "no decision model on the server yet"; exit 1; }
           echo "copied $(ls "$DATA/recordings" | wc -l) recording file(s), $(ls "$DATA/fit" | wc -l) fit day(s), $(du -sm "$DATA" | cut -f1) MB"
       # Shared with this run's backtest runners through the Actions cache (never an artifact: no recordings leave the
       # server's and runners' disks), so the server is read once a run instead of once a runner.
+      # Hands the copy to this run's backtest jobs (a cache inside one run); reruns read the Drive copy below.
       - uses: actions/cache/save@v4
         if: inputs.reuse_run == ''
         with:
@@ -124,6 +174,9 @@ jobs:
             data/fit
             data/models
           key: fidelity-data-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Keep the copy on Drive for reruns (from_drive)
+        if: inputs.reuse_run == '' && inputs.from_drive != 'false'
+        run: bash deploy/drive_lab.sh put "lab-copies/replay-fidelity/$GITHUB_RUN_ID" data "$RUNNER_TEMP/from-drive.txt"
 
   backtest:
     needs: pick

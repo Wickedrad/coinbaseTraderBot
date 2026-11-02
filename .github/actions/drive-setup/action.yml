@@ -1,0 +1,20 @@
+name: Drive setup
+description: Installs rclone with the Drive archive's token (remote "gdrive", scope drive.file) and lists the archived days in $RUNNER_TEMP/drive-days.txt
+inputs:
+  rclone_conf:
+    description: The RCLONE_CONF secret
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        RCLONE_CONF: ${{ inputs.rclone_conf }}
+      run: |
+        set -euo pipefail
+        if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF secret is not set (see drive-archive.yml)"; exit 1; fi
+        command -v rclone >/dev/null || sudo apt-get install -y -qq rclone >/dev/null
+        mkdir -p ~/.config/rclone
+        printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
+        bash deploy/drive_lab.sh days > "$RUNNER_TEMP/drive-days.txt"
+        echo "Drive has $(wc -l < "$RUNNER_TEMP/drive-days.txt") archived day(s): $(paste -sd, "$RUNNER_TEMP/drive-days.txt")"
