@@ -1033,7 +1033,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       }
       if (qlh) {
         qlh.record(m.ticker, st.now, fv.pYes, mid);
-        const n = qlh.apply(plan, m.ticker, st.now, view.position);
+        const n = qlh.apply(plan, m.ticker, st.now, view.position, { bid: view.restingBid, ask: view.restingAsk });
         if (n) { qlhHeld += n; qlhMarkets.add(m.ticker); }
       }
       // FV_ENTRY_GATE on the finished plan, as the engine: the fill model's crosses and paper's training trades open positions too.
@@ -1098,7 +1098,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   res.takerThin = ex.takerStats;
   res.vaultEnd = vault?.vaultTotal ?? 0;
   res.pocketEnd = vault?.pocketTotal ?? 0;
-  if (qlh) { const q = qlh.stats; console.log(`quote-lag hold: ${qlhHeld} orders held, ${qlhMarkets.size} markets | evals ${q.evals}, with gap ${q.withGap}, max |gap| ${(q.maxAbsGap * 100).toFixed(1)}c, triggered ${q.triggered}, plan entries while triggered: against ${q.againstEntries}, favoured ${q.favouredEntries}`); }
+  if (qlh) { const q = qlh.stats; console.log(`quote-lag hold: ${qlhHeld} orders held, ${qlhMarkets.size} markets | evals ${q.evals}, with gap ${q.withGap}, max |gap| ${(q.maxAbsGap * 100).toFixed(1)}c, triggered ${q.triggered}, plan entries while triggered: against ${q.againstEntries}, favoured ${q.favouredEntries}, resting quotes pulled ${q.restingCancelled}`); }
   return res;
 }
 

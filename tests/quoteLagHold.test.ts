@@ -39,3 +39,13 @@ test('no sample about a window ago -> no hold', () => {
   h.record('T', 0, 0.5, 0.5); h.record('T', 30_000, 0.7, 0.5);
   assert.equal(h.against('T', 30_000), undefined);
 });
+
+test('cancelResting pulls a resting quote on the against side only', () => {
+  const h = new QuoteLagHold({ theta: 0.1, windowSec: 10, maxSec: 60, cancelResting: true });
+  h.record('M', 0, 0.40, 0.40);
+  h.record('M', 10_000, 0.55, 0.41); // fair up 15c, mid lags: against = NO (resting ask)
+  const plan = { place: [], cancel: [], notes: [] } as any;
+  const rq = (id: string) => ({ clientOrderId: id, price: 0.5, remaining: 5 }) as any;
+  h.apply(plan, 'M', 10_000, 0, { bid: rq('b'), ask: rq('a') });
+  assert.deepEqual(plan.cancel.map((c: any) => c.clientOrderId), ['a']);
+});

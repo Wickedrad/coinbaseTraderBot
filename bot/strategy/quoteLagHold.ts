@@ -8,9 +8,12 @@
  * costs ~1.2c). Recorded days to Nov 1, 3 s latency + 1c slip: theta 10c, w 10 s, H 60 s saved 3.5c [2.5, 4.6] a
  * contract; placebo (no gap) 0.0c. Same code in paper and live.
  */
-import type { StrategyOutput } from './fairValueStrategy';
+import type { RestingQuote, StrategyOutput } from './fairValueStrategy';
 
-export interface QuoteLagHoldConfig { theta: number; windowSec: number; maxSec: number }
+/** cancelResting (QUOTE_LAG_HOLD_CANCEL): also pull a resting maker quote that buys the against side while the hold runs.
+ *  The edge-driven plan never places a new against-side entry (d29-hold3: 623 triggers, 0 against entries), but a quote
+ *  placed before the move still rests there: the adverse-selection case (fidelity: real markout ~1c worse than the sim). */
+export interface QuoteLagHoldConfig { theta: number; windowSec: number; maxSec: number; cancelResting?: boolean }
 
 interface Sample { t: number; fair: number; mid: number }
 
@@ -18,7 +21,7 @@ export class QuoteLagHold {
   private hist = new Map<string, Sample[]>();
   private since = new Map<string, { side: 'yes' | 'no'; t: number }>();
   /** Diagnostics: evaluations seen, with a gap reading, with the hold triggered, and entries on each side while triggered. */
-  readonly stats = { evals: 0, withGap: 0, triggered: 0, againstEntries: 0, favouredEntries: 0, maxAbsGap: 0 };
+  readonly stats = { evals: 0, withGap: 0, triggered: 0, againstEntries: 0, favouredEntries: 0, maxAbsGap: 0, restingCancelled: 0 };
   constructor(readonly cfg: QuoteLagHoldConfig) {}
 
   /** Record one evaluation's fair value and quote mid for a market. */
@@ -51,7 +54,7 @@ export class QuoteLagHold {
   }
 
   /** Drop the plan's orders that open or add to the side the gap is against, within maxSec of the hold starting. */
-  apply(plan: StrategyOutput, ticker: string, t: number, position: number): number {
+  apply(plan: StrategyOutput, ticker: string, t: number, position: number, resting?: { bid?: RestingQuote; ask?: RestingQuote }): number {
     this.stats.evals++;
     const g = this.gap(ticker, t);
     if (g) { this.stats.withGap++; this.stats.maxAbsGap = Math.max(this.stats.maxAbsGap, Math.abs(g.gap)); }
@@ -64,6 +67,14 @@ export class QuoteLagHold {
     let s = this.since.get(ticker);
     if (!s || s.side !== side) this.since.set(ticker, (s = { side, t }));
     if (t - s.t >= this.cfg.maxSec * 1000) return 0; // waited long enough: let it through until the gap clears
+    if (this.cfg.cancelResting && resting) {
+      const q = side === 'yes' ? resting.bid : resting.ask; // a resting bid buys YES, a resting ask buys NO
+      const reduces = side === 'yes' ? position < 0 : position > 0;
+      if (q && q.remaining > 0 && !reduces && !plan.cancel.some((c) => c.clientOrderId === q.clientOrderId)) {
+        plan.cancel.push({ clientOrderId: q.clientOrderId, reason: `quote lag hold: pull the resting ${side.toUpperCase()} quote (the quote lags fair value)` });
+        this.stats.restingCancelled++;
+      }
+    }
     const before = plan.place.length;
     plan.place = plan.place.filter((p) => {
       if (p.reduceOnly || p.purpose === 'exit' || !(p.count > 0)) return true;

@@ -2367,7 +2367,7 @@ export class Engine {
     if (qlh) {
       if (!this.quoteLagHold || this.quoteLagHold.cfg !== qlh) this.quoteLagHold = new QuoteLagHold(qlh);
       this.quoteLagHold.record(m.ticker, now, fv.pYes, mid);
-      this.quoteLagHold.apply(plan, m.ticker, now, view.position);
+      this.quoteLagHold.apply(plan, m.ticker, now, view.position, { bid: view.restingBid, ask: view.restingAsk });
     }
     // FV_ENTRY_GATE on the finished plan: the fill model's crosses and paper's training trades open positions too.
     applyFvGate(plan, fv.pYes, view.position, view.fees, S, loserNoEntry(view, S));
