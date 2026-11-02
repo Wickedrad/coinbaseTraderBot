@@ -191,6 +191,13 @@ jobs:
           echo "[twin] features from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
           node --import tsx research/historyTwin.ts --stage features --dirs real=$T/real,requote=$T/requote,depth=$T/depth,lag=$T/lag,lagdepth=$T/lagdepth --days "$DAYS" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]'
           du -sh $T/* | cat
+      # The judged part alone (paired mechanics + per-contract features, small) for the verdict on a push.
+      - name: Keep the judged features
+        run: mkdir -p data/twinlite && cp data/twin/paired.json data/twin/features-*.json data/twinlite/ && du -sh data/twinlite | cat
+      - uses: actions/cache/save@v4
+        with:
+          path: data/twinlite
+          key: history-twin-lite-${{ github.run_id }}
       # Only a dispatch runs the backtests that read it (a push builds and judges alone: nothing big is cached).
       - uses: actions/cache/save@v4
         if: github.event_name == 'workflow_dispatch'
@@ -293,11 +300,21 @@ jobs:
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
       - uses: actions/cache/restore@v4
+        if: github.event_name == 'workflow_dispatch'
         with:
           path: |
             data/twin
           key: history-twin-${{ github.run_id }}
           fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          path: data/twinlite
+          key: history-twin-lite-${{ github.run_id }}
+          fail-on-cache-miss: true
+      - name: The judged features in place (push)
+        if: github.event_name != 'workflow_dispatch'
+        run: mkdir -p data/twin && cp data/twinlite/* data/twin/
       - uses: actions/download-artifact@v4
         with:
           pattern: twin-*
