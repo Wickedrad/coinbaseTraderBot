@@ -61,16 +61,17 @@ export interface LoserExitConfig {
   gate: boolean;
   /** FV_ENTRY_GATE_MARGIN (0.06 a contract, the lab's best of 0, 3, 6, 9 and 12 cents). */
   gateMargin: number;
-  /** FV_ENTRY_GATE_QUOTE_MARGIN (unset = FV_ENTRY_GATE_MARGIN): the margin a resting maker quote that opens or adds to a
-   *  position needs. A quote fills later than it is placed, mostly when the price has moved through it, so it can need a
-   *  wider cushion than a taker entry, which fills at the price the gate saw. */
+  /** FV_ENTRY_GATE_QUOTE_MARGIN (0.12 a contract; 8 recorded days Oct 25 to Nov 2: the gate alone +$338, with this cushion
+   *  and hourly entries until 420 s before the close +$961, today's rules +$59): the margin a resting maker quote that opens
+   *  or adds to a position needs. A quote fills later than it is placed, mostly when the price has moved through it, so it
+   *  needs a wider cushion than a taker entry, which fills at the price the gate saw. An empty value = FV_ENTRY_GATE_MARGIN. */
   gateQuoteMargin?: number;
-  /** LOSER_CUT (on): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
+  /** LOSER_CUT (off: it lost on 6 of 8 recorded days next to the gate; studied for the condition under which it wins): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
    *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
   cut: boolean;
   /** LOSER_CUT_MARGIN (0.03 a contract; the lab: 3c beat 5, 8 and 12c, and waiting 10-30 s lost). */
   cutMargin: number;
-  /** LOSER_WINDOW_CUT (on): inside the last share of the window (STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC) or the final
+  /** LOSER_WINDOW_CUT (off: it lost on most of the 8 recorded days; studied for its winning condition): inside the last share of the window (STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC) or the final
    *  STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC, a position not in profit after fees is sold at the bid (Steven's rule); only a
    *  position in profit rides to settlement. Tennis: its last share of the match (TENNIS_NO_EXIT_BEFORE_END_FRAC). */
   window: boolean;
@@ -1172,9 +1173,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     evalFvMove: num(env, 'STRATEGY_EVAL_FV_MOVE', 0.015, 0.001, 0.2),
     repriceSec: num(env, 'STRATEGY_REPRICE_SEC', 10, 5, 600),
     minEvalIntervalSec: num(env, 'STRATEGY_MIN_EVAL_INTERVAL_SEC', 10, 0, 120),
-    // No new entries in a 15-minute contract's last 5 minutes or an hourly one's last 10: time to sell before the final minute.
+    // No new entries in a 15-minute contract's last 5 minutes or an hourly one's last 7 (8 recorded days: 420 s beat 600 s on both regimes): time to sell before the final minute.
     entryWindowUpdown: window(env, 'ENTRY_WINDOW_15M', relaxed ? [840, 300] : [900, 15]),
-    entryWindowHourly: window(env, 'ENTRY_WINDOW_HOURLY', relaxed ? [3300, 600] : [3600, 15]),
+    entryWindowHourly: window(env, 'ENTRY_WINDOW_HOURLY', relaxed ? [3300, 420] : [3600, 15]),
     hourlyMidBand: band(env, 'HOURLY_MID_BAND', [0.1, 0.9]),
     noExitBeforeCloseSec: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC', relaxed ? 60 : 0, 0, 600),
     noExitBeforeCloseFrac: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC', 0.10, 0, 0.9),
@@ -1183,10 +1184,10 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     loserExits: {
       gate: bool(env, 'FV_ENTRY_GATE', true),
       gateMargin: num(env, 'FV_ENTRY_GATE_MARGIN', 0.06, 0, 0.5),
-      ...(env.FV_ENTRY_GATE_QUOTE_MARGIN !== undefined && env.FV_ENTRY_GATE_QUOTE_MARGIN !== '' ? { gateQuoteMargin: num(env, 'FV_ENTRY_GATE_QUOTE_MARGIN', 0.06, 0, 0.5) } : {}),
-      cut: bool(env, 'LOSER_CUT', true),
+      ...(env.FV_ENTRY_GATE_QUOTE_MARGIN !== '' ? { gateQuoteMargin: num(env, 'FV_ENTRY_GATE_QUOTE_MARGIN', 0.12, 0, 0.5) } : {}),
+      cut: bool(env, 'LOSER_CUT', false),
       cutMargin: num(env, 'LOSER_CUT_MARGIN', 0.03, 0, 0.5),
-      window: bool(env, 'LOSER_WINDOW_CUT', true),
+      window: bool(env, 'LOSER_WINDOW_CUT', false),
       windowJudge: oneOf(env, 'LOSER_WINDOW_JUDGE', 'bid', ['bid', 'fair', 'cost'] as const),
       windowShare: num(env, 'LOSER_WINDOW_SHARE', 0, 0, 0.9),
       noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
