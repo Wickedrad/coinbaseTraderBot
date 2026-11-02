@@ -60,6 +60,7 @@ import { macro } from './macro/macroService';
 import { gatePasses, probation } from './risk/probation';
 import { DEFAULT_STREAK, StreakScaler } from './risk/streakScaler';
 import { applyTakeGate } from './model/takeModel';
+import { applyTaVeto } from './model/taVeto';
 import { effectiveSigma, type VolProfile } from './model/volSeasonality';
 import { floorCount } from './util/num';
 import { evThresholds } from './sizing/kelly';
@@ -2270,6 +2271,8 @@ export class Engine {
     if (snipe) { huntPlan = undefined; this.d.audit.write('pacer', { event: 'snipe', ticker: m.ticker, why: snipe.why, count: snipe.count, price: snipe.price, ...this.pacer.status(now) }); }
     // The MLP decides whether each entry is worth taking (take/skip head, once validated).
     if (S.takeGate === 'validated') applyTakeGate(plan, model.params.take, { pYes, features, tauSec, bid: bid.price, ask: ask.price, pStd: pred.std, margin: S.takeMargin, fees: md.feesFor(m.ticker) });
+    // The TA rework's contrarian veto (job 6): skip entries the order flow, confluence or a busy tape already chased.
+    applyTaVeto(plan, S.taVeto, features);
     // Quote, cross or skip each maker entry by expected value (fill model, once validated).
     const fillCtx = { q: st.q ?? pYes, book, tick: m.tickSize, tauSec, sigma: vol.sigmaPerSqrtSec, features, minEv: S.fillMinEv, takerMinEdge: strat.takerBuffer + strat.minEdge, fees: md.feesFor(m.ticker) };
     applyFillModel(plan, this.d.fillModel, fillCtx);
