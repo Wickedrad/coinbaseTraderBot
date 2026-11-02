@@ -204,6 +204,25 @@ jobs:
         with:
           path: data/twinlite
           key: history-twin-lite-${{ github.run_id }}
+      # Steven (Nov 2): all history on Drive, raw and simulated. The simulated side of this run (the deep-history twin's
+      # books and fills, the depth/lag fill-ins, the public history and its replay, the models and the judged
+      # features) goes to simulated/history-twin/<run id>; the real days are already on Drive (recordings/).
+      - name: Drive setup
+        if: always() && steps.days.outcome == 'success'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Keep the simulated twin on Drive
+        if: always() && steps.days.outcome == 'success'
+        run: |
+          set -euo pipefail
+          S="$RUNNER_TEMP/sim"; rm -rf "$S"; mkdir -p "$S"
+          for d in requote depth lag lagdepth; do [ -d data/twin/$d ] && ln -s "$GITHUB_WORKSPACE/data/twin/$d" "$S/$d"; done
+          [ -d data/twinlite ] && ln -s "$GITHUB_WORKSPACE/data/twinlite" "$S/twinlite"
+          for d in history history-replay history-replay-lag; do [ -d data/$d ] && ln -s "$GITHUB_WORKSPACE/data/$d" "$S/$d"; done
+          [ -d data/models ] && ln -s "$GITHUB_WORKSPACE/data/models" "$S/models"
+          echo "${{ steps.days.outputs.warm }},${{ steps.days.outputs.days }}" > "$S/days.txt"
+          RCLONE_COPY_LINKS=true bash deploy/drive_lab.sh put "simulated/history-twin/${{ github.run_id }}" "$S"
       # Only a dispatch runs the backtests that read it (a push builds and judges alone: nothing big is cached).
       - uses: actions/cache/save@v4
         if: github.event_name == 'workflow_dispatch'
@@ -226,6 +245,7 @@ jobs:
     # backtests run on a dispatch (or once this line is switched), at most three runners at a time.
     if: ${{ inputs.reuse_run != '' }}
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 340
     strategy:
       fail-fast: false
@@ -259,7 +279,18 @@ jobs:
             data/twin
             data/models
           key: history-twin-${{ github.run_id }}
-          fail-on-cache-miss: true
+      - name: Drive setup (the cache was evicted)
+        if: hashFiles('data/models/model.json') == ''
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The twin from Drive
+        if: hashFiles('data/models/model.json') == ''
+        run: |
+          set -euo pipefail
+          case "${{ matrix.how }}" in real|placebo) echo "::error::the real side is only in this run's cache (evicted); rerun the build"; exit 1;; esac
+          bash deploy/drive_lab.sh get "simulated/history-twin/${{ github.run_id }}/${{ matrix.how }}" "data/twin/${{ matrix.how }}"
+          bash deploy/drive_lab.sh get "simulated/history-twin/${{ github.run_id }}/models" data/models
       - name: Backtest ${{ matrix.how }}, part ${{ matrix.part }}
         run: |
           set -euo pipefail
@@ -356,6 +387,7 @@ jobs:
   reverdict:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.reverdict_run != '' }}
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 30
     permissions:
       contents: write
@@ -379,7 +411,18 @@ jobs:
         with:
           path: data/twinlite
           key: history-twin-lite-${{ inputs.reverdict_run }}
-          fail-on-cache-miss: true
+      - name: Drive setup (the cache was evicted)
+        if: hashFiles('data/twinlite/paired.json') == ''
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The judged features from Drive
+        if: hashFiles('data/twinlite/paired.json') == ''
+        env:
+          RUN: ${{ inputs.reverdict_run }}
+        run: |
+          [[ "$RUN" =~ ^[0-9]+$ ]] || { echo "reverdict_run must be a run id"; exit 1; }
+          bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/twinlite || { echo "::error::run $RUN's features are neither cached nor on Drive"; exit 1; }
       - name: Verdict
         run: |
           set -euo pipefail

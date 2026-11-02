@@ -4,6 +4,7 @@
 #   recordings/md-DAY.jsonl.gz, audit/audit-DAY*   the nightly archive (drive-archive.yml)
 #   lab-copies/<workflow>/<run id>/               what a lab run copied besides archived days, for reruns
 #   derived/<name>/                               lab data rebuilt from history (rebuild only after a code change)
+#   simulated/<name>/<run id>/                    simulated history (the history twin's books and fills), raw days stay in recordings/
 #
 #   drive_lab.sh days                          archived days, one per line
 #   drive_lab.sh recording <DAY> <dir>         pull md-DAY.jsonl.gz into <dir> (exit 3 if Drive lacks it)
@@ -13,7 +14,7 @@
 set -euo pipefail
 ROOT=${DRIVE_ROOT:-gdrive:kalshi-bot-archive}
 day() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day: $1" >&2; exit 1; }; }
-name() { [[ "$1" =~ ^(lab-copies|derived)/[A-Za-z0-9._/-]+$ && "$1" != *..* ]] || { echo "bad name: $1" >&2; exit 1; }; }
+name() { [[ "$1" =~ ^(lab-copies|derived|simulated)/[A-Za-z0-9._/-]+$ && "$1" != *..* ]] || { echo "bad name: $1" >&2; exit 1; }; }
 case "${1:-}" in
   days)
     rclone lsf "$ROOT/recordings" --files-only | sed -nE 's/^md-([0-9]{4}-[0-9]{2}-[0-9]{2})\.jsonl\.gz$/\1/p' | sort -u ;;
