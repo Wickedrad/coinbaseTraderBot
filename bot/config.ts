@@ -127,6 +127,11 @@ export interface StrategyConfig {
    *  6 min of an hourly one) a position in profit after fees rides to settlement, no exit selling it (Steven's rule, Oct 29); a
    *  position that is not in profit keeps its exits until STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC. */
   noExitBeforeCloseFrac: number;
+  /** STRATEGY_SHARE_WINDOW_MAX_SEC (3600; 0 = no cap): the window that last share measures is open to close, at most this long
+   *  (shareWindowSec). Kalshi lists the hourly and daily ladders and the range brackets hours or a day before they close, and the
+   *  bot trades them in their last hour: measured on the listing, their "last 10%" covered the whole entry window, so every
+   *  winner rode to settlement from the moment it was bought (Nov 1 replays: winners held from entry, exits idle). */
+  shareWindowMaxSec: number;
   /** PACER (Steven's spec, Oct 29 23:35 UTC): the hourly quota pacer (bot/risk/quotaPacer.ts). A 24-hour profit clock anchored
    *  to 10:00 AM New York time at PACER_HOURLY_USD (4.50) an hour; the strategy sells a position at once (the "quota snipe") when
    *  its net profit after fees, sold at the bid, covers the running slice's goal (PACER_MODE=slices, Steven's non-stacking
@@ -647,7 +652,8 @@ export interface SnnConfig {
   targetScaling: boolean;
   deferred: { wilsonCowan: boolean; gapJunctions: boolean; izhikevichCH: boolean; dcaap: boolean };
   /** SNN_ANCHOR_MID: the contract readouts start from the market's mid and learn the correction (bot/snn/network.ts
-   *  anchorLogit); a new version hash, so the networks start fresh when it flips. */
+   *  anchorLogit). Default on (Steven, Oct 30); crypto network only (params.ts anchorFor). A new version hash, so the
+   *  crypto network starts fresh when it flips. */
   anchorMid: boolean;
   /** Tennis: run three networks live and keep the fittest (population-based training). */
   tennisPopulation: boolean;
@@ -736,6 +742,10 @@ export interface TennisConfig {
    * progress sell at the bid regardless (0 = off). */
   underdogLateProgress: number;
   underdogCutProgress: number;
+  /** Steven's profit rules on tennis (Oct 30): in the last share of the match by its progress (0.30: his "less than 30%"
+   *  for tennis, against the 10% of a crypto contract's window, STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC) a position in profit
+   *  after fees rides to settlement; elsewhere the quota snipe applies as on every contract type. 0 = off. */
+  settleFrac: number;
   /** Tennis MLP (fair P(win) from the 4 signals, score, book and SNN): when validated, entries need
    *  fair - price >= this. */
   fairMinEdge: number;
@@ -889,6 +899,12 @@ function pacerConfig(env: Env): PacerConfig {
     mode: oneOf(env, 'PACER_MODE', 'slices', ['slices', 'cumulative', 'rolling_hour'] as const),
     minTakeUsd,
     maxTargetUsd: Math.max(minTakeUsd, num(env, 'PACER_MAX_TARGET_USD', 6.5, 0, 10_000)),
+    // Steven (Oct 31): under a higher target the quota is the position's stop, not its sale.
+    floor: oneOf(env, 'PACER_FLOOR', 'riding', ['off', 'targets', 'riding'] as const),
+    // Paired replays of Oct 29-30 (Oct 31): a floor armed at the profit just reached sold winners on a one-tick dip. Under
+    // today's other rules a cushion of 8 ticks a contract made $262 and $238 a day more than none (two batches, 5 bankrolls
+    // of 5 each); with the loser exits of PR #230, 16 ticks made $88 a day more than none.
+    floorTicks: num(env, 'PACER_FLOOR_TICKS', 8, 0, 50),
   };
 }
 
@@ -1138,6 +1154,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     hourlyMidBand: band(env, 'HOURLY_MID_BAND', [0.1, 0.9]),
     noExitBeforeCloseSec: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC', relaxed ? 60 : 0, 0, 600),
     noExitBeforeCloseFrac: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC', 0.10, 0, 0.9),
+    shareWindowMaxSec: num(env, 'STRATEGY_SHARE_WINDOW_MAX_SEC', 3600, 0, 7 * 86_400),
     pacer: pacerConfig(env),
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),
@@ -1532,7 +1549,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         };
       })(),
       crossFeed: bool(env, 'SNN_CROSS_FEED', false),
-      anchorMid: bool(env, 'SNN_ANCHOR_MID', false),
+      anchorMid: bool(env, 'SNN_ANCHOR_MID', true),
       deferred: {
         wilsonCowan: bool(env, 'SNN_WILSON_COWAN', false),
         gapJunctions: bool(env, 'SNN_GAP_JUNCTIONS', false),
@@ -1590,6 +1607,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       earlyFullSizeMin: num(env, 'TENNIS_EARLY_FULL_SIZE_MIN', 10, 0, 240),
       underdogLateProgress: num(env, 'TENNIS_UNDERDOG_LATE_PROGRESS', 0.35, 0, 1),
       underdogCutProgress: num(env, 'TENNIS_UNDERDOG_CUT_PROGRESS', 0.6, 0, 1),
+      settleFrac: num(env, 'TENNIS_NO_EXIT_BEFORE_END_FRAC', 0.30, 0, 0.9),
       fairMinEdge: num(env, 'TENNIS_FAIR_MIN_EDGE', 0.01, -0.5, 0.5),
       modelPath: path.resolve(env.TENNIS_MODEL_PATH ?? './params/tennis_model.json'),
     },

@@ -28,6 +28,7 @@ import { contractKind, type MarketKind } from '../bot/model/fairValue';
 import { backtestMain } from './backtest';
 import { fillDayFile, QUOTE_FILLS, type Ev, type QuoteFill } from './goLiveTally';
 import { readDepthModel, type DepthModel } from './history/depthSim';
+import { probeDays, probeStats, type AdversaryOut } from './depthAdversary';
 import { gkVariance, requoteBetween } from './history/historyReplay';
 
 const MIN = 60_000, SLOT = 15_000, DAY = 86_400_000;
@@ -258,11 +259,11 @@ function realDir(rec: string, work: string, meta: FidelityMeta): string {
   return dir;
 }
 
-type Windows = Awaited<ReturnType<typeof backtestMain>>['windows'];
+export type Windows = Awaited<ReturnType<typeof backtestMain>>['windows'];
 
 /** The decision model's backtest on one folder of days, as the pipeline runs it for the decision model
  *  (research/pipeline.ts, mlp): the production exit settings, the vol forecast and the fill model next to the model. */
-async function backtestDir(dir: string, model: string): Promise<Windows> {
+export async function backtestDir(dir: string, model: string, extra: Record<string, string> = {}): Promise<Windows> {
   const cfg = loadConfig(paperEnv(process.env));
   const models = path.dirname(model);
   const opt = (f: string) => (fs.existsSync(path.join(models, f)) ? path.join(models, f) : '');
@@ -270,6 +271,10 @@ async function backtestDir(dir: string, model: string): Promise<Windows> {
     model, exits: cfg.strategy.exitPolicy, 'vol-model': cfg.strategy.volModel ? opt('vol_model.json') : '', 'fill-model': opt('fill_model.json'),
     'hunt-grid': String(cfg.strategy.huntTargetMargin), 'hunt-confluence': String(cfg.strategy.huntMinConfluence),
     'ratchet-fill-grid': String(cfg.strategy.ratchetMinFillRatio), 'ratchet-age': String(cfg.strategy.ratchetMinWallAgeSec), 'ratchet-slip': String(cfg.strategy.ratchetSlippageTicks),
+    // The paper bot's pool is topped back up when it runs dry (bot/training/supervisor.ts): without it a losing replay goes
+    // broke on its first day ($10-$20 orders on a $200 pool) and trades nothing after.
+    refill: String(cfg.paperBankrollUsd),
+    ...extra,
   };
   const t0 = Date.now();
   const { windows: w, result: r } = await backtestMain((k, d) => (k === 'recordings' ? dir : k in fixed ? fixed[k] : d), false);
@@ -277,7 +282,15 @@ async function backtestDir(dir: string, model: string): Promise<Windows> {
   // Why a backtest traded what it did (counts only): the entry evaluations, the orders sent, the fills, and the risk
   // gateway's commonest refusals.
   const refused = Object.entries(r.paper?.rejected ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, n]) => `${k} x${n}`).join('; ');
-  console.log(`[fidelity] ${path.basename(dir)}: ${r.entryEvaluations} entry evaluations, ${r.latency?.sent ?? 0} orders sent, ${r.fills} fills, ${r.contracts} contracts, optimal-f bound ${r.optimalFBound ?? 0}${refused ? ` | refused: ${refused}` : ''}`);
+  console.log(`[fidelity] ${path.basename(dir)}: ${r.entryEvaluations} entry evaluations, ${r.latency?.sent ?? 0} orders sent, ${r.fills} fills, ${r.contracts} contracts, optimal-f bound ${r.optimalFBound ?? 0}, refills ${r.refills?.length ?? 0} ($${(r.refills ?? []).reduce((a, x) => a + x.usd, 0).toFixed(2)})${refused ? ` | refused: ${refused}` : ''}`);
+  // Which windows it traded and when (counts only): a backtest that stops early, or trades only outside the compared days,
+  // shows here.
+  const byHour = Object.entries(r.contractsByHour ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  console.log(`[fidelity] ${path.basename(dir)}: ${r.trades.length} settled positions; traded hours ${byHour.length ? `${byHour[0][0]}h to ${byHour[byHour.length - 1][0]}h` : 'none'} (${byHour.map(([h, n]) => `${h.slice(11)}:${Math.round(n)}`).join(' ')})`);
+  console.log(`[fidelity] ${path.basename(dir)} windows: ${[...w].filter(([, x]) => x.contracts > 0).slice(0, 30).map(([k, x]) => `${Number.isFinite(k) ? new Date(k).toISOString().slice(5, 16) : String(k)} ${Math.round(x.contracts)}ct $${x.pnl.toFixed(2)}`).join('; ')}`);
+  const rej = Object.entries(r.exchangeRejected ?? {}).map(([k, n]) => `${k} x${n}`).join('; ');
+  console.log(`[fidelity] ${path.basename(dir)} at the end: cash $${r.end?.balance.toFixed(2)}, ${r.end?.openPositions} open positions (worst loss $${r.end?.openMaxLoss.toFixed(2)}), ${r.end?.openOrders} resting orders${rej ? ` | exchange refused: ${rej}` : ''}${r.makerMarkout ? ` | maker fills' 60 s markout ${(r.makerMarkout.mean * 100).toFixed(2)}c a contract (${r.makerMarkout.n})` : ''}`);
+  console.log(`[fidelity] ${path.basename(dir)} entry funnel: ${Object.entries(r.funnel ?? {}).map(([k, n]) => `${k} ${n}`).join('; ')}`);
   return w;
 }
 
@@ -334,6 +347,17 @@ export async function replayFidelityMain(argOf: (k: string, d: string) => string
     // The real backtest's runner has no prepare stage, so nothing has made the folder yet.
     fs.mkdirSync(work, { recursive: true });
     writeWindows(path.join(work, parts > 1 ? `windows-${how}-p${part}.json` : `windows-${how}.json`), onDays(w, sliced().days));
+    return undefined;
+  }
+  // The adversary's probes on the real books or a fill-in (research/depthAdversary.ts), on this part's days only.
+  if (stage === 'adversary') {
+    const how = argOf('how', '');
+    if (how !== 'real' && !(QUOTE_FILLS as readonly string[]).includes(how)) throw new Error(`--how must be real or one of ${QUOTE_FILLS.join(', ')}`);
+    const days = sliced().days, t0 = Date.now();
+    const res = await probeDays(dirOf(how), days);
+    fs.mkdirSync(work, { recursive: true });
+    fs.writeFileSync(path.join(work, parts > 1 ? `adversary-${how}-p${part}.json` : `adversary-${how}.json`), JSON.stringify({ how, days: res } satisfies AdversaryOut));
+    console.log(`[fidelity] adversary on ${how} (${elapsed(t0)}): ${probeStats(res).map((x) => `${x.probe} ${x.perHour}/h, markout ${x.markoutC}c, settled ${x.settledC}c (${x.n})`).join(' | ')}`);
     return undefined;
   }
   if (stage === 'compare') {
