@@ -156,10 +156,14 @@ jobs:
           [ -n "$PS" ] || { echo "no parent start: the rebuild failed"; exit 1; }
           [ -f "$D/BTCD_SPLICED_1d.csv" ] || { echo "no spliced series"; exit 1; }
           echo "parent start $PS"
-          python3 research/btcd_fractal/study.py --data $D --out $R/study --series BTCD_SPLICED --parent-start "$PS" 2>&1 | tee $R/study.log | tail -30 | cut -c1-400
-          python3 research/btcd_fractal/study.py --data $D --out $R/study_oldanchor --series BTCD_SPLICED --parent-start 2016-01-01 2>&1 | tee $R/study_oldanchor.log | tail -12 | cut -c1-400
-          python3 research/btcd_fractal/study2.py --data $D --out $R/study2 --series BTCD_SPLICED --parent-start "$PS" 2>&1 | tee $R/study2.log | tail -25 | cut -c1-400
-          python3 research/btcd_fractal/study3.py --data $D --out $R/study3 --series BTCD_SPLICED --parent-start "$PS" 2>&1 | tee $R/study3.log | tail -20 | cut -c1-400
+          # main: CoinMarketCap's canonical dominance end to end (within ~1 pt of TradingView from 2020; no splice step)
+          python3 research/btcd_fractal/study.py --data $D --out $R/study --series BTCD_CMC --parent-start "$PS" 2>&1 | tee $R/study.log | tail -30 | cut -c1-400
+          # control A: the old anchor on the same series (the anchor's own effect)
+          python3 research/btcd_fractal/study.py --data $D --out $R/study_oldanchor --series BTCD_CMC --parent-start 2016-01-01 2>&1 | tee $R/study_oldanchor.log | tail -12 | cut -c1-400
+          # control B: the rebuild before 2018-06, TradingView after (the child on the bot's own series)
+          python3 research/btcd_fractal/study.py --data $D --out $R/study_spliced --series BTCD_SPLICED --parent-start "$PS" 2>&1 | tee $R/study_spliced.log | tail -12 | cut -c1-400
+          python3 research/btcd_fractal/study2.py --data $D --out $R/study2 --series BTCD_CMC --parent-start "$PS" 2>&1 | tee $R/study2.log | tail -25 | cut -c1-400
+          python3 research/btcd_fractal/study3.py --data $D --out $R/study3 --series BTCD_CMC --parent-start "$PS" 2>&1 | tee $R/study3.log | tail -20 | cut -c1-400
       - name: Refresh the forecast object on the latest data (weekly)
         if: ${{ env.ROUND == 'refresh' }}
         run: |
