@@ -171,9 +171,11 @@ export function biasKey(mid: number, msToClose: number): string {
   const m = msToClose / 60_000, ttc = m > 30 ? 0 : m > 10 ? 1 : m > 2 ? 2 : 3;
   return `${band}|${ttc}`;
 }
-export function addBias(map: Map<string, BiasCell>, ticks: Tick[], closeTime: number, step = 5): void {
+/** by 'mid' cuts on the quote's own mid (selection on noise: a noisy-low mid lands in a low band); by 'fair' cuts on the
+ *  coin-implied fair value, which is what a replay that builds quotes from fair needs. */
+export function addBias(map: Map<string, BiasCell>, ticks: Tick[], closeTime: number, step = 5, by: 'mid' | 'fair' = 'mid'): void {
   for (let i = 0; i < ticks.length; i += step) {
-    const x = ticks[i], mid = (x.bid + x.ask) / 2, k = biasKey(mid, closeTime - x.t);
+    const x = ticks[i], mid = (x.bid + x.ask) / 2, k = biasKey(by === 'fair' ? x.fair : mid, closeTime - x.t);
     let c = map.get(k);
     if (!c) { c = { n: 0, sum: 0, sumSq: 0, spread: 0 }; map.set(k, c); }
     const d = mid - x.fair;
@@ -207,7 +209,7 @@ async function main() {
   const st = new ReplayState(), model = MetaModel.identity();
   const ticks = new Map<string, Tick[]>();
   const cells = new Map<string, Cell>(), preds = new Map<string, Pred>();
-  const bias = new Map<string, BiasCell>();
+  const bias = new Map<string, BiasCell>(), biasFair = new Map<string, BiasCell>();
   const makers = new Map<string, Cell>(), timings = new Map<string, { trades: { t: number; pnl: number }[] }>();
   for (const adv of ADVERSARIES) for (const w of WINDOWS) for (const th of THETAS) for (const H of HORIZONS) cells.set(`${w}|${th}|${H}|${adv.latency}|${adv.slip}`, { trades: [] });
   // Adversaries of the timing filter, under the hardest latency/slip only: the favoured side (should cost) and no gap.
@@ -226,6 +228,7 @@ async function main() {
     contracts++;
     for (const [k, c] of cells) { const [w, th, H, lat, slip] = k.split('|').map(Number); for (const x of contractTrades(tk, m.closeTime, w, th, H, count, { latency: lat, slip })) c.trades.push(x); }
     addBias(bias, tk, m.closeTime);
+    addBias(biasFair, tk, m.closeTime, 5, 'fair');
     for (const [k, c] of makers) { const [w, th, H, lat, slip] = k.split('|').map(Number); for (const x of contractMakerTrades(tk, m.closeTime, w, th, H, count, { latency: lat, slip })) c.trades.push(x); }
     for (const [k, c] of timings) { const [w, th, H, lat, slip] = k.split('|').map(Number); for (const x of contractTimingGains(tk, m.closeTime, w, th, H, { latency: lat, slip })) c.trades.push(x); }
     for (const [k, c] of favoured) { const [w, th, H, lat, slip] = k.split('|').map(Number); for (const x of contractTimingGains(tk, m.closeTime, w, th, H, { latency: lat, slip }, 'favoured')) c.trades.push(x); }
@@ -287,18 +290,20 @@ async function main() {
       }
     }
   };
-  console.log('[quote-lag] quote bias: mean (mid - fair) in cents [sd] and mean spread, by mid band x time to close (for the fidelity replay)');
   const biasOut: Record<string, { n: number; meanC: number; sdC: number; spreadC: number }> = {};
-  for (let b = 0; b < BIAS_BANDS.length; b++) {
-    const parts: string[] = [];
-    for (let t = 0; t < BIAS_TTC.length; t++) {
-      const c = bias.get(`${b}|${t}`);
-      if (!c || !c.n) { parts.push(`${BIAS_TTC[t]}: -`); continue; }
-      const mean = c.sum / c.n, sd = Math.sqrt(Math.max(0, c.sumSq / c.n - mean * mean));
-      biasOut[`${BIAS_BANDS[b]}|${BIAS_TTC[t]}`] = { n: c.n, meanC: mean * 100, sdC: sd * 100, spreadC: (c.spread / c.n) * 100 };
-      parts.push(`${BIAS_TTC[t]}: ${(mean * 100).toFixed(2)}c [${(sd * 100).toFixed(1)}] sp ${((c.spread / c.n) * 100).toFixed(1)}c n ${c.n}`);
+  for (const [label, map] of [['MID band (selection on noise)', bias], ['FAIR band (for the replay)', biasFair]] as const) {
+    console.log(`[quote-lag] quote bias by ${label}: mean (mid - fair) in cents [sd] and mean spread, x time to close`);
+    for (let b = 0; b < BIAS_BANDS.length; b++) {
+      const parts: string[] = [];
+      for (let t = 0; t < BIAS_TTC.length; t++) {
+        const c = map.get(`${b}|${t}`);
+        if (!c || !c.n) { parts.push(`${BIAS_TTC[t]}: -`); continue; }
+        const mean = c.sum / c.n, sd = Math.sqrt(Math.max(0, c.sumSq / c.n - mean * mean));
+        biasOut[`${map === biasFair ? 'fair' : 'mid'}|${BIAS_BANDS[b]}|${BIAS_TTC[t]}`] = { n: c.n, meanC: mean * 100, sdC: sd * 100, spreadC: (c.spread / c.n) * 100 };
+        parts.push(`${BIAS_TTC[t]}: ${(mean * 100).toFixed(2)}c [${(sd * 100).toFixed(1)}] sp ${((c.spread / c.n) * 100).toFixed(1)}c n ${c.n}`);
+      }
+      console.log(`[quote-lag]   ${map === biasFair ? 'fair' : 'mid '} ${BIAS_BANDS[b].padStart(7)}: ${parts.join(' | ')}`);
     }
-    console.log(`[quote-lag]   mid ${BIAS_BANDS[b].padStart(7)}: ${parts.join(' | ')}`);
   }
   table('trading the gap as a taker', 'taker', cells, true);
   table('resting a maker bid on the gap\'s side (fills only when the market crosses to it within H; maker fee in, taker out)', 'maker', makers, true);
