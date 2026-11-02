@@ -65,16 +65,16 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v5
-        if: inputs.timings == 'true'
+        if: inputs.timings == 'true' || inputs.pnl == 'true'
       - name: Upload the report scripts
-        if: inputs.timings == 'true'
+        if: inputs.timings == 'true' || inputs.pnl == 'true'
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
-          source: deploy/step_timings.py
+          source: deploy/step_timings.py,deploy/pnl_report.py
           target: /tmp/diag
       - name: Report
         uses: appleboy/ssh-action@v1.0.3
@@ -194,7 +194,10 @@ jobs:
               case "$p" in /api/*) ;; *) echo "skipping $p (only /api/... paths)"; continue;; esac
               echo "== GET $p"; api "$p" | head -c 6000; echo
             done
-            if [ "$PNL" = "true" ]; then echo "== P&L forensics: in the 'forensics' job's log (they run on a GitHub runner, not on the server)"; fi
+            if [ "$PNL" = "true" ] && [ -f /tmp/diag/deploy/pnl_report.py ]; then
+              echo "== P&L report (8 days)"; nice -n 19 python3 /tmp/diag/deploy/pnl_report.py ~/bot/data 8 || true
+              echo "== kalshi check by day"; api /api/kalshi-check | python3 -c 'import json,sys; r=json.load(sys.stdin); [print(" ", d.get("day"), json.dumps(d.get("bot"))) for d in (r.get("days") or [])]' || true
+            fi
             if [ "$TIMINGS" = "true" ] && [ -f /tmp/diag/deploy/step_timings.py ]; then
               echo "== training step timings"; nice -n 19 python3 /tmp/diag/deploy/step_timings.py ~/bot/data 30 || true
             fi
