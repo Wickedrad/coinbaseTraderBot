@@ -1358,6 +1358,45 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
                 rowsR.append((f'ONLINE {nm}: x{k} where the bucket has paid so far', scaled(k, on), on))
             rowsR.append((f'ORACLE {nm}: x3 where the bucket paid this window (look-ahead)', scaled(3, oracle(kf, ag)), oracle(kf, ag)))
         rowsR.append(('ONLINE trend, nmin 20: x3', scaled(3, online(kT, 20)), online(kT, 20)))
+        # day-level condition (Steven, Nov 2: add what works under some conditions dynamically): scale only while the gated
+        # trades of the last H hours (earlier windows of the same job included, via LAB_CARRY) are net positive at x1.
+        carry_path = os.environ.get('LAB_CARRY')
+        carry = []
+        if carry_path and os.path.exists(carry_path):
+            try: carry = json.load(open(carry_path))
+            except Exception: carry = []
+        mine = [[pathsB[s]['c_sec'], per[s], kT(s)] for s in per]
+        allc = carry + mine
+        allc.sort(key=lambda c: c[0])
+        csecs = [c[0] for c in allc]
+        def daypick(H, lag=0, nmin=5, same_bucket=False):
+            memo = {}
+            def pick(s):
+                if s in memo: return memo[s]
+                t = pathsB[s]['s0'] - lag
+                i0 = bisect.bisect_left(csecs, t - H); i1 = bisect.bisect_left(csecs, t)
+                xs = [c[1] for c in allc[i0:i1] if not same_bucket or c[2] == kT(s)]
+                memo[s] = len(xs) >= nmin and sum(xs) > 0
+                return memo[s]
+            return pick
+        prior = sum(1 for c in carry if c[0] < min((m[0] for m in mine), default=0))
+        print(f'     day-level rows: {prior} gated trades carried from earlier windows of this job')
+        d24 = daypick(86400)
+        for k in (2, 3):
+            rowsR.append((f'DAY: x{k} while the last 24 h of gated trades is in profit', scaled(k, d24), d24))
+        d12 = daypick(43200); rowsR.append(('DAY 12 h: x2 while the last 12 h is in profit', scaled(2, d12), d12))
+        d6 = daypick(21600); rowsR.append(('DAY 6 h: x2 while the last 6 h is in profit', scaled(2, d6), d6))
+        db = daypick(86400, same_bucket=True); rowsR.append(('DAY + trend bucket: x2 while that bucket\'s last 24 h is in profit', scaled(2, db), db))
+        dl = daypick(86400, lag=3600); rowsR.append(('ADV DAY 24 h read 1 h stale: x2', scaled(2, dl), dl))
+        dsh = sum(1 for s in per if d24(s)) / max(1, len(per))
+        import random as _rd
+        for sd in (1, 2, 3):
+            rr = _rd.Random(100 + sd); kp = {s: rr.random() < dsh for s in per}
+            rowsR.append((f'ADV DAY placebo: x2 on a random {100 * dsh:.0f}% (seed {sd})', scaled(2, lambda s, kp=kp: kp.get(s, False)), lambda s, kp=kp: kp.get(s, False)))
+        rowsR.append(('ADV DAY 24 h x2 + 1c worse entry fill', scaled(2, d24, 0.01), d24))
+        if carry_path:
+            try: json.dump(carry + mine, open(carry_path, 'w'))
+            except Exception as e: print(f'     (carry not saved: {e})')
         # adversary: the same number of scaled entries chosen at random; 1c worse entry fills; 4c depth
         n_on = sum(1 for s in per if picks['trend'](s))
         share = n_on / max(1, len(per))
