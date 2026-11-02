@@ -1,0 +1,51 @@
+study8_honest  run 2026-11-02 12:52 UTC / 2026-11-02 07:52 ET  fast=False nulls strat 200 / comparator 100 / within-era 300 boots 1000 surrogates 100
+rows 545 eval-from 2019: fall5_26w pos 100 in 12 episodes; fall10_26w pos 27 in 1 episode(s) (2023-26: 0); onset5_26w pos 52 in 11
+common forecast rows: first 2019-04-07 (plan said 2019-01-06; the 2019-01-06 refit has only 54 rows with finite ETH/BTC features < min_train 60), n fall5 397 fall10 397; unmasked first forecast m2only/clock/eramean/strat_m2btc 2019-01-06, fixed5/strat 2019-04-07
+-- fall5_26w: AUC 19-20/21-22/23-26/pooled/eraStrat | Brier<=trainBase | Brier<=ownEra | fresh | boot q05-q95 | LOO -big/-2025/min | LOO+runup -big(21-22)/-2025(23-26)
+fixed5      0.902/0.817/0.990/0.922/0.905 | YYY | YnY | 0.937 | 0.841-0.975 | 0.901/0.927/0.901 | 0.769/na
+m2only      0.735/0.816/0.690/0.837/0.747 | YYY | Ynn | 0.826 | 0.708-0.928 | 0.776/0.905/0.776 | 0.661/na
+m2eth       0.866/0.717/0.981/0.891/0.856 | YYY | nYY | 0.933 | 0.796-0.954 | 0.867/0.922/0.863 | 0.606/na
+ethonly     0.413/0.550/0.678/0.640/0.556 | nnY | nnn | 0.667 | 0.473-0.795 | 0.558/0.676/0.558 | 0.391/na
+fixed5brief 0.844/0.778/0.974/0.881/0.868 | YYY | YYn | 0.898 | 0.786-0.949 | 0.854/0.867/0.854 | 0.714/na
+clock       0.391/0.915/0.700/0.569/0.683 | nYn | nnn | 0.583 | 0.338-0.776 | 0.432/0.567/0.432 | 0.817/na
+renewal     0.551/0.467/0.555/0.625/0.524 | nYY | nnn | 0.603 | 0.484-0.755 | 0.562/0.660/0.562 | 0.591/na
+eramean     0.386/0.169/0.083/0.512/0.201 | nnY | nnn | 0.493 | 0.364-0.680 | 0.502/0.596/0.486 | 0.312/na
+readiness   0.561/0.650/0.746/0.596/0.659 | nYY | nnn | 0.645 | 0.509-0.685 | 0.541/0.567/0.541 | 0.541/na
+strat       0.553/0.784/0.152/0.638/0.487 | nnY | nnn | 0.557 | 0.432-0.819 | 0.506/0.736/0.506 | 0.713/na
+strat_vol   0.603/0.654/0.152/0.626/0.457 | nnY | nnn | 0.553 | 0.434-0.796 | 0.501/0.721/0.501 | 0.572/na
+strat_m2btc 0.723/0.749/0.152/0.694/0.525 | YYY | Ynn | 0.607 | 0.480-0.855 | 0.581/0.802/0.581 | 0.597/na
+offset      0.845/0.849/0.989/0.896/0.898 | YnY | YnY | 0.915 | 0.798-0.961 | 0.862/0.918/0.862 | 0.812/na
+stack       0.898/0.886/0.985/0.918/0.926 | YnY | YnY | 0.932 | 0.835-0.975 | 0.890/0.941/0.890 | 0.828/na
+km26        0.597/0.774/0.263/0.658/0.537 | nnY | nnn | 0.606 | 0.462-0.817 | 0.532/0.735/0.532 | 0.731/na
+fall10_26w pooled AUC (ONE episode, a ranking of one event): fixed5 0.893  m2only 0.897  m2eth 0.820  ethonly 0.272  fixed5brief 0.827  clock 0.877  renewal 0.103  eramean 0.216  readiness 0.724  strat 0.401  strat_vol 0.401  strat_m2btc 0.566  offset 0.874  stack 0.901
+paired block-boot AUC diff vs fixed5 (pooled diff [q05,q95] P(diff<=0); 21-22 diff): m2only -0.085[-0.197,-0.014]P0.987;-0.001  m2eth -0.031[-0.076,0.011]P0.893;-0.100  ethonly -0.282[-0.433,-0.145]P1.000;-0.267  fixed5brief -0.041[-0.094,0.001]P0.945;-0.039  strat -0.284[-0.471,-0.118]P1.000;-0.033  offset -0.026[-0.059,-0.001]P0.959;0.032  stack -0.004[-0.031,0.024]P0.560;0.069  m2eth-m2only pooled 0.054 21-22 -0.100
+strat forecast source share (cell / M2 bucket / global): 2019-2020 0.308/0.286/0.407  2021-2022 0.481/0.519/0.0  2023-2026 0.124/0.535/0.342  pooled 0.259/0.474/0.267
+y13 IC/hit: fixed5 0.381/0.621  m2only 0.430/0.487  m2eth 0.458/0.723  strat 0.415/0.653   exstable fall5/fall10 pooled AUC: fixed5 0.909/0.882  strat 0.622/0.719  offset 0.885/0.909
+shifted-target null (pooled AUC real, p95, p(n draws; ! = fewer than 50, not a p-value)): strat 0.638/0.685 p0.130(n200)  fixed5 0.922/0.663 p0.000(n100)  m2only 0.837/0.622 p0.000(n100)  m2eth 0.891/0.638 p0.000(n100)  ethonly 0.640/0.621 p0.050(n100)  clock 0.569/0.634 p0.290(n100)  renewal 0.625/0.589 p0.000(n100)  offset 0.896/0.648 p0.000(n100)  stack 0.918/0.653 p0.000(n100)
+fall10_26w null p: strat p0.225(n200)  fixed5 p0.000(n100)  m2only p0.000(n100)  clock p0.000(n100)  renewal p0.880(n100)  offset p0.000(n100)
+within-era DWELL-TIME PERMUTATION null (episodes and gaps reordered, whole procedure rerun); blocks/arrangements(E = all enumerated, exact p): 2019-2020 10/3628800  2021-2022 12/479001600  2023-2026 5/120E  pooled 25/25!
+  perm strat   : 2019-2020 auc 0.553 med 0.452 p95 0.861 p0.363(n300)  2021-2022 auc 0.784 med 0.456 p95 0.721 p0.017(n300)  2023-2026 auc 0.152 med 0.639 p95 0.828 p0.892(n120E)  pooled auc 0.638 med 0.360 p95 0.674 p0.077(n300)
+  perm fixed5  : 2019-2020 auc 0.902 med 0.357 p95 0.817 p0.007(n300)  2021-2022 auc 0.817 med 0.507 p95 0.762 p0.013(n300)  2023-2026 auc 0.990 med 0.302 p95 0.950 p0.042(n120E)  pooled auc 0.922 med 0.484 p95 0.730 p0.000(n300)
+  perm m2only  : 2019-2020 auc 0.735 med 0.481 p95 0.915 p0.237(n300)  2021-2022 auc 0.816 med 0.484 p95 0.810 p0.043(n300)  2023-2026 auc 0.690 med 0.453 p95 0.916 p0.333(n120E)  pooled auc 0.837 med 0.427 p95 0.735 p0.023(n300)
+  perm m2eth   : 2019-2020 auc 0.866 med 0.365 p95 0.839 p0.027(n300)  2021-2022 auc 0.717 med 0.456 p95 0.724 p0.053(n300)  2023-2026 auc 0.981 med 0.419 p95 0.981 p0.058(n120E)  pooled auc 0.891 med 0.489 p95 0.747 p0.007(n300)
+  perm clock   : 2019-2020 auc 0.391 med 0.462 p95 0.828 p0.547(n300)  2021-2022 auc 0.915 med 0.477 p95 0.898 p0.047(n300)  2023-2026 auc 0.700 med 0.452 p95 0.993 p0.258(n120E)
+  perm renewal : 2019-2020 auc 0.551 med 0.389 p95 0.636 p0.167(n300)  2021-2022 auc 0.467 med 0.290 p95 0.469 p0.057(n300)  2023-2026 auc 0.555 med 0.110 p95 0.857 p0.300(n120E)
+  perm eramean : 2019-2020 auc 0.386 med 0.454 p95 0.884 p0.583(n300)  2021-2022 auc 0.169 med 0.333 p95 0.729 p0.750(n300)  2023-2026 auc 0.083 med 0.174 p95 0.994 p0.958(n120E)
+  reference: the plan's circular-shift within-era null (26..n-26) on frozen preds has medians fixed5 0.452/0.364/0.365  m2only 0.428/0.377/0.346 (biased below 0.5: a 52-week roll of a half-positive era anti-aligns the label), so it is not used
+surrogate BTC.D (targets rebuilt) pooled AUC: drawn/valid/matched-label-process, out-of-bounds, label base q0/50/100, episodes q0/50/100, p95 over matched: strat:iaaft 100/100/74 oob 0 base [0.289, 0.484, 0.643] ep [6, 16, 26] p95 0.566  strat:rw 100/75/55 oob 91 base [0.0, 0.225, 0.6] ep [0, 8, 22] p95 0.759  fixed5:iaaft 100/100/69 oob 0 base [0.286, 0.468, 0.657] ep [9, 16, 31] p95 0.604  fixed5:rw 100/77/51 oob 95 base [0.0, 0.209, 0.673] ep [0, 7, 23] p95 0.646
+threshold perturbation: pre-registered set ranks 7 of 11 (AUC 0.638; perturbed median 0.645); ethbtc_fromhi52w weight in fixed5 negative at 31/31 refits (-2.0..-0.29)
+claim A (strat inside fixed5 band [0.841, 0.975] and Brier<=trainBase all eras): FAIL (auc 0.638, inside False, brier<=trainBase False, <=ownEra False; paired diff vs fixed5 -0.284 P(<=0) 1.000)
+claim B skeptic (decoy within 0.05 of fixed5 in >=2 eras: {'clock': 1, 'renewal': 0, 'eramean': 0, 'eramean_flipped': 1}; fixed5 w/o big episode 0.901 < 0.75): as written not met, corrected decoys not met
+claim C skeptic (no model beats within-era permutation p95 in both 19-20 and 23-26): not met; beats both: ['fixed5']
+strong test for fixed5: {'fixed5AucWithoutBigEpisode>=0.85': True, 'beatsDecoysBy0.10EveryEra': False, 'decoyMarginsAsWritten': {'2019-2020': 0.511, '2021-2022': -0.098, '2023-2026': 0.29}, 'decoyMarginsCorrected': {'2019-2020': 0.288, '2021-2022': -0.098, '2023-2026': 0.073}, 'clearsWithinEraP95in1920and2326': True, 'pass': False}
+HONEST CLAIM: base rate plus readiness, with intervals (the strong test fails: beatsDecoysBy0.10EveryEra, pass)
+duration (daily events from 2016): 5pt n=9 days q10/50/90 [31.8, 89.0, 153.2] median 90% band [37.0, 136.0] vs uniform(14,182) [40.7, 97.9, 154.2] band [54.4, 138.5] KS p 0.576; 10pt n=6 [37.0, 126.5, 156.5]; 25pt n=2 [37, 136]
+falsifiers: (i) not-yet max close since Jun-2025 65.4 vs 65.7; (ii) not-yet 365 days to 2027-11-02, engine 'imminent' 195 weeks; (iii) not-yet last 5pt fall 2025-06-22->2025-09-14, now 0.4 pts under post-trough high
+TODAY 2026-11-01 BTC.D 60.5 (ex-stable 65.0) m2 +0.054 btc_dd -0.457 eth_fromhi -0.189 fresh True readiness False
+stratum [m2>5% | btc>35%dd | eth 10-30%off] level cell n 48 k 24 nEp 5 (used n 48 nEp 5): P(5+ in 26w) 0.481 90% episode-boot [0.247, 0.818]; P(10+) 0.303; KM w10/50/90 {'w10': 8, 'w50': 27, 'w90': None} P26 0.495 (same cell, same rows)
+  support of that cell: rows 2020-02-16..2022-08-28 label mean by year {2020: 1.0, 2021: 0.75, 2022: 0.12}; m2_yoy [0.056,0.215] today 0.054 OUT; btc_dd_ath [-1.209,-0.435] today -0.457; ethbtc_fromhi52w [-0.341,-0.108] today -0.189 -> EXTRAPOLATION (m2_yoy outside the cell's range)
+comparators P(5+ in 26w): fixed5 0.040  fixed5brief 0.039  m2only 0.320  m2eth 0.118  ethonly 0.245  clock 0.254  renewal 0.126  eramean 0.154  strat 0.481  strat_vol 0.573  strat_m2btc 0.427  offset 0.080  stack 0.071  km26 0.495  trainBase 0.350 freshBase 0.229
+HEADLINE P(5+ pt fall in 26w): in-support specifications 0.039 .. 0.427 (all specs 0.039 .. 0.573); stratified 90% interval [0.247, 0.818]; fresh base 0.229; weeks to separate strat from 25%: {'effectiveObs': 14, 'weeks': 364, 'years': 7.0}; fixed5: {'effectiveObs': 17, 'weeks': 442, 'years': 8.5}
+sensitivity strat adjacent bucket: {'m2_yoy->m2 0-5%': 0.17, 'btc_dd_ath->btc 5-35%dd': 0.667, 'ethbtc_fromhi52w->eth>30%off': 0.545, 'ethbtc_fromhi52w->eth<10%off': 0.573}; m2 +/-1pt: {'-0.01': {'strat': 0.17, 'fixed5': 0.0322}, '+0.01': {'strat': 0.481, 'fixed5': 0.0493}}; fixed5 drop-one: {'usdtd_vsma30w': 0.1116, 'ethbtc_fromhi52w': 0.15, 'btc_dd_ath': 0.0668, 'btcusd_ret13w': 0.0393, 'm2_yoy': 0.1232}; +/-1sd: {'usdtd_vsma30w': [0.0125, 0.1195], 'ethbtc_fromhi52w': [0.1372, 0.0107], 'btc_dd_ath': [0.0144, 0.1058], 'btcusd_ret13w': [0.023, 0.0682], 'm2_yoy': [0.009, 0.1591]}
+checks: truncation ok True (maxAbsDiff 0.00e+00, 20 points); strat jump at refit 0.3604 vs elsewhere 0.4969; params strat 10 cells / fixed5 6 / stack 19 vs 12 episodes; ATH-anchor max |pred diff| {'fixed5': 0.0, 'strat': 0.0, 'm2eth': 0.0, 'offset': 0.0}; readiness fired at big-event peaks true-anchor 2/3 (harness 3/3)
+wrote research/btcd_fractal/out8/honest/results.json in 115s (12:52 UTC / 2026-11-02 07:52 ET)

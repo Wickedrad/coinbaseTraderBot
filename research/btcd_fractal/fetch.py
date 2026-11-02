@@ -33,6 +33,20 @@ SERIES = {
     "US10Y": ["TVC:US10Y"],
     "SPX": ["SP:SPX", "TVC:SPX"],
     "M2": ["ECONOMICS:USM2", "FRED:M2SL"],
+    # round 10 (liquidity trial): other M2s with the FX to put them in USD, the Fed balance sheet, the stablecoin float
+    "CNM2": ["ECONOMICS:CNM2"],
+    "EUM2": ["ECONOMICS:EUM2"],
+    "JPM2": ["ECONOMICS:JPM2"],
+    "GBM2": ["ECONOMICS:GBM2"],
+    "USDCNY": ["FX_IDC:USDCNY", "FX:USDCNH"],
+    "EURUSD": ["FX:EURUSD", "FX_IDC:EURUSD"],
+    "USDJPY": ["FX:USDJPY", "FX_IDC:USDJPY"],
+    "GBPUSD": ["FX:GBPUSD", "FX_IDC:GBPUSD"],
+    "FEDBS": ["ECONOMICS:USCBBS", "FRED:WALCL"],
+    "RRP": ["FRED:RRPONTSYD"],
+    "TGA": ["FRED:WTREGEN"],
+    "USDC.D": ["CRYPTOCAP:USDC.D"],
+    "STABLES": ["CRYPTOCAP:STABLE.C", "CRYPTOCAP:STABLES"],
 }
 
 

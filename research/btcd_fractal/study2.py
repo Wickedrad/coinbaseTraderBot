@@ -145,20 +145,27 @@ def main():
     ap.add_argument("--placebos", type=int, default=30, help="per placebo kind")
     ap.add_argument("--k", type=int, default=6, help="settings each placebo may search (best of K)")
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 2)
+    ap.add_argument("--series", default="BTC.D", help="series name in --data (BTC.D = TradingView; BTCD_SPLICED = per-coin rebuild before 2018, TradingView after)")
+    ap.add_argument("--parent-start", default="2016-01-01", help="first week of the 2016-17 parent (Steven 2026-11-02: the bottom of the 2016 waterfall)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
-    btcd = load(a.data, "BTC.D")
+    PS16 = pd.Timestamp(a.parent_start)
+    PS15 = PS16 - pd.Timedelta(weeks=30)
+    lab = lambda t: t.strftime("%Y-%m") if t.day == 1 else t.strftime("%Y-%m-%d")
+    L16, L15 = lab(PS16), lab(PS15)
+    S16, S15 = PS16.strftime("%Y-%m-%d"), PS15.strftime("%Y-%m-%d")
+    btcd = load(a.data, a.series)
     W = weekly(btcd)
     D3 = btcd.resample("3D").last().dropna()
     usdt = load(a.data, "USDT.D")
-    print(f"BTC.D {btcd.index[0].date()}..{btcd.index[-1].date()}, weekly {len(W)}")
+    print(f"{a.series} {btcd.index[0].date()}..{btcd.index[-1].date()}, weekly {len(W)}; parent start {a.parent_start}")
 
     def win(s, fr, to=None):
         x = s[(s.index >= pd.Timestamp(fr)) & ((s.index < pd.Timestamp(to)) if to else True)]
         return x
 
-    PARENTS = {"2016-01..2018-01-15": ("2016-01-01", "2018-01-15"), "2016-01..2018-03": ("2016-01-01", "2018-03-01"),
+    PARENTS = {f"{L16}..2018-01-15": (S16, "2018-01-15"), f"{L16}..2018-03": (S16, "2018-03-01"),
                "2014-04..2016-07": ("2014-04-01", "2016-07-01"), "2019-06..2021-07": ("2019-06-01", "2021-07-20")}
     CHILDS = {"2018-01-01": "2018-01-01", "2021-07-20": "2021-07-20"}
     parents, pidx = {}, {}
@@ -173,7 +180,7 @@ def main():
     base = {"maxstep": 2, "cap": 16, "j0": 0.15, "shapew": 8, "wfweeks": 13, "wshape": 1.0, "dynmap": 0, "bw": 0}
     jobs = []
     # A + B on the spec parent family (child 2018)
-    for pk, res, sp, (dm, bw), wsh in itertools.product(["2016-01..2018-01-15", "2016-01..2018-03"], ["W", "3D"], ["raw", "log", "logit"],
+    for pk, res, sp, (dm, bw), wsh in itertools.product([f"{L16}..2018-01-15", f"{L16}..2018-03"], ["W", "3D"], ["raw", "log", "logit"],
                                                        [(0, 0), (2, 52), (2, 104)], [1.0, 3.0]):
         c = dict(base, parent=pk, child="2018-01-01", res=res, space=sp, dynmap=dm, bw=bw, wshape=wsh)
         if res == "3D":
@@ -282,9 +289,9 @@ def main():
                 print(f"  {g:34s} n {v['n']:3d} ratio {v['ratio']:.2f} hit {v['hit']} ic {v['ic']:.2f}")
 
     # D: fair adversary. The real parent's best of K settings vs each placebo's best of the same K.
-    fam = sorted([r for r in results if r["tag"] == "main" and r["cfg"]["parent"] == "2016-01..2018-01-15" and r["cfg"]["res"] == "W"], key=lambda r: -ic26(r))[: a.k]
+    fam = sorted([r for r in results if r["tag"] == "main" and r["cfg"]["parent"] == f"{L16}..2018-01-15" and r["cfg"]["res"] == "W"], key=lambda r: -ic26(r))[: a.k]
     fam_cfgs = [r["cfg"] for r in fam]
-    real_par = parents[("2016-01..2018-01-15", "W")]
+    real_par = parents[(f"{L16}..2018-01-15", "W")]
     real = {"bestScore": min(r["score"] for r in fam), "bestIc": max(ic26(r) for r in fam),
             "bestHit": max((r["skill"].get("h26", {}).get("hit") or 0) for r in fam)}
     rng = np.random.default_rng(20261102)
