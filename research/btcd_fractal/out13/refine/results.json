@@ -22,8 +22,8 @@
   },
   "verdicts": "adopted (all five) | condition note ((iii) and (v) pass but (i) or (iv) fails) | not supported (otherwise, with the failing criterion)"
  },
- "runUtc": "2026-11-02 20:49 UTC",
- "runEst": "2026-11-02 15:49 EST",
+ "runUtc": "2026-11-02 20:54 UTC",
+ "runEst": "2026-11-02 15:54 EST",
  "dataLastBarUtc": "2026-11-02 00:00 UTC",
  "dataLastBarEst": "2026-11-01 19:00 EST",
  "lastCompleteWeek": "2026-11-01",
@@ -5446,8 +5446,8 @@
   "asOf": "2026-11-01",
   "dataLastBarUtc": "2026-11-02 00:00 UTC",
   "dataLastBarEst": "2026-11-01 19:00 EST",
-  "runUtc": "2026-11-02 20:49 UTC",
-  "runEst": "2026-11-02 15:49 EST",
+  "runUtc": "2026-11-02 20:54 UTC",
+  "runEst": "2026-11-02 15:54 EST",
   "btcd": 60.5,
   "readings": {
    "fixed5": 0.0399,
@@ -17139,7 +17139,7 @@
    }
   ]
  },
- "runtimeSeconds": 49.9,
+ "runtimeSeconds": 34.4,
  "notes": [
   "Common rows: every model forecasts from 2019-04-07 (fixed5 needs 60 training rows: ethbtc_fromhi52w is finite from 2017-06 and labels wait 26 weeks); 370 labelled weekly rows (2019-04-07..2026-05-03), 100 positives in 12 label episodes; the last 26 weeks carry no label and enter only 'today' and decision50.",
   "fixed5 = study8_baselines.SIGNALS through study9_candidates.run_spec (study8_common.walk_forward: expanding window, refit every 13 weeks from 2019-01-06, labels withheld 26 weeks, min_train 60; z-scores clipped at 3; logistic lam 1), btc_dd_ath from the full BTCUSD history (study8_honest.ath_drawdown); it reproduces round 9 and round 8 to their 4-digit rounding (leakage.fixed5Reproduction).",
