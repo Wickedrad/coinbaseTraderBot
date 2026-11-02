@@ -304,6 +304,13 @@ export async function snnAblationMain(argOf: (k: string, d: string) => string = 
           console.log(`        conditional correction ${tag(o)}: vs market ${f5(all)}; SNN inside ${vin ? f5(vin) : '-'} (${inside.length} rows), outside ${vout ? f5(vout) : '-'} (${out2.length} rows)`);
           if (early.length) { const e = vsMarket(cc(early, o)); if (!pick || e.mean < pick.mean) pick = { o, mean: e.mean }; }
         }
+        // Control (adversary): the same shrink with no band at all. If it does as well, the band is not the condition;
+        // the SNN's correction is simply too large everywhere.
+        for (const k of [0.25, 0.5, 0.75]) {
+          const u = vsMarket(c.res.rows.map((r) => ({ ...r, pSnn: r.mid + k * (r.pSnn - r.mid) })));
+          const ul = late.length ? vsMarket(late.map((r) => ({ ...r, pSnn: r.mid + k * (r.pSnn - r.mid) }))) : null;
+          console.log(`        CONTROL uniform shrink x${k} (no band): vs market ${f5(u)}${ul ? `; days >= ${cut}: ${f5(ul)}` : ''}`);
+        }
         if (pick && late.length) {
           const l = vsMarket(cc(late, pick.o)), lr = vsMarket(late);
           console.log(`        conditional correction HELD-OUT: picked on days < ${cut} (${tag(pick.o)}), on days >= ${cut}: vs market ${f5(l)} (SNN as is ${f5(lr)}); ${l.hi < 0 ? 'BEATS the market' : l.lo > 0 ? 'worse' : 'undecided'}`);
