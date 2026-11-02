@@ -1,0 +1,8739 @@
+{
+ "module": "study9_checks",
+ "fast": false,
+ "nulls": 50,
+ "boots": 1000,
+ "runtimeSec": 51.8,
+ "oos": {
+  "reverse": {
+   "plan": {
+    "fall5_26w": {
+     "fixed5": {
+      "own": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.949,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.1305,
+       "brierBase2019": 0.3041,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 29,
+       "nPos": 29,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 1.0,
+       "brier": 0.0195,
+       "brierBase2019": 0.546,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.849,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.1923,
+       "brierBase2019": 0.1692,
+       "beatsBase2019": false
+      },
+      "eraStratAuc": 0.849,
+      "fresh": {
+       "n": 22,
+       "nPos": 13,
+       "auc": 0.923,
+       "aucNote": null,
+       "base": 0.591,
+       "brier": 0.1286,
+       "brierBase2019": 0.3505,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 1640,
+       "crossShare": 0.725,
+       "crossAuc": 0.987,
+       "withinPairs": 451,
+       "withinAuc": 0.849
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.849,
+       "minEpisode": "2017-06-18..2017-12-31",
+       "perEpisode": {
+        "2017-06-18..2017-12-31": 0.849,
+        "2018-03-04..2018-04-15": 0.964,
+        "2018-09-09..2018-09-16": 0.946,
+        "2018-12-09..2018-12-16": 0.967
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.949,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.1305,
+       "brierBase2019": 0.3041,
+       "beatsBase2019": true
+      },
+      "clip": {
+       "rows": 81,
+       "clipped": 21,
+       "share": 0.259,
+       "perInput": {
+        "usdtd_vsma30w": 12,
+        "ethbtc_fromhi52w": 7,
+        "btc_dd_ath": 0,
+        "btcusd_ret13w": 4,
+        "m2_yoy": 0
+       }
+      }
+     },
+     "m2only": {
+      "own": {
+       "n": 135,
+       "nPos": 79,
+       "auc": 0.787,
+       "aucNote": null,
+       "base": 0.585,
+       "brier": 0.377,
+       "brierBase2019": 0.3478,
+       "beatsBase2019": false
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 68,
+       "auc": 0.394,
+       "aucNote": null,
+       "base": 0.819,
+       "brier": 0.5082,
+       "brierBase2019": 0.4596,
+       "beatsBase2019": false
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.654,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.1676,
+       "brierBase2019": 0.1692,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.474,
+      "fresh": {
+       "n": 47,
+       "nPos": 32,
+       "auc": 0.787,
+       "aucNote": null,
+       "base": 0.681,
+       "brier": 0.4313,
+       "brierBase2019": 0.3935,
+       "beatsBase2019": false
+      },
+      "pairs": {
+       "pairs": 4424,
+       "crossShare": 0.667,
+       "crossAuc": 0.944,
+       "withinPairs": 1471,
+       "withinAuc": 0.474
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.479,
+       "minEpisode": "2016-09-18..2017-12-31",
+       "perEpisode": {
+        "2016-09-18..2017-12-31": 0.479,
+        "2018-03-04..2018-04-15": 0.804,
+        "2018-09-09..2018-09-16": 0.797,
+        "2018-12-09..2018-12-16": 0.806
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.904,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.3352,
+       "brierBase2019": 0.3041,
+       "beatsBase2019": false
+      },
+      "clip": {
+       "rows": 135,
+       "clipped": 0,
+       "share": 0.0,
+       "perInput": {
+        "m2_yoy": 0
+       }
+      }
+     },
+     "m2eth": {
+      "own": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.655,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2594,
+       "brierBase2019": 0.3041,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 29,
+       "nPos": 29,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 1.0,
+       "brier": 0.3936,
+       "brierBase2019": 0.546,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.712,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.1846,
+       "brierBase2019": 0.1692,
+       "beatsBase2019": false
+      },
+      "eraStratAuc": 0.712,
+      "fresh": {
+       "n": 22,
+       "nPos": 13,
+       "auc": 0.932,
+       "aucNote": null,
+       "base": 0.591,
+       "brier": 0.1637,
+       "brierBase2019": 0.3505,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 1640,
+       "crossShare": 0.725,
+       "crossAuc": 0.634,
+       "withinPairs": 451,
+       "withinAuc": 0.712
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.642,
+       "minEpisode": "2018-09-09..2018-09-16",
+       "perEpisode": {
+        "2017-06-18..2017-12-31": 0.712,
+        "2018-03-04..2018-04-15": 0.667,
+        "2018-09-09..2018-09-16": 0.642,
+        "2018-12-09..2018-12-16": 0.642
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.655,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2594,
+       "brierBase2019": 0.3041,
+       "beatsBase2019": true
+      },
+      "clip": {
+       "rows": 81,
+       "clipped": 7,
+       "share": 0.086,
+       "perInput": {
+        "m2_yoy": 0,
+        "ethbtc_fromhi52w": 7
+       }
+      }
+     },
+     "readiness": {
+      "own": {
+       "n": 135,
+       "nPos": 79,
+       "auc": 0.696,
+       "aucNote": null,
+       "base": 0.585,
+       "brier": 0.3556,
+       "brierBase2019": 0.3478,
+       "beatsBase2019": false
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 68,
+       "auc": 0.728,
+       "aucNote": null,
+       "base": 0.819,
+       "brier": 0.4458,
+       "brierBase2019": 0.4596,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.5,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.2115,
+       "brierBase2019": 0.1692,
+       "beatsBase2019": false
+      },
+      "eraStratAuc": 0.658,
+      "fresh": {
+       "n": 47,
+       "nPos": 32,
+       "auc": 0.672,
+       "aucNote": null,
+       "base": 0.681,
+       "brier": 0.4468,
+       "brierBase2019": 0.3935,
+       "beatsBase2019": false
+      },
+      "pairs": {
+       "pairs": 4424,
+       "crossShare": 0.667,
+       "crossAuc": 0.715,
+       "withinPairs": 1471,
+       "withinAuc": 0.658
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.5,
+       "minEpisode": "2016-09-18..2017-12-31",
+       "perEpisode": {
+        "2016-09-18..2017-12-31": 0.5,
+        "2018-03-04..2018-04-15": 0.715,
+        "2018-09-09..2018-09-16": 0.701,
+        "2018-12-09..2018-12-16": 0.701
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.7,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2963,
+       "brierBase2019": 0.3041,
+       "beatsBase2019": true
+      }
+     },
+     "readiness_harnessATH": {
+      "own": {
+       "n": 135,
+       "nPos": 79,
+       "auc": 0.716,
+       "aucNote": null,
+       "base": 0.585,
+       "brier": 0.3259,
+       "brierBase2019": 0.3478,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 68,
+       "auc": 0.705,
+       "aucNote": null,
+       "base": 0.819,
+       "brier": 0.3976,
+       "brierBase2019": 0.4596,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.5,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.2115,
+       "brierBase2019": 0.1692,
+       "beatsBase2019": false
+      },
+      "eraStratAuc": 0.642,
+      "fresh": {
+       "n": 47,
+       "nPos": 32,
+       "auc": 0.683,
+       "aucNote": null,
+       "base": 0.681,
+       "brier": 0.383,
+       "brierBase2019": 0.3935,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 4424,
+       "crossShare": 0.667,
+       "crossAuc": 0.753,
+       "withinPairs": 1471,
+       "withinAuc": 0.642
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.482,
+       "minEpisode": "2016-09-18..2017-12-31",
+       "perEpisode": {
+        "2016-09-18..2017-12-31": 0.482,
+        "2018-03-04..2018-04-15": 0.739,
+        "2018-09-09..2018-09-16": 0.722,
+        "2018-12-09..2018-12-16": 0.722
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.7,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2963,
+       "brierBase2019": 0.3041,
+       "beatsBase2019": true
+      }
+     }
+    },
+    "fall10_26w": {
+     "fixed5": {
+      "own": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.968,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.2577,
+       "brierBase2019": 0.3019,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 29,
+       "nPos": 28,
+       "auc": 0.214,
+       "aucNote": null,
+       "base": 0.966,
+       "brier": 0.7182,
+       "brierBase2019": 0.8344,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.001,
+       "brierBase2019": 0.005,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.214,
+      "fresh": {
+       "n": 22,
+       "nPos": 5,
+       "auc": 1.0,
+       "aucNote": null,
+       "base": 0.227,
+       "brier": 0.1049,
+       "brierBase2019": 0.2002,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 1484,
+       "crossShare": 0.981,
+       "crossAuc": 0.982,
+       "withinPairs": 28,
+       "withinAuc": 0.214
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2017-06-18..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.968,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.2577,
+       "brierBase2019": 0.3019,
+       "beatsBase2019": true
+      },
+      "clip": {
+       "rows": 81,
+       "clipped": 21,
+       "share": 0.259,
+       "perInput": {
+        "usdtd_vsma30w": 12,
+        "ethbtc_fromhi52w": 7,
+        "btc_dd_ath": 0,
+        "btcusd_ret13w": 4,
+        "m2_yoy": 0
+       }
+      }
+     },
+     "m2only": {
+      "own": {
+       "n": 135,
+       "nPos": 65,
+       "auc": 0.848,
+       "aucNote": null,
+       "base": 0.481,
+       "brier": 0.4796,
+       "brierBase2019": 0.4186,
+       "beatsBase2019": false
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 65,
+       "auc": 0.409,
+       "aucNote": null,
+       "base": 0.783,
+       "brier": 0.7801,
+       "brierBase2019": 0.6777,
+       "beatsBase2019": false
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.0,
+       "brierBase2019": 0.005,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.409,
+      "fresh": {
+       "n": 47,
+       "nPos": 24,
+       "auc": 0.946,
+       "aucNote": null,
+       "base": 0.511,
+       "brier": 0.5083,
+       "brierBase2019": 0.4436,
+       "beatsBase2019": false
+      },
+      "pairs": {
+       "pairs": 4550,
+       "crossShare": 0.743,
+       "crossAuc": 1.0,
+       "withinPairs": 1170,
+       "withinAuc": 0.409
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2016-10-02..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.999,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.3447,
+       "brierBase2019": 0.3019,
+       "beatsBase2019": false
+      },
+      "clip": {
+       "rows": 135,
+       "clipped": 0,
+       "share": 0.0,
+       "perInput": {
+        "m2_yoy": 0
+       }
+      }
+     },
+     "m2eth": {
+      "own": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.639,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.3367,
+       "brierBase2019": 0.3019,
+       "beatsBase2019": false
+      },
+      "2016-2017": {
+       "n": 29,
+       "nPos": 28,
+       "auc": 0.357,
+       "aucNote": null,
+       "base": 0.966,
+       "brier": 0.9402,
+       "brierBase2019": 0.8344,
+       "beatsBase2019": false
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.0001,
+       "brierBase2019": 0.005,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.357,
+      "fresh": {
+       "n": 22,
+       "nPos": 5,
+       "auc": 0.929,
+       "aucNote": null,
+       "base": 0.227,
+       "brier": 0.2149,
+       "brierBase2019": 0.2002,
+       "beatsBase2019": false
+      },
+      "pairs": {
+       "pairs": 1484,
+       "crossShare": 0.981,
+       "crossAuc": 0.644,
+       "withinPairs": 28,
+       "withinAuc": 0.357
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2017-06-18..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.639,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.3367,
+       "brierBase2019": 0.3019,
+       "beatsBase2019": false
+      },
+      "clip": {
+       "rows": 81,
+       "clipped": 7,
+       "share": 0.086,
+       "perInput": {
+        "m2_yoy": 0,
+        "ethbtc_fromhi52w": 7
+       }
+      }
+     },
+     "readiness": {
+      "own": {
+       "n": 135,
+       "nPos": 65,
+       "auc": 0.738,
+       "aucNote": null,
+       "base": 0.481,
+       "brier": 0.2519,
+       "brierBase2019": 0.4186,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 65,
+       "auc": 0.738,
+       "aucNote": null,
+       "base": 0.783,
+       "brier": 0.4096,
+       "brierBase2019": 0.6777,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.0,
+       "brierBase2019": 0.005,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.738,
+      "fresh": {
+       "n": 47,
+       "nPos": 24,
+       "auc": 0.729,
+       "aucNote": null,
+       "base": 0.511,
+       "brier": 0.2766,
+       "brierBase2019": 0.4436,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 4550,
+       "crossShare": 0.743,
+       "crossAuc": 0.738,
+       "withinPairs": 1170,
+       "withinAuc": 0.738
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2016-10-02..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.786,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.1481,
+       "brierBase2019": 0.3019,
+       "beatsBase2019": true
+      }
+     },
+     "readiness_harnessATH": {
+      "own": {
+       "n": 135,
+       "nPos": 65,
+       "auc": 0.77,
+       "aucNote": null,
+       "base": 0.481,
+       "brier": 0.2222,
+       "brierBase2019": 0.4186,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 65,
+       "auc": 0.729,
+       "aucNote": null,
+       "base": 0.783,
+       "brier": 0.3614,
+       "brierBase2019": 0.6777,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.0,
+       "brierBase2019": 0.005,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.729,
+      "fresh": {
+       "n": 47,
+       "nPos": 24,
+       "auc": 0.79,
+       "aucNote": null,
+       "base": 0.511,
+       "brier": 0.2128,
+       "brierBase2019": 0.4436,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 4550,
+       "crossShare": 0.743,
+       "crossAuc": 0.785,
+       "withinPairs": 1170,
+       "withinAuc": 0.729
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2016-10-02..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.786,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.1481,
+       "brierBase2019": 0.3019,
+       "beatsBase2019": true
+      }
+     }
+    }
+   },
+   "purged": {
+    "fall5_26w": {
+     "fixed5": {
+      "own": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.827,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2378,
+       "brierBase2019": 0.2956,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 29,
+       "nPos": 29,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 1.0,
+       "brier": 0.0358,
+       "brierBase2019": 0.5182,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.752,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.3504,
+       "brierBase2019": 0.1715,
+       "beatsBase2019": false
+      },
+      "eraStratAuc": 0.752,
+      "fresh": {
+       "n": 22,
+       "nPos": 13,
+       "auc": 0.872,
+       "aucNote": null,
+       "base": 0.591,
+       "brier": 0.1728,
+       "brierBase2019": 0.3383,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 1640,
+       "crossShare": 0.725,
+       "crossAuc": 0.856,
+       "withinPairs": 451,
+       "withinAuc": 0.752
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.752,
+       "minEpisode": "2017-06-18..2017-12-31",
+       "perEpisode": {
+        "2017-06-18..2017-12-31": 0.752,
+        "2018-03-04..2018-04-15": 0.865,
+        "2018-09-09..2018-09-16": 0.818,
+        "2018-12-09..2018-12-16": 0.826
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.827,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2378,
+       "brierBase2019": 0.2956,
+       "beatsBase2019": true
+      },
+      "clip": {
+       "rows": 81,
+       "clipped": 37,
+       "share": 0.457,
+       "perInput": {
+        "usdtd_vsma30w": 11,
+        "ethbtc_fromhi52w": 24,
+        "btc_dd_ath": 2,
+        "btcusd_ret13w": 5,
+        "m2_yoy": 0
+       }
+      }
+     },
+     "m2only": {
+      "own": {
+       "n": 135,
+       "nPos": 79,
+       "auc": 0.787,
+       "aucNote": null,
+       "base": 0.585,
+       "brier": 0.3645,
+       "brierBase2019": 0.3358,
+       "beatsBase2019": false
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 68,
+       "auc": 0.394,
+       "aucNote": null,
+       "base": 0.819,
+       "brier": 0.4886,
+       "brierBase2019": 0.4388,
+       "beatsBase2019": false
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.654,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.1664,
+       "brierBase2019": 0.1715,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.474,
+      "fresh": {
+       "n": 47,
+       "nPos": 32,
+       "auc": 0.787,
+       "aucNote": null,
+       "base": 0.681,
+       "brier": 0.4159,
+       "brierBase2019": 0.3779,
+       "beatsBase2019": false
+      },
+      "pairs": {
+       "pairs": 4424,
+       "crossShare": 0.667,
+       "crossAuc": 0.944,
+       "withinPairs": 1471,
+       "withinAuc": 0.474
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.479,
+       "minEpisode": "2016-09-18..2017-12-31",
+       "perEpisode": {
+        "2016-09-18..2017-12-31": 0.479,
+        "2018-03-04..2018-04-15": 0.804,
+        "2018-09-09..2018-09-16": 0.797,
+        "2018-12-09..2018-12-16": 0.806
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.904,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.3251,
+       "brierBase2019": 0.2956,
+       "beatsBase2019": false
+      },
+      "clip": {
+       "rows": 135,
+       "clipped": 0,
+       "share": 0.0,
+       "perInput": {
+        "m2_yoy": 0
+       }
+      }
+     },
+     "m2eth": {
+      "own": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.663,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2611,
+       "brierBase2019": 0.2956,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 29,
+       "nPos": 29,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 1.0,
+       "brier": 0.2497,
+       "brierBase2019": 0.5182,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.693,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.2675,
+       "brierBase2019": 0.1715,
+       "beatsBase2019": false
+      },
+      "eraStratAuc": 0.693,
+      "fresh": {
+       "n": 22,
+       "nPos": 13,
+       "auc": 0.906,
+       "aucNote": null,
+       "base": 0.591,
+       "brier": 0.128,
+       "brierBase2019": 0.3383,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 1640,
+       "crossShare": 0.725,
+       "crossAuc": 0.652,
+       "withinPairs": 451,
+       "withinAuc": 0.693
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.646,
+       "minEpisode": "2018-09-09..2018-09-16",
+       "perEpisode": {
+        "2017-06-18..2017-12-31": 0.693,
+        "2018-03-04..2018-04-15": 0.677,
+        "2018-09-09..2018-09-16": 0.646,
+        "2018-12-09..2018-12-16": 0.659
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.663,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2611,
+       "brierBase2019": 0.2956,
+       "beatsBase2019": true
+      },
+      "clip": {
+       "rows": 81,
+       "clipped": 24,
+       "share": 0.296,
+       "perInput": {
+        "m2_yoy": 0,
+        "ethbtc_fromhi52w": 24
+       }
+      }
+     },
+     "readiness": {
+      "own": {
+       "n": 135,
+       "nPos": 79,
+       "auc": 0.696,
+       "aucNote": null,
+       "base": 0.585,
+       "brier": 0.3556,
+       "brierBase2019": 0.3358,
+       "beatsBase2019": false
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 68,
+       "auc": 0.728,
+       "aucNote": null,
+       "base": 0.819,
+       "brier": 0.4458,
+       "brierBase2019": 0.4388,
+       "beatsBase2019": false
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.5,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.2115,
+       "brierBase2019": 0.1715,
+       "beatsBase2019": false
+      },
+      "eraStratAuc": 0.658,
+      "fresh": {
+       "n": 47,
+       "nPos": 32,
+       "auc": 0.672,
+       "aucNote": null,
+       "base": 0.681,
+       "brier": 0.4468,
+       "brierBase2019": 0.3779,
+       "beatsBase2019": false
+      },
+      "pairs": {
+       "pairs": 4424,
+       "crossShare": 0.667,
+       "crossAuc": 0.715,
+       "withinPairs": 1471,
+       "withinAuc": 0.658
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.5,
+       "minEpisode": "2016-09-18..2017-12-31",
+       "perEpisode": {
+        "2016-09-18..2017-12-31": 0.5,
+        "2018-03-04..2018-04-15": 0.715,
+        "2018-09-09..2018-09-16": 0.701,
+        "2018-12-09..2018-12-16": 0.701
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.7,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2963,
+       "brierBase2019": 0.2956,
+       "beatsBase2019": false
+      }
+     },
+     "readiness_harnessATH": {
+      "own": {
+       "n": 135,
+       "nPos": 79,
+       "auc": 0.716,
+       "aucNote": null,
+       "base": 0.585,
+       "brier": 0.3259,
+       "brierBase2019": 0.3358,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 68,
+       "auc": 0.705,
+       "aucNote": null,
+       "base": 0.819,
+       "brier": 0.3976,
+       "brierBase2019": 0.4388,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 11,
+       "auc": 0.5,
+       "aucNote": null,
+       "base": 0.212,
+       "brier": 0.2115,
+       "brierBase2019": 0.1715,
+       "beatsBase2019": false
+      },
+      "eraStratAuc": 0.642,
+      "fresh": {
+       "n": 47,
+       "nPos": 32,
+       "auc": 0.683,
+       "aucNote": null,
+       "base": 0.681,
+       "brier": 0.383,
+       "brierBase2019": 0.3779,
+       "beatsBase2019": false
+      },
+      "pairs": {
+       "pairs": 4424,
+       "crossShare": 0.667,
+       "crossAuc": 0.753,
+       "withinPairs": 1471,
+       "withinAuc": 0.642
+      },
+      "episodeLOO": {
+       "nEpisodes": 4,
+       "min": 0.482,
+       "minEpisode": "2016-09-18..2017-12-31",
+       "perEpisode": {
+        "2016-09-18..2017-12-31": 0.482,
+        "2018-03-04..2018-04-15": 0.739,
+        "2018-09-09..2018-09-16": 0.722,
+        "2018-12-09..2018-12-16": 0.722
+       },
+       "note": null
+      },
+      "common": {
+       "n": 81,
+       "nPos": 40,
+       "auc": 0.7,
+       "aucNote": null,
+       "base": 0.494,
+       "brier": 0.2963,
+       "brierBase2019": 0.2956,
+       "beatsBase2019": false
+      }
+     }
+    },
+    "fall10_26w": {
+     "fixed5": {
+      "own": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.969,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.2362,
+       "brierBase2019": 0.2991,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 29,
+       "nPos": 28,
+       "auc": 0.214,
+       "aucNote": null,
+       "base": 0.966,
+       "brier": 0.6571,
+       "brierBase2019": 0.8252,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.0014,
+       "brierBase2019": 0.0057,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.214,
+      "fresh": {
+       "n": 22,
+       "nPos": 5,
+       "auc": 1.0,
+       "aucNote": null,
+       "base": 0.227,
+       "brier": 0.0793,
+       "brierBase2019": 0.1986,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 1484,
+       "crossShare": 0.981,
+       "crossAuc": 0.984,
+       "withinPairs": 28,
+       "withinAuc": 0.214
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2017-06-18..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.969,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.2362,
+       "brierBase2019": 0.2991,
+       "beatsBase2019": true
+      },
+      "clip": {
+       "rows": 81,
+       "clipped": 37,
+       "share": 0.457,
+       "perInput": {
+        "usdtd_vsma30w": 11,
+        "ethbtc_fromhi52w": 24,
+        "btc_dd_ath": 2,
+        "btcusd_ret13w": 5,
+        "m2_yoy": 0
+       }
+      }
+     },
+     "m2only": {
+      "own": {
+       "n": 135,
+       "nPos": 65,
+       "auc": 0.848,
+       "aucNote": null,
+       "base": 0.481,
+       "brier": 0.4794,
+       "brierBase2019": 0.4144,
+       "beatsBase2019": false
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 65,
+       "auc": 0.409,
+       "aucNote": null,
+       "base": 0.783,
+       "brier": 0.7798,
+       "brierBase2019": 0.6704,
+       "beatsBase2019": false
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.0,
+       "brierBase2019": 0.0057,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.409,
+      "fresh": {
+       "n": 47,
+       "nPos": 24,
+       "auc": 0.946,
+       "aucNote": null,
+       "base": 0.511,
+       "brier": 0.508,
+       "brierBase2019": 0.4391,
+       "beatsBase2019": false
+      },
+      "pairs": {
+       "pairs": 4550,
+       "crossShare": 0.743,
+       "crossAuc": 1.0,
+       "withinPairs": 1170,
+       "withinAuc": 0.409
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2016-10-02..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.999,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.3446,
+       "brierBase2019": 0.2991,
+       "beatsBase2019": false
+      },
+      "clip": {
+       "rows": 135,
+       "clipped": 0,
+       "share": 0.0,
+       "perInput": {
+        "m2_yoy": 0
+       }
+      }
+     },
+     "m2eth": {
+      "own": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.652,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.3341,
+       "brierBase2019": 0.2991,
+       "beatsBase2019": false
+      },
+      "2016-2017": {
+       "n": 29,
+       "nPos": 28,
+       "auc": 0.357,
+       "aucNote": null,
+       "base": 0.966,
+       "brier": 0.9329,
+       "brierBase2019": 0.8252,
+       "beatsBase2019": false
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.0001,
+       "brierBase2019": 0.0057,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.357,
+      "fresh": {
+       "n": 22,
+       "nPos": 5,
+       "auc": 0.965,
+       "aucNote": null,
+       "base": 0.227,
+       "brier": 0.2118,
+       "brierBase2019": 0.1986,
+       "beatsBase2019": false
+      },
+      "pairs": {
+       "pairs": 1484,
+       "crossShare": 0.981,
+       "crossAuc": 0.657,
+       "withinPairs": 28,
+       "withinAuc": 0.357
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2017-06-18..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.652,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.3341,
+       "brierBase2019": 0.2991,
+       "beatsBase2019": false
+      },
+      "clip": {
+       "rows": 81,
+       "clipped": 24,
+       "share": 0.296,
+       "perInput": {
+        "m2_yoy": 0,
+        "ethbtc_fromhi52w": 24
+       }
+      }
+     },
+     "readiness": {
+      "own": {
+       "n": 135,
+       "nPos": 65,
+       "auc": 0.738,
+       "aucNote": null,
+       "base": 0.481,
+       "brier": 0.2519,
+       "brierBase2019": 0.4144,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 65,
+       "auc": 0.738,
+       "aucNote": null,
+       "base": 0.783,
+       "brier": 0.4096,
+       "brierBase2019": 0.6704,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.0,
+       "brierBase2019": 0.0057,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.738,
+      "fresh": {
+       "n": 47,
+       "nPos": 24,
+       "auc": 0.729,
+       "aucNote": null,
+       "base": 0.511,
+       "brier": 0.2766,
+       "brierBase2019": 0.4391,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 4550,
+       "crossShare": 0.743,
+       "crossAuc": 0.738,
+       "withinPairs": 1170,
+       "withinAuc": 0.738
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2016-10-02..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.786,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.1481,
+       "brierBase2019": 0.2991,
+       "beatsBase2019": true
+      }
+     },
+     "readiness_harnessATH": {
+      "own": {
+       "n": 135,
+       "nPos": 65,
+       "auc": 0.77,
+       "aucNote": null,
+       "base": 0.481,
+       "brier": 0.2222,
+       "brierBase2019": 0.4144,
+       "beatsBase2019": true
+      },
+      "2016-2017": {
+       "n": 83,
+       "nPos": 65,
+       "auc": 0.729,
+       "aucNote": null,
+       "base": 0.783,
+       "brier": 0.3614,
+       "brierBase2019": 0.6704,
+       "beatsBase2019": true
+      },
+      "2018": {
+       "n": 52,
+       "nPos": 0,
+       "auc": null,
+       "aucNote": "undefined: one class only",
+       "base": 0.0,
+       "brier": 0.0,
+       "brierBase2019": 0.0057,
+       "beatsBase2019": true
+      },
+      "eraStratAuc": 0.729,
+      "fresh": {
+       "n": 47,
+       "nPos": 24,
+       "auc": 0.79,
+       "aucNote": null,
+       "base": 0.511,
+       "brier": 0.2128,
+       "brierBase2019": 0.4391,
+       "beatsBase2019": true
+      },
+      "pairs": {
+       "pairs": 4550,
+       "crossShare": 0.743,
+       "crossAuc": 0.785,
+       "withinPairs": 1170,
+       "withinAuc": 0.729
+      },
+      "episodeLOO": {
+       "nEpisodes": 1,
+       "min": null,
+       "minEpisode": null,
+       "perEpisode": {
+        "2016-10-02..2017-12-24": null
+       },
+       "note": "one event: AUC with the only episode removed is undefined, not identifiable"
+      },
+      "common": {
+       "n": 81,
+       "nPos": 28,
+       "auc": 0.786,
+       "aucNote": null,
+       "base": 0.346,
+       "brier": 0.1481,
+       "brierBase2019": 0.2991,
+       "beatsBase2019": true
+      }
+     }
+    }
+   }
+  },
+  "reverseHeadlineWindow": "purged",
+  "forward": {
+   "fall5_26w": {
+    "rows": 370,
+    "firstRow": "2019-04-07",
+    "oos": {},
+    "fixed5": {
+     "2019-2020": {
+      "n": 91,
+      "auc": 0.902,
+      "base": 0.538,
+      "brier": 0.147
+     },
+     "2021-2022": {
+      "n": 104,
+      "auc": 0.817,
+      "base": 0.337,
+      "brier": 0.2344
+     },
+     "2023-2026": {
+      "n": 175,
+      "auc": 0.99,
+      "base": 0.091,
+      "brier": 0.0558
+     },
+     "pooled": {
+      "n": 370,
+      "auc": 0.922,
+      "base": 0.27,
+      "brier": 0.1284
+     },
+     "eraStratAuc": 0.905,
+     "fresh": {
+      "2019-2020": 0.956,
+      "2021-2022": 0.746,
+      "2023-2026": 0.988,
+      "pooled": 0.937
+     },
+     "today": 0.0399
+    },
+    "m2only": {
+     "2019-2020": {
+      "n": 91,
+      "auc": 0.735,
+      "base": 0.538,
+      "brier": 0.2474
+     },
+     "2021-2022": {
+      "n": 104,
+      "auc": 0.816,
+      "base": 0.337,
+      "brier": 0.2453
+     },
+     "2023-2026": {
+      "n": 175,
+      "auc": 0.69,
+      "base": 0.091,
+      "brier": 0.1211
+     },
+     "pooled": {
+      "n": 370,
+      "auc": 0.837,
+      "base": 0.27,
+      "brier": 0.1871
+     },
+     "eraStratAuc": 0.747,
+     "fresh": {
+      "2019-2020": 0.931,
+      "2021-2022": 0.688,
+      "2023-2026": 0.686,
+      "pooled": 0.826
+     },
+     "today": 0.3197
+    },
+    "m2eth": {
+     "2019-2020": {
+      "n": 91,
+      "auc": 0.866,
+      "base": 0.538,
+      "brier": 0.2646
+     },
+     "2021-2022": {
+      "n": 104,
+      "auc": 0.717,
+      "base": 0.337,
+      "brier": 0.2116
+     },
+     "2023-2026": {
+      "n": 175,
+      "auc": 0.981,
+      "base": 0.091,
+      "brier": 0.052
+     },
+     "pooled": {
+      "n": 370,
+      "auc": 0.891,
+      "base": 0.27,
+      "brier": 0.1491
+     },
+     "eraStratAuc": 0.856,
+     "fresh": {
+      "2019-2020": 0.941,
+      "2021-2022": 0.702,
+      "2023-2026": 0.98,
+      "pooled": 0.933
+     },
+     "today": 0.1185
+    },
+    "readiness": {
+     "2019-2020": {
+      "n": 91,
+      "auc": 0.561,
+      "base": 0.538,
+      "brier": 0.4725
+     },
+     "2021-2022": {
+      "n": 104,
+      "auc": 0.65,
+      "base": 0.337,
+      "brier": 0.25
+     },
+     "2023-2026": {
+      "n": 175,
+      "auc": 0.746,
+      "base": 0.091,
+      "brier": 0.1543
+     },
+     "pooled": {
+      "n": 370,
+      "auc": 0.596,
+      "base": 0.27,
+      "brier": 0.2595
+     },
+     "eraStratAuc": 0.659,
+     "fresh": {
+      "2019-2020": 0.593,
+      "2021-2022": 0.667,
+      "2023-2026": 0.775,
+      "pooled": 0.645
+     },
+     "today": 0.0
+    }
+   },
+   "fall10_26w": {
+    "rows": 370,
+    "firstRow": "2019-04-07",
+    "oos": {},
+    "fixed5": {
+     "2019-2020": {
+      "n": 91,
+      "auc": 0.895,
+      "base": 0.11,
+      "brier": 0.2117
+     },
+     "2021-2022": {
+      "n": 104,
+      "auc": 0.883,
+      "base": 0.163,
+      "brier": 0.1042
+     },
+     "2023-2026": {
+      "n": 175,
+      "auc": null,
+      "base": 0.0,
+      "brier": 0.009
+     },
+     "pooled": {
+      "n": 370,
+      "auc": 0.893,
+      "base": 0.073,
+      "brier": 0.0856
+     },
+     "eraStratAuc": 0.887,
+     "fresh": {
+      "2019-2020": 0.902,
+      "2021-2022": 0.971,
+      "2023-2026": null,
+      "pooled": 0.979
+     },
+     "today": 0.0006
+    },
+    "m2only": {
+     "2019-2020": {
+      "n": 91,
+      "auc": 0.735,
+      "base": 0.11,
+      "brier": 0.4285
+     },
+     "2021-2022": {
+      "n": 104,
+      "auc": 0.851,
+      "base": 0.163,
+      "brier": 0.1218
+     },
+     "2023-2026": {
+      "n": 175,
+      "auc": null,
+      "base": 0.0,
+      "brier": 0.0194
+     },
+     "pooled": {
+      "n": 370,
+      "auc": 0.897,
+      "base": 0.073,
+      "brier": 0.1488
+     },
+     "eraStratAuc": 0.81,
+     "fresh": {
+      "2019-2020": 0.879,
+      "2021-2022": 1.0,
+      "2023-2026": null,
+      "pooled": 0.981
+     },
+     "today": 0.1448
+    },
+    "m2eth": {
+     "2019-2020": {
+      "n": 91,
+      "auc": 0.433,
+      "base": 0.11,
+      "brier": 0.5175
+     },
+     "2021-2022": {
+      "n": 104,
+      "auc": 0.849,
+      "base": 0.163,
+      "brier": 0.0795
+     },
+     "2023-2026": {
+      "n": 175,
+      "auc": null,
+      "base": 0.0,
+      "brier": 0.0035
+     },
+     "pooled": {
+      "n": 370,
+      "auc": 0.82,
+      "base": 0.073,
+      "brier": 0.1513
+     },
+     "eraStratAuc": 0.702,
+     "fresh": {
+      "2019-2020": 0.697,
+      "2021-2022": 1.0,
+      "2023-2026": null,
+      "pooled": 0.951
+     },
+     "today": 0.0189
+    },
+    "readiness": {
+     "2019-2020": {
+      "n": 91,
+      "auc": 0.8,
+      "base": 0.11,
+      "brier": 0.044
+     },
+     "2021-2022": {
+      "n": 104,
+      "auc": 0.73,
+      "base": 0.163,
+      "brier": 0.1346
+     },
+     "2023-2026": {
+      "n": 175,
+      "auc": null,
+      "base": 0.0,
+      "brier": 0.1771
+     },
+     "pooled": {
+      "n": 370,
+      "auc": 0.724,
+      "base": 0.073,
+      "brier": 0.1324
+     },
+     "eraStratAuc": 0.755,
+     "fresh": {
+      "2019-2020": 0.778,
+      "2021-2022": 0.986,
+      "2023-2026": null,
+      "pooled": 0.77
+     },
+     "today": 0.0
+    }
+   }
+  }
+ },
+ "null": {
+  "plan": {
+   "fall5_26w": {
+    "meta": {
+     "nBlocks": 9,
+     "distinctShifts": 83,
+     "shiftExact": true,
+     "permExact": false,
+     "permDraws": 50,
+     "distinctArrangements": 362880
+    },
+    "fixed5": {
+     "shift": {
+      "n": 83,
+      "real": 0.949,
+      "nullMedian": 0.2462,
+      "nullP95": 0.8027,
+      "nullP05": 0.068,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.949,
+      "nullMedian": 0.7557,
+      "nullP95": 0.8993,
+      "nullP05": 0.1247,
+      "p": 0.0,
+      "exact": false,
+      "quotable": true
+     }
+    },
+    "m2only": {
+     "shift": {
+      "n": 83,
+      "real": 0.787,
+      "nullMedian": 0.2819,
+      "nullP95": 0.7578,
+      "nullP05": 0.1031,
+      "p": 0.024,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.787,
+      "nullMedian": 0.3554,
+      "nullP95": 0.9877,
+      "nullP05": 0.0391,
+      "p": 0.28,
+      "exact": false,
+      "quotable": true
+     }
+    },
+    "m2eth": {
+     "shift": {
+      "n": 83,
+      "real": 0.655,
+      "nullMedian": 0.571,
+      "nullP95": 0.7117,
+      "nullP05": 0.1845,
+      "p": 0.229,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.655,
+      "nullMedian": 0.4686,
+      "nullP95": 0.7364,
+      "nullP05": 0.1192,
+      "p": 0.18,
+      "exact": false,
+      "quotable": true
+     }
+    },
+    "readiness": {
+     "shift": {
+      "n": 83,
+      "real": 0.696,
+      "nullMedian": 0.4216,
+      "nullP95": 0.5894,
+      "nullP05": 0.2842,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.696,
+      "nullMedian": 0.597,
+      "nullP95": 0.6962,
+      "nullP05": 0.4063,
+      "p": 0.2,
+      "exact": false,
+      "quotable": true
+     }
+    },
+    "readiness_harnessATH": {
+     "shift": {
+      "n": 83,
+      "real": 0.716,
+      "nullMedian": 0.3959,
+      "nullP95": 0.5485,
+      "nullP05": 0.2586,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.716,
+      "nullMedian": 0.5866,
+      "nullP95": 0.7247,
+      "nullP05": 0.3417,
+      "p": 0.16,
+      "exact": false,
+      "quotable": true
+     }
+    }
+   },
+   "fall10_26w": {
+    "meta": {
+     "nBlocks": 3,
+     "distinctShifts": 83,
+     "shiftExact": true,
+     "permExact": true,
+     "permDraws": 6,
+     "distinctArrangements": 6
+    },
+    "fixed5": {
+     "shift": {
+      "n": 83,
+      "real": 0.968,
+      "nullMedian": 0.1832,
+      "nullP95": 0.7854,
+      "nullP05": 0.0062,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.968,
+      "nullMedian": 0.784,
+      "nullP95": 0.9277,
+      "nullP05": 0.2019,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     }
+    },
+    "m2only": {
+     "shift": {
+      "n": 83,
+      "real": 0.848,
+      "nullMedian": 0.2565,
+      "nullP95": 0.7853,
+      "nullP05": 0.0217,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.848,
+      "nullMedian": 0.5391,
+      "nullP95": 0.9997,
+      "nullP05": 0.0025,
+      "p": 0.333,
+      "exact": true,
+      "quotable": true
+     }
+    },
+    "m2eth": {
+     "shift": {
+      "n": 83,
+      "real": 0.639,
+      "nullMedian": 0.4969,
+      "nullP95": 0.8503,
+      "nullP05": 0.1642,
+      "p": 0.217,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.639,
+      "nullMedian": 0.4783,
+      "nullP95": 0.6387,
+      "nullP05": 0.1829,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     }
+    },
+    "readiness": {
+     "shift": {
+      "n": 83,
+      "real": 0.738,
+      "nullMedian": 0.3824,
+      "nullP95": 0.6183,
+      "nullP05": 0.2786,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.738,
+      "nullMedian": 0.5456,
+      "nullP95": 0.694,
+      "nullP05": 0.4269,
+      "p": 0.167,
+      "exact": true,
+      "quotable": true
+     }
+    },
+    "readiness_harnessATH": {
+     "shift": {
+      "n": 83,
+      "real": 0.77,
+      "nullMedian": 0.3846,
+      "nullP95": 0.5626,
+      "nullP05": 0.2511,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.77,
+      "nullMedian": 0.5478,
+      "nullP95": 0.7332,
+      "nullP05": 0.3698,
+      "p": 0.167,
+      "exact": true,
+      "quotable": true
+     }
+    }
+   }
+  },
+  "purged": {
+   "fall5_26w": {
+    "meta": {
+     "nBlocks": 9,
+     "distinctShifts": 83,
+     "shiftExact": true,
+     "permExact": false,
+     "permDraws": 50,
+     "distinctArrangements": 362880
+    },
+    "fixed5": {
+     "shift": {
+      "n": 83,
+      "real": 0.827,
+      "nullMedian": 0.3996,
+      "nullP95": 0.6368,
+      "nullP05": 0.2031,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.827,
+      "nullMedian": 0.5278,
+      "nullP95": 0.7499,
+      "nullP05": 0.3447,
+      "p": 0.0,
+      "exact": false,
+      "quotable": true
+     }
+    },
+    "m2only": {
+     "shift": {
+      "n": 83,
+      "real": 0.787,
+      "nullMedian": 0.2819,
+      "nullP95": 0.7578,
+      "nullP05": 0.1031,
+      "p": 0.024,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.787,
+      "nullMedian": 0.4225,
+      "nullP95": 0.9538,
+      "nullP05": 0.0268,
+      "p": 0.2,
+      "exact": false,
+      "quotable": true
+     }
+    },
+    "m2eth": {
+     "shift": {
+      "n": 83,
+      "real": 0.663,
+      "nullMedian": 0.5626,
+      "nullP95": 0.7095,
+      "nullP05": 0.1877,
+      "p": 0.157,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.663,
+      "nullMedian": 0.4355,
+      "nullP95": 0.7662,
+      "nullP05": 0.1734,
+      "p": 0.2,
+      "exact": false,
+      "quotable": true
+     }
+    },
+    "readiness": {
+     "shift": {
+      "n": 83,
+      "real": 0.696,
+      "nullMedian": 0.4216,
+      "nullP95": 0.5894,
+      "nullP05": 0.2842,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.696,
+      "nullMedian": 0.5894,
+      "nullP95": 0.6962,
+      "nullP05": 0.4269,
+      "p": 0.26,
+      "exact": false,
+      "quotable": true
+     }
+    },
+    "readiness_harnessATH": {
+     "shift": {
+      "n": 83,
+      "real": 0.716,
+      "nullMedian": 0.3959,
+      "nullP95": 0.5485,
+      "nullP05": 0.2586,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 50,
+      "real": 0.716,
+      "nullMedian": 0.579,
+      "nullP95": 0.7163,
+      "nullP05": 0.3723,
+      "p": 0.16,
+      "exact": false,
+      "quotable": true
+     }
+    }
+   },
+   "fall10_26w": {
+    "meta": {
+     "nBlocks": 3,
+     "distinctShifts": 83,
+     "shiftExact": true,
+     "permExact": true,
+     "permDraws": 6,
+     "distinctArrangements": 6
+    },
+    "fixed5": {
+     "shift": {
+      "n": 83,
+      "real": 0.969,
+      "nullMedian": 0.1769,
+      "nullP95": 0.7907,
+      "nullP05": 0.0056,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.969,
+      "nullMedian": 0.7886,
+      "nullP95": 0.9281,
+      "nullP05": 0.2029,
+      "p": 0.167,
+      "exact": true,
+      "quotable": true
+     }
+    },
+    "m2only": {
+     "shift": {
+      "n": 83,
+      "real": 0.848,
+      "nullMedian": 0.2565,
+      "nullP95": 0.7853,
+      "nullP05": 0.0217,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.848,
+      "nullMedian": 0.5391,
+      "nullP95": 0.9997,
+      "nullP05": 0.0025,
+      "p": 0.333,
+      "exact": true,
+      "quotable": true
+     }
+    },
+    "m2eth": {
+     "shift": {
+      "n": 83,
+      "real": 0.652,
+      "nullMedian": 0.4872,
+      "nullP95": 0.8068,
+      "nullP05": 0.1942,
+      "p": 0.205,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.652,
+      "nullMedian": 0.477,
+      "nullP95": 0.6503,
+      "nullP05": 0.2079,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     }
+    },
+    "readiness": {
+     "shift": {
+      "n": 83,
+      "real": 0.738,
+      "nullMedian": 0.3824,
+      "nullP95": 0.6183,
+      "nullP05": 0.2786,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.738,
+      "nullMedian": 0.5456,
+      "nullP95": 0.694,
+      "nullP05": 0.4269,
+      "p": 0.167,
+      "exact": true,
+      "quotable": true
+     }
+    },
+    "readiness_harnessATH": {
+     "shift": {
+      "n": 83,
+      "real": 0.77,
+      "nullMedian": 0.3846,
+      "nullP95": 0.5626,
+      "nullP05": 0.2511,
+      "p": 0.0,
+      "exact": true,
+      "quotable": true
+     },
+     "perm": {
+      "n": 6,
+      "real": 0.77,
+      "nullMedian": 0.5478,
+      "nullP95": 0.7332,
+      "nullP05": 0.3698,
+      "p": 0.167,
+      "exact": true,
+      "quotable": true
+     }
+    }
+   }
+  }
+ },
+ "today": {
+  "asOf": "2026-11-01",
+  "dataLastBar": {
+   "utc": "2026-11-02 00:00 UTC",
+   "et": "2026-11-01 19:00 EST"
+  },
+  "provisionalBars": [
+   "2026-11-08"
+  ],
+  "fixed5": 0.0399,
+  "forwardReadings": {
+   "fixed5": 0.0399,
+   "m2only": 0.3197,
+   "m2eth": 0.1185,
+   "readiness": 0.0
+  },
+  "readinessGate": {
+   "gateOn": false,
+   "btc_dd_ath": -0.4567,
+   "btcRallyNeededToWithin5pctOfATH": 0.4999,
+   "m2_yoy": 0.0543,
+   "m2Above0": true
+  },
+  "oneInputAtPeak": {
+   "2016-11-20": {
+    "readingAllAtPeak": null,
+    "inputsAtClipAllAtPeak": [],
+    "perInput": {
+     "usdtd_vsma30w": {
+      "peakValue": 0.0958,
+      "move": 0.1906,
+      "moveSd": 0.7,
+      "zAtPeak": -0.09,
+      "atClip": false,
+      "reading": 0.0871,
+      "note": null
+     },
+     "ethbtc_fromhi52w": {
+      "peakValue": null,
+      "move": null,
+      "moveSd": null,
+      "zAtPeak": null,
+      "atClip": null,
+      "reading": null,
+      "note": "not identifiable (input undefined at that week)"
+     },
+     "btc_dd_ath": {
+      "peakValue": -0.2653,
+      "move": 0.1914,
+      "moveSd": 0.42,
+      "zAtPeak": 0.66,
+      "atClip": false,
+      "reading": 0.0607,
+      "note": null
+     },
+     "btcusd_ret13w": {
+      "peakValue": 0.2303,
+      "move": 0.0216,
+      "moveSd": 0.05,
+      "zAtPeak": 0.29,
+      "atClip": false,
+      "reading": 0.041,
+      "note": null
+     },
+     "m2_yoy": {
+      "peakValue": 0.0697,
+      "move": 0.0154,
+      "moveSd": 0.23,
+      "zAtPeak": 0.15,
+      "atClip": false,
+      "reading": 0.0553,
+      "note": null
+     }
+    }
+   },
+   "2017-12-10": {
+    "readingAllAtPeak": 0.9703,
+    "inputsAtClipAllAtPeak": [
+     "ethbtc_fromhi52w"
+    ],
+    "perInput": {
+     "usdtd_vsma30w": {
+      "peakValue": -0.2629,
+      "move": -0.1682,
+      "moveSd": -0.62,
+      "zAtPeak": -1.41,
+      "atClip": false,
+      "reading": 0.0196,
+      "note": null
+     },
+     "ethbtc_fromhi52w": {
+      "peakValue": -1.583,
+      "move": -1.3941,
+      "moveSd": -4.09,
+      "zAtPeak": -3.37,
+      "atClip": true,
+      "reading": 0.86,
+      "note": "the model consumes this input at the -3 sd clip (z -3.4): the reading is what the clipped value gives, a larger move adds nothing"
+     },
+     "btc_dd_ath": {
+      "peakValue": 0.0,
+      "move": 0.4567,
+      "moveSd": 1.01,
+      "zAtPeak": 1.25,
+      "atClip": false,
+      "reading": 0.1064,
+      "note": null
+     },
+     "btcusd_ret13w": {
+      "peakValue": 1.2459,
+      "move": 1.0373,
+      "moveSd": 2.49,
+      "zAtPeak": 2.73,
+      "atClip": false,
+      "reading": 0.146,
+      "note": null
+     },
+     "m2_yoy": {
+      "peakValue": 0.0514,
+      "move": -0.0029,
+      "moveSd": -0.04,
+      "zAtPeak": -0.12,
+      "atClip": false,
+      "reading": 0.0375,
+      "note": null
+     }
+    }
+   },
+   "2021-01-03": {
+    "readingAllAtPeak": 0.8115,
+    "inputsAtClipAllAtPeak": [],
+    "perInput": {
+     "usdtd_vsma30w": {
+      "peakValue": -0.389,
+      "move": -0.2943,
+      "moveSd": -1.08,
+      "zAtPeak": -1.87,
+      "atClip": false,
+      "reading": 0.0114,
+      "note": null
+     },
+     "ethbtc_fromhi52w": {
+      "peakValue": -0.2119,
+      "move": -0.023,
+      "moveSd": -0.07,
+      "zAtPeak": 0.65,
+      "atClip": false,
+      "reading": 0.0435,
+      "note": null
+     },
+     "btc_dd_ath": {
+      "peakValue": 0.0,
+      "move": 0.4567,
+      "moveSd": 1.01,
+      "zAtPeak": 1.25,
+      "atClip": false,
+      "reading": 0.1064,
+      "note": null
+     },
+     "btcusd_ret13w": {
+      "peakValue": 1.1321,
+      "move": 0.9234,
+      "moveSd": 2.22,
+      "zAtPeak": 2.46,
+      "atClip": false,
+      "reading": 0.1276,
+      "note": null
+     },
+     "m2_yoy": {
+      "peakValue": 0.2125,
+      "move": 0.1582,
+      "moveSd": 2.32,
+      "zAtPeak": 2.25,
+      "atClip": false,
+      "reading": 0.5842,
+      "note": null
+     }
+    }
+   }
+  },
+  "falsifiers": {
+   "i_higherHighAbove65.7": "not-yet",
+   "ii_engineImminentSinceFeb2023": "not-yet",
+   "iii_nextFallWhileEngineFit<0.8": "not-yet",
+   "source": "copied from study8_honest.py main (calendar falsifier block), TODAY taken from the data's last bar; the 65.7 threshold and the 2027-11-02 deadline are ROUND8_PLAN's hand-set constants"
+  },
+  "decision": {
+   "readings": {
+    "fixed5": 0.0399,
+    "m2only": 0.3197,
+    "spreadLow": 0.0399,
+    "spreadHigh": 0.5915
+   },
+   "computedReadings": [
+    "fixed5",
+    "m2only"
+   ],
+   "spreadSource": "research/btcd_fractal/refresh/out8/forecast/results.json:today/onset/spread_fall5_26w_componentsInSupport",
+   "spreadHandSet": false,
+   "table": [
+    {
+     "costRatio_missedSeason_to_falseAlarm": 1,
+     "threshold": 0.5,
+     "clearedBy": [
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "spreadHigh"
+     ]
+    },
+    {
+     "costRatio_missedSeason_to_falseAlarm": 2,
+     "threshold": 0.3333,
+     "clearedBy": [
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "spreadHigh"
+     ]
+    },
+    {
+     "costRatio_missedSeason_to_falseAlarm": 5,
+     "threshold": 0.1667,
+     "clearedBy": [
+      "m2only",
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "m2only",
+      "spreadHigh"
+     ]
+    },
+    {
+     "costRatio_missedSeason_to_falseAlarm": 10,
+     "threshold": 0.0909,
+     "clearedBy": [
+      "m2only",
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "m2only",
+      "spreadHigh"
+     ]
+    },
+    {
+     "costRatio_missedSeason_to_falseAlarm": 20,
+     "threshold": 0.0476,
+     "clearedBy": [
+      "m2only",
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "m2only",
+      "spreadHigh"
+     ]
+    }
+   ],
+   "rule": "act when P(fall5_26w) >= 1 / (1 + ratio)"
+  }
+ },
+ "series": {
+  "reverse_fixed5_fall5_26w": [
+   {
+    "t": "2017-06-18",
+    "v": 0.3855
+   },
+   {
+    "t": "2017-07-02",
+    "v": 0.7785
+   },
+   {
+    "t": "2017-07-16",
+    "v": 0.9149
+   },
+   {
+    "t": "2017-07-30",
+    "v": 0.9682
+   },
+   {
+    "t": "2017-08-13",
+    "v": 0.8751
+   },
+   {
+    "t": "2017-08-27",
+    "v": 0.6169
+   },
+   {
+    "t": "2017-09-10",
+    "v": 0.7667
+   },
+   {
+    "t": "2017-09-24",
+    "v": 0.7922
+   },
+   {
+    "t": "2017-10-08",
+    "v": 0.8465
+   },
+   {
+    "t": "2017-10-22",
+    "v": 0.9639
+   },
+   {
+    "t": "2017-11-05",
+    "v": 0.962
+   },
+   {
+    "t": "2017-11-19",
+    "v": 0.9551
+   },
+   {
+    "t": "2017-12-03",
+    "v": 0.96
+   },
+   {
+    "t": "2017-12-17",
+    "v": 0.9459
+   },
+   {
+    "t": "2017-12-31",
+    "v": 0.963
+   },
+   {
+    "t": "2018-01-14",
+    "v": 0.2603
+   },
+   {
+    "t": "2018-01-28",
+    "v": 0.461
+   },
+   {
+    "t": "2018-02-11",
+    "v": 0.6814
+   },
+   {
+    "t": "2018-02-25",
+    "v": 0.6079
+   },
+   {
+    "t": "2018-03-11",
+    "v": 0.5848
+   },
+   {
+    "t": "2018-03-25",
+    "v": 0.8031
+   },
+   {
+    "t": "2018-04-08",
+    "v": 0.7747
+   },
+   {
+    "t": "2018-04-22",
+    "v": 0.6152
+   },
+   {
+    "t": "2018-05-06",
+    "v": 0.4837
+   },
+   {
+    "t": "2018-05-20",
+    "v": 0.4124
+   },
+   {
+    "t": "2018-06-03",
+    "v": 0.3893
+   },
+   {
+    "t": "2018-06-17",
+    "v": 0.3967
+   },
+   {
+    "t": "2018-07-01",
+    "v": 0.5017
+   },
+   {
+    "t": "2018-07-15",
+    "v": 0.329
+   },
+   {
+    "t": "2018-07-29",
+    "v": 0.4224
+   },
+   {
+    "t": "2018-08-12",
+    "v": 0.6673
+   },
+   {
+    "t": "2018-08-26",
+    "v": 0.9152
+   },
+   {
+    "t": "2018-09-09",
+    "v": 0.9551
+   },
+   {
+    "t": "2018-09-23",
+    "v": 0.9456
+   },
+   {
+    "t": "2018-10-07",
+    "v": 0.9248
+   },
+   {
+    "t": "2018-10-21",
+    "v": 0.7862
+   },
+   {
+    "t": "2018-11-04",
+    "v": 0.7179
+   },
+   {
+    "t": "2018-11-18",
+    "v": 0.7602
+   },
+   {
+    "t": "2018-12-02",
+    "v": 0.7983
+   },
+   {
+    "t": "2018-12-16",
+    "v": 0.8451
+   },
+   {
+    "t": "2018-12-30",
+    "v": 0.7634
+   }
+  ],
+  "reverse_m2only_fall5_26w": [
+   {
+    "t": "2016-06-05",
+    "v": 0.2304
+   },
+   {
+    "t": "2016-06-19",
+    "v": 0.2388
+   },
+   {
+    "t": "2016-07-03",
+    "v": 0.2388
+   },
+   {
+    "t": "2016-07-17",
+    "v": 0.2465
+   },
+   {
+    "t": "2016-07-31",
+    "v": 0.2465
+   },
+   {
+    "t": "2016-08-14",
+    "v": 0.2498
+   },
+   {
+    "t": "2016-08-28",
+    "v": 0.2498
+   },
+   {
+    "t": "2016-09-11",
+    "v": 0.2515
+   },
+   {
+    "t": "2016-09-25",
+    "v": 0.2515
+   },
+   {
+    "t": "2016-10-09",
+    "v": 0.2515
+   },
+   {
+    "t": "2016-10-23",
+    "v": 0.2584
+   },
+   {
+    "t": "2016-11-06",
+    "v": 0.2584
+   },
+   {
+    "t": "2016-11-20",
+    "v": 0.258
+   },
+   {
+    "t": "2016-12-04",
+    "v": 0.258
+   },
+   {
+    "t": "2016-12-18",
+    "v": 0.2637
+   },
+   {
+    "t": "2017-01-01",
+    "v": 0.2637
+   },
+   {
+    "t": "2017-01-15",
+    "v": 0.2584
+   },
+   {
+    "t": "2017-01-29",
+    "v": 0.2584
+   },
+   {
+    "t": "2017-02-12",
+    "v": 0.2518
+   },
+   {
+    "t": "2017-02-26",
+    "v": 0.2518
+   },
+   {
+    "t": "2017-03-12",
+    "v": 0.2248
+   },
+   {
+    "t": "2017-03-26",
+    "v": 0.2384
+   },
+   {
+    "t": "2017-04-09",
+    "v": 0.2384
+   },
+   {
+    "t": "2017-04-23",
+    "v": 0.2371
+   },
+   {
+    "t": "2017-05-07",
+    "v": 0.2371
+   },
+   {
+    "t": "2017-05-21",
+    "v": 0.2375
+   },
+   {
+    "t": "2017-06-04",
+    "v": 0.2375
+   },
+   {
+    "t": "2017-06-18",
+    "v": 0.2322
+   },
+   {
+    "t": "2017-07-02",
+    "v": 0.2322
+   },
+   {
+    "t": "2017-07-16",
+    "v": 0.2291
+   },
+   {
+    "t": "2017-07-30",
+    "v": 0.2291
+   },
+   {
+    "t": "2017-08-13",
+    "v": 0.2207
+   },
+   {
+    "t": "2017-08-27",
+    "v": 0.2207
+   },
+   {
+    "t": "2017-09-10",
+    "v": 0.2093
+   },
+   {
+    "t": "2017-09-24",
+    "v": 0.2206
+   },
+   {
+    "t": "2017-10-08",
+    "v": 0.2206
+   },
+   {
+    "t": "2017-10-22",
+    "v": 0.2148
+   },
+   {
+    "t": "2017-11-05",
+    "v": 0.2148
+   },
+   {
+    "t": "2017-11-19",
+    "v": 0.2111
+   },
+   {
+    "t": "2017-12-03",
+    "v": 0.2111
+   },
+   {
+    "t": "2017-12-17",
+    "v": 0.2078
+   },
+   {
+    "t": "2017-12-31",
+    "v": 0.2078
+   },
+   {
+    "t": "2018-01-14",
+    "v": 0.1997
+   },
+   {
+    "t": "2018-01-28",
+    "v": 0.1997
+   },
+   {
+    "t": "2018-02-11",
+    "v": 0.2015
+   },
+   {
+    "t": "2018-02-25",
+    "v": 0.2015
+   },
+   {
+    "t": "2018-03-11",
+    "v": 0.2015
+   },
+   {
+    "t": "2018-03-25",
+    "v": 0.1909
+   },
+   {
+    "t": "2018-04-08",
+    "v": 0.1909
+   },
+   {
+    "t": "2018-04-22",
+    "v": 0.1862
+   },
+   {
+    "t": "2018-05-06",
+    "v": 0.1862
+   },
+   {
+    "t": "2018-05-20",
+    "v": 0.1842
+   },
+   {
+    "t": "2018-06-03",
+    "v": 0.1842
+   },
+   {
+    "t": "2018-06-17",
+    "v": 0.1781
+   },
+   {
+    "t": "2018-07-01",
+    "v": 0.1781
+   },
+   {
+    "t": "2018-07-15",
+    "v": 0.1788
+   },
+   {
+    "t": "2018-07-29",
+    "v": 0.1788
+   },
+   {
+    "t": "2018-08-12",
+    "v": 0.1843
+   },
+   {
+    "t": "2018-08-26",
+    "v": 0.1843
+   },
+   {
+    "t": "2018-09-09",
+    "v": 0.1843
+   },
+   {
+    "t": "2018-09-23",
+    "v": 0.18
+   },
+   {
+    "t": "2018-10-07",
+    "v": 0.18
+   },
+   {
+    "t": "2018-10-21",
+    "v": 0.1781
+   },
+   {
+    "t": "2018-11-04",
+    "v": 0.1781
+   },
+   {
+    "t": "2018-11-18",
+    "v": 0.1758
+   },
+   {
+    "t": "2018-12-02",
+    "v": 0.1758
+   },
+   {
+    "t": "2018-12-16",
+    "v": 0.1692
+   },
+   {
+    "t": "2018-12-30",
+    "v": 0.1692
+   }
+  ],
+  "reverse_fixed5_fall5_26w_planWindow": [
+   {
+    "t": "2017-06-18",
+    "v": 0.7251
+   },
+   {
+    "t": "2017-07-02",
+    "v": 0.9413
+   },
+   {
+    "t": "2017-07-16",
+    "v": 0.9503
+   },
+   {
+    "t": "2017-07-30",
+    "v": 0.9882
+   },
+   {
+    "t": "2017-08-13",
+    "v": 0.906
+   },
+   {
+    "t": "2017-08-27",
+    "v": 0.6488
+   },
+   {
+    "t": "2017-09-10",
+    "v": 0.8291
+   },
+   {
+    "t": "2017-09-24",
+    "v": 0.8589
+   },
+   {
+    "t": "2017-10-08",
+    "v": 0.8646
+   },
+   {
+    "t": "2017-10-22",
+    "v": 0.9336
+   },
+   {
+    "t": "2017-11-05",
+    "v": 0.9581
+   },
+   {
+    "t": "2017-11-19",
+    "v": 0.9467
+   },
+   {
+    "t": "2017-12-03",
+    "v": 0.95
+   },
+   {
+    "t": "2017-12-17",
+    "v": 0.8915
+   },
+   {
+    "t": "2017-12-31",
+    "v": 0.8331
+   },
+   {
+    "t": "2018-01-14",
+    "v": 0.1451
+   },
+   {
+    "t": "2018-01-28",
+    "v": 0.4937
+   },
+   {
+    "t": "2018-02-11",
+    "v": 0.7111
+   },
+   {
+    "t": "2018-02-25",
+    "v": 0.6621
+   },
+   {
+    "t": "2018-03-11",
+    "v": 0.6525
+   },
+   {
+    "t": "2018-03-25",
+    "v": 0.78
+   },
+   {
+    "t": "2018-04-08",
+    "v": 0.6725
+   },
+   {
+    "t": "2018-04-22",
+    "v": 0.5304
+   },
+   {
+    "t": "2018-05-06",
+    "v": 0.3585
+   },
+   {
+    "t": "2018-05-20",
+    "v": 0.3651
+   },
+   {
+    "t": "2018-06-03",
+    "v": 0.3071
+   },
+   {
+    "t": "2018-06-17",
+    "v": 0.3546
+   },
+   {
+    "t": "2018-07-01",
+    "v": 0.4292
+   },
+   {
+    "t": "2018-07-15",
+    "v": 0.2506
+   },
+   {
+    "t": "2018-07-29",
+    "v": 0.2359
+   },
+   {
+    "t": "2018-08-12",
+    "v": 0.382
+   },
+   {
+    "t": "2018-08-26",
+    "v": 0.7164
+   },
+   {
+    "t": "2018-09-09",
+    "v": 0.8793
+   },
+   {
+    "t": "2018-09-23",
+    "v": 0.7297
+   },
+   {
+    "t": "2018-10-07",
+    "v": 0.6936
+   },
+   {
+    "t": "2018-10-21",
+    "v": 0.3496
+   },
+   {
+    "t": "2018-11-04",
+    "v": 0.1894
+   },
+   {
+    "t": "2018-11-18",
+    "v": 0.2341
+   },
+   {
+    "t": "2018-12-02",
+    "v": 0.3315
+   },
+   {
+    "t": "2018-12-16",
+    "v": 0.4012
+   },
+   {
+    "t": "2018-12-30",
+    "v": 0.1416
+   }
+  ],
+  "reverse_readiness": [
+   {
+    "t": "2016-06-05",
+    "v": 0.0
+   },
+   {
+    "t": "2016-06-19",
+    "v": 0.0
+   },
+   {
+    "t": "2016-07-03",
+    "v": 0.0
+   },
+   {
+    "t": "2016-07-17",
+    "v": 0.0
+   },
+   {
+    "t": "2016-07-31",
+    "v": 0.0
+   },
+   {
+    "t": "2016-08-14",
+    "v": 0.0
+   },
+   {
+    "t": "2016-08-28",
+    "v": 0.0
+   },
+   {
+    "t": "2016-09-11",
+    "v": 0.0
+   },
+   {
+    "t": "2016-09-25",
+    "v": 0.0
+   },
+   {
+    "t": "2016-10-09",
+    "v": 0.0
+   },
+   {
+    "t": "2016-10-23",
+    "v": 0.0
+   },
+   {
+    "t": "2016-11-06",
+    "v": 0.0
+   },
+   {
+    "t": "2016-11-20",
+    "v": 0.0
+   },
+   {
+    "t": "2016-12-04",
+    "v": 0.0
+   },
+   {
+    "t": "2016-12-18",
+    "v": 0.0
+   },
+   {
+    "t": "2017-01-01",
+    "v": 1.0
+   },
+   {
+    "t": "2017-01-15",
+    "v": 0.0
+   },
+   {
+    "t": "2017-01-29",
+    "v": 0.0
+   },
+   {
+    "t": "2017-02-12",
+    "v": 1.0
+   },
+   {
+    "t": "2017-02-26",
+    "v": 1.0
+   },
+   {
+    "t": "2017-03-12",
+    "v": 1.0
+   },
+   {
+    "t": "2017-03-26",
+    "v": 0.0
+   },
+   {
+    "t": "2017-04-09",
+    "v": 0.0
+   },
+   {
+    "t": "2017-04-23",
+    "v": 1.0
+   },
+   {
+    "t": "2017-05-07",
+    "v": 1.0
+   },
+   {
+    "t": "2017-05-21",
+    "v": 1.0
+   },
+   {
+    "t": "2017-06-04",
+    "v": 1.0
+   },
+   {
+    "t": "2017-06-18",
+    "v": 0.0
+   },
+   {
+    "t": "2017-07-02",
+    "v": 0.0
+   },
+   {
+    "t": "2017-07-16",
+    "v": 0.0
+   },
+   {
+    "t": "2017-07-30",
+    "v": 0.0
+   },
+   {
+    "t": "2017-08-13",
+    "v": 1.0
+   },
+   {
+    "t": "2017-08-27",
+    "v": 1.0
+   },
+   {
+    "t": "2017-09-10",
+    "v": 0.0
+   },
+   {
+    "t": "2017-09-24",
+    "v": 0.0
+   },
+   {
+    "t": "2017-10-08",
+    "v": 1.0
+   },
+   {
+    "t": "2017-10-22",
+    "v": 1.0
+   },
+   {
+    "t": "2017-11-05",
+    "v": 1.0
+   },
+   {
+    "t": "2017-11-19",
+    "v": 1.0
+   },
+   {
+    "t": "2017-12-03",
+    "v": 1.0
+   },
+   {
+    "t": "2017-12-17",
+    "v": 1.0
+   },
+   {
+    "t": "2017-12-31",
+    "v": 0.0
+   },
+   {
+    "t": "2018-01-14",
+    "v": 0.0
+   },
+   {
+    "t": "2018-01-28",
+    "v": 0.0
+   },
+   {
+    "t": "2018-02-11",
+    "v": 0.0
+   },
+   {
+    "t": "2018-02-25",
+    "v": 0.0
+   },
+   {
+    "t": "2018-03-11",
+    "v": 0.0
+   },
+   {
+    "t": "2018-03-25",
+    "v": 0.0
+   },
+   {
+    "t": "2018-04-08",
+    "v": 0.0
+   },
+   {
+    "t": "2018-04-22",
+    "v": 0.0
+   },
+   {
+    "t": "2018-05-06",
+    "v": 0.0
+   },
+   {
+    "t": "2018-05-20",
+    "v": 0.0
+   },
+   {
+    "t": "2018-06-03",
+    "v": 0.0
+   },
+   {
+    "t": "2018-06-17",
+    "v": 0.0
+   },
+   {
+    "t": "2018-07-01",
+    "v": 0.0
+   },
+   {
+    "t": "2018-07-15",
+    "v": 0.0
+   },
+   {
+    "t": "2018-07-29",
+    "v": 0.0
+   },
+   {
+    "t": "2018-08-12",
+    "v": 0.0
+   },
+   {
+    "t": "2018-08-26",
+    "v": 0.0
+   },
+   {
+    "t": "2018-09-09",
+    "v": 0.0
+   },
+   {
+    "t": "2018-09-23",
+    "v": 0.0
+   },
+   {
+    "t": "2018-10-07",
+    "v": 0.0
+   },
+   {
+    "t": "2018-10-21",
+    "v": 0.0
+   },
+   {
+    "t": "2018-11-04",
+    "v": 0.0
+   },
+   {
+    "t": "2018-11-18",
+    "v": 0.0
+   },
+   {
+    "t": "2018-12-02",
+    "v": 0.0
+   },
+   {
+    "t": "2018-12-16",
+    "v": 0.0
+   },
+   {
+    "t": "2018-12-30",
+    "v": 0.0
+   }
+  ],
+  "forward_fixed5_fall5_26w": [
+   {
+    "t": "2019-04-07",
+    "v": 0.012
+   },
+   {
+    "t": "2019-04-21",
+    "v": 0.0321
+   },
+   {
+    "t": "2019-05-05",
+    "v": 0.0828
+   },
+   {
+    "t": "2019-05-19",
+    "v": 0.0232
+   },
+   {
+    "t": "2019-06-02",
+    "v": 0.0277
+   },
+   {
+    "t": "2019-06-16",
+    "v": 0.0408
+   },
+   {
+    "t": "2019-06-30",
+    "v": 0.0857
+   },
+   {
+    "t": "2019-07-14",
+    "v": 0.2864
+   },
+   {
+    "t": "2019-07-28",
+    "v": 0.2494
+   },
+   {
+    "t": "2019-08-11",
+    "v": 0.3981
+   },
+   {
+    "t": "2019-08-25",
+    "v": 0.334
+   },
+   {
+    "t": "2019-09-08",
+    "v": 0.3376
+   },
+   {
+    "t": "2019-09-22",
+    "v": 0.2937
+   },
+   {
+    "t": "2019-10-06",
+    "v": 0.3096
+   },
+   {
+    "t": "2019-10-20",
+    "v": 0.4142
+   },
+   {
+    "t": "2019-11-03",
+    "v": 0.4642
+   },
+   {
+    "t": "2019-11-17",
+    "v": 0.5817
+   },
+   {
+    "t": "2019-12-01",
+    "v": 0.72
+   },
+   {
+    "t": "2019-12-15",
+    "v": 0.9595
+   },
+   {
+    "t": "2019-12-29",
+    "v": 0.9712
+   },
+   {
+    "t": "2020-01-12",
+    "v": 0.9945
+   },
+   {
+    "t": "2020-01-26",
+    "v": 0.9869
+   },
+   {
+    "t": "2020-02-09",
+    "v": 0.9417
+   },
+   {
+    "t": "2020-02-23",
+    "v": 0.5249
+   },
+   {
+    "t": "2020-03-08",
+    "v": 0.7969
+   },
+   {
+    "t": "2020-03-22",
+    "v": 0.9513
+   },
+   {
+    "t": "2020-04-05",
+    "v": 0.9966
+   },
+   {
+    "t": "2020-04-19",
+    "v": 0.9929
+   },
+   {
+    "t": "2020-05-03",
+    "v": 0.9941
+   },
+   {
+    "t": "2020-05-17",
+    "v": 0.9987
+   },
+   {
+    "t": "2020-05-31",
+    "v": 0.9953
+   },
+   {
+    "t": "2020-06-14",
+    "v": 0.9803
+   },
+   {
+    "t": "2020-06-28",
+    "v": 0.9815
+   },
+   {
+    "t": "2020-07-12",
+    "v": 0.3153
+   },
+   {
+    "t": "2020-07-26",
+    "v": 0.2873
+   },
+   {
+    "t": "2020-08-09",
+    "v": 0.2927
+   },
+   {
+    "t": "2020-08-23",
+    "v": 0.3652
+   },
+   {
+    "t": "2020-09-06",
+    "v": 0.6228
+   },
+   {
+    "t": "2020-09-20",
+    "v": 0.6438
+   },
+   {
+    "t": "2020-10-04",
+    "v": 0.9706
+   },
+   {
+    "t": "2020-10-18",
+    "v": 0.9706
+   },
+   {
+    "t": "2020-11-01",
+    "v": 0.9885
+   },
+   {
+    "t": "2020-11-15",
+    "v": 0.9921
+   },
+   {
+    "t": "2020-11-29",
+    "v": 0.9845
+   },
+   {
+    "t": "2020-12-13",
+    "v": 0.9861
+   },
+   {
+    "t": "2020-12-27",
+    "v": 0.9882
+   },
+   {
+    "t": "2021-01-10",
+    "v": 0.9995
+   },
+   {
+    "t": "2021-01-24",
+    "v": 0.9993
+   },
+   {
+    "t": "2021-02-07",
+    "v": 0.9996
+   },
+   {
+    "t": "2021-02-21",
+    "v": 0.9996
+   },
+   {
+    "t": "2021-03-07",
+    "v": 0.9997
+   },
+   {
+    "t": "2021-03-21",
+    "v": 0.9998
+   },
+   {
+    "t": "2021-04-04",
+    "v": 0.6808
+   },
+   {
+    "t": "2021-04-18",
+    "v": 0.6839
+   },
+   {
+    "t": "2021-05-02",
+    "v": 0.671
+   },
+   {
+    "t": "2021-05-16",
+    "v": 0.6911
+   },
+   {
+    "t": "2021-05-30",
+    "v": 0.6845
+   },
+   {
+    "t": "2021-06-13",
+    "v": 0.783
+   },
+   {
+    "t": "2021-06-27",
+    "v": 0.7767
+   },
+   {
+    "t": "2021-07-11",
+    "v": 0.8087
+   },
+   {
+    "t": "2021-07-25",
+    "v": 0.7763
+   },
+   {
+    "t": "2021-08-08",
+    "v": 0.8351
+   },
+   {
+    "t": "2021-08-22",
+    "v": 0.7704
+   },
+   {
+    "t": "2021-09-05",
+    "v": 0.7517
+   },
+   {
+    "t": "2021-09-19",
+    "v": 0.7379
+   },
+   {
+    "t": "2021-10-03",
+    "v": 0.7972
+   },
+   {
+    "t": "2021-10-17",
+    "v": 0.8728
+   },
+   {
+    "t": "2021-10-31",
+    "v": 0.8797
+   },
+   {
+    "t": "2021-11-14",
+    "v": 0.8845
+   },
+   {
+    "t": "2021-11-28",
+    "v": 0.845
+   },
+   {
+    "t": "2021-12-12",
+    "v": 0.7934
+   },
+   {
+    "t": "2021-12-26",
+    "v": 0.7924
+   },
+   {
+    "t": "2022-01-09",
+    "v": 0.7231
+   },
+   {
+    "t": "2022-01-23",
+    "v": 0.6889
+   },
+   {
+    "t": "2022-02-06",
+    "v": 0.7616
+   },
+   {
+    "t": "2022-02-20",
+    "v": 0.7246
+   },
+   {
+    "t": "2022-03-06",
+    "v": 0.7098
+   },
+   {
+    "t": "2022-03-20",
+    "v": 0.7167
+   },
+   {
+    "t": "2022-04-03",
+    "v": 0.6181
+   },
+   {
+    "t": "2022-04-17",
+    "v": 0.5447
+   },
+   {
+    "t": "2022-05-01",
+    "v": 0.5299
+   },
+   {
+    "t": "2022-05-15",
+    "v": 0.4692
+   },
+   {
+    "t": "2022-05-29",
+    "v": 0.4549
+   },
+   {
+    "t": "2022-06-12",
+    "v": 0.4196
+   },
+   {
+    "t": "2022-06-26",
+    "v": 0.2547
+   },
+   {
+    "t": "2022-07-10",
+    "v": 0.1829
+   },
+   {
+    "t": "2022-07-24",
+    "v": 0.084
+   },
+   {
+    "t": "2022-08-07",
+    "v": 0.0708
+   },
+   {
+    "t": "2022-08-21",
+    "v": 0.0579
+   },
+   {
+    "t": "2022-09-04",
+    "v": 0.0424
+   },
+   {
+    "t": "2022-09-18",
+    "v": 0.056
+   },
+   {
+    "t": "2022-10-02",
+    "v": 0.0508
+   },
+   {
+    "t": "2022-10-16",
+    "v": 0.0402
+   },
+   {
+    "t": "2022-10-30",
+    "v": 0.0235
+   },
+   {
+    "t": "2022-11-13",
+    "v": 0.0154
+   },
+   {
+    "t": "2022-11-27",
+    "v": 0.0159
+   },
+   {
+    "t": "2022-12-11",
+    "v": 0.0129
+   },
+   {
+    "t": "2022-12-25",
+    "v": 0.0137
+   },
+   {
+    "t": "2023-01-08",
+    "v": 0.01
+   },
+   {
+    "t": "2023-01-22",
+    "v": 0.0135
+   },
+   {
+    "t": "2023-02-05",
+    "v": 0.0139
+   },
+   {
+    "t": "2023-02-19",
+    "v": 0.0176
+   },
+   {
+    "t": "2023-03-05",
+    "v": 0.0165
+   },
+   {
+    "t": "2023-03-19",
+    "v": 0.032
+   },
+   {
+    "t": "2023-04-02",
+    "v": 0.0333
+   },
+   {
+    "t": "2023-04-16",
+    "v": 0.0213
+   },
+   {
+    "t": "2023-04-30",
+    "v": 0.0285
+   },
+   {
+    "t": "2023-05-14",
+    "v": 0.0215
+   },
+   {
+    "t": "2023-05-28",
+    "v": 0.0204
+   },
+   {
+    "t": "2023-06-11",
+    "v": 0.0207
+   },
+   {
+    "t": "2023-06-25",
+    "v": 0.0269
+   },
+   {
+    "t": "2023-07-09",
+    "v": 0.0261
+   },
+   {
+    "t": "2023-07-23",
+    "v": 0.0262
+   },
+   {
+    "t": "2023-08-06",
+    "v": 0.0264
+   },
+   {
+    "t": "2023-08-20",
+    "v": 0.0226
+   },
+   {
+    "t": "2023-09-03",
+    "v": 0.023
+   },
+   {
+    "t": "2023-09-17",
+    "v": 0.0223
+   },
+   {
+    "t": "2023-10-01",
+    "v": 0.0181
+   },
+   {
+    "t": "2023-10-15",
+    "v": 0.0237
+   },
+   {
+    "t": "2023-10-29",
+    "v": 0.0394
+   },
+   {
+    "t": "2023-11-12",
+    "v": 0.0336
+   },
+   {
+    "t": "2023-11-26",
+    "v": 0.0405
+   },
+   {
+    "t": "2023-12-10",
+    "v": 0.0538
+   },
+   {
+    "t": "2023-12-24",
+    "v": 0.0579
+   },
+   {
+    "t": "2024-01-07",
+    "v": 0.0712
+   },
+   {
+    "t": "2024-01-21",
+    "v": 0.0383
+   },
+   {
+    "t": "2024-02-04",
+    "v": 0.054
+   },
+   {
+    "t": "2024-02-18",
+    "v": 0.0644
+   },
+   {
+    "t": "2024-03-03",
+    "v": 0.0768
+   },
+   {
+    "t": "2024-03-17",
+    "v": 0.0914
+   },
+   {
+    "t": "2024-03-31",
+    "v": 0.1043
+   },
+   {
+    "t": "2024-04-14",
+    "v": 0.1732
+   },
+   {
+    "t": "2024-04-28",
+    "v": 0.1577
+   },
+   {
+    "t": "2024-05-12",
+    "v": 0.2374
+   },
+   {
+    "t": "2024-05-26",
+    "v": 0.171
+   },
+   {
+    "t": "2024-06-09",
+    "v": 0.174
+   },
+   {
+    "t": "2024-06-23",
+    "v": 0.1732
+   },
+   {
+    "t": "2024-07-07",
+    "v": 0.1653
+   },
+   {
+    "t": "2024-07-21",
+    "v": 0.1999
+   },
+   {
+    "t": "2024-08-04",
+    "v": 0.2887
+   },
+   {
+    "t": "2024-08-18",
+    "v": 0.3244
+   },
+   {
+    "t": "2024-09-01",
+    "v": 0.3698
+   },
+   {
+    "t": "2024-09-15",
+    "v": 0.4378
+   },
+   {
+    "t": "2024-09-29",
+    "v": 0.3619
+   },
+   {
+    "t": "2024-10-13",
+    "v": 0.3974
+   },
+   {
+    "t": "2024-10-27",
+    "v": 0.4382
+   },
+   {
+    "t": "2024-11-10",
+    "v": 0.3434
+   },
+   {
+    "t": "2024-11-24",
+    "v": 0.383
+   },
+   {
+    "t": "2024-12-08",
+    "v": 0.2801
+   },
+   {
+    "t": "2024-12-22",
+    "v": 0.4179
+   },
+   {
+    "t": "2025-01-05",
+    "v": 0.2711
+   },
+   {
+    "t": "2025-01-19",
+    "v": 0.4267
+   },
+   {
+    "t": "2025-02-02",
+    "v": 0.5493
+   },
+   {
+    "t": "2025-02-16",
+    "v": 0.5764
+   },
+   {
+    "t": "2025-03-02",
+    "v": 0.5418
+   },
+   {
+    "t": "2025-03-16",
+    "v": 0.6835
+   },
+   {
+    "t": "2025-03-30",
+    "v": 0.6841
+   },
+   {
+    "t": "2025-04-13",
+    "v": 0.8068
+   },
+   {
+    "t": "2025-04-27",
+    "v": 0.8046
+   },
+   {
+    "t": "2025-05-11",
+    "v": 0.6463
+   },
+   {
+    "t": "2025-05-25",
+    "v": 0.6868
+   },
+   {
+    "t": "2025-06-08",
+    "v": 0.7217
+   },
+   {
+    "t": "2025-06-22",
+    "v": 0.7866
+   },
+   {
+    "t": "2025-07-06",
+    "v": 0.7009
+   },
+   {
+    "t": "2025-07-20",
+    "v": 0.2313
+   },
+   {
+    "t": "2025-08-03",
+    "v": 0.2212
+   },
+   {
+    "t": "2025-08-17",
+    "v": 0.0866
+   },
+   {
+    "t": "2025-08-31",
+    "v": 0.0672
+   },
+   {
+    "t": "2025-09-14",
+    "v": 0.0739
+   },
+   {
+    "t": "2025-09-28",
+    "v": 0.081
+   },
+   {
+    "t": "2025-10-12",
+    "v": 0.0825
+   },
+   {
+    "t": "2025-10-26",
+    "v": 0.089
+   },
+   {
+    "t": "2025-11-09",
+    "v": 0.1225
+   },
+   {
+    "t": "2025-11-23",
+    "v": 0.1749
+   },
+   {
+    "t": "2025-12-07",
+    "v": 0.1495
+   },
+   {
+    "t": "2025-12-21",
+    "v": 0.1381
+   },
+   {
+    "t": "2026-01-04",
+    "v": 0.1201
+   },
+   {
+    "t": "2026-01-18",
+    "v": 0.1122
+   },
+   {
+    "t": "2026-02-01",
+    "v": 0.1971
+   },
+   {
+    "t": "2026-02-15",
+    "v": 0.2095
+   },
+   {
+    "t": "2026-03-01",
+    "v": 0.1715
+   },
+   {
+    "t": "2026-03-15",
+    "v": 0.1479
+   },
+   {
+    "t": "2026-03-29",
+    "v": 0.123
+   },
+   {
+    "t": "2026-04-12",
+    "v": 0.0976
+   },
+   {
+    "t": "2026-04-26",
+    "v": 0.1095
+   },
+   {
+    "t": "2026-05-10",
+    "v": 0.1352
+   },
+   {
+    "t": "2026-05-24",
+    "v": 0.1599
+   },
+   {
+    "t": "2026-06-07",
+    "v": 0.1549
+   },
+   {
+    "t": "2026-06-21",
+    "v": 0.1273
+   },
+   {
+    "t": "2026-07-05",
+    "v": 0.0851
+   },
+   {
+    "t": "2026-07-19",
+    "v": 0.0807
+   },
+   {
+    "t": "2026-08-02",
+    "v": 0.0615
+   },
+   {
+    "t": "2026-08-16",
+    "v": 0.0532
+   },
+   {
+    "t": "2026-08-30",
+    "v": 0.0354
+   },
+   {
+    "t": "2026-09-13",
+    "v": 0.0302
+   },
+   {
+    "t": "2026-09-27",
+    "v": 0.0261
+   },
+   {
+    "t": "2026-10-11",
+    "v": 0.0333
+   },
+   {
+    "t": "2026-10-25",
+    "v": 0.0404
+   },
+   {
+    "t": "2026-11-08",
+    "v": 0.0376
+   }
+  ],
+  "gateLeadKM_S": [
+   1.0,
+   1.0,
+   1.0,
+   0.95,
+   0.95,
+   0.95,
+   0.85,
+   0.85,
+   0.85,
+   0.85,
+   0.8,
+   0.8,
+   0.8,
+   0.8,
+   0.8,
+   0.8,
+   0.8,
+   0.8,
+   0.75,
+   0.75,
+   0.75,
+   0.75,
+   0.7,
+   0.7,
+   0.7,
+   0.7,
+   0.7,
+   0.7,
+   0.7,
+   0.7,
+   0.7,
+   0.7,
+   0.7,
+   0.65,
+   0.6,
+   0.55,
+   0.55,
+   0.55,
+   0.55,
+   0.55,
+   0.55,
+   0.55,
+   0.55,
+   0.55,
+   0.5,
+   0.5,
+   0.5,
+   0.5,
+   0.45,
+   0.4,
+   0.4,
+   0.4,
+   0.4
+  ],
+  "gateLeadKM_S_fivePointsUnderLevel": [
+   1.0,
+   1.0,
+   0.9,
+   0.9,
+   0.85,
+   0.8,
+   0.8,
+   0.65,
+   0.65,
+   0.6,
+   0.6,
+   0.55,
+   0.5,
+   0.5,
+   0.5,
+   0.45,
+   0.45,
+   0.45,
+   0.4,
+   0.35,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3,
+   0.3
+  ]
+ },
+ "notes": [
+  "Last complete Sunday close 2026-11-01; provisional bars ['2026-11-08'] enter no training label and no evaluation label.",
+  "btc_dd_ath is the true-ATH drawdown (study8_honest.ath_drawdown, weekly closes from 2013-02) for every model including the forward fixed5 reference (identical to three decimals to the baselines' harness-anchored fixed5); the harness column (anchored 2014-04) is kept only for the readiness_harnessATH comparator.",
+  "Question A fits each model ONCE on 2019+ rows (training rows end 26 weeks before the last complete Sunday) and scores it frozen on 2016-06..2018-12; the shifted-target and dwell-time permutation nulls permute the 2016-18 labels after the fit (no refit: the models never see a 2016-18 label).",
+  "PLAN AMENDMENT (no criterion change): the plan's literal window (train from 2019-01-06) has no purge gap: its first 26 training rows (2019-H1, every fall5 label 0) are labelled by the same Jan-Jun 2019 BTC.D path that labels the Jul-Dec 2018 evaluation rows. The headline is the purged window (train from 2019-07-07, the last evaluation row + 27 weeks, as the forward harness's label lag), the plan window is reported beside it with a jackknife of every 26-week training block; the pre-registered criterion is evaluated on both.",
+  "The shifted-target null is enumerated exactly over every admissible shift (>= 26 weeks, 83 of them on 135 rows) instead of 200 random draws of those 83 values, so its p is exact and quotable at any --nulls; the permutation null is enumerated exactly when its arrangement count is <= max(nulls, 120) (fall10: 3 blocks, 6 arrangements, so p >= 1/6 by construction), else drawn at random.",
+  "Decoys with no market information (the 2016-17 vs 2018 sub-era indicator and a descending time trend) are scored by the same nulls: a model whose AUC does not exceed the sub-era decoy's on the same rows passes the shifted null through the level between the two sub-eras, not through a within-cycle ranking; the era-stratified (within-sub-era) AUC, the within-2018 AUC and the permutation p are printed beside the criterion for that reading.",
+  "fall10_26w has ONE positive episode in the reversed era (2016-10-02..2017-12-24 on all rows; 2017-06-18..2017-12-24 on fixed5's rows): its reverse AUC is the ranking of one waterfall against the rest and episode leave-one-out is undefined; it is reported as one event, not identifiable.",
+  "fixed5 and M2+ETH/BTC cannot read 2016-06..2017-06 (ethbtc_fromhi52w needs 52 weeks of ETH/BTC, first finite 2017-06-18): their reversed-era rows start 2017-06-18, so the Nov 2016 waterfall is scored only by M2-only and the readiness rule; 'common' rows are the rows every model can read (= fixed5's rows). The 2016-17 sub-era on those rows has every label 1, so their 2016-17 AUC is undefined and the era-stratified AUC reduces to 2018.",
+  "SELECTION: the reversed era is out of sample for the fitted coefficients only. The readiness rule's thresholds were read off what preceded the three big waterfalls (two of them in 2016-18, ROUND8_BRIEF item 3) and fixed5's five inputs are round 7's most-picked signals from a selection run on windows starting 2016-06-01 (ROUND8_BRIEF item 6); M2-only is the only comparator whose variable choice is blind to 2016-18.",
+  "The readiness rule has no fitted object; it is scored as a 0/1 score (AUC of a binary rule). readiness_harnessATH anchors the ATH at 2014-04 (the shared loader) and is shown because the anchor decides whether the rule fired at Nov 2016 (true anchor: BTC 26% under its Dec 2013 high, so the rule did not fire before the Nov 2016 waterfall).",
+  "BTC.D 2016-18 is TradingView's back-computed series; its fall5_26w base rate (58%) is far above 2019+ (26%), so Brier against the 2019+ base rate penalises every model for the level, and AUC is the ranking statistic. The 2019+-fitted scaler clips a share of the reversed-era rows at +/-3 sd (printed per model).",
+  "Forward numbers are the standard harness (expanding window from 2016-06, refit 13 weeks, label lag 26) on the rows every model can forecast; their shifted-target nulls are in out8/baselines.",
+  "Question B fits nothing beyond fixed5's last walk-forward refit (asserted equal to the harness series today) and the readiness gate. The gate-lead Kaplan-Meier is given under the plan's outcome (lead to the next 5+ point fall PEAK) and under 'BTC.D 5+ points under the switch-on level', over all spells and over the spells that switch on outside an ongoing fall, and over merged spells; every reading rests on at most five independent run-ups.",
+  "The decision-table 'in-support spread' is read from out8/forecast or out8/honest when present, else the plan's 3.9%..35% hand-set spread, labelled handSetFallback in the table so it cannot be quoted as a computed clearance; the table is a report, not a success criterion.",
+  "Paired bootstrap bands whose slice holds fewer than two 26-week blocks (the fresh-start slice, 22 rows) use a shortened block (N // 4) and say so, instead of printing a rotation of the whole set as an interval.",
+  "DXY / US10Y daily bars are stamped 21-23 UTC the evening before the session, so the shared loader dates a Monday session to Sunday and the W-SUN panel folds it into the prior week (a one-day look-ahead in dxy_* / us10y_* features); no model in this module uses those columns (a later round should floor evening-stamped bars to the next calendar day before normalize(); study8_common.py is frozen this round).",
+  "Printed 43 lines, dropped 0; runtime 51.7s."
+ ],
+ "questionA": {
+  "design": {
+   "windows": {
+    "plan": "2019-01-06",
+    "purged": "2019-07-07"
+   },
+   "headlineWindow": "purged",
+   "scoreEra": [
+    "2016-2018",
+    "2016-06-01",
+    "2019-01-01"
+   ],
+   "subEras": [
+    [
+     "2016-2017",
+     "2016-06-01",
+     "2018-01-01"
+    ],
+    [
+     "2018",
+     "2018-01-01",
+     "2019-01-01"
+    ]
+   ],
+   "labelLagWeeks": 26,
+   "purgeNote": "the plan window's first 26 training rows are labelled by the same 2019-H1 BTC.D path that labels the last 26 evaluation rows; the purged window starts 27 weeks after the last evaluation row (2018-12-30), as the forward harness's label lag does"
+  },
+  "models": {
+   "plan": {
+    "fall5_26w": {
+     "fixed5": {
+      "nTrain": 383,
+      "trainFrom": "2019-01-06",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.2611,
+      "coef_z": {
+       "intercept": -1.7984,
+       "usdtd_vsma30w": 1.0768,
+       "ethbtc_fromhi52w": -1.0876,
+       "btc_dd_ath": 0.7399,
+       "btcusd_ret13w": 0.6367,
+       "m2_yoy": 1.5161
+      }
+     },
+     "m2only": {
+      "nTrain": 383,
+      "trainFrom": "2019-01-06",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.2611,
+      "coef_z": {
+       "intercept": -1.2602,
+       "m2_yoy": 1.1129
+      }
+     },
+     "m2eth": {
+      "nTrain": 383,
+      "trainFrom": "2019-01-06",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.2611,
+      "coef_z": {
+       "intercept": -1.582,
+       "m2_yoy": 1.6999,
+       "ethbtc_fromhi52w": -0.9213
+      }
+     }
+    },
+    "fall10_26w": {
+     "fixed5": {
+      "nTrain": 383,
+      "trainFrom": "2019-01-06",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.0705,
+      "coef_z": {
+       "intercept": -6.8244,
+       "usdtd_vsma30w": 0.0938,
+       "ethbtc_fromhi52w": -0.6372,
+       "btc_dd_ath": 1.3075,
+       "btcusd_ret13w": 1.4122,
+       "m2_yoy": 2.5637
+      }
+     },
+     "m2only": {
+      "nTrain": 383,
+      "trainFrom": "2019-01-06",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.0705,
+      "coef_z": {
+       "intercept": -6.2624,
+       "m2_yoy": 3.0848
+      }
+     },
+     "m2eth": {
+      "nTrain": 383,
+      "trainFrom": "2019-01-06",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.0705,
+      "coef_z": {
+       "intercept": -6.1852,
+       "m2_yoy": 3.4998,
+       "ethbtc_fromhi52w": -1.184
+      }
+     }
+    }
+   },
+   "purged": {
+    "fall5_26w": {
+     "fixed5": {
+      "nTrain": 357,
+      "trainFrom": "2019-07-07",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.2801,
+      "coef_z": {
+       "intercept": -1.6596,
+       "usdtd_vsma30w": 0.6736,
+       "ethbtc_fromhi52w": -1.3101,
+       "btc_dd_ath": -0.177,
+       "btcusd_ret13w": 0.7817,
+       "m2_yoy": 1.7381
+      }
+     },
+     "m2only": {
+      "nTrain": 357,
+      "trainFrom": "2019-07-07",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.2801,
+      "coef_z": {
+       "intercept": -1.1387,
+       "m2_yoy": 1.0921
+      }
+     },
+     "m2eth": {
+      "nTrain": 357,
+      "trainFrom": "2019-07-07",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.2801,
+      "coef_z": {
+       "intercept": -1.6416,
+       "m2_yoy": 1.9552,
+       "ethbtc_fromhi52w": -1.3196
+      }
+     }
+    },
+    "fall10_26w": {
+     "fixed5": {
+      "nTrain": 357,
+      "trainFrom": "2019-07-07",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.0756,
+      "coef_z": {
+       "intercept": -6.6431,
+       "usdtd_vsma30w": 0.1265,
+       "ethbtc_fromhi52w": -0.6398,
+       "btc_dd_ath": 1.1808,
+       "btcusd_ret13w": 1.4359,
+       "m2_yoy": 2.5953
+      }
+     },
+     "m2only": {
+      "nTrain": 357,
+      "trainFrom": "2019-07-07",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.0756,
+      "coef_z": {
+       "intercept": -6.0712,
+       "m2_yoy": 3.1189
+      }
+     },
+     "m2eth": {
+      "nTrain": 357,
+      "trainFrom": "2019-07-07",
+      "trainTo": "2026-05-03",
+      "trainBase": 0.0756,
+      "coef_z": {
+       "intercept": -6.0866,
+       "m2_yoy": 3.5606,
+       "ethbtc_fromhi52w": -1.1407
+      }
+     }
+    }
+   }
+  },
+  "decoys": {
+   "plan": {
+    "fall5_26w": {
+     "decoy_subEra": {
+      "auc": 0.796,
+      "n": 135,
+      "shift": {
+       "n": 83,
+       "real": 0.796,
+       "nullMedian": 0.3082,
+       "nullP95": 0.6576,
+       "nullP05": 0.1709,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 50,
+       "real": 0.796,
+       "nullMedian": 0.4837,
+       "nullP95": 0.9338,
+       "nullP05": 0.1709,
+       "p": 0.28,
+       "exact": false,
+       "quotable": true
+      }
+     },
+     "decoy_subEra_commonRows": {
+      "auc": 0.863,
+      "n": 81,
+      "shift": {
+       "n": 83,
+       "real": 0.863,
+       "nullMedian": 0.2537,
+       "nullP95": 0.7194,
+       "nullP05": 0.0446,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 50,
+       "real": 0.863,
+       "nullMedian": 0.7287,
+       "nullP95": 0.9064,
+       "nullP05": 0.1176,
+       "p": 0.12,
+       "exact": false,
+       "quotable": true
+      }
+     },
+     "decoy_trend": {
+      "auc": 0.689,
+      "n": 135,
+      "shift": {
+       "n": 83,
+       "real": 0.689,
+       "nullMedian": 0.3115,
+       "nullP95": 0.7533,
+       "nullP05": 0.1322,
+       "p": 0.12,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 50,
+       "real": 0.689,
+       "nullMedian": 0.3501,
+       "nullP95": 0.9894,
+       "nullP05": 0.0496,
+       "p": 0.28,
+       "exact": false,
+       "quotable": true
+      }
+     },
+     "decoy_trend_commonRows": {
+      "auc": 0.884,
+      "n": 81,
+      "shift": {
+       "n": 83,
+       "real": 0.884,
+       "nullMedian": 0.0871,
+       "nullP95": 0.9431,
+       "nullP05": 0.0016,
+       "p": 0.169,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 50,
+       "real": 0.884,
+       "nullMedian": 0.8957,
+       "nullP95": 1.0,
+       "nullP05": 0.0,
+       "p": 0.56,
+       "exact": false,
+       "quotable": true
+      }
+     }
+    },
+    "fall10_26w": {
+     "decoy_subEra": {
+      "auc": 0.871,
+      "n": 135,
+      "shift": {
+       "n": 83,
+       "real": 0.871,
+       "nullMedian": 0.3077,
+       "nullP95": 0.6623,
+       "nullP05": 0.1,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 6,
+       "real": 0.871,
+       "nullMedian": 0.6118,
+       "nullP95": 0.8714,
+       "nullP05": 0.1,
+       "p": 0.5,
+       "exact": true,
+       "quotable": true
+      }
+     },
+     "decoy_subEra_commonRows": {
+      "auc": 0.991,
+      "n": 81,
+      "shift": {
+       "n": 83,
+       "real": 0.991,
+       "nullMedian": 0.2315,
+       "nullP95": 0.7496,
+       "nullP05": 0.0278,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 6,
+       "real": 0.991,
+       "nullMedian": 0.799,
+       "nullP95": 0.9608,
+       "nullP05": 0.1,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      }
+     },
+     "decoy_trend": {
+      "auc": 0.757,
+      "n": 135,
+      "shift": {
+       "n": 83,
+       "real": 0.757,
+       "nullMedian": 0.3077,
+       "nullP95": 0.7831,
+       "nullP05": 0.032,
+       "p": 0.072,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 6,
+       "real": 0.757,
+       "nullMedian": 0.5,
+       "nullP95": 1.0,
+       "nullP05": 0.0,
+       "p": 0.5,
+       "exact": true,
+       "quotable": true
+      }
+     },
+     "decoy_trend_commonRows": {
+      "auc": 1.0,
+      "n": 81,
+      "shift": {
+       "n": 83,
+       "real": 1.0,
+       "nullMedian": 0.0,
+       "nullP95": 1.0,
+       "nullP05": 0.0,
+       "p": 0.145,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 6,
+       "real": 1.0,
+       "nullMedian": 1.0,
+       "nullP95": 1.0,
+       "nullP05": 0.0,
+       "p": 0.667,
+       "exact": true,
+       "quotable": true
+      }
+     }
+    }
+   },
+   "purged": {
+    "fall5_26w": {
+     "decoy_subEra": {
+      "auc": 0.796,
+      "n": 135,
+      "shift": {
+       "n": 83,
+       "real": 0.796,
+       "nullMedian": 0.3082,
+       "nullP95": 0.6576,
+       "nullP05": 0.1709,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 50,
+       "real": 0.796,
+       "nullMedian": 0.5218,
+       "nullP95": 0.8895,
+       "nullP05": 0.1709,
+       "p": 0.26,
+       "exact": false,
+       "quotable": true
+      }
+     },
+     "decoy_subEra_commonRows": {
+      "auc": 0.863,
+      "n": 81,
+      "shift": {
+       "n": 83,
+       "real": 0.863,
+       "nullMedian": 0.2537,
+       "nullP95": 0.7194,
+       "nullP05": 0.0446,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 50,
+       "real": 0.863,
+       "nullMedian": 0.7366,
+       "nullP95": 0.873,
+       "nullP05": 0.1286,
+       "p": 0.06,
+       "exact": false,
+       "quotable": true
+      }
+     },
+     "decoy_trend": {
+      "auc": 0.689,
+      "n": 135,
+      "shift": {
+       "n": 83,
+       "real": 0.689,
+       "nullMedian": 0.3115,
+       "nullP95": 0.7533,
+       "nullP05": 0.1322,
+       "p": 0.12,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 50,
+       "real": 0.689,
+       "nullMedian": 0.4283,
+       "nullP95": 0.948,
+       "nullP05": 0.0177,
+       "p": 0.24,
+       "exact": false,
+       "quotable": true
+      }
+     },
+     "decoy_trend_commonRows": {
+      "auc": 0.884,
+      "n": 81,
+      "shift": {
+       "n": 83,
+       "real": 0.884,
+       "nullMedian": 0.0871,
+       "nullP95": 0.9431,
+       "nullP05": 0.0016,
+       "p": 0.169,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 50,
+       "real": 0.884,
+       "nullMedian": 0.8944,
+       "nullP95": 1.0,
+       "nullP05": 0.0,
+       "p": 0.52,
+       "exact": false,
+       "quotable": true
+      }
+     }
+    },
+    "fall10_26w": {
+     "decoy_subEra": {
+      "auc": 0.871,
+      "n": 135,
+      "shift": {
+       "n": 83,
+       "real": 0.871,
+       "nullMedian": 0.3077,
+       "nullP95": 0.6623,
+       "nullP05": 0.1,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 6,
+       "real": 0.871,
+       "nullMedian": 0.6118,
+       "nullP95": 0.8714,
+       "nullP05": 0.1,
+       "p": 0.5,
+       "exact": true,
+       "quotable": true
+      }
+     },
+     "decoy_subEra_commonRows": {
+      "auc": 0.991,
+      "n": 81,
+      "shift": {
+       "n": 83,
+       "real": 0.991,
+       "nullMedian": 0.2315,
+       "nullP95": 0.7496,
+       "nullP05": 0.0278,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 6,
+       "real": 0.991,
+       "nullMedian": 0.799,
+       "nullP95": 0.9608,
+       "nullP05": 0.1,
+       "p": 0.0,
+       "exact": true,
+       "quotable": true
+      }
+     },
+     "decoy_trend": {
+      "auc": 0.757,
+      "n": 135,
+      "shift": {
+       "n": 83,
+       "real": 0.757,
+       "nullMedian": 0.3077,
+       "nullP95": 0.7831,
+       "nullP05": 0.032,
+       "p": 0.072,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 6,
+       "real": 0.757,
+       "nullMedian": 0.5,
+       "nullP95": 1.0,
+       "nullP05": 0.0,
+       "p": 0.5,
+       "exact": true,
+       "quotable": true
+      }
+     },
+     "decoy_trend_commonRows": {
+      "auc": 1.0,
+      "n": 81,
+      "shift": {
+       "n": 83,
+       "real": 1.0,
+       "nullMedian": 0.0,
+       "nullP95": 1.0,
+       "nullP05": 0.0,
+       "p": 0.145,
+       "exact": true,
+       "quotable": true
+      },
+      "perm": {
+       "n": 6,
+       "real": 1.0,
+       "nullMedian": 1.0,
+       "nullP95": 1.0,
+       "nullP05": 0.0,
+       "p": 0.667,
+       "exact": true,
+       "quotable": true
+      }
+     }
+    }
+   }
+  },
+  "jackknife": {
+   "fixed5": {
+    "auc": 0.949,
+    "nBlocks": 15,
+    "boundaryBlock": "2019-01-06",
+    "boundaryDelta": -0.121,
+    "otherBlocks": {
+     "maxAbsDelta": 0.015,
+     "mean": -0.002
+    },
+    "perBlock": [
+     [
+      "2019-01-06",
+      -0.121
+     ],
+     [
+      "2019-07-07",
+      -0.015
+     ],
+     [
+      "2020-01-05",
+      0.001
+     ],
+     [
+      "2020-07-05",
+      -0.014
+     ],
+     [
+      "2021-01-03",
+      -0.012
+     ],
+     [
+      "2021-07-04",
+      -0.005
+     ],
+     [
+      "2022-01-02",
+      0.01
+     ],
+     [
+      "2022-07-03",
+      0.001
+     ],
+     [
+      "2023-01-01",
+      0.002
+     ],
+     [
+      "2023-07-02",
+      0.002
+     ],
+     [
+      "2023-12-31",
+      0.001
+     ],
+     [
+      "2024-06-30",
+      0.003
+     ],
+     [
+      "2024-12-29",
+      -0.004
+     ],
+     [
+      "2025-06-29",
+      0.004
+     ],
+     [
+      "2025-12-28",
+      0.002
+     ]
+    ]
+   },
+   "m2only": {
+    "auc": 0.787,
+    "nBlocks": 15,
+    "boundaryBlock": "2019-01-06",
+    "boundaryDelta": 0.0,
+    "otherBlocks": {
+     "maxAbsDelta": 0.0,
+     "mean": 0.0
+    },
+    "perBlock": [
+     [
+      "2019-01-06",
+      0.0
+     ],
+     [
+      "2019-07-07",
+      0.0
+     ],
+     [
+      "2020-01-05",
+      0.0
+     ],
+     [
+      "2020-07-05",
+      0.0
+     ],
+     [
+      "2021-01-03",
+      0.0
+     ],
+     [
+      "2021-07-04",
+      0.0
+     ],
+     [
+      "2022-01-02",
+      0.0
+     ],
+     [
+      "2022-07-03",
+      0.0
+     ],
+     [
+      "2023-01-01",
+      0.0
+     ],
+     [
+      "2023-07-02",
+      0.0
+     ],
+     [
+      "2023-12-31",
+      0.0
+     ],
+     [
+      "2024-06-30",
+      0.0
+     ],
+     [
+      "2024-12-29",
+      0.0
+     ],
+     [
+      "2025-06-29",
+      0.0
+     ],
+     [
+      "2025-12-28",
+      0.0
+     ]
+    ]
+   },
+   "m2eth": {
+    "auc": 0.655,
+    "nBlocks": 15,
+    "boundaryBlock": "2019-01-06",
+    "boundaryDelta": 0.008,
+    "otherBlocks": {
+     "maxAbsDelta": 0.027,
+     "mean": 0.005
+    },
+    "perBlock": [
+     [
+      "2019-01-06",
+      0.008
+     ],
+     [
+      "2019-07-07",
+      0.009
+     ],
+     [
+      "2020-01-05",
+      -0.003
+     ],
+     [
+      "2020-07-05",
+      0.02
+     ],
+     [
+      "2021-01-03",
+      -0.001
+     ],
+     [
+      "2021-07-04",
+      0.001
+     ],
+     [
+      "2022-01-02",
+      0.006
+     ],
+     [
+      "2022-07-03",
+      0.004
+     ],
+     [
+      "2023-01-01",
+      0.001
+     ],
+     [
+      "2023-07-02",
+      0.001
+     ],
+     [
+      "2023-12-31",
+      0.001
+     ],
+     [
+      "2024-06-30",
+      0.001
+     ],
+     [
+      "2024-12-29",
+      0.027
+     ],
+     [
+      "2025-06-29",
+      0.005
+     ],
+     [
+      "2025-12-28",
+      0.001
+     ]
+    ]
+   }
+  },
+  "paired_reverse": {
+   "plan": {
+    "fall5_26w": {
+     "m2only": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.045,
+       "block": {
+        "n": 1000,
+        "q05": -0.136,
+        "q50": -0.056,
+        "q95": -0.007,
+        "pLE0": 0.981,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 1000,
+        "q05": -0.215,
+        "q50": -0.045,
+        "q95": 0.007,
+        "pLE0": 0.921,
+        "nBlocks": 8
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": -0.195,
+       "block": {
+        "n": 1000,
+        "q05": -0.381,
+        "q50": -0.217,
+        "q95": -0.036,
+        "pLE0": 0.992,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 998,
+        "q05": -0.455,
+        "q50": -0.219,
+        "q95": -0.025,
+        "pLE0": 0.98,
+        "nBlocks": 6
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": -0.195,
+       "block": {
+        "n": 971,
+        "q05": -0.448,
+        "q50": -0.226,
+        "q95": -0.085,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 980,
+        "q05": -0.449,
+        "q50": -0.233,
+        "q95": -0.006,
+        "pLE0": 0.961,
+        "nBlocks": 8
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": -0.128,
+       "block": {
+        "n": 978,
+        "q05": -0.372,
+        "q50": -0.133,
+        "q95": 0.034,
+        "pLE0": 0.889,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 737,
+        "q05": -0.5,
+        "q50": -0.128,
+        "q95": -0.128,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "m2eth": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.293,
+       "block": {
+        "n": 1000,
+        "q05": -0.61,
+        "q50": -0.272,
+        "q95": -0.009,
+        "pLE0": 0.964,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 999,
+        "q05": -0.552,
+        "q50": -0.275,
+        "q95": -0.054,
+        "pLE0": 0.98,
+        "nBlocks": 8
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": -0.137,
+       "block": {
+        "n": 1000,
+        "q05": -0.215,
+        "q50": -0.103,
+        "q95": 0.036,
+        "pLE0": 0.876,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 1000,
+        "q05": -0.364,
+        "q50": -0.106,
+        "q95": 0.057,
+        "pLE0": 0.85,
+        "nBlocks": 6
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": -0.137,
+       "block": {
+        "n": 966,
+        "q05": -0.222,
+        "q50": -0.094,
+        "q95": 0.063,
+        "pLE0": 0.819,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 987,
+        "q05": -0.347,
+        "q50": -0.099,
+        "q95": 0.067,
+        "pLE0": 0.812,
+        "nBlocks": 8
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": 0.009,
+       "block": {
+        "n": 983,
+        "q05": -0.094,
+        "q50": 0.0,
+        "q95": 0.154,
+        "pLE0": 0.562,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 740,
+        "q05": 0.009,
+        "q50": 0.009,
+        "q95": 0.167,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "readiness": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.249,
+       "block": {
+        "n": 1000,
+        "q05": -0.404,
+        "q50": -0.262,
+        "q95": -0.18,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 1000,
+        "q05": -0.378,
+        "q50": -0.256,
+        "q95": -0.181,
+        "pLE0": 1.0,
+        "nBlocks": 8
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": -0.349,
+       "block": {
+        "n": 1000,
+        "q05": -0.455,
+        "q50": -0.359,
+        "q95": -0.265,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 998,
+        "q05": -0.5,
+        "q50": -0.351,
+        "q95": -0.199,
+        "pLE0": 1.0,
+        "nBlocks": 6
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": -0.349,
+       "block": {
+        "n": 971,
+        "q05": -0.441,
+        "q50": -0.361,
+        "q95": -0.271,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 986,
+        "q05": -0.5,
+        "q50": -0.354,
+        "q95": -0.194,
+        "pLE0": 1.0,
+        "nBlocks": 8
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": -0.231,
+       "block": {
+        "n": 988,
+        "q05": -0.43,
+        "q50": -0.241,
+        "q95": -0.052,
+        "pLE0": 0.986,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 725,
+        "q05": -0.333,
+        "q50": -0.231,
+        "q95": -0.231,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "readiness_harnessATH": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.249,
+       "block": {
+        "n": 1000,
+        "q05": -0.406,
+        "q50": -0.258,
+        "q95": -0.18,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 1000,
+        "q05": -0.377,
+        "q50": -0.252,
+        "q95": -0.182,
+        "pLE0": 1.0,
+        "nBlocks": 8
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": -0.349,
+       "block": {
+        "n": 1000,
+        "q05": -0.459,
+        "q50": -0.354,
+        "q95": -0.267,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 998,
+        "q05": -0.5,
+        "q50": -0.362,
+        "q95": -0.191,
+        "pLE0": 1.0,
+        "nBlocks": 6
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": -0.349,
+       "block": {
+        "n": 962,
+        "q05": -0.443,
+        "q50": -0.362,
+        "q95": -0.265,
+        "pLE0": 0.999,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 985,
+        "q05": -0.5,
+        "q50": -0.351,
+        "q95": -0.199,
+        "pLE0": 1.0,
+        "nBlocks": 8
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": -0.231,
+       "block": {
+        "n": 984,
+        "q05": -0.417,
+        "q50": -0.249,
+        "q95": -0.059,
+        "pLE0": 0.989,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 760,
+        "q05": -0.333,
+        "q50": -0.231,
+        "q95": -0.231,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     }
+    },
+    "fall10_26w": {
+     "m2only": {
+      "pooled": {
+       "rows": 81,
+       "diff": 0.031,
+       "block": {
+        "n": 967,
+        "q05": 0.0,
+        "q50": 0.027,
+        "q95": 0.101,
+        "pLE0": 0.267,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 483,
+        "q05": 0.031,
+        "q50": 0.031,
+        "q95": 0.031,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": 0.75,
+       "block": {
+        "n": 674,
+        "q05": 0.5,
+        "q50": 0.732,
+        "q95": 0.929,
+        "pLE0": 0.0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 491,
+        "q05": 0.75,
+        "q50": 0.75,
+        "q95": 0.75,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": 0.75,
+       "block": {
+        "n": 521,
+        "q05": 0.464,
+        "q50": 0.72,
+        "q95": 0.85,
+        "pLE0": 0.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 521,
+        "q05": 0.75,
+        "q50": 0.75,
+        "q95": 0.75,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": 0.0,
+       "block": {
+        "n": 909,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 506,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "m2eth": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.329,
+       "block": {
+        "n": 968,
+        "q05": -0.853,
+        "q50": -0.331,
+        "q95": 0.011,
+        "pLE0": 0.933,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 513,
+        "q05": -0.329,
+        "q50": -0.329,
+        "q95": -0.329,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": 0.143,
+       "block": {
+        "n": 653,
+        "q05": 0.0,
+        "q50": 0.143,
+        "q95": 0.321,
+        "pLE0": 0.153,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 505,
+        "q05": 0.143,
+        "q50": 0.143,
+        "q95": 0.143,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": 0.143,
+       "block": {
+        "n": 517,
+        "q05": 0.074,
+        "q50": 0.167,
+        "q95": 0.296,
+        "pLE0": 0.023,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 494,
+        "q05": 0.143,
+        "q50": 0.143,
+        "q95": 0.143,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": -0.071,
+       "block": {
+        "n": 932,
+        "q05": -0.283,
+        "q50": -0.067,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 495,
+        "q05": -0.071,
+        "q50": -0.071,
+        "q95": -0.071,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "readiness": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.182,
+       "block": {
+        "n": 978,
+        "q05": -0.439,
+        "q50": -0.172,
+        "q95": -0.055,
+        "pLE0": 0.989,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 491,
+        "q05": -0.182,
+        "q50": -0.182,
+        "q95": -0.182,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": 0.571,
+       "block": {
+        "n": 682,
+        "q05": 0.365,
+        "q50": 0.536,
+        "q95": 0.679,
+        "pLE0": 0.0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 516,
+        "q05": 0.571,
+        "q50": 0.571,
+        "q95": 0.571,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": 0.571,
+       "block": {
+        "n": 512,
+        "q05": 0.421,
+        "q50": 0.569,
+        "q95": 0.633,
+        "pLE0": 0.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 494,
+        "q05": 0.571,
+        "q50": 0.571,
+        "q95": 0.571,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": 0.0,
+       "block": {
+        "n": 901,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 495,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "readiness_harnessATH": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.182,
+       "block": {
+        "n": 977,
+        "q05": -0.45,
+        "q50": -0.182,
+        "q95": -0.044,
+        "pLE0": 0.986,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 520,
+        "q05": -0.182,
+        "q50": -0.182,
+        "q95": -0.182,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": 0.571,
+       "block": {
+        "n": 695,
+        "q05": 0.369,
+        "q50": 0.536,
+        "q95": 0.67,
+        "pLE0": 0.0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 485,
+        "q05": 0.571,
+        "q50": 0.571,
+        "q95": 0.571,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": 0.571,
+       "block": {
+        "n": 547,
+        "q05": 0.414,
+        "q50": 0.57,
+        "q95": 0.635,
+        "pLE0": 0.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 494,
+        "q05": 0.571,
+        "q50": 0.571,
+        "q95": 0.571,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": 0.0,
+       "block": {
+        "n": 905,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 533,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     }
+    }
+   },
+   "purged": {
+    "fall5_26w": {
+     "m2only": {
+      "pooled": {
+       "rows": 81,
+       "diff": 0.077,
+       "block": {
+        "n": 1000,
+        "q05": -0.095,
+        "q50": 0.053,
+        "q95": 0.196,
+        "pLE0": 0.281,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 999,
+        "q05": -0.133,
+        "q50": 0.058,
+        "q95": 0.214,
+        "pLE0": 0.231,
+        "nBlocks": 8
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": -0.098,
+       "block": {
+        "n": 1000,
+        "q05": -0.435,
+        "q50": -0.144,
+        "q95": 0.063,
+        "pLE0": 0.891,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 997,
+        "q05": -0.479,
+        "q50": -0.129,
+        "q95": 0.196,
+        "pLE0": 0.779,
+        "nBlocks": 6
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": -0.098,
+       "block": {
+        "n": 980,
+        "q05": -0.498,
+        "q50": -0.147,
+        "q95": 0.02,
+        "pLE0": 0.918,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 992,
+        "q05": -0.5,
+        "q50": -0.138,
+        "q95": 0.198,
+        "pLE0": 0.757,
+        "nBlocks": 8
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": -0.077,
+       "block": {
+        "n": 982,
+        "q05": -0.394,
+        "q50": -0.083,
+        "q95": 0.181,
+        "pLE0": 0.697,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 735,
+        "q05": -0.556,
+        "q50": -0.077,
+        "q95": -0.077,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "m2eth": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.164,
+       "block": {
+        "n": 1000,
+        "q05": -0.401,
+        "q50": -0.15,
+        "q95": 0.02,
+        "pLE0": 0.908,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 997,
+        "q05": -0.355,
+        "q50": -0.154,
+        "q95": -0.014,
+        "pLE0": 0.975,
+        "nBlocks": 8
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": -0.059,
+       "block": {
+        "n": 1000,
+        "q05": -0.148,
+        "q50": -0.055,
+        "q95": 0.034,
+        "pLE0": 0.813,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 1000,
+        "q05": -0.309,
+        "q50": -0.059,
+        "q95": 0.039,
+        "pLE0": 0.83,
+        "nBlocks": 6
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": -0.059,
+       "block": {
+        "n": 977,
+        "q05": -0.225,
+        "q50": -0.05,
+        "q95": 0.08,
+        "pLE0": 0.758,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 990,
+        "q05": -0.277,
+        "q50": -0.058,
+        "q95": 0.048,
+        "pLE0": 0.827,
+        "nBlocks": 8
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": 0.034,
+       "block": {
+        "n": 982,
+        "q05": 0.0,
+        "q50": 0.033,
+        "q95": 0.116,
+        "pLE0": 0.22,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 711,
+        "q05": 0.034,
+        "q50": 0.034,
+        "q95": 0.111,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "readiness": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.127,
+       "block": {
+        "n": 1000,
+        "q05": -0.299,
+        "q50": -0.148,
+        "q95": -0.012,
+        "pLE0": 0.962,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 1000,
+        "q05": -0.278,
+        "q50": -0.15,
+        "q95": -0.012,
+        "pLE0": 0.956,
+        "nBlocks": 8
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": -0.252,
+       "block": {
+        "n": 1000,
+        "q05": -0.414,
+        "q50": -0.293,
+        "q95": -0.179,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 999,
+        "q05": -0.443,
+        "q50": -0.296,
+        "q95": -0.042,
+        "pLE0": 0.987,
+        "nBlocks": 6
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": -0.252,
+       "block": {
+        "n": 982,
+        "q05": -0.411,
+        "q50": -0.302,
+        "q95": -0.174,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 985,
+        "q05": -0.45,
+        "q50": -0.303,
+        "q95": -0.079,
+        "pLE0": 0.99,
+        "nBlocks": 8
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": -0.179,
+       "block": {
+        "n": 970,
+        "q05": -0.392,
+        "q50": -0.189,
+        "q95": -0.01,
+        "pLE0": 0.963,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 737,
+        "q05": -0.389,
+        "q50": -0.179,
+        "q95": -0.179,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "readiness_harnessATH": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.127,
+       "block": {
+        "n": 1000,
+        "q05": -0.298,
+        "q50": -0.147,
+        "q95": -0.01,
+        "pLE0": 0.963,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 1000,
+        "q05": -0.275,
+        "q50": -0.147,
+        "q95": -0.014,
+        "pLE0": 0.966,
+        "nBlocks": 8
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": -0.252,
+       "block": {
+        "n": 1000,
+        "q05": -0.425,
+        "q50": -0.302,
+        "q95": -0.172,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 1000,
+        "q05": -0.444,
+        "q50": -0.292,
+        "q95": -0.063,
+        "pLE0": 0.99,
+        "nBlocks": 6
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": -0.252,
+       "block": {
+        "n": 980,
+        "q05": -0.413,
+        "q50": -0.304,
+        "q95": -0.169,
+        "pLE0": 1.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 990,
+        "q05": -0.449,
+        "q50": -0.282,
+        "q95": -0.069,
+        "pLE0": 0.981,
+        "nBlocks": 8
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": -0.179,
+       "block": {
+        "n": 982,
+        "q05": -0.385,
+        "q50": -0.197,
+        "q95": 0.0,
+        "pLE0": 0.954,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 768,
+        "q05": -0.389,
+        "q50": -0.179,
+        "q95": -0.179,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     }
+    },
+    "fall10_26w": {
+     "m2only": {
+      "pooled": {
+       "rows": 81,
+       "diff": 0.03,
+       "block": {
+        "n": 975,
+        "q05": 0.0,
+        "q50": 0.026,
+        "q95": 0.093,
+        "pLE0": 0.266,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 525,
+        "q05": 0.03,
+        "q50": 0.03,
+        "q95": 0.03,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": 0.75,
+       "block": {
+        "n": 655,
+        "q05": 0.5,
+        "q50": 0.732,
+        "q95": 0.929,
+        "pLE0": 0.0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 509,
+        "q05": 0.75,
+        "q50": 0.75,
+        "q95": 0.75,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": 0.75,
+       "block": {
+        "n": 510,
+        "q05": 0.483,
+        "q50": 0.725,
+        "q95": 0.851,
+        "pLE0": 0.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 492,
+        "q05": 0.75,
+        "q50": 0.75,
+        "q95": 0.75,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": 0.0,
+       "block": {
+        "n": 913,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 518,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "m2eth": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.317,
+       "block": {
+        "n": 979,
+        "q05": -0.858,
+        "q50": -0.315,
+        "q95": 0.011,
+        "pLE0": 0.926,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 541,
+        "q05": -0.317,
+        "q50": -0.317,
+        "q95": -0.317,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": 0.143,
+       "block": {
+        "n": 681,
+        "q05": 0.0,
+        "q50": 0.111,
+        "q95": 0.321,
+        "pLE0": 0.169,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 515,
+        "q05": 0.143,
+        "q50": 0.143,
+        "q95": 0.143,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": 0.143,
+       "block": {
+        "n": 513,
+        "q05": 0.052,
+        "q50": 0.163,
+        "q95": 0.282,
+        "pLE0": 0.023,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 508,
+        "q05": 0.143,
+        "q50": 0.143,
+        "q95": 0.143,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": -0.035,
+       "block": {
+        "n": 926,
+        "q05": -0.194,
+        "q50": -0.028,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 512,
+        "q05": -0.035,
+        "q50": -0.035,
+        "q95": -0.035,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "readiness": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.183,
+       "block": {
+        "n": 975,
+        "q05": -0.423,
+        "q50": -0.181,
+        "q95": -0.058,
+        "pLE0": 0.988,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 506,
+        "q05": -0.183,
+        "q50": -0.183,
+        "q95": -0.183,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": 0.571,
+       "block": {
+        "n": 666,
+        "q05": 0.346,
+        "q50": 0.536,
+        "q95": 0.679,
+        "pLE0": 0.0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 515,
+        "q05": 0.571,
+        "q50": 0.571,
+        "q95": 0.571,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": 0.571,
+       "block": {
+        "n": 512,
+        "q05": 0.417,
+        "q50": 0.568,
+        "q95": 0.632,
+        "pLE0": 0.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 510,
+        "q05": 0.571,
+        "q50": 0.571,
+        "q95": 0.571,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": 0.0,
+       "block": {
+        "n": 925,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 510,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     },
+     "readiness_harnessATH": {
+      "pooled": {
+       "rows": 81,
+       "diff": -0.183,
+       "block": {
+        "n": 979,
+        "q05": -0.4,
+        "q50": -0.175,
+        "q95": -0.045,
+        "pLE0": 0.987,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 492,
+        "q05": -0.183,
+        "q50": -0.183,
+        "q95": -0.183,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      },
+      "2016-2017": {
+       "rows": 29,
+       "diff": 0.571,
+       "block": {
+        "n": 693,
+        "q05": 0.365,
+        "q50": 0.536,
+        "q95": 0.667,
+        "pLE0": 0.0,
+        "blockWeeks": 7,
+        "note": "block shortened to 7 weeks: 29 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 491,
+        "q05": 0.571,
+        "q50": 0.571,
+        "q95": 0.571,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "2018": {
+       "rows": 52,
+       "diff": null,
+       "block": {
+        "n": 0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 0,
+        "nBlocks": 1
+       }
+      },
+      "eraStrat": {
+       "rows": 81,
+       "diff": 0.571,
+       "block": {
+        "n": 560,
+        "q05": 0.434,
+        "q50": 0.566,
+        "q95": 0.631,
+        "pLE0": 0.0,
+        "blockWeeks": 26
+       },
+       "episode": {
+        "n": 519,
+        "q05": 0.571,
+        "q50": 0.571,
+        "q95": 0.571,
+        "pLE0": 0.0,
+        "nBlocks": 2
+       }
+      },
+      "fresh": {
+       "rows": 22,
+       "diff": 0.0,
+       "block": {
+        "n": 927,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "blockWeeks": 5,
+        "note": "block shortened to 5 weeks: 22 rows hold fewer than two 26-week blocks"
+       },
+       "episode": {
+        "n": 504,
+        "q05": 0.0,
+        "q50": 0.0,
+        "q95": 0.0,
+        "pLE0": 1.0,
+        "nBlocks": 2
+       }
+      }
+     }
+    }
+   }
+  },
+  "paired_forward": {
+   "fall5_26w": {
+    "m2only": {
+     "pooled": {
+      "rows": 370,
+      "diff": -0.085,
+      "block": {
+       "n": 1000,
+       "q05": -0.198,
+       "q50": -0.08,
+       "q95": -0.008,
+       "pLE0": 0.977,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.17,
+       "q50": -0.079,
+       "q95": 0.002,
+       "pLE0": 0.943,
+       "nBlocks": 24
+      }
+     },
+     "2019-2020": {
+      "rows": 91,
+      "diff": -0.167,
+      "block": {
+       "n": 1000,
+       "q05": -0.361,
+       "q50": -0.131,
+       "q95": -0.012,
+       "pLE0": 0.988,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.275,
+       "q50": -0.151,
+       "q95": 0.006,
+       "pLE0": 0.912,
+       "nBlocks": 9
+      }
+     },
+     "2021-2022": {
+      "rows": 104,
+      "diff": -0.001,
+      "block": {
+       "n": 1000,
+       "q05": -0.099,
+       "q50": -0.0,
+       "q95": 0.054,
+       "pLE0": 0.523,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.147,
+       "q50": 0.0,
+       "q95": 0.121,
+       "pLE0": 0.496,
+       "nBlocks": 9
+      }
+     },
+     "2023-2026": {
+      "rows": 175,
+      "diff": -0.3,
+      "block": {
+       "n": 946,
+       "q05": -0.658,
+       "q50": -0.327,
+       "q95": -0.133,
+       "pLE0": 1.0,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 926,
+       "q05": -0.723,
+       "q50": -0.305,
+       "q95": -0.088,
+       "pLE0": 1.0,
+       "nBlocks": 5
+      }
+     },
+     "eraStrat": {
+      "rows": 370,
+      "diff": -0.158,
+      "block": {
+       "n": 1000,
+       "q05": -0.296,
+       "q50": -0.148,
+       "q95": -0.029,
+       "pLE0": 0.984,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.252,
+       "q50": -0.143,
+       "q95": -0.001,
+       "pLE0": 0.951,
+       "nBlocks": 24
+      }
+     },
+     "fresh": {
+      "rows": 227,
+      "diff": -0.11,
+      "block": {
+       "n": 999,
+       "q05": -0.308,
+       "q50": -0.102,
+       "q95": 0.003,
+       "pLE0": 0.941,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.227,
+       "q50": -0.082,
+       "q95": -0.0,
+       "pLE0": 0.951,
+       "nBlocks": 11
+      }
+     }
+    },
+    "m2eth": {
+     "pooled": {
+      "rows": 370,
+      "diff": -0.031,
+      "block": {
+       "n": 1000,
+       "q05": -0.082,
+       "q50": -0.031,
+       "q95": 0.005,
+       "pLE0": 0.92,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.089,
+       "q50": -0.027,
+       "q95": 0.016,
+       "pLE0": 0.855,
+       "nBlocks": 24
+      }
+     },
+     "2019-2020": {
+      "rows": 91,
+      "diff": -0.036,
+      "block": {
+       "n": 1000,
+       "q05": -0.077,
+       "q50": -0.024,
+       "q95": 0.009,
+       "pLE0": 0.89,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.088,
+       "q50": -0.027,
+       "q95": 0.005,
+       "pLE0": 0.893,
+       "nBlocks": 9
+      }
+     },
+     "2021-2022": {
+      "rows": 104,
+      "diff": -0.1,
+      "block": {
+       "n": 1000,
+       "q05": -0.228,
+       "q50": -0.078,
+       "q95": 0.004,
+       "pLE0": 0.925,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.232,
+       "q50": -0.087,
+       "q95": -0.02,
+       "pLE0": 0.996,
+       "nBlocks": 9
+      }
+     },
+     "2023-2026": {
+      "rows": 175,
+      "diff": -0.009,
+      "block": {
+       "n": 940,
+       "q05": -0.104,
+       "q50": -0.011,
+       "q95": 0.0,
+       "pLE0": 0.994,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 927,
+       "q05": -0.07,
+       "q50": -0.011,
+       "q95": -0.002,
+       "pLE0": 1.0,
+       "nBlocks": 5
+      }
+     },
+     "eraStrat": {
+      "rows": 370,
+      "diff": -0.049,
+      "block": {
+       "n": 1000,
+       "q05": -0.117,
+       "q50": -0.042,
+       "q95": -0.008,
+       "pLE0": 0.988,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.112,
+       "q50": -0.043,
+       "q95": -0.013,
+       "pLE0": 0.998,
+       "nBlocks": 24
+      }
+     },
+     "fresh": {
+      "rows": 227,
+      "diff": -0.004,
+      "block": {
+       "n": 998,
+       "q05": -0.061,
+       "q50": -0.003,
+       "q95": 0.055,
+       "pLE0": 0.555,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.063,
+       "q50": -0.001,
+       "q95": 0.05,
+       "pLE0": 0.529,
+       "nBlocks": 11
+      }
+     }
+    },
+    "readiness": {
+     "pooled": {
+      "rows": 370,
+      "diff": -0.326,
+      "block": {
+       "n": 1000,
+       "q05": -0.426,
+       "q50": -0.323,
+       "q95": -0.229,
+       "pLE0": 1.0,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.421,
+       "q50": -0.326,
+       "q95": -0.218,
+       "pLE0": 1.0,
+       "nBlocks": 24
+      }
+     },
+     "2019-2020": {
+      "rows": 91,
+      "diff": -0.341,
+      "block": {
+       "n": 1000,
+       "q05": -0.426,
+       "q50": -0.334,
+       "q95": -0.225,
+       "pLE0": 1.0,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.466,
+       "q50": -0.351,
+       "q95": -0.226,
+       "pLE0": 1.0,
+       "nBlocks": 9
+      }
+     },
+     "2021-2022": {
+      "rows": 104,
+      "diff": -0.167,
+      "block": {
+       "n": 1000,
+       "q05": -0.278,
+       "q50": -0.161,
+       "q95": -0.005,
+       "pLE0": 0.953,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.325,
+       "q50": -0.159,
+       "q95": 0.13,
+       "pLE0": 0.832,
+       "nBlocks": 9
+      }
+     },
+     "2023-2026": {
+      "rows": 175,
+      "diff": -0.244,
+      "block": {
+       "n": 942,
+       "q05": -0.364,
+       "q50": -0.238,
+       "q95": -0.032,
+       "pLE0": 0.998,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 919,
+       "q05": -0.304,
+       "q50": -0.244,
+       "q95": -0.031,
+       "pLE0": 1.0,
+       "nBlocks": 5
+      }
+     },
+     "eraStrat": {
+      "rows": 370,
+      "diff": -0.246,
+      "block": {
+       "n": 1000,
+       "q05": -0.339,
+       "q50": -0.249,
+       "q95": -0.147,
+       "pLE0": 1.0,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.335,
+       "q50": -0.253,
+       "q95": -0.122,
+       "pLE0": 0.993,
+       "nBlocks": 24
+      }
+     },
+     "fresh": {
+      "rows": 227,
+      "diff": -0.292,
+      "block": {
+       "n": 1000,
+       "q05": -0.396,
+       "q50": -0.288,
+       "q95": -0.176,
+       "pLE0": 1.0,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 1000,
+       "q05": -0.433,
+       "q50": -0.288,
+       "q95": -0.17,
+       "pLE0": 1.0,
+       "nBlocks": 11
+      }
+     }
+    }
+   },
+   "fall10_26w": {
+    "m2only": {
+     "pooled": {
+      "rows": 370,
+      "diff": 0.004,
+      "block": {
+       "n": 891,
+       "q05": -0.091,
+       "q50": -0.004,
+       "q95": 0.07,
+       "pLE0": 0.536,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 712,
+       "q05": -0.403,
+       "q50": 0.004,
+       "q95": 0.061,
+       "pLE0": 0.497,
+       "nBlocks": 3
+      }
+     },
+     "2019-2020": {
+      "rows": 91,
+      "diff": -0.16,
+      "block": {
+       "n": 803,
+       "q05": -0.479,
+       "q50": -0.175,
+       "q95": 0.049,
+       "pLE0": 0.882,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 751,
+       "q05": -0.692,
+       "q50": -0.16,
+       "q95": -0.16,
+       "pLE0": 1.0,
+       "nBlocks": 2
+      }
+     },
+     "2021-2022": {
+      "rows": 104,
+      "diff": -0.032,
+      "block": {
+       "n": 863,
+       "q05": -0.269,
+       "q50": -0.027,
+       "q95": 0.116,
+       "pLE0": 0.645,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 500,
+       "q05": -0.032,
+       "q50": -0.032,
+       "q95": -0.032,
+       "pLE0": 1.0,
+       "nBlocks": 2
+      }
+     },
+     "2023-2026": {
+      "rows": 175,
+      "diff": null,
+      "block": {
+       "n": 0,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 0,
+       "nBlocks": 1
+      }
+     },
+     "eraStrat": {
+      "rows": 370,
+      "diff": -0.077,
+      "block": {
+       "n": 877,
+       "q05": -0.329,
+       "q50": -0.099,
+       "q95": 0.044,
+       "pLE0": 0.872,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 692,
+       "q05": -0.692,
+       "q50": -0.085,
+       "q95": -0.059,
+       "pLE0": 1.0,
+       "nBlocks": 3
+      }
+     },
+     "fresh": {
+      "rows": 227,
+      "diff": 0.002,
+      "block": {
+       "n": 781,
+       "q05": -0.008,
+       "q50": 0.002,
+       "q95": 0.019,
+       "pLE0": 0.357,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 698,
+       "q05": -0.003,
+       "q50": 0.002,
+       "q95": 0.003,
+       "pLE0": 0.35,
+       "nBlocks": 3
+      }
+     }
+    },
+    "m2eth": {
+     "pooled": {
+      "rows": 370,
+      "diff": -0.073,
+      "block": {
+       "n": 887,
+       "q05": -0.17,
+       "q50": -0.078,
+       "q95": -0.011,
+       "pLE0": 0.976,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 718,
+       "q05": -0.48,
+       "q50": -0.08,
+       "q95": -0.024,
+       "pLE0": 1.0,
+       "nBlocks": 3
+      }
+     },
+     "2019-2020": {
+      "rows": 91,
+      "diff": -0.462,
+      "block": {
+       "n": 831,
+       "q05": -0.701,
+       "q50": -0.444,
+       "q95": -0.164,
+       "pLE0": 1.0,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 739,
+       "q05": -0.75,
+       "q50": -0.462,
+       "q95": -0.462,
+       "pLE0": 1.0,
+       "nBlocks": 2
+      }
+     },
+     "2021-2022": {
+      "rows": 104,
+      "diff": -0.034,
+      "block": {
+       "n": 892,
+       "q05": -0.288,
+       "q50": -0.041,
+       "q95": 0.111,
+       "pLE0": 0.677,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 535,
+       "q05": -0.034,
+       "q50": -0.034,
+       "q95": -0.034,
+       "pLE0": 1.0,
+       "nBlocks": 2
+      }
+     },
+     "2023-2026": {
+      "rows": 175,
+      "diff": null,
+      "block": {
+       "n": 0,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 0,
+       "nBlocks": 1
+      }
+     },
+     "eraStrat": {
+      "rows": 370,
+      "diff": -0.185,
+      "block": {
+       "n": 899,
+       "q05": -0.506,
+       "q50": -0.197,
+       "q95": -0.02,
+       "pLE0": 0.97,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 719,
+       "q05": -0.532,
+       "q50": -0.22,
+       "q95": -0.092,
+       "pLE0": 1.0,
+       "nBlocks": 3
+      }
+     },
+     "fresh": {
+      "rows": 227,
+      "diff": -0.027,
+      "block": {
+       "n": 806,
+       "q05": -0.078,
+       "q50": -0.027,
+       "q95": 0.004,
+       "pLE0": 0.833,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 711,
+       "q05": -0.219,
+       "q50": -0.053,
+       "q95": -0.014,
+       "pLE0": 1.0,
+       "nBlocks": 3
+      }
+     }
+    },
+    "readiness": {
+     "pooled": {
+      "rows": 370,
+      "diff": -0.169,
+      "block": {
+       "n": 880,
+       "q05": -0.299,
+       "q50": -0.174,
+       "q95": -0.05,
+       "pLE0": 0.988,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 690,
+       "q05": -0.228,
+       "q50": -0.168,
+       "q95": 0.255,
+       "pLE0": 0.625,
+       "nBlocks": 3
+      }
+     },
+     "2019-2020": {
+      "rows": 91,
+      "diff": -0.095,
+      "block": {
+       "n": 827,
+       "q05": -0.212,
+       "q50": -0.101,
+       "q95": 0.02,
+       "pLE0": 0.898,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 739,
+       "q05": -0.095,
+       "q50": -0.095,
+       "q95": -0.065,
+       "pLE0": 1.0,
+       "nBlocks": 2
+      }
+     },
+     "2021-2022": {
+      "rows": 104,
+      "diff": -0.153,
+      "block": {
+       "n": 876,
+       "q05": -0.242,
+       "q50": -0.154,
+       "q95": 0.005,
+       "pLE0": 0.947,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 483,
+       "q05": -0.153,
+       "q50": -0.153,
+       "q95": -0.153,
+       "pLE0": 1.0,
+       "nBlocks": 2
+      }
+     },
+     "2023-2026": {
+      "rows": 175,
+      "diff": null,
+      "block": {
+       "n": 0,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 0,
+       "nBlocks": 1
+      }
+     },
+     "eraStrat": {
+      "rows": 370,
+      "diff": -0.132,
+      "block": {
+       "n": 893,
+       "q05": -0.23,
+       "q50": -0.138,
+       "q95": -0.046,
+       "pLE0": 0.987,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 721,
+       "q05": -0.146,
+       "q50": -0.13,
+       "q95": -0.088,
+       "pLE0": 1.0,
+       "nBlocks": 3
+      }
+     },
+     "fresh": {
+      "rows": 227,
+      "diff": -0.209,
+      "block": {
+       "n": 792,
+       "q05": -0.445,
+       "q50": -0.202,
+       "q95": -0.038,
+       "pLE0": 0.987,
+       "blockWeeks": 26
+      },
+      "episode": {
+       "n": 702,
+       "q05": -0.222,
+       "q50": -0.189,
+       "q95": -0.024,
+       "pLE0": 1.0,
+       "nBlocks": 3
+      }
+     }
+    }
+   }
+  },
+  "peaks": {
+   "plan": {
+    "2016-11-20": {
+     "inTraining": false,
+     "label_fall5_26w": 1.0,
+     "label_fall10_26w": 1.0,
+     "fall5_26w": {
+      "fixed5": null,
+      "m2only": 0.2413,
+      "m2eth": null,
+      "readiness": 0.0,
+      "readiness_harnessATH": 1.0
+     },
+     "fall10_26w": {
+      "fixed5": null,
+      "m2only": 0.0026,
+      "m2eth": null,
+      "readiness": 0.0,
+      "readiness_harnessATH": 1.0
+     },
+     "inputs": {
+      "usdtd_vsma30w": 0.0958,
+      "ethbtc_fromhi52w": null,
+      "btc_dd_ath": -0.2653,
+      "btcusd_ret13w": 0.2303,
+      "m2_yoy": 0.0697
+     }
+    },
+    "2017-12-10": {
+     "inTraining": false,
+     "label_fall5_26w": 1.0,
+     "label_fall10_26w": 1.0,
+     "fall5_26w": {
+      "fixed5": 0.9229,
+      "m2only": 0.1946,
+      "m2eth": 0.7185,
+      "readiness": 1.0,
+      "readiness_harnessATH": 1.0
+     },
+     "fall10_26w": {
+      "fixed5": 0.6094,
+      "m2only": 0.0012,
+      "m2eth": 0.0416,
+      "readiness": 1.0,
+      "readiness_harnessATH": 1.0
+     },
+     "inputs": {
+      "usdtd_vsma30w": -0.2629,
+      "ethbtc_fromhi52w": -1.583,
+      "btc_dd_ath": 0.0,
+      "btcusd_ret13w": 1.2459,
+      "m2_yoy": 0.0514
+     }
+    },
+    "2021-01-03": {
+     "inTraining": true,
+     "label_fall5_26w": 1.0,
+     "label_fall10_26w": 1.0,
+     "fall5_26w": {
+      "fixed5": 0.7754,
+      "m2only": 0.731,
+      "m2eth": 0.8023,
+      "readiness": 1.0,
+      "readiness_harnessATH": 1.0
+     },
+     "fall10_26w": {
+      "fixed5": 0.97,
+      "m2only": 0.5005,
+      "m2eth": 0.579,
+      "readiness": 1.0,
+      "readiness_harnessATH": 1.0
+     },
+     "inputs": {
+      "usdtd_vsma30w": -0.389,
+      "ethbtc_fromhi52w": -0.2119,
+      "btc_dd_ath": 0.0,
+      "btcusd_ret13w": 1.1321,
+      "m2_yoy": 0.2125
+     }
+    }
+   },
+   "purged": {
+    "2016-11-20": {
+     "inTraining": false,
+     "label_fall5_26w": 1.0,
+     "label_fall10_26w": 1.0,
+     "fall5_26w": {
+      "fixed5": null,
+      "m2only": 0.258,
+      "m2eth": null,
+      "readiness": 0.0,
+      "readiness_harnessATH": 1.0
+     },
+     "fall10_26w": {
+      "fixed5": null,
+      "m2only": 0.0029,
+      "m2eth": null,
+      "readiness": 0.0,
+      "readiness_harnessATH": 1.0
+     },
+     "inputs": {
+      "usdtd_vsma30w": 0.0958,
+      "ethbtc_fromhi52w": null,
+      "btc_dd_ath": -0.2653,
+      "btcusd_ret13w": 0.2303,
+      "m2_yoy": 0.0697
+     }
+    },
+    "2017-12-10": {
+     "inTraining": false,
+     "label_fall5_26w": 1.0,
+     "label_fall10_26w": 1.0,
+     "fall5_26w": {
+      "fixed5": 0.9573,
+      "m2only": 0.2111,
+      "m2eth": 0.8804,
+      "readiness": 1.0,
+      "readiness_harnessATH": 1.0
+     },
+     "fall10_26w": {
+      "fixed5": 0.6135,
+      "m2only": 0.0014,
+      "m2eth": 0.0373,
+      "readiness": 1.0,
+      "readiness_harnessATH": 1.0
+     },
+     "inputs": {
+      "usdtd_vsma30w": -0.2629,
+      "ethbtc_fromhi52w": -1.583,
+      "btc_dd_ath": 0.0,
+      "btcusd_ret13w": 1.2459,
+      "m2_yoy": 0.0514
+     }
+    },
+    "2021-01-03": {
+     "inTraining": true,
+     "label_fall5_26w": 1.0,
+     "label_fall10_26w": 1.0,
+     "fall5_26w": {
+      "fixed5": 0.8694,
+      "m2only": 0.7282,
+      "m2eth": 0.8328,
+      "readiness": 1.0,
+      "readiness_harnessATH": 1.0
+     },
+     "fall10_26w": {
+      "fixed5": 0.9744,
+      "m2only": 0.4986,
+      "m2eth": 0.5886,
+      "readiness": 1.0,
+      "readiness_harnessATH": 1.0
+     },
+     "inputs": {
+      "usdtd_vsma30w": -0.389,
+      "ethbtc_fromhi52w": -0.2119,
+      "btc_dd_ath": 0.0,
+      "btcusd_ret13w": 1.1321,
+      "m2_yoy": 0.2125
+     }
+    }
+   }
+  },
+  "success": {
+   "plan": {
+    "criterion": "AUC on 2016-18 above the shifted-target null p95 for fixed5 and for M2-only (fall5_26w headline; fall10_26w beside it, one event)",
+    "trainFrom": "2019-01-06",
+    "perModel": {
+     "fixed5:fall5_26w": {
+      "auc": 0.949,
+      "nullP95": 0.8027,
+      "p": 0.0,
+      "draws": 83,
+      "exact": true,
+      "quotable": true,
+      "margin": 0.146,
+      "verdict": "pass",
+      "oneEvent": false
+     },
+     "m2only:fall5_26w": {
+      "auc": 0.787,
+      "nullP95": 0.7578,
+      "p": 0.024,
+      "draws": 83,
+      "exact": true,
+      "quotable": true,
+      "margin": 0.029,
+      "verdict": "pass",
+      "oneEvent": false
+     },
+     "fixed5:fall10_26w": {
+      "auc": 0.968,
+      "nullP95": 0.7854,
+      "p": 0.0,
+      "draws": 83,
+      "exact": true,
+      "quotable": true,
+      "margin": 0.183,
+      "verdict": "pass",
+      "oneEvent": true
+     },
+     "m2only:fall10_26w": {
+      "auc": 0.848,
+      "nullP95": 0.7853,
+      "p": 0.0,
+      "draws": 83,
+      "exact": true,
+      "quotable": true,
+      "margin": 0.063,
+      "verdict": "pass",
+      "oneEvent": true
+     }
+    },
+    "headline": "pass",
+    "cycleSpecific_fall5_atChance": {
+     "fixed5": false,
+     "m2only": false,
+     "m2eth": true,
+     "readiness": false,
+     "readiness_harnessATH": false
+    },
+    "readThrough": {
+     "fixed5": {
+      "auc": 0.949,
+      "subEraDecoyAucSameRows": 0.863,
+      "beatsDecoy": true,
+      "within2018Auc": 0.849,
+      "eraStratAuc": 0.849,
+      "withinSubEraPairs": 451,
+      "crossSubEraPairShare": 0.725,
+      "permP": 0.0,
+      "permQuotable": true,
+      "clippedRows": 0.259,
+      "reading": "within-cycle ranking present: within-sub-era AUC 0.849 (451 pairs), permutation p 0.000 < 0.05; pooled AUC above the sub-era decoy's 0.863 on the same rows"
+     },
+     "m2only": {
+      "auc": 0.787,
+      "subEraDecoyAucSameRows": 0.796,
+      "beatsDecoy": false,
+      "within2018Auc": 0.654,
+      "eraStratAuc": 0.474,
+      "withinSubEraPairs": 1471,
+      "crossSubEraPairShare": 0.667,
+      "permP": 0.28,
+      "permQuotable": true,
+      "clippedRows": 0.0,
+      "reading": "LEVEL ONLY: passes the shifted null through the 2016-17 vs 2018 level ranking; within-sub-era AUC 0.474 (1471 pairs) is at or below chance; permutation p 0.280 >= 0.05; pooled AUC below the sub-era decoy's 0.796 on the same rows, so the pooled number is mostly the 2016-17 vs 2018 level"
+     },
+     "m2eth": {
+      "auc": 0.655,
+      "subEraDecoyAucSameRows": 0.863,
+      "beatsDecoy": false,
+      "within2018Auc": 0.712,
+      "eraStratAuc": 0.712,
+      "withinSubEraPairs": 451,
+      "crossSubEraPairShare": 0.725,
+      "permP": 0.18,
+      "permQuotable": true,
+      "clippedRows": 0.086,
+      "reading": "at chance on 2016-18 (cycle-specific)"
+     },
+     "readiness": {
+      "auc": 0.696,
+      "subEraDecoyAucSameRows": 0.796,
+      "beatsDecoy": false,
+      "within2018Auc": 0.5,
+      "eraStratAuc": 0.658,
+      "withinSubEraPairs": 1471,
+      "crossSubEraPairShare": 0.667,
+      "permP": 0.2,
+      "permQuotable": true,
+      "clippedRows": null,
+      "reading": "within-cycle ranking present: within-sub-era AUC 0.658 (1471 pairs), permutation p 0.200 >= 0.05; pooled AUC below the sub-era decoy's 0.796 on the same rows, so the pooled number is mostly the 2016-17 vs 2018 level"
+     }
+    }
+   },
+   "purged": {
+    "criterion": "AUC on 2016-18 above the shifted-target null p95 for fixed5 and for M2-only (fall5_26w headline; fall10_26w beside it, one event)",
+    "trainFrom": "2019-07-07",
+    "perModel": {
+     "fixed5:fall5_26w": {
+      "auc": 0.827,
+      "nullP95": 0.6368,
+      "p": 0.0,
+      "draws": 83,
+      "exact": true,
+      "quotable": true,
+      "margin": 0.19,
+      "verdict": "pass",
+      "oneEvent": false
+     },
+     "m2only:fall5_26w": {
+      "auc": 0.787,
+      "nullP95": 0.7578,
+      "p": 0.024,
+      "draws": 83,
+      "exact": true,
+      "quotable": true,
+      "margin": 0.029,
+      "verdict": "pass",
+      "oneEvent": false
+     },
+     "fixed5:fall10_26w": {
+      "auc": 0.969,
+      "nullP95": 0.7907,
+      "p": 0.0,
+      "draws": 83,
+      "exact": true,
+      "quotable": true,
+      "margin": 0.178,
+      "verdict": "pass",
+      "oneEvent": true
+     },
+     "m2only:fall10_26w": {
+      "auc": 0.848,
+      "nullP95": 0.7853,
+      "p": 0.0,
+      "draws": 83,
+      "exact": true,
+      "quotable": true,
+      "margin": 0.063,
+      "verdict": "pass",
+      "oneEvent": true
+     }
+    },
+    "headline": "pass",
+    "cycleSpecific_fall5_atChance": {
+     "fixed5": false,
+     "m2only": false,
+     "m2eth": true,
+     "readiness": false,
+     "readiness_harnessATH": false
+    },
+    "readThrough": {
+     "fixed5": {
+      "auc": 0.827,
+      "subEraDecoyAucSameRows": 0.863,
+      "beatsDecoy": false,
+      "within2018Auc": 0.752,
+      "eraStratAuc": 0.752,
+      "withinSubEraPairs": 451,
+      "crossSubEraPairShare": 0.725,
+      "permP": 0.0,
+      "permQuotable": true,
+      "clippedRows": 0.457,
+      "reading": "within-cycle ranking present: within-sub-era AUC 0.752 (451 pairs), permutation p 0.000 < 0.05; pooled AUC below the sub-era decoy's 0.863 on the same rows, so the pooled number is mostly the 2016-17 vs 2018 level"
+     },
+     "m2only": {
+      "auc": 0.787,
+      "subEraDecoyAucSameRows": 0.796,
+      "beatsDecoy": false,
+      "within2018Auc": 0.654,
+      "eraStratAuc": 0.474,
+      "withinSubEraPairs": 1471,
+      "crossSubEraPairShare": 0.667,
+      "permP": 0.2,
+      "permQuotable": true,
+      "clippedRows": 0.0,
+      "reading": "LEVEL ONLY: passes the shifted null through the 2016-17 vs 2018 level ranking; within-sub-era AUC 0.474 (1471 pairs) is at or below chance; permutation p 0.200 >= 0.05; pooled AUC below the sub-era decoy's 0.796 on the same rows, so the pooled number is mostly the 2016-17 vs 2018 level"
+     },
+     "m2eth": {
+      "auc": 0.663,
+      "subEraDecoyAucSameRows": 0.863,
+      "beatsDecoy": false,
+      "within2018Auc": 0.693,
+      "eraStratAuc": 0.693,
+      "withinSubEraPairs": 451,
+      "crossSubEraPairShare": 0.725,
+      "permP": 0.2,
+      "permQuotable": true,
+      "clippedRows": 0.296,
+      "reading": "at chance on 2016-18 (cycle-specific)"
+     },
+     "readiness": {
+      "auc": 0.696,
+      "subEraDecoyAucSameRows": 0.796,
+      "beatsDecoy": false,
+      "within2018Auc": 0.5,
+      "eraStratAuc": 0.658,
+      "withinSubEraPairs": 1471,
+      "crossSubEraPairShare": 0.667,
+      "permP": 0.26,
+      "permQuotable": true,
+      "clippedRows": null,
+      "reading": "within-cycle ranking present: within-sub-era AUC 0.658 (1471 pairs), permutation p 0.260 >= 0.05; pooled AUC below the sub-era decoy's 0.796 on the same rows, so the pooled number is mostly the 2016-17 vs 2018 level"
+     }
+    }
+   },
+   "headline": "pass",
+   "headlineWindow": "purged",
+   "windowsAgree": true,
+   "selectionNote": "The reversed era is out of sample for the fitted coefficients only: the readiness rule's thresholds (within 5% of ATH, M2 y/y > 0) were read off what preceded the three big waterfalls (ROUND8_BRIEF item 3), two of which are in 2016-18, and fixed5's five inputs are round 7's most-picked signals from a selection whose training windows start 2016-06-01 (ROUND8_BRIEF item 6); M2-only is the only comparator whose variable choice is blind to 2016-18."
+  }
+ },
+ "questionB": {
+  "oneInputAtPeak": {
+   "model": {
+    "lastRefit": "2026-09-27",
+    "nTrain": 458,
+    "coef_z": {
+     "intercept": -1.5515,
+     "usdtd_vsma30w": 1.1846,
+     "ethbtc_fromhi52w": -1.3429,
+     "btc_dd_ath": 1.0474,
+     "btcusd_ret13w": 0.567,
+     "m2_yoy": 1.5161
+    },
+    "trainSd": {
+     "usdtd_vsma30w": 0.2716,
+     "ethbtc_fromhi52w": 0.341,
+     "btc_dd_ath": 0.4542,
+     "btcusd_ret13w": 0.4157,
+     "m2_yoy": 0.0681
+    },
+    "clipSd": 3.0
+   },
+   "today": {
+    "asOf": "2026-11-01",
+    "fixed5": 0.0399,
+    "inputs": {
+     "usdtd_vsma30w": -0.0947,
+     "ethbtc_fromhi52w": -0.1889,
+     "btc_dd_ath": -0.4567,
+     "btcusd_ret13w": 0.2087,
+     "m2_yoy": 0.0543
+    },
+    "z": {
+     "usdtd_vsma30w": -0.79,
+     "ethbtc_fromhi52w": 0.72,
+     "btc_dd_ath": 0.24,
+     "btcusd_ret13w": 0.23,
+     "m2_yoy": -0.07
+    }
+   },
+   "peaks": {
+    "2016-11-20": {
+     "readingAllAtPeak": null,
+     "inputsAtClipAllAtPeak": [],
+     "perInput": {
+      "usdtd_vsma30w": {
+       "peakValue": 0.0958,
+       "move": 0.1906,
+       "moveSd": 0.7,
+       "zAtPeak": -0.09,
+       "atClip": false,
+       "reading": 0.0871,
+       "note": null
+      },
+      "ethbtc_fromhi52w": {
+       "peakValue": null,
+       "move": null,
+       "moveSd": null,
+       "zAtPeak": null,
+       "atClip": null,
+       "reading": null,
+       "note": "not identifiable (input undefined at that week)"
+      },
+      "btc_dd_ath": {
+       "peakValue": -0.2653,
+       "move": 0.1914,
+       "moveSd": 0.42,
+       "zAtPeak": 0.66,
+       "atClip": false,
+       "reading": 0.0607,
+       "note": null
+      },
+      "btcusd_ret13w": {
+       "peakValue": 0.2303,
+       "move": 0.0216,
+       "moveSd": 0.05,
+       "zAtPeak": 0.29,
+       "atClip": false,
+       "reading": 0.041,
+       "note": null
+      },
+      "m2_yoy": {
+       "peakValue": 0.0697,
+       "move": 0.0154,
+       "moveSd": 0.23,
+       "zAtPeak": 0.15,
+       "atClip": false,
+       "reading": 0.0553,
+       "note": null
+      }
+     }
+    },
+    "2017-12-10": {
+     "readingAllAtPeak": 0.9703,
+     "inputsAtClipAllAtPeak": [
+      "ethbtc_fromhi52w"
+     ],
+     "perInput": {
+      "usdtd_vsma30w": {
+       "peakValue": -0.2629,
+       "move": -0.1682,
+       "moveSd": -0.62,
+       "zAtPeak": -1.41,
+       "atClip": false,
+       "reading": 0.0196,
+       "note": null
+      },
+      "ethbtc_fromhi52w": {
+       "peakValue": -1.583,
+       "move": -1.3941,
+       "moveSd": -4.09,
+       "zAtPeak": -3.37,
+       "atClip": true,
+       "reading": 0.86,
+       "note": "the model consumes this input at the -3 sd clip (z -3.4): the reading is what the clipped value gives, a larger move adds nothing"
+      },
+      "btc_dd_ath": {
+       "peakValue": 0.0,
+       "move": 0.4567,
+       "moveSd": 1.01,
+       "zAtPeak": 1.25,
+       "atClip": false,
+       "reading": 0.1064,
+       "note": null
+      },
+      "btcusd_ret13w": {
+       "peakValue": 1.2459,
+       "move": 1.0373,
+       "moveSd": 2.49,
+       "zAtPeak": 2.73,
+       "atClip": false,
+       "reading": 0.146,
+       "note": null
+      },
+      "m2_yoy": {
+       "peakValue": 0.0514,
+       "move": -0.0029,
+       "moveSd": -0.04,
+       "zAtPeak": -0.12,
+       "atClip": false,
+       "reading": 0.0375,
+       "note": null
+      }
+     }
+    },
+    "2021-01-03": {
+     "readingAllAtPeak": 0.8115,
+     "inputsAtClipAllAtPeak": [],
+     "perInput": {
+      "usdtd_vsma30w": {
+       "peakValue": -0.389,
+       "move": -0.2943,
+       "moveSd": -1.08,
+       "zAtPeak": -1.87,
+       "atClip": false,
+       "reading": 0.0114,
+       "note": null
+      },
+      "ethbtc_fromhi52w": {
+       "peakValue": -0.2119,
+       "move": -0.023,
+       "moveSd": -0.07,
+       "zAtPeak": 0.65,
+       "atClip": false,
+       "reading": 0.0435,
+       "note": null
+      },
+      "btc_dd_ath": {
+       "peakValue": 0.0,
+       "move": 0.4567,
+       "moveSd": 1.01,
+       "zAtPeak": 1.25,
+       "atClip": false,
+       "reading": 0.1064,
+       "note": null
+      },
+      "btcusd_ret13w": {
+       "peakValue": 1.1321,
+       "move": 0.9234,
+       "moveSd": 2.22,
+       "zAtPeak": 2.46,
+       "atClip": false,
+       "reading": 0.1276,
+       "note": null
+      },
+      "m2_yoy": {
+       "peakValue": 0.2125,
+       "move": 0.1582,
+       "moveSd": 2.32,
+       "zAtPeak": 2.25,
+       "atClip": false,
+       "reading": 0.5842,
+       "note": null
+      }
+     }
+    }
+   }
+  },
+  "gateLead": {
+   "spells": [
+    {
+     "start": "2017-01-01",
+     "end": "2017-01-01",
+     "weeksOn": 1,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 49,
+     "kmTime": 49,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2017-12-10",
+      "from": 67.4,
+      "to": 36.8,
+      "days": 35
+     },
+     "tte5WeeksFromStartLevel": 11,
+     "km5Time": 11,
+     "km5Event": 1,
+     "startsInsideFall": "2016-11-20->2017-05-21"
+    },
+    {
+     "start": "2017-02-05",
+     "end": "2017-03-12",
+     "weeksOn": 6,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 44,
+     "kmTime": 44,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2017-12-10",
+      "from": 67.4,
+      "to": 36.8,
+      "days": 35
+     },
+     "tte5WeeksFromStartLevel": 7,
+     "km5Time": 7,
+     "km5Event": 1,
+     "startsInsideFall": "2016-11-20->2017-05-21"
+    },
+    {
+     "start": "2017-04-23",
+     "end": "2017-06-11",
+     "weeksOn": 8,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 33,
+     "kmTime": 33,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2017-12-10",
+      "from": 67.4,
+      "to": 36.8,
+      "days": 35
+     },
+     "tte5WeeksFromStartLevel": 2,
+     "km5Time": 2,
+     "km5Event": 1,
+     "startsInsideFall": "2016-11-20->2017-05-21"
+    },
+    {
+     "start": "2017-08-06",
+     "end": "2017-09-03",
+     "weeksOn": 5,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 18,
+     "kmTime": 18,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2017-12-10",
+      "from": 67.4,
+      "to": 36.8,
+      "days": 35
+     },
+     "tte5WeeksFromStartLevel": 20,
+     "km5Time": 20,
+     "km5Event": 1,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2017-10-01",
+     "end": "2017-11-05",
+     "weeksOn": 6,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 10,
+     "kmTime": 10,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2017-12-10",
+      "from": 67.4,
+      "to": 36.8,
+      "days": 35
+     },
+     "tte5WeeksFromStartLevel": 12,
+     "km5Time": 12,
+     "km5Event": 1,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2017-11-19",
+     "end": "2017-12-17",
+     "weeksOn": 5,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 3,
+     "kmTime": 3,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2017-12-10",
+      "from": 67.4,
+      "to": 36.8,
+      "days": 35
+     },
+     "tte5WeeksFromStartLevel": 5,
+     "km5Time": 5,
+     "km5Event": 1,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2020-11-22",
+     "end": "2021-01-10",
+     "weeksOn": 8,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 6,
+     "kmTime": 6,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2021-01-03",
+      "from": 70.3,
+      "to": 40.8,
+      "days": 133
+     },
+     "tte5WeeksFromStartLevel": 19,
+     "km5Time": 19,
+     "km5Event": 1,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2021-02-07",
+     "end": "2021-02-21",
+     "weeksOn": 3,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 70,
+     "kmTime": 52,
+     "kmEvent": 0,
+     "censoredByDataEnd": false,
+     "nextFall": "no fall within 52 weeks",
+     "tte5WeeksFromStartLevel": 9,
+     "km5Time": 9,
+     "km5Event": 1,
+     "startsInsideFall": "2021-01-03->2021-05-16"
+    },
+    {
+     "start": "2021-03-14",
+     "end": "2021-03-21",
+     "weeksOn": 2,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 65,
+     "kmTime": 52,
+     "kmEvent": 0,
+     "censoredByDataEnd": false,
+     "nextFall": "no fall within 52 weeks",
+     "tte5WeeksFromStartLevel": 4,
+     "km5Time": 4,
+     "km5Event": 1,
+     "startsInsideFall": "2021-01-03->2021-05-16"
+    },
+    {
+     "start": "2021-04-04",
+     "end": "2021-04-11",
+     "weeksOn": 2,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 62,
+     "kmTime": 52,
+     "kmEvent": 0,
+     "censoredByDataEnd": false,
+     "nextFall": "no fall within 52 weeks",
+     "tte5WeeksFromStartLevel": 2,
+     "km5Time": 2,
+     "km5Event": 1,
+     "startsInsideFall": "2021-01-03->2021-05-16"
+    },
+    {
+     "start": "2021-05-09",
+     "end": "2021-05-09",
+     "weeksOn": 1,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 57,
+     "kmTime": 52,
+     "kmEvent": 0,
+     "censoredByDataEnd": false,
+     "nextFall": "no fall within 52 weeks",
+     "tte5WeeksFromStartLevel": 18,
+     "km5Time": 18,
+     "km5Event": 1,
+     "startsInsideFall": "2021-01-03->2021-05-16"
+    },
+    {
+     "start": "2021-10-17",
+     "end": "2021-11-14",
+     "weeksOn": 5,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 34,
+     "kmTime": 34,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2022-06-12",
+      "from": 48.0,
+      "to": 39.7,
+      "days": 84
+     },
+     "tte5WeeksFromStartLevel": 7,
+     "km5Time": 7,
+     "km5Event": 1,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2024-06-09",
+     "end": "2024-06-09",
+     "weeksOn": 1,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 54,
+     "kmTime": 52,
+     "kmEvent": 0,
+     "censoredByDataEnd": false,
+     "nextFall": "no fall within 52 weeks",
+     "tte5WeeksFromStartLevel": ">= 104 (censored)",
+     "km5Time": 52,
+     "km5Event": 0,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2024-07-21",
+     "end": "2024-07-28",
+     "weeksOn": 2,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 48,
+     "kmTime": 48,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2025-06-22",
+      "from": 65.7,
+      "to": 57.8,
+      "days": 84
+     },
+     "tte5WeeksFromStartLevel": ">= 104 (censored)",
+     "km5Time": 52,
+     "km5Event": 0,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2024-10-20",
+     "end": "2024-12-15",
+     "weeksOn": 9,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 35,
+     "kmTime": 35,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2025-06-22",
+      "from": 65.7,
+      "to": 57.8,
+      "days": 84
+     },
+     "tte5WeeksFromStartLevel": ">= 104 (censored)",
+     "km5Time": 52,
+     "km5Event": 0,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2025-01-19",
+     "end": "2025-01-26",
+     "weeksOn": 2,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 22,
+     "kmTime": 22,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2025-06-22",
+      "from": 65.7,
+      "to": 57.8,
+      "days": 84
+     },
+     "tte5WeeksFromStartLevel": null,
+     "km5Time": 52,
+     "km5Event": 0,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2025-05-11",
+     "end": "2025-06-15",
+     "weeksOn": 6,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": 6,
+     "kmTime": 6,
+     "kmEvent": 1,
+     "censoredByDataEnd": false,
+     "nextFall": {
+      "peak": "2025-06-22",
+      "from": 65.7,
+      "to": 57.8,
+      "days": 84
+     },
+     "tte5WeeksFromStartLevel": 15,
+     "km5Time": 15,
+     "km5Event": 1,
+     "startsInsideFall": null
+    },
+    {
+     "start": "2025-06-29",
+     "end": "2025-08-17",
+     "weeksOn": 8,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": null,
+     "kmTime": 52,
+     "kmEvent": 0,
+     "censoredByDataEnd": false,
+     "nextFall": "no fall within 52 weeks",
+     "tte5WeeksFromStartLevel": 7,
+     "km5Time": 7,
+     "km5Event": 1,
+     "startsInsideFall": "2025-06-22->2025-09-14"
+    },
+    {
+     "start": "2025-09-14",
+     "end": "2025-09-21",
+     "weeksOn": 2,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": null,
+     "kmTime": 52,
+     "kmEvent": 0,
+     "censoredByDataEnd": false,
+     "nextFall": "no fall within 52 weeks",
+     "tte5WeeksFromStartLevel": null,
+     "km5Time": 52,
+     "km5Event": 0,
+     "startsInsideFall": "2025-06-22->2025-09-14"
+    },
+    {
+     "start": "2025-10-05",
+     "end": "2025-10-05",
+     "weeksOn": 1,
+     "leftCensoredStart": false,
+     "leadWeeksToNextFallPeak": null,
+     "kmTime": 52,
+     "kmEvent": 0,
+     "censoredByDataEnd": false,
+     "nextFall": "no fall within 52 weeks",
+     "tte5WeeksFromStartLevel": null,
+     "km5Time": 52,
+     "km5Event": 0,
+     "startsInsideFall": null
+    }
+   ],
+   "nSpells": 20,
+   "nWithFallWithin52w": 12,
+   "nStartInsideFall": 9,
+   "kmS": [
+    1.0,
+    1.0,
+    1.0,
+    0.95,
+    0.95,
+    0.95,
+    0.85,
+    0.85,
+    0.85,
+    0.85,
+    0.8,
+    0.8,
+    0.8,
+    0.8,
+    0.8,
+    0.8,
+    0.8,
+    0.8,
+    0.75,
+    0.75,
+    0.75,
+    0.75,
+    0.7,
+    0.7,
+    0.7,
+    0.7,
+    0.7,
+    0.7,
+    0.7,
+    0.7,
+    0.7,
+    0.7,
+    0.7,
+    0.65,
+    0.6,
+    0.55,
+    0.55,
+    0.55,
+    0.55,
+    0.55,
+    0.55,
+    0.55,
+    0.55,
+    0.55,
+    0.5,
+    0.5,
+    0.5,
+    0.5,
+    0.45,
+    0.4,
+    0.4,
+    0.4,
+    0.4
+   ],
+   "kmWeeks": {
+    "w10": 6,
+    "w50": 44,
+    "w90": null
+   },
+   "kmP_fallWithin26w": 0.3,
+   "kmP_fallWithin52w": 0.6,
+   "outcomeDefinitions": {
+    "leadToNextFallPeak_allSpells": {
+     "n": 20,
+     "nEvents": 12,
+     "kmWeeks": {
+      "w10": 6,
+      "w50": 44,
+      "w90": null
+     },
+     "kmP_within26w": 0.3,
+     "kmP_within52w": 0.6
+    },
+    "fivePointsUnderSwitchOnLevel_allSpells": {
+     "n": 20,
+     "nEvents": 14,
+     "kmWeeks": {
+      "w10": 2,
+      "w50": 12,
+      "w90": null
+     },
+     "kmP_within26w": 0.7,
+     "kmP_within52w": 0.7
+    },
+    "leadToNextFallPeak_spellsStartingOutsideAFall": {
+     "n": 11,
+     "nEvents": 9,
+     "kmWeeks": {
+      "w10": 6,
+      "w50": 22,
+      "w90": null
+     },
+     "kmP_within26w": 0.545,
+     "kmP_within52w": 0.818
+    },
+    "fivePointsUnderSwitchOnLevel_spellsStartingOutsideAFall": {
+     "n": 11,
+     "nEvents": 6,
+     "kmWeeks": {
+      "w10": 7,
+      "w50": 20,
+      "w90": null
+     },
+     "kmP_within26w": 0.545,
+     "kmP_within52w": 0.545
+    },
+    "note": "the plan's outcome is the first; a spell that switches on inside a fall already under way is credited with the lead to the FOLLOWING peak under it, and with the weeks to 5 points under its own switch-on level under the second; neither definition makes flickers of one run-up independent"
+   },
+   "gateFirstRow": "2014-04-06",
+   "falls5ptSince2014": [
+    {
+     "peak": "2016-11-20",
+     "from": 97.2,
+     "to": 65.5,
+     "days": 182
+    },
+    {
+     "peak": "2017-12-10",
+     "from": 67.4,
+     "to": 36.8,
+     "days": 35
+    },
+    {
+     "peak": "2018-04-01",
+     "from": 49.6,
+     "to": 39.9,
+     "days": 35
+    },
+    {
+     "peak": "2018-09-09",
+     "from": 59.8,
+     "to": 53.3,
+     "days": 14
+    },
+    {
+     "peak": "2019-09-08",
+     "from": 71.7,
+     "to": 63.8,
+     "days": 168
+    },
+    {
+     "peak": "2020-05-17",
+     "from": 68.1,
+     "to": 58.2,
+     "days": 119
+    },
+    {
+     "peak": "2021-01-03",
+     "from": 70.3,
+     "to": 40.8,
+     "days": 133
+    },
+    {
+     "peak": "2022-06-12",
+     "from": 48.0,
+     "to": 39.7,
+     "days": 84
+    },
+    {
+     "peak": "2025-06-22",
+     "from": 65.7,
+     "to": 57.8,
+     "days": 84
+    }
+   ],
+   "today": {
+    "gateOn": false,
+    "btc_dd_ath": -0.4567,
+    "btcRallyNeededToWithin5pctOfATH": 0.4999,
+    "m2_yoy": 0.0543,
+    "m2Above0": true
+   },
+   "mergedSpells_gapUnder13w": {
+    "n": 5,
+    "nWithFall": 4,
+    "leads": [
+     49,
+     6,
+     34,
+     54,
+     6
+    ],
+    "kmWeeks": {
+     "w10": 6,
+     "w50": 34,
+     "w90": null
+    },
+    "kmP_fallWithin26w": 0.4,
+    "kmP_fallWithin52w": 0.8,
+    "fivePointsUnderSwitchOnLevel": {
+     "n": 5,
+     "nEvents": 4,
+     "kmWeeks": {
+      "w10": 7,
+      "w50": 15,
+      "w90": null
+     },
+     "kmP_within26w": 0.8,
+     "kmP_within52w": 0.8
+    },
+    "note": "flickers of the gate inside one run-up counted once; the plan's every-spell reading is the primary one; at most five independent run-ups either way"
+   }
+  },
+  "falsifiers": {
+   "i_higherHighAbove65.7": {
+    "status": "not-yet",
+    "maxWeeklyCloseSince2025-06-29": 65.36,
+    "date": "2025-06-29",
+    "threshold": 65.7,
+    "lastCompleteClose": 60.5,
+    "pointsToThreshold": 5.2
+   },
+   "ii_engineImminentSinceFeb2023": {
+    "status": "not-yet",
+    "deadline": "2027-11-02",
+    "daysToDeadline": 365,
+    "last10ptFallPeak": "2021-01-03",
+    "weeksEngineHasSaidImminent": 195,
+    "note": "the engine's current mapping is read from docs/FRACTAL.md (10 Dec 2017 week since Feb 2023); this module records only the calendar and the falls"
+   },
+   "iii_nextFallWhileEngineFit<0.8": {
+    "status": "not-yet",
+    "last5ptFall": {
+     "peak": "2025-06-22",
+     "trough": "2025-09-14",
+     "days": 84
+    },
+    "postTroughHigh": 60.92,
+    "pointsBelowPostTroughHigh": 0.41,
+    "newFallStarted": false,
+    "note": "not identifiable here: needs the engine's live fit and lead window at the start of the next 5+ fall; this module records whether such a fall has started"
+   },
+   "source": "copied from study8_honest.py main (calendar falsifier block), TODAY taken from the data's last bar; the 65.7 threshold and the 2027-11-02 deadline are ROUND8_PLAN's hand-set constants"
+  },
+  "decision": {
+   "readings": {
+    "fixed5": 0.0399,
+    "m2only": 0.3197,
+    "spreadLow": 0.0399,
+    "spreadHigh": 0.5915
+   },
+   "computedReadings": [
+    "fixed5",
+    "m2only"
+   ],
+   "spreadSource": "research/btcd_fractal/refresh/out8/forecast/results.json:today/onset/spread_fall5_26w_componentsInSupport",
+   "spreadHandSet": false,
+   "table": [
+    {
+     "costRatio_missedSeason_to_falseAlarm": 1,
+     "threshold": 0.5,
+     "clearedBy": [
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "spreadHigh"
+     ]
+    },
+    {
+     "costRatio_missedSeason_to_falseAlarm": 2,
+     "threshold": 0.3333,
+     "clearedBy": [
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "spreadHigh"
+     ]
+    },
+    {
+     "costRatio_missedSeason_to_falseAlarm": 5,
+     "threshold": 0.1667,
+     "clearedBy": [
+      "m2only",
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "m2only",
+      "spreadHigh"
+     ]
+    },
+    {
+     "costRatio_missedSeason_to_falseAlarm": 10,
+     "threshold": 0.0909,
+     "clearedBy": [
+      "m2only",
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "m2only",
+      "spreadHigh"
+     ]
+    },
+    {
+     "costRatio_missedSeason_to_falseAlarm": 20,
+     "threshold": 0.0476,
+     "clearedBy": [
+      "m2only",
+      "spreadHigh"
+     ],
+     "clearedByComputedReadings": [
+      "m2only",
+      "spreadHigh"
+     ]
+    }
+   ],
+   "rule": "act when P(fall5_26w) >= 1 / (1 + ratio)"
+  }
+ },
+ "leakage": {
+  "truncationGate": {
+   "ok": true,
+   "maxAbsDiff": 0.0,
+   "tested": 20
+  },
+  "truncationFixed5Frozen": {
+   "ok": true,
+   "maxAbsDiff": 0.0,
+   "tested": 20
+  },
+  "trainLabelsEnd": "2026-05-03",
+  "lastCompleteSunday": "2026-11-01",
+  "labelsWithheld26w": true,
+  "reverseEraRowsInTraining": 0,
+  "provisionalBarsInLabels": 0,
+  "purgedWindowFirstRow": "2019-07-07",
+  "purgedLabelWindowsDisjointFromEvaluationLabelWindows": true,
+  "planWindowTrainRowsSharingLabelPathWithEvaluation": 26,
+  "lastRefitFixed5EqualsHarnessToday": true,
+  "m2LongEqualsHarness": true,
+  "dxyUs10yEveningStamp": "DXY / US10Y daily bars are stamped 21-23 UTC the evening before the session, so the shared loader dates a Monday session to Sunday and the W-SUN panel folds it into the prior week (a one-day look-ahead in dxy_* / us10y_* features); no model in this module uses those columns"
+ }
+}
