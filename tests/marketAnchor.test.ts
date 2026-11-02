@@ -72,3 +72,23 @@ test('market anchor: config is off by default and reads its lab settings', () =>
   assert.equal(c.fixedW, 0.25);
   assert.equal(c.shuffle, true);
 });
+
+test('market anchor by series: a series whose disagreement is right earns its own weight, the rest keep the bucket\'s', () => {
+  let now = 0;
+  const a = new MarketAnchor({ ...DEFAULT_MARKET_ANCHOR, enabled: true, bySeries: true, window: 2000 }, undefined, () => now);
+  const r = rng(11);
+  for (let i = 0; i < 1500; i++) {
+    const good = i % 2 === 0;
+    const t = `${good ? 'KXDOGE' : 'KXBTCD'}-26NOV02${i}-T1`;
+    const pm = 0.2 + 0.6 * r();
+    const pb = Math.min(0.95, Math.max(0.05, pm + (r() - 0.5) * 0.4));
+    a.observe(t, 1900, pm, pb);
+    now += 1000;
+    // DOGE: the bot is the truth; BTC: the market is.
+    a.settle(t, r() < (good ? pb : pm) ? 'yes' : 'no');
+  }
+  const wDoge = a.weight('KXDOGE-26NOV02X-T1', 1900), wBtc = a.weight('KXBTCD-26NOV02X-T1', 1900);
+  assert.ok(wDoge > 0.7, `doge ${wDoge}`);
+  assert.ok(wBtc < 0.3, `btc ${wBtc}`);
+  assert.ok(a.status().series);
+});

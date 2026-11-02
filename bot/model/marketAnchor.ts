@@ -32,6 +32,9 @@ export interface MarketAnchorConfig {
   maxW: number;
   /** Lab placebo: fit on disagreements paired with another market's result. */
   shuffle?: boolean;
+  /** Also learn w per series (KXDOGE, KXBTCD, KXBTC15M, ...) inside each bucket, its prior the bucket's own w
+   *  (the owner's dynamics rule, Nov 2: a price that works only in some conditions is gated to them). */
+  bySeries?: boolean;
 }
 
 export const DEFAULT_MARKET_ANCHOR: MarketAnchorConfig = { enabled: false, prior: 0.5, priorSd: 0.5, window: 400, maxW: 1.5 };
@@ -42,6 +45,7 @@ export interface MarketAnchorState { rows: Record<string, Row[]> }
 
 const PENDING_MAX_AGE_MS = 3 * 3_600_000;
 const SAVE_EVERY_MS = 60_000;
+const seriesOf = (ticker: string) => ticker.split('-')[0];
 const L = (p: number) => logit(clamp(p, 1e-4, 1 - 1e-4));
 
 /** MAP fit of w: maximise sum log-lik(y | sigmoid(a + w d)) - (w - prior)^2 / (2 sd^2), Newton steps, clipped. */
@@ -90,10 +94,13 @@ export class MarketAnchor {
   weight(ticker: string, tauSec: number): number {
     if (this.cfg.fixedW !== undefined) return this.cfg.fixedW;
     const { group, b } = this.key(ticker, tauSec);
-    const k = `${group}:${b}`;
+    return this.cfg.bySeries ? this.wOf(`${group}:${seriesOf(ticker)}:${b}`, this.wOf(`${group}:${b}`, this.cfg.prior)) : this.wOf(`${group}:${b}`, this.cfg.prior);
+  }
+
+  private wOf(k: string, prior: number): number {
     let w = this.weights.get(k);
     if (w === undefined) {
-      w = fitAnchorWeight(this.st.rows[k] ?? [], this.cfg.prior, this.cfg.priorSd, this.cfg.maxW);
+      w = fitAnchorWeight(this.st.rows[k] ?? [], prior, this.cfg.priorSd, this.cfg.maxW);
       this.weights.set(k, w);
     }
     return w;
@@ -132,8 +139,8 @@ export class MarketAnchor {
         if (!s) return;
         const k = `${e.group}:${b}`;
         const rows = (this.st.rows[k] ??= []);
-        // Scored before the record learns from it (prequential).
-        const w = this.cfg.fixedW ?? this.weights.get(k) ?? fitAnchorWeight(rows, this.cfg.prior, this.cfg.priorSd, this.cfg.maxW);
+        // Scored before the record learns from it (prequential), with the weight the price used.
+        const w = this.weight(ticker, (ACCURACY_BUCKETS[e.group][b][0] + ACCURACY_BUCKETS[e.group][b][1]) / 2);
         const ll = (z: number) => { const p = clamp(sigmoid(z), 1e-4, 1 - 1e-4); return y ? -Math.log(p) : -Math.log(1 - p); };
         this.score.n++; this.score.anchored += ll(s.a + w * s.d); this.score.raw += ll(s.a + s.d); this.score.market += ll(s.a);
         let d = s.d;
@@ -141,6 +148,14 @@ export class MarketAnchor {
         rows.push({ a: s.a, d, y });
         if (rows.length > this.cfg.window) rows.splice(0, rows.length - this.cfg.window);
         this.weights.delete(k);
+        if (this.cfg.bySeries) {
+          const ks = `${e.group}:${seriesOf(ticker)}:${b}`;
+          const sr = (this.st.rows[ks] ??= []);
+          sr.push({ a: s.a, d, y });
+          if (sr.length > this.cfg.window) sr.splice(0, sr.length - this.cfg.window);
+        }
+        // Every series weight of the bucket leans on the bucket's: refit them all.
+        for (const key of [...this.weights.keys()]) if (key.startsWith(`${e.group}:`) && key.endsWith(`:${b}`)) this.weights.delete(key);
       });
       this.dirty = true;
     }
@@ -172,8 +187,12 @@ export class MarketAnchor {
       const k = `${g}:${b}`;
       return { lo, hi, n: (this.st.rows[k] ?? []).length, w: +(this.cfg.fixedW ?? this.weights.get(k) ?? fitAnchorWeight(this.st.rows[k] ?? [], this.cfg.prior, this.cfg.priorSd, this.cfg.maxW)).toFixed(3) };
     })]));
+    const series = this.cfg.bySeries ? Object.fromEntries(Object.keys(this.st.rows).filter((k) => k.split(':').length === 3).map((k) => {
+      const [g, se, b] = k.split(':');
+      return [k, { n: this.st.rows[k].length, w: +this.wOf(k, this.wOf(`${g}:${b}`, this.cfg.prior)).toFixed(3), series: se }];
+    })) : undefined;
     const s = this.score;
     const m = (x: number) => (s.n ? +(x / s.n).toFixed(5) : null);
-    return { enabled: this.cfg.enabled, fixedW: this.cfg.fixedW ?? null, prior: this.cfg.prior, scored: s.n, llAnchored: m(s.anchored), llRaw: m(s.raw), llMarket: m(s.market), groups };
+    return { enabled: this.cfg.enabled, fixedW: this.cfg.fixedW ?? null, prior: this.cfg.prior, scored: s.n, llAnchored: m(s.anchored), llRaw: m(s.raw), llMarket: m(s.market), groups, series };
   }
 }
