@@ -587,9 +587,22 @@ jobs:
           A=${BASH_REMATCH[1]} B=${BASH_REMATCH[2]}
           K="$RUNNER_TEMP/hist/history/kalshi"; mkdir -p "$K"
           python3 -c 'import sys,datetime as d; a=d.date.fromisoformat(sys.argv[1]); b=d.date.fromisoformat(sys.argv[2]); n=(b-a).days+3; [print("/KX*/%s.jsonl" % (a+d.timedelta(days=i-1)).isoformat()) for i in range(n)]' "$A" "$B" > "$RUNNER_TEMP/kdays.txt"
-          rclone copy gdrive:kalshi-bot-archive/raw/kalshi-history "$K/" --include-from "$RUNNER_TEMP/kdays.txt" --transfers 8 || true
-          echo "already on Drive: $(find "$K" -type f | wc -l) day file(s)"
-          rsync -a --ignore-existing --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --include='/KX*/' --include-from="$RUNNER_TEMP/kdays.txt" --exclude='*' --prune-empty-dirs bot:bot/data/history/kalshi/ "$K/"
+          D=gdrive:kalshi-bot-archive/raw
+          # The Drive thread's mirror of the server's history (raw/server-history, Nov 2) first: a Drive-to-Drive copy.
+          if [ -n "$(rclone lsf "$D/server-history/kalshi" --max-depth 1 2>/dev/null | head -1)" ]; then
+            rclone copy "$D/server-history/kalshi" "$D/kalshi-history" --include-from "$RUNNER_TEMP/kdays.txt" --transfers 8 && echo "copied from raw/server-history/kalshi on Drive"
+          else echo "::error::no raw/server-history/kalshi on Drive; it holds: $(rclone lsf "$D/server-history" --max-depth 2 2>/dev/null | head -30 | paste -sd' ' -)"; exit 1; fi
+          rclone lsf -R --files-only "$D/kalshi-history" --include-from "$RUNNER_TEMP/kdays.txt" | sort > "$RUNNER_TEMP/on-drive.txt" || : > "$RUNNER_TEMP/on-drive.txt"
+          echo "on Drive now: $(wc -l < "$RUNNER_TEMP/on-drive.txt") day file(s) in the range"
+          # The server's file list only (no data), then only what Drive still lacks is read.
+          ssh bot "cd ~/bot/data/history/kalshi && find . -path './KX*/*.jsonl' -printf '%P\n'" > "$RUNNER_TEMP/server-all.txt"
+          sed -E 's#^/KX\*/##' "$RUNNER_TEMP/kdays.txt" > "$RUNNER_TEMP/kday-names.txt"
+          awk -F/ 'NR==FNR { want[$0]=1; next } ($1 ~ /^KX/ && ($2 in want))' "$RUNNER_TEMP/kday-names.txt" "$RUNNER_TEMP/server-all.txt" | sort > "$RUNNER_TEMP/on-server.txt"
+          comm -23 "$RUNNER_TEMP/on-server.txt" "$RUNNER_TEMP/on-drive.txt" > "$RUNNER_TEMP/missing.txt"
+          echo "on the server: $(wc -l < "$RUNNER_TEMP/on-server.txt"); missing on Drive: $(wc -l < "$RUNNER_TEMP/missing.txt")"
+          if [ -s "$RUNNER_TEMP/missing.txt" ]; then
+            rsync -a --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/missing.txt" bot:bot/data/history/kalshi/ "$K/"
+          fi
       - run: |
           K="$RUNNER_TEMP/hist/history/kalshi"
           echo "cache: $(find "$K" -type f | wc -l) file(s), $(du -sh "$K" | cut -f1)"
