@@ -333,7 +333,9 @@ export interface Config {
   dataDir: string;
   /** Where the money state lives (orders and positions, vault, break-even, balance history, perps trades, the
    *  Kalshi check): DATA_DIR in paper, DATA_DIR/live in live, so the paper pool and its positions never show or
-   *  count in live mode, and a switch back to paper finds the paper books as they were. */
+   *  count in live mode, and a switch back to paper finds the paper books as they were. What the bot has learned about
+   *  its own trading (component trials, accuracy gate, entry and exit curves, take-profit bench, probation, scoreboard,
+   *  streak scales, the optimal-f history) stays in DATA_DIR in both modes, so live trades exactly as paper would. */
   bookDir: string;
   /** Audit log: a day's file splits into parts at this size; files older than the retention are deleted. */
   auditMaxFileMb: number;
