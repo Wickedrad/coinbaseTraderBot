@@ -539,7 +539,7 @@ jobs:
         if: "!contains(inputs.hist_args, 'synthetic')"
         run: |
           # Bounded by the runner's disk (the recorded days need room too): above 6 GiB the rest downloads from Binance.
-          B=$(rclone size --json gdrive:kalshi-bot-archive/raw/binance-vision 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("bytes",0))' || echo 0)
+          B=$({ rclone size --json gdrive:kalshi-bot-archive/raw/binance-vision 2>/dev/null || echo "{}"; } | python3 -c 'import sys,json; print(json.load(sys.stdin).get("bytes",0))' || echo 0)
           echo "raw/binance-vision on Drive: $((B / 1048576)) MiB"
           if [ "$B" -gt 0 ] && [ "$B" -lt 6442450944 ]; then bash deploy/drive_lab.sh get raw/binance-vision "$RUNNER_TEMP/hist/history" || true; fi
       - uses: actions/download-artifact@v4
@@ -567,7 +567,7 @@ jobs:
         run: |
           set -uo pipefail
           H="$RUNNER_TEMP/hist/history"; R="$RUNNER_TEMP/hist/replay"
-          [ -d "$H" ] && { printf '/kalshi/**\n' > "$RUNNER_TEMP/no-kalshi.txt"; bash deploy/drive_lab.sh put raw/binance-vision "$H" "$RUNNER_TEMP/no-kalshi.txt"; }
+          [ -d "$H" ] && { printf '/kalshi/**\n' > "$RUNNER_TEMP/no-kalshi.txt"; bash deploy/drive_lab.sh put raw/binance-vision "$H" --exclude-from "$RUNNER_TEMP/no-kalshi.txt"; }
           [ -d "$R" ] && bash deploy/drive_lab.sh put "simulated/snn-contracts/${HFROM}_${HTO}" "$R"
           true
       - uses: actions/upload-artifact@v4
