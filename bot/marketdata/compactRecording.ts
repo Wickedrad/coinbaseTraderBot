@@ -65,6 +65,59 @@ class R {
   }
   sv(): number { const z = this.uv(); return z % 2 ? -(z + 1) / 2 : z / 2; }
   str(): string { const len = this.uv(); const s = this.b.toString('utf8', this.i, this.i + len); this.i += len; return s; }
+  /** A length-prefixed field left as bytes in place: [start, end). */
+  span(): [number, number] { const len = this.uv(); const a = this.i; this.i += len; return [a, this.i]; }
+}
+
+// ---------- decimal text ----------
+// A scaled integer n (value n / 10^k) printed as fixed-point decimal with trailing zeros dropped. The encoder stores a
+// number column this way only when this text equals String(value) for every value in it (what JSON.stringify and the
+// CSV writers print), so the decoder can write the digits straight into bytes without asking V8 to format doubles.
+const ZEROS = ['', '0', '00', '000', '0000', '00000', '000000', '0000000', '00000000'];
+export function decText(n: number, k: number): string {
+  const neg = n < 0, a = neg ? -n : n;
+  if (!k) return (neg ? '-' : '') + a;
+  const ip = Math.floor(a / POW[k]), fp = a - ip * POW[k];
+  if (!fp) return (neg ? '-' : '') + ip;
+  let f = String(fp); f = ZEROS[k - f.length] + f;
+  let e = f.length; while (f.charCodeAt(e - 1) === 48) e--;
+  return (neg ? '-' : '') + ip + '.' + f.slice(0, e);
+}
+
+/** Growable output bytes for a block's text. */
+class Out {
+  buf: Buffer;
+  n = 0;
+  constructor(size: number) { this.buf = Buffer.allocUnsafe(Math.max(1024, size)); }
+  room(k: number): void {
+    if (this.n + k <= this.buf.length) return;
+    let size = this.buf.length * 2;
+    while (size < this.n + k) size *= 2;
+    const b = Buffer.allocUnsafe(size); this.buf.copy(b, 0, 0, this.n); this.buf = b;
+  }
+  bytes(src: Buffer, a = 0, b = src.length): void { const len = b - a; this.room(len); src.copy(this.buf, this.n, a, b); this.n += len; }
+  /** Digits of a non-negative integer (< 2^53), `width` = minimum digits (zero padded). */
+  digits(a: number, width = 1): void {
+    this.room(17 + width);
+    let len = 1; for (let t = a; t >= 10; t = Math.floor(t / 10)) len++;
+    if (len < width) { for (let i = len; i < width; i++) this.buf[this.n++] = 48; }
+    let pos = this.n + len - 1;
+    do { const q = Math.floor(a / 10); this.buf[pos--] = 48 + (a - q * 10); a = q; } while (a > 0);
+    this.n += len;
+  }
+  /** decText(n, k) as bytes. */
+  dec(n: number, k: number): void {
+    this.room(1);
+    if (n < 0) { this.buf[this.n++] = 45; n = -n; }
+    if (!k) { this.digits(n); return; }
+    const ip = Math.floor(n / POW[k]);
+    let fp = n - ip * POW[k];
+    this.digits(ip);
+    if (!fp) return;
+    let w = k; while (fp % 10 === 0) { fp /= 10; w--; }
+    this.room(1); this.buf[this.n++] = 46;
+    this.digits(fp, w);
+  }
 }
 
 // ---------- columns ----------
@@ -87,7 +140,7 @@ function writeColumn(w: W, vals: unknown[], ty: Ty): void {
     for (const v of vals) { const s = scaleOf(v as number); if (s < 0) { k = -1; break; } if (s > k) k = s; }
     if (k >= 0) {
       const ints = vals.map((v) => Math.round((v as number) * POW[k]));
-      if (ints.every((x, i) => Math.abs(x) <= Number.MAX_SAFE_INTEGER / 2 && x / POW[k] === vals[i])) {
+      if (ints.every((x, i) => Math.abs(x) <= Number.MAX_SAFE_INTEGER / 2 && x / POW[k] === vals[i] && decText(x, k) === String(vals[i]))) {
         // Delta when it is smaller in sum of magnitudes (a cheap stand-in for encoded size).
         let plain = 0, dsum = 0;
         for (let i = 0; i < ints.length; i++) { plain += Math.abs(ints[i]); dsum += Math.abs(ints[i] - (i ? ints[i - 1] : 0)); }
@@ -111,21 +164,32 @@ function writeColumn(w: W, vals: unknown[], ty: Ty): void {
   for (const v of vals) w.str(JSON.stringify(v));
 }
 
-function readColumn(r: R, n: number): unknown[] {
+/** A column read back in compact form (typed arrays, dictionary entries and text fields as bytes), written out as
+ *  each line's bytes: numbers as fixed-point digits (see decText), strings JSON-quoted in object lines and bare in CSV
+ *  rows, other values as their stored JSON. No objects or per-value strings are made, so reading runs at memcpy speed. */
+type Col = { tag: 0; k: number; v: Float64Array } | { tag: 1; dict: Buffer[]; idx: Uint32Array } | { tag: 2; at: Uint32Array };
+
+function readColumn(r: R, n: number, csv: boolean): Col {
   const tag = r.byte();
-  const out = new Array<unknown>(n);
   if (tag === 0) {
-    const k = r.uv(), delta = r.byte() === 1, p = POW[k];
+    const k = r.uv(), delta = r.byte() === 1, v = new Float64Array(n);
     let prev = 0;
-    for (let i = 0; i < n; i++) { const d = r.sv(); const x = delta ? prev + d : d; prev = x; out[i] = x / p; }
-  } else if (tag === 1) {
-    const dict: string[] = [];
-    for (let i = r.uv(); i > 0; i--) dict.push(r.str());
-    for (let i = 0; i < n; i++) out[i] = dict[r.uv()];
-  } else if (tag === 2) {
-    for (let i = 0; i < n; i++) out[i] = JSON.parse(r.str());
-  } else throw new Error(`mdc: bad column tag ${tag}`);
-  return out;
+    for (let i = 0; i < n; i++) { const d = r.sv(); prev = delta ? prev + d : d; v[i] = prev; }
+    return { tag, k, v };
+  }
+  if (tag === 1) {
+    const dict: Buffer[] = [];
+    for (let i = r.uv(); i > 0; i--) { const s = r.str(); dict.push(Buffer.from(csv ? s : JSON.stringify(s))); }
+    const idx = new Uint32Array(n);
+    for (let i = 0; i < n; i++) idx[i] = r.uv();
+    return { tag, dict, idx };
+  }
+  if (tag === 2) {
+    const at = new Uint32Array(2 * n);
+    for (let i = 0; i < n; i++) { const [a, b] = r.span(); at[2 * i] = a; at[2 * i + 1] = b; }
+    return { tag, at };
+  }
+  throw new Error(`mdc: bad column tag ${tag}`);
 }
 
 // ---------- blocks ----------
@@ -167,28 +231,43 @@ export function encodeBlock(lines: string[], endsWithNewline: boolean): Buffer {
   return Buffer.from(w.out());
 }
 
-/** Lines of one block payload, and whether the block ended with a newline. */
-export function decodeBlock(payload: Buffer): { lines: string[]; endsWithNewline: boolean } {
+/** One block payload back to its text: every line followed by a newline. */
+export function decodeBlockText(payload: Buffer): { text: Buffer; lines: number; endsWithNewline: boolean } {
   const r = new R(payload);
   const n = r.uv(), endsWithNewline = r.byte() === 1;
   const sigs: [string[] | null, Ty[]][] = [];
   for (let i = r.uv(); i > 0; i--) sigs.push(JSON.parse(r.str()));
-  const ids = new Array<number>(n), count = new Array<number>(sigs.length + 1).fill(0);
+  const ids = new Uint32Array(n), count = new Array<number>(sigs.length + 1).fill(0);
   for (let i = 0; i < n; i++) { ids[i] = r.uv(); count[ids[i]]++; }
-  const raw: string[] = [];
-  for (let i = 0; i < count[0]; i++) raw.push(r.str());
-  const cols: unknown[][][] = sigs.map(([, types], s) => types.map(() => readColumn(r, count[s + 1])));
+  const raw = new Uint32Array(2 * count[0]);
+  for (let i = 0; i < count[0]; i++) { const [a, b] = r.span(); raw[2 * i] = a; raw[2 * i + 1] = b; }
+  const cols: Col[][] = sigs.map(([keys, types], s) => types.map(() => readColumn(r, count[s + 1], !keys)));
+  // Per shape, the bytes around the values: '{"t":' v ',"k":' v ... '}' (CSV: '' v ',' v ... ''), then the newline.
+  const glue: Buffer[][] = sigs.map(([keys, types]) => (keys
+    ? (keys.length ? [...keys.map((k, i) => (i ? ',' : '{') + JSON.stringify(k) + ':'), '}\n'] : ['{}\n'])
+    : [...types.map((_, i) => (i ? ',' : '')), '\n']).map((g) => Buffer.from(g)));
   const at = new Array<number>(sigs.length + 1).fill(0);
-  const lines = new Array<string>(n);
+  const out = new Out(payload.length * 4);
   for (let i = 0; i < n; i++) {
     const id = ids[i], j = at[id]++;
-    if (id === 0) { lines[i] = raw[j]; continue; }
-    const keys = sigs[id - 1][0], c = cols[id - 1];
-    if (!keys) { const f = new Array<unknown>(c.length); for (let k = 0; k < c.length; k++) f[k] = c[k][j]; lines[i] = f.join(','); continue; }
-    const o: Record<string, unknown> = {};
-    for (let k = 0; k < keys.length; k++) o[keys[k]] = c[k][j];
-    lines[i] = JSON.stringify(o);
+    if (id === 0) { out.bytes(payload, raw[2 * j], raw[2 * j + 1]); out.room(1); out.buf[out.n++] = 10; continue; }
+    const c = cols[id - 1], g = glue[id - 1];
+    for (let k = 0; k < c.length; k++) {
+      out.bytes(g[k]);
+      const col = c[k];
+      if (col.tag === 0) out.dec(col.v[j], col.k);
+      else if (col.tag === 1) out.bytes(col.dict[col.idx[j]]);
+      else out.bytes(payload, col.at[2 * j], col.at[2 * j + 1]);
+    }
+    out.bytes(g[c.length]);
   }
+  return { text: out.buf.subarray(0, out.n), lines: n, endsWithNewline };
+}
+
+/** Lines of one block payload, and whether the block ended with a newline. */
+export function decodeBlock(payload: Buffer): { lines: string[]; endsWithNewline: boolean } {
+  const { text, lines: n, endsWithNewline } = decodeBlockText(payload);
+  const lines = n ? text.toString('utf8', 0, text.length - 1).split('\n') : [];
   return { lines, endsWithNewline };
 }
 

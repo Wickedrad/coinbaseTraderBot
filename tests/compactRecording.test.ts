@@ -13,6 +13,7 @@ const LINES = [
   JSON.stringify({ t: 1761955200160, k: 'book', ticker: 'X', bids: [{ price: 0.5, size: 10 }], asks: [], ts: 1761955200160 }),
   JSON.stringify({ t: 1761955200170, k: 'index', asset: 'BTC', value: 110233.123456789, ts: 1761955200170, src: null }),
   JSON.stringify({ t: 1761955200180, k: 'odd', a: 1e-7, b: 12345678901234567890, c: -0.000001, d: 'é"\\', e: true }),
+  '{}',
   JSON.stringify({ t: 1761955200190, k: 'delta', ticker: 'KXBTC15M-25NOV0215-15', side: 'bid', price: 0.1 + 0.2, delta: 0, ts: 1761955200190 }),
   '{"t": 1, "k":"spaced"}',
   '{"t":1,"k":"torn","x":',
@@ -44,5 +45,15 @@ test('mdc file: recordingLines reads it like the gzip, and recordingFiles prefer
 
 test('mdc block: CSV rows (candles, funding) round trip, odd fields kept', () => {
   const csv = ['ts,o,h,l,c,v', '1500000000000,4261.48,4261.48,4261.48,4261.48,1.775183', '1500000060000,4261.5,4280,4261.48,4270.01,0', '1500000120000,01.50,,x,-0,1e-7', 'a,"b,c",d', '1500000180000,4270.01,4271,4269,4270,12.5'];
+  assert.deepEqual(decodeBlock(encodeBlock(csv, true)).lines, csv);
+});
+
+test('mdc numbers: fixed-point digits match how JS prints them, or the column is kept as text', () => {
+  const vals: number[] = [];
+  for (let i = 0; i < 20000; i++) vals.push(Math.round((Math.random() - 0.5) * 10 ** (1 + (i % 12))) / 10 ** (i % 9));
+  vals.push(0, -0, 1e-7, 123456789.12345678, 1761955200123, 0.1 + 0.2, 5e-324, 1e21, -1e-6);
+  const lines = vals.map((v, i) => JSON.stringify({ t: i, v }));
+  assert.deepEqual(decodeBlock(encodeBlock(lines, true)).lines, lines);
+  const csv = vals.map((v, i) => `${i},${v}`);
   assert.deepEqual(decodeBlock(encodeBlock(csv, true)).lines, csv);
 });

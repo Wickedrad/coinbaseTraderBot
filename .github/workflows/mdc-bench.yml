@@ -30,7 +30,7 @@ jobs:
   bench:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 150
+    timeout-minutes: 170
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -62,24 +62,35 @@ jobs:
           for d in ${DAYS//,/ }; do
             rclone copy "$DRIVE_ROOT/recordings/md-$d.jsonl.gz" "$D/recordings/" --transfers 1
             F=$D/recordings/md-$d.jsonl.gz
-            echo "" >> "$OUT"; echo "### $d" >> "$OUT"; echo '```' >> "$OUT"
-            if [ $first = 1 ]; then LV="9 19"; else LV="19"; fi
-            tsx scripts/mdc.ts bench "$F" $LV 2>&1 | tee -a "$OUT"
-            # Whole-day byte-exact alternatives (plain JSONL compressed as one stream).
-            PL=$RUNNER_TEMP/plain.jsonl; pigz -dc "$F" > "$PL"
-            t0=$(date +%s); pigz -9 -c "$PL" > "$RUNNER_TEMP/w.gz"; t1=$(date +%s)
-            echo "gzip -9 one stream: $(( $(stat -c%s "$RUNNER_TEMP/w.gz") / 1048576 )) MB, $((t1-t0)) s (pigz)" | tee -a "$OUT"
-            for lv in 9 19; do
-              t0=$(date +%s); zstd -q -T0 -$lv --long=27 -c "$PL" > "$RUNNER_TEMP/w.zst"; t1=$(date +%s)
-              t2=$(date +%s); zstd -q -dc --long=27 "$RUNNER_TEMP/w.zst" | wc -l >/dev/null; t3=$(date +%s)
-              echo "zstd -$lv --long=27 one stream: $(( $(stat -c%s "$RUNNER_TEMP/w.zst") / 1048576 )) MB, encode $((t1-t0)) s, decode $((t3-t2)) s" | tee -a "$OUT"
-            done
+            echo "" >> "$OUT"; echo "### recording $d" >> "$OUT"; echo '```' >> "$OUT"
+            tsx scripts/mdc.ts bench "$F" 19 2>&1 | tee -a "$OUT"
             if [ $first = 1 ]; then
-              t0=$(date +%s); xz -T0 -6 -c "$PL" > "$RUNNER_TEMP/w.xz"; t1=$(date +%s)
-              echo "xz -6 one stream: $(( $(stat -c%s "$RUNNER_TEMP/w.xz") / 1048576 )) MB, $((t1-t0)) s" | tee -a "$OUT"
+              # Whole-day byte-exact baseline: plain JSONL as one zstd stream (fast setting; -19 and xz ran past 2 h).
+              PL=$RUNNER_TEMP/plain.jsonl; pigz -dc "$F" > "$PL"
+              t0=$(date +%s); zstd -q -T0 -9 --long=27 -c "$PL" > "$RUNNER_TEMP/w.zst"; t1=$(date +%s)
+              echo "zstd -9 --long=27 one stream: $(( $(stat -c%s "$RUNNER_TEMP/w.zst") / 1048576 )) MB, encode $((t1-t0)) s" | tee -a "$OUT"
+              rm -f "$PL" "$RUNNER_TEMP/w.zst"
             fi
-            rm -f "$PL" "$RUNNER_TEMP"/w.* "$F"
-            echo '```' >> "$OUT"; first=0
+            rm -f "$F"; echo '```' >> "$OUT"; first=0
+          done
+          # History sets on Drive (raw/ = downloaded market history, simulated/ = rebuilt lab data): what is there,
+          # then the largest JSON-lines and CSV files of each, measured the same way.
+          for top in raw simulated derived; do
+            L=$RUNNER_TEMP/ls-$top.txt
+            rclone lsf -R --files-only --format sp --separator '|' "$DRIVE_ROOT/$top" 2>/dev/null > "$L" || true
+            [ -s "$L" ] || { echo "" >> "$OUT"; echo "### $top/: empty or absent" >> "$OUT"; continue; }
+            echo "" >> "$OUT"; echo "### $top/ ($(wc -l < "$L") files, $(( $(cut -d'|' -f1 "$L" | paste -sd+ | bc) / 1048576 )) MB)" >> "$OUT"; echo '```' >> "$OUT"
+            awk -F'|' '{n=split($2,p,"/"); ext=$2; sub(/^.*\./,"",ext); k=p[1]"/"(n>2?p[2]"/":"")"*."ext; s[k]+=$1; c[k]++} END {for (k in s) printf "%8.1f MB %6d files  %s\n", s[k]/1048576, c[k], k}' "$L" | sort -rn | head -15 | tee -a "$OUT"
+            for pat in '\.jsonl(\.gz)?$' '\.csv(\.gz)?$'; do
+              grep -E "$pat" "$L" | sort -t'|' -k1,1nr | head -2 | while IFS='|' read -r size f; do
+                mkdir -p "$D/h"; rclone copyto "$DRIVE_ROOT/$top/$f" "$D/h/$(basename "$f")"
+                echo "-- $top/$f" | tee -a "$OUT"
+                tsx scripts/mdc.ts bench "$D/h/$(basename "$f")" 19 2>&1 | grep -v '^kinds' | tee -a "$OUT"
+                G=$D/h/$(basename "$f"); case "$G" in *.gz) ;; *) echo "gzip -6 of it: $(( $(gzip -6 -c "$G" | wc -c) / 1024 )) KB" | tee -a "$OUT";; esac
+                rm -rf "$D/h"
+              done
+            done
+            echo '```' >> "$OUT"
           done
           cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
       - name: Post summary as a commit comment
