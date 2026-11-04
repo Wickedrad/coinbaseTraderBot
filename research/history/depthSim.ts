@@ -90,11 +90,15 @@ interface SimBook { bid: Map<number, number>; ask: Map<number, number> } // pric
 export type DepthEv = { t: number; k: string; ticker: string; [key: string]: unknown };
 
 /** How fast a level's size goes back to its drawn size (seconds). */
-const REVERT_S = 20;
+const REVERT_S = 10;
+/** A level's own second-to-second wander (sd as a share of its size). */
+const STEP_SD = 0.1;
 /** The fill-in's own best-price changes a second before flicker (Nov 2 twin: ~55 a minute). */
 const FLICK_BASE_PER_SEC = 0.9;
-/** Most prints a sweep of one level is split into (the last takes the rest). */
-const SWEEP_PRINTS = 25;
+/** Most trade-sized prints a sweep of one level makes before the rest of it is cancelled. */
+const SWEEP_PRINTS = 3;
+/** How far a level's size moves within one contract (log sd), the rest of the measured spread being between contracts. */
+const WITHIN_SD = 0.7;
 
 export class DepthSim {
   /** What the fill-in emitted (a run's diagnostics): seconds simulated, trades (sweep prints among them), flickers. */
@@ -126,7 +130,19 @@ export class DepthSim {
   }
 
   /** Drop a contract's book (settled). */
-  forget(ticker: string): void { this.books.delete(ticker); }
+  forget(ticker: string): void { this.books.delete(ticker); this.scale.delete(ticker); }
+
+  /** Each contract's own depth (Nov 4 twin): the measured sizes' spread (90th percentile ~20x the median) is mostly
+   *  between contracts and hours, not second to second. Drawn iid each time, every contract's mean size came out ~15x the
+   *  median and its top ~40x the real one; so a contract keeps one draw of that spread, and moves within WITHIN_SD. */
+  private readonly scale = new Map<string, number>();
+  private size(u: () => number, ticker: string, p50: number | null | undefined, p90: number | null | undefined): number {
+    if (!(p50 && p50 > 0)) return 1;
+    const sg = p90 && p90 > p50 ? Math.log(p90 / p50) / 1.2816 : 0, sw = Math.min(sg, WITHIN_SD), sc = Math.sqrt(Math.max(0, sg * sg - sw * sw));
+    let z = this.scale.get(ticker);
+    if (z === undefined) { const v = rng(hashStr(ticker) ^ 0x5bd1e995); z = normal(v); this.scale.set(ticker, z); }
+    return Math.max(1, Math.round(p50 * Math.exp(sc * z + sw * normal(u))));
+  }
 
   /** The book at an anchor quote (bid and ask in dollars) and its life until `until`: a full snapshot at `t`, then
    *  the changes and trades in between, in time order. `close` is the contract's close time; `nextMid` (dollars), the
@@ -146,7 +162,7 @@ export class DepthSim {
       for (let off = 0; off < DEPTH_LEVELS; off++) {
         const p = side === 'bid' ? best - off * tick : best + off * tick;
         if (p < 1 || p > PX - 1 || m.has(p)) continue;
-        if (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) m.set(p, lognormal(u, cell.levelFilledP50[off], cell.levelFilledP90[off]));
+        if (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) m.set(p, this.size(u, ticker, cell.levelFilledP50[off], cell.levelFilledP90[off]));
       }
     }
     const levels = (side: Side): Level[] => [...b![side].entries()].sort((x, y) => (side === 'bid' ? y[0] - x[0] : x[0] - y[0])).map(([p, s]) => ({ price: p / PX, size: s }));
@@ -186,7 +202,7 @@ export class DepthSim {
     const target: Record<Side, number[]> = { bid: [], ask: [] };
     for (const side of ['bid', 'ask'] as Side[]) for (let off = 0; off < DEPTH_LEVELS; off++) {
       const p50 = cell.levelFilledP50[off], p90 = cell.levelFilledP90[off];
-      target[side][off] = p50 && (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) ? lognormal(u, p50, p90 ?? p50) : 0;
+      target[side][off] = p50 && (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) ? this.size(u, ticker, p50, p90) : 0;
     }
     const pull = 1 - Math.exp(-1 / REVERT_S);
     // Flicker (Nov 2 twin: the real best price changes ~324 times a minute, the fill-in's 55): a best level pulled and put
@@ -206,17 +222,20 @@ export class DepthSim {
         let q = m.get(top)!, k = 0;
         const yes = side === 'ask';
         while (q > 0 && k < SWEEP_PRINTS) {
-          const n = k === SWEEP_PRINTS - 1 ? q : Math.min(q, tradeSz());
+          const n = Math.min(q, tradeSz());
           out.push({ t: at, k: 'trade', ticker, price: top / PX, count: n, takerSide: yes ? 'yes' : 'no', ts: at, sim: 1 });
           out.push({ t: at, k: 'delta', ticker, side, price: top / PX, delta: -n, ts: at, sim: 1 });
           q -= n; k++;
         }
+        // The rest is pulled by its makers (Nov 4 twin: traded in full, sweeps alone printed ~485 trades a minute against
+        // the real books' ~250 all told); the far side then quotes at this price, so an order resting here is crossed.
+        if (q > 0) out.push({ t: at, k: 'delta', ticker, side, price: top / PX, delta: -q, ts: at, sim: 1 });
         m.delete(top);
         owe += k; this.stats.sweepPrints += k; this.stats.trades += k;
         // The far side moves up behind the price (a down move: a new ask at the level just taken).
         const other: Side = side === 'bid' ? 'ask' : 'bid', om = b[other];
         if (side === 'bid') { refA = top; refB = top - tickAt(top); } else { refB = top; refA = top + tickAt(top); }
-        if (!om.has(top)) { const sz = lognormal(u, cell.levelFilledP50[0], cell.levelFilledP90[0]); om.set(top, sz); out.push({ t: at, k: 'delta', ticker, side: other, price: top / PX, delta: sz, ts: at, sim: 1 }); }
+        if (!om.has(top)) { const sz = this.size(u, ticker, cell.levelFilledP50[0], cell.levelFilledP90[0]); om.set(top, sz); out.push({ t: at, k: 'delta', ticker, side: other, price: top / PX, delta: sz, ts: at, sim: 1 }); }
         for (const p of [...om.keys()]) if (ticksFrom(p, top) >= DEPTH_LEVELS) { const d = om.get(p)!; om.delete(p); out.push({ t: at, k: 'delta', ticker, side: other, price: p / PX, delta: -d, ts: at, sim: 1 }); }
       }
       // The second's trades and flickers in time order, each on the book as it stands then.
@@ -265,19 +284,14 @@ export class DepthSim {
         for (let off = 0; off < DEPTH_LEVELS; off++) {
           const p = side === 'bid' ? top - off * tick : top + off * tick;
           if (p < 1 || p > PX - 1) continue;
-          const q = m.get(p) ?? 0, f = this.rates(off, q);
-          if (!f) continue;
-          let added = sumOf(u, poisson(u, f.addPerSec * frac), f.addSize.p50, f.addSize.p90);
+          const q = m.get(p) ?? 0;
+          // Each level wanders about this quarter-minute's drawn size and goes back to it (REVERT_S): the measured
+          // per-second adds and cancels, netted, made a random walk of thousands a second that sat at the cap (Nov 4 twin).
+          let next = q + pull * frac * (target[side][off] - q) + q * STEP_SD * Math.sqrt(frac) * normal(u);
           // The quote's own level, emptied by trades or cancels, is quoted again as often as the real books quote it.
-          if (off === 0 && q === 0 && added === 0 && u() < (cell.levelQuoted[0] ?? 1)) added = lognormal(u, cell.levelFilledP50[0], cell.levelFilledP90[0]);
-          const cancelled = q > 0 ? Math.min(q, sumOf(u, poisson(u, f.cancelPerSec * frac), f.cancelSize.p50, f.cancelSize.p90)) : 0;
-          // The flow's own drift is taken out (its adds and cancels, netted per second, only move a queue about); the
-          // measured shape is where it rests, and the pull takes it back there.
-          const drift = f.addPerSec * (f.addSize.mean || f.addSize.p50 || 0) - f.cancelPerSec * (f.cancelSize.mean || f.cancelSize.p50 || 0);
-          let next = q + added - cancelled - Math.round(drift * frac);
-          next += Math.round(pull * frac * (target[side][off] - next));
+          if (off === 0 && q === 0 && u() < (cell.levelQuoted[0] ?? 1)) next = this.size(u, ticker, cell.levelFilledP50[0], cell.levelFilledP90[0]);
           const cap = 4 * Math.max(1, cell.levelFilledP90[off] ?? cell.levelFilledP90[cell.levelFilledP90.length - 1] ?? 1);
-          next = Math.max(0, Math.min(cap, next));
+          next = Math.max(0, Math.min(cap, Math.round(next)));
           const d = next - q;
           if (d === 0) continue;
           if (next > 0) m.set(p, next); else m.delete(p);

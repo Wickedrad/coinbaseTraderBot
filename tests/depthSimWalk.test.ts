@@ -16,12 +16,14 @@ test('a quote that moves down walks through the bids in its way, each taken by N
   const t = 1_000_000 * MIN;
   const ev = sim.play('T', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.47);
   const trades = ev.filter((e) => e.k === 'trade');
-  // From bid 50c / ask 52c to a mid of 47c (bid ~46c): the bids at 50, 49, 48 and 47c go, each in full, in trade-sized
-  // prints (at most 25 a level, the last taking the rest).
+  // From bid 50c / ask 52c to a mid of 47c (bid ~46c): the bids at 50, 49, 48 and 47c go, each with a few trade-sized
+  // prints (at most 3) and the rest pulled.
   const prices = trades.map((e) => Math.round((e.price as number) * 100));
   assert.deepEqual([...new Set(prices)], [50, 49, 48, 47]);
-  for (const c of [50, 49, 48, 47]) assert.equal(trades.filter((e) => Math.round((e.price as number) * 100) === c).reduce((a, e) => a + (e.count as number), 0), 100);
-  assert.ok(trades.length > 4 && trades.length <= 100);
+  assert.ok(trades.length >= 4 && trades.length <= 12);
+  const bid = new Map<number, number>();
+  for (const e of ev) if (e.k === 'book') for (const l of e.bids as Array<{ price: number; size: number }>) bid.set(Math.round(l.price * 100), l.size);
+  else if (e.k === 'delta' && e.side === 'bid' && e.t < t + MIN - 2000) { const c = Math.round((e.price as number) * 100); bid.set(c, (bid.get(c) ?? 0) + (e.delta as number)); }
   assert.ok(trades.every((e) => e.takerSide === 'no' && e.t > t && e.t < t + MIN));
   // A flat next quote walks nowhere.
   const flat = new DepthSim(model).play('U', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.51);
