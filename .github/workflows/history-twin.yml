@@ -214,7 +214,7 @@ jobs:
           mkdir -p $T/lag; for d in ${WARM} ${DAYS//,/ }; do if [ -f data/history-replay-lag/md-$d.jsonl.gz ]; then cp data/history-replay-lag/md-$d.jsonl.gz $T/lag/; fi; done
           node --import tsx research/historyTwin.ts --stage fill --src $T/lag --dst $T/lagdepth --how depth --depth-model data/models/depth_model.json 2>&1 | grep '^\[twin\]' | tee -a "$RUNNER_TEMP/build.log"
           echo "[twin] features from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
-          node --import tsx research/historyTwin.ts --stage features --dirs real=$T/real,requote=$T/requote,depth=$T/depth,lag=$T/lag,lagdepth=$T/lagdepth --days "$DAYS" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]'
+          node --import tsx research/historyTwin.ts --stage features --dirs real=$T/real,requote=$T/requote,depth=$T/depth,lag=$T/lag,lagdepth=$T/lagdepth --days "$DAYS" --extra-days "$WARM" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]'
           du -sh $T/* | cat
       # The judged part alone (paired mechanics + per-contract features, small) for the verdict on a push.
       - name: Keep the judged features

@@ -260,6 +260,17 @@ async function stageFeatures(): Promise<void> {
     for (const d of days) { const f = dayFile(dir, d); if (f) rows.push(...(await dayRows(f, d, src, results))); }
     fs.writeFileSync(path.join(out, `features-${src}.json`), JSON.stringify(rows));
     console.log(`[twin] features ${src}: ${rows.length} contract lives over ${days.length} day(s)`);
+    // Per day (and, for the real side, the days around them, not judged: Nov 4, the depth model's fit days traded ~2.6x
+    // the compared days a minute), the activity features' means.
+    const extra = src === 'real' ? arg('extra-days', '').split(',').filter((d) => d && !days.includes(d)) : [];
+    const perDay = new Map<string, Row[]>();
+    for (const r of rows) perDay.set(r.day, [...(perDay.get(r.day) ?? []), r]);
+    for (const d of extra) { const f = dayFile(dir, d); if (f) perDay.set(`${d} (not judged)`, await dayRows(f, d, src, results)); }
+    const fi = (k: string) => FEATURES.indexOf(k as (typeof FEATURES)[number]);
+    for (const [d, rs] of perDay) {
+      const m = (k: string) => (rs.length ? rs.reduce((a, r) => a + (Number.isFinite(r.f[fi(k)]) ? r.f[fi(k)] : 0), 0) / rs.length : NaN).toFixed(2);
+      console.log(`[twin] ${src} ${d}: ${rs.length} lives, trades/min ${m('tradesPerMin')}, tradeSize ${m('tradeSize')}, topSize ${m('topSize')}, depth10 ${m('depth10')}, quote changes/min ${m('quoteChangesPerMin')}, followIx ${m('followIx')}, spread ${m('spreadC')}c`);
+    }
   }
 }
 

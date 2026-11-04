@@ -11,32 +11,34 @@ const model: DepthModel = {
   flow: [],
 };
 
-test('a quote that moves down walks through the bids in its way, each taken by NO takers, before the next anchor', () => {
+test('a quote that moves down takes the bids it moved through at its own time, with NO takers, and nothing before it', () => {
   const sim = new DepthSim(model);
   const t = 1_000_000 * MIN;
-  const ev = sim.play('T', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.47);
+  const first = sim.play('T', t, 0.5, 0.52, t + 15_000, t + 30 * MIN, 0.47);
+  // No trades ahead of the move: the next quote is not known to the book before its time.
+  assert.equal(first.filter((e) => e.k === 'trade').length, 0);
+  const ev = sim.play('T', t + 15_000, 0.47, 0.49, t + 30_000, t + 30 * MIN);
   const trades = ev.filter((e) => e.k === 'trade');
-  // From bid 50c / ask 52c to a mid of 47c (bid ~46c): the bids at 50, 49, 48 and 47c go, each with a few trade-sized
-  // prints (at most 3) and the rest pulled.
+  // From bid 50c to 47c: the bids at 50, 49 and 48c go, each with a few trade-sized prints (at most 3), the rest pulled,
+  // all at the new quote's time and before its book.
   const prices = trades.map((e) => Math.round((e.price as number) * 100));
-  assert.deepEqual([...new Set(prices)], [50, 49, 48, 47]);
-  assert.ok(trades.length >= 4 && trades.length <= 12);
-  const bid = new Map<number, number>();
-  for (const e of ev) if (e.k === 'book') for (const l of e.bids as Array<{ price: number; size: number }>) bid.set(Math.round(l.price * 100), l.size);
-  else if (e.k === 'delta' && e.side === 'bid' && e.t < t + MIN - 2000) { const c = Math.round((e.price as number) * 100); bid.set(c, (bid.get(c) ?? 0) + (e.delta as number)); }
-  assert.ok(trades.every((e) => e.takerSide === 'no' && e.t > t && e.t < t + MIN));
-  // A flat next quote walks nowhere.
-  const flat = new DepthSim(model).play('U', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.51);
-  assert.equal(flat.filter((e) => e.k === 'trade').length, 0);
+  assert.deepEqual([...new Set(prices)], [50, 49, 48]);
+  assert.ok(trades.length >= 3 && trades.length <= 9);
+  assert.ok(trades.every((e) => e.takerSide === 'no' && e.t === t + 15_000));
+  assert.ok(ev.findIndex((e) => e.k === 'book') > ev.findIndex((e) => e.k === 'trade'));
+  // A flat quote takes nothing.
+  const flat = new DepthSim(model);
+  flat.play('U', t, 0.5, 0.52, t + 15_000, t + 30 * MIN);
+  assert.equal(flat.play('U', t + 15_000, 0.5, 0.52, t + 30_000, t + 30 * MIN).filter((e) => e.k === 'trade').length, 0);
 });
 
-test('informed flow: with every measured trade on the side the price went, the trades before a fall are NO takers', () => {
+test('the trades before a quote do not know where the next quote goes', () => {
   const busy: DepthModel = { ...model, shape: [{ ...model.shape[0], tradesPerMin: { n: 1, mean: 60, p10: 60, p50: 60, p90: 60 } }], informed: { n: 5000, agree: 1 } };
   const t = 1_000_000 * MIN;
-  const ev = new DepthSim(busy).play('V', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.5);
-  const trades = ev.filter((e) => e.k === 'trade');
-  assert.ok(trades.length > 20);
-  assert.ok(trades.every((e) => e.takerSide === 'no'));
+  const down = new DepthSim(busy).play('V', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.3);
+  const up = new DepthSim(busy).play('V', t, 0.5, 0.52, t + MIN, t + 30 * MIN, 0.7);
+  assert.deepEqual(down, up);
+  assert.ok(down.filter((e) => e.k === 'trade').length > 20);
 });
 
 test('sizes go back to the measured shape and the best price flickers at the measured rate', () => {

@@ -91,12 +91,17 @@ export type DepthEv = { t: number; k: string; ticker: string; [key: string]: unk
 
 /** How fast a level's size goes back to its drawn size (seconds). */
 const REVERT_S = 10;
+/** The best level's, faster: its makers put back what trades take (Nov 4 twin: refilled at the others' pace, trades kept
+ *  the best level thin or empty, and the mid stopped following the index, 0.19 against 0.77 real). */
+const REVERT_TOP_S = 1;
 /** A level's own second-to-second wander (sd as a share of its size). */
 const STEP_SD = 0.1;
 /** The fill-in's own best-price changes a second before flicker (Nov 2 twin: ~55 a minute). */
 const FLICK_BASE_PER_SEC = 0.9;
 /** Most trade-sized prints a sweep of one level makes before the rest of it is cancelled. */
 const SWEEP_PRINTS = 3;
+/** Whether the trade flow may depend on the next quote (off: that is the future). */
+const USE_NEXT_MOVE = false;
 /** How far a level's size moves within one contract (log sd), the rest of the measured spread being between contracts. */
 const WITHIN_SD = 0.7;
 
@@ -154,7 +159,30 @@ export class DepthSim {
     const cell = this.cell((close - t) / MIN, (bB + bA) / 20);
     let b = this.books.get(ticker);
     if (!b) this.books.set(ticker, (b = { bid: new Map(), ask: new Map() }));
-    // Re-centre: the quote's levels are the best ones; levels it moved through go; empty places near the top are drawn.
+    // The move to this quote (Nov 4): the levels it moved through are taken at the quote's own time, a few trade-sized
+    // prints each (NO takers on the way down, YES on the way up) and the rest pulled, so an order resting there is picked
+    // off as the index moves, not before. The walk toward the NEXT quote this replaces moved the book a quarter-minute
+    // ahead of the index (the twin's mid followed the index at 0.19 against 0.77 real) and showed the bot the future.
+    const pre: DepthEv[] = [];
+    let prePrints = 0;
+    for (const side of ['bid', 'ask'] as Side[]) {
+      const m = b[side], yes = side === 'ask';
+      const gone = [...m.keys()].filter((p) => (side === 'bid' ? p > bB : p < bA)).sort((x, y) => (side === 'bid' ? y - x : x - y));
+      for (const p of gone) {
+        let q = m.get(p)!, k = 0;
+        while (q > 0 && k < SWEEP_PRINTS) {
+          const n = Math.min(q, lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90));
+          pre.push({ t, k: 'trade', ticker, price: p / PX, count: n, takerSide: yes ? 'yes' : 'no', ts: t, sim: 1 });
+          pre.push({ t, k: 'delta', ticker, side, price: p / PX, delta: -n, ts: t, sim: 1 });
+          q -= n; k++;
+        }
+        if (q > 0) pre.push({ t, k: 'delta', ticker, side, price: p / PX, delta: -q, ts: t, sim: 1 });
+        m.delete(p);
+        prePrints += k;
+      }
+    }
+    this.stats.sweepPrints += prePrints; this.stats.trades += prePrints;
+    // Re-centre: the quote's levels are the best ones; empty places near the top are drawn.
     for (const [p] of b.bid) if (p > bB || ticksFrom(p, bB) >= DEPTH_LEVELS) b.bid.delete(p);
     for (const [p] of b.ask) if (p < bA || ticksFrom(p, bA) >= DEPTH_LEVELS) b.ask.delete(p);
     for (const side of ['bid', 'ask'] as Side[]) {
@@ -166,35 +194,24 @@ export class DepthSim {
       }
     }
     const levels = (side: Side): Level[] => [...b![side].entries()].sort((x, y) => (side === 'bid' ? y[0] - x[0] : x[0] - y[0])).map(([p, s]) => ({ price: p / PX, size: s }));
-    const out: DepthEv[] = [{ t, k: 'book', ticker, bids: levels('bid'), asks: levels('ask'), ts: t, sim: 1 }];
+    const out: DepthEv[] = [...pre, { t, k: 'book', ticker, bids: levels('bid'), asks: levels('ask'), ts: t, sim: 1 }];
     // Until the next anchor, second by second: each level's adds and cancels arrive at the measured queue-reactive rates
     // (Poisson counts per second, netted into one change per level), and the trades take the best level at the measured
     // rate, size and side. Counting per second, not event by event, keeps a busy book (hundreds of changes a second) cheap.
-    const mv = nextMid !== undefined && Number.isFinite(nextMid) ? cell.byMove?.[moveOf((bB + bA) / 20, nextMid * 100)] : undefined;
+    // The flow over all moves (Nov 4): the flow by where the price goes next told the book the next quote ahead of time.
+    const mv = USE_NEXT_MOVE && nextMid !== undefined && Number.isFinite(nextMid) ? cell.byMove?.[moveOf((bB + bA) / 20, nextMid * 100)] : undefined;
     const byMove = mv && mv.segs >= MOVE_MIN_SEGS ? mv : undefined;
     const tradeRate = byMove ? Math.max(0, byMove.tradesPerSec) : Math.max(0, cell.tradesPerMin?.mean ?? 0) / 60;
     const yesShare = (byMove ? byMove.takerYesShare : undefined) ?? cell.takerYesShare ?? 0.5;
     const best = (side: Side) => { const m = b![side]; let top = side === 'bid' ? -Infinity : Infinity; for (const p of m.keys()) if (side === 'bid' ? p > top : p < top) top = p; return top; };
-    // The walk to the next quote (Nov 2): a price that moves goes THROUGH the levels in its way, each taken by trades,
-    // spread evenly over the interval. Before this the levels the next quote moved past were just deleted at the
-    // anchor, so a resting order there never filled on the way down: history makers escaped the moves that pick off
-    // real ones (60 s markout at the touch -0.07c in the fill-in vs -1.14c on the real books, Oct 30 - Nov 1).
+    // No walk toward the next quote any more (see the move to this quote, above).
     const sweeps: Array<{ at: number; side: Side }> = [];
-    if (nextMid !== undefined && Number.isFinite(nextMid)) {
-      const half = (bA - bB) / 2, tgt = Math.round(nextMid * PX);
-      const side: Side | undefined = tgt - half < bB ? 'bid' : tgt + half > bA ? 'ask' : undefined;
-      if (side) {
-        const edge = side === 'bid' ? tgt - half : tgt + half;
-        const n = [...b[side].keys()].filter((p) => (side === 'bid' ? p > edge : p < edge)).length;
-        for (let i = 0; i < n; i++) sweeps.push({ at: t + Math.floor(((i + 1) * (until - t)) / (n + 1)), side });
-      }
-    }
     let sw = 0;
     // Where the quote stands (tenths of a cent): the anchor's bid and ask, moved only by the walk. The book's levels are
     // placed and refilled around it, not around whatever best a cancel left (Nov 2 twin: drifting off the quote, the
     // fill-in's mid stopped following the index, 0.05 against 0.77 real and 0.66 for the quotes it was built on).
     let refB = bB, refA = bA;
-    const inf = this.model.informed, informedP = inf && inf.n >= 1000 ? Math.min(1, Math.max(0, 2 * (inf.agree - 0.5))) : 0;
+    const inf = this.model.informed, informedP = USE_NEXT_MOVE && inf && inf.n >= 1000 ? Math.min(1, Math.max(0, 2 * (inf.agree - 0.5))) : 0;
     const dir = nextMid !== undefined && Number.isFinite(nextMid) ? Math.sign(Math.round(nextMid * PX) - (bB + bA) / 2) : 0;
     // Each level's size for this quarter-minute, drawn from the measured shape (quoted or not, its size): the adds and
     // cancels pull a queue around it, and it pulls back (REVERT_S). Without the pull the netted flow drifted up to the
@@ -204,13 +221,13 @@ export class DepthSim {
       const p50 = cell.levelFilledP50[off], p90 = cell.levelFilledP90[off];
       target[side][off] = p50 && (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) ? this.size(u, ticker, p50, p90) : 0;
     }
-    const pull = 1 - Math.exp(-1 / REVERT_S);
+    const pull = 1 - Math.exp(-1 / REVERT_S), pullTop = 1 - Math.exp(-1 / REVERT_TOP_S);
     // Flicker (Nov 2 twin: the real best price changes ~324 times a minute, the fill-in's 55): a best level pulled and put
     // back within the second, as the real books' makers do; a trade in that moment takes the next level.
     const realTops = cell.topChangesPerMin?.mean;
     const flickPerSec = realTops !== undefined && Number.isFinite(realTops) ? Math.max(0, realTops / 60 - FLICK_BASE_PER_SEC) / 2 : 0;
     // Trades a sweep printed come out of the interval's measured count (the real count includes them).
-    let owe = 0;
+    let owe = prePrints;
     const tradeSz = () => lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90);
     for (let sec = t; sec < until; sec += 1000) {
       const end = Math.min(sec + 1000, until);
@@ -245,7 +262,7 @@ export class DepthSim {
       type Step = { at: number; kind: 'trade' } | { at: number; kind: 'pull'; side: Side; back: number } | { at: number; kind: 'back'; side: Side; price: number; size: number };
       const steps: Step[] = [];
       for (let i = 0; i < nTr; i++) steps.push({ at: sec + Math.floor(((i + 1) * room) / (nTr + 1)), kind: 'trade' });
-      if (room > 40) { const nF = poisson(u, flickPerSec * ((end - sec) / 1000)); for (let i = 0; i < nF; i++) { const at = sec + Math.floor(u() * (room - 30)); steps.push({ at, kind: 'pull', side: u() < 0.5 ? 'bid' : 'ask', back: Math.min(end - 2, at + 20 + Math.floor(u() * 600)) }); } }
+      if (room > 40) { const nF = poisson(u, flickPerSec * ((end - sec) / 1000)); for (let i = 0; i < nF; i++) { const at = sec + Math.floor(u() * (room - 30)); steps.push({ at, kind: 'pull', side: u() < 0.5 ? 'bid' : 'ask', back: Math.min(end - 2, at + 20 + Math.floor(u() * 180)) }); } }
       steps.sort((x, y) => x.at - y.at);
       for (let i = 0; i < steps.length; i++) {
         const st = steps[i], at = st.at;
@@ -287,7 +304,7 @@ export class DepthSim {
           const q = m.get(p) ?? 0;
           // Each level wanders about this quarter-minute's drawn size and goes back to it (REVERT_S): the measured
           // per-second adds and cancels, netted, made a random walk of thousands a second that sat at the cap (Nov 4 twin).
-          let next = q + pull * frac * (target[side][off] - q) + q * STEP_SD * Math.sqrt(frac) * normal(u);
+          let next = q + (off === 0 ? pullTop : pull) * frac * (target[side][off] - q) + q * STEP_SD * Math.sqrt(frac) * normal(u);
           // The quote's own level, emptied by trades or cancels, is quoted again as often as the real books quote it.
           if (off === 0 && q === 0 && u() < (cell.levelQuoted[0] ?? 1)) next = this.size(u, ticker, cell.levelFilledP50[0], cell.levelFilledP90[0]);
           const cap = 4 * Math.max(1, cell.levelFilledP90[off] ?? cell.levelFilledP90[cell.levelFilledP90.length - 1] ?? 1);
