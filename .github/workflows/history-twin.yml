@@ -208,7 +208,7 @@ jobs:
           T=data/twin
           echo "[twin] match from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
           node --import tsx research/historyTwin.ts --stage match --real data/recordings --twin data/history-replay --days "$WARM,$DAYS" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]' || { echo "match failed"; exit 1; }
-          node --import tsx research/depthStudy.ts --recordings data/fit --series 15m --out data/models/depth_model.json 2>&1 | grep -E '^\[depth\]|n= ' | sed -E 's/^\[depth\]/[twin] depth model:/; s/^  /[twin] depth cell: /' | cut -c1-420 | head -40 | tee -a "$RUNNER_TEMP/build.log" || true
+          node --import tsx research/depthStudy.ts --recordings data/fit --series 15m --out data/models/depth_model.json 2>&1 | grep -E '^\[depth\]| n=' | sed -E 's/^\[depth\]/[twin] depth model:/; s/^  /[twin] depth cell: /' | cut -c1-420 | head -40 | tee -a "$RUNNER_TEMP/build.log" || true
           [ -s data/models/depth_model.json ] || { echo "no depth model"; exit 1; }
           node --import tsx research/historyTwin.ts --stage fill --src $T/requote --dst $T/depth --how depth --depth-model data/models/depth_model.json 2>&1 | grep '^\[twin\]' | tee -a "$RUNNER_TEMP/build.log"
           mkdir -p $T/lag; for d in ${WARM} ${DAYS//,/ }; do if [ -f data/history-replay-lag/md-$d.jsonl.gz ]; then cp data/history-replay-lag/md-$d.jsonl.gz $T/lag/; fi; done
