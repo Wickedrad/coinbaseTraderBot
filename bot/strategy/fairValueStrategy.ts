@@ -290,6 +290,17 @@ export function gateMarginFor(cfg: Pick<StrategyConfig, 'loserExits'>, maker: bo
   return maker && L?.gateQuoteMargin !== undefined ? L.gateQuoteMargin : L?.gateMargin ?? 0;
 }
 
+/** FV_ENTRY_GATE_SERIES_MARGINS: the gate's config for one market, its series' margin applied (the first matching pattern;
+ *  a series is the ticker before its first '-', *SUFFIX matches every series ending in SUFFIX). */
+export function gateCfgFor<C extends Pick<StrategyConfig, 'loserExits'>>(cfg: C, ticker: string): C {
+  const L = cfg.loserExits;
+  if (!L?.seriesMargins?.length) return cfg;
+  const series = ticker.split('-')[0];
+  const hit = L.seriesMargins.find((s) => (s.pattern.startsWith('*') ? series.endsWith(s.pattern.slice(1)) : series === s.pattern));
+  if (!hit) return cfg;
+  return { ...cfg, loserExits: { ...L, gateMargin: Math.max(L.gateMargin, hit.margin), ...(L.gateQuoteMargin !== undefined ? { gateQuoteMargin: Math.max(L.gateQuoteMargin, hit.margin) } : {}) } };
+}
+
 /** The fair value gate on a finished plan (after the fill model turns quotes into crosses and paper adds its training trades):
  *  drops each order that opens or adds to a position at a cost the gate refuses. An order that only reduces the position is
  *  kept. Returns how many were dropped. */
@@ -524,10 +535,11 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   if (v.fastMove) out.notes.push('fast index move: quotes pulled');
   // FV_ENTRY_GATE (cfg.loserExits; the sizing lab, Oct 31): new risk only where the spot fair value of the side bought is at
   // least its cost with the fee plus the margin (the positions that rode to settlement losing were bad from the start).
+  const gcfg = gateCfgFor(cfg, v.ticker);
   const gate = (side: 'yes' | 'no', cost: number, n: number, taker: boolean): boolean => {
     const fee = n > 0 ? orderFee(n, cost, taker, v.fees) / n : 0;
-    if (fvGatePasses(v.pFair, side, cost, fee, cfg, !taker)) return true;
-    out.notes.push(`fair value gate: ${side.toUpperCase()} fair value ${(side === 'yes' ? v.pFair! : 1 - v.pFair!).toFixed(3)} < ${cost.toFixed(2)} + fee ${fee.toFixed(3)} + ${gateMarginFor(cfg, !taker)}`);
+    if (fvGatePasses(v.pFair, side, cost, fee, gcfg, !taker)) return true;
+    out.notes.push(`fair value gate: ${side.toUpperCase()} fair value ${(side === 'yes' ? v.pFair! : 1 - v.pFair!).toFixed(3)} < ${cost.toFixed(2)} + fee ${fee.toFixed(3)} + ${gateMarginFor(gcfg, !taker)}`);
     return false;
   };
 

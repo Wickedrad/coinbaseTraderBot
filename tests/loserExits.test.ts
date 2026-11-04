@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig, type StrategyConfig } from '../bot/config';
 import { DEFAULT_FEES } from '../bot/fees';
-import { applyFvGate, decide, fvGatePasses, inLoserWindow, loserExit, loserNoEntry, shareWindowSec, type MarketView, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
+import { applyFvGate, decide, gateCfgFor, fvGatePasses, inLoserWindow, loserExit, loserNoEntry, shareWindowSec, type MarketView, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
 
 // Steven's settlement rule (Oct 31) and the sizing lab's loser exits: the entry gate, the loser cut and the window cut.
 const base = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_CADENCE: 'continuous' }).strategy;
@@ -291,4 +291,20 @@ test('TRAINING_GATE_MARGIN: training trades take their own gate margin; other or
   const t2 = plan('train: YES at 0.50 (maker at 0.50)'); applyFvGate(t2, 0.52, 0, DEFAULT_FEES, tm); assert.equal(t2.place.length, 0);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.loserExits?.trainMargin, undefined);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TRAINING_GATE_MARGIN: '0.03' }).strategy.loserExits?.trainMargin, 0.03);
+});
+
+test('FV_ENTRY_GATE_SERIES_MARGINS: a series or *suffix pattern raises that series\' gate margins, others keep theirs', () => {
+  const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_SERIES_MARGINS: 'KXETHD=0.10,*15M=0.15' }).strategy;
+  assert.deepEqual(c.loserExits!.seriesMargins, [{ pattern: 'KXETHD', margin: 0.1 }, { pattern: '*15M', margin: 0.15 }]);
+  assert.equal(base.loserExits!.seriesMargins, undefined);
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_SERIES_MARGINS: 'KXETHD=0.9' }));
+  const sol = gateCfgFor(c, 'KXSOL15M-25OCT261530-30').loserExits!;
+  assert.equal(sol.gateMargin, 0.15); assert.equal(sol.gateQuoteMargin, 0.15);
+  const ethd = gateCfgFor(c, 'KXETHD-25OCT2617-T3999.99').loserExits!;
+  assert.equal(ethd.gateMargin, 0.1); assert.equal(ethd.gateQuoteMargin, 0.12, 'never lowers the quote cushion');
+  assert.equal(gateCfgFor(c, 'KXBTC-25OCT2617-B110000'), c);
+  // In applyFvGate: a YES at 0.60 with fair value 0.70 passes the 6c gate but not the 15c 15-minute margin.
+  const plan = (): StrategyOutput => ({ cancel: [], notes: [], place: [{ side: 'bid', price: 0.6, count: 5, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge: 0.1, why: 'cross' }] });
+  assert.equal(applyFvGate(plan(), 0.7, 0, DEFAULT_FEES, gateCfgFor(c, 'KXBTC-X')), 0);
+  assert.equal(applyFvGate(plan(), 0.7, 0, DEFAULT_FEES, gateCfgFor(c, 'KXSOL15M-X')), 1);
 });

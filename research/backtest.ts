@@ -55,7 +55,7 @@ import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { EquityGuard } from '../bot/risk/equityGuard';
 import { RiskGateway } from '../bot/risk/riskGateway';
-import { applyFvGate, decide, loserNoEntry, trainingCount, trainingOrder, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, type MarketView } from '../bot/strategy/fairValueStrategy';
+import { applyFvGate, gateCfgFor, decide, loserNoEntry, trainingCount, trainingOrder, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { ComponentTrials, type TrialName } from '../bot/strategy/componentTrials';
 import { activeRuleBook, RuleBook, setRuleBook } from '../bot/strategy/ruleBook';
 import { altcoinRiskOn, confluenceBreadth, orientedSignals, selectionPriority, taDrift, taNetDirection } from '../bot/strategy/taConviction';
@@ -978,7 +978,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         }
       }
       // FV_ENTRY_GATE on the finished plan, as the engine: the fill model's crosses and paper's training trades open positions too.
-      applyFvGate(plan, fv.pYes, view.position, DEFAULT_FEES, strategy, loserNoEntry(view, strategy), fitUsd);
+      applyFvGate(plan, fv.pYes, view.position, DEFAULT_FEES, gateCfgFor(strategy, m.ticker), loserNoEntry(view, strategy), fitUsd);
       for (const c of plan.cancel) if (!cancelInFlight.has(c.clientOrderId)) await send(m.ticker, 'cancel', () => cancelNow(c.clientOrderId), c.clientOrderId);
 
       for (const p of plan.place) {

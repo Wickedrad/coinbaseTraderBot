@@ -80,6 +80,10 @@ export interface LoserExitConfig {
    *  per-order, window and total risk caps widen by GATED_STAKE_MULT so a gated order can reach $40 (needs Steven's OK:
    *  it widens his band). Without either the risk gateway refuses the doubled order outright (whole-bot round 1). */
   gatedStakeCap?: 'clamp' | 'widen';
+  /** FV_ENTRY_GATE_SERIES_MARGINS (unset = none): a wider gate margin for the series where the gate's entries still lose,
+   *  as "PATTERN=margin,..." where PATTERN is a series (KXETHD) or *SUFFIX (*15M = every 15-minute series). A matching
+   *  series' taker and quote margins are raised to at least that margin; the first match wins. Paper and live alike. */
+  seriesMargins?: { pattern: string; margin: number }[];
   /** LOSER_CUT (off: it lost on 6 of 8 recorded days next to the gate; studied for the condition under which it wins): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
    *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
   cut: boolean;
@@ -983,6 +987,16 @@ function oneOf<T extends string>(env: Env, key: string, def: T, allowed: readonl
   return raw;
 }
 
+/** FV_ENTRY_GATE_SERIES_MARGINS: "KXETHD=0.1,*15M=0.12" -> [{pattern, margin}]. */
+export function parseSeriesMargins(raw: string): { pattern: string; margin: number }[] {
+  return raw.split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
+    const [pattern, v] = x.split('=');
+    const margin = Number(v);
+    if (!pattern || !/^\*?[A-Z0-9]+$/.test(pattern) || !(margin >= 0 && margin <= 0.5)) throw new ConfigError(`FV_ENTRY_GATE_SERIES_MARGINS: "${x}" must be SERIES=margin or *SUFFIX=margin, margin 0-0.5`);
+    return { pattern, margin };
+  });
+}
+
 /** SIZING_TIERS: unset = default ladder, "off" = configured limits at every size, or a JSON array of tier points. */
 function parseSizingTiers(raw: string | undefined, base: { risk: RiskLimits; strategy: StrategyConfig }): TierPoint[] {
   const normal = defaultTiers(base)[2];
@@ -1223,6 +1237,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
       gatedStakeMult: num(env, 'GATED_STAKE_MULT', 1, 1, 5),
       gatedStakeCap: oneOf(env, 'GATED_STAKE_CAP', 'clamp', ['clamp', 'widen'] as const),
+      ...(env.FV_ENTRY_GATE_SERIES_MARGINS ? { seriesMargins: parseSeriesMargins(env.FV_ENTRY_GATE_SERIES_MARGINS) } : {}),
     },
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),
