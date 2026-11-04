@@ -6,6 +6,7 @@ import { KalshiRest } from '../bot/kalshi/rest';
 import { parseIndexRow, tsMs } from '../bot/kalshi/ws';
 import { nearestStrikes } from '../bot/marketdata/marketData';
 import { fillTickerStrikes, parseBalanceBreakdown, parseCreatedOrder, parseFill, parseMarket, parseOrder, parseOrderbook, parsePositions, tickerStrikeOf, toBookSide } from '../bot/kalshi/wire';
+import { contractKind, rangeCap } from '../bot/model/fairValue';
 
 test('exchange shards: cash per shard from the balance breakdown, and each market\'s shard', () => {
   assert.deepEqual(parseBalanceBreakdown({ balance: 3000, balance_breakdown: [{ exchange_index: 0, balance: '30.0000' }, { exchange_index: 2, balance: '0.0000' }] }), { 0: 30, 2: 0 });
@@ -145,6 +146,12 @@ test('ticker strikes: range bounds and thresholds are filled when Kalshi omits t
   // A range market without strike_type is recognised from its ticker.
   const p = parseMarket({ ticker: 'KXDOGE-26OCT0603-B0.097', open_time: '2026-10-06T06:00:00Z', close_time: '2026-10-06T07:00:00Z' });
   assert.equal(p?.strikeType, 'between');
+  // Nov 4: a range ticker is a range whatever strike_type says (paper priced KXDOGE buckets as greater-than their floor).
+  const q = parseMarket({ ticker: 'KXDOGE-26NOV0315-B0.072', strike_type: 'structured', floor_strike: 0.0695, open_time: '2026-11-03T14:00:00Z', close_time: '2026-11-03T15:00:00Z' });
+  assert.equal(q?.strikeType, 'between');
+  assert.equal(contractKind('KXDOGE', 'greater', 'KXDOGE-26NOV0315-B0.072'), 'between');
+  assert.equal(contractKind('KXBTCD', 'greater', 'KXBTCD-26NOV0315-T77699.99'), 'greater');
+  assert.equal(rangeCap('KXDOGE-26NOV0315-B0.072', 0.0695), 0.0745);
 });
 
 test('index feed: values parse across field-name variants; timestamps in s / ms / us / ns / ISO', () => {

@@ -445,6 +445,13 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const exitLedger = new Map<string, Array<{ sideSign: number; n: number; proceeds: number }>>();
   let slipSum = 0, slipN = 0;
   const gate = opts.accuracyGate?.enabled ? new AccuracyGate(opts.accuracyGate, opts.accuracyGateFile, () => st.now) : undefined;
+  // The seeded scorecard covers settlements up to its newest row; the warm-up settles the rest into the gate (Nov 4: paper's
+  // state file, copied a day after the stretch began, had rolled every row before the stretch out of its window, so the
+  // replay traded with an empty gate, open, where paper's warm gate kept hourly entries out).
+  const gateSeededUntil = (() => {
+    if (!opts.accuracyGateFile) return -Infinity;
+    try { const g = JSON.parse(fs.readFileSync(opts.accuracyGateFile, 'utf8')) as { rows?: Record<string, Array<{ ts: number }>> }; return Math.max(-Infinity, ...Object.values(g.rows ?? {}).flat().map((r) => r.ts)); } catch { return -Infinity; }
+  })();
   // The bench's markets scored from the first trading moment on (the replay check sets them beside paper's).
   const tpScored = (e: { event: string; ticker?: string; usd?: unknown; contracts?: unknown }) => {
     if (e.event !== 'scored' || st.now < (opts.tradeFromMs ?? -Infinity)) return;
@@ -613,7 +620,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           ex.settle(m.ticker, result);
           for (const x of ofOpen.get(m.ticker) ?? []) ofRows.push({ ts: st.now, ticker: m.ticker, cost: x.cost, count: x.count, won: (x.side === 'bid') === (result === 'yes') });
           ofOpen.delete(m.ticker);
-          if (!(opts.accuracyGateFile && opts.tradeFromMs !== undefined && st.now < opts.tradeFromMs)) gate?.settle(m.ticker, result);
+          if (!(opts.accuracyGateFile && opts.tradeFromMs !== undefined && st.now < opts.tradeFromMs && st.now <= gateSeededUntil)) gate?.settle(m.ticker, result);
           if (tpBench) { tpBench.settled(m.ticker, result, st.now); if (res.paper!.takeProfitBenchedAt === undefined && ownBenched()) res.paper!.takeProfitBenchedAt = st.now; }
           for (const x of exitLedger.get(m.ticker) ?? []) {
             const won = (x.sideSign > 0) === (result === 'yes');

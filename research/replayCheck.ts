@@ -772,7 +772,8 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     const g = gateAt(gateNow, from);
     gateFile = path.join(seedDir, 'accuracy_gate.json');
     fs.writeFileSync(gateFile, JSON.stringify(g));
-    seeded.push(`accuracy gate (${Object.values(g.rows).reduce((a, r) => a + r.length, 0)} scored snapshots)`);
+    const nRows = Object.values(g.rows).reduce((a, r) => a + r.length, 0);
+    seeded.push(`accuracy gate (${nRows} scored snapshots${nRows ? '' : ': none left from before the stretch, the warm-up fills it'})`);
   }
   const follow = o.ownBench ? undefined : benchTimeline(audit.benchEvents, from, to, startBenched);
   const startMs = from - (o.warmupHours ?? 8) * HOUR;
