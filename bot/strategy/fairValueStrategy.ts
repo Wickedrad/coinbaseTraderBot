@@ -363,13 +363,20 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   const quoting = (cfg.style === 'maker' || cfg.style === 'both') && bid && ask;
   const offset = cfg.minEdge + (v.makerBuffer ?? 0);
   const expiry = Math.min(v.nowSec + cfg.orderTtlSec, v.closeSec - Math.max(1, Math.floor(v.noEntryBeforeCloseSec)));
+  // Side gate (QUOTE_SIDE_GATE): new risk rests only on the side the price disagrees with the mid by the gate; a quote
+  // that unwinds a held position is never gated.
+  const midNow = bid && ask ? (bid.price + ask.price) / 2 : undefined;
+  const gate = cfg.quoteSideGate ?? 0;
+  const bidGated = gate > 0 && midNow !== undefined && v.position >= 0 && q - midNow < gate;
+  const askGated = gate > 0 && midNow !== undefined && v.position <= 0 && midNow - q < gate;
+  if (bidGated && askGated) out.notes.push(`quote side gate: price within ${gate} of the mid`);
   if (quoting && quoteAllowed) {
     const skewed = q - cfg.inventorySkewPerContract * v.position;
 
     // YES bid.
     let bp = floorToTick(skewed - offset, tick);
     bp = Math.min(bp, round(ask.price - tick, 4));
-    if (bp >= v.minSidePrice && bp <= 1 - v.minSidePrice) {
+    if (!bidGated && bp >= v.minSidePrice && bp <= 1 - v.minSidePrice) {
       const fee = orderFee(1, bp, false, v.fees);
       const k = size('yes', bp, fee, v.maxContracts);
       const unwind = Math.max(0, -v.position);
@@ -380,7 +387,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     let ap = ceilToTick(skewed + offset, tick);
     ap = Math.max(ap, round(bid.price + tick, 4));
     const noCost = round(1 - ap, 4);
-    if (noCost >= v.minSidePrice && noCost <= 1 - v.minSidePrice) {
+    if (!askGated && noCost >= v.minSidePrice && noCost <= 1 - v.minSidePrice) {
       const fee = orderFee(1, noCost, false, v.fees);
       const k = size('no', noCost, fee, v.maxContracts);
       const unwind = Math.max(0, v.position);

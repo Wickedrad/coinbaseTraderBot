@@ -456,3 +456,14 @@ test('share window: the last share of the window is measured on at most the last
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.shareWindowMaxSec, 3600);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_SHARE_WINDOW_MAX_SEC: '1800' }).strategy.shareWindowMaxSec, 1800);
 });
+
+test('quote side gate: a price on the mid quotes neither side; above the mid it bids only; a held position can still unwind', () => {
+  const g = { ...cfg, quoteSideGate: 0.02 };
+  assert.equal(decide(view({ pYes: 0.55 }), g).place.filter((p) => p.purpose === 'quote').length, 0);
+  const up = decide(view({ pYes: 0.58 }), g).place.filter((p) => p.purpose === 'quote');
+  assert.deepEqual(up.map((p) => p.side), ['bid']);
+  const held = decide(view({ pYes: 0.58, position: 3 }), g).place.filter((p) => p.purpose === 'quote');
+  assert.ok(held.some((p) => p.side === 'ask'));
+  // Off: both sides, as before.
+  assert.equal(decide(view({ pYes: 0.55 }), cfg).place.filter((p) => p.purpose === 'quote').length, 2);
+});

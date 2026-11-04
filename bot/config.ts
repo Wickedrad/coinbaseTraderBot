@@ -188,6 +188,10 @@ export interface StrategyConfig {
   minTradableBankrollUsd: number;
   /** Veto entries when |q - p_mkt| < this many ensemble standard deviations. */
   ensembleVetoSigmas: number;
+  /** Maker quotes open new risk only on the side where the bot's price is at least this far from the mid (0 = off):
+   *  with the market anchor's weight near 0 the price sits on the mid, and two-sided quotes there are plain market
+   *  making, picked off by informed flow (60 s markout about -1.1c). QUOTE_SIDE_GATE. */
+  quoteSideGate: number;
   /** Scale Kelly by max(0, 1 - drawdown / ddScaleAt); pause entries 24 h after a 7-day loss beyond weeklyLossPause. */
   ddScaleAt: number;
   weeklyLossPause: number;
@@ -1173,6 +1177,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       maxW: num(env, 'MARKET_ANCHOR_MAX_W', 1.5, 0, 3),
       shuffle: bool(env, 'MARKET_ANCHOR_SHUFFLE', false),
       bySeries: bool(env, 'MARKET_ANCHOR_BY_SERIES', false),
+      rawMid: bool(env, 'MARKET_ANCHOR_RAW_MID', false),
       minW: env.MARKET_ANCHOR_MIN_W !== undefined && env.MARKET_ANCHOR_MIN_W !== '' ? num(env, 'MARKET_ANCHOR_MIN_W', 0, 0, 2) : undefined,
     },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
@@ -1183,6 +1188,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     minTradeEvFrac: num(env, 'STRATEGY_MIN_TRADE_EV_FRAC', 0.00016, 0, 1),
     minTradableBankrollUsd: num(env, 'MIN_TRADABLE_BANKROLL_USD', 10, 0, 1e7),
     ensembleVetoSigmas: num(env, 'STRATEGY_ENSEMBLE_VETO_SIGMAS', 2, 0, 10),
+    quoteSideGate: num(env, 'QUOTE_SIDE_GATE', 0, 0, 0.5),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
     modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),

@@ -2086,8 +2086,9 @@ export class Engine {
     if (anchor) {
       st.pBeforeAnchor = pYes;
       st.anchorW = anchor.weight(m.ticker, tauSec);
-      anchor.observe(m.ticker, tauSec, pMarket, pYes);
-      pYes = anchor.price(m.ticker, tauSec, pMarket, pYes);
+      const pAnchor = anchor.cfg.rawMid ? mid : pMarket;
+      anchor.observe(m.ticker, tauSec, pAnchor, pYes);
+      pYes = anchor.price(m.ticker, tauSec, pAnchor, pYes);
     }
     if (trials) {
       const d = (x: number | undefined) => (x === undefined ? undefined : +x.toFixed(4));

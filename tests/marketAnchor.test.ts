@@ -100,3 +100,9 @@ test('market anchor min w: a learned weight under the floor prices at the market
   const b = new MarketAnchor({ ...DEFAULT_MARKET_ANCHOR, enabled: true, prior: 0.5, priorSd: 0.01, minW: 0.25 });
   assert.equal(b.weight('KXBTC15M-26NOV04-15', 500), 0.5);
 });
+
+test('quote side gate: off by default; on, a price on the mid quotes neither side, a price above it bids only', async () => {
+  const base = { DASHBOARD_TOKEN: 'x'.repeat(32) };
+  assert.equal(loadConfig(base).strategy.quoteSideGate, 0);
+  assert.equal(loadConfig({ ...base, QUOTE_SIDE_GATE: '0.02' }).strategy.quoteSideGate, 0.02);
+});

@@ -38,6 +38,9 @@ export interface MarketAnchorConfig {
   /** A learned w below this counts as 0 (the market's price, no trade on the disagreement): a bucket or series whose
    *  record barely earns any weight stays out instead of trading on a sliver (refinement, Nov 4). */
   minW?: number;
+  /** Anchor on the raw mid instead of the calibrated mid: at w = 0 the price is exactly the mid, so the market
+   *  calibration's own tilt opens no trades (MARKET_ANCHOR_RAW_MID). */
+  rawMid?: boolean;
 }
 
 export const DEFAULT_MARKET_ANCHOR: MarketAnchorConfig = { enabled: false, prior: 0.5, priorSd: 0.5, window: 400, maxW: 1.5 };

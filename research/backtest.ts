@@ -748,7 +748,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       }
       // The market anchor, as the engine applies it (bot/model/marketAnchor.ts).
       if (anchor) {
-        const pMkt = model.marketProbability(mid);
+        const pMkt = anchor.cfg.rawMid ? mid : model.marketProbability(mid);
         anchor.observe(m.ticker, tauSec, pMkt, pYes);
         pYes = anchor.price(m.ticker, tauSec, pMkt, pYes);
       }
