@@ -35,6 +35,10 @@ jobs:
           rclone lsf gdrive:kalshi-bot-archive/audit --files-only | sed -nE 's/^audit-([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p' | sort -u | tail -n "$N" > "$RUNNER_TEMP/days.txt"
           echo "audit days: $(paste -sd, "$RUNNER_TEMP/days.txt")"
           while read -r d; do bash deploy/drive_lab.sh audit "$d" data/audit; done < "$RUNNER_TEMP/days.txt"
+          # Nov 3-4 (to ~14:45 UTC Nov 4) were copied for the replay check before the nightly archive had them.
+          if bash deploy/drive_lab.sh get lab-copies/kalshi-replay-check/41850766725 data/extra; then
+            find data/extra -name 'audit-*' -exec cp -n {} data/audit/ \; ; echo "lab copy audit files: $(find data/extra -name 'audit-*' | wc -l)"
+          fi
           for f in data/audit/*.gz; do [ -f "$f" ] && case "$f" in *.jsonl.gz) ;; *) gunzip -f "$f" ;; esac; done 2>/dev/null || true
           ls data/audit | head -20; du -sh data/audit
       - name: Audit
