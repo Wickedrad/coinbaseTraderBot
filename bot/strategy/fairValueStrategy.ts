@@ -78,6 +78,8 @@ export interface MarketView {
   huntRestSidePrice?: number;
   maxContracts: number;
   minSidePrice: number;
+  /** Highest side price an entry may pay (RISK_MAX_SIDE_PRICE); undefined = 1 - minSidePrice. */
+  maxSidePrice?: number;
   tauSec: number;
   noEntryBeforeCloseSec: number;
   fastMove: boolean;
@@ -541,7 +543,8 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
       const fee = orderFee(1, bp, false, v.fees);
       const k = size('yes', bp, fee, v.maxContracts);
       const unwind = Math.max(0, -v.position);
-      const fresh = k.contracts > 0 && gate('yes', bp, k.contracts, false) ? k.contracts : 0;
+      // RISK_MAX_SIDE_PRICE caps new risk only: the quote still carries the unwind of an opposite position.
+      const fresh = k.contracts > 0 && bp <= (v.maxSidePrice ?? 1) && gate('yes', bp, k.contracts, false) ? k.contracts : 0;
       const count = round(Math.min(v.maxContracts, quoteSize(fresh, bp, fee) + unwind), 2);
       if (count > 0) desiredBid = { side: 'bid', price: bp, count, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'quote', expirationTime: expiry, edge: q - bp - fee, why: 'maker bid' };
     }
@@ -553,7 +556,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
       const fee = orderFee(1, noCost, false, v.fees);
       const k = size('no', noCost, fee, v.maxContracts);
       const unwind = Math.max(0, v.position);
-      const fresh = k.contracts > 0 && gate('no', noCost, k.contracts, false) ? k.contracts : 0;
+      const fresh = k.contracts > 0 && noCost <= (v.maxSidePrice ?? 1) && gate('no', noCost, k.contracts, false) ? k.contracts : 0;
       const count = round(Math.min(v.maxContracts, quoteSize(fresh, noCost, fee) + unwind), 2);
       if (count > 0) desiredAsk = { side: 'ask', price: ap, count, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'quote', expirationTime: expiry, edge: (1 - q) - noCost - fee, why: 'maker ask' };
     }
@@ -631,7 +634,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   if ((cfg.style === 'taker' || cfg.style === 'both') && newRisk && !v.fastMove && out.place.every((p) => p.purpose !== 'exit' || p.timeInForce !== 'immediate_or_cancel')) {
     const mayBuyYes = !(opts.blockReductions && v.position < 0);
     const mayBuyNo = !(opts.blockReductions && v.position > 0);
-    if (mayBuyYes && ask && ask.price >= v.minSidePrice && ask.price <= 1 - v.minSidePrice) {
+    if (mayBuyYes && ask && ask.price >= v.minSidePrice && ask.price <= (v.maxSidePrice ?? 1 - v.minSidePrice)) {
       const fee1 = orderFee(1, ask.price, true, v.fees);
       const k = size('yes', ask.price, fee1, Math.min(v.maxContracts, ask.size));
       if (k.contracts > 0) {
@@ -643,7 +646,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
       }
     }
     const noCost = bid ? round(1 - bid.price, 4) : 0;
-    if (mayBuyNo && bid && noCost >= v.minSidePrice && noCost <= 1 - v.minSidePrice) {
+    if (mayBuyNo && bid && noCost >= v.minSidePrice && noCost <= (v.maxSidePrice ?? 1 - v.minSidePrice)) {
       const fee1 = orderFee(1, noCost, true, v.fees);
       const k = size('no', noCost, fee1, Math.min(v.maxContracts, bid.size));
       if (k.contracts > 0) {

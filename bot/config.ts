@@ -2,6 +2,7 @@
 // frozen. Nothing at runtime (API, LLM, learner) can change it. Changing a
 // parameter means a reviewed commit and a redeploy.
 
+import { parseProfile, type VolRegimeProfiles } from './strategy/regimeProfile';
 import type { DynamicEdgeParams } from './strategy/dynamicEdge';
 import type { RegimeScaleParams } from './strategy/regimeScale';
 import { type PacerConfig, validZone } from './risk/quotaPacer';
@@ -41,6 +42,8 @@ export interface RiskLimits {
   dailyLossLimitUsd: number;
   /** Refuse to buy a side priced below this (favourite-longshot bias) or above 1 - this. */
   minSidePrice: number;
+  /** Refuse to buy a side priced above this (RISK_MAX_SIDE_PRICE; unset = 1 - minSidePrice, the symmetric band). */
+  maxSidePrice?: number;
   /** Max new orders per rolling minute. */
   maxOrdersPerMinute: number;
   /** Max simultaneously resting orders. */
@@ -136,6 +139,8 @@ export interface StrategyConfig {
   fastMoveWindowSec: number;
   /** Entry edge moved with the market state (bot/strategy/dynamicEdge.ts; DYN_EDGE_*, all 0 = static edge). */
   dynamicEdge: DynamicEdgeParams;
+  /** Volatility-regime profiles (bot/strategy/regimeProfile.ts; VOLREG_RV1H + VOLREG_CALM/NORMAL/WILD). Undefined = off. */
+  volRegime?: VolRegimeProfiles;
   /** Order size moved with the market state (bot/strategy/regimeScale.ts; REGIME_*, all 0 = no change). */
   regimeScale: RegimeScaleParams;
   /** Resting orders expire on the exchange after this many seconds (dead-man switch); a quote still wanted is placed again. */
@@ -171,6 +176,10 @@ export interface StrategyConfig {
   entryWindowHourly: [number, number];
   /** Hourly strikes are only entered while the market mid is inside this band. */
   hourlyMidBand: [number, number];
+  /** Per-series rules (bot/strategy/seriesRules.ts): extra minimum edge by series (SERIES_EDGE_ADD "KXBTCD:0.03,..."), and
+   *  series that take no new entries (SERIES_NO_ENTRY "KXBTCD,..."; exits and settlement go on). Empty = every series alike. */
+  seriesEdgeAdd: Record<string, number>;
+  seriesNoEntry: string[];
   /** No exits in the final seconds, the hunt stop included: positions ride to settlement (spreads widen inside the
    *  averaging window, and the stop sales inside the last minutes were the ones found always wrong). */
   noExitBeforeCloseSec: number;
@@ -1011,6 +1020,18 @@ function window(env: Env, key: string, def: [number, number]): [number, number] 
   return [a, b];
 }
 
+/** "SERIES:add,SERIES:add" (adds in dollars per contract, 0 to 0.5) -> { SERIES: add }. */
+function seriesEdgeMap(env: Env, key: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const part of (env[key] ?? '').split(',').map((x) => x.trim()).filter(Boolean)) {
+    const [k, v] = part.split(':');
+    const n = Number(v);
+    if (!k || !Number.isFinite(n) || n < 0 || n > 0.5) throw new ConfigError(`${key}=${env[key]} must be "SERIES:add,..." with 0 <= add <= 0.5`);
+    out[k.trim().toUpperCase()] = n;
+  }
+  return out;
+}
+
 function band(env: Env, key: string, def: [number, number]): [number, number] {
   const raw = env[key];
   if (!raw) return def;
@@ -1134,6 +1155,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     dailyLossLimitFrac: num(env, 'RISK_DAILY_LOSS_FRAC', 0.03, 0.001, 0.2),
     dailyLossLimitUsd: num(env, 'RISK_DAILY_LOSS_USD', 5, 0.01, 100000),
     minSidePrice: num(env, 'RISK_MIN_SIDE_PRICE', 0.10, 0.01, 0.45),
+    ...(env.RISK_MAX_SIDE_PRICE ? { maxSidePrice: num(env, 'RISK_MAX_SIDE_PRICE', 0.9, 0.55, 0.99) } : {}),
     // Order submissions a minute (cancels apart). 120, owner-approved Oct 22: a fifth of Kalshi's Basic-tier write budget
     // (100 tokens a second at 10 a write: 600 writes a minute), so creates plus the cancels that go with them stay well
     // inside it; the REST client's own limiter holds every write to that budget anyway (bot/kalshi/rateLimiter.ts).
@@ -1211,6 +1233,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     entryWindowUpdown: window(env, 'ENTRY_WINDOW_15M', relaxed ? [840, 300] : [900, 15]),
     entryWindowHourly: window(env, 'ENTRY_WINDOW_HOURLY', relaxed ? [3300, 420] : [3600, 15]),
     hourlyMidBand: band(env, 'HOURLY_MID_BAND', [0.1, 0.9]),
+    seriesEdgeAdd: seriesEdgeMap(env, 'SERIES_EDGE_ADD'),
+    seriesNoEntry: (env.SERIES_NO_ENTRY ?? '').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean),
     noExitBeforeCloseSec: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC', relaxed ? 60 : 0, 0, 600),
     noExitBeforeCloseFrac: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC', 0.10, 0, 0.9),
     shareWindowMaxSec: num(env, 'STRATEGY_SHARE_WINDOW_MAX_SEC', 3600, 0, 7 * 86_400),
@@ -1317,6 +1341,18 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     takeMargin: num(env, 'TAKE_MARGIN', 0, 0, 0.2),
     taVeto: { ofi: optNum(env, 'TA_VETO_OFI', -100, 100), conf: optNum(env, 'TA_VETO_CONF', -50, 50), intensity: optNum(env, 'TA_VETO_INTENSITY', 0, 50), min: num(env, 'TA_VETO_MIN', 1, 1, 3), reverse: bool(env, 'TA_VETO_REVERSE', false), random: optNum(env, 'TA_VETO_RANDOM', 0, 1) },
   };
+
+  // Volatility-regime profiles (VOLREG_*): each regime's strategy settings, parsed as the bot's own with the profile applied.
+  if ((env.VOLREG_RV1H ?? '').trim()) {
+    const bounds = band(env, 'VOLREG_RV1H', [0, 0]);
+    const off = { VOLREG_RV1H: '', VOLREG_CALM: '', VOLREG_NORMAL: '', VOLREG_WILD: '' };
+    const profile = (key: string): StrategyConfig | undefined => {
+      let p: Record<string, string> | undefined;
+      try { p = parseProfile(env[key], key); } catch (e) { throw new ConfigError((e as Error).message); }
+      return p ? loadConfig({ ...env, ...p, ...off }).strategy : undefined;
+    };
+    strategy.volRegime = { rv1h: bounds, calm: profile('VOLREG_CALM'), normal: profile('VOLREG_NORMAL'), wild: profile('VOLREG_WILD') };
+  }
 
   const dataDir = path.resolve(env.DATA_DIR ?? './data');
 

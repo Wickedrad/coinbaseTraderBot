@@ -144,7 +144,7 @@ export class RiskGateway {
     const sideCost = i.side === 'bid' ? i.price : 1 - i.price;
     const onlyReduces = (i.side === 'ask' ? c.position > 0 : c.position < 0) && i.count <= Math.abs(c.position) + EPS;
     if (!onlyReduces && sideCost < L.minSidePrice - EPS) r.push(`side price ${sideCost.toFixed(2)} below ${L.minSidePrice} (longshot)`);
-    if (!onlyReduces && sideCost > 1 - L.minSidePrice + EPS) r.push(`side price ${sideCost.toFixed(2)} above ${1 - L.minSidePrice}`);
+    if (!onlyReduces && sideCost > (L.maxSidePrice ?? 1 - L.minSidePrice) + EPS) r.push(`side price ${sideCost.toFixed(2)} above ${L.maxSidePrice ?? 1 - L.minSidePrice}`);
 
     // Fair-value collar: the order must carry positive edge net of fees.
     const isTaker = !i.postOnly;

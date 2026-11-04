@@ -75,6 +75,8 @@ import { MarketAnchor } from '../bot/model/marketAnchor';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
 import { compactReading, MarketState, observeMarket } from '../bot/marketdata/marketState';
 import { dynamicEdge } from '../bot/strategy/dynamicEdge';
+import { seriesBlocked, seriesEdgeAdd } from '../bot/strategy/seriesRules';
+import { regimeStrategy } from '../bot/strategy/regimeProfile';
 import { otherCoinsHeld, regimeScale } from '../bot/strategy/regimeScale';
 import { gatePasses, type ProbationParams } from '../bot/risk/probation';
 import { bootstrapMeanCi, deflatedSharpe, pbo, rng, sharpe } from './stats';
@@ -420,7 +422,12 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   let peakBank = 0;
   // The engine's loss-aware sizing and weekly loss pause, in memory (bot/risk/equityGuard.ts).
   const guard = new EquityGuard({ ddScaleAt: strategy.ddScaleAt, weeklyLossPause: strategy.weeklyLossPause, dailyGoalUsd: opts.dailyGoalUsd }, opts.equityGuardFile);
-  const stratRun: StrategyConfig = { ...strategy, exitPolicy: policy === 'take_profit' ? 'take_profit' : policy === 'hold' ? 'hold' : strategy.exitPolicy === 'take_profit' ? 'fair_value' : strategy.exitPolicy };
+  const runStrategy = (s: StrategyConfig): StrategyConfig => ({ ...s, exitPolicy: policy === 'take_profit' ? 'take_profit' : policy === 'hold' ? 'hold' : s.exitPolicy === 'take_profit' ? 'fair_value' : s.exitPolicy });
+  const stratRun: StrategyConfig = runStrategy(strategy);
+  // VOLREG_*: each coin's last 1-hour realised volatility reading picks its regime's settings, as the engine
+  // (bot/strategy/regimeProfile.ts); the per-market loop below reads `strategy` / `stratRun` as that regime's.
+  const strategyBase = strategy, stratRunBase = stratRun, regimeRv1h = new Map<string, number | null>();
+  const regimeRuns = new Map<StrategyConfig, StrategyConfig>();
   let firstTs = 0;
   const closeOf = new Map<string, number>();
   const ratchets = new Map<string, LiquidityRatchet>();
@@ -602,6 +609,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     }
 
     for (const m of [...st.markets.values()].sort((a, b) => (priority.get(b.ticker) ?? 0) - (priority.get(a.ticker) ?? 0))) {
+      const strategy = regimeStrategy(strategyBase, regimeRv1h.get(m.asset));
+      const stratRun = strategy === strategyBase ? stratRunBase : regimeRuns.get(strategy) ?? (regimeRuns.set(strategy, runStrategy(strategy)).get(strategy)!);
       // Recorded for research, or synthesized from price history (quoted at the model's own fair value): never traded.
       if (m.recordOnly || m.synthetic) { if (st.now >= m.closeTime + 90_000) st.forget(m.ticker); continue; }
       closeOf.set(m.ticker, m.closeTime);
@@ -753,6 +762,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         pYes = anchor.price(m.ticker, tauSec, pMkt, pYes);
       }
       const mRead = observeMarket(mstate, { asset: m.asset, ticker: m.ticker, index: idx!, now: st.now, bid, ask, trades: st.features.micro.get(m.ticker)?.tradesIn(st.now, 300_000) });
+      if (strategyBase.volRegime) regimeRv1h.set(m.asset, mRead.rv1h);
       opts.onEval?.({ ticker: m.ticker, now: st.now, pYes, fv: fv.pYes, bid: bid.price, ask: ask.price, position: pos.position(m.ticker), spot: spot.value, strike: terms.strike, sigma: vol.sigmaPerSqrtSec, sigmaPricing: sigmaFv,
         pModel: pred.p, taVolMult, taShift, ruleShift, mstate: compactReading(mRead) });
       const pMarket = model.marketProbability(mid);
@@ -865,9 +875,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
 
       // Relaxed cadence and entry windows, mirroring the engine.
       const mt = kalshiMaintenance(st.now);
-      const kindWindow = strategy.cadence === 'relaxed'
+      const kindWindow = (strategy.cadence === 'relaxed'
         ? inEntryWindow(m.kind, tauSec, strategy.entryWindowUpdown, strategy.entryWindowHourly) && (m.kind === 'updown' || (mid >= strategy.hourlyMidBand[0] && mid <= strategy.hourlyMidBand[1]))
-        : true;
+        : true) && !seriesBlocked(strategy, m.ticker);
       // The guards that stop new risk (Engine.entryGuards): the maintenance window, a pool below the tradable minimum, the
       // weekly pause with the override off and the session edges. The accuracy gate is asked only when none of them holds.
       const edge = opts.sessionEdge?.noEntry ? sessionEdge(st.now, opts.sessionEdge.minutes) : undefined;
@@ -916,7 +926,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         ticker: m.ticker, pYes, pFair: fv.pYes, bestBid: bid, bestAsk: ask, position: pos.position(m.ticker), bankroll,
         // As the engine sizes (bot/sizing/orderBudget.ts); the regime weight (playbook / Compensator) is not replayed.
         ...(() => { const b = orderBudget({ bankroll, orderFrac: tier.orderFrac, sizeMult: sessRisk.sizeMult, riskScale: sizeScale, fCapUsd: optimalFCap(st.now, tier.orderFrac) * bankroll, paperOrderUsd: fixedUsd, bandUsd: band, maxContractsPerOrder: limits.maxContractsPerOrder }); if (b.boundBy === 'optimal_f') res.optimalFBound = (res.optimalFBound ?? 0) + 1; return { maxOrderRiskUsd: b.maxOrderRiskUsd, maxContracts: b.maxContracts, ...(b.fixedOrderUsd ? { fixedOrderUsd: b.fixedOrderUsd } : {}), ...(b.band ? { orderBandUsd: b.band } : {}) }; })(),
-        minSidePrice: limits.minSidePrice,
+        minSidePrice: limits.minSidePrice, ...(limits.maxSidePrice !== undefined ? { maxSidePrice: limits.maxSidePrice } : {}),
         ...(() => { const b = tpBenched(); return b ? { takeProfitBenched: b } : {}; })(),
         newRiskRoomUsd,
         tauSec, noEntryBeforeCloseSec: limits.noEntryBeforeCloseSec, fastMove, tickSize: m.tickSize, fees: DEFAULT_FEES,
@@ -928,7 +938,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         ...((w) => ({ settleShare: w !== undefined && tauSec <= strategy.noExitBeforeCloseFrac * w, ...(w !== undefined ? { windowSec: w } : {}) }))(shareWindowSec(m.openTime, m.closeTime, strategy.shareWindowMaxSec)),
         ...(huntRest !== undefined ? { huntRestSidePrice: huntRest } : {}),
       };
-      const strat = { ...stratRun, kellyFraction: tier.kellyFraction * sizeScale, minEdge: Math.max(0, strategy.minEdge + sessRisk.minEdgeAdd + dynamicEdge(strategy.dynamicEdge, mRead, pred.std).add), inventorySkewPerContract: strategy.inventorySkewPerContract * sessRisk.skewMult };
+      const strat = { ...stratRun, kellyFraction: tier.kellyFraction * sizeScale, minEdge: Math.max(0, strategy.minEdge + sessRisk.minEdgeAdd + dynamicEdge(strategy.dynamicEdge, mRead, pred.std).add + seriesEdgeAdd(strategy, m.ticker)), inventorySkewPerContract: strategy.inventorySkewPerContract * sessRisk.skewMult };
       const pacerUsdNow = pacerAt(st.now).neededUsd(st.now);
       const group = pacerUsdNow !== undefined && strategy.pacer.group ? snipeGroup.judge(m.ticker, view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsdNow, st.now) : undefined;
       const plan = decide(view, strat, {
@@ -977,7 +987,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           // TRAINING_MODE=maker: the side rests at its own touch (as the engine places it).
           const maker = strategy.trainMode === 'maker';
           const cost = maker ? (buyYes ? bid.price : Math.round((1 - ask.price) * 10000) / 10000) : buyYes ? ask.price : Math.round((1 - bid.price) * 10000) / 10000;
-          if (cost >= limits.minSidePrice && cost <= 1 - limits.minSidePrice && ask.price - bid.price <= 0.08 && !fastMove && tauSec > limits.noEntryBeforeCloseSec) {
+          if (cost >= limits.minSidePrice && cost <= (limits.maxSidePrice ?? 1 - limits.minSidePrice) && ask.price - bid.price <= 0.08 && !fastMove && tauSec > limits.noEntryBeforeCloseSec) {
             trainTs.push(st.now);
             trainTicker.add(m.ticker);
             res.paper!.trainTrades!++;

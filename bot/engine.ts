@@ -17,6 +17,8 @@ import type { ExchangeFill, ExchangeGateway } from './kalshi/types';
 import type { ActiveMarket, MarketData } from './marketdata/marketData';
 import type { IndexTracker } from './marketdata/indexTracker';
 import { dynamicEdge, dynamicEdgeOn } from './strategy/dynamicEdge';
+import { seriesBlocked, seriesEdgeAdd } from './strategy/seriesRules';
+import { regimeConfig } from './strategy/regimeProfile';
 import { otherCoinsHeld, regimeScale, regimeScaleOn } from './strategy/regimeScale';
 import { compactReading, MarketState, observeMarket, type MarketStateReading } from './marketdata/marketState';
 import type { OrderBook } from './marketdata/orderBook';
@@ -870,6 +872,8 @@ export class Engine {
 
   private readonly trainTs: number[] = [];
   private readonly trainTicker = new Map<string, number>();
+  /** Each coin's last 1-hour realised volatility reading, for the volatility-regime profiles (VOLREG_*). */
+  private readonly regimeRv1h = new Map<string, number | null>();
   /** Training-trade budget: TRAINING_TRADES_PER_HOUR, spread evenly (no bursts), one per contract. */
   private trainBudget(now: number, ticker: string): boolean {
     const perHour = this.d.cfg.strategy.trainTrades;
@@ -1941,7 +1945,9 @@ export class Engine {
   }
 
   private async evaluateInner(m: ActiveMarket, now: number): Promise<void> {
-    const { cfg, md, oms, model } = this.d;
+    const { md, oms, model } = this.d;
+    // VOLREG_*: the strategy settings of the coin's volatility regime (bot/strategy/regimeProfile.ts); the bot's own without.
+    const cfg = regimeConfig(this.d.cfg, this.regimeRv1h.get(m.asset));
     const R = cfg.risk;
     const book = md.book(m.ticker);
     const idx = this.pricingIndex(m.asset, now);
@@ -2112,6 +2118,7 @@ export class Engine {
     // Market state: fed here and in the backtester the same way (observeMarket), read by the audit now and by the
     // dynamic thresholds next.
     const mState = observeMarket(this.marketState, { asset: m.asset, ticker: m.ticker, index: idx!, now, bid, ask, trades: md.features.micro.get(m.ticker)?.tradesIn(now, 300_000) });
+    if (this.d.cfg.strategy.volRegime) this.regimeRv1h.set(m.asset, mState.rv1h);
 
     // The resting quotes, and the exit curve's resting sell (rest mode), which holds the held side's quote slot.
     const live = oms.liveOrders().filter((o) => o.ticker === m.ticker && (o.purpose === 'quote' || (o.purpose === 'exit' && o.timeInForce === 'good_till_canceled')) && isLive(o));
@@ -2127,9 +2134,10 @@ export class Engine {
     // Entry window: contract kind and time to close (relaxed spec), hourly strikes only while the
     // market is between 10c and 90c, and never during the guards that stop new risk.
     const guards = this.entryGuards(now);
-    const kindWindow = S.cadence === 'relaxed'
+    // A series under SERIES_NO_ENTRY takes no new entries (bot/strategy/seriesRules.ts); exits go on.
+    const kindWindow = (S.cadence === 'relaxed'
       ? inEntryWindow(m.kind, tauSec, S.entryWindowUpdown, S.entryWindowHourly) && (m.kind === 'updown' || (mid >= S.hourlyMidBand[0] && mid <= S.hourlyMidBand[1]))
-      : true;
+      : true) && !seriesBlocked(S, m.ticker);
     // Paper: no new entry where the market's own price has called recent results better than the bot (the owner's
     // choice on Oct 23; bot/strategy/accuracyGate.ts). Every evaluation feeds the gate's scorecard, live included.
     this.d.accuracyGate?.observe(m.ticker, tauSec, pYes, mid);
@@ -2187,7 +2195,7 @@ export class Engine {
     const budget = orderBudget({ bankroll, orderFrac: tier.orderFrac, sizeMult, riskScale: kellyScale, fCapUsd, paperOrderUsd: fixedUsd, bandUsd: band, maxContractsPerOrder: R.maxContractsPerOrder });
     const view: MarketView = {
       ticker: m.ticker, pYes, pFair: fv.pYes, bestBid: bid, bestAsk: ask, position: st.position, bankroll,
-      maxOrderRiskUsd: budget.maxOrderRiskUsd, maxContracts: budget.maxContracts, minSidePrice: R.minSidePrice,
+      maxOrderRiskUsd: budget.maxOrderRiskUsd, maxContracts: budget.maxContracts, minSidePrice: R.minSidePrice, ...(R.maxSidePrice !== undefined ? { maxSidePrice: R.maxSidePrice } : {}),
       ...(budget.fixedOrderUsd ? { fixedOrderUsd: budget.fixedOrderUsd } : {}),
       ...(budget.band ? { orderBandUsd: budget.band } : {}),
       // Exit curve, rest mode: the held position's sell rests at the curve's swing-top estimate (the strategy places it);
@@ -2264,7 +2272,7 @@ export class Engine {
     const dEdge = dynamicEdge(cfg.strategy.dynamicEdge, mState, pred.std);
     const strat = {
       ...cfg.strategy,
-      minEdge: Math.max(0, cfg.strategy.minEdge + sessRisk.minEdgeAdd + dEdge.add),
+      minEdge: Math.max(0, cfg.strategy.minEdge + sessRisk.minEdgeAdd + dEdge.add + seriesEdgeAdd(cfg.strategy, m.ticker)),
       inventorySkewPerContract: cfg.strategy.inventorySkewPerContract * sessRisk.skewMult,
       kellyFraction: tier.kellyFraction * kellyScale,
     };
@@ -2370,7 +2378,7 @@ export class Engine {
       // TRAINING_MODE=maker: the side rests at its own touch (YES at the bid, NO at 1 - the ask) instead of crossing.
       const maker = S.trainMode === 'maker';
       const cost = maker ? (buyYes ? bid.price : Math.round((1 - ask.price) * 10000) / 10000) : buyYes ? ask.price : Math.round((1 - bid.price) * 10000) / 10000;
-      if (cost >= R.minSidePrice && cost <= 1 - R.minSidePrice && ask.price - bid.price <= 0.08 && !fastMove && tauSec > R.noEntryBeforeCloseSec) {
+      if (cost >= R.minSidePrice && cost <= (R.maxSidePrice ?? 1 - R.minSidePrice) && ask.price - bid.price <= 0.08 && !fastMove && tauSec > R.noEntryBeforeCloseSec) {
         this.trainTs.push(now);
         this.trainTicker.set(m.ticker, m.closeTime);
         const edge = buyYes ? q - cost : (1 - q) - cost;
