@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig, type StrategyConfig } from '../bot/config';
 import { DEFAULT_FEES } from '../bot/fees';
-import { applyFvGate, decide, fvGatePasses, inLoserWindow, loserExit, loserNoEntry, shareWindowSec, type MarketView, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
+import { applyFvGate, decide, gateCfgFor, fvGatePasses, inLoserWindow, loserExit, loserNoEntry, shareWindowSec, type MarketView, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
 
 // Steven's settlement rule (Oct 31) and the sizing lab's loser exits: the entry gate, the loser cut and the window cut.
 const base = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_CADENCE: 'continuous' }).strategy;
@@ -26,10 +26,10 @@ const long = (o: Partial<MarketView> = {}) => view({ position: 10, entrySidePric
 const ioc = (out: StrategyOutput) => out.place.filter((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
 
 test('loser rules: gate 6c + 12c quote cushion on by default, cut and window cut off (8 recorded days), each by its flag', () => {
-  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, window: false, windowJudge: 'bid', windowMode: 'bid', windowRestFinalSec: 60, windowShare: 0, noEntryShare: 0, gatedStakeMult: 1 });
+  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, window: false, windowJudge: 'bid', windowMode: 'bid', windowRestFinalSec: 60, windowShare: 0, noEntryShare: 0, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
   const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE: 'false', LOSER_CUT: 'true', LOSER_WINDOW_CUT: 'true', FV_ENTRY_GATE_MARGIN: '0.09', LOSER_CUT_MARGIN: '0.05',
     FV_ENTRY_GATE_QUOTE_MARGIN: '', LOSER_WINDOW_JUDGE: 'cost', LOSER_WINDOW_MODE: 'rest', LOSER_WINDOW_REST_FINAL_SEC: '90', LOSER_WINDOW_SHARE: '0.25', LOSER_NO_ENTRY_SHARE: '0.2' }).strategy;
-  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, window: true, windowJudge: 'cost', windowMode: 'rest', windowRestFinalSec: 90, windowShare: 0.25, noEntryShare: 0.2, gatedStakeMult: 1 });
+  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, window: true, windowJudge: 'cost', windowMode: 'rest', windowRestFinalSec: 90, windowShare: 0.25, noEntryShare: 0.2, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
 });
 
 test('loser window cut: in the last share of the window or the final minute a position not in profit is sold at the bid; one in profit rides', () => {
@@ -221,6 +221,15 @@ test('GATED_STAKE_MULT: off by default; at 2 only the orders that pass the gate 
   const noFv = plan(); applyFvGate(noFv, undefined, 0, DEFAULT_FEES, x2); assert.deepEqual(noFv.place.map((p) => p.count), [5, 3]);
   // A training trade that passes the gate keeps its minimum size.
   const tr = plan(); tr.place[0] = { ...tr.place[0], why: 'train: YES at 0.60' }; applyFvGate(tr, 0.8, 0, DEFAULT_FEES, x2); assert.deepEqual(tr.place.map((p) => p.count), [5, 3]);
+  // GATED_STAKE_CAP=clamp (default) with the band's top passed in: 5 at 0.60 ($3 + fee) doubles to 10 under a $20 top, but a
+  // $5 top holds it at the most contracts that fit ($0.60 x 7 + fee <= $5); widen ignores the top (the caps widen instead).
+  const c20 = plan(); applyFvGate(c20, 0.8, 0, DEFAULT_FEES, x2, false, 20); assert.equal(c20.place[0].count, 10);
+  const c5 = plan(); applyFvGate(c5, 0.8, 0, DEFAULT_FEES, x2, false, 5);
+  assert.ok(c5.place[0].count > 5 && c5.place[0].count < 10);
+  assert.ok(c5.place[0].count * 0.6 <= 5);
+  const wide = plan(); applyFvGate(wide, 0.8, 0, DEFAULT_FEES, { ...x2, loserExits: { ...x2.loserExits!, gatedStakeCap: 'widen' } }, false, 5);
+  assert.equal(wide.place[0].count, 10);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), GATED_STAKE_CAP: 'widen' }).strategy.loserExits!.gatedStakeCap, 'widen');
 });
 
 test('shareWindowSec: the share rules measure a contract\'s own hour, not a ladder\'s listing hours or a day ahead', () => {
@@ -282,4 +291,20 @@ test('TRAINING_GATE_MARGIN: training trades take their own gate margin; other or
   const t2 = plan('train: YES at 0.50 (maker at 0.50)'); applyFvGate(t2, 0.52, 0, DEFAULT_FEES, tm); assert.equal(t2.place.length, 0);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.loserExits?.trainMargin, undefined);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TRAINING_GATE_MARGIN: '0.03' }).strategy.loserExits?.trainMargin, 0.03);
+});
+
+test('FV_ENTRY_GATE_SERIES_MARGINS: a series or *suffix pattern raises that series\' gate margins, others keep theirs', () => {
+  const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_SERIES_MARGINS: 'KXETHD=0.10,*15M=0.15' }).strategy;
+  assert.deepEqual(c.loserExits!.seriesMargins, [{ pattern: 'KXETHD', margin: 0.1 }, { pattern: '*15M', margin: 0.15 }]);
+  assert.equal(base.loserExits!.seriesMargins, undefined);
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_SERIES_MARGINS: 'KXETHD=0.9' }));
+  const sol = gateCfgFor(c, 'KXSOL15M-25OCT261530-30').loserExits!;
+  assert.equal(sol.gateMargin, 0.15); assert.equal(sol.gateQuoteMargin, 0.15);
+  const ethd = gateCfgFor(c, 'KXETHD-25OCT2617-T3999.99').loserExits!;
+  assert.equal(ethd.gateMargin, 0.1); assert.equal(ethd.gateQuoteMargin, 0.12, 'never lowers the quote cushion');
+  assert.equal(gateCfgFor(c, 'KXBTC-25OCT2617-B110000'), c);
+  // In applyFvGate: a YES at 0.60 with fair value 0.70 passes the 6c gate but not the 15c 15-minute margin.
+  const plan = (): StrategyOutput => ({ cancel: [], notes: [], place: [{ side: 'bid', price: 0.6, count: 5, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge: 0.1, why: 'cross' }] });
+  assert.equal(applyFvGate(plan(), 0.7, 0, DEFAULT_FEES, gateCfgFor(c, 'KXBTC-X')), 0);
+  assert.equal(applyFvGate(plan(), 0.7, 0, DEFAULT_FEES, gateCfgFor(c, 'KXSOL15M-X')), 1);
 });

@@ -31,7 +31,7 @@ import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
-import { applyFvGate, decide, loserNoEntry, trainingCount, trainingOrder, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
+import { applyFvGate, gateCfgFor, decide, loserNoEntry, trainingCount, trainingOrder, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
@@ -1121,8 +1121,11 @@ export class Engine {
    *  size or the order band's top (one order, PAPER_WINDOW_ORDERS in markets closing together, PAPER_TOTAL_ORDERS in all). */
   private orderLimits(t: Tier, bankroll = this.bankroll() ?? 0): Partial<RiskLimits> {
     const lim = this.tierLimits(t);
-    const usd = this.paperOrderUsd(bankroll) || (this.orderBandUsd(bankroll)?.max ?? 0);
+    let usd = this.paperOrderUsd(bankroll) || (this.orderBandUsd(bankroll)?.max ?? 0);
     if (!(usd > 0) || !(bankroll > 0)) return lim;
+    // GATED_STAKE_CAP=widen: the caps make room for a gated order scaled by GATED_STAKE_MULT (Steven's OK widens his band).
+    const L = this.d.cfg.strategy.loserExits;
+    if (L?.gate && L.gatedStakeCap === 'widen' && (L.gatedStakeMult ?? 1) > 1) usd *= L.gatedStakeMult!;
     return {
       ...lim,
       maxOrderRiskFrac: Math.max(t.orderFrac, usd / bankroll),
@@ -2370,7 +2373,7 @@ export class Engine {
       }
     }
     // FV_ENTRY_GATE on the finished plan: the fill model's crosses and paper's training trades open positions too.
-    applyFvGate(plan, fv.pYes, view.position, view.fees, S, loserNoEntry(view, S));
+    applyFvGate(plan, fv.pYes, view.position, view.fees, gateCfgFor(S, m.ticker), loserNoEntry(view, S), fixedUsd > 0 ? fixedUsd : band?.max ?? 0);
     if (this.fillLog) for (const p of plan.place) if (isMakerEntry(p)) this.fillX.set(p, fillInputs(p, fillCtx));
     if (fixedUsd > 0) plan.notes.push(`paper size: ${this.paperSizing()}; the tier, break-even scale and optimal f size live`);
     else if (band) plan.notes.push(`order band: $${band.min}-$${band.max} an order (ORDER_USD_MIN/MAX), the sized stake clamped into it; the tier, loss scale and optimal f do not size it`);
