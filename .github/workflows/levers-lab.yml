@@ -15,14 +15,17 @@ on:
     paths: ['.github/levers-batch.txt']
 permissions:
   contents: write
+# Each batch push runs on its own (a later one no longer waits for, or replaces, a queued one): keep the jobs of all
+# running batches within the thread's three with the batch file's "# max-parallel: N" line (default 3).
 concurrency:
-  group: levers-lab
+  group: levers-lab-${{ github.sha }}
   cancel-in-progress: false
 jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
       shards: ${{ steps.p.outputs.shards }}
+      maxpar: ${{ steps.p.outputs.maxpar }}
     steps:
       - uses: actions/checkout@v5
       - id: p
@@ -31,6 +34,9 @@ jobs:
           s=$(( (n + 7) / 8 )); [ "$s" -lt 1 ] && s=1; [ "$s" -gt 12 ] && s=12
           echo "$n arm(s) in $s shard(s)"
           echo "shards=$(seq 0 $((s - 1)) | jq -cs .)" >> "$GITHUB_OUTPUT"
+          mp=$(grep -oE '^# max-parallel: *[0-9]+' .github/levers-batch.txt | grep -oE '[0-9]+$' | head -1 || true)
+          mp=${mp:-3}; [ "$mp" -lt 1 ] && mp=1; [ "$mp" -gt 3 ] && mp=3; echo "at most $mp job(s) at once"
+          echo "maxpar=$mp" >> "$GITHUB_OUTPUT"
   arms:
     needs: plan
     runs-on: ubuntu-latest
@@ -38,7 +44,7 @@ jobs:
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: ${{ fromJson(needs.plan.outputs.maxpar) }}
       matrix:
         shard: ${{ fromJson(needs.plan.outputs.shards) }}
     env:
@@ -103,6 +109,7 @@ jobs:
           set -uo pipefail
           read -r tag day reuse phase note ov <<< "$1"
           D="$GITHUB_WORKSPACE/copies/$reuse"; T="$RUNNER_TEMP/arm-$tag"; mkdir -p "$T"
+          SEED=$( [ -s "$RUNNER_TEMP/seed-$reuse-$day.json" ] && sha256sum "$RUNNER_TEMP/seed-$reuse-$day.json" | cut -c1-8 || echo none)
           next=$(date -u -d "$day +1 day" +%F)
           (
             set -a; . "$D/sweep-env/train.env"; set +a
@@ -123,7 +130,7 @@ jobs:
             timeout 170m node --import tsx research/replayCheck.ts "${ARGS[@]}" --tick-phase-ms "$phase" --out "$T/out.json" || echo "replay failed or cut off"
             echo "arm took $(( ($(date +%s) - T0) / 60 )) min"
           ) > "$T/own.log" 2>&1
-          { echo "**Levers lab** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · from ${day}T15:40:00Z · replay-only overrides: \`REPLAY_TAG=$tag $ov REPLAY_NOTE=$note\` · tick phase $phase ms"
+          { echo "**Levers lab** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · from ${day}T15:40:00Z · replay-only overrides: \`REPLAY_TAG=$tag $ov REPLAY_NOTE=$note\` · tick phase $phase ms · seed $SEED"
             echo; echo '```'; grep -vE ' (WARN|INFO|DEBUG) +\[' "$T/own.log" | cut -c1-1500 | head -n 130; echo '```'
             echo; echo 'lever settings in force (server values, then the arm'"'"'s):'; echo '```'
             grep -E "$SHOW" "$D/sweep-env/train.env" | cut -c1-120 | paste -sd' ' -; echo "arm: $ov"; echo '```'; } > "$T/comment.md"
@@ -134,13 +141,19 @@ jobs:
           echo "$tag: $(grep -E '^replay +fills' "$T/own.log" | head -1 | cut -c1-160)"
           SH
           chmod +x "$RUNNER_TEMP/arm.sh"; export SHOW
-          # The spot candles the bot held at each stretch's start (Coinbase, fetched once per copy and day).
+          # The spot candles the bot held at each stretch's start (Coinbase): fetched once per copy and day and kept on Drive
+          # with the copy, so every shard and later batch replays from the same candles (the comment shows their hash).
           for k in $(awk '{print $3 "|" $2}' "$RUNNER_TEMP/arms.txt" | sort -u); do
-            reuse=${k%|*}; day=${k#*|}; next=$(date -u -d "$day +1 day" +%F); D="copies/$reuse"
-            ( set -a; . "$D/sweep-env/train.env"; set +a; export DATA_DIR="$GITHUB_WORKSPACE/$D" TRADING_MODE=paper
-              node --import tsx research/replayCheck.ts --recordings "$D/recordings" --audit "$D/audit" --days "$day,$next" --from "${day}T15:40:00Z" --to "${next}T15:40:00Z" \
-                --model "$D/models/model.json" --fetch-seed "$RUNNER_TEMP/seed-$reuse-$day.json" > /dev/null 2>&1 ) || true
-            echo "seed candles $day: $([ -s "$RUNNER_TEMP/seed-$reuse-$day.json" ] && echo fetched || echo 'not fetched (recorded bars only)')"
+            reuse=${k%|*}; day=${k#*|}; next=$(date -u -d "$day +1 day" +%F); D="copies/$reuse"; S="$RUNNER_TEMP/seed-$reuse-$day.json"
+            if [ -s "$D/seeds/seed-$day.json" ]; then cp "$D/seeds/seed-$day.json" "$S"; how='from Drive'
+            else
+              ( set -a; . "$D/sweep-env/train.env"; set +a; export DATA_DIR="$GITHUB_WORKSPACE/$D" TRADING_MODE=paper
+                node --import tsx research/replayCheck.ts --recordings "$D/recordings" --audit "$D/audit" --days "$day,$next" --from "${day}T15:40:00Z" --to "${next}T15:40:00Z" \
+                  --model "$D/models/model.json" --fetch-seed "$S" > /dev/null 2>&1 ) || true
+              how='not fetched (recorded bars only)'
+              if [ -s "$S" ]; then how=fetched; rclone copyto "$S" "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$reuse/seeds/seed-$day.json" && how='fetched, kept on Drive'; fi
+            fi
+            echo "seed candles $day: $how $([ -s "$S" ] && sha256sum "$S" | cut -c1-8)"
           done
           T0=$(date +%s)
           tr '\n' '\0' < "$RUNNER_TEMP/arms.txt" | xargs -0 -P "$LANES" -I{} "$RUNNER_TEMP/arm.sh" {}
