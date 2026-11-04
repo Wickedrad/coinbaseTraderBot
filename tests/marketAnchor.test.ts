@@ -92,3 +92,11 @@ test('market anchor by series: a series whose disagreement is right earns its ow
   assert.ok(wBtc < 0.3, `btc ${wBtc}`);
   assert.ok(a.status().series);
 });
+
+test('market anchor min w: a learned weight under the floor prices at the market', () => {
+  const a = new MarketAnchor({ ...DEFAULT_MARKET_ANCHOR, enabled: true, prior: 0.1, priorSd: 0.01, minW: 0.25 });
+  assert.equal(a.weight('KXBTC15M-26NOV04-15', 500), 0);
+  assert.equal(a.price('KXBTC15M-26NOV04-15', 500, 0.4, 0.6), 0.4);
+  const b = new MarketAnchor({ ...DEFAULT_MARKET_ANCHOR, enabled: true, prior: 0.5, priorSd: 0.01, minW: 0.25 });
+  assert.equal(b.weight('KXBTC15M-26NOV04-15', 500), 0.5);
+});

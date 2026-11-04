@@ -35,6 +35,9 @@ export interface MarketAnchorConfig {
   /** Also learn w per series (KXDOGE, KXBTCD, KXBTC15M, ...) inside each bucket, its prior the bucket's own w
    *  (the owner's dynamics rule, Nov 2: a price that works only in some conditions is gated to them). */
   bySeries?: boolean;
+  /** A learned w below this counts as 0 (the market's price, no trade on the disagreement): a bucket or series whose
+   *  record barely earns any weight stays out instead of trading on a sliver (refinement, Nov 4). */
+  minW?: number;
 }
 
 export const DEFAULT_MARKET_ANCHOR: MarketAnchorConfig = { enabled: false, prior: 0.5, priorSd: 0.5, window: 400, maxW: 1.5 };
@@ -94,7 +97,8 @@ export class MarketAnchor {
   weight(ticker: string, tauSec: number): number {
     if (this.cfg.fixedW !== undefined) return this.cfg.fixedW;
     const { group, b } = this.key(ticker, tauSec);
-    return this.cfg.bySeries ? this.wOf(`${group}:${seriesOf(ticker)}:${b}`, this.wOf(`${group}:${b}`, this.cfg.prior)) : this.wOf(`${group}:${b}`, this.cfg.prior);
+    const w = this.cfg.bySeries ? this.wOf(`${group}:${seriesOf(ticker)}:${b}`, this.wOf(`${group}:${b}`, this.cfg.prior)) : this.wOf(`${group}:${b}`, this.cfg.prior);
+    return this.cfg.minW !== undefined && w < this.cfg.minW ? 0 : w;
   }
 
   private wOf(k: string, prior: number): number {
