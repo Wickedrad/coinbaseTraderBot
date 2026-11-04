@@ -1135,7 +1135,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     profitGiveBack: num(env, 'PROFIT_GIVE_BACK', 1 / 3, 0, 1),
     // The owner, Oct 24: the take-profit goes on the exit curve's scoreboard and bench (it sold winners for $230 less
     // than holding them on Oct 23-24).
-    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', true),
+    // Off by default (Steven, Oct 31 and Nov 4): nothing is held to settlement unless in profit in the last share of the window, so a
+    // bad score never turns the take-profit off; the bench keeps scoring and reports what it would have called.
+    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', false),
     cadence,
     evalBarSec: num(env, 'STRATEGY_EVAL_BAR_SEC', 60, 5, 600),
     evalFvMove: num(env, 'STRATEGY_EVAL_FV_MOVE', 0.015, 0.001, 0.2),
