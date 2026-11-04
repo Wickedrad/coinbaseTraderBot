@@ -59,8 +59,14 @@ class R {
   constructor(private readonly b: Buffer) {}
   byte(): number { return this.b[this.i++]; }
   uv(): number {
-    let v = 0, m = 1, c: number;
-    do { c = this.b[this.i++]; v += (c & 127) * m; m *= 128; } while (c & 128);
+    const b = this.b;
+    let c = b[this.i++];
+    if (c < 128) return c;
+    // Up to four bytes (< 2^28) on small integers, the rest in floating point (values reach 2^53).
+    let v = c & 127, shift = 7;
+    for (let k = 0; k < 3; k++) { c = b[this.i++]; v |= (c & 127) << shift; shift += 7; if (c < 128) return v; }
+    let m = 268435456;
+    do { c = b[this.i++]; v += (c & 127) * m; m *= 128; } while (c & 128);
     return v;
   }
   sv(): number { const z = this.uv(); return z % 2 ? -(z + 1) / 2 : z / 2; }
@@ -95,14 +101,32 @@ class Out {
     while (size < this.n + k) size *= 2;
     const b = Buffer.allocUnsafe(size); this.buf.copy(b, 0, 0, this.n); this.buf = b;
   }
-  bytes(src: Buffer, a = 0, b = src.length): void { const len = b - a; this.room(len); src.copy(this.buf, this.n, a, b); this.n += len; }
-  /** Digits of a non-negative integer (< 2^53), `width` = minimum digits (zero padded). */
+  /** Short pieces are copied by hand: a native Buffer.copy per glue piece or value cost more than the copy itself. */
+  bytes(src: Buffer, a = 0, b = src.length): void {
+    const len = b - a;
+    this.room(len);
+    if (len > 32) { src.copy(this.buf, this.n, a, b); this.n += len; return; }
+    const d = this.buf;
+    let n = this.n;
+    for (let i = a; i < b; i++) d[n++] = src[i];
+    this.n = n;
+  }
+  /** Digits of a non-negative integer (< 2^53), `width` = minimum digits (zero padded). Split in two below 10^8 so the
+   *  digit loop runs on small integers. */
   digits(a: number, width = 1): void {
-    this.room(17 + width);
-    let len = 1; for (let t = a; t >= 10; t = Math.floor(t / 10)) len++;
-    if (len < width) { for (let i = len; i < width; i++) this.buf[this.n++] = 48; }
+    this.room(18 + width);
+    if (a < 100_000_000) { this.small(a, width); return; }
+    const hi = Math.floor(a / 100_000_000);
+    this.small(hi, width - 8);
+    this.small(a - hi * 100_000_000, 8);
+  }
+  private small(v: number, width: number): void {
+    let len = v < 10 ? 1 : v < 100 ? 2 : v < 1000 ? 3 : v < 10000 ? 4 : v < 100000 ? 5 : v < 1000000 ? 6 : v < 10000000 ? 7 : 8;
+    const d = this.buf;
+    while (len < width) { d[this.n++] = 48; width--; }
     let pos = this.n + len - 1;
-    do { const q = Math.floor(a / 10); this.buf[pos--] = 48 + (a - q * 10); a = q; } while (a > 0);
+    v |= 0;
+    do { const q = (v / 10) | 0; d[pos--] = 48 + v - q * 10; v = q; } while (v > 0);
     this.n += len;
   }
   /** decText(n, k) as bytes. */
