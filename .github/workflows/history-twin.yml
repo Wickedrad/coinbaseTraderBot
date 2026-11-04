@@ -92,7 +92,7 @@ jobs:
           path: data/fit
           key: fidelity-fit-${{ env.FIT_RUN }}-1
       - name: Keep the copy's whole days only
-        if: env.CHECK_COPY != ''
+        if: env.CHECK_COPY != '' && hashFiles('data/recordings/md-*') != ''
         run: |
           set -euo pipefail
           LAST="md-$(cut -c1-10 data/sweeps/check-to.txt 2>/dev/null)"
