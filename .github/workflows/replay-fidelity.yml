@@ -421,7 +421,7 @@ jobs:
   compare:
     needs: backtest
     # A fill-in whose job failed is left out of the comparison (the real backtest is still needed).
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && inputs.reset_choice == '' }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 60
