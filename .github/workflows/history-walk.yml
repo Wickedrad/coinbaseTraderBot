@@ -81,6 +81,16 @@ jobs:
           printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
           ssh bot true && echo "connected"
 
+      # Steven's rule (2026-11-02): data lives on Google Drive. The walk reads its state and Kalshi's days from Drive
+      # first (the server only for what Drive lacks) and keeps a copy of its state there. If Drive is not reachable the
+      # walk still runs from the server, as before.
+      - name: Drive
+        id: drive
+        continue-on-error: true
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+
       - name: Take the walk's lease
         id: lease
         run: |
@@ -100,8 +110,19 @@ jobs:
           DATA="$GITHUB_WORKSPACE/data"; W="$DATA/models/work/history-walk/$NET"; H="$RUNNER_TEMP/walk/history"
           mkdir -p "$W" "$H"
           # The walk's folder (an error copying an existing one ends the run: it must never start over by mistake).
+          # Drive's copy is used only when its walk.json is the server's (the server stays the walk's record: the lease
+          # and the daily training read it there).
+          DRIVE_OK=false; [ "${{ steps.drive.outcome }}" = success ] && DRIVE_OK=true
+          DW="gdrive:kalshi-bot-archive/models/server/work/history-walk/$NET"
           if ssh bot "test -d ~/bot/data/models/work/history-walk/$NET"; then
-            rsync -a --rsync-path="nice -n 19 rsync" --exclude 'pbt/round/' "bot:bot/data/models/work/history-walk/$NET/" "$W/"
+            SRV=$(ssh bot "sha256sum ~/bot/data/models/work/history-walk/$NET/walk.json 2>/dev/null | cut -c1-64" || true)
+            DRV=$($DRIVE_OK && rclone cat "$DW/walk.json" 2>/dev/null | sha256sum | cut -c1-64 || true)
+            if $DRIVE_OK && [ -n "$SRV" ] && [ "$SRV" = "$DRV" ] && rclone copy "$DW" "$W" --exclude 'pbt/round/**' --transfers 8; then
+              echo "walk folder from Drive (same walk.json as the server)"
+            else
+              rsync -a --rsync-path="nice -n 19 rsync" --exclude 'pbt/round/' "bot:bot/data/models/work/history-walk/$NET/" "$W/"
+              echo "walk folder from the server"
+            fi
           else echo "no $NET walk on the server yet: it starts at the beginning"; fi
           # The server's settings without any credential, and without server paths (this runner has its own).
           ssh bot "grep -E '^[A-Z][A-Z0-9_]*=' ~/bot/bot.env" | grep -vE 'KEY|SECRET|TOKEN|PASSWORD|PRIVATE|PEM|CREDENTIAL|^BIND_HOST=|^ALLOW_NON_LOOPBACK|^PORT=' | grep -vE '^[A-Z0-9_]+=["'"'"']?(/|~)' > "$RUNNER_TEMP/walk.env" || true
@@ -112,10 +133,19 @@ jobs:
           # and the BTC.D / USDT.D series the replay anchors dominance to: small files.
           python3 -c 'import json,sys,datetime as d; p=json.load(open(sys.argv[1]));
           [print("*/%s.jsonl" % (d.date.fromisoformat(p["warmUp"]) + d.timedelta(days=i)).isoformat()) for i in range(p.get("days",0)+2)] if not p.get("caughtUp") else None' "$RUNNER_TEMP/plan.json" > "$RUNNER_TEMP/kalshi-days.txt"
-          if [ "$NET" = crypto ] && [ -s "$RUNNER_TEMP/kalshi-days.txt" ] && ssh bot "test -d ~/bot/data/history/kalshi"; then
-            rsync -a --rsync-path="nice -n 19 rsync" --include='*/' --include-from="$RUNNER_TEMP/kalshi-days.txt" --exclude='*' --prune-empty-dirs bot:bot/data/history/kalshi/ "$H/kalshi/"
+          # Settled Kalshi days never change: Drive's mirror (raw/server-history) first, the server only for days it lacks.
+          if [ "$NET" = crypto ] && [ -s "$RUNNER_TEMP/kalshi-days.txt" ]; then
+            mkdir -p "$H/kalshi"
+            if $DRIVE_OK; then rclone copy gdrive:kalshi-bot-archive/raw/server-history/kalshi "$H/kalshi" --include-from "$RUNNER_TEMP/kalshi-days.txt" --transfers 8 || true; fi
+            D=$(find "$H/kalshi" -type f 2>/dev/null | wc -l)
+            if ssh bot "test -d ~/bot/data/history/kalshi"; then
+              rsync -a --ignore-existing --rsync-path="nice -n 19 rsync" --include='*/' --include-from="$RUNNER_TEMP/kalshi-days.txt" --exclude='*' --prune-empty-dirs bot:bot/data/history/kalshi/ "$H/kalshi/"
+            fi
+            echo "Kalshi day files: $D from Drive, $(( $(find "$H/kalshi" -type f 2>/dev/null | wc -l) - D )) from the server"
           fi
-          rsync -a --rsync-path="nice -n 19 rsync" --include='/tradingview/' --include='/binance-index/' --include='/bot-index/' --include='/*/BTC.D/***' --include='/*/USDT.D/***' --exclude='*' bot:bot/data/history/ "$H/" || true
+          # The dominance series grow every day: Drive first, then the server sends only files whose size changed.
+          if $DRIVE_OK; then rclone copy gdrive:kalshi-bot-archive/raw/server-history "$H" --include '/tradingview/**' --include '/binance-index/**' --include '/bot-index/**' --include '/*/BTC.D/**' --include '/*/USDT.D/**' --transfers 8 || true; fi
+          rsync -a --size-only --whole-file --rsync-path="nice -n 19 rsync" --include='/tradingview/' --include='/binance-index/' --include='/bot-index/' --include='/*/BTC.D/***' --include='/*/USDT.D/***' --exclude='*' bot:bot/data/history/ "$H/" || true
           echo "from the server: walk folder $(du -sh "$W" | cut -f1), Kalshi day files $(find "$H/kalshi" -type f 2>/dev/null | wc -l)"
 
       - name: Walk
@@ -146,6 +176,10 @@ jobs:
           ssh bot "mkdir -p ~/bot/data/models/work/history-walk/$NET"
           rsync -a --delete --rsync-path="nice -n 19 rsync" --exclude 'pbt/round/' "$W/" "bot:bot/data/models/work/history-walk/$NET/"
           echo "the $NET walk copied to the server ($(du -sh "$W" | cut -f1))"
+          # The same state on Drive (the walk's own folder there mirrors the server's, deletions included).
+          if [ "${{ steps.drive.outcome }}" = success ]; then
+            rclone sync "$W" "gdrive:kalshi-bot-archive/models/server/work/history-walk/$NET" --exclude 'pbt/round/**' --transfers 8 && echo "and kept on Drive" || echo "Drive copy failed (the server has it)"
+          fi
 
       - name: Give the walk's lease back
         if: always() && steps.lease.outputs.held == 'true'
