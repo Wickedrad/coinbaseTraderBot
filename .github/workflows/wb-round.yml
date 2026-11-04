@@ -31,7 +31,8 @@ jobs:
           WF=kalshi-replay-check.yml
           runs() { gh api "repos/$R/actions/workflows/$WF/runs?per_page=100&branch=$BR" --jq '.workflow_runs[] | "\(.status) \(.conclusion) \(.display_title)"' < /dev/null; }
           active() { runs | grep -c "^\(queued\|in_progress\|pending\|waiting\|requested\) .*REPLAY_NOTE=$NOTE" || true; }
-          done_or_running() { runs | grep -E "^(queued|in_progress|pending|waiting|requested) |^completed success " | grep -q "REPLAY_TAG=$1 .*REPLAY_NOTE=$NOTE"; }
+          # No grep -q here: under pipefail an early grep -q exit SIGPIPEs the writer and reads as "not found" (that re-ran finished arms).
+          done_or_running() { local all; all=$(runs) || return 1; [ "$(printf '%s\n' "$all" | grep -E "^(queued|in_progress|pending|waiting|requested) |^completed success " | grep -c "REPLAY_TAG=$1 .*REPLAY_NOTE=$NOTE")" -gt 0 ]; }
           while read -r tag day reuse ov; do
             [ -z "$tag" ] || [[ "$tag" == \#* ]] && continue
             if done_or_running "$tag"; then echo "skip $tag (ran or running)"; continue; fi
