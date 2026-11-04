@@ -70,6 +70,11 @@ export interface LoserExitConfig {
    *  quote margin for a resting one): the gate's margin for training trades alone. Under TRAINING_MODE=maker the 12c quote
    *  cushion let no training trade through on the recorded days, so the maker mode is judged with its own margin. */
   trainMargin?: number;
+  /** GATED_STAKE_MULT (1 = off): an entry or maker quote that passes the gate (fair value known, gate on) is sized this many
+   *  times its count, so a $10-$20 order becomes $20-$40 at 2. Sizing lab Nov 2 (shared book depth, gate + 3c cut): x2 made
+   *  +$13.43/h against +$8.08/h on Oct 24-28 and +$1.22/h against -$0.10/h on Oct 29-Nov 1; it loses on thin days and never
+   *  applies to ungated entries (x2 there lost $5-8/h more) or training trades. Same in paper and live. */
+  gatedStakeMult?: number;
   /** LOSER_CUT (off: it lost on 6 of 8 recorded days next to the gate; studied for the condition under which it wins): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
    *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
   cut: boolean;
@@ -1211,6 +1216,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       windowRestFinalSec: num(env, 'LOSER_WINDOW_REST_FINAL_SEC', 60, 0, 3600),
       windowShare: num(env, 'LOSER_WINDOW_SHARE', 0, 0, 0.9),
       noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
+      gatedStakeMult: num(env, 'GATED_STAKE_MULT', 1, 1, 5),
     },
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),

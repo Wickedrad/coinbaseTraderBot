@@ -297,6 +297,7 @@ export function applyFvGate(plan: StrategyOutput, pFair: number | undefined, pos
   noEntry = false): number {
   if (!noEntry && (!cfg.loserExits?.gate || pFair === undefined)) return 0;
   const before = plan.place.length;
+  const passed: typeof plan.place = [];
   plan.place = plan.place.filter((p) => {
     if (p.reduceOnly || p.purpose === 'exit' || !(p.count > 0)) return true;
     const buysYes = p.side === 'bid';
@@ -308,12 +309,21 @@ export function applyFvGate(plan: StrategyOutput, pFair: number | undefined, pos
     }
     if (!cfg.loserExits?.gate || pFair === undefined) return true;
     // A training trade takes TRAINING_GATE_MARGIN when one is set; every other order the margin of its type.
-    const train = p.why.startsWith('train:') && cfg.loserExits.trainMargin !== undefined;
+    const isTrain = p.why.startsWith('train:');
+    const train = isTrain && cfg.loserExits.trainMargin !== undefined;
     const gcfg = train ? { loserExits: { ...cfg.loserExits, gateMargin: cfg.loserExits.trainMargin!, gateQuoteMargin: cfg.loserExits.trainMargin } } : cfg;
     const ok = fvGatePasses(pFair, buysYes ? 'yes' : 'no', cost, orderFee(p.count, cost, !p.postOnly, fees) / p.count, gcfg, p.postOnly);
     if (!ok) plan.notes.push(`fair value gate: dropped ${p.purpose} ${buysYes ? 'YES' : 'NO'} at ${cost.toFixed(2)} (fair value ${(buysYes ? pFair : 1 - pFair).toFixed(3)} under cost + fee + ${gateMarginFor(gcfg, p.postOnly)})`);
+    // Training trades keep their minimum size: they exist to learn from, not to carry the gate's edge.
+    else if (!isTrain) passed.push(p);
     return ok;
   });
+  // GATED_STAKE_MULT: the orders that passed the gate carry its edge, so they are sized up (paper and live alike).
+  const k = cfg.loserExits?.gatedStakeMult ?? 1;
+  if (k > 1) for (const p of passed) {
+    const n = Math.floor(p.count * k + 1e-9);
+    if (n > p.count) { plan.notes.push(`gated stake x${k}: ${p.purpose} ${p.count} -> ${n} contracts`); p.count = n; }
+  }
   return before - plan.place.length;
 }
 
