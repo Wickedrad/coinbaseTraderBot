@@ -60,7 +60,11 @@ async function writeGz(file: string, lines: AsyncIterable<string>): Promise<void
 /** The tickers a day file lists (market records), with their series. */
 async function tickersOf(file: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  for await (const e of events(file)) if (e.k === 'market' && e.ticker) out.set(e.ticker, e.series ?? '');
+  // Only market records are parsed (a real day is tens of millions of book lines: parsing them all took hours, Nov 2).
+  for await (const line of recordingLines(file)) {
+    if (!line || !line.includes('"k":"market"')) continue;
+    try { const e = JSON.parse(line); if (e.k === 'market' && e.ticker) out.set(e.ticker, e.series ?? ''); } catch { /* a cut line */ }
+  }
   return out;
 }
 
@@ -72,11 +76,15 @@ export interface Paired { day: string; realContracts: number; twinContracts: num
 
 /** The real day with every contract the twin lacks taken out (its market, book, delta, trade, result records; alive
  *  marks keep only the twin's tickers). */
+const TICKER_RE = /"ticker":"([^"]+)"/;
 async function restrictDay(src: string, dst: string, keep: Set<string>): Promise<void> {
   async function* lines(): AsyncGenerator<string> {
     for await (const line of recordingLines(src)) {
       if (!line) continue;
-      if (line.includes('"ticker"') || line.includes('"tickers"')) {
+      // The ticker read straight off the line (no parse): only the rare lines listing several tickers are parsed.
+      const m = TICKER_RE.exec(line);
+      if (m && !keep.has(m[1])) continue;
+      if (line.includes('"tickers"')) {
         let e: Record<string, any>;
         try { e = JSON.parse(line); } catch { continue; }
         if (e.ticker && !keep.has(e.ticker)) continue;
@@ -154,7 +162,8 @@ async function stageMatch(): Promise<void> {
     if (prev) for (const t of (await tickersOf(prev)).keys()) keep.add(t);
     await restrictDay(rf, path.join(out, 'real', `md-${day}.jsonl.gz`), keep);
     fs.copyFileSync(tf, path.join(out, 'requote', path.basename(tf)));
-    const p = await pairDay(day, rf, tf, realT, twinT);
+    // Paired on the restricted day (the twin's contracts only): the same records for those contracts, far fewer lines.
+    const p = await pairDay(day, path.join(out, 'real', `md-${day}.jsonl.gz`), tf, realT, twinT);
     paired.push(p);
     console.log(`[twin] ${day}: contracts real ${p.realContracts} / twin ${p.twinContracts} / both ${p.both} (real 15m missing from the twin ${p.onlyReal15m}, twin-only ${p.onlyTwin}); minute quote vs real mid: ${p.quoteN} pts, off ${p.quoteMaeC.toFixed(2)}c (bias ${p.quoteBiasC.toFixed(2)}c), spread real ${p.spreadRealC.toFixed(2)}c twin ${p.spreadTwinC.toFixed(2)}c; index ${p.indexN} pts off ${p.indexMaeBps.toFixed(1)} bps (bias ${p.indexBiasBps.toFixed(1)}); results agree ${p.resultsAgree}/${p.results}`);
   }
@@ -236,7 +245,7 @@ export async function dayRows(file: string, day: string, src: string, results: R
 
 async function resultsOf(dir: string, days: string[]): Promise<Map<string, string>> {
   const r = new Map<string, string>();
-  for (const d of days) { const f = dayFile(dir, d); if (f) for await (const e of events(f)) if (e.k === 'result' && e.ticker && e.result) r.set(e.ticker, String(e.result)); }
+  for (const d of days) { const f = dayFile(dir, d); if (f) for await (const line of recordingLines(f)) { if (!line || !line.includes('"k":"result"')) continue; try { const e = JSON.parse(line); if (e.ticker && e.result) r.set(e.ticker, String(e.result)); } catch { /* a cut line */ } } }
   return r;
 }
 
@@ -251,6 +260,17 @@ async function stageFeatures(): Promise<void> {
     for (const d of days) { const f = dayFile(dir, d); if (f) rows.push(...(await dayRows(f, d, src, results))); }
     fs.writeFileSync(path.join(out, `features-${src}.json`), JSON.stringify(rows));
     console.log(`[twin] features ${src}: ${rows.length} contract lives over ${days.length} day(s)`);
+    // Per day (and, for the real side, the days around them, not judged: Nov 4, the depth model's fit days traded ~2.6x
+    // the compared days a minute), the activity features' means.
+    const extra = src === 'real' ? arg('extra-days', '').split(',').filter((d) => d && !days.includes(d)) : [];
+    const perDay = new Map<string, Row[]>();
+    for (const r of rows) perDay.set(r.day, [...(perDay.get(r.day) ?? []), r]);
+    for (const d of extra) { const f = dayFile(dir, d); if (f) perDay.set(`${d} (not judged)`, await dayRows(f, d, src, results)); }
+    const fi = (k: string) => FEATURES.indexOf(k as (typeof FEATURES)[number]);
+    for (const [d, rs] of perDay) {
+      const m = (k: string) => (rs.length ? rs.reduce((a, r) => a + (Number.isFinite(r.f[fi(k)]) ? r.f[fi(k)] : 0), 0) / rs.length : NaN).toFixed(2);
+      console.log(`[twin] ${src} ${d}: ${rs.length} lives, trades/min ${m('tradesPerMin')}, tradeSize ${m('tradeSize')}, topSize ${m('topSize')}, depth10 ${m('depth10')}, quote changes/min ${m('quoteChangesPerMin')}, followIx ${m('followIx')}, spread ${m('spreadC')}c`);
+    }
   }
 }
 
@@ -335,7 +355,7 @@ async function stageBacktest(): Promise<void> {
 
 /** The twin's days through the tally's fill-in (research/goLiveTally.ts fillDayFile), as the deep history plays them. */
 async function stageFill(): Promise<void> {
-  const { fillDayFile } = await import('./goLiveTally');
+  const { fillDayFile, depthSims } = await import('./goLiveTally');
   const { readDepthModel } = await import('./history/depthSim');
   const src = arg('src'), dst = arg('dst'), how = arg('how', 'depth') as 'depth' | 'worst' | 'hold' | 'requote';
   const depth = arg('depth-model') ? readDepthModel(arg('depth-model')) : undefined;
@@ -343,6 +363,11 @@ async function stageFill(): Promise<void> {
   fs.mkdirSync(dst, { recursive: true });
   for (const f of fs.readdirSync(src).filter((x) => x.startsWith('md-'))) await fillDayFile(path.join(src, f), path.join(dst, f), { how }, depth);
   console.log(`[twin] ${how} fill-in written for ${fs.readdirSync(dst).length} day(s)`);
+  if (depthSims.length) {
+    const t = depthSims.reduce((a, x) => ({ seconds: a.seconds + x.stats.seconds, trades: a.trades + x.stats.trades, sweepPrints: a.sweepPrints + x.stats.sweepPrints, flickers: a.flickers + x.stats.flickers }), { seconds: 0, trades: 0, sweepPrints: 0, flickers: 0 });
+    const perMin = (n: number) => (t.seconds ? ((60 * n) / t.seconds).toFixed(1) : '0');
+    console.log(`[twin] ${arg('dst')} simulator: ${Math.round(t.seconds / 60)} contract-minutes, trades ${perMin(t.trades)}/min (sweep prints ${perMin(t.sweepPrints)}), flickers ${perMin(t.flickers)}/min`);
+  }
 }
 
 async function stageVerdict(): Promise<void> {
@@ -386,6 +411,7 @@ async function stageVerdict(): Promise<void> {
     report.twins[src] = { auc: +a.toFixed(3), features: each, regimes, outcome: o, checks, pass };
     console.log(`[twin] ${src}: adversary AUC ${a.toFixed(3)} (0.5 = can't tell; pass <= 0.60) over ${real.length} real / ${tw.length} twin contract lives`);
     console.log(`[twin] ${src}: gives it away most: ${each.slice(0, 5).map((e) => `${e.name} ${e.auc} (real ${e.real}, twin ${e.twin})`).join('; ')}`);
+    console.log(`[twin] ${src}: every feature (AUC, real vs twin mean): ${each.map((e) => `${e.name} ${e.auc} ${e.real}/${e.twin}`).join('; ')}`);
     if (o) console.log(`[twin] ${src}: backtest P&L $${o.pnl.toFixed(2)} vs real $${o.realPnl.toFixed(2)}; windows ${o.traded} vs ${o.realTraded}; per-window diff $${o.meanDiff.toFixed(3)} [${o.lo.toFixed(3)}, ${o.hi.toFixed(3)}]; error $${o.rmse.toFixed(2)} (placebo $${placebo?.rmse.toFixed(2) ?? '?'}); corr ${o.corr.toFixed(2)}`);
     console.log(`[twin] ${src}: ${pass ? 'PASS' : 'FAIL'} (${Object.entries(checks).map(([k, v]) => `${k} ${v ? 'ok' : 'no'}`).join(', ')})`);
   }

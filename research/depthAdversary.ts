@@ -29,6 +29,8 @@ const SIZE = 10;
 const REFRESH_MS = 15_000;
 const LIFE_MS = 60_000;
 const MARKOUT_MS = 60_000;
+/** How long past its close a contract waits for its official result before it is settled from the recorded index. */
+const SETTLE_GRACE_MS = 90_000;
 /** No probe in a contract's last two minutes (the bot's own end-window rules take over there). */
 const END_MS = 120_000;
 
@@ -88,6 +90,18 @@ export async function probeDays(rec: string, days?: string[]): Promise<Adversary
     }
     if (e.tie || st.now - lastTick < 1000) continue;
     lastTick = st.now;
+    // Settlement from the recorded index when no official result was recorded (Nov 2: the recorder writes results only
+    // for record-only markets and paper's positions, so every probe read 0c settled): as the replay settles them.
+    for (const [tk, fs] of [...open]) {
+      const m = st.markets.get(tk);
+      if (!m || st.now < m.closeTime + SETTLE_GRACE_MS) continue;
+      const o = st.outcome(m);
+      if (!o) { if (st.now > m.closeTime + 30 * 60_000) open.delete(tk); continue; }
+      for (const f of fs) f.settled = r((f.side === 'bid' ? o.label - f.price : f.price - o.label) - f.fee / f.count);
+      open.delete(tk);
+      for (const [id, p] of [...resting]) if (p.ticker === tk) { resting.delete(id); probes.delete(p.coid); await ex.cancelOrder(id); }
+      ex.settle(tk, o.label === 1 ? 'yes' : 'no');
+    }
     // Only the days asked for are probed (the span between them is read for the books and contracts carried over).
     if (wanted.size && !wanted.has(dayOf(st.now))) continue;
     while (pending.length && pending[0].due <= st.now) {
@@ -158,7 +172,7 @@ export function probeStats(days: AdversaryDay[]): ProbeStat[] {
 
 /** real vs each fill-in, probe by probe: the settlement P&L a contract's difference and its day-bootstrap 90% band.
  *  A fill-in is "kinder" on a probe when the whole band is above zero (it pays the probe more than the real books). */
-export function compareProbes(real: AdversaryDay[], fills: Record<string, AdversaryDay[]>, draws = 400): Array<{ how: string; probe: Probe; real: ProbeStat; sim: ProbeStat; diffC: number; lo: number; hi: number; kinder: boolean }> {
+export function compareProbes(real: AdversaryDay[], fills: Record<string, AdversaryDay[]>, draws = 400): Array<{ how: string; probe: Probe; real: ProbeStat; sim: ProbeStat; diffC: number; lo: number; hi: number; mkDiffC: number; mkLo: number; mkHi: number; kinder: boolean }> {
   const out: ReturnType<typeof compareProbes> = [];
   let seed = 7;
   const u = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
@@ -167,16 +181,28 @@ export function compareProbes(real: AdversaryDay[], fills: Record<string, Advers
     const rs = probeStats(real.filter((d) => days.includes(d.day))), ss = probeStats(sim.filter((d) => days.includes(d.day)));
     for (const probe of PROBES) {
       const a = rs.find((x) => x.probe === probe)!, b = ss.find((x) => x.probe === probe)!;
-      const diffs: number[] = [];
+      // The bootstrap draws days; each day's sums are taken once (re-scoring every fill per draw timed out, Nov 2).
+      const sums = (set: AdversaryDay[], day: string) => {
+        const fs = set.find((x) => x.day === day)!.fills.filter((f) => f.probe === probe);
+        let mc = 0, mv = 0, sc = 0, sv = 0;
+        for (const f of fs) { if (f.markout !== undefined) { mc += f.count; mv += (f.markout - f.fee / f.count) * f.count; } if (f.settled !== undefined) { sc += f.count; sv += f.settled * f.count; } }
+        return { mc, mv, sc, sv };
+      };
+      const R = new Map(days.map((d) => [d, sums(real, d)])), S = new Map(days.map((d) => [d, sums(sim, d)]));
+      const score = (m: Map<string, ReturnType<typeof sums>>, pick: string[]) => { let mc = 0, mv = 0, sc = 0, sv = 0; for (const d of pick) { const x = m.get(d)!; mc += x.mc; mv += x.mv; sc += x.sc; sv += x.sv; } return { mk: mc ? (100 * mv) / mc : 0, se: sc ? (100 * sv) / sc : 0 }; };
+      const diffs: number[] = [], mks: number[] = [];
       for (let i = 0; i < draws; i++) {
         const pick = days.map(() => days[Math.floor(u() * days.length)]);
-        const ra = probeStats(pick.map((d) => real.find((x) => x.day === d)!)).find((x) => x.probe === probe)!;
-        const rb = probeStats(pick.map((d) => sim.find((x) => x.day === d)!)).find((x) => x.probe === probe)!;
-        diffs.push(rb.settledC - ra.settledC);
+        const ra = score(R, pick), rb = score(S, pick);
+        diffs.push(rb.se - ra.se); mks.push(rb.mk - ra.mk);
       }
-      diffs.sort((x, y) => x - y);
-      const lo = diffs[Math.floor(0.05 * diffs.length)] ?? 0, hi = diffs[Math.min(diffs.length - 1, Math.floor(0.95 * diffs.length))] ?? 0;
-      out.push({ how, probe, real: a, sim: b, diffC: r(b.settledC - a.settledC, 2), lo: r(lo, 2), hi: r(hi, 2), kinder: days.length >= 2 ? lo > 0 : b.settledC - a.settledC > 1 });
+      const band = (xs: number[]) => { xs.sort((x, y) => x - y); return [xs[Math.floor(0.05 * xs.length)] ?? 0, xs[Math.min(xs.length - 1, Math.floor(0.95 * xs.length))] ?? 0]; };
+      const [lo, hi] = band(diffs), [mkLo, mkHi] = band(mks);
+      // Kinder on settlement P&L, or on the 60 s markout (Nov 2: the depth fill-in's touch fills lost 0.07c where the real
+      // books' lost 1.14c, while settlement read 0 everywhere): a markout gap under half a cent is not counted.
+      const mkDiff = b.markoutC - a.markoutC;
+      const kinder = days.length >= 2 ? lo > 0 || (mkLo > 0 && mkDiff >= 0.5) : b.settledC - a.settledC > 1 || mkDiff > 1;
+      out.push({ how, probe, real: a, sim: b, diffC: r(b.settledC - a.settledC, 2), lo: r(lo, 2), hi: r(hi, 2), mkDiffC: r(mkDiff, 2), mkLo: r(mkLo, 2), mkHi: r(mkHi, 2), kinder });
     }
   }
   return out;
@@ -197,7 +223,7 @@ async function main() {
     const rows = compareProbes(real, rest);
     console.log(`[adversary] ${real.length} day(s) of real books; settlement P&L a contract in cents (fees in), 60 s markout, fills a contract-hour quoted`);
     for (const s of probeStats(real)) console.log(`  real     ${s.probe.padEnd(7)} ${String(s.perHour).padStart(6)}/h  markout ${String(s.markoutC).padStart(7)}c  settled ${String(s.settledC).padStart(7)}c  $${s.pnlUsd} (${s.n} fills)`);
-    for (const x of rows) console.log(`  ${x.how.padEnd(8)} ${x.probe.padEnd(7)} ${String(x.sim.perHour).padStart(6)}/h  markout ${String(x.sim.markoutC).padStart(7)}c  settled ${String(x.sim.settledC).padStart(7)}c  $${x.sim.pnlUsd} (${x.sim.n} fills) | vs real ${x.diffC >= 0 ? '+' : ''}${x.diffC}c [${x.lo}, ${x.hi}]${x.kinder ? '  KINDER THAN REAL' : ''}`);
+    for (const x of rows) console.log(`  ${x.how.padEnd(8)} ${x.probe.padEnd(7)} ${String(x.sim.perHour).padStart(6)}/h  markout ${String(x.sim.markoutC).padStart(7)}c  settled ${String(x.sim.settledC).padStart(7)}c  $${x.sim.pnlUsd} (${x.sim.n} fills) | vs real: settled ${x.diffC >= 0 ? '+' : ''}${x.diffC}c [${x.lo}, ${x.hi}], markout ${x.mkDiffC >= 0 ? '+' : ''}${x.mkDiffC}c [${x.mkLo}, ${x.mkHi}]${x.kinder ? '  KINDER THAN REAL' : ''}`);
     const kinder = rows.filter((x) => x.kinder);
     console.log(kinder.length ? `[adversary] broken: ${kinder.map((x) => `${x.how}/${x.probe}`).join(', ')} pay the probes more than the real books` : '[adversary] no probe earns more on a fill-in than on the real books');
     const out = cliArg('out', '');

@@ -94,6 +94,10 @@ export interface PriceMatch {
   firstHour?: PriceMatch;
 }
 export interface ReplayCheck {
+  /** REPLAY_DUMP: the chosen markets fill by fill on both sides (lines to print). */
+  dump?: string[];
+  /** Both sides scored only on markets neither first traded while paper was down (its restarts and deploys). */
+  upOnly?: { downs: Array<{ from: string; to: string; minutes: number }>; excluded: number; replay: number; paper: number; replayMarkets: number; paperMarkets: number };
   days: string[]; bankroll: number; exitPolicy: string;
   /** Whether the replay's equity guard started from the bot's, and the override it ran with. */
   guardSeeded: boolean; killOverride: boolean;
@@ -180,9 +184,12 @@ export type PaperSide = SideSummary & {
 
 /** What the check reads from the audit log (crypto only), each with its time. */
 export interface AuditRecords {
-  fills: Array<{ t: number; coid?: string; count: number; fee: number }>;
+  fills: Array<{ t: number; coid?: string; count: number; fee: number; ticker?: string; side?: string; price?: number }>;
   orders: Map<string, { purpose?: string; why?: string }>;
   settlements: Array<{ t: number; pnl: number; ticker?: string }>;
+  /** When paper was not trading: from its last audit record before a start to its first decision after it (Nov 4: the
+   *  replay runs a stretch as one start and traded through paper's restarts and deploys). */
+  downs: Array<{ from: number; to: number }>;
   /** The bot's starts, with the settings it logged (bot/main.ts: publicConfig). */
   startups: Array<{ t: number; config: Record<string, unknown> }>;
   diagnoses: Array<{ t: number; markets: number; gated: number; edged?: number; reasons: Record<string, number> }>;
@@ -213,15 +220,26 @@ const numAt = (line: string, key: string): number | undefined => {
  *  start before `prices.to`, each such start clearing what came before). */
 export async function readAudit(auditDir: string, days: string[], prices?: { from?: number; to?: number }): Promise<AuditRecords> {
   const want = new Set(days);
-  const a: AuditRecords = { fills: [], orders: new Map(), settlements: [], startups: [], diagnoses: [], modelSwaps: [], hotSwaps: [], benchEvents: [], rejects: [], refills: [], prices: new Map() };
+  const a: AuditRecords = { downs: [], fills: [], orders: new Map(), settlements: [], startups: [], diagnoses: [], modelSwaps: [], hotSwaps: [], benchEvents: [], rejects: [], refills: [], prices: new Map() };
   const files = fs.existsSync(auditDir) ? fs.readdirSync(auditDir).filter((f) => /^audit-\d{4}-\d{2}-\d{2}.*\.jsonl(\.gz)?$/.test(f) && want.has(f.slice(6, 16))).sort() : [];
   const whyOf = new Map<string, string>();
+  let lastSeen = NaN;
   for (const f of files) {
     const raw = fs.createReadStream(path.join(auditDir, f));
     const rl = readline.createInterface({ input: f.endsWith('.gz') ? raw.pipe(zlib.createGunzip()) : raw, crlfDelay: Infinity });
     for await (const line of rl) {
       const head = line.slice(0, 160);
       const decision = head.includes('"kind":"decision"');
+      {
+        const ts = /"ts":"([^"]+)"/.exec(head)?.[1];
+        const tt = ts ? Date.parse(ts) : NaN;
+        if (Number.isFinite(tt)) {
+          const open = a.downs[a.downs.length - 1];
+          if (head.includes('"kind":"startup"')) a.downs.push({ from: lastSeen, to: NaN });
+          else if (decision && open && !Number.isFinite(open.to)) open.to = tt;
+          lastSeen = tt;
+        }
+      }
       // The decision that planned an exit names why (deploy/pnl_report.py reads it the same way); so does paper's training
       // trade or exploration entry.
       const exitPlan = decision && (line.includes('"purpose":"exit"') || line.includes('"why":"train (paper)') || line.includes('"why":"explore'));
@@ -294,7 +312,7 @@ export async function readAudit(auditDir: string, days: string[], prices?: { fro
       if (r.kind === 'fill') {
         const fl = d.fill ?? {};
         if (isTennis(String(fl.ticker ?? ''))) continue;
-        a.fills.push({ t, coid: d.clientOrderId ?? fl.clientOrderId, count: Number(fl.count) || 0, fee: Number(d.fee) || 0 });
+        a.fills.push({ t, coid: d.clientOrderId ?? fl.clientOrderId, count: Number(fl.count) || 0, fee: Number(d.fee) || 0, ticker: typeof fl.ticker === 'string' ? fl.ticker : undefined, side: fl.side ?? d.side, price: Number(fl.price ?? d.price) });
         continue;
       }
       // settlement: realized P&L of the market (fees included).
@@ -306,6 +324,97 @@ export async function readAudit(auditDir: string, days: string[], prices?: { fro
 }
 
 /** What paper did in [from, to). */
+/** Paper's down windows in the stretch, and both sides' P&L on the markets neither first traded in one. */
+export function upTimeScore(r: { trades: Array<{ ticker: string; closeTs: number; pnl: number }>; fillLog?: Array<{ t: number; ticker: string }> }, a: AuditRecords, from: number, to: number): NonNullable<ReplayCheck['upOnly']> {
+  const downs = a.downs.filter((d) => Number.isFinite(d.from) && d.to > from && d.from < to).map((d) => ({ from: Math.max(from, d.from), to: Number.isFinite(d.to) ? Math.min(to, d.to) : to }));
+  const isDown = (t: number) => downs.some((d) => t >= d.from && t < d.to);
+  const first = new Map<string, number>();
+  const see = (tk: string | undefined, t: number) => { if (tk && t >= from && t < to && !(first.get(tk)! <= t)) first.set(tk, t); };
+  for (const f of r.fillLog ?? []) see(f.ticker, f.t);
+  for (const f of a.fills) see(f.ticker, f.t);
+  const bad = new Set([...first].filter(([, t]) => isDown(t)).map(([tk]) => tk));
+  let replay = 0, paper = 0, rm = 0, pm = 0;
+  for (const t of r.trades) if (t.closeTs >= from && t.closeTs < to && !bad.has(t.ticker)) { replay += t.pnl; rm++; }
+  for (const s2 of a.settlements) if (s2.t >= from && s2.t < to && s2.ticker && !bad.has(s2.ticker)) { paper += s2.pnl; pm++; }
+  return { downs: downs.map((d) => ({ from: new Date(d.from).toISOString(), to: new Date(d.to).toISOString(), minutes: Math.round((d.to - d.from) / 60_000) })), excluded: bad.size, replay: +replay.toFixed(2), paper: +paper.toFixed(2), replayMarkets: rm, paperMarkets: pm };
+}
+
+/** REPLAY_PEEK (Nov 4: paper made no taker entry in 24 h where the replay made 27): paper's own audit records for a market
+ *  over a window, compacted (kind, time, prices, the plan's orders and any reason fields), to see what held it back. Spec:
+ *  `TICKER@FROM/TO` (ISO times), several space or comma separated. */
+export async function auditPeek(auditDir: string, days: string[], spec: string): Promise<string[]> {
+  const asks = spec.split(/[\s,]+/).filter(Boolean).map((x) => { const [tk, w] = x.split('@'); const [f, t] = (w ?? '').split('/'); return { tk, from: Date.parse(f), to: Date.parse(t) }; }).filter((x) => x.tk && Number.isFinite(x.from) && Number.isFinite(x.to));
+  const want = new Set(days), out: string[] = [];
+  const kinds: Record<string, number> = {}, why: Record<string, number> = {};
+  const files = fs.existsSync(auditDir) ? fs.readdirSync(auditDir).filter((f) => /^audit-\d{4}-\d{2}-\d{2}.*\.jsonl(\.gz)?$/.test(f) && want.has(f.slice(6, 16))).sort() : [];
+  const pick = (d: Record<string, any>) => {
+    const o: Record<string, unknown> = {};
+    for (const k of ['event', 'pYes', 'fv', 'q', 'bid', 'ask', 'position', 'edge', 'style', 'newRisk', 'fastMove', 'minSidePrice', 'maxContracts', 'blocked', 'reason', 'reasons', 'gate', 'why', 'purpose', 'side', 'price', 'count', 'tauSec', 'kind', 'cadence', 'entryBlock', 'strike', 'cap', 'strikeSource', 'session', 'sessionRisk', 'modelShift', 'pMarket', 'edgeAdd', 'regimeMult'])
+      if (d[k] !== undefined) o[k] = typeof d[k] === 'number' ? +Number(d[k]).toFixed(4) : d[k];
+    if (Array.isArray(d.place)) o.place = d.place.map((p: Record<string, any>) => `${p.purpose}/${p.side}@${p.price}x${p.count}${p.timeInForce === 'immediate_or_cancel' ? ' IOC' : ''} ${String(p.why ?? '').slice(0, 50)}`);
+    if (Array.isArray(d.cancel)) o.cancel = d.cancel.length;
+    if (d.intent) o.intent = `${d.intent.purpose}/${d.intent.side}@${d.intent.price}x${d.intent.count}`;
+    return JSON.stringify(o).slice(0, 600);
+  };
+  for (const f of files) {
+    const raw = fs.createReadStream(path.join(auditDir, f));
+    const rl = readline.createInterface({ input: f.endsWith('.gz') ? raw.pipe(zlib.createGunzip()) : raw, crlfDelay: Infinity });
+    for await (const line of rl) {
+      const tk = /"ticker":"([^"]+)"/.exec(line.slice(0, 600))?.[1];
+      if (!tk) continue;
+      const ask = asks.find((x) => x.tk === tk);
+      if (!ask) continue;
+      let r: { kind?: string; ts?: string; data?: Record<string, any> };
+      try { r = JSON.parse(line); } catch { continue; }
+      const t = Date.parse(r.ts ?? '');
+      if (!(t >= ask.from && t < ask.to)) continue;
+      const k = `${r.kind}${r.data?.event ? `/${r.data.event}` : ''}`;
+      kinds[`${tk} ${k}`] = (kinds[`${tk} ${k}`] ?? 0) + 1;
+      // Why each decision did or did not plan (all of them, not only the printed ones): its cadence and entry block.
+      if (r.kind === 'decision') { const w = `${tk} cadence=${r.data?.cadence ?? 'none'} block=${String(r.data?.entryBlock ?? 'none').replace(/[\d.]+/g, '#')} place=${(r.data?.place ?? []).length ? 'some' : 'none'}`; why[w] = (why[w] ?? 0) + 1; }
+      // Every non-decision record, and one decision record in 20 (a busy market makes one a second).
+      if (r.kind === 'decision' && kinds[`${tk} ${k}`] % 20 !== 1 && !line.includes('"purpose":"entry"')) continue;
+      out.push(`  ${r.ts?.slice(5, 19)} ${tk} ${k} ${pick(r.data ?? {})}`);
+    }
+  }
+  return [`paper audit peek (${spec}): records by kind ${JSON.stringify(kinds)}`, `  decisions by cadence and entry block: ${JSON.stringify(why)}`, ...out.slice(0, 400)];
+}
+
+/** REPLAY_DUMP (Nov 4, the $246 gap): markets fill by fill on both sides. The spec is space separated: `mid` (first fill on
+ *  either side at 30-70c, YES scale), `settle:YYYY-MM-DDTHH` (markets settling in that UTC hour), or tickers. */
+export function marketDump(spec: string, r: { trades: Array<{ ticker: string; closeTs: number; pnl: number }>; fillLog?: Array<{ t: number; ticker: string; side: string; price: number; count: number; taker: boolean; coid?: string }> }, a: AuditRecords, from: number, to: number): string[] {
+  const inside = (t: number) => t >= from && t < to;
+  const purpose = (coid?: string) => (!coid ? 'other' : coid.includes('-exit-') ? coid.slice(coid.indexOf('-exit-') + 1) : /-(quote|entry|exit)(?:-tp)?$/.exec(coid)?.[1] ?? 'other');
+  type F = { t: number; side: string; price: number; count: number; tag: string };
+  const rep = new Map<string, F[]>(), pap = new Map<string, F[]>();
+  for (const f of r.fillLog ?? []) if (inside(f.t)) (rep.get(f.ticker) ?? rep.set(f.ticker, []).get(f.ticker)!).push({ t: f.t, side: f.side, price: f.price, count: f.count, tag: `${purpose(f.coid)}${f.taker ? ' taker' : ''}` });
+  for (const f of a.fills) {
+    if (!inside(f.t) || !f.ticker) continue;
+    const o = f.coid ? a.orders.get(f.coid) : undefined;
+    (pap.get(f.ticker) ?? pap.set(f.ticker, []).get(f.ticker)!).push({ t: f.t, side: String(f.side ?? '?'), price: Number(f.price), count: f.count, tag: `${o?.purpose ?? 'other'}${o?.why ? ` (${o.why.slice(0, 40)})` : ''}` });
+  }
+  const rPnl = new Map<string, { pnl: number; close: number }>(), pPnl = new Map<string, number>();
+  for (const t of r.trades) if (inside(t.closeTs)) rPnl.set(t.ticker, { pnl: t.pnl, close: t.closeTs });
+  for (const s of a.settlements) if (inside(s.t) && s.ticker) pPnl.set(s.ticker, (pPnl.get(s.ticker) ?? 0) + s.pnl);
+  const yes = (f?: F) => (f ? f.price : NaN);
+  const tickers = new Set<string>([...rep.keys(), ...pap.keys(), ...rPnl.keys(), ...pPnl.keys()]);
+  const want = spec.split(/[\s,]+/).filter(Boolean);
+  const chosen = [...tickers].filter((tk) => want.some((w) => {
+    if (w === 'mid') { const a1 = yes(rep.get(tk)?.[0]), b1 = yes(pap.get(tk)?.[0]); return (a1 >= 0.3 && a1 <= 0.7) || (b1 >= 0.3 && b1 <= 0.7); }
+    if (w.startsWith('settle:')) { const c = rPnl.get(tk)?.close; return c !== undefined && new Date(c).toISOString().startsWith(w.slice(7)); }
+    return w === tk;
+  })).sort();
+  const hm = (t: number) => new Date(t).toISOString().slice(5, 19).replace('T', ' ');
+  const fl = (xs: F[] | undefined) => (xs?.length ? xs.slice(0, 14).map((f) => `${hm(f.t)} ${f.side} ${f.price.toFixed(2)}x${Math.round(f.count)} ${f.tag}`).join('; ') + (xs.length > 14 ? `; +${xs.length - 14} more` : '') : 'none');
+  const out = [`market dump (${spec}): ${chosen.length} markets | replay P&L ${chosen.reduce((s2, tk) => s2 + (rPnl.get(tk)?.pnl ?? 0), 0).toFixed(2)} | paper ${chosen.reduce((s2, tk) => s2 + (pPnl.get(tk) ?? 0), 0).toFixed(2)}`];
+  for (const tk of chosen) {
+    out.push(`  ${tk}: replay ${(rPnl.get(tk)?.pnl ?? 0).toFixed(2)} / paper ${(pPnl.get(tk) ?? 0).toFixed(2)}`);
+    out.push(`    replay fills: ${fl(rep.get(tk))}`);
+    out.push(`    paper fills:  ${fl(pap.get(tk))}`);
+  }
+  return out;
+}
+
 export function paperSummary(a: AuditRecords, from = -Infinity, to = Infinity): PaperSide {
   const out: PaperSide = { ...empty(), gateShare: null, lastFillAt: null, extra: { train: 0, explore: 0 }, quiet: { diagnoses: 0, lastAt: null, reasons: {} }, quietHours: {}, takeProfitBench: { scored: 0, netUsd: 0, benchedAt: null, byMarket: {} }, rejected: {} };
   const inside = (t: number) => t >= from && t < to;
@@ -663,7 +772,8 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     const g = gateAt(gateNow, from);
     gateFile = path.join(seedDir, 'accuracy_gate.json');
     fs.writeFileSync(gateFile, JSON.stringify(g));
-    seeded.push(`accuracy gate (${Object.values(g.rows).reduce((a, r) => a + r.length, 0)} scored snapshots)`);
+    const nRows = Object.values(g.rows).reduce((a, r) => a + r.length, 0);
+    seeded.push(`accuracy gate (${nRows} scored snapshots${nRows ? '' : ': none left from before the stretch, the warm-up fills it'})`);
   }
   const follow = o.ownBench ? undefined : benchTimeline(audit.benchEvents, from, to, startBenched);
   const startMs = from - (o.warmupHours ?? 8) * HOUR;
@@ -688,7 +798,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     takeProfitBench: { enforce: S.takeProfitBench, rule: curveBench, stateFile: benchFile, ...(follow ? { follow } : {}) }, accuracyGateFile: gateFile, startMs, tradeFromMs: from,
     dailyGoalUsd: cfg.vault.dailyGoalUsd, equityGuardFile: guardFile, killOverride, refillUsd: cfg.paperBankrollUsd, sessionEdge: cfg.sessionEdge, onEval: match.onEval, makerMarkouts: o.makerMarkouts,
     volProfile: models.volProfile, applyVolSeasonality: Boolean(models.volProfile), volModel: models.volModel, fillModel: models.fillModel, calendar: models.calendar,
-    taNet: true, trials: models.trials, marketContext: true, ...(o.tickPhaseMs !== undefined ? { tickPhaseMs: o.tickPhaseMs } : {}), ...(seed ? { seedCandles: seed } : {}),
+    taNet: true, trials: models.trials, marketContext: true, fillLog: true, ...(o.tickPhaseMs !== undefined ? { tickPhaseMs: o.tickPhaseMs } : {}), ...(seed ? { seedCandles: seed } : {}),
   });
   fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(seedDir, { recursive: true, force: true });
@@ -718,6 +828,8 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   const x = r.exits;
   if (x.huntActivations || x.wallAsks || x.quotaSnipes) replay.hunt = `hunt mode in the replay: ${x.huntActivations} activations, ${x.ratchetTriggers} stop triggers, ${x.gaps} gaps, ${x.huntProfitTakes} profit takes, ${x.lockSales} lock sales, ${x.lockHolds} lock holds, ${x.wallAsks} wall asks (${x.wallFills.toFixed(0)} contracts filled on them), ${x.quotaSnipes} quota snipes (${x.quotaSnipeContracts.toFixed(0)} contracts)${x.floorArms || x.floorSales ? `, ${x.floorArms ?? 0} quota floors armed, ${x.floorSales ?? 0} floor sale calls` : ''}`;
   const paper = paperSummary(audit, from, to);
+  const dump = process.env.REPLAY_DUMP ? marketDump(process.env.REPLAY_DUMP, r, audit, from, to) : undefined;
+  const upOnly = upTimeScore(r, audit, from, to);
   const minHours = o.minHours ?? 3;
   const checked = hours >= minHours;
   const v = verdict(replay, paper);
@@ -728,7 +840,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     modelSwaps: audit.modelSwaps.filter(inside).map((t) => new Date(t).toISOString()),
     hotSwaps: audit.hotSwaps.filter((x) => x.t >= from).map((x) => ({ t: new Date(x.t).toISOString(), kind: x.kind })),
     refills: { paper: audit.refills.filter((x) => inside(x.t)).map((x) => ({ t: new Date(x.t).toISOString(), usd: x.usd })), replay: (r.refills ?? []).filter((x) => inside(x.t)).map((x) => ({ t: new Date(x.t).toISOString(), usd: x.usd })) },
-    replay, paper, prices: match.summary(), makerBufferPaper, models: models.used, gates: cfg.probation.mode, benched, seeded,
+    ...(dump ? { dump } : {}), upOnly, replay, paper, prices: match.summary(), makerBufferPaper, models: models.used, gates: cfg.probation.mode, benched, seeded,
     benchFollowed: follow ? { benched: follow.benched, events: follow.events.map((e) => ({ t: new Date(e.t).toISOString(), benched: e.benched })) } : null,
     ...v, checked, close: checked && v.close,
     why: checked ? v.why : [`the stretch on one start of the paper bot is ${hours.toFixed(1)} h (from ${new Date(from).toISOString()}), the check needs ${minHours} h`],
@@ -775,6 +887,11 @@ async function main(): Promise<void> {
   }
   const days = arg('days', '').split(',').map((x) => x.trim()).filter(Boolean);
   if (!days.length) throw new Error('--days YYYY-MM-DD[,YYYY-MM-DD...] is required');
+  if (process.env.REPLAY_PEEK && process.env.REPLAY_PEEK_ONLY) {
+    // Paper's records only, no replay (minutes instead of two hours).
+    for (const l of await auditPeek(arg('audit', 'data/audit'), days, process.env.REPLAY_PEEK)) console.log(l.slice(0, 900));
+    return;
+  }
   const seedOut = arg('fetch-seed', '');
   if (process.argv.includes('--plan') || seedOut) {
     // Only the audit log is read: prints the recorded days the stretch and its warm-up need, or fetches the spot candles
@@ -860,6 +977,13 @@ async function main(): Promise<void> {
   // began priced paper only from then on.
   if (res.hotSwaps) console.log(`models the bot hot-swapped since the stretch began: ${res.hotSwaps.length ? res.hotSwaps.map((x) => `${x.kind} ${hm(x.t)}`).join(', ') : 'none'}`);
   console.log(`hourly P&L correlation ${res.hourCorr === null ? 'n/a' : res.hourCorr.toFixed(2)} | total gap ${pct(res.pnlGap)}`);
+  if (res.upOnly) {
+    const u = res.upOnly;
+    console.log(`paper down in the stretch (last record before a start .. first decision after it): ${u.downs.length ? u.downs.map((d) => `${d.from.slice(5, 16)}-${d.to.slice(11, 16)} (${d.minutes} min)`).join(', ') : 'never'}`);
+    console.log(`while paper was up (markets first traded in a down window left out on both sides: ${u.excluded}): replay ${f(u.replay)} over ${u.replayMarkets} markets | paper ${f(u.paper)} over ${u.paperMarkets}`);
+  }
+  for (const l of res.dump ?? []) console.log(l.slice(0, 1500));
+  if (process.env.REPLAY_PEEK) for (const l of await auditPeek(arg('audit', 'data/audit'), res.days, process.env.REPLAY_PEEK)) console.log(l.slice(0, 900));
   console.log(!res.checked ? `VERDICT not checked yet: ${res.why.join('; ')}` : res.close ? 'VERDICT close: sweep results can count' : `VERDICT not close: ${res.why.join('; ')}`);
   console.log(`peak memory ${(process.resourceUsage().maxRSS / 1024).toFixed(0)} MB`);
 }
