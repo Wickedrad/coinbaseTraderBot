@@ -176,11 +176,19 @@ def main():
     ap.add_argument("--placebos", type=int, default=40)
     ap.add_argument("--cap", type=int, default=16, help="most child weeks on one parent week (the warp's stretch limit)")
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 2)
+    ap.add_argument("--series", default="BTC.D", help="series name in --data (BTC.D = TradingView; BTCD_SPLICED = per-coin rebuild before 2018, TradingView after)")
+    ap.add_argument("--parent-start", default="2016-01-01", help="first week of the 2016-17 parent (Steven 2026-11-02: the bottom of the 2016 waterfall)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
-    W = weekly(load(a.data, "BTC.D"))
-    PARENTS = {"2016-01..2018-03": ("2016-01-01", "2018-03-01"), "2016-01..2018-01-15": ("2016-01-01", "2018-01-15")}
+    PS16 = pd.Timestamp(a.parent_start)
+    PS15 = PS16 - pd.Timedelta(weeks=30)
+    lab = lambda t: t.strftime("%Y-%m") if t.day == 1 else t.strftime("%Y-%m-%d")
+    L16, L15 = lab(PS16), lab(PS15)
+    S16, S15 = PS16.strftime("%Y-%m-%d"), PS15.strftime("%Y-%m-%d")
+    W = weekly(load(a.data, a.series))
+    print(f"series {a.series}, parent start {a.parent_start}")
+    PARENTS = {f"{L16}..2018-03": (S16, "2018-03-01"), f"{L16}..2018-01-15": (S16, "2018-01-15")}
     parents, pidx = {}, {}
     for k, (fr, to) in PARENTS.items():
         x = W[(W.index >= pd.Timestamp(fr)) & (W.index < pd.Timestamp(to))]
@@ -209,7 +217,7 @@ def main():
         return cidx[min(i, len(cidx) - 1)].date().isoformat() if i is not None else None
 
     # stage tables per setting (printed for the reference setting: round 2's best, logit fixed map, shape 3)
-    ref = next(r for r in res if r["cfg"]["parent"] == "2016-01..2018-03" and r["cfg"]["space"] == "logit" and r["cfg"]["dynmap"] == 0 and r["cfg"]["wshape"] == 3.0)
+    ref = next(r for r in res if r["cfg"]["parent"] == f"{L16}..2018-03" and r["cfg"]["space"] == "logit" and r["cfg"]["dynmap"] == 0 and r["cfg"]["wshape"] == 3.0)
     print(f"reference: {lab(ref['cfg'])}")
     for row in ref["rows"]:
         k = ref["cfg"]["parent"]
