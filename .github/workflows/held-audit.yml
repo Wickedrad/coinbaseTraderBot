@@ -1,0 +1,49 @@
+name: Held-to-settlement audit
+
+# Paper's positions that rode to settlement: were they ever in profit after fees, how deep before settling, and what a
+# take-profit at +x c (with and without the fair-value confirm) would have done (deploy/held_losers_audit.py; thread
+# "Rework benched features to $4.50/h", daily health check ask Nov 4). Reads the audit archive on Google Drive only.
+# Prints aggregates and posts them on the commit (public repository).
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Most recent archived audit days to read'
+        required: false
+        default: '7'
+  push:
+    branches: ['claude/project-thread-g22fyz']
+    paths: ['deploy/held_losers_audit.py', '.github/workflows/held-audit.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Get the audit days from Drive
+        run: |
+          N=${{ inputs.days || '7' }}
+          mkdir -p data/audit
+          rclone lsf gdrive:kalshi-bot-archive/audit --files-only | sed -nE 's/^audit-([0-9]{4}-[0-9]{2}-[0-9]{2}).*/\1/p' | sort -u | tail -n "$N" > "$RUNNER_TEMP/days.txt"
+          echo "audit days: $(paste -sd, "$RUNNER_TEMP/days.txt")"
+          while read -r d; do bash deploy/drive_lab.sh audit "$d" data/audit; done < "$RUNNER_TEMP/days.txt"
+          for f in data/audit/*.gz; do [ -f "$f" ] && case "$f" in *.jsonl.gz) ;; *) gunzip -f "$f" ;; esac; done 2>/dev/null || true
+          ls data/audit | head -20; du -sh data/audit
+      - name: Audit
+        run: |
+          { echo "days: $(paste -sd, "$RUNNER_TEMP/days.txt")"; python3 deploy/held_losers_audit.py data/audit 2>&1; } | tee "$RUNNER_TEMP/out.txt" | tail -60
+      - name: Post on the commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "Held-to-settlement audit, run ${{ github.run_id }}"; echo; echo '```'; tail -80 "$RUNNER_TEMP/out.txt" 2>/dev/null; echo '```'; } > "$RUNNER_TEMP/c.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/c.md" --silent || echo "could not post"
