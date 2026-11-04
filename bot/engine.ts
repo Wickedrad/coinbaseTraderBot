@@ -423,7 +423,9 @@ export class Engine {
 
   constructor(private readonly d: EngineDeps) {
     this.now = d.now ?? Date.now;
-    const sf = (k: string) => (d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, `streak_${k}.json`) : undefined);
+    // The streak scales measure the model's calibration on settled entries: learned state, so live reads and extends the same
+    // files paper does (DATA_DIR, not the live book's folder) and sizes exactly as paper would at the switch.
+    const sf = (k: string) => (d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.dataDir, `streak_${k}.json`) : undefined);
     this.streak = { crypto: new StreakScaler(DEFAULT_STREAK, sf('crypto')), tennis: new StreakScaler(DEFAULT_STREAK, sf('tennis')) };
     this.cadence = new CadenceGate(d.cfg.strategy);
     this.volFc = new VolForecaster(d.cfg.strategy.volModel ? d.volModel : undefined);
@@ -907,9 +909,12 @@ export class Engine {
     let c = this.fCaps[book];
     if (!c || now - c.at >= 3_600_000 || now < c.at) {
       const rows: Array<{ ts: number; ticker: string; cost: number; count: number; won: boolean; book?: string }> = [];
-      try {
-        const file = path.join(this.d.cfg.bookDir ?? this.d.cfg.dataDir, 'trades.jsonl');
-        if (fs.existsSync(file)) {
+      // The measured edge is learned state: live reads paper's settled entries (DATA_DIR) as well as its own book's, so a
+      // switch to live keeps paper's cap instead of starting uncapped on an empty history.
+      const files = [...new Set([path.join(this.d.cfg.dataDir, 'trades.jsonl'), path.join(this.d.cfg.bookDir ?? this.d.cfg.dataDir, 'trades.jsonl')])];
+      for (const file of files) {
+        try {
+          if (!fs.existsSync(file)) continue;
           // Only the newest ~4 MB is read (never the whole file: it only grows).
           const fd = fs.openSync(file, 'r');
           try {
@@ -918,8 +923,8 @@ export class Engine {
             fs.readSync(fd, buf, 0, buf.length, start);
             for (const line of buf.toString('utf8').split('\n')) { try { if (line) rows.push(JSON.parse(line)); } catch { /* partial first line */ } }
           } finally { fs.closeSync(fd); }
-        }
-      } catch { /* unreadable: no cap */ }
+        } catch { /* unreadable: skipped */ }
+      }
       const trades = binaryTrades(rows, book).map((t) => ({ ...t, w: recencyWeight(t.ts, now, of.halfLifeDays) }));
       c = { at: now, rep: optimalF(trades, { quantile: of.quantile, minTrades: of.minTradesKalshi, horizon: 100 }) };
       this.fCaps[book] = c;
