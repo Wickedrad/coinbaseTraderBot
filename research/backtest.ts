@@ -122,7 +122,7 @@ export interface ExitStats {
 export interface SessionBreakdown { windows: number; pnl: number; contracts: number; fees: number }
 
 /** One traded contract (a market in which a position was taken), settled. */
-export interface TradeResult { ticker: string; closeTs: number; pnl: number; contracts: number; kind: string }
+export interface TradeResult { ticker: string; closeTs: number; pnl: number; contracts: number; kind: string; /** The market's first fill (YES-scale price), the entry-type breakdown. */ first?: { side: 'bid' | 'ask'; price: number } }
 
 export interface BacktestResult {
   exitPolicy: ExitPolicyName;
@@ -493,7 +493,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     }
     return Number.isFinite(ofCache.cap) ? Math.max(ofCache.cap, o.paperFloor * orderFrac) : ofCache.cap;
   };
+  const firstFill = new Map<string, { side: 'bid' | 'ask'; price: number }>();
   ex.on('fill', (f) => {
+    if (!firstFill.has(f.ticker)) firstFill.set(f.ticker, { side: f.side, price: f.price });
     const bookAfter = pos.applyFill({ ticker: f.ticker, side: f.side, count: f.count, price: f.price, fee: f.fee ?? 0 }, { closeTs: closeOf.get(f.ticker) });
     pacerAt(st.now).onFill(f, f.fee ?? 0, bookAfter, st.now);
     const w = closeOf.get(f.ticker)!;
@@ -636,7 +638,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
             pos.settle(m.ticker, result, st.now);
             pacer?.onSettled(m.ticker, p.realized ?? 0, st.now);
             const traded = res.windows.get(m.closeTime)?.contracts ?? 0;
-            if (traded > 0) res.trades.push({ ticker: m.ticker, closeTs: m.closeTime, pnl: p.realized ?? 0, contracts: traded, kind: m.kind });
+            if (traded > 0) res.trades.push({ ticker: m.ticker, closeTs: m.closeTime, pnl: p.realized ?? 0, contracts: traded, kind: m.kind, first: firstFill.get(m.ticker) });
+            firstFill.delete(m.ticker);
             const b = res.windows.get(m.closeTime) ?? { pnl: 0, contracts: 0, fees: 0 };
             b.pnl += p.realized ?? 0;
             res.windows.set(m.closeTime, b);

@@ -510,3 +510,11 @@ test('replay check: the luck test holds paper within 2 standard deviations of th
   // Test 'pct' on request.
   assert.equal(nearbyVerdict(runs, paper, { stretch, prices, history: earlier, test: 'pct' }).close, true);
 });
+
+test('replay check: entry bands split first fills by side and YES-scale price', async () => {
+  const { entryBand } = await import('../research/replayCheck');
+  assert.equal(entryBand('ask', 0.75), 'ask>0.70');
+  assert.equal(entryBand('bid', 0.2), 'bid<0.30');
+  assert.equal(entryBand('bid', 0.5), 'bid 0.30-0.70');
+  assert.equal(entryBand(undefined, 0.5), 'unknown');
+});
