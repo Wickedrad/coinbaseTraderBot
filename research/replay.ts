@@ -57,7 +57,7 @@ export type LineFilter = (kind: string, line: string) => boolean;
 const LINE_HEAD = /^\{"t":(-?\d+(?:\.\d+)?),"k":"([a-z_]+)"/;
 
 async function* lines(file: string, keep?: LineFilter): AsyncGenerator<RecEvent> {
-  const rl = file.endsWith('.gz') ? recordingLines(file) : readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+  const rl = recordingLines(file);
   for await (const line of rl) {
     if (!line) continue;
     if (keep) {

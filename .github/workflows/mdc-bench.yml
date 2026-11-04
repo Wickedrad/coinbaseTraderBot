@@ -1,0 +1,104 @@
+name: Compact recordings benchmark
+
+# Measures the lossless compact recording format (.mdc, bot/marketdata/compactRecording.ts) against the bot's gzip and
+# whole-day zstd/xz on real days pulled from Google Drive (gdrive:kalshi-bot-archive, RCLONE_CONF). Reads no server.
+# Prints sizes and timings only (the repo is public: no recordings leave the runner, no artifacts). The summary is also
+# posted as a commit comment on the commit that ran.
+
+on:
+  push:
+    branches: [claude/project-thread-eb1or9]
+    paths: ['.github/workflows/mdc-bench.yml', 'bot/marketdata/compactRecording.ts', 'scripts/mdc.ts']
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Days to measure, comma separated (empty = the two newest days on Drive)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mdc-bench
+  cancel-in-progress: true
+
+env:
+  DRIVE_ROOT: gdrive:kalshi-bot-archive
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Tools
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF secret is not set"; exit 1; fi
+          sudo apt-get install -y -qq rclone zstd xz-utils pigz >/dev/null
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
+          npm i -g tsx@4 --silent >/dev/null 2>&1
+          node -e "if(typeof require('zlib').zstdCompressSync!=='function'){console.error('node '+process.version+' has no zstd');process.exit(1)}"
+          echo "node $(node -v), zstd $(zstd -V | head -1)"
+      - name: Measure
+        env:
+          DAYS_IN: ${{ inputs.days }}
+        run: |
+          set -euo pipefail
+          D=$RUNNER_TEMP/data; OUT=$RUNNER_TEMP/summary.md; mkdir -p "$D/recordings"
+          if [ -n "${DAYS_IN:-}" ]; then DAYS=$DAYS_IN; else
+            DAYS=$(rclone lsf "$DRIVE_ROOT/recordings" --files-only | grep -E '^md-[0-9-]{10}\.jsonl\.gz$' | sort | tail -1 | sed -E 's/^md-(.{10}).*/\1/' | paste -sd, -)
+          fi
+          echo "## Compact recordings benchmark ($(date -u '+%Y-%m-%d %H:%M UTC'))" > "$OUT"
+          echo "days: $DAYS (runner: $(nproc) cores)" >> "$OUT"
+          first=1
+          for d in ${DAYS//,/ }; do
+            rclone copy "$DRIVE_ROOT/recordings/md-$d.jsonl.gz" "$D/recordings/" --transfers 1
+            F=$D/recordings/md-$d.jsonl.gz
+            echo "" >> "$OUT"; echo "### recording $d" >> "$OUT"; echo '```' >> "$OUT"
+            tsx scripts/mdc.ts bench "$F" 19 2>&1 | tee -a "$OUT"
+            if [ $first = 1 ]; then
+              # Whole-day byte-exact baseline: plain JSONL as one zstd stream (fast setting; -19 and xz ran past 2 h).
+              PL=$RUNNER_TEMP/plain.jsonl; pigz -dc "$F" > "$PL"
+              t0=$(date +%s); zstd -q -T0 -9 --long=27 -c "$PL" > "$RUNNER_TEMP/w.zst"; t1=$(date +%s)
+              echo "zstd -9 --long=27 one stream: $(( $(stat -c%s "$RUNNER_TEMP/w.zst") / 1048576 )) MB, encode $((t1-t0)) s" | tee -a "$OUT"
+              rm -f "$PL" "$RUNNER_TEMP/w.zst"
+            fi
+            rm -f "$F"; echo '```' >> "$OUT"; first=0
+          done
+          # History sets on Drive (raw/ = downloaded market history, simulated/ = rebuilt lab data): what is there,
+          # then the largest JSON-lines and CSV files of each, measured the same way.
+          for top in raw simulated derived; do
+            L=$RUNNER_TEMP/ls-$top.txt
+            rclone lsf -R --files-only --format sp --separator '|' "$DRIVE_ROOT/$top" 2>/dev/null > "$L" || true
+            [ -s "$L" ] || { echo "" >> "$OUT"; echo "### $top/: empty or absent" >> "$OUT"; continue; }
+            echo "" >> "$OUT"; echo "### $top/ ($(wc -l < "$L") files, $(( $(cut -d'|' -f1 "$L" | paste -sd+ | bc) / 1048576 )) MB)" >> "$OUT"; echo '```' >> "$OUT"
+            awk -F'|' '{n=split($2,p,"/"); ext=$2; sub(/^.*\./,"",ext); k=p[1]"/"(n>2?p[2]"/":"")"*."ext; s[k]+=$1; c[k]++} END {for (k in s) printf "%8.1f MB %6d files  %s\n", s[k]/1048576, c[k], k}' "$L" | sort -rn | head -15 | tee -a "$OUT" || true
+            for pat in '\.jsonl(\.gz)?$' '\.csv(\.gz)?$'; do
+              { grep -E "$pat" "$L" || true; } | sort -t'|' -k1,1nr | head -2 > "$RUNNER_TEMP/pick.txt" || true
+              while IFS='|' read -r size f; do
+                mkdir -p "$D/h"; rclone copyto "$DRIVE_ROOT/$top/$f" "$D/h/$(basename "$f")"
+                echo "-- $top/$f" | tee -a "$OUT"
+                tsx scripts/mdc.ts bench "$D/h/$(basename "$f")" 19 2>&1 | grep -v '^kinds' | tee -a "$OUT"
+                G=$D/h/$(basename "$f"); case "$G" in *.gz) ;; *) echo "gzip -6 of it: $(( $(gzip -6 -c "$G" | wc -c) / 1024 )) KB" | tee -a "$OUT";; esac
+                rm -rf "$D/h"
+              done < "$RUNNER_TEMP/pick.txt"
+            done
+            echo '```' >> "$OUT"
+          done
+          cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
+      - name: Post summary as a commit comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f "$RUNNER_TEMP/summary.md" ] || exit 0
+          jq -Rs '{body: .}' "$RUNNER_TEMP/summary.md" > "$RUNNER_TEMP/c.json"
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input "$RUNNER_TEMP/c.json" >/dev/null
