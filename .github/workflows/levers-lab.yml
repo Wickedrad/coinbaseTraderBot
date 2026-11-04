@@ -74,8 +74,11 @@ jobs:
             D="copies/$reuse"; mkdir -p "$D"
             rclone copy "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$reuse" "$D" --transfers 4
             [ -s "$D/sweeps/check-days.txt" ] || { echo "::error::no copy of run $reuse on Drive"; exit 1; }
+            # Only the days this shard's arms replay (each stretch is <day> 15:40 to the next day 15:40).
+            NEED=$(awk -v r="$reuse" '$3 == r {print $2}' "$RUNNER_TEMP/arms.txt" | sort -u | while read -r x; do echo "$x"; date -u -d "$x +1 day" +%F; done | sort -u)
             for d in $(tr ',' ' ' < "$D/sweeps/check-days.txt"); do
               grep -qx "$d" "$RUNNER_TEMP/drive-days.txt" || continue
+              echo "$NEED" | grep -qx "$d" || continue
               ls "$D"/recordings/md-$d.jsonl* >/dev/null 2>&1 || { rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.jsonl.gz" "$D/recordings/" && gzip -t "$D/recordings/md-$d.jsonl.gz"; }
               ls "$D"/audit/audit-$d* >/dev/null 2>&1 || rclone copy gdrive:kalshi-bot-archive/audit "$D/audit/" --include "audit-$d*" --transfers 4
             done
