@@ -52,6 +52,22 @@ jobs:
     environment: production
     timeout-minutes: 120
     steps:
+      # The compact copy of each day (md-DAY.mdc, scripts/mdc.ts, ~2.5x smaller than the gzip) is made on this runner.
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
       - name: Set up rclone with the Drive token
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
@@ -121,6 +137,13 @@ jobs:
             # Check each gzip is whole before it goes up (a cut copy would be archived for good).
             for g in "$W"/rec/*.gz "$W"/audit/*.gz; do [ -f "$g" ] || continue; gzip -t "$g" || { echo "::error::$d: $(basename "$g") is not a whole gzip"; exit 1; }; done
             rclone copy "$W/audit" "$DRIVE_ROOT/audit" --transfers 2
+            # The compact copy beside the gzip (encode checks the round trip; verify compares every line again).
+            if [ -f "$W/rec/$f.gz" ]; then
+              mkdir -p "$W/mdc"
+              if node --import tsx scripts/mdc.ts encode "$W/rec/$f.gz" "$W/mdc/md-$d.mdc" >/dev/null && node --import tsx scripts/mdc.ts verify "$W/mdc/md-$d.mdc" "$W/rec/$f.gz" >/dev/null; then
+                rclone copy "$W/mdc" "$DRIVE_ROOT/recordings" --transfers 1; echo "$d: compact copy $(du -sh "$W/mdc/md-$d.mdc" | cut -f1)"
+              else echo "::warning::$d: compact copy failed its check, only the gzip is archived"; fi
+            fi
             # The recording last: its presence on Drive is what marks the day archived.
             rclone copy "$W/rec" "$DRIVE_ROOT/recordings" --transfers 1
             echo "$d: recording $(du -sh "$W/rec" | cut -f1), audit $(wc -l < "$W/audit.txt") file(s) $(du -sh "$W/audit" | cut -f1)"
