@@ -6,6 +6,7 @@ Usage: adversary_report.py <data dir> [hours=24] [lag file]
   - fill realism: P&L and contracts from maker quote fills (simulated by the paper exchange) vs taker fills
   - stale quotes: fills within 60 s after a data-lag / feed-drop warning (lag file: one ISO time per line)
   - concentration: the day without its 3 best markets
+  - why: where the day's P&L came from (series, asset, entry route, exits, entry price band, EST hour block)
 Runs on a GitHub runner from files copied off the server; prints aggregates only."""
 import collections, glob, json, math, os, sys, time
 from datetime import datetime, timezone
@@ -34,7 +35,8 @@ for f in sorted(glob.glob(os.path.join(data, 'audit', 'audit-*.jsonl'))):
             if k == 'fill':
                 fl = d.get('fill') or {}
                 fills.append({'ts': ts, 'ticker': fl.get('ticker', ''), 'count': fl.get('count') or 0, 'price': fl.get('price') or 0,
-                              'taker': bool(fl.get('isTaker')), 'fee': d.get('fee') or 0, 'coid': d.get('clientOrderId')})
+                              'taker': bool(fl.get('isTaker')), 'fee': d.get('fee') or 0, 'coid': d.get('clientOrderId'),
+                              'side': fl.get('side') or fl.get('action') or ''})
             elif k == 'settlement':
                 settles.append({'ts': ts, 'ticker': d.get('ticker', ''), 'realized': d.get('realized') or 0})
             elif k == 'order_new':
@@ -102,6 +104,48 @@ top = sorted(per.items(), key=lambda kv: -kv[1])[:3]
 print(f"concentration: best 3 markets ${sum(v for _, v in top):.2f} ({', '.join(f'{t} ${v:.2f}' for t, v in top)}) -> without them ${total - sum(v for _, v in top):.2f}")
 worst = sorted(per.items(), key=lambda kv: kv[1])[:3]
 print(f"   worst 3 markets: {', '.join(f'{t} ${v:.2f}' for t, v in worst)}")
+
+# 6. why: attribute the day's realized P&L (per settled market) to series, asset, entry route, exits, entry price band and hour
+def series_of(t): return t.split('-')[0] if t else '?'
+def asset_of(t):
+    for a in ('BTC', 'ETH', 'SOL', 'XRP', 'DOGE'):
+        if series_of(t).startswith('KX' + a): return a
+    return 'tennis' if 'ATP' in t or 'WTA' in t else 'other'
+mf = collections.defaultdict(list)
+for x in dfills: mf[x['ticker']].append(x)
+def table(title, groups):
+    print(f"why - {title} (markets, P&L, avg/market, win %):")
+    for k, (n, pnl, w) in sorted(groups.items(), key=lambda kv: kv[1][1])[:12]:
+        print(f"   {str(k):34s} {n:4d} ${pnl:9.2f} ${pnl / n:7.2f} {100 * w / n:4.0f}%")
+def group(keyf):
+    g = {}
+    for s_ in day:
+        k = keyf(s_)
+        n, pnl, w = g.get(k, (0, 0.0, 0))
+        g[k] = (n + 1, pnl + s_['realized'], w + (1 if s_['realized'] > 0 else 0))
+    return g
+table('by series', group(lambda s_: series_of(s_['ticker'])))
+table('by asset', group(lambda s_: asset_of(s_['ticker'])))
+def route(s_):
+    fs = mf.get(s_['ticker'], [])
+    purposes = {orders.get(x['coid'], '?') for x in fs}
+    if not fs: return 'no fills in window (opened earlier)'
+    tk_exit = any(x['taker'] and orders.get(x['coid']) == 'exit' for x in fs)
+    tk_entry = any(x['taker'] and orders.get(x['coid']) == 'entry' for x in fs)
+    return ('taker entry' if tk_entry else 'maker entry') + (' + sold early' if tk_exit else ' + held to settlement')
+table('by entry route and exit', group(route))
+def band(s_):
+    fs = sorted(mf.get(s_['ticker'], []), key=lambda x: x['ts'])
+    if not fs: return 'n/a'
+    p = fs[0]['price']; p = p / 100 if p > 1.5 else p
+    return '<0.30' if p < 0.30 else '0.30-0.70' if p <= 0.70 else '>0.70'
+table('by first fill price (dollars)', group(band))
+def est_block(s_):
+    h = (time.gmtime(s_['ts']).tm_hour - 5) % 24
+    return f"{h // 4 * 4:02d}-{h // 4 * 4 + 4:02d} EST"
+table('by 4-hour block (EST)', group(est_block))
+big = sorted(per.items(), key=lambda kv: kv[1])[:5]
+print("why - 5 worst markets:", '; '.join(f"{t} ${v:.2f}" for t, v in big))
 
 # replay check verdict, when copied
 rc = os.path.join(data, 'replay-check-latest.json')
