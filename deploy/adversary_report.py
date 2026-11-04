@@ -138,8 +138,9 @@ def band(s_):
     fs = sorted(mf.get(s_['ticker'], []), key=lambda x: x['ts'])
     if not fs: return 'n/a'
     p = fs[0]['price']; p = p / 100 if p > 1.5 else p
-    return '<0.30' if p < 0.30 else '0.30-0.70' if p <= 0.70 else '>0.70'
-table('by first fill price (dollars)', group(band))
+    b = '<0.30' if p < 0.30 else '0.30-0.70' if p <= 0.70 else '>0.70'
+    return f"{fs[0]['side'] or '?'} {b}"
+table('by first fill side and price (dollars, YES scale)', group(band))
 def est_block(s_):
     h = (time.gmtime(s_['ts']).tm_hour - 5) % 24
     return f"{h // 4 * 4:02d}-{h // 4 * 4 + 4:02d} EST"
