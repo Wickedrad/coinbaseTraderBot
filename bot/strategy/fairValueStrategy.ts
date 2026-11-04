@@ -290,13 +290,18 @@ export function gateMarginFor(cfg: Pick<StrategyConfig, 'loserExits'>, maker: bo
   return maker && L?.gateQuoteMargin !== undefined ? L.gateQuoteMargin : L?.gateMargin ?? 0;
 }
 
+/** A series pattern (SERIES, or *SUFFIX for every series ending in SUFFIX) against a ticker's series (before its first '-'). */
+export function seriesMatches(pattern: string, ticker: string): boolean {
+  const series = ticker.split('-')[0];
+  return pattern.startsWith('*') ? series.endsWith(pattern.slice(1)) : series === pattern;
+}
+
 /** FV_ENTRY_GATE_SERIES_MARGINS: the gate's config for one market, its series' margin applied (the first matching pattern;
  *  a series is the ticker before its first '-', *SUFFIX matches every series ending in SUFFIX). */
 export function gateCfgFor<C extends Pick<StrategyConfig, 'loserExits'>>(cfg: C, ticker: string): C {
   const L = cfg.loserExits;
   if (!L?.seriesMargins?.length) return cfg;
-  const series = ticker.split('-')[0];
-  const hit = L.seriesMargins.find((s) => (s.pattern.startsWith('*') ? series.endsWith(s.pattern.slice(1)) : series === s.pattern));
+  const hit = L.seriesMargins.find((s) => seriesMatches(s.pattern, ticker));
   if (!hit) return cfg;
   return { ...cfg, loserExits: { ...L, gateMargin: Math.max(L.gateMargin, hit.margin), ...(L.gateQuoteMargin !== undefined ? { gateQuoteMargin: Math.max(L.gateQuoteMargin, hit.margin) } : {}) } };
 }

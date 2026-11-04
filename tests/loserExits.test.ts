@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig, type StrategyConfig } from '../bot/config';
 import { DEFAULT_FEES } from '../bot/fees';
-import { applyFvGate, decide, gateCfgFor, fvGatePasses, inLoserWindow, loserExit, loserNoEntry, shareWindowSec, type MarketView, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
+import { applyFvGate, decide, gateCfgFor, seriesMatches, fvGatePasses, inLoserWindow, loserExit, loserNoEntry, shareWindowSec, type MarketView, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
 
 // Steven's settlement rule (Oct 31) and the sizing lab's loser exits: the entry gate, the loser cut and the window cut.
 const base = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_CADENCE: 'continuous' }).strategy;
@@ -307,4 +307,14 @@ test('FV_ENTRY_GATE_SERIES_MARGINS: a series or *suffix pattern raises that seri
   const plan = (): StrategyOutput => ({ cancel: [], notes: [], place: [{ side: 'bid', price: 0.6, count: 5, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge: 0.1, why: 'cross' }] });
   assert.equal(applyFvGate(plan(), 0.7, 0, DEFAULT_FEES, gateCfgFor(c, 'KXBTC-X')), 0);
   assert.equal(applyFvGate(plan(), 0.7, 0, DEFAULT_FEES, gateCfgFor(c, 'KXSOL15M-X')), 1);
+});
+
+test('TRAINING_SKIP_SERIES: parsed as series or *suffix patterns; seriesMatches reads a ticker\'s series', () => {
+  assert.deepEqual(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TRAINING_SKIP_SERIES: '*15M, KXETH' }).strategy.trainSkipSeries, ['*15M', 'KXETH']);
+  assert.equal(base.trainSkipSeries, undefined);
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TRAINING_SKIP_SERIES: 'kx eth' }));
+  assert.ok(seriesMatches('*15M', 'KXSOL15M-25OCT261530-30'));
+  assert.ok(!seriesMatches('*15M', 'KXSOLD-25OCT2617-T200'));
+  assert.ok(seriesMatches('KXETH', 'KXETH-25OCT2617-B4000'));
+  assert.ok(!seriesMatches('KXETH', 'KXETHD-25OCT2617-T4000'));
 });
