@@ -1,0 +1,44 @@
+# Whole-bot round dispatcher (meta plan thread). Lives only on the round branch: a push that changes the queue file
+# starts it. It dispatches kalshi-replay-check comparison arms on this branch, at most CAP at a time (the project's
+# runner rationing), skipping arms that already ran or are running, and waits until every queued arm is dispatched.
+# Queue lines: <tag> <day> <reuse run> <overrides...>   (24 h stretch from <day> 15:40 UTC; REPLAY_NOTE added here)
+name: Whole-bot round dispatcher
+on:
+  push:
+    branches: [claude/whole-bot-r1]
+    paths: ['.github/wb-queue.txt']
+permissions:
+  actions: write
+  contents: read
+concurrency:
+  group: wb-round-dispatcher
+  cancel-in-progress: true
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      GH_TOKEN: ${{ github.token }}
+      R: ${{ github.repository }}
+      BR: ${{ github.ref_name }}
+      NOTE: wb-r1
+      CAP: '3'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Dispatch the queue
+        run: |
+          set -uo pipefail
+          WF=kalshi-replay-check.yml
+          runs() { gh api "repos/$R/actions/workflows/$WF/runs?per_page=100&branch=$BR" --jq '.workflow_runs[] | "\(.status) \(.conclusion) \(.display_title)"'; }
+          active() { runs | grep -c "^\(queued\|in_progress\|pending\|waiting\|requested\) .*REPLAY_NOTE=$NOTE" || true; }
+          done_or_running() { runs | grep -E "^(queued|in_progress|pending|waiting|requested) |^completed success " | grep -q "REPLAY_TAG=$1 .*REPLAY_NOTE=$NOTE"; }
+          while read -r tag day reuse ov; do
+            [ -z "$tag" ] || [[ "$tag" == \#* ]] && continue
+            if done_or_running "$tag"; then echo "skip $tag (ran or running)"; continue; fi
+            while [ "$(active)" -ge "$CAP" ]; do sleep 60; done
+            next=$(date -u -d "$day +1 day" +%F)
+            gh workflow run $WF -R "$R" --ref "$BR" -f reuse_run="$reuse" -f days="$day,$next" -f from="${day}T15:40:00Z" -f to="${next}T15:40:00Z" \
+              -f nearby=none -f overrides="REPLAY_TAG=$tag $ov REPLAY_NOTE=$NOTE"
+            echo "$(date -u +%H:%M) dispatched $tag"; sleep 30
+          done < .github/wb-queue.txt
+          echo "queue dispatched"
