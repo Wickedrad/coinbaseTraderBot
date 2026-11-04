@@ -21,11 +21,26 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 /** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
  *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
 export const VARIANTS: Record<string, Record<string, string>> = {
+  // Round 5 (Nov 4): take-profit. Paper's held-to-settlement audit (Oct 27 - Nov 2, 519 markets ridden, -$821; held-audit.yml
+  // run 41850442635): 199 of 413 losers were in profit after the exit fee at some point (median +6.5c, ~10 min left); closing
+  // at the first break-even after fees would have made +$261, at +2c +$151, and the fair-value confirm made every rule worse
+  // (-$77..-$135: the coin's fair value overrates the side held). So: a break-even floor without the confirm, on 200 days.
+  baseline: {},
+  tp_be: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+  tp_1c: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '1', PROFIT_TARGET_PCT: '0' },
+  tp_be_l1: { TP_LEVEL: '1', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+  tp_be_lat500: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0', RS_LATENCY_MS: '500' },
+  // Price/edge candidate carried for the record (round 4: +0.02/h [-0.01, +0.05], 4 of 7 blocks, NOT PROVEN).
+  skill_b05_tp_be: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+};
+
+/** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
+export const LATER: Record<string, Record<string, string>> = {
+  // Round 4 (Nov 4, run 41759673255):
   // Round 4 (Nov 4), module-first (Steven, Nov 2): the 200-day run (41496168480) found every model-trusting change winning
   // only in calming markets with hourly vol near 0.5 bp a minute (vol0.5bp|calming: skill 0.75 +77, GP full +86, dip buy
   // +149) and losing in the neighbouring bands. Each is gated to that band here (0.36-0.71 bp = the 0.5 bp bucket).
   // The placebo was exactly +0.00 in both deep runs, so it is left out of this round to save runners.
-  baseline: {},
   skill_b05: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71' },
   skill_b05_w50: { MODEL_SKILL_W_CALM: '0.5', MODEL_SKILL_W_CALM_RV: '0.36,0.71' },
   dip8_b05: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.36,0.71' },
@@ -34,12 +49,7 @@ export const VARIANTS: Record<string, Record<string, string>> = {
   // The curve cross at level 3 never sold in the replay (its fair-value margin is 0): level 1 on deep history, by condition.
   cross_l1: { SINUOUS_CROSS: 'true', SINUOUS_CROSS_LEVEL: '1' },
   // Adversary stress: orders reach the book 500 ms late, for the baseline and the candidate.
-  base_lat500: { RS_LATENCY_MS: '500' },
   skill_b05_lat500: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', RS_LATENCY_MS: '500' },
-};
-
-/** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
-export const LATER: Record<string, Record<string, string>> = {
   // Round 3 (Nov 2-3, run 41496168480):
   // The placebo: the same bot deciding on a tick shifted by half a second. Its gap from the baseline is path noise alone;
   // a variant's gain smaller than that gap is not believed.
@@ -60,7 +70,6 @@ export const LATER: Record<string, Record<string, string>> = {
   base_lat500: { RS_LATENCY_MS: '500' },
   tp_l2: { TP_LEVEL: '2' },
   skill_w50: { MODEL_SKILL_W: '0.5' },
-  cross_l1: { SINUOUS_CROSS: 'true', SINUOUS_CROSS_LEVEL: '1' },
   dip12: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.12' },
   dip8_1: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_MAX: '1', SINUOUS_DIP_COOLDOWN_SEC: '300' },
   gp_low: { PROBATION_GP_MULT: '0.1' },
