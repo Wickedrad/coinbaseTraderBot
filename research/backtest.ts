@@ -762,11 +762,14 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       // The order band (ORDER_USD_MIN / ORDER_USD_MAX), paper and live, as the engine applies it (Engine.orderBandUsd).
       const band = fixedUsd > 0 ? undefined : orderBand(strategy.orderUsdMin, strategy.orderUsdMax);
       const fitUsd = fixedUsd > 0 ? fixedUsd : band?.max ?? 0;
+      // GATED_STAKE_CAP=widen: the caps make room for a gated order scaled by GATED_STAKE_MULT (bot/engine.ts orderLimits).
+      const LX = strategy.loserExits;
+      const capUsd = LX?.gate && LX.gatedStakeCap === 'widen' && (LX.gatedStakeMult ?? 1) > 1 ? fitUsd * LX.gatedStakeMult! : fitUsd;
       const tierLimits = { maxOrderRiskFrac: tier.orderFrac, maxWindowRiskFrac: tier.windowFrac, maxTotalRiskFrac: tier.totalFrac, dailyLossLimitFrac: tier.dailyLossFrac, dailyLossLimitUsd: tier.dailyLossUsd };
       if (fitUsd > 0 && bankroll > 0) {
-        tierLimits.maxOrderRiskFrac = Math.max(tier.orderFrac, fitUsd / bankroll);
-        tierLimits.maxWindowRiskFrac = Math.max(tier.windowFrac, (PAPER_WINDOW_ORDERS * fitUsd) / bankroll);
-        tierLimits.maxTotalRiskFrac = Math.max(tier.totalFrac, (PAPER_TOTAL_ORDERS * fitUsd) / bankroll);
+        tierLimits.maxOrderRiskFrac = Math.max(tier.orderFrac, capUsd / bankroll);
+        tierLimits.maxWindowRiskFrac = Math.max(tier.windowFrac, (PAPER_WINDOW_ORDERS * capUsd) / bankroll);
+        tierLimits.maxTotalRiskFrac = Math.max(tier.totalFrac, (PAPER_TOTAL_ORDERS * capUsd) / bankroll);
       }
       // The quote slots hold quotes and resting exits, as the engine's (a resting training entry, TRAINING_MODE=maker, is not one).
       const q = (side: 'bid' | 'ask') => { const o = open.find((x) => x.side === side && purposeOf(x.clientOrderId) !== 'entry'); return o ? { clientOrderId: o.orderId, price: o.price, remaining: o.remainingCount } : undefined; };
@@ -975,7 +978,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         }
       }
       // FV_ENTRY_GATE on the finished plan, as the engine: the fill model's crosses and paper's training trades open positions too.
-      applyFvGate(plan, fv.pYes, view.position, DEFAULT_FEES, strategy, loserNoEntry(view, strategy));
+      applyFvGate(plan, fv.pYes, view.position, DEFAULT_FEES, strategy, loserNoEntry(view, strategy), fitUsd);
       for (const c of plan.cancel) if (!cancelInFlight.has(c.clientOrderId)) await send(m.ticker, 'cancel', () => cancelNow(c.clientOrderId), c.clientOrderId);
 
       for (const p of plan.place) {
