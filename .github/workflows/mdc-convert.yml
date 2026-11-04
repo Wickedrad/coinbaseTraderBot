@@ -95,7 +95,17 @@ jobs:
           done > "$RUNNER_TEMP/todo.txt"
           echo "$(wc -l < "$RUNNER_TEMP/todo.txt") files to compact under $TOP/${SUB}" | tee -a "$GITHUB_STEP_SUMMARY"
           [ -s "$RUNNER_TEMP/todo.txt" ] || exit 0
-          rclone copy "$R" "$S" --files-from "$RUNNER_TEMP/todo.txt" --transfers 8
-          df -h "$RUNNER_TEMP" | tail -1
-          tsx scripts/mdc.ts encode-tree "$S" "$O" | tee -a "$GITHUB_STEP_SUMMARY"
-          rclone copy "$O" "$R" --include '*.mdc' --transfers 8
+          # Chunks of 40 files, 3 at a time (one per core, one core left for rclone), each uploaded as soon as it is
+          # verified, so a run that hits its time budget keeps everything it finished; the next run skips those.
+          split -l 40 -d -a 4 "$RUNNER_TEMP/todo.txt" "$RUNNER_TEMP/chunk-"
+          export R S O START=$(date +%s) BUDGET=$((235 * 60))
+          one() {
+            c=$1; n=$(basename "$c")
+            if [ $(( $(date +%s) - START )) -gt "$BUDGET" ]; then echo "$n: skipped (time budget; run again)"; return 0; fi
+            rclone copy "$R" "$S/$n" --files-from "$c" --transfers 4
+            tsx scripts/mdc.ts encode-tree "$S/$n" "$O/$n" | sed "s/^/$n: /"
+            rclone copy "$O/$n" "$R" --include '*.mdc' --transfers 4
+            rm -rf "${S:?}/${n:?}" "${O:?}/${n:?}"
+          }
+          export -f one
+          ls "$RUNNER_TEMP"/chunk-* | xargs -P 3 -I{} bash -c 'one "$@"' _ {} | tee -a "$GITHUB_STEP_SUMMARY"
