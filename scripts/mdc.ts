@@ -8,6 +8,7 @@
 //   npx tsx scripts/mdc.ts encode-tree <src> <dst>          every .jsonl/.csv(.gz) under <src> -> <dst>, same tree,
 //                                                           each verified against its source; existing ones skipped
 //   npx tsx scripts/mdc.ts bench <file> [level...]          sizes, encode and read times (prints aggregates only)
+//   npx tsx scripts/mdc.ts readbench <a> <b> [rounds]       read times of two forms of the same file, alternating; checks they match
 //
 // Names: a recorded day md-DAY.jsonl(.gz) <-> md-DAY.mdc (decoded to the bot's md-DAY.jsonl.gz); any other file keeps
 // its own name without .gz plus .mdc (kalshi/KXBTC/2026-01-05.jsonl <-> 2026-01-05.jsonl.mdc, binance/BTC/1m.csv(.gz)
@@ -109,6 +110,13 @@ async function main() {
       n++; inBytes += fs.statSync(src).size; outBytes += fs.statSync(dst).size;
     }
     console.log(`encode-tree: ${n} files verified byte-identical (${skipped} already there), ${mb(inBytes)} MB -> ${mb(outBytes)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+  } else if (cmd === 'readbench' && a && b) {
+    const rounds = Number(rest[0] ?? 3), ta: number[] = [], tb: number[] = [];
+    let x = await digest(a), y = await digest(b);
+    for (let i = 0; i < rounds; i++) { x = await digest(a); ta.push(x.ms); y = await digest(b); tb.push(y.ms); }
+    const med = (v: number[]) => [...v].sort((p, q) => p - q)[Math.floor(v.length / 2)] / 1000;
+    console.log(`read ${path.basename(a)} ${med(ta).toFixed(1)} s, ${path.basename(b)} ${med(tb).toFixed(1)} s (median of ${rounds}, ${x.lines} lines), ${x.sha === y.sha && x.lines === y.lines ? 'byte-identical' : 'DIFFERENT'}`);
+    if (x.sha !== y.sha) process.exitCode = 1;
   } else if (cmd === 'bench' && a) {
     const levels = [b, ...rest].filter(Boolean).map(Number);
     const gz = await digest(a);

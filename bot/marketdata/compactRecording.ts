@@ -17,7 +17,12 @@
 //   encodeDay() checks the round trip of every block before it writes it.
 
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { pathToFileURL } from 'url';
+import { Worker } from 'worker_threads';
 import zlib from 'zlib';
+import { isAscii } from 'buffer';
 
 export const MDC_MAGIC = Buffer.from('MDC1\n');
 const BLOCK_LINES = 1_000_000;
@@ -290,9 +295,8 @@ export function decodeBlockText(payload: Buffer): { text: Buffer; lines: number;
 
 /** Lines of one block payload, and whether the block ended with a newline. */
 export function decodeBlock(payload: Buffer): { lines: string[]; endsWithNewline: boolean } {
-  const { text, lines: n, endsWithNewline } = decodeBlockText(payload);
-  const lines = n ? text.toString('utf8', 0, text.length - 1).split('\n') : [];
-  return { lines, endsWithNewline };
+  const { text, endsWithNewline } = decodeBlockText(payload);
+  return { lines: textLines(text, isAscii(text)), endsWithNewline };
 }
 
 function zstd(buf: Buffer, o: MdcOpts): Buffer {
@@ -315,26 +319,114 @@ export function isMdc(file: string): boolean {
 }
 
 /** Streams the lines of an .mdc file (without newlines), one block in memory at a time. */
+/** One zstd frame to its block text; `ascii` says the text can be read as latin1 (the fast way to make JS strings). */
+export function decodeFrameText(frame: Buffer): { text: Buffer; ascii: boolean } {
+  const { text } = decodeBlockText(unzstd(frame));
+  return { text, ascii: isAscii(text) };
+}
+
+/** A block's text to its lines (the text ends in a newline when it has any line). */
+function textLines(text: Buffer, ascii: boolean): string[] {
+  if (!text.length) return [];
+  return text.toString(ascii ? 'latin1' : 'utf8', 0, text.length - 1).split('\n');
+}
+
+/** The worker script for this build, or undefined (then blocks decode on this thread). */
+function workerScript(): { path: string; workerData?: unknown } | undefined {
+  const entry = process.argv[1] ?? '';
+  if (entry.endsWith('.cjs')) { const p = path.join(path.dirname(entry), 'mdcWorker.cjs'); return fs.existsSync(p) ? { path: p } : undefined; }
+  const dev = path.resolve('research', 'workerDev.mjs'), src = path.resolve('bot', 'marketdata', 'mdcWorker.ts');
+  return fs.existsSync(dev) && fs.existsSync(src) ? { path: dev, workerData: { entry: pathToFileURL(src).href } } : undefined;
+}
+
+/** Decoding threads for one read: MDC_WORKERS (0 = none), else up to 3, one core always left to the reader. */
+function workerCount(): number {
+  const env = Number(process.env.MDC_WORKERS);
+  if (Number.isFinite(env) && process.env.MDC_WORKERS !== '') return Math.max(0, Math.floor(env));
+  return Math.max(0, Math.min(3, (os.availableParallelism?.() ?? os.cpus().length) - 1));
+}
+
+/** Decodes frames on worker threads, in order, at most `ahead` in flight. Falls back to this thread if a worker fails. */
+class FramePool {
+  private readonly workers: Worker[] = [];
+  private readonly waiting = new Map<number, { resolve: (v: { text: Buffer; ascii: boolean }) => void; reject: (e: Error) => void }>();
+  private next = 0;
+  constructor(script: { path: string; workerData?: unknown }, n: number) {
+    for (let i = 0; i < n; i++) {
+      const w = new Worker(script.path, { workerData: script.workerData });
+      w.on('message', (m: { id: number; text?: Uint8Array; ascii?: boolean; error?: string }) => {
+        const p = this.waiting.get(m.id); if (!p) return;
+        this.waiting.delete(m.id);
+        if (m.error !== undefined) p.reject(new Error(m.error));
+        else p.resolve({ text: Buffer.from(m.text!.buffer, m.text!.byteOffset, m.text!.byteLength), ascii: !!m.ascii });
+      });
+      w.on('error', (e) => { for (const p of this.waiting.values()) p.reject(e); this.waiting.clear(); });
+      this.workers.push(w);
+    }
+  }
+  decode(id: number, frame: Buffer): Promise<{ text: Buffer; ascii: boolean }> {
+    return new Promise((resolve, reject) => {
+      this.waiting.set(id, { resolve, reject });
+      const w = this.workers[this.next++ % this.workers.length];
+      const copy = new Uint8Array(frame.length); copy.set(frame);
+      w.postMessage({ id, frame: copy }, [copy.buffer]);
+    });
+  }
+  close(): void { for (const w of this.workers) void w.terminate(); }
+}
+
+/** Streams the lines of an .mdc file (without newlines). Big files decode their blocks on worker threads, a few blocks
+ *  ahead of the reader, so reading costs about as much as handing out the lines; small ones decode here. */
 export async function* mdcLines(file: string): AsyncGenerator<string> {
   const fh = await fs.promises.open(file, 'r');
+  let pool: FramePool | undefined;
   try {
     const head = Buffer.alloc(MDC_MAGIC.length);
     await fh.read(head, 0, head.length, 0);
     if (!head.equals(MDC_MAGIC)) throw new Error(`${file}: not an .mdc file`);
     let pos = MDC_MAGIC.length;
+    const size = (await fh.stat()).size;
     const lenBuf = Buffer.alloc(4);
-    for (;;) {
+    const readFrame = async (): Promise<Buffer | undefined> => {
       const { bytesRead } = await fh.read(lenBuf, 0, 4, pos);
-      if (bytesRead < 4) return;
+      if (bytesRead < 4) return undefined;
       const len = lenBuf.readUInt32LE(0);
       const frame = Buffer.allocUnsafe(len);
       const got = (await fh.read(frame, 0, len, pos + 4)).bytesRead;
       if (got < len) throw new Error(`${file}: block cut short at byte ${pos}`);
       pos += 4 + len;
-      const { lines } = decodeBlock(unzstd(frame));
-      for (const l of lines) yield l;
+      return frame;
+    };
+    const n = size > Number(process.env.MDC_WORKER_MIN_BYTES ?? 4 * 1048576) ? workerCount() : 0;
+    const script = n > 0 ? workerScript() : undefined;
+    if (script) { try { pool = new FramePool(script, n); } catch { pool = undefined; } }
+    if (!pool) {
+      for (let f = await readFrame(); f; f = await readFrame()) { const d = decodeFrameText(f); for (const l of textLines(d.text, d.ascii)) yield l; }
+      return;
     }
-  } finally { await fh.close(); }
+    // Keep the workers busy: `ahead` blocks in flight while this thread hands out the lines of the oldest.
+    // A worker that cannot start or fails (no TypeScript loader where it runs, out of memory) costs nothing but speed:
+    // its block, and every block after it, decodes on this thread.
+    const ahead = n + 1, queue: { frame: Buffer; p: Promise<{ text: Buffer; ascii: boolean }> | undefined }[] = [];
+    let id = 0, done = false, broken = false;
+    const fill = async () => {
+      while (!done && queue.length < ahead) {
+        const frame = await readFrame();
+        if (!frame) { done = true; break; }
+        const p = broken ? undefined : pool!.decode(id++, frame);
+        p?.catch(() => undefined);
+        queue.push({ frame, p });
+      }
+    };
+    await fill();
+    while (queue.length) {
+      const q = queue.shift()!;
+      let d: { text: Buffer; ascii: boolean };
+      try { d = q.p ? await q.p : decodeFrameText(q.frame); } catch { broken = true; d = decodeFrameText(q.frame); }
+      await fill();
+      for (const l of textLines(d.text, d.ascii)) yield l;
+    }
+  } finally { pool?.close(); await fh.close(); }
 }
 
 /** Encodes an iterable of lines (no newlines) into `dest` (.mdc), checking every block decodes to the same lines.

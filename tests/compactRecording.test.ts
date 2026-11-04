@@ -57,3 +57,20 @@ test('mdc numbers: fixed-point digits match how JS prints them, or the column is
   const csv = vals.map((v, i) => `${i},${v}`);
   assert.deepEqual(decodeBlock(encodeBlock(csv, true)).lines, csv);
 });
+
+test('mdc file: blocks decoded on worker threads come back in order, byte for byte', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdcw-'));
+  const lines = Array.from({ length: 5000 }, (_, i) => JSON.stringify({ t: 1761955200000 + i, k: i % 7 ? 'delta' : 'trade', ticker: `T${i % 13}`, price: (i % 99) / 100, ts: 1761955200000 + i }));
+  const f = path.join(dir, 'md-2026-11-01.mdc');
+  await encodeLines(lines, f, { blockLines: 400, level: 3 });
+  const prev = { min: process.env.MDC_WORKER_MIN_BYTES, n: process.env.MDC_WORKERS };
+  process.env.MDC_WORKER_MIN_BYTES = '0'; process.env.MDC_WORKERS = '2';
+  try {
+    const back: string[] = [];
+    for await (const l of recordingLines(f)) back.push(l);
+    assert.deepEqual(back, lines);
+  } finally {
+    if (prev.min === undefined) delete process.env.MDC_WORKER_MIN_BYTES; else process.env.MDC_WORKER_MIN_BYTES = prev.min;
+    if (prev.n === undefined) delete process.env.MDC_WORKERS; else process.env.MDC_WORKERS = prev.n;
+  }
+});
