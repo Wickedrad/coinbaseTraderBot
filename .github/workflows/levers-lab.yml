@@ -117,6 +117,8 @@ jobs:
             # Stop 5 min after the stretch (every market closing inside it has settled; the verdict is unchanged) instead of
             # simulating the next day file to midnight (~8 h of US session, ~1/5 of the replay). RS_STOP_AFTER_MIN=off: full.
             STOP="${RS_STOP_AFTER_MIN-5}"; [ "$STOP" = off ] || ARGS+=(--stop-after-min "$STOP")
+            # Batched recording reader (same events, order and ties; ~1 us a line less). RS_READER=classic: the per-line one.
+            [ "${RS_READER-batched}" = classic ] || ARGS+=(--batched-reader)
             T0=$(date +%s)
             timeout 170m node --import tsx research/replayCheck.ts "${ARGS[@]}" --tick-phase-ms "$phase" --out "$T/out.json" || echo "replay failed or cut off"
             echo "arm took $(( ($(date +%s) - T0) / 60 )) min"
