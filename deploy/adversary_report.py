@@ -148,6 +148,66 @@ table('by 4-hour block (EST)', group(est_block))
 big = sorted(per.items(), key=lambda kv: kv[1])[:5]
 print("why - 5 worst markets:", '; '.join(f"{t} ${v:.2f}" for t, v in big))
 
+# 7. held trace: why did the markets that rode to settlement and lost ride? For each loser (no taker exit), the best net profit after
+# fees it ever showed at the bid while the exit window was open, against the take-profit floor (the larger of 2c and 10% of cost),
+# the time left at that moment, and the exit orders the bot sent (none / filled / not filled).
+import re
+def window_sec(t): return 900 if '15M' in series_of(t) else None if asset_of(t) == 'tennis' else 3600
+def exit_fee(p): return math.ceil(0.07 * p * (1 - p) * 100 - 1e-9) / 100
+losers = []
+for s_ in day:
+    t = s_['ticker']
+    fs = mf.get(t, [])
+    if s_['realized'] >= 0 or not fs or asset_of(t) == 'tennis': continue
+    sold = any(x['taker'] and orders.get(x['coid']) == 'exit' for x in fs)
+    if not sold: losers.append(s_)
+lset = {s_['ticker'] for s_ in losers}
+decs = collections.defaultdict(list)
+if lset:
+    rx = re.compile(r'"ticker":"(KX[^"]+)"')
+    for f in sorted(glob.glob(os.path.join(data, 'audit', 'audit-*.jsonl'))):
+        with open(f, 'rb') as fh:
+            for raw in fh:
+                line = raw.decode('utf8', 'replace')
+                if '"kind":"decision"' not in line[:200]: continue
+                m_ = rx.search(line)
+                if not m_ or m_.group(1) not in lset: continue
+                try: r = json.loads(line)
+                except Exception: continue
+                d = r.get('data') or {}
+                ts = t_of(r.get('ts', ''))
+                if ts is None or ts < day_from - 7200 or not d.get('position') or d.get('bid') is None: continue
+                decs[m_.group(1)].append((ts, d['position'], d['bid'], d['ask'], d.get('tauSec') or 0, [x.get('why', '') for x in d.get('place') or [] if x.get('purpose') == 'exit']))
+cats = collections.defaultdict(lambda: [0, 0.0])
+rows = []
+exit_orders = collections.defaultdict(int)
+for s_ in losers:
+    t = s_['ticker']; fs = sorted(mf[t], key=lambda x: x['ts'])
+    ds = sorted(decs.get(t, []))
+    buys = [x for x in fs if orders.get(x['coid']) in ('quote', 'entry', 'train', '?')]
+    if not buys or not ds: cats['no decision records (opened before the window)'][0] += 1; cats['no decision records (opened before the window)'][1] += s_['realized']; continue
+    side = buys[0]['side']; px = buys[0]['price']; px = px / 100 if px > 1.5 else px
+    cost = (1 - px) if side == 'ask' else px
+    efee = sum(x['fee'] for x in buys) / max(1e-9, sum(x['count'] for x in buys))
+    floor = max(0.02, 0.10 * (cost + efee))
+    win = window_sec(t) or 900
+    best, best_tau, ever_exit_try = -9, None, False
+    for ts, pos, bid, ask, tau, why in ds:
+        sbid = bid if pos > 0 else 1 - ask
+        net = sbid - cost - efee - exit_fee(sbid)
+        if why: ever_exit_try = True
+        if tau > 60 and net > best: best, best_tau = net, tau
+    in_share = best_tau is not None and best_tau <= 0.10 * win
+    if best >= floor: k = 'was above the take-profit floor with the window open: ' + ('only in the last 10% of the window' if in_share else 'with more than 10% of the window left')
+    elif best > 0: k = 'in profit after fees but below the floor'
+    else: k = 'never in profit after fees (no rule sells a loser)'
+    cats[k][0] += 1; cats[k][1] += s_['realized']
+    rows.append((s_['realized'], t, side, cost, best, best_tau, ever_exit_try))
+print(f"held trace: {len(losers)} markets lost after riding to settlement (no taker exit); why they rode (markets, P&L):")
+for k, (n, v) in sorted(cats.items(), key=lambda kv: kv[1][1]):
+    print(f"   {k:100s} {n:4d} ${v:9.2f}")
+print("held trace - 8 worst: " + '; '.join(f"{t} {sd} cost {c:.2f} best net {b:+.2f} at {('%.0f' % bt) if bt is not None else '-'} s left, exit tried {et}, ${r:.2f}" for r, t, sd, c, b, bt, et in sorted(rows)[:8]))
+
 # replay check verdict, when copied
 rc = os.path.join(data, 'replay-check-latest.json')
 if os.path.exists(rc):
