@@ -468,13 +468,18 @@ test('quote side gate: a price on the mid quotes neither side; above the mid it 
   assert.equal(decide(view({ pYes: 0.55 }), cfg).place.filter((p) => p.purpose === 'quote').length, 2);
 });
 
-test('NO longshot edge: off by default; on, only new NO risk under the price pays it', async () => {
-  const { noLongshotExtra } = await import('../bot/strategy/fairValueStrategy');
+test('NO longshot edge: off by default; on, only new NO risk under the price pays it; the mirror charges YES', async () => {
+  const { longshotExtra } = await import('../bot/strategy/fairValueStrategy');
   const base = { DASHBOARD_TOKEN: 'x'.repeat(32) };
   assert.equal(loadConfig(base).strategy.noLongshotEdge, 0);
   const s = loadConfig({ ...base, NO_LONGSHOT_EDGE: '0.04' }).strategy;
-  assert.equal(noLongshotExtra(s, 0, 0.2), 0.04);
-  assert.equal(noLongshotExtra(s, 0, 0.4), 0);
-  assert.equal(noLongshotExtra(s, 5, 0.2), 0); // unwinding a YES position
-  assert.equal(noLongshotExtra(loadConfig(base).strategy, 0, 0.2), 0);
+  assert.equal(longshotExtra(s, 'no', 0, 0.2), 0.04);
+  assert.equal(longshotExtra(s, 'no', 0, 0.4), 0);
+  assert.equal(longshotExtra(s, 'no', 5, 0.2), 0); // unwinding a YES position
+  assert.equal(longshotExtra(s, 'yes', 0, 0.2), 0);
+  assert.equal(longshotExtra(loadConfig(base).strategy, 'no', 0, 0.2), 0);
+  const m = loadConfig({ ...base, NO_LONGSHOT_EDGE: '0.04', NO_LONGSHOT_MIRROR: 'true' }).strategy;
+  assert.equal(longshotExtra(m, 'yes', 0, 0.2), 0.04);
+  assert.equal(longshotExtra(m, 'no', 0, 0.2), 0);
+  assert.equal(longshotExtra(m, 'yes', -3, 0.2), 0); // unwinding a NO position
 });
