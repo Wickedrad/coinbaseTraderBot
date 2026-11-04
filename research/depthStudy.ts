@@ -78,11 +78,17 @@ function sideLevels(b: OrderBook, side: Side): Array<[number, number]> {
   return (side === 'bid' ? s.bids : s.asks).map((l) => [Math.round(l.price * PX), l.size]);
 }
 
-export function depthStudy(files: string[]): Promise<ReturnType<typeof report>> {
-  return run(files);
+/** Which contracts a study measures: every up/down and 15-minute contract ('all'), or only the 15-minute ones ('15m': the
+ *  deep history builds only those, and the hourly books are deeper and busier; Nov 3 twin: a model fitted on all of them
+ *  gave the 15-minute fill-in tops ~25x the real ones and ~3x their trades). */
+export type StudySeries = 'all' | '15m';
+const is15m = (series: string | undefined, ticker: string) => /15M/.test(series ?? '') || /15M-/.test(ticker);
+
+export function depthStudy(files: string[], series: StudySeries = 'all'): Promise<ReturnType<typeof report>> {
+  return run(files, series);
 }
 
-async function run(files: string[]) {
+async function run(files: string[], series: StudySeries = 'all') {
   const cells = new Map<string, Cell>();
   const qr = new Map<string, Qr>();
   const cellOf = (tau: number, mid: number) => { const k = `${bucket(TAU_EDGES, tau)}|${bucket(MID_EDGES, mid)}`; let c = cells.get(k); if (!c) cells.set(k, (c = newCell())); return c; };
@@ -133,7 +139,7 @@ async function run(files: string[]) {
       let e: Record<string, any>;
       try { e = JSON.parse(line); } catch { continue; }
       const t: number = e.t ?? e.ts;
-      if (e.k === 'market' && e.ticker && e.closeTime && (e.kind === 'updown' || /15M/.test(e.series ?? ''))) {
+      if (e.k === 'market' && e.ticker && e.closeTime && (series === '15m' ? is15m(e.series, e.ticker) : e.kind === 'updown' || /15M/.test(e.series ?? ''))) {
         if (!contracts.has(e.ticker)) contracts.set(e.ticker, { ticker: e.ticker, close: Number(e.closeTime), book: new OrderBook(e.ticker), lastSample: 0, minute: 0, deltas: 0, trades: 0, seen: new Set(), segTrades: 0, segYes: 0 });
         continue;
       }
@@ -231,10 +237,11 @@ async function main() {
   const today = new Date().toISOString().slice(0, 10);
   const days = recordingFiles(rec).filter((d) => d.day < today && (!want.length || want.includes(d.day)));
   if (!days.length) throw new Error('no whole recorded days');
-  const r = await run(days.map((d) => d.file));
+  const series = cliArg('series', 'all') as StudySeries;
+  const r = await run(days.map((d) => d.file), series === '15m' ? '15m' : 'all');
   const out = cliArg('out', '');
   if (out) { fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true }); fs.writeFileSync(out, JSON.stringify({ days: days.map((d) => d.day), ...r }, null, 1)); }
-  console.log(`[depth] ${days.length} day(s): ${days[0].day}..${days[days.length - 1].day}`);
+  console.log(`[depth] ${days.length} day(s): ${days[0].day}..${days[days.length - 1].day}, contracts: ${series === '15m' ? '15-minute only' : 'all up/down'}`);
   // All cells together: the trade flow by where the mid went over the quarter-minute.
   const all = [0, 1, 2].map((k) => r.shape.reduce((m, c) => { const x = c.byMove[k]; return { segs: m.segs + x.segs, trades: m.trades + x.tradesPerSec * x.segs * (SAMPLE_MS / 1000), yes: m.yes + (x.takerYesShare ?? 0) * x.tradesPerSec * x.segs * (SAMPLE_MS / 1000) }; }, { segs: 0, trades: 0, yes: 0 }));
   console.log(`[depth] ${all.reduce((a, m) => a + m.segs, 0)} quarter-minutes, by the mid's move over them (down / flat / up): share ${all.map((m) => (m.segs / Math.max(1, all.reduce((a, x) => a + x.segs, 0))).toFixed(2)).join(' / ')}, trades/s ${all.map((m) => (m.trades / Math.max(1, m.segs * (SAMPLE_MS / 1000))).toFixed(2)).join(' / ')}, YES takers ${all.map((m) => (m.yes / Math.max(1, m.trades)).toFixed(2)).join(' / ')}`);

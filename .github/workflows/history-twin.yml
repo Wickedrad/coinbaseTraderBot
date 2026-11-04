@@ -46,6 +46,9 @@ env:
   CHECK_COPY: '41394321652'
   FIT_RUN: '41395733162'
   TWIN_DAYS: '3'
+  # The same days on Drive (the warm-up day first), for when the check copy is evicted.
+  DRIVE_DAYS: '2026-10-29,2026-10-30,2026-10-31,2026-11-01'
+  DRIVE_FIT: '2026-10-27,2026-10-28'
 
 jobs:
   build:
@@ -96,6 +99,20 @@ jobs:
           KEEP=$(ls -1 data/recordings | grep -E '^md-[0-9-]{10}\.jsonl' | sort | awk -v l="$LAST" 'substr($0,1,13) < l' | tail -n $((TWIN_DAYS + 1)))
           for f in data/recordings/*; do echo "$KEEP" | grep -qxF "$(basename "$f")" || rm -f "$f"; done
           echo "[twin] kept $(ls data/recordings | tr '\n' ' '); fit $(ls data/fit 2>/dev/null | tr '\n' ' ')"
+      # Steven (Nov 2): history lives on Drive. With the check copy evicted, the same days come from the Drive archive.
+      - name: Drive setup (no cached copy)
+        id: drive
+        if: env.CHECK_COPY != '' && hashFiles('data/recordings/md-*') == ''
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The real days and fit days from Drive
+        if: steps.drive.outcome == 'success'
+        run: |
+          set -euo pipefail
+          for d in ${DRIVE_DAYS//,/ }; do bash deploy/drive_lab.sh recording "$d" data/recordings; done
+          for d in ${DRIVE_FIT//,/ }; do bash deploy/drive_lab.sh recording "$d" data/fit; done
+          echo "[twin] real days from Drive: $(ls data/recordings | tr '\n' ' '); fit $(ls data/fit | tr '\n' ' ')" | tee -a "$RUNNER_TEMP/build.log"
       - name: The real days (an earlier Replay fidelity run's copy, or this workflow's own earlier copy)
         id: real
         if: env.CHECK_COPY == ''
@@ -140,8 +157,8 @@ jobs:
           key: twin-real-${{ github.run_id }}
       - name: Real days present?
         run: |
-          [ -f data/models/model.json ] && [ "$(ls data/recordings 2>/dev/null | wc -l)" -ge 2 ] || { echo "[twin] no cached copy of real days (evicted); needs the server copy slot (SERVER_COPY=yes)" | tee -a "$RUNNER_TEMP/build.log"; exit 1; }
-          echo "[twin] real days from cache ${{ steps.real.outputs.cache-matched-key || 'server copy' }}: $(ls data/recordings | tr '\n' ' ')" | tee -a "$RUNNER_TEMP/build.log"
+          { [ -f data/models/model.json ] || [ "${{ github.event_name }}" = push ]; } && [ "$(ls data/recordings 2>/dev/null | wc -l)" -ge 2 ] || { echo "[twin] no cached copy of real days (evicted); needs the server copy slot (SERVER_COPY=yes)" | tee -a "$RUNNER_TEMP/build.log"; exit 1; }
+          echo "[twin] real days from ${{ steps.real.outputs.cache-matched-key || 'the check copy, Drive or a server copy' }}: $(ls data/recordings | tr '\n' ' ')" | tee -a "$RUNNER_TEMP/build.log"
       - name: Which days
         id: days
         run: |
@@ -189,7 +206,7 @@ jobs:
           T=data/twin
           echo "[twin] match from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
           node --import tsx research/historyTwin.ts --stage match --real data/recordings --twin data/history-replay --days "$WARM,$DAYS" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]' || { echo "match failed"; exit 1; }
-          node --import tsx research/depthStudy.ts --recordings data/fit --out data/models/depth_model.json 2>&1 | grep -E '^\[depth\]' | sed 's/^\[depth\]/[twin] depth model:/' | cut -c1-300 | tee -a "$RUNNER_TEMP/build.log" || true
+          node --import tsx research/depthStudy.ts --recordings data/fit --series 15m --out data/models/depth_model.json 2>&1 | grep -E '^\[depth\]' | sed 's/^\[depth\]/[twin] depth model:/' | cut -c1-300 | tee -a "$RUNNER_TEMP/build.log" || true
           [ -s data/models/depth_model.json ] || { echo "no depth model"; exit 1; }
           node --import tsx research/historyTwin.ts --stage fill --src $T/requote --dst $T/depth --how depth --depth-model data/models/depth_model.json 2>&1 | grep '^\[twin\]' | tee -a "$RUNNER_TEMP/build.log"
           mkdir -p $T/lag; for d in ${WARM} ${DAYS//,/ }; do if [ -f data/history-replay-lag/md-$d.jsonl.gz ]; then cp data/history-replay-lag/md-$d.jsonl.gz $T/lag/; fi; done
