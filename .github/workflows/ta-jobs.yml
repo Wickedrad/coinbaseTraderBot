@@ -62,30 +62,18 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
-      - name: Restore the Kalshi history and its replay (this branch's, else the sweep's on main)
-        uses: actions/cache/restore@v4
+      # Steven's rule (Nov 2): storage on Google Drive, not Actions caches (they were evicted mid-run twice).
+      - uses: ./.github/actions/drive-setup
         with:
-          path: |
-            data/history
-            data/history-replay
-          key: ta-jobs-replay-${{ github.run_id }}
-          # The shared copy on main first (Nov 2: the coordinator's kalshi-replay-41353229892), then this branch's.
-          restore-keys: |
-            ta-jobs-replay-
-            kalshi-replay-41353229892
-            kalshi-replay-
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The Kalshi history and its replay (the sweep's copy on Drive)
+        run: |
+          bash deploy/drive_lab.sh get raw/history data/history || echo "no raw/history on Drive: downloading from scratch"
+          bash deploy/drive_lab.sh get simulated/kalshi-replay data/history-replay || echo "no replay on Drive: building it"
       - name: Repair stored quotes, download what is new, rebuild the replay
         run: |
           node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 140 2>&1 \
             | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -30
-      - name: Save the Kalshi history and its replay
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            data/history
-            data/history-replay
-          key: ta-jobs-replay-${{ github.run_id }}
       # Round 4 lost its last six replays when the cache above was evicted mid-run (Nov 2, 06:05 UTC): the replays read the
       # same public market data from this run's artifact instead (Kalshi and Binance history only, never a server copy).
       - name: Hand the market data to the replays
@@ -98,25 +86,24 @@ jobs:
           retention-days: 2
           compression-level: 1
       # Pin one copy of the server's model and settings for every replay of this run: the daily sweep on main saves a new
-      # copy, and replays that start hours apart would otherwise compare different models (round 3, Oct 31).
+      # copy, and replays that start hours apart would otherwise compare different models (round 3, Oct 31). The newest
+      # sweep copy in the cache if one is still there, else the last copy this workflow kept on Drive; then on Drive for
+      # this run's replays (caches were evicted mid-run on Nov 2).
       - name: Restore the server's model and settings (the sweep's copy on main)
         uses: actions/cache/restore@v4
         with:
           path: |
             data/models
             data/sweep-env
-          # Nov 2: the model-only copy dispatched for round 5 (kalshi-sweep run 41450292439), then any newer one.
-          key: kalshi-server-41450292439
+          key: kalshi-server-none
           restore-keys: kalshi-server-
-      - name: Stop when no copy of the server's model is cached (the daily sweep on main saves one at 09:23 UTC)
-        run: '[ -f data/models/model.json ] || { echo "::error::no server copy cached: rerun after the daily sweep"; exit 1; }'
-      - name: Pin that copy for every replay of this run
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            data/models
-            data/sweep-env
-          key: ta-jobs-server-${{ github.run_id }}
+      - name: Pin that copy on Drive for every replay of this run
+        run: |
+          if [ ! -f data/models/model.json ]; then bash deploy/drive_lab.sh get lab-copies/ta-jobs/server-latest data || true; echo "server copy from Drive (lab-copies/ta-jobs/server-latest)"; fi
+          [ -f data/models/model.json ] || { echo "::error::no server copy in the cache or on Drive: run kalshi-sweep's server job first"; exit 1; }
+          echo "model.json $(date -u -r data/models/model.json +%FT%TZ)"
+          bash deploy/drive_lab.sh put "lab-copies/ta-jobs/$GITHUB_RUN_ID/server" data --include '/models/**' --include '/sweep-env/**'
+          bash deploy/drive_lab.sh put lab-copies/ta-jobs/server-latest data --include '/models/**' --include '/sweep-env/**'
       - name: The variants
         id: v
         run: |
@@ -155,15 +142,11 @@ jobs:
         with:
           name: ta-jobs-data
           path: data
-      - name: Restore the server's model and settings (the sweep's copy on main)
-        id: server
-        uses: actions/cache/restore@v4
+      - uses: ./.github/actions/drive-setup
         with:
-          path: |
-            data/models
-            data/sweep-env
-          key: ta-jobs-server-${{ github.run_id }}
-          fail-on-cache-miss: true
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The server's model and settings this run pinned (Drive)
+        run: bash deploy/drive_lab.sh get "lab-copies/ta-jobs/$GITHUB_RUN_ID/server" data
       - name: Replay ${{ matrix.variant }}
         env:
           NODE_OPTIONS: --max-old-space-size=12288
@@ -215,15 +198,11 @@ jobs:
         with:
           name: ta-jobs-data
           path: data
-      - name: Restore the server's model and settings (the sweep's copy on main)
-        id: server
-        uses: actions/cache/restore@v4
+      - uses: ./.github/actions/drive-setup
         with:
-          path: |
-            data/models
-            data/sweep-env
-          key: ta-jobs-server-${{ github.run_id }}
-          fail-on-cache-miss: true
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The server's model and settings this run pinned (Drive)
+        run: bash deploy/drive_lab.sh get "lab-copies/ta-jobs/$GITHUB_RUN_ID/server" data
       - uses: actions/download-artifact@v4
         with:
           pattern: ta-jobs-baseline-p*
