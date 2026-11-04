@@ -26,10 +26,10 @@ const long = (o: Partial<MarketView> = {}) => view({ position: 10, entrySidePric
 const ioc = (out: StrategyOutput) => out.place.filter((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
 
 test('loser rules: gate 6c + 12c quote cushion on by default, cut and window cut off (8 recorded days), each by its flag', () => {
-  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, window: false, windowJudge: 'bid', windowMode: 'bid', windowRestFinalSec: 60, windowShare: 0, noEntryShare: 0, gatedStakeMult: 1 });
+  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, window: false, windowJudge: 'bid', windowMode: 'bid', windowRestFinalSec: 60, windowShare: 0, noEntryShare: 0, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
   const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE: 'false', LOSER_CUT: 'true', LOSER_WINDOW_CUT: 'true', FV_ENTRY_GATE_MARGIN: '0.09', LOSER_CUT_MARGIN: '0.05',
     FV_ENTRY_GATE_QUOTE_MARGIN: '', LOSER_WINDOW_JUDGE: 'cost', LOSER_WINDOW_MODE: 'rest', LOSER_WINDOW_REST_FINAL_SEC: '90', LOSER_WINDOW_SHARE: '0.25', LOSER_NO_ENTRY_SHARE: '0.2' }).strategy;
-  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, window: true, windowJudge: 'cost', windowMode: 'rest', windowRestFinalSec: 90, windowShare: 0.25, noEntryShare: 0.2, gatedStakeMult: 1 });
+  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, window: true, windowJudge: 'cost', windowMode: 'rest', windowRestFinalSec: 90, windowShare: 0.25, noEntryShare: 0.2, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
 });
 
 test('loser window cut: in the last share of the window or the final minute a position not in profit is sold at the bid; one in profit rides', () => {
@@ -221,6 +221,15 @@ test('GATED_STAKE_MULT: off by default; at 2 only the orders that pass the gate 
   const noFv = plan(); applyFvGate(noFv, undefined, 0, DEFAULT_FEES, x2); assert.deepEqual(noFv.place.map((p) => p.count), [5, 3]);
   // A training trade that passes the gate keeps its minimum size.
   const tr = plan(); tr.place[0] = { ...tr.place[0], why: 'train: YES at 0.60' }; applyFvGate(tr, 0.8, 0, DEFAULT_FEES, x2); assert.deepEqual(tr.place.map((p) => p.count), [5, 3]);
+  // GATED_STAKE_CAP=clamp (default) with the band's top passed in: 5 at 0.60 ($3 + fee) doubles to 10 under a $20 top, but a
+  // $5 top holds it at the most contracts that fit ($0.60 x 7 + fee <= $5); widen ignores the top (the caps widen instead).
+  const c20 = plan(); applyFvGate(c20, 0.8, 0, DEFAULT_FEES, x2, false, 20); assert.equal(c20.place[0].count, 10);
+  const c5 = plan(); applyFvGate(c5, 0.8, 0, DEFAULT_FEES, x2, false, 5);
+  assert.ok(c5.place[0].count > 5 && c5.place[0].count < 10);
+  assert.ok(c5.place[0].count * 0.6 <= 5);
+  const wide = plan(); applyFvGate(wide, 0.8, 0, DEFAULT_FEES, { ...x2, loserExits: { ...x2.loserExits!, gatedStakeCap: 'widen' } }, false, 5);
+  assert.equal(wide.place[0].count, 10);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), GATED_STAKE_CAP: 'widen' }).strategy.loserExits!.gatedStakeCap, 'widen');
 });
 
 test('shareWindowSec: the share rules measure a contract\'s own hour, not a ladder\'s listing hours or a day ahead', () => {

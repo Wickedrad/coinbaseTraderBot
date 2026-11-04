@@ -75,6 +75,11 @@ export interface LoserExitConfig {
    *  +$13.43/h against +$8.08/h on Oct 24-28 and +$1.22/h against -$0.10/h on Oct 29-Nov 1; it loses on thin days and never
    *  applies to ungated entries (x2 there lost $5-8/h more) or training trades. Same in paper and live. */
   gatedStakeMult?: number;
+  /** GATED_STAKE_CAP (clamp): how a scaled order meets the order caps. clamp = never above the order band's top (or the
+   *  paper order size), so x2 lifts a gated $10-$19 order to at most $20 and Steven's $10-$20 band holds; widen = the
+   *  per-order, window and total risk caps widen by GATED_STAKE_MULT so a gated order can reach $40 (needs Steven's OK:
+   *  it widens his band). Without either the risk gateway refuses the doubled order outright (whole-bot round 1). */
+  gatedStakeCap?: 'clamp' | 'widen';
   /** LOSER_CUT (off: it lost on 6 of 8 recorded days next to the gate; studied for the condition under which it wins): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
    *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
   cut: boolean;
@@ -1217,6 +1222,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       windowShare: num(env, 'LOSER_WINDOW_SHARE', 0, 0, 0.9),
       noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
       gatedStakeMult: num(env, 'GATED_STAKE_MULT', 1, 1, 5),
+      gatedStakeCap: oneOf(env, 'GATED_STAKE_CAP', 'clamp', ['clamp', 'widen'] as const),
     },
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),

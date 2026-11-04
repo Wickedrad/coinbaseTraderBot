@@ -294,7 +294,7 @@ export function gateMarginFor(cfg: Pick<StrategyConfig, 'loserExits'>, maker: bo
  *  drops each order that opens or adds to a position at a cost the gate refuses. An order that only reduces the position is
  *  kept. Returns how many were dropped. */
 export function applyFvGate(plan: StrategyOutput, pFair: number | undefined, position: number, fees: FeeSchedule | undefined, cfg: Pick<StrategyConfig, 'loserExits'>,
-  noEntry = false): number {
+  noEntry = false, maxStakeUsd = 0): number {
   if (!noEntry && (!cfg.loserExits?.gate || pFair === undefined)) return 0;
   const before = plan.place.length;
   const passed: typeof plan.place = [];
@@ -320,9 +320,15 @@ export function applyFvGate(plan: StrategyOutput, pFair: number | undefined, pos
   });
   // GATED_STAKE_MULT: the orders that passed the gate carry its edge, so they are sized up (paper and live alike).
   const k = cfg.loserExits?.gatedStakeMult ?? 1;
+  const clamp = (cfg.loserExits?.gatedStakeCap ?? 'clamp') === 'clamp' && maxStakeUsd > 0;
   if (k > 1) for (const p of passed) {
-    const n = Math.floor(p.count * k + 1e-9);
-    if (n > p.count) { plan.notes.push(`gated stake x${k}: ${p.purpose} ${p.count} -> ${n} contracts`); p.count = n; }
+    let n = Math.floor(p.count * k + 1e-9);
+    if (clamp) {
+      // GATED_STAKE_CAP=clamp: no higher than the order band's top, fee in (the risk gateway refuses an order above it).
+      const cost = p.side === 'bid' ? p.price : round(1 - p.price, 4);
+      while (n > p.count && n * cost + orderFee(n, cost, !p.postOnly, fees) > maxStakeUsd + 1e-9) n--;
+    }
+    if (n > p.count) { plan.notes.push(`gated stake x${k}${clamp ? ` (to $${maxStakeUsd})` : ''}: ${p.purpose} ${p.count} -> ${n} contracts`); p.count = n; }
   }
   return before - plan.place.length;
 }
