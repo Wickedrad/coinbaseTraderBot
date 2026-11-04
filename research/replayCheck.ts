@@ -94,6 +94,8 @@ export interface PriceMatch {
   firstHour?: PriceMatch;
 }
 export interface ReplayCheck {
+  /** REPLAY_DUMP: the chosen markets fill by fill on both sides (lines to print). */
+  dump?: string[];
   days: string[]; bankroll: number; exitPolicy: string;
   /** Whether the replay's equity guard started from the bot's, and the override it ran with. */
   guardSeeded: boolean; killOverride: boolean;
@@ -180,7 +182,7 @@ export type PaperSide = SideSummary & {
 
 /** What the check reads from the audit log (crypto only), each with its time. */
 export interface AuditRecords {
-  fills: Array<{ t: number; coid?: string; count: number; fee: number }>;
+  fills: Array<{ t: number; coid?: string; count: number; fee: number; ticker?: string; side?: string; price?: number }>;
   orders: Map<string, { purpose?: string; why?: string }>;
   settlements: Array<{ t: number; pnl: number; ticker?: string }>;
   /** The bot's starts, with the settings it logged (bot/main.ts: publicConfig). */
@@ -294,7 +296,7 @@ export async function readAudit(auditDir: string, days: string[], prices?: { fro
       if (r.kind === 'fill') {
         const fl = d.fill ?? {};
         if (isTennis(String(fl.ticker ?? ''))) continue;
-        a.fills.push({ t, coid: d.clientOrderId ?? fl.clientOrderId, count: Number(fl.count) || 0, fee: Number(d.fee) || 0 });
+        a.fills.push({ t, coid: d.clientOrderId ?? fl.clientOrderId, count: Number(fl.count) || 0, fee: Number(d.fee) || 0, ticker: typeof fl.ticker === 'string' ? fl.ticker : undefined, side: fl.side ?? d.side, price: Number(fl.price ?? d.price) });
         continue;
       }
       // settlement: realized P&L of the market (fees included).
@@ -306,6 +308,41 @@ export async function readAudit(auditDir: string, days: string[], prices?: { fro
 }
 
 /** What paper did in [from, to). */
+/** REPLAY_DUMP (Nov 4, the $246 gap): markets fill by fill on both sides. The spec is space separated: `mid` (first fill on
+ *  either side at 30-70c, YES scale), `settle:YYYY-MM-DDTHH` (markets settling in that UTC hour), or tickers. */
+export function marketDump(spec: string, r: { trades: Array<{ ticker: string; closeTs: number; pnl: number }>; fillLog?: Array<{ t: number; ticker: string; side: string; price: number; count: number; taker: boolean; coid?: string }> }, a: AuditRecords, from: number, to: number): string[] {
+  const inside = (t: number) => t >= from && t < to;
+  const purpose = (coid?: string) => (!coid ? 'other' : coid.includes('-exit-') ? coid.slice(coid.indexOf('-exit-') + 1) : /-(quote|entry|exit)(?:-tp)?$/.exec(coid)?.[1] ?? 'other');
+  type F = { t: number; side: string; price: number; count: number; tag: string };
+  const rep = new Map<string, F[]>(), pap = new Map<string, F[]>();
+  for (const f of r.fillLog ?? []) if (inside(f.t)) (rep.get(f.ticker) ?? rep.set(f.ticker, []).get(f.ticker)!).push({ t: f.t, side: f.side, price: f.price, count: f.count, tag: `${purpose(f.coid)}${f.taker ? ' taker' : ''}` });
+  for (const f of a.fills) {
+    if (!inside(f.t) || !f.ticker) continue;
+    const o = f.coid ? a.orders.get(f.coid) : undefined;
+    (pap.get(f.ticker) ?? pap.set(f.ticker, []).get(f.ticker)!).push({ t: f.t, side: String(f.side ?? '?'), price: Number(f.price), count: f.count, tag: `${o?.purpose ?? 'other'}${o?.why ? ` (${o.why.slice(0, 40)})` : ''}` });
+  }
+  const rPnl = new Map<string, { pnl: number; close: number }>(), pPnl = new Map<string, number>();
+  for (const t of r.trades) if (inside(t.closeTs)) rPnl.set(t.ticker, { pnl: t.pnl, close: t.closeTs });
+  for (const s of a.settlements) if (inside(s.t) && s.ticker) pPnl.set(s.ticker, (pPnl.get(s.ticker) ?? 0) + s.pnl);
+  const yes = (f?: F) => (f ? f.price : NaN);
+  const tickers = new Set<string>([...rep.keys(), ...pap.keys(), ...rPnl.keys(), ...pPnl.keys()]);
+  const want = spec.split(/[\s,]+/).filter(Boolean);
+  const chosen = [...tickers].filter((tk) => want.some((w) => {
+    if (w === 'mid') { const a1 = yes(rep.get(tk)?.[0]), b1 = yes(pap.get(tk)?.[0]); return (a1 >= 0.3 && a1 <= 0.7) || (b1 >= 0.3 && b1 <= 0.7); }
+    if (w.startsWith('settle:')) { const c = rPnl.get(tk)?.close; return c !== undefined && new Date(c).toISOString().startsWith(w.slice(7)); }
+    return w === tk;
+  })).sort();
+  const hm = (t: number) => new Date(t).toISOString().slice(5, 19).replace('T', ' ');
+  const fl = (xs: F[] | undefined) => (xs?.length ? xs.slice(0, 14).map((f) => `${hm(f.t)} ${f.side} ${f.price.toFixed(2)}x${Math.round(f.count)} ${f.tag}`).join('; ') + (xs.length > 14 ? `; +${xs.length - 14} more` : '') : 'none');
+  const out = [`market dump (${spec}): ${chosen.length} markets | replay P&L ${chosen.reduce((s2, tk) => s2 + (rPnl.get(tk)?.pnl ?? 0), 0).toFixed(2)} | paper ${chosen.reduce((s2, tk) => s2 + (pPnl.get(tk) ?? 0), 0).toFixed(2)}`];
+  for (const tk of chosen) {
+    out.push(`  ${tk}: replay ${(rPnl.get(tk)?.pnl ?? 0).toFixed(2)} / paper ${(pPnl.get(tk) ?? 0).toFixed(2)}`);
+    out.push(`    replay fills: ${fl(rep.get(tk))}`);
+    out.push(`    paper fills:  ${fl(pap.get(tk))}`);
+  }
+  return out;
+}
+
 export function paperSummary(a: AuditRecords, from = -Infinity, to = Infinity): PaperSide {
   const out: PaperSide = { ...empty(), gateShare: null, lastFillAt: null, extra: { train: 0, explore: 0 }, quiet: { diagnoses: 0, lastAt: null, reasons: {} }, quietHours: {}, takeProfitBench: { scored: 0, netUsd: 0, benchedAt: null, byMarket: {} }, rejected: {} };
   const inside = (t: number) => t >= from && t < to;
@@ -688,7 +725,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     takeProfitBench: { enforce: S.takeProfitBench, rule: curveBench, stateFile: benchFile, ...(follow ? { follow } : {}) }, accuracyGateFile: gateFile, startMs, tradeFromMs: from,
     dailyGoalUsd: cfg.vault.dailyGoalUsd, equityGuardFile: guardFile, killOverride, refillUsd: cfg.paperBankrollUsd, sessionEdge: cfg.sessionEdge, onEval: match.onEval, makerMarkouts: o.makerMarkouts,
     volProfile: models.volProfile, applyVolSeasonality: Boolean(models.volProfile), volModel: models.volModel, fillModel: models.fillModel, calendar: models.calendar,
-    taNet: true, trials: models.trials, marketContext: true, ...(o.tickPhaseMs !== undefined ? { tickPhaseMs: o.tickPhaseMs } : {}), ...(seed ? { seedCandles: seed } : {}),
+    taNet: true, trials: models.trials, marketContext: true, fillLog: Boolean(process.env.REPLAY_DUMP), ...(o.tickPhaseMs !== undefined ? { tickPhaseMs: o.tickPhaseMs } : {}), ...(seed ? { seedCandles: seed } : {}),
   });
   fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(seedDir, { recursive: true, force: true });
@@ -718,6 +755,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   const x = r.exits;
   if (x.huntActivations || x.wallAsks || x.quotaSnipes) replay.hunt = `hunt mode in the replay: ${x.huntActivations} activations, ${x.ratchetTriggers} stop triggers, ${x.gaps} gaps, ${x.huntProfitTakes} profit takes, ${x.lockSales} lock sales, ${x.lockHolds} lock holds, ${x.wallAsks} wall asks (${x.wallFills.toFixed(0)} contracts filled on them), ${x.quotaSnipes} quota snipes (${x.quotaSnipeContracts.toFixed(0)} contracts)${x.floorArms || x.floorSales ? `, ${x.floorArms ?? 0} quota floors armed, ${x.floorSales ?? 0} floor sale calls` : ''}`;
   const paper = paperSummary(audit, from, to);
+  const dump = process.env.REPLAY_DUMP ? marketDump(process.env.REPLAY_DUMP, r, audit, from, to) : undefined;
   const minHours = o.minHours ?? 3;
   const checked = hours >= minHours;
   const v = verdict(replay, paper);
@@ -728,7 +766,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     modelSwaps: audit.modelSwaps.filter(inside).map((t) => new Date(t).toISOString()),
     hotSwaps: audit.hotSwaps.filter((x) => x.t >= from).map((x) => ({ t: new Date(x.t).toISOString(), kind: x.kind })),
     refills: { paper: audit.refills.filter((x) => inside(x.t)).map((x) => ({ t: new Date(x.t).toISOString(), usd: x.usd })), replay: (r.refills ?? []).filter((x) => inside(x.t)).map((x) => ({ t: new Date(x.t).toISOString(), usd: x.usd })) },
-    replay, paper, prices: match.summary(), makerBufferPaper, models: models.used, gates: cfg.probation.mode, benched, seeded,
+    ...(dump ? { dump } : {}), replay, paper, prices: match.summary(), makerBufferPaper, models: models.used, gates: cfg.probation.mode, benched, seeded,
     benchFollowed: follow ? { benched: follow.benched, events: follow.events.map((e) => ({ t: new Date(e.t).toISOString(), benched: e.benched })) } : null,
     ...v, checked, close: checked && v.close,
     why: checked ? v.why : [`the stretch on one start of the paper bot is ${hours.toFixed(1)} h (from ${new Date(from).toISOString()}), the check needs ${minHours} h`],
@@ -860,6 +898,7 @@ async function main(): Promise<void> {
   // began priced paper only from then on.
   if (res.hotSwaps) console.log(`models the bot hot-swapped since the stretch began: ${res.hotSwaps.length ? res.hotSwaps.map((x) => `${x.kind} ${hm(x.t)}`).join(', ') : 'none'}`);
   console.log(`hourly P&L correlation ${res.hourCorr === null ? 'n/a' : res.hourCorr.toFixed(2)} | total gap ${pct(res.pnlGap)}`);
+  for (const l of res.dump ?? []) console.log(l.slice(0, 1500));
   console.log(!res.checked ? `VERDICT not checked yet: ${res.why.join('; ')}` : res.close ? 'VERDICT close: sweep results can count' : `VERDICT not close: ${res.why.join('; ')}`);
   console.log(`peak memory ${(process.resourceUsage().maxRSS / 1024).toFixed(0)} MB`);
 }

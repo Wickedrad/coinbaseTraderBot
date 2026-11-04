@@ -165,6 +165,8 @@ export interface BacktestResult {
     rejected?: Record<string, number>; trainTrades?: number; exploreEntries?: number; extraSent?: number; extraRejected?: Record<string, number> };
   /** Fills and contracts by order purpose (quote, entry, exit), and contracts filled by UTC hour (YYYY-MM-DDTHH). */
   byPurpose?: Record<string, { fills: number; contracts: number }>;
+  /** Every fill (with opts.fillLog): time, market, side, price, contracts, taker or not, the order's id. */
+  fillLog?: Array<{ t: number; ticker: string; side: 'bid' | 'ask'; price: number; count: number; taker: boolean; coid?: string }>;
   contractsByHour?: Record<string, number>;
   /** The maker buffer at the last evaluation (adaptive with the paper options). */
   makerBufferEnd?: number;
@@ -192,7 +194,7 @@ export interface BacktestResult {
  */
 export interface BacktestLatency { orderMs: number; cancelMs?: number; jitterMs?: number }
 
-export interface BacktestOpts { exitPolicy?: ExitPolicyName; ratchet?: RatchetParams; hunt?: HuntParams; volProfile?: VolProfile; applyVolSeasonality?: boolean; volModel?: VolModel; fillModel?: FillModel; sessionRisk?: SessionRiskProfile; huntSessionGuard?: boolean; huntTransitionBufferMin?: number; vault?: VaultConfig; calendar?: MacroEvent[]; sizingTiers?: TierPoint[]; latency?: BacktestLatency;
+export interface BacktestOpts { fillLog?: boolean; exitPolicy?: ExitPolicyName; ratchet?: RatchetParams; hunt?: HuntParams; volProfile?: VolProfile; applyVolSeasonality?: boolean; volModel?: VolModel; fillModel?: FillModel; sessionRisk?: SessionRiskProfile; huntSessionGuard?: boolean; huntTransitionBufferMin?: number; vault?: VaultConfig; calendar?: MacroEvent[]; sizingTiers?: TierPoint[]; latency?: BacktestLatency;
   /** Record the model calls to this tape on the first run, play them back on later ones (research/callTape.ts). `sig`
    *  must change with anything the calls depend on (the days, the model, the vol settings, the risk limits). Not used
    *  with a fill model (it reads features the tape does not keep). */
@@ -509,6 +511,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     if (!f.isTaker) markoutDue.push({ due: st.now + 60_000, ticker: f.ticker, sign: f.side === 'bid' ? 1 : -1, price: f.price });
     const bp = (res.byPurpose![purposeOf(f.clientOrderId)] ??= { fills: 0, contracts: 0 });
     bp.fills++; bp.contracts += f.count;
+    if (opts.fillLog) (res.fillLog ??= []).push({ t: st.now, ticker: f.ticker, side: f.side, price: f.price, count: f.count, taker: Boolean(f.isTaker), coid: f.clientOrderId });
     if (f.clientOrderId?.endsWith('-exit-wall')) exits.wallFills += f.count;
     if (f.clientOrderId?.endsWith('-exit-snipe')) { exits.quotaSnipes++; exits.quotaSnipeContracts += f.count; }
     const hour = new Date(st.now).toISOString().slice(0, 13);
