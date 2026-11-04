@@ -467,3 +467,14 @@ test('quote side gate: a price on the mid quotes neither side; above the mid it 
   // Off: both sides, as before.
   assert.equal(decide(view({ pYes: 0.55 }), cfg).place.filter((p) => p.purpose === 'quote').length, 2);
 });
+
+test('NO longshot edge: off by default; on, only new NO risk under the price pays it', async () => {
+  const { noLongshotExtra } = await import('../bot/strategy/fairValueStrategy');
+  const base = { DASHBOARD_TOKEN: 'x'.repeat(32) };
+  assert.equal(loadConfig(base).strategy.noLongshotEdge, 0);
+  const s = loadConfig({ ...base, NO_LONGSHOT_EDGE: '0.04' }).strategy;
+  assert.equal(noLongshotExtra(s, 0, 0.2), 0.04);
+  assert.equal(noLongshotExtra(s, 0, 0.4), 0);
+  assert.equal(noLongshotExtra(s, 5, 0.2), 0); // unwinding a YES position
+  assert.equal(noLongshotExtra(loadConfig(base).strategy, 0, 0.2), 0);
+});

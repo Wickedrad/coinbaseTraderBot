@@ -386,6 +386,8 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     // YES ask (= NO bid at 1 - ap).
     let ap = ceilToTick(skewed + offset, tick);
     ap = Math.max(ap, round(bid.price + tick, 4));
+    // NO longshot (NO_LONGSHOT_EDGE): new NO risk costing under NO_LONGSHOT_PRICE asks for extra edge.
+    if (noLongshotExtra(cfg, v.position, round(1 - ap, 4)) > 0) ap = Math.max(ceilToTick(skewed + offset + noLongshotExtra(cfg, v.position, round(1 - ap, 4)), tick), round(bid.price + tick, 4));
     const noCost = round(1 - ap, 4);
     if (!askGated && noCost >= v.minSidePrice && noCost <= 1 - v.minSidePrice) {
       const fee = orderFee(1, noCost, false, v.fees);
@@ -481,7 +483,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
       if (k.contracts > 0) {
         const fee = orderFee(k.contracts, noCost, true, v.fees) / k.contracts;
         const edge = (1 - q) - noCost - fee;
-        if (edge >= cfg.takerBuffer + cfg.minEdge) {
+        if (edge >= cfg.takerBuffer + cfg.minEdge + noLongshotExtra(cfg, v.position, noCost)) {
           out.place.push({ side: 'ask', price: bid.price, count: k.contracts, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge, why: `take NO: q ${q.toFixed(3)} vs bid ${bid.price}` });
         }
       }
@@ -514,4 +516,12 @@ function reconcileQuote(resting: RestingQuote | undefined, desired: OrderPlan | 
     out.cancel.push({ clientOrderId: resting.clientOrderId, reason: moved ? `requote ${resting.price} -> ${desired.price}` : shrink ? 'size shrink' : 'quote expiring' });
     out.place.push(desired);
   }
+}
+
+/** Extra edge asked of new NO risk that costs under cfg.noLongshotPrice (NO_LONGSHOT_EDGE; 0 = off). A NO buy that
+ *  unwinds a held YES position is never charged it. Paper's Nov 3-4 loss sat in these entries (first fill an ask
+ *  above 0.70 on the YES scale: 79 markets, 11% win). */
+export function noLongshotExtra(cfg: { noLongshotEdge?: number; noLongshotPrice?: number }, position: number, noCost: number): number {
+  const e = cfg.noLongshotEdge ?? 0;
+  return e > 0 && position <= 0 && noCost < (cfg.noLongshotPrice ?? 0.3) ? e : 0;
 }

@@ -192,6 +192,9 @@ export interface StrategyConfig {
    *  with the market anchor's weight near 0 the price sits on the mid, and two-sided quotes there are plain market
    *  making, picked off by informed flow (60 s markout about -1.1c). QUOTE_SIDE_GATE. */
   quoteSideGate: number;
+  /** Extra edge asked of new NO risk that costs under noLongshotPrice (NO_LONGSHOT_EDGE, 0 = off; NO_LONGSHOT_PRICE). */
+  noLongshotEdge: number;
+  noLongshotPrice: number;
   /** Scale Kelly by max(0, 1 - drawdown / ddScaleAt); pause entries 24 h after a 7-day loss beyond weeklyLossPause. */
   ddScaleAt: number;
   weeklyLossPause: number;
@@ -1189,6 +1192,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     minTradableBankrollUsd: num(env, 'MIN_TRADABLE_BANKROLL_USD', 10, 0, 1e7),
     ensembleVetoSigmas: num(env, 'STRATEGY_ENSEMBLE_VETO_SIGMAS', 2, 0, 10),
     quoteSideGate: num(env, 'QUOTE_SIDE_GATE', 0, 0, 0.5),
+    noLongshotEdge: num(env, 'NO_LONGSHOT_EDGE', 0, 0, 0.5),
+    noLongshotPrice: num(env, 'NO_LONGSHOT_PRICE', 0.3, 0.01, 0.5),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
     modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),
