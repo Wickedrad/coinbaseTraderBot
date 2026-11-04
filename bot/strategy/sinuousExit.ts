@@ -314,6 +314,8 @@ export interface SinuousExitParams {
   dipFrac?: number;
   dipMax?: number;
   dipCooldownSec?: number;
+  /** Nov 3 (dynamics rule): dip buys only while calming inside this hourly-vol band (bp, SINUOUS_DIP_CALM_RV). */
+  dipCalmRvBp?: [number, number];
 }
 
 /** The cross needs the coin's price to have turned against the side held: 'against', 'with' it, or 'flat' (within

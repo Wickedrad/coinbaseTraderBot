@@ -41,7 +41,7 @@ import type { TakeProfitBench } from './strategy/takeProfitBench';
 import { CadenceGate, inEntryWindow, type CadenceReason } from './strategy/cadence';
 import { kalshiMaintenance, sessionEdge, sessionState, type SessionState } from './model/sessions';
 import type { EquityGuard } from './risk/equityGuard';
-import { modelSkillWeight, type ModelHealth } from './model/modelHealth';
+import { calmIn, modelSkillWeight, type ModelHealth } from './model/modelHealth';
 import type { AccuracyGate } from './strategy/accuracyGate';
 import type { Tca } from './tca/tca';
 import type { MacroEvent } from './model/featureEngine';
@@ -57,7 +57,7 @@ import { huntBlockedBySession, mergeSessionRisk, sessionRiskFor, type SessionRis
 import { playbook } from './strategy/playbook';
 import { compensator } from './strategy/compensator';
 import { macro } from './macro/macroService';
-import { gatePasses, probation, probationGpMult, probationLevel } from './risk/probation';
+import { gatePasses, probation, probationGpCalmBand, probationGpMult, probationLevel } from './risk/probation';
 import { DEFAULT_STREAK, StreakScaler } from './risk/streakScaler';
 import { applyTakeGate } from './model/takeModel';
 import { effectiveSigma, type VolProfile } from './model/volSeasonality';
@@ -2076,7 +2076,10 @@ export class Engine {
     // On probation (VALIDATION_GATES=monitor) an unvalidated formula speaks too, live included.
     const gpSpeaks = gpRead && (gpRead.validated || (gpRead.speaks && !liveMode) || gatePasses('kalshi', false)) ? gpRead : undefined;
     // An unvalidated formula's vote is halved at each level of the Kalshi book's probation (graded, never benched, Oct 31).
-    const gpVote = gpSpeaks && !gpSpeaks.validated && probationLevel('kalshi') > 0 ? { ...gpSpeaks, exposure: gpSpeaks.exposure * probationGpMult('kalshi') } : gpSpeaks;
+    // Inside PROBATION_GP_CALM_RV's calming band (the asset's last reading, before this tick's) it votes in full (Nov 3).
+    const gpBand = probationGpCalmBand();
+    const gpFull = gpBand ? calmIn(this.marketState.reading(m.asset, now), gpBand) : false;
+    const gpVote = gpSpeaks && !gpSpeaks.validated && !gpFull && probationLevel('kalshi') > 0 ? { ...gpSpeaks, exposure: gpSpeaks.exposure * probationGpMult('kalshi') } : gpSpeaks;
     const signals = orientedSignals(features, taView, liveMode, rbRead, gpVote);
     const taDir = taNetDirection(taView, liveMode);
     const rsiTrade = [shortContract ? features.ta_rsi_15m : features.ta_rsi_1h, features.rsi_14_1m].find((x) => x !== undefined && Number.isFinite(x));
@@ -2456,7 +2459,7 @@ export class Engine {
       }
       // The dip buy (SINUOUS_DIP_BUY; Nov 1): the book rolled over while the coin's fair value of the side stays above the ask
       // plus the fee and the margin: add to the position at the ask (the same rule in the replay, research/backtest.ts).
-      if (curve.p.dipBuy && entryWindowOpen && !huntMode && view.exitWindowOpen !== false && !ridesToSettlement(view) && !plan.place.some((p) => p.purpose === 'exit' || p.purpose === 'entry')) {
+      if (curve.p.dipBuy && (!curve.p.dipCalmRvBp || calmIn(mState, curve.p.dipCalmRvBp)) && entryWindowOpen && !huntMode && view.exitWindowOpen !== false && !ridesToSettlement(view) && !plan.place.some((p) => p.purpose === 'exit' || p.purpose === 'entry')) {
         const top = sign > 0 ? ask : bid;
         const sideAsk = sign > 0 ? top.price : Math.round((1 - top.price) * 1e4) / 1e4;
         const d = curve.dip(m.ticker, { sideAsk, takerFeePer: orderFee(1, sideAsk, true, fees), fvSide: sign > 0 ? fv.pYes : 1 - fv.pYes, tauSec, position: st.position, exitFeePer: orderFee(held, sideBid, true, fees) / held }, now);

@@ -21,8 +21,26 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 /** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
  *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
 export const VARIANTS: Record<string, Record<string, string>> = {
-  // Ordered by what each wave of three runners should answer first (the account runs at most three jobs at once).
+  // Round 4 (Nov 4), module-first (Steven, Nov 2): the 200-day run (41496168480) found every model-trusting change winning
+  // only in calming markets with hourly vol near 0.5 bp a minute (vol0.5bp|calming: skill 0.75 +77, GP full +86, dip buy
+  // +149) and losing in the neighbouring bands. Each is gated to that band here (0.36-0.71 bp = the 0.5 bp bucket).
+  // The placebo was exactly +0.00 in both deep runs, so it is left out of this round to save runners.
   baseline: {},
+  skill_b05: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71' },
+  skill_b05_w50: { MODEL_SKILL_W_CALM: '0.5', MODEL_SKILL_W_CALM_RV: '0.36,0.71' },
+  dip8_b05: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.36,0.71' },
+  gp_b05: { PROBATION_GP_CALM_RV: '0.36,0.71' },
+  all_b05: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.36,0.71', PROBATION_GP_CALM_RV: '0.36,0.71' },
+  // The curve cross at level 3 never sold in the replay (its fair-value margin is 0): level 1 on deep history, by condition.
+  cross_l1: { SINUOUS_CROSS: 'true', SINUOUS_CROSS_LEVEL: '1' },
+  // Adversary stress: orders reach the book 500 ms late, for the baseline and the candidate.
+  base_lat500: { RS_LATENCY_MS: '500' },
+  skill_b05_lat500: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', RS_LATENCY_MS: '500' },
+};
+
+/** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
+export const LATER: Record<string, Record<string, string>> = {
+  // Round 3 (Nov 2-3, run 41496168480):
   // The placebo: the same bot deciding on a tick shifted by half a second. Its gap from the baseline is path noise alone;
   // a variant's gain smaller than that gap is not believed.
   placebo: { RS_TICK_PHASE_MS: '500' },
@@ -37,10 +55,6 @@ export const VARIANTS: Record<string, Record<string, string>> = {
   dip8: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08' },
   cross_l3: { SINUOUS_CROSS: 'true', SINUOUS_CROSS_LEVEL: '3' },
   gp_full: { PROBATION_GP_MULT: '1' },
-};
-
-/** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
-export const LATER: Record<string, Record<string, string>> = {
   // The replay keeps no model-health record, so the measured weight is always 1 there: skill_off == baseline (moved here).
   skill_off: { MODEL_SKILL: 'false' },
   base_lat500: { RS_LATENCY_MS: '500' },

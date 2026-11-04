@@ -76,10 +76,10 @@ import { readRecordings, ReplayState } from './replay';
 import { AccuracyGate, type AccuracyGateConfig } from '../bot/strategy/accuracyGate';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
 import { compactReading, MarketState, observeMarket } from '../bot/marketdata/marketState';
-import { modelSkillWeight } from '../bot/model/modelHealth';
+import { calmIn, modelSkillWeight } from '../bot/model/modelHealth';
 import { dynamicEdge } from '../bot/strategy/dynamicEdge';
 import { otherCoinsHeld, regimeScale } from '../bot/strategy/regimeScale';
-import { gatePasses, probationGpMult, probationLevel, type ProbationParams } from '../bot/risk/probation';
+import { gatePasses, probationGpCalmBand, probationGpMult, probationLevel, type ProbationParams } from '../bot/risk/probation';
 import { bootstrapMeanCi, deflatedSharpe, pbo, rng, sharpe } from './stats';
 
 function arg(name: string, def: string): string {
@@ -773,7 +773,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         const gp = strategy.gp ? activeGpSignals()?.read(m.asset, (a) => st.features.candles.get(a)?.bars['1h']) : undefined;
         const gpSpeaks = gp && (gp.validated || gp.speaks || gatePasses('kalshi', false)) ? gp : undefined;
         // As the engine: an unvalidated formula's vote shrinks with the Kalshi book's probation level (graded, Oct 31).
-        const gpVote = gpSpeaks && !gpSpeaks.validated && probationLevel('kalshi') > 0 ? { ...gpSpeaks, exposure: gpSpeaks.exposure * probationGpMult('kalshi') } : gpSpeaks;
+        const gpBand = probationGpCalmBand();
+        const gpFull = gpBand ? calmIn(mstate.reading(m.asset, st.now), gpBand) : false;
+        const gpVote = gpSpeaks && !gpSpeaks.validated && !gpFull && probationLevel('kalshi') > 0 ? { ...gpSpeaks, exposure: gpSpeaks.exposure * probationGpMult('kalshi') } : gpSpeaks;
         const signals = orientedSignals(fmap, taView, false, rb, gpVote);
         const rsi = [(m.closeTime - m.openTime) / 60_000 <= 20 ? fmap.ta_rsi_15m : fmap.ta_rsi_1h, fmap.rsi_14_1m].find((x) => x !== undefined && Number.isFinite(x));
         const alt = altcoinRiskOn(m.asset, fmap.usdtd_ret_15m_z, rsi, strategy);
@@ -1078,7 +1080,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
             }
           }
           // The dip buy, as the engine.
-          if (curveGate.p.dipBuy && entryWindowOpen && !huntMode && view.exitWindowOpen !== false && !ridesToSettlement(view) && !plan.place.some((p) => p.purpose === 'exit' || p.purpose === 'entry') && !pending.has(m.ticker)) {
+          if (curveGate.p.dipBuy && (!curveGate.p.dipCalmRvBp || calmIn(lastState.get(m.ticker), curveGate.p.dipCalmRvBp)) && entryWindowOpen && !huntMode && view.exitWindowOpen !== false && !ridesToSettlement(view) && !plan.place.some((p) => p.purpose === 'exit' || p.purpose === 'entry') && !pending.has(m.ticker)) {
             const top = sign > 0 ? ask : bid;
             const sideAsk = sign > 0 ? top.price : Math.round((1 - top.price) * 1e4) / 1e4;
             const fvS = sign > 0 ? fv.pYes : 1 - fv.pYes;

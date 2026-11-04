@@ -59,21 +59,24 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
-      - name: Restore the Kalshi history and its replay (this branch's, else the sweep's on main)
-        uses: actions/cache/restore@v4
+      # Steven, Nov 2: history lives on Google Drive (raw and simulated), not in Actions caches; caches only pass data
+      # between this run's jobs.
+      - uses: ./.github/actions/drive-setup
         with:
-          path: |
-            data/history
-            data/history-replay
-          key: benched-jobs-replay-${{ github.run_id }}
-          restore-keys: |
-            benched-jobs-replay-
-            ta-jobs-replay-
-            kalshi-replay-
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Get the Kalshi history and its replay from Drive
+        run: |
+          bash deploy/drive_lab.sh get raw/kalshi-history data/history || echo "no raw Kalshi history on Drive yet"
+          bash deploy/drive_lab.sh get simulated/benched-189d data/history-replay || echo "no simulated replay on Drive yet"
       - name: Repair stored quotes, download what is new, rebuild the replay
         run: |
           node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 120 2>&1 \
             | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -30
+      - name: Keep the history and its replay on Drive
+        if: always()
+        run: |
+          [ -d data/history ] && bash deploy/drive_lab.sh put raw/kalshi-history data/history
+          [ -d data/history-replay ] && bash deploy/drive_lab.sh put simulated/benched-189d data/history-replay
       - name: Save the Kalshi history and its replay
         if: always()
         uses: actions/cache/save@v4
@@ -139,14 +142,17 @@ jobs:
             data/history
             data/history-replay
           key: benched-jobs-replay-${{ github.run_id }}
-          # Nov 2: the run's own copy was evicted after ~4 h (the project shares the 10 GB cache), failing six variants.
-          # Fall back to any later copy and top it up below; the report pairs days, so a missing day only drops out.
-          restore-keys: |
-            benched-jobs-replay-
-            kalshi-replay-
-      - name: Top up the history when the run's copy was evicted
-        if: steps.replay.outputs.cache-matched-key != format('benched-jobs-replay-{0}', github.run_id)
+      # Nov 2: the run's own cache was evicted after ~4 h (the project shares the 10 GB cache), failing six variants.
+      # Then the data job's Drive copy is read instead, topped up if needed.
+      - if: steps.replay.outputs.cache-hit != 'true'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Read the history from Drive when the run's cache was evicted
+        if: steps.replay.outputs.cache-hit != 'true'
         run: |
+          bash deploy/drive_lab.sh get raw/kalshi-history data/history || true
+          bash deploy/drive_lab.sh get simulated/benched-189d data/history-replay || true
           node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 120 2>&1 | tail -5
       - name: Restore the server's model and settings (the sweep's copy on main)
         id: server
@@ -212,11 +218,7 @@ jobs:
             data/history
             data/history-replay
           key: benched-jobs-replay-${{ steps.src.outputs.run }}
-          # The run's own copy can be evicted by the time a long run reports; any later copy holds the same days.
-          restore-keys: |
-            benched-jobs-replay-
-            ta-jobs-replay-
-            kalshi-replay-
+          # If evicted, the report takes the days the results span (benchedJobs.ts dayList).
       - uses: actions/download-artifact@v4
         with:
           pattern: benched-jobs-*

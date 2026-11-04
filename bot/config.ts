@@ -1225,7 +1225,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       on: bool(env, 'MODEL_SKILL', true), min: num(env, 'MODEL_SKILL_MIN', 0.25, 0.05, 1), pinned: num(env, 'MODEL_SKILL_W', -1, -1, 1),
       // Calm-market cap (bot/model/modelHealth.ts): off (-1) until it proves itself on calming days.
       calm: num(env, 'MODEL_SKILL_W_CALM', -1, -1, 1),
-      ...((b) => (b.length === 2 && b.every(Number.isFinite) && b[0] <= b[1] ? { calmRvBp: [b[0], b[1]] as [number, number] } : {}))((env.MODEL_SKILL_W_CALM_RV ?? '').split(',').filter((x) => x.trim() !== '').map(Number)),
+      ...calmBand(env.MODEL_SKILL_W_CALM_RV, 'calmRvBp'),
     },
     paperExplore: bool(env, 'PAPER_EXPLORE', false),
     exploreRate: num(env, 'PAPER_EXPLORE_RATE', 0.1, 0, 1),
@@ -1310,6 +1310,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       takeStep: num(env, 'PROBATION_TAKE_STEP', DEFAULT_PROBATION.takeStep!, 0, 0.2),
       fillStep: num(env, 'PROBATION_FILL_STEP', DEFAULT_PROBATION.fillStep!, 0, 0.1),
       gpMult: num(env, 'PROBATION_GP_MULT', DEFAULT_PROBATION.gpMult!, 0.05, 1),
+      ...calmBand(env.PROBATION_GP_CALM_RV, 'gpCalmRvBp'),
     },
     sinuousExit: {
       mode: oneOf(env, 'SINUOUS_EXIT', DEFAULT_SINUOUS_EXIT.mode, ['gate', 'monitor', 'rest', 'cross', 'off'] as const),
@@ -1346,6 +1347,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       dipFrac: num(env, 'SINUOUS_DIP_FRAC', 0.5, 0.05, 2),
       dipMax: Math.round(num(env, 'SINUOUS_DIP_MAX', 2, 0, 20)),
       dipCooldownSec: num(env, 'SINUOUS_DIP_COOLDOWN_SEC', 60, 1, 3600),
+      ...calmBand(env.SINUOUS_DIP_CALM_RV, 'dipCalmRvBp'),
     },
     sinuousEntry: {
       mode: oneOf(env, 'SINUOUS_ENTRY', DEFAULT_SINUOUS_ENTRY.mode, ['gate', 'monitor', 'off'] as const),
@@ -1741,4 +1743,10 @@ export function publicConfig(cfg: Config): Record<string, unknown> {
     perps: { ...cfg.perps, keyId: cfg.perps.keyId ? `${cfg.perps.keyId.slice(0, 4)}…` : undefined, privateKeyPath: cfg.perps.privateKeyPath ? '(set)' : undefined },
     alerts: { telegram: Boolean(alertTelegramToken), webhook: Boolean(alertWebhookUrl) },
   };
+}
+
+/** A calming-market hourly-vol band "lo,hi" in bp a minute (bot/model/modelHealth.ts calmIn), under `key`; absent when unset or malformed. */
+function calmBand<K extends string>(v: string | undefined, key: K): Partial<Record<K, [number, number]>> {
+  const b = (v ?? '').split(',').filter((x) => x.trim() !== '').map(Number);
+  return b.length === 2 && b.every(Number.isFinite) && b[0] <= b[1] ? ({ [key]: [b[0], b[1]] } as Partial<Record<K, [number, number]>>) : {};
 }

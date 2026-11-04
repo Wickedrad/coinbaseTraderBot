@@ -46,6 +46,8 @@ export interface ProbationParams {
   fillStep?: number;
   /** What an unvalidated evolved formula's vote is multiplied by, once per level (PROBATION_GP_MULT). */
   gpMult?: number;
+  /** Nov 3 (dynamics rule): inside this calming hourly-vol band (bp, PROBATION_GP_CALM_RV) the formula votes in full. */
+  gpCalmRvBp?: [number, number];
 }
 
 export const DEFAULT_PROBATION: ProbationParams = { mode: 'monitor', minTrades: 20, t: 1, maxLossUsd: 25, maxLossPct: 0.15, window: 200, levelMax: 4, takeStep: 0.02, fillStep: 0.005, gpMult: 0.5 };
@@ -169,6 +171,8 @@ export function probationLevel(book: ProbationBook): number { return active?.lev
 /** What the level adds to an unvalidated take model's margin, and to an unvalidated fill model's expected-value bar. */
 export function probationTakeAdd(book: ProbationBook = 'kalshi'): number { return probationLevel(book) * (active?.p.takeStep ?? DEFAULT_PROBATION.takeStep!); }
 /** An unvalidated evolved formula's vote multiplier at the level: PROBATION_GP_MULT ^ level. */
+/** The calming band where an unvalidated formula votes in full (PROBATION_GP_CALM_RV), if set. */
+export function probationGpCalmBand(): [number, number] | undefined { return active?.p.gpCalmRvBp; }
 export function probationGpMult(book: ProbationBook = 'kalshi'): number { return (active?.p.gpMult ?? DEFAULT_PROBATION.gpMult!) ** probationLevel(book); }
 export function probationFillAdd(book: ProbationBook = 'kalshi'): number { return probationLevel(book) * (active?.p.fillStep ?? DEFAULT_PROBATION.fillStep!); }
 /** Validated, or unvalidated with this book on an open probation. */

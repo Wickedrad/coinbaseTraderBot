@@ -77,3 +77,15 @@ test('model skill weight: the calm-market cap applies only while volatility is c
   const on = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.18,0.71' }).strategy.modelSkill;
   assert.deepEqual([on.calm, on.calmRvBp], [0.75, [0.18, 0.71]]);
 });
+
+test('calm bands for the dip buy and the formula vote: parsed, off by default, malformed ignored', () => {
+  const tok = { DASHBOARD_TOKEN: 'x'.repeat(32) };
+  const off = loadConfig(tok);
+  assert.equal(off.sinuousExit.dipCalmRvBp, undefined);
+  assert.equal(off.probation.gpCalmRvBp, undefined);
+  const on = loadConfig({ ...tok, SINUOUS_DIP_CALM_RV: '0.36,0.71', PROBATION_GP_CALM_RV: '0.36,0.71' });
+  assert.deepEqual(on.sinuousExit.dipCalmRvBp, [0.36, 0.71]);
+  assert.deepEqual(on.probation.gpCalmRvBp, [0.36, 0.71]);
+  assert.equal(loadConfig({ ...tok, SINUOUS_DIP_CALM_RV: '0.7,0.3' }).sinuousExit.dipCalmRvBp, undefined, 'lo > hi ignored');
+  assert.equal(loadConfig({ ...tok, PROBATION_GP_CALM_RV: 'x' }).probation.gpCalmRvBp, undefined, 'malformed ignored');
+});
