@@ -1,0 +1,74 @@
+name: History build (Drive)
+
+# Downloads Binance/Kalshi history and builds the Kalshi replay from it on a GitHub runner, straight to Google Drive:
+# the raw downloads to raw/history (shared with the Kalshi sweep and the TA study), the replay to simulated/<name>.
+# No server involved. A rerun continues from what Drive already has (the download skips what is there).
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Days of history to build (most recent)'
+        required: false
+        default: '200'
+      name:
+        description: 'Replay folder on Drive: simulated/<name> (letters, digits, - and _)'
+        required: false
+        default: 'kalshi-replay-200d'
+      budget_min:
+        description: 'Download time budget (minutes); rerun to continue if the log shows fewer days'
+        required: false
+        default: '300'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: history-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    env:
+      DAYS: ${{ inputs.days || '200' }}
+      NAME: ${{ inputs.name || 'kalshi-replay-200d' }}
+      BUDGET: ${{ inputs.budget_min || '300' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Restore what Drive already has
+        run: |
+          set -euo pipefail
+          [[ "$DAYS" =~ ^[0-9]+$ ]] && [[ "$BUDGET" =~ ^[0-9]+$ ]] && [[ "$NAME" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "bad input"; exit 1; }
+          bash deploy/drive_lab.sh get raw/history data/history || echo "raw/history: nothing on Drive yet"
+          bash deploy/drive_lab.sh get "simulated/$NAME" data/history-replay || echo "simulated/$NAME: nothing on Drive yet"
+          du -sh data/history data/history-replay 2>/dev/null | cat
+      - name: Download what is new and build the replay
+        run: |
+          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$DAYS" --budget-min "$BUDGET" 2>&1 \
+            | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -40
+          du -sh data/history data/history-replay | cat
+          echo "replay days: $(ls data/history-replay | wc -l)"
+      - name: Keep both on Drive
+        if: always()
+        run: |
+          [ ! -d data/history ] || bash deploy/drive_lab.sh put raw/history data/history
+          [ ! -d data/history-replay ] || bash deploy/drive_lab.sh put "simulated/$NAME" data/history-replay
