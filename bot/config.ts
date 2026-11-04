@@ -271,6 +271,10 @@ export interface StrategyConfig {
    *  same side rests post-only at its own touch (the YES bid, or the NO bid via the YES ask), for orderTtlSec, screened by
    *  the gate's quote margin (FV_ENTRY_GATE_QUOTE_MARGIN) as any resting quote that opens a position. */
   trainMode: 'taker' | 'maker';
+  /** TRAINING_SKIP_SERIES (unset = none): series that get no training trades, as "SERIES,*SUFFIX" (*15M = every 15-minute
+   *  series). Eight recorded days with the gate: training on the 15-minute series lost $88 (2 wins in 18), on the hourly
+   *  ranges it made money. Paper and live alike. */
+  trainSkipSeries?: string[];
   /** Markets with no position and no resting order are fully re-evaluated at most every idleEvalSec
    *  (1 s otherwise): most of the bot's CPU is the per-second evaluation of markets it is not in. */
   idleEvalSec: number;
@@ -987,6 +991,14 @@ function oneOf<T extends string>(env: Env, key: string, def: T, allowed: readonl
   return raw;
 }
 
+/** TRAINING_SKIP_SERIES: "*15M,KXETH" -> ['*15M', 'KXETH']. */
+export function parseSeriesList(raw: string): string[] {
+  return raw.split(',').map((x) => x.trim()).filter(Boolean).map((p) => {
+    if (!/^\*?[A-Z0-9]+$/.test(p)) throw new ConfigError(`TRAINING_SKIP_SERIES: "${p}" must be SERIES or *SUFFIX`);
+    return p;
+  });
+}
+
 /** FV_ENTRY_GATE_SERIES_MARGINS: "KXETHD=0.1,*15M=0.12" -> [{pattern, margin}]. */
 export function parseSeriesMargins(raw: string): { pattern: string; margin: number }[] {
   return raw.split(',').map((x) => x.trim()).filter(Boolean).map((x) => {
@@ -1267,6 +1279,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     exploreMaxPerHour: num(env, 'PAPER_EXPLORE_MAX_PER_HOUR', 6, 0, 120),
     trainTrades: num(env, 'TRAINING_TRADES_PER_HOUR', 12, 0, 120),
     trainMode: oneOf(env, 'TRAINING_MODE', 'taker', ['taker', 'maker'] as const),
+    ...(env.TRAINING_SKIP_SERIES ? { trainSkipSeries: parseSeriesList(env.TRAINING_SKIP_SERIES) } : {}),
     idleEvalSec: num(env, 'EVAL_IDLE_SEC', 5, 0, 60),
     outsidePriceFallback: bool(env, 'PAPER_OUTSIDE_PRICE_FALLBACK', false),
     adversarialBoost: bool(env, 'ADVERSARIAL_BOOST', true),
