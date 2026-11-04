@@ -6,6 +6,8 @@
 # The repository is public: only counts, dollars and setting names/values of the lever keys are printed, never the
 # settings file, keys or logs.
 # Batch lines: <tag> <day> <reuse run> <tick phase ms> <note> <overrides...>   (24 h stretch from <day> 15:40 UTC)
+# Shards are contiguous blocks of about 8 lines (two waves of four, ~3.5-4 h on a B5 base), run three at a time in line
+# order: put the control and placebo lines first so the first round already pairs.
 name: Levers lab
 on:
   push:
@@ -61,7 +63,11 @@ jobs:
         run: npm ci --no-audit --no-fund --silent
       - name: This shard's arms
         run: |
-          grep -vE '^[[:space:]]*(#|$)' .github/levers-batch.txt | awk -v n="$NSHARD" -v s="$SHARD" '(NR - 1) % n == s' > "$RUNNER_TEMP/arms.txt"
+          # Contiguous shards (lines s*k+1 .. s*k+k), so a batch ordered by priority (control, placebo, top arms first)
+          # finishes whole comparisons in the first round instead of scattering them across every shard.
+          grep -vE '^[[:space:]]*(#|$)' .github/levers-batch.txt > "$RUNNER_TEMP/all.txt"
+          k=$(( ($(wc -l < "$RUNNER_TEMP/all.txt") + NSHARD - 1) / NSHARD ))
+          awk -v k="$k" -v s="$SHARD" 'NR > s * k && NR <= (s + 1) * k' "$RUNNER_TEMP/all.txt" > "$RUNNER_TEMP/arms.txt"
           echo "shard $SHARD of $NSHARD: $(wc -l < "$RUNNER_TEMP/arms.txt") arm(s)"; cut -d' ' -f1 "$RUNNER_TEMP/arms.txt" | paste -sd' ' -
       - uses: ./.github/actions/drive-setup
         with:
