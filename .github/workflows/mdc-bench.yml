@@ -57,7 +57,7 @@ jobs:
           D=$RUNNER_TEMP/data; OUT=$RUNNER_TEMP/summary.md; mkdir -p "$D"
           rclone lsf "$DRIVE_ROOT/recordings" --files-only > "$RUNNER_TEMP/ls.txt"
           if [ -n "${DAYS_IN:-}" ]; then DAYS=${DAYS_IN//,/ }; else
-            DAYS=$(grep -E '^md-[0-9-]{10}\.mdc$' "$RUNNER_TEMP/ls.txt" | sort | tail -2 | sed -E 's/^md-(.{10}).*/\1/' | tr '\n' ' ')
+            DAYS=$({ grep -E '^md-[0-9-]{10}\.mdc$' "$RUNNER_TEMP/ls.txt" || true; } | sort | tail -2 | sed -E 's/^md-(.{10}).*/\1/' | tr '\n' ' ')
           fi
           echo "## Compact recordings read benchmark ($(date -u '+%Y-%m-%d %H:%M UTC'), $(nproc) cores)" > "$OUT"
           [ -n "$DAYS" ] || { echo "no recorded day on Drive has its .mdc yet" | tee -a "$OUT"; exit 0; }

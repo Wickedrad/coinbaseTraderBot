@@ -331,6 +331,18 @@ function textLines(text: Buffer, ascii: boolean): string[] {
   return text.toString(ascii ? 'latin1' : 'utf8', 0, text.length - 1).split('\n');
 }
 
+/** A block's text as batches of lines, about `piece` bytes each, cut at newlines: each batch's strings are made just
+ *  before they are read and die young, instead of one 100 MB string per block that the collector keeps moving. */
+function* textPieces(text: Buffer, ascii: boolean, piece = 256 * 1024): Generator<string[]> {
+  const enc = ascii ? 'latin1' : 'utf8';
+  for (let a = 0; a < text.length;) {
+    let b = Math.min(text.length, a + piece);
+    if (b < text.length) { const nl = text.indexOf(10, b); b = nl < 0 ? text.length : nl + 1; }
+    yield text.toString(enc, a, b - 1).split('\n');
+    a = b;
+  }
+}
+
 /** The worker script for this build, or undefined (then blocks decode on this thread). */
 function workerScript(): { path: string; workerData?: unknown } | undefined {
   const entry = process.argv[1] ?? '';
@@ -375,9 +387,31 @@ class FramePool {
   close(): void { for (const w of this.workers) void w.terminate(); }
 }
 
-/** Streams the lines of an .mdc file (without newlines). Big files decode their blocks on worker threads, a few blocks
+/** Lines from batches of lines, through a lean iterator: one resolved promise per line instead of an async generator's
+ *  full step, which was most of what reading a big day cost once the blocks decode on other threads. */
+export function flattenBatches(batches: AsyncIterable<string[]>): AsyncIterable<string> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<string> {
+      const it = batches[Symbol.asyncIterator]();
+      let cur: string[] = [], i = 0;
+      const next = (): Promise<IteratorResult<string>> => {
+        if (i < cur.length) return Promise.resolve({ value: cur[i++], done: false });
+        return it.next().then((r) => { if (r.done) return { value: undefined, done: true }; cur = r.value; i = 0; return next(); });
+      };
+      return {
+        next,
+        return: async (): Promise<IteratorResult<string>> => { cur = []; await it.return?.(); return { value: undefined, done: true }; },
+      };
+    },
+  };
+}
+
+/** Lines of an .mdc file (without newlines). */
+export const mdcLines = (file: string): AsyncIterable<string> => flattenBatches(mdcBatches(file));
+
+/** Streams an .mdc file one block of lines at a time. Big files decode their blocks on worker threads, a few blocks
  *  ahead of the reader, so reading costs about as much as handing out the lines; small ones decode here. */
-export async function* mdcLines(file: string): AsyncGenerator<string> {
+export async function* mdcBatches(file: string): AsyncGenerator<string[]> {
   const fh = await fs.promises.open(file, 'r');
   let pool: FramePool | undefined;
   try {
@@ -401,7 +435,7 @@ export async function* mdcLines(file: string): AsyncGenerator<string> {
     const script = n > 0 ? workerScript() : undefined;
     if (script) { try { pool = new FramePool(script, n); } catch { pool = undefined; } }
     if (!pool) {
-      for (let f = await readFrame(); f; f = await readFrame()) { const d = decodeFrameText(f); for (const l of textLines(d.text, d.ascii)) yield l; }
+      for (let f = await readFrame(); f; f = await readFrame()) { const d = decodeFrameText(f); yield* textPieces(d.text, d.ascii); }
       return;
     }
     // Keep the workers busy: `ahead` blocks in flight while this thread hands out the lines of the oldest.
@@ -424,7 +458,7 @@ export async function* mdcLines(file: string): AsyncGenerator<string> {
       let d: { text: Buffer; ascii: boolean };
       try { d = q.p ? await q.p : decodeFrameText(q.frame); } catch { broken = true; d = decodeFrameText(q.frame); }
       await fill();
-      for (const l of textLines(d.text, d.ascii)) yield l;
+      yield* textPieces(d.text, d.ascii);
     }
   } finally { pool?.close(); await fh.close(); }
 }
