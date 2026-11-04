@@ -228,8 +228,21 @@ export function loserExit(v: MarketView, cfg: Pick<StrategyConfig, 'loserExits'>
       return { side: 'bid', price: bp, count: all, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'exit', expirationTime: v.closeSec - 1, edge: fvSide - (1 - bp), why: restWhy(round(1 - bp, 4)) };
     }
   }
-  if (!why && L.cut && fvSide !== undefined && fvSide < sideBid - fee - L.cutMargin - 1e-9) {
-    why = `loser cut: fair value ${fvSide.toFixed(3)} < bid ${sideBid.toFixed(2)} - fee ${fee.toFixed(3)} - ${L.cutMargin}, ${net.toFixed(2)} net after fees on ${held}`;
+  if (!why && L.cut) {
+    // LOSER_CUT_STATE: was this position ever in profit after fees (its side's best bid since the entry, net of the exit fee,
+    // above the cost with the entry fee)?
+    const cost = (v.entrySidePrice ?? 0) + (v.entryFeePerContract ?? 0);
+    const peak = v.profitPeakSidePrice ?? sideBid;
+    const once = v.entrySidePrice !== undefined && peak - orderFee(n, peak, true, v.fees) / n > cost + 1e-9;
+    const state = L.cutState ?? 'any';
+    const stateOk = state === 'any' || (state === 'once') === once;
+    const mode = L.cutMode ?? 'fair';
+    const tag = state === 'any' ? '' : once ? ' (was in profit)' : ' (never in profit)';
+    if (stateOk && mode !== 'stop' && fvSide !== undefined && fvSide < sideBid - fee - L.cutMargin - 1e-9) {
+      why = `loser cut${tag}: fair value ${fvSide.toFixed(3)} < bid ${sideBid.toFixed(2)} - fee ${fee.toFixed(3)} - ${L.cutMargin}, ${net.toFixed(2)} net after fees on ${held}`;
+    } else if (stateOk && mode !== 'fair' && v.entrySidePrice !== undefined && sideBid <= v.entrySidePrice * (1 - (L.stopDrop ?? 0.5)) + 1e-9) {
+      why = `loser cut stop${tag}: bid ${sideBid.toFixed(2)} at or below ${(100 * (1 - (L.stopDrop ?? 0.5))).toFixed(0)}% of the entry ${v.entrySidePrice.toFixed(2)}, ${net.toFixed(2)} net after fees on ${held}`;
+    }
   }
   if (!why) return undefined;
   return { side: long ? 'ask' : 'bid', price: top.price, count: n, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit',

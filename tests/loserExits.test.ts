@@ -26,10 +26,10 @@ const long = (o: Partial<MarketView> = {}) => view({ position: 10, entrySidePric
 const ioc = (out: StrategyOutput) => out.place.filter((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
 
 test('loser rules: gate 6c + 12c quote cushion on by default, cut and window cut off (8 recorded days), each by its flag', () => {
-  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, window: false, windowJudge: 'bid', windowMode: 'bid', windowRestFinalSec: 60, windowShare: 0, noEntryShare: 0, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
+  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, cutMode: 'fair', stopDrop: 0.5, cutState: 'any', window: false, windowJudge: 'bid', windowMode: 'bid', windowRestFinalSec: 60, windowShare: 0, noEntryShare: 0, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
   const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE: 'false', LOSER_CUT: 'true', LOSER_WINDOW_CUT: 'true', FV_ENTRY_GATE_MARGIN: '0.09', LOSER_CUT_MARGIN: '0.05',
     FV_ENTRY_GATE_QUOTE_MARGIN: '', LOSER_WINDOW_JUDGE: 'cost', LOSER_WINDOW_MODE: 'rest', LOSER_WINDOW_REST_FINAL_SEC: '90', LOSER_WINDOW_SHARE: '0.25', LOSER_NO_ENTRY_SHARE: '0.2' }).strategy;
-  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, window: true, windowJudge: 'cost', windowMode: 'rest', windowRestFinalSec: 90, windowShare: 0.25, noEntryShare: 0.2, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
+  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, cutMode: 'fair', stopDrop: 0.5, cutState: 'any', window: true, windowJudge: 'cost', windowMode: 'rest', windowRestFinalSec: 90, windowShare: 0.25, noEntryShare: 0.2, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
 });
 
 test('loser window cut: in the last share of the window or the final minute a position not in profit is sold at the bid; one in profit rides', () => {
@@ -317,4 +317,21 @@ test('TRAINING_SKIP_SERIES: parsed as series or *suffix patterns; seriesMatches 
   assert.ok(!seriesMatches('*15M', 'KXSOLD-25OCT2617-T200'));
   assert.ok(seriesMatches('KXETH', 'KXETH-25OCT2617-B4000'));
   assert.ok(!seriesMatches('KXETH', 'KXETHD-25OCT2617-T4000'));
+});
+
+test('LOSER_CUT_MODE / LOSER_CUT_STATE: stop sells at half the entry price; the state splits never- and once-in-profit', () => {
+  const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), LOSER_CUT_MODE: 'stop', LOSER_STOP_DROP: '0.4', LOSER_CUT_STATE: 'never' }).strategy.loserExits!;
+  assert.equal(c.cutMode, 'stop'); assert.equal(c.stopDrop, 0.4); assert.equal(c.cutState, 'never');
+  const L = (o: object) => ({ loserExits: { ...cfg.loserExits!, window: false, ...o } });
+  // Bought at 0.55, bid 0.25 (under half), fair value 0.30 (above the bid: the fair mode would not sell).
+  const down = long({ bestBid: { price: 0.25, size: 20 }, bestAsk: { price: 0.27, size: 20 }, pFair: 0.3 });
+  assert.equal(loserExit(down, L({})), undefined, 'fair mode: the market does not overpay');
+  assert.match(loserExit(down, L({ cutMode: 'stop' }))!.why, /^loser cut stop: bid 0\.25 at or below 50% of the entry 0\.55/);
+  assert.equal(loserExit(long({ bestBid: { price: 0.3, size: 20 }, bestAsk: { price: 0.32, size: 20 }, pFair: 0.35 }), L({ cutMode: 'stop' })), undefined, 'above half: holds');
+  // Never vs once in profit: a peak bid of 0.70 cleared the cost; 0.56 did not (exit fee).
+  const once = { ...down, profitPeakSidePrice: 0.7 }, never = { ...down, profitPeakSidePrice: 0.56 };
+  assert.match(loserExit(once, L({ cutMode: 'stop', cutState: 'once' }))!.why, /\(was in profit\)/);
+  assert.equal(loserExit(never, L({ cutMode: 'stop', cutState: 'once' })), undefined);
+  assert.match(loserExit(never, L({ cutMode: 'stop', cutState: 'never' }))!.why, /\(never in profit\)/);
+  assert.equal(loserExit(once, L({ cutMode: 'stop', cutState: 'never' })), undefined);
 });
