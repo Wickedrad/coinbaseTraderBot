@@ -488,6 +488,8 @@ jobs:
         run: '{ echo "HFROM=$F"; echo "HTO=$T"; } >> "$GITHUB_ENV"'
       - name: All of Drive's history (hist_from=all) - every Kalshi day with contracts, then every recorded day; Drive only, no server read
         if: inputs.hist_from == 'all'
+        env:
+          CAP: ${{ inputs.hist_to }}
         run: |
           set -euo pipefail
           D=gdrive:kalshi-bot-archive
@@ -498,6 +500,8 @@ jobs:
           # Days with contracts: a crypto series' day file over 2 KB (Kalshi's history before Aug 2026 holds empty days).
           rclone lsf -R --files-only --format sp "$D/raw/kalshi-history" --include '/KX*/*.jsonl' | awk -F';' '$1 > 2048 { n=split($2,a,"/"); sub(/\.jsonl$/,"",a[n]); print a[n] }' | sort -u > "$RUNNER_TEMP/kalshi-days.txt"
           bash deploy/drive_lab.sh days > "$RUNNER_TEMP/rec-days.txt"
+          # hist_to with hist_from=all: the last recorded day to train on (later days stay unseen, for judging).
+          if [ -n "$CAP" ]; then awk -v c="$CAP" '$0 <= c' "$RUNNER_TEMP/rec-days.txt" > "$RUNNER_TEMP/rec-cap.txt"; mv "$RUNNER_TEMP/rec-cap.txt" "$RUNNER_TEMP/rec-days.txt"; fi
           RF=$(head -1 "$RUNNER_TEMP/rec-days.txt"); RT=$(tail -1 "$RUNNER_TEMP/rec-days.txt")
           KF=$(head -1 "$RUNNER_TEMP/kalshi-days.txt"); KL=$(tail -1 "$RUNNER_TEMP/kalshi-days.txt")
           # Kalshi's minute candles up to the day before the first recorded day; the recorded books (truer) from then on.
