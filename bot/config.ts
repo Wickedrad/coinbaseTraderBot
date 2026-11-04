@@ -92,8 +92,12 @@ export interface LoserExitConfig {
   /** LOSER_CUT_MODE (fair): what fires the loser cut. fair = the spot fair value of the side is below the bid less the fee
    *  less LOSER_CUT_MARGIN (the market overpays the side); stop = the side's bid has fallen to LOSER_STOP_DROP below its
    *  entry price (the market says the position is losing); both = either. Under study (Steven, Nov 4): each mode is judged
-   *  per state and kept only where it is neutral or makes money. */
-  cutMode?: 'fair' | 'stop' | 'both';
+   *  per state and kept only where it is neutral or makes money. agree = the fair value of the side has fallen to
+   *  LOSER_STOP_DROP below the entry price AND the bid less the fee is at or above that fair value (both say it is losing,
+   *  and the sale gets at least the fair price: the stop's audit found it selling into collapsed bids far under fair value). */
+  cutMode?: 'fair' | 'stop' | 'both' | 'agree';
+  /** LOSER_CUT_MAX_TAU (0 = any time): the cut fires only inside this many seconds of the close. */
+  cutMaxTau?: number;
   /** LOSER_STOP_DROP (0.5): stop mode fires when the side's bid is at or below the entry price x (1 - this). */
   stopDrop?: number;
   /** LOSER_CUT_STATE (any): which losing positions the cut may sell. never = never in profit after fees since the entry
@@ -1252,7 +1256,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       ...(env.TRAINING_GATE_MARGIN !== undefined && env.TRAINING_GATE_MARGIN !== '' ? { trainMargin: num(env, 'TRAINING_GATE_MARGIN', 0.06, 0, 0.5) } : {}),
       cut: bool(env, 'LOSER_CUT', false),
       cutMargin: num(env, 'LOSER_CUT_MARGIN', 0.03, 0, 0.5),
-      cutMode: oneOf(env, 'LOSER_CUT_MODE', 'fair', ['fair', 'stop', 'both'] as const),
+      cutMode: oneOf(env, 'LOSER_CUT_MODE', 'fair', ['fair', 'stop', 'both', 'agree'] as const),
+      cutMaxTau: num(env, 'LOSER_CUT_MAX_TAU', 0, 0, 86400),
       stopDrop: num(env, 'LOSER_STOP_DROP', 0.5, 0.05, 0.95),
       cutState: oneOf(env, 'LOSER_CUT_STATE', 'any', ['any', 'never', 'once'] as const),
       window: bool(env, 'LOSER_WINDOW_CUT', false),

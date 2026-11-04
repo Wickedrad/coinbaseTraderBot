@@ -235,10 +235,14 @@ export function loserExit(v: MarketView, cfg: Pick<StrategyConfig, 'loserExits'>
     const peak = v.profitPeakSidePrice ?? sideBid;
     const once = v.entrySidePrice !== undefined && peak - orderFee(n, peak, true, v.fees) / n > cost + 1e-9;
     const state = L.cutState ?? 'any';
-    const stateOk = state === 'any' || (state === 'once') === once;
+    const stateOk = (state === 'any' || (state === 'once') === once) && (!(L.cutMaxTau ?? 0) || v.tauSec <= L.cutMaxTau!);
     const mode = L.cutMode ?? 'fair';
     const tag = state === 'any' ? '' : once ? ' (was in profit)' : ' (never in profit)';
-    if (stateOk && mode !== 'stop' && fvSide !== undefined && fvSide < sideBid - fee - L.cutMargin - 1e-9) {
+    const drop = L.stopDrop ?? 0.5;
+    if (stateOk && mode === 'agree') {
+      if (fvSide !== undefined && v.entrySidePrice !== undefined && fvSide <= v.entrySidePrice * (1 - drop) + 1e-9 && sideBid - fee >= fvSide - 1e-9)
+        why = `loser cut agree${tag}: fair value ${fvSide.toFixed(3)} at or below ${(100 * (1 - drop)).toFixed(0)}% of the entry ${v.entrySidePrice.toFixed(2)}, bid ${sideBid.toFixed(2)} less fee ${fee.toFixed(3)} at or above it, ${net.toFixed(2)} net after fees on ${held}`;
+    } else if (stateOk && mode !== 'stop' && fvSide !== undefined && fvSide < sideBid - fee - L.cutMargin - 1e-9) {
       why = `loser cut${tag}: fair value ${fvSide.toFixed(3)} < bid ${sideBid.toFixed(2)} - fee ${fee.toFixed(3)} - ${L.cutMargin}, ${net.toFixed(2)} net after fees on ${held}`;
     } else if (stateOk && mode !== 'fair' && v.entrySidePrice !== undefined && sideBid <= v.entrySidePrice * (1 - (L.stopDrop ?? 0.5)) + 1e-9) {
       why = `loser cut stop${tag}: bid ${sideBid.toFixed(2)} at or below ${(100 * (1 - (L.stopDrop ?? 0.5))).toFixed(0)}% of the entry ${v.entrySidePrice.toFixed(2)}, ${net.toFixed(2)} net after fees on ${held}`;

@@ -26,10 +26,10 @@ const long = (o: Partial<MarketView> = {}) => view({ position: 10, entrySidePric
 const ioc = (out: StrategyOutput) => out.place.filter((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
 
 test('loser rules: gate 6c + 12c quote cushion on by default, cut and window cut off (8 recorded days), each by its flag', () => {
-  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, cutMode: 'fair', stopDrop: 0.5, cutState: 'any', window: false, windowJudge: 'bid', windowMode: 'bid', windowRestFinalSec: 60, windowShare: 0, noEntryShare: 0, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
+  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, gateQuoteMargin: 0.12, cut: false, cutMargin: 0.03, cutMode: 'fair', cutMaxTau: 0, stopDrop: 0.5, cutState: 'any', window: false, windowJudge: 'bid', windowMode: 'bid', windowRestFinalSec: 60, windowShare: 0, noEntryShare: 0, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
   const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE: 'false', LOSER_CUT: 'true', LOSER_WINDOW_CUT: 'true', FV_ENTRY_GATE_MARGIN: '0.09', LOSER_CUT_MARGIN: '0.05',
     FV_ENTRY_GATE_QUOTE_MARGIN: '', LOSER_WINDOW_JUDGE: 'cost', LOSER_WINDOW_MODE: 'rest', LOSER_WINDOW_REST_FINAL_SEC: '90', LOSER_WINDOW_SHARE: '0.25', LOSER_NO_ENTRY_SHARE: '0.2' }).strategy;
-  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, cutMode: 'fair', stopDrop: 0.5, cutState: 'any', window: true, windowJudge: 'cost', windowMode: 'rest', windowRestFinalSec: 90, windowShare: 0.25, noEntryShare: 0.2, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
+  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: true, cutMargin: 0.05, cutMode: 'fair', cutMaxTau: 0, stopDrop: 0.5, cutState: 'any', window: true, windowJudge: 'cost', windowMode: 'rest', windowRestFinalSec: 90, windowShare: 0.25, noEntryShare: 0.2, gatedStakeMult: 1, gatedStakeCap: 'clamp' });
 });
 
 test('loser window cut: in the last share of the window or the final minute a position not in profit is sold at the bid; one in profit rides', () => {
@@ -334,4 +334,18 @@ test('LOSER_CUT_MODE / LOSER_CUT_STATE: stop sells at half the entry price; the 
   assert.equal(loserExit(never, L({ cutMode: 'stop', cutState: 'once' })), undefined);
   assert.match(loserExit(never, L({ cutMode: 'stop', cutState: 'never' }))!.why, /\(never in profit\)/);
   assert.equal(loserExit(once, L({ cutMode: 'stop', cutState: 'never' })), undefined);
+});
+
+test('LOSER_CUT_MODE=agree: sells only when the fair value fell to half the entry and the bid less the fee pays at least it; LOSER_CUT_MAX_TAU', () => {
+  const L = (o: object) => ({ loserExits: { ...cfg.loserExits!, window: false, cutMode: 'agree' as const, ...o } });
+  // Bought at 0.55; fair value 0.25 (under half); bid 0.28 less a ~1.4c fee >= 0.25: sells.
+  const ok = long({ bestBid: { price: 0.28, size: 20 }, bestAsk: { price: 0.3, size: 20 }, pFair: 0.25 });
+  assert.match(loserExit(ok, L({}))!.why, /^loser cut agree: fair value 0\.250 at or below 50% of the entry 0\.55/);
+  // A collapsed bid under the fair value: holds (the stop's failure).
+  assert.equal(loserExit(long({ bestBid: { price: 0.1, size: 20 }, bestAsk: { price: 0.3, size: 20 }, pFair: 0.25 }), L({})), undefined);
+  // Fair value above half the entry: holds.
+  assert.equal(loserExit(long({ bestBid: { price: 0.4, size: 20 }, bestAsk: { price: 0.42, size: 20 }, pFair: 0.35 }), L({})), undefined);
+  // LOSER_CUT_MAX_TAU: 400 s left, a 300 s limit holds it.
+  assert.equal(loserExit(ok, L({ cutMaxTau: 300 })), undefined);
+  assert.ok(loserExit({ ...ok, tauSec: 200 }, L({ cutMaxTau: 300 })));
 });
