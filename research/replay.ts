@@ -5,6 +5,8 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+import { StringDecoder } from 'string_decoder';
+import zlib from 'zlib';
 import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles';
 import { IndexStore } from '../bot/marketdata/indexBars';
 import { IndexTracker, type AvgMode } from '../bot/marketdata/indexTracker';
@@ -99,6 +101,83 @@ export async function* readRecordings(dir: string, sidecar = process.env.SNN_BAC
     }
   }
   if (prev) yield prev;
+}
+
+/** readRecordings in batches, one array per decompressed chunk (about 1 MB): the same events in the same order with the
+ *  same tie flags, without readline and two async generators per line (a replay's reader cost about 3 us a line, half of
+ *  it that plumbing; a recorded day is tens of millions of lines). Lines split as readline splits them (\n, \r\n or a
+ *  lone \r), empty and torn lines are dropped, and a multi-byte character cut by a chunk edge decodes whole; like
+ *  readline, an incomplete character at the very end of a file is dropped. Days with sidecar files keep the per-event
+ *  merge. `minT`: while no line stamped at or after it has been read, lines stamped before it are dropped without being
+ *  parsed; the backtest drops them unread anyway (BacktestOpts.startMs), and the first event it keeps, and every tie flag
+ *  after it, is worked out exactly as before. */
+export async function* readRecordingBatches(dir: string, sidecar = process.env.SNN_BACKFILL_DIR, fromDay?: string, toDay?: string, keep?: LineFilter, minT?: number): AsyncGenerator<RecEvent[]> {
+  const files = recordingFiles(dir).filter((f) => (!fromDay || f.day >= fromDay) && (!toDay || f.day <= toDay));
+  const sides = (sidecar ?? '').split(path.delimiter).filter(Boolean);
+  let prev: RecEvent | undefined;
+  let before = minT !== undefined; // still in the stretch before minT
+  let out: RecEvent[] = [];
+  const push = (e: RecEvent) => {
+    if (before && !(e.t < minT!)) before = false;
+    if (prev) { if (e.t === prev.t) prev.tie = true; out.push(prev); }
+    prev = e;
+  };
+  const take = (line: string) => {
+    if (!line) return;
+    if (before || keep) {
+      const h = LINE_HEAD.exec(line);
+      if (h && before && Number(h[1]) < minT!) return;
+      if (h && keep && !keep(h[2], line)) { push({ t: Number(h[1]), k: 'skip' }); return; }
+    }
+    let e: RecEvent;
+    try { e = JSON.parse(line) as RecEvent; } catch { return; /* torn line */ }
+    push(e);
+  };
+  // One piece between two \n: a \r before the \n belongs to it (\r\n), any other \r ends a line of its own.
+  const seg = (x: string) => {
+    if (x.endsWith('\r')) x = x.slice(0, -1);
+    if (x.indexOf('\r') < 0) take(x); else for (const y of x.split('\r')) take(y);
+  };
+  for (const f of files) {
+    const extra = sides.map((d) => path.join(d, `snnfill-${f.day}.jsonl`)).filter((x) => fs.existsSync(x));
+    if (extra.length) {
+      for await (const e of mergeByTime([f.file, ...extra], keep)) { push(e); if (out.length >= 4096) { yield out; out = []; } }
+      continue;
+    }
+    const raw = fs.createReadStream(f.file, { highWaterMark: 1 << 20 });
+    const src = f.file.endsWith('.gz') ? raw.pipe(zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH, chunkSize: 1 << 20 })) : raw;
+    const dec = new StringDecoder('utf8');
+    let rest = '';
+    for await (const chunk of src as AsyncIterable<Buffer>) {
+      const t = rest + dec.write(chunk);
+      let i = 0;
+      for (let j = t.indexOf('\n'); j >= 0; j = t.indexOf('\n', i)) { seg(t.slice(i, j)); i = j + 1; }
+      rest = t.slice(i);
+      if (out.length) { yield out; out = []; }
+    }
+    if (rest) seg(rest);
+  }
+  if (prev) out.push(prev);
+  if (out.length) yield out;
+}
+
+/** The events of readRecordingBatches one at a time, for a `for await` loop written per event: one resolved promise per
+ *  event instead of a generator chain per line. */
+export function eventsOf(batches: AsyncGenerator<RecEvent[]>): AsyncIterableIterator<RecEvent> {
+  let batch: RecEvent[] = [], i = 0;
+  const it: AsyncIterableIterator<RecEvent> = {
+    [Symbol.asyncIterator]: () => it,
+    async next(): Promise<IteratorResult<RecEvent>> {
+      while (i >= batch.length) {
+        const n = await batches.next();
+        if (n.done) return { value: undefined, done: true };
+        batch = n.value; i = 0;
+      }
+      return { value: batch[i++], done: false };
+    },
+    async return(): Promise<IteratorResult<RecEvent>> { await batches.return([]); return { value: undefined, done: true }; },
+  };
+  return it;
 }
 
 /** The history store's index series (BTCDOM, BTC.D, USDT.D) for the TA network's context in replays:

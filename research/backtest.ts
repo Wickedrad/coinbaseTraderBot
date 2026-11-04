@@ -70,7 +70,7 @@ import { setTaNetEnsemble, TaNetEnsemble, taNetView } from '../bot/ta/taNetEnsem
 import { ProfitPeaks } from '../bot/strategy/profitPeaks';
 import { ConfluenceRatchetExit, DEFAULT_HUNT, DEFAULT_RATCHET, EXIT_POLICIES, ExitPolicyName, HuntParams, LiquidityRatchet, RatchetParams } from '../bot/strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from '../bot/risk/quotaPacer';
-import { readRecordings, ReplayState } from './replay';
+import { eventsOf, readRecordingBatches, readRecordings, ReplayState } from './replay';
 import { AccuracyGate, type AccuracyGateConfig } from '../bot/strategy/accuracyGate';
 import { MarketAnchor } from '../bot/model/marketAnchor';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
@@ -251,6 +251,9 @@ export interface BacktestOpts { fillLog?: boolean; exitPolicy?: ExitPolicyName; 
   /** Stop reading the recordings at this time (ms). Unset: to the end of the last day file. The replay is causal, so
    *  nothing before it changes; only whole-replay counters (end balance, open positions, days) stop there too. */
   endMs?: number;
+  /** Read the recordings in ~1 MB batches (research/replay.ts readRecordingBatches): the same events, order and ties,
+   *  faster; lines before startMs are dropped unparsed. Unset: the per-line reader. */
+  batchedReader?: boolean;
   /** Evaluate on the engine's 1 s timer (bot/engine.ts: setInterval) this many ms into each second: wherever paper's
    *  timer fell, the replay can evaluate a little before or after the market moves it saw. Unset: at the first recorded
    *  event a second after the last evaluation. */
@@ -576,7 +579,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
 
   let lastTick = 0, nextTick = -Infinity, refillAt = -Infinity;
   for (const c of opts.seedCandles?.sets ?? []) st.features.onCandles(c.asset, c.tf, c.rows, opts.seedCandles!.at);
-  for await (const e of readRecordings(dir)) {
+  const events = opts.batchedReader ? eventsOf(readRecordingBatches(dir, undefined, undefined, undefined, undefined, opts.startMs)) : readRecordings(dir);
+  for await (const e of events) {
     if (opts.startMs !== undefined && e.t < opts.startMs) continue;
     if (opts.endMs !== undefined && e.t >= opts.endMs) break;
     while (inflight.length && inflight[0].due <= e.t) await inflight.shift()!.run();

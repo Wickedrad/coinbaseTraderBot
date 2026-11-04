@@ -30,7 +30,7 @@
 //       [--from auto|ISO] [--to ISO] [--min-hours 3] [--warmup-hours 8] [--model data/models/model.json] \
 //       [--paper-balance-now 512.30 | --bankroll 150] [--paper-guard equity_guard.json] [--kill-override true|false] \
 //       [--maker-markouts markouts.json] [--paper-probation probation.json] [--paper-trials component_trials.json]
-//       [--bankroll-scale 1] [--tick-phase-ms 0] [--stop-after-min 5] [--seed-candles seed-candles.json] [--out data/sweeps/replay-check.json]
+//       [--bankroll-scale 1] [--tick-phase-ms 0] [--stop-after-min 5] [--batched-reader] [--seed-candles seed-candles.json] [--out data/sweeps/replay-check.json]
 //   ... --plan   prints only the recorded days the stretch and its warm-up need (from the audit log)
 //   ... --fetch-seed seed-candles.json   fetches only the spot candles the bot held when the replay starts (Coinbase)
 //   npm run research:replay-check -- --combine main.json --nearby a.json,b.json [--out replay-check.json]
@@ -694,6 +694,8 @@ export interface ReplayCheckOpts {
    *  markets, hours, series) is the same; the replay just skips simulating the rest of the last day file (the levers lab:
    *  stretch ends 15:40, file runs to 24:00). Unset: to the end of the days, as before. */
   stopAfterMin?: number;
+  /** Read the recordings in batches (--batched-reader; BacktestOpts.batchedReader): same events, faster. */
+  batchedReader?: boolean;
   /** The paper bot's equity_guard.json (read from a copy) and its kill-switch override (default on, as bot/control.ts). */
   paperGuard?: string; killOverride?: boolean;
   /** The paper bot's recent maker fills' 60 s markouts (its TCA log), which seed the replay's adaptive maker buffer. */
@@ -821,7 +823,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     dailyGoalUsd: cfg.vault.dailyGoalUsd, equityGuardFile: guardFile, killOverride, refillUsd: cfg.paperBankrollUsd, sessionEdge: cfg.sessionEdge, onEval: match.onEval, makerMarkouts: o.makerMarkouts,
     volProfile: models.volProfile, applyVolSeasonality: Boolean(models.volProfile), volModel: models.volModel, fillModel: models.fillModel, calendar: models.calendar,
     taNet: true, trials: models.trials, marketContext: true, fillLog: true, ...(o.tickPhaseMs !== undefined ? { tickPhaseMs: o.tickPhaseMs } : {}), ...(seed ? { seedCandles: seed } : {}),
-    ...(o.stopAfterMin !== undefined ? { endMs: to + Math.max(2, o.stopAfterMin) * 60_000 } : {}),
+    ...(o.stopAfterMin !== undefined ? { endMs: to + Math.max(2, o.stopAfterMin) * 60_000 } : {}), ...(o.batchedReader ? { batchedReader: true } : {}),
   });
   fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(seedDir, { recursive: true, force: true });
@@ -931,7 +933,7 @@ async function main(): Promise<void> {
   }
   const res = await replayCheck({
     recordings: arg('recordings', 'data/recordings'), audit: arg('audit', 'data/audit'), days, model: arg('model', 'params/model.json'),
-    from: time('from'), to: time('to'), minHours: opt('min-hours'), warmupHours: opt('warmup-hours') ?? (Number(process.env.REPLAY_WARMUP_HOURS) > 0 ? Number(process.env.REPLAY_WARMUP_HOURS) : undefined), bankroll: opt('bankroll'), paperBalanceNow: opt('paper-balance-now'), bankrollScale: opt('bankroll-scale'), tickPhaseMs: opt('tick-phase-ms'), stopAfterMin: opt('stop-after-min'),
+    from: time('from'), to: time('to'), minHours: opt('min-hours'), warmupHours: opt('warmup-hours') ?? (Number(process.env.REPLAY_WARMUP_HOURS) > 0 ? Number(process.env.REPLAY_WARMUP_HOURS) : undefined), bankroll: opt('bankroll'), paperBalanceNow: opt('paper-balance-now'), bankrollScale: opt('bankroll-scale'), tickPhaseMs: opt('tick-phase-ms'), stopAfterMin: opt('stop-after-min'), batchedReader: process.argv.includes('--batched-reader'),
     paperGuard: arg('paper-guard', '') || undefined, killOverride: arg('kill-override', 'true') !== 'false',
     makerMarkouts: arg('maker-markouts', '') && fs.existsSync(arg('maker-markouts', '')) ? (JSON.parse(fs.readFileSync(arg('maker-markouts', ''), 'utf8')) as unknown[]).map(Number).filter(Number.isFinite) : undefined,
     paperProbation: arg('paper-probation', '') || undefined, paperTrials: arg('paper-trials', '') || undefined,
