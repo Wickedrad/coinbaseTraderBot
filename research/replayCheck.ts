@@ -345,11 +345,11 @@ export function upTimeScore(r: { trades: Array<{ ticker: string; closeTs: number
 export async function auditPeek(auditDir: string, days: string[], spec: string): Promise<string[]> {
   const asks = spec.split(/[\s,]+/).filter(Boolean).map((x) => { const [tk, w] = x.split('@'); const [f, t] = (w ?? '').split('/'); return { tk, from: Date.parse(f), to: Date.parse(t) }; }).filter((x) => x.tk && Number.isFinite(x.from) && Number.isFinite(x.to));
   const want = new Set(days), out: string[] = [];
-  const kinds: Record<string, number> = {};
+  const kinds: Record<string, number> = {}, why: Record<string, number> = {};
   const files = fs.existsSync(auditDir) ? fs.readdirSync(auditDir).filter((f) => /^audit-\d{4}-\d{2}-\d{2}.*\.jsonl(\.gz)?$/.test(f) && want.has(f.slice(6, 16))).sort() : [];
   const pick = (d: Record<string, any>) => {
     const o: Record<string, unknown> = {};
-    for (const k of ['event', 'pYes', 'fv', 'q', 'bid', 'ask', 'position', 'edge', 'style', 'newRisk', 'fastMove', 'minSidePrice', 'maxContracts', 'blocked', 'reason', 'reasons', 'gate', 'why', 'purpose', 'side', 'price', 'count', 'tauSec', 'kind'])
+    for (const k of ['event', 'pYes', 'fv', 'q', 'bid', 'ask', 'position', 'edge', 'style', 'newRisk', 'fastMove', 'minSidePrice', 'maxContracts', 'blocked', 'reason', 'reasons', 'gate', 'why', 'purpose', 'side', 'price', 'count', 'tauSec', 'kind', 'cadence', 'entryBlock', 'strike', 'cap', 'strikeSource', 'session', 'sessionRisk', 'modelShift', 'pMarket', 'edgeAdd', 'regimeMult'])
       if (d[k] !== undefined) o[k] = typeof d[k] === 'number' ? +Number(d[k]).toFixed(4) : d[k];
     if (Array.isArray(d.place)) o.place = d.place.map((p: Record<string, any>) => `${p.purpose}/${p.side}@${p.price}x${p.count}${p.timeInForce === 'immediate_or_cancel' ? ' IOC' : ''} ${String(p.why ?? '').slice(0, 50)}`);
     if (Array.isArray(d.cancel)) o.cancel = d.cancel.length;
@@ -370,12 +370,14 @@ export async function auditPeek(auditDir: string, days: string[], spec: string):
       if (!(t >= ask.from && t < ask.to)) continue;
       const k = `${r.kind}${r.data?.event ? `/${r.data.event}` : ''}`;
       kinds[`${tk} ${k}`] = (kinds[`${tk} ${k}`] ?? 0) + 1;
+      // Why each decision did or did not plan (all of them, not only the printed ones): its cadence and entry block.
+      if (r.kind === 'decision') { const w = `${tk} cadence=${r.data?.cadence ?? 'none'} block=${String(r.data?.entryBlock ?? 'none').replace(/[\d.]+/g, '#')} place=${(r.data?.place ?? []).length ? 'some' : 'none'}`; why[w] = (why[w] ?? 0) + 1; }
       // Every non-decision record, and one decision record in 20 (a busy market makes one a second).
       if (r.kind === 'decision' && kinds[`${tk} ${k}`] % 20 !== 1 && !line.includes('"purpose":"entry"')) continue;
       out.push(`  ${r.ts?.slice(5, 19)} ${tk} ${k} ${pick(r.data ?? {})}`);
     }
   }
-  return [`paper audit peek (${spec}): records by kind ${JSON.stringify(kinds)}`, ...out.slice(0, 400)];
+  return [`paper audit peek (${spec}): records by kind ${JSON.stringify(kinds)}`, `  decisions by cadence and entry block: ${JSON.stringify(why)}`, ...out.slice(0, 400)];
 }
 
 /** REPLAY_DUMP (Nov 4, the $246 gap): markets fill by fill on both sides. The spec is space separated: `mid` (first fill on
@@ -884,6 +886,11 @@ async function main(): Promise<void> {
   }
   const days = arg('days', '').split(',').map((x) => x.trim()).filter(Boolean);
   if (!days.length) throw new Error('--days YYYY-MM-DD[,YYYY-MM-DD...] is required');
+  if (process.env.REPLAY_PEEK && process.env.REPLAY_PEEK_ONLY) {
+    // Paper's records only, no replay (minutes instead of two hours).
+    for (const l of await auditPeek(arg('audit', 'data/audit'), days, process.env.REPLAY_PEEK)) console.log(l.slice(0, 900));
+    return;
+  }
   const seedOut = arg('fetch-seed', '');
   if (process.argv.includes('--plan') || seedOut) {
     // Only the audit log is read: prints the recorded days the stretch and its warm-up need, or fetches the spot candles
