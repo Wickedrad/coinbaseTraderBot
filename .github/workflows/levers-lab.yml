@@ -114,6 +114,9 @@ jobs:
               --maker-markouts "$P/maker-markouts.json" --paper-probation "$P/paper-probation.json" --paper-trials "$P/paper-trials.json"
               --paper-tp-bench "$P/paper-tp-bench.json" --paper-accuracy-gate "$P/paper-accuracy-gate.json" --paper-trades "$P/paper-trades.jsonl" --model "$D/models/model.json")
             S="$RUNNER_TEMP/seed-$reuse-$day.json"; [ -s "$S" ] && ARGS+=(--seed-candles "$S")
+            # Stop 5 min after the stretch (every market closing inside it has settled; the verdict is unchanged) instead of
+            # simulating the next day file to midnight (~8 h of US session, ~1/5 of the replay). RS_STOP_AFTER_MIN=off: full.
+            STOP="${RS_STOP_AFTER_MIN-5}"; [ "$STOP" = off ] || ARGS+=(--stop-after-min "$STOP")
             T0=$(date +%s)
             timeout 170m node --import tsx research/replayCheck.ts "${ARGS[@]}" --tick-phase-ms "$phase" --out "$T/out.json" || echo "replay failed or cut off"
             echo "arm took $(( ($(date +%s) - T0) / 60 )) min"

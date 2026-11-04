@@ -265,6 +265,9 @@ export interface BacktestOpts { exitPolicy?: ExitPolicyName; ratchet?: RatchetPa
   equityGuardFile?: string;
   /** No orders before this time (ms): until then the replay only watches (research/replayCheck.ts). */
   tradeFromMs?: number;
+  /** Stop reading the recordings at this time (ms). Unset: to the end of the last day file. The replay is causal, so
+   *  nothing before it changes; only whole-replay counters (end balance, open positions, days) stop there too. */
+  endMs?: number;
   /** Evaluate on the engine's 1 s timer (bot/engine.ts: setInterval) this many ms into each second: wherever paper's
    *  timer fell, the replay can evaluate a little before or after the market moves it saw. Unset: at the first recorded
    *  event a second after the last evaluation. */
@@ -600,6 +603,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   for (const c of opts.seedCandles?.sets ?? []) st.features.onCandles(c.asset, c.tf, c.rows, opts.seedCandles!.at);
   for await (const e of readRecordings(dir)) {
     if (opts.startMs !== undefined && e.t < opts.startMs) continue;
+    if (opts.endMs !== undefined && e.t >= opts.endMs) break;
     while (inflight.length && inflight[0].due <= e.t) await inflight.shift()!.run();
     st.apply(e);
     if (!firstTs) firstTs = st.now;

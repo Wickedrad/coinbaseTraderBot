@@ -108,6 +108,22 @@ test('backtest startMs: nothing before it is replayed; fills are counted per win
   assert.equal([...all.windows.values()].reduce((s, w) => s + (w.fills ?? 0), 0), all.fills);
 });
 
+test('backtest endMs: stopping after a window settles leaves every earlier window and trade the same', async () => {
+  const dir = path.join(tmp(), 'rec');
+  writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', ...NO_LOSER_RULES });
+  const run = (endMs?: number) => runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', ...(endMs !== undefined ? { endMs } : {}) });
+  const all = await run();
+  const closes = [...all.windows.keys()].sort((a, b) => a - b);
+  assert.ok(closes.length >= 4 && all.trades.length > 0, 'the synthetic stretch trades several windows');
+  const cut = closes[2]; // stop two minutes after the third window's close (markets settle a minute after it)
+  const part = await run(cut + 120_000);
+  const before = (r: typeof all) => ({ trades: r.trades.filter((t) => t.closeTs <= cut), windows: [...r.windows].filter(([w]) => w <= cut) });
+  assert.deepEqual(before(part), before(all));
+  assert.ok(part.entryEvaluations < all.entryEvaluations, 'the rest of the file is not replayed');
+  assert.ok(part.trades.every((t) => t.closeTs <= cut));
+});
+
 test('replay check: the stretch starts at the paper bot\'s last start; paper counted inside it; settings compared by name', async () => {
   const dir = tmp();
   const L = (kind: string, ts: string, data: object) => JSON.stringify({ seq: 1, ts, kind, data });
