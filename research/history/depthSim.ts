@@ -96,14 +96,17 @@ const REVERT_S = 10;
 const REVERT_TOP_S = 1;
 /** A level's own second-to-second wander (sd as a share of its size). */
 const STEP_SD = 0.1;
-/** The fill-in's own best-price changes a second before flicker (Nov 2 twin: ~55 a minute). */
-const FLICK_BASE_PER_SEC = 0.9;
+/** The fill-in's own best-price changes a second before flicker (Nov 4 twin: ~120 a minute once trades and sizes were
+ *  right; with 0.9 the best price changed ~455 times a minute against the real ~350). */
+const FLICK_BASE_PER_SEC = 2.6;
 /** Most trade-sized prints a sweep of one level makes before the rest of it is cancelled. */
 const SWEEP_PRINTS = 3;
 /** Whether the trade flow may depend on the next quote (off: that is the future). */
 const USE_NEXT_MOVE = false;
 /** How far a level's size moves within one contract (log sd), the rest of the measured spread being between contracts. */
 const WITHIN_SD = 0.7;
+/** How much one contract's trade rate differs from another's (log sd; its mean stays the measured rate). */
+const ACTIVITY_SD = 0.6;
 
 export class DepthSim {
   /** What the fill-in emitted (a run's diagnostics): seconds simulated, trades (sweep prints among them), flickers. */
@@ -135,17 +138,23 @@ export class DepthSim {
   }
 
   /** Drop a contract's book (settled). */
-  forget(ticker: string): void { this.books.delete(ticker); this.scale.delete(ticker); }
+  forget(ticker: string): void { this.books.delete(ticker); for (const k of [...this.scale.keys()]) if (k.startsWith(`${ticker}|`)) this.scale.delete(k); }
 
   /** Each contract's own depth (Nov 4 twin): the measured sizes' spread (90th percentile ~20x the median) is mostly
    *  between contracts and hours, not second to second. Drawn iid each time, every contract's mean size came out ~15x the
    *  median and its top ~40x the real one; so a contract keeps one draw of that spread, and moves within WITHIN_SD. */
   private readonly scale = new Map<string, number>();
+  /** A contract's own standard normal draw for one purpose (seeded by its ticker, the same wherever it is replayed). */
+  private contractZ(ticker: string, salt: number): number {
+    const k = `${ticker}|${salt}`;
+    let z = this.scale.get(k);
+    if (z === undefined) { z = normal(rng(hashStr(ticker) ^ salt)); this.scale.set(k, z); }
+    return z;
+  }
   private size(u: () => number, ticker: string, p50: number | null | undefined, p90: number | null | undefined): number {
     if (!(p50 && p50 > 0)) return 1;
     const sg = p90 && p90 > p50 ? Math.log(p90 / p50) / 1.2816 : 0, sw = Math.min(sg, WITHIN_SD), sc = Math.sqrt(Math.max(0, sg * sg - sw * sw));
-    let z = this.scale.get(ticker);
-    if (z === undefined) { const v = rng(hashStr(ticker) ^ 0x5bd1e995); z = normal(v); this.scale.set(ticker, z); }
+    const z = this.contractZ(ticker, 0x5bd1e995);
     return Math.max(1, Math.round(p50 * Math.exp(sc * z + sw * normal(u))));
   }
 
@@ -201,7 +210,10 @@ export class DepthSim {
     // The flow over all moves (Nov 4): the flow by where the price goes next told the book the next quote ahead of time.
     const mv = USE_NEXT_MOVE && nextMid !== undefined && Number.isFinite(nextMid) ? cell.byMove?.[moveOf((bB + bA) / 20, nextMid * 100)] : undefined;
     const byMove = mv && mv.segs >= MOVE_MIN_SEGS ? mv : undefined;
-    const tradeRate = byMove ? Math.max(0, byMove.tradesPerSec) : Math.max(0, cell.tradesPerMin?.mean ?? 0) / 60;
+    // Each contract its own activity (Nov 4 twin: the same mean trade rate as the real books, ~650 a minute, but the real
+    // contracts spread far wider, AUC 0.78 on trades a minute alone).
+    const actScale = Math.exp(ACTIVITY_SD * this.contractZ(ticker, 0x2545f491) - ACTIVITY_SD * ACTIVITY_SD / 2);
+    const tradeRate = actScale * (byMove ? Math.max(0, byMove.tradesPerSec) : Math.max(0, cell.tradesPerMin?.mean ?? 0) / 60);
     const yesShare = (byMove ? byMove.takerYesShare : undefined) ?? cell.takerYesShare ?? 0.5;
     const best = (side: Side) => { const m = b![side]; let top = side === 'bid' ? -Infinity : Infinity; for (const p of m.keys()) if (side === 'bid' ? p > top : p < top) top = p; return top; };
     // No walk toward the next quote any more (see the move to this quote, above).
