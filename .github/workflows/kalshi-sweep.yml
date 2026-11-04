@@ -79,12 +79,14 @@ jobs:
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
-      # The Kalshi history and its replay live on Drive (derived/kalshi-replay), so a new run downloads only what is new.
+      # The raw history (raw/history, shared with the TA study) and the replay built from it (simulated/kalshi-replay)
+      # live on Drive, so a new run downloads only what is new.
       - name: Restore the Kalshi history and its replay from Drive
         id: drive
         run: |
-          if bash deploy/drive_lab.sh get derived/kalshi-replay data; then echo "hit=true" >> "$GITHUB_OUTPUT"; du -sh data/history data/history-replay 2>/dev/null | cat
-          else echo "nothing on Drive yet: falling back to the newest cache"; fi
+          if bash deploy/drive_lab.sh get raw/history data/history && bash deploy/drive_lab.sh get simulated/kalshi-replay data/history-replay; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"; du -sh data/history data/history-replay 2>/dev/null | cat
+          else echo "not all on Drive yet: falling back to the newest cache"; fi
       - name: Restore the Kalshi history and its replay (cache fallback)
         if: steps.drive.outputs.hit != 'true'
         uses: actions/cache/restore@v4
@@ -100,8 +102,9 @@ jobs:
             | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -40
           du -sh data/history data/history-replay | cat
       - name: Keep the Kalshi history and its replay on Drive
-        # The data job's data folder holds only these two.
-        run: bash deploy/drive_lab.sh put derived/kalshi-replay data
+        run: |
+          bash deploy/drive_lab.sh put raw/history data/history
+          bash deploy/drive_lab.sh put simulated/kalshi-replay data/history-replay
       # Hands them to this run's search jobs (a cache inside one run).
       - name: Save the Kalshi history and its replay
         if: always()

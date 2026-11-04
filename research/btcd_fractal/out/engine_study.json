@@ -1,40 +1,40 @@
 {
   "now": {
-    "asOf": "2026-10-26",
+    "asOf": "2026-11-02",
     "parent": "2016-12-16",
     "progress": 0.476,
     "phase": "base before the waterfall (parent swing 1 of 8)",
-    "dilation": 9.2,
+    "dilation": 9.22,
     "localDilation": 16,
     "map": {
-      "a": -188.52,
+      "a": -188.5,
       "b": 2.5
     },
     "fit": {
-      "r": 0.54,
-      "recentR": -0.141,
+      "r": 0.539,
+      "recentR": -0.122,
       "maePts": 6.31,
-      "recentMaePts": 5.3
+      "recentMaePts": 5.29
     },
-    "btcd": 60.56,
+    "btcd": 60.5,
     "proj": {
-      "d30": 59.49,
-      "d90": 57.54,
-      "d180": 57.36
+      "d30": 59.44,
+      "d90": 57.48,
+      "d180": 57.31
     },
     "nextWaterfall": {
-      "start": "2029-08-10",
-      "end": "2029-11-08",
+      "start": "2029-08-18",
+      "end": "2029-11-16",
       "from": 55.8,
-      "to": 35.7,
-      "weeksAway": 145.6,
+      "to": 35.6,
+      "weeksAway": 145.7,
       "inside": false
     },
     "low": {
-      "at": "2035-06-18",
-      "btcd": 30.4
+      "at": "2035-06-28",
+      "btcd": 30.3
     },
-    "gateCross": "2029-08-12"
+    "gateCross": "2029-08-20"
   },
   "weekly": [
     {
@@ -3717,6 +3717,15 @@
       "fit": 0.54,
       "recentFit": -0.141,
       "btcd": 60.56
+    },
+    {
+      "asOf": "2026-11-02",
+      "parent": "2016-12-16",
+      "progress": 0.476,
+      "phase": "base before the waterfall (parent swing 1 of 8)",
+      "fit": 0.539,
+      "recentFit": -0.122,
+      "btcd": 60.5
     }
   ],
   "skill": {

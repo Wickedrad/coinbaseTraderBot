@@ -429,24 +429,32 @@ def main():
     ap.add_argument("--surrogates", type=int, default=60, help="per surrogate kind")
     ap.add_argument("--adv-by", default="score", choices=["score", "ic"])
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 2)
+    ap.add_argument("--series", default="BTC.D", help="series name in --data (BTC.D = TradingView; BTCD_SPLICED = per-coin rebuild before 2018, TradingView after)")
+    ap.add_argument("--parent-start", default="2016-01-01", help="first week of the 2016-17 parent (Steven 2026-11-02: the bottom of the 2016 waterfall)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
+    PS16 = pd.Timestamp(a.parent_start)
+    PS15 = PS16 - pd.Timedelta(weeks=30)
+    lab = lambda t: t.strftime("%Y-%m") if t.day == 1 else t.strftime("%Y-%m-%d")
+    L16, L15 = lab(PS16), lab(PS15)
+    S16, S15 = PS16.strftime("%Y-%m-%d"), PS15.strftime("%Y-%m-%d")
 
-    btcd = load(a.data, "BTC.D")
+    btcd = load(a.data, a.series)
     if btcd is None or len(btcd) < 400:
-        print("no BTC.D history")
+        print(f"no {a.series} history")
         return 1
     W = weekly(btcd)
-    print(f"BTC.D daily {btcd.index[0].date()}..{btcd.index[-1].date()} ({len(btcd)} bars), weekly {len(W)}")
+    print(f"{a.series} daily {btcd.index[0].date()}..{btcd.index[-1].date()} ({len(btcd)} bars), weekly {len(W)}")
 
     def window(fr, to=None):
         s = W[(W.index >= pd.Timestamp(fr)) & ((W.index < pd.Timestamp(to)) if to else True)]
         return s.values.astype(float), s.index
 
     # --- round 1 grid
-    parents = {"2016-01..2018-01-15": ("2016-01-01", "2018-01-15"), "2015-06..2018-01-15": ("2015-06-01", "2018-01-15"),
-               "2016-01..2018-03": ("2016-01-01", "2018-03-01")}
+    parents = {f"{L16}..2018-01-15": (S16, "2018-01-15"), f"{L15}..2018-01-15": (S15, "2018-01-15"),
+               f"{L16}..2018-03": (S16, "2018-03-01")}
+    print(f"parent windows {parents} (series {a.series}, parent start {a.parent_start})")
     childs = {"2018-01-01": "2018-01-01", "2018-01-15": "2018-01-15"}
     base = {"maxstep": 2, "cap": 16, "j0": 0.15, "dynmap": 0, "bw": 0, "wshape": 1.0, "shapew": 8, "bmin": 0.35, "bmax": 2.5, "wfweeks": 13}
     grid = []
@@ -456,7 +464,7 @@ def main():
                 for ms in (2, 3):
                     for dm, bw in ((0, 0), (1, 0), (2, 52), (2, 104)):
                         grid.append(dict(base, parent=pk, child=ck, wshape=wsh, maxstep=ms, dynmap=dm, bw=bw))
-    spec = dict(base, parent="2016-01..2018-01-15", child="2018-01-01")  # docs/FRACTAL.md defaults
+    spec = dict(base, parent=f"{L16}..2018-01-15", child="2018-01-01")  # docs/FRACTAL.md defaults (parent start re-anchorable)
 
     results = []
 

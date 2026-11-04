@@ -1,26 +1,32 @@
 // The recordings folder: one file per UTC day, md-YYYY-MM-DD.jsonl.gz, written as gzip while the day is recorded
 // (one gzip member every few seconds, bot/marketdata/marketData.ts Recorder), about a tenth of the plain size at every
 // hour. A day begun plain (RECORDINGS_GZIP_LIVE=false, or a bot from before it) is md-YYYY-MM-DD.jsonl until it is
-// gzipped after midnight. Every reader goes through here and reads both forms, today's file included.
+// gzipped after midnight. A day may also be md-YYYY-MM-DD.mdc, the compact lossless form (bot/marketdata/compactRecording.ts,
+// made by scripts/mdc.ts for archives and caches; the bot itself never writes it). Every reader goes through here and
+// reads all three forms, today's file included.
 
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import zlib from 'zlib';
 import { pipeline } from 'stream/promises';
+import { mdcLines } from './compactRecording';
 
-const RE = /^md-(\d{4}-\d{2}-\d{2})\.jsonl(\.gz)?$/;
+const RE = /^md-(\d{4}-\d{2}-\d{2})\.(?:jsonl(\.gz)?|mdc)$/;
+/** Which form wins when a day exists in several: plain (still being written), then gzip, then compact. */
+const rank = (f: string): number => (f.endsWith('.jsonl') ? 0 : f.endsWith('.gz') ? 1 : 2);
 
 export interface RecordingDay { day: string; file: string }
 
-/** Recorded days in a folder, sorted (the plain file wins when both forms exist). */
+/** Recorded days in a folder, sorted (the plain file wins when several forms exist, then gzip, then .mdc). */
 export function recordingFiles(dir: string): RecordingDay[] {
   if (!fs.existsSync(dir)) return [];
   const by = new Map<string, string>();
   for (const f of fs.readdirSync(dir)) {
     const m = RE.exec(f);
     if (!m) continue;
-    if (!by.has(m[1]) || !m[2]) by.set(m[1], f);
+    const had = by.get(m[1]);
+    if (had === undefined || rank(f) < rank(had)) by.set(m[1], f);
   }
   return [...by.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)).map(([day, f]) => ({ day, file: path.join(dir, f) }));
 }
@@ -32,8 +38,9 @@ export const recordingDayList = (dir: string): string[] => recordingFiles(dir).m
  *  up to where it stops instead of failing the whole read. */
 export const dayGunzip = (): zlib.Gunzip => zlib.createGunzip({ finishFlush: zlib.constants.Z_SYNC_FLUSH });
 
-/** Lines of a day file (gzipped or not). */
-export function recordingLines(file: string): readline.Interface {
+/** Lines of a day file (plain, gzipped or .mdc), for `for await`. */
+export function recordingLines(file: string): AsyncIterable<string> {
+  if (file.endsWith('.mdc')) return mdcLines(file);
   const raw = fs.createReadStream(file);
   return readline.createInterface({ input: file.endsWith('.gz') ? raw.pipe(dayGunzip()) : raw, crlfDelay: Infinity });
 }
@@ -57,7 +64,7 @@ export async function compressOldRecordings(dir: string, keepPlainDays: number, 
   if (!fs.existsSync(dir)) return done;
   for (const f of fs.readdirSync(dir)) {
     const m = RE.exec(f);
-    if (!m || m[2] || m[1] >= cutoff || m[1] >= today) continue;
+    if (!m || !f.endsWith('.jsonl') || m[1] >= cutoff || m[1] >= today) continue;
     const src = path.join(dir, f), dst = `${src}.gz`, tmp = `${dst}.tmp`;
     await pipeline(fs.createReadStream(src), zlib.createGzip({ level: 6 }), fs.createWriteStream(tmp, { mode: 0o600 }));
     fs.renameSync(tmp, dst);
@@ -87,9 +94,10 @@ export function pruneRecordings(dir: string, targetFreeBytes: number, keepDays =
   return deleted;
 }
 
-/** Both forms of the day, if both exist (a half-finished gzip). */
+/** Every form of the day that exists (a half-finished gzip, a compact copy). */
 function removeDay(d: RecordingDay): void {
-  for (const file of [d.file, d.file.endsWith('.gz') ? d.file.slice(0, -3) : `${d.file}.gz`, `${d.file.replace(/\.gz$/, '')}.gz.tmp`]) {
+  const base = d.file.replace(/\.(?:jsonl(?:\.gz)?|mdc)$/, '');
+  for (const file of [`${base}.jsonl`, `${base}.jsonl.gz`, `${base}.jsonl.gz.tmp`, `${base}.mdc`, `${base}.mdc.tmp`]) {
     try { fs.rmSync(file); } catch { /* not there */ }
   }
 }
