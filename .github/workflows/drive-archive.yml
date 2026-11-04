@@ -24,7 +24,7 @@ on:
         required: false
         default: ''
       max_days:
-        description: 'At most this many days per run (each is ~2 GB, ~4-5 min at 8 MB/s)'
+        description: 'At most this many days per run (each is ~1-2 GB: ~3 min to copy at 8 MB/s plus ~15 min to make its compact copy)'
         required: false
         default: '6'
       overwrite:
@@ -50,7 +50,7 @@ jobs:
   archive:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 120
+    timeout-minutes: 300
     steps:
       # The compact copy of each day (md-DAY.mdc, scripts/mdc.ts, ~2.5x smaller than the gzip) is made on this runner.
       - uses: actions/checkout@v5
