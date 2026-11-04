@@ -90,6 +90,17 @@ export interface LoserExitConfig {
   cut: boolean;
   /** LOSER_CUT_MARGIN (0.03 a contract; the lab: 3c beat 5, 8 and 12c, and waiting 10-30 s lost). */
   cutMargin: number;
+  /** LOSER_CUT_MODE (fair): what fires the loser cut. fair = the spot fair value of the side is below the bid less the fee
+   *  less LOSER_CUT_MARGIN (the market overpays the side); stop = the side's bid has fallen to LOSER_STOP_DROP below its
+   *  entry price (the market says the position is losing); both = either. Under study (Steven, Nov 4): each mode is judged
+   *  per state and kept only where it is neutral or makes money. */
+  cutMode?: 'fair' | 'stop' | 'both';
+  /** LOSER_STOP_DROP (0.5): stop mode fires when the side's bid is at or below the entry price x (1 - this). */
+  stopDrop?: number;
+  /** LOSER_CUT_STATE (any): which losing positions the cut may sell. never = never in profit after fees since the entry
+   *  (the side's best bid since then, net of the exit fee, never cleared the cost); once = it was in profit and fell back;
+   *  any = both. */
+  cutState?: 'any' | 'never' | 'once';
   /** LOSER_WINDOW_CUT (off: it lost on most of the 8 recorded days; studied for its winning condition): inside the last share of the window (STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC) or the final
    *  STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC, a position not in profit after fees is sold at the bid (Steven's rule); only a
    *  position in profit rides to settlement. Tennis: its last share of the match (TENNIS_NO_EXIT_BEFORE_END_FRAC). */
@@ -1251,6 +1262,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       ...(env.TRAINING_GATE_MARGIN !== undefined && env.TRAINING_GATE_MARGIN !== '' ? { trainMargin: num(env, 'TRAINING_GATE_MARGIN', 0.06, 0, 0.5) } : {}),
       cut: bool(env, 'LOSER_CUT', false),
       cutMargin: num(env, 'LOSER_CUT_MARGIN', 0.03, 0, 0.5),
+      cutMode: oneOf(env, 'LOSER_CUT_MODE', 'fair', ['fair', 'stop', 'both'] as const),
+      stopDrop: num(env, 'LOSER_STOP_DROP', 0.5, 0.05, 0.95),
+      cutState: oneOf(env, 'LOSER_CUT_STATE', 'any', ['any', 'never', 'once'] as const),
       window: bool(env, 'LOSER_WINDOW_CUT', false),
       windowJudge: oneOf(env, 'LOSER_WINDOW_JUDGE', 'bid', ['bid', 'fair', 'cost'] as const),
       windowMode: oneOf(env, 'LOSER_WINDOW_MODE', 'bid', ['bid', 'rest'] as const),
