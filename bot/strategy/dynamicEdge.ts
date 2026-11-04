@@ -12,6 +12,13 @@
 //   quiet        k x max(0, 1 - jump / quietRef): the coin is not moving. Scaling lab round 1 (Oct 31): across every arm the
 //                third of trades entered after the smallest 1-hour moves (jump under ~1.6 sigma) lost and the largest
 //                (over ~2.2 sigma) earned, so a quiet coin asks more edge and a moving one asks no extra
+//   calm profile (Steven's dynamics rule, Nov 1-2): when the coin's 1-hour realized volatility is under calmRv1h, the
+//                readings mean something else. Scaling lab round 2 (recorded Oct 29-31, Nov 2): on the wild day (rv1h ~1.5e-4)
+//                tight Kalshi books and one-sided flow were where the bot earned; on the two calm days (rv1h ~3e-5) the
+//                same entries lost (tight book <= 1c: -$152 and -$83; flow over ~0.07: -$122 and -$328). So in a calm
+//                market the edge also asks calmTight x (1 - spread / calmTightRef) on books tighter than calmTightRef, plus
+//                calmFlow x |taker imbalance| and a flat calmBias. A wild market is untouched. Live reading only (rv1h of
+//                the last hour), so no lookahead; the same code in paper and live.
 //
 // Every k is 0 by default, so nothing changes until the sweep (research/randomSweep.ts, PBO < 0.3 and a deflated Sharpe
 // on held-out days) finds settings that earn more than today's. A reading the market state does not have yet adds 0.
@@ -26,6 +33,12 @@ export interface DynamicEdgeParams {
   quiet: number;
   /** Jump (1-hour sigmas) at or above which the quiet term adds nothing. */
   quietRef: number;
+  /** Calm-market profile (0 = off): rv1h below which it applies, and its parts (see the header). */
+  calmRv1h: number;
+  calmTight: number;
+  calmTightRef: number;
+  calmFlow: number;
+  calmBias: number;
   /** Adversarial controls (research): a flat add, and a placebo that hands back a random earlier add instead of this one. */
   bias: number;
   placebo: boolean;
@@ -34,12 +47,12 @@ export interface DynamicEdgeParams {
   maxDown: number;
 }
 
-export const DYNAMIC_EDGE_OFF: DynamicEdgeParams = { vol: 0, change: 0, spread: 0, flow: 0, uncertainty: 0, quiet: 0, quietRef: 2.2, bias: 0, placebo: false, maxUp: 0.05, maxDown: 0.01 };
+export const DYNAMIC_EDGE_OFF: DynamicEdgeParams = { vol: 0, change: 0, spread: 0, flow: 0, uncertainty: 0, quiet: 0, quietRef: 2.2, calmRv1h: 0, calmTight: 0, calmTightRef: 0.015, calmFlow: 0, calmBias: 0, bias: 0, placebo: false, maxUp: 0.05, maxDown: 0.01 };
 
 export interface DynamicEdge {
   /** What to add to minEdge (probability points). */
   add: number;
-  parts: { vol: number; change: number; spread: number; flow: number; uncertainty: number; quiet: number };
+  parts: { vol: number; change: number; spread: number; flow: number; uncertainty: number; quiet: number; calm: number };
 }
 
 const v = (x: number | null | undefined) => (x === null || x === undefined || !Number.isFinite(x) ? 0 : x);
@@ -52,10 +65,18 @@ export function dynamicEdge(p: DynamicEdgeParams, r: MarketStateReading | undefi
     flow: p.flow * Math.abs(v(r?.flowImbalance)),
     uncertainty: p.uncertainty * v(pStd),
     quiet: p.quiet && p.quietRef > 0 && r?.jump != null && Number.isFinite(r.jump) ? p.quiet * Math.max(0, 1 - r.jump / p.quietRef) : 0,
+    calm: calmAdd(p, r),
   };
-  const sum = parts.vol + parts.change + parts.spread + parts.flow + parts.uncertainty + parts.quiet + p.bias;
+  const sum = parts.vol + parts.change + parts.spread + parts.flow + parts.uncertainty + parts.quiet + parts.calm + p.bias;
   const add = Math.max(-p.maxDown, Math.min(p.maxUp, sum));
   return { add: p.placebo ? placeboAdd(add) : add, parts };
+}
+
+/** The calm-market profile's add: 0 unless the profile is on and the reading says the coin is calm (rv1h known and low). */
+export function calmAdd(p: DynamicEdgeParams, r: MarketStateReading | undefined): number {
+  if (!(p.calmRv1h > 0) || r?.rv1h == null || !Number.isFinite(r.rv1h) || r.rv1h >= p.calmRv1h) return 0;
+  const tight = p.calmTight && p.calmTightRef > 0 && r.spread != null && Number.isFinite(r.spread) ? p.calmTight * Math.max(0, 1 - r.spread / p.calmTightRef) : 0;
+  return tight + p.calmFlow * Math.abs(v(r.flowImbalance)) + p.calmBias;
 }
 
 // The placebo (adversarial evaluator, Steven Nov 1): the same distribution of adds, but cut loose from the market state of
@@ -70,4 +91,4 @@ function placeboAdd(add: number): number {
   return placeboBuf[placeboSeed % placeboBuf.length];
 }
 
-export const dynamicEdgeOn = (p: DynamicEdgeParams) => p.vol !== 0 || p.change !== 0 || p.spread !== 0 || p.flow !== 0 || p.uncertainty !== 0 || p.quiet !== 0 || p.bias !== 0;
+export const dynamicEdgeOn = (p: DynamicEdgeParams) => p.vol !== 0 || p.change !== 0 || p.spread !== 0 || p.flow !== 0 || p.uncertainty !== 0 || p.quiet !== 0 || p.bias !== 0 || (p.calmRv1h > 0 && (p.calmTight !== 0 || p.calmFlow !== 0 || p.calmBias !== 0));

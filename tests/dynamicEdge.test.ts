@@ -59,3 +59,27 @@ test('adversarial controls: bias is a flat add; the placebo returns earlier adds
   assert.ok(seen.size > 1 && seen.size <= 10, 'only adds already seen come back');
   assert.equal(loadConfig({ DYN_EDGE_PLACEBO: 'true' } as NodeJS.ProcessEnv).strategy.dynamicEdge.placebo, true);
 });
+
+test('calm profile: asks more on tight books and one-sided flow only when rv1h is under the threshold', () => {
+  const p = { ...DYNAMIC_EDGE_OFF, calmRv1h: 6e-5, calmTight: 0.02, calmTightRef: 0.015, calmFlow: 0.02, calmBias: 0.005 };
+  assert.equal(dynamicEdgeOn(p), true);
+  // Wild market (rv1h 1e-4): nothing.
+  assert.equal(dynamicEdge(p, reading({ spread: 0.005 }), 0).add, 0);
+  // Calm market, 0.5c book: tight 0.02 x (1 - 0.005/0.015), flow 0.02 x 0.5, bias 0.005.
+  const e = dynamicEdge(p, reading({ rv1h: 3e-5, spread: 0.005 }), 0);
+  assert.ok(Math.abs(e.parts.calm - (0.02 * (2 / 3) + 0.01 + 0.005)) < 1e-12);
+  // Calm market, wide book: no tight part.
+  assert.ok(Math.abs(dynamicEdge(p, reading({ rv1h: 3e-5, spread: 0.04 }), 0).parts.calm - 0.015) < 1e-12);
+  // Unknown rv1h: nothing.
+  assert.equal(dynamicEdge(p, reading({ rv1h: null }), 0).parts.calm, 0);
+  // Threshold 0 = off even with weights.
+  assert.equal(dynamicEdgeOn({ ...p, calmRv1h: 0 }), false);
+});
+
+test('calm profile settings load from the environment', () => {
+  const c = loadConfig({ DYN_EDGE_CALM_RV1H: '6e-5', DYN_EDGE_CALM_TIGHT: '0.02', DYN_EDGE_CALM_FLOW: '0.03', DYN_EDGE_CALM_BIAS: '0.01' } as NodeJS.ProcessEnv);
+  assert.equal(c.strategy.dynamicEdge.calmRv1h, 6e-5);
+  assert.equal(c.strategy.dynamicEdge.calmTight, 0.02);
+  assert.equal(c.strategy.dynamicEdge.calmFlow, 0.03);
+  assert.equal(c.strategy.dynamicEdge.calmBias, 0.01);
+});
