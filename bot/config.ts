@@ -1117,6 +1117,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       calmTightRef: num(env, 'DYN_EDGE_CALM_TIGHT_REF', 0.015, 0.001, 0.2),
       calmFlow: num(env, 'DYN_EDGE_CALM_FLOW', 0, 0, 0.5),
       calmBias: num(env, 'DYN_EDGE_CALM_BIAS', 0, 0, 0.1),
+      wildScale: num(env, 'DYN_EDGE_WILD_SCALE', 1, 0, 2),
       bias: num(env, 'DYN_EDGE_BIAS', 0, -0.05, 0.1),
       placebo: env.DYN_EDGE_PLACEBO === 'true',
       maxUp: num(env, 'DYN_EDGE_MAX_UP', 0.05, 0, 0.3),

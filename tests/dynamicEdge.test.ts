@@ -83,3 +83,11 @@ test('calm profile settings load from the environment', () => {
   assert.equal(c.strategy.dynamicEdge.calmFlow, 0.03);
   assert.equal(c.strategy.dynamicEdge.calmBias, 0.01);
 });
+
+test('wild scale: the other parts are scaled only when rv1h is at or over the calm threshold', () => {
+  const p = { ...DYNAMIC_EDGE_OFF, change: 0.03, calmRv1h: 6e-5, wildScale: 0 };
+  assert.equal(dynamicEdge(p, reading({ rv1h: 1e-4 }), 0).add, 0);
+  assert.ok(Math.abs(dynamicEdge(p, reading({ rv1h: 3e-5 }), 0).add - 0.015) < 1e-12);
+  assert.ok(Math.abs(dynamicEdge({ ...p, calmRv1h: 0 }, reading({ rv1h: 1e-4 }), 0).add - 0.015) < 1e-12);
+  assert.equal(loadConfig({} as NodeJS.ProcessEnv).strategy.dynamicEdge.wildScale, 1);
+});

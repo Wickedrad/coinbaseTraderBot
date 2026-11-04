@@ -39,6 +39,9 @@ export interface DynamicEdgeParams {
   calmTightRef: number;
   calmFlow: number;
   calmBias: number;
+  /** Multiplier on the other parts (vol .. quiet) when the coin is NOT calm (rv1h known and >= calmRv1h); 1 = unchanged.
+   *  Round 3 (Nov 4, today's code): the base terms cost -$297 on the wild Oct 29 and earned on the calm days. */
+  wildScale: number;
   /** Adversarial controls (research): a flat add, and a placebo that hands back a random earlier add instead of this one. */
   bias: number;
   placebo: boolean;
@@ -47,7 +50,7 @@ export interface DynamicEdgeParams {
   maxDown: number;
 }
 
-export const DYNAMIC_EDGE_OFF: DynamicEdgeParams = { vol: 0, change: 0, spread: 0, flow: 0, uncertainty: 0, quiet: 0, quietRef: 2.2, calmRv1h: 0, calmTight: 0, calmTightRef: 0.015, calmFlow: 0, calmBias: 0, bias: 0, placebo: false, maxUp: 0.05, maxDown: 0.01 };
+export const DYNAMIC_EDGE_OFF: DynamicEdgeParams = { vol: 0, change: 0, spread: 0, flow: 0, uncertainty: 0, quiet: 0, quietRef: 2.2, calmRv1h: 0, calmTight: 0, calmTightRef: 0.015, calmFlow: 0, calmBias: 0, wildScale: 1, bias: 0, placebo: false, maxUp: 0.05, maxDown: 0.01 };
 
 export interface DynamicEdge {
   /** What to add to minEdge (probability points). */
@@ -67,6 +70,9 @@ export function dynamicEdge(p: DynamicEdgeParams, r: MarketStateReading | undefi
     quiet: p.quiet && p.quietRef > 0 && r?.jump != null && Number.isFinite(r.jump) ? p.quiet * Math.max(0, 1 - r.jump / p.quietRef) : 0,
     calm: calmAdd(p, r),
   };
+  if (p.wildScale !== 1 && p.calmRv1h > 0 && r?.rv1h != null && Number.isFinite(r.rv1h) && r.rv1h >= p.calmRv1h) {
+    for (const k of ['vol', 'change', 'spread', 'flow', 'uncertainty', 'quiet'] as const) parts[k] *= p.wildScale;
+  }
   const sum = parts.vol + parts.change + parts.spread + parts.flow + parts.uncertainty + parts.quiet + parts.calm + p.bias;
   const add = Math.max(-p.maxDown, Math.min(p.maxUp, sum));
   return { add: p.placebo ? placeboAdd(add) : add, parts };
