@@ -1,11 +1,17 @@
 // Compact recordings tool (bot/marketdata/compactRecording.ts).
 //
-//   npx tsx scripts/mdc.ts encode <md-DAY.jsonl[.gz]> [out.mdc]      lossless compact copy (checks the round trip)
-//   npx tsx scripts/mdc.ts decode <md-DAY.mdc> [out.jsonl.gz]         back to the bot's own gzip form
-//   npx tsx scripts/mdc.ts cat <file>                                 the day's lines as plain JSONL on stdout
-//   npx tsx scripts/mdc.ts verify <md-DAY.mdc> <md-DAY.jsonl[.gz]>    same lines, byte for byte?
-//   npx tsx scripts/mdc.ts expand <dir>                               decode every .mdc in <dir> to .jsonl.gz beside it
-//   npx tsx scripts/mdc.ts bench <md-DAY.jsonl.gz> [level...]         sizes, encode and read times (prints aggregates only)
+//   npx tsx scripts/mdc.ts encode <file> [out.mdc]          lossless compact copy (checks the round trip)
+//   npx tsx scripts/mdc.ts decode <file.mdc> [out]          back to the original form (see names below)
+//   npx tsx scripts/mdc.ts cat <file>                       the lines as plain text on stdout
+//   npx tsx scripts/mdc.ts verify <a> <b>                   same lines, byte for byte? (any two forms)
+//   npx tsx scripts/mdc.ts expand <dir>                     decode every .mdc under <dir> (recursive) beside itself
+//   npx tsx scripts/mdc.ts encode-tree <src> <dst>          every .jsonl/.csv(.gz) under <src> -> <dst>, same tree,
+//                                                           each verified against its source; existing ones skipped
+//   npx tsx scripts/mdc.ts bench <file> [level...]          sizes, encode and read times (prints aggregates only)
+//
+// Names: a recorded day md-DAY.jsonl(.gz) <-> md-DAY.mdc (decoded to the bot's md-DAY.jsonl.gz); any other file keeps
+// its own name without .gz plus .mdc (kalshi/KXBTC/2026-01-05.jsonl <-> 2026-01-05.jsonl.mdc, binance/BTC/1m.csv(.gz)
+// <-> 1m.csv.mdc), decoded back to the plain file the history tools read.
 //
 // Env MDC_LEVEL (default 19) and MDC_WINDOW_LOG (default 27) tune zstd for encode.
 
@@ -21,10 +27,23 @@ import { recordingLines } from '../bot/marketdata/recordingFiles';
 const opts = () => ({ level: Number(process.env.MDC_LEVEL ?? 19), windowLog: Number(process.env.MDC_WINDOW_LOG ?? 27) });
 const mb = (b: number) => (b / 1048576).toFixed(1);
 const outName = (f: string, ext: string) => f.replace(/\.(?:jsonl(?:\.gz)?|mdc)$/, '') + ext;
+const DAY = /(^|[\\/])md-\d{4}-\d{2}-\d{2}\.(?:jsonl(?:\.gz)?|mdc)$/;
+/** The compact name of a source file. */
+export const compactName = (f: string) => (DAY.test(f) ? outName(f, '.mdc') : f.replace(/\.gz$/, '') + '.mdc');
+/** The name an .mdc decodes to: a recorded day as the bot's gzip, anything else as its plain file. */
+export const decodedName = (f: string) => (DAY.test(f) ? outName(f, '.jsonl.gz') : f.replace(/\.mdc$/, ''));
+const SOURCE = /\.(?:jsonl|csv)(?:\.gz)?$/;
+function walk(dir: string, out: string[] = [], rel = ''): string[] {
+  for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+    const r = path.join(rel, e.name);
+    if (e.isDirectory()) walk(dir, out, r); else out.push(r);
+  }
+  return out;
+}
 
 /** Does the source end with a newline? (Only the plain form can be checked cheaply; the bot's files always do.) */
 function endsWithNewline(file: string): boolean {
-  if (file.endsWith('.jsonl')) {
+  if (!file.endsWith('.gz')) {
     const size = fs.statSync(file).size;
     if (!size) return true;
     const fd = fs.openSync(file, 'r'); const b = Buffer.alloc(1); fs.readSync(fd, b, 0, 1, size - 1); fs.closeSync(fd);
@@ -41,19 +60,18 @@ async function digest(file: string): Promise<{ lines: number; sha: string; bytes
   return { lines, sha: h.digest('hex'), bytes, ms: Date.now() - t0 };
 }
 
-async function encode(src: string, dst = outName(src, '.mdc'), o = opts()) {
+async function encode(src: string, dst = compactName(src), o = opts()) {
   const t0 = Date.now();
   const r = await encodeLines(recordingLines(src), dst, { ...o, endsWithNewline: endsWithNewline(src) });
   return { ...r, ms: Date.now() - t0, dst };
 }
 
 /** md-DAY.mdc -> md-DAY.jsonl.gz; any other x.mdc -> x.gz (x.csv.mdc -> x.csv.gz). */
-const decodedName = (f: string) => (/(^|\/)md-\d{4}-\d{2}-\d{2}\.mdc$/.test(f) ? outName(f, '.jsonl.gz') : f.replace(/\.mdc$/, '') + '.gz');
-
 async function decode(src: string, dst = decodedName(src)) {
   async function* text() { for await (const l of recordingLines(src)) yield l + '\n'; }
   const tmp = `${dst}.tmp`;
-  await pipeline(Readable.from(text()), zlib.createGzip({ level: 6 }), fs.createWriteStream(tmp, { mode: 0o600 }));
+  const sink = fs.createWriteStream(tmp, { mode: 0o600 });
+  await (dst.endsWith('.gz') ? pipeline(Readable.from(text()), zlib.createGzip({ level: 6 }), sink) : pipeline(Readable.from(text()), sink));
   fs.renameSync(tmp, dst);
   return dst;
 }
@@ -73,10 +91,24 @@ async function main() {
     console.log(same ? `identical: ${x.lines} lines, sha256 ${x.sha.slice(0, 16)}` : `DIFFERENT: ${x.lines} vs ${y.lines} lines`);
     process.exitCode = same ? 0 : 1;
   } else if (cmd === 'expand' && a) {
-    for (const f of fs.readdirSync(a).filter((f) => /^md-\d{4}-\d{2}-\d{2}\.mdc$/.test(f)).sort()) {
-      const dst = path.join(a, outName(f, '.jsonl.gz'));
+    for (const f of walk(a).filter((f) => f.endsWith('.mdc')).sort()) {
+      const dst = path.join(a, decodedName(f));
       if (!fs.existsSync(dst)) console.log(await decode(path.join(a, f), dst));
     }
+  } else if (cmd === 'encode-tree' && a && b) {
+    let n = 0, skipped = 0, inBytes = 0, outBytes = 0;
+    const t0 = Date.now();
+    for (const f of walk(a).filter((f) => SOURCE.test(f)).sort()) {
+      const dst = path.join(b, compactName(f));
+      if (fs.existsSync(dst)) { skipped++; continue; }
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      const src = path.join(a, f);
+      await encode(src, dst);
+      const [x, y] = await Promise.all([digest(src), digest(dst)]);
+      if (x.sha !== y.sha || x.lines !== y.lines) { fs.rmSync(dst); throw new Error(`${f}: decoded copy differs from the source (removed)`); }
+      n++; inBytes += fs.statSync(src).size; outBytes += fs.statSync(dst).size;
+    }
+    console.log(`encode-tree: ${n} files verified byte-identical (${skipped} already there), ${mb(inBytes)} MB -> ${mb(outBytes)} MB in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   } else if (cmd === 'bench' && a) {
     const levels = [b, ...rest].filter(Boolean).map(Number);
     const gz = await digest(a);
@@ -93,7 +125,7 @@ async function main() {
       fs.rmSync(dst);
     }
   } else {
-    console.error('usage: mdc.ts encode|decode|cat|verify|expand|bench ... (see the header)');
+    console.error('usage: mdc.ts encode|decode|cat|verify|expand|encode-tree|bench ... (see the header)');
     process.exitCode = 2;
   }
 }
