@@ -29,7 +29,7 @@ jobs:
         run: |
           set -uo pipefail
           WF=kalshi-replay-check.yml
-          runs() { gh api "repos/$R/actions/workflows/$WF/runs?per_page=100&branch=$BR" --jq '.workflow_runs[] | "\(.status) \(.conclusion) \(.display_title)"'; }
+          runs() { gh api "repos/$R/actions/workflows/$WF/runs?per_page=100&branch=$BR" --jq '.workflow_runs[] | "\(.status) \(.conclusion) \(.display_title)"' < /dev/null; }
           active() { runs | grep -c "^\(queued\|in_progress\|pending\|waiting\|requested\) .*REPLAY_NOTE=$NOTE" || true; }
           done_or_running() { runs | grep -E "^(queued|in_progress|pending|waiting|requested) |^completed success " | grep -q "REPLAY_TAG=$1 .*REPLAY_NOTE=$NOTE"; }
           while read -r tag day reuse ov; do
@@ -37,8 +37,12 @@ jobs:
             if done_or_running "$tag"; then echo "skip $tag (ran or running)"; continue; fi
             while [ "$(active)" -ge "$CAP" ]; do sleep 60; done
             next=$(date -u -d "$day +1 day" +%F)
-            gh workflow run $WF -R "$R" --ref "$BR" -f reuse_run="$reuse" -f days="$day,$next" -f from="${day}T15:40:00Z" -f to="${next}T15:40:00Z" \
-              -f nearby=none -f overrides="REPLAY_TAG=$tag $ov REPLAY_NOTE=$NOTE"
+            # A dispatch can fail with a transient HTTP 5xx: retry, and never let gh read the queue (stdin).
+            for try in 1 2 3 4 5; do
+              gh workflow run $WF -R "$R" --ref "$BR" -f reuse_run="$reuse" -f days="$day,$next" -f from="${day}T15:40:00Z" -f to="${next}T15:40:00Z" \
+                -f nearby=none -f overrides="REPLAY_TAG=$tag $ov REPLAY_NOTE=$NOTE" < /dev/null && break
+              echo "dispatch of $tag failed (try $try), retrying"; sleep $((try * 30))
+            done
             echo "$(date -u +%H:%M) dispatched $tag"; sleep 30
           done < .github/wb-queue.txt
           echo "queue dispatched"
