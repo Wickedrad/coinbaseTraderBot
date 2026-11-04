@@ -1351,6 +1351,14 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
             return f
         rowsR = [('gated x1 (reference)', baseR, None)]
         rowsR += [(f'gated x{k} everywhere (reference)', scaled(k, lambda s: True), None) for k in (2, 3, 5)]
+        # GATED_STAKE_CAP=clamp (whole-bot round 1: the gateway refuses an order above the band's top): x k, but never over $20
+        def capped(k, top=20.0):
+            def f(p):
+                q = baseR(p)
+                if q is None: return None
+                return dict(q, n=max(q['n'], min(k * q['n'], top / q['costF'])))
+            return f
+        rowsR += [(f'CAP gated x{k} clamped to the $20 band top', capped(k), None) for k in (2, 5)]
         picks = {}
         for nm, kf, ag in (('trend', kT, aT), ('vol', kV, aV), ('trend+vol', kTV, aTV)):
             on = online(kf); picks[nm] = on
