@@ -1,6 +1,10 @@
 # Deploys to the Lightsail box (static IP, systemd service `kalshi-bot`).
 #
-#  - Every push to main (i.e. when a PR is merged) tests, builds and deploys automatically.
+#  - Merges are batched by count (Steven, Nov 5): main deploys once DEPLOY_MIN_MERGES (repository variable, default 3)
+#    merges have built up since the last successful production deploy. A lone merge still deploys once it has
+#    waited DEPLOY_MAX_WAIT_HOURS (default 48), so a small fix never sits forever.
+#    The count is checked every hour at :25 (Steven, Nov 5), except 07:25 UTC, which would overlap the 07:15-08:15 UTC
+#    nightly Drive copy. Deploys take ~10-15 min.
 #  - Run manually from the Actions tab to redeploy main, or to deploy an existing release tag
 #    (v1.2.3) by entering it.
 #  - Rollback is one command on the server: `bash ~/bot/current/deploy/rollback.sh`.
@@ -16,8 +20,8 @@
 name: Deploy
 
 on:
-  push:
-    branches: [main, master]
+  schedule:
+    - cron: '25 0-6,8-23 * * *'
   workflow_dispatch:
     inputs:
       tag:
@@ -32,9 +36,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changed:
+    # A scheduled check deploys once enough merges have built up since the last production deploy (or the oldest has
+    # waited too long); manual runs always deploy.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      go: ${{ steps.c.outputs.go }}
+    steps:
+      - if: github.event_name == 'schedule'
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: c
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MIN_MERGES: ${{ vars.DEPLOY_MIN_MERGES || '3' }}
+          MAX_WAIT_HOURS: ${{ vars.DEPLOY_MAX_WAIT_HOURS || '48' }}
+        run: |
+          if [ "${{ github.event_name }}" != schedule ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          # Last run of this workflow whose deploy job succeeded (skipped checks also end as success, so look at the job).
+          # Other workflows use the production environment too, so the deployments list is no guide.
+          last=""
+          for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=30" --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); do
+            ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${run%%:*}/jobs" --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length')
+            if [ "$ok" -gt 0 ]; then last=${run#*:}; break; fi
+          done
+          if [ -z "$last" ] || ! git cat-file -e "$last^{commit}" 2>/dev/null; then
+            echo "no earlier deploy found: deploying"; echo go=true >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Each first-parent commit on main is one merged PR (or one direct push).
+          n=$(git rev-list --first-parent --count "$last..HEAD")
+          oldest=$(git log --first-parent --reverse --format=%ct "$last..HEAD" | head -n 1)
+          age_h=$(( oldest ? ($(date +%s) - oldest) / 3600 : 0 ))
+          echo "deployed: $last; merges waiting: $n (need $MIN_MERGES); oldest waiting ${age_h} h (max $MAX_WAIT_HOURS)"
+          if [ "$n" -ge "$MIN_MERGES" ] || { [ "$n" -ge 1 ] && [ "$age_h" -ge "$MAX_WAIT_HOURS" ]; }; then echo go=true >> "$GITHUB_OUTPUT"
+          else echo go=false >> "$GITHUB_OUTPUT"; fi
+
   deploy:
-    # Pushes deploy unless AUTO_DEPLOY is set to 'false'; manual runs always deploy.
-    if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY != 'false'
+    needs: changed
+    # Scheduled batches deploy unless AUTO_DEPLOY is set to 'false'; manual runs always deploy.
+    if: needs.changed.outputs.go == 'true' && (github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY != 'false')
     runs-on: ubuntu-latest
     environment: production
     steps:
