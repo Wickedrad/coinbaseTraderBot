@@ -33,9 +33,10 @@ on:
 permissions:
   contents: read
 
-# A new study cancels the branch's running study; a tests-only push cancels only tests-only runs.
+# Every study runs to the end (hypothesis batches pushed one after another must not cancel each other); a push without a
+# study cancels the branch's earlier push without one.
 concurrency:
-  group: all-pairs-${{ github.ref }}-${{ inputs.config || 'base' }}-${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[all-pairs]') }}
+  group: ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[all-pairs]')) && format('all-pairs-study-{0}', github.run_id) || format('all-pairs-{0}-other', github.ref) }}
   cancel-in-progress: true
 
 env:
@@ -73,21 +74,29 @@ jobs:
           MSG: ${{ github.event.head_commit.message }}
           EVENT: ${{ github.event_name }}
           ARMS_IN: ${{ inputs.arms || 'base,stress,synth15,synth1h' }}
+          CONFIG_IN: ${{ inputs.config || 'base' }}
         run: |
           set -euo pipefail
-          # A push may name its arms in the commit message: [arms:base,stress]
+          # A push may name its arms and its hypothesis configs in the commit message: [arms:base,stress] [config:a,b]
           ARMS=$(printf '%s' "$MSG" | sed -nE 's/.*\[arms:([a-z0-9,]+)\].*/\1/p' | head -1)
           ARMS=${ARMS:-$ARMS_IN}
+          CONFIGS=$(printf '%s' "$MSG" | sed -nE 's/.*\[config:([A-Za-z0-9_,-]+)\].*/\1/p' | head -1)
+          CONFIGS=${CONFIGS:-$CONFIG_IN}
           if [ "$EVENT" = "workflow_dispatch" ] || printf '%s' "$MSG" | grep -qF '[all-pairs]'; then echo "study=true" >> "$GITHUB_OUTPUT"; else echo "study=false" >> "$GITHUB_OUTPUT"; fi
           if printf '%s' "$MSG" | grep -qF '[all-pairs-diag]'; then echo "diag=true" >> "$GITHUB_OUTPUT"; else echo "diag=false" >> "$GITHUB_OUTPUT"; fi
           rr=$(printf '%s' "$MSG" | sed -nE 's/.*\[all-pairs-report:([0-9]+)\].*/\1/p' | head -1)
           echo "report_run=$rr" >> "$GITHUB_OUTPUT"
-          # 9 study jobs, at most 5 at once (the project shares ~50 runners): base folds over 4, stress and synth1h over 2.
-          python3 - "$ARMS" >> "$GITHUB_OUTPUT" <<'EOF'
-          import json, sys
+          # Per config: base folds over 4 jobs, stress and synth1h over 2, synth15 1; at most 5 jobs at once (the project
+          # shares ~50 runners, this thread ~10).
+          python3 - "$ARMS" "$CONFIGS" >> "$GITHUB_OUTPUT" <<'EOF'
+          import json, os, re, sys
           want = {a.strip() for a in sys.argv[1].split(',') if a.strip()} | {'base'}
+          configs = [c.strip() for c in sys.argv[2].split(',') if c.strip()]
+          for c in configs:
+              if not re.fullmatch(r'[A-Za-z0-9_-]+', c) or not os.path.exists(f'python/allpairs/hypotheses/{c}.json'):
+                  sys.exit(f'unknown config {c!r}')
           parts = {'base': 4, 'stress': 2, 'synth15': 1, 'synth1h': 2}
-          inc = [{'arm': a, 'part': p, 'parts': n} for a, n in parts.items() if a in want for p in range(n)]
+          inc = [{'config': c, 'arm': a, 'part': p, 'parts': n} for c in configs for a, n in parts.items() if a in want for p in range(n)]
           print('matrix=' + json.dumps({'include': inc}))
           EOF
 
@@ -131,7 +140,7 @@ jobs:
       fail-fast: false
       max-parallel: 5
       matrix: ${{ fromJSON(needs.test.outputs.matrix) }}
-    name: study (${{ matrix.arm }} ${{ matrix.part }}/${{ matrix.parts }})
+    name: study (${{ matrix.config }} ${{ matrix.arm }} ${{ matrix.part }}/${{ matrix.parts }})
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -158,14 +167,14 @@ jobs:
       - name: Run ${{ matrix.arm }} part ${{ matrix.part }}
         working-directory: python
         env:
-          CONFIG: ${{ inputs.config || 'base' }}
+          CONFIG: ${{ matrix.config }}
           DAYS: ${{ inputs.days || '0' }}
         run: |
           set -euo pipefail
           [[ "$CONFIG" =~ ^[A-Za-z0-9_-]+$ ]] && [[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "bad input"; exit 1; }
           python -W ignore -m allpairs.run --history ../data/history --config "allpairs/hypotheses/$CONFIG.json" \
             --arm ${{ matrix.arm }} --part ${{ matrix.part }} --parts ${{ matrix.parts }} --assets "$ASSETS" --days "$DAYS" \
-            --out "$RUNNER_TEMP/parts/${{ matrix.arm }}-${{ matrix.part }}.json" 2>&1 | tail -80
+            --out "$RUNNER_TEMP/parts/$CONFIG/${{ matrix.arm }}-${{ matrix.part }}.json" 2>&1 | tail -80
       # The part holds per-trade rows: it goes to Drive, never to a public artifact.
       - name: Keep the part on Drive
         if: always()
@@ -178,6 +187,10 @@ jobs:
     needs: [test, study]
     if: always() && (needs.test.outputs.study == 'true' || needs.test.outputs.report_run != '')
     runs-on: ubuntu-latest
+    # One report at a time: each reads, appends to and writes back the shared trial ledger.
+    concurrency:
+      group: all-pairs-ledger
+      cancel-in-progress: false
     timeout-minutes: 20
     permissions:
       contents: write
@@ -218,17 +231,25 @@ jobs:
             echo "no ledger on Drive yet"
           elif [ "$rc" != 0 ]; then echo "ledger download failed ($rc)"; exit 1; fi
           echo ok > "$RUNNER_TEMP/state/.fetched"
-          # The parts of the scoring run (this one, or the run a report-only rerun names); an older run's combined
-          # results stand in when it kept no parts on Drive.
+          # The parts of the scoring run (this one, or the run a report-only rerun names), one folder per hypothesis
+          # config (older runs kept them flat: one config); an older run's combined results stand in when it kept no
+          # parts on Drive.
           rc=0; bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC/parts" "$RUNNER_TEMP/parts" || rc=$?
           if [ "$rc" = 0 ]; then
-            ls "$RUNNER_TEMP/parts" | head -20
-            python -W ignore -m allpairs.run combine --parts "$RUNNER_TEMP/parts" --out "$RUNNER_TEMP/results"
+            groups=$(find "$RUNNER_TEMP/parts" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+            if [ -z "$groups" ]; then
+              python -W ignore -m allpairs.run combine --parts "$RUNNER_TEMP/parts" --out "$RUNNER_TEMP/results/base"
+            else
+              for g in $groups; do python -W ignore -m allpairs.run combine --parts "$RUNNER_TEMP/parts/$g" --out "$RUNNER_TEMP/results/$g"; done
+            fi
           elif [ "$rc" = 3 ] && [ "$SRC" != "${{ github.run_id }}" ]; then
-            bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC" "$RUNNER_TEMP/results" --include "/*.json"
+            bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC" "$RUNNER_TEMP/results/base" --include "/*.json"
           else echo "no parts for run $SRC ($rc)"; exit 1; fi
-          python -W ignore -m allpairs.report --results "$RUNNER_TEMP/results" --ledger "$RUNNER_TEMP/state/trials.jsonl" \
-            --champion "$RUNNER_TEMP/state/champion.json" --card "$RUNNER_TEMP/results/card.md" --run-url "$RUN_URL" --run-id "$SRC"
+          # One gate and card per config, in order; each config scored here counts as a trial for the next.
+          for d in "$RUNNER_TEMP"/results/*/; do
+            python -W ignore -m allpairs.report --results "$d" --ledger "$RUNNER_TEMP/state/trials.jsonl" \
+              --champion "$RUNNER_TEMP/state/champion.json" --card "${d}card.md" --run-url "$RUN_URL" --run-id "$SRC"
+          done
       - name: Keep results and the ledger on Drive
         if: always()
         run: |
@@ -246,5 +267,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "All-pairs matrix run ${{ github.run_id }} (${{ inputs.config || 'base' }}, study ${{ needs.study.result }}${{ needs.test.outputs.report_run && format(', parts of run {0}', needs.test.outputs.report_run) || '' }})"; echo; cat "$RUNNER_TEMP/results/card.md" 2>/dev/null || echo "no card"; } > "$RUNNER_TEMP/comment.md"
+          { echo "All-pairs matrix run ${{ github.run_id }} (study ${{ needs.study.result }}${{ needs.test.outputs.report_run && format(', parts of run {0}', needs.test.outputs.report_run) || '' }})"; echo
+            found=0; for f in "$RUNNER_TEMP"/results/*/card.md; do [ -f "$f" ] || continue; found=1; cat "$f"; echo; done
+            [ "$found" = 1 ] || echo "no card"; } > "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"

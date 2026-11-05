@@ -118,7 +118,9 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '') -> str:
     L = []
     folds = base.get('folds', [])
     span = f'{_day(folds[0]["test"][0])} to {_day(folds[-1]["test"][1])}' if folds else '?'
-    L.append(f'## All-pairs payoff matrix: diagnostic summary card')
+    L.append(f'## All-pairs payoff matrix: {base.get("name", "?")} ({base.get("config_hash", "?")})')
+    if base.get('config', {}).get('notes'):
+        L.append(f'Hypothesis: {base["config"]["notes"]}')
     L.append(f'Generated {_now_both()}{f" | [run]({run_url})" if run_url else ""}. Assets {", ".join(base.get("assets", []))} (DOGE excluded). '
              f'Out-of-sample days {span} ({o.get("days", 0)} days, {len(folds)} purged walk-forward folds).')
     L.append('')
