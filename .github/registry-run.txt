@@ -1,4 +1,4 @@
 # Trial registry jobs (see .github/workflows/registry.yml).
-# 22:20 UTC Nov 5: scaling rounds 3-4 from the inbox.
+# 23:10 UTC Nov 5: scaling round 5 (recorded tier, fails HO-1) from the inbox.
 inbox
 merge
