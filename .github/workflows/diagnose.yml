@@ -453,6 +453,7 @@ jobs:
         working-directory: ${{ runner.temp }}/main
         env:
           LAB_HOURLY: ${{ runner.temp }}/lab-hourly.json
+          LAB_EXCLUDE: DOGE  # main's replay leaves DOGE out (STRATEGY_EXCLUDE_SERIES default, Nov 5): the lab too
           LAB: ${{ github.workspace }}/deploy
         run: |
           set -a; . data/sweep-env/train.env; set +a
