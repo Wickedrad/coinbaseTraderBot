@@ -61,6 +61,9 @@ export interface StrategyConfig {
   series: string[];
   /** Series that are recorded (books, trades, lifecycle, results) for research but never priced or traded (RECORD_SERIES). */
   recordSeries: string[];
+  /** Series that are recorded but never priced or traded, by pattern (STRATEGY_EXCLUDE_SERIES; Steven, Nov 5: no DOGE
+   *  until the rest of the bot performs, then DOGE is trained again: STRATEGY_EXCLUDE_SERIES= trades it again). */
+  excludeSeries?: RegExp;
   /** Cap on simultaneously tracked record-only markets. */
   recordMaxMarkets: number;
   /** Discover every priceable crypto 15-minute / hourly series from the exchange (STRATEGY_SERIES=auto). */
@@ -333,7 +336,9 @@ export interface Config {
   dataDir: string;
   /** Where the money state lives (orders and positions, vault, break-even, balance history, perps trades, the
    *  Kalshi check): DATA_DIR in paper, DATA_DIR/live in live, so the paper pool and its positions never show or
-   *  count in live mode, and a switch back to paper finds the paper books as they were. */
+   *  count in live mode, and a switch back to paper finds the paper books as they were. What the bot has learned about
+   *  its own trading (component trials, accuracy gate, entry and exit curves, take-profit bench, probation, scoreboard,
+   *  streak scales, the optimal-f history) stays in DATA_DIR in both modes, so live trades exactly as paper would. */
   bookDir: string;
   /** Audit log: a day's file splits into parts at this size; files older than the retention are deleted. */
   auditMaxFileMb: number;
@@ -1090,6 +1095,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     series,
     seriesAuto,
     recordSeries: (env.RECORD_SERIES ?? '').split(',').map((x) => x.trim()).filter(Boolean),
+    excludeSeries: (() => { const v = (env.STRATEGY_EXCLUDE_SERIES ?? 'DOGE').trim(); return v ? new RegExp(v) : undefined; })(),
     recordMaxMarkets: num(env, 'RECORD_MAX_MARKETS', 150, 1, 2000),
     kellyFraction: num(env, 'STRATEGY_KELLY_FRACTION', 0.25, 0.01, 0.5),
     portfolioKelly: bool(env, 'PORTFOLIO_KELLY', true),
@@ -1133,7 +1139,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     profitGiveBack: num(env, 'PROFIT_GIVE_BACK', 1 / 3, 0, 1),
     // The owner, Oct 24: the take-profit goes on the exit curve's scoreboard and bench (it sold winners for $230 less
     // than holding them on Oct 23-24).
-    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', true),
+    // Off by default (Steven, Oct 31 and Nov 4): nothing is held to settlement unless in profit in the last share of the window, so a
+    // bad score never turns the take-profit off; the bench keeps scoring and reports what it would have called.
+    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', false),
     cadence,
     evalBarSec: num(env, 'STRATEGY_EVAL_BAR_SEC', 60, 5, 600),
     evalFvMove: num(env, 'STRATEGY_EVAL_FV_MOVE', 0.015, 0.001, 0.2),
