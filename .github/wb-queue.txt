@@ -20,3 +20,4 @@ d31-L5 2026-10-31 41540307462 MARKET_ANCHOR=true MARKET_ANCHOR_BY_SERIES=true TA
 # restart 16:35 UTC Nov 4: L2 already reran on the veto fix (2fd3df3), so L2v dropped as a duplicate
 # restart 21:35 UTC Nov 4: done_or_running fixed (grep -q + pipefail re-ran finished arms); L0-L2 lines removed (done)
 # restart 00:10 UTC Nov 5: CAP 10 (new project limit)
+# restart 01:40 UTC Nov 5: concurrency group was over GitHub's 400-char cap for L5 (startup failure); keyed on run id
