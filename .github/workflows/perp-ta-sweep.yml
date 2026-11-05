@@ -7,7 +7,7 @@ name: Perp TA sweep
 # modules join the sweep (research/perpTaModules.ts, Steven Nov 5 13:59 UTC): the analyzer's rules, rule book, confluences and
 # net vote (TA-Lib compiled), TA-Lib patterns and indicators, the TA Net / Librarian / cross-graph walk-forward forecasts kept
 # in raw/server-history, and the character classifier as a condition; the analyzer walk is cached on Drive
-# (derived/perp-ta/modules). A fidelity job
+# (derived/perp-ta/modules). A fidelity run (only: fidelity, on its own)
 # measures Kalshi's real perp quotes in the recordings against Binance's bars (spread, returns, funding). No server involved.
 # The summary is posted as a comment on the commit; full results go to Drive (models/perp-ta/run-<id>).
 on:
@@ -274,7 +274,9 @@ jobs:
         run: '[ ! -d out ] || bash deploy/drive_lab.sh put "models/perp-ta/${{ (inputs.only == ''blind'' || inputs.only == ''study'') && format(''{0}/'', inputs.only) || '''' }}run-$GITHUB_RUN_ID" out'
 
   fidelity:
-    if: ${{ inputs.only != 'blind' && inputs.only != 'study' && inputs.only != 'agree' && inputs.only != 'registry' }}
+    # Its own run only (only: fidelity): it reads the recordings, not the sweep, and took 88-110 min in rounds 2 and 3, so the
+    # sweep's report no longer waits on it (Nov 5 6:20 PM EST / 23:20 UTC).
+    if: ${{ inputs.only == 'fidelity' }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
