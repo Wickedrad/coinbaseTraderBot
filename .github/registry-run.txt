@@ -1,0 +1,8 @@
+# Trial registry jobs (see .github/workflows/registry.yml). Backfill: cell batches 1 and 2 (paper benches, DOGE dropped
+# from by_day), the all-pairs and tennis-TA ledgers; regime v1 labels with the 2026-10-28 fixture; then the merge.
+backfill-cellsweep 8e116581ccb8268a6f1e0a9e8e594bd2cf98da59 meta C0 paper cell-batch1
+backfill-cellsweep 875abb6bda1eba89f15895b943e9be9b22d374cc meta W0 paper cell-batch2
+backfill-foreign models/all-pairs/state/trials.jsonl all-pairs all-pairs-ledger
+backfill-foreign models/tennis-ta/state/trials.jsonl tennis-ta tennis-ta-ledger
+regime fixture 2026-10-28
+merge

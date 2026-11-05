@@ -1,0 +1,100 @@
+# Trial registry + regime labels (meta plan thread, institutional-methods proposal, Nov 5 2026).
+# research/registry.py: every thread writes its trials as JSONL shards to gdrive:kalshi-bot-archive/registry/shards/<thread>/;
+# the merge scores each hypothesis family (N_raw, K_eff, PBO, BHY, DSR, validator flags) into registry/merged/.
+# research/regime.py: regime v1 labels (RV60 tercile, z60 trend) from Drive raw/history/binance-1m into registry/regime-v1/.
+# Runs: daily merge (schedule, once this file is on main), or a push of .github/registry-run.txt on the meta branch,
+# whose lines pick the jobs:
+#   backfill-cellsweep <full sha> <thread> <control> <own|paper> [family]   cell-sweep Drive folder -> a shard
+#   backfill-foreign <drive path under kalshi-bot-archive> <thread> <family> another thread's own ledger -> a shard
+#   regime [from YYYY-MM-DD] [to YYYY-MM-DD] [fixture YYYY-MM-DD]          labels (+ one-day fixture artifact)
+#   merge                                                                   merge every shard and post the report
+# The repository is public: only family/arm names, counts and dollars are printed; settings files, keys and logs never.
+name: Trial registry
+on:
+  schedule:
+    - cron: '40 8 * * *'   # 08:40 UTC (3:40 AM EST), after the nightly archive and clear of the 07:15-08:15 window
+  push:
+    branches: [claude/project-thread-79ntof]
+    paths: ['.github/registry-run.txt']
+permissions:
+  contents: write
+concurrency:
+  group: trial-registry
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 90
+    env:
+      REG: gdrive:kalshi-bot-archive/registry
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Self-tests
+        run: python3 -I research/registry.py selftest && python3 -I research/regime.py selftest
+      - name: Jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          if [ "$GITHUB_EVENT_NAME" = schedule ] || [ ! -f .github/registry-run.txt ]; then echo merge > "$RUNNER_TEMP/run.txt"
+          else grep -vE '^[[:space:]]*(#|$)' .github/registry-run.txt > "$RUNNER_TEMP/run.txt"; fi
+          mkdir -p shards out
+          rc=0
+          while read -r cmd a1 a2 a3 a4 a5 a6 rest; do
+            case "$cmd" in
+              backfill-cellsweep)
+                [[ "$a1" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::backfill-cellsweep needs a full sha"; rc=1; continue; }
+                d="cs-$a1"; mkdir -p "$d"
+                rclone copy "gdrive:kalshi-bot-archive/simulated/cell-sweep/$a1" "$d" --include 'd*.json.gz' --transfers 8
+                echo "$a1: $(ls "$d" | wc -l) arm-day outputs"
+                fam=${a5:-cell-sweep-${a1:0:7}}
+                python3 -I research/registry.py cellsweep "$d" "$a1" "$a2" --control "$a3" --benches "$a4" --family "$fam" > "shards/cs-${a1:0:7}.jsonl" || { rc=1; continue; }
+                python3 -I research/registry.py validate "shards/cs-${a1:0:7}.jsonl" | tail -3
+                rclone copyto "shards/cs-${a1:0:7}.jsonl" "$REG/shards/$a2/cs-${a1:0:7}.jsonl"
+                echo "shard: $REG/shards/$a2/cs-${a1:0:7}.jsonl ($(wc -l < "shards/cs-${a1:0:7}.jsonl") rows)";;
+              backfill-foreign)
+                n=$(echo "$a1" | tr '/' '_')
+                if rclone copyto "gdrive:kalshi-bot-archive/$a1" "foreign-$n" 2>/dev/null && [ -s "foreign-$n" ]; then
+                  python3 -I research/registry.py foreign "foreign-$n" "$a2" "$a3" > "shards/foreign-$n" || { rc=1; continue; }
+                  rclone copyto "shards/foreign-$n" "$REG/shards/$a2/ledger-$n"
+                  echo "foreign $a1: $(wc -l < "shards/foreign-$n") rows -> $REG/shards/$a2/ledger-$n"
+                else echo "foreign $a1: not on Drive (or not visible to this token), skipped"; fi;;
+              regime)
+                frm=""; to=""; fx=""
+                set -- $a1 $a2 $a3 $a4 $a5 $a6
+                while [ $# -ge 2 ]; do case "$1" in from) frm=$2;; to) to=$2;; fixture) fx=$2;; esac; shift 2; done
+                mkdir -p hist
+                bash deploy/drive_lab.sh get raw/history hist --include '/binance-1m/**' || { echo "::error::no binance-1m on Drive"; rc=1; continue; }
+                for a in BTC ETH SOL XRP; do f=hist/binance-1m/$a/1m.csv; [ -f "$f" ] && echo "$a: $(wc -l < "$f") bars, $(sed -n 2p "$f" | cut -d, -f1) .. $(tail -1 "$f" | cut -d, -f1)"; done
+                python3 -I research/regime.py label hist/binance-1m out/regime-v1.csv ${frm:+--from $frm} ${to:+--to $to} 2>&1 | tail -20
+                gzip -c out/regime-v1.csv > out/regime-v1.csv.gz
+                sha=$(git rev-parse HEAD); rclone copyto out/regime-v1.csv.gz "$REG/regime-v1/$sha/labels.csv.gz"
+                echo "labels: $REG/regime-v1/$sha/labels.csv.gz"
+                if [ -n "$fx" ]; then
+                  { head -1 out/regime-v1.csv; grep "^$fx" out/regime-v1.csv; } > "out/regime-v1-fixture-$fx.csv"
+                  rclone copyto "out/regime-v1-fixture-$fx.csv" "$REG/regime-v1/$sha/fixture-$fx.csv"
+                  echo "fixture $fx: $(($(wc -l < "out/regime-v1-fixture-$fx.csv") - 1)) rows"
+                fi;;
+              merge)
+                rclone copy "$REG/shards" allshards --include '*.jsonl' --include '*.jsonl.gz' --transfers 8 || true
+                cp shards/* allshards/ 2>/dev/null || true
+                python3 -I research/registry.py merge allshards out/merged || { rc=1; continue; }
+                rclone copy out/merged "$REG/merged"
+                { echo "**Trial registry merge** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · REPLAY_NOTE=registry"; echo; head -c 60000 out/merged/report.md; } > comment.md
+                jq -n --rawfile body comment.md '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url' || true;;
+              *) echo "::warning::unknown line: $cmd";;
+            esac
+          done < "$RUNNER_TEMP/run.txt"
+          exit $rc
+      - name: Keep the regime fixture (public Binance-derived labels only)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regime-v1-fixture
+          path: out/regime-v1-fixture-*.csv
+          if-no-files-found: ignore
+          retention-days: 30
