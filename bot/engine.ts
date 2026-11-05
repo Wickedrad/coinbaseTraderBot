@@ -1577,9 +1577,10 @@ export class Engine {
       const spot = idx?.fresh(now, cfg.risk.maxIndexAgeMs), vol = idx?.vol();
       if (!terms || !spot || !vol) continue;
       const tauSec = (m.closeTime - now) / 1000;
+      const bk = md.books.get(m.ticker), bb = bk?.bestBid()?.price, ba = bk?.bestAsk()?.price;
       cq.push({
         ticker: m.ticker, column: snnColumn(m), kind: terms.kind, strike: terms.strike, cap: terms.cap, spot: spot.value, sigma: vol.sigmaPerSqrtSec, mid: md.books.get(m.ticker)?.mid(),
-        tauSec, lifeSec: (m.closeTime - m.openTime) / 1000, eventKey: `${m.asset}:${m.closeTime}`, tag: tauSec > cfg.risk.noEntryBeforeCloseSec,
+        tauSec, lifeSec: (m.closeTime - m.openTime) / 1000, spread: bb !== undefined && ba !== undefined ? ba - bb : undefined, eventKey: `${m.asset}:${m.closeTime}`, tag: tauSec > cfg.risk.noEntryBeforeCloseSec,
       });
     }
     const ti: ColumnInput[] = [], tq: ContractQuery[] = [];

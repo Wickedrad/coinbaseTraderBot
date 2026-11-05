@@ -102,8 +102,8 @@ export class SliceAudit {
   }
 }
 
-export function trainParams(stage: Stage, volNorm?: number, soft = false): SnnParams {
-  return domainParams('crypto', { ...DEFAULT_SNN, anchorMid: true, ...(volNorm ? { volNorm } : {}), ...(soft ? { softLabel: { lagSec: 300, etaScale: 0.3 } } : {}), flags: { ...stageFlags(stage) } });
+export function trainParams(stage: Stage, volNorm?: number, soft = false, maxSpread?: number): SnnParams {
+  return domainParams('crypto', { ...DEFAULT_SNN, anchorMid: true, ...(volNorm ? { volNorm } : {}), ...(soft ? { softLabel: { lagSec: 300, etaScale: 0.3 } } : {}), ...(maxSpread ? { maxSpread } : {}), flags: { ...stageFlags(stage) } });
 }
 
 async function main() {
@@ -124,7 +124,9 @@ async function main() {
   // quotes follow the index at every print between their minute candles instead of standing still for the minute.
   // An edge that only exists against the standing minute quote is the replay's staleness, not the market's.
   const requote = arg('requote', '') === 'true';
-  const params = trainParams(stage, volNorm, soft);
+  // --max-spread 0.1 (Nov 5 audit): contracts quoted wider than this neither train nor move (illiquid ladder strikes).
+  const maxSpread = Number(arg('max-spread', '0')) || undefined;
+  const params = trainParams(stage, volNorm, soft, maxSpread);
   const calendar = loadCalendar(path.resolve('params/calendar.json'));
   let checkpoint: SnnCheckpoint | undefined;
   const ckIn = arg('checkpoint-in');
@@ -136,7 +138,7 @@ async function main() {
     console.log(`[hist-train] continuing from ${ckIn}: last scored ${checkpoint.lastTs ? new Date(checkpoint.lastTs).toISOString() : 'never'}, ${upd} readout updates so far; resuming at ${start}`);
   }
   const ckOut = arg('checkpoint-out', path.join(work, 'checkpoint.json'));
-  console.log(`[hist-train] anchored crypto SNN, stage ${stage}${volNorm ? `, volNorm ${volNorm}` : ''}${soft ? ', soft labels' : ''}${synthetic ? ', synthetic contracts where Kalshi has none' : ''}${requote ? ', ADVERSARY: quotes requoted between candles' : ''}, ${from}..${to}, ${assets.join(',')}`);
+  console.log(`[hist-train] anchored crypto SNN, stage ${stage}${volNorm ? `, volNorm ${volNorm}` : ''}${soft ? ', soft labels' : ''}${maxSpread ? `, contracts wider than ${maxSpread} skipped` : ''}${synthetic ? ', synthetic contracts where Kalshi has none' : ''}${requote ? ', ADVERSARY: quotes requoted between candles' : ''}, ${from}..${to}, ${assets.join(',')}`);
 
   const f5 = (x: { mean: number; lo: number; hi: number }) => `${x.mean.toFixed(5)} [${x.lo.toFixed(5)}, ${x.hi.toFixed(5)}]`;
   const recFrom = arg('rec-from'), recTo = arg('rec-to'), recDir = arg('rec-dir', path.join(work, 'recordings')), recFetch = arg('rec-fetch');

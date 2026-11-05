@@ -259,7 +259,7 @@ export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnRepla
     for (const m of contracts ? active : []) {
       const x = priced.get(m.ticker);
       if (!x) continue;
-      queries.push({ ticker: m.ticker, column: columnOf(m), kind: x.terms.kind, strike: x.terms.strike, cap: x.terms.cap, mid: x.mid, spot: x.spot.value, sigma: x.vol.sigmaPerSqrtSec, tauSec: x.tauSec, lifeSec: (m.closeTime - m.openTime) / 1000, eventKey: `${m.asset}:${m.closeTime}`, tag: m.closeTime - st.now > noEntry });
+      queries.push({ ticker: m.ticker, column: columnOf(m), kind: x.terms.kind, strike: x.terms.strike, cap: x.terms.cap, mid: x.mid, spot: x.spot.value, sigma: x.vol.sigmaPerSqrtSec, tauSec: x.tauSec, lifeSec: (m.closeTime - m.openTime) / 1000, spread: x.ask.price - x.bid.price, eventKey: `${m.asset}:${m.closeTime}`, tag: m.closeTime - st.now > noEntry });
       ctx.push({ pYes: x.fv.pYes, mid: x.mid, asset: m.asset });
     }
     return { queries, ctx };

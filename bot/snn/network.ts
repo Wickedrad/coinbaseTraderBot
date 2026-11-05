@@ -34,6 +34,8 @@ export interface ContractQuery {
   tauSec: number;
   /** Contract life in seconds (for the life fraction). */
   lifeSec: number;
+  /** Quoted spread (ask - bid, dollars), when known: params.maxSpread skips wider contracts. */
+  spread?: number;
   /** Settlement event (asset + close time): unit of evidence and isotonic group. */
   eventKey: string;
   /** Store a tag for the settlement label (scanned while tradable). */
@@ -501,11 +503,12 @@ export class SnnNetwork {
       // anchorBand: outside the band around 50 cents the network prices at the market.
       const band = this.p.anchorMid ? this.p.anchorBand : undefined;
       if (band !== undefined && q.mid !== undefined && Number.isFinite(q.mid) && Math.abs(q.mid - 0.5) > band) s.p = Math.min(1 - ANCHOR_CLIP, Math.max(ANCHOR_CLIP, q.mid));
+      if (this.tooWide(q) && q.mid !== undefined && Number.isFinite(q.mid)) s.p = Math.min(1 - ANCHOR_CLIP, Math.max(ANCHOR_CLIP, q.mid));
     }
     // Per-contract tags: the readout's own (unprojected) prediction, so the delta rule is the exact
     // log-loss gradient; at most one tag per contract per tagEverySec.
     for (const t of ths) {
-      if (!t.q.tag) continue;
+      if (!t.q.tag || this.tooWide(t.q)) continue;
       const k = `${t.q.ticker}:${t.role}`;
       if (now - (this.lastTag.get(k) ?? -Infinity) < this.p.tagEverySec * 1000) continue;
       this.lastTag.set(k, now);
@@ -516,13 +519,19 @@ export class SnnNetwork {
     return [...out.values()];
   }
 
+  /** params.maxSpread (anchored only): the contract's quote is too wide to be a price, so it neither trains nor moves. */
+  private tooWide(q: ContractQuery): boolean {
+    const m = this.p.maxSpread;
+    return !!this.p.anchorMid && m !== undefined && m > 0 && q.spread !== undefined && Number.isFinite(q.spread) && q.spread > m;
+  }
+
   /** softLabel: each contract threshold's earlier price learns from the market's mid lagSec later (see the param). */
   private softLearn(ths: { q: ContractQuery; role: ThresholdRole; p: number; phi: Float64Array }[], now: number): void {
     const sl = this.p.softLabel;
     if (!sl || !this.p.anchorMid || !(sl.lagSec > 0) || !(sl.etaScale > 0)) return;
     for (const t of ths) {
       const mid = t.q.mid;
-      if (!t.q.tag || t.q.kind === 'between' || mid === undefined || !Number.isFinite(mid) || mid <= 0 || mid >= 1) continue;
+      if (!t.q.tag || this.tooWide(t.q) || t.q.kind === 'between' || mid === undefined || !Number.isFinite(mid) || mid <= 0 || mid >= 1) continue;
       const k = `${t.q.ticker}:${t.role}`, prev = this.softPending.get(k);
       if (prev && now - prev.ts < sl.lagSec * 1000) continue;
       if (prev && !this.learningFrozen) {

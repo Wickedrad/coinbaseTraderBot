@@ -87,6 +87,12 @@ export interface SnnParams {
    *  Oct 31 breakdown found the anchored correction beat the market at 40-60c and not in the tails. Optional: absent =
    *  no band, and the version hash is unchanged. */
   anchorBand?: number;
+  /** With anchorMid: a contract whose quoted spread (ask - bid, dollars) is wider than this neither trains the readout
+   *  (no tag, no soft label) nor gets a correction (priced at the clipped mid). The Nov 5 audit: Kalshi's history has
+   *  ~12x more hourly ladder strikes per event than the bot tracks, mostly illiquid (bid 1c / ask 99c, a 50c "mid"),
+   *  and the history edge (4.5c, ETH-60m 9c) was the network correcting those non-prices; on the books it fell to
+   *  0.4-0.6c with slope ~0.3. Optional: absent = off, and the version hash is unchanged. */
+  maxSpread?: number;
   /** Volatility-normalized contract readout: the whole feature vector is divided by (contract sigma / its asset's
    *  6-hour average sigma)^k when volatility runs above that average (ratio clipped to [1, 5]). The Oct 31 audit
    *  found the anchored correction several times too big in high volatility (calibration slope 0.13). Tags store the
