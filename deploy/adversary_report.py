@@ -221,7 +221,9 @@ for s_ in losers:
     if best >= floor:
         k = 'above the floor: ' + ('only in the last 10% of the window' if in_share else
             'give-back sell condition met, nothing sold (defect)' if sell_met else
-            'gapped from above the give-back line to below the floor' if gapped else 'armed, never fell back to the sell line before close')
+            'gapped from above the give-back line to below the floor' if gapped else
+            'peak only touched the floor (within a tick): the give-back rule had no price left to sell at' if best < floor + TICK - 1e-9 else
+            'armed, never fell back to the sell line before close')
     elif best > 0: k = 'in profit after fees but below the floor'
     else: k = 'never in profit after fees (no rule sells a loser)'
     cats[k][0] += 1; cats[k][1] += s_['realized']
