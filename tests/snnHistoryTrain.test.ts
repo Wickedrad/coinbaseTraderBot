@@ -42,3 +42,14 @@ test('history training: recorded days follow the Kalshi days, one per chunk, and
   // One that stopped inside the recordings continues the day after.
   assert.equal(resumeDay('2026-10-21', Date.parse('2026-10-25T23:59:00Z')), '2026-10-26');
 });
+
+test('history training: the pooled slice audit sums size, edge and slope per column and kind', async () => {
+  const { SliceAudit } = await import('../research/snnHistoryTrain');
+  const a = new SliceAudit();
+  a.add([{ column: 'BTC-15m', kind: 'updown', mid: 0.5, pSnn: 0.6, y: 1, eventKey: 'e1' }, { column: 'BTC-15m', kind: 'updown', mid: 0.5, pSnn: 0.4, y: 0, eventKey: 'e2' }]);
+  const l = a.lines('t');
+  const col = l.find((x) => x.includes('column BTC-15m'))!;
+  assert.match(col, /2 windows, 2 rows/);
+  assert.match(col, /size 10\.00c edge 50\.00c b 5\.00/);
+  assert.ok(l.some((x) => x.includes('col+kind 15m updown')));
+});
