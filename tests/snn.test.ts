@@ -465,6 +465,26 @@ test('engine shadow mode: SNN scores every contract and is logged, but p_model i
   assert.equal(brief.mode, 'shadow'); assert.equal(brief.alpha, 0);
 });
 
+test('engine: SNN calls older than 3 minutes stop feeding the models and are dropped at the next step', async () => {
+  const { engine, market } = await engineSetup('shadow');
+  await engine.tick(); await engine.tick();
+  assert.ok(engine.snnContext('BTC', market.ticker)?.pContract !== undefined);
+  // The network stalls: every call it made is now 181 s old.
+  const scores = (engine as any).snnScores as Map<string, { ts: number }>;
+  for (const s of scores.values()) s.ts -= 181_000;
+  for (const x of engine.snnDirs.values()) x.ts -= 181_000;
+  const ctx = engine.snnContext('BTC', market.ticker);
+  assert.equal(ctx?.pContract, undefined, 'a stale contract score is not p_snn');
+  assert.equal(ctx?.up?.[15], undefined, 'a stale direction call is not a feature');
+  // The next step prunes what it did not refresh (both maps carry the time of each call).
+  const before = scores.size;
+  (engine as any).snnScores.set('OLD-TICKER', { ticker: 'OLD-TICKER', p: 0.5, domain: 'crypto', ts: Date.now() - 181_000 });
+  await engine.tick();
+  assert.ok(!scores.has('OLD-TICKER'), 'old scores are dropped');
+  assert.ok(scores.size <= before);
+  assert.ok(engine.snnContext('BTC', market.ticker)?.pContract !== undefined, 'fresh calls feed again');
+});
+
 test('engine blend mode: alpha = 0 until earned, then p_final = (1 - alpha c) p_model + alpha c p_snn', async () => {
   const { engine, market, snn } = await engineSetup('blend');
   await engine.tick(); await engine.tick();
