@@ -304,6 +304,10 @@ export interface StrategyConfig {
    *  series). Eight recorded days with the gate: training on the 15-minute series lost $88 (2 wins in 18), on the hourly
    *  ranges it made money. Paper and live alike. */
   trainSkipSeries?: string[];
+  /** STRATEGY_SKIP_SERIES (unset = none): series that open no new risk at all (entries, quotes, training), "SERIES,*SUFFIX";
+   *  a position already held is still managed and exited. Steven, Nov 5: "let's not use DOGE at all" in the research
+   *  (KXDOGE,KXDOGE15M,KXDOGED); paper unchanged until he says. */
+  skipSeries?: string[];
   /** Markets with no position and no resting order are fully re-evaluated at most every idleEvalSec
    *  (1 s otherwise): most of the bot's CPU is the per-second evaluation of markets it is not in. */
   idleEvalSec: number;
@@ -1334,6 +1338,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     trainTrades: num(env, 'TRAINING_TRADES_PER_HOUR', 12, 0, 120),
     trainMode: oneOf(env, 'TRAINING_MODE', 'taker', ['taker', 'maker'] as const),
     ...(env.TRAINING_SKIP_SERIES ? { trainSkipSeries: parseSeriesList(env.TRAINING_SKIP_SERIES) } : {}),
+    ...(env.STRATEGY_SKIP_SERIES ? { skipSeries: parseSeriesList(env.STRATEGY_SKIP_SERIES) } : {}),
     idleEvalSec: num(env, 'EVAL_IDLE_SEC', 5, 0, 60),
     outsidePriceFallback: bool(env, 'PAPER_OUTSIDE_PRICE_FALLBACK', false),
     adversarialBoost: bool(env, 'ADVERSARIAL_BOOST', true),
