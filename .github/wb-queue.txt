@@ -19,3 +19,4 @@ d31-L5 2026-10-31 41540307462 MARKET_ANCHOR=true MARKET_ANCHOR_BY_SERIES=true TA
 # Nov 4 10:50 UTC: TA veto wired into the backtester (761bce4, PR #257); L2 rerun as L2v. Old L2 = TA inert. L3/L5 run on the fixed head.
 # restart 16:35 UTC Nov 4: L2 already reran on the veto fix (2fd3df3), so L2v dropped as a duplicate
 # restart 21:35 UTC Nov 4: done_or_running fixed (grep -q + pipefail re-ran finished arms); L0-L2 lines removed (done)
+# restart 00:10 UTC Nov 5: CAP 10 (new project limit)
