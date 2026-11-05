@@ -54,7 +54,8 @@ jobs:
                 rclone copy "gdrive:kalshi-bot-archive/simulated/cell-sweep/$a1" "$d" --include 'd*.json.gz' --transfers 8
                 echo "$a1: $(ls "$d" | wc -l) arm-day outputs"
                 fam=${a5:-cell-sweep-${a1:0:7}}
-                python3 -I research/registry.py cellsweep "$d" "$a1" "$a2" --control "$a3" --benches "$a4" --family "$fam" > "shards/cs-${a1:0:7}.jsonl" || { rc=1; continue; }
+                bf=(); if git fetch -q --depth=1 origin "$a1" 2>/dev/null && git show "$a1:.github/cell-batch.txt" > "batch-$a1.txt" 2>/dev/null; then bf=(--batch "batch-$a1.txt"); fi
+                python3 -I research/registry.py cellsweep "$d" "$a1" "$a2" --control "$a3" --benches "$a4" --family "$fam" "${bf[@]}" > "shards/cs-${a1:0:7}.jsonl" || { rc=1; continue; }
                 python3 -I research/registry.py validate "shards/cs-${a1:0:7}.jsonl" | tail -3
                 rclone copyto "shards/cs-${a1:0:7}.jsonl" "$REG/shards/$a2/cs-${a1:0:7}.jsonl"
                 echo "shard: $REG/shards/$a2/cs-${a1:0:7}.jsonl ($(wc -l < "shards/cs-${a1:0:7}.jsonl") rows)";;

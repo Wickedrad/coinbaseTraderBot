@@ -461,7 +461,7 @@ def contract_ledger(rep, target=4.50):
 # ---------------------------------------------------------------- backfill adapters
 
 def cellsweep_rows(src, sha, thread='meta', family=None, control='C', noise_tags=('P500', 'PSH', 'NLM', 'WP500', 'WPSH', 'WNLM'),
-                   placebos=('Panc', 'NLm', 'Pta', 'Psc'), month='2026-10', benches='own'):
+                   placebos=('Panc', 'NLm', 'Pta', 'Psc'), month='2026-10', benches='own', batch=None):
     """Rows from a cell-sweep folder of d<dd>-<tag>.json.gz replays (tag <arm>p<phase>), DOGE series dropped."""
     family = family or f'cell-sweep-{sha[:7]}'
     per = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))  # arm -> phase -> day -> $
@@ -481,6 +481,23 @@ def cellsweep_rows(src, sha, thread='meta', family=None, control='C', noise_tags
         for t, v in ((res.get('replay') or {}).get('byTicker') or {}).items():
             if not DOGE.match(t):
                 per[arm][ph][day] += float(v)
+    env_of, date_of = {}, {}
+    if batch:
+        with open(batch) as fh:
+            for line in fh:
+                f = line.split()
+                if not f or f[0].startswith('#') or len(f) < 5:
+                    continue
+                m = re.match(r'^d(\d\d)-(.+?)(?:p\d+)?$', f[0])
+                if not m:
+                    continue
+                date_of[m.group(1)] = f[1]
+                env_of.setdefault(m.group(2), dict(x.split('=', 1) for x in f[5:] if '=' in x))
+    if date_of:  # real dates from the batch file instead of the month guess
+        for arm in per:
+            for ph in per[arm]:
+                per[arm][ph] = defaultdict(float, {date_of.get(d[-2:], d): v for d, v in per[arm][ph].items()})
+    cenv = env_of.get(control, {})
     out = []
     ids = {}
     for arm, phs in per.items():
@@ -493,6 +510,12 @@ def cellsweep_rows(src, sha, thread='meta', family=None, control='C', noise_tags
                     'code_sha': sha, 'phases': sorted(phs), 'data': {'source': 'recorded', 'days': days, 'doge': False,
                     'benches': benches, 'books': 'recorded'}, 'by_day': by_day,
                     'ref': f'gdrive:kalshi-bot-archive/simulated/cell-sweep/{sha}'})
+        if arm in env_of:
+            e = env_of[arm]
+            diff = {k: v for k, v in e.items() if cenv.get(k) != v}
+            diff.update({k: '<unset>' for k in cenv if k not in e})
+            out[-1]['env'] = diff
+            out[-1]['modules'] = modules_of({'env': diff})
     cph = per.get(control, {})
     ps = sorted(p for p in cph if p >= 0)
     noise = None
@@ -578,6 +601,8 @@ def main(a):
             kw['control'] = a[a.index('--control') + 1]
         if '--family' in a:
             kw['family'] = a[a.index('--family') + 1]
+        if '--batch' in a:
+            kw['batch'] = a[a.index('--batch') + 1]
         if '--benches' in a:
             kw['benches'] = a[a.index('--benches') + 1]
         for r in cellsweep_rows(a[1], a[2], a[3] if len(a) > 3 and not a[3].startswith('--') else 'meta', **kw):
