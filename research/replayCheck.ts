@@ -343,6 +343,9 @@ export function upTimeScore(r: { trades: Array<{ ticker: string; closeTs: number
   for (const f of r.fillLog ?? []) see(f.ticker, f.t);
   for (const f of a.fills) see(f.ticker, f.t);
   const bad = new Set([...first].filter(([, t]) => isDown(t)).map(([tk]) => tk));
+  // Markets the replay does not trade (REPLAY_EXCLUDE, DOGE by default) are left out of paper's side too.
+  const ex = process.env.REPLAY_EXCLUDE ?? 'DOGE';
+  if (ex) { const re = new RegExp(ex); for (const s2 of a.settlements) if (s2.ticker && re.test(s2.ticker)) bad.add(s2.ticker); for (const t of r.trades) if (re.test(t.ticker)) bad.add(t.ticker); }
   let replay = 0, paper = 0, rm = 0, pm = 0;
   for (const t of r.trades) if (t.closeTs >= from && t.closeTs < to && !bad.has(t.ticker)) { replay += t.pnl; rm++; }
   for (const s2 of a.settlements) if (s2.t >= from && s2.t < to && s2.ticker && !bad.has(s2.ticker)) { paper += s2.pnl; pm++; }
@@ -392,12 +395,12 @@ export async function auditPeek(auditDir: string, days: string[], spec: string):
 
 /** REPLAY_DUMP (Nov 4, the $246 gap): markets fill by fill on both sides. The spec is space separated: `mid` (first fill on
  *  either side at 30-70c, YES scale), `settle:YYYY-MM-DDTHH` (markets settling in that UTC hour), or tickers. */
-export function marketDump(spec: string, r: { trades: Array<{ ticker: string; closeTs: number; pnl: number }>; fillLog?: Array<{ t: number; ticker: string; side: string; price: number; count: number; taker: boolean; coid?: string }> }, a: AuditRecords, from: number, to: number): string[] {
+export function marketDump(spec: string, r: { trades: Array<{ ticker: string; closeTs: number; pnl: number }>; fillLog?: Array<{ t: number; ticker: string; side: string; price: number; count: number; taker: boolean; coid?: string; why?: string }> }, a: AuditRecords, from: number, to: number): string[] {
   const inside = (t: number) => t >= from && t < to;
   const purpose = (coid?: string) => (!coid ? 'other' : coid.includes('-exit-') ? coid.slice(coid.indexOf('-exit-') + 1) : /-(quote|entry|exit)(?:-tp)?$/.exec(coid)?.[1] ?? 'other');
   type F = { t: number; side: string; price: number; count: number; tag: string };
   const rep = new Map<string, F[]>(), pap = new Map<string, F[]>();
-  for (const f of r.fillLog ?? []) if (inside(f.t)) (rep.get(f.ticker) ?? rep.set(f.ticker, []).get(f.ticker)!).push({ t: f.t, side: f.side, price: f.price, count: f.count, tag: `${purpose(f.coid)}${f.taker ? ' taker' : ''}` });
+  for (const f of r.fillLog ?? []) if (inside(f.t)) (rep.get(f.ticker) ?? rep.set(f.ticker, []).get(f.ticker)!).push({ t: f.t, side: f.side, price: f.price, count: f.count, tag: `${purpose(f.coid)}${f.taker ? ' taker' : ''}${f.why ? ` (${f.why.slice(0, 60)})` : ''}` });
   for (const f of a.fills) {
     if (!inside(f.t) || !f.ticker) continue;
     const o = f.coid ? a.orders.get(f.coid) : undefined;
@@ -412,7 +415,7 @@ export function marketDump(spec: string, r: { trades: Array<{ ticker: string; cl
   const chosen = [...tickers].filter((tk) => want.some((w) => {
     if (w === 'mid') { const a1 = yes(rep.get(tk)?.[0]), b1 = yes(pap.get(tk)?.[0]); return (a1 >= 0.3 && a1 <= 0.7) || (b1 >= 0.3 && b1 <= 0.7); }
     if (w.startsWith('settle:')) { const c = rPnl.get(tk)?.close; return c !== undefined && new Date(c).toISOString().startsWith(w.slice(7)); }
-    return w === tk;
+    return w.endsWith('*') ? tk.startsWith(w.slice(0, -1)) : w === tk;
   })).sort();
   const hm = (t: number) => new Date(t).toISOString().slice(5, 19).replace('T', ' ');
   const fl = (xs: F[] | undefined) => (xs?.length ? xs.slice(0, 14).map((f) => `${hm(f.t)} ${f.side} ${f.price.toFixed(2)}x${Math.round(f.count)} ${f.tag}`).join('; ') + (xs.length > 14 ? `; +${xs.length - 14} more` : '') : 'none');
@@ -994,7 +997,8 @@ async function main(): Promise<void> {
   const purposes = (s: SideSummary) => Object.entries(s.byPurpose).sort().map(([k, x]) => `${k} ${x.fills}/${x.contracts.toFixed(0)}`).join(', ') || 'none';
   console.log(`fills/contracts by order purpose: replay ${purposes(res.replay)} | paper ${purposes(res.paper)}`);
   const X = res.replay.extra, rej = Object.entries(X.rejected).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, n]) => `${k} x${n}`).join('; ');
-  const TT = (res.replay as { takerThin?: { asked: number; filled: number; blocked: number; bySeries: Record<string, { asked: number; filled: number; blocked: number }> } }).takerThin;
+  const TT = (res.replay as { takerThin?: { asked: number; filled: number; blocked: number; bySeries: Record<string, { asked: number; filled: number; blocked: number }>; staleRetake?: number; staleBySeries?: Record<string, number> } }).takerThin;
+  if (TT?.staleRetake !== undefined) console.log(`own-take depletion: replay taker contracts filled from a level still showing the size it showed at our take a replenish window or more earlier (the real level would still be short): ${TT.staleRetake.toFixed(0)} of ${TT.filled.toFixed(0)} | by series: ${Object.entries(TT.staleBySeries ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(' | ')}`);
   if (TT) console.log(`thin books: replay taker contracts asked ${TT.asked.toFixed(0)}, filled ${TT.filled.toFixed(0)}, refused because its own earlier takes emptied the level ${TT.blocked.toFixed(0)} | by series (asked/filled/refused): ${Object.entries(TT.bySeries).sort((a, b) => b[1].blocked - a[1].blocked).slice(0, 8).map(([k, v]) => `${k} ${v.asked.toFixed(0)}/${v.filled.toFixed(0)}/${v.blocked.toFixed(0)}`).join(' | ') || 'none'}`);
   console.log(`paper's extra entries: training trades replay ${X.train} planned, paper ${res.paper.extra.train} filled | exploration replay ${X.explore} planned, paper ${res.paper.extra.explore} filled | replay sent ${X.sent} past the risk gateway${rej ? `, turned down: ${rej}` : ''}`);
   console.log('hour (UTC)      replay contracts  paper contracts   replay P&L   paper P&L');
@@ -1054,7 +1058,7 @@ async function main(): Promise<void> {
   if (res.upOnly) {
     const u = res.upOnly;
     console.log(`paper down in the stretch (last record before a start .. first decision after it): ${u.downs.length ? u.downs.map((d) => `${d.from.slice(5, 16)}-${d.to.slice(11, 16)} (${d.minutes} min)`).join(', ') : 'never'}`);
-    console.log(`while paper was up (markets first traded in a down window left out on both sides: ${u.excluded}): replay ${f(u.replay)} over ${u.replayMarkets} markets | paper ${f(u.paper)} over ${u.paperMarkets}`);
+    console.log(`while paper was up and without REPLAY_EXCLUDE (${process.env.REPLAY_EXCLUDE ?? 'DOGE'}) markets (those and markets first traded in a down window left out on both sides: ${u.excluded}): replay ${f(u.replay)} over ${u.replayMarkets} markets | paper ${f(u.paper)} over ${u.paperMarkets}`);
   }
   for (const l of res.dump ?? []) console.log(l.slice(0, 1500));
   if (process.env.REPLAY_PEEK) for (const l of await auditPeek(arg('audit', 'data/audit'), res.days, process.env.REPLAY_PEEK)) console.log(l.slice(0, 900));

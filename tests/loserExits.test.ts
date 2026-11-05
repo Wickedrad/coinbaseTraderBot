@@ -230,6 +230,8 @@ test('GATED_STAKE_MULT: off by default; at 2 only the orders that pass the gate 
   const wide = plan(); applyFvGate(wide, 0.8, 0, DEFAULT_FEES, { ...x2, loserExits: { ...x2.loserExits!, gatedStakeCap: 'widen' } }, false, 5);
   assert.equal(wide.place[0].count, 10);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), GATED_STAKE_CAP: 'widen' }).strategy.loserExits!.gatedStakeCap, 'widen');
+  // Live keeps x1 until Steven approves (GATED_STAKE_LIVE=on); paper takes the multiplier.
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), GATED_STAKE_MULT: '2' }).strategy.loserExits!.gatedStakeMult, 2);
 });
 
 test('shareWindowSec: the share rules measure a contract\'s own hour, not a ladder\'s listing hours or a day ahead', () => {
