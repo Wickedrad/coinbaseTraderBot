@@ -7,6 +7,7 @@
 #   backfill-cellsweep <full sha> <thread> <control> <own|paper> [family]   cell-sweep Drive folder -> a shard
 #   backfill-foreign <drive path under kalshi-bot-archive> <thread> <family> another thread's own ledger -> a shard
 #   regime [from YYYY-MM-DD] [to YYYY-MM-DD] [fixture YYYY-MM-DD]          labels (+ one-day fixture artifact)
+#   drop <thread>/<file>.jsonl                                              delete one superseded shard of ours
 #   merge                                                                   merge every shard and post the report
 # The repository is public: only family/arm names, counts and dollars are printed; settings files, keys and logs never.
 name: Trial registry
@@ -79,6 +80,10 @@ jobs:
                   rclone copyto "out/regime-v1-fixture-$fx.csv" "$REG/regime-v1/$sha/fixture-$fx.csv"
                   echo "fixture $fx: $(($(wc -l < "out/regime-v1-fixture-$fx.csv") - 1)) rows"
                 fi;;
+              drop)
+                # Remove one of this registry's own shards (superseded backfill): only paths under registry/shards/.
+                [[ "$a1" =~ ^[a-z0-9-]+/[A-Za-z0-9._-]+\.jsonl$ ]] || { echo "::error::drop takes <thread>/<file>.jsonl"; rc=1; continue; }
+                rclone deletefile "$REG/shards/$a1" && echo "dropped $REG/shards/$a1" || echo "drop $a1: not there";;
               merge)
                 rclone copy "$REG/shards" allshards --include '*.jsonl' --include '*.jsonl.gz' --transfers 8 || true
                 python3 -I research/registry.py merge allshards out/merged || { rc=1; continue; }
