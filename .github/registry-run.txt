@@ -1,4 +1,5 @@
 # Trial registry jobs (see .github/workflows/registry.yml).
-# 23:10 UTC Nov 5: scaling round 5 (recorded tier, fails HO-1) from the inbox.
+# 23:45 UTC Nov 5: drop the all-pairs maker_only reproducibility re-run (duplicate trials); ingest the anchor inbox shard; merge.
+drop all-pairs/42127586982.jsonl
 inbox
 merge
