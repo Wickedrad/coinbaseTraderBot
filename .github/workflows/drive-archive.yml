@@ -116,7 +116,8 @@ jobs:
           : > "$RUNNER_TEMP/todo.txt"
           while read -r d; do
             [ -n "$d" ] && [[ "$d" < "$TODAY" ]] || continue
-            if [ "$OVERWRITE" != true ] && grep -qx "md-$d.jsonl.gz" "$RUNNER_TEMP/drive-recordings.txt"; then continue; fi
+            # Archived once Drive has the gzip or the compact .mdc of that day.
+            if [ "$OVERWRITE" != true ] && grep -qxE "md-$d\.(jsonl\.gz|mdc)" "$RUNNER_TEMP/drive-recordings.txt"; then continue; fi
             echo "$d" >> "$RUNNER_TEMP/todo.txt"
           done < "$RUNNER_TEMP/want.txt"
           head -n "$MAX_DAYS" "$RUNNER_TEMP/todo.txt" > "$RUNNER_TEMP/run.txt"

@@ -66,6 +66,15 @@ test('fails closed on unknown bankroll, stale data, halts and kill switch', () =
   assert.equal(gw.check(intent(), ctx({ bestBid: undefined })).ok, false);
 });
 
+test('kill switch: only the engine\'s marked exit passes, and only reduce-only immediate-or-cancel', () => {
+  const exit = intent({ side: 'ask', price: 0.44, count: 2, reduceOnly: true, postOnly: false, timeInForce: 'immediate_or_cancel', purpose: 'exit' });
+  assert.deepEqual(gw.check(exit, ctx({ killEngaged: true, position: 2 })).reasons, ['kill switch engaged'], 'an unmarked exit is refused');
+  assert.ok(gw.check(exit, ctx({ killEngaged: true, killExit: true, position: 2 })).ok, 'the marked exit passes');
+  assert.equal(gw.check(intent(), ctx({ killEngaged: true, killExit: true })).ok, false, 'never an entry');
+  const resting = intent({ side: 'ask', price: 0.47, count: 2, reduceOnly: false, postOnly: true, timeInForce: 'good_till_canceled', purpose: 'exit' });
+  assert.equal(gw.check(resting, ctx({ killEngaged: true, killExit: true, position: 2 })).ok, false, 'never a resting order');
+});
+
 test('rejects orders with no fee-net edge (price collar vs fair value)', () => {
   const d = gw.check(intent({ price: 0.5, fairValue: 0.5 }), ctx({ bestAsk: 0.52 }));
   assert.equal(d.ok, false);

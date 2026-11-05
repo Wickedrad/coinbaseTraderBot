@@ -13,6 +13,9 @@ export interface RiskContext {
   now: number;
   mode: TradingMode;
   killEngaged: boolean;
+  /** The kill switch is engaged, but this order is the engine's exit under it: a tennis position not in profit after fees
+   *  (Steven's rule, Nov 5: never held to settlement unless in profit). Only a reduce-only immediate-or-cancel order passes. */
+  killExit?: boolean;
   /** Paper training override: the daily loss limit neither rejects orders nor trips the kill switch. */
   dailyLossAdvisory?: boolean;
   /** Non-empty when new risk is halted (recon break, stale data, startup). */
@@ -89,7 +92,7 @@ export class RiskGateway {
       && (i.side === 'ask' ? c.position > 0 : c.position < 0) && i.count <= Math.abs(c.position) + EPS;
     const reduces = i.reduceOnly || restingExit;
 
-    if (c.killEngaged) return { ok: false, reasons: ['kill switch engaged'] };
+    if (c.killEngaged && !(c.killExit && i.reduceOnly && i.timeInForce === 'immediate_or_cancel')) return { ok: false, reasons: ['kill switch engaged'] };
     // The model's validation holds back new risk only: an exit always goes out.
     if (c.mode === 'live' && c.modelLiveBlockers.length && !reduces) r.push(`model not validated for live: ${c.modelLiveBlockers.join('; ')}`);
 
