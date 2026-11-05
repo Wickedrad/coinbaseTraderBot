@@ -100,6 +100,52 @@ def main(argv=None):
         print('crossed', json.dumps(e)[:400])
     for e in examples[:2]:
         print('example', json.dumps(e)[:400])
+    calibration(a.history, allowed_assets(a.assets.split(',')))
+
+
+def calibration(history: str, assets: list[str], live_from: str = '2026-09-12'):
+    """Are the decision quotes (as the study builds them, after its cuts) honest? Per data tier and YES-ask bucket at
+    minutes 1-13: the mean ask and the share settled YES. Buying at an honest ask loses a little on average; a bucket
+    whose YES share is far above its ask holds prices nobody could have traded. A few such cases are printed whole."""
+    from .data import market_to_rows
+    edges = [0, 0.03, 0.06, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.94, 0.97, 1.0]
+    acc = defaultdict(lambda: np.zeros(4))      # (tier, side, bucket) -> n, sum price, sum won, sum spread
+    bad = []
+    for asset in assets:
+        d = os.path.join(history, 'kalshi', f'KX{asset}15M')
+        if not os.path.isdir(d):
+            continue
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith('.jsonl'):
+                continue
+            tier = 'live' if fn[:10] >= live_from else 'hist'
+            for line in open(os.path.join(d, fn)):
+                try:
+                    m = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                raw = json.loads(line).get('candles') or []
+                r = market_to_rows(m, 15)
+                if r is None:
+                    continue
+                bid, ask = r[0], r[1]
+                yes = m.get('result') == 'yes'
+                for k in range(1, 14):
+                    for side, px, won, sp in (('YES', ask[k], yes, ask[k] - bid[k]), ('NO', 1 - bid[k], not yes, ask[k] - bid[k])):
+                        if not np.isfinite(px):
+                            continue
+                        b = int(np.searchsorted(edges, px, side='right') - 1)
+                        acc[(tier, side, b)] += (1, px, won, sp if np.isfinite(sp) else 0)
+                        if won and px <= 0.03 and len(bad) < 10 and len([x for x in bad if x[0] == tier]) < 5:
+                            o = m['closeTime'] - 900_000
+                            cs = [c for c in raw if isinstance(c.get('ts'), (int, float)) and abs((c['ts'] - o) / 60_000 - k) <= 2]
+                            bad.append((tier, m.get('ticker'), side, k, round(float(px), 4), m.get('result'),
+                                        [{kk: c.get(kk) for kk in ('ts', 'bidO', 'bidH', 'bidL', 'bidC', 'askO', 'askH', 'askL', 'askC', 'last', 'volume')} for c in cs]))
+    print(f'calibration of decision quotes, minutes 1-13 (hist = before {live_from}, live = from it): tier side bucket n avg_price won_share avg_spread')
+    for (tier, side, b), (n, sp, won, spr) in sorted(acc.items()):
+        print(f'{tier} {side} {edges[b]:.2f}-{edges[b + 1]:.2f} {int(n)} {sp / n:.4f} {won / n:.4f} {spr / n:.4f}')
+    for x in bad:
+        print('cheap winner', json.dumps(x)[:690])
 
 
 if __name__ == '__main__':

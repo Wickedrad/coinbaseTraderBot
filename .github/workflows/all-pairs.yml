@@ -166,14 +166,13 @@ jobs:
           python -W ignore -m allpairs.run --history ../data/history --config "allpairs/hypotheses/$CONFIG.json" \
             --arm ${{ matrix.arm }} --part ${{ matrix.part }} --parts ${{ matrix.parts }} --assets "$ASSETS" --days "$DAYS" \
             --out "$RUNNER_TEMP/parts/${{ matrix.arm }}-${{ matrix.part }}.json" 2>&1 | tail -80
-      - name: Keep the part (aggregates only)
+      # The part holds per-trade rows: it goes to Drive, never to a public artifact.
+      - name: Keep the part on Drive
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: part-${{ matrix.arm }}-${{ matrix.part }}
-          path: ${{ runner.temp }}/parts/
-          retention-days: 7
-          if-no-files-found: ignore
+        run: |
+          set -euo pipefail
+          [ -n "$(ls "$RUNNER_TEMP/parts" 2>/dev/null)" ] || { echo "no part written"; exit 0; }
+          bash deploy/drive_lab.sh put "models/all-pairs/runs/${{ github.run_id }}/parts" "$RUNNER_TEMP/parts"
 
   report:
     needs: [test, study]
@@ -182,7 +181,6 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
-      actions: read
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -191,12 +189,6 @@ jobs:
           cache: pip
           cache-dependency-path: python/allpairs/requirements.txt
       - run: pip install --quiet -r python/allpairs/requirements.txt
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: part-*
-          path: ${{ runner.temp }}/parts
-          run-id: ${{ needs.test.outputs.report_run || github.run_id }}
-          github-token: ${{ github.token }}
       - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
@@ -205,19 +197,34 @@ jobs:
         working-directory: python
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SRC: ${{ needs.test.outputs.report_run || github.run_id }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/state" "$RUNNER_TEMP/results"
-          bash ../deploy/drive_lab.sh get models/all-pairs/state "$RUNNER_TEMP/state" || echo "no ledger on Drive yet"
-          ls -R "$RUNNER_TEMP/parts" | head -30
-          python -W ignore -m allpairs.run combine --parts "$RUNNER_TEMP/parts" --out "$RUNNER_TEMP/results"
+          mkdir -p "$RUNNER_TEMP/state" "$RUNNER_TEMP/results" "$RUNNER_TEMP/parts"
+          # The ledger: exit 3 means Drive has none yet; anything else is an error (never start a fresh ledger over one).
+          rc=0; bash ../deploy/drive_lab.sh get models/all-pairs/state "$RUNNER_TEMP/state" || rc=$?
+          if [ "$rc" = 3 ]; then
+            rclone lsf "${DRIVE_ROOT:-gdrive:kalshi-bot-archive}/models" --max-depth 1 >/dev/null || { echo "Drive unreachable"; exit 1; }
+            echo "no ledger on Drive yet"
+          elif [ "$rc" != 0 ]; then echo "ledger download failed ($rc)"; exit 1; fi
+          echo ok > "$RUNNER_TEMP/state/.fetched"
+          # The parts of the scoring run (this one, or the run a report-only rerun names); an older run's combined
+          # results stand in when it kept no parts on Drive.
+          rc=0; bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC/parts" "$RUNNER_TEMP/parts" || rc=$?
+          if [ "$rc" = 0 ]; then
+            ls "$RUNNER_TEMP/parts" | head -20
+            python -W ignore -m allpairs.run combine --parts "$RUNNER_TEMP/parts" --out "$RUNNER_TEMP/results"
+          elif [ "$rc" = 3 ] && [ "$SRC" != "${{ github.run_id }}" ]; then
+            bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC" "$RUNNER_TEMP/results" --include "/*.json"
+          else echo "no parts for run $SRC ($rc)"; exit 1; fi
           python -W ignore -m allpairs.report --results "$RUNNER_TEMP/results" --ledger "$RUNNER_TEMP/state/trials.jsonl" \
-            --champion "$RUNNER_TEMP/state/champion.json" --card "$RUNNER_TEMP/results/card.md" --run-url "$RUN_URL" --run-id "${{ github.run_id }}"
+            --champion "$RUNNER_TEMP/state/champion.json" --card "$RUNNER_TEMP/results/card.md" --run-url "$RUN_URL" --run-id "$SRC"
       - name: Keep results and the ledger on Drive
         if: always()
         run: |
           [ ! -d "$RUNNER_TEMP/results" ] || bash deploy/drive_lab.sh put "models/all-pairs/runs/${{ github.run_id }}" "$RUNNER_TEMP/results"
-          [ ! -f "$RUNNER_TEMP/state/trials.jsonl" ] || bash deploy/drive_lab.sh put models/all-pairs/state "$RUNNER_TEMP/state"
+          # The ledger goes back only when it was read first (or Drive confirmed it has none).
+          [ ! -f "$RUNNER_TEMP/state/.fetched" ] || [ ! -f "$RUNNER_TEMP/state/trials.jsonl" ] || bash deploy/drive_lab.sh put models/all-pairs/state "$RUNNER_TEMP/state" --exclude .fetched
       - name: Post the card on the commit
         if: always()
         env:

@@ -180,6 +180,42 @@ class Policy(unittest.TestCase):
         self.assertEqual(sorted(ch.tolist()), [2, 4])
 
 
+class Placebo(unittest.TestCase):
+    def test_random_entries_follow_maker_retry(self):
+        from allpairs.policy import random_entry_placebo
+        # One window: minute 0 only has an unfilled maker attempt; minute 1 a filled taker row worth 1.
+        rows = dict(w=np.array([0, 0]), i=np.array([0, 1]), y=np.array([0.0, 1.0]), filled=np.array([False, True]))
+        out = random_entry_placebo(rows, 1.0, np.random.default_rng(0), draws=40, n_windows=1)
+        np.testing.assert_allclose(out, 1.0)        # an unfilled draw moves on to the later minute, as simulate() does
+        rows = dict(w=np.array([0, 0]), i=np.array([0, 1]), y=np.array([1.0, 0.0]), filled=np.array([True, False]))
+        out = random_entry_placebo(rows, 1.0, np.random.default_rng(1), draws=200, n_windows=1)
+        self.assertTrue(0.3 < out.mean() < 0.7)     # half the draws post the last-minute maker bid and get nothing
+
+
+class Gate(unittest.TestCase):
+    def _arm(self, name, per_hour=6.0, folds=4, expected=4, missing=()):
+        rng = np.random.default_rng(3)
+        h = rng.normal(per_hour, 2.0, 24 * 14 * folds)
+        return dict(arm=name, config_hash='abc', oos=dict(per_hour=per_hour, per_hour_ci95=[per_hour - 1, per_hour + 1], trades=100),
+                    hourly_pnl=h.tolist(), folds=[dict(test=[0, 1])] * folds, folds_expected=expected, parts_missing=list(missing),
+                    placebo=dict(random_per_hour_median=-1.0, random_per_hour_p95=0.5, shuffled_per_hour=[0.1, 0.2, 0.0]))
+
+    def test_incomplete_run_fails(self):
+        from allpairs.report import gate
+        g = gate({'base': self._arm('base'), 'stress': self._arm('stress', 1.0)}, [], None, 'r1')
+        self.assertTrue(g['checks']['complete'])
+        g = gate({'base': self._arm('base', folds=3, missing=[2]), 'stress': self._arm('stress', 1.0)}, [], None, 'r1')
+        self.assertFalse(g['checks']['complete'])
+        self.assertFalse(g['passed'])
+
+    def test_trials_counted_once(self):
+        from allpairs.report import prior_trials
+        ledger = [dict(run='r0', arm='base', config_hash='x', sr_hourly=0.1), dict(run='r0', arm='stress', config_hash='x', sr_hourly=0.0),
+                  dict(run='r0', arm='base', config_hash='x', sr_hourly=0.1), dict(run='r1', arm='base', config_hash='abc', sr_hourly=0.3)]
+        p = prior_trials(ledger, 'r1', 'abc')
+        self.assertEqual(len(p), 1)                 # r0's base once; its stress row and r1 (the candidate itself) left out
+
+
 class Validation(unittest.TestCase):
     def test_walk_forward_purged(self):
         days = np.arange(100, 300)
@@ -264,6 +300,19 @@ class Features(unittest.TestCase):
         self.assertTrue(np.isnan(bid[5]) and np.isnan(ask[5]))          # decision minute 5 = candle 5 close
         self.assertTrue(np.isnan(alo[4]))                                 # no maker fill proven by a crossed minute
         self.assertAlmostEqual(bid[4], 0.42)
+
+    def test_stale_quotes_and_bad_candle_fields(self):
+        from allpairs.data import market_to_rows
+        o = 1_767_225_600_000
+        cs = [dict(ts=o + 60_000 * c, bidO=0.4, bidH=0.45, bidL=0.4, bidC=0.42, askO=0.44, askH=0.47, askL=0.43, askC=0.45) for c in range(1, 16)
+              if not 3 <= c <= 8]
+        cs[0]['askH'] = 0.01                                              # candle 1: high under its own close
+        r = market_to_rows(dict(openTime=o, closeTime=o + 900_000, result='yes', candles=cs), 15, max_stale=3)
+        bid, ask, blo, bhi, alo, ahi = r[:6]
+        self.assertTrue(np.isnan(alo[0]) and np.isnan(ahi[0]))           # fills at minute 0 come from candle 1
+        self.assertAlmostEqual(bid[5], 0.42)                              # candles 3..5 missing: carried 3 minutes
+        self.assertTrue(np.isnan(bid[6]) and np.isnan(ask[8]))            # then no quote
+        self.assertAlmostEqual(bid[9], 0.42)
 
     def test_side_quotes(self):
         w = load_kalshi(self.dir, ['BTC'], log=lambda m: None)

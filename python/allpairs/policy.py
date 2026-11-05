@@ -49,9 +49,11 @@ def entry_rows(X: np.ndarray, pos: Positions, pnl: np.ndarray, attempts: tuple |
     return dict(w=w.astype(np.int32), s=s.astype(np.int8), i=i.astype(np.int16), mode=mode, X=feats, y=y, filled=filled)
 
 
-def maker_attempts(book_bid: np.ndarray, n_entry: int):
-    """Every (w, s, i) where a maker entry could be posted (a bid to join), i < n_entry."""
+def maker_attempts(book_bid: np.ndarray, n_entry: int, entry_minutes: np.ndarray | None = None):
+    """Every (w, s, i) where a maker entry could be posted (a bid to join), i < n_entry and i in entry_minutes."""
     ok = np.isfinite(book_bid[..., :n_entry]) & (book_bid[..., :n_entry] > 0)
+    if entry_minutes is not None:
+        ok &= np.isin(np.arange(ok.shape[-1]), entry_minutes)
     return np.nonzero(ok)
 
 
@@ -117,23 +119,43 @@ def pnl_stats(pnl: np.ndarray, hours: float, hour_of_trade: np.ndarray | None = 
     return out
 
 
-def random_entry_placebo(rows: dict, n_trades_per_window: float, rng, draws: int = 50, n_windows: int | None = None):
-    """Random entries at the model's trade rate: per draw, the same number of positions spread over random windows,
-    each at a random minute/side/mode among that window's filled rows. Returns per-draw total P&L."""
-    filled = rows.get('filled', np.ones(len(rows['y']), dtype=bool))
-    cand = np.nonzero(filled)[0]
-    cand = cand[np.argsort(rows['w'][cand], kind='stable')]
-    if not len(cand):
+def random_entry_placebo(rows: dict, n_trades_per_window: float, rng, draws: int = 50, n_windows: int | None = None,
+                         max_tries: int = 64):
+    """Random entries at the model's trade rate, traded the way the simulation trades: per draw, as many windows as the
+    model opened positions, each entered at a random row (minute, side, mode) among ALL its rows; a maker attempt that
+    does not fill leaves the window open and a later minute is drawn, as in simulate(). Exits follow the policy.
+    Returns per-draw total P&L."""
+    n = len(rows['y'])
+    if not n:
         return np.zeros(draws)
-    ws = rows['w'][cand]
-    uniq, start = np.unique(ws, return_index=True)
-    ends = np.append(start[1:], len(ws))
+    filled = np.asarray(rows.get('filled', np.ones(n, dtype=bool)), dtype=bool)
+    order = np.lexsort((rows['i'], rows['w']))
+    w = np.asarray(rows['w'])[order].astype(np.int64)
+    i = np.asarray(rows['i'])[order].astype(np.int64)
+    y = np.asarray(rows['y'], dtype=np.float64)[order]
+    f = filled[order]
+    uniq, start = np.unique(w, return_index=True)
+    ends = np.append(start[1:], n)
+    # Index just past each row's (window, minute) group: where the rows of a later minute begin.
+    key = w * 4096 + i
+    _, g_start, g_inv = np.unique(key, return_index=True, return_inverse=True)
+    g_end = np.append(g_start[1:], n)
+    after = g_end[g_inv]
     nw = len(uniq)
-    k = int(round(n_trades_per_window * (n_windows or nw)))
-    k = min(k, nw)
+    k = min(int(round(n_trades_per_window * (n_windows or nw))), nw)
     out = np.zeros(draws)
     for d in range(draws):
         pick = rng.choice(nw, k, replace=False)
-        j = start[pick] + (rng.random(k) * (ends[pick] - start[pick])).astype(np.int64)
-        out[d] = rows['y'][cand[j]].sum()
+        lo, hi = start[pick].copy(), ends[pick]
+        tot = 0.0
+        act = np.arange(k)
+        for _ in range(max_tries):
+            if not len(act):
+                break
+            j = lo[act] + (rng.random(len(act)) * (hi[act] - lo[act])).astype(np.int64)
+            ok = f[j]
+            tot += float(y[j[ok]].sum())
+            lo[act] = after[j]
+            act = act[~ok & (after[j] < hi[act])]
+        out[d] = tot
     return out

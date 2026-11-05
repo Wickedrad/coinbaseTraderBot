@@ -145,13 +145,19 @@ def main(argv=None):
         sfeats[ai] = spot_features(spots[ai])
     real = real.subset(np.nonzero(np.isin(real.asset, list(spots)))[0])
     log(f'real 15m windows: {len(real)} ({np.mean(real.real_frac):.2f} of minutes quoted), {len(np.unique(real.day))} days, assets {real.assets}')
-    keep = real.real_frac >= cfg['min_real_frac']
+    if real.crossed is not None:
+        log(f'{int(np.sum(real.crossed > 0))} windows with crossed/locked minutes; minutes quoted: '
+            f'{np.mean(np.isfinite(real.bid) & np.isfinite(real.ask)):.3f} after the stale and crossed cuts')
+    # Coverage and crossed-quote filters use the whole window (its future minutes too), so they only choose TRAINING
+    # windows. Test windows are all kept: their missing or crossed minutes simply have no quote, as at the time.
+    clean = real.real_frac >= cfg['min_real_frac']
     if real.crossed is not None:
         bad = real.crossed > cfg['max_crossed']
         months = (real.open_ms // 86_400_000).astype('datetime64[D]').astype('datetime64[M]').astype(str)
         by_m = {m_: f'{int(bad[months == m_].sum())}/{int((months == m_).sum())}' for m_ in sorted(set(months.tolist()))}
-        log(f'windows dropped for crossed/locked quotes (> {cfg["max_crossed"]} minutes), by month: {by_m}')
-        keep &= ~bad
+        log(f'windows with crossed/locked quotes (> {cfg["max_crossed"]} minutes, left out of training only), by month: {by_m}')
+        clean &= ~bad
+    keep = np.ones(len(real), dtype=bool)
     for lo_s, hi_s in cfg.get('exclude_utc') or []:
         import datetime as _dt
         ms = lambda x: int(_dt.datetime.fromisoformat(x).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000)
@@ -164,6 +170,7 @@ def main(argv=None):
         d0 = (_dt.date.fromisoformat(cfg['from_day']) - _dt.date(1970, 1, 1)).days
         keep &= real.day >= d0
     real_q = real.subset(np.nonzero(keep)[0])
+    clean_q = clean[keep]
     folds_days = walk_forward(real_q.day, walk['train_days'], walk['test_days'], walk['embargo_days'], walk['rolling'])
     if a.max_folds:
         folds_days = folds_days[-a.max_folds:]
@@ -175,7 +182,7 @@ def main(argv=None):
         w = real_q
     else:
         Sr, Fr = spot_at(real_q, spots, sfeats)
-        cal_mask = real_q.day < first_test - walk['embargo_days']
+        cal_mask = (real_q.day < first_test - walk['embargo_days']) & clean_q
         params = calibrate(real_q, Sr, Fr['rv60'].astype(np.float64), cal_mask)
         log(f'synthetic pricer calibrated on {int(cal_mask.sum())} real windows before day {first_test}: lam {params["lam"]:.2f}, mse {params["mse"]:.4f}')
         if kind == 'synth15':
@@ -192,6 +199,7 @@ def main(argv=None):
             w = price_windows(hw, spots, Fh['rv60'].astype(np.float64), params)
             fidelity = dict(lam=params['lam'], note='hourly windows are synthetic: strike = spot at the open, settled on the Binance close (Kalshi uses the CF index)')
             log(f'synthetic hourly windows: {len(w)}')
+    trainable = clean_q if kind != 'synth1h' else np.ones(len(w), dtype=bool)
     N = w.n
     S, F = spot_at(w, spots, sfeats)
     X, names = window_features(w, S, F, cfg.get('extra_features'))
@@ -215,7 +223,7 @@ def main(argv=None):
             continue
         t_f = time.time()
         rng = np.random.default_rng(17 + fi)
-        tr_idx = np.nonzero(np.isin(days, tr_days))[0]
+        tr_idx = np.nonzero(np.isin(days, tr_days) & trainable)[0]
         te_idx = np.nonzero(np.isin(days, te_days))[0]
         if not len(te_idx) or not len(tr_idx):
             continue
@@ -225,7 +233,7 @@ def main(argv=None):
         groups = (days[tr_idx] % 2).astype(np.int8)
         xr = solve_exits(btr, Xtr, ptr, costs, xcfg, groups=groups)
         pnl_tr = xr.pnl(ptr)
-        att_tr = maker_attempts(btr.bid, N - 1) if cfg['entry']['maker_entries'] else None
+        att_tr = maker_attempts(btr.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None
         rows_tr = entry_rows(Xtr, ptr, pnl_tr, att_tr)
         del pnl_tr
         # Hurdle chosen on the last inner_days of the training span (purged), the entry model fitted on the rest.
@@ -254,16 +262,17 @@ def main(argv=None):
         pte = build_positions(bte, costs, cfg['entry']['maker_entries'], entry_minutes)
         xe = solve_exits(bte, Xte, pte, costs, xcfg, models=xr.models)
         pnl_te = xe.pnl(pte)
-        att_te = maker_attempts(bte.bid, N - 1) if cfg['entry']['maker_entries'] else None
+        att_te = maker_attempts(bte.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None
         rows_te = entry_rows(Xte, pte, pnl_te, att_te)
         pred = emodel.predict(rows_te['X'])
         chosen = simulate(rows_te, pred, hurdle, entry_minutes)
+        # Hour slots of the test days that have data (te_days, sorted): a gap in the history does not shift the series.
         n_hours = len(te_days) * 24
-        t0 = int(te_days[0]) * 86_400_000
-        wopen = w.open_ms[te_idx]
-        hour_of = ((wopen[rows_te['w'][chosen]] - t0) // 3_600_000).astype(np.int64)
+        wsel = rows_te['w'][chosen]
+        wopen = w.open_ms[te_idx][wsel].astype(np.int64)
+        hour_of = np.searchsorted(te_days, days[te_idx][wsel]) * 24 + (wopen % 86_400_000) // 3_600_000
         y = rows_te['y'][chosen]
-        series = np.bincount(np.clip(hour_of, 0, n_hours - 1), weights=y, minlength=n_hours)
+        series = np.bincount(hour_of, weights=y, minlength=n_hours)[:n_hours]
         st = pnl_stats(y, n_hours)
         # Every possible taker position under the learned, naive and hindsight exits.
         tk = pte.mode == 0
@@ -308,10 +317,11 @@ def main(argv=None):
                 excluded_assets=sorted(EXCLUDED_ASSETS), windows=len(w), n=N, n_folds=len(folds_days), part=a.part, parts=a.parts,
                 folds=folds, cuts=cuts, shap_entry=shap_entry, shap_exit_hold=shap_exit, fidelity=fidelity,
                 trials_this_arm=len(ecfg.hurdles), seconds=round(time.time() - t_start))
-    result = aggregate([part]) if a.parts == 1 else part
+    # Always the raw part (combine aggregates it, also when the arm runs as a single part).
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, 'w') as fh:
-        json.dump(result, fh, default=lambda o: o.tolist() if hasattr(o, 'tolist') else str(o))
+        json.dump(part, fh, default=lambda o: o.tolist() if hasattr(o, 'tolist') else str(o))
+    result = part
     try:
         import resource
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024

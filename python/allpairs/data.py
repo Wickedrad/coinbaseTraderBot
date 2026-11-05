@@ -108,9 +108,23 @@ class Windows:
                        c('crossed') if all(p.crossed is not None for p in parts) else None)
 
 
-def market_to_rows(m: dict, n: int):
+def _side_hl(cd: dict, side: str):
+    """A candle's (low, high) for one side, or NaNs when they contradict its own open and close (a high under the
+    close, a low over it): Kalshi's historical-tier candles carry such fields, and a fill must not be inferred from them."""
+    lo, hi = _f(cd.get(f'{side}L')), _f(cd.get(f'{side}H'))
+    o_, c_ = _f(cd.get(f'{side}O')), _f(cd.get(f'{side}C'))
+    ok = np.isfinite(lo) and np.isfinite(hi) and lo <= hi + 1e-9
+    for v in (o_, c_):
+        if ok and np.isfinite(v):
+            ok = lo - 1e-9 <= v <= hi + 1e-9
+    return (lo, hi) if ok else (np.nan, np.nan)
+
+
+def market_to_rows(m: dict, n: int, max_stale: int = 3):
     """One stored market -> (bid, ask, nbid_lo, nbid_hi, nask_lo, nask_hi, kvol, real_frac, window open) or None.
-    The window is the market's last N minutes (a market listed earlier than its period is cut to the period)."""
+    The window is the market's last N minutes (a market listed earlier than its period is cut to the period). A minute
+    without a candle carries the last quote for at most max_stale minutes, then has no quote (known at that minute, so
+    no lookahead; a stale quote is not a book anyone could trade)."""
     o, c = m.get('openTime'), m.get('closeTime')
     if not isinstance(o, (int, float)) or not isinstance(c, (int, float)) or int(c - o) < n * MIN:
         return None
@@ -138,6 +152,7 @@ def market_to_rows(m: dict, n: int):
     if c1 is not None:
         bid[0], ask[0] = _f(c1.get('bidO')), _f(c1.get('askO'))
         real += 1
+    age = 0 if c1 is not None else max_stale + 1
     for k in range(1, n):
         ck = cand.get(k)
         if ck is not None:
@@ -147,13 +162,15 @@ def market_to_rows(m: dict, n: int):
             except (TypeError, ValueError):
                 kvol[k] = 0.0
             real += 1
+            age = 0
         else:
-            bid[k], ask[k] = bid[k - 1], ask[k - 1]
+            age += 1
+            bid[k], ask[k] = (bid[k - 1], ask[k - 1]) if age <= max_stale else (np.nan, np.nan)
     for k in range(n):
         nk = cand.get(k + 1)
         if nk is not None:
-            blo[k], bhi[k] = _f(nk.get('bidL')), _f(nk.get('bidH'))
-            alo[k], ahi[k] = _f(nk.get('askL')), _f(nk.get('askH'))
+            blo[k], bhi[k] = _side_hl(nk, 'bid')
+            alo[k], ahi[k] = _side_hl(nk, 'ask')
         else:  # nothing traded or moved: no maker fill is inferred
             blo[k] = bhi[k] = bid[k]
             alo[k] = ahi[k] = ask[k]

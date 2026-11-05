@@ -3,8 +3,9 @@
     python -m allpairs.report --results out/ --ledger drive/trials.jsonl --champion drive/champion.json --card card.md
 
 A candidate (the base arm of its configuration) replaces the champion only if ALL hold:
+  0. every walk-forward fold of the base and stress arms was scored, and random entries lose money (the data canary);
   1. out-of-sample $/h >= the $4.50/h target, and the 95% block-bootstrap interval of the hourly mean is above 0;
-  2. deflated Sharpe >= 0.95, deflated by every configuration ever scored (ledger) plus this run's hurdle grid;
+  2. deflated Sharpe >= 0.95, deflated by every configuration scored before it (the ledger's base rows, one per run);
   3. it beats its placebos: above every shuffled-label refit and the 95th percentile of random entries;
   4. it stays profitable in the stress arm (a cent worse on every taker leg, the maker fee charged, strict maker fills);
   5. it beats the champion's out-of-sample $/h.
@@ -54,14 +55,30 @@ def load_results(d: str) -> dict:
     return out
 
 
-def gate(arms: dict, ledger: list, champion: dict | None) -> dict:
+def prior_trials(ledger: list, run: str = '', config_hash: str = '') -> list:
+    """The configurations scored out of sample before this one: base-arm rows only (the stress arm is the same
+    configuration under worse costs, not another trial), one per (source run, configuration), this one left out. The
+    hurdle grid is not counted: the hurdle is chosen on inner validation days, never on the out-of-sample result."""
+    seen = {}
+    for t in ledger:
+        if t.get('arm', 'base') != 'base' or t.get('sr_hourly') is None:
+            continue
+        key = (str(t.get('run', '')), str(t.get('config_hash', '')))
+        if key == (str(run), str(config_hash)) and run:
+            continue
+        seen[key] = t
+    return list(seen.values())
+
+
+def gate(arms: dict, ledger: list, champion: dict | None, run: str = '') -> dict:
     base = arms.get('base')
     if not base:
         return dict(passed=False, reasons=['no base arm'])
     hourly = np.array(base['hourly_pnl'], dtype=np.float64)
-    srs = [float(t['sr_hourly']) for t in ledger if t.get('sr_hourly') is not None]
+    prior = prior_trials(ledger, run, base.get('config_hash', ''))
+    srs = [float(t['sr_hourly']) for t in prior]
     sr_var = float(np.var(srs, ddof=1)) if len(srs) >= 3 else PRIOR_SR_VAR
-    n_trials = sum(int(t.get('trials', 1)) for t in ledger) + int(base.get('trials_this_arm', 1))
+    n_trials = len(prior) + 1
     d = dsr(hourly, max(n_trials, 1), sr_var)
     o = base['oos']
     pl = arms.get('placebo', {}).get('placebo') or base.get('placebo') or {}
@@ -70,7 +87,12 @@ def gate(arms: dict, ledger: list, champion: dict | None) -> dict:
     stress = arms.get('stress', {}).get('oos', {}).get('per_hour')
     folds = base.get('folds', [])
     suspect = [f for f in folds if (f.get('random_placebo_median') or 0) > 0]
+    missing = {name: dict(parts_missing=r.get('parts_missing') or [], folds=len(r.get('folds', [])), folds_expected=r.get('folds_expected'))
+               for name, r in arms.items()
+               if r.get('parts_missing') or (r.get('folds_expected') is not None and len(r.get('folds', [])) < r['folds_expected'])}
     checks = {
+        # Every fold of the gated arms scored: a missing part would score a cherry-picked subset of the history.
+        'complete': not any(k in missing for k in ('base', 'stress')),
         # Canary: random entries must lose money after fees and spread; a fold where they win has broken data.
         'random_entries_lose': not suspect and (pl.get('random_per_hour_median') is None or pl['random_per_hour_median'] <= 0),
         'target': o['per_hour'] >= TARGET,
@@ -81,7 +103,7 @@ def gate(arms: dict, ledger: list, champion: dict | None) -> dict:
         'stress_profitable': stress is not None and stress > 0,
         'beats_champion': champion is None or o['per_hour'] > float(champion.get('per_hour', -1e9)),
     }
-    return dict(passed=all(checks.values()), checks=checks, dsr=d, n_trials=n_trials, sr_var=sr_var,
+    return dict(passed=all(checks.values()), checks=checks, dsr=d, n_trials=n_trials, sr_var=sr_var, incomplete=missing,
                 suspect_folds=[[f['test'][0], f['test'][1], f.get('random_placebo_median')] for f in suspect])
 
 
@@ -128,6 +150,10 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '') -> str:
         L.append('')
         L.append(f'Gate: ' + ', '.join(f'{k} {"✓" if v else "✗"}' for k, v in g['checks'].items()) +
                  f'. Deflated Sharpe {d["dsr"]} (hourly SR {d["sr"]} vs {d["sr0"]} expected max of {d["n_trials"]} trials).')
+    if g.get('incomplete'):
+        L.append('**INCOMPLETE**: ' + '; '.join(f'{k} has {v["folds"]}/{v["folds_expected"]} folds'
+                                                 + (f', parts missing {v["parts_missing"]}' if v['parts_missing'] else '')
+                                                 for k, v in g['incomplete'].items()) + '.')
     if g.get('suspect_folds'):
         L.append(f'**DATA SUSPECT**: random entries made money in {len(g["suspect_folds"])} fold(s) ' +
                  ', '.join(f'{_day(a)}..{_day(b)} ({m:+.2f} $/h)' for a, b, m in g['suspect_folds']) + ': those results are not evidence.')
@@ -163,7 +189,7 @@ def main(argv=None):
     ap.add_argument('--champion', required=True, help='champion.json (read, replaced when the gate passes)')
     ap.add_argument('--card', required=True)
     ap.add_argument('--run-url', default='')
-    ap.add_argument('--run-id', default='')
+    ap.add_argument('--run-id', default='', help='the run that scored the parts (not a report-only rerun)')
     a = ap.parse_args(argv)
     arms = load_results(a.results)
     ledger = []
@@ -174,7 +200,7 @@ def main(argv=None):
             except json.JSONDecodeError:
                 pass
     champion = json.load(open(a.champion)) if os.path.exists(a.champion) else None
-    g = gate(arms, ledger, champion)
+    g = gate(arms, ledger, champion, a.run_id)
     text = card(arms, g, champion, a.run_url)
     with open(a.card, 'w') as fh:
         fh.write(text + '\n')
@@ -182,9 +208,11 @@ def main(argv=None):
     base = arms.get('base')
     if base:
         now = dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%MZ')
+        have = {(str(t.get('run', '')), t.get('arm'), t.get('config_hash')) for t in ledger}
         with open(a.ledger, 'a') as fh:
             for name, r in arms.items():
-                if name in ('base', 'stress'):
+                # A report-only rerun of the same run's parts does not score anything new: no second ledger row.
+                if name in ('base', 'stress') and (str(a.run_id), name, r.get('config_hash')) not in have:
                     fh.write(json.dumps(dict(at=now, run=a.run_id, arm=name, name=r.get('name'), config_hash=r.get('config_hash'), per_hour=r['oos']['per_hour'],
                                              sr_hourly=r['oos'].get('sr_hourly'), trials=r.get('trials_this_arm', 1),
                                              test=[r['folds'][0]['test'][0], r['folds'][-1]['test'][1]] if r.get('folds') else None)) + '\n')
