@@ -18,7 +18,7 @@
 import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
-import { downloadKalshiHistory, downloadKalshiTrades, getter, loadKalshiHistory, loadKalshiTrades } from './history/kalshiHistory';
+import { downloadKalshiHistory, downloadKalshiTrades, getter } from './history/kalshiHistory';
 import { recordingLines } from '../bot/marketdata/recordingFiles';
 import { contractKind } from '../bot/model/fairValue';
 
@@ -46,36 +46,70 @@ export async function tennisSeries(): Promise<Array<{ ticker: string; title: str
   return out.sort((a, b) => a.ticker.localeCompare(b.ticker));
 }
 
-export interface MonthRow { month: string; series: string; markets: number; events: number; twoSided: number; volume: number; withTape: number; trades: number; medSpreadC: number | null; medTradesPerMarket: number | null }
+export interface MonthRow { month: string; series: string; markets: number; events: number; twoSided: number; volume: number; withTape: number; trades: number; noStart: number; medSpreadC: number | null; medTradesPerMarket: number | null }
 
 const median = (xs: number[]) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+/** The median of a histogram of whole cents (index = cents), as median() would give on the expanded list. */
+const histMedian = (h: number[]) => { const n = h.reduce((a, x) => a + x, 0); if (!n) return null; let c = 0; for (let i = 0; i < h.length; i++) { c += h[i]; if (c > Math.floor(n / 2)) return i; } return null; };
 
-/** Matches by month (UTC month of the match start, else the close) and series. */
-export function inventory(hist: string, series: string[]): { months: MonthRow[]; totals: Record<string, { markets: number; events: number; first?: string; last?: string }> } {
+/** Each line of a JSON-lines file, parsed (torn lines skipped), read one file at a time. */
+function eachLine(file: string, f: (r: any) => void): void {
+  if (!fs.existsSync(file)) return;
+  const text = fs.readFileSync(file, 'utf8');
+  let start = 0;
+  while (start < text.length) {
+    let end = text.indexOf('\n', start);
+    if (end === -1) end = text.length;
+    if (end > start) { let r: any; try { r = JSON.parse(text.slice(start, end)); } catch { r = undefined; } if (r) f(r); }
+    start = end + 1;
+  }
+}
+
+/** Matches by month (UTC month of the match start, else the close) and series. Streams one close-day file (markets, then
+ *  that day's trade tapes) at a time: a whole series' candles and tapes (KXATPMATCH alone is 10.5k markets and 35.5M
+ *  trades) do not fit a runner's heap at once. noStart counts markets Kalshi gave no start time. */
+export function inventory(hist: string, series: string[]): { months: MonthRow[]; totals: Record<string, { markets: number; events: number; noStart: number; first?: string; last?: string }> } {
   const months: MonthRow[] = [];
-  const totals: Record<string, { markets: number; events: number; first?: string; last?: string }> = {};
+  const totals: Record<string, { markets: number; events: number; noStart: number; first?: string; last?: string }> = {};
   for (const s of series) {
-    const ms = loadKalshiHistory(hist, s);
-    const days = [...new Set(ms.map((m) => new Date(m.closeTime).toISOString().slice(0, 10)))];
-    const tapes = loadKalshiTrades(hist, s, days);
-    const by = new Map<string, typeof ms>();
-    for (const m of ms) { const k = new Date(m.startTime ?? m.closeTime).toISOString().slice(0, 7); by.set(k, [...(by.get(k) ?? []), m]); }
-    const ev = new Set<string>();
-    for (const [month, rows] of [...by].sort()) {
-      const events = new Map<string, number>();
-      for (const m of rows) events.set(m.event ?? m.ticker, (events.get(m.event ?? m.ticker) ?? 0) + 1);
-      for (const e of events.keys()) ev.add(e);
-      const spreads: number[] = [], perMarket: number[] = [];
-      let trades = 0, withTape = 0;
-      for (const m of rows) {
-        for (const c of m.candles ?? []) if (c.bidC !== null && c.askC !== null && c.askC > c.bidC) spreads.push(Math.round((c.askC - c.bidC) * 100));
-        const t = tapes.get(m.ticker);
-        if (t?.length) { withTape++; trades += t.length; perMarket.push(t.length); }
-      }
-      months.push({ month, series: s, markets: rows.length, events: events.size, twoSided: [...events.values()].filter((n) => n >= 2).length, volume: Math.round(rows.reduce((a, m) => a + (m.volume ?? 0), 0)), withTape, trades, medSpreadC: median(spreads), medTradesPerMarket: median(perMarket) });
+    const dir = path.join(hist, s);
+    const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((x) => x.endsWith('.jsonl')).sort() : [];
+    type Acc = { markets: number; volume: number; withTape: number; trades: number; noStart: number; spreads: number[]; perMarket: number[]; events: Map<string, number> };
+    const by = new Map<string, Acc>();
+    const eventMonth = new Map<string, string>();
+    let first = Infinity, last = -Infinity, markets = 0, noStart = 0;
+    for (const file of files) {
+      const rows: Array<{ ticker: string; month: string }> = [];
+      eachLine(path.join(dir, file), (m) => {
+        if (!m.candles?.length) return;
+        const t = m.startTime ?? m.closeTime;
+        const month = new Date(t).toISOString().slice(0, 7);
+        let acc = by.get(month);
+        if (!acc) { acc = { markets: 0, volume: 0, withTape: 0, trades: 0, noStart: 0, spreads: new Array(101).fill(0), perMarket: [], events: new Map() }; by.set(month, acc); }
+        acc.markets++; markets++;
+        acc.volume += m.volume ?? 0;
+        if (m.startTime === undefined || m.startTime === null) { acc.noStart++; noStart++; }
+        const e = m.event ?? m.ticker;
+        const em = eventMonth.get(e) ?? month;
+        eventMonth.set(e, em);
+        const ea = by.get(em) ?? acc;
+        ea.events.set(e, (ea.events.get(e) ?? 0) + 1);
+        for (const c of m.candles) if (c.bidC !== null && c.askC !== null && c.askC > c.bidC) acc.spreads[Math.min(100, Math.round((c.askC - c.bidC) * 100))]++;
+        first = Math.min(first, t); last = Math.max(last, t);
+        rows.push({ ticker: m.ticker, month });
+      });
+      const want = new Map(rows.map((r) => [r.ticker, r.month]));
+      eachLine(path.join(dir, 'trades', file), (r) => {
+        const month = want.get(r.ticker);
+        if (!month || !r.trades?.length) return;
+        const acc = by.get(month)!;
+        acc.withTape++; acc.trades += r.trades.length; acc.perMarket.push(r.trades.length);
+      });
     }
-    const sorted = ms.map((m) => m.startTime ?? m.closeTime).sort((a, b) => a - b);
-    totals[s] = { markets: ms.length, events: ev.size, first: sorted.length ? new Date(sorted[0]).toISOString().slice(0, 10) : undefined, last: sorted.length ? new Date(sorted[sorted.length - 1]).toISOString().slice(0, 10) : undefined };
+    for (const [month, acc] of [...by].sort((x, y) => x[0].localeCompare(y[0]))) {
+      months.push({ month, series: s, markets: acc.markets, events: acc.events.size, twoSided: [...acc.events.values()].filter((n) => n >= 2).length, volume: Math.round(acc.volume), withTape: acc.withTape, trades: acc.trades, noStart: acc.noStart, medSpreadC: histMedian(acc.spreads), medTradesPerMarket: median(acc.perMarket) });
+    }
+    totals[s] = { markets, events: eventMonth.size, noStart, first: markets ? new Date(first).toISOString().slice(0, 10) : undefined, last: markets ? new Date(last).toISOString().slice(0, 10) : undefined };
   }
   return { months, totals };
 }

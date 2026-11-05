@@ -196,11 +196,11 @@ jobs:
             echo
             echo "### History by series (match start month)"
             echo
-            echo "| series | month | markets | events | two-sided | volume | with tape | trades | median spread c | median trades/market |"
-            echo "|---|---|---|---|---|---|---|---|---|---|"
-            for f in art/inventory-*/*.json; do [ -f "$f" ] || continue; jq -r '.months[] | "| \(.series) | \(.month) | \(.markets) | \(.events) | \(.twoSided) | \(.volume) | \(.withTape) | \(.trades) | \(.medSpreadC) | \(.medTradesPerMarket) |"' "$f"; done
+            echo "| series | month | markets | events | two-sided | volume | with tape | trades | no start time | median spread c | median trades/market |"
+            echo "|---|---|---|---|---|---|---|---|---|---|---|"
+            for f in art/inventory-*/*.json; do [ -f "$f" ] || continue; jq -r '.months[] | "| \(.series) | \(.month) | \(.markets) | \(.events) | \(.twoSided) | \(.volume) | \(.withTape) | \(.trades) | \(.noStart) | \(.medSpreadC) | \(.medTradesPerMarket) |"' "$f"; done
             echo
-            for f in art/inventory-*/*.json; do [ -f "$f" ] || continue; jq -r '.totals | to_entries[] | "- **\(.key)**: \(.value.markets) markets, \(.value.events) events, \(.value.first) to \(.value.last)"' "$f"; done
+            for f in art/inventory-*/*.json; do [ -f "$f" ] || continue; jq -r '.totals | to_entries[] | "- **\(.key)**: \(.value.markets) markets, \(.value.events) events, \(.value.noStart) without a start time, \(.value.first) to \(.value.last)"' "$f"; done
             echo
             echo "### Recorded days cut to tennis (real books)"
             echo
