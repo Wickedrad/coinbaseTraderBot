@@ -130,9 +130,9 @@ def route(s_):
     fs = mf.get(s_['ticker'], [])
     purposes = {orders.get(x['coid'], '?') for x in fs}
     if not fs: return 'no fills in window (opened earlier)'
-    tk_exit = any(x['taker'] and orders.get(x['coid']) == 'exit' for x in fs)
+    sold = any(orders.get(x['coid']) == 'exit' for x in fs)  # a maker exit fill is a sale too
     tk_entry = any(x['taker'] and orders.get(x['coid']) == 'entry' for x in fs)
-    return ('taker entry' if tk_entry else 'maker entry') + (' + sold early' if tk_exit else ' + held to settlement')
+    return ('taker entry' if tk_entry else 'maker entry') + (' + sold early' if sold else ' + held to settlement')
 table('by entry route and exit', group(route))
 def band(s_):
     fs = sorted(mf.get(s_['ticker'], []), key=lambda x: x['ts'])
@@ -148,10 +148,21 @@ table('by 4-hour block (EST)', group(est_block))
 big = sorted(per.items(), key=lambda kv: kv[1])[:5]
 print("why - 5 worst markets:", '; '.join(f"{t} ${v:.2f}" for t, v in big))
 
-# 7. held trace: why did the markets that rode to settlement and lost ride? For each loser (no taker exit), the best net profit after
-# fees it ever showed at the bid while the exit window was open, against the take-profit floor (the larger of 2c and 10% of cost),
-# the time left at that moment, and the exit orders the bot sent (none / filled / not filled).
+# 7. held trace: why did the markets that rode to settlement and lost ride? For each loser (no exit fill, maker or taker), the
+# best net profit after fees it ever showed at the bid while the window was open, against the bot's own take-profit floor
+# (guards.takeProfit from /api/status, copied to data/takeprofit.json: the larger of floorCents and floorPct of cost), the
+# time left at that moment, and the exit orders the bot sent. A loser that was above the floor is split into "the give-back
+# sell condition was met and nothing sold" (a defect) and "the price gapped from above the give-back line to below the
+# floor between two decisions" (the rule's documented gap case, bot/strategy/fairValueStrategy.ts).
 import re
+tp = {}
+try: tp = json.load(open(os.path.join(data, 'takeprofit.json'))) or {}
+except Exception: pass
+tp_cents = float(tp.get('floorCents', 2)) / 100
+tp_pct = float(tp.get('floorPct', 0.10))
+tp_give = float(tp.get('giveBack', 1 / 3))
+print(f"take-profit in force: floor max({tp_cents * 100:.0f}c, {tp_pct * 100:.0f}% of cost), give-back {tp_give:.3f}" + ("" if tp else " (defaults: /api/status not read)"))
+TICK = 0.01
 def window_sec(t): return 900 if '15M' in series_of(t) else None if asset_of(t) == 'tennis' else 3600
 def exit_fee(p): return math.ceil(0.07 * p * (1 - p) * 100 - 1e-9) / 100
 losers = []
@@ -159,7 +170,7 @@ for s_ in day:
     t = s_['ticker']
     fs = mf.get(t, [])
     if s_['realized'] >= 0 or not fs or asset_of(t) == 'tennis': continue
-    sold = any(x['taker'] and orders.get(x['coid']) == 'exit' for x in fs)
+    sold = any(orders.get(x['coid']) == 'exit' for x in fs)
     if not sold: losers.append(s_)
 lset = {s_['ticker'] for s_ in losers}
 decs = collections.defaultdict(list)
@@ -189,30 +200,48 @@ for s_ in losers:
     side = buys[0]['side']; px = buys[0]['price']; px = px / 100 if px > 1.5 else px
     cost = (1 - px) if side == 'ask' else px
     efee = sum(x['fee'] for x in buys) / max(1e-9, sum(x['count'] for x in buys))
-    floor = max(0.02, 0.10 * (cost + efee))
+    floor = max(tp_cents, tp_pct * (cost + efee))
     win = window_sec(t) or 900
     best, best_tau, ever_exit_try = -9, None, False
+    run_best, sell_met, gapped = None, False, False
+    prev_net = None
     for ts, pos, bid, ask, tau, why in ds:
         sbid = bid if pos > 0 else 1 - ask
         net = sbid - cost - efee - exit_fee(sbid)
         if why: ever_exit_try = True
         if tau > 60 and net > best: best, best_tau = net, tau
+        # replay the rule: armed once the best gain reached the floor; sells at or below max(best x (1 - give-back), floor + tick)
+        if net >= floor - 1e-9 and (run_best is None or net > run_best): run_best = net
+        if run_best is not None and tau > 0:
+            line_ = max(run_best * (1 - tp_give), floor + TICK)
+            if net >= floor - 1e-9 and net < run_best - 1e-9 and (net <= floor + TICK + 1e-9 or net <= line_ + 1e-9): sell_met = True
+            elif net < floor - 1e-9 and prev_net is not None and prev_net > line_ + 1e-9: gapped = True
+        prev_net = net
     in_share = best_tau is not None and best_tau <= 0.10 * win
-    if best >= floor: k = 'was above the take-profit floor with the window open: ' + ('only in the last 10% of the window' if in_share else 'with more than 10% of the window left')
+    if best >= floor:
+        k = 'above the floor: ' + ('only in the last 10% of the window' if in_share else
+            'give-back sell condition met, nothing sold (defect)' if sell_met else
+            'gapped from above the give-back line to below the floor' if gapped else 'armed, never fell back to the sell line before close')
     elif best > 0: k = 'in profit after fees but below the floor'
     else: k = 'never in profit after fees (no rule sells a loser)'
     cats[k][0] += 1; cats[k][1] += s_['realized']
-    rows.append((s_['realized'], t, side, cost, best, best_tau, ever_exit_try))
-print(f"held trace: {len(losers)} markets lost after riding to settlement (no taker exit); why they rode (markets, P&L):")
+    rows.append((s_['realized'], t, side, cost, best, best_tau, ever_exit_try, floor, k))
+print(f"held trace: {len(losers)} markets lost after riding to settlement (no exit fill); why they rode (markets, P&L):")
 for k, (n, v) in sorted(cats.items(), key=lambda kv: kv[1][1]):
     print(f"   {k:100s} {n:4d} ${v:9.2f}")
-print("held trace - 8 worst: " + '; '.join(f"{t} {sd} cost {c:.2f} best net {b:+.2f} at {('%.0f' % bt) if bt is not None else '-'} s left, exit tried {et}, ${r:.2f}" for r, t, sd, c, b, bt, et in sorted(rows)[:8]))
+fmt = lambda r, t, sd, c, b, bt, et, fl: f"{t} {sd} cost {c:.2f} best net {b:+.3f} (floor {fl:.3f}) at {('%.0f' % bt) if bt is not None else '-'} s left, exit tried {et}, ${r:.2f}"
+print("held trace - 8 worst: " + '; '.join(fmt(*x[:8]) for x in sorted(rows)[:8]))
+print("held trace - every loser that was in profit after fees:")
+for x in sorted(rows, key=lambda x: -x[4]):
+    if x[4] > 0: print(f"   {fmt(*x[:8])} | {x[8]}")
 
-# replay check verdict, when copied
+# replay check verdict, when copied: with the file's time and the backtester code it names, so it can be traced
 rc = os.path.join(data, 'replay-check-latest.json')
 if os.path.exists(rc):
     try:
         v = json.load(open(rc))
-        print("latest replay check:", json.dumps({k: v.get(k) for k in ('verdict', 'close', 'from', 'to', 'stretch', 'replay', 'paper') if k in v}, default=str)[:600])
+        at = time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(os.path.getmtime(rc)))
+        keep = {k: v.get(k) for k in ('close', 'checked', 'from', 'to', 'code', 'why') if k in v}
+        print(f"latest replay check (file written {at}; the file records no run id or commit):", json.dumps(keep, default=str)[:500])
     except Exception as e:
         print("latest replay check: unreadable", str(e)[:80])
