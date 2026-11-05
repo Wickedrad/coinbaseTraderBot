@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; empty runs the sweep"
+        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; 'agree' checks that the signals fire the same on Coinbase spot as on Binance spot; empty runs the sweep"
         required: false
         default: ''
       blind_run:
@@ -152,7 +152,7 @@ jobs:
 
   sweep:
     needs: [blind-open]
-    if: ${{ !cancelled() && inputs.only != 'fidelity' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) && (inputs.only != 'study' || inputs.study_run != '') }}
+    if: ${{ !cancelled() && inputs.only != 'fidelity' && inputs.only != 'agree' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) && (inputs.only != 'study' || inputs.study_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
@@ -274,7 +274,7 @@ jobs:
         run: '[ ! -d out ] || bash deploy/drive_lab.sh put "models/perp-ta/${{ (inputs.only == ''blind'' || inputs.only == ''study'') && format(''{0}/'', inputs.only) || '''' }}run-$GITHUB_RUN_ID" out'
 
   fidelity:
-    if: ${{ inputs.only != 'blind' && inputs.only != 'study' }}
+    if: ${{ inputs.only != 'blind' && inputs.only != 'study' && inputs.only != 'agree' }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
@@ -324,7 +324,7 @@ jobs:
     needs: [blind-open, sweep, fidelity]
     # Not after a cancel (a newer push supersedes this run): partial artifacts would post a misleading summary. Not after a
     # refused blind opening either (nothing was read).
-    if: ${{ !cancelled() && needs.blind-open.result != 'failure' && (inputs.only != 'study' || inputs.study_run != '') }}
+    if: ${{ !cancelled() && inputs.only != 'agree' && needs.blind-open.result != 'failure' && (inputs.only != 'study' || inputs.study_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -387,3 +387,88 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
+
+  # only: agree (research/perpTaAgree.ts; promised to Steven Nov 5 3:14 PM EST / 20:14 UTC): every primitive the sweep reads,
+  # computed on Binance spot (the sweep's grid) and on Coinbase spot (the live setups trader's candles) over the same minutes
+  # before the seal; trigger recall / precision and state agreement per primitive. Reads no sealed minute.
+  agree:
+    if: ${{ inputs.only == 'agree' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: ${{ fromJSON(inputs.assets || '["BTC","ETH","SOL","XRP"]') }}
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: TA-Lib loads
+        run: node -e "const t = require('talib'); if (typeof t.execute !== 'function') process.exit(1); console.log('TA-Lib', t.version || 'ok')"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The sweep's grid (Drive) and Coinbase's 1-minute candles (public API)
+        run: |
+          set -euo pipefail
+          [[ "$A" =~ ^[A-Z0-9]{2,8}$ ]] && [[ "$A" != DOGE ]] || { echo "bad or excluded coin: $A"; exit 1; }
+          bash deploy/drive_lab.sh get derived/perp-ta/grids data/perp-ta --include "$A.bin"
+          [ -s "data/perp-ta/$A.bin" ] || { echo "no grid for $A on Drive (run the sweep first)"; exit 1; }
+          npx tsx research/history/coinbaseBackfill.ts --assets "$A" --tfs 1m --from 2024-10-15 --out data/history 2>&1 | tail -15
+      - name: Agreement (Dec 2024 - Jun 2025, after 45 warm-up days)
+        run: |
+          set -o pipefail
+          node --max-old-space-size=14000 --import tsx research/perpTaAgree.ts coin --data "data/perp-ta/$A.bin" --coinbase data/history --from 2024-12-01 --to 2025-07-01 --out "out/agree-$A.json" 2>&1 | tail -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agree-${{ matrix.asset }}
+          path: out/agree-${{ matrix.asset }}.json
+
+  agree-report:
+    needs: [agree]
+    if: ${{ !cancelled() && inputs.only == 'agree' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          path: in
+      - name: Report
+        run: |
+          set -o pipefail
+          node --import tsx research/perpTaAgree.ts report --in in --out report 2>&1 | tail -40
+          cat report/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Results to Drive
+        run: bash deploy/drive_lab.sh put "models/perp-ta/agree/run-$GITHUB_RUN_ID/report" report
