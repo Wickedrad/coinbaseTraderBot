@@ -22,13 +22,17 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 /** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
  *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
 export const VARIANTS: Record<string, Record<string, string>> = {
-  // Market-anchor thread, Nov 5 18:05 UTC, on merged main (bad23a5): the wild switch failed out of sample, so this run asks
-  // whether the anchor and the cheap-NO extra edge help over ~200 days of Kalshi history (no DOGE), each against a placebo.
+  // HO-1 wave (Nov 5 22:45 UTC; registry README): REPLAY_VERSION 8, no DOGE, own benches. Settings fixed before the run
+  // (none tuned on H-DEV); scored once on H-HOLD Aug 1-Nov 4 (research/ho1Score.py), each candidate with its placebo.
   baseline: {},
   ser: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true' },
   sershuf: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', MARKET_ANCHOR_SHUFFLE: 'true' },
   sernl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04' },
   sernlm: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', NO_LONGSHOT_MIRROR: 'true' },
+  off20: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2', NO_LONGSHOT_WILD_OFF: 'true' },
+  offpl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2', MARKET_ANCHOR_WILD_PLACEBO: '0.2', NO_LONGSHOT_WILD_OFF: 'true' },
+  rvoff: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_LABELS: 'data/regime/labels.csv.gz', NO_LONGSHOT_WILD_OFF: 'true' },
+  rvpl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_LABELS: 'data/regime/labels.csv.gz', MARKET_ANCHOR_WILD_PLACEBO: '0.33', NO_LONGSHOT_WILD_OFF: 'true' },
 };
 
 export const LATER: Record<string, Record<string, string>> = {};

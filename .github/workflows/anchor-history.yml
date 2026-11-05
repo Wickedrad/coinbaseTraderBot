@@ -19,7 +19,7 @@ on:
         default: ''
   push:
     branches: ['claude/anchor-history-lab']
-    paths: ['.github/workflows/anchor-history.yml', 'research/anchorHistory.ts']
+    paths: ['.github/workflows/anchor-history.yml', 'research/anchorHistory.ts', 'research/ho1Score.py']
 
 permissions:
   contents: write
@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TJ_DAYS: ${{ inputs.days || '200' }}
+  TJ_DAYS: ${{ inputs.days || '202' }}
   TJ_SPLIT: ${{ inputs.split || '' }}
   SWEEP_BANKROLL_USD: '200'
   # Steven, Nov 5 13:26 UTC: no DOGE at all for now. Kalshi lines of these series are dropped from the replayed days
@@ -115,7 +115,7 @@ jobs:
     strategy:
       fail-fast: false
       # The account's runners are shared by every thread (Nov 5: 10 jobs a thread, ~50 for the project): eight replays at a time.
-      max-parallel: 7
+      max-parallel: 6
       matrix:
         variant: ${{ fromJson(needs.data.outputs.variants) }}
     steps:
@@ -166,6 +166,13 @@ jobs:
             kalshi-server-
       - name: Stop when no copy of the server's model is cached
         run: '[ -f data/models/model.json ] || { echo "::error::no server copy cached"; exit 1; }'
+      # HO-1 (Nov 5): regime v1 labels for the wild arms and the tercile scoring (rclone is set up above only on an evicted cache).
+      - if: steps.replay.outputs.cache-hit == 'true'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Regime v1 labels
+        run: rclone copy "gdrive:kalshi-bot-archive/registry/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz" data/regime/ && ls -la data/regime/
       - name: Replay ${{ matrix.variant }}
         env:
           NODE_OPTIONS: --max-old-space-size=12288
@@ -181,7 +188,8 @@ jobs:
           fi
           if [ -f data/sweep-env/train.env ]; then set -a; . data/sweep-env/train.env; set +a; echo "server settings: $(wc -l < data/sweep-env/train.env) line(s)"; else echo "no server settings cached: the bot's defaults"; fi
           cp -rn data/sweep-env/history/. data/history/ 2>/dev/null || true
-          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper RS_PROBATION_FILE="$GITHUB_WORKSPACE/data/sweep-env/probation.json" RS_TRIALS_FILE="$GITHUB_WORKSPACE/data/sweep-env/component_trials.json"
+          # HO-1 (Nov 5): own benches, so neither paper's probation nor its component trials are seeded.
+          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper
           echo "model: $([ -f data/models/model.json ] && echo "the server's" || echo identity)"
           node --import tsx research/anchorHistory.ts run --variant "${{ matrix.variant }}" --days data/sweep-days --model data/models/model.json --out research/out/anchor-history \
             2>&1 | grep -E '^\[anchor-history\]|Error|error' | head -20
@@ -238,10 +246,26 @@ jobs:
           # Without the replay (its caches evicted) the report takes the days the results span (benchedJobs.ts dayList).
           [ -d data/history-replay ] && node --import tsx research/randomSweep.ts days --replay data/history-replay --out data/sweep-days --days "$TJ_DAYS"
           { node --import tsx research/anchorHistory.ts report --days data/sweep-days --out research/out/anchor-history $([ -n "$TJ_SPLIT" ] && echo --split "$TJ_SPLIT") 2>&1; } | tee "$RUNNER_TEMP/report.txt" | tail -80
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: HO-1 score and registry shard
+        run: |
+          rclone copy "gdrive:kalshi-bot-archive/registry/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz" data/regime/
+          git fetch -q --depth 1 origin claude/project-thread-79ntof && git show FETCH_HEAD:research/registry.py > "$RUNNER_TEMP/registry.py"
+          node --import tsx -e "import('./research/anchorHistory.ts').then((m) => console.log(JSON.stringify(m.VARIANTS)))" > "$RUNNER_TEMP/variants.json"
+          SHARD="$RUNNER_TEMP/anchor-ho1-${{ steps.src.outputs.run }}.jsonl"
+          python3 research/ho1Score.py --results research/out/anchor-history --labels data/regime/labels.csv.gz \
+            --pairs ser:baseline:sershuf,sernl:baseline:sernlm,off20:baseline:offpl,rvoff:baseline:rvpl \
+            --code-sha "${{ github.sha }}" --env-json "$RUNNER_TEMP/variants.json" --out "$SHARD" 2>&1 | tee "$RUNNER_TEMP/ho1.txt"
+          python3 "$RUNNER_TEMP/registry.py" validate "$SHARD" 2>&1 | tail -15 | tee -a "$RUNNER_TEMP/ho1.txt"
+          rclone mkdir gdrive:kalshi-bot-archive/registry/shards/market-anchor
+          rclone copy "$SHARD" gdrive:kalshi-bot-archive/registry/shards/market-anchor/ && echo "shard on Drive: registry/shards/market-anchor/$(basename "$SHARD")" | tee -a "$RUNNER_TEMP/ho1.txt"
+          cat "$RUNNER_TEMP/ho1.txt" >> "$RUNNER_TEMP/report.txt"
       - name: Post the report on the commit
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "Anchor deep-history comparison, run ${{ steps.src.outputs.run }}"; echo; echo '```'; tail -120 "$RUNNER_TEMP/report.txt" 2>/dev/null; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          { echo "Anchor deep-history comparison, run ${{ steps.src.outputs.run }}"; echo; echo '```'; tail -200 "$RUNNER_TEMP/report.txt" 2>/dev/null; echo '```'; } > "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
