@@ -41,6 +41,10 @@ export interface MarketAnchorConfig {
   /** Anchor on the raw mid instead of the calibrated mid: at w = 0 the price is exactly the mid, so the market
    *  calibration's own tilt opens no trades (MARKET_ANCHOR_RAW_MID). */
   rawMid?: boolean;
+  /** Separate weights for disagreements that pull the price toward 0.5 (fading the market's favourite) and away from
+   *  it (MARKET_ANCHOR_SPLIT, Nov 5: on the fixed base every anchor loss sat in NO longshots, the largest
+   *  fade-the-favourite calls); each direction's prior is the bucket's own weight. */
+  split?: boolean;
 }
 
 export const DEFAULT_MARKET_ANCHOR: MarketAnchorConfig = { enabled: false, prior: 0.5, priorSd: 0.5, window: 400, maxW: 1.5 };
@@ -53,6 +57,9 @@ const PENDING_MAX_AGE_MS = 3 * 3_600_000;
 const SAVE_EVERY_MS = 60_000;
 const seriesOf = (ticker: string) => ticker.split('-')[0];
 const L = (p: number) => logit(clamp(p, 1e-4, 1 - 1e-4));
+
+/** The direction suffix of a disagreement: ':t' toward 0.5 (logit a and d of opposite signs), ':a' away. */
+const dirOf = (a: number, d: number) => (a * d < 0 ? ':t' : ':a');
 
 /** MAP fit of w: maximise sum log-lik(y | sigmoid(a + w d)) - (w - prior)^2 / (2 sd^2), Newton steps, clipped. */
 export function fitAnchorWeight(rows: ReadonlyArray<Row>, prior: number, priorSd: number, maxW: number): number {
@@ -96,11 +103,14 @@ export class MarketAnchor {
     return { group, b };
   }
 
-  /** The bucket's weight on the bot's disagreement with the market. */
-  weight(ticker: string, tauSec: number): number {
+  /** The bucket's weight on the bot's disagreement with the market (dir: ':t' / ':a' when split, from the price). */
+  weight(ticker: string, tauSec: number, dir = ''): number {
     if (this.cfg.fixedW !== undefined) return this.cfg.fixedW;
     const { group, b } = this.key(ticker, tauSec);
-    const w = this.cfg.bySeries ? this.wOf(`${group}:${seriesOf(ticker)}:${b}`, this.wOf(`${group}:${b}`, this.cfg.prior)) : this.wOf(`${group}:${b}`, this.cfg.prior);
+    const sfx = this.cfg.split ? dir : '';
+    let wb = this.wOf(`${group}:${b}`, this.cfg.prior);
+    if (sfx) wb = this.wOf(`${group}:${b}${sfx}`, wb);
+    const w = this.cfg.bySeries ? this.wOf(`${group}:${seriesOf(ticker)}:${b}${sfx}`, wb) : wb;
     return this.cfg.minW !== undefined && w < this.cfg.minW ? 0 : w;
   }
 
@@ -116,8 +126,8 @@ export class MarketAnchor {
   /** The anchored price (the raw price when the anchor is off). */
   price(ticker: string, tauSec: number, pMarket: number, pBot: number): number {
     if (!this.cfg.enabled) return pBot;
-    const a = L(pMarket);
-    return clamp(sigmoid(a + this.weight(ticker, tauSec) * (L(pBot) - a)), 0.001, 0.999);
+    const a = L(pMarket), d = L(pBot) - a;
+    return clamp(sigmoid(a + this.weight(ticker, tauSec, dirOf(a, d)) * d), 0.001, 0.999);
   }
 
   /** One evaluation: kept when it is the nearest yet to the middle of its bucket (as the accuracy gate keeps them). */
@@ -147,7 +157,8 @@ export class MarketAnchor {
         const k = `${e.group}:${b}`;
         const rows = (this.st.rows[k] ??= []);
         // Scored before the record learns from it (prequential), with the weight the price used.
-        const w = this.weight(ticker, (ACCURACY_BUCKETS[e.group][b][0] + ACCURACY_BUCKETS[e.group][b][1]) / 2);
+        const sfx = this.cfg.split ? dirOf(s.a, s.d) : '';
+        const w = this.weight(ticker, (ACCURACY_BUCKETS[e.group][b][0] + ACCURACY_BUCKETS[e.group][b][1]) / 2, sfx);
         const ll = (z: number) => { const p = clamp(sigmoid(z), 1e-4, 1 - 1e-4); return y ? -Math.log(p) : -Math.log(1 - p); };
         this.score.n++; this.score.anchored += ll(s.a + w * s.d); this.score.raw += ll(s.a + s.d); this.score.market += ll(s.a);
         let d = s.d;
@@ -155,14 +166,20 @@ export class MarketAnchor {
         rows.push({ a: s.a, d, y });
         if (rows.length > this.cfg.window) rows.splice(0, rows.length - this.cfg.window);
         this.weights.delete(k);
+        if (sfx) {
+          const kd = `${e.group}:${b}${sfx}`;
+          const dr = (this.st.rows[kd] ??= []);
+          dr.push({ a: s.a, d, y });
+          if (dr.length > this.cfg.window) dr.splice(0, dr.length - this.cfg.window);
+        }
         if (this.cfg.bySeries) {
-          const ks = `${e.group}:${seriesOf(ticker)}:${b}`;
+          const ks = `${e.group}:${seriesOf(ticker)}:${b}${sfx}`;
           const sr = (this.st.rows[ks] ??= []);
           sr.push({ a: s.a, d, y });
           if (sr.length > this.cfg.window) sr.splice(0, sr.length - this.cfg.window);
         }
         // Every series weight of the bucket leans on the bucket's: refit them all.
-        for (const key of [...this.weights.keys()]) if (key.startsWith(`${e.group}:`) && key.endsWith(`:${b}`)) this.weights.delete(key);
+        for (const key of [...this.weights.keys()]) if (key.startsWith(`${e.group}:`) && /:(\d+)(:[ta])?$/.exec(key)?.[1] === String(b)) this.weights.delete(key);
       });
       this.dirty = true;
     }
@@ -190,13 +207,17 @@ export class MarketAnchor {
   }
 
   status() {
+    const fit = (k: string, prior: number) => (this.cfg.fixedW !== undefined ? this.cfg.fixedW : this.wOf(k, prior));
     const groups = Object.fromEntries((Object.keys(ACCURACY_BUCKETS) as AccuracyGroup[]).map((g) => [g, ACCURACY_BUCKETS[g].map(([lo, hi], b) => {
-      const k = `${g}:${b}`;
-      return { lo, hi, n: (this.st.rows[k] ?? []).length, w: +(this.cfg.fixedW ?? this.weights.get(k) ?? fitAnchorWeight(this.st.rows[k] ?? [], this.cfg.prior, this.cfg.priorSd, this.cfg.maxW)).toFixed(3) };
+      const k = `${g}:${b}`, w = fit(k, this.cfg.prior);
+      const dir = this.cfg.split ? { toward: +fit(`${k}:t`, w).toFixed(3), nToward: (this.st.rows[`${k}:t`] ?? []).length, away: +fit(`${k}:a`, w).toFixed(3), nAway: (this.st.rows[`${k}:a`] ?? []).length } : {};
+      return { lo, hi, n: (this.st.rows[k] ?? []).length, w: +w.toFixed(3), ...dir };
     })]));
-    const series = this.cfg.bySeries ? Object.fromEntries(Object.keys(this.st.rows).filter((k) => k.split(':').length === 3).map((k) => {
-      const [g, se, b] = k.split(':');
-      return [k, { n: this.st.rows[k].length, w: +this.wOf(k, this.wOf(`${g}:${b}`, this.cfg.prior)).toFixed(3), series: se }];
+    // Series keys: group:SERIES:bucket[:t|:a] (a series name is never all digits).
+    const series = this.cfg.bySeries ? Object.fromEntries(Object.keys(this.st.rows).map((k) => [k, /^([^:]+):([^:]*[A-Za-z][^:]*):(\d+)(:[ta])?$/.exec(k)] as const).filter(([, m]) => m).map(([k, m]) => {
+      const [, g, se, b, sfx] = m!;
+      const wb = fit(`${g}:${b}`, this.cfg.prior);
+      return [k, { n: this.st.rows[k].length, w: +fit(k, sfx ? fit(`${g}:${b}${sfx}`, wb) : wb).toFixed(3), series: se }];
     })) : undefined;
     const s = this.score;
     const m = (x: number) => (s.n ? +(x / s.n).toFixed(5) : null);

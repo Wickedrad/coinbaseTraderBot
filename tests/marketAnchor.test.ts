@@ -106,3 +106,29 @@ test('quote side gate: off by default; on, a price on the mid quotes neither sid
   assert.equal(loadConfig(base).strategy.quoteSideGate, 0);
   assert.equal(loadConfig({ ...base, QUOTE_SIDE_GATE: '0.02' }).strategy.quoteSideGate, 0.02);
 });
+
+test('market anchor split: a disagreement that fades the favourite and is wrong loses its weight, the other keeps it', () => {
+  let now = 0;
+  const a = new MarketAnchor({ ...DEFAULT_MARKET_ANCHOR, enabled: true, split: true, window: 3000 }, undefined, () => now);
+  const r = rng(5);
+  for (let i = 0; i < 2500; i++) {
+    const t = `KXBTC15M-26NOV05${i}-15`;
+    const pm = r() < 0.5 ? 0.15 + 0.1 * r() : 0.75 + 0.1 * r();
+    const toward = r() < 0.5;
+    // The bot moves 8c toward 0.5 or 8c away from it.
+    const pb = pm > 0.5 ? (toward ? pm - 0.08 : Math.min(0.97, pm + 0.08)) : (toward ? pm + 0.08 : Math.max(0.03, pm - 0.08));
+    a.observe(t, 520, pm, pb);
+    now += 1000;
+    // Toward 0.5: the market is the truth. Away: the bot is.
+    a.settle(t, r() < (toward ? pm : pb) ? 'yes' : 'no');
+  }
+  const tk = 'KXBTC15M-26NOV05X-15';
+  const wToward = a.weight(tk, 520, ':t'), wAway = a.weight(tk, 520, ':a');
+  assert.ok(wToward < 0.3, `toward ${wToward}`);
+  assert.ok(wAway > 0.7, `away ${wAway}`);
+  // The price uses the direction: fading a 0.8 favourite to 0.7 stays near 0.8; pushing it to 0.88 keeps most of the move.
+  assert.ok(a.price(tk, 520, 0.8, 0.7) > 0.77);
+  assert.ok(a.price(tk, 520, 0.8, 0.88) > 0.86);
+  const g = a.status().groups.updown15m.find((b: any) => b.lo <= 520 && 520 < b.hi) as any;
+  assert.ok(g.toward !== undefined && g.away !== undefined);
+});

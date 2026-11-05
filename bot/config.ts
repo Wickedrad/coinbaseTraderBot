@@ -1182,6 +1182,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       priorSd: num(env, 'MARKET_ANCHOR_PRIOR_SD', 0.5, 0.01, 10),
       window: num(env, 'MARKET_ANCHOR_WINDOW', 400, 20, 5000),
       maxW: num(env, 'MARKET_ANCHOR_MAX_W', 1.5, 0, 3),
+      split: bool(env, 'MARKET_ANCHOR_SPLIT', false),
       shuffle: bool(env, 'MARKET_ANCHOR_SHUFFLE', false),
       bySeries: bool(env, 'MARKET_ANCHOR_BY_SERIES', false),
       rawMid: bool(env, 'MARKET_ANCHOR_RAW_MID', false),
