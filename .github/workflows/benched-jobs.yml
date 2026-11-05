@@ -117,7 +117,7 @@ jobs:
     strategy:
       fail-fast: false
       # The account's runners are shared by every thread (Nov 5: 10 jobs a thread, ~50 for the project): eight replays at a time.
-      max-parallel: 9
+      max-parallel: 10
       matrix:
         variant: ${{ fromJson(needs.data.outputs.variants) }}
     steps:

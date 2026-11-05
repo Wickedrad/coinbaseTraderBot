@@ -21,12 +21,29 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 /** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
  *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
 export const VARIANTS: Record<string, Record<string, string>> = {
+  // Round 8 (Nov 5): neighbours and stress of round 6's best arm. tails25 (the model's weight capped at 0.25 while the
+  // market prices a side under 30c): +0.27/h [+0.10, +0.43] over 200 days, 6 of 7 blocks, +0.22/h without its best block,
+  // held-out +0.18 [-0.13, +0.45] (NOT PROVEN at 99.3%); tails50 and tails75 were ~0, so the neighbours decide whether 0.25
+  // is a real step or a lone spike (adversary rule 6). Round 7's blind test: the calm-gated dip buy LOSES (-0.28/h held out).
+  baseline: {},
+  placebo: { RS_TICK_PHASE_MS: '500' },
+  tails25: { MODEL_SKILL_W_TAILS: '0.25' },
+  tails0: { MODEL_SKILL_W_TAILS: '0' },
+  tails10: { MODEL_SKILL_W_TAILS: '0.1' },
+  tails15: { MODEL_SKILL_W_TAILS: '0.15' },
+  tails35: { MODEL_SKILL_W_TAILS: '0.35' },
+  tails25_t20: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.2' },
+  tails25_t35: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.35' },
+  tails25_lat500: { MODEL_SKILL_W_TAILS: '0.25', RS_LATENCY_MS: '500' },
+};
+
+/** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
+export const LATER: Record<string, Record<string, string>> = {
+  // Round 7 (Nov 5, run 41944890970):
   // Round 7 (Nov 5): blind test of the sterile sweep's conditions (research/sterileSweep.ts run 41943842003), PRE-REGISTERED
   // at 01:40 UTC Nov 5 before round 6's real by-condition split was read. Sterile: the dip buy helped in calming markets at
   // 0.25-1 bp (+11.5 calming vs +0.4 rising; 2 bp -1.0); the tails cap helped only while volatility rose (+5.7 rising,
   // -15.3 calming). Judged on the held-out half (after the split) with the adversary; neighbours and 500 ms stress included.
-  baseline: {},
-  placebo: { RS_TICK_PHASE_MS: '500' },
   dip8_calm: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.18,1.41' },
   dip8_calm_narrow: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.18,0.71' },
   dip12_calm: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.12', SINUOUS_DIP_CALM_RV: '0.18,1.41' },
@@ -34,10 +51,6 @@ export const VARIANTS: Record<string, Record<string, string>> = {
   tails50_rising: { MODEL_SKILL_W_TAILS: '0.5', MODEL_SKILL_W_TAILS_RISING: 'true' },
   tails75_rising: { MODEL_SKILL_W_TAILS: '0.75', MODEL_SKILL_W_TAILS_RISING: 'true' },
   tails50_rising_lat500: { MODEL_SKILL_W_TAILS: '0.5', MODEL_SKILL_W_TAILS_RISING: 'true', RS_LATENCY_MS: '500' },
-};
-
-/** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
-export const LATER: Record<string, Record<string, string>> = {
   // Round 6 (Nov 5, run 41939402599):
   // Round 6 (Nov 5): what are we getting wrong (Steven, Nov 1). Paper Oct 28 - Nov 3: buying the side priced under 30c
   // against a favourite lost most (15-min NO under 30c: 324 markets, -$211, 26% won; held audit c75809e). The model's
