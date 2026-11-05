@@ -54,6 +54,16 @@ export interface MatchMarket {
   /** The whole position's profit after fees if sold at the bid now, the entry fee in (the quota snipe's measure on every
    *  contract type, bot/strategy/fairValueStrategy.ts positionNetAtBid); undefined when flat or unknown. */
   netAtBid?: number;
+  /** The lowest price at which selling the whole position now nets at least zero after the taker exit fee, the entry fee in
+   *  (engine-computed from the book's cost and the series' fees); undefined when flat or unknown. The profit-taking exits
+   *  never sell below it: entry + 1 tick alone can realize a loss after fees (Steven: take profit after fees). */
+  breakEven?: number;
+}
+
+/** The lowest exit price that takes a profit: one tick over the entry and at or over the break-even after fees. */
+function profitFloor(m: MatchMarket, entry: number, tick: number): number {
+  const be = m.breakEven !== undefined && Number.isFinite(m.breakEven) ? Math.ceil(m.breakEven / tick - 1e-9) * tick : -Infinity;
+  return round(Math.max(entry + tick, be), 4);
 }
 
 export type MatchPhase = 'pre' | 'underdog_window' | 'live' | 'late' | 'done';
@@ -312,7 +322,7 @@ function huntExit(t: MatchTracker, m: MatchMarket, other: MatchMarket | undefine
     t.armed.add(m.ticker);
     t.armedAt.set(m.ticker, now);
   }
-  const floorPx = round(entry + tick, 4);
+  const floorPx = profitFloor(m, entry, tick);
   const sell = (why: string): TennisPlan[] => {
     const px = nextFillableExit(m, floorPx);
     if (px === undefined) { notes.push(`${leg}: exit wanted but bid ${bid} is not in profit; holding`); return []; }
@@ -506,9 +516,9 @@ function decideLegs(t: MatchTracker, s: MatchSnapshot, cfg: TennisConfig, budget
       plans.push({ ticker: ud.ticker, side: 'ask', price: ud.quote.bid, count: ud.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'underdog_cut', why: `match ${(prog * 100).toFixed(0)}% done: underdogs usually lose late, selling at ${ud.quote.bid}` });
       return { phase, plans, notes };
     }
-    if (prog >= cfg.underdogLateProgress && ud.quote.bid !== undefined && ud.quote.bid >= entry + tick - 1e-9) {
-      // Past the early phase: no more hunting, take the next available exit in profit.
-      const px = nextFillableExit(ud, round(entry + tick, 4));
+    if (prog >= cfg.underdogLateProgress && ud.quote.bid !== undefined && ud.quote.bid >= profitFloor(ud, entry, tick) - 1e-9) {
+      // Past the early phase: no more hunting, take the next available exit in profit after fees.
+      const px = nextFillableExit(ud, profitFloor(ud, entry, tick));
       if (px !== undefined) {
         plans.push({ ticker: ud.ticker, side: 'ask', price: round(px, 4), count: ud.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'underdog_late', why: `match ${(prog * 100).toFixed(0)}% done: taking the profit while the underdog is still ahead` });
         return { phase, plans, notes };

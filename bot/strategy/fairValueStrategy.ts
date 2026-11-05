@@ -158,6 +158,17 @@ export function positionNetAtBid(position: number, cost: number | undefined, bid
   return undefined;
 }
 
+/** The lowest price (to 0.1c) at which selling `count` contracts held at `cost` a contract (the entry fee in) nets at least
+ *  zero after the taker exit fee; undefined when no price under $1 does. */
+export function breakEvenExit(count: number, cost: number, fees?: FeeSchedule): number | undefined {
+  if (!(count > 0) || !Number.isFinite(cost)) return undefined;
+  for (let k = Math.max(1, Math.ceil(cost * 1000 - 1e-9)); k < 1000; k++) {
+    const p = k / 1000;
+    if (count * (p - cost) - orderFee(count, p, true, fees) >= -1e-9) return p;
+  }
+  return undefined;
+}
+
 /** The whole position's profit after fees if sold at its side's bid now (undefined: flat, no cost basis or no bid). The quota
  *  snipe's measure (bot/risk/quotaPacer.ts), shared with the engine's group judgement. */
 export function netProfitAtBid(v: MarketView): number | undefined {

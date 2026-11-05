@@ -10,6 +10,8 @@ import type { KalshiRest } from '../bot/kalshi/rest';
 import type { MarketInfo } from '../bot/kalshi/types';
 import { MarketData, Recorder } from '../bot/marketdata/marketData';
 import { OrderBook } from '../bot/marketdata/orderBook';
+import { breakEvenExit } from '../bot/strategy/fairValueStrategy';
+import { orderFee } from '../bot/fees';
 import { contractKind } from '../bot/model/fairValue';
 import { MetaModel } from '../bot/model/metaModel';
 import { Oms } from '../bot/oms/oms';
@@ -467,6 +469,22 @@ test('underdog window opens at most 30 minutes before the start; early entries g
   assert.equal(sized(T.earlyFullSizeMin), full, 'full size through the first minutes');
   const later = sized(T.entryWindowMin);
   assert.ok(later < full && later >= Math.floor(full * 0.5 * 100) / 100 - 0.01, `${later} vs ${full}`);
+});
+
+test('tennis profit exits never sell under the break-even after fees (entry + 1 tick can lose to the taker fee)', () => {
+  // 100 held at 0.15 with a 0.0023 maker entry fee each: at 0.16 the taker fee (0.95) beats the 0.77 gain, at 0.17 it does not.
+  const cost = 0.1523, be = breakEvenExit(100, cost)!;
+  assert.ok(be > 0.16 && be < 0.17, `break-even ${be}`);
+  assert.ok(100 * (0.16 - cost) - orderFee(100, 0.16, true) < 0 && 100 * (be - cost) - orderFee(100, be, true) >= -1e-9);
+  const run = (bid: number) => {
+    const tr = new MatchTracker('U', T);
+    tr.liveSince = t0; tr.underdogTicker = 'U-DOG';
+    tr.progress = () => 0.4;
+    const now = t0 + 30 * 60_000;
+    return decideMatch(tr, { event: 'U', now, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('U-FAV', 1 - bid - 0.02, 1 - bid), mkb('U-DOG', bid, bid + 0.02, 300, 100, now, { position: 100, avgEntry: 0.15, breakEven: be })] }, T, budget);
+  };
+  assert.equal(run(0.16).plans.length, 0, 'entry + 1c nets a loss after fees: hold');
+  assert.deepEqual([run(0.17).plans[0]?.leg, run(0.17).plans[0]?.price], ['underdog_late', 0.17]);
 });
 
 test('underdogs lose late: past 35% of the match take any profit, past 60% sell regardless', () => {
