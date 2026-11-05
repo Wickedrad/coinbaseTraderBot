@@ -991,7 +991,9 @@ export class Engine {
     };
   }
 
-  /** Share of equity locked in open binary positions until they settle (it cannot buffer perp margin). */
+  /** Share of the event-contract pool held in open binaries until they settle (max loss over event-contract equity). Perp
+   *  margin is a separate account in both modes (the margin subaccount live, PaperPerpExchange in paper), so this says nothing
+   *  about perp margin. PerpTrader uses it only to inflate its assumed volatility; SetupTrader ignores it on purpose (I116). */
   lockedFraction(): number {
     const eq = this.equity();
     if (!(eq && eq > 0)) return 0;
