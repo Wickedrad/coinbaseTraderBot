@@ -1514,7 +1514,8 @@ export class Engine {
       const book = md.book(m.ticker);
       if (!this.bookUsable(book, now)) continue;
       const b = book.bestBid(), a = book.bestAsk();
-      const net = positionNetAtBid(pos.yes, (pos.fees - pos.netCash) / pos.yes, b, a, md.feesFor(m.ticker));
+      // The open contracts' own cost, entry fee in (an earlier exit's profit is not counted again: bot/oms/positions.ts).
+      const net = positionNetAtBid(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, b, a, md.feesFor(m.ticker));
       if (!b || net === undefined || net > 1e-9) continue;
       this.killExitTs.set(m.ticker, now);
       const event = m.eventTicker ?? m.ticker.slice(0, m.ticker.lastIndexOf('-'));

@@ -328,7 +328,7 @@ test('engine: the quota snipe sells a tennis position whose profit after fees (e
 });
 
 test('engine: with the kill switch engaged a tennis position not in profit after fees is sold at the bid; one in profit is held', async () => {
-  const run = async (entry: number) => {
+  const run = async (entry: number, prior = false) => {
     const dir = tmpDir();
     const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false' });
     const now = Date.now();
@@ -353,6 +353,15 @@ test('engine: with the kill switch engaged a tennis position not in profit after
     const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: MetaModel.identity(), exchangeStatus: openExchange() });
     const r = await recon.run('startup');
     engine.balance = r!.balance;
+    const order = { ticker: 'KXATPMATCH-E1-FAV', asset: 'TENNIS', windowCloseTs: now + 6 * 3_600_000, timeInForce: 'immediate_or_cancel' as const, postOnly: false, fairValue: entry, modelId: 'm', decisionId: 'd' };
+    if (prior) {
+      // An earlier round trip on the same market: 50 bought at 0.70, sold at 0.86 (+$8.00 before fees).
+      md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: 0.68, size: 100 }], asks: [{ price: 0.7, size: 100 }] }, Date.now());
+      await oms.submit({ ...order, side: 'bid', price: 0.7, count: 50, reduceOnly: false, purpose: 'quote' });
+      md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: 0.86, size: 100 }], asks: [{ price: 0.88, size: 100 }] }, Date.now());
+      await oms.submit({ ...order, side: 'ask', price: 0.86, count: 50, reduceOnly: true, purpose: 'exit' });
+      assert.equal(oms.positions.position('KXATPMATCH-E1-FAV'), 0);
+    }
     // Bought on the paper exchange too (a reduce-only exit needs the position there): 50 at `entry`, then the book moves.
     md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: entry - 0.02, size: 100 }], asks: [{ price: entry, size: 100 }] }, Date.now());
     await oms.submit({ ticker: 'KXATPMATCH-E1-FAV', asset: 'TENNIS', windowCloseTs: now + 6 * 3_600_000, side: 'bid', price: entry, count: 50, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'quote', fairValue: entry, modelId: 'm', decisionId: 'd' });
@@ -375,6 +384,10 @@ test('engine: with the kill switch engaged a tennis position not in profit after
   const won = await run(0.7);
   assert.equal(won.position, 50);
   assert.equal(won.exits.length, 0);
+  // An earlier winning round trip on the market does not hide the open contracts' loss: they are judged on their own cost.
+  const again = await run(0.9, true);
+  assert.equal(again.position, 0, JSON.stringify(again));
+  assert.match(String(again.exits[0]?.why), /^kill switch engaged: -\$3\.\d\d after fees at bid 0\.84/);
 });
 
 import fs from 'fs';
