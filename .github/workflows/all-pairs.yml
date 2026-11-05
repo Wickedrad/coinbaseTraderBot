@@ -22,7 +22,7 @@ on:
         required: false
         default: 'base'
       arms:
-        description: 'Arms to run: base,stress,synth15,synth1h (base always runs)'
+        description: 'Arms to run: base,stress,tight,synth15,synth1h (base always runs)'
         required: false
         default: 'base,stress,synth15,synth1h'
       days:
@@ -52,6 +52,7 @@ jobs:
       matrix: ${{ steps.go.outputs.matrix }}
       report_run: ${{ steps.go.outputs.report_run }}
       diag: ${{ steps.go.outputs.diag }}
+      diag_only: ${{ steps.go.outputs.diag_only }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -83,7 +84,9 @@ jobs:
           CONFIGS=$(printf '%s' "$MSG" | sed -nE 's/.*\[config:([A-Za-z0-9_,-]+)\].*/\1/p' | head -1)
           CONFIGS=${CONFIGS:-$CONFIG_IN}
           if [ "$EVENT" = "workflow_dispatch" ] || printf '%s' "$MSG" | grep -qF '[all-pairs]'; then echo "study=true" >> "$GITHUB_OUTPUT"; else echo "study=false" >> "$GITHUB_OUTPUT"; fi
-          if printf '%s' "$MSG" | grep -qF '[all-pairs-diag]'; then echo "diag=true" >> "$GITHUB_OUTPUT"; else echo "diag=false" >> "$GITHUB_OUTPUT"; fi
+          # "[all-pairs-diag]" runs the whole data report, "[all-pairs-diag:tier]" only the tier report and keep_crossed gate.
+          if printf '%s' "$MSG" | grep -qE '\[all-pairs-diag(:tier)?\]'; then echo "diag=true" >> "$GITHUB_OUTPUT"; else echo "diag=false" >> "$GITHUB_OUTPUT"; fi
+          if printf '%s' "$MSG" | grep -qF '[all-pairs-diag:tier]'; then echo "diag_only=tier" >> "$GITHUB_OUTPUT"; else echo "diag_only=all" >> "$GITHUB_OUTPUT"; fi
           rr=$(printf '%s' "$MSG" | sed -nE 's/.*\[all-pairs-report:([0-9]+)\].*/\1/p' | head -1)
           echo "report_run=$rr" >> "$GITHUB_OUTPUT"
           # Per config: base folds over 4 jobs, stress and synth1h over 2, synth15 1; at most 5 jobs at once (the project
@@ -95,7 +98,7 @@ jobs:
           for c in configs:
               if not re.fullmatch(r'[A-Za-z0-9_-]+', c) or not os.path.exists(f'python/allpairs/hypotheses/{c}.json'):
                   sys.exit(f'unknown config {c!r}')
-          parts = {'base': 4, 'stress': 2, 'synth15': 1, 'synth1h': 2}
+          parts = {'base': 4, 'stress': 2, 'tight': 2, 'synth15': 1, 'synth1h': 2}
           inc = [{'config': c, 'arm': a, 'part': p, 'parts': n} for c in configs for a, n in parts.items() if a in want for p in range(n)]
           print('matrix=' + json.dumps({'include': inc}))
           EOF
@@ -122,12 +125,13 @@ jobs:
       - name: Data-quality report of the Kalshi candles
         env:
           GH_TOKEN: ${{ github.token }}
+          DIAG_ONLY: ${{ needs.test.outputs.diag_only }}
         run: |
           set -euo pipefail
           args=()
           for a in ${ASSETS//,/ }; do [ "$a" = "DOGE" ] || args+=(--include "/kalshi/KX${a}15M/*.jsonl"); done
           bash deploy/drive_lab.sh get raw/history data/history "${args[@]}"
-          (cd python && python -W ignore -m allpairs.diag --history ../data/history --assets "$ASSETS") | tee "$RUNNER_TEMP/diag.txt"
+          (cd python && python -W ignore -m allpairs.diag --history ../data/history --assets "$ASSETS" --only "${DIAG_ONLY:-all}") | tee "$RUNNER_TEMP/diag.txt"
           { echo "All-pairs data diagnostics, run ${{ github.run_id }}"; echo; echo '```'; cut -c1-700 "$RUNNER_TEMP/diag.txt"; echo '```'; } > "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
 

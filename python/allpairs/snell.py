@@ -91,6 +91,7 @@ class ExitConfig:
     maker_exits: bool = True
     rows_per_fit: int = 200_000
     seed: int = 7
+    policy: str = 'learned'       # 'learned' | 'naive': hold, sell only where the settlement rule forces it (no exit model)
     lgb_params: dict = field(default_factory=lambda: dict(n_estimators=150, learning_rate=0.05, num_leaves=31, min_child_samples=200,
                                                           subsample=0.8, subsample_freq=1, colsample_bytree=0.8, reg_lambda=1.0))
 
@@ -153,6 +154,8 @@ def solve_exits(book: Book, X: np.ndarray, pos: Positions, costs: Costs, cfg: Ex
     """Backward induction over k = N-1 .. 1. With `models` (from a training set) the policy is applied as fitted;
     otherwise it is fitted here with 2-fold cross-fitting over `groups` (per window, 0/1), each half's decisions made by
     the model fitted on the other half. The returned models are both halves' (averaged when applied elsewhere)."""
+    if cfg.policy not in ('learned', 'naive'):
+        raise ValueError(f'exit policy {cfg.policy!r}')
     N = book.n
     P = len(pos)
     rng = np.random.default_rng(cfg.seed)
@@ -191,26 +194,32 @@ def solve_exits(book: Book, X: np.ndarray, pos: Positions, costs: Costs, cfg: Ex
             forced = ~in_profit & has_T
             allow_H &= ~forced; allow_M &= ~forced
         Yk1 = Y[alive]
-        rM = np.where(fill, aM, Yk1)
-        Z = state_features(X, pos, alive, k, aT)
-        if fit_here:
-            hold_m, mk_m = [], []
+        dT, dM = allow_T, allow_M        # actions the policy may choose; allow_* stay intact for the hindsight bound below
+        if cfg.policy == 'naive':
+            dT = allow_T & ~allow_H      # only the forced final-minute sale (allow_H is False only there)
+            dM = np.zeros_like(allow_M)
             pred_H = np.zeros(len(alive)); pred_M = np.zeros(len(alive))
-            for half in (0, 1):
-                tr = g[alive] == half
-                te = ~tr
-                mh = _fit(Z[tr], Yk1[tr], cfg, rng)
-                trm = tr & has_M
-                mm = _fit(Z[trm], rM[trm], cfg, rng) if cfg.maker_exits else _Mean([])
-                hold_m.append(mh); mk_m.append(mm)
-                pred_H[te] = mh.predict(Z[te]) if te.any() else 0
-                pred_M[te] = mm.predict(Z[te]) if te.any() else 0
-            out_models[k] = (hold_m, mk_m)
         else:
-            hold_m, mk_m = out_models[k]
-            pred_H = _predict(hold_m, Z)
-            pred_M = _predict(mk_m, Z) if cfg.maker_exits else np.zeros(len(alive))
-        vals = np.stack([np.where(allow_T, aT, -np.inf), np.where(allow_M, pred_M, -np.inf), np.where(allow_H, pred_H, -np.inf)], axis=1)
+            rM = np.where(fill, aM, Yk1)
+            Z = state_features(X, pos, alive, k, aT)
+            if fit_here:
+                hold_m, mk_m = [], []
+                pred_H = np.zeros(len(alive)); pred_M = np.zeros(len(alive))
+                for half in (0, 1):
+                    tr = g[alive] == half
+                    te = ~tr
+                    mh = _fit(Z[tr], Yk1[tr], cfg, rng)
+                    trm = tr & has_M
+                    mm = _fit(Z[trm], rM[trm], cfg, rng) if cfg.maker_exits else _Mean([])
+                    hold_m.append(mh); mk_m.append(mm)
+                    pred_H[te] = mh.predict(Z[te]) if te.any() else 0
+                    pred_M[te] = mm.predict(Z[te]) if te.any() else 0
+                out_models[k] = (hold_m, mk_m)
+            else:
+                hold_m, mk_m = out_models[k]
+                pred_H = _predict(hold_m, Z)
+                pred_M = _predict(mk_m, Z) if cfg.maker_exits else np.zeros(len(alive))
+        vals = np.stack([np.where(dT, aT, -np.inf), np.where(dM, pred_M, -np.inf), np.where(allow_H, pred_H, -np.inf)], axis=1)
         act = np.argmax(vals, axis=1)
         none = ~np.isfinite(vals.max(axis=1))   # nothing allowed (no bid, not in profit, final): settles
         act[none] = H_

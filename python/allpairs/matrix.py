@@ -38,6 +38,9 @@ class Costs:
     # RISK_MAX_CONTRACTS_PER_ORDER (250). 0 turns either bound off (the engine's own default, for tests).
     min_side_price: float = 0.0
     max_contracts: int = 0
+    # No entry where the side's book is wider than this (dollars; 0 = off). The 'tight' arm sets 0.10: an edge that lives
+    # only on wide books (a 1c bid / 99c ask has a meaningless mid) is not an edge the bot can take (SNN thread, Nov 5).
+    max_spread: float = 0.0
 
 
 def maker_fills(bid, ask, nbl, nbh, nal, nah, strict: bool):
@@ -63,6 +66,10 @@ def entry_legs(bid, ask, fill_buy, c: Costs):
     with np.errstate(invalid='ignore'):
         ok_T = np.isfinite(ask) & (ask > 0) & (pa < 1) & (pa >= lo) & (pa <= hi)
         ok_M = np.isfinite(bid) & (bid > 0) & (bid < 1) & (bid >= lo) & (bid <= hi) & fill_buy
+        if c.max_spread > 0:
+            tight = (ask - bid) <= c.max_spread + EPS      # NaN (no two-sided book) compares False
+            ok_T &= tight
+            ok_M &= tight
     C_T = _cap(contracts_for_stake(c.stake, np.where(ok_T, pa, np.nan)), c)
     cost_T = np.where(ok_T, pa + taker_fee(C_T, np.where(ok_T, pa, 0.5), c.taker_mult, c.precision) / np.maximum(C_T, 1), np.nan)
     C_M = _cap(contracts_for_stake(c.stake, np.where(ok_M, bid, np.nan)), c)

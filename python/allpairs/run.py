@@ -26,7 +26,8 @@ import numpy as np
 from . import DEFAULT_ASSETS, EXCLUDED_ASSETS
 from .data import MIN, Windows, allowed_assets, load_kalshi, load_spot
 from .features import BASE_NAMES, cross_at, side_quotes, spot_at, spot_features, window_features
-from .matrix import Costs, all_pairs
+from .fees import contracts_for_stake, taker_fee
+from .matrix import Costs, _cap, all_pairs
 from .policy import EntryConfig, entry_rows, fit_entry, maker_attempts, pnl_stats, random_entry_placebo, simulate
 from .snell import STATE_EXTRA, Book, ExitConfig, build_positions, solve_exits
 from .synthetic import calibrate, hourly_windows, price_windows
@@ -61,6 +62,8 @@ DEFAULTS = {
 ARMS = {
     'base': {},
     'stress': {'costs': {'slip': 0.01, 'taker_mult': 1.25, 'maker_mult': 1.0, 'strict_maker': True}, 'placebo': {'shuffles': 0}},
+    # Robustness: no entry on a book wider than 10c (a lead must survive it; SNN thread's ladder-strike finding, Nov 5).
+    'tight': {'costs': {'max_spread': 0.10}, 'placebo': {'shuffles': 0}},
     'placebo': {'placebo': {'shuffles': 3}},
     'synth15': {'kind': 'synth15', 'placebo': {'shuffles': 0}},
     'synth1h': {'kind': 'synth1h', 'exit': {'rows_per_fit': 100_000}, 'placebo': {'shuffles': 0}},
@@ -108,6 +111,19 @@ def shap_top(model, X: np.ndarray, names: list[str], top: int = 12, rows: int = 
     return [[names[j], round(float(imp[j]), 4)] for j in order]
 
 
+def fair_edge_value(rows: dict, book, names: list[str], costs: Costs) -> np.ndarray:
+    """C x (fair - ask - slip - taker fee per contract) of every taker row: the entry's expected settlement P&L if the
+    zero-drift digital (features 'fair', side-signed) is right, sized and charged as matrix.entry_legs from the float64
+    book. Maker rows -inf (never entered by this rule)."""
+    w_, s_, i_ = rows['w'], rows['s'], rows['i']
+    pa = book.ask[w_, s_, i_] + costs.slip
+    with np.errstate(invalid='ignore'):
+        C = _cap(contracts_for_stake(costs.stake, pa), costs)
+        fee = taker_fee(C, np.where(np.isfinite(pa), pa, 0.5), costs.taker_mult, costs.precision) / np.maximum(C, 1)
+        e = C * (rows['X'][:, names.index('fair')].astype(np.float64) - pa - fee)
+    return np.where((rows['mode'] == 0) & np.isfinite(e), e, -np.inf)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--history', default='data/history')
@@ -132,12 +148,21 @@ def main(argv=None):
         log(f'assets excluded by rule: {",".join(dropped)} (DOGE is not used at all)')
     costs = Costs(**cfg['costs'])
     xcfg = ExitConfig(end_rule=cfg['exit']['end_rule'], end_frac=cfg['exit']['end_frac'], maker_exits=cfg['exit']['maker_exits'],
-                      rows_per_fit=cfg['exit']['rows_per_fit'])
+                      rows_per_fit=cfg['exit']['rows_per_fit'], policy=cfg['exit'].get('policy', 'learned'))
     ecfg = EntryConfig(hurdles=tuple(cfg['entry']['hurdles']), rows_per_fit=cfg['entry']['rows_per_fit'])
     walk = cfg['walk']
+    decision = cfg['entry'].get('decision', 'model')   # read with .get, never a DEFAULTS key (config_hash)
+    if decision not in ('model', 'fair_edge'):
+        raise SystemExit(f'entry.decision {decision!r}')
 
     # ---- data
-    real = load_kalshi(a.history, assets, n=15, log=log)
+    # Sealed lockbox days (whole UTC days) are never read: their day files are not opened (load_kalshi skip_days).
+    import datetime as _dt
+    ms = lambda x: int(_dt.datetime.fromisoformat(x).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000)
+    sealed_days = set()
+    for lo_s, hi_s in cfg.get('exclude_utc') or []:
+        sealed_days |= set(range(ms(lo_s) // 86_400_000, (ms(hi_s) - 1) // 86_400_000 + 1))
+    real = load_kalshi(a.history, assets, n=15, log=log, skip_days=sealed_days)
     if a.days:
         cut = real.open_ms.max() - a.days * 86_400_000
         real = real.subset(np.nonzero(real.open_ms >= cut)[0])
@@ -177,11 +202,6 @@ def main(argv=None):
         log(f'windows with crossed/locked quotes (> {cfg["max_crossed"]} minutes, left out of training only), by month: {by_m}')
         clean &= ~bad
     # Sealed spans (the lockbox) leave out every UTC day they touch, whole, for every arm: no partial day in a fold.
-    import datetime as _dt
-    ms = lambda x: int(_dt.datetime.fromisoformat(x).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000)
-    sealed_days = set()
-    for lo_s, hi_s in cfg.get('exclude_utc') or []:
-        sealed_days |= set(range(ms(lo_s) // 86_400_000, (ms(hi_s) - 1) // 86_400_000 + 1))
 
     def unsealed(win) -> np.ndarray:
         ok = ~np.isin(win.day, sorted(sealed_days))
@@ -279,6 +299,7 @@ def main(argv=None):
         f_idx = np.nonzero(np.isin(days, fit_d) & trainable)[0]
         v_idx = np.nonzero(np.isin(days, val_d))[0]
         rows_fit = rows_val = None
+        eq_val = None
         if len(f_idx) and len(v_idx):
             bf, bv = sub_book(f_idx), sub_book(v_idx)
             pf = build_positions(bf, costs, cfg['entry']['maker_entries'], entry_minutes)
@@ -287,14 +308,22 @@ def main(argv=None):
             pv_ = build_positions(bv, costs, cfg['entry']['maker_entries'], entry_minutes)
             xv = solve_exits(bv, X[v_idx], pv_, costs, xcfg, models=xf.models)
             rows_val = entry_rows(X[v_idx], pv_, xv.pnl(pv_), maker_attempts(bv.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None)
+            tkv = pv_.mode == 0   # exit quality on the inner validation span (exit models fitted on fit days only; no test outcome)
+            eq_val = {name: [float(np.nansum(v[tkv])), int(np.isfinite(v[tkv]).sum())]
+                      for name, v in (('policy', xv.pnl(pv_)), ('naive', xv.pnl(pv_, 'naive')), ('oracle', xv.pnl(pv_, 'oracle')))}
+            if decision == 'fair_edge':
+                rows_val['fe'] = fair_edge_value(rows_val, bv, names, costs)
             del xf, xv, pf, pv_
 
         def pick_hurdle(shuffle=None):
             if rows_val is None or not len(rows_val['y']) or not len(rows_fit['y']):
                 return ecfg.hurdles[0], {}
-            mdl = fit_entry(rows_fit, ecfg, shuffle_rng=shuffle)
             vrows = rows_val
-            pv = mdl.predict(vrows['X'])
+            if decision == 'fair_edge' and shuffle is None:
+                pv = vrows['fe']
+            else:
+                mdl = fit_entry(rows_fit, ecfg, shuffle_rng=shuffle)
+                pv = mdl.predict(vrows['X'])
             scores = {}
             for h in ecfg.hurdles:
                 ch = simulate(vrows, pv, h, entry_minutes)
@@ -303,15 +332,23 @@ def main(argv=None):
             return best, scores
 
         hurdle, val_scores = pick_hurdle()
-        emodel = fit_entry(rows_tr, ecfg)
+        emodel = fit_entry(rows_tr, ecfg) if decision == 'model' else None
         # Out of sample: exits by the training span's models, entries by its entry model.
         pte = build_positions(bte, costs, cfg['entry']['maker_entries'], entry_minutes)
         xe = solve_exits(bte, Xte, pte, costs, xcfg, models=xr.models)
         pnl_te = xe.pnl(pte)
         att_te = maker_attempts(bte.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None
         rows_te = entry_rows(Xte, pte, pnl_te, att_te)
-        pred = emodel.predict(rows_te['X'])
+        pred = emodel.predict(rows_te['X']) if emodel is not None else fair_edge_value(rows_te, bte, names, costs)
         chosen = simulate(rows_te, pred, hurdle, entry_minutes)
+        # Diagnostics only (no decision reads them): the chosen trades re-scored under the naive exit, P(settle YES) of the
+        # training pool and of the test windows, and the mean entry prediction by side over every test row (hurdle-free).
+        y_naive = entry_rows(Xte[..., :1], pte, xe.pnl(pte, 'naive'), att_te)['y']
+        fin = np.isfinite(pred)
+        diag = dict(naive_exit_pnl=round(float(y_naive[chosen].sum()), 2),
+                    p_yes=[round(float(btr.settle[:, 0].mean()), 4), round(float(bte.settle[:, 0].mean()), 4)],
+                    pred_by_side=[round(float(pred[(rows_te['s'] == s_) & fin].mean()), 4) if np.any((rows_te['s'] == s_) & fin) else None
+                                  for s_ in (0, 1)])
         # Hour slots of the test days that have data (te_days, sorted): a gap in the history does not shift the series.
         n_hours = len(te_days) * 24
         wsel = rows_te['w'][chosen]
@@ -344,12 +381,12 @@ def main(argv=None):
                           val_per_hour={str(k): round(v, 3) for k, v in val_scores.items()}, oos=st, n_hours=n_hours,
                           random_placebo=[round(float(x), 4) for x in rp], shuffled_per_hour=[round(x, 4) for x in shuf],
                           train_positions=len(ptr), test_positions=len(pte), seconds=round(time.time() - t_f),
-                          hourly=[round(float(x), 4) for x in series], exit_quality=eq,
+                          hourly=[round(float(x), 4) for x in series], exit_quality=eq, val_exit_quality=eq_val, diag=diag,
                           trades={k: [round(float(x), 5) if isinstance(x, (float, np.floating)) else int(x) for x in np.asarray(v).tolist()] for k, v in trades.items()}))
         log(f'fold {fi}: test {te_days[0]}..{te_days[-1]} hurdle {hurdle}: {st["trades"]} trades {st["per_hour"]:+.2f} $/h '
             f'(random {np.median(rp):+.2f}, shuffled {[round(x, 2) for x in shuf]}) [{time.time() - t_f:.0f} s]')
         if fi == last_fold:
-            shap_entry = shap_top(emodel, rows_te['X'], entry_names)
+            shap_entry = shap_top(emodel, rows_te['X'], entry_names) if emodel is not None else []
             kmid = N // 2
             if kmid in xr.models:
                 from .matrix import exit_taker

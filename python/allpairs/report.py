@@ -90,6 +90,7 @@ def gate(arms: dict, ledger: list, champion: dict | None, run: str = '') -> dict
     shuffled = pl.get('shuffled_per_hour') or []
     rand95 = pl.get('random_per_hour_p95')
     stress = arms.get('stress', {}).get('oos', {}).get('per_hour')
+    tight = arms.get('tight', {}).get('oos', {}).get('per_hour')
     folds = base.get('folds', [])
     suspect = [f for f in folds if (f.get('random_placebo_median') or 0) > 0]
     missing = {name: dict(parts_missing=r.get('parts_missing') or [], folds=len(r.get('folds', [])), folds_expected=r.get('folds_expected'))
@@ -97,7 +98,7 @@ def gate(arms: dict, ledger: list, champion: dict | None, run: str = '') -> dict
                if r.get('parts_missing') or (r.get('folds_expected') is not None and len(r.get('folds', [])) < r['folds_expected'])}
     checks = {
         # Every fold of the gated arms scored: a missing part would score a cherry-picked subset of the history.
-        'complete': not any(k in missing for k in ('base', 'stress')),
+        'complete': not any(k in missing for k in ('base', 'stress', 'tight')),
         # Canary: random entries must lose money after fees and spread; a fold where they win has broken data.
         'random_entries_lose': not suspect and (pl.get('random_per_hour_median') is None or pl['random_per_hour_median'] <= 0),
         'target': o['per_hour'] >= TARGET,
@@ -106,6 +107,8 @@ def gate(arms: dict, ledger: list, champion: dict | None, run: str = '') -> dict
         'beats_shuffled': bool(shuffled) and o['per_hour'] > max(shuffled),
         'beats_random_p95': rand95 is not None and o['per_hour'] > rand95,
         'stress_profitable': stress is not None and stress > 0,
+        # A lead must survive dropping books wider than 10c; not run counts as not passed.
+        'tight_profitable': tight is not None and tight > 0,
         'beats_champion': champion is None or o['per_hour'] > float(champion.get('per_hour', -1e9)),
     }
     return dict(passed=all(checks.values()), checks=checks, dsr=d, n_trials=n_trials, sr_var=sr_var, incomplete=missing,
@@ -132,8 +135,9 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '') -> str:
     L.append('| Arm | $/h OOS | Trades | CI95 | Note |')
     L.append('|---|---|---|---|---|')
     notes = {'base': 'real 15m Kalshi quotes', 'stress': '+1c every taker leg, maker fee, strict maker fills', 'placebo': 'same + shuffled-label refits',
-             'synth15': 'real windows, synthetic quotes (pricer fidelity)', 'synth1h': 'synthetic hourly (not gated)'}
-    for name in ('base', 'stress', 'placebo', 'synth15', 'synth1h'):
+             'synth15': 'real windows, synthetic quotes (pricer fidelity)', 'synth1h': 'synthetic hourly (not gated)',
+             'tight': 'no entry on a book wider than 10c'}
+    for name in ('base', 'stress', 'tight', 'placebo', 'synth15', 'synth1h'):
         r = arms.get(name)
         if not r:
             continue

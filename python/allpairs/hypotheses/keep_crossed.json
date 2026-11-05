@@ -1,0 +1,5 @@
+{
+  "name": "keep_crossed",
+  "notes": "Training keeps windows with crossed/locked recorded minutes (max_crossed 0 -> 99: never drops; a window counts at most 14). Those minutes stay untradeable (data.market_to_rows: no two-sided book = no quote; maker fills need candle k+1 to trade and close on a book), and validation/test windows were already kept whole, so only the training-window selection changes. Historical-tier storage turns only an empty ask ($1.00) into $0.01 and a minute counts as crossed only with bid > 0, so the drop can remove YES-settling windows from training only (an outcome-selected training set that over-values NO). Gate fixed before running (outcomes only, no P&L, windows opening 2026-04-18..2026-06-16, never scored out of sample): dropped windows' P(settle YES) exceeds kept windows' by >= 5 points AND the trainable pool's P(YES) is >= 1 point below all windows'. One value, no sweep. If the gate passes this is a training-data correctness fix, adopted as the engine default whatever this run's out-of-sample result.",
+  "max_crossed": 99
+}

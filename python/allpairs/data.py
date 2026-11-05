@@ -198,9 +198,21 @@ def market_to_rows(m: dict, n: int, max_stale: int = 0):
     return bid, ask, blo, bhi, alo, ahi, kvol, real / max(1, n - 1), o, n_crossed
 
 
+def _file_day(fn: str):
+    """UTC day number of a day file named YYYY-MM-DD.jsonl, or None."""
+    import datetime as _dt
+    try:
+        return (_dt.date.fromisoformat(fn[:10]) - _dt.date(1970, 1, 1)).days
+    except ValueError:
+        return None
+
+
 def load_kalshi(history_dir: str, assets, n: int = 15, series_fmt: str = 'KX{asset}15M', from_ms: int | None = None,
-                to_ms: int | None = None, log=print) -> Windows:
+                to_ms: int | None = None, log=print, skip_days=None) -> Windows:
+    """skip_days: UTC day numbers (days since 1970) that are never read: a day file named YYYY-MM-DD.jsonl for one of
+    them is not opened, and a market opening on one of them is dropped before it is parsed (the sealed lockbox)."""
     assets = allowed_assets(assets)
+    skip_days = set(int(x) for x in (skip_days or ()))
     rows = {k: [] for k in ('asset', 'open', 'strike', 'settle', 'bid', 'ask', 'blo', 'bhi', 'alo', 'ahi', 'kvol', 'real', 'ticker', 'crossed')}
     for ai, a in enumerate(assets):
         d = os.path.join(history_dir, 'kalshi', series_fmt.format(asset=a))
@@ -210,6 +222,8 @@ def load_kalshi(history_dir: str, assets, n: int = 15, series_fmt: str = 'KX{ass
         kept = skipped = longer = crossed_w = 0
         for fn in sorted(os.listdir(d)):
             if not fn.endswith('.jsonl'):
+                continue
+            if skip_days and _file_day(fn) in skip_days:
                 continue
             with open(os.path.join(d, fn), encoding='utf8') as fh:
                 for line in fh:
@@ -221,6 +235,8 @@ def load_kalshi(history_dir: str, assets, n: int = 15, series_fmt: str = 'KX{ass
                     except json.JSONDecodeError:
                         continue
                     if (from_ms is not None and m.get('openTime', 0) < from_ms) or (to_ms is not None and m.get('openTime', 0) >= to_ms):
+                        continue
+                    if skip_days and int(m.get('openTime', 0)) // 86_400_000 in skip_days:
                         continue
                     r = market_to_rows(m, n)
                     strike = _f_strike(m.get('strike'))

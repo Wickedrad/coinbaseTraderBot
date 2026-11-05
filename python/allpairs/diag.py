@@ -24,7 +24,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--history', default='data/history')
     ap.add_argument('--assets', default='BTC,ETH,SOL,XRP')
+    ap.add_argument('--only', default='all', choices=('all', 'tier'), help="'tier': only the tier report and the keep_crossed gate")
     a = ap.parse_args(argv)
+    if a.only == 'tier':
+        tier_report(a.history, allowed_assets(a.assets.split(',')))
+        return
     st = defaultdict(lambda: defaultdict(float))
     examples = []
     wk = defaultdict(lambda: [0, 0])
@@ -182,6 +186,56 @@ def calibration(history: str, assets: list[str], live_from: str = '2026-09-12'):
         print(f'{tier} min {k:2d}: {f(0)} | {f(1)} | {f(2)} | {f(3)}')
     for t in top:
         print('big one-minute winner', json.dumps(t)[:690])
+
+
+def tier_report(history: str, assets: list[str], live_from: str = '2026-09-12', gate_to: str = '2026-06-17'):
+    """Historical vs live tier (no P&L, no model): quote coverage, spread, volume, maker-fill rate, crossed windows and the
+    settle rate of the windows the training filter drops (max_crossed 0). Then the keep_crossed gate, fixed before any
+    run (workflow wf_7de383f8-2f4, Nov 5): on windows opening before gate_to (Apr 18 - Jun 16, never scored out of sample),
+    the dropped windows' P(settle YES) exceeds the kept windows' by >= 5 points AND the training pool's P(YES) is >= 1
+    point below all windows'. Outcome rates only. The sealed lockbox (Nov 6-13) is never read."""
+    import datetime as dt
+    from .data import load_kalshi
+    from .features import side_quotes
+    from .matrix import maker_fills
+    day = lambda s: (dt.date.fromisoformat(s) - dt.date(1970, 1, 1)).days
+    ms = lambda s: day(s) * 86_400_000
+    sealed = set(range(day('2026-11-06'), day('2026-11-13') + 1))
+    w = load_kalshi(history, assets, n=15, to_ms=ms('2026-11-06'), log=lambda *_: None, skip_days=sealed)
+    if not len(w):
+        print('tier report: no windows')
+        return
+    live = w.open_ms >= ms(live_from)
+    bid, ask, nbl, nbh, nal, nah, settle = side_quotes(w)
+    fb, fs = maker_fills(bid, ask, nbl, nbh, nal, nah, False)
+    book = np.isfinite(w.bid) & np.isfinite(w.ask)
+    bad = w.crossed > 0
+    lowcov = w.real_frac < 0.8
+    q = lambda x, p: float(np.nanpercentile(x, p)) if np.isfinite(x).any() else float('nan')
+    rate = lambda m: float(w.settle[m].mean()) if m.any() else float('nan')
+    print('\n== Tier report (historical tier before %s, live tier from it; lockbox never read)' % live_from)
+    for name, sel in (('historical', ~live), ('live', live)):
+        if not sel.any():
+            print(f'{name}: no windows')
+            continue
+        sp = (w.ask - w.bid)[sel][:, 1:]
+        kv = w.kvol[sel][:, 1:]
+        has = book[sel][:, :-1]
+        print(f'{name}: {int(sel.sum())} windows, P(settle YES) {rate(sel):.3f}; two-sided book share minutes 1-14 '
+              f'{np.round(book[sel][:, 1:].mean(axis=0), 2).tolist()}')
+        print(f'  spread p10/p50/p90 {q(sp, 10):.3f}/{q(sp, 50):.3f}/{q(sp, 90):.3f}; volume/min p50/p90 {q(kv, 50):.0f}/{q(kv, 90):.0f}; '
+              f'zero-volume minutes {np.mean(kv == 0):.3f}')
+        print(f'  maker fill rate given a book: YES buy {fb[sel][:, 0, :-1][has].mean():.3f}, NO buy {fb[sel][:, 1, :-1][has].mean():.3f}, '
+              f'YES sell {fs[sel][:, 0, :-1][has].mean():.3f}, NO sell {fs[sel][:, 1, :-1][has].mean():.3f}')
+        print(f'  windows with crossed minutes (dropped from training): {bad[sel].mean():.3f}, P(YES) dropped {rate(sel & bad):.3f} '
+              f'vs kept {rate(sel & ~bad):.3f}; coverage < 0.8: {lowcov[sel].mean():.3f}; training pool P(YES) '
+              f'{rate(sel & ~bad & ~lowcov):.3f} vs all {rate(sel):.3f}')
+    g = w.open_ms < ms(gate_to)
+    d_drop, d_kept = rate(g & bad), rate(g & ~bad)
+    d_pool, d_all = rate(g & ~bad & ~lowcov), rate(g)
+    ok = (d_drop - d_kept >= 0.05) and (d_all - d_pool >= 0.01)
+    print(f'GATE keep_crossed (windows before {gate_to}: {int(g.sum())}, {int((g & bad).sum())} dropped): P(YES) dropped {d_drop:.4f} vs kept '
+          f'{d_kept:.4f} (needs +0.05), training pool {d_pool:.4f} vs all {d_all:.4f} (needs -0.01): {"PASS" if ok else "FAIL"}')
 
 
 if __name__ == '__main__':
