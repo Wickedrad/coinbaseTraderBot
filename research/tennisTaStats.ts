@@ -263,7 +263,8 @@ function fmtP(p: number): string {
   if (!Number.isFinite(p)) return '-';
   return p !== 0 && p < 1e-3 ? p.toExponential(1) : p.toFixed(3);
 }
-const cell = (s: string) => s.replace(/\|/g, '\\|');
+/** A markdown table cell: backslashes first, then the pipes. */
+const cell = (s: string) => s.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Family B
