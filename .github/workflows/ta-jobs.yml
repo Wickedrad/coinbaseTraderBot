@@ -32,6 +32,8 @@ env:
   TJ_DAYS: ${{ inputs.days || '240' }}
   # Steven (Nov 5): no DOGE in any replay, sweep or score until he says otherwise.
   HISTORY_REPLAY_ASSETS: 'BTC,ETH,SOL,XRP'
+  # The replay leaves DOGE out by default (research/replay.ts, #265); set here so this workflow never trades it.
+  REPLAY_EXCLUDE: 'DOGE'
   # Each variant replays its days in two halves on two runners (one would pass GitHub's 6-hour job limit); the report adds
   # them together. Steven (Nov 1): history iterations must be deep on days and cover several market regimes.
   TJ_PARTS: '2'
@@ -156,7 +158,7 @@ jobs:
           node --import tsx research/randomSweep.ts days --replay data/history-replay --out data/sweep-days --days "$TJ_DAYS" --part "${{ matrix.part }}/$TJ_PARTS"
           if [ -f data/sweep-env/train.env ]; then set -a; . data/sweep-env/train.env; set +a; echo "server settings: $(wc -l < data/sweep-env/train.env) line(s)"; else echo "no server settings cached: the bot's defaults"; fi
           cp -rn data/sweep-env/history/. data/history/ 2>/dev/null || true
-          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper RS_PROBATION_FILE="$GITHUB_WORKSPACE/data/sweep-env/probation.json" RS_TRIALS_FILE="$GITHUB_WORKSPACE/data/sweep-env/component_trials.json"
+          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper RS_TRIALS_FILE="$GITHUB_WORKSPACE/data/sweep-env/component_trials.json"
           echo "model: $([ -f data/models/model.json ] && echo "the server's" || echo identity)"
           node --import tsx research/taJobs.ts run --part "p${{ matrix.part }}" --variant "${{ matrix.variant }}" --days data/sweep-days --model data/models/model.json --out research/out/ta-jobs \
             $([ "${{ matrix.variant }}" = baseline ] && echo --entry-log) 2>&1 | grep -E '^\[ta-jobs\]|Error|error' | head -20
@@ -217,7 +219,7 @@ jobs:
           node --import tsx research/randomSweep.ts days --replay data/history-replay --out data/sweep-days --days "$TJ_DAYS"
           if [ -f data/sweep-env/train.env ]; then set -a; . data/sweep-env/train.env; set +a; echo "server settings: $(wc -l < data/sweep-env/train.env) line(s)"; else echo "no server settings cached: the bot's defaults"; fi
           cp -rn data/sweep-env/history/. data/history/ 2>/dev/null || true
-          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper RS_PROBATION_FILE="$GITHUB_WORKSPACE/data/sweep-env/probation.json" RS_TRIALS_FILE="$GITHUB_WORKSPACE/data/sweep-env/component_trials.json"
+          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper RS_TRIALS_FILE="$GITHUB_WORKSPACE/data/sweep-env/component_trials.json"
           echo "model: $([ -f data/models/model.json ] && echo "the server's" || echo identity)"
           node --import tsx research/taJobs.ts train-gate --days data/sweep-days --out research/out/ta-jobs $([ -n "$TJ_SPLIT" ] && echo --split "$TJ_SPLIT") 2>&1 | grep -E '^\[ta-jobs\]|Error' | head -10
           rm -f research/out/ta-jobs/baseline*.json research/out/ta-jobs/baseline*.entries.jsonl

@@ -62,6 +62,9 @@ export interface StrategyConfig {
   series: string[];
   /** Series that are recorded (books, trades, lifecycle, results) for research but never priced or traded (RECORD_SERIES). */
   recordSeries: string[];
+  /** Series that are recorded but never priced or traded, by pattern (STRATEGY_EXCLUDE_SERIES; Steven, Nov 5: no DOGE
+   *  until the rest of the bot performs, then DOGE is trained again: STRATEGY_EXCLUDE_SERIES= trades it again). */
+  excludeSeries?: RegExp;
   /** Cap on simultaneously tracked record-only markets. */
   recordMaxMarkets: number;
   /** Discover every priceable crypto 15-minute / hourly series from the exchange (STRATEGY_SERIES=auto). */
@@ -1100,6 +1103,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     series,
     seriesAuto,
     recordSeries: (env.RECORD_SERIES ?? '').split(',').map((x) => x.trim()).filter(Boolean),
+    excludeSeries: (() => { const v = (env.STRATEGY_EXCLUDE_SERIES ?? 'DOGE').trim(); return v ? new RegExp(v) : undefined; })(),
     recordMaxMarkets: num(env, 'RECORD_MAX_MARKETS', 150, 1, 2000),
     kellyFraction: num(env, 'STRATEGY_KELLY_FRACTION', 0.25, 0.01, 0.5),
     portfolioKelly: bool(env, 'PORTFOLIO_KELLY', true),
@@ -1152,7 +1156,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     profitGiveBack: num(env, 'PROFIT_GIVE_BACK', 1 / 3, 0, 1),
     // The owner, Oct 24: the take-profit goes on the exit curve's scoreboard and bench (it sold winners for $230 less
     // than holding them on Oct 23-24).
-    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', true),
+    // Off by default (Steven, Oct 31 and Nov 4): nothing is held to settlement unless in profit in the last share of the window, so a
+    // bad score never turns the take-profit off; the bench keeps scoring and reports what it would have called.
+    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', false),
     cadence,
     evalBarSec: num(env, 'STRATEGY_EVAL_BAR_SEC', 60, 5, 600),
     evalFvMove: num(env, 'STRATEGY_EVAL_FV_MOVE', 0.015, 0.001, 0.2),
@@ -1243,7 +1249,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     takeMidGate: (env.TAKE_MID_GATE ?? '').trim(),
     takeMidMargin: num(env, 'TAKE_MID_MARGIN', 0, 0, 0.2),
     takeMidFlip: bool(env, 'TAKE_MID_FLIP', false),
-    taVeto: { ofi: optNum(env, 'TA_VETO_OFI', -100, 100), conf: optNum(env, 'TA_VETO_CONF', -50, 50), intensity: optNum(env, 'TA_VETO_INTENSITY', 0, 50), min: num(env, 'TA_VETO_MIN', 1, 1, 3), reverse: bool(env, 'TA_VETO_REVERSE', false), random: optNum(env, 'TA_VETO_RANDOM', 0, 1) },
+    taVeto: { ofi: optNum(env, 'TA_VETO_OFI', -100, 100), conf: optNum(env, 'TA_VETO_CONF', -50, 50), intensity: optNum(env, 'TA_VETO_INTENSITY', 0, 50), min: num(env, 'TA_VETO_MIN', 2, 1, 3), reverse: bool(env, 'TA_VETO_REVERSE', false), random: optNum(env, 'TA_VETO_RANDOM', 0, 1) },
   };
 
   const dataDir = path.resolve(env.DATA_DIR ?? './data');
