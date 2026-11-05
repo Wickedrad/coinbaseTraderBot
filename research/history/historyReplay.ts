@@ -662,7 +662,10 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
           ev.push({ t: c.ts, k: 'book', ticker: m.ticker, bids: [{ price: c.bidC, size: 100 }], asks: [{ price: c.askC, size: 100 }], ts: c.ts });
           // The minute's last quote stands until the next one (near the money, where a network would use it), or with
           // requote follows the index until then.
-          const mid = (c.bidC + c.askC) / 2, until = Math.min(cs[i + 1]?.ts ?? m.closeTime, m.closeTime);
+          // A crossed or locked candle (about 4% of the historical tier's minutes, Apr 18-Sep 11) is skipped: the quote before
+          // it keeps following the index up to the next good candle.
+          let nx = i + 1; while (nx < cs.length && !(cs[nx].bidC !== null && cs[nx].askC !== null && cs[nx].askC! > cs[nx].bidC!)) nx++;
+          const mid = (c.bidC + c.askC) / 2, until = Math.min(cs[nx]?.ts ?? m.closeTime, m.closeTime);
           if (mid >= 0.03 && mid <= 0.97) for (let at = c.ts + 15_000; at < until; at += 15_000) { const l = alive.get(at); if (l) l.push(m.ticker); else alive.set(at, [m.ticker]); }
           if (ixs && sgs) requoteBetween(ev, { ...m, kind }, c.bidC, c.askC, c.ts, until, d0, ixs, sgs, o.requoteLag);
         }
