@@ -807,9 +807,14 @@ export const FEATURES: Record<string, { group: FeatureGroup; description: string
   } },
 
   // G/H. Kalshi perpetuals: premium to the settlement index (perps lead spot), funding, positioning.
-  // The quote is per contract on Kalshi (contract size x coin price), so it is compared per coin: before Nov 5 the raw quote
-  // went in and the feature sat at the -100 clip in live while the history replay (per-coin quotes) gave real premiums.
-  perp_premium_bps: { group: 'perp', tier: 'T2', description: 'Kalshi perp price per coin vs settlement index, bps', fn: (c) => {
+  // Kalshi quotes perps PER CONTRACT (BTC 0.0001, ETH 0.001, SOL 0.1 of a coin). perp_premium_bps compares that quote with
+  // the coin's index, so it sat at its -100 clip in every recording (XRP's quote fits neither unit and read what it gave).
+  // It is kept exactly as is for the models trained on it; new trainings leave it out (T3) and use perp_premium_coin_bps.
+  perp_premium_bps: { group: 'perp', tier: 'T3', description: 'LEGACY: Kalshi perp quote (per contract) vs settlement index, bps; pinned at the -100 clip for per-contract quotes, kept for models trained on it (use perp_premium_coin_bps)', fn: (c) => {
+    const p = c.perp?.price(c.now), ix = c.index.latest()?.value;
+    return p && ix ? clip(1e4 * Math.log(p / ix), 100) : NA;
+  } },
+  perp_premium_coin_bps: { group: 'perp', tier: 'T2', description: 'Kalshi perp price per coin vs settlement index, bps (the quote over its contract size)', fn: (c) => {
     const ix = c.index.latest()?.value, p = c.perp?.coinPrice(c.now, ix);
     return p && ix ? clip(1e4 * Math.log(p / ix), 100) : NA;
   } },

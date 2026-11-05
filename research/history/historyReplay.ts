@@ -77,10 +77,10 @@ import { loadKalshiTrades, type KalshiHistMarket, type KalshiTrade } from './kal
 import { anchorsIn, dominanceAnchors, DominanceReplay, type DomState } from './dominanceReplay';
 import type { Candle } from '../../bot/ta/indicators';
 
-// 6 (Nov 5): perp quotes per contract like Kalshi's live quotes (were per coin); also rebuilds days cached before the
+// 7 (Nov 5): perp quotes per contract like Kalshi's live quotes (were per coin); also rebuilds days cached before the
 // requote's 0.1c tail tick (797853e) and the crossed-candle requote fix (88c6ebf), which changed the output without a
-// version change.
-export const REPLAY_VERSION = 6;
+// version change. 6 is the tennis candle-quote fix (PR #286): whichever merges second takes the next unused number.
+export const REPLAY_VERSION = 7;
 /** Kalshi perp contract sizes (units of the coin a contract), for a replay without the bot's own recordings to read them
  *  from: the perp TA thread's fidelity check of the Oct 28 - Nov 3 recordings (quote / spot: BTC 0.0001, ETH 0.001,
  *  SOL 0.1). Other coins fall back to 0.001. */

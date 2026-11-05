@@ -147,8 +147,9 @@ test('history replay: day files the replay reads like live recordings; the perps
   const idx = st.index.get('BTC')!.latest()!.value, spot = st.spot.get('BTC')!.latest()!.value;
   assert.ok(Math.abs(idx / spot - 1.0004) < 1e-6, `basis ${idx / spot}`);
   // The perp premium reads the quote per coin: the bars sit 3 bp over spot, so about -1 bp against the index (4 bp over spot).
-  const prem = assetFeatureMap('BTC', st.now, { index: st.index.get('BTC'), spot: st.spot.get('BTC'), bars: st.features.bars.get('BTC'), candles: st.features.candles.get('BTC'), perp: st.features.perps.get('BTC') }).perp_premium_bps;
-  assert.ok(Math.abs(prem) < 20, `perp premium per coin ${prem}`);
+  const af = assetFeatureMap('BTC', st.now, { index: st.index.get('BTC'), spot: st.spot.get('BTC'), bars: st.features.bars.get('BTC'), candles: st.features.candles.get('BTC'), perp: st.features.perps.get('BTC') });
+  assert.ok(Math.abs(af.perp_premium_coin_bps) < 20, `perp premium per coin ${af.perp_premium_coin_bps}`);
+  assert.equal(af.perp_premium_bps, -100, 'the legacy premium reads the per-contract quote, as in live');
 
   const rows = await buildPerpDataset(out, { everySec: 600, horizonMin: 60 });
   assert.ok(rows.length > 300, `perp rows ${rows.length}`);

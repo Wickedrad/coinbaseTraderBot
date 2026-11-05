@@ -91,17 +91,3 @@ test('models may use any subset of registry features; missing values impute to t
   // positive spot lead raises P(YES).
   assert.ok(m.predict({ logit_fv: logit(fv), ofi_30s: 1, spot_lead_10s_z: 2 }, fv) > m.predict({ logit_fv: logit(fv), ofi_30s: 1, spot_lead_10s_z: 0 }, fv));
 });
-
-test('perp premium: a model trained while it sat at the -100 clip reads it as missing; a later model reads it', () => {
-  // Two inputs: logit_fv (the identity) and perp_premium_bps, pinned at -100 in the recordings before the per-contract fix
-  // (its std fell back to 1): its input weight never learned, so a live premium must not move that model's price.
-  const params = (mean: number, std: number) => ({
-    version: 't', kind: 'mlp', features: ['logit_fv', 'perp_premium_bps'], trainedAt: '2026-11-05', referenceSigma: 5e-5,
-    normalization: { mean: [0, mean], std: [1.5, std] },
-    layers: [{ weights: [[1.5, 0.8]], bias: [0], activation: 'linear' }],
-  }) as unknown as MetaModelParams;
-  const f = { logit_fv: logit(0.6), perp_premium_bps: 2 };
-  const pinned = MetaModel.fromJson(JSON.stringify(params(-100, 1))).predict(f, 0.6);
-  assert.ok(Math.abs(pinned - 0.6) < 1e-9, `pinned premium ignored: ${pinned}`);
-  assert.ok(MetaModel.fromJson(JSON.stringify(params(1, 4))).predict(f, 0.6) > 0.6, 'a model trained on real premiums uses them');
-});
