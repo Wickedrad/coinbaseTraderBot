@@ -147,3 +147,22 @@ test('market anchor wild regime: off by default; volatility far above its slow a
   assert.equal((a.status() as any).wildShare, 0.3333);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.marketAnchor.wildRatio, 0);
 });
+
+test('market anchor: the slow vol average survives a restart', async () => {
+  const fs = await import('fs'); const os = await import('os'); const path = await import('path');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'anc-')), 'a.json');
+  let now = 0;
+  const cfg = { ...DEFAULT_MARKET_ANCHOR, enabled: true, wildRatio: 2 };
+  const a = new MarketAnchor(cfg, file, () => now);
+  for (let i = 0; i <= 7 * 60; i++) { now = i * 60_000; a.isWild({ asset: 'BTC', sigma: 1 }); (a as unknown as { feedVol(c: unknown): void }).feedVol({ asset: 'BTC', sigma: 1 }); }
+  a.flush();
+  const b = new MarketAnchor(cfg, file, () => now);
+  assert.equal(b.isWild({ asset: 'BTC', sigma: 3 }), true);
+  assert.equal(b.isWild({ asset: 'BTC', sigma: 1.5 }), false);
+});
+
+test('config: NO_LONGSHOT_WILD_OFF without the anchor is refused', () => {
+  const base = { DASHBOARD_TOKEN: 'x'.repeat(32) };
+  assert.throws(() => loadConfig({ ...base, NO_LONGSHOT_WILD_OFF: 'true' }), /NO_LONGSHOT_WILD_OFF needs/);
+  assert.equal(loadConfig({ ...base, NO_LONGSHOT_WILD_OFF: 'true', MARKET_ANCHOR: 'true', MARKET_ANCHOR_WILD_RATIO: '2' }).strategy.noLongshotWildOff, true);
+});

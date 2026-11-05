@@ -62,6 +62,9 @@ export interface StrategyConfig {
   series: string[];
   /** Series that are recorded (books, trades, lifecycle, results) for research but never priced or traded (RECORD_SERIES). */
   recordSeries: string[];
+  /** Series that are recorded but never priced or traded, by pattern (STRATEGY_EXCLUDE_SERIES; Steven, Nov 5: no DOGE
+   *  until the rest of the bot performs, then DOGE is trained again: STRATEGY_EXCLUDE_SERIES= trades it again). */
+  excludeSeries?: RegExp;
   /** Cap on simultaneously tracked record-only markets. */
   recordMaxMarkets: number;
   /** Discover every priceable crypto 15-minute / hourly series from the exchange (STRATEGY_SERIES=auto). */
@@ -1107,6 +1110,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     series,
     seriesAuto,
     recordSeries: (env.RECORD_SERIES ?? '').split(',').map((x) => x.trim()).filter(Boolean),
+    excludeSeries: (() => { const v = (env.STRATEGY_EXCLUDE_SERIES ?? 'DOGE').trim(); return v ? new RegExp(v) : undefined; })(),
     recordMaxMarkets: num(env, 'RECORD_MAX_MARKETS', 150, 1, 2000),
     kellyFraction: num(env, 'STRATEGY_KELLY_FRACTION', 0.25, 0.01, 0.5),
     portfolioKelly: bool(env, 'PORTFOLIO_KELLY', true),
@@ -1206,7 +1210,13 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     noLongshotEdge: num(env, 'NO_LONGSHOT_EDGE', 0, 0, 0.5),
     noLongshotPrice: num(env, 'NO_LONGSHOT_PRICE', 0.3, 0.01, 0.5),
     noLongshotMirror: bool(env, 'NO_LONGSHOT_MIRROR', false),
-    noLongshotWildOff: bool(env, 'NO_LONGSHOT_WILD_OFF', false),
+    // The wild regime comes from the market anchor: without MARKET_ANCHOR and a wild ratio the flag would do nothing (bot audit, Nov 5).
+    noLongshotWildOff: (() => {
+      const on = bool(env, 'NO_LONGSHOT_WILD_OFF', false);
+      if (on && (!bool(env, 'MARKET_ANCHOR', false) || !(num(env, 'MARKET_ANCHOR_WILD_RATIO', 0, 0, 10) > 0)))
+        throw new Error('NO_LONGSHOT_WILD_OFF needs MARKET_ANCHOR=true and MARKET_ANCHOR_WILD_RATIO > 0 (the wild regime comes from the anchor)');
+      return on;
+    })(),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
     modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),

@@ -167,7 +167,7 @@ export interface BacktestResult {
   /** Fills and contracts by order purpose (quote, entry, exit), and contracts filled by UTC hour (YYYY-MM-DDTHH). */
   byPurpose?: Record<string, { fills: number; contracts: number }>;
   /** Every fill (with opts.fillLog): time, market, side, price, contracts, taker or not, the order's id. */
-  fillLog?: Array<{ t: number; ticker: string; side: 'bid' | 'ask'; price: number; count: number; taker: boolean; coid?: string }>;
+  fillLog?: Array<{ t: number; ticker: string; side: 'bid' | 'ask'; price: number; count: number; taker: boolean; coid?: string; why?: string }>;
   contractsByHour?: Record<string, number>;
   /** The maker buffer at the last evaluation (adaptive with the paper options). */
   makerBufferEnd?: number;
@@ -248,8 +248,6 @@ export interface BacktestOpts { fillLog?: boolean; exitPolicy?: ExitPolicyName; 
   equityGuardFile?: string;
   /** No orders before this time (ms): until then the replay only watches (research/replayCheck.ts). */
   tradeFromMs?: number;
-  /** Coins left out of the replay entirely (REPLAY_EXCLUDE_ASSETS; Steven, Nov 5: no DOGE for now). */
-  excludeAssets?: string[];
   /** Evaluate on the engine's 1 s timer (bot/engine.ts: setInterval) this many ms into each second: wherever paper's
    *  timer fell, the replay can evaluate a little before or after the market moves it saw. Unset: at the first recorded
    *  event a second after the last evaluation. */
@@ -449,6 +447,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const stopByOrder = new Map<string, number>();
   const exitLedger = new Map<string, Array<{ sideSign: number; n: number; proceeds: number }>>();
   let slipSum = 0, slipN = 0;
+  /** The plan's reason for each entry order (opts.fillLog), carried onto its fills. */
+  const entryWhy = new Map<string, string>();
   const gate = opts.accuracyGate?.enabled ? new AccuracyGate(opts.accuracyGate, opts.accuracyGateFile, () => st.now) : undefined;
   // The seeded scorecard covers settlements up to its newest row; the warm-up settles the rest into the gate (Nov 4: paper's
   // state file, copied a day after the stretch began, had rolled every row before the stretch out of its window, so the
@@ -457,7 +457,6 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     if (!opts.accuracyGateFile) return -Infinity;
     try { const g = JSON.parse(fs.readFileSync(opts.accuracyGateFile, 'utf8')) as { rows?: Record<string, Array<{ ts: number }>> }; return Math.max(-Infinity, ...Object.values(g.rows ?? {}).flat().map((r) => r.ts)); } catch { return -Infinity; }
   })();
-  const excluded = new Set((opts.excludeAssets ?? []).map((x) => x.toUpperCase()));
   const anchor = strategy.marketAnchor?.enabled ? new MarketAnchor(strategy.marketAnchor, undefined, () => st.now) : undefined;
   // The bench's markets scored from the first trading moment on (the replay check sets them beside paper's).
   const tpScored = (e: { event: string; ticker?: string; usd?: unknown; contracts?: unknown }) => {
@@ -527,7 +526,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     if (!f.isTaker) markoutDue.push({ due: st.now + 60_000, ticker: f.ticker, sign: f.side === 'bid' ? 1 : -1, price: f.price });
     const bp = (res.byPurpose![purposeOf(f.clientOrderId)] ??= { fills: 0, contracts: 0 });
     bp.fills++; bp.contracts += f.count;
-    if (opts.fillLog) (res.fillLog ??= []).push({ t: st.now, ticker: f.ticker, side: f.side, price: f.price, count: f.count, taker: Boolean(f.isTaker), coid: f.clientOrderId });
+    if (opts.fillLog) (res.fillLog ??= []).push({ t: st.now, ticker: f.ticker, side: f.side, price: f.price, count: f.count, taker: Boolean(f.isTaker), coid: f.clientOrderId, ...(f.clientOrderId && entryWhy.has(f.clientOrderId) ? { why: entryWhy.get(f.clientOrderId) } : {}) });
     if (f.clientOrderId?.endsWith('-exit-wall')) exits.wallFills += f.count;
     if (f.clientOrderId?.endsWith('-exit-snipe')) { exits.quotaSnipes++; exits.quotaSnipeContracts += f.count; }
     const hour = new Date(st.now).toISOString().slice(0, 13);
@@ -619,7 +618,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
 
     for (const m of [...st.markets.values()].sort((a, b) => (priority.get(b.ticker) ?? 0) - (priority.get(a.ticker) ?? 0))) {
       // Recorded for research, or synthesized from price history (quoted at the model's own fair value): never traded.
-      if (m.recordOnly || m.synthetic || excluded.has(m.asset)) { if (st.now >= m.closeTime + 90_000) st.forget(m.ticker); continue; }
+      if (m.recordOnly || m.synthetic) { if (st.now >= m.closeTime + 90_000) st.forget(m.ticker); continue; }
       closeOf.set(m.ticker, m.closeTime);
       // Settle closed markets.
       if (st.now >= m.closeTime + 60_000) {
@@ -1048,6 +1047,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         }
         if (/^(train|explore)/.test(p.why)) res.paper!.extraSent = (res.paper!.extraSent ?? 0) + 1;
         const clientOrderId = `${m.ticker}-${st.now}-${p.side}-${p.purpose}${p.why.startsWith('take-profit') ? '-tp' : p.why.startsWith('confluence ratchet wall ask') ? '-wall' : p.purpose === 'exit' ? '-rest' : ''}`;
+        if (opts.fillLog && p.purpose === 'entry') entryWhy.set(clientOrderId, p.why.slice(0, 90));
         await send(m.ticker, 'order', async () => {
           try {
             await ex.createOrder({ ticker: m.ticker, side: p.side, count: p.count, price: p.price, timeInForce: p.timeInForce, postOnly: p.postOnly, reduceOnly: p.reduceOnly, selfTradePrevention: 'taker_at_cross', clientOrderId, expirationTime: p.expirationTime });

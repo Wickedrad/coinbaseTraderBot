@@ -524,12 +524,12 @@ function reconcileQuote(resting: RestingQuote | undefined, desired: OrderPlan | 
 }
 
 /** Extra edge asked of new NO risk that costs under cfg.noLongshotPrice (NO_LONGSHOT_EDGE; 0 = off). A buy that
- *  unwinds a held position is never charged it. Paper's Nov 3-4 loss sat in these entries (first fill an ask above
- *  0.70 on the YES scale: 79 markets, 11% win). NO_LONGSHOT_MIRROR (lab placebo) charges YES longshots instead, to
+ *  unwinds a held position is never charged it. Replay evidence (no DOGE): the plain bot's NO-longshot first fills
+ *  (an ask above 0.70 on the YES scale) lost -$195 on Oct 23-25 and -$75 on Nov 3. NO_LONGSHOT_MIRROR (lab placebo) charges YES longshots instead, to
  *  tell a real NO-longshot effect from plain "trade less". */
 export function longshotExtra(cfg: { noLongshotEdge?: number; noLongshotPrice?: number; noLongshotMirror?: boolean; noLongshotWildOff?: boolean }, side: 'yes' | 'no', position: number, cost: number, wild = false): number {
   // NO_LONGSHOT_WILD_OFF (Nov 5): in the wild regime NO longshots win (the Oct 29 crash: the market lags, YES favourites
-  // collapse; base +$466 there came from them), so the extra edge applies in calm markets only.
+  // collapse; in the Oct 25-31 replay the plain bot's gain that day came from them), so the extra edge applies in calm markets only.
   if (wild && cfg.noLongshotWildOff) return 0;
   const e = cfg.noLongshotEdge ?? 0;
   if (!(e > 0) || cost >= (cfg.noLongshotPrice ?? 0.3)) return 0;
