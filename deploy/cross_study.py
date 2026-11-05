@@ -678,9 +678,9 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
               'per': {}, 'stk': {}, 'entries': len(ps), 're': 0, 're_real': 0.0, 'cap_now': 0.0, 'cap_peak': 0.0, 'thin_n': 0, 'thin_usd': 0.0,
               'held_w': 0, 'held_w_usd': 0.0, 'held_l': 0, 'held_l_usd': 0.0, 'cut': 0, 'cut_usd': 0.0, 'cut_win': 0, 'nobid': 0,
               'hourly': collections.defaultdict(lambda: [0.0, 0.0])}  # UTC hour -> [contracts filled (entries + sales), realized $]
-        hk = lambda sec: datetime.datetime.fromtimestamp(sec, datetime.timezone.utc).strftime('%Y-%m-%dT%H')
+        hour_key = lambda sec: datetime.datetime.fromtimestamp(sec, datetime.timezone.utc).strftime('%Y-%m-%dT%H')
         for p in ps:
-            if not p.get('child'): st['hourly'][hk(p['s0'])][0] += p['n']
+            if not p.get('child'): st['hourly'][hour_key(p['s0'])][0] += p['n']
         live = set(); done = [False] * len(ps); child = [False] * len(ps); conf = {}
         for p in ps:
             if p.get('thin_in'): st['thin_n'] += 1; st['thin_usd'] += p['thin_in']
@@ -761,7 +761,7 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
 
         def close(i, t, x, kind):
             done[i] = True; live.discard(i); credit(x, t); st[kind] += 1
-            hh = st['hourly'][hk(t)]; hh[1] += x
+            hh = st['hourly'][hour_key(t)]; hh[1] += x
             if kind not in ('held', 'held_w', 'held_l'): hh[0] += ps[i]['n']  # a sale fills; a settlement does not
             if not child[i]: st['per'][ps[i]['src']] = st['per'].get(ps[i]['src'], 0.0) + x; st['stk'][ps[i]['src']] = ps[i]['n'] * ps[i]['costF']
             st['cap_now'] -= ps[i]['n'] * ps[i]['costF']
