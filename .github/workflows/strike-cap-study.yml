@@ -1,0 +1,56 @@
+name: Strike cap study
+
+# Decision 1 (Nov 5): strike selection with CATALOG_PICK_MAX_SPREAD at 0 (legacy), 5, 10, 15 and 20c on the same Kalshi
+# history days (research/strikeCapStudy.ts). History days only, never the L1 lockbox (Nov 6-13). Report as a commit comment.
+on:
+  push:
+    branches: [claude/project-thread-qj4n4v-strike-cap]
+    paths: [research/strikeCapStudy.ts, .github/workflows/strike-cap-study.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  study:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Kalshi history from Drive
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get raw/history data/history --exclude '/kalshi/*15M/**' --exclude '/kalshi/*DOGE*/**' --include '/kalshi/**' --exclude '*' > /dev/null
+          # Only the studied days (files are by close day): Sep 15 - Nov 4.
+          find data/history/kalshi -name '*.jsonl' | while read -r f; do d=$(basename "$f" .jsonl); { [[ "$d" < 2026-09-15 ]] || [[ "$d" > 2026-11-04 ]]; } && rm -f "$f"; done || true
+          for s in data/history/kalshi/*; do echo "$(basename "$s"): $(ls "$s" | grep -c jsonl) day(s)"; done
+      - name: Study
+        run: |
+          set -euo pipefail
+          S=$(ls data/history/kalshi | grep -vE '15M$|DOGE' | grep -E '^KX(BTC|ETH|SOL|XRP)' | paste -sd, -)
+          echo "series: $S"
+          node --max-old-space-size=12000 --import tsx research/strikeCapStudy.ts --history data/history/kalshi --series "$S" --from 2026-09-15 --to 2026-11-05 --out study.json > /dev/null
+          jq . study.json
+      - name: Report as a commit comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          { echo "## Strike cap study, run $GITHUB_RUN_ID"; echo; echo '```json'; jq . study.json; echo '```'; } > body.md
+          jq -Rs '{body: .}' body.md > req.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input req.json > /dev/null
