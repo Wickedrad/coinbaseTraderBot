@@ -259,6 +259,11 @@ jobs:
             --pairs ser:baseline:sershuf,sernl:baseline:sernlm,off20:baseline:offpl,rvoff:baseline:rvpl \
             --code-sha "${{ github.sha }}" --env-json "$RUNNER_TEMP/variants.json" --out "$SHARD" 2>&1 | tee "$RUNNER_TEMP/ho1.txt"
           python3 "$RUNNER_TEMP/registry.py" validate "$SHARD" 2>&1 | tail -15 | tee -a "$RUNNER_TEMP/ho1.txt"
+          python3 "$RUNNER_TEMP/registry.py" ho1 "$SHARD" | python3 -c "
+import json,sys
+for l in sys.stdin:
+  r=json.loads(l)
+  if r['role']=='candidate': print('registry.py ho1:', r['arm'], json.dumps(r.get('heldout')))" | tee -a "$RUNNER_TEMP/ho1.txt"
           rclone mkdir gdrive:kalshi-bot-archive/registry/shards/market-anchor
           rclone copy "$SHARD" gdrive:kalshi-bot-archive/registry/shards/market-anchor/ && echo "shard on Drive: registry/shards/market-anchor/$(basename "$SHARD")" | tee -a "$RUNNER_TEMP/ho1.txt"
           cat "$RUNNER_TEMP/ho1.txt" >> "$RUNNER_TEMP/report.txt"
