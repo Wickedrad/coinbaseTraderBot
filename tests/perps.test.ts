@@ -106,7 +106,7 @@ test('perp premium per coin reads Kalshi\'s per-contract quote over its contract
   // Live: BTC 0.0001 BTC a contract, mid $10.0010 = $100,010 a coin: +1 bp.
   const live = premium(10.0005, 10.0015);
   assert.ok(Math.abs(live.coin - 1) < 0.01, `per contract ${live.coin}`);
-  assert.equal(live.legacy, -100, 'the legacy feature reads the raw quote, as every model trained before Nov 5 saw it');
+  assert.equal(live.legacy, -100, 'the legacy feature reads the raw quote, as live always has (and the recordings-trained models saw)');
   const perCoin = premium(100_005, 100_015);
   assert.ok(Math.abs(perCoin.coin - 1) < 0.01 && Math.abs(perCoin.legacy - 1) < 0.01, 'a per-coin quote reads the same on both');
   assert.ok(Number.isNaN(premium(5, 6).coin), 'neither unit: unavailable');
@@ -118,7 +118,7 @@ test('perp premium per coin reads Kalshi\'s per-contract quote over its contract
   const idx = new IndexTracker('BTC', 3_600_000), hub = new PerpHub();
   idx.add(100_000, now); hub.apply(snap({ ts: now, bid: 10.0005, ask: 10.0015 }));
   const pf = perpFeatures('BTC', now, { index: idx, perp: hub.get('BTC') });
-  assert.equal(pf.perp_premium_bps, -100, 'a deployed perp model trained on the legacy premium still reads it');
+  assert.equal(pf.perp_premium_bps, -100, 'a deployed perp model trained on the legacy premium reads what live always gave it');
   assert.ok(Math.abs(pf.perp_premium_coin_bps - 1) < 0.01);
 });
 

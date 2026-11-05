@@ -65,7 +65,9 @@ export interface PerpFeatureSources {
 
 
 /** Inputs that perp models trained before Nov 5 read and new trainings leave out: still computed, so a deployed model reads
- *  what it was trained on (perp_premium_bps is Kalshi's per-contract quote against the coin's index). */
+ *  what live has always given it (perp_premium_bps is Kalshi's per-contract quote against the coin's index, -100 for BTC,
+ *  ETH and SOL). A model trained on the recordings saw that too; one trained on a history replay before REPLAY_VERSION 7
+ *  saw per-coin premiums under this name and has read -100 live all along, which only a retrain fixes. */
 export const PERP_LEGACY_FEATURES = ['perp_premium_bps'];
 
 /** Feature values for one asset at `now` (NaN where data is missing), for PERP_FEATURES and PERP_LEGACY_FEATURES. */

@@ -809,7 +809,10 @@ export const FEATURES: Record<string, { group: FeatureGroup; description: string
   // G/H. Kalshi perpetuals: premium to the settlement index (perps lead spot), funding, positioning.
   // Kalshi quotes perps PER CONTRACT (BTC 0.0001, ETH 0.001, SOL 0.1 of a coin). perp_premium_bps compares that quote with
   // the coin's index, so it sat at its -100 clip in every recording (XRP's contract is 1 XRP: its quote is per coin).
-  // It is kept exactly as is for the models trained on it; new trainings leave it out (T3) and use perp_premium_coin_bps.
+  // It is kept exactly as live has always read it, for the deployed models; new trainings leave it out (T3) and use
+  // perp_premium_coin_bps. Models trained on a history replay before REPLAY_VERSION 7 saw per-coin premiums under this name
+  // (the replay quoted per coin then), so they read -100 live as they always have until retrained. The SNN still reads it
+  // (bot/snn/inputs.ts) and moves to perp_premium_coin_bps at its next retrain.
   perp_premium_bps: { group: 'perp', tier: 'T3', description: 'LEGACY: Kalshi perp quote (per contract) vs settlement index, bps; pinned at the -100 clip for per-contract quotes, kept for models trained on it (use perp_premium_coin_bps)', fn: (c) => {
     const p = c.perp?.price(c.now), ix = c.index.latest()?.value;
     return p && ix ? clip(1e4 * Math.log(p / ix), 100) : NA;
