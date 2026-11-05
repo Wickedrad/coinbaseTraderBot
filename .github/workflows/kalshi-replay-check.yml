@@ -70,6 +70,8 @@ on:
 permissions:
   # Write for the one step that posts the replay's summary on the commit (a comment); everything else reads.
   contents: write
+  # Deploy runs (which code paper ran in the stretch).
+  actions: read
 
 concurrency:
   # Comparison runs (overrides set) each get their own group, so several exit policies replay side by side; a fidelity
@@ -84,6 +86,29 @@ jobs:
     timeout-minutes: 345
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: The code paper ran in the stretch (deploys from the Deploy workflow's runs)
+        # Nov 5: replays of Oct 25-29 ran today's code against paper's older code (smaller orders before the $10-$20
+        # band), and read as replay overfills. The bot code paper ran differs from the replayed code: say so up front.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROM: ${{ inputs.from || '' }}
+          TO: ${{ inputs.to || '' }}
+        run: |
+          OUT="$RUNNER_TEMP/code.txt"; : > "$OUT"
+          case "$FROM" in 20*) ;; *) echo "from is not a time: skipped"; exit 0;; esac
+          TO=${TO:-$(date -u +%FT%TZ)}; case "$TO" in 20*) ;; *) TO=$(date -u +%FT%TZ);; esac
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=100" \
+            --jq '.workflow_runs[] | [.updated_at, .head_sha] | @tsv' | sort > "$RUNNER_TEMP/deploys.tsv"
+          BASE=$(awk -F'\t' -v f="$FROM" '$1 < f' "$RUNNER_TEMP/deploys.tsv" | tail -1 | cut -f2)
+          INSIDE=$(awk -F'\t' -v f="$FROM" -v t="$TO" '$1 >= f && $1 < t {print $1 " " substr($2,1,7)}' "$RUNNER_TEMP/deploys.tsv" | tr '\n' ',' | sed 's/,$//')
+          if [ -z "$BASE" ]; then echo "paper's code at the stretch start: unknown (no deploy run found before $FROM)" | tee "$OUT"; exit 0; fi
+          DIFF=$(git diff --shortstat "$BASE" HEAD -- bot params 2>/dev/null || echo "not comparable")
+          if [ -z "$DIFF" ]; then MSG="paper ran the replayed bot code (deploy ${BASE:0:7})"; else MSG="CODE DIFFERS: paper ran deploy ${BASE:0:7}, the replay runs ${GITHUB_SHA:0:7}; bot/ and params/:$DIFF (judge fidelity only where they match)"; fi
+          [ -n "$INSIDE" ] && MSG="$MSG | deploys inside the stretch: $INSIDE"
+          echo "$MSG" | tee "$OUT"
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
@@ -365,6 +390,7 @@ jobs:
         run: |
           LOG="$RUNNER_TEMP/own.log"; [ -s "$LOG" ] || { echo "no replay output to post"; exit 0; }
           { echo "**Replay check** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · from $CHECK_FROM${OVERRIDES:+ · replay-only overrides: \`$OVERRIDES\`}"
+            [ -s "$RUNNER_TEMP/code.txt" ] && { echo; cat "$RUNNER_TEMP/code.txt"; }
             echo; echo '```'; grep -vE ' (WARN|INFO|DEBUG) +\[' "$LOG" | cut -c1-900 | head -n 120; echo '```'
             echo; echo 'Every replay (own, then nearby by bankroll scale):'; echo; echo '```'
             for L in "$LOG" "$RUNNER_TEMP"/nearby-*.log; do echo "== $(basename "$L" .log)"; grep -E '^replay  +fills|^hunt mode in the replay|^exit audit|^entry timing|^regime|^trade anatomy|^paper.s extra entries|^fills/contracts by order purpose|^settled markets / P&L by series' "$L" | cut -c1-1400; done
