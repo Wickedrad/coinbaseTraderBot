@@ -22,8 +22,9 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import crypto from 'crypto';
+import { regRow, runRef } from './perpTaRegistry';
 import {
-  readGrid, buildPrims, triggers, stateAt, outcomes, atrUnit, conditions, folds, POLICIES, POLICIES_R1, CONDS, NZ, KALSHI_COSTS,
+  readGrid, buildPrims, triggers, stateAt, outcomes, atrUnit, conditions, folds, POLICIES_ALL, CONDS, NZ, KALSHI_COSTS,
   type Grid, type Prim, type Costs, type Candidate, type Policy,
 } from './perpTaSweep';
 import { modulePrims, MODULE_CONDS } from './perpTaModules';
@@ -34,7 +35,7 @@ const fin = Number.isFinite;
 
 /** costs / policy: the coin's costs and the exit policy exactly as the sweep ran them (round 2: per-coin half-spread and
  *  funding offset, maker entries); absent on a set frozen before round 2 (the set's costs, and the policy found by id in
- *  POLICIES or POLICIES_R1: their ids differ). */
+ *  any round's policies, POLICIES_ALL: their ids differ). */
 export interface FrozenCand { id: string; a: string; group: string; rule: string; mode: 'follow' | 'fade'; pol: string; side: 'long' | 'short'; cond: string; disc: { n: number; mean: number; t: number; exc: number; tExc: number }; costs?: Costs; policy?: Policy }
 export interface Frozen { schema: 'perpta-frozen1'; run: string; sha: string; at: string; seal: string; validFrom: string; costs: Costs; passing: number; hash: string; cands: FrozenCand[] }
 
@@ -66,7 +67,7 @@ export function freeze(cands: Candidate[], o: { run: string; sha: string; seal: 
   return { schema: 'perpta-frozen1', run: o.run, sha: o.sha, at: new Date().toISOString(), seal: o.seal, validFrom: o.validFrom, costs: o.costs, passing: pass.length, hash: crypto.createHash('sha1').update(key).digest('hex').slice(0, 16), cands: fz };
 }
 
-const policyById = (id: string): Policy | undefined => POLICIES.find((x) => x.id === id) ?? POLICIES_R1.find((x) => x.id === id);
+const policyById = (id: string): Policy | undefined => POLICIES_ALL.find((x) => x.id === id);
 
 export interface SealedStats { n: number; mean: number; t: number; exc: number; tExc: number; hit: number; holdMin: number; over480: number; perDay: number; usdPerHourPer1k: number; stress6: number; fundStress?: number }
 export interface CoinOut {
@@ -96,12 +97,19 @@ function stats(xs: number[], ex: number[], vb: number[]): { n: number; mean: num
   return { n, mean: m, t: m / Math.sqrt(v / n), exc: em, tExc: em / Math.sqrt(ev / n), hit: xs.filter((x) => x > 0).length / n };
 }
 
-/** One coin: replicate every frozen candidate's discovery trades, then (only if all match) its sealed trades. */
-export function blindCoin(g: Grid, fz: Frozen, o: { modules?: false | { history?: string; forecasts?: string; cacheDir?: string }; log?: (m: string) => void }): CoinOut {
+/** The project's lockbox (meta plan thread: L1 Nov 6 05:00 - Nov 13 05:00 UTC, L2 Nov 13 - 20, each opened once): the blind
+ *  test reads no minute from the start of the UTC day it opens (Nov 6 00:00 UTC, so no registry row carries a lockbox day)
+ *  unless --end moves the cap (once the meta thread has opened the lockbox). */
+export const LOCKBOX_FROM = Date.UTC(2026, 10, 6, 0);
+
+/** One coin: replicate every frozen candidate's discovery trades, then (only if all match) its sealed trades, up to endMs
+ *  (LOCKBOX_FROM by default). */
+export function blindCoin(g: Grid, fz: Frozen, o: { modules?: false | { history?: string; forecasts?: string; cacheDir?: string }; log?: (m: string) => void; endMs?: number }): CoinOut {
   const log = o.log ?? console.log;
   const cands = fz.cands.filter((c) => c.a === g.asset);
   const seal = Date.parse(fz.seal), validFrom = Date.parse(fz.validFrom);
-  const nFull = g.n, iSeal = Math.round((seal - g.t0) / MIN);
+  const nFull = Math.min(g.n, Math.max(0, Math.floor(((o.endMs ?? LOCKBOX_FROM) - g.t0) / MIN))), iSeal = Math.round((seal - g.t0) / MIN);
+  if (nFull < g.n) log(`${g.asset}: sealed block capped at ${new Date(g.t0 + nFull * MIN).toISOString()} (the lockbox; --end moves it)`);
   const res: CoinOut = { schema: 'perpta-blind1', asset: g.asset, hash: fz.hash, sealFrom: fz.seal, sealTo: new Date(g.t0 + nFull * MIN).toISOString(), sealDays: +(Math.max(0, nFull - iSeal) / 1440).toFixed(2), replication: [], notes: [] };
   if (!cands.length) { res.notes.push('no frozen candidate on this coin'); res.cands = []; return res; }
   if (iSeal >= nFull - 1440) { res.notes.push('less than a day of history after the seal'); return res; }
@@ -215,7 +223,7 @@ export function blindCoin(g: Grid, fz: Frozen, o: { modules?: false | { history?
 
 function rng(seed: number): () => number { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
-export interface Book { members: string[]; trades: number; skippedBusy: number; skippedCap: number; usd: number; usdPerHour: number; lb90: number; stressUsdPerHour: number; fundStressUsdPerHour: number; unfilled: number; byCoin: Record<string, number>; bestMonthShare: number; months: Record<string, number>; over480: number; pass: boolean; why: string[] }
+export interface Book { members: string[]; trades: number; skippedBusy: number; skippedCap: number; usd: number; usdPerHour: number; lb90: number; stressUsdPerHour: number; fundStressUsdPerHour: number; unfilled: number; byCoin: Record<string, number>; bestMonthShare: number; months: Record<string, number>; over480: number; pass: boolean; why: string[] ; /** $ per day on the sealed block (exit day, UTC), at perPos a position: the registry's by_day. */ byDay: Record<string, number> }
 
 export function rulebook(fz: Frozen, coins: CoinOut[], members: string[], o: { perPos?: number; cap?: number; resamples?: number } = {}): Book {
   const perPos = o.perPos ?? 500, cap = o.cap ?? 1000, maxOpen = Math.floor(cap / perPos);
@@ -246,6 +254,10 @@ export function rulebook(fz: Frozen, coins: CoinOut[], members: string[], o: { p
     byCoin[s.a] = (byCoin[s.a] ?? 0) + v;
     const mo = new Date(s.te).toISOString().slice(0, 7); months[mo] = (months[mo] ?? 0) + v;
   }
+  // $ per UTC exit day over every sealed calendar day (the registry's by_day; the bootstrap below keeps its own day bins).
+  const byDay: Record<string, number> = {};
+  for (let t = seal; t < end; t += DAY) byDay[new Date(t).toISOString().slice(0, 10)] = 0;
+  for (const s of taken) { const k = new Date(s.te).toISOString().slice(0, 10); byDay[k] = (byDay[k] ?? 0) + (s.x / 1e4) * perPos; }
   // Day-block bootstrap of the mean daily P&L (seeded: the same set gives the same bound).
   const R = o.resamples ?? 10_000, r = rng(parseInt(fz.hash.slice(0, 8), 16) || 1), means = new Float64Array(R);
   for (let b = 0; b < R; b++) { let s = 0; for (let k = 0; k < nDays; k++) s += daily[Math.floor(r() * nDays)]; means[b] = s / nDays; }
@@ -263,6 +275,7 @@ export function rulebook(fz: Frozen, coins: CoinOut[], members: string[], o: { p
     members, trades: taken.length, skippedBusy, skippedCap, usd: +usd.toFixed(2), usdPerHour: +(usd / hours).toFixed(4), lb90: +lb90.toFixed(4), stressUsdPerHour: +(stress / hours).toFixed(4), fundStressUsdPerHour: +(fStress / hours).toFixed(4), unfilled,
     byCoin: Object.fromEntries(Object.entries(byCoin).map(([k, v]) => [k, +v.toFixed(2)])), bestMonthShare: +share.toFixed(3), months: Object.fromEntries(Object.entries(months).sort().map(([k, v]) => [k, +v.toFixed(2)])),
     over480: taken.filter((s) => s.hd > 480).length, pass: why.length === 0, why,
+    byDay: Object.fromEntries(Object.entries(byDay).map(([k, v]) => [k, +v.toFixed(4)])),
   };
 }
 
@@ -285,12 +298,16 @@ export function blindReport(fz: Frozen, coins: CoinOut[]): { md: string; verdict
   const all = rulebook(fz, coins, fz.cands.map((c) => c.id));
   const passers = per.filter((p) => p.pass).map((p) => p.c.id);
   const chosen = passers.length ? rulebook(fz, coins, passers) : undefined;
+  // Every frozen coin must have been read (its job may have crashed, failed replication or had under a day after the
+  // seal): a rulebook judged on part of the set fails closed.
+  const unread = [...new Set(fz.cands.map((c) => c.a))].filter((a) => !coins.find((x) => x.asset === a)?.cands);
+  for (const b of [all, chosen]) if (b && unread.length) { b.pass = false; b.why.unshift(`not read on ${unread.join(', ')}`); }
   const span = coins.length ? `${fz.seal.slice(0, 10)} .. ${coins.map((c) => c.sealTo.slice(0, 10)).sort().pop()}` : 'no coin';
   const fmtB = (b: Book) => `${b.trades} trades (skipped: coin busy ${b.skippedBusy}, cap full ${b.skippedCap}); $${b.usd} = **$${b.usdPerHour}/h** per $1k (bootstrap 90% lower bound $${b.lb90}/h; at +3 bps per side $${b.stressUsdPerHour}/h; funding paid x1.5, received x0.5 $${b.fundStressUsdPerHour}/h; ${b.unfilled} maker orders unfilled); by coin ${Object.entries(b.byCoin).map(([k, v]) => `${k} $${v}`).join(', ') || 'none'}; best month ${b.bestMonthShare}; held > 480 min ${b.over480}. ${b.pass ? '**PASS**' : `fails: ${b.why.join('; ')}`}${b.pass && b.usdPerHour < 4.5 ? ' (below the $4.50/h target)' : ''}`;
   const md = [
     `## Perp TA blind test: frozen set ${fz.hash} from sweep run ${fz.run} (${fz.cands.length} of ${fz.passing} passing candidates), sealed ${span}`,
     '',
-    failedRep.length ? `**Replication failed** for ${failedRep.map((r) => `${r.id} (${r.a}: n ${r.n} vs ${r.frozenN}, mean ${r.mean} vs ${r.frozenMean})`).join(', ')}: those coins' sealed blocks were not read.` : `Every candidate replicated its discovery trades exactly before the sealed block was read.`,
+    failedRep.length ? `**Replication failed** for ${failedRep.map((r) => `${r.id} (${r.a}: n ${r.n} vs ${r.frozenN}, mean ${r.mean} vs ${r.frozenMean})`).join(', ')}: those coins' sealed blocks were not read.` : unread.length ? `**Not read** on ${unread.join(', ')} (no output, or under a day after the seal): the rulebooks fail closed.` : `Every candidate replicated its discovery trades exactly before the sealed block was read.`,
     '',
     `**Rulebook, every frozen candidate** (the judged one): ${fmtB(all)}`,
     '',
@@ -303,7 +320,7 @@ export function blindReport(fz: Frozen, coins: CoinOut[]): { md: string; verdict
     `Rulebook months (every candidate): ${Object.entries(all.months).map(([k, v]) => `${k} $${v}`).join(', ') || 'none'}`,
     ...coins.flatMap((c) => c.notes.filter((n) => !n.startsWith('modules:')).map((n) => `- ${c.asset}: ${n}`)),
   ].join('\n');
-  return { md, verdict: { hash: fz.hash, run: fz.run, candidates: fz.cands.length, replicationFailed: failedRep.length, perCandidatePass: passers.length, rulebook: all, passersRulebook: chosen ?? null } };
+  return { md, verdict: { hash: fz.hash, run: fz.run, candidates: fz.cands.length, replicationFailed: failedRep.length, unread, perCandidatePass: passers.length, rulebook: all, passersRulebook: chosen ?? null } };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -325,7 +342,9 @@ async function main(): Promise<void> {
     const fz = JSON.parse(fs.readFileSync(arg('frozen')!, 'utf8')) as Frozen;
     const g = readGrid(arg('data')!);
     const modules = arg('modules', 'true') === 'false' ? false as const : { history: arg('history'), forecasts: arg('forecasts'), cacheDir: arg('module-cache') };
-    const r = blindCoin(g, fz, { modules, log });
+    const end = arg('end');
+    if (end !== undefined && !Number.isFinite(Date.parse(end))) throw new Error(`--end ${end}: not a time`);
+    const r = blindCoin(g, fz, { modules, log, endMs: end !== undefined ? Date.parse(end) : undefined });
     const file = arg('out')!;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(r));
@@ -342,8 +361,22 @@ async function main(): Promise<void> {
     fs.writeFileSync(path.join(outDir, 'summary.md'), r.md + '\n');
     fs.writeFileSync(path.join(outDir, 'verdict.json'), JSON.stringify(r.verdict, null, 1));
     const now = new Date();
-    const row = { thread: 'perp-ta-rulebook', kind: 'blind-test', run: process.env.GITHUB_RUN_ID ?? 'local', sha: process.env.GITHUB_SHA ?? '', at_utc: now.toISOString(), at_eastern: now.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false }), frozen_from_run: fz.run, set_hash: fz.hash, n_candidates: fz.cands.length, verdict: r.verdict, doge_excluded: true, prereg: '/mnt/project-files/perp-ta/preregistration.md' };
-    fs.writeFileSync(path.join(outDir, 'registry.jsonl'), JSON.stringify(row) + '\n');
+    const run = process.env.GITHUB_RUN_ID ?? 'local', sha = process.env.GITHUB_SHA ?? 'local';
+    const raw = { thread: 'perp-ta-rulebook', kind: 'blind-test', run, sha, at_utc: now.toISOString(), at_eastern: now.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false }), frozen_from_run: fz.run, set_hash: fz.hash, n_candidates: fz.cands.length, verdict: r.verdict, doge_excluded: true, prereg: '/mnt/project-files/perp-ta/preregistration.md' };
+    // Registry v1 rows: the whole frozen set's rulebook and, if any candidate passed alone, the passers' rulebook, each
+    // with its sealed-block $ per day (one position per coin, the rulebook's size), against the sweep run's control.
+    // The rulebook is judged against flat (no position: $0 every day), so the paired control is a flat book over the same
+    // sealed days. A blind test whose replication failed, or that read no coin, has no daily P&L (counted, not scored).
+    const v = r.verdict as { rulebook: Book; passersRulebook: Book | null; replicationFailed: number; unread: string[] };
+    const read = v.replicationFailed === 0 && v.unread.length === 0 && coins.some((c) => (c.cands?.length ?? 0) > 0);
+    const dayOf = (b: Book) => (read ? b.byDay : {});
+    const flat = regRow({ arm: `blind:${fz.hash.slice(0, 12)}:flat`, role: 'control', codeSha: sha, codeEpoch: `perp-ta blind of run ${fz.run}`, byDay: Object.fromEntries(Object.keys(dayOf(v.rulebook)).map((d) => [d, 0])), ref: runRef(run), at: now, verdict: 'flat: no position (the rulebook benchmark)' });
+    const rows = [
+      flat,
+      regRow({ arm: `blind:${fz.hash.slice(0, 12)}:all`, role: 'candidate', control: flat.trial_id, codeSha: sha, codeEpoch: `perp-ta blind of run ${fz.run}`, byDay: dayOf(v.rulebook), fills: v.rulebook.trades, ref: runRef(run), at: now, verdict: !read ? 'not read (replication failed or a coin not read)' : v.rulebook.pass ? 'PASS' : v.rulebook.why.join('; '), raw }),
+      ...(v.passersRulebook ? [regRow({ arm: `blind:${fz.hash.slice(0, 12)}:passers`, role: 'candidate', control: flat.trial_id, codeSha: sha, codeEpoch: `perp-ta blind of run ${fz.run}`, byDay: dayOf(v.passersRulebook), fills: v.passersRulebook.trades, ref: runRef(run), at: now, verdict: !read ? 'not read (replication failed or a coin not read)' : v.passersRulebook.pass ? 'PASS' : v.passersRulebook.why.join('; '), raw: { kind: 'blind-test-passers', set_hash: fz.hash } })] : []),
+    ];
+    fs.writeFileSync(path.join(outDir, 'registry.jsonl'), rows.map((x) => JSON.stringify(x)).join('\n') + '\n');
     console.log(r.md);
     return;
   }

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { COLS, outcomes, fundingCum, pool, readJsonlGz, writeJsonlGz, POLICIES, POLICIES_R2, EXITS, type Grid, type Policy, type Costs } from '../research/perpTaSweep';
+import { COLS, outcomes, fundingCum, pool, readJsonlGz, writeJsonlGz, atrUnit, POLICIES, POLICIES_R2, POLICIES_R3, POLICIES_ALL, EXITS, type Grid, type Policy, type Costs } from '../research/perpTaSweep';
 
 // A flat perp at 100 for n minutes; tests then move single bars.
 function flat(n: number): Grid {
@@ -83,9 +83,8 @@ test('perp TA round 2: funding offset and stress apply at funding instants only;
   const t = outcomes(flat(30), 30, unit(30), COSTS, [EXITS[0]]);
   near(t.net[0][0], -28);
   assert.deepEqual([t.exit[0][0], t.hold[0][0]], [5, 5]);
-  assert.equal(POLICIES, POLICIES_R2);
-  assert.equal(POLICIES.length, 36);
-  assert.ok(POLICIES.every((p) => p.entry && /^(MP5|MP15|ML15):/.test(p.id)));
+  assert.equal(POLICIES_R2.length, 36);
+  assert.ok(POLICIES_R2.every((p) => p.entry && /^(MP5|MP15|ML15):/.test(p.id)));
 });
 
 test('perp TA: pooled folds carry funding; round 1 records (8 fields) pool to zero funding', () => {
@@ -105,4 +104,67 @@ test('perp TA: gzip lines are written in members and read back without one big s
   assert.equal(back.length, lines.length);
   assert.equal(back[45_000], lines[45_000]);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// A seeded random walk (perp = spot) with a few missing minutes, for the scan tests.
+function walk(n: number, seed: number, vol = 0.0015): Grid {
+  const g = flat(n);
+  let x = seed >>> 0, p = 100;
+  const rnd = () => { x = (x * 1664525 + 1013904223) >>> 0; return x / 2 ** 32; };
+  for (let i = 0; i < n; i++) {
+    const o = p, c = o * Math.exp((rnd() - 0.5) * 2 * vol), h = Math.max(o, c) * (1 + rnd() * vol), l = Math.min(o, c) * (1 - rnd() * vol);
+    for (const [k, v] of [['so', o], ['sh', h], ['sl', l], ['sc', c], ['po', o], ['ph', h], ['pl', l], ['pc', c]] as const) g.c[k][i] = v;
+    p = c;
+  }
+  for (const i of [7000, 7001, 23456]) g.c.valid[i] = 0;
+  for (let i = 0; i < n; i += 480) g.c.fund[i] = (rnd() - 0.4) * 2e-4;
+  return g;
+}
+
+test('perp TA round 3: the block-skipping exit scan gives exactly the minute-by-minute results', () => {
+  const n = 40_000, g = walk(n, 7), u = atrUnit(g, n);
+  const pols = [...POLICIES_R3.filter((_, k) => k % 3 === 0 || k < 12), ...POLICIES_R2.filter((_, k) => k % 7 === 0)];
+  const a = outcomes(g, n, u, COSTS, pols), b = outcomes(g, n, u, COSTS, pols, { noSkip: true });
+  let trades = 0;
+  for (let k = 0; k < a.net.length; k++) {
+    for (let i = 0; i < n; i++) {
+      const x = a.net[k][i], y = b.net[k][i];
+      if (x !== x || y !== y) assert.ok(x !== x && y !== y, `policy ${k} minute ${i}: ${x} vs ${y}`);
+      else { assert.equal(x, y); trades++; }
+      if (a.exit[k][i] !== b.exit[k][i] || a.hold[k][i] !== b.hold[k][i]) assert.fail(`policy ${k} minute ${i}: exit ${a.exit[k][i]} vs ${b.exit[k][i]}`);
+    }
+    assert.deepEqual(a.fills[k], b.fills[k]);
+  }
+  assert.ok(trades > 100_000, `${trades} trades compared`);
+});
+
+test('perp TA round 3: exits sized in 1h / 4h ATRs; ML60 rests 0.25 x the 1-hour ATR off', () => {
+  assert.equal(POLICIES, POLICIES_R3);
+  assert.equal(POLICIES.length, 36);
+  assert.ok(POLICIES.every((p) => p.entry && (p.tf === 60 || p.tf === 240) && !p.trail && /^(MP15|ML15|ML60):[HD]/.test(p.id)));
+  assert.equal(new Set(POLICIES_ALL.map((p) => p.id)).size, POLICIES_ALL.length, 'policy ids are unique across rounds');
+  const n = 20_000, g = walk(n, 11), u15 = atrUnit(g, n), u60 = atrUnit(g, n, 60), u240 = atrUnit(g, n, 240);
+  assert.ok(u60[5000] > u15[5000] && u240[5000] > u60[5000], 'longer bars, wider ATR');
+  // A tf-60 policy is the same policy run on the 1-hour ATR; ML60's offset reads the 1-hour ATR too.
+  const h = POLICIES_R3.find((p) => p.id === 'ML60:HS1T2')!;
+  const x = outcomes(g, n, u15, COSTS, [h]);
+  const y = outcomes(g, n, u60, COSTS, [{ ...h, tf: undefined, entry: { ...h.entry!, tf: undefined } }]);
+  for (let i = 0; i < n; i++) if (!(Number.isNaN(x.net[0][i]) && Number.isNaN(y.net[0][i]))) assert.equal(x.net[0][i], y.net[0][i]);
+  // ML15 with a 1-hour exit: the offset stays in 15-minute ATRs (entry tf absent = 15), not the exit's.
+  const m = POLICIES_R3.find((p) => p.id === 'ML15:HS1T2')!;
+  const same = (a: Float32Array, b: Float32Array) => a.every((v, i) => (Number.isNaN(v) && Number.isNaN(b[i])) || v === b[i]);
+  const z = outcomes(g, n, u15, COSTS, [m, { ...m, entry: { ...m.entry!, tf: 15 } }, { ...m, entry: { ...m.entry!, tf: 60 } }]);
+  assert.ok(same(z.net[0], z.net[2]) && same(z.net[1], z.net[3]), 'ML15 = an explicit 15-minute offset');
+  assert.ok(!same(z.net[0], z.net[4]), 'ML15 differs from the same order 0.25 x the 1-hour ATR off');
+  assert.ok(z.fills[0].filled > z.fills[4].filled, 'a nearer limit fills more often');
+});
+
+test('perp TA registry v1: trial ids match registry.py make_id; rows carry the schema fields', async () => {
+  const { makeId, regRow, controlArm, pyDumps } = await import('../research/perpTaRegistry');
+  // registry.py make_id('perp-ta', 'perp-ta-rulebook', 'random-entries:run-123', 'abc', []) (computed with the Python tool).
+  assert.equal(makeId('perp-ta', 'perp-ta-rulebook', controlArm('123'), 'abc', []), 'a827be194cb37621');
+  assert.equal(pyDumps(['a', ['b'], null, [], { z: 'é', a: 1 }]), '["a", ["b"], null, [], {"a": 1, "z": "\\u00e9"}]');
+  const r = regRow({ arm: 'blind:x:all', role: 'candidate', control: 'c', codeSha: 's', byDay: { '2025-07-02': -1, '2025-07-01': 2 } });
+  assert.deepEqual(r.data, { source: 'history', days: ['2025-07-01', '2025-07-02'], doge: false, benches: 'own' });
+  for (const k of ['trial_id', 'thread', 'family', 'arm', 'role', 'code_sha', 'data', 'by_day'] as const) assert.ok(k in r, k);
 });

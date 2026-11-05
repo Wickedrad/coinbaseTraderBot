@@ -33,7 +33,7 @@ on:
       n_raw:
         description: 'Study: cells tested so far by this thread (every run, for the deflated Sharpe)'
         required: false
-        default: '98793570'
+        default: '248350921'
       reopen_reason:
         description: 'Blind test: only to reopen a set already opened (e.g. a crash before any sealed number was read); logged'
         required: false
@@ -115,14 +115,21 @@ jobs:
           echo "run $BLIND_RUN: round $ROUND, $MAKER maker-entry candidates"
           if [ "$ROUND" -ge 2 ] || [ "$MAKER" -gt 0 ]; then
             : > studies.jsonl
-            for f in $(rclone lsf gdrive:kalshi-bot-archive/registry/ --include 'perp-ta-study-run-*.jsonl'); do rclone cat "gdrive:kalshi-bot-archive/registry/$f" >> studies.jsonl; done
+            # Study rows: the legacy path (studies before registry v1) and the v1 shards (the record under .raw).
+            # A listing that fails is fatal (a silent gap could bind the gate to a later study); only a shards folder that
+            # does not exist yet reads as empty.
+            LEGACY=$(rclone lsf --files-only gdrive:kalshi-bot-archive/registry/ --include 'perp-ta-study-run-*.jsonl') || { echo "registry listing failed: refused"; exit 1; }
+            if SHARDS=$(rclone lsf --files-only gdrive:kalshi-bot-archive/registry/shards/perp-ta/ --include 'study-run-*.jsonl' 2> shards.err); then :; else
+              grep -qi 'directory not found' shards.err || { cat shards.err; echo "registry shards listing failed: refused"; exit 1; }; SHARDS=""; fi
+            for f in $LEGACY; do rclone cat "gdrive:kalshi-bot-archive/registry/$f" >> studies.jsonl; done
+            for f in $SHARDS; do rclone cat "gdrive:kalshi-bot-archive/registry/shards/perp-ta/$f" | jq -c 'if .v == 1 then .raw else . end' >> studies.jsonl; done
             ASSETS=$(jq -c '.assets | unique' cand/summary.json)
             P=$(jq -s -r --arg r "$BLIND_RUN" --argjson as "$ASSETS" '[.[] | select(.kind == "study" and .of_sweep_run == $r and (.coins // [] | map(.asset) | unique) == $as and (.coins | all(.universe > 0 and .replicated >= 0.99 * .universe)))] | sort_by(.at_utc) | (.[0].spa_validation_p // empty)' studies.jsonl)
             [ -n "$P" ] || { echo "round $ROUND: run $BLIND_RUN has no complete study of $ASSETS yet (dispatch only=study study_run=$BLIND_RUN first)"; exit 1; }
             awk -v p="$P" 'BEGIN { exit !(p <= 0.10) }' || { echo "round gate: run $BLIND_RUN validation SPA p = $P > 0.10: no blind test (pre-registered)"; exit 1; }
             echo "round gate: validation SPA p = $P <= 0.10"
           fi
-          node --import tsx research/perpTaBlind.ts freeze --candidates cand/candidates.json.gz --run "$BLIND_RUN" --half-spread "$HALF" --out frozen/frozen.json
+          node --import tsx research/perpTaBlind.ts freeze --candidates cand/candidates.json.gz --run "$BLIND_RUN" --sha "$(jq -r '.sha // ""' cand/summary.json)" --half-spread "$HALF" --out frozen/frozen.json
           echo "has=$(jq -r 'if (.cands | length) > 0 then "true" else "false" end' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
           echo "coins=$(jq -c '[.cands[].a] | unique' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
       - name: Log the opening (before the sealed block is read)
@@ -340,7 +347,7 @@ jobs:
       - name: Report
         env:
           STUDY_RUN: ${{ inputs.study_run }}
-          N_RAW: ${{ inputs.n_raw || '98793570' }}
+          N_RAW: ${{ inputs.n_raw || '248350921' }}
         run: |
           set -euo pipefail
           [[ "$N_RAW" =~ ^[0-9]+$ ]] || { echo "bad n_raw"; exit 1; }
@@ -373,7 +380,8 @@ jobs:
           cp -r in/fidelity report/ 2>/dev/null || true
           K=${{ (inputs.only == 'blind' || inputs.only == 'study') && format('{0}-', inputs.only) || '' }}
           bash deploy/drive_lab.sh put "models/perp-ta/${K:+${K%-}/}run-$GITHUB_RUN_ID/report" report
-          [ ! -f report/registry.jsonl ] || rclone copyto report/registry.jsonl "gdrive:kalshi-bot-archive/registry/perp-ta-${K}run-$GITHUB_RUN_ID.jsonl"
+          # Registry v1 shards (meta plan thread: gdrive:kalshi-bot-archive/registry/shards/<thread>/<run>.jsonl).
+          [ ! -f report/registry.jsonl ] || rclone copyto report/registry.jsonl "gdrive:kalshi-bot-archive/registry/shards/perp-ta/${K}run-$GITHUB_RUN_ID.jsonl"
       - name: Summary on the commit
         env:
           GH_TOKEN: ${{ github.token }}
