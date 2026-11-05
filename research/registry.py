@@ -45,6 +45,9 @@ N01 = NormalDist()
 ROLES = ('control', 'candidate', 'placebo', 'loo', 'neighbour')
 SOURCES = ('recorded', 'history', 'paper', 'live')
 DOGE = re.compile(r'^KXDOGE', re.I)
+# Settings whose inputs come from the order book, which history replays synthesize (size 100, no depth): OFI, depth and the
+# TA veto's confirmation count. Trade-tape signals (tennis taker flow, momentum, opponent) are real on history days.
+BOOK_FLOW = re.compile(r'OFI|DEPTH|^TA_VETO_CONF$', re.I)
 
 SCHEMA = {
     '$schema': 'https://json-schema.org/draft/2020-12/schema',
@@ -117,7 +120,7 @@ def validate(r: dict) -> tuple[list[str], list[str]]:
         fl.append('G0:doge-included')  # Steven 13:26 UTC Nov 5: no DOGE in scoring for now
     if d.get('benches') == 'paper':
         fl.append('G0:paper-benches')  # Steven 13:51 UTC Nov 5: paper has no say in training
-    if d.get('source') == 'history' and d.get('books') == 'synthetic' and any('ofi' in k.lower() or 'conf' in k.lower() for k in (r.get('env') or {})):
+    if d.get('source') == 'history' and d.get('books') == 'synthetic' and any(BOOK_FLOW.search(k) for k in (r.get('env') or {})):
         fl.append('G1:synthetic-book-flow')  # order-flow inputs are fake on history books (TA thread, Nov 5)
     w = r.get('wide_spread_share')
     if isinstance(w, (int, float)) and w > 0.5:
@@ -464,6 +467,10 @@ def selftest():
          'data': {'source': 'recorded', 'days': ['2026-11-07'], 'doge': True}, 'by_day': {'2026-11-07': 1.0}}
     err, fl = validate(r)
     assert not err and 'G0:doge-included' in fl and 'G2:unpaired' in fl and 'LOCKBOX:L1-days-read-early' in fl, fl
+    h = {**r, 'data': {'source': 'history', 'days': ['2026-10-01'], 'books': 'synthetic'}}
+    assert 'G1:synthetic-book-flow' in validate({**h, 'env': {'TA_VETO_OFI': 0}})[1]
+    assert 'G1:synthetic-book-flow' in validate({**h, 'env': {'TENNIS_CONF_DEPTH': 1}})[1]
+    assert 'G1:synthetic-book-flow' not in validate({**h, 'env': {'TENNIS_CONF_FLOW': 1, 'TENNIS_CONF_MOMENTUM_CENTS': 2}})[1]
     print('registry selftest ok')
 
 
