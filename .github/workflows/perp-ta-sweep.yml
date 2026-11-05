@@ -275,7 +275,7 @@ jobs:
 
   fidelity:
     # Its own run only (only: fidelity): it reads the recordings, not the sweep, and took 88-110 min in rounds 2 and 3, so the
-    # sweep's report no longer waits on it (Nov 5 6:20 PM EST / 23:20 UTC).
+    # sweep's report no longer waits on it (Nov 5 6:14 PM EST / 23:14 UTC).
     if: ${{ inputs.only == 'fidelity' }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
