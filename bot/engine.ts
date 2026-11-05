@@ -1708,7 +1708,10 @@ export class Engine {
   setModel(model: MetaModel): void {
     const old = this.d.model.id;
     this.d.model = model;
-    this.hunts.clear();
+    // Held positions keep their hunt (its entry anchor, trailing stop, floor and lock judgement): clearing it re-anchored
+    // the target on the new model's price and dropped a running stop on every autotrain swap. Positions opened after the
+    // swap get the new model's validated hunt parameters.
+    for (const t of [...this.hunts.keys()]) if (Math.abs(this.d.oms.positions.position(t)) < 1e-9) this.hunts.delete(t);
     if (this.d.snn && this.d.snn.blender.bindModel(model.id)) this.saveSnnBlender();
     this.d.audit.write('config', { event: 'model_swapped', from: old, to: model.id });
     log.info('meta-model hot-swapped', { from: old, to: model.id });
