@@ -1759,7 +1759,10 @@ export class Engine {
   setModel(model: MetaModel): void {
     const old = this.d.model.id;
     this.d.model = model;
-    this.hunts.clear();
+    // Held positions keep their hunt (its entry anchor, trailing stop, floor and lock judgement): clearing it re-anchored
+    // the target on the new model's price and dropped a running stop on every autotrain swap. Positions opened after the
+    // swap get the new model's validated hunt parameters.
+    for (const t of [...this.hunts.keys()]) if (Math.abs(this.d.oms.positions.position(t)) < 1e-9) this.hunts.delete(t);
     if (this.d.snn && this.d.snn.blender.bindModel(model.id)) this.saveSnnBlender();
     this.d.audit.write('config', { event: 'model_swapped', from: old, to: model.id });
     log.info('meta-model hot-swapped', { from: old, to: model.id });
@@ -2301,6 +2304,10 @@ export class Engine {
       }
     } else {
       st.exitMode = 'fair_value';
+      // A hunt that sits out (bench, unvalidated hunt in live) never sees the position go flat, and the hunt keeps state
+      // only while a position is held: drop it once flat, or a same-side position opened later inherits its anchor, lock
+      // and stop when hunting resumes (a model swap keeps held positions' hunts).
+      if (Math.abs(st.position) < 1e-9) this.hunts.delete(m.ticker);
     }
     const dEdge = dynamicEdge(cfg.strategy.dynamicEdge, mState, pred.std);
     const strat = {
