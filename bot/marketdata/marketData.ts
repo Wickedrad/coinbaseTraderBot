@@ -489,7 +489,7 @@ export class MarketData extends EventEmitter {
         perSeries[series] = ps;
         for (const m of markets) {
           if (m.closeTime <= now) { ps.closed++; continue; }
-          const kind = contractKind(series, m.strikeType);
+          const kind = contractKind(series, m.strikeType, m.ticker);
           // Far-dated strikes (daily/weekly ladders) are never inside an entry window; skip them.
           const horizonMs = kind === 'match' ? this.cfg.tennis.horizonHours * 3_600_000 : this.cfg.catalogHorizonMin * 60_000;
           if (m.closeTime > now + horizonMs && !(kind === 'match' && m.startTime !== undefined && m.startTime < now + horizonMs)) { ps.farDated++; continue; }

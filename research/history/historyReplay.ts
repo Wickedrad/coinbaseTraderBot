@@ -652,7 +652,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     domCount += domToday;
     const alive = new Map<number, string[]>();
     for (const m of kms) {
-      const kind = contractKind(m.series, m.strikeType);
+      const kind = contractKind(m.series, m.strikeType, m.ticker);
       ev.push({ t: m.openTime - MIN, k: 'market', ticker: m.ticker, series: m.series, asset: m.asset, openTime: m.openTime, closeTime: m.closeTime, strike: m.strike, cap: m.cap, kind, event: m.event, tickSize: 0.01, hist: 1 });
       const cs = (m.candles ?? []).filter((c) => c.ts >= m.openTime && c.ts <= m.closeTime);
       const ixs = slotIx.get(m.asset), sgs = slotSig.get(m.asset);

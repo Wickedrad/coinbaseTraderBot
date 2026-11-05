@@ -8,7 +8,8 @@
 #   lab-copies/<workflow>/<run id>/               what a lab run copied besides archived days, for reruns
 #
 #   drive_lab.sh days                          archived days, one per line
-#   drive_lab.sh recording <DAY> <dir>         pull md-DAY.jsonl.gz into <dir> (exit 3 if Drive lacks it)
+#   drive_lab.sh recording <DAY> <dir>         pull md-DAY.jsonl.gz into <dir>: the gzip if Drive has it, else the compact
+#                                              md-DAY.mdc decoded to that name (scripts/mdc.ts; exit 3 if Drive has neither)
 #   drive_lab.sh audit <DAY> <dir>             pull audit-DAY* into <dir>
 #   drive_lab.sh put <name> <src dir> [rclone filter args...]   upload (copy, never deletes on Drive)
 #   drive_lab.sh get <name> <dest dir> [rclone filter args...]  download (exit 3 if Drive has nothing there)
@@ -18,11 +19,15 @@ day() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day: $1" >&2; 
 name() { [[ "$1" =~ ^(lab-copies|raw|simulated|models|derived)/[A-Za-z0-9._/-]+$ && "$1" != *..* ]] || { echo "bad name: $1" >&2; exit 1; }; }
 case "${1:-}" in
   days)
-    rclone lsf "$ROOT/recordings" --files-only | sed -nE 's/^md-([0-9]{4}-[0-9]{2}-[0-9]{2})\.jsonl\.gz$/\1/p' | sort -u ;;
+    rclone lsf "$ROOT/recordings" --files-only | sed -nE 's/^md-([0-9]{4}-[0-9]{2}-[0-9]{2})\.(jsonl\.gz|mdc)$/\1/p' | sort -u ;;
   recording)
     day "$2"; mkdir -p "$3"
-    [ -n "$(rclone lsf "$ROOT/recordings" --files-only --include "md-$2.jsonl.gz")" ] || exit 3
-    rclone copy "$ROOT/recordings/md-$2.jsonl.gz" "$3/"
+    if [ -n "$(rclone lsf "$ROOT/recordings" --files-only --include "md-$2.jsonl.gz")" ]; then
+      rclone copy "$ROOT/recordings/md-$2.jsonl.gz" "$3/"
+    elif [ -n "$(rclone lsf "$ROOT/recordings" --files-only --include "md-$2.mdc")" ]; then
+      T=$(mktemp -d); rclone copy "$ROOT/recordings/md-$2.mdc" "$T/"
+      node --import tsx "$(dirname "$0")/../scripts/mdc.ts" decode "$T/md-$2.mdc" "$3/md-$2.jsonl.gz" >/dev/null; rm -rf "$T"
+    else exit 3; fi
     gzip -t "$3/md-$2.jsonl.gz" ;;
   audit)
     day "$2"; mkdir -p "$3"; rclone copy "$ROOT/audit" "$3/" --include "audit-$2*" --transfers 4 ;;

@@ -205,7 +205,7 @@ export function parseMarket(m: Obj): MarketInfo | undefined {
     closeTime,
     floorStrike: strike !== undefined && strike > 0 ? strike : undefined,
     capStrike: cap !== undefined && cap > 0 ? cap : undefined,
-    strikeType: m.strike_type ? String(m.strike_type) : tickerStrikeOf(String(m.ticker))?.kind === 'B' ? 'between' : undefined,
+    strikeType: tickerStrikeOf(String(m.ticker))?.kind === 'B' ? 'between' : m.strike_type ? String(m.strike_type) : undefined,
     tickerStrike: tickerStrikeOf(String(m.ticker)),
     yesMid: (() => {
       const b = parseDollars(m.yes_bid_dollars) ?? parseDollars(m.yes_bid, true);
