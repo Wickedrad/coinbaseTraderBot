@@ -29,7 +29,7 @@ import { isLive } from './oms/orderState';
 import { openEntryFee, openSidePrice, PositionBook } from './oms/positions';
 import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
-import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
+import { EXIT_RATE_RESERVE, newRiskRoomUsd, RiskContext, RiskGateway, tennisLimits, waterfallLimits } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
 import { decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
@@ -1184,8 +1184,7 @@ export class Engine {
     const totals = this.riskTotals(m.closeTime);
     const free = this.freeCash(this.shardOf(m.ticker));
     const lim = this.orderLimits(tier, bankroll);
-    if (this.d.cfg.risk.sizeCaps === false) return Math.max(0, free ?? Infinity); // RISK_SIZE_CAPS off: free cash only
-    return Math.max(0, Math.min((lim.maxWindowRiskFrac ?? tier.windowFrac) * bankroll - totals.window, (lim.maxTotalRiskFrac ?? tier.totalFrac) * bankroll - totals.total, free ?? Infinity));
+    return newRiskRoomUsd(this.d.cfg.risk.sizeCaps, lim.maxWindowRiskFrac ?? tier.windowFrac, lim.maxTotalRiskFrac ?? tier.totalFrac, bankroll, totals.window, totals.total, free);
   }
 
   /** Crypto: window = markets closing together. Tennis (`tennisEvent`): window = the match, total = all tennis. */
@@ -2666,7 +2665,7 @@ export class Engine {
       ctx.skipEdgeCollar = true;
       const sh = this.sportsHalt();
       if (sh) ctx.haltReasons = [...ctx.haltReasons, sh];
-      ctx.limitOverrides = { maxOrderRiskFrac: T.orderFrac, maxWindowRiskFrac: T.maxMatchFrac, maxTotalRiskFrac: T.maxTotalFrac, minSidePrice: Math.min(T.underdogMin, cfg.risk.minSidePrice) };
+      ctx.limitOverrides = tennisLimits(T, cfg.risk.minSidePrice);
     }
     // Waterfall mode (bot/macro/waterfall.ts), new exposure only (exits and reduce-only orders pass): armed pauses
     // tennis and holds Kalshi binaries to a share of the bank; triggered pauses Kalshi binaries as well.
@@ -2678,8 +2677,7 @@ export class Engine {
         return;
       }
       if (!tennis && wf.kalshiMaxFrac !== undefined) {
-        const lim = ctx.limitOverrides ?? {};
-        ctx.limitOverrides = { ...lim, maxTotalRiskFrac: Math.min(lim.maxTotalRiskFrac ?? cfg.risk.maxTotalRiskFrac, wf.kalshiMaxFrac) };
+        ctx.limitOverrides = waterfallLimits(ctx.limitOverrides ?? {}, cfg.risk, wf.kalshiMaxFrac);
       }
     }
     const decision = risk.check(intent, ctx);

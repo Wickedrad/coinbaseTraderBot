@@ -55,7 +55,7 @@ import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions'
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { EquityGuard } from '../bot/risk/equityGuard';
-import { RiskGateway } from '../bot/risk/riskGateway';
+import { newRiskRoomUsd as riskRoomUsd, RiskGateway } from '../bot/risk/riskGateway';
 import { decide, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { ComponentTrials, type TrialName } from '../bot/strategy/componentTrials';
 import { activeRuleBook, RuleBook, setRuleBook } from '../bot/strategy/ruleBook';
@@ -912,7 +912,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           totalRisk += l;
           if (closeOf.get(t) === m.closeTime) windowRisk += l;
         }
-        newRiskRoomUsd = limits.sizeCaps === false ? Math.max(0, await ex.getBalance()) : Math.max(0, Math.min(tierLimits.maxWindowRiskFrac * bankroll - windowRisk, tierLimits.maxTotalRiskFrac * bankroll - totalRisk, await ex.getBalance()));
+        newRiskRoomUsd = riskRoomUsd(limits.sizeCaps, tierLimits.maxWindowRiskFrac, tierLimits.maxTotalRiskFrac, bankroll, windowRisk, totalRisk, await ex.getBalance());
       }
       const view: MarketView = {
         ticker: m.ticker, pYes, bestBid: bid, bestAsk: ask, position: pos.position(m.ticker), bankroll,

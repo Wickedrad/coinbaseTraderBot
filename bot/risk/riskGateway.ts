@@ -66,6 +66,25 @@ const MAX_DISTANCE_FROM_TOUCH = 0.25;
 /** Share of the per-minute order budget kept for orders that reduce a position: quote traffic never crowds out an exit. */
 export const EXIT_RATE_RESERVE = 0.2;
 
+/** Tennis's own budget (per order, per match, 25% of the pool in total): hard limits, kept on whatever RISK_SIZE_CAPS says. */
+export function tennisLimits(t: { orderFrac: number; maxMatchFrac: number; maxTotalFrac: number; underdogMin: number }, minSidePrice: number): Partial<RiskLimits> {
+  return { maxOrderRiskFrac: t.orderFrac, maxWindowRiskFrac: t.maxMatchFrac, maxTotalRiskFrac: t.maxTotalFrac, minSidePrice: Math.min(t.underdogMin, minSidePrice), sizeCaps: true };
+}
+
+/** Waterfall armed: Kalshi binaries held to `frac` of the bank in total. A loss limit, so it holds with RISK_SIZE_CAPS
+ *  off too (then only this total cap is on; the order and window caps stay off). */
+export function waterfallLimits(lim: Partial<RiskLimits>, base: RiskLimits, frac: number): Partial<RiskLimits> {
+  const total = Math.min(lim.maxTotalRiskFrac ?? base.maxTotalRiskFrac, frac);
+  if ((lim.sizeCaps ?? base.sizeCaps) !== false) return { ...lim, maxTotalRiskFrac: total };
+  return { ...lim, sizeCaps: true, maxOrderRiskFrac: Infinity, maxWindowRiskFrac: Infinity, maxTotalRiskFrac: frac };
+}
+
+/** Room for new risk: under the window and total caps and in the free cash; the free cash alone with RISK_SIZE_CAPS off. */
+export function newRiskRoomUsd(sizeCaps: boolean | undefined, windowFrac: number, totalFrac: number, bankroll: number, windowRisk: number, totalRisk: number, free: number | undefined): number {
+  if (sizeCaps === false) return Math.max(0, free ?? Infinity);
+  return Math.max(0, Math.min(windowFrac * bankroll - windowRisk, totalFrac * bankroll - totalRisk, free ?? Infinity));
+}
+
 export class RiskGateway {
   constructor(private readonly limits: RiskLimits) {}
 
