@@ -719,7 +719,9 @@ export function nearestStrikes<M extends { ticker: string; eventTicker?: string;
       // ladder's middle). A dead or one-sided listing never reads 50c, and a briefly wide strike at the money is kept.
       const mid = new Map<M, number>();
       for (const m of ms) { const v = listingPickMid(m.yesBid, m.yesAsk, maxSpread); if (v !== undefined) mid.set(m, v); }
-      const useMid = mid.size >= Math.max(2, ms.length / 2);
+      // Two tight quotes are enough to place the money (Nov 5 study: requiring half the ladder tight, as the legacy rule
+      // does for any price, sent 63% of refreshes to the fallback, since a ladder's far strikes are mostly dead).
+      const useMid = mid.size >= 2;
       let tier1: M[] = [], money: number | undefined;
       if (useMid && between) {
         tier1 = ms.filter((m) => mid.has(m) && mid.get(m)! >= 0.05).sort((a, b) => mid.get(b)! - mid.get(a)!).slice(0, n);

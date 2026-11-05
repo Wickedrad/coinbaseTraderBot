@@ -43,11 +43,11 @@ test('strike cap: a 24c/36c bucket on a range still makes it past tight 1c bucke
   assert.ok(out.includes('B2') && out.includes('B3'), out.join(','));
 });
 
-test('strike cap: 1c/99c and one-sided listings lose to a 48c/52c strike; fewer than half tight falls back to the index', () => {
+test('strike cap: 1c/99c and one-sided listings lose to a 48c/52c strike; fewer than two tight quotes fall back to the index', () => {
   const ms = [q('D0', 100, 0.01, 0.99), q('D1', 101, undefined, 0.5, { yesMid: 0.5 }), q('D2', 102, 0.48, 0.52), q('D3', 103, 0.2, 0.22), q('D4', 104, 0.05, 0.06)];
   assert.deepEqual(pick(ms, 1, 0.1, 110), ['D2']);
   assert.ok(pick(ms, 1, 0, 110).length === 1, 'legacy still picks one');
-  // Only 1 of 4 tight: the index decides.
+  // Only one tight quote: the index decides.
   const few = [q('F0', 100, 0.01, 0.99), q('F1', 101, 0.01, 0.99), q('F2', 102, 0.48, 0.52), q('F3', 103, 0.01, 0.99)];
   const paths = { mid: 0, index: 0, median: 0 };
   assert.deepEqual(nearestStrikes(few, kindOf, 'KXBTCD', 100.2, 1, new Set(), { maxSpread: 0.1, paths }).map((m) => m.ticker), ['F0']);
@@ -61,4 +61,12 @@ test('strike cap: a tracked wide market is kept; maxSpread 0 reproduces the lega
   assert.deepEqual(pick(ms, 2, 0), legacy);
   assert.deepEqual(legacy, ['K0', 'K1'], 'legacy takes the dead 1c/99c listing as 50c');
   assert.deepEqual(pick(ms, 2, 0.1), ['K1', 'K2']);
+});
+
+test('strike cap: two tight quotes in a mostly dead ladder still place the money', () => {
+  const ms = [...Array.from({ length: 10 }, (_, i) => q(`X${i}`, 90 + i, 0.01, 0.99)), q('Y0', 100, 0.6, 0.62), q('Y1', 101, 0.39, 0.41), q('Y2', 102, 0.01, 0.99), q('Y3', 103, undefined, 0.02)];
+  const paths = { mid: 0, index: 0, median: 0 };
+  const out = nearestStrikes(ms, kindOf, 'KXBTCD', undefined, 2, new Set(), { maxSpread: 0.1, paths }).map((m) => m.ticker).sort();
+  assert.deepEqual(out, ['Y0', 'Y1']);
+  assert.equal(paths.mid, 1);
 });

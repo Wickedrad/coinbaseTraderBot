@@ -5,7 +5,7 @@ name: Strike cap study
 on:
   push:
     branches: [claude/project-thread-qj4n4v-strike-cap]
-    paths: [research/strikeCapStudy.ts, .github/workflows/strike-cap-study.yml]
+    paths: [research/strikeCapStudy.ts, .github/workflows/strike-cap-study.yml, bot/marketdata/marketData.ts]
 
 permissions:
   contents: write
@@ -31,7 +31,7 @@ jobs:
       - name: Kalshi ladder and range history (public API; Drive holds only the 15-minute series)
         run: |
           set -euo pipefail
-          timeout 55m node --import tsx research/history/kalshiHistory.ts --series KXBTCD,KXETHD,KXSOLD,KXBTC,KXETH --days 22 --out data/history/kalshi --budget-min 50 2>&1 | tail -8 || true
+          timeout 55m node --import tsx research/history/kalshiHistory.ts --series KXBTCD,KXBTC --days 22 --out data/history/kalshi --budget-min 50 2>&1 | tail -8 || true
           for s in data/history/kalshi/*; do echo "$(basename "$s"): $(ls "$s" | grep -c jsonl) day file(s)"; done
       - name: Study
         run: |
