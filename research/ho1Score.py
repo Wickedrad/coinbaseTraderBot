@@ -174,6 +174,10 @@ def main():
         print(f'  H-HOLD {pnl(R, hold_days):+.2f} vs control {pnl(C, hold_days):+.2f} vs placebo {pnl(P, hold_days) if P else float("nan"):+.2f}; '
               f'folds won {won}/{len(fold_lines)}, worst fold own {worst_own:+.2f}/h, worst diff {worst_diff:+.2f}/h')
         print('  ' + ' | '.join(fold_lines))
+        f5 = [d for f in folds[:5] for d in f]
+        won5 = sum(1 for f in folds[:5] if f and pnl(R, f) - pnl(C, f) > 0)
+        print(f'  without fold 6 (Oct 20-Nov 4, where the anchor settings were tuned): won {won5}/5, '
+              f'diff {(pnl(R, f5) - pnl(C, f5)) / max(1, 24 * len(f5)):+.3f}/h, vs placebo {((pnl(R, f5) - pnl(P, f5)) / max(1, 24 * len(f5))) if P else float("nan"):+.3f}/h')
         print('  terciles: ' + ', '.join(f'{t} {v[0]} h cand {v[1] / v[0]:+.2f}/h ctl {v[2] / v[0]:+.2f}/h' for t, v in sorted(th.items())))
     seen, uniq = set(), []
     for r in rows:
