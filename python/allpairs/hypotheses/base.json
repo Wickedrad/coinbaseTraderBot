@@ -1,0 +1,5 @@
+{
+  "name": "base",
+  "notes": "Champion candidate 0: the engine's defaults. Hypotheses are copies of this file with one change each (extra_features expressions or execution parameters); every scored configuration counts as a trial in the deflated Sharpe gate.",
+  "extra_features": []
+}
