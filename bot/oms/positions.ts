@@ -18,6 +18,12 @@ export interface MarketPosition {
   yes: number;
   netCash: number;
   fees: number;
+  /** The open contracts' own cost, average-cost accounting in side terms (a long YES position's YES price, a NO position's
+   *  NO price), and their entry fees. Net cash and fees also hold earlier exits, so after a profitable partial exit they
+   *  make the rest look cheaper than it was; these do not. Unset on a position saved before Nov 5 (openSidePrice then
+   *  reads net cash, as before) until its next fill. */
+  openCost?: number;
+  openFees?: number;
   settled: boolean;
   result?: 'yes' | 'no';
   /** Realized PnL once settled (net of fees). */
@@ -33,6 +39,21 @@ export interface FillLike {
   fee: number;
 }
 
+/** The side-terms price a contract of the open position cost, entry fee out (undefined when flat): a long YES position's
+ *  YES price, a NO position's NO price. Plus openEntryFee it is the cost basis that every "profit after fees" of a held
+ *  position (the quota snipe, the ride to settlement, the take-profit, the loser cuts) is measured against. */
+export function openSidePrice(pos: Pick<MarketPosition, 'yes' | 'netCash' | 'openCost'> | undefined): number | undefined {
+  if (!pos || Math.abs(pos.yes) < 1e-9) return undefined;
+  if (pos.openCost !== undefined) return pos.openCost / Math.abs(pos.yes);
+  return pos.yes > 0 ? -pos.netCash / pos.yes : 1 - pos.netCash / -pos.yes;
+}
+
+/** The entry fee a contract of the open position paid (undefined when flat). */
+export function openEntryFee(pos: Pick<MarketPosition, 'yes' | 'fees' | 'openFees'> | undefined): number | undefined {
+  if (!pos || Math.abs(pos.yes) < 1e-9) return undefined;
+  return (pos.openFees ?? pos.fees) / Math.abs(pos.yes);
+}
+
 export class PositionBook {
   private readonly markets = new Map<string, MarketPosition>();
 
@@ -43,7 +64,7 @@ export class PositionBook {
   ensure(ticker: string, meta: { closeTs?: number; asset?: string } = {}): MarketPosition {
     let m = this.markets.get(ticker);
     if (!m) {
-      m = { ticker, closeTs: meta.closeTs ?? 0, asset: meta.asset ?? '', yes: 0, netCash: 0, fees: 0, settled: false };
+      m = { ticker, closeTs: meta.closeTs ?? 0, asset: meta.asset ?? '', yes: 0, netCash: 0, fees: 0, openCost: 0, openFees: 0, settled: false };
       this.markets.set(ticker, m);
     } else {
       if (meta.closeTs && !m.closeTs) m.closeTs = meta.closeTs;
@@ -56,9 +77,30 @@ export class PositionBook {
     const m = this.ensure(f.ticker, meta);
     if (m.settled) throw new Error(`fill on settled market ${f.ticker}`);
     const signed = f.side === 'bid' ? f.count : -f.count;
+    const before = m.yes;
+    if (m.openCost === undefined || m.openFees === undefined) {
+      // Saved before the open cost was kept: the old reading (all of net cash and fees on the open contracts).
+      m.openCost = (openSidePrice(m) ?? 0) * Math.abs(before);
+      m.openFees = Math.abs(before) > 1e-9 ? m.fees : 0;
+    }
+    const sidePx = signed > 0 ? f.price : 1 - f.price;
+    if (Math.abs(before) < 1e-9 || Math.sign(before) === Math.sign(signed)) {
+      m.openCost += f.count * sidePx;
+      m.openFees += f.fee;
+    } else {
+      // A reduction takes its share of the cost and the entry fees at the average; its own fee is an exit fee. The part of a
+      // fill that goes through zero opens the other side.
+      const n = Math.min(f.count, Math.abs(before));
+      const keep = 1 - n / Math.abs(before);
+      m.openCost *= keep;
+      m.openFees *= keep;
+      const rest = round2(f.count - n);
+      if (rest > 1e-9) { m.openCost = rest * sidePx; m.openFees = f.fee * (rest / f.count); }
+    }
     m.yes = round2(m.yes + signed);
     m.netCash -= signed * f.price;
     m.fees += f.fee;
+    if (Math.abs(m.yes) < 1e-9) { m.openCost = 0; m.openFees = 0; }
     return m;
   }
 
@@ -72,6 +114,8 @@ export class PositionBook {
     m.settledTs = ts;
     m.netCash += payout;
     m.yes = 0;
+    m.openCost = 0;
+    m.openFees = 0;
     return m;
   }
 

@@ -346,7 +346,9 @@ export class HourlyQuotaPacer {
 
   /** A fill the position book has applied (`after` is the market's book state after it): the reducing part's realized
    *  P&L against the position's cost basis (entry fee in), net of the fill's fee, is credited; an entry credits nothing.
-   *  Returns the credit. */
+   *  Returns the credit. The book's net cash holds every earlier exit's proceeds, so the basis left on the open contracts
+   *  is the cash and fees put in less what came back, plus what this market has already credited (its earlier exits'
+   *  profit): without that a second partial exit was credited the first one's profit again until the market settled. */
   onFill(f: { ticker: string; side: 'bid' | 'ask'; count: number; price: number }, fee: number, after: { yes: number; netCash: number; fees: number }, now: number): number {
     const signed = f.side === 'bid' ? f.count : -f.count;
     const yesBefore = round2(after.yes - signed);
@@ -354,7 +356,8 @@ export class HourlyQuotaPacer {
     const n = Math.min(f.count, Math.abs(yesBefore));
     const netCashBefore = after.netCash + signed * f.price;
     const feesBefore = after.fees - fee;
-    const basis = (yesBefore > 0 ? -netCashBefore / yesBefore : 1 - netCashBefore / -yesBefore) + feesBefore / Math.abs(yesBefore);
+    const credited = this.fed.get(f.ticker) ?? 0;
+    const basis = (yesBefore > 0 ? -netCashBefore / yesBefore : 1 - netCashBefore / -yesBefore) + (feesBefore + credited) / Math.abs(yesBefore);
     const sidePrice = yesBefore > 0 ? f.price : 1 - f.price;
     const credit = n * (sidePrice - basis) - fee * (n / f.count);
     this.fed.set(f.ticker, (this.fed.get(f.ticker) ?? 0) + credit);
