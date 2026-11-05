@@ -94,6 +94,10 @@ jobs:
                 [[ "$a1" =~ ^[a-z0-9-]+/[A-Za-z0-9._-]+\.jsonl$ ]] || { echo "::error::drop takes <thread>/<file>.jsonl"; rc=1; continue; }
                 rclone deletefile "$REG/shards/$a1" && echo "dropped $REG/shards/$a1" || echo "drop $a1: not there";;
               merge)
+                # Parallel first uploads can make twin folders of one name on Drive (a reader then skips one silently):
+                # pre-create the known thread folders and merge any twins before reading.
+                for th in meta all-pairs sizing tennis-ta losses ta anchor fidelity benched snn levers scaling fractal perp-ta; do rclone mkdir "$REG/shards/$th"; done
+                rclone dedupe --dedupe-mode merge "$REG/shards" 2>&1 | tail -3 || true
                 rclone copy "$REG/shards" allshards --include '*.jsonl' --include '*.jsonl.gz' --transfers 8 || true
                 python3 -I research/registry.py merge allshards out/merged || { rc=1; continue; }
                 rclone copy out/merged "$REG/merged"
