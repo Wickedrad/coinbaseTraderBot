@@ -333,6 +333,9 @@ export function upTimeScore(r: { trades: Array<{ ticker: string; closeTs: number
   for (const f of r.fillLog ?? []) see(f.ticker, f.t);
   for (const f of a.fills) see(f.ticker, f.t);
   const bad = new Set([...first].filter(([, t]) => isDown(t)).map(([tk]) => tk));
+  // Markets the replay does not trade (REPLAY_EXCLUDE, DOGE by default) are left out of paper's side too.
+  const ex = process.env.REPLAY_EXCLUDE ?? 'DOGE';
+  if (ex) { const re = new RegExp(ex); for (const s2 of a.settlements) if (s2.ticker && re.test(s2.ticker)) bad.add(s2.ticker); for (const t of r.trades) if (re.test(t.ticker)) bad.add(t.ticker); }
   let replay = 0, paper = 0, rm = 0, pm = 0;
   for (const t of r.trades) if (t.closeTs >= from && t.closeTs < to && !bad.has(t.ticker)) { replay += t.pnl; rm++; }
   for (const s2 of a.settlements) if (s2.t >= from && s2.t < to && s2.ticker && !bad.has(s2.ticker)) { paper += s2.pnl; pm++; }
@@ -980,7 +983,7 @@ async function main(): Promise<void> {
   if (res.upOnly) {
     const u = res.upOnly;
     console.log(`paper down in the stretch (last record before a start .. first decision after it): ${u.downs.length ? u.downs.map((d) => `${d.from.slice(5, 16)}-${d.to.slice(11, 16)} (${d.minutes} min)`).join(', ') : 'never'}`);
-    console.log(`while paper was up (markets first traded in a down window left out on both sides: ${u.excluded}): replay ${f(u.replay)} over ${u.replayMarkets} markets | paper ${f(u.paper)} over ${u.paperMarkets}`);
+    console.log(`while paper was up and without REPLAY_EXCLUDE (${process.env.REPLAY_EXCLUDE ?? 'DOGE'}) markets (those and markets first traded in a down window left out on both sides: ${u.excluded}): replay ${f(u.replay)} over ${u.replayMarkets} markets | paper ${f(u.paper)} over ${u.paperMarkets}`);
   }
   for (const l of res.dump ?? []) console.log(l.slice(0, 1500));
   if (process.env.REPLAY_PEEK) for (const l of await auditPeek(arg('audit', 'data/audit'), res.days, process.env.REPLAY_PEEK)) console.log(l.slice(0, 900));
