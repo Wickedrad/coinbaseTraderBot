@@ -459,7 +459,7 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
       const bid = m.quote.bid;
       const selling = out.plans.some((p) => p.ticker === m.ticker && p.side === 'ask' && p.timeInForce === 'immediate_or_cancel');
       const higher = mode === 'off' || selling ? undefined : tennisHigher(t, m, out.plans, bid, mode, tick);
-      const call = quotaCall(net, r.pacerUsd, floor, higher, (r.floorTicks ?? 0) * tick * m.position);
+      const call = quotaCall(net, r.pacerUsd, floor, higher, undefined, (r.floorTicks ?? 0) * tick * m.position);
       if (call.arm !== undefined) {
         r.floors?.arm(m.ticker, m.position, call.arm);
         out.notes.push(`${m.ticker}: quota floor: +$${net.toFixed(2)} net covers the $${call.arm.toFixed(2)} the hour needs; held for ${higher}, sold if the profit falls below its floor`);

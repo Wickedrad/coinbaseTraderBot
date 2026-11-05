@@ -1,0 +1,16 @@
+# Benched lab round 4 (2026-11-01 ~15:10 UTC / 10:10 AM EST), on the losses thread's latest loser exits (ef116e7).
+# Round 3 (mean of 5 bankrolls, $/day; paired vs tp1 -173.7): skill75 +22 | skill85 -41 | skill60 -25 | dip4 -65 (~225
+# dip buys a day) | dip8 -9 (58) | dip4_x3 -71 | s75_dip4 +3 | gp25 = gp0 = tp1 (no GP formula votes in the window).
+# Round 4: skill75 as the base for the dip buy, made rarer (wider margin, one per market, longer cooldown, smaller size).
+# days=2026-10-29,2026-10-30
+# from=2026-10-29T15:40:00Z
+# to=2026-10-30T15:40:00Z
+# reuse_run=41210511914
+base:
+tp1: TP_LEVEL=1
+s75: TP_LEVEL=1 MODEL_SKILL_W=0.75
+s75_tp2: TP_LEVEL=2 MODEL_SKILL_W=0.75
+s75_dip8: TP_LEVEL=1 MODEL_SKILL_W=0.75 SINUOUS_DIP_BUY=true SINUOUS_DIP_MARGIN=0.08
+s75_dip12: TP_LEVEL=1 MODEL_SKILL_W=0.75 SINUOUS_DIP_BUY=true SINUOUS_DIP_MARGIN=0.12
+s75_dip8_1: TP_LEVEL=1 MODEL_SKILL_W=0.75 SINUOUS_DIP_BUY=true SINUOUS_DIP_MARGIN=0.08 SINUOUS_DIP_MAX=1 SINUOUS_DIP_COOLDOWN_SEC=300
+s75_dip8_q: TP_LEVEL=1 MODEL_SKILL_W=0.75 SINUOUS_DIP_BUY=true SINUOUS_DIP_MARGIN=0.08 SINUOUS_DIP_FRAC=0.25

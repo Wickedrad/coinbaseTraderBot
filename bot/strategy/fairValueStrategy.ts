@@ -38,6 +38,11 @@ import type { OrderPurpose } from '../oms/orderState';
 import { evThresholds, kellySize, targetEvSize } from '../sizing/kelly';
 import { quotaCall } from '../risk/quotaPacer';
 import { ceilToTick, floorCount, floorToTick, round } from '../util/num';
+import { levelMargin } from './levelLadder';
+
+/** The take-profit's fair-value confirm by level (1, 2, 3, 4...): the coin's value of the side may sit at most this far above
+ *  the net bid (TP_FV_MARGINS). */
+export const DEFAULT_TP_FV_MARGINS = [0.06, 0.03, 0.01, 0];
 
 export interface RestingQuote {
   clientOrderId: string;
@@ -102,6 +107,11 @@ export interface MarketView {
   profitPeakSidePrice?: number;
   /** Why the take-profit is benched (bot/strategy/takeProfitBench.ts): it sells nothing; the model exit still runs. */
   takeProfitBenched?: string;
+  /** The take-profit's strictness level (bot/strategy/takeProfitBench.ts, levelLadder.ts): from 1 it sells only while the
+   *  coin's spot fair value of the side (pFair) is at most the net bid plus the level's margin (cfg.takeProfitFvMargins). */
+  takeProfitLevel?: number;
+  /** The model's skill weight against the calibrated market (bot/model/modelHealth.ts; 1 or undefined = full say). */
+  modelSkillWeight?: number;
   /** Entry window open (contract kind, time to close, maintenance). Default: tau >= noEntryBeforeCloseSec. */
   entryWindowOpen?: boolean;
   /** Exits allowed (false in the final minute: ride to settlement). Default true. */
@@ -140,9 +150,12 @@ export interface StrategyOutput {
 }
 
 /** Decision probability of YES: the model, or shrunk toward the calibrated market under target-EV sizing. */
-export function decisionProbability(v: Pick<MarketView, 'pYes' | 'pMarket'>, cfg: Pick<StrategyConfig, 'sizing' | 'kappa'>): number {
-  if (cfg.sizing !== 'target_ev' || v.pMarket === undefined) return v.pYes;
-  return v.pMarket + cfg.kappa * (v.pYes - v.pMarket);
+export function decisionProbability(v: Pick<MarketView, 'pYes' | 'pMarket' | 'modelSkillWeight'>, cfg: Pick<StrategyConfig, 'sizing' | 'kappa'>): number {
+  if (v.pMarket === undefined) return v.pYes;
+  const base = cfg.sizing !== 'target_ev' ? v.pYes : v.pMarket + cfg.kappa * (v.pYes - v.pMarket);
+  // The model's skill weight (bot/model/modelHealth.ts modelSkillWeight): toward the market as far as the model has lost to it.
+  const w = v.modelSkillWeight;
+  return w === undefined || w >= 1 ? base : v.pMarket + w * (base - v.pMarket);
 }
 
 /** `opts.exits: false` disables the built-in model exit (another exit policy
@@ -469,6 +482,14 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
       out.notes.push(`take-profit benched${label}: +${net.toFixed(3)} now, best +${best.toFixed(3)}, not sold (${v.takeProfitBenched})`);
       return { sell: false, protective: false, why: '' };
     }
+    // The level's fair-value confirm: a winner the coin says is worth more than the bid pays (net of the exit fee) plus the
+    // level's margin is not sold here; it rides on (to the model exit, the quota's floor, the end window).
+    const fvM = levelMargin(cfg.takeProfitFvMargins ?? DEFAULT_TP_FV_MARGINS, v.takeProfitLevel ?? 0);
+    const fvSide = v.pFair === undefined ? undefined : label === ' NO' ? 1 - v.pFair : v.pFair;
+    if (fvM !== undefined && fvSide !== undefined && fvSide > sidePx - exitFee + fvM + 1e-9) {
+      out.notes.push(`take-profit held by fair value${label} (level ${v.takeProfitLevel}): +${net.toFixed(3)} now, the coin's value ${fvSide.toFixed(3)} > net bid ${(sidePx - exitFee).toFixed(3)} + ${fvM}`);
+      return { sell: false, protective: false, why: '', riding: true };
+    }
     const sellBelow = Math.max(best * (1 - giveBack), floor + tick);
     const lastTick = net <= floor + tick + 1e-9;
     const sell = net >= floor - 1e-9 && (giveBack <= 0 || (net < best - 1e-9 && (lastTick || net <= best * (1 - giveBack) + 1e-9)));
@@ -506,13 +527,22 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     if (set(v.curveRestSidePrice)) return `the curve's sell resting at ${v.curveRestSidePrice!.toFixed(2)}`;
     if (set(v.huntRestSidePrice)) return `the hunt's sell resting at the wall ${v.huntRestSidePrice!.toFixed(2)}`;
     for (const t of opts.higherTargets ?? []) if (set(t.sidePrice)) return `${t.why} at ${t.sidePrice.toFixed(2)}`;
-    if (floorMode !== 'riding') return undefined;
+    if (floorMode !== 'riding' && floorMode !== 'trail') return undefined;
     if (exits && tp?.riding) return 'the take-profit riding its best';
-    return opts.pacerHigher;
+    return opts.pacerHigher ?? (floorMode === 'trail' ? 'the quota trailing its best' : undefined);
   };
   const quota = (netUsd: number, sideBid: number, modelPx: number, tp: { sell: boolean; riding?: boolean } | undefined, selling: boolean) => {
     const higher = sniping && !selling ? aimsHigher(sideBid, modelPx, tp) : undefined;
-    const call = sniping ? quotaCall(netUsd, pacerUsd, opts.pacerFloor, higher, (cfg.pacer?.floorTicks ?? 0) * tick * Math.abs(v.position)) : {};
+    const cushion = (cfg.pacer?.floorTicks ?? 0) * tick * Math.abs(v.position);
+    let call = sniping ? quotaCall(netUsd, pacerUsd, opts.pacerFloor, higher, floorMode === 'trail' ? cfg.pacer?.trailKeep : undefined, cushion) : {};
+    if (call.sell === 'floor' && cfg.pacer?.floorConfirm === 'model') {
+      // The model's value of the position: its side at the model's probability (q for YES, 1 - q for NO), after the exit fee.
+      const modelNet = positionNetAtBid(v.position, cost, { price: q }, { price: q }, v.fees);
+      if (modelNet !== undefined && modelNet >= opts.pacerFloor! - cushion - 1e-9) {
+        out.notes.push(`quota floor held: +$${netUsd.toFixed(2)} net at bid ${sideBid.toFixed(2)} is below its $${opts.pacerFloor!.toFixed(2)} floor, but the model values the position at +$${modelNet.toFixed(2)}`);
+        call = {};
+      }
+    }
     if (call.arm !== undefined) {
       out.pacerArm = { usd: call.arm, why: higher! };
       out.notes.push(`quota floor: +$${netUsd.toFixed(2)} net covers the $${call.arm.toFixed(2)} the hour needs; held for ${higher}, sold if the profit falls below its floor`);

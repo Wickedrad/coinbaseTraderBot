@@ -10,7 +10,9 @@ import { parseSessionRisk, type SessionRiskProfile } from './model/sessionRisk';
 import { DEFAULT_PROBATION, type ProbationParams } from './risk/probation';
 import { FEE_SCHEDULE_URL } from './kalshi/feeSchedule';
 import { DEFAULT_SINUOUS_ENTRY, type SinuousEntryParams } from './strategy/sinuousEntry';
-import { DEFAULT_SINUOUS_EXIT, type SinuousExitParams } from './strategy/sinuousExit';
+import { DEFAULT_CROSS_FV_MARGINS, DEFAULT_SINUOUS_EXIT, type SinuousExitParams } from './strategy/sinuousExit';
+import { parseLevelMargins } from './strategy/levelLadder';
+import { DEFAULT_TP_FV_MARGINS } from './strategy/fairValueStrategy';
 import { defaultTiers, validateTiers, type TierPoint } from './risk/sizingTiers';
 import type { AccuracyGateConfig } from './strategy/accuracyGate';
 import type { TaVetoConfig } from './model/taVeto';
@@ -200,6 +202,11 @@ export interface StrategyConfig {
   /** Take-profit bench (bot/strategy/takeProfitBench.ts): its crypto sales scored against holding to settlement, the
    *  take-profit benched on the exit curve's rule. false = scored only, never benched. */
   takeProfitBench: boolean;
+  /** The take-profit's strictness ladder (Oct 31, never bench): TP_LEVEL pins a level (-1: the ladder decides), TP_LEVEL_MAX
+   *  caps it, TP_FV_MARGINS the fair-value confirm by level (bot/strategy/levelLadder.ts). */
+  takeProfitLevel: number;
+  takeProfitLevelMax: number;
+  takeProfitFvMargins?: number[];
   /** relaxed = decide on each 1-minute bar close or on a trigger (spec cadence); continuous = every tick. */
   cadence: 'relaxed' | 'continuous';
   /** Scheduled evaluation period, fair-value move that triggers an evaluation, re-price period, and the floor between evaluations. */
@@ -288,6 +295,9 @@ export interface StrategyConfig {
   weeklyLossPause: number;
   /** Halt new risk when the rolling log-loss advantage vs the calibrated market is significantly negative. */
   modelHealthHalt: boolean;
+  /** In place of the halt (Oct 31, never bench): the decision price leans toward the market by the model's measured skill
+   *  (MODEL_SKILL, MODEL_SKILL_MIN; MODEL_SKILL_W pins the weight). */
+  modelSkill: { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number]; tails?: number; tail?: number; tailsRising?: boolean };
   /** Paper exploration: occasionally enter a borderline opportunity (edge within exploreBand below the
    *  threshold, still fee-net positive) at minimum size, logged with its probability, so the fill model
    *  and the edge threshold get data near the boundary. Paper mode only. */
@@ -1029,11 +1039,13 @@ function pacerConfig(env: Env): PacerConfig {
     minTakeUsd,
     maxTargetUsd: Math.max(minTakeUsd, num(env, 'PACER_MAX_TARGET_USD', 6.5, 0, 10_000)),
     // Steven (Oct 31): under a higher target the quota is the position's stop, not its sale.
-    floor: oneOf(env, 'PACER_FLOOR', 'riding', ['off', 'targets', 'riding'] as const),
+    floor: oneOf(env, 'PACER_FLOOR', 'riding', ['off', 'targets', 'riding', 'trail'] as const),
+    trailKeep: num(env, 'PACER_TRAIL_KEEP', 0.5, 0, 1),
     // Paired replays of Oct 29-30 (Oct 31): a floor armed at the profit just reached sold winners on a one-tick dip. Under
     // today's other rules a cushion of 8 ticks a contract made $262 and $238 a day more than none (two batches, 5 bankrolls
     // of 5 each); with the loser exits of PR #230, 16 ticks made $88 a day more than none.
     floorTicks: num(env, 'PACER_FLOOR_TICKS', 8, 0, 50),
+    floorConfirm: oneOf(env, 'PACER_FLOOR_CONFIRM', 'none', ['none', 'model'] as const),
   };
 }
 
@@ -1291,6 +1303,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     // Off by default (Steven, Oct 31 and Nov 4): nothing is held to settlement unless in profit in the last share of the window, so a
     // bad score never turns the take-profit off; the bench keeps scoring and reports what it would have called.
     takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', false),
+    takeProfitLevel: Math.round(num(env, 'TP_LEVEL', -1, -1, 10)),
+    takeProfitLevelMax: Math.round(num(env, 'TP_LEVEL_MAX', 4, 0, 10)),
+    takeProfitFvMargins: parseLevelMargins(env.TP_FV_MARGINS, DEFAULT_TP_FV_MARGINS),
     cadence,
     evalBarSec: num(env, 'STRATEGY_EVAL_BAR_SEC', 60, 5, 600),
     evalFvMove: num(env, 'STRATEGY_EVAL_FV_MOVE', 0.015, 0.001, 0.2),
@@ -1349,7 +1364,16 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     ensembleVetoSigmas: num(env, 'STRATEGY_ENSEMBLE_VETO_SIGMAS', 2, 0, 10),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
-    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),
+    // Never bench (Oct 31): the model-vs-market check no longer halts entries; the skill weight below replaces it.
+    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', false),
+    modelSkill: {
+      on: bool(env, 'MODEL_SKILL', true), min: num(env, 'MODEL_SKILL_MIN', 0.25, 0.05, 1), pinned: num(env, 'MODEL_SKILL_W', -1, -1, 1),
+      // Calm-market cap (bot/model/modelHealth.ts): off (-1) until it proves itself on calming days.
+      calm: num(env, 'MODEL_SKILL_W_CALM', -1, -1, 1),
+      ...calmBand(env.MODEL_SKILL_W_CALM_RV, 'calmRvBp'),
+      // Tails cap (bot/model/modelHealth.ts): off (-1) until it proves itself.
+      tails: num(env, 'MODEL_SKILL_W_TAILS', -1, -1, 1), tail: num(env, 'MODEL_SKILL_TAIL', 0.3, 0.01, 0.49), tailsRising: bool(env, 'MODEL_SKILL_W_TAILS_RISING', false),
+    },
     paperExplore: bool(env, 'PAPER_EXPLORE', false),
     exploreRate: num(env, 'PAPER_EXPLORE_RATE', 0.1, 0, 1),
     exploreBand: num(env, 'PAPER_EXPLORE_BAND', 0.02, 0, 0.1),
@@ -1432,6 +1456,12 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       maxLossUsd: num(env, 'PROBATION_MAX_LOSS_USD', DEFAULT_PROBATION.maxLossUsd, 0, 1e9),
       maxLossPct: num(env, 'PROBATION_MAX_LOSS_PCT', DEFAULT_PROBATION.maxLossPct, 0, 1),
       window: num(env, 'PROBATION_WINDOW', DEFAULT_PROBATION.window, 10, 100_000),
+      // Graded, never benched (Oct 31): the highest level, and what each level asks of an unvalidated take / fill model.
+      levelMax: Math.round(num(env, 'PROBATION_LEVEL_MAX', DEFAULT_PROBATION.levelMax!, 0, 10)),
+      takeStep: num(env, 'PROBATION_TAKE_STEP', DEFAULT_PROBATION.takeStep!, 0, 0.2),
+      fillStep: num(env, 'PROBATION_FILL_STEP', DEFAULT_PROBATION.fillStep!, 0, 0.1),
+      gpMult: num(env, 'PROBATION_GP_MULT', DEFAULT_PROBATION.gpMult!, 0.05, 1),
+      ...calmBand(env.PROBATION_GP_CALM_RV, 'gpCalmRvBp'),
     },
     sinuousExit: {
       mode: oneOf(env, 'SINUOUS_EXIT', DEFAULT_SINUOUS_EXIT.mode, ['gate', 'monitor', 'rest', 'cross', 'off'] as const),
@@ -1458,6 +1488,17 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       // Paper and live alike; the paper-only names from before Oct 24 are still read.
       benchT: num(env, 'SINUOUS_BENCH_T', num(env, 'SINUOUS_PAPER_BENCH_T', 2, 0.5, 10), 0.5, 10),
       benchMinExits: num(env, 'SINUOUS_BENCH_MIN_EXITS', num(env, 'SINUOUS_PAPER_BENCH_MIN_EXITS', 30, 5, 10_000), 5, 10_000),
+      // The cross's strictness ladder (Oct 31: a trip makes it stricter, never benched; bot/strategy/levelLadder.ts).
+      crossFvMargins: parseLevelMargins(env.SINUOUS_CROSS_FV_MARGINS, DEFAULT_CROSS_FV_MARGINS),
+      crossLevel: Math.round(num(env, 'SINUOUS_CROSS_LEVEL', -1, -1, 10)),
+      crossLevelMax: Math.round(num(env, 'SINUOUS_CROSS_LEVEL_MAX', 4, 0, 10)),
+      // The dip buy (Nov 1: the cross's misreads turned into entries; off until the lab passes it).
+      dipBuy: bool(env, 'SINUOUS_DIP_BUY', false),
+      dipMargin: num(env, 'SINUOUS_DIP_MARGIN', 0.04, 0, 0.5),
+      dipFrac: num(env, 'SINUOUS_DIP_FRAC', 0.5, 0.05, 2),
+      dipMax: Math.round(num(env, 'SINUOUS_DIP_MAX', 2, 0, 20)),
+      dipCooldownSec: num(env, 'SINUOUS_DIP_COOLDOWN_SEC', 60, 1, 3600),
+      ...calmBand(env.SINUOUS_DIP_CALM_RV, 'dipCalmRvBp'),
     },
     sinuousEntry: {
       mode: oneOf(env, 'SINUOUS_ENTRY', DEFAULT_SINUOUS_ENTRY.mode, ['gate', 'monitor', 'off'] as const),
@@ -1857,4 +1898,10 @@ export function publicConfig(cfg: Config): Record<string, unknown> {
     perps: { ...cfg.perps, keyId: cfg.perps.keyId ? `${cfg.perps.keyId.slice(0, 4)}…` : undefined, privateKeyPath: cfg.perps.privateKeyPath ? '(set)' : undefined },
     alerts: { telegram: Boolean(alertTelegramToken), webhook: Boolean(alertWebhookUrl) },
   };
+}
+
+/** A calming-market hourly-vol band "lo,hi" in bp a minute (bot/model/modelHealth.ts calmIn), under `key`; absent when unset or malformed. */
+function calmBand<K extends string>(v: string | undefined, key: K): Partial<Record<K, [number, number]>> {
+  const b = (v ?? '').split(',').filter((x) => x.trim() !== '').map(Number);
+  return b.length === 2 && b.every(Number.isFinite) && b[0] <= b[1] ? ({ [key]: [b[0], b[1]] } as Partial<Record<K, [number, number]>>) : {};
 }

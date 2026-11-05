@@ -1,0 +1,124 @@
+name: Sterile sweep
+
+# Simulated 15-minute markets over a grid of market conditions (vol, rising/calming, drift, how the quote follows fair
+# value), every benched feature's setting on the real bot code against the baseline and a placebo; flags the cells where
+# a setting is in profit and beats the placebo on every seed (research/sterileSweep.ts; Steven, Nov 5). Synthetic data
+# only, so artifacts hold no server data; the server's model copy is read from main's cache and never uploaded.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/project-thread-g22fyz']
+    paths: ['research/sterileSweep.ts', '.github/workflows/sterile-sweep.yml']
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: sterile-sweep-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ST_SEEDS: '4'
+  ST_WINDOWS: '24'
+  SWEEP_BANKROLL_USD: '200'
+
+jobs:
+  settings:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.s.outputs.list }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - uses: actions/cache@v4
+        id: deps
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - id: s
+        run: echo "list=$(node --import tsx -e "import('./research/sterileSweep.ts').then((m) => console.log(JSON.stringify(Object.keys(m.SETTINGS))))")" >> "$GITHUB_OUTPUT"
+
+  run:
+    needs: [settings]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix:
+        setting: ${{ fromJson(needs.settings.outputs.list) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - uses: actions/cache@v4
+        id: deps
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: The server's model and settings (the daily sweep's copy on main)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/models
+            data/sweep-env
+          key: kalshi-server-none
+          restore-keys: kalshi-server-
+      - name: Sweep ${{ matrix.setting }}
+        run: |
+          node --import tsx research/sterileSweep.ts gen --out data/sterile --seeds "$ST_SEEDS" --windows "$ST_WINDOWS"
+          if [ -f data/sweep-env/train.env ]; then set -a; . data/sweep-env/train.env; set +a; fi
+          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper RS_PROBATION_FILE="$GITHUB_WORKSPACE/data/sweep-env/probation.json" RS_TRIALS_FILE="$GITHUB_WORKSPACE/data/sweep-env/component_trials.json"
+          echo "model: $([ -f data/models/model.json ] && echo "the server's" || echo identity)"
+          node --import tsx research/sterileSweep.ts run --dir data/sterile --variant "${{ matrix.setting }}" --model data/models/model.json --out research/out/sterile 2>&1 | grep -E '^\[sterile\]|Error|error' | head -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sterile-${{ matrix.setting }}
+          path: research/out/sterile/
+          retention-days: 14
+
+  report:
+    needs: [run]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - uses: actions/cache@v4
+        id: deps
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sterile-*
+          path: research/out/sterile
+          merge-multiple: true
+      - name: Report
+        run: node --import tsx research/sterileSweep.ts report --out research/out/sterile 2>&1 | tee "$RUNNER_TEMP/r.txt" | tail -80
+      - name: Post on the commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "Sterile sweep, run ${{ github.run_id }} (seeds $ST_SEEDS, $ST_WINDOWS windows a scenario)"; echo; echo '```'; tail -120 "$RUNNER_TEMP/r.txt"; echo '```'; } > "$RUNNER_TEMP/c.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/c.md" --silent || echo "could not post"

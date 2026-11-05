@@ -55,6 +55,8 @@ export interface SideSummary {
   exits: Record<string, number>;
   /** confluence_ratchet: what hunt mode did in the replay (activations, stop triggers, lock sale judgements, wall asks). */
   hunt?: string;
+  /** The exit audit by kind (backtest ExitStats.byKind): sold after fees, held to settlement, the best later bid. */
+  exitAudit?: string;
   /** Settled P&L by UTC hour (YYYY-MM-DDTHH). */
   byHour: Record<string, number>;
   /** Fills and contracts by order purpose (quote, entry, exit; other: an order the log does not name). */
@@ -240,8 +242,8 @@ export async function readAudit(auditDir: string, days: string[], prices?: { fro
           lastSeen = tt;
         }
       }
-      // The decision that planned an exit names why (deploy/pnl_report.py reads it the same way); so does paper's training
-      // trade or exploration entry.
+      // The decision that planned an exit names why (deploy/pnl_report.py reads it the same way); so does a training
+      // trade ("train (paper)" until Oct 31, "train:" since) or paper's exploration entry.
       const exitPlan = decision && (line.includes('"purpose":"exit"') || line.includes('"why":"train (paper)') || line.includes('"why":"train:') || line.includes('"why":"explore'));
       const diagnosis = decision && head.includes('"event":"entry_diagnosis"');
       const swap = head.includes('"kind":"config"') && head.includes('"event":"model_swapped"');
@@ -731,7 +733,8 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   const { readSeedCandles } = await import('./seedCandles');
   const cfg = loadConfig(paperEnv(process.env));
   const models = await engineModels(cfg as Config, { trialsFile: o.paperTrials });
-  const benched = installProbation(cfg as Config, o.paperProbation);
+  // RS_PROBATION_OPEN=1 (a lab arm): every book's probation open, whatever paper's probation.json holds.
+  const benched = installProbation(cfg as Config, process.env.RS_PROBATION_OPEN === '1' ? undefined : o.paperProbation);
   const model = fs.existsSync(o.model) ? MetaModel.load(o.model) : MetaModel.identity();
   const days = [...o.days].sort();
   const audit = await readAudit(o.audit, days, { from: o.from, to: o.to });
@@ -798,7 +801,9 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     exitPolicy: policy as never, sessionRisk: models.sessionRisk, huntSessionGuard: S.huntSessionGuard, huntTransitionBufferMin: S.huntTransitionBufferMin,
     sizingTiers: cfg.sizingTiers, paper: { orderFrac: S.paperOrderFrac, orderUsd: S.paperOrderUsd }, accuracyGate: S.accuracyGate,
     optimalF: { ...cfg.optimalF, ...(ofSeed ? { seed: ofSeed } : {}) },
-    takeProfitBench: { enforce: S.takeProfitBench, rule: curveBench, stateFile: benchFile, ...(follow ? { follow } : {}) }, accuracyGateFile: gateFile, startMs, tradeFromMs: from,
+    takeProfitBench: { enforce: S.takeProfitBench, rule: curveBench, stateFile: benchFile, ...(follow ? { follow } : {}) },
+    takeProfitLevel: { pinned: S.takeProfitLevel, max: S.takeProfitLevelMax },
+    curveExit: { params: cfg.sinuousExit, rule: curveBench }, accuracyGateFile: gateFile, startMs, tradeFromMs: from,
     dailyGoalUsd: cfg.vault.dailyGoalUsd, equityGuardFile: guardFile, killOverride, refillUsd: cfg.paperBankrollUsd, sessionEdge: cfg.sessionEdge, onEval: match.onEval, makerMarkouts: o.makerMarkouts,
     volProfile: models.volProfile, applyVolSeasonality: Boolean(models.volProfile), volModel: models.volModel, fillModel: models.fillModel, calendar: models.calendar,
     taNet: true, trials: models.trials, marketContext: true, fillLog: true, ...(o.tickPhaseMs !== undefined ? { tickPhaseMs: o.tickPhaseMs } : {}), ...(seed ? { seedCandles: seed } : {}),
@@ -829,7 +834,11 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   if (tpContracts) replay.exits['take-profit'] = +tpContracts.toFixed(2);
   if (r.exits.contracts - tpContracts > 1e-9) replay.exits['model exit / ratchet'] = +(r.exits.contracts - tpContracts).toFixed(2);
   const x = r.exits;
-  if (x.huntActivations || x.wallAsks || x.quotaSnipes) replay.hunt = `hunt mode in the replay: ${x.huntActivations} activations, ${x.ratchetTriggers} stop triggers, ${x.gaps} gaps, ${x.huntProfitTakes} profit takes, ${x.lockSales} lock sales, ${x.lockHolds} lock holds, ${x.wallAsks} wall asks (${x.wallFills.toFixed(0)} contracts filled on them), ${x.quotaSnipes} quota snipes (${x.quotaSnipeContracts.toFixed(0)} contracts)${x.floorArms || x.floorSales ? `, ${x.floorArms ?? 0} quota floors armed, ${x.floorSales ?? 0} floor sale calls` : ''}`;
+  if (x.huntActivations || x.wallAsks || x.quotaSnipes || x.crossSales || x.dipBuys) replay.hunt = `hunt mode in the replay: ${x.huntActivations} activations, ${x.ratchetTriggers} stop triggers, ${x.gaps} gaps, ${x.huntProfitTakes} profit takes, ${x.lockSales} lock sales, ${x.lockHolds} lock holds, ${x.wallAsks} wall asks (${x.wallFills.toFixed(0)} contracts filled on them), ${x.quotaSnipes} quota snipes (${x.quotaSnipeContracts.toFixed(0)} contracts)${x.floorArms || x.floorSales ? `, ${x.floorArms ?? 0} quota floors armed, ${x.floorSales ?? 0} floor sale calls` : ''}${x.crossSales ? `, ${x.crossSales} curve cross sales (${(x.crossContracts ?? 0).toFixed(0)} contracts filled)` : ''}${x.dipBuys ? `, ${x.dipBuys} curve dip buys` : ''}`;
+  if (x.byKind) replay.exitAudit = `exit audit${x.lateFills ? ` (entry and quote fills in the last 10% of the window: ${x.lateFills} fills ${(x.lateContracts ?? 0).toFixed(0)} c)` : ''}, sold after fees / held to settlement / best later bid after fees: ${Object.entries(x.byKind).sort((a, b) => b[1].contracts - a[1].contracts)
+    .map(([k, v]) => `${k} ${v.fills} fills ${v.contracts.toFixed(0)} c $${v.proceeds.toFixed(2)} / $${v.settled.toFixed(2)} / $${v.best.toFixed(2)}`
+      + (v.fv !== undefined ? `, fair value at the sale $${v.fv.toFixed(2)}` : '') + (v.tauC !== undefined && v.contracts > 0 ? ` ${(v.tauC / v.contracts).toFixed(0)} s to the close` : '')
+      + (v.underC ? `, sold under fair value ${v.underC.toFixed(0)} c $${(v.underProceeds ?? 0).toFixed(2)} / $${(v.underSettled ?? 0).toFixed(2)} (fair $${(v.underFv ?? 0).toFixed(2)})` : '')).join(' | ')}`;
   const paper = paperSummary(audit, from, to);
   const dump = process.env.REPLAY_DUMP ? marketDump(process.env.REPLAY_DUMP, r, audit, from, to) : undefined;
   const upOnly = upTimeScore(r, audit, from, to);
@@ -928,6 +937,7 @@ async function main(): Promise<void> {
   row('replay', res.replay);
   row('paper', res.paper);
   if (res.replay.hunt) console.log(res.replay.hunt);
+  if (res.replay.exitAudit) console.log(res.replay.exitAudit);
   const purposes = (s: SideSummary) => Object.entries(s.byPurpose).sort().map(([k, x]) => `${k} ${x.fills}/${x.contracts.toFixed(0)}`).join(', ') || 'none';
   console.log(`fills/contracts by order purpose: replay ${purposes(res.replay)} | paper ${purposes(res.paper)}`);
   const X = res.replay.extra, rej = Object.entries(X.rejected).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, n]) => `${k} x${n}`).join('; ');
