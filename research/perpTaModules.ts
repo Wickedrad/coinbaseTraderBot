@@ -1,8 +1,8 @@
 // The bot's own TA modules as perp-sweep primitives and conditions (research/perpTaSweep.ts; Steven, Nov 5 2026 13:59 UTC:
 // "This needs to utilize the modules in the bot related to TA such as TA Net, TA Lib, the librarian, confluence and so on").
 //
-//   analyzer   bot/ta/analyzer.ts tfState + evaluate, the bot's own reading, on 5m / 15m / 1h / 4h / 1d spot bars (260-bar
-//              windows, closed bars only) at every 5-minute close: every rule of bot/ta/knowledge.ts RULES and BOOK_RULES on
+//   analyzer   bot/ta/analyzer.ts tfState + evaluate, the bot's own reading, on 5m / 15m / 1h / 4h / 1d spot bars (the
+//              live bot's windows: 320 bars, 80 on 4h; closed bars only) at every 5-minute close: every rule of bot/ta/knowledge.ts RULES and BOOK_RULES on
 //              each of its timeframes (ta:<rule>@<tf>, book:<rule>@<tf>: the rule's direction), each of the 13 CONFLUENCES
 //              (conf:<id>: the sign of its score) and the net vote (ta_net: beyond its discovery 80th percentile). Breadth over
 //              the four coins feeds the breadth rule; no other macro input (dominance, risk gauges) exists in the history.
@@ -20,9 +20,13 @@
 //              weights most (trend / revert / breakout / flat), TA Net's volatility forecast above or below its discovery
 //              median, and TA-Lib's Hilbert trend mode on 1h (trend / cycle)
 //
-// Every threshold comes from the discovery period only (before validFrom). The analyzer walk (the slow part, about 1.4 ms
+// Every threshold comes from the discovery period only (before validFrom). The forecasts are walk-forward in their weights
+// only: the TA Net tournament's hyperparameters and the input cull the Librarian shares were chosen on the whole server
+// history (to 2026), so cells reading them are reported as diagnostic, never as a pass, until they are re-exported from
+// history cut before validFrom. The analyzer walk (the slow part, about 1.4 ms
 // per bar) is cached per coin and sealed length (--module-cache), the rest is recomputed each run.
 
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { tfState, evaluate, type TfState } from '../bot/ta/analyzer';
@@ -36,7 +40,7 @@ import { aggregate, type Grid, type Prim } from './perpTaSweep';
 
 const MIN = 60_000, H = 3_600_000;
 const fin = Number.isFinite;
-export const MODULES_VERSION = 'mod1';
+export const MODULES_VERSION = 'mod2';
 export const MODULE_CONDS = ['char_calm', 'char_trending', 'char_vidio', 'char_vsys', 'lib_trend', 'lib_revert', 'lib_breakout', 'lib_flat', 'tanet_vol_hi', 'tanet_vol_lo', 'ht_trend', 'ht_cycle'];
 export const NONE = 255;
 
@@ -53,9 +57,23 @@ const quant = (xs: number[], p: number) => { if (!xs.length) return NaN; const s
 // The analyzer walk (rules, rule book, confluences, net vote).
 
 const TFS: Array<[Timeframe, number]> = [['5m', 5], ['15m', 15], ['1h', 60], ['4h', 240], ['1d', 1440]];
-const W = 260;
+/** Bars per timeframe as the live bot holds them (bot/ta/candleStore.ts: 320 per timeframe, 4h built from the 320
+ *  hourly bars, so at most 80): rules that need longer look-backs (a 4h SMA200) never fire live, so not here either. */
+const W: Record<string, number> = { '5m': 320, '15m': 320, '1h': 320, '4h': 80, '1d': 320 };
 
-interface AnalyzerCache { version: string; asset: string; t0: number; nMax: number; ids: string[]; n5: number }
+interface AnalyzerCache { version: string; asset: string; t0: number; nMax: number; ids: string[]; n5: number; digest: string }
+
+/** What the analyzer walk depends on: the bot's TA code (every bot/ta source), this file, the engine, the windows, the
+ *  grid's spot bars up to nMax and the other coins' hourly coverage. */
+function walkDigest(g: Grid, nMax: number, others: Candle[][]): string {
+  const h = crypto.createHash('sha1');
+  const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'bot', 'ta');
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.ts')).sort()) h.update(f).update(fs.readFileSync(path.join(dir, f)));
+  h.update(fs.readFileSync(new URL(import.meta.url).pathname));
+  h.update(`${taEngine()}|${JSON.stringify(W)}|${JSON.stringify(TFS)}|${others.map((o) => `${o.length}:${o[0]?.ts}:${o[o.length - 1]?.ts}`).join(',')}`);
+  for (const k of ['so', 'sh', 'sl', 'sc', 'sv', 'stb'] as const) { const a = g.c[k]; h.update(Buffer.from(a.buffer, a.byteOffset, Math.min(a.length, nMax) * 4)); }
+  return h.digest('hex');
+}
 
 function analyzerWalk(g: Grid, nMax: number, others: Candle[][], log: (m: string) => void): { ids: string[]; s: Int8Array[]; net: Float32Array } {
   const prevExtras = process.env.TA_LIB_EXTRAS;
@@ -75,7 +93,7 @@ function analyzerWalk(g: Grid, nMax: number, others: Candle[][], log: (m: string
       const j = Math.floor(end / m) - 1;
       if (j < 29 || lastJ[tf] === j) continue;
       lastJ[tf] = j;
-      const st = tfState(tf, cs[tf].slice(Math.max(0, j - W + 1), j + 1));
+      const st = tfState(tf, cs[tf].slice(Math.max(0, j - W[tf] + 1), j + 1));
       if (st) latest[tf] = st; else delete latest[tf];
     }
     const dk = Math.floor(end / 1440);
@@ -105,11 +123,15 @@ function dailyOf(h1: Candle[]): Candle[] {
 
 function cachedAnalyzer(g: Grid, nMax: number, others: Candle[][], dir: string | undefined, log: (m: string) => void): { ids: string[]; s: Int8Array[]; net: Float32Array } {
   const file = dir ? path.join(dir, `${g.asset}-${MODULES_VERSION}-${nMax}.bin`) : undefined;
+  const digest = file ? walkDigest(g, nMax, others) : '';
   if (file && fs.existsSync(file)) {
     try {
       const buf = fs.readFileSync(file), nl = buf.indexOf(10);
       const h = JSON.parse(buf.subarray(0, nl).toString()) as AnalyzerCache;
-      if (h.version === MODULES_VERSION && h.asset === g.asset && h.t0 === g.t0 && h.nMax === nMax) {
+      const whole = buf.length === nl + 1 + h.n5 * 4 + h.n5 * h.ids.length;
+      if (!whole) log(`analyzer cache ${file} is truncated: recomputing`);
+      else if (h.digest !== digest) log(`analyzer cache ${file} was made from other code or data: recomputing`);
+      if (whole && h.digest === digest && h.version === MODULES_VERSION && h.asset === g.asset && h.t0 === g.t0 && h.nMax === nMax) {
         let o = nl + 1;
         const net = new Float32Array(buf.buffer.slice(buf.byteOffset + o, buf.byteOffset + o + h.n5 * 4)); o += h.n5 * 4;
         const s = h.ids.map(() => { const a = new Int8Array(buf.buffer.slice(buf.byteOffset + o, buf.byteOffset + o + h.n5)); o += h.n5; return a; });
@@ -122,8 +144,10 @@ function cachedAnalyzer(g: Grid, nMax: number, others: Candle[][], dir: string |
   if (file) {
     fs.mkdirSync(dir!, { recursive: true });
     const n5 = r.net.length;
-    const head = Buffer.from(JSON.stringify({ version: MODULES_VERSION, asset: g.asset, t0: g.t0, nMax, ids: r.ids, n5 } satisfies AnalyzerCache) + '\n');
-    fs.writeFileSync(file, Buffer.concat([head, Buffer.from(r.net.buffer), ...r.s.map((a) => Buffer.from(a.buffer))]));
+    const head = Buffer.from(JSON.stringify({ version: MODULES_VERSION, asset: g.asset, t0: g.t0, nMax, ids: r.ids, n5, digest } satisfies AnalyzerCache) + '\n');
+    // Written beside, then renamed: an interrupted write never leaves a short file under the cache's name.
+    fs.writeFileSync(`${file}.tmp`, Buffer.concat([head, Buffer.from(r.net.buffer), ...r.s.map((a) => Buffer.from(a.buffer))]));
+    fs.renameSync(`${file}.tmp`, file);
   }
   return r;
 }
@@ -138,10 +162,11 @@ function talibPrims(cs: Candle[], m: number): { prims: Prim[]; ht: Int8Array } {
   const out: Prim[] = [];
   const add = (id: string, f: (i: number) => number) => { const s = new Int8Array(n); for (let i = 0; i < n; i++) { const x = f(i); s[i] = x > 0 ? 1 : x < 0 ? -1 : 0; } out.push({ id: `${id}@${m}m`, fam: id, m, s }); };
   const netCdl = new Float64Array(n);
+  const DIRLESS = new Set(['DOJI', 'DRAGONFLYDOJI', 'GRAVESTONEDOJI', 'SPINNINGTOP']); // TA-Lib returns +100 (or the bar's colour) for these: no direction
   for (const p of KEY_PATTERNS) {
     const r = tl(`CDL${p}`, ohlc).outInteger;
     if (!r) continue;
-    for (let i = 0; i < n; i++) netCdl[i] += Math.sign(r[i] || 0);
+    if (!DIRLESS.has(p)) for (let i = 0; i < n; i++) netCdl[i] += Math.sign(r[i] || 0);
     add(`cdl_${p.toLowerCase()}`, (i) => r[i] || 0);
   }
   add('cdl_net', (i) => (netCdl[i] >= 2 ? 1 : netCdl[i] <= -2 ? -1 : 0));

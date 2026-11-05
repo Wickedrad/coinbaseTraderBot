@@ -43,7 +43,7 @@ export interface FidelityAsset {
   spreadBps: { median: number; p75: number; p90: number; mean: number };
   returns: Record<string, { rho: number; beta: number; te: number; n: number }>;
   premiumBps: { mean: number; sd: number; n: number };
-  funding: { kalshiSeen: number; kalshiZeroShare: number; kalshiMeanBps: number; pairs: number; modelMeanBps: number; modelZeroShare: number; corr: number; meanAbsDiffBps: number };
+  funding: { kalshiSeen: number; kalshiZeroShare: number; kalshiZeroShareQuotes: number; kalshiMeanBps: number; pairs: number; modelMeanBps: number; modelZeroShare: number; corr: number; meanAbsDiffBps: number; noModel: number; verdict: string };
 }
 
 export async function fidelity(o: { recordings: string; history: string; assets: string[]; from?: string; to?: string; log?: (m: string) => void }): Promise<{ days: string[]; assets: FidelityAsset[] }> {
@@ -94,13 +94,13 @@ export async function fidelity(o: { recordings: string; history: string; assets:
     const binance: Array<[number, number]> = fs.existsSync(fundFile) ? fs.readFileSync(fundFile, 'utf8').split('\n').slice(1).filter(Boolean).map((l) => l.split(',').map(Number) as [number, number]) : [];
     const kRates = ps.filter((x) => fin(x[3])).map((x) => x[3]);
     const pairs: Array<[number, number]> = [];
-    let pi = 0;
+    let pi = 0, noModel = 0;
     for (const tf of kalshiFundingTimes(from, to)) {
       while (pi + 1 < ps.length && ps[pi + 1][0] < tf) pi++;
       const kq = ps[pi];
       if (!kq || kq[0] > tf || tf - kq[0] > 10 * MIN || !fin(kq[3])) continue;
       const win = binance.filter(([t]) => t > tf - 8 * 3_600_000 && t <= tf);
-      if (!win.length) continue;
+      if (!win.length) { noModel++; continue; }
       pairs.push([kq[3], kalshiRateFromBinance(win.reduce((s, [, r]) => s + r, 0))]);
     }
     const kc = pairs.map((p) => p[0]), mc = pairs.map((p) => p[1]);
@@ -111,9 +111,12 @@ export async function fidelity(o: { recordings: string; history: string; assets:
       spreadBps: { median: +q(spreads, 0.5).toFixed(2), p75: +q(spreads, 0.75).toFixed(2), p90: +q(spreads, 0.9).toFixed(2), mean: +mean(spreads).toFixed(2) },
       returns, premiumBps: { mean: +pm.toFixed(2), sd: +psd.toFixed(2), n: prem.length },
       funding: {
-        kalshiSeen: kRates.length, kalshiZeroShare: +(kRates.filter((x) => Math.abs(x) < 1e-9).length / Math.max(1, kRates.length)).toFixed(3), kalshiMeanBps: +(mean(kRates) * 1e4).toFixed(3),
+        // Zero shares at the funding instants on both sides (same denominator); the all-quotes share is kept apart.
+        kalshiSeen: kRates.length, kalshiZeroShare: +(kc.filter((x) => Math.abs(x) < 1e-9).length / Math.max(1, kc.length)).toFixed(3), kalshiZeroShareQuotes: +(kRates.filter((x) => Math.abs(x) < 1e-9).length / Math.max(1, kRates.length)).toFixed(3), kalshiMeanBps: +(mean(kRates) * 1e4).toFixed(3),
         pairs: pairs.length, modelMeanBps: +(mean(mc) * 1e4).toFixed(3), modelZeroShare: +(mc.filter((x) => x === 0).length / Math.max(1, mc.length)).toFixed(3), corr: +fc.rho.toFixed(3),
         meanAbsDiffBps: +(mean(pairs.map(([x, y]) => Math.abs(x - y))) * 1e4).toFixed(3),
+        // Binance publishes settled funding in monthly archives only: instants of the current month have no model rate.
+        noModel: noModel, verdict: pairs.length < 30 ? 'insufficient (fewer than 30 instants with both rates)' : 'ok',
       },
     };
     log(`${a}: ${r.quotes} quotes (${r.quoteEverySec} s apart) over ${r.minutes} min; spread median ${r.spreadBps.median} bps (p90 ${r.spreadBps.p90}); 15m returns rho ${r.returns['15m'].rho} beta ${r.returns['15m'].beta} te ${r.returns['15m'].te} bps (n ${r.returns['15m'].n}); premium ${r.premiumBps.mean} +/- ${r.premiumBps.sd} bps; funding Kalshi mean ${r.funding.kalshiMeanBps} bps (zero ${r.funding.kalshiZeroShare}) vs model ${r.funding.modelMeanBps} (zero ${r.funding.modelZeroShare}), ${r.funding.pairs} instants, |diff| ${r.funding.meanAbsDiffBps} bps`);

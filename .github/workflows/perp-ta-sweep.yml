@@ -13,7 +13,7 @@ name: Perp TA sweep
 on:
   push:
     branches: [claude/project-thread-9040i4]
-    paths: [research/perpTaSweep.ts, research/perpTaModules.ts, research/perpTaFidelity.ts, .github/workflows/perp-ta-sweep.yml]
+    paths: [research/perpTaSweep.ts, research/perpTaModules.ts, research/perpTaFidelity.ts, .github/workflows/perp-ta-sweep.yml, 'bot/ta/**']
   workflow_dispatch:
     inputs:
       assets:
@@ -27,7 +27,7 @@ on:
       fid_days:
         description: 'Recorded days for the fidelity check (most recent)'
         required: false
-        default: '7'
+        default: '15'
 
 permissions:
   # Write only for the commit comment with the summary.
@@ -99,7 +99,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "### Perp TA sweep $A failed (run $GITHUB_RUN_ID)"; echo '```'; tail -n 60 "$RUNNER_TEMP/sweep.log" 2>/dev/null | cut -c1-300 || echo "no sweep log (failed before the sweep)"; echo '```'; } > "$RUNNER_TEMP/fail.md"
+          { echo "### Perp TA sweep $A failed (run $GITHUB_RUN_ID)"; echo '```'; if [ -s "$RUNNER_TEMP/sweep.log" ]; then tail -n 60 "$RUNNER_TEMP/sweep.log" | cut -c1-300; else echo "no sweep log (failed before prep or the sweep)"; fi; echo '```'; } > "$RUNNER_TEMP/fail.md"
           jq -n --rawfile body "$RUNNER_TEMP/fail.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
       - uses: actions/upload-artifact@v4
         with:
@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
-      FID_DAYS: ${{ inputs.fid_days || '7' }}
+      FID_DAYS: ${{ inputs.fid_days || '15' }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -157,7 +157,8 @@ jobs:
 
   report:
     needs: [sweep, fidelity]
-    if: always()
+    # Not after a cancel (a newer push supersedes this run): partial artifacts would post a misleading summary.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -185,8 +186,9 @@ jobs:
           if [ -f in/fidelity/fidelity.json ]; then
             node -e "
               const f = require('./in/fidelity/fidelity.json');
-              const rows = f.assets.map((a) => '| ' + [a.asset, a.quotes, a.spreadBps.median, a.spreadBps.p90, a.returns['1m'].rho, a.returns['15m'].rho, a.returns['15m'].beta, a.returns['15m'].te, a.returns['60m'].rho, a.premiumBps.mean, a.premiumBps.sd, a.funding.kalshiMeanBps, a.funding.kalshiZeroShare, a.funding.modelMeanBps, a.funding.pairs, a.funding.meanAbsDiffBps].join(' | ') + ' |');
-              console.log(['', '### Fidelity: Kalshi perp quotes vs Binance USD-M (' + f.days[0] + ' .. ' + f.days[f.days.length - 1] + ')', '| coin | quotes | spread med bps | spread p90 | rho 1m | rho 15m | beta 15m | te 15m bps | rho 60m | premium bps | premium sd | Kalshi funding bps | Kalshi zero share | model funding bps | instants | abs diff bps |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|', ...rows].join('\n'));
+              const rows = f.assets.map((a) => '| ' + [a.asset, a.quotes, a.spreadBps.median, a.spreadBps.p90, a.returns['1m'].rho, a.returns['15m'].rho, a.returns['15m'].beta, a.returns['15m'].te, a.returns['60m'].rho, a.premiumBps.mean, a.premiumBps.sd, a.funding.kalshiMeanBps, a.funding.kalshiZeroShare, a.funding.modelMeanBps, a.funding.modelZeroShare, a.funding.pairs, a.funding.meanAbsDiffBps, a.funding.verdict].join(' | ') + ' |');
+              const span = f.days.length ? f.days[0] + ' .. ' + f.days[f.days.length - 1] : 'no recorded perp quotes';
+              console.log(['', '### Fidelity: Kalshi perp quotes vs Binance USD-M (' + span + ')', '| coin | quotes | spread med bps | spread p90 | rho 1m | rho 15m | beta 15m | te 15m bps | rho 60m | premium bps | premium sd | Kalshi funding bps | Kalshi zero share | model funding bps | model zero share | instants | abs diff bps | funding check |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|', ...rows].join('\n'));
             " >> report/summary.md
           fi
           head -c 60000 report/summary.md > "$RUNNER_TEMP/comment.md"
@@ -194,10 +196,11 @@ jobs:
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
-      - name: Results to Drive
+      - name: Results to Drive, and this run's rows for the project trial registry
         run: |
           cp -r in/fidelity report/ 2>/dev/null || true
           bash deploy/drive_lab.sh put "models/perp-ta/run-$GITHUB_RUN_ID/report" report
+          [ ! -f report/registry.jsonl ] || rclone copyto report/registry.jsonl "gdrive:kalshi-bot-archive/registry/perp-ta-run-$GITHUB_RUN_ID.jsonl"
       - name: Summary on the commit
         env:
           GH_TOKEN: ${{ github.token }}

@@ -409,8 +409,10 @@ export const POLICIES: Policy[] = [
   { id: 'TR1.5', sl: 1.5, tp: 0, max: 480, trail: 1.5 },
 ];
 
-export interface Costs { takerBps: number; makerBps: number; halfSpreadBps: number }
-export const KALSHI_COSTS: Costs = { takerBps: 12, makerBps: 5, halfSpreadBps: 2 };
+/** ttBps: how far price must trade THROUGH a resting target before it counts as filled (a bare touch of the Binance
+ *  high or low does not fill a maker order at the back of the queue). */
+export interface Costs { takerBps: number; makerBps: number; halfSpreadBps: number; ttBps?: number }
+export const KALSHI_COSTS: Costs = { takerBps: 12, makerBps: 5, halfSpreadBps: 2, ttBps: 1 };
 
 /** The 15-minute ATR(14) as a fraction of price, known at the end of each minute (last closed 15m bar). */
 export function atrUnit(g: Grid, nMax: number): Float32Array {
@@ -427,7 +429,7 @@ export function outcomes(g: Grid, nMax: number, unit: Float32Array, costs: Costs
   const cum = new Float64Array(nMax + 1); // cum[i + 1] = funding applied at the ends of minutes 0..i
   for (let i = 0; i < nMax; i++) cum[i + 1] = cum[i] + fund[i];
   const net: Float32Array[] = [], exit: Int32Array[] = [], hold: Uint16Array[] = [];
-  const takerSide = costs.takerBps + costs.halfSpreadBps, makerSide = costs.makerBps;
+  const takerSide = costs.takerBps + costs.halfSpreadBps, makerSide = costs.makerBps, tt = (costs.ttBps ?? 1) / 1e4;
   for (const p of pols) for (const d of [1, -1]) {
     const nt = new Float32Array(nMax).fill(NaN), ex = new Int32Array(nMax).fill(-1), hd = new Uint16Array(nMax);
     for (let i = 0; i + 1 < nMax; i++) {
@@ -439,18 +441,21 @@ export function outcomes(g: Grid, nMax: number, unit: Float32Array, costs: Costs
       const tpPx = p.tp > 0 ? P0 * (1 + d * p.tp * A) : NaN;
       const last = e + p.max - 1;
       if (last >= nMax) continue;
-      let fill = NaN, maker = false, j = e, best = P0;
+      let fill = NaN, maker = false, j = e, best = P0, gap = false;
       for (; j <= last; j++) {
+        // A trade open across missing minutes (forward-filled flat bars) cannot be judged: dropped.
+        if (!valid[j]) { gap = true; break; }
         if (d > 0) {
           if (pl[j] <= stop) { fill = j > e && po[j] < stop ? po[j] : stop; break; }
-          if (p.tp > 0 && ph[j] > tpPx) { fill = tpPx; maker = true; break; }
+          if (p.tp > 0 && ph[j] >= tpPx * (1 + tt)) { fill = tpPx; maker = true; break; }
           if (p.trail) { if (pc[j] > best) best = pc[j]; const ts = best * (1 - p.trail * A); if (ts > stop) stop = ts; }
         } else {
           if (ph[j] >= stop) { fill = j > e && po[j] > stop ? po[j] : stop; break; }
-          if (p.tp > 0 && pl[j] < tpPx) { fill = tpPx; maker = true; break; }
+          if (p.tp > 0 && pl[j] <= tpPx * (1 - tt)) { fill = tpPx; maker = true; break; }
           if (p.trail) { if (pc[j] < best) best = pc[j]; const ts = best * (1 + p.trail * A); if (ts < stop) stop = ts; }
         }
       }
+      if (gap) continue;
       if (j > last) { j = last; fill = pc[last]; }
       // Funding at the ends of minutes e .. j - 1 (a position exited during or at the close of minute j is flat
       // before the instant that ends it).
@@ -550,7 +555,7 @@ export interface CellRec {
    *  the same condition with the same exit and side (exc, tExc: what the signal adds; drift and fees cancel). */
   disc: { n: number; mean: number; t: number; hit: number; exc: number; tExc: number };
   /** The same cell traded the other way (the other mode): what a reversed signal does. */
-  rev: { n: number; mean: number; t: number };
+  rev: { n: number; mean: number; t: number; exc?: number; tExc?: number };
   placebo?: { pct: number; mean: number; sd: number; shifts: number };
 }
 
@@ -589,7 +594,9 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
   /** The bot's TA modules (research/perpTaModules.ts); false = classic families only. */
   modules?: false | { history?: string; forecasts?: string; cacheDir?: string };
   /** 'ctx' (default): every trigger alone and with each context filter (FILTERS); 'all': every ordered pair. */
-  pairs?: 'ctx' | 'all' }): SweepOut {
+  pairs?: 'ctx' | 'all';
+  /** Fewest discovery trades for a cell to be a candidate (BH-eligible and given a placebo); smaller cells still count in m. */
+  minBhN?: number }): SweepOut {
   const log = o.log ?? console.log;
   const minN = o.minN ?? 30, storeT = o.storeT ?? 2.5;
   const nMax = Math.min(g.n, Math.max(0, Math.round((o.seal - g.t0) / MIN)));
@@ -698,20 +705,24 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
       const d = discStats(acc, cb, fo.discovery);
       if (!(d.n >= minN) || !fin(d.tExc)) continue;
       tested++;
-      tHist[Math.max(0, Math.min(80, Math.round((d.tExc + 10) * 4)))]++;
+      tHist[Math.max(0, Math.min(80, Math.floor((d.tExc + 10) * 4)))]++; // bin b holds t in [b/4 - 10, (b+1)/4 - 10)
       tally(r, d.tExc >= storeT);
       if (d.tExc < storeT) continue;
       const rv = discStats(acc, cellIdx(1 - mode, p, side, c) * NF * NS, fo.discovery);
       const f: number[][] = [];
       for (let k = 0; k < NF; k++) { const b = cb + k * NS; f.push([acc[b], +acc[b + 1].toFixed(1), +acc[b + 2].toFixed(0), acc[b + 3], acc[b + 4], +acc[b + 5].toFixed(1), +acc[b + 6].toFixed(0), +acc[b + 7].toFixed(0)]); }
-      recs.push({ a: g.asset, rule: r.id, mode: mode ? 'fade' : 'follow', pol: POLICIES[p].id, side: side ? 'short' : 'long', cond: CONDS[c], f, disc: { n: d.n, mean: +d.mean.toFixed(2), t: +d.t.toFixed(3), hit: +d.hit.toFixed(3), exc: +d.exc.toFixed(2), tExc: +d.tExc.toFixed(3) }, rev: { n: rv.n, mean: +rv.mean.toFixed(2), t: +(rv.t || 0).toFixed(3) } });
+      recs.push({ a: g.asset, rule: r.id, mode: mode ? 'fade' : 'follow', pol: POLICIES[p].id, side: side ? 'short' : 'long', cond: CONDS[c], f, disc: { n: d.n, mean: +d.mean.toFixed(2), t: +d.t.toFixed(3), hit: +d.hit.toFixed(3), exc: +d.exc.toFixed(2), tExc: +d.tExc.toFixed(3) }, rev: { n: rv.n, mean: +rv.mean.toFixed(2), t: +(rv.t || 0).toFixed(3), exc: +(rv.exc || 0).toFixed(2), tExc: +(rv.tExc || 0).toFixed(3) } });
     }
     if (done % 1000 === 0) log(`rules ${done}/${todo.length}: ${tested} cells tested, ${recs.length} stored (${((Date.now() - t) / 60000).toFixed(1)} min)`);
   }
   log(`sweep: ${todo.length} rules, ${tested} cells tested, ${recs.length} stored with t >= ${storeT} in ${((Date.now() - t) / 60000).toFixed(1)} min`);
 
   // Placebo for the strongest stored cells: the rule's own entries moved by whole days (the time of day kept).
-  const top = [...recs].filter((r) => r.disc.mean > 0).sort((x, y) => y.disc.tExc - x.disc.tExc).slice(0, o.placeboTop ?? 1500);
+  // Placebo slots: the cell each group (coin, rule, mode, side) would put forward (its best discovery excess t among cells
+  // that survive the +3 bps per side stress), best groups first: the report judges exactly these representatives.
+  const repBest = new Map<string, CellRec>();
+  for (const r of recs) { if (!(r.disc.mean - 6 > 0) || !(r.disc.n >= (o.minBhN ?? 100))) continue; const k = `${r.rule}|${r.mode}|${r.side}`, b = repBest.get(k); if (!b || r.disc.tExc > b.disc.tExc) repBest.set(k, r); }
+  const top = [...repBest.values()].sort((x, y) => y.disc.tExc - x.disc.tExc).slice(0, o.placeboTop ?? 3000);
   const S = o.shifts ?? 60, days = Math.floor(nMax / 1440);
   const shifts = Array.from({ length: S }, (_, k) => Math.round(7 + (k * (days - 14)) / Math.max(1, S - 1)) * 1440).filter((s) => s > 0 && s < nMax);
   const byRule = new Map<string, RuleDef>(todo.map((r) => [r.id, r]));
@@ -737,7 +748,7 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
     schema: 'perpta-sweep2', asset: g.asset, at: new Date().toISOString(), t0: new Date(g.t0).toISOString(), seal: new Date(o.seal).toISOString(), validFrom: new Date(o.validFrom).toISOString(),
     nMinutes: nMax, prims: prims.map((p) => p.id), filters: filt.map((b) => prims[b].id), rules: todo.length, bySource: bySrc, modules: mod?.notes ?? 'off', tested, stored: recs.length, storeT, minN, tHist, folds: fo.labels, discoveryFolds: fo.discovery,
     foldDays: fo.starts.map((s, k) => +(((k + 1 < fo.starts.length ? fo.starts[k + 1] : nMax) - s) / 1440).toFixed(2)),
-    policies: POLICIES, conds: CONDS, costs: o.costs,
+    policies: POLICIES, conds: CONDS, costs: o.costs, minBhN: o.minBhN ?? 100,
     triggersPerDay: Object.fromEntries(prims.map((p, k) => [p.id, +(trig[k].idx.length / (nMax / 1440)).toFixed(2)])),
   };
   return { header, recs };
@@ -786,8 +797,72 @@ export function pbo(M: number[][]): number {
   return below / total;
 }
 
-export interface Candidate extends CellRec { p: number; val: Pooled; discPooled: Pooled; tradesPerDay: number; usdPerHourPer1k: number; valUsdPerHourPer1k: number; stress6: number; why: string[] }
+/** P(T > t) for Student's t with df degrees of freedom (regularized incomplete beta; normal tail for df > 2000). */
+export function tSf(t: number, df: number): number {
+  if (!fin(t)) return 1;
+  if (!(df >= 1)) return 1;
+  if (df > 2000) return normSf(t);
+  const x = df / (df + t * t), p = 0.5 * ibeta(x, df / 2, 0.5);
+  return t >= 0 ? p : 1 - p;
+}
+function ibeta(x: number, a: number, b: number): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const lbeta = lgamma(a + b) - lgamma(a) - lgamma(b);
+  const front = Math.exp(Math.log(x) * a + Math.log(1 - x) * b + lbeta);
+  return x < (a + 1) / (a + b + 2) ? (front * betacf(x, a, b)) / a : 1 - (front * betacf(1 - x, b, a)) / b;
+}
+function betacf(x: number, a: number, b: number): number {
+  const TINY = 1e-300;
+  let c = 1, d = 1 - ((a + b) * x) / (a + 1);
+  if (Math.abs(d) < TINY) d = TINY;
+  d = 1 / d;
+  let h = d;
+  for (let m = 1; m <= 300; m++) {
+    const m2 = 2 * m;
+    let aa = (m * (b - m) * x) / ((a + m2 - 1) * (a + m2));
+    d = 1 + aa * d; if (Math.abs(d) < TINY) d = TINY; c = 1 + aa / c; if (Math.abs(c) < TINY) c = TINY; d = 1 / d; h *= d * c;
+    aa = (-(a + m) * (a + b + m) * x) / ((a + m2) * (a + m2 + 1));
+    d = 1 + aa * d; if (Math.abs(d) < TINY) d = TINY; c = 1 + aa / c; if (Math.abs(c) < TINY) c = TINY; d = 1 / d;
+    const del = d * c; h *= del;
+    if (Math.abs(del - 1) < 1e-12) break;
+  }
+  return h;
+}
+function lgamma(z: number): number { // Lanczos
+  const g = 7, cf = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if (z < 0.5) return Math.log(Math.PI / Math.abs(Math.sin(Math.PI * z))) - lgamma(1 - z);
+  z -= 1;
+  let x = cf[0];
+  for (let i = 1; i < g + 2; i++) x += cf[i] / (z + i);
+  const t = z + g + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
 
+/** Benjamini-Hochberg: the indices (into ps) rejected at q with m hypotheses (m >= ps.length: untested-here ones have p = 1). */
+function bhReject(ps: number[], q: number, m = ps.length): Set<number> {
+  const ord = ps.map((p, i) => [p, i] as const).sort((a, b) => a[0] - b[0]);
+  let kMax = 0;
+  ord.forEach(([p], k) => { if (p <= (q * (k + 1)) / m) kMax = k + 1; });
+  return new Set(ord.slice(0, kMax).map(([, i]) => i));
+}
+
+/** A cell reading the forecasts or forecast conditions: their model selection (tournament hyperparameters, the input
+ *  cull) saw 2024-2026 outcomes, past the seal, so they are diagnostic only until re-exported on cut history. */
+const FORECAST_CONDS = new Set(['tanet_vol_hi', 'tanet_vol_lo', 'lib_trend', 'lib_revert', 'lib_breakout', 'lib_flat']);
+export const isDiagnostic = (c: { rule: string; cond: string }) => c.rule.split('+').some((id) => sourceOf(id) === 'TA Net / Librarian / cross graph') || FORECAST_CONDS.has(c.cond);
+
+export interface Candidate extends CellRec { p: number; val: Pooled; discPooled: Pooled; tradesPerDay: number; usdPerHourPer1k: number; valUsdPerHourPer1k: number; stress6: number; why: string[]; group: string; valP?: number; diagnostic: boolean }
+
+/** The report. Selection, all pre-registered (/mnt/project-files/perp-ta/preregistration.md):
+ *   1. every tested cell of every coin is one hypothesis (m); a cell with >= minBhN discovery trades gets the one-sided
+ *      Student-t p of its discovery excess (variance floored at the random entries'); Benjamini-Hochberg at q
+ *   2. each group (coin, rule, mode, side) puts forward ONE cell, chosen on discovery alone: its best excess t among
+ *      cells that survive +3 bps per side (net - 6 bps > 0) with >= minBhN trades (the sweep gave exactly these a placebo)
+ *   3. the representative must be a BH discovery, positive and above random in >= 60% of discovery half-years, placebo
+ *      percentile >= 0.95, reversed excess < 0 (a mechanical check: kept as a leak flag)
+ *   4. validation: Benjamini-Hochberg at q over the representatives left (forecast-reading ones excluded: diagnostic) on
+ *      the one-sided t-test of the validation excess (>= 30 trades), and validation net > 0 and excess > 0. */
 export function report(files: string[], o: { q?: number; minBps?: number; log?: (m: string) => void }): { summary: Record<string, unknown>; candidates: Candidate[]; funnel: Record<string, number>; md: string } {
   const log = o.log ?? console.log;
   const q = o.q ?? 0.1, minBps = o.minBps ?? 3;
@@ -799,73 +874,96 @@ export function report(files: string[], o: { q?: number; minBps?: number; log?: 
   }
   const m = headers.reduce((a, h) => a + h.tested, 0);
   const hdr = new Map(headers.map((h) => [h.asset as string, h]));
-  // Benjamini-Hochberg over every tested cell of every coin, on the excess over random entries (one-sided: the signal
-  // adds to what any entry in that month, condition, side and exit made).
-  const withP = recs.map((r) => ({ r, p: normSf(r.disc.tExc) })).sort((a, b) => a.p - b.p);
-  let kMax = 0;
-  withP.forEach((x, k) => { if (x.p <= (q * (k + 1)) / m) kMax = k + 1; });
-  const bh = withP.slice(0, kMax);
-  const funnel: Record<string, number> = { tested: m, stored: recs.length, bh: bh.length };
+  const minBhN = (a: string) => (hdr.get(a)?.minBhN as number | undefined) ?? 100;
+  // 1. BH over every tested cell.
+  const elig = recs.filter((r) => r.disc.n >= minBhN(r.a));
+  const pEl = elig.map((r) => tSf(r.disc.tExc, r.disc.n - 1));
+  const bhIdx = bhReject(pEl, q, m);
+  const bhSet = new Set<CellRec>([...bhIdx].map((i) => elig[i]));
+  const pOf = new Map<CellRec, number>(elig.map((r, i) => [r, pEl[i]]));
+  // 2. One representative per group, on discovery alone.
+  const groupOf = (r: CellRec) => `${r.a}|${r.rule}|${r.mode}|${r.side}`;
+  const reps = new Map<string, CellRec>();
+  for (const r of elig) { if (!(r.disc.mean - 6 > 0)) continue; const k = groupOf(r), b = reps.get(k); if (!b || r.disc.tExc > b.disc.tExc) reps.set(k, r); }
   const cands: Candidate[] = [];
-  for (const { r, p } of bh) {
+  for (const [g, r] of reps) {
     const h = hdr.get(r.a)!, D = h.discoveryFolds as number, NF = (h.folds as string[]).length;
     const disc = pool(r.f, 0, D), val = pool(r.f, D, NF);
     const fd = h.foldDays as number[], days = fd.slice(0, D).reduce((a, b) => a + b, 0), vDays = fd.slice(D).reduce((a, b) => a + b, 0);
     const why: string[] = [];
+    if (!bhSet.has(r)) why.push('not a discovery under Benjamini-Hochberg');
     if (disc.mean < minBps) why.push(`discovery ${disc.mean.toFixed(1)} bps/trade < ${minBps}`);
-    if (disc.mean - 6 <= 0) why.push('fails +3 bps/side stress');
     if (disc.pos < Math.ceil(0.6 * disc.folds) || disc.excPos < Math.ceil(0.6 * disc.folds)) why.push(`net positive in ${disc.pos}/${disc.folds} discovery half-years, above random in ${disc.excPos}`);
-    if (r.rev.mean >= 0) why.push(`reversed also makes ${r.rev.mean} bps`);
+    if (r.rev.exc !== undefined ? r.rev.exc >= 0 : r.rev.mean >= 0) why.push(`reversed excess ${r.rev.exc ?? r.rev.mean} >= 0`);
     if (!r.placebo) why.push('no placebo run'); else if (r.placebo.pct < 0.95) why.push(`placebo percentile ${r.placebo.pct}`);
-    if (!(val.n >= 10)) why.push(`only ${val.n} validation trades`);
-    else if (!(val.mean > 0 && val.t >= 1 && val.exc > 0)) why.push(`validation ${val.mean.toFixed(1)} bps/trade (t ${val.t.toFixed(2)}), ${val.exc.toFixed(1)} above random`);
+    const diagnostic = isDiagnostic(r);
+    if (diagnostic) why.push('reads a forecast whose model selection saw 2024-2026: diagnostic only');
     const tradesPerDay = disc.n / days;
-    cands.push({ ...r, p, val, discPooled: disc, tradesPerDay: +tradesPerDay.toFixed(2), usdPerHourPer1k: +((disc.mean / 1e4) * 1000 * tradesPerDay / 24).toFixed(3), valUsdPerHourPer1k: +((val.mean / 1e4) * 1000 * (val.n / Math.max(1, vDays)) / 24).toFixed(3), stress6: +(disc.mean - 6).toFixed(2), why });
+    cands.push({ ...r, p: pOf.get(r) ?? 1, val, discPooled: disc, tradesPerDay: +tradesPerDay.toFixed(2), usdPerHourPer1k: +((disc.mean / 1e4) * 1000 * tradesPerDay / 24).toFixed(3), valUsdPerHourPer1k: +((val.mean / 1e4) * 1000 * (val.n / Math.max(1, vDays)) / 24).toFixed(3), stress6: +(disc.mean - 6).toFixed(2), why, group: g, diagnostic });
   }
-  const keep = (k: string, f: (c: Candidate) => boolean) => { funnel[k] = cands.filter(f).length; };
-  keep('bh+economic', (c) => c.discPooled.mean >= minBps && c.stress6 > 0);
-  const stable = (c: Candidate) => c.discPooled.pos >= Math.ceil(0.6 * c.discPooled.folds) && c.discPooled.excPos >= Math.ceil(0.6 * c.discPooled.folds);
-  keep('+stable', (c) => c.discPooled.mean >= minBps && c.stress6 > 0 && stable(c));
-  keep('+reversed', (c) => c.discPooled.mean >= minBps && c.stress6 > 0 && stable(c) && c.rev.mean < 0);
-  keep('+placebo', (c) => c.why.filter((w) => !w.startsWith('only') && !w.startsWith('validation')).length === 0);
-  keep('+validation', (c) => c.why.length === 0);
+  // 4. Validation: BH over the representatives that passed every discovery check.
+  const discOk = (c: Candidate) => c.why.length === 0 || (c.why.length === 1 && c.diagnostic);
+  const fam = cands.filter((c) => discOk(c) && !c.diagnostic);
+  const vp = fam.map((c) => (c.val.n >= 30 ? tSf(c.val.tExc, c.val.n - 1) : 1));
+  const vRej = bhReject(vp, q);
+  fam.forEach((c, i) => { c.valP = +vp[i].toExponential(3); });
+  for (const c of cands.filter(discOk)) {
+    const i = fam.indexOf(c);
+    if (!(c.val.n >= 30)) c.why.push(`only ${c.val.n} validation trades`);
+    else if (!(c.val.mean > 0 && c.val.exc > 0)) c.why.push(`validation ${c.val.mean.toFixed(1)} bps/trade, ${c.val.exc.toFixed(1)} above random`);
+    else if (i >= 0 && !vRej.has(i)) c.why.push(`validation excess t ${c.val.tExc.toFixed(2)} not a discovery under Benjamini-Hochberg over ${fam.length} groups`);
+    else if (i < 0) { const pv = tSf(c.val.tExc, c.val.n - 1); c.valP = +pv.toExponential(3); }
+  }
+  const funnel: Record<string, number> = { tested: m, stored: recs.length, [`n>=${minBhN(recs[0]?.a ?? '')}`]: elig.length, bh: bhSet.size, groups: reps.size };
+  const has = (c: Candidate, pre: string) => c.why.some((w) => w.startsWith(pre));
+  funnel['+bh'] = cands.filter((c) => !has(c, 'not a discovery')).length;
+  funnel['+economic'] = cands.filter((c) => !has(c, 'not a discovery') && !has(c, 'discovery ')).length;
+  funnel['+stable'] = cands.filter((c) => !has(c, 'not a discovery') && !has(c, 'discovery ') && !has(c, 'net positive')).length;
+  funnel['+reversed'] = cands.filter((c) => !has(c, 'not a discovery') && !has(c, 'discovery ') && !has(c, 'net positive') && !has(c, 'reversed')).length;
+  funnel['+placebo'] = cands.filter(discOk).length;
+  funnel['non-forecast'] = fam.length;
+  funnel['+validation'] = cands.filter((c) => c.why.length === 0).length;
   const pass = cands.filter((c) => c.why.length === 0);
-  // CSCV over the 200 strongest BH cells (per-fold means; folds without trades count 0).
-  const topM = [...cands].sort((a, b) => b.disc.tExc - a.disc.tExc).slice(0, 200);
+  // CSCV over the 200 strongest groups (their discovery representative from every stored cell), per-fold excess means
+  // over discovery and validation folds; an odd fold count drops the oldest.
+  const best200 = new Map<string, CellRec>();
+  for (const r of recs) { const k = groupOf(r), b = best200.get(k); if (!b || r.disc.tExc > b.disc.tExc) best200.set(k, r); }
+  const topM = [...best200.values()].sort((a, b) => b.disc.tExc - a.disc.tExc).slice(0, 200);
   const NFmin = Math.min(...topM.map((c) => c.f.length));
-  const PBO = topM.length >= 2 ? pbo(topM.map((c) => c.f.slice(c.f.length - NFmin).map((x) => (x[0] ? x[1] / x[0] : 0)))) : NaN;
+  const PBO = topM.length >= 2 ? pbo(topM.map((c) => { const f = c.f.slice(c.f.length - NFmin); const off = f.length % 2; return f.slice(off).map((x) => (x[0] ? x[5] / x[0] : 0)); })) : NaN;
   // The t distribution of all tested cells (null ~ N(0, 1) if nothing works and nothing leaks).
   const tAll = new Array(81).fill(0);
   for (const h of headers) (h.tHist as number[]).forEach((v, i) => { tAll[i] += v; });
   const share = (lo: number) => tAll.reduce((a, v, i) => a + (i / 4 - 10 >= lo ? v : 0), 0) / Math.max(1, m);
-  const summary = { at: new Date().toISOString(), assets: headers.map((h) => h.asset), tested: m, q, minBps, funnel, pbo: PBO, tShareAbove2: +share(2).toFixed(4), tShareAbove3: +share(3).toFixed(5), normalAbove2: 0.0228, normalAbove3: 0.00135, perAsset: headers.map((h) => ({ asset: h.asset, tested: h.tested, stored: h.stored, minutes: h.nMinutes, folds: h.folds, discovery: h.discoveryFolds, prims: (h.prims as string[]).length, modules: h.modules })) } as Record<string, unknown>;
+  const summary = { at: new Date().toISOString(), assets: headers.map((h) => h.asset), tested: m, q, minBps, funnel, pbo: PBO, tShareAbove2: +share(2).toFixed(4), tShareAbove3: +share(3).toFixed(5), normalAbove2: 0.0228, normalAbove3: 0.00135, perAsset: headers.map((h) => ({ asset: h.asset, tested: h.tested, stored: h.stored, minutes: h.nMinutes, folds: h.folds, discovery: h.discoveryFolds, prims: (h.prims as string[]).length, modules: h.modules, costs: h.costs })) } as Record<string, unknown>;
   const f1 = (x: number) => (fin(x) ? x.toFixed(1) : '-');
-  const fmt = (c: Candidate) => `| ${c.a} | ${c.rule} | ${c.mode} | ${c.pol} | ${c.side} | ${c.cond} | ${c.disc.n} | ${c.disc.mean} | ${c.disc.exc} | ${c.disc.tExc} | ${c.placebo ? c.placebo.pct : '-'} | ${c.rev.mean} | ${c.val.n} | ${f1(c.val.mean)} | ${f1(c.val.exc)} | ${c.tradesPerDay} | ${c.valUsdPerHourPer1k} | ${c.why.join('; ') || 'PASS'} |`;
-  const head = '| coin | rule | mode | exit | side | condition | disc n | disc bps | disc excess | excess t | placebo | reversed bps | val n | val bps | val excess | trades/day | val $/h per $1k | verdict |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
+  const fmt = (c: Candidate) => `| ${c.a} | ${c.rule} | ${c.mode} | ${c.pol} | ${c.side} | ${c.cond} | ${c.disc.n} | ${c.disc.mean} | ${c.disc.exc} | ${c.disc.tExc} | ${c.placebo ? c.placebo.pct : '-'} | ${c.val.n} | ${f1(c.val.mean)} | ${f1(c.val.exc)} | ${f1(c.val.tExc)} | ${c.tradesPerDay} | ${c.valUsdPerHourPer1k} | ${c.why.join('; ') || 'PASS'} |`;
+  const head = '| coin | rule | mode | exit | side | condition | disc n | disc bps | disc excess | excess t | placebo | val n | val bps | val excess | val excess t | trades/day | val $/h per $1k | verdict |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
   const rank = (a: Candidate, b: Candidate) => (a.why.length - b.why.length) || (b.disc.tExc - a.disc.tExc);
-  // The table: the best cell per coin, trigger, mode and side (the same signal under other filters, exits and conditions
-  // is counted in the funnel, not repeated here).
+  // The table: the best group per coin, trigger, mode and side (the same signal under other filters is in the funnel).
   const seen = new Set<string>();
   const best = [...cands].sort(rank).filter((c) => { const k = `${c.a}|${c.rule.split('+')[0]}|${c.mode}|${c.side}`; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 40);
-  // By source (the bot's modules vs the classic families): tested / stored from the sweeps, BH and pass from here.
+  // By source (the bot's modules vs the classic families): tested / stored from the sweeps; groups, BH and pass here.
   const src: Record<string, { tt: number; ts: number; tb: number; tp: number; ft: number; fs: number; fb: number; fp: number }> = {};
   const S = (k: string) => (src[k] ??= { tt: 0, ts: 0, tb: 0, tp: 0, ft: 0, fs: 0, fb: 0, fp: 0 });
   for (const h of headers) for (const [k, v] of Object.entries((h.bySource ?? {}) as Record<string, { trig: number[]; filt: number[] }>)) { const x = S(k); x.tt += v.trig[0]; x.ts += v.trig[1]; x.ft += v.filt[0]; x.fs += v.filt[1]; }
   const srcOf = (c: Candidate) => { const [a, b] = c.rule.split('+'); return [sourceOf(a), b ? sourceOf(b) : undefined] as const; };
-  for (const c of cands) { const [a, b] = srcOf(c); S(a).tb++; if (!c.why.length) S(a).tp++; if (b) { S(b).fb++; if (!c.why.length) S(b).fp++; } }
+  for (const c of cands) { if (has(c, 'not a discovery')) continue; const [a, b] = srcOf(c); S(a).tb++; if (!c.why.length) S(a).tp++; if (b) { S(b).fb++; if (!c.why.length) S(b).fp++; } }
   summary.bySource = src;
-  const bestBySrc = Object.keys(src).flatMap((k) => { const sn = new Set<string>(); return cands.filter((c) => srcOf(c)[0] === k).sort(rank).filter((c) => { const key = `${c.a}|${c.rule.split('+')[0]}`; if (sn.has(key)) return false; sn.add(key); return true; }).slice(0, 3); });
+  const bestBySrc = Object.keys(src).flatMap((k) => { const sn = new Set<string>(); return cands.filter((c) => srcOf(c)[0] === k && !has(c, 'not a discovery')).sort(rank).filter((c) => { const key = `${c.a}|${c.rule.split('+')[0]}`; if (sn.has(key)) return false; sn.add(key); return true; }).slice(0, 3); });
+  const diag = cands.filter((c) => c.diagnostic && !has(c, 'not a discovery')).sort(rank).slice(0, 10);
   const md = [
     `### Perp TA sweep, round 1 (with the bot's TA modules)`,
-    `Tested ${m.toLocaleString()} cells (${headers.map((h) => `${h.asset} ${h.tested.toLocaleString()}`).join(', ')}); Benjamini-Hochberg q=${q}: ${bh.length} pass discovery.`,
+    `Tested ${m.toLocaleString()} cells (${headers.map((h) => `${h.asset} ${h.tested.toLocaleString()}`).join(', ')}); Benjamini-Hochberg q=${q} on Student-t p of the discovery excess (cells with >= ${minBhN(recs[0]?.a ?? '')} trades): ${bhSet.size} cells pass, in ${funnel['+bh']} of ${reps.size} groups (coin, rule, mode, side).`,
     `Share of cells whose discovery excess over random entries has t >= 2: ${(share(2) * 100).toFixed(2)}% (pure noise would give 2.28%); t >= 3: ${(share(3) * 100).toFixed(3)}% (noise 0.135%).`,
-    `Funnel: ${Object.entries(funnel).map(([k, v]) => `${k} ${v}`).join(' -> ')}. CSCV PBO over the top ${topM.length}: ${fin(PBO) ? PBO.toFixed(2) : 'n/a'}.`,
-    `Passing every check: ${pass.length}.`,
+    `Funnel (groups after "groups"): ${Object.entries(funnel).map(([k, v]) => `${k} ${v}`).join(' -> ')}. CSCV PBO over the top ${topM.length} groups: ${fin(PBO) ? PBO.toFixed(2) : 'n/a'}.`,
+    `Passing every check, validation included: ${pass.length}. Costs: taker ${headers[0]?.costs?.takerBps} + half-spread ${headers[0]?.costs?.halfSpreadBps} bps per taker side, maker ${headers[0]?.costs?.makerBps} bps (targets need a ${headers[0]?.costs?.ttBps ?? 0} bp trade-through), Kalshi funding signed.`,
     '', head, ...best.map(fmt),
-    '', '**By source** (cells with that source as the trigger / as the filter: tested, discovery excess t >= 2.5, Benjamini-Hochberg pass, every check passed)',
-    '| source | trigger tested | t >= 2.5 | BH | pass | filter tested | t >= 2.5 | BH | pass |', '|---|---|---|---|---|---|---|---|---|',
+    '', '**By source** (cells with that source as the trigger / as the filter: tested, discovery excess t >= 2.5 in the sweep; groups whose representative is a BH discovery, and groups passing every check)',
+    '| source | trigger tested | t >= 2.5 | BH groups | pass | filter tested | t >= 2.5 | BH groups | pass |', '|---|---|---|---|---|---|---|---|---|',
     ...Object.entries(src).sort((a, b) => b[1].tt - a[1].tt).map(([k, x]) => `| ${k} | ${x.tt.toLocaleString()} | ${x.ts.toLocaleString()} | ${x.tb} | ${x.tp} | ${x.ft.toLocaleString()} | ${x.fs.toLocaleString()} | ${x.fb} | ${x.fp} |`),
     ...(bestBySrc.length ? ['', '**Best per trigger source**', '', head, ...bestBySrc.map(fmt)] : []),
+    ...(diag.length ? ['', '**Forecast-reading groups (diagnostic: the TA Net / Librarian / cross-graph model selection saw 2024-2026)**', '', head, ...diag.map(fmt)] : []),
     '', '<details><summary>Module coverage per coin</summary>', '',
     ...headers.map((h) => `- ${h.asset}: ${Array.isArray(h.modules) ? (h.modules as string[]).join('; ') : String(h.modules ?? 'n/a')}`),
     '', '</details>',
@@ -888,12 +986,17 @@ async function main(): Promise<void> {
       const { downloadBinance, downloadBinanceFunding, downloadBinanceOpenInterest } = await import('./history/binanceVision');
       const quiet = () => undefined;
       const from = arg('from-month', '2019-09')!;
-      await downloadBinance({ out: hist, assets: [asset], intervals: ['1m'], markets: ['spot'], source: 'binance-1m', fromMonth: from, log: quiet, concurrency: 8 });
-      await downloadBinance({ out: hist, assets: [asset], intervals: ['1m'], markets: ['um'], fromMonth: from, log: quiet, concurrency: 8 });
+      const sums = [
+        ...await downloadBinance({ out: hist, assets: [asset], intervals: ['1m'], markets: ['spot'], source: 'binance-1m', fromMonth: from, log: quiet, concurrency: 8 }),
+        ...await downloadBinance({ out: hist, assets: [asset], intervals: ['1m'], markets: ['um'], fromMonth: from, log: quiet, concurrency: 8 }),
+      ];
       await downloadBinanceFunding({ out: hist, assets: [asset], fromMonth: from, log: quiet });
       await downloadBinanceOpenInterest({ out: hist, assets: [asset], fromDay: `${from}-01`, log: quiet, concurrency: 8 });
       // Every coin's spot hourly bars: the character classifier's cross-coin correlation and the breadth reading.
-      await downloadBinance({ out: hist, assets: (arg('others', 'BTC,ETH,SOL,XRP')!).split(','), intervals: ['1h'], markets: ['spot'], source: 'binance-1h', fromMonth: from, log: quiet, concurrency: 8 });
+      sums.push(...await downloadBinance({ out: hist, assets: (arg('others', 'BTC,ETH,SOL,XRP')!).split(','), intervals: ['1h'], markets: ['spot'], source: 'binance-1h', fromMonth: from, log: quiet, concurrency: 8 }));
+      for (const x of sums) log(`${x.pair} ${x.market} ${x.tf}: ${x.listed} archives listed, ${x.fetched} fetched, ${x.skipped} kept, ${x.failed} FAILED, ${x.bars} bars${x.note ? ` (${x.note})` : ''}`);
+      const failed = sums.filter((x) => x.failed > 0);
+      if (failed.length) log(`WARNING: ${failed.length} series had failed downloads (gaps become invalid minutes): ${failed.map((x) => `${x.pair} ${x.market} ${x.tf}`).join(', ')}`);
       log(`${asset}: downloads done`);
     }
     writeGrid(await buildGrid(hist, asset, log), path.join(outDir, `${asset}.bin`));
@@ -902,10 +1005,10 @@ async function main(): Promise<void> {
   if (mode === 'sweep') {
     const g = readGrid(arg('data')!);
     const seal = Date.parse(arg('seal', '2025-07-01')! + 'T00:00:00Z'), validFrom = Date.parse(arg('valid-from', '2024-01-01')! + 'T00:00:00Z');
-    const costs: Costs = { takerBps: +arg('taker', '12')!, makerBps: +arg('maker', '5')!, halfSpreadBps: +arg('half-spread', '2')! };
+    const costs: Costs = { takerBps: +arg('taker', '12')!, makerBps: +arg('maker', '5')!, halfSpreadBps: +arg('half-spread', '2')!, ttBps: +arg('trade-through', '1')! };
     const shard = +arg('shard', '0')!, shards = +arg('shards', '1')!;
     const modules = arg('modules', 'true') === 'false' ? false as const : { history: arg('history'), forecasts: arg('forecasts'), cacheDir: arg('module-cache') };
-    const res = sweepAsset(g, { seal, validFrom, costs, log, modules, pairs: arg('pairs', 'ctx') === 'all' ? 'all' : 'ctx', placeboTop: +arg('placebo-top', '1500')!, shifts: +arg('shifts', '60')!, storeT: +arg('store-t', '2.5')!, rules: shards > 1 ? (r) => r.trig % shards === shard : undefined });
+    const res = sweepAsset(g, { seal, validFrom, costs, log, modules, pairs: arg('pairs', 'ctx') === 'all' ? 'all' : 'ctx', placeboTop: +arg('placebo-top', '3000')!, minBhN: +arg('min-bh-n', '100')!, shifts: +arg('shifts', '60')!, storeT: +arg('store-t', '2.5')!, rules: shards > 1 ? (r) => r.trig % shards === shard : undefined });
     const file = arg('out')!;
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, zlib.gzipSync([JSON.stringify({ ...res.header, shard, shards }), ...res.recs.map((r) => JSON.stringify(r))].join('\n') + '\n'));
@@ -920,6 +1023,16 @@ async function main(): Promise<void> {
     fs.writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(r.summary, null, 1));
     fs.writeFileSync(path.join(outDir, 'candidates.json.gz'), zlib.gzipSync(JSON.stringify(r.candidates)));
     fs.writeFileSync(path.join(outDir, 'summary.md'), r.md + '\n');
+    // Rows for the project trial registry (meta plan thread; gdrive:kalshi-bot-archive/registry/): the run and every
+    // group that passed the discovery checks, with N_raw = cells tested.
+    const now = new Date(), est = now.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false });
+    const run = process.env.GITHUB_RUN_ID ?? 'local', sha = process.env.GITHUB_SHA ?? '';
+    const base = { thread: 'perp-ta-rulebook', run, sha, at_utc: now.toISOString(), at_eastern: est, evidence: 'binance-history (spot TA, USD-M fills)', doge_excluded: true, prereg: '/mnt/project-files/perp-ta/preregistration.md' };
+    const rows = [
+      { ...base, kind: 'run', n_raw: r.summary.tested, funnel: r.funnel, pbo: r.summary.pbo, assets: r.summary.assets, blocks: { discovery: '< 2024-01-01', validation: '2024-01-01 .. 2025-06-30', sealed: '>= 2025-07-01 (not opened)' } },
+      ...r.candidates.filter((c) => !c.why.some((w) => w.startsWith('not a discovery'))).map((c) => ({ ...base, kind: 'group', group: c.group, pol: c.pol, cond: c.cond, disc: c.disc, val: { n: c.val.n, mean: +c.val.mean.toFixed(2), exc: +c.val.exc.toFixed(2), tExc: +c.val.tExc.toFixed(3) }, gate: c.why.length ? 'discovery' : 'validation', verdict: c.why.length ? c.why.join('; ') : 'PASS (awaiting the sealed blind test)', diagnostic: c.diagnostic })),
+    ];
+    fs.writeFileSync(path.join(outDir, 'registry.jsonl'), rows.map((x) => JSON.stringify(x)).join('\n') + '\n');
     return;
   }
   console.log('usage: perpTaSweep.ts prep|sweep|report (see the header)');
