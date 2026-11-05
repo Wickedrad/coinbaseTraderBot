@@ -354,6 +354,8 @@ def main(argv=None):
         fin = np.isfinite(pred)
         diag = dict(naive_exit_pnl=round(float(y_naive[chosen].sum()), 2),
                     p_yes=[round(float(btr.settle[:, 0].mean()), 4), round(float(bte.settle[:, 0].mean()), 4)],
+                    # P(settle YES) of every training-day window before the training filters (registry pyes_all)
+                    p_yes_train_all=round(float(np.mean(w.settle[np.isin(days, tr_days)])), 4),
                     pred_by_side=[round(float(pred[(rows_te['s'] == s_) & fin].mean()), 4) if np.any((rows_te['s'] == s_) & fin) else None
                                   for s_ in (0, 1)])
         # Hour slots of the test days that have data (te_days, sorted): a gap in the history does not shift the series.
@@ -383,8 +385,9 @@ def main(argv=None):
         side_price = np.where(si == 0, w.ask[te_idx][wi, ii], 1 - w.bid[te_idx][wi, ii])
         trades = dict(asset=w.asset[te_idx][wi].astype(int), side=si.astype(int), i=ii.astype(int), mode=rows_te['mode'][ci].astype(int),
                       pnl=y, rv60=F['rv60'][te_idx][wi, ii].astype(np.float64), tau_frac=(N - ii) / N, price=side_price,
-                      day=days[te_idx][wi])
-        folds.append(dict(fold=fi, train=[int(tr_days[0]), int(tr_days[-1])], test=[int(te_days[0]), int(te_days[-1])], hurdle=hurdle,
+                      day=days[te_idx][wi], spread=(w.ask - w.bid)[te_idx][wi, ii])
+        folds.append(dict(fold=fi, train=[int(tr_days[0]), int(tr_days[-1])], test=[int(te_days[0]), int(te_days[-1])],
+                          test_days=[int(d) for d in te_days], hurdle=hurdle,
                           val_per_hour={str(k): round(v, 3) for k, v in val_scores.items()}, oos=st, n_hours=n_hours,
                           random_placebo=[round(float(x), 4) for x in rp], shuffled_per_hour=[round(x, 4) for x in shuf],
                           train_positions=len(ptr), test_positions=len(pte), seconds=round(time.time() - t_f),
@@ -451,6 +454,16 @@ def aggregate(parts: list[dict]) -> dict:
             for v in np.unique(tr[key]):
                 sel = tr[key] == v
                 dst[lab(int(v))] = dict(n=int(sel.sum()), per_hour=round(float(pnl[sel].sum()) / total_hours, 3), avg=round(float(pnl[sel].mean()), 3))
+    # Registry fields: share of |P&L| from entries on books wider than 10c; P(settle YES) of the training pool vs all
+    # training-day windows (fold means).
+    wide = None
+    if len(pnl) and 'spread' in tr:
+        sp = np.asarray(tr['spread'], dtype=np.float64)
+        tot = float(np.abs(pnl).sum())
+        wide = round(float(np.abs(pnl[np.nan_to_num(sp, nan=1.0) > 0.10 + 1e-9]).sum()) / tot, 4) if tot > 0 else 0.0
+    pk = [f['diag']['p_yes'][0] for f in folds if (f.get('diag') or {}).get('p_yes')]
+    pa = [f['diag']['p_yes_train_all'] for f in folds if (f.get('diag') or {}).get('p_yes_train_all') is not None]
+    pyes = [round(float(np.mean(pk)), 4), round(float(np.mean(pa)), 4)] if pk and len(pa) == len(pk) else None
     eq = {}
     for name in ('policy', 'naive', 'oracle'):
         s_ = sum(f['exit_quality'][name][0] for f in folds)
@@ -474,6 +487,7 @@ def aggregate(parts: list[dict]) -> dict:
         losing_clusters=clusters[:3], winning_clusters=clusters[::-1][:3],
         shap_entry=shap_e, shap_exit_hold=shap_x, hourly_pnl=[round(float(x), 3) for x in hourly], fidelity=p0.get('fidelity'),
         trials_this_arm=p0['trials_this_arm'], seconds=sum(p.get('seconds', 0) for p in parts), parts=len(parts),
+        wide_spread_share=wide, pyes=pyes,
     )
 
 
