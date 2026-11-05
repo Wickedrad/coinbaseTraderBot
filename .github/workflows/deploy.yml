@@ -3,16 +3,8 @@
 #  - Merges are batched by count (Steven, Nov 5): main deploys once DEPLOY_MIN_MERGES (repository variable, default 3)
 #    merges have built up since the last successful production deploy. A lone merge still deploys once it has
 #    waited DEPLOY_MAX_WAIT_HOURS (default 48), so a small fix never sits forever.
-#    The count is checked at five set times, each landing the restart inside a session-edge window where the bot
-#    already takes no new entries (bot/model/sessions.ts, 40 min), and clear of the 07:15-08:15 UTC nightly Drive copy.
-#    Deploys take ~10-15 min:
-#      00:05 UTC / 7:05 PM EST -> Tokyo open (00:00-00:40)
-#      08:20 UTC / 3:20 AM EST -> London open (08:00-08:40), after the Drive copy
-#      14:35 UTC / 9:35 AM EST -> New York open (14:30-15:10), after the 9:15 AM EST daily health check
-#      15:55 UTC / 10:55 AM EST -> London close (15:50-16:30)
-#      20:25 UTC / 3:25 PM EST -> New York close (20:20-21:00)
-#    GitHub cron is UTC only: when US/UK daylight saving starts (March) these land an hour off the New York and
-#    London edges and need moving.
+#    The count is checked every hour at :25 (Steven, Nov 5), except 07:25 UTC, which would overlap the 07:15-08:15 UTC
+#    nightly Drive copy. Deploys take ~10-15 min.
 #  - Run manually from the Actions tab to redeploy main, or to deploy an existing release tag
 #    (v1.2.3) by entering it.
 #  - Rollback is one command on the server: `bash ~/bot/current/deploy/rollback.sh`.
@@ -29,11 +21,7 @@ name: Deploy
 
 on:
   schedule:
-    - cron: '5 0 * * *'
-    - cron: '20 8 * * *'
-    - cron: '35 14 * * *'
-    - cron: '55 15 * * *'
-    - cron: '25 20 * * *'
+    - cron: '25 0-6,8-23 * * *'
   workflow_dispatch:
     inputs:
       tag:
