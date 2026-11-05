@@ -32,6 +32,10 @@ export interface RiskLimits {
   maxOrderRiskFrac: number;
   /** Max fraction of bankroll at risk across all correlated crypto markets closing in the same window. */
   maxWindowRiskFrac: number;
+  /** RISK_SIZE_CAPS: the order, window and total risk caps (shares of the bankroll) in the risk gateway and in the
+   *  new-risk room. Off by default since Nov 5 (Steven: other modules decide the size). Free cash, the fat-finger
+   *  count, stale data, the price collars, the daily loss limit and the kill switch stay on either way. */
+  sizeCaps?: boolean;
   /** Max fraction of bankroll at risk across all open positions and resting orders. */
   maxTotalRiskFrac: number;
   /** Daily loss (realized + mark-to-market, fee-inclusive) that trips the kill switch. */
@@ -1081,6 +1085,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     maxOrderRiskFrac: num(env, 'RISK_MAX_ORDER_FRAC', 0.02, 0.001, 0.05),
     maxWindowRiskFrac: num(env, 'RISK_MAX_WINDOW_FRAC', 0.03, 0.001, 0.1),
     maxTotalRiskFrac: num(env, 'RISK_MAX_TOTAL_FRAC', 0.10, 0.001, 0.25),
+    sizeCaps: bool(env, 'RISK_SIZE_CAPS', false),
     dailyLossLimitFrac: num(env, 'RISK_DAILY_LOSS_FRAC', 0.03, 0.001, 0.2),
     dailyLossLimitUsd: num(env, 'RISK_DAILY_LOSS_USD', 5, 0.01, 100000),
     minSidePrice: num(env, 'RISK_MIN_SIDE_PRICE', 0.10, 0.01, 0.45),

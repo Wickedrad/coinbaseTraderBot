@@ -1184,6 +1184,7 @@ export class Engine {
     const totals = this.riskTotals(m.closeTime);
     const free = this.freeCash(this.shardOf(m.ticker));
     const lim = this.orderLimits(tier, bankroll);
+    if (this.d.cfg.risk.sizeCaps === false) return Math.max(0, free ?? Infinity); // RISK_SIZE_CAPS off: free cash only
     return Math.max(0, Math.min((lim.maxWindowRiskFrac ?? tier.windowFrac) * bankroll - totals.window, (lim.maxTotalRiskFrac ?? tier.totalFrac) * bankroll - totals.total, free ?? Infinity));
   }
 

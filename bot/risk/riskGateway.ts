@@ -163,9 +163,10 @@ export class RiskGateway {
     const addRisk = Math.max(0, c.marketRiskWith - c.marketRiskNow);
     const orderRisk = i.count * (sideCost + feePer);
     if (c.freeCash !== undefined && !onlyReduces && orderRisk > c.freeCash + EPS) r.push(`order cost $${orderRisk.toFixed(2)} > free cash $${Math.max(0, c.freeCash).toFixed(2)}${c.freeCashWhere ? ` ${c.freeCashWhere}` : ''}`);
-    if (orderRisk > L.maxOrderRiskFrac * bank + EPS) r.push(`order risk $${orderRisk.toFixed(2)} > ${(L.maxOrderRiskFrac * 100).toFixed(1)}% of $${bank.toFixed(2)}`);
-    if (c.windowRisk + addRisk > L.maxWindowRiskFrac * bank + EPS) r.push(`window risk $${(c.windowRisk + addRisk).toFixed(2)} > ${(L.maxWindowRiskFrac * 100).toFixed(1)}% cap`);
-    if (c.totalRisk + addRisk > L.maxTotalRiskFrac * bank + EPS) r.push(`total risk $${(c.totalRisk + addRisk).toFixed(2)} > ${(L.maxTotalRiskFrac * 100).toFixed(1)}% cap`);
+    // RISK_SIZE_CAPS (off by default): the shares-of-bankroll caps; the sizing modules decide the size without them.
+    if (L.sizeCaps !== false && orderRisk > L.maxOrderRiskFrac * bank + EPS) r.push(`order risk $${orderRisk.toFixed(2)} > ${(L.maxOrderRiskFrac * 100).toFixed(1)}% of $${bank.toFixed(2)}`);
+    if (L.sizeCaps !== false && c.windowRisk + addRisk > L.maxWindowRiskFrac * bank + EPS) r.push(`window risk $${(c.windowRisk + addRisk).toFixed(2)} > ${(L.maxWindowRiskFrac * 100).toFixed(1)}% cap`);
+    if (L.sizeCaps !== false && c.totalRisk + addRisk > L.maxTotalRiskFrac * bank + EPS) r.push(`total risk $${(c.totalRisk + addRisk).toFixed(2)} > ${(L.maxTotalRiskFrac * 100).toFixed(1)}% cap`);
 
     // Daily loss limit trips the kill switch (paper training override: advisory, handled by the engine).
     const limit = this.dailyLossLimit(bank, c.limitOverrides);

@@ -912,7 +912,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           totalRisk += l;
           if (closeOf.get(t) === m.closeTime) windowRisk += l;
         }
-        newRiskRoomUsd = Math.max(0, Math.min(tierLimits.maxWindowRiskFrac * bankroll - windowRisk, tierLimits.maxTotalRiskFrac * bankroll - totalRisk, await ex.getBalance()));
+        newRiskRoomUsd = limits.sizeCaps === false ? Math.max(0, await ex.getBalance()) : Math.max(0, Math.min(tierLimits.maxWindowRiskFrac * bankroll - windowRisk, tierLimits.maxTotalRiskFrac * bankroll - totalRisk, await ex.getBalance()));
       }
       const view: MarketView = {
         ticker: m.ticker, pYes, bestBid: bid, bestAsk: ask, position: pos.position(m.ticker), bankroll,

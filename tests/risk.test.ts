@@ -201,3 +201,19 @@ test('a resting exit (the exit curve\'s post-only sell) that sells no more than 
   // Still post-only: one that would cross the bid is refused.
   assert.match(gw.check({ ...rest, price: 0.45 }, c).reasons.join(';'), /post-only ask would cross/);
 });
+
+test('RISK_SIZE_CAPS off (the default): no order, window or total cap; free cash, daily loss and stale data still refuse', () => {
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).risk.sizeCaps, false);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), RISK_SIZE_CAPS: 'true' }).risk.sizeCaps, true);
+  const off = new RiskGateway({ ...limits, sizeCaps: false });
+  // $4.50 order (> 2% of $200), window and total already past their caps: the caps refuse it, off lets it through.
+  const big = intent({ count: 10 });
+  const full = ctx({ windowRisk: 50, totalRisk: 150, marketRiskWith: 4.5 });
+  assert.match(gw.check(big, full).reasons.join(';'), /order risk.*window risk.*total risk/);
+  assert.deepEqual(off.check(big, full).reasons, []);
+  assert.match(off.check(big, { ...full, freeCash: 1 }).reasons.join(';'), /free cash/);
+  assert.match(off.check(big, { ...full, bookUsable: false }).reasons.join(';'), /order book stale/);
+  const daily = off.check(big, { ...full, dailyPnl: -100 });
+  assert.equal(daily.ok, false);
+  assert.ok(daily.tripKill);
+});
