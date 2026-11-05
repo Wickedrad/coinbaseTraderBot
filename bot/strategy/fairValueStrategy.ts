@@ -298,7 +298,9 @@ export function loserNoEntry(v: Pick<MarketView, 'settleShare' | 'exitWindowOpen
 export function fvGatePasses(pFair: number | undefined, side: 'yes' | 'no', cost: number, fee: number, cfg: Pick<StrategyConfig, 'loserExits'>, maker = false): boolean {
   const L = cfg.loserExits;
   if (!L?.gate || pFair === undefined) return true;
-  return (side === 'yes' ? pFair : 1 - pFair) >= cost + fee + gateMarginFor(cfg, maker) - 1e-9;
+  // FV_ENTRY_GATE_LONGSHOT: a side bought under its price threshold needs at least the longshot margin.
+  const margin = L.longshot && cost < L.longshot.below ? Math.max(gateMarginFor(cfg, maker), L.longshot.margin) : gateMarginFor(cfg, maker);
+  return (side === 'yes' ? pFair : 1 - pFair) >= cost + fee + margin - 1e-9;
 }
 
 /** The gate's margin for an order: a resting maker quote's own (FV_ENTRY_GATE_QUOTE_MARGIN) when one is set. */

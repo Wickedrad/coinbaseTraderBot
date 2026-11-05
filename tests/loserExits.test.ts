@@ -349,3 +349,15 @@ test('LOSER_CUT_MODE=agree: sells only when the fair value fell to half the entr
   assert.equal(loserExit(ok, L({ cutMaxTau: 300 })), undefined);
   assert.ok(loserExit({ ...ok, tauSec: 200 }, L({ cutMaxTau: 300 })));
 });
+
+test('FV_ENTRY_GATE_LONGSHOT: a side bought under the threshold needs the longshot margin; dearer sides keep the gate\'s', () => {
+  assert.deepEqual(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_LONGSHOT: '0.25=0.15' }).strategy.loserExits!.longshot, { below: 0.25, margin: 0.15 });
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_LONGSHOT: '0.25' }));
+  const ls = { loserExits: { ...cfg.loserExits!, longshot: { below: 0.25, margin: 0.15 } } };
+  // NO at 0.20 with NO fair value 0.33: clears 6c (0.20 + fee + 0.06) but not 15c.
+  assert.ok(fvGatePasses(0.67, 'no', 0.2, 0.01, cfg));
+  assert.ok(!fvGatePasses(0.67, 'no', 0.2, 0.01, ls));
+  assert.ok(fvGatePasses(0.6, 'no', 0.2, 0.01, ls));
+  // At 0.30 (above the threshold) the 6c gate applies.
+  assert.ok(fvGatePasses(0.6, 'no', 0.3, 0.01, ls));
+});
