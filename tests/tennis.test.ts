@@ -328,9 +328,10 @@ test('engine: the quota snipe sells a tennis position whose profit after fees (e
 });
 
 import fs from 'fs';
-import { runTennisBacktest } from '../research/tennisBacktest';
+import { engineTennisRules, runTennisBacktest } from '../research/tennisBacktest';
 
-test('tennis backtest: underdog bought pre-start, trailed up the bounce, sold when it slipped below the stop', async () => {
+/** One match: the underdog is bought pre-start at 0.15, bounces to 0.30 (a wall at 0.28), slips to 0.27 and then 0.19. */
+function writeBounceMatch(): string {
   const dir = path.join(tmpDir(), 'rec');
   fs.mkdirSync(dir, { recursive: true });
   const t0 = Date.parse('2026-10-01T12:00:00Z');
@@ -352,12 +353,37 @@ test('tennis backtest: underdog bought pre-start, trailed up the bounce, sold wh
   ev.push({ t: t0 + 3 * 3600 * 1000 + 1000, k: 'result', ticker: 'KXATPMATCH-E-DOG', result: 'no' }, { t: t0 + 3 * 3600 * 1000 + 1000, k: 'result', ticker: 'KXATPMATCH-E-FAV', result: 'yes' });
   ev.push({ t: t0 + 3 * 3600 * 1000 + 10_000, k: 'book', ticker: 'KXATPMATCH-E-DOG', bids: [], asks: [] });
   fs.writeFileSync(path.join(dir, 'md-2026-10-01.jsonl'), ev.map((e) => JSON.stringify(e)).join('\n') + '\n');
-  const r = await runTennisBacktest(dir, T, 200);
+  return dir;
+}
+
+test('tennis backtest: underdog bought pre-start, trailed up the bounce, sold when it slipped below the stop', async () => {
+  const r = await runTennisBacktest(writeBounceMatch(), T, 200);
   assert.equal(r.matches, 1);
   assert.ok(r.byLeg.underdog_entry?.fills > 0, JSON.stringify(r.byLeg));
   assert.ok(r.byLeg.underdog_trail?.fills > 0, JSON.stringify(r.byLeg));
   assert.ok(r.pnl > 0, `pnl ${r.pnl}`);
   assert.ok(r.maxTennisRisk <= 0.25 * 200 + 1e-9);
+});
+
+test('tennis backtest applies the engine\'s profit rules: the quota snipe sells the bounce once its profit covers the hour', async () => {
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) });
+  const rules = engineTennisRules(cfg);
+  assert.equal(rules.settleFrac, cfg.tennis.settleFrac);
+  assert.equal(rules.pacer, cfg.strategy.pacer);
+  assert.equal(engineTennisRules(cfg, false).pacer, undefined);
+  const dir = writeBounceMatch();
+  const plain = await runTennisBacktest(dir, T, 200);
+  assert.equal(plain.byLeg.quota_snipe, undefined, 'no rules: the legs alone');
+  // A $3 hour, no floor: the bounce to 0.22 is up about $3.65 after fees on 65.62 contracts, so the snipe sells it there.
+  const pacer = { ...cfg.strategy.pacer, enabled: true, hourlyUsd: 3 };
+  const sniped = await runTennisBacktest(dir, T, 200, undefined, { ...rules, pacer, floorMode: 'off' });
+  assert.ok(sniped.byLeg.quota_snipe?.fills > 0, JSON.stringify(sniped.byLeg));
+  assert.equal(sniped.byLeg.underdog_trail, undefined, 'the snipe sold before the trail did');
+  assert.ok(sniped.pnl > 3 - 1e-9, `snipe pnl ${sniped.pnl}`);
+  // The default $4.50 hour asks more than the bounce made: the legs trade as without the rules.
+  const fullHour = await runTennisBacktest(dir, T, 200, undefined, { ...rules, pacer: { ...cfg.strategy.pacer, enabled: true }, floorMode: 'off' });
+  assert.equal(fullHour.byLeg.quota_snipe, undefined, JSON.stringify(fullHour.byLeg));
+  assert.ok(Math.abs(fullHour.pnl - plain.pnl) < 1e-9);
 });
 
 test('entries need tennis confluence: 1 signal pre-match, 2 live; thresholds are configurable', () => {
