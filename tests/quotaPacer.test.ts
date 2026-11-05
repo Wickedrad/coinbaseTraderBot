@@ -4,7 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup, anchorAfter, anchorBefore, quotaCall, wallClock, wallToUtc, type PacerConfig } from '../bot/risk/quotaPacer';
-import { PositionBook } from '../bot/oms/positions';
+import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { loadConfig } from '../bot/config';
 
 const CFG: PacerConfig = { enabled: true, group: true, hourlyUsd: 4.5, anchorHour: 10, anchorMinute: 0, tz: 'America/New_York', mode: 'cumulative', minTakeUsd: 0.75, maxTargetUsd: 6.5, floor: 'off', floorTicks: 0 };
@@ -86,6 +86,33 @@ test('credits: every reduction credits its realized profit net of its fee, and a
   assert.equal(fill('C', 'bid', 4, 0.5, 0.04, t0 + 7000), 0);
   assert.equal(+fill('C', 'ask', 6, 0.45, 0.06, t0 + 8000).toFixed(4), +(4 * (0.45 - 0.51) - 0.04).toFixed(4));
   assert.equal(+p.status(t0 + 8000).realized24hUsd.toFixed(4), +(3.35 + 0.8 + 4 * (0.45 - 0.51) - 0.04).toFixed(4));
+  // The flipped NO position (2 at 0.55, its share of the fee 0.02) bought back at YES 0.40: 2 x (0.60 - 0.56) - 0.02.
+  assert.equal(+fill('C', 'bid', 2, 0.4, 0.02, t0 + 9000).toFixed(4), 0.06);
+});
+
+test('credits: a second partial exit is credited against the open contracts\' own cost, not the first exit\'s profit again', () => {
+  const t0 = T('2026-10-29T14:00:00Z');
+  const p = new HourlyQuotaPacer(CFG, t0);
+  const book = new PositionBook();
+  const fill = (side: 'bid' | 'ask', count: number, price: number, fee: number, at: number) => +p.onFill({ ticker: 'A', side, count, price }, fee, book.applyFill({ ticker: 'A', side, count, price, fee }), at).toFixed(4);
+  // Buy 100 at 0.15 (fee 1.00), sell 50 at 0.25 (fee 0.50) twice: each half 50 x (0.25 - 0.16) - 0.50 = 4.00, not 9.00 the second time.
+  assert.equal(fill('bid', 100, 0.15, 1, t0 + 1000), 0);
+  assert.equal(fill('ask', 50, 0.25, 0.5, t0 + 2000), 4);
+  assert.equal(fill('ask', 50, 0.25, 0.5, t0 + 3000), 4);
+  const m = book.get('A')!;
+  assert.equal(+(m.netCash - m.fees).toFixed(4), 8, 'the book: +8.00 realized, flat');
+  assert.equal(+p.status(t0 + 3000).realized24hUsd.toFixed(4), 8, 'the clock holds what the book realized, before the settlement');
+  // A third exit after buying more: the new contracts' cost, the earlier round trip's profit left out.
+  assert.equal(fill('bid', 40, 0.3, 0.4, t0 + 4000), 0);
+  assert.equal(fill('ask', 20, 0.28, 0.2, t0 + 5000), +(20 * (0.28 - 0.31) - 0.2).toFixed(4));
+  // The book's open cost is the same basis: 20 left from 0.30 with 0.01 a contract of entry fee, the round trip left out
+  // (net cash alone reads them at about 0.05).
+  const open = book.get('A')!;
+  assert.deepEqual([+openSidePrice(open)!.toFixed(4), +openEntryFee(open)!.toFixed(4)], [0.3, 0.01]);
+  assert.ok(-open.netCash / open.yes < 0.1);
+  assert.equal(fill('ask', 20, 0.35, 0.2, t0 + 6000), +(20 * (0.35 - 0.31) - 0.2).toFixed(4));
+  const s = book.settle('A', 'no', t0 + 7000)!;
+  assert.ok(Math.abs(p.onSettled('A', s.realized!, t0 + 7000)) < 1e-9, 'every exit credited exactly: nothing left for the settlement');
 });
 
 test('the group: positions each in profit after fees whose profits together cover the target are all sold', () => {
