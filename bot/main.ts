@@ -132,7 +132,7 @@ async function main(): Promise<void> {
   // (DATA_DIR and DATA_DIR/live); both started over once on Oct 24, when crosses began to be scored on their fills.
   const curveParams = cfg.sinuousExit;
   const curveBench = { ...cfg.probation, t: cfg.sinuousExit.benchT ?? cfg.probation.t, minTrades: cfg.sinuousExit.benchMinExits ?? cfg.probation.minTrades };
-  const curveExit = curveParams.mode === 'off' ? undefined : new SinuousExitGate(curveParams, curveBench, path.join(cfg.bookDir, 'curve-exit.json'), (e) => {
+  const curveExit = curveParams.mode === 'off' ? undefined : new SinuousExitGate(curveParams, curveBench, path.join(cfg.dataDir, 'curve-exit.json'), (e) => {
     audit.write('curve_exit', e);
     // Never benched (Oct 31): a rejected window makes the cross one level stricter (bot/strategy/levelLadder.ts).
     if (e.event === 'stricter' || e.event === 'looser') alerter.notify('info', 'curve-exit', `Exit curve's cross ${e.event} (level ${String(e.from)} -> ${String(e.level)}): ${String(e.reason)}`);
@@ -140,7 +140,7 @@ async function main(): Promise<void> {
   // Take-profit bench (bot/strategy/takeProfitBench.ts; the owner, Oct 24: the take-profit goes on the exit curve's
   // scoreboard and bench): each crypto take-profit sale against holding to settlement, benched on the curve's rule
   // (TAKE_PROFIT_BENCH=false: scored only). Each book keeps its own scoreboard (DATA_DIR and DATA_DIR/live).
-  const takeProfitBench = new TakeProfitBench(cfg.strategy.takeProfitBench, curveBench, path.join(cfg.bookDir, 'take-profit-bench.json'), (e) => {
+  const takeProfitBench = new TakeProfitBench(cfg.strategy.takeProfitBench, curveBench, path.join(cfg.dataDir, 'take-profit-bench.json'), (e) => {
     audit.write('take_profit_bench', e);
     // Never benched (Oct 31): a rejected window makes the take-profit one level stricter (its fair-value confirm).
     if (e.event === 'stricter' || e.event === 'looser') alerter.notify('info', 'take-profit-bench', `Take-profit ${e.event} (level ${String(e.from)} -> ${String(e.level)}): ${String(e.reason)}`);
@@ -152,16 +152,16 @@ async function main(): Promise<void> {
   // they perform well in the test allow them to function for paper trading"): each scored against the price without it
   // on every settled crypto contract; one that tests significantly better goes into paper's prices, never live's
   // (bot/strategy/componentTrials.ts). Each book keeps its own scorecards (DATA_DIR and DATA_DIR/live).
-  const trials = cfg.trials.enabled ? new ComponentTrials(cfg.trials, path.join(cfg.bookDir, 'component_trials.json'), (name, to, why) => {
+  const trials = cfg.trials.enabled ? new ComponentTrials(cfg.trials, path.join(cfg.dataDir, 'component_trials.json'), (name, to, why) => {
     audit.write('trial', { event: to, trial: name, why, appliesIn: 'paper' });
     alerter.notify('info', `trial-${name}`, `Trial: the ${TRIAL_LABEL[name]} is ${to === 'on' ? 'now ON in paper' : to === 'off' ? 'OFF in paper' : 'testing'}: ${why}`);
   }) : undefined;
   // The scoreboard: every price against the Kalshi market on every settled crypto contract, paper and live alike
   // (bot/health/scoreboard.ts). Each book keeps its own.
-  const scoreboard = cfg.scoreboard.enabled ? new Scoreboard(cfg.scoreboard, path.join(cfg.bookDir, 'scoreboard.json')) : undefined;
+  const scoreboard = cfg.scoreboard.enabled ? new Scoreboard(cfg.scoreboard, path.join(cfg.dataDir, 'scoreboard.json')) : undefined;
   // Entry curve (SINUOUS_ENTRY, bot/strategy/sinuousEntry.ts): monitor scores maker entries by the book's curve at the
   // fill; gate also holds back quotes the curve is running against.
-  const curveEntry = cfg.sinuousEntry.mode === 'off' ? undefined : new SinuousEntryGate(cfg.sinuousEntry, path.join(cfg.bookDir, 'curve-entry.json'));
+  const curveEntry = cfg.sinuousEntry.mode === 'off' ? undefined : new SinuousEntryGate(cfg.sinuousEntry, path.join(cfg.dataDir, 'curve-entry.json'));
 
   // Model: frozen, versioned, validated offline. Identity (pure fair value) if no file. The
   // automated pipeline's promoted copies (AUTO_TRAIN_DIR) win over params/ and are hot-swapped.
@@ -327,7 +327,7 @@ async function main(): Promise<void> {
   const control = new RunControl(path.join(cfg.dataDir, 'control.json'));
   // Kill-switch override (paper and live): loss brakes de-risk instead of halting.
   const trainingOverride = () => control.killOverride;
-  const perpsStreak = new StreakScaler(DEFAULT_STREAK, path.join(cfg.bookDir, 'streak_perps.json'));
+  const perpsStreak = new StreakScaler(DEFAULT_STREAK, path.join(cfg.dataDir, 'streak_perps.json'));
   const perpsBreakEven = new BreakEven(path.join(cfg.bookDir, 'perps_break_even.json'));
   // Probation's loss limit follows each account's size (PROBATION_MAX_LOSS_PCT of its break-even, at most
   // PROBATION_MAX_LOSS_USD); a book already past it is benched now rather than at its next result.
@@ -337,7 +337,7 @@ async function main(): Promise<void> {
   const modelHealth = new ModelHealth({ minWindows: cfg.strategy.modelHealthMinWindows }, path.join(cfg.dataDir, 'model_health.json'));
   const taHealth = new ModelHealth({ minWindows: 1e9 }, path.join(cfg.dataDir, 'ta_health.json'));
   // Bot vs market per time-to-close bucket (each book its own scorecard); only paper blocks entries on it.
-  const accuracyGate = new AccuracyGate(cfg.strategy.accuracyGate, path.join(cfg.bookDir, 'accuracy_gate.json'));
+  const accuracyGate = new AccuracyGate(cfg.strategy.accuracyGate, path.join(cfg.dataDir, 'accuracy_gate.json'));
   // TA conviction for the perps (setup trader): features + the TA network's raw view, cached per asset per minute.
   const convCache = new Map<string, { ts: number; f: Record<string, number>; v: TaNetView | undefined; rb?: { score: number; n: number }; gp?: { exposure: number } }>();
   const conviction = (asset: string, dir: number, now: number) => {

@@ -1,0 +1,457 @@
+# Can a deep-history day stand in for a real recorded Kalshi day? (research/historyTwin.ts; Steven, Nov 1.) Each recorded
+# day is rebuilt by the deep-history pipeline itself (research/kalshiReplayData.ts: Binance 1-minute bars + Kalshi's
+# public minute candles, requote), then the tally's depth fill-in on top, and judged against the real day: paired
+# mechanics, a classifier adversary trying to tell the two apart, and the decision model's backtest window by window
+# beside a noise floor (the real days at +250 ms).
+#
+# No server access at all: the real days come from an earlier Replay fidelity run's cache (reuse_run), and both sides are
+# backtested with the repository's paper settings (the same settings both ways, which is all a like-for-like test needs). This repository is public: jobs
+# print counts, cents and $ only; recordings move between jobs through the Actions cache, never artifacts.
+name: History twin
+
+on:
+  # A new workflow can't be dispatched until it is on main: while on its branch, a push of its own files runs it.
+  push:
+    branches: [claude/project-thread-lq48hg, claude/project-thread-qj4n4v]
+    paths: ['.github/workflows/history-twin.yml', 'research/historyTwin.ts', 'research/history/depthSim.ts']
+  workflow_dispatch:
+    inputs:
+      reuse_run:
+        description: 'Replay fidelity run whose cached days (recordings, older fit days, models) are the real side'
+        required: true
+        default: '41351064742'
+      reverdict_run:
+        description: 'Only the verdict again, on the judged features an earlier push build cached (its run id); nothing else runs'
+        required: false
+        default: ''
+      parts:
+        description: 'Runners per backtest (the compared days split into this many runs)'
+        required: false
+        default: '4'
+
+permissions:
+  contents: read
+
+concurrency:
+  # A re-verdict (minutes, no data) never waits behind a build (hours).
+  group: history-twin-${{ inputs.reverdict_run || 'build' }}
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --max-old-space-size=12288
+  # 'yes' only while the coordinator has handed this thread the server copy slot: with no cached copy of real days,
+  # the build then copies the newest 5 recorded days, 3 older fit days and the models once, capped at 8 MB/s.
+  SERVER_COPY: 'no'
+  # Real side (Nov 2): losses' replay check copy A2 (Oct 29 - Nov 2) + Replay fidelity run 41395733162's fit days Oct 27-28.
+  CHECK_COPY: '41394321652'
+  FIT_RUN: '41395733162'
+  TWIN_DAYS: '3'
+  # The same days on Drive (the warm-up day first), for when the check copy is evicted.
+  DRIVE_DAYS: '2026-10-29,2026-10-30,2026-10-31,2026-11-01'
+  # Nov 4: the depth model fitted on Oct 27-28 gave tops ~37x and trades ~3x the compared days' (15-minute books only, so
+  # not the hourly ones); fitted on the warm-up day next to them instead, to see whether those days just differ.
+  DRIVE_FIT: '2026-10-29'
+
+jobs:
+  build:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.reverdict_run == '' }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 340
+    permissions:
+      contents: write
+    outputs:
+      days: ${{ steps.days.outputs.days }}
+      warm: ${{ steps.days.outputs.warm }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      # Nov 2: the real days from a Kalshi replay check copy plus a Replay fidelity run's fit days (check_copy mode), so no
+      # extra copy of the compared days sits in the 10 GB cache.
+      - name: The real days from a replay check copy (CHECK_COPY)
+        if: env.CHECK_COPY != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: replay-check-copy-${{ env.CHECK_COPY }}
+      - name: Its fit days (Replay fidelity run FIT_RUN)
+        if: env.CHECK_COPY != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: data/fit
+          key: fidelity-fit-${{ env.FIT_RUN }}-1
+      - name: Keep the copy's whole days only
+        if: env.CHECK_COPY != '' && hashFiles('data/recordings/md-*') != ''
+        run: |
+          set -euo pipefail
+          LAST="md-$(cut -c1-10 data/sweeps/check-to.txt 2>/dev/null)"
+          KEEP=$(ls -1 data/recordings | grep -E '^md-[0-9-]{10}\.jsonl' | sort | awk -v l="$LAST" 'substr($0,1,13) < l' | tail -n $((TWIN_DAYS + 1)))
+          for f in data/recordings/*; do echo "$KEEP" | grep -qxF "$(basename "$f")" || rm -f "$f"; done
+          echo "[twin] kept $(ls data/recordings | tr '\n' ' '); fit $(ls data/fit 2>/dev/null | tr '\n' ' ')"
+      # Steven (Nov 2): history lives on Drive. With the check copy evicted, the same days come from the Drive archive.
+      - name: Drive setup (no cached copy)
+        id: drive
+        if: env.CHECK_COPY != '' && hashFiles('data/recordings/md-*') == ''
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The real days and fit days from Drive
+        if: steps.drive.outcome == 'success'
+        run: |
+          set -euo pipefail
+          for d in ${DRIVE_DAYS//,/ }; do bash deploy/drive_lab.sh recording "$d" data/recordings; done
+          for d in ${DRIVE_FIT//,/ }; do bash deploy/drive_lab.sh recording "$d" data/fit; done
+          echo "[twin] real days from Drive: $(ls data/recordings | tr '\n' ' '); fit $(ls data/fit | tr '\n' ' ')" | tee -a "$RUNNER_TEMP/build.log"
+      - name: The real days (an earlier Replay fidelity run's copy, or this workflow's own earlier copy)
+        id: real
+        if: env.CHECK_COPY == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/recordings
+            data/fit
+            data/models
+          key: fidelity-data-${{ inputs.reuse_run || '41351064742' }}-1
+          restore-keys: |
+            twin-real-
+            fidelity-data-
+      - name: Copy the real days from the server (only with the copy slot)
+        if: env.CHECK_COPY == '' && steps.real.outputs.cache-matched-key == '' && env.SERVER_COPY == 'yes'
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER_NAME: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          PORT: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
+          printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
+          TODAY=$(date -u +%F)
+          ALL=$(ssh bot "cd ~/bot/data/recordings && ls -1 md-*.jsonl*" | sort | awk -v t="md-$TODAY" '$0 < t')
+          echo "$ALL" | tail -n 5 > "$RUNNER_TEMP/rec.txt"; echo "$ALL" | head -n -5 | tail -n 3 > "$RUNNER_TEMP/fit.txt"
+          mkdir -p data/recordings data/fit data/models
+          rsync -a --bwlimit=8000 --rsync-path="nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/rec.txt" bot:bot/data/recordings/ data/recordings/
+          rsync -a --bwlimit=8000 --rsync-path="nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/fit.txt" bot:bot/data/recordings/ data/fit/
+          for f in model.json vol_model.json fill_model.json; do rsync -a --bwlimit=8000 --rsync-path="nice -n 19 rsync" "bot:bot/data/models/$f" data/models/ 2>/dev/null || echo "$f: not on the server"; done
+          echo "copied $(ls data/recordings | wc -l) day(s), $(ls data/fit | wc -l) fit day(s), $(du -sm data | cut -f1) MB"
+      - name: Keep the copy for later runs
+        if: env.CHECK_COPY == '' && steps.real.outputs.cache-matched-key == '' && env.SERVER_COPY == 'yes'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/recordings
+            data/fit
+            data/models
+          key: twin-real-${{ github.run_id }}
+      - name: Real days present?
+        run: |
+          { [ -f data/models/model.json ] || [ "${{ github.event_name }}" = push ]; } && [ "$(ls data/recordings 2>/dev/null | wc -l)" -ge 2 ] || { echo "[twin] no cached copy of real days (evicted); needs the server copy slot (SERVER_COPY=yes)" | tee -a "$RUNNER_TEMP/build.log"; exit 1; }
+          echo "[twin] real days from ${{ steps.real.outputs.cache-matched-key || 'the check copy, Drive or a server copy' }}: $(ls data/recordings | tr '\n' ' ')" | tee -a "$RUNNER_TEMP/build.log"
+      - name: Which days
+        id: days
+        run: |
+          set -euo pipefail
+          ALL=$(ls -1 data/recordings | sed -E 's/^md-([0-9-]{10}).*/\1/' | sort -u)
+          WARM=$(echo "$ALL" | head -1); DAYS=$(echo "$ALL" | tail -n +2 | paste -sd, -)
+          echo "days=$DAYS" >> "$GITHUB_OUTPUT"; echo "warm=$WARM" >> "$GITHUB_OUTPUT"
+          echo "warm-up $WARM, compared $DAYS; depth model fitted on $(ls data/fit | sed -E 's/^md-([0-9-]{10}).*/\1/' | paste -sd' ' -)"
+      - name: Restore the Kalshi history and its replay
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/history
+            data/history-replay
+          key: kalshi-replay-twin-${{ github.run_id }}
+          restore-keys: kalshi-replay-
+      - name: The deep-history twin of those days (Binance + Kalshi public history, the deep history's own pipeline)
+        env:
+          WARM: ${{ steps.days.outputs.warm }}
+        run: |
+          set -euo pipefail
+          BACK=$(( ( $(date -u +%s) - $(date -u -d "$WARM" +%s) ) / 86400 + 2 ))
+          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$BACK" --budget-min 120 2>&1 | tee -a "$RUNNER_TEMP/build.log" \
+            | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -20
+      - name: The same twin with the quote lagging the index (the SNN thread's fit, Oct 24-31)
+        env:
+          WARM: ${{ steps.days.outputs.warm }}
+        run: |
+          BACK=$(( ( $(date -u +%s) - $(date -u -d "$WARM" +%s) ) / 86400 + 2 ))
+          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay-lag --days "$BACK" --budget-min 30 --requote-lag 0.29/3.9 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E 'replay: .*written|day\(s\) with' | tail -3
+      - name: Save the Kalshi history and its replay
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/history
+            data/history-replay
+          key: kalshi-replay-twin-${{ github.run_id }}
+      - name: Match, fill in, and describe every contract both ways
+        env:
+          DAYS: ${{ steps.days.outputs.days }}
+          WARM: ${{ steps.days.outputs.warm }}
+        run: |
+          set -euo pipefail
+          T=data/twin
+          echo "[twin] match from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
+          node --import tsx research/historyTwin.ts --stage match --real data/recordings --twin data/history-replay --days "$WARM,$DAYS" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]' || { echo "match failed"; exit 1; }
+          node --import tsx research/depthStudy.ts --recordings data/fit --series 15m --out data/models/depth_model.json 2>&1 | grep -E '^\[depth\]| n=' | sed -E 's/^\[depth\]/[twin] depth model:/; s/^  /[twin] depth cell: /' | cut -c1-420 | head -40 | tee -a "$RUNNER_TEMP/build.log" || true
+          [ -s data/models/depth_model.json ] || { echo "no depth model"; exit 1; }
+          node --import tsx research/historyTwin.ts --stage fill --src $T/requote --dst $T/depth --how depth --depth-model data/models/depth_model.json 2>&1 | grep '^\[twin\]' | tee -a "$RUNNER_TEMP/build.log"
+          mkdir -p $T/lag; for d in ${WARM} ${DAYS//,/ }; do if [ -f data/history-replay-lag/md-$d.jsonl.gz ]; then cp data/history-replay-lag/md-$d.jsonl.gz $T/lag/; fi; done
+          node --import tsx research/historyTwin.ts --stage fill --src $T/lag --dst $T/lagdepth --how depth --depth-model data/models/depth_model.json 2>&1 | grep '^\[twin\]' | tee -a "$RUNNER_TEMP/build.log"
+          echo "[twin] features from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
+          node --import tsx research/historyTwin.ts --stage features --dirs real=$T/real,requote=$T/requote,depth=$T/depth,lag=$T/lag,lagdepth=$T/lagdepth --days "$DAYS" --extra-days "$WARM" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep '^\[twin\]'
+          du -sh $T/* | cat
+      # The judged part alone (paired mechanics + per-contract features, small) for the verdict on a push.
+      - name: Keep the judged features
+        run: mkdir -p data/twinlite && cp data/twin/paired.json data/twin/features-*.json data/twinlite/ && du -sh data/twinlite | cat
+      - uses: actions/cache/save@v4
+        with:
+          path: data/twinlite
+          key: history-twin-lite-${{ github.run_id }}
+      # Steven (Nov 2): all history on Drive, raw and simulated. The simulated side of this run (the deep-history twin's
+      # books and fills, the depth/lag fill-ins, the public history and its replay, the models and the judged
+      # features) goes to simulated/history-twin/<run id>; the real days are already on Drive (recordings/).
+      - name: Drive setup
+        if: always() && steps.days.outcome == 'success'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Keep the simulated twin on Drive
+        if: always() && steps.days.outcome == 'success'
+        run: |
+          set -euo pipefail
+          S="$RUNNER_TEMP/sim"; rm -rf "$S"; mkdir -p "$S"
+          for d in requote depth lag lagdepth; do [ -d data/twin/$d ] && ln -s "$GITHUB_WORKSPACE/data/twin/$d" "$S/$d"; done
+          [ -d data/twinlite ] && ln -s "$GITHUB_WORKSPACE/data/twinlite" "$S/twinlite"
+          for d in history history-replay history-replay-lag; do [ -d data/$d ] && ln -s "$GITHUB_WORKSPACE/data/$d" "$S/$d"; done
+          [ -d data/models ] && ln -s "$GITHUB_WORKSPACE/data/models" "$S/models"
+          echo "${{ steps.days.outputs.warm }},${{ steps.days.outputs.days }}" > "$S/days.txt"
+          RCLONE_COPY_LINKS=true bash deploy/drive_lab.sh put "simulated/history-twin/${{ github.run_id }}" "$S"
+      # Only a dispatch runs the backtests that read it (a push builds and judges alone: nothing big is cached).
+      - uses: actions/cache/save@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          path: |
+            data/twin
+            data/models
+          key: history-twin-${{ github.run_id }}
+      - name: Report (commit comment; logs can't be read from the cloud session)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "History twin build, run ${{ github.run_id }} (${{ job.status }})"; echo; echo '```'; grep -E '^\[(twin|kalshi-replay-data)\]' "$RUNNER_TEMP/build.log" 2>/dev/null | cut -c1-400 | tail -40; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+
+  backtest:
+    needs: build
+    # A push runs only the build (paired mechanics + the adversary); the
+    # backtests run on a dispatch (or once this line is switched), at most ten runners at a time.
+    if: ${{ inputs.reuse_run != '' }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      # Ten of the twenty matrix jobs at a time (Nov 5): the org's runners took 36 jobs together (Nov 2-4).
+      max-parallel: 10
+      matrix:
+        how: [real, placebo, requote, depth, lagdepth]
+        part: [0, 1, 2, 3]
+    env:
+      DAYS: ${{ needs.build.outputs.days }}
+      WARM: ${{ needs.build.outputs.warm }}
+      PARTS: ${{ inputs.parts || '4' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/twin
+            data/models
+          key: history-twin-${{ github.run_id }}
+      - name: Drive setup (the cache was evicted)
+        if: hashFiles('data/models/model.json') == ''
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The twin from Drive
+        if: hashFiles('data/models/model.json') == ''
+        run: |
+          set -euo pipefail
+          case "${{ matrix.how }}" in real|placebo) echo "::error::the real side is only in this run's cache (evicted); rerun the build"; exit 1;; esac
+          bash deploy/drive_lab.sh get "simulated/history-twin/${{ github.run_id }}/${{ matrix.how }}" "data/twin/${{ matrix.how }}"
+          bash deploy/drive_lab.sh get "simulated/history-twin/${{ github.run_id }}/models" data/models
+      - name: Backtest ${{ matrix.how }}, part ${{ matrix.part }}
+        run: |
+          set -euo pipefail
+          IFS=, read -ra D <<< "$DAYS"; N=${#D[@]}; PER=$(( (N + PARTS - 1) / PARTS )); S=$(( ${{ matrix.part }} * PER ))
+          [ "$S" -lt "$N" ] || { echo "no days in this part"; mkdir -p "$RUNNER_TEMP/out"; exit 0; }
+          MINE=("${D[@]:$S:$PER}"); PREV=$([ "$S" -eq 0 ] && echo "$WARM" || echo "${D[$((S-1))]}")
+          SRC=data/twin/${{ matrix.how }}; [ "${{ matrix.how }}" = placebo ] && SRC=data/twin/real
+          DIR="$RUNNER_TEMP/days"; mkdir -p "$DIR"
+          for d in "$PREV" "${MINE[@]}"; do ln -sf "$GITHUB_WORKSPACE/$SRC/md-$d.jsonl.gz" "$DIR/"; done
+          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper AUTO_TRAIN=off
+          LAT=(); [ "${{ matrix.how }}" = placebo ] && LAT=(--latency-ms 250)
+          node --import tsx research/historyTwin.ts --stage backtest --dir "$DIR" --name "${{ matrix.how }}-p${{ matrix.part }}" --days "$(IFS=,; echo "${MINE[*]}")" --model data/models/model.json --out "$RUNNER_TEMP/out" "${LAT[@]}" > "$RUNNER_TEMP/bt.log" 2>&1 || { tail -5 "$RUNNER_TEMP/bt.log" | cut -c1-200; exit 1; }
+          grep '^\[fidelity\]' "$RUNNER_TEMP/bt.log" | grep -v ' windows: ' | cut -c1-300
+      # Per-window P&L only (no recordings, no settings).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: twin-${{ matrix.how }}-p${{ matrix.part }}
+          path: ${{ runner.temp }}/out/
+          retention-days: 3
+          if-no-files-found: ignore
+
+  verdict:
+    needs: [build, backtest]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/cache/restore@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          path: |
+            data/twin
+          key: history-twin-${{ github.run_id }}
+          fail-on-cache-miss: true
+      - uses: actions/cache/restore@v4
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          path: data/twinlite
+          key: history-twin-lite-${{ github.run_id }}
+          fail-on-cache-miss: true
+      - name: The judged features in place (push)
+        if: github.event_name != 'workflow_dispatch'
+        run: mkdir -p data/twin && cp data/twinlite/* data/twin/
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: twin-*
+          path: ${{ runner.temp }}/in
+      - name: Verdict
+        run: |
+          set -euo pipefail
+          for how in real placebo requote depth lagdepth; do
+            python3 - "$how" "$RUNNER_TEMP/in" data/twin <<'PY'
+          import glob, json, sys
+          how, src, out = sys.argv[1:]
+          parts = sorted(glob.glob(f"{src}/twin-{how}-p*/windows-{how}-p*.json"))
+          w = [x for f in parts for x in json.load(open(f))]
+          if parts: json.dump(w, open(f"{out}/windows-{how}.json", "w"))
+          print(f"{how}: {len(parts)} part(s), {len(w)} window(s)")
+          PY
+          done
+          node --import tsx research/historyTwin.ts --stage verdict --out data/twin 2>&1 | tee "$RUNNER_TEMP/verdict.log" | grep '^\[twin\]'
+          python3 - <<'PY' | tee -a "$RUNNER_TEMP/verdict.log"
+          import json
+          r = json.load(open('data/twin/verdict.json'))
+          for p in r['paired']:
+              print(f"{p['day']}: both {p['both']}, missing {p['onlyReal15m']}, quote off {p['quoteMaeC']:.2f}c, index off {p['indexMaeBps']:.1f} bps, results {p['resultsAgree']}/{p['results']}")
+          PY
+      - name: Report (commit comment)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "History twin verdict, run ${{ github.run_id }} (${{ job.status }})"; echo; echo '```'; cut -c1-500 "$RUNNER_TEMP/verdict.log" 2>/dev/null | grep -v '^\[twin\] features'; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+
+  reverdict:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reverdict_run != '' }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - uses: actions/cache/restore@v4
+        with:
+          path: data/twinlite
+          key: history-twin-lite-${{ inputs.reverdict_run }}
+      - name: Drive setup (the cache was evicted)
+        if: hashFiles('data/twinlite/paired.json') == ''
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The judged features from Drive
+        if: hashFiles('data/twinlite/paired.json') == ''
+        env:
+          RUN: ${{ inputs.reverdict_run }}
+        run: |
+          [[ "$RUN" =~ ^[0-9]+$ ]] || { echo "reverdict_run must be a run id"; exit 1; }
+          bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/twinlite || { echo "::error::run $RUN's features are neither cached nor on Drive"; exit 1; }
+      - name: Verdict
+        run: |
+          set -euo pipefail
+          mkdir -p data/twin && cp data/twinlite/* data/twin/
+          node --import tsx research/historyTwin.ts --stage verdict --out data/twin 2>&1 | tee "$RUNNER_TEMP/verdict.log" | grep '^\[twin\]'
+      - name: Report (commit comment)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "History twin re-verdict of run ${{ inputs.reverdict_run }} (run ${{ github.run_id }}, ${{ job.status }})"; echo; echo '```'; cut -c1-1500 "$RUNNER_TEMP/verdict.log" 2>/dev/null | grep -v '^\[twin\] features'; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null

@@ -218,6 +218,9 @@ test('quota floors (PACER_FLOOR, Steven Oct 31): armed at the need while a rule 
   assert.deepEqual(quotaCall(4.3, 4.5, 4.5, "the model's sell price 0.80", undefined, 0.5), {}, 'cushion: a $0.20 dip under the floor holds');
   assert.deepEqual(quotaCall(3.9, 4.5, 4.5, "the model's sell price 0.80", undefined, 0.5), { sell: 'floor' }, 'cushion: past it, sold');
   assert.deepEqual(quotaCall(4.5, 3, 4.5, "the model's sell price 0.80"), { arm: 3 }, 'at the floor: held');
+  // PACER_FLOOR_TICKS: the cushion (dollars for the position) lets the profit dip that far under the floor before it sells.
+  assert.deepEqual(quotaCall(4.3, 4.5, 4.5, "the model's sell price 0.80", undefined, 0.5), {}, 'cushion: a $0.20 dip under the floor holds');
+  assert.deepEqual(quotaCall(3.9, 4.5, 4.5, "the model's sell price 0.80", undefined, 0.5), { sell: 'floor' }, 'cushion: past it, sold');
   assert.deepEqual(quotaCall(4.6, 6, 4.5, undefined), {}, 'nothing aims higher now but the need is above the profit: the floor holds it');
   assert.deepEqual(quotaCall(-0.5, 3, 4.5, undefined), { sell: 'floor' }, 'gapped through it into a loss: still the stop');
   assert.deepEqual(quotaCall(undefined, 4.5, 4.5, undefined), {});
@@ -226,4 +229,6 @@ test('quota floors (PACER_FLOOR, Steven Oct 31): armed at the need while a rule 
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_FLOOR: 'targets' }).strategy.pacer.floor, 'targets');
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_FLOOR: 'off' }).strategy.pacer.floor, 'off');
   assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_FLOOR: 'maybe' }));
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.pacer.floorTicks, 8);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_FLOOR_TICKS: '0' }).strategy.pacer.floorTicks, 0);
 });

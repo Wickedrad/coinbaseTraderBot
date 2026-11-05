@@ -11,9 +11,13 @@ import { IndexTracker, type AvgMode } from '../bot/marketdata/indexTracker';
 import { setTaNetContextSource } from '../bot/ta/taNet';
 import { OrderBook } from '../bot/marketdata/orderBook';
 import { FeatureHub } from '../bot/model/featureEngine';
-import { contractKind, type ContractTerms, type MarketKind } from '../bot/model/fairValue';
+import { contractKind, isRangeTicker, rangeCap, type ContractTerms, type MarketKind } from '../bot/model/fairValue';
 import type { SnnConf, SnnContext } from '../bot/model/featureEngine';
 import type { TennisScore } from '../bot/tennis/tennisModel';
+
+/** Markets the replays never trade (recorded only), by ticker pattern. Steven, Nov 5: no DOGE at all for now, so the
+ *  default leaves DOGE out; REPLAY_EXCLUDE='' trades everything again, any other value is a pattern of its own. */
+export const REPLAY_EXCLUDE: RegExp | undefined = (() => { const v = process.env.REPLAY_EXCLUDE ?? 'DOGE'; return v ? new RegExp(v) : undefined; })();
 import { hashStr, normals } from './history/historyReplay';
 
 /** Settlement averaging in research, matching the bot's SETTLEMENT_AVG (default official). */
@@ -57,7 +61,7 @@ export type LineFilter = (kind: string, line: string) => boolean;
 const LINE_HEAD = /^\{"t":(-?\d+(?:\.\d+)?),"k":"([a-z_]+)"/;
 
 async function* lines(file: string, keep?: LineFilter): AsyncGenerator<RecEvent> {
-  const rl = file.endsWith('.gz') ? recordingLines(file) : readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+  const rl = recordingLines(file);
   for await (const line of rl) {
     if (!line) continue;
     if (keep) {
@@ -181,9 +185,9 @@ export class ReplayState {
     switch (e.k) {
       case 'market':
         this.markets.set(e.ticker, {
-          ticker: e.ticker, series: e.series, asset: e.asset, openTime: e.openTime, closeTime: e.closeTime, strike: e.strike ?? undefined, cap: e.cap ?? undefined,
-          kind: e.kind ?? contractKind(e.series ?? ''), event: e.event ?? undefined, tickSize: e.tickSize ?? 0.01,
-          title: e.title ?? undefined, startTime: e.startTime ?? undefined, recordOnly: e.recordOnly ? true : undefined, synthetic: e.synth ? true : undefined,
+          ticker: e.ticker, series: e.series, asset: e.asset, openTime: e.openTime, closeTime: e.closeTime, strike: e.strike ?? undefined, cap: e.cap ?? rangeCap(e.ticker, e.strike),
+          kind: isRangeTicker(e.ticker) ? 'between' : e.kind ?? contractKind(e.series ?? ''), event: e.event ?? undefined, tickSize: e.tickSize ?? 0.01,
+          title: e.title ?? undefined, startTime: e.startTime ?? undefined, recordOnly: e.recordOnly || REPLAY_EXCLUDE?.test(e.ticker) ? true : undefined, synthetic: e.synth ? true : undefined,
         });
         break;
       case 'index': {

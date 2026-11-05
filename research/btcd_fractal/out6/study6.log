@@ -1,0 +1,35 @@
+BTC.D: parent 2016-01-01..2018-03-01 (113 w), child from 2018-01-01 (462 w), scale 11.595, waterfalls [['2016-12-11', '2017-08-27'], ['2017-12-10', '2018-01-14']]
+USDT.D: parent 2016-01-01..2018-03-01 (113 w), child from 2018-01-01 (462 w), scale 15.924, waterfalls []
+TOTAL3: parent 2017-07-14..2018-03-01 (33 w), child from 2018-04-01 (450 w), scale 18.313, waterfalls [['2017-07-30', '2018-01-07']]
+ETHBTC: parent 2016-07-01..2018-03-01 (87 w), child from 2018-01-01 (462 w), scale 20.933, waterfalls [['2017-01-01', '2017-03-26'], ['2017-04-23', '2017-06-18'], ['2017-12-10', '2018-01-28']]
+16 fits in 18s
+360 placebos in 757s
+BTC.D: now 2017-12-10 (settings ['2017-12-10', '2017-12-10', '2017-12-10', '2017-12-10']), score 1.32, ic26 0.501, adversary {"iaaft": {"n": 30, "pScore": 0.067, "pIc26": 0.0, "medianScore": 1.616}, "block8": {"n": 30, "pScore": 0.133, "pIc26": 0.033, "medianScore": 2.895}, "walk": {"n": 30, "pScore": 0.067, "pIc26": 0.0, "medianScore": 2.005}}, dil 5.2/26.0, last 3y track {'first': '2017-12-10', 'last': '2017-12-24', 'distinctParentWeeks': 3}
+    {'kind': 'fall', 'parent': '2016-01-03..2016-07-10', 'parentWeeks': 27, 'child': '2018-01-07..2018-04-15', 'childWeeks': 15, 'dil': 0.6, 'ampRatio': -0.17, 'complete': True}
+    {'kind': 'fall', 'parent': '2016-07-10..2016-07-24', 'parentWeeks': 2, 'child': '2018-04-22..2018-06-17', 'childWeeks': 9, 'dil': 4.5, 'ampRatio': 0.06, 'complete': True}
+    {'kind': 'rise', 'parent': '2016-07-24..2016-11-20', 'parentWeeks': 17, 'child': '2018-06-24..2020-01-12', 'childWeeks': 82, 'dil': 4.8, 'ampRatio': 1.81, 'complete': True}
+    {'kind': 'waterfall', 'parent': '2016-11-20..2017-08-27', 'parentWeeks': 40, 'child': '2020-01-19..2022-09-18', 'childWeeks': 140, 'dil': 3.5, 'ampRatio': 0.35, 'complete': True}
+    {'kind': 'rise', 'parent': '2017-08-27..2017-12-10', 'parentWeeks': 15, 'child': '2022-09-25..2026-11-08', 'childWeeks': 216, 'dil': 14.4, 'ampRatio': 1.17, 'complete': False}
+    {'kind': 'fall', 'parent': '2017-12-10..2018-01-14', 'parentWeeks': 5, 'child': None, 'childWeeks': 0, 'dil': None, 'ampRatio': None, 'complete': False}
+USDT.D: now 2017-12-24 (settings ['2017-10-29', '2017-12-03', '2017-12-24', '2017-12-31']), score 1.20, ic26 0.249, adversary {"iaaft": {"n": 30, "pScore": 0.233, "pIc26": 0.433, "medianScore": 2.216}, "block8": {"n": 30, "pScore": 0.667, "pIc26": 0.6, "medianScore": 1.093}, "walk": {"n": 30, "pScore": 0.067, "pIc26": 0.4, "medianScore": 2.16}}, dil 4.4/1.4, last 3y track {'first': '2017-10-01', 'last': '2018-02-25', 'distinctParentWeeks': 13}
+    {'kind': 'rise', 'parent': '2016-01-03..2018-02-25', 'parentWeeks': 112, 'child': '2018-01-07..2026-11-08', 'childWeeks': 462, 'dil': 4.1, 'ampRatio': 0.95, 'complete': False}
+TOTAL3: now 2018-02-25 (settings ['2018-02-18', '2018-02-25', '2018-02-25', '2018-02-25']), score 1.03, ic26 0.128, adversary {"iaaft": {"n": 30, "pScore": 0.1, "pIc26": 0.667, "medianScore": 1.591}, "block8": {"n": 30, "pScore": 0.333, "pIc26": 0.333, "medianScore": 1.198}, "walk": {"n": 30, "pScore": 0.1, "pIc26": 0.367, "medianScore": 1.396}}, dil 13.6/13.0, last 3y track {'first': '2018-02-25', 'last': '2018-02-25', 'distinctParentWeeks': 1}
+    {'kind': 'waterfall', 'parent': '2017-07-16..2018-01-07', 'parentWeeks': 25, 'child': '2018-04-01..2025-01-12', 'childWeeks': 355, 'dil': 14.2, 'ampRatio': 0.78, 'complete': True}
+    {'kind': 'rise', 'parent': '2018-01-07..2018-02-04', 'parentWeeks': 4, 'child': '2025-01-19..2026-03-08', 'childWeeks': 60, 'dil': 15.0, 'ampRatio': 0.32, 'complete': True}
+ETHBTC: now 2017-12-31 (settings ['2017-12-17', '2017-12-17', '2017-12-31', '2017-12-31']), score 3.95, ic26 0.226, adversary {"iaaft": {"n": 30, "pScore": 1.0, "pIc26": 0.7, "medianScore": 1.552}, "block8": {"n": 30, "pScore": 0.933, "pIc26": 0.667, "medianScore": 2.573}, "walk": {"n": 30, "pScore": 0.933, "pIc26": 0.633, "medianScore": 1.913}}, dil 6.9/6.5, last 3y track {'first': '2017-11-05', 'last': '2017-12-31', 'distinctParentWeeks': 8}
+    {'kind': 'rise', 'parent': '2016-07-03..2017-01-01', 'parentWeeks': 26, 'child': '2018-01-07..2020-02-02', 'childWeeks': 109, 'dil': 4.2, 'ampRatio': 1.45, 'complete': True}
+    {'kind': 'waterfall', 'parent': '2017-01-01..2017-03-26', 'parentWeeks': 12, 'child': '2020-02-09..2021-05-30', 'childWeeks': 69, 'dil': 5.8, 'ampRatio': 0.72, 'complete': True}
+    {'kind': 'rise', 'parent': '2017-03-26..2017-04-09', 'parentWeeks': 2, 'child': '2021-06-06..2021-06-06', 'childWeeks': 1, 'dil': 0.5, 'ampRatio': 0.11, 'complete': True}
+    {'kind': 'waterfall', 'parent': '2017-04-09..2017-06-18', 'parentWeeks': 10, 'child': '2021-06-13..2022-01-02', 'childWeeks': 30, 'dil': 3.0, 'ampRatio': -0.0, 'complete': True}
+    {'kind': 'rise', 'parent': '2017-06-18..2017-12-10', 'parentWeeks': 25, 'child': '2022-01-09..2026-06-28', 'childWeeks': 234, 'dil': 9.4, 'ampRatio': 0.67, 'complete': True}
+    {'kind': 'waterfall', 'parent': '2017-12-10..2018-01-28', 'parentWeeks': 7, 'child': '2026-07-05..2026-11-08', 'childWeeks': 19, 'dil': 2.7, 'ampRatio': 0.07, 'complete': False}
+paths around the big BTC.D waterfall starts (median change from the start week):
+   USDT.D  [-14.0, 37.3, 23.7, 35.6, 0.0, -1.7, 60.6, 87.9, 75.0]
+   TOTAL3  [-74.5, -68.1, -63.5, -25.0, 0.0, 84.2, 68.0, 85.2, 74.8]
+   ETHBTC  [60.6, 38.4, 50.8, 33.7, 0.0, 29.3, 6.1, 18.7, 99.2]
+   BTC.D   [1.0, -11.0, -5.3, -6.8, 0.0, -7.3, -8.6, -12.5, -25.2]
+lead/lag USDT.D: lag0 0.045, best lag 3 w corr 0.128, p 0.458
+lead/lag TOTAL3: lag0 -0.426, best lag 0 w corr -0.426, p 0.0
+lead/lag ETHBTC: lag0 -0.66, best lag 0 w corr -0.66, p 0.0
+confluence: {"countNow": 2, "byEvent": {"2016-11-20": {"count": 0, "which": []}, "2017-12-10": {"count": 0, "which": []}, "2021-01-03": {"count": 3, "which": ["BTC.D", "TOTAL3", "ETHBTC"]}, "2018-04-01": {"count": 0, "which": []}, "2018-09-09": {"count": 0, "which": []}, "2019-09-08": {"count": 2, "which": ["BTC.D", "ETHBTC"]}, "2020-05-17": {"count": 2, "which": ["BTC.D", "ETHBTC"]}, "2022-06-12": {"count": 0, "which": []}, "2025-06-22": {"count": 2, "which": ["BTC.D", "ETHBTC"]}}, "precision": {">=0": {"weeks": 409, "fall5in26w": 0.24, "weeksAwayFromEvents": 371, "fall5in26wAway": 0.18}, ">=1": {"weeks": 369, "fall5in26w": 0.26, "weeksAwayFromEvents": 331, "fall5in26wAway": 0.19}, ">=2": {"weeks": 313, "fall5in26w": 0.27, "weeksAwayFromEvents": 278, "fall5in26wAway": 0.19}, ">=3": {"weeks": 56, "fall5in26w": 0.54, "weeksAwayFromEvents": 32, "fall5in26wAway": 0.22}, ">=4": {"weeks": 0, "fall5in26w": null, "weeksAwayFromEvents": 0, "fall5in26wAway": null}}, "seriesNow": {"BTC.D": true, "USDT.D": false, "TOTAL3": false, "ETHBTC": true}}
+done in 765s

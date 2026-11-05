@@ -135,3 +135,26 @@ test('the days split into parts, each read from the day before it, and only thei
   // The warm-up day's windows are left out; a window closing at midnight belongs to the day before.
   assert.deepEqual([...onDays(w, ['2026-10-23']).values()].map((x) => x.pnl), [2, 3]);
 });
+
+test('the depth simulator does not know the next quote: trades are the same before a rise, a fall or a flat price', () => {
+  // Nov 3: the flow by move (YES takers before a rise) read the NEXT quote, a look-ahead the real tape cannot have; the
+  // trades between two quotes must not depend on where the price goes next (depthSim.ts USE_NEXT_MOVE).
+  const moved = { ...depth, shape: depth.shape.map((c) => ({ ...c, byMove: [
+    { segs: 100, tradesPerSec: 2, takerYesShare: 0.1 }, { segs: 100, tradesPerSec: 0.5, takerYesShare: 0.5 }, { segs: 100, tradesPerSec: 2, takerYesShare: 0.9 }] })) };
+  const play = (nextMid?: number) => new DepthSim(moved).play('KXBTC15M-P', D0, 0.45, 0.47, D0 + 15_000, D0 + 10 * MIN, nextMid);
+  assert.deepEqual(play(0.50), play(0.42));
+  assert.deepEqual(play(0.50), play());
+});
+
+test('the depth fill-in writes every record in time order, one simulated book per recorded quote', () => {
+  const dir = tmpDir();
+  const evs = read(recordedDay(dir).file);
+  const out = fillQuotes(evs, { how: 'depth' }, depth);
+  assert.ok(out.every((e, i) => i === 0 || e.t >= out[i - 1].t), 'in time order');
+  assert.equal(out.length, new Set(out).size);
+  const books = out.filter((e) => e.k === 'book' && e.ticker === 'KXBTC15M-A');
+  assert.ok(books.length >= fillQuotes(evs, { how: 'requote' }).filter((e) => e.k === 'book' && e.ticker === 'KXBTC15M-A').length);
+  // Every record of the day still comes out, the settlement last.
+  assert.equal(out.filter((e) => e.k === 'result').length, 1);
+  assert.equal(out.filter((e) => e.k === 'index').length, evs.filter((e) => e.k === 'index').length);
+});

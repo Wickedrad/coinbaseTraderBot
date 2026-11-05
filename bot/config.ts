@@ -15,6 +15,7 @@ import { parseLevelMargins } from './strategy/levelLadder';
 import { DEFAULT_TP_FV_MARGINS } from './strategy/fairValueStrategy';
 import { defaultTiers, validateTiers, type TierPoint } from './risk/sizingTiers';
 import type { AccuracyGateConfig } from './strategy/accuracyGate';
+import type { TaVetoConfig } from './model/taVeto';
 import type { VaultConfig } from './vault/vault';
 import { DEFAULT_LIVE_LINE } from './strategy/liveLine';
 import { DEFAULT_TRIALS, TRIAL_NAMES, type TrialName, type TrialParams } from './strategy/componentTrials';
@@ -92,6 +93,9 @@ export interface StrategyConfig {
   series: string[];
   /** Series that are recorded (books, trades, lifecycle, results) for research but never priced or traded (RECORD_SERIES). */
   recordSeries: string[];
+  /** Series that are recorded but never priced or traded, by pattern (STRATEGY_EXCLUDE_SERIES; Steven, Nov 5: no DOGE
+   *  until the rest of the bot performs, then DOGE is trained again: STRATEGY_EXCLUDE_SERIES= trades it again). */
+  excludeSeries?: RegExp;
   /** Cap on simultaneously tracked record-only markets. */
   recordMaxMarkets: number;
   /** Discover every priceable crypto 15-minute / hourly series from the exchange (STRATEGY_SERIES=auto). */
@@ -333,6 +337,8 @@ export interface StrategyConfig {
   takeGate: 'validated' | 'off';
   /** Extra P(win) required above a trade's break-even (price + fee). */
   takeMargin: number;
+  /** The TA rework's contrarian entry veto (bot/model/taVeto.ts; TA_VETO_OFI / TA_VETO_CONF / TA_VETO_INTENSITY, unset = off). */
+  taVeto: TaVetoConfig;
 }
 
 export interface Config {
@@ -377,7 +383,9 @@ export interface Config {
   dataDir: string;
   /** Where the money state lives (orders and positions, vault, break-even, balance history, perps trades, the
    *  Kalshi check): DATA_DIR in paper, DATA_DIR/live in live, so the paper pool and its positions never show or
-   *  count in live mode, and a switch back to paper finds the paper books as they were. */
+   *  count in live mode, and a switch back to paper finds the paper books as they were. What the bot has learned about
+   *  its own trading (component trials, accuracy gate, entry and exit curves, take-profit bench, probation, scoreboard,
+   *  streak scales, the optimal-f history) stays in DATA_DIR in both modes, so live trades exactly as paper would. */
   bookDir: string;
   /** Audit log: a day's file splits into parts at this size; files older than the retention are deleted. */
   auditMaxFileMb: number;
@@ -912,6 +920,11 @@ const DEFAULT_INDEX_IDS: Record<string, string> = {
 
 type Env = Record<string, string | undefined>;
 
+/** An optional number: NaN when unset (the setting is off). */
+function optNum(env: Env, key: string, lo: number, hi: number): number {
+  return env[key] === undefined || env[key] === '' ? NaN : num(env, key, 0, lo, hi);
+}
+
 function num(env: Env, key: string, def: number, lo: number, hi: number): number {
   const raw = env[key];
   const v = raw === undefined || raw === '' ? def : Number(raw);
@@ -941,7 +954,10 @@ function pacerConfig(env: Env): PacerConfig {
     // Steven (Oct 31): under a higher target the quota is the position's stop, not its sale.
     floor: oneOf(env, 'PACER_FLOOR', 'riding', ['off', 'targets', 'riding', 'trail'] as const),
     trailKeep: num(env, 'PACER_TRAIL_KEEP', 0.5, 0, 1),
-    floorTicks: num(env, 'PACER_FLOOR_TICKS', 0, 0, 50),
+    // Paired replays of Oct 29-30 (Oct 31): a floor armed at the profit just reached sold winners on a one-tick dip. Under
+    // today's other rules a cushion of 8 ticks a contract made $262 and $238 a day more than none (two batches, 5 bankrolls
+    // of 5 each); with the loser exits of PR #230, 16 ticks made $88 a day more than none.
+    floorTicks: num(env, 'PACER_FLOOR_TICKS', 8, 0, 50),
     floorConfirm: oneOf(env, 'PACER_FLOOR_CONFIRM', 'none', ['none', 'model'] as const),
   };
 }
@@ -1128,6 +1144,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     series,
     seriesAuto,
     recordSeries: (env.RECORD_SERIES ?? '').split(',').map((x) => x.trim()).filter(Boolean),
+    excludeSeries: (() => { const v = (env.STRATEGY_EXCLUDE_SERIES ?? 'DOGE').trim(); return v ? new RegExp(v) : undefined; })(),
     recordMaxMarkets: num(env, 'RECORD_MAX_MARKETS', 150, 1, 2000),
     kellyFraction: num(env, 'STRATEGY_KELLY_FRACTION', 0.25, 0.01, 0.5),
     portfolioKelly: bool(env, 'PORTFOLIO_KELLY', true),
@@ -1171,7 +1188,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     profitGiveBack: num(env, 'PROFIT_GIVE_BACK', 1 / 3, 0, 1),
     // The owner, Oct 24: the take-profit goes on the exit curve's scoreboard and bench (it sold winners for $230 less
     // than holding them on Oct 23-24).
-    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', true),
+    // Off by default (Steven, Oct 31 and Nov 4): nothing is held to settlement unless in profit in the last share of the window, so a
+    // bad score never turns the take-profit off; the bench keeps scoring and reports what it would have called.
+    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', false),
     takeProfitLevel: Math.round(num(env, 'TP_LEVEL', -1, -1, 10)),
     takeProfitLevelMax: Math.round(num(env, 'TP_LEVEL_MAX', 4, 0, 10)),
     takeProfitFvMargins: parseLevelMargins(env.TP_FV_MARGINS, DEFAULT_TP_FV_MARGINS),
@@ -1281,6 +1300,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     fillMinEv: num(env, 'FILL_MIN_EV', 0, -0.5, 0.5),
     takeGate: oneOf(env, 'TAKE_GATE', 'validated', ['validated', 'off'] as const),
     takeMargin: num(env, 'TAKE_MARGIN', 0, 0, 0.2),
+    taVeto: { ofi: optNum(env, 'TA_VETO_OFI', -100, 100), conf: optNum(env, 'TA_VETO_CONF', -50, 50), intensity: optNum(env, 'TA_VETO_INTENSITY', 0, 50), min: num(env, 'TA_VETO_MIN', 1, 1, 3), reverse: bool(env, 'TA_VETO_REVERSE', false), random: optNum(env, 'TA_VETO_RANDOM', 0, 1) },
   };
 
   const dataDir = path.resolve(env.DATA_DIR ?? './data');

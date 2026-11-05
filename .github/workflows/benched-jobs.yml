@@ -91,7 +91,15 @@ jobs:
           key: benched-jobs-replay-${{ github.run_id }}
       # Pin one copy of the server's model and settings for every replay of this run: the daily sweep on main saves a new
       # copy, and replays that start hours apart would otherwise compare different models (round 3, Oct 31).
+      # Nov 5 audit: one server copy for every round, kept on Drive (models/benched-server-pin), so baselines stop moving
+      # between runs (-0.17 to -0.58/h on the same days when the cache's copy changed). The first run pins the cache's newest.
+      - name: The pinned server copy from Drive
+        id: pin
+        run: |
+          bash deploy/drive_lab.sh get models/benched-server-pin data || true
+          if [ -f data/models/model.json ]; then echo "hit=true" >> "$GITHUB_OUTPUT"; echo "pinned copy from Drive"; fi
       - name: Restore the server's model and settings (the sweep's copy on main)
+        if: steps.pin.outputs.hit != 'true'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -101,6 +109,11 @@ jobs:
           restore-keys: kalshi-server-
       - name: Stop when no copy of the server's model is cached (the daily sweep on main saves one at 09:23 UTC)
         run: '[ -f data/models/model.json ] || { echo "::error::no server copy cached: rerun after the daily sweep"; exit 1; }'
+      - name: Pin it on Drive (first run only)
+        if: steps.pin.outputs.hit != 'true'
+        run: bash deploy/drive_lab.sh put models/benched-server-pin data --include "models/**" --include "sweep-env/**"
+      - name: The model copy's hash (in every report)
+        run: echo "model_copy_hash $(sha256sum data/models/model.json | cut -c1-12), trained to $(node -e "try{const m=require('./data/models/model.json');console.log(m.trainedTo||m.trainedAt||m.meta?.trainedTo||'unknown')}catch{console.log('unknown')}")"
       - name: Pin that copy for every replay of this run
         uses: actions/cache/save@v4
         with:
@@ -186,7 +199,9 @@ jobs:
           fi
           if [ -f data/sweep-env/train.env ]; then set -a; . data/sweep-env/train.env; set +a; echo "server settings: $(wc -l < data/sweep-env/train.env) line(s)"; else echo "no server settings cached: the bot's defaults"; fi
           cp -rn data/sweep-env/history/. data/history/ 2>/dev/null || true
-          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper RS_PROBATION_FILE="$GITHUB_WORKSPACE/data/sweep-env/probation.json" RS_TRIALS_FILE="$GITHUB_WORKSPACE/data/sweep-env/component_trials.json"
+          # Nov 5 audit: fresh probation (not paper's state; paper has no say) and the take-profit bench off (#258/#266).
+          export TAKE_PROFIT_BENCH=false
+          export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper RS_PROBATION_FILE="$RUNNER_TEMP/fresh-probation.json" RS_TRIALS_FILE="$GITHUB_WORKSPACE/data/sweep-env/component_trials.json"
           echo "model: $([ -f data/models/model.json ] && echo "the server's" || echo identity)"
           node --import tsx research/benchedJobs.ts run --variant "${{ matrix.variant }}" --days data/sweep-days --model data/models/model.json --out research/out/benched-jobs \
             2>&1 | grep -E '^\[benched-jobs\]|Error|error' | head -20

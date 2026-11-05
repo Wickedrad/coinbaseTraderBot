@@ -21,24 +21,28 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 /** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
  *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
 export const VARIANTS: Record<string, Record<string, string>> = {
-  // Round 8 (Nov 5): neighbours and stress of round 6's best arm. tails25 (the model's weight capped at 0.25 while the
-  // market prices a side under 30c): +0.27/h [+0.10, +0.43] over 200 days, 6 of 7 blocks, +0.22/h without its best block,
-  // held-out +0.18 [-0.13, +0.45] (NOT PROVEN at 99.3%); tails50 and tails75 were ~0, so the neighbours decide whether 0.25
-  // is a real step or a lone spike (adversary rule 6). Round 7's blind test: the calm-gated dip buy LOSES (-0.28/h held out).
+  // Round 9 (Nov 5): the bot as on main c0f6b39 (merged: #244 thin books, #258/#266 take-profit bench off, #265 tail tick),
+  // no DOGE, one pinned server model copy (Drive models/benched-server-pin), fresh probation. Round 8 (with DOGE, old bot)
+  // was cancelled. tails25 against its neighbours and latency stress; the take-profit's fair-value confirm at its
+  // strictest (level 3: sold only when the coin's fair value of the side is at most the net bid), reinstated on history
+  // per Steven (13:52 UTC Nov 5: nothing dropped on paper evidence), against the plain break-even take-profit.
   baseline: {},
   placebo: { RS_TICK_PHASE_MS: '500' },
   tails25: { MODEL_SKILL_W_TAILS: '0.25' },
-  tails0: { MODEL_SKILL_W_TAILS: '0' },
   tails10: { MODEL_SKILL_W_TAILS: '0.1' },
   tails15: { MODEL_SKILL_W_TAILS: '0.15' },
   tails35: { MODEL_SKILL_W_TAILS: '0.35' },
-  tails25_t20: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.2' },
   tails25_t35: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.35' },
   tails25_lat500: { MODEL_SKILL_W_TAILS: '0.25', RS_LATENCY_MS: '500' },
+  tp_be: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+  tp_be_l3: { TP_LEVEL: '3', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
 };
 
 /** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
 export const LATER: Record<string, Record<string, string>> = {
+  // Round 8 (Nov 5, run 42003201224 with DOGE, cancelled; 42035983199 without DOGE on the old bot):
+  tails0: { MODEL_SKILL_W_TAILS: '0' },
+  tails25_t20: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.2' },
   // Round 7 (Nov 5, run 41944890970):
   // Round 7 (Nov 5): blind test of the sterile sweep's conditions (research/sterileSweep.ts run 41943842003), PRE-REGISTERED
   // at 01:40 UTC Nov 5 before round 6's real by-condition split was read. Sterile: the dip buy helped in calming markets at
