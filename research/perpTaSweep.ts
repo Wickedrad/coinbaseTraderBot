@@ -30,6 +30,13 @@
 //                stop. Funding: Kalshi's 00:00 / 08:00 / 16:00 New York times, modelled from Binance's settled rates
 //                (Binance's rate less its 0.01% interest leg, Kalshi's |rate| < 0.01% => 0, cap 2%), signed (longs
 //                pay a positive rate).
+//   round 2      (ROUND, POLICIES_R2) entries as the live executor places them (bot/perps/hedger.ts: post-only maker, never
+//                taker): pegged at the touch for 5 or 15 minutes, or resting 0.25 ATR off the decision close for 15, filled
+//                at their price when the perp trades 1 bp through it, maker 5 bps, unfilled = no trade (the rule waits while
+//                the order rests); x the 12 exits = 36 policies. Per-coin half-spreads and Kalshi's measured funding premium
+//                over the model (--half-spread, --funding-offset; the workflow passes the fidelity medians), and a funding
+//                stress in the report (paid x1.5, received x0.5). The bot's directional conviction (conv:*, perpTaModules.ts)
+//                joins as trigger and filter.
 //   conditions   every trade also counts in its market condition at entry: trend / range (1h ADX 25), volatility
 //                low / mid / high (24 h realised vs its 30-day mean), session (Asia 0-7, Europe 7-13, US 13-20, late
 //                20-24 UTC), funding positive / zero / negative, weekday / weekend
@@ -393,8 +400,18 @@ export function triggers(p: Prim, valid: Float32Array, nMax: number): { idx: Int
 // ---------------------------------------------------------------------------------------------------------------
 // Exits and costs.
 
-export interface Policy { id: string; sl: number; tp: number; max: number; trail?: number }
-export const POLICIES: Policy[] = [
+/** How a trade is entered. Absent (round 1): taker at the next perp bar's open, paying the taker fee and half the spread.
+ *  Round 2 enters as the live executor does (bot/perps/hedger.ts: post-only maker orders, never taker):
+ *    peg    a post-only order at the touch (the bid for a long, the ask for a short), re-pegged at every minute's open to
+ *           the last perp close less (long) / plus (short) the coin's half-spread, resting up to w minutes
+ *    limit  a post-only order off x the 15-minute ATR below (long) / above (short) the decision minute's close, w minutes
+ *  A resting order fills when the perp trades ttBps THROUGH its price (a bare touch does not fill an order at the back of
+ *  the queue), at its price, paying the maker fee. An order that does not fill is cancelled after w minutes: no trade,
+ *  and the rule takes no other entry while it rests. */
+export interface Entry { kind: 'peg' | 'limit'; w: number; off?: number }
+export interface Policy { id: string; sl: number; tp: number; max: number; trail?: number; entry?: Entry }
+/** The 12 exits (round 1's policies: taker entries). */
+export const EXITS: Policy[] = [
   { id: 'T5', sl: 3, tp: 0, max: 5 },
   { id: 'T15', sl: 3, tp: 0, max: 15 },
   { id: 'T60', sl: 3, tp: 0, max: 60 },
@@ -408,10 +425,24 @@ export const POLICIES: Policy[] = [
   { id: 'S2T4', sl: 2, tp: 4, max: 960 },
   { id: 'TR1.5', sl: 1.5, tp: 0, max: 480, trail: 1.5 },
 ];
+export const ENTRIES: Array<{ tag: string; entry: Entry }> = [
+  { tag: 'MP5', entry: { kind: 'peg', w: 5 } },
+  { tag: 'MP15', entry: { kind: 'peg', w: 15 } },
+  { tag: 'ML15', entry: { kind: 'limit', w: 15, off: 0.25 } },
+];
+export const POLICIES_R1: Policy[] = EXITS;
+/** Round 2: every maker entry with every exit (36 policies, id "<entry>:<exit>"). */
+export const POLICIES_R2: Policy[] = ENTRIES.flatMap(({ tag, entry }) => EXITS.map((x) => ({ ...x, id: `${tag}:${x.id}`, entry })));
+export const ROUND = 2;
+/** The policies this round's sweep walks. The study and the blind test read a run's own from its header. */
+export const POLICIES: Policy[] = POLICIES_R2;
 
-/** ttBps: how far price must trade THROUGH a resting target before it counts as filled (a bare touch of the Binance
- *  high or low does not fill a maker order at the back of the queue). */
-export interface Costs { takerBps: number; makerBps: number; halfSpreadBps: number; ttBps?: number }
+/** ttBps: how far price must trade THROUGH a resting order (a target, or a maker entry) before it counts as filled (a bare
+ *  touch of the Binance high or low does not fill a maker order at the back of the queue).
+ *  fundOffsetBps: added to the modelled Kalshi rate at every funding instant (bps per 8 h, + = longs pay more): Kalshi's
+ *  measured premium over the Binance-based model (research/perpTaFidelity.ts, Oct 21 - Nov 3 2026: BTC 1.66, ETH 1.19,
+ *  SOL 0.14, XRP 1.57). fundMult multiplies the rate (a stress; 1 = none). */
+export interface Costs { takerBps: number; makerBps: number; halfSpreadBps: number; ttBps?: number; fundOffsetBps?: number; fundMult?: number }
 export const KALSHI_COSTS: Costs = { takerBps: 12, makerBps: 5, halfSpreadBps: 2, ttBps: 1 };
 
 /** The 15-minute ATR(14) as a fraction of price, known at the end of each minute (last closed 15m bar). */
@@ -421,28 +452,79 @@ export function atrUnit(g: Grid, nMax: number): Float32Array {
   return out;
 }
 
+/** The funding applied at the end of each minute (a fraction of notional, + = longs pay), cumulated: cum[i + 1] = the
+ *  funding at the ends of minutes 0..i. The grid marks every instant (a zero rate as 1e-12); the offset and the stress
+ *  apply at instants only. */
+export function fundingCum(g: Grid, nMax: number, costs: Costs): Float64Array {
+  const fund = g.c.fund, off = (costs.fundOffsetBps ?? 0) / 1e4, mult = costs.fundMult ?? 1;
+  const cum = new Float64Array(nMax + 1);
+  for (let i = 0; i < nMax; i++) { const f = fund[i]; cum[i + 1] = cum[i] + (fin(f) && f !== 0 ? ((Math.abs(f) < 1e-9 ? 0 : f) + off) * mult : 0); }
+  return cum;
+}
+
+export interface Outcomes {
+  /** Per policy and direction (index policy * 2 + (long ? 0 : 1)), indexed by the decision minute i: net bps, NaN = no trade. */
+  net: Float32Array[];
+  /** The minute the position is flat again; for a maker entry that never filled, the minute its order was cancelled
+   *  (net NaN); -1 = not tradable. */
+  exit: Int32Array[];
+  /** Minutes in the position (from the fill minute to the exit minute, both counted). */
+  hold: Uint16Array[];
+  /** fundingCum: a trade's funding is d * (cum[exit] - cum[exit - hold + 1]). */
+  cum: Float64Array;
+  /** Maker entries: orders placed (a full window of tradable minutes, or a fill before a gap) and filled. */
+  fills: Array<{ tried: number; filled: number }>;
+}
+
 /** Outcome tables: for each policy and direction, the net result (bps of notional) of a trade decided at the end of
- *  minute i (entered at the open of minute i + 1 on the perp) and the minute it is flat again. NaN = not tradable or
- *  not finished before nMax. */
-export function outcomes(g: Grid, nMax: number, unit: Float32Array, costs: Costs, pols: Policy[] = POLICIES): { net: Float32Array[]; exit: Int32Array[]; hold: Uint16Array[] } {
-  const { po, ph, pl, pc, valid, fund } = g.c;
-  const cum = new Float64Array(nMax + 1); // cum[i + 1] = funding applied at the ends of minutes 0..i
-  for (let i = 0; i < nMax; i++) cum[i + 1] = cum[i] + fund[i];
-  const net: Float32Array[] = [], exit: Int32Array[] = [], hold: Uint16Array[] = [];
-  const takerSide = costs.takerBps + costs.halfSpreadBps, makerSide = costs.makerBps, tt = (costs.ttBps ?? 1) / 1e4;
+ *  minute i and the minute it is flat again. A taker entry fills at the open of minute i + 1; a maker entry (Entry) at
+ *  its price in the first minute that trades through it. In a maker entry's fill minute only the stop is judged (the
+ *  minute's range came partly before the fill: a bar reaching the stop counts as stopped, its target is never credited).
+ *  NaN = not tradable, not filled, or not finished before nMax. */
+export function outcomes(g: Grid, nMax: number, unit: Float32Array, costs: Costs, pols: Policy[] = POLICIES): Outcomes {
+  const { po, ph, pl, pc, valid } = g.c;
+  const cum = fundingCum(g, nMax, costs);
+  const net: Float32Array[] = [], exit: Int32Array[] = [], hold: Uint16Array[] = [], fills: Outcomes['fills'] = [];
+  const takerSide = costs.takerBps + costs.halfSpreadBps, makerSide = costs.makerBps, tt = (costs.ttBps ?? 1) / 1e4, h = costs.halfSpreadBps / 1e4;
   for (const p of pols) for (const d of [1, -1]) {
     const nt = new Float32Array(nMax).fill(NaN), ex = new Int32Array(nMax).fill(-1), hd = new Uint16Array(nMax);
+    const en = p.entry;
+    let tried = 0, filled = 0;
     for (let i = 0; i + 1 < nMax; i++) {
       const A = unit[i];
       if (!valid[i] || !valid[i + 1] || !(A > 0)) continue;
-      const e = i + 1, P0 = po[e];
+      let e = i + 1, P0 = po[e], entryCost = takerSide, fillMinute = false;
+      if (en) {
+        if (i + en.w >= nMax) continue;
+        const lim = en.kind === 'limit' ? pc[i] * (1 - d * (en.off ?? 0) * A) : NaN;
+        let f = -1, bad = false;
+        for (let j = i + 1; j <= i + en.w; j++) {
+          if (!valid[j]) { bad = true; break; } // the book is unknown across missing minutes: no trade
+          const q = en.kind === 'peg' ? pc[j - 1] * (1 - d * h) : lim;
+          if (!(q > 0)) { bad = true; break; }
+          if (d > 0 ? pl[j] <= q * (1 - tt) : ph[j] >= q * (1 + tt)) { f = j; P0 = q; break; }
+        }
+        if (bad) continue;
+        tried++;
+        if (f < 0) { ex[i] = i + en.w; continue; } // not filled: cancelled at the end of minute i + w
+        filled++;
+        e = f; entryCost = makerSide; fillMinute = true;
+      }
       if (!(P0 > 0)) continue;
       let stop = P0 * (1 - d * p.sl * A);
       const tpPx = p.tp > 0 ? P0 * (1 + d * p.tp * A) : NaN;
       const last = e + p.max - 1;
       if (last >= nMax) continue;
       let fill = NaN, maker = false, j = e, best = P0, gap = false;
-      for (; j <= last; j++) {
+      if (fillMinute) {
+        // A minute that opened through the stop (the resting order filled at its price on the way) exits at the open.
+        if (d > 0 ? pl[e] <= stop : ph[e] >= stop) fill = (d > 0 ? po[e] < stop : po[e] > stop) ? po[e] : stop;
+        else {
+          if (p.trail) { if (d > 0 ? pc[e] > best : pc[e] < best) best = pc[e]; const ts = best * (1 - d * p.trail * A); if (d > 0 ? ts > stop : ts < stop) stop = ts; }
+          j = e + 1;
+        }
+      }
+      if (fill !== fill) for (; j <= last; j++) {
         // A trade open across missing minutes (forward-filled flat bars) cannot be judged: dropped.
         if (!valid[j]) { gap = true; break; }
         if (d > 0) {
@@ -460,12 +542,12 @@ export function outcomes(g: Grid, nMax: number, unit: Float32Array, costs: Costs
       // Funding at the ends of minutes e .. j - 1 (a position exited during or at the close of minute j is flat
       // before the instant that ends it).
       const fundBps = d * (cum[j] - cum[e]) * 1e4;
-      nt[i] = d * (fill / P0 - 1) * 1e4 - takerSide - (maker ? makerSide : takerSide) - fundBps;
+      nt[i] = d * (fill / P0 - 1) * 1e4 - entryCost - (maker ? makerSide : takerSide) - fundBps;
       ex[i] = j; hd[i] = Math.min(65535, j - e + 1);
     }
-    net.push(nt); exit.push(ex); hold.push(hd);
+    net.push(nt); exit.push(ex); hold.push(hd); fills.push({ tried, filled });
   }
-  return { net, exit, hold };
+  return { net, exit, hold, cum, fills };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -542,14 +624,15 @@ const NPOL = POLICIES.length;
 const NCELL = 2 * NPOL * 2 * NCOND; // mode x policy x signal side x condition
 // Per fold: n, sum, sumsq, wins, hold minutes, sum and sum of squares of the excess over random entries, and the sum of the
 // random entries' variance at each trade (the variance floor: a small target with a rare large stop can go 50 trades without
-// a stop and show a tiny sample variance; the t statistics never use less than what a random entry with that exit varies).
-const NS = 8;
+// a stop and show a tiny sample variance; the t statistics never use less than what a random entry with that exit varies),
+// and the funding paid (bps, signed: + = paid) and its absolute value (the funding stress).
+const NS = 10;
 const cellIdx = (mode: number, p: number, side: number, c: number) => ((mode * NPOL + p) * 2 + side) * NCOND + c;
 
 export interface CellRec {
   a: string; rule: string; mode: 'follow' | 'fade'; pol: string; side: 'long' | 'short'; cond: string;
   /** Per fold: [n, sum bps, sum of squares, wins, hold minutes, sum of excess bps, its sum of squares, sum of the random
-   *  entries' variance at each trade]. */
+   *  entries' variance at each trade, funding paid (bps, + = paid), its absolute value] (round 1 records stop at 8). */
   f: number[][];
   /** Discovery: net bps per trade and its t, and the excess over entering at a random minute of the same month in
    *  the same condition with the same exit and side (exc, tExc: what the signal adds; drift and fees cancel). */
@@ -573,7 +656,7 @@ export interface RuleDef { id: string; trig: number; filt: number }
 
 /** Which part of the library a primitive comes from (the report's funnel by source). */
 export const sourceOf = (id: string): string => (id.startsWith('ta:') ? 'analyzer rule' : id.startsWith('book:') ? 'rule book' : id.startsWith('conf:') || id === 'ta_net' ? 'confluence'
-  : /^(cdl_|tl_)/.test(id) ? 'TA-Lib' : /^(tanet_|lib_|xg_)/.test(id) ? 'TA Net / Librarian / cross graph' : id.startsWith('perp_') ? 'perp' : 'classic TA');
+  : id.startsWith('conv:') ? 'conviction' : /^(cdl_|tl_)/.test(id) ? 'TA-Lib' : /^(tanet_|lib_|xg_)/.test(id) ? 'TA Net / Librarian / cross graph' : id.startsWith('perp_') ? 'perp' : 'classic TA');
 
 /** Context filters a trigger is paired with (a confluence = trigger AND filter agreeing): higher-timeframe trend, the
  *  analyzer's trend / structure / momentum readings, its 13 confluences and net vote, the forecasts, perp readings. */
@@ -586,7 +669,7 @@ export const FILTERS = [
   'tanet_up1', 'tanet_up4', 'lib_net', 'xg_rel4', 'xg_rel24', 'xg_rank',
   'tl_sar@60m', 'tl_aroon@60m', 'tl_kama@60m',
 ];
-const isFilter = (id: string) => FILTERS.includes(id) || id.startsWith('conf:');
+const isFilter = (id: string) => FILTERS.includes(id) || id.startsWith('conf:') || id.startsWith('conv:');
 
 export interface SweepOut { header: Record<string, unknown>; recs: CellRec[] }
 
@@ -608,7 +691,8 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
   t = Date.now();
   const unit = atrUnit(g, nMax);
   const out = outcomes(g, nMax, unit, o.costs);
-  log(`outcome tables: ${NPOL} policies x 2 sides in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+  const fillShare = Object.fromEntries(POLICIES.map((p, k) => { const a = out.fills[2 * k], b = out.fills[2 * k + 1], n = a.tried + b.tried; return [p.id, n ? +((a.filled + b.filled) / n).toFixed(4) : null]; }));
+  log(`outcome tables: ${NPOL} policies x 2 sides in ${((Date.now() - t) / 1000).toFixed(1)} s${POLICIES.some((p) => p.entry) ? `; maker fill share ${ENTRIES.map(({ tag }) => { const ks = POLICIES.map((p, k) => (p.id.startsWith(`${tag}:`) ? k : -1)).filter((k) => k >= 0); let n = 0, f = 0; for (const k of ks) for (const z of [0, 1]) { n += out.fills[2 * k + z].tried; f += out.fills[2 * k + z].filled; } return `${tag} ${n ? ((100 * f) / n).toFixed(1) : '-'}%`; }).join(', ')}` : ''}`);
   const cond = conditions(g, nMax, mod);
   const fo = folds(g, nMax, o.validFrom);
   const NF = fo.starts.length;
@@ -677,7 +761,8 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
       if (!g.c.valid[i] || i + 1 >= nMax || !g.c.valid[i + 1]) continue;
       const sd = en.dir[q], td = mode === 0 ? sd : -sd, k = p * 2 + (td > 0 ? 0 : 1);
       const x = out.net[k][i];
-      if (x !== x) continue;
+      // A maker order that never filled rested until its cancel minute: the rule took no other entry meanwhile.
+      if (x !== x) { const c = out.exit[k][i]; if (c > nextFree) nextFree = c; continue; }
       const ex = out.exit[k][i];
       nextFree = ex;
       const f = fo.of[i];
@@ -685,7 +770,8 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
       const side = sd > 0 ? 0 : 1;
       if (onlySide >= 0 && side !== onlySide) continue;
       const hd = out.hold[k][i], win = x > 0 ? 1 : 0, b0 = k * NCOND * NM + monthOf[i];
-      const add = (c: number) => { const b = (cellIdx(mode, p, side, c) * NF + f) * NS, j = b0 + c * NM, e = x - base[j]; into[b] += 1; into[b + 1] += x; into[b + 2] += x * x; into[b + 3] += win; into[b + 4] += hd; into[b + 5] += e; into[b + 6] += e * e; into[b + 7] += bvar[j]; };
+      const fb = td * (out.cum[ex] - out.cum[ex - hd + 1]) * 1e4, fa = Math.abs(fb);
+      const add = (c: number) => { const b = (cellIdx(mode, p, side, c) * NF + f) * NS, j = b0 + c * NM, e = x - base[j]; into[b] += 1; into[b + 1] += x; into[b + 2] += x * x; into[b + 3] += win; into[b + 4] += hd; into[b + 5] += e; into[b + 6] += e * e; into[b + 7] += bvar[j]; into[b + 8] += fb; into[b + 9] += fa; };
       if (onlyCond >= 0) { let hit = onlyCond === 0; for (let z = 0; z < NZ && !hit; z++) hit = cond[i * NZ + z] === onlyCond; if (hit) add(onlyCond); continue; }
       add(0);
       for (let z = 0; z < NZ; z++) { const cz = cond[i * NZ + z]; if (cz !== NONE) add(cz); }
@@ -710,7 +796,7 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
       if (d.tExc < storeT) continue;
       const rv = discStats(acc, cellIdx(1 - mode, p, side, c) * NF * NS, fo.discovery);
       const f: number[][] = [];
-      for (let k = 0; k < NF; k++) { const b = cb + k * NS; f.push([acc[b], +acc[b + 1].toFixed(1), +acc[b + 2].toFixed(0), acc[b + 3], acc[b + 4], +acc[b + 5].toFixed(1), +acc[b + 6].toFixed(0), +acc[b + 7].toFixed(0)]); }
+      for (let k = 0; k < NF; k++) { const b = cb + k * NS; f.push([acc[b], +acc[b + 1].toFixed(1), +acc[b + 2].toFixed(0), acc[b + 3], acc[b + 4], +acc[b + 5].toFixed(1), +acc[b + 6].toFixed(0), +acc[b + 7].toFixed(0), +acc[b + 8].toFixed(1), +acc[b + 9].toFixed(1)]); }
       recs.push({ a: g.asset, rule: r.id, mode: mode ? 'fade' : 'follow', pol: POLICIES[p].id, side: side ? 'short' : 'long', cond: CONDS[c], f, disc: { n: d.n, mean: +d.mean.toFixed(2), t: +d.t.toFixed(3), hit: +d.hit.toFixed(3), exc: +d.exc.toFixed(2), tExc: +d.tExc.toFixed(3) }, rev: { n: rv.n, mean: +rv.mean.toFixed(2), t: +(rv.t || 0).toFixed(3), exc: +(rv.exc || 0).toFixed(2), tExc: +(rv.tExc || 0).toFixed(3) } });
     }
     if (done % 1000 === 0) log(`rules ${done}/${todo.length}: ${tested} cells tested, ${recs.length} stored (${((Date.now() - t) / 60000).toFixed(1)} min)`);
@@ -745,10 +831,10 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
   }
   log(`placebo: ${top.length} cells x ${shifts.length} whole-day shifts in ${((Date.now() - t) / 60000).toFixed(1)} min`);
   const header = {
-    schema: 'perpta-sweep2', asset: g.asset, at: new Date().toISOString(), t0: new Date(g.t0).toISOString(), seal: new Date(o.seal).toISOString(), validFrom: new Date(o.validFrom).toISOString(),
+    schema: 'perpta-sweep3', round: ROUND, asset: g.asset, at: new Date().toISOString(), t0: new Date(g.t0).toISOString(), seal: new Date(o.seal).toISOString(), validFrom: new Date(o.validFrom).toISOString(),
     nMinutes: nMax, prims: prims.map((p) => p.id), filters: filt.map((b) => prims[b].id), rules: todo.length, bySource: bySrc, modules: mod?.notes ?? 'off', tested, stored: recs.length, storeT, minN, tHist, folds: fo.labels, discoveryFolds: fo.discovery,
     foldDays: fo.starts.map((s, k) => +(((k + 1 < fo.starts.length ? fo.starts[k + 1] : nMax) - s) / 1440).toFixed(2)),
-    policies: POLICIES, conds: CONDS, costs: o.costs, minBhN: o.minBhN ?? 100,
+    policies: POLICIES, fillShare, conds: CONDS, costs: o.costs, minBhN: o.minBhN ?? 100,
     triggersPerDay: Object.fromEntries(prims.map((p, k) => [p.id, +(trig[k].idx.length / (nMax / 1440)).toFixed(2)])),
   };
   return { header, recs };
@@ -757,20 +843,40 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
 // ---------------------------------------------------------------------------------------------------------------
 // The report: multiple testing, adversaries, validation folds, CSCV.
 
+/** Writes lines as gzip in members of up to 20,000 lines (no single string near V8's limit; gunzip reads concatenated
+ *  members as one stream). */
+export function writeJsonlGz(file: string, lines: Iterable<string>): void {
+  const fd = fs.openSync(file, 'w');
+  try {
+    let buf: string[] = [];
+    const flush = () => { if (buf.length) { fs.writeSync(fd, zlib.gzipSync(buf.join('\n') + '\n')); buf = []; } };
+    for (const l of lines) { buf.push(l); if (buf.length >= 20_000) flush(); }
+    flush();
+  } finally { fs.closeSync(fd); }
+}
+
+/** The non-empty lines of a gzip file (one or several members), decoded one at a time: the file is never one string. */
+export function readJsonlGz(file: string): string[] {
+  const b = zlib.gunzipSync(fs.readFileSync(file)), out: string[] = [];
+  for (let s = 0; s < b.length;) { let e = b.indexOf(10, s); if (e < 0) e = b.length; if (e > s) out.push(b.toString('utf8', s, e)); s = e + 1; }
+  return out;
+}
+
 const normSf = (z: number): number => { // P(Z > z)
   const t = 1 / (1 + 0.2316419 * Math.abs(z)), d = 0.3989422804014327 * Math.exp(-z * z / 2);
   const p = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
   return z >= 0 ? p : 1 - p;
 };
 
-interface Pooled { n: number; mean: number; t: number; hit: number; hold: number; pos: number; folds: number; exc: number; tExc: number; excPos: number }
-function pool(f: number[][], from: number, to: number): Pooled {
-  let n = 0, s = 0, s2 = 0, w = 0, h = 0, pos = 0, nf = 0, e = 0, e2 = 0, excPos = 0, vb = 0;
-  for (let k = from; k < to && k < f.length; k++) { const [a, b, c, d, hh, x, x2, xb] = f[k]; n += a; s += b; s2 += c; w += d; h += hh; e += x; e2 += x2; vb += xb ?? 0; if (a > 0) { nf++; if (b > 0) pos++; if (x > 0) excPos++; } }
+/** fund / fundAbs: mean funding paid per trade (bps, + = paid) and its mean absolute value (0 on round 1 records). */
+export interface Pooled { n: number; mean: number; t: number; hit: number; hold: number; pos: number; folds: number; exc: number; tExc: number; excPos: number; fund: number; fundAbs: number }
+export function pool(f: number[][], from: number, to: number): Pooled {
+  let n = 0, s = 0, s2 = 0, w = 0, h = 0, pos = 0, nf = 0, e = 0, e2 = 0, excPos = 0, vb = 0, fu = 0, fa = 0;
+  for (let k = from; k < to && k < f.length; k++) { const [a, b, c, d, hh, x, x2, xb, xf, xa] = f[k]; n += a; s += b; s2 += c; w += d; h += hh; e += x; e2 += x2; vb += xb ?? 0; fu += xf ?? 0; fa += xa ?? 0; if (a > 0) { nf++; if (b > 0) pos++; if (x > 0) excPos++; } }
   const floor = n ? Math.max(1e-9, vb / n) : 1e-9;
   const mean = n ? s / n : NaN, v = n > 1 ? Math.max(floor, (s2 - n * mean * mean) / (n - 1)) : NaN;
   const em = n ? e / n : NaN, ev = n > 1 ? Math.max(floor, (e2 - n * em * em) / (n - 1)) : NaN;
-  return { n, mean, t: n > 1 ? mean / Math.sqrt(v / n) : NaN, hit: n ? w / n : NaN, hold: n ? h / n : NaN, pos, folds: nf, exc: em, tExc: n > 1 ? em / Math.sqrt(ev / n) : NaN, excPos };
+  return { n, mean, t: n > 1 ? mean / Math.sqrt(v / n) : NaN, hit: n ? w / n : NaN, hold: n ? h / n : NaN, pos, folds: nf, exc: em, tExc: n > 1 ? em / Math.sqrt(ev / n) : NaN, excPos, fund: n ? fu / n : 0, fundAbs: n ? fa / n : 0 };
 }
 
 /** CSCV probability of backtest overfitting (Bailey, Borwein, Lopez de Prado, Zhu 2015) over a configs x folds matrix
@@ -852,7 +958,8 @@ function bhReject(ps: number[], q: number, m = ps.length): Set<number> {
 const FORECAST_CONDS = new Set(['tanet_vol_hi', 'tanet_vol_lo', 'lib_trend', 'lib_revert', 'lib_breakout', 'lib_flat']);
 export const isDiagnostic = (c: { rule: string; cond: string }) => c.rule.split('+').some((id) => sourceOf(id) === 'TA Net / Librarian / cross graph') || FORECAST_CONDS.has(c.cond);
 
-export interface Candidate extends CellRec { p: number; val: Pooled; discPooled: Pooled; tradesPerDay: number; usdPerHourPer1k: number; valUsdPerHourPer1k: number; stress6: number; why: string[]; group: string; valP?: number; diagnostic: boolean }
+/** costs / policyDef: the coin's costs and the exit policy as its sweep ran them (the blind test trades exactly these). */
+export interface Candidate extends CellRec { p: number; val: Pooled; discPooled: Pooled; tradesPerDay: number; usdPerHourPer1k: number; valUsdPerHourPer1k: number; stress6: number; fundStress: number; why: string[]; group: string; valP?: number; diagnostic: boolean; costs?: Costs; policyDef?: Policy }
 
 /** The report. Selection, all pre-registered (/mnt/project-files/perp-ta/preregistration.md):
  *   1. every tested cell of every coin is one hypothesis (m); a cell with >= minBhN discovery trades gets the one-sided
@@ -862,13 +969,15 @@ export interface Candidate extends CellRec { p: number; val: Pooled; discPooled:
  *   3. the representative must be a BH discovery, positive and above random in >= 60% of discovery half-years, placebo
  *      percentile >= 0.95, reversed excess < 0 (a mechanical check: kept as a leak flag)
  *   4. validation: Benjamini-Hochberg at q over the representatives left (forecast-reading ones excluded: diagnostic) on
- *      the one-sided t-test of the validation excess (>= 30 trades), and validation net > 0 and excess > 0. */
+ *      the one-sided t-test of the validation excess (>= 30 trades), and validation net > 0 and excess > 0
+ *   round 2 adds the funding stress (funding paid x1.5, received x0.5: net - half the mean absolute funding per trade):
+ *      discovery >= minBps (step 3) and validation > 0 (step 4). */
 export function report(files: string[], o: { q?: number; minBps?: number; log?: (m: string) => void }): { summary: Record<string, unknown>; candidates: Candidate[]; funnel: Record<string, number>; md: string } {
   const log = o.log ?? console.log;
   const q = o.q ?? 0.1, minBps = o.minBps ?? 3;
   const recs: CellRec[] = [], headers: Array<Record<string, any>> = [];
   for (const file of files) {
-    const lines = zlib.gunzipSync(fs.readFileSync(file)).toString('utf8').split('\n').filter(Boolean);
+    const lines = readJsonlGz(file);
     headers.push(JSON.parse(lines[0]));
     for (const l of lines.slice(1)) recs.push(JSON.parse(l));
   }
@@ -893,14 +1002,23 @@ export function report(files: string[], o: { q?: number; minBps?: number; log?: 
     const why: string[] = [];
     if (!bhSet.has(r)) why.push('not a discovery under Benjamini-Hochberg');
     if (disc.mean < minBps) why.push(`discovery ${disc.mean.toFixed(1)} bps/trade < ${minBps}`);
+    const fundStress = disc.mean - 0.5 * disc.fundAbs;
+    if (!(fundStress >= minBps)) why.push(`funding x1.5: discovery ${fundStress.toFixed(1)} bps/trade < ${minBps} (mean funding ${disc.fund.toFixed(2)} bps)`);
     if (disc.pos < Math.ceil(0.6 * disc.folds) || disc.excPos < Math.ceil(0.6 * disc.folds)) why.push(`net positive in ${disc.pos}/${disc.folds} discovery half-years, above random in ${disc.excPos}`);
     if (r.rev.exc !== undefined ? r.rev.exc >= 0 : r.rev.mean >= 0) why.push(`reversed excess ${r.rev.exc ?? r.rev.mean} >= 0`);
     if (!r.placebo) why.push('no placebo run'); else if (r.placebo.pct < 0.95) why.push(`placebo percentile ${r.placebo.pct}`);
     const diagnostic = isDiagnostic(r);
     if (diagnostic) why.push('reads a forecast whose model selection saw 2024-2026: diagnostic only');
     const tradesPerDay = disc.n / days;
-    cands.push({ ...r, p: pOf.get(r) ?? 1, val, discPooled: disc, tradesPerDay: +tradesPerDay.toFixed(2), usdPerHourPer1k: +((disc.mean / 1e4) * 1000 * tradesPerDay / 24).toFixed(3), valUsdPerHourPer1k: +((val.mean / 1e4) * 1000 * (val.n / Math.max(1, vDays)) / 24).toFixed(3), stress6: +(disc.mean - 6).toFixed(2), why, group: g, diagnostic });
+    const policyDef = (h.policies as Policy[] | undefined)?.find((x) => x.id === r.pol);
+    cands.push({ ...r, p: pOf.get(r) ?? 1, val, discPooled: disc, tradesPerDay: +tradesPerDay.toFixed(2), usdPerHourPer1k: +((disc.mean / 1e4) * 1000 * tradesPerDay / 24).toFixed(3), valUsdPerHourPer1k: +((val.mean / 1e4) * 1000 * (val.n / Math.max(1, vDays)) / 24).toFixed(3), stress6: +(disc.mean - 6).toFixed(2), fundStress: +fundStress.toFixed(2), why, group: g, diagnostic, costs: h.costs as Costs, policyDef });
   }
+  // The funnel through the discovery checks, in the order they are applied (before any validation reason is added).
+  const funnel: Record<string, number> = { tested: m, stored: recs.length, [`n>=${minBhN(recs[0]?.a ?? '')}`]: elig.length, bh: bhSet.size, groups: reps.size };
+  const has = (c: Candidate, pre: string) => c.why.some((w) => w.startsWith(pre));
+  const STAGES: Array<[string, string[]]> = [['+bh', ['not a discovery']], ['+economic', ['discovery ']], ['+funding', ['funding x1.5: discovery']], ['+stable', ['net positive']], ['+reversed', ['reversed']], ['+placebo', ['no placebo', 'placebo percentile']]];
+  const gone: string[] = [];
+  for (const [name, pres] of STAGES) { gone.push(...pres); funnel[name] = cands.filter((c) => !gone.some((pre) => has(c, pre))).length; }
   // 4. Validation: BH over the representatives that passed every discovery check.
   const discOk = (c: Candidate) => c.why.length === 0 || (c.why.length === 1 && c.diagnostic);
   const fam = cands.filter((c) => discOk(c) && !c.diagnostic);
@@ -911,16 +1029,10 @@ export function report(files: string[], o: { q?: number; minBps?: number; log?: 
     const i = fam.indexOf(c);
     if (!(c.val.n >= 30)) c.why.push(`only ${c.val.n} validation trades`);
     else if (!(c.val.mean > 0 && c.val.exc > 0)) c.why.push(`validation ${c.val.mean.toFixed(1)} bps/trade, ${c.val.exc.toFixed(1)} above random`);
+    else if (!(c.val.mean - 0.5 * c.val.fundAbs > 0)) c.why.push(`funding x1.5: validation ${(c.val.mean - 0.5 * c.val.fundAbs).toFixed(1)} bps/trade`);
     else if (i >= 0 && !vRej.has(i)) c.why.push(`validation excess t ${c.val.tExc.toFixed(2)} not a discovery under Benjamini-Hochberg over ${fam.length} groups`);
     else if (i < 0) { const pv = tSf(c.val.tExc, c.val.n - 1); c.valP = +pv.toExponential(3); }
   }
-  const funnel: Record<string, number> = { tested: m, stored: recs.length, [`n>=${minBhN(recs[0]?.a ?? '')}`]: elig.length, bh: bhSet.size, groups: reps.size };
-  const has = (c: Candidate, pre: string) => c.why.some((w) => w.startsWith(pre));
-  funnel['+bh'] = cands.filter((c) => !has(c, 'not a discovery')).length;
-  funnel['+economic'] = cands.filter((c) => !has(c, 'not a discovery') && !has(c, 'discovery ')).length;
-  funnel['+stable'] = cands.filter((c) => !has(c, 'not a discovery') && !has(c, 'discovery ') && !has(c, 'net positive')).length;
-  funnel['+reversed'] = cands.filter((c) => !has(c, 'not a discovery') && !has(c, 'discovery ') && !has(c, 'net positive') && !has(c, 'reversed')).length;
-  funnel['+placebo'] = cands.filter(discOk).length;
   funnel['non-forecast'] = fam.length;
   funnel['+validation'] = cands.filter((c) => c.why.length === 0).length;
   const pass = cands.filter((c) => c.why.length === 0);
@@ -935,7 +1047,12 @@ export function report(files: string[], o: { q?: number; minBps?: number; log?: 
   const tAll = new Array(81).fill(0);
   for (const h of headers) (h.tHist as number[]).forEach((v, i) => { tAll[i] += v; });
   const share = (lo: number) => tAll.reduce((a, v, i) => a + (i / 4 - 10 >= lo ? v : 0), 0) / Math.max(1, m);
-  const summary = { at: new Date().toISOString(), assets: headers.map((h) => h.asset), tested: m, q, minBps, funnel, pbo: PBO, tShareAbove2: +share(2).toFixed(4), tShareAbove3: +share(3).toFixed(5), normalAbove2: 0.0228, normalAbove3: 0.00135, perAsset: headers.map((h) => ({ asset: h.asset, tested: h.tested, stored: h.stored, minutes: h.nMinutes, folds: h.folds, discovery: h.discoveryFolds, prims: (h.prims as string[]).length, modules: h.modules, costs: h.costs })) } as Record<string, unknown>;
+  // Descriptive: the 40 strongest non-forecast groups' validation trades pooled (their trades overlap: no test).
+  const top40 = cands.filter((c) => !c.diagnostic).sort((a, b) => b.disc.tExc - a.disc.tExc).slice(0, 40);
+  const vPool = (() => { if (!top40.length) return undefined; const acc: number[][] = []; for (const c of top40) { const D = hdr.get(c.a)!.discoveryFolds as number; for (const row of c.f.slice(D)) { const z = new Array(10).fill(0); row.forEach((v, k) => { z[k] = v; }); acc.push(z); } } return pool(acc, 0, acc.length); })();
+  const round = (headers[0]?.round as number | undefined) ?? 1;
+  const costLine = headers.filter((h, k) => headers.findIndex((x) => x.asset === h.asset) === k).map((h) => { const c = h.costs as Costs; return `${h.asset} taker ${c.takerBps} + half-spread ${c.halfSpreadBps}, maker ${c.makerBps}${c.fundOffsetBps ? `, funding ${c.fundOffsetBps > 0 ? '+' : ''}${c.fundOffsetBps} bps / 8 h over the model` : ''}${c.fundMult && c.fundMult !== 1 ? ` x${c.fundMult}` : ''}${h.fillShare ? `; maker fills ${ENTRIES.map(({ tag }) => { const v = Object.entries(h.fillShare as Record<string, number | null>).filter(([k, x]) => k.startsWith(`${tag}:`) && x !== null).map(([, x]) => x as number); return `${tag} ${v.length ? (100 * v.reduce((a, b) => a + b, 0) / v.length).toFixed(0) : '-'}%`; }).join(' ')}` : ''}`; }).join('; ');
+  const summary = { at: new Date().toISOString(), round, assets: headers.map((h) => h.asset), tested: m, q, minBps, funnel, pbo: PBO, top40Validation: vPool ? { n: vPool.n, mean: +vPool.mean.toFixed(2), exc: +vPool.exc.toFixed(2), fund: +vPool.fund.toFixed(2) } : null, tShareAbove2: +share(2).toFixed(4), tShareAbove3: +share(3).toFixed(5), normalAbove2: 0.0228, normalAbove3: 0.00135, perAsset: headers.map((h) => ({ asset: h.asset, tested: h.tested, stored: h.stored, minutes: h.nMinutes, folds: h.folds, discovery: h.discoveryFolds, prims: (h.prims as string[]).length, modules: h.modules, costs: h.costs, fillShare: h.fillShare })) } as Record<string, unknown>;
   const f1 = (x: number) => (fin(x) ? x.toFixed(1) : '-');
   const fmt = (c: Candidate) => `| ${c.a} | ${c.rule} | ${c.mode} | ${c.pol} | ${c.side} | ${c.cond} | ${c.disc.n} | ${c.disc.mean} | ${c.disc.exc} | ${c.disc.tExc} | ${c.placebo ? c.placebo.pct : '-'} | ${c.val.n} | ${f1(c.val.mean)} | ${f1(c.val.exc)} | ${f1(c.val.tExc)} | ${c.tradesPerDay} | ${c.valUsdPerHourPer1k} | ${c.why.join('; ') || 'PASS'} |`;
   const head = '| coin | rule | mode | exit | side | condition | disc n | disc bps | disc excess | excess t | placebo | val n | val bps | val excess | val excess t | trades/day | val $/h per $1k | verdict |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
@@ -953,11 +1070,12 @@ export function report(files: string[], o: { q?: number; minBps?: number; log?: 
   const bestBySrc = Object.keys(src).flatMap((k) => { const sn = new Set<string>(); return cands.filter((c) => srcOf(c)[0] === k && !has(c, 'not a discovery')).sort(rank).filter((c) => { const key = `${c.a}|${c.rule.split('+')[0]}`; if (sn.has(key)) return false; sn.add(key); return true; }).slice(0, 3); });
   const diag = cands.filter((c) => c.diagnostic && !has(c, 'not a discovery')).sort(rank).slice(0, 10);
   const md = [
-    `### Perp TA sweep, round 1 (with the bot's TA modules)`,
+    `### Perp TA sweep, round ${round} (with the bot's TA modules${round >= 2 ? '; post-only maker entries' : ''})`,
     `Tested ${m.toLocaleString()} cells (${headers.map((h) => `${h.asset} ${h.tested.toLocaleString()}`).join(', ')}); Benjamini-Hochberg q=${q} on Student-t p of the discovery excess (cells with >= ${minBhN(recs[0]?.a ?? '')} trades): ${bhSet.size} cells pass, in ${funnel['+bh']} of ${reps.size} groups (coin, rule, mode, side).`,
     `Share of cells whose discovery excess over random entries has t >= 2: ${(share(2) * 100).toFixed(2)}% (pure noise would give 2.28%); t >= 3: ${(share(3) * 100).toFixed(3)}% (noise 0.135%).`,
     `Funnel (groups after "groups"): ${Object.entries(funnel).map(([k, v]) => `${k} ${v}`).join(' -> ')}. CSCV PBO over the top ${topM.length} groups: ${fin(PBO) ? PBO.toFixed(2) : 'n/a'}.`,
-    `Passing every check, validation included: ${pass.length}. Costs: taker ${headers[0]?.costs?.takerBps} + half-spread ${headers[0]?.costs?.halfSpreadBps} bps per taker side, maker ${headers[0]?.costs?.makerBps} bps (targets need a ${headers[0]?.costs?.ttBps ?? 0} bp trade-through), Kalshi funding signed.`,
+    `Passing every check, validation included: ${pass.length}. Costs (bps; resting orders need a ${headers[0]?.costs?.ttBps ?? 0} bp trade-through; Kalshi funding signed): ${costLine}.`,
+    vPool ? `The 40 strongest non-forecast groups on validation, pooled (descriptive, their trades overlap): ${vPool.n.toLocaleString()} trades, net ${vPool.mean.toFixed(1)} bps a trade, ${vPool.exc.toFixed(1)} above random entries, funding ${vPool.fund.toFixed(2)} bps a trade.` : '',
     '', head, ...best.map(fmt),
     '', '**By source** (cells with that source as the trigger / as the filter: tested, discovery excess t >= 2.5 in the sweep; groups whose representative is a BH discovery, and groups passing every check)',
     '| source | trigger tested | t >= 2.5 | BH groups | pass | filter tested | t >= 2.5 | BH groups | pass |', '|---|---|---|---|---|---|---|---|---|',
@@ -1005,13 +1123,14 @@ async function main(): Promise<void> {
   if (mode === 'sweep') {
     const g = readGrid(arg('data')!);
     const seal = Date.parse(arg('seal', '2025-07-01')! + 'T00:00:00Z'), validFrom = Date.parse(arg('valid-from', '2024-01-01')! + 'T00:00:00Z');
-    const costs: Costs = { takerBps: +arg('taker', '12')!, makerBps: +arg('maker', '5')!, halfSpreadBps: +arg('half-spread', '2')!, ttBps: +arg('trade-through', '1')! };
+    const costs: Costs = { takerBps: +arg('taker', '12')!, makerBps: +arg('maker', '5')!, halfSpreadBps: +arg('half-spread', '2')!, ttBps: +arg('trade-through', '1')!, fundOffsetBps: +arg('funding-offset', '0')!, fundMult: +arg('funding-mult', '1')! };
+    for (const [k, v] of Object.entries(costs)) if (!fin(v)) throw new Error(`--${k}: not a number`);
     const shard = +arg('shard', '0')!, shards = +arg('shards', '1')!;
     const modules = arg('modules', 'true') === 'false' ? false as const : { history: arg('history'), forecasts: arg('forecasts'), cacheDir: arg('module-cache') };
     const res = sweepAsset(g, { seal, validFrom, costs, log, modules, pairs: arg('pairs', 'ctx') === 'all' ? 'all' : 'ctx', placeboTop: +arg('placebo-top', '3000')!, minBhN: +arg('min-bh-n', '100')!, shifts: +arg('shifts', '60')!, storeT: +arg('store-t', '2.5')!, rules: shards > 1 ? (r) => r.trig % shards === shard : undefined });
     const file = arg('out')!;
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, zlib.gzipSync([JSON.stringify({ ...res.header, shard, shards }), ...res.recs.map((r) => JSON.stringify(r))].join('\n') + '\n'));
+    writeJsonlGz(file, (function* () { yield JSON.stringify({ ...res.header, shard, shards }); for (const r of res.recs) yield JSON.stringify(r); })());
     log(`wrote ${file} (${res.recs.length} cells)`);
     return;
   }
@@ -1027,7 +1146,7 @@ async function main(): Promise<void> {
     // group that passed the discovery checks, with N_raw = cells tested.
     const now = new Date(), est = now.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false });
     const run = process.env.GITHUB_RUN_ID ?? 'local', sha = process.env.GITHUB_SHA ?? '';
-    const base = { thread: 'perp-ta-rulebook', run, sha, at_utc: now.toISOString(), at_eastern: est, evidence: 'binance-history (spot TA, USD-M fills)', doge_excluded: true, prereg: '/mnt/project-files/perp-ta/preregistration.md' };
+    const base = { thread: 'perp-ta-rulebook', round: r.summary.round, run, sha, at_utc: now.toISOString(), at_eastern: est, evidence: 'binance-history (spot TA, USD-M fills)', doge_excluded: true, prereg: '/mnt/project-files/perp-ta/preregistration.md' };
     const rows = [
       { ...base, kind: 'run', n_raw: r.summary.tested, funnel: r.funnel, pbo: r.summary.pbo, assets: r.summary.assets, blocks: { discovery: '< 2024-01-01', validation: '2024-01-01 .. 2025-06-30', sealed: '>= 2025-07-01 (not opened)' } },
       ...r.candidates.filter((c) => !c.why.some((w) => w.startsWith('not a discovery'))).map((c) => ({ ...base, kind: 'group', group: c.group, pol: c.pol, cond: c.cond, disc: c.disc, val: { n: c.val.n, mean: +c.val.mean.toFixed(2), exc: +c.val.exc.toFixed(2), tExc: +c.val.tExc.toFixed(3) }, gate: c.why.length ? 'discovery' : 'validation', verdict: c.why.length ? c.why.join('; ') : 'PASS (awaiting the sealed blind test)', diagnostic: c.diagnostic })),

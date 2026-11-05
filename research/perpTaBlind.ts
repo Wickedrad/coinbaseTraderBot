@@ -14,15 +14,17 @@
 // number computed. Per candidate (sealed): n >= 20, net > 0, excess over random entries > 0, net t >= 1 and excess
 // t >= 1. The rulebook (every frozen candidate together; $500 a position, $1,000 open at most, one position per coin,
 // earliest signal first) passes with a day-block bootstrap 90% one-sided lower bound on $/h above 0, positive on BTC,
-// ETH and one of SOL / XRP, no month holding more than half the gain, and still above 0 at +3 bps per side.
+// ETH and one of SOL / XRP, no month holding more than half the gain, and still above 0 at +3 bps per side; from round 2
+// also above 0 with funding paid x1.5 and received x0.5. A round 2 maker order that did not fill holds its coin's slot
+// until cancelled (a signal row [ts, 0, cancel ts, 0, 0]) and is not a trade.
 
 import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import crypto from 'crypto';
 import {
-  readGrid, buildPrims, triggers, stateAt, outcomes, atrUnit, conditions, folds, POLICIES, CONDS, NZ, KALSHI_COSTS,
-  type Grid, type Prim, type Costs, type Candidate,
+  readGrid, buildPrims, triggers, stateAt, outcomes, atrUnit, conditions, folds, POLICIES, POLICIES_R1, CONDS, NZ, KALSHI_COSTS,
+  type Grid, type Prim, type Costs, type Candidate, type Policy,
 } from './perpTaSweep';
 import { modulePrims, MODULE_CONDS } from './perpTaModules';
 
@@ -30,7 +32,10 @@ const MIN = 60_000;
 const DAY = 86_400_000;
 const fin = Number.isFinite;
 
-export interface FrozenCand { id: string; a: string; group: string; rule: string; mode: 'follow' | 'fade'; pol: string; side: 'long' | 'short'; cond: string; disc: { n: number; mean: number; t: number; exc: number; tExc: number } }
+/** costs / policy: the coin's costs and the exit policy exactly as the sweep ran them (round 2: per-coin half-spread and
+ *  funding offset, maker entries); absent on a set frozen before round 2 (the set's costs, and the policy found by id in
+ *  POLICIES or POLICIES_R1: their ids differ). */
+export interface FrozenCand { id: string; a: string; group: string; rule: string; mode: 'follow' | 'fade'; pol: string; side: 'long' | 'short'; cond: string; disc: { n: number; mean: number; t: number; exc: number; tExc: number }; costs?: Costs; policy?: Policy }
 export interface Frozen { schema: 'perpta-frozen1'; run: string; sha: string; at: string; seal: string; validFrom: string; costs: Costs; passing: number; hash: string; cands: FrozenCand[] }
 
 /** The frozen set: the candidates that passed the sweep's selection (forecast-reading cells never do), at most 20:
@@ -49,21 +54,27 @@ export function freeze(cands: Candidate[], o: { run: string; sha: string; seal: 
     const round = queues.filter((q) => q.length > r).map((q) => q[r]).sort((x, y) => y.disc.tExc - x.disc.tExc);
     pick.push(...round.slice(0, (o.max ?? 20) - pick.length));
   }
-  const fz = pick.map((c, k): FrozenCand => ({
-    id: `c${k + 1}`, a: c.a, group: c.group, rule: c.rule, mode: c.mode, pol: c.pol, side: c.side, cond: c.cond,
-    disc: { n: c.disc.n, mean: c.disc.mean, t: c.disc.t, exc: c.disc.exc, tExc: c.disc.tExc },
-  }));
-  const key = JSON.stringify({ seal: o.seal, validFrom: o.validFrom, costs: o.costs, cands: fz.map(({ a, rule, mode, pol, side, cond }) => ({ a, rule, mode, pol, side, cond })) });
+  const fz = pick.map((c, k): FrozenCand => {
+    const policy = c.policyDef ?? policyById(c.pol);
+    if (!policy) throw new Error(`${c.a} ${c.group}: exit policy ${c.pol} unknown`);
+    return {
+      id: `c${k + 1}`, a: c.a, group: c.group, rule: c.rule, mode: c.mode, pol: c.pol, side: c.side, cond: c.cond,
+      disc: { n: c.disc.n, mean: c.disc.mean, t: c.disc.t, exc: c.disc.exc, tExc: c.disc.tExc }, costs: c.costs ?? o.costs, policy,
+    };
+  });
+  const key = JSON.stringify({ seal: o.seal, validFrom: o.validFrom, costs: o.costs, cands: fz.map(({ a, rule, mode, pol, side, cond, costs, policy }) => ({ a, rule, mode, pol, side, cond, costs, policy })) });
   return { schema: 'perpta-frozen1', run: o.run, sha: o.sha, at: new Date().toISOString(), seal: o.seal, validFrom: o.validFrom, costs: o.costs, passing: pass.length, hash: crypto.createHash('sha1').update(key).digest('hex').slice(0, 16), cands: fz };
 }
 
-export interface SealedStats { n: number; mean: number; t: number; exc: number; tExc: number; hit: number; holdMin: number; over480: number; perDay: number; usdPerHourPer1k: number; stress6: number }
+const policyById = (id: string): Policy | undefined => POLICIES.find((x) => x.id === id) ?? POLICIES_R1.find((x) => x.id === id);
+
+export interface SealedStats { n: number; mean: number; t: number; exc: number; tExc: number; hit: number; holdMin: number; over480: number; perDay: number; usdPerHourPer1k: number; stress6: number; fundStress?: number }
 export interface CoinOut {
   schema: 'perpta-blind1'; asset: string; hash: string; sealFrom: string; sealTo: string; sealDays: number;
   replication: Array<{ id: string; ok: boolean; n: number; frozenN: number; mean: number; frozenMean: number }>;
   /** Only when every candidate of the coin replicated: the sealed stats and the rulebook signals (decision ts, net bps,
    *  exit ts, hold minutes) of each candidate. */
-  cands?: Array<{ id: string; sealed: SealedStats; signals: Array<[number, number, number, number]> }>;
+  cands?: Array<{ id: string; sealed: SealedStats; signals: Array<[number, number, number, number, number?]> }>;
   notes: string[];
 }
 
@@ -100,7 +111,12 @@ export function blindCoin(g: Grid, fz: Frozen, o: { modules?: false | { history?
   const needMod = cands.some((c) => !resolveRule(c.rule, byId)) || cands.some((c) => MODULE_CONDS.includes(c.cond));
   const mod = needMod && o.modules !== false ? modulePrims(g, nFull, { ...(o.modules || {}), discoveryEnd: validFrom, log }) : undefined;
   if (mod) { prims.push(...mod.prims); byId = new Map(prims.map((p) => [p.id, p])); res.notes.push(...mod.notes.map((n) => `modules: ${n}`)); }
-  const unit = atrUnit(g, nFull), out = outcomes(g, nFull, unit, fz.costs), cond = conditions(g, nFull, mod), fo = folds(g, nFull, validFrom);
+  // The coin's costs and the candidates' policies as the sweep ran them.
+  const costs = cands[0].costs ?? fz.costs;
+  if (cands.some((c) => JSON.stringify(c.costs ?? fz.costs) !== JSON.stringify(costs))) throw new Error(`${g.asset}: frozen candidates disagree on the coin's costs`);
+  const pols: Policy[] = [];
+  for (const c of cands) { const p = c.policy ?? policyById(c.pol); if (p && !pols.some((x) => x.id === p.id)) pols.push(p); }
+  const unit = atrUnit(g, nFull), out = outcomes(g, nFull, unit, costs, pols), cond = conditions(g, nFull, mod), fo = folds(g, nFull, validFrom);
   const monthOf = new Int16Array(nFull);
   const y0 = new Date(g.t0).getUTCFullYear(), m0 = new Date(g.t0).getUTCMonth();
   for (let i = 0; i < nFull; i++) { const d = new Date(g.t0 + i * MIN); monthOf[i] = (d.getUTCFullYear() - y0) * 12 + d.getUTCMonth() - m0; }
@@ -118,14 +134,14 @@ export function blindCoin(g: Grid, fz: Frozen, o: { modules?: false | { history?
     for (let j = 0; j < NM; j++) { m[j] = n[j] ? s[j] / n[j] : 0; v[j] = n[j] > 1 ? Math.max(0, s2[j] / n[j] - m[j] * m[j]) : 0; }
     const r = { m, v }; baseCache.set(key, r); return r;
   };
-  type Tr = { i: number; x: number; e: number; vb: number; ex: number; hd: number };
+  type Tr = { i: number; x: number; e: number; vb: number; ex: number; hd: number; fb: number };
   const plans = cands.map((c) => {
     const rr = resolveRule(c.rule, byId);
     if (!rr) return undefined;
     const [tp, fp] = rr, tr = triggers(tp, g.c.valid, nFull);
     const idx: number[] = [], dir: number[] = [];
     for (let q = 0; q < tr.idx.length; q++) { const i = tr.idx[q]; if (!fp || stateAt(fp, i) === tr.dir[q]) { idx.push(i); dir.push(tr.dir[q]); } }
-    return { c, idx, dir, mode: c.mode === 'fade' ? 1 : 0, p: POLICIES.findIndex((x) => x.id === c.pol), side: c.side === 'short' ? 1 : 0, ci: CONDS.indexOf(c.cond) };
+    return { c, idx, dir, mode: c.mode === 'fade' ? 1 : 0, p: pols.findIndex((x) => x.id === c.pol), side: c.side === 'short' ? 1 : 0, ci: CONDS.indexOf(c.cond) };
   });
   // The cell exactly as the sweep walked it: one trade at a time over every entry of the rule (both sides, every
   // condition), a trade kept when its side and condition are the cell's; purged when its exit falls in the next fold.
@@ -138,14 +154,14 @@ export function blindCoin(g: Grid, fz: Frozen, o: { modules?: false | { history?
       if (!g.c.valid[i] || i + 1 >= nFull || !g.c.valid[i + 1]) continue;
       const sd = pl.dir[q], td = pl.mode === 0 ? sd : -sd, k = pl.p * 2 + (td > 0 ? 0 : 1);
       const x = out.net[k][i];
-      if (x !== x) continue;
+      if (x !== x) { const cx = out.exit[k][i]; if (cx > nextFree) nextFree = cx; continue; } // an unfilled maker order rested (as in the sweep)
       const ex = out.exit[k][i];
       nextFree = ex;
       if (i < from || i >= to) continue;
       if (purge && fo.of[ex] !== fo.of[i]) continue;
       if ((sd > 0 ? 0 : 1) !== pl.side || !inCond(i, pl.ci)) continue;
-      const b = baseline(k, pl.ci), mo = monthOf[i];
-      outT.push({ i, x, e: x - b.m[mo], vb: b.v[mo], ex, hd: out.hold[k][i] });
+      const b = baseline(k, pl.ci), mo = monthOf[i], hd = out.hold[k][i];
+      outT.push({ i, x, e: x - b.m[mo], vb: b.v[mo], ex, hd, fb: td * (out.cum[ex] - out.cum[ex - hd + 1]) * 1e4 });
     }
     return outT;
   };
@@ -174,16 +190,20 @@ export function blindCoin(g: Grid, fz: Frozen, o: { modules?: false | { history?
       n: s.n, mean: +s.mean.toFixed(2), t: +s.t.toFixed(3), exc: +s.exc.toFixed(2), tExc: +s.tExc.toFixed(3), hit: +s.hit.toFixed(3),
       holdMin: tr.length ? +(tr.reduce((a, t) => a + t.hd, 0) / tr.length).toFixed(1) : 0, over480: tr.filter((t) => t.hd > 480).length,
       perDay: +(s.n / (hours / 24)).toFixed(3), usdPerHourPer1k: +((sum / 1e4) * 1000 / hours).toFixed(4), stress6: +(s.mean - 6).toFixed(2),
+      fundStress: tr.length ? +(s.mean - 0.5 * tr.reduce((a, t) => a + Math.abs(t.fb), 0) / tr.length).toFixed(2) : NaN,
     };
-    const signals: Array<[number, number, number, number]> = [];
+    // [decision ts, net bps, exit ts, hold minutes, funding bps]; a maker order that did not fill is [ts, 0, cancel ts, 0, 0]
+    // (it held the coin's slot and margin until cancelled; nothing is booked).
+    const signals: Array<[number, number, number, number, number]> = [];
     for (let q = 0; q < pl.idx.length; q++) {
       const i = pl.idx[q];
       if (i < iSeal || !g.c.valid[i] || i + 1 >= nFull || !g.c.valid[i + 1]) continue;
       const sd = pl.dir[q];
       if ((sd > 0 ? 0 : 1) !== pl.side || !inCond(i, pl.ci)) continue;
-      const td = pl.mode === 0 ? sd : -sd, kk = pl.p * 2 + (td > 0 ? 0 : 1), x = out.net[kk][i];
-      if (x !== x) continue;
-      signals.push([g.t0 + i * MIN, +x.toFixed(2), g.t0 + out.exit[kk][i] * MIN, out.hold[kk][i]]);
+      const td = pl.mode === 0 ? sd : -sd, kk = pl.p * 2 + (td > 0 ? 0 : 1), x = out.net[kk][i], ex = out.exit[kk][i];
+      if (x !== x) { if (ex > i) signals.push([g.t0 + i * MIN, 0, g.t0 + ex * MIN, 0, 0]); continue; }
+      const hd = out.hold[kk][i];
+      signals.push([g.t0 + i * MIN, +x.toFixed(2), g.t0 + ex * MIN, hd, +(td * (out.cum[ex] - out.cum[ex - hd + 1]) * 1e4).toFixed(3)]);
     }
     return { id: c.id, sealed, signals };
   });
@@ -195,14 +215,14 @@ export function blindCoin(g: Grid, fz: Frozen, o: { modules?: false | { history?
 
 function rng(seed: number): () => number { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
-export interface Book { members: string[]; trades: number; skippedBusy: number; skippedCap: number; usd: number; usdPerHour: number; lb90: number; stressUsdPerHour: number; byCoin: Record<string, number>; bestMonthShare: number; months: Record<string, number>; over480: number; pass: boolean; why: string[] }
+export interface Book { members: string[]; trades: number; skippedBusy: number; skippedCap: number; usd: number; usdPerHour: number; lb90: number; stressUsdPerHour: number; fundStressUsdPerHour: number; unfilled: number; byCoin: Record<string, number>; bestMonthShare: number; months: Record<string, number>; over480: number; pass: boolean; why: string[] }
 
 export function rulebook(fz: Frozen, coins: CoinOut[], members: string[], o: { perPos?: number; cap?: number; resamples?: number } = {}): Book {
   const perPos = o.perPos ?? 500, cap = o.cap ?? 1000, maxOpen = Math.floor(cap / perPos);
   const rank = new Map(fz.cands.map((c, k) => [c.id, k]));
   const coinOf = new Map(fz.cands.map((c) => [c.id, c.a]));
-  const sig: Array<{ t: number; x: number; te: number; hd: number; a: string; r: number }> = [];
-  for (const co of coins) for (const c of co.cands ?? []) if (members.includes(c.id)) for (const [t, x, te, hd] of c.signals) sig.push({ t, x, te, hd, a: coinOf.get(c.id)!, r: rank.get(c.id)! });
+  const sig: Array<{ t: number; x: number; te: number; hd: number; fb: number; a: string; r: number }> = [];
+  for (const co of coins) for (const c of co.cands ?? []) if (members.includes(c.id)) for (const [t, x, te, hd, fb] of c.signals) sig.push({ t, x, te, hd, fb: fb ?? 0, a: coinOf.get(c.id)!, r: rank.get(c.id)! });
   sig.sort((p, q) => p.t - q.t || p.r - q.r);
   const busy = new Map<string, number>();
   const taken: typeof sig = [];
@@ -213,13 +233,16 @@ export function rulebook(fz: Frozen, coins: CoinOut[], members: string[], o: { p
     if (busy.size >= maxOpen) { skippedCap++; continue; }
     busy.set(s.a, s.te); taken.push(s);
   }
+  // An unfilled maker order took its slot until cancelled; it is not a trade.
+  const unfilled = taken.filter((s) => s.hd === 0).length;
+  taken.splice(0, taken.length, ...taken.filter((s) => s.hd > 0));
   const seal = Date.parse(fz.seal), end = Math.max(seal + DAY, ...coins.map((c) => Date.parse(c.sealTo)));
   const hours = (end - seal) / 3_600_000, nDays = Math.max(1, Math.round((end - seal) / DAY));
   const daily = new Float64Array(nDays), byCoin: Record<string, number> = {}, months: Record<string, number> = {};
-  let usd = 0, stress = 0;
+  let usd = 0, stress = 0, fStress = 0;
   for (const s of taken) {
     const v = (s.x / 1e4) * perPos, d = Math.min(nDays - 1, Math.max(0, Math.floor((s.te - seal) / DAY)));
-    daily[d] += v; usd += v; stress += ((s.x - 6) / 1e4) * perPos;
+    daily[d] += v; usd += v; stress += ((s.x - 6) / 1e4) * perPos; fStress += ((s.x - 0.5 * Math.abs(s.fb)) / 1e4) * perPos;
     byCoin[s.a] = (byCoin[s.a] ?? 0) + v;
     const mo = new Date(s.te).toISOString().slice(0, 7); months[mo] = (months[mo] ?? 0) + v;
   }
@@ -235,8 +258,9 @@ export function rulebook(fz: Frozen, coins: CoinOut[], members: string[], o: { p
   if (!((byCoin.BTC ?? 0) > 0 && (byCoin.ETH ?? 0) > 0 && ((byCoin.SOL ?? 0) > 0 || (byCoin.XRP ?? 0) > 0))) why.push('not positive on BTC, ETH and one of SOL / XRP');
   if (!(usd > 0 && share <= 0.5)) why.push(usd > 0 ? `best month holds ${(share * 100).toFixed(0)}% of the gain` : 'no gain');
   if (!(stress > 0)) why.push('not above 0 at +3 bps per side');
+  if (!(fStress > 0)) why.push('not above 0 with funding paid x1.5 and received x0.5');
   return {
-    members, trades: taken.length, skippedBusy, skippedCap, usd: +usd.toFixed(2), usdPerHour: +(usd / hours).toFixed(4), lb90: +lb90.toFixed(4), stressUsdPerHour: +(stress / hours).toFixed(4),
+    members, trades: taken.length, skippedBusy, skippedCap, usd: +usd.toFixed(2), usdPerHour: +(usd / hours).toFixed(4), lb90: +lb90.toFixed(4), stressUsdPerHour: +(stress / hours).toFixed(4), fundStressUsdPerHour: +(fStress / hours).toFixed(4), unfilled,
     byCoin: Object.fromEntries(Object.entries(byCoin).map(([k, v]) => [k, +v.toFixed(2)])), bestMonthShare: +share.toFixed(3), months: Object.fromEntries(Object.entries(months).sort().map(([k, v]) => [k, +v.toFixed(2)])),
     over480: taken.filter((s) => s.hd > 480).length, pass: why.length === 0, why,
   };
@@ -262,7 +286,7 @@ export function blindReport(fz: Frozen, coins: CoinOut[]): { md: string; verdict
   const passers = per.filter((p) => p.pass).map((p) => p.c.id);
   const chosen = passers.length ? rulebook(fz, coins, passers) : undefined;
   const span = coins.length ? `${fz.seal.slice(0, 10)} .. ${coins.map((c) => c.sealTo.slice(0, 10)).sort().pop()}` : 'no coin';
-  const fmtB = (b: Book) => `${b.trades} trades (skipped: coin busy ${b.skippedBusy}, cap full ${b.skippedCap}); $${b.usd} = **$${b.usdPerHour}/h** per $1k (bootstrap 90% lower bound $${b.lb90}/h; at +3 bps per side $${b.stressUsdPerHour}/h); by coin ${Object.entries(b.byCoin).map(([k, v]) => `${k} $${v}`).join(', ') || 'none'}; best month ${b.bestMonthShare}; held > 480 min ${b.over480}. ${b.pass ? '**PASS**' : `fails: ${b.why.join('; ')}`}${b.pass && b.usdPerHour < 4.5 ? ' (below the $4.50/h target)' : ''}`;
+  const fmtB = (b: Book) => `${b.trades} trades (skipped: coin busy ${b.skippedBusy}, cap full ${b.skippedCap}); $${b.usd} = **$${b.usdPerHour}/h** per $1k (bootstrap 90% lower bound $${b.lb90}/h; at +3 bps per side $${b.stressUsdPerHour}/h; funding paid x1.5, received x0.5 $${b.fundStressUsdPerHour}/h; ${b.unfilled} maker orders unfilled); by coin ${Object.entries(b.byCoin).map(([k, v]) => `${k} $${v}`).join(', ') || 'none'}; best month ${b.bestMonthShare}; held > 480 min ${b.over480}. ${b.pass ? '**PASS**' : `fails: ${b.why.join('; ')}`}${b.pass && b.usdPerHour < 4.5 ? ' (below the $4.50/h target)' : ''}`;
   const md = [
     `## Perp TA blind test: frozen set ${fz.hash} from sweep run ${fz.run} (${fz.cands.length} of ${fz.passing} passing candidates), sealed ${span}`,
     '',

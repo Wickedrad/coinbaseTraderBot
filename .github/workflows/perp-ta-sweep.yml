@@ -43,9 +43,13 @@ on:
         required: false
         default: '["BTC","ETH","SOL","XRP"]'
       half_spread:
-        description: 'Half-spread charged per taker side (bps)'
+        description: 'Half-spread per coin (bps; JSON map, or one number for every coin). Default: the medians Kalshi quoted Oct 21 - Nov 3 2026 (fidelity run 42055132097)'
         required: false
-        default: '2'
+        default: '{"BTC":0.19,"ETH":0.22,"SOL":1.23,"XRP":1.94}'
+      funding_offset:
+        description: "Kalshi funding over the Binance-based model per coin (bps per 8 h, + = longs pay more; JSON map or one number). Default: Kalshi's measured mean less the model's, Oct 21 - Nov 3 2026"
+        required: false
+        default: '{"BTC":1.66,"ETH":1.19,"SOL":0.14,"XRP":1.57}'
       fid_days:
         description: 'Recorded days for the fidelity check (most recent)'
         required: false
@@ -71,7 +75,8 @@ jobs:
     env:
       BLIND_RUN: ${{ inputs.blind_run }}
       REASON: ${{ inputs.reopen_reason }}
-      HALF: ${{ inputs.half_spread || '2' }}
+      # Round 1 sets only (one half-spread for every coin, as run 2 swept); round 2 candidates carry their coin's costs.
+      HALF: '2'
     outputs:
       has: ${{ steps.freeze.outputs.has }}
       coins: ${{ steps.freeze.outputs.coins }}
@@ -100,6 +105,23 @@ jobs:
           [[ "$BLIND_RUN" =~ ^[0-9]+$ ]] || { echo "blind_run must be a sweep run id"; exit 1; }
           mkdir -p cand frozen
           rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$BLIND_RUN/report/candidates.json.gz" cand/
+          # Round gate (pre-registered for round 2 on): the run's first complete whole-universe study (every coin of the run,
+          # >= 99% of each coin's universe replicated) must find the validation SPA consistent p <= 0.10, or nothing of the
+          # round is blind-tested. Fails closed: an unreadable summary, or any maker-entry candidate, means the gate applies.
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$BLIND_RUN/report/summary.json" cand/ || true
+          [ -s cand/summary.json ] || { echo "run $BLIND_RUN: report/summary.json not readable on Drive: refused"; exit 1; }
+          ROUND=$(jq -r '.round // 1' cand/summary.json)
+          MAKER=$(gzip -dc cand/candidates.json.gz | jq '[.[] | select(.policyDef.entry != null)] | length')
+          echo "run $BLIND_RUN: round $ROUND, $MAKER maker-entry candidates"
+          if [ "$ROUND" -ge 2 ] || [ "$MAKER" -gt 0 ]; then
+            : > studies.jsonl
+            for f in $(rclone lsf gdrive:kalshi-bot-archive/registry/ --include 'perp-ta-study-run-*.jsonl'); do rclone cat "gdrive:kalshi-bot-archive/registry/$f" >> studies.jsonl; done
+            ASSETS=$(jq -c '.assets | unique' cand/summary.json)
+            P=$(jq -s -r --arg r "$BLIND_RUN" --argjson as "$ASSETS" '[.[] | select(.kind == "study" and .of_sweep_run == $r and (.coins // [] | map(.asset) | unique) == $as and (.coins | all(.universe > 0 and .replicated >= 0.99 * .universe)))] | sort_by(.at_utc) | (.[0].spa_validation_p // empty)' studies.jsonl)
+            [ -n "$P" ] || { echo "round $ROUND: run $BLIND_RUN has no complete study of $ASSETS yet (dispatch only=study study_run=$BLIND_RUN first)"; exit 1; }
+            awk -v p="$P" 'BEGIN { exit !(p <= 0.10) }' || { echo "round gate: run $BLIND_RUN validation SPA p = $P > 0.10: no blind test (pre-registered)"; exit 1; }
+            echo "round gate: validation SPA p = $P <= 0.10"
+          fi
           node --import tsx research/perpTaBlind.ts freeze --candidates cand/candidates.json.gz --run "$BLIND_RUN" --half-spread "$HALF" --out frozen/frozen.json
           echo "has=$(jq -r 'if (.cands | length) > 0 then "true" else "false" end' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
           echo "coins=$(jq -c '[.cands[].a] | unique' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
@@ -132,8 +154,18 @@ jobs:
         asset: ${{ fromJSON(inputs.only == 'blind' && needs.blind-open.outputs.coins || inputs.assets || '["BTC","ETH","SOL","XRP"]') }}
     env:
       A: ${{ matrix.asset }}
-      HALF: ${{ inputs.half_spread || '2' }}
+      RS_HALF_MAP: ${{ inputs.half_spread || '{"BTC":0.19,"ETH":0.22,"SOL":1.23,"XRP":1.94}' }}
+      RS_FUND_MAP: ${{ inputs.funding_offset || '{"BTC":1.66,"ETH":1.19,"SOL":0.14,"XRP":1.57}' }}
     steps:
+      - name: This coin's costs
+        run: |
+          set -euo pipefail
+          pick() { if [[ "$1" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then echo "$1"; else jq -er --arg a "$A" '.[$a] | numbers' <<< "$1"; fi; }
+          HALF=$(pick "$RS_HALF_MAP") || { echo "no half-spread for $A in $RS_HALF_MAP"; exit 1; }
+          FOFF=$(pick "$RS_FUND_MAP") || { echo "no funding offset for $A in $RS_FUND_MAP"; exit 1; }
+          echo "HALF=$HALF" >> "$GITHUB_ENV"; echo "FOFF=$FOFF" >> "$GITHUB_ENV"
+          echo "$A: half-spread $HALF bps, funding offset $FOFF bps / 8 h"
+
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
@@ -176,7 +208,7 @@ jobs:
         if: ${{ inputs.only != 'blind' && inputs.only != 'study' }}
         run: |
           set -euo pipefail
-          node --max-old-space-size=14000 --import tsx research/perpTaSweep.ts sweep --data "data/perp-ta/$A.bin" --out "out/$A.jsonl.gz" --half-spread "$HALF" --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v '^\[perp-ta\] analyzer walk [0-9]' | tail -60
+          node --max-old-space-size=14000 --import tsx research/perpTaSweep.ts sweep --data "data/perp-ta/$A.bin" --out "out/$A.jsonl.gz" --half-spread "$HALF" --funding-offset "$FOFF" --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v '^\[perp-ta\] analyzer walk [0-9]' | tail -60
       - uses: actions/download-artifact@v4
         if: ${{ inputs.only == 'blind' }}
         with:

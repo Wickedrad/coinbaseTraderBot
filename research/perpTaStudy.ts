@@ -28,8 +28,8 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import {
-  readGrid, buildPrims, triggers, stateAt, outcomes, atrUnit, conditions, folds, isDiagnostic, POLICIES, CONDS, NZ,
-  type Grid, type Costs, type CellRec, type Candidate,
+  readGrid, buildPrims, triggers, stateAt, outcomes, atrUnit, conditions, folds, isDiagnostic, POLICIES, CONDS, NZ, readJsonlGz,
+  type Grid, type Costs, type CellRec, type Candidate, type Policy,
 } from './perpTaSweep';
 import { modulePrims } from './perpTaModules';
 import { resolveRule } from './perpTaBlind';
@@ -177,7 +177,7 @@ export interface StudyCoin {
 
 const dailySr = (xs: ArrayLike<number>, from: number, to: number) => { let s = 0, s2 = 0; const n = to - from; for (let i = from; i < to; i++) { s += xs[i]; s2 += xs[i] * xs[i]; } const m = s / n, v = s2 / n - m * m; return v > 0 ? m / Math.sqrt(v) : 0; };
 
-export function studyCoin(g: Grid, cells: CellRec[], header: { seal: string; validFrom: string; costs: Costs }, reps: Set<string>, o: { top?: number; anyBlocks?: boolean; modules?: false | { history?: string; forecasts?: string; cacheDir?: string }; log?: (m: string) => void }): StudyCoin {
+export function studyCoin(g: Grid, cells: CellRec[], header: { seal: string; validFrom: string; costs: Costs; policies?: Policy[] }, reps: Set<string>, o: { top?: number; anyBlocks?: boolean; modules?: false | { history?: string; forecasts?: string; cacheDir?: string }; log?: (m: string) => void }): StudyCoin {
   const log = o.log ?? console.log, quiet = () => undefined;
   // The pre-registered blocks (/mnt/project-files/perp-ta/preregistration.md): a sweep run with other blocks is refused.
   if (Date.parse(header.seal) !== Date.parse('2025-07-01T00:00:00Z') || Date.parse(header.validFrom) !== Date.parse('2024-01-01T00:00:00Z')) {
@@ -189,7 +189,9 @@ export function studyCoin(g: Grid, cells: CellRec[], header: { seal: string; val
   const mod = o.modules === false ? undefined : modulePrims(g, nMax, { ...(o.modules || {}), discoveryEnd: validFrom, log });
   if (mod) prims.push(...mod.prims);
   const byId = new Map(prims.map((p) => [p.id, p]));
-  const unit = atrUnit(g, nMax), out = outcomes(g, nMax, unit, header.costs), cond = conditions(g, nMax, mod), fo = folds(g, nMax, validFrom);
+  // The run's own policies (round 1: taker entries; round 2: maker entries), as its header lists them.
+  const pols: Policy[] = header.policies?.length ? header.policies : POLICIES;
+  const unit = atrUnit(g, nMax), out = outcomes(g, nMax, unit, header.costs, pols), cond = conditions(g, nMax, mod), fo = folds(g, nMax, validFrom);
   const discEnd = fo.discovery < fo.starts.length ? fo.starts[fo.discovery] : nMax;
   const inCond = (i: number, c: number) => { if (c === 0) return true; for (let z = 0; z < NZ; z++) if (cond[i * NZ + z] === c) return true; return false; };
   const day0 = Math.floor(g.t0 / DAY), daySeal = Math.floor((g.t0 + nMax * MIN) / DAY), dayValid = Math.floor(validFrom / DAY);
@@ -208,7 +210,7 @@ export function studyCoin(g: Grid, cells: CellRec[], header: { seal: string; val
   let unresolved = 0;
   for (const [gk, cs] of groups) {
     const [rule, mode, pol] = gk.split('\u0001');
-    const rr = resolveRule(rule, byId), p = POLICIES.findIndex((x) => x.id === pol);
+    const rr = resolveRule(rule, byId), p = pols.findIndex((x) => x.id === pol);
     if (!rr || p < 0) { unresolved += cs.length; continue; }
     const [tp, fp] = rr, tr = triggers(tp, g.c.valid, nMax);
     const mo = mode === 'fade' ? 1 : 0;
@@ -221,7 +223,7 @@ export function studyCoin(g: Grid, cells: CellRec[], header: { seal: string; val
       if (!g.c.valid[i] || i + 1 >= nMax || !g.c.valid[i + 1]) continue;
       const sd = tr.dir[q], td = mo === 0 ? sd : -sd, k = p * 2 + (td > 0 ? 0 : 1);
       const x = out.net[k][i];
-      if (x !== x) continue;
+      if (x !== x) { const c = out.exit[k][i]; if (c > nextFree) nextFree = c; continue; } // an unfilled maker order rested (as in the sweep)
       const ex = out.exit[k][i];
       nextFree = ex;
       if (fo.of[ex] !== fo.of[i]) continue; // purged as in the sweep
@@ -423,7 +425,9 @@ export function studyReport(coins: StudyCoin[], o: { run: string; nRaw: number; 
     bs ? `**Deflated Sharpe** of the best discovery cell (${fmtK(bs)}; daily Sharpe ${dEff!.sr.toFixed(4)} over ${dEff!.T} days, skew ${dEff!.skew.toFixed(2)}, kurtosis ${dEff!.kurt.toFixed(1)}; variance of the medoids' Sharpe ${varSr.toExponential(3)}): DSR ${dEff!.dsr.toFixed(4)} at N = N_eff (${nEff}; expected best Sharpe under the null ${dEff!.sr0.toFixed(4)}), ${dRaw!.dsr.toFixed(4)} at N = N_raw (${dRaw!.sr0.toFixed(4)}). With the variance of every clustered cell's Sharpe (${varPool.toExponential(3)}): DSR ${dPr!.dsr.toFixed(4)} at N = ${nPr} (participation ratio; null ${dPr!.sr0.toFixed(4)}), ${dRawPool!.dsr.toFixed(4)} at N = N_raw (${dRawPool!.sr0.toFixed(4)}). The trials' Sharpe ratios are net of costs, so cells that beat random entries but lose to fees widen their spread. Its validation: ${vm.toFixed(2)} bps a day.` : 'No series.',
     ...coins.flatMap((c) => c.notes.map((n) => `- ${c.asset}: ${n}`)),
   ].join('\n');
-  const out = { run: o.run, nEff, nRaw: o.nRaw, series: all.length, days: { discovery: Td, validation: Tv }, spaDiscoveryInSample: { ...sd, best: fmtK(all[sd.best]), stepm: Object.fromEntries(Object.entries(sd.stepm).map(([k, v]) => [k, v.map((i) => fmtK(all[i]))])) }, spaValidation: { ...sv, best: fmtK(all[sv.best]), stepm: Object.fromEntries(Object.entries(sv.stepm).map(([k, v]) => [k, v.map((i) => fmtK(all[i]))])) }, dsr: bs ? { cell: fmtK(bs), atNeff: dEff, atNraw: dRaw, varSr, atPr: dPr, atNrawPool: dRawPool, varPool, nPr, validationBpsPerDay: vm } : null, nPr, onc: Object.fromEntries(coins.map((c) => [c.asset, c.onc])) };
+  const out = { run: o.run, nEff, nRaw: o.nRaw, series: all.length, days: { discovery: Td, validation: Tv }, spaDiscoveryInSample: { ...sd, best: fmtK(all[sd.best]), stepm: Object.fromEntries(Object.entries(sd.stepm).map(([k, v]) => [k, v.map((i) => fmtK(all[i]))])) }, spaValidation: { ...sv, best: fmtK(all[sv.best]), stepm: Object.fromEntries(Object.entries(sv.stepm).map(([k, v]) => [k, v.map((i) => fmtK(all[i]))])) }, dsr: bs ? { cell: fmtK(bs), atNeff: dEff, atNraw: dRaw, varSr, atPr: dPr, atNrawPool: dRawPool, varPool, nPr, validationBpsPerDay: vm } : null, nPr, onc: Object.fromEntries(coins.map((c) => [c.asset, c.onc])),
+    // What the study covered (the round gate accepts only a study of every coin of the run with >= 99% replicated).
+    coins: coins.map((c) => ({ asset: c.asset, universe: c.universe, replicated: c.replicated, mismatched: c.mismatched, unresolved: c.unresolved })) };
   return { md, out };
 }
 
@@ -436,8 +440,8 @@ async function main(): Promise<void> {
   const log = (m: string) => console.log(`[perp-ta-study] ${m}`);
   if (mode === 'coin') {
     const g = readGrid(arg('data')!);
-    const lines = zlib.gunzipSync(fs.readFileSync(arg('cells')!)).toString().split('\n').filter(Boolean);
-    const header = JSON.parse(lines[0]) as { seal: string; validFrom: string; costs: Costs; asset: string };
+    const lines = readJsonlGz(arg('cells')!);
+    const header = JSON.parse(lines[0]) as { seal: string; validFrom: string; costs: Costs; asset: string; policies?: Policy[] };
     if (header.asset !== g.asset) throw new Error(`cells are for ${header.asset}, grid is ${g.asset}`);
     const cells = lines.slice(1).map((l) => JSON.parse(l) as CellRec);
     const cands = arg('candidates') ? JSON.parse(zlib.gunzipSync(fs.readFileSync(arg('candidates')!)).toString()) as Candidate[] : [];
@@ -459,7 +463,7 @@ async function main(): Promise<void> {
     fs.writeFileSync(path.join(outDir, 'summary.md'), r.md + '\n');
     fs.writeFileSync(path.join(outDir, 'study.json'), JSON.stringify(r.out, null, 1));
     const now = new Date();
-    const row = { thread: 'perp-ta-rulebook', kind: 'study', run: process.env.GITHUB_RUN_ID ?? 'local', sha: process.env.GITHUB_SHA ?? '', of_sweep_run: r.out.run, at_utc: now.toISOString(), at_eastern: now.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false }), n_raw: r.out.nRaw, n_eff: r.out.nEff, spa_discovery_p_in_sample_screened: (r.out.spaDiscoveryInSample as { pC: number }).pC, spa_validation_p: (r.out.spaValidation as { pC: number }).pC, dsr: r.out.dsr, doge_excluded: true, blocks: { discovery: '< 2024-01-01', validation: '2024-01-01 .. 2025-06-30', sealed: '>= 2025-07-01 (not read)' } };
+    const row = { thread: 'perp-ta-rulebook', kind: 'study', run: process.env.GITHUB_RUN_ID ?? 'local', sha: process.env.GITHUB_SHA ?? '', of_sweep_run: r.out.run, at_utc: now.toISOString(), at_eastern: now.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false }), n_raw: r.out.nRaw, n_eff: r.out.nEff, spa_discovery_p_in_sample_screened: (r.out.spaDiscoveryInSample as { pC: number }).pC, spa_validation_p: (r.out.spaValidation as { pC: number }).pC, dsr: r.out.dsr, coins: r.out.coins, doge_excluded: true, blocks: { discovery: '< 2024-01-01', validation: '2024-01-01 .. 2025-06-30', sealed: '>= 2025-07-01 (not read)' } };
     fs.writeFileSync(path.join(outDir, 'registry.jsonl'), JSON.stringify(row) + '\n');
     console.log(r.md);
     return;

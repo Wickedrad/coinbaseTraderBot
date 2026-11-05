@@ -6,6 +6,13 @@
 //              each of its timeframes (ta:<rule>@<tf>, book:<rule>@<tf>: the rule's direction), each of the 13 CONFLUENCES
 //              (conf:<id>: the sign of its score) and the net vote (ta_net: beyond its discovery 80th percentile). Breadth over
 //              the four coins feeds the breadth rule; no other macro input (dominance, risk gauges) exists in the history.
+//   conviction the bot's directional conviction for perps (bot/strategy/taConviction.ts directionalConviction: the breadth
+//              of agreeing TA / confluence votes that scales a perp setup's size) at every 5-minute close, from the votes the
+//              history can give: the confluence count (its momentum and RSI factors: mom60, mom300, RSI(14) on 1-minute
+//              closes; the macro, Kalshi order-flow and spot-lead factors are not in the history) and the momentum family
+//              (trend-rule net, trend alignment, multi-timeframe momentum, RSI and EMA stack on 1h). conv:boost = both votes
+//              one way (breadth 0.5, the most two votes reach), conv:lean = breadth > 0. The TA network, rule book and
+//              evolved formula votes are left out (no walk-forward history of them before the seal).
 //   TA-Lib     bot/ta/talib.ts tl() over full series on 15m and 1h bars: the 22 key candlestick patterns (cdl_<name>@<m>m),
 //              their net (cdl_net: two or more patterns more one way), and the TA-Lib-only indicators the TA network reads
 //              (SAR side, CCI back inside +-100, Aroon oscillator +-50, Ultimate oscillator 30 / 70, KAMA side, StochRSI
@@ -34,13 +41,15 @@ import type { Timeframe } from '../bot/ta/knowledge';
 import { tl, taEngine, KEY_PATTERNS } from '../bot/ta/talib';
 import { characterOf } from '../bot/ta/character';
 import { breadthOf } from '../bot/ta/marketContext';
+import { RULES } from '../bot/ta/knowledge';
+import { orientedSignals, confluenceBreadth } from '../bot/strategy/taConviction';
 import { readSeries, seriesPath } from '../bot/marketdata/historyStore';
 import type { Candle } from '../bot/ta/indicators';
 import { aggregate, type Grid, type Prim } from './perpTaSweep';
 
 const MIN = 60_000, H = 3_600_000;
 const fin = Number.isFinite;
-export const MODULES_VERSION = 'mod2';
+export const MODULES_VERSION = 'mod3';
 export const MODULE_CONDS = ['char_calm', 'char_trending', 'char_vidio', 'char_vsys', 'lib_trend', 'lib_revert', 'lib_breakout', 'lib_flat', 'tanet_vol_hi', 'tanet_vol_lo', 'ht_trend', 'ht_cycle'];
 export const NONE = 255;
 
@@ -63,15 +72,17 @@ const W: Record<string, number> = { '5m': 320, '15m': 320, '1h': 320, '4h': 80, 
 
 interface AnalyzerCache { version: string; asset: string; t0: number; nMax: number; ids: string[]; n5: number; digest: string }
 
-/** What the analyzer walk depends on: the bot's TA code (every bot/ta source), this file, the engine, the windows, the
+/** What the analyzer walk depends on: the bot's TA code (every bot/ta source, and the conviction's taConviction.ts), this file, the engine, the windows, the
  *  grid's spot bars up to nMax and the other coins' hourly coverage. */
 function walkDigest(g: Grid, nMax: number, others: Candle[][]): string {
   const h = crypto.createHash('sha1');
   const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'bot', 'ta');
   for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.ts')).sort()) h.update(f).update(fs.readFileSync(path.join(dir, f)));
   h.update(fs.readFileSync(new URL(import.meta.url).pathname));
+  h.update(fs.readFileSync(path.join(dir, '..', 'strategy', 'taConviction.ts'))); // the conviction readings
   h.update(`${taEngine()}|${JSON.stringify(W)}|${JSON.stringify(TFS)}|${others.map((o) => `${o.length}:${o[0]?.ts}:${o[o.length - 1]?.ts}`).join(',')}`);
-  for (const k of ['so', 'sh', 'sl', 'sc', 'sv', 'stb'] as const) { const a = g.c[k]; h.update(Buffer.from(a.buffer, a.byteOffset, Math.min(a.length, nMax) * 4)); }
+  // valid: the conviction's sigma and windows read it.
+  for (const k of ['so', 'sh', 'sl', 'sc', 'sv', 'stb', 'valid'] as const) { const a = g.c[k]; h.update(Buffer.from(a.buffer, a.byteOffset, Math.min(a.length, nMax) * 4)); }
   return h.digest('hex');
 }
 
@@ -87,6 +98,31 @@ function analyzerWalk(g: Grid, nMax: number, others: Candle[][], log: (m: string
   const latest: Partial<Record<Timeframe, TfState>> = {}, lastJ: Partial<Record<Timeframe, number>> = {};
   let dayK = -1, breadth: ReturnType<typeof breadthOf>;
   const t0 = Date.now();
+  // Conviction inputs. sigma as the bot keeps it (bot/model/featureEngine.ts): an EWMA of the per-second variance with a
+  // 300 s half-life, restarted across a gap; here from 1-minute spot returns (r^2 / 60 per second).
+  const sc = g.c.sc, valid = g.c.valid;
+  const sig2 = new Float64Array(nMax).fill(NaN);
+  {
+    const alpha = 1 - Math.pow(0.5, 60 / 300);
+    let v = 0, cnt = 0;
+    for (let i = 1; i < nMax; i++) {
+      if (!valid[i] || !valid[i - 1] || !(sc[i] > 0) || !(sc[i - 1] > 0)) { cnt = 0; continue; }
+      const r = Math.log(sc[i] / sc[i - 1]), x = (r * r) / 60;
+      v = cnt ? alpha * x + (1 - alpha) * v : x; cnt++;
+      if (cnt >= 2) sig2[i] = v;
+    }
+  }
+  const okRun = (i: number, n: number) => { if (i - n < 0) return false; for (let j = i - n; j <= i; j++) if (!valid[j] || !(sc[j] > 0)) return false; return true; };
+  const clip = (x: number, lim = 10) => (fin(x) ? Math.max(-lim, Math.min(lim, x)) : NaN);
+  const kindOf = new Map(RULES.map((r) => [r.id, r.kind]));
+  const confCount = (i: number): number => {
+    const sd = Math.sqrt(sig2[i]);
+    const mom = (n: number) => (sd > 0 && okRun(i, n) ? clip(Math.log(sc[i] / sc[i - n]) / (sd * Math.sqrt(60 * n))) : NaN);
+    let rsi = NaN;
+    if (okRun(i, 15)) { let up = 0, dn = 0; for (let j = i - 14; j <= i; j++) { const d = sc[j] - sc[j - 1]; if (d > 0) up += d; else dn -= d; } rsi = up + dn > 0 ? (100 - 100 / (1 + up / Math.max(1e-12, dn)) - 50) / 50 : 0; }
+    const avail = [mom(1), mom(5), -3 * rsi].filter(fin);
+    return avail.length < 3 ? NaN : avail.reduce((a, x) => a + (x > 1 ? 1 : x < -1 ? -1 : 0), 0);
+  };
   for (let k = 29; k < n5; k++) {
     const end = (k + 1) * 5, t = g.t0 + end * MIN;
     for (const [tf, m] of TFS) {
@@ -103,6 +139,21 @@ function analyzerWalk(g: Grid, nMax: number, others: Candle[][], log: (m: string
     for (const x of snap.book ?? []) if (x.dir) put(`book:${x.id}@${x.tf}`, k, x.dir);
     for (const c of snap.confluences) if (c.score) put(`conf:${c.id}`, k, c.score > 0 ? 1 : -1);
     net[k] = snap.net;
+    {
+      const i = end - 1, fresh = !!(latest['15m'] ?? latest['1h']), h1 = latest['1h'];
+      const cf = (id: string) => (fresh ? snap.confluences.find((x) => x.id === id)?.score ?? NaN : NaN);
+      const f: Record<string, number> = {
+        conf_count: i < nMax ? confCount(i) : NaN,
+        taconf_net_trend: fresh ? clip(snap.signals.filter((x) => kindOf.get(x.id) === 'trend').reduce((a, x) => a + x.dir * x.strength, 0), 30) : NaN,
+        taconf_trend_alignment: cf('trend_alignment'),
+        taconf_mtf_momentum: cf('mtf_momentum'),
+        ta_rsi_1h: h1 ? (h1.rsi - 50) / 50 : NaN,
+        ta_ema_stack_1h: h1 ? (h1.close > h1.ema21 && h1.ema21 > h1.ema50 ? 1 : h1.close < h1.ema21 && h1.ema21 < h1.ema50 ? -1 : fin(h1.ema50) ? 0 : NaN) : NaN,
+      };
+      const sigs = orientedSignals(f, undefined, false), up = confluenceBreadth(sigs, 1).breadth, dn = confluenceBreadth(sigs, -1).breadth;
+      if (up >= 0.5) put('conv:boost', k, 1); else if (dn >= 0.5) put('conv:boost', k, -1);
+      if (up > 0) put('conv:lean', k, 1); else if (dn > 0) put('conv:lean', k, -1);
+    }
     if (k % 100_000 === 0) log(`analyzer walk ${k}/${n5} five-minute bars (${((Date.now() - t0) / 60000).toFixed(1)} min)`);
   }
   if (prevExtras === undefined) delete process.env.TA_LIB_EXTRAS; else process.env.TA_LIB_EXTRAS = prevExtras;
