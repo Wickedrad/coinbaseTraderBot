@@ -22,7 +22,7 @@ jobs:
       R: ${{ github.repository }}
       BR: ${{ github.ref_name }}
       NOTE: wb-r2
-      CAP: '10'
+      CAP: '3'
     steps:
       - uses: actions/checkout@v5
       - name: Dispatch the queue
