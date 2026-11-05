@@ -493,7 +493,7 @@ export class MarketData extends EventEmitter {
         // richest buckets on a range), else nearest Kalshi's index. Never an outside exchange's price.
         // With the spread cap, distance is measured only from a fresh index (60 s); a stale one falls back to the ladder's middle.
         const capped = this.cfg.catalogPickMaxSpread > 0;
-        const ix = capped ? this.index.get(asset)?.fresh(now, 60_000)?.value : this.index.get(asset)?.latest()?.value;
+        const ix = capped ? this.index.get(asset)?.fresh(Date.now(), 60_000)?.value : this.index.get(asset)?.latest()?.value;
         const paths = { mid: 0, index: 0, median: 0 };
         const markets = nearestStrikes(fetched, contractKind, series, ix, this.cfg.catalogStrikesPerEvent, new Set(this.markets.keys()), { maxSpread: this.cfg.catalogPickMaxSpread, paths });
         // Where markets drop out, per series (dashboard / API diagnostics).
@@ -729,13 +729,15 @@ export function nearestStrikes<M extends { ticker: string; eventTicker?: string;
         // A ladder: the tight quotes locate the money (where YES crosses 50c, interpolated between the tight strikes on
         // either side), and every strike is ranked by its distance from there, so a wide strike at the money still
         // outranks tight tails. Without a tight quote between 10c and 90c, the index decides.
-        const pts = ms.filter((m) => mid.has(m)).map((m) => ({ k: ref(m)!, v: mid.get(m)! })).sort((a, b) => a.k - b.k);
+        // Only quotes between 10c and 90c place it: two tight tails (97c and 2c) would put the crossing anywhere between them.
+        const pts = ms.filter((m) => mid.has(m)).map((m) => ({ k: ref(m)!, v: mid.get(m)! })).filter((x) => x.v >= 0.1 && x.v <= 0.9).sort((a, b) => a.k - b.k);
         for (let i = 0; i + 1 < pts.length && money === undefined; i++) {
           const a = pts[i], b = pts[i + 1];
           if ((a.v - 0.5) * (b.v - 0.5) <= 0 && a.v !== b.v) money = a.k + ((0.5 - a.v) / (b.v - a.v)) * (b.k - a.k);
         }
-        const nearest = pts.filter((x) => x.v >= 0.1 && x.v <= 0.9).sort((a, b) => Math.abs(a.v - 0.5) - Math.abs(b.v - 0.5))[0];
-        if (money === undefined && nearest) money = nearest.k;
+        // No crossing inside the band: one quote alone places the money only without an index.
+        const nearest = pts.sort((a, b) => Math.abs(a.v - 0.5) - Math.abs(b.v - 0.5))[0];
+        if (money === undefined && nearest && price === undefined) money = nearest.k;
         if (money !== undefined) tier1 = [...ms].sort((a, b) => Math.abs(ref(a)! - money!) - Math.abs(ref(b)! - money!)).slice(0, n);
       }
       const keep = new Set(tier1);

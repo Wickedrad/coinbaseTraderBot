@@ -70,3 +70,14 @@ test('strike cap: two tight quotes in a mostly dead ladder still place the money
   assert.deepEqual(out, ['Y0', 'Y1']);
   assert.equal(paths.mid, 1);
 });
+
+test('strike cap: tight tails outside 10-90c never place the money over a fresh index', () => {
+  // Ladder 100..120, index at 104; only the two ends are tight (97c/99c and 1c/3c), the rest wide.
+  const ms = Array.from({ length: 21 }, (_, i) => (i === 0 ? q('K100', 100, 0.97, 0.99) : i === 20 ? q('K120', 120, 0.01, 0.03) : q(`K${100 + i}`, 100 + i, 0.2, 0.8)));
+  const out = nearestStrikes(ms, kindOf, 'KXBTCD', 104, 4, new Set(), { maxSpread: 0.1 }).map((m) => Number(m.ticker.slice(1))).sort((a, b) => a - b);
+  assert.ok(out.every((k) => Math.abs(k - 104) <= 2), out.join(','));
+  // One in-band quote with no crossing: the index still decides.
+  const one = [...ms.slice(0, 15), q('K115', 115, 0.29, 0.31), ...ms.slice(16)];
+  const out1 = nearestStrikes(one, kindOf, 'KXBTCD', 104, 2, new Set(), { maxSpread: 0.1 }).map((m) => Number(m.ticker.slice(1)));
+  assert.ok(out1.every((k) => Math.abs(k - 104) <= 1), out1.join(','));
+});
