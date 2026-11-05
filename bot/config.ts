@@ -74,7 +74,9 @@ export interface LoserExitConfig {
   /** GATED_STAKE_MULT (1 = off): an entry or maker quote that passes the gate (fair value known, gate on) is sized this many
    *  times its count, so a $10-$20 order becomes $20-$40 at 2. Sizing lab Nov 2 (shared book depth, gate + 3c cut): x2 made
    *  +$13.43/h against +$8.08/h on Oct 24-28 and +$1.22/h against -$0.10/h on Oct 29-Nov 1; it loses on thin days and never
-   *  applies to ungated entries (x2 there lost $5-8/h more) or training trades. Same in paper and live. */
+   *  applies to ungated entries (x2 there lost $5-8/h more) or training trades. Paper and replays only for now: with
+   *  TRADING_MODE=live it stays 1 unless GATED_STAKE_LIVE=on (Steven, Nov 4: gated $20-$40 in paper and replays, live
+   *  keeps $10-$20 until he approves). */
   gatedStakeMult?: number;
   /** GATED_STAKE_CAP (clamp): how a scaled order meets the order caps. clamp = never above the order band's top (or the
    *  paper order size), so x2 lifts a gated $10-$19 order to at most $20 and Steven's $10-$20 band holds; widen = the
@@ -1306,7 +1308,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       windowRestFinalSec: num(env, 'LOSER_WINDOW_REST_FINAL_SEC', 60, 0, 3600),
       windowShare: num(env, 'LOSER_WINDOW_SHARE', 0, 0, 0.9),
       noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
-      gatedStakeMult: num(env, 'GATED_STAKE_MULT', 1, 1, 5),
+      gatedStakeMult: mode === 'live' && env.GATED_STAKE_LIVE !== 'on' ? 1 : num(env, 'GATED_STAKE_MULT', 1, 1, 5),
       gatedStakeCap: oneOf(env, 'GATED_STAKE_CAP', 'clamp', ['clamp', 'widen'] as const),
       ...(env.FV_ENTRY_GATE_LONGSHOT ? { longshot: parseLongshot(env.FV_ENTRY_GATE_LONGSHOT) } : {}),
       ...(env.FV_ENTRY_GATE_LONGSHOT_SERIES ? { longshotSeries: parseSeriesList(env.FV_ENTRY_GATE_LONGSHOT_SERIES) } : {}),
