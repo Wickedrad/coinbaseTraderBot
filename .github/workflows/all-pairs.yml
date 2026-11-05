@@ -54,6 +54,7 @@ jobs:
       diag: ${{ steps.go.outputs.diag }}
       diag_only: ${{ steps.go.outputs.diag_only }}
       registry: ${{ steps.go.outputs.registry }}
+      configs: ${{ steps.go.outputs.configs }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -105,7 +106,25 @@ jobs:
           parts = {'base': 4, 'stress': 2, 'tight': 2, 'synth15': 1, 'synth1h': 2}
           inc = [{'config': c, 'arm': a, 'part': p, 'parts': n} for c in configs for a, n in parts.items() if a in want for p in range(n)]
           print('matrix=' + json.dumps({'include': inc}))
+          print('configs=' + ','.join(configs))
           EOF
+      # Google Drive lets two folders share a name: when two study jobs upload their first part at the same second, each
+      # can make its own copy of a folder, and a reader then sees only one of the twins (run 42100397043 lost exit_naive
+      # base part 3 that way). The run's part folders are made here, once, before any study job starts.
+      - name: Drive setup
+        if: steps.go.outputs.study == 'true'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Make the run's part folders on Drive
+        if: steps.go.outputs.study == 'true'
+        env:
+          CONFIGS: ${{ steps.go.outputs.configs }}
+        run: |
+          set -euo pipefail
+          R="${DRIVE_ROOT:-gdrive:kalshi-bot-archive}"
+          for c in ${CONFIGS//,/ }; do rclone mkdir "$R/models/all-pairs/runs/${{ github.run_id }}/parts/$c"; done
+          rclone lsf "$R/models/all-pairs/runs/${{ github.run_id }}/parts" --dirs-only | paste -sd' ' -
 
   diag:
     needs: test
@@ -240,6 +259,8 @@ jobs:
             echo "no ledger on Drive yet"
           elif [ "$rc" != 0 ]; then echo "ledger download failed ($rc)"; exit 1; fi
           echo ok > "$RUNNER_TEMP/state/.fetched"
+          # Twin folders (see the test job) are merged before the parts are read: a part in a twin is otherwise skipped.
+          rclone dedupe --dedupe-mode skip "$R/models/all-pairs/runs/$SRC" 2>&1 | grep -v '^$' | tail -5 || true
           # The parts of the scoring run (this one, or the run a report-only rerun names), one folder per hypothesis
           # config (older runs kept them flat: one config); an older run's combined results stand in when it kept no
           # parts on Drive.
@@ -273,8 +294,12 @@ jobs:
           bash allpairs/registry_shard.sh "$SRC" "$RUNNER_TEMP/results" "$sha" "${{ github.server_url }}/${{ github.repository }}/actions/runs/$SRC"
       - name: Keep results and the ledger on Drive
         if: always()
+        env:
+          SRC: ${{ needs.test.outputs.report_run || github.run_id }}
         run: |
-          [ ! -d "$RUNNER_TEMP/results" ] || bash deploy/drive_lab.sh put "models/all-pairs/runs/${{ github.run_id }}" "$RUNNER_TEMP/results"
+          # Under the scored run: a report-only rerun recombines that run's parts and replaces its kept results (the
+          # registry backfill reads them from there).
+          [ ! -d "$RUNNER_TEMP/results" ] || bash deploy/drive_lab.sh put "models/all-pairs/runs/$SRC" "$RUNNER_TEMP/results"
           # The ledger goes back only when it was read first (or Drive confirmed it has none), and never shorter than
           # the copy on Drive (a ledger only grows).
           if [ -f "$RUNNER_TEMP/state/.fetched" ] && [ -f "$RUNNER_TEMP/state/trials.jsonl" ]; then
@@ -330,6 +355,7 @@ jobs:
           echo "runs in the ledger: $runs"
           for run in $runs; do
             d="$RUNNER_TEMP/runs/$run"; mkdir -p "$d"
+            rclone dedupe --dedupe-mode skip "$R/models/all-pairs/runs/$run" 2>&1 | grep -v '^$' | tail -3 || true
             rclone copy "$R/models/all-pairs/runs/$run" "$d" --exclude "/parts/**" || true
             if [ -z "$(find "$d" -name '*.json' ! -name gate.json -print -quit)" ]; then
               # Only the raw parts were kept: combine them here (one folder per config, or flat for older runs).
