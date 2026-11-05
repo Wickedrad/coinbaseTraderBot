@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import { test } from 'node:test';
-import { aggregate, barPath, buildHistoryReplay, gkVariance, niceStep, normals, PERP_CONTRACT_SIZE, synthQuote, windowAverage } from '../research/history/historyReplay';
+import { aggregate, barPath, buildHistoryReplay, gkVariance, niceStep, normals, PERP_CONTRACT_SIZE, replayPerpTick, synthQuote, windowAverage } from '../research/history/historyReplay';
 import { readRecordings, ReplayState, type RecEvent } from '../research/replay';
 import { replaySnn } from '../research/snnReplay';
 import { snnInteractions } from '../research/snnPbt';
@@ -139,6 +139,10 @@ test('history replay: day files the replay reads like live recordings; the perps
   // Per contract, as Kalshi quotes live: BTC's contract is 0.0001 BTC (the spec carries no size: the default), the bars ~60k.
   assert.equal(firstPerp.contractSize, 0.0001);
   assert.deepEqual(PERP_CONTRACT_SIZE, { BTC: 0.0001, ETH: 0.001, SOL: 0.1, XRP: 1 }, 'the sizes the recordings show (quote over spot)');
+  // The recorded tick on today's quotes; a finer one on an old day's small per-contract quote (ETH 2019, $0.15 a contract).
+  assert.equal(replayPerpTick(0.001, 10, 2e-4), 0.001);
+  assert.equal(replayPerpTick(0.001, 0.15, 1e-4), 1e-5);
+  assert.equal(replayPerpTick(undefined, 0.15, 1e-4), undefined);
   assert.ok(firstPerp.last > 3 && firstPerp.last < 12, `per-contract quote ${firstPerp.last}`);
   assert.equal(firstPerp.fundingRate, 0.0001);
   assert.ok(st.index.get('BTC')!.vol(), 'four prints a minute: the index volatility estimator runs');
