@@ -120,11 +120,12 @@ def pnl_stats(pnl: np.ndarray, hours: float, hour_of_trade: np.ndarray | None = 
 
 
 def random_entry_placebo(rows: dict, n_trades_per_window: float, rng, draws: int = 50, n_windows: int | None = None,
-                         max_tries: int = 64):
-    """Random entries at the model's trade rate, traded the way the simulation trades: per draw, as many windows as the
-    model opened positions, each entered at a random row (minute, side, mode) among ALL its rows; a maker attempt that
-    does not fill leaves the window open and a later minute is drawn, as in simulate(). Exits follow the policy.
-    Returns per-draw total P&L."""
+                         max_steps: int = 10_000):
+    """Random entries at the model's trade rate, traded the way the simulation trades. Per draw, windows are taken in a
+    random order until as many positions have opened as the model opened (or the windows run out); in each window a
+    random row (minute, side, mode) among ALL its rows is entered, and a maker attempt that does not fill leaves the
+    window open for a later minute, as in simulate(); a window that ends without a fill is replaced by the next one.
+    Exits follow the policy. Returns per-draw total P&L."""
     n = len(rows['y'])
     if not n:
         return np.zeros(draws)
@@ -137,25 +138,33 @@ def random_entry_placebo(rows: dict, n_trades_per_window: float, rng, draws: int
     uniq, start = np.unique(w, return_index=True)
     ends = np.append(start[1:], n)
     # Index just past each row's (window, minute) group: where the rows of a later minute begin.
-    key = w * 4096 + i
-    _, g_start, g_inv = np.unique(key, return_index=True, return_inverse=True)
-    g_end = np.append(g_start[1:], n)
-    after = g_end[g_inv]
+    _, g_start, g_inv = np.unique(w * 4096 + i, return_index=True, return_inverse=True)
+    after = np.append(g_start[1:], n)[g_inv]
     nw = len(uniq)
     k = min(int(round(n_trades_per_window * (n_windows or nw))), nw)
     out = np.zeros(draws)
+    if k <= 0:
+        return out
     for d in range(draws):
-        pick = rng.choice(nw, k, replace=False)
-        lo, hi = start[pick].copy(), ends[pick]
-        tot = 0.0
+        perm = rng.permutation(nw)
+        q = k
+        lo, hi = start[perm[:k]].copy(), ends[perm[:k]].copy()
         act = np.arange(k)
-        for _ in range(max_tries):
+        tot = 0.0
+        for _ in range(max_steps):
             if not len(act):
                 break
             j = lo[act] + (rng.random(len(act)) * (hi[act] - lo[act])).astype(np.int64)
             ok = f[j]
             tot += float(y[j[ok]].sum())
             lo[act] = after[j]
-            act = act[~ok & (after[j] < hi[act])]
+            cont = ~ok & (after[j] < hi[act])
+            dead = act[~ok & ~cont]
+            n_rep = min(len(dead), nw - q)
+            if n_rep:
+                new = perm[q:q + n_rep]
+                q += n_rep
+                lo[dead[:n_rep]], hi[dead[:n_rep]] = start[new], ends[new]
+            act = np.concatenate([act[cont], dead[:n_rep]])
         out[d] = tot
     return out

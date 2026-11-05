@@ -55,18 +55,21 @@ def load_results(d: str) -> dict:
     return out
 
 
-def prior_trials(ledger: list, run: str = '', config_hash: str = '') -> list:
+def prior_trials(ledger: list, run: str = '', config_hash: str = '', test=None, sr=None) -> list:
     """The configurations scored out of sample before this one: base-arm rows only (the stress arm is the same
-    configuration under worse costs, not another trial), one per (source run, configuration), this one left out. The
-    hurdle grid is not counted: the hurdle is chosen on inner validation days, never on the out-of-sample result."""
+    configuration under worse costs, not another trial), one per scoring (rows with the same configuration, test span
+    and Sharpe are one scoring however many report reruns wrote them), the candidate's own scoring left out. The hurdle
+    grid is not counted: the hurdle is chosen on inner validation days, never on the out-of-sample result."""
+    def content(t):
+        return (str(t.get('config_hash', '')), tuple(t.get('test') or ()), round(float(t['sr_hourly']), 9))
+    me = (str(config_hash), tuple(test or ()), round(float(sr), 9)) if sr is not None else None
     seen = {}
     for t in ledger:
         if t.get('arm', 'base') != 'base' or t.get('sr_hourly') is None:
             continue
-        key = (str(t.get('run', '')), str(t.get('config_hash', '')))
-        if key == (str(run), str(config_hash)) and run:
+        if (run and (str(t.get('run', '')), str(t.get('config_hash', ''))) == (str(run), str(config_hash))) or content(t) == me:
             continue
-        seen[key] = t
+        seen[content(t)] = t
     return list(seen.values())
 
 
@@ -75,7 +78,9 @@ def gate(arms: dict, ledger: list, champion: dict | None, run: str = '') -> dict
     if not base:
         return dict(passed=False, reasons=['no base arm'])
     hourly = np.array(base['hourly_pnl'], dtype=np.float64)
-    prior = prior_trials(ledger, run, base.get('config_hash', ''))
+    folds = base.get('folds', [])
+    span = [folds[0]['test'][0], folds[-1]['test'][1]] if folds else None
+    prior = prior_trials(ledger, run, base.get('config_hash', ''), span, base['oos'].get('sr_hourly'))
     srs = [float(t['sr_hourly']) for t in prior]
     sr_var = float(np.var(srs, ddof=1)) if len(srs) >= 3 else PRIOR_SR_VAR
     n_trials = len(prior) + 1

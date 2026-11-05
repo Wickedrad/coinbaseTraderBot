@@ -190,6 +190,23 @@ class Placebo(unittest.TestCase):
         rows = dict(w=np.array([0, 0]), i=np.array([0, 1]), y=np.array([1.0, 0.0]), filled=np.array([True, False]))
         out = random_entry_placebo(rows, 1.0, np.random.default_rng(1), draws=200, n_windows=1)
         self.assertTrue(0.3 < out.mean() < 0.7)     # half the draws post the last-minute maker bid and get nothing
+        W = 20                                      # with spare windows, an unfilled one is replaced: the model's count
+        rows = dict(w=np.repeat(np.arange(W), 2), i=np.tile([0, 1], W), y=np.tile([1.0, 0.0], W), filled=np.tile([True, False], W))
+        out = random_entry_placebo(rows, 5 / W, np.random.default_rng(2), draws=50, n_windows=W)
+        np.testing.assert_allclose(out, 5.0)
+
+
+class Bounds(unittest.TestCase):
+    def test_bot_side_price_band_and_contract_cap(self):
+        from allpairs.matrix import entry_legs
+        bid = np.array([0.04, 0.20, 0.50]); ask = np.array([0.05, 0.22, 0.52]); fb = np.ones(3, dtype=bool)
+        c = Costs(min_side_price=0.10, max_contracts=50)
+        cost_T, C_T, cost_M, C_M, ok_T, ok_M = entry_legs(bid, ask, fb, c)
+        self.assertEqual(ok_T.tolist(), [False, True, True])             # a 5c side is a longshot the bot refuses
+        self.assertEqual(ok_M.tolist(), [False, True, True])
+        self.assertEqual(C_T[1], 50)                                      # floor(15 / 0.22) = 68, capped at 50
+        free = entry_legs(bid, ask, fb, Costs())
+        self.assertTrue(free[4][0] and free[1][0] == 300)                 # the engine alone has no band
 
 
 class Gate(unittest.TestCase):
@@ -214,6 +231,10 @@ class Gate(unittest.TestCase):
                   dict(run='r0', arm='base', config_hash='x', sr_hourly=0.1), dict(run='r1', arm='base', config_hash='abc', sr_hourly=0.3)]
         p = prior_trials(ledger, 'r1', 'abc')
         self.assertEqual(len(p), 1)                 # r0's base once; its stress row and r1 (the candidate itself) left out
+        ledger += [dict(run='r9', arm='base', config_hash='abc', sr_hourly=0.3, test=[1, 2]),   # an old report-only copy of r1
+                   dict(run='r1', arm='base', config_hash='abc', sr_hourly=0.3, test=[1, 2])]
+        p = prior_trials(ledger, 'r1', 'abc', [1, 2], 0.3)
+        self.assertEqual([t['run'] for t in p], ['r0'])
 
 
 class Validation(unittest.TestCase):
@@ -304,8 +325,8 @@ class Features(unittest.TestCase):
     def test_stale_quotes_and_bad_candle_fields(self):
         from allpairs.data import market_to_rows
         o = 1_767_225_600_000
-        cs = [dict(ts=o + 60_000 * c, bidO=0.4, bidH=0.45, bidL=0.4, bidC=0.42, askO=0.44, askH=0.47, askL=0.43, askC=0.45) for c in range(1, 16)
-              if not 3 <= c <= 8]
+        cs = [dict(ts=o + 60_000 * c, bidO=0.4, bidH=0.45, bidL=0.4, bidC=0.42, askO=0.44, askH=0.47, askL=0.43, askC=0.45, volume=10)
+              for c in range(1, 16) if not 3 <= c <= 8]
         cs[0]['askH'] = 0.01                                              # candle 1: high under its own close
         r = market_to_rows(dict(openTime=o, closeTime=o + 900_000, result='yes', candles=cs), 15, max_stale=3)
         bid, ask, blo, bhi, alo, ahi = r[:6]
@@ -313,6 +334,22 @@ class Features(unittest.TestCase):
         self.assertAlmostEqual(bid[5], 0.42)                              # candles 3..5 missing: carried 3 minutes
         self.assertTrue(np.isnan(bid[6]) and np.isnan(ask[8]))            # then no quote
         self.assertAlmostEqual(bid[9], 0.42)
+        self.assertAlmostEqual(alo[1], 0.43)                              # candle 2 proves fills for minute 1
+        r0 = market_to_rows(dict(openTime=o, closeTime=o + 900_000, result='yes', candles=cs), 15)
+        self.assertTrue(np.isnan(r0[0][3]) and np.isnan(r0[0][0]))       # default: no carried quote, none at the listing
+
+    def test_one_sided_and_untraded_minutes(self):
+        from allpairs.data import market_to_rows
+        o = 1_767_225_600_000
+        cs = [dict(ts=o + 60_000 * c, bidO=0.4, bidH=0.45, bidL=0.4, bidC=0.42, askO=0.44, askH=0.47, askL=0.43, askC=0.45, volume=5)
+              for c in range(1, 16)]
+        cs[3].update(bidO=0, bidH=0, bidL=0, bidC=0, askO=0.01, askH=0.01, askL=0.01, askC=0.01)  # candle 4: historical 'no ask' as 1c, no bid
+        cs[6]['volume'] = 0                                                                   # candle 7: nothing traded
+        bid, ask, blo, bhi, alo, ahi = market_to_rows(dict(openTime=o, closeTime=o + 900_000, result='yes', candles=cs), 15)[:6]
+        self.assertTrue(np.isnan(ask[4]) and np.isnan(bid[4]))           # one-sided: no quote on either side
+        self.assertTrue(np.isnan(alo[3]))                                 # and it proves no fill for minute 3
+        self.assertTrue(np.isnan(alo[6]) and np.isnan(bhi[6]))            # an untraded next minute proves no fill
+        self.assertAlmostEqual(alo[5], 0.43)
 
     def test_side_quotes(self):
         w = load_kalshi(self.dir, ['BTC'], log=lambda m: None)

@@ -34,7 +34,10 @@ from .validate import block_bootstrap_mean, inner_split, psr, walk_forward
 
 DEFAULTS = {
     'name': 'base',
-    'costs': {'stake': 15.0, 'slip': 0.0, 'taker_mult': 1.0, 'maker_mult': 0.0, 'strict_maker': False},
+    # The bot's own risk gateway bounds every entry: side price within [0.10, 0.90] (RISK_MIN_SIDE_PRICE) and at most 250
+    # contracts an order (RISK_MAX_CONTRACTS_PER_ORDER), so no position is a 1,500-lot bought at a cent.
+    'costs': {'stake': 15.0, 'slip': 0.0, 'taker_mult': 1.0, 'maker_mult': 0.0, 'strict_maker': False, 'min_side_price': 0.10,
+              'max_contracts': 250},
     'exit': {'end_rule': 'bot', 'end_frac': 0.10, 'maker_exits': True, 'rows_per_fit': 200_000},
     # No entry at minute 0 (candle 1's OPEN, the first instant of the market): in Kalshi's historical-tier candles that
     # open is often a stale cheap YES ask (run 42045813675: +$816/h of +$818/h came from minute-0 YES taker entries under
@@ -151,9 +154,10 @@ def main(argv=None):
     log(f'real 15m windows: {len(real)} ({np.mean(real.real_frac):.2f} of minutes quoted), {len(np.unique(real.day))} days, assets {real.assets}')
     if real.crossed is not None:
         log(f'{int(np.sum(real.crossed > 0))} windows with crossed/locked minutes; minutes quoted: '
-            f'{np.mean(np.isfinite(real.bid) & np.isfinite(real.ask)):.3f} after the stale and crossed cuts')
+            f'{np.mean(np.isfinite(real.bid) & np.isfinite(real.ask)):.3f} have a two-sided book')
     # Coverage and crossed-quote filters use the whole window (its future minutes too), so they only choose TRAINING
-    # windows. Test windows are all kept: their missing or crossed minutes simply have no quote, as at the time.
+    # windows. Test (and inner validation) windows are all kept: a minute without a candle or without a two-sided book
+    # has no quote there (data.market_to_rows), as it had none at the time.
     clean = real.real_frac >= cfg['min_real_frac']
     if real.crossed is not None:
         bad = real.crossed > cfg['max_crossed']
@@ -161,16 +165,23 @@ def main(argv=None):
         by_m = {m_: f'{int(bad[months == m_].sum())}/{int((months == m_).sum())}' for m_ in sorted(set(months.tolist()))}
         log(f'windows with crossed/locked quotes (> {cfg["max_crossed"]} minutes, left out of training only), by month: {by_m}')
         clean &= ~bad
-    keep = np.ones(len(real), dtype=bool)
+    # Sealed spans (the lockbox) leave out every UTC day they touch, whole, for every arm: no partial day in a fold.
+    import datetime as _dt
+    ms = lambda x: int(_dt.datetime.fromisoformat(x).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000)
+    sealed_days = set()
     for lo_s, hi_s in cfg.get('exclude_utc') or []:
-        import datetime as _dt
-        ms = lambda x: int(_dt.datetime.fromisoformat(x).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000)
-        hit = (real.open_ms + real.n * MIN > ms(lo_s)) & (real.open_ms < ms(hi_s))
-        if hit.any():
-            log(f'{int(hit.sum())} windows in the sealed span {lo_s}..{hi_s} UTC left out')
-        keep &= ~hit
+        sealed_days |= set(range(ms(lo_s) // 86_400_000, (ms(hi_s) - 1) // 86_400_000 + 1))
+
+    def unsealed(win) -> np.ndarray:
+        ok = ~np.isin(win.day, sorted(sealed_days))
+        for lo_s, hi_s in cfg.get('exclude_utc') or []:
+            ok &= ~((win.open_ms + win.n * MIN > ms(lo_s)) & (win.open_ms < ms(hi_s)))
+        return ok
+
+    keep = unsealed(real)
+    if not keep.all():
+        log(f'{int((~keep).sum())} windows on sealed days left out ({len(sealed_days)} UTC days)')
     if cfg.get('from_day'):
-        import datetime as _dt
         d0 = (_dt.date.fromisoformat(cfg['from_day']) - _dt.date(1970, 1, 1)).days
         keep &= real.day >= d0
     real_q = real.subset(np.nonzero(keep)[0])
@@ -199,6 +210,7 @@ def main(argv=None):
             log(f'synthetic vs real quotes on test days: {fidelity}')
         else:
             hw = hourly_windows(spots, real.assets, int(real_q.open_ms.min()), int(real_q.open_ms.max()), offsets=tuple(cfg['hourly_offsets']))
+            hw = hw.subset(np.nonzero(unsealed(hw) & np.isin(hw.day, np.unique(real_q.day)))[0])
             _, Fh = spot_at(hw, spots, sfeats)
             w = price_windows(hw, spots, Fh['rv60'].astype(np.float64), params)
             fidelity = dict(lam=params['lam'], note='hourly windows are synthetic: strike = spot at the open, settled on the Binance close (Kalshi uses the CF index)')
@@ -242,18 +254,28 @@ def main(argv=None):
         att_tr = maker_attempts(btr.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None
         rows_tr = entry_rows(Xtr, ptr, pnl_tr, att_tr)
         del pnl_tr
-        # Hurdle chosen on the last inner_days of the training span (purged), the entry model fitted on the rest.
+        # The hurdle is chosen on the last inner_days of the training span exactly as the test span is scored: exit and
+        # entry models fitted on the earlier days only (purged and embargoed, so no validation outcome reaches a fit
+        # label through the cross-fitted exits), validation windows exited by those exit models.
         fit_d, val_d = inner_split(tr_days, walk['inner_days'], walk['embargo_days'])
-        rday = days[tr_idx][rows_tr['w']]
-        fsel = np.isin(rday, fit_d)
-        vsel = np.isin(rday, val_d)
+        f_idx = np.nonzero(np.isin(days, fit_d) & trainable)[0]
+        v_idx = np.nonzero(np.isin(days, val_d))[0]
+        rows_fit = rows_val = None
+        if len(f_idx) and len(v_idx):
+            bf, bv = sub_book(f_idx), sub_book(v_idx)
+            pf = build_positions(bf, costs, cfg['entry']['maker_entries'], entry_minutes)
+            xf = solve_exits(bf, X[f_idx], pf, costs, xcfg, groups=(days[f_idx] % 2).astype(np.int8))
+            rows_fit = entry_rows(X[f_idx], pf, xf.pnl(pf), maker_attempts(bf.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None)
+            pv_ = build_positions(bv, costs, cfg['entry']['maker_entries'], entry_minutes)
+            xv = solve_exits(bv, X[v_idx], pv_, costs, xcfg, models=xf.models)
+            rows_val = entry_rows(X[v_idx], pv_, xv.pnl(pv_), maker_attempts(bv.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None)
+            del xf, xv, pf, pv_
 
         def pick_hurdle(shuffle=None):
-            if not vsel.any():
+            if rows_val is None or not len(rows_val['y']) or not len(rows_fit['y']):
                 return ecfg.hurdles[0], {}
-            sub = {k: v[fsel] for k, v in rows_tr.items()}
-            mdl = fit_entry(sub, ecfg, shuffle_rng=shuffle)
-            vrows = {k: v[vsel] for k, v in rows_tr.items()}
+            mdl = fit_entry(rows_fit, ecfg, shuffle_rng=shuffle)
+            vrows = rows_val
             pv = mdl.predict(vrows['X'])
             scores = {}
             for h in ecfg.hurdles:

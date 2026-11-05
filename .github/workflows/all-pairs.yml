@@ -201,10 +201,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/state" "$RUNNER_TEMP/results" "$RUNNER_TEMP/parts"
-          # The ledger: exit 3 means Drive has none yet; anything else is an error (never start a fresh ledger over one).
+          # The ledger. drive_lab.sh answers 3 for an empty listing, also when the listing itself failed, so a 3 is
+          # believed only after each level of the exact path is listed successfully and the ledger is not there (never
+          # start a fresh ledger over one that could not be read).
+          R="${DRIVE_ROOT:-gdrive:kalshi-bot-archive}"
           rc=0; bash ../deploy/drive_lab.sh get models/all-pairs/state "$RUNNER_TEMP/state" || rc=$?
           if [ "$rc" = 3 ]; then
-            rclone lsf "${DRIVE_ROOT:-gdrive:kalshi-bot-archive}/models" --max-depth 1 >/dev/null || { echo "Drive unreachable"; exit 1; }
+            top=$(rclone lsf "$R/models" --dirs-only) || { echo "Drive listing failed"; exit 1; }
+            if printf '%s\n' "$top" | grep -qx 'all-pairs/'; then
+              sub=$(rclone lsf "$R/models/all-pairs" --dirs-only) || { echo "Drive listing failed"; exit 1; }
+              if printf '%s\n' "$sub" | grep -qx 'state/'; then
+                files=$(rclone lsf "$R/models/all-pairs/state") || { echo "Drive listing failed"; exit 1; }
+                [ -z "$files" ] || { echo "the ledger exists but could not be read"; exit 1; }
+              fi
+            fi
             echo "no ledger on Drive yet"
           elif [ "$rc" != 0 ]; then echo "ledger download failed ($rc)"; exit 1; fi
           echo ok > "$RUNNER_TEMP/state/.fetched"
@@ -223,8 +233,14 @@ jobs:
         if: always()
         run: |
           [ ! -d "$RUNNER_TEMP/results" ] || bash deploy/drive_lab.sh put "models/all-pairs/runs/${{ github.run_id }}" "$RUNNER_TEMP/results"
-          # The ledger goes back only when it was read first (or Drive confirmed it has none).
-          [ ! -f "$RUNNER_TEMP/state/.fetched" ] || [ ! -f "$RUNNER_TEMP/state/trials.jsonl" ] || bash deploy/drive_lab.sh put models/all-pairs/state "$RUNNER_TEMP/state" --exclude .fetched
+          # The ledger goes back only when it was read first (or Drive confirmed it has none), and never shorter than
+          # the copy on Drive (a ledger only grows).
+          if [ -f "$RUNNER_TEMP/state/.fetched" ] && [ -f "$RUNNER_TEMP/state/trials.jsonl" ]; then
+            remote=$(rclone cat "${DRIVE_ROOT:-gdrive:kalshi-bot-archive}/models/all-pairs/state/trials.jsonl" 2>/dev/null | wc -l || true)
+            mine=$(wc -l < "$RUNNER_TEMP/state/trials.jsonl")
+            if [ "$mine" -ge "${remote:-0}" ]; then bash deploy/drive_lab.sh put models/all-pairs/state "$RUNNER_TEMP/state" --exclude .fetched
+            else echo "the ledger here ($mine rows) is shorter than Drive's ($remote): not uploaded"; exit 1; fi
+          fi
       - name: Post the card on the commit
         if: always()
         env:

@@ -33,6 +33,11 @@ class Costs:
     maker_mult: float = 0.0      # crypto series pay no maker fee; stress charges 1 (0.0175 x P(1-P))
     strict_maker: bool = False   # maker fills need the price traded through by a tick
     precision: float = 0.01      # the account's balance grid: 0.01 through an FCM (the bot's default), 0.0001 direct
+    # The bot's risk gateway (bot/risk/riskGateway.ts, bot/config.ts): an entry's side price must lie in
+    # [RISK_MIN_SIDE_PRICE, 1 - RISK_MIN_SIDE_PRICE] (0.10 by default) and an order holds at most
+    # RISK_MAX_CONTRACTS_PER_ORDER (250). 0 turns either bound off (the engine's own default, for tests).
+    min_side_price: float = 0.0
+    max_contracts: int = 0
 
 
 def maker_fills(bid, ask, nbl, nbh, nal, nah, strict: bool):
@@ -41,20 +46,26 @@ def maker_fills(bid, ask, nbl, nbh, nal, nah, strict: bool):
         through = TICK if strict else 0.0
         fb = nal <= bid - through + EPS
         fs = nbh >= ask + through - EPS
-    fb &= np.isfinite(bid)
-    fs &= np.isfinite(ask)
+    fb &= np.isfinite(bid) & np.isfinite(nal)
+    fs &= np.isfinite(ask) & np.isfinite(nbh)
     return fb, fs
+
+
+def _cap(C, c: Costs):
+    return np.minimum(C, c.max_contracts) if c.max_contracts and c.max_contracts > 0 else C
 
 
 def entry_legs(bid, ask, fill_buy, c: Costs):
     """Per-contract entry cost (fee in) and contract count for taker (at the ask) and maker (at the bid) entries.
     Returns (cost_T, C_T, cost_M, C_M, ok_T, ok_M); maker entries are ok only where they filled."""
     pa = ask + c.slip
-    ok_T = np.isfinite(ask) & (pa < 1)
-    C_T = contracts_for_stake(c.stake, np.where(ok_T, pa, np.nan))
+    lo, hi = (c.min_side_price - EPS, 1 - c.min_side_price + EPS) if c.min_side_price > 0 else (0.0, 1.0)
+    with np.errstate(invalid='ignore'):
+        ok_T = np.isfinite(ask) & (ask > 0) & (pa < 1) & (pa >= lo) & (pa <= hi)
+        ok_M = np.isfinite(bid) & (bid > 0) & (bid < 1) & (bid >= lo) & (bid <= hi) & fill_buy
+    C_T = _cap(contracts_for_stake(c.stake, np.where(ok_T, pa, np.nan)), c)
     cost_T = np.where(ok_T, pa + taker_fee(C_T, np.where(ok_T, pa, 0.5), c.taker_mult, c.precision) / np.maximum(C_T, 1), np.nan)
-    ok_M = np.isfinite(bid) & (bid > 0) & fill_buy
-    C_M = contracts_for_stake(c.stake, np.where(ok_M, bid, np.nan))
+    C_M = _cap(contracts_for_stake(c.stake, np.where(ok_M, bid, np.nan)), c)
     cost_M = np.where(ok_M, bid + maker_fee(C_M, np.where(ok_M, bid, 0.5), c.maker_mult, c.precision) / np.maximum(C_M, 1), np.nan)
     return cost_T, C_T, cost_M, C_M, ok_T, ok_M
 
@@ -62,7 +73,8 @@ def entry_legs(bid, ask, fill_buy, c: Costs):
 def exit_taker(bid, C, c: Costs):
     """Per-contract proceeds of a taker sale at the bid for a C-contract position (NaN where there is no bid)."""
     pb = bid - c.slip
-    ok = np.isfinite(pb) & (pb > 0)
+    with np.errstate(invalid='ignore'):
+        ok = np.isfinite(pb) & (pb > 0) & (bid < 1)
     Cs = np.where(ok, C, 0)
     fee = taker_fee(Cs, np.where(ok, pb, 0.5), c.taker_mult, c.precision) / np.maximum(C, 1)
     return np.where(ok, pb - fee, np.nan)
@@ -70,7 +82,8 @@ def exit_taker(bid, C, c: Costs):
 
 def exit_maker(ask, C, c: Costs):
     """Per-contract proceeds of a maker sale resting at the ask (valid only where it fills)."""
-    ok = np.isfinite(ask) & (ask < 1)
+    with np.errstate(invalid='ignore'):
+        ok = np.isfinite(ask) & (ask > 0) & (ask < 1)
     Cs = np.where(ok, C, 0)
     fee = maker_fee(Cs, np.where(ok, ask, 0.5), c.maker_mult, c.precision) / np.maximum(C, 1)
     return np.where(ok, ask - fee, np.nan)

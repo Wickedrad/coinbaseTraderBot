@@ -110,21 +110,44 @@ class Windows:
 
 def _side_hl(cd: dict, side: str):
     """A candle's (low, high) for one side, or NaNs when they contradict its own open and close (a high under the
-    close, a low over it): Kalshi's historical-tier candles carry such fields, and a fill must not be inferred from them."""
+    close, a low over it) or leave (0, 1): Kalshi's historical-tier candles carry such fields, and a fill must not be
+    inferred from them."""
     lo, hi = _f(cd.get(f'{side}L')), _f(cd.get(f'{side}H'))
     o_, c_ = _f(cd.get(f'{side}O')), _f(cd.get(f'{side}C'))
-    ok = np.isfinite(lo) and np.isfinite(hi) and lo <= hi + 1e-9
+    ok = np.isfinite(lo) and np.isfinite(hi) and 0 < lo <= hi + 1e-9 and hi < 1
     for v in (o_, c_):
         if ok and np.isfinite(v):
             ok = lo - 1e-9 <= v <= hi + 1e-9
     return (lo, hi) if ok else (np.nan, np.nan)
 
 
-def market_to_rows(m: dict, n: int, max_stale: int = 3):
-    """One stored market -> (bid, ask, nbid_lo, nbid_hi, nask_lo, nask_hi, kvol, real_frac, window open) or None.
-    The window is the market's last N minutes (a market listed earlier than its period is cut to the period). A minute
-    without a candle carries the last quote for at most max_stale minutes, then has no quote (known at that minute, so
-    no lookahead; a stale quote is not a book anyone could trade)."""
+def _book(b: float, a: float) -> bool:
+    """A two-sided book: 0 < bid < ask < 1."""
+    return bool(np.isfinite(b) and np.isfinite(a) and 0 < b < a - 1e-9 and a < 1)
+
+
+def _volume(cd: dict) -> float:
+    try:
+        return float(cd.get('volume') or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def market_to_rows(m: dict, n: int, max_stale: int = 0):
+    """One stored market -> (bid, ask, nbid_lo, nbid_hi, nask_lo, nask_hi, kvol, real_frac, window open, n_crossed) or
+    None. The window is the market's last N minutes (a market listed earlier than its period is cut to the period).
+
+    A decision quote is candle k's close (k >= 1) and must be a two-sided book, 0 < bid < ask < 1, at that minute;
+    anything else is no quote (NaN, both sides). Kalshi's historical-tier candles (markets settled before the API's
+    historical cutoff, Apr - early Sep 2026 here) store an empty ask, $1.00 'no offers', as $0.01 (the history parser
+    divides legacy values >= 1 by 100), so a one-sided minute reads as a 1c YES ask with no bid, and with a bid it is
+    crossed (~4% of their minutes, counted in n_crossed). Neither is a book anyone could trade.
+    k = 0 would be candle 1's open, the listing instant: an empty book in the live tier (asks at 99c+), a placeholder
+    one in the historical tier (a 1c YES ask that settled YES 49% of the time, diag run 42049460236). No quote.
+    A minute without a candle has no quote unless max_stale > 0 (a carried quote beside current spot features would be
+    a free option). real_frac is the share of decision minutes 1..N-1 that have a candle.
+    Maker fills for an order resting at minute k come from candle k+1, which proves a fill only when it traded (volume
+    > 0), its close is a two-sided book and its highs/lows agree with its own open and close; otherwise no fill."""
     o, c = m.get('openTime'), m.get('closeTime')
     if not isinstance(o, (int, float)) or not isinstance(c, (int, float)) or int(c - o) < n * MIN:
         return None
@@ -147,54 +170,32 @@ def market_to_rows(m: dict, n: int, max_stale: int = 3):
     blo = np.full(n, np.nan); bhi = np.full(n, np.nan); alo = np.full(n, np.nan); ahi = np.full(n, np.nan)
     kvol = np.zeros(n)
     real = 0
-    # k = 0 would be candle 1's open: the market's listing instant, an empty book (live tier: asks at 99c+) or a
-    # placeholder one (historical tier: a 1c YES ask that won 49% of the time, diag run 42049460236). No quote.
-    c1 = cand.get(1)
-    if c1 is not None:
-        real += 1
-    age = 0 if c1 is not None else max_stale + 1
+    n_crossed = 0
+    age = max_stale + 1
     for k in range(1, n):
         ck = cand.get(k)
         if ck is not None:
-            bid[k], ask[k] = _f(ck.get('bidC')), _f(ck.get('askC'))
-            try:
-                kvol[k] = float(ck.get('volume') or 0.0)
-            except (TypeError, ValueError):
-                kvol[k] = 0.0
             real += 1
-            age = 0
+            kvol[k] = _volume(ck)
+            b_, a_ = _f(ck.get('bidC')), _f(ck.get('askC'))
+            if np.isfinite(b_) and np.isfinite(a_) and b_ > 0 and b_ >= a_ - 1e-9:
+                n_crossed += 1
+            if _book(b_, a_):
+                bid[k], ask[k] = b_, a_
+                age = 0
+            else:
+                age = max_stale + 1
         else:
             age += 1
-            bid[k], ask[k] = (bid[k - 1], ask[k - 1]) if age <= max_stale else (np.nan, np.nan)
+            if age <= max_stale:
+                bid[k], ask[k] = bid[k - 1], ask[k - 1]
     for k in range(n):
         nk = cand.get(k + 1)
-        if nk is not None:
-            blo[k], bhi[k] = _side_hl(nk, 'bid')
-            alo[k], ahi[k] = _side_hl(nk, 'ask')
-        else:  # nothing traded or moved: no maker fill is inferred
-            blo[k] = bhi[k] = bid[k]
-            alo[k] = ahi[k] = ask[k]
-    # A bid of 0 is no bid; an ask of 1 is no ask.
-    for a in (bid, blo, bhi):
-        a[~(a > 0)] = np.nan
-    for a in (ask, alo, ahi):
-        a[~(a < 1)] = np.nan
-    # Crossed or locked quotes (bid >= ask) are not a book anyone could trade: Kalshi's historical-tier candles (markets
-    # settled before the API's historical cutoff, Apr-Sep 2026 here) carry them in ~4% of minutes, with bid and ask
-    # closes from different moments. Such a minute has no quote, and a crossed next minute proves no maker fill.
-    with np.errstate(invalid='ignore'):
-        crossed = bid >= ask - 1e-9
-        ncross = np.zeros(n, dtype=bool)
-        for k in range(n):
-            nk = cand.get(k + 1)
-            if nk is not None:
-                b_, a_ = _f(nk.get('bidC')), _f(nk.get('askC'))
-                ncross[k] = np.isfinite(b_) and np.isfinite(a_) and b_ >= a_ - 1e-9
-    bid[crossed] = np.nan; ask[crossed] = np.nan
-    for a in (blo, bhi, alo, ahi):
-        a[ncross] = np.nan
-    n_crossed = int(crossed.sum())
-    return bid, ask, blo, bhi, alo, ahi, np.nan_to_num(kvol), real / n, o, n_crossed
+        if nk is None or _volume(nk) <= 0 or not _book(_f(nk.get('bidC')), _f(nk.get('askC'))):
+            continue   # no trade, or no book at its close: no maker fill is inferred
+        blo[k], bhi[k] = _side_hl(nk, 'bid')
+        alo[k], ahi[k] = _side_hl(nk, 'ask')
+    return bid, ask, blo, bhi, alo, ahi, kvol, real / max(1, n - 1), o, n_crossed
 
 
 def load_kalshi(history_dir: str, assets, n: int = 15, series_fmt: str = 'KX{asset}15M', from_ms: int | None = None,
