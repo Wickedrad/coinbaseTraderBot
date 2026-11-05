@@ -186,6 +186,9 @@ const corr = (a: number[], b: number[]) => {
 
 interface Life { ticker: string; asset: string; open: number; close: number; book: OrderBook; changes: number; lastTop: string; slots: Array<{ t: number; mid?: number; spread?: number; top?: number; depth?: number; ix?: number }>; trades: number; size: number }
 
+/** Diagnostics (not features): the 15 s mid moves against the index moves, by price band and minute mark, per source. */
+export const followDiag: Record<string, Record<string, { m: number[]; x: number[] }>> = {};
+
 export async function dayRows(file: string, day: string, src: string, results: ReadonlyMap<string, string>, keep?: ReadonlySet<string>): Promise<Row[]> {
   const lives = new Map<string, Life>(), ix = new Map<string, number>();
   const d0 = Date.parse(`${day}T00:00:00Z`), d1 = d0 + 86_400_000;
@@ -225,6 +228,7 @@ export async function dayRows(file: string, day: string, src: string, results: R
       if (a.mid === undefined || b.mid === undefined || !a.ix || !b.ix) continue;
       const m = logit(b.mid) - logit(a.mid), x = Math.log(b.ix / a.ix) * 1e4;
       dm.push(m); di.push(x);
+      { const g = (followDiag[src] ??= {}); const k = `${a.mid < 0.1 || a.mid > 0.9 ? 'tails' : 'middle'}${b.t % MIN === 0 ? ' at minute' : ''}`; (g[k] ??= { m: [], x: [] }).m.push(m); g[k].x.push(x); }
       const c = l.slots[i + 1];
       dmNext.push(c?.mid !== undefined && b.mid !== undefined ? logit(c.mid) - logit(b.mid) : 0);
       jumpAll += Math.abs(m); if (b.t % MIN === 0) jumpAtMin += Math.abs(m);
@@ -267,6 +271,10 @@ async function stageFeatures(): Promise<void> {
     for (const r of rows) perDay.set(r.day, [...(perDay.get(r.day) ?? []), r]);
     for (const d of extra) { const f = dayFile(dir, d); if (f) perDay.set(`${d} (not judged)`, await dayRows(f, d, src, results)); }
     const fi = (k: string) => FEATURES.indexOf(k as (typeof FEATURES)[number]);
+    for (const [k, g] of Object.entries(followDiag[src] ?? {})) {
+      const sdv = (xs: number[]) => { const mu = xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length); return Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / Math.max(1, xs.length)); };
+      console.log(`[twin] ${src} follow ${k}: ${g.m.length} moves, corr ${corr(g.m, g.x).toFixed(3)}, mid move sd ${sdv(g.m).toFixed(3)}, zero moves ${(g.m.filter((v) => v === 0).length / Math.max(1, g.m.length) * 100).toFixed(0)}%`);
+    }
     for (const [d, rs] of perDay) {
       const m = (k: string) => (rs.length ? rs.reduce((a, r) => a + (Number.isFinite(r.f[fi(k)]) ? r.f[fi(k)] : 0), 0) / rs.length : NaN).toFixed(2);
       console.log(`[twin] ${src} ${d}: ${rs.length} lives, trades/min ${m('tradesPerMin')}, tradeSize ${m('tradeSize')}, topSize ${m('topSize')}, depth10 ${m('depth10')}, quote changes/min ${m('quoteChangesPerMin')}, followIx ${m('followIx')}, spread ${m('spreadC')}c`);
