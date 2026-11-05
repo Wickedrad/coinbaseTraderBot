@@ -38,11 +38,25 @@ def _f(v) -> float:
         x = float(v)
     except (TypeError, ValueError):
         return np.nan
-    # Legacy-cents repair (research/history/kalshiHistory.ts repairLegacyCents): a price under one cent is a dollar
-    # value divided by 100 once more.
-    if 0 < x < 0.01:
-        x = round(x * 1e6) / 1e4
     return x
+
+
+_PRICE_KEYS = ('bidO', 'bidH', 'bidL', 'bidC', 'askO', 'askH', 'askL', 'askC', 'last')
+
+
+def repair_legacy_cents(candles: list) -> bool:
+    """research/history/kalshiHistory.ts repairLegacyCents, per market: a market from the /historical endpoint whose
+    dollar prices were divided by 100 once more has EVERY price under a cent; it is scaled back. A market with some
+    prices under a cent among normal ones keeps them (Kalshi quotes tenths of a cent in the tails). True if repaired."""
+    vals = [c.get(k) for c in candles for k in _PRICE_KEYS if isinstance(c.get(k), (int, float)) and c.get(k) > 0]
+    if not vals or max(vals) >= 0.01:
+        return False
+    for c in candles:
+        for k in _PRICE_KEYS:
+            v = c.get(k)
+            if isinstance(v, (int, float)) and 0 < v < 0.01:
+                c[k] = round(v * 1e6) / 1e4
+    return True
 
 
 @dataclass
@@ -102,6 +116,7 @@ def market_to_rows(m: dict, n: int):
     if res not in ('yes', 'no'):
         return None
     cand = {}
+    repair_legacy_cents(m.get('candles') or [])
     for cd in m.get('candles') or []:
         ts = cd.get('ts')
         if not isinstance(ts, (int, float)):

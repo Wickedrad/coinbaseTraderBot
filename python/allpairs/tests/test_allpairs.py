@@ -223,6 +223,15 @@ class Features(unittest.TestCase):
             with self.assertRaises((ValueError, SyntaxError)):
                 safe_eval(bad, env)
 
+    def test_legacy_cents(self):
+        from allpairs.data import repair_legacy_cents
+        legacy = [dict(bidC=0.0048, askC=0.0052), dict(bidC=0.0049, askC=0.0051)]
+        self.assertTrue(repair_legacy_cents(legacy))
+        self.assertAlmostEqual(legacy[0]['bidC'], 0.48)
+        tails = [dict(bidC=0.005, askC=0.012), dict(bidC=0.003, askC=0.011)]
+        self.assertFalse(repair_legacy_cents(tails))
+        self.assertAlmostEqual(tails[0]['bidC'], 0.005)
+
     def test_side_quotes(self):
         w = load_kalshi(self.dir, ['BTC'], log=lambda m: None)
         b, a, nbl, nbh, nal, nah, st = side_quotes(w)

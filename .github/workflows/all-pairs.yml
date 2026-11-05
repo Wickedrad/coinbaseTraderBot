@@ -10,7 +10,8 @@ name: All-pairs matrix
 
 on:
   # A new workflow can't be dispatched until it is on main: while on its branch, a push whose commit message has
-  # "[all-pairs]" runs the study; any other push of these files runs the unit tests only.
+  # "[all-pairs]" runs the study, "[all-pairs-report:<run id>]" re-runs only the card on that run's parts; any other
+  # push of these files runs the unit tests only.
   push:
     branches: [claude/project-thread-eqduzm]
     paths: ['.github/workflows/all-pairs.yml', 'python/allpairs/**']
@@ -48,6 +49,7 @@ jobs:
     outputs:
       study: ${{ steps.go.outputs.study }}
       matrix: ${{ steps.go.outputs.matrix }}
+      report_run: ${{ steps.go.outputs.report_run }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -70,7 +72,9 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT" = "workflow_dispatch" ] || printf '%s' "$MSG" | grep -qF '[all-pairs]'; then echo "study=true" >> "$GITHUB_OUTPUT"; else echo "study=false" >> "$GITHUB_OUTPUT"; fi
-          # Up to 9 study runners (this thread's cap is 10 jobs): the base arm's folds over 4, stress over 2, synth1h over 2.
+          rr=$(printf '%s' "$MSG" | sed -nE 's/.*\[all-pairs-report:([0-9]+)\].*/\1/p' | head -1)
+          echo "report_run=$rr" >> "$GITHUB_OUTPUT"
+          # 9 study jobs, at most 5 at once (the project shares ~50 runners): base folds over 4, stress and synth1h over 2.
           python3 - "$ARMS" >> "$GITHUB_OUTPUT" <<'EOF'
           import json, sys
           want = {a.strip() for a in sys.argv[1].split(',') if a.strip()} | {'base'}
@@ -86,7 +90,7 @@ jobs:
     timeout-minutes: 340
     strategy:
       fail-fast: false
-      max-parallel: 9
+      max-parallel: 5
       matrix: ${{ fromJSON(needs.test.outputs.matrix) }}
     name: study (${{ matrix.arm }} ${{ matrix.part }}/${{ matrix.parts }})
     steps:
@@ -134,11 +138,12 @@ jobs:
 
   report:
     needs: [test, study]
-    if: always() && needs.test.outputs.study == 'true'
+    if: always() && (needs.test.outputs.study == 'true' || needs.test.outputs.report_run != '')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -151,6 +156,8 @@ jobs:
         with:
           pattern: part-*
           path: ${{ runner.temp }}/parts
+          run-id: ${{ needs.test.outputs.report_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
@@ -163,6 +170,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/state" "$RUNNER_TEMP/results"
           bash ../deploy/drive_lab.sh get models/all-pairs/state "$RUNNER_TEMP/state" || echo "no ledger on Drive yet"
+          ls -R "$RUNNER_TEMP/parts" | head -30
           python -W ignore -m allpairs.run combine --parts "$RUNNER_TEMP/parts" --out "$RUNNER_TEMP/results"
           python -W ignore -m allpairs.report --results "$RUNNER_TEMP/results" --ledger "$RUNNER_TEMP/state/trials.jsonl" \
             --champion "$RUNNER_TEMP/state/champion.json" --card "$RUNNER_TEMP/results/card.md" --run-url "$RUN_URL" --run-id "${{ github.run_id }}"
@@ -176,5 +184,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "All-pairs matrix run ${{ github.run_id }} (${{ inputs.config || 'base' }}, ${{ needs.study.result }})"; echo; cat "$RUNNER_TEMP/results/card.md" 2>/dev/null || echo "no card"; } > "$RUNNER_TEMP/comment.md"
+          { echo "All-pairs matrix run ${{ github.run_id }} (${{ inputs.config || 'base' }}, study ${{ needs.study.result }}${{ needs.test.outputs.report_run && format(', parts of run {0}', needs.test.outputs.report_run) || '' }})"; echo; cat "$RUNNER_TEMP/results/card.md" 2>/dev/null || echo "no card"; } > "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
