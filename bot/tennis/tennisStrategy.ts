@@ -112,6 +112,9 @@ export class MatchTracker {
   /** The price each trail starts at while the bid is still below it (PACER_FLOOR: a set price above the quota). */
   readonly trailStart = new Map<string, number>();
   readonly peak = new Map<string, number>();
+  /** The furthest the match's progress has reached. Progress falls back when the price returns toward 50/50 (a comeback),
+   *  so the loser cut and the entry block go by this, not the reading of the tick (TENNIS_END_LOSER_CUT). */
+  progressHigh = 0;
   /** Last tennis-confluence reading per held market (dashboard). */
   readonly signals = new Map<string, { score: number; momentum: boolean; flow: boolean; depth: boolean; crossMarket: boolean }>();
   private history: Array<{ ts: number; p: number }> = [];
@@ -378,6 +381,8 @@ export interface TennisProfitRules {
   /** TENNIS_END_LOSER_CUT: in that last share a position not in profit after fees is sold at the bid (never held to
    *  settlement), and no entry is placed. */
   endLoserCut?: boolean;
+  /** TENNIS_END_ENTRY_MARGIN: with endLoserCut, no new entry once the match is this much short of its last share. */
+  endEntryMargin?: number;
   /** PACER_FLOOR (bot/risk/quotaPacer.ts): which legs count as aiming higher than the quota (off when unset), and the floors. */
   floorMode?: PacerFloorMode;
   floors?: QuotaFloors;
@@ -396,7 +401,9 @@ export function decideMatch(t: MatchTracker, s: MatchSnapshot, cfg: TennisConfig
 /**
  * Steven's profit rules (Oct 29-30), on tennis as on every contract type. Inside the last share of the match a position in
  * profit after fees rides to settlement: no exit sells it. One that is not is never held to settlement: with endLoserCut it is
- * sold at the bid (end_cut), and no entry is placed there; without it, it keeps the legs' exits (the stops, the late cut).
+ * sold at the bid (end_cut), and no entry is placed from endEntryMargin before it; without it, it keeps the legs' exits (the
+ * stops, the late cut). The cut and the entry block go by the furthest progress the match has reached: a comeback pulls the
+ * progress back below the last share just as a favorite goes under water, and the position must not ride that to settlement.
  * Elsewhere the quota snipe sells a position whose whole profit after fees at the bid covers what the clock hour needs,
  * whatever the legs planned for it (the hunt, the take-profit, the favorite's hold); a thin bid takes what it can and the
  * rest is judged again next tick. Under PACER_FLOOR (Steven, Oct 31) a leg aiming higher keeps the position instead, the
@@ -406,12 +413,15 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
   const frac = r.settleFrac ?? 0;
   const prog = t.liveSince !== undefined ? t.progress(s.now, s.markets) : 0;
   const lastShare = frac > 0 && prog >= 1 - frac - 1e-9;
+  t.progressHigh = Math.max(t.progressHigh, prog);
+  const high = t.progressHigh;
+  const cutShare = frac > 0 && high >= 1 - frac - 1e-9;
   const mode = r.floorMode ?? 'off';
-  if (lastShare && r.endLoserCut) {
+  if (r.endLoserCut && frac > 0 && high >= 1 - frac - (r.endEntryMargin ?? 0) - 1e-9) {
     const entries = out.plans.filter((p) => p.side === 'bid' && !p.reduceOnly);
     if (entries.length) {
       out.plans = out.plans.filter((p) => !entries.includes(p));
-      out.notes.push(`match ${(prog * 100).toFixed(0)}% done (its last ${(frac * 100).toFixed(0)}%): no new entry (${entries.map((p) => p.leg).join(', ')}), it could not be held to settlement unless in profit`);
+      out.notes.push(`match ${(high * 100).toFixed(0)}% done (its last ${(frac * 100).toFixed(0)}% from ${((1 - frac) * 100).toFixed(0)}%): no new entry (${entries.map((p) => p.leg).join(', ')}), it could not be held to settlement unless in profit`);
     }
   }
   for (const m of s.markets) {
@@ -422,12 +432,13 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
     if (lastShare && net !== undefined && net > 1e-9) {
       out.plans = out.plans.filter(others);
       out.notes.push(`${m.ticker}: match ${(prog * 100).toFixed(0)}% done (its last ${(frac * 100).toFixed(0)}%), +$${net.toFixed(2)} after fees: riding to settlement`);
-    } else if (lastShare && r.endLoserCut && net !== undefined && m.quote.bid !== undefined) {
+    } else if (cutShare && r.endLoserCut && net !== undefined && !(net > 1e-9) && m.quote.bid !== undefined) {
       // Not in profit after fees: never held to settlement. A thin bid takes what it can and the rest is judged next tick.
       const bid = m.quote.bid;
+      const at = prog < high - 1e-9 ? `${(prog * 100).toFixed(0)}% done, ${(high * 100).toFixed(0)}% at its furthest` : `${(prog * 100).toFixed(0)}% done`;
       out.plans = out.plans.filter(others);
       out.plans.push({ ticker: m.ticker, side: 'ask', price: bid, count: m.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'end_cut',
-        why: `match ${(prog * 100).toFixed(0)}% done (its last ${(frac * 100).toFixed(0)}%), ${net < 0 ? '-' : '+'}$${Math.abs(net).toFixed(2)} after fees at bid ${bid}: not in profit, not held to settlement` });
+        why: `match ${at} (its last ${(frac * 100).toFixed(0)}%), ${net < 0 ? '-' : '+'}$${Math.abs(net).toFixed(2)} after fees at bid ${bid}: not in profit, not held to settlement` });
     } else if (r.pacerUsd !== undefined && net !== undefined && m.quote.bid !== undefined) {
       const bid = m.quote.bid;
       const selling = out.plans.some((p) => p.ticker === m.ticker && p.side === 'ask' && p.timeInForce === 'immediate_or_cancel');

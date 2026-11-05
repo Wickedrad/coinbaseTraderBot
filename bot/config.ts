@@ -748,8 +748,13 @@ export interface TennisConfig {
   settleFrac: number;
   /** TENNIS_END_LOSER_CUT (on): the other half of that rule, nothing is held to settlement unless it is in profit. In the last
    *  share of the match a position not in profit after fees is sold at the bid, and no new entry is placed there (it
-   *  would start under water). The favorite leg has no loss exit of its own (TENNIS_FAV_STOP_CENTS is 0 by default). */
+   *  would start under water). The favorite leg has no loss exit of its own (TENNIS_FAV_STOP_CENTS is 0 by default). The
+   *  share is settleFrac's, so settleFrac 0 turns the cut off too. Both go by the furthest progress the match has reached
+   *  (a comeback pulls the progress back). */
   endLoserCut: boolean;
+  /** TENNIS_END_ENTRY_MARGIN (0.05): with the cut on, no new entry from this much progress before the last share, so a
+   *  position bought just before it has time to cover the spread and fees before it is judged (0.65 with the defaults). */
+  endEntryMargin: number;
   /** Tennis MLP (fair P(win) from the 4 signals, score, book and SNN): when validated, entries need
    *  fair - price >= this. */
   fairMinEdge: number;
@@ -1610,6 +1615,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       underdogCutProgress: num(env, 'TENNIS_UNDERDOG_CUT_PROGRESS', 0.6, 0, 1),
       settleFrac: num(env, 'TENNIS_NO_EXIT_BEFORE_END_FRAC', 0.30, 0, 0.9),
       endLoserCut: bool(env, 'TENNIS_END_LOSER_CUT', true),
+      endEntryMargin: num(env, 'TENNIS_END_ENTRY_MARGIN', 0.05, 0, 0.5),
       fairMinEdge: num(env, 'TENNIS_FAIR_MIN_EDGE', 0.01, -0.5, 0.5),
       modelPath: path.resolve(env.TENNIS_MODEL_PATH ?? './params/tennis_model.json'),
     },
