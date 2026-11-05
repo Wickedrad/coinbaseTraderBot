@@ -77,7 +77,7 @@ import { loadKalshiTrades, type KalshiHistMarket, type KalshiTrade } from './kal
 import { anchorsIn, dominanceAnchors, DominanceReplay, type DomState } from './dominanceReplay';
 import type { Candle } from '../../bot/ta/indicators';
 
-export const REPLAY_VERSION = 5;
+export const REPLAY_VERSION = 6;
 const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
 const TFS: Array<{ tf: string; ms: number }> = [{ tf: '1m', ms: MIN }, { tf: '5m', ms: 5 * MIN }, { tf: '15m', ms: 15 * MIN }, { tf: '1h', ms: HOUR }, { tf: '1d', ms: DAY }];
 const BACKFILL = 300;
@@ -845,7 +845,7 @@ function tennisEvents(kalshiDir: string, series: string[], day: string, d0: numb
           ...m.candles.filter((c) => c.ts >= begin && c.ts <= m.closeTime).map((c): Step => ({ t: c.ts, c })),
           ...(tapes.get(m.ticker) ?? []).filter((x) => x[0] >= begin && x[0] <= m.closeTime).map((x): Step => ({ t: x[0], tr: x })),
         ].sort((a, b) => a.t - b.t || (a.c ? 0 : 1) - (b.c ? 0 : 1));
-        let spread = 0.02, booked = 0;
+        let spread = 0.02, booked = 0, lastQuote = '';
         const book = (t: number, bid: number, ask: number) => {
           const b = Math.round(bid * 100) / 100, a = Math.round(ask * 100) / 100;
           if (!(b >= 0.01 && a <= 0.99 && a > b)) return;
@@ -855,7 +855,13 @@ function tennisEvents(kalshiDir: string, series: string[], day: string, d0: numb
         for (const st of steps) {
           if (st.c) {
             const { bidC, askC } = st.c;
-            if (bidC !== null && askC !== null && askC > bidC) { spread = Math.max(0.01, askC - bidC); book(st.t, bidC, askC); }
+            // Minute 0 (the market's first candle) is skipped: its quote is the listing's, before anyone traded. A candle
+            // that repeats the last candle's quote is skipped too: Kalshi carries a quiet minute's quote forward, and after
+            // a trade that carried quote would overwrite the book the trade set.
+            if (st.c === m.candles[0]) continue;
+            const q = `${bidC}/${askC}`;
+            if (q === lastQuote) continue;
+            if (bidC !== null && askC !== null && askC > bidC) { lastQuote = q; spread = Math.max(0.01, askC - bidC); book(st.t, bidC, askC); }
             continue;
           }
           const [t, price, count, side] = st.tr!;
