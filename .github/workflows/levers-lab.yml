@@ -118,8 +118,12 @@ jobs:
             P="$D/runner-temp"; BAL=$(cat "$P/paper-balance" 2>/dev/null || true); G="$P/paper-guard.json"; [ -s "$G" ] || G=""
             ARGS=(--recordings "$D/recordings" --audit "$D/audit" --days "$day,$next" --from "${day}T15:40:00Z" --to "${next}T15:40:00Z" --min-hours 3
               ${BAL:+--paper-balance-now "$BAL"} ${G:+--paper-guard "$G"} --kill-override "$(cat "$P/kill-override" 2>/dev/null || echo true)"
-              --maker-markouts "$P/maker-markouts.json" --paper-probation "$P/paper-probation.json" --paper-trials "$P/paper-trials.json"
-              --paper-tp-bench "$P/paper-tp-bench.json" --paper-accuracy-gate "$P/paper-accuracy-gate.json" --paper-trades "$P/paper-trades.jsonl" --model "$D/models/model.json")
+              --maker-markouts "$P/maker-markouts.json" --paper-trials "$P/paper-trials.json"
+              --own-bench --paper-trades "$P/paper-trades.jsonl" --model "$D/models/model.json")
+            # Arms keep their own take-profit bench and probation (main #266). The accuracy gate starts fresh by default:
+            # paper's gate rows carry no ticker, so its DOGE-scored rows cannot be stripped. LAB_GATE_SEED=paper seeds it
+            # from paper as before (diagnostic). DOGE itself is left out by REPLAY_EXCLUDE (default DOGE, main #265).
+            [ "${LAB_GATE_SEED-fresh}" = paper ] && ARGS+=(--paper-accuracy-gate "$P/paper-accuracy-gate.json")
             S="$RUNNER_TEMP/seed-$reuse-$day.json"; [ -s "$S" ] && ARGS+=(--seed-candles "$S")
             # Stop 5 min after the stretch (every market closing inside it has settled; the verdict is unchanged) instead of
             # simulating the next day file to midnight (~8 h of US session, ~1/5 of the replay). RS_STOP_AFTER_MIN=off: full.
