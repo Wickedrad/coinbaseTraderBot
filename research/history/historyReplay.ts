@@ -652,7 +652,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     domCount += domToday;
     const alive = new Map<number, string[]>();
     for (const m of kms) {
-      const kind = contractKind(m.series, m.strikeType);
+      const kind = contractKind(m.series, m.strikeType, m.ticker);
       ev.push({ t: m.openTime - MIN, k: 'market', ticker: m.ticker, series: m.series, asset: m.asset, openTime: m.openTime, closeTime: m.closeTime, strike: m.strike, cap: m.cap, kind, event: m.event, tickSize: 0.01, hist: 1 });
       const cs = (m.candles ?? []).filter((c) => c.ts >= m.openTime && c.ts <= m.closeTime);
       const ixs = slotIx.get(m.asset), sgs = slotSig.get(m.asset);
@@ -662,7 +662,10 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
           ev.push({ t: c.ts, k: 'book', ticker: m.ticker, bids: [{ price: c.bidC, size: 100 }], asks: [{ price: c.askC, size: 100 }], ts: c.ts });
           // The minute's last quote stands until the next one (near the money, where a network would use it), or with
           // requote follows the index until then.
-          const mid = (c.bidC + c.askC) / 2, until = Math.min(cs[i + 1]?.ts ?? m.closeTime, m.closeTime);
+          // A crossed or locked candle (about 4% of the historical tier's minutes, Apr 18-Sep 11) is skipped: the quote before
+          // it keeps following the index up to the next good candle.
+          let nx = i + 1; while (nx < cs.length && !(cs[nx].bidC !== null && cs[nx].askC !== null && cs[nx].askC! > cs[nx].bidC!)) nx++;
+          const mid = (c.bidC + c.askC) / 2, until = Math.min(cs[nx]?.ts ?? m.closeTime, m.closeTime);
           if (mid >= 0.03 && mid <= 0.97) for (let at = c.ts + 15_000; at < until; at += 15_000) { const l = alive.get(at); if (l) l.push(m.ticker); else alive.set(at, [m.ticker]); }
           if (ixs && sgs) requoteBetween(ev, { ...m, kind }, c.bidC, c.askC, c.ts, until, d0, ixs, sgs, o.requoteLag);
         }
@@ -784,7 +787,10 @@ export function requoteBetween(ev: Ev[], m: { ticker: string; kind: MarketKind; 
   const p0 = fvAt(t0);
   if (p0 === undefined) return;
   const off = logit((bid0 + ask0) / 2) - logit(p0);
-  const w = Math.max(1, Math.round((ask0 - bid0) * 100));
+  // Kalshi's tick: 0.1c below 10c and above 90c, 1c in between (the recordings' books; Nov 5: whole-cent requotes in the
+  // tails made the twin's mid jump in coarse logit steps, 15 s mid moves sd 0.44 vs real 0.37, index follow 0.66 vs 0.77).
+  const tickOf = (p: number) => (p < 0.1 || p > 0.9 ? 0.001 : 0.01);
+  const spread0 = ask0 - bid0;
   // With a lag the quote carries a share of the fair value's move since the candle, reached through a first-order filter.
   const l0 = logit(p0), keep = lag ? Math.exp(-1 / Math.max(1e-6, lag.tauSec)) : 0;
   let y = 0, last = t0;
@@ -800,8 +806,10 @@ export function requoteBetween(ev: Ev[], m: { ticker: string; kind: MarketKind; 
       q = l0 + y;
     }
     const mid = 1 / (1 + Math.exp(-(q + off)));
-    const bid = Math.min(99 - w, Math.max(1, Math.round(mid * 100 - w / 2)));
-    ev.push({ t, k: 'book', ticker: m.ticker, bids: [{ price: bid / 100, size: 100 }], asks: [{ price: (bid + w) / 100, size: 100 }], ts: t });
+    const tick = tickOf(mid), w = Math.max(1, Math.round(spread0 / tick));
+    const lo = Math.round((mid - (w * tick) / 2) / tick);
+    const bid = Math.min(Math.round((1 - tick) / tick) - w, Math.max(1, lo));
+    ev.push({ t, k: 'book', ticker: m.ticker, bids: [{ price: +(bid * tick).toFixed(4), size: 100 }], asks: [{ price: +((bid + w) * tick).toFixed(4), size: 100 }], ts: t });
   }
 }
 

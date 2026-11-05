@@ -18,7 +18,7 @@ const log = logger('snn');
 
 export function snnParams(c: SnnConfig, domain?: SnnDomain): SnnParams {
   const stage = domain ? c.domains[domain].stage : c.stage;
-  const base = { ...DEFAULT_SNN, seed: c.seed, maxColumns: c.maxColumns, readoutEta: c.readoutEta, flags: { ...stageFlags(stage), ...c.deferred }, ...(anchorFor(c.anchorMid, domain) ? { anchorMid: true } : {}) };
+  const base = { ...DEFAULT_SNN, seed: c.seed, maxColumns: c.maxColumns, readoutEta: c.readoutEta, flags: { ...stageFlags(stage), ...c.deferred }, ...(anchorFor(c.anchorMid, domain) ? { anchorMid: true, ...(c.maxSpread && domain === 'crypto' ? { maxSpread: c.maxSpread } : {}) } : {}) };
   return domain ? domainParams(domain, base) : base;
 }
 
