@@ -429,14 +429,17 @@ export function marketDump(spec: string, r: { trades: Array<{ ticker: string; cl
   return out;
 }
 
-export function paperSummary(a: AuditRecords, from = -Infinity, to = Infinity): PaperSide {
+/** REPLAY_EXCLUDE_ASSETS (Steven, Nov 5: no DOGE for now): coins left out of both sides, matched on the ticker's series (KX<COIN>...). */
+export const excludedTicker = (assets: string[]) => (ticker: string | undefined) => !!ticker && assets.some((a) => ticker.toUpperCase().startsWith(`KX${a.toUpperCase()}`));
+
+export function paperSummary(a: AuditRecords, from = -Infinity, to = Infinity, exclude: (ticker: string | undefined) => boolean = () => false): PaperSide {
   const out: PaperSide = { ...empty(), gateShare: null, lastFillAt: null, extra: { train: 0, explore: 0 }, quiet: { diagnoses: 0, lastAt: null, reasons: {} }, quietHours: {}, takeProfitBench: { scored: 0, netUsd: 0, benchedAt: null, byMarket: {} }, rejected: {} };
   const inside = (t: number) => t >= from && t < to;
   let lastFill = -Infinity;
   const first = new Map<string, { side?: string; price?: number }>();
   for (const f of a.fills) if (f.ticker && !first.has(f.ticker)) first.set(f.ticker, { side: f.side, price: f.price });
   for (const f of a.fills) {
-    if (!inside(f.t)) continue;
+    if (!inside(f.t) || exclude(f.ticker)) continue;
     out.fills++; out.contracts += f.count; out.fees += f.fee;
     out.lastFillAt = new Date(f.t).toISOString();
     lastFill = Math.max(lastFill, f.t);
@@ -452,7 +455,7 @@ export function paperSummary(a: AuditRecords, from = -Infinity, to = Infinity): 
     out.exits[k] = (out.exits[k] ?? 0) + f.count;
   }
   for (const s of a.settlements) {
-    if (!inside(s.t)) continue;
+    if (!inside(s.t) || exclude(s.ticker)) continue;
     out.pnl += s.pnl; out.markets++;
     const h = hourOf(s.t);
     out.byHour[h] = (out.byHour[h] ?? 0) + s.pnl;
@@ -812,7 +815,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     exitPolicy: policy as never, sessionRisk: models.sessionRisk, huntSessionGuard: S.huntSessionGuard, huntTransitionBufferMin: S.huntTransitionBufferMin,
     sizingTiers: cfg.sizingTiers, paper: { orderFrac: S.paperOrderFrac, orderUsd: S.paperOrderUsd }, accuracyGate: S.accuracyGate,
     optimalF: { ...cfg.optimalF, ...(ofSeed ? { seed: ofSeed } : {}) },
-    takeProfitBench: { enforce: S.takeProfitBench, rule: curveBench, stateFile: benchFile, ...(follow ? { follow } : {}) }, accuracyGateFile: gateFile, startMs, tradeFromMs: from,
+    takeProfitBench: { enforce: S.takeProfitBench, rule: curveBench, stateFile: benchFile, ...(follow ? { follow } : {}) }, accuracyGateFile: gateFile, startMs, tradeFromMs: from, excludeAssets: (process.env.REPLAY_EXCLUDE_ASSETS ?? '').split(/[\s,]+/).filter(Boolean),
     dailyGoalUsd: cfg.vault.dailyGoalUsd, equityGuardFile: guardFile, killOverride, refillUsd: cfg.paperBankrollUsd, sessionEdge: cfg.sessionEdge, onEval: match.onEval, makerMarkouts: o.makerMarkouts,
     volProfile: models.volProfile, applyVolSeasonality: Boolean(models.volProfile), volModel: models.volModel, fillModel: models.fillModel, calendar: models.calendar,
     taNet: true, trials: models.trials, marketContext: true, fillLog: true, ...(o.tickPhaseMs !== undefined ? { tickPhaseMs: o.tickPhaseMs } : {}), ...(seed ? { seedCandles: seed } : {}),
@@ -845,7 +848,8 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   if (r.exits.contracts - tpContracts > 1e-9) replay.exits['model exit / ratchet'] = +(r.exits.contracts - tpContracts).toFixed(2);
   const x = r.exits;
   if (x.huntActivations || x.wallAsks || x.quotaSnipes) replay.hunt = `hunt mode in the replay: ${x.huntActivations} activations, ${x.ratchetTriggers} stop triggers, ${x.gaps} gaps, ${x.huntProfitTakes} profit takes, ${x.lockSales} lock sales, ${x.lockHolds} lock holds, ${x.wallAsks} wall asks (${x.wallFills.toFixed(0)} contracts filled on them), ${x.quotaSnipes} quota snipes (${x.quotaSnipeContracts.toFixed(0)} contracts)${x.floorArms || x.floorSales ? `, ${x.floorArms ?? 0} quota floors armed, ${x.floorSales ?? 0} floor sale calls` : ''}`;
-  const paper = paperSummary(audit, from, to);
+  const exAssets = (process.env.REPLAY_EXCLUDE_ASSETS ?? '').split(/[\s,]+/).filter(Boolean);
+  const paper = paperSummary(audit, from, to, excludedTicker(exAssets));
   const dump = process.env.REPLAY_DUMP ? marketDump(process.env.REPLAY_DUMP, r, audit, from, to) : undefined;
   const upOnly = upTimeScore(r, audit, from, to);
   const minHours = o.minHours ?? 3;

@@ -248,6 +248,8 @@ export interface BacktestOpts { fillLog?: boolean; exitPolicy?: ExitPolicyName; 
   equityGuardFile?: string;
   /** No orders before this time (ms): until then the replay only watches (research/replayCheck.ts). */
   tradeFromMs?: number;
+  /** Coins left out of the replay entirely (REPLAY_EXCLUDE_ASSETS; Steven, Nov 5: no DOGE for now). */
+  excludeAssets?: string[];
   /** Evaluate on the engine's 1 s timer (bot/engine.ts: setInterval) this many ms into each second: wherever paper's
    *  timer fell, the replay can evaluate a little before or after the market moves it saw. Unset: at the first recorded
    *  event a second after the last evaluation. */
@@ -455,6 +457,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     if (!opts.accuracyGateFile) return -Infinity;
     try { const g = JSON.parse(fs.readFileSync(opts.accuracyGateFile, 'utf8')) as { rows?: Record<string, Array<{ ts: number }>> }; return Math.max(-Infinity, ...Object.values(g.rows ?? {}).flat().map((r) => r.ts)); } catch { return -Infinity; }
   })();
+  const excluded = new Set((opts.excludeAssets ?? []).map((x) => x.toUpperCase()));
   const anchor = strategy.marketAnchor?.enabled ? new MarketAnchor(strategy.marketAnchor, undefined, () => st.now) : undefined;
   // The bench's markets scored from the first trading moment on (the replay check sets them beside paper's).
   const tpScored = (e: { event: string; ticker?: string; usd?: unknown; contracts?: unknown }) => {
@@ -616,7 +619,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
 
     for (const m of [...st.markets.values()].sort((a, b) => (priority.get(b.ticker) ?? 0) - (priority.get(a.ticker) ?? 0))) {
       // Recorded for research, or synthesized from price history (quoted at the model's own fair value): never traded.
-      if (m.recordOnly || m.synthetic) { if (st.now >= m.closeTime + 90_000) st.forget(m.ticker); continue; }
+      if (m.recordOnly || m.synthetic || excluded.has(m.asset)) { if (st.now >= m.closeTime + 90_000) st.forget(m.ticker); continue; }
       closeOf.set(m.ticker, m.closeTime);
       // Settle closed markets.
       if (st.now >= m.closeTime + 60_000) {
