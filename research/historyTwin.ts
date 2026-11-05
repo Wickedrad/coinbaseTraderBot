@@ -38,7 +38,9 @@ import { recordingLines } from '../bot/marketdata/recordingFiles';
 
 const MIN = 60_000, SLOT = 15_000;
 const logit = (p: number) => { const q = Math.min(0.995, Math.max(0.005, p)); return Math.log(q / (1 - q)); };
-const is15m = (series: string | undefined, ticker: string) => /15M/.test(series ?? '') || /15M-/.test(ticker);
+// Markets the replays leave out (REPLAY_EXCLUDE, DOGE by default) are left out of the twin too.
+const EXCLUDE = (() => { const v = process.env.REPLAY_EXCLUDE ?? 'DOGE'; return v ? new RegExp(v) : undefined; })();
+const is15m = (series: string | undefined, ticker: string) => (/15M/.test(series ?? '') || /15M-/.test(ticker)) && !EXCLUDE?.test(ticker);
 const dayFile = (dir: string, day: string) => ['.jsonl.gz', '.jsonl'].map((x) => path.join(dir, `md-${day}${x}`)).find((f) => fs.existsSync(f));
 const arg = (k: string, d = ''): string => { const i = process.argv.indexOf(`--${k}`); return i >= 0 && process.argv[i + 1] && !process.argv[i + 1].startsWith('--') ? process.argv[i + 1] : d; };
 
