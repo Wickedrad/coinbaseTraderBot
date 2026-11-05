@@ -1,0 +1,7 @@
+{
+  "name": "exit_naive",
+  "notes": "Control on exit-model noise: entry labels and every exit follow the study's naive hold-then-forced rule (no voluntary sale; at the last decision minute a position not in profit after fees is sold at the bid, one in profit rides to settlement; end_rule bot unchanged; labels still follow the exit policy, never a max over exits). No exit model is fitted. Learned Snell exits trailed this rule by about 0.24 $ per possible taker position on every card. Question: is there any entry edge once labels carry no exit-model noise? Read against this run's own random and shuffled placebos (same labels) and, fold by fold, against base_ctrl.",
+  "exit": {
+    "policy": "naive"
+  }
+}

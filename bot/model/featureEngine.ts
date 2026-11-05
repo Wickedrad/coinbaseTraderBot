@@ -807,8 +807,19 @@ export const FEATURES: Record<string, { group: FeatureGroup; description: string
   } },
 
   // G/H. Kalshi perpetuals: premium to the settlement index (perps lead spot), funding, positioning.
-  perp_premium_bps: { group: 'perp', tier: 'T2', description: 'Kalshi perp price vs settlement index, bps', fn: (c) => {
+  // Kalshi quotes perps PER CONTRACT (BTC 0.0001, ETH 0.001, SOL 0.1 of a coin). perp_premium_bps compares that quote with
+  // the coin's index, so it sat at its -100 clip in every recording (XRP's contract is 1 XRP: its quote is per coin).
+  // It is kept exactly as live has always read it, for the deployed models; new trainings leave it out (T3) and use
+  // perp_premium_coin_bps. Models trained on a history replay before REPLAY_VERSION 7 saw per-coin premiums under this name
+  // (the replay quoted per coin then), so they read -100 live as they always have until retrained. The SNN still reads it
+  // (bot/snn/inputs.ts CRYPTO_POP and cryptoValues), retrains included: moving it to perp_premium_coin_bps takes a change
+  // there and a fresh SNN, the SNN thread's call.
+  perp_premium_bps: { group: 'perp', tier: 'T3', description: 'LEGACY: Kalshi perp quote (per contract) vs settlement index, bps; pinned at the -100 clip for per-contract quotes, kept for models trained on it (use perp_premium_coin_bps)', fn: (c) => {
     const p = c.perp?.price(c.now), ix = c.index.latest()?.value;
+    return p && ix ? clip(1e4 * Math.log(p / ix), 100) : NA;
+  } },
+  perp_premium_coin_bps: { group: 'perp', tier: 'T2', description: 'Kalshi perp price per coin vs settlement index, bps (the quote over its contract size)', fn: (c) => {
+    const ix = c.index.latest()?.value, p = c.perp?.coinPrice(c.now, ix);
     return p && ix ? clip(1e4 * Math.log(p / ix), 100) : NA;
   } },
   perp_premium_chg_5m: { group: 'perp', tier: 'T2', description: 'change in the perp premium over 5 min, bps', fn: (c, k) => {
