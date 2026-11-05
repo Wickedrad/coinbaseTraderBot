@@ -83,7 +83,9 @@ import type { Candle } from '../../bot/ta/indicators';
 // version change. 6 was reserved for PR #286, which merged second and took 8.
 // 8 (Nov 5, PR #286): tennis history skips minute-0 and carried candle quotes; only the strikes the live catalog would
 // follow (4 nearest the money per event, 90 min horizon) are tradable, the rest record-only.
-export const REPLAY_VERSION = 8;
+// 9 (Nov 5, strike cap PR): the catalog picks strikes as live does with CATALOG_PICK_MAX_SPREAD (a listing's mid trusted
+// only within 10c, two tiers, the index for the rest).
+export const REPLAY_VERSION = 9;
 /** Kalshi perp contract sizes (units of the coin a contract), for a replay without the bot's own recordings to read them
  *  from: the perp TA thread's fidelity runs over the Oct 21 - Nov 3 recordings (each market's mid against Coinbase spot:
  *  BTC 0.0001, ETH 0.001, SOL 0.1, XRP 1). A coin with no known size is quoted per coin (1), as before Nov 5. */
@@ -118,6 +120,8 @@ export interface ReplayOpts {
    *  bot would never follow are written record-only. 0 strikes = every strike tradable (the replay before version 8). */
   catalogStrikesPerEvent?: number;
   catalogHorizonMin?: number;
+  /** CATALOG_PICK_MAX_SPREAD (0.10; 0 = the legacy pick by any listing mid, else the last price). */
+  catalogPickMaxSpread?: number;
   perpSpecs?: Record<string, PerpSpec>;
   /** Synthetic 15-minute and hourly contracts where Kalshi's history has none (default on). */
   synthetic?: boolean;
@@ -327,7 +331,7 @@ function readFunding(file: string): Array<[number, number]> {
  *  once tracked a contract stays tracked. Up/Down contracts are always tracked from their open. Contracts never picked are
  *  the ones the bot never follows: the replay marks them record-only (Kalshi's history lists every strike of a ladder,
  *  about 12 times what the bot follows, and the far ones often show 1c/99c books). Refreshes are read once a minute. */
-export function catalogTracking(kms: KMarket[], o: { n: number; horizonMs: number; refreshMs?: number; priceAt?: (t: number) => number | undefined }): Map<string, number> {
+export function catalogTracking(kms: KMarket[], o: { n: number; horizonMs: number; refreshMs?: number; priceAt?: (t: number) => number | undefined; maxSpread?: number }): Map<string, number> {
   const out = new Map<string, number>();
   if (!o.n) { for (const m of kms) out.set(m.ticker, m.openTime); return out; }
   const step = o.refreshMs ?? MIN;
@@ -346,9 +350,9 @@ export function catalogTracking(kms: KMarket[], o: { n: number; horizonMs: numbe
         const c = i >= 0 ? m.candles[i] : undefined;
         const b = c?.bidC ?? undefined, k = c?.askC ?? undefined, l = c?.last ?? undefined;
         const yesMid = b !== undefined && k !== undefined && b > 0 && k > b && k < 1 ? (b + k) / 2 : l !== undefined && l > 0 && l < 1 ? l : undefined;
-        return { ticker: m.ticker, eventTicker: m.event, strikeType: m.strikeType, floorStrike: m.strike ?? undefined, capStrike: m.cap ?? undefined, yesMid, series: m.series };
+        return { ticker: m.ticker, eventTicker: m.event, strikeType: m.strikeType, floorStrike: m.strike ?? undefined, capStrike: m.cap ?? undefined, yesMid, yesBid: b, yesAsk: k, series: m.series };
       });
-      const picked = nearestStrikes(listed, (series, st) => contractKind(series, st), listed[0].series, o.priceAt?.(t), o.n, new Set(out.keys()));
+      const picked = nearestStrikes(listed, (series, st) => contractKind(series, st), listed[0].series, o.priceAt?.(t), o.n, new Set(out.keys()), { maxSpread: o.maxSpread ?? 0 });
       for (const x of picked) if (!out.has(x.ticker)) out.set(x.ticker, t);
     }
   }
@@ -541,7 +545,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
   // next day's file, so every file stays in time order.
   let carry: Ev[] = [];
   const tennisSeries = o.tennisSeries ?? [];
-  const base = `${REPLAY_VERSION}:${assets.join(',')}:${synthetic ? 'synth' : 'real'}:${tennisSeries.join(',')}${o.requote ? ':requote' : ''}${o.requote && o.requoteLag ? `:lag${o.requoteLag.gInf}/${o.requoteLag.tauSec}` : ''}:cat${o.catalogStrikesPerEvent ?? 4}/${o.catalogHorizonMin ?? 90}`;
+  const base = `${REPLAY_VERSION}:${assets.join(',')}:${synthetic ? 'synth' : 'real'}:${tennisSeries.join(',')}${o.requote ? ':requote' : ''}${o.requote && o.requoteLag ? `:lag${o.requoteLag.gInf}/${o.requoteLag.tauSec}` : ''}:cat${o.catalogStrikesPerEvent ?? 4}/${o.catalogHorizonMin ?? 90}/${o.catalogPickMaxSpread ?? 0.1}`;
   const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
   // A day's inputs: the Kalshi history it reads (a later download reached it), how far the 1-minute
   // history and funding rates reach into it, and the dominance anchors near it.
@@ -713,7 +717,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     // The strikes the live catalog would follow; the rest are record-only (the bot never trades or prices them).
     const ixAt = (asset: string) => (t: number) => { const a = slotIx.get(asset); const i = Math.floor((t - d0) / 15_000); const v = a && i >= 0 && i < a.length ? a[i] : NaN; return v > 0 ? v : undefined; };
     const tracked = new Map<string, number>();
-    for (const a of new Set(kms.map((m) => m.asset))) for (const [t, at] of catalogTracking(kms.filter((m) => m.asset === a), { n: o.catalogStrikesPerEvent ?? 4, horizonMs: (o.catalogHorizonMin ?? 90) * MIN, priceAt: ixAt(a) })) tracked.set(t, at);
+    for (const a of new Set(kms.map((m) => m.asset))) for (const [t, at] of catalogTracking(kms.filter((m) => m.asset === a), { n: o.catalogStrikesPerEvent ?? 4, horizonMs: (o.catalogHorizonMin ?? 90) * MIN, priceAt: ixAt(a), maxSpread: o.catalogPickMaxSpread ?? 0.1 })) tracked.set(t, at);
     for (const m of kms) {
       const kind = contractKind(m.series, m.strikeType, m.ticker);
       const at = kind === 'updown' ? m.openTime - MIN : tracked.get(m.ticker);
