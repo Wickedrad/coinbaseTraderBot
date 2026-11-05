@@ -19,6 +19,9 @@ import fs from 'fs';
 import path from 'path';
 import { OrderBook } from '../bot/marketdata/orderBook';
 import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles';
+
+/** Markets the replays leave out (REPLAY_EXCLUDE, DOGE by default) are not studied either. */
+const EXCLUDE = (() => { const v = process.env.REPLAY_EXCLUDE ?? 'DOGE'; return v ? new RegExp(v) : undefined; })();
 import { moveOf, PX, ticksFrom } from './history/depthSim';
 
 const MIN = 60_000;
@@ -139,7 +142,7 @@ async function run(files: string[], series: StudySeries = 'all') {
       let e: Record<string, any>;
       try { e = JSON.parse(line); } catch { continue; }
       const t: number = e.t ?? e.ts;
-      if (e.k === 'market' && e.ticker && e.closeTime && (series === '15m' ? is15m(e.series, e.ticker) : e.kind === 'updown' || /15M/.test(e.series ?? ''))) {
+      if (e.k === 'market' && e.ticker && e.closeTime && !EXCLUDE?.test(e.ticker) && (series === '15m' ? is15m(e.series, e.ticker) : e.kind === 'updown' || /15M/.test(e.series ?? ''))) {
         if (!contracts.has(e.ticker)) contracts.set(e.ticker, { ticker: e.ticker, close: Number(e.closeTime), book: new OrderBook(e.ticker), lastSample: 0, minute: 0, deltas: 0, trades: 0, seen: new Set(), segTrades: 0, segYes: 0 });
         continue;
       }
