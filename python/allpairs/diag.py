@@ -104,13 +104,20 @@ def main(argv=None):
 
 
 def calibration(history: str, assets: list[str], live_from: str = '2026-09-12'):
-    """Are the decision quotes (as the study builds them, after its cuts) honest? Per data tier and YES-ask bucket at
-    minutes 1-13: the mean ask and the share settled YES. Buying at an honest ask loses a little on average; a bucket
-    whose YES share is far above its ask holds prices nobody could have traded. A few such cases are printed whole."""
+    """Are the quotes the study trades on honest? Built exactly as the study builds them (market_to_rows, both sides).
+    1. Calibration by data tier, minute group (0 = candle 1's open, 1-13, 14) and ask bucket: mean ask vs share won.
+    2. Mean $ of one $15 position by tier and entry minute, four round trips: taker in at the ask, out at the next
+       minute's bid (TT1); taker in, held to settlement (TS); maker in at the bid when the study's fill rule fills it,
+       out at the next minute's bid (MT1); taker in, maker out at the next minute's ask when filled (TM1).
+       Honest quotes lose a little on every one; a minute or tier that makes money has prices nobody could trade.
+    3. The largest one-minute winners of the historical tier, with their raw candles."""
     from .data import market_to_rows
-    edges = [0, 0.03, 0.06, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.94, 0.97, 1.0]
-    acc = defaultdict(lambda: np.zeros(4))      # (tier, side, bucket) -> n, sum price, sum won, sum spread
-    bad = []
+    from .fees import contracts_for_stake, maker_fee, taker_fee
+    edges = [0, 0.03, 0.1, 0.35, 0.65, 0.9, 0.97, 1.0]
+    cal = defaultdict(lambda: np.zeros(3))      # (tier, minutes, bucket) -> n, sum price, sum won
+    rt = defaultdict(lambda: np.zeros(8))       # (tier, minute) -> n and sum $ for TT1, TS, MT1, TM1
+    top = []
+    keys = ('ts', 'bidO', 'bidH', 'bidL', 'bidC', 'askO', 'askH', 'askL', 'askC', 'last', 'volume')
     for asset in assets:
         d = os.path.join(history, 'kalshi', f'KX{asset}15M')
         if not os.path.isdir(d):
@@ -124,28 +131,57 @@ def calibration(history: str, assets: list[str], live_from: str = '2026-09-12'):
                     m = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                raw = json.loads(line).get('candles') or []
+                raw = [dict(c) for c in (m.get('candles') or [])]
                 r = market_to_rows(m, 15)
                 if r is None:
                     continue
-                bid, ask = r[0], r[1]
-                yes = m.get('result') == 'yes'
-                for k in range(1, 14):
-                    for side, px, won, sp in (('YES', ask[k], yes, ask[k] - bid[k]), ('NO', 1 - bid[k], not yes, ask[k] - bid[k])):
-                        if not np.isfinite(px):
-                            continue
-                        b = int(np.searchsorted(edges, px, side='right') - 1)
-                        acc[(tier, side, b)] += (1, px, won, sp if np.isfinite(sp) else 0)
-                        if won and px <= 0.03 and len(bad) < 10 and len([x for x in bad if x[0] == tier]) < 5:
-                            o = m['closeTime'] - 900_000
-                            cs = [c for c in raw if isinstance(c.get('ts'), (int, float)) and abs((c['ts'] - o) / 60_000 - k) <= 2]
-                            bad.append((tier, m.get('ticker'), side, k, round(float(px), 4), m.get('result'),
-                                        [{kk: c.get(kk) for kk in ('ts', 'bidO', 'bidH', 'bidL', 'bidC', 'askO', 'askH', 'askL', 'askC', 'last', 'volume')} for c in cs]))
-    print(f'calibration of decision quotes, minutes 1-13 (hist = before {live_from}, live = from it): tier side bucket n avg_price won_share avg_spread')
-    for (tier, side, b), (n, sp, won, spr) in sorted(acc.items()):
-        print(f'{tier} {side} {edges[b]:.2f}-{edges[b + 1]:.2f} {int(n)} {sp / n:.4f} {won / n:.4f} {spr / n:.4f}')
-    for x in bad:
-        print('cheap winner', json.dumps(x)[:690])
+                bid, ask, blo, bhi, alo, ahi = r[:6]
+                yes = float(m.get('result') == 'yes')
+                with np.errstate(invalid='ignore'):
+                    for side, b_, a_, al_, bh_, won in (('YES', bid, ask, alo, bhi, yes), ('NO', 1 - ask, 1 - bid, 1 - bhi, 1 - alo, 1 - yes)):
+                        for k in range(15):
+                            px = a_[k]
+                            if np.isfinite(px) and 0 < px < 1:
+                                grp = 'm0' if k == 0 else ('m14' if k == 14 else 'm1-13')
+                                cal[(tier, grp, int(np.searchsorted(edges, px, side='right') - 1))] += (1, px, won)
+                        n = 14
+                        A, B, An, Bn = a_[:n], b_[:n], a_[1:n + 1], b_[1:n + 1]
+                        okA = np.isfinite(A) & (A > 0) & (A < 1)
+                        C = np.where(okA, contracts_for_stake(15.0, np.where(okA, A, 0.5)), 0)
+                        cost = np.where(okA, C * A + taker_fee(C, np.where(okA, A, 0.5)), np.nan)
+                        okBn = np.isfinite(Bn) & (Bn > 0)
+                        tt1 = np.where(okA & okBn, C * np.where(okBn, Bn, 0) - taker_fee(C, np.where(okBn, Bn, 0.5)) - cost, np.nan)
+                        ts = np.where(okA, C * won - cost, np.nan)
+                        okB = np.isfinite(B) & (B > 0) & (B < 1) & np.isfinite(al_[:n]) & (al_[:n] <= B + 1e-9)
+                        Cm = np.where(okB, contracts_for_stake(15.0, np.where(okB, B, 0.5)), 0)
+                        mt1 = np.where(okB & okBn, Cm * np.where(okBn, Bn, 0) - taker_fee(Cm, np.where(okBn, Bn, 0.5)) - Cm * np.where(okB, B, 0), np.nan)
+                        okM = okA & np.isfinite(An) & (An < 1) & np.isfinite(bh_[1:n + 1]) & (bh_[1:n + 1] >= An - 1e-9)
+                        tm1 = np.where(okM, C * np.where(okM, An, 0) - maker_fee(C, np.where(okM, An, 0.5)) - cost, np.nan)
+                        for k in range(n):
+                            v = rt[(tier, k)]
+                            for j, x in enumerate((tt1[k], ts[k], mt1[k], tm1[k])):
+                                if np.isfinite(x):
+                                    v[2 * j] += 1
+                                    v[2 * j + 1] += x
+                            if tier == 'hist':
+                                best = max((x, nm) for x, nm in ((tt1[k], 'TT1'), (mt1[k], 'MT1'), (tm1[k], 'TM1')) if np.isfinite(x)) if any(
+                                    np.isfinite(x) for x in (tt1[k], mt1[k], tm1[k])) else None
+                                if best and best[0] > 50 and (len(top) < 8 or best[0] > top[-1][0]):
+                                    o = m['closeTime'] - 900_000
+                                    cs = [{kk: c.get(kk) for kk in keys} | {'min': round((c['ts'] - o) / 60_000)} for c in raw
+                                          if isinstance(c.get('ts'), (int, float)) and -1 <= (c['ts'] - o) / 60_000 - k <= 2]
+                                    top.append((round(float(best[0]), 1), best[1], m.get('ticker'), side, k, m.get('result'), cs))
+                                    top.sort(key=lambda t: -t[0])
+                                    del top[8:]
+    print(f'calibration by tier (hist = before {live_from}), minutes, ask bucket: n avg_ask won_share')
+    for (tier, grp, b), (n, sp, won) in sorted(cal.items()):
+        print(f'{tier} {grp} {edges[b]:.2f}-{edges[b + 1]:.2f} {int(n)} {sp / n:.4f} {won / n:.4f}')
+    print('mean $ per $15 position by tier and entry minute: TT1 (n) | TS | MT1 (n) | TM1 (n)')
+    for (tier, k), v in sorted(rt.items()):
+        f = lambda j: f'{v[2 * j + 1] / max(1, v[2 * j]):+.3f} ({int(v[2 * j])})'
+        print(f'{tier} min {k:2d}: {f(0)} | {f(1)} | {f(2)} | {f(3)}')
+    for t in top:
+        print('big one-minute winner', json.dumps(t)[:690])
 
 
 if __name__ == '__main__':
