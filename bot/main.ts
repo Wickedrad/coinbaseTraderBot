@@ -116,10 +116,18 @@ async function main(): Promise<void> {
   if (cfg.alertTelegramToken && cfg.alertTelegramChatId) sinks.push(new TelegramSink(cfg.alertTelegramToken, cfg.alertTelegramChatId));
   if (cfg.alertWebhookUrl) sinks.push(new WebhookSink(cfg.alertWebhookUrl));
   const alerter = new Alerter(sinks, audit);
-  // Probation (VALIDATION_GATES=monitor): unvalidated models trade, and a book whose results are unacceptable is benched.
-  const probationBooks = new Probation(cfg.probation, path.join(cfg.dataDir, 'probation.json'), (book, reason) => {
-    audit.write('probation', { event: 'benched', book, reason });
-    alerter.notify('warn', `probation-${book}`, `Probation: ${book} benched (its unvalidated models stop trading until the next model or a reset): ${reason}`);
+  // Probation (VALIDATION_GATES=monitor): unvalidated models trade, and their book's results are scored. A book whose
+  // results are unacceptable would bench: an "iterate this book" alert, nothing turned off, unless the owner set
+  // PROBATION_BENCH=true. Every change is audited; the alerts are at most one per book per 6 hours.
+  const probationBooks = new Probation(cfg.probation, path.join(cfg.dataDir, 'probation.json'), (e) => {
+    audit.write('probation', { event: e.event === 'bench' ? (e.active ? 'benched' : 'would_bench') : (e.active ? 'unbenched' : 'would_bench_cleared'), book: e.book, reason: e.reason, alerted: e.alert });
+    if (!e.alert) return;
+    if (e.event === 'bench') alerter.notify('warn', `probation-${e.book}`, e.active
+      ? `Probation: ${e.book} benched (PROBATION_BENCH=true: its unvalidated models stop trading until its results recover, the next model or a reset): ${e.reason}`
+      : `Probation: ${e.book} would bench (score-only, nothing turned off), iterate it: ${e.reason}`);
+    else alerter.notify('info', `probation-${e.book}`, e.active
+      ? `Probation: ${e.book} unbenched (its unvalidated models trade again): ${e.reason}`
+      : `Probation: ${e.book} no longer would bench: ${e.reason}`);
   });
   setProbation(probationBooks);
   if (cfg.probation.mode === 'monitor') log.info('validation gates: monitor (unvalidated models trade on probation)', { ...cfg.probation });
@@ -329,7 +337,8 @@ async function main(): Promise<void> {
   const perpsStreak = new StreakScaler(DEFAULT_STREAK, path.join(cfg.dataDir, 'streak_perps.json'));
   const perpsBreakEven = new BreakEven(path.join(cfg.bookDir, 'perps_break_even.json'));
   // Probation's loss limit follows each account's size (PROBATION_MAX_LOSS_PCT of its break-even, at most
-  // PROBATION_MAX_LOSS_USD); a book already past it is benched now rather than at its next result.
+  // PROBATION_MAX_LOSS_USD); a book already past it would bench now rather than at its next result, and one that has
+  // recovered clears.
   probationBooks.setBreakEven((book) => (book === 'perps' || book === 'setups' ? perpsBreakEven.reference : equityGuard.reference));
   probationBooks.review();
   let perpsPaper: PaperPerpExchange | undefined;
