@@ -44,14 +44,21 @@ export function blendVersions(list: VersionReading[]): { view: TaNetView; weight
     return d > 0 ? n / d : undefined;
   };
   const share = (pred: (v: TaNetView) => boolean | undefined) => views.reduce((a, x, i) => a + (pred(x.v!) ? ws[i] : 0), 0) / W;
+  // A head counts as validated when versions holding at least half the weight validated it. A validated head then reads
+  // only the versions that validated it: before, it averaged every version's raw forecast, so a validated champion with
+  // two failed archives (or a forward-muted champion with two validated ones) priced and voted with up to half its
+  // forecast from heads that had failed, at full reliability. A head that is not validated keeps every version (the
+  // consumers gate it off; the TA network's trial reads raw1/raw4, every version, as before).
+  const validated1 = share((v) => v.validated1) >= 0.5, validated4 = share((v) => v.validated4) >= 0.5;
+  const in1 = (a: VersionReading) => !validated1 || Boolean(a.v!.validated1), in4 = (a: VersionReading) => !validated4 || Boolean(a.v!.validated4);
   return {
     weights,
     view: {
-      up1: blend((a) => a.v!.up1), up4: blend((a) => a.v!.up4),
-      skill1: blend((a) => ((a.v!.graded1 ?? 0) >= 24 ? a.v!.skill1 : undefined)), skill4: blend((a) => ((a.v!.graded4 ?? 0) >= 24 ? a.v!.skill4 : undefined)),
-      graded1: Math.max(...views.map((a) => a.v!.graded1 ?? 0)), graded4: Math.max(...views.map((a) => a.v!.graded4 ?? 0)),
-      // A head counts as validated when versions holding at least half the weight validated it.
-      validated1: share((v) => v.validated1) >= 0.5, validated4: share((v) => v.validated4) >= 0.5,
+      up1: blend((a) => (in1(a) ? a.v!.up1 : undefined)), up4: blend((a) => (in4(a) ? a.v!.up4 : undefined)),
+      raw1: blend((a) => a.v!.up1), raw4: blend((a) => a.v!.up4),
+      skill1: blend((a) => (in1(a) && (a.v!.graded1 ?? 0) >= 24 ? a.v!.skill1 : undefined)), skill4: blend((a) => (in4(a) && (a.v!.graded4 ?? 0) >= 24 ? a.v!.skill4 : undefined)),
+      graded1: Math.max(...views.filter(in1).map((a) => a.v!.graded1 ?? 0)), graded4: Math.max(...views.filter(in4).map((a) => a.v!.graded4 ?? 0)),
+      validated1, validated4,
       vol4h: blend((a) => a.vol4h),
     },
   };

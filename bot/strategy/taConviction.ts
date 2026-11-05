@@ -38,6 +38,9 @@ export interface TaNetView {
   skill1?: number; skill4?: number;
   graded1?: number; graded4?: number;
   validated1?: boolean; validated4?: boolean;
+  /** An ensemble's forecasts over every version, validated or not (bot/ta/taNetEnsemble.ts): what the TA network's trial
+   *  reads. up1/up4 of a validated ensemble head are only its validated versions. One network: undefined (up1/up4 are it). */
+  raw1?: number; raw4?: number;
   /** Validated volatility forecast: log(next-4h realised vol / last-24h realised vol); undefined when no
    *  version's vol head is validated. */
   vol4h?: number;
@@ -79,8 +82,8 @@ export function taDrift(v: TaNetView | undefined, tauSec: number, c: Pick<Convic
   if (!v || !(tauSec > 0)) return undefined;
   const r = (validated: boolean | undefined, skill: number | undefined, graded: number | undefined) => (c.full ? 1 : reliability(validated, skill, graded, c.live));
   const heads: Array<{ p?: number; r: number; hSec: number; name: string }> = [
-    { p: v.up1, r: r(v.validated1, v.skill1, v.graded1), hSec: H, name: '1h' },
-    { p: v.up4, r: r(v.validated4, v.skill4, v.graded4), hSec: 4 * H, name: '4h' },
+    { p: c.full ? v.raw1 ?? v.up1 : v.up1, r: r(v.validated1, v.skill1, v.graded1), hSec: H, name: '1h' },
+    { p: c.full ? v.raw4 ?? v.up4 : v.up4, r: r(v.validated4, v.skill4, v.graded4), hSec: 4 * H, name: '4h' },
   ];
   let num = 0, den = 0;
   const parts: string[] = [];
