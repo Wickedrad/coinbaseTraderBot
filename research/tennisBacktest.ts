@@ -7,7 +7,7 @@
 
 import path from 'path';
 import { loadConfig, paperEnv, type TennisConfig } from '../bot/config';
-import { PositionBook } from '../bot/oms/positions';
+import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { decideMatch, MatchTracker, type MatchMarket, type TennisPlan } from '../bot/tennis/tennisStrategy';
@@ -88,7 +88,7 @@ export async function runTennisBacktest(dir: string, cfg: TennisConfig, bankroll
         const b = st.books.get(m.ticker);
         const p = pos.get(m.ticker);
         const usable = b?.isUsable(st.now, 10_000);
-        return { ticker: m.ticker, title: m.title, position: p?.yes ?? 0, avgEntry: p && p.yes > 0 ? -p.netCash / p.yes : undefined, breakEven: p && p.yes > 0 ? breakEvenExit(p.yes, (p.fees - p.netCash) / p.yes) : undefined, quote: { bid: usable ? b!.bestBid()?.price : undefined, ask: usable ? b!.bestAsk()?.price : undefined }, book: usable ? b : undefined, flow: flowOf(st, m.ticker, cfg.confWindowSec) };
+        return { ticker: m.ticker, title: m.title, position: p?.yes ?? 0, avgEntry: p && p.yes > 0 ? -p.netCash / p.yes : undefined, breakEven: p && p.yes > 0 ? breakEvenExit(p.yes, openSidePrice(p)! + openEntryFee(p)!) : undefined, quote: { bid: usable ? b!.bestBid()?.price : undefined, ask: usable ? b!.bestAsk()?.price : undefined }, book: usable ? b : undefined, flow: flowOf(st, m.ticker, cfg.confWindowSec) };
       });
       const risk = tennisRisk();
       res.maxTennisRisk = Math.max(res.maxTennisRisk, risk);
