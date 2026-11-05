@@ -19,7 +19,15 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "'fidelity' runs the fidelity check alone; empty runs everything"
+        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; empty runs the sweep"
+        required: false
+        default: ''
+      blind_run:
+        description: 'Blind test: the sweep run whose candidates are frozen and traded on the sealed block (opened once per set)'
+        required: false
+        default: ''
+      reopen_reason:
+        description: 'Blind test: only to reopen a set already opened (e.g. a crash before any sealed number was read); logged'
         required: false
         default: ''
       assets:
@@ -45,14 +53,75 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The blind test's first step (research/perpTaBlind.ts; pre-registered in /mnt/project-files/perp-ta/preregistration.md):
+  # freeze blind_run's passing candidates and log the opening on Drive BEFORE any sealed number is computed. A set already
+  # opened is refused unless reopen_reason says why (logged with the row).
+  blind-open:
+    if: ${{ inputs.only == 'blind' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BLIND_RUN: ${{ inputs.blind_run }}
+      REASON: ${{ inputs.reopen_reason }}
+      HALF: ${{ inputs.half_spread || '2' }}
+    outputs:
+      has: ${{ steps.freeze.outputs.has }}
+      coins: ${{ steps.freeze.outputs.coins }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Freeze the candidate set
+        id: freeze
+        run: |
+          set -euo pipefail
+          [[ "$BLIND_RUN" =~ ^[0-9]+$ ]] || { echo "blind_run must be a sweep run id"; exit 1; }
+          mkdir -p cand frozen
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$BLIND_RUN/report/candidates.json.gz" cand/
+          node --import tsx research/perpTaBlind.ts freeze --candidates cand/candidates.json.gz --run "$BLIND_RUN" --half-spread "$HALF" --out frozen/frozen.json
+          echo "has=$(jq -r 'if (.cands | length) > 0 then "true" else "false" end' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
+          echo "coins=$(jq -c '[.cands[].a] | unique' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
+      - name: Log the opening (before the sealed block is read)
+        if: steps.freeze.outputs.has == 'true'
+        run: |
+          set -euo pipefail
+          H=$(jq -r .hash frozen/frozen.json)
+          L=gdrive:kalshi-bot-archive/models/perp-ta/blind/openings.jsonl
+          rclone cat "$L" > ledger.jsonl 2>/dev/null || : > ledger.jsonl
+          if jq -e --arg h "$H" 'select(.set_hash == $h)' ledger.jsonl > /dev/null && [ -z "$REASON" ]; then echo "frozen set $H was already opened: refused (see $L)"; exit 1; fi
+          jq -nc --arg h "$H" --arg run "$GITHUB_RUN_ID" --arg from "$BLIND_RUN" --arg why "$REASON" --arg utc "$(date -u +%FT%TZ)" --arg et "$(TZ=America/New_York date '+%F %T %Z')" --slurpfile f frozen/frozen.json \
+            '{set_hash: $h, blind_run: $run, frozen_from_run: $from, n: ($f[0].cands | length), coins: ([$f[0].cands[].a] | unique), at_utc: $utc, at_eastern: $et, reopen_reason: (if $why == "" then null else $why end)}' >> ledger.jsonl
+          rclone rcat "$L" < ledger.jsonl
+          tail -n 1 ledger.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frozen
+          path: frozen/frozen.json
+          retention-days: 30
+
   sweep:
-    if: ${{ inputs.only != 'fidelity' }}
+    needs: [blind-open]
+    if: ${{ !cancelled() && inputs.only != 'fidelity' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
       fail-fast: false
       matrix:
-        asset: ${{ fromJSON(inputs.assets || '["BTC","ETH","SOL","XRP"]') }}
+        asset: ${{ fromJSON(inputs.only == 'blind' && needs.blind-open.outputs.coins || inputs.assets || '["BTC","ETH","SOL","XRP"]') }}
     env:
       A: ${{ matrix.asset }}
       HALF: ${{ inputs.half_spread || '2' }}
@@ -96,9 +165,26 @@ jobs:
           bash deploy/drive_lab.sh get derived/perp-ta/modules data/modcache --include "$A-*" || echo "no cached analyzer walk yet"
           ls -la data/server-hist/.tanet-oos data/server-hist/.librarian data/server-hist/.xgraph data/modcache 2>&1 | grep -v '^total' | cat
       - name: Sweep
+        if: ${{ inputs.only != 'blind' }}
         run: |
           set -euo pipefail
           node --max-old-space-size=14000 --import tsx research/perpTaSweep.ts sweep --data "data/perp-ta/$A.bin" --out "out/$A.jsonl.gz" --half-spread "$HALF" --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v '^\[perp-ta\] analyzer walk [0-9]' | tail -60
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.only == 'blind' }}
+        with:
+          name: frozen
+          path: frozen
+      - name: Blind test (replicates every frozen cell's discovery trades first; reads the sealed block only if all match)
+        if: ${{ inputs.only == 'blind' }}
+        run: |
+          set -euo pipefail
+          node --max-old-space-size=14000 --import tsx research/perpTaBlind.ts coin --frozen frozen/frozen.json --data "data/perp-ta/$A.bin" --out "out/blind-$A.json" --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v 'analyzer walk [0-9]' | tail -20
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.only == 'blind' }}
+        with:
+          name: blind-${{ matrix.asset }}
+          path: out/blind-${{ matrix.asset }}.json
+          retention-days: 30
       - name: Keep the analyzer walk on Drive
         if: always()
         run: '[ ! -d data/modcache ] || bash deploy/drive_lab.sh put derived/perp-ta/modules data/modcache'
@@ -110,14 +196,17 @@ jobs:
           { echo "### Perp TA sweep $A failed (run $GITHUB_RUN_ID)"; echo '```'; if [ -s "$RUNNER_TEMP/sweep.log" ]; then tail -n 60 "$RUNNER_TEMP/sweep.log" | cut -c1-300; else echo "no sweep log (failed before prep or the sweep)"; fi; echo '```'; } > "$RUNNER_TEMP/fail.md"
           jq -n --rawfile body "$RUNNER_TEMP/fail.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
       - uses: actions/upload-artifact@v4
+        if: ${{ inputs.only != 'blind' }}
         with:
           name: sweep-${{ matrix.asset }}
           path: out/${{ matrix.asset }}.jsonl.gz
           retention-days: 14
       - name: Results to Drive
-        run: bash deploy/drive_lab.sh put "models/perp-ta/run-$GITHUB_RUN_ID" out
+        if: ${{ always() }}
+        run: '[ ! -d out ] || bash deploy/drive_lab.sh put "models/perp-ta/${{ inputs.only == ''blind'' && ''blind/'' || '''' }}run-$GITHUB_RUN_ID" out'
 
   fidelity:
+    if: ${{ inputs.only != 'blind' }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
@@ -164,9 +253,10 @@ jobs:
           retention-days: 14
 
   report:
-    needs: [sweep, fidelity]
-    # Not after a cancel (a newer push supersedes this run): partial artifacts would post a misleading summary.
-    if: ${{ !cancelled() }}
+    needs: [blind-open, sweep, fidelity]
+    # Not after a cancel (a newer push supersedes this run): partial artifacts would post a misleading summary. Not after a
+    # refused blind opening either (nothing was read).
+    if: ${{ !cancelled() && needs.blind-open.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -190,7 +280,9 @@ jobs:
         run: |
           set -euo pipefail
           ls -R in | head -20
-          if ls -d in/sweep-* >/dev/null 2>&1; then
+          if [ -f in/frozen/frozen.json ]; then
+            node --max-old-space-size=12000 --import tsx research/perpTaBlind.ts report --frozen in/frozen/frozen.json --in in --out report 2>&1 | tail -40
+          elif ls -d in/sweep-* >/dev/null 2>&1; then
             node --max-old-space-size=12000 --import tsx research/perpTaSweep.ts report --in in --out report 2>&1 | tail -60
           else
             mkdir -p report && echo '## Perp TA: fidelity check only (no sweep in this run)' > report/summary.md
@@ -212,8 +304,9 @@ jobs:
       - name: Results to Drive, and this run's rows for the project trial registry
         run: |
           cp -r in/fidelity report/ 2>/dev/null || true
-          bash deploy/drive_lab.sh put "models/perp-ta/run-$GITHUB_RUN_ID/report" report
-          [ ! -f report/registry.jsonl ] || rclone copyto report/registry.jsonl "gdrive:kalshi-bot-archive/registry/perp-ta-run-$GITHUB_RUN_ID.jsonl"
+          K=${{ inputs.only == 'blind' && 'blind-' || '' }}
+          bash deploy/drive_lab.sh put "models/perp-ta/${K:+blind/}run-$GITHUB_RUN_ID/report" report
+          [ ! -f report/registry.jsonl ] || rclone copyto report/registry.jsonl "gdrive:kalshi-bot-archive/registry/perp-ta-${K}run-$GITHUB_RUN_ID.jsonl"
       - name: Summary on the commit
         env:
           GH_TOKEN: ${{ github.token }}
