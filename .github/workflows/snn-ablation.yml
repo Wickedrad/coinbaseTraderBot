@@ -85,6 +85,11 @@ concurrency:
   group: snn-ablation-${{ inputs.hist_from != '' && 'history' || 'ablate' }}
   cancel-in-progress: false
 
+# Steven, Nov 5: no DOGE for now (training, replays and scoring).
+env:
+  SNN_SKIP_ASSETS: DOGE
+  HISTORY_REPLAY_ASSETS: BTC,ETH,SOL,XRP
+
 jobs:
   # Every mechanism in one job (a dispatch with an empty "only"; hours).
   ablate:

@@ -52,6 +52,8 @@ export interface SnnReplayResult {
 }
 
 export interface SnnReplayOpts {
+  /** Assets left out entirely (no columns, no contracts). Default: SNN_SKIP_ASSETS (comma list); Steven, Nov 5: no DOGE for now. */
+  skipAssets?: string[];
   params: SnnParams;
   model?: MetaModel;
   snnModel?: SnnModelFile;
@@ -118,6 +120,7 @@ export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnRepla
   const tennisIn = new Map<string, { input: ColumnInput; query: ContractQuery; ts: number }>();
   const eventOf = (m: RecMarket) => m.event ?? m.ticker.slice(0, m.ticker.lastIndexOf('-'));
   const net = new SnnNetwork(o.params, { whitelist: o.whitelist, model: o.snnModel });
+  const skip = new Set((o.skipAssets ?? (process.env.SNN_SKIP_ASSETS ?? '').split(',')).map((x) => x.trim().toUpperCase()).filter(Boolean));
   net.dirLog = o.lean && domain !== 'perps' ? undefined : [];
   net.training = Boolean(o.training?.eprop);
   net.pauseLearning = Boolean(o.pauseLearning);
@@ -286,7 +289,7 @@ export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnRepla
     }
     if (tennisDomain) tennisStep(T);
     // L0 inputs: the closest-to-the-money Up/Down or "greater" contract per column.
-    const active = tennisDomain ? [] : [...st.markets.values()].filter((m) => !m.recordOnly && m.kind !== 'match' && st.now >= m.openTime && st.now < m.closeTime);
+    const active = tennisDomain ? [] : [...st.markets.values()].filter((m) => !m.recordOnly && m.kind !== 'match' && !skip.has(m.asset) && st.now >= m.openTime && st.now < m.closeTime);
     const priced = new Map<string, NonNullable<ReturnType<typeof fx>>>();
     for (const m of active) { const x = fx(m, st.now); if (x) priced.set(m.ticker, x); }
     const atm = new Map<string, RecMarket>();
@@ -300,6 +303,7 @@ export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnRepla
     const inputs: ColumnInput[] = [];
     for (const x of tennisIn.values()) if (st.now - x.ts < 15_000) inputs.push(x.input);
     if (horizons.length) for (const [asset, idx] of [...st.index].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+      if (skip.has(asset)) continue;
       const px = idx.fresh(st.now, 30_000)?.value;
       if (!px) continue;
       let ac = assetCache.get(asset);
