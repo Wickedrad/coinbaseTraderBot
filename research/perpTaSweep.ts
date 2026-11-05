@@ -1,0 +1,929 @@
+// Perp TA rulebook sweep (thread "Build a TA rulebook for perpetuals", Steven 2026-11-05 13:31 UTC): which spot TA
+// patterns, and which confluences of them, predict what a Kalshi perpetual does next, after the perps fees AND
+// funding, by market condition, judged against placebos and on days the search never saw.
+//
+//   prep    node --import tsx research/perpTaSweep.ts prep --asset BTC --history data/history --out data/perp-ta
+//           downloads what is missing (Binance spot 1m, USD-M 1m, funding, open interest) and writes one aligned
+//           1-minute grid per coin (data/perp-ta/BTC.bin): spot o/h/l/c/v/taker-buy (the TA reads spot, as the live
+//           setups trader does), the perp's o/h/l/c (trades are filled on the perp), the Kalshi funding model and OI.
+//   sweep   node --import tsx research/perpTaSweep.ts sweep --data data/perp-ta/BTC.bin --out out/BTC.jsonl.gz
+//           [--history data/history (the other coins' Binance hourly bars)] [--forecasts <server history> (.tanet-oos,
+//           .librarian, .xgraph)] [--module-cache dir] [--modules false] [--pairs ctx|all]
+//   report  node --import tsx research/perpTaSweep.ts report --in out --out report
+//
+// The sweep (sterile: textbook parameters, nothing fitted, every cell counted as a trial):
+//   modules      the bot's own TA library on top (research/perpTaModules.ts): the analyzer's rules, rule book, 13
+//                confluences and net vote, TA-Lib candlestick patterns and indicators, the TA Net / Librarian / cross-graph
+//                walk-forward forecasts, and the character classifier, Librarian strategy, TA Net volatility and HT trend
+//                mode as market conditions
+//   primitives   ~120 TA readings (trend, mean reversion, volume / taker flow, candle patterns, squeeze and range
+//                breakouts, and four perp readings: funding, premium, open interest) on 1m / 5m / 15m / 1h / 4h spot
+//                bars, each -1 / 0 / +1 at the close of a bar of its own timeframe (closed bars only)
+//   rules        trigger = a primitive turning to +1 or -1 at its bar's close; confluence = the trigger AND a context
+//                filter (FILTERS: higher-timeframe trend, the analyzer's confluences, the forecasts...) agreeing then;
+//                mode follow (trade the signal) or fade (trade against it: the TA veto found the crowd's side losing
+//                on Kalshi)
+//   execution    decided at the close of a 1-minute bar, entered at the next perp bar's open (taker 12 bps + half the
+//                spread), one position per rule at a time; 12 exit policies in units of the 15-minute ATR: time stops
+//                (5, 15, 60, 240 min, with a catastrophe stop), stop / target pairs (target = a resting maker sell,
+//                5 bps), a trailing stop. Stops fill at the stop or a worse open, a bar touching both counts as the
+//                stop. Funding: Kalshi's 00:00 / 08:00 / 16:00 New York times, modelled from Binance's settled rates
+//                (Binance's rate less its 0.01% interest leg, Kalshi's |rate| < 0.01% => 0, cap 2%), signed (longs
+//                pay a positive rate).
+//   conditions   every trade also counts in its market condition at entry: trend / range (1h ADX 25), volatility
+//                low / mid / high (24 h realised vs its 30-day mean), session (Asia 0-7, Europe 7-13, US 13-20, late
+//                20-24 UTC), funding positive / zero / negative, weekday / weekend
+//   folds        half-years; a trade whose exit falls in a later half-year than its entry is dropped (purge). The
+//                discovery folds (before 2024) choose; the validation folds (2024-01 .. 2025-06) only confirm; the
+//                bars from --seal (2025-07-01) on are never read by the sweep (the blind test's days)
+//   stored       every tested cell (>= 30 discovery trades) is counted; cells with a discovery t >= 2.5 are written
+//                with their per-fold sums, the reversed cell (other mode) and, for the strongest, a placebo: the
+//                rule's own entries moved by whole days (60 shifts, time of day kept) through the same exits
+// The report applies Benjamini-Hochberg over every tested cell of every coin, then the adversaries (placebo,
+// reversed, stress costs, fold stability) and the validation folds, and a CSCV probability of overfitting.
+
+import fs from 'fs';
+import path from 'path';
+import zlib from 'zlib';
+import readline from 'readline';
+import { modulePrims, MODULE_CONDS, NONE, type ModuleOut } from './perpTaModules';
+import { adx, atr, bollinger, cmf, donchian, ema, ichimoku, keltner, macd, mfi, obv, rsi, sma, stochastic, type Candle } from '../bot/ta/indicators';
+
+const MIN = 60_000;
+const DAY = 86_400_000;
+const fin = Number.isFinite;
+
+// ---------------------------------------------------------------------------------------------------------------
+// Data: one aligned 1-minute grid per coin.
+
+export const COLS = ['so', 'sh', 'sl', 'sc', 'sv', 'stb', 'po', 'ph', 'pl', 'pc', 'fund', 'oi', 'valid'] as const;
+export type Col = (typeof COLS)[number];
+export interface Grid { asset: string; t0: number; n: number; c: Record<Col, Float32Array>; fundRaw: Float32Array }
+
+async function readCsv(file: string, onRow: (f: string[]) => void): Promise<void> {
+  if (!fs.existsSync(file)) return;
+  const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
+  for await (const line of rl) { if (!line || line.startsWith('ts')) continue; onRow(line.split(',')); }
+}
+
+function firstTs(file: string): number | undefined {
+  if (!fs.existsSync(file)) return undefined;
+  const fd = fs.openSync(file, 'r'), buf = Buffer.alloc(4096);
+  const n = fs.readSync(fd, buf, 0, 4096, 0); fs.closeSync(fd);
+  for (const l of buf.subarray(0, n).toString('utf8').split('\n')) { const t = Number(l.split(',')[0]); if (fin(t) && t > 1e12) return t; }
+  return undefined;
+}
+function lastTs(file: string): number | undefined {
+  if (!fs.existsSync(file)) return undefined;
+  const size = fs.statSync(file).size, fd = fs.openSync(file, 'r'), len = Math.min(size, 8192), buf = Buffer.alloc(len);
+  fs.readSync(fd, buf, 0, len, size - len); fs.closeSync(fd);
+  const ls = buf.toString('utf8').split('\n').filter(Boolean);
+  for (let k = ls.length - 1; k >= 0; k--) { const t = Number(ls[k].split(',')[0]); if (fin(t) && t > 1e12) return t; }
+  return undefined;
+}
+
+/** Kalshi's funding instants (00:00, 08:00, 16:00 America/New_York) between two times. */
+export function kalshiFundingTimes(from: number, to: number): number[] {
+  const hourNy = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', hourCycle: 'h23' });
+  const out: number[] = [];
+  for (let t = Math.ceil(from / 3_600_000) * 3_600_000; t <= to; t += 3_600_000) {
+    const h = Number(hourNy.format(new Date(t)));
+    if (h === 0 || h === 8 || h === 16) out.push(t);
+  }
+  return out;
+}
+
+/** Kalshi's rate at a funding instant from Binance's settled rates over the 8 hours before it: Binance's rate is the
+ *  premium plus a 0.01%-per-8h interest leg Kalshi does not have; Kalshi zeroes |rate| < 0.01% and caps at 2%. */
+export function kalshiRateFromBinance(binanceSum8h: number): number {
+  const r = binanceSum8h - 0.0001;
+  if (!(Math.abs(r) >= 0.0001)) return 0;
+  return Math.max(-0.02, Math.min(0.02, r));
+}
+
+export async function buildGrid(hist: string, asset: string, log: (m: string) => void = console.log): Promise<Grid> {
+  const fSpot = path.join(hist, 'binance-1m', asset, '1m.csv'), fPerp = path.join(hist, 'binance-um', asset, '1m.csv');
+  const fFund = path.join(hist, 'binance-funding', asset, 'funding.csv'), fOi = path.join(hist, 'binance-oi', asset, 'oi.csv');
+  const s0 = firstTs(fSpot), p0 = firstTs(fPerp), s1 = lastTs(fSpot), p1 = lastTs(fPerp);
+  if (!s0 || !p0 || !s1 || !p1) throw new Error(`${asset}: missing ${!s0 || !s1 ? fSpot : fPerp}`);
+  const t0 = Math.ceil(Math.max(s0, p0, Date.UTC(2020, 0, 1)) / DAY) * DAY, t1 = Math.min(s1, p1);
+  const n = Math.floor((t1 - t0) / MIN) + 1;
+  const c = Object.fromEntries(COLS.map((k) => [k, new Float32Array(n)])) as Record<Col, Float32Array>;
+  const seenS = new Uint8Array(n), seenP = new Uint8Array(n);
+  await readCsv(fSpot, (f) => {
+    const i = (Number(f[0]) - t0) / MIN; if (!(i >= 0 && i < n && Number.isInteger(i))) return;
+    c.so[i] = +f[1]; c.sh[i] = +f[2]; c.sl[i] = +f[3]; c.sc[i] = +f[4]; c.sv[i] = +f[5] || 0; c.stb[i] = f[6] !== undefined && f[6] !== '' ? +f[6] : NaN; seenS[i] = 1;
+  });
+  await readCsv(fPerp, (f) => {
+    const i = (Number(f[0]) - t0) / MIN; if (!(i >= 0 && i < n && Number.isInteger(i))) return;
+    c.po[i] = +f[1]; c.ph[i] = +f[2]; c.pl[i] = +f[3]; c.pc[i] = +f[4]; seenP[i] = 1;
+  });
+  // Missing minutes: a flat bar at the last close, no volume, not tradable.
+  let gaps = 0;
+  for (let i = 0; i < n; i++) {
+    c.valid[i] = seenS[i] && seenP[i] && c.sc[i] > 0 && c.pc[i] > 0 ? 1 : 0;
+    if (!seenS[i] || !(c.sc[i] > 0)) { const pc = i ? c.sc[i - 1] : NaN; c.so[i] = c.sh[i] = c.sl[i] = c.sc[i] = pc; c.sv[i] = 0; c.stb[i] = 0; }
+    if (!seenP[i] || !(c.pc[i] > 0)) { const pc = i ? c.pc[i - 1] : NaN; c.po[i] = c.ph[i] = c.pl[i] = c.pc[i] = pc; }
+    if (!c.valid[i]) gaps++;
+  }
+  // Funding: Binance's settled rates, then Kalshi's rate at each Kalshi instant (applied at the end of the minute
+  // that ends at it: a position open across that instant pays or receives it).
+  const binance: Array<[number, number]> = [];
+  await readCsv(fFund, (f) => { const t = +f[0], r = +f[1]; if (fin(t) && fin(r)) binance.push([t, r]); });
+  binance.sort((a, b) => a[0] - b[0]);
+  const fundRaw = new Float32Array(n);
+  let bi = 0, applied = 0;
+  for (const tf of kalshiFundingTimes(t0 + MIN, t0 + n * MIN)) {
+    while (bi < binance.length && binance[bi][0] <= tf - 8 * 3_600_000) bi++;
+    let s = 0, k = bi, cnt = 0;
+    for (; k < binance.length && binance[k][0] <= tf; k++) { s += binance[k][1]; cnt++; }
+    if (!cnt) continue;
+    const i = (tf - t0) / MIN - 1; // the minute that ends at tf
+    if (i < 0 || i >= n) continue;
+    // A zero-rate instant is stored as 1e-12 (no money moves) so "fund[i] !== 0" still marks every instant.
+    c.fund[i] = kalshiRateFromBinance(s) || 1e-12; fundRaw[i] = s; applied++;
+  }
+  // Open interest (5-minute snapshots, from September 2020): carried forward to each minute's end.
+  const oi: Array<[number, number]> = [];
+  await readCsv(fOi, (f) => { const t = +f[0], v = +f[1]; if (fin(t) && v > 0) oi.push([t, v]); });
+  oi.sort((a, b) => a[0] - b[0]);
+  let oj = 0, cur = NaN;
+  for (let i = 0; i < n; i++) {
+    const end = t0 + (i + 1) * MIN;
+    while (oj < oi.length && oi[oj][0] <= end) cur = oi[oj++][1];
+    c.oi[i] = cur;
+  }
+  log(`${asset}: ${n} minutes ${new Date(t0).toISOString().slice(0, 10)} .. ${new Date(t0 + (n - 1) * MIN).toISOString().slice(0, 16)}, ${gaps} not tradable, ${applied} Kalshi funding instants (${binance.length} Binance rates), ${oi.length} OI snapshots`);
+  return { asset, t0, n, c, fundRaw };
+}
+
+export function writeGrid(g: Grid, file: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const header = Buffer.from(JSON.stringify({ schema: 'perpta1', asset: g.asset, t0: g.t0, n: g.n, cols: [...COLS, 'fundRaw'] }) + '\n');
+  const fd = fs.openSync(`${file}.tmp`, 'w');
+  fs.writeSync(fd, header);
+  for (const k of COLS) fs.writeSync(fd, Buffer.from(g.c[k].buffer, g.c[k].byteOffset, g.c[k].byteLength));
+  fs.writeSync(fd, Buffer.from(g.fundRaw.buffer, g.fundRaw.byteOffset, g.fundRaw.byteLength));
+  fs.closeSync(fd);
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+export function readGrid(file: string): Grid {
+  const buf = fs.readFileSync(file);
+  const nl = buf.indexOf(10);
+  const h = JSON.parse(buf.subarray(0, nl).toString('utf8')) as { schema: string; asset: string; t0: number; n: number; cols: string[] };
+  if (h.schema !== 'perpta1') throw new Error(`${file}: not a perp-ta grid`);
+  let off = nl + 1;
+  const take = () => { const a = new Float32Array(h.n); Buffer.from(a.buffer).set(buf.subarray(off, off + 4 * h.n)); off += 4 * h.n; return a; };
+  const c = Object.fromEntries(COLS.map((k) => [k, take()])) as Record<Col, Float32Array>;
+  return { asset: h.asset, t0: h.t0, n: h.n, c, fundRaw: take() };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Bars of a timeframe from the 1-minute grid. Bar k of an m-minute timeframe covers minutes [k m, (k + 1) m) of the
+// grid (which starts at a UTC midnight), so it is closed, and readable, at the end of minute (k + 1) m - 1.
+
+export function aggregate(g: Grid, m: number, nMax = g.n): Candle[] {
+  const { so, sh, sl, sc, sv, stb } = g.c;
+  const out: Candle[] = [];
+  for (let k = 0; (k + 1) * m <= nMax; k++) {
+    const a = k * m, b = a + m;
+    let h = -Infinity, l = Infinity, v = 0, tb = 0, tbOk = true;
+    for (let i = a; i < b; i++) { if (sh[i] > h) h = sh[i]; if (sl[i] < l) l = sl[i]; v += sv[i]; const x = stb[i]; if (fin(x)) tb += x; else tbOk = false; }
+    out.push({ ts: g.t0 + a * MIN, o: so[a], h, l, c: sc[b - 1], v, tb: tbOk ? tb : undefined });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Primitives: -1 / 0 / +1 per bar of their timeframe, from that bar and earlier ones only.
+
+type Fam = (cs: Candle[]) => Int8Array;
+const sg = (x: number) => (x > 0 ? 1 : x < 0 ? -1 : 0);
+const mk = (n: number, f: (i: number) => number): Int8Array => { const s = new Int8Array(n); for (let i = 0; i < n; i++) { const v = f(i); s[i] = v > 0 ? 1 : v < 0 ? -1 : 0; } return s; };
+const closesOf = (cs: Candle[]) => cs.map((c) => c.c);
+
+function rollingStd(xs: number[], n: number): Float64Array {
+  const out = new Float64Array(xs.length).fill(NaN);
+  let s = 0, s2 = 0, cnt = 0;
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i]; if (fin(x)) { s += x; s2 += x * x; cnt++; }
+    if (i >= n) { const y = xs[i - n]; if (fin(y)) { s -= y; s2 -= y * y; cnt--; } }
+    if (cnt >= n * 0.8) { const m = s / cnt; out[i] = Math.sqrt(Math.max(0, s2 / cnt - m * m)); }
+  }
+  return out;
+}
+
+function supertrend(cs: Candle[], n = 10, mult = 3): Int8Array {
+  const a = atr(cs, n), out = new Int8Array(cs.length);
+  let up = NaN, dn = NaN, dir = 0;
+  for (let i = 0; i < cs.length; i++) {
+    if (!fin(a[i])) continue;
+    const mid = (cs[i].h + cs[i].l) / 2, bu = mid + mult * a[i], bl = mid - mult * a[i];
+    const pc = i ? cs[i - 1].c : cs[i].c;
+    up = fin(up) && pc <= up ? Math.min(bu, up) : bu;
+    dn = fin(dn) && pc >= dn ? Math.max(bl, dn) : bl;
+    if (dir === 0) dir = cs[i].c >= mid ? 1 : -1;
+    else if (dir > 0 && cs[i].c < dn) dir = -1;
+    else if (dir < 0 && cs[i].c > up) dir = 1;
+    out[i] = dir;
+  }
+  return out;
+}
+
+function sessionVwapDev(cs: Candle[]): Int8Array {
+  const dev: number[] = new Array(cs.length).fill(NaN);
+  let day = -1, pv = 0, vv = 0;
+  for (let i = 0; i < cs.length; i++) {
+    const d = Math.floor(cs[i].ts / DAY);
+    if (d !== day) { day = d; pv = 0; vv = 0; }
+    const tp = (cs[i].h + cs[i].l + cs[i].c) / 3; pv += tp * cs[i].v; vv += cs[i].v;
+    if (vv > 0) dev[i] = cs[i].c / (pv / vv) - 1;
+  }
+  const sd = rollingStd(dev, 100);
+  return mk(cs.length, (i) => { const z = dev[i] / sd[i]; return fin(z) ? (z < -2 ? 1 : z > 2 ? -1 : 0) : 0; });
+}
+
+function tsmom(cs: Candle[], n: number): Int8Array {
+  const c = closesOf(cs), r1 = c.map((x, i) => (i ? Math.log(x / c[i - 1]) : NaN)), sd = rollingStd(r1, 100);
+  return mk(cs.length, (i) => { if (i < n) return 0; const z = Math.log(c[i] / c[i - n]) / (sd[i] * Math.sqrt(n)); return fin(z) ? (z > 1 ? 1 : z < -1 ? -1 : 0) : 0; });
+}
+
+function tflow(cs: Candle[], n: number, th: number): Int8Array {
+  return mk(cs.length, (i) => {
+    if (i < n - 1) return 0;
+    let tb = 0, v = 0;
+    for (let j = i - n + 1; j <= i; j++) { const x = cs[j].tb; if (x === undefined || !fin(x)) return 0; tb += x; v += cs[j].v; }
+    if (!(v > 0)) return 0;
+    const imb = (2 * tb - v) / v;
+    return imb > th ? 1 : imb < -th ? -1 : 0;
+  });
+}
+
+export const FAMILIES: Record<string, Fam> = {
+  emax9_21: (cs) => { const c = closesOf(cs), a = ema(c, 9), b = ema(c, 21); return mk(cs.length, (i) => (fin(a[i]) && fin(b[i]) ? a[i] - b[i] : 0)); },
+  emax20_50: (cs) => { const c = closesOf(cs), a = ema(c, 20), b = ema(c, 50); return mk(cs.length, (i) => (fin(a[i]) && fin(b[i]) ? a[i] - b[i] : 0)); },
+  px_ema200: (cs) => { const c = closesOf(cs), a = ema(c, 200); return mk(cs.length, (i) => (fin(a[i]) ? c[i] - a[i] : 0)); },
+  macd_hist: (cs) => { const h = macd(closesOf(cs)).hist; return mk(cs.length, (i) => (fin(h[i]) ? h[i] : 0)); },
+  adx_dir: (cs) => { const d = adx(cs); return mk(cs.length, (i) => (d.adx[i] >= 25 ? d.plusDI[i] - d.minusDI[i] : 0)); },
+  donch20: (cs) => { const d = donchian(cs, 20); return mk(cs.length, (i) => (cs[i].c > d.upper[i] ? 1 : cs[i].c < d.lower[i] ? -1 : 0)); },
+  donch55: (cs) => { const d = donchian(cs, 55); return mk(cs.length, (i) => (cs[i].c > d.upper[i] ? 1 : cs[i].c < d.lower[i] ? -1 : 0)); },
+  tsmom12: (cs) => tsmom(cs, 12),
+  tsmom48: (cs) => tsmom(cs, 48),
+  supertrend: (cs) => supertrend(cs),
+  ichimoku: (cs) => { const k = ichimoku(cs); return mk(cs.length, (i) => { const hi = Math.max(k.spanA[i], k.spanB[i]), lo = Math.min(k.spanA[i], k.spanB[i]); if (!fin(hi) || !fin(lo)) return 0; return cs[i].c > hi && k.tenkan[i] > k.kijun[i] ? 1 : cs[i].c < lo && k.tenkan[i] < k.kijun[i] ? -1 : 0; }); },
+  rsi_mom: (cs) => { const r = rsi(closesOf(cs)); return mk(cs.length, (i) => (r[i] > 55 ? 1 : r[i] < 45 ? -1 : 0)); },
+  rsi14_30: (cs) => { const r = rsi(closesOf(cs)); return mk(cs.length, (i) => (r[i] < 30 ? 1 : r[i] > 70 ? -1 : 0)); },
+  rsi14_20: (cs) => { const r = rsi(closesOf(cs)); return mk(cs.length, (i) => (r[i] < 20 ? 1 : r[i] > 80 ? -1 : 0)); },
+  rsi2_10: (cs) => { const r = rsi(closesOf(cs), 2); return mk(cs.length, (i) => (r[i] < 10 ? 1 : r[i] > 90 ? -1 : 0)); },
+  bb20_2: (cs) => { const b = bollinger(closesOf(cs), 20, 2); return mk(cs.length, (i) => (cs[i].c < b.lower[i] ? 1 : cs[i].c > b.upper[i] ? -1 : 0)); },
+  bb20_25: (cs) => { const b = bollinger(closesOf(cs), 20, 2.5); return mk(cs.length, (i) => (cs[i].c < b.lower[i] ? 1 : cs[i].c > b.upper[i] ? -1 : 0)); },
+  stoch_x: (cs) => { const s = stochastic(cs); return mk(cs.length, (i) => (s.k[i] < 20 && s.k[i] > s.d[i] ? 1 : s.k[i] > 80 && s.k[i] < s.d[i] ? -1 : 0)); },
+  vwap_dev: (cs) => sessionVwapDev(cs),
+  keltner_bo: (cs) => { const k = keltner(cs); return mk(cs.length, (i) => (cs[i].c > k.upper[i] ? 1 : cs[i].c < k.lower[i] ? -1 : 0)); },
+  tflow3: (cs) => tflow(cs, 3, 0.1),
+  tflow12: (cs) => tflow(cs, 12, 0.05),
+  vol_spike: (cs) => { const va = sma(cs.map((c) => c.v), 20); return mk(cs.length, (i) => (i > 0 && cs[i].v > 3 * va[i - 1] ? cs[i].c - cs[i].o : 0)); },
+  obv_slope: (cs) => { const o = obv(cs), e = ema(o, 20); return mk(cs.length, (i) => (fin(e[i]) ? o[i] - e[i] : 0)); },
+  cmf20: (cs) => { const m = cmf(cs); return mk(cs.length, (i) => (m[i] > 0.1 ? 1 : m[i] < -0.1 ? -1 : 0)); },
+  mfi14: (cs) => { const m = mfi(cs); return mk(cs.length, (i) => (m[i] < 20 ? 1 : m[i] > 80 ? -1 : 0)); },
+  engulf: (cs) => mk(cs.length, (i) => {
+    if (i < 1) return 0; const a = cs[i - 1], b = cs[i];
+    if (a.c < a.o && b.c > b.o && b.c >= a.o && b.o <= a.c && b.c - b.o > a.o - a.c) return 1;
+    if (a.c > a.o && b.c < b.o && b.c <= a.o && b.o >= a.c && b.o - b.c > a.c - a.o) return -1;
+    return 0;
+  }),
+  pinbar: (cs) => mk(cs.length, (i) => {
+    const b = cs[i], r = b.h - b.l; if (!(r > 0)) return 0;
+    const body = Math.abs(b.c - b.o), lw = Math.min(b.o, b.c) - b.l, uw = b.h - Math.max(b.o, b.c);
+    if (lw >= 2 * body && lw >= 0.6 * r && b.c >= b.l + (2 / 3) * r) return 1;
+    if (uw >= 2 * body && uw >= 0.6 * r && b.c <= b.l + (1 / 3) * r) return -1;
+    return 0;
+  }),
+  inside_bo: (cs) => mk(cs.length, (i) => {
+    if (i < 2) return 0; const m = cs[i - 2], p = cs[i - 1], b = cs[i];
+    if (!(p.h <= m.h && p.l >= m.l)) return 0;
+    return b.c > p.h ? 1 : b.c < p.l ? -1 : 0;
+  }),
+  fvg: (cs) => mk(cs.length, (i) => (i < 2 ? 0 : cs[i].l > cs[i - 2].h ? 1 : cs[i].h < cs[i - 2].l ? -1 : 0)),
+  three_bar: (cs) => mk(cs.length, (i) => {
+    if (i < 2) return 0; const a = cs[i - 2], b = cs[i - 1], c = cs[i];
+    if (a.c > a.o && b.c > b.o && c.c > c.o && b.c > a.c && c.c > b.c) return 1;
+    if (a.c < a.o && b.c < b.o && c.c < c.o && b.c < a.c && c.c < b.c) return -1;
+    return 0;
+  }),
+  squeeze_bo: (cs) => {
+    const c = closesOf(cs), b = bollinger(c, 20, 2), k = keltner(cs, 20, 1.5);
+    const on = (i: number) => fin(b.upper[i]) && fin(k.upper[i]) && b.upper[i] < k.upper[i] && b.lower[i] > k.lower[i];
+    return mk(cs.length, (i) => (i > 0 && on(i - 1) && !on(i) ? (c[i] > b.mid[i] ? 1 : c[i] < b.mid[i] ? -1 : 0) : 0));
+  },
+  nr7_bo: (cs) => mk(cs.length, (i) => {
+    if (i < 8) return 0; const p = cs[i - 1], r = p.h - p.l;
+    for (let j = i - 7; j < i - 1; j++) if (cs[j].h - cs[j].l <= r) return 0;
+    return cs[i].c > p.h ? 1 : cs[i].c < p.l ? -1 : 0;
+  }),
+};
+
+/** Which families run on which timeframe (minutes). 1m: the fast ones; 4h: trend context. */
+const MAIN_TFS = [5, 15, 60];
+const MAIN_FAMS = Object.keys(FAMILIES);
+const FAST_FAMS = ['emax9_21', 'rsi2_10', 'bb20_2', 'tflow3', 'vol_spike', 'engulf', 'three_bar', 'fvg'];
+const CTX_FAMS = ['emax20_50', 'px_ema200', 'adx_dir', 'supertrend', 'ichimoku', 'macd_hist'];
+
+export interface Prim { id: string; fam: string; m: number; s: Int8Array }
+
+/** Perp readings on the 1-minute grid (m = 1) or 5-minute bars: Kalshi funding (fade the crowded side), the perp's
+ *  premium over spot (fade an extreme), open interest with price (new positions: follow), an open-interest flush
+ *  (fade the move that flushed it). */
+function perpPrims(g: Grid, nMax: number): Prim[] {
+  const { fund, oi, sc, pc } = g.c;
+  const fs1 = new Int8Array(nMax), oiPx = new Int8Array(nMax), oiFlush = new Int8Array(nMax);
+  let last = 0;
+  for (let i = 0; i < nMax; i++) {
+    if (fund[i] !== 0) last = fund[i]; // an instant (zero-rate instants hold 1e-12)
+    // The rate known at the end of minute i is the last instant's (one ending at i included).
+    fs1[i] = last >= 0.0001 ? -1 : last <= -0.0001 ? 1 : 0;
+    if (i >= 60 && oi[i] > 0 && oi[i - 60] > 0) {
+      const d = oi[i] / oi[i - 60] - 1, r = sc[i] / sc[i - 60] - 1;
+      oiPx[i] = d >= 0.015 ? (r > 0 ? 1 : r < 0 ? -1 : 0) : 0;
+      oiFlush[i] = d <= -0.02 ? (r > 0 ? -1 : r < 0 ? 1 : 0) : 0;
+    }
+  }
+  const m5 = 5, k5 = Math.floor(nMax / m5), prem: number[] = new Array(k5);
+  for (let k = 0; k < k5; k++) { const i = (k + 1) * m5 - 1; prem[k] = pc[i] / sc[i] - 1; }
+  const mu = sma(prem, 288), sd = rollingStd(prem, 288);
+  const basis = mk(k5, (k) => { const z = (prem[k] - mu[k]) / sd[k]; return fin(z) ? (z > 2 ? -1 : z < -2 ? 1 : 0) : 0; });
+  return [
+    { id: 'perp_fund_fade@1m', fam: 'perp_fund', m: 1, s: fs1 },
+    { id: 'perp_oi_px@1m', fam: 'perp_oi_px', m: 1, s: oiPx },
+    { id: 'perp_oi_flush@1m', fam: 'perp_oi_flush', m: 1, s: oiFlush },
+    { id: 'perp_basis_fade@5m', fam: 'perp_basis', m: 5, s: basis },
+  ];
+}
+
+export function buildPrims(g: Grid, nMax: number, log: (m: string) => void = console.log): Prim[] {
+  const out: Prim[] = [];
+  const plan: Array<[number, string[]]> = [[1, FAST_FAMS], ...MAIN_TFS.map((m) => [m, MAIN_FAMS] as [number, string[]]), [240, CTX_FAMS]];
+  for (const [m, fams] of plan) {
+    const t = Date.now();
+    const cs = aggregate(g, m, nMax);
+    for (const f of fams) out.push({ id: `${f}@${m}m`, fam: f, m, s: FAMILIES[f](cs) });
+    log(`primitives @${m}m: ${fams.length} on ${cs.length} bars in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+  }
+  out.push(...perpPrims(g, nMax));
+  return out;
+}
+
+/** State of a primitive at the end of minute i (its last bar closed by then). */
+export const stateAt = (p: Prim, i: number): number => { const k = Math.floor((i + 1) / p.m) - 1; return k >= 0 && k < p.s.length ? p.s[k] : 0; };
+
+/** Trigger minutes: the primitive's bar closes on a new nonzero reading (edge-triggered). */
+export function triggers(p: Prim, valid: Float32Array, nMax: number): { idx: Int32Array; dir: Int8Array } {
+  const idx: number[] = [], dir: number[] = [];
+  for (let k = 1; k < p.s.length; k++) {
+    const v = p.s[k];
+    if (v === 0 || v === p.s[k - 1]) continue;
+    const i = (k + 1) * p.m - 1;
+    if (i + 1 >= nMax || !valid[i] || !valid[i + 1]) continue;
+    idx.push(i); dir.push(v);
+  }
+  return { idx: Int32Array.from(idx), dir: Int8Array.from(dir) };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Exits and costs.
+
+export interface Policy { id: string; sl: number; tp: number; max: number; trail?: number }
+export const POLICIES: Policy[] = [
+  { id: 'T5', sl: 3, tp: 0, max: 5 },
+  { id: 'T15', sl: 3, tp: 0, max: 15 },
+  { id: 'T60', sl: 3, tp: 0, max: 60 },
+  { id: 'T240', sl: 4, tp: 0, max: 240 },
+  { id: 'S.5T1', sl: 0.5, tp: 1, max: 60 },
+  { id: 'S1T1', sl: 1, tp: 1, max: 120 },
+  { id: 'S1T2', sl: 1, tp: 2, max: 240 },
+  { id: 'S2T2', sl: 2, tp: 2, max: 240 },
+  { id: 'S3T1', sl: 3, tp: 1, max: 240 },
+  { id: 'S1.5T3', sl: 1.5, tp: 3, max: 480 },
+  { id: 'S2T4', sl: 2, tp: 4, max: 960 },
+  { id: 'TR1.5', sl: 1.5, tp: 0, max: 480, trail: 1.5 },
+];
+
+export interface Costs { takerBps: number; makerBps: number; halfSpreadBps: number }
+export const KALSHI_COSTS: Costs = { takerBps: 12, makerBps: 5, halfSpreadBps: 2 };
+
+/** The 15-minute ATR(14) as a fraction of price, known at the end of each minute (last closed 15m bar). */
+export function atrUnit(g: Grid, nMax: number): Float32Array {
+  const cs = aggregate(g, 15, nMax), a = atr(cs, 14), out = new Float32Array(nMax);
+  for (let i = 0; i < nMax; i++) { const k = Math.floor((i + 1) / 15) - 1; const v = k >= 0 ? a[k] / cs[k].c : NaN; out[i] = fin(v) ? Math.max(0.001, Math.min(0.05, v)) : NaN; }
+  return out;
+}
+
+/** Outcome tables: for each policy and direction, the net result (bps of notional) of a trade decided at the end of
+ *  minute i (entered at the open of minute i + 1 on the perp) and the minute it is flat again. NaN = not tradable or
+ *  not finished before nMax. */
+export function outcomes(g: Grid, nMax: number, unit: Float32Array, costs: Costs, pols: Policy[] = POLICIES): { net: Float32Array[]; exit: Int32Array[]; hold: Uint16Array[] } {
+  const { po, ph, pl, pc, valid, fund } = g.c;
+  const cum = new Float64Array(nMax + 1); // cum[i + 1] = funding applied at the ends of minutes 0..i
+  for (let i = 0; i < nMax; i++) cum[i + 1] = cum[i] + fund[i];
+  const net: Float32Array[] = [], exit: Int32Array[] = [], hold: Uint16Array[] = [];
+  const takerSide = costs.takerBps + costs.halfSpreadBps, makerSide = costs.makerBps;
+  for (const p of pols) for (const d of [1, -1]) {
+    const nt = new Float32Array(nMax).fill(NaN), ex = new Int32Array(nMax).fill(-1), hd = new Uint16Array(nMax);
+    for (let i = 0; i + 1 < nMax; i++) {
+      const A = unit[i];
+      if (!valid[i] || !valid[i + 1] || !(A > 0)) continue;
+      const e = i + 1, P0 = po[e];
+      if (!(P0 > 0)) continue;
+      let stop = P0 * (1 - d * p.sl * A);
+      const tpPx = p.tp > 0 ? P0 * (1 + d * p.tp * A) : NaN;
+      const last = e + p.max - 1;
+      if (last >= nMax) continue;
+      let fill = NaN, maker = false, j = e, best = P0;
+      for (; j <= last; j++) {
+        if (d > 0) {
+          if (pl[j] <= stop) { fill = j > e && po[j] < stop ? po[j] : stop; break; }
+          if (p.tp > 0 && ph[j] > tpPx) { fill = tpPx; maker = true; break; }
+          if (p.trail) { if (pc[j] > best) best = pc[j]; const ts = best * (1 - p.trail * A); if (ts > stop) stop = ts; }
+        } else {
+          if (ph[j] >= stop) { fill = j > e && po[j] > stop ? po[j] : stop; break; }
+          if (p.tp > 0 && pl[j] < tpPx) { fill = tpPx; maker = true; break; }
+          if (p.trail) { if (pc[j] < best) best = pc[j]; const ts = best * (1 + p.trail * A); if (ts < stop) stop = ts; }
+        }
+      }
+      if (j > last) { j = last; fill = pc[last]; }
+      // Funding at the ends of minutes e .. j - 1 (a position exited during or at the close of minute j is flat
+      // before the instant that ends it).
+      const fundBps = d * (cum[j] - cum[e]) * 1e4;
+      nt[i] = d * (fill / P0 - 1) * 1e4 - takerSide - (maker ? makerSide : takerSide) - fundBps;
+      ex[i] = j; hd[i] = Math.min(65535, j - e + 1);
+    }
+    net.push(nt); exit.push(ex); hold.push(hd);
+  }
+  return { net, exit, hold };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Conditions and folds.
+
+export const BASE_CONDS = ['all', 'trend', 'range', 'vol_low', 'vol_mid', 'vol_high', 'asia', 'europe', 'us', 'late', 'fund_pos', 'fund_zero', 'fund_neg', 'weekday', 'weekend'];
+/** Base conditions, then the bot modules' (research/perpTaModules.ts: character, Librarian strategy, TA Net volatility, HT trend mode). */
+export const CONDS = [...BASE_CONDS, ...MODULE_CONDS];
+export const NCOND = CONDS.length;
+/** Condition slots per minute: 5 base (always set) and 4 module slots (NONE when the module has no reading). */
+export const NZ = 9;
+
+/** Per minute, the NZ condition cells (besides 'all') a trade entered then counts in (NONE = no cell in that slot). */
+export function conditions(g: Grid, nMax: number, mod?: ModuleOut): Uint8Array {
+  const out = new Uint8Array(nMax * NZ).fill(NONE);
+  const B = BASE_CONDS.length, mh = mod?.hourly;
+  const h1 = aggregate(g, 60, nMax), a = adx(h1).adx;
+  const { sc, fund } = g.c;
+  // 24 h realised volatility of 1-minute log returns, against its own 30-day mean (both trailing).
+  const W = 1440, M = 30 * 1440;
+  const rv = new Float64Array(nMax).fill(NaN);
+  let s2 = 0;
+  for (let i = 1; i < nMax; i++) {
+    const r = Math.log(sc[i] / sc[i - 1]); s2 += fin(r) ? r * r : 0;
+    if (i > W) { const q = Math.log(sc[i - W] / sc[i - W - 1]); s2 -= fin(q) ? q * q : 0; }
+    if (i >= W) rv[i] = Math.sqrt(Math.max(0, s2) / W);
+  }
+  let sm = 0, cnt = 0;
+  let lastFund = 0;
+  for (let i = 0; i < nMax; i++) {
+    if (fin(rv[i])) { sm += rv[i]; cnt++; }
+    if (i >= M && fin(rv[i - M])) { sm -= rv[i - M]; cnt--; }
+    const k = Math.floor((i + 1) / 60) - 1;
+    const trend = k >= 0 && a[k] >= 25 ? 0 : 1; // cells 1 trend, 2 range
+    const ratio = cnt > 1440 ? rv[i] / (sm / cnt) : NaN;
+    const vol = !fin(ratio) ? 1 : ratio < 0.8 ? 0 : ratio > 1.25 ? 2 : 1;
+    const ts = g.t0 + (i + 1) * MIN, hr = new Date(ts).getUTCHours(), wd = new Date(ts).getUTCDay();
+    const sess = hr < 7 ? 0 : hr < 13 ? 1 : hr < 20 ? 2 : 3;
+    if (fund[i] !== 0) lastFund = fund[i];
+    const f = lastFund >= 0.0001 ? 0 : lastFund <= -0.0001 ? 2 : 1;
+    const o = i * NZ;
+    out[o] = 1 + trend; out[o + 1] = 3 + vol; out[o + 2] = 6 + sess; out[o + 3] = 10 + f; out[o + 4] = wd === 0 || wd === 6 ? 14 : 13;
+    if (mh && k >= 0) {
+      const a = [mh.char[k], mh.lib[k], mh.vol[k], mh.ht[k]];
+      for (let z = 0; z < 4; z++) if (a[z] !== undefined && a[z] !== NONE) out[o + 5 + z] = B + a[z];
+    }
+  }
+  return out;
+}
+
+export interface Folds { starts: number[]; labels: string[]; of: Int8Array; discovery: number; }
+/** Half-year folds from the grid's start to nMax; folds starting before `validFrom` are discovery. */
+export function folds(g: Grid, nMax: number, validFrom: number): Folds {
+  const starts: number[] = [], labels: string[] = [];
+  const d0 = new Date(g.t0);
+  let y = d0.getUTCFullYear(), h = d0.getUTCMonth() < 6 ? 0 : 1;
+  for (;;) {
+    const t = Date.UTC(y, h * 6, 1), i = Math.max(0, Math.round((t - g.t0) / MIN));
+    if (i >= nMax) break;
+    starts.push(i); labels.push(`${y}H${h + 1}`);
+    if (h === 1) { y++; h = 0; } else h = 1;
+  }
+  const of = new Int8Array(nMax);
+  let f = 0;
+  for (let i = 0; i < nMax; i++) { while (f + 1 < starts.length && i >= starts[f + 1]) f++; of[i] = f; }
+  const vi = Math.round((validFrom - g.t0) / MIN);
+  return { starts, labels, of, discovery: starts.filter((s) => s < vi).length };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The sweep.
+
+const NPOL = POLICIES.length;
+const NCELL = 2 * NPOL * 2 * NCOND; // mode x policy x signal side x condition
+// Per fold: n, sum, sumsq, wins, hold minutes, sum and sum of squares of the excess over random entries, and the sum of the
+// random entries' variance at each trade (the variance floor: a small target with a rare large stop can go 50 trades without
+// a stop and show a tiny sample variance; the t statistics never use less than what a random entry with that exit varies).
+const NS = 8;
+const cellIdx = (mode: number, p: number, side: number, c: number) => ((mode * NPOL + p) * 2 + side) * NCOND + c;
+
+export interface CellRec {
+  a: string; rule: string; mode: 'follow' | 'fade'; pol: string; side: 'long' | 'short'; cond: string;
+  /** Per fold: [n, sum bps, sum of squares, wins, hold minutes, sum of excess bps, its sum of squares, sum of the random
+   *  entries' variance at each trade]. */
+  f: number[][];
+  /** Discovery: net bps per trade and its t, and the excess over entering at a random minute of the same month in
+   *  the same condition with the same exit and side (exc, tExc: what the signal adds; drift and fees cancel). */
+  disc: { n: number; mean: number; t: number; hit: number; exc: number; tExc: number };
+  /** The same cell traded the other way (the other mode): what a reversed signal does. */
+  rev: { n: number; mean: number; t: number };
+  placebo?: { pct: number; mean: number; sd: number; shifts: number };
+}
+
+function discStats(acc: Float64Array, base: number, nf: number): { n: number; mean: number; t: number; hit: number; exc: number; tExc: number } {
+  let n = 0, s = 0, s2 = 0, w = 0, e = 0, e2 = 0, vb = 0;
+  for (let f = 0; f < nf; f++) { const o = base + f * NS; n += acc[o]; s += acc[o + 1]; s2 += acc[o + 2]; w += acc[o + 3]; e += acc[o + 5]; e2 += acc[o + 6]; vb += acc[o + 7]; }
+  if (n < 2) return { n, mean: n ? s / n : NaN, t: NaN, hit: n ? w / n : NaN, exc: n ? e / n : NaN, tExc: NaN };
+  const floor = Math.max(1e-9, vb / n);
+  const mean = s / n, v = Math.max(floor, (s2 - n * mean * mean) / (n - 1));
+  const em = e / n, ev = Math.max(floor, (e2 - n * em * em) / (n - 1));
+  return { n, mean, t: mean / Math.sqrt(v / n), hit: w / n, exc: em, tExc: em / Math.sqrt(ev / n) };
+}
+
+export interface RuleDef { id: string; trig: number; filt: number }
+
+/** Which part of the library a primitive comes from (the report's funnel by source). */
+export const sourceOf = (id: string): string => (id.startsWith('ta:') ? 'analyzer rule' : id.startsWith('book:') ? 'rule book' : id.startsWith('conf:') || id === 'ta_net' ? 'confluence'
+  : /^(cdl_|tl_)/.test(id) ? 'TA-Lib' : /^(tanet_|lib_|xg_)/.test(id) ? 'TA Net / Librarian / cross graph' : id.startsWith('perp_') ? 'perp' : 'classic TA');
+
+/** Context filters a trigger is paired with (a confluence = trigger AND filter agreeing): higher-timeframe trend, the
+ *  analyzer's trend / structure / momentum readings, its 13 confluences and net vote, the forecasts, perp readings. */
+export const FILTERS = [
+  'emax20_50@240m', 'px_ema200@240m', 'adx_dir@240m', 'supertrend@240m', 'ichimoku@240m', 'macd_hist@240m',
+  'emax20_50@60m', 'supertrend@60m', 'donch55@60m', 'tsmom12@60m', 'tsmom48@60m', 'vwap_dev@15m', 'tflow12@15m',
+  'perp_fund_fade@1m', 'perp_basis_fade@5m', 'perp_oi_px@1m',
+  'ta_net', 'ta:ema_stack@1h', 'ta:ema_stack@4h', 'ta:ma_regime@4h', 'ta:ma_regime@1d', 'ta:market_structure@1h', 'ta:market_structure@4h',
+  'ta:momentum_state@1h', 'ta:momentum_state@4h', 'ta:ichimoku_cloud@4h', 'ta:ichimoku_cloud@1d', 'ta:adx_trend@1h', 'ta:obv_trend@1h', 'ta:cmf_flow@1h', 'ta:vwap_side@15m',
+  'tanet_up1', 'tanet_up4', 'lib_net', 'xg_rel4', 'xg_rel24', 'xg_rank',
+  'tl_sar@60m', 'tl_aroon@60m', 'tl_kama@60m',
+];
+const isFilter = (id: string) => FILTERS.includes(id) || id.startsWith('conf:');
+
+export interface SweepOut { header: Record<string, unknown>; recs: CellRec[] }
+
+export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs: Costs; minN?: number; storeT?: number; placeboTop?: number; shifts?: number; log?: (m: string) => void; rules?: (r: RuleDef) => boolean;
+  /** The bot's TA modules (research/perpTaModules.ts); false = classic families only. */
+  modules?: false | { history?: string; forecasts?: string; cacheDir?: string };
+  /** 'ctx' (default): every trigger alone and with each context filter (FILTERS); 'all': every ordered pair. */
+  pairs?: 'ctx' | 'all' }): SweepOut {
+  const log = o.log ?? console.log;
+  const minN = o.minN ?? 30, storeT = o.storeT ?? 2.5;
+  const nMax = Math.min(g.n, Math.max(0, Math.round((o.seal - g.t0) / MIN)));
+  let t = Date.now();
+  const prims = buildPrims(g, nMax, log);
+  const mod = o.modules === false ? undefined : modulePrims(g, nMax, { ...(o.modules ?? {}), discoveryEnd: o.validFrom, log });
+  if (mod) prims.push(...mod.prims);
+  log(`primitives: ${prims.length} (${Object.entries(prims.reduce((a, p) => { const k = sourceOf(p.id); a[k] = (a[k] ?? 0) + 1; return a; }, {} as Record<string, number>)).map(([k, v]) => `${k} ${v}`).join(', ')}) in ${((Date.now() - t) / 60000).toFixed(1)} min`);
+  t = Date.now();
+  const unit = atrUnit(g, nMax);
+  const out = outcomes(g, nMax, unit, o.costs);
+  log(`outcome tables: ${NPOL} policies x 2 sides in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+  const cond = conditions(g, nMax, mod);
+  const fo = folds(g, nMax, o.validFrom);
+  const NF = fo.starts.length;
+  // The random-entry baseline: per policy, trade direction, condition and calendar month, the mean result of entering
+  // at every tradable minute (what any entry would have made then: drift, fees, funding and the exit's own shape).
+  t = Date.now();
+  const monthOf = new Int16Array(nMax);
+  const y0 = new Date(g.t0).getUTCFullYear(), m0 = new Date(g.t0).getUTCMonth();
+  for (let i = 0; i < nMax; i++) { const d = new Date(g.t0 + i * MIN); monthOf[i] = (d.getUTCFullYear() - y0) * 12 + d.getUTCMonth() - m0; }
+  const NM = monthOf[nMax - 1] + 1;
+  const base = new Float64Array(NPOL * 2 * NCOND * NM), bvar = new Float64Array(base.length);
+  {
+    const cnt = new Float64Array(base.length);
+    for (let k = 0; k < NPOL * 2; k++) {
+      const nt = out.net[k];
+      for (let i = 0; i < nMax; i++) {
+        const x = nt[i]; if (x !== x) continue;
+        const mo = monthOf[i], b0 = k * NCOND * NM;
+        base[b0 + mo] += x; bvar[b0 + mo] += x * x; cnt[b0 + mo]++;
+        for (let z = 0; z < NZ; z++) { const cz = cond[i * NZ + z]; if (cz === NONE) continue; const j = b0 + cz * NM + mo; base[j] += x; bvar[j] += x * x; cnt[j]++; }
+      }
+    }
+    for (let j = 0; j < base.length; j++) { base[j] = cnt[j] ? base[j] / cnt[j] : 0; bvar[j] = cnt[j] > 1 ? Math.max(0, bvar[j] / cnt[j] - base[j] * base[j]) : 0; }
+  }
+  log(`random-entry baseline: ${NM} months in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+  const trig = prims.map((p) => triggers(p, g.c.valid, nMax));
+  const rules: RuleDef[] = [];
+  const filt = prims.map((p, b) => (o.pairs === 'all' || isFilter(p.id) ? b : -1)).filter((b) => b >= 0);
+  for (let a = 0; a < prims.length; a++) {
+    rules.push({ id: prims[a].id, trig: a, filt: -1 });
+    for (const b of filt) if (b !== a) rules.push({ id: `${prims[a].id}+${prims[b].id}`, trig: a, filt: b });
+  }
+  const bySrc: Record<string, { trig: [number, number]; filt: [number, number] }> = {};
+  const tally = (r: RuleDef, stored: boolean) => {
+    const a = (bySrc[sourceOf(prims[r.trig].id)] ??= { trig: [0, 0], filt: [0, 0] }).trig;
+    a[0]++; if (stored) a[1]++;
+    if (r.filt >= 0) { const b = (bySrc[sourceOf(prims[r.filt].id)] ??= { trig: [0, 0], filt: [0, 0] }).filt; b[0]++; if (stored) b[1]++; }
+  };
+  const todo = o.rules ? rules.filter(o.rules) : rules;
+  log(`${prims.length} primitives, ${todo.length} rules, ${NF} folds (${fo.discovery} discovery: ${fo.labels.slice(0, fo.discovery).join(' ')}; validation ${fo.labels.slice(fo.discovery).join(' ')}), sealed from ${new Date(o.seal).toISOString().slice(0, 10)}`);
+
+  const acc = new Float64Array(NCELL * NF * NS);
+  const recs: CellRec[] = [];
+  const tHist = new Array(81).fill(0); // discovery t of every tested cell, -10..+10 in 0.25 steps
+  let tested = 0;
+  const entriesOf = (r: RuleDef): { idx: Int32Array; dir: Int8Array; len: number } => {
+    const tr = trig[r.trig];
+    if (r.filt < 0) return { idx: tr.idx, dir: tr.dir, len: tr.idx.length };
+    const fp = prims[r.filt], idx = new Int32Array(tr.idx.length), dir = new Int8Array(tr.idx.length);
+    let k = 0;
+    for (let q = 0; q < tr.idx.length; q++) { const i = tr.idx[q]; if (stateAt(fp, i) === tr.dir[q]) { idx[k] = i; dir[k] = tr.dir[q]; k++; } }
+    return { idx, dir, len: k };
+  };
+  const walk = (en: { idx: Int32Array; dir: Int8Array; len: number }, mode: number, p: number, into: Float64Array, onlySide = -1, onlyCond = -1, shift = 0): void => {
+    let nextFree = 0;
+    const L = en.len;
+    // A shifted (placebo) walk visits the rotated entries in time order: from the first index that lands at or after
+    // the shift's wrap point.
+    let start = 0;
+    if (shift) { const cut = nMax - shift; while (start < L && en.idx[start] < cut) start++; }
+    for (let q0 = 0; q0 < L; q0++) {
+      const q = shift ? (start + q0) % L : q0;
+      let i = en.idx[q];
+      if (shift) { i += shift; if (i >= nMax) i -= nMax; }
+      if (i < nextFree) continue;
+      if (!g.c.valid[i] || i + 1 >= nMax || !g.c.valid[i + 1]) continue;
+      const sd = en.dir[q], td = mode === 0 ? sd : -sd, k = p * 2 + (td > 0 ? 0 : 1);
+      const x = out.net[k][i];
+      if (x !== x) continue;
+      const ex = out.exit[k][i];
+      nextFree = ex;
+      const f = fo.of[i];
+      if (fo.of[ex] !== f) continue; // purged: the exit falls in the next fold
+      const side = sd > 0 ? 0 : 1;
+      if (onlySide >= 0 && side !== onlySide) continue;
+      const hd = out.hold[k][i], win = x > 0 ? 1 : 0, b0 = k * NCOND * NM + monthOf[i];
+      const add = (c: number) => { const b = (cellIdx(mode, p, side, c) * NF + f) * NS, j = b0 + c * NM, e = x - base[j]; into[b] += 1; into[b + 1] += x; into[b + 2] += x * x; into[b + 3] += win; into[b + 4] += hd; into[b + 5] += e; into[b + 6] += e * e; into[b + 7] += bvar[j]; };
+      if (onlyCond >= 0) { let hit = onlyCond === 0; for (let z = 0; z < NZ && !hit; z++) hit = cond[i * NZ + z] === onlyCond; if (hit) add(onlyCond); continue; }
+      add(0);
+      for (let z = 0; z < NZ; z++) { const cz = cond[i * NZ + z]; if (cz !== NONE) add(cz); }
+    }
+  };
+
+  t = Date.now();
+  let done = 0;
+  for (const r of todo) {
+    const en = entriesOf(r);
+    done++;
+    if (en.len < minN) continue;
+    acc.fill(0);
+    for (let mode = 0; mode < 2; mode++) for (let p = 0; p < NPOL; p++) walk(en, mode, p, acc);
+    for (let mode = 0; mode < 2; mode++) for (let p = 0; p < NPOL; p++) for (let side = 0; side < 2; side++) for (let c = 0; c < NCOND; c++) {
+      const cb = cellIdx(mode, p, side, c) * NF * NS;
+      const d = discStats(acc, cb, fo.discovery);
+      if (!(d.n >= minN) || !fin(d.tExc)) continue;
+      tested++;
+      tHist[Math.max(0, Math.min(80, Math.round((d.tExc + 10) * 4)))]++;
+      tally(r, d.tExc >= storeT);
+      if (d.tExc < storeT) continue;
+      const rv = discStats(acc, cellIdx(1 - mode, p, side, c) * NF * NS, fo.discovery);
+      const f: number[][] = [];
+      for (let k = 0; k < NF; k++) { const b = cb + k * NS; f.push([acc[b], +acc[b + 1].toFixed(1), +acc[b + 2].toFixed(0), acc[b + 3], acc[b + 4], +acc[b + 5].toFixed(1), +acc[b + 6].toFixed(0), +acc[b + 7].toFixed(0)]); }
+      recs.push({ a: g.asset, rule: r.id, mode: mode ? 'fade' : 'follow', pol: POLICIES[p].id, side: side ? 'short' : 'long', cond: CONDS[c], f, disc: { n: d.n, mean: +d.mean.toFixed(2), t: +d.t.toFixed(3), hit: +d.hit.toFixed(3), exc: +d.exc.toFixed(2), tExc: +d.tExc.toFixed(3) }, rev: { n: rv.n, mean: +rv.mean.toFixed(2), t: +(rv.t || 0).toFixed(3) } });
+    }
+    if (done % 1000 === 0) log(`rules ${done}/${todo.length}: ${tested} cells tested, ${recs.length} stored (${((Date.now() - t) / 60000).toFixed(1)} min)`);
+  }
+  log(`sweep: ${todo.length} rules, ${tested} cells tested, ${recs.length} stored with t >= ${storeT} in ${((Date.now() - t) / 60000).toFixed(1)} min`);
+
+  // Placebo for the strongest stored cells: the rule's own entries moved by whole days (the time of day kept).
+  const top = [...recs].filter((r) => r.disc.mean > 0).sort((x, y) => y.disc.tExc - x.disc.tExc).slice(0, o.placeboTop ?? 1500);
+  const S = o.shifts ?? 60, days = Math.floor(nMax / 1440);
+  const shifts = Array.from({ length: S }, (_, k) => Math.round(7 + (k * (days - 14)) / Math.max(1, S - 1)) * 1440).filter((s) => s > 0 && s < nMax);
+  const byRule = new Map<string, RuleDef>(todo.map((r) => [r.id, r]));
+  const one = new Float64Array(NCELL * NF * NS);
+  t = Date.now();
+  for (const rec of top) {
+    const r = byRule.get(rec.rule)!, en = entriesOf(r);
+    const mode = rec.mode === 'fade' ? 1 : 0, p = POLICIES.findIndex((x) => x.id === rec.pol), side = rec.side === 'short' ? 1 : 0, c = CONDS.indexOf(rec.cond);
+    const cb = cellIdx(mode, p, side, c) * NF * NS;
+    const means: number[] = [];
+    for (const sh of shifts) {
+      for (let k = 0; k < NF * NS; k++) one[cb + k] = 0;
+      walk(en, mode, p, one, side, c, sh);
+      const d = discStats(one, cb, fo.discovery);
+      if (d.n >= 10) means.push(d.mean);
+    }
+    if (!means.length) continue;
+    const mu = means.reduce((a, b) => a + b, 0) / means.length, sd = Math.sqrt(means.reduce((a, b) => a + (b - mu) ** 2, 0) / Math.max(1, means.length - 1));
+    rec.placebo = { pct: +(means.filter((m) => m < rec.disc.mean).length / means.length).toFixed(3), mean: +mu.toFixed(2), sd: +sd.toFixed(2), shifts: means.length };
+  }
+  log(`placebo: ${top.length} cells x ${shifts.length} whole-day shifts in ${((Date.now() - t) / 60000).toFixed(1)} min`);
+  const header = {
+    schema: 'perpta-sweep2', asset: g.asset, at: new Date().toISOString(), t0: new Date(g.t0).toISOString(), seal: new Date(o.seal).toISOString(), validFrom: new Date(o.validFrom).toISOString(),
+    nMinutes: nMax, prims: prims.map((p) => p.id), filters: filt.map((b) => prims[b].id), rules: todo.length, bySource: bySrc, modules: mod?.notes ?? 'off', tested, stored: recs.length, storeT, minN, tHist, folds: fo.labels, discoveryFolds: fo.discovery,
+    foldDays: fo.starts.map((s, k) => +(((k + 1 < fo.starts.length ? fo.starts[k + 1] : nMax) - s) / 1440).toFixed(2)),
+    policies: POLICIES, conds: CONDS, costs: o.costs,
+    triggersPerDay: Object.fromEntries(prims.map((p, k) => [p.id, +(trig[k].idx.length / (nMax / 1440)).toFixed(2)])),
+  };
+  return { header, recs };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The report: multiple testing, adversaries, validation folds, CSCV.
+
+const normSf = (z: number): number => { // P(Z > z)
+  const t = 1 / (1 + 0.2316419 * Math.abs(z)), d = 0.3989422804014327 * Math.exp(-z * z / 2);
+  const p = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  return z >= 0 ? p : 1 - p;
+};
+
+interface Pooled { n: number; mean: number; t: number; hit: number; hold: number; pos: number; folds: number; exc: number; tExc: number; excPos: number }
+function pool(f: number[][], from: number, to: number): Pooled {
+  let n = 0, s = 0, s2 = 0, w = 0, h = 0, pos = 0, nf = 0, e = 0, e2 = 0, excPos = 0, vb = 0;
+  for (let k = from; k < to && k < f.length; k++) { const [a, b, c, d, hh, x, x2, xb] = f[k]; n += a; s += b; s2 += c; w += d; h += hh; e += x; e2 += x2; vb += xb ?? 0; if (a > 0) { nf++; if (b > 0) pos++; if (x > 0) excPos++; } }
+  const floor = n ? Math.max(1e-9, vb / n) : 1e-9;
+  const mean = n ? s / n : NaN, v = n > 1 ? Math.max(floor, (s2 - n * mean * mean) / (n - 1)) : NaN;
+  const em = n ? e / n : NaN, ev = n > 1 ? Math.max(floor, (e2 - n * em * em) / (n - 1)) : NaN;
+  return { n, mean, t: n > 1 ? mean / Math.sqrt(v / n) : NaN, hit: n ? w / n : NaN, hold: n ? h / n : NaN, pos, folds: nf, exc: em, tExc: n > 1 ? em / Math.sqrt(ev / n) : NaN, excPos };
+}
+
+/** CSCV probability of backtest overfitting (Bailey, Borwein, Lopez de Prado, Zhu 2015) over a configs x folds matrix
+ *  of per-fold mean returns: the share of in-sample / out-of-sample splits where the in-sample best ranks below the
+ *  out-of-sample median. */
+export function pbo(M: number[][]): number {
+  const T = M[0]?.length ?? 0;
+  if (M.length < 2 || T < 4) return NaN;
+  const S = T % 2 ? T - 1 : T, half = S / 2;
+  const combos: number[][] = [];
+  const rec = (start: number, cur: number[]) => { if (cur.length === half) { combos.push([...cur]); return; } for (let i = start; i < S; i++) { cur.push(i); rec(i + 1, cur); cur.pop(); } };
+  rec(0, []);
+  let below = 0, total = 0;
+  for (const is of combos) {
+    const isSet = new Set(is), oos = Array.from({ length: S }, (_, i) => i).filter((i) => !isSet.has(i));
+    const score = (row: number[], cols: number[]) => cols.reduce((a, c) => a + (fin(row[c]) ? row[c] : 0), 0) / cols.length;
+    let best = 0, bestV = -Infinity;
+    M.forEach((row, r) => { const v = score(row, is); if (v > bestV) { bestV = v; best = r; } });
+    const oosScores = M.map((row) => score(row, oos));
+    const rank = oosScores.filter((v) => v < oosScores[best]).length / (M.length - 1); // 0 worst .. 1 best
+    if (rank < 0.5) below++;
+    total++;
+  }
+  return below / total;
+}
+
+export interface Candidate extends CellRec { p: number; val: Pooled; discPooled: Pooled; tradesPerDay: number; usdPerHourPer1k: number; valUsdPerHourPer1k: number; stress6: number; why: string[] }
+
+export function report(files: string[], o: { q?: number; minBps?: number; log?: (m: string) => void }): { summary: Record<string, unknown>; candidates: Candidate[]; funnel: Record<string, number>; md: string } {
+  const log = o.log ?? console.log;
+  const q = o.q ?? 0.1, minBps = o.minBps ?? 3;
+  const recs: CellRec[] = [], headers: Array<Record<string, any>> = [];
+  for (const file of files) {
+    const lines = zlib.gunzipSync(fs.readFileSync(file)).toString('utf8').split('\n').filter(Boolean);
+    headers.push(JSON.parse(lines[0]));
+    for (const l of lines.slice(1)) recs.push(JSON.parse(l));
+  }
+  const m = headers.reduce((a, h) => a + h.tested, 0);
+  const hdr = new Map(headers.map((h) => [h.asset as string, h]));
+  // Benjamini-Hochberg over every tested cell of every coin, on the excess over random entries (one-sided: the signal
+  // adds to what any entry in that month, condition, side and exit made).
+  const withP = recs.map((r) => ({ r, p: normSf(r.disc.tExc) })).sort((a, b) => a.p - b.p);
+  let kMax = 0;
+  withP.forEach((x, k) => { if (x.p <= (q * (k + 1)) / m) kMax = k + 1; });
+  const bh = withP.slice(0, kMax);
+  const funnel: Record<string, number> = { tested: m, stored: recs.length, bh: bh.length };
+  const cands: Candidate[] = [];
+  for (const { r, p } of bh) {
+    const h = hdr.get(r.a)!, D = h.discoveryFolds as number, NF = (h.folds as string[]).length;
+    const disc = pool(r.f, 0, D), val = pool(r.f, D, NF);
+    const fd = h.foldDays as number[], days = fd.slice(0, D).reduce((a, b) => a + b, 0), vDays = fd.slice(D).reduce((a, b) => a + b, 0);
+    const why: string[] = [];
+    if (disc.mean < minBps) why.push(`discovery ${disc.mean.toFixed(1)} bps/trade < ${minBps}`);
+    if (disc.mean - 6 <= 0) why.push('fails +3 bps/side stress');
+    if (disc.pos < Math.ceil(0.6 * disc.folds) || disc.excPos < Math.ceil(0.6 * disc.folds)) why.push(`net positive in ${disc.pos}/${disc.folds} discovery half-years, above random in ${disc.excPos}`);
+    if (r.rev.mean >= 0) why.push(`reversed also makes ${r.rev.mean} bps`);
+    if (!r.placebo) why.push('no placebo run'); else if (r.placebo.pct < 0.95) why.push(`placebo percentile ${r.placebo.pct}`);
+    if (!(val.n >= 10)) why.push(`only ${val.n} validation trades`);
+    else if (!(val.mean > 0 && val.t >= 1 && val.exc > 0)) why.push(`validation ${val.mean.toFixed(1)} bps/trade (t ${val.t.toFixed(2)}), ${val.exc.toFixed(1)} above random`);
+    const tradesPerDay = disc.n / days;
+    cands.push({ ...r, p, val, discPooled: disc, tradesPerDay: +tradesPerDay.toFixed(2), usdPerHourPer1k: +((disc.mean / 1e4) * 1000 * tradesPerDay / 24).toFixed(3), valUsdPerHourPer1k: +((val.mean / 1e4) * 1000 * (val.n / Math.max(1, vDays)) / 24).toFixed(3), stress6: +(disc.mean - 6).toFixed(2), why });
+  }
+  const keep = (k: string, f: (c: Candidate) => boolean) => { funnel[k] = cands.filter(f).length; };
+  keep('bh+economic', (c) => c.discPooled.mean >= minBps && c.stress6 > 0);
+  const stable = (c: Candidate) => c.discPooled.pos >= Math.ceil(0.6 * c.discPooled.folds) && c.discPooled.excPos >= Math.ceil(0.6 * c.discPooled.folds);
+  keep('+stable', (c) => c.discPooled.mean >= minBps && c.stress6 > 0 && stable(c));
+  keep('+reversed', (c) => c.discPooled.mean >= minBps && c.stress6 > 0 && stable(c) && c.rev.mean < 0);
+  keep('+placebo', (c) => c.why.filter((w) => !w.startsWith('only') && !w.startsWith('validation')).length === 0);
+  keep('+validation', (c) => c.why.length === 0);
+  const pass = cands.filter((c) => c.why.length === 0);
+  // CSCV over the 200 strongest BH cells (per-fold means; folds without trades count 0).
+  const topM = [...cands].sort((a, b) => b.disc.tExc - a.disc.tExc).slice(0, 200);
+  const NFmin = Math.min(...topM.map((c) => c.f.length));
+  const PBO = topM.length >= 2 ? pbo(topM.map((c) => c.f.slice(c.f.length - NFmin).map((x) => (x[0] ? x[1] / x[0] : 0)))) : NaN;
+  // The t distribution of all tested cells (null ~ N(0, 1) if nothing works and nothing leaks).
+  const tAll = new Array(81).fill(0);
+  for (const h of headers) (h.tHist as number[]).forEach((v, i) => { tAll[i] += v; });
+  const share = (lo: number) => tAll.reduce((a, v, i) => a + (i / 4 - 10 >= lo ? v : 0), 0) / Math.max(1, m);
+  const summary = { at: new Date().toISOString(), assets: headers.map((h) => h.asset), tested: m, q, minBps, funnel, pbo: PBO, tShareAbove2: +share(2).toFixed(4), tShareAbove3: +share(3).toFixed(5), normalAbove2: 0.0228, normalAbove3: 0.00135, perAsset: headers.map((h) => ({ asset: h.asset, tested: h.tested, stored: h.stored, minutes: h.nMinutes, folds: h.folds, discovery: h.discoveryFolds, prims: (h.prims as string[]).length, modules: h.modules })) } as Record<string, unknown>;
+  const f1 = (x: number) => (fin(x) ? x.toFixed(1) : '-');
+  const fmt = (c: Candidate) => `| ${c.a} | ${c.rule} | ${c.mode} | ${c.pol} | ${c.side} | ${c.cond} | ${c.disc.n} | ${c.disc.mean} | ${c.disc.exc} | ${c.disc.tExc} | ${c.placebo ? c.placebo.pct : '-'} | ${c.rev.mean} | ${c.val.n} | ${f1(c.val.mean)} | ${f1(c.val.exc)} | ${c.tradesPerDay} | ${c.valUsdPerHourPer1k} | ${c.why.join('; ') || 'PASS'} |`;
+  const head = '| coin | rule | mode | exit | side | condition | disc n | disc bps | disc excess | excess t | placebo | reversed bps | val n | val bps | val excess | trades/day | val $/h per $1k | verdict |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
+  const rank = (a: Candidate, b: Candidate) => (a.why.length - b.why.length) || (b.disc.tExc - a.disc.tExc);
+  // The table: the best cell per coin, trigger, mode and side (the same signal under other filters, exits and conditions
+  // is counted in the funnel, not repeated here).
+  const seen = new Set<string>();
+  const best = [...cands].sort(rank).filter((c) => { const k = `${c.a}|${c.rule.split('+')[0]}|${c.mode}|${c.side}`; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 40);
+  // By source (the bot's modules vs the classic families): tested / stored from the sweeps, BH and pass from here.
+  const src: Record<string, { tt: number; ts: number; tb: number; tp: number; ft: number; fs: number; fb: number; fp: number }> = {};
+  const S = (k: string) => (src[k] ??= { tt: 0, ts: 0, tb: 0, tp: 0, ft: 0, fs: 0, fb: 0, fp: 0 });
+  for (const h of headers) for (const [k, v] of Object.entries((h.bySource ?? {}) as Record<string, { trig: number[]; filt: number[] }>)) { const x = S(k); x.tt += v.trig[0]; x.ts += v.trig[1]; x.ft += v.filt[0]; x.fs += v.filt[1]; }
+  const srcOf = (c: Candidate) => { const [a, b] = c.rule.split('+'); return [sourceOf(a), b ? sourceOf(b) : undefined] as const; };
+  for (const c of cands) { const [a, b] = srcOf(c); S(a).tb++; if (!c.why.length) S(a).tp++; if (b) { S(b).fb++; if (!c.why.length) S(b).fp++; } }
+  summary.bySource = src;
+  const bestBySrc = Object.keys(src).flatMap((k) => { const sn = new Set<string>(); return cands.filter((c) => srcOf(c)[0] === k).sort(rank).filter((c) => { const key = `${c.a}|${c.rule.split('+')[0]}`; if (sn.has(key)) return false; sn.add(key); return true; }).slice(0, 3); });
+  const md = [
+    `### Perp TA sweep, round 1 (with the bot's TA modules)`,
+    `Tested ${m.toLocaleString()} cells (${headers.map((h) => `${h.asset} ${h.tested.toLocaleString()}`).join(', ')}); Benjamini-Hochberg q=${q}: ${bh.length} pass discovery.`,
+    `Share of cells whose discovery excess over random entries has t >= 2: ${(share(2) * 100).toFixed(2)}% (pure noise would give 2.28%); t >= 3: ${(share(3) * 100).toFixed(3)}% (noise 0.135%).`,
+    `Funnel: ${Object.entries(funnel).map(([k, v]) => `${k} ${v}`).join(' -> ')}. CSCV PBO over the top ${topM.length}: ${fin(PBO) ? PBO.toFixed(2) : 'n/a'}.`,
+    `Passing every check: ${pass.length}.`,
+    '', head, ...best.map(fmt),
+    '', '**By source** (cells with that source as the trigger / as the filter: tested, discovery excess t >= 2.5, Benjamini-Hochberg pass, every check passed)',
+    '| source | trigger tested | t >= 2.5 | BH | pass | filter tested | t >= 2.5 | BH | pass |', '|---|---|---|---|---|---|---|---|---|',
+    ...Object.entries(src).sort((a, b) => b[1].tt - a[1].tt).map(([k, x]) => `| ${k} | ${x.tt.toLocaleString()} | ${x.ts.toLocaleString()} | ${x.tb} | ${x.tp} | ${x.ft.toLocaleString()} | ${x.fs.toLocaleString()} | ${x.fb} | ${x.fp} |`),
+    ...(bestBySrc.length ? ['', '**Best per trigger source**', '', head, ...bestBySrc.map(fmt)] : []),
+    '', '<details><summary>Module coverage per coin</summary>', '',
+    ...headers.map((h) => `- ${h.asset}: ${Array.isArray(h.modules) ? (h.modules as string[]).join('; ') : String(h.modules ?? 'n/a')}`),
+    '', '</details>',
+  ].join('\n');
+  log(md);
+  return { summary, candidates: cands, funnel, md };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// CLI.
+
+function arg(k: string, d?: string): string | undefined { const i = process.argv.indexOf(`--${k}`); return i >= 0 && process.argv[i + 1] !== undefined && !process.argv[i + 1].startsWith('--') ? process.argv[i + 1] : d; }
+
+async function main(): Promise<void> {
+  const mode = process.argv[2];
+  const log = (m: string) => console.log(`[perp-ta] ${m}`);
+  if (mode === 'prep') {
+    const asset = arg('asset')!, hist = arg('history', 'data/history')!, outDir = arg('out', 'data/perp-ta')!;
+    if (arg('download', 'true') === 'true') {
+      const { downloadBinance, downloadBinanceFunding, downloadBinanceOpenInterest } = await import('./history/binanceVision');
+      const quiet = () => undefined;
+      const from = arg('from-month', '2019-09')!;
+      await downloadBinance({ out: hist, assets: [asset], intervals: ['1m'], markets: ['spot'], source: 'binance-1m', fromMonth: from, log: quiet, concurrency: 8 });
+      await downloadBinance({ out: hist, assets: [asset], intervals: ['1m'], markets: ['um'], fromMonth: from, log: quiet, concurrency: 8 });
+      await downloadBinanceFunding({ out: hist, assets: [asset], fromMonth: from, log: quiet });
+      await downloadBinanceOpenInterest({ out: hist, assets: [asset], fromDay: `${from}-01`, log: quiet, concurrency: 8 });
+      // Every coin's spot hourly bars: the character classifier's cross-coin correlation and the breadth reading.
+      await downloadBinance({ out: hist, assets: (arg('others', 'BTC,ETH,SOL,XRP')!).split(','), intervals: ['1h'], markets: ['spot'], source: 'binance-1h', fromMonth: from, log: quiet, concurrency: 8 });
+      log(`${asset}: downloads done`);
+    }
+    writeGrid(await buildGrid(hist, asset, log), path.join(outDir, `${asset}.bin`));
+    return;
+  }
+  if (mode === 'sweep') {
+    const g = readGrid(arg('data')!);
+    const seal = Date.parse(arg('seal', '2025-07-01')! + 'T00:00:00Z'), validFrom = Date.parse(arg('valid-from', '2024-01-01')! + 'T00:00:00Z');
+    const costs: Costs = { takerBps: +arg('taker', '12')!, makerBps: +arg('maker', '5')!, halfSpreadBps: +arg('half-spread', '2')! };
+    const shard = +arg('shard', '0')!, shards = +arg('shards', '1')!;
+    const modules = arg('modules', 'true') === 'false' ? false as const : { history: arg('history'), forecasts: arg('forecasts'), cacheDir: arg('module-cache') };
+    const res = sweepAsset(g, { seal, validFrom, costs, log, modules, pairs: arg('pairs', 'ctx') === 'all' ? 'all' : 'ctx', placeboTop: +arg('placebo-top', '1500')!, shifts: +arg('shifts', '60')!, storeT: +arg('store-t', '2.5')!, rules: shards > 1 ? (r) => r.trig % shards === shard : undefined });
+    const file = arg('out')!;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, zlib.gzipSync([JSON.stringify({ ...res.header, shard, shards }), ...res.recs.map((r) => JSON.stringify(r))].join('\n') + '\n'));
+    log(`wrote ${file} (${res.recs.length} cells)`);
+    return;
+  }
+  if (mode === 'report') {
+    const dir = arg('in')!, outDir = arg('out', 'report')!;
+    const files = fs.readdirSync(dir, { recursive: true }).map(String).filter((f) => f.endsWith('.jsonl.gz')).map((f) => path.join(dir, f));
+    const r = report(files, { q: +arg('q', '0.1')!, minBps: +arg('min-bps', '3')!, log });
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(r.summary, null, 1));
+    fs.writeFileSync(path.join(outDir, 'candidates.json.gz'), zlib.gzipSync(JSON.stringify(r.candidates)));
+    fs.writeFileSync(path.join(outDir, 'summary.md'), r.md + '\n');
+    return;
+  }
+  console.log('usage: perpTaSweep.ts prep|sweep|report (see the header)');
+  process.exitCode = 1;
+}
+
+if (process.argv[1] && import.meta.url?.endsWith(path.basename(process.argv[1]))) main().catch((e) => { console.error(e); process.exitCode = 1; });

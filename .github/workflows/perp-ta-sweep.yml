@@ -1,0 +1,205 @@
+name: Perp TA sweep
+
+# The perp TA rulebook sweep (research/perpTaSweep.ts; thread "Build a TA rulebook for perpetuals", Nov 5 2026): per coin
+# (DOGE excluded, Steven Nov 5), Binance spot + USD-M 1-minute history from Binance Vision (kept on Drive under
+# raw/perp-ta-history/<coin>, apart from the shared raw/history), the aligned grid (derived/perp-ta/grids), the sterile sweep of
+# TA readings and their confluences against Kalshi's perp fees and funding, then one report over every coin. The bot's own TA
+# modules join the sweep (research/perpTaModules.ts, Steven Nov 5 13:59 UTC): the analyzer's rules, rule book, confluences and
+# net vote (TA-Lib compiled), TA-Lib patterns and indicators, the TA Net / Librarian / cross-graph walk-forward forecasts kept
+# in raw/server-history, and the character classifier as a condition; the analyzer walk is cached on Drive
+# (derived/perp-ta/modules). A fidelity job
+# measures Kalshi's real perp quotes in the recordings against Binance's bars (spread, returns, funding). No server involved.
+# The summary is posted as a comment on the commit; full results go to Drive (models/perp-ta/run-<id>).
+on:
+  push:
+    branches: [claude/project-thread-9040i4]
+    paths: [research/perpTaSweep.ts, research/perpTaModules.ts, research/perpTaFidelity.ts, .github/workflows/perp-ta-sweep.yml]
+  workflow_dispatch:
+    inputs:
+      assets:
+        description: 'Coins (JSON list)'
+        required: false
+        default: '["BTC","ETH","SOL","XRP"]'
+      half_spread:
+        description: 'Half-spread charged per taker side (bps)'
+        required: false
+        default: '2'
+      fid_days:
+        description: 'Recorded days for the fidelity check (most recent)'
+        required: false
+        default: '7'
+
+permissions:
+  # Write only for the commit comment with the summary.
+  contents: write
+
+concurrency:
+  group: perp-ta-sweep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: ${{ fromJSON(inputs.assets || '["BTC","ETH","SOL","XRP"]') }}
+    env:
+      A: ${{ matrix.asset }}
+      HALF: ${{ inputs.half_spread || '2' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: TA-Lib loads
+        run: node -e "const t = require('talib'); if (typeof t.execute !== 'function') process.exit(1); console.log('TA-Lib', t.version || 'ok')"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: History from Drive, then what is new from Binance
+        run: |
+          set -euo pipefail
+          [[ "$A" =~ ^[A-Z0-9]{2,8}$ ]] && [[ "$A" != DOGE ]] || { echo "bad or excluded coin: $A"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist-$A" || echo "raw/perp-ta-history/$A: nothing on Drive yet"
+          node --max-old-space-size=12000 --import tsx research/perpTaSweep.ts prep --asset "$A" --history "data/hist-$A" --out data/perp-ta 2>&1 | tee "$RUNNER_TEMP/sweep.log" | tail -20
+          du -sh "data/hist-$A" data/perp-ta | cat
+      - name: Keep the history and grid on Drive
+        if: always()
+        run: |
+          [ ! -d "data/hist-$A" ] || bash deploy/drive_lab.sh put "raw/perp-ta-history/$A" "data/hist-$A"
+          [ ! -f "data/perp-ta/$A.bin" ] || bash deploy/drive_lab.sh put derived/perp-ta/grids data/perp-ta --include "$A.bin"
+      - name: The server's walk-forward forecasts (TA Net, Librarian, cross graph) and the cached analyzer walk
+        run: |
+          bash deploy/drive_lab.sh get raw/server-history data/server-hist --include "/.tanet-oos/forecasts.json" --include "/.librarian/forecasts.json" --include "/.xgraph/forecasts.json" || echo "raw/server-history: nothing on Drive"
+          bash deploy/drive_lab.sh get derived/perp-ta/modules data/modcache --include "$A-*" || echo "no cached analyzer walk yet"
+          ls -la data/server-hist/.tanet-oos data/server-hist/.librarian data/server-hist/.xgraph data/modcache 2>&1 | grep -v '^total' | cat
+      - name: Sweep
+        run: |
+          set -euo pipefail
+          node --max-old-space-size=14000 --import tsx research/perpTaSweep.ts sweep --data "data/perp-ta/$A.bin" --out "out/$A.jsonl.gz" --half-spread "$HALF" --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v '^\[perp-ta\] analyzer walk [0-9]' | tail -60
+      - name: Keep the analyzer walk on Drive
+        if: always()
+        run: '[ ! -d data/modcache ] || bash deploy/drive_lab.sh put derived/perp-ta/modules data/modcache'
+      - name: On failure, the log's tail on the commit
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "### Perp TA sweep $A failed (run $GITHUB_RUN_ID)"; echo '```'; tail -n 60 "$RUNNER_TEMP/sweep.log" 2>/dev/null | cut -c1-300 || echo "no sweep log (failed before the sweep)"; echo '```'; } > "$RUNNER_TEMP/fail.md"
+          jq -n --rawfile body "$RUNNER_TEMP/fail.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sweep-${{ matrix.asset }}
+          path: out/${{ matrix.asset }}.jsonl.gz
+          retention-days: 14
+      - name: Results to Drive
+        run: bash deploy/drive_lab.sh put "models/perp-ta/run-$GITHUB_RUN_ID" out
+
+  fidelity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      FID_DAYS: ${{ inputs.fid_days || '7' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Recorded days from Drive (compact .mdc when Drive has it)
+        run: |
+          set -euo pipefail
+          [[ "$FID_DAYS" =~ ^[0-9]+$ ]] || { echo "bad fid_days"; exit 1; }
+          mkdir -p data/recordings
+          for d in $(tail -n "$FID_DAYS" "$RUNNER_TEMP/drive-days.txt"); do
+            if [ -n "$(rclone lsf gdrive:kalshi-bot-archive/recordings --files-only --include "md-$d.mdc")" ]; then rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.mdc" data/recordings/;
+            else rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.jsonl.gz" data/recordings/; fi
+          done
+          ls -la data/recordings | cat
+      - name: Fidelity (Binance perp bars and funding for those days, then the comparison)
+        run: |
+          set -euo pipefail
+          FROM=$(tail -n "$FID_DAYS" "$RUNNER_TEMP/drive-days.txt" | head -n 1 | cut -c1-7)
+          [[ "$FROM" =~ ^[0-9]{4}-[0-9]{2}$ ]] || { echo "no recorded days on Drive"; exit 1; }
+          mkdir -p out
+          node --max-old-space-size=12000 --import tsx research/perpTaFidelity.ts --recordings data/recordings --history data/hist-fid --download-from "$FROM" --assets BTC,ETH,SOL,XRP --out out/fidelity.json 2>&1 | tail -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fidelity
+          path: out/fidelity.json
+          retention-days: 14
+
+  report:
+    needs: [sweep, fidelity]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          path: in
+      - name: Report
+        run: |
+          set -euo pipefail
+          ls -R in | head -20
+          node --max-old-space-size=12000 --import tsx research/perpTaSweep.ts report --in in --out report 2>&1 | tail -60
+          if [ -f in/fidelity/fidelity.json ]; then
+            node -e "
+              const f = require('./in/fidelity/fidelity.json');
+              const rows = f.assets.map((a) => '| ' + [a.asset, a.quotes, a.spreadBps.median, a.spreadBps.p90, a.returns['1m'].rho, a.returns['15m'].rho, a.returns['15m'].beta, a.returns['15m'].te, a.returns['60m'].rho, a.premiumBps.mean, a.premiumBps.sd, a.funding.kalshiMeanBps, a.funding.kalshiZeroShare, a.funding.modelMeanBps, a.funding.pairs, a.funding.meanAbsDiffBps].join(' | ') + ' |');
+              console.log(['', '### Fidelity: Kalshi perp quotes vs Binance USD-M (' + f.days[0] + ' .. ' + f.days[f.days.length - 1] + ')', '| coin | quotes | spread med bps | spread p90 | rho 1m | rho 15m | beta 15m | te 15m bps | rho 60m | premium bps | premium sd | Kalshi funding bps | Kalshi zero share | model funding bps | instants | abs diff bps |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|', ...rows].join('\n'));
+            " >> report/summary.md
+          fi
+          head -c 60000 report/summary.md > "$RUNNER_TEMP/comment.md"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Results to Drive
+        run: |
+          cp -r in/fidelity report/ 2>/dev/null || true
+          bash deploy/drive_lab.sh put "models/perp-ta/run-$GITHUB_RUN_ID/report" report
+      - name: Summary on the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
