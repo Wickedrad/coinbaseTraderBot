@@ -41,8 +41,9 @@ export const PERP_FEATURES = [
  *  driver, how fast volatility is changing (the perps inputs carry no SNN governor level). */
 export const PERP_GATED = {
   trend: ['ret_15m_z', 'ret_1h_z', 'ret_4h_z', 'efficiency_ratio_1h', 'ta_rsi_1h', 'ta_rsi_4h', 'ta_macd_hist_1h', 'ta_di_diff_1h', 'ta_ema_stack_1h', 'ta_ema_stack_4h', 'ta_bb_pctb_1h', 'taconf_trend_alignment', 'taconf_mtf_momentum', 'taconf_net_trend', 'taconf_net_reversal', 'tanet_up_1h', 'tanet_up_4h'],
-  // The premium per coin; perp_premium_bps (per contract, pinned) for gated models trained before Nov 5.
-  micro: ['perp_premium_coin_bps', 'perp_premium_bps', 'perp_premium_chg_5m', 'perp_ret_diff_5m_z', 'funding_rate_bps', 'funding_delta_4h', 'perp_oi_chg_1h', 'perp_oi_accel_1h', 'ta_taker_imb_1h', 'ta_taker_imb_4h'],
+  // The premium per coin. This list shapes new trainings only: a gated model trained before Nov 5 reads perp_premium_bps
+  // through its own stored indices, the value coming from PERP_LEGACY_FEATURES.
+  micro: ['perp_premium_coin_bps', 'perp_premium_chg_5m', 'perp_ret_diff_5m_z', 'funding_rate_bps', 'funding_delta_4h', 'perp_oi_chg_1h', 'perp_oi_accel_1h', 'ta_taker_imb_1h', 'ta_taker_imb_4h'],
   drivers: ['vol_ratio_15m_4h'],
 };
 export const perpGatedLayout = (features: string[] = PERP_FEATURES) => ({
