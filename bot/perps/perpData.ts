@@ -55,6 +55,9 @@ const ts = (v: unknown): number | undefined => {
   return undefined;
 };
 
+/** The fields of a snapshot that describe the book now: taken from every snapshot as they are, absent included. */
+const QUOTE_FIELDS = ['bid', 'ask', 'last', 'mark', 'liquidationMark', 'isOpen'] as const;
+
 const NAMES: Record<string, string[]> = {
   BTC: ['BITCOIN', 'BTC'], ETH: ['ETHEREUM', 'ETHER', 'ETH'], SOL: ['SOLANA', 'SOL'], XRP: ['XRP', 'RIPPLE'], DOGE: ['DOGECOIN', 'DOGE'],
 };
@@ -135,7 +138,13 @@ export class PerpState {
       this.funding.push({ ts: s.ts, rate: s.fundingRate });
       while (this.funding.length && this.funding[0].ts < s.ts - 10 * 3_600_000) this.funding.shift();
     }
-    this.latest = { ...this.latest, ...Object.fromEntries(Object.entries(s).filter(([, v]) => v !== undefined)) } as PerpSnapshot;
+    // Each snapshot is a full market row: a missing bid or ask is an empty side of the book now, so the quote fields always
+    // come from this snapshot (merging kept the old touch under a fresh ts, which passed the freshness checks and priced
+    // orders and paper fills off a quote that was gone). Static fields (contract size, tick, leverage) and the funding
+    // estimate carry over when a row leaves them out.
+    const merged = { ...this.latest, ...Object.fromEntries(Object.entries(s).filter(([, v]) => v !== undefined)) } as PerpSnapshot;
+    for (const k of QUOTE_FIELDS) (merged as unknown as Record<string, unknown>)[k] = s[k];
+    this.latest = merged;
   }
 
   /** Fresh mid (or mark) price. */
