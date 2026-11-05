@@ -57,6 +57,10 @@ for f in files:
                 ev = d.get('event') if isinstance(d, dict) else None
                 other[f"{k}:{ev}"] += 1
 
+if os.environ.get('NO_DOGE'):  # weekly review: the same report with every DOGE market left out (context only)
+    settles = [x for x in settles if not x['ticker'].startswith('KXDOGE')]
+    fills = [x for x in fills if not x['ticker'].startswith('KXDOGE')]
+    print('(DOGE markets excluded)')
 print(f'audit files: {[os.path.basename(f) for f in files]}')
 print(f'fills {len(fills)}  settlements {len(settles)}  orders {len(orders)}  startups {len(starts)}')
 print('startups (restarts):', ', '.join(s[5:16] for s in starts))

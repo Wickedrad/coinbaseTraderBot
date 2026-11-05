@@ -196,6 +196,8 @@ jobs:
             done
             if [ "$PNL" = "true" ] && [ -f /tmp/diag/deploy/pnl_report.py ]; then
               echo "== P&L report (8 days)"; nice -n 19 python3 /tmp/diag/deploy/pnl_report.py ~/bot/data 8 || true
+              echo "== P&L by day without DOGE (context only)"; NO_DOGE=1 nice -n 19 python3 /tmp/diag/deploy/pnl_report.py ~/bot/data 8 2>/dev/null | sed -n '/== realized P&L by UTC day and kind/,/== live-equivalent/p' || true
+              echo "== deploys this week (~/bot/deploys.log)"; tail -n 40 ~/bot/deploys.log 2>/dev/null | cut -c1-200 || true
               echo "== kalshi check by day"; api /api/kalshi-check | python3 -c 'import json,sys; r=json.load(sys.stdin); [print(" ", d.get("day"), json.dumps(d.get("bot"))) for d in (r.get("days") or [])]' || true
             fi
             if [ "$TIMINGS" = "true" ] && [ -f /tmp/diag/deploy/step_timings.py ]; then
