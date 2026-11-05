@@ -13,7 +13,8 @@
 // Kelly then sizes inside that budget from the trade's own edge (bot/sizing/kelly.ts). The order band (ORDER_USD_MIN /
 // ORDER_USD_MAX, $10-$20 since Steven's choice on Oct 30, paper and live) replaces the budget: the budget is the band's top
 // and the strategy clamps Kelly's stake into the band. The paper order size (PAPER_ORDER_FRAC / PAPER_ORDER_USD, off by
-// default since the owner's choice on Oct 28: paper sizes like live) replaces all of it when set.
+// default since the owner's choice on Oct 28: paper sizes like live) replaces all of it when set. BAND_SIZE_MULT (Steven,
+// Nov 5) lets sizeMult scale the band and the paper size too: shrink (never above the top) or scale (up to BAND_SIZE_MAX).
 import { floorCount } from '../util/num';
 
 export interface OrderBudgetInput {
@@ -31,7 +32,20 @@ export interface OrderBudgetInput {
   /** The order band in dollars (orderBand(); undefined = off). */
   bandUsd?: { min: number; max: number };
   maxContractsPerOrder: number;
+  /** BAND_SIZE_MULT: whether sizeMult scales the band and the paper order size (off = it does not). */
+  bandSizeMult?: 'off' | 'shrink' | 'scale';
+  /** BAND_SIZE_MAX: the top factor for bandSizeMult 'scale'. */
+  bandSizeMax?: number;
 }
+
+/** The factor the band and the paper order size take from sizeMult (1 = unchanged). */
+export function bandFactor(sizeMult: number, mode: 'off' | 'shrink' | 'scale' = 'off', max = 1.5): number {
+  if (mode === 'off' || !Number.isFinite(sizeMult)) return 1;
+  const m = Math.max(0, sizeMult);
+  return mode === 'shrink' ? Math.min(1, m) : Math.min(m, Math.max(1, max));
+}
+
+const cents = (x: number) => Math.round(x * 100) / 100;
 
 export interface OrderBudget {
   maxOrderRiskUsd: number;
@@ -52,8 +66,17 @@ export function orderBand(minUsd: number | undefined, maxUsd: number | undefined
 }
 
 export function orderBudget(i: OrderBudgetInput): OrderBudget {
-  if (i.paperOrderUsd > 0) return { maxOrderRiskUsd: i.paperOrderUsd, maxContracts: floorCount(i.maxContractsPerOrder), fixedOrderUsd: i.paperOrderUsd, boundBy: 'paper' };
-  if (i.bandUsd && i.bandUsd.min > 0) return { maxOrderRiskUsd: i.bandUsd.max, maxContracts: floorCount(i.maxContractsPerOrder), band: i.bandUsd, boundBy: 'band' };
+  const k = bandFactor(i.sizeMult, i.bandSizeMult, i.bandSizeMax);
+  if (i.paperOrderUsd > 0) {
+    const usd = cents(i.paperOrderUsd * k);
+    return { maxOrderRiskUsd: usd, maxContracts: floorCount(i.maxContractsPerOrder), ...(usd > 0 ? { fixedOrderUsd: usd } : {}), boundBy: 'paper' };
+  }
+  if (i.bandUsd && i.bandUsd.min > 0) {
+    // A session or regime that sizes to 0 places nothing (no band left to clamp into).
+    if (!(k > 0)) return { maxOrderRiskUsd: 0, maxContracts: 0, boundBy: 'band' };
+    const band = k === 1 ? i.bandUsd : { min: cents(i.bandUsd.min * k), max: cents(i.bandUsd.max * k) };
+    return { maxOrderRiskUsd: band.max, maxContracts: floorCount(i.maxContractsPerOrder), band, boundBy: 'band' };
+  }
   const tierUsd = i.orderFrac * i.bankroll * i.sizeMult * i.riskScale;
   const capped = Number.isFinite(i.fCapUsd) && i.fCapUsd < tierUsd;
   return { maxOrderRiskUsd: capped ? i.fCapUsd : tierUsd, maxContracts: floorCount(i.maxContractsPerOrder * Math.min(1, i.sizeMult)), boundBy: capped ? 'optimal_f' : 'tier' };

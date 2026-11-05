@@ -166,6 +166,13 @@ export interface StrategyConfig {
    *  order size (paperOrderUsd / paperOrderFrac) wins over it. */
   orderUsdMin: number;
   orderUsdMax: number;
+  /** BAND_SIZE_MULT (off): whether the session x regime size factor (sizeMult) scales the order band and the paper order
+   *  size, paper, live and replay alike (Steven, Nov 5: "the size multiplier multiplies from $10-$20 and from $20-$40 on
+   *  gated entries"). off = the band ignores it (as before). shrink = band x min(1, sizeMult): never above the band's top.
+   *  scale = band x min(sizeMult, BAND_SIZE_MAX): can go above the top, and the risk caps widen by BAND_SIZE_MAX. */
+  bandSizeMult: 'off' | 'shrink' | 'scale';
+  /** BAND_SIZE_MAX (1.5): the highest factor BAND_SIZE_MULT=scale applies. */
+  bandSizeMax: number;
   /** Paper only: no new crypto entries in a time-to-close bucket where the market mid has scored a better log loss
    *  than the bot's (temperature-calibrated) probability over the last settled markets (bot/strategy/accuracyGate.ts;
    *  the owner's choice on Oct 23). Live never blocks on it. */
@@ -1173,6 +1180,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0, 0, 1),
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
     orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
+    bandSizeMult: oneOf(env, 'BAND_SIZE_MULT', 'off', ['off', 'shrink', 'scale'] as const),
+    bandSizeMax: num(env, 'BAND_SIZE_MAX', 1.5, 1, 3),
     accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
     kappa: num(env, 'STRATEGY_KAPPA', 0.5, 0, 1),

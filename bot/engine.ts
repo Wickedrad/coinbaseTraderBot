@@ -1121,7 +1121,9 @@ export class Engine {
    *  size or the order band's top (one order, PAPER_WINDOW_ORDERS in markets closing together, PAPER_TOTAL_ORDERS in all). */
   private orderLimits(t: Tier, bankroll = this.bankroll() ?? 0): Partial<RiskLimits> {
     const lim = this.tierLimits(t);
-    const usd = this.paperOrderUsd(bankroll) || (this.orderBandUsd(bankroll)?.max ?? 0);
+    // BAND_SIZE_MULT=scale: the caps make room for the band's top scaled up to BAND_SIZE_MAX.
+    const S = this.d.cfg.strategy;
+    const usd = (this.paperOrderUsd(bankroll) || (this.orderBandUsd(bankroll)?.max ?? 0)) * (S.bandSizeMult === 'scale' ? S.bandSizeMax : 1);
     if (!(usd > 0) || !(bankroll > 0)) return lim;
     return {
       ...lim,
@@ -2172,7 +2174,7 @@ export class Engine {
     // Session risk scales size (sizeMult in [0, 1.5]: above 1 only for a reliably earning session, dollars only). The risk scale (drawdown, losing streak,
     // training-mode de-risking) shrinks every sizing route: Kelly, target-EV and the per-order caps alike. The same
     // budget sizes the backtester's orders (bot/sizing/orderBudget.ts).
-    const budget = orderBudget({ bankroll, orderFrac: tier.orderFrac, sizeMult, riskScale: kellyScale, fCapUsd, paperOrderUsd: fixedUsd, bandUsd: band, maxContractsPerOrder: R.maxContractsPerOrder });
+    const budget = orderBudget({ bankroll, orderFrac: tier.orderFrac, sizeMult, riskScale: kellyScale, fCapUsd, paperOrderUsd: fixedUsd, bandUsd: band, maxContractsPerOrder: R.maxContractsPerOrder, bandSizeMult: cfg.strategy.bandSizeMult, bandSizeMax: cfg.strategy.bandSizeMax });
     const view: MarketView = {
       ticker: m.ticker, pYes, bestBid: bid, bestAsk: ask, position: st.position, bankroll,
       maxOrderRiskUsd: budget.maxOrderRiskUsd, maxContracts: budget.maxContracts, minSidePrice: R.minSidePrice,
