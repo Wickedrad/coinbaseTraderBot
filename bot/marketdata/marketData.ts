@@ -225,7 +225,7 @@ export class MarketData extends EventEmitter {
     this.indexBars = new IndexBars(histDir);
     this.indexStore = new IndexStore(histDir);
     this.indexBars.onClose = () => this.indexStore.invalidate();
-    for (const s of cfg.strategy.series) this.series.set(s, cfg.seriesAssetMap[s]);
+    for (const s of cfg.strategy.series) this.addSeries(s, cfg.seriesAssetMap[s]);
     this.addTennisSeries();
     // Track every asset that has a settlement index, so discovered series can be priced at once.
     const assets = new Set([...this.series.values(), ...(cfg.strategy.seriesAuto ? Object.values(cfg.indexIdMap) : [])]);
@@ -425,7 +425,7 @@ export class MarketData extends EventEmitter {
         this.series.clear();
         for (const [s, a] of Object.entries(found)) {
           if (!before.has(s)) log.info('discovered series', { series: s, asset: a });
-          this.series.set(s, a);
+          this.addSeries(s, a);
         }
         this.addTennisSeries();
         this.discoveredAt = now;
@@ -435,9 +435,17 @@ export class MarketData extends EventEmitter {
     }
   }
 
-  /** Record-only series (RECORD_SERIES) that are not already traded, with their asset when it names one. */
+  /** Series left out of trading (STRATEGY_EXCLUDE_SERIES), kept recorded for later training, with their asset. */
+  private readonly excludedSeries = new Map<string, string>();
+  private addSeries(s: string, asset: string): void {
+    if (this.cfg.strategy.excludeSeries?.test(s)) { this.excludedSeries.set(s, asset); return; }
+    this.series.set(s, asset);
+  }
+
+  /** Record-only series (RECORD_SERIES, and the excluded ones) that are not already traded, with their asset when it names one. */
   private recordSeriesList(): Array<[string, string]> {
-    return this.cfg.strategy.recordSeries.filter((s) => !this.series.has(s)).map((s) => [s, assetFromSeries(s, Object.values(this.cfg.indexIdMap)) ?? 'REC']);
+    const own = this.cfg.strategy.recordSeries.filter((s) => !this.series.has(s) && !this.excludedSeries.has(s)).map((s) => [s, assetFromSeries(s, Object.values(this.cfg.indexIdMap)) ?? 'REC'] as [string, string]);
+    return [...own, ...this.excludedSeries];
   }
 
   private readonly resultChecked = new Set<string>();
