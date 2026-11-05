@@ -120,8 +120,21 @@ def spot_at(w: Windows, spots: dict[int, Spot], feats: dict[int, dict[str, np.nd
     return S, F
 
 
-def window_features(w: Windows, S: np.ndarray, F: dict[str, np.ndarray], extra: list[dict] | None = None):
-    """X (W, 2, N, n_features) float32 and the feature names."""
+def cross_at(w: Windows, spot: Spot, feats: dict[str, np.ndarray], label: str, names=('r1', 'r3', 'r5')) -> dict[str, np.ndarray]:
+    """Another asset's spot returns at every decision time of every window ({f'lead_{label}_{name}': (W, N)}): the bar
+    that closed at t_k, as for the window's own asset (no lookahead). For a lead-lag hypothesis: does a BTC move reach
+    the other assets' Kalshi quotes a minute late?"""
+    t = w.open_ms[:, None] + MIN * np.arange(w.n)[None, :]
+    m = spot.bar_closing_at(t)
+    ok = m >= 0
+    mm = np.where(ok, m, 0)
+    return {f'lead_{label}_{n}': np.where(ok, feats[n][mm], np.nan).astype(np.float32) for n in names}
+
+
+def window_features(w: Windows, S: np.ndarray, F: dict[str, np.ndarray], extra: list[dict] | None = None,
+                    cross: dict[str, np.ndarray] | None = None):
+    """X (W, 2, N, n_features) float32 and the feature names. `cross`: other assets' spot returns (cross_at), signed
+    like the window's own returns (flipped for the NO side)."""
     W, N = len(w), w.n
     bid, ask, *_ = side_quotes(w)
     k = np.arange(N)[None, :]
@@ -158,9 +171,11 @@ def window_features(w: Windows, S: np.ndarray, F: dict[str, np.ndarray], extra: 
                 elif name in _MIRROR1:
                     x = 1 - x
             side_cols[name] = x
+        for name, x in sorted((cross or {}).items()):
+            side_cols[name] = x.astype(np.float64) * sgn
         for name, x in side_cols.items():
             cols.setdefault(name, [None, None])[s] = x
-    names = list(BASE_NAMES)
+    names = list(BASE_NAMES) + sorted(cross or {})
     X = np.empty((W, 2, N, len(names) + len(extra or [])), dtype=np.float32)
     for j, name in enumerate(names):
         X[:, 0, :, j] = cols[name][0]

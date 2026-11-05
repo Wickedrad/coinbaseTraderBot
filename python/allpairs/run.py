@@ -25,7 +25,7 @@ import numpy as np
 
 from . import DEFAULT_ASSETS, EXCLUDED_ASSETS
 from .data import MIN, Windows, allowed_assets, load_kalshi, load_spot
-from .features import BASE_NAMES, side_quotes, spot_at, spot_features, window_features
+from .features import BASE_NAMES, cross_at, side_quotes, spot_at, spot_features, window_features
 from .matrix import Costs, all_pairs
 from .policy import EntryConfig, entry_rows, fit_entry, maker_attempts, pnl_stats, random_entry_placebo, simulate
 from .snell import STATE_EXTRA, Book, ExitConfig, build_positions, solve_exits
@@ -45,6 +45,7 @@ DEFAULTS = {
     'entry': {'hurdles': [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 1e9], 'maker_entries': True, 'entry_minutes': None, 'first_minute': 1,
               'rows_per_fit': 1_000_000},
     'extra_features': [],
+    'cross_assets': [],        # other assets whose spot returns become features of every window (lead_<ASSET>_r1/r3/r5)
     'placebo': {'shuffles': 3, 'random_draws': 50},
     # The project's fixed history split (institutional-methods, Nov 5): 60 days train, 2 days gap, 14 days test.
     'walk': {'train_days': 60, 'test_days': 14, 'embargo_days': 2, 'inner_days': 10, 'rolling': True},
@@ -218,7 +219,13 @@ def main(argv=None):
     trainable = clean_q if kind != 'synth1h' else np.ones(len(w), dtype=bool)
     N = w.n
     S, F = spot_at(w, spots, sfeats)
-    X, names = window_features(w, S, F, cfg.get('extra_features'))
+    cross = {}
+    for lab in cfg.get('cross_assets') or []:
+        if lab in EXCLUDED_ASSETS or lab not in real.assets or real.assets.index(lab) not in spots:
+            raise SystemExit(f'cross asset {lab} is not loaded (assets {real.assets})')
+        ai = real.assets.index(lab)
+        cross.update(cross_at(w, spots[ai], sfeats[ai], lab))
+    X, names = window_features(w, S, F, cfg.get('extra_features'), cross)
     state_names = names + STATE_EXTRA
     entry_names = names + ['entry_maker']
     bid, ask, nbl, nbh, nal, nah, settle = side_quotes(w)

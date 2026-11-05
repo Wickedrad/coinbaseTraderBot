@@ -261,7 +261,7 @@ class Features(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.dir = tempfile.mkdtemp()
-        make(cls.dir, days=3, assets=('BTC', 'DOGE'))
+        make(cls.dir, days=3, assets=('BTC', 'DOGE', 'ETH'))
 
     @classmethod
     def tearDownClass(cls):
@@ -292,6 +292,26 @@ class Features(unittest.TestCase):
         spot_cols = [names.index(n) for n in ('r1', 'r15', 'rv60', 'rsi14', 'bbw20', 'macd', 'ou60', 'zdist', 'fair')]
         np.testing.assert_allclose(X[j, :, k, spot_cols], X2[j, :, k, spot_cols], rtol=1e-6, atol=1e-6)
         self.assertFalse(np.allclose(X[j, 0, k + 1, names.index('r1')], X2[j, 0, k + 1, names.index('r1')]))
+
+    def test_cross_asset_features(self):
+        """Another asset's returns at a decision time: no lookahead, signed by side, usable in expressions."""
+        from allpairs.features import cross_at
+        w = load_kalshi(self.dir, ['BTC'], log=lambda m: None)
+        lo, hi = int(w.open_ms.min()) - 2 * 86_400_000, int(w.open_ms.max()) + 86_400_000
+        sp, eth = load_spot(self.dir, 'BTC', lo, hi), load_spot(self.dir, 'ETH', lo, hi)
+        S, F = spot_at(w, {0: sp}, {0: spot_features(sp)})
+        cr = cross_at(w, eth, spot_features(eth), 'ETH')
+        X, names = window_features(w, S, F, [dict(name='lag', expr='lead_ETH_r1 - r1')], cr)
+        j, k = 50, 7
+        c = names.index('lead_ETH_r1')
+        self.assertAlmostEqual(float(X[j, 0, k, c]), -float(X[j, 1, k, c]), places=6)
+        self.assertAlmostEqual(float(X[j, 0, k, names.index('lag')]), float(X[j, 0, k, c] - X[j, 0, k, names.index('r1')]), places=5)
+        t = int(w.open_ms[j]) + 60_000 * k
+        m = eth.bar_closing_at(np.array([t]))[0]
+        for arr in (eth.o, eth.h, eth.l, eth.c, eth.v):
+            arr[m + 1:] *= 1.37
+        cr2 = cross_at(w, eth, spot_features(eth), 'ETH')
+        self.assertAlmostEqual(float(cr['lead_ETH_r3'][j, k]), float(cr2['lead_ETH_r3'][j, k]), places=6)
 
     def test_safe_eval(self):
         env = {'a': np.array([1.0, 2.0]), 'b': np.array([2.0, 0.0])}
