@@ -30,6 +30,8 @@ concurrency:
 
 env:
   TJ_DAYS: ${{ inputs.days || '240' }}
+  # Steven (Nov 5): no DOGE in any replay, sweep or score until he says otherwise.
+  HISTORY_REPLAY_ASSETS: 'BTC,ETH,SOL,XRP'
   # Each variant replays its days in two halves on two runners (one would pass GitHub's 6-hour job limit); the report adds
   # them together. Steven (Nov 1): history iterations must be deep on days and cover several market regimes.
   TJ_PARTS: '2'
@@ -116,8 +118,8 @@ jobs:
     timeout-minutes: 330
     strategy:
       fail-fast: false
-      # The account's runner cap is shared by every thread (Nov 1): long replays run one at a time.
-      max-parallel: 1
+      # Coordinator (Nov 5): up to 10 jobs at once for the project (was 3), about 50 across the project.
+      max-parallel: 10
       matrix:
         variant: ${{ fromJson(needs.data.outputs.variants) }}
         part: [1, 2]
@@ -172,8 +174,8 @@ jobs:
     timeout-minutes: 330
     strategy:
       fail-fast: false
-      # The account's runner cap is shared by every thread (Nov 1): long replays run one at a time.
-      max-parallel: 1
+      # Coordinator (Nov 5): up to 10 jobs at once for the project (was 3), about 50 across the project.
+      max-parallel: 10
       matrix:
         variant: ${{ fromJson(needs.data.outputs.gates) }}
         part: [1, 2]

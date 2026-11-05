@@ -1643,7 +1643,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       historyReplay: bool(env, 'HISTORY_REPLAY', false),
       historyReplayYears: num(env, 'HISTORY_REPLAY_YEARS', 0, 0, 20),
       historyReplayDir: path.resolve(env.HISTORY_REPLAY_DIR ?? path.join(dataDir, 'history-replay')),
-      historyReplayAssets: (env.HISTORY_REPLAY_ASSETS ?? 'BTC,ETH,SOL,XRP,DOGE').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean),
+      historyReplayAssets: (env.HISTORY_REPLAY_ASSETS ?? 'BTC,ETH,SOL,XRP').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean),
       retrainEveryDays: num(env, 'TA_NET_RETRAIN_DAYS', 7, 0, 365),
       arch: oneOf(env, 'TA_NET_ARCH', 'flat', ['flat', 'grouped'] as const),
       engine: oneOf(env, 'TA_NET_ENGINE', 'ts', ['ts', 'torch', 'auto'] as const),
