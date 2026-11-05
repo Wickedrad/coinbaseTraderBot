@@ -239,3 +239,23 @@ test('kalshi history: a market near the cutoff missing from the archive is fetch
   const again = await downloadKalshiHistory({ series: ['KXBTC15M'], days: 30, out, fetchImpl, now, ratePerSec: 100, log: () => {} });
   assert.equal(again.markets + again.rejected, 0, 'nothing asked twice');
 });
+
+test('tennis history replay: minute 0 and a carried candle quote never set the book; the book a trade set stands', async () => {
+  const hist = fs.mkdtempSync(path.join(os.tmpdir(), 'th-')), out = path.join(hist, 'replay');
+  const kal = path.join(hist, 'kalshi', 'KXATPMATCH');
+  fs.mkdirSync(path.join(kal, 'trades'), { recursive: true });
+  const start = DAY0 + 10 * 3_600_000, close = start + 120 * MIN, ticker = 'KXATPMATCH-M9-A';
+  const c = (ts: number, bidC: number, askC: number) => ({ ts, bidC, askC, last: null, volume: 1 });
+  // Minute 0 lists at 1c/99c; then 40/42; a trade lifts 45; the next minute repeats 40/42 (carried); then 46/48.
+  const candles = [c(start - 20 * MIN, 0.01, 0.99), c(start - 19 * MIN, 0.4, 0.42), c(start - 18 * MIN, 0.4, 0.42), c(start - 17 * MIN, 0.46, 0.48)];
+  fs.writeFileSync(path.join(kal, '2026-03-02.jsonl'), JSON.stringify({ ticker, series: 'KXATPMATCH', event: 'KXATPMATCH-M9', openTime: start - 86_400_000, closeTime: close, strike: null, cap: null, title: 'm9', startTime: start, result: 'yes', candles }) + '\n');
+  fs.writeFileSync(path.join(kal, 'trades', '2026-03-02.jsonl'), JSON.stringify({ ticker, trades: [[start - 18 * MIN - 30_000, 0.45, 2, 1]] }) + '\n');
+  await buildHistoryReplay({ historyDir: hist, outDir: out, assets: [], fromDay: '2026-03-02', toDay: '2026-03-03', tennisSeries: ['KXATPMATCH'], log: () => {} });
+  const books: Array<[number, number, number]> = [];
+  for await (const e of readRecordings(out)) if (e.k === 'book' && e.ticker === ticker) books.push([e.t, e.bids[0].price, e.asks[0].price]);
+  assert.deepEqual(books, [
+    [start - 19 * MIN, 0.4, 0.42],
+    [start - 18 * MIN - 30_000, 0.43, 0.45],
+    [start - 17 * MIN, 0.46, 0.48],
+  ]);
+});
