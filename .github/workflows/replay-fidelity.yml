@@ -185,8 +185,8 @@ jobs:
     timeout-minutes: 340
     strategy:
       fail-fast: false
-      # All eight at once (Nov 5): since the move to the Wickedrad org (Nov 2-4) 36 jobs ran together with no job
-      # waiting for a runner, and these backtests read nothing from the server but bot.env.
+      # All eight at once (Nov 5): since the move to the Wickedrad org (Nov 2-4) 36 jobs ran together and every
+      # non-matrix job started within a minute, and these backtests read nothing from the server but bot.env.
       max-parallel: 8
       matrix:
         # Eight runners, not 24: queued behind the other labs, 24 waited so long that the cached copy of the days was
