@@ -99,7 +99,13 @@ SCHEMA = {
         'raw': {'type': 'object', 'description': 'foreign ledger row kept verbatim'},
         'contract_type': {'enum': list(CONTRACT_TYPES), 'description': 'inferred from thread/env when absent (contract_type_of)'},
         'modules': {'type': 'array', 'items': {'type': 'string'}, 'description': 'bot modules the arm changes; inferred from env when absent'},
-        'held_out': {'type': 'boolean', 'description': 'true when by_day is out of sample for the choice of this arm (walk-forward, sealed days)'},
+        'held_out': {'type': 'boolean', 'description': 'legacy: by_day is out of sample (not enough for the ledger without heldout)'},
+        'heldout': {'type': 'object', 'description': 'held-out standard HO-1 evidence (see HO1 below and the README)', 'properties': {
+            'standard': {'const': 'HO-1'}, 'tier': {'enum': ['history', 'recorded']},
+            'days': {'type': 'number'}, 'folds': {'type': 'integer'}, 'folds_won': {'type': 'integer'},
+            'worst_fold_per_hour': {'type': 'number'}, 'terciles_covered': {'type': 'integer'},
+            'terciles_won': {'type': 'integer'}, 'worst_tercile_per_hour': {'type': 'number'},
+            'beats_placebo': {'type': 'boolean'}, 'replay_version': {'type': 'integer'}}},
     },
 }
 
@@ -369,7 +375,7 @@ def merge(shard_dir, out_dir, S=6):
                           'gain': sum(g), 'gain_per_day': _mean(g), 'p': paired_p(g), 'sr': sr, 'sr0': sr0, 'dsr': prob,
                           'above_2noise': (None if noise is None else sum(g) > 2 * noise * math.sqrt(len(cd))),
                           'flags': r['flags'], 'contract_type': contract_type_of(r), 'modules': modules_of(r),
-                          'held_out': bool(r.get('held_out')), 'hours_per_day': (r.get('hours') or 24 * len(cd)) / max(1, len(cd))})
+                          'held_out': bool(r.get('held_out')), 'ho1': ho1_pass(r.get('heldout')), 'hours_per_day': (r.get('hours') or 24 * len(cd)) / max(1, len(cd))})
         for c, (adj, rej) in zip(cands, bhy([c['p'] for c in cands])):
             c['p_bhy'], c['bhy_pass'] = adj, rej
         rep['families'].append({'thread': th, 'family': fam, 'n_raw': len(rs_all), 'k_eff': ke, 'days': len(days),
@@ -412,12 +418,45 @@ def modules_of(r):
     return sorted(m) or ['other']
 
 
+# Held-out standard HO-1 (Steven 22:07 UTC Nov 5: held-out must be a large chunk of time, not a few days).
+#   history tier : choose on H-DEV Apr 18-Jul 31 2026 only; score on H-HOLD Aug 1-Nov 4 2026 (96 days, crash of Oct 29
+#                  included) in 6 consecutive folds of 16 days. Needs >= 90 held-out days, folds won >= 4/6, worst fold
+#                  >= -$0.50/h, >= 2 of 3 RV terciles covered (regime v1, >= 100 h each) and won, none below -$0.50/h,
+#                  and the gain beats its placebo.
+#   recorded tier: every fixed-code recorded day (>= 14 days, Oct 21 on), leave-one-day-out walk-forward (>= 14 folds),
+#                  >= 2 tick phases or K=8 seeds; folds won >= 60%, worst day >= -$1.00/h, beats placebo.
+#   The ledger counts a result when its history tier passes and its recorded tier is not negative, or (a mechanism the
+#   history books cannot simulate: depth, order flow) when its recorded tier passes. Lockboxes L1/L2 stay separate.
+HO1 = {'history': {'days': 90, 'folds': 6, 'win_share': 4 / 6, 'worst_fold': -0.50, 'terciles': 2, 'worst_tercile': -0.50},
+       'recorded': {'days': 14, 'folds': 14, 'win_share': 0.60, 'worst_fold': -1.00, 'terciles': 0, 'worst_tercile': None}}
+REPLAY_VERSION_MIN = 8  # results from before #286 are re-run on REPLAY_VERSION 8
+
+
+def ho1_pass(h):
+    """(passes, why) for a row's heldout block under HO-1."""
+    if not isinstance(h, dict) or h.get('standard') != 'HO-1' or h.get('tier') not in HO1:
+        return False, 'no HO-1 held-out block'
+    t = HO1[h['tier']]
+    why = []
+    if (h.get('days') or 0) < t['days']: why.append(f'{h.get("days") or 0} held-out days < {t["days"]}')
+    k = h.get('folds') or 0
+    if k < t['folds']: why.append(f'{k} folds < {t["folds"]}')
+    elif (h.get('folds_won') or 0) / k < t['win_share'] - 1e-9: why.append(f'won {h.get("folds_won") or 0}/{k} folds')
+    if (h.get('worst_fold_per_hour') if h.get('worst_fold_per_hour') is not None else -1e9) < t['worst_fold']: why.append('worst fold too deep')
+    if t['terciles']:
+        if (h.get('terciles_covered') or 0) < t['terciles'] or (h.get('terciles_won') or 0) < t['terciles']: why.append('fewer than 2 RV terciles won')
+        if (h.get('worst_tercile_per_hour') if h.get('worst_tercile_per_hour') is not None else -1e9) < t['worst_tercile']: why.append('a tercile below -$0.50/h')
+    if not h.get('beats_placebo'): why.append('does not beat its placebo')
+    if h['tier'] == 'history' and (h.get('replay_version') or 0) < REPLAY_VERSION_MIN: why.append(f'replay version < {REPLAY_VERSION_MIN}')
+    return not why, '; '.join(why)
+
+
 BLOCKING = ('G0:', 'G1:', 'G1b:', 'G1c:', 'G2:', 'LOCKBOX:')
 
 
 def validated(c):
     """A result that may count toward a contract type's model: clean evidence, held out, survives multiple testing and noise."""
-    return (c['role'] == 'candidate' and c['held_out'] and c['bhy_pass'] and c['above_2noise'] is not False
+    return (c['role'] == 'candidate' and c['ho1'][0] and c['bhy_pass'] and c['above_2noise'] is not False
             and c['gain'] > 0 and not any(f.startswith(BLOCKING) for f in c['flags']))
 
 
@@ -425,7 +464,8 @@ def contract_ledger(rep, target=4.50):
     """Per contract type: the best validated result per module, combined greedily over disjoint module sets."""
     cs = [dict(c, thread=f['thread'], family=f['family']) for f in rep['families'] for c in f['candidates']]
     L = ['# Contract-type ledger (Steven, 21:59 UTC / 4:59 PM EST Nov 5)', '',
-         'Sum of the best VALIDATED module results that combine (disjoint modules): held out, BHY pass, above 2x noise, no',
+         'Sum of the best VALIDATED module results that combine (disjoint modules): held-out standard HO-1 (96-day history',
+         'hold-out in 6 folds + 2 RV terciles, or 14+ recorded days walk-forward; see README), BHY pass, above 2x noise, no',
          'blocking flag (DOGE, paper benches, synthetic book flow, wide spreads, selection bias, unpaired, lockbox). Never paper.',
          f'A contract type at or above ${target:.2f}/h freezes as that type\'s model; new work is then judged against it.', '']
     for ct in CONTRACT_TYPES:
@@ -449,7 +489,7 @@ def contract_ledger(rep, target=4.50):
             L += ['', 'Leads not yet validated (why):', '| module(s) | thread / family | arm | $/h | why not |', '|---|---|---|---|---|']
             for c in leads:
                 why = [f for f in c['flags'] if f.startswith(BLOCKING)]
-                if not c['held_out']: why.append('in-sample')
+                if not c['ho1'][0]: why.append('HO-1: ' + c['ho1'][1])
                 if not c['bhy_pass']: why.append(f'BHY p {c["p_bhy"]:.2f}')
                 if c['above_2noise'] is False: why.append('under 2x noise')
                 if c['role'] != 'candidate': why.append(c['role'])
@@ -574,6 +614,11 @@ def selftest():
     assert 'G1:synthetic-book-flow' in validate({**h, 'env': {'TA_VETO_OFI': 0}})[1]
     assert 'G1:synthetic-book-flow' in validate({**h, 'env': {'TENNIS_CONF_DEPTH': 1}})[1]
     assert 'G1:synthetic-book-flow' not in validate({**h, 'env': {'TENNIS_CONF_FLOW': 1, 'TENNIS_CONF_MOMENTUM_CENTS': 2}})[1]
+    ok = {'standard': 'HO-1', 'tier': 'history', 'days': 96, 'folds': 6, 'folds_won': 4, 'worst_fold_per_hour': -0.2,
+          'terciles_covered': 3, 'terciles_won': 2, 'worst_tercile_per_hour': -0.1, 'beats_placebo': True, 'replay_version': 8}
+    assert ho1_pass(ok)[0], ho1_pass(ok)
+    assert not ho1_pass({**ok, 'days': 7})[0] and not ho1_pass({**ok, 'folds_won': 3})[0] and not ho1_pass({**ok, 'replay_version': 7})[0]
+    assert not ho1_pass(None)[0]
     print('registry selftest ok')
 
 
