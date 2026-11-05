@@ -55,6 +55,7 @@ jobs:
       diag_only: ${{ steps.go.outputs.diag_only }}
       registry: ${{ steps.go.outputs.registry }}
       configs: ${{ steps.go.outputs.configs }}
+      protocol: ${{ steps.go.outputs.protocol }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -93,9 +94,14 @@ jobs:
           if printf '%s' "$MSG" | grep -qF '[all-pairs-registry]'; then echo "registry=true" >> "$GITHUB_OUTPUT"; else echo "registry=false" >> "$GITHUB_OUTPUT"; fi
           rr=$(printf '%s' "$MSG" | sed -nE 's/.*\[all-pairs-report:([0-9]+)\].*/\1/p' | head -1)
           echo "report_run=$rr" >> "$GITHUB_OUTPUT"
+          # "[protocol:ho1]": the project's held-out standard HO-1 (choose and fit on Apr 18-Jul 31, score once on
+          # Aug 1-Nov 4 in 6 folds of 16 days); otherwise the purged walk-forward of the config.
+          PROTOCOL=$(printf '%s' "$MSG" | sed -nE 's/.*\[protocol:(ho1|walk)\].*/\1/p' | head -1)
+          PROTOCOL=${PROTOCOL:-walk}
+          echo "protocol=$PROTOCOL" >> "$GITHUB_OUTPUT"
           # Per config: base folds over 4 jobs, stress and synth1h over 2, synth15 1; at most 5 jobs at once (the project
           # shares ~50 runners, this thread ~10).
-          python3 - "$ARMS" "$CONFIGS" >> "$GITHUB_OUTPUT" <<'EOF'
+          python3 - "$ARMS" "$CONFIGS" "$PROTOCOL" >> "$GITHUB_OUTPUT" <<'EOF'
           import json, os, re, sys
           # base, stress and tight always run: the gate needs all three (a missing arm counts as not passed).
           want = {a.strip() for a in sys.argv[1].split(',') if a.strip()} | {'base', 'stress', 'tight'}
@@ -104,6 +110,8 @@ jobs:
               if not re.fullmatch(r'[A-Za-z0-9_-]+', c) or not os.path.exists(f'python/allpairs/hypotheses/{c}.json'):
                   sys.exit(f'unknown config {c!r}')
           parts = {'base': 4, 'stress': 2, 'tight': 2, 'synth15': 1, 'synth1h': 2}
+          if sys.argv[3] == 'ho1':   # one model per arm, fitted once: one job scores all 6 held-out folds
+              parts = {a: 1 for a in parts}
           inc = [{'config': c, 'arm': a, 'part': p, 'parts': n} for c in configs for a, n in parts.items() if a in want for p in range(n)]
           print('matrix=' + json.dumps({'include': inc}))
           print('configs=' + ','.join(configs))
@@ -196,10 +204,11 @@ jobs:
         env:
           CONFIG: ${{ matrix.config }}
           DAYS: ${{ inputs.days || '0' }}
+          PROTOCOL: ${{ needs.test.outputs.protocol || 'walk' }}
         run: |
           set -euo pipefail
-          [[ "$CONFIG" =~ ^[A-Za-z0-9_-]+$ ]] && [[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "bad input"; exit 1; }
-          python -W ignore -m allpairs.run --history ../data/history --config "allpairs/hypotheses/$CONFIG.json" \
+          [[ "$CONFIG" =~ ^[A-Za-z0-9_-]+$ ]] && [[ "$DAYS" =~ ^[0-9]+$ ]] && [[ "$PROTOCOL" =~ ^(walk|ho1)$ ]] || { echo "bad input"; exit 1; }
+          python -W ignore -m allpairs.run --history ../data/history --config "allpairs/hypotheses/$CONFIG.json" --protocol "$PROTOCOL" \
             --arm ${{ matrix.arm }} --part ${{ matrix.part }} --parts ${{ matrix.parts }} --assets "$ASSETS" --days "$DAYS" \
             --out "$RUNNER_TEMP/parts/$CONFIG/${{ matrix.arm }}-${{ matrix.part }}.json" 2>&1 | tail -80
       # The part holds per-trade rows: it goes to Drive, never to a public artifact.
@@ -275,6 +284,12 @@ jobs:
           elif [ "$rc" = 3 ] && [ "$SRC" != "${{ github.run_id }}" ]; then
             bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC" "$RUNNER_TEMP/results/base" --include "/*.json"
           else echo "no parts for run $SRC ($rc)"; exit 1; fi
+          # HO-1 runs: the registry's held-out block per arm (folds, RV terciles from the frozen regime v1 labels, placebo).
+          if grep -lq '"protocol": "ho1"' "$RUNNER_TEMP"/results/*/*.json 2>/dev/null; then
+            if rclone copyto "$R/registry/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz" "$RUNNER_TEMP/labels.csv.gz"; then
+              python -W ignore -m allpairs.ho1 --results "$RUNNER_TEMP/results" --labels "$RUNNER_TEMP/labels.csv.gz"
+            else echo "::warning::regime v1 labels not readable: no HO-1 block"; fi
+          fi
           # One gate and card per config, in order; each config scored here counts as a trial for the next.
           for d in "$RUNNER_TEMP"/results/*/; do
             python -W ignore -m allpairs.report --results "$d" --ledger "$RUNNER_TEMP/state/trials.jsonl" \

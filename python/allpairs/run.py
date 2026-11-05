@@ -31,7 +31,7 @@ from .matrix import Costs, _cap, all_pairs
 from .policy import EntryConfig, entry_rows, fit_entry, maker_attempts, pnl_stats, random_entry_placebo, simulate
 from .snell import STATE_EXTRA, Book, ExitConfig, build_positions, solve_exits
 from .synthetic import calibrate, hourly_windows, price_windows
-from .validate import block_bootstrap_mean, inner_split, psr, walk_forward
+from .validate import HO1_DEV_FROM, HO1_FOLDS, HO1_HOLD_FROM, HO1_HOLD_TO, block_bootstrap_mean, ho1_folds, inner_split, psr, walk_forward
 
 DEFAULTS = {
     'name': 'base',
@@ -79,6 +79,16 @@ def merge(a: dict, b: dict) -> dict:
     for k, v in b.items():
         out[k] = merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else copy.deepcopy(v)
     return out
+
+
+def arm_config(file_cfg: dict, arm: str, protocol: str = 'walk') -> dict:
+    """The run's configuration: the engine defaults, the hypothesis file, then the arm's overrides."""
+    cfg = merge(merge(DEFAULTS, file_cfg), ARMS[arm])
+    if protocol == 'ho1' and arm in ('stress', 'tight'):
+        # HO-1 judges every gated arm against its own placebos (the arm is fitted once, so its shuffled-label refits are
+        # cheap); placebo is not part of the config hash.
+        cfg['placebo']['shuffles'] = max(int(cfg['placebo']['shuffles']), int(DEFAULTS['placebo']['shuffles']))
+    return cfg
 
 
 def config_hash(cfg: dict) -> str:
@@ -138,12 +148,17 @@ def main(argv=None):
     ap.add_argument('--max-folds', type=int, default=0)
     ap.add_argument('--part', type=int, default=0, help='this job runs folds with index %% parts == part')
     ap.add_argument('--parts', type=int, default=1)
+    ap.add_argument('--protocol', default='walk', choices=('walk', 'ho1'),
+                    help='walk: purged walk-forward (config walk); ho1: held-out standard HO-1, one model chosen and fitted '
+                         'on H-DEV, scored once on H-HOLD in 6 folds (an evaluation protocol: not part of the config hash)')
+    ap.add_argument('--ho1-span', default=f'{HO1_DEV_FROM},{HO1_HOLD_FROM},{HO1_HOLD_TO}',
+                    help='HO-1 dev_from,hold_from,hold_to (inclusive); the project standard by default (tests only)')
     ap.add_argument('--out', required=True)
     a = ap.parse_args(argv)
     t_start = time.time()
     with open(a.config) as fh:
         file_cfg = json.load(fh)
-    cfg = merge(merge(DEFAULTS, file_cfg), ARMS[a.arm])
+    cfg = arm_config(file_cfg, a.arm, a.protocol)
     kind = cfg.get('kind', 'real15')
     asked = [x.strip().upper() for x in a.assets.split(',') if x.strip()]
     assets = allowed_assets(asked)
@@ -224,7 +239,13 @@ def main(argv=None):
         keep &= real.day >= d0
     real_q = real.subset(np.nonzero(keep)[0])
     clean_q = clean[keep]
-    folds_days = walk_forward(real_q.day, walk['train_days'], walk['test_days'], walk['embargo_days'], walk['rolling'])
+    if a.protocol == 'ho1':
+        dev_from, hold_from, hold_to = a.ho1_span.split(',')
+        folds_days = ho1_folds(real_q.day, dev_from, hold_from, hold_to, HO1_FOLDS, walk['embargo_days'])
+        log(f'HO-1: one model chosen and fitted on {dev_from}..(purge before {hold_from}), scored on {hold_from}..{hold_to} '
+            f'in {len(folds_days)} folds')
+    else:
+        folds_days = walk_forward(real_q.day, walk['train_days'], walk['test_days'], walk['embargo_days'], walk['rolling'])
     if a.max_folds:
         folds_days = folds_days[-a.max_folds:]
     if not folds_days:
@@ -281,17 +302,16 @@ def main(argv=None):
     folds = []
     shap_entry = shap_exit = []
     last_fold = len(folds_days) - 1
-    for fi, (tr_days, te_days) in enumerate(folds_days):
-        if fi % a.parts != a.part:
-            continue
-        t_f = time.time()
-        rng = np.random.default_rng(17 + fi)
+    trained = {}   # training span -> its fitted models; under HO-1 every fold shares one span, fitted once
+
+    def train_span(tr_days, seed_i):
+        """Exit models, entry model, hurdle and the shuffled-label placebo models of one training span (seeds by the
+        span's first fold, so a walk-forward fold is fitted exactly as before)."""
         tr_idx = np.nonzero(np.isin(days, tr_days) & trainable)[0]
-        te_idx = np.nonzero(np.isin(days, te_days))[0]
-        if not len(te_idx) or not len(tr_idx):
-            continue
-        btr, bte = sub_book(tr_idx), sub_book(te_idx)
-        Xtr, Xte = X[tr_idx], X[te_idx]
+        if not len(tr_idx):
+            return None
+        btr = sub_book(tr_idx)
+        Xtr = X[tr_idx]
         ptr = build_positions(btr, costs, cfg['entry']['maker_entries'], entry_minutes, taker)
         groups = (days[tr_idx] % 2).astype(np.int8)
         xr = solve_exits(btr, Xtr, ptr, costs, xcfg, groups=groups)
@@ -340,9 +360,38 @@ def main(argv=None):
 
         hurdle, val_scores = pick_hurdle()
         emodel = fit_entry(rows_tr, ecfg) if decision == 'model' else None
+        # Placebo 2's models: entry models fitted on permuted labels, same hurdle procedure (scored on each test span).
+        shuf = []
+        for k_ in range(int(cfg['placebo']['shuffles'])):
+            h_s, _ = pick_hurdle(shuffle=np.random.default_rng(100 + 10 * seed_i + k_))
+            m_s = fit_entry(rows_tr, ecfg, shuffle_rng=np.random.default_rng(200 + 10 * seed_i + k_))
+            shuf.append((h_s, m_s))
+        return dict(models=xr.models, emodel=emodel, hurdle=hurdle, val_scores=val_scores, eq_val=eq_val, shuf=shuf,
+                    n_pos=len(ptr), p_yes=float(btr.settle[:, 0].mean()), p_yes_all=float(np.mean(w.settle[np.isin(days, tr_days)])))
+
+    for fi, (tr_days, te_days) in enumerate(folds_days):
+        if fi % a.parts != a.part:
+            continue
+        t_f = time.time()
+        rng = np.random.default_rng(17 + fi)
+        te_idx = np.nonzero(np.isin(days, te_days))[0]
+        if not len(te_idx):
+            continue
+        # HO-1: every fold shares the span and its one fit; walk-forward: one fit per fold, as before (also when two
+        # folds' training days happen to be identical: the placebo seeds follow the fold).
+        key = np.asarray(tr_days).tobytes() if a.protocol == 'ho1' else (fi, np.asarray(tr_days).tobytes())
+        if key not in trained:
+            trained.clear()   # walk-forward spans are never reused: keep only the current one in memory
+            trained[key] = train_span(tr_days, 0 if a.protocol == 'ho1' else fi)
+        tsp = trained[key]
+        if tsp is None:
+            continue
+        hurdle, val_scores, eq_val, emodel = tsp['hurdle'], tsp['val_scores'], tsp['eq_val'], tsp['emodel']
+        bte = sub_book(te_idx)
+        Xte = X[te_idx]
         # Out of sample: exits by the training span's models, entries by its entry model.
         pte = build_positions(bte, costs, cfg['entry']['maker_entries'], entry_minutes, taker)
-        xe = solve_exits(bte, Xte, pte, costs, xcfg, models=xr.models)
+        xe = solve_exits(bte, Xte, pte, costs, xcfg, models=tsp['models'])
         pnl_te = xe.pnl(pte)
         att_te = maker_attempts(bte.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None
         rows_te = entry_rows(Xte, pte, pnl_te, att_te)
@@ -353,9 +402,9 @@ def main(argv=None):
         y_naive = entry_rows(Xte[..., :1], pte, xe.pnl(pte, 'naive'), att_te)['y']
         fin = np.isfinite(pred)
         diag = dict(naive_exit_pnl=round(float(y_naive[chosen].sum()), 2),
-                    p_yes=[round(float(btr.settle[:, 0].mean()), 4), round(float(bte.settle[:, 0].mean()), 4)],
+                    p_yes=[round(tsp['p_yes'], 4), round(float(bte.settle[:, 0].mean()), 4)],
                     # P(settle YES) of every training-day window before the training filters (registry pyes_all)
-                    p_yes_train_all=round(float(np.mean(w.settle[np.isin(days, tr_days)])), 4),
+                    p_yes_train_all=round(tsp['p_yes_all'], 4),
                     pred_by_side=[round(float(pred[(rows_te['s'] == s_) & fin].mean()), 4) if np.any((rows_te['s'] == s_) & fin) else None
                                   for s_ in (0, 1)])
         # Hour slots of the test days that have data (te_days, sorted): a gap in the history does not shift the series.
@@ -373,11 +422,9 @@ def main(argv=None):
         # Placebo 1: random entries at the model's rate, exits by the policy.
         per_window = len(chosen) / max(1, len(te_idx))
         rp = random_entry_placebo(rows_te, per_window, rng, cfg['placebo']['random_draws'], len(te_idx)) / n_hours
-        # Placebo 2: entry models fitted on permuted labels, same hurdle procedure.
+        # Placebo 2: entry models fitted on permuted labels, same hurdle procedure (fitted with the training span).
         shuf = []
-        for k_ in range(int(cfg['placebo']['shuffles'])):
-            h_s, _ = pick_hurdle(shuffle=np.random.default_rng(100 + 10 * fi + k_))
-            m_s = fit_entry(rows_tr, ecfg, shuffle_rng=np.random.default_rng(200 + 10 * fi + k_))
+        for h_s, m_s in tsp['shuf']:
             ch_s = simulate(rows_te, m_s.predict(rows_te['X']), h_s, entry_minutes)
             shuf.append(float(rows_te['y'][ch_s].sum()) / n_hours)
         ci = chosen
@@ -390,7 +437,7 @@ def main(argv=None):
                           test_days=[int(d) for d in te_days], hurdle=hurdle,
                           val_per_hour={str(k): round(v, 3) for k, v in val_scores.items()}, oos=st, n_hours=n_hours,
                           random_placebo=[round(float(x), 4) for x in rp], shuffled_per_hour=[round(x, 4) for x in shuf],
-                          train_positions=len(ptr), test_positions=len(pte), seconds=round(time.time() - t_f),
+                          train_positions=tsp['n_pos'], test_positions=len(pte), seconds=round(time.time() - t_f),
                           hourly=[round(float(x), 4) for x in series], exit_quality=eq, val_exit_quality=eq_val, diag=diag,
                           trades={k: [round(float(x), 5) if isinstance(x, (float, np.floating)) else int(x) for x in np.asarray(v).tolist()] for k, v in trades.items()}))
         log(f'fold {fi}: test {te_days[0]}..{te_days[-1]} hurdle {hurdle}: {st["trades"]} trades {st["per_hour"]:+.2f} $/h '
@@ -398,15 +445,16 @@ def main(argv=None):
         if fi == last_fold:
             shap_entry = shap_top(emodel, rows_te['X'], entry_names) if emodel is not None else []
             kmid = N // 2
-            if kmid in xr.models:
+            if kmid in tsp['models']:
                 from .matrix import exit_taker
                 from .snell import state_features
                 alive = np.nonzero(pte.k0 <= kmid)[0][:50_000]
                 aT = exit_taker(bte.bid[pte.w[alive], pte.s[alive], kmid], pte.C[alive], costs)
                 Z = state_features(Xte, pte, alive, kmid, aT)
-                shap_exit = shap_top(xr.models[kmid][0][0], Z, state_names, top=8)
-        del xr, xe, rows_tr, rows_te, ptr, pte
+                shap_exit = shap_top(tsp['models'][kmid][0][0], Z, state_names, top=8)
+        del xe, rows_te, pte
     part = dict(arm=a.arm, kind=kind, name=cfg.get('name', 'base'), config_hash=config_hash(cfg), config=cfg, assets=w.assets,
+                protocol=a.protocol, ho1_span=a.ho1_span.split(',') if a.protocol == 'ho1' else None,
                 traded_assets=[real.assets[i] for i in (trade_ai or sorted(spots))],
                 excluded_assets=sorted(EXCLUDED_ASSETS), windows=len(w), n=N, n_folds=len(folds_days), part=a.part, parts=a.parts,
                 folds=folds, cuts=cuts, shap_entry=shap_entry, shap_exit_hold=shap_exit, fidelity=fidelity,
@@ -475,6 +523,7 @@ def aggregate(parts: list[dict]) -> dict:
             for f in folds]
     return dict(
         arm=p0['arm'], kind=p0['kind'], name=p0['name'], config_hash=p0['config_hash'], config=p0['config'], assets=p0['assets'], traded_assets=p0.get('traded_assets'),
+        protocol=p0.get('protocol', 'walk'), ho1_span=p0.get('ho1_span'),
         excluded_assets=p0['excluded_assets'], windows=p0['windows'], n=p0['n'], folds=slim, folds_expected=p0['n_folds'],
         oos=dict(oos, hours=total_hours, per_hour_ci95=[round(ci_lo, 3), round(ci_hi, 3)], sr_hourly=round(sr_h, 4), psr0=round(psr(hourly), 4),
                  days=int(len(daily)), losing_days=int(np.sum(daily < 0)), worst_day=round(float(daily.min()), 2) if len(daily) else 0.0,

@@ -118,7 +118,7 @@ def gate(arms: dict, ledger: list, champion: dict | None, run: str = '') -> dict
                 suspect_folds=[[f['test'][0], f['test'][1], f.get('random_placebo_median')] for f in suspect])
 
 
-def card(arms: dict, g: dict, champion: dict | None, run_url: str = '') -> str:
+def card(arms: dict, g: dict, champion: dict | None, run_url: str = '', heldout: dict | None = None) -> str:
     base = arms.get('base', {})
     o = base.get('oos', {})
     L = []
@@ -127,8 +127,14 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '') -> str:
     L.append(f'## All-pairs payoff matrix: {base.get("name", "?")} ({base.get("config_hash", "?")})')
     if base.get('config', {}).get('notes'):
         L.append(f'Hypothesis: {base["config"]["notes"]}')
+    if base.get('protocol') == 'ho1':
+        hs = base.get('ho1_span') or ['?', '?', '?']
+        how = (f'held-out standard HO-1: one model, its hurdle and every setting chosen on {hs[0]}..{hs[1]} (purge before {hs[1]}), '
+               f'scored once on {o.get("days", 0)} held-out days {span} in {len(folds)} folds')
+    else:
+        how = f'Out-of-sample days {span} ({o.get("days", 0)} days, {len(folds)} purged walk-forward folds)'
     L.append(f'Generated {_now_both()}{f" | [run]({run_url})" if run_url else ""}. Assets {", ".join(base.get("traded_assets") or base.get("assets", []))} (DOGE excluded). '
-             f'Out-of-sample days {span} ({o.get("days", 0)} days, {len(folds)} purged walk-forward folds).')
+             f'{how[0].upper() + how[1:]}.')
     L.append('')
     verdict = 'PASSES the gate: new champion' if g.get('passed') else 'does not pass the gate yet (champion unchanged)'
     L.append(f'**Out of sample: {o.get("per_hour", 0):+.2f} $/h against the $4.50/h target**, {o.get("trades", 0)} trades, 95% CI '
@@ -172,6 +178,18 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '') -> str:
     if g.get('suspect_folds'):
         L.append(f'**DATA SUSPECT**: random entries made money in {len(g["suspect_folds"])} fold(s) ' +
                  ', '.join(f'{_day(a)}..{_day(b)} ({m:+.2f} $/h)' for a, b, m in g['suspect_folds']) + ': those results are not evidence.')
+    if heldout:
+        from .ho1 import verdict
+        for name in ('base', 'stress', 'tight'):
+            b = heldout.get(name)
+            if not b:
+                continue
+            ok, why = verdict(b)
+            bt = b.get('by_tercile') or {}
+            L.append(f'HO-1 {name}: {"PASS" if ok else "fails"}; folds won {b.get("folds_won")}/{b.get("folds")} '
+                     f'(worst {b.get("worst_fold_per_hour", 0):+.2f} $/h); RV terciles ' +
+                     ', '.join(f'{t} {v["per_hour"]:+.2f} $/h ({v["hours"]} h)' for t, v in bt.items() if v.get('per_hour') is not None) +
+                     f'; beats placebo {"✓" if b.get("beats_placebo") else "✗"}' + ('' if ok else f' ({"; ".join(why)})') + '.')
     if champion:
         L.append(f'Champion: {champion.get("name")} ({champion.get("config_hash")}) at {champion.get("per_hour")} $/h.')
     for title, key in (('By asset', 'by_asset'), ('By entry mode', 'by_mode'), ('By side', 'by_side')):
@@ -216,7 +234,9 @@ def main(argv=None):
                 pass
     champion = json.load(open(a.champion)) if os.path.exists(a.champion) else None
     g = gate(arms, ledger, champion, a.run_id)
-    text = card(arms, g, champion, a.run_url)
+    hp = os.path.join(a.results, 'heldout.json')
+    heldout = json.load(open(hp)) if os.path.exists(hp) else None
+    text = card(arms, g, champion, a.run_url, heldout)
     with open(a.card, 'w') as fh:
         fh.write(text + '\n')
     print(text)
