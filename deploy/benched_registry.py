@@ -76,6 +76,11 @@ def meta(arm):
 fams = sorted({meta(a)[1] for a in res if a != 'baseline'} - {None}) or ['benched']
 ids = {fam: reg.make_id(thread, fam, 'baseline', sha, days, None, None, {}) for fam in fams}
 now = datetime.now(timezone.utc).isoformat(timespec='seconds')
+# The base bot every arm here is measured on (meta plan thread, Nov 5): the benched lab branch, whose defaults differ from
+# main's in these flags, so the contract ledger groups its rows apart from main-based ones.
+BASE_DEFAULTS = {'MODEL_SKILL': 'true', 'MODEL_HEALTH_HALT': 'false', 'TRAINING_TRADES_PER_HOUR': '12', 'FV_ENTRY_GATE': 'true',
+                 'LOSER_CUT': 'true', 'LOSER_WINDOW_CUT': 'true', 'TP_LEVEL': '-1 (ladder)', 'SINUOUS_CROSS_LEVEL': '-1 (ladder)',
+                 'PROBATION': 'graded (levels, never benched)', 'PACER_FLOOR modes': 'trail/confirm available (off by default)'}
 rows = []
 for arm, r in sorted(res.items()):
     role, fam, pfor = meta(arm)
@@ -87,6 +92,7 @@ for arm, r in sorted(res.items()):
         if replay_version: data['replay_version'] = replay_version
         row = {'v': 1, 'trial_id': tid, 'ts': now, 'thread': thread, 'family': fam, 'arm': arm, 'role': role, 'env': env,
                'code_sha': sha, 'data': data, 'by_day': {d: round(float(r['byDay'].get(d, 0.0)), 4) for d in days},
+               'base': f'benched-lab@{sha[:7]}', 'base_defaults': BASE_DEFAULTS,
                'hours': 24.0 * len(days), 'ref': f'https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/{run}'}
         bt = by_tercile(r)
         if bt: row['by_tercile'] = bt
