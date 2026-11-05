@@ -34,6 +34,9 @@ env:
   TJ_DAYS: ${{ inputs.days || '200' }}
   TJ_SPLIT: ${{ inputs.split || '' }}
   SWEEP_BANKROLL_USD: '200'
+  # Steven, Nov 5 13:26 UTC: no DOGE at all for now. Kalshi lines of these series are dropped from the replayed days
+  # (the coin's own price lines stay, so other coins' cross inputs are unchanged).
+  TJ_EXCLUDE_RE: 'KXDOGE'
   # A push whose message holds [report-from:<run id>] only redoes the report of that earlier run (its replays and artifacts).
   TJ_REPORT_FROM: ${{ contains(github.event.head_commit.message, '[report-from:') && github.event.head_commit.message || '' }}
 
@@ -173,6 +176,14 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=12288
         run: |
           node --import tsx research/randomSweep.ts days --replay data/history-replay --out data/sweep-days --days "$TJ_DAYS"
+          if [ -n "$TJ_EXCLUDE_RE" ]; then
+            for f in data/sweep-days/*; do
+              src=$(readlink -f "$f"); tmp="$src.tmp"
+              if [[ "$src" == *.gz ]]; then { zcat "$src" | grep -vE "$TJ_EXCLUDE_RE" || true; } | gzip -1 > "$tmp"; else { grep -vE "$TJ_EXCLUDE_RE" "$src" || true; } > "$tmp"; fi
+              mv "$tmp" "$src"
+            done
+            echo "dropped Kalshi lines matching $TJ_EXCLUDE_RE; left: $(for f in data/sweep-days/*; do zgrep -c "$TJ_EXCLUDE_RE" "$f" 2>/dev/null; done | paste -sd+ | bc)"
+          fi
           if [ -f data/sweep-env/train.env ]; then set -a; . data/sweep-env/train.env; set +a; echo "server settings: $(wc -l < data/sweep-env/train.env) line(s)"; else echo "no server settings cached: the bot's defaults"; fi
           cp -rn data/sweep-env/history/. data/history/ 2>/dev/null || true
           export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper RS_PROBATION_FILE="$GITHUB_WORKSPACE/data/sweep-env/probation.json" RS_TRIALS_FILE="$GITHUB_WORKSPACE/data/sweep-env/component_trials.json"
