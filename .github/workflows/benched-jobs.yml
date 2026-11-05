@@ -258,6 +258,26 @@ jobs:
           # Without the replay (its caches evicted) the report takes the days the results span (benchedJobs.ts dayList).
           [ -d data/history-replay ] && node --import tsx research/randomSweep.ts days --replay data/history-replay --out data/sweep-days --days "$TJ_DAYS"
           { node --import tsx research/benchedJobs.ts report --days data/sweep-days --out research/out/benched-jobs $([ -n "$TJ_SPLIT" ] && echo --split "$TJ_SPLIT") 2>&1; } | tee "$RUNNER_TEMP/report.txt" | tail -80
+      # Trial registry (meta plan thread, Nov 5): one row per variant with its daily $ (no DOGE), synthetic books, to Drive.
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Registry rows to Drive (registry/shards/benched)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch -q --depth 1 origin claude/project-thread-79ntof
+          git show FETCH_HEAD:research/registry.py > "$RUNNER_TEMP/registry.py"
+          export TJ_VARIANT_ENVS="$(node --import tsx -e "import('./research/benchedJobs.ts').then((m) => console.log(JSON.stringify({ ...m.LATER, ...m.VARIANTS })))")"
+          RUN=${{ steps.src.outputs.run }}
+          SHA=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN" --jq .head_sha)
+          python3 deploy/benched_registry.py research/out/benched-jobs "$RUN" "$SHA" "$RUNNER_TEMP/registry.py" "$RUNNER_TEMP/benched-$RUN.jsonl"
+          python3 "$RUNNER_TEMP/registry.py" validate "$RUNNER_TEMP/benched-$RUN.jsonl" | tail -5
+          rclone mkdir gdrive:kalshi-bot-archive/registry/shards/benched
+          rclone copyto "$RUNNER_TEMP/benched-$RUN.jsonl" "gdrive:kalshi-bot-archive/registry/shards/benched/$RUN.jsonl"
+          echo "registry shard: registry/shards/benched/$RUN.jsonl"
       - name: Post the report on the commit
         if: always()
         env:
