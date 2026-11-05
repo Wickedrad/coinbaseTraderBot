@@ -15,6 +15,8 @@
 // MARKET_ANCHOR_W fixes w for every bucket (lab arms); MARKET_ANCHOR_SHUFFLE (lab placebo) fits on results
 // paired with another market's disagreement, which carries no information.
 
+import fs from 'fs';
+import zlib from 'zlib';
 import { accuracyBucket, accuracyGroup, ACCURACY_BUCKETS, type AccuracyGroup } from '../strategy/accuracyGate';
 import { clamp, logit, sigmoid } from '../util/num';
 import { readJson, writeJsonAtomic } from '../util/persist';
@@ -56,6 +58,9 @@ export interface MarketAnchorConfig {
   wildHalfLifeH?: number;
   /** Lab placebo (MARKET_ANCHOR_WILD_PLACEBO): wild in random coin-hours with this probability instead of by volatility. */
   wildPlacebo?: number;
+  /** Research: regime v1 labels (regime.py's labels.csv[.gz]); when set, the wild regime is the HIGH RV tercile at that
+   *  minute instead of the vol ratio (pre-registered Nov 5). A minute without a label (NA) is not wild. */
+  wildLabels?: string;
 }
 
 /** What the anchor reads of the coin at an evaluation: its pricing volatility (any unit, the same each time). */
@@ -157,13 +162,15 @@ export class MarketAnchor {
   /** True when the coin's volatility runs wildRatio times its slow average (after 6 h of history). */
   isWild(ctx?: AnchorContext): boolean {
     const r = this.cfg.wildRatio ?? 0;
-    if (!(r > 0) || !ctx) return false;
+    const labels = this.cfg.wildLabels;
+    if (!(r > 0) && !labels || !ctx) return false;
     const pl = this.cfg.wildPlacebo ?? 0;
     if (pl > 0) {
       let h = 2166136261;
       for (const ch of `${ctx.asset}:${Math.floor(this.now() / 3_600_000)}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
       return ((h >>> 0) % 10_000) / 10_000 < pl;
     }
+    if (labels) return regimeHigh(labels, ctx.asset, this.now());
     const e = this.slowVol.get(ctx.asset);
     return !!e && this.now() - e.first >= 6 * 3_600_000 && e.v > 0 && ctx.sigma >= r * e.v;
   }
@@ -273,7 +280,29 @@ export class MarketAnchor {
     })) : undefined;
     const s = this.score;
     const m = (x: number) => (s.n ? +(x / s.n).toFixed(5) : null);
-    const wild = (this.cfg.wildRatio ?? 0) > 0 ? { wildRatio: this.cfg.wildRatio, wildShare: this.wild.evals ? +(this.wild.wild / this.wild.evals).toFixed(4) : null } : {};
+    const wild = (this.cfg.wildRatio ?? 0) > 0 || this.cfg.wildLabels ? { wildRatio: this.cfg.wildLabels ? 'regime-v1 HIGH' : this.cfg.wildRatio, wildShare: this.wild.evals ? +(this.wild.wild / this.wild.evals).toFixed(4) : null } : {};
     return { ...wild, enabled: this.cfg.enabled, fixedW: this.cfg.fixedW ?? null, prior: this.cfg.prior, scored: s.n, llAnchored: m(s.anchored), llRaw: m(s.raw), llMarket: m(s.market), groups, series };
   }
+}
+
+/** HIGH-tercile minutes per asset from a regime v1 labels file (ts_iso,asset,rv60,q33,q67,tercile,...), loaded once. */
+const regimeFiles = new Map<string, Map<string, Set<number>>>();
+export function regimeHigh(file: string, asset: string, nowMs: number): boolean {
+  let m = regimeFiles.get(file);
+  if (!m) {
+    m = new Map();
+    const buf = fs.readFileSync(file);
+    const text = (file.endsWith('.gz') ? zlib.gunzipSync(buf) : buf).toString('utf8');
+    for (const line of text.split('\n')) {
+      const f = line.split(',');
+      if (f[5] !== 'HIGH') continue;
+      const t = Date.parse(f[0]);
+      if (!Number.isFinite(t)) continue;
+      const a = f[1].toUpperCase();
+      let set = m.get(a); if (!set) m.set(a, (set = new Set()));
+      set.add(t);
+    }
+    regimeFiles.set(file, m);
+  }
+  return m.get(asset.toUpperCase())?.has(Math.floor(nowMs / 60_000) * 60_000) ?? false;
 }

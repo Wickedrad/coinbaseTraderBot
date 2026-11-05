@@ -1192,6 +1192,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       wildW: num(env, 'MARKET_ANCHOR_WILD_W', 1, 0, 1.5),
       wildHalfLifeH: num(env, 'MARKET_ANCHOR_WILD_HALF_LIFE_H', 48, 1, 720),
       wildPlacebo: num(env, 'MARKET_ANCHOR_WILD_PLACEBO', 0, 0, 1),
+      wildLabels: env.MARKET_ANCHOR_WILD_LABELS || undefined,
       split: bool(env, 'MARKET_ANCHOR_SPLIT', false),
       shuffle: bool(env, 'MARKET_ANCHOR_SHUFFLE', false),
       bySeries: bool(env, 'MARKET_ANCHOR_BY_SERIES', false),
@@ -1214,8 +1215,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     // The wild regime comes from the market anchor: without MARKET_ANCHOR and a wild ratio the flag would do nothing (bot audit, Nov 5).
     noLongshotWildOff: (() => {
       const on = bool(env, 'NO_LONGSHOT_WILD_OFF', false);
-      if (on && (!bool(env, 'MARKET_ANCHOR', false) || !(num(env, 'MARKET_ANCHOR_WILD_RATIO', 0, 0, 10) > 0)))
-        throw new Error('NO_LONGSHOT_WILD_OFF needs MARKET_ANCHOR=true and MARKET_ANCHOR_WILD_RATIO > 0 (the wild regime comes from the anchor)');
+      if (on && (!bool(env, 'MARKET_ANCHOR', false) || !(num(env, 'MARKET_ANCHOR_WILD_RATIO', 0, 0, 10) > 0) && !env.MARKET_ANCHOR_WILD_LABELS))
+        throw new Error('NO_LONGSHOT_WILD_OFF needs MARKET_ANCHOR=true and MARKET_ANCHOR_WILD_RATIO > 0 or MARKET_ANCHOR_WILD_LABELS (the wild regime comes from the anchor)');
       return on;
     })(),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
