@@ -3,11 +3,13 @@ import { test } from 'node:test';
 import { loadConfig } from '../bot/config';
 import { IndexTracker } from '../bot/marketdata/indexTracker';
 import { OrderBook } from '../bot/marketdata/orderBook';
-import { computeFeatureMap } from '../bot/model/featureEngine';
+import { computeFeatureMap, FEATURES } from '../bot/model/featureEngine';
+import { VOL_MODEL_ASSET_FEATURES } from '../bot/model/volModel';
 import { hedgeTargets, PerpHedger, type HedgeParams } from '../bot/perps/hedger';
 import { lastFundingTime, PaperPerpExchange } from '../bot/perps/paperPerp';
-import { assetOfPerp, nextFundingTime, parseFundingEstimate, parseMarginMarket, PerpHub, type PerpSnapshot } from '../bot/perps/perpData';
+import { assetOfPerp, nextFundingTime, parseFundingEstimate, parseMarginMarket, PerpHub, perpQuoteUnits, type PerpSnapshot } from '../bot/perps/perpData';
 import { KalshiPerpsRest, parsePerpPositions } from '../bot/perps/perpRest';
+import { PERP_FEATURES, perpFeatures } from '../bot/perps/perpSignal';
 
 const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
 
@@ -82,6 +84,42 @@ test('perp features: premium to the index, lead-lag, funding, open interest', ()
   assert.ok(f.perp_oi_chg_1h > 0);
   const none = computeFeatureMap({ now, fairValue: 0.5, mid: 0.51, tauSec: 600, sigmaPerSqrtSec: 1e-4, referenceSigma: 1e-4, inWindow: false, book, index: idx });
   assert.ok(Number.isNaN(none.perp_premium_bps), 'no perp data -> unavailable, never 0');
+});
+
+test('perp premium per coin reads Kalshi\'s per-contract quote over its contract size; the legacy premium is unchanged', () => {
+  // Units: the quote over the index sits at the contract size (per contract) or at 1 (per coin), else unknown.
+  assert.equal(perpQuoteUnits(10.002, 0.0001, 100_000), 0.0001);
+  assert.equal(perpQuoteUnits(100_020, 0.0001, 100_000), 1);
+  assert.equal(perpQuoteUnits(2.5005, 1, 2.5), 1, 'XRP: 1 XRP a contract, its quote is per coin');
+  assert.equal(perpQuoteUnits(4.6e17, 1, 2.5), undefined);
+  assert.equal(perpQuoteUnits(undefined, 0.0001, 100_000), undefined);
+  const t0 = 1_800_000_000_000, now = t0 + 60_000;
+  const book = new OrderBook('T');
+  book.applySnapshot({ bids: [{ price: 0.5, size: 10 }], asks: [{ price: 0.52, size: 10 }] }, now);
+  const premium = (bid: number, ask: number) => {
+    const hub = new PerpHub(), idx = new IndexTracker('BTC', 3_600_000);
+    idx.add(100_000, now);
+    hub.apply(snap({ ts: now, bid, ask }));
+    const f = computeFeatureMap({ now, fairValue: 0.5, mid: 0.51, tauSec: 600, sigmaPerSqrtSec: 1e-4, referenceSigma: 1e-4, inWindow: false, book, index: idx, perp: hub.get('BTC') });
+    return { coin: f.perp_premium_coin_bps, legacy: f.perp_premium_bps };
+  };
+  // Live: BTC 0.0001 BTC a contract, mid $10.0010 = $100,010 a coin: +1 bp.
+  const live = premium(10.0005, 10.0015);
+  assert.ok(Math.abs(live.coin - 1) < 0.01, `per contract ${live.coin}`);
+  assert.equal(live.legacy, -100, 'the legacy feature reads the raw quote, as live always has (and the recordings-trained models saw)');
+  const perCoin = premium(100_005, 100_015);
+  assert.ok(Math.abs(perCoin.coin - 1) < 0.01 && Math.abs(perCoin.legacy - 1) < 0.01, 'a per-coin quote reads the same on both');
+  assert.ok(Number.isNaN(premium(5, 6).coin), 'neither unit: unavailable');
+  // New trainings read the premium per coin, never the legacy one; models trained on it still get it.
+  assert.equal(FEATURES.perp_premium_bps.tier, 'T3');
+  assert.equal(FEATURES.perp_premium_coin_bps.tier, 'T2');
+  assert.ok(PERP_FEATURES.includes('perp_premium_coin_bps') && !PERP_FEATURES.includes('perp_premium_bps'));
+  assert.ok(VOL_MODEL_ASSET_FEATURES.includes('perp_premium_coin_bps') && !(VOL_MODEL_ASSET_FEATURES as readonly string[]).includes('perp_premium_bps'));
+  const idx = new IndexTracker('BTC', 3_600_000), hub = new PerpHub();
+  idx.add(100_000, now); hub.apply(snap({ ts: now, bid: 10.0005, ask: 10.0015 }));
+  const pf = perpFeatures('BTC', now, { index: idx, perp: hub.get('BTC') });
+  assert.equal(pf.perp_premium_bps, -100, 'a deployed perp model trained on the legacy premium reads what live always gave it');
+  assert.ok(Math.abs(pf.perp_premium_coin_bps - 1) < 0.01);
 });
 
 const P: HedgeParams = { minDollarDelta: 2000, maxNotionalUsd: 1000, excludeTauSec: 120, repriceSec: 30, takerAfterSec: 300 };
