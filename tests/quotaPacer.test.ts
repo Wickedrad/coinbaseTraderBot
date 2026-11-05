@@ -4,7 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup, anchorAfter, anchorBefore, quotaCall, wallClock, wallToUtc, type PacerConfig } from '../bot/risk/quotaPacer';
-import { PositionBook } from '../bot/oms/positions';
+import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { loadConfig } from '../bot/config';
 
 const CFG: PacerConfig = { enabled: true, group: true, hourlyUsd: 4.5, anchorHour: 10, anchorMinute: 0, tz: 'America/New_York', mode: 'cumulative', minTakeUsd: 0.75, maxTargetUsd: 6.5, floor: 'off', floorTicks: 0 };
@@ -105,6 +105,11 @@ test('credits: a second partial exit is credited against the open contracts\' ow
   // A third exit after buying more: the new contracts' cost, the earlier round trip's profit left out.
   assert.equal(fill('bid', 40, 0.3, 0.4, t0 + 4000), 0);
   assert.equal(fill('ask', 20, 0.28, 0.2, t0 + 5000), +(20 * (0.28 - 0.31) - 0.2).toFixed(4));
+  // The book's open cost is the same basis: 20 left from 0.30 with 0.01 a contract of entry fee, the round trip left out
+  // (net cash alone reads them at about 0.05).
+  const open = book.get('A')!;
+  assert.deepEqual([+openSidePrice(open)!.toFixed(4), +openEntryFee(open)!.toFixed(4)], [0.3, 0.01]);
+  assert.ok(-open.netCash / open.yes < 0.1);
   assert.equal(fill('ask', 20, 0.35, 0.2, t0 + 6000), +(20 * (0.35 - 0.31) - 0.2).toFixed(4));
   const s = book.settle('A', 'no', t0 + 7000)!;
   assert.ok(Math.abs(p.onSettled('A', s.realized!, t0 + 7000)) < 1e-9, 'every exit credited exactly: nothing left for the settlement');
