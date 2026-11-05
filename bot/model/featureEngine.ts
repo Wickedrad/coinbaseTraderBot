@@ -807,8 +807,10 @@ export const FEATURES: Record<string, { group: FeatureGroup; description: string
   } },
 
   // G/H. Kalshi perpetuals: premium to the settlement index (perps lead spot), funding, positioning.
-  perp_premium_bps: { group: 'perp', tier: 'T2', description: 'Kalshi perp price vs settlement index, bps', fn: (c) => {
-    const p = c.perp?.price(c.now), ix = c.index.latest()?.value;
+  // The quote is per contract on Kalshi (contract size x coin price), so it is compared per coin: before Nov 5 the raw quote
+  // went in and the feature sat at the -100 clip in live while the history replay (per-coin quotes) gave real premiums.
+  perp_premium_bps: { group: 'perp', tier: 'T2', description: 'Kalshi perp price per coin vs settlement index, bps', fn: (c) => {
+    const ix = c.index.latest()?.value, p = c.perp?.coinPrice(c.now, ix);
     return p && ix ? clip(1e4 * Math.log(p / ix), 100) : NA;
   } },
   perp_premium_chg_5m: { group: 'perp', tier: 'T2', description: 'change in the perp premium over 5 min, bps', fn: (c, k) => {

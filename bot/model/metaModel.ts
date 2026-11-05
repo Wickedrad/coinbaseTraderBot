@@ -247,7 +247,8 @@ export class MetaModel {
     const features = vectorFor(p.features, featureMap);
     const resid = p.residualFeature !== undefined && Number.isFinite(features[p.residualFeature]) ? features[p.residualFeature] : 0;
     const members: EnsembleMember[] = [{ normalization: p.normalization, layers: p.layers, gbdt: p.gbdt }, ...(p.ensemble ?? [])];
-    const logits = members.map((m) => memberLogit(p.kind, m, features) + resid);
+    const pinned = p.features.indexOf(PINNED_PREMIUM);
+    const logits = members.map((m) => memberLogit(p.kind, m, features, pinned) + resid);
     const z = logits.reduce((a, b) => a + b, 0) / logits.length;
     const out = (zz: number) => {
       if (p.betaCalibration) return clamp(applyBeta(sigmoid(zz), p.betaCalibration), 1e-4, 1 - 1e-4);
@@ -262,9 +263,17 @@ export class MetaModel {
   }
 }
 
-function memberLogit(kind: MetaModelParams['kind'], m: EnsembleMember, features: number[]): number {
+/** perp_premium_bps sat at its -100 clip in every recording until the per-contract fix (Nov 5): Kalshi quotes perps per
+ *  contract and the feature compared that quote with the coin's index. A network trained on those days saw the input at
+ *  its mean all along (normalized 0), so the input weight never learned; the now real premium would only add noise. Such
+ *  a model (training mean at the clip) reads it as missing, as it saw it. A model trained after the fix has a real mean
+ *  and reads it normally. Trees cannot split on a column that never varied, so they need no guard. */
+const PINNED_PREMIUM = 'perp_premium_bps';
+
+function memberLogit(kind: MetaModelParams['kind'], m: EnsembleMember, features: number[], pinned = -1): number {
   if (kind === 'gbdt') return gbdtLogit(m.gbdt!, features);
-  let x = features.map((v, i) => (Number.isFinite(v) ? (v - m.normalization!.mean[i]) / m.normalization!.std[i] : 0));
+  const n = m.normalization!, stale = pinned >= 0 && n.mean[pinned] <= -99;
+  let x = features.map((v, i) => (Number.isFinite(v) && !(stale && i === pinned) ? (v - n.mean[i]) / n.std[i] : 0));
   for (const layer of m.layers!) x = forward(layer, x);
   return x[0];
 }

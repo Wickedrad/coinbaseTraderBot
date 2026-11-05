@@ -6,7 +6,7 @@ import { OrderBook } from '../bot/marketdata/orderBook';
 import { computeFeatureMap } from '../bot/model/featureEngine';
 import { hedgeTargets, PerpHedger, type HedgeParams } from '../bot/perps/hedger';
 import { lastFundingTime, PaperPerpExchange } from '../bot/perps/paperPerp';
-import { assetOfPerp, nextFundingTime, parseFundingEstimate, parseMarginMarket, PerpHub, type PerpSnapshot } from '../bot/perps/perpData';
+import { assetOfPerp, nextFundingTime, parseFundingEstimate, parseMarginMarket, PerpHub, perpQuoteUnits, type PerpSnapshot } from '../bot/perps/perpData';
 import { KalshiPerpsRest, parsePerpPositions } from '../bot/perps/perpRest';
 
 const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
@@ -82,6 +82,27 @@ test('perp features: premium to the index, lead-lag, funding, open interest', ()
   assert.ok(f.perp_oi_chg_1h > 0);
   const none = computeFeatureMap({ now, fairValue: 0.5, mid: 0.51, tauSec: 600, sigmaPerSqrtSec: 1e-4, referenceSigma: 1e-4, inWindow: false, book, index: idx });
   assert.ok(Number.isNaN(none.perp_premium_bps), 'no perp data -> unavailable, never 0');
+});
+
+test('perp premium reads Kalshi\'s per-contract quote per coin; a quote that fits neither unit has no premium', () => {
+  // Units: the quote over the index sits at the contract size (per contract) or at 1 (per coin), else unknown.
+  assert.equal(perpQuoteUnits(10.002, 0.0001, 100_000), 0.0001);
+  assert.equal(perpQuoteUnits(100_020, 0.0001, 100_000), 1);
+  assert.equal(perpQuoteUnits(4.6e17, 1, 2.5), undefined);
+  assert.equal(perpQuoteUnits(undefined, 0.0001, 100_000), undefined);
+  const t0 = 1_800_000_000_000, now = t0 + 60_000;
+  const book = new OrderBook('T');
+  book.applySnapshot({ bids: [{ price: 0.5, size: 10 }], asks: [{ price: 0.52, size: 10 }] }, now);
+  const premium = (bid: number, ask: number) => {
+    const hub = new PerpHub(), idx = new IndexTracker('BTC', 3_600_000);
+    idx.add(100_000, now);
+    hub.apply(snap({ ts: now, bid, ask }));
+    return computeFeatureMap({ now, fairValue: 0.5, mid: 0.51, tauSec: 600, sigmaPerSqrtSec: 1e-4, referenceSigma: 1e-4, inWindow: false, book, index: idx, perp: hub.get('BTC') }).perp_premium_bps;
+  };
+  // Live: BTC 0.0001 BTC a contract, mid $10.0010 = $100,010 a coin: +1 bp (it read -100, the clip, before Nov 5).
+  assert.ok(Math.abs(premium(10.0005, 10.0015) - 1) < 0.01, `per contract ${premium(10.0005, 10.0015)}`);
+  assert.ok(Math.abs(premium(100_005, 100_015) - 1) < 0.01, 'per coin (old history replays) reads the same');
+  assert.ok(Number.isNaN(premium(5, 6)), 'neither unit: unavailable');
 });
 
 const P: HedgeParams = { minDollarDelta: 2000, maxNotionalUsd: 1000, excludeTauSec: 120, repriceSec: 30, takerAfterSec: 300 };

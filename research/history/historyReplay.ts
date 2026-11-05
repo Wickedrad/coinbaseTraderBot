@@ -77,7 +77,13 @@ import { loadKalshiTrades, type KalshiHistMarket, type KalshiTrade } from './kal
 import { anchorsIn, dominanceAnchors, DominanceReplay, type DomState } from './dominanceReplay';
 import type { Candle } from '../../bot/ta/indicators';
 
-export const REPLAY_VERSION = 5;
+// 6 (Nov 5): perp quotes per contract like Kalshi's live quotes (were per coin); also rebuilds days cached before the
+// requote's 0.1c tail tick (797853e), which changed the output without a version change.
+export const REPLAY_VERSION = 6;
+/** Kalshi perp contract sizes (units of the coin a contract), for a replay without the bot's own recordings to read them
+ *  from: the perp TA thread's fidelity check of the Oct 28 - Nov 3 recordings (quote / spot: BTC 0.0001, ETH 0.001,
+ *  SOL 0.1). Other coins fall back to 0.001. */
+export const PERP_CONTRACT_SIZE: Record<string, number> = { BTC: 0.0001, ETH: 0.001, SOL: 0.1 };
 const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
 const TFS: Array<{ tf: string; ms: number }> = [{ tf: '1m', ms: MIN }, { tf: '5m', ms: 5 * MIN }, { tf: '15m', ms: 15 * MIN }, { tf: '1h', ms: HOUR }, { tf: '1d', ms: DAY }];
 const BACKFILL = 300;
@@ -581,6 +587,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
       let fi = 0;
       const spec = o.perpSpecs?.[a] ?? {};
       const half = (spec.halfSpreadBps ?? 1) / 1e4;
+      const cs = spec.contractSize ?? PERP_CONTRACT_SIZE[a] ?? 0.001;
       const perpBy = new Map(perpBars.map((c) => [c.ts, c]));
       const seed = hashStr(a);
       let m5: Candle[] = [];
@@ -605,9 +612,10 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
           if (px) px[slot0 + k] = v;
           if (ixs && sgs) { ixs[slot0 + k] = iv; sgs[slot0 + k] = s.vMkt && s.vMkt > 0 ? Math.sqrt(s.vMkt) : NaN; }
           if (pprints) {
-            const pv = pprints[k][1];
+            // Quoted per contract, as Kalshi quotes its perps live (the coin price x the contract size).
+            const pv = pprints[k][1] * cs;
             ev.push({ t, k: 'perp', ticker: spec.ticker ?? `${a}-PERP`, asset: a, ts: t, bid: roundTo(pv * (1 - half), spec.tickSize, -1), ask: roundTo(pv * (1 + half), spec.tickSize, 1), last: pv, mark: pv,
-              fundingRate: rate, nextFundingTs: next, openInterest: openInterestAt(s.oi, t), contractSize: spec.contractSize ?? 0.001, tickSize: spec.tickSize, fractional: spec.fractional ?? true, leverage: spec.leverage ?? 10, hist: 1 });
+              fundingRate: rate, nextFundingTs: next, openInterest: openInterestAt(s.oi, t), contractSize: cs, tickSize: spec.tickSize, fractional: spec.fractional ?? true, leverage: spec.leverage ?? 10, hist: 1 });
           }
           s.prints.push([t, iv]);
           if (s.prints.length > 80) s.prints.splice(0, s.prints.length - 64);

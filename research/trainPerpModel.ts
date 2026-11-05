@@ -39,7 +39,8 @@ export interface PerpRow { ts: number; asset: string; x: number[]; y: number; fu
 
 const DAY = 86_400_000;
 /** Bumped when the rows change for the same recordings (the cache keys carry it). */
-const PERP_DATASET_VERSION = 1;
+// 2 (Nov 5): perp_premium_bps reads Kalshi's per-contract quote per coin (cached rows held the -100 clip).
+const PERP_DATASET_VERSION = 2;
 
 /** The lines a perp row reads: the asset-level prices and dominance, candles, the perp quotes and the SNN's calls, never
  *  the Kalshi contracts' books (most of a recorded day). */

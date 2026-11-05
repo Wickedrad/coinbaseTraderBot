@@ -1522,7 +1522,7 @@ export class Engine {
     const f = this.d.md.perpFeed;
     const markets = [...this.d.md.features.perps.byAsset.entries()].map(([asset, s]) => {
       const ix = this.d.md.index.get(asset)?.latest()?.value;
-      const p = s.price(now);
+      const p = s.coinPrice(now, ix);
       return { asset, ticker: s.latest?.ticker, bid: s.latest?.bid, ask: s.latest?.ask, premiumBps: p && ix ? 1e4 * Math.log(p / ix) : null, fundingRate: s.latest?.fundingRate ?? null, nextFundingTs: s.latest?.nextFundingTs ?? null, contractSize: s.latest?.contractSize ?? null, leverage: s.latest?.leverage ?? null };
     });
     return {
