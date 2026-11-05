@@ -113,7 +113,7 @@ def main():
         tid = make_id(THREAD, FAMILY, name, a.code_sha, all_days, env=env)
         ids[name] = tid
         out = {'v': 1, 'trial_id': tid, 'ts': now, 'thread': THREAD, 'family': FAMILY, 'arm': name, 'role': role,
-               'env': env, 'code_sha': a.code_sha, 'code_epoch': f'REPLAY_VERSION={a.replay_version}',
+               'env': env, 'code_sha': a.code_sha, 'code_epoch': f'REPLAY_VERSION={a.replay_version}', 'base': f'anchor@{a.code_sha[:7]}',
                'data': {'source': 'history', 'days': all_days, 'doge': False, 'benches': 'own', 'books': 'synthetic', 'replay_version': a.replay_version},
                'by_tercile': by_tercile(r),
                'by_day': {d: round(v, 4) for d, v in sorted(r.get('byDay', {}).items())},
