@@ -34,7 +34,7 @@ import { assetFeatureMap, computeFeatureMap } from '../bot/model/featureEngine';
 import { VolForecaster, VolModel } from '../bot/model/volModel';
 import { applyFillModel, FillModel } from '../bot/tca/fillModel';
 import { applyMidGate, loadMidGate } from '../bot/model/midTakeGate';
-import { applyTaVeto } from '../bot/model/taVeto';
+import { applyMaxSpread, applyTaVeto } from '../bot/model/taVeto';
 import { applyTakeGate, TAKE_GATED_DRIVERS, TAKE_GATED_MICRO, TAKE_GATED_TREND } from '../bot/model/takeModel';
 import { dropTape, openTape, TapeMiss, tickerHash, type TapeReader, type TapeWriter } from './callTape';
 import { effectiveSigma, loadVolProfile, type VolProfile } from '../bot/model/volSeasonality';
@@ -982,6 +982,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const qDecision = decisionProbability(view, strat);
       if (strategy.takeGate === 'validated') applyTakeGate(plan, model.params.take, { pYes, features: fmap, tauSec, bid: bid.price, ask: ask.price, pStd: pred.std, margin: strategy.takeMargin });
       // The TA contrarian entry veto, as live (bot/engine.ts, just before the fill model).
+      applyMaxSpread(plan, strategy.taMaxSpread, bid.price, ask.price);
       const taVetoed = applyTaVeto(plan, strategy.taVeto, fmap);
       if (taVetoed) { const fn = (res.funnel ??= {}); fn[funnelKey('TA veto skips')] = (fn[funnelKey('TA veto skips')] ?? 0) + taVetoed; }
       // Fill model (validated only), as live: quote, cross or skip each maker entry by expected value.

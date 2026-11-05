@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyTaVeto, taVetoReasons, type TaVetoConfig } from '../bot/model/taVeto';
+import { applyMaxSpread, applyTaVeto, taVetoReasons, type TaVetoConfig } from '../bot/model/taVeto';
 
 const off: TaVetoConfig = { ofi: NaN, conf: NaN, intensity: NaN, min: 1 };
 const order = (side: 'bid' | 'ask', purpose = 'entry', why = 'take', reduceOnly = false) => ({ side, price: 0.4, reduceOnly, purpose, why });
@@ -31,4 +31,15 @@ test('TA veto: random control skips about its share', () => {
   let kept = 0;
   for (let i = 0; i < 2000; i++) { const plan = { place: [order('bid')], notes: [] as string[] }; applyTaVeto(plan, { ...off, random: 0.3 }, {}); kept += plan.place.length; }
   assert.ok(kept > 1300 && kept < 1500, `kept ${kept}`);
+});
+
+test('the entry spread filter skips wide-spread entries and keeps exits', () => {
+  const plan = { place: [{ purpose: 'entry', side: 'bid', price: 0.5, why: 'x' }, { purpose: 'exit', side: 'ask', price: 0.6, why: 'y' }] as any[], notes: [] as string[] };
+  assert.equal(applyMaxSpread(plan, 0.1, 0.01, 0.99), 1);
+  assert.equal(plan.place.length, 1);
+  assert.equal(plan.place[0].purpose, 'exit');
+  const tight = { place: [{ purpose: 'entry', side: 'bid', price: 0.5, why: 'x' }] as any[], notes: [] as string[] };
+  assert.equal(applyMaxSpread(tight, 0.1, 0.48, 0.52), 0);
+  assert.equal(tight.place.length, 1);
+  assert.equal(applyMaxSpread(tight, undefined, 0.01, 0.99), 0);
 });

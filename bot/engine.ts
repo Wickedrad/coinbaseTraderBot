@@ -62,7 +62,7 @@ import { gatePasses, probation } from './risk/probation';
 import { DEFAULT_STREAK, StreakScaler } from './risk/streakScaler';
 import { applyTakeGate } from './model/takeModel';
 import { applyMidGate, loadMidGate } from './model/midTakeGate';
-import { applyTaVeto } from './model/taVeto';
+import { applyMaxSpread, applyTaVeto } from './model/taVeto';
 import { effectiveSigma, type VolProfile } from './model/volSeasonality';
 import { floorCount } from './util/num';
 import { evThresholds } from './sizing/kelly';
@@ -2283,6 +2283,7 @@ export class Engine {
     if (S.takeGate === 'validated') applyTakeGate(plan, model.params.take, { pYes, features, tauSec, bid: bid.price, ask: ask.price, pStd: pred.std, margin: S.takeMargin, fees: md.feesFor(m.ticker) });
     if (S.takeMidGate) applyMidGate(plan, loadMidGate(S.takeMidGate), { pYes, mid: (bid.price + ask.price) / 2, features, tauSec, bid: bid.price, ask: ask.price, margin: S.takeMidMargin, fees: md.feesFor(m.ticker), flip: S.takeMidFlip, position: st.position });
     // The TA rework's contrarian veto (job 6): skip entries the order flow, confluence or a busy tape already chased.
+    applyMaxSpread(plan, S.taMaxSpread, bid.price, ask.price);
     applyTaVeto(plan, S.taVeto, features);
     // Quote, cross or skip each maker entry by expected value (fill model, once validated).
     const fillCtx = { q: st.q ?? pYes, book, tick: m.tickSize, tauSec, sigma: vol.sigmaPerSqrtSec, features, minEv: S.fillMinEv, takerMinEdge: strat.takerBuffer + strat.minEdge, fees: md.feesFor(m.ticker) };

@@ -54,3 +54,17 @@ export function applyTaVeto<T extends VetoOrder>(plan: { place: T[]; notes: stri
   });
   return n;
 }
+
+/** Entry spread filter (TA_MAX_SPREAD, unset = off): no new entry into a contract quoted wider than maxSpread (a 1c bid
+ * and 99c ask gives a 50c "mid" that is not a price). Exits, reduce-only orders and cancels always pass. */
+export function applyMaxSpread<T extends VetoOrder & { reduceOnly?: boolean }>(plan: { place: T[]; notes: string[] }, maxSpread: number | undefined, bid: number, ask: number): number {
+  if (maxSpread === undefined || !Number.isFinite(maxSpread) || ask - bid <= maxSpread) return 0;
+  let n = 0;
+  plan.place = plan.place.filter((o) => {
+    if (o.reduceOnly || o.purpose === 'exit') return true;
+    n++;
+    return false;
+  });
+  if (n) plan.notes.push(`TA spread filter: skipped ${n} entries (spread ${(ask - bid).toFixed(2)} > ${maxSpread})`);
+  return n;
+}

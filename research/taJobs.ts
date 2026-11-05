@@ -38,6 +38,7 @@ export const VARIANTS: Record<string, Record<string, string>> = {
   // round 6:   veto_ofi: { TA_VETO_OFI: '0' },
   // round 6:   veto_conf: { TA_VETO_CONF: '0' },
   // round 6:   veto_int: { TA_VETO_INTENSITY: '10.6' },
+  spread10_veto_two: { TA_MAX_SPREAD: '0.10', ...VETO, TA_VETO_MIN: '2' },
   veto_two: { ...VETO, TA_VETO_MIN: '2' },
   veto_any: { ...VETO },
   // Adversaries: the same veto on signals AGAINST the side (should hurt if the contrarian read is real), and random skips

@@ -300,6 +300,8 @@ export interface StrategyConfig {
   takeMidFlip: boolean;
   /** The TA rework's contrarian entry veto (bot/model/taVeto.ts; TA_VETO_OFI / TA_VETO_CONF / TA_VETO_INTENSITY, unset = off). */
   taVeto: TaVetoConfig;
+  /** Entry spread filter (TA_MAX_SPREAD, unset = off): no new entry into a wider contract. */
+  taMaxSpread?: number;
 }
 
 export interface Config {
@@ -1249,6 +1251,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     takeMidGate: (env.TAKE_MID_GATE ?? '').trim(),
     takeMidMargin: num(env, 'TAKE_MID_MARGIN', 0, 0, 0.2),
     takeMidFlip: bool(env, 'TAKE_MID_FLIP', false),
+    taMaxSpread: optNum(env, 'TA_MAX_SPREAD', 0, 1),
     taVeto: { ofi: optNum(env, 'TA_VETO_OFI', -100, 100), conf: optNum(env, 'TA_VETO_CONF', -50, 50), intensity: optNum(env, 'TA_VETO_INTENSITY', 0, 50), min: num(env, 'TA_VETO_MIN', 2, 1, 3), reverse: bool(env, 'TA_VETO_REVERSE', false), random: optNum(env, 'TA_VETO_RANDOM', 0, 1) },
   };
 
