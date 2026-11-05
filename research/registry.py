@@ -145,6 +145,10 @@ def validate(r: dict) -> tuple[list[str], list[str]]:
         fl.append('G1:synthetic-book-flow')  # order-flow inputs are fake on history books (TA thread, Nov 5)
     if d.get('engine') in RANK_ONLY:
         fl.append('G1:rank-only-level')  # level ($/h) not valid; compare only variants on the same entries
+    if 'dev-choice' in (r.get('flags') or []):
+        if any(x >= H_HOLD[0] for x in (r.get('by_day') or {})):
+            fl.append('G0:dev-choice-reads-hold')  # an H-DEV choice run must not carry H-HOLD days
+        fl.append('DEV:choice-only')  # counted in N_raw, never scored as held out
     w = r.get('wide_spread_share')
     if isinstance(w, (int, float)) and w > 0.5:
         fl.append('G1b:wide-spread-pnl')  # SNN thread: history "mid" of a 1c/99c book is not a price
@@ -415,7 +419,7 @@ def ho1_fill(rows):
     plac = {(r['family'], r.get('placebo_for')): r for r in rows if r['role'] == 'placebo' and r.get('placebo_for')}
     for r in rows:
         c = byid.get(r.get('control'))
-        if r['role'] == 'control' or not c:
+        if r['role'] == 'control' or not c or 'dev-choice' in (r.get('flags') or []):
             continue
         tier = 'history' if r['data']['source'] == 'history' else 'recorded'
         d0, d1 = (date.fromisoformat(H_HOLD[0]), date.fromisoformat(H_HOLD[1])) if tier == 'history' else (None, None)
@@ -499,13 +503,14 @@ def ho1_pass(h, contract_type='price_prediction'):
     return not why, '; '.join(why)
 
 
+BLOCKING_EXTRA = ('DEV:',)
 BLOCKING = ('G0:', 'G1:', 'G1b:', 'G1c:', 'G2:', 'LOCKBOX:')
 
 
 def validated(c):
     """A result that may count toward a contract type's model: clean evidence, held out, survives multiple testing and noise."""
     return (c['role'] == 'candidate' and c['ho1'][0] and c['bhy_pass'] and c['above_2noise'] is not False
-            and c['gain'] > 0 and not any(f.startswith(BLOCKING) for f in c['flags']))
+            and c['gain'] > 0 and not any(f.startswith(BLOCKING + BLOCKING_EXTRA) for f in c['flags']))
 
 
 def contract_ledger(rep, target=4.50):
@@ -679,6 +684,8 @@ def selftest():
     hx = ho1_fill(rows)[1]['heldout']
     assert hx['days'] == 96 and hx['folds'] == 6 and hx['folds_won'] == 6 and hx['terciles_won'] == 3 and hx['beats_placebo'], hx
     assert ho1_pass(hx)[0], ho1_pass(hx)
+    dv = {**r, 'flags': ['dev-choice'], 'by_day': {'2026-07-30': 1.0, '2026-08-02': 1.0}, 'control': 'c'}
+    assert 'G0:dev-choice-reads-hold' in validate(dv)[1] and 'DEV:choice-only' in validate(dv)[1]
     print('registry selftest ok')
 
 
