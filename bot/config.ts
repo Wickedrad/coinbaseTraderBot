@@ -356,6 +356,8 @@ export interface Config {
   /** Strike ladders and range brackets: track only the N strikes nearest the price in each event (0 = all).
    *  Far strikes sit at 1c / 99c and are never traded; tracking them only costs CPU. */
   catalogStrikesPerEvent: number;
+  /** Strike selection: largest listing spread whose mid is trusted (0 = legacy: any mid, else the last price). */
+  catalogPickMaxSpread: number;
   /** Allow using the Coinbase public ticker as an index proxy (basis risk; paper/shadow only). */
   allowProxyIndex: boolean;
   /** Stream Coinbase spot for lead-lag features and the dashboard (never a pricing input). */
@@ -1329,6 +1331,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     seriesAssetMap,
     catalogHorizonMin: num(env, 'CATALOG_HORIZON_MIN', 90, 16, 7 * 24 * 60),
     catalogStrikesPerEvent: num(env, 'CATALOG_STRIKES_PER_EVENT', 4, 0, 1000),
+    // Strike selection trusts a listing's mid only when its spread is at most this (0 = the legacy rule: any mid, else the
+    // last price). Institutional research decision 1, Nov 5 (a dead 1c/99c listing read 50c and took a strike slot).
+    catalogPickMaxSpread: num(env, 'CATALOG_PICK_MAX_SPREAD', 0.1, 0, 1),
     allowProxyIndex,
     spotFeed: bool(env, 'SPOT_FEED', true),
     dominanceFeed: bool(env, 'DOMINANCE_FEED', true),

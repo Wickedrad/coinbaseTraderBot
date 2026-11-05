@@ -36,7 +36,7 @@ import { SpotBookRecorder, SpotBookService, spotBookLine } from './spotBook';
 import { KalshiPerpsRest } from '../perps/perpRest';
 import type { PerpSnapshot } from '../perps/perpData';
 import { contractKind, type ContractTerms, type MarketKind } from '../model/fairValue';
-import { fillTickerStrikes } from '../kalshi/wire';
+import { fillTickerStrikes, listingPickMid } from '../kalshi/wire';
 import { DominanceService } from './dominance';
 import { IndexBars, IndexStore } from './indexBars';
 import { IndexTracker } from './indexTracker';
@@ -453,7 +453,7 @@ export class MarketData extends EventEmitter {
   /** Refresh the list of open markets for each configured series (traded first, then record-only). */
   private catalogBusy = false;
   /** Last catalog refresh: series that failed, the latest error, when (for the dashboard). */
-  catalogHealth: { ts: number; series: number; failed: number; lastError?: string; durationMs?: number; tracked?: number; recordOnly?: number; open?: number; perSeries?: Record<string, { fetched: number; nearest: number; closed: number; farDated: number; notOpenYet: number; kept: number; sample?: string }> } = { ts: 0, series: 0, failed: 0 };
+  catalogHealth: { ts: number; series: number; failed: number; lastError?: string; durationMs?: number; tracked?: number; recordOnly?: number; open?: number; perSeries?: Record<string, { fetched: number; nearest: number; closed: number; farDated: number; notOpenYet: number; kept: number; pickPaths?: Record<'mid' | 'index' | 'median', number>; sample?: string }> } = { ts: 0, series: 0, failed: 0 };
 
   private catalogRun = 0;
   private catalogBusySince = 0;
@@ -491,9 +491,13 @@ export class MarketData extends EventEmitter {
         const fetched = fillTickerStrikes(await this.rest.getOpenMarkets(series));
         // Which strikes to track: the ones at the money by Kalshi's own prices (nearest 50c on a ladder, the
         // richest buckets on a range), else nearest Kalshi's index. Never an outside exchange's price.
-        const markets = nearestStrikes(fetched, contractKind, series, this.index.get(asset)?.latest()?.value, this.cfg.catalogStrikesPerEvent, new Set(this.markets.keys()));
+        // With the spread cap, distance is measured only from a fresh index (60 s); a stale one falls back to the ladder's middle.
+        const capped = this.cfg.catalogPickMaxSpread > 0;
+        const ix = capped ? this.index.get(asset)?.fresh(now, 60_000)?.value : this.index.get(asset)?.latest()?.value;
+        const paths = { mid: 0, index: 0, median: 0 };
+        const markets = nearestStrikes(fetched, contractKind, series, ix, this.cfg.catalogStrikesPerEvent, new Set(this.markets.keys()), { maxSpread: this.cfg.catalogPickMaxSpread, paths });
         // Where markets drop out, per series (dashboard / API diagnostics).
-        const ps = { fetched: fetched.length, nearest: markets.length, closed: 0, farDated: 0, notOpenYet: 0, kept: 0, sample: fetched[0] ? `${fetched[0].ticker} open ${new Date(fetched[0].openTime).toISOString()} close ${new Date(fetched[0].closeTime).toISOString()}` : undefined };
+        const ps = { fetched: fetched.length, nearest: markets.length, closed: 0, farDated: 0, notOpenYet: 0, kept: 0, pickPaths: paths, sample: fetched[0] ? `${fetched[0].ticker} open ${new Date(fetched[0].openTime).toISOString()} close ${new Date(fetched[0].closeTime).toISOString()}` : undefined };
         perSeries[series] = ps;
         for (const m of markets) {
           if (m.closeTime <= now) { ps.closed++; continue; }
@@ -688,10 +692,12 @@ export class MarketData extends EventEmitter {
 /** A catalog refresh running longer than this no longer blocks the next one. */
 export const CATALOG_STUCK_MS = 180_000;
 
-export function nearestStrikes<M extends { ticker: string; eventTicker?: string; strikeType?: string; floorStrike?: number; capStrike?: number; yesMid?: number }>(
+export function nearestStrikes<M extends { ticker: string; eventTicker?: string; strikeType?: string; floorStrike?: number; capStrike?: number; yesMid?: number; yesBid?: number; yesAsk?: number }>(
   markets: M[], kindOf: (series: string, strikeType?: string) => string, series: string, price: number | undefined, n: number, tracked: Set<string>,
+  o: { maxSpread?: number; paths?: Record<'mid' | 'index' | 'median', number> } = {},
 ): M[] {
   if (!n) return markets;
+  const maxSpread = o.maxSpread ?? 0;
   const ref = (m: M) => (m.floorStrike !== undefined && m.capStrike !== undefined ? (m.floorStrike + m.capStrike) / 2 : m.floorStrike ?? m.capStrike);
   const byEvent = new Map<string, M[]>();
   const out: M[] = [];
@@ -701,20 +707,53 @@ export function nearestStrikes<M extends { ticker: string; eventTicker?: string;
     const e = m.eventTicker ?? series;
     (byEvent.get(e) ?? byEvent.set(e, []).get(e)!).push(m);
   }
+  const path = (p: 'mid' | 'index' | 'median') => { if (o.paths) o.paths[p] = (o.paths[p] ?? 0) + 1; };
   for (const ms of byEvent.values()) {
-    // Kalshi's own prices first: at the money = YES nearest 50c (above / below ladders) or the richest
-    // buckets (ranges). Needs a price on at least half the event's markets.
-    const priced = ms.filter((m) => m.yesMid !== undefined);
-    if (priced.length >= Math.max(2, ms.length / 2)) {
-      const between = kindOf(series, ms[0].strikeType) === 'between';
-      const score = (m: M) => (m.yesMid === undefined ? Infinity : between ? -m.yesMid : Math.abs(m.yesMid - 0.5));
-      const keep = new Set([...ms].sort((a, b) => score(a) - score(b)).slice(0, n));
+    const between = kindOf(series, ms[0].strikeType) === 'between';
+    const refs = ms.map((m) => ref(m)!).sort((a, b) => a - b);
+    const p = price ?? refs[Math.floor(refs.length / 2)];
+    const byIndex = (a: M, b: M) => Math.abs(ref(a)! - p) - Math.abs(ref(b)! - p);
+    if (maxSpread > 0) {
+      // Two tiers (decision 1, Nov 5): Kalshi's own tight quotes first (ranges: the richest tight buckets; ladders: the
+      // strikes nearest where the tight quotes cross 50c), then everything else by distance from the index (or the
+      // ladder's middle). A dead or one-sided listing never reads 50c, and a briefly wide strike at the money is kept.
+      const mid = new Map<M, number>();
+      for (const m of ms) { const v = listingPickMid(m.yesBid, m.yesAsk, maxSpread); if (v !== undefined) mid.set(m, v); }
+      const useMid = mid.size >= Math.max(2, ms.length / 2);
+      let tier1: M[] = [], money: number | undefined;
+      if (useMid && between) {
+        tier1 = ms.filter((m) => mid.has(m) && mid.get(m)! >= 0.05).sort((a, b) => mid.get(b)! - mid.get(a)!).slice(0, n);
+      } else if (useMid) {
+        // A ladder: the tight quotes locate the money (where YES crosses 50c, interpolated between the tight strikes on
+        // either side), and every strike is ranked by its distance from there, so a wide strike at the money still
+        // outranks tight tails. Without a tight quote between 10c and 90c, the index decides.
+        const pts = ms.filter((m) => mid.has(m)).map((m) => ({ k: ref(m)!, v: mid.get(m)! })).sort((a, b) => a.k - b.k);
+        for (let i = 0; i + 1 < pts.length && money === undefined; i++) {
+          const a = pts[i], b = pts[i + 1];
+          if ((a.v - 0.5) * (b.v - 0.5) <= 0 && a.v !== b.v) money = a.k + ((0.5 - a.v) / (b.v - a.v)) * (b.k - a.k);
+        }
+        const nearest = pts.filter((x) => x.v >= 0.1 && x.v <= 0.9).sort((a, b) => Math.abs(a.v - 0.5) - Math.abs(b.v - 0.5))[0];
+        if (money === undefined && nearest) money = nearest.k;
+        if (money !== undefined) tier1 = [...ms].sort((a, b) => Math.abs(ref(a)! - money!) - Math.abs(ref(b)! - money!)).slice(0, n);
+      }
+      const keep = new Set(tier1);
+      for (const m of [...ms].sort(byIndex)) { if (keep.size >= n) break; keep.add(m); }
+      path(tier1.length ? 'mid' : price !== undefined ? 'index' : 'median');
       for (const m of ms) if (keep.has(m) || tracked.has(m.ticker)) out.push(m);
       continue;
     }
-    const refs = ms.map((m) => ref(m)!).sort((a, b) => a - b);
-    const p = price ?? refs[Math.floor(refs.length / 2)];
-    const keep = new Set([...ms].sort((a, b) => Math.abs(ref(a)! - p) - Math.abs(ref(b)! - p)).slice(0, n));
+    // Legacy (maxSpread 0): Kalshi's own prices first: at the money = YES nearest 50c (above / below ladders) or the
+    // richest buckets (ranges). Needs a price on at least half the event's markets.
+    const priced = ms.filter((m) => m.yesMid !== undefined);
+    if (priced.length >= Math.max(2, ms.length / 2)) {
+      const score = (m: M) => (m.yesMid === undefined ? Infinity : between ? -m.yesMid : Math.abs(m.yesMid - 0.5));
+      const keep = new Set([...ms].sort((a, b) => score(a) - score(b)).slice(0, n));
+      path('mid');
+      for (const m of ms) if (keep.has(m) || tracked.has(m.ticker)) out.push(m);
+      continue;
+    }
+    const keep = new Set([...ms].sort(byIndex).slice(0, n));
+    path(price !== undefined ? 'index' : 'median');
     for (const m of ms) if (keep.has(m) || tracked.has(m.ticker)) out.push(m);
   }
   return out;
