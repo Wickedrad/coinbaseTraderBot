@@ -23,6 +23,7 @@ import { loadSessionRiskFile } from './model/sessionRisk';
 import { loadCalendar } from './model/calendar';
 import { ModelHealth } from './model/modelHealth';
 import { AccuracyGate } from './strategy/accuracyGate';
+import { MarketAnchor } from './model/marketAnchor';
 import { directionalConviction, type TaNetView } from './strategy/taConviction';
 import { setTaNetEnsemble, TaNetEnsemble, taNetView } from './ta/taNetEnsemble';
 import { assetFeatureMap } from './model/featureEngine';
@@ -337,6 +338,7 @@ async function main(): Promise<void> {
   const taHealth = new ModelHealth({ minWindows: 1e9 }, path.join(cfg.dataDir, 'ta_health.json'));
   // Bot vs market per time-to-close bucket (each book its own scorecard); only paper blocks entries on it.
   const accuracyGate = new AccuracyGate(cfg.strategy.accuracyGate, path.join(cfg.dataDir, 'accuracy_gate.json'));
+  const marketAnchor = new MarketAnchor(cfg.strategy.marketAnchor, path.join(cfg.dataDir, 'market_anchor.json'));
   // TA conviction for the perps (setup trader): features + the TA network's raw view, cached per asset per minute.
   const convCache = new Map<string, { ts: number; f: Record<string, number>; v: TaNetView | undefined; rb?: { score: number; n: number }; gp?: { exposure: number } }>();
   const conviction = (asset: string, dir: number, now: number) => {
@@ -545,7 +547,7 @@ async function main(): Promise<void> {
   // The exchange's own status and maintenance schedule gate new entries (exits stay allowed).
   const exchangeStatus = new ExchangeStatusMonitor(rest);
   exchangeStatus.start();
-  const engine: Engine = new Engine({ kalshiCheck, control, exchangeStatus, cfg, audit, alerter, md, gateway, oms, risk, kill, recon, model, volProfile, vault, balanceMonitor, balanceMonitorPath, tca, equityGuard, modelHealth, taHealth, accuracyGate, calendar, hedger, perpTrader: directionalTrader, clock, tennisScores, tennisFair, volModel, fillModel, fillLogDir: path.join(cfg.dataDir, 'fills'), snn, snnBlenderPath: path.join(cfg.snn.checkpointDir, 'blender.json'), curveExit, takeProfitBench, curveEntry, liveLines, trials, scoreboard });
+  const engine: Engine = new Engine({ kalshiCheck, control, exchangeStatus, cfg, audit, alerter, md, gateway, oms, risk, kill, recon, model, volProfile, vault, balanceMonitor, balanceMonitorPath, tca, equityGuard, modelHealth, taHealth, accuracyGate, marketAnchor, calendar, hedger, perpTrader: directionalTrader, clock, tennisScores, tennisFair, volModel, fillModel, fillLogDir: path.join(cfg.dataDir, 'fills'), snn, snnBlenderPath: path.join(cfg.snn.checkpointDir, 'blender.json'), curveExit, takeProfitBench, curveEntry, liveLines, trials, scoreboard });
   // The pipeline's session risk profile (session_risk.json), under SESSION_RISK; autotrain hot-swaps new ones.
   const sr = loadSessionRiskFile(modelPaths.session_risk);
   if (sr) { engine.setSessionRiskAuto(sr.profile); log.info(`session risk ${sr.version}${cfg.strategy.sessionRiskAuto ? '' : ' loaded, not applied (SESSION_RISK_AUTO off)'}`, { sessions: Object.keys(sr.profile) }); }
@@ -622,6 +624,7 @@ async function main(): Promise<void> {
     kalshiCheck.flush();
     paper?.flush();
     accuracyGate.flush();
+    marketAnchor.flush();
     autoTrain.stop();
     try { engine.saveSnnBlender(); await Promise.all(Object.values(engine.snn?.units ?? {}).map((u) => u!.host.stop())); } catch (e) { log.error('SNN checkpoint on shutdown failed', { error: String(e) }); }
     audit.write('shutdown', { sig });

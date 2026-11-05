@@ -74,7 +74,9 @@ permissions:
 concurrency:
   # Comparison runs (overrides set) each get their own group, so several exit policies replay side by side; a fidelity
   # check keeps the shared group and never runs beside another.
-  group: kalshi-replay-check${{ inputs.overrides && format('-{0}-{1}', inputs.overrides, inputs.from) || '' }}
+  # GitHub caps a group name at 400 characters, and long override lists ran past it (the run failed at start with no job),
+  # so comparison runs key their group on the run id instead: still one group each.
+  group: kalshi-replay-check${{ inputs.overrides && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
 jobs:

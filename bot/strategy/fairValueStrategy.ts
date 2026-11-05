@@ -571,13 +571,22 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   const quoting = (cfg.style === 'maker' || cfg.style === 'both') && bid && ask;
   const offset = cfg.minEdge + (v.makerBuffer ?? 0);
   const expiry = Math.min(v.nowSec + cfg.orderTtlSec, v.closeSec - Math.max(1, Math.floor(v.noEntryBeforeCloseSec)));
+  // Side gate (QUOTE_SIDE_GATE): new risk rests only on the side the price disagrees with the mid by the gate; a quote
+  // that unwinds a held position is never gated.
+  const midNow = bid && ask ? (bid.price + ask.price) / 2 : undefined;
+  const sideGate = cfg.quoteSideGate ?? 0;
+  const bidGated = sideGate > 0 && midNow !== undefined && v.position >= 0 && q - midNow < sideGate;
+  const askGated = sideGate > 0 && midNow !== undefined && v.position <= 0 && midNow - q < sideGate;
+  if (bidGated && askGated) out.notes.push(`quote side gate: price within ${sideGate} of the mid`);
   if (quoting && quoteAllowed) {
     const skewed = q - cfg.inventorySkewPerContract * v.position;
 
     // YES bid.
     let bp = floorToTick(skewed - offset, tick);
     bp = Math.min(bp, round(ask.price - tick, 4));
-    if (bp >= v.minSidePrice && bp <= 1 - v.minSidePrice) {
+    const xYes = longshotExtra(cfg, 'yes', v.position, bp);
+    if (xYes > 0) bp = Math.min(floorToTick(skewed - offset - xYes, tick), round(ask.price - tick, 4));
+    if (!bidGated && bp >= v.minSidePrice && bp <= 1 - v.minSidePrice) {
       const fee = orderFee(1, bp, false, v.fees);
       const k = size('yes', bp, fee, v.maxContracts);
       const unwind = Math.max(0, -v.position);
@@ -588,8 +597,11 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     // YES ask (= NO bid at 1 - ap).
     let ap = ceilToTick(skewed + offset, tick);
     ap = Math.max(ap, round(bid.price + tick, 4));
+    // NO longshot (NO_LONGSHOT_EDGE): new NO risk costing under NO_LONGSHOT_PRICE asks for extra edge.
+    const xNo = longshotExtra(cfg, 'no', v.position, round(1 - ap, 4));
+    if (xNo > 0) ap = Math.max(ceilToTick(skewed + offset + xNo, tick), round(bid.price + tick, 4));
     const noCost = round(1 - ap, 4);
-    if (noCost >= v.minSidePrice && noCost <= 1 - v.minSidePrice) {
+    if (!askGated && noCost >= v.minSidePrice && noCost <= 1 - v.minSidePrice) {
       const fee = orderFee(1, noCost, false, v.fees);
       const k = size('no', noCost, fee, v.maxContracts);
       const unwind = Math.max(0, v.position);
@@ -677,7 +689,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
       if (k.contracts > 0) {
         const fee = orderFee(k.contracts, ask.price, true, v.fees) / k.contracts;
         const edge = q - ask.price - fee;
-        if (edge >= cfg.takerBuffer + cfg.minEdge && gate('yes', ask.price, k.contracts, true)) {
+        if (edge >= cfg.takerBuffer + cfg.minEdge + longshotExtra(cfg, 'yes', v.position, ask.price) && gate('yes', ask.price, k.contracts, true)) {
           out.place.push({ side: 'bid', price: ask.price, count: k.contracts, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge, why: `take YES: q ${q.toFixed(3)} vs ask ${ask.price}` });
         }
       }
@@ -689,7 +701,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
       if (k.contracts > 0) {
         const fee = orderFee(k.contracts, noCost, true, v.fees) / k.contracts;
         const edge = (1 - q) - noCost - fee;
-        if (edge >= cfg.takerBuffer + cfg.minEdge && gate('no', noCost, k.contracts, true)) {
+        if (edge >= cfg.takerBuffer + cfg.minEdge + longshotExtra(cfg, 'no', v.position, noCost) && gate('no', noCost, k.contracts, true)) {
           out.place.push({ side: 'ask', price: bid.price, count: k.contracts, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge, why: `take NO: q ${q.toFixed(3)} vs bid ${bid.price}` });
         }
       }
@@ -722,4 +734,16 @@ function reconcileQuote(resting: RestingQuote | undefined, desired: OrderPlan | 
     out.cancel.push({ clientOrderId: resting.clientOrderId, reason: moved ? `requote ${resting.price} -> ${desired.price}` : shrink ? 'size shrink' : 'quote expiring' });
     out.place.push(desired);
   }
+}
+
+/** Extra edge asked of new NO risk that costs under cfg.noLongshotPrice (NO_LONGSHOT_EDGE; 0 = off). A buy that
+ *  unwinds a held position is never charged it. Paper's Nov 3-4 loss sat in these entries (first fill an ask above
+ *  0.70 on the YES scale: 79 markets, 11% win). NO_LONGSHOT_MIRROR (lab placebo) charges YES longshots instead, to
+ *  tell a real NO-longshot effect from plain "trade less". */
+export function longshotExtra(cfg: { noLongshotEdge?: number; noLongshotPrice?: number; noLongshotMirror?: boolean }, side: 'yes' | 'no', position: number, cost: number): number {
+  const e = cfg.noLongshotEdge ?? 0;
+  if (!(e > 0) || cost >= (cfg.noLongshotPrice ?? 0.3)) return 0;
+  const charged: 'yes' | 'no' = cfg.noLongshotMirror ? 'yes' : 'no';
+  if (side !== charged) return 0;
+  return (side === 'no' ? position <= 0 : position >= 0) ? e : 0;
 }

@@ -50,6 +50,10 @@ import type { Config } from '../bot/config';
 import type { EvalReading } from './backtest';
 
 export interface SideSummary {
+  /** Settled P&L by market (the worst-losers line). */
+  byTicker?: Record<string, number>;
+  /** Settled markets by their first fill: side and YES-scale price band (bid<0.30, ask>0.70, ...): markets, wins, P&L. */
+  byEntry?: Record<string, { markets: number; wins: number; pnl: number }>;
   fills: number; contracts: number; fees: number; pnl: number; markets: number;
   /** Exit contracts by kind (take-profit, model exit, ratchet stop, cross, other). */
   exits: Record<string, number>;
@@ -167,7 +171,7 @@ export const foldReason = (r: string) => r.replace(/[-+]?\$?\d[\d.,]*%?/g, '#');
 const empty = (): SideSummary => ({ fills: 0, contracts: 0, fees: 0, pnl: 0, markets: 0, exits: {}, byHour: {}, byPurpose: {}, contractsByHour: {}, bySeries: {} });
 /** One market the take-profit bench scored: what its sales made against holding to settlement, the contracts sold, when. */
 export interface TakeProfitMarket { usd: number; contracts: number; t: number }
-const addSeries = (s: SideSummary, ticker: string, pnl: number) => { const x = (s.bySeries[ticker.split('-')[0]] ??= { markets: 0, pnl: 0 }); x.markets++; x.pnl += pnl; };
+const addSeries = (s: SideSummary, ticker: string, pnl: number) => { const x = (s.bySeries[ticker.split('-')[0]] ??= { markets: 0, pnl: 0 }); x.markets++; x.pnl += pnl; const t = (s.byTicker ??= {}); t[ticker] = (t[ticker] ?? 0) + pnl; };
 export type PaperSide = SideSummary & {
   gateShare: number | null; edgeShare?: number | null; lastFillAt: string | null;
   /** Fills of paper's own extra entries: training trades and exploration entries. */
@@ -323,6 +327,16 @@ export async function readAudit(auditDir: string, days: string[], prices?: { fro
   return a;
 }
 
+/** The entry-type band of a market's first fill: its side and YES-scale price (ask>0.70 = sold YES high, the NO longshot). */
+export function entryBand(side: string | undefined, price: number | undefined): string {
+  if ((side !== 'bid' && side !== 'ask') || !Number.isFinite(price)) return 'unknown';
+  return `${side}${price! < 0.3 ? '<0.30' : price! <= 0.7 ? ' 0.30-0.70' : '>0.70'}`;
+}
+function addEntry(s: SideSummary, band: string, pnl: number): void {
+  const e = ((s.byEntry ??= {})[band] ??= { markets: 0, wins: 0, pnl: 0 });
+  e.markets++; e.pnl += pnl; if (pnl > 0) e.wins++;
+}
+
 /** What paper did in [from, to). */
 /** Paper's down windows in the stretch, and both sides' P&L on the markets neither first traded in one. */
 export function upTimeScore(r: { trades: Array<{ ticker: string; closeTs: number; pnl: number }>; fillLog?: Array<{ t: number; ticker: string }> }, a: AuditRecords, from: number, to: number): NonNullable<ReplayCheck['upOnly']> {
@@ -419,6 +433,8 @@ export function paperSummary(a: AuditRecords, from = -Infinity, to = Infinity): 
   const out: PaperSide = { ...empty(), gateShare: null, lastFillAt: null, extra: { train: 0, explore: 0 }, quiet: { diagnoses: 0, lastAt: null, reasons: {} }, quietHours: {}, takeProfitBench: { scored: 0, netUsd: 0, benchedAt: null, byMarket: {} }, rejected: {} };
   const inside = (t: number) => t >= from && t < to;
   let lastFill = -Infinity;
+  const first = new Map<string, { side?: string; price?: number }>();
+  for (const f of a.fills) if (f.ticker && !first.has(f.ticker)) first.set(f.ticker, { side: f.side, price: f.price });
   for (const f of a.fills) {
     if (!inside(f.t)) continue;
     out.fills++; out.contracts += f.count; out.fees += f.fee;
@@ -441,6 +457,7 @@ export function paperSummary(a: AuditRecords, from = -Infinity, to = Infinity): 
     const h = hourOf(s.t);
     out.byHour[h] = (out.byHour[h] ?? 0) + s.pnl;
     if (s.ticker) addSeries(out, s.ticker, s.pnl);
+    if (s.ticker) addEntry(out, entryBand(first.get(s.ticker)?.side, first.get(s.ticker)?.price), s.pnl);
   }
   let markets = 0, gated = 0, edged = 0;
   for (const d of a.diagnoses) {
@@ -806,7 +823,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   const replay = {
     ...empty(), accuracyBlocks: r.paper?.accuracyBlocks ?? 0, sessionEdgeBlocks: r.paper?.sessionEdgeBlocks ?? 0, entryEvaluations: r.entryEvaluations,
     takeProfitBenchedAt: r.paper?.takeProfitBenchedAt ? new Date(r.paper.takeProfitBenchedAt).toISOString() : null, takeProfitScored: r.paper?.takeProfitScored ?? 0, takeProfitNetUsd: r.paper?.takeProfitNetUsd ?? 0, takeProfitByMarket: r.paper?.takeProfitByMarket ?? {}, rejected: r.paper?.rejected ?? {}, sizeScaleMin: r.sizeScaleMin ?? 1,
-    makerBufferEnd: r.makerBufferEnd ?? null, takerThin: r.takerThin, extra: { train: r.paper?.trainTrades ?? 0, explore: r.paper?.exploreEntries ?? 0, sent: r.paper?.extraSent ?? 0, rejected: r.paper?.extraRejected ?? {} },
+    makerBufferEnd: r.makerBufferEnd ?? null, takerThin: r.takerThin, marketAnchor: r.marketAnchor, extra: { train: r.paper?.trainTrades ?? 0, explore: r.paper?.exploreEntries ?? 0, sent: r.paper?.extraSent ?? 0, rejected: r.paper?.extraRejected ?? {} },
   };
   const mk = (o.makerMarkouts ?? []).slice(-2000);
   const makerBufferPaper = mk.length >= 30 ? Math.min(S.makerBufferRange[1], Math.max(S.makerBufferRange[0], -mk.reduce((a, x) => a + x, 0) / mk.length)) : null;
@@ -818,6 +835,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     const h = hourOf(t.closeTs);
     replay.byHour[h] = (replay.byHour[h] ?? 0) + t.pnl;
     addSeries(replay, t.ticker, t.pnl);
+    addEntry(replay, entryBand(t.first?.side, t.first?.price), t.pnl);
   }
   replay.byPurpose = r.byPurpose ?? {};
   replay.contractsByHour = r.contractsByHour ?? {};
@@ -907,7 +925,7 @@ async function main(): Promise<void> {
   }
   const res = await replayCheck({
     recordings: arg('recordings', 'data/recordings'), audit: arg('audit', 'data/audit'), days, model: arg('model', 'params/model.json'),
-    from: time('from'), to: time('to'), minHours: opt('min-hours'), warmupHours: opt('warmup-hours'), bankroll: opt('bankroll'), paperBalanceNow: opt('paper-balance-now'), bankrollScale: opt('bankroll-scale'), tickPhaseMs: opt('tick-phase-ms'),
+    from: time('from'), to: time('to'), minHours: opt('min-hours'), warmupHours: opt('warmup-hours') ?? (Number(process.env.REPLAY_WARMUP_HOURS) > 0 ? Number(process.env.REPLAY_WARMUP_HOURS) : undefined), bankroll: opt('bankroll'), paperBalanceNow: opt('paper-balance-now'), bankrollScale: opt('bankroll-scale'), tickPhaseMs: opt('tick-phase-ms'),
     paperGuard: arg('paper-guard', '') || undefined, killOverride: arg('kill-override', 'true') !== 'false',
     makerMarkouts: arg('maker-markouts', '') && fs.existsSync(arg('maker-markouts', '')) ? (JSON.parse(fs.readFileSync(arg('maker-markouts', ''), 'utf8')) as unknown[]).map(Number).filter(Number.isFinite) : undefined,
     paperProbation: arg('paper-probation', '') || undefined, paperTrials: arg('paper-trials', '') || undefined,
@@ -930,6 +948,15 @@ async function main(): Promise<void> {
   const X = res.replay.extra, rej = Object.entries(X.rejected).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, n]) => `${k} x${n}`).join('; ');
   const TT = (res.replay as { takerThin?: { asked: number; filled: number; blocked: number; bySeries: Record<string, { asked: number; filled: number; blocked: number }> } }).takerThin;
   if (TT) console.log(`thin books: replay taker contracts asked ${TT.asked.toFixed(0)}, filled ${TT.filled.toFixed(0)}, refused because its own earlier takes emptied the level ${TT.blocked.toFixed(0)} | by series (asked/filled/refused): ${Object.entries(TT.bySeries).sort((a, b) => b[1].blocked - a[1].blocked).slice(0, 8).map(([k, v]) => `${k} ${v.asked.toFixed(0)}/${v.filled.toFixed(0)}/${v.blocked.toFixed(0)}`).join(' | ') || 'none'}`);
+  // Paper's worst losers (full-stake, -$9 or worse) and what the replay did in the same markets: 0 = it never traded them.
+  const PT = res.paper.byTicker ?? {}, RT = res.replay.byTicker ?? {};
+  const worst = Object.entries(PT).filter(([, v]) => v <= -9).sort((a, b) => a[1] - b[1]);
+  if (worst.length) console.log(`paper's worst losers (<= -$9): ${worst.length}, $${worst.reduce((a, [, v]) => a + v, 0).toFixed(2)} | replay in the same markets: $${worst.reduce((a, [k]) => a + (RT[k] ?? 0), 0).toFixed(2)}, not traded ${worst.filter(([k]) => RT[k] === undefined).length}, lost $9+ ${worst.filter(([k]) => (RT[k] ?? 0) <= -9).length} | ${worst.slice(0, 12).map(([k, v]) => `${k} ${v.toFixed(2)}/${RT[k] === undefined ? '-' : RT[k].toFixed(2)}`).join(', ')}`);
+  const MA = (res.replay as { marketAnchor?: { scored: number; llAnchored: number | null; llRaw: number | null; llMarket: number | null; groups: Record<string, Array<{ lo: number; hi: number; n: number; w: number }>>; series?: Record<string, { n: number; w: number }> } }).marketAnchor;
+  const ent = (e?: SideSummary['byEntry']) => Object.entries(e ?? {}).sort().map(([k, v]) => `${k} ${v.markets} mk ${Math.round(100 * v.wins / v.markets)}% win ${f(v.pnl)}`).join(', ') || 'none';
+  console.log(`settled markets by first fill (YES-scale price): replay ${ent(res.replay.byEntry)} | paper ${ent(res.paper.byEntry)}`);
+  if (MA) console.log(`market anchor: ${MA.scored} snapshots scored, log loss anchored ${MA.llAnchored} raw ${MA.llRaw} market ${MA.llMarket} | w by bucket: ${Object.entries(MA.groups).map(([g, bs]) => `${g} ${bs.map((b) => `${b.lo}-${b.hi}s ${b.w} (n ${b.n})`).join(', ')}`).join(' | ')}`);
+  if (MA?.series) console.log(`market anchor by series (n >= 20): ${Object.entries(MA.series).filter(([, v]) => v.n >= 20).sort().map(([k, v]) => `${k} ${v.w} (n ${v.n})`).join(', ') || 'none'}`);
   console.log(`paper's extra entries: training trades replay ${X.train} planned, paper ${res.paper.extra.train} filled | exploration replay ${X.explore} planned, paper ${res.paper.extra.explore} filled | replay sent ${X.sent} past the risk gateway${rej ? `, turned down: ${rej}` : ''}`);
   console.log('hour (UTC)      replay contracts  paper contracts   replay P&L   paper P&L');
   for (const h of [...new Set([...Object.keys(res.replay.contractsByHour), ...Object.keys(res.paper.contractsByHour), ...Object.keys(res.replay.byHour), ...Object.keys(res.paper.byHour)])].sort()) {
