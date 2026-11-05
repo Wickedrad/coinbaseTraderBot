@@ -168,7 +168,11 @@ export interface StudySeries { key: string; a: string; rule: string; mode: strin
 export interface StudyCoin {
   schema: 'perpta-study1'; asset: string; day0: number; dayValid: number; daySeal: number; universe: number; replicated: number; mismatched: number; unresolved: number;
   onc: { n: number; k: number; quality: number; kBase: number; qualityBase: number; redone: number; weeks: number };
-  srDiscAll: number[]; series: StudySeries[]; notes: string[];
+  /** Participation ratio of the clustered cells' weekly correlation matrix, (tr C)^2 / ||C||_F^2: a second effective
+   *  number of trials that does not depend on where the clusters are cut (at most the number of weeks). */
+  pr?: number;
+  /** srDiscAll: the medoids' discovery daily Sharpe; srPool: every clustered cell's. */
+  srDiscAll: number[]; srPool?: number[]; series: StudySeries[]; notes: string[];
 }
 
 const dailySr = (xs: ArrayLike<number>, from: number, to: number) => { let s = 0, s2 = 0; const n = to - from; for (let i = from; i < to; i++) { s += xs[i]; s2 += xs[i] * xs[i]; } const m = s / n, v = s2 / n - m * m; return v > 0 ? m / Math.sqrt(v) : 0; };
@@ -280,21 +284,32 @@ export function studyCoin(g: Grid, cells: CellRec[], header: { seal: string; val
     if (js.length > 2) for (const j of js) { let s = 0; for (const j2 of js) { let dot = 0; for (let w = 0; w < W; w++) dot += Xf[j * W + w] * Xf[j2 * W + w]; s += dot; } if (s > bs) { bs = s; bj = j; } }
     medoid.set(c, { j: bj, size: js.length });
   }
+  // Participation ratio from the W x W Gram matrix (same nonzero eigenvalues as the n x n correlation matrix).
+  let pr = 0;
+  if (rows.length >= 2) {
+    const G = new Float64Array(W * W);
+    for (let j = 0; j < rows.length; j++) { const o0 = j * W; for (let u = 0; u < W; u++) { const xu = Xf[o0 + u]; if (xu === 0) continue; const gu = u * W; for (let v = 0; v < W; v++) G[gu + v] += xu * Xf[o0 + v]; } }
+    let f2 = 0; for (let q = 0; q < G.length; q++) f2 += G[q] * G[q];
+    pr = f2 > 0 ? (rows.length * rows.length) / f2 : 0;
+  }
+  log(`${g.asset}: participation ratio of the clustered cells' weekly correlation ${pr.toFixed(1)} (of ${rows.length} cells, ${W} weeks)`);
   const isMed = new Map<number, { cluster: number; size: number }>();
   for (const [c, m] of medoid) isMed.set(rows[m.j], { cluster: c, size: m.size });
   const clusterOf = new Map<number, number>(); rows.forEach((a, j) => clusterOf.set(a, res.labels[j]));
   const series: StudySeries[] = [];
-  const srDiscAll: number[] = [];
+  const srDiscAll: number[] = [], srPool: number[] = [];
+  const pooled = new Set(rows);
   for (let a = 0; a < ok.length; a++) {
     const c = ok[a], k = keyOf(c), arr = daily.get(k)!;
     const inPool = a < pool.length, med = inPool ? isMed.get(a) : undefined, rep = reps.has(k);
     const sr = dailySr(arr, 0, Math.max(1, dDisc));
     if (med) srDiscAll.push(+sr.toFixed(5));
+    if (inPool && pooled.has(a)) srPool.push(+sr.toFixed(5));
     if (!med && !rep) continue;
     const cl = inPool ? clusterOf.get(a) ?? -1 : -1;
     series.push({ key: k, a: c.a, rule: c.rule, mode: c.mode, pol: c.pol, side: c.side, cond: c.cond, disc: { n: c.disc.n, mean: c.disc.mean, tExc: c.disc.tExc }, medoid: !!med, rep, cluster: cl, size: med?.size ?? (cl >= 0 ? members.get(cl)?.length ?? 0 : 0), srDisc: +sr.toFixed(5), day0, daily: Array.from(arr, (v) => +v.toFixed(2)) });
   }
-  return { schema: 'perpta-study1', asset: g.asset, day0, dayValid, daySeal, universe: uni.length, replicated: ok.length, mismatched, unresolved, onc: { n: rows.length, k: res.k, quality: +res.q.toFixed(4), kBase: res.kBase, qualityBase: +res.qBase.toFixed(4), redone: res.redone, weeks: W }, srDiscAll, series, notes };
+  return { schema: 'perpta-study1', asset: g.asset, day0, dayValid, daySeal, universe: uni.length, replicated: ok.length, mismatched, unresolved, onc: { n: rows.length, k: res.k, quality: +res.q.toFixed(4), kBase: res.kBase, qualityBase: +res.qBase.toFixed(4), redone: res.redone, weeks: W }, pr: +pr.toFixed(2), srDiscAll, srPool, series, notes };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -381,12 +396,15 @@ export function studyReport(coins: StudyCoin[], o: { run: string; nRaw: number; 
   const col = (s: StudySeries, from: number, T: number) => { const x = new Float64Array(T); for (let t = 0; t < T; t++) { const di = from + t - s.day0; if (di >= 0 && di < s.daily.length) x[t] = s.daily[di]; } return x; };
   const disc = all.map((s) => col(s, D0, Td)), val = all.map((s) => col(s, Dv, Tv));
   const sd = spa(disc, Td, { B: o.B, block: o.block, seed: 11 }), sv = spa(val, Tv, { B: o.B, block: o.block, seed: 12 });
-  const srs = coins.flatMap((c) => c.srDiscAll), mu = srs.reduce((a, b) => a + b, 0) / Math.max(1, srs.length), varSr = srs.reduce((a, b) => a + (b - mu) ** 2, 0) / Math.max(1, srs.length - 1);
+  const variance = (xs: number[]) => { const m = xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length); return xs.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, xs.length - 1); };
+  const varSr = variance(coins.flatMap((c) => c.srDiscAll)), varPool = variance(coins.flatMap((c) => c.srPool ?? c.srDiscAll));
+  const nPr = Math.max(1, Math.round(coins.reduce((s, c) => s + (c.pr ?? 0), 0)));
   // The best discovery cell by daily Sharpe, on its own coin's discovery days.
   let bi = 0; for (let k = 0; k < all.length; k++) if (all[k].srDisc > all[bi].srDisc) bi = k;
   const bs = all[bi];
   const own = bs ? bs.daily.slice(0, Math.max(1, Dv - bs.day0)) : [];
   const dEff = bs ? dsr(own, nEff, varSr) : undefined, dRaw = bs ? dsr(own, o.nRaw, varSr) : undefined;
+  const dPr = bs ? dsr(own, nPr, varPool) : undefined, dRawPool = bs ? dsr(own, o.nRaw, varPool) : undefined;
   const bv = bs ? val[bi] : new Float64Array(0);
   const vm = bv.length ? bv.reduce((a, b) => a + b, 0) / bv.length : NaN;
   const fmtK = (s?: StudySeries) => (s ? `${s.a} ${s.rule} ${s.mode} ${s.pol} ${s.side} ${s.cond}` : 'none');
@@ -396,16 +414,16 @@ export function studyReport(coins: StudyCoin[], o: { run: string; nRaw: number; 
     `## Perp TA sweep run ${o.run}: whole-universe check (beside the pre-registered selection, which it does not change)`,
     '',
     `Universe per coin: the top cells by discovery excess t plus every Benjamini-Hochberg group representative, each recomputed and matched to its stored discovery record: ${coins.map((c) => `${c.asset} ${c.replicated}/${c.universe}${c.mismatched ? ` (${c.mismatched} did not replicate)` : ''}`).join(', ')}.`,
-    `**N_eff = ${nEff}** clusters (ONC on weekly discovery P&L: ${coins.map((c) => `${c.asset} ${c.onc.k} of ${c.onc.n} cells, quality ${c.onc.quality}`).join(', ')}); N_raw = ${o.nRaw.toLocaleString()} cells tested (run 1 included). The clustered universe is only the top cells, so N_eff is a lower bound on the effective number of trials.`,
+    `**N_eff = ${nEff}** clusters (ONC on weekly discovery P&L: ${coins.map((c) => `${c.asset} ${c.onc.k} of ${c.onc.n} cells, quality ${c.onc.quality}`).join(', ')}); participation ratio of the same cells' correlation **${nPr}** (${coins.map((c) => `${c.asset} ${c.pr ?? '?'}`).join(', ')}; at most the number of weeks); N_raw = ${o.nRaw.toLocaleString()} cells tested (run 1 included). The clustered universe is only the top cells, so both are lower bounds on the effective number of trials.`,
     '',
     `**SPA** (Hansen; daily net P&L after fees and funding against flat; stationary bootstrap, mean block ${o.block ?? 5} days, B = ${o.B ?? 2000}) over ${all.length} series (cluster medoids plus representatives):`,
     `- **validation** (${Tv} days, the test): p = ${sv.pC.toFixed(4)} (consistent), ${sv.pL.toFixed(4)} (lower), ${sv.pU.toFixed(4)} (upper); best ${fmtK(all[sv.best])}, t ${sv.stat.toFixed(2)}. StepM ${stepLine(sv, val)}`,
     `- discovery (${Td} days, in sample: these series were screened on these same days out of ${o.nRaw.toLocaleString()} cells, so these p-values do not adjust for that search and are not a test): p = ${sd.pC.toFixed(4)} (consistent), ${sd.pL.toFixed(4)} (lower), ${sd.pU.toFixed(4)} (upper); best ${fmtK(all[sd.best])}, t ${sd.stat.toFixed(2)}. StepM ${stepLine(sd, disc)}`,
     '',
-    bs ? `**Deflated Sharpe** of the best discovery cell (${fmtK(bs)}; daily Sharpe ${dEff!.sr.toFixed(4)} over ${dEff!.T} days, skew ${dEff!.skew.toFixed(2)}, kurtosis ${dEff!.kurt.toFixed(1)}; variance of the medoids' Sharpe ${varSr.toExponential(3)}): DSR ${dEff!.dsr.toFixed(4)} at N = N_eff (${nEff}; expected best Sharpe under the null ${dEff!.sr0.toFixed(4)}), ${dRaw!.dsr.toFixed(4)} at N = N_raw (${dRaw!.sr0.toFixed(4)}). Its validation: ${vm.toFixed(2)} bps a day.` : 'No series.',
+    bs ? `**Deflated Sharpe** of the best discovery cell (${fmtK(bs)}; daily Sharpe ${dEff!.sr.toFixed(4)} over ${dEff!.T} days, skew ${dEff!.skew.toFixed(2)}, kurtosis ${dEff!.kurt.toFixed(1)}; variance of the medoids' Sharpe ${varSr.toExponential(3)}): DSR ${dEff!.dsr.toFixed(4)} at N = N_eff (${nEff}; expected best Sharpe under the null ${dEff!.sr0.toFixed(4)}), ${dRaw!.dsr.toFixed(4)} at N = N_raw (${dRaw!.sr0.toFixed(4)}). With the variance of every clustered cell's Sharpe (${varPool.toExponential(3)}): DSR ${dPr!.dsr.toFixed(4)} at N = ${nPr} (participation ratio; null ${dPr!.sr0.toFixed(4)}), ${dRawPool!.dsr.toFixed(4)} at N = N_raw (${dRawPool!.sr0.toFixed(4)}). The trials' Sharpe ratios are net of costs, so cells that beat random entries but lose to fees widen their spread. Its validation: ${vm.toFixed(2)} bps a day.` : 'No series.',
     ...coins.flatMap((c) => c.notes.map((n) => `- ${c.asset}: ${n}`)),
   ].join('\n');
-  const out = { run: o.run, nEff, nRaw: o.nRaw, series: all.length, days: { discovery: Td, validation: Tv }, spaDiscoveryInSample: { ...sd, best: fmtK(all[sd.best]), stepm: Object.fromEntries(Object.entries(sd.stepm).map(([k, v]) => [k, v.map((i) => fmtK(all[i]))])) }, spaValidation: { ...sv, best: fmtK(all[sv.best]), stepm: Object.fromEntries(Object.entries(sv.stepm).map(([k, v]) => [k, v.map((i) => fmtK(all[i]))])) }, dsr: bs ? { cell: fmtK(bs), atNeff: dEff, atNraw: dRaw, varSr, validationBpsPerDay: vm } : null, onc: Object.fromEntries(coins.map((c) => [c.asset, c.onc])) };
+  const out = { run: o.run, nEff, nRaw: o.nRaw, series: all.length, days: { discovery: Td, validation: Tv }, spaDiscoveryInSample: { ...sd, best: fmtK(all[sd.best]), stepm: Object.fromEntries(Object.entries(sd.stepm).map(([k, v]) => [k, v.map((i) => fmtK(all[i]))])) }, spaValidation: { ...sv, best: fmtK(all[sv.best]), stepm: Object.fromEntries(Object.entries(sv.stepm).map(([k, v]) => [k, v.map((i) => fmtK(all[i]))])) }, dsr: bs ? { cell: fmtK(bs), atNeff: dEff, atNraw: dRaw, varSr, atPr: dPr, atNrawPool: dRawPool, varPool, nPr, validationBpsPerDay: vm } : null, nPr, onc: Object.fromEntries(coins.map((c) => [c.asset, c.onc])) };
   return { md, out };
 }
 
