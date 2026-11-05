@@ -2203,6 +2203,7 @@ export class Engine {
       ...(() => { const r = st.position !== 0 && !fastMove ? this.d.curveExit?.restTarget(m.ticker, tauSec) : undefined; return r !== undefined ? { curveRestSidePrice: r } : {}; })(),
       newRiskRoomUsd: reason ? this.newRiskRoom(m, bankroll, tier) : undefined,
       tauSec, noEntryBeforeCloseSec: R.noEntryBeforeCloseSec, fastMove, tickSize: m.tickSize, fees: md.feesFor(m.ticker),
+      wildRegime: anchor?.isWild({ asset: m.asset, sigma: vol.sigmaPerSqrtSec }) ?? false,
       restingBid, restingAsk, nowSec: Math.floor(now / 1000), closeSec: Math.floor(m.closeTime / 1000),
       pMarket, pStd: pred.std, makerBuffer: this.makerBuffer(), entrySidePrice: entrySidePrice !== undefined && entrySidePrice > 0 && entrySidePrice < 1 ? entrySidePrice : undefined,
       entryFeePerContract: pos && Math.abs(pos.yes) > 1e-9 ? pos.fees / Math.abs(pos.yes) : undefined,

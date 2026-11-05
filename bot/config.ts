@@ -197,6 +197,8 @@ export interface StrategyConfig {
   noLongshotPrice: number;
   /** Lab placebo: charge the extra edge on YES longshots instead (NO_LONGSHOT_MIRROR). */
   noLongshotMirror: boolean;
+  /** No extra edge in the market anchor's wild regime (NO_LONGSHOT_WILD_OFF). */
+  noLongshotWildOff: boolean;
   /** Scale Kelly by max(0, 1 - drawdown / ddScaleAt); pause entries 24 h after a 7-day loss beyond weeklyLossPause. */
   ddScaleAt: number;
   weeklyLossPause: number;
@@ -1203,6 +1205,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     noLongshotEdge: num(env, 'NO_LONGSHOT_EDGE', 0, 0, 0.5),
     noLongshotPrice: num(env, 'NO_LONGSHOT_PRICE', 0.3, 0.01, 0.5),
     noLongshotMirror: bool(env, 'NO_LONGSHOT_MIRROR', false),
+    noLongshotWildOff: bool(env, 'NO_LONGSHOT_WILD_OFF', false),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
     modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),

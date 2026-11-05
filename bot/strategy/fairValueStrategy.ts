@@ -49,6 +49,8 @@ export interface RestingQuote {
 
 export interface MarketView {
   ticker: string;
+  /** The market anchor's wild regime (MARKET_ANCHOR_WILD_RATIO): volatility far above its slow average. */
+  wildRegime?: boolean;
   pYes: number;
   bestBid?: { price: number; size: number };
   bestAsk?: { price: number; size: number };
@@ -376,7 +378,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     // YES bid.
     let bp = floorToTick(skewed - offset, tick);
     bp = Math.min(bp, round(ask.price - tick, 4));
-    const xYes = longshotExtra(cfg, 'yes', v.position, bp);
+    const xYes = longshotExtra(cfg, 'yes', v.position, bp, v.wildRegime);
     if (xYes > 0) bp = Math.min(floorToTick(skewed - offset - xYes, tick), round(ask.price - tick, 4));
     if (!bidGated && bp >= v.minSidePrice && bp <= 1 - v.minSidePrice) {
       const fee = orderFee(1, bp, false, v.fees);
@@ -389,7 +391,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     let ap = ceilToTick(skewed + offset, tick);
     ap = Math.max(ap, round(bid.price + tick, 4));
     // NO longshot (NO_LONGSHOT_EDGE): new NO risk costing under NO_LONGSHOT_PRICE asks for extra edge.
-    const xNo = longshotExtra(cfg, 'no', v.position, round(1 - ap, 4));
+    const xNo = longshotExtra(cfg, 'no', v.position, round(1 - ap, 4), v.wildRegime);
     if (xNo > 0) ap = Math.max(ceilToTick(skewed + offset + xNo, tick), round(bid.price + tick, 4));
     const noCost = round(1 - ap, 4);
     if (!askGated && noCost >= v.minSidePrice && noCost <= 1 - v.minSidePrice) {
@@ -474,7 +476,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
       if (k.contracts > 0) {
         const fee = orderFee(k.contracts, ask.price, true, v.fees) / k.contracts;
         const edge = q - ask.price - fee;
-        if (edge >= cfg.takerBuffer + cfg.minEdge + longshotExtra(cfg, 'yes', v.position, ask.price)) {
+        if (edge >= cfg.takerBuffer + cfg.minEdge + longshotExtra(cfg, 'yes', v.position, ask.price, v.wildRegime)) {
           out.place.push({ side: 'bid', price: ask.price, count: k.contracts, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge, why: `take YES: q ${q.toFixed(3)} vs ask ${ask.price}` });
         }
       }
@@ -486,7 +488,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
       if (k.contracts > 0) {
         const fee = orderFee(k.contracts, noCost, true, v.fees) / k.contracts;
         const edge = (1 - q) - noCost - fee;
-        if (edge >= cfg.takerBuffer + cfg.minEdge + longshotExtra(cfg, 'no', v.position, noCost)) {
+        if (edge >= cfg.takerBuffer + cfg.minEdge + longshotExtra(cfg, 'no', v.position, noCost, v.wildRegime)) {
           out.place.push({ side: 'ask', price: bid.price, count: k.contracts, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge, why: `take NO: q ${q.toFixed(3)} vs bid ${bid.price}` });
         }
       }
@@ -525,7 +527,10 @@ function reconcileQuote(resting: RestingQuote | undefined, desired: OrderPlan | 
  *  unwinds a held position is never charged it. Paper's Nov 3-4 loss sat in these entries (first fill an ask above
  *  0.70 on the YES scale: 79 markets, 11% win). NO_LONGSHOT_MIRROR (lab placebo) charges YES longshots instead, to
  *  tell a real NO-longshot effect from plain "trade less". */
-export function longshotExtra(cfg: { noLongshotEdge?: number; noLongshotPrice?: number; noLongshotMirror?: boolean }, side: 'yes' | 'no', position: number, cost: number): number {
+export function longshotExtra(cfg: { noLongshotEdge?: number; noLongshotPrice?: number; noLongshotMirror?: boolean; noLongshotWildOff?: boolean }, side: 'yes' | 'no', position: number, cost: number, wild = false): number {
+  // NO_LONGSHOT_WILD_OFF (Nov 5): in the wild regime NO longshots win (the Oct 29 crash: the market lags, YES favourites
+  // collapse; base +$466 there came from them), so the extra edge applies in calm markets only.
+  if (wild && cfg.noLongshotWildOff) return 0;
   const e = cfg.noLongshotEdge ?? 0;
   if (!(e > 0) || cost >= (cfg.noLongshotPrice ?? 0.3)) return 0;
   const charged: 'yes' | 'no' = cfg.noLongshotMirror ? 'yes' : 'no';

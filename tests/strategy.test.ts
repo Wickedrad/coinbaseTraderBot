@@ -483,3 +483,13 @@ test('NO longshot edge: off by default; on, only new NO risk under the price pay
   assert.equal(longshotExtra(m, 'no', 0, 0.2), 0);
   assert.equal(longshotExtra(m, 'yes', -3, 0.2), 0); // unwinding a NO position
 });
+
+test('NO longshot edge, wild off: no extra edge in the wild regime when NO_LONGSHOT_WILD_OFF is on', async () => {
+  const { longshotExtra } = await import('../bot/strategy/fairValueStrategy');
+  const base = { DASHBOARD_TOKEN: 'x'.repeat(32) };
+  const s = loadConfig({ ...base, NO_LONGSHOT_EDGE: '0.04' }).strategy;
+  assert.equal(longshotExtra(s, 'no', 0, 0.2, true), 0.04);
+  const w = loadConfig({ ...base, NO_LONGSHOT_EDGE: '0.04', NO_LONGSHOT_WILD_OFF: 'true' }).strategy;
+  assert.equal(longshotExtra(w, 'no', 0, 0.2, true), 0);
+  assert.equal(longshotExtra(w, 'no', 0, 0.2, false), 0.04);
+});
