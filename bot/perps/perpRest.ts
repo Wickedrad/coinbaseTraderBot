@@ -5,7 +5,8 @@
 // Authenticated (perps API key, signed like the prediction API):
 //   POST /margin/orders, DELETE /margin/orders/{id}, GET /margin/orders,
 //   GET /margin/positions, GET /margin/balance, GET /margin/risk, GET /margin/enabled,
-//   PUT/DELETE /margin/cross/positions/{ticker}/exit_trigger (exchange-side stop-loss).
+//   PUT/DELETE /margin/cross/positions/{ticker}/exit_trigger (exchange-side stop-loss),
+//   GET /margin/fee_tiers (this account's rate per market), GET /margin/fee_tier_rates (the fee schedule).
 // Field names follow the perps OpenAPI spec (specs/perps_openapi.yaml in the public
 // kalshi-python-sdk). Rules from the spec enforced here:
 //  - reduce_only is only accepted on immediate_or_cancel / fill_or_kill orders.
@@ -187,6 +188,17 @@ export class KalshiPerpsRest implements PerpGateway {
   /** Whether margin trading is enabled for this account (rolling out member by member). */
   async enabled(): Promise<boolean> {
     return Boolean((await this.call('GET', '/margin/enabled', undefined, true))?.enabled);
+  }
+
+  /** This account's maker and taker fee rate per perp market, raw ({maker_fee_rates, taker_fee_rates}: decimal
+   *  fractions of notional). Parsed by bot/perps/feeTier.ts. */
+  async feeTiers(): Promise<unknown> {
+    return this.call('GET', '/margin/fee_tiers', undefined, true);
+  }
+
+  /** Kalshi's perps fee schedule, raw ({fee_tier_rates: [{fee_schedule, tier, maker_fee_rate, taker_fee_rate}]}). */
+  async feeTierRates(): Promise<unknown> {
+    return this.call('GET', '/margin/fee_tier_rates', undefined, true);
   }
 
   async setStopLoss(ticker: string, stopPrice: number): Promise<void> {
