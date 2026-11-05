@@ -1,0 +1,213 @@
+name: Tennis TA data
+
+# Tennis contract history for the tennis TA rulebook trial (research/tennisTaData.ts; thread "Build a profitable tennis TA
+# rulebook", Nov 5 2026). Kalshi's settled tennis match markets with 1-minute candles and full trade tapes, as far back as
+# Kalshi keeps them (public API, no key), kept on Drive at raw/tennis-history/kalshi/<SERIES>.tar.gz and topped up each run;
+# the bot's recorded days cut to their tennis lines (real books, real tape, live scores) at derived/tennis-ta/recorded/.
+# No server involved. The inventory is posted as a comment on the commit and kept at models/tennis-ta/inventory/.
+on:
+  push:
+    branches: [claude/project-thread-7817be]
+    paths: [research/tennisTaData.ts, .github/workflows/tennis-ta-data.yml]
+  workflow_dispatch:
+    inputs:
+      series:
+        description: 'Tennis series to download (JSON list)'
+        required: false
+        default: '["KXATPMATCH","KXWTAMATCH"]'
+      days:
+        description: 'How far back to list settled markets (days)'
+        required: false
+        default: '900'
+      budget_min:
+        description: 'Download budget per series (minutes); the rest waits for the next run'
+        required: false
+        default: '300'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tennis-ta-data-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  series:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Kalshi tennis series
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          node --import tsx research/tennisTaData.ts series > out/series.json
+          jq -r '.[] | "\(.ticker)\t\(.title)\t\(.feeType)\t\(.feeMultiplier)"' out/series.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: series
+          path: out/series.json
+          retention-days: 30
+
+  history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        series: ${{ fromJSON(inputs.series || '["KXATPMATCH","KXWTAMATCH"]') }}
+    env:
+      S: ${{ matrix.series }}
+      DAYS: ${{ inputs.days || '900' }}
+      BUDGET: ${{ inputs.budget_min || '300' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: History kept on Drive
+        run: |
+          set -euo pipefail
+          mkdir -p data/tennis/kalshi
+          if [ -n "$(rclone lsf gdrive:kalshi-bot-archive/raw/tennis-history/kalshi --files-only --include "$S.tar.gz" 2>/dev/null)" ]; then
+            rclone copy "gdrive:kalshi-bot-archive/raw/tennis-history/kalshi/$S.tar.gz" .
+            tar -xzf "$S.tar.gz" -C data/tennis/kalshi && rm "$S.tar.gz"
+            echo "restored $(ls data/tennis/kalshi/$S | wc -l) day file(s) of $S"
+          else echo "no $S history on Drive yet"; fi
+      - name: Download what is new from Kalshi
+        run: |
+          set -euo pipefail
+          node --import tsx research/tennisTaData.ts download --series "$S" --days "$DAYS" --out data/tennis/kalshi --budget-min "$BUDGET" 2>&1 \
+            | grep -vE '^\[tennis-data\] .*(already|listing|page)' | tail -30
+      - name: Keep on Drive
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          [ -d "data/tennis/kalshi/$S" ] || { echo "nothing to keep"; exit 0; }
+          tar -czf "$S.tar.gz" -C data/tennis/kalshi "$S"
+          rclone copyto "$S.tar.gz" "gdrive:kalshi-bot-archive/raw/tennis-history/kalshi/$S.tar.gz"
+          echo "kept $S: $(du -h "$S.tar.gz" | cut -f1)"
+      - name: Inventory
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          mkdir -p inv
+          node --import tsx research/tennisTaData.ts inventory --hist data/tennis/kalshi --series "$S" --out "inv/$S.json"
+          rclone copyto "inv/$S.json" "gdrive:kalshi-bot-archive/models/tennis-ta/inventory/$S.json"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: inventory-${{ matrix.series }}
+          path: inv/
+          retention-days: 30
+
+  recorded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Recorded days cut to tennis
+        run: |
+          set -euo pipefail
+          D=gdrive:kalshi-bot-archive/derived/tennis-ta/recorded
+          have=$(rclone lsf "$D" --files-only 2>/dev/null || true)
+          mkdir -p rec out
+          : > out/recorded.jsonl
+          while read -r day; do
+            [ -n "$day" ] || continue
+            if grep -qx "md-$day.jsonl.gz" <<< "$have"; then echo "$day already cut"; continue; fi
+            if ! bash deploy/drive_lab.sh recording "$day" rec; then echo "$day: not readable on Drive"; continue; fi
+            r=$(node --import tsx research/tennisTaData.ts recorded --in "rec/md-$day.jsonl.gz" --out "cut/md-$day.jsonl.gz")
+            echo "$day $r"
+            jq -c --arg d "$day" '. + {day: $d}' <<< "$r" >> out/recorded.jsonl
+            rclone copyto "cut/md-$day.jsonl.gz" "$D/md-$day.jsonl.gz"
+            rm -f "rec/md-$day.jsonl.gz"
+          done < "$RUNNER_TEMP/drive-days.txt"
+          rclone cat gdrive:kalshi-bot-archive/models/tennis-ta/inventory/recorded.jsonl 2>/dev/null > prev.jsonl || : > prev.jsonl
+          cat prev.jsonl out/recorded.jsonl | jq -sc 'group_by(.day) | map(.[-1]) | .[]' > all.jsonl
+          rclone copyto all.jsonl gdrive:kalshi-bot-archive/models/tennis-ta/inventory/recorded.jsonl
+          cp all.jsonl out/recorded.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recorded
+          path: out/recorded.jsonl
+          retention-days: 30
+
+  report:
+    needs: [series, history, recorded]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: Inventory as a commit comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Tennis TA data, run $GITHUB_RUN_ID"
+            echo
+            echo "### Kalshi tennis series"
+            if [ -f art/series/series.json ]; then jq -r '.[] | "- `\(.ticker)` \(.title) (fee \(.feeType) x\(.feeMultiplier))"' art/series/series.json; else echo "(series job failed)"; fi
+            echo
+            echo "### History by series (match start month)"
+            echo
+            echo "| series | month | markets | events | two-sided | volume | with tape | trades | median spread c | median trades/market |"
+            echo "|---|---|---|---|---|---|---|---|---|---|"
+            for f in art/inventory-*/*.json; do [ -f "$f" ] || continue; jq -r '.months[] | "| \(.series) | \(.month) | \(.markets) | \(.events) | \(.twoSided) | \(.volume) | \(.withTape) | \(.trades) | \(.medSpreadC) | \(.medTradesPerMarket) |"' "$f"; done
+            echo
+            for f in art/inventory-*/*.json; do [ -f "$f" ] || continue; jq -r '.totals | to_entries[] | "- **\(.key)**: \(.value.markets) markets, \(.value.events) events, \(.value.first) to \(.value.last)"' "$f"; done
+            echo
+            echo "### Recorded days cut to tennis (real books)"
+            echo
+            echo "| day | match markets | tennis lines kept | live score lines |"
+            echo "|---|---|---|---|"
+            if [ -f art/recorded/recorded.jsonl ]; then jq -r '"| \(.day) | \(.matches) | \(.kept) | \(.scores) |"' art/recorded/recorded.jsonl; fi
+          } > body.md
+          cat body.md
+          jq -Rs '{body: .}' body.md > req.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input req.json > /dev/null
