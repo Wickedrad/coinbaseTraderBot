@@ -1268,7 +1268,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0, 0, 1),
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
     orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
-    accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
+    accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000), ...(env.ACCURACY_GATE_EXEMPT_SERIES ? { exemptSeries: env.ACCURACY_GATE_EXEMPT_SERIES.split(',').map((x) => x.trim().toUpperCase()).filter(Boolean) } : {}) },
     marketAnchor: {
       enabled: bool(env, 'MARKET_ANCHOR', false),
       fixedW: env.MARKET_ANCHOR_W !== undefined && env.MARKET_ANCHOR_W !== '' ? num(env, 'MARKET_ANCHOR_W', 0.5, 0, 2) : undefined,

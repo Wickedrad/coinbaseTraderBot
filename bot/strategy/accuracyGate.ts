@@ -15,6 +15,8 @@
 import { normCdf, normInv } from '../util/num';
 import { readJson, writeJsonAtomic } from '../util/persist';
 
+import { seriesOf } from './seriesRules';
+
 export type AccuracyGroup = 'updown15m' | 'hourly';
 
 export interface AccuracyGateConfig {
@@ -24,6 +26,9 @@ export interface AccuracyGateConfig {
   window: number;
   /** Fewer settled markets than this in a bucket: open (warm-up). */
   minMarkets: number;
+  /** Series the gate never blocks (ACCURACY_GATE_EXEMPT_SERIES, e.g. KXDOGE,KXETH15M; levers lab Nov 5: with the gate off
+   *  the replay earned more, mostly on those series). Their markets are still scored. */
+  exemptSeries?: string[];
 }
 
 /** Time-to-close buckets in seconds, (lo, hi]: the 15-minute markets' entry window (840-300 s) and the hourly ones'
@@ -153,6 +158,7 @@ export class AccuracyGate {
   /** Why no new entry may open in this market now, or undefined when one may. */
   block(ticker: string, tauSec: number): string | undefined {
     if (!this.cfg.enabled) return undefined;
+    if (this.cfg.exemptSeries?.length && this.cfg.exemptSeries.includes(seriesOf(ticker))) return undefined;
     const group = accuracyGroup(ticker);
     const b = accuracyBucket(group, tauSec);
     if (b === undefined) return undefined;

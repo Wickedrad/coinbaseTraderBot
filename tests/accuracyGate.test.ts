@@ -84,6 +84,11 @@ test('accuracy gate: odd quotes are not scored; a settled market is scored once;
   const off = new AccuracyGate({ ...CFG, enabled: false });
   run(off, 60, 700, () => 0.5, (y) => (y ? 0.65 : 0.35));
   assert.equal(off.block('KXETH15M-X-00', 700), undefined);
+  // Exempt series pass a closed bucket; others in the same bucket stay blocked.
+  const ex = new AccuracyGate({ ...CFG, exemptSeries: ['KXETH15M'] });
+  run(ex, 60, 700, () => 0.5, (y) => (y ? 0.65 : 0.35));
+  assert.equal(ex.block('KXETH15M-X-00', 700), undefined);
+  assert.ok(ex.block('KXBTC15M-X-00', 700));
 });
 
 test('accuracy gate: the window keeps the newest markets, and the scorecard survives a restart', () => {
