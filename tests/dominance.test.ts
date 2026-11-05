@@ -42,6 +42,21 @@ test('no BTC price or no baseline means no sample (never invented)', () => {
   assert.throws(() => new DominanceCalculator().setBaseline(coins.filter((x) => x.symbol !== 'usdt'), TOTAL, new Map(), 1));
 });
 
+test('service: a CoinGecko baseline before the first Binance push does not lock the stream onto the extras', async () => {
+  const fake = (async (url: string) => {
+    if (String(url).includes('/global')) return new Response(JSON.stringify({ data: { total_market_cap: { usd: TOTAL } } }));
+    return new Response(JSON.stringify(coins.map((c) => ({ symbol: c.symbol, current_price: c.price, market_cap: c.marketCap }))));
+  }) as unknown as typeof fetch;
+  const svc = new DominanceService({ binanceWsUrl: 'wss://stream.binance.com:9443/ws/!miniTicker@arr', coingeckoUrl: 'https://cg.test/api/v3', fetchImpl: fake, extraSymbols: ['XRP'] });
+  svc.stop(); // no sockets in a test: connect() is a no-op once closed
+  await svc.refreshBaseline(); // CoinGecko first: Binance has listed nothing yet
+  assert.equal((svc as any).streaming, undefined, 'stays on the all-market stream');
+  const now = Date.now();
+  svc.onMiniTickers([{ s: 'BTCUSDT', c: '60000', E: now }, { s: 'ETHUSDT', c: '3000', E: now }, { s: 'SOLUSDT', c: '150', E: now }, { s: 'XRPUSDT', c: '0.5', E: now }]);
+  await svc.refreshBaseline();
+  assert.deepEqual((svc as any).streaming, ['BTC', 'ETH', 'SOL', 'XRP'], 'the top coins Binance prices, not only BTC plus the extras');
+});
+
 test('service parses Binance mini-tickers and anchors from CoinGecko', async () => {
   const fake = (async (url: string) => {
     if (String(url).includes('/global')) return new Response(JSON.stringify({ data: { total_market_cap: { usd: TOTAL } } }));
