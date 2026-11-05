@@ -32,6 +32,7 @@ class Costs:
     taker_mult: float = 1.0
     maker_mult: float = 0.0      # crypto series pay no maker fee; stress charges 1 (0.0175 x P(1-P))
     strict_maker: bool = False   # maker fills need the price traded through by a tick
+    precision: float = 0.01      # the account's balance grid: 0.01 through an FCM (the bot's default), 0.0001 direct
 
 
 def maker_fills(bid, ask, nbl, nbh, nal, nah, strict: bool):
@@ -51,10 +52,10 @@ def entry_legs(bid, ask, fill_buy, c: Costs):
     pa = ask + c.slip
     ok_T = np.isfinite(ask) & (pa < 1)
     C_T = contracts_for_stake(c.stake, np.where(ok_T, pa, np.nan))
-    cost_T = np.where(ok_T, pa + taker_fee(C_T, np.where(ok_T, pa, 0.5), c.taker_mult) / np.maximum(C_T, 1), np.nan)
+    cost_T = np.where(ok_T, pa + taker_fee(C_T, np.where(ok_T, pa, 0.5), c.taker_mult, c.precision) / np.maximum(C_T, 1), np.nan)
     ok_M = np.isfinite(bid) & (bid > 0) & fill_buy
     C_M = contracts_for_stake(c.stake, np.where(ok_M, bid, np.nan))
-    cost_M = np.where(ok_M, bid + maker_fee(C_M, np.where(ok_M, bid, 0.5), c.maker_mult) / np.maximum(C_M, 1), np.nan)
+    cost_M = np.where(ok_M, bid + maker_fee(C_M, np.where(ok_M, bid, 0.5), c.maker_mult, c.precision) / np.maximum(C_M, 1), np.nan)
     return cost_T, C_T, cost_M, C_M, ok_T, ok_M
 
 
@@ -63,7 +64,7 @@ def exit_taker(bid, C, c: Costs):
     pb = bid - c.slip
     ok = np.isfinite(pb) & (pb > 0)
     Cs = np.where(ok, C, 0)
-    fee = taker_fee(Cs, np.where(ok, pb, 0.5), c.taker_mult) / np.maximum(C, 1)
+    fee = taker_fee(Cs, np.where(ok, pb, 0.5), c.taker_mult, c.precision) / np.maximum(C, 1)
     return np.where(ok, pb - fee, np.nan)
 
 
@@ -71,7 +72,7 @@ def exit_maker(ask, C, c: Costs):
     """Per-contract proceeds of a maker sale resting at the ask (valid only where it fills)."""
     ok = np.isfinite(ask) & (ask < 1)
     Cs = np.where(ok, C, 0)
-    fee = maker_fee(Cs, np.where(ok, ask, 0.5), c.maker_mult) / np.maximum(C, 1)
+    fee = maker_fee(Cs, np.where(ok, ask, 0.5), c.maker_mult, c.precision) / np.maximum(C, 1)
     return np.where(ok, ask - fee, np.nan)
 
 

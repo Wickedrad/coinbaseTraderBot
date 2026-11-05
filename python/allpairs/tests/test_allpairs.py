@@ -40,6 +40,27 @@ class Fees(unittest.TestCase):
         self.assertEqual(float(taker_fee(0, 0.5)), 0.0)
         self.assertEqual(float(taker_fee(5, 1.0)), 0.0)
 
+    def test_parity_with_bot_fees_ts(self):
+        """Same numbers as bot/fees.ts itself (run by Node with type stripping) on a grid of counts, prices, grids and
+        multipliers: one fee rule for the bot, paper, replay and this engine."""
+        import shutil, subprocess
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node not installed')
+        counts = [1, 2, 3, 7, 10, 13, 29, 30, 37, 100, 150, 1500, 12.5]
+        prices = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.123, 0.25, 0.33, 0.4999, 0.5, 0.51, 0.77, 0.9, 0.95, 0.99, 0.999]
+        cases = [(c, p, prec, tm, mm) for c in counts for p in prices for prec in (0.01, 0.0001) for tm, mm in ((1, 0), (1, 1), (1.25, 1))]
+        js = ("import('./bot/fees.ts').then(f => { const cs = JSON.parse(process.argv[1]); console.log(JSON.stringify(cs.map(([c, p, prec, tm, mm]) => "
+              "[f.takerFee(c, p, {takerMultiplier: tm, makerMultiplier: mm, balancePrecision: prec}), f.makerFee(c, p, {takerMultiplier: tm, makerMultiplier: mm, balancePrecision: prec})]))) })")
+        r = subprocess.run([node, '--experimental-strip-types', '--no-warnings', '-e', js, json.dumps(cases)], cwd=ROOT, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0 and 'strip-types' in r.stderr:
+            self.skipTest('node too old for --experimental-strip-types')
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        want = json.loads(r.stdout.strip().splitlines()[-1])
+        for (c, p, prec, tm, mm), (wt, wm) in zip(cases, want):
+            self.assertAlmostEqual(float(taker_fee(c, p, tm, prec)), wt, places=9, msg=(c, p, prec, tm))
+            self.assertAlmostEqual(float(maker_fee(c, p, mm, prec)), wm, places=9, msg=(c, p, prec, mm))
+
     def test_contracts(self):
         self.assertEqual(list(contracts_for_stake(15, np.array([0.5, 0.99, 0.01, np.nan]))), [30, 15, 1500, 0])
 

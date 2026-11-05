@@ -39,7 +39,10 @@ DEFAULTS = {
     'entry': {'hurdles': [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 1e9], 'maker_entries': True, 'entry_minutes': None, 'rows_per_fit': 1_000_000},
     'extra_features': [],
     'placebo': {'shuffles': 3, 'random_draws': 50},
-    'walk': {'train_days': 90, 'test_days': 14, 'embargo_days': 1, 'inner_days': 14, 'rolling': True},
+    # The project's fixed history split (institutional-methods, Nov 5): 60 days train, 2 days gap, 14 days test.
+    'walk': {'train_days': 60, 'test_days': 14, 'embargo_days': 2, 'inner_days': 10, 'rolling': True},
+    # Sealed lockbox weeks (opened once, by the lockbox gate only): never loaded here. L1 = Nov 6 00:00 to Nov 13 00:00 EST.
+    'exclude_utc': [['2026-11-06T05:00', '2026-11-13T05:00']],
     'min_real_frac': 0.8,
     'max_crossed': 0,          # windows with more crossed/locked recorded minutes are dropped (historical-tier candles)
     'from_day': None,          # 'YYYY-MM-DD': only windows from this day on
@@ -48,7 +51,7 @@ DEFAULTS = {
 
 ARMS = {
     'base': {},
-    'stress': {'costs': {'slip': 0.01, 'maker_mult': 1.0, 'strict_maker': True}, 'placebo': {'shuffles': 0}},
+    'stress': {'costs': {'slip': 0.01, 'taker_mult': 1.25, 'maker_mult': 1.0, 'strict_maker': True}, 'placebo': {'shuffles': 0}},
     'placebo': {'placebo': {'shuffles': 3}},
     'synth15': {'kind': 'synth15', 'placebo': {'shuffles': 0}},
     'synth1h': {'kind': 'synth1h', 'exit': {'rows_per_fit': 100_000}, 'placebo': {'shuffles': 0}},
@@ -149,6 +152,13 @@ def main(argv=None):
         by_m = {m_: f'{int(bad[months == m_].sum())}/{int((months == m_).sum())}' for m_ in sorted(set(months.tolist()))}
         log(f'windows dropped for crossed/locked quotes (> {cfg["max_crossed"]} minutes), by month: {by_m}')
         keep &= ~bad
+    for lo_s, hi_s in cfg.get('exclude_utc') or []:
+        import datetime as _dt
+        ms = lambda x: int(_dt.datetime.fromisoformat(x).replace(tzinfo=_dt.timezone.utc).timestamp() * 1000)
+        hit = (real.open_ms + real.n * MIN > ms(lo_s)) & (real.open_ms < ms(hi_s))
+        if hit.any():
+            log(f'{int(hit.sum())} windows in the sealed span {lo_s}..{hi_s} UTC left out')
+        keep &= ~hit
     if cfg.get('from_day'):
         import datetime as _dt
         d0 = (_dt.date.fromisoformat(cfg['from_day']) - _dt.date(1970, 1, 1)).days
