@@ -210,6 +210,7 @@ export async function evalTrial(dir: string, modelPath: string, env: Record<stri
       // Adversarial stress (research/benchedJobs.ts): orders reach the book this late, so the fills are the ones a slower bot gets.
       // The placebo (research/benchedJobs.ts): the same bot deciding on a shifted tick, so the gap is path noise alone.
       ...(env.RS_TICK_PHASE_MS ? { tickPhaseMs: Number(env.RS_TICK_PHASE_MS) } : {}),
+      ...(Number(env.RS_SKIP_MARKETS) > 0 ? { skipMarketShare: Number(env.RS_SKIP_MARKETS) } : {}),
       ...(Number(env.RS_LATENCY_MS) > 0 ? { latency: { orderMs: Number(env.RS_LATENCY_MS), jitterMs: Number(env.RS_LATENCY_MS) / 2 } } : {}),
     });
     const byDay: Record<string, number> = {}, tradesByDay: Record<string, number> = {}, byHour: Record<string, number> = {};

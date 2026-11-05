@@ -110,3 +110,12 @@ test('model skill weight: MODEL_SKILL_W_TAILS_RISING caps the tails only while v
   assert.equal(modelSkillWeight({ pWorse: null }, p, { rv1h: 1e-4, volRatio: null, pMarket: 0.85 }), 1, 'tails, unknown');
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), MODEL_SKILL_W_TAILS_RISING: 'true' }).strategy.modelSkill.tailsRising, true);
 });
+
+test('research skip control: a ticker\'s share is stable, in [0, 1), and spread across markets', async () => {
+  const { tickerShare } = await import('../research/backtest');
+  assert.equal(tickerShare('KXBTC15M-26NOV051400-00'), tickerShare('KXBTC15M-26NOV051400-00'));
+  const xs = Array.from({ length: 2000 }, (_, i) => tickerShare(`KXETH15M-26NOV05${String(i).padStart(4, '0')}-00`));
+  assert.ok(xs.every((x) => x >= 0 && x < 1));
+  const under = xs.filter((x) => x < 0.37).length / xs.length;
+  assert.ok(Math.abs(under - 0.37) < 0.05, `${under}`);
+});

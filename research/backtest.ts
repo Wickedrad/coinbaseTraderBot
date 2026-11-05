@@ -277,6 +277,8 @@ export interface BacktestOpts { fillLog?: boolean; exitPolicy?: ExitPolicyName; 
    *  timer fell, the replay can evaluate a little before or after the market moves it saw. Unset: at the first recorded
    *  event a second after the last evaluation. */
   tickPhaseMs?: number;
+  /** Research control: no entries in this share (0-1) of markets, chosen by a hash of the ticker. */
+  skipMarketShare?: number;
   /** With the paper options the maker buffer adapts as the engine's does (Engine.makerBuffer, bot/tca/tca.ts): once 30
    *  maker fills have a 60 s markout, it is minus their average (the newest 2000), within strategy.makerBufferRange.
    *  These seed it: the paper bot's own recent maker markouts (the replay check reads them from its TCA log). */
@@ -1117,6 +1119,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       }
       // FV_ENTRY_GATE on the finished plan, as the engine: the fill model's crosses and paper's training trades open positions too.
       applyFvGate(plan, fv.pYes, view.position, DEFAULT_FEES, strategy, loserNoEntry(view, strategy));
+      // Research control (benched jobs, Nov 5): no entries at all in this share of markets, picked by a hash of the ticker, so
+      // a feature that trades less can be told apart from simply trading less in a losing bot.
+      if (opts.skipMarketShare && tickerShare(m.ticker) < opts.skipMarketShare) plan.place = plan.place.filter((p) => p.purpose !== 'entry');
       for (const c of plan.cancel) if (!cancelInFlight.has(c.clientOrderId)) await send(m.ticker, 'cancel', () => cancelNow(c.clientOrderId), c.clientOrderId);
 
       for (const p of plan.place) {
@@ -1353,3 +1358,10 @@ export async function backtestMain(argOf: (k: string, d: string) => string = cli
 if (process.argv[1] && import.meta.url?.endsWith(path.basename(process.argv[1]))) void backtestMain();
 
 function cliArg(k: string, d: string): string { const i = process.argv.indexOf(`--${k}`); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : d; }
+
+/** A ticker's stable place in [0, 1) (FNV-1a), for the research skip control. */
+export function tickerShare(ticker: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < ticker.length; i++) { h ^= ticker.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h / 2 ** 32;
+}

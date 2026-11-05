@@ -21,25 +21,32 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 /** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
  *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
 export const VARIANTS: Record<string, Record<string, string>> = {
-  // Round 9 (Nov 5): the bot as on main c0f6b39 (merged: #244 thin books, #258/#266 take-profit bench off, #265 tail tick),
-  // no DOGE, one pinned server model copy (Drive models/benched-server-pin), fresh probation. Round 8 (with DOGE, old bot)
-  // was cancelled. tails25 against its neighbours and latency stress; the take-profit's fair-value confirm at its
-  // strictest (level 3: sold only when the coin's fair value of the side is at most the net bid), reinstated on history
-  // per Steven (13:52 UTC Nov 5: nothing dropped on paper evidence), against the plain break-even take-profit.
+  // Round 10 (Nov 5): round 9 (run 42064010206, current bot, no DOGE, pinned model ecf8c541c272) found tails15 GENUINE:
+  // +0.43/h [+0.22, +0.62] over 200 days, held-out +0.39 [+0.09, +0.68], 7 of 7 blocks, +0.36 without its best block;
+  // tails10 GENUINE (+0.35), tails25 +0.18, tails35 -0.03: a smooth peak. The placebo was identical to the baseline (inert on
+  // these books), and tails15 trades 37% less in a bot that loses -0.56/h, so the control is random: no entries in 37% (and
+  // 20%) of markets picked by a ticker hash. tails15 must beat skip37 to be selection, not just trading less. Then the
+  // peak's fine neighbours, its stress, a wider tail, and the stack with the take-profit's strictest fair-value confirm.
   baseline: {},
-  placebo: { RS_TICK_PHASE_MS: '500' },
-  tails25: { MODEL_SKILL_W_TAILS: '0.25' },
-  tails10: { MODEL_SKILL_W_TAILS: '0.1' },
+  skip37: { RS_SKIP_MARKETS: '0.37' },
+  skip20: { RS_SKIP_MARKETS: '0.2' },
   tails15: { MODEL_SKILL_W_TAILS: '0.15' },
-  tails35: { MODEL_SKILL_W_TAILS: '0.35' },
-  tails25_t35: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.35' },
-  tails25_lat500: { MODEL_SKILL_W_TAILS: '0.25', RS_LATENCY_MS: '500' },
-  tp_be: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
-  tp_be_l3: { TP_LEVEL: '3', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+  tails12: { MODEL_SKILL_W_TAILS: '0.12' },
+  tails20: { MODEL_SKILL_W_TAILS: '0.2' },
+  tails15_lat500: { MODEL_SKILL_W_TAILS: '0.15', RS_LATENCY_MS: '500' },
+  tails15_t35: { MODEL_SKILL_W_TAILS: '0.15', MODEL_SKILL_TAIL: '0.35' },
+  tails15_tp_l3: { MODEL_SKILL_W_TAILS: '0.15', TP_LEVEL: '3', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
 };
 
 /** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
 export const LATER: Record<string, Record<string, string>> = {
+  // Round 9 (Nov 5, run 42064010206):
+  placebo_r9: { RS_TICK_PHASE_MS: '500' },
+  tails10: { MODEL_SKILL_W_TAILS: '0.1' },
+  tails35: { MODEL_SKILL_W_TAILS: '0.35' },
+  tails25_t35: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.35' },
+  tails25_lat500: { MODEL_SKILL_W_TAILS: '0.25', RS_LATENCY_MS: '500' },
+  tp_be_l3: { TP_LEVEL: '3', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
   // Round 8 (Nov 5, run 42003201224 with DOGE, cancelled; 42035983199 without DOGE on the old bot):
   tails0: { MODEL_SKILL_W_TAILS: '0' },
   tails25_t20: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.2' },
