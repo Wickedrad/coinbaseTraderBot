@@ -720,6 +720,12 @@ export interface TennisConfig {
   trailMinFillRatio: number;
   trailMinWallAgeSec: number;
   trailSlippageTicks: number;
+  /** The order-book wall ratchet in the hunt (default on). Off: the hunt trails the peak bid only (a replay on Kalshi's
+   *  history, whose one-level 100-lot book shows a wall at every bid, runs with it off). */
+  trailRatchet: boolean;
+  /** 'Take the profit' exits (hunt, underdog late) floor at the first price in profit AFTER fees (entry fee in, taker fee
+   *  at the exit out) instead of entry + 1 tick before fees (audit I48). Default off = unchanged. */
+  exitFloorFees: boolean;
   /** Conservative price hunt past the target: continue only while >= huntMinSignals of the tennis
    * confluence signals agree, for at most huntMaxSec, trailing huntTrailTicks under the peak bid. */
   huntMinSignals: number;
@@ -1590,6 +1596,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       trailMinFillRatio: num(env, 'TENNIS_TRAIL_MIN_FILL_RATIO', 1, 0.1, 20),
       trailMinWallAgeSec: num(env, 'TENNIS_TRAIL_MIN_WALL_AGE_SEC', 3, 0, 120),
       trailSlippageTicks: num(env, 'TENNIS_TRAIL_SLIPPAGE_TICKS', 1, 0, 10),
+      trailRatchet: bool(env, 'TENNIS_TRAIL_RATCHET', true),
+      exitFloorFees: bool(env, 'TENNIS_EXIT_FLOOR_FEES', false),
       huntMinSignals: num(env, 'TENNIS_HUNT_MIN_SIGNALS', 2, 1, 4),
       huntMaxSec: num(env, 'TENNIS_HUNT_MAX_SEC', 180, 0, 3600),
       huntTrailTicks: num(env, 'TENNIS_HUNT_TRAIL_TICKS', 2, 1, 20),

@@ -1,0 +1,181 @@
+name: Tennis TA sweep
+
+# The tennis TA rulebook trial's sweeps (research/tennisTaSweep.ts, research/tennisTaSim.ts, research/tennis_ta_report.py;
+# pre-registration and amendments in the thread "Build a profitable tennis TA rulebook", Nov 5 2026). Each run is asked
+# for by a commit to research/tennis-ta/sweep-request.json (stage, pool, date range, shards), so every counting run is a
+# deliberate, logged commit. Shards replay the Kalshi tennis history kept on Drive (raw/tennis-history/kalshi) through the
+# production tennis strategy over the stage's configs, in date slices; the report job scores every cell over the pool's
+# universe (tournament-week bootstrap, BH screen, ONC N_eff, SPA/StepM, DSR, PBO, loser tables) and writes the registry
+# rows. Outputs stay on Drive (models/tennis-ta/runs/<run>/); the report is posted as a comment on the commit.
+on:
+  push:
+    branches: [claude/project-thread-7817be]
+    paths: [research/tennis-ta/sweep-request.json]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tennis-ta-sweep
+  cancel-in-progress: false
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      plan: ${{ steps.req.outputs.plan }}
+      stage: ${{ steps.req.outputs.stage }}
+      pool: ${{ steps.req.outputs.pool }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Request and plan
+        id: req
+        run: |
+          set -euo pipefail
+          R=research/tennis-ta/sweep-request.json
+          cat "$R"
+          echo "stage=$(jq -r .stage "$R")" >> "$GITHUB_OUTPUT"
+          echo "pool=$(jq -r .pool "$R")" >> "$GITHUB_OUTPUT"
+          echo "plan=$(node --import tsx research/tennisTaSweep.ts plan --from "$(jq -r .from "$R")" --to "$(jq -r .to "$R")" --shards "$(jq -r .shards "$R")")" >> "$GITHUB_OUTPUT"
+      - name: Fee changes (Kalshi)
+        run: |
+          set -euo pipefail
+          mkdir -p prep
+          node --import tsx research/tennisTaSweep.ts fees --series KXATPMATCH,KXWTAMATCH --out prep/fees.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prep
+          path: prep/fees.json
+          retention-days: 30
+
+  shard:
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include: ${{ fromJSON(needs.prep.outputs.plan) }}
+    env:
+      K: ${{ matrix.k }}
+      FROM: ${{ matrix.from }}
+      TO: ${{ matrix.to }}
+      STAGE: ${{ needs.prep.outputs.stage }}
+      POOL: ${{ needs.prep.outputs.pool }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: prep
+          path: prep
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Tennis history from Drive
+        run: |
+          set -euo pipefail
+          mkdir -p data/tennis/kalshi
+          for S in KXATPMATCH KXWTAMATCH; do
+            if [ -n "$(rclone lsf gdrive:kalshi-bot-archive/raw/tennis-history/kalshi --files-only --include "$S.tar.gz" 2>/dev/null)" ]; then
+              rclone copy "gdrive:kalshi-bot-archive/raw/tennis-history/kalshi/$S.tar.gz" .
+              tar -xzf "$S.tar.gz" -C data/tennis/kalshi && rm "$S.tar.gz"
+              echo "$S: $(ls data/tennis/kalshi/$S | grep -c jsonl) day file(s)"
+            else echo "no $S history on Drive"; fi
+          done
+      - name: Replay days for the slice
+        run: |
+          set -euo pipefail
+          A=$(date -u -d "$FROM -1 day" +%F); B=$(date -u -d "$TO +2 day" +%F)
+          node --max-old-space-size=6144 --import tsx research/tennisTaSweep.ts days --hist data/tennis/kalshi --out data/replay --from "$A" --to "$B" --series KXATPMATCH,KXWTAMATCH 2>&1 | tail -5
+      - name: Sweep (4 processes on the runner's 4 cores, whole-day sub-slices)
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          SUB=$(node --import tsx research/tennisTaSweep.ts plan --from "$FROM" --to "$TO" --shards 4)
+          pids=()
+          for j in $(echo "$SUB" | jq -r '.[].k'); do
+            F=$(echo "$SUB" | jq -r ".[$j].from"); T=$(echo "$SUB" | jq -r ".[$j].to")
+            node --max-old-space-size=3584 --import tsx research/tennisTaSweep.ts run --replay data/replay --from "$F" --to "$T" --stage "$STAGE" --pool "$POOL" \
+              --units models/tennis-ta/state/units.json --fees prep/fees.json --out "out/a-s$STAGE-$K-$j.json.gz" > "out/log-$j.txt" 2>&1 &
+            pids+=($!)
+          done
+          rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done
+          tail -n 3 out/log-*.txt
+          exit $rc
+      - name: Keep on Drive
+        run: |
+          set -euo pipefail
+          for f in out/a-s*.json.gz; do rclone copyto "$f" "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$GITHUB_RUN_ID/shards/$(basename "$f")"; done
+          du -ch out/a-s*.json.gz | tail -1
+
+  report:
+    needs: [prep, shard]
+    if: ${{ !cancelled() && needs.prep.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      POOL: ${{ needs.prep.outputs.pool }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python packages
+        run: pip install --quiet numpy scipy scikit-learn
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Shards
+        run: |
+          set -euo pipefail
+          rclone copy "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$GITHUB_RUN_ID/shards" shards
+          ls -la shards
+      - name: Report
+        run: |
+          set -euo pipefail
+          python research/tennis_ta_report.py --shards shards --pool "$POOL" --run "$GITHUB_RUN_ID" --out report | tail -60
+      - name: Keep the report and the trial rows on Drive
+        run: |
+          set -euo pipefail
+          rclone copy report "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$GITHUB_RUN_ID/report"
+          # The trial ledger (Amendment 1, A1) until the meta plan's registry path exists: append this run's rows.
+          L=gdrive:kalshi-bot-archive/models/tennis-ta/state/trials.jsonl
+          { rclone cat "$L" 2>/dev/null || true; zcat "report/registry-tennis-ta-$GITHUB_RUN_ID.jsonl.gz"; } > trials.jsonl
+          rclone rcat "$L" < trials.jsonl
+          echo "ledger rows: $(wc -l < trials.jsonl)"
+      - name: Report as a commit comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          { cat report/report.md; echo; echo "Outputs: gdrive:kalshi-bot-archive/models/tennis-ta/runs/$GITHUB_RUN_ID/"; } | head -c 60000 > body.md
+          jq -Rs '{body: .}' body.md > req.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input req.json > /dev/null
