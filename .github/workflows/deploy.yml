@@ -1,6 +1,13 @@
 # Deploys to the Lightsail box (static IP, systemd service `kalshi-bot`).
 #
-#  - Every push to main (i.e. when a PR is merged) tests, builds and deploys automatically.
+#  - Merges are batched (Steven, Nov 4): main deploys at three set times a day, each landing its restart inside a session-edge
+#    window where the bot already takes no new entries (bot/model/sessions.ts, 40 min), and clear of the 07:15-08:15 UTC
+#    nightly Drive copy. Start times (deploys take ~10-15 min):
+#      00:05 UTC / 7:05 PM EST -> Tokyo open (00:00-00:40),
+#      14:35 UTC / 9:35 AM EST -> New York open (14:30-15:10), after the 9:15 AM EST daily health check,
+#      20:25 UTC / 3:25 PM EST -> New York close (20:20-21:00).
+#    A scheduled run deploys only when main moved since the last successful deploy. GitHub cron is UTC only: when US/UK
+#    daylight saving starts (March) these land an hour off the New York and London edges and need moving.
 #  - Run manually from the Actions tab to redeploy main, or to deploy an existing release tag
 #    (v1.2.3) by entering it.
 #  - Rollback is one command on the server: `bash ~/bot/current/deploy/rollback.sh`.
@@ -16,8 +23,10 @@
 name: Deploy
 
 on:
-  push:
-    branches: [main, master]
+  schedule:
+    - cron: '5 0 * * *'
+    - cron: '35 14 * * *'
+    - cron: '25 20 * * *'
   workflow_dispatch:
     inputs:
       tag:
@@ -32,9 +41,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  changed:
+    # A scheduled batch deploys only when main has moved since the last successful deploy; manual runs always deploy.
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      go: ${{ steps.c.outputs.go }}
+    steps:
+      - id: c
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != schedule ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          last=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].head_sha // ""')
+          if [ "$last" = "$GITHUB_SHA" ]; then echo "main $GITHUB_SHA is already deployed"; echo go=false >> "$GITHUB_OUTPUT"
+          else echo "main moved: $last -> $GITHUB_SHA"; echo go=true >> "$GITHUB_OUTPUT"; fi
+
   deploy:
-    # Pushes deploy unless AUTO_DEPLOY is set to 'false'; manual runs always deploy.
-    if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY != 'false'
+    needs: changed
+    # Scheduled batches deploy unless AUTO_DEPLOY is set to 'false'; manual runs always deploy.
+    if: needs.changed.outputs.go == 'true' && (github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY != 'false')
     runs-on: ubuntu-latest
     environment: production
     steps:

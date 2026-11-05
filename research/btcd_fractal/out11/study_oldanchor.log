@@ -1,0 +1,37 @@
+BTCD_CMC daily 2013-04-29..2026-11-02 (4929 bars), weekly 706
+parent windows {'2016-01..2018-01-15': ('2016-01-01', '2018-01-15'), '2015-06-05..2018-01-15': ('2015-06-05', '2018-01-15'), '2016-01..2018-03': ('2016-01-01', '2018-03-01')} (series BTCD_CMC, parent start 2016-01-01)
+round 1: 144 settings in 149s
+  score 2.620 r 0.926 | parent 2016-01..2018-01-15 child 2018-01-15 wshape 0.0 maxstep 3 j0 0.15
+  score 2.682 r 0.922 | parent 2016-01..2018-03 child 2018-01-01 wshape 0.0 maxstep 2 j0 0.15
+  score 2.720 r 0.925 | parent 2016-01..2018-03 child 2018-01-15 wshape 0.0 maxstep 2 j0 0.15
+  score 2.792 r 0.926 | parent 2016-01..2018-01-15 child 2018-01-15 wshape 0.0 maxstep 2 j0 0.15
+  score 2.826 r 0.926 | parent 2016-01..2018-03 child 2018-01-15 wshape 0.0 maxstep 3 j0 0.15
+round 2: 44 more settings, 182s
+  score 2.284 r 0.935 | {'maxstep': 2, 'cap': 24, 'j0': 0.15, 'dynmap': 1, 'bw': 0, 'wshape': 0.0, 'shapew': 8, 'bmin': 0.35, 'bmax': 2.5, 'wfweeks': 13, 'parent': '2016-01..2018-01-15', 'child': '2018-01-15'}
+  score 2.291 r 0.926 | {'maxstep': 3, 'cap': 16, 'j0': 0.15, 'dynmap': 1, 'bw': 0, 'wshape': 0.0, 'shapew': 8, 'bmin': 0.35, 'bmax': 2.5, 'wfweeks': 0, 'parent': '2016-01..2018-01-15', 'child': '2018-01-15'}
+  score 2.314 r 0.925 | {'maxstep': 2, 'cap': 16, 'j0': 0.15, 'dynmap': 1, 'bw': 0, 'wshape': 0.0, 'shapew': 8, 'bmin': 0.35, 'bmax': 2.5, 'wfweeks': 0, 'parent': '2016-01..2018-03', 'child': '2018-01-15'}
+  score 2.342 r 0.926 | {'maxstep': 2, 'cap': 16, 'j0': 0.15, 'dynmap': 1, 'bw': 0, 'wshape': 0.0, 'shapew': 8, 'bmin': 0.35, 'bmax': 2.5, 'wfweeks': 0, 'parent': '2016-01..2018-01-15', 'child': '2018-01-15'}
+  score 2.356 r 0.926 | {'maxstep': 3, 'cap': 16, 'j0': 0.15, 'dynmap': 1, 'bw': 0, 'wshape': 0.0, 'shapew': 8, 'bmin': 0.35, 'bmax': 2.5, 'wfweeks': 26, 'parent': '2016-01..2018-01-15', 'child': '2018-01-15'}
+  dynmap 0: 36 settings, best score 2.934, median 6.457, best r 0.925, best hit26 0.42, best ic26 0.56
+  dynmap 1: 72 settings, best score 2.284, median 2.792, best r 0.936, best hit26 0.53, best ic26 0.29
+  dynmap 2: 80 settings, best score 3.520, median 6.353, best r 0.980, best hit26 0.45, best ic26 0.53
+adversary (real parent score 2.284, r 0.935, cost 9.89):
+  iaaft      hit26 median 0.5106382978723404 p 0.8524590163934426 | ic26 median 0.04831215301267856 p 0.4426229508196721
+  iaaft      n  60 score median 1.799 best 1.189 p 0.803 | r median 0.916 p 0.393 | cost p 0.410
+  block8     hit26 median 0.48936170212765956 p 0.7704918032786885 | ic26 median 0.0029695764727379168 p 0.36065573770491804
+  block8     n  60 score median 2.193 best 1.135 p 0.557 | r median 0.925 p 0.475 | cost p 0.410
+  walk       hit26 median 0.4574468085106383 p 0.7868852459016393 | ic26 median 0.055077220828437926 p 0.45901639344262296
+  walk       n  60 score median 2.032 best 0.985 p 0.639 | r median 0.932 p 0.475 | cost p 0.541
+  reversed   hit26 median 0.5531914893617021 p 1.0 | ic26 median 0.06263018579367614 p 0.5
+  reversed   n   1 score median 1.892 best 1.892 p 1.000 | r median 0.944 p 1.000 | cost p 1.000
+  otherBTCD  hit26 median 0.4148936170212766 p 0.6521739130434783 | ic26 median 0.06693324043571894 p 0.4782608695652174
+  otherBTCD  n  22 score median 1.528 best 1.214 p 0.826 | r median 0.853 p 0.304 | cost p 0.304
+  offset     hit26 median 0.43617021276595747 p 0.8 | ic26 median 0.10434297577855801 p 0.68
+  offset     n  24 score median 2.474 best 1.270 p 0.400 | r median 0.930 p 0.240 | cost p 0.200
+  child@2017-06-01: score 3.353 r 0.925 cost 11.32
+  child@2018-06-01: score 2.876 r 0.958 cost 5.98
+  child@2019-01-01: score 2.118 r 0.970 cost 4.42
+  child@2019-07-01: score 2.347 r 0.984 cost 2.61
+  child@2020-01-01: score 3.142 r 0.982 cost 2.55
+done in 260s; today's parent week (weighted p10/p50/p90): ['2017-12-03', '2017-12-24', '2018-01-14']
+fan (BTC.D %): {"w4": {"p10": 47.35, "p25": 53.52, "p50": 57.5, "p75": 60.02, "p90": 62.51}, "w13": {"p10": 34.02, "p25": 44.07, "p50": 53.41, "p75": 60.02, "p90": 60.19}, "w26": {"p10": 34.0, "p25": 37.8, "p50": 47.9, "p75": 54.35, "p90": 60.02}, "w52": {"p10": 33.57, "p25": 36.34, "p50": 47.9, "p75": 54.35, "p90": 60.02}, "w78": {"p10": 33.57, "p25": 37.82, "p50": 47.9, "p75": 55.63, "p90": 60.02}}

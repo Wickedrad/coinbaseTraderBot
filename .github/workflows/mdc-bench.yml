@@ -1,0 +1,82 @@
+name: Compact recordings benchmark
+
+# Measures the lossless compact recording format (.mdc, bot/marketdata/compactRecording.ts) against the bot's gzip and
+# whole-day zstd/xz on real days pulled from Google Drive (gdrive:kalshi-bot-archive, RCLONE_CONF). Reads no server.
+# Prints sizes and timings only (the repo is public: no recordings leave the runner, no artifacts). The summary is also
+# posted as a commit comment on the commit that ran.
+
+on:
+  push:
+    branches: [claude/project-thread-eb1or9]
+    paths: ['.github/workflows/mdc-bench.yml', 'bot/marketdata/compactRecording.ts', 'bot/marketdata/mdcWorker.ts', 'scripts/mdc.ts']
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Days to measure, comma separated (empty = the two newest days on Drive)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mdc-bench
+  cancel-in-progress: true
+
+env:
+  DRIVE_ROOT: gdrive:kalshi-bot-archive
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Tools
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF secret is not set"; exit 1; fi
+          sudo apt-get install -y -qq rclone zstd xz-utils pigz >/dev/null
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
+          npm ci --ignore-scripts --silent >/dev/null 2>&1 && npm i -g tsx@4 --silent >/dev/null 2>&1
+          node -e "if(typeof require('zlib').zstdCompressSync!=='function'){console.error('node '+process.version+' has no zstd');process.exit(1)}"
+          echo "node $(node -v), zstd $(zstd -V | head -1)"
+      - name: Measure
+        env:
+          DAYS_IN: ${{ inputs.days }}
+        run: |
+          set -euo pipefail
+          # Read speed, gzip vs .mdc, on recorded days that already have their .mdc on Drive (made by mdc-convert.yml):
+          # each form is read 3 times, alternating, and the two are checked to give the same lines byte for byte.
+          D=$RUNNER_TEMP/data; OUT=$RUNNER_TEMP/summary.md; mkdir -p "$D"
+          rclone lsf "$DRIVE_ROOT/recordings" --files-only > "$RUNNER_TEMP/ls.txt"
+          if [ -n "${DAYS_IN:-}" ]; then DAYS=${DAYS_IN//,/ }; else
+            DAYS=$({ grep -E '^md-[0-9-]{10}\.mdc$' "$RUNNER_TEMP/ls.txt" || true; } | sort | tail -2 | sed -E 's/^md-(.{10}).*/\1/' | tr '\n' ' ')
+          fi
+          echo "## Compact recordings read benchmark ($(date -u '+%Y-%m-%d %H:%M UTC'), $(nproc) cores)" > "$OUT"
+          [ -n "$DAYS" ] || { echo "no recorded day on Drive has its .mdc yet" | tee -a "$OUT"; exit 0; }
+          echo '```' >> "$OUT"
+          for d in $DAYS; do
+            rclone copy "$DRIVE_ROOT/recordings/md-$d.jsonl.gz" "$D/" --transfers 1
+            rclone copy "$DRIVE_ROOT/recordings/md-$d.mdc" "$D/" --transfers 1
+            echo "$d: gzip $(( $(stat -c%s "$D/md-$d.jsonl.gz") / 1048576 )) MB, mdc $(( $(stat -c%s "$D/md-$d.mdc") / 1048576 )) MB" | tee -a "$OUT"
+            tsx scripts/mdc.ts readbench "$D/md-$d.jsonl.gz" "$D/md-$d.mdc" 3 2>&1 | tee -a "$OUT"
+            MDC_WORKERS=0 tsx scripts/mdc.ts readbench "$D/md-$d.jsonl.gz" "$D/md-$d.mdc" 1 2>&1 | sed 's/^/no workers: /' | tee -a "$OUT"
+            rm -f "$D/md-$d.jsonl.gz" "$D/md-$d.mdc"
+          done
+          echo '```' >> "$OUT"
+          cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
+      - name: Post summary as a commit comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f "$RUNNER_TEMP/summary.md" ] || exit 0
+          jq -Rs '{body: .}' "$RUNNER_TEMP/summary.md" > "$RUNNER_TEMP/c.json"
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input "$RUNNER_TEMP/c.json" >/dev/null

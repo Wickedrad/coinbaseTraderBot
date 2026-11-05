@@ -1,0 +1,62 @@
+BTCD_CMC 2013-04-29..2026-11-02, weekly 706; parent start 2016-03-13
+96 settings in 133s
+  res=3D                       {'n': 36, 'bestScore': 3.169, 'medianScore': 4.698, 'bestIc26': 0.387, 'medianIc26': 0.133, 'bestHit26': 0.441}
+  res=W                        {'n': 36, 'bestScore': 4.062, 'medianScore': 4.678, 'bestIc26': 0.565, 'medianIc26': 0.197, 'bestHit26': 0.452}
+  space=log                    {'n': 24, 'bestScore': 3.993, 'medianScore': 4.621, 'bestIc26': 0.478, 'medianIc26': 0.251, 'bestHit26': 0.441}
+  space=logit                  {'n': 24, 'bestScore': 3.169, 'medianScore': 4.353, 'bestIc26': 0.238, 'medianIc26': 0.049, 'bestHit26': 0.419}
+  space=raw                    {'n': 24, 'bestScore': 5.111, 'medianScore': 6.291, 'bestIc26': 0.565, 'medianIc26': 0.19, 'bestHit26': 0.452}
+  dynmap=0                     {'n': 24, 'bestScore': 3.192, 'medianScore': 4.502, 'bestIc26': 0.565, 'medianIc26': 0.245, 'bestHit26': 0.43}
+  dynmap=2                     {'n': 48, 'bestScore': 3.169, 'medianScore': 4.817, 'bestIc26': 0.562, 'medianIc26': 0.117, 'bestHit26': 0.452}
+  alt:2014-04..2016-07         {'n': 12, 'bestScore': 1.509, 'medianScore': 1.674, 'bestIc26': 0.541, 'medianIc26': 0.213, 'bestHit26': 0.505}
+  alt:2019-06..2021-07         {'n': 12, 'bestScore': 2.705, 'medianScore': 2.843, 'bestIc26': 0.522, 'medianIc26': 0.339, 'bestHit26': 0.292}
+  main                         {'n': 72, 'bestScore': 3.169, 'medianScore': 4.678, 'bestIc26': 0.565, 'medianIc26': 0.15, 'bestHit26': 0.452}
+best by score:
+  3.169 ic26 0.24 now 2017-12-10 | 2016-03-13..2018-03 3D logit dyn2/104 wsh1.0
+  3.192 ic26 0.21 now 2017-12-10 | 2016-03-13..2018-03 3D logit dyn0/0 wsh1.0
+  3.701 ic26 0.06 now 2017-12-10 | 2016-03-13..2018-01-15 3D logit dyn0/0 wsh1.0
+  3.779 ic26 0.01 now 2017-12-10 | 2016-03-13..2018-03 3D logit dyn0/0 wsh3.0
+  3.806 ic26 0.01 now 2017-12-10 | 2016-03-13..2018-01-15 3D logit dyn2/104 wsh1.0
+best by ic26:
+  ic26 0.56 hit 0.40860215053763443 score 5.832 now 2017-12-17 | 2016-03-13..2018-03 W raw dyn0/0 wsh1.0
+  ic26 0.56 hit 0.45161290322580644 score 5.972 now 2017-12-17 | 2016-03-13..2018-03 W raw dyn2/104 wsh1.0
+  ic26 0.56 hit 0.3870967741935484 score 6.262 now 2017-12-17 | 2016-03-13..2018-01-15 W raw dyn0/0 wsh1.0
+  ic26 0.55 hit 0.3870967741935484 score 6.379 now 2017-12-17 | 2016-03-13..2018-01-15 W raw dyn2/104 wsh1.0
+  ic26 0.48 hit 0.3655913978494624 score 4.453 now 2017-12-17 | 2016-03-13..2018-01-15 W log dyn0/0 wsh1.0
+track bestScore (2016-03-13..2018-03 3D logit dyn2/104 wsh1.0) last 12 (child->parent): 2025-12->2017-12-10, 2026-01->2017-12-10, 2026-02->2017-12-10, 2026-03->2017-12-10, 2026-04->2017-12-10, 2026-05->2017-12-10, 2026-06->2017-12-10, 2026-07->2017-12-10, 2026-08->2017-12-10, 2026-09->2017-12-10, 2026-10->2017-12-10, 2026-11->2017-12-10
+track bestIc (2016-03-13..2018-03 W raw dyn0/0 wsh1.0) last 12 (child->parent): 2025-12->2017-12-17, 2026-01->2017-12-10, 2026-02->2017-12-17, 2026-03->2017-12-17, 2026-04->2017-12-17, 2026-05->2017-12-10, 2026-06->2017-12-17, 2026-07->2017-12-17, 2026-08->2017-12-17, 2026-09->2017-12-17, 2026-10->2017-12-17, 2026-11->2017-12-17
+track best3D (2016-03-13..2018-03 3D logit dyn2/104 wsh1.0) last 12 (child->parent): 2025-12->2017-12-10, 2026-01->2017-12-10, 2026-02->2017-12-10, 2026-03->2017-12-10, 2026-04->2017-12-10, 2026-05->2017-12-10, 2026-06->2017-12-10, 2026-07->2017-12-10, 2026-08->2017-12-10, 2026-09->2017-12-10, 2026-10->2017-12-10, 2026-11->2017-12-10
+conditions (bestIc: 2016-03-13..2018-03 W raw dyn0/0 wsh1.0):
+  all                                n  96 ratio 6.10 hit 0.409 ic 0.56
+  |proj26| >= 3 pts                  n  84 ratio 6.70 hit 0.444 ic 0.57
+  |proj26| >= 6 pts                  n  82 ratio 6.93 hit 0.456 ic 0.57
+  |proj26| < 3 pts                   n  12 ratio 1.29 hit 0.167 ic -0.38
+  recent fit r >= 0.5                n  76 ratio 6.68 hit 0.378 ic 0.59
+  recent fit r < 0.5                 n  20 ratio 3.21 hit 0.526 ic 0.68
+  match inside a parent waterfall    n  56 ratio 4.82 hit 0.352 ic 0.49
+  match outside                      n  40 ratio 7.10 hit 0.487 ic 0.62
+  USDT.D falling (13w)               n  40 ratio 3.89 hit 0.359 ic 0.79
+  USDT.D rising (13w)                n  56 ratio 8.36 hit 0.444 ic 0.43
+  projects a fall, USDT.D falling    n  38 ratio 4.00 hit 0.324 ic 0.79
+  projects a fall, USDT.D rising     n  54 ratio 8.63 hit 0.462 ic 0.47
+conditions (bestScore: 2016-03-13..2018-03 3D logit dyn2/104 wsh1.0):
+  all                                n  96 ratio 3.12 hit 0.398 ic 0.24
+  |proj26| >= 3 pts                  n  76 ratio 3.73 hit 0.425 ic 0.24
+  |proj26| >= 6 pts                  n  62 ratio 4.11 hit 0.417 ic 0.23
+  |proj26| < 3 pts                   n  20 ratio 1.13 hit 0.3 ic 0.03
+  recent fit r >= 0.5                n  88 ratio 2.99 hit 0.407 ic 0.26
+  recent fit r < 0.5                 n   8 ratio 7.62 hit 0.286 ic -0.72
+  match inside a parent waterfall    n  37 ratio 4.52 hit 0.2 ic 0.44
+  match outside                      n  59 ratio 2.66 hit 0.517 ic 0.22
+  USDT.D falling (13w)               n  40 ratio 2.46 hit 0.359 ic 0.29
+  USDT.D rising (13w)                n  56 ratio 3.78 hit 0.426 ic 0.22
+  projects a fall, USDT.D falling    n  35 ratio 2.66 hit 0.324 ic 0.23
+  projects a fall, USDT.D rising     n  46 ratio 4.21 hit 0.444 ic 0.35
+fair adversary, best of 6 (real: score 4.341, ic26 0.588, hit26 0.467):
+  block8     n  30 score med 2.437 p 0.903 | ic med 0.331 p 0.065 | hit med 0.478 p 0.742
+  iaaft      n  30 score med 1.358 p 1.000 | ic med 0.223 p 0.065 | hit med 0.556 p 0.935
+  otherBTCD  n   9 score med 2.230 p 1.000 | ic med 0.341 p 0.100 | hit med 0.511 p 0.800
+  walk       n  30 score med 2.123 p 1.000 | ic med 0.315 p 0.097 | hit med 0.511 p 0.677
+today's parent date p10/p50/p90 (round 2 main family): ['2017-11-10', '2017-12-19', '2018-01-27']
+alt:2014-04..2016-07: best 2014-04..2016-07 W logit dyn2/104 wsh1.0 score 1.509 now 2016-01-17 proj {'w13': 52.35, 'w26': 48.57, 'w52': 40.76, 'w78': 43.48}
+alt:2019-06..2021-07: best 2019-06..2021-07 W raw dyn0/0 wsh1.0 score 2.705 now 2020-01-12 proj {'w13': 57.47, 'w26': 57.33, 'w52': 51.3, 'w78': 53.88}
+done in 401s

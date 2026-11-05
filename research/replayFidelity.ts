@@ -24,10 +24,11 @@ import zlib from 'zlib';
 import { loadConfig, paperEnv } from '../bot/config';
 import { OrderBook } from '../bot/marketdata/orderBook';
 import { linkDays, recordingFiles, recordingLines, type RecordingDay } from '../bot/marketdata/recordingFiles';
-import { contractKind, type MarketKind } from '../bot/model/fairValue';
+import { contractKind, isRangeTicker, type MarketKind } from '../bot/model/fairValue';
 import { backtestMain } from './backtest';
 import { fillDayFile, QUOTE_FILLS, type Ev, type QuoteFill } from './goLiveTally';
 import { readDepthModel, type DepthModel } from './history/depthSim';
+import { probeDays, probeStats, type AdversaryOut } from './depthAdversary';
 import { gkVariance, requoteBetween } from './history/historyReplay';
 
 const MIN = 60_000, SLOT = 15_000, DAY = 86_400_000;
@@ -88,7 +89,7 @@ export async function asHistory(day: RecordingDay, out: string | undefined, carr
     try { e = JSON.parse(line); } catch { continue; }
     advance(e.t);
     if (e.k === 'market' && e.ticker && e.asset) {
-      markets.set(e.ticker, { ticker: e.ticker, asset: e.asset, kind: e.kind ?? contractKind(e.series ?? ''), strike: e.strike ?? null, cap: e.cap ?? null, openTime: e.openTime, closeTime: e.closeTime });
+      markets.set(e.ticker, { ticker: e.ticker, asset: e.asset, kind: isRangeTicker(e.ticker) ? 'between' : e.kind ?? contractKind(e.series ?? ''), strike: e.strike ?? null, cap: e.cap ?? null, openTime: e.openTime, closeTime: e.closeTime });
     } else if (e.k === 'book' && e.ticker) {
       const b = books.get(e.ticker) ?? new OrderBook(e.ticker); books.set(e.ticker, b);
       b.applySnapshot({ bids: e.bids ?? [], asks: e.asks ?? [] }, e.t);
@@ -258,11 +259,11 @@ function realDir(rec: string, work: string, meta: FidelityMeta): string {
   return dir;
 }
 
-type Windows = Awaited<ReturnType<typeof backtestMain>>['windows'];
+export type Windows = Awaited<ReturnType<typeof backtestMain>>['windows'];
 
 /** The decision model's backtest on one folder of days, as the pipeline runs it for the decision model
  *  (research/pipeline.ts, mlp): the production exit settings, the vol forecast and the fill model next to the model. */
-async function backtestDir(dir: string, model: string): Promise<Windows> {
+export async function backtestDir(dir: string, model: string, extra: Record<string, string> = {}): Promise<Windows> {
   const cfg = loadConfig(paperEnv(process.env));
   const models = path.dirname(model);
   const opt = (f: string) => (fs.existsSync(path.join(models, f)) ? path.join(models, f) : '');
@@ -273,6 +274,7 @@ async function backtestDir(dir: string, model: string): Promise<Windows> {
     // The paper bot's pool is topped back up when it runs dry (bot/training/supervisor.ts): without it a losing replay goes
     // broke on its first day ($10-$20 orders on a $200 pool) and trades nothing after.
     refill: String(cfg.paperBankrollUsd),
+    ...extra,
   };
   const t0 = Date.now();
   const { windows: w, result: r } = await backtestMain((k, d) => (k === 'recordings' ? dir : k in fixed ? fixed[k] : d), false);
@@ -345,6 +347,17 @@ export async function replayFidelityMain(argOf: (k: string, d: string) => string
     // The real backtest's runner has no prepare stage, so nothing has made the folder yet.
     fs.mkdirSync(work, { recursive: true });
     writeWindows(path.join(work, parts > 1 ? `windows-${how}-p${part}.json` : `windows-${how}.json`), onDays(w, sliced().days));
+    return undefined;
+  }
+  // The adversary's probes on the real books or a fill-in (research/depthAdversary.ts), on this part's days only.
+  if (stage === 'adversary') {
+    const how = argOf('how', '');
+    if (how !== 'real' && !(QUOTE_FILLS as readonly string[]).includes(how)) throw new Error(`--how must be real or one of ${QUOTE_FILLS.join(', ')}`);
+    const days = sliced().days, t0 = Date.now();
+    const res = await probeDays(dirOf(how), days);
+    fs.mkdirSync(work, { recursive: true });
+    fs.writeFileSync(path.join(work, parts > 1 ? `adversary-${how}-p${part}.json` : `adversary-${how}.json`), JSON.stringify({ how, days: res } satisfies AdversaryOut));
+    console.log(`[fidelity] adversary on ${how} (${elapsed(t0)}): ${probeStats(res).map((x) => `${x.probe} ${x.perHour}/h, markout ${x.markoutC}c, settled ${x.settledC}c (${x.n})`).join(' | ')}`);
     return undefined;
   }
   if (stage === 'compare') {

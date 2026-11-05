@@ -11,6 +11,8 @@
 #
 # Required secrets (the same as Deploy): LIGHTSAIL_HOST, LIGHTSAIL_USERNAME, LIGHTSAIL_SSH_KEY (optional LIGHTSAIL_PORT).
 name: Kalshi replay check
+# Lab: the run's title carries the overrides, so a dispatcher can find its own run (REPLAY_TAG) among several sent at once.
+run-name: "Kalshi replay check${{ inputs.overrides && format(' · {0}', inputs.overrides) || '' }}"
 
 on:
   schedule:
@@ -53,6 +55,14 @@ on:
         description: 'Replay-only settings, KEY=VALUE space separated (e.g. EXIT_POLICY=hold): the replay runs with them against what paper actually did, and the verdict is not copied to the server'
         required: false
         default: ''
+      reuse_run:
+        description: 'Replay what an earlier comparison run of this check on the same branch copied (its run id): no server read at all (its copy is cached 7 days unused)'
+        required: false
+        default: ''
+      from_drive:
+        description: 'Google Drive instead of Actions caches (true/false): days already in the Drive archive (drive-archive.yml) are read from Drive, only the rest from the server; a comparison run keeps its copy on Drive (lab-copies/kalshi-replay-check/<run id>) instead of a cache, and reuse_run restores from Drive (any branch), falling back to the cache'
+        required: false
+        default: 'true'
   push:
     branches: ['claude/kalshi-random-sweep']
     paths: ['.github/workflows/kalshi-replay-check.yml', 'research/replayCheck.ts', 'research/backtest.ts', 'research/seedCandles.ts']
@@ -89,6 +99,7 @@ jobs:
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
       - name: SSH to the server
+        if: ${{ !inputs.reuse_run }}
         env:
           SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           HOST: ${{ secrets.LIGHTSAIL_HOST }}
@@ -99,14 +110,32 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
           printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
           ssh bot true && echo "connected"
+      - name: Set up rclone with the Drive archive's token (from_drive)
+        if: ${{ inputs.from_drive != 'false' }}
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF secret is not set (see drive-archive.yml)"; exit 1; fi
+          sudo apt-get install -y -qq rclone >/dev/null
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
+          # A day is archived once its recording is on Drive (the archive uploads the recording last).
+          rclone lsf gdrive:kalshi-bot-archive/recordings --files-only | sed -nE 's/^md-([0-9]{4}-[0-9]{2}-[0-9]{2})\.jsonl\.gz$/\1/p' | sort > "$RUNNER_TEMP/drive-days.txt"
+          echo "Drive has $(wc -l < "$RUNNER_TEMP/drive-days.txt") archived day(s): $(paste -sd, "$RUNNER_TEMP/drive-days.txt")"
       - name: Copy the audit log, the recordings the stretch needs, the model and the settings (read-only)
+        if: ${{ !inputs.reuse_run }}
         env:
           CHECK_DAYS: ${{ inputs.days || '' }}
           CHECK_FROM: ${{ inputs.from || 'auto' }}
           CHECK_TO: ${{ inputs.to || 'now' }}
           SKIP_MODELS: ${{ inputs.skip_models || '' }}
+          FROM_DRIVE: ${{ inputs.from_drive || 'true' }}
         run: |
           set -euo pipefail
+          # Days the Drive archive has (from_drive): their recordings and audit log come from Drive, not the server.
+          on_drive() { [ "$FROM_DRIVE" != false ] && grep -qx "$1" "$RUNNER_TEMP/drive-days.txt"; }
+          DRIVE=gdrive:kalshi-bot-archive
           DATA="$GITHUB_WORKSPACE/data"; mkdir -p "$DATA/recordings" "$DATA/audit" "$DATA/models" "$DATA/sweep-env" "$DATA/sweeps"
           for f in $SKIP_MODELS; do [[ "$f" =~ ^(vol_profile|vol_model|fill_model|session_risk|rule_book|gp_indicators)\.json$ ]] || { echo "skip_models: $f is not one of the model files the check copies"; exit 1; }; done
           # A model file left out (skip_models): one the paper bot did not have yet in the stretch.
@@ -124,9 +153,16 @@ jobs:
             TO="$CHECK_TO"
           fi
           echo "$TO" > "$DATA/sweeps/check-to.txt"
-          PAT=$(echo "$D" | tr ',' '\n' | sed -E "s/^(.+)$/-name 'audit-\1*' -o/" | tr '\n' ' ' | sed -E 's/ -o $//')
-          ssh bot "cd ~/bot/data/audit && find . -maxdepth 1 -type f \( $PAT \) -printf '%P\n'" > "$RUNNER_TEMP/audit.txt"
-          pull --files-from="$RUNNER_TEMP/audit.txt" bot:bot/data/audit/ "$DATA/audit/" || vanished_ok
+          SD=""; : > "$RUNNER_TEMP/audit.txt"
+          for d in ${D//,/ }; do
+            if on_drive "$d"; then rclone copy "$DRIVE/audit" "$DATA/audit/" --include "audit-$d*" --transfers 4; echo "audit $d: from Drive"
+            else SD="${SD:+$SD,}$d"; fi
+          done
+          if [ -n "$SD" ]; then
+            PAT=$(echo "$SD" | tr ',' '\n' | sed -E "s/^(.+)$/-name 'audit-\1*' -o/" | tr '\n' ' ' | sed -E 's/ -o $//')
+            ssh bot "cd ~/bot/data/audit && find . -maxdepth 1 -type f \( $PAT \) -printf '%P\n'" > "$RUNNER_TEMP/audit.txt"
+            pull --files-from="$RUNNER_TEMP/audit.txt" bot:bot/data/audit/ "$DATA/audit/" || vanished_ok
+          fi
           # The take-profit bench's and the accuracy gate's scoreboards now, read right after the audit log (whose bench
           # events wind the bench back): the replay starts from them as they stood when the stretch began.
           pull bot:bot/data/take-profit-bench.json "$RUNNER_TEMP/paper-tp-bench.json" 2>/dev/null || true
@@ -169,6 +205,10 @@ jobs:
           [[ "$NEED" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(,[0-9]{4}-[0-9]{2}-[0-9]{2})*$ ]] || { echo "could not work out the stretch"; exit 1; }
           for d in ${NEED//,/ }; do
             f="md-$d.jsonl"
+            if on_drive "$d"; then
+              rclone copy "$DRIVE/recordings/$f.gz" "$DATA/recordings/" --transfers 1 && gzip -t "$DATA/recordings/$f.gz"
+              echo "recording $d: from Drive"; continue
+            fi
             # A plain file is the day being recorded (or one not compressed yet): copied as it stands and gzipped on the
             # runner (a torn last line is skipped).
             if ssh bot "test -f ~/bot/data/recordings/$f"; then
@@ -200,11 +240,67 @@ jobs:
           echo "TA network $([ -f "$DATA/models/ta_net.json" ] && echo "from the server" || echo "shipped") + $(ls "$DATA/models/archive/ta_net" | wc -l) archived; rule book $([ -f "$DATA/models/rule_book.json" ] && echo read || echo 'not read'); trials $([ -s "$RUNNER_TEMP/paper-trials.json" ] && echo read || echo 'not read'); index series $(find "$DATA/history" -name '*.csv' | wc -l) file(s)"
           # The server's settings without any credential line and without server paths (the same filter as Remote training).
           ssh bot "grep -E '^[A-Z][A-Z0-9_]*=' ~/bot/bot.env" | grep -vE 'KEY|SECRET|TOKEN|PASSWORD|PRIVATE|PEM|CREDENTIAL|^BIND_HOST=|^ALLOW_NON_LOOPBACK|^PORT=' | grep -vE '^[A-Z0-9_]+=["'"'"']?(/|~)' > "$DATA/sweep-env/train.env" || true
-          echo "audit days $D: $(wc -l < "$RUNNER_TEMP/audit.txt") file(s); recorded days $NEED: $(ls "$DATA/recordings" | wc -l) file(s); settings $(wc -l < "$DATA/sweep-env/train.env") line(s); paper balance $([ -s "$RUNNER_TEMP/paper-balance" ] && echo read || echo 'not read'), equity guard $([ -s "$RUNNER_TEMP/paper-guard.json" ] && echo read || echo 'not read'), override $(cat "$RUNNER_TEMP/kill-override"), maker markouts $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$RUNNER_TEMP/maker-markouts.json" 2>/dev/null || echo 0)"
+          echo "audit days $D: $(ls "$DATA/audit" | wc -l) file(s); recorded days $NEED: $(ls "$DATA/recordings" | wc -l) file(s); settings $(wc -l < "$DATA/sweep-env/train.env") line(s); paper balance $([ -s "$RUNNER_TEMP/paper-balance" ] && echo read || echo 'not read'), equity guard $([ -s "$RUNNER_TEMP/paper-guard.json" ] && echo read || echo 'not read'), override $(cat "$RUNNER_TEMP/kill-override"), maker markouts $(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$RUNNER_TEMP/maker-markouts.json" 2>/dev/null || echo 0)"
           du -sh "$DATA/recordings" | cat
+          # Paper's state the replay reads from the runner's temp folder, kept with the copy for reruns (reuse_run).
+          mkdir -p "$DATA/runner-temp"
+          for f in kill-override maker-markouts.json paper-accuracy-gate.json paper-balance paper-guard.json paper-probation.json paper-tp-bench.json paper-trades.jsonl paper-trials.json; do
+            if [ -e "$RUNNER_TEMP/$f" ]; then cp -p "$RUNNER_TEMP/$f" "$DATA/runner-temp/"; fi
+          done
+      - name: Keep the copy for reruns of the same stretch (reuse_run)
+        if: ${{ !inputs.reuse_run && github.event_name == 'workflow_dispatch' && inputs.overrides && inputs.from_drive == 'false' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: replay-check-copy-${{ github.run_id }}
+      - name: Keep the copy on Drive for reruns (reuse_run, from_drive)
+        # Everything but the days the archive already holds (those are pulled from recordings/ and audit/ on reuse).
+        if: ${{ !inputs.reuse_run && github.event_name == 'workflow_dispatch' && inputs.overrides && inputs.from_drive != 'false' }}
+        run: |
+          set -euo pipefail
+          X="$RUNNER_TEMP/copy-exclude.txt"; : > "$X"
+          while read -r d; do [ -n "$d" ] && printf '/recordings/md-%s.jsonl.gz\n/audit/audit-%s*\n' "$d" "$d" >> "$X"; done < "$RUNNER_TEMP/drive-days.txt"
+          rclone copy data "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$GITHUB_RUN_ID" --exclude-from "$X" --transfers 4
+          echo "copy kept on Drive: lab-copies/kalshi-replay-check/$GITHUB_RUN_ID ($(rclone size "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$GITHUB_RUN_ID" | tail -1 | sed 's/^ *//'))"
+      - name: Restore an earlier run's copy (reuse_run)
+        id: reuse_cache
+        if: ${{ inputs.reuse_run }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: replay-check-copy-${{ inputs.reuse_run }}
+          fail-on-cache-miss: ${{ inputs.from_drive == 'false' }}
+      - name: Restore an earlier run's copy from Drive (reuse_run, from_drive)
+        if: ${{ inputs.reuse_run && inputs.from_drive != 'false' && steps.reuse_cache.outputs.cache-hit != 'true' }}
+        env:
+          REUSE: ${{ inputs.reuse_run }}
+        run: |
+          set -euo pipefail
+          [[ "$REUSE" =~ ^[0-9]+$ ]] || { echo "reuse_run must be a run id"; exit 1; }
+          rclone copy "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$REUSE" data --transfers 4
+          [ -s data/sweeps/check-days.txt ] || { echo "::error::no copy of run $REUSE on Drive or in the cache"; exit 1; }
+          for d in $(tr ',' ' ' < data/sweeps/check-days.txt); do
+            grep -qx "$d" "$RUNNER_TEMP/drive-days.txt" || continue
+            ls data/recordings/md-$d.jsonl* >/dev/null 2>&1 || { rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.jsonl.gz" data/recordings/ && gzip -t "data/recordings/md-$d.jsonl.gz"; }
+            ls data/audit/audit-$d* >/dev/null 2>&1 || rclone copy gdrive:kalshi-bot-archive/audit data/audit/ --include "audit-$d*" --transfers 4
+            echo "$d: from Drive"
+          done
+      - name: Put that run's paper state back (reuse_run)
+        if: ${{ inputs.reuse_run }}
+        env:
+          REUSE: ${{ inputs.reuse_run }}
+        run: |
+          cp -p data/runner-temp/* "$RUNNER_TEMP/" 2>/dev/null || true
+          echo "replaying run $REUSE's copy, no server read: $(du -sh data | cut -f1), days $(cat data/sweeps/check-days.txt), to $(cat data/sweeps/check-to.txt)"
       - name: Replay check (backtester vs paper, since the bot's last start)
+        # Lab: REPLAY_SKIP=1 among the overrides makes a copy-only run (the copy is cached for reuse arms, nothing replayed).
+        if: ${{ !contains(inputs.overrides, 'REPLAY_SKIP=1') }}
         env:
           CHECK_FROM: ${{ inputs.from || 'auto' }}
+          # Lab: a reuse arm may replay one day of a copy that holds several (its own `days` and `to`; the copy's otherwise).
+          REUSE: ${{ inputs.reuse_run || '' }}
+          CHECK_TO_IN: ${{ inputs.to || 'now' }}
+          CHECK_DAYS_IN: ${{ inputs.reuse_run && inputs.days || '' }}
           MIN_HOURS: ${{ inputs.min_hours || '3' }}
           NEARBY: ${{ inputs.nearby || '0.95 0.975 1.025 1.05' }}
           PHASES: ${{ inputs.phases || '200 400 600 800' }}
@@ -218,7 +314,9 @@ jobs:
           BAL=$(cat "$RUNNER_TEMP/paper-balance" 2>/dev/null || true)
           GUARD="$RUNNER_TEMP/paper-guard.json"; [ -s "$GUARD" ] || GUARD=""
           OVERRIDE=$(cat "$RUNNER_TEMP/kill-override" 2>/dev/null || echo true)
-          ARGS=(--recordings data/recordings --audit data/audit --days "$(cat data/sweeps/check-days.txt)" --from "$CHECK_FROM" --to "$(cat data/sweeps/check-to.txt)"
+          # A reuse arm's own end (`to`) replaces the copy's; a copy run keeps the end its copy step wrote (the input or now).
+          TO_ARG=$(cat data/sweeps/check-to.txt); if [ -n "$REUSE" ] && [ -n "$CHECK_TO_IN" ] && [ "$CHECK_TO_IN" != now ]; then TO_ARG="$CHECK_TO_IN"; fi
+          ARGS=(--recordings data/recordings --audit data/audit --days "${CHECK_DAYS_IN:-$(cat data/sweeps/check-days.txt)}" --from "$CHECK_FROM" --to "$TO_ARG"
             --min-hours "$MIN_HOURS" ${BAL:+--paper-balance-now "$BAL"} ${GUARD:+--paper-guard "$GUARD"} --kill-override "$OVERRIDE"
             --maker-markouts "$RUNNER_TEMP/maker-markouts.json" --paper-probation "$RUNNER_TEMP/paper-probation.json" --paper-trials "$RUNNER_TEMP/paper-trials.json"
             --paper-tp-bench "$RUNNER_TEMP/paper-tp-bench.json" --paper-accuracy-gate "$RUNNER_TEMP/paper-accuracy-gate.json" --paper-trades "$RUNNER_TEMP/paper-trades.jsonl" --model data/models/model.json)
@@ -267,11 +365,14 @@ jobs:
         run: |
           LOG="$RUNNER_TEMP/own.log"; [ -s "$LOG" ] || { echo "no replay output to post"; exit 0; }
           { echo "**Replay check** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · from $CHECK_FROM${OVERRIDES:+ · replay-only overrides: \`$OVERRIDES\`}"
-            echo; echo '```'; cut -c1-600 "$LOG" | head -n 150; echo '```'; } > "$RUNNER_TEMP/comment.md"
+            echo; echo '```'; grep -vE ' (WARN|INFO|DEBUG) +\[' "$LOG" | cut -c1-900 | head -n 120; echo '```'
+            echo; echo 'Every replay (own, then nearby by bankroll scale):'; echo; echo '```'
+            for L in "$LOG" "$RUNNER_TEMP"/nearby-*.log; do echo "== $(basename "$L" .log)"; grep -E '^replay  +fills|^hunt mode in the replay|^exit audit|^entry timing|^regime|^trade anatomy|^paper.s extra entries|^fills/contracts by order purpose|^settled markets / P&L by series' "$L" | cut -c1-1400; done
+            grep -E '^(nearby replays of the stretch|median )' "$LOG" | cut -c1-1500; echo '```'; } > "$RUNNER_TEMP/comment.md"
           jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
       - name: Copy the verdict to the server
         # A replay with overrides is a comparison, not a fidelity check: it never touches the server's verdict or tally.
-        if: ${{ !inputs.overrides }}
+        if: ${{ !inputs.overrides && !inputs.reuse_run }}
         run: |
           [ -f data/sweeps/replay-check-latest.json ] || { echo "no verdict to copy"; exit 0; }
           ssh bot "mkdir -p ~/bot/data/models/sweeps"
