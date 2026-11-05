@@ -22,15 +22,13 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 /** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
  *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
 export const VARIANTS: Record<string, Record<string, string>> = {
-  // Market-anchor thread, Nov 5: out-of-sample test of the regime switch over ~200 days of Kalshi history (no DOGE).
-  // Oct 25-31 recorded books, no DOGE: off20 +$2.39/h, base +$0.58/h, the random-regime placebo -$0.94/h.
+  // Market-anchor thread, Nov 5 18:05 UTC, on merged main (bad23a5): the wild switch failed out of sample, so this run asks
+  // whether the anchor and the cheap-NO extra edge help over ~200 days of Kalshi history (no DOGE), each against a placebo.
   baseline: {},
-  placebo: { RS_TICK_PHASE_MS: '500' },
+  ser: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true' },
+  sershuf: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', MARKET_ANCHOR_SHUFFLE: 'true' },
   sernl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04' },
-  off20: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2', NO_LONGSHOT_WILD_OFF: 'true' },
-  off25: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2.5', NO_LONGSHOT_WILD_OFF: 'true' },
-  offpl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2', MARKET_ANCHOR_WILD_PLACEBO: '0.2', NO_LONGSHOT_WILD_OFF: 'true' },
-  off20_lat500: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2', NO_LONGSHOT_WILD_OFF: 'true', RS_LATENCY_MS: '500' },
+  sernlm: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', NO_LONGSHOT_MIRROR: 'true' },
 };
 
 export const LATER: Record<string, Record<string, string>> = {};
