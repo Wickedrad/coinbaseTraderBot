@@ -131,3 +131,17 @@ for key in ('series', 'band', 'side', 'state'):
     g = collections.defaultdict(float)
     for r, v in res: g[r[key]] += v - r['realized']
     print(f"  best rule (+{best[0]*100:.0f}c{'' if best[1] is None else f' fv<=bid+{best[1]*100:.0f}c'}) vs riding by {key}: " + ', '.join(f"{k} {v:+.2f}" for k, v in sorted(g.items(), key=lambda kv: kv[1])))
+
+# Every settled market paper traded (held or sold early), by the side bought first and its entry price band: is a group
+# losing systematically (Steven, Nov 1: "what specifically are we getting wrong")?
+grp = collections.defaultdict(lambda: [0, 0.0, 0])
+for t, (sts, result, realized) in settles.items():
+    fs = sorted(fills.get(t, []))
+    if not fs: continue
+    _, side, n, p, _ = fs[0]
+    yes = side == 'bid'
+    k = f"{series(t)}|{'yes' if yes else 'no'}|{band(p if yes else 1 - p)}"
+    grp[k][0] += 1; grp[k][1] += realized; grp[k][2] += realized > 0
+print("all traded markets by first side and entry band (n, P&L, win%):")
+for k, v in sorted(grp.items(), key=lambda kv: kv[1][1]):
+    print(f"  {k}: {v[0]} ${v[1]:.2f} {100 * v[2] / max(1, v[0]):.0f}%")
