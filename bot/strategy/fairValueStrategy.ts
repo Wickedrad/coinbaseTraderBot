@@ -319,10 +319,15 @@ export function seriesMatches(pattern: string, ticker: string): boolean {
  *  a series is the ticker before its first '-', *SUFFIX matches every series ending in SUFFIX). */
 export function gateCfgFor<C extends Pick<StrategyConfig, 'loserExits'>>(cfg: C, ticker: string): C {
   const L = cfg.loserExits;
-  if (!L?.seriesMargins?.length) return cfg;
-  const hit = L.seriesMargins.find((s) => seriesMatches(s.pattern, ticker));
-  if (!hit) return cfg;
-  return { ...cfg, loserExits: { ...L, gateMargin: Math.max(L.gateMargin, hit.margin), ...(L.gateQuoteMargin !== undefined ? { gateQuoteMargin: Math.max(L.gateQuoteMargin, hit.margin) } : {}) } };
+  if (!L?.seriesMargins?.length && !L?.seriesQuoteMargins?.length) return cfg;
+  // FV_ENTRY_GATE_SERIES_QUOTE_MARGINS: a series' own resting-quote margin (it may lower the global one), then the series
+  // margins raise both margins to at least theirs.
+  const q = L.seriesQuoteMargins?.find((s) => seriesMatches(s.pattern, ticker));
+  const hit = L.seriesMargins?.find((s) => seriesMatches(s.pattern, ticker));
+  if (!q && !hit) return cfg;
+  const quote = q ? q.margin : L.gateQuoteMargin;
+  const m = hit?.margin ?? 0;
+  return { ...cfg, loserExits: { ...L, gateMargin: Math.max(L.gateMargin, m), ...(quote !== undefined ? { gateQuoteMargin: Math.max(quote, m) } : {}) } };
 }
 
 /** The fair value gate on a finished plan (after the fill model turns quotes into crosses and paper adds its training trades):
