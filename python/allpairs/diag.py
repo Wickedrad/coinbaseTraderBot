@@ -17,6 +17,7 @@ import numpy as np
 
 from .data import allowed_assets
 
+SEALED = ('2026-11-06', '2026-11-13')   # lockbox L1 (Nov 6 05:00 - Nov 13 05:00 UTC) as whole UTC day files
 KEYS = ('bidO', 'bidH', 'bidL', 'bidC', 'askO', 'askH', 'askL', 'askC', 'last')
 
 
@@ -40,6 +41,8 @@ def main(argv=None):
         for fn in sorted(os.listdir(d)):
             if not fn.endswith('.jsonl'):
                 continue
+            if SEALED[0] <= fn[:10] <= SEALED[1]:
+                continue      # the sealed lockbox week is never read (its file names are close days, UTC)
             month = fn[:7]
             week = __import__('datetime').date.fromisoformat(fn[:10]).isocalendar()[1]
             for line in open(os.path.join(d, fn)):
@@ -128,6 +131,8 @@ def calibration(history: str, assets: list[str], live_from: str = '2026-09-12'):
             continue
         for fn in sorted(os.listdir(d)):
             if not fn.endswith('.jsonl'):
+                continue
+            if SEALED[0] <= fn[:10] <= SEALED[1]:
                 continue
             tier = 'live' if fn[:10] >= live_from else 'hist'
             for line in open(os.path.join(d, fn)):

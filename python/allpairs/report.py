@@ -96,6 +96,9 @@ def gate(arms: dict, ledger: list, champion: dict | None, run: str = '') -> dict
     missing = {name: dict(parts_missing=r.get('parts_missing') or [], folds=len(r.get('folds', [])), folds_expected=r.get('folds_expected'))
                for name, r in arms.items()
                if r.get('parts_missing') or (r.get('folds_expected') is not None and len(r.get('folds', [])) < r['folds_expected'])}
+    for name in ('stress', 'tight'):      # an arm the gate needs that never ran is incomplete, not just unprofitable
+        if name not in arms:
+            missing[name] = dict(parts_missing=['not run'], folds=0, folds_expected=None)
     checks = {
         # Every fold of the gated arms scored: a missing part would score a cherry-picked subset of the history.
         'complete': not any(k in missing for k in ('base', 'stress', 'tight')),
@@ -162,7 +165,8 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '') -> str:
         L.append(f'Gate: ' + ', '.join(f'{k} {"✓" if v else "✗"}' for k, v in g['checks'].items()) +
                  f'. Deflated Sharpe {d["dsr"]} (hourly SR {d["sr"]} vs {d["sr0"]} expected max of {d["n_trials"]} trials).')
     if g.get('incomplete'):
-        L.append('**INCOMPLETE**: ' + '; '.join(f'{k} has {v["folds"]}/{v["folds_expected"]} folds'
+        L.append('**INCOMPLETE**: ' + '; '.join(f'{k} not run' if v['parts_missing'] == ['not run'] else
+                                                 f'{k} has {v["folds"]}/{v["folds_expected"]} folds'
                                                  + (f', parts missing {v["parts_missing"]}' if v['parts_missing'] else '')
                                                  for k, v in g['incomplete'].items()) + '.')
     if g.get('suspect_folds'):

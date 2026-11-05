@@ -22,9 +22,9 @@ on:
         required: false
         default: 'base'
       arms:
-        description: 'Arms to run: base,stress,tight,synth15,synth1h (base always runs)'
+        description: 'Arms to run: base,stress,tight,synth15,synth1h (base, stress and tight always run)'
         required: false
-        default: 'base,stress,synth15,synth1h'
+        default: 'base,stress,tight,synth15,synth1h'
       days:
         description: 'Most recent N days of history (0 = all on Drive)'
         required: false
@@ -74,7 +74,7 @@ jobs:
         env:
           MSG: ${{ github.event.head_commit.message }}
           EVENT: ${{ github.event_name }}
-          ARMS_IN: ${{ inputs.arms || 'base,stress,synth15,synth1h' }}
+          ARMS_IN: ${{ inputs.arms || 'base,stress,tight,synth15,synth1h' }}
           CONFIG_IN: ${{ inputs.config || 'base' }}
         run: |
           set -euo pipefail
@@ -93,7 +93,8 @@ jobs:
           # shares ~50 runners, this thread ~10).
           python3 - "$ARMS" "$CONFIGS" >> "$GITHUB_OUTPUT" <<'EOF'
           import json, os, re, sys
-          want = {a.strip() for a in sys.argv[1].split(',') if a.strip()} | {'base'}
+          # base, stress and tight always run: the gate needs all three (a missing arm counts as not passed).
+          want = {a.strip() for a in sys.argv[1].split(',') if a.strip()} | {'base', 'stress', 'tight'}
           configs = [c.strip() for c in sys.argv[2].split(',') if c.strip()]
           for c in configs:
               if not re.fullmatch(r'[A-Za-z0-9_-]+', c) or not os.path.exists(f'python/allpairs/hypotheses/{c}.json'):

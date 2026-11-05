@@ -219,9 +219,13 @@ class Gate(unittest.TestCase):
 
     def test_incomplete_run_fails(self):
         from allpairs.report import gate
-        g = gate({'base': self._arm('base'), 'stress': self._arm('stress', 1.0)}, [], None, 'r1')
+        g = gate({'base': self._arm('base'), 'stress': self._arm('stress', 1.0), 'tight': self._arm('tight', 1.0)}, [], None, 'r1')
         self.assertTrue(g['checks']['complete'])
-        g = gate({'base': self._arm('base', folds=3, missing=[2]), 'stress': self._arm('stress', 1.0)}, [], None, 'r1')
+        # An arm the gate needs that never ran is incomplete (it is not mistaken for an arm that ran and lost).
+        g = gate({'base': self._arm('base'), 'stress': self._arm('stress', 1.0)}, [], None, 'r1')
+        self.assertFalse(g['checks']['complete'])
+        self.assertEqual(g['incomplete']['tight']['parts_missing'], ['not run'])
+        g = gate({'base': self._arm('base', folds=3, missing=[2]), 'stress': self._arm('stress', 1.0), 'tight': self._arm('tight', 1.0)}, [], None, 'r1')
         self.assertFalse(g['checks']['complete'])
         self.assertFalse(g['passed'])
 
