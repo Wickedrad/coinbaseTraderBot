@@ -94,6 +94,10 @@ export interface LoserExitConfig {
    *  (mostly NO against the favourite) lost $140 net (72 lost, 19 won) while every dearer band made money; paper's own
    *  loser Oct 28-Nov 3 was the same case on the 15-minute series (324 markets, -$211). */
   longshot?: { below: number; margin: number };
+  /** FV_ENTRY_GATE_LONGSHOT_SERIES (unset = every series): the series the longshot margin applies to, "SERIES,*SUFFIX".
+   *  Nov 5, 12 replayed days: the longshot margin helped KXETHD (+$50), KXSOLD (+$48) and KXBTC15M (+$20) and cost
+   *  KXBTCD (-$34) and KXETH15M (-$33), whose cheap sides win often enough. */
+  longshotSeries?: string[];
   /** LOSER_CUT (off: it lost on 6 of 8 recorded days next to the gate; studied for the condition under which it wins): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
    *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
   cut: boolean;
@@ -1297,6 +1301,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       gatedStakeMult: num(env, 'GATED_STAKE_MULT', 1, 1, 5),
       gatedStakeCap: oneOf(env, 'GATED_STAKE_CAP', 'clamp', ['clamp', 'widen'] as const),
       ...(env.FV_ENTRY_GATE_LONGSHOT ? { longshot: parseLongshot(env.FV_ENTRY_GATE_LONGSHOT) } : {}),
+      ...(env.FV_ENTRY_GATE_LONGSHOT_SERIES ? { longshotSeries: parseSeriesList(env.FV_ENTRY_GATE_LONGSHOT_SERIES) } : {}),
       ...(env.FV_ENTRY_GATE_SERIES_MARGINS ? { seriesMargins: parseSeriesMargins(env.FV_ENTRY_GATE_SERIES_MARGINS) } : {}),
       ...(env.FV_ENTRY_GATE_SERIES_QUOTE_MARGINS ? { seriesQuoteMargins: parseSeriesMargins(env.FV_ENTRY_GATE_SERIES_QUOTE_MARGINS) } : {}),
     },
