@@ -515,6 +515,7 @@ test('tennis backtest applies the engine\'s profit rules: the quota snipe sells 
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) });
   const rules = engineTennisRules(cfg);
   assert.equal(rules.settleFrac, cfg.tennis.settleFrac);
+  assert.deepEqual([rules.endLoserCut, rules.endEntryMargin], [cfg.tennis.endLoserCut, cfg.tennis.endEntryMargin]);
   assert.equal(rules.pacer, cfg.strategy.pacer);
   assert.equal(engineTennisRules(cfg, false).pacer, undefined);
   const dir = writeBounceMatch();

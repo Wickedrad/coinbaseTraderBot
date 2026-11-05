@@ -11,7 +11,7 @@
 
 import path from 'path';
 import { loadConfig, paperEnv, type TennisConfig } from '../bot/config';
-import { PositionBook } from '../bot/oms/positions';
+import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { HourlyQuotaPacer, QuotaFloors, type PacerConfig, type PacerFloorMode } from '../bot/risk/quotaPacer';
@@ -28,6 +28,10 @@ export interface TennisBacktestRules {
   pacer?: PacerConfig;
   /** TENNIS_NO_EXIT_BEFORE_END_FRAC: the last share of the match in which a position in profit after fees rides. */
   settleFrac?: number;
+  /** TENNIS_END_LOSER_CUT and TENNIS_END_ENTRY_MARGIN: in that share a position not in profit after fees is sold at the bid,
+   *  and no entry is placed from the margin before it. */
+  endLoserCut?: boolean;
+  endEntryMargin?: number;
   /** PACER_FLOOR and PACER_FLOOR_TICKS. */
   floorMode?: PacerFloorMode;
   floorTicks?: number;
@@ -35,7 +39,7 @@ export interface TennisBacktestRules {
 
 /** The rules as the engine reads them from the config. */
 export function engineTennisRules(cfg: { tennis: TennisConfig; strategy: { pacer: PacerConfig } }, pacer = true): TennisBacktestRules {
-  return { pacer: pacer ? cfg.strategy.pacer : undefined, settleFrac: cfg.tennis.settleFrac, floorMode: cfg.strategy.pacer.floor, floorTicks: cfg.strategy.pacer.floorTicks };
+  return { pacer: pacer ? cfg.strategy.pacer : undefined, settleFrac: cfg.tennis.settleFrac, endLoserCut: cfg.tennis.endLoserCut, endEntryMargin: cfg.tennis.endEntryMargin, floorMode: cfg.strategy.pacer.floor, floorTicks: cfg.strategy.pacer.floorTicks };
 }
 
 export interface TennisBacktest {
@@ -114,19 +118,20 @@ export async function runTennisBacktest(dir: string, cfg: TennisConfig, bankroll
         const b = st.books.get(m.ticker);
         const p = pos.get(m.ticker);
         const usable = b?.isUsable(st.now, 10_000);
-        return { ticker: m.ticker, title: m.title, position: p?.yes ?? 0, avgEntry: p && p.yes > 0 ? -p.netCash / p.yes : undefined, quote: { bid: usable ? b!.bestBid()?.price : undefined, ask: usable ? b!.bestAsk()?.price : undefined }, book: usable ? b : undefined, flow: flowOf(st, m.ticker, cfg.confWindowSec) };
+        return { ticker: m.ticker, title: m.title, position: p?.yes ?? 0, avgEntry: p && p.yes > 0 ? openSidePrice(p) : undefined, quote: { bid: usable ? b!.bestBid()?.price : undefined, ask: usable ? b!.bestAsk()?.price : undefined }, book: usable ? b : undefined, flow: flowOf(st, m.ticker, cfg.confWindowSec) };
       });
       // The quota snipe's measure, as the engine gives it: the whole position's profit after fees at the bid, the cost basis
       // with the entry fee in.
       for (const x of markets) {
         const p = pos.get(x.ticker);
-        if (p && p.yes > 0) x.netAtBid = positionNetAtBid(p.yes, (p.fees - p.netCash) / p.yes, x.quote.bid !== undefined ? { price: x.quote.bid } : undefined, x.quote.ask !== undefined ? { price: x.quote.ask } : undefined, FEES);
+        // As the engine: the open contracts' own cost, entry fee in (bot/oms/positions.ts).
+        if (p && p.yes > 0) x.netAtBid = positionNetAtBid(p.yes, openSidePrice(p)! + openEntryFee(p)!, x.quote.bid !== undefined ? { price: x.quote.bid } : undefined, x.quote.ask !== undefined ? { price: x.quote.ask } : undefined, FEES);
       }
       const risk = tennisRisk();
       res.maxTennisRisk = Math.max(res.maxTennisRisk, risk);
       const matchRisk = tickers.reduce((s, t) => s + marketWorstLoss(pos.get(t), [], FEES), 0);
       const out = decideMatch(tr, { event, now: st.now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)) }, cfg, { bankroll, tennisRisk: risk, matchRisk }, ms[0].tickSize,
-        { pacerUsd: pacerAt(st.now)?.neededUsd(st.now), settleFrac: rules.settleFrac, floorMode: rules.floorMode, floors, floorTicks: rules.floorTicks });
+        { pacerUsd: pacerAt(st.now)?.neededUsd(st.now), settleFrac: rules.settleFrac, endLoserCut: rules.endLoserCut, endEntryMargin: rules.endEntryMargin, floorMode: rules.floorMode, floors, floorTicks: rules.floorTicks });
       const mine = open.filter((o) => tickers.includes(o.ticker));
       const same = (p: TennisPlan, o: typeof mine[number]) => p.ticker === o.ticker && p.side === o.side && Math.abs(p.price - o.price) < 1e-9 && Math.abs(p.count - o.remainingCount) < 0.02;
       for (const o of mine) if (!out.plans.some((p) => same(p, o))) await ex.cancelOrder(o.orderId);
