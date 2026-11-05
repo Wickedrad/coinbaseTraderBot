@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { loadConfig } from '../bot/config';
 import { MetaModel } from '../bot/model/metaModel';
 import { runBacktest } from '../research/backtest';
-import { buildDataset } from '../research/buildDataset';
+import { buildDataset, DATASET_REFERENCE_SIGMA } from '../research/buildDataset';
 import { bootstrapMeanCi, deflatedSharpe, expectedMaxSharpe, pbo, probabilisticSharpe, rng } from '../research/stats';
 import { writeSyntheticRecordings } from '../research/synthetic';
 import { trainMetaModel } from '../research/trainMetaModel';
@@ -48,6 +48,8 @@ test('research pipeline runs end to end on synthetic recordings', async () => {
   const model = MetaModel.fromJson(JSON.stringify(rep.params));
   // Default search is MLP-only with a hidden layer: a real neural network.
   assert.equal(rep.params.kind, 'mlp');
+  // log_vol_ratio is built in live against params.referenceSigma: it must be the reference the rows were built against.
+  assert.equal(rep.params.referenceSigma, DATASET_REFERENCE_SIGMA);
   assert.ok(rep.cv.every((r: { model: string }) => /^mlp-h(8|16)-/.test(r.model)), JSON.stringify(rep.cv.map((r: { model: string }) => r.model)));
   // Tiny sample: must NOT pass go-live gates.
   assert.equal(rep.params.validation!.passed, false);
