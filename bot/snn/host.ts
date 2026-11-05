@@ -64,7 +64,9 @@ export class SnnHost implements SnnHostLike {
   private worker?: Worker;
   private readonly local = new SnnRuntime();
   private seq = 0;
-  private readonly waiting = new Map<number, (r: SnnReply) => void>();
+  private readonly waiting = new Map<number, (r: SnnReply | undefined) => void>();
+  /** The init request start() sent, kept to bring the network back in-process if the worker dies. */
+  private initReq?: Req;
   private busy = false;
   private readonly lat: number[] = [];
   private lastCheckpoint = 0;
@@ -85,10 +87,12 @@ export class SnnHost implements SnnHostLike {
   async start(now = Date.now()): Promise<void> {
     if (this.o.worker) {
       try {
-        this.worker = new Worker(this.o.worker.path, { execArgv: this.o.worker.execArgv });
-        this.worker.on('message', (r: SnnReply) => { const f = this.waiting.get(r.id); this.waiting.delete(r.id); f?.(r); });
-        this.worker.on('error', (e) => { this.lastError = `worker: ${e.message}`; log.error('snn worker error', { error: e.message }); this.worker = undefined; });
-        this.worker.unref();
+        const w = new Worker(this.o.worker.path, { execArgv: this.o.worker.execArgv });
+        this.worker = w;
+        w.on('message', (r: SnnReply) => { const f = this.waiting.get(r.id); this.waiting.delete(r.id); f?.(r); });
+        w.on('error', (e) => this.workerDied(w, `error: ${e.message}`));
+        w.on('exit', (code) => this.workerDied(w, `exited (code ${code})`));
+        w.unref();
       } catch (e) {
         this.lastError = `worker failed to start, running in-process: ${(e as Error).message}`;
         this.worker = undefined;
@@ -96,10 +100,32 @@ export class SnnHost implements SnnHostLike {
     }
     const seeded = this.o.seedCheckpoint;
     const cp = this.loadCheckpoint() ?? seeded;
-    const r = await this.call({ type: 'init', params: this.o.params, whitelist: this.o.whitelist, model: this.o.model, checkpoint: cp, allowParamChange: Boolean(seeded) && cp === seeded }, 30_000);
+    this.initReq = { type: 'init', params: this.o.params, whitelist: this.o.whitelist, model: this.o.model, checkpoint: cp, allowParamChange: Boolean(seeded) && cp === seeded };
+    let r = await this.call(this.initReq, 30_000);
+    // A worker that died during init: the network came back in-process (workerDied); init there.
+    if (!r && !this.worker) r = await this.call(this.initReq, 30_000);
     if (!r?.ok) throw new Error(`SNN init failed: ${r && !r.ok ? r.error : 'timeout'}`);
     this.restoredFrom = (r.result as { restoredFrom: string | null }).restoredFrom;
     this.lastCheckpoint = now;
+  }
+
+  /** The worker crashed or exited on its own. Every later call used to go to the local runtime, which was never
+   *  initialised, so the network stayed dead (no learning, no settlements, no p_snn) until the process restarted. The
+   *  network now carries on in-process from the newest checkpoint (the state since that checkpoint is lost). */
+  private workerDied(w: Worker, why: string): void {
+    if (this.worker !== w) return; // stopped on purpose, or already handled
+    this.worker = undefined;
+    for (const f of this.waiting.values()) f(undefined);
+    this.waiting.clear();
+    let note = 'not initialised yet';
+    if (this.initReq) {
+      const seeded = this.o.seedCheckpoint, cp = this.loadCheckpoint() ?? seeded;
+      const r = this.local.handle({ ...this.initReq, checkpoint: cp, allowParamChange: Boolean(seeded) && cp === seeded, id: ++this.seq } as SnnRequest);
+      note = r.ok ? `restarted in-process from ${(r.result as { restoredFrom: string | null }).restoredFrom ?? 'a fresh network'}` : `in-process restart failed: ${r.error}`;
+      if (r.ok) this.restoredFrom = (r.result as { restoredFrom: string | null }).restoredFrom;
+    }
+    this.lastError = `worker ${why}; ${note}`;
+    log.error('snn worker died', { why, note });
   }
 
   private call(req: Req, timeoutMs: number): Promise<SnnReply | undefined> {
@@ -212,7 +238,8 @@ export class SnnHost implements SnnHostLike {
 
   async stop(now = Date.now()): Promise<void> {
     await this.checkpoint(now);
-    await this.worker?.terminate();
+    const w = this.worker;
     this.worker = undefined;
+    await w?.terminate();
   }
 }
