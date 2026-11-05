@@ -361,3 +361,12 @@ test('FV_ENTRY_GATE_LONGSHOT: a side bought under the threshold needs the longsh
   // At 0.30 (above the threshold) the 6c gate applies.
   assert.ok(fvGatePasses(0.6, 'no', 0.3, 0.01, ls));
 });
+
+test('FV_ENTRY_GATE_SERIES_QUOTE_MARGINS: a series\' own quote margin may lower the global one; series margins still raise', () => {
+  const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_SERIES_QUOTE_MARGINS: 'KXXRP15M=0,KXBTC=0.05', FV_ENTRY_GATE_SERIES_MARGINS: 'KXBTC=0.08' }).strategy;
+  const xrp = gateCfgFor(c, 'KXXRP15M-26NOV051200-00').loserExits!;
+  assert.equal(xrp.gateQuoteMargin, 0); assert.equal(xrp.gateMargin, 0.06);
+  const btc = gateCfgFor(c, 'KXBTC-26NOV0512-B70000').loserExits!;
+  assert.equal(btc.gateQuoteMargin, 0.08, 'lowered to 5c, then raised to the series margin 8c'); assert.equal(btc.gateMargin, 0.08);
+  assert.equal(gateCfgFor(c, 'KXETH15M-X').loserExits!.gateQuoteMargin, 0.12);
+});

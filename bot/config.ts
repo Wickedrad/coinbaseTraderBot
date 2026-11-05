@@ -85,6 +85,10 @@ export interface LoserExitConfig {
    *  as "PATTERN=margin,..." where PATTERN is a series (KXETHD) or *SUFFIX (*15M = every 15-minute series). A matching
    *  series' taker and quote margins are raised to at least that margin; the first match wins. Paper and live alike. */
   seriesMargins?: { pattern: string; margin: number }[];
+  /** FV_ENTRY_GATE_SERIES_QUOTE_MARGINS (unset = none): a series' own resting-quote margin, same syntax as the series
+   *  margins, and it may LOWER the global FV_ENTRY_GATE_QUOTE_MARGIN (the cell sweep, Nov 5: KXXRP15M at 0 beat the gate-off
+   *  base by +$115 held out over Oct 25-31, 7 of 7 days). FV_ENTRY_GATE_SERIES_MARGINS still raises it afterwards. */
+  seriesQuoteMargins?: { pattern: string; margin: number }[];
   /** FV_ENTRY_GATE_LONGSHOT (unset = none), "below=margin" (0.25=0.15): a side bought under `below` needs at least `margin`
    *  above its cost and fee. Nov 5, 9 replayed days with the range fix (#260): hourly maker quotes buying a side under 25c
    *  (mostly NO against the favourite) lost $140 net (72 lost, 19 won) while every dearer band made money; paper's own
@@ -1294,6 +1298,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       gatedStakeCap: oneOf(env, 'GATED_STAKE_CAP', 'clamp', ['clamp', 'widen'] as const),
       ...(env.FV_ENTRY_GATE_LONGSHOT ? { longshot: parseLongshot(env.FV_ENTRY_GATE_LONGSHOT) } : {}),
       ...(env.FV_ENTRY_GATE_SERIES_MARGINS ? { seriesMargins: parseSeriesMargins(env.FV_ENTRY_GATE_SERIES_MARGINS) } : {}),
+      ...(env.FV_ENTRY_GATE_SERIES_QUOTE_MARGINS ? { seriesQuoteMargins: parseSeriesMargins(env.FV_ENTRY_GATE_SERIES_QUOTE_MARGINS) } : {}),
     },
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),
