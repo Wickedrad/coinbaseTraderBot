@@ -85,6 +85,11 @@ export interface LoserExitConfig {
    *  as "PATTERN=margin,..." where PATTERN is a series (KXETHD) or *SUFFIX (*15M = every 15-minute series). A matching
    *  series' taker and quote margins are raised to at least that margin; the first match wins. Paper and live alike. */
   seriesMargins?: { pattern: string; margin: number }[];
+  /** FV_ENTRY_GATE_LONGSHOT (unset = none), "below=margin" (0.25=0.15): a side bought under `below` needs at least `margin`
+   *  above its cost and fee. Nov 5, 9 replayed days with the range fix (#260): hourly maker quotes buying a side under 25c
+   *  (mostly NO against the favourite) lost $140 net (72 lost, 19 won) while every dearer band made money; paper's own
+   *  loser Oct 28-Nov 3 was the same case on the 15-minute series (324 markets, -$211). */
+  longshot?: { below: number; margin: number };
   /** LOSER_CUT (off: it lost on 6 of 8 recorded days next to the gate; studied for the condition under which it wins): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
    *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
   cut: boolean;
@@ -1016,6 +1021,13 @@ function oneOf<T extends string>(env: Env, key: string, def: T, allowed: readonl
   return raw;
 }
 
+/** FV_ENTRY_GATE_LONGSHOT: "0.25=0.15" -> { below: 0.25, margin: 0.15 }. */
+export function parseLongshot(raw: string): { below: number; margin: number } {
+  const [b, m] = raw.split('=').map(Number);
+  if (!(b > 0 && b < 1) || !(m >= 0 && m <= 0.5)) throw new ConfigError(`FV_ENTRY_GATE_LONGSHOT=${raw} must be below=margin, below 0-1, margin 0-0.5`);
+  return { below: b, margin: m };
+}
+
 /** TRAINING_SKIP_SERIES: "*15M,KXETH" -> ['*15M', 'KXETH']. */
 export function parseSeriesList(raw: string): string[] {
   return raw.split(',').map((x) => x.trim()).filter(Boolean).map((p) => {
@@ -1280,6 +1292,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
       gatedStakeMult: num(env, 'GATED_STAKE_MULT', 1, 1, 5),
       gatedStakeCap: oneOf(env, 'GATED_STAKE_CAP', 'clamp', ['clamp', 'widen'] as const),
+      ...(env.FV_ENTRY_GATE_LONGSHOT ? { longshot: parseLongshot(env.FV_ENTRY_GATE_LONGSHOT) } : {}),
       ...(env.FV_ENTRY_GATE_SERIES_MARGINS ? { seriesMargins: parseSeriesMargins(env.FV_ENTRY_GATE_SERIES_MARGINS) } : {}),
     },
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
