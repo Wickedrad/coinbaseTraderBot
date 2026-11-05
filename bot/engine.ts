@@ -101,6 +101,9 @@ import { altcoinRiskOn, confluenceBreadth, orientedSignals, selectionPriority, t
 
 /** Paper fixed size: how many fixed-size orders the window cap (markets closing together) and the total cap hold. */
 const PAPER_WINDOW_ORDERS = 3;
+/** SNN calls (contract scores, direction calls) older than this are ignored and dropped: the replay's rule
+ *  (research/replay.ts snnContext), so a stalled or dead network stops feeding the MLP, perps, tennis and the blend. */
+const SNN_MAX_AGE_MS = 180_000;
 const PAPER_TOTAL_ORDERS = 10;
 
 const log = logger('engine');
@@ -400,10 +403,10 @@ export class Engine {
   /** Tennis columns: latest input and contract query per live match. */
   private readonly snnTennis = new Map<string, { input: ColumnInput; query: ContractQuery; ts: number }>();
   /** Latest direction calls by column key. */
-  readonly snnDirs = new Map<string, DirectionPred>();
+  readonly snnDirs = new Map<string, DirectionPred & { ts: number }>();
   private snnLastLog = 0;
   private readonly snnAssetCache = new Map<string, { ts: number; f: Record<string, number> }>();
-  private readonly snnScores = new Map<string, ContractScore & { domain: SnnDomain; ts?: number }>();
+  private readonly snnScores = new Map<string, ContractScore & { domain: SnnDomain; ts: number }>();
   private readonly snnReplies = new Map<SnnDomain, StepReply | undefined>();
   private readonly snnLastAlert = new Map<string, number>();
   private snnLastSave = 0;
@@ -1628,8 +1631,8 @@ export class Engine {
     for (const [d, r] of replies) {
       this.snnReplies.set(d, r);
       if (!r) continue;
-      for (const s of r.scores) this.snnScores.set(s.ticker, { ...s, domain: d });
-      for (const x of r.directions) this.snnDirs.set(`${d}:${x.key}`, x);
+      for (const s of r.scores) this.snnScores.set(s.ticker, { ...s, domain: d, ts: now });
+      for (const x of r.directions) this.snnDirs.set(`${d}:${x.key}`, { ...x, ts: now });
       // Log each network's calls with their confidence: research and the decision models learn from them.
       if (logIt) md.record('snn', { d, dirs: r.directions.map(dirRow), c: Object.fromEntries(r.scores.map((s) => [s.ticker, +s.p.toFixed(5)])) });
       if (r.alerts.length && now - (this.snnLastAlert.get(d) ?? 0) > 3_600_000) {
@@ -1638,7 +1641,10 @@ export class Engine {
         this.d.alerter.notify('warn', 'snn-health', `SNN ${d} health: ${r.alerts.join('; ')}`);
       }
     }
-    for (const [t, s] of this.snnScores) if (now - (s.ts ?? now) > 120_000) this.snnScores.delete(t);
+    // Scores carried no time before, so this prune never fired and direction calls had none: after a stall or a dead
+    // worker the last calls fed the models as if fresh, and the maps grew with every ticker ever scored.
+    for (const [t, s] of this.snnScores) if (now - s.ts > SNN_MAX_AGE_MS) this.snnScores.delete(t);
+    for (const [k, x] of this.snnDirs) if (now - x.ts > SNN_MAX_AGE_MS) this.snnDirs.delete(k);
     const cr = this.snnReplies.get('crypto');
     if (cr && cr.scores.length) {
       const n = cr.scores.length;
@@ -1655,24 +1661,32 @@ export class Engine {
     const own: SnnDomain = consumer;
     const other: SnnDomain = consumer === 'crypto' ? 'perps' : 'crypto';
     const up: SnnContext['up'] = {}, move: SnnContext['move'] = {}, conf: SnnContext['conf'] = {};
+    const now = this.now();
     for (const [d, allowed] of [[own, true], [other, this.d.cfg.snn.crossFeed]] as const) {
       if (!allowed) continue;
       for (const h of DOMAIN_HORIZONS[d as 'crypto' | 'perps']) {
         if (up[h] !== undefined) continue; // own network first
         const x = this.snnDirs.get(`${d}:${cryptoColumnKey(asset, h)}`);
-        if (x) { up[h] = x.pUp; move[h] = x.expSignedMove; conf[h] = dirConf(x); }
+        if (x && now - x.ts <= SNN_MAX_AGE_MS) { up[h] = x.pUp; move[h] = x.expSignedMove; conf[h] = dirConf(x); }
       }
     }
-    const s = ticker ? this.snnScores.get(ticker) : undefined;
+    const s = ticker ? this.freshScore(ticker, now) : undefined;
     return { up, move, conf, pContract: s && s.domain === own ? s.p : undefined };
+  }
+
+  /** The SNN's latest score for a contract, unless it is older than SNN_MAX_AGE_MS. */
+  private freshScore(ticker: string, now: number): (ContractScore & { domain: SnnDomain; ts: number }) | undefined {
+    const s = this.snnScores.get(ticker);
+    return s && now - s.ts <= SNN_MAX_AGE_MS ? s : undefined;
   }
 
   /** Tennis MLP fair P(A wins) (validated models only; otherwise undefined and the rules decide). */
   private tennisFairFor(event: string, tv: Record<string, number | undefined> | undefined, tickerA: string): number | undefined {
     const m = this.d.tennisFair;
     if (!m || !gatePasses('tennis', m.validated) || !tv) return undefined;
-    const dir = this.snnDirs.get(`tennis:${tennisColumnKey(event)}`);
-    const s = this.snnScores.get(tickerA);
+    const now = this.now(), d = this.snnDirs.get(`tennis:${tennisColumnKey(event)}`);
+    const dir = d && now - d.ts <= SNN_MAX_AGE_MS ? d : undefined;
+    const s = this.freshScore(tickerA, now);
     const p = m.predict(tennisFairInputs(tv, { p: s?.domain === 'tennis' ? s.p : undefined, up: dir?.pUp, skill: dir?.skill, calConf: dir?.calConf }));
     return Number.isFinite(p) ? p : undefined;
   }
@@ -1713,8 +1727,8 @@ export class Engine {
     const unit = snn?.units.crypto;
     if (!snn || !unit) return { p: pModel };
     const reply = this.snnReplies.get('crypto');
-    const s = this.snnScores.get(m.ticker);
-    if (!s || s.domain !== 'crypto') { st.snnShadow = reply ? 'not scored' : 'no readout (timeout or warming up)'; return { p: pModel }; }
+    const s = this.freshScore(m.ticker, now);
+    if (!s || s.domain !== 'crypto') { st.snnShadow = this.snnScores.has(m.ticker) ? 'stale readout (over 3 min old)' : reply ? 'not scored' : 'no readout (timeout or warming up)'; return { p: pModel }; }
     const c = snn.blender.confidence(s.surprise, s.surprise0, s.G);
     const shadow = this.d.cfg.snn.mode !== 'blend' ? 'shadow mode'
       : !reply ? 'readout timed out'
