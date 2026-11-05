@@ -104,6 +104,10 @@ export interface TrialResult {
   ok: boolean; error?: string; ms: number;
   pnl: number; fees: number; contracts: number; fills: number; trades: number;
   byDay: Record<string, number>; tradesByDay: Record<string, number>; byHour: Record<string, number>;
+  /** Diagnostics: decisions evaluated and refills of a pool that ran dry (deep-history labs). */
+  diag?: { entryEvaluations: number; refills: number; refillUsd: number; crossSales: number; dipBuys: number };
+  /** P&L and markets by market condition at entry (not filled on this branch). */
+  byRegime?: Record<string, { pnl: number; n: number }>;
 }
 
 export const trialId = (env: Record<string, string>) => crypto.createHash('sha1').update(JSON.stringify(Object.entries(env).sort())).digest('hex').slice(0, 12);
@@ -158,7 +162,7 @@ async function tapeFor(dir: string, modelPath: string, tapeDir: string | undefin
 }
 
 /** One trial: the production backtester over every day in `dir`, as paper with these bot.env lines. */
-export async function evalTrial(dir: string, modelPath: string, env: Record<string, string>, stage = 1, scope: Scope = 'sample', tapeDir?: string): Promise<TrialResult> {
+export async function evalTrial(dir: string, modelPath: string, env: Record<string, string>, stage = 1, scope: Scope = 'sample', tapeDir?: string, extra: { refill?: boolean } = {}): Promise<TrialResult> {
   const t0 = Date.now();
   const base = { id: trialId(env), stage, scope, env, ms: 0, pnl: 0, fees: 0, contracts: 0, fills: 0, trades: 0, byDay: {}, tradesByDay: {}, byHour: {} };
   try {
@@ -191,6 +195,10 @@ export async function evalTrial(dir: string, modelPath: string, env: Record<stri
       accuracyGate: S.accuracyGate, takeProfitBench: { enforce: S.takeProfitBench, rule }, tape, dailyGoalUsd: cfg.vault.dailyGoalUsd, sessionEdge: cfg.sessionEdge,
       volProfile: em.volProfile, applyVolSeasonality: Boolean(em.volProfile), volModel: em.volModel, fillModel: em.fillModel, calendar: em.calendar,
       taNet: true, trials: em.trials, marketContext: true, ...(seed ? { seedCandles: seed } : {}),
+      // Deep-history labs: paper's refill when the pool runs dry; a shifted tick (placebo) and late orders (stress).
+      ...(extra.refill ? { refillUsd: cfg.paperBankrollUsd } : {}),
+      ...(env.RS_TICK_PHASE_MS ? { tickPhaseMs: Number(env.RS_TICK_PHASE_MS) } : {}),
+      ...(Number(env.RS_LATENCY_MS) > 0 ? { latency: { orderMs: Number(env.RS_LATENCY_MS), jitterMs: Number(env.RS_LATENCY_MS) / 2 } } : {}),
     });
     const byDay: Record<string, number> = {}, tradesByDay: Record<string, number> = {}, byHour: Record<string, number> = {};
     for (const t of r.trades) {
@@ -199,7 +207,8 @@ export async function evalTrial(dir: string, modelPath: string, env: Record<stri
       tradesByDay[iso.slice(0, 10)] = (tradesByDay[iso.slice(0, 10)] ?? 0) + 1;
       byHour[iso.slice(0, 13)] = (byHour[iso.slice(0, 13)] ?? 0) + t.pnl;
     }
-    return { ...base, ok: true, ms: Date.now() - t0, pnl: r.pnl, fees: r.fees, contracts: r.contracts, fills: r.fills, trades: r.trades.length, byDay, tradesByDay, byHour };
+    return { ...base, ok: true, ms: Date.now() - t0, pnl: r.pnl, fees: r.fees, contracts: r.contracts, fills: r.fills, trades: r.trades.length, byDay, tradesByDay, byHour,
+      diag: { entryEvaluations: r.entryEvaluations, refills: r.refills?.length ?? 0, refillUsd: (r.refills ?? []).reduce((x, y) => x + y.usd, 0), crossSales: (r.exits as { crossSales?: number }).crossSales ?? 0, dipBuys: (r.exits as { dipBuys?: number }).dipBuys ?? 0 } };
   } catch (e) {
     return { ...base, ok: false, error: String((e as Error).message ?? e).slice(0, 300), ms: Date.now() - t0 };
   }
