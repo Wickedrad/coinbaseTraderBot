@@ -402,7 +402,7 @@ export function marketDump(spec: string, r: { trades: Array<{ ticker: string; cl
   const chosen = [...tickers].filter((tk) => want.some((w) => {
     if (w === 'mid') { const a1 = yes(rep.get(tk)?.[0]), b1 = yes(pap.get(tk)?.[0]); return (a1 >= 0.3 && a1 <= 0.7) || (b1 >= 0.3 && b1 <= 0.7); }
     if (w.startsWith('settle:')) { const c = rPnl.get(tk)?.close; return c !== undefined && new Date(c).toISOString().startsWith(w.slice(7)); }
-    return w === tk;
+    return w.endsWith('*') ? tk.startsWith(w.slice(0, -1)) : w === tk;
   })).sort();
   const hm = (t: number) => new Date(t).toISOString().slice(5, 19).replace('T', ' ');
   const fl = (xs: F[] | undefined) => (xs?.length ? xs.slice(0, 14).map((f) => `${hm(f.t)} ${f.side} ${f.price.toFixed(2)}x${Math.round(f.count)} ${f.tag}`).join('; ') + (xs.length > 14 ? `; +${xs.length - 14} more` : '') : 'none');
