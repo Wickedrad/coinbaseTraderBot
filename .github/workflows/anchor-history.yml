@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TJ_DAYS: ${{ inputs.days || '202' }}
+  TJ_DAYS: ${{ inputs.days || '201' }}
   TJ_SPLIT: ${{ inputs.split || '' }}
   SWEEP_BANKROLL_USD: '200'
   # Steven, Nov 5 13:26 UTC: no DOGE at all for now. Kalshi lines of these series are dropped from the replayed days
@@ -71,7 +71,7 @@ jobs:
       - name: Get the Kalshi history and its replay from Drive
         run: |
           bash deploy/drive_lab.sh get raw/kalshi-history data/history || echo "no raw Kalshi history on Drive yet"
-          bash deploy/drive_lab.sh get simulated/benched-189d data/history-replay || echo "no simulated replay on Drive yet"
+          bash deploy/drive_lab.sh get simulated/benched-200d-v8 data/history-replay || echo "no simulated replay on Drive yet"
       - name: Repair stored quotes, download what is new, rebuild the replay
         run: |
           node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 120 2>&1 \
@@ -151,7 +151,7 @@ jobs:
         if: steps.replay.outputs.cache-hit != 'true'
         run: |
           bash deploy/drive_lab.sh get raw/kalshi-history data/history || true
-          bash deploy/drive_lab.sh get simulated/benched-189d data/history-replay || true
+          bash deploy/drive_lab.sh get simulated/benched-200d-v8 data/history-replay || true
           node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 120 2>&1 | tail -5
       - name: Restore the server's model and settings (the sweep's copy on main)
         id: server
