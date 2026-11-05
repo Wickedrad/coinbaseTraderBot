@@ -161,7 +161,7 @@ export class DepthSim {
   /** The book at an anchor quote (bid and ask in dollars) and its life until `until`: a full snapshot at `t`, then
    *  the changes and trades in between, in time order. `close` is the contract's close time; `nextMid` (dollars), the
    *  next quote's mid, sets the trade flow by where the price is going (unknown: the flow over all moves). */
-  play(ticker: string, t: number, bid: number, ask: number, until: number, close: number, nextMid?: number): DepthEv[] {
+  play(ticker: string, t: number, bid: number, ask: number, until: number, close: number, nextMid?: number, recentVol?: number): DepthEv[] {
     const bB = Math.round(bid * PX), bA = Math.round(ask * PX);
     if (!(bB >= 1 && bA <= PX - 1 && bA > bB)) return [];
     const u = rng(hashStr(ticker) ^ Math.floor(t / 1000));
@@ -212,7 +212,13 @@ export class DepthSim {
     const byMove = mv && mv.segs >= MOVE_MIN_SEGS ? mv : undefined;
     // Each contract its own activity (Nov 4 twin: the same mean trade rate as the real books, ~650 a minute, but the real
     // contracts spread far wider, AUC 0.78 on trades a minute alone).
-    const actScale = Math.exp(ACTIVITY_SD * this.contractZ(ticker, 0x2545f491) - ACTIVITY_SD * ACTIVITY_SD / 2);
+    // With the history's own minute volume (the minute before `t`, so nothing ahead of time; Nov 5 twin: a depth model fitted
+    // on a Thursday traded 2.25x the real weekend's count), the contract's activity follows it, shrunk toward the cell's
+    // rate; without it, each contract its own random activity level.
+    const expVol = Math.max(0, cell.tradesPerMin?.mean ?? 0) * (cell.tradeSize?.mean ?? cell.tradeSize?.p50 ?? 0);
+    const actScale = recentVol !== undefined && expVol > 0
+      ? Math.min(8, Math.max(0.05, (recentVol + 0.2 * expVol) / (1.2 * expVol)))
+      : Math.exp(ACTIVITY_SD * this.contractZ(ticker, 0x2545f491) - ACTIVITY_SD * ACTIVITY_SD / 2);
     const tradeRate = actScale * (byMove ? Math.max(0, byMove.tradesPerSec) : Math.max(0, cell.tradesPerMin?.mean ?? 0) / 60);
     const yesShare = (byMove ? byMove.takerYesShare : undefined) ?? cell.takerYesShare ?? 0.5;
     const best = (side: Side) => { const m = b![side]; let top = side === 'bid' ? -Infinity : Infinity; for (const p of m.keys()) if (side === 'bid' ? p > top : p < top) top = p; return top; };

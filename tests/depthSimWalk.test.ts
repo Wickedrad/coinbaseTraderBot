@@ -55,3 +55,14 @@ test('sizes go back to the measured shape and the best price flickers at the mea
   // ~(300/60 - 0.9)/2 = 2 flickers a second over 15 s.
   assert.ok(sim.stats.flickers >= 15 && sim.stats.flickers <= 50, `flickers ${sim.stats.flickers}`);
 });
+
+test('the trade rate follows the history\'s minute volume before the quote (nothing ahead of time)', () => {
+  const busy: DepthModel = { ...model, shape: [{ ...model.shape[0], tradesPerMin: { n: 1, mean: 60, p10: 60, p50: 60, p90: 60 }, tradeSize: { n: 1, mean: 2, p10: 2, p50: 2, p90: 2 } }] };
+  const t = 1_000_000 * MIN;
+  const n = (vol?: number) => new DepthSim(busy).play('W', t, 0.5, 0.52, t + 5 * MIN, t + 30 * MIN, undefined, vol).filter((e) => e.k === 'trade').length;
+  // The cell expects 60 trades x 2 contracts = 120 contracts a minute.
+  const quiet = n(0), usual = n(120), hot = n(600);
+  assert.ok(quiet < usual / 3, `quiet ${quiet} vs usual ${usual}`);
+  assert.ok(hot > usual * 2.5, `hot ${hot} vs usual ${usual}`);
+  assert.ok(Math.abs(usual - 300) < 60, `usual ${usual} ~ 60 a minute for 5 minutes`);
+});

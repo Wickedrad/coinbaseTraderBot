@@ -202,6 +202,8 @@ export function quoteFiller(fill: QuoteFill): (e: Ev) => Ev | undefined {
 
 /** Every depth fill-in made in this process (their stats: what the simulator emitted). */
 export const depthSims: DepthSim[] = [];
+/** The depth fill-in's trade rate follows the history's minute volume (DEPTH_HIST_VOLUME=0: the fitted rate alone). */
+const HIST_VOLUME = process.env.DEPTH_HIST_VOLUME !== '0';
 
 /** A whole day through quoteFiller. */
 export function fillQuotes(events: Ev[], fill: QuoteFill, depth?: DepthModel): Ev[] {
@@ -231,7 +233,10 @@ export function streamFiller(fill: QuoteFill, depth?: DepthModel): { push: (e: E
   depthSims.push(sim);
   const close = new Map<string, number>();
   // The quote each contract's book is waiting to be played from, until its next quote is in.
-  const held = new Map<string, { e: Ev; close: number }>();
+  const held = new Map<string, { e: Ev; close: number; vol?: number }>();
+  // Each contract's last minute volume from the history (its aggregate trade at the minute's end) and when it came.
+  const lastVol = new Map<string, { t: number; n: number }>();
+  const volAt = (ticker: string, t: number): number | undefined => { const v = lastVol.get(ticker); return v === undefined ? (lastVol.size ? 0 : undefined) : t - v.t <= 61_000 ? v.n : 0; };
   // What is not written yet: the day's own records in their order, and the simulated ones in time order.
   let raw: Ev[] = [], simQ: Ev[] = [], ri = 0, si = 0, checked = -Infinity;
   const mid = (e: Ev) => (e.bids![0].price + e.asks![0].price) / 2;
@@ -239,7 +244,7 @@ export function streamFiller(fill: QuoteFill, depth?: DepthModel): { push: (e: E
     const h = held.get(ticker);
     if (!h) return;
     held.delete(ticker);
-    const played = sim.play(ticker, h.e.t, h.e.bids![0].price, h.e.asks![0].price, until, h.close, nextMid) as Ev[];
+    const played = sim.play(ticker, h.e.t, h.e.bids![0].price, h.e.asks![0].price, until, h.close, nextMid, h.vol) as Ev[];
     if (!played.length) { raw = [...raw.slice(ri), h.e].sort((a, b) => a.t - b.t); ri = 0; return; }
     simQ = [...simQ.slice(si), ...played].sort((a, b) => a.t - b.t); si = 0;
   };
@@ -270,7 +275,7 @@ export function streamFiller(fill: QuoteFill, depth?: DepthModel): { push: (e: E
         if (e.k === 'market' && e.ticker && e.closeTime) close.set(e.ticker, Number(e.closeTime));
         const c = e.ticker ? close.get(e.ticker) : undefined;
         if (c === undefined) raw.push(e);
-        else if (e.k === 'trade') { /* the simulated book trades instead */ }
+        else if (e.k === 'trade') { if (HIST_VOLUME && e.count) lastVol.set(e.ticker!, { t: e.t, n: Number(e.count) }); /* the simulated book trades instead */ }
         else if (e.k === 'result') {
           play(e.ticker!, Math.min(e.t, (held.get(e.ticker!)?.e.t ?? e.t) + ANCHOR_MS));
           sim.forget(e.ticker!); close.delete(e.ticker!);
@@ -282,7 +287,7 @@ export function streamFiller(fill: QuoteFill, depth?: DepthModel): { push: (e: E
           const h = held.get(e.ticker!);
           if (h) play(e.ticker!, Math.min(e.t, h.e.t + LOOKAHEAD_MS), mid(e));
           dropSim(e.ticker!, e.t);
-          held.set(e.ticker!, { e, close: c });
+          held.set(e.ticker!, { e, close: c, vol: HIST_VOLUME ? volAt(e.ticker!, e.t) : undefined });
         }
       }
       // Held quotes are all newer than this (they are played within a second of input time of turning LOOKAHEAD_MS old).
