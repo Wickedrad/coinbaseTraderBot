@@ -104,6 +104,20 @@ export interface TrialResult {
   ok: boolean; error?: string; ms: number;
   pnl: number; fees: number; contracts: number; fills: number; trades: number;
   byDay: Record<string, number>; tradesByDay: Record<string, number>; byHour: Record<string, number>;
+  /** Diagnostics: decisions evaluated, refills of a pool that ran dry, the exit curve's cross sales and dip buys. */
+  diag?: { entryEvaluations: number; refills: number; refillUsd: number; crossSales: number; dipBuys: number };
+  /** P&L and markets by market condition at entry (regimeKey). */
+  byRegime?: Record<string, { pnl: number; n: number }>;
+  /** P&L by coin and close hour ('BTC|2026-08-01T13'), for HO-1's RV terciles. */
+  byAssetHour?: Record<string, number>;
+}
+
+/** A market condition at entry: the contract's kind, the coin's 1-hour volatility band (bps, powers of 2), and whether
+ *  volatility was rising (15-minute over 1-hour realized volatility above 1) or calming. */
+export function regimeKey(t: { kind: string; state?: { rv1h: number | null; volRatio: number | null } }): string {
+  const rv = t.state?.rv1h, vr = t.state?.volRatio;
+  const band = rv && rv > 0 ? `vol${2 ** Math.round(Math.log2(rv * 1e4))}bp` : 'vol?';
+  return `${t.kind}|${band}|${vr == null ? '?' : vr > 1 ? 'rising' : 'calming'}`;
 }
 
 export const trialId = (env: Record<string, string>) => crypto.createHash('sha1').update(JSON.stringify(Object.entries(env).sort())).digest('hex').slice(0, 12);
@@ -158,7 +172,6 @@ async function tapeFor(dir: string, modelPath: string, tapeDir: string | undefin
 }
 
 /** One trial: the production backtester over every day in `dir`, as paper with these bot.env lines. */
-/** `refill`: refill the pool when it runs dry, as paper does (a comparison over months otherwise stops in week one). */
 export async function evalTrial(dir: string, modelPath: string, env: Record<string, string>, stage = 1, scope: Scope = 'sample', tapeDir?: string, extra: { refill?: boolean } = {}): Promise<TrialResult> {
   const t0 = Date.now();
   const base = { id: trialId(env), stage, scope, env, ms: 0, pnl: 0, fees: 0, contracts: 0, fills: 0, trades: 0, byDay: {}, tradesByDay: {}, byHour: {} };
@@ -189,19 +202,33 @@ export async function evalTrial(dir: string, modelPath: string, env: Record<stri
       exitPolicy: policy as never, sessionRisk: em.sessionRisk, huntSessionGuard: S.huntSessionGuard, huntTransitionBufferMin: S.huntTransitionBufferMin,
       sizingTiers: cfg.sizingTiers, paper: { orderFrac: S.paperOrderFrac, orderUsd: S.paperOrderUsd },
       optimalF: cfg.optimalF,
-      accuracyGate: S.accuracyGate, takeProfitBench: { enforce: S.takeProfitBench, rule }, tape, dailyGoalUsd: cfg.vault.dailyGoalUsd, sessionEdge: cfg.sessionEdge,
+      accuracyGate: S.accuracyGate, takeProfitBench: { enforce: S.takeProfitBench, rule }, takeProfitLevel: { pinned: S.takeProfitLevel, max: S.takeProfitLevelMax },
+      // The exit curve as the bot runs it (its cross and dip buy act only when their settings turn them on).
+      curveExit: { params: cfg.sinuousExit, rule: { ...cfg.probation, t: cfg.sinuousExit.benchT ?? cfg.probation.t, minTrades: cfg.sinuousExit.benchMinExits ?? cfg.probation.minTrades } }, tape, dailyGoalUsd: cfg.vault.dailyGoalUsd, sessionEdge: cfg.sessionEdge,
       volProfile: em.volProfile, applyVolSeasonality: Boolean(em.volProfile), volModel: em.volModel, fillModel: em.fillModel, calendar: em.calendar,
       taNet: true, trials: em.trials, marketContext: true, ...(seed ? { seedCandles: seed } : {}),
+      // Paper refills its pool when it can no longer trade; a comparison over months needs the same or it stops in week one.
       ...(extra.refill ? { refillUsd: cfg.paperBankrollUsd } : {}),
+      // Adversarial stress (research/benchedJobs.ts): orders reach the book this late, so the fills are the ones a slower bot gets.
+      // The placebo (research/benchedJobs.ts): the same bot deciding on a shifted tick, so the gap is path noise alone.
+      ...(env.RS_TICK_PHASE_MS ? { tickPhaseMs: Number(env.RS_TICK_PHASE_MS) } : {}),
+      ...(Number(env.RS_SKIP_MARKETS) > 0 ? { skipMarketShare: Number(env.RS_SKIP_MARKETS) } : {}),
+      ...(Number(env.RS_LATENCY_MS) > 0 ? { latency: { orderMs: Number(env.RS_LATENCY_MS), jitterMs: Number(env.RS_LATENCY_MS) / 2 } } : {}),
     });
     const byDay: Record<string, number> = {}, tradesByDay: Record<string, number> = {}, byHour: Record<string, number> = {};
+    const byRegime: Record<string, { pnl: number; n: number }> = {}, byAssetHour: Record<string, number> = {};
     for (const t of r.trades) {
+      const g = (byRegime[regimeKey(t)] ??= { pnl: 0, n: 0 }); g.pnl += t.pnl; g.n++;
       const iso = new Date(t.closeTs).toISOString();
       byDay[iso.slice(0, 10)] = (byDay[iso.slice(0, 10)] ?? 0) + t.pnl;
       tradesByDay[iso.slice(0, 10)] = (tradesByDay[iso.slice(0, 10)] ?? 0) + 1;
       byHour[iso.slice(0, 13)] = (byHour[iso.slice(0, 13)] ?? 0) + t.pnl;
+      // HO-1 (Nov 5): the coin and close hour of each trade, for the regime v1 RV terciles of the held-out score.
+      const coin = /^KX(BTC|ETH|SOL|XRP|DOGE)/.exec(t.ticker ?? '')?.[1] ?? 'other';
+      byAssetHour[`${coin}|${iso.slice(0, 13)}`] = (byAssetHour[`${coin}|${iso.slice(0, 13)}`] ?? 0) + t.pnl;
     }
-    return { ...base, ok: true, ms: Date.now() - t0, pnl: r.pnl, fees: r.fees, contracts: r.contracts, fills: r.fills, trades: r.trades.length, byDay, tradesByDay, byHour };
+    return { ...base, ok: true, ms: Date.now() - t0, pnl: r.pnl, fees: r.fees, contracts: r.contracts, fills: r.fills, trades: r.trades.length, byDay, tradesByDay, byHour,
+      diag: { entryEvaluations: r.entryEvaluations, refills: r.refills?.length ?? 0, refillUsd: (r.refills ?? []).reduce((a, x) => a + x.usd, 0), crossSales: r.exits.crossSales ?? 0, dipBuys: r.exits.dipBuys ?? 0 }, byRegime, byAssetHour };
   } catch (e) {
     return { ...base, ok: false, error: String((e as Error).message ?? e).slice(0, 300), ms: Date.now() - t0 };
   }

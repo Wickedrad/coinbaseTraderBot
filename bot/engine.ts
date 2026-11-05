@@ -31,7 +31,7 @@ import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
-import { decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
+import { applyFvGate, decide, loserNoEntry, trainingCount, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
@@ -41,7 +41,7 @@ import type { TakeProfitBench } from './strategy/takeProfitBench';
 import { CadenceGate, inEntryWindow, type CadenceReason } from './strategy/cadence';
 import { kalshiMaintenance, sessionEdge, sessionState, type SessionState } from './model/sessions';
 import type { EquityGuard } from './risk/equityGuard';
-import type { ModelHealth } from './model/modelHealth';
+import { calmIn, modelSkillWeight, type ModelHealth } from './model/modelHealth';
 import type { AccuracyGate } from './strategy/accuracyGate';
 import type { Tca } from './tca/tca';
 import type { MacroEvent } from './model/featureEngine';
@@ -57,7 +57,7 @@ import { huntBlockedBySession, mergeSessionRisk, sessionRiskFor, type SessionRis
 import { playbook } from './strategy/playbook';
 import { compensator } from './strategy/compensator';
 import { macro } from './macro/macroService';
-import { gatePasses, probation } from './risk/probation';
+import { gatePasses, probation, probationGpCalmBand, probationGpMult, probationLevel } from './risk/probation';
 import { DEFAULT_STREAK, StreakScaler } from './risk/streakScaler';
 import { applyTakeGate } from './model/takeModel';
 import { applyTaVeto } from './model/taVeto';
@@ -865,9 +865,9 @@ export class Engine {
 
   private readonly trainTs: number[] = [];
   private readonly trainTicker = new Map<string, number>();
-  /** Paper training-trade budget: PAPER_TRAINING_TRADES_PER_HOUR, spread evenly (no bursts), one per contract. */
+  /** Training-trade budget: TRAINING_TRADES_PER_HOUR, spread evenly (no bursts), one per contract. */
   private trainBudget(now: number, ticker: string): boolean {
-    const perHour = this.d.cfg.strategy.paperTrainTrades;
+    const perHour = this.d.cfg.strategy.trainTrades;
     if (!(perHour > 0) || this.trainTicker.has(ticker)) return false;
     while (this.trainTs.length && this.trainTs[0] < now - 3_600_000) this.trainTs.shift();
     const last = this.trainTs[this.trainTs.length - 1] ?? 0;
@@ -2124,7 +2124,12 @@ export class Engine {
     const gpRead = S0.gp ? activeGpSignals()?.read(m.asset, (a) => md.features.candles.get(a)?.bars['1h']) : undefined;
     // On probation (VALIDATION_GATES=monitor) an unvalidated formula speaks too, live included.
     const gpSpeaks = gpRead && (gpRead.validated || (gpRead.speaks && !liveMode) || gatePasses('kalshi', false)) ? gpRead : undefined;
-    const signals = orientedSignals(features, taView, liveMode, rbRead, gpSpeaks);
+    // An unvalidated formula's vote is halved at each level of the Kalshi book's probation (graded, never benched, Oct 31).
+    // Inside PROBATION_GP_CALM_RV's calming band (the asset's last reading, before this tick's) it votes in full (Nov 3).
+    const gpBand = probationGpCalmBand();
+    const gpFull = gpBand ? calmIn(this.marketState.reading(m.asset, now), gpBand) : false;
+    const gpVote = gpSpeaks && !gpSpeaks.validated && !gpFull && probationLevel('kalshi') > 0 ? { ...gpSpeaks, exposure: gpSpeaks.exposure * probationGpMult('kalshi') } : gpSpeaks;
+    const signals = orientedSignals(features, taView, liveMode, rbRead, gpVote);
     const taDir = taNetDirection(taView, liveMode);
     const rsiTrade = [shortContract ? features.ta_rsi_15m : features.ta_rsi_1h, features.rsi_14_1m].find((x) => x !== undefined && Number.isFinite(x));
     const alt = altcoinRiskOn(m.asset, features.usdtd_ret_15m_z, rsiTrade, S0);
@@ -2218,7 +2223,7 @@ export class Engine {
     // budget sizes the backtester's orders (bot/sizing/orderBudget.ts).
     const budget = orderBudget({ bankroll, orderFrac: tier.orderFrac, sizeMult, riskScale: kellyScale, fCapUsd, paperOrderUsd: fixedUsd, bandUsd: band, maxContractsPerOrder: R.maxContractsPerOrder, bandSizeMult: cfg.strategy.bandSizeMult, bandSizeMax: cfg.strategy.bandSizeMax });
     const view: MarketView = {
-      ticker: m.ticker, pYes, bestBid: bid, bestAsk: ask, position: st.position, bankroll,
+      ticker: m.ticker, pYes, pFair: fv.pYes, bestBid: bid, bestAsk: ask, position: st.position, bankroll,
       maxOrderRiskUsd: budget.maxOrderRiskUsd, maxContracts: budget.maxContracts, minSidePrice: R.minSidePrice,
       ...(budget.fixedOrderUsd ? { fixedOrderUsd: budget.fixedOrderUsd } : {}),
       ...(budget.band ? { orderBandUsd: budget.band } : {}),
@@ -2233,8 +2238,10 @@ export class Engine {
       entryFeePerContract: openEntryFee(pos),
       profitPeakSidePrice: this.profitPeaks.update(m.ticker, st.position, st.position > 0 ? bid.price : st.position < 0 ? Math.round((1 - ask.price) * 1e4) / 1e4 : undefined),
       ...(this.d.takeProfitBench?.benched ? { takeProfitBenched: this.d.takeProfitBench.benched } : {}),
+      ...(this.d.takeProfitBench ? { takeProfitLevel: this.d.takeProfitBench.level } : {}),
+      ...(() => { const w = this.d.modelHealth?.skillWeight(cfg.strategy.modelSkill, { rv1h: mState?.rv1h ?? null, volRatio: mState?.volRatio ?? null, pMarket }) ?? modelSkillWeight({ pWorse: null }, cfg.strategy.modelSkill, { rv1h: mState?.rv1h ?? null, volRatio: mState?.volRatio ?? null, pMarket }); return w < 1 ? { modelSkillWeight: w } : {}; })(),
       entryWindowOpen, exitWindowOpen: tauSec > S.noExitBeforeCloseSec,
-      settleShare: ((w) => w !== undefined && tauSec <= S.noExitBeforeCloseFrac * w)(shareWindowSec(m.openTime, m.closeTime, S.shareWindowMaxSec)),
+      ...((w) => ({ settleShare: w !== undefined && tauSec <= S.noExitBeforeCloseFrac * w, ...(w !== undefined ? { windowSec: w } : {}) }))(shareWindowSec(m.openTime, m.closeTime, S.shareWindowMaxSec)),
     };
     // Exit policy. confluence_ratchet: fair-value exit normally; "hunt" mode (liquidity ratchet
     // manages the exit, nothing else may reduce the position) only while the contract has beaten
@@ -2318,6 +2325,9 @@ export class Engine {
     // A quota snipe liquidates the position: the hunt's stop order would only double it. The decision is audited with the clock.
     const snipe = plan.place.find((p) => p.purpose === 'exit' && p.why.startsWith('quota snipe'));
     if (snipe) { huntPlan = undefined; this.d.audit.write('pacer', { event: 'snipe', ticker: m.ticker, why: snipe.why, count: snipe.count, price: snipe.price, ...this.pacer.status(now) }); }
+    // A loser exit (LOSER_CUT / LOSER_WINDOW_CUT) sells the position at the bid in place of the hunt's own sale.
+    const loserSale = plan.place.find((p) => p.purpose === 'exit' && p.why.startsWith('loser'));
+    if (loserSale) { huntPlan = undefined; this.d.audit.write('loser_exit', { ticker: m.ticker, why: loserSale.why, count: loserSale.count, price: loserSale.price }); }
     // The MLP decides whether each entry is worth taking (take/skip head, once validated).
     if (S.takeGate === 'validated') applyTakeGate(plan, model.params.take, { pYes, features, tauSec, bid: bid.price, ask: ask.price, pStd: pred.std, margin: S.takeMargin, fees: md.feesFor(m.ticker) });
     // The TA rework's contrarian veto (job 6): skip entries the order flow, confluence or a busy tape already chased.
@@ -2388,12 +2398,12 @@ export class Engine {
         plan.notes.push(`exploration entry (paper, p=${S.exploreRate})`);
       }
     }
-    // Paper training trades: when still nothing is entered, take 1 contract on the side the model favours
-    // (taker, at the touch) a few times an hour, spread over time and one per contract. These guarantee a
-    // steady stream of (simulated) trades to watch and learn from; tagged 'train' so their results can be
-    // separated from edge-qualified entries. Live mode never does this.
+    // Training trades (TRAINING_TRADES_PER_HOUR; paper and live alike since Steven's pick on Oct 31): when still nothing
+    // is entered, buy the side the model favours (taker, at the touch) a few times an hour, spread over time and one per
+    // contract, sized at the order band's minimum. They keep a steady stream of trades to learn from; tagged 'train:' so
+    // their results can be separated from edge-qualified entries, and screened by the fair value gate below like any entry.
     // A resting maker quote does not count as entering: quotes far from the touch rarely fill.
-    if (cfg.mode === 'paper' && reason && entryWindowOpen && st.position === 0 && !plan.place.some((p) => p.purpose === 'entry') && this.trainBudget(now, m.ticker)) {
+    if (reason && entryWindowOpen && st.position === 0 && !plan.place.some((p) => p.purpose === 'entry') && this.trainBudget(now, m.ticker)) {
       const q = st.q ?? pYes;
       const buyYes = q >= mid;
       const cost = buyYes ? ask.price : Math.round((1 - bid.price) * 10000) / 10000;
@@ -2401,11 +2411,14 @@ export class Engine {
         this.trainTs.push(now);
         this.trainTicker.set(m.ticker, m.closeTime);
         const edge = buyYes ? q - ask.price : (1 - q) - cost;
-        plan.place.push({ side: buyYes ? 'bid' : 'ask', price: buyYes ? ask.price : bid.price, count: 1, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge,
-          why: `train (paper): ${buyYes ? 'YES' : 'NO'} at ${cost.toFixed(2)}, model q ${q.toFixed(3)} vs mid ${mid.toFixed(3)}` });
-        plan.notes.push('training trade (paper, 1 contract)');
+        const count = trainingCount(cost, view);
+        plan.place.push({ side: buyYes ? 'bid' : 'ask', price: buyYes ? ask.price : bid.price, count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge,
+          why: `train: ${buyYes ? 'YES' : 'NO'} at ${cost.toFixed(2)}, model q ${q.toFixed(3)} vs mid ${mid.toFixed(3)}` });
+        plan.notes.push(`training trade (${count} contract${count === 1 ? '' : 's'})`);
       }
     }
+    // FV_ENTRY_GATE on the finished plan: the fill model's crosses and paper's training trades open positions too.
+    applyFvGate(plan, fv.pYes, view.position, view.fees, S, loserNoEntry(view, S));
     if (this.fillLog) for (const p of plan.place) if (isMakerEntry(p)) this.fillX.set(p, fillInputs(p, fillCtx));
     if (fixedUsd > 0) plan.notes.push(`paper size: ${this.paperSizing()}; the tier, break-even scale and optimal f size live`);
     else if (band) plan.notes.push(`order band: $${band.min}-$${band.max} an order (ORDER_USD_MIN/MAX), the sized stake clamped into it; the tier, loss scale and optimal f do not size it`);
@@ -2487,7 +2500,7 @@ export class Engine {
           const turn = ret === undefined || direction === 0 || Math.abs(ret) < 0.25 * vol.sigmaPerSqrtSec * Math.sqrt(win) ? 'flat' : Math.sign(ret) * direction * sign < 0 ? 'against' : 'with';
           const exitFeePer = orderFee(n, sideBid, true, fees) / n;
           const floor = Math.max(S.profitTarget ?? 0, (S.profitTargetPct ?? 0) * (entrySide + entryFeePer));
-          const c = curve.cross(m.ticker, { sidePrice: sideBid, count: n, exitFeePer, entrySidePrice: entrySide, entryFeePer, floor, tauSec, spot: turn, line: st.line }, now);
+          const c = curve.cross(m.ticker, { sidePrice: sideBid, count: n, exitFeePer, entrySidePrice: entrySide, entryFeePer, floor, tauSec, spot: turn, line: st.line, fvSide: sign > 0 ? fv.pYes : 1 - fv.pYes }, now);
           if (c.note) plan.notes.push(c.note);
           if (c.sell) {
             const q = st.q ?? pYes;
@@ -2496,6 +2509,16 @@ export class Engine {
               edge: sign > 0 ? top.price - q - exitFeePer : q - top.price - exitFeePer, why: c.why! });
           }
         }
+      }
+      // The dip buy (SINUOUS_DIP_BUY; Nov 1): the book rolled over while the coin's fair value of the side stays above the ask
+      // plus the fee and the margin: add to the position at the ask (the same rule in the replay, research/backtest.ts).
+      if (curve.p.dipBuy && (!curve.p.dipCalmRvBp || calmIn(mState, curve.p.dipCalmRvBp)) && entryWindowOpen && !huntMode && view.exitWindowOpen !== false && !ridesToSettlement(view) && !plan.place.some((p) => p.purpose === 'exit' || p.purpose === 'entry')) {
+        const top = sign > 0 ? ask : bid;
+        const sideAsk = sign > 0 ? top.price : Math.round((1 - top.price) * 1e4) / 1e4;
+        const d = curve.dip(m.ticker, { sideAsk, takerFeePer: orderFee(1, sideAsk, true, fees), fvSide: sign > 0 ? fv.pYes : 1 - fv.pYes, tauSec, position: st.position, exitFeePer: orderFee(held, sideBid, true, fees) / held }, now);
+        const n = Math.min(d.buy, floorCount(top.size), view.maxContracts);
+        if (n >= 1) plan.place.push({ side: sign > 0 ? 'bid' : 'ask', price: top.price, count: n, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry',
+          edge: (sign > 0 ? fv.pYes : 1 - fv.pYes) - sideAsk - orderFee(1, sideAsk, true, fees), why: d.why! });
       }
     } else curve?.flat(m.ticker, now);
     if (huntMode) plan.notes.push(huntHeld ?? `hunting: stop ${st.huntStop ?? 'forming'}`);
@@ -2589,8 +2612,8 @@ export class Engine {
     if (snapped === undefined || !(snapped > 0 && snapped < 1)) return;
     if (snapped !== p.price) p = { ...p, price: snapped };
     // Tennis orders are rules-based (no model probability to size an edge from): budgeted separately.
-    // Paper training trades are 1 contract with no edge requirement (they exist to produce trades).
-    const training = cfg.mode === 'paper' && p.why.startsWith('train (paper)');
+    // Training trades have no edge requirement (they exist to produce trades); the order band sizes them.
+    const training = p.why.startsWith('train:');
     const pk = tennis || training || this.paperOrderUsd() > 0 || this.orderBandUsd() ? undefined : this.portfolioCap(m, p, pYes, now);
     if (pk && pk.contracts < p.count) {
       this.d.audit.write('decision', { decisionId, ticker: m.ticker, event: 'portfolio_kelly_cap', from: p.count, to: pk.contracts, fStar: +pk.fStar.toFixed(4), edgePerDay: +pk.edgePerDay.toFixed(4) });
@@ -2686,8 +2709,8 @@ export class Engine {
   }
 
   /** Paper: why live would not have sent this order under its own rules: an entry while the model has not passed
-   *  validation and the Kalshi probation is benched (live's risk gateway rejects it), a paper training or exploration
-   *  trade (live never makes them), or a ratchet stop live would not run (hunt mode not validated, probation benched).
+   *  validation and the Kalshi probation is benched (live's risk gateway rejects it), a paper exploration trade (live
+   *  never makes them; training trades run in both since Oct 31), or a ratchet stop live would not run (hunt mode not validated, probation benched).
    *  The owner's choice on Oct 23: paper keeps trading, and the P&L report shows a live-equivalent P&L without these. */
   private liveWouldBlock(p: OrderPlan): string[] {
     const { cfg, model } = this.d;
@@ -2696,7 +2719,6 @@ export class Engine {
     }
     const out: string[] = [];
     if (!cfg.liveAllowUnvalidated && !gatePasses('kalshi', false) && model.liveBlockers().length) out.push('model not validated, probation benched');
-    if (p.why.startsWith('train (paper)')) out.push('paper training trade');
     if (p.why.startsWith('explore (')) out.push('paper exploration');
     return out;
   }

@@ -402,6 +402,9 @@ export interface TennisProfitRules {
   /** PACER_FLOOR (bot/risk/quotaPacer.ts): which legs count as aiming higher than the quota (off when unset), and the floors. */
   floorMode?: PacerFloorMode;
   floors?: QuotaFloors;
+  /** LOSER_WINDOW_CUT (Steven, Oct 31: nothing rides to settlement unless it is in the last share and in profit): inside the
+   *  match's last share a position not in profit after fees is sold at the bid. */
+  loserWindow?: boolean;
   /** PACER_FLOOR_TICKS: the floor's cushion, price ticks a contract. */
   floorTicks?: number;
 }
@@ -459,7 +462,7 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
       const bid = m.quote.bid;
       const selling = out.plans.some((p) => p.ticker === m.ticker && p.side === 'ask' && p.timeInForce === 'immediate_or_cancel');
       const higher = mode === 'off' || selling ? undefined : tennisHigher(t, m, out.plans, bid, mode, tick);
-      const call = quotaCall(net, r.pacerUsd, floor, higher, (r.floorTicks ?? 0) * tick * m.position);
+      const call = quotaCall(net, r.pacerUsd, floor, higher, undefined, (r.floorTicks ?? 0) * tick * m.position);
       if (call.arm !== undefined) {
         r.floors?.arm(m.ticker, m.position, call.arm);
         out.notes.push(`${m.ticker}: quota floor: +$${net.toFixed(2)} net covers the $${call.arm.toFixed(2)} the hour needs; held for ${higher}, sold if the profit falls below its floor`);

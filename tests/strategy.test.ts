@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig, type StrategyConfig } from '../bot/config';
-import { DEFAULT_FEES } from '../bot/fees';
-import { decide, MarketView, shareWindowSec, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
+import { DEFAULT_FEES, orderFee } from '../bot/fees';
+import { decide, MarketView, shareWindowSec, trainingCount, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
 import { ProfitPeaks } from '../bot/strategy/profitPeaks';
 
 // Continuous cadence + Kelly sizing (the pre-relaxed behaviour these tests pin down).
@@ -110,6 +110,27 @@ test('take-profit on a NO position (PROFIT_GIVE_BACK=0): bought back at the ask,
   const exit = decide(short(0.56), pt).place.find((p) => p.purpose === 'exit')!;
   assert.deepEqual([exit.side, exit.price, exit.count, exit.reduceOnly], ['bid', 0.56, 10, true]);
   assert.match(exit.why, /^take-profit NO: \+0\.02/);
+});
+
+test('take-profit ladder (Oct 31, never bench): from level 1 it sells only while the coin\'s fair value of the side is at most the net bid plus the level\'s margin', () => {
+  const pt = { ...cfg, profitTarget: 0.02, profitTargetPct: 0, profitGiveBack: 0, takeProfitFvMargins: [0.06, 0.03, 0.01, 0] };
+  const long = (o: Partial<MarketView>) => view({ position: 10, pYes: 0.7, entrySidePrice: 0.4, entryFeePerContract: 0, bestBid: { price: 0.44, size: 50 }, bestAsk: { price: 0.46, size: 50 }, ...o });
+  const tp = (v: MarketView) => decide(v, pt).place.find((p) => p.purpose === 'exit' && p.why.startsWith('take-profit'));
+  // Level 0: sells at +2.2c whatever the coin says.
+  assert.ok(tp(long({ pFair: 0.9, takeProfitLevel: 0 })));
+  // Level 1: the coin says 0.90 against a 0.422 net bid: held (riding), with a note.
+  const held = decide(long({ pFair: 0.9, takeProfitLevel: 1 }), pt);
+  assert.equal(held.place.filter((p) => p.why.startsWith('take-profit')).length, 0);
+  assert.ok(held.notes.some((n) => /^take-profit held by fair value \(level 1\): \+0\.022 now, the coin's value 0\.900 > net bid 0\.422 \+ 0\.06$/.test(n)), held.notes.join(' | '));
+  // Level 1, the coin at 0.47 (within 6c of the net bid): sells. Level 3 (1c margin): held.
+  assert.ok(tp(long({ pFair: 0.47, takeProfitLevel: 1 })));
+  assert.equal(tp(long({ pFair: 0.47, takeProfitLevel: 3 })), undefined);
+  // NO side: the coin's value of NO is 1 - pFair.
+  const short = (pFair: number) => view({ position: -10, pYes: 0.3, entrySidePrice: 0.4, entryFeePerContract: 0, bestBid: { price: 0.54, size: 50 }, bestAsk: { price: 0.56, size: 50 }, pFair, takeProfitLevel: 2 });
+  assert.equal(decide(short(0.2), pt).place.filter((p) => p.why.startsWith('take-profit')).length, 0, 'NO worth 0.80 to the coin');
+  assert.equal(decide(short(0.55), pt).place.filter((p) => p.why.startsWith('take-profit')).length, 1, 'NO worth 0.45 to the coin');
+  // No fair value in the view: no confirm.
+  assert.ok(tp(long({ takeProfitLevel: 4 })));
 });
 
 test('take-profit: no exits in the final minute or while hunting (the hunt\'s trailing stop has it)', () => {
@@ -436,6 +457,50 @@ test('exit curve rest mode: a NO position rests a YES bid at 1 - target, and the
   const out = decide(short({ position: -6, curveRestSidePrice: 0.401, restingBid: { clientOrderId: 'b', price: 0.59, remaining: 10 } }), cfg);
   assert.ok(out.cancel.some((c) => c.clientOrderId === 'b'));
   assert.equal(out.place.find((p) => p.side === 'bid' && p.purpose === 'exit')!.count, 6);
+});
+
+test('quota trail (PACER_FLOOR=trail, lab): a winner no other rule holds rides on the quota, its floor keeping a share of the gain', () => {
+  // Long 10 YES at 0.40 plus the fee, about +0.85 net at the 0.52 bid; the model's exits are off, so nothing else aims higher.
+  const long = view({ position: 10, pYes: 0.5, entrySidePrice: 0.4, entryFeePerContract: 0.0175, bestBid: { price: 0.52, size: 50 }, bestAsk: { price: 0.6, size: 50 } });
+  const sale = (out: StrategyOutput) => out.place.find((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
+  const riding = decide(long, { ...cfg, pacer: { ...cfg.pacer, floorTicks: 0, floor: 'riding' } }, { exits: false, pacerUsd: 0.75 });
+  assert.match(sale(riding)!.why, /^quota snipe: /, 'riding: nothing aims higher, sold at the quota');
+  const trail = decide(long, { ...cfg, pacer: { ...cfg.pacer, floorTicks: 0, floor: 'trail', trailKeep: 0.5 } }, { exits: false, pacerUsd: 0.75 });
+  assert.equal(sale(trail), undefined, 'trail: held');
+  assert.equal(trail.pacerArm?.why, 'the quota trailing its best');
+  assert.ok(trail.pacerArm!.usd > 0.75 + 1e-9 && trail.pacerArm!.usd < 0.86, `trail: the floor keeps half the gain above the need (${trail.pacerArm!.usd})`);
+  // Below the armed floor it is sold at the bid.
+  assert.match(sale(decide(long, { ...cfg, pacer: { ...cfg.pacer, floorTicks: 0, floor: 'trail', trailKeep: 0.5 } }, { exits: false, pacerUsd: 0.75, pacerFloor: 0.95 }))!.why, /^quota snipe \(floor\): /);
+});
+
+test('quota floor confirmed by the model (PACER_FLOOR_CONFIRM=model, lab): a breached floor sells only when the model values the position below it too', () => {
+  // About +0.85 net at the 0.52 bid (10 at 0.40 plus the fee) under a $0.95 floor: breached.
+  const sale = (out: StrategyOutput) => out.place.find((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
+  const conf = { ...cfg, pacer: { ...cfg.pacer, floorTicks: 0, floor: 'riding' as const, floorConfirm: 'model' as const } };
+  const long = (pYes: number) => view({ position: 10, pYes, entrySidePrice: 0.4, entryFeePerContract: 0.0175, bestBid: { price: 0.52, size: 50 }, bestAsk: { price: 0.6, size: 50 } });
+  const opts = { exits: false, pacerUsd: 0.75, pacerFloor: 0.95 };
+  assert.match(sale(decide(long(0.75), { ...cfg, pacer: { ...cfg.pacer, floorTicks: 0, floor: 'riding' } }, opts))!.why, /^quota snipe \(floor\): /, 'unconfirmed: sold on the breach');
+  const held = decide(long(0.75), conf, opts);
+  assert.equal(sale(held), undefined, 'the model values it at about +3.2: held');
+  assert.ok(held.notes.some((n) => n.startsWith('quota floor held: ')));
+  assert.match(sale(decide(long(0.45), conf, opts))!.why, /^quota snipe \(floor\): /, 'the model values it at about +0.15: sold');
+  // The NO side: 10 NO at 0.40 plus the fee, NO bid 0.52 (YES ask 0.48).
+  const short = (pYes: number) => view({ position: -10, pYes, entrySidePrice: 0.4, entryFeePerContract: 0.0175, bestBid: { price: 0.4, size: 50 }, bestAsk: { price: 0.48, size: 50 } });
+  assert.equal(sale(decide(short(0.25), conf, opts)), undefined, 'NO worth 0.75 to the model: held');
+  assert.match(sale(decide(short(0.55), conf, opts))!.why, /^quota snipe \(floor\): /, 'NO worth 0.45 to the model: sold');
+});
+
+test('trainingCount: a training trade buys the order band\'s minimum with fees, within the band and the contract cap', () => {
+  const band = { min: 10, max: 20 };
+  // 60c plus the 1.68c taker fee a contract: 16.21 contracts reach $10 (contracts in 0.01 steps, as the strategy sizes).
+  assert.equal(trainingCount(0.6, { orderBandUsd: band, maxContracts: 1000, fees: DEFAULT_FEES }), 16.21);
+  // Cheap sides take many contracts, never past the contract cap.
+  assert.equal(trainingCount(0.05, { orderBandUsd: band, maxContracts: 100, fees: DEFAULT_FEES }), 100);
+  // A fixed order size wins over the band and is a cap: $20 at 60c with the fee rounded up on the whole order stays <= $20.
+  const n = trainingCount(0.6, { fixedOrderUsd: 20, orderBandUsd: band, maxContracts: 1000, fees: DEFAULT_FEES });
+  assert.ok(n > 32 && n * 0.6 + orderFee(n, 0.6, true) <= 20 + 1e-9, `${n}`);
+  // No size at all keeps the old single contract.
+  assert.equal(trainingCount(0.5, { maxContracts: 1000, fees: DEFAULT_FEES }), 1);
 });
 
 test('share window: the last share of the window is measured on at most the last hour, not on the whole listing', () => {

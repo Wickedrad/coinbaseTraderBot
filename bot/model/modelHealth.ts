@@ -73,4 +73,46 @@ export class ModelHealth {
   }
 
   forget(ticker: string): void { this.snaps.delete(ticker); }
+
+  /** The model's skill weight (modelSkillWeight) from the current status. */
+  skillWeight(p: SkillParams, st?: SkillState | null): number { return modelSkillWeight(this.status(), p, st); }
+}
+
+// Skill weight (Steven, Oct 31: "Anything benched needs to be reworked ... rather than bench them"). In place of halting new
+// risk when the model loses to the calibrated market (MODEL_HEALTH_HALT), the decision price leans toward the market as far as
+// the evidence says the model is worse: q = market + w (model - market) (bot/strategy/fairValueStrategy.ts decisionProbability).
+// w = 1 while the evidence does not lean worse (pWorse >= 0.5, or under 10 windows); it falls linearly toward MODEL_SKILL_MIN
+// as pWorse falls to 0 (at the old halt's p = 0.05: about 0.33 with the 0.25 floor); a drift alarm (the model recently worse
+// than its own record) halves it. Never 0: the model keeps a say, and keeps being scored. MODEL_SKILL_W pins it (the lab).
+// Calm-market cap (Steven, Nov 1-2: a setting that wins only in some conditions gets the condition built in). On 189 days
+// (Apr 15 - Oct 31) a 0.75 weight won in calming markets (15-min vol below the hour's) and lost in rising ones, so
+// MODEL_SKILL_W_CALM caps the weight only while the asset's volatility is calming, optionally only inside an hourly-vol band
+// (MODEL_SKILL_W_CALM_RV, basis points per minute, "lo,hi"). Rising or unknown volatility keeps the measured weight.
+// Tails cap (Nov 5, "what are we getting wrong"): paper's Oct 28 - Nov 3 markets lost most where the bot bought the side
+// the market prices under 30c against a favourite (15-min NO under 30c: 324 markets, -$211, 26% won). MODEL_SKILL_W_TAILS
+// caps the weight while the market's probability is outside [MODEL_SKILL_TAIL, 1 - MODEL_SKILL_TAIL], whatever the state.
+export interface SkillParams { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number]; tails?: number; tail?: number; tailsRising?: boolean }
+export interface SkillState { rv1h: number | null; volRatio: number | null; pMarket?: number | null }
+export function modelSkillWeight(h: { pWorse: number | null; drift?: { alarm: boolean } }, p: SkillParams, st?: SkillState | null): number {
+  if (p.pinned !== undefined && p.pinned >= 0) return Math.min(1, p.pinned);
+  let w = 1;
+  if (p.on) {
+    w = h.pWorse === null || h.pWorse >= 0.5 ? 1 : p.min + (1 - p.min) * (h.pWorse / 0.5);
+    if (h.drift?.alarm) w *= 0.5;
+    w = Math.max(p.min, Math.min(1, w));
+  }
+  if (p.calm !== undefined && p.calm >= 0 && calmIn(st, p.calmRvBp)) w = Math.min(w, p.calm);
+  // MODEL_SKILL_W_TAILS_RISING (Nov 5, the sterile sweep: the cap helped only while volatility rose): tails AND rising.
+  if (p.tails !== undefined && p.tails >= 0 && inTails(st?.pMarket, p.tail ?? 0.3) && (!p.tailsRising || (st?.volRatio != null && st.volRatio > 1))) w = Math.min(w, p.tails);
+  return w;
+}
+/** True when the market's probability `pm` is outside [tail, 1 - tail]. */
+export function inTails(pm: number | null | undefined, tail: number): boolean { return pm != null && Number.isFinite(pm) && (pm < tail || pm > 1 - tail); }
+/** True while `st` is a calming market (15-min vol below the hour's) inside the optional hourly-vol band (bp). */
+export function calmIn(st: SkillState | null | undefined, band?: [number, number]): boolean {
+  if (!st || st.volRatio == null || !(st.volRatio < 1)) return false;
+  if (!band) return true;
+  if (st.rv1h == null || !(st.rv1h > 0)) return false;
+  const bp = st.rv1h * 1e4;
+  return bp >= band[0] && bp <= band[1];
 }
