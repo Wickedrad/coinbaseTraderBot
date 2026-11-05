@@ -1,0 +1,40 @@
+name: Regime v1 TS match
+
+# Lab only (not for merge): checks bot/model/regimeV1.ts against the regime.py v1 fixture on Drive and posts the
+# summary as a commit comment (aggregates only; this repository is public).
+on:
+  push:
+    branches: ['claude/regime-v1-match']
+
+permissions:
+  contents: write
+
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Get the fixture and Binance 1m closes
+        run: |
+          R=gdrive:kalshi-bot-archive
+          rclone copy "$R/registry/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/fixture-2026-10-28.csv" data/regime/
+          rclone lsf "$R/raw/history/binance-1m" --max-depth 2 | head -20
+          for a in BTC ETH SOL XRP; do rclone copy "$R/raw/history/binance-1m/$a" "data/binance-1m/$a" --include '1m.csv*'; done
+          for f in data/binance-1m/*/1m.csv.gz; do [ -f "$f" ] && gunzip -f "$f"; done
+          ls -la data/binance-1m/* data/regime | head -20
+      - name: Match
+        run: |
+          node --import tsx research/regimeMatch.ts data/binance-1m data/regime/fixture-2026-10-28.csv | tee "$RUNNER_TEMP/out.txt" | tail -20
+          { echo '**Regime v1 TS match** run [${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})'; echo; echo '```'; tail -20 "$RUNNER_TEMP/out.txt"; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent
+        env:
+          GH_TOKEN: ${{ github.token }}
