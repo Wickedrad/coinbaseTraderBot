@@ -101,7 +101,7 @@ jobs:
                 rclone copy "$REG/shards" allshards --include '*.jsonl' --include '*.jsonl.gz' --transfers 8 || true
                 python3 -I research/registry.py merge allshards out/merged || { rc=1; continue; }
                 rclone copy out/merged "$REG/merged"
-                { echo "**Trial registry merge** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · REPLAY_NOTE=registry"; echo; head -c 60000 out/merged/report.md; } > comment.md
+                { echo "**Trial registry merge** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · REPLAY_NOTE=registry"; echo; head -c 30000 out/merged/contract-ledger.md; echo; head -c 30000 out/merged/report.md; } > comment.md
                 jq -n --rawfile body comment.md '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url' || true;;
               *) echo "::warning::unknown line: $cmd";;
             esac

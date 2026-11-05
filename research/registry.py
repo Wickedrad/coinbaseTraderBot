@@ -42,6 +42,12 @@ from collections import defaultdict
 from statistics import NormalDist
 
 N01 = NormalDist()
+CONTRACT_TYPES = ('price_prediction', 'perpetual', 'tennis')
+# Steven 21:59 UTC Nov 5: track $/h per contract type, adding up the best validated module results that combine.
+MODULE_OF = [(r'^(MARKET_ANCHOR|NO_LONGSHOT)', 'anchor'), (r'^TA_VETO', 'ta-veto'), (r'^FV_ENTRY_GATE|^ENTRY_WINDOW', 'entry-gate'),
+             (r'^GATED_STAKE', 'sizing'), (r'^DYN_EDGE', 'scaling'), (r'^ACCURACY_GATE', 'accuracy-gate'),
+             (r'^MODEL_SKILL', 'model-skill'), (r'^TENNIS_', 'tennis-ta'), (r'^PERP_', 'perp'), (r'^PACER', 'pacer'),
+             (r'^(LOSER|TP_|TAKE_PROFIT|EXIT)', 'exits'), (r'^STRATEGY_EXCLUDE', 'series-filter'), (r'^TRAINING', 'training')]
 ROLES = ('control', 'candidate', 'placebo', 'loo', 'neighbour')
 SOURCES = ('recorded', 'history', 'paper', 'live')
 DOGE = re.compile(r'^KXDOGE', re.I)
@@ -91,6 +97,9 @@ SCHEMA = {
         'verdict': {'type': 'string'},
         'ref': {'type': 'string', 'description': 'run URL, comment or Drive path behind the row'},
         'raw': {'type': 'object', 'description': 'foreign ledger row kept verbatim'},
+        'contract_type': {'enum': list(CONTRACT_TYPES), 'description': 'inferred from thread/env when absent (contract_type_of)'},
+        'modules': {'type': 'array', 'items': {'type': 'string'}, 'description': 'bot modules the arm changes; inferred from env when absent'},
+        'held_out': {'type': 'boolean', 'description': 'true when by_day is out of sample for the choice of this arm (walk-forward, sealed days)'},
     },
 }
 
@@ -359,7 +368,8 @@ def merge(shard_dir, out_dir, S=6):
             cands.append({'trial_id': r['trial_id'], 'arm': r['arm'], 'role': r['role'], 'days': len(cd),
                           'gain': sum(g), 'gain_per_day': _mean(g), 'p': paired_p(g), 'sr': sr, 'sr0': sr0, 'dsr': prob,
                           'above_2noise': (None if noise is None else sum(g) > 2 * noise * math.sqrt(len(cd))),
-                          'flags': r['flags']})
+                          'flags': r['flags'], 'contract_type': contract_type_of(r), 'modules': modules_of(r),
+                          'held_out': bool(r.get('held_out')), 'hours_per_day': (r.get('hours') or 24 * len(cd)) / max(1, len(cd))})
         for c, (adj, rej) in zip(cands, bhy([c['p'] for c in cands])):
             c['p_bhy'], c['bhy_pass'] = adj, rej
         rep['families'].append({'thread': th, 'family': fam, 'n_raw': len(rs_all), 'k_eff': ke, 'days': len(days),
@@ -380,7 +390,72 @@ def merge(shard_dir, out_dir, S=6):
         L.append('')
     with open(os.path.join(out_dir, 'report.md'), 'w') as fh:
         fh.write('\n'.join(L).replace('nan', 'n/a') + '\n')
+    with open(os.path.join(out_dir, 'contract-ledger.md'), 'w') as fh:
+        fh.write(contract_ledger(rep))
     return rep
+
+
+def contract_type_of(r):
+    if r.get('contract_type') in CONTRACT_TYPES:
+        return r['contract_type']
+    if 'tennis' in r['thread'] or any(k.startswith('TENNIS_') for k in (r.get('env') or {})):
+        return 'tennis'
+    if 'perp' in r['thread'] or any(k.startswith('PERP_') for k in (r.get('env') or {})):
+        return 'perpetual'
+    return 'price_prediction'
+
+
+def modules_of(r):
+    if r.get('modules'):
+        return sorted(set(r['modules']))
+    m = {mod for k in (r.get('env') or {}) for pat, mod in MODULE_OF if re.match(pat, k)}
+    return sorted(m) or ['other']
+
+
+BLOCKING = ('G0:', 'G1:', 'G1b:', 'G1c:', 'G2:', 'LOCKBOX:')
+
+
+def validated(c):
+    """A result that may count toward a contract type's model: clean evidence, held out, survives multiple testing and noise."""
+    return (c['role'] == 'candidate' and c['held_out'] and c['bhy_pass'] and c['above_2noise'] is not False
+            and c['gain'] > 0 and not any(f.startswith(BLOCKING) for f in c['flags']))
+
+
+def contract_ledger(rep, target=4.50):
+    """Per contract type: the best validated result per module, combined greedily over disjoint module sets."""
+    cs = [dict(c, thread=f['thread'], family=f['family']) for f in rep['families'] for c in f['candidates']]
+    L = ['# Contract-type ledger (Steven, 21:59 UTC / 4:59 PM EST Nov 5)', '',
+         'Sum of the best VALIDATED module results that combine (disjoint modules): held out, BHY pass, above 2x noise, no',
+         'blocking flag (DOGE, paper benches, synthetic book flow, wide spreads, selection bias, unpaired, lockbox). Never paper.',
+         f'A contract type at or above ${target:.2f}/h freezes as that type\'s model; new work is then judged against it.', '']
+    for ct in CONTRACT_TYPES:
+        mine = [c for c in cs if c['contract_type'] == ct]
+        ok = sorted([c for c in mine if validated(c)], key=lambda c: -c['gain_per_day'] / c['hours_per_day'])
+        used, picks = set(), []
+        for c in ok:
+            if not used & set(c['modules']):
+                picks.append(c); used |= set(c['modules'])
+        tot = sum(c['gain_per_day'] / c['hours_per_day'] for c in picks)
+        state = 'MODEL (freeze)' if tot >= target else 'building'
+        L.append(f'## {ct.replace("_", " ").title()}: ${tot:+.2f}/h validated of ${target:.2f}/h, {state}')
+        L.append(f'{len(mine)} scored candidate(s); {len(ok)} validated.')
+        if picks:
+            L += ['| module(s) | thread / family | arm | $/h | days | p BHY | DSR |', '|---|---|---|---|---|---|---|']
+            for c in picks:
+                L.append(f'| {", ".join(c["modules"])} | {c["thread"]} / {c["family"]} | {c["arm"]} | {c["gain_per_day"] / c["hours_per_day"]:+.2f}'
+                         f' | {c["days"]} | {c["p_bhy"]:.3f} | {c["dsr"]:.2f} |')
+        leads = sorted([c for c in mine if not validated(c) and c['gain'] > 0], key=lambda c: -c['gain_per_day'] / c['hours_per_day'])[:8]
+        if leads:
+            L += ['', 'Leads not yet validated (why):', '| module(s) | thread / family | arm | $/h | why not |', '|---|---|---|---|---|']
+            for c in leads:
+                why = [f for f in c['flags'] if f.startswith(BLOCKING)]
+                if not c['held_out']: why.append('in-sample')
+                if not c['bhy_pass']: why.append(f'BHY p {c["p_bhy"]:.2f}')
+                if c['above_2noise'] is False: why.append('under 2x noise')
+                if c['role'] != 'candidate': why.append(c['role'])
+                L.append(f'| {", ".join(c["modules"])} | {c["thread"]} / {c["family"]} | {c["arm"]} | {c["gain_per_day"] / c["hours_per_day"]:+.2f} | {"; ".join(why)} |')
+        L.append('')
+    return '\n'.join(L).replace('nan', 'n/a') + '\n'
 
 
 # ---------------------------------------------------------------- backfill adapters
