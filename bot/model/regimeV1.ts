@@ -6,8 +6,8 @@
 //         (needs >= 50 returns, else NA). Not annualized.
 // q33/q67 = linear-interpolated 33.33/66.67 percentiles of every minute
 //         RV60 for the asset over the 30 days ending at the previous
-//         00:00 UTC, recomputed once per UTC day. NA when the asset has
-//         fewer than 7 days of history before the day.
+//         00:00 UTC, recomputed once per UTC day. NA when those values lie
+//         on fewer than 7 distinct UTC days.
 // Label at minute t uses data up to the close of minute t-1 only.
 
 export type Tercile = 'LOW' | 'MID' | 'HIGH' | 'NA';
@@ -74,10 +74,11 @@ export class RegimeV1 {
     if (a.cutDay === day) return;
     a.cutDay = day;
     a.q33 = a.q67 = NaN;
-    if (Number.isNaN(a.firstT) || day - a.firstT < 7 * DAY) return;
     const from = day - 30 * DAY;
-    const vals = a.rv.filter(x => x.t >= from && x.t < day).map(x => x.v).sort((x, y) => x - y);
-    if (vals.length === 0) return;
+    const win = a.rv.filter(x => x.t >= from && x.t < day);
+    // NA unless RV60 values lie on at least 7 distinct UTC days of the window (regime.py's rule).
+    if (new Set(win.map(x => Math.floor(x.t / DAY))).size < 7) return;
+    const vals = win.map(x => x.v).sort((x, y) => x - y);
     a.q33 = percentileSorted(vals, 100 / 3);
     a.q67 = percentileSorted(vals, 200 / 3);
   }

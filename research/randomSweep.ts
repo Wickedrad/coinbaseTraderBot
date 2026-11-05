@@ -26,7 +26,7 @@
 //     the stage 1-2 search and on the finalists alike
 //   - the deflated Sharpe ratio of its holdout days (every trial counted) has a probability of at least 0.95
 //   - enough trades on the holdout days (MIN_HOLDOUT_TRADES)
-//   - the latest replay check is close (the backtester trades as paper does: research/replayCheck.ts), and on the
+//   - (the latest replay check vs paper is reported only: paper P&L has no say in selection, Steven Nov 5) and on the
 //     recorded days (stage 4) the candidate makes money and beats today's settings. The history replay rebuilds
 //     Kalshi's quotes from minute candles, and the sweeps of Oct 25 accepted settings that made +$400k on $150 there
 //     and lost on the recorded day as today's settings did; these two rules would have turned them down.
@@ -331,7 +331,7 @@ export function report(trials: TrialResult[], days: string[], sampleSize = 40, g
     }
     if (!(deflated && deflated.probability >= DSR_MIN)) why.push(`deflated Sharpe probability ${deflated && Number.isFinite(deflated.probability) ? deflated.probability.toFixed(2) : 'n/a'} (needs ${DSR_MIN})`);
     if (best.holdout.trades < MIN_HOLDOUT_TRADES) why.push(`only ${best.holdout.trades} trades on the holdout days (needs ${MIN_HOLDOUT_TRADES})`);
-    if (gate.replayCheck !== undefined && !gate.replayCheck?.close) why.push(gate.replayCheck ? `the replay check is not close (${gate.replayCheck.why.join('; ') || 'not checked yet'})` : 'no replay check verdict yet');
+    // The replay check (paper vs replay) is reported, never gated on: paper P&L has no say in selection (Steven, Nov 5).
     if (gate.recorded) {
       const c = recOf(best.t.id), b0 = recOf(trialId({}));
       if (!c) why.push('not replayed on the recorded days (stage 4)');

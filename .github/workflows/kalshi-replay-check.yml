@@ -147,8 +147,8 @@ jobs:
           sudo apt-get install -y -qq rclone >/dev/null
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
-          # A day is archived once its recording is on Drive (the archive uploads the recording last).
-          rclone lsf gdrive:kalshi-bot-archive/recordings --files-only | sed -nE 's/^md-([0-9]{4}-[0-9]{2}-[0-9]{2})\.jsonl\.gz$/\1/p' | sort > "$RUNNER_TEMP/drive-days.txt"
+          # A day is archived once its recording is on Drive, as gzip or compact .mdc (the archive uploads the recording last).
+          bash deploy/drive_lab.sh days > "$RUNNER_TEMP/drive-days.txt"
           echo "Drive has $(wc -l < "$RUNNER_TEMP/drive-days.txt") archived day(s): $(paste -sd, "$RUNNER_TEMP/drive-days.txt")"
       - name: Copy the audit log, the recordings the stretch needs, the model and the settings (read-only)
         if: ${{ !inputs.reuse_run }}
@@ -286,7 +286,7 @@ jobs:
         run: |
           set -euo pipefail
           X="$RUNNER_TEMP/copy-exclude.txt"; : > "$X"
-          while read -r d; do [ -n "$d" ] && printf '/recordings/md-%s.jsonl.gz\n/audit/audit-%s*\n' "$d" "$d" >> "$X"; done < "$RUNNER_TEMP/drive-days.txt"
+          while read -r d; do [ -n "$d" ] && printf '/recordings/md-%s.jsonl.gz\n/recordings/md-%s.mdc\n/audit/audit-%s*\n' "$d" "$d" "$d" >> "$X"; done < "$RUNNER_TEMP/drive-days.txt"
           rclone copy data "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$GITHUB_RUN_ID" --exclude-from "$X" --transfers 4
           echo "copy kept on Drive: lab-copies/kalshi-replay-check/$GITHUB_RUN_ID ($(rclone size "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$GITHUB_RUN_ID" | tail -1 | sed 's/^ *//'))"
       - name: Restore an earlier run's copy (reuse_run)
@@ -308,10 +308,15 @@ jobs:
           [ -s data/sweeps/check-days.txt ] || { echo "::error::no copy of run $REUSE on Drive or in the cache"; exit 1; }
           for d in $(tr ',' ' ' < data/sweeps/check-days.txt); do
             grep -qx "$d" "$RUNNER_TEMP/drive-days.txt" || continue
-            ls data/recordings/md-$d.jsonl* >/dev/null 2>&1 || { rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.jsonl.gz" data/recordings/ && gzip -t "data/recordings/md-$d.jsonl.gz"; }
+            ls data/recordings/md-$d.jsonl* >/dev/null 2>&1 || bash deploy/drive_lab.sh recording "$d" data/recordings
             ls data/audit/audit-$d* >/dev/null 2>&1 || rclone copy gdrive:kalshi-bot-archive/audit data/audit/ --include "audit-$d*" --transfers 4
             echo "$d: from Drive"
           done
+      - name: Regime v1 labels for the market anchor's wild regime (lab, MARKET_ANCHOR_WILD_LABELS among the overrides)
+        if: ${{ contains(inputs.overrides, 'MARKET_ANCHOR_WILD_LABELS') && inputs.from_drive != 'false' }}
+        run: |
+          rclone copy "gdrive:kalshi-bot-archive/registry/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz" data/regime/
+          ls -la data/regime/
       - name: Put that run's paper state back (reuse_run)
         if: ${{ inputs.reuse_run }}
         env:

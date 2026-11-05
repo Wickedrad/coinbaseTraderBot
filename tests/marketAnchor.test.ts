@@ -166,3 +166,27 @@ test('config: NO_LONGSHOT_WILD_OFF without the anchor is refused', () => {
   assert.throws(() => loadConfig({ ...base, NO_LONGSHOT_WILD_OFF: 'true' }), /NO_LONGSHOT_WILD_OFF needs/);
   assert.equal(loadConfig({ ...base, NO_LONGSHOT_WILD_OFF: 'true', MARKET_ANCHOR: 'true', MARKET_ANCHOR_WILD_RATIO: '2' }).strategy.noLongshotWildOff, true);
 });
+
+test('market anchor: regime v1 labels drive the wild regime (HIGH only, NA not wild)', async () => {
+  const fs = await import('fs'); const os = await import('os'); const path = await import('path');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'reg-')), 'labels.csv');
+  fs.writeFileSync(file, 'ts_iso,asset,rv60,q33,q67,tercile,z60,trend\n2026-10-29T12:00:00Z,BTC,0.01,0.002,0.004,HIGH,1,TREND\n2026-10-29T12:01:00Z,BTC,0.001,0.002,0.004,LOW,0,FLAT\n2026-10-29T12:02:00Z,BTC,,,,NA,,NA\n');
+  let now = Date.parse('2026-10-29T12:00:30Z');
+  const a = new MarketAnchor({ ...DEFAULT_MARKET_ANCHOR, enabled: true, wildLabels: file }, undefined, () => now);
+  assert.equal(a.isWild({ asset: 'BTC', sigma: 1 }), true);
+  assert.equal(a.isWild({ asset: 'ETH', sigma: 1 }), false);
+  now += 60_000; assert.equal(a.isWild({ asset: 'BTC', sigma: 1 }), false);
+  now += 60_000; assert.equal(a.isWild({ asset: 'BTC', sigma: 1 }), false);
+  const base = { DASHBOARD_TOKEN: 'x'.repeat(32) };
+  assert.equal(loadConfig({ ...base, NO_LONGSHOT_WILD_OFF: 'true', MARKET_ANCHOR: 'true', MARKET_ANCHOR_WILD_LABELS: file }).strategy.noLongshotWildOff, true);
+});
+
+test('market anchor: in a regime v1 HIGH minute the price is the wild weight (raw by default)', async () => {
+  const fs = await import('fs'); const os = await import('os'); const path = await import('path');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'reg-')), 'labels.csv');
+  fs.writeFileSync(file, 'ts_iso,asset,rv60,q33,q67,tercile,z60,trend\n2026-10-29T12:00:00Z,BTC,0.01,0.002,0.004,HIGH,1,TREND\n');
+  const now = Date.parse('2026-10-29T12:00:30Z');
+  const a = new MarketAnchor({ ...DEFAULT_MARKET_ANCHOR, enabled: true, fixedW: 0, wildLabels: file }, undefined, () => now);
+  assert.ok(Math.abs(a.price('KXBTCD-X', 600, 0.5, 0.7, { asset: 'BTC', sigma: 1 }) - 0.7) < 1e-9);
+  assert.ok(Math.abs(a.price('KXETHD-X', 600, 0.5, 0.7, { asset: 'ETH', sigma: 1 }) - 0.5) < 1e-9);
+});

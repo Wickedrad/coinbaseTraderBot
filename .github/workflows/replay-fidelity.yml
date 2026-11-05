@@ -390,7 +390,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/out"
           if [ "${{ matrix.group }}" = depth ]; then
             [ -n "$FIT" ] && [ -n "$(ls -A "$DATA/fit" 2>/dev/null)" ] || { echo "no older recorded days to fit the depth model on"; exit 1; }
-            node --import tsx research/depthStudy.ts --recordings "$DATA/fit" --out "$DATA/models/depth_model.json" 2>&1 | grep -E '^\[depth\] [0-9]' || true
+            node --import tsx research/depthStudy.ts --recordings "$DATA/fit" --series 15m --out "$DATA/models/depth_model.json" 2>&1 | grep -E '^\[depth\] [0-9]' || true
             [ -s "$DATA/models/depth_model.json" ] || { echo "the depth study wrote no model"; exit 1; }
             run --stage prepare --only depth --depth-model "$DATA/models/depth_model.json"
             run --stage backtest --how depth
