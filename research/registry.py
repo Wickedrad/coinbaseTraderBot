@@ -47,6 +47,8 @@ SOURCES = ('recorded', 'history', 'paper', 'live')
 DOGE = re.compile(r'^KXDOGE', re.I)
 # Settings whose inputs come from the order book, which history replays synthesize (size 100, no depth): OFI, depth and the
 # TA veto's confirmation count. Trade-tape signals (tennis taker flow, momentum, opponent) are real on history days.
+# Simulators whose $ level disagrees with the replay (sizing lab, run 42071866371: 1.66x fills, window corr +0.14).
+RANK_ONLY = {'cross_study'}
 BOOK_FLOW = re.compile(r'OFI|DEPTH|^TA_VETO_CONF$', re.I)
 
 SCHEMA = {
@@ -75,6 +77,7 @@ SCHEMA = {
             'benches': {'enum': ['own', 'paper']},
             'copy': {'type': 'string', 'description': 'Drive copy / reuse_run the replay read'},
             'books': {'enum': ['recorded', 'synthetic']},
+            'engine': {'type': 'string', 'description': 'simulator: replay (TS backtester, default) | cross_study (sizing lab) | ...'},
         }},
         'by_day': {'type': 'object', 'additionalProperties': {'type': 'number'}},
         'by_cell': {'type': 'object', 'description': 'optional: cell -> $ over the days'},
@@ -122,6 +125,8 @@ def validate(r: dict) -> tuple[list[str], list[str]]:
         fl.append('G0:paper-benches')  # Steven 13:51 UTC Nov 5: paper has no say in training
     if d.get('source') == 'history' and d.get('books') == 'synthetic' and any(BOOK_FLOW.search(k) for k in (r.get('env') or {})):
         fl.append('G1:synthetic-book-flow')  # order-flow inputs are fake on history books (TA thread, Nov 5)
+    if d.get('engine') in RANK_ONLY:
+        fl.append('G1:rank-only-level')  # level ($/h) not valid; compare only variants on the same entries
     w = r.get('wide_spread_share')
     if isinstance(w, (int, float)) and w > 0.5:
         fl.append('G1b:wide-spread-pnl')  # SNN thread: history "mid" of a 1c/99c book is not a price
