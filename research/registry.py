@@ -382,7 +382,7 @@ def merge(shard_dir, out_dir, S=6):
                           'gain': sum(g), 'gain_per_day': _mean(g), 'p': paired_p(g), 'sr': sr, 'sr0': sr0, 'dsr': prob,
                           'above_2noise': (None if noise is None else sum(g) > 2 * noise * math.sqrt(len(cd))),
                           'flags': r['flags'], 'contract_type': contract_type_of(r), 'modules': modules_of(r),
-                          'held_out': bool(r.get('held_out')), 'ho1': ho1_pass(r.get('heldout'), contract_type_of(r)), 'hours_per_day': (r.get('hours') or 24 * len(cd)) / max(1, len(cd))})
+                          'held_out': bool(r.get('held_out')), 'ho1': ho1_pass(r.get('heldout'), contract_type_of(r), (r.get('data') or {}).get('engine')), 'hours_per_day': (r.get('hours') or 24 * len(cd)) / max(1, len(cd))})
         for c, (adj, rej) in zip(cands, bhy([c['p'] for c in cands])):
             c['p_bhy'], c['bhy_pass'] = adj, rej
         rep['families'].append({'thread': th, 'family': fam, 'n_raw': len(rs_all), 'k_eff': ke, 'days': len(days),
@@ -483,7 +483,7 @@ HO1 = {'history': {'days': 90, 'folds': 6, 'win_share': 4 / 6, 'worst_fold': -0.
 REPLAY_VERSION_MIN = 8  # results from before #286 are re-run on REPLAY_VERSION 8
 
 
-def ho1_pass(h, contract_type='price_prediction'):
+def ho1_pass(h, contract_type='price_prediction', engine='replay'):
     """(passes, why) for a row's heldout block under HO-1."""
     if not isinstance(h, dict) or h.get('standard') != 'HO-1' or h.get('tier') not in HO1:
         return False, 'no HO-1 held-out block'
@@ -499,7 +499,7 @@ def ho1_pass(h, contract_type='price_prediction'):
         if (h.get('worst_tercile_per_hour') if h.get('worst_tercile_per_hour') is not None else -1e9) < t['worst_tercile']: why.append('a tercile below -$0.50/h')
     if not h.get('beats_placebo'): why.append('does not beat its placebo')
     # REPLAY_VERSION is the Kalshi history replay's; perps run their own minute simulator on Binance bars (no version gate).
-    if h['tier'] == 'history' and contract_type != 'perpetual' and (h.get('replay_version') or 0) < REPLAY_VERSION_MIN: why.append(f'replay version < {REPLAY_VERSION_MIN}')
+    if h['tier'] == 'history' and contract_type != 'perpetual' and engine in (None, 'replay') and (h.get('replay_version') or 0) < REPLAY_VERSION_MIN: why.append(f'replay version < {REPLAY_VERSION_MIN}')
     return not why, '; '.join(why)
 
 
@@ -673,6 +673,8 @@ def selftest():
     assert not ho1_pass({**ok, 'days': 7})[0] and not ho1_pass({**ok, 'folds_won': 3})[0] and not ho1_pass({**ok, 'replay_version': 7})[0]
     assert not ho1_pass(None)[0]
     assert ho1_pass({**ok, 'replay_version': None}, 'perpetual')[0]
+    assert ho1_pass({**ok, 'replay_version': None}, 'price_prediction', 'allpairs')[0]
+    assert not ho1_pass({**ok, 'replay_version': None}, 'price_prediction', 'replay')[0]
     from datetime import date, timedelta
     hd = [(date(2026, 8, 1) + timedelta(days=i)).isoformat() for i in range(96)]
     base = {'thread': 't', 'family': 'f', 'code_sha': 's', 'data': {'source': 'history', 'days': hd, 'replay_version': 8}}
