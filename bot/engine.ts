@@ -26,7 +26,7 @@ import { priceContract, SETTLEMENT_AVG_SEC } from './model/fairValue';
 import { explain, type Driver, type MetaModel } from './model/metaModel';
 import type { Oms, OrderIntent } from './oms/oms';
 import { isLive } from './oms/orderState';
-import { PositionBook } from './oms/positions';
+import { openEntryFee, openSidePrice, PositionBook } from './oms/positions';
 import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
@@ -1396,9 +1396,10 @@ export class Engine {
         const pos = oms.positions.get(m.ticker);
         return {
           ticker: m.ticker, title: m.title, position: pos?.yes ?? 0,
-          avgEntry: pos && pos.yes > 0 ? -pos.netCash / pos.yes : undefined,
-          // The quota snipe's measure, as on the crypto contracts: the cost basis has the entry fee in.
-          netAtBid: pos && pos.yes > 0 ? positionNetAtBid(pos.yes, (pos.fees - pos.netCash) / pos.yes, b, a, md.feesFor(m.ticker)) : undefined,
+          avgEntry: pos && pos.yes > 0 ? openSidePrice(pos) : undefined,
+          // The quota snipe's measure, as on the crypto contracts: the open contracts' cost basis, entry fee in (an earlier
+          // exit's profit is already on the pacer's clock, so it is not counted again).
+          netAtBid: pos && pos.yes > 0 ? positionNetAtBid(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, b, a, md.feesFor(m.ticker)) : undefined,
           quote: { bid: b?.price, ask: a?.price, bidSize: b?.size, askSize: a?.size },
           book: usable ? book : undefined,
           flow: (() => {
@@ -1557,7 +1558,7 @@ export class Engine {
     const f = this.d.md.perpFeed;
     const markets = [...this.d.md.features.perps.byAsset.entries()].map(([asset, s]) => {
       const ix = this.d.md.index.get(asset)?.latest()?.value;
-      const p = s.price(now);
+      const p = s.coinPrice(now, ix);
       return { asset, ticker: s.latest?.ticker, bid: s.latest?.bid, ask: s.latest?.ask, premiumBps: p && ix ? 1e4 * Math.log(p / ix) : null, fundingRate: s.latest?.fundingRate ?? null, nextFundingTs: s.latest?.nextFundingTs ?? null, contractSize: s.latest?.contractSize ?? null, leverage: s.latest?.leverage ?? null };
     });
     return {
@@ -2187,7 +2188,9 @@ export class Engine {
       this.d.scoreboard.record(m.ticker, m.asset, m.closeTime, { market: pMarket, fair_value: fv.pYes, meta_model: pred.p, bot_price: pYes, snn: blended.pSnn, ta_tilt: taShiftFull !== undefined ? clampP(pred.p + taShiftFull) : undefined }, now);
     }
     const pos = oms.positions.get(m.ticker);
-    const entrySidePrice = pos && pos.yes > 0 ? -pos.netCash / pos.yes : pos && pos.yes < 0 ? 1 - pos.netCash / -pos.yes : undefined;
+    // The open contracts' price (an earlier exit's profit is on the pacer's clock already): the snipe, the take-profit and
+    // the ride-to-settlement judge them, not the market's whole P&L.
+    const entrySidePrice = openSidePrice(pos);
     const tier = this.tier();
     const rs = this.riskScale('crypto');
     // The regime scale (market state: volatility, a recent change point, correlated coins held) joins the risk scale,
@@ -2221,7 +2224,7 @@ export class Engine {
       tauSec, noEntryBeforeCloseSec: R.noEntryBeforeCloseSec, fastMove, tickSize: m.tickSize, fees: md.feesFor(m.ticker),
       restingBid, restingAsk, nowSec: Math.floor(now / 1000), closeSec: Math.floor(m.closeTime / 1000),
       pMarket, pStd: pred.std, makerBuffer: this.makerBuffer(), entrySidePrice: entrySidePrice !== undefined && entrySidePrice > 0 && entrySidePrice < 1 ? entrySidePrice : undefined,
-      entryFeePerContract: pos && Math.abs(pos.yes) > 1e-9 ? pos.fees / Math.abs(pos.yes) : undefined,
+      entryFeePerContract: openEntryFee(pos),
       profitPeakSidePrice: this.profitPeaks.update(m.ticker, st.position, st.position > 0 ? bid.price : st.position < 0 ? Math.round((1 - ask.price) * 1e4) / 1e4 : undefined),
       ...(this.d.takeProfitBench?.benched ? { takeProfitBenched: this.d.takeProfitBench.benched } : {}),
       entryWindowOpen, exitWindowOpen: tauSec > S.noExitBeforeCloseSec,
