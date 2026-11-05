@@ -26,7 +26,7 @@
 //     the stage 1-2 search and on the finalists alike
 //   - the deflated Sharpe ratio of its holdout days (every trial counted) has a probability of at least 0.95
 //   - enough trades on the holdout days (MIN_HOLDOUT_TRADES)
-//   - the latest replay check is close (the backtester trades as paper does: research/replayCheck.ts), and on the
+//   - (the latest replay check vs paper is reported only: paper P&L has no say in selection, Steven Nov 5) and on the
 //     recorded days (stage 4) the candidate makes money and beats today's settings. The history replay rebuilds
 //     Kalshi's quotes from minute candles, and the sweeps of Oct 25 accepted settings that made +$400k on $150 there
 //     and lost on the recorded day as today's settings did; these two rules would have turned them down.
@@ -108,6 +108,8 @@ export interface TrialResult {
   diag?: { entryEvaluations: number; refills: number; refillUsd: number; crossSales: number; dipBuys: number };
   /** P&L and markets by market condition at entry (regimeKey). */
   byRegime?: Record<string, { pnl: number; n: number }>;
+  /** P&L by coin and close hour ('BTC|2026-08-01T13'), for HO-1's RV terciles. */
+  byAssetHour?: Record<string, number>;
 }
 
 /** A market condition at entry: the contract's kind, the coin's 1-hour volatility band (bps, powers of 2), and whether
@@ -214,16 +216,19 @@ export async function evalTrial(dir: string, modelPath: string, env: Record<stri
       ...(Number(env.RS_LATENCY_MS) > 0 ? { latency: { orderMs: Number(env.RS_LATENCY_MS), jitterMs: Number(env.RS_LATENCY_MS) / 2 } } : {}),
     });
     const byDay: Record<string, number> = {}, tradesByDay: Record<string, number> = {}, byHour: Record<string, number> = {};
-    const byRegime: Record<string, { pnl: number; n: number }> = {};
+    const byRegime: Record<string, { pnl: number; n: number }> = {}, byAssetHour: Record<string, number> = {};
     for (const t of r.trades) {
       const g = (byRegime[regimeKey(t)] ??= { pnl: 0, n: 0 }); g.pnl += t.pnl; g.n++;
       const iso = new Date(t.closeTs).toISOString();
       byDay[iso.slice(0, 10)] = (byDay[iso.slice(0, 10)] ?? 0) + t.pnl;
       tradesByDay[iso.slice(0, 10)] = (tradesByDay[iso.slice(0, 10)] ?? 0) + 1;
       byHour[iso.slice(0, 13)] = (byHour[iso.slice(0, 13)] ?? 0) + t.pnl;
+      // HO-1 (Nov 5): the coin and close hour of each trade, for the regime v1 RV terciles of the held-out score.
+      const coin = /^KX(BTC|ETH|SOL|XRP|DOGE)/.exec(t.ticker ?? '')?.[1] ?? 'other';
+      byAssetHour[`${coin}|${iso.slice(0, 13)}`] = (byAssetHour[`${coin}|${iso.slice(0, 13)}`] ?? 0) + t.pnl;
     }
     return { ...base, ok: true, ms: Date.now() - t0, pnl: r.pnl, fees: r.fees, contracts: r.contracts, fills: r.fills, trades: r.trades.length, byDay, tradesByDay, byHour,
-      diag: { entryEvaluations: r.entryEvaluations, refills: r.refills?.length ?? 0, refillUsd: (r.refills ?? []).reduce((a, x) => a + x.usd, 0), crossSales: r.exits.crossSales ?? 0, dipBuys: r.exits.dipBuys ?? 0 }, byRegime };
+      diag: { entryEvaluations: r.entryEvaluations, refills: r.refills?.length ?? 0, refillUsd: (r.refills ?? []).reduce((a, x) => a + x.usd, 0), crossSales: r.exits.crossSales ?? 0, dipBuys: r.exits.dipBuys ?? 0 }, byRegime, byAssetHour };
   } catch (e) {
     return { ...base, ok: false, error: String((e as Error).message ?? e).slice(0, 300), ms: Date.now() - t0 };
   }
@@ -346,7 +351,7 @@ export function report(trials: TrialResult[], days: string[], sampleSize = 40, g
     }
     if (!(deflated && deflated.probability >= DSR_MIN)) why.push(`deflated Sharpe probability ${deflated && Number.isFinite(deflated.probability) ? deflated.probability.toFixed(2) : 'n/a'} (needs ${DSR_MIN})`);
     if (best.holdout.trades < MIN_HOLDOUT_TRADES) why.push(`only ${best.holdout.trades} trades on the holdout days (needs ${MIN_HOLDOUT_TRADES})`);
-    if (gate.replayCheck !== undefined && !gate.replayCheck?.close) why.push(gate.replayCheck ? `the replay check is not close (${gate.replayCheck.why.join('; ') || 'not checked yet'})` : 'no replay check verdict yet');
+    // The replay check (paper vs replay) is reported, never gated on: paper P&L has no say in selection (Steven, Nov 5).
     if (gate.recorded) {
       const c = recOf(best.t.id), b0 = recOf(trialId({}));
       if (!c) why.push('not replayed on the recorded days (stage 4)');

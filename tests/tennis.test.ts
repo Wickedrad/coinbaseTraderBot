@@ -197,26 +197,87 @@ test('profit rules on tennis (Steven, Oct 30): the quota snipe sells a position 
   assert.equal(dog(0.2, 3.9).plans.length, 0, 'in profit: rides instead of the cut');
 });
 
-test('tennis loser window cut (LOSER_WINDOW_CUT, Steven Oct 31): in the last 30% of the match a position not in profit is sold at the bid; one in profit rides', () => {
-  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.loserExits?.window, true);
-  const fav = (prog: number, bid: number, net: number | undefined, r: { pacerUsd?: number; settleFrac?: number; loserWindow?: boolean }) => {
+test('profit rules on tennis: in the last 30% of the match a position not in profit after fees is never held to settlement', () => {
+  assert.equal(T.endLoserCut, true);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_END_LOSER_CUT: 'false' }).tennis.endLoserCut, false);
+  const rules = { pacerUsd: 4.5, settleFrac: T.settleFrac, endLoserCut: true };
+  // A favorite held from 0.80 (it has no loss exit of its own: TENNIS_FAV_STOP_CENTS is 0), the progress held 3 minutes.
+  const fav = (prog: number, bid: number, net: number | undefined, r: { pacerUsd?: number; settleFrac?: number; endLoserCut?: boolean }) => {
     const tr = new MatchTracker('P', T);
     tr.progress = () => prog;
-    return decideMatch(tr, { event: 'P', now: t0 + 3_600_000, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] }, T, budget, 0.01, r);
+    const at = (now: number) => decideMatch(tr, { event: 'P', now, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] }, T, budget, 0.01, r);
+    for (let k = 6; k > 0; k--) at(t0 + 3_600_000 - k * 30_000);
+    return at(t0 + 3_600_000);
   };
-  const rules = { pacerUsd: 4.5, settleFrac: T.settleFrac, loserWindow: true };
-  // 75% done (inside the last 30%), -$1.00 after fees: sold at the bid.
-  const cut = fav(0.75, 0.78, -1, rules);
+  // 75% done, -$0.80 after fees at the 0.79 bid: sold at the bid.
+  const cut = fav(0.75, 0.79, -0.8, rules);
   assert.equal(cut.plans.length, 1, JSON.stringify(cut));
   const p = cut.plans[0];
-  assert.deepEqual([p.leg, p.side, p.price, p.count, p.reduceOnly, p.postOnly, p.timeInForce], ['loser_window_cut', 'ask', 0.78, 30, true, false, 'immediate_or_cancel']);
-  assert.equal(p.why, 'loser window cut: -1.00 net after fees on 30 at bid 0.78, match 75% done (its last 30%): only a position in profit rides to settlement');
-  // Break-even is not profit: sold too. In profit: rides.
-  assert.equal(fav(0.75, 0.78, 0, rules).plans[0]?.leg, 'loser_window_cut');
-  assert.equal(fav(0.75, 0.84, 5, rules).plans.length, 0);
-  // Before the last 30%, or with the flag off, the legs decide (the favorite holds under its target).
-  assert.equal(fav(0.5, 0.78, -1, rules).plans.length, 0);
-  assert.equal(fav(0.75, 0.78, -1, { pacerUsd: 4.5, settleFrac: T.settleFrac }).plans.length, 0);
+  assert.deepEqual([p.leg, p.side, p.price, p.count, p.reduceOnly, p.postOnly, p.timeInForce], ['end_cut', 'ask', 0.79, 30, true, false, 'immediate_or_cancel']);
+  assert.equal(p.why, 'match 75% done (its last 30%), -$0.80 after fees at bid 0.79: not in profit, not held to settlement');
+  // Break-even after fees is not a profit: cut too.
+  assert.equal(fav(0.75, 0.81, 0, rules).plans[0]?.leg, 'end_cut');
+  // In profit there: rides. Before the last 30%: the legs decide (the favorite holds).
+  assert.equal(fav(0.75, 0.84, 1, rules).plans.length, 0);
+  assert.equal(fav(0.65, 0.79, -0.8, rules).plans.length, 0);
+  // With the rule off the favorite rides the loss to settlement (as before Nov 5).
+  assert.equal(fav(0.75, 0.79, -0.8, { pacerUsd: 4.5, settleFrac: T.settleFrac }).plans.length, 0);
+  // No bid: nothing to sell into (the engine then has no net either); judged again next tick.
+  const noBid = new MatchTracker('P', T);
+  noBid.progress = () => 0.75;
+  noBid.progressHigh = 0.75;
+  const dry = decideMatch(noBid, { event: 'P', now: t0 + 3_600_000, startTime: t0, closeTime: t0 + 86_400_000, markets: [{ ...mk('P-FAV', 0.79, 0.81, { position: 30, avgEntry: 0.8 }), quote: { ask: 0.81, askSize: 50 } }, mk('P-DOG', 0.19, 0.21)] }, T, budget, 0.01, rules);
+  assert.equal(dry.plans.length, 0, JSON.stringify(dry.plans));
+  // A comeback pulls the progress back below the last share just as the favorite goes under water: it is cut all the same.
+  const back = new MatchTracker('P', T);
+  let prog = 0.76, now = t0 + 3_600_000;
+  back.progress = () => prog;
+  const snapAt = (bid: number, net: number) => ({ event: 'P', now, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] });
+  for (let k = 0; k < 6; k++, now += 30_000) assert.equal(decideMatch(back, snapAt(0.9, 2.5), T, budget, 0.01, rules).plans.length, 0, 'in profit: rides');
+  prog = 0.62;
+  const comeback = decideMatch(back, snapAt(0.79, -0.8), T, budget, 0.01, rules);
+  assert.equal(comeback.plans[0]?.leg, 'end_cut', JSON.stringify(comeback));
+  assert.equal(comeback.plans[0]?.why, 'match 62% done, 76% at its furthest (its last 30%), -$0.80 after fees at bid 0.79: not in profit, not held to settlement');
+  // No last share (TENNIS_NO_EXIT_BEFORE_END_FRAC=0): no cut either.
+  assert.equal(fav(0.75, 0.79, -0.8, { pacerUsd: 4.5, settleFrac: 0, endLoserCut: true }).plans.length, 0);
+  // One tick's reading (a thin or one-sided book) does not latch: back at 30% the position is the legs' again.
+  const spike = new MatchTracker('P', T);
+  let sp = 0.3;
+  spike.progress = () => sp;
+  now = t0 + 3_600_000;
+  for (let k = 0; k < 6; k++, now += 30_000) decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules);
+  sp = 0.72;
+  decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules);
+  now += 5_000;
+  sp = 0.3;
+  for (let k = 0; k < 8; k++, now += 30_000) assert.equal(decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules).plans.length, 0, `tick ${k}`);
+  assert.equal(spike.progressHigh, 0.3);
+  // Held for two minutes it is reached: the cut stays on when the progress falls back.
+  sp = 0.72;
+  for (let k = 0; k < 5; k++, now += 30_000) decideMatch(spike, snapAt(0.9, 2.5), T, budget, 0.01, rules);
+  sp = 0.5;
+  assert.equal(decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules).plans[0]?.leg, 'end_cut');
+  // No new entry in the last 30%: a favorite bought there would start under water.
+  const entry = (r: { settleFrac?: number; endLoserCut?: boolean; endEntryMargin?: number }, prog = 0.8, high = 0) => {
+    const tr = new MatchTracker('Q', T);
+    tr.liveSince = t0;
+    tr.progress = () => prog;
+    tr.progressHigh = high;
+    let now = t0 + 60 * 60_000;
+    const snap = () => ({ event: 'Q', now, closeTime: t0 + 86_400_000, markets: [mkb('Q-A', 0.84, 0.86, 300, 100, now, { flow: 0.5 }), mk('Q-B', 0.14, 0.16)] });
+    for (let i = 0; i < 12; i++) { decideMatch(tr, snap(), T, budget, 0.01, r); now += 30_000; }
+    return decideMatch(tr, snap(), T, budget, 0.01, r);
+  };
+  assert.equal(entry({ settleFrac: T.settleFrac }).plans[0]?.leg, 'fav_entry', 'the rule off: the favorite is bought late');
+  const none = entry({ settleFrac: T.settleFrac, endLoserCut: true });
+  assert.equal(none.plans.length, 0, JSON.stringify(none.plans));
+  assert.ok(none.notes.some((n) => n.includes('no new entry (fav_entry)')), JSON.stringify(none.notes));
+  // The margin: none from 65% (TENNIS_END_ENTRY_MARGIN 0.05 before the last 30%), and a dip in progress does not reopen it.
+  assert.equal(T.endEntryMargin, 0.05);
+  const r = { settleFrac: T.settleFrac, endLoserCut: true, endEntryMargin: T.endEntryMargin };
+  assert.equal(entry(r, 0.6).plans[0]?.leg, 'fav_entry', 'before the margin: bought');
+  assert.equal(entry(r, 0.66).plans.length, 0, 'inside the margin: not bought');
+  assert.equal(entry(r, 0.6, 0.72).plans.length, 0, 'the match reached its last share before: not bought on a dip');
 });
 
 test('quota floor on tennis (PACER_FLOOR, Steven Oct 31): a leg aiming higher keeps the position, the need it covered becomes its floor, and it is sold once its profit falls below it', () => {
@@ -349,10 +410,74 @@ test('engine: the quota snipe sells a tennis position whose profit after fees (e
   assert.equal((await run(0.8)).snipes.length, 0);
 });
 
-import fs from 'fs';
-import { runTennisBacktest } from '../research/tennisBacktest';
+test('engine: with the kill switch engaged a tennis position not in profit after fees is sold at the bid; one in profit is held', async () => {
+  const run = async (entry: number, prior = false) => {
+    const dir = tmpDir();
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false' });
+    const now = Date.now();
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 30 * 60_000 });
+    const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
+    const rest = {
+      getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
+      getOpenMarkets: async (s: string) => (s === 'KXATPMATCH' ? markets : []),
+      getMarket: async () => undefined,
+    } as unknown as KalshiRest;
+    const audit = tmpAudit();
+    const md = new MarketData(cfg, rest, undefined, new Recorder(path.join(dir, 'rec')));
+    await md.refreshCatalog(now);
+    md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: 0.84, size: 100 }], asks: [{ price: 0.86, size: 100 }] }, Date.now());
+    md.book('KXATPMATCH-E1-DOG').applySnapshot({ bids: [{ price: 0.14, size: 300 }], asks: [{ price: 0.16, size: 100 }] }, Date.now());
+    const paper = new PaperExchange(undefined, 200, (t) => md.books.get(t), () => ({ takerMultiplier: 1, makerMultiplier: 1 }));
+    const kill = new KillSwitch(path.join(dir, 'kill.json'), audit);
+    const oms = new Oms({ gateway: paper, audit, statePath: path.join(dir, 'oms.json'), feesFor: (t) => md.feesFor(t), sleep: async () => undefined });
+    paper.on('fill', (f) => oms.onFill(f));
+    paper.on('order', (o) => oms.onExchangeOrder(o));
+    const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: () => undefined });
+    const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: MetaModel.identity(), exchangeStatus: openExchange() });
+    const r = await recon.run('startup');
+    engine.balance = r!.balance;
+    const order = { ticker: 'KXATPMATCH-E1-FAV', asset: 'TENNIS', windowCloseTs: now + 6 * 3_600_000, timeInForce: 'immediate_or_cancel' as const, postOnly: false, fairValue: entry, modelId: 'm', decisionId: 'd' };
+    if (prior) {
+      // An earlier round trip on the same market: 50 bought at 0.70, sold at 0.86 (+$8.00 before fees).
+      md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: 0.68, size: 100 }], asks: [{ price: 0.7, size: 100 }] }, Date.now());
+      await oms.submit({ ...order, side: 'bid', price: 0.7, count: 50, reduceOnly: false, purpose: 'quote' });
+      md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: 0.86, size: 100 }], asks: [{ price: 0.88, size: 100 }] }, Date.now());
+      await oms.submit({ ...order, side: 'ask', price: 0.86, count: 50, reduceOnly: true, purpose: 'exit' });
+      assert.equal(oms.positions.position('KXATPMATCH-E1-FAV'), 0);
+    }
+    // Bought on the paper exchange too (a reduce-only exit needs the position there): 50 at `entry`, then the book moves.
+    md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: entry - 0.02, size: 100 }], asks: [{ price: entry, size: 100 }] }, Date.now());
+    await oms.submit({ ticker: 'KXATPMATCH-E1-FAV', asset: 'TENNIS', windowCloseTs: now + 6 * 3_600_000, side: 'bid', price: entry, count: 50, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'quote', fairValue: entry, modelId: 'm', decisionId: 'd' });
+    md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: 0.84, size: 100 }], asks: [{ price: 0.86, size: 100 }] }, Date.now());
+    assert.equal(oms.positions.position('KXATPMATCH-E1-FAV'), 50);
+    await kill.engage('test', 'manual');
+    await engine.tick();
+    await engine.tick();
+    const exits = audit.tail(500, 'decision').map((x) => x.data as Record<string, unknown>).filter((x) => x.leg === 'kill_exit');
+    return { position: oms.positions.position('KXATPMATCH-E1-FAV'), exits, rejects: audit.tail(500, 'risk_reject').length };
+  };
+  // 50 from 0.90, bid 0.84: -$3.00 and the fees: sold at the bid, once (the second tick finds it flat).
+  const lost = await run(0.9);
+  assert.equal(lost.position, 0, JSON.stringify(lost));
+  assert.equal(lost.exits.length, 1);
+  assert.deepEqual([lost.exits[0].price, lost.exits[0].count, lost.exits[0].side], [0.84, 50, 'ask']);
+  assert.match(String(lost.exits[0].why), /^kill switch engaged: -\$3\.\d\d after fees at bid 0\.84, not in profit, not held to settlement$/);
+  assert.equal(lost.rejects, 0);
+  // From 0.70 it is in profit after fees: held to settlement as the rule allows; nothing is sent.
+  const won = await run(0.7);
+  assert.equal(won.position, 50);
+  assert.equal(won.exits.length, 0);
+  // An earlier winning round trip on the market does not hide the open contracts' loss: they are judged on their own cost.
+  const again = await run(0.9, true);
+  assert.equal(again.position, 0, JSON.stringify(again));
+  assert.match(String(again.exits[0]?.why), /^kill switch engaged: -\$3\.\d\d after fees at bid 0\.84/);
+});
 
-test('tennis backtest: underdog bought pre-start, trailed up the bounce, sold when it slipped below the stop', async () => {
+import fs from 'fs';
+import { engineTennisRules, runTennisBacktest } from '../research/tennisBacktest';
+
+/** One match: the underdog is bought pre-start at 0.15, bounces to 0.30 (a wall at 0.28), slips to 0.27 and then 0.19. */
+function writeBounceMatch(): string {
   const dir = path.join(tmpDir(), 'rec');
   fs.mkdirSync(dir, { recursive: true });
   const t0 = Date.parse('2026-10-01T12:00:00Z');
@@ -374,12 +499,38 @@ test('tennis backtest: underdog bought pre-start, trailed up the bounce, sold wh
   ev.push({ t: t0 + 3 * 3600 * 1000 + 1000, k: 'result', ticker: 'KXATPMATCH-E-DOG', result: 'no' }, { t: t0 + 3 * 3600 * 1000 + 1000, k: 'result', ticker: 'KXATPMATCH-E-FAV', result: 'yes' });
   ev.push({ t: t0 + 3 * 3600 * 1000 + 10_000, k: 'book', ticker: 'KXATPMATCH-E-DOG', bids: [], asks: [] });
   fs.writeFileSync(path.join(dir, 'md-2026-10-01.jsonl'), ev.map((e) => JSON.stringify(e)).join('\n') + '\n');
-  const r = await runTennisBacktest(dir, T, 200);
+  return dir;
+}
+
+test('tennis backtest: underdog bought pre-start, trailed up the bounce, sold when it slipped below the stop', async () => {
+  const r = await runTennisBacktest(writeBounceMatch(), T, 200);
   assert.equal(r.matches, 1);
   assert.ok(r.byLeg.underdog_entry?.fills > 0, JSON.stringify(r.byLeg));
   assert.ok(r.byLeg.underdog_trail?.fills > 0, JSON.stringify(r.byLeg));
   assert.ok(r.pnl > 0, `pnl ${r.pnl}`);
   assert.ok(r.maxTennisRisk <= 0.25 * 200 + 1e-9);
+});
+
+test('tennis backtest applies the engine\'s profit rules: the quota snipe sells the bounce once its profit covers the hour', async () => {
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) });
+  const rules = engineTennisRules(cfg);
+  assert.equal(rules.settleFrac, cfg.tennis.settleFrac);
+  assert.deepEqual([rules.endLoserCut, rules.endEntryMargin], [cfg.tennis.endLoserCut, cfg.tennis.endEntryMargin]);
+  assert.equal(rules.pacer, cfg.strategy.pacer);
+  assert.equal(engineTennisRules(cfg, false).pacer, undefined);
+  const dir = writeBounceMatch();
+  const plain = await runTennisBacktest(dir, T, 200);
+  assert.equal(plain.byLeg.quota_snipe, undefined, 'no rules: the legs alone');
+  // A $3 hour, no floor: the bounce to 0.22 is up about $3.65 after fees on 65.62 contracts, so the snipe sells it there.
+  const pacer = { ...cfg.strategy.pacer, enabled: true, hourlyUsd: 3 };
+  const sniped = await runTennisBacktest(dir, T, 200, undefined, { ...rules, pacer, floorMode: 'off' });
+  assert.ok(sniped.byLeg.quota_snipe?.fills > 0, JSON.stringify(sniped.byLeg));
+  assert.equal(sniped.byLeg.underdog_trail, undefined, 'the snipe sold before the trail did');
+  assert.ok(sniped.pnl > 3 - 1e-9, `snipe pnl ${sniped.pnl}`);
+  // The default $4.50 hour asks more than the bounce made: the legs trade as without the rules.
+  const fullHour = await runTennisBacktest(dir, T, 200, undefined, { ...rules, pacer: { ...cfg.strategy.pacer, enabled: true }, floorMode: 'off' });
+  assert.equal(fullHour.byLeg.quota_snipe, undefined, JSON.stringify(fullHour.byLeg));
+  assert.ok(Math.abs(fullHour.pnl - plain.pnl) < 1e-9);
 });
 
 test('entries need tennis confluence: 1 signal pre-match, 2 live; thresholds are configurable', () => {

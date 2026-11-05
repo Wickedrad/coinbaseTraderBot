@@ -24,7 +24,7 @@ import path from 'path';
 import zlib from 'zlib';
 import { loadConfig, paperEnv } from '../bot/config';
 import { recordingFiles } from '../bot/marketdata/recordingFiles';
-import { PERP_FEATURES, perpFeatures, perpGatedLayout, PerpModel, type PerpModelParams } from '../bot/perps/perpSignal';
+import { PERP_FEATURES, PERP_LEGACY_FEATURES, perpFeatures, perpGatedLayout, PerpModel, type PerpModelParams } from '../bot/perps/perpSignal';
 import { fitGatedExperts, gatedPredict, type GatedExperts } from '../bot/model/gatedExperts';
 import { HOLDOUT_RULE, isHoldout, weekBlocks } from './historyLedger';
 import { readRecordings, ReplayState, type LineFilter } from './replay';
@@ -35,11 +35,18 @@ import { deflatedSharpe, rng } from './stats';
 import { gbdtLogit, type GbdtModel } from '../bot/model/trees';
 import { trainGbdt } from './gbdt';
 
-export interface PerpRow { ts: number; asset: string; x: number[]; y: number; fundingBps: number }
+export interface PerpRow {
+  ts: number; asset: string; x: number[]; y: number; fundingBps: number;
+  /** PERP_LEGACY_FEATURES (perp_premium_bps), never trained on: the champion contest hands them to an incumbent trained
+   *  before Nov 5, so it is scored on what it reads live. */
+  legacy?: number[];
+}
 
 const DAY = 86_400_000;
 /** Bumped when the rows change for the same recordings (the cache keys carry it). */
-const PERP_DATASET_VERSION = 1;
+// 2 (Nov 5): rows carry perp_premium_coin_bps, the premium per coin (perp_premium_bps reads Kalshi's per-contract quote
+// against the coin's index and sat at the -100 clip; it is kept only for models trained on it, in each row's legacy).
+const PERP_DATASET_VERSION = 2;
 
 /** The lines a perp row reads: the asset-level prices and dominance, candles, the perp quotes and the SNN's calls, never
  *  the Kalshi contracts' books (most of a recorded day). */
@@ -57,7 +64,7 @@ export async function perpRowsForDays(dir: string, days: string[], warm: string 
   const H = (opts.horizonMin ?? 240) * 60_000;
   const from = Date.parse(days[0]), to = Date.parse(days[days.length - 1]) + DAY;
   const st = opts.state ?? new ReplayState();
-  const samples: Array<{ ts: number; asset: string; x: number[]; mid: number; fundingBps: number }> = [];
+  const samples: Array<{ ts: number; asset: string; x: number[]; legacy: number[]; mid: number; fundingBps: number }> = [];
   const mids = new Map<string, Array<{ ts: number; mid: number }>>();
   const nextAt = new Map<string, number>();
   const quoted = new Set<string>();
@@ -80,7 +87,7 @@ export async function perpRowsForDays(dir: string, days: string[], warm: string 
       if (st.now < from || st.now >= to || st.now < (nextAt.get(asset) ?? 0)) continue;
       nextAt.set(asset, Math.floor(st.now / every + 1) * every);
       const f = perpFeatures(asset, st.now, { index: st.index.get(asset), spot: st.spot.get(asset), bars: st.features.bars.get(asset), candles: st.features.candles.get(asset), usdtd: st.usdtd, btcd: st.btcd, perp: ps, snn: st.snnContext(asset, undefined, 'perps') });
-      samples.push({ ts: st.now, asset, x: PERP_FEATURES.map((n) => f[n]), mid, fundingBps: Number.isFinite(f.funding_rate_bps) ? f.funding_rate_bps : 0 });
+      samples.push({ ts: st.now, asset, x: PERP_FEATURES.map((n) => f[n]), legacy: PERP_LEGACY_FEATURES.map((n) => f[n]), mid, fundingBps: Number.isFinite(f.funding_rate_bps) ? f.funding_rate_bps : 0 });
     }
     quoted.clear();
   }
@@ -91,7 +98,7 @@ export async function perpRowsForDays(dir: string, days: string[], warm: string 
     let lo = 0, hi = arr.length - 1, j = -1;
     while (lo <= hi) { const m = (lo + hi) >> 1; if (arr[m].ts >= s.ts + H) { j = m; hi = m - 1; } else lo = m + 1; }
     if (j < 0 || arr[j].ts - (s.ts + H) > 300_000) continue;
-    rows.push({ ts: s.ts, asset: s.asset, x: s.x, y: 1e4 * Math.log(arr[j].mid / s.mid), fundingBps: s.fundingBps });
+    rows.push({ ts: s.ts, asset: s.asset, x: s.x, y: 1e4 * Math.log(arr[j].mid / s.mid), fundingBps: s.fundingBps, legacy: s.legacy });
   }
   return rows.sort((a, b) => a.ts - b.ts);
 }
@@ -122,7 +129,8 @@ export async function buildPerpDataset(dir: string, opts: PerpDatasetOpts = {}):
   const stat = (d: string | undefined) => { const f = d && fileOf.get(d); if (!f) return '-'; try { const x = fs.statSync(f); return `${x.size}.${Math.round(x.mtimeMs)}`; } catch { return '-'; } };
   const sides = (process.env.SNN_BACKFILL_DIR ?? '').split(path.delimiter).filter(Boolean);
   const sideStat = (d: string) => sides.map((x) => { try { return fs.statSync(path.join(x, `snnfill-${d}.jsonl`)).size; } catch { return 0; } }).join('.');
-  const head = `${PERP_DATASET_VERSION}|${every}|${H}|${hashStr(PERP_FEATURES.join(','))}`;
+  const head = `${PERP_DATASET_VERSION}|${every}|${H}|${hashStr(`${PERP_FEATURES.join(',')}|${PERP_LEGACY_FEATURES.join(',')}`)}`;
+  const nx = PERP_FEATURES.length, num = (v: number | null) => (v === null ? NaN : v), json = (v: number | undefined) => (v !== undefined && Number.isFinite(v) ? v : null);
   const sigOf = (d: string) => { const i = pos.get(d)!; return `${head}|${stat(all[i - 1])}|${stat(d)}|${stat(all[i + 1])}|${sideStat(d)}`; };
   const cacheFile = (d: string) => path.join(opts.cacheDir!, `${d}.json.gz`);
   fs.mkdirSync(opts.cacheDir, { recursive: true });
@@ -132,7 +140,7 @@ export async function buildPerpDataset(dir: string, opts: PerpDatasetOpts = {}):
     try {
       const c = JSON.parse(zlib.gunzipSync(fs.readFileSync(cacheFile(d))).toString('utf8')) as PerpCacheFile;
       if (c.sig === sigOf(d)) {
-        byDay.set(d, c.rows.map((r) => ({ ts: r[0] as number, asset: c.assets[r[1] as number], y: r[2] as number, fundingBps: r[3] as number, x: r.slice(4).map((v) => (v === null ? NaN : v)) })));
+        byDay.set(d, c.rows.map((r) => ({ ts: r[0] as number, asset: c.assets[r[1] as number], y: r[2] as number, fundingBps: r[3] as number, x: r.slice(4, 4 + nx).map(num), legacy: r.slice(4 + nx).map(num) })));
         continue;
       }
     } catch { /* not cached yet */ }
@@ -161,7 +169,7 @@ export async function buildPerpDataset(dir: string, opts: PerpDatasetOpts = {}):
       for (const [d, rs] of got) {
         byDay.set(d, rs);
         const assets = [...new Set(rs.map((r) => r.asset))];
-        const c: PerpCacheFile = { sig: sigOf(d), assets, rows: rs.map((r) => [r.ts, assets.indexOf(r.asset), r.y, r.fundingBps, ...r.x.map((v) => (Number.isFinite(v) ? v : null))]) };
+        const c: PerpCacheFile = { sig: sigOf(d), assets, rows: rs.map((r) => [r.ts, assets.indexOf(r.asset), r.y, r.fundingBps, ...r.x.map(json), ...PERP_LEGACY_FEATURES.map((_, k) => json(r.legacy?.[k]))]) };
         fs.writeFileSync(`${cacheFile(d)}.tmp`, zlib.gzipSync(JSON.stringify(c)));
         fs.renameSync(`${cacheFile(d)}.tmp`, cacheFile(d));
       }
@@ -285,10 +293,14 @@ export function ruleTrades(rows: PerpRow[], p: (i: number) => number, idx: Itera
 }
 
 /** A trained model's record on rows it never saw (a champion contest on the held-out weeks): the live
- *  rule's trades and their mean net P&L (bps), and the forecasts' information coefficient. */
+ *  rule's trades and their mean net P&L (bps), and the forecasts' information coefficient. A model trained on a legacy
+ *  input (perp_premium_bps) reads it from the row's legacy values, as it does live. */
 export function perpRuleRecord(model: PerpModel, rows: PerpRow[], o: { horizonMin: number; makerBps: number; entryEdgeBps: number }): { trades: number; meanBps: number; ic: number } {
   const sorted = [...rows].sort((a, b) => a.ts - b.ts);
-  const preds = sorted.map((r) => model.predict(Object.fromEntries(PERP_FEATURES.map((n, k) => [n, r.x[k]]))).muBps);
+  const preds = sorted.map((r) => model.predict(Object.fromEntries([
+    ...PERP_LEGACY_FEATURES.map((n, k) => [n, r.legacy?.[k] ?? NaN] as const),
+    ...PERP_FEATURES.map((n, k) => [n, r.x[k]] as const),
+  ])).muBps);
   const t = ruleTrades(sorted, (i) => preds[i], sorted.keys(), o);
   return { trades: t.length, meanBps: t.length ? t.reduce((a, x) => a + x, 0) / t.length : NaN, ic: pearson(preds, sorted.map((r) => r.y)) };
 }

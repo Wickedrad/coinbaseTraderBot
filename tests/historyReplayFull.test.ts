@@ -225,7 +225,7 @@ test('perps dataset: each day cached, the same rows as without the cache, a chan
   writeBars(hist, D0 - 2 * DAY, D0 + 2 * DAY);
   writeDominance(hist, D0, D0 + 2 * DAY);
   await buildHistoryReplay({ historyDir: hist, outDir: out, assets: ['BTC', 'ETH'], fromDay: '2026-02-27', toDay: '2026-03-02', log: () => {} });
-  const norm = (rows: PerpRow[]) => rows.map((r) => ({ ...r, x: r.x.map((v) => v + 0) })); // JSON keeps no -0
+  const norm = (rows: PerpRow[]) => rows.map((r) => ({ ...r, x: r.x.map((v) => v + 0), legacy: r.legacy?.map((v) => v + 0) })); // JSON keeps no -0
   const plain = await buildPerpDataset(out, { everySec: 3600, horizonMin: 60 });
   const logs: string[] = [];
   const cached = await buildPerpDataset(out, { everySec: 3600, horizonMin: 60, cacheDir: cache, log: (m) => logs.push(m) });

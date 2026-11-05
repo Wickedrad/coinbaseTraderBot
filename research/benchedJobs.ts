@@ -20,26 +20,62 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 
 /** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
  *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
-export const VARIANTS: Record<string, Record<string, string>> = {
-  // Round 10 (Nov 5): round 9 (run 42064010206, current bot, no DOGE, pinned model ecf8c541c272) found tails15 GENUINE:
-  // +0.43/h [+0.22, +0.62] over 200 days, held-out +0.39 [+0.09, +0.68], 7 of 7 blocks, +0.36 without its best block;
-  // tails10 GENUINE (+0.35), tails25 +0.18, tails35 -0.03: a smooth peak. The placebo was identical to the baseline (inert on
-  // these books), and tails15 trades 37% less in a bot that loses -0.56/h, so the control is random: no entries in 37% (and
-  // 20%) of markets picked by a ticker hash. tails15 must beat skip37 to be selection, not just trading less. Then the
-  // peak's fine neighbours, its stress, a wider tail, and the stack with the take-profit's strictest fair-value confirm.
-  baseline: {},
-  skip37: { RS_SKIP_MARKETS: '0.37' },
-  skip20: { RS_SKIP_MARKETS: '0.2' },
-  tails15: { MODEL_SKILL_W_TAILS: '0.15' },
-  tails12: { MODEL_SKILL_W_TAILS: '0.12' },
-  tails20: { MODEL_SKILL_W_TAILS: '0.2' },
-  tails15_lat500: { MODEL_SKILL_W_TAILS: '0.15', RS_LATENCY_MS: '500' },
-  tails15_t35: { MODEL_SKILL_W_TAILS: '0.15', MODEL_SKILL_TAIL: '0.35' },
-  tails15_tp_l3: { MODEL_SKILL_W_TAILS: '0.15', TP_LEVEL: '3', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
-};
+/** One arm of a run: its registry role and family, the arm a placebo stands in for, and its bot.env lines. */
+export interface Arm { name: string; role: 'control' | 'candidate' | 'placebo' | 'neighbour'; family: string; placeboFor?: string; env: Record<string, string> }
+
+/** Arms as text, one per line (or `;`-separated): `<arm> <role> [family=<f>] [placebo_for=<arm>] KEY=VAL ...`. The shared
+ *  HO-1 history harness (Nov 5): any thread passes its own arms through the workflow's `arms` input (env TJ_ARMS). The
+ *  arm named `baseline` is every family's control. */
+export function parseArms(text: string, defaultFamily = 'benched'): Arm[] {
+  const arms: Arm[] = [];
+  for (const raw of text.split(/[\n;]/)) {
+    const line = raw.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const [name, role, ...rest] = line.split(/\s+/);
+    if (!/^[A-Za-z0-9_.-]+$/.test(name ?? '')) throw new Error(`bad arm name in "${line}"`);
+    if (!['control', 'candidate', 'placebo', 'neighbour'].includes(role)) throw new Error(`bad role in "${line}"`);
+    const arm: Arm = { name, role: role as Arm['role'], family: defaultFamily, env: {} };
+    for (const kv of rest) {
+      const i = kv.indexOf('=');
+      if (i <= 0) throw new Error(`bad KEY=VAL "${kv}" in "${line}"`);
+      const k = kv.slice(0, i), v = kv.slice(i + 1);
+      if (k === 'family') arm.family = v;
+      else if (k === 'placebo_for') arm.placeboFor = v;
+      else if (/^[A-Z][A-Z0-9_]*$/.test(k)) arm.env[k] = v;
+      else throw new Error(`bad key ${k} in "${line}"`);
+    }
+    arms.push(arm);
+  }
+  if (!arms.some((x) => x.name === 'baseline')) arms.unshift({ name: 'baseline', role: 'control', family: defaultFamily, env: {} });
+  return arms;
+}
+
+// Round 11 (Nov 5, HO-1): the bot on main e3c83c1 (REPLAY_VERSION 8), no DOGE, H-DEV Apr 18-Jul 31 to choose, H-HOLD
+// Aug 1-Nov 4 scored once in 6 folds of 16 d with regime v1 RV terciles. The tails cap: 0.15 was the best on H-DEV in round 9
+// (+0.46/h before the split; 0.10 +0.41, 0.25 +0.24, 0.35 -0.06), so it is the candidate; skip37 (no entries in a random
+// 37% of markets, its trade cut) is its placebo. The calm cap (round 4, withdrawn on narrow held-out data) is re-run per
+// Steven (22:07 UTC Nov 5) with a matched random drop. Round 10 (skip control, old replay) was cancelled for this.
+export const DEFAULT_ARMS = `
+baseline control
+tails15 candidate family=model-skill-tails MODEL_SKILL_W_TAILS=0.15
+skip37 placebo family=model-skill-tails placebo_for=tails15 RS_SKIP_MARKETS=0.37
+tails10 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.1
+tails12 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.12
+tails20 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.2
+tails15_lat500 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.15 RS_LATENCY_MS=500
+skill_b05 candidate family=model-skill-calm MODEL_SKILL_W_CALM=0.75 MODEL_SKILL_W_CALM_RV=0.36,0.71
+skip05 placebo family=model-skill-calm placebo_for=skill_b05 RS_SKIP_MARKETS=0.05
+`;
+
+export const ARMS: Arm[] = parseArms(process.env.TJ_ARMS?.trim() ? process.env.TJ_ARMS : DEFAULT_ARMS, process.env.TJ_FAMILY || 'benched');
+export const VARIANTS: Record<string, Record<string, string>> = Object.fromEntries(ARMS.map((x) => [x.name, x.env]));
 
 /** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
 export const LATER: Record<string, Record<string, string>> = {
+  // Round 10 (Nov 5, run 42115946048, cancelled for HO-1 and replay v8):
+  skip20: { RS_SKIP_MARKETS: '0.2' },
+  tails15_t35: { MODEL_SKILL_W_TAILS: '0.15', MODEL_SKILL_TAIL: '0.35' },
+  tails15_tp_l3: { MODEL_SKILL_W_TAILS: '0.15', TP_LEVEL: '3', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
   // Round 9 (Nov 5, run 42064010206):
   placebo_r9: { RS_TICK_PHASE_MS: '500' },
   tails10: { MODEL_SKILL_W_TAILS: '0.1' },

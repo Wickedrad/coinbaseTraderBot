@@ -12,11 +12,19 @@ on:
       days:
         description: 'Most recent replay days to compare'
         required: false
-        default: '200'
-      split:
-        description: 'First day scored as held out (YYYY-MM-DD; empty = the middle day)'
+        default: '201'
+      arms:
+        description: 'Arms, one per line or ";"-separated: <arm> <control|candidate|placebo|neighbour> [family=<f>] [placebo_for=<arm>] KEY=VAL ... (empty = research/benchedJobs.ts DEFAULT_ARMS)'
         required: false
         default: ''
+      thread:
+        description: 'Registry thread name (shard folder registry/shards/<thread>)'
+        required: false
+        default: 'benched'
+      split:
+        description: 'First day scored as held out (YYYY-MM-DD; HO-1 H-HOLD starts 2026-08-01)'
+        required: false
+        default: '2026-08-01'
   push:
     branches: ['claude/benched-lab', 'claude/project-thread-g22fyz']
     paths: ['.github/workflows/benched-jobs.yml', 'research/benchedJobs.ts']
@@ -31,8 +39,15 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  TJ_DAYS: ${{ inputs.days || '200' }}
-  TJ_SPLIT: ${{ inputs.split || '' }}
+  # HO-1 (project held-out standard, Nov 5): choose on H-DEV Apr 18-Jul 31, score once on H-HOLD Aug 1-Nov 4 (6 folds).
+  TJ_DAYS: ${{ inputs.days || '201' }}
+  TJ_SPLIT: ${{ inputs.split || '2026-08-01' }}
+  # The shared history harness: any thread's arms (research/benchedJobs.ts parseArms) and its registry thread name.
+  TJ_ARMS: ${{ inputs.arms || '' }}
+  TJ_THREAD: ${{ inputs.thread || 'benched' }}
+  # REPLAY_VERSION 8 (main #286) rebuilds every day, so the v8 replay has its own Drive folder (v5 stays in benched-189d).
+  TJ_REPLAY_DRIVE: simulated/benched-200d-v8
+  TJ_LABELS: gdrive:kalshi-bot-archive/registry/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz
   SWEEP_BANKROLL_USD: '200'
   # Steven, Nov 5 13:26 UTC: no DOGE at all for now. Kalshi lines of these series are dropped from the replayed days
   # (the coin's own price lines stay, so other coins' cross inputs are unchanged).
@@ -44,7 +59,7 @@ jobs:
   data:
     if: ${{ !contains(github.event.head_commit.message, '[report-from:') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 340
     outputs:
       variants: ${{ steps.v.outputs.variants }}
     steps:
@@ -71,16 +86,16 @@ jobs:
       - name: Get the Kalshi history and its replay from Drive
         run: |
           bash deploy/drive_lab.sh get raw/kalshi-history data/history || echo "no raw Kalshi history on Drive yet"
-          bash deploy/drive_lab.sh get simulated/benched-189d data/history-replay || echo "no simulated replay on Drive yet"
+          bash deploy/drive_lab.sh get "$TJ_REPLAY_DRIVE" data/history-replay || echo "no simulated replay on Drive yet"
       - name: Repair stored quotes, download what is new, rebuild the replay
         run: |
-          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 120 2>&1 \
+          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 300 2>&1 \
             | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -30
       - name: Keep the history and its replay on Drive
         if: always()
         run: |
           [ -d data/history ] && bash deploy/drive_lab.sh put raw/kalshi-history data/history
-          [ -d data/history-replay ] && bash deploy/drive_lab.sh put simulated/benched-189d data/history-replay
+          [ -d data/history-replay ] && bash deploy/drive_lab.sh put "$TJ_REPLAY_DRIVE" data/history-replay
       - name: Save the Kalshi history and its replay
         if: always()
         uses: actions/cache/save@v4
@@ -169,8 +184,8 @@ jobs:
         if: steps.replay.outputs.cache-hit != 'true'
         run: |
           bash deploy/drive_lab.sh get raw/kalshi-history data/history || true
-          bash deploy/drive_lab.sh get simulated/benched-189d data/history-replay || true
-          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 120 2>&1 | tail -5
+          bash deploy/drive_lab.sh get "$TJ_REPLAY_DRIVE" data/history-replay || true
+          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$((TJ_DAYS + 3))" --budget-min 15 2>&1 | tail -5
       - name: Restore the server's model and settings (the sweep's copy on main)
         id: server
         uses: actions/cache/restore@v4
@@ -253,15 +268,19 @@ jobs:
           merge-multiple: true
           run-id: ${{ steps.src.outputs.run }}
           github-token: ${{ github.token }}
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Arms, replay version and the regime v1 labels (HO-1)
+        run: |
+          echo "TJ_ARMS_JSON=$(node --import tsx -e "import('./research/benchedJobs.ts').then((m) => console.log(JSON.stringify(m.ARMS)))")" >> "$GITHUB_ENV"
+          echo "TJ_REPLAY_VERSION=$(node --import tsx -e "import('./research/history/historyReplay.ts').then((m) => console.log(m.REPLAY_VERSION))")" >> "$GITHUB_ENV"
+          rclone copyto "$TJ_LABELS" "$RUNNER_TEMP/labels.csv.gz" || echo "::warning::no regime v1 labels: terciles not scored"
       - name: Report
         run: |
           # Without the replay (its caches evicted) the report takes the days the results span (benchedJobs.ts dayList).
           [ -d data/history-replay ] && node --import tsx research/randomSweep.ts days --replay data/history-replay --out data/sweep-days --days "$TJ_DAYS"
           { node --import tsx research/benchedJobs.ts report --days data/sweep-days --out research/out/benched-jobs $([ -n "$TJ_SPLIT" ] && echo --split "$TJ_SPLIT") 2>&1; } | tee "$RUNNER_TEMP/report.txt" | tail -80
-      # Trial registry (meta plan thread, Nov 5): one row per variant with its daily $ (no DOGE), synthetic books, to Drive.
-      - uses: ./.github/actions/drive-setup
-        with:
-          rclone_conf: ${{ secrets.RCLONE_CONF }}
       - name: Registry rows to Drive (registry/shards/benched)
         continue-on-error: true
         env:
@@ -270,14 +289,21 @@ jobs:
           set -euo pipefail
           git fetch -q --depth 1 origin claude/project-thread-79ntof
           git show FETCH_HEAD:research/registry.py > "$RUNNER_TEMP/registry.py"
-          export TJ_VARIANT_ENVS="$(node --import tsx -e "import('./research/benchedJobs.ts').then((m) => console.log(JSON.stringify({ ...m.LATER, ...m.VARIANTS })))")"
           RUN=${{ steps.src.outputs.run }}
           SHA=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN" --jq .head_sha)
-          python3 deploy/benched_registry.py research/out/benched-jobs "$RUN" "$SHA" "$RUNNER_TEMP/registry.py" "$RUNNER_TEMP/benched-$RUN.jsonl"
-          python3 "$RUNNER_TEMP/registry.py" validate "$RUNNER_TEMP/benched-$RUN.jsonl" | tail -5
-          rclone mkdir gdrive:kalshi-bot-archive/registry/shards/benched
-          rclone copyto "$RUNNER_TEMP/benched-$RUN.jsonl" "gdrive:kalshi-bot-archive/registry/shards/benched/$RUN.jsonl"
-          echo "registry shard: registry/shards/benched/$RUN.jsonl"
+          python3 deploy/benched_registry.py research/out/benched-jobs "$RUN" "$SHA" "$RUNNER_TEMP/registry.py" "$RUNNER_TEMP/rows-$RUN.jsonl" "$RUNNER_TEMP/labels.csv.gz"
+          # HO-1 blocks filled by the registry's own code (registry.py ho1), the same for every thread.
+          python3 "$RUNNER_TEMP/registry.py" ho1 "$RUNNER_TEMP/rows-$RUN.jsonl" > "$RUNNER_TEMP/$TJ_THREAD-$RUN.jsonl"
+          python3 "$RUNNER_TEMP/registry.py" validate "$RUNNER_TEMP/$TJ_THREAD-$RUN.jsonl" | tail -5
+          python3 -c "import json,sys; [print(r['family'], r['arm'], r['role'], json.dumps(r.get('heldout'))) for r in map(json.loads, open(sys.argv[1]))]" "$RUNNER_TEMP/$TJ_THREAD-$RUN.jsonl"
+          rclone mkdir "gdrive:kalshi-bot-archive/registry/shards/$TJ_THREAD"
+          rclone copyto "$RUNNER_TEMP/$TJ_THREAD-$RUN.jsonl" "gdrive:kalshi-bot-archive/registry/shards/$TJ_THREAD/$RUN.jsonl"
+          echo "registry shard: registry/shards/$TJ_THREAD/$RUN.jsonl"
+      - name: HO-1 held-out score (folds and RV terciles, paired vs the baseline)
+        if: always()
+        continue-on-error: true
+        run: |
+          { echo; python3 deploy/benched_ho1.py research/out/benched-jobs "$RUNNER_TEMP/labels.csv.gz" "$RUNNER_TEMP/ho1.json"; } 2>&1 | tee -a "$RUNNER_TEMP/report.txt"
       - name: Post the report on the commit
         if: always()
         env:

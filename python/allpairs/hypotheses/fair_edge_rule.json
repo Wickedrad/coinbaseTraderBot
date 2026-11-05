@@ -1,0 +1,8 @@
+{
+  "name": "fair_edge_rule",
+  "notes": "No learned entry prior: a taker entry opens at the first minute where C x (fair - ask - slip - exact taker fee per contract) clears the hurdle, i.e. the expected settlement P&L if the zero-drift digital is right. Hurdle chosen on the inner validation span exactly as before; exits by the learned policy; costs from the arm (the stress arm applies its own slip and fee). Comparator: taker_only (same taker positions, exits and hurdle procedure, learned ranking). Pre-registered failure signatures: losing trades concentrated above 70c (fat tails), a persistent asset x side sign (spot vs index basis), or off in most folds (no level mispricing after fees); any of them retires the level-fair family.",
+  "entry": {
+    "maker_entries": false,
+    "decision": "fair_edge"
+  }
+}

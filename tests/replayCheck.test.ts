@@ -28,8 +28,11 @@ test('backtest paper options: orders sized from the bankroll share, gate and ben
   const big = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', paper: { orderFrac: 0.2, orderUsd: 0 }, accuracyGate: cfg.strategy.accuracyGate, takeProfitBench: { enforce: true, rule } });
   assert.ok(small.paper && big.paper);
   assert.ok(Number.isFinite(small.pnl) && Number.isFinite(big.pnl));
-  // A larger share of the bankroll an order trades more contracts (or the same when nothing traded).
-  assert.ok(big.contracts >= small.contracts);
+  // A larger share of the bankroll an order buys more contracts (or the same when nothing traded). The exits that follow
+  // depend on the path (how much of the position is still held, when its profit covers the hour), so only entries compare.
+  const bought = (r: typeof big) => (r.byPurpose?.quote?.contracts ?? 0) + (r.byPurpose?.entry?.contracts ?? 0);
+  assert.ok(bought(big) >= bought(small), `${bought(big)} < ${bought(small)}`);
+  assert.ok(bought(small) > 0, 'it traded');
   // The gate starts with an empty scorecard: it cannot block before it has scored enough markets.
   assert.equal(small.paper.accuracyBlocks, 0);
   // The engine's loss-aware size: a quarter at worst, never zero (a drawdown does not stop the replay trading).
