@@ -23,7 +23,7 @@ import re
 import sys
 from collections import defaultdict
 
-PLACEBOS = {'P500', 'PSH', 'NLM'}
+PLACEBOS = {'P500', 'PSH', 'NLM', 'WP500', 'WPSH', 'WNLM'}
 HOURS_PER_DAY = 24.0
 
 
@@ -36,6 +36,7 @@ def cell_of(ticker: str) -> str:
 
 def load(d: str):
     pnl = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))  # arm -> day -> cell -> $
+    cnt = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))  # arm -> day -> cell -> settled markets
     days, arms = set(), set()
     for f in sorted(os.listdir(d)):
         m = re.match(r'^d(\d\d)-([A-Za-z0-9]+)\.json(\.gz)?$', f)
@@ -50,7 +51,8 @@ def load(d: str):
         pnl[arm][day]  # mark the arm as run that day, even with no settled markets
         for t, v in bt.items():
             pnl[arm][day][cell_of(t)] += float(v)
-    return pnl, sorted(days), sorted(arms)
+            cnt[arm][day][cell_of(t)] += 1
+    return pnl, cnt, sorted(days), sorted(arms)
 
 
 def main() -> None:
@@ -58,7 +60,8 @@ def main() -> None:
     src, out = args[0], args[1]
     control = args[args.index('--control') + 1] if '--control' in args else 'C0'
     noise = args[args.index('--noise') + 1] if '--noise' in args else 'P500'
-    pnl, days, arms = load(src)
+    pnl, cnt, days, arms = load(src)
+    MIN_MARKETS = 10  # a cell needs at least this many settled markets (picked arm, all days) to be SOLID
     full = [a for a in arms if all(day in pnl[a] for day in days)]
     missing = sorted(set(arms) - set(full))
     if control not in full:
@@ -113,33 +116,35 @@ def main() -> None:
         pos = sum(1 for g in gains if g > 0)
         sd = noise_sd(c)
         floor = 2 * sd * math.sqrt(len(days)) if sd is not None else None
-        solid = top != control and gain > 0 and (floor is None or gain > floor) and pos >= math.ceil(len(days) / 2) and stab >= 5 / 7
+        nmk = sum(cnt[top][d].get(c, 0) for d in days)
+        solid = nmk >= MIN_MARKETS and top != control and gain > 0 and (floor is None or gain > floor) and pos >= math.ceil(len(days) / 2) and stab >= 5 / 7
         ctl = tot(control, c, days)
         map_oos += oos
         ctl_oos += ctl
-        rows.append((c, top, stab, gain, pos, floor, solid, ctl, tot(top, c, days)))
+        rows.append((c, top, stab, gain, pos, floor, solid, ctl, tot(top, c, days), nmk, sum(cnt[control][d].get(c, 0) for d in days)))
     w('## Cell map, walk-forward (pick on the other days, score the held-out day)')
     w(f'Cell-map total held out: {map_oos:+.2f} vs control {ctl_oos:+.2f} ({(map_oos - ctl_oos):+.2f}; '
       f'{map_oos / (HOURS_PER_DAY * len(days)):+.2f}/h vs {ctl_oos / (HOURS_PER_DAY * len(days)):+.2f}/h). '
       'Cells are scored apart, so this ignores shared bankroll and pacer effects: a whole-bot replay confirms it.')
     w('')
-    w('| cell | picked | folds won | held-out gain vs control | days ahead | noise floor (2 SD) | control $ | picked $ (all days) | verdict |')
+    w('| cell | picked | folds won | held-out gain vs control | days ahead | noise floor (2 SD) | control $ (markets) | picked $ (markets) | verdict |')
     w('|---|---|---|---|---|---|---|---|---|')
     for r in sorted(rows, key=lambda r: -r[3]):
-        c, top, stab, gain, pos, floor, solid, ctl, pt = r
-        verdict = 'SOLID' if solid else ('keep control' if top == control else 'not proven')
-        w(f'| {c} | {top} | {stab:.0%} | {gain:+.2f} | {pos}/{len(days)} | {"-" if floor is None else f"{floor:.2f}"} | {ctl:+.2f} | {pt:+.2f} | {verdict} |')
+        c, top, stab, gain, pos, floor, solid, ctl, pt, nmk, nctl = r
+        verdict = 'SOLID' if solid else ('keep control' if top == control else ('too few markets' if nmk < MIN_MARKETS else 'not proven'))
+        w(f'| {c} | {top} | {stab:.0%} | {gain:+.2f} | {pos}/{len(days)} | {"-" if floor is None else f"{floor:.2f}"} | {ctl:+.2f} ({nctl}) | {pt:+.2f} ({nmk}) | {verdict} |')
     w('')
     # Placebo check: each real arm beside its placebo, per cell where it won.
     w('## Placebos beside what they mimic (all days, all cells)')
-    for real, plc in (('C0', 'PSH'), ('NL04', 'NLM'), ('C0', 'P500')):
+    for real, plc in (('C0', 'PSH'), ('NL04', 'NLM'), ('C0', 'P500'), ('W0', 'WPSH'), ('WNL04', 'WNLM'), ('W0', 'WP500')):
         if real in full and plc in full:
             a = sum(tot(real, c, days) for c in cells); b = sum(tot(plc, c, days) for c in cells)
             w(f'- {real} {a:+.2f} vs {plc} {b:+.2f}')
-    if 'NOANC' in full and 'PSH' in full:
-        a = sum(tot(control, c, days) for c in cells) - sum(tot('NOANC', c, days) for c in cells)
-        b = sum(tot('PSH', c, days) for c in cells) - sum(tot('NOANC', c, days) for c in cells)
-        w(f'- anchor gain over no anchor: real {a:+.2f}, shuffled placebo {b:+.2f}')
+    for base, noanc, psh in (('C0', 'NOANC', 'PSH'), ('W0', 'WNOANC', 'WPSH')):
+        if all(x in full for x in (base, noanc, psh)):
+            a = sum(tot(base, c, days) - tot(noanc, c, days) for c in cells)
+            b = sum(tot(psh, c, days) - tot(noanc, c, days) for c in cells)
+            w(f'- anchor gain over no anchor on {base}: real {a:+.2f}, shuffled placebo {b:+.2f}')
     w('')
     solid = [r for r in rows if r[6]]
     w(f'## Solid candidates: {len(solid)}')

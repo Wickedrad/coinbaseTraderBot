@@ -187,7 +187,8 @@ jobs:
           # Earlier batches' arms can join this score: '# score-with: <sha> ...' lines in the batch file.
           for s in $(grep -oE '^# score-with:.*' .github/cell-batch.txt | cut -d: -f2-); do rclone copy "gdrive:kalshi-bot-archive/simulated/cell-sweep/$s" cs --include '*.json.gz' --transfers 8 --ignore-existing; done
           echo "$(ls cs | wc -l) arm-day outputs"
-          python3 research/cellSweep.py cs cs-report.md || { echo "scoring failed"; exit 1; }
+          CTL=$(grep -oE '^# control: *[A-Za-z0-9]+' .github/cell-batch.txt | awk '{print $3}' | head -1); NZ=$(grep -oE '^# noise: *[A-Za-z0-9]+' .github/cell-batch.txt | awk '{print $3}' | head -1)
+          python3 research/cellSweep.py cs cs-report.md --control "${CTL:-C0}" --noise "${NZ:-P500}" || { echo "scoring failed"; exit 1; }
           rclone copyto cs-report.md "$SRC/report.md"; rclone copyto cs-report.json "$SRC/report.json"
           { echo "**Cell sweep score** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · REPLAY_NOTE=cell-score"; echo; head -c 60000 cs-report.md; } > comment.md
           jq -n --rawfile body comment.md '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
