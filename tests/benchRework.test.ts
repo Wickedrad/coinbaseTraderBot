@@ -89,3 +89,16 @@ test('calm bands for the dip buy and the formula vote: parsed, off by default, m
   assert.equal(loadConfig({ ...tok, SINUOUS_DIP_CALM_RV: '0.7,0.3' }).sinuousExit.dipCalmRvBp, undefined, 'lo > hi ignored');
   assert.equal(loadConfig({ ...tok, PROBATION_GP_CALM_RV: 'x' }).probation.gpCalmRvBp, undefined, 'malformed ignored');
 });
+
+test('model skill weight: the tails cap applies only while the market prices a side under the tail', () => {
+  const p = { on: true, min: 0.25, tails: 0.5, tail: 0.3 };
+  const st = (pm: number | null) => ({ rv1h: null, volRatio: null, pMarket: pm });
+  assert.equal(modelSkillWeight({ pWorse: null }, p, st(0.8)), 0.5, 'NO side under 30c');
+  assert.equal(modelSkillWeight({ pWorse: null }, p, st(0.2)), 0.5, 'YES side under 30c');
+  assert.equal(modelSkillWeight({ pWorse: null }, p, st(0.5)), 1, 'middle: untouched');
+  assert.equal(modelSkillWeight({ pWorse: null }, p, st(null)), 1, 'no market price: untouched');
+  assert.equal(modelSkillWeight({ pWorse: 0.05, drift: { alarm: true } }, p, st(0.9)), 0.25, 'never looser than the measured weight');
+  const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), MODEL_SKILL_W_TAILS: '0.5', MODEL_SKILL_TAIL: '0.25' }).strategy.modelSkill;
+  assert.deepEqual([c.tails, c.tail], [0.5, 0.25]);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.modelSkill.tails, -1, 'off by default');
+});

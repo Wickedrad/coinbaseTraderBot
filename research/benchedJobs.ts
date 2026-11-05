@@ -21,21 +21,32 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 /** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
  *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
 export const VARIANTS: Record<string, Record<string, string>> = {
+  // Round 6 (Nov 5): what are we getting wrong (Steven, Nov 1). Paper Oct 28 - Nov 3: buying the side priced under 30c
+  // against a favourite lost most (15-min NO under 30c: 324 markets, -$211, 26% won; held audit c75809e). The model's
+  // weight against the market is capped while the market is in the tails (MODEL_SKILL_W_TAILS, MODEL_SKILL_TAIL).
+  baseline: {},
+  placebo: { RS_TICK_PHASE_MS: '500' },
+  tails50: { MODEL_SKILL_W_TAILS: '0.5' },
+  tails25: { MODEL_SKILL_W_TAILS: '0.25' },
+  tails75: { MODEL_SKILL_W_TAILS: '0.75' },
+  tails50_t20: { MODEL_SKILL_W_TAILS: '0.5', MODEL_SKILL_TAIL: '0.2' },
+  tails50_lat500: { MODEL_SKILL_W_TAILS: '0.5', RS_LATENCY_MS: '500' },
+  tails50_calm_tp1c: { MODEL_SKILL_W_TAILS: '0.5', MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', TP_LEVEL: '0', PROFIT_TARGET_CENTS: '1', PROFIT_TARGET_PCT: '0' },
+};
+
+/** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
+export const LATER: Record<string, Record<string, string>> = {
+  // Round 5 (Nov 4, run 41850972752):
   // Round 5 (Nov 4): take-profit. Paper's held-to-settlement audit (Oct 27 - Nov 2, 519 markets ridden, -$821; held-audit.yml
   // run 41850442635): 199 of 413 losers were in profit after the exit fee at some point (median +6.5c, ~10 min left); closing
   // at the first break-even after fees would have made +$261, at +2c +$151, and the fair-value confirm made every rule worse
   // (-$77..-$135: the coin's fair value overrates the side held). So: a break-even floor without the confirm, on 200 days.
-  baseline: {},
   tp_be: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
   tp_1c: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '1', PROFIT_TARGET_PCT: '0' },
   tp_be_l1: { TP_LEVEL: '1', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
   tp_be_lat500: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0', RS_LATENCY_MS: '500' },
   // Price/edge candidate carried for the record (round 4: +0.02/h [-0.01, +0.05], 4 of 7 blocks, NOT PROVEN).
   skill_b05_tp_be: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
-};
-
-/** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
-export const LATER: Record<string, Record<string, string>> = {
   // Round 4 (Nov 4, run 41759673255):
   // Round 4 (Nov 4), module-first (Steven, Nov 2): the 200-day run (41496168480) found every model-trusting change winning
   // only in calming markets with hourly vol near 0.5 bp a minute (vol0.5bp|calming: skill 0.75 +77, GP full +86, dip buy
