@@ -54,19 +54,6 @@ export interface MatchMarket {
   /** The whole position's profit after fees if sold at the bid now, the entry fee in (the quota snipe's measure on every
    *  contract type, bot/strategy/fairValueStrategy.ts positionNetAtBid); undefined when flat or unknown. */
   netAtBid?: number;
-  /** The lowest price at which selling the whole position now nets at least zero after the taker exit fee, the entry fee in
-   *  (engine-computed from the book's cost and the series' fees); undefined when flat or unknown. The profit-taking exits
-   *  never sell below it: entry + 1 tick alone can realize a loss after fees (Steven: take profit after fees). */
-  breakEven?: number;
-  /** Research only (research/tennisTaSim.ts; the engine never sets it): the position's cost a contract with its entry fee
-   *  in ((fees - netCash) / yes), for the loser stop. */
-  costPer?: number;
-}
-
-/** The lowest exit price that takes a profit: one tick over the entry and at or over the break-even after fees. */
-function profitFloor(m: MatchMarket, entry: number, tick: number): number {
-  const be = m.breakEven !== undefined && Number.isFinite(m.breakEven) ? Math.ceil(m.breakEven / tick - 1e-9) * tick : -Infinity;
-  return round(Math.max(entry + tick, be), 4);
 }
 
 export type MatchPhase = 'pre' | 'underdog_window' | 'live' | 'late' | 'done';
@@ -101,7 +88,7 @@ export interface TennisPlan {
   postOnly: boolean;
   reduceOnly: boolean;
   timeInForce: 'good_till_canceled' | 'immediate_or_cancel';
-  leg: 'underdog_entry' | 'underdog_tp' | 'underdog_trail' | 'underdog_late' | 'underdog_cut' | 'underdog_stop' | 'fav_entry' | 'fav_trail' | 'fav_stop' | 'quota_snipe' | 'end_cut' | 'loser_stop';
+  leg: 'underdog_entry' | 'underdog_tp' | 'underdog_trail' | 'underdog_late' | 'underdog_cut' | 'underdog_stop' | 'fav_entry' | 'fav_trail' | 'fav_stop' | 'quota_snipe' | 'end_cut';
   why: string;
 }
 
@@ -110,6 +97,9 @@ const GRAND_SLAMS = /(australian open|roland garros|french open|wimbledon|us ope
 const mid = (q: Quote) => (q.bid !== undefined && q.ask !== undefined && q.ask >= q.bid ? (q.bid + q.ask) / 2 : undefined);
 
 /** Per-match state machine. */
+/** How long a progress reading must hold before the loser cut and the entry block take it as reached (MatchTracker.progressHigh). */
+export const PROGRESS_LATCH_MS = 120_000;
+
 export class MatchTracker {
   liveSince?: number;
   underdogTicker?: string;
@@ -125,11 +115,22 @@ export class MatchTracker {
   /** The price each trail starts at while the bid is still below it (PACER_FLOOR: a set price above the quota). */
   readonly trailStart = new Map<string, number>();
   readonly peak = new Map<string, number>();
-  /** The furthest the match's progress has reached. Progress falls back when the price returns toward 50/50 (a comeback),
-   *  so the loser cut and the entry block go by this, not the reading of the tick (TENNIS_END_LOSER_CUT). */
+  /** The furthest progress the match has held for PROGRESS_LATCH_MS (every reading in that span at least this). Progress
+   *  falls back when the price returns toward 50/50 (a comeback), so the loser cut and the entry block go by this, not the
+   *  reading of the tick (TENNIS_END_LOSER_CUT); one tick's thin or one-sided book cannot set it. */
   progressHigh = 0;
-  /** Research only (research/tennisTaSim.ts placebo arms): replaces each confluence reading; unset in the bot. */
-  signalHook?: (sig: { score: number; momentum: boolean; flow: boolean; depth: boolean; crossMarket: boolean }, ticker: string, now: number) => { score: number; momentum: boolean; flow: boolean; depth: boolean; crossMarket: boolean };
+  private readonly progressSeen: Array<{ ts: number; p: number }> = [];
+
+  /** Takes this tick's progress reading and returns progressHigh. */
+  latchProgress(now: number, p: number): number {
+    const seen = this.progressSeen;
+    if (seen.length && now < seen[seen.length - 1].ts) seen.length = 0;
+    seen.push({ ts: now, p });
+    // Keep one reading at or before the span's start, so the span is known to be covered.
+    while (seen.length > 1 && seen[1].ts <= now - PROGRESS_LATCH_MS) seen.shift();
+    if (seen[0].ts <= now - PROGRESS_LATCH_MS) this.progressHigh = Math.max(this.progressHigh, Math.min(...seen.map((x) => x.p)));
+    return this.progressHigh;
+  }
   /** Last tennis-confluence reading per held market (dashboard). */
   readonly signals = new Map<string, { score: number; momentum: boolean; flow: boolean; depth: boolean; crossMarket: boolean }>();
   private history: Array<{ ts: number; p: number }> = [];
@@ -287,8 +288,7 @@ export function tennisConfluence(t: MatchTracker, m: MatchMarket, other: MatchMa
   const flow = m.flow !== undefined && m.flow >= cfg.confFlow - 1e-9;
   const depth = m.book !== undefined && m.book.imbalance(3) >= cfg.confDepth - 1e-9;
   const crossMarket = oth !== undefined && oth <= -cfg.confOpponentCents + 1e-9;
-  const sig = { score: [momentum, flow, depth, crossMarket].filter(Boolean).length, momentum, flow, depth, crossMarket };
-  return t.signalHook ? t.signalHook(sig, m.ticker, now) : sig;
+  return { score: [momentum, flow, depth, crossMarket].filter(Boolean).length, momentum, flow, depth, crossMarket };
 }
 
 /** Sell price that the visible bids can absorb for the whole position, never below `minPx`. */
@@ -328,7 +328,7 @@ function huntExit(t: MatchTracker, m: MatchMarket, other: MatchMarket | undefine
     t.armed.add(m.ticker);
     t.armedAt.set(m.ticker, now);
   }
-  const floorPx = profitFloor(m, entry, tick);
+  const floorPx = round(entry + tick, 4);
   const sell = (why: string): TennisPlan[] => {
     const px = nextFillableExit(m, floorPx);
     if (px === undefined) { notes.push(`${leg}: exit wanted but bid ${bid} is not in profit; holding`); return []; }
@@ -337,7 +337,7 @@ function huntExit(t: MatchTracker, m: MatchMarket, other: MatchMarket | undefine
   const peak = Math.max(t.peak.get(m.ticker) ?? 0, bid ?? 0);
   t.peak.set(m.ticker, peak);
   let stop = Math.max(target, round(peak - cfg.huntTrailTicks * tick, 4));
-  if (m.book && cfg.trailRatchet !== false) {
+  if (m.book) {
     let r = t.ratchets.get(m.ticker);
     if (!r) { r = new LiquidityRatchet({ minFillRatio: cfg.trailMinFillRatio, minWallAgeMs: cfg.trailMinWallAgeSec * 1000, slippageTicks: cfg.trailSlippageTicks }); t.ratchets.set(m.ticker, r); }
     const out = r.evaluate({ position: m.position, book: m.book, now, tick, fees: { takerMultiplier: 1, makerMultiplier: 1 }, floor: target });
@@ -404,9 +404,6 @@ export interface TennisProfitRules {
   floors?: QuotaFloors;
   /** PACER_FLOOR_TICKS: the floor's cushion, price ticks a contract. */
   floorTicks?: number;
-  /** Research only (the tennis TA trial's loser-stop knob; the engine never sets it): sell at the bid once the profit
-   *  after fees falls to -loserStopFrac x the position's cost (MatchMarket.costPer). 0 or unset = off. */
-  loserStopFrac?: number;
 }
 
 /**
@@ -421,8 +418,9 @@ export function decideMatch(t: MatchTracker, s: MatchSnapshot, cfg: TennisConfig
  * Steven's profit rules (Oct 29-30), on tennis as on every contract type. Inside the last share of the match a position in
  * profit after fees rides to settlement: no exit sells it. One that is not is never held to settlement: with endLoserCut it is
  * sold at the bid (end_cut), and no entry is placed from endEntryMargin before it; without it, it keeps the legs' exits (the
- * stops, the late cut). The cut and the entry block go by the furthest progress the match has reached: a comeback pulls the
- * progress back below the last share just as a favorite goes under water, and the position must not ride that to settlement.
+ * stops, the late cut). The cut and the entry block go by the furthest progress the match has held for PROGRESS_LATCH_MS (2
+ * min): a comeback pulls the progress back below the last share just as a favorite goes under water, and the position must
+ * not ride that to settlement, while one tick's thin book must not start the cut for the rest of the match.
  * Elsewhere the quota snipe sells a position whose whole profit after fees at the bid covers what the clock hour needs,
  * whatever the legs planned for it (the hunt, the take-profit, the favorite's hold); a thin bid takes what it can and the
  * rest is judged again next tick. Under PACER_FLOOR (Steven, Oct 31) a leg aiming higher keeps the position instead, the
@@ -432,8 +430,7 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
   const frac = r.settleFrac ?? 0;
   const prog = t.liveSince !== undefined ? t.progress(s.now, s.markets) : 0;
   const lastShare = frac > 0 && prog >= 1 - frac - 1e-9;
-  t.progressHigh = Math.max(t.progressHigh, prog);
-  const high = t.progressHigh;
+  const high = t.latchProgress(s.now, prog);
   const cutShare = frac > 0 && high >= 1 - frac - 1e-9;
   const mode = r.floorMode ?? 'off';
   if (r.endLoserCut && frac > 0 && high >= 1 - frac - (r.endEntryMargin ?? 0) - 1e-9) {
@@ -458,10 +455,6 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
       out.plans = out.plans.filter(others);
       out.plans.push({ ticker: m.ticker, side: 'ask', price: bid, count: m.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'end_cut',
         why: `match ${at} (its last ${(frac * 100).toFixed(0)}%), ${net < 0 ? '-' : '+'}$${Math.abs(net).toFixed(2)} after fees at bid ${bid}: not in profit, not held to settlement` });
-    } else if (r.loserStopFrac && r.loserStopFrac > 0 && net !== undefined && m.costPer !== undefined && m.quote.bid !== undefined && net <= -r.loserStopFrac * m.costPer * m.position + 1e-9) {
-      out.plans = out.plans.filter(others);
-      out.plans.push({ ticker: m.ticker, side: 'ask', price: m.quote.bid, count: m.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'loser_stop',
-        why: `-$${Math.abs(net).toFixed(2)} after fees is ${(r.loserStopFrac * 100).toFixed(0)}% of the cost or worse: loser stop` });
     } else if (r.pacerUsd !== undefined && net !== undefined && m.quote.bid !== undefined) {
       const bid = m.quote.bid;
       const selling = out.plans.some((p) => p.ticker === m.ticker && p.side === 'ask' && p.timeInForce === 'immediate_or_cancel');
@@ -529,9 +522,9 @@ function decideLegs(t: MatchTracker, s: MatchSnapshot, cfg: TennisConfig, budget
       plans.push({ ticker: ud.ticker, side: 'ask', price: ud.quote.bid, count: ud.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'underdog_cut', why: `match ${(prog * 100).toFixed(0)}% done: underdogs usually lose late, selling at ${ud.quote.bid}` });
       return { phase, plans, notes };
     }
-    if (prog >= cfg.underdogLateProgress && ud.quote.bid !== undefined && ud.quote.bid >= profitFloor(ud, entry, tick) - 1e-9) {
-      // Past the early phase: no more hunting, take the next available exit in profit after fees.
-      const px = nextFillableExit(ud, profitFloor(ud, entry, tick));
+    if (prog >= cfg.underdogLateProgress && ud.quote.bid !== undefined && ud.quote.bid >= entry + tick - 1e-9) {
+      // Past the early phase: no more hunting, take the next available exit in profit.
+      const px = nextFillableExit(ud, round(entry + tick, 4));
       if (px !== undefined) {
         plans.push({ ticker: ud.ticker, side: 'ask', price: round(px, 4), count: ud.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'underdog_late', why: `match ${(prog * 100).toFixed(0)}% done: taking the profit while the underdog is still ahead` });
         return { phase, plans, notes };

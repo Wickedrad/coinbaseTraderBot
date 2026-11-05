@@ -77,7 +77,14 @@ import { loadKalshiTrades, type KalshiHistMarket, type KalshiTrade } from './kal
 import { anchorsIn, dominanceAnchors, DominanceReplay, type DomState } from './dominanceReplay';
 import type { Candle } from '../../bot/ta/indicators';
 
-export const REPLAY_VERSION = 6;
+// 7 (Nov 5): perp quotes per contract like Kalshi's live quotes (were per coin); also rebuilds days cached before the
+// requote's 0.1c tail tick (797853e) and the crossed-candle requote fix (88c6ebf), which changed the output without a
+// version change. 6 is the tennis candle-quote fix (PR #286): whichever merges second takes the next unused number.
+export const REPLAY_VERSION = 7;
+/** Kalshi perp contract sizes (units of the coin a contract), for a replay without the bot's own recordings to read them
+ *  from: the perp TA thread's fidelity runs over the Oct 21 - Nov 3 recordings (each market's mid against Coinbase spot:
+ *  BTC 0.0001, ETH 0.001, SOL 0.1, XRP 1). A coin with no known size is quoted per coin (1), as before Nov 5. */
+export const PERP_CONTRACT_SIZE: Record<string, number> = { BTC: 0.0001, ETH: 0.001, SOL: 0.1, XRP: 1 };
 const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
 const TFS: Array<{ tf: string; ms: number }> = [{ tf: '1m', ms: MIN }, { tf: '5m', ms: 5 * MIN }, { tf: '15m', ms: 15 * MIN }, { tf: '1h', ms: HOUR }, { tf: '1d', ms: DAY }];
 const BACKFILL = 300;
@@ -363,6 +370,14 @@ export async function perpSpecsFromRecordings(dir: string, assets: string[]): Pr
   return out;
 }
 
+/** The tick a replayed perp quote is rounded to. The recorded tick is set for today's per-contract prices (BTC ~$10 a
+ *  contract); on an old day whose quote is far smaller (ETH 2019: ~$0.15 a contract) it would be most of the spread, so there
+ *  the tick is the largest power of ten within the half-spread (`half`, a fraction), keeping the recorded spread. */
+export function replayPerpTick(tick: number | undefined, quote: number, half: number): number | undefined {
+  if (tick === undefined || !(quote > 0) || !(half > 0) || tick <= quote * half + 1e-12) return tick;
+  return Number(`1e${Math.floor(Math.log10(quote * half))}`);
+}
+
 function roundTo(x: number, tick: number | undefined, dir: -1 | 1): number {
   if (!tick || !(tick > 0)) return x;
   return (dir < 0 ? Math.floor(x / tick) : Math.ceil(x / tick)) * tick;
@@ -581,6 +596,8 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
       let fi = 0;
       const spec = o.perpSpecs?.[a] ?? {};
       const half = (spec.halfSpreadBps ?? 1) / 1e4;
+      const cs = spec.contractSize ?? PERP_CONTRACT_SIZE[a] ?? 1;
+      const tickFor = (pv: number) => replayPerpTick(spec.tickSize, pv, half);
       const perpBy = new Map(perpBars.map((c) => [c.ts, c]));
       const seed = hashStr(a);
       let m5: Candle[] = [];
@@ -605,9 +622,10 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
           if (px) px[slot0 + k] = v;
           if (ixs && sgs) { ixs[slot0 + k] = iv; sgs[slot0 + k] = s.vMkt && s.vMkt > 0 ? Math.sqrt(s.vMkt) : NaN; }
           if (pprints) {
-            const pv = pprints[k][1];
-            ev.push({ t, k: 'perp', ticker: spec.ticker ?? `${a}-PERP`, asset: a, ts: t, bid: roundTo(pv * (1 - half), spec.tickSize, -1), ask: roundTo(pv * (1 + half), spec.tickSize, 1), last: pv, mark: pv,
-              fundingRate: rate, nextFundingTs: next, openInterest: openInterestAt(s.oi, t), contractSize: spec.contractSize ?? 0.001, tickSize: spec.tickSize, fractional: spec.fractional ?? true, leverage: spec.leverage ?? 10, hist: 1 });
+            // Quoted per contract, as Kalshi quotes its perps live (the coin price x the contract size).
+            const pv = pprints[k][1] * cs, tick = tickFor(pv);
+            ev.push({ t, k: 'perp', ticker: spec.ticker ?? `${a}-PERP`, asset: a, ts: t, bid: roundTo(pv * (1 - half), tick, -1), ask: roundTo(pv * (1 + half), tick, 1), last: pv, mark: pv,
+              fundingRate: rate, nextFundingTs: next, openInterest: openInterestAt(s.oi, t), contractSize: cs, tickSize: tick, fractional: spec.fractional ?? true, leverage: spec.leverage ?? 10, hist: 1 });
           }
           s.prints.push([t, iv]);
           if (s.prints.length > 80) s.prints.splice(0, s.prints.length - 64);
@@ -845,7 +863,7 @@ function tennisEvents(kalshiDir: string, series: string[], day: string, d0: numb
           ...m.candles.filter((c) => c.ts >= begin && c.ts <= m.closeTime).map((c): Step => ({ t: c.ts, c })),
           ...(tapes.get(m.ticker) ?? []).filter((x) => x[0] >= begin && x[0] <= m.closeTime).map((x): Step => ({ t: x[0], tr: x })),
         ].sort((a, b) => a.t - b.t || (a.c ? 0 : 1) - (b.c ? 0 : 1));
-        let spread = 0.02, booked = 0, lastQuote = '';
+        let spread = 0.02, booked = 0;
         const book = (t: number, bid: number, ask: number) => {
           const b = Math.round(bid * 100) / 100, a = Math.round(ask * 100) / 100;
           if (!(b >= 0.01 && a <= 0.99 && a > b)) return;
@@ -855,13 +873,7 @@ function tennisEvents(kalshiDir: string, series: string[], day: string, d0: numb
         for (const st of steps) {
           if (st.c) {
             const { bidC, askC } = st.c;
-            // Minute 0 (the market's first candle) is skipped: its quote is the listing's, before anyone traded. A candle
-            // that repeats the last candle's quote is skipped too: Kalshi carries a quiet minute's quote forward, and after
-            // a trade that carried quote would overwrite the book the trade set.
-            if (st.c === m.candles[0]) continue;
-            const q = `${bidC}/${askC}`;
-            if (q === lastQuote) continue;
-            if (bidC !== null && askC !== null && askC > bidC) { lastQuote = q; spread = Math.max(0.01, askC - bidC); book(st.t, bidC, askC); }
+            if (bidC !== null && askC !== null && askC > bidC) { spread = Math.max(0.01, askC - bidC); book(st.t, bidC, askC); }
             continue;
           }
           const [t, price, count, side] = st.tr!;

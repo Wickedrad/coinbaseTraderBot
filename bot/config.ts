@@ -752,8 +752,8 @@ export interface TennisConfig {
   /** TENNIS_END_LOSER_CUT (on): the other half of that rule, nothing is held to settlement unless it is in profit. In the last
    *  share of the match a position not in profit after fees is sold at the bid, and no new entry is placed there (it
    *  would start under water). The favorite leg has no loss exit of its own (TENNIS_FAV_STOP_CENTS is 0 by default). The
-   *  share is settleFrac's, so settleFrac 0 turns the cut off too. Both go by the furthest progress the match has reached
-   *  (a comeback pulls the progress back). */
+   *  share is settleFrac's, so settleFrac 0 turns the cut off too. Both go by the furthest progress the match has held
+   *  for 2 minutes (a comeback pulls the progress back; one tick's thin book does not count). */
   endLoserCut: boolean;
   /** TENNIS_END_ENTRY_MARGIN (0.05): with the cut on, no new entry from this much progress before the last share, so a
    *  position bought just before it has time to cover the spread and fees before it is judged (0.65 with the defaults). */

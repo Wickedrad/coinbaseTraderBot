@@ -119,7 +119,7 @@ test('take model trainer: a signal that moves from momentum to order flow as vol
 /** Perp rows: the label follows the 1h return in calm stretches and the perp premium when volatility turns up. */
 function perpRows(n: number, seed: number): PerpRow[] {
   const r = rng(seed);
-  const iRet = PERP_FEATURES.indexOf('ret_1h_z'), iPrem = PERP_FEATURES.indexOf('perp_premium_bps'), iVol = PERP_FEATURES.indexOf('vol_ratio_15m_4h');
+  const iRet = PERP_FEATURES.indexOf('ret_1h_z'), iPrem = PERP_FEATURES.indexOf('perp_premium_coin_bps'), iVol = PERP_FEATURES.indexOf('vol_ratio_15m_4h');
   const rows: PerpRow[] = [];
   for (let i = 0; i < n; i++) {
     const x = PERP_FEATURES.map(() => NaN);
@@ -143,7 +143,7 @@ test('perps: the gated candidate is walked forward with the others; when it wins
   fs.writeFileSync(file, JSON.stringify(res.params));
   const model = PerpModel.load(file)!;
   assert.ok(model, 'loads');
-  const f = (ret: number, prem: number, vol: number) => ({ ret_1h_z: ret, perp_premium_bps: prem, vol_ratio_15m_4h: vol });
+  const f = (ret: number, prem: number, vol: number) => ({ ret_1h_z: ret, perp_premium_coin_bps: prem, vol_ratio_15m_4h: vol });
   assert.ok(model.predict(f(0, 6, 1.6)).muBps > model.predict(f(0, -6, 1.6)).muBps + 15);
   assert.ok(model.predict(f(1.5, 0, 0.4)).muBps > model.predict(f(-1.5, 0, 0.4)).muBps + 15);
   const cap = 3 * res.params.residStdBps;
