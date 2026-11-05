@@ -2373,7 +2373,7 @@ export class Engine {
       }
     }
     // FV_ENTRY_GATE on the finished plan: the fill model's crosses and paper's training trades open positions too.
-    applyFvGate(plan, fv.pYes, view.position, view.fees, gateCfgFor(S, m.ticker), loserNoEntry(view, S), fixedUsd > 0 ? fixedUsd : band?.max ?? 0);
+    applyFvGate(plan, fv.pYes, view.position, view.fees, gateCfgFor(S, m.ticker), loserNoEntry(view, S) || (S.skipSeries ?? []).some((x) => seriesMatches(x, m.ticker)), fixedUsd > 0 ? fixedUsd : band?.max ?? 0);
     if (this.fillLog) for (const p of plan.place) if (isMakerEntry(p)) this.fillX.set(p, fillInputs(p, fillCtx));
     if (fixedUsd > 0) plan.notes.push(`paper size: ${this.paperSizing()}; the tier, break-even scale and optimal f size live`);
     else if (band) plan.notes.push(`order band: $${band.min}-$${band.max} an order (ORDER_USD_MIN/MAX), the sized stake clamped into it; the tier, loss scale and optimal f do not size it`);

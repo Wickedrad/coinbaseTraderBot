@@ -378,3 +378,13 @@ test('FV_ENTRY_GATE_LONGSHOT_SERIES: the longshot margin only on the listed seri
   assert.ok(!fvGatePasses(0.67, 'no', 0.2, 0.01, gateCfgFor(c, 'KXSOLD-X')));
   assert.ok(fvGatePasses(0.67, 'no', 0.2, 0.01, gateCfgFor(c, 'KXBTCD-X')));
 });
+
+test('STRATEGY_SKIP_SERIES: parsed as a series list; the noEntry path drops every order that opens risk', () => {
+  assert.deepEqual(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_SKIP_SERIES: 'KXDOGE,KXDOGE15M,KXDOGED' }).strategy.skipSeries, ['KXDOGE', 'KXDOGE15M', 'KXDOGED']);
+  const plan = (): StrategyOutput => ({ cancel: [], notes: [], place: [
+    { side: 'bid', price: 0.6, count: 5, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge: 0.1, why: 'cross' },
+    { side: 'ask', price: 0.5, count: 3, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge: 0, why: 'exit' },
+  ] });
+  const p = plan(); applyFvGate(p, 0.9, 0, DEFAULT_FEES, cfg, true);
+  assert.deepEqual(p.place.map((x) => x.purpose), ['exit']);
+});
