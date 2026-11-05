@@ -67,3 +67,11 @@ test('correction audit: slope 1 when the correction is the truth, below 1 when d
   assert.ok(one.edgeCents > 3 && rev.edgeCents < -3, `edge: ${one.edgeCents} ${rev.edgeCents}`);
   assert.ok(dbl.sizeCents > 1.8 * one.sizeCents && dbl.sizeCents <= 2 * one.sizeCents + 1e-9, `size: ${one.sizeCents} ${dbl.sizeCents}`);
 });
+
+test('block bootstrap: a single day falls back to 4-hour blocks, so its CI is finite', async () => {
+  const { blockBootstrap } = await import('../research/snnAblation');
+  const t0 = Date.parse('2026-11-01T00:00:00Z');
+  const ev = Array.from({ length: 48 }, (_, i) => ({ s: (i % 3) - 1 + 0.1, n: 1, day: '2026-11-01', ts: t0 + i * 1_800_000 }));
+  const c = blockBootstrap(ev, 200);
+  assert.ok(Number.isFinite(c.lo) && Number.isFinite(c.hi) && c.lo <= c.mean && c.mean <= c.hi);
+});

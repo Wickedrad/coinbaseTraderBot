@@ -72,15 +72,15 @@ const key = (r: SnnRow) => `${r.ticker}@${r.ts}`;
 /** Per-event paired difference f(candidate) - f(baseline) over rows present in both runs. */
 export function pairedEvent(cand: SnnRow[], base: SnnRow[], f: (r: SnnRow) => number, iters = 2000) {
   const b = new Map(base.map((r) => [key(r), r]));
-  const ev = new Map<string, { s: number; n: number; day: string }>();
+  const ev = new Map<string, { s: number; n: number; day: string; ts: number }>();
   for (const r of cand) {
     const o = b.get(key(r));
     if (!o) continue;
-    const e = ev.get(r.eventKey) ?? { s: 0, n: 0, day: r.day };
+    const e = ev.get(r.eventKey) ?? { s: 0, n: 0, day: r.day, ts: r.ts };
     e.s += f(r) - f(o); e.n++;
     ev.set(r.eventKey, e);
   }
-  return dayBlockBootstrap([...ev.values()].map((e) => ({ day: e.day, x: e.s / e.n })), iters);
+  return blockBootstrap([...ev.values()], iters);
 }
 
 const clipMid = (m: number) => Math.min(0.98, Math.max(0.02, m));
@@ -132,9 +132,16 @@ export function vsMarketBreakdown(rows: SnnRow[], iters = 1000, minEvents = 150)
 
 /** Per-event mean of a per-row quantity, clustered and day-block bootstrapped. */
 export function eventCi(rows: SnnRow[], f: (r: SnnRow) => number, iters = 2000) {
-  const ev = new Map<string, { s: number; n: number; day: string }>();
-  for (const r of rows) { const e = ev.get(r.eventKey) ?? { s: 0, n: 0, day: r.day }; e.s += f(r); e.n++; ev.set(r.eventKey, e); }
-  return dayBlockBootstrap([...ev.values()].map((e) => ({ day: e.day, x: e.s / e.n })), iters);
+  const ev = new Map<string, { s: number; n: number; day: string; ts: number }>();
+  for (const r of rows) { const e = ev.get(r.eventKey) ?? { s: 0, n: 0, day: r.day, ts: r.ts }; e.s += f(r); e.n++; ev.set(r.eventKey, e); }
+  return blockBootstrap([...ev.values()], iters);
+}
+
+/** Day blocks; with a single day, 4-hour blocks instead, so a one-day CI is never NaN (institutional-methods
+ *  review, Nov 5). The hour blocks are narrower than the truth when hours are correlated: read them as a floor. */
+export function blockBootstrap(ev: { s: number; n: number; day: string; ts: number }[], iters: number) {
+  const oneDay = new Set(ev.map((e) => e.day)).size < 2;
+  return dayBlockBootstrap(ev.map((e) => ({ day: oneDay ? `${e.day}T${Math.floor(new Date(e.ts).getUTCHours() / 4)}` : e.day, x: e.s / e.n })), iters);
 }
 
 const conf = (r: SnnRow, useSurprise: boolean) => (useSurprise ? surpriseConfidence(1, r.surprise0, r.surprise) : 1) * (1 - DEFAULT_SNN.govDeltaP * r.G);
