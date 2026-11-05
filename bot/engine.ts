@@ -31,7 +31,7 @@ import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
-import { decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
+import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
@@ -1394,6 +1394,7 @@ export class Engine {
           avgEntry: pos && pos.yes > 0 ? -pos.netCash / pos.yes : undefined,
           // The quota snipe's measure, as on the crypto contracts: the cost basis has the entry fee in.
           netAtBid: pos && pos.yes > 0 ? positionNetAtBid(pos.yes, (pos.fees - pos.netCash) / pos.yes, b, a, md.feesFor(m.ticker)) : undefined,
+          breakEven: pos && pos.yes > 0 ? breakEvenExit(pos.yes, (pos.fees - pos.netCash) / pos.yes, md.feesFor(m.ticker)) : undefined,
           quote: { bid: b?.price, ask: a?.price, bidSize: b?.size, askSize: a?.size },
           book: usable ? book : undefined,
           flow: (() => {
