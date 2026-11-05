@@ -20,6 +20,8 @@ import { clamp, logit, sigmoid } from '../util/num';
 import { readJson, writeJsonAtomic } from '../util/persist';
 
 export interface MarketAnchorConfig {
+  /** Books wider than this (YES dollars) are ignored by the anchor: no learning, raw price (MARKET_ANCHOR_MAX_SPREAD; 0 = off). */
+  maxSpread?: number;
   enabled: boolean;
   /** Fixed weight for every bucket (lab); undefined = learned. */
   fixedW?: number;

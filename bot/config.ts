@@ -1196,6 +1196,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       shuffle: bool(env, 'MARKET_ANCHOR_SHUFFLE', false),
       bySeries: bool(env, 'MARKET_ANCHOR_BY_SERIES', false),
       rawMid: bool(env, 'MARKET_ANCHOR_RAW_MID', false),
+      maxSpread: num(env, 'MARKET_ANCHOR_MAX_SPREAD', 0, 0, 1),
       minW: env.MARKET_ANCHOR_MIN_W !== undefined && env.MARKET_ANCHOR_MIN_W !== '' ? num(env, 'MARKET_ANCHOR_MIN_W', 0, 0, 2) : undefined,
     },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),

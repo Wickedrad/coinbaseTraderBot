@@ -763,7 +763,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         if (ruleShift) pYes = Math.max(0.001, Math.min(0.999, pYes + ruleShift));
       }
       // The market anchor, as the engine applies it (bot/model/marketAnchor.ts).
-      if (anchor) {
+      if (anchor && !((anchor.cfg.maxSpread ?? 0) > 0 && ask.price - bid.price > (anchor.cfg.maxSpread ?? 0))) {
         const pMkt = anchor.cfg.rawMid ? mid : model.marketProbability(mid);
         const actx = { asset: m.asset, sigma: vol.sigmaPerSqrtSec };
         anchor.observe(m.ticker, tauSec, pMkt, pYes, actx);

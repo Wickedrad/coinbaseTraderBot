@@ -2082,7 +2082,10 @@ export class Engine {
     if (trialOn('rules') && ruleShift) pYes = Math.max(0.001, Math.min(0.999, pYes + ruleShift));
     // The market anchor (bot/model/marketAnchor.ts): the price starts from the calibrated mid and keeps the share of its
     // disagreement that has been right before in this time-to-close bucket; the record learns from the raw price.
-    const anchor = this.d.marketAnchor?.cfg.enabled ? this.d.marketAnchor : undefined;
+    // MARKET_ANCHOR_MAX_SPREAD: a wide book's mid is not a price (a 1c bid and 99c ask make a 50c mid), so the anchor neither
+    // learns from nor prices such a book (SNN thread, Nov 5: its history edge came only from those quotes).
+    const anchorMaxSpread = this.d.marketAnchor?.cfg.maxSpread ?? 0;
+    const anchor = this.d.marketAnchor?.cfg.enabled && !(anchorMaxSpread > 0 && ask.price - bid.price > anchorMaxSpread) ? this.d.marketAnchor : undefined;
     if (anchor) {
       st.pBeforeAnchor = pYes;
       st.anchorW = anchor.weight(m.ticker, tauSec);
