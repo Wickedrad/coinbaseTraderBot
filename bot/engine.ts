@@ -26,7 +26,7 @@ import { priceContract, SETTLEMENT_AVG_SEC } from './model/fairValue';
 import { explain, type Driver, type MetaModel } from './model/metaModel';
 import type { Oms, OrderIntent } from './oms/oms';
 import { isLive } from './oms/orderState';
-import { PositionBook } from './oms/positions';
+import { openEntryFee, openSidePrice, PositionBook } from './oms/positions';
 import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
@@ -1220,6 +1220,9 @@ export class Engine {
       // A stale hedge must still be unwound when the binaries it offset are gone, and directional
       // perp positions are flattened (leverage: never sit on them unattended).
       await this.d.hedger?.tick(this.exposures(), { reduceOnly: true, directional: this.perpDirectional('kill switch engaged') });
+      // Steven's rule (Nov 5): nothing is held to settlement unless it is in profit, the kill switch included. A tennis
+      // position not in profit after fees is sold at the bid; one in profit is held.
+      await this.tennisKillExits();
       return;
     }
 
@@ -1299,6 +1302,8 @@ export class Engine {
   // ---- ATP tennis (bot/tennis/tennisStrategy.ts) --------------------------------------
   private readonly matches = new Map<string, MatchTracker>();
   private lastTennisTick = 0;
+  /** The last kill-switch exit attempt per tennis market (tennisKillExits). */
+  private readonly killExitTs = new Map<string, number>();
   /** Live tennis scores (TENNIS_SCORE_FEED=kalshi): milestone per event, last poll, raw payload. */
   private readonly scores = new Map<string, { milestone?: { id: string; type: string } | null; polledTs: number; score?: TennisScore; raw?: unknown; error?: string; pAtPoll?: number; prev?: LiveTennisMatch; breaks?: [number, number]; breaksTotal?: [number, number] }>();
   readonly tennisStatus = new Map<string, { event: string; phase: string; fairA?: number; pA?: number; progress: number; progressDetail?: Record<string, unknown>; score?: TennisScore; scoreRaw?: unknown; liveSince?: number; notes: string[]; tickers: string[]; updatedTs: number; trailingStops?: Record<string, number>; confluence?: Record<string, unknown> }>();
@@ -1393,9 +1398,10 @@ export class Engine {
         const pos = oms.positions.get(m.ticker);
         return {
           ticker: m.ticker, title: m.title, position: pos?.yes ?? 0,
-          avgEntry: pos && pos.yes > 0 ? -pos.netCash / pos.yes : undefined,
-          // The quota snipe's measure, as on the crypto contracts: the cost basis has the entry fee in.
-          netAtBid: pos && pos.yes > 0 ? positionNetAtBid(pos.yes, (pos.fees - pos.netCash) / pos.yes, b, a, md.feesFor(m.ticker)) : undefined,
+          avgEntry: pos && pos.yes > 0 ? openSidePrice(pos) : undefined,
+          // The quota snipe's measure, as on the crypto contracts: the open contracts' cost basis, entry fee in (an earlier
+          // exit's profit is already on the pacer's clock, so it is not counted again).
+          netAtBid: pos && pos.yes > 0 ? positionNetAtBid(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, b, a, md.feesFor(m.ticker)) : undefined,
           quote: { bid: b?.price, ask: a?.price, bidSize: b?.size, askSize: a?.size },
           book: usable ? book : undefined,
           flow: (() => {
@@ -1416,7 +1422,7 @@ export class Engine {
       // (TENNIS_NO_EXIT_BEFORE_END_FRAC, 30%, by its progress: the live score against the format's sets, else the time and
       // information clocks) riding in profit.
       const out = decideMatch(tracker, { event, now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score, fairA }, T,
-        { bankroll, tennisRisk: totals.total, matchRisk: totals.window }, ms[0].tickSize, { pacerUsd: this.pacer.neededUsd(now), settleFrac: T.settleFrac, floorMode: this.d.cfg.strategy.pacer.floor, floors: this.quotaFloors,
+        { bankroll, tennisRisk: totals.total, matchRisk: totals.window }, ms[0].tickSize, { pacerUsd: this.pacer.neededUsd(now), settleFrac: T.settleFrac, endLoserCut: T.endLoserCut, endEntryMargin: T.endEntryMargin, floorMode: this.d.cfg.strategy.pacer.floor, floors: this.quotaFloors,
           floorTicks: this.d.cfg.strategy.pacer.floorTicks });
       if (tradeable) for (const p of out.plans) if (p.leg === 'quota_snipe') this.d.audit.write('pacer', { event: 'snipe', ticker: p.ticker, book: 'tennis', why: p.why, count: p.count, price: p.price, ...this.pacer.status(now) });
       // Exit-in-profit curve (strategy/sinuousExit.ts) on each held player market: a take-profit (the target, the
@@ -1443,7 +1449,7 @@ export class Engine {
           const g = curve.check(p.ticker, {
             sidePrice: p.price, count: p.count, exitFeePer: orderFee(p.count, p.price, true, md.feesFor(p.ticker)) / p.count,
             entrySidePrice: mk.avgEntry, entryFeePer: entryFeePer(p.ticker, mk.position),
-            protective: trailBroken || p.leg === 'underdog_cut' || p.leg === 'underdog_stop' || p.leg === 'fav_stop',
+            protective: trailBroken || p.leg === 'underdog_cut' || p.leg === 'underdog_stop' || p.leg === 'fav_stop' || p.leg === 'end_cut',
           }, now);
           if (g.note) out.notes.push(g.note);
           return g.allow;
@@ -1492,6 +1498,37 @@ export class Engine {
     if (ended.length) void this.d.snn?.units.tennis?.host.remove(ended);
   }
 
+  /** The kill switch stops every new order, but Steven's rule (Nov 5) holds nothing to settlement unless it is in profit: a
+   *  held tennis position whose whole profit after fees at the bid (entry fee in) is not positive is sold at the bid,
+   *  reduce-only and immediate-or-cancel (the gateway lets only that through: RiskContext.killExit). A position in profit
+   *  is held. At most one attempt per market every 30 s; tracking-only tennis (live without TENNIS_LIVE) never trades. */
+  private async tennisKillExits(): Promise<void> {
+    const { cfg, md, oms } = this.d;
+    const T = cfg.tennis;
+    const now = this.now();
+    if (!T.enabled || !(cfg.mode !== 'live' || T.live)) return;
+    for (const m of md.activeMarkets(now)) {
+      if (m.kind !== 'match') continue;
+      const pos = oms.positions.get(m.ticker);
+      if (!pos || !(pos.yes > 0)) continue;
+      if (now - (this.killExitTs.get(m.ticker) ?? -Infinity) < 30_000) continue;
+      if (oms.liveOrders().some((o) => o.ticker === m.ticker && isLive(o) && !o.cancelRequested)) continue;
+      const book = md.book(m.ticker);
+      if (!this.bookUsable(book, now)) continue;
+      const b = book.bestBid(), a = book.bestAsk();
+      // The open contracts' own cost, entry fee in (an earlier exit's profit is not counted again: bot/oms/positions.ts).
+      const net = positionNetAtBid(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, b, a, md.feesFor(m.ticker));
+      if (!b || net === undefined || net > 1e-9) continue;
+      this.killExitTs.set(m.ticker, now);
+      const event = m.eventTicker ?? m.ticker.slice(0, m.ticker.lastIndexOf('-'));
+      const why = `kill switch engaged: ${net < 0 ? '-' : '+'}$${Math.abs(net).toFixed(2)} after fees at bid ${b.price}, not in profit, not held to settlement`;
+      const plan: OrderPlan = { side: 'ask', price: b.price, count: pos.yes, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge: 0, why: `tennis kill_exit: ${why}` };
+      const decisionId = crypto.randomUUID();
+      this.d.audit.write('decision', { decisionId, ticker: m.ticker, strategy: 'tennis', event, leg: 'kill_exit', why, price: b.price, count: pos.yes, side: 'ask' });
+      await this.placeChecked(m, plan, a ? (b.price + a.price) / 2 : b.price, decisionId, { event, killExit: true });
+    }
+  }
+
   /** Directional perp targets for the executor, or undefined without a trader. `halt` flattens. */
   private perpDirectional(halt?: string): ((c: DirectionalContext) => Promise<import('./perps/hedger').DirTarget[]>) | undefined {
     const t = this.d.perpTrader;
@@ -1524,7 +1561,7 @@ export class Engine {
     const f = this.d.md.perpFeed;
     const markets = [...this.d.md.features.perps.byAsset.entries()].map(([asset, s]) => {
       const ix = this.d.md.index.get(asset)?.latest()?.value;
-      const p = s.price(now);
+      const p = s.coinPrice(now, ix);
       return { asset, ticker: s.latest?.ticker, bid: s.latest?.bid, ask: s.latest?.ask, premiumBps: p && ix ? 1e4 * Math.log(p / ix) : null, fundingRate: s.latest?.fundingRate ?? null, nextFundingTs: s.latest?.nextFundingTs ?? null, contractSize: s.latest?.contractSize ?? null, leverage: s.latest?.leverage ?? null };
     });
     return {
@@ -2157,7 +2194,9 @@ export class Engine {
       this.d.scoreboard.record(m.ticker, m.asset, m.closeTime, { market: pMarket, fair_value: fv.pYes, meta_model: pred.p, bot_price: pYes, snn: blended.pSnn, ta_tilt: taShiftFull !== undefined ? clampP(pred.p + taShiftFull) : undefined }, now);
     }
     const pos = oms.positions.get(m.ticker);
-    const entrySidePrice = pos && pos.yes > 0 ? -pos.netCash / pos.yes : pos && pos.yes < 0 ? 1 - pos.netCash / -pos.yes : undefined;
+    // The open contracts' price (an earlier exit's profit is on the pacer's clock already): the snipe, the take-profit and
+    // the ride-to-settlement judge them, not the market's whole P&L.
+    const entrySidePrice = openSidePrice(pos);
     const tier = this.tier();
     const rs = this.riskScale('crypto');
     // The regime scale (market state: volatility, a recent change point, correlated coins held) joins the risk scale,
@@ -2191,7 +2230,7 @@ export class Engine {
       tauSec, noEntryBeforeCloseSec: R.noEntryBeforeCloseSec, fastMove, tickSize: m.tickSize, fees: md.feesFor(m.ticker),
       restingBid, restingAsk, nowSec: Math.floor(now / 1000), closeSec: Math.floor(m.closeTime / 1000),
       pMarket, pStd: pred.std, makerBuffer: this.makerBuffer(), entrySidePrice: entrySidePrice !== undefined && entrySidePrice > 0 && entrySidePrice < 1 ? entrySidePrice : undefined,
-      entryFeePerContract: pos && Math.abs(pos.yes) > 1e-9 ? pos.fees / Math.abs(pos.yes) : undefined,
+      entryFeePerContract: openEntryFee(pos),
       profitPeakSidePrice: this.profitPeaks.update(m.ticker, st.position, st.position > 0 ? bid.price : st.position < 0 ? Math.round((1 - ask.price) * 1e4) / 1e4 : undefined),
       ...(this.d.takeProfitBench?.benched ? { takeProfitBenched: this.d.takeProfitBench.benched } : {}),
       entryWindowOpen, exitWindowOpen: tauSec > S.noExitBeforeCloseSec,
@@ -2541,7 +2580,7 @@ export class Engine {
     return { contracts, fStar, edgePerDay: timeNormalizedEdge(candidate) };
   }
 
-  private async placeChecked(m: ActiveMarket, p: OrderPlan, pYes: number, decisionId: string, tennis?: { event: string }): Promise<void> {
+  private async placeChecked(m: ActiveMarket, p: OrderPlan, pYes: number, decisionId: string, tennis?: { event: string; killExit?: boolean }): Promise<void> {
     const { cfg, md, oms, risk, kill, model } = this.d;
     const now = this.now();
     const T = cfg.tennis;
@@ -2596,6 +2635,7 @@ export class Engine {
       dailyLossAdvisory: this.overrideActive(),
     };
     if (training) ctx.skipEdgeCollar = true;
+    if (tennis?.killExit) ctx.killExit = true;
     // An adversary-boosted entry may use proportionally more of the per-order caps (window / total caps unchanged).
     if (p.boost && p.boost > 1 && !tennis) {
       const lim = ctx.limitOverrides ?? {};

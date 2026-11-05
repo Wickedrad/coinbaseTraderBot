@@ -1,0 +1,9 @@
+{
+  "name": "lead_btc",
+  "notes": "Cross-asset lead-lag: BTC's and ETH's last 1/3/5-minute spot returns as features of every window, plus BTC's move minus the window's own asset move (does a BTC move reach the other Kalshi books a minute late?).",
+  "cross_assets": ["BTC", "ETH"],
+  "extra_features": [
+    {"name": "lag_btc_1", "expr": "lead_BTC_r1 - r1"},
+    {"name": "lag_btc_3", "expr": "lead_BTC_r3 - r3"}
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "name": "maker_only",
+  "notes": "Maker entries only (a resting bid that fills when the ask comes down to it; no taker entries). On the corrected training data (keep_crossed, run 42088667467) maker entries were about break-even (-0.04 $/h on 1173 trades) while taker entries lost -0.49 $/h on 1674: a taker pays the spread and the taker fee on the way in, a maker pays neither (the crypto series charge no maker fee; the stress arm charges it and needs the price to trade through). Exits by the learned policy. Read against this run's random and shuffled placebos and the tight arm.",
+  "entry": {"taker_entries": false}
+}

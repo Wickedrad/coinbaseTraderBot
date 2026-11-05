@@ -158,6 +158,11 @@ test('perps contest: the live rule scored on held-out rows; the replay\'s holdou
   assert.ok(good.trades >= 20 && good.meanBps > 0 && good.ic > 0.99, 'a model that reads the move earns after fees');
   assert.ok(bad.trades >= 20 && bad.meanBps < 0 && bad.ic < -0.99);
   assert.equal(flat.trades, 0, 'no edge over the fees: it never trades');
+  // An incumbent trained on the legacy perp_premium_bps reads it from the rows' legacy values, as it does live.
+  const legacy = new PerpModel({ version: 'legacy', kind: 'linear', horizonMin: 60, features: ['perp_premium_bps'], mean: [0], std: [1], weights: [30], bias: 0, residStdBps: 50, lambda: 1, trainedAt: 'x' });
+  const legacyRows = rows.map((r, i) => ({ ...r, legacy: [Math.sin(i * 1.7)] }));
+  assert.ok(perpRuleRecord(legacy, legacyRows, o).ic > 0.99, 'the legacy input reaches the incumbent');
+  assert.equal(perpRuleRecord(legacy, rows, o).trades, 0, 'without it the input is missing');
   const days = daysFrom('2020-01-06', 7 * 60);
   const held = holdoutDays(days);
   const holdWeeks = weekBlocks(days).filter((b) => isHoldout(b, days[days.length - 1]));
