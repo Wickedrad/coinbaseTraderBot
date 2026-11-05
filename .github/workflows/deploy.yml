@@ -1,13 +1,18 @@
 # Deploys to the Lightsail box (static IP, systemd service `kalshi-bot`).
 #
-#  - Merges are batched (Steven, Nov 4): main deploys at three set times a day, each landing its restart inside a session-edge
-#    window where the bot already takes no new entries (bot/model/sessions.ts, 40 min), and clear of the 07:15-08:15 UTC
-#    nightly Drive copy. Start times (deploys take ~10-15 min):
-#      00:05 UTC / 7:05 PM EST -> Tokyo open (00:00-00:40),
-#      14:35 UTC / 9:35 AM EST -> New York open (14:30-15:10), after the 9:15 AM EST daily health check,
-#      20:25 UTC / 3:25 PM EST -> New York close (20:20-21:00).
-#    A scheduled run deploys only when main moved since the last successful deploy. GitHub cron is UTC only: when US/UK
-#    daylight saving starts (March) these land an hour off the New York and London edges and need moving.
+#  - Merges are batched by count (Steven, Nov 5): main deploys once DEPLOY_MIN_MERGES (repository variable, default 3)
+#    merges have built up since the last successful production deploy. A lone merge still deploys once it has
+#    waited DEPLOY_MAX_WAIT_HOURS (default 48), so a small fix never sits forever.
+#    The count is checked at five set times, each landing the restart inside a session-edge window where the bot
+#    already takes no new entries (bot/model/sessions.ts, 40 min), and clear of the 07:15-08:15 UTC nightly Drive copy.
+#    Deploys take ~10-15 min:
+#      00:05 UTC / 7:05 PM EST -> Tokyo open (00:00-00:40)
+#      08:20 UTC / 3:20 AM EST -> London open (08:00-08:40), after the Drive copy
+#      14:35 UTC / 9:35 AM EST -> New York open (14:30-15:10), after the 9:15 AM EST daily health check
+#      15:55 UTC / 10:55 AM EST -> London close (15:50-16:30)
+#      20:25 UTC / 3:25 PM EST -> New York close (20:20-21:00)
+#    GitHub cron is UTC only: when US/UK daylight saving starts (March) these land an hour off the New York and
+#    London edges and need moving.
 #  - Run manually from the Actions tab to redeploy main, or to deploy an existing release tag
 #    (v1.2.3) by entering it.
 #  - Rollback is one command on the server: `bash ~/bot/current/deploy/rollback.sh`.
@@ -25,7 +30,9 @@ name: Deploy
 on:
   schedule:
     - cron: '5 0 * * *'
+    - cron: '20 8 * * *'
     - cron: '35 14 * * *'
+    - cron: '55 15 * * *'
     - cron: '25 20 * * *'
   workflow_dispatch:
     inputs:
@@ -42,21 +49,43 @@ concurrency:
 
 jobs:
   changed:
-    # A scheduled batch deploys only when main has moved since the last successful deploy; manual runs always deploy.
+    # A scheduled check deploys once enough merges have built up since the last production deploy (or the oldest has
+    # waited too long); manual runs always deploy.
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       actions: read
     outputs:
       go: ${{ steps.c.outputs.go }}
     steps:
+      - if: github.event_name == 'schedule'
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - id: c
         env:
           GH_TOKEN: ${{ github.token }}
+          MIN_MERGES: ${{ vars.DEPLOY_MIN_MERGES || '3' }}
+          MAX_WAIT_HOURS: ${{ vars.DEPLOY_MAX_WAIT_HOURS || '48' }}
         run: |
           if [ "${{ github.event_name }}" != schedule ]; then echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
-          last=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].head_sha // ""')
-          if [ "$last" = "$GITHUB_SHA" ]; then echo "main $GITHUB_SHA is already deployed"; echo go=false >> "$GITHUB_OUTPUT"
-          else echo "main moved: $last -> $GITHUB_SHA"; echo go=true >> "$GITHUB_OUTPUT"; fi
+          # Last run of this workflow whose deploy job succeeded (skipped checks also end as success, so look at the job).
+          # Other workflows use the production environment too, so the deployments list is no guide.
+          last=""
+          for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=30" --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); do
+            ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${run%%:*}/jobs" --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length')
+            if [ "$ok" -gt 0 ]; then last=${run#*:}; break; fi
+          done
+          if [ -z "$last" ] || ! git cat-file -e "$last^{commit}" 2>/dev/null; then
+            echo "no earlier deploy found: deploying"; echo go=true >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Each first-parent commit on main is one merged PR (or one direct push).
+          n=$(git rev-list --first-parent --count "$last..HEAD")
+          oldest=$(git log --first-parent --reverse --format=%ct "$last..HEAD" | head -n 1)
+          age_h=$(( oldest ? ($(date +%s) - oldest) / 3600 : 0 ))
+          echo "deployed: $last; merges waiting: $n (need $MIN_MERGES); oldest waiting ${age_h} h (max $MAX_WAIT_HOURS)"
+          if [ "$n" -ge "$MIN_MERGES" ] || { [ "$n" -ge 1 ] && [ "$age_h" -ge "$MAX_WAIT_HOURS" ]; }; then echo go=true >> "$GITHUB_OUTPUT"
+          else echo go=false >> "$GITHUB_OUTPUT"; fi
 
   deploy:
     needs: changed
