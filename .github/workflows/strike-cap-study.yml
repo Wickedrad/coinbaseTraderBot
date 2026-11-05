@@ -1,7 +1,7 @@
 name: Strike cap study
 
 # Decision 1 (Nov 5): strike selection with CATALOG_PICK_MAX_SPREAD at 0 (legacy), 5, 10, 15 and 20c on the same Kalshi
-# history days (research/strikeCapStudy.ts). History days only, never the L1 lockbox (Nov 6-13). Report as a commit comment.
+# history days Oct 15 - Nov 4 (research/strikeCapStudy.ts), downloaded from Kalshi's public API. History days only, never the L1 lockbox (Nov 6-13). Report as a commit comment.
 on:
   push:
     branches: [claude/project-thread-qj4n4v-strike-cap]
@@ -13,7 +13,7 @@ permissions:
 jobs:
   study:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -28,23 +28,17 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent --ignore-scripts
-      - name: Drive setup
-        uses: ./.github/actions/drive-setup
-        with:
-          rclone_conf: ${{ secrets.RCLONE_CONF }}
-      - name: Kalshi history from Drive
+      - name: Kalshi ladder and range history (public API; Drive holds only the 15-minute series)
         run: |
           set -euo pipefail
-          bash deploy/drive_lab.sh get raw/history data/history --exclude '/kalshi/*15M/**' --exclude '/kalshi/*DOGE*/**' --include '/kalshi/**' --exclude '*' > /dev/null
-          # Only the studied days (files are by close day): Sep 15 - Nov 4.
-          find data/history/kalshi -name '*.jsonl' | while read -r f; do d=$(basename "$f" .jsonl); { [[ "$d" < 2026-09-15 ]] || [[ "$d" > 2026-11-04 ]]; } && rm -f "$f"; done || true
-          for s in data/history/kalshi/*; do echo "$(basename "$s"): $(ls "$s" | grep -c jsonl) day(s)"; done
+          timeout 55m node --import tsx research/history/kalshiHistory.ts --series KXBTCD,KXETHD,KXSOLD,KXBTC,KXETH --days 22 --out data/history/kalshi --budget-min 50 2>&1 | tail -8 || true
+          for s in data/history/kalshi/*; do echo "$(basename "$s"): $(ls "$s" | grep -c jsonl) day file(s)"; done
       - name: Study
         run: |
           set -euo pipefail
-          S=$(ls data/history/kalshi | grep -vE '15M$|DOGE' | grep -E '^KX(BTC|ETH|SOL|XRP)' | paste -sd, -)
+          S=$(ls data/history/kalshi | paste -sd, -)
           echo "series: $S"
-          node --max-old-space-size=12000 --import tsx research/strikeCapStudy.ts --history data/history/kalshi --series "$S" --from 2026-09-15 --to 2026-11-05 --out study.json > /dev/null
+          node --max-old-space-size=12000 --import tsx research/strikeCapStudy.ts --history data/history/kalshi --series "$S" --from 2026-10-15 --to 2026-11-05 --out study.json > /dev/null
           jq . study.json
       - name: Report as a commit comment
         env:
