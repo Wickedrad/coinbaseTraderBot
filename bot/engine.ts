@@ -2251,6 +2251,10 @@ export class Engine {
       }
     } else {
       st.exitMode = 'fair_value';
+      // A hunt that sits out (bench, unvalidated hunt in live) never sees the position go flat, and the hunt keeps state
+      // only while a position is held: drop it once flat, or a same-side position opened later inherits its anchor, lock
+      // and stop when hunting resumes (a model swap keeps held positions' hunts).
+      if (Math.abs(st.position) < 1e-9) this.hunts.delete(m.ticker);
     }
     const dEdge = dynamicEdge(cfg.strategy.dynamicEdge, mState, pred.std);
     const strat = {

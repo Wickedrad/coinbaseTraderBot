@@ -336,6 +336,17 @@ test('a model hot swap keeps the hunt of a held position and drops the hunts of 
   assert.equal(hunts.has('FLAT-MARKET'), false);
 });
 
+test('a hunt that sits out drops itself once the market is flat (a later position starts a fresh hunt)', async () => {
+  // Hunting is not allowed here (another exit policy: the same branch as a bench or an unvalidated hunt in live).
+  const { engine, recon, market } = await setup({ exitPolicy: 'take_profit' });
+  const r = await recon.run('startup');
+  engine.balance = r!.balance;
+  const hunts = (engine as unknown as { hunts: Map<string, unknown> }).hunts;
+  hunts.set(market.ticker, { stale: true }); // a hunt left from a position that closed while hunting sat out
+  await engine.tick();
+  assert.equal(hunts.has(market.ticker), false, 'flat while sitting out: the stale hunt is gone');
+});
+
 test('exit curve: a profitable fair-value exit waits for a spike above the curve', async () => {
   const curveExit = new SinuousExitGate({ mode: 'gate', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
   const { engine, recon, market, md, oms } = await setup({ curveExit });
