@@ -5,7 +5,9 @@
 //   spread      Kalshi's quoted spread in bps of the mid (median, p75, p90): the half-spread the sweep charges per taker side
 //   returns     correlation, slope and tracking error of Kalshi mid returns against Binance perp returns over 1, 5, 15
 //               and 60 minutes: how much of a move measured on Binance a Kalshi position actually gets
-//   premium     Kalshi's mid against Coinbase spot (bps): the basis the funding pays for
+//   units       Kalshi quotes perps per contract (BTC: 0.0001 BTC a contract): the mid per coin is the mid over the
+//               contract size, checked against spot (a market that fits neither is reported as 'unknown', no premium)
+//   premium     Kalshi's mid per coin against Coinbase spot and against the recorded settlement index (bps; median, p10, p90)
 //   funding     the funding rates Kalshi quoted against the sweep's model of them from Binance's settled rates
 //               (research/perpTaSweep.ts kalshiRateFromBinance), at the same Kalshi funding instants
 //
@@ -38,37 +40,88 @@ async function readUm(file: string, from: number, to: number): Promise<Map<numbe
   return out;
 }
 
+export interface FidelityTicker { ticker: string; quotes: number; medianMid: number; contractSize: number | null; firstDay: string; lastDay: string }
+
 export interface FidelityAsset {
-  asset: string; quotes: number; minutes: number; quoteEverySec: number;
+  asset: string; ticker: string; tickers: FidelityTicker[]; quotes: number; minutes: number; quoteEverySec: number;
+  /** How Kalshi quotes this perp: per contract (price x contract size, as Kalshi documents), per coin, or unknown. */
+  unit: { kind: 'per contract' | 'per coin' | 'unknown'; contractSize: number | null; observedScale: number };
+  /** Minutes whose mid moved more than 10% from the minute before (bad prints): left out of returns and premium. */
+  jumps: number;
+  spot: { n: number; median: number; p01: number; p99: number };
+  index: { n: number; src: string; median: number };
   spreadBps: { median: number; p75: number; p90: number; mean: number };
   returns: Record<string, { rho: number; beta: number; te: number; n: number }>;
-  premiumBps: { mean: number; sd: number; n: number };
+  /** Kalshi mid per coin against Coinbase spot and against the recorded settlement index (bps; robust: median, p10, p90). */
+  premiumBps: { median: number; p10: number; p90: number; n: number };
+  premiumIndexBps: { median: number; p10: number; p90: number; n: number };
   funding: { kalshiSeen: number; kalshiZeroShare: number; kalshiZeroShareQuotes: number; kalshiMeanBps: number; pairs: number; modelMeanBps: number; modelZeroShare: number; corr: number; meanAbsDiffBps: number; noModel: number; verdict: string };
 }
+
+type Quote = [number, number, number, number]; // ts, bid, ask, funding rate
+const day = (t: number) => new Date(t).toISOString().slice(0, 10);
+const robust = (xs: number[]) => ({ median: +q(xs, 0.5).toFixed(2), p10: +q(xs, 0.1).toFixed(2), p90: +q(xs, 0.9).toFixed(2), n: xs.length });
 
 export async function fidelity(o: { recordings: string; history: string; assets: string[]; from?: string; to?: string; log?: (m: string) => void }): Promise<{ days: string[]; assets: FidelityAsset[] }> {
   const log = o.log ?? console.log;
   const wanted = new Set(o.assets);
-  const perp = new Map<string, Array<[number, number, number, number]>>(); // ts, bid, ask, funding rate
+  // Per coin, per Kalshi ticker: quotes and the contract sizes they carried (a coin can list more than one market).
+  const perp = new Map<string, Map<string, { qs: Quote[]; cs: number[] }>>();
   const spot = new Map<string, Array<[number, number]>>();
+  const index = new Map<string, Map<string, Array<[number, number]>>>(); // coin -> src -> prints
   const days = new Set<string>();
-  for await (const e of readRecordings(o.recordings, '', o.from, o.to, (k) => k === 'perp' || k === 'spot')) {
+  for await (const e of readRecordings(o.recordings, '', o.from, o.to, (k) => k === 'perp' || k === 'spot' || k === 'index')) {
     if (e.k === 'skip' || e.hist) continue;
     const a = e.asset as string | undefined;
     if (!a || !wanted.has(a)) continue;
     const ts = (e.ts ?? e.t) as number;
-    if (e.k === 'perp' && e.bid > 0 && e.ask >= e.bid) { (perp.get(a) ?? perp.set(a, []).get(a)!).push([ts, e.bid, e.ask, fin(e.fundingRate) ? e.fundingRate : NaN]); days.add(new Date(ts).toISOString().slice(0, 10)); }
-    else if (e.k === 'spot' && e.value > 0) (spot.get(a) ?? spot.set(a, []).get(a)!).push([ts, e.value]);
+    if (e.k === 'perp' && e.bid > 0 && e.ask >= e.bid) {
+      const byT = perp.get(a) ?? perp.set(a, new Map()).get(a)!;
+      const tk = String(e.ticker ?? '?');
+      const rec = byT.get(tk) ?? byT.set(tk, { qs: [], cs: [] }).get(tk)!;
+      rec.qs.push([ts, e.bid, e.ask, fin(e.fundingRate) ? e.fundingRate : NaN]);
+      if (fin(e.contractSize) && e.contractSize > 0) rec.cs.push(e.contractSize);
+      days.add(day(ts));
+    } else if (e.k === 'spot' && e.value > 0) (spot.get(a) ?? spot.set(a, []).get(a)!).push([ts, e.value]);
+    else if (e.k === 'index' && e.value > 0) {
+      const bySrc = index.get(a) ?? index.set(a, new Map()).get(a)!;
+      const src = String(e.src ?? '?');
+      (bySrc.get(src) ?? bySrc.set(src, []).get(src)!).push([ts, e.value]);
+    }
   }
   const out: FidelityAsset[] = [];
   for (const a of o.assets) {
-    const ps = (perp.get(a) ?? []).sort((x, y) => x[0] - y[0]);
-    if (!ps.length) { log(`${a}: no Kalshi perp quotes in the recordings`); continue; }
+    const byT = perp.get(a);
+    if (!byT || !byT.size) { log(`${a}: no Kalshi perp quotes in the recordings`); continue; }
+    const tickers: FidelityTicker[] = [...byT].map(([ticker, r]) => {
+      r.qs.sort((x, y) => x[0] - y[0]);
+      return { ticker, quotes: r.qs.length, medianMid: +q(r.qs.map(([, b, k]) => (b + k) / 2), 0.5).toPrecision(6), contractSize: r.cs.length ? q(r.cs, 0.5) : null, firstDay: day(r.qs[0][0]), lastDay: day(r.qs[r.qs.length - 1][0]) };
+    }).sort((x, y) => y.quotes - x.quotes);
+    // The coin's main market (most quotes): mixing markets would put their price gap into the returns.
+    const main = tickers[0], ps = byT.get(main.ticker)!.qs;
     const from = Math.floor(ps[0][0] / MIN) * MIN, to = Math.floor(ps[ps.length - 1][0] / MIN) * MIN;
     const spreads = ps.map(([, b, k]) => ((k - b) / ((k + b) / 2)) * 1e4);
-    // Kalshi mid at each minute's end: the last quote inside the minute (fresh: within the minute itself).
+    // Kalshi mid at each minute's end: the last quote inside the minute; minutes that jump > 10% are bad prints.
+    const raw = new Map<number, number>();
+    for (const [t, b, k] of ps) raw.set(Math.floor(t / MIN) * MIN, (b + k) / 2);
     const kMid = new Map<number, number>();
-    for (const [t, b, k] of ps) kMid.set(Math.floor(t / MIN) * MIN, (b + k) / 2);
+    let prev = NaN, jumps = 0;
+    for (const [t, m] of raw) { if (fin(prev) && Math.abs(Math.log(m / prev)) > 0.1) { jumps++; continue; } kMid.set(t, m); prev = m; }
+    // Spot and the settlement index by minute (the index source the bot used, the spot proxy only when nothing else).
+    const sp = spot.get(a) ?? [];
+    const sMin = new Map<number, number>();
+    for (const [t, v] of sp) sMin.set(Math.floor(t / MIN) * MIN, v);
+    const srcs = [...(index.get(a) ?? new Map<string, Array<[number, number]>>())].sort((x, y) => (x[0] === 'proxy' ? 1 : 0) - (y[0] === 'proxy' ? 1 : 0) || y[1].length - x[1].length);
+    const [ixSrc, ixPrints] = srcs[0] ?? ['none', []];
+    const iMin = new Map<number, number>();
+    for (const [t, v] of ixPrints) iMin.set(Math.floor(t / MIN) * MIN, v);
+    // Units: Kalshi documents prices per contract (BTC 0.0001 BTC per contract). Check against spot rather than assume.
+    const ratios: number[] = [];
+    for (const [t, m] of kMid) { const s2 = sMin.get(t) ?? iMin.get(t); if (s2) ratios.push(m / s2); }
+    const scale = q(ratios, 0.5), cs = main.contractSize;
+    const near = (x: number, y: number) => fin(x) && fin(y) && y > 0 && Math.abs(Math.log(x / y)) < Math.log(1.2);
+    const kind: FidelityAsset['unit']['kind'] = cs !== null && near(scale, cs) ? 'per contract' : near(scale, 1) ? 'per coin' : 'unknown';
+    const per = kind === 'per contract' ? cs! : kind === 'per coin' ? 1 : NaN;
     // Binance bar t closes at t + 1 min: the Kalshi mid of minute t is its last quote before t + 1 min.
     const um = await readUm(path.join(o.history, 'binance-um', a, '1m.csv'), from, to);
     const returns: FidelityAsset['returns'] = {};
@@ -83,12 +136,13 @@ export async function fidelity(o: { recordings: string; history: string; assets:
       const c = corr(ka, ba);
       returns[`${h}m`] = { rho: +c.rho.toFixed(4), beta: +c.beta.toFixed(3), te: +c.te.toFixed(2), n: c.n };
     }
-    // Premium against Coinbase spot: Kalshi mid vs the last spot print in the same minute.
-    const sMin = new Map<number, number>();
-    for (const [t, v] of spot.get(a) ?? []) sMin.set(Math.floor(t / MIN) * MIN, v);
-    const prem: number[] = [];
-    for (const [t, m] of kMid) { const s = sMin.get(t); if (s) prem.push((m / s - 1) * 1e4); }
-    const pm = mean(prem), psd = Math.sqrt(mean(prem.map((x) => (x - pm) ** 2)));
+    // Premium: the Kalshi mid per coin against Coinbase spot and against the settlement index, same minute.
+    const prem: number[] = [], premIx: number[] = [];
+    if (fin(per)) for (const [t, m] of kMid) {
+      const s2 = sMin.get(t), ix = iMin.get(t);
+      if (s2) prem.push(Math.log(m / per / s2) * 1e4);
+      if (ix) premIx.push(Math.log(m / per / ix) * 1e4);
+    }
     // Funding: the rate Kalshi quoted just before each funding instant against the model from Binance's settled rates.
     const fundFile = path.join(o.history, 'binance-funding', a, 'funding.csv');
     const binance: Array<[number, number]> = fs.existsSync(fundFile) ? fs.readFileSync(fundFile, 'utf8').split('\n').slice(1).filter(Boolean).map((l) => l.split(',').map(Number) as [number, number]) : [];
@@ -107,9 +161,12 @@ export async function fidelity(o: { recordings: string; history: string; assets:
     const fc = corr(kc, mc);
     const quoteEvery = ps.length > 1 ? (ps[ps.length - 1][0] - ps[0][0]) / (ps.length - 1) / 1000 : NaN;
     const r: FidelityAsset = {
-      asset: a, quotes: ps.length, minutes: kMid.size, quoteEverySec: +quoteEvery.toFixed(2),
+      asset: a, ticker: main.ticker, tickers, quotes: ps.length, minutes: kMid.size, quoteEverySec: +quoteEvery.toFixed(2),
+      unit: { kind, contractSize: cs, observedScale: +scale.toPrecision(4) }, jumps,
+      spot: { n: sp.length, median: +q(sp.map((x) => x[1]), 0.5).toPrecision(6), p01: +q(sp.map((x) => x[1]), 0.01).toPrecision(6), p99: +q(sp.map((x) => x[1]), 0.99).toPrecision(6) },
+      index: { n: ixPrints.length, src: ixSrc, median: +q(ixPrints.map((x) => x[1]), 0.5).toPrecision(6) },
       spreadBps: { median: +q(spreads, 0.5).toFixed(2), p75: +q(spreads, 0.75).toFixed(2), p90: +q(spreads, 0.9).toFixed(2), mean: +mean(spreads).toFixed(2) },
-      returns, premiumBps: { mean: +pm.toFixed(2), sd: +psd.toFixed(2), n: prem.length },
+      returns, premiumBps: robust(prem), premiumIndexBps: robust(premIx),
       funding: {
         // Zero shares at the funding instants on both sides (same denominator); the all-quotes share is kept apart.
         kalshiSeen: kRates.length, kalshiZeroShare: +(kc.filter((x) => Math.abs(x) < 1e-9).length / Math.max(1, kc.length)).toFixed(3), kalshiZeroShareQuotes: +(kRates.filter((x) => Math.abs(x) < 1e-9).length / Math.max(1, kRates.length)).toFixed(3), kalshiMeanBps: +(mean(kRates) * 1e4).toFixed(3),
@@ -119,7 +176,7 @@ export async function fidelity(o: { recordings: string; history: string; assets:
         noModel: noModel, verdict: pairs.length < 30 ? 'insufficient (fewer than 30 instants with both rates)' : 'ok',
       },
     };
-    log(`${a}: ${r.quotes} quotes (${r.quoteEverySec} s apart) over ${r.minutes} min; spread median ${r.spreadBps.median} bps (p90 ${r.spreadBps.p90}); 15m returns rho ${r.returns['15m'].rho} beta ${r.returns['15m'].beta} te ${r.returns['15m'].te} bps (n ${r.returns['15m'].n}); premium ${r.premiumBps.mean} +/- ${r.premiumBps.sd} bps; funding Kalshi mean ${r.funding.kalshiMeanBps} bps (zero ${r.funding.kalshiZeroShare}) vs model ${r.funding.modelMeanBps} (zero ${r.funding.modelZeroShare}), ${r.funding.pairs} instants, |diff| ${r.funding.meanAbsDiffBps} bps`);
+    log(`${a}: ${r.quotes} quotes (${r.quoteEverySec} s apart) over ${r.minutes} min; spread median ${r.spreadBps.median} bps (p90 ${r.spreadBps.p90}); 15m returns rho ${r.returns['15m'].rho} beta ${r.returns['15m'].beta} te ${r.returns['15m'].te} bps (n ${r.returns['15m'].n}); ${r.ticker} of ${tickers.length} market(s), quoted ${kind} (contract ${cs}, observed ${r.unit.observedScale}), ${jumps} jump minutes; premium vs spot median ${r.premiumBps.median} bps (p10 ${r.premiumBps.p10}, p90 ${r.premiumBps.p90}), vs index (${ixSrc}) ${r.premiumIndexBps.median}; funding Kalshi mean ${r.funding.kalshiMeanBps} bps (zero ${r.funding.kalshiZeroShare}) vs model ${r.funding.modelMeanBps} (zero ${r.funding.modelZeroShare}), ${r.funding.pairs} instants, |diff| ${r.funding.meanAbsDiffBps} bps`);
     out.push(r);
   }
   return { days: [...days].sort(), assets: out };

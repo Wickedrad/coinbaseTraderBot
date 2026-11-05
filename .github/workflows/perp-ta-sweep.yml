@@ -13,9 +13,15 @@ name: Perp TA sweep
 on:
   push:
     branches: [claude/project-thread-9040i4]
-    paths: [research/perpTaSweep.ts, research/perpTaModules.ts, research/perpTaFidelity.ts, .github/workflows/perp-ta-sweep.yml, 'bot/ta/**']
+    # The sweep's own code reruns it. Fidelity or workflow-only changes do not (run them with workflow_dispatch; only:
+    # fidelity runs the fidelity check and its report without the four sweeps).
+    paths: [research/perpTaSweep.ts, research/perpTaModules.ts, 'bot/ta/**']
   workflow_dispatch:
     inputs:
+      only:
+        description: "'fidelity' runs the fidelity check alone; empty runs everything"
+        required: false
+        default: ''
       assets:
         description: 'Coins (JSON list)'
         required: false
@@ -34,11 +40,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: perp-ta-sweep-${{ github.ref }}
+  # A fidelity-only run never cancels a sweep in progress.
+  group: perp-ta-sweep-${{ github.ref }}-${{ inputs.only || 'all' }}
   cancel-in-progress: true
 
 jobs:
   sweep:
+    if: ${{ inputs.only != 'fidelity' }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
@@ -182,13 +190,18 @@ jobs:
         run: |
           set -euo pipefail
           ls -R in | head -20
-          node --max-old-space-size=12000 --import tsx research/perpTaSweep.ts report --in in --out report 2>&1 | tail -60
+          if ls -d in/sweep-* >/dev/null 2>&1; then
+            node --max-old-space-size=12000 --import tsx research/perpTaSweep.ts report --in in --out report 2>&1 | tail -60
+          else
+            mkdir -p report && echo '## Perp TA: fidelity check only (no sweep in this run)' > report/summary.md
+          fi
           if [ -f in/fidelity/fidelity.json ]; then
             node -e "
               const f = require('./in/fidelity/fidelity.json');
-              const rows = f.assets.map((a) => '| ' + [a.asset, a.quotes, a.spreadBps.median, a.spreadBps.p90, a.returns['1m'].rho, a.returns['15m'].rho, a.returns['15m'].beta, a.returns['15m'].te, a.returns['60m'].rho, a.premiumBps.mean, a.premiumBps.sd, a.funding.kalshiMeanBps, a.funding.kalshiZeroShare, a.funding.modelMeanBps, a.funding.modelZeroShare, a.funding.pairs, a.funding.meanAbsDiffBps, a.funding.verdict].join(' | ') + ' |');
+              const rows = f.assets.map((a) => '| ' + [a.asset, a.ticker + (a.tickers.length > 1 ? ' (+' + (a.tickers.length - 1) + ')' : ''), a.quotes, a.unit.kind + ' (' + a.unit.contractSize + ')', a.jumps, a.spreadBps.median, a.spreadBps.p90, a.returns['1m'].rho, a.returns['15m'].rho, a.returns['15m'].beta, a.returns['15m'].te, a.returns['60m'].rho, a.premiumBps.median, a.premiumBps.p10 + ' .. ' + a.premiumBps.p90, a.premiumIndexBps.median + ' (' + a.index.src + ')', a.funding.kalshiMeanBps, a.funding.kalshiZeroShare, a.funding.modelMeanBps, a.funding.modelZeroShare, a.funding.pairs, a.funding.meanAbsDiffBps, a.funding.verdict].join(' | ') + ' |');
               const span = f.days.length ? f.days[0] + ' .. ' + f.days[f.days.length - 1] : 'no recorded perp quotes';
-              console.log(['', '### Fidelity: Kalshi perp quotes vs Binance USD-M (' + span + ')', '| coin | quotes | spread med bps | spread p90 | rho 1m | rho 15m | beta 15m | te 15m bps | rho 60m | premium bps | premium sd | Kalshi funding bps | Kalshi zero share | model funding bps | model zero share | instants | abs diff bps | funding check |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|', ...rows].join('\n'));
+              const other = f.assets.filter((a) => a.tickers.length > 1).map((a) => a.asset + ': ' + a.tickers.map((t) => t.ticker + ' ' + t.quotes + ' quotes, mid ' + t.medianMid + ', contract ' + t.contractSize + ', ' + t.firstDay + '..' + t.lastDay).join('; '));
+              console.log(['', '### Fidelity: Kalshi perp quotes vs Binance USD-M (' + span + ')', 'Kalshi quotes perps per contract; the premium is the mid per coin (mid over the contract size) against Coinbase spot and the recorded settlement index. Jump minutes (> 10% in a minute) are left out.', '', '| coin | market | quotes | quoted | jump min | spread med bps | spread p90 | rho 1m | rho 15m | beta 15m | te 15m bps | rho 60m | premium vs spot bps | p10 .. p90 | premium vs index | Kalshi funding bps | Kalshi zero share | model funding bps | model zero share | instants | abs diff bps | funding check |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|', ...rows, ...(other.length ? ['', 'Coins with more than one market in the recordings: ' + other.join(' | ')] : [])].join('\n'));
             " >> report/summary.md
           fi
           head -c 60000 report/summary.md > "$RUNNER_TEMP/comment.md"
