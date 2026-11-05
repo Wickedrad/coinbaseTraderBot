@@ -234,6 +234,14 @@ jobs:
           # data-lag and feed-drop warnings of the last day (times only)
           ssh bot 'journalctl -u kalshi-bot --since "25 hours ago" --no-pager -o short-iso-precise 2>/dev/null | grep -E "behind real time|kalshi-ws\] closed|feed down" | cut -d" " -f1' > data/lags.txt || true
           echo "$(wc -l < data/lags.txt) lag / feed-drop warnings"
+          # The take-profit settings the bot runs with (guards.takeProfit from /api/status); only that object leaves the box.
+          # The dashboard password is read on the server and handed to curl on stdin, never printed.
+          ssh bot bash -s <<'SH' | python3 -c 'import json,sys; print(json.dumps((json.load(sys.stdin).get("guards") or {}).get("takeProfit") or {}))' > data/takeprofit.json || echo '{}' > data/takeprofit.json
+          PW=$(sed -n 's/^DASHBOARD_PASSWORD=//p' ~/bot/bot.env 2>/dev/null | tail -1 | tr -d '\r')
+          case "$PW" in \"*\") PW=${PW#\"}; PW=${PW%\"};; esac
+          if [ -n "$PW" ]; then printf 'Authorization: Bearer %s\n' "$PW" | curl -s -m 20 -H @- http://localhost:3000/api/status; else curl -s -m 20 http://localhost:3000/api/status; fi
+          SH
+          echo "take-profit settings: $(cat data/takeprofit.json)"
       - name: Adversary report
         run: python3 deploy/adversary_report.py data 24 data/lags.txt
 

@@ -79,8 +79,8 @@ test('random sweep: a proposal also needs a close replay check, and to make mone
   assert.ok(behind.why.some((w) => /not better than today's settings on the recorded days/.test(w)), behind.why.join('; '));
   const ok = [...search, ...finals, trial({}, () => -0.1, 'recorded'), trial(hold, () => 0.1, 'recorded')];
   const r2 = report(ok, days, 20, { replayCheck: { close: false, why: ['P&L beyond luck'] }, recorded: true });
-  assert.deepEqual(r2.why, ['the replay check is not close (P&L beyond luck)']);
-  assert.deepEqual(report(ok, days, 20, { replayCheck: null, recorded: true }).why, ['no replay check verdict yet']);
+  assert.deepEqual(r2.why, []); // reported only: paper P&L has no say in selection
+  assert.deepEqual(report(ok, days, 20, { replayCheck: null, recorded: true }).why, []);
   assert.ok(report([...search, ...finals], days, 20, { replayCheck: close, recorded: true }).why.some((w) => /stage 4/.test(w)));
   const r3 = report(ok, days, 20, { replayCheck: close, recorded: true });
   assert.equal(r3.accepted, true, r3.why.join('; '));
