@@ -1956,6 +1956,9 @@ export class Engine {
     // Both modes (paper since Oct 23, like live): no new entry in a series until its fee schedule is known exactly
     // (bot/kalshi/feeSchedule.ts). Exits still go out, priced with a cautious schedule.
     const feeBlock = md.feeBlock(m.ticker);
+    // EXCLUDE_ASSETS (Steven, Nov 5: "let's not use DOGE at all"): no new trading in these coins; a held position still
+    // runs the normal exit path. The backtester skips the same markets (research/backtest.ts).
+    if (st.position === 0 && cfg.strategy.excludeAssets?.includes(m.asset)) return block('asset excluded (EXCLUDE_ASSETS)');
     const lagHalt = this.feedLagHalt();
     if (lagHalt) return block(lagHalt);
     if (!book.isUsable(now, R.maxBookAgeMs)) return block('book not usable');

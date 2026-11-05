@@ -171,6 +171,8 @@ export interface StrategyConfig {
    *  gated entries"). off = the band ignores it (as before). shrink = band x min(1, sizeMult): never above the band's top.
    *  scale = band x min(sizeMult, BAND_SIZE_MAX): can go above the top, and the risk caps widen by BAND_SIZE_MAX. */
   bandSizeMult: 'off' | 'shrink' | 'scale';
+  /** EXCLUDE_ASSETS (empty): coins (e.g. DOGE) the bot opens no new positions in, paper, live and replay alike. */
+  excludeAssets?: string[];
   /** BAND_SIZE_MAX (1.5): the highest factor BAND_SIZE_MULT=scale applies. */
   bandSizeMax: number;
   /** Paper only: no new crypto entries in a time-to-close bucket where the market mid has scored a better log loss
@@ -1182,6 +1184,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
     bandSizeMult: oneOf(env, 'BAND_SIZE_MULT', 'off', ['off', 'shrink', 'scale'] as const),
     bandSizeMax: num(env, 'BAND_SIZE_MAX', 1.5, 1, 3),
+    excludeAssets: (env.EXCLUDE_ASSETS ?? '').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean),
     accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
     kappa: num(env, 'STRATEGY_KAPPA', 0.5, 0, 1),

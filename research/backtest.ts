@@ -614,7 +614,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
 
     for (const m of [...st.markets.values()].sort((a, b) => (priority.get(b.ticker) ?? 0) - (priority.get(a.ticker) ?? 0))) {
       // Recorded for research, or synthesized from price history (quoted at the model's own fair value): never traded.
-      if (m.recordOnly || m.synthetic) { if (st.now >= m.closeTime + 90_000) st.forget(m.ticker); continue; }
+      // EXCLUDE_ASSETS: never traded, as the engine blocks entries in those coins.
+      if (m.recordOnly || m.synthetic || (strategy.excludeAssets?.includes(m.asset) && pos.position(m.ticker) === 0)) { if (st.now >= m.closeTime + 90_000) st.forget(m.ticker); continue; }
       closeOf.set(m.ticker, m.closeTime);
       // Settle closed markets.
       if (st.now >= m.closeTime + 60_000) {

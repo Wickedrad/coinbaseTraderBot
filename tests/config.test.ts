@@ -68,3 +68,13 @@ test('training runs load a live server\'s settings in paper mode: live perps bec
   assert.equal(cfg.strategy.exitPolicy, 'confluence_ratchet', 'every other setting is kept');
   assert.deepEqual(paperEnv({ PERP_HEDGE: 'off' }).PERP_HEDGE, 'off');
 });
+
+test('EXCLUDE_ASSETS and BAND_SIZE_MULT load (off / empty by default)', () => {
+  const d = loadConfig({} as NodeJS.ProcessEnv).strategy;
+  assert.deepEqual(d.excludeAssets, []);
+  assert.equal(d.bandSizeMult, 'off');
+  const c = loadConfig({ EXCLUDE_ASSETS: 'doge, xrp', BAND_SIZE_MULT: 'scale', BAND_SIZE_MAX: '1.5' } as NodeJS.ProcessEnv).strategy;
+  assert.deepEqual(c.excludeAssets, ['DOGE', 'XRP']);
+  assert.equal(c.bandSizeMult, 'scale');
+  assert.equal(c.bandSizeMax, 1.5);
+});
