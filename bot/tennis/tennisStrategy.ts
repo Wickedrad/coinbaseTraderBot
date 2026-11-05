@@ -97,6 +97,9 @@ const GRAND_SLAMS = /(australian open|roland garros|french open|wimbledon|us ope
 const mid = (q: Quote) => (q.bid !== undefined && q.ask !== undefined && q.ask >= q.bid ? (q.bid + q.ask) / 2 : undefined);
 
 /** Per-match state machine. */
+/** How long a progress reading must hold before the loser cut and the entry block take it as reached (MatchTracker.progressHigh). */
+export const PROGRESS_LATCH_MS = 120_000;
+
 export class MatchTracker {
   liveSince?: number;
   underdogTicker?: string;
@@ -112,9 +115,22 @@ export class MatchTracker {
   /** The price each trail starts at while the bid is still below it (PACER_FLOOR: a set price above the quota). */
   readonly trailStart = new Map<string, number>();
   readonly peak = new Map<string, number>();
-  /** The furthest the match's progress has reached. Progress falls back when the price returns toward 50/50 (a comeback),
-   *  so the loser cut and the entry block go by this, not the reading of the tick (TENNIS_END_LOSER_CUT). */
+  /** The furthest progress the match has held for PROGRESS_LATCH_MS (every reading in that span at least this). Progress
+   *  falls back when the price returns toward 50/50 (a comeback), so the loser cut and the entry block go by this, not the
+   *  reading of the tick (TENNIS_END_LOSER_CUT); one tick's thin or one-sided book cannot set it. */
   progressHigh = 0;
+  private readonly progressSeen: Array<{ ts: number; p: number }> = [];
+
+  /** Takes this tick's progress reading and returns progressHigh. */
+  latchProgress(now: number, p: number): number {
+    const seen = this.progressSeen;
+    if (seen.length && now < seen[seen.length - 1].ts) seen.length = 0;
+    seen.push({ ts: now, p });
+    // Keep one reading at or before the span's start, so the span is known to be covered.
+    while (seen.length > 1 && seen[1].ts <= now - PROGRESS_LATCH_MS) seen.shift();
+    if (seen[0].ts <= now - PROGRESS_LATCH_MS) this.progressHigh = Math.max(this.progressHigh, Math.min(...seen.map((x) => x.p)));
+    return this.progressHigh;
+  }
   /** Last tennis-confluence reading per held market (dashboard). */
   readonly signals = new Map<string, { score: number; momentum: boolean; flow: boolean; depth: boolean; crossMarket: boolean }>();
   private history: Array<{ ts: number; p: number }> = [];
@@ -402,8 +418,9 @@ export function decideMatch(t: MatchTracker, s: MatchSnapshot, cfg: TennisConfig
  * Steven's profit rules (Oct 29-30), on tennis as on every contract type. Inside the last share of the match a position in
  * profit after fees rides to settlement: no exit sells it. One that is not is never held to settlement: with endLoserCut it is
  * sold at the bid (end_cut), and no entry is placed from endEntryMargin before it; without it, it keeps the legs' exits (the
- * stops, the late cut). The cut and the entry block go by the furthest progress the match has reached: a comeback pulls the
- * progress back below the last share just as a favorite goes under water, and the position must not ride that to settlement.
+ * stops, the late cut). The cut and the entry block go by the furthest progress the match has held for PROGRESS_LATCH_MS (2
+ * min): a comeback pulls the progress back below the last share just as a favorite goes under water, and the position must
+ * not ride that to settlement, while one tick's thin book must not start the cut for the rest of the match.
  * Elsewhere the quota snipe sells a position whose whole profit after fees at the bid covers what the clock hour needs,
  * whatever the legs planned for it (the hunt, the take-profit, the favorite's hold); a thin bid takes what it can and the
  * rest is judged again next tick. Under PACER_FLOOR (Steven, Oct 31) a leg aiming higher keeps the position instead, the
@@ -413,8 +430,7 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
   const frac = r.settleFrac ?? 0;
   const prog = t.liveSince !== undefined ? t.progress(s.now, s.markets) : 0;
   const lastShare = frac > 0 && prog >= 1 - frac - 1e-9;
-  t.progressHigh = Math.max(t.progressHigh, prog);
-  const high = t.progressHigh;
+  const high = t.latchProgress(s.now, prog);
   const cutShare = frac > 0 && high >= 1 - frac - 1e-9;
   const mode = r.floorMode ?? 'off';
   if (r.endLoserCut && frac > 0 && high >= 1 - frac - (r.endEntryMargin ?? 0) - 1e-9) {

@@ -201,11 +201,13 @@ test('profit rules on tennis: in the last 30% of the match a position not in pro
   assert.equal(T.endLoserCut, true);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_END_LOSER_CUT: 'false' }).tennis.endLoserCut, false);
   const rules = { pacerUsd: 4.5, settleFrac: T.settleFrac, endLoserCut: true };
-  // A favorite held from 0.80 (it has no loss exit of its own: TENNIS_FAV_STOP_CENTS is 0).
+  // A favorite held from 0.80 (it has no loss exit of its own: TENNIS_FAV_STOP_CENTS is 0), the progress held 3 minutes.
   const fav = (prog: number, bid: number, net: number | undefined, r: { pacerUsd?: number; settleFrac?: number; endLoserCut?: boolean }) => {
     const tr = new MatchTracker('P', T);
     tr.progress = () => prog;
-    return decideMatch(tr, { event: 'P', now: t0 + 3_600_000, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] }, T, budget, 0.01, r);
+    const at = (now: number) => decideMatch(tr, { event: 'P', now, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] }, T, budget, 0.01, r);
+    for (let k = 6; k > 0; k--) at(t0 + 3_600_000 - k * 30_000);
+    return at(t0 + 3_600_000);
   };
   // 75% done, -$0.80 after fees at the 0.79 bid: sold at the bid.
   const cut = fav(0.75, 0.79, -0.8, rules);
@@ -223,20 +225,38 @@ test('profit rules on tennis: in the last 30% of the match a position not in pro
   // No bid: nothing to sell into (the engine then has no net either); judged again next tick.
   const noBid = new MatchTracker('P', T);
   noBid.progress = () => 0.75;
+  noBid.progressHigh = 0.75;
   const dry = decideMatch(noBid, { event: 'P', now: t0 + 3_600_000, startTime: t0, closeTime: t0 + 86_400_000, markets: [{ ...mk('P-FAV', 0.79, 0.81, { position: 30, avgEntry: 0.8 }), quote: { ask: 0.81, askSize: 50 } }, mk('P-DOG', 0.19, 0.21)] }, T, budget, 0.01, rules);
   assert.equal(dry.plans.length, 0, JSON.stringify(dry.plans));
   // A comeback pulls the progress back below the last share just as the favorite goes under water: it is cut all the same.
   const back = new MatchTracker('P', T);
-  let prog = 0.76;
+  let prog = 0.76, now = t0 + 3_600_000;
   back.progress = () => prog;
-  const snapAt = (bid: number, net: number) => ({ event: 'P', now: t0 + 3_600_000, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] });
-  assert.equal(decideMatch(back, snapAt(0.9, 2.5), T, budget, 0.01, rules).plans.length, 0, 'in profit: rides');
+  const snapAt = (bid: number, net: number) => ({ event: 'P', now, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] });
+  for (let k = 0; k < 6; k++, now += 30_000) assert.equal(decideMatch(back, snapAt(0.9, 2.5), T, budget, 0.01, rules).plans.length, 0, 'in profit: rides');
   prog = 0.62;
   const comeback = decideMatch(back, snapAt(0.79, -0.8), T, budget, 0.01, rules);
   assert.equal(comeback.plans[0]?.leg, 'end_cut', JSON.stringify(comeback));
   assert.equal(comeback.plans[0]?.why, 'match 62% done, 76% at its furthest (its last 30%), -$0.80 after fees at bid 0.79: not in profit, not held to settlement');
   // No last share (TENNIS_NO_EXIT_BEFORE_END_FRAC=0): no cut either.
   assert.equal(fav(0.75, 0.79, -0.8, { pacerUsd: 4.5, settleFrac: 0, endLoserCut: true }).plans.length, 0);
+  // One tick's reading (a thin or one-sided book) does not latch: back at 30% the position is the legs' again.
+  const spike = new MatchTracker('P', T);
+  let sp = 0.3;
+  spike.progress = () => sp;
+  now = t0 + 3_600_000;
+  for (let k = 0; k < 6; k++, now += 30_000) decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules);
+  sp = 0.72;
+  decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules);
+  now += 5_000;
+  sp = 0.3;
+  for (let k = 0; k < 8; k++, now += 30_000) assert.equal(decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules).plans.length, 0, `tick ${k}`);
+  assert.equal(spike.progressHigh, 0.3);
+  // Held for two minutes it is reached: the cut stays on when the progress falls back.
+  sp = 0.72;
+  for (let k = 0; k < 5; k++, now += 30_000) decideMatch(spike, snapAt(0.9, 2.5), T, budget, 0.01, rules);
+  sp = 0.5;
+  assert.equal(decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules).plans[0]?.leg, 'end_cut');
   // No new entry in the last 30%: a favorite bought there would start under water.
   const entry = (r: { settleFrac?: number; endLoserCut?: boolean; endEntryMargin?: number }, prog = 0.8, high = 0) => {
     const tr = new MatchTracker('Q', T);
