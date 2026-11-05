@@ -599,7 +599,7 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
         sig_cache[j] = out
         return out
 
-    def pacer_run(paths, base, pacer, hourly=4.5, floor=0.75, cap=6.5, frac=0.10, no_exit_sec=60, size=None, reenter=False, depth=False, stake_fn=None, remap=None, loser=None, depth_px=0.02):
+    def pacer_run(paths, base, pacer, hourly=4.5, floor=0.75, cap=6.5, frac=0.10, no_exit_sec=60, size=None, reenter=False, depth=False, stake_fn=None, remap=None, loser=None, depth_px=0.02, tag=None):
         """One base exit with (or without) the pacer on top, every position in time order on one clock. base: a sim() rule or
         None (hold everything); pacer: None | (mode, group) with mode 'cumulative' | 'rolling_hour' | 'slices' (Steven's
         non-stacking spec of Oct 30, bot/risk/quotaPacer.ts: catch-up slices of at most the hourly target).
@@ -676,7 +676,11 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
         st = {'real': 0.0, 'cyc': None, 'cyc_real': 0.0, 'bk': collections.defaultdict(float), 'base': 0, 'held': 0, 'snipe': 0, 'group': 0, 'cts': 0.0,
               'hours': 0, 'on_pace': 0, 'hkey': None, 'slice': 0.0, 'sl_h': 0,
               'per': {}, 'stk': {}, 'entries': len(ps), 're': 0, 're_real': 0.0, 'cap_now': 0.0, 'cap_peak': 0.0, 'thin_n': 0, 'thin_usd': 0.0,
-              'held_w': 0, 'held_w_usd': 0.0, 'held_l': 0, 'held_l_usd': 0.0, 'cut': 0, 'cut_usd': 0.0, 'cut_win': 0, 'nobid': 0}
+              'held_w': 0, 'held_w_usd': 0.0, 'held_l': 0, 'held_l_usd': 0.0, 'cut': 0, 'cut_usd': 0.0, 'cut_win': 0, 'nobid': 0,
+              'hourly': collections.defaultdict(lambda: [0.0, 0.0])}  # UTC hour -> [contracts filled (entries + sales), realized $]
+        hk = lambda sec: datetime.datetime.fromtimestamp(sec, datetime.timezone.utc).strftime('%Y-%m-%dT%H')
+        for p in ps:
+            if not p.get('child'): st['hourly'][hk(p['s0'])][0] += p['n']
         live = set(); done = [False] * len(ps); child = [False] * len(ps); conf = {}
         for p in ps:
             if p.get('thin_in'): st['thin_n'] += 1; st['thin_usd'] += p['thin_in']
@@ -757,6 +761,8 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
 
         def close(i, t, x, kind):
             done[i] = True; live.discard(i); credit(x, t); st[kind] += 1
+            hh = st['hourly'][hk(t)]; hh[1] += x
+            if kind not in ('held', 'held_w', 'held_l'): hh[0] += ps[i]['n']  # a sale fills; a settlement does not
             if not child[i]: st['per'][ps[i]['src']] = st['per'].get(ps[i]['src'], 0.0) + x; st['stk'][ps[i]['src']] = ps[i]['n'] * ps[i]['costF']
             st['cap_now'] -= ps[i]['n'] * ps[i]['costF']
             if child[i]: st['re_real'] += x
@@ -853,6 +859,15 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
                     close(i, t, net, 'group'); st['cts'] += ps[i]['n']
         st['span_h'] = (T1 - T0) / 3600.0
         st['n'] = len(ps)
+        if tag and os.environ.get('LAB_HOURLY'):  # the agreement check with the TS replay (deploy/lab_agree.py)
+            fn = os.environ['LAB_HOURLY']
+            try: cur = json.load(open(fn))
+            except Exception: cur = {}
+            old = cur.get(tag, {})
+            for h_, (c_, x_) in st['hourly'].items():
+                o_ = old.get(h_, [0.0, 0.0]); old[h_] = [o_[0] + c_, o_[1] + x_]
+            cur[tag] = old
+            json.dump(cur, open(fn, 'w'))
         return st
 
     def pacer_table(paths, title, bases):
@@ -1182,7 +1197,7 @@ def ratchet_lab(acts, episodes, tops, terms, index_at, sigma_cached, top_at, tak
              ('$50-$100; slices; next signal; depth', {'remap': band5, 'reenter': 'any', 'depth': True})]
     for lab, kw in rows5:
         kw = dict(kw); pc = kw.pop('pacer', SL)
-        r = pacer_run(pathsB, baseG, pc, **kw)
+        r = pacer_run(pathsB, baseG, pc, tag={'$10-$20; slices [BASELINE]': 'band', '$10-$20; slices; depth': 'band_depth'}.get(lab), **kw)
         if r is None: print('    (no costed position)'); break
         print(f"    {lab:66s} {r['real']:+10.2f}  {r['real'] / max(r['span_h'], 1e-9):+6.2f}  {r['entries']:7d}  {r['re']:10d}  {r['re_real']:+10.2f}  {r['snipe']:6d}  {r['held']:4d}  {r['cap_peak']:14.2f}  {r['thin_usd']:7.2f}")
     stakes = sorted(ownv(p) for p in pathsB if p.get('costF') is not None)

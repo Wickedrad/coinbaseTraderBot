@@ -57,6 +57,10 @@ on:
         description: 'With pnl: hours of positions the exit study replays (whole number, 1-24; about a minute of server time an hour)'
         required: false
         default: '8'
+      agree_copy:
+        description: "Lab agreement check instead: a kalshi-replay-check copy-only run id on Drive (lab-copies); main's TS replay and this ref's cross_study.py run on it, per-window contracts and P&L compared (deploy/lab_agree.py); no server read"
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -64,7 +68,7 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    if: ${{ !inputs.exit_hours }}
+    if: ${{ !inputs.exit_hours && !inputs.agree_copy }}
     environment: production
     steps:
       - uses: actions/checkout@v5
@@ -397,3 +401,89 @@ jobs:
               echo; echo '```'; cat "$P"; echo; echo '```'; } > "$RUNNER_TEMP/comment.md"
             jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
           done
+
+  lab-agree:
+    # Does the exit lab agree with the TS replay (institutional-methods check, Nov 5)? On a replay-check copy kept on Drive:
+    # main's research/replayCheck.ts replays the stretch (the check's own replay, no nearby ones, paper's benches followed),
+    # while this ref's deploy/cross_study.py runs 24 h windows over the same files with LAB_HOURLY; deploy/lab_agree.py
+    # compares contracts and P&L per 6 h window. Nothing touches the server; the comparison is posted on the commit.
+    if: ${{ inputs.agree_copy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Main's code beside this ref (the replay runs main; the lab and the comparer are this ref's)
+        run: git worktree add -q "$RUNNER_TEMP/main" origin/main && git -C "$RUNNER_TEMP/main" log --oneline -1
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Install main's dependencies
+        working-directory: ${{ runner.temp }}/main
+        run: npm ci --no-audit --no-fund --silent
+      - name: The copy and its days from Drive
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          REUSE: ${{ inputs.agree_copy }}
+        working-directory: ${{ runner.temp }}/main
+        run: |
+          set -euo pipefail
+          [[ "$REUSE" =~ ^[0-9]+$ ]] || { echo "agree_copy must be a run id"; exit 1; }
+          [ -n "$RCLONE_CONF" ] || { echo "::error::RCLONE_CONF secret is not set"; exit 1; }
+          sudo apt-get install -y -qq rclone >/dev/null
+          mkdir -p ~/.config/rclone && printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
+          rclone copy "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$REUSE" data --transfers 4
+          [ -s data/sweeps/check-days.txt ] || { echo "::error::no copy of run $REUSE on Drive"; exit 1; }
+          mkdir -p data/recordings data/audit
+          for d in $(tr ',' ' ' < data/sweeps/check-days.txt); do
+            ls data/recordings/md-$d.jsonl* >/dev/null 2>&1 || rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.jsonl.gz" data/recordings/ || true
+            ls data/audit/audit-$d* >/dev/null 2>&1 || rclone copy gdrive:kalshi-bot-archive/audit data/audit/ --include "audit-$d*" --transfers 4 || true
+          done
+          cp -p data/runner-temp/* "$RUNNER_TEMP/" 2>/dev/null || true
+          echo "copy of run $REUSE: $(du -sh data | cut -f1), days $(cat data/sweeps/check-days.txt), to $(cat data/sweeps/check-to.txt); $(ls data/recordings data/audit | grep -c jsonl) day files"
+      - name: TS replay (background) and the lab's windows on the same files
+        working-directory: ${{ runner.temp }}/main
+        env:
+          LAB_HOURLY: ${{ runner.temp }}/lab-hourly.json
+          LAB: ${{ github.workspace }}/deploy
+        run: |
+          set -a; . data/sweep-env/train.env; set +a
+          export DATA_DIR="$PWD/data" TRADING_MODE=paper
+          BAL=$(cat "$RUNNER_TEMP/paper-balance" 2>/dev/null || true)
+          GUARD="$RUNNER_TEMP/paper-guard.json"; [ -s "$GUARD" ] || GUARD=""
+          OVERRIDE=$(cat "$RUNNER_TEMP/kill-override" 2>/dev/null || echo true)
+          TO=$(cat data/sweeps/check-to.txt); DAYS=$(cat data/sweeps/check-days.txt)
+          ARGS=(--recordings data/recordings --audit data/audit --days "$DAYS" --from auto --to "$TO" --min-hours 3
+            ${BAL:+--paper-balance-now "$BAL"} ${GUARD:+--paper-guard "$GUARD"} --kill-override "$OVERRIDE"
+            --maker-markouts "$RUNNER_TEMP/maker-markouts.json" --paper-trials "$RUNNER_TEMP/paper-trials.json"
+            --paper-accuracy-gate "$RUNNER_TEMP/paper-accuracy-gate.json" --paper-trades "$RUNNER_TEMP/paper-trades.jsonl" --model data/models/model.json
+            --paper-probation "$RUNNER_TEMP/paper-probation.json" --paper-tp-bench "$RUNNER_TEMP/paper-tp-bench.json")
+          node --import tsx research/replayCheck.ts "${ARGS[@]}" --fetch-seed data/sweeps/seed-candles.json || echo "spot candles: not fetched"
+          [ -s data/sweeps/seed-candles.json ] && ARGS+=(--seed-candles data/sweeps/seed-candles.json)
+          ( timeout 320m node --import tsx research/replayCheck.ts "${ARGS[@]}" --tick-phase-ms 0 --out "$RUNNER_TEMP/replay.json" > "$RUNNER_TEMP/replay.log" 2>&1 || echo "replay stopped: $?" >> "$RUNNER_TEMP/replay.log" ) &
+          # The lab: 24 h windows back from the copy's end over its days (positions by entry, so windows add up).
+          : > "$RUNNER_TEMP/lab.log"; rm -f "$LAB_HOURLY"
+          NW=$(echo "$DAYS" | tr ',' '\n' | wc -l)
+          for i in $(seq 0 $((NW - 1))); do
+            U=$(python3 -c "import datetime as d; e=d.datetime.fromisoformat('$TO'.replace('Z', '')) - d.timedelta(hours=24 * $i); print(e.strftime('%Y-%m-%dT%H:%M:%SZ'))")
+            { timeout 3000 python3 "$LAB/cross_study.py" data 24 "$U" || echo "(exit study stopped: $?)"; } > "$RUNNER_TEMP/one.txt" 2>&1
+            { echo "== lab window 24 h up to $U"; grep -E '^(audit files|recordings |\(exit study stopped)' "$RUNNER_TEMP/one.txt"; grep -E 'slices \[BASELINE\]|slices; depth  ' "$RUNNER_TEMP/one.txt" | head -4; } | tee -a "$RUNNER_TEMP/lab.log"
+          done
+          wait
+          grep -E '^(replay check|replay  +fills|paper  +fills|VERDICT|replay stopped)' "$RUNNER_TEMP/replay.log" | cut -c1-400 | tee -a "$RUNNER_TEMP/lab.log"
+      - name: Compare and post on the commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE: ${{ inputs.agree_copy }}
+        run: |
+          R="$RUNNER_TEMP/report.txt"
+          { cat "$RUNNER_TEMP/lab.log" 2>/dev/null; echo
+            if [ -s "$RUNNER_TEMP/replay.json" ] && [ -s "$RUNNER_TEMP/lab-hourly.json" ]; then python3 deploy/lab_agree.py "$RUNNER_TEMP/replay.json" "$RUNNER_TEMP/lab-hourly.json" 6
+            else echo "no comparison: replay.json $([ -s "$RUNNER_TEMP/replay.json" ] && echo ok || echo missing), lab-hourly.json $([ -s "$RUNNER_TEMP/lab-hourly.json" ] && echo ok || echo missing)"; tail -n 5 "$RUNNER_TEMP/replay.log" 2>/dev/null | cut -c1-300; fi; } > "$R" 2>&1
+          { echo "**Lab agreement check** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · copy $REUSE · replay on main $(git -C "$RUNNER_TEMP/main" rev-parse --short HEAD)"
+            echo; echo '```'; cut -c1-400 "$R" | head -c 60000; echo; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
