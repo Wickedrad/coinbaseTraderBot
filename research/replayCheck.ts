@@ -382,12 +382,12 @@ export async function auditPeek(auditDir: string, days: string[], spec: string):
 
 /** REPLAY_DUMP (Nov 4, the $246 gap): markets fill by fill on both sides. The spec is space separated: `mid` (first fill on
  *  either side at 30-70c, YES scale), `settle:YYYY-MM-DDTHH` (markets settling in that UTC hour), or tickers. */
-export function marketDump(spec: string, r: { trades: Array<{ ticker: string; closeTs: number; pnl: number }>; fillLog?: Array<{ t: number; ticker: string; side: string; price: number; count: number; taker: boolean; coid?: string }> }, a: AuditRecords, from: number, to: number): string[] {
+export function marketDump(spec: string, r: { trades: Array<{ ticker: string; closeTs: number; pnl: number }>; fillLog?: Array<{ t: number; ticker: string; side: string; price: number; count: number; taker: boolean; coid?: string; why?: string }> }, a: AuditRecords, from: number, to: number): string[] {
   const inside = (t: number) => t >= from && t < to;
   const purpose = (coid?: string) => (!coid ? 'other' : coid.includes('-exit-') ? coid.slice(coid.indexOf('-exit-') + 1) : /-(quote|entry|exit)(?:-tp)?$/.exec(coid)?.[1] ?? 'other');
   type F = { t: number; side: string; price: number; count: number; tag: string };
   const rep = new Map<string, F[]>(), pap = new Map<string, F[]>();
-  for (const f of r.fillLog ?? []) if (inside(f.t)) (rep.get(f.ticker) ?? rep.set(f.ticker, []).get(f.ticker)!).push({ t: f.t, side: f.side, price: f.price, count: f.count, tag: `${purpose(f.coid)}${f.taker ? ' taker' : ''}` });
+  for (const f of r.fillLog ?? []) if (inside(f.t)) (rep.get(f.ticker) ?? rep.set(f.ticker, []).get(f.ticker)!).push({ t: f.t, side: f.side, price: f.price, count: f.count, tag: `${purpose(f.coid)}${f.taker ? ' taker' : ''}${f.why ? ` (${f.why.slice(0, 60)})` : ''}` });
   for (const f of a.fills) {
     if (!inside(f.t) || !f.ticker) continue;
     const o = f.coid ? a.orders.get(f.coid) : undefined;
