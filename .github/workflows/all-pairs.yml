@@ -1,0 +1,374 @@
+# All-pairs entry/exit payoff matrices (python/allpairs; Steven, 2026-11-05): every entry minute against every exit
+# minute and settlement of each 15-minute Kalshi window, net of the real fees, maker and taker fills; a Snell-envelope
+# (Longstaff-Schwartz) exit policy; entry labels that follow it; purged walk-forward folds split over runners; a deflated
+# Sharpe gate with placebo, stress and synthetic-pricer arms. The card is posted on the commit.
+#
+# Data: Google Drive raw/history (Kalshi's own 1-minute candles of the 15-minute series and Binance 1-minute bars, the
+# 200-day history), read-only; results and the trial ledger go to Drive models/all-pairs. No server access at all.
+# DOGE is never loaded (Steven, Nov 5). The repository is public: only aggregates are printed or uploaded.
+name: All-pairs matrix
+
+on:
+  # A new workflow can't be dispatched until it is on main: while on its branch, a push whose commit message has
+  # "[all-pairs]" runs the study, "[all-pairs-report:<run id>]" re-runs only the card on that run's parts; any other
+  # push of these files runs the unit tests only.
+  push:
+    branches: [claude/project-thread-eqduzm]
+    paths: ['.github/workflows/all-pairs.yml', 'python/allpairs/**']
+  workflow_dispatch:
+    inputs:
+      config:
+        description: 'Hypothesis config under python/allpairs/hypotheses/ (the candidate, without .json)'
+        required: false
+        default: 'base'
+      arms:
+        description: 'Arms to run: base,stress,tight,synth15,synth1h (base, stress and tight always run)'
+        required: false
+        default: 'base,stress,tight,synth15,synth1h'
+      days:
+        description: 'Most recent N days of history (0 = all on Drive)'
+        required: false
+        default: '0'
+
+permissions:
+  contents: read
+
+# Every study runs to the end (hypothesis batches pushed one after another must not cancel each other); a push without a
+# study cancels the branch's earlier push without one.
+concurrency:
+  group: ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[all-pairs]')) && format('all-pairs-study-{0}', github.run_id) || format('all-pairs-{0}-other', github.ref) }}
+  cancel-in-progress: true
+
+env:
+  ASSETS: BTC,ETH,SOL,XRP
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      study: ${{ steps.go.outputs.study }}
+      matrix: ${{ steps.go.outputs.matrix }}
+      report_run: ${{ steps.go.outputs.report_run }}
+      diag: ${{ steps.go.outputs.diag }}
+      diag_only: ${{ steps.go.outputs.diag_only }}
+      registry: ${{ steps.go.outputs.registry }}
+      configs: ${{ steps.go.outputs.configs }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/allpairs/requirements.txt
+      - run: pip install --quiet -r python/allpairs/requirements.txt
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Unit tests
+        working-directory: python
+        run: |
+          set -o pipefail
+          python -W ignore -m unittest discover -s allpairs/tests -t . 2>&1 | tail -20
+      - name: Plan the jobs
+        id: go
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          EVENT: ${{ github.event_name }}
+          ARMS_IN: ${{ inputs.arms || 'base,stress,tight,synth15,synth1h' }}
+          CONFIG_IN: ${{ inputs.config || 'base' }}
+        run: |
+          set -euo pipefail
+          # A push may name its arms and its hypothesis configs in the commit message: [arms:base,stress] [config:a,b]
+          ARMS=$(printf '%s' "$MSG" | sed -nE 's/.*\[arms:([a-z0-9,]+)\].*/\1/p' | head -1)
+          ARMS=${ARMS:-$ARMS_IN}
+          CONFIGS=$(printf '%s' "$MSG" | sed -nE 's/.*\[config:([A-Za-z0-9_,-]+)\].*/\1/p' | head -1)
+          CONFIGS=${CONFIGS:-$CONFIG_IN}
+          if [ "$EVENT" = "workflow_dispatch" ] || printf '%s' "$MSG" | grep -qF '[all-pairs]'; then echo "study=true" >> "$GITHUB_OUTPUT"; else echo "study=false" >> "$GITHUB_OUTPUT"; fi
+          # "[all-pairs-diag]" runs the whole data report, "[all-pairs-diag:tier]" only the tier report and keep_crossed gate.
+          if printf '%s' "$MSG" | grep -qE '\[all-pairs-diag(:tier)?\]'; then echo "diag=true" >> "$GITHUB_OUTPUT"; else echo "diag=false" >> "$GITHUB_OUTPUT"; fi
+          if printf '%s' "$MSG" | grep -qF '[all-pairs-diag:tier]'; then echo "diag_only=tier" >> "$GITHUB_OUTPUT"; else echo "diag_only=all" >> "$GITHUB_OUTPUT"; fi
+          # "[all-pairs-registry]" writes the trial-registry shard of every run in the ledger (backfill).
+          if printf '%s' "$MSG" | grep -qF '[all-pairs-registry]'; then echo "registry=true" >> "$GITHUB_OUTPUT"; else echo "registry=false" >> "$GITHUB_OUTPUT"; fi
+          rr=$(printf '%s' "$MSG" | sed -nE 's/.*\[all-pairs-report:([0-9]+)\].*/\1/p' | head -1)
+          echo "report_run=$rr" >> "$GITHUB_OUTPUT"
+          # Per config: base folds over 4 jobs, stress and synth1h over 2, synth15 1; at most 5 jobs at once (the project
+          # shares ~50 runners, this thread ~10).
+          python3 - "$ARMS" "$CONFIGS" >> "$GITHUB_OUTPUT" <<'EOF'
+          import json, os, re, sys
+          # base, stress and tight always run: the gate needs all three (a missing arm counts as not passed).
+          want = {a.strip() for a in sys.argv[1].split(',') if a.strip()} | {'base', 'stress', 'tight'}
+          configs = [c.strip() for c in sys.argv[2].split(',') if c.strip()]
+          for c in configs:
+              if not re.fullmatch(r'[A-Za-z0-9_-]+', c) or not os.path.exists(f'python/allpairs/hypotheses/{c}.json'):
+                  sys.exit(f'unknown config {c!r}')
+          parts = {'base': 4, 'stress': 2, 'tight': 2, 'synth15': 1, 'synth1h': 2}
+          inc = [{'config': c, 'arm': a, 'part': p, 'parts': n} for c in configs for a, n in parts.items() if a in want for p in range(n)]
+          print('matrix=' + json.dumps({'include': inc}))
+          print('configs=' + ','.join(configs))
+          EOF
+      # Google Drive lets two folders share a name: when two study jobs upload their first part at the same second, each
+      # can make its own copy of a folder, and a reader then sees only one of the twins (run 42100397043 lost exit_naive
+      # base part 3 that way). The run's part folders are made here, once, before any study job starts.
+      - name: Drive setup
+        if: steps.go.outputs.study == 'true'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Make the run's part folders on Drive
+        if: steps.go.outputs.study == 'true'
+        env:
+          CONFIGS: ${{ steps.go.outputs.configs }}
+        run: |
+          set -euo pipefail
+          R="${DRIVE_ROOT:-gdrive:kalshi-bot-archive}"
+          for c in ${CONFIGS//,/ }; do rclone mkdir "$R/models/all-pairs/runs/${{ github.run_id }}/parts/$c"; done
+          rclone lsf "$R/models/all-pairs/runs/${{ github.run_id }}/parts" --dirs-only | paste -sd' ' -
+
+  diag:
+    needs: test
+    if: needs.test.outputs.diag == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/allpairs/requirements.txt
+      - run: pip install --quiet -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Data-quality report of the Kalshi candles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIAG_ONLY: ${{ needs.test.outputs.diag_only }}
+        run: |
+          set -euo pipefail
+          args=()
+          for a in ${ASSETS//,/ }; do [ "$a" = "DOGE" ] || args+=(--include "/kalshi/KX${a}15M/*.jsonl"); done
+          bash deploy/drive_lab.sh get raw/history data/history "${args[@]}"
+          (cd python && python -W ignore -m allpairs.diag --history ../data/history --assets "$ASSETS" --only "${DIAG_ONLY:-all}") | tee "$RUNNER_TEMP/diag.txt"
+          { echo "All-pairs data diagnostics, run ${{ github.run_id }}"; echo; echo '```'; cut -c1-700 "$RUNNER_TEMP/diag.txt"; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+
+  study:
+    needs: test
+    if: needs.test.outputs.study == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix: ${{ fromJSON(needs.test.outputs.matrix) }}
+    name: study (${{ matrix.config }} ${{ matrix.arm }} ${{ matrix.part }}/${{ matrix.parts }})
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/allpairs/requirements.txt
+      - run: pip install --quiet -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Kalshi 15-minute candles and Binance 1-minute bars from Drive (no DOGE)
+        run: |
+          set -euo pipefail
+          args=()
+          for a in ${ASSETS//,/ }; do
+            [ "$a" = "DOGE" ] && continue
+            args+=(--include "/kalshi/KX${a}15M/*.jsonl" --include "/binance-1m/${a}/1m.csv")
+          done
+          bash deploy/drive_lab.sh get raw/history data/history "${args[@]}"
+          du -sh data/history/kalshi data/history/binance-1m | cat
+          for d in data/history/kalshi/*; do echo "$(basename "$d"): $(ls "$d" | wc -l) day files, $(cat "$d"/*.jsonl | wc -l) markets"; done
+      - name: Run ${{ matrix.arm }} part ${{ matrix.part }}
+        working-directory: python
+        env:
+          CONFIG: ${{ matrix.config }}
+          DAYS: ${{ inputs.days || '0' }}
+        run: |
+          set -euo pipefail
+          [[ "$CONFIG" =~ ^[A-Za-z0-9_-]+$ ]] && [[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "bad input"; exit 1; }
+          python -W ignore -m allpairs.run --history ../data/history --config "allpairs/hypotheses/$CONFIG.json" \
+            --arm ${{ matrix.arm }} --part ${{ matrix.part }} --parts ${{ matrix.parts }} --assets "$ASSETS" --days "$DAYS" \
+            --out "$RUNNER_TEMP/parts/$CONFIG/${{ matrix.arm }}-${{ matrix.part }}.json" 2>&1 | tail -80
+      # The part holds per-trade rows: it goes to Drive, never to a public artifact.
+      - name: Keep the part on Drive
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -n "$(ls "$RUNNER_TEMP/parts" 2>/dev/null)" ] || { echo "no part written"; exit 0; }
+          bash deploy/drive_lab.sh put "models/all-pairs/runs/${{ github.run_id }}/parts" "$RUNNER_TEMP/parts"
+
+  report:
+    needs: [test, study]
+    if: always() && (needs.test.outputs.study == 'true' || needs.test.outputs.report_run != '')
+    runs-on: ubuntu-latest
+    # One report at a time: each reads, appends to and writes back the shared trial ledger.
+    concurrency:
+      group: all-pairs-ledger
+      cancel-in-progress: false
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/allpairs/requirements.txt
+      - run: pip install --quiet -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Combine the parts, gate, card
+        working-directory: python
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SRC: ${{ needs.test.outputs.report_run || github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/state" "$RUNNER_TEMP/results" "$RUNNER_TEMP/parts"
+          # The ledger. drive_lab.sh answers 3 for an empty listing, also when the listing itself failed, so a 3 is
+          # believed only after each level of the exact path is listed successfully and the ledger is not there (never
+          # start a fresh ledger over one that could not be read).
+          R="${DRIVE_ROOT:-gdrive:kalshi-bot-archive}"
+          rc=0; bash ../deploy/drive_lab.sh get models/all-pairs/state "$RUNNER_TEMP/state" || rc=$?
+          if [ "$rc" = 3 ]; then
+            top=$(rclone lsf "$R/models" --dirs-only) || { echo "Drive listing failed"; exit 1; }
+            if printf '%s\n' "$top" | grep -qx 'all-pairs/'; then
+              sub=$(rclone lsf "$R/models/all-pairs" --dirs-only) || { echo "Drive listing failed"; exit 1; }
+              if printf '%s\n' "$sub" | grep -qx 'state/'; then
+                files=$(rclone lsf "$R/models/all-pairs/state") || { echo "Drive listing failed"; exit 1; }
+                [ -z "$files" ] || { echo "the ledger exists but could not be read"; exit 1; }
+              fi
+            fi
+            echo "no ledger on Drive yet"
+          elif [ "$rc" != 0 ]; then echo "ledger download failed ($rc)"; exit 1; fi
+          echo ok > "$RUNNER_TEMP/state/.fetched"
+          # Twin folders (see the test job) are merged before the parts are read: a part in a twin is otherwise skipped.
+          rclone dedupe --dedupe-mode skip "$R/models/all-pairs/runs/$SRC" 2>&1 | grep -v '^$' | tail -5 || true
+          # The parts of the scoring run (this one, or the run a report-only rerun names), one folder per hypothesis
+          # config (older runs kept them flat: one config); an older run's combined results stand in when it kept no
+          # parts on Drive.
+          rc=0; bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC/parts" "$RUNNER_TEMP/parts" || rc=$?
+          if [ "$rc" = 0 ]; then
+            groups=$(find "$RUNNER_TEMP/parts" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+            if [ -z "$groups" ]; then
+              python -W ignore -m allpairs.run combine --parts "$RUNNER_TEMP/parts" --out "$RUNNER_TEMP/results/base"
+            else
+              for g in $groups; do python -W ignore -m allpairs.run combine --parts "$RUNNER_TEMP/parts/$g" --out "$RUNNER_TEMP/results/$g"; done
+            fi
+          elif [ "$rc" = 3 ] && [ "$SRC" != "${{ github.run_id }}" ]; then
+            bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC" "$RUNNER_TEMP/results/base" --include "/*.json"
+          else echo "no parts for run $SRC ($rc)"; exit 1; fi
+          # One gate and card per config, in order; each config scored here counts as a trial for the next.
+          for d in "$RUNNER_TEMP"/results/*/; do
+            python -W ignore -m allpairs.report --results "$d" --ledger "$RUNNER_TEMP/state/trials.jsonl" \
+              --champion "$RUNNER_TEMP/state/champion.json" --card "${d}card.md" --run-url "$RUN_URL" --run-id "$SRC"
+          done
+      - name: Trial-registry shard of the run (registry/shards/all-pairs/<run>.jsonl)
+        if: always()
+        working-directory: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SRC: ${{ needs.test.outputs.report_run || github.run_id }}
+        run: |
+          set -euo pipefail
+          ls "$RUNNER_TEMP"/results/*/*.json >/dev/null 2>&1 || { echo "no results: no shard"; exit 0; }
+          if [ "$SRC" = "${{ github.run_id }}" ]; then sha=${{ github.sha }}
+          else sha=$(gh api "repos/${{ github.repository }}/actions/runs/$SRC" --jq .head_sha); fi
+          bash allpairs/registry_shard.sh "$SRC" "$RUNNER_TEMP/results" "$sha" "${{ github.server_url }}/${{ github.repository }}/actions/runs/$SRC"
+      - name: Keep results and the ledger on Drive
+        if: always()
+        env:
+          SRC: ${{ needs.test.outputs.report_run || github.run_id }}
+        run: |
+          # Under the scored run: a report-only rerun recombines that run's parts and replaces its kept results (the
+          # registry backfill reads them from there).
+          [ ! -d "$RUNNER_TEMP/results" ] || bash deploy/drive_lab.sh put "models/all-pairs/runs/$SRC" "$RUNNER_TEMP/results"
+          # The ledger goes back only when it was read first (or Drive confirmed it has none), and never shorter than
+          # the copy on Drive (a ledger only grows).
+          if [ -f "$RUNNER_TEMP/state/.fetched" ] && [ -f "$RUNNER_TEMP/state/trials.jsonl" ]; then
+            remote=$(rclone cat "${DRIVE_ROOT:-gdrive:kalshi-bot-archive}/models/all-pairs/state/trials.jsonl" 2>/dev/null | wc -l || true)
+            mine=$(wc -l < "$RUNNER_TEMP/state/trials.jsonl")
+            if [ "$mine" -ge "${remote:-0}" ]; then bash deploy/drive_lab.sh put models/all-pairs/state "$RUNNER_TEMP/state" --exclude .fetched
+            else echo "the ledger here ($mine rows) is shorter than Drive's ($remote): not uploaded"; exit 1; fi
+          fi
+      - name: Post the card on the commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "All-pairs matrix run ${{ github.run_id }} (study ${{ needs.study.result }}${{ needs.test.outputs.report_run && format(', parts of run {0}', needs.test.outputs.report_run) || '' }})"; echo
+            found=0; for f in "$RUNNER_TEMP"/results/*/card.md; do [ -f "$f" ] || continue; found=1; cat "$f"; echo; done
+            [ "$found" = 1 ] || echo "no card"; } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
+
+  # Backfill: the registry shard of every run in the trial ledger, oldest first (a run's control may be an earlier run).
+  registry:
+    needs: test
+    if: needs.test.outputs.registry == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: all-pairs-registry
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/allpairs/requirements.txt
+      - run: pip install --quiet -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Registry shards of every scored run
+        working-directory: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          R="${DRIVE_ROOT:-gdrive:kalshi-bot-archive}"
+          mkdir -p "$RUNNER_TEMP/state"
+          rclone copy "$R/models/all-pairs/state" "$RUNNER_TEMP/state" --include trials.jsonl
+          runs=$(python3 -c "import json,sys; rs={str(json.loads(l).get('run','')) for l in open(sys.argv[1]) if l.strip()}; print(' '.join(sorted((r for r in rs if r.isdigit()), key=int)))" "$RUNNER_TEMP/state/trials.jsonl")
+          echo "runs in the ledger: $runs"
+          for run in $runs; do
+            d="$RUNNER_TEMP/runs/$run"; mkdir -p "$d"
+            rclone dedupe --dedupe-mode skip "$R/models/all-pairs/runs/$run" 2>&1 | grep -v '^$' | tail -3 || true
+            rclone copy "$R/models/all-pairs/runs/$run" "$d" --exclude "/parts/**" || true
+            if [ -z "$(find "$d" -name '*.json' ! -name gate.json -print -quit)" ]; then
+              # Only the raw parts were kept: combine them here (one folder per config, or flat for older runs).
+              rclone copy "$R/models/all-pairs/runs/$run/parts" "$d/parts" || true
+              groups=$(find "$d/parts" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort || true)
+              if [ -n "$groups" ]; then for g in $groups; do python -W ignore -m allpairs.run combine --parts "$d/parts/$g" --out "$d/results/$g"; done
+              elif [ -n "$(find "$d/parts" -name '*.json' -print -quit 2>/dev/null)" ]; then python -W ignore -m allpairs.run combine --parts "$d/parts" --out "$d/results/base"; fi
+              rm -rf "$d/parts"
+            fi
+            [ -n "$(find "$d" -name '*.json' ! -name gate.json -print -quit)" ] || { echo "run $run: no results on Drive"; continue; }
+            sha=$(gh api "repos/${{ github.repository }}/actions/runs/$run" --jq .head_sha)
+            # Runs before 4a628f9 (run 42054088258) scored dirty historical quotes (minute-0 placeholder, one-sided and
+            # crossed books, carried quotes): kept as trials, flagged.
+            flags=(); if [ "$run" -lt 42054088258 ]; then flags=(invalid-data:dirty-historical-quotes); fi
+            bash allpairs/registry_shard.sh "$run" "$d" "$sha" "${{ github.server_url }}/${{ github.repository }}/actions/runs/$run" "${flags[@]}"
+          done

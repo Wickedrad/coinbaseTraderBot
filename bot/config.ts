@@ -756,6 +756,15 @@ export interface TennisConfig {
    *  for tennis, against the 10% of a crypto contract's window, STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC) a position in profit
    *  after fees rides to settlement; elsewhere the quota snipe applies as on every contract type. 0 = off. */
   settleFrac: number;
+  /** TENNIS_END_LOSER_CUT (on): the other half of that rule, nothing is held to settlement unless it is in profit. In the last
+   *  share of the match a position not in profit after fees is sold at the bid, and no new entry is placed there (it
+   *  would start under water). The favorite leg has no loss exit of its own (TENNIS_FAV_STOP_CENTS is 0 by default). The
+   *  share is settleFrac's, so settleFrac 0 turns the cut off too. Both go by the furthest progress the match has held
+   *  for 2 minutes (a comeback pulls the progress back; one tick's thin book does not count). */
+  endLoserCut: boolean;
+  /** TENNIS_END_ENTRY_MARGIN (0.05): with the cut on, no new entry from this much progress before the last share, so a
+   *  position bought just before it has time to cover the spread and fees before it is judged (0.65 with the defaults). */
+  endEntryMargin: number;
   /** Tennis MLP (fair P(win) from the 4 signals, score, book and SNN): when validated, entries need
    *  fair - price >= this. */
   fairMinEdge: number;
@@ -781,6 +790,10 @@ export interface PerpsConfig {
   takerAfterSec: number;
   makerFeeBps: number;
   takerFeeBps: number;
+  /** Read this account's real perps fee rates (GET /margin/fee_tiers and /margin/fee_tier_rates, signed, read only)
+   *  every feeTierHours and alert when they differ from makerFeeBps / takerFeeBps (bot/perps/feeTier.ts). Needs a key. */
+  feeTierCheck: boolean;
+  feeTierHours: number;
   /** Stage 3 directional trading: off | paper (simulated against live perp quotes) | live (real orders). */
   trading: 'off' | 'paper' | 'live';
   /** Frozen perp signal model (research:perp-train); without it the momentum prior trades at pilot size. */
@@ -1418,6 +1431,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         takerAfterSec: num(env, 'PERP_HEDGE_TAKER_AFTER_SEC', 300, 10, 86400),
         makerFeeBps: num(env, 'PERP_MAKER_FEE_BPS', 5, 0, 100),
         takerFeeBps: num(env, 'PERP_TAKER_FEE_BPS', 12, 0, 100),
+        feeTierCheck: bool(env, 'PERP_FEE_TIER_CHECK', true),
+        feeTierHours: num(env, 'PERP_FEE_TIER_HOURS', 6, 1, 168),
         trading,
         modelPath: path.resolve(env.PERP_MODEL_PATH ?? './params/perp_model.json'),
         paperBalanceUsd: num(env, 'PERP_PAPER_BALANCE_USD', 100, 1, 1e9),
@@ -1628,6 +1643,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       underdogLateProgress: num(env, 'TENNIS_UNDERDOG_LATE_PROGRESS', 0.35, 0, 1),
       underdogCutProgress: num(env, 'TENNIS_UNDERDOG_CUT_PROGRESS', 0.6, 0, 1),
       settleFrac: num(env, 'TENNIS_NO_EXIT_BEFORE_END_FRAC', 0.30, 0, 0.9),
+      endLoserCut: bool(env, 'TENNIS_END_LOSER_CUT', true),
+      endEntryMargin: num(env, 'TENNIS_END_ENTRY_MARGIN', 0.05, 0, 0.5),
       fairMinEdge: num(env, 'TENNIS_FAIR_MIN_EDGE', 0.01, -0.5, 0.5),
       modelPath: path.resolve(env.TENNIS_MODEL_PATH ?? './params/tennis_model.json'),
     },

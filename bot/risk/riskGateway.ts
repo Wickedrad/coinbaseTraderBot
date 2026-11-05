@@ -13,6 +13,9 @@ export interface RiskContext {
   now: number;
   mode: TradingMode;
   killEngaged: boolean;
+  /** The kill switch is engaged, but this order is the engine's exit under it: a tennis position not in profit after fees
+   *  (Steven's rule, Nov 5: never held to settlement unless in profit). Only a reduce-only immediate-or-cancel order passes. */
+  killExit?: boolean;
   /** Paper training override: the daily loss limit neither rejects orders nor trips the kill switch. */
   dailyLossAdvisory?: boolean;
   /** Non-empty when new risk is halted (recon break, stale data, startup). */
@@ -89,7 +92,7 @@ export class RiskGateway {
       && (i.side === 'ask' ? c.position > 0 : c.position < 0) && i.count <= Math.abs(c.position) + EPS;
     const reduces = i.reduceOnly || restingExit;
 
-    if (c.killEngaged) return { ok: false, reasons: ['kill switch engaged'] };
+    if (c.killEngaged && !(c.killExit && i.reduceOnly && i.timeInForce === 'immediate_or_cancel')) return { ok: false, reasons: ['kill switch engaged'] };
     // The model's validation holds back new risk only: an exit always goes out.
     if (c.mode === 'live' && c.modelLiveBlockers.length && !reduces) r.push(`model not validated for live: ${c.modelLiveBlockers.join('; ')}`);
 
@@ -97,7 +100,10 @@ export class RiskGateway {
     if (!(i.price > 0 && i.price < 1)) r.push(`price ${i.price} outside (0,1)`);
     if (!onGrid(i.price, c.priceRanges, c.tickSize)) r.push(`price ${i.price} off the market's price grid (tick ${c.priceRanges ? 'per band' : c.tickSize})`);
     if (!(i.count > 0)) r.push(`count ${i.count} must be > 0`);
-    if (i.count > L.maxContractsPerOrder + EPS) r.push(`count ${i.count} > max ${L.maxContractsPerOrder}`);
+    // The fat-finger cap guards new risk. An exit is checked below never to sell more than is held, and a position grows
+    // only by orders under this cap, so an exit of the whole position goes out (stacked entries at cheap prices can pass
+    // the cap, and rejecting their take-profit or loser cut held them to settlement).
+    if (!reduces && i.count > L.maxContractsPerOrder + EPS) r.push(`count ${i.count} > max ${L.maxContractsPerOrder}`);
     if (Math.abs(i.count * 100 - Math.round(i.count * 100)) > 1e-6) r.push(`count ${i.count} finer than 0.01`);
     if (i.reduceOnly && i.timeInForce !== 'immediate_or_cancel') r.push('reduce_only requires immediate_or_cancel');
     if (!Number.isFinite(i.fairValue) || i.fairValue <= 0 || i.fairValue >= 1) r.push('missing fair value');
