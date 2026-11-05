@@ -82,6 +82,16 @@ jobs:
                   rclone copyto "out/regime-v1-fixture-$fx.csv" "$REG/regime-v1/$sha/fixture-$fx.csv"
                   echo "fixture $fx: $(($(wc -l < "out/regime-v1-fixture-$fx.csv") - 1)) rows"
                 fi;;
+              score-cellsweep)
+                # Re-score a cell-sweep batch whose own score job failed: cellSweep.py from claude/cell-sweep, outputs on Drive.
+                [[ "$a1" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::score-cellsweep needs a full sha"; rc=1; continue; }
+                git fetch -q --depth=1 origin claude/cell-sweep && git show FETCH_HEAD:research/cellSweep.py > cellSweep.py
+                d="cs-$a1"; mkdir -p "$d"; SRC="gdrive:kalshi-bot-archive/simulated/cell-sweep/$a1"
+                rclone copy "$SRC" "$d" --include 'd*.json.gz' --transfers 8; echo "$a1: $(ls "$d" | wc -l) arm-day outputs"
+                python3 -I cellSweep.py "$d" "cs-report-$a1.md" --control "$a2" --noise "${a3:-P500}" || { echo "::error::scoring failed"; rc=1; continue; }
+                rclone copyto "cs-report-$a1.md" "$SRC/report.md"; [ -f "cs-report-$a1.json" ] && rclone copyto "cs-report-$a1.json" "$SRC/report.json"
+                { echo "**Cell sweep score** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · REPLAY_NOTE=cell-score"; echo; head -c 60000 "cs-report-$a1.md"; } > comment-cs.md
+                jq -n --rawfile body comment-cs.md '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$a1/comments" --input - --jq '.html_url' || true;;
               inbox)
                 # Shards from threads without Drive access, committed under .github/registry-inbox/<thread>/<file>.jsonl.
                 for f in .github/registry-inbox/*/*.jsonl; do

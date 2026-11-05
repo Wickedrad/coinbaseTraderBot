@@ -1,3 +1,5 @@
 # Trial registry jobs (see .github/workflows/registry.yml).
-# 22:05 UTC Nov 5: first contract-type ledger (Steven 21:59 UTC).
+# 22:20 UTC Nov 5: batch 3y score job failed (no "# noise:" line + pipefail); re-score here, backfill 3y, merge.
+score-cellsweep 69878ff9588c0bbedf930cf954a5e4dd9e0d04f6 C
+backfill-cellsweep 69878ff9588c0bbedf930cf954a5e4dd9e0d04f6 meta C own cell-batch3y
 merge
