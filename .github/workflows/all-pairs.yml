@@ -50,6 +50,7 @@ jobs:
       study: ${{ steps.go.outputs.study }}
       matrix: ${{ steps.go.outputs.matrix }}
       report_run: ${{ steps.go.outputs.report_run }}
+      diag: ${{ steps.go.outputs.diag }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -72,6 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT" = "workflow_dispatch" ] || printf '%s' "$MSG" | grep -qF '[all-pairs]'; then echo "study=true" >> "$GITHUB_OUTPUT"; else echo "study=false" >> "$GITHUB_OUTPUT"; fi
+          if printf '%s' "$MSG" | grep -qF '[all-pairs-diag]'; then echo "diag=true" >> "$GITHUB_OUTPUT"; else echo "diag=false" >> "$GITHUB_OUTPUT"; fi
           rr=$(printf '%s' "$MSG" | sed -nE 's/.*\[all-pairs-report:([0-9]+)\].*/\1/p' | head -1)
           echo "report_run=$rr" >> "$GITHUB_OUTPUT"
           # 9 study jobs, at most 5 at once (the project shares ~50 runners): base folds over 4, stress and synth1h over 2.
@@ -82,6 +84,37 @@ jobs:
           inc = [{'arm': a, 'part': p, 'parts': n} for a, n in parts.items() if a in want for p in range(n)]
           print('matrix=' + json.dumps({'include': inc}))
           EOF
+
+  diag:
+    needs: test
+    if: needs.test.outputs.diag == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/allpairs/requirements.txt
+      - run: pip install --quiet -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Data-quality report of the Kalshi candles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=()
+          for a in ${ASSETS//,/ }; do [ "$a" = "DOGE" ] || args+=(--include "/kalshi/KX${a}15M/*.jsonl"); done
+          bash deploy/drive_lab.sh get raw/history data/history "${args[@]}"
+          (cd python && python -W ignore -m allpairs.diag --history ../data/history --assets "$ASSETS") | tee "$RUNNER_TEMP/diag.txt"
+          { echo "All-pairs data diagnostics, run ${{ github.run_id }}"; echo; echo '```'; cut -c1-700 "$RUNNER_TEMP/diag.txt"; echo '```'; } > "$RUNNER_TEMP/comment.md"
+          gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
 
   study:
     needs: test
