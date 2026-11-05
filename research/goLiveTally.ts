@@ -200,6 +200,9 @@ export function quoteFiller(fill: QuoteFill): (e: Ev) => Ev | undefined {
   };
 }
 
+/** Every depth fill-in made in this process (their stats: what the simulator emitted). */
+export const depthSims: DepthSim[] = [];
+
 /** A whole day through quoteFiller. */
 export function fillQuotes(events: Ev[], fill: QuoteFill, depth?: DepthModel): Ev[] {
   const f = streamFiller(fill, depth);
@@ -225,6 +228,7 @@ export function streamFiller(fill: QuoteFill, depth?: DepthModel): { push: (e: E
   if (!depth) throw new Error('the depth fill-in needs a depth model (models/depth_model.json)');
   const anchors = quoteFiller({ how: 'requote' });
   const sim = new DepthSim(depth);
+  depthSims.push(sim);
   const close = new Map<string, number>();
   // The quote each contract's book is waiting to be played from, until its next quote is in.
   const held = new Map<string, { e: Ev; close: number }>();

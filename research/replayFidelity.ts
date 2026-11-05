@@ -24,7 +24,7 @@ import zlib from 'zlib';
 import { loadConfig, paperEnv } from '../bot/config';
 import { OrderBook } from '../bot/marketdata/orderBook';
 import { linkDays, recordingFiles, recordingLines, type RecordingDay } from '../bot/marketdata/recordingFiles';
-import { contractKind, type MarketKind } from '../bot/model/fairValue';
+import { contractKind, isRangeTicker, type MarketKind } from '../bot/model/fairValue';
 import { backtestMain } from './backtest';
 import { fillDayFile, QUOTE_FILLS, type Ev, type QuoteFill } from './goLiveTally';
 import { readDepthModel, type DepthModel } from './history/depthSim';
@@ -89,7 +89,7 @@ export async function asHistory(day: RecordingDay, out: string | undefined, carr
     try { e = JSON.parse(line); } catch { continue; }
     advance(e.t);
     if (e.k === 'market' && e.ticker && e.asset) {
-      markets.set(e.ticker, { ticker: e.ticker, asset: e.asset, kind: e.kind ?? contractKind(e.series ?? ''), strike: e.strike ?? null, cap: e.cap ?? null, openTime: e.openTime, closeTime: e.closeTime });
+      markets.set(e.ticker, { ticker: e.ticker, asset: e.asset, kind: isRangeTicker(e.ticker) ? 'between' : e.kind ?? contractKind(e.series ?? ''), strike: e.strike ?? null, cap: e.cap ?? null, openTime: e.openTime, closeTime: e.closeTime });
     } else if (e.k === 'book' && e.ticker) {
       const b = books.get(e.ticker) ?? new OrderBook(e.ticker); books.set(e.ticker, b);
       b.applySnapshot({ bids: e.bids ?? [], asks: e.asks ?? [] }, e.t);
