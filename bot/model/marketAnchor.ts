@@ -63,7 +63,7 @@ export const DEFAULT_MARKET_ANCHOR: MarketAnchorConfig = { enabled: false, prior
 
 interface Snap { a: number; d: number; tau: number }
 interface Row { a: number; d: number; y: 0 | 1 }
-export interface MarketAnchorState { rows: Record<string, Row[]> }
+export interface MarketAnchorState { rows: Record<string, Row[]>; /** Slow pricing-vol averages (wild regime), kept across restarts. */ vol?: Record<string, { v: number; first: number; last: number }> }
 
 const PENDING_MAX_AGE_MS = 3 * 3_600_000;
 const SAVE_EVERY_MS = 60_000;
@@ -108,6 +108,8 @@ export class MarketAnchor {
   constructor(readonly cfg: MarketAnchorConfig, private readonly file?: string, private readonly now: () => number = Date.now) {
     this.st = (file && readJson<MarketAnchorState>(file, { quarantine: true })) || { rows: {} };
     if (!this.st.rows || typeof this.st.rows !== 'object') this.st.rows = {};
+    // A restart keeps each coin's slow vol average, so the wild regime is not blind for its first 6 h (bot audit, Nov 5).
+    for (const [k, e] of Object.entries(this.st.vol ?? {})) if (e && e.v > 0 && Number.isFinite(e.first) && Number.isFinite(e.last)) this.slowVol.set(k, { ...e });
   }
 
   private key(ticker: string, tauSec: number): { group: AccuracyGroup; b: number } {
@@ -147,6 +149,7 @@ export class MarketAnchor {
     const hl = (this.cfg.wildHalfLifeH ?? 48) * 3_600_000;
     e.v += (1 - Math.pow(0.5, (t - e.last) / hl)) * (ctx.sigma - e.v);
     e.last = t;
+    if ((this.cfg.wildRatio ?? 0) > 0) { this.dirty = true; this.save(); }
   }
 
   /** True when the coin's volatility runs wildRatio times its slow average (after 6 h of history). */
@@ -247,6 +250,7 @@ export class MarketAnchor {
 
   flush(): void {
     if (!this.file || !this.dirty) return;
+    if (this.slowVol.size) this.st.vol = Object.fromEntries(this.slowVol);
     writeJsonAtomic(this.file, this.st);
     this.lastSave = this.now();
     this.dirty = false;

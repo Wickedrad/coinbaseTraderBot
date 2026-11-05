@@ -519,12 +519,12 @@ test('replay check: entry bands split first fills by side and YES-scale price', 
   assert.equal(entryBand(undefined, 0.5), 'unknown');
 });
 
-test('replay check: REPLAY_EXCLUDE_ASSETS matches a coin by its series prefix', async () => {
+test('replay check: paper totals drop the REPLAY_EXCLUDE markets', async () => {
   const { excludedTicker } = await import('../research/replayCheck');
-  const ex = excludedTicker(['DOGE']);
+  const ex = excludedTicker(/DOGE/);
   assert.equal(ex('KXDOGE-26NOV05-B0.17'), true);
   assert.equal(ex('KXDOGE15M-26NOV05-15'), true);
   assert.equal(ex('KXBTCD-26NOV05-T70000'), false);
   assert.equal(ex(undefined), false);
-  assert.equal(excludedTicker([])('KXDOGE-1'), false);
+  assert.equal(excludedTicker(undefined)('KXDOGE-1'), false);
 });
