@@ -30,14 +30,16 @@ HOURS_PER_DAY = 24.0
 def cell_of(ticker: str) -> str:
     parts = ticker.split('-')
     series = parts[0]
-    kind = parts[-1][:1] if len(parts) > 2 and parts[-1][:1] in 'BT' else '?'
+    kind = parts[-1][:1] if len(parts) > 2 and parts[-1][:1] in 'BT' else 'U'  # U = 15-minute up/down
     return f'{series} {kind}'
 
 
 def load(d: str):
-    pnl = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))  # arm -> day -> cell -> $
-    cnt = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))  # arm -> day -> cell -> settled markets
-    days, arms = set(), set()
+    """Arms tagged <arm>p<phase> (one replay per tick phase) are averaged over their phases: the path noise of one
+    replay (a tick phase moved $500+ a week in batch 2) shrinks with the number of phases."""
+    raw = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))  # arm -> phase -> day -> cell
+    rawc = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
+    days = set()
     for f in sorted(os.listdir(d)):
         m = re.match(r'^d(\d\d)-([A-Za-z0-9]+)\.json(\.gz)?$', f)
         if not m:
@@ -45,14 +47,29 @@ def load(d: str):
         op = gzip.open if f.endswith('.gz') else open
         with op(os.path.join(d, f), 'rt') as fh:
             res = json.load(fh)
-        day, arm = m.group(1), m.group(2)
-        days.add(day); arms.add(arm)
+        day, tag = m.group(1), m.group(2)
+        pm = re.match(r'^(.+?)p(\d+)$', tag)
+        arm, ph = (pm.group(1), int(pm.group(2))) if pm else (tag, -1)
+        days.add(day)
         bt = (res.get('replay') or {}).get('byTicker') or {}
-        pnl[arm][day]  # mark the arm as run that day, even with no settled markets
+        raw[arm][ph][day]  # mark the run, even with no settled markets
         for t, v in bt.items():
-            pnl[arm][day][cell_of(t)] += float(v)
-            cnt[arm][day][cell_of(t)] += 1
-    return pnl, cnt, sorted(days), sorted(arms)
+            raw[arm][ph][day][cell_of(t)] += float(v)
+            rawc[arm][ph][day][cell_of(t)] += 1
+    pnl = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))  # arm -> day -> cell -> $ (phase mean)
+    cnt = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+    for arm, phs in raw.items():
+        for day in days:
+            have = [ph for ph in phs if day in phs[ph]]
+            if not have or len(have) < len(phs):
+                continue  # a day is complete only with every phase the arm ran
+            pnl[arm][day]
+            for ph in have:
+                for c, v in phs[ph][day].items():
+                    pnl[arm][day][c] += v / len(have)
+                for c, v in rawc[arm][ph][day].items():
+                    cnt[arm][day][c] += v / len(have)
+    return pnl, cnt, sorted(days), sorted(raw), raw
 
 
 def main() -> None:
@@ -60,7 +77,7 @@ def main() -> None:
     src, out = args[0], args[1]
     control = args[args.index('--control') + 1] if '--control' in args else 'C0'
     noise = args[args.index('--noise') + 1] if '--noise' in args else 'P500'
-    pnl, cnt, days, arms = load(src)
+    pnl, cnt, days, arms, raw = load(src)
     MIN_MARKETS = 10  # a cell needs at least this many settled markets (picked arm, all days) to be SOLID
     full = [a for a in arms if all(day in pnl[a] for day in days)]
     missing = sorted(set(arms) - set(full))
@@ -91,6 +108,15 @@ def main() -> None:
 
     # Noise floor per cell: SD over days of (noise twin - control).
     def noise_sd(c):
+        # Phase-averaged control: two of its phases differ by sigma*sqrt(2) a day; an arm-minus-control difference of
+        # n-phase means has sigma*sqrt(2/n), so SD(phase A - phase B) / sqrt(n).
+        phs = sorted(p for p in raw.get(control, {}) if p >= 0)
+        if len(phs) >= 2:
+            a, b = raw[control][phs[0]], raw[control][phs[1]]
+            xs = [a[d].get(c, 0.0) - b[d].get(c, 0.0) for d in days if d in a and d in b]
+            if len(xs) >= 2:
+                mu = sum(xs) / len(xs)
+                return math.sqrt(sum((x - mu) ** 2 for x in xs) / (len(xs) - 1)) / math.sqrt(len(phs))
         if noise not in full:
             return None
         xs = [pnl[noise][d].get(c, 0.0) - pnl[control][d].get(c, 0.0) for d in days]
@@ -116,12 +142,12 @@ def main() -> None:
         pos = sum(1 for g in gains if g > 0)
         sd = noise_sd(c)
         floor = 2 * sd * math.sqrt(len(days)) if sd is not None else None
-        nmk = sum(cnt[top][d].get(c, 0) for d in days)
+        nmk = round(sum(cnt[top][d].get(c, 0) for d in days))
         solid = nmk >= MIN_MARKETS and top != control and gain > 0 and (floor is None or gain > floor) and pos >= math.ceil(len(days) / 2) and stab >= 5 / 7
         ctl = tot(control, c, days)
         map_oos += oos
         ctl_oos += ctl
-        rows.append((c, top, stab, gain, pos, floor, solid, ctl, tot(top, c, days), nmk, sum(cnt[control][d].get(c, 0) for d in days)))
+        rows.append((c, top, stab, gain, pos, floor, solid, ctl, tot(top, c, days), nmk, round(sum(cnt[control][d].get(c, 0) for d in days))))
     w('## Cell map, walk-forward (pick on the other days, score the held-out day)')
     w(f'Cell-map total held out: {map_oos:+.2f} vs control {ctl_oos:+.2f} ({(map_oos - ctl_oos):+.2f}; '
       f'{map_oos / (HOURS_PER_DAY * len(days)):+.2f}/h vs {ctl_oos / (HOURS_PER_DAY * len(days)):+.2f}/h). '
