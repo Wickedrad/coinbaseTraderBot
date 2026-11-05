@@ -386,6 +386,26 @@ test('host: in-process and worker-thread runtimes agree; checkpoints are version
   await worker.stop(); await local.stop(T0 + 10);
 });
 
+test('host: a worker that dies hands the network to the in-process runtime from the newest checkpoint', async () => {
+  const dir = tmpDir();
+  const params = small();
+  const tp = tape(5);
+  const host = new SnnHost({ params, worker: { path: path.resolve('bot/snn/worker.dev.mjs') }, timeoutMs: 2_000, latencySkipP99Ms: 150, checkpointDir: dir, checkpointEveryMin: 1e9, keepCheckpoints: 2 });
+  await host.start(T0);
+  assert.equal(host.mode, 'worker');
+  for (let s = 0; s < 3; s++) await host.stepAndScore(T0 + s * 1000, tp[s], [query('Q', 60050)]);
+  assert.ok(await host.checkpoint(T0 + 3000));
+  // The worker dies on its own (not through stop()).
+  const w = (host as any).worker as import('node:worker_threads').Worker;
+  await new Promise<void>((res) => { w.once('exit', () => res()); void w.terminate(); });
+  assert.equal(host.mode, 'in-process');
+  assert.match(String(host.lastError), /worker exited .*restarted in-process from checkpoint @/);
+  const r = await host.stepAndScore(T0 + 4000, tp[4], [query('Q', 60050)]);
+  assert.ok(r && r.scores.length === 1, 'the network still scores after the worker died');
+  await host.settle('Q', 'yes', T0 + 5000);
+  await host.stop(T0 + 6000);
+});
+
 test('host: a slow readout times out at the deadline (alpha = 0) and feeds latency p99', async () => {
   const host = new SnnHost({ params: small(), timeoutMs: 20, latencySkipP99Ms: 15, checkpointEveryMin: 1e9, keepCheckpoints: 1 });
   await host.start(T0);
