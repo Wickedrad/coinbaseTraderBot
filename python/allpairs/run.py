@@ -45,6 +45,7 @@ DEFAULTS = {
     'entry': {'hurdles': [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 1e9], 'maker_entries': True, 'entry_minutes': None, 'first_minute': 1,
               'rows_per_fit': 1_000_000},
     'extra_features': [],
+    'trade_assets': [],        # [] = every loaded asset; else only these assets' windows are traded
     'cross_assets': [],        # other assets whose spot returns become features of every window (lead_<ASSET>_r1/r3/r5)
     'placebo': {'shuffles': 3, 'random_draws': 50},
     # The project's fixed history split (institutional-methods, Nov 5): 60 days train, 2 days gap, 14 days test.
@@ -152,6 +153,15 @@ def main(argv=None):
             continue
         sfeats[ai] = spot_features(spots[ai])
     real = real.subset(np.nonzero(np.isin(real.asset, list(spots)))[0])
+    # trade_assets: only these assets' windows are traded (per-asset sweeps); every loaded asset's spot stays available
+    # for cross-asset features.
+    trade = [x.strip().upper() for x in cfg.get('trade_assets') or []]
+    trade_ai = None
+    if trade:
+        trade_ai = [real.assets.index(x) for x in trade if x in real.assets and real.assets.index(x) in spots]
+        if len(trade_ai) != len(trade):
+            raise SystemExit(f'trade_assets {trade}: not all loaded (assets {real.assets}; DOGE is never loaded)')
+        real = real.subset(np.nonzero(np.isin(real.asset, trade_ai))[0])
     log(f'real 15m windows: {len(real)} ({np.mean(real.real_frac):.2f} of minutes quoted), {len(np.unique(real.day))} days, assets {real.assets}')
     if real.crossed is not None:
         log(f'{int(np.sum(real.crossed > 0))} windows with crossed/locked minutes; minutes quoted: '
@@ -211,7 +221,8 @@ def main(argv=None):
             log(f'synthetic vs real quotes on test days: {fidelity}')
         else:
             hw = hourly_windows(spots, real.assets, int(real_q.open_ms.min()), int(real_q.open_ms.max()), offsets=tuple(cfg['hourly_offsets']))
-            hw = hw.subset(np.nonzero(unsealed(hw) & np.isin(hw.day, np.unique(real_q.day)))[0])
+            hw = hw.subset(np.nonzero(unsealed(hw) & np.isin(hw.day, np.unique(real_q.day))
+                                      & (np.isin(hw.asset, trade_ai) if trade_ai else True))[0])
             _, Fh = spot_at(hw, spots, sfeats)
             w = price_windows(hw, spots, Fh['rv60'].astype(np.float64), params)
             fidelity = dict(lam=params['lam'], note='hourly windows are synthetic: strike = spot at the open, settled on the Binance close (Kalshi uses the CF index)')
@@ -349,6 +360,7 @@ def main(argv=None):
                 shap_exit = shap_top(xr.models[kmid][0][0], Z, state_names, top=8)
         del xr, xe, rows_tr, rows_te, ptr, pte
     part = dict(arm=a.arm, kind=kind, name=cfg.get('name', 'base'), config_hash=config_hash(cfg), config=cfg, assets=w.assets,
+                traded_assets=[real.assets[i] for i in (trade_ai or sorted(spots))],
                 excluded_assets=sorted(EXCLUDED_ASSETS), windows=len(w), n=N, n_folds=len(folds_days), part=a.part, parts=a.parts,
                 folds=folds, cuts=cuts, shap_entry=shap_entry, shap_exit_hold=shap_exit, fidelity=fidelity,
                 trials_this_arm=len(ecfg.hurdles), seconds=round(time.time() - t_start))
@@ -405,7 +417,7 @@ def aggregate(parts: list[dict]) -> dict:
     slim = [{k: v for k, v in f.items() if k not in ('hourly', 'trades', 'random_placebo')} | {'random_placebo_median': round(float(np.median(f['random_placebo'])), 3) if f['random_placebo'] else None}
             for f in folds]
     return dict(
-        arm=p0['arm'], kind=p0['kind'], name=p0['name'], config_hash=p0['config_hash'], config=p0['config'], assets=p0['assets'],
+        arm=p0['arm'], kind=p0['kind'], name=p0['name'], config_hash=p0['config_hash'], config=p0['config'], assets=p0['assets'], traded_assets=p0.get('traded_assets'),
         excluded_assets=p0['excluded_assets'], windows=p0['windows'], n=p0['n'], folds=slim, folds_expected=p0['n_folds'],
         oos=dict(oos, hours=total_hours, per_hour_ci95=[round(ci_lo, 3), round(ci_hi, 3)], sr_hourly=round(sr_h, 4), psr0=round(psr(hourly), 4),
                  days=int(len(daily)), losing_days=int(np.sum(daily < 0)), worst_day=round(float(daily.min()), 2) if len(daily) else 0.0,
