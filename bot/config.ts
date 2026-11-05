@@ -771,6 +771,10 @@ export interface PerpsConfig {
   takerAfterSec: number;
   makerFeeBps: number;
   takerFeeBps: number;
+  /** Read this account's real perps fee rates (GET /margin/fee_tiers and /margin/fee_tier_rates, signed, read only)
+   *  every feeTierHours and alert when they differ from makerFeeBps / takerFeeBps (bot/perps/feeTier.ts). Needs a key. */
+  feeTierCheck: boolean;
+  feeTierHours: number;
   /** Stage 3 directional trading: off | paper (simulated against live perp quotes) | live (real orders). */
   trading: 'off' | 'paper' | 'live';
   /** Frozen perp signal model (research:perp-train); without it the momentum prior trades at pilot size. */
@@ -1395,6 +1399,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         takerAfterSec: num(env, 'PERP_HEDGE_TAKER_AFTER_SEC', 300, 10, 86400),
         makerFeeBps: num(env, 'PERP_MAKER_FEE_BPS', 5, 0, 100),
         takerFeeBps: num(env, 'PERP_TAKER_FEE_BPS', 12, 0, 100),
+        feeTierCheck: bool(env, 'PERP_FEE_TIER_CHECK', true),
+        feeTierHours: num(env, 'PERP_FEE_TIER_HOURS', 6, 1, 168),
         trading,
         modelPath: path.resolve(env.PERP_MODEL_PATH ?? './params/perp_model.json'),
         paperBalanceUsd: num(env, 'PERP_PAPER_BALANCE_USD', 100, 1, 1e9),
