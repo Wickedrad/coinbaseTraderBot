@@ -1,6 +1,9 @@
 # Deploys to the Lightsail box (static IP, systemd service `kalshi-bot`).
 #
-#  - Every push to main (i.e. when a PR is merged) tests, builds and deploys automatically.
+#  - Every push to main (i.e. when a PR is merged) tests, builds and deploys automatically (Steven, Nov 5: no batching).
+#  - Every deploy is logged, so a problem can be matched to the merge and restart that caused it: one JSON line per
+#    deploy in ~/bot/deploys.log on the server (time, release, commit, the PRs it brought since the last deploy),
+#    and the same list in the run's summary.
 #  - Run manually from the Actions tab to redeploy main, or to deploy an existing release tag
 #    (v1.2.3) by entering it.
 #  - Rollback is one command on the server: `bash ~/bot/current/deploy/rollback.sh`.
@@ -33,6 +36,9 @@ concurrency:
 
 jobs:
   deploy:
+    permissions:
+      contents: read
+      actions: read
     # Pushes deploy unless AUTO_DEPLOY is set to 'false'; manual runs always deploy.
     if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY != 'false'
     runs-on: ubuntu-latest
@@ -46,6 +52,27 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.sha }}
+          fetch-depth: 0
+
+      - name: Merges this deploy brings
+        id: merges
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Last earlier run of this workflow whose deploy job succeeded.
+          prev=""
+          for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=30" --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); do
+            [ "${run%%:*}" = "$GITHUB_RUN_ID" ] && continue
+            ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${run%%:*}/jobs" --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length')
+            if [ "$ok" -gt 0 ]; then prev=${run#*:}; break; fi
+          done
+          prs=""
+          if [ -n "$prev" ] && git cat-file -e "$prev^{commit}" 2>/dev/null; then
+            prs=$(git log --first-parent --reverse --format=%s "$prev..HEAD" | grep -oE '#[0-9]+' | sort -u -t'#' -k2 -n | paste -sd, - || true)
+          fi
+          echo "previous deploy: ${prev:-unknown}; brings: ${prs:-none found}"
+          { echo "prev=$prev"; echo "prs=$prs"; } >> "$GITHUB_OUTPUT"
+          { echo "### Deploy $(git rev-parse --short HEAD)"; echo "Previous deploy: \`${prev:0:7}\`"; echo "Brings: ${prs:-none found}"; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Release name
         id: rel
@@ -156,6 +183,10 @@ jobs:
             # Dependencies: reuses the live release's modules and TA-Lib build when unchanged (deploy/install.sh).
             bash deploy/install.sh
             bash deploy/activate.sh ~/releases/${{ steps.rel.outputs.name }}
+            # Deploy log: one line per deploy, so a restart and any issue after it can be matched to the merges it brought.
+            printf '{"at":"%s","release":"%s","sha":"%s","prev_sha":"%s","prs":"%s","event":"%s","run":"%s"}\n' \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${{ steps.rel.outputs.name }}" "${{ github.sha }}" "${{ steps.merges.outputs.prev }}" \
+              "${{ steps.merges.outputs.prs }}" "${{ github.event_name }}" "${{ github.run_id }}" >> ~/bot/deploys.log
             # Keep the 5 newest releases (plus whatever current/previous point to).
             keep="$(readlink ~/bot/current):$(readlink ~/bot/previous 2>/dev/null || true)"
             ls -dt ~/releases/*/ | tail -n +6 | while read -r d; do d="${d%/}"; case ":$keep:" in *":$d:"*) ;; *) rm -rf "$d";; esac; done

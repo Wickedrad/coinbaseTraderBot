@@ -74,7 +74,7 @@ test('take-profit bench: sales and scores survive a restart; a reset lifts the b
   assert.equal(b.status().pending, 1);
 });
 
-test('take-profit bench: on by default (TAKE_PROFIT_BENCH)', () => {
-  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40) }).strategy.takeProfitBench, true);
-  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), TAKE_PROFIT_BENCH: 'false' }).strategy.takeProfitBench, false);
+test('take-profit bench: scores only by default (TAKE_PROFIT_BENCH=true enforces it)', () => {
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40) }).strategy.takeProfitBench, false);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), TAKE_PROFIT_BENCH: 'true' }).strategy.takeProfitBench, true);
 });
