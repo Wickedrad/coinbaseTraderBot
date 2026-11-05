@@ -91,7 +91,7 @@ export class ModelHealth {
 // Tails cap (Nov 5, "what are we getting wrong"): paper's Oct 28 - Nov 3 markets lost most where the bot bought the side
 // the market prices under 30c against a favourite (15-min NO under 30c: 324 markets, -$211, 26% won). MODEL_SKILL_W_TAILS
 // caps the weight while the market's probability is outside [MODEL_SKILL_TAIL, 1 - MODEL_SKILL_TAIL], whatever the state.
-export interface SkillParams { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number]; tails?: number; tail?: number }
+export interface SkillParams { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number]; tails?: number; tail?: number; tailsRising?: boolean }
 export interface SkillState { rv1h: number | null; volRatio: number | null; pMarket?: number | null }
 export function modelSkillWeight(h: { pWorse: number | null; drift?: { alarm: boolean } }, p: SkillParams, st?: SkillState | null): number {
   if (p.pinned !== undefined && p.pinned >= 0) return Math.min(1, p.pinned);
@@ -102,7 +102,8 @@ export function modelSkillWeight(h: { pWorse: number | null; drift?: { alarm: bo
     w = Math.max(p.min, Math.min(1, w));
   }
   if (p.calm !== undefined && p.calm >= 0 && calmIn(st, p.calmRvBp)) w = Math.min(w, p.calm);
-  if (p.tails !== undefined && p.tails >= 0 && inTails(st?.pMarket, p.tail ?? 0.3)) w = Math.min(w, p.tails);
+  // MODEL_SKILL_W_TAILS_RISING (Nov 5, the sterile sweep: the cap helped only while volatility rose): tails AND rising.
+  if (p.tails !== undefined && p.tails >= 0 && inTails(st?.pMarket, p.tail ?? 0.3) && (!p.tailsRising || (st?.volRatio != null && st.volRatio > 1))) w = Math.min(w, p.tails);
   return w;
 }
 /** True when the market's probability `pm` is outside [tail, 1 - tail]. */

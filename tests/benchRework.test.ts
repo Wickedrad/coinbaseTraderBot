@@ -102,3 +102,11 @@ test('model skill weight: the tails cap applies only while the market prices a s
   assert.deepEqual([c.tails, c.tail], [0.5, 0.25]);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.modelSkill.tails, -1, 'off by default');
 });
+
+test('model skill weight: MODEL_SKILL_W_TAILS_RISING caps the tails only while volatility rises', () => {
+  const p = { on: true, min: 0.25, tails: 0.5, tail: 0.3, tailsRising: true };
+  assert.equal(modelSkillWeight({ pWorse: null }, p, { rv1h: 1e-4, volRatio: 1.4, pMarket: 0.85 }), 0.5, 'tails, rising');
+  assert.equal(modelSkillWeight({ pWorse: null }, p, { rv1h: 1e-4, volRatio: 0.7, pMarket: 0.85 }), 1, 'tails, calming');
+  assert.equal(modelSkillWeight({ pWorse: null }, p, { rv1h: 1e-4, volRatio: null, pMarket: 0.85 }), 1, 'tails, unknown');
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), MODEL_SKILL_W_TAILS_RISING: 'true' }).strategy.modelSkill.tailsRising, true);
+});

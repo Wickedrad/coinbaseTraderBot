@@ -25,8 +25,9 @@ permissions:
   contents: write
   actions: read
 
+# One group a commit: a new round no longer cancels the one still running (Nov 5, 10 jobs a thread).
 concurrency:
-  group: benched-jobs-${{ github.ref }}
+  group: benched-jobs-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 env:
@@ -116,7 +117,7 @@ jobs:
     strategy:
       fail-fast: false
       # The account's runners are shared by every thread (Nov 5: 10 jobs a thread, ~50 for the project): eight replays at a time.
-      max-parallel: 8
+      max-parallel: 9
       matrix:
         variant: ${{ fromJson(needs.data.outputs.variants) }}
     steps:
