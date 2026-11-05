@@ -143,10 +143,22 @@ export type MarketKind = ContractKind | 'less' | 'match';
 /** Series traded as sports match-winner markets. */
 export const MATCH_SERIES = /^KXATPMATCH$/i;
 
+/** A range bucket's ticker: its last segment is B followed by the bucket's centre. */
+export const isRangeTicker = (ticker: string): boolean => /-B\d+(?:\.\d+)?$/.test(ticker);
+
+/** A range bucket's cap from its floor, where a recording left it out: the bucket is centred on its ticker's value. */
+export function rangeCap(ticker: string, floor?: number | null): number | undefined {
+  const c = /-B(\d+(?:\.\d+)?)$/.exec(ticker);
+  return c && floor ? +(2 * Number(c[1]) - floor).toPrecision(12) : undefined;
+}
+
 /** Contract kind from the series and Kalshi strike_type. 15-minute series are
  * Up/Down; otherwise strike_type decides (default 'greater', the hourly ladder). */
-export function contractKind(seriesTicker: string, strikeType?: string): MarketKind {
+export function contractKind(seriesTicker: string, strikeType?: string, ticker?: string): MarketKind {
   if (MATCH_SERIES.test(seriesTicker)) return 'match';
+  // A "-B<centre>" ticker is a range bucket whatever strike_type says (Nov 4: paper priced the KXDOGE hourly ranges as
+  // greater-than their floor, fair value 0.9999 on a bucket trading at 30c).
+  if (ticker && isRangeTicker(ticker)) return 'between';
   const st = (strikeType ?? '').toLowerCase();
   if (st === 'between') return 'between';
   if (st === 'less' || st === 'less_or_equal') return 'less';

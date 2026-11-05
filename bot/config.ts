@@ -2,17 +2,24 @@
 // frozen. Nothing at runtime (API, LLM, learner) can change it. Changing a
 // parameter means a reviewed commit and a redeploy.
 
+import type { DynamicEdgeParams } from './strategy/dynamicEdge';
+import type { RegimeScaleParams } from './strategy/regimeScale';
+import { type PacerConfig, validZone } from './risk/quotaPacer';
 import fs from 'fs';
 import { parseSessionRisk, type SessionRiskProfile } from './model/sessionRisk';
 import { DEFAULT_PROBATION, type ProbationParams } from './risk/probation';
 import { FEE_SCHEDULE_URL } from './kalshi/feeSchedule';
 import { DEFAULT_SINUOUS_ENTRY, type SinuousEntryParams } from './strategy/sinuousEntry';
-import { DEFAULT_SINUOUS_EXIT, type SinuousExitParams } from './strategy/sinuousExit';
+import { DEFAULT_CROSS_FV_MARGINS, DEFAULT_SINUOUS_EXIT, type SinuousExitParams } from './strategy/sinuousExit';
+import { parseLevelMargins } from './strategy/levelLadder';
+import { DEFAULT_TP_FV_MARGINS } from './strategy/fairValueStrategy';
 import { defaultTiers, validateTiers, type TierPoint } from './risk/sizingTiers';
 import type { AccuracyGateConfig } from './strategy/accuracyGate';
+import type { TaVetoConfig } from './model/taVeto';
 import type { VaultConfig } from './vault/vault';
 import { DEFAULT_LIVE_LINE } from './strategy/liveLine';
 import { DEFAULT_TRIALS, TRIAL_NAMES, type TrialName, type TrialParams } from './strategy/componentTrials';
+import { DEFAULT_SCOREBOARD, type ScoreboardParams } from './health/scoreboard';
 import os from 'os';
 import path from 'path';
 
@@ -50,12 +57,59 @@ export interface RiskLimits {
   maxConsecutiveOrderErrors: number;
 }
 
+/** Steven's settlement rule and the loser exits that enforce it (bot/strategy/fairValueStrategy.ts decide). */
+export interface LoserExitConfig {
+  /** FV_ENTRY_GATE (on): a crypto entry is taken only when the spot fair value of the side bought (the contract priced off the
+   *  index, before the model, the SNN, the TA and the rules) is at least its cost with the fee plus FV_ENTRY_GATE_MARGIN. */
+  gate: boolean;
+  /** FV_ENTRY_GATE_MARGIN (0.06 a contract, the lab's best of 0, 3, 6, 9 and 12 cents). */
+  gateMargin: number;
+  /** LOSER_CUT (on): a position not in profit after fees is sold at the bid (the top bid's size each evaluation, no delay)
+   *  as soon as the spot fair value of its side is below the bid less the taker fee a contract less LOSER_CUT_MARGIN. */
+  cut: boolean;
+  /** LOSER_CUT_MARGIN (0.03 a contract; the lab: 3c beat 5, 8 and 12c, and waiting 10-30 s lost). */
+  cutMargin: number;
+  /** LOSER_WINDOW_CUT (on): inside the last share of the window (STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC) or the final
+   *  STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC, a position not in profit after fees is sold at the bid (Steven's rule); only a
+   *  position in profit rides to settlement. Tennis: its last share of the match (TENNIS_NO_EXIT_BEFORE_END_FRAC). */
+  window: boolean;
+  /** LOSER_WINDOW_JUDGE (bid): how the window cut tells a loser it sells. bid: not in profit after fees at the bid (as first
+   *  built). fair: that, and the spot fair value of the side under the bid less the taker fee a contract (selling beats
+   *  holding: a bid that has fallen under fair value near the close is not hit). cost: that, and the spot fair value of the
+   *  side under its cost with the entry fee (in profit judged by the coin's price instead of a thin closing bid). */
+  windowJudge: 'bid' | 'fair' | 'cost';
+  /** LOSER_WINDOW_SHARE (0: off): the window cut also runs once this share of the contract's window is left, when that is
+   *  earlier than the last share (STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC), while the books are still deep. */
+  windowShare: number;
+  /** LOSER_NO_ENTRY_SHARE (0: off): no new risk (entries, quotes that add, fill-model crosses, training trades) once this
+   *  share of the contract's window is left, nor anywhere the loser window cut runs: a position opened there is under water
+   *  by the spread and fees at once, and the window cut would sell it straight back into a thin closing bid. */
+  noEntryShare: number;
+  /** GATED_STAKE_MULT (1 = off; 1-5): opening orders that pass the fair value gate are sized x this (training trades keep
+   *  their minimum). Paper and replays only: with TRADING_MODE=live it stays 1 unless GATED_STAKE_LIVE=on (Steven, Nov 4:
+   *  gated $20-$40 in paper and replays, live keeps $10-$20 until he approves). */
+  gatedStakeMult?: number;
+  /** GATED_STAKE_CAP (clamp): clamp = a scaled order never above the order band's top (or the paper order size), fee in;
+   *  widen = the per-order, window and total risk caps widen by GATED_STAKE_MULT so a gated order can reach k x the top. */
+  gatedStakeCap?: 'clamp' | 'widen';
+  /** GATED_STAKE_SHADOW (off; never live): the gate blocks nothing and only picks the orders GATED_STAKE_MULT scales, so a
+   *  paired replay trades its x1 control's very entries and differs in size. */
+  gatedStakeShadow?: boolean;
+  /** GATED_STAKE_RANDOM (0 = off; never live): the placebo for the gate's pick: the gate blocks nothing (as shadow) and
+   *  x GATED_STAKE_MULT goes to a gate-blind hashed share of the judged opening orders (GATED_STAKE_SEED) instead. */
+  gatedStakeRandom?: number;
+  gatedStakeSeed?: number;
+}
+
 export interface StrategyConfig {
   style: StrategyStyle;
   /** Series to trade, e.g. KXBTC15M (with seriesAuto: the fallback list). */
   series: string[];
   /** Series that are recorded (books, trades, lifecycle, results) for research but never priced or traded (RECORD_SERIES). */
   recordSeries: string[];
+  /** Series that are recorded but never priced or traded, by pattern (STRATEGY_EXCLUDE_SERIES; Steven, Nov 5: no DOGE
+   *  until the rest of the bot performs, then DOGE is trained again: STRATEGY_EXCLUDE_SERIES= trades it again). */
+  excludeSeries?: RegExp;
   /** Cap on simultaneously tracked record-only markets. */
   recordMaxMarkets: number;
   /** Discover every priceable crypto 15-minute / hourly series from the exchange (STRATEGY_SERIES=auto). */
@@ -76,6 +130,10 @@ export interface StrategyConfig {
   /** Pull quotes if |index move| over `fastMoveWindowSec` exceeds this many sigmas. */
   fastMoveSigmas: number;
   fastMoveWindowSec: number;
+  /** Entry edge moved with the market state (bot/strategy/dynamicEdge.ts; DYN_EDGE_*, all 0 = static edge). */
+  dynamicEdge: DynamicEdgeParams;
+  /** Order size moved with the market state (bot/strategy/regimeScale.ts; REGIME_*, all 0 = no change). */
+  regimeScale: RegimeScaleParams;
   /** Resting orders expire on the exchange after this many seconds (dead-man switch); a quote still wanted is placed again. */
   orderTtlSec: number;
   /** Exit mode. hold = Mode A (ride to settlement, no exit fee); fair_value = model exit only;
@@ -97,6 +155,11 @@ export interface StrategyConfig {
   /** Take-profit bench (bot/strategy/takeProfitBench.ts): its crypto sales scored against holding to settlement, the
    *  take-profit benched on the exit curve's rule. false = scored only, never benched. */
   takeProfitBench: boolean;
+  /** The take-profit's strictness ladder (Oct 31, never bench): TP_LEVEL pins a level (-1: the ladder decides), TP_LEVEL_MAX
+   *  caps it, TP_FV_MARGINS the fair-value confirm by level (bot/strategy/levelLadder.ts). */
+  takeProfitLevel: number;
+  takeProfitLevelMax: number;
+  takeProfitFvMargins?: number[];
   /** relaxed = decide on each 1-minute bar close or on a trigger (spec cadence); continuous = every tick. */
   cadence: 'relaxed' | 'continuous';
   /** Scheduled evaluation period, fair-value move that triggers an evaluation, re-price period, and the floor between evaluations. */
@@ -109,8 +172,38 @@ export interface StrategyConfig {
   entryWindowHourly: [number, number];
   /** Hourly strikes are only entered while the market mid is inside this band. */
   hourlyMidBand: [number, number];
-  /** No exits in the final seconds: positions ride to settlement (spreads widen inside the averaging window). */
+  /** No exits in the final seconds, the hunt stop included: positions ride to settlement (spreads widen inside the
+   *  averaging window, and the stop sales inside the last minutes were the ones found always wrong). */
   noExitBeforeCloseSec: number;
+  /** STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC: in the last share of the contract's window (0.10 = the last 90 s of a 15-minute market,
+   *  6 min of an hourly one) a position in profit after fees rides to settlement, no exit selling it (Steven's rule, Oct 29); a
+   *  position that is not in profit keeps its exits until STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC. */
+  noExitBeforeCloseFrac: number;
+  /** STRATEGY_SHARE_WINDOW_MAX_SEC (3600; 0 = no cap): the window the share rules measure (that last share, LOSER_WINDOW_SHARE,
+   *  LOSER_NO_ENTRY_SHARE) is open to close, at most this long (shareWindowSec). Kalshi lists the hourly and daily ladders and
+   *  the range brackets hours or a day before they close, and the bot trades them in their last hour: measured on the listing,
+   *  their "last 10%" covered the whole entry window, so every winner rode to settlement and the loser window cut sold every
+   *  new buy straight back into the bid (Nov 1 replay: window cut sales on average 1,828 s before the close). */
+  shareWindowMaxSec: number;
+  /** PACER (Steven's spec, Oct 29 23:35 UTC): the hourly quota pacer (bot/risk/quotaPacer.ts). A 24-hour profit clock anchored
+   *  to 10:00 AM New York time at PACER_HOURLY_USD (4.50) an hour; the strategy sells a position at once (the "quota snipe") when
+   *  its net profit after fees, sold at the bid, covers the running slice's goal (PACER_MODE=slices, Steven's non-stacking
+   *  spec of Oct 30: never more than PACER_HOURLY_USD, a deficit caught up in rolling slices, a fresh slice each clock hour)
+   *  or, in the older modes, the clock hour's deficit clamped to [PACER_MIN_TAKE_USD, PACER_MAX_TARGET_USD], whatever the
+   *  exit policy (hold included), the hunt or the model says. Inside the last share of the
+   *  window a position in profit rides to settlement instead, and a hunted position is never held for settlement
+   *  (HUNT_LOCK_SALE_ELSE=exit). */
+  pacer: PacerConfig;
+  /** Steven's settlement rule (Oct 31: nothing rides to settlement unless it is in the last share of its window and in profit)
+   *  and the sizing lab's loser exits (section L, Oct 31), the same in paper and live. Unset: off (views and tests built
+   *  outside the loader). */
+  loserExits?: LoserExitConfig;
+  /** PROFIT_MANDATE (off by default; Steven's first wording, Oct 29 23:22 UTC): outside that final share of the window a position
+   *  whose side bid net of the exit fee clears its entry cost (entry fee in) by PROFIT_MANDATE_MIN is sold at the bid whatever the
+   *  exit policy or the model says, a hunt trailing its stop excepted. On, a penny of profit sells before the pacer's threshold is
+   *  ever reached. */
+  profitMandate: boolean;
+  profitMandateMin: number;
   /** Maker adverse-selection buffer: default, and clamp range when estimated from 60 s markouts. */
   makerBuffer: number;
   makerBufferRange: [number, number];
@@ -125,6 +218,13 @@ export interface StrategyConfig {
    *  (the owner's choice on Oct 24, a minimum of 10%: orders shrink as the account does and grow as it does). 0 = the
    *  fixed paperOrderUsd. Live never uses it. */
   paperOrderFrac: number;
+  /** The order band, paper and live (Steven, Oct 30: "between $10-$20 an order"): each crypto entry and maker quote that
+   *  sizing wants stakes its sized amount clamped to [orderUsdMin, orderUsdMax] dollars, within the risk room and free
+   *  cash left (an entry the room cannot fit at orderUsdMin is skipped), in place of the tier, loss-aware, optimal-f and
+   *  portfolio-Kelly sizing; the risk caps widen to fit it as for the paper order size. orderUsdMin 0 = off. A paper
+   *  order size (paperOrderUsd / paperOrderFrac) wins over it. */
+  orderUsdMin: number;
+  orderUsdMax: number;
   /** Paper only: no new crypto entries in a time-to-close bucket where the market mid has scored a better log loss
    *  than the bot's (temperature-calibrated) probability over the last settled markets (bot/strategy/accuracyGate.ts;
    *  the owner's choice on Oct 23). Live never blocks on it. */
@@ -148,6 +248,9 @@ export interface StrategyConfig {
   weeklyLossPause: number;
   /** Halt new risk when the rolling log-loss advantage vs the calibrated market is significantly negative. */
   modelHealthHalt: boolean;
+  /** In place of the halt (Oct 31, never bench): the decision price leans toward the market by the model's measured skill
+   *  (MODEL_SKILL, MODEL_SKILL_MIN; MODEL_SKILL_W pins the weight). */
+  modelSkill: { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number]; tails?: number; tail?: number; tailsRising?: boolean };
   /** Paper exploration: occasionally enter a borderline opportunity (edge within exploreBand below the
    *  threshold, still fee-net positive) at minimum size, logged with its probability, so the fill model
    *  and the edge threshold get data near the boundary. Paper mode only. */
@@ -155,9 +258,11 @@ export interface StrategyConfig {
   exploreRate: number;
   exploreBand: number;
   exploreMaxPerHour: number;
-  /** Paper only: guaranteed 1-contract training trades per hour on the side the model favours, taken when
-   *  nothing qualifies on edge, so the bot always produces trades to learn from and to watch (0 = off). */
-  paperTrainTrades: number;
+  /** TRAINING_TRADES_PER_HOUR (12; the old paper-only PAPER_TRAINING_TRADES_PER_HOUR is no longer read): training
+   *  trades an hour on the side the model favours, taken when nothing qualifies on edge, so the bot keeps producing
+   *  trades to learn from (0 = off). Steven's pick on Oct 31 (sizing thread): back on, in paper and live alike, each
+   *  sized at the order band's minimum ($10) and screened by the fair value gate (FV_ENTRY_GATE) like every entry. */
+  trainTrades: number;
   /** Markets with no position and no resting order are fully re-evaluated at most every idleEvalSec
    *  (1 s otherwise): most of the bot's CPU is the per-second evaluation of markets it is not in. */
   idleEvalSec: number;
@@ -168,8 +273,9 @@ export interface StrategyConfig {
    *  evidence, are re-sized by Kelly with a conviction multiplier up to adversarialMaxBoost (<= 2). */
   adversarialBoost: boolean;
   adversarialMaxBoost: number;
-  /** TA conviction overlay (bot/strategy/taConviction.ts): the TA network's direction forecasts add a
-   *  drift to the mathematical fair value (weight x reliability; at most taPricingMaxShift). */
+  /** TA conviction overlay (bot/strategy/taConviction.ts): the TA network's blind-test-validated direction forecasts
+   *  add a drift to the mathematical fair value (weight x reliability; at most taPricingMaxShift); unproven heads
+   *  only through the 'ta' component trial. */
   taPricing: boolean;
   taPricingWeight: number;
   taPricingMaxShift: number;
@@ -195,11 +301,37 @@ export interface StrategyConfig {
   modelHealthMinWindows: number;
   huntTargetMargin: number;
   huntMinConfluence: number;
+  /** HUNT_HYBRID: in hunt mode a triggered stop sells only when the model agrees the contract is worth less than the stop
+   *  plus the fee (bot/strategy/exitPolicies.ts); off by default. */
+  huntHybrid: boolean;
+  /** HUNT_SELL_INTO_GAP: off, a gap through the hunt stop never sells (the lock waits for the bid to come back). */
+  huntSellIntoGap: boolean;
+  /** HUNT_LOCK_SALE: off | fair_value | flow | either | both. Judge the hunted position once instead of trailing a stop that
+   *  sells every dip: sell the whole position at the bid when the bid is at least the math fair value plus
+   *  HUNT_LOCK_SALE_FV_MARGIN (0.02) and/or the last minute's Kalshi taker flow favours the held side. HUNT_LOCK_SALE_AT
+   *  (lock | trigger) says when: right at the lock, or (default) the first time the bid sits under the ratchet's stop.
+   *  HUNT_LOCK_SALE_ELSE (hold | exit; exit by default since Oct 29 23:00 UTC: the profit mandate never
+   *  holds a hunted position to settlement) when the rule does not hit. fair_value by default (Oct 29): on the replayed days it is
+   *  never worse than the trailing stop (+$39 on Oct 28, level on Oct 27) and level with holding, on half the contracts. */
+  huntLockSale: 'off' | 'fair_value' | 'flow' | 'either' | 'both';
+  huntLockSaleFvMargin: number;
+  huntLockSaleElse: 'hold' | 'exit';
+  huntLockSaleAt: 'lock' | 'trigger';
+  /** HUNT_WALL_ASK: while the hunt's stop walks up, rest the position's sell at a top-of-book sell wall on our side (the best
+   *  ask's size at least HUNT_WALL_ASK_RATIO x the best bid's and the position, its price at least the fair value plus
+   *  HUNT_LOCK_SALE_FV_MARGIN), post-only behind the wall, until it fills or the lock sale's judgement cancels it. On by
+   *  default since Oct 29 23:00 UTC (Steven's multi-day paper run of the rule); the exit study measured it level with the
+   *  judgement alone (+9 / +98 vs +8 / +106 against holding on the recorded days). */
+  huntWallAsk: boolean;
+  huntWallAskRatio: number;
   ratchetMinFillRatio: number;
   ratchetMinWallAgeSec: number;
   ratchetSlippageTicks: number;
   /** Per-session risk multipliers (can only reduce risk). */
   sessionRisk: SessionRiskProfile;
+  /** Apply the pipeline's session_risk.json under SESSION_RISK (bot/model/sessionRisk.ts). */
+  sessionRiskAuto: boolean;
+  sessionRiskPath: string;
   /** Block hunt mode in twilight/weekend liquidity and near session changes. */
   huntSessionGuard: boolean;
   huntTransitionBufferMin: number;
@@ -219,6 +351,8 @@ export interface StrategyConfig {
   takeGate: 'validated' | 'off';
   /** Extra P(win) required above a trade's break-even (price + fee). */
   takeMargin: number;
+  /** The TA rework's contrarian entry veto (bot/model/taVeto.ts; TA_VETO_OFI / TA_VETO_CONF / TA_VETO_INTENSITY, unset = off). */
+  taVeto: TaVetoConfig;
 }
 
 export interface Config {
@@ -253,6 +387,9 @@ export interface Config {
    *  without them on every settled crypto contract; one that tests significantly better goes into paper's prices, one
    *  significantly worse comes out, never in live's (bot/strategy/componentTrials.ts). */
   trials: TrialParams;
+  /** SCOREBOARD (default on): every price (math fair value, meta-model, the bot's, the SNN's, the TA tilt) scored against the
+   *  Kalshi market on every settled crypto contract, paper and live alike (bot/health/scoreboard.ts). */
+  scoreboard: ScoreboardParams;
   host: string;
   port: number;
   /** DASHBOARD_PASSWORD: '' (default) = the dashboard opens without a login. */
@@ -260,12 +397,16 @@ export interface Config {
   dataDir: string;
   /** Where the money state lives (orders and positions, vault, break-even, balance history, perps trades, the
    *  Kalshi check): DATA_DIR in paper, DATA_DIR/live in live, so the paper pool and its positions never show or
-   *  count in live mode, and a switch back to paper finds the paper books as they were. */
+   *  count in live mode, and a switch back to paper finds the paper books as they were. What the bot has learned about
+   *  its own trading (component trials, accuracy gate, entry and exit curves, take-profit bench, probation, scoreboard,
+   *  streak scales, the optimal-f history) stays in DATA_DIR in both modes, so live trades exactly as paper would. */
   bookDir: string;
   /** Audit log: a day's file splits into parts at this size; files older than the retention are deleted. */
   auditMaxFileMb: number;
   auditRetentionDays: number;
   paramsPath: string;
+  /** The paper Kalshi pool (Steven, Oct 30: $200): what paper starts with and refills to; raising it tops the pool up once
+   *  (bot/training/supervisor.ts). */
   paperBankrollUsd: number;
   /** Map of Kalshi CF Benchmarks index id -> asset symbol (BTC, ETH...). */
   indexIdMap: Record<string, string>;
@@ -299,6 +440,14 @@ export interface Config {
   coinbaseRestUrl: string;
   /** Coinbase public trade feed (taker order flow for the candles) and its URL. */
   takerFlow: boolean;
+  /** Record Coinbase's spot order book (top spotBookDepth levels a side) for every tracked coin every this many seconds
+   *  (SPOT_BOOK_RECORD_SEC; 0 = off): the depth the exit and sizing research needs, which the recordings lacked. */
+  spotBookRecordSec: number;
+  spotBookDepth: number;
+  /** Also record the whole spot book's size in SPOT_BOOK_BANDS bands SPOT_BOOK_BAND_BPS wide out from the mid
+   *  (defaults 10 x 10 bps = out to 1%), so walls past the top levels are kept; 0 bands = off. */
+  spotBookBandBps: number;
+  spotBookBands: number;
   coinbaseWsUrl: string;
   binanceWsUrl: string;
   coingeckoUrl: string;
@@ -563,6 +712,10 @@ export interface SnnConfig {
   /** Conservative-only dynamic target scaling (hunt take-profit distance), one step per 15 min. */
   targetScaling: boolean;
   deferred: { wilsonCowan: boolean; gapJunctions: boolean; izhikevichCH: boolean; dcaap: boolean };
+  /** SNN_ANCHOR_MID: the contract readouts start from the market's mid and learn the correction (bot/snn/network.ts
+   *  anchorLogit). Default on (Steven, Oct 30); crypto network only (params.ts anchorFor). A new version hash, so the
+   *  crypto network starts fresh when it flips. */
+  anchorMid: boolean;
   /** Tennis: run three networks live and keep the fittest (population-based training). */
   tennisPopulation: boolean;
   /** Graded matches between live tournament rounds. */
@@ -650,6 +803,19 @@ export interface TennisConfig {
    * progress sell at the bid regardless (0 = off). */
   underdogLateProgress: number;
   underdogCutProgress: number;
+  /** Steven's profit rules on tennis (Oct 30): in the last share of the match by its progress (0.30: his "less than 30%"
+   *  for tennis, against the 10% of a crypto contract's window, STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC) a position in profit
+   *  after fees rides to settlement; elsewhere the quota snipe applies as on every contract type. 0 = off. */
+  settleFrac: number;
+  /** TENNIS_END_LOSER_CUT (on): the other half of that rule, nothing is held to settlement unless it is in profit. In the last
+   *  share of the match a position not in profit after fees is sold at the bid, and no new entry is placed there (it
+   *  would start under water). The favorite leg has no loss exit of its own (TENNIS_FAV_STOP_CENTS is 0 by default). The
+   *  share is settleFrac's, so settleFrac 0 turns the cut off too. Both go by the furthest progress the match has held
+   *  for 2 minutes (a comeback pulls the progress back; one tick's thin book does not count). */
+  endLoserCut: boolean;
+  /** TENNIS_END_ENTRY_MARGIN (0.05): with the cut on, no new entry from this much progress before the last share, so a
+   *  position bought just before it has time to cover the spread and fees before it is judged (0.65 with the defaults). */
+  endEntryMargin: number;
   /** Tennis MLP (fair P(win) from the 4 signals, score, book and SNN): when validated, entries need
    *  fair - price >= this. */
   fairMinEdge: number;
@@ -675,6 +841,10 @@ export interface PerpsConfig {
   takerAfterSec: number;
   makerFeeBps: number;
   takerFeeBps: number;
+  /** Read this account's real perps fee rates (GET /margin/fee_tiers and /margin/fee_tier_rates, signed, read only)
+   *  every feeTierHours and alert when they differ from makerFeeBps / takerFeeBps (bot/perps/feeTier.ts). Needs a key. */
+  feeTierCheck: boolean;
+  feeTierHours: number;
   /** Stage 3 directional trading: off | paper (simulated against live perp quotes) | live (real orders). */
   trading: 'off' | 'paper' | 'live';
   /** Frozen perp signal model (research:perp-train); without it the momentum prior trades at pilot size. */
@@ -777,6 +947,11 @@ const DEFAULT_INDEX_IDS: Record<string, string> = {
 
 type Env = Record<string, string | undefined>;
 
+/** An optional number: NaN when unset (the setting is off). */
+function optNum(env: Env, key: string, lo: number, hi: number): number {
+  return env[key] === undefined || env[key] === '' ? NaN : num(env, key, 0, lo, hi);
+}
+
 function num(env: Env, key: string, def: number, lo: number, hi: number): number {
   const raw = env[key];
   const v = raw === undefined || raw === '' ? def : Number(raw);
@@ -784,6 +959,34 @@ function num(env: Env, key: string, def: number, lo: number, hi: number): number
     throw new ConfigError(`${key}=${raw} must be a number in [${lo}, ${hi}]`);
   }
   return v;
+}
+
+/** The hourly quota pacer's settings (PACER_*, bot/risk/quotaPacer.ts). */
+function pacerConfig(env: Env): PacerConfig {
+  const tz = (env.PACER_TZ ?? 'America/New_York').trim() || 'America/New_York';
+  if (!validZone(tz)) throw new Error(`PACER_TZ ${tz} is not a time zone this Node knows`);
+  const minTakeUsd = num(env, 'PACER_MIN_TAKE_USD', 0.75, 0, 10_000);
+  return {
+    enabled: bool(env, 'PACER', true),
+    // Off by default since Oct 30: in the exit lab (Oct 24-28, every position) the group sold winners the pacer alone would
+    // have kept and made less on 4 of the 5 days (+$163 against +$222 without it).
+    group: bool(env, 'PACER_GROUP', false),
+    hourlyUsd: num(env, 'PACER_HOURLY_USD', 4.5, 0, 10_000),
+    anchorHour: Math.floor(num(env, 'PACER_ANCHOR_HOUR', 10, 0, 23)),
+    anchorMinute: Math.floor(num(env, 'PACER_ANCHOR_MINUTE', 0, 0, 59)),
+    tz,
+    mode: oneOf(env, 'PACER_MODE', 'slices', ['slices', 'cumulative', 'rolling_hour'] as const),
+    minTakeUsd,
+    maxTargetUsd: Math.max(minTakeUsd, num(env, 'PACER_MAX_TARGET_USD', 6.5, 0, 10_000)),
+    // Steven (Oct 31): under a higher target the quota is the position's stop, not its sale.
+    floor: oneOf(env, 'PACER_FLOOR', 'riding', ['off', 'targets', 'riding', 'trail'] as const),
+    trailKeep: num(env, 'PACER_TRAIL_KEEP', 0.5, 0, 1),
+    // Paired replays of Oct 29-30 (Oct 31): a floor armed at the profit just reached sold winners on a one-tick dip. Under
+    // today's other rules a cushion of 8 ticks a contract made $262 and $238 a day more than none (two batches, 5 bankrolls
+    // of 5 each); with the loser exits of PR #230, 16 ticks made $88 a day more than none.
+    floorTicks: num(env, 'PACER_FLOOR_TICKS', 8, 0, 50),
+    floorConfirm: oneOf(env, 'PACER_FLOOR_CONFIRM', 'none', ['none', 'model'] as const),
+  };
 }
 
 function bool(env: Env, key: string, def: boolean): boolean {
@@ -968,6 +1171,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     series,
     seriesAuto,
     recordSeries: (env.RECORD_SERIES ?? '').split(',').map((x) => x.trim()).filter(Boolean),
+    excludeSeries: (() => { const v = (env.STRATEGY_EXCLUDE_SERIES ?? 'DOGE').trim(); return v ? new RegExp(v) : undefined; })(),
     recordMaxMarkets: num(env, 'RECORD_MAX_MARKETS', 150, 1, 2000),
     kellyFraction: num(env, 'STRATEGY_KELLY_FRACTION', 0.25, 0.01, 0.5),
     portfolioKelly: bool(env, 'PORTFOLIO_KELLY', true),
@@ -980,6 +1184,23 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     // Quotes stay fresh (a stale bid is the one that gets picked off): pulled on a 2-sigma move, re-priced every 10 s.
     fastMoveSigmas: num(env, 'STRATEGY_FAST_MOVE_SIGMAS', 2, 0.5, 20),
     fastMoveWindowSec: num(env, 'STRATEGY_FAST_MOVE_WINDOW_SEC', 5, 1, 120),
+    dynamicEdge: {
+      vol: num(env, 'DYN_EDGE_VOL', 0, -0.2, 0.2),
+      change: num(env, 'DYN_EDGE_CHANGE', 0, 0, 0.2),
+      spread: num(env, 'DYN_EDGE_SPREAD', 0, 0, 2),
+      flow: num(env, 'DYN_EDGE_FLOW', 0, 0, 0.2),
+      uncertainty: num(env, 'DYN_EDGE_UNCERTAINTY', 0, 0, 2),
+      maxUp: num(env, 'DYN_EDGE_MAX_UP', 0.05, 0, 0.3),
+      maxDown: num(env, 'DYN_EDGE_MAX_DOWN', 0.01, 0, 0.1),
+    },
+    regimeScale: {
+      volTarget: num(env, 'REGIME_VOL_TARGET', 0, 0, 2),
+      changeDerisk: num(env, 'REGIME_CHANGE_DERISK', 0, 0, 1),
+      corrDerisk: num(env, 'REGIME_CORR_DERISK', 0, 0, 2),
+      min: num(env, 'REGIME_SCALE_MIN', 0.25, 0, 1),
+      max: num(env, 'REGIME_SCALE_MAX', 1.5, 1, 2),
+      upWeight: num(env, 'REGIME_UP_WEIGHT', 0.5, 0, 1),
+    },
     // 20 s: a quote the bot stops tending is gone from the exchange within 20 s. Re-placing the ones still wanted costs
     // orders, which RISK_MAX_ORDERS_PER_MIN (120) now has room for.
     orderTtlSec: num(env, 'STRATEGY_ORDER_TTL_SEC', 20, 10, 900),
@@ -994,7 +1215,12 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     profitGiveBack: num(env, 'PROFIT_GIVE_BACK', 1 / 3, 0, 1),
     // The owner, Oct 24: the take-profit goes on the exit curve's scoreboard and bench (it sold winners for $230 less
     // than holding them on Oct 23-24).
-    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', true),
+    // Off by default (Steven, Oct 31 and Nov 4): nothing is held to settlement unless in profit in the last share of the window, so a
+    // bad score never turns the take-profit off; the bench keeps scoring and reports what it would have called.
+    takeProfitBench: bool(env, 'TAKE_PROFIT_BENCH', false),
+    takeProfitLevel: Math.round(num(env, 'TP_LEVEL', -1, -1, 10)),
+    takeProfitLevelMax: Math.round(num(env, 'TP_LEVEL_MAX', 4, 0, 10)),
+    takeProfitFvMargins: parseLevelMargins(env.TP_FV_MARGINS, DEFAULT_TP_FV_MARGINS),
     cadence,
     evalBarSec: num(env, 'STRATEGY_EVAL_BAR_SEC', 60, 5, 600),
     evalFvMove: num(env, 'STRATEGY_EVAL_FV_MOVE', 0.015, 0.001, 0.2),
@@ -1005,12 +1231,34 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     entryWindowHourly: window(env, 'ENTRY_WINDOW_HOURLY', relaxed ? [3300, 600] : [3600, 15]),
     hourlyMidBand: band(env, 'HOURLY_MID_BAND', [0.1, 0.9]),
     noExitBeforeCloseSec: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC', relaxed ? 60 : 0, 0, 600),
+    noExitBeforeCloseFrac: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC', 0.10, 0, 0.9),
+    shareWindowMaxSec: num(env, 'STRATEGY_SHARE_WINDOW_MAX_SEC', 3600, 0, 7 * 86_400),
+    pacer: pacerConfig(env),
+    loserExits: {
+      gate: bool(env, 'FV_ENTRY_GATE', true),
+      gateMargin: num(env, 'FV_ENTRY_GATE_MARGIN', 0.06, 0, 0.5),
+      cut: bool(env, 'LOSER_CUT', true),
+      cutMargin: num(env, 'LOSER_CUT_MARGIN', 0.03, 0, 0.5),
+      window: bool(env, 'LOSER_WINDOW_CUT', true),
+      windowJudge: oneOf(env, 'LOSER_WINDOW_JUDGE', 'bid', ['bid', 'fair', 'cost'] as const),
+      windowShare: num(env, 'LOSER_WINDOW_SHARE', 0, 0, 0.9),
+      noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
+      gatedStakeMult: mode === 'live' && env.GATED_STAKE_LIVE !== 'on' ? 1 : num(env, 'GATED_STAKE_MULT', 1, 1, 5),
+      gatedStakeCap: oneOf(env, 'GATED_STAKE_CAP', 'clamp', ['clamp', 'widen'] as const),
+      gatedStakeShadow: mode !== 'live' && bool(env, 'GATED_STAKE_SHADOW', false),
+      gatedStakeRandom: mode === 'live' ? 0 : num(env, 'GATED_STAKE_RANDOM', 0, 0, 1),
+      gatedStakeSeed: num(env, 'GATED_STAKE_SEED', 0, 0, 1e9),
+    },
+    profitMandate: bool(env, 'PROFIT_MANDATE', false),
+    profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),
     // Maker discount for the measured adverse move a minute after a fill: at least 1.5c, up to 3c.
     makerBuffer: num(env, 'STRATEGY_MAKER_BUFFER', relaxed ? 0.02 : 0, 0, 0.1),
     makerBufferRange: band(env, 'STRATEGY_MAKER_BUFFER_RANGE', relaxed ? [0.015, 0.03] : [0, 0]),
     minQuoteContracts: num(env, 'STRATEGY_MIN_QUOTE_CONTRACTS', 3, 0, 100),
-    paperOrderUsd: num(env, 'PAPER_ORDER_USD', 10, 0, 1000),
-    paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0.10, 0, 1),
+    paperOrderUsd: num(env, 'PAPER_ORDER_USD', 0, 0, 1000),
+    paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0, 0, 1),
+    orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
+    orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
     accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
     kappa: num(env, 'STRATEGY_KAPPA', 0.5, 0, 1),
@@ -1022,12 +1270,21 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     ensembleVetoSigmas: num(env, 'STRATEGY_ENSEMBLE_VETO_SIGMAS', 2, 0, 10),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
-    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),
-    paperExplore: bool(env, 'PAPER_EXPLORE', true),
+    // Never bench (Oct 31): the model-vs-market check no longer halts entries; the skill weight below replaces it.
+    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', false),
+    modelSkill: {
+      on: bool(env, 'MODEL_SKILL', true), min: num(env, 'MODEL_SKILL_MIN', 0.25, 0.05, 1), pinned: num(env, 'MODEL_SKILL_W', -1, -1, 1),
+      // Calm-market cap (bot/model/modelHealth.ts): off (-1) until it proves itself on calming days.
+      calm: num(env, 'MODEL_SKILL_W_CALM', -1, -1, 1),
+      ...calmBand(env.MODEL_SKILL_W_CALM_RV, 'calmRvBp'),
+      // Tails cap (bot/model/modelHealth.ts): off (-1) until it proves itself.
+      tails: num(env, 'MODEL_SKILL_W_TAILS', -1, -1, 1), tail: num(env, 'MODEL_SKILL_TAIL', 0.3, 0.01, 0.49), tailsRising: bool(env, 'MODEL_SKILL_W_TAILS_RISING', false),
+    },
+    paperExplore: bool(env, 'PAPER_EXPLORE', false),
     exploreRate: num(env, 'PAPER_EXPLORE_RATE', 0.1, 0, 1),
     exploreBand: num(env, 'PAPER_EXPLORE_BAND', 0.02, 0, 0.1),
     exploreMaxPerHour: num(env, 'PAPER_EXPLORE_MAX_PER_HOUR', 6, 0, 120),
-    paperTrainTrades: num(env, 'PAPER_TRAINING_TRADES_PER_HOUR', 12, 0, 120),
+    trainTrades: num(env, 'TRAINING_TRADES_PER_HOUR', 12, 0, 120),
     idleEvalSec: num(env, 'EVAL_IDLE_SEC', 5, 0, 60),
     outsidePriceFallback: bool(env, 'PAPER_OUTSIDE_PRICE_FALLBACK', false),
     adversarialBoost: bool(env, 'ADVERSARIAL_BOOST', true),
@@ -1049,12 +1306,22 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     modelHealthMinWindows: num(env, 'MODEL_HEALTH_MIN_WINDOWS', 200, 20, 100000),
     huntTargetMargin: num(env, 'HUNT_TARGET_MARGIN', 0.02, 0, 0.5),
     huntMinConfluence: num(env, 'HUNT_MIN_CONFLUENCE', 2, 1, 7),
+    huntHybrid: bool(env, 'HUNT_HYBRID', false),
+    huntSellIntoGap: bool(env, 'HUNT_SELL_INTO_GAP', true),
+    huntLockSale: oneOf(env, 'HUNT_LOCK_SALE', 'fair_value', ['off', 'fair_value', 'flow', 'either', 'both'] as const),
+    huntLockSaleFvMargin: num(env, 'HUNT_LOCK_SALE_FV_MARGIN', 0.02, -0.2, 0.2),
+    huntLockSaleElse: oneOf(env, 'HUNT_LOCK_SALE_ELSE', 'exit', ['hold', 'exit'] as const),
+    huntLockSaleAt: oneOf(env, 'HUNT_LOCK_SALE_AT', 'trigger', ['lock', 'trigger'] as const),
+    huntWallAsk: bool(env, 'HUNT_WALL_ASK', true),
+    huntWallAskRatio: num(env, 'HUNT_WALL_ASK_RATIO', 3, 1, 1000),
     ratchetMinFillRatio: num(env, 'RATCHET_MIN_FILL_RATIO', 1, 0.1, 20),
     ratchetMinWallAgeSec: num(env, 'RATCHET_MIN_WALL_AGE_SEC', 3, 0, 120),
     ratchetSlippageTicks: num(env, 'RATCHET_SLIPPAGE_TICKS', 1, 0, 10),
     sessionRisk: (() => { try { return parseSessionRisk(env.SESSION_RISK); } catch (e) { throw new ConfigError((e as Error).message); } })(),
     huntSessionGuard: bool(env, 'HUNT_SESSION_GUARD', true),
     huntTransitionBufferMin: num(env, 'HUNT_TRANSITION_BUFFER_MIN', 10, 0, 120),
+    sessionRiskAuto: bool(env, 'SESSION_RISK_AUTO', true),
+    sessionRiskPath: path.resolve(env.SESSION_RISK_PATH ?? './params/session_risk.json'),
     volSeasonality: bool(env, 'VOL_SEASONALITY', true),
     volProfilePath: path.resolve(env.VOL_PROFILE_PATH ?? './params/vol_profile.json'),
     volModel: bool(env, 'VOL_MODEL', true),
@@ -1065,6 +1332,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     fillMinEv: num(env, 'FILL_MIN_EV', 0, -0.5, 0.5),
     takeGate: oneOf(env, 'TAKE_GATE', 'validated', ['validated', 'off'] as const),
     takeMargin: num(env, 'TAKE_MARGIN', 0, 0, 0.2),
+    taVeto: { ofi: optNum(env, 'TA_VETO_OFI', -100, 100), conf: optNum(env, 'TA_VETO_CONF', -50, 50), intensity: optNum(env, 'TA_VETO_INTENSITY', 0, 50), min: num(env, 'TA_VETO_MIN', 1, 1, 3), reverse: bool(env, 'TA_VETO_REVERSE', false), random: optNum(env, 'TA_VETO_RANDOM', 0, 1) },
   };
 
   const dataDir = path.resolve(env.DATA_DIR ?? './data');
@@ -1091,6 +1359,12 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       maxLossUsd: num(env, 'PROBATION_MAX_LOSS_USD', DEFAULT_PROBATION.maxLossUsd, 0, 1e9),
       maxLossPct: num(env, 'PROBATION_MAX_LOSS_PCT', DEFAULT_PROBATION.maxLossPct, 0, 1),
       window: num(env, 'PROBATION_WINDOW', DEFAULT_PROBATION.window, 10, 100_000),
+      // Graded, never benched (Oct 31): the highest level, and what each level asks of an unvalidated take / fill model.
+      levelMax: Math.round(num(env, 'PROBATION_LEVEL_MAX', DEFAULT_PROBATION.levelMax!, 0, 10)),
+      takeStep: num(env, 'PROBATION_TAKE_STEP', DEFAULT_PROBATION.takeStep!, 0, 0.2),
+      fillStep: num(env, 'PROBATION_FILL_STEP', DEFAULT_PROBATION.fillStep!, 0, 0.1),
+      gpMult: num(env, 'PROBATION_GP_MULT', DEFAULT_PROBATION.gpMult!, 0.05, 1),
+      ...calmBand(env.PROBATION_GP_CALM_RV, 'gpCalmRvBp'),
     },
     sinuousExit: {
       mode: oneOf(env, 'SINUOUS_EXIT', DEFAULT_SINUOUS_EXIT.mode, ['gate', 'monitor', 'rest', 'cross', 'off'] as const),
@@ -1117,6 +1391,17 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       // Paper and live alike; the paper-only names from before Oct 24 are still read.
       benchT: num(env, 'SINUOUS_BENCH_T', num(env, 'SINUOUS_PAPER_BENCH_T', 2, 0.5, 10), 0.5, 10),
       benchMinExits: num(env, 'SINUOUS_BENCH_MIN_EXITS', num(env, 'SINUOUS_PAPER_BENCH_MIN_EXITS', 30, 5, 10_000), 5, 10_000),
+      // The cross's strictness ladder (Oct 31: a trip makes it stricter, never benched; bot/strategy/levelLadder.ts).
+      crossFvMargins: parseLevelMargins(env.SINUOUS_CROSS_FV_MARGINS, DEFAULT_CROSS_FV_MARGINS),
+      crossLevel: Math.round(num(env, 'SINUOUS_CROSS_LEVEL', -1, -1, 10)),
+      crossLevelMax: Math.round(num(env, 'SINUOUS_CROSS_LEVEL_MAX', 4, 0, 10)),
+      // The dip buy (Nov 1: the cross's misreads turned into entries; off until the lab passes it).
+      dipBuy: bool(env, 'SINUOUS_DIP_BUY', false),
+      dipMargin: num(env, 'SINUOUS_DIP_MARGIN', 0.04, 0, 0.5),
+      dipFrac: num(env, 'SINUOUS_DIP_FRAC', 0.5, 0.05, 2),
+      dipMax: Math.round(num(env, 'SINUOUS_DIP_MAX', 2, 0, 20)),
+      dipCooldownSec: num(env, 'SINUOUS_DIP_COOLDOWN_SEC', 60, 1, 3600),
+      ...calmBand(env.SINUOUS_DIP_CALM_RV, 'dipCalmRvBp'),
     },
     sinuousEntry: {
       mode: oneOf(env, 'SINUOUS_ENTRY', DEFAULT_SINUOUS_ENTRY.mode, ['gate', 'monitor', 'off'] as const),
@@ -1135,6 +1420,12 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         paperStart: (env.TRIAL_PAPER_START ?? DEFAULT_TRIALS.paperStart.join(',')).split(',').map((x) => x.trim()).filter((x): x is TrialName => (TRIAL_NAMES as string[]).includes(x)),
       };
     })(),
+    scoreboard: {
+      enabled: bool(env, 'SCOREBOARD', DEFAULT_SCOREBOARD.enabled),
+      keep: num(env, 'SCOREBOARD_KEEP', DEFAULT_SCOREBOARD.keep, 100, 20000),
+      snnAlpha: num(env, 'TRIAL_SNN_ALPHA', DEFAULT_SCOREBOARD.snnAlpha, 0, 1),
+      bootstrap: num(env, 'SCOREBOARD_BOOTSTRAP', DEFAULT_SCOREBOARD.bootstrap, 50, 5000),
+    },
     host,
     port: num(env, 'PORT', 3000, 1, 65535),
     dashboardPassword,
@@ -1143,8 +1434,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     auditMaxFileMb: num(env, 'AUDIT_MAX_FILE_MB', 256, 16, 4096),
     auditRetentionDays: num(env, 'AUDIT_RETENTION_DAYS', 30, 0, 3650),
     paramsPath: path.resolve(env.MODEL_PARAMS_PATH ?? './params/model.json'),
-    // Starts in the aggressive tier; see SIZING_TIERS.
-    paperBankrollUsd: num(env, 'PAPER_BANKROLL_USD', 100, 1, 1e7),
+    // $200 since Oct 30 (Steven), the normal tier; see SIZING_TIERS.
+    paperBankrollUsd: num(env, 'PAPER_BANKROLL_USD', 200, 1, 1e7),
     indexIdMap: jsonMap(env, 'INDEX_ID_MAP', DEFAULT_INDEX_IDS),
     seriesAssetMap,
     catalogHorizonMin: num(env, 'CATALOG_HORIZON_MIN', 90, 16, 7 * 24 * 60),
@@ -1161,6 +1452,10 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     taStudyPath: path.resolve(env.TA_STUDY_PATH ?? './params/ta_study.json'),
     coinbaseRestUrl: env.COINBASE_REST_URL ?? 'https://api.exchange.coinbase.com',
     takerFlow: bool(env, 'TAKER_FLOW', true),
+    spotBookRecordSec: num(env, 'SPOT_BOOK_RECORD_SEC', 15, 0, 3600),
+    spotBookDepth: num(env, 'SPOT_BOOK_DEPTH', 10, 1, 50),
+    spotBookBandBps: num(env, 'SPOT_BOOK_BAND_BPS', 10, 1, 500),
+    spotBookBands: num(env, 'SPOT_BOOK_BANDS', 10, 0, 100),
     coinbaseWsUrl: env.COINBASE_WS_URL ?? 'wss://ws-feed.exchange.coinbase.com',
     // Binance.com blocks US IPs; the market-data-only host usually works. Override if needed.
     binanceWsUrl: env.BINANCE_WS_URL ?? 'wss://data-stream.binance.vision/ws/!miniTicker@arr',
@@ -1220,6 +1515,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         takerAfterSec: num(env, 'PERP_HEDGE_TAKER_AFTER_SEC', 300, 10, 86400),
         makerFeeBps: num(env, 'PERP_MAKER_FEE_BPS', 5, 0, 100),
         takerFeeBps: num(env, 'PERP_TAKER_FEE_BPS', 12, 0, 100),
+        feeTierCheck: bool(env, 'PERP_FEE_TIER_CHECK', true),
+        feeTierHours: num(env, 'PERP_FEE_TIER_HOURS', 6, 1, 168),
         trading,
         modelPath: path.resolve(env.PERP_MODEL_PATH ?? './params/perp_model.json'),
         paperBalanceUsd: num(env, 'PERP_PAPER_BALANCE_USD', 100, 1, 1e9),
@@ -1371,6 +1668,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         };
       })(),
       crossFeed: bool(env, 'SNN_CROSS_FEED', false),
+      anchorMid: bool(env, 'SNN_ANCHOR_MID', true),
       deferred: {
         wilsonCowan: bool(env, 'SNN_WILSON_COWAN', false),
         gapJunctions: bool(env, 'SNN_GAP_JUNCTIONS', false),
@@ -1428,6 +1726,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       earlyFullSizeMin: num(env, 'TENNIS_EARLY_FULL_SIZE_MIN', 10, 0, 240),
       underdogLateProgress: num(env, 'TENNIS_UNDERDOG_LATE_PROGRESS', 0.35, 0, 1),
       underdogCutProgress: num(env, 'TENNIS_UNDERDOG_CUT_PROGRESS', 0.6, 0, 1),
+      settleFrac: num(env, 'TENNIS_NO_EXIT_BEFORE_END_FRAC', 0.30, 0, 0.9),
+      endLoserCut: bool(env, 'TENNIS_END_LOSER_CUT', true),
+      endEntryMargin: num(env, 'TENNIS_END_ENTRY_MARGIN', 0.05, 0, 0.5),
       fairMinEdge: num(env, 'TENNIS_FAIR_MIN_EDGE', 0.01, -0.5, 0.5),
       modelPath: path.resolve(env.TENNIS_MODEL_PATH ?? './params/tennis_model.json'),
     },
@@ -1500,4 +1801,10 @@ export function publicConfig(cfg: Config): Record<string, unknown> {
     perps: { ...cfg.perps, keyId: cfg.perps.keyId ? `${cfg.perps.keyId.slice(0, 4)}…` : undefined, privateKeyPath: cfg.perps.privateKeyPath ? '(set)' : undefined },
     alerts: { telegram: Boolean(alertTelegramToken), webhook: Boolean(alertWebhookUrl) },
   };
+}
+
+/** A calming-market hourly-vol band "lo,hi" in bp a minute (bot/model/modelHealth.ts calmIn), under `key`; absent when unset or malformed. */
+function calmBand<K extends string>(v: string | undefined, key: K): Partial<Record<K, [number, number]>> {
+  const b = (v ?? '').split(',').filter((x) => x.trim() !== '').map(Number);
+  return b.length === 2 && b.every(Number.isFinite) && b[0] <= b[1] ? ({ [key]: [b[0], b[1]] } as Partial<Record<K, [number, number]>>) : {};
 }

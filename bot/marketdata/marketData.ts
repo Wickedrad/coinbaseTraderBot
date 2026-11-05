@@ -32,6 +32,7 @@ import type { CandleRow } from '../ta/candleStore';
 import type { Timeframe } from '../ta/knowledge';
 import { SpotCandleFeed } from './spotCandles';
 import { TakerFlowFeed } from './takerFlow';
+import { SpotBookRecorder, SpotBookService, spotBookLine } from './spotBook';
 import { KalshiPerpsRest } from '../perps/perpRest';
 import type { PerpSnapshot } from '../perps/perpData';
 import { contractKind, type ContractTerms, type MarketKind } from '../model/fairValue';
@@ -208,6 +209,7 @@ export class MarketData extends EventEmitter {
   private proxyWs: WebSocket | null = null;
   private candleFeed?: SpotCandleFeed;
   private takerFlow?: TakerFlowFeed;
+  private spotBooks?: SpotBookRecorder;
   indexSource: 'kalshi' | 'proxy' | 'none' = 'none';
   wsConnected = false;
 
@@ -223,7 +225,7 @@ export class MarketData extends EventEmitter {
     this.indexBars = new IndexBars(histDir);
     this.indexStore = new IndexStore(histDir);
     this.indexBars.onClose = () => this.indexStore.invalidate();
-    for (const s of cfg.strategy.series) this.series.set(s, cfg.seriesAssetMap[s]);
+    for (const s of cfg.strategy.series) this.addSeries(s, cfg.seriesAssetMap[s]);
     this.addTennisSeries();
     // Track every asset that has a settlement index, so discovered series can be priced at once.
     const assets = new Set([...this.series.values(), ...(cfg.strategy.seriesAuto ? Object.values(cfg.indexIdMap) : [])]);
@@ -281,6 +283,12 @@ export class MarketData extends EventEmitter {
       this.binanceTimer = setInterval(() => this.pullBinance(), 1000);
       this.binanceTimer.unref();
     }
+    if (this.cfg.spotBookRecordSec > 0) {
+      this.spotBooks = new SpotBookRecorder(() => [...this.index.keys()], (asset, b) => this.recorder.write('spot_book', spotBookLine(asset, b)),
+        this.cfg.spotBookRecordSec * 1000, new SpotBookService(this.cfg.coinbaseRestUrl, 1000, this.cfg.spotBookDepth, fetch,
+          { bps: this.cfg.spotBookBandBps, n: this.cfg.spotBookBands }));
+      this.spotBooks.start();
+    }
     if (this.cfg.taCandles) {
       // Live order flow (Coinbase public trades) so live candles carry taker-buy volume like the history.
       if (this.cfg.takerFlow) { this.takerFlow = new TakerFlowFeed([...this.index.keys()], this.cfg.coinbaseWsUrl); this.takerFlow.start(); }
@@ -326,6 +334,7 @@ export class MarketData extends EventEmitter {
     this.perpFeed?.stop();
     this.candleFeed?.stop();
     this.takerFlow?.stop();
+    this.spotBooks?.stop();
     this.recorder.close();
   }
 
@@ -416,7 +425,7 @@ export class MarketData extends EventEmitter {
         this.series.clear();
         for (const [s, a] of Object.entries(found)) {
           if (!before.has(s)) log.info('discovered series', { series: s, asset: a });
-          this.series.set(s, a);
+          this.addSeries(s, a);
         }
         this.addTennisSeries();
         this.discoveredAt = now;
@@ -426,9 +435,17 @@ export class MarketData extends EventEmitter {
     }
   }
 
-  /** Record-only series (RECORD_SERIES) that are not already traded, with their asset when it names one. */
+  /** Series left out of trading (STRATEGY_EXCLUDE_SERIES), kept recorded for later training, with their asset. */
+  private readonly excludedSeries = new Map<string, string>();
+  private addSeries(s: string, asset: string): void {
+    if (this.cfg.strategy.excludeSeries?.test(s)) { this.excludedSeries.set(s, asset); return; }
+    this.series.set(s, asset);
+  }
+
+  /** Record-only series (RECORD_SERIES, and the excluded ones) that are not already traded, with their asset when it names one. */
   private recordSeriesList(): Array<[string, string]> {
-    return this.cfg.strategy.recordSeries.filter((s) => !this.series.has(s)).map((s) => [s, assetFromSeries(s, Object.values(this.cfg.indexIdMap)) ?? 'REC']);
+    const own = this.cfg.strategy.recordSeries.filter((s) => !this.series.has(s) && !this.excludedSeries.has(s)).map((s) => [s, assetFromSeries(s, Object.values(this.cfg.indexIdMap)) ?? 'REC'] as [string, string]);
+    return [...own, ...this.excludedSeries];
   }
 
   private readonly resultChecked = new Set<string>();
@@ -480,7 +497,7 @@ export class MarketData extends EventEmitter {
         perSeries[series] = ps;
         for (const m of markets) {
           if (m.closeTime <= now) { ps.closed++; continue; }
-          const kind = contractKind(series, m.strikeType);
+          const kind = contractKind(series, m.strikeType, m.ticker);
           // Far-dated strikes (daily/weekly ladders) are never inside an entry window; skip them.
           const horizonMs = kind === 'match' ? this.cfg.tennis.horizonHours * 3_600_000 : this.cfg.catalogHorizonMin * 60_000;
           if (m.closeTime > now + horizonMs && !(kind === 'match' && m.startTime !== undefined && m.startTime < now + horizonMs)) { ps.farDated++; continue; }

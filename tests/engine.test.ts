@@ -166,22 +166,36 @@ test('a location-attestation refusal on a tennis order pauses tennis only; on an
   } finally { engine.stop(); }
 });
 
-test('paper training trades: with no edge anywhere, 1 contract is still traded on the model side, once per contract', async () => {
-  const { engine, recon, oms, market, md } = await setup({ env: { STRATEGY_MIN_EDGE: '0.5', PAPER_EXPLORE: 'false', PAPER_TRAINING_TRADES_PER_HOUR: '12' } });
-  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.55, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
-  const r = await recon.run('startup');
-  engine.balance = r!.balance;
-  await engine.tick();
-  const entries = oms.allOrders().filter((o) => o.ticker === market.ticker && o.purpose === 'entry');
-  assert.equal(entries.length, 1, `status: ${JSON.stringify(engine.status.get(market.ticker))}`);
-  assert.equal(entries[0].count, 1);
-  // Spot above the strike: the model favours YES, bought at the ask.
-  assert.equal(entries[0].side, 'bid');
-  assert.equal(entries[0].price, 0.6);
-  // One per contract: a second pass does not add another.
-  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.55, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
-  await engine.tick();
-  assert.equal(oms.allOrders().filter((o) => o.ticker === market.ticker && o.purpose === 'entry').length, 1);
+test('training trades: with no edge anywhere, the model side is still bought at the order band\'s minimum, once per contract, in paper and live alike', async () => {
+  const key = path.join(tmpDir(), 'k.pem');
+  fs.writeFileSync(key, 'x', { mode: 0o600 });
+  const LIVE = { TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK', LIVE_ALLOW_UNVALIDATED_MODEL: 'true' };
+  for (const [name, mode] of [['paper', {}], ['live', LIVE]] as const) {
+    const { engine, recon, oms, market, md } = await setup({ env: { STRATEGY_MIN_EDGE: '0.5', PAPER_EXPLORE: 'false', TRAINING_TRADES_PER_HOUR: '12', ...mode } });
+    md.book(market.ticker).applySnapshot({ bids: [{ price: 0.55, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
+    const r = await recon.run('startup');
+    engine.balance = r!.balance;
+    await engine.tick();
+    const entries = oms.allOrders().filter((o) => o.ticker === market.ticker && o.purpose === 'entry');
+    assert.equal(entries.length, 1, `${name} status: ${JSON.stringify(engine.status.get(market.ticker))}`);
+    // The band's $10 minimum at 60c plus the 1.68c taker fee a contract: 16.21 contracts.
+    assert.equal(entries[0].count, 16.21, name);
+    // Spot above the strike: the model favours YES, bought at the ask.
+    assert.equal(entries[0].side, 'bid');
+    assert.equal(entries[0].price, 0.6);
+    // One per contract: a second pass does not add another.
+    md.book(market.ticker).applySnapshot({ bids: [{ price: 0.55, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
+    await engine.tick();
+    assert.equal(oms.allOrders().filter((o) => o.ticker === market.ticker && o.purpose === 'entry').length, 1, name);
+  }
+  // Off (0); a leftover value of the retired paper-only key is not read, so it cannot keep them off (the default 12).
+  for (const [env, n] of [[{ TRAINING_TRADES_PER_HOUR: '0' }, 0], [{ PAPER_TRAINING_TRADES_PER_HOUR: '0' }, 1]] as const) {
+    const g = await setup({ env: { STRATEGY_MIN_EDGE: '0.5', PAPER_EXPLORE: 'false', ...env } });
+    g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.55, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
+    g.engine.balance = (await g.recon.run('startup'))!.balance;
+    await g.engine.tick();
+    assert.equal(g.oms.allOrders().filter((o) => o.purpose === 'entry').length, n, JSON.stringify(env));
+  }
 });
 
 test('paper (PAPER_OUTSIDE_PRICE_FALLBACK=true) prices from Coinbase spot when the Kalshi index is stale or too sparse for volatility', async () => {
@@ -249,7 +263,7 @@ test('paper uses live\'s stale-data limits (a 5 s book, a 3 s index)', () => {
 test('paper: an order live would not have sent is tagged at its first fill, for the live-equivalent P&L', async () => {
   // No probation is set in tests and the identity model has no validation report: with the model gating live orders
   // (LIVE_ALLOW_UNVALIDATED_MODEL=false), live would reject every entry.
-  const { engine, recon, paper, market, audit } = await setup({ env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false', LIVE_ALLOW_UNVALIDATED_MODEL: 'false' } });
+  const { engine, recon, paper, market, audit } = await setup({ env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false', LIVE_ALLOW_UNVALIDATED_MODEL: 'false' } });
   engine.balance = (await recon.run('startup'))!.balance;
   await engine.tick();
   const o = (await paper.getOpenOrders())[0];
@@ -263,7 +277,7 @@ test('paper: an order live would not have sent is tagged at its first fill, for 
 });
 
 test('paper: by default live sends what an unvalidated model wants, so nothing is tagged for it', async () => {
-  const { engine, recon, paper, market, audit } = await setup({ env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const { engine, recon, paper, market, audit } = await setup({ env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   engine.balance = (await recon.run('startup'))!.balance;
   await engine.tick();
   const o = (await paper.getOpenOrders())[0];
@@ -357,7 +371,7 @@ class StubRest extends SinuousExitGate {
 
 test('exit curve rest mode: the held position rests its sell at the curve target; an exit crossing the book pulls it', async () => {
   const curveExit = new StubRest({ mode: 'rest', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
-  const { engine, recon, market, md, oms, audit } = await setup({ curveExit, env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const { engine, recon, market, md, oms, audit } = await setup({ curveExit, env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   engine.balance = (await recon.run('startup'))!.balance;
   // Long 10 YES bought at 0.40 as a maker: the take-profit floor is 4c, so never below 0.44.
   oms.onFill({ tradeId: 'r1', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
@@ -394,7 +408,7 @@ class StubCross extends StubRest {
 test('exit curve rest mode, the cross: a turned spot sells at the bid at once and pulls the resting sell', async () => {
   const curveExit = new StubCross({ mode: 'rest', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
   curveExit.target = 0.7;
-  const { engine, recon, market, md, oms, audit } = await setup({ curveExit, env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const { engine, recon, market, md, oms, audit } = await setup({ curveExit, env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   engine.balance = (await recon.run('startup'))!.balance;
   oms.onFill({ tradeId: 'x1', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
   md.book(market.ticker).applySnapshot({ bids: [{ price: 0.45, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
@@ -435,7 +449,7 @@ class StubCrossOnly extends SinuousExitGate {
 
 test('exit curve cross mode (the default, paper and live): no sell rests at the swing top; the cross still sells at the bid', async () => {
   const curveExit = new StubCrossOnly({ mode: 'cross', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
-  const { engine, recon, market, md, oms } = await setup({ curveExit, env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const { engine, recon, market, md, oms } = await setup({ curveExit, env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   engine.balance = (await recon.run('startup'))!.balance;
   // Long 10 YES bought at 0.40 on the (paper) exchange, so its sale can fill.
   md.book(market.ticker).applySnapshot({ bids: [{ price: 0.38, size: 50 }], asks: [{ price: 0.4, size: 50 }] }, Date.now());
@@ -466,7 +480,7 @@ test('exit curve on the live line: a break of the coin\'s line sells the held po
     }
   }
   const liveLines = new BrokenLine();
-  const { engine, recon, market, md, oms, audit } = await setup({ curveExit, liveLines, env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const { engine, recon, market, md, oms, audit } = await setup({ curveExit, liveLines, env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   engine.balance = (await recon.run('startup'))!.balance;
   md.book(market.ticker).applySnapshot({ bids: [{ price: 0.38, size: 50 }], asks: [{ price: 0.4, size: 50 }] }, Date.now());
   await oms.submit({ ticker: market.ticker, asset: 'BTC', windowCloseTs: market.closeTime, side: 'bid', price: 0.4, count: 10, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', fairValue: 0.5, modelId: 'm', decisionId: 'e' });
@@ -488,7 +502,7 @@ test('exit curve on the live line, the sell signal off (the default): a break is
   class BrokenLine extends LiveLines {
     override read(): LiveLineReading { return { price: 100, projected: 100.1, band: { lower: 100.04, upper: 100.16, k: 2, sec: 300 }, underSd: 2.6, slope: -0.4, breakSec: 2, broke: true }; }
   }
-  const { engine, recon, market, md, oms } = await setup({ curveExit, liveLines: new BrokenLine(), env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const { engine, recon, market, md, oms } = await setup({ curveExit, liveLines: new BrokenLine(), env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   engine.balance = (await recon.run('startup'))!.balance;
   md.book(market.ticker).applySnapshot({ bids: [{ price: 0.38, size: 50 }], asks: [{ price: 0.4, size: 50 }] }, Date.now());
   await oms.submit({ ticker: market.ticker, asset: 'BTC', windowCloseTs: market.closeTime, side: 'bid', price: 0.4, count: 10, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', fairValue: 0.5, modelId: 'm', decisionId: 'e' });
@@ -501,7 +515,7 @@ test('exit curve on the live line, the sell signal off (the default): a break is
 
 test('exit curve: a cross whose order fills nothing is not scored', async () => {
   const curveExit = new StubCrossOnly({ mode: 'cross', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
-  const { engine, recon, market, md, oms } = await setup({ curveExit, env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const { engine, recon, market, md, oms } = await setup({ curveExit, env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   engine.balance = (await recon.run('startup'))!.balance;
   oms.onFill({ tradeId: 'k2', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
   md.book(market.ticker).applySnapshot({ bids: [{ price: 0.45, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
@@ -553,7 +567,7 @@ test('take-profit: a winner runs, then is sold once it gives back a third of its
 test('take-profit bench: a take-profit sale is scored on its fill against holding to settlement; benched, the take-profit sells nothing', async () => {
   const rule = { minTrades: 30, t: 2, maxLossUsd: 25, window: 200 };
   const run = async (bench: TakeProfitBench) => {
-    const g = await setup({ takeProfitBench: bench, env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+    const g = await setup({ takeProfitBench: bench, env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
     g.engine.balance = (await g.recon.run('startup'))!.balance;
     // Long 10 YES bought at 0.40 on the (paper) exchange, so the take-profit's sale can fill.
     g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.38, size: 50 }], asks: [{ price: 0.4, size: 50 }] }, Date.now());
@@ -576,15 +590,17 @@ test('take-profit bench: a take-profit sale is scored on its fill against holdin
   assert.deepEqual([s.scored, s.pending], [1, 0]);
   assert.ok(s.netUsd < -5 && s.netUsd > -5.3, `(0.50 - fee - 1) x 10: ${s.netUsd}`);
   assert.equal(g.engine.takeProfitBenchStatus()?.scored, 1);
-  // A bench already called (the take-profit cost $26 against holding): the same pull-back sells nothing.
-  const benched = new TakeProfitBench(true, rule);
-  for (let i = 0; i < 13; i++) { benched.filled(`M${i}`, 1, 0.81, 10, 0.01, i); benched.settled(`M${i}`, 'yes', i + 1); }
-  const h = await run(benched);
+  // A rule already tripped (the take-profit cost $26 against holding): level 1, never benched. The coin's fair value of the
+  // side is far above the 0.50 bid, so the same pull-back is held by the fair-value confirm.
+  const stepped = new TakeProfitBench(true, rule);
+  for (let i = 0; i < 13; i++) { stepped.filled(`M${i}`, 1, 0.81, 10, 0.01, i); stepped.settled(`M${i}`, 'yes', i + 1); }
+  assert.deepEqual([stepped.level, stepped.benched], [1, undefined]);
+  const h = await run(stepped);
   assert.equal(h.exits().length, 0, h.notes());
-  assert.match(h.notes(), /take-profit benched: \+0\.\d+ now, best \+0\.\d+, not sold \(take-profit sales cost \$26\.00/);
-  // The dashboard's reset lifts it.
+  assert.match(h.notes(), /take-profit held by fair value \(level 1\): \+0\.\d+ now, the coin's value 0\.\d+ > net bid 0\.\d+ \+ 0\.06/);
+  // The dashboard's reset goes back to level 0.
   assert.equal(h.engine.resetTakeProfitBench(), true);
-  assert.equal(benched.benched, undefined);
+  assert.equal(stepped.level, 0);
 });
 
 test('take-profit: the last tick above the floor goes out at once, the exit curve never holds it', async () => {
@@ -660,7 +676,7 @@ test('vault: a settled loss is won back before a later win is vaulted; the total
   assert.deepEqual([vault.status().realized?.total, vault.status().realized?.high], [0, 0]);
 });
 
-test('paper: the vault keeps its books, but the paper bankroll is the whole balance (VAULT_IN_PAPER off, the default)', async () => {
+test('paper: the vault reserve leaves the bankroll, as in live (since Oct 28)', async () => {
   // The vault keeps half of every new realized high (before Oct 23's rule, half of every win and none of the losses:
   // by Oct 23 it held $343 of the $360 paper pool).
   const vault = new Vault({ enabled: true, quotaUsd: 100, winShare: 0.5, pocketShare: 0.1, quotaReset: 'session', dailyGoalUsd: 100 });
@@ -670,12 +686,12 @@ test('paper: the vault keeps its books, but the paper bankroll is the whole bala
   oms.onFill({ tradeId: 'w', orderId: '', ticker: 'W', side: 'bid', count: 20, price: 0.5, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: Date.now() - 1, asset: 'BTC' });
   oms.settle('W', 'yes');
   assert.equal(vault.vaultTotal, 5, 'still vaulted on the books');
-  assert.equal(engine.bankroll(), 200, 'and still traded in paper');
+  assert.equal(engine.bankroll(), 195, 'and not traded, in paper as in live');
 });
 
-test('paper size: a wanted trade buys about PAPER_ORDER_FRAC of the bankroll (10%); PAPER_ORDER_FRAC=0 the fixed PAPER_ORDER_USD; both 0 size as in live', async () => {
+test('paper size: by default the $10-$20 order band, as live; PAPER_ORDER_FRAC buys a share of the bankroll; PAPER_ORDER_FRAC=0 with PAPER_ORDER_USD a fixed amount; band off, paper sizes as live', async () => {
   const quote = (g: Awaited<ReturnType<typeof setup>>) => g.oms.liveOrders().find((o) => o.ticker === g.market.ticker && o.purpose === 'quote' && !o.cancelRequested && o.side === 'bid');
-  const env = { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' };
+  const env = { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' };
   const run = async (extra: Record<string, string>) => {
     const g = await setup({ env: { ...env, ...extra } });
     g.engine.balance = (await g.recon.run('startup'))!.balance;
@@ -683,8 +699,8 @@ test('paper size: a wanted trade buys about PAPER_ORDER_FRAC of the bankroll (10
     return { g, q: quote(g)!, notes: g.engine.status.get(g.market.ticker)?.notes ?? [] };
   };
   const near = (q: { count: number; price: number }, usd: number) => { const v = q.count * q.price; return v > usd - q.price - 0.05 && v <= usd + 1e-9; };
-  // 10% of the $200 account: $20 an order.
-  const frac = await run({});
+  // PAPER_ORDER_FRAC=0.1: 10% of the $200 account, $20 an order.
+  const frac = await run({ PAPER_ORDER_FRAC: '0.1' });
   assert.ok(frac.q, JSON.stringify(frac.notes));
   assert.ok(near(frac.q, 20), `${frac.q.count} at ${frac.q.price}`);
   assert.match(frac.notes.join(' | '), /paper size: \$20\.00 an order \(10% of the bankroll, PAPER_ORDER_FRAC\)/);
@@ -698,15 +714,24 @@ test('paper size: a wanted trade buys about PAPER_ORDER_FRAC of the bankroll (10
   assert.ok(near(fixed.q, 8), `${fixed.q.count} at ${fixed.q.price}`);
   assert.match(fixed.notes.join(' | '), /paper size: \$8 an order \(PAPER_ORDER_USD\)/);
   assert.equal(fixed.g.engine.paperOrderUsd(100), 8);
-  // Both off: the tier and break-even sizing of a $200 account, a few dollars at most.
-  const sized = await run({ PAPER_ORDER_FRAC: '0', PAPER_ORDER_USD: '0' });
+  // Both off (the default since Oct 28: paper sizes like live) and the band off: the tier and break-even sizing of a $200
+  // account, a few dollars at most.
+  const sized = await run({ ORDER_USD_MIN: '0' });
+  assert.equal(sized.g.engine.paperOrderUsd(100), 0);
+  assert.equal(sized.g.engine.guardStatus().orderBandUsd, null);
   assert.ok(sized.q.count * sized.q.price < 5, `${sized.q.count} at ${sized.q.price}`);
   assert.ok(sized.q.count < frac.q.count);
+  // The default since Oct 30 (Steven): the order band, $10-$20 an order (paper and live alike).
+  const band = await run({});
+  assert.ok(band.q, JSON.stringify(band.notes));
+  assert.ok(band.q.count * band.q.price > 9.4 && band.q.count * band.q.price <= 20, `${band.q.count} at ${band.q.price}`);
+  assert.match(band.notes.join(' | '), /order band: \$10-\$20 an order \(ORDER_USD_MIN\/MAX\)/);
+  assert.deepEqual(band.g.engine.guardStatus().orderBandUsd, { min: 10, max: 20 });
 });
 
 test('accuracy gate (paper): no new quote in a time-to-close bucket where the market mid called results better', async () => {
   const quote = (g: Awaited<ReturnType<typeof setup>>) => g.oms.liveOrders().find((o) => o.ticker === g.market.ticker && o.purpose === 'quote' && !o.cancelRequested);
-  const env = { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' };
+  const env = { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' };
   // 50 settled 15-minute markets per bucket around 10 minutes out, where the mid leaned the right way and the bot sat at 0.5.
   const scorecard = (enabled: boolean) => {
     const gate = new AccuracyGate({ enabled, window: 150, minMarkets: 40 });
@@ -761,7 +786,7 @@ test('no new risk below the $10 hard floor; $20 trades on the aggressive tier', 
 
 test('conviction: every evaluation records the TA overlay; the altcoin risk-on rule boosts a long entry 2.5x', async () => {
   // NON_ALTCOINS empty: the test market (BTC) counts as an altcoin.
-  const base = await setup({ env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const base = await setup({ env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   let r = await base.recon.run('startup');
   base.engine.balance = r!.balance;
   await base.engine.tick();
@@ -772,7 +797,7 @@ test('conviction: every evaluation records the TA overlay; the altcoin risk-on r
   assert.match(st0.conviction!.alt.why, /not an altcoin|USDT\.D|RSI/);
 
   // PAPER_ORDER_FRAC=0 and PAPER_ORDER_USD=0: a paper order size is never boosted, and this test is about the boost.
-  const alt = await setup({ trend: 0.000002, env: { NON_ALTCOINS: 'NONE', PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false', ADVERSARIAL_BOOST: 'false', PAPER_ORDER_USD: '0', PAPER_ORDER_FRAC: '0' } });
+  const alt = await setup({ trend: 0.000002, env: { NON_ALTCOINS: 'NONE', TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false', ADVERSARIAL_BOOST: 'false', PAPER_ORDER_USD: '0', PAPER_ORDER_FRAC: '0' } });
   const now = Date.now();
   // USDT.D falling over the last 20 minutes (with some noise for its volatility); the index rising (RSI > 50).
   let u = 5.0;
@@ -789,7 +814,7 @@ test('conviction: every evaluation records the TA overlay; the altcoin risk-on r
 
 test('conviction: the adversary vetoes the altcoin boost on an entry it breaks', async () => {
   // Ask-heavy book: the tape attack breaks a YES entry, so it keeps its normal size.
-  const alt = await setup({ trend: 0.000002, askSize: 5000, env: { NON_ALTCOINS: 'NONE', PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const alt = await setup({ trend: 0.000002, askSize: 5000, env: { NON_ALTCOINS: 'NONE', TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   const now = Date.now();
   let u = 5.0;
   for (let s = 1800; s >= 0; s -= 10) { u *= 1 - 0.00002 + 0.00001 * Math.sin(s); alt.md.usdtd.add(u, now - s * 1000); }
@@ -803,7 +828,7 @@ test('conviction: the adversary vetoes the altcoin boost on an entry it breaks',
 });
 
 test('idle evaluation: a market the bot is not in is re-evaluated every EVAL_IDLE_SEC, not every tick', async () => {
-  const { engine, recon, market, oms, paper } = await setup({ env: { EVAL_IDLE_SEC: '30', STRATEGY_STYLE: 'taker', STRATEGY_MIN_EDGE: '0.5', PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
+  const { engine, recon, market, oms, paper } = await setup({ env: { EVAL_IDLE_SEC: '30', STRATEGY_STYLE: 'taker', STRATEGY_MIN_EDGE: '0.5', TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' } });
   const r = await recon.run('startup');
   engine.balance = r!.balance;
   await engine.tick();
@@ -873,42 +898,42 @@ test('paper: a balance move nobody made (a paper book started fresh) re-anchors 
   assert.equal(monitor.state.expected, 100, 'expected balance re-anchored');
 });
 
-test('component trials: a trial that passed moves paper\'s price, never live\'s; every contract in its entry window is recorded', async () => {
+test('component trials: a trial that passed moves the price in paper and live alike; every contract in its entry window is recorded', async () => {
   class Stub extends ComponentTrials {
     readonly onNames = new Set<TrialName>();
     readonly records: Array<[TrialName, string, number, number]> = [];
     override applied(name: TrialName): boolean { return this.onNames.has(name); }
     override record(name: TrialName, ticker: string, _asset: string, _close: number, pWith: number, pWithout: number): void { this.records.push([name, ticker, pWith, pWithout]); }
   }
-  // The TA network's 1 h and 4 h calls, neither validated nor graded yet: today's tilt counts each at half.
+  // The TA network's 1 h and 4 h calls, neither validated: outside their trial they do not move the price at all.
   const view: TaNetView = { up1: 0.62, up4: 0.6 };
   const run = async (env: Record<string, string>, on: TrialName[]) => {
     const trials = new Stub(DEFAULT_TRIALS);
     for (const n of on) trials.onNames.add(n);
-    const s = await setup({ trials, env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false', ...env } });
+    const s = await setup({ trials, env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false', ...env } });
     (s.engine as unknown as { taView: () => TaNetView }).taView = () => view;
     s.engine.balance = (await s.recon.run('startup'))!.balance;
     await s.engine.tick();
     return { st: s.engine.status.get(s.market.ticker)!, trials };
   };
   const off = await run({}, []);
-  assert.ok(off.st.trials && off.st.trials.ta! > off.st.taShift! && off.st.taShift! > 0, `full ${off.st.trials?.ta}, today ${off.st.taShift}`);
+  assert.ok(off.st.trials && off.st.trials.ta! > 0 && off.st.taShift === 0, `full ${off.st.trials?.ta}, today ${off.st.taShift}`);
   assert.deepEqual(off.st.trials!.applied, []);
   const rec = off.trials.records.filter(([n]) => n === 'ta');
   assert.ok(rec.length >= 1, 'the contract in its entry window is recorded');
   assert.ok(Math.abs(rec[0][3] - off.st.pModel!) < 1e-12 && Math.abs(rec[0][2] - (off.st.pModel! + off.st.trials!.ta!)) < 1e-4, 'scored with the full tilt against the meta-model\'s price');
   const on = await run({}, ['ta']);
-  assert.ok(Math.abs(on.st.taShift! - on.st.trials!.ta!) < 1e-4 && on.st.taShift! > off.st.taShift! * 1.5, `paper prices with the full-weight tilt once its trial passed: ${on.st.taShift}`);
+  assert.ok(Math.abs(on.st.taShift! - on.st.trials!.ta!) < 1e-4 && on.st.taShift! > 0, `paper prices with the full-weight tilt once its trial passed: ${on.st.taShift}`);
   assert.deepEqual(on.st.trials!.applied, ['ta']);
-  // Live: the same passing trial changes nothing.
+  // Live: the same passing trial moves live's price the same way (the owner, Oct 28: paper behaves as live).
   const key = path.join(tmpDir(), 'k.pem');
   fs.writeFileSync(key, 'x', { mode: 0o600 });
   const live = await run({ TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' }, ['ta']);
-  assert.ok(Math.abs(live.st.taShift! - off.st.taShift!) < 1e-6, `live ${live.st.taShift} vs paper without the trial ${off.st.taShift}`);
-  assert.deepEqual(live.st.trials!.applied, []);
+  assert.ok(Math.abs(live.st.taShift! - on.st.taShift!) < 1e-6, `live ${live.st.taShift} vs paper with the trial ${on.st.taShift}`);
+  assert.deepEqual(live.st.trials!.applied, ['ta']);
 });
 
-test('component trials: the trained model comes out of paper\'s price when its trial says so, never out of live\'s', async () => {
+test('component trials: the trained model comes out of the price when its trial says so, in paper and live alike', async () => {
   class Stub extends ComponentTrials {
     readonly onNames = new Set<TrialName>();
     readonly records: Array<[TrialName, number, number]> = [];
@@ -922,7 +947,7 @@ test('component trials: the trained model comes out of paper\'s price when its t
   const run = async (env: Record<string, string>, on: TrialName[]) => {
     const trials = new Stub(DEFAULT_TRIALS);
     for (const x of on) trials.onNames.add(x);
-    const s = await setup({ trials, model, env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false', ...env } });
+    const s = await setup({ trials, model, env: { TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false', ...env } });
     s.engine.balance = (await s.recon.run('startup'))!.balance;
     await s.engine.tick();
     return { st: s.engine.status.get(s.market.ticker)!, trials };
@@ -937,5 +962,27 @@ test('component trials: the trained model comes out of paper\'s price when its t
   const key = path.join(tmpDir(), 'k.pem');
   fs.writeFileSync(key, 'x', { mode: 0o600 });
   const live = await run({ TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' }, []);
-  assert.ok(Math.abs(lean(live.st) - 0.4) < 1e-6, 'live keeps the trained model whatever its trial says');
+  assert.ok(Math.abs(live.st.pModel! - live.st.fairValue!) < 1e-12, 'out of live\'s price too');
+});
+
+test('the dashboard\'s snipe badge: the hour\'s target and the held position\'s profit after fees at the bid; pacer off, no target', async () => {
+  for (const pacer of ['true', 'false']) {
+    const { engine, recon, market, md, oms } = await setup({ env: { PACER: pacer, TRAINING_TRADES_PER_HOUR: '0' } });
+    const r = await recon.run('startup');
+    engine.balance = r!.balance;
+    md.book(market.ticker).applySnapshot({ bids: [{ price: 0.56, size: 50 }], asks: [{ price: 0.58, size: 50 }] }, Date.now());
+    await engine.tick();
+    assert.equal(engine.status.get(market.ticker)!.snipe, undefined, 'flat: no badge');
+    // Long 10 YES bought at 0.40 as a maker: at a 0.56 bid it is +$1.60 less the $0.18 taker fee, +$1.42. A fresh pacer's
+    // slice is the full $4.50, so it is not sniped yet.
+    oms.onFill({ tradeId: 'p1', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+    await engine.tick();
+    const s = engine.status.get(market.ticker)!.snipe!;
+    assert.deepEqual({ ...s, nowUsd: Math.round(s.nowUsd! * 100) / 100 }, { atUsd: pacer === 'true' ? 4.5 : undefined, nowUsd: 1.42, rides: false, closed: false });
+    // Half sold at 0.56 (fee 0.09): the badge measures the 5 still held at their own 0.40, +$0.80 less the $0.09 taker fee.
+    // Net cash would put them at 0.22 and show the sold half's profit again (+$1.62).
+    oms.onFill({ tradeId: 'p2', orderId: '', ticker: market.ticker, side: 'ask', count: 5, price: 0.56, isTaker: true, fee: 0.09, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+    await engine.tick();
+    assert.equal(Math.round(engine.status.get(market.ticker)!.snipe!.nowUsd! * 100) / 100, 0.71);
+  }
 });

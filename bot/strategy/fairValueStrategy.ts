@@ -31,12 +31,18 @@
 //
 // Pure function: no I/O. The engine turns plans into risk-checked orders.
 
-import type { StrategyConfig } from '../config';
+import type { LoserExitConfig, StrategyConfig } from '../config';
 import { orderFee, type FeeSchedule } from '../fees';
 import type { BookSide, TimeInForce } from '../kalshi/types';
 import type { OrderPurpose } from '../oms/orderState';
 import { evThresholds, kellySize, targetEvSize } from '../sizing/kelly';
+import { quotaCall } from '../risk/quotaPacer';
 import { ceilToTick, floorCount, floorToTick, round } from '../util/num';
+import { levelMargin } from './levelLadder';
+
+/** The take-profit's fair-value confirm by level (1, 2, 3, 4...): the coin's value of the side may sit at most this far above
+ *  the net bid (TP_FV_MARGINS). */
+export const DEFAULT_TP_FV_MARGINS = [0.06, 0.03, 0.01, 0];
 
 export interface RestingQuote {
   clientOrderId: string;
@@ -49,6 +55,9 @@ export interface RestingQuote {
 export interface MarketView {
   ticker: string;
   pYes: number;
+  /** The spot fair value of YES: the contract priced off the index (bot/model/fairValue.ts priceContract), before the model,
+   *  the SNN, the TA and the rules move it. The loser exits' measure (cfg.loserExits); unset: those that need it are off. */
+  pFair?: number;
   bestBid?: { price: number; size: number };
   bestAsk?: { price: number; size: number };
   position: number;
@@ -62,9 +71,16 @@ export interface MarketView {
    *  buys about this many dollars of contracts, within maxOrderRiskUsd, the risk room and maxContracts. Undefined = the
    *  sized amount. */
   fixedOrderUsd?: number;
+  /** The order band (ORDER_USD_MIN / ORDER_USD_MAX, paper and live): a trade sizing wants (contracts > 0) stakes the
+   *  sized amount clamped to [min, max] dollars, within maxOrderRiskUsd, the risk room and maxContracts; skipped when
+   *  those cannot fit the minimum. Undefined = the sized amount. */
+  orderBandUsd?: { min: number; max: number };
   /** Exit curve rest mode: the side price at which the held position's sell rests (the curve's swing-top estimate).
    *  Undefined = no resting curve sell. */
   curveRestSidePrice?: number;
+  /** Hunt mode's sell-wall ask (HUNT_WALL_ASK, bot/strategy/exitPolicies.ts): the side price at which the hunted position's
+   *  sell rests, joined behind a top-of-book sell wall. Undefined = none. Placed while the hunt blocks every other reduction. */
+  huntRestSidePrice?: number;
   maxContracts: number;
   minSidePrice: number;
   tauSec: number;
@@ -91,10 +107,20 @@ export interface MarketView {
   profitPeakSidePrice?: number;
   /** Why the take-profit is benched (bot/strategy/takeProfitBench.ts): it sells nothing; the model exit still runs. */
   takeProfitBenched?: string;
+  /** The take-profit's strictness level (bot/strategy/takeProfitBench.ts, levelLadder.ts): from 1 it sells only while the
+   *  coin's spot fair value of the side (pFair) is at most the net bid plus the level's margin (cfg.takeProfitFvMargins). */
+  takeProfitLevel?: number;
+  /** The model's skill weight against the calibrated market (bot/model/modelHealth.ts; 1 or undefined = full say). */
+  modelSkillWeight?: number;
   /** Entry window open (contract kind, time to close, maintenance). Default: tau >= noEntryBeforeCloseSec. */
   entryWindowOpen?: boolean;
   /** Exits allowed (false in the final minute: ride to settlement). Default true. */
   exitWindowOpen?: boolean;
+  /** Inside the last STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC of the contract's window (Steven's rule, Oct 29): a position in profit
+   *  after fees rides to settlement (no exit sells it); one that is not keeps its exits. Default false. */
+  settleShare?: boolean;
+  /** The contract's whole window, open to close, in seconds (the loser exits' LOSER_WINDOW_SHARE). */
+  windowSec?: number;
 }
 
 export interface OrderPlan {
@@ -118,12 +144,18 @@ export interface StrategyOutput {
   place: OrderPlan[];
   cancel: Array<{ clientOrderId: string; reason: string }>;
   notes: string[];
+  /** PACER_FLOOR: the held position's profit covers what the hour needs while another exit rule aims higher (`why`); the
+   *  caller arms its floor at `usd` (bot/risk/quotaPacer.ts QuotaFloors) and passes it back as opts.pacerFloor. */
+  pacerArm?: { usd: number; why: string };
 }
 
 /** Decision probability of YES: the model, or shrunk toward the calibrated market under target-EV sizing. */
-export function decisionProbability(v: Pick<MarketView, 'pYes' | 'pMarket'>, cfg: Pick<StrategyConfig, 'sizing' | 'kappa'>): number {
-  if (cfg.sizing !== 'target_ev' || v.pMarket === undefined) return v.pYes;
-  return v.pMarket + cfg.kappa * (v.pYes - v.pMarket);
+export function decisionProbability(v: Pick<MarketView, 'pYes' | 'pMarket' | 'modelSkillWeight'>, cfg: Pick<StrategyConfig, 'sizing' | 'kappa'>): number {
+  if (v.pMarket === undefined) return v.pYes;
+  const base = cfg.sizing !== 'target_ev' ? v.pYes : v.pMarket + cfg.kappa * (v.pYes - v.pMarket);
+  // The model's skill weight (bot/model/modelHealth.ts modelSkillWeight): toward the market as far as the model has lost to it.
+  const w = v.modelSkillWeight;
+  return w === undefined || w >= 1 ? base : v.pMarket + w * (base - v.pMarket);
 }
 
 /** `opts.exits: false` disables the built-in model exit (another exit policy
@@ -132,7 +164,175 @@ export function decisionProbability(v: Pick<MarketView, 'pYes' | 'pMarket'>, cfg
  * opposite-side takes), used while a winner is being run under the confluence
  * ratchet. `opts.entries: false` evaluates exits only and leaves resting quotes
  * untouched (relaxed cadence between scheduled evaluations). */
-export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boolean; blockReductions?: boolean; entries?: boolean } = {}): StrategyOutput {
+/** A position's whole profit after fees if sold at its side's bid now: `cost` is the side-terms cost a contract, entry fee in
+ *  (undefined: unknown), `bid`/`ask` the YES book's top (a NO position sells at 1 - ask). Undefined when flat or unknown. */
+export function positionNetAtBid(position: number, cost: number | undefined, bid: { price: number } | undefined, ask: { price: number } | undefined, fees?: FeeSchedule): number | undefined {
+  if (cost === undefined) return undefined;
+  if (position > 0 && bid) return position * (bid.price - cost) - orderFee(position, bid.price, true, fees);
+  if (position < 0 && ask) {
+    const noBid = round(1 - ask.price, 4);
+    return -position * (noBid - cost) - orderFee(-position, noBid, true, fees);
+  }
+  return undefined;
+}
+
+/** The whole position's profit after fees if sold at its side's bid now (undefined: flat, no cost basis or no bid). The quota
+ *  snipe's measure (bot/risk/quotaPacer.ts), shared with the engine's group judgement. */
+export function netProfitAtBid(v: MarketView): number | undefined {
+  const cost = v.entrySidePrice !== undefined ? v.entrySidePrice + (v.entryFeePerContract ?? 0) : undefined;
+  return positionNetAtBid(v.position, cost, v.bestBid, v.bestAsk, v.fees);
+}
+
+/** Steven's rule (Oct 29): inside the last share of the window a position in profit after fees rides to settlement. */
+export function ridesToSettlement(v: MarketView): boolean {
+  return v.exitWindowOpen !== false && v.settleShare === true && v.position !== 0 && (netProfitAtBid(v) ?? 0) > 1e-9;
+}
+
+/** Steven's settlement rule (Oct 31: nothing rides to settlement unless it is in the last share of its window and in profit)
+ *  and the sizing lab's loser exits (cfg.loserExits, section L). A position not in profit after fees at its side's bid is sold
+ *  there, the top bid's size: inside the last share of the window or the final minute (the window cut), and anywhere once
+ *  the spot fair value of its side is below the bid less the taker fee a contract less the margin (the loser cut: the index
+ *  moves before Kalshi does, so it sells at once). Undefined: no such sale (in profit, no bid, no cost basis, or off). */
+export function loserExit(v: MarketView, cfg: Pick<StrategyConfig, 'loserExits'>): OrderPlan | undefined {
+  const L = cfg.loserExits;
+  if (!L || (!L.cut && !L.window) || v.position === 0) return undefined;
+  const long = v.position > 0;
+  const top = long ? v.bestBid : v.bestAsk;
+  if (!top || !(top.size > 0)) return undefined;
+  const net = netProfitAtBid(v);
+  if (net === undefined || net > 1e-9) return undefined;
+  const sideBid = long ? top.price : round(1 - top.price, 4);
+  const n = round(Math.min(Math.abs(v.position), top.size), 2);
+  if (!(n > 0)) return undefined;
+  const fee = orderFee(n, sideBid, true, v.fees) / n;
+  const fvSide = v.pFair === undefined ? undefined : long ? v.pFair : 1 - v.pFair;
+  const held = `${Math.abs(v.position)}${long ? '' : ' NO'}`;
+  let why: string | undefined;
+  if (L.window && inLoserWindow(v, L)) {
+    // The judge (LOSER_WINDOW_JUDGE): bid sells whatever is not in profit at the bid; fair and cost first ask the coin's
+    // price (no fair value known: judged at the bid).
+    const cost = (v.entrySidePrice ?? 0) + (v.entryFeePerContract ?? 0);
+    const judge = L.windowJudge ?? 'bid';
+    const sells = judge === 'bid' || fvSide === undefined ? true : judge === 'fair' ? fvSide < sideBid - fee - 1e-9 : fvSide < cost - 1e-9;
+    const fair = judge === 'bid' || fvSide === undefined ? '' : judge === 'fair' ? `, fair value ${fvSide.toFixed(3)} < bid less fee ${(sideBid - fee).toFixed(3)}` : `, fair value ${fvSide.toFixed(3)} < cost ${cost.toFixed(3)}`;
+    if (sells) why = `loser window cut: ${net.toFixed(2)} net after fees on ${held} at bid ${sideBid.toFixed(2)}${fair}, ${Math.round(v.tauSec)} s to the close (only a position in profit rides to settlement)`;
+  }
+  if (!why && L.cut && fvSide !== undefined && fvSide < sideBid - fee - L.cutMargin - 1e-9) {
+    why = `loser cut: fair value ${fvSide.toFixed(3)} < bid ${sideBid.toFixed(2)} - fee ${fee.toFixed(3)} - ${L.cutMargin}, ${net.toFixed(2)} net after fees on ${held}`;
+  }
+  if (!why) return undefined;
+  return { side: long ? 'ask' : 'bid', price: top.price, count: n, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit',
+    edge: fvSide === undefined ? 0 : sideBid - fee - fvSide, why };
+}
+
+/** A training trade's size (TRAINING_TRADES_PER_HOUR, paper and live): the order band's minimum (or the fixed paper order
+ *  size) in contracts (0.01 steps, as the strategy sizes) at `cost` with the taker fee, never past the band's maximum (or the
+ *  fixed size) once the fee rounds up on the whole order, within the per-order contract cap; 1 contract without a band. */
+export function trainingCount(cost: number, v: Pick<MarketView, 'orderBandUsd' | 'fixedOrderUsd' | 'maxContracts' | 'fees'>): number {
+  const fixed = (v.fixedOrderUsd ?? 0) > 0 ? v.fixedOrderUsd! : undefined;
+  const usd = fixed ?? v.orderBandUsd?.min;
+  if (!(usd !== undefined && usd > 0) || !(cost > 0 && cost < 1)) return 1;
+  const cap = fixed ?? Math.max(usd, v.orderBandUsd!.max);
+  const unit = cost + orderFee(100, cost, true, v.fees) / 100;
+  let n = floorCount(Math.min(v.maxContracts > 0 ? v.maxContracts : Infinity, usd / unit));
+  while (n > 0 && n * cost + orderFee(n, cost, true, v.fees) > cap + 1e-9) n = round(n - 0.01, 2);
+  return Math.max(n, 0.01);
+}
+
+/** The window the share rules measure (the last share STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC, LOSER_WINDOW_SHARE, LOSER_NO_ENTRY_SHARE):
+ *  open to close, at most `maxSec` (STRATEGY_SHARE_WINDOW_MAX_SEC, an hour; 0 = no cap). A 15-minute contract keeps its 900 s;
+ *  an hourly or daily ladder or a range bracket listed hours ahead is measured on the hour the bot trades it in. */
+export function shareWindowSec(openTime: number, closeTime: number, maxSec: number): number | undefined {
+  if (!Number.isFinite(openTime) || !(closeTime > openTime)) return undefined;
+  const span = (closeTime - openTime) / 1000;
+  return maxSec > 0 ? Math.min(span, maxSec) : span;
+}
+
+/** Where the loser window cut runs: the last share of the window (settleShare), the final minute, and from LOSER_WINDOW_SHARE
+ *  of the window left when that is set. */
+export function inLoserWindow(v: Pick<MarketView, 'settleShare' | 'exitWindowOpen' | 'tauSec' | 'windowSec'>, L: LoserExitConfig): boolean {
+  return v.settleShare === true || v.exitWindowOpen === false
+    || ((L.windowShare ?? 0) > 0 && v.windowSec !== undefined && v.tauSec <= (L.windowShare ?? 0) * v.windowSec);
+}
+
+/** LOSER_NO_ENTRY_SHARE (cfg.loserExits): no new risk from that share of the window left on, nor where the window cut runs. */
+export function loserNoEntry(v: Pick<MarketView, 'settleShare' | 'exitWindowOpen' | 'tauSec' | 'windowSec'>, cfg: Pick<StrategyConfig, 'loserExits'>): boolean {
+  const L = cfg.loserExits;
+  if (!L || !((L.noEntryShare ?? 0) > 0)) return false;
+  if (v.windowSec !== undefined && v.tauSec <= L.noEntryShare * v.windowSec) return true;
+  return L.window && inLoserWindow(v, L);
+}
+
+/** FV_ENTRY_GATE (cfg.loserExits): an entry's side, bought at `cost` a contract with `fee`, must leave the spot fair value of
+ *  that side at least the margin above cost plus fee. True when the gate is off or no fair value is known. */
+export function fvGatePasses(pFair: number | undefined, side: 'yes' | 'no', cost: number, fee: number, cfg: Pick<StrategyConfig, 'loserExits'>): boolean {
+  const L = cfg.loserExits;
+  if (!L?.gate || pFair === undefined) return true;
+  return (side === 'yes' ? pFair : 1 - pFair) >= cost + fee + L.gateMargin - 1e-9;
+}
+
+/** The fair value gate on a finished plan (after the fill model turns quotes into crosses and paper adds its training trades):
+ *  drops each order that opens or adds to a position at a cost the gate refuses. An order that only reduces the position is
+ *  kept. Returns how many were dropped. */
+/** FNV-1a then murmur3's finalizer onto [0, 1): a reproducible coin for the GATED_STAKE_RANDOM placebo. */
+function unitHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b) >>> 0; h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35) >>> 0; h ^= h >>> 16;
+  return (h >>> 0) / 0x100000000;
+}
+
+export function applyFvGate(plan: StrategyOutput, pFair: number | undefined, position: number, fees: FeeSchedule | undefined, cfg: Pick<StrategyConfig, 'loserExits'>,
+  noEntry = false, maxStakeUsd = 0): number {
+  if (!noEntry && (!cfg.loserExits?.gate || pFair === undefined)) return 0;
+  const before = plan.place.length;
+  const passed: typeof plan.place = [];
+  const seen: typeof plan.place = []; // every opening non-training order the gate judged (the placebo draws from these)
+  const rnd = cfg.loserExits?.gatedStakeRandom ?? 0;
+  const shadow = Boolean(cfg.loserExits?.gatedStakeShadow) || rnd > 0;
+  plan.place = plan.place.filter((p) => {
+    if (p.reduceOnly || p.purpose === 'exit' || !(p.count > 0)) return true;
+    const buysYes = p.side === 'bid';
+    if (buysYes ? position < 0 && p.count <= -position + 1e-9 : position > 0 && p.count <= position + 1e-9) return true;
+    const cost = buysYes ? p.price : round(1 - p.price, 4);
+    if (noEntry) {
+      plan.notes.push(`loser window: dropped ${p.purpose} ${buysYes ? 'YES' : 'NO'} at ${cost.toFixed(2)} (no new risk this close to the end)`);
+      return false;
+    }
+    if (!cfg.loserExits?.gate || pFair === undefined) return true;
+    const ok = fvGatePasses(pFair, buysYes ? 'yes' : 'no', cost, orderFee(p.count, cost, !p.postOnly, fees) / p.count, cfg);
+    if (!ok) plan.notes.push(`fair value gate: ${shadow ? 'would drop (shadow, kept)' : 'dropped'} ${p.purpose} ${buysYes ? 'YES' : 'NO'} at ${cost.toFixed(2)} (fair value ${(buysYes ? pFair : 1 - pFair).toFixed(3)} under cost + fee + ${cfg.loserExits!.gateMargin})`);
+    // Training trades keep their minimum size: they exist to learn from, not to carry the gate's edge.
+    const isTrain = p.why.startsWith('train:');
+    if (ok && !isTrain) passed.push(p);
+    if (!isTrain) seen.push(p);
+    return ok || shadow;
+  });
+  if (rnd > 0) {
+    const seed = cfg.loserExits?.gatedStakeSeed ?? 0;
+    passed.length = 0;
+    for (const p of seen) if (unitHash(`${seed}|${p.side}|${p.price}|${p.purpose}|${p.why}`) < rnd) passed.push(p);
+  }
+  // GATED_STAKE_MULT: the orders that passed the gate carry its edge, so they are sized up (paper and replays).
+  const k = cfg.loserExits?.gatedStakeMult ?? 1;
+  const clamp = (cfg.loserExits?.gatedStakeCap ?? 'clamp') === 'clamp' && maxStakeUsd > 0;
+  if (k > 1) for (const p of passed) {
+    let n = Math.floor(p.count * k + 1e-9);
+    if (clamp) {
+      const cost = p.side === 'bid' ? p.price : round(1 - p.price, 4);
+      while (n > p.count && n * cost + orderFee(n, cost, !p.postOnly, fees) > maxStakeUsd + 1e-9) n--;
+    }
+    if (n > p.count) { plan.notes.push(`gated stake x${k}${clamp ? ` (to $${maxStakeUsd})` : ''}: ${p.purpose} ${p.count} -> ${n} contracts`); p.count = n; }
+  }
+  return before - plan.place.length;
+}
+
+export function decide(v: MarketView, cfg: StrategyConfig, opts: {
+  exits?: boolean; blockReductions?: boolean; entries?: boolean; profitMandate?: number; pacerUsd?: number; pacerGroup?: { sumUsd: number; members: number };
+  /** PACER_FLOOR: the position's armed floor in dollars (QuotaFloors); why a rule outside this function rides a winner (the
+   *  hunt trailing its stop, from the engine); set sell prices of rules outside it (side terms, e.g. the TA's take-profit). */
+  pacerFloor?: number; pacerHigher?: string; higherTargets?: Array<{ why: string; sidePrice: number }>;
+} = {}): StrategyOutput {
   const out: StrategyOutput = { place: [], cancel: [], notes: [] };
   const tick = v.tickSize;
   const bid = v.bestBid;
@@ -149,13 +349,28 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boole
     }
     return kellySize({ q: side === 'yes' ? q : 1 - q, cost, feePerContract: fee, bankroll: v.bankroll, kellyFraction: cfg.kellyFraction, maxRiskUsd: v.maxOrderRiskUsd, maxContracts });
   };
-  // Sizing decides whether a trade is worth taking; a paper order size then decides how much (PAPER_ORDER_FRAC / PAPER_ORDER_USD).
+  // Sizing decides whether a trade is worth taking; a paper order size (PAPER_ORDER_FRAC / PAPER_ORDER_USD) or the order
+  // band (ORDER_USD_MIN / ORDER_USD_MAX: the sized stake clamped into it) then decides how much.
   const size = (side: 'yes' | 'no', cost: number, fee: number, maxContracts: number) => {
     const k = sized(side, cost, fee, maxContracts);
-    if (!(v.fixedOrderUsd! > 0) || !(k.contracts > 0)) return k;
-    const usd = Math.min(v.fixedOrderUsd!, v.maxOrderRiskUsd, v.newRiskRoomUsd ?? Infinity);
-    const contracts = floorCount(Math.min(maxContracts, usd / (cost + fee)));
-    return contracts > 0 ? { ...k, contracts, riskUsd: contracts * (cost + fee) } : k;
+    if (!(k.contracts > 0)) return k;
+    const room = Math.min(v.maxOrderRiskUsd, v.newRiskRoomUsd ?? Infinity);
+    if (v.fixedOrderUsd! > 0) {
+      const usd = Math.min(v.fixedOrderUsd!, room);
+      const contracts = floorCount(Math.min(maxContracts, usd / (cost + fee)));
+      return contracts > 0 ? { ...k, contracts, riskUsd: contracts * (cost + fee) } : k;
+    }
+    const b = v.orderBandUsd;
+    if (!b) return k;
+    const unit = cost + fee;
+    const inBand = (usd: number) => {
+      const contracts = floorCount(Math.min(maxContracts, usd / unit));
+      return contracts > 0 && contracts * unit >= b.min - 0.01 ? { ...k, contracts, riskUsd: contracts * unit } : undefined;
+    };
+    // Never below the band. When the risk room cannot fit even the minimum, the minimum still goes out, for the risk
+    // gateway to refuse with its reason (free cash on the market's shard, the window or total cap); when the contract
+    // cap cannot fit it, nothing.
+    return inBand(Math.min(Math.max(k.contracts * unit, b.min), b.max, room)) ?? inBand(b.min) ?? { ...k, contracts: 0, riskUsd: 0 };
   };
   // A maker quote sizing wants (contracts > 0) is at least minQuoteContracts, as far as the per-order caps and the risk
   // room left allow; never smaller than sizing asked for.
@@ -167,8 +382,14 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boole
   };
 
   // ---- Exits (risk-reducing, allowed in every style) ------------------------
-  const exitWindow = v.exitWindowOpen !== false;
-  if (!exitWindow && v.position !== 0) out.notes.push('final minute: riding to settlement');
+  // The final minute and the last share of the window (settleShare) hold a position in profit after fees; under the loser exits
+  // (cfg.loserExits, Steven's rule of Oct 31) one that is not is sold, and the loser cut sells one the index has turned on.
+  const riding = ridesToSettlement(v);
+  const cut = loserExit(v, cfg);
+  if (cut) out.place.push(cut);
+  const exitWindow = v.exitWindowOpen !== false && !riding && !cut;
+  if (v.exitWindowOpen === false && v.position !== 0 && !cut) out.notes.push('final minute: riding to settlement');
+  if (riding) out.notes.push('final share of the window, in profit after fees: riding to settlement');
   const exits = opts.exits !== false && exitWindow;
   const margin = cfg.exitMargin ?? cfg.takerBuffer;
   // Take-profit: what selling the held side at its touch banks a contract over its cost, net of every fee. The floor is
@@ -189,41 +410,115 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boole
       out.notes.push(`take-profit benched${label}: +${net.toFixed(3)} now, best +${best.toFixed(3)}, not sold (${v.takeProfitBenched})`);
       return { sell: false, protective: false, why: '' };
     }
+    // The level's fair-value confirm: a winner the coin says is worth more than the bid pays (net of the exit fee) plus the
+    // level's margin is not sold here; it rides on (to the model exit, the quota's floor, the end window).
+    const fvM = levelMargin(cfg.takeProfitFvMargins ?? DEFAULT_TP_FV_MARGINS, v.takeProfitLevel ?? 0);
+    const fvSide = v.pFair === undefined ? undefined : label === ' NO' ? 1 - v.pFair : v.pFair;
+    if (fvM !== undefined && fvSide !== undefined && fvSide > sidePx - exitFee + fvM + 1e-9) {
+      out.notes.push(`take-profit held by fair value${label} (level ${v.takeProfitLevel}): +${net.toFixed(3)} now, the coin's value ${fvSide.toFixed(3)} > net bid ${(sidePx - exitFee).toFixed(3)} + ${fvM}`);
+      return { sell: false, protective: false, why: '', riding: true };
+    }
     const sellBelow = Math.max(best * (1 - giveBack), floor + tick);
     const lastTick = net <= floor + tick + 1e-9;
     const sell = net >= floor - 1e-9 && (giveBack <= 0 || (net < best - 1e-9 && (lastTick || net <= best * (1 - giveBack) + 1e-9)));
     if (!sell) {
       out.notes.push(`take-profit armed${label}: +${net.toFixed(3)} now, best +${best.toFixed(3)}; sells at or below +${Math.min(sellBelow, best).toFixed(3)}, never under the +${floor.toFixed(3)} floor`);
-      return { sell: false, protective: false, why: '' };
+      return { sell: false, protective: false, why: '', riding: true };
     }
     return { sell, protective: lastTick && giveBack > 0, why: `take-profit${label}: +${net.toFixed(3)} a contract net of fees (best +${best.toFixed(3)}, floor +${floor.toFixed(3)})` };
   };
-  if (exits && v.position > 0 && bid) {
+  // Steven's profit rules (Oct 29). The quota snipe (PACER, bot/risk/quotaPacer.ts): outside the last share of the window
+  // (settleShare) a position whose whole net profit after fees, sold at the bid, covers opts.pacerUsd (what the rest of the
+  // clock hour owes, clamped) is sold at the bid whatever the exit policy, the hunt or the model says; a thin bid takes what it
+  // can and the rest is judged again next tick. Inside that final share a position in profit rides to settlement. The profit
+  // mandate (PROFIT_MANDATE, off by default) sells any position whose side bid net of the exit fee clears its entry cost (fee
+  // in) by opts.profitMandate; the caller leaves it undefined while a hunt trails its stop (the stop is that position's profit
+  // take, bot/engine.ts) and when it is off. A take-profit that sells the same tick keeps its name (its bench scores it).
+  // opts.pacerGroup (Steven's addition, Oct 30): this position is in profit after fees and, with the other positions in profit,
+  // covers the target, so it is sold at the bid whatever its own net profit (bot/risk/quotaPacer.ts SnipeGroup).
+  const mandateMin = opts.profitMandate;
+  const cost = v.entrySidePrice !== undefined ? v.entrySidePrice + (v.entryFeePerContract ?? 0) : undefined;
+  const mandate = mandateMin !== undefined && cost !== undefined && exitWindow;
+  const pacerUsd = opts.pacerUsd;
+  const sniping = pacerUsd !== undefined && cost !== undefined && exitWindow;
+  // PACER_FLOOR (Steven, Oct 31): while another exit rule aims higher than the quota, the quota is the position's stop, not its
+  // sale (bot/risk/quotaPacer.ts quotaCall): its profit covering the need arms a floor there, and the position is sold once the
+  // profit falls below it. A set sell price above the bid and below the payout aims higher in either mode: the model exit's
+  // (the value plus the margin and the fee), a resting sell (the curve's, the hunt's wall ask), a rule's target passed in. In
+  // riding mode so does a rule riding a winner: the take-profit trailing its best, the hunt trailing its stop (from the
+  // engine). A position held only for settlement does not aim higher (Steven's rule of Oct 29: the quota is taken then).
+  const floorMode = cfg.pacer?.floor ?? 'off';
+  const aimsHigher = (sideBid: number, modelPx: number, tp: { riding?: boolean } | undefined): string | undefined => {
+    if (floorMode === 'off') return undefined;
+    const set = (px: number | undefined) => px !== undefined && px > sideBid + 1e-9 && px <= 1 - tick + 1e-9;
+    if (exits && set(modelPx)) return `the model's sell price ${modelPx.toFixed(2)}`;
+    if (set(v.curveRestSidePrice)) return `the curve's sell resting at ${v.curveRestSidePrice!.toFixed(2)}`;
+    if (set(v.huntRestSidePrice)) return `the hunt's sell resting at the wall ${v.huntRestSidePrice!.toFixed(2)}`;
+    for (const t of opts.higherTargets ?? []) if (set(t.sidePrice)) return `${t.why} at ${t.sidePrice.toFixed(2)}`;
+    if (floorMode !== 'riding' && floorMode !== 'trail') return undefined;
+    if (exits && tp?.riding) return 'the take-profit riding its best';
+    return opts.pacerHigher ?? (floorMode === 'trail' ? 'the quota trailing its best' : undefined);
+  };
+  const quota = (netUsd: number, sideBid: number, modelPx: number, tp: { sell: boolean; riding?: boolean } | undefined, selling: boolean) => {
+    const higher = sniping && !selling ? aimsHigher(sideBid, modelPx, tp) : undefined;
+    const cushion = (cfg.pacer?.floorTicks ?? 0) * tick * Math.abs(v.position);
+    let call = sniping ? quotaCall(netUsd, pacerUsd, opts.pacerFloor, higher, floorMode === 'trail' ? cfg.pacer?.trailKeep : undefined, cushion) : {};
+    if (call.sell === 'floor' && cfg.pacer?.floorConfirm === 'model') {
+      // The model's value of the position: its side at the model's probability (q for YES, 1 - q for NO), after the exit fee.
+      const modelNet = positionNetAtBid(v.position, cost, { price: q }, { price: q }, v.fees);
+      if (modelNet !== undefined && modelNet >= opts.pacerFloor! - cushion - 1e-9) {
+        out.notes.push(`quota floor held: +$${netUsd.toFixed(2)} net at bid ${sideBid.toFixed(2)} is below its $${opts.pacerFloor!.toFixed(2)} floor, but the model values the position at +$${modelNet.toFixed(2)}`);
+        call = {};
+      }
+    }
+    if (call.arm !== undefined) {
+      out.pacerArm = { usd: call.arm, why: higher! };
+      out.notes.push(`quota floor: +$${netUsd.toFixed(2)} net covers the $${call.arm.toFixed(2)} the hour needs; held for ${higher}, sold if the profit falls below its floor`);
+    }
+    return { call, grouped: opts.pacerGroup !== undefined && netUsd > 1e-9 && higher === undefined };
+  };
+  if ((exits || mandate || sniping) && v.position > 0 && bid) {
     const n = Math.min(v.position, bid.size);
     const fee = n > 0 ? orderFee(n, bid.price, true, v.fees) / n : 0;
     const edge = bid.price - q - fee;
-    const tp = n > 0 ? takeProfit(n, bid.price, fee, '') : undefined;
-    if (n > 0 && (edge >= margin || tp?.sell)) {
+    const tp = exits && n > 0 ? takeProfit(n, bid.price, fee, '') : undefined;
+    const pm = mandate && n > 0 && bid.price - fee >= cost! + mandateMin! - 1e-9;
+    const netUsd = sniping ? netProfitAtBid(v) ?? 0 : 0;
+    const { call, grouped } = quota(netUsd, bid.price, q + fee + margin, tp, exits && (edge >= margin || tp?.sell === true));
+    const snipe = sniping && n > 0 && (call.sell !== undefined || grouped);
+    if (n > 0 && ((exits && (edge >= margin || tp?.sell)) || pm || snipe)) {
       out.place.push({ side: 'ask', price: bid.price, count: round(n, 2), timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge,
         ...(tp?.sell && tp.protective ? { protective: true } : {}),
-        why: tp?.sell ? tp.why : `bid ${bid.price} - fee > q ${q.toFixed(3)} + ${margin}` });
+        why: tp?.sell ? tp.why : snipe ? (call.sell === 'floor' ? `quota snipe (floor): ${netUsd < 0 ? '-' : '+'}$${Math.abs(netUsd).toFixed(2)} net on ${v.position} at bid ${bid.price} fell below its $${opts.pacerFloor!.toFixed(2)} floor`
+            : call.sell === 'snipe' ? `quota snipe: +$${netUsd.toFixed(2)} net on ${v.position} at bid ${bid.price} covers the $${pacerUsd!.toFixed(2)} the hour needs`
+            : `quota snipe (group): +$${netUsd.toFixed(2)} net on ${v.position} at bid ${bid.price}, with ${opts.pacerGroup!.members - 1} other position${opts.pacerGroup!.members === 2 ? '' : 's'} in profit (+$${opts.pacerGroup!.sumUsd.toFixed(2)} together) covers the $${pacerUsd!.toFixed(2)} the hour needs`)
+          : exits && edge >= margin ? `bid ${bid.price} - fee > q ${q.toFixed(3)} + ${margin}` : `profit mandate exit: bid ${bid.price} - fee ${fee.toFixed(3)} >= cost ${cost!.toFixed(3)} + ${mandateMin}` });
     }
-  } else if (exits && v.position < 0 && ask) {
+  } else if ((exits || mandate || sniping) && v.position < 0 && ask) {
     const n = Math.min(-v.position, ask.size);
     const noBid = round(1 - ask.price, 4);
     const fee = n > 0 ? orderFee(n, noBid, true, v.fees) / n : 0;
     const edge = q - ask.price - fee;
-    const tp = n > 0 ? takeProfit(n, noBid, fee, ' NO') : undefined;
-    if (n > 0 && (edge >= margin || tp?.sell)) {
+    const tp = exits && n > 0 ? takeProfit(n, noBid, fee, ' NO') : undefined;
+    const pm = mandate && n > 0 && noBid - fee >= cost! + mandateMin! - 1e-9;
+    const netUsd = sniping ? netProfitAtBid(v) ?? 0 : 0;
+    const { call, grouped } = quota(netUsd, noBid, 1 - q + fee + margin, tp, exits && (edge >= margin || tp?.sell === true));
+    const snipe = sniping && n > 0 && (call.sell !== undefined || grouped);
+    if (n > 0 && ((exits && (edge >= margin || tp?.sell)) || pm || snipe)) {
       out.place.push({ side: 'bid', price: ask.price, count: round(n, 2), timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge,
         ...(tp?.sell && tp.protective ? { protective: true } : {}),
-        why: tp?.sell ? tp.why : `NO bid ${noBid.toFixed(2)} - fee > q + ${margin}` });
+        why: tp?.sell ? tp.why : snipe ? (call.sell === 'floor' ? `quota snipe (floor): ${netUsd < 0 ? '-' : '+'}$${Math.abs(netUsd).toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)} fell below its $${opts.pacerFloor!.toFixed(2)} floor`
+            : call.sell === 'snipe' ? `quota snipe: +$${netUsd.toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)} covers the $${pacerUsd!.toFixed(2)} the hour needs`
+            : `quota snipe (group): +$${netUsd.toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)}, with ${opts.pacerGroup!.members - 1} other position${opts.pacerGroup!.members === 2 ? '' : 's'} in profit (+$${opts.pacerGroup!.sumUsd.toFixed(2)} together) covers the $${pacerUsd!.toFixed(2)} the hour needs`)
+          : exits && edge >= margin ? `NO bid ${noBid.toFixed(2)} - fee > q + ${margin}` : `profit mandate exit: NO bid ${noBid.toFixed(2)} - fee ${fee.toFixed(3)} >= cost ${cost!.toFixed(3)} + ${mandateMin}` });
     }
   }
 
   if (opts.entries === false) return out;
 
-  const entriesAllowed = (v.entryWindowOpen ?? true) && v.tauSec >= v.noEntryBeforeCloseSec;
+  const lateNoEntry = loserNoEntry(v, cfg);
+  const entriesAllowed = (v.entryWindowOpen ?? true) && v.tauSec >= v.noEntryBeforeCloseSec && !lateNoEntry;
+  if (lateNoEntry) out.notes.push('loser window: no new risk this close to the end');
   // Ensemble veto: the model's disagreement with the market must exceed its own uncertainty.
   const vetoed = v.pStd !== undefined && v.pMarket !== undefined && cfg.ensembleVetoSigmas > 0 && Math.abs(v.pYes - v.pMarket) < cfg.ensembleVetoSigmas * v.pStd;
   const newRisk = entriesAllowed && !vetoed;
@@ -231,6 +526,14 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boole
   if (!entriesAllowed) out.notes.push('outside entry window');
   if (vetoed) out.notes.push(`ensemble veto: |p - p_mkt| < ${cfg.ensembleVetoSigmas} x ${v.pStd!.toFixed(3)}`);
   if (v.fastMove) out.notes.push('fast index move: quotes pulled');
+  // FV_ENTRY_GATE (cfg.loserExits; the sizing lab, Oct 31): new risk only where the spot fair value of the side bought is at
+  // least its cost with the fee plus the margin (the positions that rode to settlement losing were bad from the start).
+  const gate = (side: 'yes' | 'no', cost: number, n: number, taker: boolean): boolean => {
+    const fee = n > 0 ? orderFee(n, cost, taker, v.fees) / n : 0;
+    if (fvGatePasses(v.pFair, side, cost, fee, cfg)) return true;
+    out.notes.push(`fair value gate: ${side.toUpperCase()} fair value ${(side === 'yes' ? v.pFair! : 1 - v.pFair!).toFixed(3)} < ${cost.toFixed(2)} + fee ${fee.toFixed(3)} + ${cfg.loserExits!.gateMargin}`);
+    return false;
+  };
 
   // ---- Maker quotes -----------------------------------------------------------
   let desiredBid: OrderPlan | undefined;
@@ -248,7 +551,8 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boole
       const fee = orderFee(1, bp, false, v.fees);
       const k = size('yes', bp, fee, v.maxContracts);
       const unwind = Math.max(0, -v.position);
-      const count = round(Math.min(v.maxContracts, quoteSize(k.contracts, bp, fee) + unwind), 2);
+      const fresh = k.contracts > 0 && gate('yes', bp, k.contracts, false) ? k.contracts : 0;
+      const count = round(Math.min(v.maxContracts, quoteSize(fresh, bp, fee) + unwind), 2);
       if (count > 0) desiredBid = { side: 'bid', price: bp, count, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'quote', expirationTime: expiry, edge: q - bp - fee, why: 'maker bid' };
     }
     // YES ask (= NO bid at 1 - ap).
@@ -259,7 +563,8 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boole
       const fee = orderFee(1, noCost, false, v.fees);
       const k = size('no', noCost, fee, v.maxContracts);
       const unwind = Math.max(0, v.position);
-      const count = round(Math.min(v.maxContracts, quoteSize(k.contracts, noCost, fee) + unwind), 2);
+      const fresh = k.contracts > 0 && gate('no', noCost, k.contracts, false) ? k.contracts : 0;
+      const count = round(Math.min(v.maxContracts, quoteSize(fresh, noCost, fee) + unwind), 2);
       if (count > 0) desiredAsk = { side: 'ask', price: ap, count, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'quote', expirationTime: expiry, edge: (1 - q) - noCost - fee, why: 'maker ask' };
     }
   }
@@ -307,6 +612,23 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boole
     if (v.position > 0) desiredAsk = undefined;
     if (v.position < 0) desiredBid = undefined;
   }
+  // Hunt mode's sell-wall ask (HUNT_WALL_ASK, bot/strategy/exitPolicies.ts): the hunted position's sell rests at the sell
+  // wall's price (joined behind it, post-only, sized to the position) in the held side's quote slot, the one reduction a hunt
+  // allows; pulled like the curve sell when an exit crosses the book this tick, and when the hunt stops asking for it.
+  if (quoting && opts.blockReductions && v.huntRestSidePrice !== undefined && v.position !== 0) {
+    const exiting = out.place.some((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
+    const n = round(Math.abs(v.position), 2);
+    const why = (sidePx: number, no: string) => `confluence ratchet wall ask${no} ${sidePx} (rests behind the sell wall at ${v.huntRestSidePrice!.toFixed(2)})`;
+    if (v.position > 0) {
+      const ap = Math.max(ceilToTick(v.huntRestSidePrice, tick), round(bid!.price + tick, 4));
+      desiredAsk = !exiting && ap < 1 ? { side: 'ask', price: ap, count: n, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'exit', expirationTime: v.closeSec - 1, edge: ap - q, why: why(ap, '') } : undefined;
+      restSide = 'ask';
+    } else {
+      const bp = Math.min(floorToTick(1 - v.huntRestSidePrice, tick), round(ask!.price - tick, 4));
+      desiredBid = !exiting && bp > 0 ? { side: 'bid', price: bp, count: n, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'exit', expirationTime: v.closeSec - 1, edge: q - bp, why: why(round(1 - bp, 4), ' NO') } : undefined;
+      restSide = 'bid';
+    }
+  }
   reconcileQuote(v.restingBid, desiredBid, cfg.requoteThreshold, v.nowSec, out, restSide === 'bid');
   reconcileQuote(v.restingAsk, desiredAsk, cfg.requoteThreshold, v.nowSec, out, restSide === 'ask');
 
@@ -320,7 +642,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boole
       if (k.contracts > 0) {
         const fee = orderFee(k.contracts, ask.price, true, v.fees) / k.contracts;
         const edge = q - ask.price - fee;
-        if (edge >= cfg.takerBuffer + cfg.minEdge) {
+        if (edge >= cfg.takerBuffer + cfg.minEdge && gate('yes', ask.price, k.contracts, true)) {
           out.place.push({ side: 'bid', price: ask.price, count: k.contracts, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge, why: `take YES: q ${q.toFixed(3)} vs ask ${ask.price}` });
         }
       }
@@ -332,7 +654,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: { exits?: boole
       if (k.contracts > 0) {
         const fee = orderFee(k.contracts, noCost, true, v.fees) / k.contracts;
         const edge = (1 - q) - noCost - fee;
-        if (edge >= cfg.takerBuffer + cfg.minEdge) {
+        if (edge >= cfg.takerBuffer + cfg.minEdge && gate('no', noCost, k.contracts, true)) {
           out.place.push({ side: 'ask', price: bid.price, count: k.contracts, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge, why: `take NO: q ${q.toFixed(3)} vs bid ${bid.price}` });
         }
       }

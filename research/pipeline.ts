@@ -66,7 +66,7 @@
 // AUTO_TRAIN_ON_MODEL_CHANGE).
 //
 //   npm run pipeline                         # everything
-//   npm run pipeline -- --only mlp,perps     # steps: history, history_replay, ta_net, ta_net_oos, librarian, cross_graph, rule_book, gp, lead_lag, setups, setup_snn, sweep, snn, vol_model, dataset, mlp, vol, perps, tennis, fill, sizing, playbook, readiness
+//   npm run pipeline -- --only mlp,perps     # steps: history, history_replay, ta_net, ta_net_oos, librarian, cross_graph, rule_book, gp, lead_lag, setups, setup_snn, sweep, snn, vol_model, dataset, mlp, tally_history, vol, perps, tennis, fill, sizing, playbook, readiness
 //   npm run pipeline -- --force-ablation     # re-run the SNN ablations even if not due
 //   npm run pipeline -- --sweep-all          # every step due now (weekly studies, tournaments, ablations, sweeps)
 //   npm run pipeline -- --only ta_net --force-ta-net   # retrain the TA network now
@@ -84,12 +84,12 @@ import { loadConfig, paperEnv, type Config } from '../bot/config';
 import { GO_LIVE_GATES, MetaModel } from '../bot/model/metaModel';
 import { PerpModel } from '../bot/perps/perpSignal';
 import type { SnnCheckpoint } from '../bot/snn/network';
-import { DEFAULT_SNN, domainParams, STAGES, stageFlags, type SnnDomain, type Stage } from '../bot/snn/params';
+import { anchorFor, DEFAULT_SNN, domainParams, STAGES, stageFlags, type SnnDomain, type Stage } from '../bot/snn/params';
 import { FillModel } from '../bot/tca/fillModel';
 import { trainFillMain } from './trainFillModel';
 import { trainVolModelMain, VOL_MODEL_MIN_DAYS } from './trainVolModel';
 import { backtestMain } from './backtest';
-import { buildDatasetMain } from './buildDataset';
+import { buildDatasetMain, readDataset } from './buildDataset';
 import { perpBacktestMain, PERP_RECORDED_MIN_DAYS, PERP_RECORDED_TEST_DAYS } from './perpBacktest';
 import { sessionsMain } from './sessions';
 import { snnAblationMain, type Verdict } from './snnAblation';
@@ -124,7 +124,8 @@ import { trainCrossLead } from './crossLead';
 import { CL_SCHEMA, setCrossLeadPath } from '../bot/ta/crossLead';
 import { setCrossGraphPath, XG_SCHEMA } from '../bot/ta/crossGraph';
 import { LIB_SCHEMA, setLibrarianPath } from '../bot/ta/librarian';
-import { addBatch, annotateTally, judgeBatch, readTally, tallyEvidence } from './goLiveTally';
+import { addBatch, addHistoryBatch, annotateTally, DEPTH_MODEL_FILE, judgeBatch, judgeRows, nextHistoryDays, readQuoteFill, readTally, tallyEvidence, writeHistoryDays } from './goLiveTally';
+import { readDepthModel } from './history/depthSim';
 
 const readLibSchema = (f: string): string | undefined => { try { return (JSON.parse(fs.readFileSync(f, 'utf8')) as { schema?: string }).schema; } catch { return undefined; } };
 import { BINANCE_INDEXES, downloadBinance, downloadBinanceFunding, downloadBinanceOpenInterest, type BinanceMarket } from './history/binanceVision';
@@ -142,7 +143,7 @@ import { capHours, enterDecisionPhase, resetSession, sessionActive, sessionTimeU
 /** Coins with Kalshi crypto contracts: the SNN tournaments' transition penalty reads their regime changes. */
 const SNN_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
 
-export const STEPS = ['history', 'history_replay', 'oracle_cull', 'ta_net', 'ta_net_oos', 'librarian', 'cross_graph', 'cross_lead', 'rule_book', 'gp', 'lead_lag', 'setups', 'setup_snn', 'sweep', 'snn', 'vol_model', 'dataset', 'mlp', 'vol', 'perps', 'tennis', 'fill', 'sizing', 'playbook', 'readiness', 'conditioning'] as const;
+export const STEPS = ['history', 'history_replay', 'oracle_cull', 'ta_net', 'ta_net_oos', 'librarian', 'cross_graph', 'cross_lead', 'rule_book', 'gp', 'lead_lag', 'setups', 'setup_snn', 'sweep', 'snn', 'vol_model', 'dataset', 'mlp', 'tally_history', 'vol', 'perps', 'tennis', 'fill', 'session_risk', 'sizing', 'playbook', 'readiness', 'conditioning'] as const;
 export type Step = typeof STEPS[number];
 
 /** Per replayable network. */
@@ -382,7 +383,7 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
   const sessionMin = Number(process.env.TRAIN_SESSION_MIN) || 0;
   resetSession();
   const DATA_STEPS = ['history-seed', 'history', 'history-index', 'history_replay', 'conditioning'];
-  const DECISION_STEPS = ['vol_model', 'dataset', 'mlp', 'vol', 'perps', 'tennis', 'fill', 'sizing', 'playbook', 'readiness'];
+  const DECISION_STEPS = ['vol_model', 'dataset', 'mlp', 'tally_history', 'vol', 'perps', 'tennis', 'fill', 'session_risk', 'sizing', 'playbook', 'readiness'];
   const run = async (step: string, fn: () => Promise<unknown>, skip?: string) => {
     const t0 = Date.now();
     if (stopRequested) {
@@ -880,7 +881,7 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
     const pbt = await run('snn-tennis-pbt', async () => {
       let r;
       try {
-        r = await runSnnPbt({ recordings: replayDir, domain: 'tennis', stage, days: tennisDays.slice(-A.snnPbtDays), initDays: A.snnPbtInitDays, evalDays: 1, stateDir: path.join(work, 'snnpbt', 'tennis'), maxRounds: A.snnPbtMaxRounds || undefined, restartEvery: A.snnPbtRestartEvery, fresh: ds.pbtStage !== undefined && ds.pbtStage !== stage, population: A.snnPbtPopulation, workers: workerCount(), genetic, tennis: cfg.tennis, log, stop: sessionTimeUp });
+        r = await runSnnPbt({ recordings: replayDir, domain: 'tennis', stage, days: tennisDays.slice(-A.snnPbtDays), initDays: A.snnPbtInitDays, evalDays: 1, anchorMid: anchorFor(cfg.snn.anchorMid, 'tennis'), stateDir: path.join(work, 'snnpbt', 'tennis'), maxRounds: A.snnPbtMaxRounds || undefined, restartEvery: A.snnPbtRestartEvery, fresh: ds.pbtStage !== undefined && ds.pbtStage !== stage, population: A.snnPbtPopulation, workers: workerCount(), genetic, tennis: cfg.tennis, log, stop: sessionTimeUp });
       } catch (e) {
         if (/need at least/.test((e as Error).message)) throw new SkipStep((e as Error).message);
         throw e;
@@ -897,7 +898,7 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
     const trainNeeded = Boolean(pbt?.complete) || !fs.existsSync(file) || ds.stage !== stage;
     await run('snn-tennis-train', async () => {
       const span = tennisDays.slice(-A.snnTrainDays);
-      const params = withSnnHyper(domainParams('tennis', { ...DEFAULT_SNN, flags: { ...stageFlags(stage), ...cfg.snn.deferred }, seed: cfg.snn.seed, maxColumns: cfg.snn.maxColumns, readoutEta: cfg.snn.readoutEta }), hyper);
+      const params = withSnnHyper(domainParams('tennis', { ...DEFAULT_SNN, flags: { ...stageFlags(stage), ...cfg.snn.deferred }, ...(anchorFor(cfg.snn.anchorMid, 'tennis') ? { anchorMid: true } : {}), seed: cfg.snn.seed, maxColumns: cfg.snn.maxColumns, readoutEta: cfg.snn.readoutEta }), hyper);
       const r = await replaySnn(replayDir, { params, domain: 'tennis', tennis: cfg.tennis, skipModel: true, from: dayMs(span[0]), to: dayMs(nextDay(span[span.length - 1])), fromDay: span[0], toDay: span[span.length - 1] });
       const matches = r.net.tennisTemplate?.n ?? 0;
       if (!matches) throw new SkipStep('no tennis match settled in the replayed days');
@@ -980,7 +981,7 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
         let r;
         try {
           const transitions = pbtDays.length ? regimeTransitions(T.historyDir, SNN_COINS.filter((a) => storedAssets(T.historyDir).includes(a)), Date.parse(`${pbtDays[0]}T00:00:00Z`), Date.parse(`${pbtDays[pbtDays.length - 1]}T00:00:00Z`) + 86_400_000, log) : [];
-          r = await runSnnPbt({ recordings: src, domain, stage, days: pbtDays, allDays: srcDays, layout, generation: gen?.id, transitions, initDays: A.snnPbtInitDays, evalDays: 1, model: domain === 'crypto' && mlpPath() ? MetaModel.load(mlpPath()!) : undefined, modelPath: domain === 'crypto' ? mlpPath() : undefined, stateDir: path.join(work, 'snnpbt', domain), maxRounds: A.snnPbtMaxRounds || undefined, restartEvery: A.snnPbtRestartEvery, fresh: ds.pbtStage !== undefined && ds.pbtStage !== stage, population: A.snnPbtPopulation, workers: workerCount(), genetic, log, stop: sessionTimeUp });
+          r = await runSnnPbt({ recordings: src, domain, stage, days: pbtDays, allDays: srcDays, layout, generation: gen?.id, transitions, initDays: A.snnPbtInitDays, evalDays: 1, model: domain === 'crypto' && mlpPath() ? MetaModel.load(mlpPath()!) : undefined, modelPath: domain === 'crypto' ? mlpPath() : undefined, anchorMid: anchorFor(cfg.snn.anchorMid, domain), stateDir: path.join(work, 'snnpbt', domain), maxRounds: A.snnPbtMaxRounds || undefined, restartEvery: A.snnPbtRestartEvery, fresh: ds.pbtStage !== undefined && ds.pbtStage !== stage, population: A.snnPbtPopulation, workers: workerCount(), genetic, log, stop: sessionTimeUp });
           ds.turnAt = Date.now();
         } catch (e) {
           if (/need at least/.test((e as Error).message)) throw new SkipStep((e as Error).message);
@@ -1015,7 +1016,7 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
           recordings: src, stage, domain, out: cand, model: domain === 'crypto' ? mlpPath() : undefined, hyper: fromWalk ? JSON.stringify(fromWalk.hyper) : hyper ? JSON.stringify(hyper) : undefined, 'skip-model': src === rec ? undefined : 'true',
           from: trainSpan[0], to: evalSpan[0] ?? undefined,
           'eval-from': evalSpan[0], 'eval-to': evalSpan.length ? nextDay(evalSpan[evalSpan.length - 1]) : undefined,
-          init: fromWalk ? eliteFile : undefined, incumbent: fromWalk && src === rec ? file : undefined,
+          init: fromWalk ? eliteFile : undefined, incumbent: fromWalk && src === rec ? file : undefined, anchor: anchorFor(cfg.snn.anchorMid, domain) ? 'true' : undefined,
         });
         if (walkElite) ds.walkThrough = walkElite.through;
         ds.walkFellShort = undefined;
@@ -1053,7 +1054,7 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
       // Prequential backfill, day by day from the last backfilled day (a fresh online network of the
       // promoted stage: it was never fitted offline on these days, so no output saw its own label).
       await run(`snn-${domain}-backfill`, async () => {
-        const params = withSnnHyper(domainParams(domain, { ...DEFAULT_SNN, flags: { ...stageFlags(stage), ...cfg.snn.deferred }, seed: cfg.snn.seed, maxColumns: cfg.snn.maxColumns, readoutEta: cfg.snn.readoutEta }), hyper);
+        const params = withSnnHyper(domainParams(domain, { ...DEFAULT_SNN, flags: { ...stageFlags(stage), ...cfg.snn.deferred }, ...(anchorFor(cfg.snn.anchorMid, domain) ? { anchorMid: true } : {}), seed: cfg.snn.seed, maxColumns: cfg.snn.maxColumns, readoutEta: cfg.snn.readoutEta }), hyper);
         const pv = versionHash(params);
         if (ds.backfillStage !== stage || (ds.backfillVersion && ds.backfillVersion !== pv)) { for (const f of fs.readdirSync(fill)) fs.rmSync(path.join(fill, f), { force: true }); ds.backfillThrough = undefined; ds.backfillStage = stage; }
         ds.backfillVersion = pv;
@@ -1134,7 +1135,7 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
       if (batch) writeAtomic(tallyFile, JSON.stringify(tallied));
       const ev = tallyEvidence(tallied);
       if (ev) annotateTally(cand, ev);
-      const goLive = ev ? { days: ev.days, windows: ev.nWindows, windowsTraded: ev.windowsTraded, added: batch?.windows.length ?? 0 } : null;
+      const goLive = ev ? { days: ev.days, windows: ev.nWindows, windowsTraded: ev.windowsTraded, added: batch?.windows.length ?? 0, recorded: ev.recorded ?? null, history: ev.history ?? null } : null;
       if (ev) log(`mlp: go-live tally ${ev.nWindows} of ${GO_LIVE_GATES.minWindows} judged windows, ${ev.windowsTraded} of ${GO_LIVE_GATES.minWindowsTraded} traded, over ${ev.days} day(s) (${batch?.windows.length ?? 0} added)`);
       const m = MetaModel.load(cand);
       const passed = Boolean(m.params.validation?.passed);
@@ -1150,6 +1151,52 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
   }
 
   // ---- 6. intraday volatility profile: the replay's last 180 days of 1-minute history when it exists ----
+  // ---- 5b. the go-live tally's unseen history: the live decision model plays the history replay's days before the
+  // recordings as if live, a few at a time while TALLY_HISTORY_MIN lasts (research/goLiveTally.ts); each chunk is kept
+  // as soon as it is judged, and the gates are judged again on the whole tally ----
+  if (want('tally_history')) {
+    const tallyFile = path.join(A.dir, 'mlp_tally.json');
+    await run('tally_history', async () => {
+      const live = mlpPath();
+      if (!live) throw new SkipStep('no decision model yet');
+      const kDays = T.historyReplay ? replayKalshiDays(replayDir) : [];
+      if (!kDays.length) throw new SkipStep('no history replay day with Kalshi\'s real contracts yet');
+      const judge = MetaModel.load(live);
+      const histMin = Number(process.env.TALLY_HISTORY_MIN ?? 30), chunk = Math.max(1, Number(process.env.TALLY_HISTORY_CHUNK) || 5);
+      const fill = readQuoteFill(A.dir);
+      const t0 = Date.now();
+      let tallied = readTally(tallyFile), played = 0, added = 0, traded = 0;
+      while (Date.now() - t0 < histMin * 60_000) {
+        const next = nextHistoryDays(kDays, days[0], tallied, chunk);
+        if (!next.length) break;
+        const src = path.join(work, 'tally-history');
+        const hData = path.join(work, 'tally-history.jsonl');
+        try {
+          await writeHistoryDays(replayDir, next, src, fill, fill.how === 'depth' ? readDepthModel(path.join(A.dir, DEPTH_MODEL_FILE)) : undefined);
+          await buildDatasetMain(argsOf({ recordings: src, out: hData, every: 60, 'vol-model': volModelArg }));
+          const { rows } = await readDataset(hData);
+          const bt = rows.length ? await backtestMain(argsOf({
+            recordings: src, model: live, exits: cfg.strategy.exitPolicy, 'vol-model': volModelArg, 'fill-model': fillModelArg,
+            'hunt-grid': cfg.strategy.huntTargetMargin, 'hunt-confluence': cfg.strategy.huntMinConfluence,
+            'ratchet-fill-grid': cfg.strategy.ratchetMinFillRatio, 'ratchet-age': cfg.strategy.ratchetMinWallAgeSec, 'ratchet-slip': cfg.strategy.ratchetSlippageTicks,
+          }), false) : undefined;
+          const b = bt ? judgeBatch(judgeRows(judge, rows), bt.windows, { after: 0, model: judge.params.version, trials: judge.params.validation?.variantsTried ?? 1, at: new Date(now).toISOString() }) : undefined;
+          tallied = addHistoryBatch(tallied, tallied.history?.edge ?? days[0], next, b);
+          writeAtomic(tallyFile, JSON.stringify(tallied));
+          played += next.length; added += b?.windows.length ?? 0; traded += b?.trades.filter((x) => x[2] > 0).length ?? 0;
+          log(`tally_history: ${next[0]}..${next[next.length - 1]} played as live (${fill.how} quotes): ${b?.windows.length ?? 0} window(s), ${b?.trades.filter((x) => x[2] > 0).length ?? 0} traded`);
+        } finally {
+          fs.rmSync(src, { recursive: true, force: true });
+          fs.rmSync(hData, { force: true });
+        }
+      }
+      if (!played) throw new SkipStep(tallied.history ? `every history day before ${tallied.history.edge} already played` : 'no recorded day yet to start from');
+      const ev = tallyEvidence(tallied);
+      const gate = ev ? annotateTally(live, ev) : undefined;
+      return { days: played, windows: added, traded, quotes: fill.how, goLive: ev ? { days: ev.days, windows: ev.nWindows, windowsTraded: ev.windowsTraded, recorded: ev.recorded ?? null, history: ev.history ?? null } : null, passed: gate?.passed ?? false, liveBlockers: gate?.blockers ?? [] };
+    });
+  }
+
   if (want('vol')) {
     const recent = T.historyReplay ? replayDays().slice(-180) : [];
     await run('vol', ifChanged('vol', async () => {
@@ -1269,6 +1316,18 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
       const m = FillModel.load(promoted('fill'));
       return { promoted: true, active: Boolean(m?.validated), validation: p.validation };
     });
+  }
+
+  // ---- 8b. session risk: per-session backtest of the current model and settings on the recordings; sessions that
+  // reliably lose shrink, ones that reliably earn grow at half weight (research/sessions.ts). The bot applies it
+  // under any hand-set SESSION_RISK (SESSION_RISK_AUTO). ----
+  if (want('session_risk')) {
+    await run('session_risk', ifChanged('session_risk', async () => {
+      const out = promoted('session_risk');
+      await sessionsMain(argsOf({ recordings: rec, out: path.join(work, 'vol_profile.session-risk.json'), model: fs.existsSync(promoted('mlp')) ? promoted('mlp') : cfg.paramsPath, 'risk-out': out }));
+      const f = JSON.parse(fs.readFileSync(out, 'utf8')) as { profile: Record<string, unknown> };
+      return { promoted: true, sessions: Object.keys(f.profile) };
+    }), tooFew);
   }
 
   // ---- 9. sizing tuner: replays the bot's settled entries under a grid of sizing policies (PROPOSAL) ----

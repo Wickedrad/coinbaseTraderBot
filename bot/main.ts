@@ -19,6 +19,7 @@ import { KalshiWs } from './kalshi/ws';
 import { MarketData, Recorder } from './marketdata/marketData';
 import { MetaModel } from './model/metaModel';
 import { loadVolProfile, type VolProfile } from './model/volSeasonality';
+import { loadSessionRiskFile } from './model/sessionRisk';
 import { loadCalendar } from './model/calendar';
 import { ModelHealth } from './model/modelHealth';
 import { AccuracyGate } from './strategy/accuracyGate';
@@ -40,9 +41,10 @@ import { capRecordings, compressOldRecordings, freeBytesAt, makeRecordingsRoom, 
 import { DEFAULT_LANES } from './setups/lanes';
 import { PaperPerpExchange } from './perps/paperPerp';
 import { KalshiPerpsRest, type PerpGateway } from './perps/perpRest';
+import { PerpFeeTierCheck, type FeeTierStatus } from './perps/feeTier';
 import { BalanceMonitor, type MonitorState } from './vault/balanceMonitor';
 import { Vault } from './vault/vault';
-import { readJson, setQuarantineAll } from './util/persist';
+import { readJson, setQuarantineAll, writeJsonAtomic } from './util/persist';
 import { championEnv, championPath, markApplied, readChampion, watchChampion } from './strategy/conditioningOverlay';
 import { Playbook, setPlaybook } from './strategy/playbook';
 import { Compensator, setCompensator } from './strategy/compensator';
@@ -74,6 +76,7 @@ import { SinuousExitGate } from './strategy/sinuousExit';
 import { TakeProfitBench } from './strategy/takeProfitBench';
 import { LiveLines } from './strategy/liveLine';
 import { ComponentTrials, TRIAL_LABEL } from './strategy/componentTrials';
+import { Scoreboard } from './health/scoreboard';
 import { DEFAULT_STREAK, StreakScaler } from './risk/streakScaler';
 
 const log = logger('main');
@@ -115,9 +118,10 @@ async function main(): Promise<void> {
   if (cfg.alertWebhookUrl) sinks.push(new WebhookSink(cfg.alertWebhookUrl));
   const alerter = new Alerter(sinks, audit);
   // Probation (VALIDATION_GATES=monitor): unvalidated models trade, and a book whose results are unacceptable is benched.
-  const probationBooks = new Probation(cfg.probation, path.join(cfg.bookDir, 'probation.json'), (book, reason) => {
-    audit.write('probation', { event: 'benched', book, reason });
-    alerter.notify('warn', `probation-${book}`, `Probation: ${book} benched (its unvalidated models stop trading until the next model or a reset): ${reason}`);
+  // Graded, never benched (Oct 31): a rejected window asks the book's unvalidated models for more, one level at a time.
+  const probationBooks = new Probation(cfg.probation, path.join(cfg.bookDir, 'probation.json'), (book, reason, move) => {
+    audit.write('probation', { event: move.event, book, reason, level: move.level, from: move.from });
+    alerter.notify('info', `probation-${book}`, `Probation: ${book} ${move.event} (level ${move.from} -> ${move.level}; its unvalidated models keep trading, asked for more at each level): ${reason}`);
   });
   setProbation(probationBooks);
   if (cfg.probation.mode === 'monitor') log.info('validation gates: monitor (unvalidated models trade on probation)', { ...cfg.probation });
@@ -129,19 +133,19 @@ async function main(): Promise<void> {
   // (DATA_DIR and DATA_DIR/live); both started over once on Oct 24, when crosses began to be scored on their fills.
   const curveParams = cfg.sinuousExit;
   const curveBench = { ...cfg.probation, t: cfg.sinuousExit.benchT ?? cfg.probation.t, minTrades: cfg.sinuousExit.benchMinExits ?? cfg.probation.minTrades };
-  const curveExit = curveParams.mode === 'off' ? undefined : new SinuousExitGate(curveParams, curveBench, path.join(cfg.bookDir, 'curve-exit.json'), (e) => {
+  const curveExit = curveParams.mode === 'off' ? undefined : new SinuousExitGate(curveParams, curveBench, path.join(cfg.dataDir, 'curve-exit.json'), (e) => {
     audit.write('curve_exit', e);
-    if (e.event === 'benched') alerter.notify('warn', 'curve-exit', curveParams.mode === 'rest' || curveParams.mode === 'cross'
-      ? `Exit curve's cross benched (it stops selling on the cross until a reset${curveParams.mode === 'rest' ? '; the resting sells go on' : ''}): ${String(e.reason)}`
-      : `Exit curve benched (profit exits go out without waiting for it until a reset): ${String(e.reason)}`);
+    // Never benched (Oct 31): a rejected window makes the cross one level stricter (bot/strategy/levelLadder.ts).
+    if (e.event === 'stricter' || e.event === 'looser') alerter.notify('info', 'curve-exit', `Exit curve's cross ${e.event} (level ${String(e.from)} -> ${String(e.level)}): ${String(e.reason)}`);
   }, Date.now(), 'cross-fills-2026-10-24');
   // Take-profit bench (bot/strategy/takeProfitBench.ts; the owner, Oct 24: the take-profit goes on the exit curve's
   // scoreboard and bench): each crypto take-profit sale against holding to settlement, benched on the curve's rule
   // (TAKE_PROFIT_BENCH=false: scored only). Each book keeps its own scoreboard (DATA_DIR and DATA_DIR/live).
-  const takeProfitBench = new TakeProfitBench(cfg.strategy.takeProfitBench, curveBench, path.join(cfg.bookDir, 'take-profit-bench.json'), (e) => {
+  const takeProfitBench = new TakeProfitBench(cfg.strategy.takeProfitBench, curveBench, path.join(cfg.dataDir, 'take-profit-bench.json'), (e) => {
     audit.write('take_profit_bench', e);
-    if (e.event === 'benched') alerter.notify('warn', 'take-profit-bench', `Take-profit benched (winners ride to the model exit, the ratchet stop or settlement until a reset): ${String(e.reason)}`);
-  });
+    // Never benched (Oct 31): a rejected window makes the take-profit one level stricter (its fair-value confirm).
+    if (e.event === 'stricter' || e.event === 'looser') alerter.notify('info', 'take-profit-bench', `Take-profit ${e.event} (level ${String(e.from)} -> ${String(e.level)}): ${String(e.reason)}`);
+  }, Date.now(), { pinned: cfg.strategy.takeProfitLevel, max: cfg.strategy.takeProfitLevelMax });
   // The live line (bot/strategy/liveLine.ts): each coin's settlement index as a curve, shared by its contracts; the cross
   // watches it (SINUOUS_CROSS_SOURCE=line) and the depth monitor shows each held position's reading.
   const liveLines = curveExit ? new LiveLines(cfg.sinuousExit.line) : undefined;
@@ -149,13 +153,16 @@ async function main(): Promise<void> {
   // they perform well in the test allow them to function for paper trading"): each scored against the price without it
   // on every settled crypto contract; one that tests significantly better goes into paper's prices, never live's
   // (bot/strategy/componentTrials.ts). Each book keeps its own scorecards (DATA_DIR and DATA_DIR/live).
-  const trials = cfg.trials.enabled ? new ComponentTrials(cfg.trials, path.join(cfg.bookDir, 'component_trials.json'), (name, to, why) => {
+  const trials = cfg.trials.enabled ? new ComponentTrials(cfg.trials, path.join(cfg.dataDir, 'component_trials.json'), (name, to, why) => {
     audit.write('trial', { event: to, trial: name, why, appliesIn: 'paper' });
     alerter.notify('info', `trial-${name}`, `Trial: the ${TRIAL_LABEL[name]} is ${to === 'on' ? 'now ON in paper' : to === 'off' ? 'OFF in paper' : 'testing'}: ${why}`);
   }) : undefined;
+  // The scoreboard: every price against the Kalshi market on every settled crypto contract, paper and live alike
+  // (bot/health/scoreboard.ts). Each book keeps its own.
+  const scoreboard = cfg.scoreboard.enabled ? new Scoreboard(cfg.scoreboard, path.join(cfg.dataDir, 'scoreboard.json')) : undefined;
   // Entry curve (SINUOUS_ENTRY, bot/strategy/sinuousEntry.ts): monitor scores maker entries by the book's curve at the
   // fill; gate also holds back quotes the curve is running against.
-  const curveEntry = cfg.sinuousEntry.mode === 'off' ? undefined : new SinuousEntryGate(cfg.sinuousEntry, path.join(cfg.bookDir, 'curve-entry.json'));
+  const curveEntry = cfg.sinuousEntry.mode === 'off' ? undefined : new SinuousEntryGate(cfg.sinuousEntry, path.join(cfg.dataDir, 'curve-entry.json'));
 
   // Model: frozen, versioned, validated offline. Identity (pure fair value) if no file. The
   // automated pipeline's promoted copies (AUTO_TRAIN_DIR) win over params/ and are hot-swapped.
@@ -321,7 +328,7 @@ async function main(): Promise<void> {
   const control = new RunControl(path.join(cfg.dataDir, 'control.json'));
   // Kill-switch override (paper and live): loss brakes de-risk instead of halting.
   const trainingOverride = () => control.killOverride;
-  const perpsStreak = new StreakScaler(DEFAULT_STREAK, path.join(cfg.bookDir, 'streak_perps.json'));
+  const perpsStreak = new StreakScaler(DEFAULT_STREAK, path.join(cfg.dataDir, 'streak_perps.json'));
   const perpsBreakEven = new BreakEven(path.join(cfg.bookDir, 'perps_break_even.json'));
   // Probation's loss limit follows each account's size (PROBATION_MAX_LOSS_PCT of its break-even, at most
   // PROBATION_MAX_LOSS_USD); a book already past it is benched now rather than at its next result.
@@ -331,7 +338,7 @@ async function main(): Promise<void> {
   const modelHealth = new ModelHealth({ minWindows: cfg.strategy.modelHealthMinWindows }, path.join(cfg.dataDir, 'model_health.json'));
   const taHealth = new ModelHealth({ minWindows: 1e9 }, path.join(cfg.dataDir, 'ta_health.json'));
   // Bot vs market per time-to-close bucket (each book its own scorecard); only paper blocks entries on it.
-  const accuracyGate = new AccuracyGate(cfg.strategy.accuracyGate, path.join(cfg.bookDir, 'accuracy_gate.json'));
+  const accuracyGate = new AccuracyGate(cfg.strategy.accuracyGate, path.join(cfg.dataDir, 'accuracy_gate.json'));
   // TA conviction for the perps (setup trader): features + the TA network's raw view, cached per asset per minute.
   const convCache = new Map<string, { ts: number; f: Record<string, number>; v: TaNetView | undefined; rb?: { score: number; n: number }; gp?: { exposure: number } }>();
   const conviction = (asset: string, dir: number, now: number) => {
@@ -343,9 +350,9 @@ async function main(): Promise<void> {
       v = taNetView(asset, candles, now);
       // The rule book at the setups' holding horizon (a day), for the coin's character.
       const rb = cfg.strategy.ruleBook ? activeRuleBook()?.read(candles?.snapshot(now, marketContext()?.macro()), 24, marketContext()?.character(asset)?.cls) : undefined;
-      // The coin's evolved formula (validated only in live mode).
+      // The coin's evolved formula: validated, or on probation (the same rule in paper and live).
       const g = cfg.strategy.gp ? activeGpSignals()?.read(asset, (a) => md.features.candles.get(a)?.bars['1h']) : undefined;
-      const gp = g && (g.validated || (g.speaks && cfg.mode !== 'live') || gatePasses('setups', false)) ? g : undefined;
+      const gp = g && (g.validated || gatePasses('setups', false)) ? g : undefined;
       c = { ts: now, f, v, rb, gp };
       convCache.set(asset, c);
     }
@@ -363,6 +370,7 @@ async function main(): Promise<void> {
   let hedger: PerpHedger | undefined;
   let perpTrader: PerpTrader | undefined;
   let directionalTrader: DirectionalTrader | undefined;
+  let perpFeeTier: PerpFeeTierCheck | undefined;
   const P = cfg.perps;
   const perpsWanted = P.hedge !== 'off' || P.trading !== 'off';
   if (perpsWanted && !P.feed) log.warn('perp hedging/trading needs PERPS_FEED=true; perps disabled');
@@ -370,10 +378,12 @@ async function main(): Promise<void> {
     const hub = md.features.perps;
     const tickerAsset = (t: string) => [...hub.byAsset.entries()].find(([, s]) => s.latest?.ticker === t)?.[0];
     let perpGateway: PerpGateway;
+    let signedPerps: KalshiPerpsRest | undefined;
     if (P.hedge === 'live' || P.trading === 'live') {
       const live = new KalshiPerpsRest(P.restUrl, KalshiSigner.fromFile(P.keyId!, P.privateKeyPath!), fetch, P.subaccount);
       if (!(await live.enabled().catch(() => false))) log.warn('GET /margin/enabled says margin trading is not enabled for this account yet (rolling out member by member); perp orders will be rejected');
       perpGateway = live;
+      signedPerps = live;
     } else {
       const sim = new PaperPerpExchange(hub, tickerAsset, { makerBps: P.makerFeeBps, takerBps: P.takerFeeBps }, path.join(cfg.dataDir, 'paper_perps.json'), Date.now, P.paperBalanceUsd);
       md.on('perp', () => sim.step());
@@ -464,7 +474,7 @@ async function main(): Promise<void> {
           horizonMin: P.horizonMin, entryEdgeBps: P.entryEdgeBps, exitEdgeBps: P.exitEdgeBps, kellyFraction: P.kellyFraction, maxLeverage: P.maxLeverage,
           maxNotionalUsd: P.maxTradeNotionalUsd, maxTotalNotionalUsd: P.maxTotalNotionalUsd, stopAtrMult: P.stopAtrMult, minStopBps: P.minStopBps, maxHoldMin: P.maxHoldMin,
           dailyLossFrac: P.dailyLossFrac, cooldownMin: P.cooldownMin, pilotMaxNotionalUsd: P.pilotMaxNotionalUsd, pilotMaxLeverage: P.pilotMaxLeverage, priorIc: P.priorIc,
-          makerBps: P.makerFeeBps, requireValidation: P.requireValidation, minEquityUsd: P.minEquityUsd, liqBuffer: P.liqBuffer, maintMargin: P.maintMargin,
+          makerBps: P.makerFeeBps, takerBps: P.takerFeeBps, requireValidation: P.requireValidation, minEquityUsd: P.minEquityUsd, liqBuffer: P.liqBuffer, maintMargin: P.maintMargin,
         },
         hub, gateway: perpGateway, model: perpModel, audit, trainingOverride,
         sources: (asset) => ({ index: md.index.get(asset), spot: md.spot.get(asset), bars: md.features.bars.get(asset), candles: md.features.candles.get(asset), usdtd: md.usdtd, btcd: md.btcd, perp: hub.get(asset), snn: engineRef?.snnContext(asset, undefined, 'perps') }),
@@ -473,6 +483,51 @@ async function main(): Promise<void> {
     }
     kill.bindCancelAll(async (reason) => { await oms.cancelAll(reason); await hedger!.cancelAll(reason); });
     log.info('perps enabled', { hedge: P.hedge, trading: P.trading, gateway: perpGateway.name });
+    // Perps fee tier check (bot/perps/feeTier.ts; Steven, Nov 5 2026): this account's real perps fee rates against the
+    // fees the bot charges (PERP_TAKER_FEE_BPS / PERP_MAKER_FEE_BPS: paper perps, the setup and perp traders' costs).
+    // Signed GETs only, so it runs in paper too when a key is configured; it reports and alerts, it never changes a fee.
+    if (P.feeTierCheck) {
+      const feeLog = logger('perp-fees');
+      if (!signedPerps && P.keyId && P.privateKeyPath) {
+        try { signedPerps = new KalshiPerpsRest(P.restUrl, KalshiSigner.fromFile(P.keyId, P.privateKeyPath), fetch, P.subaccount); }
+        catch (e) { feeLog.warn(`perps fee tier check off: the key at ${P.privateKeyPath} could not be read (${(e as Error).message})`); }
+      }
+      if (!signedPerps) { if (!P.keyId || !P.privateKeyPath) feeLog.info('perps fee tier check off: no perps key (KALSHI_PERPS_KEY_ID or KALSHI_KEY_ID with its private key)'); }
+      else {
+        const check = new PerpFeeTierCheck(signedPerps, {
+          makerBps: P.makerFeeBps, takerBps: P.takerFeeBps,
+          tickers: () => [...hub.byAsset.values()].map((st) => st.latest?.ticker).filter((t): t is string => !!t),
+        });
+        perpFeeTier = check;
+        // An info alert on the first read and whenever the rates change; each mismatch warns once per UTC day. The alert
+        // state and the last read are kept in data/perp_fee_tier.json, so a restart (every deploy) does not re-alert.
+        const stateFile = path.join(cfg.dataDir, 'perp_fee_tier.json');
+        const saved = readJson<{ rates?: unknown; day?: unknown; warned?: unknown; last?: FeeTierStatus }>(stateFile) ?? {};
+        let lastRates = typeof saved.rates === 'string' ? saved.rates : '', warnedDay = typeof saved.day === 'string' ? saved.day : '';
+        const warned = new Set<string>(Array.isArray(saved.warned) ? saved.warned.filter((m): m is string => typeof m === 'string') : []);
+        check.seed(saved.last);
+        const runCheck = async () => {
+          const r = await check.run();
+          if (!r.status) { feeLog.warn('perps fee tier check failed (the fees the bot charges stay)', { error: r.error }); return; }
+          const st = r.status, day = new Date(st.at).toISOString().slice(0, 10);
+          audit.write('perp_fee_tier', st);
+          feeLog.info(`perps fees: ${st.note}`, { mismatches: st.mismatches.length });
+          const rates = JSON.stringify(st.rates.map((x) => [x.makerBps, x.takerBps]));
+          if (rates !== lastRates) { alerter.notify('info', 'perp-fee-tier', `Perps fee check: ${st.note}`); lastRates = rates; }
+          if (day !== warnedDay) { warned.clear(); warnedDay = day; }
+          st.mismatches.forEach((m, i) => {
+            const k = st.mismatchKeys[i] ?? m;
+            if (warned.has(k)) return;
+            warned.add(k);
+            alerter.notify('warn', `perp-fee-tier-${day}-${k}`, `Perps fee check: ${m}`);
+          });
+          try { writeJsonAtomic(stateFile, { rates: lastRates, day: warnedDay, warned: [...warned], last: st }); }
+          catch (e) { feeLog.warn('perps fee tier alert state not saved', { error: String((e as Error)?.message ?? e) }); }
+        };
+        setTimeout(() => void runCheck(), 60_000).unref();
+        setInterval(() => void runCheck(), P.feeTierHours * 3_600_000).unref();
+      }
+    }
   }
   // Cortex-like SNN: shadow by default; in blend mode alpha is earned (<= 0.25) by out-of-sample Brier.
   // Three isolated SNNs (crypto contracts, perps, tennis): each its own worker, model and checkpoints.
@@ -540,8 +595,16 @@ async function main(): Promise<void> {
   // The exchange's own status and maintenance schedule gate new entries (exits stay allowed).
   const exchangeStatus = new ExchangeStatusMonitor(rest);
   exchangeStatus.start();
-  const engine: Engine = new Engine({ kalshiCheck, control, exchangeStatus, cfg, audit, alerter, md, gateway, oms, risk, kill, recon, model, volProfile, vault, balanceMonitor, balanceMonitorPath, tca, equityGuard, modelHealth, taHealth, accuracyGate, calendar, hedger, perpTrader: directionalTrader, clock, tennisScores, tennisFair, volModel, fillModel, fillLogDir: path.join(cfg.dataDir, 'fills'), snn, snnBlenderPath: path.join(cfg.snn.checkpointDir, 'blender.json'), curveExit, takeProfitBench, curveEntry, liveLines, trials });
+  const engine: Engine = new Engine({ kalshiCheck, control, exchangeStatus, cfg, audit, alerter, md, gateway, oms, risk, kill, recon, model, volProfile, vault, balanceMonitor, balanceMonitorPath, tca, equityGuard, modelHealth, taHealth, accuracyGate, calendar, hedger, perpTrader: directionalTrader, clock, tennisScores, tennisFair, volModel, fillModel, fillLogDir: path.join(cfg.dataDir, 'fills'), snn, snnBlenderPath: path.join(cfg.snn.checkpointDir, 'blender.json'), curveExit, takeProfitBench, curveEntry, liveLines, trials, scoreboard });
+  // The pipeline's session risk profile (session_risk.json), under SESSION_RISK; autotrain hot-swaps new ones.
+  const sr = loadSessionRiskFile(modelPaths.session_risk);
+  if (sr) { engine.setSessionRiskAuto(sr.profile); log.info(`session risk ${sr.version}${cfg.strategy.sessionRiskAuto ? '' : ' loaded, not applied (SESSION_RISK_AUTO off)'}`, { sessions: Object.keys(sr.profile) }); }
   engineRef = engine;
+  // Module ledger once an hour (and 5 minutes after start) in the audit log, for the daily module report
+  // (deploy/module_report.py): which parts were on, shadow, off or benched, and what flagged them.
+  const writeLedger = () => { try { audit.write('modules', { rows: engine.moduleLedger() }); } catch (e) { log.warn('module ledger failed', { error: String(e) }); } };
+  setTimeout(writeLedger, 300_000).unref();
+  setInterval(writeLedger, 3_600_000).unref();
   const autoTrain = new AutoTrainer({ cfg, engine, audit, alerter, perpTrader });
   autoTrain.start();
   // Paper training override: automatic kill trips de-risk instead of halting; exhausted pools are refilled.
@@ -591,7 +654,7 @@ async function main(): Promise<void> {
   // The dashboard comes up first (it shows the engine warming up); loading every market takes a minute or
   // more on a small server.
   training.start();
-  const app = createApi({ kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
+  const app = createApi({ perpFeeTier, kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
   const server = app.listen(cfg.port, cfg.host, () => log.info(`operator API on http://${cfg.host}:${cfg.port} (${cfg.dashboardPassword ? 'password required' : 'no login'})`));
 
   md.start();

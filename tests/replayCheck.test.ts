@@ -15,17 +15,24 @@ import { writeSyntheticRecordings } from '../research/synthetic';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'replay-check-test-'));
 
+// The loser rules (FV_ENTRY_GATE, LOSER_CUT, LOSER_WINDOW_CUT; on by default) off: the synthetic market sits near fair value,
+// so the 6c gate would refuse most entries, and these tests pin down other mechanics.
+const NO_LOSER_RULES = { FV_ENTRY_GATE: 'false', LOSER_CUT: 'false', LOSER_WINDOW_CUT: 'false' };
+
 test('backtest paper options: orders sized from the bankroll share, gate and bench wired in', async () => {
   const dir = path.join(tmp(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 12, marketNoise: 0.06 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', ...NO_LOSER_RULES });
   const rule = { ...cfg.probation, t: 2, minTrades: 30 };
   const small = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', paper: { orderFrac: 0.02, orderUsd: 0 }, accuracyGate: cfg.strategy.accuracyGate, takeProfitBench: { enforce: true, rule } });
   const big = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', paper: { orderFrac: 0.2, orderUsd: 0 }, accuracyGate: cfg.strategy.accuracyGate, takeProfitBench: { enforce: true, rule } });
   assert.ok(small.paper && big.paper);
   assert.ok(Number.isFinite(small.pnl) && Number.isFinite(big.pnl));
-  // A larger share of the bankroll an order trades more contracts (or the same when nothing traded).
-  assert.ok(big.contracts >= small.contracts);
+  // A larger share of the bankroll an order buys more contracts (or the same when nothing traded). The exits that follow
+  // depend on the path (how much of the position is still held, when its profit covers the hour), so only entries compare.
+  const bought = (r: typeof big) => (r.byPurpose?.quote?.contracts ?? 0) + (r.byPurpose?.entry?.contracts ?? 0);
+  assert.ok(bought(big) >= bought(small), `${bought(big)} < ${bought(small)}`);
+  assert.ok(bought(small) > 0, 'it traded');
   // The gate starts with an empty scorecard: it cannot block before it has scored enough markets.
   assert.equal(small.paper.accuracyBlocks, 0);
   // The engine's loss-aware size: a quarter at worst, never zero (a drawdown does not stop the replay trading).
@@ -266,23 +273,24 @@ test('engine models: the TA network and the component trials\' verdicts as the b
   } finally { setTaNet(undefined); setTaNetEnsemble(undefined); }
 });
 
-test('backtest paper options: the paper bot\'s training trades and exploration entries', async () => {
+test('backtest: the bot\'s training trades (paper and live alike) and paper\'s exploration entries', async () => {
   const dir = path.join(tmp(), 'rec');
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
   const paper = { orderFrac: 0.1, orderUsd: 0 };
   const run = (env: Record<string, string>, opts: object = { paper }) => {
-    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', ...env });
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', ...NO_LOSER_RULES, ...env });
     return runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', ...opts });
   };
-  const on = await run({ PAPER_TRAINING_TRADES_PER_HOUR: '120', PAPER_EXPLORE: 'false' });
+  const on = await run({ TRAINING_TRADES_PER_HOUR: '120', PAPER_EXPLORE: 'false' });
   assert.ok((on.paper?.trainTrades ?? 0) > 0, 'training trades when nothing else enters');
   assert.ok((on.paper?.trainTrades ?? 0) <= 120 * Math.ceil(on.days * 24), 'within the hourly budget');
   assert.equal(on.paper?.exploreEntries, 0);
-  const off = await run({ PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' });
+  const off = await run({ TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' });
   assert.equal(off.paper?.trainTrades, 0);
-  const notPaper = await run({ PAPER_TRAINING_TRADES_PER_HOUR: '120' }, {});
-  assert.equal(notPaper.paper?.trainTrades, 0, 'only with the paper options');
-  assert.ok((on.paper?.extraSent ?? 0) > 0, 'training trades reach the exchange');
+  const notPaper = await run({ TRAINING_TRADES_PER_HOUR: '120', PAPER_EXPLORE: 'true', PAPER_EXPLORE_RATE: '1' }, {});
+  assert.ok((notPaper.paper?.trainTrades ?? 0) > 0, 'training trades without the paper options too (paper and live alike since Oct 31)');
+  assert.equal(notPaper.paper?.exploreEntries, 0, 'exploration only with the paper options');
+  assert.ok((on.paper?.extraSent ?? 0) > 0, `training trades reach the exchange: ${JSON.stringify(on.paper?.extraRejected)}`);
   assert.ok(!Object.keys(on.paper?.extraRejected ?? {}).some((k) => k.startsWith('no fee-net edge')), 'training trades need no edge, as in the engine');
 });
 
@@ -305,7 +313,8 @@ test('replay check: the take-profit bench and the accuracy gate wound back to th
   // The backtester starts from such a scoreboard: a benched one sells nothing at take-profit from the first moment on.
   const dir = path.join(tmp(), 'rec');
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
+  // The quota snipe (on by default) and the profit mandate would sell the winners before the take-profit arms: off, so the bench is what sells.
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PROFIT_MANDATE: 'false', PACER: 'false' });
   const rule = { minTrades: 1000, t: 99, maxLossUsd: 1e9, window: 50 };
   const stateFile = path.join(tmp(), 'take-profit-bench.json');
   fs.writeFileSync(stateFile, JSON.stringify({ results: [-1], since: 0, benched: { at: 0, reason: 'seeded' }, sales: [] }));
@@ -318,10 +327,11 @@ test('replay check: the take-profit bench and the accuracy gate wound back to th
   assert.ok(Math.abs(byMarket.reduce((a, x) => a + x.usd, 0) - (fresh.paper?.takeProfitNetUsd ?? 0)) < 1e-6);
   assert.ok(Math.abs(byMarket.reduce((a, x) => a + x.contracts, 0) - (fresh.paper?.takeProfitContracts ?? 0)) < 1e-6, 'every contract sold is scored once its market settles');
   assert.equal(fresh.paper?.takeProfitBenchedAt, undefined);
+  // A bench seeded from before the ladder (Oct 31: never benched) comes back as level 1: it still sells, with the fair-value confirm.
   const seeded = await run({ stateFile });
-  assert.equal(seeded.paper?.takeProfitBenchedAt, 0);
-  assert.equal(seeded.paper?.takeProfitSales, 0);
-  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')).benched, { at: 0, reason: 'seeded' });
+  assert.equal(seeded.paper?.takeProfitBenchedAt, undefined);
+  assert.ok((seeded.paper?.takeProfitSales ?? 0) <= (fresh.paper?.takeProfitSales ?? 0), 'level 1 asks more of each sale');
+  assert.equal(JSON.parse(fs.readFileSync(stateFile, 'utf8')).level, 1);
 
   // Paper's bench through the stretch: benched at the start or not, then its benches and resets in it.
   const tl = benchTimeline([{ t: from - 9, event: 'benched', reason: 'early' }, { t: from - 1, event: 'scored', usd: 1 }, { t: from + 1, event: 'reset' }, { t: from + 2, event: 'benched', reason: 'again' }], from, from + 10);
@@ -426,15 +436,15 @@ test('backtest tickPhaseMs: the markets evaluated on the engine\'s 1 s timer, th
   assert.deepEqual(early, plain, 'these recordings have an event every 5 s: each gets a pass either way');
 });
 
-test('the bot\'s validation gates: monitor lets unvalidated models trade unless their book is benched', () => {
+test('the bot\'s validation gates: monitor lets unvalidated models trade, graded by their book\'s probation level (never benched)', () => {
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) });
   try {
-    assert.deepEqual(installProbation(cfg), [], 'no state: nothing benched');
+    assert.deepEqual(installProbation(cfg), [], 'no state: every book at level 0');
     assert.equal(gatePasses('kalshi', false), true);
     const file = path.join(tmp(), 'probation.json');
     fs.writeFileSync(file, JSON.stringify({ kalshi: { results: [-5], since: 0, benched: { at: 1, reason: 'lost' } } }));
-    assert.deepEqual(installProbation(cfg, file), ['kalshi']);
-    assert.equal(gatePasses('kalshi', false), false);
+    assert.deepEqual(installProbation(cfg, file), ['kalshi (level 1)'], 'a bench saved before the ladder: level 1');
+    assert.equal(gatePasses('kalshi', false), true);
     assert.equal(gatePasses('kalshi', true), true);
     assert.equal(fs.readFileSync(file, 'utf8').includes('"benched"'), true, 'the bot\'s file is only read');
     const enforce = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), VALIDATION_GATES: 'enforce' });

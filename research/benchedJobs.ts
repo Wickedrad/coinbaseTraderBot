@@ -1,0 +1,292 @@
+// The benched features over months (thread "Rework benched features to $4.50/h"; Steven, Nov 1: "if historical data is
+// used to iterate it needs to be deep on days and represent multiple market regimes"). The whole bot, as paper runs it,
+// replayed on the Kalshi history days with each reworked feature at its settings: the take-profit's level, the model's
+// skill weight, the exit curve's cross and its inversion (the dip buy), the probation's graded GP vote. A variant is a set of
+// bot.env lines, scored by the production backtester exactly as the random sweep scores a trial (research/randomSweep.ts),
+// with the pool refilled like paper.
+//
+//   node --import tsx research/benchedJobs.ts run    --variant baseline --days data/sweep-days --model data/models/model.json --out research/out/benched-jobs
+//   node --import tsx research/benchedJobs.ts report --days data/sweep-days --out research/out/benched-jobs [--split 2026-09-01] [--block 30]
+//
+// The report prints aggregates only (this repository is public): $ an hour after fees on the days before and after the
+// split, each variant against the baseline day by day with a bootstrap interval, and the same by block of days (one
+// market regime after another), so a variant that wins only in one stretch shows it.
+
+import fs from 'fs';
+import path from 'path';
+import { rng } from './stats';
+import type { TrialResult } from './randomSweep';
+import { recordingFiles } from '../bot/marketdata/recordingFiles';
+
+/** Each variant's bot.env lines on top of the server's settings. The baseline is the branch's defaults: the take-profit's
+ *  level ladder (adaptive), the model's skill weight (adaptive), the probation graded, the cross and the dip buy off. */
+/** One arm of a run: its registry role and family, the arm a placebo stands in for, and its bot.env lines. */
+export interface Arm { name: string; role: 'control' | 'candidate' | 'placebo' | 'neighbour'; family: string; placeboFor?: string; env: Record<string, string> }
+
+/** Arms as text, one per line (or `;`-separated): `<arm> <role> [family=<f>] [placebo_for=<arm>] KEY=VAL ...`. The shared
+ *  HO-1 history harness (Nov 5): any thread passes its own arms through the workflow's `arms` input (env TJ_ARMS). The
+ *  arm named `baseline` is every family's control. */
+export function parseArms(text: string, defaultFamily = 'benched'): Arm[] {
+  const arms: Arm[] = [];
+  for (const raw of text.split(/[\n;]/)) {
+    const line = raw.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const [name, role, ...rest] = line.split(/\s+/);
+    if (!/^[A-Za-z0-9_.-]+$/.test(name ?? '')) throw new Error(`bad arm name in "${line}"`);
+    if (!['control', 'candidate', 'placebo', 'neighbour'].includes(role)) throw new Error(`bad role in "${line}"`);
+    const arm: Arm = { name, role: role as Arm['role'], family: defaultFamily, env: {} };
+    for (const kv of rest) {
+      const i = kv.indexOf('=');
+      if (i <= 0) throw new Error(`bad KEY=VAL "${kv}" in "${line}"`);
+      const k = kv.slice(0, i), v = kv.slice(i + 1);
+      if (k === 'family') arm.family = v;
+      else if (k === 'placebo_for') arm.placeboFor = v;
+      else if (/^[A-Z][A-Z0-9_]*$/.test(k)) arm.env[k] = v;
+      else throw new Error(`bad key ${k} in "${line}"`);
+    }
+    arms.push(arm);
+  }
+  if (!arms.some((x) => x.name === 'baseline')) arms.unshift({ name: 'baseline', role: 'control', family: defaultFamily, env: {} });
+  return arms;
+}
+
+// Round 11 (Nov 5, HO-1): the bot on main e3c83c1 (REPLAY_VERSION 8), no DOGE, H-DEV Apr 18-Jul 31 to choose, H-HOLD
+// Aug 1-Nov 4 scored once in 6 folds of 16 d with regime v1 RV terciles. The tails cap: 0.15 was the best on H-DEV in round 9
+// (+0.46/h before the split; 0.10 +0.41, 0.25 +0.24, 0.35 -0.06), so it is the candidate; skip37 (no entries in a random
+// 37% of markets, its trade cut) is its placebo. The calm cap (round 4, withdrawn on narrow held-out data) is re-run per
+// Steven (22:07 UTC Nov 5) with a matched random drop. Round 10 (skip control, old replay) was cancelled for this.
+export const DEFAULT_ARMS = `
+baseline control
+tails15 candidate family=model-skill-tails MODEL_SKILL_W_TAILS=0.15
+skip37 placebo family=model-skill-tails placebo_for=tails15 RS_SKIP_MARKETS=0.37
+tails10 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.1
+tails12 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.12
+tails20 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.2
+tails15_lat500 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.15 RS_LATENCY_MS=500
+skill_b05 candidate family=model-skill-calm MODEL_SKILL_W_CALM=0.75 MODEL_SKILL_W_CALM_RV=0.36,0.71
+skip05 placebo family=model-skill-calm placebo_for=skill_b05 RS_SKIP_MARKETS=0.05
+`;
+
+export const ARMS: Arm[] = parseArms(process.env.TJ_ARMS?.trim() ? process.env.TJ_ARMS : DEFAULT_ARMS, process.env.TJ_FAMILY || 'benched');
+export const VARIANTS: Record<string, Record<string, string>> = Object.fromEntries(ARMS.map((x) => [x.name, x.env]));
+
+/** Run after the first verdicts: neighbours of the winners, the latency stress, and the other levels and margins. */
+export const LATER: Record<string, Record<string, string>> = {
+  // Round 10 (Nov 5, run 42115946048, cancelled for HO-1 and replay v8):
+  skip20: { RS_SKIP_MARKETS: '0.2' },
+  tails15_t35: { MODEL_SKILL_W_TAILS: '0.15', MODEL_SKILL_TAIL: '0.35' },
+  tails15_tp_l3: { MODEL_SKILL_W_TAILS: '0.15', TP_LEVEL: '3', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+  // Round 9 (Nov 5, run 42064010206):
+  placebo_r9: { RS_TICK_PHASE_MS: '500' },
+  tails10: { MODEL_SKILL_W_TAILS: '0.1' },
+  tails35: { MODEL_SKILL_W_TAILS: '0.35' },
+  tails25_t35: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.35' },
+  tails25_lat500: { MODEL_SKILL_W_TAILS: '0.25', RS_LATENCY_MS: '500' },
+  tp_be_l3: { TP_LEVEL: '3', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+  // Round 8 (Nov 5, run 42003201224 with DOGE, cancelled; 42035983199 without DOGE on the old bot):
+  tails0: { MODEL_SKILL_W_TAILS: '0' },
+  tails25_t20: { MODEL_SKILL_W_TAILS: '0.25', MODEL_SKILL_TAIL: '0.2' },
+  // Round 7 (Nov 5, run 41944890970):
+  // Round 7 (Nov 5): blind test of the sterile sweep's conditions (research/sterileSweep.ts run 41943842003), PRE-REGISTERED
+  // at 01:40 UTC Nov 5 before round 6's real by-condition split was read. Sterile: the dip buy helped in calming markets at
+  // 0.25-1 bp (+11.5 calming vs +0.4 rising; 2 bp -1.0); the tails cap helped only while volatility rose (+5.7 rising,
+  // -15.3 calming). Judged on the held-out half (after the split) with the adversary; neighbours and 500 ms stress included.
+  dip8_calm: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.18,1.41' },
+  dip8_calm_narrow: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.18,0.71' },
+  dip12_calm: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.12', SINUOUS_DIP_CALM_RV: '0.18,1.41' },
+  dip8_calm_lat500: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.18,1.41', RS_LATENCY_MS: '500' },
+  tails50_rising: { MODEL_SKILL_W_TAILS: '0.5', MODEL_SKILL_W_TAILS_RISING: 'true' },
+  tails75_rising: { MODEL_SKILL_W_TAILS: '0.75', MODEL_SKILL_W_TAILS_RISING: 'true' },
+  tails50_rising_lat500: { MODEL_SKILL_W_TAILS: '0.5', MODEL_SKILL_W_TAILS_RISING: 'true', RS_LATENCY_MS: '500' },
+  // Round 6 (Nov 5, run 41939402599):
+  // Round 6 (Nov 5): what are we getting wrong (Steven, Nov 1). Paper Oct 28 - Nov 3: buying the side priced under 30c
+  // against a favourite lost most (15-min NO under 30c: 324 markets, -$211, 26% won; held audit c75809e). The model's
+  // weight against the market is capped while the market is in the tails (MODEL_SKILL_W_TAILS, MODEL_SKILL_TAIL).
+  tails50: { MODEL_SKILL_W_TAILS: '0.5' },
+  tails25: { MODEL_SKILL_W_TAILS: '0.25' },
+  tails75: { MODEL_SKILL_W_TAILS: '0.75' },
+  tails50_t20: { MODEL_SKILL_W_TAILS: '0.5', MODEL_SKILL_TAIL: '0.2' },
+  tails50_lat500: { MODEL_SKILL_W_TAILS: '0.5', RS_LATENCY_MS: '500' },
+  tails50_calm_tp1c: { MODEL_SKILL_W_TAILS: '0.5', MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', TP_LEVEL: '0', PROFIT_TARGET_CENTS: '1', PROFIT_TARGET_PCT: '0' },
+  // Round 5 (Nov 4, run 41850972752):
+  // Round 5 (Nov 4): take-profit. Paper's held-to-settlement audit (Oct 27 - Nov 2, 519 markets ridden, -$821; held-audit.yml
+  // run 41850442635): 199 of 413 losers were in profit after the exit fee at some point (median +6.5c, ~10 min left); closing
+  // at the first break-even after fees would have made +$261, at +2c +$151, and the fair-value confirm made every rule worse
+  // (-$77..-$135: the coin's fair value overrates the side held). So: a break-even floor without the confirm, on 200 days.
+  tp_be: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+  tp_1c: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '1', PROFIT_TARGET_PCT: '0' },
+  tp_be_l1: { TP_LEVEL: '1', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+  tp_be_lat500: { TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0', RS_LATENCY_MS: '500' },
+  // Price/edge candidate carried for the record (round 4: +0.02/h [-0.01, +0.05], 4 of 7 blocks, NOT PROVEN).
+  skill_b05_tp_be: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', TP_LEVEL: '0', PROFIT_TARGET_CENTS: '0.5', PROFIT_TARGET_PCT: '0' },
+  // Round 4 (Nov 4, run 41759673255):
+  // Round 4 (Nov 4), module-first (Steven, Nov 2): the 200-day run (41496168480) found every model-trusting change winning
+  // only in calming markets with hourly vol near 0.5 bp a minute (vol0.5bp|calming: skill 0.75 +77, GP full +86, dip buy
+  // +149) and losing in the neighbouring bands. Each is gated to that band here (0.36-0.71 bp = the 0.5 bp bucket).
+  // The placebo was exactly +0.00 in both deep runs, so it is left out of this round to save runners.
+  skill_b05: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71' },
+  skill_b05_w50: { MODEL_SKILL_W_CALM: '0.5', MODEL_SKILL_W_CALM_RV: '0.36,0.71' },
+  dip8_b05: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.36,0.71' },
+  gp_b05: { PROBATION_GP_CALM_RV: '0.36,0.71' },
+  all_b05: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_CALM_RV: '0.36,0.71', PROBATION_GP_CALM_RV: '0.36,0.71' },
+  // The curve cross at level 3 never sold in the replay (its fair-value margin is 0): level 1 on deep history, by condition.
+  cross_l1: { SINUOUS_CROSS: 'true', SINUOUS_CROSS_LEVEL: '1' },
+  // Adversary stress: orders reach the book 500 ms late, for the baseline and the candidate.
+  skill_b05_lat500: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.36,0.71', RS_LATENCY_MS: '500' },
+  // Round 3 (Nov 2-3, run 41496168480):
+  // The placebo: the same bot deciding on a tick shifted by half a second. Its gap from the baseline is path noise alone;
+  // a variant's gain smaller than that gap is not believed.
+  placebo: { RS_TICK_PHASE_MS: '500' },
+  skill_w75: { MODEL_SKILL_W: '0.75' },
+  tp_l0: { TP_LEVEL: '0' },
+  tp_l1: { TP_LEVEL: '1' },
+  // Nov 2 (dynamics rule): skill_w75 won in calming markets and lost in rising ones on 189 days, so the weight is capped
+  // only while volatility is calming (bot/model/modelHealth.ts calmIn), and in a second arm only in the 0.25-0.5 bp bands
+  // where it won. Its by-condition line must show +0.00 in every rising condition (untouched).
+  skill_calm75: { MODEL_SKILL_W_CALM: '0.75' },
+  skill_calm75_mid: { MODEL_SKILL_W_CALM: '0.75', MODEL_SKILL_W_CALM_RV: '0.18,0.71' },
+  dip8: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08' },
+  cross_l3: { SINUOUS_CROSS: 'true', SINUOUS_CROSS_LEVEL: '3' },
+  gp_full: { PROBATION_GP_MULT: '1' },
+  // The replay keeps no model-health record, so the measured weight is always 1 there: skill_off == baseline (moved here).
+  skill_off: { MODEL_SKILL: 'false' },
+  base_lat500: { RS_LATENCY_MS: '500' },
+  tp_l2: { TP_LEVEL: '2' },
+  skill_w50: { MODEL_SKILL_W: '0.5' },
+  dip12: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.12' },
+  dip8_1: { SINUOUS_DIP_BUY: 'true', SINUOUS_DIP_MARGIN: '0.08', SINUOUS_DIP_MAX: '1', SINUOUS_DIP_COOLDOWN_SEC: '300' },
+  gp_low: { PROBATION_GP_MULT: '0.1' },
+};
+
+function dayList(days: string, out: string): string[] {
+  const listed = fs.existsSync(days) ? recordingFiles(days).map((d) => d.day).sort() : [];
+  if (listed.length) return listed;
+  const seen = new Set<string>();
+  for (const f of fs.existsSync(out) ? fs.readdirSync(out) : []) if (f.endsWith('.json')) for (const d of Object.keys(JSON.parse(fs.readFileSync(path.join(out, f), 'utf8')).byDay ?? {})) seen.add(d);
+  return [...seen].sort();
+}
+
+function arg(k: string, d: string): string { const i = process.argv.indexOf(`--${k}`); return i >= 0 && process.argv[i + 1] && !process.argv[i + 1].startsWith('--') ? process.argv[i + 1] : d; }
+
+const f2 = (x: number) => (x >= 0 ? '+' : '') + x.toFixed(2);
+
+/** Mean of `xs` with a percentile bootstrap interval (days resampled). */
+export function bootMean(xs: number[], draws = 4000, seed = 5): { mean: number; lo: number; hi: number } {
+  if (!xs.length) return { mean: NaN, lo: NaN, hi: NaN };
+  const mean = xs.reduce((a, v) => a + v, 0) / xs.length;
+  const r = rng(seed);
+  const ms: number[] = [];
+  for (let d = 0; d < draws; d++) { let s = 0; for (let i = 0; i < xs.length; i++) s += xs[Math.floor(r() * xs.length)]; ms.push(s / xs.length); }
+  ms.sort((a, b) => a - b);
+  return { mean, lo: ms[Math.floor(draws * 0.025)], hi: ms[Math.floor(draws * 0.975)] };
+}
+
+/** Bootstrap of the mean resampling runs of `len` consecutive days (a regime lasts longer than a day; days are not
+ *  independent), at the two-sided level `alpha`. */
+export function blockBootMean(xs: number[], len = 7, alpha = 0.05, draws = 4000, seed = 9): { mean: number; lo: number; hi: number } {
+  if (!xs.length) return { mean: NaN, lo: NaN, hi: NaN };
+  const mean = xs.reduce((a, v) => a + v, 0) / xs.length;
+  const r = rng(seed), n = xs.length, L = Math.max(1, Math.min(len, n));
+  const ms: number[] = [];
+  for (let d = 0; d < draws; d++) {
+    let s = 0, k = 0;
+    while (k < n) { const st = Math.floor(r() * (n - L + 1)); for (let j = 0; j < L && k < n; j++, k++) s += xs[st + j]; }
+    ms.push(s / n);
+  }
+  ms.sort((a, b) => a - b);
+  return { mean, lo: ms[Math.floor(draws * alpha / 2)], hi: ms[Math.min(draws - 1, Math.floor(draws * (1 - alpha / 2)))] };
+}
+
+/** The adversary's verdict on a variant against the baseline (Steven, Nov 1: try to break whatever creates gains). A gain
+ *  counts as genuine only if it survives all of: the held-out days (after the split), a week-block bootstrap with the
+ *  level corrected for the number of variants tried (Bonferroni), and most blocks of days (regimes) on its side; a
+ *  variant whose gain rests on one block is reported with that block. */
+export function adversary(r: TrialResult, base: TrialResult, all: string[], after: string[], blocks: string[][], tried: number): { verdict: string; line: string } {
+  const diff = (ds: string[]) => ds.map((d) => ((r.byDay[d] ?? 0) - (base.byDay[d] ?? 0)) / 24);
+  const alpha = 0.05 / Math.max(1, tried);
+  const held = blockBootMean(diff(after), 7, alpha);
+  const per = blocks.map((b) => diff(b).reduce((a, v) => a + v, 0) / Math.max(1, b.length));
+  const wins = per.filter((v) => v > 0).length;
+  const total = diff(all).reduce((a, v) => a + v, 0);
+  const best = per.indexOf(Math.max(...per));
+  const withoutBest = per.length > 1 ? (total - per[best] * blocks[best].length) / Math.max(1, all.length - blocks[best].length) : NaN;
+  const genuine = held.lo > 0 && wins * 3 >= per.length * 2 && withoutBest > 0;
+  const hurt = held.hi < 0;
+  return {
+    verdict: genuine ? 'GENUINE' : hurt ? 'LOSES' : 'NOT PROVEN',
+    line: `held out, week blocks, ${(100 * (1 - alpha)).toFixed(1)}% for ${tried} variants: ${f2(held.mean)}/h [${f2(held.lo)}, ${f2(held.hi)}] | wins ${wins} of ${per.length} blocks | without its best block ${f2(withoutBest)}/h`,
+  };
+}
+
+/** $ an hour of a variant on `days` (its day P&L over 24 h), and against the baseline day by day. */
+export function perHour(r: TrialResult, days: string[]): number { return days.length ? days.reduce((a, d) => a + (r.byDay[d] ?? 0), 0) / (days.length * 24) : NaN; }
+export function vsBase(r: TrialResult, base: TrialResult, days: string[]) { return bootMean(days.map((d) => ((r.byDay[d] ?? 0) - (base.byDay[d] ?? 0)) / 24)); }
+
+/** Where a variant wins and loses against the baseline by market condition at entry (randomSweep.regimeKey), so a setting
+ *  that pays in some conditions becomes a dynamic one there (Steven, Nov 1) instead of on or off everywhere. Conditions
+ *  with fewer than `minN` markets in either run are pooled as 'thin'. */
+export function byCondition(r: TrialResult, base: TrialResult, minN = 40): string {
+  if (!r.byRegime || !base.byRegime) return '';
+  const keys = new Set([...Object.keys(r.byRegime), ...Object.keys(base.byRegime)]);
+  const rows: Array<{ k: string; d: number; n: number }> = [];
+  let thin = 0, thinN = 0;
+  for (const k of keys) {
+    const a = r.byRegime[k] ?? { pnl: 0, n: 0 }, b = base.byRegime[k] ?? { pnl: 0, n: 0 };
+    if (Math.min(a.n, b.n) < minN) { thin += a.pnl - b.pnl; thinN += b.n; continue; }
+    rows.push({ k, d: a.pnl - b.pnl, n: b.n });
+  }
+  rows.sort((x, y) => y.d - x.d);
+  const fmt = (x: { k: string; d: number; n: number }) => `${x.k} ${f2(x.d)} (${x.n} mkts)`;
+  return `\n${''.padEnd(10)} by condition ($ vs baseline): ${rows.map(fmt).join(', ')}${thinN ? `, thin ${f2(thin)} (${thinN} mkts)` : ''}`;
+}
+
+async function main(): Promise<void> {
+  const cmd = process.argv[2];
+  const out = arg('out', 'research/out/benched-jobs');
+  const days = arg('days', 'data/sweep-days');
+  if (cmd === 'run') {
+    const name = arg('variant', 'baseline');
+    const env = VARIANTS[name] ?? LATER[name];
+    if (!env) throw new Error(`unknown variant ${name} (${Object.keys(VARIANTS).join(', ')})`);
+    const { evalTrial } = await import('./randomSweep');
+    const t0 = Date.now();
+    const r = await evalTrial(days, arg('model', 'data/models/model.json'), env, 3, 'all', undefined, { refill: true });
+    fs.mkdirSync(out, { recursive: true });
+    fs.writeFileSync(path.join(out, `${name}.json`), JSON.stringify({ name, ...r }));
+    const d = r.diag;
+    console.log(`[benched-jobs] ${name}: ${r.ok ? `P&L ${f2(r.pnl)}, fees ${r.fees.toFixed(2)}, ${r.trades} trades, ${r.contracts} contracts, ${d?.entryEvaluations ?? 0} decisions, ${d?.refills ?? 0} refills ($${(d?.refillUsd ?? 0).toFixed(0)}), ${d?.crossSales ?? 0} cross sales, ${d?.dipBuys ?? 0} dip buys` : `FAILED ${r.error}`} in ${((Date.now() - t0) / 60_000).toFixed(1)} min`);
+    return;
+  }
+  if (cmd === 'report') {
+    const all = dayList(days, out);
+    const split = arg('split', all[Math.floor(all.length * 0.5)] ?? '');
+    const block = Math.max(5, Number(arg('block', '30')) || 30);
+    const before = all.filter((d) => d < split), after = all.filter((d) => d >= split);
+    const blocks: string[][] = [];
+    for (let i = 0; i < all.length; i += block) blocks.push(all.slice(i, i + block));
+    const res = new Map<string, TrialResult & { name: string }>();
+    for (const f of fs.existsSync(out) ? fs.readdirSync(out) : []) if (f.endsWith('.json')) { const j = JSON.parse(fs.readFileSync(path.join(out, f), 'utf8')); res.set(j.name, j); }
+    const span = (d: string[]) => (d.length ? `${d[0]}..${d[d.length - 1]} (${d.length} d)` : 'none');
+    console.log(`days: all ${span(all)} | before split ${span(before)} | after ${span(after)} | blocks of ${block} d: ${blocks.map((b) => `${b[0]}..${b[b.length - 1]}`).join(', ')}`);
+    const base = res.get('baseline');
+    const names = [...res.keys()].sort((a, b) => (a === 'baseline' ? -1 : b === 'baseline' ? 1 : a.localeCompare(b)));
+    for (const name of names) {
+      const r = res.get(name)!;
+      if (!r.ok) { console.log(`${name}: FAILED ${r.error}`); continue; }
+      const d = r.diag;
+      let line = `${name.padEnd(10)} all ${f2(perHour(r, all))}/h | before ${f2(perHour(r, before))}/h | after ${f2(perHour(r, after))}/h | ${r.trades} trades, ${d?.refills ?? 0} refills, ${d?.crossSales ?? 0} cross sales, ${d?.dipBuys ?? 0} dip buys`;
+      if (base?.ok && name !== 'baseline') {
+        const a = vsBase(r, base, all), b = vsBase(r, base, after);
+        const adv = adversary(r, base, all, after, blocks, res.size - 1);
+        line += `\n${''.padEnd(10)} adversary: ${adv.verdict} (${adv.line})`;
+        line += byCondition(r, base);
+        line += `\n${''.padEnd(10)} vs baseline: all ${f2(a.mean)}/h [${f2(a.lo)}, ${f2(a.hi)}] | after split ${f2(b.mean)}/h [${f2(b.lo)}, ${f2(b.hi)}] | by block ${blocks.map((x) => f2(vsBase(r, base, x).mean)).join(' ')}`;
+      } else line += `\n${''.padEnd(10)} by block ${blocks.map((x) => f2(perHour(r, x))).join(' ')}/h; ${all.filter((x) => (r.byDay[x] ?? 0) > 0).length} of ${all.length} days profitable`;
+      console.log(line);
+    }
+    return;
+  }
+  throw new Error('usage: benchedJobs.ts run|report (see the header)');
+}
+
+if (process.argv[1] && import.meta.url?.endsWith(path.basename(process.argv[1]))) main().catch((e) => { console.error((e as Error).stack ?? e); process.exitCode = 1; });

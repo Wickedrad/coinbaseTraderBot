@@ -1,0 +1,5 @@
+{
+  "name": "taker_only",
+  "notes": "Taker entries only. Before the bot's price band, maker entries lost $10.53/h of the $10.31/h total in run 42050769711 (a resting bid fills when the price moves through it: adverse selection).",
+  "entry": {"maker_entries": false}
+}
