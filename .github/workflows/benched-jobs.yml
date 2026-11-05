@@ -17,6 +17,10 @@ on:
         description: 'Arms, one per line or ";"-separated: <arm> <control|candidate|placebo|neighbour> [family=<f>] [placebo_for=<arm>] KEY=VAL ... (empty = research/benchedJobs.ts DEFAULT_ARMS)'
         required: false
         default: ''
+      mode:
+        description: 'full (H-DEV + H-HOLD, scored once) or dev (H-DEV only, Apr 18-Jul 31: for choosing settings; no Aug 1+ numbers anywhere, rows flagged dev-choice)'
+        required: false
+        default: 'full'
       thread:
         description: 'Registry thread name (shard folder registry/shards/<thread>)'
         required: false
@@ -41,7 +45,10 @@ concurrency:
 env:
   # HO-1 (project held-out standard, Nov 5): choose on H-DEV Apr 18-Jul 31, score once on H-HOLD Aug 1-Nov 4 (6 folds).
   TJ_DAYS: ${{ inputs.days || '201' }}
+  TJ_MODE: ${{ inputs.mode || 'full' }}
+  # dev mode ignores the split (the report splits H-DEV at its middle), since nothing after Jul 31 is replayed.
   TJ_SPLIT: ${{ inputs.split || '2026-08-01' }}
+  TJ_DEV_END: '2026-07-31'
   # The shared history harness: any thread's arms (research/benchedJobs.ts parseArms) and its registry thread name.
   TJ_ARMS: ${{ inputs.arms || '' }}
   TJ_THREAD: ${{ inputs.thread || 'benched' }}
@@ -204,6 +211,7 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=12288
         run: |
           node --import tsx research/randomSweep.ts days --replay data/history-replay --out data/sweep-days --days "$TJ_DAYS"
+          if [ "$TJ_MODE" = dev ]; then for f in data/sweep-days/md-*; do d=${f##*/md-}; d=${d%%.*}; [[ "$d" > "$TJ_DEV_END" ]] && rm -f "$f"; done; echo "dev mode: $(ls data/sweep-days | wc -l) H-DEV day(s) up to $TJ_DEV_END"; fi
           if [ -n "$TJ_EXCLUDE_RE" ]; then
             for f in data/sweep-days/*; do
               src=$(readlink -f "$f"); tmp="$src.tmp"
@@ -280,7 +288,8 @@ jobs:
         run: |
           # Without the replay (its caches evicted) the report takes the days the results span (benchedJobs.ts dayList).
           [ -d data/history-replay ] && node --import tsx research/randomSweep.ts days --replay data/history-replay --out data/sweep-days --days "$TJ_DAYS"
-          { node --import tsx research/benchedJobs.ts report --days data/sweep-days --out research/out/benched-jobs $([ -n "$TJ_SPLIT" ] && echo --split "$TJ_SPLIT") 2>&1; } | tee "$RUNNER_TEMP/report.txt" | tail -80
+          if [ "$TJ_MODE" = dev ]; then for f in data/sweep-days/md-*; do d=${f##*/md-}; d=${d%%.*}; [[ "$d" > "$TJ_DEV_END" ]] && rm -f "$f"; done; echo "dev mode: $(ls data/sweep-days | wc -l) H-DEV day(s) up to $TJ_DEV_END"; fi
+          { node --import tsx research/benchedJobs.ts report --days data/sweep-days --out research/out/benched-jobs $([ -n "$TJ_SPLIT" ] && [ "$TJ_MODE" != dev ] && echo --split "$TJ_SPLIT") 2>&1; } | tee "$RUNNER_TEMP/report.txt" | tail -80
       - name: Registry rows to Drive (registry/shards/benched)
         continue-on-error: true
         env:
@@ -300,7 +309,7 @@ jobs:
           rclone copyto "$RUNNER_TEMP/$TJ_THREAD-$RUN.jsonl" "gdrive:kalshi-bot-archive/registry/shards/$TJ_THREAD/$RUN.jsonl"
           echo "registry shard: registry/shards/$TJ_THREAD/$RUN.jsonl"
       - name: HO-1 held-out score (folds and RV terciles, paired vs the baseline)
-        if: always()
+        if: always() && env.TJ_MODE != 'dev'
         continue-on-error: true
         run: |
           { echo; python3 deploy/benched_ho1.py research/out/benched-jobs "$RUNNER_TEMP/labels.csv.gz" "$RUNNER_TEMP/ho1.json"; } 2>&1 | tee -a "$RUNNER_TEMP/report.txt"

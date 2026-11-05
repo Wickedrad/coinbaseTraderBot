@@ -25,6 +25,13 @@ for f in sorted(glob.glob(os.path.join(src, '*.json'))):
         res[r.get('name') or os.path.basename(f)[:-5]] = r
 if 'baseline' not in res:
     sys.exit('no baseline result')
+dev = os.environ.get('TJ_MODE') == 'dev'
+dev_end = os.environ.get('TJ_DEV_END', '2026-07-31')
+if dev:
+    # H-DEV only: nothing after Jul 31 may reach the registry (a trade closing past midnight is dropped too).
+    for r in res.values():
+        r['byDay'] = {d: v for d, v in r['byDay'].items() if d <= dev_end}
+        r.pop('byAssetHour', None)
 days = sorted({d for r in res.values() for d in r['byDay']})
 
 # Regime v1 labels at the top of each hour of H-HOLD: (coin, 'YYYY-MM-DDTHH') -> LOW/MID/HIGH.
@@ -94,6 +101,6 @@ with open(out, 'w') as fh:
         err, fl = reg.validate(row)
         if err:
             bad += 1; print(f"invalid {row['arm']}: {err}", file=sys.stderr); continue
-        if fl: row['flags'] = sorted(set(row.get('flags', []) + fl))
+        if fl or dev: row['flags'] = sorted(set(row.get('flags', []) + fl + (['dev-choice'] if dev else [])))
         fh.write(json.dumps(row) + '\n')
 print(f"registry: {len(rows) - bad} row(s) for run {run} -> {out}" + (f", {bad} invalid" if bad else '') + (f"; terciles from {len(lab)} coin-hours" if lab else '; no tercile labels'))
