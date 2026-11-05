@@ -319,7 +319,13 @@ export function seriesMatches(pattern: string, ticker: string): boolean {
  *  a series is the ticker before its first '-', *SUFFIX matches every series ending in SUFFIX). */
 export function gateCfgFor<C extends Pick<StrategyConfig, 'loserExits'>>(cfg: C, ticker: string): C {
   const L = cfg.loserExits;
-  if (!L?.seriesMargins?.length && !L?.seriesQuoteMargins?.length) return cfg;
+  if (!L) return cfg;
+  // FV_ENTRY_GATE_LONGSHOT_SERIES: the longshot margin only on the listed series.
+  if (L.longshot && L.longshotSeries?.length && !L.longshotSeries.some((p) => seriesMatches(p, ticker))) {
+    const { longshot: _drop, ...rest } = L;
+    return gateCfgFor({ ...cfg, loserExits: rest }, ticker);
+  }
+  if (!L.seriesMargins?.length && !L.seriesQuoteMargins?.length) return cfg;
   // FV_ENTRY_GATE_SERIES_QUOTE_MARGINS: a series' own resting-quote margin (it may lower the global one), then the series
   // margins raise both margins to at least theirs.
   const q = L.seriesQuoteMargins?.find((s) => seriesMatches(s.pattern, ticker));

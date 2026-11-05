@@ -370,3 +370,11 @@ test('FV_ENTRY_GATE_SERIES_QUOTE_MARGINS: a series\' own quote margin may lower 
   assert.equal(btc.gateQuoteMargin, 0.08, 'lowered to 5c, then raised to the series margin 8c'); assert.equal(btc.gateMargin, 0.08);
   assert.equal(gateCfgFor(c, 'KXETH15M-X').loserExits!.gateQuoteMargin, 0.12);
 });
+
+test('FV_ENTRY_GATE_LONGSHOT_SERIES: the longshot margin only on the listed series', () => {
+  const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE_LONGSHOT: '0.25=0.15', FV_ENTRY_GATE_LONGSHOT_SERIES: 'KXETHD,KXSOLD' }).strategy;
+  assert.deepEqual(gateCfgFor(c, 'KXETHD-26NOV0512-T2400').loserExits!.longshot, { below: 0.25, margin: 0.15 });
+  assert.equal(gateCfgFor(c, 'KXBTCD-26NOV0512-T70000').loserExits!.longshot, undefined);
+  assert.ok(!fvGatePasses(0.67, 'no', 0.2, 0.01, gateCfgFor(c, 'KXSOLD-X')));
+  assert.ok(fvGatePasses(0.67, 'no', 0.2, 0.01, gateCfgFor(c, 'KXBTCD-X')));
+});
