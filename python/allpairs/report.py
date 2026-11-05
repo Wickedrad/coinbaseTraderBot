@@ -68,7 +68,11 @@ def gate(arms: dict, ledger: list, champion: dict | None) -> dict:
     shuffled = pl.get('shuffled_per_hour') or []
     rand95 = pl.get('random_per_hour_p95')
     stress = arms.get('stress', {}).get('oos', {}).get('per_hour')
+    folds = base.get('folds', [])
+    suspect = [f for f in folds if (f.get('random_placebo_median') or 0) > 0]
     checks = {
+        # Canary: random entries must lose money after fees and spread; a fold where they win has broken data.
+        'random_entries_lose': not suspect and (pl.get('random_per_hour_median') is None or pl['random_per_hour_median'] <= 0),
         'target': o['per_hour'] >= TARGET,
         'ci_above_zero': o['per_hour_ci95'][0] > 0,
         'dsr': d['dsr'] >= 0.95,
@@ -77,7 +81,8 @@ def gate(arms: dict, ledger: list, champion: dict | None) -> dict:
         'stress_profitable': stress is not None and stress > 0,
         'beats_champion': champion is None or o['per_hour'] > float(champion.get('per_hour', -1e9)),
     }
-    return dict(passed=all(checks.values()), checks=checks, dsr=d, n_trials=n_trials, sr_var=sr_var)
+    return dict(passed=all(checks.values()), checks=checks, dsr=d, n_trials=n_trials, sr_var=sr_var,
+                suspect_folds=[[f['test'][0], f['test'][1], f.get('random_placebo_median')] for f in suspect])
 
 
 def card(arms: dict, g: dict, champion: dict | None, run_url: str = '') -> str:
@@ -123,6 +128,9 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '') -> str:
         L.append('')
         L.append(f'Gate: ' + ', '.join(f'{k} {"✓" if v else "✗"}' for k, v in g['checks'].items()) +
                  f'. Deflated Sharpe {d["dsr"]} (hourly SR {d["sr"]} vs {d["sr0"]} expected max of {d["n_trials"]} trials).')
+    if g.get('suspect_folds'):
+        L.append(f'**DATA SUSPECT**: random entries made money in {len(g["suspect_folds"])} fold(s) ' +
+                 ', '.join(f'{_day(a)}..{_day(b)} ({m:+.2f} $/h)' for a, b, m in g['suspect_folds']) + ': those results are not evidence.')
     if champion:
         L.append(f'Champion: {champion.get("name")} ({champion.get("config_hash")}) at {champion.get("per_hour")} $/h.')
     for title, key in (('By asset', 'by_asset'), ('By entry mode', 'by_mode'), ('By side', 'by_side')):

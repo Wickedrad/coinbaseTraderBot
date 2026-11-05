@@ -69,9 +69,12 @@ jobs:
         env:
           MSG: ${{ github.event.head_commit.message }}
           EVENT: ${{ github.event_name }}
-          ARMS: ${{ inputs.arms || 'base,stress,synth15,synth1h' }}
+          ARMS_IN: ${{ inputs.arms || 'base,stress,synth15,synth1h' }}
         run: |
           set -euo pipefail
+          # A push may name its arms in the commit message: [arms:base,stress]
+          ARMS=$(printf '%s' "$MSG" | sed -nE 's/.*\[arms:([a-z0-9,]+)\].*/\1/p' | head -1)
+          ARMS=${ARMS:-$ARMS_IN}
           if [ "$EVENT" = "workflow_dispatch" ] || printf '%s' "$MSG" | grep -qF '[all-pairs]'; then echo "study=true" >> "$GITHUB_OUTPUT"; else echo "study=false" >> "$GITHUB_OUTPUT"; fi
           if printf '%s' "$MSG" | grep -qF '[all-pairs-diag]'; then echo "diag=true" >> "$GITHUB_OUTPUT"; else echo "diag=false" >> "$GITHUB_OUTPUT"; fi
           rr=$(printf '%s' "$MSG" | sed -nE 's/.*\[all-pairs-report:([0-9]+)\].*/\1/p' | head -1)

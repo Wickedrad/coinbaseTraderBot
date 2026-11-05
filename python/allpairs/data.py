@@ -78,6 +78,7 @@ class Windows:
     real_frac: np.ndarray      # (W,) share of decision minutes with a real (not carried) quote
     synthetic: np.ndarray      # (W,) bool: quotes priced by the synthetic pricer
     tickers: list[str] = field(default_factory=list)
+    crossed: np.ndarray | None = None   # (W,) decision minutes whose recorded quote was crossed or locked
 
     def __len__(self) -> int:
         return len(self.open_ms)
@@ -87,7 +88,8 @@ class Windows:
         g = lambda a: a[idx]
         return Windows(self.n, g(self.asset), self.assets, g(self.open_ms), g(self.strike), g(self.settle), g(self.bid), g(self.ask),
                        g(self.nbid_lo), g(self.nbid_hi), g(self.nask_lo), g(self.nask_hi), g(self.kvol), g(self.real_frac),
-                       g(self.synthetic), [self.tickers[i] for i in np.atleast_1d(idx)] if self.tickers else [])
+                       g(self.synthetic), [self.tickers[i] for i in np.atleast_1d(idx)] if self.tickers else [],
+                       g(self.crossed) if self.crossed is not None else None)
 
     @property
     def day(self) -> np.ndarray:
@@ -102,7 +104,8 @@ class Windows:
         a0 = parts[0]
         c = lambda name: np.concatenate([getattr(p, name) for p in parts])
         return Windows(a0.n, c('asset'), a0.assets, c('open_ms'), c('strike'), c('settle'), c('bid'), c('ask'), c('nbid_lo'), c('nbid_hi'),
-                       c('nask_lo'), c('nask_hi'), c('kvol'), c('real_frac'), c('synthetic'), sum((p.tickers for p in parts), []))
+                       c('nask_lo'), c('nask_hi'), c('kvol'), c('real_frac'), c('synthetic'), sum((p.tickers for p in parts), []),
+                       c('crossed') if all(p.crossed is not None for p in parts) else None)
 
 
 def market_to_rows(m: dict, n: int):
@@ -159,19 +162,34 @@ def market_to_rows(m: dict, n: int):
         a[~(a > 0)] = np.nan
     for a in (ask, alo, ahi):
         a[~(a < 1)] = np.nan
-    return bid, ask, blo, bhi, alo, ahi, np.nan_to_num(kvol), real / n, o
+    # Crossed or locked quotes (bid >= ask) are not a book anyone could trade: Kalshi's historical-tier candles (markets
+    # settled before the API's historical cutoff, Apr-Sep 2026 here) carry them in ~4% of minutes, with bid and ask
+    # closes from different moments. Such a minute has no quote, and a crossed next minute proves no maker fill.
+    with np.errstate(invalid='ignore'):
+        crossed = bid >= ask - 1e-9
+        ncross = np.zeros(n, dtype=bool)
+        for k in range(n):
+            nk = cand.get(k + 1)
+            if nk is not None:
+                b_, a_ = _f(nk.get('bidC')), _f(nk.get('askC'))
+                ncross[k] = np.isfinite(b_) and np.isfinite(a_) and b_ >= a_ - 1e-9
+    bid[crossed] = np.nan; ask[crossed] = np.nan
+    for a in (blo, bhi, alo, ahi):
+        a[ncross] = np.nan
+    n_crossed = int(crossed.sum())
+    return bid, ask, blo, bhi, alo, ahi, np.nan_to_num(kvol), real / n, o, n_crossed
 
 
 def load_kalshi(history_dir: str, assets, n: int = 15, series_fmt: str = 'KX{asset}15M', from_ms: int | None = None,
                 to_ms: int | None = None, log=print) -> Windows:
     assets = allowed_assets(assets)
-    rows = {k: [] for k in ('asset', 'open', 'strike', 'settle', 'bid', 'ask', 'blo', 'bhi', 'alo', 'ahi', 'kvol', 'real', 'ticker')}
+    rows = {k: [] for k in ('asset', 'open', 'strike', 'settle', 'bid', 'ask', 'blo', 'bhi', 'alo', 'ahi', 'kvol', 'real', 'ticker', 'crossed')}
     for ai, a in enumerate(assets):
         d = os.path.join(history_dir, 'kalshi', series_fmt.format(asset=a))
         if not os.path.isdir(d):
             log(f'kalshi: no {d}')
             continue
-        kept = skipped = longer = 0
+        kept = skipped = longer = crossed_w = 0
         for fn in sorted(os.listdir(d)):
             if not fn.endswith('.jsonl'):
                 continue
@@ -191,16 +209,17 @@ def load_kalshi(history_dir: str, assets, n: int = 15, series_fmt: str = 'KX{ass
                     if r is None or not np.isfinite(strike):
                         skipped += 1
                         continue
-                    bid, ask, blo, bhi, alo, ahi, kvol, real, o_eff = r
+                    bid, ask, blo, bhi, alo, ahi, kvol, real, o_eff, n_crossed = r
                     if int(m['closeTime'] - m['openTime']) != n * MIN:
                         longer += 1
                     rows['asset'].append(ai); rows['open'].append(o_eff); rows['strike'].append(strike)
                     rows['settle'].append(1.0 if m['result'] == 'yes' else 0.0)
                     for k_, v in (('bid', bid), ('ask', ask), ('blo', blo), ('bhi', bhi), ('alo', alo), ('ahi', ahi), ('kvol', kvol)):
                         rows[k_].append(v)
-                    rows['real'].append(real); rows['ticker'].append(str(m.get('ticker', '')))
+                    rows['real'].append(real); rows['ticker'].append(str(m.get('ticker', ''))); rows['crossed'].append(n_crossed)
+                    crossed_w += n_crossed > 0
                     kept += 1
-        log(f'kalshi: {a}: {kept} windows ({longer} listed before their period, cut to the last {n} min), {skipped} skipped (void, too short, no candles or no strike)')
+        log(f'kalshi: {a}: {kept} windows ({longer} listed before their period, cut to the last {n} min; {crossed_w} with crossed quotes), {skipped} skipped (void, too short, no candles or no strike)')
     if not rows['open']:
         raise SystemExit('no Kalshi windows loaded')
     W = len(rows['open'])
@@ -208,7 +227,7 @@ def load_kalshi(history_dir: str, assets, n: int = 15, series_fmt: str = 'KX{ass
     order = np.argsort(np.array(rows['open']), kind='stable')
     w = Windows(n, np.array(rows['asset'], dtype=np.int16), assets, np.array(rows['open'], dtype=np.int64), np.array(rows['strike']),
                 np.array(rows['settle']), arr('bid'), arr('ask'), arr('blo'), arr('bhi'), arr('alo'), arr('ahi'), arr('kvol'),
-                np.array(rows['real']), np.zeros(W, dtype=bool), rows['ticker'])
+                np.array(rows['real']), np.zeros(W, dtype=bool), rows['ticker'], np.array(rows['crossed'], dtype=np.int16))
     return w.subset(order)
 
 

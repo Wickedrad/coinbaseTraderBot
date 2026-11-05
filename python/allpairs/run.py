@@ -41,6 +41,8 @@ DEFAULTS = {
     'placebo': {'shuffles': 3, 'random_draws': 50},
     'walk': {'train_days': 90, 'test_days': 14, 'embargo_days': 1, 'inner_days': 14, 'rolling': True},
     'min_real_frac': 0.8,
+    'max_crossed': 0,          # windows with more crossed/locked recorded minutes are dropped (historical-tier candles)
+    'from_day': None,          # 'YYYY-MM-DD': only windows from this day on
     'hourly_offsets': [0.0],
 }
 
@@ -140,7 +142,18 @@ def main(argv=None):
         sfeats[ai] = spot_features(spots[ai])
     real = real.subset(np.nonzero(np.isin(real.asset, list(spots)))[0])
     log(f'real 15m windows: {len(real)} ({np.mean(real.real_frac):.2f} of minutes quoted), {len(np.unique(real.day))} days, assets {real.assets}')
-    real_q = real.subset(np.nonzero(real.real_frac >= cfg['min_real_frac'])[0])
+    keep = real.real_frac >= cfg['min_real_frac']
+    if real.crossed is not None:
+        bad = real.crossed > cfg['max_crossed']
+        months = (real.open_ms // 86_400_000).astype('datetime64[D]').astype('datetime64[M]').astype(str)
+        by_m = {m_: f'{int(bad[months == m_].sum())}/{int((months == m_).sum())}' for m_ in sorted(set(months.tolist()))}
+        log(f'windows dropped for crossed/locked quotes (> {cfg["max_crossed"]} minutes), by month: {by_m}')
+        keep &= ~bad
+    if cfg.get('from_day'):
+        import datetime as _dt
+        d0 = (_dt.date.fromisoformat(cfg['from_day']) - _dt.date(1970, 1, 1)).days
+        keep &= real.day >= d0
+    real_q = real.subset(np.nonzero(keep)[0])
     folds_days = walk_forward(real_q.day, walk['train_days'], walk['test_days'], walk['embargo_days'], walk['rolling'])
     if a.max_folds:
         folds_days = folds_days[-a.max_folds:]

@@ -27,6 +27,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     st = defaultdict(lambda: defaultdict(float))
     examples = []
+    wk = defaultdict(lambda: [0, 0])
+    crossed_ex = []
     for asset in allowed_assets(a.assets.split(',')):
         d = os.path.join(a.history, 'kalshi', f'KX{asset}15M')
         if not os.path.isdir(d):
@@ -35,6 +37,7 @@ def main(argv=None):
             if not fn.endswith('.jsonl'):
                 continue
             month = fn[:7]
+            week = __import__('datetime').date.fromisoformat(fn[:10]).isocalendar()[1]
             for line in open(os.path.join(d, fn)):
                 try:
                     m = json.loads(line)
@@ -59,8 +62,12 @@ def main(argv=None):
                     b, x = c.get('bidC'), c.get('askC')
                     if isinstance(b, (int, float)) and isinstance(x, (int, float)):
                         s['quotes'] += 1
+                        wk[(fn[:4], week)][0] += 1
                         if b > x:
                             s['crossed'] += 1
+                            wk[(fn[:4], week)][1] += 1
+                            if len(crossed_ex) < 8 and len(crossed_ex) < 2 * (1 + len({e[0] for e in crossed_ex})):
+                                crossed_ex.append((fn[:7], m.get('ticker'), {k: c.get(k) for k in KEYS}))
                         s['spread_sum'] += x - b
                         if x - b > 0.5:
                             s['wide'] += 1
@@ -88,8 +95,11 @@ def main(argv=None):
         fields = ' '.join(f'{k}:{s[f"sub_{k}"] / max(1, s[f"n_{k}"]):.3f}' for k in KEYS)
         print(f'{month}  {int(s["markets"]):5d}  {int(s["all_sub"]):5d}  {int(s["mixed"]):5d}  {s["crossed"] / q:.4f}  {s["wide"] / q:.4f}  '
               f'{s["spread_sum"] / q:.4f}  {s["cal_mid"] / max(1, s["cal_n"]):.3f} {s["cal_yes"] / max(1, s["cal_n"]):.3f}  {s["ask7_lt5"] / max(1, s["cal_n"]):.3f}  | {fields}  len!=15m:{int(s["dur_ne_15"])}')
-    for e in examples:
-        print('example', json.dumps(e)[:600])
+    print('crossed share by ISO week: ' + ', '.join(f'{y}-W{w:02d} {c / max(1, n):.4f}' for (y, w), (n, c) in sorted(wk.items())))
+    for e in crossed_ex:
+        print('crossed', json.dumps(e)[:400])
+    for e in examples[:2]:
+        print('example', json.dumps(e)[:400])
 
 
 if __name__ == '__main__':

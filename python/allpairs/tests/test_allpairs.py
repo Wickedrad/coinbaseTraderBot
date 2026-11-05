@@ -232,6 +232,18 @@ class Features(unittest.TestCase):
         self.assertFalse(repair_legacy_cents(tails))
         self.assertAlmostEqual(tails[0]['bidC'], 0.005)
 
+    def test_crossed_minutes_dropped(self):
+        from allpairs.data import market_to_rows
+        o = 1_767_225_600_000
+        cs = [dict(ts=o + 60_000 * c, bidO=0.4, bidH=0.45, bidL=0.4, bidC=0.42, askO=0.44, askH=0.47, askL=0.43, askC=0.45) for c in range(1, 16)]
+        cs[4]['bidC'], cs[4]['askC'] = 0.60, 0.05   # candle 5 closes crossed
+        r = market_to_rows(dict(openTime=o, closeTime=o + 900_000, result='yes', candles=cs), 15)
+        bid, ask, blo, bhi, alo, ahi, kvol, real, o_eff, n_crossed = r
+        self.assertEqual(n_crossed, 1)
+        self.assertTrue(np.isnan(bid[5]) and np.isnan(ask[5]))          # decision minute 5 = candle 5 close
+        self.assertTrue(np.isnan(alo[4]))                                 # no maker fill proven by a crossed minute
+        self.assertAlmostEqual(bid[4], 0.42)
+
     def test_side_quotes(self):
         w = load_kalshi(self.dir, ['BTC'], log=lambda m: None)
         b, a, nbl, nbh, nal, nah, st = side_quotes(w)
