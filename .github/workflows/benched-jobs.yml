@@ -39,7 +39,7 @@ permissions:
 
 # One group a commit: a new round no longer cancels the one still running (Nov 5, 10 jobs a thread).
 concurrency:
-  group: benched-jobs-${{ github.ref }}-${{ github.sha }}
+  group: benched-jobs-${{ github.ref }}-${{ github.sha }}-${{ github.run_id }}
   cancel-in-progress: true
 
 env:
