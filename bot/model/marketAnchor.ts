@@ -180,7 +180,7 @@ export class MarketAnchor {
     if (!this.cfg.enabled) return pBot;
     const a = L(pMarket), d = L(pBot) - a;
     let w = this.weight(ticker, tauSec, dirOf(a, d));
-    if ((this.cfg.wildRatio ?? 0) > 0) {
+    if ((this.cfg.wildRatio ?? 0) > 0 || this.cfg.wildLabels) {
       this.wild.evals++;
       if (this.isWild(ctx)) { this.wild.wild++; w = this.cfg.wildW ?? 1; }
     }
