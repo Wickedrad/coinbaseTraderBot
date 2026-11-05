@@ -67,7 +67,7 @@ export interface CoinOut {
   notes: string[];
 }
 
-function resolveRule(rule: string, byId: Map<string, Prim>): [Prim, Prim | undefined] | undefined {
+export function resolveRule(rule: string, byId: Map<string, Prim>): [Prim, Prim | undefined] | undefined {
   if (byId.has(rule)) return [byId.get(rule)!, undefined];
   for (let k = rule.indexOf('+'); k > 0; k = rule.indexOf('+', k + 1)) {
     const a = byId.get(rule.slice(0, k)), b = byId.get(rule.slice(k + 1));

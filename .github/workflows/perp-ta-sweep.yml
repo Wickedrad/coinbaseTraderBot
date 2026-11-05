@@ -19,13 +19,21 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; empty runs the sweep"
+        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; empty runs the sweep"
         required: false
         default: ''
       blind_run:
         description: 'Blind test: the sweep run whose candidates are frozen and traded on the sealed block (opened once per set)'
         required: false
         default: ''
+      study_run:
+        description: "Study: the sweep run whose stored cells get the whole-universe check (ONC N_eff, SPA / StepM, deflated Sharpe; never reads the sealed block)"
+        required: false
+        default: ''
+      n_raw:
+        description: 'Study: cells tested so far by this thread (every run, for the deflated Sharpe)'
+        required: false
+        default: '98793570'
       reopen_reason:
         description: 'Blind test: only to reopen a set already opened (e.g. a crash before any sealed number was read); logged'
         required: false
@@ -48,8 +56,8 @@ permissions:
   contents: write
 
 concurrency:
-  # A fidelity-only run never cancels a sweep in progress.
-  group: perp-ta-sweep-${{ github.ref }}-${{ inputs.only || 'all' }}
+  # A fidelity-only run never cancels a sweep in progress; a study cancels only an earlier study of the same run.
+  group: perp-ta-sweep-${{ github.ref }}-${{ inputs.only || 'all' }}${{ inputs.only == 'study' && format('-{0}', inputs.study_run) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -115,7 +123,7 @@ jobs:
 
   sweep:
     needs: [blind-open]
-    if: ${{ !cancelled() && inputs.only != 'fidelity' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) }}
+    if: ${{ !cancelled() && inputs.only != 'fidelity' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) && (inputs.only != 'study' || inputs.study_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
@@ -165,7 +173,7 @@ jobs:
           bash deploy/drive_lab.sh get derived/perp-ta/modules data/modcache --include "$A-*" || echo "no cached analyzer walk yet"
           ls -la data/server-hist/.tanet-oos data/server-hist/.librarian data/server-hist/.xgraph data/modcache 2>&1 | grep -v '^total' | cat
       - name: Sweep
-        if: ${{ inputs.only != 'blind' }}
+        if: ${{ inputs.only != 'blind' && inputs.only != 'study' }}
         run: |
           set -euo pipefail
           node --max-old-space-size=14000 --import tsx research/perpTaSweep.ts sweep --data "data/perp-ta/$A.bin" --out "out/$A.jsonl.gz" --half-spread "$HALF" --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v '^\[perp-ta\] analyzer walk [0-9]' | tail -60
@@ -185,6 +193,27 @@ jobs:
           name: blind-${{ matrix.asset }}
           path: out/blind-${{ matrix.asset }}.json
           retention-days: 30
+      # The whole-universe check of study_run (research/perpTaStudy.ts): its stored cells are recomputed on the same grid
+      # and inputs up to the sealed block's start (never past it), matched to their stored discovery record, clustered (ONC)
+      # and turned into daily net P&L for the report's SPA / StepM and deflated Sharpe.
+      - name: Study (recomputes the stored cells up to the seal; the sealed block is not read)
+        if: ${{ inputs.only == 'study' }}
+        env:
+          STUDY_RUN: ${{ inputs.study_run }}
+        run: |
+          set -euo pipefail
+          [[ "$STUDY_RUN" =~ ^[0-9]+$ ]] || { echo "study_run must be a sweep run id"; exit 1; }
+          mkdir -p study-in out
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$STUDY_RUN/$A.jsonl.gz" study-in/
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$STUDY_RUN/report/candidates.json.gz" study-in/
+          ls -la study-in | cat
+          node --max-old-space-size=14000 --import tsx research/perpTaStudy.ts coin --data "data/perp-ta/$A.bin" --cells "study-in/$A.jsonl.gz" --candidates study-in/candidates.json.gz --out "out/study-$A.json.gz" --top 5000 --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v 'analyzer walk [0-9]' | tail -20
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.only == 'study' }}
+        with:
+          name: study-${{ matrix.asset }}
+          path: out/study-${{ matrix.asset }}.json.gz
+          retention-days: 30
       - name: Keep the analyzer walk on Drive
         if: always()
         run: '[ ! -d data/modcache ] || bash deploy/drive_lab.sh put derived/perp-ta/modules data/modcache'
@@ -196,17 +225,17 @@ jobs:
           { echo "### Perp TA sweep $A failed (run $GITHUB_RUN_ID)"; echo '```'; if [ -s "$RUNNER_TEMP/sweep.log" ]; then tail -n 60 "$RUNNER_TEMP/sweep.log" | cut -c1-300; else echo "no sweep log (failed before prep or the sweep)"; fi; echo '```'; } > "$RUNNER_TEMP/fail.md"
           jq -n --rawfile body "$RUNNER_TEMP/fail.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
       - uses: actions/upload-artifact@v4
-        if: ${{ inputs.only != 'blind' }}
+        if: ${{ inputs.only != 'blind' && inputs.only != 'study' }}
         with:
           name: sweep-${{ matrix.asset }}
           path: out/${{ matrix.asset }}.jsonl.gz
           retention-days: 14
       - name: Results to Drive
         if: ${{ always() }}
-        run: '[ ! -d out ] || bash deploy/drive_lab.sh put "models/perp-ta/${{ inputs.only == ''blind'' && ''blind/'' || '''' }}run-$GITHUB_RUN_ID" out'
+        run: '[ ! -d out ] || bash deploy/drive_lab.sh put "models/perp-ta/${{ (inputs.only == ''blind'' || inputs.only == ''study'') && format(''{0}/'', inputs.only) || '''' }}run-$GITHUB_RUN_ID" out'
 
   fidelity:
-    if: ${{ inputs.only != 'blind' }}
+    if: ${{ inputs.only != 'blind' && inputs.only != 'study' }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
@@ -256,7 +285,7 @@ jobs:
     needs: [blind-open, sweep, fidelity]
     # Not after a cancel (a newer push supersedes this run): partial artifacts would post a misleading summary. Not after a
     # refused blind opening either (nothing was read).
-    if: ${{ !cancelled() && needs.blind-open.result != 'failure' }}
+    if: ${{ !cancelled() && needs.blind-open.result != 'failure' && (inputs.only != 'study' || inputs.study_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -277,10 +306,16 @@ jobs:
         with:
           path: in
       - name: Report
+        env:
+          STUDY_RUN: ${{ inputs.study_run }}
+          N_RAW: ${{ inputs.n_raw || '98793570' }}
         run: |
           set -euo pipefail
+          [[ "$N_RAW" =~ ^[0-9]+$ ]] || { echo "bad n_raw"; exit 1; }
           ls -R in | head -20
-          if [ -f in/frozen/frozen.json ]; then
+          if ls -d in/study-* >/dev/null 2>&1; then
+            node --max-old-space-size=12000 --import tsx research/perpTaStudy.ts report --in in --out report --run "$STUDY_RUN" --n-raw "$N_RAW" --b 2000 --block 5 2>&1 | tail -40
+          elif [ -f in/frozen/frozen.json ]; then
             node --max-old-space-size=12000 --import tsx research/perpTaBlind.ts report --frozen in/frozen/frozen.json --in in --out report 2>&1 | tail -40
           elif ls -d in/sweep-* >/dev/null 2>&1; then
             node --max-old-space-size=12000 --import tsx research/perpTaSweep.ts report --in in --out report 2>&1 | tail -60
@@ -304,8 +339,8 @@ jobs:
       - name: Results to Drive, and this run's rows for the project trial registry
         run: |
           cp -r in/fidelity report/ 2>/dev/null || true
-          K=${{ inputs.only == 'blind' && 'blind-' || '' }}
-          bash deploy/drive_lab.sh put "models/perp-ta/${K:+blind/}run-$GITHUB_RUN_ID/report" report
+          K=${{ (inputs.only == 'blind' || inputs.only == 'study') && format('{0}-', inputs.only) || '' }}
+          bash deploy/drive_lab.sh put "models/perp-ta/${K:+${K%-}/}run-$GITHUB_RUN_ID/report" report
           [ ! -f report/registry.jsonl ] || rclone copyto report/registry.jsonl "gdrive:kalshi-bot-archive/registry/perp-ta-${K}run-$GITHUB_RUN_ID.jsonl"
       - name: Summary on the commit
         env:
