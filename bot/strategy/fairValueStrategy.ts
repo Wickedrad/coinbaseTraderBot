@@ -274,10 +274,22 @@ export function fvGatePasses(pFair: number | undefined, side: 'yes' | 'no', cost
 /** The fair value gate on a finished plan (after the fill model turns quotes into crosses and paper adds its training trades):
  *  drops each order that opens or adds to a position at a cost the gate refuses. An order that only reduces the position is
  *  kept. Returns how many were dropped. */
+/** FNV-1a then murmur3's finalizer onto [0, 1): a reproducible coin for the GATED_STAKE_RANDOM placebo. */
+function unitHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b) >>> 0; h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35) >>> 0; h ^= h >>> 16;
+  return (h >>> 0) / 0x100000000;
+}
+
 export function applyFvGate(plan: StrategyOutput, pFair: number | undefined, position: number, fees: FeeSchedule | undefined, cfg: Pick<StrategyConfig, 'loserExits'>,
-  noEntry = false): number {
+  noEntry = false, maxStakeUsd = 0): number {
   if (!noEntry && (!cfg.loserExits?.gate || pFair === undefined)) return 0;
   const before = plan.place.length;
+  const passed: typeof plan.place = [];
+  const seen: typeof plan.place = []; // every opening non-training order the gate judged (the placebo draws from these)
+  const rnd = cfg.loserExits?.gatedStakeRandom ?? 0;
+  const shadow = Boolean(cfg.loserExits?.gatedStakeShadow) || rnd > 0;
   plan.place = plan.place.filter((p) => {
     if (p.reduceOnly || p.purpose === 'exit' || !(p.count > 0)) return true;
     const buysYes = p.side === 'bid';
@@ -289,9 +301,29 @@ export function applyFvGate(plan: StrategyOutput, pFair: number | undefined, pos
     }
     if (!cfg.loserExits?.gate || pFair === undefined) return true;
     const ok = fvGatePasses(pFair, buysYes ? 'yes' : 'no', cost, orderFee(p.count, cost, !p.postOnly, fees) / p.count, cfg);
-    if (!ok) plan.notes.push(`fair value gate: dropped ${p.purpose} ${buysYes ? 'YES' : 'NO'} at ${cost.toFixed(2)} (fair value ${(buysYes ? pFair : 1 - pFair).toFixed(3)} under cost + fee + ${cfg.loserExits!.gateMargin})`);
-    return ok;
+    if (!ok) plan.notes.push(`fair value gate: ${shadow ? 'would drop (shadow, kept)' : 'dropped'} ${p.purpose} ${buysYes ? 'YES' : 'NO'} at ${cost.toFixed(2)} (fair value ${(buysYes ? pFair : 1 - pFair).toFixed(3)} under cost + fee + ${cfg.loserExits!.gateMargin})`);
+    // Training trades keep their minimum size: they exist to learn from, not to carry the gate's edge.
+    const isTrain = p.why.startsWith('train:');
+    if (ok && !isTrain) passed.push(p);
+    if (!isTrain) seen.push(p);
+    return ok || shadow;
   });
+  if (rnd > 0) {
+    const seed = cfg.loserExits?.gatedStakeSeed ?? 0;
+    passed.length = 0;
+    for (const p of seen) if (unitHash(`${seed}|${p.side}|${p.price}|${p.purpose}|${p.why}`) < rnd) passed.push(p);
+  }
+  // GATED_STAKE_MULT: the orders that passed the gate carry its edge, so they are sized up (paper and replays).
+  const k = cfg.loserExits?.gatedStakeMult ?? 1;
+  const clamp = (cfg.loserExits?.gatedStakeCap ?? 'clamp') === 'clamp' && maxStakeUsd > 0;
+  if (k > 1) for (const p of passed) {
+    let n = Math.floor(p.count * k + 1e-9);
+    if (clamp) {
+      const cost = p.side === 'bid' ? p.price : round(1 - p.price, 4);
+      while (n > p.count && n * cost + orderFee(n, cost, !p.postOnly, fees) > maxStakeUsd + 1e-9) n--;
+    }
+    if (n > p.count) { plan.notes.push(`gated stake x${k}${clamp ? ` (to $${maxStakeUsd})` : ''}: ${p.purpose} ${p.count} -> ${n} contracts`); p.count = n; }
+  }
   return before - plan.place.length;
 }
 

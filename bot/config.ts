@@ -85,6 +85,20 @@ export interface LoserExitConfig {
    *  share of the contract's window is left, nor anywhere the loser window cut runs: a position opened there is under water
    *  by the spread and fees at once, and the window cut would sell it straight back into a thin closing bid. */
   noEntryShare: number;
+  /** GATED_STAKE_MULT (1 = off; 1-5): opening orders that pass the fair value gate are sized x this (training trades keep
+   *  their minimum). Paper and replays only: with TRADING_MODE=live it stays 1 unless GATED_STAKE_LIVE=on (Steven, Nov 4:
+   *  gated $20-$40 in paper and replays, live keeps $10-$20 until he approves). */
+  gatedStakeMult?: number;
+  /** GATED_STAKE_CAP (clamp): clamp = a scaled order never above the order band's top (or the paper order size), fee in;
+   *  widen = the per-order, window and total risk caps widen by GATED_STAKE_MULT so a gated order can reach k x the top. */
+  gatedStakeCap?: 'clamp' | 'widen';
+  /** GATED_STAKE_SHADOW (off; never live): the gate blocks nothing and only picks the orders GATED_STAKE_MULT scales, so a
+   *  paired replay trades its x1 control's very entries and differs in size. */
+  gatedStakeShadow?: boolean;
+  /** GATED_STAKE_RANDOM (0 = off; never live): the placebo for the gate's pick: the gate blocks nothing (as shadow) and
+   *  x GATED_STAKE_MULT goes to a gate-blind hashed share of the judged opening orders (GATED_STAKE_SEED) instead. */
+  gatedStakeRandom?: number;
+  gatedStakeSeed?: number;
 }
 
 export interface StrategyConfig {
@@ -1229,6 +1243,11 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       windowJudge: oneOf(env, 'LOSER_WINDOW_JUDGE', 'bid', ['bid', 'fair', 'cost'] as const),
       windowShare: num(env, 'LOSER_WINDOW_SHARE', 0, 0, 0.9),
       noEntryShare: num(env, 'LOSER_NO_ENTRY_SHARE', 0, 0, 0.9),
+      gatedStakeMult: mode === 'live' && env.GATED_STAKE_LIVE !== 'on' ? 1 : num(env, 'GATED_STAKE_MULT', 1, 1, 5),
+      gatedStakeCap: oneOf(env, 'GATED_STAKE_CAP', 'clamp', ['clamp', 'widen'] as const),
+      gatedStakeShadow: mode !== 'live' && bool(env, 'GATED_STAKE_SHADOW', false),
+      gatedStakeRandom: mode === 'live' ? 0 : num(env, 'GATED_STAKE_RANDOM', 0, 0, 1),
+      gatedStakeSeed: num(env, 'GATED_STAKE_SEED', 0, 0, 1e9),
     },
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),

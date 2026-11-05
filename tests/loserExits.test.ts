@@ -24,10 +24,10 @@ const long = (o: Partial<MarketView> = {}) => view({ position: 10, entrySidePric
 const ioc = (out: StrategyOutput) => out.place.filter((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
 
 test('loser rules: on by default (gate 6c, cut 3c, window), each off by its flag', () => {
-  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, cut: true, cutMargin: 0.03, window: true, windowJudge: 'bid', windowShare: 0, noEntryShare: 0 });
+  assert.deepEqual(base.loserExits, { gate: true, gateMargin: 0.06, cut: true, cutMargin: 0.03, window: true, windowJudge: 'bid', windowShare: 0, noEntryShare: 0, gatedStakeMult: 1, gatedStakeCap: 'clamp', gatedStakeShadow: false, gatedStakeRandom: 0, gatedStakeSeed: 0 });
   const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), FV_ENTRY_GATE: 'false', LOSER_CUT: 'false', LOSER_WINDOW_CUT: 'false', FV_ENTRY_GATE_MARGIN: '0.09', LOSER_CUT_MARGIN: '0.05',
     LOSER_WINDOW_JUDGE: 'cost', LOSER_WINDOW_SHARE: '0.25', LOSER_NO_ENTRY_SHARE: '0.2' }).strategy;
-  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: false, cutMargin: 0.05, window: false, windowJudge: 'cost', windowShare: 0.25, noEntryShare: 0.2 });
+  assert.deepEqual(c.loserExits, { gate: false, gateMargin: 0.09, cut: false, cutMargin: 0.05, window: false, windowJudge: 'cost', windowShare: 0.25, noEntryShare: 0.2, gatedStakeMult: 1, gatedStakeCap: 'clamp', gatedStakeShadow: false, gatedStakeRandom: 0, gatedStakeSeed: 0 });
 });
 
 test('loser window cut: in the last share of the window or the final minute a position not in profit is sold at the bid; one in profit rides', () => {
@@ -210,4 +210,29 @@ test('shareWindowSec: the share rules measure a contract\'s own hour, not a ladd
   const at = (maxSec: number) => inLoserWindow({ settleShare: false, exitWindowOpen: true, tauSec: 1800, windowSec: shareWindowSec(close - 20 * 3_600_000, close, maxSec) }, L);
   assert.equal(at(3600), false);
   assert.equal(at(0), true);
+});
+
+test('GATED_STAKE_MULT / CAP / SHADOW / RANDOM: gated opening orders sized up, clamped or widened; shadow and placebo arms; never live', () => {
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy;
+  const L = cfg.loserExits!;
+  const x2: StrategyConfig = { ...cfg, loserExits: { ...L, gate: true, gateMargin: 0.06, gatedStakeMult: 2 } };
+  const plan = (why = 'cross'): StrategyOutput => ({ cancel: [], notes: [], place: [
+    { side: 'bid', price: 0.6, count: 5, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge: 0.1, why },
+    { side: 'ask', price: 0.5, count: 3, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge: 0, why: 'exit' },
+  ] });
+  const ok = plan(); assert.equal(applyFvGate(ok, 0.8, 0, DEFAULT_FEES, x2), 0); assert.deepEqual(ok.place.map((p) => p.count), [10, 3]);
+  const tr = plan('train: YES at 0.60'); applyFvGate(tr, 0.8, 0, DEFAULT_FEES, x2); assert.deepEqual(tr.place.map((p) => p.count), [5, 3]);
+  const c5 = plan(); applyFvGate(c5, 0.8, 0, DEFAULT_FEES, x2, false, 5); assert.ok(c5.place[0].count > 5 && c5.place[0].count * 0.6 <= 5);
+  const w = plan(); applyFvGate(w, 0.8, 0, DEFAULT_FEES, { ...x2, loserExits: { ...x2.loserExits!, gatedStakeCap: 'widen' } }, false, 5); assert.equal(w.place[0].count, 10);
+  const sh: StrategyConfig = { ...x2, loserExits: { ...x2.loserExits!, gatedStakeShadow: true } };
+  const shNo = plan(); assert.equal(applyFvGate(shNo, 0.5, 0, DEFAULT_FEES, sh), 0); assert.deepEqual(shNo.place.map((p) => p.count), [5, 3]);
+  const r1: StrategyConfig = { ...x2, loserExits: { ...x2.loserExits!, gatedStakeRandom: 1 } };
+  const rFail = plan(); assert.equal(applyFvGate(rFail, 0.5, 0, DEFAULT_FEES, r1), 0); assert.deepEqual(rFail.place.map((p) => p.count), [10, 3]);
+  const half = (seed: number, why: string) => { const q = plan(why); applyFvGate(q, 0.8, 0, DEFAULT_FEES, { ...x2, loserExits: { ...x2.loserExits!, gatedStakeRandom: 0.5, gatedStakeSeed: seed } }); return q.place[0].count; };
+  const draws = Array.from({ length: 200 }, (_, i) => half(7, `cross ${i}`));
+  assert.deepEqual(draws, Array.from({ length: 200 }, (_, i) => half(7, `cross ${i}`)));
+  const share = draws.filter((c) => c === 10).length / draws.length;
+  assert.ok(share > 0.38 && share < 0.62, `share ${share}`);
+  const pe = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), GATED_STAKE_MULT: '2', GATED_STAKE_CAP: 'widen', GATED_STAKE_SHADOW: 'true', GATED_STAKE_RANDOM: '0.4', GATED_STAKE_SEED: '3' }).strategy.loserExits!;
+  assert.deepEqual([pe.gatedStakeMult, pe.gatedStakeCap, pe.gatedStakeShadow, pe.gatedStakeRandom, pe.gatedStakeSeed], [2, 'widen', true, 0.4, 3]);
 });

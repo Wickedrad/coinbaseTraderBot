@@ -853,11 +853,14 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       // The order band (ORDER_USD_MIN / ORDER_USD_MAX), paper and live, as the engine applies it (Engine.orderBandUsd).
       const band = fixedUsd > 0 ? undefined : orderBand(strategy.orderUsdMin, strategy.orderUsdMax);
       const fitUsd = fixedUsd > 0 ? fixedUsd : band?.max ?? 0;
+      // GATED_STAKE_CAP=widen: the caps make room for a gated order scaled by GATED_STAKE_MULT (bot/engine.ts orderLimits).
+      const LX = strategy.loserExits;
+      const capUsd = LX?.gate && LX.gatedStakeCap === 'widen' && (LX.gatedStakeMult ?? 1) > 1 ? fitUsd * LX.gatedStakeMult! : fitUsd;
       const tierLimits = { maxOrderRiskFrac: tier.orderFrac, maxWindowRiskFrac: tier.windowFrac, maxTotalRiskFrac: tier.totalFrac, dailyLossLimitFrac: tier.dailyLossFrac, dailyLossLimitUsd: tier.dailyLossUsd };
       if (fitUsd > 0 && bankroll > 0) {
-        tierLimits.maxOrderRiskFrac = Math.max(tier.orderFrac, fitUsd / bankroll);
-        tierLimits.maxWindowRiskFrac = Math.max(tier.windowFrac, (PAPER_WINDOW_ORDERS * fitUsd) / bankroll);
-        tierLimits.maxTotalRiskFrac = Math.max(tier.totalFrac, (PAPER_TOTAL_ORDERS * fitUsd) / bankroll);
+        tierLimits.maxOrderRiskFrac = Math.max(tier.orderFrac, capUsd / bankroll);
+        tierLimits.maxWindowRiskFrac = Math.max(tier.windowFrac, (PAPER_WINDOW_ORDERS * capUsd) / bankroll);
+        tierLimits.maxTotalRiskFrac = Math.max(tier.totalFrac, (PAPER_TOTAL_ORDERS * capUsd) / bankroll);
       }
       const q = (side: 'bid' | 'ask') => { const o = open.find((x) => x.side === side); return o ? { clientOrderId: o.orderId, price: o.price, remaining: o.remainingCount } : undefined; };
       // An exit queued on an evaluation goes out on the next one, a second later (the live bot's reaction); with the paper
@@ -1119,7 +1122,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         } else curveGate.flat(m.ticker, st.now);
       }
       // FV_ENTRY_GATE on the finished plan, as the engine: the fill model's crosses and paper's training trades open positions too.
-      applyFvGate(plan, fv.pYes, view.position, DEFAULT_FEES, strategy, loserNoEntry(view, strategy));
+      applyFvGate(plan, fv.pYes, view.position, DEFAULT_FEES, strategy, loserNoEntry(view, strategy), fitUsd);
       // Research control (benched jobs, Nov 5): no entries at all in this share of markets, picked by a hash of the ticker, so
       // a feature that trades less can be told apart from simply trading less in a losing bot.
       if (opts.skipMarketShare && tickerShare(m.ticker) < opts.skipMarketShare) plan.place = plan.place.filter((p) => p.purpose !== 'entry');
