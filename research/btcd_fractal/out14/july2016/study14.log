@@ -1,0 +1,35 @@
+round 14 study start 2026-11-02 23:09 UTC / 2026-11-02 18:09 EST (6:09 PM EST); numba on; workers 4; fast False
+TV weekly 2014-04-06..2026-11-01 (657); index steps 2014-2018: 6
+  step 2016-10-09: dTV -0.825 dCMC -0.043 dlogTOTAL2 +0.229 dlogBTCUSD -0.002
+  step 2016-12-16: dTV -2.028 dCMC +0.001 dlogTOTAL2 +0.559 dlogBTCUSD +0.007
+  step 2017-04-02: dTV -5.435 dCMC -2.478 dlogTOTAL2 +0.484 dlogBTCUSD -0.005
+  step 2017-05-07: dTV -4.060 dCMC -1.899 dlogTOTAL2 +0.251 dlogBTCUSD -0.003
+  step 2017-05-09: dTV +3.753 dCMC +2.535 dlogTOTAL2 -0.179 dlogBTCUSD +0.042
+  step 2017-07-14: dTV -23.089 dCMC +0.107 dlogTOTAL2 +0.973 dlogBTCUSD -0.056
+TV anchors: P0 2016-06-19 (98.41), P1 2016-07-24 (95.19), P2 2016-11-20 (97.19), P3 2016-12-18 (95.11), C0 2017-12-10 (67.39), C1 2018-01-14 (36.83), C2 2019-09-08 (71.70), C3 2021-05-16 (40.82) | C2' 2021-01-03, C3' 2022-01-16, P3' 2017-01-15 | all match the expected TV dates
+TVc anchors: P0 2016-06-19 (86.87), P1 2016-07-24 (67.95), P2 2016-12-25 (84.70), P3 2017-01-15 (81.29), C0 2017-12-10 (67.39), C1 2018-01-14 (36.83), C2 2019-09-08 (71.70), C3 2021-05-16 (40.82) | C2' 2021-01-03, C3' 2022-01-16, P3' 2017-01-15 | differ from expected TV dates: ['P2', 'P3']
+CMC anchors: P0 2016-06-19 (85.49), P1 2016-07-24 (79.64), P2 2016-12-25 (87.57), P3 2017-01-15 (84.81), C0 2017-12-10 (60.87), C1 2018-01-14 (32.44), C2 2021-01-03 (71.80), C3 2021-05-16 (40.20) | C2' 2019-09-08, C3' 2022-01-16, P3' 2017-01-15 | differ from expected TV dates: ['P2', 'P3', 'C2']
+fixed5 out-of-sample rows: 199 dates from ['research/btcd_fractal/out8/honest/results.json', 'research/btcd_fractal/out9/candidates/results.json']
+family size per series: 264 (2 maps x 3 caps x 44 anchor sets)
+kernel compiled in 0.8s
+638 jobs (480 walk-forward placebos, 114 T2 batches, 41 T1-null batches of 401 synthetic children) on 4 workers
+  63/638 jobs done, 35s
+  126/638 jobs done, 84s
+  189/638 jobs done, 132s
+  252/638 jobs done, 182s
+  315/638 jobs done, 230s
+  378/638 jobs done, 283s
+  441/638 jobs done, 358s
+  504/638 jobs done, 431s
+  567/638 jobs done, 455s
+  630/638 jobs done, 455s
+pool done in 455s
+T1 (TV family): median 2017-03-05, share within +-4 weeks 0.936 -> robust
+T2 TV: real D (search) 0.24185560689751334, rule anchors 0.17410264569494707; families passing 0/5; reversed 0.39034684950596615; pass False
+T2 TVc: real D (search) 0.22166976576117653, rule anchors 0.14609111417822146; families passing 0/5; reversed 0.11424576527373058; pass False
+T2 CMC: real D (search) 4.894288774251164, rule anchors 0.1656539055925903; families passing 0/5; reversed 0.14719883072380613; pass False
+T3 TV: Brier fractal 0.6581 clim 0.1482 improvement -0.5099 (q05 -0.695003799420379) placebo p95 +0.0627 fixed5 0.10864 -> pass False
+T3 TVc: Brier fractal 0.6906 clim 0.1482 improvement -0.5424 (q05 -0.6788780355454686) placebo p95 +0.0627 fixed5 0.10864 -> pass False
+T3 CMC: Brier fractal 0.5847 clim 0.1482 improvement -0.4365 (q05 -0.6359460176700642) placebo p95 +0.0627 fixed5 0.10864 -> pass False
+base rate: plateau / decline shares, blocks 0.91 / 0.09, walks 0.49 / 0.51, uniform 0.093 / 0.5814 (real: plateau)
+verdicts: placement robust, shape not supported, forecast not supported; today (TV primary) -> parent week 2017-03-05; runtime 463s

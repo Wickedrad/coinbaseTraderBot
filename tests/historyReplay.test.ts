@@ -3,11 +3,12 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import { test } from 'node:test';
-import { aggregate, barPath, buildHistoryReplay, gkVariance, niceStep, normals, synthQuote, windowAverage } from '../research/history/historyReplay';
+import { aggregate, barPath, buildHistoryReplay, gkVariance, niceStep, normals, PERP_CONTRACT_SIZE, replayPerpTick, synthQuote, windowAverage } from '../research/history/historyReplay';
 import { readRecordings, ReplayState, type RecEvent } from '../research/replay';
 import { replaySnn } from '../research/snnReplay';
 import { snnInteractions } from '../research/snnPbt';
 import { buildPerpDataset } from '../research/trainPerpModel';
+import { assetFeatureMap } from '../bot/model/featureEngine';
 import { DEFAULT_SNN, domainParams, stageFlags, withFlags } from '../bot/snn/params';
 import { tmpDir } from './helpers';
 
@@ -91,7 +92,7 @@ test('history replay: bar paths, 60 s averages, quotes and aggregation', () => {
 test('history replay: day files the replay reads like live recordings; the perps dataset trains on them', async () => {
   const hist = tmpDir(), out = path.join(tmpDir(), 'replay');
   writeHistory(hist);
-  const r = await buildHistoryReplay({ historyDir: hist, outDir: out, assets: ['BTC', 'ETH'], fromDay: '2026-03-01', toDay: '2026-03-04', perpSpecs: { BTC: { ticker: 'KXBTCPERP', tickSize: 0.5, halfSpreadBps: 2 } }, log: () => {} });
+  const r = await buildHistoryReplay({ historyDir: hist, outDir: out, assets: ['BTC', 'ETH'], fromDay: '2026-03-01', toDay: '2026-03-04', perpSpecs: { BTC: { ticker: 'KXBTCPERP', tickSize: 0.001, halfSpreadBps: 2 } }, log: () => {} });
   assert.equal(r.written, 4);
   assert.match(r.notes.join(' '), /ETH: no 1-minute spot history/);
   const again = await buildHistoryReplay({ historyDir: hist, outDir: out, assets: ['BTC'], fromDay: '2026-03-01', toDay: '2026-03-04', log: () => {} });
@@ -134,7 +135,15 @@ test('history replay: day files the replay reads like live recordings; the perps
     assert.equal(r.result, windowAverage(prints, m.closeTime)!.avg >= m.strike ? 'yes' : 'no', 'settled by the real price path');
   }
   assert.equal(firstPerp.ticker, 'KXBTCPERP');
-  assert.ok(firstPerp.ask > firstPerp.bid && firstPerp.bid % 0.5 === 0, 'quoted at the spread, on the tick');
+  assert.ok(firstPerp.ask > firstPerp.bid && Math.abs(firstPerp.bid / 0.001 - Math.round(firstPerp.bid / 0.001)) < 1e-6, 'quoted at the spread, on the tick');
+  // Per contract, as Kalshi quotes live: BTC's contract is 0.0001 BTC (the spec carries no size: the default), the bars ~60k.
+  assert.equal(firstPerp.contractSize, 0.0001);
+  assert.deepEqual(PERP_CONTRACT_SIZE, { BTC: 0.0001, ETH: 0.001, SOL: 0.1, XRP: 1 }, 'the sizes the recordings show (quote over spot)');
+  // The recorded tick on today's quotes; a finer one on an old day's small per-contract quote (ETH 2019, $0.15 a contract).
+  assert.equal(replayPerpTick(0.001, 10, 2e-4), 0.001);
+  assert.equal(replayPerpTick(0.001, 0.15, 1e-4), 1e-5);
+  assert.equal(replayPerpTick(undefined, 0.15, 1e-4), undefined);
+  assert.ok(firstPerp.last > 3 && firstPerp.last < 12, `per-contract quote ${firstPerp.last}`);
   assert.equal(firstPerp.fundingRate, 0.0001);
   assert.ok(st.index.get('BTC')!.vol(), 'four prints a minute: the index volatility estimator runs');
   const tfs = st.features.candles.get('BTC');
@@ -142,6 +151,10 @@ test('history replay: day files the replay reads like live recordings; the perps
   // The basis: index prints sit ~4 bp above Binance once a contract has opened.
   const idx = st.index.get('BTC')!.latest()!.value, spot = st.spot.get('BTC')!.latest()!.value;
   assert.ok(Math.abs(idx / spot - 1.0004) < 1e-6, `basis ${idx / spot}`);
+  // The perp premium reads the quote per coin: the bars sit 3 bp over spot, so about -1 bp against the index (4 bp over spot).
+  const af = assetFeatureMap('BTC', st.now, { index: st.index.get('BTC'), spot: st.spot.get('BTC'), bars: st.features.bars.get('BTC'), candles: st.features.candles.get('BTC'), perp: st.features.perps.get('BTC') });
+  assert.ok(Math.abs(af.perp_premium_coin_bps) < 20, `perp premium per coin ${af.perp_premium_coin_bps}`);
+  assert.equal(af.perp_premium_bps, -100, 'the legacy premium reads the per-contract quote, as in live');
 
   const rows = await buildPerpDataset(out, { everySec: 600, horizonMin: 60 });
   assert.ok(rows.length > 300, `perp rows ${rows.length}`);
