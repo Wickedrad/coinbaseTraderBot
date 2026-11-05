@@ -17,7 +17,8 @@
 // gates, validated parts keep trading). Either way the verdict is checked again at every result and at start, and it
 // clears once the window recovers: the net back above half the loss limit and t above -PROBATION_T/2 (the gap keeps
 // a book near the limit from flapping). Alerts go out only when the verdict changes, at most one per book per 6
-// hours. A new model for the book (the trainer's next promotion) or the dashboard also starts a fresh probation. Only
+// hours; a change held back by that cap is sent once the 6 hours are up, if the verdict still differs from the last
+// alert, so the owner's last message always ends up showing the book's current state. A new model for the book (the trainer's next promotion) or the dashboard also starts a fresh probation. Only
 // the most recent PROBATION_WINDOW results count. Inputs to other models (TA heads, Librarian, cross-asset graph and
 // leads) are not gated here: the models that read them were trained with those gates.
 
@@ -60,13 +61,16 @@ export interface ProbationBookStatus {
   open: boolean; maxLossUsd: number;
 }
 
-/** A change of a book's verdict. alert is false when the book already had an alert in the last 6 hours. */
-export interface ProbationEvent { book: ProbationBook; event: 'bench' | 'clear'; reason: string; active: boolean; alert: boolean }
+/** A change of a book's verdict. alert is false when the book already had an alert in the last 6 hours. delayed: the
+ *  alert for a change that was held back by that cap, sent once the 6 hours are up. */
+export interface ProbationEvent { book: ProbationBook; event: 'bench' | 'clear'; reason: string; active: boolean; alert: boolean; delayed?: boolean }
 
 export class Probation {
   private st: State;
   private breakEvenOf?: (book: ProbationBook) => number | undefined;
-  private readonly alertedAt = new Map<ProbationBook, number>();
+  // The last alert per book (when, and whether it said the book would bench), and the latest change held back since.
+  private readonly alerted = new Map<ProbationBook, { at: number; benched: boolean }>();
+  private readonly pending = new Map<ProbationBook, { event: ProbationEvent['event']; reason: string }>();
 
   constructor(readonly p: ProbationParams = DEFAULT_PROBATION, private readonly file?: string, private readonly onChange?: (e: ProbationEvent) => void, now = Date.now()) {
     const saved = file ? readJson<Partial<State>>(file, { quarantine: true }) : undefined;
@@ -89,6 +93,18 @@ export class Probation {
     let changed = false;
     for (const book of PROBATION_BOOKS) changed = this.evaluate(book, now) || changed;
     if (changed) this.save();
+    this.flushAlerts(now);
+  }
+
+  /** Send the alert for a change the 6 hour cap held back, once the cap is up and the verdict still differs from the
+   *  last alert (main.ts also calls this on a timer, so it goes out even when no further result arrives). */
+  flushAlerts(now = Date.now()): void {
+    for (const [book, p] of this.pending) {
+      const last = this.alerted.get(book);
+      if (last && now - last.at < PROBATION_ALERT_MS) continue;
+      this.pending.delete(book);
+      if ((p.event === 'bench') === Boolean(this.st[book].benched) && (!last || last.benched !== (p.event === 'bench'))) this.emit(book, p.event, p.reason, now, true);
+    }
   }
 
   /** May an unvalidated part of this book trade? (A validated part always may.) Only PROBATION_BENCH closes it. */
@@ -109,11 +125,13 @@ export class Probation {
     if (b.results.length > this.p.window) b.results.splice(0, b.results.length - this.p.window);
     this.evaluate(book, now);
     this.save();
+    this.flushAlerts(now);
   }
 
   /** A fresh probation for the book (a new model for it, or the dashboard). */
   reset(book: ProbationBook, now = Date.now()): void {
     this.st[book] = { results: [], since: now };
+    this.pending.delete(book);
     this.save();
   }
 
@@ -140,11 +158,14 @@ export class Probation {
     return true;
   }
 
-  private emit(book: ProbationBook, event: ProbationEvent['event'], reason: string, now: number): void {
-    const last = this.alertedAt.get(book);
-    const alert = last === undefined || now - last >= PROBATION_ALERT_MS;
-    if (alert) this.alertedAt.set(book, now);
-    this.onChange?.({ book, event, reason, active: this.p.bench, alert });
+  private emit(book: ProbationBook, event: ProbationEvent['event'], reason: string, now: number, delayed = false): void {
+    const last = this.alerted.get(book);
+    const alert = last === undefined || now - last.at >= PROBATION_ALERT_MS;
+    if (alert) {
+      this.alerted.set(book, { at: now, benched: event === 'bench' });
+      this.pending.delete(book);
+    } else this.pending.set(book, { event, reason });
+    this.onChange?.({ book, event, reason, active: this.p.bench, alert, ...(delayed ? { delayed } : {}) });
   }
 
   /** The window has recovered: the net above half the loss limit and t above -PROBATION_T/2 (or too few results for a t). */

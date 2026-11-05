@@ -143,6 +143,40 @@ test('a book oscillating at its loss limit gives one alert: the verdict clears o
   assert.deepEqual(events.at(-1), { book: 'tennis', event: 'clear', reason: events.at(-1)!.reason, active: false, alert: true });
 });
 
+test('a change held back by the 6 hour cap is alerted once the cap is up, unless the verdict changed back', () => {
+  const events: ProbationEvent[] = [];
+  const p = new Probation({ ...DEFAULT_PROBATION, bench: true }, undefined, (e) => events.push(e));
+  p.record('setups', -30, at(0));
+  p.record('setups', 25, at(2));
+  assert.ok(p.open('setups'), 'recovered at T+2h: trading again');
+  assert.deepEqual(events.map((e) => [e.event, e.alert]), [['bench', true], ['clear', false]]);
+  p.flushAlerts(at(6) - 1);
+  assert.equal(events.length, 2, 'still inside the cap');
+  p.flushAlerts(at(6));
+  assert.deepEqual(events.at(-1), { book: 'setups', event: 'clear', reason: events[1].reason, active: true, alert: true, delayed: true });
+  p.flushAlerts(at(20));
+  assert.equal(events.length, 3, 'one clear alert, not repeated');
+
+  // At defaults: a "no longer would bench" alert, a re-bench within the hour, then the review after 6 hours sends it.
+  events.length = 0;
+  const q = new Probation(DEFAULT_PROBATION, undefined, (e) => events.push(e));
+  q.record('kalshi', -30, at(0));
+  q.record('kalshi', 25, at(7));
+  q.record('kalshi', -30, at(8));
+  assert.deepEqual(events.map((e) => [e.event, e.alert]), [['bench', true], ['clear', true], ['bench', false]]);
+  q.review(at(13));
+  assert.deepEqual(events.map((e) => [e.event, e.alert, e.delayed]), [['bench', true, undefined], ['clear', true, undefined], ['bench', false, undefined], ['bench', true, true]]);
+
+  // A change that is undone inside the cap sends nothing: the last alert is already right.
+  events.length = 0;
+  const r = new Probation(DEFAULT_PROBATION, undefined, (e) => events.push(e));
+  r.record('perps', -30, at(0));
+  r.record('perps', 25, at(1));
+  r.record('perps', -30, at(2));
+  r.flushAlerts(at(12));
+  assert.equal(events.filter((e) => e.alert).length, 1);
+});
+
 test('PROBATION_BENCH=true: a benched book comes back on once its window recovers, with an unbench alert', () => {
   const events: ProbationEvent[] = [];
   const p = new Probation({ ...DEFAULT_PROBATION, bench: true }, undefined, (e) => events.push(e));

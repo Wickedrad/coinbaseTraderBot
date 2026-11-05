@@ -118,9 +118,10 @@ async function main(): Promise<void> {
   const alerter = new Alerter(sinks, audit);
   // Probation (VALIDATION_GATES=monitor): unvalidated models trade, and their book's results are scored. A book whose
   // results are unacceptable would bench: an "iterate this book" alert, nothing turned off, unless the owner set
-  // PROBATION_BENCH=true. Every change is audited; the alerts are at most one per book per 6 hours.
+  // PROBATION_BENCH=true. Every change is audited; the alerts are at most one per book per 6 hours, and a change held
+  // back by that cap is sent when the 6 hours are up (the timer below) if the verdict has not changed back.
   const probationBooks = new Probation(cfg.probation, path.join(cfg.dataDir, 'probation.json'), (e) => {
-    audit.write('probation', { event: e.event === 'bench' ? (e.active ? 'benched' : 'would_bench') : (e.active ? 'unbenched' : 'would_bench_cleared'), book: e.book, reason: e.reason, alerted: e.alert });
+    audit.write('probation', { event: e.event === 'bench' ? (e.active ? 'benched' : 'would_bench') : (e.active ? 'unbenched' : 'would_bench_cleared'), book: e.book, reason: e.reason, alerted: e.alert, ...(e.delayed ? { delayed: true } : {}) });
     if (!e.alert) return;
     if (e.event === 'bench') alerter.notify('warn', `probation-${e.book}`, e.active
       ? `Probation: ${e.book} benched (PROBATION_BENCH=true: its unvalidated models stop trading until its results recover, the next model or a reset): ${e.reason}`
@@ -130,6 +131,7 @@ async function main(): Promise<void> {
       : `Probation: ${e.book} no longer would bench: ${e.reason}`);
   });
   setProbation(probationBooks);
+  setInterval(() => probationBooks.flushAlerts(), 600_000).unref();
   if (cfg.probation.mode === 'monitor') log.info('validation gates: monitor (unvalidated models trade on probation)', { ...cfg.probation });
   // Exit-in-profit curve (SINUOUS_EXIT, bot/strategy/sinuousExit.ts), the same in paper and live (the owner, Oct 23: "It
   // can't just be paper mode. When I take it out of paper mode into live it needs to behave identical"): cross by
