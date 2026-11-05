@@ -720,6 +720,9 @@ export interface TennisConfig {
   trailMinFillRatio: number;
   trailMinWallAgeSec: number;
   trailSlippageTicks: number;
+  /** TENNIS_TRAIL_RATCHET (on): the book-wall trailing stop (LiquidityRatchet) on the hunt. Off only for research on history
+   *  days, whose one-level synthetic book has no walls (the tennis TA trial). */
+  trailRatchet: boolean;
   /** Conservative price hunt past the target: continue only while >= huntMinSignals of the tennis
    * confluence signals agree, for at most huntMaxSec, trailing huntTrailTicks under the peak bid. */
   huntMinSignals: number;
@@ -1599,6 +1602,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       trailMinFillRatio: num(env, 'TENNIS_TRAIL_MIN_FILL_RATIO', 1, 0.1, 20),
       trailMinWallAgeSec: num(env, 'TENNIS_TRAIL_MIN_WALL_AGE_SEC', 3, 0, 120),
       trailSlippageTicks: num(env, 'TENNIS_TRAIL_SLIPPAGE_TICKS', 1, 0, 10),
+      trailRatchet: bool(env, 'TENNIS_TRAIL_RATCHET', true),
       huntMinSignals: num(env, 'TENNIS_HUNT_MIN_SIGNALS', 2, 1, 4),
       huntMaxSec: num(env, 'TENNIS_HUNT_MAX_SEC', 180, 0, 3600),
       huntTrailTicks: num(env, 'TENNIS_HUNT_TRAIL_TICKS', 2, 1, 20),

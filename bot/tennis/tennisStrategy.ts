@@ -58,6 +58,9 @@ export interface MatchMarket {
    *  (engine-computed from the book's cost and the series' fees); undefined when flat or unknown. The profit-taking exits
    *  never sell below it: entry + 1 tick alone can realize a loss after fees (Steven: take profit after fees). */
   breakEven?: number;
+  /** Research only (research/tennisTaSim.ts; the engine never sets it): the position's cost a contract with its entry fee
+   *  in ((fees - netCash) / yes), for the loser stop. */
+  costPer?: number;
 }
 
 /** The lowest exit price that takes a profit: one tick over the entry and at or over the break-even after fees. */
@@ -98,7 +101,7 @@ export interface TennisPlan {
   postOnly: boolean;
   reduceOnly: boolean;
   timeInForce: 'good_till_canceled' | 'immediate_or_cancel';
-  leg: 'underdog_entry' | 'underdog_tp' | 'underdog_trail' | 'underdog_late' | 'underdog_cut' | 'underdog_stop' | 'fav_entry' | 'fav_trail' | 'fav_stop' | 'quota_snipe' | 'end_cut';
+  leg: 'underdog_entry' | 'underdog_tp' | 'underdog_trail' | 'underdog_late' | 'underdog_cut' | 'underdog_stop' | 'fav_entry' | 'fav_trail' | 'fav_stop' | 'quota_snipe' | 'end_cut' | 'loser_stop';
   why: string;
 }
 
@@ -125,6 +128,8 @@ export class MatchTracker {
   /** The furthest the match's progress has reached. Progress falls back when the price returns toward 50/50 (a comeback),
    *  so the loser cut and the entry block go by this, not the reading of the tick (TENNIS_END_LOSER_CUT). */
   progressHigh = 0;
+  /** Research only (research/tennisTaSim.ts placebo arms): replaces each confluence reading; unset in the bot. */
+  signalHook?: (sig: { score: number; momentum: boolean; flow: boolean; depth: boolean; crossMarket: boolean }, ticker: string, now: number) => { score: number; momentum: boolean; flow: boolean; depth: boolean; crossMarket: boolean };
   /** Last tennis-confluence reading per held market (dashboard). */
   readonly signals = new Map<string, { score: number; momentum: boolean; flow: boolean; depth: boolean; crossMarket: boolean }>();
   private history: Array<{ ts: number; p: number }> = [];
@@ -282,7 +287,8 @@ export function tennisConfluence(t: MatchTracker, m: MatchMarket, other: MatchMa
   const flow = m.flow !== undefined && m.flow >= cfg.confFlow - 1e-9;
   const depth = m.book !== undefined && m.book.imbalance(3) >= cfg.confDepth - 1e-9;
   const crossMarket = oth !== undefined && oth <= -cfg.confOpponentCents + 1e-9;
-  return { score: [momentum, flow, depth, crossMarket].filter(Boolean).length, momentum, flow, depth, crossMarket };
+  const sig = { score: [momentum, flow, depth, crossMarket].filter(Boolean).length, momentum, flow, depth, crossMarket };
+  return t.signalHook ? t.signalHook(sig, m.ticker, now) : sig;
 }
 
 /** Sell price that the visible bids can absorb for the whole position, never below `minPx`. */
@@ -331,7 +337,7 @@ function huntExit(t: MatchTracker, m: MatchMarket, other: MatchMarket | undefine
   const peak = Math.max(t.peak.get(m.ticker) ?? 0, bid ?? 0);
   t.peak.set(m.ticker, peak);
   let stop = Math.max(target, round(peak - cfg.huntTrailTicks * tick, 4));
-  if (m.book) {
+  if (m.book && cfg.trailRatchet !== false) {
     let r = t.ratchets.get(m.ticker);
     if (!r) { r = new LiquidityRatchet({ minFillRatio: cfg.trailMinFillRatio, minWallAgeMs: cfg.trailMinWallAgeSec * 1000, slippageTicks: cfg.trailSlippageTicks }); t.ratchets.set(m.ticker, r); }
     const out = r.evaluate({ position: m.position, book: m.book, now, tick, fees: { takerMultiplier: 1, makerMultiplier: 1 }, floor: target });
@@ -398,6 +404,9 @@ export interface TennisProfitRules {
   floors?: QuotaFloors;
   /** PACER_FLOOR_TICKS: the floor's cushion, price ticks a contract. */
   floorTicks?: number;
+  /** Research only (the tennis TA trial's loser-stop knob; the engine never sets it): sell at the bid once the profit
+   *  after fees falls to -loserStopFrac x the position's cost (MatchMarket.costPer). 0 or unset = off. */
+  loserStopFrac?: number;
 }
 
 /**
@@ -449,6 +458,10 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
       out.plans = out.plans.filter(others);
       out.plans.push({ ticker: m.ticker, side: 'ask', price: bid, count: m.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'end_cut',
         why: `match ${at} (its last ${(frac * 100).toFixed(0)}%), ${net < 0 ? '-' : '+'}$${Math.abs(net).toFixed(2)} after fees at bid ${bid}: not in profit, not held to settlement` });
+    } else if (r.loserStopFrac && r.loserStopFrac > 0 && net !== undefined && m.costPer !== undefined && m.quote.bid !== undefined && net <= -r.loserStopFrac * m.costPer * m.position + 1e-9) {
+      out.plans = out.plans.filter(others);
+      out.plans.push({ ticker: m.ticker, side: 'ask', price: m.quote.bid, count: m.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'loser_stop',
+        why: `-$${Math.abs(net).toFixed(2)} after fees is ${(r.loserStopFrac * 100).toFixed(0)}% of the cost or worse: loser stop` });
     } else if (r.pacerUsd !== undefined && net !== undefined && m.quote.bid !== undefined) {
       const bid = m.quote.bid;
       const selling = out.plans.some((p) => p.ticker === m.ticker && p.side === 'ask' && p.timeInForce === 'immediate_or_cancel');

@@ -1,7 +1,8 @@
 // Shared shapes of the tennis TA rulebook trial (pre-registration: /mnt/project-files/tennis-ta/preregistration.md).
-// research/tennisTaSim.ts (family A: the production strategy over a config grid), research/tennisTaSignals.ts (family B:
-// TA-Lib readings of the price path as a sterile event study), research/tennisTaStats.ts (clustered statistics, BH,
-// CSCV) and research/tennisTaSweep.ts (the CLI the workflow runs) all speak these.
+// research/tennisTaSim.ts (family A: the production strategy over a config grid, and the match grids),
+// research/tennisTaSignals.ts (family B: TA-Lib readings of the price path as a sterile event study, exported as
+// FamilyBExport) and research/tennisTaSweep.ts (the CLI the workflow runs, which writes both into the shard files) speak
+// these.
 
 /** One match's quotes on a 1-second grid, built causally while the replay streams (no lookahead: index i holds the book
  *  as it stood at t0 + i*1000 after every event stamped <= that time). Market A = the event's markets sorted by ticker [0]. */
@@ -11,7 +12,7 @@ export interface MatchGrid {
   /** Data stratum: 'H' Kalshi history (one-level synthesized book), 'R' the bot's recordings (real depth). */
   stratum: 'H' | 'R';
   tickers: [string, string];
-  /** Published start (ms) if known, else the first sample. */
+  /** Published start (ms) if known, else the earliest market-line time (bookkeeping; startPublished says which). */
   start: number;
   /** UTC day of `start` (YYYY-MM-DD): the cluster for inference. */
   day: string;
@@ -33,7 +34,51 @@ export interface MatchGrid {
   resultA: 0 | 1;
   /** Index after which no order may be placed (the market's close, or the grid end). */
   closeIdx: number;
+  /** Tournament-week unit holding the match's start (models/tennis-ta/state/units.json id), set by the sweep before family B
+   *  reads the grid: research/tennisTaSignals.ts SignalStudy.addMatch throws without it. */
+  unit?: string;
+  /** True when `start` is Kalshi's published start, false when it is the earliest market-line time (bookkeeping only). */
+  startPublished?: boolean;
 }
+
+/** Family B (research/tennisTaSignals.ts): one cell of the entry-locked event study, totals over a slice. Every value is
+ *  dollars of net profit after fees per entry (one entry = one position of the cell: a taker buy and its exit or
+ *  settlement). Real entries only, except the placebo columns of `units`. */
+export interface FamilyBCell {
+  /** "B|<reading>|<bar>|<trigger>|<follow|fade>|<context>|<exit>", e.g. "B|RSI14L|1m|exitExt|follow|all|tp30sl30". */
+  id: string;
+  /** The hypothesis group: the id without context and exit ("B|RSI14L|1m|exitExt|follow"). */
+  group: string;
+  /** Entries and the first four raw moments of net per entry (skew / kurtosis come from sum3 / sum4). */
+  n: number; sum: number; sumSq: number; sum3: number; sum4: number;
+  /** Positions held to settlement without being in profit after fees in the last share of the match. */
+  breaches: number;
+  /** Gross (before fees) and fees, totals. */
+  gross: number; fees: number;
+  /** Total net under the stress: every sale one tick lower and every fee at the stressed fee multiplier (diagnostics say
+   *  which); settlement payouts unchanged. */
+  stressSum: number;
+  /** Per tournament-week unit: [entries, net sum, placebo entries, placebo net sum]. Compare per-unit MEANS (sum / n against
+   *  placebo sum / placebo n), never sums: the two arms do not make the same number of entries. */
+  units: Record<string, [number, number, number, number]>;
+  /** Per UTC match-day (of the match start): [entries, net sum]. Months (folds) are the days' YYYY-MM. */
+  days: Record<string, [number, number]>;
+}
+
+/** Family B's part of a sweep shard file: one SignalStudy over one slice (one stratum, never H and R together). */
+export interface FamilyBExport {
+  stratum: 'H' | 'R';
+  /** Cells in the design, fired or not (the BH m of family B for this stratum). */
+  designSize: number;
+  diagnostics: Record<string, unknown>;
+  /** Every cell with a real or a placebo entry, in design order. */
+  cells: FamilyBCell[];
+}
+
+// ---- Legacy: the shapes below (ClusterStats, CellResult, PairDiff, ClusterAcc, emptyStats, mergeStats) are read only by
+// research/tennisTaStats.ts and tests/tennisTaStats.test.ts, which the report rewrite removes; family B no longer produces
+// CellResult (it exports FamilyBExport above, whose placebo comparison is by per-unit means, not PairDiff's day sums).
+// ConfigDay and ConfigRun stay: the sim uses them.
 
 /** Per-cell accumulator with match-day clusters, kept online: matches arrive in start order inside a slice, so a cell's
  *  running day sum is flushed into the totals when the day changes. Folds are calendar months (YYYY-MM). */
@@ -57,7 +102,7 @@ export interface CellResult {
   stress?: ClusterStats;
   /** The cell's placebo (B: the signal shifted within the match; A: coin-flip confluence) totals, same entry rule. */
   placebo?: ClusterStats;
-  /** Per-day paired difference against the placebo (same days). */
+  /** Legacy (day sums): measures how many entries each arm made rather than edge when the arms' counts differ. */
   pairDiff?: PairDiff;
   /** Settlement-rule breaches (positions that reached settlement not in profit after fees or before the last 30%). */
   breaches: number;
@@ -91,7 +136,8 @@ export interface ConfigRun {
   days: ConfigDay[];
 }
 
-/** Per-day paired difference (a cell's day sum minus its placebo's day sum, both over the same match-days). */
+/** Legacy: per-day paired difference of SUMS (a cell's day sum minus its placebo's day sum). Not used by family B any more:
+ *  compare per-unit means (FamilyBCell.units) instead. */
 export interface PairDiff { clusters: number; sum: number; sumSq: number }
 
 export const emptyStats = (): ClusterStats => ({ n: 0, sum: 0, sumSq: 0, clusters: 0, cSumSq: 0, cNSq: 0, cNSum: 0 });

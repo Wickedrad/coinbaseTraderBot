@@ -1,30 +1,45 @@
 // Tennis TA rulebook trial, family B: TA-Lib readings of the match price path and the production confluence signals as
 // a sterile, entry-locked event study (pre-registration /mnt/project-files/tennis-ta/preregistration.md, section 5
-// "Family B" as changed by Amendment 1: A1 staged design, A5 controls, A7 cells). Every trigger series is evaluated per
-// match on the 1-second MatchGrid; entries are taker buys of YES on one player, exits are the fixed exit set under
-// Steven's settlement rule, and every cell gets a circular-shift placebo, a one-tick exit stress and day-clustered
-// accumulators (research/tennisTaTypes.ts ClusterAcc). Realized net $ after fees is the only score.
+// "Family B" as changed by Amendment 1: A1 staged design, A5 controls, A6 the bot's real exit path, A7 cells). Every
+// trigger series is evaluated per match on the 1-second MatchGrid; entries are taker buys of YES on one player, exits are
+// the fixed exit set under production's end cut (TENNIS_END_LOSER_CUT), and every cell gets a circular-shift placebo, a
+// stress figure and per-unit / per-day accumulators (research/tennisTaTypes.ts FamilyBCell). Realized net $ after fees is
+// the only score.
+//
+// One study = one stratum: H (Kalshi history) and R (recordings) are never mixed (addMatch throws). The stratum is given up
+// front (opts.stratum; the sweep must pass it) or taken from the first grid; exportCells throws when it is neither, since the
+// design (designSize) depends on it and an empty slice cannot tell. Every grid carries its tournament-week unit (g.unit,
+// set by the sweep; addMatch throws without it). Matches may arrive in any order: per-unit and per-day rows are keyed by
+// unit and day, so nothing depends on it (a grid whose day is before an earlier grid's is only counted, diagnostics
+// outOfOrderGrids). The study refuses to run without the real TA-Lib engine (bot/ta/talib.ts taEngine() must be 'talib':
+// the constructor throws), and a TA-Lib call that returns nothing throws: it never goes quiet.
 //
 // Price and bars
 //   pA[i] = MatchTracker.probability: (midA + 1 - midB) / 2 when both books have bid and ask (ask >= bid), else the one
 //   that exists (1 - midB for B), NaN when neither. Bars (A7: logit(mid) bars built from 5 s mids, as the bot would):
 //   bar k covers samples [kL, (k+1)L) and reads pA only at the 5 s marks (samples 4, 9, 14, ...; the bar's last sample
-//   is one); close = last non-NaN value at or before the bar end (carried forward across bars and gaps), high/low over
-//   the bar's marks including the carried open; volume = all taker contracts of both markets in the bar; signed flow
-//   toward A = (yesVolA - noVolA) - (yesVolB - noVolB). A bar is acted on at the sample right after its end (decision
-//   d = (k+1)L), the fill one latency later. Bars start at the first bar with a close (a leading NaN would poison
-//   TA-Lib's recursive smoothers); only whole bars are built. pA is clipped to [0.01, 0.99] before every logit.
-//   Bar lengths: 1 m and 5 m on H; 10 s and 30 s too on R (A1: one-level minute books make shorter bars near copies).
+//   is one); close = the last valid mark of the bar; high / low over the bar's valid marks and the previous bar's close
+//   (its open); volume = all taker contracts of both markets in the bar; signed flow toward A = (yesVolA - noVolA) -
+//   (yesVolB - noVolB). A bar is acted on at the sample right after its end (decision d = (k+1)L), the fill one latency
+//   later. pA is clipped to [0.01, 0.99] before every logit.
+//   Gaps (section 5: "gaps masked"): a bar with no valid mark is a gap bar. Gaps are never carried: the bar series is cut
+//   into segments at gap bars and TA-Lib runs on each segment alone, so every reading warms up again after a gap, and no
+//   trigger's window holds a gap or a value from before it.
+//   Bar lengths: 1 m and 5 m on H; 10 s and 30 s too on R (A1: one-level minute books make shorter bars near copies). The
+//   `bars` option narrows them (the sweep passes 1m, 5m on H); asking for 10 s / 30 s on H throws.
 //
-// Readings (TA-Lib through bot/ta/talib.ts tl(), once per match per bar length on the full causal series, on logit bars)
+// Readings (TA-Lib through bot/ta/talib.ts tl(), once per segment per bar length, on logit bars)
 //   RSI14, STOCH14_3_3 (slowK), WILLR14, CCI14, BBP20_2 (%B of BBANDS 20/2): trigger exitExt (BBP: reenter) = leaving an
 //     extreme: crossing up through the low level -> long A, down through the high level -> long B (RSI 30/70, STOCH
 //     20/80, WILLR -80/-20, CCI -100/+100, %B 0/1).
-//   MFI14: same trigger (20/80), from bar H/L/C of pA itself, not logit: MFI weighs typical price x volume, which turns
-//     meaningless when the logit typical price is negative.
+//   MFI14: same trigger (20/80), from bar H/L/C of pA itself in cents (x100), not logit: MFI weighs typical price x volume,
+//     which turns meaningless when the logit typical price is negative, and TA-Lib returns 0 whenever the window's money
+//     flow sums under 1.0, which prices on the 0..1 scale hit.
 //   MACDH12_26_9L (MACD histogram), SLOPE14L (LINEARREG_SLOPE 14), MOM10L (MOM 10: ROC = x / x_prev - 1 is meaningless
 //     on a logit that changes sign), OBVS14 (LINEARREG_SLOPE 14 of OBV = cumulative signed taker flow toward A; the tape
-//     gives the true sign, so TA-Lib's price-signed OBV is not used): trigger zeroX = sign change (up -> long A).
+//     gives the true sign, so TA-Lib's price-signed OBV is not used): trigger zeroX = the sign of the reading flips (to +
+//     -> long A). Readings within 1e-12 of 0 (OBVS: 1e-9 x |OBV|) are 0 (TA-Lib's float noise on a flat window), and a
+//     trigger needs the last NONZERO reading of the same valid run to have the other sign: 0 -> + after + is no cross.
 //   ADX14L: section 5 used ADX >= 25 as a trend/chop context; A1 defines a cell as series x phase x price bucket (x
 //     TA-Lib column) and A7 lists ADX among the TA-Lib columns, so ADX is a column here: trigger thrX = ADX crosses up
 //     through 25, long the side PLUS_DI vs MINUS_DI favours (A on a tie). NATR (A7) has no direction and KAMA efficiency
@@ -32,72 +47,97 @@
 //   The two extremes are ONE trigger: market A is just the first ticker in sort order, and RSI(1 - p) = 100 - RSI(p), so
 //   "RSI leaves 30 on A" and "RSI leaves 70 on B" are the same hypothesis seen from the two markets (one canonical side
 //   per match). The price bucket still separates the cheap side from the dear one.
-//   Masks: (1) flat: both bars of a crossing (k-1 and k) need a pA change inside the reading's lookback (14 bars; STOCH
-//   16, BBP 20, MOM 10, MACDH 9); MFI also taker volume and OBVS signed flow in its 14 bars (TA-Lib returns 0 for
-//   RSI/WILLR/STOCH/MFI on flat input, a false extreme). (2) warm-up: nothing before TA-Lib's begIndex (its NaN).
-//   (3) A7 jump mask: no TA entry whose decision falls within 3 minutes after a 1-minute pA move of 10c or more (any
-//   60 s window of the carried pA); applied at entry time, so the placebo is masked the same way.
+//   Masks: (1) flat windows (TA-Lib returns a degenerate value there: RSI / WILLR / STOCH / MFI 0, slope +-1e-17): a
+//   crossing needs both of its bars (k-1 and k) to read a window that moved. Close-based readings (RSI 15 closes, BBP 20,
+//   SLOPE 14, MOM 11, MACDH 10) need a close change inside the closes they read (last change >= k - closes + 2, a range
+//   inside a bar does not count); WILLR / CCI / ADX a bar range inside their 14 bars; STOCH a range inside each of the
+//   three 14-bar fastK windows its slowK averages (so bars k-3..k for a crossing); MFI a bar with volume whose typical
+//   price moved inside its 14 bars; OBVS a nonzero flow inside the 13 flows its 14 OBV values hold. (2) warm-up: nothing
+//   before TA-Lib's begIndex in each segment (its NaN). (3) A7 jump mask: no TA entry whose decision falls within 3
+//   minutes after a 1-minute pA move of 10c or more (any 60 s window of the carried pA); applied at entry time, so the
+//   placebo is masked the same way.
 //
 // Confluence primitives (bot/tennis/tennisStrategy.ts tennisConfluence semantics, on the 1 s grid, both players)
 //   MOM: mid of player X rose >= level over the window (production midChange: first valid mid at or after now - w vs
 //   the latest valid mid, span >= w/2); OPP: the other market's mid fell >= level; FLOW: (YES - NO) / total taker
 //   contracts on X's market over the window >= level; DEPTH: imbX >= level (R only; it never fires on H, A5).
-//   Trigger = the signal toward X turns on (off at i-1, on at i; nothing at i = 0); follow buys X.
+//   Trigger = the signal toward X turns on (off at i-1, on at i; nothing at i = 0). Gaps: MOM / OPP toward X are read only
+//   where the market they measure has a valid mid at i (DEPTH: where X's imbalance exists); elsewhere the signal is
+//   unknown, and a turn-on needs a known "off" at i-1, so nothing fires at or right after a gap.
 //   Variants: MOM and OPP at {0.005, 0.01, 0.02, 0.04} with window 60 s plus windows {120, 300} s at the default 0.01
 //   (and {15, 30} s on R only, A1); FLOW at {0.05, 0.2, 0.4, 0.7} with window 60 s; DEPTH at {0.1, 0.2, 0.4, 0.7} (R).
 //
 // Entries (A1: entry-locked; each entry set computed once, the fixed exits reuse it)
-//   A series' triggers are walked in time order. A trigger is an entry when its decision comes after the lock and at
+//   A series' triggers are walked in time order. A trigger is an entry when its decision comes after the lock, before
+//   production's end-entry block (TENNIS_END_ENTRY_MARGIN: no entry once the furthest progress of the match reaches
+//   1 - settleFrac - margin, 0.65 with the defaults; a later position would start under water in the last share), and at
 //   least one direction can take it: follow buys the side the trigger names, fade the other side; a direction takes it
 //   when that side has a bid and an ask at fill = decision + latencySec (rounded up to whole samples), the spread is
 //   <= 5c, the fill is before closeIdx, and, for fade only, the ask is within [0.10, 0.90] (A7: no fades above 90c or
-//   below 10c; applied to every family B series). Taker buy of YES at the ask, count = max(1, floor(orderUsd / ask)).
+//   below 10c; applied to every family B series). Taker buy of YES at the ask, count = max(1, floor(orderUsd / ask)),
+//   capped at 100 on H (the synthesized book's one level is 100 contracts; R entries over 100 are counted, diagnostics
+//   rOver100, since the grid carries no depth).
 //   Both directions and all five exits are evaluated on that one entry; the lock then runs until the last of those
-//   positions has closed (a position that rides or breaches locks the series for the rest of the match). So each cell
-//   holds at most one position at a time, follow and fade are the same entry set (the reversed-direction adversary),
-//   and every entry goes to its context cell AND to the 'all' cell. A later trigger may re-enter.
-// Exits (from the sample after the fill): ts2m / ts10m time stops; tp30sl30 and tp50sl25 brackets on the bid, relative
-//   to the entry price, with a 15 min stop; trail3t: armed once the bid >= entry + 2c, exit when the bid <= peak - 3
-//   ticks, 15 min stop. A stop that finds no bid sells at the next sample with one. Every exit is a taker sell at the
-//   bid; fees are bot/fees.ts orderFee per order (taker, multipliers 1/1, rounded up to the cent).
-// Settlement rule (Steven, section 4): applied at the first sample after the fill where one of its conditions TURNS ON
-//   while the position is open: decided (pA >= 0.97 or <= 0.03; a flicker off and back on is a new turn-on), progress
-//   reaches 0.70, or the sample is closeIdx. There the position rides to settlement only if its net after both fees at
-//   the current bid is > 0 (payout count x won, no settlement fee); otherwise it is sold at that bid (with no bid: at the
-//   next sample with one; with none up to closeIdx it settles and counts as a breach). A position opened while a
-//   condition is already on is not cut at birth (that would make every late and decided-price cell a certain loser of
-//   spread plus two fees): it keeps its exit and meets the rule at the next turn-on or at closeIdx. When the rule's
-//   sample coincides with a bracket or trail hit, the rule wins.
-// Stress (CellResult.stress): the same entries and exit decisions, every sale one tick (0.01) lower, floored at 0.01, its
-//   fee recomputed; settlement payouts unchanged.
+//   positions has closed (a position held to settlement locks the series for the rest of the match). So each cell holds
+//   at most one position at a time, follow and fade are the same entry set (the reversed-direction adversary), and every
+//   entry goes to its context cell AND to the 'all' cell. A later trigger may re-enter.
+// Exits: an exit is DECIDED at a sample j >= fill + 1 on the quotes of j and SOLD one latency later, at the bid of the first
+//   sample at or after j + latency that has one (the entry waits the same latency); never at the sample that decided it.
+//   ts2m / ts10m time stops; tp30sl30 and tp50sl25 brackets on the bid, relative to the entry price, with a 15 min stop;
+//   trail3t: armed once the bid >= entry + 2c, exit when the bid <= peak - 3 ticks, 15 min stop. Every sale is a taker
+//   sell at the bid; fees are bot/fees.ts orderFee per order (taker, multipliers 1/1, rounded up to the cent).
+// End cut (production applyProfitRules with TENNIS_END_LOSER_CUT on; settleFrac = TENNIS_NO_EXIT_BEFORE_END_FRAC 0.30):
+//   once the furthest progress of the match (running max of g.progress) reaches 1 - settleFrac, the position is judged at
+//   every sample with a bid: net after fees at the bid (count x bid - exit fee - count x ask - entry fee) <= 0 -> cut (sold
+//   at the bid one latency later, kind 'cut'); > 0 while the current progress is in the last share -> it rides (no exit
+//   sells it); > 0 after a comeback took the current progress back under it -> the fixed exit applies again. A position
+//   still open at closeIdx settles: payout count x 1 or 0 by g.resultA, no settlement fee; it is a 'ride' if its last
+//   judgement was "in profit after fees in the last share", else a 'breach' (held to settlement not in profit: a cut with
+//   no bid to sell into up to closeIdx, or a position the last share never reached). Breaches are counted per cell.
+// Stress (FamilyBCell.stressSum): the same entries and exit decisions, every sale stressTicks (1) tick lower, floored at
+//   0.01 (F2), and every fee at stressFeeMult (1.25, A7's "fees x1.25") times the multipliers; settlement payouts
+//   unchanged. diagnostics.settings records both.
 //
 // Contexts (A1/A7 cell = series x match phase x price bucket; section 5's band x phase x trend grid is replaced):
 //   tour series (g.series, e.g. KXATPMATCH) x phase at the decision {pre (before liveIdx or never live), first20 (the
 //   first 20 min after liveIdx), t1 / t2 / t3 (then progress < 1/3, < 2/3, >= 2/3)} x price bucket of the ask paid
 //   {b08-15 [0.08, 0.15), b15-25 [0.15, 0.25), b75-85 [0.75, 0.85), b85-92 [0.85, 0.92], other}, plus 'all'. Best-of-3
-//   vs best-of-5 (A7) cannot be told from a MatchGrid (no title or tournament), so it is not a context.
+//   vs best-of-5 (A7) cannot be told from a MatchGrid (no title or tournament), so it is not a context. t3 is in the
+//   design only when the end-entry block leaves room for it (1 - settleFrac - margin > 2/3; not with the defaults).
 //
-// Placebo (CellResult.placebo, pairDiff): each series' trigger list (decision and side) shifted circularly inside
-//   [0, closeIdx] by an offset drawn from [600, closeIdx + 1 - 600] (seeded by seed and the event name, one draw per
-//   series); no placebo when closeIdx + 1 < 1200 samples. Placebo triggers go through exactly the same entry rule (jump
-//   mask and fade band included), lock, exits and context classification (their own context at the shifted time).
-//   pairDiff is per day (the cell's day sum minus its placebo's day sum) over days where either had an entry; entries
-//   from matches without a placebo stay out of the pairing (they are still in total) so the pairing is like for like.
+// Placebo (FamilyBCell.units[u][2..3]): each series' trigger list (decision and side) shifted circularly inside
+//   [0, closeIdx] by an offset drawn from [1800, closeIdx + 1 - 1800] (seeded by seed and the event name, one draw per
+//   series), so every placebo trigger is at least 30 min from the real trigger it came from, in both directions: a fixed
+//   exit closes within 15 min (plus the latency) when there is a bid to sell into, so such a position never reaches its
+//   source trigger (a shorter shift would replay the real trigger's own move). A position can hold longer in the last
+//   share (the end cut lets one in profit after fees ride to settlement) or while there is no bid to sell into, and a
+//   placebo whose shift wrapped (it lies before its source) can then still be open after its source trigger's decision.
+//   Those positions are kept as they are and counted (diagnostics placeboSpanSource, positions): ending or dropping them
+//   would give the placebo arm exits the real arm does not have and bias it even with no edge anywhere (a sale pays a
+//   spread and an exit fee that settlement does not; dropping removes rides, which are positions in profit). Kept, they
+//   add no bias under the null, and with a real edge they move the placebo toward the real arm (conservative). No
+//   placebo for a match with fewer than 3600 samples (diagnostics noPlaceboMatches / noPlaceboEntries). Placebo triggers
+//   go through exactly the same entry rule (end block, jump mask and fade band included), lock, exits and context
+//   classification (their own context at the shifted time). The two arms make different numbers of entries per cell
+//   (real triggers cluster where the price moves), so they are compared by MEAN net per entry per unit, never by sums:
+//   units carry the counts for that.
 //
-// Universe (A5): an H match with no tape on either market is skipped and counted (diagnostics().noTape).
+// Universe (A5): an H match with no tape on either market is skipped and counted (diagnostics noTape).
 // Zero-volume minutes (A7: flagged): entries whose decision follows 60 s without a single taker contract on either
-//   market are counted in diagnostics().zeroVolEntries; they are not masked.
+//   market are counted in diagnostics zeroVolEntries; they are not masked.
 //
-// Design size (the m for Benjamini-Hochberg) = series x 2 directions x contexts x 5 exits, contexts = 1 + 25 x the tour
-//   series seen. H: 11 TA columns x 2 bars + 16 primitives = 38 series (KXATPMATCH + KXWTAMATCH: 38 x 2 x 51 x 5 =
-//   19,380 cells); R: 11 x 4 + 24 = 68 series (KXATPMATCH only: 68 x 2 x 26 x 5 = 17,680 cells).
+// Design size (the m for Benjamini-Hochberg) = series x 2 directions x contexts x 5 exits, contexts = 1 + phases x 5
+//   buckets x the tour series seen (phases 4 with the default end block, 5 when t3 is reachable). H: 11 TA columns x 2
+//   bars + 16 primitives = 38 series (KXATPMATCH + KXWTAMATCH: 38 x 2 x 41 x 5 = 15,580 cells); R: 11 x 4 + 24 = 68
+//   series (KXATPMATCH only: 68 x 2 x 21 x 5 = 14,280 cells).
 //
-// Statistics: ClusterAcc per cell, value = net $ per entry, cluster = g.day. cells() flushes the open day clusters, so
-// call it once after the last addMatch of the run.
+// Output: exportCells() (contract C3) gives every cell with a real or placebo entry: entries, the first four moments of net
+// per entry, breaches, gross, fees, stressSum, and per-unit [n, sum, placebo n, placebo sum] and per-day [n, sum].
 
+import { loadConfig, paperEnv } from '../bot/config';
 import { orderFee, type FeeSchedule } from '../bot/fees';
-import { tl } from '../bot/ta/talib';
-import { ClusterAcc, emptyStats, type CellResult, type ClusterStats, type MatchGrid, type PairDiff } from './tennisTaTypes';
+import { taEngine, taEngineError, tl } from '../bot/ta/talib';
+import type { FamilyBCell, FamilyBExport, MatchGrid } from './tennisTaTypes';
 
 /** Tennis pays maker and taker fees (multiplier 1 each); every order rounds up to the cent. */
 export const FEES: FeeSchedule = { takerMultiplier: 1, makerMultiplier: 1 };
@@ -111,7 +151,7 @@ const EXITS = ['ts2m', 'ts10m', 'tp30sl30', 'tp50sl25', 'trail3t'];
 const N_EXIT = EXITS.length;
 const PHASES = ['pre', 'first20', 't1', 't2', 't3'];
 const BUCKETS = ['b08-15', 'b15-25', 'b75-85', 'b85-92', 'other'];
-const N_PB = PHASES.length * BUCKETS.length; // 25 contexts per tour series
+const N_PB = PHASES.length * BUCKETS.length; // 25 context slots per tour series (t3's 5 may be out of the design)
 const MAX_TOURS = 64;
 const CTX_STRIDE = 1 + N_PB * MAX_TOURS;
 const DIRS = ['follow', 'fade'];
@@ -120,33 +160,42 @@ const TIME_STOP = [120, 600, 900, 900, 900];
 const MAX_SPREAD = 0.05;
 const FADE_MIN = 0.1;
 const FADE_MAX = 0.9;
-const DECIDED_HI = 0.97;
-const DECIDED_LO = 0.03;
-const LATE = 0.7;
 const FIRST_PHASE_SEC = 20 * 60;
-const PLACEBO_MIN = 600;
+/** Minimum placebo shift (s): longer than the longest fixed exit (900 s) plus latency and the longest bar (300 s). Positions
+ *  held longer (end-cut rides, waits for a bid) can outlast it: diagnostics placeboSpanSource counts the placebo ones still
+ *  open after their source trigger's decision. */
+export const PLACEBO_MIN_SEC = 1800;
+/** H's synthesized book is one level of 100 contracts a side. */
+export const H_LOT_CAP = 100;
 const JUMP = 0.1;
 const JUMP_LAG = 60;
 const JUMP_MASK = 180;
 const EPS = 1e-9;
+const ZERO_SNAP = 1e-12;
+const NEG = -1_000_000_000;
+/** Shortest segment worth a TA-Lib pass (MOM 10 needs 11 bars for one value, a crossing two values). */
+const MIN_SEG = 12;
 
 type TaKind = 'ext' | 'zero' | 'adx';
-interface TaReading { name: string; trigger: string; kind: TaKind; lo: number; hi: number; look: number; mask: 'price' | 'flow' | 'priceVol' }
+/** How a reading's window is checked for flatness: close changes, bar ranges, STOCH's three fastK windows, signed flow,
+ *  MFI's money flow. `win` = closes (close) or bars (the others) the reading at bar k reads. */
+type Valid = 'close' | 'range' | 'stoch' | 'flow' | 'mfi';
+interface TaReading { name: string; trigger: string; kind: TaKind; lo: number; hi: number; valid: Valid; win: number }
 const TA_READINGS: TaReading[] = [
-  { name: 'RSI14L', trigger: 'exitExt', kind: 'ext', lo: 30, hi: 70, look: 14, mask: 'price' },
-  { name: 'STOCH14_3_3L', trigger: 'exitExt', kind: 'ext', lo: 20, hi: 80, look: 16, mask: 'price' },
-  { name: 'WILLR14L', trigger: 'exitExt', kind: 'ext', lo: -80, hi: -20, look: 14, mask: 'price' },
-  { name: 'CCI14L', trigger: 'exitExt', kind: 'ext', lo: -100, hi: 100, look: 14, mask: 'price' },
-  { name: 'BBP20_2L', trigger: 'reenter', kind: 'ext', lo: 0, hi: 1, look: 20, mask: 'price' },
-  { name: 'MACDH12_26_9L', trigger: 'zeroX', kind: 'zero', lo: 0, hi: 0, look: 9, mask: 'price' },
-  { name: 'SLOPE14L', trigger: 'zeroX', kind: 'zero', lo: 0, hi: 0, look: 14, mask: 'price' },
-  { name: 'MOM10L', trigger: 'zeroX', kind: 'zero', lo: 0, hi: 0, look: 10, mask: 'price' },
-  { name: 'OBVS14', trigger: 'zeroX', kind: 'zero', lo: 0, hi: 0, look: 14, mask: 'flow' },
-  { name: 'MFI14', trigger: 'exitExt', kind: 'ext', lo: 20, hi: 80, look: 14, mask: 'priceVol' },
-  { name: 'ADX14L', trigger: 'thrX', kind: 'adx', lo: 25, hi: 25, look: 14, mask: 'price' },
+  { name: 'RSI14L', trigger: 'exitExt', kind: 'ext', lo: 30, hi: 70, valid: 'close', win: 15 },
+  { name: 'STOCH14_3_3L', trigger: 'exitExt', kind: 'ext', lo: 20, hi: 80, valid: 'stoch', win: 14 },
+  { name: 'WILLR14L', trigger: 'exitExt', kind: 'ext', lo: -80, hi: -20, valid: 'range', win: 14 },
+  { name: 'CCI14L', trigger: 'exitExt', kind: 'ext', lo: -100, hi: 100, valid: 'range', win: 14 },
+  { name: 'BBP20_2L', trigger: 'reenter', kind: 'ext', lo: 0, hi: 1, valid: 'close', win: 20 },
+  { name: 'MACDH12_26_9L', trigger: 'zeroX', kind: 'zero', lo: 0, hi: 0, valid: 'close', win: 10 },
+  { name: 'SLOPE14L', trigger: 'zeroX', kind: 'zero', lo: 0, hi: 0, valid: 'close', win: 14 },
+  { name: 'MOM10L', trigger: 'zeroX', kind: 'zero', lo: 0, hi: 0, valid: 'close', win: 11 },
+  { name: 'OBVS14', trigger: 'zeroX', kind: 'zero', lo: 0, hi: 0, valid: 'flow', win: 14 },
+  { name: 'MFI14', trigger: 'exitExt', kind: 'ext', lo: 20, hi: 80, valid: 'mfi', win: 14 },
+  { name: 'ADX14L', trigger: 'thrX', kind: 'adx', lo: 25, hi: 25, valid: 'range', win: 14 },
 ];
 const N_TA = TA_READINGS.length;
-const R_ADX = TA_READINGS.findIndex((t) => t.kind === 'adx');
+const R_OBVS = TA_READINGS.findIndex((t) => t.name === 'OBVS14');
 
 type PrimKind = 'MOM' | 'OPP' | 'FLOW' | 'DEPTH';
 const MOM_WINDOWS = [15, 30, 60, 120, 300];
@@ -176,18 +225,20 @@ for (const k of ['MOM', 'OPP'] as const) {
 for (const l of [0.05, 0.2, 0.4, 0.7]) prim('FLOW', 60, l);
 for (const l of [0.1, 0.2, 0.4, 0.7]) prim('DEPTH', 0, l);
 const N_SERIES = SERIES.length; // 68
-const N_SERIES_H = SERIES.filter((s) => !s.rOnly).length; // 38
 const FIRST_PRIM = N_TA * BAR_LENS.length;
 
 const phaseBucketNames: string[] = [];
 for (const p of PHASES) for (const b of BUCKETS) phaseBucketNames.push(`${p}:${b}`);
 
-/** The design, for the report. Contexts are 'all' plus '<tour series>:<phase>:<bucket>' for every tour series seen
- *  (listed here for the two tours of the trial; any other tennis series follows the same pattern). */
-export const SIGNAL_SPEC: { readings: string[]; bars: string[]; exits: string[]; contexts: string[] } = {
+/** The design labels, for the report. Contexts are 'all' plus '<tour series>:<phase>:<bucket>' for every tour series seen
+ *  (listed here for the two tours of the trial; any other tennis series follows the same pattern). Which phases are in a
+ *  study's design depends on its end-entry block (see designSize()). */
+export const SIGNAL_SPEC: { readings: string[]; bars: string[]; exits: string[]; phases: string[]; buckets: string[]; contexts: string[] } = {
   readings: [...TA_READINGS.map((t) => t.name), 'MOM', 'OPP', 'FLOW', 'DEPTH'],
   bars: [...BAR_NAMES, '1s'],
   exits: [...EXITS],
+  phases: [...PHASES],
+  buckets: [...BUCKETS],
   contexts: ['all', ...['KXATPMATCH', 'KXWTAMATCH'].flatMap((t) => phaseBucketNames.map((pb) => `${t}:${pb}`))],
 };
 
@@ -203,7 +254,12 @@ const K_TIME = 0, K_TP = 1, K_SL = 2, K_TRAIL = 3, K_CUT = 4, K_RIDE = 5, K_BREA
 export interface EntryTrace {
   series: string; dir: 'follow' | 'fade'; exit: string; context: string; placebo: boolean;
   decision: number; fill: number; side: 'A' | 'B'; entryPx: number; count: number;
-  /** Sample of the sale, or of the settlement-rule decision for ride / breach. */
+  /** Decision of the real trigger this one came from: the shifted-from decision for a placebo, `decision` for a real one.
+   *  A placebo with source > decision and exitIdx > source was still open after its source trigger (placeboSpanSource). */
+  source: number;
+  /** Sample whose quotes decided the exit (a sale fills one latency later); for ride / breach the last judgement. */
+  exitDecision: number;
+  /** Sample of the sale, or closeIdx for ride / breach. */
   exitIdx: number;
   /** Sale price, or the settlement payout per contract (1 / 0) for ride / breach. */
   exitPx: number;
@@ -214,6 +270,17 @@ export interface SignalStudyOpts {
   orderUsd?: number;
   latencySec?: number;
   seed?: number;
+  /** Bar lengths to run (names from '10s', '30s', '1m', '5m'; default all four). H runs 1m and 5m only (A1). */
+  bars?: readonly string[];
+  /** The last share of the match for the end cut (default: production TENNIS_NO_EXIT_BEFORE_END_FRAC, 0.30). */
+  settleFrac?: number;
+  /** No entry from this much progress before the last share (default: production TENNIS_END_ENTRY_MARGIN, 0.05). */
+  endEntryMargin?: number;
+  /** Stress: ticks off every sale (default 1) and multiplier on every fee (default 1.25). */
+  stressTicks?: number;
+  stressFeeMult?: number;
+  /** The study's stratum up front (else the first match's; exportCells throws when there is neither). */
+  stratum?: 'H' | 'R';
   /** Diagnostics: called for every simulated position (real and placebo). */
   trace?: (t: EntryTrace) => void;
 }
@@ -223,6 +290,11 @@ export interface SignalDiagnostics {
   matches: number;
   /** H matches skipped for having no tape on either market (A5). */
   noTape: number;
+  /** Grids with fewer than 2 samples. */
+  tooShort: number;
+  /** Matches too short for a placebo (closeIdx + 1 < 2 x 1800 samples), and the real entries they made. */
+  noPlaceboMatches: number;
+  noPlaceboEntries: number;
   triggers: number;
   /** Real entries (one per locked entry, both directions and all exits share it). */
   entries: number;
@@ -233,28 +305,50 @@ export interface SignalDiagnostics {
   jumpMasked: number;
   /** Real fade positions refused by the 10c / 90c fade band. */
   fadeBand: number;
+  /** Real triggers at or after the end-entry block. */
+  endBlocked: number;
+  /** Bars without a valid 5 s mark after a bar series' first close (each cuts the TA segment). */
+  gapBars: number;
+  /** Real H positions whose count was capped at 100; real R positions over 100 contracts (no depth on the grid). */
+  hCapped: number;
+  rOver100: number;
+  /** Real positions by exit kind. */
+  kinds: Record<ExitKind, number>;
+  /** Grids whose day is before an earlier grid's (allowed: nothing in the study depends on the order). */
+  outOfOrderGrids: number;
+  /** Placebo positions (direction x exit) still open after the decision of the real trigger they were shifted from: a
+   *  wrapped shift whose position rode or waited for a bid past it (kept, see the header's Placebo). */
+  placeboSpanSource: number;
 }
 
+type UnitRow = [number, number, number, number];
+type DayRow = [number, number];
+
 class Cell {
-  readonly acc = new ClusterAcc();
-  readonly stress = new ClusterAcc();
-  readonly plac = new ClusterAcc();
-  breaches = 0;
-  gross = 0;
-  fees = 0;
-  readonly pair: PairDiff = { clusters: 0, sum: 0, sumSq: 0 };
-  pDay = '';
-  pCell = 0;
-  pPlac = 0;
-  pAny = false;
-  pairTo(day: string): void {
-    if (day === this.pDay) return;
-    this.pairFlush();
-    this.pDay = day;
+  n = 0; sum = 0; sumSq = 0; sum3 = 0; sum4 = 0;
+  breaches = 0; gross = 0; fees = 0; stressSum = 0;
+  readonly units = new Map<string, UnitRow>();
+  readonly days = new Map<string, DayRow>();
+  private uStamp = -1;
+  private uRow: UnitRow = [0, 0, 0, 0];
+  private dStamp = -1;
+  private dRow: DayRow = [0, 0];
+  /** The match's unit row (stamp = the match's ordinal, so a cell looks its row up once per match). */
+  unitRow(stamp: number, unit: string): UnitRow {
+    if (stamp !== this.uStamp) {
+      let r = this.units.get(unit);
+      if (!r) { r = [0, 0, 0, 0]; this.units.set(unit, r); }
+      this.uRow = r; this.uStamp = stamp;
+    }
+    return this.uRow;
   }
-  pairFlush(): void {
-    if (this.pAny) { const d = this.pCell - this.pPlac; this.pair.clusters++; this.pair.sum += d; this.pair.sumSq += d * d; }
-    this.pCell = 0; this.pPlac = 0; this.pAny = false;
+  dayRow(stamp: number, day: string): DayRow {
+    if (stamp !== this.dStamp) {
+      let r = this.days.get(day);
+      if (!r) { r = [0, 0]; this.days.set(day, r); }
+      this.dRow = r; this.dStamp = stamp;
+    }
+    return this.dRow;
   }
 }
 
@@ -274,58 +368,123 @@ function hash32(s: string): number {
 const logit = (p: number) => { const q = p < 0.01 ? 0.01 : p > 0.99 ? 0.99 : p; return Math.log(q / (1 - q)); };
 const tick = (x: number) => Math.round(x * 1e4) / 1e4;
 const nz = (x: number) => (x === x ? x : 0);
-const copyStats = (s: ClusterStats): ClusterStats => ({ ...s });
+const r9 = (x: number) => Math.round(x * 1e9) / 1e9;
+
+/** Production defaults of the end cut (bot/config.ts with no TENNIS_* override), read once. */
+let prodEnd: { settleFrac: number; endEntryMargin: number } | undefined;
+function productionEnd(): { settleFrac: number; endEntryMargin: number } {
+  if (!prodEnd) { const t = loadConfig(paperEnv({})).tennis; prodEnd = { settleFrac: t.settleFrac, endEntryMargin: t.endEntryMargin }; }
+  return prodEnd;
+}
 
 // buffer slots
 const F_PA = 0, F_MIDA = 1, F_MIDB = 2, F_CYA = 3, F_CNA = 4, F_CYB = 5, F_CNB = 6, F_CVOL = 7, F_CHG = 8, F_CARRY = 18; // F_CHG: 10 slots
-const I_NEXTEV = 0, I_NBA = 1, I_NBB = 2, I_LVA = 3, I_LVB = 4, I_NVA = 5, I_NVB = 6, I_JUMP = 7;
-const U_DEC = 0;
+const I_NBA = 1, I_NBB = 2, I_LVA = 3, I_LVB = 4, I_NVA = 5, I_NVB = 6, I_JUMP = 7;
 
 export class SignalStudy {
   private readonly orderUsd: number;
   private readonly lat: number;
   private readonly seed: number;
+  private readonly settleFrac: number;
+  private readonly endEntryMargin: number;
+  private readonly stressTicks: number;
+  private readonly stressFeeMult: number;
+  private readonly feesStress: FeeSchedule;
+  /** Bar lengths asked for (by index into BAR_LENS). */
+  private readonly barOn: boolean[];
+  private readonly barsAsked: boolean;
   private readonly trace?: (t: EntryTrace) => void;
   private readonly cellMap = new Map<number, Cell>();
   private readonly tours = new Map<string, number>();
-  private sawR = false;
-  private readonly diag: SignalDiagnostics = { matches: 0, noTape: 0, triggers: 0, entries: 0, placeboEntries: 0, zeroVolEntries: 0, jumpMasked: 0, fadeBand: 0 };
+  private stratum?: 'H' | 'R';
+  private lastDay = '';
+  private readonly diag: SignalDiagnostics = {
+    matches: 0, noTape: 0, tooShort: 0, noPlaceboMatches: 0, noPlaceboEntries: 0, triggers: 0, entries: 0, placeboEntries: 0, zeroVolEntries: 0,
+    jumpMasked: 0, fadeBand: 0, endBlocked: 0, gapBars: 0, hCapped: 0, rOver100: 0,
+    kinds: { time: 0, tp: 0, sl: 0, trail: 0, cut: 0, ride: 0, breach: 0 },
+    outOfOrderGrids: 0, placeboSpanSource: 0,
+  };
 
   // ---- per-match state (buffers reused across matches) ----
   private g!: MatchGrid;
   private n = 0;
   private closeIdx = 0;
   private day = '';
+  private unit = '';
+  private stamp = 0;
   private tour = 0;
+  private onH = true;
   private placeboOn = false;
+  /** First sample where the furthest progress is in the last share (the end cut judges from there), n if never. */
+  private cutIdx = 0;
+  /** First sample from which no entry is placed (the end-entry block), n if never. */
+  private entryEnd = 0;
   private readonly f64: Float64Array[] = [];
   private readonly i32: Int32Array[] = [];
-  private readonly u8: Uint8Array[] = [];
   private trig = new Int32Array(4096);
   private nTrig = 0;
   /** Each series' triggers are trig[seriesStart[s] .. seriesEnd[s]), sorted by decision. */
   private readonly seriesStart = new Int32Array(N_SERIES);
   private readonly seriesEnd = new Int32Array(N_SERIES);
   private plc = new Int32Array(4096);
+  /** The current placebo list: its first plcWrap entries wrapped (source = decision + N - offset), the rest did not
+   *  (source = decision - offset). */
+  private plcWrap = 0;
+  private plcOff = 0;
+  private plcN = 0;
   // exit scratch
   private xAt = 0;
   private xPx = 0;
   private xKind = 0;
+  private xDec = 0;
 
   constructor(opts: SignalStudyOpts = {}) {
+    if (taEngine() !== 'talib') {
+      throw new Error(`tennisTaSignals: family B needs the TA-Lib engine (bot/ta/talib.ts), the active engine is ${taEngine()} (${taEngineError() ?? 'unknown reason'})`);
+    }
     this.orderUsd = opts.orderUsd ?? 10;
     this.lat = Math.max(0, Math.ceil(opts.latencySec ?? 1));
     this.seed = (opts.seed ?? 20261105) >>> 0;
+    const prod = opts.settleFrac === undefined || opts.endEntryMargin === undefined ? productionEnd() : undefined;
+    this.settleFrac = opts.settleFrac ?? prod!.settleFrac;
+    this.endEntryMargin = opts.endEntryMargin ?? prod!.endEntryMargin;
+    this.stressTicks = opts.stressTicks ?? 1;
+    this.stressFeeMult = opts.stressFeeMult ?? 1.25;
+    this.feesStress = { ...FEES, takerMultiplier: FEES.takerMultiplier * this.stressFeeMult, makerMultiplier: FEES.makerMultiplier * this.stressFeeMult };
+    this.barsAsked = opts.bars !== undefined;
+    for (const b of opts.bars ?? []) if (!BAR_NAMES.includes(b)) throw new Error(`tennisTaSignals: unknown bar ${b} (bars: ${BAR_NAMES.join(', ')})`);
+    this.barOn = BAR_NAMES.map((b) => opts.bars === undefined || opts.bars.includes(b));
+    this.stratum = opts.stratum;
+    this.checkBars();
     this.trace = opts.trace;
   }
 
-  /** How many cells exist in the design (BH m), including cells that never fired: series x 2 directions x
-   *  (1 + 25 x tour series seen) contexts x 5 exits. */
-  designSize(): number {
-    return (this.sawR ? N_SERIES : N_SERIES_H) * 2 * (1 + N_PB * this.tours.size) * N_EXIT;
+  private checkBars(): void {
+    if (this.stratum !== 'H' || !this.barsAsked) return;
+    const bad = BAR_NAMES.filter((_, b) => this.barOn[b] && !BAR_ON_H[b]);
+    if (bad.length) throw new Error(`tennisTaSignals: bars ${bad.join(', ')} run on recorded books (R) only, not on H (A1)`);
   }
 
-  diagnostics(): SignalDiagnostics { return { ...this.diag }; }
+  /** Is t3 (progress >= 2/3) reachable under the end-entry block? Not with the defaults (no entry from 0.65). */
+  private t3InDesign(): boolean {
+    return !(this.settleFrac > 0) || 1 - this.settleFrac - this.endEntryMargin > 2 / 3 + EPS;
+  }
+
+  /** How many cells exist in the design (BH m), including cells that never fired: series of this stratum x 2 directions x
+   *  (1 + phases x 5 buckets x tour series seen) contexts x 5 exits. */
+  designSize(): number {
+    const onR = this.stratum === 'R';
+    let series = 0;
+    for (const s of SERIES) {
+      if (s.rOnly && !onR) continue;
+      if (s.ta >= 0 && !this.barOn[s.b]) continue;
+      series++;
+    }
+    const phases = PHASES.length - (this.t3InDesign() ? 0 : 1);
+    return series * 2 * (1 + phases * BUCKETS.length * this.tours.size) * N_EXIT;
+  }
+
+  diagnostics(): SignalDiagnostics { return { ...this.diag, kinds: { ...this.diag.kinds } }; }
 
   private bufF(slot: number, n: number): Float64Array {
     let a = this.f64[slot];
@@ -337,27 +496,31 @@ export class SignalStudy {
     if (!a || a.length < n) { a = new Int32Array(Math.ceil(n * 1.25) + 16); this.i32[slot] = a; }
     return a;
   }
-  private bufU(slot: number, n: number): Uint8Array {
-    let a = this.u8[slot];
-    if (!a || a.length < n) { a = new Uint8Array(Math.ceil(n * 1.25) + 16); this.u8[slot] = a; }
-    return a;
-  }
   private push(v: number): void {
     if (this.nTrig >= this.trig.length) { const t = new Int32Array(this.trig.length * 2); t.set(this.trig); this.trig = t; }
     this.trig[this.nTrig++] = v;
   }
 
-  /** Evaluate one completed match. Matches arrive in non-decreasing g.day order within a run. */
+  /** Evaluate one completed match. Grids of one study share a stratum and carry their unit (anything else throws); they
+   *  may come in any day order (a grid that is out of order is counted in diagnostics outOfOrderGrids). */
   addMatch(g: MatchGrid): void {
+    if (typeof g.unit !== 'string' || !g.unit) throw new Error(`tennisTaSignals: grid ${g.event} has no unit (the sweep sets MatchGrid.unit before addMatch)`);
+    if (g.stratum !== 'H' && g.stratum !== 'R') throw new Error(`tennisTaSignals: grid ${g.event} has stratum ${String(g.stratum)}`);
+    if (this.stratum === undefined) { this.stratum = g.stratum; this.checkBars(); }
+    else if (g.stratum !== this.stratum) throw new Error(`tennisTaSignals: grid ${g.event} is stratum ${g.stratum} in a ${this.stratum} study (H and R are never mixed)`);
+    if (g.day < this.lastDay) this.diag.outOfOrderGrids++;
+    else this.lastDay = g.day;
     const n = g.n;
-    if (!(n > 1)) return;
+    if (!(n > 1)) { this.diag.tooShort++; return; }
     this.g = g;
     this.n = n;
     this.closeIdx = Math.min(Math.max(0, g.closeIdx), n - 1);
     this.day = g.day;
+    this.unit = g.unit;
+    this.stamp++;
+    this.onH = g.stratum === 'H';
     this.prepareQuotes();
-    if (g.stratum === 'H' && this.f64[F_CVOL][n] <= 0) { this.diag.noTape++; return; }
-    if (g.stratum === 'R') this.sawR = true;
+    if (this.onH && this.f64[F_CVOL][n] <= 0) { this.diag.noTape++; return; }
     let tour = this.tours.get(g.series);
     if (tour === undefined) {
       if (this.tours.size >= MAX_TOURS) throw new Error(`tennisTaSignals: more than ${MAX_TOURS} tour series`);
@@ -367,44 +530,51 @@ export class SignalStudy {
     this.tour = tour;
     this.diag.matches++;
     this.nTrig = 0;
-    const onR = g.stratum === 'R';
+    const onR = !this.onH;
     this.buildBarSeries(onR);
     this.buildPrimitives(onR);
     this.diag.triggers += this.nTrig;
-    this.placeboOn = this.closeIdx + 1 >= 2 * PLACEBO_MIN;
+    const N = this.closeIdx + 1;
+    this.placeboOn = N >= 2 * PLACEBO_MIN_SEC;
+    if (!this.placeboOn) this.diag.noPlaceboMatches++;
     const rng = mulberry32((hash32(g.event) ^ this.seed) >>> 0);
     for (let s = 0; s < N_SERIES; s++) {
       if (SERIES[s].rOnly && !onR) continue;
-      const off = this.placeboOn ? PLACEBO_MIN + Math.floor(rng() * (this.closeIdx + 1 - 2 * PLACEBO_MIN + 1)) : 0;
+      // Offset in [M, N - M]: every placebo trigger is at least M from its real trigger, forward or (wrapped) backward.
+      const off = this.placeboOn ? PLACEBO_MIN_SEC + Math.floor(rng() * (N - 2 * PLACEBO_MIN_SEC + 1)) : 0;
       const t0 = this.seriesStart[s], t1 = this.seriesEnd[s];
       if (t1 === t0) continue;
+      const before = this.diag.entries;
       this.pass(s, this.trig, t0, t1, false);
       if (this.placeboOn) this.pass(s, this.plc, 0, this.rotate(t0, t1, off), true);
+      else this.diag.noPlaceboEntries += this.diag.entries - before;
     }
   }
 
-  /** pA, mids, settlement-rule events, next-bid lookups, valid-mid lookups, cumulative tape, jump marks. */
+  /** pA, mids, the end-cut indices, next-bid lookups, valid-mid lookups, cumulative tape, jump marks. */
   private prepareQuotes(): void {
     const g = this.g, n = this.n, C = this.closeIdx;
     const pA = this.bufF(F_PA, n), mA = this.bufF(F_MIDA, n), mB = this.bufF(F_MIDB, n);
-    const dec = this.bufU(U_DEC, n);
     for (let i = 0; i < n; i++) {
       const ba = g.bidA[i], aa = g.askA[i], bb = g.bidB[i], ab = g.askB[i];
       const a = ba > 0 && aa > 0 && aa >= ba ? (ba + aa) / 2 : NaN;
       const b = bb > 0 && ab > 0 && ab >= bb ? (bb + ab) / 2 : NaN;
       mA[i] = a; mB[i] = b;
-      const p = a === a ? (b === b ? (a + 1 - b) / 2 : a) : b === b ? 1 - b : NaN;
-      pA[i] = p;
-      dec[i] = p >= DECIDED_HI - EPS || p <= DECIDED_LO + EPS ? 1 : 0;
+      pA[i] = a === a ? (b === b ? (a + 1 - b) / 2 : a) : b === b ? 1 - b : NaN;
     }
-    // Settlement-rule events: decided turns on, progress reaches 0.70, or closeIdx.
-    const nextEv = this.bufI(I_NEXTEV, n + 1);
-    const prog = g.progress;
-    nextEv[n] = n;
-    for (let i = n - 1; i >= 0; i--) {
-      let ev = i === C;
-      if (!ev && i > 0 && i < C) ev = (dec[i] === 1 && dec[i - 1] === 0) || (prog[i] >= LATE && !(prog[i - 1] >= LATE));
-      nextEv[i] = ev ? i : i > C ? n : nextEv[i + 1];
+    // The end cut and the entry block go by the furthest progress reached (production MatchTracker.progressHigh).
+    const frac = this.settleFrac;
+    const cutAt = 1 - frac - 1e-9, blockAt = 1 - frac - this.endEntryMargin - 1e-9;
+    this.cutIdx = n; this.entryEnd = n;
+    if (frac > 0) {
+      const prog = g.progress;
+      let hi = 0;
+      for (let i = 0; i < n; i++) {
+        const p = prog[i];
+        if (p > hi) hi = p;
+        if (hi >= blockAt && this.entryEnd === n) this.entryEnd = i;
+        if (hi >= cutAt) { this.cutIdx = i; break; }
+      }
     }
     // Next sample at or after i (up to closeIdx) with a bid on each side; -1 when none.
     const nbA = this.bufI(I_NBA, n + 1), nbB = this.bufI(I_NBB, n + 1);
@@ -442,20 +612,21 @@ export class SignalStudy {
     }
   }
 
-  /** Bars, TA-Lib readings and their triggers for the TA series of this stratum. */
+  /** Bars, TA-Lib readings (per gap-free segment) and their triggers for the TA series of this stratum. */
   private buildBarSeries(onR: boolean): void {
     const g = this.g, n = this.n;
     const pA = this.f64[F_PA];
+    for (let s = 0; s < FIRST_PRIM; s++) { this.seriesStart[s] = this.nTrig; this.seriesEnd[s] = this.nTrig; }
     for (let b = 0; b < BAR_LENS.length; b++) {
-      for (let r = 0; r < N_TA; r++) { this.seriesStart[r * BAR_LENS.length + b] = 0; this.seriesEnd[r * BAR_LENS.length + b] = 0; }
-      if (!BAR_ON_H[b] && !onR) continue;
+      if (!this.barOn[b] || (!BAR_ON_H[b] && !onR)) continue;
       const L = BAR_LENS[b];
       const K = Math.floor(n / L);
-      let last = NaN;
-      let k0 = -1;
-      const c: number[] = [], h: number[] = [], l: number[] = [], v: number[] = [], f: number[] = [];
+      if (K < MIN_SEG) continue;
+      const c = new Float64Array(K), h = new Float64Array(K), l = new Float64Array(K), v = new Float64Array(K), f = new Float64Array(K);
+      const gap = new Uint8Array(K);
+      let prev = NaN, seen = false;
       for (let k = 0; k < K; k++) {
-        let hi = last, lo = last, vol = 0, fl = 0;
+        let hi = prev, lo = prev, last = NaN, vol = 0, fl = 0;
         const start = k * L, end = start + L;
         for (let i = start + ((MID_STEP - 1 - (start % MID_STEP)) % MID_STEP); i < end; i += MID_STEP) {
           const p = pA[i];
@@ -465,79 +636,121 @@ export class SignalStudy {
           const ya = nz(g.yesVolA[i]), na = nz(g.noVolA[i]), yb = nz(g.yesVolB[i]), nb = nz(g.noVolB[i]);
           vol += ya + na + yb + nb; fl += ya - na - (yb - nb);
         }
-        if (k0 < 0) { if (last === last) k0 = k; else continue; }
-        c.push(last); h.push(hi); l.push(lo); v.push(vol); f.push(fl);
+        v[k] = vol; f[k] = fl;
+        if (last === last) { c[k] = last; h[k] = hi; l[k] = lo; prev = last; seen = true; }
+        else { gap[k] = 1; c[k] = NaN; h[k] = NaN; l[k] = NaN; prev = NaN; if (seen) this.diag.gapBars++; }
       }
-      const M = k0 < 0 ? 0 : K - k0;
-      const res: number[][] = [];
-      const mv = new Int32Array(M), vl = new Int32Array(M), fl = new Int32Array(M);
-      let plusDi: number[] = [], minusDi: number[] = [];
-      if (M >= 3) {
-        let lm = -1e9, lv = -1e9, lf = -1e9;
-        for (let j = 0; j < M; j++) {
-          if (h[j] - l[j] > 1e-12) lm = j;
-          if (v[j] > 0) lv = j;
-          if (f[j] !== 0) lf = j;
-          mv[j] = lm; vl[j] = lv; fl[j] = lf;
+      // Flat-window masks: the latest bar (same segment) with a close change, a range, a flow, a money flow; NEG if none.
+      const lastChg = new Int32Array(K), lastRng = new Int32Array(K), lastFlow = new Int32Array(K), lastMf = new Int32Array(K);
+      for (let k = 0; k < K; k++) {
+        if (gap[k]) { lastChg[k] = NEG; lastRng[k] = NEG; lastFlow[k] = NEG; lastMf[k] = NEG; continue; }
+        const first = k === 0 || gap[k - 1] === 1;
+        lastChg[k] = !first && Math.abs(c[k] - c[k - 1]) > 1e-12 ? k : first ? NEG : lastChg[k - 1];
+        lastRng[k] = h[k] - l[k] > 1e-12 ? k : first ? NEG : lastRng[k - 1];
+        lastFlow[k] = f[k] !== 0 ? k : first ? NEG : lastFlow[k - 1];
+        const mf = !first && v[k] > 0 && Math.abs((h[k] + l[k] + c[k]) - (h[k - 1] + l[k - 1] + c[k - 1])) > 3e-12;
+        lastMf[k] = mf ? k : first ? NEG : lastMf[k - 1];
+      }
+      const res: Float64Array[] = [];
+      for (let r = 0; r < N_TA; r++) res.push(new Float64Array(K).fill(NaN));
+      const pdi = new Float64Array(K).fill(NaN), mdi = new Float64Array(K).fill(NaN), obv = new Float64Array(K);
+      for (let k = 0; k < K;) {
+        if (gap[k]) { k++; continue; }
+        let k1 = k;
+        while (k1 < K && !gap[k1]) k1++;
+        if (k1 - k >= MIN_SEG) this.readings(c, h, l, v, f, k, k1, res, pdi, mdi, obv);
+        k = k1;
+      }
+      const valid = (t: TaReading, k: number): boolean => {
+        if (k < 0) return false;
+        switch (t.valid) {
+          case 'close': return lastChg[k] >= k - t.win + 2;
+          case 'range': return lastRng[k] >= k - t.win + 1;
+          case 'flow': return lastFlow[k] >= k - t.win + 2;
+          case 'mfi': return lastMf[k] >= k - t.win + 1;
+          case 'stoch':
+            for (let m = k - 2; m <= k; m++) if (m < 0 || lastRng[m] < m - t.win + 1) return false;
+            return true;
         }
-        const lc = c.map(logit), lh = h.map(logit), ll = l.map(logit);
-        const obv = new Array<number>(M);
-        let cum = 0;
-        for (let j = 0; j < M; j++) { cum += f[j]; obv[j] = cum; }
-        const lhlc = { high: lh, low: ll, close: lc };
-        const out = (o: Record<string, number[]>, k: string) => o[k] ?? [];
-        const bb = tl('BBANDS', { inReal: lc }, { optInTimePeriod: 20, optInNbDevUp: 2, optInNbDevDn: 2, optInMAType: 0 });
-        const up = out(bb, 'outRealUpperBand'), dn = out(bb, 'outRealLowerBand');
-        const pctB = new Array<number>(M);
-        for (let j = 0; j < M; j++) { const w = up[j] - dn[j]; pctB[j] = w > 1e-12 ? (lc[j] - dn[j]) / w : NaN; }
-        res[0] = out(tl('RSI', { inReal: lc }, { optInTimePeriod: 14 }), 'outReal');
-        res[1] = out(tl('STOCH', lhlc, { optInFastK_Period: 14, optInSlowK_Period: 3, optInSlowK_MAType: 0, optInSlowD_Period: 3, optInSlowD_MAType: 0 }), 'outSlowK');
-        res[2] = out(tl('WILLR', lhlc, { optInTimePeriod: 14 }), 'outReal');
-        res[3] = out(tl('CCI', lhlc, { optInTimePeriod: 14 }), 'outReal');
-        res[4] = pctB;
-        res[5] = out(tl('MACD', { inReal: lc }, { optInFastPeriod: 12, optInSlowPeriod: 26, optInSignalPeriod: 9 }), 'outMACDHist');
-        res[6] = out(tl('LINEARREG_SLOPE', { inReal: lc }, { optInTimePeriod: 14 }), 'outReal');
-        res[7] = out(tl('MOM', { inReal: lc }, { optInTimePeriod: 10 }), 'outReal');
-        res[8] = out(tl('LINEARREG_SLOPE', { inReal: obv }, { optInTimePeriod: 14 }), 'outReal');
-        res[9] = out(tl('MFI', { high: h, low: l, close: c, volume: v }, { optInTimePeriod: 14 }), 'outReal');
-        res[R_ADX] = out(tl('ADX', lhlc, { optInTimePeriod: 14 }), 'outReal');
-        plusDi = out(tl('PLUS_DI', lhlc, { optInTimePeriod: 14 }), 'outReal');
-        minusDi = out(tl('MINUS_DI', lhlc, { optInTimePeriod: 14 }), 'outReal');
-      }
+      };
       for (let r = 0; r < N_TA; r++) {
         const s = r * BAR_LENS.length + b;
-        const start = this.nTrig;
+        const t = TA_READINGS[r];
         const vals = res[r];
-        if (vals && M >= 3) {
-          const t = TA_READINGS[r], look = t.look;
-          const mk = t.mask === 'flow' ? fl : mv;
-          for (let j = 1; j < M; j++) {
-            const x = vals[j], u = vals[j - 1];
-            if (!(x === x && u === u)) continue;
-            if (mk[j] < j - look + 1 || mk[j - 1] < j - look) continue;
-            if (t.mask === 'priceVol' && (vl[j] < j - look + 1 || vl[j - 1] < j - look)) continue;
-            let side = -1;
+        this.seriesStart[s] = this.nTrig;
+        let lastSign = 0;
+        for (let k = 1; k < K; k++) {
+          const x = vals[k];
+          if (!(x === x) || !valid(t, k)) { lastSign = 0; continue; }
+          let side = -1;
+          if (t.kind === 'zero') {
+            const snap = r === R_OBVS ? 1e-9 * Math.max(1, Math.abs(obv[k])) : ZERO_SNAP;
+            const sg = x > snap ? 1 : x < -snap ? -1 : 0;
+            if (sg !== 0) {
+              if (lastSign !== 0 && sg !== lastSign) side = sg > 0 ? 0 : 1;
+              lastSign = sg;
+            }
+          } else {
+            const u = vals[k - 1];
+            if (!(u === u) || !valid(t, k - 1)) continue;
             if (t.kind === 'ext') {
               if (u < t.lo && x >= t.lo) side = 0;
               else if (u > t.hi && x <= t.hi) side = 1;
-            } else if (t.kind === 'zero') {
-              if (u <= 0 && x > 0) side = 0;
-              else if (u >= 0 && x < 0) side = 1;
             } else if (u < t.lo && x >= t.lo) {
-              side = plusDi[j] >= minusDi[j] || !(minusDi[j] === minusDi[j]) ? 0 : 1;
+              side = pdi[k] >= mdi[k] || !(mdi[k] === mdi[k]) ? 0 : 1;
             }
-            if (side < 0) continue;
-            const d = (k0 + j + 1) * L;
-            if (d < n) this.push(d * 2 + side);
           }
+          if (side < 0) continue;
+          const d = (k + 1) * L;
+          if (d < n) this.push(d * 2 + side);
         }
-        this.seriesStart[s] = start;
         this.seriesEnd[s] = this.nTrig;
       }
     }
   }
 
-  /** Confluence primitives on the 1 s grid: triggers when the signal toward a player turns on. */
+  /** TA-Lib over bars [k0, k1) (one gap-free segment); writes the readings into res (aligned to the bar index). */
+  private readings(c: Float64Array, h: Float64Array, l: Float64Array, v: Float64Array, f: Float64Array, k0: number, k1: number,
+    res: Float64Array[], pdi: Float64Array, mdi: Float64Array, obv: Float64Array): void {
+    const M = k1 - k0;
+    const lc = new Array<number>(M), lh = new Array<number>(M), ll = new Array<number>(M);
+    const cc = new Array<number>(M), hc = new Array<number>(M), lcn = new Array<number>(M), vv = new Array<number>(M), ob = new Array<number>(M);
+    let cum = 0;
+    for (let j = 0; j < M; j++) {
+      const k = k0 + j;
+      lc[j] = logit(c[k]); lh[j] = logit(h[k]); ll[j] = logit(l[k]);
+      cc[j] = c[k] * 100; hc[j] = h[k] * 100; lcn[j] = l[k] * 100; vv[j] = v[k];
+      cum += f[k]; ob[j] = cum; obv[k] = cum;
+    }
+    // A TA-Lib call that returns nothing is an error here, never "no triggers".
+    const got = (name: string, o: Record<string, number[]>, key: string): number[] => {
+      const a = o[key];
+      if (!a || a.length !== M) throw new Error(`tennisTaSignals: TA-Lib ${name} returned no ${key} for ${M} bars`);
+      return a;
+    };
+    const need = (name: string, inputs: Record<string, number[]>, opts: Record<string, number>, key: string): number[] => got(name, tl(name, inputs, opts), key);
+    const put = (dst: Float64Array, a: ArrayLike<number>) => { for (let j = 0; j < M; j++) dst[k0 + j] = a[j]; };
+    const lhlc = { high: lh, low: ll, close: lc };
+    const bb = tl('BBANDS', { inReal: lc }, { optInTimePeriod: 20, optInNbDevUp: 2, optInNbDevDn: 2, optInMAType: 0 });
+    const up = got('BBANDS', bb, 'outRealUpperBand'), dn = got('BBANDS', bb, 'outRealLowerBand');
+    const pctB = new Array<number>(M);
+    for (let j = 0; j < M; j++) { const w = up[j] - dn[j]; pctB[j] = w > 1e-12 ? (lc[j] - dn[j]) / w : NaN; }
+    put(res[0], need('RSI', { inReal: lc }, { optInTimePeriod: 14 }, 'outReal'));
+    put(res[1], need('STOCH', lhlc, { optInFastK_Period: 14, optInSlowK_Period: 3, optInSlowK_MAType: 0, optInSlowD_Period: 3, optInSlowD_MAType: 0 }, 'outSlowK'));
+    put(res[2], need('WILLR', lhlc, { optInTimePeriod: 14 }, 'outReal'));
+    put(res[3], need('CCI', lhlc, { optInTimePeriod: 14 }, 'outReal'));
+    put(res[4], pctB);
+    put(res[5], need('MACD', { inReal: lc }, { optInFastPeriod: 12, optInSlowPeriod: 26, optInSignalPeriod: 9 }, 'outMACDHist'));
+    put(res[6], need('LINEARREG_SLOPE', { inReal: lc }, { optInTimePeriod: 14 }, 'outReal'));
+    put(res[7], need('MOM', { inReal: lc }, { optInTimePeriod: 10 }, 'outReal'));
+    put(res[8], need('LINEARREG_SLOPE', { inReal: ob }, { optInTimePeriod: 14 }, 'outReal'));
+    put(res[9], need('MFI', { high: hc, low: lcn, close: cc, volume: vv }, { optInTimePeriod: 14 }, 'outReal'));
+    put(res[10], need('ADX', lhlc, { optInTimePeriod: 14 }, 'outReal'));
+    put(pdi, need('PLUS_DI', lhlc, { optInTimePeriod: 14 }, 'outReal'));
+    put(mdi, need('MINUS_DI', lhlc, { optInTimePeriod: 14 }, 'outReal'));
+  }
+
+  /** Confluence primitives on the 1 s grid: triggers when the signal toward a player turns on from a known "off". */
   private buildPrimitives(onR: boolean): void {
     const g = this.g, n = this.n;
     const mA = this.f64[F_MIDA], mB = this.f64[F_MIDB];
@@ -564,16 +777,24 @@ export class SignalStudy {
       this.seriesEnd[s] = this.nTrig;
       if (sp.rOnly && !onR) continue;
       const lev = sp.level;
-      let onA = false, onB = false;
+      // Known state at i - 1 (defined, on) per side: a trigger needs on at i and a known off at i - 1.
+      let dA = false, oA = false, dB = false, oB = false;
+      const step = (i: number, defA: boolean, a: boolean, defB: boolean, b: boolean) => {
+        if (a && dA && !oA) this.push(i * 2);
+        if (b && dB && !oB) this.push(i * 2 + 1);
+        dA = defA; oA = a; dB = defB; oB = b;
+      };
       if (sp.prim === 'MOM' || sp.prim === 'OPP') {
         const wi = MOM_WINDOWS.indexOf(sp.w);
         const ca = this.f64[F_CHG + 2 * wi], cb = this.f64[F_CHG + 2 * wi + 1];
         const mom = sp.prim === 'MOM';
         for (let i = 0; i < n; i++) {
-          const a = mom ? ca[i] >= lev - EPS : cb[i] <= -lev + EPS;
-          const b = mom ? cb[i] >= lev - EPS : ca[i] <= -lev + EPS;
-          if (i > 0) { if (a && !onA) this.push(i * 2); if (b && !onB) this.push(i * 2 + 1); }
-          onA = a; onB = b;
+          // MOM toward X reads X's mid now; OPP toward X reads the other market's mid now.
+          const okA = lvA[i] === i, okB = lvB[i] === i;
+          const defA = mom ? okA : okB, defB = mom ? okB : okA;
+          const a = defA && (mom ? ca[i] >= lev - EPS : cb[i] <= -lev + EPS);
+          const b = defB && (mom ? cb[i] >= lev - EPS : ca[i] <= -lev + EPS);
+          step(i, defA, a, defB, b);
         }
       } else if (sp.prim === 'FLOW') {
         const w = sp.w;
@@ -582,15 +803,13 @@ export class SignalStudy {
           const ya = cya[i + 1] - cya[lo], na = cna[i + 1] - cna[lo], yb = cyb[i + 1] - cyb[lo], nb = cnb[i + 1] - cnb[lo];
           const a = ya + na > 0 && (ya - na) / (ya + na) >= lev - EPS;
           const b = yb + nb > 0 && (yb - nb) / (yb + nb) >= lev - EPS;
-          if (i > 0) { if (a && !onA) this.push(i * 2); if (b && !onB) this.push(i * 2 + 1); }
-          onA = a; onB = b;
+          step(i, true, a, true, b);
         }
       } else {
         const ia = g.imbA, ib = g.imbB;
         for (let i = 0; i < n; i++) {
-          const a = ia[i] >= lev - EPS, b = ib[i] >= lev - EPS;
-          if (i > 0) { if (a && !onA) this.push(i * 2); if (b && !onB) this.push(i * 2 + 1); }
-          onA = a; onB = b;
+          const defA = ia[i] === ia[i], defB = ib[i] === ib[i];
+          step(i, defA, defA && ia[i] >= lev - EPS, defB, defB && ib[i] >= lev - EPS);
         }
       }
       this.seriesEnd[s] = this.nTrig;
@@ -608,6 +827,7 @@ export class SignalStudy {
     while (split < end && (this.trig[split] >> 1) + off < N) split++;
     let k = 0;
     for (let t = split; t < end; t++) { const v = this.trig[t]; this.plc[k++] = ((v >> 1) + off - N) * 2 + (v & 1); }
+    this.plcWrap = k; this.plcOff = off; this.plcN = N;
     for (let t = t0; t < split; t++) { const v = this.trig[t]; this.plc[k++] = ((v >> 1) + off) * 2 + (v & 1); }
     return k;
   }
@@ -623,15 +843,19 @@ export class SignalStudy {
     const lj = this.i32[I_JUMP];
     const cv = this.f64[F_CVOL];
     const tourBase = 1 + this.tour * N_PB;
+    const E = this.entryEnd;
     let lock = -1;
     for (let t = from; t < to; t++) {
       const v = arr[t];
       const d = v >> 1;
       if (d <= lock) continue;
+      if (d >= E) { if (!placebo) this.diag.endBlocked += to - t; break; }
       const e = d + this.lat;
       if (e > lastFill) break;
       if (isTa && lj[d] >= d - JUMP_MASK) { if (!placebo) this.diag.jumpMasked++; continue; }
       const ts = v & 1;
+      // The real trigger's decision this one came from (a wrapped placebo lies before it, so its position can outlast it).
+      const src = !placebo ? d : t < this.plcWrap ? d + this.plcN - this.plcOff : d - this.plcOff;
       // Which directions can take this entry.
       let took = false;
       let lockTo = e;
@@ -646,8 +870,13 @@ export class SignalStudy {
           if (placebo) this.diag.placeboEntries++;
           else { this.diag.entries++; if (cv[d + 1] - cv[d + 1 - 60 < 0 ? 0 : d + 1 - 60] <= 0) this.diag.zeroVolEntries++; }
         }
-        const count = Math.max(1, Math.floor(this.orderUsd / ask + EPS));
+        let count = Math.max(1, Math.floor(this.orderUsd / ask + EPS));
+        if (count > H_LOT_CAP) {
+          if (this.onH) { count = H_LOT_CAP; if (!placebo) this.diag.hCapped++; }
+          else if (!placebo) this.diag.rOver100++;
+        }
         const feeIn = orderFee(count, ask, true, FEES);
+        const feeInS = orderFee(count, ask, true, this.feesStress);
         const cost = count * ask + feeIn;
         // Context: tour series, phase at the decision, bucket of the ask paid.
         const phase = live < 0 || d < live ? 0 : d < live + FIRST_PHASE_SEC ? 1 : !(prog[d] >= 1 / 3) ? 2 : prog[d] < 2 / 3 ? 3 : 4;
@@ -660,22 +889,24 @@ export class SignalStudy {
           const at = this.xAt, px = this.xPx, kind = this.xKind;
           let gross: number, fees: number, net: number, snet: number;
           if (kind >= K_RIDE) {
-            gross = count * px - count * ask; fees = feeIn; net = gross - fees; snet = net;
+            gross = count * px - count * ask; fees = feeIn; net = gross - fees; snet = gross - feeInS;
             lockTo = Infinity;
           } else {
             const feeOut = orderFee(count, px, true, FEES);
             gross = count * (px - ask); fees = feeIn + feeOut; net = gross - fees;
-            const ps = tick(px - 0.01 >= 0.01 ? px - 0.01 : 0.01);
-            snet = count * (ps - ask) - feeIn - orderFee(count, ps, true, FEES);
+            const ps = tick(Math.max(px - 0.01 * this.stressTicks, 0.01));
+            snet = count * (ps - ask) - feeInS - orderFee(count, ps, true, this.feesStress);
             if (at > lockTo) lockTo = at;
           }
+          if (!placebo) this.diag.kinds[KIND_NAMES[kind]]++;
+          else if (src > d && at > src) this.diag.placeboSpanSource++;
           const breach = kind === K_BREACH;
           this.record((base + ctx) * N_EXIT + x, net, snet, gross, fees, breach, placebo);
           this.record(base * N_EXIT + x, net, snet, gross, fees, breach, placebo);
           if (this.trace) {
             this.trace({
               series: `${sp.reading}|${sp.bar}|${sp.trigger}`, dir: dir ? 'fade' : 'follow', exit: EXITS[x], context: this.ctxName(ctx), placebo,
-              decision: d, fill: e, side: side ? 'B' : 'A', entryPx: ask, count, exitIdx: at, exitPx: px, kind: KIND_NAMES[kind],
+              decision: d, fill: e, side: side ? 'B' : 'A', entryPx: ask, count, source: src, exitDecision: this.xDec, exitIdx: at, exitPx: px, kind: KIND_NAMES[kind],
               net, gross, fees, stressNet: snet,
             });
           }
@@ -696,94 +927,132 @@ export class SignalStudy {
   private record(key: number, net: number, snet: number, gross: number, fees: number, breach: boolean, placebo: boolean): void {
     let c = this.cellMap.get(key);
     if (!c) { c = new Cell(); this.cellMap.set(key, c); }
-    if (placebo) {
-      c.plac.add(net, this.day);
-      c.pairTo(this.day); c.pPlac += net; c.pAny = true;
-      return;
-    }
-    c.acc.add(net, this.day);
-    c.stress.add(snet, this.day);
-    c.gross += gross; c.fees += fees;
+    const u = c.unitRow(this.stamp, this.unit);
+    if (placebo) { u[2]++; u[3] += net; return; }
+    u[0]++; u[1] += net;
+    const dr = c.dayRow(this.stamp, this.day);
+    dr[0]++; dr[1] += net;
+    const x2 = net * net;
+    c.n++; c.sum += net; c.sumSq += x2; c.sum3 += x2 * net; c.sum4 += x2 * x2;
+    c.stressSum += snet; c.gross += gross; c.fees += fees;
     if (breach) c.breaches++;
-    if (this.placeboOn) { c.pairTo(this.day); c.pCell += net; c.pAny = true; }
   }
 
-  /** Exit of a position filled at e on side (0 = A, 1 = B): sets xAt, xPx, xKind. cost = count x ask + entry fee. */
+  /** Exit of a position filled at e on side (0 = A, 1 = B): sets xDec (deciding sample), xAt (sale sample, or closeIdx when
+   *  it settles), xPx (sale price, or the payout 1 / 0) and xKind. cost = count x ask + entry fee. */
   private exit(e: number, side: number, x: number, ask: number, count: number, cost: number): void {
-    const g = this.g;
+    const g = this.g, C = this.closeIdx, B = this.cutIdx;
     const bid = side ? g.bidB : g.bidA;
     const nb = side ? this.i32[I_NBB] : this.i32[I_NBA];
-    const c = this.i32[I_NEXTEV][e + 1]; // <= closeIdx since e < closeIdx
-    let at = -1, px = 0, kind = K_TIME;
+    const prog = g.progress;
+    const share = 1 - this.settleFrac - 1e-9;
     const stop = e + TIME_STOP[x];
-    if (x === 2 || x === 3) {
-      const tp = ask * (x === 2 ? 1.3 : 1.5) - EPS, sl = ask * (x === 2 ? 0.7 : 0.75) + EPS;
-      const lim = stop < c - 1 ? stop : c - 1;
-      for (let j = e + 1; j <= lim; j++) {
+    const bracket = x === 2 || x === 3, trail = x === 4;
+    const tp = bracket ? ask * (x === 2 ? 1.3 : 1.5) - EPS : Infinity, sl = bracket ? ask * (x === 2 ? 0.7 : 0.75) + EPS : -Infinity;
+    const arm = ask + 0.02 - EPS;
+    let armed = false, peak = 0;
+    let dec = -1, kind = K_TIME, ride = false, judged = -1;
+    let j = e + 1;
+    // Before the last share: the fixed exit alone (decided on the quotes of j, j >= e + 1).
+    const lim = Math.min(stop - 1, B - 1, C);
+    if (bracket) {
+      for (; j <= lim; j++) {
         const b = bid[j];
-        if (b >= tp) { at = j; px = b; kind = K_TP; break; }
-        if (b <= sl) { at = j; px = b; kind = K_SL; break; }
+        if (b >= tp) { dec = j; kind = K_TP; break; }
+        if (b <= sl) { dec = j; kind = K_SL; break; }
       }
-    } else if (x === 4) {
-      const arm = ask + 0.02 - EPS;
-      let armed = false, peak = 0;
-      const lim = stop < c - 1 ? stop : c - 1;
-      for (let j = e + 1; j <= lim; j++) {
+    } else if (trail) {
+      for (; j <= lim; j++) {
         const b = bid[j];
         if (!(b > 0)) continue;
         if (!armed) { if (b >= arm) { armed = true; peak = b; } }
         else if (b > peak) peak = b;
-        else if (b <= peak - 0.03 + EPS) { at = j; px = b; kind = K_TRAIL; break; }
+        else if (b <= peak - 0.03 + EPS) { dec = j; kind = K_TRAIL; break; }
+      }
+    } else if (j <= lim) j = lim + 1;
+    if (dec < 0 && j <= C) {
+      if (j < B) { dec = j; kind = K_TIME; } // j === stop
+      else {
+        // The last share by the furthest progress: the end cut judges the position at every sample with a bid.
+        for (; j <= C; j++) {
+          const b = bid[j];
+          if (!(b > 0)) continue;
+          let trailHit = false;
+          if (trail) {
+            if (!armed) { if (b >= arm) { armed = true; peak = b; } }
+            else if (b > peak) peak = b;
+            else if (b <= peak - 0.03 + EPS) trailHit = true;
+          }
+          judged = j;
+          const net = count * b - orderFee(count, b, true, FEES) - cost;
+          if (!(net > EPS)) { dec = j; kind = K_CUT; ride = false; break; }
+          if (prog[j] >= share) { ride = true; continue; }
+          // In profit, but a comeback took the current progress back under the last share: the fixed exit applies.
+          ride = false;
+          if (j >= stop) { dec = j; kind = K_TIME; break; }
+          if (b >= tp) { dec = j; kind = K_TP; break; }
+          if (b <= sl) { dec = j; kind = K_SL; break; }
+          if (trailHit) { dec = j; kind = K_TRAIL; break; }
+        }
       }
     }
-    if (at < 0 && stop < c) {
-      const j = nb[stop];
-      if (j >= 0 && j < c) { at = j; px = bid[j]; kind = K_TIME; }
+    const won = side === 0 ? g.resultA === 1 : g.resultA === 0;
+    if (dec >= 0) {
+      // Sold one latency after the deciding sample, at the first bid from there (never on the deciding sample's quote).
+      const k0 = Math.max(dec + this.lat, e + 1);
+      const k = k0 <= C ? nb[k0] : -1;
+      if (k >= 0) { this.xDec = dec; this.xAt = k; this.xPx = bid[k]; this.xKind = kind; return; }
+      // No bid to sell into up to closeIdx: held to settlement after a decision to sell, not in profit in the last share.
+      ride = false;
     }
-    if (at < 0) {
-      // Settlement rule at sample c.
-      const won = side === 0 ? g.resultA === 1 : g.resultA === 0;
-      const b = bid[c];
-      if (b > 0) {
-        if (count * b - orderFee(count, b, true, FEES) - cost > EPS) { at = c; px = won ? 1 : 0; kind = K_RIDE; }
-        else { at = c; px = b; kind = K_CUT; }
-      } else {
-        const j = nb[c];
-        if (j >= 0) { at = j; px = bid[j]; kind = K_CUT; }
-        else { at = c; px = won ? 1 : 0; kind = K_BREACH; }
-      }
-    }
-    this.xAt = at; this.xPx = px; this.xKind = kind;
+    this.xDec = dec >= 0 ? dec : judged >= 0 ? judged : C;
+    this.xAt = C;
+    this.xPx = won ? 1 : 0;
+    this.xKind = ride ? K_RIDE : K_BREACH;
   }
 
-  /** Flush open day clusters and return every cell with entries (real or placebo). Call once after the last match. */
-  cells(): CellResult[] {
-    const out: CellResult[] = [];
+  /** Every cell with a real or placebo entry, in design order (contract C3); the study can keep running after it. Throws
+   *  when the stratum is unknown (none given to the constructor and no grid seen): the design differs between H and R. */
+  exportCells(): FamilyBExport {
+    const stratum = this.stratum;
+    if (stratum === undefined) {
+      throw new Error('tennisTaSignals: exportCells of a study that has no stratum (pass opts.stratum to new SignalStudy: a slice without a grid cannot tell H from R, and their designs differ)');
+    }
+    const out: FamilyBCell[] = [];
     const keys = [...this.cellMap.keys()].sort((a, b) => a - b);
     for (const key of keys) {
       const c = this.cellMap.get(key)!;
-      c.acc.flush(); c.stress.flush(); c.plac.flush(); c.pairFlush();
       const x = key % N_EXIT, rest = (key - x) / N_EXIT;
       const ctx = rest % CTX_STRIDE, sd = (rest - ctx) / CTX_STRIDE;
       const dir = sd % 2, s = (sd - dir) / 2;
       const sp = SERIES[s];
       const group = `B|${sp.reading}|${sp.bar}|${sp.trigger}|${DIRS[dir]}`;
-      const folds: Record<string, ClusterStats> = {};
-      for (const [k, v] of Object.entries(c.acc.folds)) folds[k] = copyStats(v);
+      const units: Record<string, [number, number, number, number]> = {};
+      for (const [u, r] of c.units) units[u] = [r[0], r9(r[1]), r[2], r9(r[3])];
+      const days: Record<string, [number, number]> = {};
+      for (const [d, r] of c.days) days[d] = [r[0], r9(r[1])];
       out.push({
-        id: `${group}|${this.ctxName(ctx)}|${EXITS[x]}`,
-        family: 'B',
-        group,
-        total: copyStats(c.acc.total),
-        folds,
-        stress: copyStats(c.stress.total),
-        placebo: c.plac.total.n ? copyStats(c.plac.total) : emptyStats(),
-        pairDiff: { ...c.pair },
-        breaches: c.breaches,
-        gross: c.gross,
-        fees: c.fees,
+        id: `${group}|${this.ctxName(ctx)}|${EXITS[x]}`, group,
+        n: c.n, sum: r9(c.sum), sumSq: c.sumSq, sum3: c.sum3, sum4: c.sum4,
+        breaches: c.breaches, gross: r9(c.gross), fees: r9(c.fees), stressSum: r9(c.stressSum),
+        units, days,
       });
     }
-    return out;
+    const bars = BAR_NAMES.filter((_, b) => this.barOn[b] && (stratum === 'R' || BAR_ON_H[b]));
+    return {
+      stratum,
+      designSize: this.designSize(),
+      diagnostics: {
+        ...this.diagnostics(),
+        tours: [...this.tours.keys()],
+        settings: {
+          orderUsd: this.orderUsd, latencySec: this.lat, seed: this.seed, bars, settleFrac: this.settleFrac, endEntryMargin: this.endEntryMargin,
+          phasesInDesign: PHASES.filter((p) => p !== 't3' || this.t3InDesign()), placeboMinSec: PLACEBO_MIN_SEC, hLotCap: H_LOT_CAP,
+          stress: `every sale ${this.stressTicks} tick(s) lower (F2), every fee x${this.stressFeeMult}`, stressTicks: this.stressTicks, stressFeeMult: this.stressFeeMult,
+          taEngine: taEngine(),
+        },
+      },
+      cells: out,
+    };
   }
 }
