@@ -784,7 +784,10 @@ export function requoteBetween(ev: Ev[], m: { ticker: string; kind: MarketKind; 
   const p0 = fvAt(t0);
   if (p0 === undefined) return;
   const off = logit((bid0 + ask0) / 2) - logit(p0);
-  const w = Math.max(1, Math.round((ask0 - bid0) * 100));
+  // Kalshi's tick: 0.1c below 10c and above 90c, 1c in between (the recordings' books; Nov 5: whole-cent requotes in the
+  // tails made the twin's mid jump in coarse logit steps, 15 s mid moves sd 0.44 vs real 0.37, index follow 0.66 vs 0.77).
+  const tickOf = (p: number) => (p < 0.1 || p > 0.9 ? 0.001 : 0.01);
+  const spread0 = ask0 - bid0;
   // With a lag the quote carries a share of the fair value's move since the candle, reached through a first-order filter.
   const l0 = logit(p0), keep = lag ? Math.exp(-1 / Math.max(1e-6, lag.tauSec)) : 0;
   let y = 0, last = t0;
@@ -800,8 +803,10 @@ export function requoteBetween(ev: Ev[], m: { ticker: string; kind: MarketKind; 
       q = l0 + y;
     }
     const mid = 1 / (1 + Math.exp(-(q + off)));
-    const bid = Math.min(99 - w, Math.max(1, Math.round(mid * 100 - w / 2)));
-    ev.push({ t, k: 'book', ticker: m.ticker, bids: [{ price: bid / 100, size: 100 }], asks: [{ price: (bid + w) / 100, size: 100 }], ts: t });
+    const tick = tickOf(mid), w = Math.max(1, Math.round(spread0 / tick));
+    const lo = Math.round((mid - (w * tick) / 2) / tick);
+    const bid = Math.min(Math.round((1 - tick) / tick) - w, Math.max(1, lo));
+    ev.push({ t, k: 'book', ticker: m.ticker, bids: [{ price: +(bid * tick).toFixed(4), size: 100 }], asks: [{ price: +((bid + w) * tick).toFixed(4), size: 100 }], ts: t });
   }
 }
 
