@@ -763,8 +763,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       // The market anchor, as the engine applies it (bot/model/marketAnchor.ts).
       if (anchor) {
         const pMkt = anchor.cfg.rawMid ? mid : model.marketProbability(mid);
-        anchor.observe(m.ticker, tauSec, pMkt, pYes);
-        pYes = anchor.price(m.ticker, tauSec, pMkt, pYes);
+        const actx = { asset: m.asset, sigma: vol.sigmaPerSqrtSec };
+        anchor.observe(m.ticker, tauSec, pMkt, pYes, actx);
+        pYes = anchor.price(m.ticker, tauSec, pMkt, pYes, actx);
       }
       const mRead = observeMarket(mstate, { asset: m.asset, ticker: m.ticker, index: idx!, now: st.now, bid, ask, trades: st.features.micro.get(m.ticker)?.tradesIn(st.now, 300_000) });
       opts.onEval?.({ ticker: m.ticker, now: st.now, pYes, fv: fv.pYes, bid: bid.price, ask: ask.price, position: pos.position(m.ticker), spot: spot.value, strike: terms.strike, sigma: vol.sigmaPerSqrtSec, sigmaPricing: sigmaFv,

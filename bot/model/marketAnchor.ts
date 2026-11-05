@@ -45,7 +45,17 @@ export interface MarketAnchorConfig {
    *  it (MARKET_ANCHOR_SPLIT, Nov 5: on the fixed base every anchor loss sat in NO longshots, the largest
    *  fade-the-favourite calls); each direction's prior is the bucket's own weight. */
   split?: boolean;
+  /** Wild regime (MARKET_ANCHOR_WILD_RATIO, 0 = off; Nov 5: on the Oct 29 crash the raw price made +$466 and the mid
+   *  lagged, while the anchor had learned w ~0 from the calm days before): when the coin's pricing volatility runs this
+   *  many times its slow average (MARKET_ANCHOR_WILD_HALF_LIFE_H), the weight is wildW (MARKET_ANCHOR_WILD_W, 1 = the
+   *  bot's own price). */
+  wildRatio?: number;
+  wildW?: number;
+  wildHalfLifeH?: number;
 }
+
+/** What the anchor reads of the coin at an evaluation: its pricing volatility (any unit, the same each time). */
+export interface AnchorContext { asset: string; sigma: number }
 
 export const DEFAULT_MARKET_ANCHOR: MarketAnchorConfig = { enabled: false, prior: 0.5, priorSd: 0.5, window: 400, maxW: 1.5 };
 
@@ -87,6 +97,9 @@ export class MarketAnchor {
   private lastPrune = 0;
   private dirty = false;
   private shuffleSeed = 1;
+  /** Slow average of each coin's pricing volatility (wild regime), with when it started and was last fed. */
+  private readonly slowVol = new Map<string, { v: number; first: number; last: number }>();
+  readonly wild = { evals: 0, wild: 0 };
   /** Log loss sums of the anchored, raw and market prices at the scored snapshots (status, replay report). */
   readonly score = { n: 0, anchored: 0, raw: 0, market: 0 };
 
@@ -123,15 +136,40 @@ export class MarketAnchor {
     return w;
   }
 
+  /** Feed the coin's pricing volatility into its slow average (once a minute at most). */
+  private feedVol(ctx: AnchorContext): void {
+    if (!(ctx.sigma > 0) || !Number.isFinite(ctx.sigma)) return;
+    const t = this.now(), e = this.slowVol.get(ctx.asset);
+    if (!e) { this.slowVol.set(ctx.asset, { v: ctx.sigma, first: t, last: t }); return; }
+    if (t - e.last < 60_000) return;
+    const hl = (this.cfg.wildHalfLifeH ?? 48) * 3_600_000;
+    e.v += (1 - Math.pow(0.5, (t - e.last) / hl)) * (ctx.sigma - e.v);
+    e.last = t;
+  }
+
+  /** True when the coin's volatility runs wildRatio times its slow average (after 6 h of history). */
+  isWild(ctx?: AnchorContext): boolean {
+    const r = this.cfg.wildRatio ?? 0;
+    if (!(r > 0) || !ctx) return false;
+    const e = this.slowVol.get(ctx.asset);
+    return !!e && this.now() - e.first >= 6 * 3_600_000 && e.v > 0 && ctx.sigma >= r * e.v;
+  }
+
   /** The anchored price (the raw price when the anchor is off). */
-  price(ticker: string, tauSec: number, pMarket: number, pBot: number): number {
+  price(ticker: string, tauSec: number, pMarket: number, pBot: number, ctx?: AnchorContext): number {
     if (!this.cfg.enabled) return pBot;
     const a = L(pMarket), d = L(pBot) - a;
-    return clamp(sigmoid(a + this.weight(ticker, tauSec, dirOf(a, d)) * d), 0.001, 0.999);
+    let w = this.weight(ticker, tauSec, dirOf(a, d));
+    if ((this.cfg.wildRatio ?? 0) > 0) {
+      this.wild.evals++;
+      if (this.isWild(ctx)) { this.wild.wild++; w = this.cfg.wildW ?? 1; }
+    }
+    return clamp(sigmoid(a + w * d), 0.001, 0.999);
   }
 
   /** One evaluation: kept when it is the nearest yet to the middle of its bucket (as the accuracy gate keeps them). */
-  observe(ticker: string, tauSec: number, pMarket: number, pBot: number): void {
+  observe(ticker: string, tauSec: number, pMarket: number, pBot: number, ctx?: AnchorContext): void {
+    if (ctx && (this.cfg.wildRatio ?? 0) > 0) this.feedVol(ctx);
     if (!(pMarket >= 0.03 && pMarket <= 0.97) || !(pBot > 0.001 && pBot < 0.999)) return;
     const group = accuracyGroup(ticker);
     const b = accuracyBucket(group, tauSec);
@@ -221,6 +259,7 @@ export class MarketAnchor {
     })) : undefined;
     const s = this.score;
     const m = (x: number) => (s.n ? +(x / s.n).toFixed(5) : null);
-    return { enabled: this.cfg.enabled, fixedW: this.cfg.fixedW ?? null, prior: this.cfg.prior, scored: s.n, llAnchored: m(s.anchored), llRaw: m(s.raw), llMarket: m(s.market), groups, series };
+    const wild = (this.cfg.wildRatio ?? 0) > 0 ? { wildRatio: this.cfg.wildRatio, wildShare: this.wild.evals ? +(this.wild.wild / this.wild.evals).toFixed(4) : null } : {};
+    return { ...wild, enabled: this.cfg.enabled, fixedW: this.cfg.fixedW ?? null, prior: this.cfg.prior, scored: s.n, llAnchored: m(s.anchored), llRaw: m(s.raw), llMarket: m(s.market), groups, series };
   }
 }

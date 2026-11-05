@@ -132,3 +132,18 @@ test('market anchor split: a disagreement that fades the favourite and is wrong 
   const g = a.status().groups.updown15m.find((b: any) => b.lo <= 520 && 520 < b.hi) as any;
   assert.ok(g.toward !== undefined && g.away !== undefined);
 });
+
+test('market anchor wild regime: off by default; volatility far above its slow average gives the bot its own price', () => {
+  let now = 0;
+  const t = 'KXBTC15M-26NOV05-15';
+  const off = new MarketAnchor({ ...DEFAULT_MARKET_ANCHOR, enabled: true, fixedW: 0 }, undefined, () => now);
+  assert.equal(off.price(t, 500, 0.4, 0.6, { asset: 'BTC', sigma: 9 }), 0.4);
+  const a = new MarketAnchor({ ...DEFAULT_MARKET_ANCHOR, enabled: true, fixedW: 0, wildRatio: 2 }, undefined, () => now);
+  for (let i = 0; i < 8 * 60; i++) { a.observe(t, 500, 0.4, 0.6, { asset: 'BTC', sigma: 1 }); now += 60_000; }
+  assert.ok(Math.abs(a.price(t, 500, 0.4, 0.6, { asset: 'BTC', sigma: 1.5 }) - 0.4) < 1e-9);
+  assert.ok(Math.abs(a.price(t, 500, 0.4, 0.6, { asset: 'BTC', sigma: 2.5 }) - 0.6) < 1e-9);
+  // Another coin has no history yet: never wild.
+  assert.ok(Math.abs(a.price(t, 500, 0.4, 0.6, { asset: 'ETH', sigma: 5 }) - 0.4) < 1e-9);
+  assert.equal((a.status() as any).wildShare, 0.3333);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.marketAnchor.wildRatio, 0);
+});
