@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; 'agree' checks that the signals fire the same on Coinbase spot as on Binance spot; empty runs the sweep"
+        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; 'agree' checks that the signals fire the same on Coinbase spot as on Binance spot; 'registry' writes every round's rows as registry v1 shards (contract type, modules); empty runs the sweep"
         required: false
         default: ''
       blind_run:
@@ -152,7 +152,7 @@ jobs:
 
   sweep:
     needs: [blind-open]
-    if: ${{ !cancelled() && inputs.only != 'fidelity' && inputs.only != 'agree' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) && (inputs.only != 'study' || inputs.study_run != '') }}
+    if: ${{ !cancelled() && inputs.only != 'fidelity' && inputs.only != 'agree' && inputs.only != 'registry' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) && (inputs.only != 'study' || inputs.study_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
@@ -274,7 +274,7 @@ jobs:
         run: '[ ! -d out ] || bash deploy/drive_lab.sh put "models/perp-ta/${{ (inputs.only == ''blind'' || inputs.only == ''study'') && format(''{0}/'', inputs.only) || '''' }}run-$GITHUB_RUN_ID" out'
 
   fidelity:
-    if: ${{ inputs.only != 'blind' && inputs.only != 'study' && inputs.only != 'agree' }}
+    if: ${{ inputs.only != 'blind' && inputs.only != 'study' && inputs.only != 'agree' && inputs.only != 'registry' }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
@@ -324,7 +324,7 @@ jobs:
     needs: [blind-open, sweep, fidelity]
     # Not after a cancel (a newer push supersedes this run): partial artifacts would post a misleading summary. Not after a
     # refused blind opening either (nothing was read).
-    if: ${{ !cancelled() && inputs.only != 'agree' && needs.blind-open.result != 'failure' && (inputs.only != 'study' || inputs.study_run != '') }}
+    if: ${{ !cancelled() && inputs.only != 'agree' && inputs.only != 'registry' && needs.blind-open.result != 'failure' && (inputs.only != 'study' || inputs.study_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -472,3 +472,61 @@ jobs:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
       - name: Results to Drive
         run: bash deploy/drive_lab.sh put "models/perp-ta/agree/run-$GITHUB_RUN_ID/report" report
+
+  # only: registry (Steven 4:59 PM EST / 21:59 UTC Nov 5: $/h tracked per contract type): every perp TA round's rows in the
+  # project registry as v1 shards tagged contract_type perpetual with the modules each touches (research/perpTaRegistry.ts
+  # backfill). The legacy rows of rounds 1-2 (registry/perp-ta-*.jsonl, which the registry merge does not read) are
+  # converted; v1 shards without the fields are filled in with their trial ids unchanged. Every shard written is checked
+  # with the registry's own validator (research/registry.py, meta plan branch) first; nothing else on Drive is touched.
+  registry:
+    if: ${{ inputs.only == 'registry' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The rows on Drive (legacy and v1)
+        run: |
+          set -o pipefail
+          R=gdrive:kalshi-bot-archive/registry
+          mkdir -p reg/legacy reg/v1
+          rclone copy "$R/" reg/legacy --max-depth 1 --include 'perp-ta-*.jsonl'
+          if rclone lsf --files-only "$R/shards/perp-ta/" > /dev/null 2> shards.err; then
+            rclone copy "$R/shards/perp-ta/" reg/v1 --max-depth 1 --include '*.jsonl'
+          else grep -qi 'directory not found' shards.err || { cat shards.err; echo "shards listing failed"; exit 1; }; fi
+          echo "legacy: $(ls reg/legacy | tr '\n' ' ')"; echo "v1: $(ls reg/v1 | tr '\n' ' ')"
+      - name: Backfill and validate
+        run: |
+          set -o pipefail
+          npx tsx research/perpTaRegistry.ts backfill --legacy reg/legacy --v1 reg/v1 --out reg/out
+          git fetch -q --depth 1 origin claude/project-thread-79ntof
+          git show FETCH_HEAD:research/registry.py > reg/registry.py
+          shopt -s nullglob; F=(reg/out/*.jsonl); rc=0
+          [ ${#F[@]} -eq 0 ] || python3 -I reg/registry.py validate "${F[@]}" > val.txt || rc=$?
+          [ ! -f val.txt ] || { grep INVALID val.txt | head -20 || true; cut -d' ' -f2- val.txt | sort | uniq -c || true; }
+          exit $rc
+      - name: Shards to Drive
+        run: |
+          R=gdrive:kalshi-bot-archive/registry/shards/perp-ta
+          rclone mkdir "$R"
+          echo "## Perp TA registry shards (contract type perpetual)" >> "$GITHUB_STEP_SUMMARY"
+          for f in reg/out/*.jsonl; do
+            [ -f "$f" ] || continue
+            rclone copyto "$f" "$R/$(basename "$f")"
+            echo "- $(basename "$f"): $(wc -l < "$f") rows" | tee -a "$GITHUB_STEP_SUMMARY"
+          done

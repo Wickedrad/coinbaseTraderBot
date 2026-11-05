@@ -168,3 +168,63 @@ test('perp TA registry v1: trial ids match registry.py make_id; rows carry the s
   assert.deepEqual(r.data, { source: 'history', days: ['2025-07-01', '2025-07-02'], doge: false, benches: 'own' });
   for (const k of ['trial_id', 'thread', 'family', 'arm', 'role', 'code_sha', 'data', 'by_day'] as const) assert.ok(k in r, k);
 });
+
+test('perp TA registry: rows carry contract type perpetual and the modules; the backfill converts legacy rows and fills v1 shards', async () => {
+  const { regRow, regModules, backfill, controlArm } = await import('../research/perpTaRegistry');
+  const blind = regRow({ arm: 'blind:x:all', role: 'candidate', control: 'c', codeSha: 's', heldOut: true, byDay: { '2025-07-01': 1, '2025-07-02': 0 } });
+  assert.equal(blind.contract_type, 'perpetual');
+  assert.equal(blind.held_out, true);
+  assert.equal(blind.hours, 48);
+  assert.ok(blind.modules.includes('perp-exits') && blind.modules.includes('ta-net') && blind.modules.includes('ta-conviction'));
+  assert.deepEqual([...blind.module_roles.changes, ...blind.module_roles.reads].sort(), blind.modules);
+  assert.ok(!regModules(1).modules.includes('ta-conviction'), 'round 1 read no conviction');
+  assert.equal(regRow({ arm: 'a', role: 'control', codeSha: 's' }).held_out, false);
+  assert.equal(regRow({ arm: 'a', role: 'control', codeSha: 's' }).hours, undefined);
+
+  // Legacy rows (before registry v1): round 1 has no round field; the study names the run it studied.
+  const base = { thread: 'perp-ta-rulebook', run: '11', sha: 'sha1', at_utc: '2026-11-05T15:00:00.000Z' };
+  const legacy = {
+    'perp-ta-run-11.jsonl': [{ ...base, kind: 'run', n_raw: 5, funnel: { '+validation': 0 } }, { ...base, kind: 'group', group: 'g', pol: 'p', cond: 'c', verdict: 'fails validation' }],
+    'perp-ta-study-run-12.jsonl': [{ thread: 'perp-ta-rulebook', kind: 'study', run: '12', sha: 'sha2', of_sweep_run: '11', at_utc: base.at_utc, n_raw: 5, n_eff: 2, spa_validation_p: 0.9 }],
+    'perp-ta-run-13.jsonl': [{ ...base, run: '13', kind: 'run', round: 3 }],
+    'perp-ta-blind-run-15.jsonl': [{ thread: 'perp-ta-rulebook', kind: 'blind-test', run: '15', sha: 'sha4', frozen_from_run: '11', set_hash: 'abcdef0123456789', n_candidates: 3, at_utc: base.at_utc, verdict: { rulebook: { pass: false, why: ['no gain'] }, passersRulebook: { pass: true, why: [] } } }],
+  };
+  // A v1 shard written before the contract fields (round 3's sweep run 13, already on Drive) and one already complete.
+  const strip = (r: object) => { const o: Record<string, unknown> = { ...r }; for (const k of ['contract_type', 'modules', 'module_roles', 'held_out', 'hours']) delete o[k]; return o; };
+  const ctl13 = regRow({ arm: controlArm('13'), role: 'control', codeSha: 'sha1' });
+  const old13 = [strip(ctl13), strip(regRow({ arm: 'r3:sweep:run-13', role: 'candidate', control: ctl13.trial_id, codeSha: 'sha1' }))];
+  const done = [regRow({ arm: 'study:of-run-13', role: 'candidate', codeSha: 'sha3' })];
+  // A v1 blind shard missing the fields: the judged rulebook is held out, the passers' (chosen on the sealed block) is not.
+  const bd2 = { '2025-07-01': 1 };
+  const blindOld = [strip(regRow({ arm: 'blind:x:all', role: 'candidate', codeSha: 's', byDay: bd2 })), strip(regRow({ arm: 'blind:x:passers', role: 'candidate', codeSha: 's', byDay: bd2 }))];
+  const { out, log } = backfill(legacy, { 'run-13.jsonl': old13, 'study-run-14.jsonl': done as unknown as Record<string, unknown>[], 'blind-run-16.jsonl': blindOld });
+  assert.deepEqual(out['blind-run-16.jsonl'].map((r) => r.held_out), [true, false]);
+  delete out['blind-run-16.jsonl'];
+  assert.deepEqual(Object.keys(out).sort(), ['blind-run-15.jsonl', 'run-11.jsonl', 'run-13.jsonl', 'study-run-12.jsonl']);
+  const [bf, ba, bp] = out['blind-run-15.jsonl'];
+  assert.deepEqual([bf.arm, ba.arm, bp.arm], ['blind:abcdef012345:flat', 'blind:abcdef012345:all', 'blind:abcdef012345:passers']);
+  assert.ok(ba.control === bf.trial_id && bp.control === bf.trial_id && !ba.held_out && !bp.held_out);
+  assert.match(ba.verdict ?? '', /^no gain \(legacy row/);
+  assert.ok(log.some((l) => /perp-ta-run-13.jsonl: run-13.jsonl already a v1 shard, skipped/.test(l)));
+  const [ctl, run, grp] = out['run-11.jsonl'];
+  assert.equal(ctl.arm, 'random-entries:run-11');
+  assert.equal(run.arm, 'r1:sweep:run-11');
+  assert.equal(grp.arm, 'r1:run-11:g|p|c');
+  assert.equal(run.control, ctl.trial_id);
+  assert.equal(grp.control, ctl.trial_id);
+  // Same trial id as the current writer gives the same record; the record is kept under raw; ts is when the trial ran.
+  assert.equal(run.trial_id, regRow({ arm: 'r1:sweep:run-11', role: 'candidate', codeSha: 'sha1' }).trial_id);
+  assert.equal(run.raw?.n_raw, 5);
+  assert.equal(run.ts, base.at_utc);
+  assert.equal(run.code_epoch, 'perp-minute-sim sha1 (perp-ta round 1)');
+  for (const r of [ctl, run, grp, ...out['study-run-12.jsonl']]) {
+    assert.equal(r.contract_type, 'perpetual');
+    assert.ok(!r.modules.includes('ta-conviction'), `${r.arm}: round 1`);
+    assert.equal(r.held_out, false);
+  }
+  assert.equal(out['study-run-12.jsonl'][0].arm, 'study:of-run-11');
+  // The v1 shard keeps its trial ids and fields and gains the contract fields (round 3: conviction read).
+  assert.deepEqual(out['run-13.jsonl'].map((r) => r.trial_id), old13.map((r) => r.trial_id));
+  for (const r of out['run-13.jsonl']) { assert.equal(r.contract_type, 'perpetual'); assert.ok(r.modules.includes('ta-conviction')); assert.ok(r.code_epoch?.startsWith('perp-minute-sim sha1')); }
+  assert.ok(log.some((l) => /study-run-14.jsonl: complete, left as is/.test(l)));
+});
