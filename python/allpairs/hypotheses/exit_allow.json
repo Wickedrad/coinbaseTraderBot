@@ -1,0 +1,5 @@
+{
+  "name": "exit_allow",
+  "notes": "In the last 10% of the window the exit policy may also sell a position in profit instead of always riding it to settlement (Steven's rule allows riding only then, never forces it).",
+  "exit": {"end_rule": "allow"}
+}
