@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { OrderRejectedError, OrderStateUnknownError } from '../bot/kalshi/types';
 import { Oms, OrderIntent } from '../bot/oms/oms';
 import { canTransition } from '../bot/oms/orderState';
+import { openEntryFee, openSidePrice, PositionBook as Book } from '../bot/oms/positions';
 import { DEFAULT_FEES } from '../bot/fees';
 import { FakeGateway } from './fakeGateway';
 import { tmpAudit, tmpDir } from './helpers';
@@ -153,4 +154,29 @@ test('settlement realizes fee-inclusive PnL', async () => {
   const m = oms.settle(rec.ticker, 'yes')!;
   assert.ok(Math.abs(m.realized! - (10 - 4 - 0.17)) < 1e-9);
   assert.equal(oms.positions.position(rec.ticker), 0);
+});
+
+test('position book: the open contracts\' cost at the average, apart from earlier exits; through zero the other side opens', () => {
+  const b = new Book();
+  const f = (side: 'bid' | 'ask', count: number, price: number, fee: number) => b.applyFill({ ticker: 'X', side, count, price, fee });
+  const at = () => [+openSidePrice(b.get('X'))!.toFixed(4), +openEntryFee(b.get('X'))!.toFixed(4)];
+  f('bid', 10, 0.4, 0.1);
+  f('bid', 10, 0.5, 0.1);
+  assert.deepEqual(at(), [0.45, 0.01], 'two buys: the average');
+  f('ask', 5, 0.7, 0.05);
+  assert.deepEqual(at(), [0.45, 0.01], 'a profitable partial exit leaves the rest at its own cost (net cash would read 0.22)');
+  f('ask', 20, 0.6, 0.2);
+  const x = b.get('X')!;
+  assert.equal(x.yes, -5);
+  assert.deepEqual(at(), [0.4, 0.01], 'through zero: 5 NO at 0.40 (YES sold at 0.60), their share of the fee');
+  f('bid', 5, 0.3, 0.05);
+  assert.deepEqual([b.get('X')!.openCost, b.get('X')!.openFees, openSidePrice(b.get('X'))], [0, 0, undefined], 'flat');
+  // A position saved before the open cost was kept reads net cash, as before, and keeps the average from its next fill.
+  const old = new Book([{ ticker: 'O', closeTs: 0, asset: '', yes: 10, netCash: -4, fees: 0.1, settled: false }]);
+  assert.deepEqual([openSidePrice(old.get('O')), openEntryFee(old.get('O'))], [0.4, 0.01]);
+  old.applyFill({ ticker: 'O', side: 'ask', count: 5, price: 0.6, fee: 0.05 });
+  assert.deepEqual([+openSidePrice(old.get('O'))!.toFixed(4), +openEntryFee(old.get('O'))!.toFixed(4)], [0.4, 0.01]);
+  b.applyFill({ ticker: 'S', side: 'bid', count: 3, price: 0.2, fee: 0 });
+  b.settle('S', 'no', 1);
+  assert.deepEqual([b.get('S')!.openCost, b.get('S')!.openFees], [0, 0]);
 });
