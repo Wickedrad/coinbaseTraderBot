@@ -352,7 +352,10 @@ export class HourlyQuotaPacer {
     const yesBefore = round2(after.yes - signed);
     if (!(f.count > 0) || Math.abs(yesBefore) < 1e-9 || Math.sign(yesBefore) === Math.sign(signed)) return 0;
     const n = Math.min(f.count, Math.abs(yesBefore));
-    const netCashBefore = after.netCash + signed * f.price;
+    // The book's cash is cumulative: earlier reductions' proceeds are in it. Taking out what those reductions already
+    // credited (their realized result, fees in) leaves the cost of the lots still open (entry fees in) as the basis;
+    // without it every later partial exit was credited again with the earlier ones' profit (or debited their loss).
+    const netCashBefore = after.netCash + signed * f.price - (this.fed.get(f.ticker) ?? 0);
     const feesBefore = after.fees - fee;
     const basis = (yesBefore > 0 ? -netCashBefore / yesBefore : 1 - netCashBefore / -yesBefore) + feesBefore / Math.abs(yesBefore);
     const sidePrice = yesBefore > 0 ? f.price : 1 - f.price;

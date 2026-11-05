@@ -110,6 +110,28 @@ test('the group: positions each in profit after fees whose profits together cove
   assert.deepEqual(g.judge('D', undefined, 0.75, t0 + 304_000), { sell: false, sumUsd: 0, members: 0 });
 });
 
+test('partial exits: each credits only its own lots, so the credits sum to the round trip (long and short)', () => {
+  const t0 = T('2026-10-29T14:00:00Z');
+  const p = new HourlyQuotaPacer(CFG, t0);
+  const book = new PositionBook();
+  const fill = (ticker: string, side: 'bid' | 'ask', count: number, price: number, fee: number, at: number) => p.onFill({ ticker, side, count, price }, fee, book.applyFill({ ticker, side, count, price, fee }), at);
+  // Long: buy 10 at 0.50 (fee 0.10), sell 5 + 5 at 0.60 (fee 0.05 each): 6.00 - 5.00 - 0.20 = 0.80 in all, 0.40 each
+  // (the second sale was credited 0.90 before: the first sale's proceeds lowered its basis).
+  fill('A', 'bid', 10, 0.5, 0.1, t0 + 1000);
+  assert.equal(+fill('A', 'ask', 5, 0.6, 0.05, t0 + 2000).toFixed(4), 0.4);
+  assert.equal(+fill('A', 'ask', 5, 0.6, 0.05, t0 + 3000).toFixed(4), 0.4);
+  assert.equal(+p.onSettled('A', book.settle('A', 'yes', t0 + 4000)!.realized!, t0 + 4000).toFixed(4), 0, 'nothing left for the settlement');
+  // Short: sell 10 YES at 0.60 (NO at 0.40), buy back 5 + 5 at 0.50, no fees: 0.50 each.
+  fill('B', 'ask', 10, 0.6, 0, t0 + 5000);
+  assert.equal(+fill('B', 'bid', 5, 0.5, 0, t0 + 6000).toFixed(4), 0.5);
+  assert.equal(+fill('B', 'bid', 5, 0.5, 0, t0 + 7000).toFixed(4), 0.5);
+  // A losing partial exit is debited once: buy 10 at 0.50, sell 5 at 0.40, then 5 at 0.50 (flat).
+  fill('C', 'bid', 10, 0.5, 0, t0 + 8000);
+  assert.equal(+fill('C', 'ask', 5, 0.4, 0, t0 + 9000).toFixed(4), -0.5);
+  assert.equal(+fill('C', 'ask', 5, 0.5, 0, t0 + 10_000).toFixed(4), 0);
+  assert.equal(+p.status(t0 + 10_000).realized24hUsd.toFixed(4), 0.8 + 1 - 0.5);
+});
+
 test('the state file resumes the running cycle after a restart and drops it after the anchor, keeping open markets\' credits', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pacer-'));
   const file = path.join(dir, 'quota_pacer_state.json');
