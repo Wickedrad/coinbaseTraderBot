@@ -1000,7 +1000,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       if (extraOk && !plan.place.some((p) => p.purpose === 'entry')) {
         while (trainTs.length && trainTs[0] < st.now - 3_600_000) trainTs.shift();
         const perHour = strategy.trainTrades;
-        if (perHour > 0 && !trainTicker.has(m.ticker) && !(strategy.trainSkipSeries ?? []).some((x) => seriesMatches(x, m.ticker)) && trainTs.length < perHour && st.now - (trainTs[trainTs.length - 1] ?? 0) >= (3_600_000 / perHour) * 0.5) {
+        if (perHour > 0 && !trainTicker.has(m.ticker) && ![...(strategy.trainSkipSeries ?? []), ...(strategy.excludeSeries ?? [])].some((x) => seriesMatches(x, m.ticker)) && trainTs.length < perHour && st.now - (trainTs[trainTs.length - 1] ?? 0) >= (3_600_000 / perHour) * 0.5) {
           const buyYes = qDecision >= mid;
           // TRAINING_MODE=maker: the side rests at its own touch (as the engine places it).
           const maker = strategy.trainMode === 'maker';

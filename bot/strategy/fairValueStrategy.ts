@@ -546,7 +546,9 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   if (opts.entries === false) return out;
 
   const lateNoEntry = loserNoEntry(v, cfg);
-  const entriesAllowed = (v.entryWindowOpen ?? true) && v.tauSec >= v.noEntryBeforeCloseSec && !lateNoEntry;
+  const excludedSeries = (cfg.excludeSeries ?? []).some((x) => seriesMatches(x, v.ticker));
+  const entriesAllowed = (v.entryWindowOpen ?? true) && v.tauSec >= v.noEntryBeforeCloseSec && !lateNoEntry && !excludedSeries;
+  if (excludedSeries) out.notes.push('series excluded (STRATEGY_EXCLUDE_SERIES)');
   if (lateNoEntry) out.notes.push('loser window: no new risk this close to the end');
   // Ensemble veto: the model's disagreement with the market must exceed its own uncertainty.
   const vetoed = v.pStd !== undefined && v.pMarket !== undefined && cfg.ensembleVetoSigmas > 0 && Math.abs(v.pYes - v.pMarket) < cfg.ensembleVetoSigmas * v.pStd;

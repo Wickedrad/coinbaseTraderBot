@@ -2373,7 +2373,7 @@ export class Engine {
     // contract, sized at the order band's minimum. They keep a steady stream of trades to learn from; tagged 'train:' so
     // their results can be separated from edge-qualified entries, and screened by the fair value gate below like any entry.
     // A resting maker quote does not count as entering: quotes far from the touch rarely fill.
-    if (reason && entryWindowOpen && st.position === 0 && !plan.place.some((p) => p.purpose === 'entry') && !(S.trainSkipSeries ?? []).some((x) => seriesMatches(x, m.ticker)) && this.trainBudget(now, m.ticker)) {
+    if (reason && entryWindowOpen && st.position === 0 && !plan.place.some((p) => p.purpose === 'entry') && ![...(S.trainSkipSeries ?? []), ...(S.excludeSeries ?? [])].some((x) => seriesMatches(x, m.ticker)) && this.trainBudget(now, m.ticker)) {
       const q = st.q ?? pYes;
       const buyYes = q >= mid;
       // TRAINING_MODE=maker: the side rests at its own touch (YES at the bid, NO at 1 - the ask) instead of crossing.

@@ -304,6 +304,9 @@ export interface StrategyConfig {
    *  series). Eight recorded days with the gate: training on the 15-minute series lost $88 (2 wins in 18), on the hourly
    *  ranges it made money. Paper and live alike. */
   trainSkipSeries?: string[];
+  /** STRATEGY_EXCLUDE_SERIES (unset = none): series that open no new risk at all (entries, quotes; exits still run), as
+   *  "SERIES,*SUFFIX". Steven, Nov 5: no DOGE for now (its hourly ranges dominated replays on thin books). */
+  excludeSeries?: string[];
   /** Markets with no position and no resting order are fully re-evaluated at most every idleEvalSec
    *  (1 s otherwise): most of the bot's CPU is the per-second evaluation of markets it is not in. */
   idleEvalSec: number;
@@ -1340,6 +1343,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     trainTrades: num(env, 'TRAINING_TRADES_PER_HOUR', 12, 0, 120),
     trainMode: oneOf(env, 'TRAINING_MODE', 'taker', ['taker', 'maker'] as const),
     ...(env.TRAINING_SKIP_SERIES ? { trainSkipSeries: parseSeriesList(env.TRAINING_SKIP_SERIES) } : {}),
+    ...(env.STRATEGY_EXCLUDE_SERIES ? { excludeSeries: parseSeriesList(env.STRATEGY_EXCLUDE_SERIES) } : {}),
     idleEvalSec: num(env, 'EVAL_IDLE_SEC', 5, 0, 60),
     outsidePriceFallback: bool(env, 'PAPER_OUTSIDE_PRICE_FALLBACK', false),
     adversarialBoost: bool(env, 'ADVERSARIAL_BOOST', true),

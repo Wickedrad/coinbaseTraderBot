@@ -508,3 +508,12 @@ test('NO longshot edge: off by default; on, only new NO risk under the price pay
   assert.equal(longshotExtra(m, 'no', 0, 0.2), 0);
   assert.equal(longshotExtra(m, 'yes', -3, 0.2), 0); // unwinding a NO position
 });
+
+test('STRATEGY_EXCLUDE_SERIES: an excluded series opens no new risk (no quotes, no entries); others trade as before', () => {
+  const g = { ...cfg, excludeSeries: ['KXDOGE', '*15M'] };
+  const opens = (t: string, c: typeof cfg) => decide(view({ ticker: t, pYes: 0.75 }), c).place.filter((p) => p.purpose === 'quote' || p.purpose === 'entry').length;
+  assert.equal(opens('KXDOGE-26NOV0314-B0.072', g), 0);
+  assert.equal(opens('KXBTC15M-26NOV0314-15', g), 0);
+  assert.ok(opens('KXBTC-26NOV0314-B95000', g) > 0);
+  assert.equal(opens('KXDOGE-26NOV0314-B0.072', cfg), opens('KXBTC-26NOV0314-B95000', cfg));
+});
