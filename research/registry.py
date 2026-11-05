@@ -99,6 +99,8 @@ SCHEMA = {
         'ref': {'type': 'string', 'description': 'run URL, comment or Drive path behind the row'},
         'raw': {'type': 'object', 'description': 'foreign ledger row kept verbatim'},
         'by_tercile': {'type': 'object', 'description': 'HO-1 history tier: {"LOW"|"MID"|"HIGH": {"pnl": $, "hours": h}} over H-HOLD, regime v1 labels'},
+        'base': {'type': 'string', 'description': 'the base bot the arm is measured on: "<name>@<commit>" plus its non-main defaults in base_defaults; the ledger only adds results that share a base (default: code_sha)'},
+        'base_defaults': {'type': 'object', 'description': 'flags where this base differs from main defaults'},
         'placebo_for': {'type': 'string', 'description': 'on a placebo row: the arm it mimics (HO-1 beats_placebo)'},
         'contract_type': {'enum': list(CONTRACT_TYPES), 'description': 'inferred from thread/env when absent (contract_type_of)'},
         'modules': {'type': 'array', 'items': {'type': 'string'}, 'description': 'bot modules the arm changes; inferred from env when absent'},
@@ -382,7 +384,8 @@ def merge(shard_dir, out_dir, S=6):
                           'gain': sum(g), 'gain_per_day': _mean(g), 'p': paired_p(g), 'sr': sr, 'sr0': sr0, 'dsr': prob,
                           'above_2noise': (None if noise is None else sum(g) > 2 * noise * math.sqrt(len(cd))),
                           'flags': r['flags'], 'contract_type': contract_type_of(r), 'modules': modules_of(r),
-                          'held_out': bool(r.get('held_out')), 'ho1': ho1_pass(r.get('heldout'), contract_type_of(r), (r.get('data') or {}).get('engine')), 'hours_per_day': (r.get('hours') or 24 * len(cd)) / max(1, len(cd))})
+                          'held_out': bool(r.get('held_out')), 'ho1': ho1_pass(r.get('heldout'), contract_type_of(r), (r.get('data') or {}).get('engine')),
+                          'base': r.get('base') or r['code_sha'], 'hours_per_day': (r.get('hours') or 24 * len(cd)) / max(1, len(cd))})
         for c, (adj, rej) in zip(cands, bhy([c['p'] for c in cands])):
             c['p_bhy'], c['bhy_pass'] = adj, rej
         rep['families'].append({'thread': th, 'family': fam, 'n_raw': len(rs_all), 'k_eff': ke, 'days': len(days),
@@ -524,14 +527,19 @@ def contract_ledger(rep, target=4.50):
     for ct in CONTRACT_TYPES:
         mine = [c for c in cs if c['contract_type'] == ct]
         ok = sorted([c for c in mine if validated(c)], key=lambda c: -c['gain_per_day'] / c['hours_per_day'])
-        used, picks = set(), []
-        for c in ok:
-            if not used & set(c['modules']):
-                picks.append(c); used |= set(c['modules'])
-        tot = sum(c['gain_per_day'] / c['hours_per_day'] for c in picks)
+        # Module gains only add on the same base bot (benched note, Nov 5): combine per base, report the best base.
+        tot, picks, best_base = 0.0, [], None
+        for b in sorted({c['base'] for c in ok}):
+            used, pk = set(), []
+            for c in ok:
+                if c['base'] == b and not used & set(c['modules']):
+                    pk.append(c); used |= set(c['modules'])
+            t = sum(c['gain_per_day'] / c['hours_per_day'] for c in pk)
+            if best_base is None or t > tot:
+                tot, picks, best_base = t, pk, b
         state = 'MODEL (freeze)' if tot >= target else 'building'
         L.append(f'## {ct.replace("_", " ").title()}: ${tot:+.2f}/h validated of ${target:.2f}/h, {state}')
-        L.append(f'{len(mine)} scored candidate(s); {len(ok)} validated.')
+        L.append(f'{len(mine)} scored candidate(s); {len(ok)} validated' + (f'; base bot {best_base}' if best_base else '') + '.')
         if picks:
             L += ['| module(s) | thread / family | arm | $/h | days | p BHY | DSR |', '|---|---|---|---|---|---|---|']
             for c in picks:
