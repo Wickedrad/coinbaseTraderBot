@@ -78,7 +78,10 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
   /** Size our taker fills removed from a book level (ticker|side|price): see TAKEN_REPLENISH_MS. */
   private readonly taken = new Map<string, { size: number; taken: number; ts: number }>();
   /** Taker contracts asked for, filled, and refused because the level was already taken by us. */
-  readonly takerStats: { asked: number; filled: number; blocked: number; bySeries: Record<string, { asked: number; filled: number; blocked: number }> } = { asked: 0, filled: 0, blocked: 0, bySeries: {} };
+  readonly takerStats: { asked: number; filled: number; blocked: number; bySeries: Record<string, { asked: number; filled: number; blocked: number }>; staleRetake: number; staleBySeries: Record<string, number> } = { asked: 0, filled: 0, blocked: 0, bySeries: {}, staleRetake: 0, staleBySeries: {} };
+  /** The level's displayed size when we last took from it (kept after the replenish window): a take from a level the
+   *  book still shows at that same size takes liquidity our earlier take already removed in the real market. */
+  private readonly lastTake = new Map<string, { size: number; ts: number }>();
 
   constructor(
     /** State file; undefined = in-memory only (backtests). */
@@ -218,6 +221,12 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
         this.takerStats.blocked += blocked; ser.blocked += blocked;
         const n = Math.min(avail, o.remainingCount);
         if (n <= 1e-9) continue;
+        // Audit (Nov 5, the replay's snipe volume): the level shows the very size it showed at our last take, so the
+        // book has not changed there since; the real level would still be short what we took.
+        const lt = this.lastTake.get(key);
+        if (!e && lt && Math.abs(lt.size - lvl.size) < 1e-9 && this.now() - lt.ts < 600_000) { this.takerStats.staleRetake += n; this.takerStats.staleBySeries[req.ticker.split('-')[0]] = (this.takerStats.staleBySeries[req.ticker.split('-')[0]] ?? 0) + n; }
+        this.lastTake.set(key, { size: lvl.size, ts: this.now() });
+        if (this.lastTake.size > 20000) for (const [k, v] of this.lastTake) if (this.now() - v.ts >= 600_000) this.lastTake.delete(k);
         this.fill(o, n, lvl.price, true);
         this.takerStats.filled += n; ser.filled += n;
         if (TAKEN_REPLENISH_MS > 0) this.taken.set(key, { size: lvl.size, taken: (e?.taken ?? 0) + n, ts: this.now() });
