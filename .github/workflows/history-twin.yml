@@ -159,7 +159,7 @@ jobs:
           key: twin-real-${{ github.run_id }}
       - name: Real days present?
         run: |
-          { [ -f data/models/model.json ] || [ "${{ github.event_name }}" = push ]; } && [ "$(ls data/recordings 2>/dev/null | wc -l)" -ge 2 ] || { echo "[twin] no cached copy of real days (evicted); needs the server copy slot (SERVER_COPY=yes)" | tee -a "$RUNNER_TEMP/build.log"; exit 1; }
+          { [ -f data/models/model.json ] || [ "${{ github.event_name }}" = push ] || [ -n "$CHECK_COPY" ]; } && [ "$(ls data/recordings 2>/dev/null | wc -l)" -ge 2 ] || { echo "[twin] no cached copy of real days (evicted); needs the server copy slot (SERVER_COPY=yes)" | tee -a "$RUNNER_TEMP/build.log"; exit 1; }
           echo "[twin] real days from ${{ steps.real.outputs.cache-matched-key || 'the check copy, Drive or a server copy' }}: $(ls data/recordings | tr '\n' ' ')" | tee -a "$RUNNER_TEMP/build.log"
       - name: Which days
         id: days
