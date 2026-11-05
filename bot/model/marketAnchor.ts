@@ -52,6 +52,8 @@ export interface MarketAnchorConfig {
   wildRatio?: number;
   wildW?: number;
   wildHalfLifeH?: number;
+  /** Lab placebo (MARKET_ANCHOR_WILD_PLACEBO): wild in random coin-hours with this probability instead of by volatility. */
+  wildPlacebo?: number;
 }
 
 /** What the anchor reads of the coin at an evaluation: its pricing volatility (any unit, the same each time). */
@@ -151,6 +153,12 @@ export class MarketAnchor {
   isWild(ctx?: AnchorContext): boolean {
     const r = this.cfg.wildRatio ?? 0;
     if (!(r > 0) || !ctx) return false;
+    const pl = this.cfg.wildPlacebo ?? 0;
+    if (pl > 0) {
+      let h = 2166136261;
+      for (const ch of `${ctx.asset}:${Math.floor(this.now() / 3_600_000)}`) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+      return ((h >>> 0) % 10_000) / 10_000 < pl;
+    }
     const e = this.slowVol.get(ctx.asset);
     return !!e && this.now() - e.first >= 6 * 3_600_000 && e.v > 0 && ctx.sigma >= r * e.v;
   }

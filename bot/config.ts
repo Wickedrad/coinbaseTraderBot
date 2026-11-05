@@ -1187,6 +1187,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       wildRatio: num(env, 'MARKET_ANCHOR_WILD_RATIO', 0, 0, 10),
       wildW: num(env, 'MARKET_ANCHOR_WILD_W', 1, 0, 1.5),
       wildHalfLifeH: num(env, 'MARKET_ANCHOR_WILD_HALF_LIFE_H', 48, 1, 720),
+      wildPlacebo: num(env, 'MARKET_ANCHOR_WILD_PLACEBO', 0, 0, 1),
       split: bool(env, 'MARKET_ANCHOR_SPLIT', false),
       shuffle: bool(env, 'MARKET_ANCHOR_SHUFFLE', false),
       bySeries: bool(env, 'MARKET_ANCHOR_BY_SERIES', false),
