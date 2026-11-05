@@ -1,0 +1,381 @@
+name: Perp TA sweep
+
+# The perp TA rulebook sweep (research/perpTaSweep.ts; thread "Build a TA rulebook for perpetuals", Nov 5 2026): per coin
+# (DOGE excluded, Steven Nov 5), Binance spot + USD-M 1-minute history from Binance Vision (kept on Drive under
+# raw/perp-ta-history/<coin>, apart from the shared raw/history), the aligned grid (derived/perp-ta/grids), the sterile sweep of
+# TA readings and their confluences against Kalshi's perp fees and funding, then one report over every coin. The bot's own TA
+# modules join the sweep (research/perpTaModules.ts, Steven Nov 5 13:59 UTC): the analyzer's rules, rule book, confluences and
+# net vote (TA-Lib compiled), TA-Lib patterns and indicators, the TA Net / Librarian / cross-graph walk-forward forecasts kept
+# in raw/server-history, and the character classifier as a condition; the analyzer walk is cached on Drive
+# (derived/perp-ta/modules). A fidelity job
+# measures Kalshi's real perp quotes in the recordings against Binance's bars (spread, returns, funding). No server involved.
+# The summary is posted as a comment on the commit; full results go to Drive (models/perp-ta/run-<id>).
+on:
+  push:
+    branches: [claude/project-thread-9040i4]
+    # The sweep's own code reruns it. Fidelity or workflow-only changes do not (run them with workflow_dispatch; only:
+    # fidelity runs the fidelity check and its report without the four sweeps).
+    paths: [research/perpTaSweep.ts, research/perpTaModules.ts, 'bot/ta/**']
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; empty runs the sweep"
+        required: false
+        default: ''
+      blind_run:
+        description: 'Blind test: the sweep run whose candidates are frozen and traded on the sealed block (opened once per set)'
+        required: false
+        default: ''
+      study_run:
+        description: "Study: the sweep run whose stored cells get the whole-universe check (ONC N_eff, SPA / StepM, deflated Sharpe; never reads the sealed block)"
+        required: false
+        default: ''
+      n_raw:
+        description: 'Study: cells tested so far by this thread (every run, for the deflated Sharpe)'
+        required: false
+        default: '98793570'
+      reopen_reason:
+        description: 'Blind test: only to reopen a set already opened (e.g. a crash before any sealed number was read); logged'
+        required: false
+        default: ''
+      assets:
+        description: 'Coins (JSON list)'
+        required: false
+        default: '["BTC","ETH","SOL","XRP"]'
+      half_spread:
+        description: 'Half-spread per coin (bps; JSON map, or one number for every coin). Default: the medians Kalshi quoted Oct 21 - Nov 3 2026 (fidelity run 42055132097)'
+        required: false
+        default: '{"BTC":0.19,"ETH":0.22,"SOL":1.23,"XRP":1.94}'
+      funding_offset:
+        description: "Kalshi funding over the Binance-based model per coin (bps per 8 h, + = longs pay more; JSON map or one number). Default: Kalshi's measured mean less the model's, Oct 21 - Nov 3 2026"
+        required: false
+        default: '{"BTC":1.66,"ETH":1.19,"SOL":0.14,"XRP":1.57}'
+      fid_days:
+        description: 'Recorded days for the fidelity check (most recent)'
+        required: false
+        default: '15'
+
+permissions:
+  # Write only for the commit comment with the summary.
+  contents: write
+
+concurrency:
+  # A fidelity-only run never cancels a sweep in progress; a study cancels only an earlier study of the same run.
+  group: perp-ta-sweep-${{ github.ref }}-${{ inputs.only || 'all' }}${{ inputs.only == 'study' && format('-{0}', inputs.study_run) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  # The blind test's first step (research/perpTaBlind.ts; pre-registered in /mnt/project-files/perp-ta/preregistration.md):
+  # freeze blind_run's passing candidates and log the opening on Drive BEFORE any sealed number is computed. A set already
+  # opened is refused unless reopen_reason says why (logged with the row).
+  blind-open:
+    if: ${{ inputs.only == 'blind' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BLIND_RUN: ${{ inputs.blind_run }}
+      REASON: ${{ inputs.reopen_reason }}
+      # Round 1 sets only (one half-spread for every coin, as run 2 swept); round 2 candidates carry their coin's costs.
+      HALF: '2'
+    outputs:
+      has: ${{ steps.freeze.outputs.has }}
+      coins: ${{ steps.freeze.outputs.coins }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Freeze the candidate set
+        id: freeze
+        run: |
+          set -euo pipefail
+          [[ "$BLIND_RUN" =~ ^[0-9]+$ ]] || { echo "blind_run must be a sweep run id"; exit 1; }
+          mkdir -p cand frozen
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$BLIND_RUN/report/candidates.json.gz" cand/
+          # Round gate (pre-registered for round 2 on): the run's first complete whole-universe study (every coin of the run,
+          # >= 99% of each coin's universe replicated) must find the validation SPA consistent p <= 0.10, or nothing of the
+          # round is blind-tested. Fails closed: an unreadable summary, or any maker-entry candidate, means the gate applies.
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$BLIND_RUN/report/summary.json" cand/ || true
+          [ -s cand/summary.json ] || { echo "run $BLIND_RUN: report/summary.json not readable on Drive: refused"; exit 1; }
+          ROUND=$(jq -r '.round // 1' cand/summary.json)
+          MAKER=$(gzip -dc cand/candidates.json.gz | jq '[.[] | select(.policyDef.entry != null)] | length')
+          echo "run $BLIND_RUN: round $ROUND, $MAKER maker-entry candidates"
+          if [ "$ROUND" -ge 2 ] || [ "$MAKER" -gt 0 ]; then
+            : > studies.jsonl
+            for f in $(rclone lsf gdrive:kalshi-bot-archive/registry/ --include 'perp-ta-study-run-*.jsonl'); do rclone cat "gdrive:kalshi-bot-archive/registry/$f" >> studies.jsonl; done
+            ASSETS=$(jq -c '.assets | unique' cand/summary.json)
+            P=$(jq -s -r --arg r "$BLIND_RUN" --argjson as "$ASSETS" '[.[] | select(.kind == "study" and .of_sweep_run == $r and (.coins // [] | map(.asset) | unique) == $as and (.coins | all(.universe > 0 and .replicated >= 0.99 * .universe)))] | sort_by(.at_utc) | (.[0].spa_validation_p // empty)' studies.jsonl)
+            [ -n "$P" ] || { echo "round $ROUND: run $BLIND_RUN has no complete study of $ASSETS yet (dispatch only=study study_run=$BLIND_RUN first)"; exit 1; }
+            awk -v p="$P" 'BEGIN { exit !(p <= 0.10) }' || { echo "round gate: run $BLIND_RUN validation SPA p = $P > 0.10: no blind test (pre-registered)"; exit 1; }
+            echo "round gate: validation SPA p = $P <= 0.10"
+          fi
+          node --import tsx research/perpTaBlind.ts freeze --candidates cand/candidates.json.gz --run "$BLIND_RUN" --half-spread "$HALF" --out frozen/frozen.json
+          echo "has=$(jq -r 'if (.cands | length) > 0 then "true" else "false" end' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
+          echo "coins=$(jq -c '[.cands[].a] | unique' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
+      - name: Log the opening (before the sealed block is read)
+        if: steps.freeze.outputs.has == 'true'
+        run: |
+          set -euo pipefail
+          H=$(jq -r .hash frozen/frozen.json)
+          L=gdrive:kalshi-bot-archive/models/perp-ta/blind/openings.jsonl
+          rclone cat "$L" > ledger.jsonl 2>/dev/null || : > ledger.jsonl
+          if jq -e --arg h "$H" 'select(.set_hash == $h)' ledger.jsonl > /dev/null && [ -z "$REASON" ]; then echo "frozen set $H was already opened: refused (see $L)"; exit 1; fi
+          jq -nc --arg h "$H" --arg run "$GITHUB_RUN_ID" --arg from "$BLIND_RUN" --arg why "$REASON" --arg utc "$(date -u +%FT%TZ)" --arg et "$(TZ=America/New_York date '+%F %T %Z')" --slurpfile f frozen/frozen.json \
+            '{set_hash: $h, blind_run: $run, frozen_from_run: $from, n: ($f[0].cands | length), coins: ([$f[0].cands[].a] | unique), at_utc: $utc, at_eastern: $et, reopen_reason: (if $why == "" then null else $why end)}' >> ledger.jsonl
+          rclone rcat "$L" < ledger.jsonl
+          tail -n 1 ledger.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frozen
+          path: frozen/frozen.json
+          retention-days: 30
+
+  sweep:
+    needs: [blind-open]
+    if: ${{ !cancelled() && inputs.only != 'fidelity' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) && (inputs.only != 'study' || inputs.study_run != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: ${{ fromJSON(inputs.only == 'blind' && needs.blind-open.outputs.coins || inputs.assets || '["BTC","ETH","SOL","XRP"]') }}
+    env:
+      A: ${{ matrix.asset }}
+      RS_HALF_MAP: ${{ inputs.half_spread || '{"BTC":0.19,"ETH":0.22,"SOL":1.23,"XRP":1.94}' }}
+      RS_FUND_MAP: ${{ inputs.funding_offset || '{"BTC":1.66,"ETH":1.19,"SOL":0.14,"XRP":1.57}' }}
+    steps:
+      - name: This coin's costs
+        run: |
+          set -euo pipefail
+          pick() { if [[ "$1" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then echo "$1"; else jq -er --arg a "$A" '.[$a] | numbers' <<< "$1"; fi; }
+          HALF=$(pick "$RS_HALF_MAP") || { echo "no half-spread for $A in $RS_HALF_MAP"; exit 1; }
+          FOFF=$(pick "$RS_FUND_MAP") || { echo "no funding offset for $A in $RS_FUND_MAP"; exit 1; }
+          echo "HALF=$HALF" >> "$GITHUB_ENV"; echo "FOFF=$FOFF" >> "$GITHUB_ENV"
+          echo "$A: half-spread $HALF bps, funding offset $FOFF bps / 8 h"
+
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: TA-Lib loads
+        run: node -e "const t = require('talib'); if (typeof t.execute !== 'function') process.exit(1); console.log('TA-Lib', t.version || 'ok')"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: History from Drive, then what is new from Binance
+        run: |
+          set -euo pipefail
+          [[ "$A" =~ ^[A-Z0-9]{2,8}$ ]] && [[ "$A" != DOGE ]] || { echo "bad or excluded coin: $A"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist-$A" || echo "raw/perp-ta-history/$A: nothing on Drive yet"
+          node --max-old-space-size=12000 --import tsx research/perpTaSweep.ts prep --asset "$A" --history "data/hist-$A" --out data/perp-ta 2>&1 | tee "$RUNNER_TEMP/sweep.log" | tail -20
+          du -sh "data/hist-$A" data/perp-ta | cat
+      - name: Keep the history and grid on Drive
+        if: always()
+        run: |
+          [ ! -d "data/hist-$A" ] || bash deploy/drive_lab.sh put "raw/perp-ta-history/$A" "data/hist-$A"
+          [ ! -f "data/perp-ta/$A.bin" ] || bash deploy/drive_lab.sh put derived/perp-ta/grids data/perp-ta --include "$A.bin"
+      - name: The server's walk-forward forecasts (TA Net, Librarian, cross graph) and the cached analyzer walk
+        run: |
+          bash deploy/drive_lab.sh get raw/server-history data/server-hist --include "/.tanet-oos/forecasts.json" --include "/.librarian/forecasts.json" --include "/.xgraph/forecasts.json" || echo "raw/server-history: nothing on Drive"
+          bash deploy/drive_lab.sh get derived/perp-ta/modules data/modcache --include "$A-*" || echo "no cached analyzer walk yet"
+          ls -la data/server-hist/.tanet-oos data/server-hist/.librarian data/server-hist/.xgraph data/modcache 2>&1 | grep -v '^total' | cat
+      - name: Sweep
+        if: ${{ inputs.only != 'blind' && inputs.only != 'study' }}
+        run: |
+          set -euo pipefail
+          node --max-old-space-size=14000 --import tsx research/perpTaSweep.ts sweep --data "data/perp-ta/$A.bin" --out "out/$A.jsonl.gz" --half-spread "$HALF" --funding-offset "$FOFF" --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v '^\[perp-ta\] analyzer walk [0-9]' | tail -60
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.only == 'blind' }}
+        with:
+          name: frozen
+          path: frozen
+      - name: Blind test (replicates every frozen cell's discovery trades first; reads the sealed block only if all match)
+        if: ${{ inputs.only == 'blind' }}
+        run: |
+          set -euo pipefail
+          node --max-old-space-size=14000 --import tsx research/perpTaBlind.ts coin --frozen frozen/frozen.json --data "data/perp-ta/$A.bin" --out "out/blind-$A.json" --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v 'analyzer walk [0-9]' | tail -20
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.only == 'blind' }}
+        with:
+          name: blind-${{ matrix.asset }}
+          path: out/blind-${{ matrix.asset }}.json
+          retention-days: 30
+      # The whole-universe check of study_run (research/perpTaStudy.ts): its stored cells are recomputed on the same grid
+      # and inputs up to the sealed block's start (never past it), matched to their stored discovery record, clustered (ONC)
+      # and turned into daily net P&L for the report's SPA / StepM and deflated Sharpe.
+      - name: Study (recomputes the stored cells up to the seal; the sealed block is not read)
+        if: ${{ inputs.only == 'study' }}
+        env:
+          STUDY_RUN: ${{ inputs.study_run }}
+        run: |
+          set -euo pipefail
+          [[ "$STUDY_RUN" =~ ^[0-9]+$ ]] || { echo "study_run must be a sweep run id"; exit 1; }
+          mkdir -p study-in out
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$STUDY_RUN/$A.jsonl.gz" study-in/
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$STUDY_RUN/report/candidates.json.gz" study-in/
+          ls -la study-in | cat
+          node --max-old-space-size=14000 --import tsx research/perpTaStudy.ts coin --data "data/perp-ta/$A.bin" --cells "study-in/$A.jsonl.gz" --candidates study-in/candidates.json.gz --out "out/study-$A.json.gz" --top 5000 --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | tee "$RUNNER_TEMP/sweep.log" | grep -v 'analyzer walk [0-9]' | tail -20
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.only == 'study' }}
+        with:
+          name: study-${{ matrix.asset }}
+          path: out/study-${{ matrix.asset }}.json.gz
+          retention-days: 30
+      - name: Keep the analyzer walk on Drive
+        if: always()
+        run: '[ ! -d data/modcache ] || bash deploy/drive_lab.sh put derived/perp-ta/modules data/modcache'
+      - name: On failure, the log's tail on the commit
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "### Perp TA sweep $A failed (run $GITHUB_RUN_ID)"; echo '```'; if [ -s "$RUNNER_TEMP/sweep.log" ]; then tail -n 60 "$RUNNER_TEMP/sweep.log" | cut -c1-300; else echo "no sweep log (failed before prep or the sweep)"; fi; echo '```'; } > "$RUNNER_TEMP/fail.md"
+          jq -n --rawfile body "$RUNNER_TEMP/fail.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.only != 'blind' && inputs.only != 'study' }}
+        with:
+          name: sweep-${{ matrix.asset }}
+          path: out/${{ matrix.asset }}.jsonl.gz
+          retention-days: 14
+      - name: Results to Drive
+        if: ${{ always() }}
+        run: '[ ! -d out ] || bash deploy/drive_lab.sh put "models/perp-ta/${{ (inputs.only == ''blind'' || inputs.only == ''study'') && format(''{0}/'', inputs.only) || '''' }}run-$GITHUB_RUN_ID" out'
+
+  fidelity:
+    if: ${{ inputs.only != 'blind' && inputs.only != 'study' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      FID_DAYS: ${{ inputs.fid_days || '15' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Recorded days from Drive (compact .mdc when Drive has it)
+        run: |
+          set -euo pipefail
+          [[ "$FID_DAYS" =~ ^[0-9]+$ ]] || { echo "bad fid_days"; exit 1; }
+          mkdir -p data/recordings
+          for d in $(tail -n "$FID_DAYS" "$RUNNER_TEMP/drive-days.txt"); do
+            if [ -n "$(rclone lsf gdrive:kalshi-bot-archive/recordings --files-only --include "md-$d.mdc")" ]; then rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.mdc" data/recordings/;
+            else rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.jsonl.gz" data/recordings/; fi
+          done
+          ls -la data/recordings | cat
+      - name: Fidelity (Binance perp bars and funding for those days, then the comparison)
+        run: |
+          set -euo pipefail
+          FROM=$(tail -n "$FID_DAYS" "$RUNNER_TEMP/drive-days.txt" | head -n 1 | cut -c1-7)
+          [[ "$FROM" =~ ^[0-9]{4}-[0-9]{2}$ ]] || { echo "no recorded days on Drive"; exit 1; }
+          mkdir -p out
+          node --max-old-space-size=12000 --import tsx research/perpTaFidelity.ts --recordings data/recordings --history data/hist-fid --download-from "$FROM" --assets BTC,ETH,SOL,XRP --out out/fidelity.json 2>&1 | tail -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fidelity
+          path: out/fidelity.json
+          retention-days: 14
+
+  report:
+    needs: [blind-open, sweep, fidelity]
+    # Not after a cancel (a newer push supersedes this run): partial artifacts would post a misleading summary. Not after a
+    # refused blind opening either (nothing was read).
+    if: ${{ !cancelled() && needs.blind-open.result != 'failure' && (inputs.only != 'study' || inputs.study_run != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          path: in
+      - name: Report
+        env:
+          STUDY_RUN: ${{ inputs.study_run }}
+          N_RAW: ${{ inputs.n_raw || '98793570' }}
+        run: |
+          set -euo pipefail
+          [[ "$N_RAW" =~ ^[0-9]+$ ]] || { echo "bad n_raw"; exit 1; }
+          ls -R in | head -20
+          if ls -d in/study-* >/dev/null 2>&1; then
+            node --max-old-space-size=12000 --import tsx research/perpTaStudy.ts report --in in --out report --run "$STUDY_RUN" --n-raw "$N_RAW" --b 2000 --block 5 2>&1 | tail -40
+          elif [ -f in/frozen/frozen.json ]; then
+            node --max-old-space-size=12000 --import tsx research/perpTaBlind.ts report --frozen in/frozen/frozen.json --in in --out report 2>&1 | tail -40
+          elif ls -d in/sweep-* >/dev/null 2>&1; then
+            node --max-old-space-size=12000 --import tsx research/perpTaSweep.ts report --in in --out report 2>&1 | tail -60
+          else
+            mkdir -p report && echo '## Perp TA: fidelity check only (no sweep in this run)' > report/summary.md
+          fi
+          if [ -f in/fidelity/fidelity.json ]; then
+            node -e "
+              const f = require('./in/fidelity/fidelity.json');
+              const rows = f.assets.map((a) => '| ' + [a.asset, a.ticker + (a.tickers.length > 1 ? ' (+' + (a.tickers.length - 1) + ')' : ''), a.quotes, a.unit.kind + ' (' + a.unit.contractSize + ')', a.jumps, a.spreadBps.median, a.spreadBps.p90, a.returns['1m'].rho, a.returns['15m'].rho, a.returns['15m'].beta, a.returns['15m'].te, a.returns['60m'].rho, a.premiumBps.median, a.premiumBps.p10 + ' .. ' + a.premiumBps.p90, a.premiumIndexBps.median + ' (' + a.index.src + ')', a.funding.kalshiMeanBps, a.funding.kalshiZeroShare, a.funding.modelMeanBps, a.funding.modelZeroShare, a.funding.pairs, a.funding.meanAbsDiffBps, a.funding.verdict].join(' | ') + ' |');
+              const span = f.days.length ? f.days[0] + ' .. ' + f.days[f.days.length - 1] : 'no recorded perp quotes';
+              const other = f.assets.filter((a) => a.tickers.length > 1).map((a) => a.asset + ': ' + a.tickers.map((t) => t.ticker + ' ' + t.quotes + ' quotes, mid ' + t.medianMid + ', contract ' + t.contractSize + ', ' + t.firstDay + '..' + t.lastDay).join('; '));
+              console.log(['', '### Fidelity: Kalshi perp quotes vs Binance USD-M (' + span + ')', 'Kalshi quotes perps per contract; the premium is the mid per coin (mid over the contract size) against Coinbase spot and the recorded settlement index. Jump minutes (> 10% in a minute) are left out.', '', '| coin | market | quotes | quoted | jump min | spread med bps | spread p90 | rho 1m | rho 15m | beta 15m | te 15m bps | rho 60m | premium vs spot bps | p10 .. p90 | premium vs index | Kalshi funding bps | Kalshi zero share | model funding bps | model zero share | instants | abs diff bps | funding check |', '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|', ...rows, ...(other.length ? ['', 'Coins with more than one market in the recordings: ' + other.join(' | ')] : [])].join('\n'));
+            " >> report/summary.md
+          fi
+          head -c 60000 report/summary.md > "$RUNNER_TEMP/comment.md"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Results to Drive, and this run's rows for the project trial registry
+        run: |
+          cp -r in/fidelity report/ 2>/dev/null || true
+          K=${{ (inputs.only == 'blind' || inputs.only == 'study') && format('{0}-', inputs.only) || '' }}
+          bash deploy/drive_lab.sh put "models/perp-ta/${K:+${K%-}/}run-$GITHUB_RUN_ID/report" report
+          [ ! -f report/registry.jsonl ] || rclone copyto report/registry.jsonl "gdrive:kalshi-bot-archive/registry/perp-ta-${K}run-$GITHUB_RUN_ID.jsonl"
+      - name: Summary on the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url'

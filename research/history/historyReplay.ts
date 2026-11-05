@@ -72,12 +72,22 @@ import readline from 'readline';
 import zlib from 'zlib';
 import { contractKind, priceContract, SETTLEMENT_AVG_SEC, type MarketKind } from '../../bot/model/fairValue';
 import { dayGunzip } from '../../bot/marketdata/recordingFiles';
+import { nearestStrikes } from '../../bot/marketdata/marketData';
 import { loadSeries } from './candles';
 import { loadKalshiTrades, type KalshiHistMarket, type KalshiTrade } from './kalshiHistory';
 import { anchorsIn, dominanceAnchors, DominanceReplay, type DomState } from './dominanceReplay';
 import type { Candle } from '../../bot/ta/indicators';
 
-export const REPLAY_VERSION = 5;
+// 7 (Nov 5): perp quotes per contract like Kalshi's live quotes (were per coin); also rebuilds days cached before the
+// requote's 0.1c tail tick (797853e) and the crossed-candle requote fix (88c6ebf), which changed the output without a
+// version change. 6 was reserved for PR #286, which merged second and took 8.
+// 8 (Nov 5, PR #286): tennis history skips minute-0 and carried candle quotes; only the strikes the live catalog would
+// follow (4 nearest the money per event, 90 min horizon) are tradable, the rest record-only.
+export const REPLAY_VERSION = 8;
+/** Kalshi perp contract sizes (units of the coin a contract), for a replay without the bot's own recordings to read them
+ *  from: the perp TA thread's fidelity runs over the Oct 21 - Nov 3 recordings (each market's mid against Coinbase spot:
+ *  BTC 0.0001, ETH 0.001, SOL 0.1, XRP 1). A coin with no known size is quoted per coin (1), as before Nov 5. */
+export const PERP_CONTRACT_SIZE: Record<string, number> = { BTC: 0.0001, ETH: 0.001, SOL: 0.1, XRP: 1 };
 const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
 const TFS: Array<{ tf: string; ms: number }> = [{ tf: '1m', ms: MIN }, { tf: '5m', ms: 5 * MIN }, { tf: '15m', ms: 15 * MIN }, { tf: '1h', ms: HOUR }, { tf: '1d', ms: DAY }];
 const BACKFILL = 300;
@@ -104,6 +114,10 @@ export interface ReplayOpts {
   kalshiDir?: string;
   /** Kalshi tennis series to replay (match markets from <kalshiDir>/<SERIES>, tapes from <SERIES>/trades). */
   tennisSeries?: string[];
+  /** The live catalog's strikes per event and horizon (CATALOG_STRIKES_PER_EVENT 4, CATALOG_HORIZON_MIN 90): strikes the
+   *  bot would never follow are written record-only. 0 strikes = every strike tradable (the replay before version 8). */
+  catalogStrikesPerEvent?: number;
+  catalogHorizonMin?: number;
   perpSpecs?: Record<string, PerpSpec>;
   /** Synthetic 15-minute and hourly contracts where Kalshi's history has none (default on). */
   synthetic?: boolean;
@@ -307,6 +321,40 @@ function readFunding(file: string): Array<[number, number]> {
   return res;
 }
 
+/** When the live catalog would first track each contract (bot/marketdata/marketData.ts refreshCatalogOnce): every
+ *  refresh keeps the `n` strikes per event nearest the money by Kalshi's own quote (nearestStrikes, the quote read as the
+ *  market listing gives it: the bid/ask mid, else the last price), among contracts closing within the catalog horizon;
+ *  once tracked a contract stays tracked. Up/Down contracts are always tracked from their open. Contracts never picked are
+ *  the ones the bot never follows: the replay marks them record-only (Kalshi's history lists every strike of a ladder,
+ *  about 12 times what the bot follows, and the far ones often show 1c/99c books). Refreshes are read once a minute. */
+export function catalogTracking(kms: KMarket[], o: { n: number; horizonMs: number; refreshMs?: number; priceAt?: (t: number) => number | undefined }): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!o.n) { for (const m of kms) out.set(m.ticker, m.openTime); return out; }
+  const step = o.refreshMs ?? MIN;
+  const byEvent = new Map<string, KMarket[]>();
+  for (const m of kms) { const e = m.event ?? m.series; (byEvent.get(e) ?? byEvent.set(e, []).get(e)!).push(m); }
+  for (const ms of byEvent.values()) {
+    const from = Math.min(...ms.map((m) => m.openTime)), to = Math.max(...ms.map((m) => m.closeTime));
+    const ci = new Map<string, number>();
+    for (let t = Math.ceil(from / step) * step; t < to; t += step) {
+      const live = ms.filter((m) => m.openTime <= t && m.closeTime > t && m.closeTime <= t + o.horizonMs);
+      if (!live.length) continue;
+      const listed = live.map((m) => {
+        let i = ci.get(m.ticker) ?? -1;
+        while (i + 1 < m.candles.length && m.candles[i + 1].ts <= t) i++;
+        ci.set(m.ticker, i);
+        const c = i >= 0 ? m.candles[i] : undefined;
+        const b = c?.bidC ?? undefined, k = c?.askC ?? undefined, l = c?.last ?? undefined;
+        const yesMid = b !== undefined && k !== undefined && b > 0 && k > b && k < 1 ? (b + k) / 2 : l !== undefined && l > 0 && l < 1 ? l : undefined;
+        return { ticker: m.ticker, eventTicker: m.event, strikeType: m.strikeType, floorStrike: m.strike ?? undefined, capStrike: m.cap ?? undefined, yesMid, series: m.series };
+      });
+      const picked = nearestStrikes(listed, (series, st) => contractKind(series, st), listed[0].series, o.priceAt?.(t), o.n, new Set(out.keys()));
+      for (const x of picked) if (!out.has(x.ticker)) out.set(x.ticker, t);
+    }
+  }
+  return out;
+}
+
 interface KMarket { ticker: string; series: string; event?: string; openTime: number; closeTime: number; strike: number | null; cap: number | null; strikeType?: string; result?: string; candles: Array<{ ts: number; bidC: number | null; askC: number | null; last: number | null; volume: number | null }> }
 
 /** Settled Kalshi contracts of the replayed assets in the day files of `day` and the next (files are by close day). */
@@ -361,6 +409,14 @@ export async function perpSpecsFromRecordings(dir: string, assets: string[]): Pr
     if (Object.keys(out).length === assets.length) break;
   }
   return out;
+}
+
+/** The tick a replayed perp quote is rounded to. The recorded tick is set for today's per-contract prices (BTC ~$10 a
+ *  contract); on an old day whose quote is far smaller (ETH 2019: ~$0.15 a contract) it would be most of the spread, so there
+ *  the tick is the largest power of ten within the half-spread (`half`, a fraction), keeping the recorded spread. */
+export function replayPerpTick(tick: number | undefined, quote: number, half: number): number | undefined {
+  if (tick === undefined || !(quote > 0) || !(half > 0) || tick <= quote * half + 1e-12) return tick;
+  return Number(`1e${Math.floor(Math.log10(quote * half))}`);
 }
 
 function roundTo(x: number, tick: number | undefined, dir: -1 | 1): number {
@@ -485,7 +541,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
   // next day's file, so every file stays in time order.
   let carry: Ev[] = [];
   const tennisSeries = o.tennisSeries ?? [];
-  const base = `${REPLAY_VERSION}:${assets.join(',')}:${synthetic ? 'synth' : 'real'}:${tennisSeries.join(',')}${o.requote ? ':requote' : ''}${o.requote && o.requoteLag ? `:lag${o.requoteLag.gInf}/${o.requoteLag.tauSec}` : ''}`;
+  const base = `${REPLAY_VERSION}:${assets.join(',')}:${synthetic ? 'synth' : 'real'}:${tennisSeries.join(',')}${o.requote ? ':requote' : ''}${o.requote && o.requoteLag ? `:lag${o.requoteLag.gInf}/${o.requoteLag.tauSec}` : ''}:cat${o.catalogStrikesPerEvent ?? 4}/${o.catalogHorizonMin ?? 90}`;
   const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
   // A day's inputs: the Kalshi history it reads (a later download reached it), how far the 1-minute
   // history and funding rates reach into it, and the dominance anchors near it.
@@ -581,6 +637,8 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
       let fi = 0;
       const spec = o.perpSpecs?.[a] ?? {};
       const half = (spec.halfSpreadBps ?? 1) / 1e4;
+      const cs = spec.contractSize ?? PERP_CONTRACT_SIZE[a] ?? 1;
+      const tickFor = (pv: number) => replayPerpTick(spec.tickSize, pv, half);
       const perpBy = new Map(perpBars.map((c) => [c.ts, c]));
       const seed = hashStr(a);
       let m5: Candle[] = [];
@@ -605,9 +663,10 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
           if (px) px[slot0 + k] = v;
           if (ixs && sgs) { ixs[slot0 + k] = iv; sgs[slot0 + k] = s.vMkt && s.vMkt > 0 ? Math.sqrt(s.vMkt) : NaN; }
           if (pprints) {
-            const pv = pprints[k][1];
-            ev.push({ t, k: 'perp', ticker: spec.ticker ?? `${a}-PERP`, asset: a, ts: t, bid: roundTo(pv * (1 - half), spec.tickSize, -1), ask: roundTo(pv * (1 + half), spec.tickSize, 1), last: pv, mark: pv,
-              fundingRate: rate, nextFundingTs: next, openInterest: openInterestAt(s.oi, t), contractSize: spec.contractSize ?? 0.001, tickSize: spec.tickSize, fractional: spec.fractional ?? true, leverage: spec.leverage ?? 10, hist: 1 });
+            // Quoted per contract, as Kalshi quotes its perps live (the coin price x the contract size).
+            const pv = pprints[k][1] * cs, tick = tickFor(pv);
+            ev.push({ t, k: 'perp', ticker: spec.ticker ?? `${a}-PERP`, asset: a, ts: t, bid: roundTo(pv * (1 - half), tick, -1), ask: roundTo(pv * (1 + half), tick, 1), last: pv, mark: pv,
+              fundingRate: rate, nextFundingTs: next, openInterest: openInterestAt(s.oi, t), contractSize: cs, tickSize: tick, fractional: spec.fractional ?? true, leverage: spec.leverage ?? 10, hist: 1 });
           }
           s.prints.push([t, iv]);
           if (s.prints.length > 80) s.prints.splice(0, s.prints.length - 64);
@@ -651,9 +710,19 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     }
     domCount += domToday;
     const alive = new Map<number, string[]>();
+    // The strikes the live catalog would follow; the rest are record-only (the bot never trades or prices them).
+    const ixAt = (asset: string) => (t: number) => { const a = slotIx.get(asset); const i = Math.floor((t - d0) / 15_000); const v = a && i >= 0 && i < a.length ? a[i] : NaN; return v > 0 ? v : undefined; };
+    const tracked = new Map<string, number>();
+    for (const a of new Set(kms.map((m) => m.asset))) for (const [t, at] of catalogTracking(kms.filter((m) => m.asset === a), { n: o.catalogStrikesPerEvent ?? 4, horizonMs: (o.catalogHorizonMin ?? 90) * MIN, priceAt: ixAt(a) })) tracked.set(t, at);
     for (const m of kms) {
       const kind = contractKind(m.series, m.strikeType, m.ticker);
-      ev.push({ t: m.openTime - MIN, k: 'market', ticker: m.ticker, series: m.series, asset: m.asset, openTime: m.openTime, closeTime: m.closeTime, strike: m.strike, cap: m.cap, kind, event: m.event, tickSize: 0.01, hist: 1 });
+      const at = kind === 'updown' ? m.openTime - MIN : tracked.get(m.ticker);
+      const mk = { k: 'market', ticker: m.ticker, series: m.series, asset: m.asset, openTime: m.openTime, closeTime: m.closeTime, strike: m.strike, cap: m.cap, kind, event: m.event, tickSize: 0.01, hist: 1 };
+      if (at !== undefined && at <= m.openTime - MIN) ev.push({ t: m.openTime - MIN, ...mk });
+      else {
+        ev.push({ t: m.openTime - MIN, ...mk, recordOnly: true });
+        if (at !== undefined) ev.push({ t: at, ...mk });
+      }
       const cs = (m.candles ?? []).filter((c) => c.ts >= m.openTime && c.ts <= m.closeTime);
       const ixs = slotIx.get(m.asset), sgs = slotSig.get(m.asset);
       for (let i = 0; i < cs.length; i++) {
@@ -845,7 +914,7 @@ function tennisEvents(kalshiDir: string, series: string[], day: string, d0: numb
           ...m.candles.filter((c) => c.ts >= begin && c.ts <= m.closeTime).map((c): Step => ({ t: c.ts, c })),
           ...(tapes.get(m.ticker) ?? []).filter((x) => x[0] >= begin && x[0] <= m.closeTime).map((x): Step => ({ t: x[0], tr: x })),
         ].sort((a, b) => a.t - b.t || (a.c ? 0 : 1) - (b.c ? 0 : 1));
-        let spread = 0.02, booked = 0;
+        let spread = 0.02, booked = 0, lastQuote = '';
         const book = (t: number, bid: number, ask: number) => {
           const b = Math.round(bid * 100) / 100, a = Math.round(ask * 100) / 100;
           if (!(b >= 0.01 && a <= 0.99 && a > b)) return;
@@ -855,7 +924,13 @@ function tennisEvents(kalshiDir: string, series: string[], day: string, d0: numb
         for (const st of steps) {
           if (st.c) {
             const { bidC, askC } = st.c;
-            if (bidC !== null && askC !== null && askC > bidC) { spread = Math.max(0.01, askC - bidC); book(st.t, bidC, askC); }
+            // Minute 0 (the market's first candle) is skipped: its quote is the listing's, before anyone traded. A candle
+            // that repeats the last candle's quote is skipped too: Kalshi carries a quiet minute's quote forward, and after
+            // a trade that carried quote would overwrite the book the trade set.
+            if (st.c === m.candles[0]) continue;
+            const q = `${bidC}/${askC}`;
+            if (q === lastQuote) continue;
+            if (bidC !== null && askC !== null && askC > bidC) { lastQuote = q; spread = Math.max(0.01, askC - bidC); book(st.t, bidC, askC); }
             continue;
           }
           const [t, price, count, side] = st.tr!;

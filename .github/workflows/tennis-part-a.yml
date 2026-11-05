@@ -1,0 +1,86 @@
+name: Tennis Part A (recorded books)
+
+# Tennis G1, "recorded books only" (research/tennisBookCheck.ts): are the bot's recorded tennis books a sound reference,
+# and do Kalshi's 1-minute candles agree with them? Reads the recorded days cut to tennis (Drive derived/tennis-ta/recorded,
+# written by tennis-ta-data.yml) and the Kalshi tennis history (Drive raw/tennis-history/kalshi). No server copy.
+# The report is posted as a comment on the commit and kept on Drive at models/tennis-ta/part-a/.
+on:
+  push:
+    branches: [claude/project-thread-qj4n4v]
+    paths: [research/tennisBookCheck.ts, .github/workflows/tennis-part-a.yml]
+  workflow_dispatch:
+    inputs:
+      from:
+        description: 'Start (UTC, ISO)'
+        required: false
+        default: '2026-10-21T00:00:00Z'
+      to:
+        description: 'End (UTC, ISO, exclusive)'
+        required: false
+        default: '2026-11-05T02:00:00Z'
+      series:
+        description: 'History series to compare candles from'
+        required: false
+        default: 'KXATPMATCH'
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FROM: ${{ inputs.from || '2026-10-21T00:00:00Z' }}
+      TO: ${{ inputs.to || '2026-11-05T02:00:00Z' }}
+      SERIES: ${{ inputs.series || 'KXATPMATCH' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Recorded tennis days and history from Drive
+        run: |
+          set -euo pipefail
+          mkdir -p rec hist
+          rclone copy gdrive:kalshi-bot-archive/derived/tennis-ta/recorded rec --include 'md-*.jsonl.gz'
+          echo "recorded days: $(ls rec | wc -l) ($(ls rec | head -1) .. $(ls rec | tail -1))"
+          for S in ${SERIES//,/ }; do
+            if rclone copy "gdrive:kalshi-bot-archive/raw/tennis-history/kalshi/$S.tar.gz" . 2>/dev/null && [ -f "$S.tar.gz" ]; then
+              tar -xzf "$S.tar.gz" -C hist && rm "$S.tar.gz"; echo "history $S: $(ls hist/$S | wc -l) day file(s)"
+            else echo "no $S history on Drive"; fi
+          done
+      - name: Check
+        run: |
+          set -euo pipefail
+          H=""; [ -n "$(ls hist 2>/dev/null)" ] && H="--history hist --series $SERIES"
+          node --import tsx research/tennisBookCheck.ts --recordings rec --from "$FROM" --to "$TO" $H --out part-a.json > /dev/null
+          jq . part-a.json
+          rclone copyto part-a.json "gdrive:kalshi-bot-archive/models/tennis-ta/part-a/part-a-$GITHUB_RUN_ID.json"
+      - name: Report as a commit comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Tennis Part A, run $GITHUB_RUN_ID: $(jq -r .verdict part-a.json)"
+            echo
+            echo '```json'
+            jq . part-a.json
+            echo '```'
+          } > body.md
+          jq -Rs '{body: .}' body.md > req.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input req.json > /dev/null

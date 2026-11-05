@@ -51,7 +51,7 @@ import type { MacroEvent } from '../bot/model/featureEngine';
 import { loadCalendar } from '../bot/model/calendar';
 import { GO_LIVE_GATES, MetaModel } from '../bot/model/metaModel';
 import type { OrderIntent } from '../bot/oms/oms';
-import { PositionBook } from '../bot/oms/positions';
+import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { EquityGuard } from '../bot/risk/equityGuard';
@@ -855,8 +855,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         // The engine holds the hunt stop inside the no-exit seconds and, in the last share of the window, for a position in
         // profit after fees (bot/engine.ts huntHeld): so does the replay.
         const pH = pos.get(m.ticker);
-        const sideH = pH && pH.yes > 0 ? -pH.netCash / pH.yes : pH && pH.yes < 0 ? 1 - pH.netCash / -pH.yes : undefined;
-        const costH = sideH !== undefined && sideH > 0 && sideH < 1 ? sideH + pH!.fees / Math.abs(pH!.yes) : undefined;
+        const sideH = openSidePrice(pH);
+        const costH = sideH !== undefined && sideH > 0 && sideH < 1 ? sideH + openEntryFee(pH)! : undefined;
         const winH = shareWindowSec(m.openTime, m.closeTime, strategy.shareWindowMaxSec);
         const shareH = winH !== undefined && tauSec <= strategy.noExitBeforeCloseFrac * winH;
         const heldH = !(tauSec > strategy.noExitBeforeCloseSec) || (shareH && (positionNetAtBid(posH, costH, bid, ask, DEFAULT_FEES) ?? 0) > 1e-9);
@@ -901,7 +901,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       if (reason && accuracyBlock) res.paper!.accuracyBlocks++;
       if (reason && kindWindow && edge !== undefined && res.paper) res.paper.sessionEdgeBlocks!++;
       const pNow = pos.get(m.ticker);
-      const entrySide = pNow && pNow.yes > 0 ? -pNow.netCash / pNow.yes : pNow && pNow.yes < 0 ? 1 - pNow.netCash / -pNow.yes : undefined;
+      // As the engine: the open contracts' price, an earlier exit's profit already on the pacer's clock.
+      const entrySide = openSidePrice(pNow);
       // As the engine (Engine.newRiskRoom): a new order fits the room left under the window and total caps and in the
       // free cash, so near the caps an order shrinks instead of being refused. Paper's cash holds nothing back for
       // resting orders, as the bot reads it.
@@ -927,7 +928,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         tauSec, noEntryBeforeCloseSec: limits.noEntryBeforeCloseSec, fastMove, tickSize: m.tickSize, fees: DEFAULT_FEES,
         restingBid: rb, restingAsk: ra, nowSec: Math.floor(st.now / 1000), closeSec: Math.floor(m.closeTime / 1000),
         pMarket, pStd: pred.std, makerBuffer: (res.makerBufferEnd = makerBuffer()), entrySidePrice: entrySide !== undefined && entrySide > 0 && entrySide < 1 ? entrySide : undefined,
-        entryFeePerContract: pNow && Math.abs(pNow.yes) > 1e-9 ? pNow.fees / Math.abs(pNow.yes) : undefined,
+        entryFeePerContract: openEntryFee(pNow),
         profitPeakSidePrice: peaks.update(m.ticker, posC, posC > 0 ? bid.price : posC < 0 ? Math.round((1 - ask.price) * 1e4) / 1e4 : undefined),
         entryWindowOpen, exitWindowOpen: tauSec > strategy.noExitBeforeCloseSec,
         ...((w) => ({ settleShare: w !== undefined && tauSec <= strategy.noExitBeforeCloseFrac * w, ...(w !== undefined ? { windowSec: w } : {}) }))(shareWindowSec(m.openTime, m.closeTime, strategy.shareWindowMaxSec)),

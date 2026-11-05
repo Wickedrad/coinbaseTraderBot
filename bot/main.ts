@@ -41,9 +41,10 @@ import { capRecordings, compressOldRecordings, freeBytesAt, makeRecordingsRoom, 
 import { DEFAULT_LANES } from './setups/lanes';
 import { PaperPerpExchange } from './perps/paperPerp';
 import { KalshiPerpsRest, type PerpGateway } from './perps/perpRest';
+import { PerpFeeTierCheck, type FeeTierStatus } from './perps/feeTier';
 import { BalanceMonitor, type MonitorState } from './vault/balanceMonitor';
 import { Vault } from './vault/vault';
-import { readJson, setQuarantineAll } from './util/persist';
+import { readJson, setQuarantineAll, writeJsonAtomic } from './util/persist';
 import { championEnv, championPath, markApplied, readChampion, watchChampion } from './strategy/conditioningOverlay';
 import { Playbook, setPlaybook } from './strategy/playbook';
 import { Compensator, setCompensator } from './strategy/compensator';
@@ -368,6 +369,7 @@ async function main(): Promise<void> {
   let hedger: PerpHedger | undefined;
   let perpTrader: PerpTrader | undefined;
   let directionalTrader: DirectionalTrader | undefined;
+  let perpFeeTier: PerpFeeTierCheck | undefined;
   const P = cfg.perps;
   const perpsWanted = P.hedge !== 'off' || P.trading !== 'off';
   if (perpsWanted && !P.feed) log.warn('perp hedging/trading needs PERPS_FEED=true; perps disabled');
@@ -375,10 +377,12 @@ async function main(): Promise<void> {
     const hub = md.features.perps;
     const tickerAsset = (t: string) => [...hub.byAsset.entries()].find(([, s]) => s.latest?.ticker === t)?.[0];
     let perpGateway: PerpGateway;
+    let signedPerps: KalshiPerpsRest | undefined;
     if (P.hedge === 'live' || P.trading === 'live') {
       const live = new KalshiPerpsRest(P.restUrl, KalshiSigner.fromFile(P.keyId!, P.privateKeyPath!), fetch, P.subaccount);
       if (!(await live.enabled().catch(() => false))) log.warn('GET /margin/enabled says margin trading is not enabled for this account yet (rolling out member by member); perp orders will be rejected');
       perpGateway = live;
+      signedPerps = live;
     } else {
       const sim = new PaperPerpExchange(hub, tickerAsset, { makerBps: P.makerFeeBps, takerBps: P.takerFeeBps }, path.join(cfg.dataDir, 'paper_perps.json'), Date.now, P.paperBalanceUsd);
       md.on('perp', () => sim.step());
@@ -478,6 +482,51 @@ async function main(): Promise<void> {
     }
     kill.bindCancelAll(async (reason) => { await oms.cancelAll(reason); await hedger!.cancelAll(reason); });
     log.info('perps enabled', { hedge: P.hedge, trading: P.trading, gateway: perpGateway.name });
+    // Perps fee tier check (bot/perps/feeTier.ts; Steven, Nov 5 2026): this account's real perps fee rates against the
+    // fees the bot charges (PERP_TAKER_FEE_BPS / PERP_MAKER_FEE_BPS: paper perps, the setup and perp traders' costs).
+    // Signed GETs only, so it runs in paper too when a key is configured; it reports and alerts, it never changes a fee.
+    if (P.feeTierCheck) {
+      const feeLog = logger('perp-fees');
+      if (!signedPerps && P.keyId && P.privateKeyPath) {
+        try { signedPerps = new KalshiPerpsRest(P.restUrl, KalshiSigner.fromFile(P.keyId, P.privateKeyPath), fetch, P.subaccount); }
+        catch (e) { feeLog.warn(`perps fee tier check off: the key at ${P.privateKeyPath} could not be read (${(e as Error).message})`); }
+      }
+      if (!signedPerps) { if (!P.keyId || !P.privateKeyPath) feeLog.info('perps fee tier check off: no perps key (KALSHI_PERPS_KEY_ID or KALSHI_KEY_ID with its private key)'); }
+      else {
+        const check = new PerpFeeTierCheck(signedPerps, {
+          makerBps: P.makerFeeBps, takerBps: P.takerFeeBps,
+          tickers: () => [...hub.byAsset.values()].map((st) => st.latest?.ticker).filter((t): t is string => !!t),
+        });
+        perpFeeTier = check;
+        // An info alert on the first read and whenever the rates change; each mismatch warns once per UTC day. The alert
+        // state and the last read are kept in data/perp_fee_tier.json, so a restart (every deploy) does not re-alert.
+        const stateFile = path.join(cfg.dataDir, 'perp_fee_tier.json');
+        const saved = readJson<{ rates?: unknown; day?: unknown; warned?: unknown; last?: FeeTierStatus }>(stateFile) ?? {};
+        let lastRates = typeof saved.rates === 'string' ? saved.rates : '', warnedDay = typeof saved.day === 'string' ? saved.day : '';
+        const warned = new Set<string>(Array.isArray(saved.warned) ? saved.warned.filter((m): m is string => typeof m === 'string') : []);
+        check.seed(saved.last);
+        const runCheck = async () => {
+          const r = await check.run();
+          if (!r.status) { feeLog.warn('perps fee tier check failed (the fees the bot charges stay)', { error: r.error }); return; }
+          const st = r.status, day = new Date(st.at).toISOString().slice(0, 10);
+          audit.write('perp_fee_tier', st);
+          feeLog.info(`perps fees: ${st.note}`, { mismatches: st.mismatches.length });
+          const rates = JSON.stringify(st.rates.map((x) => [x.makerBps, x.takerBps]));
+          if (rates !== lastRates) { alerter.notify('info', 'perp-fee-tier', `Perps fee check: ${st.note}`); lastRates = rates; }
+          if (day !== warnedDay) { warned.clear(); warnedDay = day; }
+          st.mismatches.forEach((m, i) => {
+            const k = st.mismatchKeys[i] ?? m;
+            if (warned.has(k)) return;
+            warned.add(k);
+            alerter.notify('warn', `perp-fee-tier-${day}-${k}`, `Perps fee check: ${m}`);
+          });
+          try { writeJsonAtomic(stateFile, { rates: lastRates, day: warnedDay, warned: [...warned], last: st }); }
+          catch (e) { feeLog.warn('perps fee tier alert state not saved', { error: String((e as Error)?.message ?? e) }); }
+        };
+        setTimeout(() => void runCheck(), 60_000).unref();
+        setInterval(() => void runCheck(), P.feeTierHours * 3_600_000).unref();
+      }
+    }
   }
   // Cortex-like SNN: shadow by default; in blend mode alpha is earned (<= 0.25) by out-of-sample Brier.
   // Three isolated SNNs (crypto contracts, perps, tennis): each its own worker, model and checkpoints.
@@ -604,7 +653,7 @@ async function main(): Promise<void> {
   // The dashboard comes up first (it shows the engine warming up); loading every market takes a minute or
   // more on a small server.
   training.start();
-  const app = createApi({ kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
+  const app = createApi({ perpFeeTier, kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
   const server = app.listen(cfg.port, cfg.host, () => log.info(`operator API on http://${cfg.host}:${cfg.port} (${cfg.dashboardPassword ? 'password required' : 'no login'})`));
 
   md.start();

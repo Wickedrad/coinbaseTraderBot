@@ -977,5 +977,10 @@ test('the dashboard\'s snipe badge: the hour\'s target and the held position\'s 
     await engine.tick();
     const s = engine.status.get(market.ticker)!.snipe!;
     assert.deepEqual({ ...s, nowUsd: Math.round(s.nowUsd! * 100) / 100 }, { atUsd: pacer === 'true' ? 4.5 : undefined, nowUsd: 1.42, rides: false, closed: false });
+    // Half sold at 0.56 (fee 0.09): the badge measures the 5 still held at their own 0.40, +$0.80 less the $0.09 taker fee.
+    // Net cash would put them at 0.22 and show the sold half's profit again (+$1.62).
+    oms.onFill({ tradeId: 'p2', orderId: '', ticker: market.ticker, side: 'ask', count: 5, price: 0.56, isTaker: true, fee: 0.09, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+    await engine.tick();
+    assert.equal(Math.round(engine.status.get(market.ticker)!.snipe!.nowUsd! * 100) / 100, 0.71);
   }
 });
