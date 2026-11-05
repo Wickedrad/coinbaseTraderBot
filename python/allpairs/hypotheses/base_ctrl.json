@@ -1,0 +1,5 @@
+{
+  "name": "base_ctrl",
+  "notes": "Control, not a hypothesis: the base configuration (same config_hash as base at this commit) re-scored on the patched engine and on the same history snapshot as exit_naive and keep_crossed, so that the new result-neutral diagnostics (val_exit_quality, diag.naive_exit_pnl, diag.p_yes, diag.pred_by_side) exist for base. Its per-fold results must reproduce the base card on every fold whose days did not change; any difference means the patch is not result-neutral and the batch is void.",
+  "extra_features": []
+}
