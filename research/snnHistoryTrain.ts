@@ -85,20 +85,20 @@ export function recDays(a: string, b: string): string[] {
  *  calibration slope b, and the mean Brier against the mid, per column (asset x horizon) and contract kind. Where the
  *  history's edge fails on the recorded books shows here (no CI: a pooled view to choose the next condition). */
 export class SliceAudit {
-  private m = new Map<string, { n: number; sxy: number; sxx: number; size: number; edge: number; moved: number; db: number; ev: Set<string> }>();
+  private m = new Map<string, { n: number; sxy: number; sxx: number; size: number; edge: number; moved: number; db: number; ev: Set<string>; yes: Set<string> }>();
   add(rows: { column: string; kind: string; mid: number; pSnn: number; y: number; eventKey: string }[]) {
     for (const r of rows) for (const key of [`column ${r.column}`, `kind ${r.kind}`, `col+kind ${r.column.split('-')[1] ?? r.column} ${r.kind}`]) {
-      const a = this.m.get(key) ?? { n: 0, sxy: 0, sxx: 0, size: 0, edge: 0, moved: 0, db: 0, ev: new Set<string>() };
+      const a = this.m.get(key) ?? { n: 0, sxy: 0, sxx: 0, size: 0, edge: 0, moved: 0, db: 0, ev: new Set<string>(), yes: new Set<string>() };
       const mid = Math.min(0.98, Math.max(0.02, r.mid)), x = r.pSnn - mid, e = r.y - mid;
       a.n++; a.sxy += x * e; a.sxx += x * x; a.size += Math.abs(x);
       if (x !== 0) { a.edge += Math.sign(x) * e; a.moved++; }
-      a.db += (r.pSnn - r.y) ** 2 - (mid - r.y) ** 2; a.ev.add(r.eventKey);
+      a.db += (r.pSnn - r.y) ** 2 - (mid - r.y) ** 2; a.ev.add(r.eventKey); if (r.y === 1) a.yes.add(r.eventKey);
       this.m.set(key, a);
     }
   }
   lines(label: string): string[] {
     return [...this.m].sort((a, b) => a[0].localeCompare(b[0])).map(([k, a]) =>
-      `[hist-train] ${label} ${k}: ${a.ev.size} windows, ${a.n} rows, vs mid ${(a.db / Math.max(1, a.n)).toFixed(5)}, size ${((100 * a.size) / Math.max(1, a.n)).toFixed(2)}c edge ${a.moved ? ((100 * a.edge) / a.moved).toFixed(2) : '0.00'}c b ${a.sxx > 0 ? (a.sxy / a.sxx).toFixed(2) : 'NaN'}`);
+      `[hist-train] ${label} ${k}: ${a.ev.size} windows (YES ${(a.yes.size / Math.max(1, a.ev.size)).toFixed(3)}: a scored pool far from ~0.5 on updown means whole windows were dropped), ${a.n} rows, vs mid ${(a.db / Math.max(1, a.n)).toFixed(5)}, size ${((100 * a.size) / Math.max(1, a.n)).toFixed(2)}c edge ${a.moved ? ((100 * a.edge) / a.moved).toFixed(2) : '0.00'}c b ${a.sxx > 0 ? (a.sxy / a.sxx).toFixed(2) : 'NaN'}`);
   }
 }
 
@@ -150,7 +150,7 @@ async function main() {
   if (start > to) console.log(`[hist-train] the checkpoint already covers the Kalshi days ${from}..${to}; on to the recorded days`);
   let timeUp = false;
   const auditFrom = arg('audit-from', '2026-10-01');
-  const histAudit = new SliceAudit(), recAudit = new SliceAudit();
+  const histAudit = new SliceAudit(), histEarly = new SliceAudit(), recAudit = new SliceAudit();
   for (const [a, b] of start > to ? [] : trainChunks(start, to)) {
     if (Date.now() > deadline) { console.log(`[hist-train] time is up before ${a}: the next run continues from the checkpoint`); timeUp = true; break; }
     const warm = addDays(a, -1), t0 = Date.now();
@@ -170,7 +170,7 @@ async function main() {
     const windows = new Set(res.rows.map((r) => r.eventKey)).size;
     const frozen = res.steps ? (100 * res.frozenSteps) / res.steps : 0;
     if (!res.rows.length) { console.log(`[hist-train] ${a}..${b}: no contracts scored (${built.written} day(s) built; Kalshi history missing for these days?)`); continue; }
-    if (a >= auditFrom) histAudit.add(res.rows);
+    (a >= auditFrom ? histAudit : histEarly).add(res.rows);
     const vm = vsMarket(res.rows, 1000), c = correctionStats(res.rows);
     console.log(`[hist-train] ${a}..${b}: ${windows} windows, vs market ${f5(vm)} ${vm.hi < 0 ? 'BEATS the market' : vm.lo > 0 ? 'worse' : 'undecided'}; correction size ${c.sizeCents.toFixed(2)}c edge ${c.edgeCents.toFixed(2)}c b ${c.slope.toFixed(2)}; learning frozen ${frozen.toFixed(1)}%;${built.synthetic ? ` ${built.synthetic} synthetic contracts;` : ''} ${((Date.now() - t0) / 60000).toFixed(1)} min`);
     // Rows of this month are not needed any more (memory over months).
@@ -204,6 +204,7 @@ async function main() {
     }
   }
   save();
+  for (const l of histEarly.lines(`audit Kalshi history before ${auditFrom} (this run)`)) console.log(l);
   for (const l of histAudit.lines(`audit Kalshi history from ${auditFrom} (this run)`)) console.log(l);
   for (const l of recAudit.lines('audit recorded days (this run)')) console.log(l);
   console.log(`[hist-train] checkpoint -> ${ckOut}`);
