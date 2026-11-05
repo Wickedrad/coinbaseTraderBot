@@ -42,6 +42,9 @@ test('live mode needs prod, credentials, a deploy-time acknowledgement, and no p
   assert.equal(live.perps.trading, 'off', 'PERP_TRADING=paper (the default) is off in live');
   assert.equal(live.perps.hedge, 'off');
   assert.throws(() => loadConfig({ ...ok, ALLOW_PROXY_INDEX: 'true' }), /PROXY/);
+  // Gated stake multiplier: paper and replays only until Steven approves it for live (GATED_STAKE_LIVE=on).
+  assert.equal(loadConfig({ ...ok, GATED_STAKE_MULT: '2' }).strategy.loserExits!.gatedStakeMult, 1);
+  assert.equal(loadConfig({ ...ok, GATED_STAKE_MULT: '2', GATED_STAKE_LIVE: 'on' }).strategy.loserExits!.gatedStakeMult, 2);
   fs.chmodSync(key, 0o644);
   assert.throws(() => loadConfig(ok), /chmod 600/);
 });

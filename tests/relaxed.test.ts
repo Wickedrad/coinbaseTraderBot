@@ -64,11 +64,12 @@ test('entry windows by contract kind', () => {
   assert.ok(!inEntryWindow('updown', 880, [840, 120], [3300, 300]));
   assert.ok(inEntryWindow('greater', 3000, [840, 120], [3300, 300]));
   assert.ok(!inEntryWindow('greater', 200, [840, 120], [3300, 300]));
-  // Defaults: no new 15-minute entries in the last 5 minutes, no hourly ones in the last 10 (time to sell first).
-  assert.deepEqual([relaxed.entryWindowUpdown, relaxed.entryWindowHourly], [[840, 300], [3300, 600]]);
+  // Defaults: no new 15-minute entries in the last 5 minutes, no hourly ones in the last 7 (time to sell first).
+  assert.deepEqual([relaxed.entryWindowUpdown, relaxed.entryWindowHourly], [[840, 300], [3300, 420]]);
   assert.ok(inEntryWindow('updown', 300, relaxed.entryWindowUpdown, relaxed.entryWindowHourly));
   assert.ok(!inEntryWindow('updown', 299, relaxed.entryWindowUpdown, relaxed.entryWindowHourly));
-  assert.ok(!inEntryWindow('greater', 599, relaxed.entryWindowUpdown, relaxed.entryWindowHourly));
+  assert.ok(inEntryWindow('greater', 599, relaxed.entryWindowUpdown, relaxed.entryWindowHourly));
+  assert.ok(!inEntryWindow('greater', 419, relaxed.entryWindowUpdown, relaxed.entryWindowHourly));
 });
 
 // ---- Sizing --------------------------------------------------------------------
