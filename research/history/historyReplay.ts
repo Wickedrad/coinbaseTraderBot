@@ -82,9 +82,9 @@ import type { Candle } from '../../bot/ta/indicators';
 // version change. 6 is the tennis candle-quote fix (PR #286): whichever merges second takes the next unused number.
 export const REPLAY_VERSION = 7;
 /** Kalshi perp contract sizes (units of the coin a contract), for a replay without the bot's own recordings to read them
- *  from: the perp TA thread's fidelity check of the Oct 28 - Nov 3 recordings (quote / spot: BTC 0.0001, ETH 0.001,
- *  SOL 0.1). Other coins fall back to 0.001. */
-export const PERP_CONTRACT_SIZE: Record<string, number> = { BTC: 0.0001, ETH: 0.001, SOL: 0.1 };
+ *  from: the perp TA thread's fidelity runs over the Oct 21 - Nov 3 recordings (each market's mid against Coinbase spot:
+ *  BTC 0.0001, ETH 0.001, SOL 0.1, XRP 1). Other coins fall back to 0.001. */
+export const PERP_CONTRACT_SIZE: Record<string, number> = { BTC: 0.0001, ETH: 0.001, SOL: 0.1, XRP: 1 };
 const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
 const TFS: Array<{ tf: string; ms: number }> = [{ tf: '1m', ms: MIN }, { tf: '5m', ms: 5 * MIN }, { tf: '15m', ms: 15 * MIN }, { tf: '1h', ms: HOUR }, { tf: '1d', ms: DAY }];
 const BACKFILL = 300;

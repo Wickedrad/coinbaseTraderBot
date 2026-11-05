@@ -90,6 +90,7 @@ test('perp premium per coin reads Kalshi\'s per-contract quote over its contract
   // Units: the quote over the index sits at the contract size (per contract) or at 1 (per coin), else unknown.
   assert.equal(perpQuoteUnits(10.002, 0.0001, 100_000), 0.0001);
   assert.equal(perpQuoteUnits(100_020, 0.0001, 100_000), 1);
+  assert.equal(perpQuoteUnits(2.5005, 1, 2.5), 1, 'XRP: 1 XRP a contract, its quote is per coin');
   assert.equal(perpQuoteUnits(4.6e17, 1, 2.5), undefined);
   assert.equal(perpQuoteUnits(undefined, 0.0001, 100_000), undefined);
   const t0 = 1_800_000_000_000, now = t0 + 60_000;

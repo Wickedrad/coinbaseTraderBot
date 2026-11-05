@@ -112,8 +112,8 @@ export function nextFundingTime(now: number): number {
 }
 
 /** Units of the underlying one quoted price stands for. Kalshi quotes perps PER CONTRACT (the quote is the contract size
- *  x the coin price: BTC 0.0001 BTC a contract, ETH 0.001, SOL 0.1, by the perp TA thread's fidelity check of the Oct 28 -
- *  Nov 3 recordings), so the quote over the index sits at the contract size; a per-coin quote sits at 1. A quote that fits
+ *  x the coin price: BTC 0.0001 BTC a contract, ETH 0.001, SOL 0.1, XRP 1, by the perp TA thread's fidelity runs over the
+ *  Oct 21 - Nov 3 recordings), so the quote over the index sits at the contract size; a per-coin quote sits at 1. A quote that fits
  *  neither (a bad print, a market quoted some other way) is undefined. The test band (x or / 1.5) is far wider than any
  *  real premium (a few bps), so it only tells the units apart. */
 export function perpQuoteUnits(quote: number | undefined, contractSize: number | undefined, index: number | undefined): number | undefined {
