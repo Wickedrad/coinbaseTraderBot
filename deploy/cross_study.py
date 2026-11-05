@@ -1949,6 +1949,11 @@ def main():
 
     # -- 1. Exit fills by reason (vs holding; markouts after the book is loaded).
     # -- The recordings: top of book a second at a time for the episodes' markets, the settlement index, market terms.
+    # LAB_EXCLUDE (e.g. DOGE): series left out entirely, as main's STRATEGY_EXCLUDE_SERIES (Nov 5: no DOGE for now).
+    excl = [x for x in os.environ.get('LAB_EXCLUDE', '').replace(',', ' ').split() if x]
+    if excl:
+        n0 = len(episodes); episodes = [ep for ep in episodes if not any(ep['ticker'].startswith('KX' + x) or ep['ticker'].startswith(x) for x in excl)]
+        print(f"LAB_EXCLUDE {' '.join(excl)}: {n0 - len(episodes)} of {n0} positions left out")
     wanted = {ep['ticker'] for ep in episodes}
     win = {}
     for ep in episodes:

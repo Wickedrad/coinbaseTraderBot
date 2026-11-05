@@ -57,6 +57,10 @@ on:
         description: 'With pnl: hours of positions the exit study replays (whole number, 1-24; about a minute of server time an hour)'
         required: false
         default: '8'
+      exit_exclude:
+        description: 'With exit_runner: series the lab leaves out, space separated (e.g. DOGE: as main, Nov 5)'
+        required: false
+        default: ''
       agree_copy:
         description: "Lab agreement check instead: a kalshi-replay-check copy-only run id on Drive (lab-copies); main's TS replay and this ref's cross_study.py run on it, per-window contracts and P&L compared (deploy/lab_agree.py); no server read"
         required: false
@@ -312,6 +316,7 @@ jobs:
           WINDOWS: ${{ inputs.exit_windows }}
           NOSERVER: ${{ inputs.exit_noserver }}
           LAB_CARRY: ${{ runner.temp }}/carry.json
+          LAB_EXCLUDE: ${{ inputs.exit_exclude }}
         run: |
           [[ "$HOURS" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "hours must be a number"; exit 1; }
           multi=1; [ -n "$WINDOWS" ] || { WINDOWS="$HOURS@$UNTIL"; multi=0; }
@@ -348,7 +353,7 @@ jobs:
               { timeout 6600 python3 deploy/cross_study.py data "$h" $U || echo "(exit study stopped: $?)"; } 2>&1 | tee "$RUNNER_TEMP/report.txt"
             else
               { timeout 3000 python3 deploy/cross_study.py data "$h" $U || echo "(exit study stopped: $?)"; } > "$RUNNER_TEMP/one.txt" 2>&1
-              { echo "===== window: $h h up to $u"; grep -E '^(audit files|recordings |\(exit study stopped)' "$RUNNER_TEMP/one.txt"
+              { echo "===== window: $h h up to $u"; grep -E '^(audit files|recordings |LAB_EXCLUDE|\(exit study stopped)' "$RUNNER_TEMP/one.txt"
                 sed -n '/^  G\. /,/^  C\. /p' "$RUNNER_TEMP/one.txt" | grep -v '^  C\. '; echo; } | tee -a "$RUNNER_TEMP/report.txt"
             fi
           done
