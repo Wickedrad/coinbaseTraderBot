@@ -7,6 +7,7 @@
 #   backfill-cellsweep <full sha> <thread> <control> <own|paper> [family]   cell-sweep Drive folder -> a shard
 #   backfill-foreign <drive path under kalshi-bot-archive> <thread> <family> another thread's own ledger -> a shard
 #   regime [from YYYY-MM-DD] [to YYYY-MM-DD] [fixture YYYY-MM-DD]          labels (+ one-day fixture artifact)
+#   inbox                                                                   copy .github/registry-inbox/<thread>/*.jsonl to Drive
 #   drop <thread>/<file>.jsonl                                              delete one superseded shard of ours
 #   merge                                                                   merge every shard and post the report
 # The repository is public: only family/arm names, counts and dollars are printed; settings files, keys and logs never.
@@ -80,6 +81,14 @@ jobs:
                   rclone copyto "out/regime-v1-fixture-$fx.csv" "$REG/regime-v1/$sha/fixture-$fx.csv"
                   echo "fixture $fx: $(($(wc -l < "out/regime-v1-fixture-$fx.csv") - 1)) rows"
                 fi;;
+              inbox)
+                # Shards from threads without Drive access, committed under .github/registry-inbox/<thread>/<file>.jsonl.
+                for f in .github/registry-inbox/*/*.jsonl; do
+                  [ -f "$f" ] || continue
+                  th=$(basename "$(dirname "$f")")
+                  if python3 -I research/registry.py validate "$f" > /dev/null; then rclone copyto "$f" "$REG/shards/$th/$(basename "$f")" && echo "inbox: $f -> $REG/shards/$th/ ($(wc -l < "$f") rows)"
+                  else echo "::error::inbox $f has invalid rows"; rc=1; fi
+                done;;
               drop)
                 # Remove one of this registry's own shards (superseded backfill): only paths under registry/shards/.
                 [[ "$a1" =~ ^[a-z0-9-]+/[A-Za-z0-9._-]+\.jsonl$ ]] || { echo "::error::drop takes <thread>/<file>.jsonl"; rc=1; continue; }

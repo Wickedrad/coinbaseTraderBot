@@ -1,4 +1,4 @@
 # Trial registry jobs (see .github/workflows/registry.yml).
-# 20:35 UTC Nov 5: all-pairs now writes its own shards (27 rows, family all-pairs-policy); drop the 23-row foreign backfill.
-drop all-pairs/ledger-models_all-pairs_state_trials.jsonl
+# 21:35 UTC Nov 5: sizing round 14 (lab, rank-only) from the inbox.
+inbox
 merge
