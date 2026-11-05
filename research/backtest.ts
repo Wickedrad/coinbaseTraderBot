@@ -1059,8 +1059,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         // price it never rested, so every replay filled 0 contracts on wall asks). Immediate exits queue for next tick.
         if (p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel') {
           // Queue for next tick, like every other exit (a take-profit keeps its name: its fills feed the bench).
-          if (!pending.has(m.ticker)) pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: p.why.startsWith('take-profit') ? 'tp' : p.why.startsWith('quota snipe') ? 'snipe' : 'fv' });
-        if (p.why.startsWith('train:')) trainIds.add(clientOrderId);
+          if (!pending.has(m.ticker)) pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: p.why.startsWith('take-profit') ? 'tp' : p.why.startsWith('quota snipe (floor)') ? 'floor' : p.why.startsWith('quota snipe') ? 'snipe' : p.why.startsWith('loser window cut') ? 'wcut' : p.why.startsWith('loser cut') ? 'cut' : 'fv' });
           continue;
         }
         // A taker entry against an existing position is an early exit in disguise
@@ -1097,12 +1096,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           continue;
         }
         if (/^(train|explore)/.test(p.why)) res.paper!.extraSent = (res.paper!.extraSent ?? 0) + 1;
-<<<<<<< HEAD
-        const clientOrderId = `${m.ticker}-${st.now}-${p.side}-${p.purpose}${p.why.startsWith('take-profit') ? '-tp' : p.why.startsWith('confluence ratchet wall ask') ? '-wall' : p.why.startsWith('loser window rest') ? '-wrest' : ''}`;
-        if (p.why.startsWith('train:')) trainIds.add(clientOrderId);
-=======
         const clientOrderId = `${m.ticker}-${st.now}-${p.side}-${p.purpose}${p.why.startsWith('take-profit') ? '-tp' : p.why.startsWith('confluence ratchet wall ask') ? '-wall' : p.purpose === 'exit' ? '-rest' : ''}`;
->>>>>>> claude/loser-exits
+        if (p.why.startsWith('train:')) trainIds.add(clientOrderId);
         await send(m.ticker, 'order', async () => {
           try {
             await ex.createOrder({ ticker: m.ticker, side: p.side, count: p.count, price: p.price, timeInForce: p.timeInForce, postOnly: p.postOnly, reduceOnly: p.reduceOnly, selfTradePrevention: 'taker_at_cross', clientOrderId, expirationTime: p.expirationTime });
