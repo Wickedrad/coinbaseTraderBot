@@ -65,8 +65,12 @@ export function eventOf(ticker: string, event?: string): string {
   return i > 0 ? ticker.slice(0, i) : ticker;
 }
 
+/** The reference sigma the dataset's log_vol_ratio is built against (log(sigma / reference)). The trainer stores this same
+ *  value in the model (params.referenceSigma), so live and replay build the feature as the model was fitted on it. */
+export const DATASET_REFERENCE_SIGMA = 5e-5;
+
 export async function buildDataset(
-  dir: string, everySec: number, referenceSigma = 5e-5,
+  dir: string, everySec: number, referenceSigma = DATASET_REFERENCE_SIGMA,
   opts: { volProfile?: VolProfile; applyVolSeasonality?: boolean; volModel?: VolModel; entryWindowOnly?: boolean; calendar?: MacroEvent[]; entryWindowUpdown?: [number, number]; entryWindowHourly?: [number, number]; includeSynthetic?: boolean; onRow?: (r: DatasetRow) => void; /** A market to leave out before any feature is computed (a study's sample of contracts). */ skipMarket?: (m: RecMarket) => boolean } = {},
 ): Promise<DatasetRow[]> {
   const volProfile = opts.volProfile;
@@ -157,7 +161,7 @@ export async function buildDatasetMain(argOf: (k: string, d: string) => string =
   const windows = new Set<number>();
   const drain = () => { if (buf.length) { fs.writeSync(fd, buf.join('')); buf = []; } };
   try {
-    await buildDataset(dir, every, 5e-5, {
+    await buildDataset(dir, every, DATASET_REFERENCE_SIGMA, {
       volProfile, applyVolSeasonality: Boolean(volProfile), volModel, entryWindowOnly: process.argv.includes('--entry-window-only'), calendar: loadCalendar(cal),
       onRow: (r) => { buf.push(JSON.stringify(r) + '\n'); n++; windows.add(r.window); if (r.labelSource === 'official') official++; if (buf.length >= 2000) drain(); },
     });

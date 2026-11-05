@@ -47,7 +47,7 @@ import { priceContract } from '../bot/model/fairValue';
 import { GO_LIVE_GATES, MetaModel, type EnsembleMember, type MetaModelParams } from '../bot/model/metaModel';
 import { clamp, logit, pushAll, sigmoid } from '../bot/util/num';
 import type { DatasetRow } from './buildDataset';
-import { eventOf, readDataset } from './buildDataset';
+import { DATASET_REFERENCE_SIGMA, eventOf, readDataset } from './buildDataset';
 import { predictGbdtLogits, trainGbdt } from './gbdt';
 import { initLayers, predictLogits, train } from './mlp';
 import { MlpTorch } from './mlpTorch';
@@ -452,7 +452,10 @@ export async function trainMetaModel(rowsIn: DatasetRow[], opts: TrainOpts & { t
   const calP = (z: number) => (betaCalibration ? applyBeta(sigmoid(z), betaCalibration) : calibration ? sigmoid(calibration.a * z + calibration.b) : sigmoid(z));
   const take = opts.takeModel === false ? undefined : fitTakeModel(chosen.oofRows, chosen.oofZ.map(calP), opts.takeMinEdge ?? 0.02, seed);
 
-  const referenceSigma = rows.reduce((s, r) => s + r.sigma, 0) / rows.length;
+  // The reference the rows' log_vol_ratio was built against, not the rows' mean sigma: live and replay build the feature with
+  // params.referenceSigma, so storing the mean sigma shifted log_vol_ratio by log(5e-5 / mean sigma) away from training in
+  // every prediction (a constant offset on one base input of every MLP and GBDT).
+  const referenceSigma = DATASET_REFERENCE_SIGMA;
   const variantsTried = grid.length + (opts.fixedNu === undefined ? NU_CANDIDATES.length : 0);
   const params: MetaModelParams = {
     version: `meta-${model.family}-${new Date().toISOString().slice(0, 10)}-${chosen.g.set.spec}-${specName(model)}`,
