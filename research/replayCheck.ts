@@ -48,6 +48,7 @@ import readline from 'readline';
 import zlib from 'zlib';
 import type { Config } from '../bot/config';
 import type { EvalReading } from './backtest';
+import { stateAudit } from './stateAudit';
 
 export interface SideSummary {
   /** Settled P&L by market (the worst-losers line). */
@@ -103,6 +104,8 @@ export interface ReplayCheck {
   /** Both sides scored only on markets neither first traded while paper was down (its restarts and deploys). */
   upOnly?: { downs: Array<{ from: string; to: string; minutes: number }>; excluded: number; replay: number; paper: number; replayMarkets: number; paperMarkets: number };
   days: string[]; bankroll: number; exitPolicy: string;
+  /** The replay's trades by the market state they entered in (research/stateAudit.ts). */
+  stateAudit?: string[];
   /** Whether the replay's equity guard started from the bot's, and the override it ran with. */
   guardSeeded: boolean; killOverride: boolean;
   /** The compared stretch [from, to), its length, and the paper bot's starts in the days' audit log. */
@@ -838,6 +841,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
     addEntry(replay, entryBand(t.first?.side, t.first?.price), t.pnl);
   }
   replay.byPurpose = r.byPurpose ?? {};
+  const stateLines = stateAudit(r.trades.filter((t) => inside(t.closeTs)));
   replay.contractsByHour = r.contractsByHour ?? {};
   // Contracts, as paper's: the take-profit's sales, and the other exits (the model exit and the ratchet).
   const tpContracts = r.paper?.takeProfitContracts ?? 0;
@@ -852,6 +856,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   const checked = hours >= minHours;
   const v = verdict(replay, paper);
   return {
+    stateAudit: stateLines,
     days, bankroll, bankrollScale: o.bankrollScale ?? 1, ...(o.tickPhaseMs !== undefined ? { tickPhaseMs: o.tickPhaseMs } : {}), exitPolicy: policy, guardSeeded: Boolean(guardFile), killOverride, from: new Date(from).toISOString(), to: new Date(to).toISOString(), hours,
     startups: audit.startups.map((s) => new Date(s.t).toISOString()),
     settingsDiffer: startedAt ? settingsDiffer(JSON.parse(JSON.stringify(publicConfig(cfg as Config))), startedAt.config) : null,
@@ -958,6 +963,7 @@ async function main(): Promise<void> {
   if (MA) console.log(`market anchor: ${MA.scored} snapshots scored, log loss anchored ${MA.llAnchored} raw ${MA.llRaw} market ${MA.llMarket} | w by bucket: ${Object.entries(MA.groups).map(([g, bs]) => `${g} ${bs.map((b) => `${b.lo}-${b.hi}s ${b.w} (n ${b.n})`).join(', ')}`).join(' | ')}`);
   if (MA?.series) console.log(`market anchor by series (n >= 20): ${Object.entries(MA.series).filter(([, v]) => v.n >= 20).sort().map(([k, v]) => `${k} ${v.w} (n ${v.n})`).join(', ') || 'none'}`);
   console.log(`paper's extra entries: training trades replay ${X.train} planned, paper ${res.paper.extra.train} filled | exploration replay ${X.explore} planned, paper ${res.paper.extra.explore} filled | replay sent ${X.sent} past the risk gateway${rej ? `, turned down: ${rej}` : ''}`);
+  for (const l of res.stateAudit ?? []) console.log(l);
   console.log('hour (UTC)      replay contracts  paper contracts   replay P&L   paper P&L');
   for (const h of [...new Set([...Object.keys(res.replay.contractsByHour), ...Object.keys(res.paper.contractsByHour), ...Object.keys(res.replay.byHour), ...Object.keys(res.paper.byHour)])].sort()) {
     console.log(`${h.replace('T', ' ')}:00  ${(res.replay.contractsByHour[h] ?? 0).toFixed(0).padStart(16)}  ${(res.paper.contractsByHour[h] ?? 0).toFixed(0).padStart(15)}  ${f(res.replay.byHour[h] ?? 0).padStart(11)}  ${f(res.paper.byHour[h] ?? 0).padStart(10)}`);

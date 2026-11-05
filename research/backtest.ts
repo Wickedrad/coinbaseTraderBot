@@ -123,7 +123,9 @@ export interface ExitStats {
 export interface SessionBreakdown { windows: number; pnl: number; contracts: number; fees: number }
 
 /** One traded contract (a market in which a position was taken), settled. */
-export interface TradeResult { ticker: string; closeTs: number; pnl: number; contracts: number; kind: string; /** The market's first fill (YES-scale price), the entry-type breakdown. */ first?: { side: 'bid' | 'ask'; price: number } }
+export interface TradeResult { ticker: string; closeTs: number; pnl: number; contracts: number; kind: string; /** The market's first fill (YES-scale price), the entry-type breakdown. */ first?: { side: 'bid' | 'ask'; price: number };
+  /** The market-state reading (compactReading) at the last evaluation before the market's entry. */
+  mstate?: Record<string, number | null> }
 
 export interface BacktestResult {
   exitPolicy: ExitPolicyName;
@@ -391,6 +393,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const volFc = new VolForecaster(opts.volModel);
   // Market state, fed at each evaluation exactly as the engine feeds it (bot/marketdata/marketState.ts).
   const mstate = new MarketState();
+  // The reading at each market's last evaluation while flat: the state its entry was made in (research/stateAudit.ts).
+  const entryState = new Map<string, Record<string, number | null>>();
   const pos = new PositionBook();
   const ex = new PaperExchange(undefined, bankroll0, (t) => st.books.get(t), () => DEFAULT_FEES, () => st.now);
   const gateway = new RiskGateway(limits);
@@ -649,7 +653,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
             pos.settle(m.ticker, result, st.now);
             pacer?.onSettled(m.ticker, p.realized ?? 0, st.now);
             const traded = res.windows.get(m.closeTime)?.contracts ?? 0;
-            if (traded > 0) res.trades.push({ ticker: m.ticker, closeTs: m.closeTime, pnl: p.realized ?? 0, contracts: traded, kind: m.kind, first: firstFill.get(m.ticker) });
+            const es = entryState.get(m.ticker);
+            entryState.delete(m.ticker);
+            if (traded > 0) res.trades.push({ ticker: m.ticker, closeTs: m.closeTime, pnl: p.realized ?? 0, contracts: traded, kind: m.kind, first: firstFill.get(m.ticker), ...(es ? { mstate: es } : {}) });
             firstFill.delete(m.ticker);
             const b = res.windows.get(m.closeTime) ?? { pnl: 0, contracts: 0, fees: 0 };
             b.pnl += p.realized ?? 0;
@@ -767,6 +773,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         pYes = anchor.price(m.ticker, tauSec, pMkt, pYes);
       }
       const mRead = observeMarket(mstate, { asset: m.asset, ticker: m.ticker, index: idx!, now: st.now, bid, ask, trades: st.features.micro.get(m.ticker)?.tradesIn(st.now, 300_000) });
+      if (pos.position(m.ticker) === 0) entryState.set(m.ticker, compactReading(mRead));
       opts.onEval?.({ ticker: m.ticker, now: st.now, pYes, fv: fv.pYes, bid: bid.price, ask: ask.price, position: pos.position(m.ticker), spot: spot.value, strike: terms.strike, sigma: vol.sigmaPerSqrtSec, sigmaPricing: sigmaFv,
         pModel: pred.p, taVolMult, taShift, ruleShift, mstate: compactReading(mRead) });
       const pMarket = model.marketProbability(mid);
@@ -788,7 +795,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const fixedUsd = !opts.paper ? 0 : opts.paper.orderFrac > 0 ? (bankroll > 0 ? Math.round(opts.paper.orderFrac * bankroll * 100) / 100 : 0) : Math.max(0, opts.paper.orderUsd);
       // The order band (ORDER_USD_MIN / ORDER_USD_MAX), paper and live, as the engine applies it (Engine.orderBandUsd).
       const band = fixedUsd > 0 ? undefined : orderBand(strategy.orderUsdMin, strategy.orderUsdMax);
-      const fitUsd = fixedUsd > 0 ? fixedUsd : band?.max ?? 0;
+      const fitUsd = (fixedUsd > 0 ? fixedUsd : band?.max ?? 0) * (strategy.bandSizeMult === 'scale' ? strategy.bandSizeMax : 1);
       // GATED_STAKE_CAP=widen: the caps make room for a gated order scaled by GATED_STAKE_MULT (bot/engine.ts orderLimits).
       const LX = strategy.loserExits;
       const capUsd = LX?.gate && LX.gatedStakeCap === 'widen' && (LX.gatedStakeMult ?? 1) > 1 ? fitUsd * LX.gatedStakeMult! : fitUsd;
@@ -932,7 +939,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const view: MarketView = {
         ticker: m.ticker, pYes, pFair: fv.pYes, bestBid: bid, bestAsk: ask, position: pos.position(m.ticker), bankroll,
         // As the engine sizes (bot/sizing/orderBudget.ts); the regime weight (playbook / Compensator) is not replayed.
-        ...(() => { const b = orderBudget({ bankroll, orderFrac: tier.orderFrac, sizeMult: sessRisk.sizeMult, riskScale: sizeScale, fCapUsd: optimalFCap(st.now, tier.orderFrac) * bankroll, paperOrderUsd: fixedUsd, bandUsd: band, maxContractsPerOrder: limits.maxContractsPerOrder }); if (b.boundBy === 'optimal_f') res.optimalFBound = (res.optimalFBound ?? 0) + 1; return { maxOrderRiskUsd: b.maxOrderRiskUsd, maxContracts: b.maxContracts, ...(b.fixedOrderUsd ? { fixedOrderUsd: b.fixedOrderUsd } : {}), ...(b.band ? { orderBandUsd: b.band } : {}) }; })(),
+        ...(() => { const b = orderBudget({ bankroll, orderFrac: tier.orderFrac, sizeMult: sessRisk.sizeMult, riskScale: sizeScale, fCapUsd: optimalFCap(st.now, tier.orderFrac) * bankroll, paperOrderUsd: fixedUsd, bandUsd: band, maxContractsPerOrder: limits.maxContractsPerOrder, bandSizeMult: strategy.bandSizeMult, bandSizeMax: strategy.bandSizeMax }); if (b.boundBy === 'optimal_f') res.optimalFBound = (res.optimalFBound ?? 0) + 1; return { maxOrderRiskUsd: b.maxOrderRiskUsd, maxContracts: b.maxContracts, ...(b.fixedOrderUsd ? { fixedOrderUsd: b.fixedOrderUsd } : {}), ...(b.band ? { orderBandUsd: b.band } : {}) }; })(),
         minSidePrice: limits.minSidePrice,
         ...(() => { const b = tpBenched(); return b ? { takeProfitBenched: b } : {}; })(),
         newRiskRoomUsd,

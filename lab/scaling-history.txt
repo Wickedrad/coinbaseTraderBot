@@ -1,0 +1,10 @@
+# Scaling history lab, round 1 (2026-11-01, rerun on the new repo with the taker-depletion fill fix): the recorded-day winner (e_novol) against today's bot and the two strongest
+# adversarial controls, on 120 history days (Jul-Oct, several regimes), one replay at a time (shared runner cap).
+#  - adv_placebo: same distribution of edge adds, drawn from earlier moments (does the market reading matter?)
+#  - adv_bias2: a flat 2c raise with no reading (does it only trade less?)
+# Pass = e_novol beats both day by day, in most months and in calm, normal and wild days. Next: neighbours, drop-one, fills.
+# days=120
+base:
+e_novol: DYN_EDGE_CHANGE=0.03 DYN_EDGE_SPREAD=0.5 DYN_EDGE_FLOW=0.02 DYN_EDGE_UNCERTAINTY=0.5
+adv_placebo: DYN_EDGE_CHANGE=0.03 DYN_EDGE_SPREAD=0.5 DYN_EDGE_FLOW=0.02 DYN_EDGE_UNCERTAINTY=0.5 DYN_EDGE_PLACEBO=true
+adv_bias2: DYN_EDGE_BIAS=0.02

@@ -248,6 +248,13 @@ export interface StrategyConfig {
    *  order size (paperOrderUsd / paperOrderFrac) wins over it. */
   orderUsdMin: number;
   orderUsdMax: number;
+  /** BAND_SIZE_MULT (off): whether the session x regime size factor (sizeMult) scales the order band and the paper order
+   *  size, paper, live and replay alike (Steven, Nov 5: "the size multiplier multiplies from $10-$20 and from $20-$40 on
+   *  gated entries"). off = the band ignores it (as before). shrink = band x min(1, sizeMult): never above the band's top.
+   *  scale = band x min(sizeMult, BAND_SIZE_MAX): can go above the top, and the risk caps widen by BAND_SIZE_MAX. */
+  bandSizeMult: 'off' | 'shrink' | 'scale';
+  /** BAND_SIZE_MAX (1.5): the highest factor BAND_SIZE_MULT=scale applies. */
+  bandSizeMax: number;
   /** Paper only: no new crypto entries in a time-to-close bucket where the market mid has scored a better log loss
    *  than the bot's (temperature-calibrated) probability over the last settled markets (bot/strategy/accuracyGate.ts;
    *  the owner's choice on Oct 23). Live never blocks on it. */
@@ -1233,6 +1240,16 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       spread: num(env, 'DYN_EDGE_SPREAD', 0, 0, 2),
       flow: num(env, 'DYN_EDGE_FLOW', 0, 0, 0.2),
       uncertainty: num(env, 'DYN_EDGE_UNCERTAINTY', 0, 0, 2),
+      quiet: num(env, 'DYN_EDGE_QUIET', 0, 0, 0.2),
+      quietRef: num(env, 'DYN_EDGE_QUIET_REF', 2.2, 0.5, 10),
+      calmRv1h: num(env, 'DYN_EDGE_CALM_RV1H', 0, 0, 0.01),
+      calmTight: num(env, 'DYN_EDGE_CALM_TIGHT', 0, 0, 0.2),
+      calmTightRef: num(env, 'DYN_EDGE_CALM_TIGHT_REF', 0.015, 0.001, 0.2),
+      calmFlow: num(env, 'DYN_EDGE_CALM_FLOW', 0, 0, 0.5),
+      calmBias: num(env, 'DYN_EDGE_CALM_BIAS', 0, 0, 0.1),
+      wildScale: num(env, 'DYN_EDGE_WILD_SCALE', 1, 0, 2),
+      bias: num(env, 'DYN_EDGE_BIAS', 0, -0.05, 0.1),
+      placebo: env.DYN_EDGE_PLACEBO === 'true',
       maxUp: num(env, 'DYN_EDGE_MAX_UP', 0.05, 0, 0.3),
       maxDown: num(env, 'DYN_EDGE_MAX_DOWN', 0.01, 0, 0.1),
     },
@@ -1240,6 +1257,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       volTarget: num(env, 'REGIME_VOL_TARGET', 0, 0, 2),
       changeDerisk: num(env, 'REGIME_CHANGE_DERISK', 0, 0, 1),
       corrDerisk: num(env, 'REGIME_CORR_DERISK', 0, 0, 2),
+      jump: num(env, 'REGIME_JUMP', 0, 0, 2),
+      jumpRef: num(env, 'REGIME_JUMP_REF', 2, 0.5, 10),
       min: num(env, 'REGIME_SCALE_MIN', 0.25, 0, 1),
       max: num(env, 'REGIME_SCALE_MAX', 1.5, 1, 2),
       upWeight: num(env, 'REGIME_UP_WEIGHT', 0.5, 0, 1),
@@ -1305,6 +1324,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0, 0, 1),
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
     orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
+    bandSizeMult: oneOf(env, 'BAND_SIZE_MULT', 'off', ['off', 'shrink', 'scale'] as const),
+    bandSizeMax: num(env, 'BAND_SIZE_MAX', 1.5, 1, 3),
     accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
     marketAnchor: {
       enabled: bool(env, 'MARKET_ANCHOR', false),

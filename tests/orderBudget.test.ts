@@ -29,3 +29,17 @@ test('order budget: the order band (ORDER_USD_MIN / ORDER_USD_MAX, Steven Oct 30
   assert.deepEqual(b, { maxOrderRiskUsd: 20, maxContracts: 50, band: { min: 10, max: 20 }, boundBy: 'band' });
   assert.equal(orderBudget({ ...base, bandUsd: orderBand(10, 20), paperOrderUsd: 15 }).boundBy, 'paper');
 });
+
+test('BAND_SIZE_MULT: off ignores sizeMult; shrink never goes above the top; scale goes up to BAND_SIZE_MAX', () => {
+  const b = { bankroll: 200, orderFrac: 0.02, riskScale: 1, fCapUsd: Infinity, paperOrderUsd: 0, bandUsd: { min: 10, max: 20 }, maxContractsPerOrder: 50 };
+  assert.deepEqual(orderBudget({ ...b, sizeMult: 0.5 }).band, { min: 10, max: 20 });
+  assert.deepEqual(orderBudget({ ...b, sizeMult: 0.5, bandSizeMult: 'shrink' }).band, { min: 5, max: 10 });
+  assert.deepEqual(orderBudget({ ...b, sizeMult: 1.4, bandSizeMult: 'shrink' }).band, { min: 10, max: 20 });
+  assert.deepEqual(orderBudget({ ...b, sizeMult: 1.4, bandSizeMult: 'scale' }).band, { min: 14, max: 28 });
+  assert.deepEqual(orderBudget({ ...b, sizeMult: 2, bandSizeMult: 'scale', bandSizeMax: 1.5 }).band, { min: 15, max: 30 });
+  const zero = orderBudget({ ...b, sizeMult: 0, bandSizeMult: 'shrink' });
+  assert.equal(zero.maxOrderRiskUsd, 0);
+  assert.equal(zero.maxContracts, 0);
+  assert.equal(orderBudget({ ...b, paperOrderUsd: 20, sizeMult: 0.5, bandSizeMult: 'shrink' }).fixedOrderUsd, 10);
+  assert.equal(orderBudget({ ...b, paperOrderUsd: 20, sizeMult: 0.5 }).fixedOrderUsd, 20);
+});

@@ -260,15 +260,16 @@ jobs:
 
   backtest:
     needs: build
-    # The account's runners are saturated (Nov 1): a push runs only the build (paired mechanics + the adversary); the
-    # backtests run on a dispatch (or once this line is switched), at most three runners at a time.
+    # A push runs only the build (paired mechanics + the adversary); the
+    # backtests run on a dispatch (or once this line is switched), at most ten runners at a time.
     if: ${{ inputs.reuse_run != '' }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 340
     strategy:
       fail-fast: false
-      max-parallel: 3
+      # Ten of the twenty matrix jobs at a time (Nov 5): the org's runners took 36 jobs together (Nov 2-4).
+      max-parallel: 10
       matrix:
         how: [real, placebo, requote, depth, lagdepth]
         part: [0, 1, 2, 3]
