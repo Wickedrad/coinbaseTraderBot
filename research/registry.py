@@ -20,6 +20,7 @@ Commands:
   merge SHARD_DIR OUT_DIR        merge every shard, score each family, write merged/ files
   cellsweep SRC_DIR SHA THREAD   turn a cell-sweep Drive folder (d<dd>-<tag>.json.gz) into registry rows on stdout
   foreign FILE THREAD FAMILY     wrap another thread's own ledger (one JSON object a line) into registry rows
+  ho1 SHARD                      fill each paired row's HO-1 heldout block (folds, terciles, placebo) -> stdout
   selftest                       run the built-in checks
 
 Statistics (no scipy; tests in selftest):
@@ -97,6 +98,8 @@ SCHEMA = {
         'verdict': {'type': 'string'},
         'ref': {'type': 'string', 'description': 'run URL, comment or Drive path behind the row'},
         'raw': {'type': 'object', 'description': 'foreign ledger row kept verbatim'},
+        'by_tercile': {'type': 'object', 'description': 'HO-1 history tier: {"LOW"|"MID"|"HIGH": {"pnl": $, "hours": h}} over H-HOLD, regime v1 labels'},
+        'placebo_for': {'type': 'string', 'description': 'on a placebo row: the arm it mimics (HO-1 beats_placebo)'},
         'contract_type': {'enum': list(CONTRACT_TYPES), 'description': 'inferred from thread/env when absent (contract_type_of)'},
         'modules': {'type': 'array', 'items': {'type': 'string'}, 'description': 'bot modules the arm changes; inferred from env when absent'},
         'held_out': {'type': 'boolean', 'description': 'legacy: by_day is out of sample (not enough for the ledger without heldout)'},
@@ -401,6 +404,50 @@ def merge(shard_dir, out_dir, S=6):
     return rep
 
 
+H_HOLD = ('2026-08-01', '2026-11-04')
+
+
+def ho1_fill(rows):
+    """Fill the HO-1 `heldout` block of every paired row from by_day (and by_tercile) against its control, so every thread
+    computes folds the same way. History tier: H-HOLD days in 6 consecutive folds; recorded tier: one fold per day."""
+    from datetime import date, timedelta
+    byid = {r['trial_id']: r for r in rows}
+    plac = {(r['family'], r.get('placebo_for')): r for r in rows if r['role'] == 'placebo' and r.get('placebo_for')}
+    for r in rows:
+        c = byid.get(r.get('control'))
+        if r['role'] == 'control' or not c:
+            continue
+        tier = 'history' if r['data']['source'] == 'history' else 'recorded'
+        d0, d1 = (date.fromisoformat(H_HOLD[0]), date.fromisoformat(H_HOLD[1])) if tier == 'history' else (None, None)
+        days = sorted(d for d in r['by_day'] if d in c['by_day'] and (tier == 'recorded' or H_HOLD[0] <= d <= H_HOLD[1]))
+        hpd = 24.0
+        if tier == 'history':
+            span = (d1 - d0).days + 1
+            edges = [d0 + timedelta(days=round(i * span / 6)) for i in range(7)]
+            folds = [[d for d in days if edges[i].isoformat() <= d < edges[i + 1].isoformat()] for i in range(6)]
+            folds[-1] += [d for d in days if d == d1.isoformat()]
+        else:
+            folds = [[d] for d in days]
+        fg = [sum(r['by_day'][d] - c['by_day'][d] for d in f) / (hpd * len(f)) for f in folds if f]
+        h = {'standard': 'HO-1', 'tier': tier, 'days': len(days), 'folds': len(fg), 'folds_won': sum(1 for g in fg if g > 0),
+             'worst_fold_per_hour': min(fg) if fg else None}
+        rt, ct = r.get('by_tercile') or {}, c.get('by_tercile') or {}
+        if tier == 'history' and rt and ct:
+            tg = {k: (rt[k]['pnl'] - ct[k]['pnl']) / rt[k]['hours'] for k in rt if k in ct and (rt[k].get('hours') or 0) >= 100}
+            h.update(terciles_covered=len(tg), terciles_won=sum(1 for g in tg.values() if g > 0),
+                     worst_tercile_per_hour=min(tg.values()) if tg else None)
+        p = plac.get((r['family'], r['arm']))
+        if p:
+            gain = sum(r['by_day'][d] - c['by_day'][d] for d in days)
+            pg = sum(p['by_day'].get(d, 0.0) - c['by_day'][d] for d in days)
+            h['beats_placebo'] = gain > pg
+        rv = (r.get('data') or {}).get('replay_version')
+        if rv is not None:
+            h['replay_version'] = rv
+        r['heldout'] = h
+    return rows
+
+
 def contract_type_of(r):
     if r.get('contract_type') in CONTRACT_TYPES:
         return r['contract_type']
@@ -619,6 +666,17 @@ def selftest():
     assert ho1_pass(ok)[0], ho1_pass(ok)
     assert not ho1_pass({**ok, 'days': 7})[0] and not ho1_pass({**ok, 'folds_won': 3})[0] and not ho1_pass({**ok, 'replay_version': 7})[0]
     assert not ho1_pass(None)[0]
+    from datetime import date, timedelta
+    hd = [(date(2026, 8, 1) + timedelta(days=i)).isoformat() for i in range(96)]
+    base = {'thread': 't', 'family': 'f', 'code_sha': 's', 'data': {'source': 'history', 'days': hd, 'replay_version': 8}}
+    rows = [dict(base, trial_id='c', arm='C', role='control', by_day={d: 0.0 for d in hd},
+                 by_tercile={k: {'pnl': 0.0, 'hours': 700} for k in ('LOW', 'MID', 'HIGH')}),
+            dict(base, trial_id='x', arm='X', role='candidate', control='c', by_day={d: 30.0 for d in hd},
+                 by_tercile={k: {'pnl': 900.0, 'hours': 700} for k in ('LOW', 'MID', 'HIGH')}),
+            dict(base, trial_id='p', arm='P', role='placebo', placebo_for='X', control='c', by_day={d: 1.0 for d in hd})]
+    hx = ho1_fill(rows)[1]['heldout']
+    assert hx['days'] == 96 and hx['folds'] == 6 and hx['folds_won'] == 6 and hx['terciles_won'] == 3 and hx['beats_placebo'], hx
+    assert ho1_pass(hx)[0], ho1_pass(hx)
     print('registry selftest ok')
 
 
@@ -654,6 +712,10 @@ def main(a):
             print(json.dumps(r, sort_keys=True))
     elif a[0] == 'foreign':
         for r in foreign_rows(a[1], a[2], a[3]):
+            print(json.dumps(r, sort_keys=True))
+    elif a[0] == 'ho1':
+        rows = [r for _, _, r in read_rows(a[1:2]) if '_bad' not in r]
+        for r in ho1_fill(rows):
             print(json.dumps(r, sort_keys=True))
     elif a[0] == 'selftest':
         selftest()
