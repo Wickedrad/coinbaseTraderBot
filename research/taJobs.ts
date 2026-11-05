@@ -40,7 +40,7 @@ export const VARIANTS: Record<string, Record<string, string>> = {
   // round 6:   veto_int: { TA_VETO_INTENSITY: '10.6' },
   spread10_veto_two: { TA_MAX_SPREAD: '0.10', ...VETO, TA_VETO_MIN: '2' },
   veto_two: { ...VETO, TA_VETO_MIN: '2' },
-  veto_any: { ...VETO },
+  veto_any: { ...VETO, TA_VETO_MIN: '1' },
   // Adversaries: the same veto on signals AGAINST the side (should hurt if the contrarian read is real), and random skips
   // near veto_two's expected share (about half of the fills had two signals for the side in round 4).
   adv_veto_reverse: { ...VETO, TA_VETO_MIN: '2', TA_VETO_REVERSE: 'true' },
