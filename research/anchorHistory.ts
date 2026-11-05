@@ -24,15 +24,15 @@ import { recordingFiles } from '../bot/marketdata/recordingFiles';
 export const VARIANTS: Record<string, Record<string, string>> = {
   // HO-1 wave (Nov 5 22:45 UTC; registry README): REPLAY_VERSION 8, no DOGE, own benches. Settings fixed before the run
   // (none tuned on H-DEV); scored once on H-HOLD Aug 1-Nov 4 (research/ho1Score.py), each candidate with its placebo.
+  // Trimmed to 7 arms (00:00 UTC Nov 6): sernl was identical to ser on history; every anchor arm ignores books wider than 10c
+  // (MARKET_ANCHOR_MAX_SPREAD, the SNN thread's wide-spread artifact).
   baseline: {},
-  ser: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true' },
-  sershuf: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', MARKET_ANCHOR_SHUFFLE: 'true' },
-  sernl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04' },
-  sernlm: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', NO_LONGSHOT_MIRROR: 'true' },
-  off20: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2', NO_LONGSHOT_WILD_OFF: 'true' },
-  offpl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2', MARKET_ANCHOR_WILD_PLACEBO: '0.2', NO_LONGSHOT_WILD_OFF: 'true' },
-  rvoff: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_LABELS: 'data/regime/labels.csv.gz', NO_LONGSHOT_WILD_OFF: 'true' },
-  rvpl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_LABELS: 'data/regime/labels.csv.gz', MARKET_ANCHOR_WILD_PLACEBO: '0.33', NO_LONGSHOT_WILD_OFF: 'true' },
+  ser: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', MARKET_ANCHOR_MAX_SPREAD: '0.10' },
+  sershuf: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', MARKET_ANCHOR_MAX_SPREAD: '0.10', MARKET_ANCHOR_SHUFFLE: 'true' },
+  off20: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', MARKET_ANCHOR_MAX_SPREAD: '0.10', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2', NO_LONGSHOT_WILD_OFF: 'true' },
+  offpl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', MARKET_ANCHOR_MAX_SPREAD: '0.10', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_RATIO: '2', MARKET_ANCHOR_WILD_PLACEBO: '0.2', NO_LONGSHOT_WILD_OFF: 'true' },
+  rvoff: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', MARKET_ANCHOR_MAX_SPREAD: '0.10', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_LABELS: 'data/regime/labels.csv.gz', NO_LONGSHOT_WILD_OFF: 'true' },
+  rvpl: { MARKET_ANCHOR: 'true', MARKET_ANCHOR_BY_SERIES: 'true', MARKET_ANCHOR_MAX_SPREAD: '0.10', NO_LONGSHOT_EDGE: '0.04', MARKET_ANCHOR_WILD_LABELS: 'data/regime/labels.csv.gz', MARKET_ANCHOR_WILD_PLACEBO: '0.33', NO_LONGSHOT_WILD_OFF: 'true' },
 };
 
 export const LATER: Record<string, Record<string, string>> = {};
