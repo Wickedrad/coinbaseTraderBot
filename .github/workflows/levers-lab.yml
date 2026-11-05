@@ -31,11 +31,11 @@ jobs:
       - id: p
         run: |
           n=$(grep -cvE '^[[:space:]]*(#|$)' .github/levers-batch.txt || true)
-          s=$(( (n + 7) / 8 )); [ "$s" -lt 1 ] && s=1; [ "$s" -gt 12 ] && s=12
+          s=$(( (n + 7) / 8 )); [ "$s" -lt 1 ] && s=1; [ "$s" -gt 10 ] && s=10
           echo "$n arm(s) in $s shard(s)"
           echo "shards=$(seq 0 $((s - 1)) | jq -cs .)" >> "$GITHUB_OUTPUT"
           mp=$(grep -oE '^# max-parallel: *[0-9]+' .github/levers-batch.txt | grep -oE '[0-9]+$' | head -1 || true)
-          mp=${mp:-3}; [ "$mp" -lt 1 ] && mp=1; [ "$mp" -gt 3 ] && mp=3; echo "at most $mp job(s) at once"
+          mp=${mp:-3}; [ "$mp" -lt 1 ] && mp=1; [ "$mp" -gt 10 ] && mp=10; echo "at most $mp job(s) at once"
           echo "maxpar=$mp" >> "$GITHUB_OUTPUT"
   arms:
     needs: plan
