@@ -108,8 +108,10 @@ def validate(r: dict) -> tuple[list[str], list[str]]:
     if d.get('source') not in SOURCES:
         err.append(f'data.source {d.get("source")!r}')
     bd = r['by_day']
-    if not isinstance(bd, dict) or not bd or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in bd.values()):
-        err.append('by_day must be a non-empty {day: finite $} map')
+    if not isinstance(bd, dict) or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in bd.values()):
+        err.append('by_day must be a {day: finite $} map')
+    elif not bd:
+        fl.append('G2:no-daily-pnl')  # kept in the trial count (N_raw), left out of PBO/DSR/BHY
     # Validator rules (meta thread, Nov 5):
     if d.get('doge'):
         fl.append('G0:doge-included')  # Steven 13:26 UTC Nov 5: no DOGE in scoring for now
@@ -330,7 +332,9 @@ def merge(shard_dir, out_dir, S=6):
         fams[(r['thread'], r['family'])].append(r)
     rep = {'n_rows': len(rows), 'n_bad': len(bad), 'bad': bad[:200], 'families': []}
     for (th, fam), rs in sorted(fams.items()):
-        days = sorted(set.intersection(*[set(r['by_day']) for r in rs]))
+        scored = [r for r in rs if r['by_day']]
+        days = sorted(set.intersection(*[set(r['by_day']) for r in scored])) if scored else []
+        rs_all, rs = rs, scored
         mat = {r['trial_id']: [r['by_day'][d] for d in days] for r in rs}
         ke = k_eff(list(mat.values())) if len(days) >= 3 else float(len(rs))
         p_bo, splits = pbo({r['trial_id']: mat[r['trial_id']] for r in rs if r['role'] != 'placebo'}, S) if len(days) >= 2 else (float('nan'), 0)
@@ -350,9 +354,9 @@ def merge(shard_dir, out_dir, S=6):
                           'flags': r['flags']})
         for c, (adj, rej) in zip(cands, bhy([c['p'] for c in cands])):
             c['p_bhy'], c['bhy_pass'] = adj, rej
-        rep['families'].append({'thread': th, 'family': fam, 'n_raw': len(rs), 'k_eff': ke, 'days': len(days),
+        rep['families'].append({'thread': th, 'family': fam, 'n_raw': len(rs_all), 'k_eff': ke, 'days': len(days),
                                 'pbo': p_bo, 'pbo_splits': splits, 'candidates': cands,
-                                'flagged': sum(1 for r in rs if r['flags'])})
+                                'flagged': sum(1 for r in rs_all if r['flags'])})
     with open(os.path.join(out_dir, 'report.json'), 'w') as fh:
         json.dump(rep, fh, indent=1, default=lambda x: None)
     L = [f'# Trial registry: {len(rows)} trials, {len(rep["families"])} families, {len(bad)} invalid rows', '']
