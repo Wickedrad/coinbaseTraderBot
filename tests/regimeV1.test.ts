@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RegimeV1, percentileSorted, rv60 } from '../bot/model/regimeV1.ts';
+import { RegimeV1, percentileSorted, rv60 } from '../bot/model/regimeV1';
 
 const MIN = 60_000, DAY = 86_400_000;
 
