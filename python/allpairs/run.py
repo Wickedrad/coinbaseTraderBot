@@ -54,7 +54,11 @@ DEFAULTS = {
     # Sealed lockbox weeks (opened once, by the lockbox gate only): never loaded here. L1 = Nov 6 00:00 to Nov 13 00:00 EST.
     'exclude_utc': [['2026-11-06T05:00', '2026-11-13T05:00']],
     'min_real_frac': 0.8,
-    'max_crossed': 0,          # windows with more crossed/locked recorded minutes are dropped (historical-tier candles)
+    # Windows with more crossed/locked recorded minutes leave TRAINING only. 99 = never (a window has at most 14): in the
+    # historical tier a crossed minute is an empty YES ask stored as 1c, and 99.9% of such windows settled YES, so a
+    # drop made the training set NO-biased (P(YES) 0.423 vs 0.498; diag run 42088067536; keep_crossed, run 42088667467).
+    # The crossed minutes themselves stay untradeable (data.market_to_rows needs a two-sided book).
+    'max_crossed': 99,
     'from_day': None,          # 'YYYY-MM-DD': only windows from this day on
     'hourly_offsets': [0.0],
 }
@@ -152,6 +156,9 @@ def main(argv=None):
     ecfg = EntryConfig(hurdles=tuple(cfg['entry']['hurdles']), rows_per_fit=cfg['entry']['rows_per_fit'])
     walk = cfg['walk']
     decision = cfg['entry'].get('decision', 'model')   # read with .get, never a DEFAULTS key (config_hash)
+    taker = bool(cfg['entry'].get('taker_entries', True))   # False: maker entries only (read with .get, as above)
+    if not taker and not cfg['entry']['maker_entries']:
+        raise SystemExit('entry: taker_entries and maker_entries both off')
     if decision not in ('model', 'fair_edge'):
         raise SystemExit(f'entry.decision {decision!r}')
 
@@ -285,7 +292,7 @@ def main(argv=None):
             continue
         btr, bte = sub_book(tr_idx), sub_book(te_idx)
         Xtr, Xte = X[tr_idx], X[te_idx]
-        ptr = build_positions(btr, costs, cfg['entry']['maker_entries'], entry_minutes)
+        ptr = build_positions(btr, costs, cfg['entry']['maker_entries'], entry_minutes, taker)
         groups = (days[tr_idx] % 2).astype(np.int8)
         xr = solve_exits(btr, Xtr, ptr, costs, xcfg, groups=groups)
         pnl_tr = xr.pnl(ptr)
@@ -302,10 +309,10 @@ def main(argv=None):
         eq_val = None
         if len(f_idx) and len(v_idx):
             bf, bv = sub_book(f_idx), sub_book(v_idx)
-            pf = build_positions(bf, costs, cfg['entry']['maker_entries'], entry_minutes)
+            pf = build_positions(bf, costs, cfg['entry']['maker_entries'], entry_minutes, taker)
             xf = solve_exits(bf, X[f_idx], pf, costs, xcfg, groups=(days[f_idx] % 2).astype(np.int8))
             rows_fit = entry_rows(X[f_idx], pf, xf.pnl(pf), maker_attempts(bf.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None)
-            pv_ = build_positions(bv, costs, cfg['entry']['maker_entries'], entry_minutes)
+            pv_ = build_positions(bv, costs, cfg['entry']['maker_entries'], entry_minutes, taker)
             xv = solve_exits(bv, X[v_idx], pv_, costs, xcfg, models=xf.models)
             rows_val = entry_rows(X[v_idx], pv_, xv.pnl(pv_), maker_attempts(bv.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None)
             tkv = pv_.mode == 0   # exit quality on the inner validation span (exit models fitted on fit days only; no test outcome)
@@ -334,7 +341,7 @@ def main(argv=None):
         hurdle, val_scores = pick_hurdle()
         emodel = fit_entry(rows_tr, ecfg) if decision == 'model' else None
         # Out of sample: exits by the training span's models, entries by its entry model.
-        pte = build_positions(bte, costs, cfg['entry']['maker_entries'], entry_minutes)
+        pte = build_positions(bte, costs, cfg['entry']['maker_entries'], entry_minutes, taker)
         xe = solve_exits(bte, Xte, pte, costs, xcfg, models=xr.models)
         pnl_te = xe.pnl(pte)
         att_te = maker_attempts(bte.bid, N - 1, entry_minutes) if cfg['entry']['maker_entries'] else None

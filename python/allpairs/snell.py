@@ -65,7 +65,8 @@ class Positions:
         return self.i + 1
 
 
-def build_positions(book: Book, costs: Costs, maker_entries: bool = True, entry_minutes: np.ndarray | None = None) -> Positions:
+def build_positions(book: Book, costs: Costs, maker_entries: bool = True, entry_minutes: np.ndarray | None = None,
+                    taker_entries: bool = True) -> Positions:
     """Every possible position: each window x side x entry minute (0..N-2) x entry mode that can fill."""
     W, S, N = book.bid.shape
     cost_T, C_T, cost_M, C_M, ok_T, ok_M = entry_legs(book.bid, book.ask, book.fill_buy, costs)
@@ -75,7 +76,7 @@ def build_positions(book: Book, costs: Costs, maker_entries: bool = True, entry_
         allowed &= np.isin(np.arange(N), entry_minutes)
     parts = []
     for mode, ok, C, cost in ((0, ok_T, C_T, cost_T), (1, ok_M, C_M, cost_M)):
-        if mode == 1 and not maker_entries:
+        if (mode == 1 and not maker_entries) or (mode == 0 and not taker_entries):
             continue
         m = ok & allowed[None, None, :]
         w, s, i = np.nonzero(m)

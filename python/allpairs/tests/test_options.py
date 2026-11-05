@@ -61,14 +61,18 @@ class ExitPolicyNaive(unittest.TestCase):
 
 
 class ConfigKeys(unittest.TestCase):
-    OPTIONAL = {('exit', 'policy'): ('learned', 'naive'), ('entry', 'decision'): ('model', 'fair_edge')}
+    OPTIONAL = {('exit', 'policy'): ('learned', 'naive'), ('entry', 'decision'): ('model', 'fair_edge'),
+                ('entry', 'taker_entries'): (True, False)}
 
     def test_new_keys_do_not_rehash_existing_configs(self):
         """exit.policy / entry.decision are read with .get, never DEFAULTS keys: base keeps its hash (pinned at HEAD)."""
         self.assertNotIn('policy', DEFAULTS['exit'])
         self.assertNotIn('decision', DEFAULTS['entry'])
-        base = json.load(open(os.path.join(HYP, 'base.json')))
-        self.assertEqual(config_hash(merge(merge(DEFAULTS, base), ARMS['base'])), '63b53e995f')
+        self.assertNotIn('taker_entries', DEFAULTS['entry'])
+        h = lambda f: config_hash(merge(merge(DEFAULTS, json.load(open(os.path.join(HYP, f)))), ARMS['base']))
+        # max_crossed 99 became the default after keep_crossed (Nov 5): base is now the same trial as keep_crossed.
+        self.assertEqual(h('base.json'), 'da11163cef')
+        self.assertEqual(h('keep_crossed.json'), h('base.json'))
 
     def test_hypothesis_keys_exist(self):
         """Every key a hypothesis file sets is a DEFAULTS key or a known optional key with a valid value (a typo would
@@ -159,6 +163,25 @@ class Spread(unittest.TestCase):
         self.assertTrue(off[4][1] and off[5][1])          # the 12c book trades without the cap
         self.assertEqual(ARMS['tight']['costs'], {'max_spread': 0.10})
         self.assertNotIn('max_spread', DEFAULTS['costs'])  # read through Costs' default: existing hashes unchanged
+
+
+class MakerOnly(unittest.TestCase):
+    def test_taker_entries_off_leaves_the_maker_positions(self):
+        rng = np.random.default_rng(7)
+        W, N = 200, 15
+        mids = np.clip(0.5 + np.cumsum(rng.normal(0, 0.05, (W, N)), axis=1), 0.15, 0.85)
+        bid, ask = np.round(mids - 0.01, 2), np.round(mids + 0.01, 2)
+        st = lambda y, n_: np.stack([y, n_], axis=1)
+        # the next minute's ask low reaches our bid (and the bid high our ask): every resting order can fill
+        book = Book.build(st(bid, 1 - ask), st(ask, 1 - bid), st(bid, 1 - ask), st(ask, 1 - bid), st(bid, 1 - ask), st(ask, 1 - bid),
+                          st(sy := (rng.random(W) < 0.5).astype(float), 1 - sy), Costs())
+        both = build_positions(book, Costs(), maker_entries=True)
+        self.assertTrue(np.any(both.mode == 0) and np.any(both.mode == 1))
+        mk = build_positions(book, Costs(), maker_entries=True, taker_entries=False)
+        self.assertTrue(len(mk) > 0 and np.all(mk.mode == 1))
+        sel = both.mode == 1
+        for k in ('w', 's', 'i', 'C', 'cost'):
+            np.testing.assert_array_equal(getattr(mk, k), getattr(both, k)[sel])
 
 
 class Lockbox(unittest.TestCase):
