@@ -197,6 +197,89 @@ test('profit rules on tennis (Steven, Oct 30): the quota snipe sells a position 
   assert.equal(dog(0.2, 3.9).plans.length, 0, 'in profit: rides instead of the cut');
 });
 
+test('profit rules on tennis: in the last 30% of the match a position not in profit after fees is never held to settlement', () => {
+  assert.equal(T.endLoserCut, true);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_END_LOSER_CUT: 'false' }).tennis.endLoserCut, false);
+  const rules = { pacerUsd: 4.5, settleFrac: T.settleFrac, endLoserCut: true };
+  // A favorite held from 0.80 (it has no loss exit of its own: TENNIS_FAV_STOP_CENTS is 0), the progress held 3 minutes.
+  const fav = (prog: number, bid: number, net: number | undefined, r: { pacerUsd?: number; settleFrac?: number; endLoserCut?: boolean }) => {
+    const tr = new MatchTracker('P', T);
+    tr.progress = () => prog;
+    const at = (now: number) => decideMatch(tr, { event: 'P', now, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] }, T, budget, 0.01, r);
+    for (let k = 6; k > 0; k--) at(t0 + 3_600_000 - k * 30_000);
+    return at(t0 + 3_600_000);
+  };
+  // 75% done, -$0.80 after fees at the 0.79 bid: sold at the bid.
+  const cut = fav(0.75, 0.79, -0.8, rules);
+  assert.equal(cut.plans.length, 1, JSON.stringify(cut));
+  const p = cut.plans[0];
+  assert.deepEqual([p.leg, p.side, p.price, p.count, p.reduceOnly, p.postOnly, p.timeInForce], ['end_cut', 'ask', 0.79, 30, true, false, 'immediate_or_cancel']);
+  assert.equal(p.why, 'match 75% done (its last 30%), -$0.80 after fees at bid 0.79: not in profit, not held to settlement');
+  // Break-even after fees is not a profit: cut too.
+  assert.equal(fav(0.75, 0.81, 0, rules).plans[0]?.leg, 'end_cut');
+  // In profit there: rides. Before the last 30%: the legs decide (the favorite holds).
+  assert.equal(fav(0.75, 0.84, 1, rules).plans.length, 0);
+  assert.equal(fav(0.65, 0.79, -0.8, rules).plans.length, 0);
+  // With the rule off the favorite rides the loss to settlement (as before Nov 5).
+  assert.equal(fav(0.75, 0.79, -0.8, { pacerUsd: 4.5, settleFrac: T.settleFrac }).plans.length, 0);
+  // No bid: nothing to sell into (the engine then has no net either); judged again next tick.
+  const noBid = new MatchTracker('P', T);
+  noBid.progress = () => 0.75;
+  noBid.progressHigh = 0.75;
+  const dry = decideMatch(noBid, { event: 'P', now: t0 + 3_600_000, startTime: t0, closeTime: t0 + 86_400_000, markets: [{ ...mk('P-FAV', 0.79, 0.81, { position: 30, avgEntry: 0.8 }), quote: { ask: 0.81, askSize: 50 } }, mk('P-DOG', 0.19, 0.21)] }, T, budget, 0.01, rules);
+  assert.equal(dry.plans.length, 0, JSON.stringify(dry.plans));
+  // A comeback pulls the progress back below the last share just as the favorite goes under water: it is cut all the same.
+  const back = new MatchTracker('P', T);
+  let prog = 0.76, now = t0 + 3_600_000;
+  back.progress = () => prog;
+  const snapAt = (bid: number, net: number) => ({ event: 'P', now, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] });
+  for (let k = 0; k < 6; k++, now += 30_000) assert.equal(decideMatch(back, snapAt(0.9, 2.5), T, budget, 0.01, rules).plans.length, 0, 'in profit: rides');
+  prog = 0.62;
+  const comeback = decideMatch(back, snapAt(0.79, -0.8), T, budget, 0.01, rules);
+  assert.equal(comeback.plans[0]?.leg, 'end_cut', JSON.stringify(comeback));
+  assert.equal(comeback.plans[0]?.why, 'match 62% done, 76% at its furthest (its last 30%), -$0.80 after fees at bid 0.79: not in profit, not held to settlement');
+  // No last share (TENNIS_NO_EXIT_BEFORE_END_FRAC=0): no cut either.
+  assert.equal(fav(0.75, 0.79, -0.8, { pacerUsd: 4.5, settleFrac: 0, endLoserCut: true }).plans.length, 0);
+  // One tick's reading (a thin or one-sided book) does not latch: back at 30% the position is the legs' again.
+  const spike = new MatchTracker('P', T);
+  let sp = 0.3;
+  spike.progress = () => sp;
+  now = t0 + 3_600_000;
+  for (let k = 0; k < 6; k++, now += 30_000) decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules);
+  sp = 0.72;
+  decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules);
+  now += 5_000;
+  sp = 0.3;
+  for (let k = 0; k < 8; k++, now += 30_000) assert.equal(decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules).plans.length, 0, `tick ${k}`);
+  assert.equal(spike.progressHigh, 0.3);
+  // Held for two minutes it is reached: the cut stays on when the progress falls back.
+  sp = 0.72;
+  for (let k = 0; k < 5; k++, now += 30_000) decideMatch(spike, snapAt(0.9, 2.5), T, budget, 0.01, rules);
+  sp = 0.5;
+  assert.equal(decideMatch(spike, snapAt(0.79, -0.8), T, budget, 0.01, rules).plans[0]?.leg, 'end_cut');
+  // No new entry in the last 30%: a favorite bought there would start under water.
+  const entry = (r: { settleFrac?: number; endLoserCut?: boolean; endEntryMargin?: number }, prog = 0.8, high = 0) => {
+    const tr = new MatchTracker('Q', T);
+    tr.liveSince = t0;
+    tr.progress = () => prog;
+    tr.progressHigh = high;
+    let now = t0 + 60 * 60_000;
+    const snap = () => ({ event: 'Q', now, closeTime: t0 + 86_400_000, markets: [mkb('Q-A', 0.84, 0.86, 300, 100, now, { flow: 0.5 }), mk('Q-B', 0.14, 0.16)] });
+    for (let i = 0; i < 12; i++) { decideMatch(tr, snap(), T, budget, 0.01, r); now += 30_000; }
+    return decideMatch(tr, snap(), T, budget, 0.01, r);
+  };
+  assert.equal(entry({ settleFrac: T.settleFrac }).plans[0]?.leg, 'fav_entry', 'the rule off: the favorite is bought late');
+  const none = entry({ settleFrac: T.settleFrac, endLoserCut: true });
+  assert.equal(none.plans.length, 0, JSON.stringify(none.plans));
+  assert.ok(none.notes.some((n) => n.includes('no new entry (fav_entry)')), JSON.stringify(none.notes));
+  // The margin: none from 65% (TENNIS_END_ENTRY_MARGIN 0.05 before the last 30%), and a dip in progress does not reopen it.
+  assert.equal(T.endEntryMargin, 0.05);
+  const r = { settleFrac: T.settleFrac, endLoserCut: true, endEntryMargin: T.endEntryMargin };
+  assert.equal(entry(r, 0.6).plans[0]?.leg, 'fav_entry', 'before the margin: bought');
+  assert.equal(entry(r, 0.66).plans.length, 0, 'inside the margin: not bought');
+  assert.equal(entry(r, 0.6, 0.72).plans.length, 0, 'the match reached its last share before: not bought on a dip');
+});
+
 test('quota floor on tennis (PACER_FLOOR, Steven Oct 31): a leg aiming higher keeps the position, the need it covered becomes its floor, and it is sold once its profit falls below it', () => {
   // The favorite held from 0.80 under its 0.86 hunt start: a set price above the bid, in either mode.
   const floors = new QuotaFloors();
