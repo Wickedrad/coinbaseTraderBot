@@ -132,6 +132,9 @@ jobs:
             echo "== models the bot hot-swapped in the last 5 days (UTC, model, file)"
             find ~/bot/data/audit -name 'audit-*.jsonl' -mtime -5 2>/dev/null | sort | while read -r f; do LC_ALL=C nice -n 19 grep -hF '"hot_swap"' "$f"; done | python3 -c 'import json,sys; [print(r["ts"][:16], (r.get("data") or {}).get("kind"), str((r.get("data") or {}).get("file") or "").split("/")[-1]) for r in (json.loads(l) for l in sys.stdin if l.strip())]' | tail -60 || true
             echo "== OOM / kills"; sudo dmesg -T 2>/dev/null | grep -iE "out of memory|killed process" | tail -5 || true
+            # Memory per run of the bot: systemd logs each run's start, and on stop how much memory it peaked at, so growth
+            # can be judged against uptime across restarts (the bot's own RSS history resets with every deploy).
+            echo "== bot runs, last 3 days (start, stop, memory peak)"; journalctl -u kalshi-bot --since "3 days ago" --no-pager -o short-iso 2>/dev/null | grep -E "Started kalshi-bot|Consumed .* memory peak|Deactivated successfully|Main process exited" | sed -E 's/ip-[^ ]+ systemd\[1\]: //; s/kalshi-bot.service: //' | tail -40 || true
             echo "== warnings and errors, last 3 h (counted)"
             journalctl -u kalshi-bot --since "3 hours ago" --no-pager | grep -E "ERROR|WARN|Started|Stopped|exited" | sed -E 's/^.*kalshi-bot\[[0-9]+\]: //; s/^[0-9TZ:.-]+ //; s/\{.*//' | sort | uniq -c | sort -rn | head -25
             echo "== live learning (does the running bot adapt to its results?)"
@@ -234,6 +237,14 @@ jobs:
           # data-lag and feed-drop warnings of the last day (times only)
           ssh bot 'journalctl -u kalshi-bot --since "25 hours ago" --no-pager -o short-iso-precise 2>/dev/null | grep -E "behind real time|kalshi-ws\] closed|feed down" | cut -d" " -f1' > data/lags.txt || true
           echo "$(wc -l < data/lags.txt) lag / feed-drop warnings"
+          # The take-profit settings the bot runs with (guards.takeProfit from /api/status); only that object leaves the box.
+          # The dashboard password is read on the server and handed to curl on stdin, never printed.
+          ssh bot bash -s <<'SH' | python3 -c 'import json,sys; print(json.dumps((json.load(sys.stdin).get("guards") or {}).get("takeProfit") or {}))' > data/takeprofit.json || echo '{}' > data/takeprofit.json
+          PW=$(sed -n 's/^DASHBOARD_PASSWORD=//p' ~/bot/bot.env 2>/dev/null | tail -1 | tr -d '\r')
+          case "$PW" in \"*\") PW=${PW#\"}; PW=${PW%\"};; esac
+          if [ -n "$PW" ]; then printf 'Authorization: Bearer %s\n' "$PW" | curl -s -m 20 -H @- http://localhost:3000/api/status; else curl -s -m 20 http://localhost:3000/api/status; fi
+          SH
+          echo "take-profit settings: $(cat data/takeprofit.json)"
       - name: Adversary report
         run: python3 deploy/adversary_report.py data 24 data/lags.txt
 

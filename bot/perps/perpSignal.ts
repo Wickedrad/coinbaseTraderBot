@@ -24,7 +24,7 @@ import { gbdtLogit, validateGbdt, type GbdtModel } from '../model/trees';
 /** Candidate inputs for the perp model: returns/volatility, perp premium/funding/OI, macro, TA. */
 export const PERP_FEATURES = [
   'ret_15m_z', 'ret_1h_z', 'ret_4h_z', 'efficiency_ratio_1h', 'log_rv_1h', 'vol_ratio_15m_4h',
-  'perp_premium_bps', 'perp_premium_chg_5m', 'perp_ret_diff_5m_z', 'funding_rate_bps', 'min_to_funding', 'perp_oi_chg_1h',
+  'perp_premium_coin_bps', 'perp_premium_chg_5m', 'perp_ret_diff_5m_z', 'funding_rate_bps', 'min_to_funding', 'perp_oi_chg_1h',
   // Leverage dynamics and order flow.
   'funding_delta_4h', 'perp_oi_accel_1h', 'ta_taker_imb_1h', 'ta_taker_imb_4h',
   'usdtd_ret_15m_z', 'btcd_rel_5m_z',
@@ -41,7 +41,9 @@ export const PERP_FEATURES = [
  *  driver, how fast volatility is changing (the perps inputs carry no SNN governor level). */
 export const PERP_GATED = {
   trend: ['ret_15m_z', 'ret_1h_z', 'ret_4h_z', 'efficiency_ratio_1h', 'ta_rsi_1h', 'ta_rsi_4h', 'ta_macd_hist_1h', 'ta_di_diff_1h', 'ta_ema_stack_1h', 'ta_ema_stack_4h', 'ta_bb_pctb_1h', 'taconf_trend_alignment', 'taconf_mtf_momentum', 'taconf_net_trend', 'taconf_net_reversal', 'tanet_up_1h', 'tanet_up_4h'],
-  micro: ['perp_premium_bps', 'perp_premium_chg_5m', 'perp_ret_diff_5m_z', 'funding_rate_bps', 'funding_delta_4h', 'perp_oi_chg_1h', 'perp_oi_accel_1h', 'ta_taker_imb_1h', 'ta_taker_imb_4h'],
+  // The premium per coin. This list shapes new trainings only: a gated model trained before Nov 5 reads perp_premium_bps
+  // through its own stored indices, the value coming from PERP_LEGACY_FEATURES.
+  micro: ['perp_premium_coin_bps', 'perp_premium_chg_5m', 'perp_ret_diff_5m_z', 'funding_rate_bps', 'funding_delta_4h', 'perp_oi_chg_1h', 'perp_oi_accel_1h', 'ta_taker_imb_1h', 'ta_taker_imb_4h'],
   drivers: ['vol_ratio_15m_4h'],
 };
 export const perpGatedLayout = (features: string[] = PERP_FEATURES) => ({
@@ -63,11 +65,18 @@ export interface PerpFeatureSources {
 }
 
 
-/** Feature values for one asset at `now` (NaN where data is missing). */
+/** Inputs that perp models trained before Nov 5 read and new trainings leave out: still computed, so a deployed model reads
+ *  what live has always given it (perp_premium_bps is Kalshi's per-contract quote against the coin's index, -100 for BTC,
+ *  ETH and SOL). A model trained on the recordings saw that too; one trained on a history replay before REPLAY_VERSION 7
+ *  saw per-coin premiums under this name and has read -100 live all along, which only a retrain fixes. */
+export const PERP_LEGACY_FEATURES = ['perp_premium_bps'];
+
+/** Feature values for one asset at `now` (NaN where data is missing), for PERP_FEATURES and PERP_LEGACY_FEATURES. */
 export function perpFeatures(asset: string, now: number, s: PerpFeatureSources): Record<string, number> {
-  if (!s.index) return Object.fromEntries(PERP_FEATURES.map((n) => [n, NaN]));
+  const names = [...PERP_FEATURES, ...PERP_LEGACY_FEATURES];
+  if (!s.index) return Object.fromEntries(names.map((n) => [n, NaN]));
   const all = assetFeatureMap(asset, now, s);
-  return Object.fromEntries(PERP_FEATURES.map((n) => [n, all[n] ?? NaN]));
+  return Object.fromEntries(names.map((n) => [n, all[n] ?? NaN]));
 }
 
 export interface PerpModelValidation {

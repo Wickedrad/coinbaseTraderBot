@@ -12,7 +12,8 @@
 #                                              md-DAY.mdc decoded to that name (scripts/mdc.ts; exit 3 if Drive has neither)
 #   drive_lab.sh audit <DAY> <dir>             pull audit-DAY* into <dir>
 #   drive_lab.sh put <name> <src dir> [rclone filter args...]   upload (copy, never deletes on Drive)
-#   drive_lab.sh get <name> <dest dir> [rclone filter args...]  download (exit 3 if Drive has nothing there)
+#   drive_lab.sh get <name> <dest dir> [rclone filter args...]  download (exit 3 if Drive has nothing there;
+#                                              day files in compact form, md-*.mdc, are left out: use recording for those)
 set -euo pipefail
 ROOT=${DRIVE_ROOT:-gdrive:kalshi-bot-archive}
 day() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "bad day: $1" >&2; exit 1; }; }
@@ -40,6 +41,6 @@ case "${1:-}" in
     name "$2"; mkdir -p "$3"
     [ -n "$(rclone lsf "$ROOT/$2" --max-depth 1 2>/dev/null)" ] || exit 3
     N=$2; D=$3; shift 3
-    rclone copy "$ROOT/$N" "$D" "$@" --transfers 8 ;;
+    rclone copy "$ROOT/$N" "$D" --exclude 'md-*.mdc' "$@" --transfers 8 ;;
   *) sed -n '2,16p' "$0"; exit 1 ;;
 esac
