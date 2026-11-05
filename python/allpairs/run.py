@@ -36,7 +36,11 @@ DEFAULTS = {
     'name': 'base',
     'costs': {'stake': 15.0, 'slip': 0.0, 'taker_mult': 1.0, 'maker_mult': 0.0, 'strict_maker': False},
     'exit': {'end_rule': 'bot', 'end_frac': 0.10, 'maker_exits': True, 'rows_per_fit': 200_000},
-    'entry': {'hurdles': [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 1e9], 'maker_entries': True, 'entry_minutes': None, 'rows_per_fit': 1_000_000},
+    # No entry at minute 0 (candle 1's OPEN, the first instant of the market): in Kalshi's historical-tier candles that
+    # open is often a stale cheap YES ask (run 42045813675: +$816/h of +$818/h came from minute-0 YES taker entries under
+    # 30c, and random entries won; the open is the listing instant, see data.market_to_rows), and no bot fills at that instant.
+    'entry': {'hurdles': [0.0, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 1e9], 'maker_entries': True, 'entry_minutes': None, 'first_minute': 1,
+              'rows_per_fit': 1_000_000},
     'extra_features': [],
     'placebo': {'shuffles': 3, 'random_draws': 50},
     # The project's fixed history split (institutional-methods, Nov 5): 60 days train, 2 days gap, 14 days test.
@@ -213,7 +217,9 @@ def main(argv=None):
     def sub_book(idx):
         return Book(book_all.bid[idx], book_all.ask[idx], book_all.fill_buy[idx], book_all.fill_sell[idx], book_all.settle[idx])
 
-    entry_minutes = np.array(cfg['entry']['entry_minutes']) if cfg['entry'].get('entry_minutes') else None
+    entry_minutes = np.arange(int(cfg['entry'].get('first_minute') or 0), N - 1)
+    if cfg['entry'].get('entry_minutes'):
+        entry_minutes = np.intersect1d(entry_minutes, np.array(cfg['entry']['entry_minutes']))
     cuts = {'rv60': [float(x) for x in np.nanpercentile(F['rv60'][np.isin(days, folds_days[0][0])], [33.3, 66.7])]}
     folds = []
     shap_entry = shap_exit = []

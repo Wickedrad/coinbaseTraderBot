@@ -147,10 +147,10 @@ def market_to_rows(m: dict, n: int, max_stale: int = 3):
     blo = np.full(n, np.nan); bhi = np.full(n, np.nan); alo = np.full(n, np.nan); ahi = np.full(n, np.nan)
     kvol = np.zeros(n)
     real = 0
-    # k = 0: candle 1's open.
+    # k = 0 would be candle 1's open: the market's listing instant, an empty book (live tier: asks at 99c+) or a
+    # placeholder one (historical tier: a 1c YES ask that won 49% of the time, diag run 42049460236). No quote.
     c1 = cand.get(1)
     if c1 is not None:
-        bid[0], ask[0] = _f(c1.get('bidO')), _f(c1.get('askO'))
         real += 1
     age = 0 if c1 is not None else max_stale + 1
     for k in range(1, n):
