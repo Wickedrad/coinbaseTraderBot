@@ -65,7 +65,8 @@ permissions:
 
 concurrency:
   # A fidelity-only run never cancels a sweep in progress; a study cancels only an earlier study of the same run.
-  group: perp-ta-sweep-${{ github.ref }}-${{ inputs.only || 'all' }}${{ inputs.only == 'study' && format('-{0}', inputs.study_run) || '' }}
+  # A one-time opening (slow-sealed, blind) gets a group of its own: a second dispatch must never cancel one already logged.
+  group: perp-ta-sweep-${{ github.ref }}-${{ inputs.only || 'all' }}${{ inputs.only == 'study' && format('-{0}', inputs.study_run) || '' }}${{ (inputs.only == 'slow-sealed' || inputs.only == 'blind') && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -538,12 +539,78 @@ jobs:
           done
 
   # only: slow / slow-sealed. Round 4's one hypothesis, PTA-R4-slow (research/perpTaSlow.ts; pre-registered in
-  # /mnt/project-files/perp-ta/preregistration.md, "Round 4"): the bot's macro_trend confluence state at each day boundary,
-  # for the 'macro' diagnostic only (counted, never a candidate). Best effort: the gates read the sweep's cached analyzer walk
-  # (the walk to the seal); the sealed run recomputes it to the lockbox cap within the step's limit. The rule runs without it
-  # when it fails (the diagnostic is then reported as not run).
+  # /mnt/project-files/perp-ta/preregistration.md, "Round 4"). 'slow': the kill-only gates (discovery from the grid's start
+  # to 2023-12-31, validation 2024-01-01 .. 2025-06-30; nothing at or after the seal is read). 'slow-sealed': slow-open first
+  # checks that gates_run passed with this code's rule hash on the four coins and logs the opening on Drive
+  # (models/perp-ta/slow/openings.jsonl); only then does anything read the sealed block (2025-07-01 .. the lockbox cap, Nov 6
+  # 2026 00:00 UTC). Any earlier opening of PTA-R4-slow, whatever its hash, refuses a new one without reopen_reason.
+  slow-open:
+    if: ${{ inputs.only == 'slow-sealed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GATES_RUN: ${{ inputs.gates_run }}
+      REASON: ${{ inputs.reopen_reason }}
+      RS_ASSETS: ${{ inputs.assets || '["BTC","ETH","SOL","XRP"]' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The gates passed with this rule on the four coins
+        run: |
+          set -euo pipefail
+          [[ "$GATES_RUN" =~ ^[0-9]+$ ]] || { echo "gates_run must be the run id of a 'slow' run"; exit 1; }
+          ASSETS=$(jq -er 'join(",")' <<< "$RS_ASSETS")
+          [ "$ASSETS" = "BTC,ETH,SOL,XRP" ] || { echo "the rule trades BTC,ETH,SOL,XRP, not $ASSETS: refused"; exit 1; }
+          mkdir -p gates
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/slow/run-$GATES_RUN/gates.json" gates/
+          [ -s gates/gates.json ] || { echo "run $GATES_RUN: gates.json not readable on Drive: refused"; exit 1; }
+          H=$(node --import tsx research/perpTaSlow.ts hash)
+          [[ "$H" =~ ^[0-9a-f]{16}$ ]] || { echo "no rule hash: $H"; exit 1; }
+          jq -e --arg h "$H" '.mode == "gates" and .pass == true and .hash == $h and (.assets | join(",")) == "BTC,ETH,SOL,XRP"' gates/gates.json > /dev/null \
+            || { jq -c '{mode, pass, hash, assets}' gates/gates.json; echo "this code's rule is $H: refused"; exit 1; }
+          echo "H=$H" >> "$GITHUB_ENV"
+      - name: Log the opening (before the sealed block is read)
+        run: |
+          set -euo pipefail
+          D=gdrive:kalshi-bot-archive/models/perp-ta/slow
+          # A listing that fails is fatal (an unread ledger must never be overwritten); only a missing ledger reads as empty.
+          if HAS=$(rclone lsf "$D/" --files-only --include openings.jsonl 2> lsf.err); then :; else
+            grep -qi 'directory not found' lsf.err || { cat lsf.err; echo "ledger listing failed: refused"; exit 1; }; HAS=""; fi
+          if [ -n "$HAS" ]; then rclone cat "$D/openings.jsonl" > ledger.jsonl; else : > ledger.jsonl; fi
+          jq -c . ledger.jsonl > /dev/null || { echo "the ledger does not parse: refused"; exit 1; }
+          if [ -n "$(jq -c 'select(.rule == "PTA-R4-slow")' ledger.jsonl)" ] && [ -z "$REASON" ]; then
+            echo "PTA-R4-slow was already opened (any hash counts; see $D/openings.jsonl): refused without reopen_reason"; exit 1; fi
+          jq -nc --arg h "$H" --arg run "$GITHUB_RUN_ID" --arg g "$GATES_RUN" --arg why "$REASON" --arg sha "$GITHUB_SHA" --arg utc "$(date -u +%FT%TZ)" --arg et "$(TZ=America/New_York date '+%F %T %Z')" \
+            '{rule: "PTA-R4-slow", rule_hash: $h, sealed_run: $run, gates_run: $g, coins: ["BTC","ETH","SOL","XRP"], code_sha: $sha, at_utc: $utc, at_eastern: $et, reopen_reason: (if $why == "" then null else $why end)}' >> ledger.jsonl
+          rclone rcat "$D/openings.jsonl" < ledger.jsonl
+          rclone cat "$D/openings.jsonl" | tail -n 1 | jq -e --arg run "$GITHUB_RUN_ID" '.sealed_run == $run' || { echo "the opening did not land on Drive: refused"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slow-gates
+          path: gates/gates.json
+          retention-days: 30
+
+  # The bot's macro_trend confluence state at each day boundary, for the 'macro' diagnostic only (counted, never a candidate).
+  # Best effort: the gates read the sweep's cached analyzer walk (the walk to the seal); the sealed run recomputes it to the
+  # lockbox cap, only after slow-open logged the opening. The rule runs without it when it fails (reported as not run).
   slow-macro:
-    if: ${{ inputs.only == 'slow' || inputs.only == 'slow-sealed' }}
+    needs: [slow-open]
+    if: ${{ !cancelled() && (inputs.only == 'slow' || (inputs.only == 'slow-sealed' && needs.slow-open.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 200
     strategy:
@@ -594,21 +661,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # The rule itself, all coins in one book. 'slow': the kill-only gates (discovery from the grid's start to 2023-12-31,
-  # validation 2024-01-01 .. 2025-06-30; nothing at or after the seal is read). 'slow-sealed': only with gates_run, a 'slow'
-  # run whose gates passed with this code's rule hash; the opening is logged on Drive (models/perp-ta/slow/openings.jsonl)
-  # before the sealed block (2025-07-01 .. the lockbox cap, Nov 6 2026 00:00 UTC) is read, once per rule hash. Results go to
-  # Drive (models/perp-ta/slow/run-<id>) and the registry (shards/perp-ta/slow-<mode>-run-<id>.jsonl); the summary is this
-  # run's step summary (no commit comment).
+  # The rule itself, all four coins in one book. Results go to Drive (models/perp-ta/slow/run-<id>) and the registry
+  # (shards/perp-ta/slow-<mode>-run-<id>.jsonl); the summary is this run's step summary (no commit comment).
   slow:
-    needs: [slow-macro]
-    if: ${{ !cancelled() && (inputs.only == 'slow' || inputs.only == 'slow-sealed') }}
+    needs: [slow-open, slow-macro]
+    if: ${{ !cancelled() && (inputs.only == 'slow' || (inputs.only == 'slow-sealed' && needs.slow-open.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       MODE: ${{ inputs.only == 'slow-sealed' && 'sealed' || 'gates' }}
-      GATES_RUN: ${{ inputs.gates_run }}
-      REASON: ${{ inputs.reopen_reason }}
       RS_ASSETS: ${{ inputs.assets || '["BTC","ETH","SOL","XRP"]' }}
     steps:
       - uses: actions/checkout@v5
@@ -653,34 +714,12 @@ jobs:
         run: |
           set -o pipefail
           node --max-old-space-size=12000 --import tsx research/perpTaSlow.ts gates --assets "$ASSETS" --grids data/perp-ta --history data --macro data/macro --out out/slow 2>&1 | tail -60
-      - name: The gates passed with this rule (sealed only)
+      - uses: actions/download-artifact@v4
         if: env.MODE == 'sealed'
-        run: |
-          set -euo pipefail
-          [[ "$GATES_RUN" =~ ^[0-9]+$ ]] || { echo "gates_run must be the run id of a 'slow' run"; exit 1; }
-          mkdir -p gates
-          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/slow/run-$GATES_RUN/gates.json" gates/
-          [ -s gates/gates.json ] || { echo "run $GATES_RUN: gates.json not readable on Drive: refused"; exit 1; }
-          H=$(node --import tsx research/perpTaSlow.ts hash)
-          [[ "$H" =~ ^[0-9a-f]{16}$ ]] || { echo "no rule hash: $H"; exit 1; }
-          jq -e --arg h "$H" --arg a "$ASSETS" '.mode == "gates" and .pass == true and .hash == $h and (.assets | join(",")) == $a' gates/gates.json > /dev/null \
-            || { jq -c '{mode, pass, hash, assets}' gates/gates.json; echo "this code's rule is $H on $ASSETS: refused"; exit 1; }
-          echo "H=$H" >> "$GITHUB_ENV"
-      - name: Log the opening (before the sealed block is read)
-        if: env.MODE == 'sealed'
-        run: |
-          set -euo pipefail
-          D=gdrive:kalshi-bot-archive/models/perp-ta/slow
-          # A listing that fails is fatal (an unread ledger must never be overwritten); only a missing ledger reads as empty.
-          if HAS=$(rclone lsf "$D/" --files-only --include openings.jsonl 2> lsf.err); then :; else
-            grep -qi 'directory not found' lsf.err || { cat lsf.err; echo "ledger listing failed: refused"; exit 1; }; HAS=""; fi
-          if [ -n "$HAS" ]; then rclone cat "$D/openings.jsonl" > ledger.jsonl; else : > ledger.jsonl; fi
-          if jq -e --arg h "$H" 'select(.rule_hash == $h)' ledger.jsonl > /dev/null && [ -z "$REASON" ]; then echo "rule $H was already opened: refused (see $D/openings.jsonl)"; exit 1; fi
-          jq -nc --arg h "$H" --arg run "$GITHUB_RUN_ID" --arg g "$GATES_RUN" --arg a "$ASSETS" --arg why "$REASON" --arg sha "$GITHUB_SHA" --arg utc "$(date -u +%FT%TZ)" --arg et "$(TZ=America/New_York date '+%F %T %Z')" \
-            '{rule: "PTA-R4-slow", rule_hash: $h, sealed_run: $run, gates_run: $g, coins: ($a | split(",")), code_sha: $sha, at_utc: $utc, at_eastern: $et, reopen_reason: (if $why == "" then null else $why end)}' >> ledger.jsonl
-          rclone rcat "$D/openings.jsonl" < ledger.jsonl
-          rclone cat "$D/openings.jsonl" | tail -n 1 | jq -e --arg run "$GITHUB_RUN_ID" '.sealed_run == $run' || { echo "the opening did not land on Drive: refused"; exit 1; }
-      - name: Sealed block (2025-07-01 .. 2026-11-06 00:00 UTC; once)
+        with:
+          name: slow-gates
+          path: gates
+      - name: Sealed block (2025-07-01 .. 2026-11-06 00:00 UTC; opened by slow-open)
         if: env.MODE == 'sealed'
         run: |
           set -o pipefail

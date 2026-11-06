@@ -3,9 +3,10 @@ import { test } from 'node:test';
 import { COLS, type Grid } from '../research/perpTaSweep';
 import { ho1Of } from '../research/perpTaBlind';
 import {
-  SLOW, dailyCloses, votes, sigma30, nextSide, simulate, dailyPriced, placebo, blockResult, evaluate, ruleHash,
-  type CoinRun, type Spot, type CoinCosts, type CoinData,
+  SLOW, dailyCloses, votes, sigma30, nextSide, simulate, dailyPriced, placebo, blockResult, evaluate, ruleHash, gateOf, sealedVerdict,
+  type CoinRun, type Spot, type CoinCosts, type CoinData, type BlockResult,
 } from '../research/perpTaSlow';
+import type { Ho1 } from '../research/perpTaBlind';
 
 const MPD = 1440, DAY = 86_400_000, NOVOTE = -128;
 const T0 = Date.UTC(2021, 0, 1);
@@ -24,6 +25,10 @@ function grid(n: number, px: (i: number) => number, o: { pp?: (i: number) => num
   }
   if (o.fundEvery) for (let i = o.fundEvery - 1; i < n; i += o.fundEvery) c.fund[i] = o.rate ?? 1e-12;
   return { asset: o.asset ?? 'BTC', t0: o.t0 ?? T0, n, c, fundRaw: new Float32Array(n) };
+}
+/** Minutes [from, to) without a perp bar, as buildGrid leaves them: not valid, the perp bar a copy of the last close. */
+function gap(g: Grid, from: number, to: number): void {
+  for (let i = from; i < to; i++) { const c = g.c.pc[i - 1]; g.c.po[i] = g.c.ph[i] = g.c.pl[i] = g.c.pc[i] = c; g.c.valid[i] = 0; }
 }
 const spotOf = (n: number, px: (i: number) => number): Spot => ({ has: new Uint8Array(n).fill(1), close: Float64Array.from({ length: n }, (_, i) => px(i)) });
 /** Piecewise drift per day (log return per day), continuous in minutes. */
@@ -76,7 +81,9 @@ test('perp TA slow: a planted daily trend is held long from the first day with 3
   const g = grid(n, px), r = simulate(g, spotOf(n, px), n, BTC);
   // Votes are +3 from boundary 29; sigma30 needs closes 1..31 (C[0] never exists): the entry is at boundary 31.
   assert.equal(r.entries.indexOf(1), 31);
-  assert.equal(r.makerFills[31], 1); assert.equal(sum(r.takerFills), 0); assert.equal(r.trades.length, 0);
+  assert.equal(r.makerFills[31], 1); assert.equal(sum(r.takerFills), 0);
+  assert.equal(r.trades.length, 1); assert.equal(r.trades[0].open, true, 'still held: reported as an open trade');
+  assert.ok(Number.isNaN(r.trades[0].exitMin)); assert.equal(r.trades[0].entryMin, 31 * MPD);
   const q = g.c.pc[31 * MPD - 1] * (1 - 0.19e-4), qty = 250 / q;
   const expect = qty * (g.c.pc[n - 1] - q) - 250 * 5e-4;
   assert.ok(Math.abs(sum(r.mtm) - expect) < 1e-9 * Math.abs(expect), `${sum(r.mtm)} vs ${expect}`);
@@ -104,12 +111,19 @@ test('perp TA slow: no trade-through, no maker fill; the taker fallback takes mi
   assert.equal(simulate(g2, spotOf(n, px), n, BTC).trades[0].entryMin, 31 * MPD + 71);
 });
 
-test('perp TA slow: an order unfilled for a whole day is cancelled and the vote decides again', () => {
+test('perp TA slow: an order unfilled at the next 00:00 is carried to the first perp bar; that day\'s vote is not acted on', () => {
   const days = 60, n = days * MPD, px = path([[days, 0.005]]);
   const g = grid(n, px);
-  for (let i = 31 * MPD; i < 32 * MPD; i++) g.c.valid[i] = 0;
+  gap(g, 31 * MPD, 32 * MPD + 30);
   const r = simulate(g, spotOf(n, px), n, BTC);
-  assert.equal(r.cancelled, 1); assert.equal(r.entries[31], 0); assert.equal(r.entries[32], 1);
+  assert.equal(r.carried, 1); assert.equal(r.carriedDay[32], 1); assert.equal(r.ordersDay[32], 0);
+  assert.equal(r.entries[31], 0); assert.equal(r.entries[32], 1);
+  assert.equal(r.trades[0].entryMin, 32 * MPD + 30); assert.deepEqual(r.trades[0].taker, [true]);
+  // A minute with a perp bar but no spot bar (not valid in the grid) still fills a resting order.
+  const g2 = grid(n, px);
+  for (let i = 31 * MPD; i < 31 * MPD + 5; i++) g2.c.valid[i] = 0;
+  const r2 = simulate(g2, spotOf(n, px), n, BTC);
+  assert.equal(r2.makerFills[31], 1); assert.equal(r2.trades[0].entryMin, 31 * MPD);
 });
 
 test('perp TA slow: a crash through all three lookbacks reverses long to short in one order', () => {
@@ -155,6 +169,8 @@ test('perp TA slow: every day MTM = price + fees + funding, and the tercile $ ad
       assert.ok(Math.abs(r.mtm[k] - (r.terUsd[3 * k] + r.terUsd[3 * k + 1] + r.terUsd[3 * k + 2])) < 1e-9, `${variant} terciles day ${k}`);
     }
     assert.ok(r.trades.length > 0 || variant === 'always-long', variant);
+    // The hourly attribution adds up to the book's MTM (every minute is in a tercile here).
+    assert.ok(Math.abs(sum(r.hourTerUsd) - sum(r.mtm)) < 1e-6, `${variant} hourly attribution`);
     assert.equal(sum(r.terMinutes), (days - 1) * MPD + 0, 'every minute from day 1 on is counted once');
   }
 });
@@ -198,12 +214,47 @@ test('perp TA slow: gates mode never reads the sealed block (evaluate capped at 
 
 test('perp TA slow: the daily-priced book charges the cost at each position change, on both legs', () => {
   const nd = 10, z = () => new Float64Array(nd);
-  const r = { notional: Float64Array.from([0, 0, 100, 100, 100, 0, 0, -100, -100, 0]), posId: Int32Array.from([0, 0, 1, 1, 1, 0, 0, 2, 2, 0]), ret: z().fill(0.01), fundRate: z() } as unknown as CoinRun;
+  const r = { t0: T0, notional: Float64Array.from([0, 0, 100, 100, 100, 0, 0, -100, -100, 0]), posId: Int32Array.from([0, 0, 1, 1, 1, 0, 0, 2, 2, 0]), ret: z().fill(0.01), fundRate: z() } as unknown as CoinRun;
   // Price: (3 x 100 - 2 x 100) x 1% = 1; costs 0.001 x (100 + 101 + 100 + 101).
   assert.ok(Math.abs(dailyPriced([r], [0], [nd], [0.001], 0) - (1 - 0.402)) < 1e-12);
   // Shifted by 5 with wrap: the long sits on days 7-9 and the short on days 2-3.
   const s5 = dailyPriced([r], [0], [nd], [0], 5);
   assert.ok(Math.abs(s5 - (-2 * 1 + 3 * 1)) < 1e-12);
+});
+
+test('perp TA slow: shifts are common calendar shifts; a coin is flat on days it has no data for', () => {
+  const z = (n: number) => new Float64Array(n);
+  const A = { t0: T0, notional: z(10), posId: new Int32Array(10), ret: z(10), fundRate: z(10) } as unknown as CoinRun;
+  const B = { t0: T0 + 3 * DAY, notional: z(7).fill(100), posId: new Int32Array(7).fill(1), ret: z(7).fill(0.01), fundRate: z(7) } as unknown as CoinRun;
+  // Calendar days 0..9; B covers 3..9. Shifted by 2, B's days 3 and 4 source calendar days 1 and 2 (no data: flat).
+  assert.ok(Math.abs(dailyPriced([A, B], [0, 0], [10, 7], [0, 0], 0) - 7) < 1e-12);
+  assert.ok(Math.abs(dailyPriced([A, B], [0, 0], [10, 7], [0, 0], 2) - 5) < 1e-12);
+});
+
+test('perp TA slow: the coins\' P&L correlation pairs the same calendar days', () => {
+  const rnd = lcg(21), days = 400, lag = 50, n = days * MPD;
+  const base = path([[100, 0.006], [100, -0.006], [100, 0.006], [101, -0.004]]);
+  const noise = Float64Array.from({ length: n + lag * MPD }, () => 1 + 0.002 * (rnd() - 0.5));
+  const pa = (i: number) => base(i) * noise[i], pb = (i: number) => pa(i + lag * MPD);
+  const ra = simulate(grid(n, pa), spotOf(n, pa), n, BTC);
+  const nb = n - lag * MPD, rb = simulate(grid(nb, pb, { t0: T0 + lag * DAY, asset: 'ETH' }), spotOf(nb, pb), nb, BTC);
+  const br = blockResult([ra, rb], { name: 'discovery', from: T0, to: T0 + days * DAY }, 1, { resamples: 10 });
+  assert.ok(br.meanPairCorr > 0.8, `rho ${br.meanPairCorr}`);
+});
+
+test('perp TA slow: the gates need net and the daily-priced rule above the placebo mean; the sealed statuses', () => {
+  const br = { block: 'validation', usd: 10, placebo: { rule: 30, mean: 20, percentile: 0.9, shifts: 1000 } } as unknown as BlockResult;
+  assert.equal(gateOf(br).pass, false);
+  assert.ok(gateOf({ ...br, usd: 25 } as BlockResult).pass);
+  const sb = { usd: 100, priceUsd: 120, entries: 40, lb90: 0.01, bestMonthShare: 0.2, byCoin: { BTC: 1, ETH: 1, SOL: 1, XRP: -1 }, placebo: { rule: 100, mean: 10 } } as unknown as BlockResult;
+  const st = { stress3: 1, fundStress: 1, offset0: 1, offset2: 1 };
+  const ok = { why: [], beats_placebo: true } as unknown as Ho1;
+  assert.equal(sealedVerdict(sb, ok, st).status, 'PASS (provisional)');
+  const folds = { why: ['HO-1: 15 of 30 folds won (needs 20)'], beats_placebo: true } as unknown as Ho1;
+  assert.equal(sealedVerdict(sb, folds, st).status, 'FAIL: edge not refuted, HO-1 not met');
+  assert.equal(sealedVerdict(sb, { ...folds, beats_placebo: false } as Ho1, st).status, 'FAIL');
+  const few = sealedVerdict({ ...sb, entries: 12 } as BlockResult, ok, st);
+  assert.equal(few.status, 'INCONCLUSIVE'); assert.equal(few.pass, false);
 });
 
 test('perp TA slow: the placebo prices the rule as the minute simulation does, and a trend follower beats its shifts', () => {
