@@ -248,3 +248,37 @@ test('history replay: a walk block built in a new folder from the end state the 
   const read = (dir: string, d: string) => zlib.gunzipSync(fs.readFileSync(path.join(dir, `md-${d}.jsonl.gz`))).toString();
   for (const d of ['2026-03-03', '2026-03-04']) assert.ok(read(b2, d) === read(one, d), `${d}: the same day as in one build`);
 });
+
+test('history replay: the catalog picks ladder strikes by the index without requote, and after midnight too', async () => {
+  const hist = tmpDir(), out = path.join(tmpDir(), 'replay');
+  writeHistory(hist);
+  const open = new Map<number, number>();
+  for (const l of fs.readFileSync(path.join(hist, 'binance-1m', 'BTC', '1m.csv'), 'utf8').split('\n').slice(1)) { const f = l.split(',').map(Number); if (f[0] > 0) open.set(f[0], f[1]); }
+  const STEP = 250;
+  // An event's ladder, centred off the index: strikes k = -2..9 steps from the index at `at`, wide (1c / 99c) quotes
+  // except an optional lone tight in-band quote at strike `lone`.
+  const ladder = (name: string, openT: number, closeT: number, at: number, lone?: number) => {
+    const p0 = Math.round((open.get(at)! * 1.0004) / 10) * 10;
+    return Array.from({ length: 12 }, (_, i) => {
+      const k = i - 2, strike = p0 + k * STEP;
+      const candles = [];
+      for (let t = openT + MIN; t <= closeT; t += MIN) candles.push(k === lone ? { ts: t, bidC: 0.45, askC: 0.47, last: 0.46, volume: 1 } : { ts: t, bidC: 0.01, askC: 0.99, last: null, volume: 0 });
+      return { k, line: JSON.stringify({ ticker: `${name}-T${strike}`, series: 'KXBTCD', event: name, openTime: openT, closeTime: closeT, strike, cap: null, strikeType: 'greater', result: 'no', candles }) };
+    });
+  };
+  const H = 3_600_000;
+  const day = ladder('KXBTCD-26MAR0112', D0 + 10 * H, D0 + 12 * H, D0 + 10.5 * H, 8);            // picked at 10:30 UTC
+  const night = ladder('KXBTCD-26MAR0202', D0 + 23 * H, D0 + 26 * H, D0 + 24.5 * H);             // picked at 00:30 UTC the next day
+  fs.mkdirSync(path.join(hist, 'kalshi', 'KXBTCD'), { recursive: true });
+  fs.writeFileSync(path.join(hist, 'kalshi', 'KXBTCD', '2026-03-01.jsonl'), [...day, ...night].map((x) => x.line).join('\n') + '\n');
+  await buildHistoryReplay({ historyDir: hist, outDir: out, assets: ['BTC'], fromDay: '2026-03-01', toDay: '2026-03-02', synthetic: false, log: () => {} });
+  const first = new Map<string, number>();
+  for await (const e of readRecordings(out)) if (e.k === 'market' && !(e as { recordOnly?: boolean }).recordOnly && /^KXBTCD/.test(e.ticker) && !first.has(e.ticker)) first.set(e.ticker, e.t);
+  const pickedAt = (xs: typeof day, t0: number) => xs.filter((x) => first.get(JSON.parse(x.line).ticker) === Math.min(...xs.map((y) => first.get(JSON.parse(y.line).ticker) ?? Infinity)) && first.get(JSON.parse(x.line).ticker)! <= t0 + MIN).map((x) => x.k).sort((a, b) => a - b);
+  // Same day: the index decides, not the lone tight quote eight steps up.
+  const a = pickedAt(day, D0 + 10.5 * H);
+  assert.ok(a.length === 4 && a.includes(0) && !a.includes(8), `same-day picks ${a}`);
+  // After midnight: still the index (not the ladder's middle, three to four steps up).
+  const b = pickedAt(night, D0 + 24.5 * H);
+  assert.ok(b.length === 4 && b.includes(0) && !b.includes(5), `after-midnight picks ${b}`);
+});

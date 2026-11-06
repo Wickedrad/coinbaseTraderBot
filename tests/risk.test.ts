@@ -6,7 +6,7 @@ import { loadConfig, type RiskLimits } from '../bot/config';
 import type { OrderIntent } from '../bot/oms/oms';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { KillSwitch } from '../bot/risk/killSwitch';
-import { RiskContext, RiskGateway } from '../bot/risk/riskGateway';
+import { newRiskRoomUsd, RiskContext, RiskGateway, tennisLimits, waterfallLimits } from '../bot/risk/riskGateway';
 import { tmpAudit, tmpDir } from './helpers';
 
 const limits: RiskLimits = {
@@ -200,4 +200,43 @@ test('a resting exit (the exit curve\'s post-only sell) that sells no more than 
   assert.match(gw.check({ ...rest, purpose: 'quote' }, { ...c, haltReasons: [] }).reasons.join(';'), /no fee-net edge/);
   // Still post-only: one that would cross the bid is refused.
   assert.match(gw.check({ ...rest, price: 0.45 }, c).reasons.join(';'), /post-only ask would cross/);
+});
+
+test('RISK_SIZE_CAPS off (the default): no order, window or total cap; free cash, daily loss and stale data still refuse', () => {
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).risk.sizeCaps, false);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), RISK_SIZE_CAPS: 'true' }).risk.sizeCaps, true);
+  const off = new RiskGateway({ ...limits, sizeCaps: false });
+  // $4.50 order (> 2% of $200), window and total already past their caps: the caps refuse it, off lets it through.
+  const big = intent({ count: 10 });
+  const full = ctx({ windowRisk: 50, totalRisk: 150, marketRiskWith: 4.5 });
+  assert.match(gw.check(big, full).reasons.join(';'), /order risk.*window risk.*total risk/);
+  assert.deepEqual(off.check(big, full).reasons, []);
+  assert.match(off.check(big, { ...full, freeCash: 1 }).reasons.join(';'), /free cash/);
+  assert.match(off.check(big, { ...full, bookUsable: false }).reasons.join(';'), /order book stale/);
+  const daily = off.check(big, { ...full, dailyPnl: -100 });
+  assert.equal(daily.ok, false);
+  assert.ok(daily.tripKill);
+});
+
+test('with RISK_SIZE_CAPS off, the tennis budget and the waterfall total still refuse; the risk room is the free cash', () => {
+  const offLimits = { ...limits, sizeCaps: false };
+  const off = new RiskGateway(offLimits);
+  const big = intent({ count: 10 });
+  // Tennis: per-order, per-match and total caps are its own hard budget.
+  const T = { orderFrac: 0.02, maxMatchFrac: 0.05, maxTotalFrac: 0.25, underdogMin: 0.1 };
+  const tl = tennisLimits(T, offLimits.minSidePrice);
+  assert.equal(tl.sizeCaps, true);
+  assert.match(off.check(big, ctx({ limitOverrides: tl, windowRisk: 50, totalRisk: 150, marketRiskWith: 4.5 })).reasons.join(';'), /order risk.*window risk.*total risk/);
+  // Waterfall armed: total held to 12.5% of the bank; the order and window caps stay off.
+  const wl = waterfallLimits({}, offLimits, 0.125);
+  const d = off.check(big, ctx({ limitOverrides: wl, windowRisk: 50, totalRisk: 30, marketRiskWith: 4.5 }));
+  assert.deepEqual(d.reasons.map((r) => r.split(' ')[0] + ' ' + r.split(' ')[1]), ['total risk']);
+  assert.ok(off.check(big, ctx({ limitOverrides: wl, windowRisk: 50, totalRisk: 10, marketRiskWith: 4.5 })).ok);
+  // With the caps on, the waterfall only lowers the total cap, as before.
+  assert.deepEqual(waterfallLimits({}, limits, 0.125), { maxTotalRiskFrac: 0.1 });
+  assert.deepEqual(waterfallLimits({}, { ...limits, maxTotalRiskFrac: 0.2 }, 0.125), { maxTotalRiskFrac: 0.125 });
+  // Risk room (engine and backtest): window/total caps vs free cash only.
+  assert.equal(newRiskRoomUsd(true, 0.03, 0.1, 200, 4, 0, 100), 2);
+  assert.equal(newRiskRoomUsd(false, 0.03, 0.1, 200, 4, 0, 100), 100);
+  assert.equal(newRiskRoomUsd(undefined, 0.03, 0.1, 200, 4, 0, 100), 2);
 });

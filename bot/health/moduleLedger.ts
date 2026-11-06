@@ -75,7 +75,8 @@ export interface LedgerInput {
   };
   exitPolicy: string;
   takeProfitBench?: { scored: number; netUsd: number; benched: boolean; enforce: boolean } | null;
-  probation?: Record<string, { trades: number; netUsd: number; benched: boolean }> | null;
+  /** benched: PROBATION_BENCH is on and the book is off. wouldBench: its results are past a limit (score-only by default). */
+  probation?: Record<string, { trades: number; netUsd: number; benched: boolean; wouldBench?: boolean }> | null;
   /** Index age per asset (ms; null = never seen). */
   indexAgeMs: Record<string, number | null>;
   maxIndexAgeMs: number;
@@ -158,7 +159,7 @@ export function buildLedger(x: LedgerInput): ModuleRow[] {
     rows.push({ module: 'accuracy gate', area: 'gates', state: g.enabled ? 'on' : 'off', validated: null, score: { label: 'time-to-close buckets blocked', value: g.blocked, n: g.buckets }, flags: [] });
   }
   for (const [book, p] of Object.entries(x.probation ?? {})) {
-    rows.push({ module: `probation: ${book}`, area: 'gates', state: p.benched ? 'benched' : 'on', validated: null, score: { label: 'net dollars on probation', value: +p.netUsd.toFixed(2), n: p.trades }, flags: [] });
+    rows.push({ module: `probation: ${book}`, area: 'gates', state: p.benched ? 'benched' : 'on', validated: null, score: { label: 'net dollars on probation', value: +p.netUsd.toFixed(2), n: p.trades }, flags: p.wouldBench && !p.benched ? ['would bench (score-only, nothing turned off): iterate it'] : [] });
   }
 
   // Sizing.

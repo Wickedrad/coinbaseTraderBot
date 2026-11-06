@@ -582,7 +582,7 @@ export async function runPipeline(o: PipelineOpts = {}): Promise<{ steps: StepRe
       // From the first day of 1-minute history (HISTORY_REPLAY_YEARS=0), else the last N years.
       const fromDay = T.historyReplayYears > 0 ? new Date(now - T.historyReplayYears * 365 * 86_400_000).toISOString().slice(0, 10) : historyStart(T.historyDir, T.historyReplayAssets) ?? yesterday;
       const perpSpecs = await perpSpecsFromRecordings(rec, T.historyReplayAssets);
-      const r = await buildHistoryReplay({ historyDir: T.historyDir, outDir: replayDir, assets: T.historyReplayAssets, fromDay, toDay: yesterday, perpSpecs, tennisSeries: cfg.tennis.enabled ? cfg.tennis.series : [], log });
+      const r = await buildHistoryReplay({ historyDir: T.historyDir, outDir: replayDir, assets: T.historyReplayAssets, fromDay, toDay: yesterday, perpSpecs, tennisSeries: cfg.tennis.enabled ? cfg.tennis.series : [], catalogStrikesPerEvent: cfg.catalogStrikesPerEvent, catalogHorizonMin: cfg.catalogHorizonMin, catalogPickMaxSpread: cfg.catalogPickMaxSpread, log });
       if (!r.assets.length) throw new SkipStep(`no 1-minute history yet (${r.notes.join('; ')})`);
       return { ...r, perpSpecs: Object.keys(perpSpecs) };
     }, T.historyReplay ? undefined : 'HISTORY_REPLAY=false');

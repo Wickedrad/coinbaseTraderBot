@@ -84,6 +84,9 @@ export interface MarketInfo {
   /** Kalshi's own YES price for the market in the listing (bid/ask mid, else last trade): picks the
    *  at-the-money strikes without any outside price. */
   yesMid?: number;
+  /** The listing's YES bid and ask as given (strike selection reads them through listingPickMid). */
+  yesBid?: number;
+  yesAsk?: number;
   /** Kalshi strike_type: greater, greater_or_equal, less, between, ... */
   strikeType?: string;
   tickSize: number;

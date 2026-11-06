@@ -66,6 +66,25 @@ const MAX_DISTANCE_FROM_TOUCH = 0.25;
 /** Share of the per-minute order budget kept for orders that reduce a position: quote traffic never crowds out an exit. */
 export const EXIT_RATE_RESERVE = 0.2;
 
+/** Tennis's own budget (per order, per match, 25% of the pool in total): hard limits, kept on whatever RISK_SIZE_CAPS says. */
+export function tennisLimits(t: { orderFrac: number; maxMatchFrac: number; maxTotalFrac: number; underdogMin: number }, minSidePrice: number): Partial<RiskLimits> {
+  return { maxOrderRiskFrac: t.orderFrac, maxWindowRiskFrac: t.maxMatchFrac, maxTotalRiskFrac: t.maxTotalFrac, minSidePrice: Math.min(t.underdogMin, minSidePrice), sizeCaps: true };
+}
+
+/** Waterfall armed: Kalshi binaries held to `frac` of the bank in total. A loss limit, so it holds with RISK_SIZE_CAPS
+ *  off too (then only this total cap is on; the order and window caps stay off). */
+export function waterfallLimits(lim: Partial<RiskLimits>, base: RiskLimits, frac: number): Partial<RiskLimits> {
+  const total = Math.min(lim.maxTotalRiskFrac ?? base.maxTotalRiskFrac, frac);
+  if ((lim.sizeCaps ?? base.sizeCaps) !== false) return { ...lim, maxTotalRiskFrac: total };
+  return { ...lim, sizeCaps: true, maxOrderRiskFrac: Infinity, maxWindowRiskFrac: Infinity, maxTotalRiskFrac: frac };
+}
+
+/** Room for new risk: under the window and total caps and in the free cash; the free cash alone with RISK_SIZE_CAPS off. */
+export function newRiskRoomUsd(sizeCaps: boolean | undefined, windowFrac: number, totalFrac: number, bankroll: number, windowRisk: number, totalRisk: number, free: number | undefined): number {
+  if (sizeCaps === false) return Math.max(0, free ?? Infinity);
+  return Math.max(0, Math.min(windowFrac * bankroll - windowRisk, totalFrac * bankroll - totalRisk, free ?? Infinity));
+}
+
 export class RiskGateway {
   constructor(private readonly limits: RiskLimits) {}
 
@@ -163,9 +182,10 @@ export class RiskGateway {
     const addRisk = Math.max(0, c.marketRiskWith - c.marketRiskNow);
     const orderRisk = i.count * (sideCost + feePer);
     if (c.freeCash !== undefined && !onlyReduces && orderRisk > c.freeCash + EPS) r.push(`order cost $${orderRisk.toFixed(2)} > free cash $${Math.max(0, c.freeCash).toFixed(2)}${c.freeCashWhere ? ` ${c.freeCashWhere}` : ''}`);
-    if (orderRisk > L.maxOrderRiskFrac * bank + EPS) r.push(`order risk $${orderRisk.toFixed(2)} > ${(L.maxOrderRiskFrac * 100).toFixed(1)}% of $${bank.toFixed(2)}`);
-    if (c.windowRisk + addRisk > L.maxWindowRiskFrac * bank + EPS) r.push(`window risk $${(c.windowRisk + addRisk).toFixed(2)} > ${(L.maxWindowRiskFrac * 100).toFixed(1)}% cap`);
-    if (c.totalRisk + addRisk > L.maxTotalRiskFrac * bank + EPS) r.push(`total risk $${(c.totalRisk + addRisk).toFixed(2)} > ${(L.maxTotalRiskFrac * 100).toFixed(1)}% cap`);
+    // RISK_SIZE_CAPS (off by default): the shares-of-bankroll caps; the sizing modules decide the size without them.
+    if (L.sizeCaps !== false && orderRisk > L.maxOrderRiskFrac * bank + EPS) r.push(`order risk $${orderRisk.toFixed(2)} > ${(L.maxOrderRiskFrac * 100).toFixed(1)}% of $${bank.toFixed(2)}`);
+    if (L.sizeCaps !== false && c.windowRisk + addRisk > L.maxWindowRiskFrac * bank + EPS) r.push(`window risk $${(c.windowRisk + addRisk).toFixed(2)} > ${(L.maxWindowRiskFrac * 100).toFixed(1)}% cap`);
+    if (L.sizeCaps !== false && c.totalRisk + addRisk > L.maxTotalRiskFrac * bank + EPS) r.push(`total risk $${(c.totalRisk + addRisk).toFixed(2)} > ${(L.maxTotalRiskFrac * 100).toFixed(1)}% cap`);
 
     // Daily loss limit trips the kill switch (paper training override: advisory, handled by the engine).
     const limit = this.dailyLossLimit(bank, c.limitOverrides);

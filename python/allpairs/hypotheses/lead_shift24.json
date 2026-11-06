@@ -1,0 +1,10 @@
+{
+  "name": "lead_shift24",
+  "notes": "Placebo of lead_btc (prereg/AP-H1b.md P3): the same features, with every BTC and ETH lead feature taken from the same minute 24 hours earlier (cross_shift_min 1440). Same distribution, no information about the window. lead_btc minus this is the value of the lead information itself.",
+  "cross_assets": ["BTC", "ETH"],
+  "cross_shift_min": 1440,
+  "extra_features": [
+    {"name": "lag_btc_1", "expr": "lead_BTC_r1 - r1"},
+    {"name": "lag_btc_3", "expr": "lead_BTC_r3 - r3"}
+  ]
+}

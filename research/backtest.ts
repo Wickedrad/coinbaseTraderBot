@@ -55,7 +55,7 @@ import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions'
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { EquityGuard } from '../bot/risk/equityGuard';
-import { RiskGateway } from '../bot/risk/riskGateway';
+import { newRiskRoomUsd as riskRoomUsd, RiskGateway } from '../bot/risk/riskGateway';
 import { decide, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { ComponentTrials, type TrialName } from '../bot/strategy/componentTrials';
 import { activeRuleBook, RuleBook, setRuleBook } from '../bot/strategy/ruleBook';
@@ -350,9 +350,9 @@ export async function engineModels(cfg: Config, o: { trialsFile?: string } = {})
 }
 
 /** The validation gates as the bot runs them (bot/main.ts): with VALIDATION_GATES=monitor (the default) a model that
- *  has not passed validation (the fill model, the take model) trades on probation unless its book is benched. `stateFile`
- *  is the bot's probation.json, read from a private copy (nothing is written back). Process-wide, as in the bot; returns
- *  the benched books. */
+ *  has not passed validation (the fill model, the take model) trades on probation unless its book is benched, which only
+ *  happens with PROBATION_BENCH=true. `stateFile` is the bot's probation.json, read from a private copy (nothing is
+ *  written back). Process-wide, as in the bot; returns the benched books. */
 export function installProbation(cfg: Config, stateFile?: string): string[] {
   let file: string | undefined;
   if (stateFile && fs.existsSync(stateFile)) {
@@ -899,8 +899,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const pNow = pos.get(m.ticker);
       // As the engine: the open contracts' price, an earlier exit's profit already on the pacer's clock.
       const entrySide = openSidePrice(pNow);
-      // As the engine (Engine.newRiskRoom): a new order fits the room left under the window and total caps and in the
-      // free cash, so near the caps an order shrinks instead of being refused. Paper's cash holds nothing back for
+      // As the engine (Engine.newRiskRoom): a new order fits the room left under the window and total caps (with
+      // RISK_SIZE_CAPS=true) and in the free cash, so near them an order shrinks instead of being refused. Paper's cash holds nothing back for
       // resting orders, as the bot reads it.
       let newRiskRoomUsd: number | undefined;
       if (reason) {
@@ -912,7 +912,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           totalRisk += l;
           if (closeOf.get(t) === m.closeTime) windowRisk += l;
         }
-        newRiskRoomUsd = Math.max(0, Math.min(tierLimits.maxWindowRiskFrac * bankroll - windowRisk, tierLimits.maxTotalRiskFrac * bankroll - totalRisk, await ex.getBalance()));
+        newRiskRoomUsd = riskRoomUsd(limits.sizeCaps, tierLimits.maxWindowRiskFrac, tierLimits.maxTotalRiskFrac, bankroll, windowRisk, totalRisk, await ex.getBalance());
       }
       const view: MarketView = {
         ticker: m.ticker, pYes, bestBid: bid, bestAsk: ask, position: pos.position(m.ticker), bankroll,
