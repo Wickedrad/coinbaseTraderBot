@@ -20,7 +20,7 @@ import { loadCalendar } from '../bot/model/calendar';
 import { MetaModel } from '../bot/model/metaModel';
 import { dayBlockBootstrap } from '../bot/snn/blender';
 import { blend, brier, calibrationSlope, correlation, surpriseConfidence } from '../bot/snn/formulas';
-import { DEFAULT_SNN, domainParams, stageFlags, type SnnFlags, type SnnParams, type Stage } from '../bot/snn/params';
+import { DEFAULT_SNN, domainParams, stageFlags, versionHash, type SnnFlags, type SnnParams, type Stage } from '../bot/snn/params';
 import { replaySnn, type SnnReplayResult, type SnnRow } from './snnReplay';
 import { replayGain, volScaled, conditionalCorrection, inCondition, type GainOpts, type CondOpts } from '../bot/snn/correctionGain';
 
@@ -237,8 +237,16 @@ export async function snnAblationMain(argOf: (k: string, d: string) => string = 
   // from one is built with them, or its arrays do not fit (K seeds, Nov 6).
   const initShape = (() => {
     if (!initFile || !fs.existsSync(initFile)) return {};
-    const cp = JSON.parse(fs.readFileSync(initFile, 'utf8')) as { params?: Partial<SnnParams> };
-    return { ...(cp.params?.seed !== undefined ? { seed: cp.params.seed } : {}), ...(cp.params?.leadInputs ? { leadInputs: cp.params.leadInputs } : {}) };
+    const cp = JSON.parse(fs.readFileSync(initFile, 'utf8')) as { version?: string; params?: Partial<SnnParams> };
+    if (cp.params) return { ...(cp.params.seed !== undefined ? { seed: cp.params.seed } : {}), ...(cp.params.leadInputs ? { leadInputs: cp.params.leadInputs } : {}) };
+    // Checkpoints carry only the params' hash: find the history trainer's params (research/snnHistoryTrain.ts
+    // trainParams, same key order) whose hash it is.
+    for (const stage of ['S5', 'S4', 'S6', 'S3', 'S2', 'S1'] as Stage[]) for (const seed of [0, 11, 22, 33, 44, 55, 66, 77, 88, 99]) for (const lead of [undefined, 'G', 'P'] as const) for (const maxSpread of [0.1, undefined]) {
+      const p = domainParams('crypto', { ...DEFAULT_SNN, ...(seed ? { seed } : {}), ...(lead ? { leadInputs: lead } : {}), anchorMid: true, ...(maxSpread ? { maxSpread } : {}), flags: { ...stageFlags(stage) } });
+      if (versionHash(p) === cp.version) { console.error(`--init checkpoint: seed ${p.seed}${lead ? `, lead ${lead}` : ''} (stage ${stage})`); return { seed: p.seed, ...(lead ? { leadInputs: lead } : {}) }; }
+    }
+    console.error('--init checkpoint: params not recognised; the default seed is used');
+    return {};
   })();
   const run = async (name: string, stage: Stage, flags: Partial<SnnFlags> | undefined, overrides: Partial<SnnParams>, init = false) => {
     const params: SnnParams = domainParams(domain, { ...DEFAULT_SNN, ...overrides, ...(init ? initShape : {}), flags: { ...stageFlags(stage), ...(flags ?? {}) } });
