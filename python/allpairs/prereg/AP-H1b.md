@@ -63,7 +63,7 @@ than 10c, not from lead information. BTC/ETH 1-minute returns are already in the
   Logging must not change any result, which the reproduction check above verifies.
 - **Queued, not dropped:** hurdle_lcb and stale_quote.
 
-## Amendment 1 (2026-11-06 00:25 UTC / Nov 5 7:25 PM EST: after the HO-1 card of run 42127527423, before any follow-up result)
+## Amendment 1 (2026-11-06 00:08 UTC / Nov 5 7:08 PM EST: after the HO-1 card of run 42127527423, before any follow-up result)
 - **G_base = 0.** In run 42127527423, lead_btc's base arm had 0 trades, and so did keep_crossed's (config `base`,
   da11163cef). In both, the hurdle was off in all 6 folds: no hurdle paid on the H-DEV validation days. So the
   "No gain to explain" branch applies: P1 is moot, and W is undefined because there are no trades.

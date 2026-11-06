@@ -1,6 +1,6 @@
 # Pre-registration AP-H2: maker_only's 10c-cap HO-1 pass is the candle-touch maker fill, not an edge that survives queue position
 
-Written 2026-11-06 00:25 UTC (Nov 5 7:25 PM EST). This is after the HO-1 card of run 42127527423, which is where the claim
+Written 2026-11-06 00:08 UTC (Nov 5 7:08 PM EST). This is after the HO-1 card of run 42127527423, which is where the claim
 comes from, and before any tight_strict result exists. Decision rule, mechanism readouts and multiple-testing position
 agreed with the institutional-research thread (00:06 UTC Nov 6).
 
