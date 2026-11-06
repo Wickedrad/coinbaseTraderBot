@@ -15,7 +15,7 @@ import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions'
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { HourlyQuotaPacer, QuotaFloors, type PacerConfig, type PacerFloorMode } from '../bot/risk/quotaPacer';
-import { positionNetAtBid } from '../bot/strategy/fairValueStrategy';
+import { breakEvenExit, positionNetAtBid } from '../bot/strategy/fairValueStrategy';
 import { decideMatch, MatchTracker, type MatchMarket, type TennisPlan } from '../bot/tennis/tennisStrategy';
 import { readRecordings, ReplayState } from './replay';
 import { bootstrapMeanCi } from './stats';
@@ -118,7 +118,7 @@ export async function runTennisBacktest(dir: string, cfg: TennisConfig, bankroll
         const b = st.books.get(m.ticker);
         const p = pos.get(m.ticker);
         const usable = b?.isUsable(st.now, 10_000);
-        return { ticker: m.ticker, title: m.title, position: p?.yes ?? 0, avgEntry: p && p.yes > 0 ? openSidePrice(p) : undefined, quote: { bid: usable ? b!.bestBid()?.price : undefined, ask: usable ? b!.bestAsk()?.price : undefined }, book: usable ? b : undefined, flow: flowOf(st, m.ticker, cfg.confWindowSec) };
+        return { ticker: m.ticker, title: m.title, position: p?.yes ?? 0, avgEntry: p && p.yes > 0 ? openSidePrice(p) : undefined, breakEven: p && p.yes > 0 ? breakEvenExit(p.yes, openSidePrice(p)! + openEntryFee(p)!, FEES) : undefined, quote: { bid: usable ? b!.bestBid()?.price : undefined, ask: usable ? b!.bestAsk()?.price : undefined }, book: usable ? b : undefined, flow: flowOf(st, m.ticker, cfg.confWindowSec) };
       });
       // The quota snipe's measure, as the engine gives it: the whole position's profit after fees at the bid, the cost basis
       // with the entry fee in.

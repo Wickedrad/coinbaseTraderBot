@@ -31,7 +31,7 @@ import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
-import { decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
+import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
@@ -1403,6 +1403,8 @@ export class Engine {
           // The quota snipe's measure, as on the crypto contracts: the open contracts' cost basis, entry fee in (an earlier
           // exit's profit is already on the pacer's clock, so it is not counted again).
           netAtBid: pos && pos.yes > 0 ? positionNetAtBid(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, b, a, md.feesFor(m.ticker)) : undefined,
+          // The profit-taking exits' floor: the lowest price that nets at least zero after the exit fee on the open contracts' cost.
+          breakEven: pos && pos.yes > 0 ? breakEvenExit(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, md.feesFor(m.ticker)) : undefined,
           quote: { bid: b?.price, ask: a?.price, bidSize: b?.size, askSize: a?.size },
           book: usable ? book : undefined,
           flow: (() => {
