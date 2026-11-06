@@ -1,0 +1,311 @@
+name: Tennis TA data
+
+# Tennis contract history for the tennis TA rulebook trial (research/tennisTaData.ts; thread "Build a profitable tennis TA
+# rulebook", Nov 5 2026). Kalshi's settled tennis match markets with 1-minute candles and full trade tapes, as far back as
+# Kalshi keeps them (public API, no key), kept on Drive at raw/tennis-history/kalshi/<SERIES>.tar.gz and topped up each run;
+# the bot's recorded days cut to their tennis lines (real books, real tape, live scores, and 'beat' and 'ws_beat' lines
+# that keep the feed's and the Kalshi socket's liveness: contract C8) at derived/tennis-ta/recorded/, a day cut again when
+# its cut version is older than the code's. No server involved. The inventory (by month, and by unit week: two-sided
+# events and the share with a published start time, which START_ERA_FROM in research/tennisTaSweep.ts is read off) is
+# posted as a comment on the commit and kept at models/tennis-ta/inventory/.
+#
+# Every shard job of a tennis-ta-sweep.yml run downloads <SERIES>.tar.gz on its own and records its sha256 as the data
+# version (the run fails when its shards read two). So a tarball is replaced only when its content changed, built byte for
+# byte the same from the same files, uploaded to raw/tennis-history/kalshi/staged/ first and moved into place (a server
+# side rename) only while no sweep run is queued or running; one that cannot be placed before the job's time runs out
+# stays staged, and the next data run restores from it and places it.
+on:
+  push:
+    branches: [claude/project-thread-7817be]
+    paths: [research/tennisTaData.ts, tests/tennisTaData.test.ts, .github/workflows/tennis-ta-data.yml]
+  workflow_dispatch:
+    inputs:
+      series:
+        description: 'Tennis series to download (JSON list)'
+        required: false
+        default: '["KXATPMATCH","KXWTAMATCH"]'
+      days:
+        description: 'How far back to list settled markets (days)'
+        required: false
+        default: '900'
+      budget_min:
+        description: 'Download budget per series (minutes); the rest waits for the next run'
+        required: false
+        default: '300'
+
+permissions:
+  contents: write
+  # The history jobs list tennis-ta-sweep.yml's runs before they replace a tarball the sweeps read.
+  actions: read
+
+# One data run at a time on any ref: they all write the same Drive paths.
+concurrency:
+  group: tennis-ta-data
+  cancel-in-progress: false
+
+jobs:
+  series:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Kalshi tennis series
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          node --import tsx research/tennisTaData.ts series > out/series.json
+          jq -r '.[] | "\(.ticker)\t\(.title)\t\(.feeType)\t\(.feeMultiplier)"' out/series.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: series
+          path: out/series.json
+          retention-days: 30
+      - name: Tests (the tennis cut and the weekly inventory)
+        run: |
+          set -euo pipefail
+          node --import tsx --test tests/tennisTaData.test.ts 2>&1 | tail -15
+
+  history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        series: ${{ fromJSON(inputs.series || '["KXATPMATCH","KXWTAMATCH"]') }}
+    env:
+      S: ${{ matrix.series }}
+      DAYS: ${{ inputs.days || '900' }}
+      BUDGET: ${{ inputs.budget_min || '300' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: History kept on Drive
+        run: |
+          set -euo pipefail
+          echo "JOB_T0=$(date +%s)" >> "$GITHUB_ENV"
+          K=gdrive:kalshi-bot-archive/raw/tennis-history/kalshi
+          mkdir -p data/tennis/kalshi
+          # A staged copy (one an earlier run could not place while a sweep ran) is the newer one: it was built on the
+          # placed one plus what that run downloaded.
+          src=""
+          if [ -n "$(rclone lsf "$K/staged" --files-only --include "$S.tar.gz" 2>/dev/null || true)" ]; then src="$K/staged/$S.tar.gz"
+          elif [ -n "$(rclone lsf "$K" --files-only --include "$S.tar.gz" 2>/dev/null || true)" ]; then src="$K/$S.tar.gz"; fi
+          if [ -n "$src" ]; then
+            rclone copyto "$src" "$S.tar.gz"
+            tar -xzf "$S.tar.gz" -C data/tennis/kalshi && rm "$S.tar.gz"
+            echo "restored $(ls data/tennis/kalshi/$S | wc -l) day file(s) of $S from $src"
+          else echo "no $S history on Drive yet"; fi
+          # The content as restored (names and bytes of every file): a tarball is replaced only when this changes.
+          fp() { if [ -d "data/tennis/kalshi/$S" ]; then (cd data/tennis/kalshi && find "$S" -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) | sha256sum | cut -c1-64; else echo none; fi; }
+          echo "FP0=$(fp)" >> "$GITHUB_ENV"
+      - name: Download what is new from Kalshi
+        run: |
+          set -euo pipefail
+          node --import tsx research/tennisTaData.ts download --series "$S" --days "$DAYS" --out data/tennis/kalshi --budget-min "$BUDGET" 2>&1 \
+            | grep -vE '^\[tennis-data\] .*(already|listing|page)' | tail -30
+      - name: Keep on Drive (staged)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          [ -d "data/tennis/kalshi/$S" ] || { echo "nothing to keep"; exit 0; }
+          fp() { (cd data/tennis/kalshi && find "$S" -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) | sha256sum | cut -c1-64; }
+          if [ "$(fp)" = "${FP0:-}" ]; then echo "$S unchanged: the tarball on Drive stands"; exit 0; fi
+          # Byte for byte the same tarball from the same files (names sorted, no times or owners), so its sha256, the
+          # sweeps' data version, changes only with the content.
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C data/tennis/kalshi "$S" | gzip -n -6 > "$S.tar.gz"
+          rclone copyto "$S.tar.gz" "gdrive:kalshi-bot-archive/raw/tennis-history/kalshi/staged/$S.tar.gz"
+          echo "staged $S: $(du -h "$S.tar.gz" | cut -f1), sha256 $(sha256sum "$S.tar.gz" | cut -c1-16)"
+          rm "$S.tar.gz"
+      - name: Inventory
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          mkdir -p inv
+          # Streams one close-day file at a time (a whole series does not fit): held to a 4 GB heap so a regression fails here.
+          node --max-old-space-size=4096 --import tsx research/tennisTaData.ts inventory --hist data/tennis/kalshi --series "$S" --out "inv/$S.json"
+          rclone copyto "inv/$S.json" "gdrive:kalshi-bot-archive/models/tennis-ta/inventory/$S.json"
+      - name: Place the staged tarball (while no sweep reads the history)
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          K=gdrive:kalshi-bot-archive/raw/tennis-history/kalshi
+          if [ -z "$(rclone lsf "$K/staged" --files-only --include "$S.tar.gz" 2>/dev/null || true)" ]; then echo "nothing staged"; exit 0; fi
+          # Sweep runs not completed (queued, waiting or in progress): their shard jobs read the tarball one by one. A
+          # workflow GitHub does not know (404: it never ran) has none; any other failure is retried, then let through.
+          busy() {
+            local i n
+            for i in 1 2 3; do
+              if n=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/tennis-ta-sweep.yml/runs?per_page=50" --jq '[.workflow_runs[] | select(.status != "completed")] | length' 2> gh.err); then echo "$n"; return; fi
+              if grep -q 'HTTP 404' gh.err; then echo 0; return; fi
+              sleep 20
+            done
+            echo "::warning::could not list the sweep runs ($(head -c 200 gh.err)); placing $S anyway" >&2
+            echo 0
+          }
+          # Until 10 min before the job's limit (345 min); then the copy stays staged for the next data run.
+          deadline=$(( ${JOB_T0:-$(date +%s)} + 335 * 60 ))
+          while n=$(busy) && [ "$n" -gt 0 ]; do
+            if (( $(date +%s) > deadline )); then echo "::notice::$n sweep run(s) still queued or running: $S stays staged for the next data run"; exit 0; fi
+            echo "$(date -u +%H:%M) waiting for $n sweep run(s)"; sleep 60
+          done
+          rclone moveto "$K/staged/$S.tar.gz" "$K/$S.tar.gz"
+          echo "placed $S at $K/$S.tar.gz"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: inventory-${{ matrix.series }}
+          path: inv/
+          retention-days: 30
+
+  recorded:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Recorded days cut to tennis
+        run: |
+          set -euo pipefail
+          D=gdrive:kalshi-bot-archive/derived/tennis-ta/recorded
+          INV=gdrive:kalshi-bot-archive/models/tennis-ta/inventory/recorded.jsonl
+          CUT=$(node --import tsx research/tennisTaData.ts cut-version)
+          have=$(rclone lsf "$D" --files-only 2>/dev/null || true)
+          rclone cat "$INV" 2>/dev/null > prev.jsonl || : > prev.jsonl
+          # A day is cut again unless its row names this cut version (an older cut lacks the beat lines and the lines of
+          # matches listed on the day before).
+          current=$(jq -r --arg c "$CUT" 'select(.cut == $c) | .day' prev.jsonl 2>/dev/null || true)
+          mkdir -p rec out
+          : > out/recorded.jsonl
+          done_n=0; left=0
+          while read -r day; do
+            [ -n "$day" ] || continue
+            if grep -qx "md-$day.jsonl.gz" <<< "$have" && grep -qx "$day" <<< "$current"; then done_n=$((done_n + 1)); continue; fi
+            # Time budget: the job stops at 180 min; days not reached wait for the next run.
+            if (( SECONDS > 140 * 60 )); then left=$((left + 1)); continue; fi
+            if ! bash deploy/drive_lab.sh recording "$day" rec; then echo "$day: not readable on Drive"; continue; fi
+            if ! r=$(node --import tsx research/tennisTaData.ts recorded --in "rec/md-$day.jsonl.gz" --out "cut/md-$day.jsonl.gz"); then
+              echo "::warning::$day: the tennis cut failed"; rm -f "rec/md-$day.jsonl.gz" "cut/md-$day.jsonl.gz"; continue
+            fi
+            echo "$day $r"
+            rclone copyto "cut/md-$day.jsonl.gz" "$D/md-$day.jsonl.gz"
+            jq -c --arg d "$day" '. + {day: $d}' <<< "$r" >> out/recorded.jsonl
+            rm -f "rec/md-$day.jsonl.gz" "cut/md-$day.jsonl.gz"
+          done < "$RUNNER_TEMP/drive-days.txt"
+          echo "cut now: $(wc -l < out/recorded.jsonl) day(s); already at $CUT: $done_n"
+          [ "$left" -eq 0 ] || echo "::notice::$left recorded day(s) wait for the next run (time budget)"
+          cat prev.jsonl out/recorded.jsonl | jq -sc 'group_by(.day) | map(.[-1]) | .[]' > all.jsonl
+          rclone copyto all.jsonl "$INV"
+          cp all.jsonl out/recorded.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recorded
+          path: out/recorded.jsonl
+          retention-days: 30
+
+  report:
+    needs: [series, history, recorded]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: Inventory as a commit comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Tennis TA data, run $GITHUB_RUN_ID"
+            echo
+            echo "### Kalshi tennis series"
+            if [ -f art/series/series.json ]; then jq -r '.[] | "- `\(.ticker)` \(.title) (fee \(.feeType) x\(.feeMultiplier))"' art/series/series.json; else echo "(series job failed)"; fi
+            echo
+            inv=(art/inventory-*/*.json)
+            [ -f "${inv[0]}" ] || inv=()
+            echo "### History by series (match start month)"
+            echo
+            echo "| series | month | markets | events | two-sided | volume | with tape | trades | no start time | median spread c | median trades/market |"
+            echo "|---|---|---|---|---|---|---|---|---|---|---|"
+            for f in "${inv[@]}"; do jq -r '.months[] | "| \(.series) | \(.month) | \(.markets) | \(.events) | \(.twoSided) | \(.volume) | \(.withTape) | \(.trades) | \(.noStart) | \(.medSpreadC) | \(.medTradesPerMarket) |"' "$f"; done
+            echo
+            for f in "${inv[@]}"; do jq -r '.totals | to_entries[] | "- **\(.key)**: \(.value.markets) markets, \(.value.events) events, \(.value.noStart) without a start time, \(.value.first) to \(.value.last); at least 95% of two-sided events with a start time in every week from \(.value.startEraWeek // "(no such week)")"' "$f"; done
+            echo
+            echo "### Two-sided events by unit week (Monday 05:00 UTC) and the share with a published start time"
+            echo
+            echo "The start era (START_ERA_FROM in research/tennisTaSweep.ts, a Monday 05:00 UTC) is read off this table before the first counting run."
+            echo
+            if [ "${#inv[@]}" -gt 0 ]; then
+              jq -rs '
+                [.[].weeks // [] | .[]] | group_by(.week) | map({week: .[0].week, two: (map(.twoSided) | add), st: (map(.withStart) | add)}) | map(select(.two > 0)) as $r
+                | [range(($r | length) - 1; -1; -1)] | reduce .[] as $i ({from: null, ok: true}; if .ok and ($r[$i].st >= 0.95 * $r[$i].two) then {from: $r[$i].week, ok: true} else .ok = false end)
+                | "All series: at least 95% of two-sided events with a start time in every week from **\(.from // "(no such week)")**.\n"' "${inv[@]}"
+              jq -rs '
+                def lab: sub("^KX"; "") | sub("MATCH$"; "");
+                def pct(a; b): if b > 0 then "\((100 * a / b) | floor)%" else "-" end;
+                [.[].weeks // [] | .[]] as $w
+                | ($w | map(.series) | unique) as $s
+                | if ($w | length) == 0 then "(no weekly rows)" else
+                    ("| week | " + ($s | map("\(lab) two-sided | \(lab) share with start") | join(" | ")) + " | all: share with start |"),
+                    ("|---|" + ($s | map("---|---|") | join("")) + "---|"),
+                    ($w | group_by(.week)[] | . as $g
+                      | ($g | map({key: .series, value: .}) | from_entries) as $by
+                      | "| \($g[0].week) | " + ($s | map(($by[.] // {twoSided: 0, withStart: 0}) as $x | "\($x.twoSided) | \(pct($x.withStart; $x.twoSided))") | join(" | ")) + " | " + pct($g | map(.withStart) | add; $g | map(.twoSided) | add) + " |")
+                  end' "${inv[@]}"
+            else echo "(no inventory)"; fi
+            echo
+            echo "### Recorded days cut to tennis (real books)"
+            echo
+            # kept counts every line written, the beat lines included (tennis-cut/2 on); the column shows the tennis lines.
+            echo "| day | cut | match markets | listed an earlier day | tennis lines kept | beat lines | ws_beat lines | live score lines |"
+            echo "|---|---|---|---|---|---|---|---|"
+            if [ -f art/recorded/recorded.jsonl ]; then jq -r '"| \(.day) | \(.cut // "tennis-cut/1") | \(.matches) | \(.carried // "-") | \(.kept - (.beats // 0) - (.sockBeats // 0)) | \(.beats // "-") | \(.sockBeats // "-") | \(.scores) |"' art/recorded/recorded.jsonl; fi
+          } > body.md
+          cat body.md
+          jq -Rs '{body: .}' body.md > req.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input req.json > /dev/null
