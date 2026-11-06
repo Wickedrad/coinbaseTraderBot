@@ -13,7 +13,16 @@ research/tennisTaSweep.ts run (gzip JSON, one per sub-slice, contract C4):
               every non-stick id ends in its arm, a config's arms share overrides, no stress or measuring key moved
               outside a measuring stick, no two non-placebo runs with the same overrides and fill). Any problem: exit
               non-zero, nothing written.
-  universe    family A: every owned match of the pool(s) with a tape (a match the config did not trade counts 0). A cell
+  pools (C9)  the matchList rows of the pool named by --pool are scored: 'disc' (H-DEV: start-era matches with a published
+              start closing before DEV_TO, any choice stage), 'old' (stratum H0, stage 2 finalists only) or 'hold' (H-HOLD:
+              matches starting from HOLD_FROM, stage 'hold' only: a frozen spec list scored once, C10). 'nostart',
+              'embargo' (Jul 31 and the matches straddling DEV_TO) and the other pools' rows are left out and counted by pool
+              in the coverage section; 'check' and the hash-sealed units are retired. Pools are per match; units stay
+              Monday 05:00 UTC weeks for the bootstrap and the slicing, and a pool's hours are its units cut to its window
+              (pool_window). The era edges come from the shard metas (meta.era), else this file's copy of
+              research/tennisTaSweep.ts's constants; H-HOLD and its 6 fold edges from research/registry.py (H_HOLD, ho1_fill).
+              matchList fold (1..6 on a hold match, else null) must equal the registry's edges (fold_problems).
+  universe    family A: every owned match of the pool with a tape (a match the config did not trade counts 0). A cell
               = config x arm x tour x phase x price bucket of the entry (an "all" level on each axis); arms F1, F2, coin
               (the config's coin-flip placebo) and stick (measuring sticks: scored and logged, never screened or counted
               as hypotheses). Realized net after fees is the only score.
@@ -23,38 +32,61 @@ research/tennisTaSweep.ts run (gzip JSON, one per sub-slice, contract C4):
               section 6 conditions: >= 100 entries on >= 30 match-days, mean > 0, >= 60% of monthly folds with 10+
               entries positive, net positive under F2 (B: the stress column), zero settlement breaches for the CONFIG
               (A: any breach in any cell of any arm of the config fails every cell of it; B: the reading's exit rule)
-  folds       months of each unit's last day (the Sunday before its Monday 05:00 UTC end): a unit is never split
+  folds       months of each unit's last day (the Sunday before its Monday 05:00 UTC end): a unit is never split. A hold
+              run uses the 6 HO-1 folds instead, by each match's UTC day at the registry's edges.
   placebo     A: per-unit paired difference against the config's coin arm, same bootstrap; B: paired per-unit difference
               of mean net per entry (cell minus placebo, units where both have entries) with a paired z
   day t       the match-day clustered t of section 6, kept as a descriptive column (A2), vs zero and vs the placebo
   ONC         N_eff = clusters of the per-match P&L correlation (distance sqrt((1 - rho) / 2)) over the F1 cells with
-              >= --onc-min entries (Lopez de Prado clusterKMeansTop: k-means base over k = 2..n - 1, every k to 40 and a
-              10% geometric grid above refined around the best, scored by the silhouette t on the exact distances; the
-              below-mean clusters are re-clustered and the result is kept only if the mean cluster t rises). The scan
-              and a warning when a cap binds or k = 2 wins go to summary.json (onc)
+              >= --onc-min entries (Lopez de Prado clusterKMeansTop: k-means base over k = 2..n - 1 with no cap by
+              default, every k to 40 and a 10% geometric grid above refined around the best, scored by the silhouette t
+              on the exact distances; the below-mean clusters are re-clustered and the result is kept only if the mean
+              cluster t rises). The k range, the scan and a warning when a cap binds or k = 2 wins go to summary.json
+              (onc) and report.md
   SPA/StepM   Hansen SPA (consistent) and Romano-Wolf StepM over the ONC medoids + each cluster's best cell + production
               + every flagged cell
-  DSR         deflated Sharpe at N_eff on per-match Sharpe with the per-match skew and kurtosis; SR0's variance is taken
-              across the N_eff cluster-mean series, each Sharpe over its members' tour universe (each cell's SR is over
-              its own). Family B: per-entry Sharpe at its own trial count.
+  DSR         deflated Sharpe at N_eff on per-match Sharpe with the per-match skew and kurtosis. SR0 is per tour universe
+              (all, ATP, WTA): its variance is taken across the N_eff cluster-mean series, each Sharpe over that
+              universe's matches, and a cell's DSR uses the SR0 of its own universe (the one its SR is over). Family B:
+              per-entry Sharpe at its own trial count.
   production  the config whose overrides equal production's spec by value (H: the ratchet off), not by id
   sensitivity section 5: range of mean net per match across a knob's levels, a config counting for a knob when it differs
               from the baseline (--baseline, else meta.baseline, else production) by value in that A1 knob alone; ranked
-              by range, ties by the section 5 order; A2 runs only if stage 2 on H-DISC ranks six knobs
+              by range, ties by the section 5 order, over each config's F1 all/all/all cell on the scored pool; A2 runs
+              only if stage 2 on H-DISC ranks six knobs
   PBO         CSCV over the folds for the stage's config selection (the 'all' cells)
   $/h         net / pool wall-clock hours (pool units clipped to the data span, embargoed hours left out) and net /
-              live-match hours (A7)
-  registry    one row per scored cell (N_raw per family), ids carry the arm, for registry/tennis-ta-<run>.jsonl
+              live-match hours (A7: close minus the published start; a match without one gets its series' median, else
+              the pool's, else --live-median-hours; a pool with no published start at all and no --live-median-hours,
+              i.e. H0, has no $/live-hour figure, said in report.md)
+  registry    C7 / C11: report/registry-v1-<run>.jsonl, rows of the project registry v1 (research/registry.py, loaded
+              from --registry-py; every row passes its validate() before anything is written). Family A: one row per config
+              x arm (arm = the spec id, env = its overrides; the production F1 config is the control, other F1 configs are
+              candidates against it, a config's F2 / F0 arm is its neighbour and its coin arm its placebo (placebo_for = the
+              config's F1 arm), both against the config's F1 row, measuring sticks are controls). Family B: one row per
+              reading x exit (its 'all' context; the other contexts in by_cell), a candidate against its own placebo row when
+              the export carries per-day placebo sums. hours = the $/h denominator, contract_type 'tennis' and the modules
+              each row changes (spec_modules), base 'tennis-ta@<sha>' and base_defaults (the overrides every spec shares that
+              differ from production), data.replay_version (meta.replayVersion, else research/history/historyReplay.ts) and
+              data.engine 'replay'. Families tennis-ta-A / tennis-ta-B for the start-era history (H), suffixed -H0 / -R for
+              the other strata (reg_families). A disc (or H0) run is a dev-choice run: flags ['dev-choice'] and by_day over
+              the pool's UTC match days, none in H-HOLD (refused otherwise). A hold run: by_day over every H-HOLD day (0 on a
+              day without a trade), by_tercile {'ATP'|'WTA': {pnl, hours}} (the tours as the RV-tercile stand-in, hours =
+              the tour's live-match hours), then the registry's ho1_fill fills each paired row's heldout block and each
+              candidate's verdict is its ho1_pass; report.md scores each candidate per fold, per tour and against its placebo.
 
-Usage: tennis_ta_report.py --shards DIR --pool disc[,check] --run RUN_ID --out DIR [--plan prep/plan.json]
-       [--units models/tennis-ta/state/units.json] [--boot 2000] [--block 1] [--seed 20261105] [--baseline CONFIG]
+Usage: tennis_ta_report.py --shards DIR --pool disc|old|hold --run RUN_ID --out DIR --registry-py registry.py --sha SHA
+       [--plan prep/plan.json] [--units models/tennis-ta/state/units.json] [--boot 2000] [--block 1] [--seed 20261105]
+       [--baseline CONFIG] [--ref DRIVE_FOLDER] [--live-median-hours H|SERIES=H,...|summary.json] [--no-registry (local runs: no rows)]
 """
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import json
 import math
 import os
+import re
 import sys
 import warnings
 from collections import Counter, defaultdict
@@ -109,8 +141,48 @@ def day_of(ts_ms):
 
 
 HARD_CUTOFF = ms_of('2026-11-05T02:00:00Z')
-CHECK_FROM = ms_of('2026-04-01T00:00:00Z')
-EMBARGO_MS = DAY_MS
+# The era edges of research/tennisTaSweep.ts (C9; tests/test_tennis_ta_report.py holds them to it). Kalshi's tennis match
+# history starts HISTORY_FROM; units starting before START_ERA_FROM are pool 'old' (stratum H0: no published start, the
+# older "advances past the round" settlement rule, a different product). In the start era a match needs a published start
+# (else 'nostart'); it is 'disc' (H-DEV) when it closes before DEV_TO, 'hold' (H-HOLD) when it starts from HOLD_FROM, and
+# 'embargo' in between (Jul 31 and the matches straddling DEV_TO). START_ERA_FROM is a placeholder there, fixed from the
+# weekly inventory before the first counting run, so a run's own edges are read from its shard metas (meta.era) and these
+# are only the fallback.
+HISTORY_FROM = ms_of('2025-06-18T00:00:00Z')
+START_ERA_FROM = ms_of('2026-04-27T05:00:00Z')
+DEV_TO = ms_of('2026-07-31T00:00:00Z')
+HOLD_FROM = ms_of('2026-08-01T00:00:00Z')
+DEFAULT_ERA = {'historyFrom': HISTORY_FROM, 'startEraFrom': START_ERA_FROM, 'devTo': DEV_TO, 'holdFrom': HOLD_FROM, 'cutoff': HARD_CUTOFF}
+# The pools of research/tennisTaSweep.ts (C9): the A3 hash seal and the dev-check pool are retired (the contiguous hold block
+# replaces them; the old era needs no seal, nothing is chosen there), and the unit table's legacy `sealed` flags are ignored.
+POOL_NAMES = ('old', 'nostart', 'disc', 'embargo', 'hold', 'out')
+# Stages: '1' and '2' choose settings on H-DEV (pool disc; 'old' = H0 stress at stage 2); 'hold' scores a frozen spec list
+# (research/tennis-ta/hold-specs.json) once on H-HOLD (C10).
+HOLD_STAGE = 'hold'
+# C7 (registry v1 rows)
+REG_THREAD = 'tennis-ta'
+REG_FAMILY_A = 'tennis-ta-A'
+REG_FAMILY_B = 'tennis-ta-B'
+PLACEBO_SEED = 20261105
+# code_epoch = simVersion + '; REPLAY_VERSION=<n>; ' + CODE_EPOCH_TAIL, n read from the history replay the sweep built its days
+# with (research/history/historyReplay.ts, next to this file), so the rows follow the code when the replay version moves.
+CODE_EPOCH_TAIL = 'main with #290-#292; #279 and #287 merged in'
+HISTORY_REPLAY_TS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'history', 'historyReplay.ts')
+DRIVE_RUNS = 'gdrive:kalshi-bot-archive/models/tennis-ta/runs'
+# HO-1 (registry README, project-wide from 22:30 UTC Nov 5): settings are chosen only on H-DEV; H-HOLD is scored once, in
+# 6 consecutive folds. The registry module's own H_HOLD wins when it is loaded (this copy is the fallback).
+HO1_HOLD = ('2026-08-01', '2026-11-04')
+HO1_FOLDS = 6
+# Registry flags per pool (C11): an H-DEV choice run is 'dev-choice' (counted, never scored as held out; its by_day stops
+# before H-HOLD), H0 is a dev-side stress test of stage 2 finalists, a hold run carries no dev-choice flag.
+DEV_FLAG = 'dev-choice'
+REG_BASE = 'tennis-ta'
+REG_ENGINE = 'replay'
+# The bot module each setting belongs to (C7 modules; the contract-type ledger adds results over disjoint module sets).
+# Production's end loser cut and the harness loser stop are exits, the pacer is the pacer, the bankroll is sizing; every
+# other TENNIS_* key is the tennis rulebook (tennis-ta). Stress adversaries and decision-clock offsets change no module, so
+# a run that moves only those measures the rulebook itself (tennis-ta).
+MODULE_KEYS = {'TENNIS_END_LOSER_CUT': 'exits', 'HARNESS_LOSER_STOP': 'exits', 'HARNESS_PACER': 'pacer', 'HARNESS_BANKROLL': 'sizing'}
 
 
 def bucket_of(px):
@@ -368,12 +440,163 @@ def unit_fold(u):
     return day_of(u['end'] - DAY_MS)[:7]
 
 
-def unit_pool(u, cutoff=HARD_CUTOFF):
-    if u['start'] >= cutoff:
-        return 'out'
-    if u.get('sealed'):
-        return 'sealed'
-    return 'disc' if u['start'] < CHECK_FROM else 'check'
+def era_of(raw):
+    """A run's era edges (meta.era / plan.era: ISO strings, research/tennisTaSweep.ts eraEdges) as ms; DEFAULT_ERA's
+    values for anything missing or unreadable."""
+    out = dict(DEFAULT_ERA)
+    for k in out:
+        v = (raw or {}).get(k) if isinstance(raw, dict) else None
+        if isinstance(v, str):
+            try:
+                out[k] = ms_of(v)
+            except ValueError:
+                pass
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[k] = int(v)
+    return out
+
+
+def era_text(era, h_hold=HO1_HOLD):
+    """The C9 era rule, stated with a run's edges."""
+    d = lambda t: datetime.fromtimestamp(t / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M UTC')  # noqa: E731
+    return (f"history from {d(era['historyFrom'])} to the cutoff {d(era['cutoff'])}; units starting before {d(era['startEraFrom'])} are "
+            f"pool old (stratum H0: no published start and the older advances-past-the-round settlement, a different product, a "
+            f"stress test for stage 2 finalists only); from then a match needs a published start (else nostart: excluded and "
+            f"counted); disc = H-DEV, the start-era matches closing before {d(era['devTo'])}; hold = H-HOLD, the matches starting "
+            f"from {d(era['holdFrom'])} (start and close before the cutoff; scored on the UTC days {h_hold[0]} to {h_hold[1]} in "
+            f"{HO1_FOLDS} folds, once per frozen spec list); embargo = the start-era matches in between (never scored)")
+
+
+def unit_pools(u, era=None):
+    """The pools a unit's matches can fall in (C9: pools are per match; units stay Monday 05:00 UTC weeks for the
+    bootstrap and the slicing): {'out'} when it starts at or after the cutoff or ends by the history's start; {'old'}
+    before the start era; else the start-era pools whose time it reaches: 'disc' when it starts before DEV_TO, 'embargo'
+    when it reaches [DEV_TO, HOLD_FROM), 'hold' when it ends after HOLD_FROM. A unit's legacy `sealed` flag is ignored."""
+    e = era or DEFAULT_ERA
+    if u['start'] >= e['cutoff'] or u['end'] <= e['historyFrom']:
+        return {'out'}
+    if u['start'] < e['startEraFrom']:
+        return {'old'}
+    out = set()
+    if u['start'] < e['devTo']:
+        out.add('disc')
+    if u['start'] < e['holdFrom'] and u['end'] > e['devTo']:
+        out.add('embargo')
+    if u['end'] > e['holdFrom']:
+        out.add('hold')
+    return out
+
+
+def pool_window(pool, era=None, h_hold=HO1_HOLD):
+    """[lo, hi) of wall-clock time a pool's hours come from, within its units: old = the old-era units' whole span, disc =
+    up to DEV_TO, hold = HOLD_FROM to the end of H-HOLD's last UTC day (a hold match starting on a later UTC day, in the
+    two hours before the cutoff, is not an H-HOLD match), each cut to the history and the cutoff."""
+    e = era or DEFAULT_ERA
+    if pool == 'disc':
+        return e['historyFrom'], min(e['devTo'], e['cutoff'])
+    if pool == 'hold':
+        return max(e['holdFrom'], e['historyFrom']), min(day_ms(h_hold[1]) + DAY_MS, e['cutoff'])
+    return e['historyFrom'], e['cutoff']
+
+
+def ho1_fold_edges(h_hold=HO1_HOLD, k=HO1_FOLDS):
+    """HO-1's fold edges, as research/registry.py ho1_fill cuts them: span = the hold's days, edge i = first day +
+    round(i * span / k) days (Python's round, as the registry), the last fold running to the hold's last day. -> k
+    (first day, last day) pairs, ISO."""
+    from datetime import date
+    d0, d1 = date.fromisoformat(h_hold[0]), date.fromisoformat(h_hold[1])
+    span = (d1 - d0).days + 1
+    edges = [d0 + timedelta(days=round(i * span / k)) for i in range(k + 1)]
+    out = [(edges[i].isoformat(), (edges[i + 1] - timedelta(days=1)).isoformat()) for i in range(k)]
+    out[-1] = (out[-1][0], d1.isoformat())
+    return out
+
+
+def ho1_fold_of(day, edges):
+    """The HO-1 fold (1..k) of a UTC day, None outside H-HOLD."""
+    for i, (a, b) in enumerate(edges):
+        if a <= day <= b:
+            return i + 1
+    return None
+
+
+def hold_days(h_hold=HO1_HOLD):
+    from datetime import date
+    d0, d1 = date.fromisoformat(h_hold[0]), date.fromisoformat(h_hold[1])
+    return [(d0 + timedelta(days=i)).isoformat() for i in range((d1 - d0).days + 1)]
+
+
+def fold_problems(matches, edges):
+    """matchList rows whose `fold` (C9: 1..6 for a hold match, by the registry's edges; null otherwise) disagrees with the
+    registry's edges. A row without the key is not checked (an older sweep); a hold match on a UTC day after H-HOLD (it
+    starts in the two hours before the cutoff) is no H-HOLD match, is left out of the hold score, and its fold is not read."""
+    p = []
+    lo, hi = edges[0][0], edges[-1][1]
+    for m in matches:
+        if 'fold' not in m:
+            continue
+        day = str(m.get('day'))
+        if m.get('pool') == 'hold':
+            if not (lo <= day <= hi):
+                continue
+            want = ho1_fold_of(day, edges)
+        else:
+            want = None
+        got = m['fold']
+        if isinstance(got, bool) or got != want:
+            p.append(f"{m.get('event')} (pool {m.get('pool')}, day {day}): fold {json.dumps(got)}, the registry's edges give {json.dumps(want)}")
+    return p
+
+
+def hold_list_problems(runs, stratum='H'):
+    """A hold run's frozen spec list, checked as stage 2's (C10): exactly one production-default F1 config (the control);
+    every other config with an F1 run (a candidate) also runs its coin placebo and its F2 neighbour; no coin or F2 arm
+    without its config's F1. Measuring sticks may ride along. Empty = sound."""
+    p, arms = [], defaultdict(dict)
+    for rid, r in runs.items():
+        if r['stick']:
+            continue
+        cfg, _, tag = rid.rpartition('|')
+        arms[cfg][tag] = r
+    prod = [cfg for cfg, a in arms.items() if 'F1' in a and is_production(a['F1']['overrides'], stratum)]
+    if len(prod) != 1:
+        p.append(f"{len(prod)} F1 config(s) equal production by value ({', '.join(prod[:3]) or 'none'}): a hold list needs exactly one "
+                 f"production-default F1 control")
+    for cfg, a in sorted(arms.items()):
+        if 'F1' not in a:
+            p.append(f"config {cfg}: arm(s) {', '.join(sorted(a))} without its F1 run")
+        elif cfg not in prod:
+            miss = [t for t in ('coin', 'F2') if t not in a]
+            if miss:
+                p.append(f"candidate {cfg}|F1: no {' and no '.join(miss)} arm (a hold candidate is scored with its coin placebo and its F2 neighbour)")
+    if not any(cfg not in prod and 'F1' in a for cfg, a in arms.items()):
+        p.append('no candidate: the hold list holds the control only')
+    return p
+
+
+def pool_refusal(pools, stage=None, shard_pool=None):
+    """Why --pool cannot be scored (None when it can). One pool a run (C10): 'disc' (H-DEV, any choice stage), 'old' (H0)
+    at stage 2, 'hold' (H-HOLD) at stage 'hold' only (a frozen spec list, scored once); 'nostart', 'embargo' and 'out' are
+    never scored."""
+    bad = [p for p in pools if p not in POOL_NAMES]
+    if bad or not pools:
+        return f"unknown pool(s) {', '.join(bad) or '(none)'}: pools are {', '.join(POOL_NAMES)} (C9: 'check' and the hash-sealed units are retired; H-HOLD is pool 'hold')"
+    if len(pools) != 1:
+        return f"one pool per run ({', '.join(pools)} given): H-DEV, H-HOLD and the old era (H0) are never pooled"
+    p = pools[0]
+    if p in ('nostart', 'embargo', 'out'):
+        return (f"pool '{p}' is never scored ('nostart' matches are excluded and counted in every run's coverage; embargoed and "
+                f"out matches are streamed past)")
+    if p == 'old' and stage is not None and str(stage) != '2':
+        return f"pool 'old' (stratum H0) is a stress test for stage 2 finalists only, these shards are stage {stage}"
+    if p == 'hold' and stage is not None and str(stage) != HOLD_STAGE:
+        return (f"pool 'hold' (H-HOLD) is scored only by stage '{HOLD_STAGE}' (a frozen spec list, research/tennis-ta/hold-specs.json, "
+                f"scored once), these shards are stage {stage}")
+    if p != 'hold' and stage is not None and str(stage) == HOLD_STAGE:
+        return f"stage '{HOLD_STAGE}' scores pool 'hold' only, not pool '{p}'"
+    if shard_pool is not None and str(shard_pool) != p:
+        return f"--pool {p} but the shards were swept for pool {shard_pool}"
+    return None
 
 
 def subtract(a, b, cuts):
@@ -392,19 +615,28 @@ def subtract(a, b, cuts):
     return parts
 
 
-def pool_spans_from_table(table, pools, only):
-    """Fallback when neither the plan nor the shard metas carry poolSpans: each swept pool unit cut at the hard cutoff,
-    minus the 24 h embargo windows of the sealed units."""
-    cuts = []
-    for s in table:
-        if s.get('sealed'):
-            cuts += [(s['start'] - EMBARGO_MS, s['start']), (s['end'], s['end'] + EMBARGO_MS)]
+def pool_spans_from_table(table, pools, only, era=None, h_hold=HO1_HOLD):
+    """Fallback when neither the plan nor the shard metas carry poolSpans (research/tennisTaSweep.ts poolSpans): each
+    swept unit of the pool cut to the pool's window (pool_window)."""
+    e = era or DEFAULT_ERA
     out = []
-    for u in table:
-        if unit_pool(u) in pools and u['id'] in only:
-            iv = subtract(u['start'], min(u['end'], HARD_CUTOFF), cuts)
-            out.append({'unit': u['id'], 'start': u['start'], 'end': u['end'], 'intervals': [list(x) for x in iv],
-                        'hours': sum(b - a for a, b in iv) / HOUR_MS})
+    for p in pools:
+        lo, hi = pool_window(p, e, h_hold)
+        for u in table:
+            if p in unit_pools(u, e) and u['id'] in only:
+                iv = subtract(max(u['start'], lo), min(u['end'], hi), [])
+                out.append({'unit': u['id'], 'start': u['start'], 'end': u['end'], 'intervals': [list(x) for x in iv],
+                            'hours': sum(b - a for a, b in iv) / HOUR_MS})
+    return out
+
+
+def clip_spans(spans, lo, hi):
+    """Spans with every interval cut to [lo, hi) (a sweep's whole-unit span of a unit straddling DEV_TO or HOLD_FROM keeps
+    only its pool's part)."""
+    out = []
+    for s in spans:
+        iv = [[max(a, lo), min(b, hi)] for a, b in s['intervals'] if min(b, hi) > max(a, lo)]
+        out.append(dict(s, intervals=iv, hours=sum(b - a for a, b in iv) / HOUR_MS))
     return out
 
 
@@ -419,7 +651,7 @@ def ep_columns(rows, cols):
     """Episode rows (lists in meta.episodeCols order) as numpy columns."""
     n = len(rows)
     if not n:
-        return {'m': np.zeros(0, dtype=np.int64), 't': np.zeros(0), 'hold': np.zeros(0), 'px': np.zeros(0), 'pnl': np.zeros(0),
+        return {'m': np.zeros(0, dtype=np.int64), 'k': np.zeros(0, dtype=np.int64), 't': np.zeros(0), 'hold': np.zeros(0), 'px': np.zeros(0), 'pnl': np.zeros(0),
                 'sig': np.zeros(0, dtype=np.int64), 'br': np.zeros(0, dtype=np.int64), 'ph': np.zeros(0, dtype='<U4'),
                 'leg': np.zeros(0, dtype='<U4'), 'x': np.zeros(0, dtype='<U4')}
     d = dict(zip(cols, zip(*rows)))
@@ -427,7 +659,7 @@ def ep_columns(rows, cols):
 
     def num(c, dt):
         return np.asarray([0 if v is None else v for v in d.get(c, z)], dtype=dt)
-    return {'m': num('m', np.int64), 't': num('t', np.float64), 'hold': num('hold', np.float64), 'px': num('px', np.float64),
+    return {'m': num('m', np.int64), 'k': num('k', np.int64), 't': num('t', np.float64), 'hold': num('hold', np.float64), 'px': num('px', np.float64),
             'pnl': num('pnl', np.float64), 'sig': num('sig', np.int64), 'br': num('br', np.int64),
             'ph': np.asarray([str(v) for v in d.get('ph', ('',) * n)]), 'leg': np.asarray([str(v) for v in d.get('leg', ('',) * n)]),
             'x': np.asarray([str(v) for v in d.get('x', ('',) * n)])}
@@ -471,7 +703,7 @@ def read_shard(path):
 
 
 CONSISTENT = ('run', 'stage', 'pool', 'simVersion', 'dataVersion', 'families', 'shards')
-CONSISTENT_IF_SET = ('requestSha', 'unitsSha', 'stratum')
+CONSISTENT_IF_SET = ('requestSha', 'unitsSha', 'stratum', 'era', 'replayVersion', 'specsHash')
 REQUIRED = ('run', 'stage', 'pool', 'simVersion', 'dataVersion', 'families', 'shards', 'subShards', 'k', 'j', 'from', 'to', 'units')
 
 
@@ -627,9 +859,10 @@ def check_shard_set(infos, table, plan=None, run=None, allow_unversioned=False, 
         if i['b_units'] - set(us):
             p.append(f"{i['file']}: familyB cells name unit(s) outside the slice: {sorted(i['b_units'] - set(us))[:5]}")
     pool = metas[0].get('pool')
+    era = era_of(metas[0].get('era') or (plan or {}).get('era'))
     swept = sorted(unit_file, key=lambda u: by_id[u]['start'])
     for a_, b_ in zip(swept, swept[1:]):
-        gap = [u['id'] for u in table if by_id[a_]['start'] < u['start'] < by_id[b_]['start'] and unit_pool(u) == pool]
+        gap = [u['id'] for u in table if by_id[a_]['start'] < u['start'] < by_id[b_]['start'] and pool in unit_pools(u, era)]
         if gap:
             p.append(f"unit(s) {', '.join(gap[:5])} of pool {pool} lie between {a_} and {b_} but no shard file swept them")
 
@@ -653,6 +886,8 @@ def check_shard_set(infos, table, plan=None, run=None, allow_unversioned=False, 
                     p.append(f"{i['file']}: meta.{key} {json.dumps(m.get(key))}, the plan has {json.dumps(want)}")
             if plan.get('unitsSha') and m.get('unitsSha') is not None and m.get('unitsSha') != plan.get('unitsSha'):
                 p.append(f"{i['file']}: meta.unitsSha differs from the plan")
+            if plan.get('era') is not None and m.get('era') is not None and era_of(m['era']) != era_of(plan['era']):
+                p.append(f"{i['file']}: meta.era (the pool edges it was swept with) differs from the plan's")
             if not (_isint(k) and _isint(j) and 0 <= k < len(subplans) and 0 <= j < len(subplans[k])):
                 p.append(f"{i['file']}: (k, j) = ({k}, {j}) is not a sub-slice of the plan")
                 continue
@@ -680,20 +915,28 @@ def merge_cells_b(exports):
             acc = cells.get(cid)
             if acc is None:
                 acc = cells[cid] = {'id': cid, 'group': c.get('group'), 'n': 0, 'sum': 0.0, 'sumSq': 0.0, 'sum3': 0.0, 'sum4': 0.0,
-                                    'breaches': 0, 'gross': 0.0, 'fees': 0.0, 'stressSum': 0.0, 'units': {}, 'days': {}}
+                                    'breaches': 0, 'gross': 0.0, 'fees': 0.0, 'stressSum': 0.0, 'units': {}, 'days': {},
+                                    'day_cols': None, 'markets': 0, 'placeboMarkets': 0, 'has_markets': True}
                 order.append(cid)
             elif acc['group'] != c.get('group'):
                 problems.append(f"familyB cell {cid}: group {c.get('group')} in one shard, {acc['group']} in another")
             for k in ('n', 'sum', 'sumSq', 'sum3', 'sum4', 'breaches', 'gross', 'fees', 'stressSum'):
                 acc[k] += c.get(k) or 0
+            # Distinct markets with a real / placebo entry (FamilyBCell.markets): a match is owned by one slice, so they add.
+            acc['has_markets'] = acc['has_markets'] and 'markets' in c and 'placeboMarkets' in c
+            acc['markets'] += c.get('markets') or 0
+            acc['placeboMarkets'] += c.get('placeboMarkets') or 0
             for u, v in (c.get('units') or {}).items():
                 cur = acc['units'].setdefault(u, [0, 0.0, 0, 0.0])
                 for q in range(4):
                     cur[q] += v[q] if q < len(v) and v[q] is not None else 0
             for dd, v in (c.get('days') or {}).items():
-                cur = acc['days'].setdefault(dd, [0, 0.0])
-                cur[0] += v[0]
-                cur[1] += v[1]
+                # [entries, net] (FamilyBCell.days); [entries, net, placebo entries, placebo net] when the export carries
+                # per-day placebo sums, which the registry's placebo row needs (day_placebo: every day row had them).
+                cur = acc['days'].setdefault(dd, [0, 0.0, 0, 0.0])
+                for q in range(4):
+                    cur[q] += v[q] if q < len(v) and v[q] is not None else 0
+                acc['day_cols'] = len(v) if acc['day_cols'] is None else min(acc['day_cols'], len(v))
     return [cells[i] for i in order], problems
 
 
@@ -758,7 +1001,10 @@ def load(shard_dir, table, plan=None, run=None, allow_unversioned=False):
                         cur[kk] = cur.get(kk, 0) + x
                 else:
                     diag.setdefault(k, v)
-        fam_b = {'stratum': fbs[0].get('stratum'), 'designSize': design_b(infos)[0], 'diagnostics': diag, 'cells': b_cells}
+        cols = [c['day_cols'] for c in b_cells if c['day_cols'] is not None]
+        fam_b = {'stratum': fbs[0].get('stratum'), 'designSize': design_b(infos)[0], 'diagnostics': diag, 'cells': b_cells,
+                 # per-day placebo sums in every day row of the export (the registry's family B placebo rows need them)
+                 'day_placebo': bool(cols) and min(cols) >= 4}
     metas = [infos[i]['meta'] for i in order]
     return {'matches': matches, 'runs': runs, 'familyB': fam_b, 'metas': metas, 'files': [infos[i]['file'] for i in order]}
 
@@ -1013,7 +1259,8 @@ def onc(corr, seed, max_k=None, n_init=3, dim=256, diag=None):
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description='Tennis TA trial report: scores families A and B from a checked shard set.')
     ap.add_argument('--shards', required=True, help='directory of the shard files (gzip JSON)')
-    ap.add_argument('--pool', default='disc', help='pool(s) to score, comma separated (a match is kept when its pool is in the list)')
+    ap.add_argument('--pool', default='disc', help="the pool to score: 'disc' (H-DEV), 'old' (stratum H0) at stage 2, or 'hold' (H-HOLD) at "
+                                                   "stage 'hold'; it must be the shards' pool")
     ap.add_argument('--run', default=None, help='run id; every shard file must carry it (default: the shards\' run)')
     ap.add_argument('--out', required=True)
     ap.add_argument('--plan', default=None, help='prep/plan.json: every planned file present exactly once, each matching its slice')
@@ -1033,7 +1280,32 @@ def parse_args(argv=None):
                          "(default: the shards' meta.baseline, else the production config)")
     ap.add_argument('--alpha', type=float, default=0.10, help='BH q and StepM alpha')
     ap.add_argument('--allow-unversioned', action='store_true', help='local runs only: accept shards without a data version')
+    ap.add_argument('--registry-py', default=None,
+                    help="the project's research/registry.py (make_id, validate): required to write the registry rows (C7)")
+    ap.add_argument('--sha', default=None, help='code_sha of the rows: the commit the run swept and scored ($GITHUB_SHA; default: that env var)')
+    ap.add_argument('--ref', default=None, help=f'the rows\' ref (default: {DRIVE_RUNS}/<run>)')
+    ap.add_argument('--no-registry', action='store_true', help='local runs only: score and report without writing registry rows')
+    ap.add_argument('--live-median-hours', default=None,
+                    help="live-match hours a match stands in for when its pool has no published start at all (H0): a number, "
+                         "SERIES=HOURS,... or a start-era run's summary.json (its live_median_hours); without it such a pool's "
+                         "$/live-hour figures are refused (n/a, stated in report.md)")
     return ap.parse_args(argv)
+
+
+def load_registry(path):
+    """The project's registry module (research/registry.py, another thread's code) from a file: make_id and validate."""
+    try:
+        spec = importlib.util.spec_from_file_location('tennis_ta_registry_v1', path)
+        if spec is None or spec.loader is None:
+            raise ImportError('not a Python file')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as e:  # noqa: BLE001 - any failure to load is the same refusal
+        sys.exit(f'--registry-py {path}: cannot load it ({type(e).__name__}: {str(e)[:200]}): nothing is scored and no registry rows are written')
+    for fn in ('make_id', 'validate'):
+        if not callable(getattr(mod, fn, None)):
+            sys.exit(f'--registry-py {path}: it has no {fn}(): nothing is scored and no registry rows are written')
+    return mod
 
 
 def usd(x):
@@ -1053,7 +1325,11 @@ def f4(x, spec='.4f'):
 
 def main(argv=None):
     a = parse_args(argv)
-    pools = [p for p in a.pool.split(',') if p]
+    pools = [p.strip() for p in a.pool.split(',') if p.strip()]
+    refused = pool_refusal(pools)
+    if refused:
+        sys.exit(f'--pool {a.pool}: {refused}: nothing is scored and no registry rows are written')
+    reg = load_registry(a.registry_py) if a.registry_py else None
     try:
         with open(a.units) as fh:
             table = sorted(json.load(fh), key=lambda u: u['start'])
@@ -1076,7 +1352,50 @@ def main(argv=None):
     stratum = str(meta.get('stratum') or 'H')
     sim_version = meta.get('simVersion') or meta.get('sim_version')
     data_version = meta.get('dataVersion')
+    era = era_of(meta.get('era') or (plan or {}).get('era'))
+    era_src = 'the shard metas' if meta.get('era') else 'the plan' if (plan or {}).get('era') else "the report's copy of the sweep's constants"
+    stratum_label = stratum_label_of(stratum, pools)
+    refused = pool_refusal(pools, stage, meta.get('pool'))
+    if refused:
+        sys.exit(f'--pool {a.pool}: {refused}: nothing is scored and no registry rows are written')
+    hold_run = pools == ['hold']
+    # H-HOLD as the registry defines it (its module's H_HOLD when loaded), and its HO-1 fold edges.
+    h_hold = tuple(getattr(reg, 'H_HOLD', None) or HO1_HOLD) if reg is not None else HO1_HOLD
+    fold_edges = ho1_fold_edges(h_hold)
+    if hold_run:
+        if reg is not None and not all(callable(getattr(reg, fn, None)) for fn in ('ho1_fill', 'ho1_pass')):
+            sys.exit(f'--registry-py {a.registry_py}: it has no ho1_fill() / ho1_pass(): a hold run\'s rows need the registry\'s HO-1 '
+                     f'heldout block: nothing is scored and no registry rows are written')
+        if era['holdFrom'] != day_ms(h_hold[0]):
+            sys.exit(f"the shards' HOLD_FROM ({day_of(era['holdFrom'])}) is not the registry's H-HOLD start ({h_hold[0]}): the pool "
+                     f"'hold' would not be H-HOLD: nothing is scored and no registry rows are written")
+    stated = (plan or {}).get('holdFolds') or meta.get('holdFolds')
+    if stated is not None and [(str(f.get('from')), str(f.get('to'))) for f in stated] != fold_edges:
+        theirs = ', '.join(f"{f.get('fold')}: {f.get('from')} to {f.get('to')}" for f in stated)
+        ours = ', '.join(f'{i + 1}: {x} to {y}' for i, (x, y) in enumerate(fold_edges))
+        sys.exit(f"the sweep's holdFolds ({theirs}) are not the registry's HO-1 folds ({ours}): nothing is scored and no registry rows "
+                 f"are written")
+    fold_bad = fold_problems(data['matches'], fold_edges)
+    if fold_bad:
+        for x in fold_bad[:20]:
+            print(f'folds: {x}', file=sys.stderr)
+        sys.exit(f"{len(fold_bad)} matchList fold(s) disagree with the registry's HO-1 fold edges ({', '.join(f'{i + 1}: {x} to {y}' for i, (x, y) in enumerate(fold_edges))}): "
+                 f"nothing is scored and no registry rows are written")
+    said = sorted({str(mt['stratumLabel']) for mt in metas if mt.get('stratumLabel')} - {stratum_label})
+    if said:
+        sys.exit(f"the shards say stratum {', '.join(said)} but stratum {stratum} on pool {','.join(pools)} is {stratum_label} "
+                 f"(the sweep's stratumLabelOf): the registry family would be wrong: nothing is scored and no registry rows are written")
+    try:
+        live_given = parse_live_medians(a.live_median_hours)
+    except (OSError, ValueError, TypeError, AttributeError) as e:
+        sys.exit(f'--live-median-hours {a.live_median_hours}: {e}: nothing is scored and no registry rows are written')
     matches, runs, fam_b = data['matches'], data['runs'], data['familyB']
+    if hold_run:
+        hp = hold_list_problems(runs, stratum)
+        if hp:
+            for x in hp[:40]:
+                print(f'hold list: {x}', file=sys.stderr)
+            sys.exit(f'{len(hp)} problem(s) with the frozen hold list (C10, validated like stage 2): nothing is scored and no registry rows are written')
     if a.baseline and not any(not r['stick'] and r.get('placebo') != 'coin' and r.get('fill') == 'F1' and rid.rsplit('|', 1)[0] == a.baseline
                               for rid, r in runs.items()):
         sys.exit(f'--baseline {a.baseline}: no F1 config of that id in the shards (a config is a run id without its arm, e.g. A|s2|center): '
@@ -1084,8 +1403,22 @@ def main(argv=None):
     rng = np.random.default_rng(a.seed)
     B = a.boot
 
-    # ---- universe (family A): the pool(s)' owned matches with a tape, in start order
+    # ---- owned matches by pool (C6): only the requested pool is scored; 'nostart' (a start-era match without a published
+    # start) and 'old' rows are excluded and counted here
+    pool_matches = Counter(str(m.get('pool')) for m in matches)
+    pool_units = defaultdict(set)
+    for m in matches:
+        pool_units[str(m.get('pool'))].add(m.get('unit'))
+    by_pool = {p: {'matches': pool_matches[p], 'units': len(pool_units[p]), 'scored': p in pools}
+               for p in sorted(pool_matches, key=lambda x: (POOL_NAMES.index(x) if x in POOL_NAMES else 99, x))}
+
+    # ---- universe (family A): the pool's owned matches with a tape, in start order. A hold match on a UTC day after H-HOLD
+    # (it starts in the two hours before the cutoff) is no H-HOLD match: left out and counted.
     in_pool = [i for i, m in enumerate(matches) if m.get('pool') in pools]
+    hold_after = []
+    if hold_run:
+        hold_after = [i for i in in_pool if not (h_hold[0] <= str(matches[i].get('day')) <= h_hold[1])]
+        in_pool = [i for i in in_pool if h_hold[0] <= str(matches[i].get('day')) <= h_hold[1]]
     keep = [i for i in in_pool if (matches[i].get('trades') or 0) > 0]
     no_tape = len(in_pool) - len(keep)
     if not keep:
@@ -1104,11 +1437,18 @@ def main(argv=None):
     days = sorted({m['day'] for m in M})
     didx = {d: i for i, d in enumerate(days)}
     m_day = np.array([didx[m['day']] for m in M])
-    folds = sorted({unit_fold(unit_by_id[u]) for u in units})
-    fidx = {f: i for i, f in enumerate(folds)}
-    NF = len(folds)
-    u_fold = np.array([fidx[unit_fold(unit_by_id[u])] for u in units])
-    m_fold = u_fold[m_unit]
+    if hold_run:
+        # The HO-1 folds (the registry's edges) by each match's UTC day: H-HOLD's 6 consecutive folds, not months.
+        folds = [str(i + 1) for i in range(len(fold_edges))]
+        fidx = {f: i for i, f in enumerate(folds)}
+        NF = len(folds)
+        m_fold = np.array([ho1_fold_of(m['day'], fold_edges) - 1 for m in M])
+    else:
+        folds = sorted({unit_fold(unit_by_id[u]) for u in units})
+        fidx = {f: i for i, f in enumerate(folds)}
+        NF = len(folds)
+        u_fold = np.array([fidx[unit_fold(unit_by_id[u])] for u in units])
+        m_fold = u_fold[m_unit]
     m_tour = np.array([tour(m['series']) for m in M])
     tours = sorted(set(m_tour))
     tour_levels = (tours + ['all']) if len(tours) > 1 else ['all']
@@ -1150,20 +1490,16 @@ def main(argv=None):
                 by_u[s['unit']] = s
         spans, spans_src = list(by_u.values()), 'the shard metas'
     else:
-        spans, spans_src = pool_spans_from_table(table, pools, set(swept_units)), 'the unit table'
-    spans = [s for s in spans if s['unit'] in unit_by_id and unit_pool(unit_by_id[s['unit']]) in pools]
+        spans, spans_src = pool_spans_from_table(table, pools, set(swept_units), era, h_hold), 'the unit table'
+    # Each span cut to the pool's window (C9: a unit straddling DEV_TO or HOLD_FROM gives each pool only its own part; the
+    # embargo day and the matches straddling DEV_TO count in no pool's hours).
+    win_lo, win_hi = pool_window(pools[0], era, h_hold)
+    spans = clip_spans([s for s in spans if s['unit'] in unit_by_id and pools[0] in unit_pools(unit_by_id[s['unit']], era)], win_lo, win_hi)
     pool_hours = clipped_hours(spans, span_lo, span_hi)
     unclipped_hours = clipped_hours(spans, -1, 1 << 62)
-    live_dur = np.array([max(0, m['close'] - m['start']) / HOUR_MS for m in M])
-    published = np.array([m.get('startPublished', True) is not False for m in M])
-    m_series = np.array([m['series'] for m in M])
-    for s in set(m_series):
-        sel = (m_series == s) & ~published
-        ref = live_dur[(m_series == s) & published]
-        if sel.any():
-            live_dur[sel] = float(np.median(ref)) if len(ref) else 0.0
-    live_hours = {t: float(live_dur[univ[t]].sum()) for t in tour_levels}
-    no_start_pool = int((~published).sum())
+    live_dur, live_medians, live_info = live_durations(M, live_given)
+    live_hours = {t: (float(live_dur[univ[t]].sum()) if live_dur is not None else None) for t in tour_levels}
+    no_start_pool = sum(1 for m in M if m.get('startPublished', True) is False)
 
     def per_hour(net, hours):
         return net / hours if hours else None
@@ -1176,6 +1512,8 @@ def main(argv=None):
     day_sums = []       # per cell, days
     vec_store = {}      # cell index -> per-match vector (F1 cells with enough entries, for ONC / SPA)
     hourly = []
+    run_info = {}       # run id -> config, arm, distinct markets traded in the pool
+    match_net = {}      # run id -> per-match net over the scored matches (the all/all/all cell's vector)
     config_br = defaultdict(lambda: defaultdict(int))
     warn = 0
     for rid in sorted(runs):
@@ -1193,12 +1531,15 @@ def main(argv=None):
         ep = r['ep']
         km = remap[ep['m']] >= 0 if len(ep['m']) else np.zeros(0, dtype=bool)
         e_m = remap[ep['m'][km]]
+        e_k = ep['k'][km] if 'k' in ep and len(ep['k']) == len(km) else np.zeros(len(e_m), dtype=np.int64)
+        run_info[rid] = {'config': config, 'arm': arm, 'markets': len(set(zip(e_m.tolist(), e_k.tolist())))}
         e_pnl, e_ph, e_br = ep['pnl'][km], ep['ph'][km], ep['br'][km]
         e_bk = buckets_of(ep['px'][km])
         e_hour = eastern_hours(ep['t'][km] + 1000.0 * ep['hold'][km])
         e_tour = m_tour[e_m] if len(e_m) else np.zeros(0, dtype='<U3')
         config_br[config][arm] += int((e_br > 0).sum())
         ep_tot = np.bincount(e_m, weights=e_pnl, minlength=N) if len(e_m) else np.zeros(N)
+        match_net[rid] = ep_tot
         dev = np.abs(ep_tot - r['pnl'][keep]).max(initial=0) if len(r['pnl']) == len(matches) else 0.0
         if dev > 0.05 and warn < 20:
             print(f'warning: {rid}: episodes differ from match P&L by up to {dev:.3f}')
@@ -1306,7 +1647,8 @@ def main(argv=None):
     if len(onc_ids) > a.onc_cap:
         dropped = len(onc_ids) - a.onc_cap
         onc_ids = onc_ids[:a.onc_cap]
-    n_eff, medoids, best_in, cluster_srs, n_distinct, onc_labels = 0, [], [], [], 0, {}
+    n_eff, medoids, best_in, n_distinct, onc_labels = 0, [], [], 0, {}
+    cl_series = []  # the N_eff cluster-mean per-match series (for SR0)
     onc_diag, onc_warn = {}, []
     if onc_ids:
         groups = {}
@@ -1333,15 +1675,7 @@ def main(argv=None):
                 onc_labels[i] = k
             medoids.append(reps[idx[np.argmin(dist[np.ix_(idx, idx)].sum(axis=1))]])
             best_in.append(max(members, key=lambda i: (cells[i]['mean'], -i)))
-            # The cluster-mean series' per-match Sharpe over its members' universe (the matches of their tours), the scale
-            # each cell's own SR is taken on: over all N a one-tour cluster's Sharpe would shrink by about sqrt(its share).
-            s_univ = np.zeros(N, dtype=bool)
-            for i in members:
-                s_univ |= univ[cells[i]['tour']]
-            s = Xraw[idx].mean(axis=0)[s_univ]
-            sd = s.std(ddof=1) if len(s) > 1 else 0.0
-            if sd > 0:
-                cluster_srs.append(float(s.mean() / sd))
+            cl_series.append(Xraw[idx].mean(axis=0))
         if onc_diag.get('cap_binding') or onc_diag.get('q_rising_at_cap'):
             onc_warn.append(f"the k scan's quality is {'best' if onc_diag.get('cap_binding') else 'still rising'} at its cap k = {onc_diag['k_hi']} "
                             f"(--onc-max-k) of {onc_diag['n']} cells: the true cluster count may be higher, so N_eff = {n_eff} may be "
@@ -1388,15 +1722,8 @@ def main(argv=None):
         spa['stepm_rejected'] = [cells[spa_set[k]]['cell'] for k in rejected]
         spa['stepm_alpha'] = a.alpha
 
-    # ---- DSR at N_eff; SR0's variance across the N_eff cluster-mean series
-    v_sr = float(np.var(cluster_srs, ddof=1)) if len(cluster_srs) > 1 else 0.0
-
-    def sr0_of(v, n_trials):
-        if v <= 0:
-            return 0.0
-        n_t = max(n_trials, 2)
-        return math.sqrt(v) * ((1 - EULER) * norm_ppf(1 - 1 / n_t) + EULER * norm_ppf(1 - 1 / (n_t * math.e)))
-    sr0 = sr0_of(v_sr, n_eff)
+    # ---- DSR at N_eff; SR0's variance across the N_eff cluster-mean series, per tour universe
+    sr0, v_sr, cluster_srs = sr0_by_universe(cl_series, univ, n_eff)
 
     def dsr(sr, skew, kurt, T_, sr_0):
         den_ = 1 - skew * sr + (kurt - 1) / 4 * sr * sr
@@ -1404,7 +1731,8 @@ def main(argv=None):
     for i in set(spa_set) | set(prod):
         c = cells[i]
         c['sr'] = c['mean'] / c['sd'] if c['sd'] > 0 else 0.0
-        c['dsr'] = dsr(c['sr'], c['skew'], c['kurt'], c['universe'], sr0)
+        c['sr0'] = sr0[c['tour']]
+        c['dsr'] = dsr(c['sr'], c['skew'], c['kurt'], c['universe'], c['sr0'])
 
     # ---- PBO (CSCV) over the folds for the stage's configs ('all' cells, F1)
     pbo = None
@@ -1439,6 +1767,10 @@ def main(argv=None):
         base_cfg, base_src = prod_cfg, 'the production config'
     sens = knob_sensitivity(cfg_rows, base_cfg, stage, pools, stratum)
     sens['baseline_source'] = base_src
+    sens['scope'] = (f"each config's F1 all/all/all cell (every tour, phase and price bucket, {N} scored {','.join(pools)} matches, "
+                     f"stratum {stratum_label}, this run's {len(allc)} F1 configs only); F2, coin and stick arms and the tour / phase / "
+                     f"bucket cells are not ranked; R-only knobs are reported as leads, never ranked; A2 is chosen only from stage 2 "
+                     f"on H-DISC")
     if base_cfg is None:
         sens['a2_reason'] = 'no baseline: no production config in this run and none named (--baseline): nothing is ranked'
     sens_main = factorial_main_effects(cfg_rows, PROD_SPEC.get(stratum, {}))
@@ -1464,47 +1796,207 @@ def main(argv=None):
                                    n=n, net=round(net, 4), mean=round(net / n, 4), win=round(wins / n, 3)))
 
     # ---- family B
-    fb_rows, fb_sum = score_family_b(fam_b, uidx, unit_by_id, fidx, W, a.alpha, pool_hours, live_hours['all']) if fam_b else ([], None)
+    day_fold = (lambda d: (lambda f: None if f is None else f - 1)(ho1_fold_of(d, fold_edges))) if hold_run else None
+    fb_rows, fb_sum = score_family_b(fam_b, uidx, unit_by_id, fidx, W, a.alpha, pool_hours, live_hours['all'], day_fold) if fam_b else ([], None)
 
-    # ---- registry rows (every scored cell = N_raw, per family)
+    # ---- per-run daily and per-tour nets over the scored matches (the registry rows and the hold score)
+    run_days = {rid: dict(zip(days, (float(x) for x in np.bincount(m_day, weights=v, minlength=len(days))))) for rid, v in match_net.items()}
+    tour_hours = {t: (float(live_dur[m_tour == t].sum()) if live_dur is not None else 0.0) for t in ('ATP', 'WTA')}
+    run_tour = {rid: {t: float(v[m_tour == t].sum()) for t in ('ATP', 'WTA')} for rid, v in match_net.items()}
+    configs_arms = defaultdict(dict)
+    for rid, info in run_info.items():
+        if info['arm'] != 'stick':
+            configs_arms[info['config']][info['arm']] = rid
+    prod_rid = configs_arms.get(prod_cfg, {}).get('F1') if prod_cfg else None
+
+    # ---- registry rows (C7 / C11: registry v1, one row per config x arm of family A and per reading x exit of family B)
     from_d, to_d = min(m['day'] for m in M), max(m['day'] for m in M)
     days_eastern = [fmt_eastern(M[0]['start'], '%Y-%m-%d %H:%M'), fmt_eastern(t_last, '%Y-%m-%d %H:%M')]
     n_raw_a, n_raw_b = nC, len(fb_rows)
-    gate = 'stage1-screen' if stage == '1' else f'stage{stage}'
-    common = dict(thread='tennis-ta', run=run_id, sha=meta.get('sha'), sim_version=sim_version, data_version=data_version,
-                  evidence=meta.get('evidence'), stage=stage, pool=','.join(pools), days_utc=[from_d, to_d], days_eastern=days_eastern,
-                  doge_excluded=True)
-    reg = []
-    for i, c in enumerate(cells):
-        ch = hashlib.sha1(json.dumps({'overrides': c['overrides'], 'fill': c['fill'], 'placebo': c['placebo'], 'stick': c['arm'] == 'stick'},
-                                     sort_keys=True).encode()).hexdigest()[:16]
-        verdict = ('flag' if c.get('flag') else 'no') if c['arm'] == 'F1' else 'stick' if c['arm'] == 'stick' else 'arm'
-        reg.append(dict(common, family='A', cell=c['cell'], config=c['config'], arm=c['arm'], config_hash=ch, overrides=c['overrides'],
-                        seeds={'coin': 'hash32(spec id)', 'bootstrap': a.seed}, entries=c['entries'], matches=c['universe'],
-                        net=round(c['net'], 4), mean_per_match=round(c['mean'], 6), usd_per_hour=c['usd_per_hour'],
-                        usd_per_live_hour=c['usd_per_live_hour'], hourly_eastern=[round(x, 4) for x in hourly[i]],
-                        placebo_partner=c.get('placebo_partner'), gate='measuring stick (not screened)' if c['arm'] == 'stick' else gate,
-                        verdict=verdict, p_boot=c['p'], bh=c.get('bh'), t_day=c['t_day'], t_day_placebo=c.get('t_day_placebo'),
-                        p_placebo=c.get('p_placebo'), breaches=c['breaches'], config_breaches=c['config_breaches'],
-                        fold_share=c['fold_share'], onc_cluster=onc_labels.get(i), n_raw=n_raw_a, n_eff=n_eff))
-    for r_ in fb_rows:
-        reg.append(dict(common, family='B', cell=r_['reg_id'], config=r_['rule'], arm='B', config_hash=hashlib.sha1(r_['id'].encode()).hexdigest()[:16],
-                        overrides={'familyB': r_['id']}, seeds={'familyB': 20261105, 'bootstrap': a.seed}, entries=r_['n'], matches=None,
-                        net=round(r_['net'], 4), mean_per_entry=round(r_['mean'], 6), usd_per_hour=r_['usd_per_hour'],
-                        usd_per_live_hour=r_['usd_per_live_hour'], hourly_eastern=None, placebo_partner=None, placebo_kind='in-cell circular shift',
-                        gate=f'{gate}-B', verdict='flag' if r_['flag'] else 'no', p_boot=r_['p'], bh=r_['bh'], t_unit=r_['t_unit'],
-                        t_day=r_['t_day'], z_placebo=r_['z_placebo'], breaches=r_['breaches'], config_breaches=r_['rule_breaches'],
-                        fold_share=r_['fold_share'], n_raw=n_raw_b, n_eff=None, design_size=fb_sum['design_size']))
-    ids = Counter(r['cell'] for r in reg)
-    dup_ids = [k for k, v in ids.items() if v > 1]
-    if dup_ids:
-        sys.exit(f'{len(dup_ids)} registry id(s) repeat (e.g. {dup_ids[0]}): no registry rows are written')
+    gate = 'stage1-screen' if stage == '1' else 'ho1-hold' if hold_run else f'stage{stage}'
+    if hold_run:
+        # Every H-HOLD day the swept units reach (C11: by_day over every hold day, 0 on a day without a trade), so the
+        # registry's ho1_fill counts all 96 days and cuts its 6 folds from them.
+        swept_iv = [(unit_by_id[u]['start'], unit_by_id[u]['end']) for u in swept_units if u in unit_by_id]
+        day_set = [d for d in hold_days(h_hold) if any(s_ < day_ms(d) + DAY_MS and e_ > day_ms(d) for s_, e_ in swept_iv)]
+    else:
+        # Every UTC match day of the pool's matches (with a tape or not) and every family B day.
+        day_set = sorted({matches[i]['day'] for i in in_pool} | {d for c in b_cells for d in c['days']})
+    hold_score = hold_scoring(cells, by_id, run_days, run_tour, tour_hours, configs_arms, prod_rid, day_set, fold_edges) if hold_run else None
+    registry, reg_rows = None, None
+    if a.no_registry:
+        registry = {'written': False, 'reason': '--no-registry (a local run): no registry rows'}
+    else:
+        if reg is None:
+            sys.exit('no --registry-py: the registry rows (C7) take their trial ids and checks from the project\'s research/registry.py '
+                     '(make_id, validate), and none are invented here: nothing is written (pass --no-registry for a local run without rows)')
+        sha = a.sha or os.environ.get('GITHUB_SHA')
+        if not sha:
+            sys.exit('no --sha (and no GITHUB_SHA): the registry rows need the code_sha the run swept and scored: nothing is written')
+        swept = str(meta.get('sha') or '')
+        hexsha = lambda x: len(x) == 40 and all(ch in '0123456789abcdef' for ch in x.lower())  # noqa: E731
+        if hexsha(swept) and hexsha(sha) and swept.lower() != sha.lower():
+            sys.exit(f'--sha {sha} but the shards were swept at {swept}: the rows would carry the wrong code_sha: nothing is written')
+        rv, rv_src, rv_err = replay_version_of(meta)
+        if rv_err:
+            sys.exit(f'{rv_err}: nothing is written')
+        epoch = code_epoch(sim_version, rv)
+        fam_a, fam_b_name = reg_families(stratum_label)
+        ref = a.ref or f'{DRIVE_RUNS}/{run_id}'
+        rec = stratum == 'R'
+        reg_data = {'source': 'recorded' if rec else 'history', 'books': 'recorded' if rec else 'synthetic', 'days': day_set, 'doge': False,
+                    'copy': str(data_version), 'engine': REG_ENGINE}
+        if not rec:
+            reg_data['replay_version'] = rv
+        # C11: an H-DEV choice run (disc, and the H0 stress of stage 2 finalists) is dev-choice and reads no H-HOLD day; a hold
+        # run carries no dev-choice flag.
+        reg_flags = [] if hold_run else [DEV_FLAG] + (['H0-stress'] if pools == ['old'] else [])
+        base_name = f'{REG_BASE}@{sha}'
+        base_defaults = shared_base_defaults([runs[rid]['overrides'] for rid in sorted(runs)])
+        ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        common_raw = {'run': run_id, 'stage': stage, 'pool': ','.join(pools), 'stratum': stratum_label, 'sim_version': sim_version,
+                      'evidence': meta.get('evidence'), 'days_utc': [from_d, to_d], 'days_eastern': days_eastern, 'doge_excluded': True}
+        a_runs = []
+        for rid in sorted(runs):
+            info = run_info[rid]
+            i = by_id[(info['config'], info['arm'], 'all', 'all', 'all')]
+            c = cells[i]
+            ch = hashlib.sha1(json.dumps({'overrides': c['overrides'], 'fill': c['fill'], 'placebo': c['placebo'], 'stick': c['arm'] == 'stick'},
+                                         sort_keys=True).encode()).hexdigest()[:16]
+            if c['arm'] == 'F1' and hold_run:
+                # filled from the registry's HO-1 block after ho1_fill (candidates); the control is never scored
+                verdict = 'HO-1 control (production, not scored)' if rid == prod_rid else 'HO-1 (pending)'
+            elif c['arm'] == 'F1':
+                verdict = 'flag' if c.get('flag') else 'no: ' + ', '.join(c.get('gates_failed') or [])
+            else:
+                verdict = {'stick': 'measuring stick (not screened)', 'coin': 'placebo (not screened)'}.get(c['arm'], 'neighbour (not screened)')
+            raw = dict(common_raw, config=c['config'], arm=c['arm'], config_hash=ch, entries=c['entries'], matches=c['universe'],
+                       net=round(c['net'], 6), mean_per_match=round(c['mean'], 6), usd_per_hour=c['usd_per_hour'],
+                       usd_per_live_hour=c['usd_per_live_hour'], hourly_eastern=[round(float(x), 4) for x in hourly[i]],
+                       gate='measuring stick (not screened)' if c['arm'] == 'stick' else gate, p_boot=c['p'], ci90=c['ci90'],
+                       bh=c.get('bh'), p_placebo=c.get('p_placebo'), t_day=c['t_day'], breaches=c['breaches'],
+                       config_breaches=c['config_breaches'], fold_share=c['fold_share'], dsr=c.get('dsr'), onc_cluster=onc_labels.get(i),
+                       flagged_cells=sum(1 for j in f1 if cells[j]['config'] == c['config'] and cells[j]['flag']) if c['arm'] == 'F1' else None,
+                       n_raw_cells=n_raw_a, n_eff=n_eff)
+            ar = {'id': rid, 'config': info['config'], 'arm': info['arm'], 'overrides': runs[rid]['overrides'],
+                  'production': info['arm'] == 'F1' and prod_cfg is not None and info['config'] == prod_cfg,
+                  'by_day': run_days[rid], 'fills': c['entries'], 'markets': info['markets'], 'verdict': verdict, 'raw': raw}
+            if hold_run:
+                # C11: the project's stand-in for RV terciles on tennis (pending the meta plan): the tours over H-HOLD, each
+                # with its hold matches' live-match hours.
+                ar['by_tercile'] = {t: {'pnl': round(run_tour[rid][t], 6), 'hours': round(tour_hours[t], 6)} for t in ('ATP', 'WTA')}
+            a_runs.append(ar)
+        b_rules, b_notes = [], []
+        if fam_b:
+            fb_by_id = {r_['id']: r_ for r_ in fb_rows}
+            rules = defaultdict(dict)
+            for c in b_cells:
+                rules[_rule_of(c)][_ctx_of(c)] = c
+            for rule, ctxs in sorted(rules.items()):
+                allc_b = ctxs.get('all')
+                if allc_b is None:
+                    b_notes.append(f'{rule}: no all-context cell in the export: no row')
+                    continue
+                sc = fb_by_id.get(allc_b['id'])
+                if hold_run:
+                    verdict = 'HO-1 (pending)'
+                else:
+                    verdict = ('flag' if sc['flag'] else 'no: ' + ', '.join(sc['gates_failed'])) if sc else 'no entries (placebo only)'
+                raw = dict(common_raw, cell=allc_b['id'], entries=int(allc_b['n']), net=round(float(allc_b['sum']), 6),
+                           mean_per_entry=round(sc['mean'], 6) if sc else None, p_boot=sc['p'] if sc else None, bh=sc['bh'] if sc else None,
+                           z_placebo=sc['z_placebo'] if sc else None, placebo_diff=sc['placebo_diff'] if sc else None,
+                           stress_net=sc['stress_net'] if sc else None, rule_breaches=sc['rule_breaches'] if sc else int(allc_b['breaches']),
+                           usd_per_hour=sc['usd_per_hour'] if sc else None, gate=f'{gate}-B', design_size=fb_sum['design_size'],
+                           flagged_contexts=sum(1 for x in ctxs.values() if fb_by_id.get(x['id'], {}).get('flag')), n_raw_cells=n_raw_b)
+                placebo = None
+                if fam_b.get('day_placebo'):
+                    pn = int(sum(v[2] for v in allc_b['units'].values() if len(v) > 2))
+                    placebo = {'by_day': {d: float(v[3]) for d, v in allc_b['days'].items()}, 'fills': pn,
+                               'markets': int(allc_b['placeboMarkets']) if allc_b.get('has_markets') else None,
+                               'raw': dict(common_raw, cell=allc_b['id'], placebo='circular shift (Amendment 3)', entries=pn,
+                                           net=round(float(sum(v[3] for v in allc_b['units'].values() if len(v) > 3)), 6))}
+                b_rules.append({'rule': rule, 'by_day': {d: float(v[1]) for d, v in allc_b['days'].items()},
+                                'by_cell': {ctx: float(x['sum']) for ctx, x in ctxs.items() if ctx != 'all' and x['n'] > 0},
+                                'fills': int(allc_b['n']), 'markets': int(allc_b['markets']) if allc_b.get('has_markets') else None,
+                                'verdict': verdict, 'raw': raw, 'placebo': placebo})
+            if not fam_b.get('day_placebo'):
+                b_notes.append('family B placebo rows are not written: the export\'s day rows carry no placebo sums ([entries, net] only; '
+                               'the per-unit placebo sums cannot give a by_day), so family B candidates have no control (G2:unpaired)')
+            if hold_run:
+                b_notes.append('family B rows carry no by_tercile (the export has no per-tour sums), so their HO-1 block cannot pass the '
+                               'tercile test: family B is scored on H-HOLD for the record only')
+        rows, problems, notes = registry_rows(reg.make_id, sha, day_set, pool_hours, reg_data, reg_flags, ref, epoch, ts, a_runs, b_rules,
+                                              stratum, label=stratum_label, base=base_name, base_defaults=base_defaults)
+        notes += b_notes
+        if stratum_label != 'H':
+            notes.append(f'stratum {stratum_label}: families {fam_a} / {fam_b_name}, apart from the start-era history families '
+                         f'{REG_FAMILY_A} / {REG_FAMILY_B} (the strata are never pooled in a test, and the registry scores a family over '
+                         f'the days its rows share)')
+        if not hold_run:
+            reads = [d for d in day_set if d >= h_hold[0]]
+            if reads:
+                problems.append(f'{len(reads)} by_day day(s) of this dev-choice run ({reads[0]} to {reads[-1]}) are in H-HOLD (from {h_hold[0]}): '
+                                f'the registry would block the family (G0:dev-choice-reads-hold); a disc match closes before DEV_TO')
+        else:
+            if len(day_set) < len(hold_days(h_hold)):
+                notes.append(f'the swept units reach {len(day_set)} of H-HOLD\'s {len(hold_days(h_hold))} days: HO-1 needs 90 held-out days')
+            if hold_after:
+                notes.append(f'{len(hold_after)} pool hold match(es) start on a UTC day after H-HOLD ({h_hold[1]}), in the hours before the '
+                             f'cutoff: no H-HOLD match, left out of the score and the rows')
+        notes.append(f"base {base_name}, base_defaults {json.dumps(base_defaults, sort_keys=True)} (the overrides every spec of the run "
+                     f"shares that differ from production); data.replay_version {rv} ({rv_src}), data.engine {REG_ENGINE}")
+        reg_rows = [json.loads(dumps(r)) for r in rows]
+        ho1 = {}
+        if hold_run:
+            # The registry's own HO-1 block (folds, terciles = tours, placebo, replay version) for every paired row.
+            reg.ho1_fill(reg_rows)
+            ct_of = getattr(reg, 'contract_type_of', lambda r: 'tennis')
+            for r in reg_rows:
+                if r.get('heldout') is None:
+                    continue
+                ok, why = reg.ho1_pass(r['heldout'], ct_of(r), (r.get('data') or {}).get('engine'))
+                ho1[r['arm']] = {'pass': bool(ok), 'why': why, 'heldout': r['heldout'], 'role': r['role'], 'family': r['family']}
+                if r['role'] == 'candidate':
+                    r['verdict'] = 'HO-1 pass' if ok else f'HO-1 fail: {why}'
+            for r in reg_rows:
+                if r.get('verdict') == 'HO-1 (pending)':
+                    r['verdict'] = 'HO-1: no held-out block (no control to pair with)'
+            reg_rows = [json.loads(dumps(r)) for r in reg_rows]
+        vflags = Counter()
+        for r in reg_rows:
+            err, fl = reg.validate(r)
+            if err:
+                problems.append(f"{r.get('family')} {r.get('arm')}: {'; '.join(err)}")
+            vflags.update(fl)
+            if not hold_run and 'G0:dev-choice-reads-hold' in fl:
+                problems.append(f"{r.get('family')} {r.get('arm')}: the validator flags G0:dev-choice-reads-hold")
+        if problems:
+            for x in problems[:40]:
+                print(f'registry: {x}', file=sys.stderr)
+            sys.exit(f'{len(problems)} problem(s) with the registry rows (research/registry.py validate): nothing is written')
+        for x in notes:
+            print(f'registry note: {x}', file=sys.stderr)
+        ctrl = next((r['trial_id'] for r in reg_rows if r['family'] == fam_a and r['role'] == 'control' and r['arm'].endswith('|F1')
+                     and r['arm'].rsplit('|', 1)[0] == prod_cfg), None)
+        if hold_score is not None:
+            for hc in hold_score['candidates']:
+                hc['ho1'] = ho1.get(hc['arm'])
+                hc['registry_differs'] = registry_fold_differences(hc, (ho1.get(hc['arm']) or {}).get('heldout'))
+        registry = {'written': True, 'file': f'registry-v1-{run_id}.jsonl', 'rows': len(reg_rows),
+                    'families': dict(Counter(r['family'] for r in reg_rows)), 'roles': dict(Counter(r['role'] for r in reg_rows)),
+                    'control': ctrl, 'control_arm': f'{prod_cfg}|F1' if ctrl else None, 'code_sha': sha, 'code_epoch': epoch,
+                    'replay_version': rv, 'replay_version_source': rv_src, 'family_a': fam_a,
+                    'family_b': fam_b_name, 'base': base_name, 'base_defaults': base_defaults,
+                    'days': len(day_set), 'hours': pool_hours, 'flags': reg_flags, 'validator_flags': dict(vflags), 'notes': notes,
+                    'b_placebo_rows': bool(fam_b and fam_b.get('day_placebo')), 'ref': ref,
+                    'ho1': ({arm: {k: v for k, v in x.items() if k != 'heldout'} for arm, x in ho1.items()} if hold_run else None)}
 
     # ---- outputs (only now: everything above was checked)
     os.makedirs(a.out, exist_ok=True)
-    with gzip.open(os.path.join(a.out, f'registry-tennis-ta-{run_id}.jsonl.gz'), 'wt') as fh:
-        for r in reg:
-            fh.write(dumps(r) + '\n')
+    if reg_rows is not None:
+        with open(os.path.join(a.out, registry['file']), 'w') as fh:
+            for r in reg_rows:
+                fh.write(json.dumps(r, sort_keys=True, allow_nan=False) + '\n')
     slim = [{k: v for k, v in c.items() if k != 'fold_means'} for c in cells]
     with gzip.open(os.path.join(a.out, 'cells.json.gz'), 'wt') as fh:
         fh.write(dumps(slim))
@@ -1535,16 +2027,29 @@ def main(argv=None):
             row = {k: c.get(k) for k in ('cell', 'entries', 'net', 'mean', 'ci90', 'p', 'breaches', 'usd_per_hour', 'usd_per_live_hour', 't_day')}
             row['vs_production'] = (c['net'] - prod_all['net']) / max(1, N) if prod_all else None
             stick_rows.append(row)
+    k_range = None
+    if onc_diag.get('k_hi'):
+        k_range = {'from': 2, 'to': onc_diag['k_hi'], 'n': onc_diag.get('n'), 'cap': onc_diag.get('k_cap'),
+                   'grid': f'every k to {ONC_DENSE_K}, a geometric grid above (steps of at most {ONC_K_RATIO - 1:.0%}), the gaps next '
+                           f'to the {ONC_REFINE_TOP} best filled in until adjacent', 'scanned': onc_diag.get('scanned')}
     summary = dict(run=run_id, pools=pools, stage=stage, sim_version=sim_version, data_version=data_version, files=data['files'],
+                   era={k: datetime.fromtimestamp(v / 1000, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') for k, v in era.items()},
+                   era_source=era_src, era_rule=era_text(era, h_hold), stratum_label=stratum_label, by_pool=by_pool, hold_run=hold_run,
+                   h_hold=list(h_hold), ho1_folds=[{'fold': i + 1, 'from': x, 'to': y} for i, (x, y) in enumerate(fold_edges)],
+                   hold=hold_summary(hold_score, hold_after, meta, plan, run_id, runs) if hold_run else None,
+                   excluded={p: v['matches'] for p, v in by_pool.items() if not v['scored']},
                    slicing=slicing, coverage=coverage, owned_matches=owned, owned_no_published_start=owned_no_start,
                    matches=N, no_tape=no_tape, pool_no_published_start=no_start_pool, units=U, days=len(days), folds=folds,
                    pool_hours=pool_hours, pool_hours_unclipped=unclipped_hours, pool_hours_source=spans_src, data_span=[day_of(span_lo), day_of(span_hi - 1)],
-                   data_span_source=span_src, live_hours=live_hours, n_raw={'A': n_raw_a, 'B': n_raw_b}, f1_cells=len(f1),
+                   data_span_source=span_src, live_hours=live_hours, live_hours_source=live_info['source'], live_estimated=live_info,
+                   live_median_hours=live_medians, n_raw={'A': n_raw_a, 'B': n_raw_b}, f1_cells=len(f1),
                    stick_cells=len(sticks), bh_rejections=int(rej.sum()), gates_A=dict(gates_a), flagged=[cells[i]['cell'] for i in f1 if cells[i]['flag']],
                    n_eff=n_eff, onc_cells=len(onc_ids), onc_distinct=n_distinct, onc_dropped=dropped, spa=spa, sr0=sr0, v_sr=v_sr,
-                   v_sr_source=(f'variance of per-match Sharpe across the {len(cluster_srs)} ONC cluster-mean series, each over its '
-                                f'members\' tour universe (the scale of each cell\'s own SR)'), pbo=pbo,
-                   onc=dict(onc_diag, warnings=onc_warn, max_k_arg=a.onc_max_k, dim=a.onc_dim, n_init=a.onc_init),
+                   v_sr_clusters={t: len(v) for t, v in cluster_srs.items()},
+                   v_sr_source=('the variance of per-match Sharpe across the ONC cluster-mean series, each Sharpe over that tour '
+                                'universe\'s matches; a cell\'s DSR uses the SR0 of its own tour universe, the matches its SR is over'),
+                   pbo=pbo, onc=dict(onc_diag, warnings=onc_warn, max_k_arg=a.onc_max_k, dim=a.onc_dim, n_init=a.onc_init, k_range=k_range),
+                   registry=registry,
                    sensitivity=sens, sensitivity_factorial=sens_main, production=production, production_config=prod_cfg,
                    stratum=stratum, sticks=stick_rows, bh_floor=bh_floor, family_b=fb_sum,
                    config_breaches={k: dict(v) for k, v in config_br.items() if sum(v.values())},
@@ -1553,13 +2058,16 @@ def main(argv=None):
         fh.write(dumps(summary, indent=1))
 
     L = render(a, summary, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_last, pools)
+    if summary['registry'] and summary['registry'].get('written'):
+        print(f"registry: {summary['registry']['rows']} row(s) written to {os.path.join(a.out, summary['registry']['file'])}")
     with open(os.path.join(a.out, 'report.md'), 'w') as fh:
         fh.write('\n'.join(L) + '\n')
     print('\n'.join(L))
 
 
-def score_family_b(fam_b, uidx, unit_by_id, fidx, W, alpha, pool_hours, live_hours_all):
-    """Family B cells (merged FamilyBCell, C2) scored with the same unit bootstrap; its own BH family and DSR trial count."""
+def score_family_b(fam_b, uidx, unit_by_id, fidx, W, alpha, pool_hours, live_hours_all, day_fold=None):
+    """Family B cells (merged FamilyBCell, C2) scored with the same unit bootstrap; its own BH family and DSR trial count.
+    Folds: the month of each unit's last day, or (day_fold: a hold run's HO-1 fold index of a UTC day) by day."""
     cells = [c for c in fam_b['cells'] if c['n'] > 0]
     design = int(fam_b.get('designSize') or 0)
     m_total = max(design, len(cells))
@@ -1569,7 +2077,7 @@ def score_family_b(fam_b, uidx, unit_by_id, fidx, W, alpha, pool_hours, live_hou
         return rows, {'design_size': design, 'bh_m': m_total, 'cells_with_entries': 0, 'cells_total': len(fam_b['cells']), 'gates': {}, 'flagged': [],
                       'diagnostics': fam_b.get('diagnostics'), 'stratum': fam_b.get('stratum'), 'sr0': 0.0, 'v_sr': 0.0, 'bh_rejections': 0}
     SB, NB = np.zeros((len(cells), U)), np.zeros((len(cells), U))
-    u_fold = {u: fidx[unit_fold(unit_by_id[u])] for u in uidx}
+    u_fold = {u: fidx[unit_fold(unit_by_id[u])] for u in uidx} if day_fold is None else {}
     for i, c in enumerate(cells):
         for u, v in c['units'].items():
             if u in uidx:
@@ -1598,10 +2106,15 @@ def score_family_b(fam_b, uidx, unit_by_id, fidx, W, alpha, pool_hours, live_hou
             sdd = float(np.std(d, ddof=1))
             z_pl = float(np.mean(d) / (sdd / math.sqrt(len(d)))) if sdd > 0 else None
         fo_n, fo_s = np.zeros(NF), np.zeros(NF)
-        for u, v in c['units'].items():
+        for u, v in (c['units'].items() if day_fold is None else ()):
             if u in u_fold:
                 fo_n[u_fold[u]] += v[0]
                 fo_s[u_fold[u]] += v[1]
+        for dd, v in (c['days'].items() if day_fold is not None else ()):
+            f = day_fold(dd)
+            if f is not None:
+                fo_n[f] += v[0]
+                fo_s[f] += v[1]
         big = fo_n >= 10
         dvals = [v for v in c['days'].values() if v[0] > 0]
         rid = c['id'] if c['id'].startswith('B|') else 'B|' + c['id']
@@ -1644,11 +2157,356 @@ def score_family_b(fam_b, uidx, unit_by_id, fidx, W, alpha, pool_hours, live_hou
     return rows, summ
 
 
+def sr0_of(v, n_trials):
+    """The DSR's SR0: sqrt(V[SR]) x the expected maximum of n_trials standard normals (Bailey and Lopez de Prado)."""
+    if v <= 0:
+        return 0.0
+    n_t = max(n_trials, 2)
+    return math.sqrt(v) * ((1 - EULER) * norm_ppf(1 - 1 / n_t) + EULER * norm_ppf(1 - 1 / (n_t * math.e)))
+
+
+def sr0_by_universe(series, universes, n_trials):
+    """SR0 per tour universe -> ({t: SR0}, {t: V[SR]}, {t: [SR]}). series: the cluster-mean per-match P&L series (each of
+    length N); universes: {t: bool mask over the N matches}. One universe per SR0: each cluster series' Sharpe is taken
+    over universe t's matches, the same matches a cell of tour t takes its own SR over, so a cell's DSR compares like with
+    like; a cluster that never trades a universe has no variance there and is not a trial on it."""
+    srs = {t: [] for t in universes}
+    for x in series:
+        x = np.asarray(x, dtype=np.float64)
+        for t, mask in universes.items():
+            s = x[mask]
+            sd = s.std(ddof=1) if len(s) > 1 else 0.0
+            if sd > 0:
+                srs[t].append(float(s.mean() / sd))
+    v_sr = {t: (float(np.var(v, ddof=1)) if len(v) > 1 else 0.0) for t, v in srs.items()}
+    return {t: sr0_of(v, n_trials) for t, v in v_sr.items()}, v_sr, srs
+
+
+def spec_modules(overrides, stratum='H'):
+    """The bot modules a run changes (C7), from its overrides' difference with production by value, for every family A
+    row (stick, F1, F2 / F0 and coin alike): production's end loser cut off (the settle-hold stick) or the harness loser
+    stop -> exits, the pacer off -> pacer, the bankroll -> sizing, any other TENNIS_* key -> tennis-ta. Nothing moved, or
+    only a stress adversary or a decision-clock offset, measures the tennis rulebook itself -> tennis-ta."""
+    d = diff_keys(overrides, PROD_SPEC.get(stratum or 'H', {}))
+    mods = {MODULE_KEYS[k] for k in d if k in MODULE_KEYS}
+    if any(k.startswith('TENNIS_') and k not in MODULE_KEYS for k in d):
+        mods.add('tennis-ta')
+    return sorted(mods) or ['tennis-ta']
+
+
+stick_modules = spec_modules  # the pass 1 name
+
+
+def stratum_label_of(stratum, pools):
+    """The sweep's stratumLabelOf (research/tennisTaSweep.ts): pool 'old' on history is H0, else the stratum."""
+    return 'H0' if stratum == 'H' and list(pools) == ['old'] else stratum
+
+
+def reg_families(label):
+    """The registry families (A, B) of a run's stratum label. A family is one multiple-testing unit and the registry
+    scores it over the days every row shares (registry.py merge), and the strata are never pooled in a test (section 2):
+    history in the start era (H: disc, and check once it opens) keeps tennis-ta-A / tennis-ta-B; H0 (pool old, the older
+    product) and R (recorded books) get their own, suffixed by the label."""
+    label = str(label or 'H')
+    if label == 'H':
+        return REG_FAMILY_A, REG_FAMILY_B
+    return f'{REG_FAMILY_A}-{label}', f'{REG_FAMILY_B}-{label}'
+
+
+def replay_version(path=HISTORY_REPLAY_TS):
+    """REPLAY_VERSION of the history replay the sweep built its days with (research/history/historyReplay.ts), or None."""
+    try:
+        with open(path) as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    m = re.search(r'^export const REPLAY_VERSION\s*=\s*(\d+)\s*;', text, re.M)
+    return int(m.group(1)) if m else None
+
+
+def code_epoch(sim_version, rv):
+    return f'{sim_version}; REPLAY_VERSION={rv}; {CODE_EPOCH_TAIL}'
+
+
+def replay_version_of(meta, path=HISTORY_REPLAY_TS):
+    """The history replay's REPLAY_VERSION a run's days were built with -> (version, source, error). The shard metas'
+    replayVersion (the sweep records it) when present, which must agree with research/history/historyReplay.ts when that
+    is readable (the rows' code_sha is the sweep's, so they can only differ by a mistake); else the file's."""
+    rel = os.path.relpath(path, REPO)
+    code = replay_version(path)
+    raw = meta.get('replayVersion', meta.get('replay_version'))
+    if raw is not None:
+        if isinstance(raw, bool) or not (isinstance(raw, int) or (isinstance(raw, str) and raw.strip().isdigit())):
+            return None, None, f'meta.replayVersion {raw!r} is not a whole number'
+        mv = int(raw)
+        if code is not None and code != mv:
+            return None, None, f'the shards were built with REPLAY_VERSION {mv} (meta.replayVersion) but {rel} sets {code}'
+        return mv, 'the shard metas (meta.replayVersion)' + (f', the same as {rel}' if code is not None else ''), None
+    if code is None:
+        return None, None, (f'cannot read REPLAY_VERSION from {path} (the history replay the sweep built its days with) and the shard '
+                            f'metas carry no replayVersion: the rows\' code_epoch and data.replay_version would be a guess')
+    return code, rel, None
+
+
+def shared_base_defaults(overrides_list):
+    """C11 base_defaults: the overrides every spec of the run shares (same key, same value by value) that differ from
+    production's default (a key the report has no default for counts as differing), e.g. {'TENNIS_TRAIL_RATCHET': False}
+    on history. Values as the first spec writes them."""
+    if not overrides_list:
+        return {}
+    first, out = overrides_list[0], {}
+    for k in sorted(first):
+        v = ov_val(first, k)
+        if all(k in o and ov_val(o, k) == v for o in overrides_list[1:]) and (k not in KNOB_DEFAULTS or v != knob_val(k, KNOB_DEFAULTS[k])):
+            out[k] = first[k]
+    return out
+
+
+def hold_scoring(cells, by_id, run_days, run_tour, tour_hours, configs_arms, prod_rid, day_set, fold_edges, hours_per_day=24.0):
+    """A hold run's score of each candidate (every F1 config but the production control), the report's own figures beside
+    the registry's HO-1 block: the paired gain against the control in each HO-1 fold as $/h over 24 h a day (as
+    research/registry.py ho1_fill takes it), folds won, the worst fold, each tour's gain per live-match hour (the
+    tercile stand-in), the paired placebo comparison (the gain against the control of the candidate and of its coin arm,
+    and the per-unit bootstrap of candidate minus coin on the all/all/all cell) and the F2 neighbour's gain."""
+    cd = run_days[prod_rid]
+    fold_days = [[d for d in day_set if ho1_fold_of(d, fold_edges) == k + 1] for k in range(len(fold_edges))]
+    out = []
+    for cfg, arms in sorted(configs_arms.items()):
+        rid = arms.get('F1')
+        if rid is None or rid == prod_rid:
+            continue
+        rd = run_days[rid]
+        g = {d: rd.get(d, 0.0) - cd.get(d, 0.0) for d in day_set}
+        pl, f2 = arms.get('coin'), arms.get('F2')
+        folds = []
+        for k, fd in enumerate(fold_days):
+            if not fd:
+                folds.append({'fold': k + 1, 'from': fold_edges[k][0], 'to': fold_edges[k][1], 'days': 0, 'gain': 0.0, 'gain_per_hour': None})
+                continue
+            gain = sum(g[d] for d in fd)
+            f = {'fold': k + 1, 'from': fold_edges[k][0], 'to': fold_edges[k][1], 'days': len(fd), 'gain': gain,
+                 'gain_per_hour': gain / (hours_per_day * len(fd)), 'net_per_hour': sum(rd.get(d, 0.0) for d in fd) / (hours_per_day * len(fd))}
+            if pl:
+                f['vs_placebo_per_hour'] = sum(rd.get(d, 0.0) - run_days[pl].get(d, 0.0) for d in fd) / (hours_per_day * len(fd))
+            if k == len(fold_days) - 1 and fold_edges[-1][1] in fd:
+                # research/registry.py ho1_fill appends H-HOLD's last day to the last fold although its last edge already holds it:
+                # the registry's figure for that fold (the day counted twice), kept to explain a difference
+                f['gain_per_hour_registry'] = (gain + g[fold_edges[-1][1]]) / (hours_per_day * (len(fd) + 1))
+            folds.append(f)
+        fg = [f['gain_per_hour'] for f in folds if f['gain_per_hour'] is not None]
+        total = sum(g.values())
+        plac = None
+        if pl:
+            pg = sum(run_days[pl].get(d, 0.0) - cd.get(d, 0.0) for d in day_set)
+            ca = cells[by_id[(cfg, 'F1', 'all', 'all', 'all')]]
+            plac = {'arm': pl, 'gain': pg, 'beats': total > pg, 'diff': total - pg, 'diff_per_match': ca.get('placebo_diff'),
+                    'p': ca.get('p_placebo'), 't_day': ca.get('t_day_placebo')}
+        tours = {t: {'gain': run_tour[rid][t] - run_tour[prod_rid][t], 'hours': tour_hours[t],
+                     'gain_per_live_hour': (run_tour[rid][t] - run_tour[prod_rid][t]) / tour_hours[t] if tour_hours[t] > 0 else None}
+                 for t in ('ATP', 'WTA')}
+        out.append({'config': cfg, 'arm': rid, 'gain': total, 'gain_per_hour': total / (hours_per_day * len(day_set)) if day_set else None,
+                    'folds': folds, 'folds_won': sum(1 for x in fg if x > 0), 'worst_fold_per_hour': min(fg) if fg else None,
+                    'tours': tours, 'placebo': plac,
+                    'neighbour': {'arm': f2, 'gain': sum(run_days[f2].get(d, 0.0) - cd.get(d, 0.0) for d in day_set)} if f2 else None})
+    return {'control': prod_rid, 'days': len(day_set), 'hours_per_day': hours_per_day,
+            'folds': [{'fold': k + 1, 'from': a_, 'to': b_, 'days': len(fd)} for k, ((a_, b_), fd) in enumerate(zip(fold_edges, fold_days))],
+            'candidates': out}
+
+
+def hold_summary(score, hold_after, meta, plan, run_id, runs):
+    """summary.json's hold block: the score and the frozen list it scored (C10: its hash, sha256 of the canonical spec
+    list as the sweep's specsHash, from the shard metas or the plan, and its spec ids; the workflow appends the opening)."""
+    sha = meta.get('specsHash') or (plan or {}).get('specsHash')
+    return dict(score or {}, matches_after_hold=len(hold_after), specs_sha=sha, spec_ids=sorted(runs), run=str(run_id))
+
+
+def registry_fold_differences(hc, h, tol=1e-9):
+    """Where the registry's HO-1 block (ho1_fill) differs from the report's own fold figures for a candidate, and why
+    when the registry's double count of H-HOLD's last day explains it."""
+    if not isinstance(h, dict):
+        return []
+    out = []
+    if h.get('folds_won') is not None and h['folds_won'] != hc['folds_won']:
+        out.append(f"folds won: registry {h['folds_won']}, report {hc['folds_won']}")
+    rw, mw = h.get('worst_fold_per_hour'), hc['worst_fold_per_hour']
+    if finite(rw) and finite(mw) and abs(rw - mw) > tol:
+        alt = [f.get('gain_per_hour_registry', f['gain_per_hour']) for f in hc['folds'] if f['gain_per_hour'] is not None]
+        why = (' (the registry counts H-HOLD\'s last day twice in the last fold)'
+               if alt and abs(min(alt) - rw) <= 1e-6 else '')
+        out.append(f"worst fold: registry {rw:+.4f} $/h, report {mw:+.4f} $/h{why}")
+    return out
+
+
+def live_durations(M, pool_medians=None):
+    """Live-match hours per pool match (A7: close minus the published start) and how they were found. A match without a
+    published start gets its series' median over the pool's published matches; a series with none gets the pool's
+    median over every series; a pool with none at all (H0: no match has one) takes pool_medians ({series or '*': h},
+    --live-median-hours, a start-era run's live_median_hours), else live hours are not measured and every $/live-hour is
+    refused (None). -> (durations or None, {series: measured median}, {estimated, by, source})."""
+    live = np.array([max(0, m['close'] - m['start']) / HOUR_MS for m in M], dtype=float)
+    published = np.array([m.get('startPublished', True) is not False for m in M], dtype=bool)
+    series = np.array([m['series'] for m in M])
+    medians = {str(s): float(np.median(live[(series == s) & published])) for s in sorted(set(series)) if ((series == s) & published).any()}
+    est = int((~published).sum())
+    info = {'estimated': est, 'by': {}, 'source': 'measured: close minus the published start'}
+    if not est:
+        return live, medians, info
+    pool_med = float(np.median(live[published])) if published.any() else None
+    given = {str(k): float(v) for k, v in (pool_medians or {}).items()}
+    for s in sorted(set(series)):
+        sel = (series == s) & ~published
+        if not sel.any():
+            continue
+        if s in medians:
+            live[sel], how = medians[s], 'its series\' median'
+        elif pool_med is not None:
+            live[sel], how = pool_med, 'the pool\'s median (its series has no published start)'
+        elif s in given or '*' in given:
+            live[sel], how = given.get(s, given.get('*')), '--live-median-hours'
+        else:
+            return None, medians, {'estimated': est, 'by': {}, 'source': (
+                f"not measured: {est} of {len(M)} pool matches have no published start and {s} has no median to stand in "
+                f"(pass --live-median-hours, e.g. a start-era run's summary.json live_median_hours)")}
+        info['by'][str(s)] = {'matches': int(sel.sum()), 'hours_each': round(float(live[sel][0]), 4), 'from': how}
+    info['source'] = (f"close minus the published start; {est} of {len(M)} pool matches without one estimated ("
+                      + '; '.join(f"{s} {v['matches']} at {v['hours_each']:.2f} h, {v['from']}" for s, v in info['by'].items()) + ')')
+    return live, medians, info
+
+
+def parse_live_medians(spec):
+    """--live-median-hours: a number (every series) or SERIES=HOURS,... (e.g. KXATPMATCH=1.9,KXWTAMATCH=1.6), or a
+    summary.json whose live_median_hours to take. -> {series or '*': hours}."""
+    if not spec:
+        return {}
+    if os.path.exists(spec):
+        with open(spec) as fh:
+            got = json.load(fh).get('live_median_hours') or {}
+        out = {str(k): float(v) for k, v in got.items()}
+    elif '=' in spec:
+        out = {}
+        for part in spec.split(','):
+            k, _, v = part.partition('=')
+            out[k.strip()] = float(v)
+    else:
+        out = {'*': float(spec)}
+    if not out or not all(math.isfinite(v) and v > 0 for v in out.values()):
+        raise ValueError(f'{spec!r}: no positive finite hours')
+    return out
+
+
+def full_days(by_day, day_set):
+    """{day: $} over the run's whole day set (0 on a day without a trade), rounded to 1e-6 $."""
+    out = {}
+    for d in day_set:
+        v = round(float(by_day.get(d, 0.0)), 6)
+        out[d] = 0.0 if v == 0 else v
+    return out
+
+
+def registry_rows(make_id, sha, day_set, hours, data, flags, ref, epoch, ts, a_runs, b_rules, stratum='H', label=None, base=None,
+                  base_defaults=None):
+    """The C7 registry v1 rows of one run -> (rows, problems, notes). Problems stop the write; notes are reported.
+    a_runs: one per family A spec {id, config, arm (F0 / F1 / F2 / coin / stick), overrides, production (the F1 run of
+    the config equal to production by value), by_day, fills, markets, verdict, raw}. b_rules: one per family B reading x
+    exit {rule, by_day, by_cell, fills, markets (None when the export has no market counts), verdict, raw, placebo (None,
+    or {by_day, fills, markets, raw})}. Roles: the production F1
+    row is the control and every other F1 row a candidate against it; a config's F2 / F0 row is its neighbour and its
+    coin row its placebo, both against the config's F1 row; measuring sticks are controls; a family B row is a candidate
+    against its own placebo row. Every row: contract_type 'tennis', its modules, by_day over the whole day set. label: the
+    stratum label (H, H0, R; default the stratum), which picks the families (reg_families). Family A modules come from
+    each run's overrides against production (spec_modules), the same rule for sticks and hypotheses. C11: every row
+    carries base ('tennis-ta@<sha>') and base_defaults when given; a placebo row names the arm it mimics (placebo_for: the
+    config's F1 arm; family B: its reading x exit); an a_run's by_tercile (a hold run: {'ATP'|'WTA': {pnl, hours}}) is
+    copied onto its row."""
+    rows, problems, notes = [], [], []
+    fam_a, fam_b = reg_families(label or stratum)
+    day_set = sorted(day_set)
+    days = set(day_set)
+    for x in list(a_runs) + list(b_rules) + [b['placebo'] for b in b_rules if b.get('placebo')]:
+        extra = set(x['by_day']) - days
+        if extra:
+            problems.append(f"{x.get('id') or x.get('rule')}: by_day names day(s) outside the run's day set: {sorted(extra)[:3]}")
+    common = {'v': 1, 'ts': ts, 'thread': REG_THREAD, 'code_sha': sha, 'code_epoch': epoch, 'contract_type': 'tennis', 'data': data,
+              'hours': float(hours), 'flags': list(flags), 'ref': ref}
+    if base is not None:
+        common.update(base=base, base_defaults=dict(base_defaults or {}))
+    ids = {}
+
+    def tid(family, arm, seed, env):
+        return make_id(REG_THREAD, family, arm, sha, day_set, seed, [], env)
+    f1_of = {r['config']: r for r in a_runs if r['arm'] == 'F1'}
+    prods = [r for r in a_runs if r['arm'] == 'F1' and r.get('production')]
+    if len(prods) > 1:
+        problems.append(f"{len(prods)} F1 runs equal production by value ({', '.join(r['id'] for r in prods[:3])}): the control is ambiguous")
+    prod = prods[0] if len(prods) == 1 else None
+    for r in a_runs:
+        seed = PLACEBO_SEED if r['arm'] == 'coin' else None
+        ids[r['id']] = tid(fam_a, r['id'], seed, r['overrides'])
+    if prod is None and any(r['arm'] == 'F1' for r in a_runs):
+        notes.append('no F1 run equals production by value: the F1 candidates have no control (the registry flags them G2:unpaired)')
+    for r in sorted(a_runs, key=lambda x: x['id']):
+        arm = r['arm']
+        row = dict(common, trial_id=ids[r['id']], family=fam_a, arm=r['id'], env=r['overrides'],
+                   seed=PLACEBO_SEED if arm == 'coin' else None, modules=spec_modules(r['overrides'], stratum))
+        if arm == 'stick':
+            row.update(role='control')
+        elif arm == 'F1':
+            row.update(role='control' if r is prod else 'candidate')
+            if r is not prod and prod is not None:
+                row['control'] = ids[prod['id']]
+        else:
+            row.update(role='placebo' if arm == 'coin' else 'neighbour')
+            f1 = f1_of.get(r['config'])
+            if f1 is not None:
+                row['control'] = ids[f1['id']]
+                if arm == 'coin':
+                    row['placebo_for'] = f1['id']
+            else:
+                notes.append(f"{r['id']}: its config has no F1 run, so the {'placebo' if arm == 'coin' else 'neighbour'} row has no control")
+        row.update(by_day=full_days(r['by_day'], day_set), fills=int(r['fills']), markets=int(r['markets']), verdict=r['verdict'], raw=r['raw'])
+        if r.get('by_tercile'):
+            row['by_tercile'] = {k: {'pnl': float(v['pnl']), 'hours': float(v['hours'])} for k, v in sorted(r['by_tercile'].items())}
+        rows.append(row)
+    for b in sorted(b_rules, key=lambda x: x['rule']):
+        row = dict(common, trial_id=tid(fam_b, b['rule'], None, {}), family=fam_b, arm=b['rule'], role='candidate', env={},
+                   seed=None, modules=['tennis-ta'])
+        pl = b.get('placebo')
+        if pl is not None:
+            parm = b['rule'] + '|placebo'
+            prow = dict(common, trial_id=tid(fam_b, parm, PLACEBO_SEED, {}), family=fam_b, arm=parm, role='placebo', env={},
+                        seed=PLACEBO_SEED, modules=['tennis-ta'], placebo_for=b['rule'], by_day=full_days(pl['by_day'], day_set), fills=int(pl['fills']),
+                        verdict='placebo (not screened)', raw=pl['raw'])
+            if pl.get('markets') is not None:
+                prow['markets'] = int(pl['markets'])
+            row['control'] = prow['trial_id']
+            rows.append(prow)
+        row.update(by_day=full_days(b['by_day'], day_set), fills=int(b['fills']), verdict=b['verdict'], raw=b['raw'])
+        if b.get('markets') is not None:
+            row['markets'] = int(b['markets'])
+        if b.get('by_cell'):
+            row['by_cell'] = {k: round(float(v), 6) for k, v in sorted(b['by_cell'].items())}
+        rows.append(row)
+    seen = Counter(r['trial_id'] for r in rows)
+    dup = [k for k, v in seen.items() if v > 1]
+    if dup:
+        problems.append(f"{len(dup)} trial id(s) repeat (e.g. {dup[0]}: {', '.join(r['arm'] for r in rows if r['trial_id'] == dup[0])})")
+    return rows, problems, notes
+
+
 def _level_key(v):
     try:
         return (0, float(v), '')
     except (TypeError, ValueError):
         return (1, 0.0, str(v))
+
+
+def _ctx_of(c):
+    """A family B cell's context (the cut of its rule's entries: 'all', or phase:band:trend)."""
+    g, cid = c.get('group') or '', c['id']
+    if g and cid.startswith(g + '|'):
+        return cid[len(g) + 1:].rsplit('|', 1)[0]
+    parts = cid.split('|')
+    return parts[-2] if len(parts) > 2 else ''
 
 
 def _rule_of(c):
@@ -1661,10 +2519,52 @@ def _rule_of(c):
     return '|'.join(parts[:-2] + parts[-1:]) if len(parts) > 2 else cid
 
 
+def render_hold(s):
+    """report.md's H-HOLD section: each candidate of the frozen list scored once against the production control."""
+    h = s['hold']
+    L = ['### H-HOLD score (HO-1, once per frozen spec list)']
+    nd = len(hold_days(tuple(s['h_hold'])))
+    L.append(f"Frozen list: {len(h['spec_ids'])} spec(s), hash {h['specs_sha'] or 'not in the shard metas or the plan'}; control "
+             f"{h['control']}; {h['days']} of H-HOLD's {nd} days ({s['h_hold'][0]} to {s['h_hold'][1]}). Each candidate is scored by its "
+             f"paired gain over the control ($ after fees, candidate minus control by day), per fold as $/h over 24 h a day as "
+             f"research/registry.py ho1_fill takes it; the tours stand in for the RV terciles (gain per live-match hour of that tour's "
+             f"hold matches, at least 100 h to count); the placebo comparison is the candidate's gain against its coin arm's gain over "
+             f"the same control (beats = larger), with the per-unit bootstrap p of candidate minus coin.")
+    if not h['candidates']:
+        L.append('- no candidate')
+        return L
+    nf = len(s['ho1_folds'])
+    L.append('| candidate | gain | $/h | ' + ' | '.join(f'fold {k + 1} $/h' for k in range(nf))
+             + ' | folds won | worst fold $/h | ATP $/live h | WTA $/live h | vs placebo | F2 gain | HO-1 |')
+    L.append('|' + '---|' * (10 + nf))
+    for c in h['candidates']:
+        pl = c['placebo']
+        pl_txt = (f"{usd(c['gain'])} vs {usd(pl['gain'])} ({'beats' if pl['beats'] else 'does not beat'}; p {f4(pl['p'], '.4f')})" if pl else 'no coin arm')
+        ho = c.get('ho1')
+        ho_txt = ('pass' if ho['pass'] else f"fail: {ho['why']}") if ho else 'no registry block'
+        L.append(f"| {md(c['arm'])} | {usd(c['gain'])} | {f4(c['gain_per_hour'])} | "
+                 + ' | '.join(f4(f['gain_per_hour']) for f in c['folds'])
+                 + f" | {c['folds_won']}/{sum(1 for f in c['folds'] if f['days'])} | {f4(c['worst_fold_per_hour'])} | "
+                 f"{f4(c['tours']['ATP']['gain_per_live_hour'])} ({c['tours']['ATP']['hours']:,.0f} h) | "
+                 f"{f4(c['tours']['WTA']['gain_per_live_hour'])} ({c['tours']['WTA']['hours']:,.0f} h) | {pl_txt} | "
+                 f"{usd((c['neighbour'] or {}).get('gain'))} | {md(ho_txt)} |")
+    for c in h['candidates']:
+        ho = c.get('ho1')
+        if not ho:
+            continue
+        hb = ho['heldout']
+        L.append(f"- {md(c['arm'])}: registry HO-1 block (ho1_fill): {hb.get('days')} days, {hb.get('folds_won')}/{hb.get('folds')} folds won, "
+                 f"worst fold {f4(hb.get('worst_fold_per_hour'))} $/h, tours {hb.get('terciles_won', '-')}/{hb.get('terciles_covered', '-')} won "
+                 f"(worst {f4(hb.get('worst_tercile_per_hour'))} $/h), beats placebo {hb.get('beats_placebo')}, replay version "
+                 f"{hb.get('replay_version')}: ho1_pass {'PASS' if ho['pass'] else 'FAIL (' + ho['why'] + ')'}."
+                 + (' Differs from the report: ' + '; '.join(c['registry_differs']) + '.' if c.get('registry_differs') else ''))
+    return L
+
+
 def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_last, pools):
     L = []
     pool_txt = ','.join(pools)
-    L.append(f"## Tennis TA sweep, stage {s['stage']}, pool {pool_txt} (run {s['run']})")
+    L.append(f"## Tennis TA sweep, stage {s['stage']}, pool {pool_txt}, stratum {s['stratum_label']} (run {s['run']})")
     L.append(f"Evidence: {meta.get('evidence', '-')}. sha {str(meta.get('sha') or '-')[:10]}, {s['sim_version']}, data version {s['data_version']}. "
              f"Days {M[0]['day']} to {M[-1]['day']} UTC "
              f"({fmt_eastern(M[0]['start'], '%b %d %I:%M %p')} to {fmt_eastern(t_last, '%b %d %I:%M %p')}).")
@@ -1680,15 +2580,34 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
     L.append(f"- Coverage: {cov}. {s['owned_matches']} owned matches, {s['owned_no_published_start']} without a published start (unit and pool "
              f"from the earliest market-line time); in the pool {s['matches']} with a tape ({s['no_tape']} without one left out), "
              f"{s['pool_no_published_start']} of them without a published start.")
+    bp = s['by_pool']
+    L.append("- Matches by pool (matchList): " + ', '.join(f"{p} {v['matches']} in {v['units']} unit(s)" + (' (scored)' if v['scored'] else ' (excluded, counted)')
+                                                         for p, v in bp.items())
+             + f". Only pool {pool_txt} is scored; the other pools' rows ({', '.join(repr(p) for p in bp if p not in s['pools']) or 'none'}) "
+             + f"are left out of it. Era rule (C9, edges from {s['era_source']}): "
+             + s['era_rule'] + '.')
+    if s['hold_run'] and s['hold']['matches_after_hold']:
+        L.append(f"- {s['hold']['matches_after_hold']} hold match(es) start on a UTC day after H-HOLD's last day ({s['h_hold'][1]}), in the hours "
+                 f"before the cutoff: no H-HOLD match (the registry's H-HOLD ends {s['h_hold'][1]}), left out of the score and the rows.")
     fb = s['family_b']
     L.append(f"- N_raw: family A {s['n_raw']['A']} cells ({s['f1_cells']} F1 cells screened, {s['stick_cells']} measuring-stick cells logged, never "
              f"screened)" + (f"; family B {s['n_raw']['B']} cells with entries (design {fb['design_size']}, its own BH family)" if fb else '; family B not run') + '.')
-    L.append(f"- Hours: pool {s['pool_hours']:,.0f} h (from {s['pool_hours_source']}: pool units minus the 24 h embargo windows of sealed units, "
-             f"clipped to the data span {s['data_span'][0]} to {s['data_span'][1]}, {s['data_span_source']}; {s['pool_hours_unclipped']:,.0f} h unclipped); "
-             f"live-match {s['live_hours']['all']:,.0f} h (close minus the published start; a match without one gets its series' median).")
+    L.append(f"- Hours: pool {s['pool_hours']:,.0f} h (from {s['pool_hours_source']}: the pool's units cut to its window ("
+             + ('H-HOLD, from HOLD_FROM to the end of its last UTC day' if s['hold_run'] else 'H-DEV, up to DEV_TO' if s['pools'] == ['disc']
+                else 'the old-era units, whole')
+             + f"; the embargo day Jul 31 counts in no pool), clipped to the data span {s['data_span'][0]} to {s['data_span'][1]}, {s['data_span_source']}; {s['pool_hours_unclipped']:,.0f} h unclipped); "
+             + (f"live-match {s['live_hours']['all']:,.1f} h ({s['live_hours_source']})." if s['live_hours']['all'] is not None
+                else f"live-match hours {s['live_hours_source']}, so every $/live-match-hour figure is n/a."))
+    if s['live_hours']['all'] is None:
+        L.append(f"**Warning (A7):** no $/live-match-hour figure in this run: live-match hours {s['live_hours_source']}.")
     pb = s['pbo']
-    L.append(f"- Folds: {len(s['folds'])} monthly folds by the month of each unit's last day (a unit is never split)"
-             + (f"; CSCV drops fold {pb['dropped_fold']} to make the count even" if pb and pb.get('dropped_fold') else '') + '.')
+    if s['hold_run']:
+        L.append(f"- Folds: the {len(s['ho1_folds'])} HO-1 folds of H-HOLD ({s['h_hold'][0]} to {s['h_hold'][1]}), cut by each match's UTC day at "
+                 f"research/registry.py's edges: " + ', '.join(f"{f['fold']}: {f['from']} to {f['to']}" for f in s['ho1_folds'])
+                 + '; the fold share, PBO and every fold column below use them (the bootstrap still resamples whole units).')
+    else:
+        L.append(f"- Folds: {len(s['folds'])} monthly folds by the month of each unit's last day (a unit is never split)"
+                 + (f"; CSCV drops fold {pb['dropped_fold']} to make the count even" if pb and pb.get('dropped_fold') else '') + '.')
     bf = s['bh_floor']
     L.append(f"- Bootstrap: stationary over {s['units']} units (mean block {a.block:g} unit), B = {a.boot}, seed {a.seed}; p = (c + 1) / (B + 1), so the "
              f"smallest p is {bf['p_min']:.1e} and BH at q = {a.alpha} rejects nothing unless at least {bf['A_cells_at_floor_needed']} of the "
@@ -1713,6 +2632,10 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
             L.append(f"| {md(p['cell'].rsplit('|', 3)[0])} | {p['entries']} | {usd(p['net'])} | {f4(p['mean'])} | {f4(p['ci90'][0], '.3f')}..{f4(p['ci90'][1], '.3f')} | "
                      f"{f4(p['p'])} | {f4(p['vs_production'])} | {usd(p['usd_per_hour'])} | {usd(p['usd_per_live_hour'])} | {p['breaches']} |")
     L.append('')
+    if s['hold_run']:
+        L += render_hold(s)
+        L.append('')
+        L.append('The discovery screen below is descriptive on H-HOLD (the settings were chosen on H-DEV; HO-1 above is the test):')
     g = s['gates_A']
     L.append(f"Screen: BH q = {a.alpha} rejects {s['bh_rejections']} of {s['f1_cells']} F1 cells; gates passed: "
              + ', '.join(f'{k} {g.get(k, 0)}' for k in ('BH', 'entries>=100', 'days>=30', 'mean>0', 'folds>=60%', 'F2 net>0', 'config breaches=0'))
@@ -1725,16 +2648,25 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
         L.append(f"SPA (consistent) over {sp['models']} models: T = {sp['T']:.2f}, p = {sp['p_consistent']:.4f}, best {sp['best']}. "
                  f"StepM (alpha {sp['stepm_alpha']}) rejects {len(sp['stepm_rejected'])}.")
     od = s['onc']
+    kr = od.get('k_range')
+    if kr:
+        k_txt = (f"; k search range 2..{kr['to']}" + (f" (capped by --onc-max-k {kr['cap']}, below n - 1 = {kr['n'] - 1})" if kr['cap']
+                                                       else f" = n - 1 of the {kr['n']} distinct vectors (no cap)")
+                 + f": {kr['grid']}, {kr['scanned']} k tried, k-means on {od['kmeans_dims']} components keeping {od['kmeans_variance_kept']:.1%} "
+                 f"of the variance, silhouettes exact")
+        k_txt += (f"; best k {od['best_k']} (quality {od['best_q']:.2f}){', refinement kept' if od.get('refined') else ', refinement not kept'}"
+                  if od.get('best_k') else '; no k gave a valid split')
+    else:
+        k_txt = '; ONC not run (fewer than 3 distinct vectors: N_eff = their count)'
     L.append(f"N_eff = {s['n_eff']} (ONC over {s['onc_cells']} F1 cells with >= {a.onc_min} entries, {s['onc_distinct']} distinct per-match vectors"
-             + (f", {s['onc_dropped']} beyond the cap left out" if s['onc_dropped'] else '')
-             + (f"; base scan k = 2..{od['k_hi']} ({od['scanned']} k tried, k-means on {od['kmeans_dims']} components keeping "
-                f"{od['kmeans_variance_kept']:.1%} of the variance, silhouettes exact): best k {od['best_k']} (quality {od['best_q']:.2f})"
-                f"{', refinement kept' if od.get('refined') else ', refinement not kept'}" if od.get('best_k') else '') + ').')
+             + (f", {s['onc_dropped']} beyond the cap left out" if s['onc_dropped'] else '') + k_txt + ').')
     for w_ in od.get('warnings') or []:
         L.append(f"**Warning (ONC):** {w_}.")
     if pb:
         L.append(f"PBO (CSCV, {pb['folds']} folds, {pb['combos']} splits): {pb['pbo']:.2f}.")
-    L.append(f"DSR reference SR0 = {s['sr0']:.4f} per match ({s['v_sr_source']}: {s['v_sr']:.6f}), N = N_eff.")
+    L.append("DSR reference SR0 per match, one per tour universe (" + s['v_sr_source'] + "): "
+             + '; '.join(f"{t} {s['sr0'][t]:.4f} (V[SR] {s['v_sr'][t]:.6f} over {s['v_sr_clusters'][t]} cluster series)" for t in s['sr0'])
+             + ", N = N_eff.")
     L.append('')
     top = sorted(f1, key=lambda i: (not cells[i]['flag'], cells[i]['p'], -cells[i]['mean']))[:25]
     L.append('| cell | entries | days | net | $/match | 90% CI | p | BH | F2 net | vs placebo | day t | day t vs placebo | folds+ | $/h | $/live h | DSR |')
@@ -1749,6 +2681,7 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
     sv = s['sensitivity']
     L.append(f"Knob sensitivity (section 5 rule: {sv['rule']}; baseline {sv['baseline'] or '-'}, from {sv.get('baseline_source')}; a config "
              f"enters a knob's levels when it differs from the baseline, by value, in that knob alone):")
+    L.append(f"- Ranking scope: {sv.get('scope')}.")
     for k in sv['ranking'] + [k for k in sv['knobs'] if k not in sv['ranking']]:
         v = sv['knobs'][k]
         L.append(f"- {k}{' (R only: a lead, never ranked)' if v['r_only'] else ''}: "
@@ -1764,6 +2697,21 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
         L.append("Threshold factorial main effects (descriptive: mean net a match by level, averaged over the other thresholds): "
                  + '; '.join(f"{k}: " + ', '.join(f"{lv}: {x:.4f}" for lv, x in v['levels'].items()) + f" (range {v['range']:.4f})"
                              for k, v in s['sensitivity_factorial'].items()) + '.')
+    rg = s.get('registry') or {}
+    L.append('')
+    if rg.get('written'):
+        L.append(f"Registry (C7, research/registry.py v1, validated): {rg['rows']} row(s) in {rg['file']} ("
+                 + ', '.join(f'{k} {v}' for k, v in sorted(rg['families'].items())) + '; roles ' + ', '.join(f'{k} {v}' for k, v in sorted(rg['roles'].items()))
+                 + f"), contract type tennis; control {rg['control_arm'] or 'none (no production F1 run)'}; by_day over {rg['days']} UTC "
+                 + ('H-HOLD day(s)' if s['hold_run'] else 'match day(s), none in H-HOLD')
+                 + f", hours {rg['hours']:,.1f} (the $/h denominator); code {str(rg['code_sha'])[:10]}, {rg['code_epoch']}; base {rg.get('base')}"
+                 f" (base_defaults {json.dumps(rg.get('base_defaults') or {}, sort_keys=True)}); data.replay_version {rg['replay_version']}"
+                 + (f"; flags {', '.join(rg['flags'])}" if rg['flags'] else '')
+                 + (f"; validator flags {', '.join(f'{k} {v}' for k, v in sorted(rg['validator_flags'].items()))}" if rg['validator_flags'] else '') + '.')
+        for x in rg.get('notes') or []:
+            L.append(f"- {x}.")
+    else:
+        L.append(f"Registry: no rows ({rg.get('reason', 'not written')}).")
     L.append('')
     L.append('Biggest losers (production, F1):')
     for r_ in [x for x in loser_rows if x['run'] in prod_runs][:12]:

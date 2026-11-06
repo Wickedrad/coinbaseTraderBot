@@ -106,18 +106,19 @@ export function writeRecordingLines(dir: string, lines: Array<{ t: number; k: st
   for (const [d, l] of byDay) fs.writeFileSync(path.join(dir, `md-${d}.jsonl`), l.join('\n') + '\n');
 }
 
-/** What shows the feed's liveness in a recording: 'none' = tennis lines only (the tennis cut research/tennisTaData.ts
- *  writes today; production writes no heartbeat kind), 'hb' = a heartbeat line every 5 s (what a cut that keeps the feed's
- *  liveness would add), 'raw' = a delta of a crypto contract every 5 s (the raw file, the socket's other markets). */
-export type RecordedFeed = 'none' | 'hb' | 'raw';
+/** What shows the feed's liveness in a recording: 'none' = tennis lines only (a tennis cut without liveness lines;
+ *  production writes no liveness kind), 'beat' = a beat line every 5 s (what research/tennisTaData.ts writes into the cut,
+ *  at most once per 5 s of raw-file activity), 'alive' = an alive line every 5 s naming the match's books (the history
+ *  replay's kind), 'raw' = a delta of a crypto contract every 5 s (the raw file, the socket's other markets). */
+export type RecordedFeed = 'none' | 'beat' | 'alive' | 'raw';
 
 /** The bot's recordings of one match: the market lines when the bot first lists it (two days before its start), one book
- *  snapshot each then deltas, the tape, a 10-minute silence in the match (no line at all) and the settlement only as
- *  Kalshi's lifecycle lines (determined, then settled; no result line; a 'deactivated' line with a wrong result mid-match
- *  must be ignored). After the silence the deltas come back and the next snapshots follow 2 minutes later, or with
- *  `resync` it ends with fresh snapshots of both books first (a reconnect: Kalshi re-snapshots on resubscribe). A wins
- *  from 75c. */
-export function writeTaRecording(dir: string, startDay = '2026-03-04', o: { feed?: RecordedFeed; resync?: boolean } = {}): RecordingPlan {
+ *  snapshot each then deltas, the tape, a 10-minute silence in the match (no line at all, or with `quiet` no tennis line
+ *  while the feed's liveness lines go on: a quiet tennis stretch inside a live feed) and the settlement only as Kalshi's
+ *  lifecycle lines (determined, then settled; no result line; a 'deactivated' line with a wrong result mid-match must be
+ *  ignored). After the silence the deltas come back and the next snapshots follow 2 minutes later, or with `resync` it
+ *  ends with fresh snapshots of both books first (a reconnect: Kalshi re-snapshots on resubscribe). A wins from 75c. */
+export function writeTaRecording(dir: string, startDay = '2026-03-04', o: { feed?: RecordedFeed; resync?: boolean; quiet?: boolean } = {}): RecordingPlan {
   const feed = o.feed ?? 'none';
   const start = Date.parse(`${startDay}T10:00:00Z`);
   const plan: RecordingPlan = { listed: start - 46 * 3_600_000, start, end: start + 120 * MIN, gapFrom: start + 40 * MIN, gapTo: start + 50 * MIN, snapAgain: start + 52 * MIN,
@@ -140,9 +141,12 @@ export function writeTaRecording(dir: string, startDay = '2026-03-04', o: { feed
   });
   snap(plan.listed + 1000);
   for (let t = plan.listed + 5000; t <= plan.settled + 10 * MIN; t += 5000) {
-    if (t >= plan.gapFrom && t < plan.gapTo) continue;
-    if (feed === 'hb') put(t, 'hb', {});
+    const silent = t >= plan.gapFrom && t < plan.gapTo;
+    if (silent && !o.quiet) continue;
+    if (feed === 'beat') put(t, 'beat', {});
+    if (feed === 'alive') put(t, 'alive', { tickers: plan.tickers });
     if (feed === 'raw') put(t, 'delta', { ticker: 'KXBTCD-26MAR0417-T90000', side: 'bid', price: 0.5, delta: t % 10_000 ? 1 : -1, ts: t });
+    if (silent) continue;
     if (t >= start - 60 * MIN && t <= plan.end) {
       if (o.resync && t === plan.gapTo) snap(t);
       if (t % 10_000 === 0) move(t);

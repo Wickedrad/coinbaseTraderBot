@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { test } from 'node:test';
+import { loadConfig, paperEnv } from '../bot/config';
 import { orderFee } from '../bot/fees';
-import { FEES, H_LOT_CAP, PLACEBO_MIN_SEC, SIGNAL_SPEC, SignalStudy, type EntryTrace } from '../research/tennisTaSignals';
+import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
+import { positionNetAtBid } from '../bot/strategy/fairValueStrategy';
+import { MatchTracker, PROGRESS_LATCH_MS } from '../bot/tennis/tennisStrategy';
+import { FEES, H_LOT_CAP, latchedProgress, PLACEBO_MIN_SEC, SIGNAL_SPEC, SignalStudy, type EntryTrace } from '../research/tennisTaSignals';
 import type { FamilyBCell, MatchGrid } from '../research/tennisTaTypes';
 
 // Synthetic MatchGrids (stratum H, one-level 1c books, imbalance 0) for family B of the tennis TA trial.
@@ -165,6 +169,26 @@ test('placebo pairing compares MEANS per unit: no false edge where the real arm 
   assert.ok(sumWins / cells > 0.75, `sum-paired wins ${sumWins} / ${cells}`);
   // The contract's statistic (per-unit means): a coin flip.
   assert.ok(meanWins / cells > 0.35 && meanWins / cells < 0.65, `mean-paired wins ${meanWins} / ${cells}`);
+  // By day (the registry's control row, C7): the raw placebo day sum crowns the sparser arm too; the placebo scaled to the
+  // real arm's entries that day (n x placebo sum / placebo n; a day without placebo entries takes the cell's pooled
+  // placebo mean) does not. Every day row carries the counts for it.
+  let allCells = 0, fewer = 0, daySumWins = 0, dayScaledWins = 0;
+  for (const c of st.exportCells().cells) {
+    if (!c.id.includes('|all|')) continue;
+    const rows = Object.values(c.days);
+    for (const r of rows) assert.equal(r.length, 4, `${c.id}: day rows are [n, sum, placebo n, placebo sum]`);
+    const n = rows.reduce((a, r) => a + r[0], 0), pn = rows.reduce((a, r) => a + r[2], 0), ps = rows.reduce((a, r) => a + r[3], 0);
+    if (!n || !pn) continue;
+    let gSum = 0, gScaled = 0;
+    for (const [dn, ds, dpn, dps] of rows) { gSum += ds - dps; gScaled += ds - dn * (dpn ? dps / dpn : ps / pn); }
+    allCells++;
+    if (n < pn) fewer++;
+    if (gSum > 0) daySumWins++;
+    if (gScaled > 0) dayScaledWins++;
+  }
+  assert.ok(allCells >= 200 && fewer > 0.7 * allCells, `all cells ${allCells}, real arm sparser in ${fewer}`);
+  assert.ok(daySumWins / allCells > 0.62, `raw day-sum pairing wins ${daySumWins} / ${allCells}`);
+  assert.ok(dayScaledWins / allCells > 0.38 && dayScaledWins / allCells < 0.62, `count-scaled day pairing wins ${dayScaledWins} / ${allCells}`);
 });
 
 test('placebo shift: at least 30 min from the real trigger both ways, none for a match under 2 x 30 min', () => {
@@ -195,7 +219,7 @@ test('placebo shift: at least 30 min from the real trigger both ways, none for a
   for (const c of st.exportCells().cells) for (const u of Object.values(c.units)) assert.equal(u[2], 0);
 });
 
-test('placebo past its source: a wrapped placebo that rides is kept, carries its source and is counted', () => {
+test('placebo past its source: a wrapped placebo that could ride past its source is left out by its time, never its outcome', () => {
   // OPP w60 0.01 toward A: B falls 2c at 3000 (N = 4000), so its placebo wraps to d' = 3000 + offset - 4000 in [800, 1200].
   const OPP60 = 'OPP|1s|on:w60:0.01';
   const opts = { seed: 3, day: '2026-01-02', live: -1, progEnd: 0, resultA: 1 as const, event: 'EV-span', tape: false };
@@ -208,29 +232,88 @@ test('placebo past its source: a wrapped placebo that rides is kept, carries its
   const dp = pl[0].decision;
   assert.equal(pl[0].source, 3000);
   assert.ok(dp <= 3000 - PLACEBO_MIN_SEC, `placebo ${dp}`);
-  // Same event and length (so the same offsets): A jumps 20c right after d' and the last share starts 2 s later, so the
-  // placebo's follow position is in profit after fees there and rides to settlement, past its source trigger at 3000.
-  const g = grid(pathOf(4000, (i) => (i < dp + 3 ? 0.405 : i < 3000 ? 0.605 : 0.625)), opts);
-  for (let i = 0; i < g.n; i++) g.progress[i] = i < dp + 5 ? 0.5 : 0.75;
-  const all: EntryTrace[] = [];
-  const st = new SignalStudy({ trace: (t) => all.push(t) });
-  st.addMatch(g);
-  const mine = all.filter((t) => t.placebo && t.series === OPP60 && t.decision === dp);
-  assert.equal(mine.length, 10, 'one placebo entry, both directions, five exits');
-  for (const t of mine) assert.equal(t.source, 3000);
-  const rode = mine.filter((t) => t.exitIdx > t.source).map((t) => `${t.dir}|${t.exit}|${t.kind}`).sort();
-  assert.deepEqual(rode, ['follow|tp50sl25|ride', 'follow|trail3t|ride', 'follow|ts10m|ride', 'follow|ts2m|ride']);
-  // Kept as they are (the same exits as the real arm), and counted.
-  const spans = all.filter((t) => t.placebo && t.source > t.decision && t.exitIdx > t.source).length;
-  assert.ok(spans >= 4);
-  assert.equal(st.diagnostics().placeboSpanSource, spans);
-  assert.equal((st.exportCells().diagnostics as { placeboSpanSource: number }).placeboSpanSource, spans);
+  // Same event and length (so the same offsets). A moves 20c right after d' (up: the placebo's follow position is in profit
+  // after fees and would ride to settlement past its source at 3000; down: it would lose), and the reading is in the last
+  // share from `share` (until `back`, then again from `again`). Its longest time stop is d' + 1 + 900: it could ride past
+  // it when the reading is in the share by then and the latch gets there within 2 min (+10 s) after it.
+  const run = (up: boolean, share: number, back = 4000, again = 4000) => {
+    const lv = up ? [0.405, 0.605, 0.625] : [0.405, 0.205, 0.225];
+    const g = grid(pathOf(4000, (i) => (i < dp + 3 ? lv[0] : i < 3000 ? lv[1] : lv[2])), opts);
+    for (let i = 0; i < g.n; i++) g.progress[i] = (i >= share && i < back) || i >= again ? 0.75 : 0.5;
+    const all: EntryTrace[] = [];
+    const st = new SignalStudy({ trace: (t) => all.push(t) });
+    st.addMatch(g);
+    return { all, mine: all.filter((t) => t.placebo && t.series === OPP60 && t.decision === dp), d: st.diagnostics() };
+  };
+  // Without the rule this one rides past its source: the reading is in the share from d' + 5, so the follow position (in
+  // profit) rides through its stops, and the latch (d' + 125) cuts nothing in profit. Could ride (share at d' + 5, or
+  // exactly at its longest time stop): left out, whichever way the price goes.
+  for (const share of [dp + 5, dp + 901]) {
+    const up = run(true, share), down = run(false, share);
+    assert.equal(up.mine.length, 0, `share ${share - dp} s after d': the wrapped placebo is left out`);
+    assert.equal(down.mine.length, 0, 'left out when it would lose too: the rule reads the time, not the outcome');
+    assert.ok(up.d.placeboSpanExcluded >= 1 && down.d.placeboSpanExcluded >= 1);
+    assert.equal(up.d.placeboSpanSource, 0, 'no placebo position is open past its source');
+    for (const t of up.all) if (t.placebo && t.source > t.decision) assert.ok(t.exitIdx <= t.source, `${t.series} ${t.decision}: open past ${t.source}`);
+    // diagnostics spanWindow replays each series without the rule from its first left-out trigger (measured only, never
+    // recorded or traced): it sees the leak the rule removes, positions open past their source.
+    for (const x of [up, down]) {
+      const w = x.d.spanWindow;
+      assert.ok(w.ruleOffPastSource >= 2, `share ${share - dp} s after d': replayed positions past their source ${w.ruleOffPastSource}`);
+      assert.ok(w.ruleOffPositions > w.ruleOnPositions, `replay ${w.ruleOffPositions} vs recorded ${w.ruleOnPositions}`);
+      assert.equal(x.all.filter((t) => t.placebo).length, w.allPlaceboPositions, 'the replay is never traced');
+    }
+  }
+  // Kept, and closed in time: the share one second after its longest time stop (every exit is decided by then), or a
+  // reading in the share for under a minute after d' whose latch comes only when the reading is back there at 2500.
+  for (const [share, back, again] of [[dp + 902, 4000, 4000], [dp + 5, dp + 60, 2500]]) {
+    const kept = run(true, share, back, again);
+    assert.equal(kept.mine.length, 10, `share ${share - dp} s after d': one placebo entry, both directions, five exits`);
+    for (const t of kept.mine) {
+      assert.equal(t.source, 3000);
+      assert.ok(t.kind !== 'ride' && t.exitIdx < 3000, `${t.dir}|${t.exit}: ${t.kind} at ${t.exitIdx}`);
+    }
+    assert.equal(kept.d.placeboSpanSource, 0);
+  }
+  const kept = run(true, dp + 902);
   // Every trace names its source: a real one itself, a placebo one at least 30 min away (circularly).
-  for (const t of all) {
+  for (const t of kept.all) {
     if (!t.placebo) { assert.equal(t.source, t.decision); continue; }
     const gap = Math.abs(t.decision - t.source);
     assert.ok(Math.min(gap, 4000 - gap) >= PLACEBO_MIN_SEC, `${t.series}: ${t.decision} from ${t.source}`);
   }
+  // On random walks no placebo position outlasts its source, and the placebo still covers the matches: a placebo that did
+  // not wrap (it lies after its source) keeps its rides.
+  let laterRides = 0, tracedReal = 0, tracedPlacebo = 0;
+  const st = new SignalStudy({ trace: (t) => {
+    if (t.placebo) tracedPlacebo++; else tracedReal++;
+    if (!t.placebo) return;
+    if (t.source > t.decision) assert.ok(t.exitIdx <= t.source, `${t.series}: ${t.decision} open past ${t.source}`);
+    else if (t.kind === 'ride') laterRides++;
+  } });
+  for (let k = 0; k < 4; k++) { const p = rwPath(500 + k, 3 * 3600); st.addMatch(grid(p, { seed: 900 + k, day: '2026-03-01', live: 1200, progEnd: 1, resultA: p[p.length - 1] > 0.5 ? 1 : 0 })); }
+  const d = st.diagnostics();
+  assert.ok(d.placeboSpanExcluded > 0 && d.placeboEntries > 10 * d.placeboSpanExcluded, `excluded ${d.placeboSpanExcluded}, placebo entries ${d.placeboEntries}`);
+  assert.equal(d.placeboSpanSource, 0);
+  assert.ok(laterRides > 0, 'placebo rides after their source are kept');
+  // spanWindow: the arms' totals match the cells and the trace; the window is a share of each; the replay ran.
+  const w = d.spanWindow;
+  let n = 0, sum = 0, pn = 0, ps = 0;
+  for (const c of st.exportCells().cells) {
+    if (!c.id.includes('|all|')) continue;
+    n += c.n; sum += c.sum;
+    const pl = placeboOf(c);
+    pn += pl.n; ps += pl.sum;
+  }
+  assert.equal(w.allRealPositions, n);
+  assert.equal(w.allRealPositions, tracedReal);
+  assert.equal(w.allRealPositions, Object.values(d.kinds).reduce((a, b) => a + b, 0));
+  assert.equal(w.allPlaceboPositions, pn);
+  assert.equal(w.allPlaceboPositions, tracedPlacebo);
+  assert.ok(Math.abs(w.allRealNet - sum) < 1e-6 && Math.abs(w.allPlaceboNet - ps) < 1e-6, `nets ${w.allRealNet} / ${sum}, ${w.allPlaceboNet} / ${ps}`);
+  assert.ok(w.realPositions > 0 && w.realPositions < w.allRealPositions, `real in the window ${w.realPositions} of ${w.allRealPositions}`);
+  assert.ok(w.placeboPositions < w.allPlaceboPositions && w.ruleOnPositions <= w.placeboPositions, `placebo in the window ${w.placeboPositions}, after a left-out trigger ${w.ruleOnPositions}`);
+  assert.ok(w.ruleOffPositions > w.ruleOnPositions, `replay ${w.ruleOffPositions} vs recorded ${w.ruleOnPositions}`);
 });
 
 test('order: the same matches in another day order give the same cells', () => {
@@ -401,11 +484,13 @@ test('gaps are masked, never carried: no TA reading over a gap until a fresh war
 });
 
 /** End-cut fixtures: A at 0.505, a 2c rise at 1000 (MOM w60 toward A: follow buys A at 0.53, fade buys B at 0.48), A at
- *  0.60 from 1050; progress 0.5 from the start (300) and 0.75 from 1100 (the last 30% by the furthest progress). */
-function endGrid(o: { resultA: 0 | 1; dropAt?: number; noBidB?: boolean }): MatchGrid {
-  const p = pathOf(3600, (i) => (i < 1000 ? 0.505 : i < 1050 ? 0.525 : o.dropAt !== undefined && i >= o.dropAt ? 0.5 : 0.6));
+ *  `level` (0.60) from 1050; progress 0.5 from the start (300) and 0.75 from 1100 (the last 30% by the reading; the latch,
+ *  2 min of readings there, from 1220), back to 0.5 from `backAt` when given. */
+function endGrid(o: { resultA: 0 | 1; dropAt?: number; noBidB?: boolean; level?: number; backAt?: number; moveAt?: number }): MatchGrid {
+  const lv = o.level ?? 0.6;
+  const p = pathOf(3600, (i) => (i < 1000 ? 0.505 : i < 1050 ? 0.525 : o.dropAt !== undefined && i >= o.dropAt ? 0.5 : o.moveAt !== undefined && i >= o.moveAt ? lv + 0.02 : lv));
   const g = grid(p, { seed: 5, day: '2026-01-02', live: 300, progEnd: 0, resultA: o.resultA });
-  for (let i = 0; i < g.n; i++) g.progress[i] = i < 300 ? 0 : i < 1100 ? 0.5 : 0.75;
+  for (let i = 0; i < g.n; i++) g.progress[i] = i < 300 ? 0 : i < 1100 || (o.backAt !== undefined && i >= o.backAt) ? 0.5 : 0.75;
   if (o.noBidB) for (let i = 1101; i < g.n; i++) { g.bidB[i] = NaN; g.askB[i] = NaN; }
   return g;
 }
@@ -420,23 +505,32 @@ test('end cut: in the last share a position in profit after fees rides to settle
     for (const t of mine) {
       assert.equal(t.decision, 1000);
       if (t.dir === 'follow') {
-        // 18 x 0.60 - 0.31 - (18 x 0.53 + 0.32) = +0.63 after fees at 1100: rides, paid by the result.
+        // 18 x 0.60 - 0.31 - (18 x 0.53 + 0.32) = +0.63 after fees from 1100, the first reading in the last share: it rides
+        // from there (production's lastShare reads the reading, not the latch; ts2m's stop at 1121 never sells it), paid
+        // by the result.
         assert.equal(t.side, 'A');
         assert.equal(t.kind, 'ride', `${t.exit}: ${t.kind}`);
         assert.equal(t.exitPx, resultA);
         assert.equal(t.exitIdx, 3599);
         assert.ok(Math.abs(t.net - (t.count * (resultA - t.entryPx) - orderFee(t.count, t.entryPx, true, FEES))) < 1e-9);
+      } else if (t.exit === 'ts2m') {
+        // B bought at 0.48, bid 0.40: not in profit, but the latch is not in the last share before 1220, so production does
+        // not cut it yet and its own exit stands: the 2 min stop at 1121.
+        assert.equal(t.kind, 'time');
+        assert.equal(t.exitDecision, 1121);
+        assert.equal(t.exitIdx, 1122);
       } else {
-        // B bought at 0.48, bid 0.40 at 1100: not in profit, cut on the quotes of 1100 and sold at 1101.
+        // The others are still open at 1220, when the reading has held the last share for 2 min: cut on the quotes of 1220,
+        // sold at 1221.
         assert.equal(t.side, 'B');
         assert.equal(t.kind, 'cut', `${t.exit}: ${t.kind}`);
-        assert.equal(t.exitDecision, 1100);
-        assert.equal(t.exitIdx, 1101);
+        assert.equal(t.exitDecision, 1220);
+        assert.equal(t.exitIdx, 1221);
         assert.equal(t.exitPx, 0.4);
       }
     }
-    // The end-entry block: nothing enters once the furthest progress reaches 0.65 (here 1100).
-    assert.ok(trips.every((t) => t.decision < 1100));
+    // The end-entry block: nothing enters once the latched progress reaches 0.65 (here 1220).
+    assert.ok(trips.every((t) => t.decision < 1220));
     const cells = byId(st.exportCells().cells);
     assert.equal(cells.get(`B|${MOM60}|follow|all|ts10m`)!.breaches, 0);
     assert.equal(cells.get(`B|${MOM60}|fade|all|ts10m`)!.breaches, 0);
@@ -452,7 +546,121 @@ test('end cut: in the last share a position in profit after fees rides to settle
     assert.equal(t.exitPx, 0.5);
   }
   assert.ok(st.diagnostics().endBlocked > 0, 'the drop at 2000 triggers series that the end block refuses');
-  assert.ok(trips.every((t) => t.decision < 1100));
+  assert.ok(trips.every((t) => t.decision < 1220));
+});
+
+test('end cut waits for the latch: a reading in the last share for under 2 min neither cuts nor blocks entries', () => {
+  // The reading is 0.75 from 1100 to 1219 only (120 readings, under PROGRESS_LATCH_MS), then 0.5 again; A moves 2c at 2500.
+  const run = (backAt: number) => {
+    const trips: EntryTrace[] = [];
+    const st = new SignalStudy({ trace: (t) => { if (!t.placebo && t.series === MOM60) trips.push(t); } });
+    st.addMatch(endGrid({ resultA: 1, backAt, moveAt: 2500 }));
+    return { trips, d: st.diagnostics() };
+  };
+  const { trips } = run(1220);
+  const first = trips.filter((t) => t.decision === 1000);
+  assert.equal(first.length, 10);
+  for (const t of first) {
+    assert.notEqual(t.kind, 'cut', `${t.dir}|${t.exit}`);
+    assert.notEqual(t.kind, 'ride', `${t.dir}|${t.exit}`);
+  }
+  const at = (dir: string, exit: string) => first.find((t) => t.dir === dir && t.exit === exit)!;
+  // The follow position (in profit) rode through 1100-1219, which held its 2 min stop (1121); the comeback at 1220 ends the
+  // ride and the stop sells it there. The fade position (not in profit) keeps its own exits: never cut.
+  assert.equal(at('follow', 'ts2m').kind, 'time');
+  assert.equal(at('follow', 'ts2m').exitDecision, 1220);
+  assert.equal(at('fade', 'ts2m').exitDecision, 1121);
+  assert.equal(at('fade', 'ts10m').kind, 'time');
+  assert.equal(at('fade', 'ts10m').exitDecision, 1601);
+  // No end-entry block: the move at 2500 enters.
+  assert.ok(trips.some((t) => t.decision === 2500), `decisions ${[...new Set(trips.map((t) => t.decision))]}`);
+  // One more reading (1100-1220: the reading at 1220 closes 2 min of the last share) latches it: cut at 1220, the move at
+  // 2500 is blocked.
+  const held = run(1221);
+  const heldFade = held.trips.filter((t) => t.decision === 1000 && t.dir === 'fade' && t.exit !== 'ts2m');
+  assert.equal(heldFade.length, 4);
+  assert.ok(heldFade.every((t) => t.kind === 'cut' && t.exitDecision === 1220));
+  assert.ok(!held.trips.some((t) => t.decision >= 1220));
+  assert.ok(held.d.endBlocked > 0);
+  assert.equal(held.d.progressHighFromGrid, 0);
+});
+
+test('latched progress: latchedProgress is MatchTracker.latchProgress reading for reading; a grid that carries it is used', () => {
+  const tennis = loadConfig(paperEnv({})).tennis;
+  const cases: Array<{ name: string; p: Float64Array; step: number }> = [];
+  for (let k = 0; k < 6; k++) {
+    // Rising readings with holds, one-tick spikes, comebacks, and jumps.
+    const r = rng(300 + k), n = 1500, p = new Float64Array(n);
+    let x = 0;
+    for (let i = 0; i < n; i++) {
+      const u = r();
+      x = u < 0.02 ? Math.min(1, x + 0.2 * r()) : u < 0.04 ? Math.max(0, x - 0.2 * r()) : u < 0.5 ? x : Math.min(1, x + 0.002 * r());
+      p[i] = u > 0.995 ? Math.min(1, x + 0.3) : x;
+    }
+    cases.push({ name: `walk ${k}`, p, step: k % 2 ? 5000 : 1000 });
+  }
+  const nan = Float64Array.from({ length: 400 }, (_, i) => (i === 250 ? NaN : i / 400));
+  cases.push({ name: 'NaN reading', p: nan, step: 1000 });
+  for (const c of cases) {
+    const ref = new MatchTracker('ref', tennis);
+    const got = latchedProgress(c.p, c.p.length, c.step);
+    for (let i = 0; i < c.p.length; i++) {
+      const want = ref.latchProgress(i * c.step, c.p[i]);
+      assert.ok(Object.is(got[i], want) || Math.abs(got[i] - want) < 1e-15, `${c.name} reading ${i}: ${got[i]} vs ${want}`);
+    }
+  }
+  // 1 s readings: 0 until 2 min are covered; a 0.75 held 119 s never counts, one held 120 s does.
+  assert.equal(PROGRESS_LATCH_MS, 120_000);
+  const spike = Float64Array.from({ length: 600 }, (_, i) => (i >= 200 && i < 320 ? 0.75 : 0.5));
+  assert.equal(Math.max(...latchedProgress(spike)), 0.5);
+  const hold = Float64Array.from({ length: 600 }, (_, i) => (i >= 200 && i <= 320 ? 0.75 : 0.5));
+  const h = latchedProgress(hold);
+  assert.equal(h[319], 0.5);
+  assert.equal(h[320], 0.75);
+  assert.equal(h[599], 0.75, 'it never falls');
+  // A grid that carries production's latch (research/tennisTaSim.ts grids: g.progressHigh) is read as it is: here the latch
+  // reaches the last share only at 1500, so the not-in-profit fade positions are cut at 1500 and entries stop there.
+  const g = endGrid({ resultA: 1 }) as MatchGrid & { progressHigh?: Float64Array };
+  g.progressHigh = Float64Array.from({ length: g.n }, (_, i) => (i < 1500 ? 0.5 : 0.75));
+  const trips: EntryTrace[] = [];
+  const st = new SignalStudy({ trace: (t) => { if (!t.placebo && t.series === MOM60) trips.push(t); } });
+  st.addMatch(g);
+  const fades = trips.filter((x) => x.dir === 'fade' && x.exit !== 'ts2m');
+  assert.equal(fades.length, 4);
+  for (const t of fades) assert.ok(t.kind === 'cut' && t.exitDecision === 1500, `${t.exit}: ${t.kind} at ${t.exitDecision}`);
+  assert.ok(!trips.some((t) => t.decision >= 1500));
+  assert.equal(st.diagnostics().progressHighFromGrid, 1);
+  assert.equal((st.exportCells().diagnostics as { settings: { progressLatchMs: number } }).settings.progressLatchMs, PROGRESS_LATCH_MS);
+  // Not production's latch: one that falls, or is short.
+  const bad = endGrid({ resultA: 1 }) as MatchGrid & { progressHigh?: Float64Array };
+  bad.progressHigh = Float64Array.from({ length: bad.n }, (_, i) => (i === 2000 ? 0.75 : 0.5));
+  assert.throws(() => new SignalStudy().addMatch(bad), /progressHigh falls/);
+  bad.progressHigh = new Float64Array(10);
+  assert.throws(() => new SignalStudy().addMatch(bad), /progressHigh samples/);
+});
+
+test('after fees on the open contracts\' cost: entry price + entry fee a contract, as production\'s positionNetAtBid', () => {
+  // follow buys 18 A at 0.53 (entry fee 0.32). In the last share A's bid is 0.56 (net -0.10: the entry fee makes it a loss)
+  // or 0.57 (net +0.09).
+  const fill = { ticker: 'KXATPMATCH-X-A', side: 'bid' as const, count: 18, price: 0.53, fee: orderFee(18, 0.53, true, FEES) };
+  const pos = new PositionBook().applyFill(fill);
+  const cost = openSidePrice(pos)! + openEntryFee(pos)!;
+  const prod = (b: number) => positionNetAtBid(pos.yes, cost, { price: b }, undefined, FEES)!;
+  assert.ok(Math.abs(prod(0.56) + 0.1) < 1e-9 && Math.abs(prod(0.57) - 0.09) < 1e-9, `${prod(0.56)} ${prod(0.57)}`);
+  // Without the entry fee 0.56 would be a profit: the fee is what decides it.
+  assert.ok(positionNetAtBid(pos.yes, openSidePrice(pos)!, { price: 0.56 }, undefined, FEES)! > 0);
+  for (const [level, kind] of [[0.565, 'cut'], [0.575, 'ride']] as const) {
+    const trips: EntryTrace[] = [];
+    new SignalStudy({ trace: (t) => { if (!t.placebo && t.series === MOM60 && t.dir === 'follow') trips.push(t); } }).addMatch(endGrid({ resultA: 1, level }));
+    assert.equal(trips.length, 5);
+    for (const t of trips) {
+      assert.equal(t.count, 18);
+      assert.equal(t.entryPx, 0.53);
+      // ts2m's stop (1121) comes before the latch (1220): a position not in profit keeps its own exit until then.
+      assert.equal(t.kind, kind === 'cut' && t.exit === 'ts2m' ? 'time' : kind, `${level} ${t.exit}`);
+      if (t.kind === 'cut') { assert.equal(t.exitDecision, 1220); assert.ok(Math.abs(t.net - prod(0.56)) < 1e-9); }
+    }
+  }
 });
 
 test('end cut: a position held to settlement not in profit is a breach, counted per cell', () => {
@@ -525,11 +733,13 @@ test('TA-Lib: the study refuses to run without the real engine (no silent zero-t
 });
 
 test('exportCells: the C2 shape, with per-unit and per-day rows that add up to the cell', () => {
-  const trips: EntryTrace[] = [];
-  const st = new SignalStudy({ trace: (t) => trips.push(t) });
+  const trips: EntryTrace[] = [], tripMatch = new Map<EntryTrace, number>();
+  let cur = 0;
+  const st = new SignalStudy({ trace: (t) => { trips.push(t); tripMatch.set(t, cur); } });
   const units = ['W-2026-03-02', 'W-2026-03-02', 'W-2026-03-09', 'W-2026-03-09'];
   const days = ['2026-03-02', '2026-03-03', '2026-03-09', '2026-03-10'];
   for (let k = 0; k < 4; k++) {
+    cur = k;
     const p = rwPath(70 + k, 3 * 3600);
     st.addMatch(grid(p, { seed: 80 + k, day: days[k], unit: units[k], live: 900, progEnd: 1, resultA: p[p.length - 1] > 0.5 ? 1 : 0 }));
   }
@@ -540,24 +750,27 @@ test('exportCells: the C2 shape, with per-unit and per-day rows that add up to t
   assert.equal((ex.diagnostics as { matches: number }).matches, 4);
   assert.ok(ex.cells.length > 100);
   assert.equal(new Set(ex.cells.map((c) => c.id)).size, ex.cells.length);
-  const keys = ['id', 'group', 'n', 'sum', 'sumSq', 'sum3', 'sum4', 'breaches', 'gross', 'fees', 'stressSum', 'units', 'days'];
+  const keys = ['id', 'group', 'n', 'sum', 'sumSq', 'sum3', 'sum4', 'breaches', 'gross', 'fees', 'stressSum', 'units', 'days', 'markets', 'placeboMarkets'];
   for (const c of ex.cells) {
     assert.deepEqual(Object.keys(c).sort(), [...keys].sort());
-    let un = 0, us = 0, dn = 0, ds = 0;
+    let un = 0, us = 0, dn = 0, ds = 0, upn = 0, ups = 0, dpn = 0, dps = 0;
     for (const [u, row] of Object.entries(c.units)) {
       assert.ok(units.includes(u));
       assert.equal(row.length, 4);
-      un += row[0]; us += row[1];
+      un += row[0]; us += row[1]; upn += row[2]; ups += row[3];
       assert.ok(row[0] > 0 || row[2] > 0);
     }
+    // Days carry the placebo columns too (the registry's family B placebo row needs a by_day, C7).
     for (const [d, row] of Object.entries(c.days)) {
       assert.ok(days.includes(d));
-      assert.equal(row.length, 2);
-      dn += row[0]; ds += row[1];
+      assert.equal(row.length, 4);
+      dn += row[0]; ds += row[1]; dpn += row[2]; dps += row[3];
+      assert.ok(row[0] > 0 || row[2] > 0);
     }
     assert.equal(un, c.n);
     assert.equal(dn, c.n);
-    assert.ok(Math.abs(us - c.sum) < 1e-6 && Math.abs(ds - c.sum) < 1e-6);
+    assert.equal(dpn, upn);
+    assert.ok(Math.abs(us - c.sum) < 1e-6 && Math.abs(ds - c.sum) < 1e-6 && Math.abs(dps - ups) < 1e-6);
     assert.ok(Math.abs(c.gross - c.fees - c.sum) < 1e-6);
   }
   // One cell against its positions: moments, stress, placebo columns by unit, days.
@@ -571,6 +784,11 @@ test('exportCells: the C2 shape, with per-unit and per-day rows that add up to t
   assert.ok(Math.abs(real.reduce((a, t) => a + t.stressNet, 0) - cell.stressSum) < 1e-6);
   assert.equal(Object.values(cell.units).reduce((a, u) => a + u[2], 0), plac.length);
   assert.ok(Math.abs(Object.values(cell.units).reduce((a, u) => a + u[3], 0) - plac.reduce((a, t) => a + t.net, 0)) < 1e-6);
+  // Markets: distinct match x side with an entry, per arm (the registry rows' markets).
+  const mk = (l: typeof mine) => new Set(l.map((t) => `${tripMatch.get(t)}|${t.side}`)).size;
+  assert.equal(cell.markets, mk(real));
+  assert.equal(cell.placeboMarkets, mk(plac));
+  assert.ok(cell.markets > 0 && cell.markets <= real.length);
   // Stress: the same exits, every sale one tick lower and every fee x1.25.
   for (const t of real) {
     const fs = { ...FEES, takerMultiplier: 1.25, makerMultiplier: 1.25 };
@@ -601,9 +819,13 @@ test('design size covers every reported cell', () => {
   const cells = st.exportCells().cells;
   assert.ok(cells.length > 0);
   assert.ok(st.designSize() >= cells.length);
-  // H, one tour series: 38 series x 2 directions x (1 + 4 phases x 5 buckets) contexts x 5 exits; t3 (progress >= 2/3)
-  // is out of the design because nothing enters from 0.65 (production's end-entry block).
-  assert.equal(st.designSize(), 38 * 2 * 21 * 5);
+  // H, one tour series: 38 series x 2 directions x (1 + 5 phases x 5 buckets) contexts x 5 exits. t3 (a reading of 2/3 or
+  // more) is in the design: the end-entry block reads the latched progress, so entries go on there until the reading has
+  // held 0.65 for 2 min.
+  assert.equal(st.designSize(), 38 * 2 * 26 * 5);
+  assert.deepEqual((st.exportCells().diagnostics as { settings: { phasesInDesign: string[] } }).settings.phasesInDesign, SIGNAL_SPEC.phases);
+  // Here the reading passes 2/3 at 5000 and the latch 0.65 at 5010: a placebo trigger enters in that window.
+  assert.ok(cells.some((c) => c.id.includes(':t3:')), 'entries in t3 under the latch');
   assert.equal(new SignalStudy({ settleFrac: 0.2, endEntryMargin: 0.05 }).designSize(), 38 * 2 * 1 * 5);
   for (const c of cells) {
     const parts = c.id.split('|');
@@ -611,11 +833,10 @@ test('design size covers every reported cell', () => {
     assert.equal(c.group, parts.slice(0, 5).join('|'));
     assert.ok(SIGNAL_SPEC.exits.includes(parts[6]));
     assert.ok(parts[5] === 'all' || SIGNAL_SPEC.contexts.includes(parts[5]), parts[5]);
-    assert.ok(!parts[5].includes(':t3:'), c.id);
     // H runs no 10 s / 30 s bars and no windows under 60 s (Amendment 1, A1).
     assert.ok(parts[2] !== '10s' && parts[2] !== '30s' && !/on:w(15|30):/.test(parts[3]), c.id);
   }
-  // With room for t3 (cut share from 0.8, entries until 0.75) it is in the design.
+  // Another end rule, the same design.
   const wide = new SignalStudy({ settleFrac: 0.2, endEntryMargin: 0.05 });
   wide.addMatch(grid(rwPath(40, 2 * 3600), { seed: 60, day: '2026-04-01', live: 600, progEnd: 1, resultA: 1 }));
   assert.equal(wide.designSize(), 38 * 2 * 26 * 5);

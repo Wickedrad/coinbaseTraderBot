@@ -5,42 +5,62 @@
 // the bot's recordings cut to tennis lines by research/tennisTaData.ts) runs MANY configs of the production tennis strategy
 // in lock-step: market data (books, tape, results) is shared, each config has its own trackers, orders and positions.
 //
-// What it mirrors from production (bot/engine.ts tennisTick): decisions every 5 s through decideMatch with the
-// TennisProfitRules the engine builds (pacerUsd, settleFrac, endLoserCut, endEntryMargin, floorMode, floors, floorTicks):
-// the after-fee ride in the last 30% of the match, the end loser cut (TENNIS_END_LOSER_CUT, leg end_cut) and the entry block
-// before it, the quota snipe. Each market gets avgEntry = -netCash/yes, netAtBid (positionNetAtBid) and breakEven
-// (breakEvenExit) on the position's round-trip cost basis (fees - netCash)/yes with that market's fee schedule, as the engine
-// computes them; quotes only from books the engine would use (no older than RISK_MAX_BOOK_AGE_MS, not crossed); flow over
-// confWindowSec from the tape; the strategy gets the event's published start (none when Kalshi gave none: the tracker then
-// detects the start from the price) and the EARLIEST of its markets' closes. Fees per fill with bot/fees.ts (tennis pays
-// maker and taker fees, each fill rounded up to the cent); the per-order / per-match / total tennis caps through tennisSize
-// on a fixed $200 bankroll (no compounding: a sterile sweep); resting orders cancelled when no longer planned; GTC orders
-// expiring at min(1 h, their market's close - 1 s).
-// The quota pacer (Amendment 1, A6): each config runs its own HourlyQuotaPacer at the production PACER_* settings, fed by
-// its own tennis fills and settlements (and the drops of matches that never settle), plus QuotaFloors. Production's pacer
-// also sees crypto and perps, which a tennis replay cannot reproduce; HARNESS_PACER=off is the sensitivity arm. The pacer,
-// the risk caps and the placebo reservoir live as long as the run: the sweep cuts runs at unit edges (Amendment 3), so they
-// restart only there.
+// What it mirrors from production (bot/engine.ts tennisTick, main with #290-#292 and #279): decisions every 5 s through
+// decideMatch with the TennisProfitRules the engine builds (pacerUsd, settleFrac, endLoserCut, endEntryMargin, floorMode,
+// floors, floorTicks): the after-fee ride in the last 30% of the match, the end loser cut (TENNIS_END_LOSER_CUT, leg end_cut)
+// and the entry block before it, both on the progress the match has held for PROGRESS_LATCH_MS (decideMatch latches it
+// itself), the quota snipe. Positions are production's own book (bot/oms/positions.ts PositionBook: applyFill on every
+// fill with the fee bot/oms/oms.ts books, on the side price paid; settle on the result), and each held market gets the
+// engine's fields on the OPEN contracts' cost: avgEntry = openSidePrice, netAtBid = positionNetAtBid and breakEven =
+// breakEvenExit on openSidePrice + openEntryFee, with that market's (stressed, dated) fee schedule; quotes only from books
+// the engine would use (no older than RISK_MAX_BOOK_AGE_MS, not crossed); flow over confWindowSec from the tape; the
+// strategy gets the event's published start (none when Kalshi gave none: the tracker then detects the start from the price)
+// and the EARLIEST of its markets' closes. Fees per fill with bot/fees.ts (tennis pays maker and taker fees, each fill
+// rounded up to the cent); the per-order / per-match / total tennis caps through tennisSize on a fixed $200 bankroll (no
+// compounding: a sterile sweep), each market's risk as bot/engine.ts marketRisk counts it (the position and the working
+// orders that are not reduce-only); resting orders cancelled when no longer planned; GTC orders expiring at min(1 h, their
+// market's close - 1 s).
+// The quota pacer (Amendment 1, A6): each config runs its own HourlyQuotaPacer at the production PACER_* settings, fed as
+// the engine feeds it (onFill with the fill, its fee and the position book's state after it; onSettled with the realized
+// P&L, and the drops of matches that never settle), plus QuotaFloors. Production's pacer also sees crypto and perps, which
+// a tennis replay cannot reproduce; HARNESS_PACER=off is the sensitivity arm. The pacer, the risk caps and the placebo
+// reservoir live as long as the run: the sweep cuts runs at unit edges (Amendment 3), so they restart only there.
 // What it does not: the riskScale / optimal-f scaling and equity guard (persisted state), feed-lag and sports halts, the
-// curve gate (a no-op under the default SINUOUS_EXIT=cross), the fair model and SNN features (no fairA is passed).
+// kill switch and its tennis exit (bot/engine.ts tennisKillExits: the sim never engages a kill switch), the curve gate (a
+// no-op under the default SINUOUS_EXIT=cross), the fair model and SNN features (no fairA is passed).
+// Progress as the sim itself reads it, each as production reads it for that purpose: the settlement audit's ride rule on
+// the reading of the tick (applyProfitRules' lastShare, MatchTracker.progress); the grid's `progress` (family B's ride rule
+// and phase contexts) the same reading of a production-default tracker, and its `progressHigh` that tracker's latched
+// progress (MatchTracker.latchProgress, PROGRESS_LATCH_MS: what the end cut and the entry block read); the episodes' phase
+// labels the reading of the tick (as the strategy's own phases and the dashboard read it).
 //
 // Recorded books (stratum R): production marks every intact book alive each second while the Kalshi socket has had a
 // message in the last 12 s (its pings keep a quiet socket alive), invalidates every book on a disconnect, and re-snapshots
 // only on (re)subscribe. The recordings carry neither the pings nor the disconnects, so a pre-pass over the same files
-// (feedTimeline) rebuilds the feed's outages, per day file:
-//  - a day that shows the feed's liveness (a heartbeat line, kind 'hb', which a tennis cut may keep for every second of
-//    raw-file activity; or the socket's lines of other markets, as a raw recording has): every silence of the socket's
-//    lines (book, delta, trade, lifecycle) and heartbeats longer than 12 s is an outage;
-//  - a blind day (the tennis cut without heartbeats, as research/tennisTaData.ts writes it today; production writes no
-//    heartbeat kind): a tennis silence is a quiet market, not a disconnect, unless it ends in a resubscribe, i.e. snapshots
-//    of at least two already-snapshotted books within RESYNC_WINDOW_MS of the line that ends it (a reconnect or a restart).
+// (feedTimeline) rebuilds the feed's outages, per day file. The socket's lines are book, delta, trade and lifecycle lines
+// of any market and SOCKET_BEAT_KIND lines ('ws_beat': a cut's mark of the socket's lines of the markets it drops, at most
+// one per 5 s of them); the feed's liveness lines are those and the 'beat' (the tennis cut research/tennisTaData.ts
+// writes one at most once per 5 s of ANY source line, the Coinbase spot feed and REST polls included) and 'alive' lines.
+//  - a day whose socket shows its own liveness (the socket's lines of other markets, as a raw recording has, or ws_beat
+//    lines): every silence of the socket's lines longer than 12 s is an outage, dated from the socket's last line, as on
+//    the raw file; a quiet tennis stretch inside a live socket is not;
+//  - a day that shows only the feed's liveness ('beat' or 'alive' lines): every silence of the socket's lines and those
+//    liveness lines longer than 12 s is an outage (the recorder itself fell silent: a restart or a stall);
+//  - on every day, a silence of the socket's lines longer than 12 s that ends in a resubscribe, i.e. snapshots of at
+//    least two already-snapshotted books within RESYNC_WINDOW_MS of the line that ends it (a reconnect or a restart: the bot
+//    re-snapshots known books only then), is an outage too: on a blind day (the tennis cut without liveness lines) it is
+//    the only kind, and on a day with beats but no ws_beat a reconnect the beats masked. Such an outage is dated from the
+//    socket's last line (conservative: a cut without ws_beat lines shows no later sign of the socket), unless the feed's
+//    liveness lines fell silent for over 12 s inside it: then from the first such silence (the lines show the recorder
+//    alive until then, and a restart takes the socket down with it).
 // In an outage books are marked alive only up to 12 s after its last line (so unusable 17 s after it, as production's
 // books go stale once the socket falls silent) and are invalidated at its end: no quote, no fill, until the next snapshot.
-// A blind outage is known once it ends; the pre-pass gives the sim the disconnect production itself knew of at the time
-// (no market data comes from it), and dates it from the last tennis line, which is conservative. Settlements come from
-// 'result' lines and from Kalshi's lifecycle lines (determined / settled with a result), the first one per market. A
-// recorded match's market line is written when the bot first lists it (up to 36 h before the start), so R reads
-// lookbackDays before fromDay.
+// A resubscribe-found outage is known once it ends; the pre-pass gives the sim the disconnect production itself knew of at
+// the time (no market data comes from it). 'beat', 'ws_beat' and 'alive' lines are feed activity only: on R the sim's own
+// alive timer marks the books, so an 'alive' line's tickers are not applied (on H, where the history replay writes them,
+// they keep its minute quotes standing). Settlements come from 'result' lines and from Kalshi's lifecycle lines
+// (determined / settled with a result), the first one per market. A recorded match's market line is written when the bot
+// first lists it (up to 36 h before the start), so R reads lookbackDays before fromDay.
 //
 // Output per config: realized net per match over EVERY owned match in finish order (0 for a match it did not trade,
 // aligned with SweepResult.matchList), the per-day totals, and one Episode per position (entry to flat or settlement)
@@ -52,8 +72,10 @@
 // IOC orders execute 1 s later against the book then; F2 = F1 plus one tick of slippage on every taker exit.
 //
 // Settlement audit (Amendment 3): a position held into settlement is a breach unless, at the config's last decision before
-// it, the match was in its last settleFrac share by the progress production's ride rule reads (MatchTracker.progress) AND
-// the position's net at the bid after fees was above zero. The verdict is refreshed at every decision for every held market
+// it, the match was in its last settleFrac share by the progress production's ride rule reads (MatchTracker.progress, the
+// reading of the tick, not the latched progress the end cut waits for: a loser the latch has not cut yet when the match
+// settles is held to settlement in production too, and counted) AND the position's net at the bid after fees, on the open
+// contracts' cost (netAtBid as above), was above zero. The verdict is refreshed at every decision for every held market
 // and dropped whenever a position opens or goes flat, so a position no decision has judged is a breach. A position still
 // open when its match never settles is dropped and counted as a breach too. With TENNIS_END_LOSER_CUT=false (the
 // settle-hold measuring stick) breaches are expected, and counted.
@@ -62,6 +84,8 @@
 // together) drawn at random from a reservoir of the same config's real readings on OTHER matches strictly earlier in time;
 // the current real reading joins the reservoir only after the clock has moved past it (an empty reservoir answers no
 // signal). The placebo never sees the reading it replaces, keeps the joint firing distribution, and breaks the timing.
+// Its draws are seeded with PLACEBO_SEED (20261105, the seed the registry rows of the placebo arms record) combined with
+// the spec id (rng(PLACEBO_SEED ^ hash32(spec.id))), so each coin config has its own stream and a re-run reproduces it.
 // Amendment 3 is drafted and goes into the pre-registration before the stage 1 counting run; until it does, the registered
 // text (section 7, Placebo A: a coin flip per signal at the match's firing rate) differs from this control.
 
@@ -69,6 +93,7 @@ import { loadConfig, paperEnv, type TennisConfig } from '../bot/config';
 import { orderFee } from '../bot/fees';
 import { contractKind } from '../bot/model/fairValue';
 import type { OrderBook } from '../bot/marketdata/orderBook';
+import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { HourlyQuotaPacer, QuotaFloors, type PacerConfig, type PacerFloorMode } from '../bot/risk/quotaPacer';
 import type { FeeSchedule } from '../bot/fees';
@@ -87,8 +112,17 @@ const DAY = 86_400_000;
 export const FEED_SILENCE_MS = 12_000;
 /** Blind R days: a tennis silence is an outage when resubscribe snapshots follow the line that ends it this soon. */
 export const RESYNC_WINDOW_MS = 15_000;
-/** The heartbeat kind a tennis cut may keep (one line per second of raw-file activity); production writes none. */
-export const HEARTBEAT_KIND = 'hb';
+/** The liveness line the tennis cut writes (research/tennisTaData.ts: at most once per 5 s of raw-file activity, any source
+ *  line); production writes none. It shows the recorder alive, not the Kalshi socket. */
+export const HEARTBEAT_KIND = 'beat';
+/** The socket's liveness line a cut may write ({"t":<ms>,"k":"ws_beat"}: at most once per 5 s of the Kalshi socket's
+ *  lines, i.e. book, delta, trade or lifecycle lines of any market, crypto included, at that line's time); production writes
+ *  none. feedTimeline reads it as a line of the socket (of a market the cut dropped). */
+export const SOCKET_BEAT_KIND = 'ws_beat';
+/** Lines that are feed activity only (contract C8): the cut's beats and the history replay's alive marks. */
+export const FEED_ACTIVITY_KINDS: readonly string[] = [HEARTBEAT_KIND, SOCKET_BEAT_KIND, 'alive'];
+/** The coin placebo's base seed (combined with the spec id; the registry rows of the placebo arms record it). */
+export const PLACEBO_SEED = 20261105;
 /** A recorded score older than this is not passed to the strategy (the free feed polls about every 14 min). */
 const SCORE_MAX_AGE_MS = 15 * 60_000;
 /** A match grid starts at most this long before the published start (R lists a match up to 36 h ahead). */
@@ -103,9 +137,10 @@ export type FillModel = 'F0' | 'F1' | 'F2';
 export interface SimSpec {
   id: string;
   /** Env-style overrides of production (TENNIS_*, PACER_*), plus harness rules: HARNESS_LOSER_STOP (research loser stop,
-   *  a fraction of the open lot's cost, 0 = off), HARNESS_BANKROLL (default 200), HARNESS_PACER ('tennis' default, 'off'),
-   *  HARNESS_LATENCY_MS (added to the fill model's latency), HARNESS_FEE_MULT (fees x this, stress). With no override the
-   *  config is production's defaults exactly (TENNIS_END_LOSER_CUT on; the settle-hold stick sets it false). */
+   *  a fraction of the open contracts' cost openSidePrice + openEntryFee, 0 = off), HARNESS_BANKROLL (default 200),
+   *  HARNESS_PACER ('tennis' default, 'off'), HARNESS_LATENCY_MS (added to the fill model's latency), HARNESS_FEE_MULT (fees
+   *  x this, stress). With no override the config is production's defaults exactly (TENNIS_END_LOSER_CUT on; the
+   *  settle-hold stick sets it false). */
   overrides: Record<string, string | number | boolean>;
   fill: FillModel;
   placebo?: 'coin';
@@ -117,9 +152,6 @@ interface SimOrder {
   id: number; ticker: string; side: 'bid' | 'ask'; price: number; remaining: number; initial: number;
   postOnly: boolean; reduceOnly: boolean; ioc: boolean; placedTs: number; activeTs: number; queueAhead: number; expiry: number; leg: TennisPlan['leg']; entryCounted: boolean;
 }
-/** A market's position: the round-trip book as production keeps it (never reset until settlement), and the open lot's own
- *  cash and fees (reset when a flat position opens) for the research loser stop's cost. */
-export interface Pos { yes: number; netCash: number; fees: number; lotCash: number; lotFees: number }
 interface EventAcc { pnl: number; gross: number; fees: number; entries: number; traded: boolean; breaches: number; legs: Record<string, number>; eps: Episode[] }
 /** One position from its first entry fill to flat (or settlement): a loser-table row. */
 export interface Episode {
@@ -234,7 +266,9 @@ export class ConfigSim {
   /** Research loser stop (HARNESS_LOSER_STOP), undefined when off. */
   readonly loserStopFrac?: number;
   readonly trackers = new Map<string, MatchTracker>();
-  readonly pos = new Map<string, Pos>();
+  /** Positions as production keeps them (bot/oms/positions.ts: applyFill on every fill, settle on the result). A settled
+   *  market leaves the book at once (nothing reads it after), so get() is a live position or a flat unsettled market. */
+  readonly pos = new PositionBook();
   /** Resting orders by ticker. */
   readonly resting = new Map<string, SimOrder[]>();
   pending: SimOrder[] = [];
@@ -279,7 +313,7 @@ export class ConfigSim {
     this.latency = (spec.fill === 'F0' ? 0 : 1000) + Math.max(0, Number(spec.overrides.HARNESS_LATENCY_MS ?? 0));
     this.slipTicks = spec.fill === 'F2' ? 1 : 0;
     this.offset = Math.max(0, Math.min(DEC_MS - 1, spec.offsetMs ?? 0));
-    if (spec.placebo === 'coin') this.placebo = new PlaceboReservoir(rng(hash32(spec.id)));
+    if (spec.placebo === 'coin') this.placebo = new PlaceboReservoir(rng((PLACEBO_SEED ^ hash32(spec.id)) >>> 0));
   }
 
   tracker(event: string): MatchTracker {
@@ -299,9 +333,7 @@ export class ConfigSim {
   }
 
   /** Anything held or working on this ticker? */
-  busy(ticker: string): boolean { return this.pos.has(ticker) || (this.resting.get(ticker)?.length ?? 0) > 0 || this.pending.some((o) => o.ticker === ticker); }
-
-  private p(ticker: string): Pos { let x = this.pos.get(ticker); if (!x) { x = { yes: 0, netCash: 0, fees: 0, lotCash: 0, lotFees: 0 }; this.pos.set(ticker, x); } return x; }
+  busy(ticker: string): boolean { return this.pos.get(ticker)?.settled === false || (this.resting.get(ticker)?.length ?? 0) > 0 || this.pending.some((o) => o.ticker === ticker); }
 
   ev(event: string): EventAcc { let e = this.events.get(event); if (!e) { e = { pnl: 0, gross: 0, fees: 0, entries: 0, traded: false, breaches: 0, legs: {}, eps: [] }; this.events.set(event, e); } return e; }
 
@@ -321,24 +353,28 @@ export class ConfigSim {
     return { pacerUsd, settleFrac: this.cfg.settleFrac, endLoserCut: this.cfg.endLoserCut, endEntryMargin: this.cfg.endEntryMargin, floorMode: this.floorMode, floors: this.floors, floorTicks: this.floorTicks, loserStopFrac: this.loserStopFrac };
   }
 
-  /** A held market's fields as the engine computes them: avgEntry = -netCash/yes, netAtBid and breakEven on the round-trip
-   *  cost basis (fees - netCash)/yes with this market's (stressed) fee schedule; costPer from the open lot alone, only for
-   *  the research loser stop and only when positive. Undefined when flat. */
+  /** A held market's fields as bot/engine.ts tennisTick fills them from the position book: position = yes; for a long
+   *  position avgEntry = openSidePrice, and netAtBid (positionNetAtBid) and breakEven (breakEvenExit) on the open contracts'
+   *  cost openSidePrice + openEntryFee with this market's (stressed, dated) fee schedule; costPer the same cost, only for the
+   *  research loser stop and only when positive. Undefined when flat. */
   held(ticker: string, bid: { price: number } | undefined, ask: { price: number } | undefined): HeldFields | undefined {
     const p = this.pos.get(ticker);
-    const yes = p?.yes ?? 0;
-    if (!p || !(yes > 0)) return undefined;
+    if (!p || p.settled || Math.abs(p.yes) < 1e-9) return undefined;
+    if (!(p.yes > 0)) return { position: p.yes };
     const fees = this.fees(ticker);
-    const cost = (p.fees - p.netCash) / yes;
-    const key = `${yes}|${p.netCash}|${p.fees}|${fees.takerMultiplier}`;
+    const avgEntry = openSidePrice(p)!;
+    const cost = avgEntry + openEntryFee(p)!;
+    const key = `${p.yes}|${cost}|${fees.takerMultiplier}|${fees.takerRate ?? ''}|${fees.balancePrecision ?? ''}`;
     let be = this.beCache.get(ticker);
-    if (!be || be.key !== key) { be = { key, be: breakEvenExit(yes, cost, fees) }; this.beCache.set(ticker, be); }
-    const out: HeldFields = { position: yes, avgEntry: -p.netCash / yes, netAtBid: positionNetAtBid(yes, cost, bid, ask, fees), breakEven: be.be };
-    if (this.loserStopFrac !== undefined) { const lot = (p.lotFees - p.lotCash) / yes; if (lot > 1e-9) out.costPer = lot; }
+    if (!be || be.key !== key) { be = { key, be: breakEvenExit(p.yes, cost, fees) }; this.beCache.set(ticker, be); }
+    const out: HeldFields = { position: p.yes, avgEntry, netAtBid: positionNetAtBid(p.yes, cost, bid, ask, fees), breakEven: be.be };
+    if (this.loserStopFrac !== undefined && cost > 1e-9) out.costPer = cost;
     return out;
   }
 
-  /** The settlement audit at a decision: may each held market ride to settlement, by production's ride rule as of now? */
+  /** The settlement audit at a decision: may each held market ride to settlement, by production's ride rule as of now?
+   *  (applyProfitRules' lastShare: the reading of the tick, never the latched progressHigh, which only the end cut and the
+   *  entry block read.) */
   audit(tr: MatchTracker, markets: MatchMarket[], now: number): void {
     if (!markets.some((m) => m.position > 0)) return;
     const frac = this.cfg.settleFrac;
@@ -357,37 +393,42 @@ export class ConfigSim {
     (this.events.get(o.event) ?? this.ev(o.event)).eps.push(Object.assign(ep, { k: -1, ticker } as unknown as Episode));
   }
 
-  /** Worst-case loss of a market: position plus resting and pending orders (bot/risk/exposure.ts). */
+  /** Worst-case loss of a market as bot/engine.ts marketRisk counts it (bot/risk/exposure.ts): the position and the working
+   *  orders (resting and in flight) that are not reduce-only, a non-post-only one at the taker fee. */
   worst(ticker: string): number {
     const p = this.pos.get(ticker);
-    const rest = [...(this.resting.get(ticker) ?? []), ...this.pending.filter((o) => o.ticker === ticker)].map((o) => ({ ticker, side: o.side, price: o.price, remaining: o.remaining, isTaker: false }));
-    if (!p && !rest.length) return 0;
-    return marketWorstLoss(p ? { yes: p.yes, netCash: p.netCash, fees: p.fees } : undefined, rest, this.fees(ticker));
+    const pos = p && !p.settled ? p : undefined;
+    const orders = [...(this.resting.get(ticker) ?? []), ...this.pending.filter((o) => o.ticker === ticker)];
+    if (!pos && !orders.length) return 0;
+    const rest = orders.filter((o) => !o.reduceOnly).map((o) => ({ ticker, side: o.side, price: o.price, remaining: o.remaining, isTaker: !o.postOnly }));
+    return marketWorstLoss(pos, rest, this.fees(ticker));
   }
 
-  /** Tickers this config holds or works orders on. */
-  tickers(): string[] { return [...new Set([...this.pos.keys(), ...this.resting.keys(), ...this.pending.map((o) => o.ticker)])]; }
+  /** Tickers this config holds (unsettled, flat ones with realized cash included, as bot/engine.ts riskTotals) or works
+   *  orders on. */
+  tickers(): string[] { return [...new Set([...this.pos.unsettled().map((m) => m.ticker), ...this.resting.keys(), ...this.pending.map((o) => o.ticker)])]; }
 
   fill(o: SimOrder, n: number, price: number, isTaker: boolean, event: string, ts: number): void {
     n = r2(Math.min(n, o.remaining));
     if (n <= 0) return;
-    const p = this.p(o.ticker);
-    const fee = orderFee(n, price, isTaker, this.fees(o.ticker));
-    const before = p.yes, base = p.netCash - p.fees;
-    const signed = o.side === 'bid' ? n : -n;
-    const after = r2(before + signed);
+    const prev = this.pos.get(o.ticker);
+    if (prev?.settled) return;
+    const before = prev?.yes ?? 0, base = prev ? prev.netCash - prev.fees : 0;
+    // The fee as production books it (bot/oms/oms.ts onFill, bot/paper/paperExchange.ts): on the side price paid.
+    const fee = orderFee(n, o.side === 'bid' ? price : 1 - price, isTaker, this.fees(o.ticker));
+    const p = this.pos.applyFill({ ticker: o.ticker, side: o.side, count: n, price, fee });
+    const after = p.yes;
     const opened = before <= 1e-9 && after > 1e-9, flat = before > 1e-9 && after <= 1e-9;
-    if (opened) { p.lotCash = 0; p.lotFees = 0; }
-    p.yes = after;
-    p.netCash -= signed * price; p.lotCash -= signed * price;
-    p.fees += fee; p.lotFees += fee;
     o.remaining = r2(o.remaining - n);
     // A position that opens or goes flat has no ride verdict until a decision judges it.
     if (opened || flat) this.rideOk.delete(o.ticker);
+    // bot/engine.ts: the pacer gets the fill, its fee and the position book's state after it.
     this.pacer?.onFill({ ticker: o.ticker, side: o.side, count: n, price }, fee, p, ts);
     if (opened) this.open.set(o.ticker, { event, ticker: o.ticker, t: ts, leg: o.leg, px: price, n: p.yes, ph: this.phaseOf.get(event) ?? 'pre', sig: this.lastSig.get(o.ticker) ?? 0, base });
     else if (p.yes > 1e-9) { const op = this.open.get(o.ticker); if (op && p.yes > op.n) op.n = p.yes; }
-    if (flat) { this.closeEp(o.ticker, o.leg, p.netCash - p.fees, ts, false); this.floors.forget(o.ticker); }
+    // The quota floor stays (bot/engine.ts touches QuotaFloors on no fill: the next decision's floor(ticker, 0) drops it,
+    // or a re-entry filled before that decision keeps it, as in production).
+    if (flat) this.closeEp(o.ticker, o.leg, p.netCash - p.fees, ts, false);
     const e = this.ev(event);
     e.traded = true;
     e.legs[o.leg] = (e.legs[o.leg] ?? 0) + 1;
@@ -507,7 +548,7 @@ export class ConfigSim {
     if (k.length) this.resting.set(ticker, k); else this.resting.delete(ticker);
   }
 
-  /** Settle a market: payout, realized P&L into its match, the settlement-rule audit. */
+  /** Settle a market (PositionBook.settle): payout, realized P&L into its match and the pacer, the settlement-rule audit. */
   settle(ticker: string, result: 'yes' | 'no', event: string, ts: number): void {
     this.resting.delete(ticker);
     this.pending = this.pending.filter((o) => o.ticker !== ticker);
@@ -515,19 +556,20 @@ export class ConfigSim {
     const p = this.pos.get(ticker);
     const ride = this.rideOk.get(ticker) === true;
     this.rideOk.delete(ticker);
-    if (!p) return;
-    const e = this.ev(event);
-    const breach = p.yes > 1e-9 && !ride;
-    if (breach) e.breaches++;
-    const payout = result === 'yes' ? p.yes : 0;
-    const realized = p.netCash + payout - p.fees;
-    e.pnl += realized;
-    e.gross += p.netCash + payout;
-    e.fees += p.fees;
-    this.pacer?.onSettled(ticker, realized, ts);
-    if (p.yes > 1e-9) this.closeEp(ticker, 'settle', realized, ts, breach);
-    this.pos.delete(ticker);
     this.beCache.delete(ticker);
+    if (!p || p.settled) return;
+    const e = this.ev(event);
+    const held = p.yes;
+    const breach = held > 1e-9 && !ride;
+    if (breach) e.breaches++;
+    const m = this.pos.settle(ticker, result, ts)!;
+    const realized = m.realized ?? 0;
+    e.pnl += realized;
+    e.gross += m.netCash;
+    e.fees += m.fees;
+    this.pacer?.onSettled(ticker, realized, ts);
+    if (held > 1e-9) this.closeEp(ticker, 'settle', realized, ts, breach);
+    this.pos.prune(Infinity);
   }
 
   /** Close a match into its day (an unresolved match's open positions are dropped, counted as breaches, and their realized
@@ -538,18 +580,22 @@ export class ConfigSim {
       this.pending = this.pending.filter((o) => o.ticker !== t);
       this.floors.forget(t);
       const p = this.pos.get(t);
-      if (p) {
+      if (p && !p.settled) {
         const e = this.ev(event);
-        e.pnl += p.netCash - p.fees; e.gross += p.netCash; e.fees += p.fees;
-        if (p.yes > 1e-9) { e.breaches++; this.closeEp(t, 'drop', p.netCash - p.fees, ts, true); }
-        this.pacer?.onSettled(t, p.netCash - p.fees, ts);
-        this.pos.delete(t);
+        const held = p.yes;
+        // Dropped: what is held is worth nothing (settled 'no' pays a YES position nothing: realized = net cash - fees).
+        const m = this.pos.settle(t, 'no', ts)!;
+        const realized = m.realized ?? 0;
+        e.pnl += realized; e.gross += m.netCash; e.fees += m.fees;
+        if (held > 1e-9) { e.breaches++; this.closeEp(t, 'drop', realized, ts, true); }
+        this.pacer?.onSettled(t, realized, ts);
       }
       this.open.delete(t);
       this.rideOk.delete(t);
       this.lastSig.delete(t);
       this.beCache.delete(t);
     }
+    this.pos.prune(Infinity);
     const e = this.events.get(event);
     this.trackers.delete(event);
     this.events.delete(event);
@@ -607,60 +653,98 @@ export function tennisOnly(lost?: Set<string>, lostFrom = -Infinity): LineFilter
 }
 
 /** An outage of the recorded feed: books are marked alive only up to `from` + FEED_SILENCE_MS and are invalidated at
- *  `to` (the line that ended it). `blind`: a silence of tennis lines on a blind day, an outage by the resubscribe after it. */
+ *  `to` (the line that ended it). `blind`: found only by the resubscribe after it (a silence of the socket's lines on a
+ *  blind day, or a reconnect that the beats of a day without ws_beat lines masked). */
 export interface FeedGap { from: number; to: number; blind: boolean }
 export interface FeedTimeline {
   /** Outages in time order (they never overlap). */
   gaps: FeedGap[];
-  /** Day files that show the feed's liveness (heartbeat lines, or the socket's lines of non-tennis markets), and the blind
-   *  ones (tennis lines only: a silence is an outage only when a resubscribe ends it). */
+  /** Day files that show the feed's liveness (beat, ws_beat or alive lines, or the socket's lines of non-tennis markets),
+   *  and the blind ones (tennis lines only: a silence is an outage only when a resubscribe ends it). */
   liveDays: string[];
   blindDays: string[];
 }
 
 /** R: the recorded feed's outages over the day files [fromDay, toDay] (see the header: recorded books). The socket's
- *  lines are book, delta, trade and lifecycle lines of any market, plus heartbeat lines; nothing else (market lines come
- *  from REST polls, scores from another feed) proves the socket was up. */
+ *  lines are book, delta, trade and lifecycle lines of any market and ws_beat lines (SOCKET_BEAT_KIND); beat and alive
+ *  lines are the feed's liveness too (FEED_ACTIVITY_KINDS); nothing else (market lines come from REST polls, scores from
+ *  another feed) proves the feed was up. On a day whose socket shows its own liveness (other markets' socket lines, or
+ *  ws_beat lines) every silence of the socket's lines over FEED_SILENCE_MS is an outage; on a day that shows liveness
+ *  every silence of all of them over FEED_SILENCE_MS is one; on any day a silence of the socket's lines over
+ *  FEED_SILENCE_MS that a resubscribe ends is one (dated from the first silence of all of them inside it, if any). */
 export async function feedTimeline(dir: string, fromDay: string, toDay: string): Promise<FeedTimeline> {
   const files = recordingFiles(dir).filter((f) => f.day >= fromDay && f.day <= toDay);
   const isMatchSeries = matchSeriesTest();
-  const liveDays = new Set<string>(), blindDays: string[] = [];
+  const liveDays = new Set<string>(), sockDays = new Set<string>(), blindDays: string[] = [];
   const snapped = new Set<string>();
-  type Cand = { from: number; to: number; fromDay: string; toDay: string; known: number; resynced?: Set<string> };
-  const cands: Cand[] = [];
-  let last = -Infinity, lastDay = '';
+  // Silences of every feed line (judged where the days show liveness) and of the socket's own lines (judged where the
+  // socket shows its own liveness, else by the resubscribe that ends them).
+  type Cand = { from: number; to: number; fromDay: string; toDay: string };
+  type SockCand = Cand & { known: number; resynced?: Set<string> };
+  const cands: Cand[] = [], sock: SockCand[] = [];
+  let last = -Infinity, lastDay = '', lastSock = -Infinity, lastSockDay = '';
   for (const f of files) {
-    let live = false;
+    let live = false, sockLive = false;
     for await (const line of recordingLines(f.file)) {
       const h = LINE_HEAD.exec(line);
       if (!h) continue;
       const k = h[2];
-      let ticker = '';
-      if (k === HEARTBEAT_KIND) live = true;
-      else if (k === 'book' || k === 'delta' || k === 'trade' || k === 'lifecycle') {
-        ticker = TICKER_RE.exec(line)?.[1] ?? '';
-        if (!isMatchSeries(ticker)) live = true;
-      } else continue;
+      const sockBeat = k === SOCKET_BEAT_KIND;
+      const socket = sockBeat || k === 'book' || k === 'delta' || k === 'trade' || k === 'lifecycle';
+      if (!socket && !FEED_ACTIVITY_KINDS.includes(k)) continue;
       const t = Number(h[1]);
-      if (t - last > FEED_SILENCE_MS && Number.isFinite(last)) cands.push({ from: last, to: t, fromDay: lastDay, toDay: f.day, known: snapped.size });
+      let ticker = '';
+      if (socket) {
+        if (!sockBeat) ticker = TICKER_RE.exec(line)?.[1] ?? '';
+        if (sockBeat || !isMatchSeries(ticker)) live = sockLive = true;
+      } else live = true;
+      if (t - last > FEED_SILENCE_MS && Number.isFinite(last)) cands.push({ from: last, to: t, fromDay: lastDay, toDay: f.day });
+      if (t > last) { last = t; lastDay = f.day; }
+      if (!socket) continue;
+      if (t - lastSock > FEED_SILENCE_MS && Number.isFinite(lastSock)) sock.push({ from: lastSock, to: t, fromDay: lastSockDay, toDay: f.day, known: snapped.size });
       if (k === 'book') {
-        // A snapshot of a book already snapshotted: a resubscribe (Kalshi snapshots only on subscribe).
-        const c = cands[cands.length - 1];
+        // A snapshot of a book already snapshotted: a resubscribe (the bot re-snapshots known books only on a reconnect,
+        // bot/kalshi/ws.ts subscribeAll, or one alone after a sequence gap).
+        const c = sock[sock.length - 1];
         if (c && t <= c.to + RESYNC_WINDOW_MS && snapped.has(ticker)) (c.resynced ??= new Set()).add(ticker);
         snapped.add(ticker);
       }
-      if (t > last) { last = t; lastDay = f.day; }
+      if (t > lastSock) { lastSock = t; lastSockDay = f.day; }
     }
     if (live) liveDays.add(f.day); else blindDays.push(f.day);
+    if (sockLive) sockDays.add(f.day);
   }
-  const gaps: FeedGap[] = [];
-  for (const c of cands) {
+  const found: FeedGap[] = [];
+  // Feed silences on days that show liveness, in time order (`last` never steps back).
+  const feedSil = cands.filter((c) => liveDays.has(c.fromDay) && liveDays.has(c.toDay));
+  for (const c of feedSil) found.push({ from: c.from, to: c.to, blind: false });
+  for (const c of sock) {
+    // The socket shows its own liveness at both ends: every silence of it is an outage, as on the raw file.
+    if (sockDays.has(c.fromDay) && sockDays.has(c.toDay)) { found.push({ from: c.from, to: c.to, blind: false }); continue; }
     // A resubscribe re-snapshots every subscribed book; one book alone is a sequence-gap resnapshot, not an outage.
-    if (liveDays.has(c.fromDay) && liveDays.has(c.toDay)) gaps.push({ from: c.from, to: c.to, blind: false });
-    else if (c.known > 0 && (c.resynced?.size ?? 0) >= Math.min(2, c.known)) gaps.push({ from: c.from, to: c.to, blind: true });
+    if (!(c.known > 0 && (c.resynced?.size ?? 0) >= Math.min(2, c.known))) continue;
+    // Dated from the first feed silence inside it (the recorder was shown alive until then), else from the socket's last
+    // line (conservative: beats from any source show nothing of the socket).
+    let lo = 0, hi = feedSil.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (feedSil[mid].from < c.from) lo = mid + 1; else hi = mid; }
+    const inner = lo < feedSil.length && feedSil[lo].to <= c.to ? feedSil[lo] : undefined;
+    found.push({ from: inner?.from ?? c.from, to: c.to, blind: true });
+  }
+  // One outage where several rules found it (merged: blind only if every rule that found it was the resubscribe).
+  found.sort((x, y) => x.from - y.from || x.to - y.to);
+  const gaps: FeedGap[] = [];
+  for (const g of found) {
+    const p = gaps[gaps.length - 1];
+    if (p && g.from < p.to) { p.to = Math.max(p.to, g.to); p.blind = p.blind && g.blind; } else gaps.push({ ...g });
   }
   return { gaps, liveDays: [...liveDays], blindDays };
 }
+
+/** A match grid with production's latched progress beside the reading of the tick (research/tennisTaTypes.ts MatchGrid
+ *  declares it optional; the sim sets it on every grid): per sample, the furthest progress the match had held for
+ *  PROGRESS_LATCH_MS as of the last decision (MatchTracker.latchProgress of a production-default tracker), what
+ *  applyProfitRules' end cut and entry block read; `progress` stays the reading of the tick, what its ride rule reads. */
+export type GridWithHigh = MatchGrid & { progressHigh: Float64Array };
 
 /** Builds a MatchGrid while the replay streams: one sample a second, the book as it stood then. */
 class GridBuilder {
@@ -668,7 +752,11 @@ class GridBuilder {
   n = 0;
   readonly cols: number[][] = Array.from({ length: 10 }, () => []);
   readonly prog: number[] = [];
+  readonly high: number[] = [];
+  /** The production-default clock's reading of the tick and its latched progress (MatchTracker.progressHigh), as of the
+   *  last decision. */
   progress = 0;
+  progressHigh = 0;
   liveIdx = -1;
   readonly vol = [0, 0, 0, 0];
   sample(t: number, books: Array<OrderBook | undefined>, usable: (b: OrderBook | undefined) => boolean): void {
@@ -679,15 +767,16 @@ class GridBuilder {
     const row = [ba, aa, bb, ab, this.vol[0], this.vol[1], this.vol[2], this.vol[3], ia, ib];
     for (let k = 0; k < 10; k++) this.cols[k].push(row[k]);
     this.prog.push(this.progress);
+    this.high.push(this.progressHigh);
     this.vol.fill(0);
     this.n++;
   }
   build(ev: LiveEvent, stratum: 'H' | 'R', resultA: 0 | 1): MatchGrid {
     const f = (k: number) => Float64Array.from(this.cols[k]);
     const closeIdx = Math.max(0, Math.min(this.n - 1, Math.floor((ev.closeMin - this.t0) / 1000)));
-    const g: MatchGrid & { startPublished?: boolean } = { event: ev.event, series: ev.series, stratum, tickers: [ev.tickers[0], ev.tickers[1]], start: ev.start, startPublished: ev.startPublished, day: ev.day, t0: this.t0, n: this.n,
+    const g: GridWithHigh = { event: ev.event, series: ev.series, stratum, tickers: [ev.tickers[0], ev.tickers[1]], start: ev.start, startPublished: ev.startPublished, day: ev.day, t0: this.t0, n: this.n,
       bidA: f(0), askA: f(1), bidB: f(2), askB: f(3), yesVolA: f(4), noVolA: f(5), yesVolB: f(6), noVolB: f(7), imbA: f(8), imbB: f(9),
-      progress: Float64Array.from(this.prog), liveIdx: this.liveIdx, resultA, closeIdx };
+      progress: Float64Array.from(this.prog), progressHigh: Float64Array.from(this.high), liveIdx: this.liveIdx, resultA, closeIdx };
     return g;
   }
 }
@@ -708,7 +797,7 @@ interface LiveEvent {
   /** Settled markets (the first result or settling lifecycle line of each). */
   results: Map<string, 'yes' | 'no'>;
   grid?: GridBuilder;
-  /** A production-default tracker: the grid's progress clock and the phase labels. */
+  /** A production-default tracker: the grid's progress clock (the reading and the latch) and the phase labels. */
   clock: MatchTracker;
 }
 
@@ -739,9 +828,11 @@ export interface SweepOpts {
 
 export interface SweepResult {
   runs: SimRun[]; matchList: MatchInfo[]; matches: number; oneLegged: number; unresolved: number; events: number; decisions: number; ms: number;
-  /** R: feed outages (feedTimeline) and their total length; those found on blind days by the resubscribe that ended them. */
+  /** R: feed outages (feedTimeline) and their total length; those found only by the resubscribe that ended them (on a
+   *  blind day, or a reconnect that the beats of a day without ws_beat lines masked). */
   gaps: number; gapMs: number; blindGaps: number;
-  /** R: day files read that show the feed's liveness, and blind ones (no heartbeat: tennis silences are not judged). */
+  /** R: day files read that show the feed's liveness, and blind ones (no beat, ws_beat or alive line: tennis silences are
+   *  judged only by a resubscribe). */
   liveDays: number; blindDays: number;
   /** Tennis match tickers with book, delta or trade lines at or after fromDay but no market line in what was read (an
    *  owned match may be lost; a match begun before fromDay that has no market line in the read counts too). */
@@ -858,9 +949,12 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
       const startTime = ev.startTime;
       if (cl.off === 0) {
         ev.clock.observe({ event: ev.event, now, startTime, markets: plain, closeTime: ev.closeMin, score });
+        // As bot/tennis/tennisStrategy.ts applyProfitRules reads it at every decision: the reading of the tick (the ride rule,
+        // and the phase label as the strategy's own phases read it) and the latched progress (the end cut, the entry block).
         const prog = ev.clock.liveSince !== undefined ? ev.clock.progress(now, plain) : 0;
+        const high = ev.clock.latchProgress(now, prog);
         phaseOf.set(ev.event, phaseLabel(ev.clock.liveSince, now, prog));
-        if (ev.grid) { ev.grid.progress = prog; if (ev.grid.liveIdx < 0 && ev.clock.liveSince !== undefined) ev.grid.liveIdx = Math.max(0, ev.grid.n - 1); }
+        if (ev.grid) { ev.grid.progress = prog; ev.grid.progressHigh = high; if (ev.grid.liveIdx < 0 && ev.clock.liveSince !== undefined) ev.grid.liveIdx = Math.max(0, ev.grid.n - 1); }
       }
       if (!cl.sims.length) continue;
       const tick = st.markets.get(ev.tickers[0])?.tickSize ?? 0.01;
@@ -971,6 +1065,8 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
       for (const b of st.books.values()) b.invalidate();
     }
     if (e.k === 'skip') continue;
+    // R: an alive line is feed activity only (feedTimeline); the sim's own alive timer marks the books (isUsable).
+    if (e.k === 'alive' && o.stratum === 'R') continue;
     st.apply(e);
     events++;
     switch (e.k) {
@@ -1044,8 +1140,8 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
   if (o.onGrid) { gridQueue.sort((a, b) => a.day.localeCompare(b.day) || a.start - b.start); for (const g of gridQueue.splice(0)) o.onGrid(g); }
   if (lost.size) log(`sweep ${o.fromDay}..${o.toDay}: ${lost.size} tennis match tickers had book or trade lines from ${o.fromDay} on but no market line in what was read (lost)`);
   if (lateGrids) log(`sweep ${o.fromDay}..${o.toDay}: ${lateGrids} match grids finished after their day was released (not given to family B)`);
-  if (feed?.blindDays.length) log(`sweep ${o.fromDay}..${o.toDay}: ${feed.blindDays.length} of ${feed.blindDays.length + feed.liveDays.length} recorded days carry no heartbeat: tennis silences there are outages only when a resubscribe ends them`);
-  log(`sweep ${o.fromDay}..${o.toDay} (${o.stratum}): ${matches} matches (${oneLegged} one-legged, ${unresolvedN} unresolved, ${matchList.filter((m) => !m.startPublished).length} without a published start), ${o.specs.length} configs, ${decisions} decisions${o.stratum === 'R' ? `, ${gaps} feed outages (${(gapMs / 60_000).toFixed(0)} min, ${blindGaps} on blind days)` : ''}, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
+  if (feed?.blindDays.length) log(`sweep ${o.fromDay}..${o.toDay}: ${feed.blindDays.length} of ${feed.blindDays.length + feed.liveDays.length} recorded days carry no beat, ws_beat or alive line: tennis silences there are outages only when a resubscribe ends them`);
+  log(`sweep ${o.fromDay}..${o.toDay} (${o.stratum}): ${matches} matches (${oneLegged} one-legged, ${unresolvedN} unresolved, ${matchList.filter((m) => !m.startPublished).length} without a published start), ${o.specs.length} configs, ${decisions} decisions${o.stratum === 'R' ? `, ${gaps} feed outages (${(gapMs / 60_000).toFixed(0)} min, ${blindGaps} found only by a resubscribe: blind days, or reconnects the beats masked)` : ''}, ${((Date.now() - t0) / 1000).toFixed(0)} s`);
   return { runs: sims.map((s) => s.run(o.stratum)), matchList, matches, oneLegged, unresolved: unresolvedN, events, decisions, ms: Date.now() - t0, gaps, gapMs, blindGaps,
     liveDays: feed?.liveDays.length ?? 0, blindDays: feed?.blindDays.length ?? 0, lost: lost.size, lateGrids };
 }

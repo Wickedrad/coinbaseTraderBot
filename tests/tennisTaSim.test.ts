@@ -6,12 +6,12 @@ import { test } from 'node:test';
 import { loadConfig, paperEnv } from '../bot/config';
 import { orderFee, type FeeSchedule } from '../bot/fees';
 import { OrderBook } from '../bot/marketdata/orderBook';
-import { PositionBook } from '../bot/oms/positions';
+import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { HourlyQuotaPacer, QuotaFloors } from '../bot/risk/quotaPacer';
 import { breakEvenExit, positionNetAtBid } from '../bot/strategy/fairValueStrategy';
-import type { MatchMarket, TennisPlan } from '../bot/tennis/tennisStrategy';
+import { MatchTracker, PROGRESS_LATCH_MS, type MatchMarket, type TennisPlan } from '../bot/tennis/tennisStrategy';
 import { buildHistoryReplay } from '../research/history/historyReplay';
-import { ConfigSim, FEES, feedTimeline, PLACEBO_RESERVOIR, PlaceboReservoir, phaseLabel, RESYNC_WINDOW_MS, rng, runSweep, sigBits, type SimSpec } from '../research/tennisTaSim';
+import { ConfigSim, FEES, feedTimeline, hash32, PLACEBO_RESERVOIR, PLACEBO_SEED, PlaceboReservoir, phaseLabel, RESYNC_WINDOW_MS, rng, runSweep, sigBits, SOCKET_BEAT_KIND, type GridWithHigh, type SimSpec } from '../research/tennisTaSim';
 import type { MatchGrid } from '../research/tennisTaTypes';
 import { comeback, writeRecordingLines, writeScriptedHistory, writeTaHistory, writeTaRecording, type RecordedFeed } from './tennisTaFixture';
 
@@ -152,45 +152,70 @@ test('a spec with no overrides gets the profit rules exactly as bot/engine.ts bu
   assert.throws(() => simOf('F1', { HARNESS_LOSER_CUT: false }), /HARNESS_LOSER_CUT/);
 });
 
-test('netAtBid, breakEven and avgEntry match the engine on the same fills (round-trip basis); costPer is the open lot only', () => {
+test('held markets as bot/engine.ts fills them: PositionBook, the open contracts\' cost (openSidePrice + openEntryFee), the engine\'s formulas; the pacer fed the same', () => {
+  const pacerCfg = loadConfig(paperEnv({})).strategy.pacer;
   for (const mult of [1, 1.25]) {
     const s = simOf('F1', mult === 1 ? { HARNESS_LOSER_STOP: 0.3 } : { HARNESS_LOSER_STOP: 0.3, HARNESS_FEE_MULT: mult });
     const fees: FeeSchedule = { ...FEES, takerMultiplier: FEES.takerMultiplier * mult, makerMultiplier: FEES.makerMultiplier * mult };
+    s.rulesAt(T0); // the pacer starts with the first decision
     const book = new PositionBook();
-    const fills: Array<[side: 'bid' | 'ask', n: number, px: number, taker: boolean]> = [['bid', 7, 0.33, false], ['bid', 3.5, 0.35, true], ['ask', 4, 0.41, true], ['ask', 6.5, 0.47, true], ['bid', 6, 0.45, false], ['bid', 2.25, 0.46, true]];
+    const pacer = new HourlyQuotaPacer(pacerCfg, T0);
+    // A profitable partial exit, an add to what is left, flat, a re-entry and its own partial exit.
+    const fills: Array<[side: 'bid' | 'ask', n: number, px: number, taker: boolean]> = [['bid', 7, 0.33, false], ['bid', 3.5, 0.35, true], ['ask', 4, 0.41, true], ['bid', 2, 0.38, false],
+      ['ask', 8.5, 0.47, true], ['bid', 6, 0.45, false], ['ask', 2.5, 0.52, true], ['bid', 2.25, 0.46, true]];
     const quotes: Array<[number, number]> = [[0.3, 0.32], [0.36, 0.38], [0.5, 0.52], [0.12, 0.14]];
+    const roundTripOff: number[] = [];
     for (const [i, [side, n, px, taker]] of fills.entries()) {
-      s.fill(order(side, n, px), n, px, taker, 'E', 1000 * (i + 1));
-      book.applyFill({ ticker: TK, side, count: n, price: px, fee: orderFee(n, px, taker, fees) });
-      const pos = book.get(TK)!;
-      assert.equal(yes(s), pos.yes);
+      const ts = T0 + 1000 * (i + 1);
+      s.fill(order(side, n, px), n, px, taker, 'E', ts);
+      // bot/oms/oms.ts onFill: the fee on the side price paid, into the book; then bot/engine.ts's pacer hook on the book after it.
+      const fee = orderFee(n, side === 'bid' ? px : 1 - px, taker, fees);
+      const pos = book.applyFill({ ticker: TK, side, count: n, price: px, fee });
+      pacer.onFill({ ticker: TK, side, count: n, price: px }, fee, pos, ts);
+      assert.deepEqual(s.pos.get(TK), pos, `fill ${i}: the position book x${mult}`);
+      assert.equal(s.pacer!.status(ts).realized24hUsd, pacer.status(ts).realized24hUsd, `fill ${i}: the pacer's credit x${mult}`);
       for (const [b, a] of quotes) {
         const sim = s.held(TK, { price: b }, { price: a });
         if (!(pos.yes > 0)) { assert.equal(sim, undefined); continue; }
-        // bot/engine.ts tennisTick, verbatim.
+        // bot/engine.ts tennisTick, verbatim (costPer: the research loser stop's cost, the same open contracts' cost).
         const engine = {
-          position: pos.yes, avgEntry: -pos.netCash / pos.yes,
-          netAtBid: positionNetAtBid(pos.yes, (pos.fees - pos.netCash) / pos.yes, { price: b }, { price: a }, fees),
-          breakEven: breakEvenExit(pos.yes, (pos.fees - pos.netCash) / pos.yes, fees),
+          position: pos.yes, avgEntry: openSidePrice(pos),
+          netAtBid: positionNetAtBid(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, { price: b }, { price: a }, fees),
+          breakEven: breakEvenExit(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, fees),
+          costPer: openSidePrice(pos)! + openEntryFee(pos)!,
         };
-        assert.deepEqual({ position: sim!.position, avgEntry: sim!.avgEntry, netAtBid: sim!.netAtBid, breakEven: sim!.breakEven }, engine, `fill ${i} quote ${b}/${a} x${mult}`);
+        assert.deepEqual(sim, engine, `fill ${i} quote ${b}/${a} x${mult}`);
+        // What the old round-trip basis ((fees - netCash) / yes, every earlier exit's profit in) would have said.
+        roundTripOff[i] = Math.max(roundTripOff[i] ?? 0, Math.abs(positionNetAtBid(pos.yes, (pos.fees - pos.netCash) / pos.yes, { price: b }, { price: a }, fees)! - sim!.netAtBid!));
       }
     }
-    // The re-entry's lot: its own cost (fees in), unlike the round trip that carries the first episode's profit.
-    const p = s.pos.get(TK)!;
-    const lotFees = orderFee(6, 0.45, false, fees) + orderFee(2.25, 0.46, true, fees);
-    assert.ok(Math.abs(s.held(TK, undefined, undefined)!.costPer! - (6 * 0.45 + 2.25 * 0.46 + lotFees) / 8.25) < 1e-9);
-    assert.ok((p.fees - p.netCash) / p.yes < s.held(TK, undefined, undefined)!.costPer! - 0.01, 'the round-trip basis is lower after a profitable episode');
+    assert.ok((roundTripOff[0] ?? 0) < 1e-9, 'one entry: both bases agree');
+    for (const i of [2, 3, 5, 6, 7]) assert.ok(roundTripOff[i] > 0.1, `fill ${i}: after a profitable exit the round-trip basis is off by ${roundTripOff[i]} x${mult}`);
+    // Settlement through the book: realized into the match and the pacer exactly as the engine's settled hook does.
+    s.settle(TK, 'yes', 'E', T0 + 20_000);
+    const m = book.settle(TK, 'yes', T0 + 20_000)!;
+    pacer.onSettled(TK, m.realized!, T0 + 20_000);
+    assert.equal(s.pacer!.status(T0 + 20_000).realized24hUsd, pacer.status(T0 + 20_000).realized24hUsd);
+    s.finish('E', [TK], '2026-03-02', false, T0 + 30_000);
+    assert.ok(Math.abs(s.run('H').pnl[0] - m.realized!) < 1e-4, `realized ${s.run('H').pnl[0]} vs the book's ${m.realized}`);
+    assert.equal(s.pos.get(TK), undefined, 'a settled market leaves the book');
   }
-  // No positive lot cost (a lot that already took more than it cost): no costPer, so the loser stop cannot misfire.
+  // costPer only for the research loser stop; it stays the open contracts' cost after a profitable partial exit.
   const s = simOf('F1', { HARNESS_LOSER_STOP: 0.3 });
   s.fill(order('bid', 10, 0.2), 10, 0.2, false, 'E', 1000);
   s.fill(order('ask', 5, 0.9), 5, 0.9, true, 'E', 2000);
-  assert.equal(s.held(TK, { price: 0.5 }, { price: 0.52 })!.costPer, undefined);
+  assert.ok(Math.abs(s.held(TK, { price: 0.5 }, { price: 0.52 })!.costPer! - (0.2 + orderFee(10, 0.2, false, FEES) / 10)) < 1e-9);
   assert.equal(simOf('F1').held(TK, undefined, undefined), undefined);
   const off = simOf('F1');
   off.fill(order('bid', 10, 0.2), 10, 0.2, false, 'E', 1000);
   assert.equal(off.held(TK, { price: 0.5 }, { price: 0.52 })!.costPer, undefined, 'costPer only for the research loser stop');
+  // A sale's fee is booked on the side price paid (bot/oms/oms.ts), not the YES price: they differ on fractional counts.
+  const fs1 = simOf('F1');
+  fs1.fill(order('bid', 1.55, 0.333), 1.55, 0.333, true, 'E', 1000);
+  fs1.fill(order('ask', 1.55, 0.333), 1.55, 0.333, true, 'E', 2000);
+  const sideFee = orderFee(1.55, 0.333, true, FEES) + orderFee(1.55, 0.667, true, FEES);
+  assert.notEqual(orderFee(1.55, 0.333, true, FEES), orderFee(1.55, 0.667, true, FEES));
+  assert.ok(Math.abs(fs1.pos.get(TK)!.fees - sideFee) < 1e-12);
 });
 
 test('the pacer is fed by the config\'s fills, settlements and dropped positions', () => {
@@ -219,6 +244,23 @@ test('the pacer is fed by the config\'s fills, settlements and dropped positions
   assert.ok(Math.abs(realized() - b3 + 5 * 0.4 + orderFee(5, 0.4, false, FEES)) < 1e-3, 'the drop is debited');
   assert.equal(s.run('H').days[0].breaches, 1, 'and counted as a breach');
   assert.equal(simOf('F0', { HARNESS_PACER: 'off' }).pacer, undefined);
+});
+
+test('the quota floor outlives a flat fill as in production (no fill touches QuotaFloors); settlement forgets it', () => {
+  // Production (bot/engine.ts): floor() at each decision, forget() on the settled event; a fill never touches the floors.
+  const prod = new QuotaFloors();
+  prod.floor(TK, 10); prod.arm(TK, 10, 1.5);
+  const s = simOf('F1');
+  s.fill(order('bid', 10, 0.4), 10, 0.4, false, 'E', 0);
+  s.floors.floor(TK, 10); s.floors.arm(TK, 10, 1.5);
+  // Flat at 1 s, a re-entry of 8 filled at 3 s, then the next decision reads the floor.
+  s.fill(order('ask', 10, 0.6, 'quota_snipe'), 10, 0.6, true, 'E', 1000);
+  s.fill(order('bid', 8, 0.55), 8, 0.55, false, 'E', 3000);
+  const got = s.floors.floor(TK, yes(s));
+  assert.ok(got !== undefined && Math.abs(got - 1.2) < 1e-9, `floor ${got}`);
+  assert.equal(got, prod.floor(TK, 8));
+  s.settle(TK, 'yes', 'E', 4000);
+  assert.equal(s.floors.floor(TK, 8), undefined, 'settled: forgotten (bot/engine.ts on settled)');
 });
 
 test('settlement audit: a position nobody judged since it opened is a breach (the verdict dies when a position goes flat or opens)', () => {
@@ -294,6 +336,7 @@ test('settlement audit verdict: production\'s ride rule on the progress of the t
   late.observe({ event: 'L', now: now - 60_000, startTime: now - 2 * 3_600_000, markets: mk(1), closeTime: now + 3_600_000 });
   late.observe({ event: 'L', now, startTime: now - 2 * 3_600_000, markets: mk(1, 0.97), closeTime: now + 3_600_000 });
   assert.ok(late.progress(now, mk(1, 0.97)) >= 0.7);
+  assert.equal(late.progressHigh, 0, 'the latch has not reached the last share (no 2 min of readings there): the ride goes by the reading');
   for (const [net, ok] of [[1, true], [0, false], [-1, false], [undefined, false]] as const) {
     s.audit(late, mk(net, 0.97), now);
     assert.equal(s.rideOk.get(TK), ok, `last share, net ${net}`);
@@ -317,6 +360,15 @@ test('coin placebo: the joint firing distribution is kept; the reservoir is boun
   assert.ok(Math.abs(rate - 0.5) < 0.06, `rate ${rate}`);
   assert.deepEqual(draws(7).out, a.out, 'deterministic');
   assert.notDeepEqual(draws(8).out, a.out);
+  // A coin config's reservoir draws from PLACEBO_SEED (the registry rows' seed) combined with its spec id.
+  const id = 'A|s1|m0.01|f0.2|o0.01|w60|coin';
+  const sim = new ConfigSim({ id, overrides: {}, fill: 'F1', placebo: 'coin' });
+  const ref = new PlaceboReservoir(rng((PLACEBO_SEED ^ hash32(id)) >>> 0));
+  assert.equal(PLACEBO_SEED, 20261105);
+  const seq = (r: PlaceboReservoir) => { const out: number[] = []; for (let t = 0; t < 3000; t++) out.push(r.draw(t % 3 ? 'E1' : 'E2', t, t % 16)); return out; };
+  const got = seq(sim.placebo!);
+  assert.deepEqual(got, seq(ref));
+  assert.notDeepEqual(got, seq(new PlaceboReservoir(rng(hash32(id)))), 'not the spec id alone');
 });
 
 // ---- Sweeps ----------------------------------------------------------------------------------------------------------
@@ -429,80 +481,131 @@ test('settlement audit on a comeback: the settle-hold stick holds the losing fav
   assert.equal(fav('cut').x, 'end_cut');
   assert.equal(breaches('cut'), 0);
   assert.ok(fav('cut').pnl > fav('hold').pnl);
-  assert.equal(fav('stop').x, 'loser_stop', 'the research loser stop fires on the lot\'s own cost');
+  assert.equal(fav('stop').x, 'loser_stop', 'the research loser stop fires on the open contracts\' own cost');
   assert.equal(breaches('stop'), 0);
+  // The grids carry production's two progress reads for family B: `progress` the reading of the tick (the ride rule, the
+  // phase contexts) and `progressHigh` the latched progress (MatchTracker.latchProgress over the 5 s decisions of a
+  // production-default tracker: what the end cut and the entry block read), which follows the reading by PROGRESS_LATCH_MS.
+  const tennis = loadConfig(paperEnv({})).tennis;
+  const share = 1 - tennis.settleFrac;
+  let lagged = 0;
+  for (const g of grids as GridWithHigh[]) {
+    assert.equal(g.progressHigh.length, g.n);
+    const ref = new MatchTracker('ref', tennis);
+    const closeT = g.t0 + g.closeIdx * 1000;
+    let checked = 0;
+    for (let i = 0; i < g.n; i++) {
+      // The sample 1 s after a decision holds that decision's readings (a sample at a decision's instant comes before it).
+      const d = g.t0 + i * 1000 - 1000;
+      if (d % 5000 !== 0 || d >= closeT) continue;
+      assert.equal(g.progressHigh[i], ref.latchProgress(d, g.progress[i]), `${g.event}: the latch at sample ${i}`);
+      checked++;
+    }
+    assert.ok(checked > 1000, `${g.event}: ${checked} decisions`);
+    const iRead = g.progress.findIndex((p) => p >= share - 1e-9), iHigh = g.progressHigh.findIndex((p) => p >= share - 1e-9);
+    if (iRead < 0) continue;
+    assert.ok(iHigh >= 0 && iHigh - iRead >= PROGRESS_LATCH_MS / 1000, `${g.event}: the last share by the reading at ${iRead}, by the latch at ${iHigh}`);
+    // Not the running maximum of the reading (one tick's high reading never sets it).
+    let runMax = 0, above = 0;
+    for (let i = 0; i < g.n; i++) { runMax = Math.max(runMax, g.progress[i]); assert.ok(g.progressHigh[i] <= runMax + 1e-12); if (runMax > g.progressHigh[i] + 0.01) above++; }
+    assert.ok(above > 0, `${g.event}: the latch lags the running maximum`);
+    lagged++;
+  }
+  assert.ok(lagged > 0, 'a match reached its last share');
 });
 
+type RecordedCase = { feed: RecordedFeed; resync: boolean; quiet?: boolean; gaps: number; blind: number; liveDays: number; blindDays: number };
+const R_SPECS: SimSpec[] = [{ id: 'prod', overrides: {}, fill: 'F1' }, { id: 'loose', overrides: { ...LOOSE }, fill: 'F1' }];
+
+/** One recording of writeTaRecording through the sweep: the match, its settlement, the feed's outages and the grid's quotes
+ *  around the 10-minute tennis silence. Returns the configs' per-match P&L. */
+async function recordedCase(c: RecordedCase): Promise<string> {
+  const name = `${c.feed}${c.quiet ? '+quiet' : ''}${c.resync ? '+resync' : ''}`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ttr-'));
+  const plan = writeTaRecording(dir, '2026-03-04', { feed: c.feed, resync: c.resync, quiet: c.quiet });
+  const grids: MatchGrid[] = [];
+  const r = await runSweep({ dir, fromDay: '2026-03-04', toDay: '2026-03-05', stratum: 'R', specs: R_SPECS, onGrid: (g) => grids.push(g) });
+  assert.equal(r.matches, 1, `${name}: the market line written two days before the start is read`);
+  const m = r.matchList[0];
+  assert.equal(m.event, plan.event);
+  assert.equal(m.unresolved, false, `${name}: settled from the lifecycle lines alone`);
+  assert.equal(m.resultA, 1);
+  assert.equal(m.startPublished, true);
+  assert.equal(r.unresolved, 0);
+  assert.deepEqual([r.gaps, r.blindGaps, r.liveDays, r.blindDays], [c.gaps, c.blind, c.liveDays, c.blindDays], name);
+  if (c.gaps) assert.ok(r.gapMs >= 10 * MIN && r.gapMs < 11 * MIN, `${name}: ${r.gapMs}`);
+  else assert.equal(r.gapMs, 0, name);
+  assert.equal(r.lost, 0);
+  for (const run of r.runs) {
+    assert.equal(run.days[0].unresolved, 0);
+    assert.ok(run.episodes.every((e) => e.x !== 'drop'), `${name} ${run.id}: nothing dropped`);
+    assert.equal(run.days[0].breaches, 0);
+  }
+  assert.ok(r.runs.some((x) => x.episodes.some((e) => e.x === 'settle')), `${name}: a held favorite settles on the lifecycle line`);
+  assert.equal(grids.length, 1);
+  const g = grids[0];
+  const at = (t: number) => { const i = Math.floor((t - g.t0) / 1000); return [g.bidA[i], g.askA[i], g.bidB[i], g.askB[i]]; };
+  const quoted = (t: number) => at(t).every(Number.isFinite);
+  assert.equal(g.t0, plan.start - 3 * 3_600_000, 'the grid starts 3 h before the published start');
+  // 45 h after the only snapshot, with no tennis line since: a quiet book on a live socket is current.
+  assert.ok(quoted(g.t0 + 1000), `${name}: quoted at the grid's start`);
+  assert.ok(quoted(plan.gapFrom - 10_000), `${name}: quoted before the silence`);
+  assert.ok(quoted(plan.gapFrom + 5000), `${name}: production keeps a quiet book alive 12 s after the last message, then 5 s more`);
+  assert.ok(quoted(plan.end - 60_000));
+  const dead = (t: number, why: string) => assert.ok(!quoted(t), `${name}: stale at ${new Date(t).toISOString()} (${why})`);
+  const ok = (t: number, why: string) => assert.ok(quoted(t), `${name}: quoted at ${new Date(t).toISOString()} (${why})`);
+  if (!c.gaps) {
+    // A silence that is no outage (a quiet market on a blind day, or a quiet tennis stretch inside a live feed): the books
+    // stay usable through it.
+    for (const t of [plan.gapFrom + 30_000, plan.gapFrom + 5 * MIN, plan.gapTo + 5000, plan.snapAgain - 1000]) ok(t, 'no outage');
+    assert.equal(g.n, [...g.bidA].filter(Number.isFinite).length, `${name}: every second quoted`);
+  } else {
+    for (const t of [plan.gapFrom + 30_000, plan.gapFrom + 5 * MIN, plan.gapTo - 1000]) dead(t, 'in the outage');
+    if (c.resync) for (const t of [plan.gapTo + 1000, plan.snapAgain - 1000]) ok(t, 'the resubscribe snapshots');
+    else for (const t of [plan.gapTo + 5000, plan.snapAgain - 1000]) dead(t, 'deltas without a snapshot');
+    ok(plan.snapAgain + 1000, 'usable again after the next snapshot');
+  }
+  return JSON.stringify(r.runs.map((x) => x.pnl));
+}
+
 test('R: early-listed matches (lookback), lifecycle-only settlement; feed outages blank every book until its next snapshot', async () => {
-  const specs: SimSpec[] = [{ id: 'prod', overrides: {}, fill: 'F1' }, { id: 'loose', overrides: { ...LOOSE }, fill: 'F1' }];
-  // Which silences are outages: on a day that shows the feed's liveness (heartbeats, or a raw file's other markets) every
-  // silence over 12 s; on a blind day (the tennis cut: tennis lines only) only one that a resubscribe ends.
-  const cases: Array<{ feed: RecordedFeed; resync: boolean; gaps: number; blind: number; liveDays: number; blindDays: number }> = [
-    { feed: 'hb', resync: false, gaps: 1, blind: 0, liveDays: 3, blindDays: 0 },
+  // Which silences are outages: on a day that shows the feed's liveness (beat lines, or a raw file's other markets) every
+  // silence over 12 s; on a blind day (tennis lines only) only one that a resubscribe ends.
+  const cases: RecordedCase[] = [
+    { feed: 'beat', resync: false, gaps: 1, blind: 0, liveDays: 3, blindDays: 0 },
     { feed: 'raw', resync: false, gaps: 1, blind: 0, liveDays: 3, blindDays: 0 },
-    { feed: 'hb', resync: true, gaps: 1, blind: 0, liveDays: 3, blindDays: 0 },
+    { feed: 'beat', resync: true, gaps: 1, blind: 0, liveDays: 3, blindDays: 0 },
     { feed: 'none', resync: false, gaps: 0, blind: 0, liveDays: 0, blindDays: 2 },
     { feed: 'none', resync: true, gaps: 1, blind: 1, liveDays: 0, blindDays: 2 },
   ];
   const pnls: string[] = [];
-  for (const c of cases) {
-    const name = `${c.feed}${c.resync ? '+resync' : ''}`;
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ttr-'));
-    const plan = writeTaRecording(dir, '2026-03-04', { feed: c.feed, resync: c.resync });
-    const grids: MatchGrid[] = [];
-    const r = await runSweep({ dir, fromDay: '2026-03-04', toDay: '2026-03-05', stratum: 'R', specs, onGrid: (g) => grids.push(g) });
-    assert.equal(r.matches, 1, `${name}: the market line written two days before the start is read`);
-    const m = r.matchList[0];
-    assert.equal(m.event, plan.event);
-    assert.equal(m.unresolved, false, `${name}: settled from the lifecycle lines alone`);
-    assert.equal(m.resultA, 1);
-    assert.equal(m.startPublished, true);
-    assert.equal(r.unresolved, 0);
-    assert.deepEqual([r.gaps, r.blindGaps, r.liveDays, r.blindDays], [c.gaps, c.blind, c.liveDays, c.blindDays], name);
-    if (c.gaps) assert.ok(r.gapMs >= 10 * MIN && r.gapMs < 11 * MIN, `${name}: ${r.gapMs}`);
-    assert.equal(r.lost, 0);
-    for (const run of r.runs) {
-      assert.equal(run.days[0].unresolved, 0);
-      assert.ok(run.episodes.every((e) => e.x !== 'drop'), `${name} ${run.id}: nothing dropped`);
-      assert.equal(run.days[0].breaches, 0);
-    }
-    assert.ok(r.runs.some((x) => x.episodes.some((e) => e.x === 'settle')), `${name}: a held favorite settles on the lifecycle line`);
-    pnls.push(JSON.stringify(r.runs.map((x) => x.pnl)));
-    assert.equal(grids.length, 1);
-    const g = grids[0];
-    const at = (t: number) => { const i = Math.floor((t - g.t0) / 1000); return [g.bidA[i], g.askA[i], g.bidB[i], g.askB[i]]; };
-    const quoted = (t: number) => at(t).every(Number.isFinite);
-    assert.equal(g.t0, plan.start - 3 * 3_600_000, 'the grid starts 3 h before the published start');
-    // 45 h after the only snapshot, with no tennis line since: a quiet book on a live socket is current.
-    assert.ok(quoted(g.t0 + 1000), `${name}: quoted at the grid's start`);
-    assert.ok(quoted(plan.gapFrom - 10_000), `${name}: quoted before the silence`);
-    assert.ok(quoted(plan.gapFrom + 5000), `${name}: production keeps a quiet book alive 12 s after the last message, then 5 s more`);
-    assert.ok(quoted(plan.end - 60_000));
-    const dead = (t: number, why: string) => assert.ok(!quoted(t), `${name}: stale at ${new Date(t).toISOString()} (${why})`);
-    const ok = (t: number, why: string) => assert.ok(quoted(t), `${name}: quoted at ${new Date(t).toISOString()} (${why})`);
-    if (!c.gaps) {
-      // A blind day's silence that no resubscribe ends is a quiet market: the books stay usable through it.
-      for (const t of [plan.gapFrom + 30_000, plan.gapFrom + 5 * MIN, plan.gapTo + 5000, plan.snapAgain - 1000]) ok(t, 'no outage');
-      assert.equal(g.n, [...g.bidA].filter(Number.isFinite).length, `${name}: every second quoted`);
-    } else {
-      for (const t of [plan.gapFrom + 30_000, plan.gapFrom + 5 * MIN, plan.gapTo - 1000]) dead(t, 'in the outage');
-      if (c.resync) for (const t of [plan.gapTo + 1000, plan.snapAgain - 1000]) ok(t, 'the resubscribe snapshots');
-      else for (const t of [plan.gapTo + 5000, plan.snapAgain - 1000]) dead(t, 'deltas without a snapshot');
-      ok(plan.snapAgain + 1000, 'usable again after the next snapshot');
-    }
-  }
-  // The heartbeat and the raw file's other markets read the same feed; the strategy never sees them.
+  for (const c of cases) pnls.push(await recordedCase(c));
+  // The beats and the raw file's other markets read the same feed; the strategy never sees them.
   assert.equal(pnls[0], pnls[1]);
   // Only a day before fromDay: the match's market line is lost, and the loss is counted.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ttr-'));
   writeTaRecording(dir);
-  const short = await runSweep({ dir, fromDay: '2026-03-04', toDay: '2026-03-05', stratum: 'R', specs, lookbackDays: 1 });
+  const short = await runSweep({ dir, fromDay: '2026-03-04', toDay: '2026-03-05', stratum: 'R', specs: R_SPECS, lookbackDays: 1 });
   assert.equal(short.matches, 0);
   assert.equal(short.lost, 2);
   // A match that began before fromDay is no loss, though the read meets its lines without their market line.
-  const after = await runSweep({ dir, fromDay: '2026-03-05', toDay: '2026-03-06', stratum: 'R', specs, lookbackDays: 1 });
+  const after = await runSweep({ dir, fromDay: '2026-03-05', toDay: '2026-03-06', stratum: 'R', specs: R_SPECS, lookbackDays: 1 });
   assert.equal(after.matches, 0);
   assert.equal(after.lost, 0);
+});
+
+test('R: beat and alive lines keep a live feed\'s books usable through a quiet tennis stretch; a reconnect they mask is still an outage', async () => {
+  // The tennis lines stop for 10 minutes while the beats (or alive lines, or a raw file's crypto deltas) go on: no outage.
+  const quiet: RecordedCase[] = (['beat', 'alive', 'raw'] as const).map((feed) => ({ feed, resync: false, quiet: true, gaps: 0, blind: 0, liveDays: 3, blindDays: 0 }));
+  const pnls: string[] = [];
+  for (const c of quiet) pnls.push(await recordedCase(c));
+  // Feed activity only: the configs trade exactly as on the blind day's quiet market (no outage there either), an alive
+  // line's tickers never touch a recorded book.
+  const blind = await recordedCase({ feed: 'none', resync: false, gaps: 0, blind: 0, liveDays: 0, blindDays: 2 });
+  assert.deepEqual(pnls, [blind, blind, blind]);
+  // The same quiet stretch ended by a resubscribe (fresh snapshots of both books): a reconnect the beats hid (they come from
+  // any source line), an outage from the last tennis line to the snapshots, even with alive lines naming the books in it.
+  for (const feed of ['beat', 'alive'] as const) await recordedCase({ feed, resync: true, quiet: true, gaps: 1, blind: 1, liveDays: 3, blindDays: 0 });
 });
 
 test('feedTimeline: a lone book re-snapshot (a sequence gap) after a blind silence is no outage; two are', async () => {
@@ -523,6 +626,47 @@ test('feedTimeline: a lone book re-snapshot (a sequence gap) after a blind silen
   const f = await feedTimeline(dir, '2026-03-04', '2026-03-04');
   assert.deepEqual(f.blindDays, ['2026-03-04']);
   assert.deepEqual(f.gaps, [{ from: T + 61_000, to: T + 120_000, blind: true }]);
+});
+
+test('feedTimeline: ws_beat lines date a reconnect from the socket\'s last line after a quiet tennis hour; without them the beats mask it (conservative), a restart is dated from the silence', async () => {
+  const T = Date.parse('2026-03-04T10:00:00Z');
+  const tk = ['KXATPMATCH-W1-A', 'KXATPMATCH-W1-B'];
+  const S = 1000;
+  const book = (t: number, ticker: string) => ({ t, k: 'book', ticker, bids: [{ price: 0.4, size: 10 }], asks: [{ price: 0.42, size: 10 }], ts: t });
+  const delta = (t: number) => ({ t, k: 'delta', ticker: tk[0], side: 'bid', price: 0.4, delta: 1, ts: t });
+  // O: a 20 s Kalshi outage after an hour without a tennis line (the Coinbase feed goes on, so the any-source beats do),
+  // ended by a resubscribe; W: a 30 s stall of the socket that no resubscribe ends; R: the whole recorder silent 30 s.
+  const O = T + 3600 * S, W = T + 5400 * S, R = T + 1800 * S;
+  const lines = (o: { ws: boolean; restart?: boolean }) => {
+    const out: Array<{ t: number; k: string; [key: string]: unknown }> = [book(T, tk[0]), book(T, tk[1])];
+    const kalshiDown = (t: number) => (!o.restart && ((t >= O && t < O + 20 * S) || (t >= W && t < W + 30 * S)));
+    const allDown = (t: number) => !!o.restart && t >= R && t < R + 30 * S;
+    for (let t = T; t <= T + 7200 * S; t += 5 * S) {
+      if (allDown(t)) continue;
+      out.push({ t, k: 'beat' });
+      if (o.ws && !kalshiDown(t)) out.push({ t, k: SOCKET_BEAT_KIND });
+    }
+    for (let t = T + 10 * S; t <= T + 60 * S; t += 10 * S) out.push(delta(t));
+    if (o.restart) out.push(book(R + 32 * S, tk[0]), book(R + 32 * S, tk[1]));
+    else { out.push(book(O + 20 * S, tk[0]), book(O + 20 * S, tk[1])); for (let t = O + 30 * S; t <= O + 80 * S; t += 10 * S) out.push(delta(t)); }
+    out.push(delta(T + 7200 * S + 1));
+    return out;
+  };
+  const gapsOf = async (ls: ReturnType<typeof lines>) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ttw-'));
+    writeRecordingLines(dir, ls);
+    const f = await feedTimeline(dir, '2026-03-04', '2026-03-04');
+    assert.deepEqual([f.liveDays, f.blindDays], [['2026-03-04'], []]);
+    return f.gaps.map((g) => [(g.from - T) / S, (g.to - T) / S, g.blind]);
+  };
+  // The socket's own liveness: the reconnect from the last ws_beat (as the raw file's crypto lines would date it), the
+  // stall too (no resubscribe needed), and no outage in the quiet tennis hour.
+  assert.deepEqual(await gapsOf(lines({ ws: true })), [[3595, 3620, false], [5395, 5430, false]]);
+  // Beats from any source only: the reconnect is found by its resubscribe and dated from the last TENNIS socket line (the
+  // cut shows nothing later of the socket), the stall is not seen.
+  assert.deepEqual(await gapsOf(lines({ ws: false })), [[60, 3620, true]]);
+  // A restart (every line silent, then the resubscribe): dated from the silence, not from the last tennis line.
+  assert.deepEqual(await gapsOf(lines({ ws: false, restart: true })), [[1795, 1832, false]]);
 });
 
 test('R: the strategy and the orders stop at the EARLIER close; a resting order on A expires at A\'s close - 1 s', async () => {

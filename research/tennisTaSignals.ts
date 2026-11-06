@@ -69,13 +69,13 @@
 //
 // Entries (A1: entry-locked; each entry set computed once, the fixed exits reuse it)
 //   A series' triggers are walked in time order. A trigger is an entry when its decision comes after the lock, before
-//   production's end-entry block (TENNIS_END_ENTRY_MARGIN: no entry once the furthest progress of the match reaches
-//   1 - settleFrac - margin, 0.65 with the defaults; a later position would start under water in the last share), and at
-//   least one direction can take it: follow buys the side the trigger names, fade the other side; a direction takes it
-//   when that side has a bid and an ask at fill = decision + latencySec (rounded up to whole samples), the spread is
-//   <= 5c, the fill is before closeIdx, and, for fade only, the ask is within [0.10, 0.90] (A7: no fades above 90c or
-//   below 10c; applied to every family B series). Taker buy of YES at the ask, count = max(1, floor(orderUsd / ask)),
-//   capped at 100 on H (the synthesized book's one level is 100 contracts; R entries over 100 are counted, diagnostics
+//   production's end-entry block (TENNIS_END_ENTRY_MARGIN: no entry once the latched progress of the match, see End
+//   cut, reaches 1 - settleFrac - margin, 0.65 with the defaults; a later position would start under water in the last
+//   share), and at least one direction can take it: follow buys the side the trigger names, fade the other side; a
+//   direction takes it when that side has a bid and an ask at fill = decision + latencySec (rounded up to whole samples),
+//   the spread is <= 5c, the fill is before closeIdx, and, for fade only, the ask is within [0.10, 0.90] (A7: no fades
+//   above 90c or below 10c; applied to every family B series). Taker buy of YES at the ask, count = max(1,
+//   floor(orderUsd / ask)), capped at 100 on H (the synthesized book's one level is 100 contracts; R entries over 100 are counted, diagnostics
 //   rOver100, since the grid carries no depth).
 //   Both directions and all five exits are evaluated on that one entry; the lock then runs until the last of those
 //   positions has closed (a position held to settlement locks the series for the rest of the match). So each cell holds
@@ -86,14 +86,25 @@
 //   ts2m / ts10m time stops; tp30sl30 and tp50sl25 brackets on the bid, relative to the entry price, with a 15 min stop;
 //   trail3t: armed once the bid >= entry + 2c, exit when the bid <= peak - 3 ticks, 15 min stop. Every sale is a taker
 //   sell at the bid; fees are bot/fees.ts orderFee per order (taker, multipliers 1/1, rounded up to the cent).
-// End cut (production applyProfitRules with TENNIS_END_LOSER_CUT on; settleFrac = TENNIS_NO_EXIT_BEFORE_END_FRAC 0.30):
-//   once the furthest progress of the match (running max of g.progress) reaches 1 - settleFrac, the position is judged at
-//   every sample with a bid: net after fees at the bid (count x bid - exit fee - count x ask - entry fee) <= 0 -> cut (sold
-//   at the bid one latency later, kind 'cut'); > 0 while the current progress is in the last share -> it rides (no exit
-//   sells it); > 0 after a comeback took the current progress back under it -> the fixed exit applies again. A position
-//   still open at closeIdx settles: payout count x 1 or 0 by g.resultA, no settlement fee; it is a 'ride' if its last
-//   judgement was "in profit after fees in the last share", else a 'breach' (held to settlement not in profit: a cut with
-//   no bid to sell into up to closeIdx, or a position the last share never reached). Breaches are counted per cell.
+// End cut (production applyProfitRules with TENNIS_END_LOSER_CUT on; settleFrac = TENNIS_NO_EXIT_BEFORE_END_FRAC 0.30).
+//   Production reads two progress values. The ride rule reads the reading of the tick (g.progress). The cut and the entry
+//   block read the latched progress (MatchTracker.progressHigh): the furthest progress that every reading of the last
+//   PROGRESS_LATCH_MS (2 min) has held, so a reading that does not hold for 2 min never starts the cut. Family B takes the
+//   latch from the grid when the grid carries it (research/tennisTaSim.ts grids: g.progressHigh, a production-default
+//   tracker's latch over its 5 s decisions; it must not fall, and anything else throws). Otherwise family B runs the same
+//   rule over g.progress, one reading a sample (latchedProgress; the tests pin it to MatchTracker.latchProgress). Net after
+//   fees at the bid is production's positionNetAtBid on the open contracts' cost a contract (openSidePrice + openEntryFee:
+//   the ask paid + the entry fee / count). A family B position is one fill, so this equals count x bid - exit fee - (count x
+//   ask + entry fee), as before #290-#292; no outcome changes.
+//   A position in profit after fees at a sample with a bid whose reading is in the last share rides: no exit sells it, even
+//   before the latch gets there (production's lastShare). Once the latched progress is in the last share, the position is
+//   judged at every sample with a bid. Net <= 0 -> cut (sold at the bid one latency later, kind 'cut'). Net > 0 while the
+//   reading is in the last share -> it rides. Net > 0 after a comeback took the reading back under the share -> the fixed
+//   exit applies again. Before the latch gets there, a position that is not riding keeps its fixed exit: production does
+//   not cut it yet. A position still open at closeIdx settles: payout count x 1 or 0 by g.resultA, no settlement fee. It is
+//   a 'ride' if its last judgement was "in profit after fees in the last share". Otherwise it is a 'breach', held to
+//   settlement not in profit: a cut with no bid to sell into up to closeIdx, or a position the last share never reached.
+//   Breaches are counted per cell.
 // Stress (FamilyBCell.stressSum): the same entries and exit decisions, every sale stressTicks (1) tick lower, floored at
 //   0.01 (F2), and every fee at stressFeeMult (1.25, A7's "fees x1.25") times the multipliers; settlement payouts
 //   unchanged. diagnostics.settings records both.
@@ -102,41 +113,74 @@
 //   tour series (g.series, e.g. KXATPMATCH) x phase at the decision {pre (before liveIdx or never live), first20 (the
 //   first 20 min after liveIdx), t1 / t2 / t3 (then progress < 1/3, < 2/3, >= 2/3)} x price bucket of the ask paid
 //   {b08-15 [0.08, 0.15), b15-25 [0.15, 0.25), b75-85 [0.75, 0.85), b85-92 [0.85, 0.92], other}, plus 'all'. Best-of-3
-//   vs best-of-5 (A7) cannot be told from a MatchGrid (no title or tournament), so it is not a context. t3 is in the
-//   design only when the end-entry block leaves room for it (1 - settleFrac - margin > 2/3; not with the defaults).
+//   vs best-of-5 (A7) cannot be told from a MatchGrid (no title or tournament), so it is not a context. t3 is always in
+//   the design. The end-entry block reads the latched progress, so entries go on at a reading of 2/3 or more until the
+//   reading has held 1 - settleFrac - margin (0.65) for 2 min. With the defaults in a 2 h match the reading passes 2/3
+//   about 2 min after 0.65, inside the latch's lag; a reading that jumps or comes back can get there at any time.
 //
 // Placebo (FamilyBCell.units[u][2..3]): each series' trigger list (decision and side) shifted circularly inside
 //   [0, closeIdx] by an offset drawn from [1800, closeIdx + 1 - 1800] (seeded by seed and the event name, one draw per
-//   series), so every placebo trigger is at least 30 min from the real trigger it came from, in both directions: a fixed
-//   exit closes within 15 min (plus the latency) when there is a bid to sell into, so such a position never reaches its
-//   source trigger (a shorter shift would replay the real trigger's own move). A position can hold longer in the last
-//   share (the end cut lets one in profit after fees ride to settlement) or while there is no bid to sell into, and a
-//   placebo whose shift wrapped (it lies before its source) can then still be open after its source trigger's decision.
-//   Those positions are kept as they are and counted (diagnostics placeboSpanSource, positions): ending or dropping them
-//   would give the placebo arm exits the real arm does not have and bias it even with no edge anywhere (a sale pays a
-//   spread and an exit fee that settlement does not; dropping removes rides, which are positions in profit). Kept, they
-//   add no bias under the null, and with a real edge they move the placebo toward the real arm (conservative). No
+//   series). So every placebo trigger is at least 30 min from the real trigger it came from (its source), in both
+//   directions; a shorter shift would replay the real trigger's own move. A placebo whose shift did not wrap lies after its
+//   source, so its position never holds across it. A placebo whose shift wrapped lies before its source, and its position
+//   must close before the source's decision. A position open across the source holds the move that defined the real
+//   trigger: a MOM trigger toward A is an A rise, and a ride to settlement across it is paid by a result that the move made
+//   likelier. That biases the placebo even with no edge anywhere: toward the real arm for follow, away from it for fade
+//   (anti-conservative there). It is not a neutral leak. A fixed exit is decided by its time stop at the latest (stop =
+//   fill + 900 s) and sells at the next bid, inside the 30 min. Only a ride holds a position past its stop, and riding
+//   from the stop to the source (898+ s later) needs two things. First, a reading in the last share at the stop, so the
+//   first such reading comes at or before the stop. Second, the latch in the last share within 2 min of the stop: a ride
+//   needs the reading there at every sample, and 2 min of that latches it. So a wrapped placebo trigger is left out
+//   (diagnostics placeboSpanExcluded) when its longest stop (decision + latency + 900 s) is at or after the first reading
+//   in the last share and the latched cut share starts no later than that stop + 2 min (+10 s of slack for a grid latch
+//   taken at 5 s decisions). Every position that could ride past its source is left out, and only the triggers in the
+//   last ~17 min before the latched cut share can be; with the defaults the end-entry block (latched 0.65) shortens that.
+//   The rule reads the trigger's time and the match clock, never the position's outcome. Dropping only the positions
+//   that did outlast their source would drop rides, which are positions in profit, and bias the arm down. The clock's
+//   info part moves with the price, so the rule's edge still depends a little on the path near the cut share. It is not
+//   free of bias either: it takes that clock window out of the placebo arm only (the real arm and the shifts that did
+//   not wrap keep it), and positions filled there earn more than elsewhere (more of them ride or settle, with no exit
+//   fee), so the placebo mean comes out a little lower, which favours the real arm in both directions. Measured on 80
+//   synthetic grids (logit random walks drifting toward the result, latch from the grid or not, gaps; rule on vs off):
+//   870 of 79,030 placebo positions go (39 of them would have been open past their source, at +1.89 $ each), the
+//   placebo mean goes -1.5530 -> -1.5552 $ a position (follow -0.0007, fade -0.0042) against an SE of about 0.010; real
+//   positions in the window average -1.39 against -1.66 elsewhere. Most of the move (about -0.0017) is losing the 39
+//   leaking rides; the rest (about -0.0005) is the window's other placebo positions. The circular shift itself puts
+//   more placebo mass in the window than the real arm has there (about 5.4% of positions vs 4.0%; 4.3% with the rule).
+//   diagnostics.spanWindow measures all of this on every run, with an exact replay of each series without the rule from
+//   its first left-out trigger. Taking the same window out of both arms (real triggers and every placebo trigger in it)
+//   would remove the asymmetry but drops production's last entries from the real arm (4% of real positions on those
+//   grids): a design change for Amendment 3, not made here. The other way past the source is a sale that waits through
+//   it for a bid (no bid on that side for 15+ min). Those positions are kept and counted (diagnostics
+//   placeboSpanSource; ending them would give the placebo arm exits the real arm does not have).
+//   Left as Amendment 3 has it: a reading on 5 m bars looks back further than the 30 min arc (RSI 14 bars), and the arc
+//   covers the exits and the trigger's last bar, not the whole look-back. No
 //   placebo for a match with fewer than 3600 samples (diagnostics noPlaceboMatches / noPlaceboEntries). Placebo triggers
 //   go through exactly the same entry rule (end block, jump mask and fade band included), lock, exits and context
 //   classification (their own context at the shifted time). The two arms make different numbers of entries per cell
 //   (real triggers cluster where the price moves), so they are compared by MEAN net per entry per unit, never by sums:
-//   units carry the counts for that.
+//   units carry the counts for that. Day rows carry them too: a pairing by day (the registry's control row, C7) must scale
+//   the placebo to the real arm's entries, n[d] x placebo sum[d] / placebo n[d], never use the raw placebo sum (the arm
+//   that enters less often would gain the fees it did not pay).
 //
 // Universe (A5): an H match with no tape on either market is skipped and counted (diagnostics noTape).
 // Zero-volume minutes (A7: flagged): entries whose decision follows 60 s without a single taker contract on either
 //   market are counted in diagnostics zeroVolEntries; they are not masked.
 //
 // Design size (the m for Benjamini-Hochberg) = series x 2 directions x contexts x 5 exits, contexts = 1 + phases x 5
-//   buckets x the tour series seen (phases 4 with the default end block, 5 when t3 is reachable). H: 11 TA columns x 2
-//   bars + 16 primitives = 38 series (KXATPMATCH + KXWTAMATCH: 38 x 2 x 41 x 5 = 15,580 cells); R: 11 x 4 + 24 = 68
-//   series (KXATPMATCH only: 68 x 2 x 21 x 5 = 14,280 cells).
+//   buckets x the tour series seen (5 phases). H: 11 TA columns x 2 bars + 16 primitives = 38 series (KXATPMATCH +
+//   KXWTAMATCH: 38 x 2 x 51 x 5 = 19,380 cells); R: 11 x 4 + 24 = 68 series (KXATPMATCH only: 68 x 2 x 26 x 5 = 17,680
+//   cells).
 //
 // Output: exportCells() (contract C3) gives every cell with a real or placebo entry: entries, the first four moments of net
-// per entry, breaches, gross, fees, stressSum, and per-unit [n, sum, placebo n, placebo sum] and per-day [n, sum].
+// per entry, breaches, gross, fees, stressSum, per-unit and per-day [n, sum, placebo n, placebo sum], and the distinct
+// markets each arm entered.
 
 import { loadConfig, paperEnv } from '../bot/config';
 import { orderFee, type FeeSchedule } from '../bot/fees';
+import { positionNetAtBid } from '../bot/strategy/fairValueStrategy';
 import { taEngine, taEngineError, tl } from '../bot/ta/talib';
+import { PROGRESS_LATCH_MS } from '../bot/tennis/tennisStrategy';
 import type { FamilyBCell, FamilyBExport, MatchGrid } from './tennisTaTypes';
 
 /** Tennis pays maker and taker fees (multiplier 1 each); every order rounds up to the cent. */
@@ -151,19 +195,25 @@ const EXITS = ['ts2m', 'ts10m', 'tp30sl30', 'tp50sl25', 'trail3t'];
 const N_EXIT = EXITS.length;
 const PHASES = ['pre', 'first20', 't1', 't2', 't3'];
 const BUCKETS = ['b08-15', 'b15-25', 'b75-85', 'b85-92', 'other'];
-const N_PB = PHASES.length * BUCKETS.length; // 25 context slots per tour series (t3's 5 may be out of the design)
+const N_PB = PHASES.length * BUCKETS.length; // 25 context slots per tour series
 const MAX_TOURS = 64;
 const CTX_STRIDE = 1 + N_PB * MAX_TOURS;
 const DIRS = ['follow', 'fade'];
 
 const TIME_STOP = [120, 600, 900, 900, 900];
+/** The longest time stop: a position held past it rides (or waits for a bid). */
+const T_MAX = Math.max(...TIME_STOP);
+/** The progress latch in 1 s samples, and the slack for a grid latch taken at the sim's 5 s decisions (it can trail a latch
+ *  over the 1 s readings by a decision and a sample). */
+const LATCH_SAMPLES = Math.ceil(PROGRESS_LATCH_MS / 1000 - 1e-9);
+const LATCH_SLACK = 10;
 const MAX_SPREAD = 0.05;
 const FADE_MIN = 0.1;
 const FADE_MAX = 0.9;
 const FIRST_PHASE_SEC = 20 * 60;
-/** Minimum placebo shift (s): longer than the longest fixed exit (900 s) plus latency and the longest bar (300 s). Positions
- *  held longer (end-cut rides, waits for a bid) can outlast it: diagnostics placeboSpanSource counts the placebo ones still
- *  open after their source trigger's decision. */
+/** Minimum placebo shift (s): longer than the longest fixed exit (900 s) plus latency and the longest bar (300 s). A ride
+ *  can hold longer: a wrapped placebo whose position could ride is left out (diagnostics placeboSpanExcluded), and one that
+ *  waits for a bid past its source is counted (placeboSpanSource). */
 export const PLACEBO_MIN_SEC = 1800;
 /** H's synthesized book is one level of 100 contracts a side. */
 export const H_LOT_CAP = 100;
@@ -231,8 +281,8 @@ const phaseBucketNames: string[] = [];
 for (const p of PHASES) for (const b of BUCKETS) phaseBucketNames.push(`${p}:${b}`);
 
 /** The design labels, for the report. Contexts are 'all' plus '<tour series>:<phase>:<bucket>' for every tour series seen
- *  (listed here for the two tours of the trial; any other tennis series follows the same pattern). Which phases are in a
- *  study's design depends on its end-entry block (see designSize()). */
+ *  (listed here for the two tours of the trial; any other tennis series follows the same pattern). Every phase is in the
+ *  design (see designSize()). */
 export const SIGNAL_SPEC: { readings: string[]; bars: string[]; exits: string[]; phases: string[]; buckets: string[]; contexts: string[] } = {
   readings: [...TA_READINGS.map((t) => t.name), 'MOM', 'OPP', 'FLOW', 'DEPTH'],
   bars: [...BAR_NAMES, '1s'],
@@ -317,22 +367,57 @@ export interface SignalDiagnostics {
   /** Grids whose day is before an earlier grid's (allowed: nothing in the study depends on the order). */
   outOfOrderGrids: number;
   /** Placebo positions (direction x exit) still open after the decision of the real trigger they were shifted from: a
-   *  wrapped shift whose position rode or waited for a bid past it (kept, see the header's Placebo). */
+   *  wrapped shift whose sale waited for a bid past it (kept, see the header's Placebo). */
   placeboSpanSource: number;
+  /** Wrapped placebo triggers left out because their position could ride past their source (their longest time stop at
+   *  or after the first reading in the last share, and the latched cut share no later than 2 min (+10 s) after it; see the
+   *  header's Placebo). */
+  placeboSpanExcluded: number;
+  /** The size of that rule's bias, measured on every run (see the header's Placebo): sums over the run, so shards add up. */
+  spanWindow: SpanWindowDiag;
+  /** Matches whose grid carried production's latched progress (g.progressHigh); the others latched g.progress here. */
+  progressHighFromGrid: number;
 }
 
+/** Positions (direction x exit) and their net $ after fees around the placebo exclusion (header, Placebo). Its window: the
+ *  fill's longest time stop (fill + 900 s) at or after the first reading in the last share, and the latched cut share no
+ *  later than that stop + 2 min (+10 s). The rule drops the window from the placebo arm only (its wrapped triggers). The
+ *  placebo arm without the rule has (allPlaceboNet - ruleOnNet + ruleOffNet) / (allPlaceboPositions - ruleOnPositions +
+ *  ruleOffPositions) a position, against allPlaceboNet / allPlaceboPositions with it; realNet / realPositions against the
+ *  rest of the real arm says how the window's positions differ. */
+export interface SpanWindowDiag {
+  /** Real positions filled in the window, and every real position. */
+  realPositions: number; realNet: number; allRealPositions: number; allRealNet: number;
+  /** Placebo positions recorded with the fill in the window (shifts that did not wrap), and every recorded placebo position. */
+  placeboPositions: number; placeboNet: number; allPlaceboPositions: number; allPlaceboNet: number;
+  /** Recorded placebo positions from each series' first left-out trigger on (per match), and the same stretch replayed
+   *  from the same lock without the rule (measured only: never recorded or traced). Before that trigger both are the same. */
+  ruleOnPositions: number; ruleOnNet: number; ruleOffPositions: number; ruleOffNet: number;
+  /** Replayed positions open past their source: the leak the rule is for. */
+  ruleOffPastSource: number; ruleOffPastSourceNet: number;
+}
+
+const spanWindowZero = (): SpanWindowDiag => ({
+  realPositions: 0, realNet: 0, allRealPositions: 0, allRealNet: 0, placeboPositions: 0, placeboNet: 0, allPlaceboPositions: 0,
+  allPlaceboNet: 0, ruleOnPositions: 0, ruleOnNet: 0, ruleOffPositions: 0, ruleOffNet: 0, ruleOffPastSource: 0, ruleOffPastSourceNet: 0,
+});
+
 type UnitRow = [number, number, number, number];
-type DayRow = [number, number];
+type DayRow = [number, number, number, number];
 
 class Cell {
   n = 0; sum = 0; sumSq = 0; sum3 = 0; sum4 = 0;
   breaches = 0; gross = 0; fees = 0; stressSum = 0;
+  /** Distinct markets (match x side) with a real / a placebo entry. */
+  markets = 0; placeboMarkets = 0;
+  private mStamp = -1;
+  private mSeen = 0;
   readonly units = new Map<string, UnitRow>();
   readonly days = new Map<string, DayRow>();
   private uStamp = -1;
   private uRow: UnitRow = [0, 0, 0, 0];
   private dStamp = -1;
-  private dRow: DayRow = [0, 0];
+  private dRow: DayRow = [0, 0, 0, 0];
   /** The match's unit row (stamp = the match's ordinal, so a cell looks its row up once per match). */
   unitRow(stamp: number, unit: string): UnitRow {
     if (stamp !== this.uStamp) {
@@ -342,10 +427,18 @@ class Cell {
     }
     return this.uRow;
   }
+  /** Counts the entry's market (side 0 = A, 1 = B of the match `stamp`) once per arm. */
+  market(stamp: number, side: number, placebo: boolean): void {
+    if (stamp !== this.mStamp) { this.mStamp = stamp; this.mSeen = 0; }
+    const bit = (placebo ? 4 : 1) << side;
+    if (this.mSeen & bit) return;
+    this.mSeen |= bit;
+    if (placebo) this.placeboMarkets++; else this.markets++;
+  }
   dayRow(stamp: number, day: string): DayRow {
     if (stamp !== this.dStamp) {
       let r = this.days.get(day);
-      if (!r) { r = [0, 0]; this.days.set(day, r); }
+      if (!r) { r = [0, 0, 0, 0]; this.days.set(day, r); }
       this.dRow = r; this.dStamp = stamp;
     }
     return this.dRow;
@@ -365,6 +458,27 @@ function hash32(s: string): number {
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return h >>> 0;
 }
+/**
+ * Production's latched progress over one reading every stepMs (bot/tennis/tennisStrategy.ts MatchTracker.latchProgress,
+ * which applyProfitRules' end cut and entry block read). out[i] = the furthest progress that every reading from the last one
+ * at or before (reading i's time - PROGRESS_LATCH_MS) through reading i has held, as of reading i. It is 0 until a whole span
+ * is covered and never falls. A NaN reading in a covered span sticks as NaN, as production's Math.min / Math.max make it.
+ * O(n) with a monotone queue of the span's minimum; the tracker rescans its span every tick.
+ */
+export function latchedProgress(prog: ArrayLike<number>, n = prog.length, stepMs = 1000, out = new Float64Array(n)): Float64Array {
+  const w = Math.ceil(PROGRESS_LATCH_MS / stepMs - 1e-9);
+  const q = new Int32Array(n);
+  let qh = 0, qt = 0, high = 0, lastNaN = -1;
+  for (let i = 0; i < n; i++) {
+    const p = prog[i];
+    if (p === p) { while (qt > qh && prog[q[qt - 1]] >= p) qt--; q[qt++] = i; } else lastNaN = i;
+    while (qt > qh && q[qh] < i - w) qh++;
+    if (i >= w) high = lastNaN >= i - w ? NaN : Math.max(high, prog[q[qh]]);
+    out[i] = high;
+  }
+  return out;
+}
+
 const logit = (p: number) => { const q = p < 0.01 ? 0.01 : p > 0.99 ? 0.99 : p; return Math.log(q / (1 - q)); };
 const tick = (x: number) => Math.round(x * 1e4) / 1e4;
 const nz = (x: number) => (x === x ? x : 0);
@@ -378,7 +492,7 @@ function productionEnd(): { settleFrac: number; endEntryMargin: number } {
 }
 
 // buffer slots
-const F_PA = 0, F_MIDA = 1, F_MIDB = 2, F_CYA = 3, F_CNA = 4, F_CYB = 5, F_CNB = 6, F_CVOL = 7, F_CHG = 8, F_CARRY = 18; // F_CHG: 10 slots
+const F_PA = 0, F_MIDA = 1, F_MIDB = 2, F_CYA = 3, F_CNA = 4, F_CYB = 5, F_CNB = 6, F_CVOL = 7, F_CHG = 8, F_CARRY = 18, F_HIGH = 19; // F_CHG: 10 slots
 const I_NBA = 1, I_NBB = 2, I_LVA = 3, I_LVB = 4, I_NVA = 5, I_NVB = 6, I_JUMP = 7;
 
 export class SignalStudy {
@@ -387,6 +501,8 @@ export class SignalStudy {
   private readonly seed: number;
   private readonly settleFrac: number;
   private readonly endEntryMargin: number;
+  /** A reading at or over this is in the last share (Infinity when settleFrac is 0: no last share). */
+  private readonly share: number;
   private readonly stressTicks: number;
   private readonly stressFeeMult: number;
   private readonly feesStress: FeeSchedule;
@@ -402,7 +518,7 @@ export class SignalStudy {
     matches: 0, noTape: 0, tooShort: 0, noPlaceboMatches: 0, noPlaceboEntries: 0, triggers: 0, entries: 0, placeboEntries: 0, zeroVolEntries: 0,
     jumpMasked: 0, fadeBand: 0, endBlocked: 0, gapBars: 0, hCapped: 0, rOver100: 0,
     kinds: { time: 0, tp: 0, sl: 0, trail: 0, cut: 0, ride: 0, breach: 0 },
-    outOfOrderGrids: 0, placeboSpanSource: 0,
+    outOfOrderGrids: 0, placeboSpanSource: 0, placeboSpanExcluded: 0, spanWindow: spanWindowZero(), progressHighFromGrid: 0,
   };
 
   // ---- per-match state (buffers reused across matches) ----
@@ -415,10 +531,14 @@ export class SignalStudy {
   private tour = 0;
   private onH = true;
   private placeboOn = false;
-  /** First sample where the furthest progress is in the last share (the end cut judges from there), n if never. */
+  /** First sample where the latched progress is in the last share (the end cut judges from there), n if never. */
   private cutIdx = 0;
-  /** First sample from which no entry is placed (the end-entry block), n if never. */
+  /** First sample from which no entry is placed (the end-entry block, on the latched progress), n if never. */
   private entryEnd = 0;
+  /** First sample whose progress reading is in the last share (a position in profit can ride from there), n if never. */
+  private shareIdx = 0;
+  /** Did this match's grid carry production's latched progress? */
+  private highFromGrid = false;
   private readonly f64: Float64Array[] = [];
   private readonly i32: Int32Array[] = [];
   private trig = new Int32Array(4096);
@@ -437,6 +557,8 @@ export class SignalStudy {
   private xPx = 0;
   private xKind = 0;
   private xDec = 0;
+  /** positionNetAtBid's bid (reused). */
+  private readonly quote = { price: 0 };
 
   constructor(opts: SignalStudyOpts = {}) {
     if (taEngine() !== 'talib') {
@@ -448,6 +570,7 @@ export class SignalStudy {
     const prod = opts.settleFrac === undefined || opts.endEntryMargin === undefined ? productionEnd() : undefined;
     this.settleFrac = opts.settleFrac ?? prod!.settleFrac;
     this.endEntryMargin = opts.endEntryMargin ?? prod!.endEntryMargin;
+    this.share = this.settleFrac > 0 ? 1 - this.settleFrac - 1e-9 : Infinity;
     this.stressTicks = opts.stressTicks ?? 1;
     this.stressFeeMult = opts.stressFeeMult ?? 1.25;
     this.feesStress = { ...FEES, takerMultiplier: FEES.takerMultiplier * this.stressFeeMult, makerMultiplier: FEES.makerMultiplier * this.stressFeeMult };
@@ -465,11 +588,6 @@ export class SignalStudy {
     if (bad.length) throw new Error(`tennisTaSignals: bars ${bad.join(', ')} run on recorded books (R) only, not on H (A1)`);
   }
 
-  /** Is t3 (progress >= 2/3) reachable under the end-entry block? Not with the defaults (no entry from 0.65). */
-  private t3InDesign(): boolean {
-    return !(this.settleFrac > 0) || 1 - this.settleFrac - this.endEntryMargin > 2 / 3 + EPS;
-  }
-
   /** How many cells exist in the design (BH m), including cells that never fired: series of this stratum x 2 directions x
    *  (1 + phases x 5 buckets x tour series seen) contexts x 5 exits. */
   designSize(): number {
@@ -480,11 +598,15 @@ export class SignalStudy {
       if (s.ta >= 0 && !this.barOn[s.b]) continue;
       series++;
     }
-    const phases = PHASES.length - (this.t3InDesign() ? 0 : 1);
-    return series * 2 * (1 + phases * BUCKETS.length * this.tours.size) * N_EXIT;
+    // Every phase, t3 included: the end-entry block reads the latched progress, so a reading of 2/3 or more can still enter.
+    return series * 2 * (1 + PHASES.length * BUCKETS.length * this.tours.size) * N_EXIT;
   }
 
-  diagnostics(): SignalDiagnostics { return { ...this.diag, kinds: { ...this.diag.kinds } }; }
+  diagnostics(): SignalDiagnostics {
+    const w = this.diag.spanWindow, spanWindow = { ...w };
+    for (const k of Object.keys(w) as (keyof SpanWindowDiag)[]) spanWindow[k] = r9(w[k]);
+    return { ...this.diag, kinds: { ...this.diag.kinds }, spanWindow };
+  }
 
   private bufF(slot: number, n: number): Float64Array {
     let a = this.f64[slot];
@@ -529,6 +651,7 @@ export class SignalStudy {
     }
     this.tour = tour;
     this.diag.matches++;
+    if (this.highFromGrid) this.diag.progressHighFromGrid++;
     this.nTrig = 0;
     const onR = !this.onH;
     this.buildBarSeries(onR);
@@ -562,19 +685,16 @@ export class SignalStudy {
       mA[i] = a; mB[i] = b;
       pA[i] = a === a ? (b === b ? (a + 1 - b) / 2 : a) : b === b ? 1 - b : NaN;
     }
-    // The end cut and the entry block go by the furthest progress reached (production MatchTracker.progressHigh).
+    // The end cut and the entry block go by production's latched progress (MatchTracker.progressHigh), the ride rule by the
+    // reading of the tick (g.progress).
     const frac = this.settleFrac;
     const cutAt = 1 - frac - 1e-9, blockAt = 1 - frac - this.endEntryMargin - 1e-9;
-    this.cutIdx = n; this.entryEnd = n;
+    this.cutIdx = n; this.entryEnd = n; this.shareIdx = n;
+    const high = this.progressHighOf(n), prog = g.progress;
     if (frac > 0) {
-      const prog = g.progress;
-      let hi = 0;
-      for (let i = 0; i < n; i++) {
-        const p = prog[i];
-        if (p > hi) hi = p;
-        if (hi >= blockAt && this.entryEnd === n) this.entryEnd = i;
-        if (hi >= cutAt) { this.cutIdx = i; break; }
-      }
+      for (let i = 0; i < n; i++) if (high[i] >= blockAt) { this.entryEnd = i; break; }
+      for (let i = 0; i < n; i++) if (high[i] >= cutAt) { this.cutIdx = i; break; }
+      for (let i = 0; i < n; i++) if (prog[i] >= cutAt) { this.shareIdx = i; break; }
     }
     // Next sample at or after i (up to closeIdx) with a bid on each side; -1 when none.
     const nbA = this.bufI(I_NBA, n + 1), nbB = this.bufI(I_NBB, n + 1);
@@ -610,6 +730,21 @@ export class SignalStudy {
       if (i >= JUMP_LAG) { const d = carried - hist[i - JUMP_LAG]; if (d >= JUMP - EPS || d <= -JUMP + EPS) last = i; }
       lj[i] = last;
     }
+  }
+
+  /** The match's latched progress a sample: the grid's own when it carries one (research/tennisTaSim.ts grids: production's
+   *  tracker over its 5 s decisions), else latchedProgress over g.progress, one reading a sample. A grid latch that is
+   *  shorter than the grid or falls is not production's: it throws. */
+  private progressHighOf(n: number): ArrayLike<number> {
+    const g = this.g;
+    const own = (g as MatchGrid & { progressHigh?: ArrayLike<number> }).progressHigh;
+    this.highFromGrid = own !== undefined && own !== null;
+    if (!this.highFromGrid) return latchedProgress(g.progress, n, 1000, this.bufF(F_HIGH, n));
+    if (own!.length < n) throw new Error(`tennisTaSignals: grid ${g.event} has ${own!.length} progressHigh samples for ${n} samples`);
+    for (let i = 1; i < n; i++) {
+      if (own![i] < own![i - 1] - 1e-12) throw new Error(`tennisTaSignals: grid ${g.event} progressHigh falls at sample ${i} (${own![i - 1]} -> ${own![i]}): production's latch never falls`);
+    }
+    return own!;
   }
 
   /** Bars, TA-Lib readings (per gap-free segment) and their triggers for the TA series of this stratum. */
@@ -832,8 +967,10 @@ export class SignalStudy {
     return k;
   }
 
-  /** One entry-locked pass of series s over a sorted trigger list: both directions and all exits share each entry. */
-  private pass(s: number, arr: Int32Array, from: number, to: number, placebo: boolean): void {
+  /** One entry-locked pass of series s over a sorted trigger list: both directions and all exits share each entry. A shadow
+   *  pass replays a placebo list from `from` (with the lock lock0 there) without the span rule, into diagnostics spanWindow
+   *  only: it records, traces and counts nothing else. */
+  private pass(s: number, arr: Int32Array, from: number, to: number, placebo: boolean, shadow = false, lock0 = -1): void {
     const g = this.g;
     const lastFill = this.closeIdx - 1;
     const prog = g.progress;
@@ -844,7 +981,10 @@ export class SignalStudy {
     const cv = this.f64[F_CVOL];
     const tourBase = 1 + this.tour * N_PB;
     const E = this.entryEnd;
-    let lock = -1;
+    const sw = this.diag.spanWindow;
+    let lock = lock0;
+    /** The first trigger the span rule left out, and the lock there: the rule-off replay starts from it. */
+    let offFrom = -1, offLock = -1;
     for (let t = from; t < to; t++) {
       const v = arr[t];
       const d = v >> 1;
@@ -853,9 +993,19 @@ export class SignalStudy {
       const e = d + this.lat;
       if (e > lastFill) break;
       if (isTa && lj[d] >= d - JUMP_MASK) { if (!placebo) this.diag.jumpMasked++; continue; }
+      const wrapped = placebo && t < this.plcWrap;
+      // A wrapped placebo lies before its source: left out when its position could ride past it, by the trigger's time and
+      // the match clock, never by its outcome (see the header's Placebo). It leaves the window out of the placebo arm only:
+      // diagnostics spanWindow measures what that does (the shadow replay below).
+      const inWin = e + T_MAX >= this.shareIdx && e + T_MAX + LATCH_SAMPLES + LATCH_SLACK >= this.cutIdx;
+      if (wrapped && inWin && !shadow) {
+        this.diag.placeboSpanExcluded++;
+        if (offFrom < 0) { offFrom = t; offLock = lock; }
+        continue;
+      }
       const ts = v & 1;
-      // The real trigger's decision this one came from (a wrapped placebo lies before it, so its position can outlast it).
-      const src = !placebo ? d : t < this.plcWrap ? d + this.plcN - this.plcOff : d - this.plcOff;
+      // The real trigger's decision this one came from (a wrapped placebo lies before it).
+      const src = !placebo ? d : wrapped ? d + this.plcN - this.plcOff : d - this.plcOff;
       // Which directions can take this entry.
       let took = false;
       let lockTo = e;
@@ -867,7 +1017,7 @@ export class SignalStudy {
         if (dir === 1 && (ask < FADE_MIN - EPS || ask > FADE_MAX + EPS)) { if (!placebo) this.diag.fadeBand++; continue; }
         if (!took) {
           took = true;
-          if (placebo) this.diag.placeboEntries++;
+          if (placebo) { if (!shadow) this.diag.placeboEntries++; }
           else { this.diag.entries++; if (cv[d + 1] - cv[d + 1 - 60 < 0 ? 0 : d + 1 - 60] <= 0) this.diag.zeroVolEntries++; }
         }
         let count = Math.max(1, Math.floor(this.orderUsd / ask + EPS));
@@ -877,7 +1027,9 @@ export class SignalStudy {
         }
         const feeIn = orderFee(count, ask, true, FEES);
         const feeInS = orderFee(count, ask, true, this.feesStress);
-        const cost = count * ask + feeIn;
+        // The open contracts' cost a contract, as production measures every after-fee judgement (openSidePrice +
+        // openEntryFee of a one-fill position).
+        const costPer = ask + feeIn / count;
         // Context: tour series, phase at the decision, bucket of the ask paid.
         const phase = live < 0 || d < live ? 0 : d < live + FIRST_PHASE_SEC ? 1 : !(prog[d] >= 1 / 3) ? 2 : prog[d] < 2 / 3 ? 3 : 4;
         const bucket = ask >= 0.08 - EPS && ask < 0.15 - EPS ? 0 : ask >= 0.15 - EPS && ask < 0.25 - EPS ? 1
@@ -885,7 +1037,7 @@ export class SignalStudy {
         const ctx = tourBase + phase * BUCKETS.length + bucket;
         const base = (s * 2 + dir) * CTX_STRIDE;
         for (let x = 0; x < N_EXIT; x++) {
-          this.exit(e, side, x, ask, count, cost);
+          this.exit(e, side, x, ask, count, costPer);
           const at = this.xAt, px = this.xPx, kind = this.xKind;
           let gross: number, fees: number, net: number, snet: number;
           if (kind >= K_RIDE) {
@@ -898,11 +1050,21 @@ export class SignalStudy {
             snet = count * (ps - ask) - feeInS - orderFee(count, ps, true, this.feesStress);
             if (at > lockTo) lockTo = at;
           }
+          if (shadow) {
+            sw.ruleOffPositions++; sw.ruleOffNet += net;
+            if (src > d && at > src) { sw.ruleOffPastSource++; sw.ruleOffPastSourceNet += net; }
+            continue;
+          }
+          if (placebo) {
+            sw.allPlaceboPositions++; sw.allPlaceboNet += net;
+            if (inWin) { sw.placeboPositions++; sw.placeboNet += net; }
+            if (offFrom >= 0) { sw.ruleOnPositions++; sw.ruleOnNet += net; }
+          } else { sw.allRealPositions++; sw.allRealNet += net; if (inWin) { sw.realPositions++; sw.realNet += net; } }
           if (!placebo) this.diag.kinds[KIND_NAMES[kind]]++;
           else if (src > d && at > src) this.diag.placeboSpanSource++;
           const breach = kind === K_BREACH;
-          this.record((base + ctx) * N_EXIT + x, net, snet, gross, fees, breach, placebo);
-          this.record(base * N_EXIT + x, net, snet, gross, fees, breach, placebo);
+          this.record((base + ctx) * N_EXIT + x, net, snet, gross, fees, breach, placebo, side);
+          this.record(base * N_EXIT + x, net, snet, gross, fees, breach, placebo, side);
           if (this.trace) {
             this.trace({
               series: `${sp.reading}|${sp.bar}|${sp.trigger}`, dir: dir ? 'fade' : 'follow', exit: EXITS[x], context: this.ctxName(ctx), placebo,
@@ -914,6 +1076,7 @@ export class SignalStudy {
       }
       if (took) lock = lockTo;
     }
+    if (offFrom >= 0) this.pass(s, arr, offFrom, to, true, true, offLock);
   }
 
   private ctxName(ctx: number): string {
@@ -924,13 +1087,13 @@ export class SignalStudy {
     return `${name}:${phaseBucketNames[pb]}`;
   }
 
-  private record(key: number, net: number, snet: number, gross: number, fees: number, breach: boolean, placebo: boolean): void {
+  private record(key: number, net: number, snet: number, gross: number, fees: number, breach: boolean, placebo: boolean, side: number): void {
     let c = this.cellMap.get(key);
     if (!c) { c = new Cell(); this.cellMap.set(key, c); }
-    const u = c.unitRow(this.stamp, this.unit);
-    if (placebo) { u[2]++; u[3] += net; return; }
+    c.market(this.stamp, side, placebo);
+    const u = c.unitRow(this.stamp, this.unit), dr = c.dayRow(this.stamp, this.day);
+    if (placebo) { u[2]++; u[3] += net; dr[2]++; dr[3] += net; return; }
     u[0]++; u[1] += net;
-    const dr = c.dayRow(this.stamp, this.day);
     dr[0]++; dr[1] += net;
     const x2 = net * net;
     c.n++; c.sum += net; c.sumSq += x2; c.sum3 += x2 * net; c.sum4 += x2 * x2;
@@ -938,14 +1101,22 @@ export class SignalStudy {
     if (breach) c.breaches++;
   }
 
+  /** Production's net after fees at the bid (bot/strategy/fairValueStrategy.ts positionNetAtBid) on the open contracts'
+   *  cost a contract. */
+  private netAt(count: number, costPer: number, b: number): number {
+    this.quote.price = b;
+    return positionNetAtBid(count, costPer, this.quote, undefined, FEES)!;
+  }
+
   /** Exit of a position filled at e on side (0 = A, 1 = B): sets xDec (deciding sample), xAt (sale sample, or closeIdx when
-   *  it settles), xPx (sale price, or the payout 1 / 0) and xKind. cost = count x ask + entry fee. */
-  private exit(e: number, side: number, x: number, ask: number, count: number, cost: number): void {
-    const g = this.g, C = this.closeIdx, B = this.cutIdx;
+   *  it settles), xPx (sale price, or the payout 1 / 0) and xKind. costPer = the open contracts' cost a contract (the ask
+   *  + the entry fee / count: production's openSidePrice + openEntryFee). */
+  private exit(e: number, side: number, x: number, ask: number, count: number, costPer: number): void {
+    const g = this.g, C = this.closeIdx, B = this.cutIdx, S = this.shareIdx;
     const bid = side ? g.bidB : g.bidA;
     const nb = side ? this.i32[I_NBB] : this.i32[I_NBA];
     const prog = g.progress;
-    const share = 1 - this.settleFrac - 1e-9;
+    const share = this.share;
     const stop = e + TIME_STOP[x];
     const bracket = x === 2 || x === 3, trail = x === 4;
     const tp = bracket ? ask * (x === 2 ? 1.3 : 1.5) - EPS : Infinity, sl = bracket ? ask * (x === 2 ? 0.7 : 0.75) + EPS : -Infinity;
@@ -953,8 +1124,9 @@ export class SignalStudy {
     let armed = false, peak = 0;
     let dec = -1, kind = K_TIME, ride = false, judged = -1;
     let j = e + 1;
-    // Before the last share: the fixed exit alone (decided on the quotes of j, j >= e + 1).
-    const lim = Math.min(stop - 1, B - 1, C);
+    // Before any reading is in the last share (so before the latch too): the fixed exit alone (decided on the quotes of j,
+    // j >= e + 1).
+    const lim = Math.min(stop - 1, S - 1, B - 1, C);
     if (bracket) {
       for (; j <= lim; j++) {
         const b = bid[j];
@@ -971,24 +1143,34 @@ export class SignalStudy {
       }
     } else if (j <= lim) j = lim + 1;
     if (dec < 0 && j <= C) {
-      if (j < B) { dec = j; kind = K_TIME; } // j === stop
+      if (j < S && j < B) { dec = j; kind = K_TIME; } // j === stop
       else {
-        // The last share by the furthest progress: the end cut judges the position at every sample with a bid.
+        // From the first reading in the last share: production's profit rules judge the position before the fixed exit.
         for (; j <= C; j++) {
           const b = bid[j];
-          if (!(b > 0)) continue;
+          const has = b > 0;
+          const cutting = j >= B;
+          // In the cut share (by the latched progress) a sample without a bid is not judged: nothing to sell into.
+          if (cutting && !has) continue;
           let trailHit = false;
-          if (trail) {
+          if (trail && has) {
             if (!armed) { if (b >= arm) { armed = true; peak = b; } }
             else if (b > peak) peak = b;
             else if (b <= peak - 0.03 + EPS) trailHit = true;
           }
-          judged = j;
-          const net = count * b - orderFee(count, b, true, FEES) - cost;
-          if (!(net > EPS)) { dec = j; kind = K_CUT; ride = false; break; }
-          if (prog[j] >= share) { ride = true; continue; }
-          // In profit, but a comeback took the current progress back under the last share: the fixed exit applies.
-          ride = false;
+          if (has) {
+            const inShare = prog[j] >= share;
+            if (inShare || cutting) {
+              judged = j;
+              const net = this.netAt(count, costPer, b);
+              // lastShare and in profit after fees: rides (no exit sells it), whether or not the latch is there yet.
+              if (inShare && net > EPS) { ride = true; continue; }
+              // cutShare and not in profit after fees: never held to settlement.
+              if (cutting && !(net > EPS)) { dec = j; kind = K_CUT; ride = false; break; }
+            }
+            // Not riding: under the share (a comeback, or the latch not there yet), or not in profit before the latch.
+            ride = false;
+          }
           if (j >= stop) { dec = j; kind = K_TIME; break; }
           if (b >= tp) { dec = j; kind = K_TP; break; }
           if (b <= sl) { dec = j; kind = K_SL; break; }
@@ -1029,13 +1211,13 @@ export class SignalStudy {
       const group = `B|${sp.reading}|${sp.bar}|${sp.trigger}|${DIRS[dir]}`;
       const units: Record<string, [number, number, number, number]> = {};
       for (const [u, r] of c.units) units[u] = [r[0], r9(r[1]), r[2], r9(r[3])];
-      const days: Record<string, [number, number]> = {};
-      for (const [d, r] of c.days) days[d] = [r[0], r9(r[1])];
+      const days: Record<string, [number, number, number, number]> = {};
+      for (const [d, r] of c.days) days[d] = [r[0], r9(r[1]), r[2], r9(r[3])];
       out.push({
         id: `${group}|${this.ctxName(ctx)}|${EXITS[x]}`, group,
         n: c.n, sum: r9(c.sum), sumSq: c.sumSq, sum3: c.sum3, sum4: c.sum4,
         breaches: c.breaches, gross: r9(c.gross), fees: r9(c.fees), stressSum: r9(c.stressSum),
-        units, days,
+        units, days, markets: c.markets, placeboMarkets: c.placeboMarkets,
       });
     }
     const bars = BAR_NAMES.filter((_, b) => this.barOn[b] && (stratum === 'R' || BAR_ON_H[b]));
@@ -1047,7 +1229,9 @@ export class SignalStudy {
         tours: [...this.tours.keys()],
         settings: {
           orderUsd: this.orderUsd, latencySec: this.lat, seed: this.seed, bars, settleFrac: this.settleFrac, endEntryMargin: this.endEntryMargin,
-          phasesInDesign: PHASES.filter((p) => p !== 't3' || this.t3InDesign()), placeboMinSec: PLACEBO_MIN_SEC, hLotCap: H_LOT_CAP,
+          phasesInDesign: [...PHASES], placeboMinSec: PLACEBO_MIN_SEC, hLotCap: H_LOT_CAP,
+          // The end cut and the entry block read the progress held this long (production MatchTracker.progressHigh).
+          progressLatchMs: PROGRESS_LATCH_MS,
           stress: `every sale ${this.stressTicks} tick(s) lower (F2), every fee x${this.stressFeeMult}`, stressTicks: this.stressTicks, stressFeeMult: this.stressFeeMult,
           taEngine: taEngine(),
         },

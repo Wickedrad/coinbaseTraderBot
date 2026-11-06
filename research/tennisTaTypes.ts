@@ -28,6 +28,10 @@ export interface MatchGrid {
   /** Match progress 0..1 per sample from the production clock (bot/tennis/tennisStrategy.ts MatchTracker.progress, no
    *  score on H; R uses recorded scores when present). 0 before the match is live. */
   progress: Float64Array;
+  /** Production's latched progress per sample (MatchTracker.progressHigh of the production-default clock, which the end
+   *  loser cut and the entry block read; research/tennisTaSim.ts sets it on every grid, GridWithHigh). Family B reads it
+   *  when present, else latches `progress` itself (research/tennisTaSignals.ts latchedProgress). */
+  progressHigh?: Float64Array;
   /** Index of the first live sample (-1 if never live). */
   liveIdx: number;
   /** Settlement of market A: 1 = player A won, 0 = lost. */
@@ -61,8 +65,12 @@ export interface FamilyBCell {
   /** Per tournament-week unit: [entries, net sum, placebo entries, placebo net sum]. Compare per-unit MEANS (sum / n against
    *  placebo sum / placebo n), never sums: the two arms do not make the same number of entries. */
   units: Record<string, [number, number, number, number]>;
-  /** Per UTC match-day (of the match start): [entries, net sum]. Months (folds) are the days' YYYY-MM. */
-  days: Record<string, [number, number]>;
+  /** Per UTC match-day (of the match start): [entries, net sum, placebo entries, placebo net sum]. Months (folds) are the
+   *  days' YYYY-MM. The placebo columns give the registry's family B placebo row its by_day (C7). */
+  days: Record<string, [number, number, number, number]>;
+  /** Distinct markets (match x side) with a real entry, and with a placebo entry (the registry rows' `markets`, C7). A
+   *  match is owned by one slice, so the counts add over slices. */
+  markets: number; placeboMarkets: number;
 }
 
 /** Family B's part of a sweep shard file: one SignalStudy over one slice (one stratum, never H and R together). */
