@@ -116,7 +116,9 @@ def main():
                'env': env, 'code_sha': a.code_sha, 'code_epoch': f'REPLAY_VERSION={a.replay_version}', 'base': f'anchor@{a.code_sha[:7]}',
                'data': {'source': 'history', 'days': all_days, 'doge': False, 'benches': 'own', 'books': 'synthetic', 'replay_version': a.replay_version},
                'by_tercile': by_tercile(r),
-               'by_day': {d: round(v, 4) for d, v in sorted(r.get('byDay', {}).items())},
+               # Every replayed day, $0 where the arm made no trade: registry.py ho1 pairs days present in both rows, so a missing
+               # zero day would drop out of the held-out score (42137452467: off20 counted on 41 of 94 days).
+               'by_day': {d: round(r.get('byDay', {}).get(d, 0.0), 4) for d in all_days},
                'hours': len(all_days) * 24, 'fills': r.get('fills', 0), 'contract_type': 'Price Prediction', 'modules': ['anchor']}
         if control:
             out['control'] = control
