@@ -254,7 +254,9 @@ export interface Ho1 {
 }
 export const HO1_RULES = { days: 90, folds: 6, foldDays: 16, foldsWon: 4, worstFold: -0.5, tercileHours: 100, tercilesWon: 2, worstTercile: -0.5 };
 
-export function ho1Of(byDay: Record<string, number>, taken: Array<{ x: number; rnd?: number; ter?: number }>, terHours: number[], perPos: number): Ho1 {
+/** o.placebo replaces the random-entry placebo with an external one (round 4's circular shifts: the rule's $ priced as its
+ *  placebo is, against the placebo's mean). */
+export function ho1Of(byDay: Record<string, number>, taken: Array<{ x: number; rnd?: number; ter?: number }>, terHours: number[], perPos: number, o: { placebo?: { usd: number; placeboUsd: number } } = {}): Ho1 {
   const R = HO1_RULES, days = Object.keys(byDay).sort(), N = days.length;
   const foldUsdH: number[] = [], nF = Math.max(R.folds, Math.floor(N / R.foldDays)), need = Math.ceil((nF * R.foldsWon) / R.folds - 1e-9);
   for (let k = 0; k < nF; k++) {
@@ -275,14 +277,15 @@ export function ho1Of(byDay: Record<string, number>, taken: Array<{ x: number; r
   const terUsdH = [0, 1, 2].map((k) => (terHours[k] > 0 ? terUsd[k] / terHours[k] : null));
   const tWon = covered.filter((k) => (terUsdH[k] ?? 0) > 0).length;
   const worstT = covered.length ? Math.min(...covered.map((k) => terUsdH[k]!)) : null;
-  const beats = placebo === placebo && usd > placebo;
+  if (o.placebo) placebo = o.placebo.placeboUsd;
+  const beats = placebo === placebo && (o.placebo ? o.placebo.usd : usd) > placebo;
   const why: string[] = [];
   if (N < R.days) why.push(`HO-1: ${N} held-out days < ${R.days}`);
   if (won < need) why.push(`HO-1: ${won} of ${nF} folds won (needs ${need})`);
   if (!(worstF >= R.worstFold)) why.push(`HO-1: worst fold $${worstF.toFixed(3)}/h < $${R.worstFold}/h`);
   if (tWon < R.tercilesWon) why.push(`HO-1: ${tWon} of 3 RV terciles won with ${R.tercileHours}+ h (needs ${R.tercilesWon})`);
   if (worstT !== null && worstT < R.worstTercile) why.push(`HO-1: an RV tercile at $${worstT.toFixed(3)}/h < $${R.worstTercile}/h`);
-  if (!beats) why.push(placebo === placebo ? `HO-1: $${usd.toFixed(2)} not above its placebo $${placebo.toFixed(2)} (the same trades at random entries)` : 'HO-1: no placebo (signals without the random-entry baseline)');
+  if (!beats) why.push(placebo !== placebo ? (o.placebo ? 'HO-1: no placebo (the block is too short for its circular shifts)' : 'HO-1: no placebo (signals without the random-entry baseline)') : o.placebo ? `HO-1: $${o.placebo.usd.toFixed(2)} not above its placebo $${placebo.toFixed(2)} (circular shifts, priced alike)` : `HO-1: $${usd.toFixed(2)} not above its placebo $${placebo.toFixed(2)} (the same trades at random entries)`);
   const r4 = (v: number) => +v.toFixed(4);
   return {
     standard: 'HO-1', tier: 'history', days: N, folds: nF, folds_won: won, worst_fold_per_hour: r4(worstF), terciles_covered: covered.length,

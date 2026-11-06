@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; 'agree' checks that the signals fire the same on Coinbase spot as on Binance spot; 'registry' writes every round's rows as registry v1 shards (contract type, modules); empty runs the sweep"
+        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; 'agree' checks that the signals fire the same on Coinbase spot as on Binance spot; 'registry' writes every round's rows as registry v1 shards (contract type, modules); 'slow' runs round 4's slow trend rule on its discovery and validation gates; 'slow-sealed' opens the sealed block for it once (gates_run must have passed); empty runs the sweep"
         required: false
         default: ''
       blind_run:
@@ -34,8 +34,12 @@ on:
         description: 'Study: cells tested so far by this thread (every run, for the deflated Sharpe)'
         required: false
         default: '248350921'
+      gates_run:
+        description: "slow-sealed: the 'slow' run whose gates passed (its gates.json on Drive, with this code's rule hash)"
+        required: false
+        default: ''
       reopen_reason:
-        description: 'Blind test: only to reopen a set already opened (e.g. a crash before any sealed number was read); logged'
+        description: 'Blind test or slow-sealed: only to reopen a set already opened (e.g. a crash before any sealed number was read); logged'
         required: false
         default: ''
       assets:
@@ -152,7 +156,7 @@ jobs:
 
   sweep:
     needs: [blind-open]
-    if: ${{ !cancelled() && inputs.only != 'fidelity' && inputs.only != 'agree' && inputs.only != 'registry' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) && (inputs.only != 'study' || inputs.study_run != '') }}
+    if: ${{ !cancelled() && inputs.only != 'fidelity' && inputs.only != 'agree' && inputs.only != 'registry' && inputs.only != 'slow' && inputs.only != 'slow-sealed' && inputs.only != 'decay' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) && (inputs.only != 'study' || inputs.study_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
@@ -326,7 +330,7 @@ jobs:
     needs: [blind-open, sweep, fidelity]
     # Not after a cancel (a newer push supersedes this run): partial artifacts would post a misleading summary. Not after a
     # refused blind opening either (nothing was read).
-    if: ${{ !cancelled() && inputs.only != 'agree' && inputs.only != 'registry' && needs.blind-open.result != 'failure' && (inputs.only != 'study' || inputs.study_run != '') }}
+    if: ${{ !cancelled() && inputs.only != 'agree' && inputs.only != 'registry' && inputs.only != 'slow' && inputs.only != 'slow-sealed' && inputs.only != 'decay' && needs.blind-open.result != 'failure' && (inputs.only != 'study' || inputs.study_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -532,3 +536,159 @@ jobs:
             rclone copyto "$f" "$R/$(basename "$f")"
             echo "- $(basename "$f"): $(wc -l < "$f") rows" | tee -a "$GITHUB_STEP_SUMMARY"
           done
+
+  # only: slow / slow-sealed. Round 4's one hypothesis, PTA-R4-slow (research/perpTaSlow.ts; pre-registered in
+  # /mnt/project-files/perp-ta/preregistration.md, "Round 4"): the bot's macro_trend confluence state at each day boundary,
+  # for the 'macro' diagnostic only (counted, never a candidate). Best effort: the gates read the sweep's cached analyzer walk
+  # (the walk to the seal); the sealed run recomputes it to the lockbox cap within the step's limit. The rule runs without it
+  # when it fails (the diagnostic is then reported as not run).
+  slow-macro:
+    if: ${{ inputs.only == 'slow' || inputs.only == 'slow-sealed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: ${{ fromJSON(inputs.assets || '["BTC","ETH","SOL","XRP"]') }}
+    env:
+      A: ${{ matrix.asset }}
+      END: ${{ inputs.only == 'slow-sealed' && 'lockbox' || 'seal' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The grid, the coins' hourly bars and the cached analyzer walk (Drive)
+        run: |
+          set -euo pipefail
+          [[ "$A" =~ ^[A-Z0-9]{2,8}$ ]] && [[ "$A" != DOGE ]] || { echo "bad or excluded coin: $A"; exit 1; }
+          bash deploy/drive_lab.sh get derived/perp-ta/grids data/perp-ta --include "$A.bin"
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist-$A" --include "binance-1h/**" || echo "no hourly bars on Drive"
+          bash deploy/drive_lab.sh get derived/perp-ta/modules data/modcache --include "$A-*" || echo "no cached analyzer walk"
+          ls -la data/perp-ta data/modcache 2>&1 | grep -v '^total' | cat
+      - name: macro_trend at each day boundary (to the ${{ env.END }})
+        continue-on-error: true
+        timeout-minutes: ${{ inputs.only == 'slow-sealed' && 170 || 60 }}
+        run: |
+          set -o pipefail
+          node --max-old-space-size=14000 --import tsx research/perpTaSlow.ts macro --assets "$A" --data "data/perp-ta/$A.bin" --history "data/hist-$A" --module-cache data/modcache --end "$END" --out "out/macro/$A.json" 2>&1 | grep -v 'analyzer walk [0-9]' | tail -20
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slow-macro-${{ matrix.asset }}
+          path: out/macro/${{ matrix.asset }}.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # The rule itself, all coins in one book. 'slow': the kill-only gates (discovery from the grid's start to 2023-12-31,
+  # validation 2024-01-01 .. 2025-06-30; nothing at or after the seal is read). 'slow-sealed': only with gates_run, a 'slow'
+  # run whose gates passed with this code's rule hash; the opening is logged on Drive (models/perp-ta/slow/openings.jsonl)
+  # before the sealed block (2025-07-01 .. the lockbox cap, Nov 6 2026 00:00 UTC) is read, once per rule hash. Results go to
+  # Drive (models/perp-ta/slow/run-<id>) and the registry (shards/perp-ta/slow-<mode>-run-<id>.jsonl); the summary is this
+  # run's step summary (no commit comment).
+  slow:
+    needs: [slow-macro]
+    if: ${{ !cancelled() && (inputs.only == 'slow' || inputs.only == 'slow-sealed') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MODE: ${{ inputs.only == 'slow-sealed' && 'sealed' || 'gates' }}
+      GATES_RUN: ${{ inputs.gates_run }}
+      REASON: ${{ inputs.reopen_reason }}
+      RS_ASSETS: ${{ inputs.assets || '["BTC","ETH","SOL","XRP"]' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The grids and Binance spot (Drive)
+        run: |
+          set -euo pipefail
+          ASSETS=$(jq -er 'join(",")' <<< "$RS_ASSETS")
+          [[ "$ASSETS" =~ ^[A-Z0-9]{2,8}(,[A-Z0-9]{2,8})*$ ]] && [[ ",$ASSETS," != *,DOGE,* ]] || { echo "bad or excluded coins: $ASSETS"; exit 1; }
+          echo "ASSETS=$ASSETS" >> "$GITHUB_ENV"
+          for A in ${ASSETS//,/ }; do
+            bash deploy/drive_lab.sh get derived/perp-ta/grids data/perp-ta --include "$A.bin"
+            [ -s "data/perp-ta/$A.bin" ] || { echo "no grid for $A on Drive (run the sweep first)"; exit 1; }
+            bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist-$A" --include "binance-1m/$A/**"
+            [ -s "data/hist-$A/binance-1m/$A/1m.csv" ] || { echo "no Binance spot bars for $A on Drive"; exit 1; }
+            head -c 4000 "data/perp-ta/$A.bin" | head -n 1 | jq -c '{asset, t0: (.t0 / 1000 | todate), n, end: ((.t0 + .n * 60000) / 1000 | todate)}'
+          done
+          du -sh data | cat
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: slow-macro-*
+          path: data/macro
+          merge-multiple: true
+      - name: Gates (discovery and validation; nothing at or after the seal is read)
+        if: env.MODE == 'gates'
+        run: |
+          set -o pipefail
+          node --max-old-space-size=12000 --import tsx research/perpTaSlow.ts gates --assets "$ASSETS" --grids data/perp-ta --history data --macro data/macro --out out/slow 2>&1 | tail -60
+      - name: The gates passed with this rule (sealed only)
+        if: env.MODE == 'sealed'
+        run: |
+          set -euo pipefail
+          [[ "$GATES_RUN" =~ ^[0-9]+$ ]] || { echo "gates_run must be the run id of a 'slow' run"; exit 1; }
+          mkdir -p gates
+          rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/slow/run-$GATES_RUN/gates.json" gates/
+          [ -s gates/gates.json ] || { echo "run $GATES_RUN: gates.json not readable on Drive: refused"; exit 1; }
+          H=$(node --import tsx research/perpTaSlow.ts hash)
+          [[ "$H" =~ ^[0-9a-f]{16}$ ]] || { echo "no rule hash: $H"; exit 1; }
+          jq -e --arg h "$H" --arg a "$ASSETS" '.mode == "gates" and .pass == true and .hash == $h and (.assets | join(",")) == $a' gates/gates.json > /dev/null \
+            || { jq -c '{mode, pass, hash, assets}' gates/gates.json; echo "this code's rule is $H on $ASSETS: refused"; exit 1; }
+          echo "H=$H" >> "$GITHUB_ENV"
+      - name: Log the opening (before the sealed block is read)
+        if: env.MODE == 'sealed'
+        run: |
+          set -euo pipefail
+          D=gdrive:kalshi-bot-archive/models/perp-ta/slow
+          # A listing that fails is fatal (an unread ledger must never be overwritten); only a missing ledger reads as empty.
+          if HAS=$(rclone lsf "$D/" --files-only --include openings.jsonl 2> lsf.err); then :; else
+            grep -qi 'directory not found' lsf.err || { cat lsf.err; echo "ledger listing failed: refused"; exit 1; }; HAS=""; fi
+          if [ -n "$HAS" ]; then rclone cat "$D/openings.jsonl" > ledger.jsonl; else : > ledger.jsonl; fi
+          if jq -e --arg h "$H" 'select(.rule_hash == $h)' ledger.jsonl > /dev/null && [ -z "$REASON" ]; then echo "rule $H was already opened: refused (see $D/openings.jsonl)"; exit 1; fi
+          jq -nc --arg h "$H" --arg run "$GITHUB_RUN_ID" --arg g "$GATES_RUN" --arg a "$ASSETS" --arg why "$REASON" --arg sha "$GITHUB_SHA" --arg utc "$(date -u +%FT%TZ)" --arg et "$(TZ=America/New_York date '+%F %T %Z')" \
+            '{rule: "PTA-R4-slow", rule_hash: $h, sealed_run: $run, gates_run: $g, coins: ($a | split(",")), code_sha: $sha, at_utc: $utc, at_eastern: $et, reopen_reason: (if $why == "" then null else $why end)}' >> ledger.jsonl
+          rclone rcat "$D/openings.jsonl" < ledger.jsonl
+          rclone cat "$D/openings.jsonl" | tail -n 1 | jq -e --arg run "$GITHUB_RUN_ID" '.sealed_run == $run' || { echo "the opening did not land on Drive: refused"; exit 1; }
+      - name: Sealed block (2025-07-01 .. 2026-11-06 00:00 UTC; once)
+        if: env.MODE == 'sealed'
+        run: |
+          set -o pipefail
+          node --max-old-space-size=12000 --import tsx research/perpTaSlow.ts sealed --assets "$ASSETS" --grids data/perp-ta --history data --gates gates/gates.json --macro data/macro --out out/slow 2>&1 | tail -60
+      - name: Results to Drive, the registry shard and the summary
+        if: always()
+        run: |
+          [ -d out/slow ] || exit 0
+          bash deploy/drive_lab.sh put "models/perp-ta/slow/run-$GITHUB_RUN_ID" out/slow
+          [ ! -s "out/slow/registry-$MODE.jsonl" ] || rclone copyto "out/slow/registry-$MODE.jsonl" "gdrive:kalshi-bot-archive/registry/shards/perp-ta/slow-$MODE-run-$GITHUB_RUN_ID.jsonl"
+          [ ! -f "out/slow/$MODE.md" ] || cat "out/slow/$MODE.md" >> "$GITHUB_STEP_SUMMARY"
