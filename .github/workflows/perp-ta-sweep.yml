@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; 'agree' checks that the signals fire the same on Coinbase spot as on Binance spot; 'registry' writes every round's rows as registry v1 shards (contract type, modules); 'slow' runs round 4's slow trend rule on its discovery and validation gates; 'slow-sealed' opens the sealed block for it once (gates_run must have passed); empty runs the sweep"
+        description: "'fidelity' runs the fidelity check alone; 'blind' runs the blind test of blind_run's frozen set; 'study' runs the whole-universe check of study_run; 'agree' checks that the signals fire the same on Coinbase spot as on Binance spot; 'registry' writes every round's rows as registry v1 shards (contract type, modules); 'slow' runs round 4's slow trend rule on its discovery and validation gates; 'slow-sealed' opens the sealed block for it once (gates_run must have passed); 'decay' walks rounds 1-3's top 40 groups again with entry delays (validation only); empty runs the sweep"
         required: false
         default: ''
       blind_run:
@@ -692,3 +692,109 @@ jobs:
           bash deploy/drive_lab.sh put "models/perp-ta/slow/run-$GITHUB_RUN_ID" out/slow
           [ ! -s "out/slow/registry-$MODE.jsonl" ] || rclone copyto "out/slow/registry-$MODE.jsonl" "gdrive:kalshi-bot-archive/registry/shards/perp-ta/slow-$MODE-run-$GITHUB_RUN_ID.jsonl"
           [ ! -f "out/slow/$MODE.md" ] || cat "out/slow/$MODE.md" >> "$GITHUB_STEP_SUMMARY"
+
+  # only: decay. PTA-H1-decay-v2 (research/perpTaDecay.ts; the institutional thread's diagnostic, pre-registered beside
+  # PTA-R4-slow): each round's 40 strongest non-forecast groups (round 1 primary, 2 and 3 secondary) walked again with the
+  # entry 0, 1, 5, 15 and 60 minutes late on the validation block, against the sweep's 60 whole-day-shift placebos. Every
+  # table stops at the seal (the sweep's own nMax): the sealed block is not read. Counted in the registry, not scored.
+  decay:
+    if: ${{ inputs.only == 'decay' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: ${{ fromJSON(inputs.assets || '["BTC","ETH","SOL","XRP"]') }}
+    env:
+      A: ${{ matrix.asset }}
+      RS_ROUNDS: '1:42053618890 2:42085051869 3:42112448258'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: TA-Lib loads
+        run: node -e "const t = require('talib'); if (typeof t.execute !== 'function') process.exit(1); console.log('TA-Lib', t.version || 'ok')"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The grid, the module inputs and each round's candidates and costs (Drive)
+        run: |
+          set -euo pipefail
+          [[ "$A" =~ ^[A-Z0-9]{2,8}$ ]] && [[ "$A" != DOGE ]] || { echo "bad or excluded coin: $A"; exit 1; }
+          bash deploy/drive_lab.sh get derived/perp-ta/grids data/perp-ta --include "$A.bin"
+          [ -s "data/perp-ta/$A.bin" ] || { echo "no grid for $A on Drive"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist-$A" --include "binance-1h/**" || echo "no hourly bars on Drive"
+          bash deploy/drive_lab.sh get raw/server-history data/server-hist --include "/.tanet-oos/forecasts.json" --include "/.librarian/forecasts.json" --include "/.xgraph/forecasts.json" || echo "raw/server-history: nothing on Drive"
+          bash deploy/drive_lab.sh get derived/perp-ta/modules data/modcache --include "$A-*" || echo "no cached analyzer walk"
+          ARGS=""
+          for spec in $RS_ROUNDS; do
+            K=${spec%%:*}; RUN=${spec#*:}
+            mkdir -p "in/r$K"
+            rclone copy "gdrive:kalshi-bot-archive/models/perp-ta/run-$RUN/report/candidates.json.gz" "in/r$K/"
+            # The coin's header (its costs and exits as that sweep ran them): the first line of its cells file.
+            { rclone cat "gdrive:kalshi-bot-archive/models/perp-ta/run-$RUN/$A.jsonl.gz" --count 20000000 | gzip -dc 2>/dev/null | head -n 1 > "in/r$K/$A.header.json"; } || true
+            jq -e '.costs' "in/r$K/$A.header.json" > /dev/null && [ -s "in/r$K/candidates.json.gz" ] || { echo "round $K (run $RUN): header or candidates not readable"; exit 1; }
+            echo "round $K (run $RUN): $(jq -c '{round, costs}' "in/r$K/$A.header.json")"
+            ARGS="$ARGS --round $K:$RUN:in/r$K"
+          done
+          echo "ROUND_ARGS=$ARGS" >> "$GITHUB_ENV"
+      - name: Delayed walks (validation only)
+        run: |
+          set -o pipefail
+          node --max-old-space-size=14000 --import tsx research/perpTaDecay.ts coin --data "data/perp-ta/$A.bin" $ROUND_ARGS --out "out/decay-$A.json" --history "data/hist-$A" --forecasts data/server-hist --module-cache data/modcache 2>&1 | grep -v 'analyzer walk [0-9]' | tail -60
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decay-${{ matrix.asset }}
+          path: out/decay-${{ matrix.asset }}.json
+          retention-days: 30
+
+  decay-report:
+    needs: [decay]
+    if: ${{ !cancelled() && inputs.only == 'decay' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: perp-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: decay-*
+          path: in
+          merge-multiple: true
+      - name: Report
+        run: |
+          set -o pipefail
+          node --max-old-space-size=8000 --import tsx research/perpTaDecay.ts report --in in --out report 2>&1 | tail -60
+          cat report/decay.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Results to Drive and the registry shard
+        run: |
+          bash deploy/drive_lab.sh put "models/perp-ta/decay/run-$GITHUB_RUN_ID" report
+          [ ! -s report/registry.jsonl ] || rclone copyto report/registry.jsonl "gdrive:kalshi-bot-archive/registry/shards/perp-ta/decay-run-$GITHUB_RUN_ID.jsonl"
