@@ -233,8 +233,15 @@ export async function snnAblationMain(argOf: (k: string, d: string) => string = 
   const calendar = loadCalendar(path.resolve('params/calendar.json'));
   const cache = new Map<string, { res: SnnReplayResult; sum: RunSummary }>();
   const initFile = argOf('init', '');
+  // A checkpoint's connectivity is drawn from its seed (and its L0 width from its lead inputs): a candidate started
+  // from one is built with them, or its arrays do not fit (K seeds, Nov 6).
+  const initShape = (() => {
+    if (!initFile || !fs.existsSync(initFile)) return {};
+    const cp = JSON.parse(fs.readFileSync(initFile, 'utf8')) as { params?: Partial<SnnParams> };
+    return { ...(cp.params?.seed !== undefined ? { seed: cp.params.seed } : {}), ...(cp.params?.leadInputs ? { leadInputs: cp.params.leadInputs } : {}) };
+  })();
   const run = async (name: string, stage: Stage, flags: Partial<SnnFlags> | undefined, overrides: Partial<SnnParams>, init = false) => {
-    const params: SnnParams = domainParams(domain, { ...DEFAULT_SNN, ...overrides, flags: { ...stageFlags(stage), ...(flags ?? {}) } });
+    const params: SnnParams = domainParams(domain, { ...DEFAULT_SNN, ...overrides, ...(init ? initShape : {}), flags: { ...stageFlags(stage), ...(flags ?? {}) } });
     const k = JSON.stringify(params) + (init ? `|init:${initFile}` : '');
     if (!cache.has(k)) {
       process.stderr.write(`replaying ${name} ${JSON.stringify(overrides)}...\n`);
