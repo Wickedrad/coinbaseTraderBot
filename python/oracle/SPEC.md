@@ -3,6 +3,7 @@
 Study design and pass rules: `python/oracle/prereg/OR-H1.md` (frozen before any result). This file fixes the code
 interfaces so the pieces can be built in parallel. Times are UTC ms unless named otherwise. NEVER DOGE.
 
+Run Python from python/ (`cd python && python3 -m oracle.<module>`; imports `from oracle.common import ...`, `from allpairs.data import load_kalshi`). Tests: `cd python && python3 -m pytest -q oracle/tests`.
 Constants (python/oracle/common.py, mirrored in research/oracle/oracleExport.ts):
 ```
 DEV_END   = 2026-08-01T00:00Z   (no mining / confirmation code loads a row whose decision t >= DEV_END - horizon)
@@ -50,7 +51,7 @@ One directory per (contract type, scope): `perp-BTC/`, `pp15-ETH/`, `pp60-SOL/`,
   horizons 15 and 60) and `parts/spot-<A>/` (every minute in [spot-from, spot-to): `t_end.npy` int64 = end of the minute,
   `X.npy` int8 with the same feature list, `close.npy` float64 spot close, `rv60.npy` float32 = sqrt(sum r^2) over the
   last 60 one-minute log returns, `rv.npy` int8 tercile, `meta.json`).
-- Features: buildPrims (all 121) + modulePrims (forecasts NOT passed; drop any prim id starting `tanet`, `lib_`, `xg_`;
+- Features: buildPrims (all of them: 113 classic + 4 perp = 117; the prereg's "117 classic + 4 perp" overcounts) + modulePrims (forecasts NOT passed; drop any prim id starting `tanet`, `lib_`, `xg_`;
   keep the analyzer / book / confluence / ta_net / conv / TA-Lib readings) with discoveryEnd = DEV_END, value = stateAt(p, i);
   context buckets: character class and HT trend mode (module hourly arrays, last closed hour), hour bucket (6 x 4 h),
   weekend, RV tercile, 60-minute trend bucket (z60 regime v1: FLAT/TREND/STRONG x sign).
@@ -60,7 +61,7 @@ One directory per (contract type, scope): `perp-BTC/`, `pp15-ETH/`, `pp60-SOL/`,
   Per-coin costs: half spread {BTC .19, ETH .22, SOL 1.23, XRP 1.94} bps, funding offset {1.66, 1.19, .14, 1.57} bps / 8 h.
 - Regime v1 RV terciles: port research/perpTaRegime.ts from origin/claude/project-thread-9040i4 into research/oracle/regime.ts.
 ### 2b. python/oracle/pp.py (reuses python/allpairs: data.load_kalshi, features.side_quotes, fees)
-`python3 -m python.oracle.pp --kind 15|60 --history <dir with kalshi/KX<A>15M or KX<A>D> --spot parts/spot-<A> --asset BTC --out parts`
+`cd python && python3 -m oracle.pp --kind 15|60 --history <dir with kalshi/KX<A>15M or KX<A>D> --spot parts/spot-<A> --asset BTC --out parts`
 Writes `parts/pp15-<A>/` or `parts/pp60-<A>/`, sides Y/N, horizon [15] or [60]. Decisions k inside the entry window
 (15: k = 1..10; 60: k = 5..50 and YES mid in [0.10, 0.90]); t = open + 60 s * k (python/allpairs convention, quote = candle
 close at t); spot features joined at the spot minute whose END equals t. Exit and labels per the prereg (take-profit at the
@@ -68,7 +69,7 @@ bid outside the last 10%; else at the final candle ride if in profit, else sell 
 side-price bucket (0.1-wide), tau bucket, spread bucket, mid change 1/3/5 min, z = ln(S/K)/(sigma sqrt(tau)) bucket,
 fair - side mid bucket, last-5-minute volume bucket. Strata: side price bucket x tau bucket (3) x RV tercile.
 ### 2c. python/oracle/tennis.py
-`python3 -m python.oracle.tennis --tar <KXATPMATCH.tar.gz> --tour ATP --out parts` -> `parts/tennis-ATP/` (sides Y/N per
+`cd python && python3 -m oracle.tennis --tar <KXATPMATCH.tar.gz> --tour ATP --out parts` -> `parts/tennis-ATP/` (sides Y/N per
 market, horizons 15 and 60, group = event). Start era only (market start >= 2026-04-27T05:00Z, close < 2026-11-05T00:00Z).
 ### 2d. research/oracle/hourlyBackfill.ts
 Downloads settled KX{BTC,ETH,SOL}D markets for [from, to) from Kalshi's public API (research/history/kalshiHistory.ts
@@ -77,7 +78,7 @@ close at (close - 60 min) (spot from the grid), and writes kalshiHistory-format 
 1-minute candles for the last 70 minutes, so `load_kalshi(n=60, series_fmt='KX{asset}D')` reads it.
 
 ## 3. Miner: python/oracle/mine.py (numpy + numba)
-`python3 -m python.oracle.mine --ct perp --parts <dir> --out out/perp [--top 40] [--beam 500]`
+`cd python && python3 -m oracle.mine --ct perp --parts <dir> --out out/perp [--top 40] [--beam 500]`
 Loads only rows whose horizon ends before DEV_END (assert). Stage 1 on split A, stage 2 on split B, freeze. Writes:
 `stage1.jsonl.gz`, `confirm.jsonl`, `frozen.json` (+ `frozen.sha256`), `report.md` (aggregates only), `lift/<scope>-<s><h>.csv`
 (single-item lift table), `instances/<scope>-<s><h>.csv.gz` (every discovery decision with hit = 1 and its feature states,
@@ -85,7 +86,8 @@ the "list of instances"), `base_rates.json`. Pooled scope = the sum of per-part 
 perps in memory).
 Setup JSON: `{id, ct, scope, side, h, items:[{f, v}], rank, dev:{A:{n, hit, base_hit, ev, uplift, t}, B:{trades, days, usd_day, hit, base_hit, p_ev, p_up, p}}}`
 ## 4. HO-1 scorer: python/oracle/ho1.py
-`python3 -m python.oracle.ho1 --frozen frozen.json --parts <dir> --labels <regime labels.csv.gz> --out out/ho1 --run <id> --code-sha <sha>`
+`cd python && python3 -m oracle.ho1 --frozen frozen.json --parts <dir> --labels <regime labels.csv.gz> --out out/ho1 --run <id> --code-sha <sha> [--sha256 <hex|file>] [--registry research/registry.py] [--confirm confirm.jsonl]`
+(--sha256 defaults to frozen.sha256 beside frozen.json; ho1.py refuses a frozen file whose hash does not match.)
 Writes registry rows (thread `oracle-setups`, family `oracle-<ct>-v1`, contract_type perpetual | price_prediction |
 tennis, roles candidate / control (flat) / placebo, by_day on all 96 HO-1 days with zeros, by_tercile, data.source
 'history', data.metric 'usd'), validated with research/registry.py (from origin/claude/project-thread-79ntof), plus
