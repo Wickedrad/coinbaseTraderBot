@@ -46,6 +46,8 @@ If the old bot is running under the same `kalshi-bot` service name, the first de
 
 The deploy never changes `TRADING_MODE`. A new server starts in `paper`. Going live is done by hand in `~/bot/bot.env`.
 
+Right before the switch, run the go-live checklist in the README ("Right before switching to live", under Modes): the kill switch, PLAY / STOP, the kill-switch override, each book's probation against the live limit, `LIVE_ALLOW_UNVALIDATED_MODEL`, the margin balance and the cash split.
+
 ### Connecting the prediction and perps APIs (live)
 
 1. **Key:** in Kalshi's account settings, create an API key and download its private key. Copy the private key to the server (`scp key.pem ubuntu@54.145.7.203:~/.kalshi/private_key.pem`), then `chmod 600 ~/.kalshi/private_key.pem`. One key works for both the prediction API and the perps REST API (a separate perps key is optional).
@@ -69,7 +71,7 @@ The deploy never changes `TRADING_MODE`. A new server starts in `paper`. Going l
    - Perps trade from the margin balance. Moving money from the event-contract balance to margin needs Kalshi's transfer, which isn't available through the API yet, so do it on the website.
 
 **What stays on while live, whatever the settings:**
-- the risk limits, the daily loss stops and the kill switch
+- the risk limits and the kill switch (the daily loss stops and the weekly pause halt live trading only with the kill-switch override off; it is ON by default, see the README checklist)
 - the exchange's own status and maintenance schedule: no new entries while trading is paused, during maintenance, or in the 10 minutes before a scheduled window
 - price-grid snapping (orders always land on the market's valid prices)
 - reconciliation against the exchange
