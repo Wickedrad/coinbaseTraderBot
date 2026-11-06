@@ -97,11 +97,11 @@ jobs:
                 # H-A part 1 / cheap-NO Stage A: FLB map on H-DEV real Kalshi candles (research/flbMap.py). Never reads Aug 1 on.
                 python3 -c 'import numpy' 2>/dev/null || pip install -q numpy
                 mkdir -p kh
-                rclone copy gdrive:kalshi-bot-archive/raw/history/kalshi kh --include '*/2026-04-1[89].jsonl*' --include '*/2026-04-[23]?.jsonl*' --include '*/2026-0[567]-??.jsonl*' --exclude 'KXDOGE*/**' --transfers 8 2>&1 | grep -v "Duplicate" | tail -3 || true
+                rclone copy gdrive:kalshi-bot-archive/raw/history/kalshi kh --filter '- KXDOGE*/**' --filter '+ */2026-04-1[89].jsonl*' --filter '+ */2026-04-[23]?.jsonl*' --filter '+ */2026-0[567]-??.jsonl*' --filter '- *' --transfers 8 2>&1 | grep -v "Duplicate" | tail -3 || true
                 echo "kalshi history: $(ls kh | paste -sd' ') ; $(find kh -name '*.jsonl*' | wc -l) day files, $(du -sh kh | cut -f1)"
                 rclone copyto "$REG/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz" labels.csv.gz
                 sha=$(git rev-parse HEAD)
-                python3 -I research/flbMap.py fit kh flb-out --labels labels.csv.gz --boot "${a1:-1000}" --sha "$sha" || { echo "::error::flb fit failed"; rc=1; continue; }
+                python3 research/flbMap.py fit kh flb-out --labels labels.csv.gz --boot "${a1:-1000}" --sha "$sha" || { echo "::error::flb fit failed"; rc=1; continue; }
                 rclone copy flb-out "$REG/flb-map/$sha"
                 echo "flb map: $REG/flb-map/$sha/flb-map.json"
                 { echo "**FLB map v1 (H-A part 1)** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · Drive registry/flb-map/$sha"; echo; head -c 60000 flb-out/flb-report.md; } > comment-flb.md
