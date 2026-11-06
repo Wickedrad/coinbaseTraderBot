@@ -135,3 +135,24 @@ test('tails cap side (MODEL_SKILL_TAILS_SIDE): long caps only where the model le
   // Outside the tails, no cap on any side.
   assert.equal(modelSkillWeight({ pWorse: null }, p('long'), st(0.5, 0.9)), 1);
 });
+
+test('TA veto price chase (TA_VETO_MID1M): a maker entry is skipped when the mid moved toward its side in the last minute; takes and exits pass', async () => {
+  const { applyTaVeto } = await import('../bot/model/taVeto');
+  const c = { ofi: NaN, conf: NaN, intensity: NaN, min: 1, mid1m: 0.005 };
+  const mk = () => ({ notes: [] as string[], place: [
+    { side: 'bid' as const, price: 0.4, reduceOnly: false, purpose: 'quote', why: 'maker bid' },
+    { side: 'ask' as const, price: 0.45, reduceOnly: false, purpose: 'quote', why: 'maker ask' },
+    { side: 'bid' as const, price: 0.41, reduceOnly: false, purpose: 'entry', why: 'take YES' },
+    { side: 'ask' as const, price: 0.39, reduceOnly: true, purpose: 'exit', why: 'exit' },
+  ] });
+  // Mid up 1c in a minute: toward YES. The YES maker bid goes; the NO maker (ask), the take and the exit stay.
+  const plan = mk();
+  assert.equal(applyTaVeto(plan, c, { p_mkt_chg_1m: 0.01 }), 1);
+  assert.deepEqual(plan.place.map((o) => o.why), ['maker ask', 'take YES', 'exit']);
+  // Below the threshold: nothing skipped.
+  assert.equal(applyTaVeto(mk(), c, { p_mkt_chg_1m: 0.002 }), 0);
+  // TA_VETO_SEED: the random control is reproducible per seed and differs across seeds.
+  const r = (seed: number) => { const p = { notes: [] as string[], place: Array.from({ length: 40 }, () => ({ side: 'bid' as const, price: 0.4, reduceOnly: false, purpose: 'entry', why: 'take' })) }; applyTaVeto(p, { ofi: NaN, conf: NaN, intensity: NaN, min: 1, random: 0.5, seed }, {}); return p.place.length; };
+  const a = r(11), b = r(12);
+  assert.ok(a > 0 && a < 40 && b > 0 && b < 40);
+});

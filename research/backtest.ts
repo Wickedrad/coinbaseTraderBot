@@ -124,6 +124,8 @@ export interface ExitStats {
   floorSales?: number;
   /** The exit curve's cross (SINUOUS_CROSS): sales sent and their fills' contracts. */
   crossSales?: number;
+  /** Research placebo sales (RS_RANDOM_EXIT). */
+  randomExits?: number;
   crossContracts?: number;
   /** PACER_FLOOR_CONFIRM=model (lab): ticks a breached floor was held because the model valued the position above it. */
   floorHolds?: number;
@@ -279,6 +281,8 @@ export interface BacktestOpts { fillLog?: boolean; exitPolicy?: ExitPolicyName; 
   tickPhaseMs?: number;
   /** Research control: no entries in this share (0-1) of markets, chosen by a hash of the ticker. */
   skipMarketShare?: number;
+  /** Research placebo: chance per decision that a held position is sold at the touch (RS_RANDOM_EXIT). */
+  randomExitRate?: number;
   /** With the paper options the maker buffer adapts as the engine's does (Engine.makerBuffer, bot/tca/tca.ts): once 30
    *  maker fills have a 60 s markout, it is minus their average (the newest 2000), within strategy.makerBufferRange.
    *  These seed it: the paper bot's own recent maker markouts (the replay check reads them from its TCA log). */
@@ -1123,6 +1127,17 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       // Research control (benched jobs, Nov 5): no entries at all in this share of markets, picked by a hash of the ticker, so
       // a feature that trades less can be told apart from simply trading less in a losing bot.
       if (opts.skipMarketShare && tickerShare(m.ticker) < opts.skipMarketShare) plan.place = plan.place.filter((p) => p.purpose !== 'entry');
+      // Research placebo for exit rules (Nov 6): a held position with no sale planned is sold at the touch at random moments,
+      // at this chance per decision (hash of ticker and time), so an exit rule can be told apart from selling more often.
+      if (opts.randomExitRate && view.position !== 0 && !plan.place.some((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel')
+        && tickerShare(`${m.ticker}|${st.now}`) < opts.randomExitRate) {
+        const sign = view.position > 0 ? 1 : -1, top = sign > 0 ? bid : ask;
+        if (top && top.price > 0 && top.price < 1) {
+          exits.randomExits = (exits.randomExits ?? 0) + 1;
+          plan.place = plan.place.filter((p) => !(p.purpose === 'exit' && p.timeInForce === 'good_till_canceled'));
+          plan.place.push({ side: sign > 0 ? 'ask' : 'bid', price: top.price, count: Math.abs(view.position), timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge: 0, why: 'random exit (research placebo)' });
+        }
+      }
       for (const c of plan.cancel) if (!cancelInFlight.has(c.clientOrderId)) await send(m.ticker, 'cancel', () => cancelNow(c.clientOrderId), c.clientOrderId);
 
       for (const p of plan.place) {

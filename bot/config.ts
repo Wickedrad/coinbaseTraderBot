@@ -1313,7 +1313,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     fillMinEv: num(env, 'FILL_MIN_EV', 0, -0.5, 0.5),
     takeGate: oneOf(env, 'TAKE_GATE', 'validated', ['validated', 'off'] as const),
     takeMargin: num(env, 'TAKE_MARGIN', 0, 0, 0.2),
-    taVeto: { ofi: optNum(env, 'TA_VETO_OFI', -100, 100), conf: optNum(env, 'TA_VETO_CONF', -50, 50), intensity: optNum(env, 'TA_VETO_INTENSITY', 0, 50), min: num(env, 'TA_VETO_MIN', 1, 1, 3), reverse: bool(env, 'TA_VETO_REVERSE', false), random: optNum(env, 'TA_VETO_RANDOM', 0, 1) },
+    taVeto: { ofi: optNum(env, 'TA_VETO_OFI', -100, 100), conf: optNum(env, 'TA_VETO_CONF', -50, 50), intensity: optNum(env, 'TA_VETO_INTENSITY', 0, 50), min: num(env, 'TA_VETO_MIN', 1, 1, 3), reverse: bool(env, 'TA_VETO_REVERSE', false), random: optNum(env, 'TA_VETO_RANDOM', 0, 1), mid1m: optNum(env, 'TA_VETO_MID1M', 0, 1), seed: num(env, 'TA_VETO_SEED', 4242, 1, 2147483646) },
   };
 
   const dataDir = path.resolve(env.DATA_DIR ?? './data');

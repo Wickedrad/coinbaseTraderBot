@@ -19,15 +19,20 @@ export interface TaVetoConfig {
   reverse?: boolean;
   /** Adversary: skip this share of entries at random, ignoring the signals (TA_VETO_RANDOM; NaN = off). */
   random?: number;
+  /** Price chase (TA thread, Nov 6): skip a MAKER entry on a side when the Kalshi mid moved toward that side by at least this
+   *  much in the last minute (p_mkt_chg_1m oriented to the side; TA_VETO_MID1M, a probability; NaN = off). */
+  mid1m?: number;
+  /** Seed of the random control's generator (TA_VETO_SEED, default 4242), so each placebo replicate draws its own. */
+  seed?: number;
 }
 
-export const taVetoOn = (c: TaVetoConfig | undefined): c is TaVetoConfig => !!c && (Number.isFinite(c.ofi) || Number.isFinite(c.conf) || Number.isFinite(c.intensity) || Number.isFinite(c.random ?? NaN));
+export const taVetoOn = (c: TaVetoConfig | undefined): c is TaVetoConfig => !!c && (Number.isFinite(c.ofi) || Number.isFinite(c.conf) || Number.isFinite(c.intensity) || Number.isFinite(c.random ?? NaN) || Number.isFinite(c.mid1m ?? NaN));
 
-let seed = 4242;
+let seed = 4242, seededWith: number | undefined;
 function draw(): number { seed = (seed * 16807) % 2147483647; return seed / 2147483647; }
 
 /** Which vetoes fire for an entry on `side` (feature map of the decision). */
-export function taVetoReasons(c: TaVetoConfig, side: 'yes' | 'no', f: Record<string, number>): string[] {
+export function taVetoReasons(c: TaVetoConfig, side: 'yes' | 'no', f: Record<string, number>, maker = false): string[] {
   const s = (side === 'yes' ? 1 : -1) * (c.reverse ? -1 : 1);
   const out: string[] = [];
   const v = (k: string) => (Number.isFinite(f[k]) ? f[k] : undefined);
@@ -35,6 +40,8 @@ export function taVetoReasons(c: TaVetoConfig, side: 'yes' | 'no', f: Record<str
   if (Number.isFinite(c.ofi) && ofi !== undefined && s * ofi > c.ofi) out.push(`order flow ${(s * ofi).toFixed(2)} for ${side.toUpperCase()}`);
   if (Number.isFinite(c.conf) && conf !== undefined && s * conf > c.conf) out.push(`confluence ${(s * conf).toFixed(0)} for ${side.toUpperCase()}`);
   if (Number.isFinite(c.intensity) && inten !== undefined && (c.reverse ? inten < c.intensity : inten > c.intensity)) out.push(`${c.reverse ? 'quiet' : 'busy'} tape ${inten.toFixed(1)}`);
+  const mid = v('p_mkt_chg_1m');
+  if (maker && Number.isFinite(c.mid1m ?? NaN) && mid !== undefined && s * mid >= c.mid1m!) out.push(`mid chased ${(s * mid).toFixed(3)} toward ${side.toUpperCase()} in 1 min`);
   return out;
 }
 
@@ -42,11 +49,12 @@ type VetoOrder = { side: 'bid' | 'ask'; price: number; reduceOnly: boolean; purp
 /** Drop the entry orders (takes and maker entry quotes) the veto fires on. Returns how many were dropped. */
 export function applyTaVeto<T extends VetoOrder>(plan: { place: T[]; notes: string[] }, c: TaVetoConfig | undefined, f: Record<string, number>): number {
   if (!taVetoOn(c)) return 0;
+  if (c.seed !== undefined && Number.isFinite(c.seed) && seededWith !== c.seed) { seed = Math.max(1, Math.floor(c.seed) % 2147483647); seededWith = c.seed; }
   let n = 0;
   plan.place = plan.place.filter((o) => {
     if (o.reduceOnly || o.purpose === 'exit' || (o.purpose === 'quote' && !o.why.startsWith('maker '))) return true;
     const side = o.side === 'bid' ? 'yes' : 'no';
-    const r = Number.isFinite(c.random ?? NaN) ? (draw() < c.random! ? ['random control'] : []) : taVetoReasons(c, side, f);
+    const r = Number.isFinite(c.random ?? NaN) ? (draw() < c.random! ? ['random control'] : []) : taVetoReasons(c, side, f, o.purpose === 'quote' && o.why.startsWith('maker '));
     if (r.length < (Number.isFinite(c.random ?? NaN) ? 1 : Math.max(1, c.min))) return true;
     n++;
     plan.notes.push(`TA veto: skip ${side.toUpperCase()} @ ${(side === 'yes' ? o.price : 1 - o.price).toFixed(2)} (${r.join(', ')})`);
