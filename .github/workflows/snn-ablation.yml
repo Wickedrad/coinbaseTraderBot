@@ -76,6 +76,10 @@ on:
         description: 'quote-lag only: an Actions cache key saved by Replay fidelity on main (e.g. fidelity-data-41351064742-1); its recorded days are used and the server is not read'
         required: false
         default: ''
+      h1_judge_arms:
+        description: 'SNN-H1 judge only (research/snnLeadJudge.ts): NAME:SEED=<folder under Drive simulated/snn-rows>, comma list; control arm C; judge_args adds flags (e.g. --hb-from 2026-09-12). Nothing else runs'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -94,7 +98,7 @@ env:
 jobs:
   # Every mechanism in one job (a dispatch with an empty "only"; hours).
   ablate:
-    if: inputs.only == '' && inputs.from_run == '' && inputs.hist_from == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
+    if: inputs.only == '' && inputs.from_run == '' && inputs.hist_from == '' && inputs.h1_judge_arms == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
@@ -183,7 +187,7 @@ jobs:
 
   # One mechanism: its baseline and candidate replay on two runners at once (each ~2-3 h), then one judge.
   quote-lag:
-    if: inputs.only == 'quote-lag' && inputs.hist_from == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
+    if: inputs.only == 'quote-lag' && inputs.hist_from == '' && inputs.h1_judge_arms == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
@@ -284,7 +288,7 @@ jobs:
           if-no-files-found: ignore
 
   side:
-    if: inputs.only != '' && inputs.only != 'quote-lag' && inputs.from_run == '' && inputs.hist_from == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
+    if: inputs.only != '' && inputs.only != 'quote-lag' && inputs.from_run == '' && inputs.hist_from == '' && inputs.h1_judge_arms == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
@@ -657,3 +661,46 @@ jobs:
           K="$RUNNER_TEMP/hist/history/kalshi"
           echo "cache: $(find "$K" -type f | wc -l) file(s), $(du -sh "$K" | cut -f1)"
           bash deploy/drive_lab.sh put raw/kalshi-history "$K"
+
+  # Failure diagnosis SNN-H1-lead-info and H-B: the judge over the arms' per-row output on Drive. Drive only.
+  h1-judge:
+    if: inputs.h1_judge_arms != ''
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund --silent
+      - name: Judge
+        env:
+          ARMS: ${{ inputs.h1_judge_arms }}
+          CTRL: C
+          ARGS: ${{ inputs.judge_args }}
+        run: |
+          set -euo pipefail
+          mkdir -p research/out rows
+          SPEC=""
+          IFS=',' read -ra A <<< "$ARMS"
+          for a in "${A[@]}"; do
+            N="${a%%=*}"; F="${a#*=}"
+            N=$(printf '%s' "$N" | tr -cd 'A-Za-z0-9:_-'); F=$(printf '%s' "$F" | tr -cd 'A-Za-z0-9._-')
+            bash deploy/drive_lab.sh get "simulated/snn-rows/$F" "rows/$F" || { echo "::error::simulated/snn-rows/$F is not on Drive"; exit 1; }
+            SPEC="$SPEC${SPEC:+,}$N=rows/$F"
+          done
+          EXTRA=$(printf '%s' "$ARGS" | tr -cd 'a-zA-Z0-9 .-')
+          C=$(printf '%s' "$CTRL" | tr -cd 'A-Za-z0-9_-')
+          NODE_OPTIONS="--max-old-space-size=12288" node --import tsx research/snnLeadJudge.ts --arms "$SPEC" --control "$C" --out research/out/snn-h1-judge.md $EXTRA | tail -120
+          cat research/out/snn-h1-judge.md >> "$GITHUB_STEP_SUMMARY"
+          bash deploy/drive_lab.sh put "derived/snn-h1-judge/${{ github.run_id }}" research/out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snn-h1-judge
+          path: research/out/snn-h1-judge.md
+          if-no-files-found: ignore
