@@ -1,0 +1,213 @@
+// SNN history training on Kalshi's own contract history (Steven, Oct 31: "the SNNs haven't really been able to learn
+// ... fix this expeditiously"). The anchored crypto network learns its correction to the market only when a contract
+// settles: about 460 windows a day, and the ablations replay 8 recorded days. Kalshi's settled crypto contracts with
+// their 1-minute bid / ask candles (history/kalshi, repaired by PR #219) cover months more. This walks ONE anchored
+// crypto network through them in time order, week by week, carrying its whole state (research/snnReplay.ts with a
+// checkpoint), real contracts only (no synthetic ones), and prints after every month how it priced that month BEFORE
+// learning each outcome (prequential: every price precedes the settlement that trains on it), against the market:
+// the learning curve. The checkpoint at the end is the network a recorded-days ablation then starts from (--init).
+//
+// This is prediction learning, not trading: no fills are simulated, so the depth simulator's fill check does not gate it.
+//
+//   node --import tsx research/snnHistoryTrain.ts --from 2026-01-01 --to 2026-09-30 --history <dir with kalshi/> \
+//     --work <scratch> [--checkpoint-in in.json] --checkpoint-out out.json [--minutes 330] [--vol-norm 1] [--synthetic true]
+//     [--rec-from DAY --rec-to DAY --rec-dir <dir> [--rec-fetch deploy/drive_lab.sh]]
+//
+// All history (Steven, Nov 2: "learn on the entirety of history we have available on Google Drive"): after the Kalshi
+// days, the same network continues day by day through the recorded days (the bot's own books, md-DAY.jsonl.gz), in
+// time order. With --rec-fetch each recorded day is pulled from Drive just before it is replayed and deleted after the
+// next one (two days on disk at a time; a day is 1-2 GB).
+
+import { execFileSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { loadConfig, paperEnv } from '../bot/config';
+import { loadCalendar } from '../bot/model/calendar';
+import type { SnnCheckpoint } from '../bot/snn/network';
+import { DEFAULT_SNN, domainParams, stageFlags, type SnnParams, type Stage } from '../bot/snn/params';
+import { downloadBinance } from './history/binanceVision';
+import { buildHistoryReplay } from './history/historyReplay';
+import { addDays } from './historyWalkState';
+import { correctionStats, vsMarket } from './snnAblation';
+import { replaySnn } from './snnReplay';
+
+const arg = (k: string, d = '') => { const i = process.argv.indexOf(`--${k}`); return i > 0 && process.argv[i + 1] !== undefined ? process.argv[i + 1] : d; };
+
+/** Month chunks [first, last] covering from..to (inclusive days). */
+export function monthChunks(from: string, to: string): [string, string][] {
+  const out: [string, string][] = [];
+  let a = from;
+  while (a <= to) {
+    const [y, m] = a.split('-').map(Number);
+    const end = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); // last day of a's month
+    const b = end < to ? end : to;
+    out.push([a, b]);
+    a = addDays(b, 1);
+  }
+  return out;
+}
+
+/** The month chunks cut into pieces of at most `days` days, so the checkpoint (and the learning curve) is saved often
+ *  and a job stopped by its time limit loses at most one piece. */
+export function trainChunks(from: string, to: string, days = 7): [string, string][] {
+  const out: [string, string][] = [];
+  for (const [a, b] of monthChunks(from, to)) {
+    let x = a;
+    while (x <= b) { const y = addDays(x, days - 1) < b ? addDays(x, days - 1) : b; out.push([x, y]); x = addDays(y, 1); }
+  }
+  return out;
+}
+
+/** Where a continued training starts: the day after the checkpoint's last scored moment (never before --from). */
+export function resumeDay(from: string, lastTs: number | undefined): string {
+  if (!lastTs || !Number.isFinite(lastTs)) return from;
+  const next = addDays(new Date(lastTs).toISOString().slice(0, 10), 1);
+  return next > from ? next : from;
+}
+
+/** How many of the days a..b have a Kalshi day file in any series (building a replay without one scores nothing). */
+export function kalshiDays(kalshiDir: string, a: string, b: string): number {
+  if (!fs.existsSync(kalshiDir)) return 0;
+  const series = fs.readdirSync(kalshiDir);
+  let n = 0;
+  for (let d = a; d <= b; d = addDays(d, 1)) if (series.some((s) => fs.existsSync(path.join(kalshiDir, s, `${d}.jsonl`)))) n++;
+  return n;
+}
+
+/** Recorded days a..b, one chunk per day (each day replays with the day before it as warm-up). */
+export function recDays(a: string, b: string): string[] {
+  const out: string[] = [];
+  for (let d = a; d <= b; d = addDays(d, 1)) out.push(d);
+  return out;
+}
+
+/** Pooled per-slice audit across chunks (rows are dropped after each chunk): the correction's size, edge and
+ *  calibration slope b, and the mean Brier against the mid, per column (asset x horizon) and contract kind. Where the
+ *  history's edge fails on the recorded books shows here (no CI: a pooled view to choose the next condition). */
+export class SliceAudit {
+  private m = new Map<string, { n: number; sxy: number; sxx: number; size: number; edge: number; moved: number; db: number; ev: Set<string>; yes: Set<string> }>();
+  add(rows: { column: string; kind: string; mid: number; pSnn: number; y: number; eventKey: string }[]) {
+    for (const r of rows) for (const key of [`column ${r.column}`, `kind ${r.kind}`, `col+kind ${r.column.split('-')[1] ?? r.column} ${r.kind}`]) {
+      const a = this.m.get(key) ?? { n: 0, sxy: 0, sxx: 0, size: 0, edge: 0, moved: 0, db: 0, ev: new Set<string>(), yes: new Set<string>() };
+      const mid = Math.min(0.98, Math.max(0.02, r.mid)), x = r.pSnn - mid, e = r.y - mid;
+      a.n++; a.sxy += x * e; a.sxx += x * x; a.size += Math.abs(x);
+      if (x !== 0) { a.edge += Math.sign(x) * e; a.moved++; }
+      a.db += (r.pSnn - r.y) ** 2 - (mid - r.y) ** 2; a.ev.add(r.eventKey); if (r.y === 1) a.yes.add(r.eventKey);
+      this.m.set(key, a);
+    }
+  }
+  lines(label: string): string[] {
+    return [...this.m].sort((a, b) => a[0].localeCompare(b[0])).map(([k, a]) =>
+      `[hist-train] ${label} ${k}: ${a.ev.size} windows (YES ${(a.yes.size / Math.max(1, a.ev.size)).toFixed(3)}: a scored pool far from ~0.5 on updown means whole windows were dropped), ${a.n} rows, vs mid ${(a.db / Math.max(1, a.n)).toFixed(5)}, size ${((100 * a.size) / Math.max(1, a.n)).toFixed(2)}c edge ${a.moved ? ((100 * a.edge) / a.moved).toFixed(2) : '0.00'}c b ${a.sxx > 0 ? (a.sxy / a.sxx).toFixed(2) : 'NaN'}`);
+  }
+}
+
+export function trainParams(stage: Stage, volNorm?: number, soft = false, maxSpread?: number, seed?: number): SnnParams {
+  return domainParams('crypto', { ...DEFAULT_SNN, ...(seed ? { seed } : {}), anchorMid: true, ...(volNorm ? { volNorm } : {}), ...(soft ? { softLabel: { lagSec: 300, etaScale: 0.3 } } : {}), ...(maxSpread ? { maxSpread } : {}), flags: { ...stageFlags(stage) } });
+}
+
+async function main() {
+  const from = arg('from'), to = arg('to');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) throw new Error('--from / --to YYYY-MM-DD');
+  const work = arg('work', 'research/out/snn-history'), hist = arg('history', path.join(work, 'history')), rep = path.join(work, 'replay');
+  const deadline = Date.now() + Number(arg('minutes', '330')) * 60_000;
+  const cfg = loadConfig(paperEnv(process.env));
+  const assets = cfg.taNet.historyReplayAssets;
+  const stage = (arg('stage', '') || cfg.snn.domains.crypto.stage) as Stage;
+  const volNorm = Number(arg('vol-norm', '0')) || undefined;
+  const soft = arg('soft', '') === 'true';
+  // Synthetic contracts (Steven, Nov 1): where Kalshi has no contract history, the same 15m Up/Down and hourly ladders
+  // built from the price path, quoted at a no-skill fair value (research/history/historyReplay.ts). They teach the
+  // network the price path's direction only, never Kalshi's pricing: real days judge what that is worth.
+  const synthetic = arg('synthetic', '') === 'true';
+  // Adversary (Steven, Nov 1: try to break whatever is producing gains): with --requote true the real contracts'
+  // quotes follow the index at every print between their minute candles instead of standing still for the minute.
+  // An edge that only exists against the standing minute quote is the replay's staleness, not the market's.
+  const requote = arg('requote', '') === 'true';
+  // --max-spread 0.1 (Nov 5 audit): contracts quoted wider than this neither train nor move (illiquid ladder strikes).
+  const maxSpread = Number(arg('max-spread', '0')) || undefined;
+  // --seed (K seeds per variant: the spread across seeds is the training noise floor).
+  const seed = Number(arg('seed', '0')) || undefined;
+  const params = trainParams(stage, volNorm, soft, maxSpread, seed);
+  const calendar = loadCalendar(path.resolve('params/calendar.json'));
+  let checkpoint: SnnCheckpoint | undefined;
+  const ckIn = arg('checkpoint-in');
+  let start = from;
+  if (ckIn && fs.existsSync(ckIn)) {
+    checkpoint = JSON.parse(fs.readFileSync(ckIn, 'utf8')) as SnnCheckpoint;
+    start = resumeDay(from, checkpoint.lastTs);
+    const upd = checkpoint.columns.reduce((s, c) => s + (c.readout?.updates ?? 0), 0);
+    console.log(`[hist-train] continuing from ${ckIn}: last scored ${checkpoint.lastTs ? new Date(checkpoint.lastTs).toISOString() : 'never'}, ${upd} readout updates so far; resuming at ${start}`);
+  }
+  const ckOut = arg('checkpoint-out', path.join(work, 'checkpoint.json'));
+  console.log(`[hist-train] anchored crypto SNN, stage ${stage}${volNorm ? `, volNorm ${volNorm}` : ''}${soft ? ', soft labels' : ''}${maxSpread ? `, contracts wider than ${maxSpread} skipped` : ''}${seed ? `, seed ${seed}` : ''}${synthetic ? ', synthetic contracts where Kalshi has none' : ''}${requote ? ', ADVERSARY: quotes requoted between candles' : ''}, ${from}..${to}, ${assets.join(',')}`);
+
+  const f5 = (x: { mean: number; lo: number; hi: number }) => `${x.mean.toFixed(5)} [${x.lo.toFixed(5)}, ${x.hi.toFixed(5)}]`;
+  const recFrom = arg('rec-from'), recTo = arg('rec-to'), recDir = arg('rec-dir', path.join(work, 'recordings')), recFetch = arg('rec-fetch');
+  const withRec = /^\d{4}-\d{2}-\d{2}$/.test(recFrom) && /^\d{4}-\d{2}-\d{2}$/.test(recTo) && recFrom <= recTo;
+  const save = () => { if (checkpoint) { fs.mkdirSync(path.dirname(ckOut), { recursive: true }); fs.writeFileSync(ckOut, JSON.stringify(checkpoint)); } };
+  if (start > to && !withRec) { console.log(`[hist-train] the checkpoint already covers ${from}..${to}`); save(); return; }
+  if (start > to) console.log(`[hist-train] the checkpoint already covers the Kalshi days ${from}..${to}; on to the recorded days`);
+  let timeUp = false;
+  const auditFrom = arg('audit-from', '2026-10-01');
+  const histAudit = new SliceAudit(), histEarly = new SliceAudit(), recAudit = new SliceAudit();
+  for (const [a, b] of start > to ? [] : trainChunks(start, to)) {
+    if (Date.now() > deadline) { console.log(`[hist-train] time is up before ${a}: the next run continues from the checkpoint`); timeUp = true; break; }
+    const warm = addDays(a, -1), t0 = Date.now();
+    if (!synthetic && !kalshiDays(path.join(hist, 'kalshi'), a, b)) { console.log(`[hist-train] ${a}..${b}: no Kalshi history on these days, skipped`); continue; }
+    console.log(`[hist-train] ${a}..${b}: building and replaying`);
+    const month = (d: string) => d.slice(0, 7);
+    const dl = async (intervals: ('1m' | '15m' | '1h' | '1d')[], f: string, source?: string) =>
+      (await downloadBinance({ out: hist, assets, intervals, markets: ['spot'], source, fromMonth: month(f), toMonth: month(b), log: () => undefined })).reduce((s, x) => s + x.fetched, 0);
+    await dl(['1m'], warm, 'binance-1m');
+    await dl(['15m', '1h'], addDays(warm, -14));
+    await dl(['1d'], addDays(warm, -310));
+    const built = await buildHistoryReplay({ historyDir: hist, outDir: rep, assets, fromDay: warm, toDay: b, synthetic, requote, log: () => undefined });
+    const res = await replaySnn(rep, { params, from: Date.parse(`${a}T00:00:00Z`), to: Date.parse(`${b}T23:59:59Z`), fromDay: warm, toDay: b, calendar, domain: 'crypto', checkpoint, skipModel: true });
+    checkpoint = res.net.serialize();
+    fs.mkdirSync(path.dirname(ckOut), { recursive: true });
+    fs.writeFileSync(ckOut, JSON.stringify(checkpoint));
+    const windows = new Set(res.rows.map((r) => r.eventKey)).size;
+    const frozen = res.steps ? (100 * res.frozenSteps) / res.steps : 0;
+    if (!res.rows.length) { console.log(`[hist-train] ${a}..${b}: no contracts scored (${built.written} day(s) built; Kalshi history missing for these days?)`); continue; }
+    (a >= auditFrom ? histAudit : histEarly).add(res.rows);
+    const vm = vsMarket(res.rows, 1000), c = correctionStats(res.rows);
+    console.log(`[hist-train] ${a}..${b}: ${windows} windows, vs market ${f5(vm)} ${vm.hi < 0 ? 'BEATS the market' : vm.lo > 0 ? 'worse' : 'undecided'}; correction size ${c.sizeCents.toFixed(2)}c edge ${c.edgeCents.toFixed(2)}c b ${c.slope.toFixed(2)}; learning frozen ${frozen.toFixed(1)}%;${built.synthetic ? ` ${built.synthetic} synthetic contracts;` : ''} ${((Date.now() - t0) / 60000).toFixed(1)} min`);
+    // Rows of this month are not needed any more (memory over months).
+    res.rows.length = 0;
+  }
+  if (withRec && !timeUp) {
+    const recStart = resumeDay(recFrom, checkpoint?.lastTs);
+    const fetchDay = (d: string) => {
+      const f = path.join(recDir, `md-${d}.jsonl.gz`);
+      if (fs.existsSync(f) || !recFetch) return fs.existsSync(f);
+      try { execFileSync('bash', [recFetch, 'recording', d, recDir], { stdio: 'ignore' }); } catch { return false; }
+      return fs.existsSync(f);
+    };
+    fs.mkdirSync(recDir, { recursive: true });
+    for (const d of recDays(recStart, recTo)) {
+      if (Date.now() > deadline) { console.log(`[hist-train] time is up before recorded day ${d}: the next run continues from the checkpoint`); break; }
+      const warm = addDays(d, -1), t0 = Date.now();
+      if (!fetchDay(d)) { console.log(`[hist-train] recorded ${d}: not on Drive, skipped`); continue; }
+      fetchDay(warm);
+      // Only the warm-up day and this day on disk.
+      for (const f of fs.readdirSync(recDir)) { const m = /^md-(\d{4}-\d{2}-\d{2})\.jsonl\.gz$/.exec(f); if (recFetch && m && m[1] < warm) fs.rmSync(path.join(recDir, f)); }
+      const res = await replaySnn(recDir, { params, from: Date.parse(`${d}T00:00:00Z`), to: Date.parse(`${d}T23:59:59Z`), fromDay: warm, toDay: d, calendar, domain: 'crypto', checkpoint, skipModel: true });
+      checkpoint = res.net.serialize();
+      save();
+      const windows = new Set(res.rows.map((r) => r.eventKey)).size;
+      if (!res.rows.length) { console.log(`[hist-train] recorded ${d}: no contracts scored`); continue; }
+      recAudit.add(res.rows);
+      const vm = vsMarket(res.rows, 1000), c = correctionStats(res.rows);
+      console.log(`[hist-train] recorded ${d}: ${windows} windows, vs market ${f5(vm)} ${vm.hi < 0 ? 'BEATS the market' : vm.lo > 0 ? 'worse' : 'undecided'}; correction size ${c.sizeCents.toFixed(2)}c edge ${c.edgeCents.toFixed(2)}c b ${c.slope.toFixed(2)}; ${((Date.now() - t0) / 60000).toFixed(1)} min`);
+      res.rows.length = 0;
+    }
+  }
+  save();
+  for (const l of histEarly.lines(`audit Kalshi history before ${auditFrom} (this run)`)) console.log(l);
+  for (const l of histAudit.lines(`audit Kalshi history from ${auditFrom} (this run)`)) console.log(l);
+  for (const l of recAudit.lines('audit recorded days (this run)')) console.log(l);
+  console.log(`[hist-train] checkpoint -> ${ckOut}`);
+}
+
+if (process.argv[1] && /snnHistoryTrain\.ts$/.test(process.argv[1])) main().catch((e) => { console.error(`history training failed: ${e instanceof Error ? e.stack : e}`); process.exit(1); });

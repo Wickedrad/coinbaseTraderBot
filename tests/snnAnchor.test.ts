@@ -186,3 +186,21 @@ test('anchor band: outside 50c +/- band the price is the market, inside it is th
   assert.equal(versionHash(base), versionHash({ ...base }), 'absent: hash unchanged');
   assert.notEqual(versionHash(base), versionHash({ ...base, anchorBand: 0.1 }));
 });
+
+test('max spread: a contract quoted wider than maxSpread neither trains nor moves; tighter ones learn as before', () => {
+  const tp = tape(30);
+  const mk = (maxSpread?: number, spread?: number) => {
+    const net = new SnnNetwork(small({ anchorMid: true, readoutEta: 0.05, readoutCap: 1, ...(maxSpread !== undefined ? { maxSpread } : {}) }));
+    for (let s = 0; s < 30; s++) net.step(T0 + s * 1000, tp[s]);
+    for (let k = 1; k <= 40; k++) { net.score([query(`B${k}`, { mid: 0.45, spread })], T0 + (40 + k * 61) * 1000); net.settle(`B${k}`, 'yes', T0 + (40 + k * 61) * 1000 + 1); }
+    return net;
+  };
+  const wide = mk(0.1, 0.9), free = mk(undefined, 0.9), tight = mk(0.1, 0.02);
+  const w = (n: SnnNetwork) => [...n.readouts.get('BTC-15m')!.wf];
+  assert.ok(w(wide).every((x) => x === 0), 'wide quotes: no learning');
+  assert.ok(w(free).some((x) => x !== 0), 'without the gate the same quotes train');
+  assert.deepEqual(w(tight), w(free), 'tight quotes: learning unchanged');
+  const at = (n: SnnNetwork, spread: number, tk: string) => n.score([query(tk, { tag: false, mid: 0.45, spread })], T0 + 9000e3)[0].p;
+  assert.ok(Math.abs(at(tight, 0.9, 'X1') - 0.45) < 1e-12, 'a wide quote is priced at the mid');
+  assert.ok(Math.abs(at(tight, 0.02, 'X2') - 0.45) > 1e-6, 'a tight one gets the correction');
+});

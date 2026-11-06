@@ -407,6 +407,7 @@ export async function kalshiScore(dir: string, modelPath: string, strategy: Reco
   kalshiModels.set(modelPath, model);
   const S = { ...cfg.strategy, ...strategy } as typeof cfg.strategy;
   const res = await runBacktest(dir, model, S, cfg.risk, cfg.paperBankrollUsd, {
+    snnPrice: cfg.snn.price,
     sessionRisk: S.sessionRisk, huntSessionGuard: S.huntSessionGuard, huntTransitionBufferMin: S.huntTransitionBufferMin,
     vault: cfg.vault.enabled ? cfg.vault : undefined, sizingTiers: cfg.sizingTiers, tape,
   });

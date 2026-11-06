@@ -28,19 +28,73 @@ on:
         description: 'Judge only: re-judge the saved sides of this earlier run id (no replay, no server read; artifacts last 7 days)'
         required: false
         default: ''
+      base_from:
+        description: 'Reuse the baseline side saved by this earlier run id (same mechanism, unchanged baseline): only the candidate replays, so the server is read once instead of twice'
+        required: false
+        default: ''
+      init_from:
+        description: 'history-trained: the run id whose history training saved the checkpoint the candidate starts from'
+        required: false
+        default: ''
+      hist_from:
+        description: 'History training instead of an ablation: first day (YYYY-MM-DD) of Kalshi contract history to walk the anchored crypto SNN through (research/snnHistoryTrain.ts)'
+        required: false
+        default: ''
+      hist_to:
+        description: 'History training: last day (YYYY-MM-DD)'
+        required: false
+        default: ''
+      hist_args:
+        description: 'History training: extra flags, e.g. --vol-norm 1'
+        required: false
+        default: ''
+      hist_resume_from:
+        description: 'History training: the run id whose checkpoint this run continues from'
+        required: false
+        default: ''
+      hist_chain:
+        description: 'History training: when the job time limit stops the range, start a new run that continues it (true/false)'
+        required: false
+        default: 'false'
+      judge_args:
+        description: 'Extra judge flags, e.g. --gain true --gainPrior 100 --gainForget 0.999 (the learned correction gain; --gainPerRow true weighs every row)'
+        required: false
+        default: '--gain true'
+      replay_cache:
+        description: 'side jobs only: a kalshi-replay-check run id whose copy (cache replay-check-copy-<id>, path data) is replayed instead of reading the server'
+        required: false
+        default: ''
+      drive_backfill_cache:
+        description: 'One-off: an Actions cache key of Kalshi history (e.g. kalshi-history-2026-01-01-2026-09-30) to copy to Drive raw/kalshi-history; nothing else runs'
+        required: false
+        default: ''
+      drive_backfill_range:
+        description: 'One-off: FROM..TO (YYYY-MM-DD..YYYY-MM-DD) of Kalshi day files to copy from the server to Drive raw/kalshi-history (needs the server copy slot); nothing else runs'
+        required: false
+        default: ''
+      fidelity_cache:
+        description: 'quote-lag only: an Actions cache key saved by Replay fidelity on main (e.g. fidelity-data-41351064742-1); its recorded days are used and the server is not read'
+        required: false
+        default: ''
 
 permissions:
   contents: read
-  actions: read
+  actions: write # history training continues itself in a new run when a range outlasts the job time limit
 
+# Server-reading runs queue one at a time; all-Drive history training (hist_from=all) runs in parallel (Nov 5 limits).
 concurrency:
-  group: snn-ablation
+  group: snn-ablation-${{ inputs.hist_from == 'all' && format('drive-{0}', github.run_id) || (inputs.hist_from != '' && 'history' || 'ablate') }}
   cancel-in-progress: false
+
+# Steven, Nov 5: no DOGE for now (training, replays and scoring).
+env:
+  SNN_SKIP_ASSETS: DOGE
+  HISTORY_REPLAY_ASSETS: BTC,ETH,SOL,XRP
 
 jobs:
   # Every mechanism in one job (a dispatch with an empty "only"; hours).
   ablate:
-    if: inputs.only == '' && inputs.from_run == ''
+    if: inputs.only == '' && inputs.from_run == '' && inputs.hist_from == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
@@ -50,6 +104,9 @@ jobs:
       DAYS: ${{ inputs.days || '8' }}
     steps:
       - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
@@ -75,6 +132,12 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
           printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
           ssh bot true && echo "connected"
+      - name: Recordings from the cache (only new or changed files are then read from the server)
+        uses: actions/cache/restore@v4
+        with:
+          path: data/recordings
+          key: snn-recordings-${{ inputs.domain || 'crypto' }}-${{ github.run_id }}
+          restore-keys: snn-recordings-${{ inputs.domain || 'crypto' }}-
       - name: Copy the recordings and the meta-model (read-only)
         run: |
           set -euo pipefail
@@ -83,16 +146,27 @@ jobs:
           DATA="$GITHUB_WORKSPACE/data"; mkdir -p "$DATA/recordings" "$DATA/models"
           vanished_ok() { local c=$?; [ $c -eq 24 ] && return 0; return $c; }
           ssh bot "cd ~/bot/data/recordings && find . -type f \( ! -name 'md-*' -o -mtime -$DAYS \) -printf '%P\n'" > "$RUNNER_TEMP/recordings.txt"
-          rsync -a --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/recordings.txt" bot:bot/data/recordings/ "$DATA/recordings/" || vanished_ok
+          # Cached files outside today's window are dropped (the replay starts at the oldest day present).
+          (cd "$DATA/recordings" && find . -type f -printf '%P\n' | sort > "$RUNNER_TEMP/have.txt"; sort "$RUNNER_TEMP/recordings.txt" | comm -23 "$RUNNER_TEMP/have.txt" - | xargs -r -d '\n' rm -f)
+          echo "cache held $(wc -l < "$RUNNER_TEMP/have.txt") file(s); rsync now reads only new or changed ones"
+          bash deploy/snn_drive_first.sh "$RUNNER_TEMP/recordings.txt" "$DATA/recordings"
+          rsync -a --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/recordings.txt" bot:bot/data/recordings/ "$DATA/recordings/" || vanished_ok
           rsync -a --rsync-path="nice -n 19 ionice -c3 rsync" bot:bot/data/models/model.json "$DATA/models/" 2>/dev/null || echo "no promoted meta-model on the server: the shipped params/model.json prices"
-          rsync -a --bwlimit=8000 --rsync-path="nice -n 19 rsync" --files-from="$RUNNER_TEMP/recordings.txt" bot:bot/data/recordings/ "$DATA/recordings/" || vanished_ok
-          rsync -a --bwlimit=8000 --rsync-path="nice -n 19 rsync" bot:bot/data/models/model.json "$DATA/models/" 2>/dev/null || echo "no promoted meta-model on the server: the shipped params/model.json prices"
           echo "copied $(wc -l < "$RUNNER_TEMP/recordings.txt") recording file(s); data $(du -sh "$DATA" | cut -f1)"
           # The oldest complete recorded day copied: the replay starts there.
           FROM=$(ls "$DATA/recordings" | grep -oE 'md-[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | sed 's/^md-//' | head -1)
           [ -n "$FROM" ] || { echo "no recordings copied"; exit 1; }
           echo "FROM=$FROM" >> "$GITHUB_ENV"
+          # The repo's Actions caches share 10 GB and evict the least recently used: a copy above 3 GB is not cached,
+          # so it cannot push other threads' caches out (the run uses its own copy either way).
+          MB=$(du -sm "$DATA/recordings" | cut -f1); echo "CACHE_OK=$([ "$MB" -le 3000 ] && echo true || echo false)" >> "$GITHUB_ENV"; echo "recordings $MB MB"
           echo "replay from $FROM ($(ls "$DATA/recordings" | grep -oE 'md-[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | wc -l) day(s))"
+      - name: Save the recordings to the cache
+        if: matrix.side != 'baseline'
+        uses: actions/cache/save@v4
+        with:
+          path: data/recordings
+          key: snn-recordings-${{ inputs.domain || 'crypto' }}-${{ github.run_id }}
       - name: Ablation
         run: |
           set -euo pipefail
@@ -108,21 +182,20 @@ jobs:
           if-no-files-found: ignore
 
   # One mechanism: its baseline and candidate replay on two runners at once (each ~2-3 h), then one judge.
-  side:
-    if: inputs.only != '' && inputs.from_run == ''
+  quote-lag:
+    if: inputs.only == 'quote-lag' && inputs.hist_from == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 345
-    strategy:
-      fail-fast: false
-      matrix:
-        side: [baseline, candidate]
     env:
       ONLY: ${{ inputs.only }}
       DOMAIN: ${{ inputs.domain || 'crypto' }}
       DAYS: ${{ inputs.days || '8' }}
     steps:
       - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
@@ -138,6 +211,7 @@ jobs:
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
       - name: SSH to the server
+        if: inputs.fidelity_cache == ''
         env:
           SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           HOST: ${{ secrets.LIGHTSAIL_HOST }}
@@ -148,7 +222,25 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
           printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
           ssh bot true && echo "connected"
+      - name: Recorded days from the Replay fidelity cache (no server read)
+        if: inputs.fidelity_cache != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/recordings
+            data/fit
+            data/models
+          key: ${{ inputs.fidelity_cache }}
+          fail-on-cache-miss: true
+      - name: Recordings from the cache (only new or changed files are then read from the server)
+        if: inputs.fidelity_cache == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: data/recordings
+          key: snn-recordings-${{ inputs.domain || 'crypto' }}-${{ github.run_id }}
+          restore-keys: snn-recordings-${{ inputs.domain || 'crypto' }}-
       - name: Copy the recordings and the meta-model (read-only)
+        if: inputs.fidelity_cache == ''
         run: |
           set -euo pipefail
           [[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "days must be a number"; exit 1; }
@@ -156,20 +248,152 @@ jobs:
           DATA="$GITHUB_WORKSPACE/data"; mkdir -p "$DATA/recordings" "$DATA/models"
           vanished_ok() { local c=$?; [ $c -eq 24 ] && return 0; return $c; }
           ssh bot "cd ~/bot/data/recordings && find . -type f \( ! -name 'md-*' -o -mtime -$DAYS \) -printf '%P\n'" > "$RUNNER_TEMP/recordings.txt"
-          rsync -a --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/recordings.txt" bot:bot/data/recordings/ "$DATA/recordings/" || vanished_ok
+          # Cached files outside today's window are dropped (the replay starts at the oldest day present).
+          (cd "$DATA/recordings" && find . -type f -printf '%P\n' | sort > "$RUNNER_TEMP/have.txt"; sort "$RUNNER_TEMP/recordings.txt" | comm -23 "$RUNNER_TEMP/have.txt" - | xargs -r -d '\n' rm -f)
+          echo "cache held $(wc -l < "$RUNNER_TEMP/have.txt") file(s); rsync now reads only new or changed ones"
+          bash deploy/snn_drive_first.sh "$RUNNER_TEMP/recordings.txt" "$DATA/recordings"
+          rsync -a --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/recordings.txt" bot:bot/data/recordings/ "$DATA/recordings/" || vanished_ok
           rsync -a --rsync-path="nice -n 19 ionice -c3 rsync" bot:bot/data/models/model.json "$DATA/models/" 2>/dev/null || echo "no promoted meta-model on the server: the shipped params/model.json prices"
           echo "copied $(wc -l < "$RUNNER_TEMP/recordings.txt") recording file(s); data $(du -sh "$DATA" | cut -f1)"
           # The oldest complete recorded day copied: the replay starts there.
           FROM=$(ls "$DATA/recordings" | grep -oE 'md-[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | sed 's/^md-//' | head -1)
           [ -n "$FROM" ] || { echo "no recordings copied"; exit 1; }
           echo "FROM=$FROM" >> "$GITHUB_ENV"
+          # The repo's Actions caches share 10 GB and evict the least recently used: a copy above 3 GB is not cached,
+          # so it cannot push other threads' caches out (the run uses its own copy either way).
+          MB=$(du -sm "$DATA/recordings" | cut -f1); echo "CACHE_OK=$([ "$MB" -le 3000 ] && echo true || echo false)" >> "$GITHUB_ENV"; echo "recordings $MB MB"
           echo "replay from $FROM ($(ls "$DATA/recordings" | grep -oE 'md-[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | wc -l) day(s))"
+      - name: Save the recordings to the cache
+        if: inputs.fidelity_cache == '' && env.CACHE_OK == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/recordings
+          key: snn-recordings-${{ inputs.domain || 'crypto' }}-${{ github.run_id }}
+      - name: Quote lag study
+        run: |
+          set -euo pipefail
+          mkdir -p research/out
+          export TRADING_MODE=paper AUTO_TRAIN=off
+          # Does the mid follow the coin's move a few seconds late, and does trading that pay after taker fees?
+          npm run --silent research:quote-lag -- --recordings "$GITHUB_WORKSPACE/data/recordings" --count 20 --out research/out/quote_lag.json 2>&1 | grep --line-buffered -E '^\[quote-lag\]|Error|FATAL'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quote-lag
+          path: research/out/quote_lag.json
+          if-no-files-found: ignore
+
+  side:
+    if: inputs.only != '' && inputs.only != 'quote-lag' && inputs.from_run == '' && inputs.hist_from == '' && inputs.drive_backfill_cache == '' && inputs.drive_backfill_range == ''
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        side: ${{ fromJSON(inputs.base_from != '' && '["candidate"]' || '["baseline","candidate"]') }}
+    env:
+      ONLY: ${{ inputs.only }}
+      DOMAIN: ${{ inputs.domain || 'crypto' }}
+      DAYS: ${{ inputs.days || '8' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: An earlier replay-check copy (replay_cache, no server read)
+        if: inputs.replay_cache != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: replay-check-copy-${{ inputs.replay_cache }}
+          fail-on-cache-miss: true
+      - name: Days in that copy
+        if: inputs.replay_cache != ''
+        run: |
+          set -euo pipefail
+          FROM=$(ls data/recordings | grep -oE 'md-[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | sed 's/^md-//' | head -1)
+          [ -n "$FROM" ] || { echo "no recordings in the copy"; exit 1; }
+          echo "FROM=$FROM" >> "$GITHUB_ENV"
+          echo "replay from $FROM ($(ls data/recordings | grep -oE 'md-[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | wc -l) day(s)), $(du -sh data | cut -f1)"
+      - name: SSH to the server
+        if: inputs.replay_cache == ''
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER_NAME: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          PORT: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
+          printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
+          ssh bot true && echo "connected"
+      - name: Recordings from the cache (only new or changed files are then read from the server)
+        if: inputs.replay_cache == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: data/recordings
+          key: snn-recordings-${{ inputs.domain || 'crypto' }}-${{ github.run_id }}
+          restore-keys: snn-recordings-${{ inputs.domain || 'crypto' }}-
+      - name: Copy the recordings and the meta-model (read-only)
+        if: inputs.replay_cache == ''
+        run: |
+          set -euo pipefail
+          [[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "days must be a number"; exit 1; }
+          [[ "$DOMAIN" =~ ^(crypto|perps)$ ]] || { echo "domain must be crypto or perps"; exit 1; }
+          DATA="$GITHUB_WORKSPACE/data"; mkdir -p "$DATA/recordings" "$DATA/models"
+          vanished_ok() { local c=$?; [ $c -eq 24 ] && return 0; return $c; }
+          ssh bot "cd ~/bot/data/recordings && find . -type f \( ! -name 'md-*' -o -mtime -$DAYS \) -printf '%P\n'" > "$RUNNER_TEMP/recordings.txt"
+          # Cached files outside today's window are dropped (the replay starts at the oldest day present).
+          (cd "$DATA/recordings" && find . -type f -printf '%P\n' | sort > "$RUNNER_TEMP/have.txt"; sort "$RUNNER_TEMP/recordings.txt" | comm -23 "$RUNNER_TEMP/have.txt" - | xargs -r -d '\n' rm -f)
+          echo "cache held $(wc -l < "$RUNNER_TEMP/have.txt") file(s); rsync now reads only new or changed ones"
+          bash deploy/snn_drive_first.sh "$RUNNER_TEMP/recordings.txt" "$DATA/recordings"
+          rsync -a --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/recordings.txt" bot:bot/data/recordings/ "$DATA/recordings/" || vanished_ok
+          rsync -a --rsync-path="nice -n 19 ionice -c3 rsync" bot:bot/data/models/model.json "$DATA/models/" 2>/dev/null || echo "no promoted meta-model on the server: the shipped params/model.json prices"
+          echo "copied $(wc -l < "$RUNNER_TEMP/recordings.txt") recording file(s); data $(du -sh "$DATA" | cut -f1)"
+          # The oldest complete recorded day copied: the replay starts there.
+          FROM=$(ls "$DATA/recordings" | grep -oE 'md-[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | sed 's/^md-//' | head -1)
+          [ -n "$FROM" ] || { echo "no recordings copied"; exit 1; }
+          echo "FROM=$FROM" >> "$GITHUB_ENV"
+          # The repo's Actions caches share 10 GB and evict the least recently used: a copy above 3 GB is not cached,
+          # so it cannot push other threads' caches out (the run uses its own copy either way).
+          MB=$(du -sm "$DATA/recordings" | cut -f1); echo "CACHE_OK=$([ "$MB" -le 3000 ] && echo true || echo false)" >> "$GITHUB_ENV"; echo "recordings $MB MB"
+          echo "replay from $FROM ($(ls "$DATA/recordings" | grep -oE 'md-[0-9]{4}-[0-9]{2}-[0-9]{2}' | sort -u | wc -l) day(s))"
+      - name: Save the recordings to the cache
+        if: matrix.side != 'baseline' && inputs.replay_cache == '' && env.CACHE_OK == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/recordings
+          key: snn-recordings-${{ inputs.domain || 'crypto' }}-${{ github.run_id }}
+      - uses: actions/download-artifact@v4
+        # history-trained: the candidate starts from the network a history-training run saved.
+        if: inputs.init_from != '' && matrix.side == 'candidate'
+        with:
+          name: snn-history-checkpoint
+          path: research/out/init
+          run-id: ${{ inputs.init_from }}
+          github-token: ${{ github.token }}
       - name: Replay one side
         run: |
           set -euo pipefail
           DATA="$GITHUB_WORKSPACE/data"; mkdir -p research/out
           MODEL=""; [ "$DOMAIN" = crypto ] && [ -f "$DATA/models/model.json" ] && MODEL="--model $DATA/models/model.json"
-          npm run --silent research:snn-ablation -- --recordings "$DATA/recordings" --domain "$DOMAIN" --from "${FROM}T00:00:00Z" --only "$ONLY" --side ${{ matrix.side }} --save research/out/side-${{ matrix.side }}.json $MODEL
+          INIT=""; [ -f research/out/init/snn-history-checkpoint.json ] && INIT="--init research/out/init/snn-history-checkpoint.json"
+          npm run --silent research:snn-ablation -- --recordings "$DATA/recordings" --domain "$DOMAIN" --from "${FROM}T00:00:00Z" --only "$ONLY" --side ${{ matrix.side }} --save research/out/side-${{ matrix.side }}.json $MODEL $INIT
       - uses: actions/upload-artifact@v4
         with:
           name: snn-ablation-side-${{ matrix.side }}
@@ -178,7 +402,7 @@ jobs:
 
   judge:
     needs: side
-    if: always() && (needs.side.result == 'success' || inputs.from_run != '')
+    if: always() && inputs.hist_from == '' && (needs.side.result == 'success' || inputs.from_run != '')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -209,15 +433,221 @@ jobs:
           # Judge-only: the sides saved by an earlier run.
           run-id: ${{ inputs.from_run || github.run_id }}
           github-token: ${{ inputs.from_run != '' && github.token || '' }}
+      - uses: actions/download-artifact@v4
+        # The baseline side saved by an earlier run (base_from): no second replay, no second server read.
+        if: inputs.base_from != '' && inputs.from_run == ''
+        with:
+          name: snn-ablation-side-baseline
+          path: research/out
+          run-id: ${{ inputs.base_from }}
+          github-token: ${{ github.token }}
       - name: Judge
+        env:
+          JUDGE_ARGS: ${{ inputs.judge_args }}
         run: |
           set -euo pipefail
           # The verdict line, the "vs market" line (the SNN plan's phase 1 go/no-go) and where the SNN stands against
           # the market by asset x horizon, mid level, hour, kind and volatility.
-          npm run --silent research:snn-ablation -- --domain "$DOMAIN" --only "$ONLY" --judge research/out/side-baseline.json,research/out/side-candidate.json --breakdown true --out research/out/snn_ablation.json
+          npm run --silent research:snn-ablation -- --domain "$DOMAIN" --only "$ONLY" --judge research/out/side-baseline.json,research/out/side-candidate.json --breakdown true $(printf '%s' "$JUDGE_ARGS" | tr -cd 'a-zA-Z0-9 .-') --out research/out/snn_ablation.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: snn-ablation-${{ inputs.domain || 'crypto' }}
           path: research/out/snn_ablation.json
           if-no-files-found: ignore
+
+  # History training (Steven, Oct 31: make the SNNs learn, fast): one anchored crypto network walks Kalshi's settled
+  # contracts month by month and prints how it priced each month against the market before learning it. From the
+  # server only Kalshi's day files for the range, once (throttled, the same lock as the recordings copy), then kept in
+  # the Actions cache so a rerun reads nothing from the server. Spot history comes from data.binance.vision.
+  history-train:
+    if: inputs.hist_from != ''
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 350
+    env:
+      HARGS: ${{ inputs.hist_args }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: The range as given
+        if: inputs.hist_from != 'all'
+        env:
+          F: ${{ inputs.hist_from }}
+          T: ${{ inputs.hist_to }}
+        run: '{ echo "HFROM=$F"; echo "HTO=$T"; } >> "$GITHUB_ENV"'
+      - name: All of Drive's history (hist_from=all) - every Kalshi day with contracts, then every recorded day; Drive only, no server read
+        if: inputs.hist_from == 'all'
+        env:
+          CAP: ${{ inputs.hist_to }}
+        run: |
+          set -euo pipefail
+          D=gdrive:kalshi-bot-archive
+          # The Drive mirror of the server's history first (Drive to Drive), so raw/kalshi-history holds every day there is.
+          if [ -n "$(rclone lsf "$D/raw/server-history/kalshi" --max-depth 1 2>/dev/null | head -1)" ]; then
+            rclone copy "$D/raw/server-history/kalshi" "$D/raw/kalshi-history" --include '/KX*/*.jsonl' --transfers 8
+          fi
+          # Days with contracts: a crypto series' day file over 2 KB (Kalshi's history before Aug 2026 holds empty days).
+          rclone lsf -R --files-only --format sp "$D/raw/kalshi-history" --include '/KX*/*.jsonl' | awk -F';' '$1 > 2048 { n=split($2,a,"/"); sub(/\.jsonl$/,"",a[n]); print a[n] }' | sort -u > "$RUNNER_TEMP/kalshi-days.txt"
+          bash deploy/drive_lab.sh days > "$RUNNER_TEMP/rec-days.txt"
+          # hist_to with hist_from=all: the last recorded day to train on (later days stay unseen, for judging).
+          if [ -n "$CAP" ]; then awk -v c="$CAP" '$0 <= c' "$RUNNER_TEMP/rec-days.txt" > "$RUNNER_TEMP/rec-cap.txt"; mv "$RUNNER_TEMP/rec-cap.txt" "$RUNNER_TEMP/rec-days.txt"; fi
+          RF=$(head -1 "$RUNNER_TEMP/rec-days.txt"); RT=$(tail -1 "$RUNNER_TEMP/rec-days.txt")
+          KF=$(head -1 "$RUNNER_TEMP/kalshi-days.txt"); KL=$(tail -1 "$RUNNER_TEMP/kalshi-days.txt")
+          # Kalshi's minute candles up to the day before the first recorded day; the recorded books (truer) from then on.
+          KT=$(python3 -c 'import sys,datetime as d; print(min(d.date.fromisoformat(sys.argv[1]), d.date.fromisoformat(sys.argv[2])-d.timedelta(days=1)))' "$KL" "$RF")
+          echo "Kalshi days with contracts on Drive: $(wc -l < "$RUNNER_TEMP/kalshi-days.txt") ($KF..$KL); recorded days on Drive: $(wc -l < "$RUNNER_TEMP/rec-days.txt") ($RF..$RT)"
+          echo "training order: Kalshi $KF..$KT, then recorded $RF..$RT"
+          { echo "HFROM=$KF"; echo "HTO=$KT"; echo "RFROM=$RF"; echo "RTO=$RT"; } >> "$GITHUB_ENV"
+          echo "HMODE=all" >> "$GITHUB_ENV"
+      - name: Check the range
+        run: |
+          [[ "$HFROM" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "$HTO" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "hist_from / hist_to must be YYYY-MM-DD (or hist_from=all)"; exit 1; }
+      - name: SSH to the server
+        if: "!contains(inputs.hist_args, 'synthetic') && inputs.hist_from != 'all'"
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER_NAME: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          PORT: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
+          printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
+          ssh bot true && echo "connected"
+      - name: Kalshi's day files for the range (Drive raw/kalshi-history first, the server only for the rest, then kept on Drive)
+        if: "!contains(inputs.hist_args, 'synthetic')"
+        run: |
+          set -euo pipefail
+          K="$RUNNER_TEMP/hist/history/kalshi"; mkdir -p "$K"
+          # The range's day files and the day after each (contracts past midnight); crypto series only (no tennis tapes).
+          python3 -c 'import sys,datetime as d; a=d.date.fromisoformat(sys.argv[1]); b=d.date.fromisoformat(sys.argv[2]); n=(b-a).days+3; [print("/KX*/%s.jsonl" % (a+d.timedelta(days=i-1)).isoformat()) for i in range(n)]' "$HFROM" "$HTO" > "$RUNNER_TEMP/kdays.txt"
+          rclone copy gdrive:kalshi-bot-archive/raw/kalshi-history "$K/" --include-from "$RUNNER_TEMP/kdays.txt" --transfers 8 || true
+          echo "from Drive: $(find "$K" -type f | wc -l) day file(s)"
+          if [ "${HMODE:-}" != all ]; then
+            rsync -a --ignore-existing --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --include='/KX*/' --include-from="$RUNNER_TEMP/kdays.txt" --exclude='*' --prune-empty-dirs bot:bot/data/history/kalshi/ "$K/"
+            bash deploy/drive_lab.sh put raw/kalshi-history "$K"
+          fi
+          echo "Kalshi day files: $(find "$K" -type f | wc -l) in $(ls "$K" | wc -l) series, $(du -sh "$K" | cut -f1)"
+      - name: Spot history already on Drive (raw/binance-vision), so only what is missing downloads
+        if: "!contains(inputs.hist_args, 'synthetic')"
+        run: |
+          # Bounded by the runner's disk (the recorded days need room too): above 6 GiB the rest downloads from Binance.
+          B=$({ rclone size --json gdrive:kalshi-bot-archive/raw/binance-vision 2>/dev/null || echo "{}"; } | python3 -c 'import sys,json; print(json.load(sys.stdin).get("bytes",0))' || echo 0)
+          echo "raw/binance-vision on Drive: $((B / 1048576)) MiB"
+          if [ "$B" -gt 0 ] && [ "$B" -lt 6442450944 ]; then bash deploy/drive_lab.sh get raw/binance-vision "$RUNNER_TEMP/hist/history" || true; fi
+      - uses: actions/download-artifact@v4
+        # Continue an earlier history training from its checkpoint (it resumes the day after the checkpoint's last one).
+        if: inputs.hist_resume_from != ''
+        with:
+          name: snn-history-checkpoint
+          path: research/out/prev
+          run-id: ${{ inputs.hist_resume_from }}
+          github-token: ${{ github.token }}
+      - name: Train
+        id: train
+        timeout-minutes: 330
+        run: |
+          set -euo pipefail
+          mkdir -p research/out
+          export TRADING_MODE=paper AUTO_TRAIN=off NODE_OPTIONS="--max-old-space-size=6144"
+          EXTRA=$(printf '%s' "$HARGS" | tr -cd 'a-zA-Z0-9 .-')
+          PREV=""; [ -f research/out/prev/snn-history-checkpoint.json ] && PREV="--checkpoint-in research/out/prev/snn-history-checkpoint.json"
+          REC=""; [ -n "${RFROM:-}" ] && REC="--rec-from $RFROM --rec-to $RTO --rec-dir $RUNNER_TEMP/rec --rec-fetch deploy/drive_lab.sh"
+          node --import tsx research/snnHistoryTrain.ts --from "$HFROM" --to "$HTO" --history "$RUNNER_TEMP/hist/history" --work "$RUNNER_TEMP/hist" --minutes 260 --checkpoint-out research/out/snn-history-checkpoint.json $PREV $REC $EXTRA 2>&1 | grep --line-buffered -E '^\[hist-train\]|failed|FATAL|heap' | stdbuf -oL cut -c1-260 | tee research/out/hist-train.log
+          if grep -q 'time is up' research/out/hist-train.log; then echo "more=true" >> "$GITHUB_OUTPUT"; else echo "more=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Keep the raw spot history and the simulated contracts on Drive
+        if: always()
+        run: |
+          set -uo pipefail
+          H="$RUNNER_TEMP/hist/history"; R="$RUNNER_TEMP/hist/replay"
+          [ -d "$H" ] && { printf '/kalshi/**\n' > "$RUNNER_TEMP/no-kalshi.txt"; bash deploy/drive_lab.sh put raw/binance-vision "$H" --exclude-from "$RUNNER_TEMP/no-kalshi.txt"; }
+          [ -d "$R" ] && bash deploy/drive_lab.sh put "simulated/snn-contracts/${HFROM}_${HTO}" "$R"
+          true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snn-history-checkpoint
+          path: research/out/snn-history-checkpoint.json
+          if-no-files-found: ignore
+      - name: Continue the range in a new run (the job time limit stopped this one)
+        if: steps.train.outputs.more == 'true' && inputs.hist_chain == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run snn-ablation.yml --ref "$GITHUB_REF_NAME" -f hist_from="${{ inputs.hist_from }}" -f hist_to="${{ inputs.hist_to }}" -f hist_args="$HARGS" -f hist_resume_from="${{ github.run_id }}" -f hist_chain=true
+
+  # One-off (Steven, Nov 2: all history on Drive): an existing Kalshi history cache to Drive raw/kalshi-history.
+  drive-backfill:
+    if: inputs.drive_backfill_cache != '' || inputs.drive_backfill_range != ''
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - uses: actions/cache/restore@v4
+        if: inputs.drive_backfill_cache != ''
+        with:
+          path: ${{ runner.temp }}/hist/history/kalshi
+          key: ${{ inputs.drive_backfill_cache }}
+          fail-on-cache-miss: true
+      - name: SSH to the server (drive_backfill_range)
+        if: inputs.drive_backfill_range != ''
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER_NAME: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          PORT: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_bot && chmod 600 ~/.ssh/id_bot
+          printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
+          ssh bot true && echo "connected"
+      - name: Kalshi day files from the server, those Drive lacks (read-only, throttled, one copy at a time)
+        if: inputs.drive_backfill_range != ''
+        env:
+          RANGE: ${{ inputs.drive_backfill_range }}
+        run: |
+          set -euo pipefail
+          [[ "$RANGE" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})\.\.([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]] || { echo "range must be YYYY-MM-DD..YYYY-MM-DD"; exit 1; }
+          A=${BASH_REMATCH[1]} B=${BASH_REMATCH[2]}
+          K="$RUNNER_TEMP/hist/history/kalshi"; mkdir -p "$K"
+          python3 -c 'import sys,datetime as d; a=d.date.fromisoformat(sys.argv[1]); b=d.date.fromisoformat(sys.argv[2]); n=(b-a).days+3; [print("/KX*/%s.jsonl" % (a+d.timedelta(days=i-1)).isoformat()) for i in range(n)]' "$A" "$B" > "$RUNNER_TEMP/kdays.txt"
+          D=gdrive:kalshi-bot-archive/raw
+          # The Drive thread's mirror of the server's history (raw/server-history, Nov 2) first: a Drive-to-Drive copy.
+          if [ -n "$(rclone lsf "$D/server-history/kalshi" --max-depth 1 2>/dev/null | head -1)" ]; then
+            rclone copy "$D/server-history/kalshi" "$D/kalshi-history" --include-from "$RUNNER_TEMP/kdays.txt" --transfers 8 && echo "copied from raw/server-history/kalshi on Drive"
+          else echo "::error::no raw/server-history/kalshi on Drive; it holds: $(rclone lsf "$D/server-history" --max-depth 2 2>/dev/null | head -30 | paste -sd' ' -)"; exit 1; fi
+          rclone lsf -R --files-only "$D/kalshi-history" --include-from "$RUNNER_TEMP/kdays.txt" | sort > "$RUNNER_TEMP/on-drive.txt" || : > "$RUNNER_TEMP/on-drive.txt"
+          echo "on Drive now: $(wc -l < "$RUNNER_TEMP/on-drive.txt") day file(s) in the range"
+          # The server's file list only (no data), then only what Drive still lacks is read.
+          ssh bot "cd ~/bot/data/history/kalshi && find . -path './KX*/*.jsonl' -printf '%P\n'" > "$RUNNER_TEMP/server-all.txt"
+          sed -E 's#^/KX\*/##' "$RUNNER_TEMP/kdays.txt" > "$RUNNER_TEMP/kday-names.txt"
+          awk -F/ 'NR==FNR { want[$0]=1; next } ($1 ~ /^KX/ && ($2 in want))' "$RUNNER_TEMP/kday-names.txt" "$RUNNER_TEMP/server-all.txt" | sort > "$RUNNER_TEMP/on-server.txt"
+          comm -23 "$RUNNER_TEMP/on-server.txt" "$RUNNER_TEMP/on-drive.txt" > "$RUNNER_TEMP/missing.txt"
+          echo "on the server: $(wc -l < "$RUNNER_TEMP/on-server.txt"); missing on Drive: $(wc -l < "$RUNNER_TEMP/missing.txt")"
+          if [ -s "$RUNNER_TEMP/missing.txt" ]; then
+            rsync -a --whole-file --bwlimit=8m --rsync-path="flock bot/data/locks/snn-ablation-copy.lock nice -n 19 ionice -c3 rsync" --files-from="$RUNNER_TEMP/missing.txt" bot:bot/data/history/kalshi/ "$K/"
+          fi
+      - run: |
+          K="$RUNNER_TEMP/hist/history/kalshi"
+          echo "cache: $(find "$K" -type f | wc -l) file(s), $(du -sh "$K" | cut -f1)"
+          bash deploy/drive_lab.sh put raw/kalshi-history "$K"

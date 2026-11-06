@@ -22,8 +22,9 @@ import { dayBlockBootstrap } from '../bot/snn/blender';
 import { blend, brier, calibrationSlope, correlation, surpriseConfidence } from '../bot/snn/formulas';
 import { DEFAULT_SNN, domainParams, stageFlags, type SnnFlags, type SnnParams, type Stage } from '../bot/snn/params';
 import { replaySnn, type SnnReplayResult, type SnnRow } from './snnReplay';
+import { replayGain, volScaled, conditionalCorrection, inCondition, type GainOpts, type CondOpts } from '../bot/snn/correctionGain';
 
-export interface Mechanism { name: string; candidate: { stage: Stage; flags?: Partial<SnnFlags>; params?: Partial<SnnParams> }; baseline: { stage: Stage; flags?: Partial<SnnFlags>; params?: Partial<SnnParams> }; note: string }
+export interface Mechanism { name: string; candidate: { stage: Stage; flags?: Partial<SnnFlags>; params?: Partial<SnnParams>; /** Start from the network in --init (a history-training checkpoint). */ init?: true }; baseline: { stage: Stage; flags?: Partial<SnnFlags>; params?: Partial<SnnParams> }; note: string }
 
 /** The staging order and each stage's comparison (S0..S6, then the deferred mechanisms vs proxies). */
 export const MECHANISMS: Mechanism[] = [
@@ -38,6 +39,13 @@ export const MECHANISMS: Mechanism[] = [
   { name: 'gap junctions', candidate: { stage: 'S5', flags: { gapJunctions: true } }, baseline: { stage: 'S5', flags: { proxies: true } }, note: 'vs BTC-ETH correlation feature' },
   { name: 'Izhikevich CH', candidate: { stage: 'S5', flags: { izhikevichCH: true } }, baseline: { stage: 'S5', flags: { proxies: true } }, note: 'vs delta-spike burst counter' },
   { name: 'dCaAP units', candidate: { stage: 'S5', flags: { dcaap: true } }, baseline: { stage: 'S5' }, note: 'vs 2-branch Poirazi XOR' },
+  { name: 'liquid-history-trained', candidate: { stage: 'S5', params: { anchorMid: true, maxSpread: 0.1 }, init: true }, baseline: { stage: 'S5', params: { anchorMid: true, maxSpread: 0.1 } }, note: 'history training with contracts quoted wider than 10c skipped (--init checkpoint, trained with --max-spread 0.1) vs the same gated network from cold' },
+  { name: 'liquid-gate', candidate: { stage: 'S5', params: { anchorMid: true, maxSpread: 0.1 } }, baseline: { stage: 'S5', params: { anchorMid: true } }, note: 'contracts quoted wider than 10c neither train nor move the price (cold networks both)' },
+  { name: 'history-trained', candidate: { stage: 'S5', params: { anchorMid: true }, init: true }, baseline: { stage: 'S5', params: { anchorMid: true } }, note: 'the anchored network after history training on Kalshi contracts (--init checkpoint) vs the same network from cold, on recorded days after the history' },
+  { name: 'soft labels', candidate: { stage: 'S5', params: { anchorMid: true, softLabel: { lagSec: 300, etaScale: 0.3 } } }, baseline: { stage: 'S5', params: { anchorMid: true } }, note: 'the anchored readout also learns every 5 minutes from where the mid went (soft label), not only at settlement' },
+  { name: 'vol-normalized readout v2', candidate: { stage: 'S5', params: { anchorMid: true, volNorm: 2, volNormRefH: 24 } }, baseline: { stage: 'S5', params: { anchorMid: true } }, note: 'v1 (k 1, 6 h reference) barely moved the correction; v2 divides by the ratio squared against a 24-hour reference (audit: high-vol slope 0.10, needs ~90% smaller moves)' },
+  { name: 'faster readout', candidate: { stage: 'S5', params: { anchorMid: true, readoutEta: 1e-3 } }, baseline: { stage: 'S5', params: { anchorMid: true } }, note: 'readout learning rate 1e-4 -> 1e-3: on Aug-Sep Kalshi history the anchored readout stayed within 0.01c of the mid' },
+  { name: 'vol-normalized readout', candidate: { stage: 'S5', params: { anchorMid: true, volNorm: 1 } }, baseline: { stage: 'S5', params: { anchorMid: true } }, note: 'anchored readout features divided by the fast/slow activity ratio when it runs hot (audit Oct 31: correction ~8x too big in high vol)' },
   { name: 'anchor band 40-60c', candidate: { stage: 'S5', params: { anchorMid: true, anchorBand: 0.1 } }, baseline: { stage: 'S5', params: { anchorMid: true } }, note: 'the anchored price departs from the mid only at 40-60c (picked on Oct 22-30; judge on later days only)' },
   { name: 'mid-anchored readout', candidate: { stage: 'S5', params: { anchorMid: true } }, baseline: { stage: 'S5' }, note: 'logit p = logit(mid) + w . phi, weights from zero, vs the readout that prices from scratch (SNN plan phase 1)' },
 ];
@@ -64,21 +72,37 @@ const key = (r: SnnRow) => `${r.ticker}@${r.ts}`;
 /** Per-event paired difference f(candidate) - f(baseline) over rows present in both runs. */
 export function pairedEvent(cand: SnnRow[], base: SnnRow[], f: (r: SnnRow) => number, iters = 2000) {
   const b = new Map(base.map((r) => [key(r), r]));
-  const ev = new Map<string, { s: number; n: number; day: string }>();
+  const ev = new Map<string, { s: number; n: number; day: string; ts: number }>();
   for (const r of cand) {
     const o = b.get(key(r));
     if (!o) continue;
-    const e = ev.get(r.eventKey) ?? { s: 0, n: 0, day: r.day };
+    const e = ev.get(r.eventKey) ?? { s: 0, n: 0, day: r.day, ts: r.ts };
     e.s += f(r) - f(o); e.n++;
     ev.set(r.eventKey, e);
   }
-  return dayBlockBootstrap([...ev.values()].map((e) => ({ day: e.day, x: e.s / e.n })), iters);
+  return blockBootstrap([...ev.values()], iters);
 }
 
 const clipMid = (m: number) => Math.min(0.98, Math.max(0.02, m));
 /** The SNN alone against the market on the same rows: per-event mean of brier(p_snn) - brier(mid), day-block CI. */
 export function vsMarket(rows: SnnRow[], iters = 2000) {
   return eventCi(rows, (r) => brier(r.pSnn, r.y) - brier(clipMid(r.mid), r.y), iters);
+}
+
+/** The audit of the SNN's correction to the market within a slice: its mean size (cents); its edge, the mean of
+ *  sign(p_snn - mid) * (y - mid) in cents, which is what one contract bought at the mid in the direction of the
+ *  correction would earn before fees (a share "pointing the right way" says little on a 0/1 outcome, since even the
+ *  true probability points the right way about half the time); and its calibration slope, the least-squares b in
+ *  (y - mid) = b (p_snn - mid): b near 1 = the right size, 0 < b < 1 = it overcorrects (shrinking it by b would
+ *  help), b > 1 = it is too timid, b <= 0 = it points the wrong way. */
+export function correctionStats(rows: SnnRow[]) {
+  let sxy = 0, sxx = 0, size = 0, edge = 0, n = 0, moved = 0;
+  for (const r of rows) {
+    const m = Math.min(0.98, Math.max(0.02, r.mid)), x = r.pSnn - m, e = r.y - m;
+    sxy += x * e; sxx += x * x; size += Math.abs(x); n++;
+    if (x !== 0) { edge += Math.sign(x) * e; moved++; }
+  }
+  return { sizeCents: n ? (100 * size) / n : 0, edgeCents: moved ? (100 * edge) / moved : 0, slope: sxx > 0 ? sxy / sxx : NaN };
 }
 
 /** Where the SNN differs from the market: vsMarket within slices of the rows (column = asset x horizon, the mid's
@@ -92,15 +116,15 @@ export function vsMarketBreakdown(rows: SnnRow[], iters = 1000, minEvents = 150)
     kind: (r) => r.kind,
     vol: (r) => (r.volRatio < 0.8 ? 'vol low' : r.volRatio < 1.25 ? 'vol normal' : 'vol high'),
   };
-  const out: { by: string; slice: string; events: number; mean: number; lo: number; hi: number; verdict: string }[] = [];
+  const out: { by: string; slice: string; events: number; mean: number; lo: number; hi: number; verdict: string; corr: ReturnType<typeof correctionStats> }[] = [];
   for (const [by, f] of Object.entries(slicers)) {
     const groups = new Map<string, SnnRow[]>();
     for (const r of rows) { const k = f(r); const g = groups.get(k); if (g) g.push(r); else groups.set(k, [r]); }
     for (const [slice, g] of [...groups].sort((a, b) => a[0].localeCompare(b[0]))) {
       const events = new Set(g.map((r) => r.eventKey)).size;
-      if (events < minEvents) { out.push({ by, slice, events, mean: NaN, lo: NaN, hi: NaN, verdict: 'too few' }); continue; }
+      if (events < minEvents) { out.push({ by, slice, events, mean: NaN, lo: NaN, hi: NaN, verdict: 'too few', corr: correctionStats(g) }); continue; }
       const c = vsMarket(g, iters);
-      out.push({ by, slice, events, mean: c.mean, lo: c.lo, hi: c.hi, verdict: c.hi < 0 ? 'BEATS the market' : c.lo > 0 ? 'worse' : 'undecided' });
+      out.push({ by, slice, events, mean: c.mean, lo: c.lo, hi: c.hi, verdict: c.hi < 0 ? 'BEATS the market' : c.lo > 0 ? 'worse' : 'undecided', corr: correctionStats(g) });
     }
   }
   return out;
@@ -108,9 +132,16 @@ export function vsMarketBreakdown(rows: SnnRow[], iters = 1000, minEvents = 150)
 
 /** Per-event mean of a per-row quantity, clustered and day-block bootstrapped. */
 export function eventCi(rows: SnnRow[], f: (r: SnnRow) => number, iters = 2000) {
-  const ev = new Map<string, { s: number; n: number; day: string }>();
-  for (const r of rows) { const e = ev.get(r.eventKey) ?? { s: 0, n: 0, day: r.day }; e.s += f(r); e.n++; ev.set(r.eventKey, e); }
-  return dayBlockBootstrap([...ev.values()].map((e) => ({ day: e.day, x: e.s / e.n })), iters);
+  const ev = new Map<string, { s: number; n: number; day: string; ts: number }>();
+  for (const r of rows) { const e = ev.get(r.eventKey) ?? { s: 0, n: 0, day: r.day, ts: r.ts }; e.s += f(r); e.n++; ev.set(r.eventKey, e); }
+  return blockBootstrap([...ev.values()], iters);
+}
+
+/** Day blocks; with a single day, 4-hour blocks instead, so a one-day CI is never NaN (institutional-methods
+ *  review, Nov 5). The hour blocks are narrower than the truth when hours are correlated: read them as a floor. */
+export function blockBootstrap(ev: { s: number; n: number; day: string; ts: number }[], iters: number) {
+  const oneDay = new Set(ev.map((e) => e.day)).size < 2;
+  return dayBlockBootstrap(ev.map((e) => ({ day: oneDay ? `${e.day}T${Math.floor(new Date(e.ts).getUTCHours() / 4)}` : e.day, x: e.s / e.n })), iters);
 }
 
 const conf = (r: SnnRow, useSurprise: boolean) => (useSurprise ? surpriseConfidence(1, r.surprise0, r.surprise) : 1) * (1 - DEFAULT_SNN.govDeltaP * r.G);
@@ -201,12 +232,15 @@ export async function snnAblationMain(argOf: (k: string, d: string) => string = 
   const domain = argOf('domain', 'crypto') as 'crypto' | 'perps';
   const calendar = loadCalendar(path.resolve('params/calendar.json'));
   const cache = new Map<string, { res: SnnReplayResult; sum: RunSummary }>();
-  const run = async (name: string, stage: Stage, flags: Partial<SnnFlags> | undefined, overrides: Partial<SnnParams>) => {
+  const initFile = argOf('init', '');
+  const run = async (name: string, stage: Stage, flags: Partial<SnnFlags> | undefined, overrides: Partial<SnnParams>, init = false) => {
     const params: SnnParams = domainParams(domain, { ...DEFAULT_SNN, ...overrides, flags: { ...stageFlags(stage), ...(flags ?? {}) } });
-    const k = JSON.stringify(params);
+    const k = JSON.stringify(params) + (init ? `|init:${initFile}` : '');
     if (!cache.has(k)) {
       process.stderr.write(`replaying ${name} ${JSON.stringify(overrides)}...\n`);
-      const res = await replaySnn(dir, { params, model, from, to, calendar, domain });
+      if (init && !(initFile && fs.existsSync(initFile))) throw new Error(`${name}: needs --init <history-training checkpoint>`);
+      const checkpoint = init ? JSON.parse(fs.readFileSync(initFile, 'utf8')) : undefined;
+      const res = await replaySnn(dir, { params, model, from, to, calendar, domain, checkpoint, allowParamChange: init || undefined });
       cache.set(k, { res, sum: summarize(name, overrides, res) });
     }
     return cache.get(k)!;
@@ -222,7 +256,7 @@ export async function snnAblationMain(argOf: (k: string, d: string) => string = 
     if (side) {
       if (side !== 'baseline' && side !== 'candidate') throw new Error('--side is baseline or candidate');
       const spec = side === 'baseline' ? m.baseline : m.candidate;
-      const r = await run(side === 'baseline' ? `${m.name} [baseline]` : m.name, spec.stage, spec.flags, { ...(spec.params ?? {}) });
+      const r = await run(side === 'baseline' ? `${m.name} [baseline]` : m.name, spec.stage, spec.flags, { ...(spec.params ?? {}) }, side === 'candidate' && m.candidate.init === true);
       const save = argOf('save', `research/out/snn_ablation_${side}.json`);
       fs.mkdirSync(path.dirname(save), { recursive: true });
       fs.writeFileSync(save, JSON.stringify(savedSide(m.name, side, r.res, r.sum)));
@@ -237,19 +271,117 @@ export async function snnAblationMain(argOf: (k: string, d: string) => string = 
     if (argOf('breakdown', '') === 'true') {
       const bd = vsMarketBreakdown(c.res.rows);
       console.log('        where the candidate stands against the market (Brier SNN - mid per window, day-block 95% CI):');
-      for (const x of bd) console.log(`          ${x.by.padEnd(8)} ${x.slice.padEnd(20)} ${String(x.events).padStart(5)} windows  ${Number.isFinite(x.mean) ? `${x.mean.toFixed(5)} [${x.lo.toFixed(5)}, ${x.hi.toFixed(5)}]` : ''.padEnd(29)}  ${x.verdict}`);
+      console.log('          (correction: mean size in cents, edge in cents per contract traded at the mid in its direction before fees, calibration slope b; b<1 overcorrects, b<=0 wrong way)');
+      for (const x of bd) console.log(`          ${x.by.padEnd(8)} ${x.slice.padEnd(20)} ${String(x.events).padStart(5)} windows  ${Number.isFinite(x.mean) ? `${x.mean.toFixed(5)} [${x.lo.toFixed(5)}, ${x.hi.toFixed(5)}]` : ''.padEnd(29)}  ${x.verdict.padEnd(16)}  size ${x.corr.sizeCents.toFixed(2)}c  edge ${x.corr.edgeCents.toFixed(2)}c  b ${x.corr.slope.toFixed(2)}`);
       v.extra = { ...(v.extra ?? {}), vsMarketBreakdown: bd };
+    }
+    // --gain: the candidate priced through the learned correction gain (bot/snn/correctionGain.ts), replayed causally
+    // over the saved rows. The gain does not feed back into the SNN's learning, so this is exactly what it would price.
+    if (argOf('gain', '') === 'true') {
+      // A small pre-registered grid (prior strength in windows x forgetting per window), all printed: picking the best
+      // here is fitting to these days, so the pick is only confirmed on days recorded after them.
+      const f5 = (x: { mean: number; lo: number; hi: number }) => `${x.mean.toFixed(5)} [${x.lo.toFixed(5)}, ${x.hi.toFixed(5)}]`;
+      for (const prior of [30, 100, 300]) for (const forget of [0.998, 0.999, 0.9997]) {
+        const vg = vsMarket(replayGain(c.res.rows, { prior, forget }));
+        console.log(`        correction gain grid: prior ${String(prior).padStart(3)} windows, forget ${forget}: vs market ${f5(vg)}`);
+      }
+      for (const prior of [100, 400]) for (const forget of [0.9995, 0.9999]) {
+        const vg = vsMarket(replayGain(c.res.rows, { prior, forget, perRow: true }));
+        console.log(`        correction gain grid, per row: prior ${String(prior).padStart(3)}, forget ${forget}: vs market ${f5(vg)}`);
+      }
+      for (const k of [0.5, 1, 2]) {
+        const vg = vsMarket(c.res.rows.map((r) => ({ ...r, pSnn: volScaled(r.mid, r.pSnn, r.volRatio, k) })));
+        console.log(`        fixed vol sizing (correction / volRatio^${k} above normal vol): vs market ${f5(vg)}`);
+      }
+      // Conditional correction (dynamics rule): full SNN correction only inside a mid band and vol cap, scaled by
+      // `outside` elsewhere. Tested under its own condition: rows inside vs outside the condition are judged apart,
+      // and the band is picked on the first half of the days and confirmed on the second (adversary: held-out days).
+      {
+        const days = [...new Set(c.res.rows.map((r) => new Date(r.ts).toISOString().slice(0, 10)))].sort();
+        const cut = days[Math.floor(days.length / 2)] ?? '';
+        const early = c.res.rows.filter((r) => new Date(r.ts).toISOString().slice(0, 10) < cut);
+        const late = c.res.rows.filter((r) => new Date(r.ts).toISOString().slice(0, 10) >= cut);
+        const condGrid: CondOpts[] = [];
+        for (const [midLo, midHi] of [[0.4, 0.6], [0.35, 0.65], [0.3, 0.7]]) for (const volMax of [1, 1.25, Infinity]) for (const outside of [0, 0.5]) condGrid.push({ midLo, midHi, volMax, outside });
+        const cc = (rows: typeof c.res.rows, o: CondOpts) => rows.map((r) => ({ ...r, pSnn: conditionalCorrection(r.mid, r.pSnn, r.volRatio, o) }));
+        const tag = (o: CondOpts) => `mid ${o.midLo}-${o.midHi}, vol<=${o.volMax}, outside x${o.outside}`;
+        let pick: { o: CondOpts; mean: number } | null = null;
+        for (const o of condGrid) {
+          const all = vsMarket(cc(c.res.rows, o));
+          const inside = c.res.rows.filter((r) => inCondition(r.mid, r.volRatio, o)), out2 = c.res.rows.filter((r) => !inCondition(r.mid, r.volRatio, o));
+          const vin = inside.length ? vsMarket(inside) : null, vout = out2.length ? vsMarket(out2) : null;
+          console.log(`        conditional correction ${tag(o)}: vs market ${f5(all)}; SNN inside ${vin ? f5(vin) : '-'} (${inside.length} rows), outside ${vout ? f5(vout) : '-'} (${out2.length} rows)`);
+          if (early.length) { const e = vsMarket(cc(early, o)); if (!pick || e.mean < pick.mean) pick = { o, mean: e.mean }; }
+        }
+        // Control (adversary): the same shrink with no band at all. If it does as well, the band is not the condition;
+        // the SNN's correction is simply too large everywhere.
+        for (const k of [0.25, 0.5, 0.75]) {
+          const u = vsMarket(c.res.rows.map((r) => ({ ...r, pSnn: r.mid + k * (r.pSnn - r.mid) })));
+          const ul = late.length ? vsMarket(late.map((r) => ({ ...r, pSnn: r.mid + k * (r.pSnn - r.mid) }))) : null;
+          console.log(`        CONTROL uniform shrink x${k} (no band): vs market ${f5(u)}${ul ? `; days >= ${cut}: ${f5(ul)}` : ''}`);
+        }
+        // DYNAMICS (Steven, Nov 2): the shrink conditioned on a regime. Per slice (vol regime, asset x horizon, mid
+        // distance, UTC hour block) the factor k is picked on the early days, then applied on the later days and judged
+        // against the uniform x0.5. Adversary: the same per-slice picks with the slice labels shuffled across events.
+        if (early.length && late.length) {
+          const KS = [0, 0.25, 0.5, 0.75, 1];
+          const shr = (r: (typeof late)[number], k: number) => ({ ...r, pSnn: r.mid + k * (r.pSnn - r.mid) });
+          const sse = (rows: typeof late) => rows.reduce((a, r) => a + (r.pSnn - r.y) ** 2, 0);
+          const slicers: Record<string, (r: (typeof late)[number]) => string> = {
+            vol: (r) => (r.volRatio < 0.8 ? 'low' : r.volRatio < 1.25 ? 'normal' : 'high'),
+            column: (r) => r.column,
+            mid: (r) => { const d = Math.abs(r.mid - 0.5); return d < 0.1 ? '40-60' : d < 0.25 ? '25-40' : d < 0.4 ? '10-25' : 'edge'; },
+            hour: (r) => String(Math.floor(new Date(r.ts).getUTCHours() / 4) * 4),
+          };
+          const uLate = vsMarket(late.map((r) => shr(r, 0.5)));
+          for (const [name, f] of Object.entries(slicers)) {
+            const pickK = (rows: typeof early, lab: (r: (typeof early)[number]) => string) => {
+              const g = new Map<string, typeof early>();
+              for (const r of rows) { const k = lab(r); const a = g.get(k); if (a) a.push(r); else g.set(k, [r]); }
+              const ks = new Map<string, number>();
+              for (const [sl, rs] of g) ks.set(sl, rs.length < 500 ? 0.5 : KS.reduce((b, k) => (sse(rs.map((r) => shr(r, k))) < sse(rs.map((r) => shr(r, b))) ? k : b), 0.5));
+              return ks;
+            };
+            const ks = pickK(early, f);
+            const lc = vsMarket(late.map((r) => shr(r, ks.get(f(r)) ?? 0.5)));
+            // Placebo: each event gets a random slice label (same label mix), picks made and applied the same way.
+            const labs = [...ks.keys()], ev = new Map<string, string>();
+            let seed = 7; const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+            const plab = (r: (typeof late)[number]) => { let l = ev.get(r.eventKey); if (!l) ev.set(r.eventKey, (l = labs[Math.floor(rnd() * labs.length)] ?? '')); return l; };
+            const pks = pickK(early, plab);
+            const pc = vsMarket(late.map((r) => shr(r, pks.get(plab(r)) ?? 0.5)));
+            const kTxt = [...ks].map(([a, b]) => `${a} x${b}`).join(', ');
+            console.log(`        REGIME SHRINK by ${name} (${kTxt}): days >= ${cut} vs market ${f5(lc)} | uniform x0.5 ${f5(uLate)} | placebo labels ${f5(pc)}; ${lc.mean < uLate.mean && lc.mean < pc.mean ? 'beats uniform and placebo' : 'no gain over uniform/placebo'}`);
+          }
+        }
+        if (pick && late.length) {
+          const l = vsMarket(cc(late, pick.o)), lr = vsMarket(late);
+          console.log(`        conditional correction HELD-OUT: picked on days < ${cut} (${tag(pick.o)}), on days >= ${cut}: vs market ${f5(l)} (SNN as is ${f5(lr)}); ${l.hi < 0 ? 'BEATS the market' : l.lo > 0 ? 'worse' : 'undecided'}`);
+          v.extra = { ...(v.extra ?? {}), conditionalCorrection: { pick: pick.o, cut, heldOut: l, heldOutRaw: lr } };
+        }
+      }
+      const o: GainOpts = { prior: Number(argOf('gainPrior', '100')), forget: Number(argOf('gainForget', '0.999')), perRow: argOf('gainPerRow', '') === 'true' };
+      const gained = replayGain(c.res.rows, o), raw = vsMarket(c.res.rows), vm = vsMarket(gained);
+      const f = (x: { mean: number; lo: number; hi: number }) => `${x.mean.toFixed(5)} [${x.lo.toFixed(5)}, ${x.hi.toFixed(5)}]`;
+      console.log(`        correction gain (prior ${o.prior} windows, forget ${o.forget}): vs market ${f(vm)} (SNN as is ${f(raw)}); ${vm.hi < 0 ? 'BEATS the market' : vm.lo > 0 ? 'worse' : 'undecided'}`);
+      const before = new Map(vsMarketBreakdown(c.res.rows).map((x) => [`${x.by}|${x.slice}`, x]));
+      for (const x of vsMarketBreakdown(gained)) {
+        const b0 = before.get(`${x.by}|${x.slice}`);
+        console.log(`          ${x.by.padEnd(8)} ${x.slice.padEnd(20)} ${String(x.events).padStart(5)} windows  ${Number.isFinite(x.mean) ? `${x.mean.toFixed(5)} [${x.lo.toFixed(5)}, ${x.hi.toFixed(5)}]` : ''.padEnd(29)}  ${x.verdict.padEnd(16)}  was ${b0 && Number.isFinite(b0.mean) ? b0.mean.toFixed(5) : '-'}  size ${x.corr.sizeCents.toFixed(2)}c  edge ${x.corr.edgeCents.toFixed(2)}c  b ${x.corr.slope.toFixed(2)}`);
+      }
+      v.extra = { ...(v.extra ?? {}), correctionGain: { opts: o, vsMarket: vm, raw } };
     }
     writeVerdicts(out, { domain, recordings: dir, from: from ?? null, to: to ?? null }, [v]);
     return [v];
   }
   for (const m of MECHANISMS) {
     if (only && !m.name.startsWith(only)) continue;
+    if (m.candidate.init && !initFile) { console.log(`skip ${m.name}: needs --init <history-training checkpoint>`); continue; }
     const configs = grid[m.name] ?? [{}];
     if (configs.length > MAX_GRID) throw new Error(`${m.name}: ${configs.length} configs exceed the pre-registered cap of ${MAX_GRID}`);
     const base = await run(`${m.name} [baseline]`, m.baseline.stage, m.baseline.flags, { ...(m.baseline.params ?? {}) });
     const tried: { res: SnnReplayResult; sum: RunSummary }[] = [];
-    for (const ov of configs) tried.push(await run(m.name, m.candidate.stage, m.candidate.flags, { ...(m.candidate.params ?? {}), ...ov }));
+    for (const ov of configs) tried.push(await run(m.name, m.candidate.stage, m.candidate.flags, { ...(m.candidate.params ?? {}), ...ov }, m.candidate.init === true));
     const best = tried.sort((a, b) => a.sum.brier - b.sum.brier)[0];
     const v = judge(m, best.res, base.res, best.sum, base.sum, tried.map((t) => t.sum));
     verdicts.push(v);

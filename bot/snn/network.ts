@@ -34,6 +34,8 @@ export interface ContractQuery {
   tauSec: number;
   /** Contract life in seconds (for the life fraction). */
   lifeSec: number;
+  /** Quoted spread (ask - bid, dollars), when known: params.maxSpread skips wider contracts. */
+  spread?: number;
   /** Settlement event (asset + close time): unit of evidence and isotonic group. */
   eventKey: string;
   /** Store a tag for the settlement label (scanned while tradable). */
@@ -129,6 +131,10 @@ export class SnnNetwork {
   readonly version: string;
   readonly columns = new Map<string, Column>();
   readonly readouts = new Map<string, Readout>();
+  /** volNorm: per-asset slow average of the contracts' sigma (time-weighted, 6 h), the reference the ratio is read against. */
+  private sigmaRef = new Map<string, { v: number; ts: number }>();
+  /** softLabel: per contract threshold, the last price scored and its features, waiting for the mid lagSec later. */
+  private softPending = new Map<string, { ts: number; phi: Float32Array; p: number; column: string }>();
   /** Direction heads (one per column): trained continuously on realised price moves, traded or not. */
   readonly dirReadouts = new Map<string, Readout>();
   readonly dirTags = new Map<string, DirTag[]>();
@@ -466,7 +472,7 @@ export class SnnNetwork {
       for (const [role, K] of roles) {
         if (!(K && K > 0)) continue;
         const d = Math.log(q.spot / K) / (q.sigma * Math.sqrt(q.tauSec));
-        const phi = c.features(d, life, this.extras(c));
+        const phi = this.volNormed(c, c.features(d, life, this.extras(c)), this.sigmaRatio(c.asset, q.sigma, now));
         ths.push({ q, role, K, p: sigmoid(this.anchorLogit(q, role, d) + ro.logit(phi)), phi });
       }
     }
@@ -497,18 +503,46 @@ export class SnnNetwork {
       // anchorBand: outside the band around 50 cents the network prices at the market.
       const band = this.p.anchorMid ? this.p.anchorBand : undefined;
       if (band !== undefined && q.mid !== undefined && Number.isFinite(q.mid) && Math.abs(q.mid - 0.5) > band) s.p = Math.min(1 - ANCHOR_CLIP, Math.max(ANCHOR_CLIP, q.mid));
+      if (this.tooWide(q) && q.mid !== undefined && Number.isFinite(q.mid)) s.p = Math.min(1 - ANCHOR_CLIP, Math.max(ANCHOR_CLIP, q.mid));
     }
     // Per-contract tags: the readout's own (unprojected) prediction, so the delta rule is the exact
     // log-loss gradient; at most one tag per contract per tagEverySec.
     for (const t of ths) {
-      if (!t.q.tag) continue;
+      if (!t.q.tag || this.tooWide(t.q)) continue;
       const k = `${t.q.ticker}:${t.role}`;
       if (now - (this.lastTag.get(k) ?? -Infinity) < this.p.tagEverySec * 1000) continue;
       this.lastTag.set(k, now);
       this.readouts.get(t.q.column)!.tag(t.q.ticker, t.q.kind, t.role, t.phi, t.p, now);
     }
     if (this.lastTag.size > 4 * this.p.maxTaggedContracts) for (const [k, ts] of this.lastTag) if (now - ts > 6 * 3_600_000) this.lastTag.delete(k);
+    this.softLearn(ths, now);
     return [...out.values()];
+  }
+
+  /** params.maxSpread (anchored only): the contract's quote is too wide to be a price, so it neither trains nor moves. */
+  private tooWide(q: ContractQuery): boolean {
+    const m = this.p.maxSpread;
+    return !!this.p.anchorMid && m !== undefined && m > 0 && q.spread !== undefined && Number.isFinite(q.spread) && q.spread > m;
+  }
+
+  /** softLabel: each contract threshold's earlier price learns from the market's mid lagSec later (see the param). */
+  private softLearn(ths: { q: ContractQuery; role: ThresholdRole; p: number; phi: Float64Array }[], now: number): void {
+    const sl = this.p.softLabel;
+    if (!sl || !this.p.anchorMid || !(sl.lagSec > 0) || !(sl.etaScale > 0)) return;
+    for (const t of ths) {
+      const mid = t.q.mid;
+      if (!t.q.tag || this.tooWide(t.q) || t.q.kind === 'between' || mid === undefined || !Number.isFinite(mid) || mid <= 0 || mid >= 1) continue;
+      const k = `${t.q.ticker}:${t.role}`, prev = this.softPending.get(k);
+      if (prev && now - prev.ts < sl.lagSec * 1000) continue;
+      if (prev && !this.learningFrozen) {
+        const c = this.columns.get(prev.column), ro = this.readouts.get(prev.column);
+        // The market-implied exceedance of this threshold: the mid for strike roles, 1 - mid for a 'less' cap.
+        const target = Math.min(1 - ANCHOR_CLIP, Math.max(ANCHOR_CLIP, t.q.kind === 'less' ? 1 - mid : mid));
+        if (c && ro) ro.soft(prev.phi, prev.p, target, this.p.readoutEta * sl.etaScale * (1 - this.p.govDelta * c.G));
+      }
+      this.softPending.set(k, { ts: now, phi: Float32Array.from(t.phi), p: t.p, column: t.q.column });
+    }
+    if (this.softPending.size > 4 * this.p.maxTaggedContracts) for (const [k, v] of this.softPending) if (now - v.ts > 2 * 3_600_000) this.softPending.delete(k);
   }
 
   /** Settlement: tag lookup -> readout delta rule (scaled by the column governor, off while frozen). */
@@ -655,6 +689,30 @@ export class SnnNetwork {
    *  query without a usable mid falls back to the crude fair value sigma(priorSlope x d) the un-anchored readout starts
    *  from. Without the flag it is 0 (the weights carry the prior). Tags store the anchored p, so the settlement delta
    *  stays the exact log-loss gradient. */
+  /** volNorm: the contract's volatility against its asset's slow average (the measure the Oct 31 audit sliced by:
+   *  sigma over a 6-hour time-weighted average of sigma). The average is updated as contracts are scored. */
+  sigmaRatio(asset: string, sigma: number, now: number): number {
+    if (!this.p.volNorm || !(sigma > 0) || !Number.isFinite(sigma)) return 1;
+    const r = this.sigmaRef.get(asset);
+    if (!r) { this.sigmaRef.set(asset, { v: sigma, ts: now }); return 1; }
+    const ratio = sigma / r.v;
+    const a = 1 - Math.exp(-Math.max(0, now - r.ts) / ((this.p.volNormRefH ?? 6) * 3_600_000));
+    r.v += a * (sigma - r.v); r.ts = Math.max(r.ts, now);
+    return ratio;
+  }
+
+  /** volNorm: the contract features divided by ratio^k when its volatility runs above its slow average (ratio clipped
+   *  to [1, 5]), so the readout's correction does not grow with volatility. Off (absent) = the features unchanged. */
+  volNormed(_c: Column, phi: Float64Array, ratio: number): Float64Array {
+    const k = this.p.volNorm;
+    if (!k || !Number.isFinite(ratio)) return phi;
+    const r = Math.min(5, Math.max(1, ratio));
+    if (r === 1) return phi;
+    const s = Math.pow(r, -k);
+    for (let i = 0; i < phi.length; i++) phi[i] *= s;
+    return phi;
+  }
+
   anchorLogit(q: Pick<ContractQuery, 'kind' | 'mid'>, role: ThresholdRole, d: number): number {
     if (!this.p.anchorMid) return 0;
     const mid = q.mid;

@@ -31,7 +31,9 @@ import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, RiskContext, RiskGateway } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
-import { decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
+import { QuoteLagHold } from './strategy/quoteLagHold';
+import { snnPrice, VolRef } from './snn/priceAdjust';
+import { applyFvGate, decide, loserNoEntry, trainingCount, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
@@ -868,9 +870,13 @@ export class Engine {
 
   private readonly trainTs: number[] = [];
   private readonly trainTicker = new Map<string, number>();
-  /** Paper training-trade budget: PAPER_TRAINING_TRADES_PER_HOUR, spread evenly (no bursts), one per contract. */
+  /** QUOTE_LAG_HOLD (cfg.strategy.loserExits.quoteLagHold): per-market fair/mid history and running holds. */
+  private quoteLagHold?: QuoteLagHold;
+  /** SNN_PRICE's per-asset one-day volatility reference. */
+  private snnVolRef = new VolRef();
+  /** Training-trade budget: TRAINING_TRADES_PER_HOUR, spread evenly (no bursts), one per contract. */
   private trainBudget(now: number, ticker: string): boolean {
-    const perHour = this.d.cfg.strategy.paperTrainTrades;
+    const perHour = this.d.cfg.strategy.trainTrades;
     if (!(perHour > 0) || this.trainTicker.has(ticker)) return false;
     while (this.trainTs.length && this.trainTs[0] < now - 3_600_000) this.trainTs.shift();
     const last = this.trainTs[this.trainTs.length - 1] ?? 0;
@@ -1617,9 +1623,10 @@ export class Engine {
       const spot = idx?.fresh(now, cfg.risk.maxIndexAgeMs), vol = idx?.vol();
       if (!terms || !spot || !vol) continue;
       const tauSec = (m.closeTime - now) / 1000;
+      const bk = md.books.get(m.ticker), bb = bk?.bestBid()?.price, ba = bk?.bestAsk()?.price;
       cq.push({
         ticker: m.ticker, column: snnColumn(m), kind: terms.kind, strike: terms.strike, cap: terms.cap, spot: spot.value, sigma: vol.sigmaPerSqrtSec, mid: md.books.get(m.ticker)?.mid(),
-        tauSec, lifeSec: (m.closeTime - m.openTime) / 1000, eventKey: `${m.asset}:${m.closeTime}`, tag: tauSec > cfg.risk.noEntryBeforeCloseSec,
+        tauSec, lifeSec: (m.closeTime - m.openTime) / 1000, spread: bb !== undefined && ba !== undefined ? ba - bb : undefined, eventKey: `${m.asset}:${m.closeTime}`, tag: tauSec > cfg.risk.noEntryBeforeCloseSec,
       });
     }
     const ti: ColumnInput[] = [], tq: ContractQuery[] = [];
@@ -1966,6 +1973,7 @@ export class Engine {
         this.lastDecisionAudit.delete(t);
         this.lastFeatureAudit.delete(t);
         this.trainTicker.delete(t);
+        this.quoteLagHold?.forget(t);
       }
     }
     for (const [k, ts] of this.lastRejectAudit) if (ts < cutoff) this.lastRejectAudit.delete(k);
@@ -2081,7 +2089,12 @@ export class Engine {
     const blended = this.snnBlend(m, st, pModel, tauSec > R.noEntryBeforeCloseSec, now);
     // The SNN's trial blend of a price: (1 - a) p + a p_snn.
     const snnTrial = (p: number) => (blended.a !== undefined && blended.pSnn !== undefined ? (1 - blended.a) * p + blended.a * blended.pSnn : undefined);
-    const pBase = trialOn('snn') && blended.a !== undefined ? snnTrial(pModel)! : blended.p;
+    const pBase0 = trialOn('snn') && blended.a !== undefined ? snnTrial(pModel)! : blended.p;
+    // SNN_PRICE (bot/snn/priceAdjust.ts): the SNN's contract call (the same one the replay reads from the log), pulled
+    // toward the mid by volatility regime and gated by contract kind.
+    const snnPx = cfg.snn.price ? snnPrice(pBase0, this.snnContext(m.asset, m.ticker)?.pContract, mid, this.snnVolRef.ratio(m.asset, vol.sigmaPerSqrtSec, now), terms.kind, cfg.snn.price) : undefined;
+    const pBase = snnPx ? snnPx.p : pBase0;
+    if (snnPx && snnPx.p !== pBase0) st.snnShadow = `SNN_PRICE: ${snnPx.why}`;
     const why = explain(model, features, fv.pYes);
     st.modelShift = why.shiftFromFairValue;
     st.drivers = why.drivers;
@@ -2230,7 +2243,7 @@ export class Engine {
     // budget sizes the backtester's orders (bot/sizing/orderBudget.ts).
     const budget = orderBudget({ bankroll, orderFrac: tier.orderFrac, sizeMult, riskScale: kellyScale, fCapUsd, paperOrderUsd: fixedUsd, bandUsd: band, maxContractsPerOrder: R.maxContractsPerOrder });
     const view: MarketView = {
-      ticker: m.ticker, pYes, bestBid: bid, bestAsk: ask, position: st.position, bankroll,
+      ticker: m.ticker, pYes, pFair: fv.pYes, bestBid: bid, bestAsk: ask, position: st.position, bankroll,
       maxOrderRiskUsd: budget.maxOrderRiskUsd, maxContracts: budget.maxContracts, minSidePrice: R.minSidePrice,
       ...(budget.fixedOrderUsd ? { fixedOrderUsd: budget.fixedOrderUsd } : {}),
       ...(budget.band ? { orderBandUsd: budget.band } : {}),
@@ -2246,7 +2259,7 @@ export class Engine {
       profitPeakSidePrice: this.profitPeaks.update(m.ticker, st.position, st.position > 0 ? bid.price : st.position < 0 ? Math.round((1 - ask.price) * 1e4) / 1e4 : undefined),
       ...(this.d.takeProfitBench?.benched ? { takeProfitBenched: this.d.takeProfitBench.benched } : {}),
       entryWindowOpen, exitWindowOpen: tauSec > S.noExitBeforeCloseSec,
-      settleShare: ((w) => w !== undefined && tauSec <= S.noExitBeforeCloseFrac * w)(shareWindowSec(m.openTime, m.closeTime, S.shareWindowMaxSec)),
+      ...((w) => ({ settleShare: w !== undefined && tauSec <= S.noExitBeforeCloseFrac * w, ...(w !== undefined ? { windowSec: w } : {}) }))(shareWindowSec(m.openTime, m.closeTime, S.shareWindowMaxSec)),
     };
     // Exit policy. confluence_ratchet: fair-value exit normally; "hunt" mode (liquidity ratchet
     // manages the exit, nothing else may reduce the position) only while the contract has beaten
@@ -2334,6 +2347,9 @@ export class Engine {
     // A quota snipe liquidates the position: the hunt's stop order would only double it. The decision is audited with the clock.
     const snipe = plan.place.find((p) => p.purpose === 'exit' && p.why.startsWith('quota snipe'));
     if (snipe) { huntPlan = undefined; this.d.audit.write('pacer', { event: 'snipe', ticker: m.ticker, why: snipe.why, count: snipe.count, price: snipe.price, ...this.pacer.status(now) }); }
+    // A loser exit (LOSER_CUT / LOSER_WINDOW_CUT) sells the position at the bid in place of the hunt's own sale.
+    const loserSale = plan.place.find((p) => p.purpose === 'exit' && p.why.startsWith('loser'));
+    if (loserSale) { huntPlan = undefined; this.d.audit.write('loser_exit', { ticker: m.ticker, why: loserSale.why, count: loserSale.count, price: loserSale.price }); }
     // The MLP decides whether each entry is worth taking (take/skip head, once validated).
     if (S.takeGate === 'validated') applyTakeGate(plan, model.params.take, { pYes, features, tauSec, bid: bid.price, ask: ask.price, pStd: pred.std, margin: S.takeMargin, fees: md.feesFor(m.ticker) });
     // The TA rework's contrarian veto (job 6): skip entries the order flow, confluence or a busy tape already chased.
@@ -2404,12 +2420,12 @@ export class Engine {
         plan.notes.push(`exploration entry (paper, p=${S.exploreRate})`);
       }
     }
-    // Paper training trades: when still nothing is entered, take 1 contract on the side the model favours
-    // (taker, at the touch) a few times an hour, spread over time and one per contract. These guarantee a
-    // steady stream of (simulated) trades to watch and learn from; tagged 'train' so their results can be
-    // separated from edge-qualified entries. Live mode never does this.
+    // Training trades (TRAINING_TRADES_PER_HOUR; paper and live alike since Steven's pick on Oct 31): when still nothing
+    // is entered, buy the side the model favours (taker, at the touch) a few times an hour, spread over time and one per
+    // contract, sized at the order band's minimum. They keep a steady stream of trades to learn from; tagged 'train:' so
+    // their results can be separated from edge-qualified entries, and screened by the fair value gate below like any entry.
     // A resting maker quote does not count as entering: quotes far from the touch rarely fill.
-    if (cfg.mode === 'paper' && reason && entryWindowOpen && st.position === 0 && !plan.place.some((p) => p.purpose === 'entry') && this.trainBudget(now, m.ticker)) {
+    if (reason && entryWindowOpen && st.position === 0 && !plan.place.some((p) => p.purpose === 'entry') && this.trainBudget(now, m.ticker)) {
       const q = st.q ?? pYes;
       const buyYes = q >= mid;
       const cost = buyYes ? ask.price : Math.round((1 - bid.price) * 10000) / 10000;
@@ -2417,11 +2433,21 @@ export class Engine {
         this.trainTs.push(now);
         this.trainTicker.set(m.ticker, m.closeTime);
         const edge = buyYes ? q - ask.price : (1 - q) - cost;
-        plan.place.push({ side: buyYes ? 'bid' : 'ask', price: buyYes ? ask.price : bid.price, count: 1, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge,
-          why: `train (paper): ${buyYes ? 'YES' : 'NO'} at ${cost.toFixed(2)}, model q ${q.toFixed(3)} vs mid ${mid.toFixed(3)}` });
-        plan.notes.push('training trade (paper, 1 contract)');
+        const count = trainingCount(cost, view);
+        plan.place.push({ side: buyYes ? 'bid' : 'ask', price: buyYes ? ask.price : bid.price, count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', edge,
+          why: `train: ${buyYes ? 'YES' : 'NO'} at ${cost.toFixed(2)}, model q ${q.toFixed(3)} vs mid ${mid.toFixed(3)}` });
+        plan.notes.push(`training trade (${count} contract${count === 1 ? '' : 's'})`);
       }
     }
+    // QUOTE_LAG_HOLD on the finished plan: hold entries on the side a lagging quote is about to move toward.
+    const qlh = S.loserExits?.quoteLagHold;
+    if (qlh) {
+      if (!this.quoteLagHold || this.quoteLagHold.cfg !== qlh) this.quoteLagHold = new QuoteLagHold(qlh);
+      this.quoteLagHold.record(m.ticker, now, fv.pYes, mid);
+      this.quoteLagHold.apply(plan, m.ticker, now, view.position, { bid: view.restingBid, ask: view.restingAsk });
+    }
+    // FV_ENTRY_GATE on the finished plan: the fill model's crosses and paper's training trades open positions too.
+    applyFvGate(plan, fv.pYes, view.position, view.fees, S, loserNoEntry(view, S));
     if (this.fillLog) for (const p of plan.place) if (isMakerEntry(p)) this.fillX.set(p, fillInputs(p, fillCtx));
     if (fixedUsd > 0) plan.notes.push(`paper size: ${this.paperSizing()}; the tier, break-even scale and optimal f size live`);
     else if (band) plan.notes.push(`order band: $${band.min}-$${band.max} an order (ORDER_USD_MIN/MAX), the sized stake clamped into it; the tier, loss scale and optimal f do not size it`);
@@ -2605,8 +2631,8 @@ export class Engine {
     if (snapped === undefined || !(snapped > 0 && snapped < 1)) return;
     if (snapped !== p.price) p = { ...p, price: snapped };
     // Tennis orders are rules-based (no model probability to size an edge from): budgeted separately.
-    // Paper training trades are 1 contract with no edge requirement (they exist to produce trades).
-    const training = cfg.mode === 'paper' && p.why.startsWith('train (paper)');
+    // Training trades have no edge requirement (they exist to produce trades); the order band sizes them.
+    const training = p.why.startsWith('train:');
     const pk = tennis || training || this.paperOrderUsd() > 0 || this.orderBandUsd() ? undefined : this.portfolioCap(m, p, pYes, now);
     if (pk && pk.contracts < p.count) {
       this.d.audit.write('decision', { decisionId, ticker: m.ticker, event: 'portfolio_kelly_cap', from: p.count, to: pk.contracts, fStar: +pk.fStar.toFixed(4), edgePerDay: +pk.edgePerDay.toFixed(4) });
@@ -2702,8 +2728,8 @@ export class Engine {
   }
 
   /** Paper: why live would not have sent this order under its own rules: an entry while the model has not passed
-   *  validation and the Kalshi probation is benched (live's risk gateway rejects it), a paper training or exploration
-   *  trade (live never makes them), or a ratchet stop live would not run (hunt mode not validated, probation benched).
+   *  validation and the Kalshi probation is benched (live's risk gateway rejects it), a paper exploration trade (live
+   *  never makes them; training trades run in both since Oct 31), or a ratchet stop live would not run (hunt mode not validated, probation benched).
    *  The owner's choice on Oct 23: paper keeps trading, and the P&L report shows a live-equivalent P&L without these. */
   private liveWouldBlock(p: OrderPlan): string[] {
     const { cfg, model } = this.d;
@@ -2712,7 +2738,6 @@ export class Engine {
     }
     const out: string[] = [];
     if (!cfg.liveAllowUnvalidated && !gatePasses('kalshi', false) && model.liveBlockers().length) out.push('model not validated, probation benched');
-    if (p.why.startsWith('train (paper)')) out.push('paper training trade');
     if (p.why.startsWith('explore (')) out.push('paper exploration');
     return out;
   }
