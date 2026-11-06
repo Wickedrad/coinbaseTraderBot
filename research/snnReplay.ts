@@ -4,6 +4,7 @@
 // Evaluation is prequential walk-forward with strict timestamps: every prediction is recorded
 // before its own label (or any later label) can touch the weights.
 
+import type { GapTape } from './gapTape';
 import fs from 'fs';
 import path from 'path';
 import { assetFeatureMap, computeFeatureMap, type MacroEvent } from '../bot/model/featureEngine';
@@ -27,6 +28,8 @@ export interface SnnRow {
   ticker: string; eventKey: string; column: string; ts: number; day: string; kind: string;
   pModel: number; pSnn: number; mid: number; y: 0 | 1;
   surprise: number; surprise0: number; G: number; volRatio: number;
+  /** Quoted spread, the fair-value gap (fair value minus mid, cents; the current one, whatever the SNN was fed) and the spot. */
+  spread?: number; fvGap?: number; spot?: number;
 }
 
 /** Brier sums over the graded rows (p_snn and p_model against the label), added in row order. */
@@ -52,6 +55,8 @@ export interface SnnReplayResult {
 }
 
 export interface SnnReplayOpts {
+  /** SNN-H1: the gap the lead channel fv_gap_c is fed, shifted in time (research/gapTape.ts). Unset: the current gap. */
+  gapTape?: GapTape;
   /** Assets left out entirely (no columns, no contracts). Default: SNN_SKIP_ASSETS (comma list); Steven, Nov 5: no DOGE for now. */
   skipAssets?: string[];
   params: SnnParams;
@@ -282,6 +287,7 @@ export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnRepla
     if (st.now < nextSec) continue;
     const T = Math.floor(st.now / 1000) * 1000;
     nextSec = T + 1000;
+    if (o.gapTape && T % 3_600_000 === 0) o.gapTape.prune(T);
     // Settle closed markets (90 s after close, when the official average is fully observed). Their book and trade
     // tracker go with them: over weeks of replay they would pile up (thousands of contracts a day).
     for (const m of [...st.markets.values()]) {
@@ -314,7 +320,9 @@ export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnRepla
       for (const h of horizons) {
         const key = cryptoColumnKey(asset, h);
         const m = contracts ? atm.get(key) : undefined, x = m ? priced.get(m.ticker) : undefined;
-        const contract = m && x ? { dAtm: x.fv.d2, tauFrac: x.tauSec / Math.max(1, (m.closeTime - m.openTime) / 1000), mid: x.mid, spread: x.ask.price - x.bid.price, imbalance: x.book.imbalance(3) } : undefined;
+        const gapNow = m && x ? (x.fv.pYes - x.mid) * 100 : undefined;
+        const fvGap = o.gapTape ? o.gapTape.feed(key, T, gapNow) : gapNow;
+        const contract = m && x ? { dAtm: x.fv.d2, tauFrac: x.tauSec / Math.max(1, (m.closeTime - m.openTime) / 1000), mid: x.mid, spread: x.ask.price - x.bid.price, imbalance: x.book.imbalance(3), fvGap } : undefined;
         inputs.push({ key, asset, price: px, mid: contract?.mid, values: cryptoValues(h as CryptoHorizon, ac.f, contract) });
       }
     }
@@ -361,7 +369,7 @@ export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnRepla
       const ref = volRef.get(m.asset) ?? x.vol.sigmaPerSqrtSec;
       volRef.set(m.asset, ref + (1 - Math.exp(-1 / 1440)) * (x.vol.sigmaPerSqrtSec - ref));
       const arr = pending.get(s.ticker) ?? [];
-      arr.push({ ticker: s.ticker, eventKey: s.eventKey, column: s.column, ts: T, day, kind: x.terms.kind, pModel, pSnn: s.p, mid: x.mid, surprise: s.surprise, surprise0: s.surprise0, G: s.G, volRatio: x.vol.sigmaPerSqrtSec / ref });
+      arr.push({ ticker: s.ticker, eventKey: s.eventKey, column: s.column, ts: T, day, kind: x.terms.kind, pModel, pSnn: s.p, mid: x.mid, surprise: s.surprise, surprise0: s.surprise0, G: s.G, volRatio: x.vol.sigmaPerSqrtSec / ref, spread: x.ask.price - x.bid.price, fvGap: (x.fv.pYes - x.mid) * 100, spot: x.spot.value });
       pending.set(s.ticker, arr);
       if (!o.lean) {
         edgeByCol.set(s.column, [...(edgeByCol.get(s.column) ?? []), Math.abs(s.p - x.mid)]);

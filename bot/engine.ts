@@ -401,7 +401,7 @@ export class Engine {
   private vaultLedgerStarted = false;
   // SNN: L0 inputs observed during the last tick (one ATM contract per column), the latest readout.
   /** Closest-to-the-money Kalshi contract per crypto column (its book feeds the column's contract channels). */
-  private readonly snnObs = new Map<string, { contract: { dAtm?: number; tauFrac?: number; mid?: number; spread?: number; imbalance?: number }; absD: number; ts: number }>();
+  private readonly snnObs = new Map<string, { contract: { dAtm?: number; tauFrac?: number; mid?: number; spread?: number; imbalance?: number; fvGap?: number }; absD: number; ts: number }>();
   /** Tennis columns: latest input and contract query per live match. */
   private readonly snnTennis = new Map<string, { input: ColumnInput; query: ContractQuery; ts: number }>();
   /** Latest direction calls by column key. */
@@ -1716,7 +1716,7 @@ export class Engine {
   }
 
   /** Remember this market's book for its column's contract channels (closest-to-the-money contract). */
-  private snnObserve(m: ActiveMarket, contract: { dAtm?: number; tauFrac?: number; mid?: number; spread?: number; imbalance?: number }, now: number): void {
+  private snnObserve(m: ActiveMarket, contract: { dAtm?: number; tauFrac?: number; mid?: number; spread?: number; imbalance?: number; fvGap?: number }, now: number): void {
     if (!this.d.snn?.units.crypto || (m.kind !== 'updown' && m.kind !== 'greater')) return;
     const key = snnColumn(m);
     const absD = Number.isFinite(contract.dAtm) ? Math.abs(contract.dAtm!) : Infinity;
@@ -2079,7 +2079,7 @@ export class Engine {
     const pred = model.predictDetailed(features, fv.pYes);
     const pMarket = model.marketProbability(mid);
     // SNN: feed this market's encodings to the next 1 s step, then blend (alpha = 0 unless earned).
-    this.snnObserve(m, { mid, spread: ask.price - bid.price, imbalance: features.imbalance, dAtm: fv.d2, tauFrac: tauSec / Math.max(1, (m.closeTime - m.openTime) / 1000) }, now);
+    this.snnObserve(m, { mid, spread: ask.price - bid.price, fvGap: (fv.pYes - mid) * 100, imbalance: features.imbalance, dAtm: fv.d2, tauFrac: tauSec / Math.max(1, (m.closeTime - m.openTime) / 1000) }, now);
     // Component trials (bot/strategy/componentTrials.ts): the price follows each trial's verdict, in paper and live alike
     // (the owner, Oct 28) (the trained model stays in until it tests significantly worse than the math alone; the others
     // go in once they test better, the rule book while it is tested).

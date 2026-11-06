@@ -579,6 +579,12 @@ jobs:
           H="$RUNNER_TEMP/hist/history"; R="$RUNNER_TEMP/hist/replay"
           [ -d "$H" ] && { printf '/kalshi/**\n' > "$RUNNER_TEMP/no-kalshi.txt"; bash deploy/drive_lab.sh put raw/binance-vision "$H" --exclude-from "$RUNNER_TEMP/no-kalshi.txt"; }
           [ -d "$R" ] && bash deploy/drive_lab.sh put "simulated/snn-contracts/${HFROM}_${HTO}" "$R"
+          # --rows true (SNN-H1 arms): every scored row, per chunk, for the paired judge. Drive only (derived from
+          # server-copied Kalshi history: never a public artifact). One folder per arm (its trainer args).
+          if [ -d research/out/rows ]; then
+            TAG=$(printf '%s' "$HARGS" | tr -cd 'a-zA-Z0-9 .-' | sed 's/--//g; s/ \+/_/g; s/^_//; s/_$//')
+            bash deploy/drive_lab.sh put "simulated/snn-rows/${TAG:-plain}/${{ github.run_id }}" research/out/rows
+          fi
           true
       - uses: actions/upload-artifact@v4
         if: always()

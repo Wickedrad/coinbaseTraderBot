@@ -124,9 +124,10 @@ export class TapeWriter implements SnnTapeSink {
     queries.forEach((q, i) => {
       const [t, c, k, e, a] = ids[i];
       o.vu(t); o.vu(c); o.vu(k); o.vu(e); o.vu(a);
-      o.u8((q.strike !== undefined ? 1 : 0) | (q.cap !== undefined ? 2 : 0) | (q.tag ? 4 : 0));
+      o.u8((q.strike !== undefined ? 1 : 0) | (q.cap !== undefined ? 2 : 0) | (q.tag ? 4 : 0) | (q.spread !== undefined ? 8 : 0));
       if (q.strike !== undefined) o.f64(q.strike);
       if (q.cap !== undefined) o.f64(q.cap);
+      if (q.spread !== undefined) o.f64(q.spread);
       o.f64(q.spot); o.f64(q.sigma); o.f64(q.tauSec); o.f64(q.lifeSec); o.f64(ctx[i].pYes); o.f64(ctx[i].mid);
     });
     this.flush();
@@ -217,10 +218,10 @@ export function* readTape(file: string): Generator<Op> {
           const queries: ContractQuery[] = [], ctx: { pYes: number; mid: number; asset: string }[] = [];
           for (let k = 0; k < n; k++) {
             const ticker = strs[vu()], column = strs[vu()], kind = strs[vu()], eventKey = strs[vu()], asset = strs[vu()], fl = b[i++];
-            const strike = fl & 1 ? f64() : undefined, cap = fl & 2 ? f64() : undefined;
+            const strike = fl & 1 ? f64() : undefined, cap = fl & 2 ? f64() : undefined, spread = fl & 8 ? f64() : undefined;
             const spot = f64(), sigma = f64(), tauSec = f64(), lifeSec = f64(), pYes = f64(), mid = f64();
             // The mid travels in the row's context; the mid-anchored readout reads it from the query.
-            queries.push({ ticker, column, kind, strike, cap, mid, spot, sigma, tauSec, lifeSec, eventKey, tag: Boolean(fl & 4) });
+            queries.push({ ticker, column, kind, strike, cap, mid, spot, sigma, tauSec, lifeSec, eventKey, tag: Boolean(fl & 4), ...(spread !== undefined ? { spread } : {}) });
             ctx.push({ pYes, mid, asset });
           }
           yield { op: OP_SCORE, T, queries, ctx };
@@ -312,7 +313,7 @@ export class TapeMember {
       const ref = this.volRef.get(c.asset) ?? q.sigma;
       this.volRef.set(c.asset, ref + (1 - Math.exp(-1 / 1440)) * (q.sigma - ref));
       const arr = this.pending.get(s.ticker) ?? [];
-      arr.push({ ticker: s.ticker, eventKey: s.eventKey, column: s.column, ts: T, day, kind: q.kind, pModel: c.pYes, pSnn: s.p, mid: c.mid, surprise: s.surprise, surprise0: s.surprise0, G: s.G, volRatio: q.sigma / ref });
+      arr.push({ ticker: s.ticker, eventKey: s.eventKey, column: s.column, ts: T, day, kind: q.kind, pModel: c.pYes, pSnn: s.p, mid: c.mid, surprise: s.surprise, surprise0: s.surprise0, G: s.G, volRatio: q.sigma / ref, spread: q.spread, fvGap: (c.pYes - c.mid) * 100, spot: q.spot });
       this.pending.set(s.ticker, arr);
     }
   }

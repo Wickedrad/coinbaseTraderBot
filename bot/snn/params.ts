@@ -93,6 +93,8 @@ export interface SnnParams {
    *  and the history edge (4.5c, ETH-60m 9c) was the network correcting those non-prices; on the books it fell to
    *  0.4-0.6c with slope ~0.3. Optional: absent = off, and the version hash is unchanged. */
   maxSpread?: number;
+  /** Research only (SNN-H1): extra lead-information L0 channels on crypto columns (bot/snn/inputs.ts LEAD_POP). */
+  leadInputs?: 'G' | 'P';
   /** Volatility-normalized contract readout: the whole feature vector is divided by (contract sigma / its asset's
    *  6-hour average sigma)^k when volatility runs above that average (ratio clipped to [1, 5]). The Oct 31 audit
    *  found the anchored correction several times too big in high volatility (calibration slope 0.13). Tags store the

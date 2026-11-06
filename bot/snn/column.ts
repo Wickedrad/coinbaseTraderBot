@@ -115,8 +115,8 @@ export class Column {
   constructor(readonly key: string, readonly asset: string, p: SnnParams, readonly index: number) {
     this.p = p;
     this.kind = columnKind(key);
-    this.pop = popSpec(this.kind);
-    this.nL0 = l0Width(this.kind);
+    this.pop = popSpec(this.kind, p.leadInputs);
+    this.nL0 = l0Width(this.kind, p.leadInputs);
     this.horizonSec = columnHorizonSec(key);
     this.deltaThr = this.kind === 'tennis' ? TENNIS_DELTA_CENTS : CRYPTO_DELTA_BPS;
     const nL0 = this.nL0;

@@ -21,15 +21,18 @@
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import zlib from 'zlib';
 import { loadConfig, paperEnv } from '../bot/config';
 import { loadCalendar } from '../bot/model/calendar';
+import type { LeadInputs } from '../bot/snn/inputs';
 import type { SnnCheckpoint } from '../bot/snn/network';
 import { DEFAULT_SNN, domainParams, stageFlags, type SnnParams, type Stage } from '../bot/snn/params';
 import { downloadBinance } from './history/binanceVision';
 import { buildHistoryReplay } from './history/historyReplay';
 import { addDays } from './historyWalkState';
 import { correctionStats, vsMarket } from './snnAblation';
-import { replaySnn } from './snnReplay';
+import { GapTape, type GapTapeJson } from './gapTape';
+import { replaySnn, type SnnRow } from './snnReplay';
 
 const arg = (k: string, d = '') => { const i = process.argv.indexOf(`--${k}`); return i > 0 && process.argv[i + 1] !== undefined ? process.argv[i + 1] : d; };
 
@@ -102,8 +105,8 @@ export class SliceAudit {
   }
 }
 
-export function trainParams(stage: Stage, volNorm?: number, soft = false, maxSpread?: number, seed?: number): SnnParams {
-  return domainParams('crypto', { ...DEFAULT_SNN, ...(seed ? { seed } : {}), anchorMid: true, ...(volNorm ? { volNorm } : {}), ...(soft ? { softLabel: { lagSec: 300, etaScale: 0.3 } } : {}), ...(maxSpread ? { maxSpread } : {}), flags: { ...stageFlags(stage) } });
+export function trainParams(stage: Stage, volNorm?: number, soft = false, maxSpread?: number, seed?: number, lead?: LeadInputs): SnnParams {
+  return domainParams('crypto', { ...DEFAULT_SNN, ...(seed ? { seed } : {}), ...(lead ? { leadInputs: lead } : {}), anchorMid: true, ...(volNorm ? { volNorm } : {}), ...(soft ? { softLabel: { lagSec: 300, etaScale: 0.3 } } : {}), ...(maxSpread ? { maxSpread } : {}), flags: { ...stageFlags(stage) } });
 }
 
 async function main() {
@@ -128,19 +131,37 @@ async function main() {
   const maxSpread = Number(arg('max-spread', '0')) || undefined;
   // --seed (K seeds per variant: the spread across seeds is the training noise floor).
   const seed = Number(arg('seed', '0')) || undefined;
-  const params = trainParams(stage, volNorm, soft, maxSpread, seed);
+  // SNN-H1 (failure diagnoses, Nov 5): --lead G adds the fair-value gap channel, --lead P the corrected perp inputs;
+  // --gap-shift-min feeds arm G the gap from that many minutes earlier (1 = the stale-input check, >= 10080 = placebo).
+  const leadArg = arg('lead', '').toUpperCase();
+  const lead: LeadInputs | undefined = leadArg === 'G' || leadArg === 'P' ? leadArg : undefined;
+  const gapShiftMs = Math.max(0, Number(arg('gap-shift-min', '0')) || 0) * 60_000;
+  // --rows-out DIR: every scored row (gz JSONL per chunk) for the paired judge (research/snnLeadJudge.ts).
+  const rowsOut = arg('rows-out', arg('rows', '') === 'true' ? path.resolve('research/out/rows') : '');
+  const params = trainParams(stage, volNorm, soft, maxSpread, seed, lead);
   const calendar = loadCalendar(path.resolve('params/calendar.json'));
   let checkpoint: SnnCheckpoint | undefined;
+  let gapJson: GapTapeJson | undefined;
   const ckIn = arg('checkpoint-in');
   let start = from;
   if (ckIn && fs.existsSync(ckIn)) {
     checkpoint = JSON.parse(fs.readFileSync(ckIn, 'utf8')) as SnnCheckpoint;
     start = resumeDay(from, checkpoint.lastTs);
+    gapJson = (checkpoint as SnnCheckpoint & { gapTape?: GapTapeJson }).gapTape;
     const upd = checkpoint.columns.reduce((s, c) => s + (c.readout?.updates ?? 0), 0);
     console.log(`[hist-train] continuing from ${ckIn}: last scored ${checkpoint.lastTs ? new Date(checkpoint.lastTs).toISOString() : 'never'}, ${upd} readout updates so far; resuming at ${start}`);
   }
   const ckOut = arg('checkpoint-out', path.join(work, 'checkpoint.json'));
-  console.log(`[hist-train] anchored crypto SNN, stage ${stage}${volNorm ? `, volNorm ${volNorm}` : ''}${soft ? ', soft labels' : ''}${maxSpread ? `, contracts wider than ${maxSpread} skipped` : ''}${seed ? `, seed ${seed}` : ''}${synthetic ? ', synthetic contracts where Kalshi has none' : ''}${requote ? ', ADVERSARY: quotes requoted between candles' : ''}, ${from}..${to}, ${assets.join(',')}`);
+  const gapTape = lead === 'G' && gapShiftMs > 0 ? GapTape.from(gapJson, gapShiftMs) : undefined;
+  const keep = (cp: SnnCheckpoint): SnnCheckpoint => (gapTape ? Object.assign(cp, { gapTape: gapTape.toJSON() }) : cp);
+  const dumpRows = (label: string, rows: SnnRow[]) => {
+    if (!rowsOut || !rows.length) return;
+    fs.mkdirSync(rowsOut, { recursive: true });
+    const r5 = (x: number | undefined) => (x === undefined ? undefined : Math.round(x * 1e5) / 1e5);
+    const body = rows.map((r) => JSON.stringify({ t: r.ts, k: r.ticker, e: r.eventKey, c: r.column, kd: r.kind, p: r5(r.pSnn), m: r5(r.mid), f: r5(r.pModel), y: r.y, s: r5(r.spread), g: r5(r.fvGap), x: r.spot, v: r5(r.volRatio) })).join('\n') + '\n';
+    fs.writeFileSync(path.join(rowsOut, `rows-${label}.jsonl.gz`), zlib.gzipSync(body));
+  };
+  console.log(`[hist-train] anchored crypto SNN, stage ${stage}${volNorm ? `, volNorm ${volNorm}` : ''}${soft ? ', soft labels' : ''}${maxSpread ? `, contracts wider than ${maxSpread} skipped` : ''}${seed ? `, seed ${seed}` : ''}${lead ? `, lead inputs ${lead}${gapShiftMs ? ` (gap shifted ${gapShiftMs / 60_000} min)` : ''}` : ''}${synthetic ? ', synthetic contracts where Kalshi has none' : ''}${requote ? ', ADVERSARY: quotes requoted between candles' : ''}, ${from}..${to}, ${assets.join(',')}`);
 
   const f5 = (x: { mean: number; lo: number; hi: number }) => `${x.mean.toFixed(5)} [${x.lo.toFixed(5)}, ${x.hi.toFixed(5)}]`;
   const recFrom = arg('rec-from'), recTo = arg('rec-to'), recDir = arg('rec-dir', path.join(work, 'recordings')), recFetch = arg('rec-fetch');
@@ -160,17 +181,20 @@ async function main() {
     const dl = async (intervals: ('1m' | '15m' | '1h' | '1d')[], f: string, source?: string) =>
       (await downloadBinance({ out: hist, assets, intervals, markets: ['spot'], source, fromMonth: month(f), toMonth: month(b), log: () => undefined })).reduce((s, x) => s + x.fetched, 0);
     await dl(['1m'], warm, 'binance-1m');
+    // Arm P reads the perp channels: the replay quotes perps from Binance USD-M minute bars (research/history/historyReplay.ts).
+    if (lead === 'P') await downloadBinance({ out: hist, assets, intervals: ['1m'], markets: ['um'], fromMonth: month(warm), toMonth: month(b), log: () => undefined });
     await dl(['15m', '1h'], addDays(warm, -14));
     await dl(['1d'], addDays(warm, -310));
     const built = await buildHistoryReplay({ historyDir: hist, outDir: rep, assets, fromDay: warm, toDay: b, synthetic, requote, log: () => undefined });
-    const res = await replaySnn(rep, { params, from: Date.parse(`${a}T00:00:00Z`), to: Date.parse(`${b}T23:59:59Z`), fromDay: warm, toDay: b, calendar, domain: 'crypto', checkpoint, skipModel: true });
-    checkpoint = res.net.serialize();
+    const res = await replaySnn(rep, { params, from: Date.parse(`${a}T00:00:00Z`), to: Date.parse(`${b}T23:59:59Z`), fromDay: warm, toDay: b, calendar, domain: 'crypto', checkpoint, skipModel: true, ...(gapTape ? { gapTape } : {}) });
+    checkpoint = keep(res.net.serialize());
     fs.mkdirSync(path.dirname(ckOut), { recursive: true });
     fs.writeFileSync(ckOut, JSON.stringify(checkpoint));
     const windows = new Set(res.rows.map((r) => r.eventKey)).size;
     const frozen = res.steps ? (100 * res.frozenSteps) / res.steps : 0;
     if (!res.rows.length) { console.log(`[hist-train] ${a}..${b}: no contracts scored (${built.written} day(s) built; Kalshi history missing for these days?)`); continue; }
     (a >= auditFrom ? histAudit : histEarly).add(res.rows);
+    dumpRows(`h-${a}`, res.rows);
     const vm = vsMarket(res.rows, 1000), c = correctionStats(res.rows);
     console.log(`[hist-train] ${a}..${b}: ${windows} windows, vs market ${f5(vm)} ${vm.hi < 0 ? 'BEATS the market' : vm.lo > 0 ? 'worse' : 'undecided'}; correction size ${c.sizeCents.toFixed(2)}c edge ${c.edgeCents.toFixed(2)}c b ${c.slope.toFixed(2)}; learning frozen ${frozen.toFixed(1)}%;${built.synthetic ? ` ${built.synthetic} synthetic contracts;` : ''} ${((Date.now() - t0) / 60000).toFixed(1)} min`);
     // Rows of this month are not needed any more (memory over months).
@@ -192,12 +216,13 @@ async function main() {
       fetchDay(warm);
       // Only the warm-up day and this day on disk.
       for (const f of fs.readdirSync(recDir)) { const m = /^md-(\d{4}-\d{2}-\d{2})\.jsonl\.gz$/.exec(f); if (recFetch && m && m[1] < warm) fs.rmSync(path.join(recDir, f)); }
-      const res = await replaySnn(recDir, { params, from: Date.parse(`${d}T00:00:00Z`), to: Date.parse(`${d}T23:59:59Z`), fromDay: warm, toDay: d, calendar, domain: 'crypto', checkpoint, skipModel: true });
-      checkpoint = res.net.serialize();
+      const res = await replaySnn(recDir, { params, from: Date.parse(`${d}T00:00:00Z`), to: Date.parse(`${d}T23:59:59Z`), fromDay: warm, toDay: d, calendar, domain: 'crypto', checkpoint, skipModel: true, ...(gapTape ? { gapTape } : {}) });
+      checkpoint = keep(res.net.serialize());
       save();
       const windows = new Set(res.rows.map((r) => r.eventKey)).size;
       if (!res.rows.length) { console.log(`[hist-train] recorded ${d}: no contracts scored`); continue; }
       recAudit.add(res.rows);
+      dumpRows(`r-${d}`, res.rows);
       const vm = vsMarket(res.rows, 1000), c = correctionStats(res.rows);
       console.log(`[hist-train] recorded ${d}: ${windows} windows, vs market ${f5(vm)} ${vm.hi < 0 ? 'BEATS the market' : vm.lo > 0 ? 'worse' : 'undecided'}; correction size ${c.sizeCents.toFixed(2)}c edge ${c.edgeCents.toFixed(2)}c b ${c.slope.toFixed(2)}; ${((Date.now() - t0) / 60000).toFixed(1)} min`);
       res.rows.length = 0;

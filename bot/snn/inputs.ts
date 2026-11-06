@@ -63,9 +63,20 @@ export const TENNIS_POP: PopSpec[] = [
 export const CRYPTO_DELTA_BPS = [3, 6, 12];
 export const TENNIS_DELTA_CENTS = [0.01, 0.02, 0.04];
 
-export function popSpec(kind: ColumnKind): PopSpec[] { return kind === 'tennis' ? TENNIS_POP : CRYPTO_POP; }
+/** Optional lead-information channels (failure diagnosis SNN-H1, research only; off unless params.leadInputs is set).
+ *  G: the spot-led fair-value gap of the column's contract, fair value minus the Kalshi mid, in cents.
+ *  P: the corrected Kalshi perp inputs (per-coin premium, 1-minute perp-minus-index return). */
+export type LeadInputs = 'G' | 'P';
+export const LEAD_POP: Record<LeadInputs, PopSpec[]> = {
+  G: [{ name: 'fv_gap_c', lo: -10, hi: 10 }],
+  P: [{ name: 'perp_premium_coin_bps', lo: -20, hi: 20 }, { name: 'perp_ret_diff_1m_z', lo: -3, hi: 3 }],
+};
+export function popSpec(kind: ColumnKind, lead?: LeadInputs): PopSpec[] {
+  if (kind === 'tennis') return TENNIS_POP;
+  return lead ? [...CRYPTO_POP, ...LEAD_POP[lead]] : CRYPTO_POP;
+}
 /** L0 width: 8 delta channels (3 thresholds x up/down + 2 secondary) + 8 bands per pop input. */
-export function l0Width(kind: ColumnKind): number { return 8 + 8 * popSpec(kind).length; }
+export function l0Width(kind: ColumnKind, lead?: LeadInputs): number { return 8 + 8 * popSpec(kind, lead).length; }
 
 export const cryptoColumnKey = (asset: string, h: CryptoHorizon) => `${asset}-${h}m`;
 export const tennisColumnKey = (event: string) => `TEN:${event}`;
@@ -77,7 +88,7 @@ export function columnHorizonSec(key: string): number {
 export function columnKind(key: string): ColumnKind { return key.startsWith('TEN:') ? 'tennis' : 'crypto'; }
 
 /** Crypto column values from one asset-level feature map (+ the ATM Kalshi contract when listed). */
-export function cryptoValues(h: CryptoHorizon, f: Record<string, number>, contract?: { dAtm?: number; tauFrac?: number; mid?: number; spread?: number; imbalance?: number }): Record<string, number | undefined> {
+export function cryptoValues(h: CryptoHorizon, f: Record<string, number>, contract?: { dAtm?: number; tauFrac?: number; mid?: number; spread?: number; imbalance?: number; fvGap?: number }): Record<string, number | undefined> {
   const [a, b] = TA_TFS[h];
   const g = (k: string) => (Number.isFinite(f[k]) ? f[k] : undefined);
   return {
@@ -89,6 +100,8 @@ export function cryptoValues(h: CryptoHorizon, f: Record<string, number>, contra
     taconf_trend_alignment: g('taconf_trend_alignment'), taconf_mtf_momentum: g('taconf_mtf_momentum'),
     perp_premium_bps: g('perp_premium_bps'), funding_rate_bps: g('funding_rate_bps'), perp_ret_diff_5m_z: g('perp_ret_diff_5m_z'),
     usdtd_ret_15m_z: g('usdtd_ret_15m_z'),
+    // lead channels (read only when params.leadInputs names them)
+    fv_gap_c: contract?.fvGap, perp_premium_coin_bps: g('perp_premium_coin_bps'), perp_ret_diff_1m_z: g('perp_ret_diff_1m_z'),
   };
 }
 
