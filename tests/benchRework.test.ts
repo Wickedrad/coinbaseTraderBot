@@ -119,3 +119,19 @@ test('research skip control: a ticker\'s share is stable, in [0, 1), and spread 
   const under = xs.filter((x) => x < 0.37).length / xs.length;
   assert.ok(Math.abs(under - 0.37) < 0.05, `${under}`);
 });
+
+test('tails cap side (MODEL_SKILL_TAILS_SIDE): long caps only where the model leans to the cheap side, fav only toward the favourite', async () => {
+  const { modelSkillWeight } = await import('../bot/model/modelHealth');
+  const p = (side: 'both' | 'long' | 'fav') => ({ on: false, min: 0.25, tails: 0.15, tail: 0.3, tailsSide: side });
+  const st = (pMarket: number, pModel: number) => ({ rv1h: null, volRatio: null, pMarket, pModel });
+  // Market 20c YES; the model at 35c leans to buying the cheap YES (long), at 10c to the favourite NO.
+  assert.equal(modelSkillWeight({ pWorse: null }, p('long'), st(0.2, 0.35)), 0.15);
+  assert.equal(modelSkillWeight({ pWorse: null }, p('long'), st(0.2, 0.1)), 1);
+  assert.equal(modelSkillWeight({ pWorse: null }, p('fav'), st(0.2, 0.1)), 0.15);
+  assert.equal(modelSkillWeight({ pWorse: null }, p('fav'), st(0.2, 0.35)), 1);
+  // Market 85c YES (NO is the cheap side): the model at 70c leans to the cheap NO.
+  assert.equal(modelSkillWeight({ pWorse: null }, p('long'), st(0.85, 0.7)), 0.15);
+  assert.equal(modelSkillWeight({ pWorse: null }, p('both'), st(0.85, 0.95)), 0.15);
+  // Outside the tails, no cap on any side.
+  assert.equal(modelSkillWeight({ pWorse: null }, p('long'), st(0.5, 0.9)), 1);
+});

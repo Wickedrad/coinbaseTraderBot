@@ -236,7 +236,7 @@ export interface StrategyConfig {
   modelHealthHalt: boolean;
   /** In place of the halt (Oct 31, never bench): the decision price leans toward the market by the model's measured skill
    *  (MODEL_SKILL, MODEL_SKILL_MIN; MODEL_SKILL_W pins the weight). */
-  modelSkill: { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number]; tails?: number; tail?: number; tailsRising?: boolean };
+  modelSkill: { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number]; tails?: number; tail?: number; tailsRising?: boolean; tailsSide?: 'both' | 'long' | 'fav' };
   /** Paper exploration: occasionally enter a borderline opportunity (edge within exploreBand below the
    *  threshold, still fee-net positive) at minimum size, logged with its probability, so the fill model
    *  and the edge threshold get data near the boundary. Paper mode only. */
@@ -1259,7 +1259,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       calm: num(env, 'MODEL_SKILL_W_CALM', -1, -1, 1),
       ...calmBand(env.MODEL_SKILL_W_CALM_RV, 'calmRvBp'),
       // Tails cap (bot/model/modelHealth.ts): off (-1) until it proves itself.
-      tails: num(env, 'MODEL_SKILL_W_TAILS', -1, -1, 1), tail: num(env, 'MODEL_SKILL_TAIL', 0.3, 0.01, 0.49), tailsRising: bool(env, 'MODEL_SKILL_W_TAILS_RISING', false),
+      tails: num(env, 'MODEL_SKILL_W_TAILS', -1, -1, 1), tail: num(env, 'MODEL_SKILL_TAIL', 0.3, 0.01, 0.49), tailsRising: bool(env, 'MODEL_SKILL_W_TAILS_RISING', false), tailsSide: oneOf(env, 'MODEL_SKILL_TAILS_SIDE', 'both', ['both', 'long', 'fav'] as const),
     },
     paperExplore: bool(env, 'PAPER_EXPLORE', false),
     exploreRate: num(env, 'PAPER_EXPLORE_RATE', 0.1, 0, 1),

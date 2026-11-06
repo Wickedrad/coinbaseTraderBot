@@ -107,6 +107,9 @@ with open(out, 'w') as fh:
         err, fl = reg.validate(row)
         if err:
             bad += 1; print(f"invalid {row['arm']}: {err}", file=sys.stderr); continue
-        if fl or dev: row['flags'] = sorted(set(row.get('flags', []) + fl + (['dev-choice'] if dev else [])))
+        # The pinned server model (models/benched-server-pin) was trained through early Nov, over H-HOLD: until a model trained
+        # only before Aug 1 re-scores them, these rows carry leaky-model (institutional-methods review, Nov 6).
+        extra = (['dev-choice'] if dev else []) + ([] if os.environ.get('TJ_MODEL_CLEAN') == 'true' else ['leaky-model'])
+        row['flags'] = sorted(set(row.get('flags', []) + fl + extra))
         fh.write(json.dumps(row) + '\n')
 print(f"registry: {len(rows) - bad} row(s) for run {run} -> {out}" + (f", {bad} invalid" if bad else '') + (f"; terciles from {len(lab)} coin-hours" if lab else '; no tercile labels'))

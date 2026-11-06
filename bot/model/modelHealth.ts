@@ -91,8 +91,8 @@ export class ModelHealth {
 // Tails cap (Nov 5, "what are we getting wrong"): paper's Oct 28 - Nov 3 markets lost most where the bot bought the side
 // the market prices under 30c against a favourite (15-min NO under 30c: 324 markets, -$211, 26% won). MODEL_SKILL_W_TAILS
 // caps the weight while the market's probability is outside [MODEL_SKILL_TAIL, 1 - MODEL_SKILL_TAIL], whatever the state.
-export interface SkillParams { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number]; tails?: number; tail?: number; tailsRising?: boolean }
-export interface SkillState { rv1h: number | null; volRatio: number | null; pMarket?: number | null }
+export interface SkillParams { on: boolean; min: number; pinned?: number; calm?: number; calmRvBp?: [number, number]; tails?: number; tail?: number; tailsRising?: boolean; tailsSide?: 'both' | 'long' | 'fav' }
+export interface SkillState { rv1h: number | null; volRatio: number | null; pMarket?: number | null; pModel?: number | null }
 export function modelSkillWeight(h: { pWorse: number | null; drift?: { alarm: boolean } }, p: SkillParams, st?: SkillState | null): number {
   if (p.pinned !== undefined && p.pinned >= 0) return Math.min(1, p.pinned);
   let w = 1;
@@ -103,8 +103,18 @@ export function modelSkillWeight(h: { pWorse: number | null; drift?: { alarm: bo
   }
   if (p.calm !== undefined && p.calm >= 0 && calmIn(st, p.calmRvBp)) w = Math.min(w, p.calm);
   // MODEL_SKILL_W_TAILS_RISING (Nov 5, the sterile sweep: the cap helped only while volatility rose): tails AND rising.
-  if (p.tails !== undefined && p.tails >= 0 && inTails(st?.pMarket, p.tail ?? 0.3) && (!p.tailsRising || (st?.volRatio != null && st.volRatio > 1))) w = Math.min(w, p.tails);
+  // MODEL_SKILL_TAILS_SIDE (Nov 6, hypothesis BR-H1-LONGSIDE): 'long' caps only where the model leans toward the cheap side
+  // (it would buy the longshot), 'fav' only where it leans toward the favourite; 'both' (default) either way.
+  if (p.tails !== undefined && p.tails >= 0 && inTails(st?.pMarket, p.tail ?? 0.3) && (!p.tailsRising || (st?.volRatio != null && st.volRatio > 1))
+    && tailsSideOk(p.tailsSide, st?.pMarket, st?.pModel, p.tail ?? 0.3)) w = Math.min(w, p.tails);
   return w;
+}
+/** Whether the tails cap applies on this side: the model leans toward the cheap side (long) or the favourite (fav). */
+export function tailsSideOk(side: SkillParams['tailsSide'], pm: number | null | undefined, pModel: number | null | undefined, tail: number): boolean {
+  if (!side || side === 'both') return true;
+  if (pm == null || pModel == null || !Number.isFinite(pm) || !Number.isFinite(pModel)) return false;
+  const long = pm < tail ? pModel > pm : pm > 1 - tail ? pModel < pm : false;
+  return side === 'long' ? long : !long;
 }
 /** True when the market's probability `pm` is outside [tail, 1 - tail]. */
 export function inTails(pm: number | null | undefined, tail: number): boolean { return pm != null && Number.isFinite(pm) && (pm < tail || pm > 1 - tail); }

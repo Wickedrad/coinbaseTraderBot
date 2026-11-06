@@ -1,0 +1,11 @@
+# Round 12 (pre-registered 00:10 UTC Nov 6, before round 11's report): hypothesis BR-H1-LONGSIDE, the tails cap earns by
+# removing negative-EV buys of the cheap side (< 30c), not favourite-side buys nor trading less. Replay v8 (stay on v8).
+# Dispatch: benched-jobs.yml, input arms = this file's lines, ~05:00-06:30 UTC Nov 6.
+baseline control
+tails15 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.15
+skip37 placebo family=model-skill-tails placebo_for=tails15 RS_SKIP_MARKETS=0.37
+tails15_long candidate family=model-skill-tails MODEL_SKILL_W_TAILS=0.15 MODEL_SKILL_TAILS_SIDE=long
+skipL placebo family=model-skill-tails placebo_for=tails15_long RS_SKIP_MARKETS=SET_FROM_ROUND11_DEV
+tails15_fav neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.15 MODEL_SKILL_TAILS_SIDE=fav
+tails15_long_lat500 neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.15 MODEL_SKILL_TAILS_SIDE=long RS_LATENCY_MS=500
+tails10_long neighbour family=model-skill-tails MODEL_SKILL_W_TAILS=0.1 MODEL_SKILL_TAILS_SIDE=long
