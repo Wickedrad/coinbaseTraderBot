@@ -528,6 +528,7 @@ export class Engine {
   onBalance(balance: number, readAt = this.now()): void {
     this.balance = balance;
     this.balanceTs = readAt;
+    this.snapshotHeld(readAt);
     this.checkShardCash();
     const eq = this.equity();
     // The vault's realized total starts (once) at the account's net P&L against break-even when that is negative.
@@ -1011,13 +1012,29 @@ export class Engine {
     return this.balance + this.heldAtRead() + this.d.oms.positions.open().reduce((s, m) => s + PositionBook.maxLoss(m), 0);
   }
 
-  /** What the entry orders resting at the last balance read hold: Kalshi's balance leaves it out, yet it is still the
-   *  account's money (equity and the bankroll count it; freeCash does not). */
+  /** What the orders resting at the last balance read held: Kalshi's balance leaves it out, yet it is still the account's
+   *  money (equity and the bankroll count it; freeCash does not). Snapshotted at the read: only an order's opening part
+   *  is held (selling what is held needs no cash, as on Kalshi and in PaperExchange.held), and an order canceled since
+   *  still counts until the next read (the stale balance has not got the cash back); a fill since releases its share
+   *  (the position now carries it). */
+  private heldSnap: Array<{ id: string; per: number; open: number; filled: number }> = [];
+  private snapshotHeld(readAt: number): void {
+    const cover = new Map<string, number>();
+    this.heldSnap = [];
+    for (const o of this.d.oms.liveOrders()) {
+      if (o.reduceOnly || o.createdTs > readAt || o.remainingCount <= 0) continue;
+      const k = `${o.ticker}|${o.side}`, pos = this.d.oms.positions.position(o.ticker);
+      const left = cover.get(k) ?? Math.max(0, o.side === 'ask' ? pos : -pos);
+      const closing = Math.min(left, o.remainingCount);
+      cover.set(k, left - closing);
+      if (o.remainingCount - closing > 0) this.heldSnap.push({ id: o.clientOrderId, per: o.side === 'bid' ? o.price : 1 - o.price, open: o.remainingCount - closing, filled: o.filledCount });
+    }
+  }
   private heldAtRead(): number {
     let held = 0;
-    for (const o of this.d.oms.liveOrders()) {
-      if (o.reduceOnly || o.purpose === 'exit' || o.createdTs > this.balanceTs) continue;
-      held += (o.side === 'bid' ? o.price : 1 - o.price) * Math.max(0, o.remainingCount);
+    for (const h of this.heldSnap) {
+      const since = Math.max(0, (this.d.oms.get(h.id)?.filledCount ?? h.filled) - h.filled);
+      held += h.per * Math.max(0, h.open - since);
     }
     return held;
   }
