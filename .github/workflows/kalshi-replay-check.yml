@@ -147,8 +147,8 @@ jobs:
           sudo apt-get install -y -qq rclone >/dev/null
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
-          # A day is archived once its recording is on Drive (the archive uploads the recording last).
-          rclone lsf gdrive:kalshi-bot-archive/recordings --files-only | sed -nE 's/^md-([0-9]{4}-[0-9]{2}-[0-9]{2})\.jsonl\.gz$/\1/p' | sort > "$RUNNER_TEMP/drive-days.txt"
+          # A day is archived once its recording is on Drive, as gzip or compact .mdc (the archive uploads the recording last).
+          bash deploy/drive_lab.sh days > "$RUNNER_TEMP/drive-days.txt"
           echo "Drive has $(wc -l < "$RUNNER_TEMP/drive-days.txt") archived day(s): $(paste -sd, "$RUNNER_TEMP/drive-days.txt")"
       - name: Copy the audit log, the recordings the stretch needs, the model and the settings (read-only)
         if: ${{ !inputs.reuse_run }}
@@ -286,7 +286,7 @@ jobs:
         run: |
           set -euo pipefail
           X="$RUNNER_TEMP/copy-exclude.txt"; : > "$X"
-          while read -r d; do [ -n "$d" ] && printf '/recordings/md-%s.jsonl.gz\n/audit/audit-%s*\n' "$d" "$d" >> "$X"; done < "$RUNNER_TEMP/drive-days.txt"
+          while read -r d; do [ -n "$d" ] && printf '/recordings/md-%s.jsonl.gz\n/recordings/md-%s.mdc\n/audit/audit-%s*\n' "$d" "$d" "$d" >> "$X"; done < "$RUNNER_TEMP/drive-days.txt"
           rclone copy data "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$GITHUB_RUN_ID" --exclude-from "$X" --transfers 4
           echo "copy kept on Drive: lab-copies/kalshi-replay-check/$GITHUB_RUN_ID ($(rclone size "gdrive:kalshi-bot-archive/lab-copies/kalshi-replay-check/$GITHUB_RUN_ID" | tail -1 | sed 's/^ *//'))"
       - name: Restore an earlier run's copy (reuse_run)
@@ -308,7 +308,7 @@ jobs:
           [ -s data/sweeps/check-days.txt ] || { echo "::error::no copy of run $REUSE on Drive or in the cache"; exit 1; }
           for d in $(tr ',' ' ' < data/sweeps/check-days.txt); do
             grep -qx "$d" "$RUNNER_TEMP/drive-days.txt" || continue
-            ls data/recordings/md-$d.jsonl* >/dev/null 2>&1 || { rclone copy "gdrive:kalshi-bot-archive/recordings/md-$d.jsonl.gz" data/recordings/ && gzip -t "data/recordings/md-$d.jsonl.gz"; }
+            ls data/recordings/md-$d.jsonl* >/dev/null 2>&1 || bash deploy/drive_lab.sh recording "$d" data/recordings
             ls data/audit/audit-$d* >/dev/null 2>&1 || rclone copy gdrive:kalshi-bot-archive/audit data/audit/ --include "audit-$d*" --transfers 4
             echo "$d: from Drive"
           done
@@ -346,14 +346,17 @@ jobs:
           ARGS=(--recordings data/recordings --audit data/audit --days "${CHECK_DAYS_IN:-$(cat data/sweeps/check-days.txt)}" --from "$CHECK_FROM" --to "$TO_ARG"
             --min-hours "$MIN_HOURS" ${BAL:+--paper-balance-now "$BAL"} ${GUARD:+--paper-guard "$GUARD"} --kill-override "$OVERRIDE"
             --maker-markouts "$RUNNER_TEMP/maker-markouts.json" --paper-trials "$RUNNER_TEMP/paper-trials.json"
-            --paper-accuracy-gate "$RUNNER_TEMP/paper-accuracy-gate.json" --paper-trades "$RUNNER_TEMP/paper-trades.jsonl" --model data/models/model.json)
+            --paper-trades "$RUNNER_TEMP/paper-trades.jsonl" --model data/models/model.json)
           # Paper's benches (Steven, 2026-11-05 13:52 UTC: paper's P&L has no say in training until the bot makes money).
-          # A fidelity check (no overrides) still follows paper's take-profit bench and Kalshi probation, to compare like
-          # with like; a comparison run (overrides set) keeps its own, starting fresh, unless RS_PAPER_BENCHES=follow.
+          # A fidelity check (no overrides) still follows paper's take-profit bench, Kalshi probation and accuracy gate, to
+          # compare like with like; a comparison run (overrides set) keeps its own, starting fresh, unless
+          # RS_PAPER_BENCHES=follow. The accuracy gate counts as a bench: seeded from paper, paper's scored snapshots would
+          # block or open entries in every arm alike, so a comparison would partly read paper's state.
           if [ -z "$OVERRIDES" ] || [ "${RS_PAPER_BENCHES-own}" = follow ]; then
-            ARGS+=(--paper-probation "$RUNNER_TEMP/paper-probation.json" --paper-tp-bench "$RUNNER_TEMP/paper-tp-bench.json")
+            ARGS+=(--paper-probation "$RUNNER_TEMP/paper-probation.json" --paper-tp-bench "$RUNNER_TEMP/paper-tp-bench.json"
+              --paper-accuracy-gate "$RUNNER_TEMP/paper-accuracy-gate.json")
           else
-            ARGS+=(--own-bench); echo "paper's benches not followed (own take-profit bench and probation, fresh); RS_PAPER_BENCHES=follow to follow them"
+            ARGS+=(--own-bench); echo "paper's benches not followed (own take-profit bench, probation and accuracy gate, fresh); RS_PAPER_BENCHES=follow to follow them"
           fi
           T0=$(date +%s); mkdir -p data/sweeps/nearby; [ "$NEARBY" = none ] && NEARBY=''
           # The spot candles the bot held when the replay starts (its startup fetch from Coinbase, made for that time): a

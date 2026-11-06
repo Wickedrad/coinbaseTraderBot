@@ -55,6 +55,9 @@ const ts = (v: unknown): number | undefined => {
   return undefined;
 };
 
+/** The fields of a snapshot that describe the book now: taken from every snapshot as they are, absent included. */
+const QUOTE_FIELDS = ['bid', 'ask', 'last', 'mark', 'liquidationMark', 'isOpen'] as const;
+
 const NAMES: Record<string, string[]> = {
   BTC: ['BITCOIN', 'BTC'], ETH: ['ETHEREUM', 'ETHER', 'ETH'], SOL: ['SOLANA', 'SOL'], XRP: ['XRP', 'RIPPLE'], DOGE: ['DOGECOIN', 'DOGE'],
 };
@@ -111,6 +114,18 @@ export function nextFundingTime(now: number): number {
   return now + 8 * 3_600_000;
 }
 
+/** Units of the underlying one quoted price stands for. Kalshi quotes perps PER CONTRACT (the quote is the contract size
+ *  x the coin price: BTC 0.0001 BTC a contract, ETH 0.001, SOL 0.1, XRP 1, by the perp TA thread's fidelity runs over the
+ *  Oct 21 - Nov 3 recordings), so the quote over the index sits at the contract size; a per-coin quote sits at 1. A quote that fits
+ *  neither (a bad print, a market quoted some other way) is undefined. The test band (x or / 1.5) is far wider than any
+ *  real premium (a few bps), so it only tells the units apart. */
+export function perpQuoteUnits(quote: number | undefined, contractSize: number | undefined, index: number | undefined): number | undefined {
+  if (!(quote! > 0) || !(index! > 0)) return undefined;
+  const r = quote! / index!, near = (a: number, b: number) => Math.abs(Math.log(a / b)) < Math.log(1.5);
+  if (contractSize !== undefined && contractSize > 0 && near(r, contractSize)) return contractSize;
+  return near(r, 1) ? 1 : undefined;
+}
+
 /** Per-asset perp state: mid/mark series, open interest series, latest funding. */
 export class PerpState {
   readonly mid = new IndexTracker('perp', 5 * 3_600_000, 300);
@@ -135,12 +150,26 @@ export class PerpState {
       this.funding.push({ ts: s.ts, rate: s.fundingRate });
       while (this.funding.length && this.funding[0].ts < s.ts - 10 * 3_600_000) this.funding.shift();
     }
-    this.latest = { ...this.latest, ...Object.fromEntries(Object.entries(s).filter(([, v]) => v !== undefined)) } as PerpSnapshot;
+    // Each snapshot is a full market row: a missing bid or ask is an empty side of the book now, so the quote fields always
+    // come from this snapshot (merging kept the old touch under a fresh ts, which passed the freshness checks and priced
+    // orders and paper fills off a quote that was gone). Static fields (contract size, tick, leverage) and the funding
+    // estimate carry over when a row leaves them out.
+    const merged = { ...this.latest, ...Object.fromEntries(Object.entries(s).filter(([, v]) => v !== undefined)) } as PerpSnapshot;
+    for (const k of QUOTE_FIELDS) (merged as unknown as Record<string, unknown>)[k] = s[k];
+    this.latest = merged;
   }
 
   /** Fresh mid (or mark) price. */
   price(now: number, maxAgeMs = 15_000): number | undefined {
     return this.mid.fresh(now, maxAgeMs)?.value;
+  }
+
+  /** Fresh mid per coin of the underlying, comparable with the index (the quote over the contract size: Kalshi quotes per
+   *  contract); undefined when there is no fresh quote or index, or the quote fits neither unit (perpQuoteUnits). Sizing
+   *  and orders keep using price(): they are per contract on the exchange too. */
+  coinPrice(now: number, index: number | undefined, maxAgeMs = 15_000): number | undefined {
+    const p = this.price(now, maxAgeMs), u = perpQuoteUnits(p, this.latest?.contractSize, index);
+    return u === undefined ? undefined : p! / u;
   }
 }
 

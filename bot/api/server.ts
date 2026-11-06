@@ -69,6 +69,8 @@ export interface ApiDeps {
   settlement?: SettlementSweeper;
   /** Restart the bot (systemd starts it again). */
   restart?: () => void;
+  /** This account's real perps fee rates against the fees the bot charges (bot/perps/feeTier.ts). */
+  perpFeeTier?: { status(): unknown };
 }
 
 export function tokenMatches(expected: string, provided: string | undefined): boolean {
@@ -227,6 +229,7 @@ export function createApi(d: ApiDeps): express.Express {
       settlement: d.settlement?.status() ?? null,
       kalshiCheck: d.kalshiCheck?.status() ?? null,
       feeSchedule: d.md.feeStatus(),
+      perpFeeTier: d.perpFeeTier?.status() ?? null,
       latency: latencySnapshot(),
       run: d.control?.status() ?? { active: true, since: null },
       perpsMode: d.cfg.perps.trading,
