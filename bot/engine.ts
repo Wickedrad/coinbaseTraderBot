@@ -528,6 +528,7 @@ export class Engine {
   onBalance(balance: number, readAt = this.now()): void {
     this.balance = balance;
     this.balanceTs = readAt;
+    this.snapshotHeld(readAt);
     this.checkShardCash();
     const eq = this.equity();
     // The vault's realized total starts (once) at the account's net P&L against break-even when that is negative.
@@ -542,11 +543,13 @@ export class Engine {
     const { balanceMonitor: mon } = this.d;
     if (!mon) return;
     const now = this.now();
-    this.d.kalshiCheck?.onBalance(balance, mon.state.expected);
+    // The cash ledger counts what resting entries hold (Kalshi's balance leaves it out; placing an order moves no money).
+    const cash = balance + this.heldAtRead();
+    this.d.kalshiCheck?.onBalance(cash, mon.state.expected);
     // Quiet = nothing awaiting settlement and no settlement in the last 10 minutes.
     const awaiting = this.d.oms.positions.unsettled().some((m) => m.closeTs && m.closeTs < now);
     const quiet = !awaiting && now - this.lastSettleTs > 10 * 60_000;
-    const res = mon.check(balance, quiet);
+    const res = mon.check(cash, quiet);
     this.saveMonitor();
     if (!res.deposit && !res.withdrawal) return;
     // Paper: nobody moves money in or out of a paper book (the bot's own refills are noted as they
@@ -1006,7 +1009,34 @@ export class Engine {
   /** Cash + committed premium (before vault/pocket reservations): the drawdown reference. */
   equity(): number | undefined {
     if (this.balance === undefined) return undefined;
-    return this.balance + this.d.oms.positions.open().reduce((s, m) => s + PositionBook.maxLoss(m), 0);
+    return this.balance + this.heldAtRead() + this.d.oms.positions.open().reduce((s, m) => s + PositionBook.maxLoss(m), 0);
+  }
+
+  /** What the orders resting at the last balance read held: Kalshi's balance leaves it out, yet it is still the account's
+   *  money (equity and the bankroll count it; freeCash does not). Snapshotted at the read: only an order's opening part
+   *  is held (selling what is held needs no cash, as on Kalshi and in PaperExchange.held), and an order canceled since
+   *  still counts until the next read (the stale balance has not got the cash back); a fill since releases its share
+   *  (the position now carries it). */
+  private heldSnap: Array<{ id: string; per: number; open: number; filled: number }> = [];
+  private snapshotHeld(readAt: number): void {
+    const cover = new Map<string, number>();
+    this.heldSnap = [];
+    for (const o of this.d.oms.liveOrders()) {
+      if (o.reduceOnly || o.createdTs > readAt || o.remainingCount <= 0) continue;
+      const k = `${o.ticker}|${o.side}`, pos = this.d.oms.positions.position(o.ticker);
+      const left = cover.get(k) ?? Math.max(0, o.side === 'ask' ? pos : -pos);
+      const closing = Math.min(left, o.remainingCount);
+      cover.set(k, left - closing);
+      if (o.remainingCount - closing > 0) this.heldSnap.push({ id: o.clientOrderId, per: o.side === 'bid' ? o.price : 1 - o.price, open: o.remainingCount - closing, filled: o.filledCount });
+    }
+  }
+  private heldAtRead(): number {
+    let held = 0;
+    for (const h of this.heldSnap) {
+      const since = Math.max(0, (this.d.oms.get(h.id)?.filledCount ?? h.filled) - h.filled);
+      held += h.per * Math.max(0, h.open - since);
+    }
+    return held;
   }
 
   /** Adverse-selection buffer for maker entries: -(average 60 s maker markout), clamped; default until 30 maker fills. */
@@ -1094,7 +1124,7 @@ export class Engine {
     // Vaulted and pocketed profit is not the bot's to trade, in paper as in live (the owner, Oct 28: paper behaves as
     // live; VAULT_IN_PAPER is no longer read).
     const reserved = this.d.vault?.reserved() ?? 0;
-    return Math.max(0, this.balance + committed - reserved);
+    return Math.max(0, this.balance + this.heldAtRead() + committed - reserved);
   }
 
   /** Paper order size in dollars: PAPER_ORDER_FRAC of the bankroll (10%, the owner's choice on Oct 24: orders shrink as

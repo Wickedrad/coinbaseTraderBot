@@ -196,8 +196,10 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
       if (!reduces) throw new OrderRejectedError('reduce only would increase position', 400, 'reduce_only');
       o.remainingCount = Math.min(o.remainingCount, Math.abs(pos));
     }
-    const cost = (req.side === 'bid' ? req.price : 1 - req.price) * req.count;
-    if (!req.reduceOnly && cost > this.st.balance + 1e-9) throw new OrderRejectedError('insufficient_balance', 400, 'insufficient_balance');
+    // Like Kalshi: an order's opening part is checked against the cash not already held by resting orders (closing
+    // what is held needs no cash).
+    const cost = (req.side === 'bid' ? req.price : 1 - req.price) * this.opening(req.ticker, req.side, req.count);
+    if (!req.reduceOnly && cost > this.available() + 1e-9) throw new OrderRejectedError('insufficient_balance', 400, 'insufficient_balance');
 
     this.st.orders.push(o);
     this.index(o);
@@ -282,8 +284,43 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
     return Object.entries(this.st.positions).filter(([, v]) => Math.abs(v) > 1e-9).map(([ticker, position]) => ({ ticker, position }));
   }
 
+  /** Cash Kalshi would report: the account's cash less what resting orders hold (a resting buy's cost is held until it
+   *  fills or is canceled, as GET /portfolio/balance shows it; Engine.freeCash relies on that). */
   async getBalance(): Promise<number> {
+    return this.available();
+  }
+
+  /** The account's cash including what resting orders hold (for equity: a hold is still the account's money). */
+  cash(): number {
     return this.st.balance;
+  }
+
+  /** What resting orders hold: the cost of each one's opening part. Orders that only close a held position hold nothing. */
+  held(): number {
+    const cover = new Map<string, number>();
+    let h = 0;
+    for (const o of this.resting.values()) {
+      if (o.reduceOnly || o.remainingCount <= 1e-9) continue;
+      const k = `${o.ticker}|${o.side}`;
+      const pos = this.st.positions[o.ticker] ?? 0;
+      const left = cover.get(k) ?? Math.max(0, o.side === 'ask' ? pos : -pos);
+      const closing = Math.min(left, o.remainingCount);
+      cover.set(k, left - closing);
+      h += (o.side === 'bid' ? o.price : 1 - o.price) * (o.remainingCount - closing);
+    }
+    return h;
+  }
+
+  private available(): number {
+    return this.st.balance - this.held();
+  }
+
+  /** The part of a new order that opens exposure, after what resting orders on the same side already close. */
+  private opening(ticker: string, side: 'bid' | 'ask', count: number): number {
+    const pos = this.st.positions[ticker] ?? 0;
+    let cover = Math.max(0, side === 'ask' ? pos : -pos);
+    for (const o of this.resting.values()) if (o.ticker === ticker && o.side === side && !o.reduceOnly) cover -= o.remainingCount;
+    return Math.max(0, count - Math.max(0, cover));
   }
 
   /** Public trade print from market data; `tradeTs` is the exchange's time stamp of the trade. */

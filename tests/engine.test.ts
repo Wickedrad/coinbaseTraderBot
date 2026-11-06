@@ -1,3 +1,4 @@
+import { PositionBook } from '../bot/oms/positions';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
@@ -1052,4 +1053,22 @@ test('probation score-only (default): the unvalidated fill model stays active wh
     assert.equal(engine.fillModelActive, false);
     assert.equal(engine.moduleLedger().find((r) => r.module === 'probation: kalshi')?.state, 'benched');
   } finally { setProbation(undefined); }
+});
+
+test('equity counts what resting orders hold at a read: only the opening part, and a cancel keeps it until the next read', async () => {
+  const { engine, paper, oms, market } = await setup();
+  const base = { ticker: market.ticker, asset: 'BTC', windowCloseTs: market.closeTime, timeInForce: 'good_till_canceled' as const, postOnly: true, reduceOnly: false, fairValue: 0.5, modelId: 'm', decisionId: 'e' };
+  // Long 50 YES at 60c (lifts the 60c ask), then a resting ask that only closes it and a resting bid that opens.
+  await oms.submit({ ...base, side: 'bid', price: 0.6, count: 50, timeInForce: 'immediate_or_cancel', postOnly: false, purpose: 'entry' });
+  await oms.submit({ ...base, side: 'ask', price: 0.8, count: 50, purpose: 'quote' });
+  const bid = await oms.submit({ ...base, side: 'bid', price: 0.4, count: 10, purpose: 'entry' });
+  const cash = paper.cash();
+  engine.onBalance(await paper.getBalance());
+  const eq = cash + oms.positions.open().reduce((x, m) => x + PositionBook.maxLoss(m), 0);
+  assert.ok(Math.abs(engine.equity()! - eq) < 1e-6, `equity ${engine.equity()} vs ${eq}: the closing ask holds nothing, the bid's $4 is added back`);
+  // Canceled after the read: the stale balance has not got the $4 back, so equity holds still.
+  await oms.cancel(bid.clientOrderId, 'test');
+  assert.ok(Math.abs(engine.equity()! - eq) < 1e-6, `after the cancel ${engine.equity()}`);
+  engine.onBalance(await paper.getBalance());
+  assert.ok(Math.abs(engine.equity()! - eq) < 1e-6, `next read ${engine.equity()}`);
 });
