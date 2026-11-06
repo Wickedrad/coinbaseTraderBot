@@ -48,6 +48,15 @@ parameters (placebo seeds, bootstrap block / draws, BHY q, seed) come from its p
    difference is written to the notes).
 Outputs (--out): rows.jsonl (the registry shard), ho1.json, ho1.md (aggregates only, public repo), validated.json (the
 passing setups ranked by HO-1 $/h: the rulebook's input). NEVER DOGE.
+
+--all-confirmed --confirm confirm.jsonl (python/oracle/prereg/OR-AMEND-1.md; Steven, 2026-11-06 14:03 UTC): a descriptive
+trial of EVERY setup of confirm.jsonl (not only frozen.json, which may hold zero setups; its SHA-256 check stays: it names
+the mined parts). Each setup is traded and judged exactly as a frozen one (steps 2, 3, 6 above, same seed per setup id);
+no book. Registry family 'oracle-<ct>-allconf-v1', role candidate (+ placebo, + the flat control), flags 'all-confirmed' and
+'DEV:all-confirmed-descriptive' (kept out of the registry's validated ledger); BHY at m = every confirmed setup of the type.
+Outputs: rows.jsonl, ho1-all.json, ho1-all.md (aggregates: counts scored / passing the HO-1 rules / passing after BHY, the
+HO-1 $/day distribution, the top 20 by $/day with fold / tercile wins and placebo difference) and lockbox_candidates.json
+(OR-AMEND-1: per contract type the setups passing the HO-1 rules before BHY, by HO-1 $/h, top 10, for lockbox L1).
 """
 from __future__ import annotations
 
@@ -85,6 +94,12 @@ TERCILES = ('LOW', 'MID', 'HIGH')
 TOURS = ('ATP', 'WTA')
 MIN_STRATUM_HOURS = 100                                 # registry HO-1: a tercile counts with >= 100 h
 HEX64 = re.compile(r'[0-9a-f]{64}')
+# The all-confirmed mode (python/oracle/prereg/OR-AMEND-1.md): every confirmed setup scored on HO-1 as a descriptive trial.
+ALL_FLAG = 'all-confirmed'
+DEV_FLAG = 'DEV:all-confirmed-descriptive'      # registry BLOCKING_EXTRA 'DEV:': never counted as validated (lockbox L1 decides)
+AMEND = 'OR-AMEND-1'
+LOCKBOX_TOP = 10
+LOCKBOX = {'from': '2026-11-06T05:00Z', 'to': '2026-11-13T05:00Z', 'read_after': '2026-11-14T05:00Z', 'rows': 'decision and whole horizon inside [from, to) (common.split_of convention)', 'days': 7, 'days_won_min': 4}
 # The primary exit each setup was scored with (prereg "Decision times, entries, labels, exits"): the rulebook hook must
 # run exactly this exit, or the HO-1 $ is not what live would realise (prereg "Known limits").
 EXITS = {
@@ -213,8 +228,8 @@ class HoldPart:
         arrays = {'t': t}
         need = ['group', 'asset', 'X'] + [f'stratum_{s}' for s in self.sides]
         need += [key(nm, s, h) for s in self.sides for h in self.hs for nm in ('ok', 'hit', 'trade', 'hold')]
-        opt = ['rv', 'mkt', 'close', 'tmin', 'event'] + [key(nm, s, h) for s in self.sides for h in self.hs
-                                                         for nm in ('tradeLat', 'tradeCost', 'tradeSettle')]
+        opt = ['rv', 'mkt', 'close', 'tmin', 'event', 'hour', 'kmin', 'notional'] + [key(nm, s, h) for s in self.sides for h in self.hs
+                                                                                     for nm in ('tradeLat', 'tradeCost', 'tradeSettle', 'best')]
         for nm in need + opt:
             if part.has(nm):
                 arrays[nm] = np.array(part[nm][lo:hi])
@@ -521,24 +536,34 @@ def items_str(items) -> str:
     return ' & '.join(f'{i["f"]}={int(i["v"])}' for i in items)
 
 
-def setup_env(s: dict, ct: str, sha: str) -> dict:
+def setup_env(s: dict, ct: str, sha: str, confirm_sha: str | None = None) -> dict:
+    """The registry env of a setup. With confirm_sha (the all-confirmed mode, OR-AMEND-1) the env names the mode and the
+    confirm.jsonl hash instead of a frozen rank, so its trial ids never equal a pre-registered opening's."""
     tg = re.search(r'-m([0-9p]+)$', str(s['scope'])) if ct == 'perp-rev' else None
     extra = {'ORACLE_TARGET_BPS': tg.group(1).replace('p', '.')} if tg else {}
-    return {**extra, 'ORACLE_SETUP': s['id'], 'ORACLE_SCOPE': s['scope'], 'ORACLE_SIDE': s['side'], 'ORACLE_H_MIN': str(int(s['h'])),
-            'ORACLE_ITEMS': items_str(s['items']), 'ORACLE_SIZE_USD': f'{SIZE[ct]:g}', 'ORACLE_EXIT': 'primary',
-            'ORACLE_FROZEN_RANK': str(int(s['rank'])), 'ORACLE_FROZEN_SHA256': sha[:16]}
+    env = {**extra, 'ORACLE_SETUP': s['id'], 'ORACLE_SCOPE': s['scope'], 'ORACLE_SIDE': s['side'], 'ORACLE_H_MIN': str(int(s['h'])),
+           'ORACLE_ITEMS': items_str(s['items']), 'ORACLE_SIZE_USD': f'{SIZE[ct]:g}', 'ORACLE_EXIT': 'primary'}
+    if confirm_sha:
+        env.update({'ORACLE_MODE': ALL_FLAG, 'ORACLE_CONFIRM_RANK': str(int(s['rank'])), 'ORACLE_CONFIRM_SHA256': confirm_sha[:16],
+                    'ORACLE_FROZEN_SHA256': sha[:16]})
+    else:
+        env.update({'ORACLE_FROZEN_RANK': str(int(s['rank'])), 'ORACLE_FROZEN_SHA256': sha[:16]})
+    return env
 
 
-def build_rows(reg, ct, fam, sha, code_sha, run, results, book, control_terc, hps) -> tuple:
+def build_rows(reg, ct, fam, sha, code_sha, run, results, book, control_terc, hps, confirm_sha: str | None = None) -> tuple:
     """(rows, control row): the control, a candidate per setup and the book, a placebo per candidate; by_day on all 96
-    days. Sets trial_id / placebo_trial_id on each result."""
+    days. Sets trial_id / placebo_trial_id on each result. confirm_sha set = the all-confirmed mode (OR-AMEND-1): every
+    row carries the flags 'all-confirmed' and DEV_FLAG (a descriptive trial, never a pre-registered pass), and book is None."""
     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     ctype = CONTRACT_TYPE[ct]
     ref = f'https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/{run}' if re.fullmatch(r'[0-9]+', str(run)) else str(run)
     data = {'source': 'history', 'days': list(HOLD_DAYS), 'doge': False, 'metric': 'usd', 'engine': 'oracle'}
+    flags = [f'frozen-sha256:{sha[:16]}'] + ([ALL_FLAG, DEV_FLAG, f'confirm-sha256:{confirm_sha[:16]}'] if confirm_sha else [])
+    epoch = ('oracle-setups OR-AMEND-1 all-confirmed HO-1 (descriptive; python/oracle/ho1.py --all-confirmed on the oracle parts)'
+             if confirm_sha else 'oracle-setups OR-H1 HO-1 (python/oracle/ho1.py on the oracle parts; no TS replay)')
     common = {'v': 1, 'ts': now, 'thread': THREAD, 'family': fam, 'code_sha': code_sha, 'seed': None, 'contract_type': ctype,
-              'hours': HOLD_HOURS, 'base': f'oracle-setups@{code_sha}', 'ref': ref, 'flags': [f'frozen-sha256:{sha[:16]}'],
-              'code_epoch': 'oracle-setups OR-H1 HO-1 (python/oracle/ho1.py on the oracle parts; no TS replay)'}
+              'hours': HOLD_HOURS, 'base': f'oracle-setups@{code_sha}', 'ref': ref, 'flags': flags, 'code_epoch': epoch}
 
     def row(arm, role, env, by_day, terc, extra):
         r = dict(common, arm=arm, role=role, env=env, data=dict(data, days=list(HOLD_DAYS)), flags=list(common['flags']),
@@ -548,17 +573,19 @@ def build_rows(reg, ct, fam, sha, code_sha, run, results, book, control_terc, hp
             raise SystemExit('make_id differs from research/registry.py make_id')
         return r
 
+    mode_raw = {'mode': ALL_FLAG, 'confirm_sha256': confirm_sha} if confirm_sha else {}
     ctl = row('flat', 'control', {}, np.zeros(len(HOLD_DAYS)), control_terc,
               {'modules': ['oracle-setups'], 'fills': 0, 'verdict': 'control: flat (no trading, $0 every HO-1 day)',
-               'raw': {'run': str(run), 'ct': ct, 'frozen_sha256': sha, 'parts': [hp.dir for hp in hps]}})
+               'raw': {'run': str(run), 'ct': ct, 'frozen_sha256': sha, 'parts': [hp.dir for hp in hps], **mode_raw}})
     rows = [ctl]
     cands = [(r['setup'], r, r['setup']['id']) for r in results] + ([(None, book, 'book')] if book else [])
     for s, res, arm in cands:
         ev = res['eval']
         if s is not None:
-            env = setup_env(s, ct, sha)
+            env = setup_env(s, ct, sha, confirm_sha)
             mods = ['oracle-setups'] + res['modules']
-            raw = {'run': str(run), 'ct': ct, 'frozen_sha256': sha, 'setup': {k_: s[k_] for k_ in ('id', 'scope', 'side', 'h', 'items', 'rank')}}
+            raw = {'run': str(run), 'ct': ct, 'frozen_sha256': sha, **mode_raw,
+                   'setup': {k_: s[k_] for k_ in ('id', 'scope', 'side', 'h', 'items', 'rank')}}
         else:
             env = {'ORACLE_BOOK': 'all frozen setups, best frozen rank first', 'ORACLE_SETUPS': ','.join(x['setup']['id'] for x in results),
                    'ORACLE_POSITIONS': ({'perp': 'one $300 position at a time across all coins', 'perp-rev': 'one position at a time across all coins, notional min($300, $5 / (M / 1e4))'}[ct] if is_perp(ct) else 'one position per event at a time' if ct == 'tennis'
@@ -661,6 +688,8 @@ def resolve_parts(doc: dict, root: str, ct: str) -> list:
 
 
 def run(a) -> dict:
+    if getattr(a, 'all_confirmed', False):
+        return run_all(a)
     log = log_to(a.quiet)
     doc, sha = load_frozen(a.frozen, a.sha256)          # refused here, before any part is opened, on a hash mismatch
     reg, reg_path, reg_sha = load_registry(a.registry)
@@ -839,6 +868,265 @@ def run(a) -> dict:
     return {'summary': summary, 'rows': rows, 'validated': validated, 'results': results, 'book': book}
 
 
+# ---------------------------------------------------------------- the all-confirmed mode (OR-AMEND-1)
+
+def load_confirm(path: str, ct: str) -> tuple:
+    """(setups, sha256 of the file) of the miner's confirm.jsonl: every stage-2 setup, checked like a frozen setup (scope /
+    ct / side / horizon / items, DOGE refused, ids unique). rank = the line order (1..m), rank_A = the miner's stage-1 rank."""
+    with open(path, 'rb') as f:
+        body = f.read()
+    out, seen = [], set()
+    for ln, line in enumerate(body.decode('utf-8').splitlines(), 1):
+        if not line.strip():
+            continue
+        s = json.loads(line)
+        if not isinstance(s, dict) or not s.get('id'):
+            raise SystemExit(f'{path}:{ln}: not a setup')
+        if 'DOGE' in str(s.get('scope', '')).upper() or s.get('ct') not in (None, ct):
+            raise SystemExit(f'confirmed setup {s.get("id")}: scope / ct refused')
+        if s.get('side') not in SIDES[ct] or int(s.get('h', -1)) not in HORIZONS[ct] or not s.get('items'):
+            raise SystemExit(f'confirmed setup {s.get("id")}: bad side / horizon / items')
+        if s['id'] in seen:
+            raise SystemExit(f'{path}: setup {s["id"]} twice')
+        seen.add(s['id'])
+        d = {k_: s[k_] for k_ in ('id', 'scope', 'side', 'h', 'items')}
+        d.update({'ct': ct, 'rank': len(out) + 1, 'rank_A': s.get('rank'), 'dev': s.get('dev') or {},
+                  'frozen': bool(s.get('frozen')), 'survivor': bool(s.get('survivor')), 'p_bhy_B': s.get('p_bhy')})
+        out.append(d)
+    return out, hashlib.sha256(body).hexdigest()
+
+
+def amend_sha() -> str | None:
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prereg', f'{AMEND}.md')
+    if not os.path.isfile(p):
+        return None
+    with open(p, 'rb') as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def lockbox_select(out_setups: list, top: int = LOCKBOX_TOP) -> list:
+    """OR-AMEND-1: the setups that pass the HO-1 rules (registry ho1_pass, beats its placebo, hit rate above the matched
+    base; BHY not applied), ranked by HO-1 $/h (ties by id), the best `top`."""
+    ok = [s for s in out_setups if s['verdict']['rules_pass']]
+    return sorted(ok, key=lambda s: (-s['ho1']['usd_per_hour'], s['id']))[:top]
+
+
+def quantiles(x) -> dict:
+    x = np.asarray(x, dtype=np.float64)
+    if not len(x):
+        return {'n': 0}
+    q = np.quantile(x, [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0])
+    return {'n': int(len(x)), 'mean': float(x.mean()), 'min': float(q[0]), 'p10': float(q[1]), 'p25': float(q[2]),
+            'median': float(q[3]), 'p75': float(q[4]), 'p90': float(q[5]), 'max': float(q[6]),
+            'positive': int(np.sum(x > 0)), 'zero': int(np.sum(x == 0))}
+
+
+def report_all_md(doc) -> str:
+    ct, c = doc['ct'], doc['counts']
+    L = [f'# Oracle setups HO-1, all confirmed setups: {ct} ({doc["family"]})', '',
+         f'**Descriptive trial ({AMEND}, python/oracle/prereg/{AMEND}.md; Steven, 2026-11-06 14:03 UTC).** Every setup in the '
+         'miner\'s confirm.jsonl is scored on HO-1 (Aug 1 - Nov 4 2026, 96 days) exactly as a frozen setup is (same trading, '
+         '8-seed matched placebo, folds, terciles, hit rate vs matched base, registry ho1_pass). This is not a pre-registered '
+         'pass: HO-1 is no longer a clean final test for these setups. Only the lockbox L1 (2026-11-06T05:00Z to '
+         '2026-11-13T05:00Z, decisions whose whole horizon lies inside it; read once, no earlier than 2026-11-14T05:00Z) decides what may enter a rulebook. Aggregates only.', '',
+         f'confirm.jsonl sha256 `{doc["confirm_sha256"]}`; frozen.json sha256 `{doc["frozen_sha256"]}` (checked; '
+         f'{doc["n_frozen"]} frozen setup(s)); parts ' + ', '.join(f'{p["dir"]} ({p["hold_rows"]} hold rows)' for p in doc['parts']) + '.',
+         f'Registry rows {doc["n_rows"]} (family {doc["family"]}, flags `{ALL_FLAG}`, `{DEV_FLAG}`; no book row).', '',
+         '| confirmed setups | scored | with HO-1 trades | pass HO-1 rules (before BHY) | pass after BHY q '
+         f'{doc["params"]["q"]} at m = {doc["m_all"]} | lockbox L1 candidates |',
+         '|---|---|---|---|---|---|',
+         f'| {c["confirmed"]} | {c["scored"]} | {c["traded"]} | {c["rules_pass"]} | {c["bhy_pass"]} | {c["lockbox"]} |', '']
+    # The lockbox candidates come first: the commit card caps ho1-all.md, and this list is the result that matters.
+    L += [f'## Lockbox L1 candidates ({AMEND}: HO-1 rules pass before BHY, ranked by HO-1 $/h, top {LOCKBOX_TOP})', '']
+    if doc['lockbox']:
+        L += ['| # | setup | scope | side h | items | HO-1 $/h | trades |', '|---|---|---|---|---|---|---|']
+        L += [f'| {s["rank_lockbox"]} | {s["id"]} | {s["scope"]} | {s["side"]} {s["h"]} | {esc_md(items_str(s["items"]))} | '
+              f'{s["usd_per_hour"]:+.4f} | {s["trades"]} |' for s in doc['lockbox']]
+    else:
+        L.append('None: no confirmed setup of this type passes the HO-1 rules.')
+    L += ['', f'Lockbox pass rule ({AMEND}): on L1 the setup is traded as here and must beat its matched placebo (8 seeds) on '
+          f'lockbox $ and win >= {LOCKBOX["days_won_min"]} of the {LOCKBOX["days"]} lockbox days; only lockbox passers can enter rulebooks.', '']
+    if doc.get('fail_reasons'):
+        L += ['Why setups fail the HO-1 rules (a setup can fail several):', '', '| reason | setups |', '|---|---|']
+        L += [f'| {esc_md(k)} | {v} |' for k, v in doc['fail_reasons']]
+        L.append('')
+    d = doc['usd_day_dist']
+    if d.get('n'):
+        L += ['HO-1 $/day over the scored setups (zeros on days without trades included):', '',
+              '| n | mean | min | p10 | p25 | median | p75 | p90 | max | > $0 | no trades |', '|---|---|---|---|---|---|---|---|---|---|---|',
+              f'| {d["n"]} | ' + ' | '.join(f'{d[k]:+.3f}' for k in ('mean', 'min', 'p10', 'p25', 'median', 'p75', 'p90', 'max'))
+              + f' | {d["positive"]} | {doc["counts"]["scored"] - doc["counts"]["traded"]} |', '']
+    L += [f'## Top {len(doc["top"])} by HO-1 $/day', '',
+          '| # | setup | scope | side h | items | trades | $/day | $/h | placebo diff $/day | folds won (16-day / registry) '
+          '| strata won / covered | hit vs base | p | p BHY all | HO-1 rules | lockbox |',
+          '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+    for i, s in enumerate(doc['top'], 1):
+        e, h, v = s['ho1'], s['heldout'], s['verdict']
+        L.append(f'| {i} | {s["id"]} | {s["scope"]} | {s["side"]} {s["h"]} | {esc_md(items_str(s["items"]))} | {e["trades"]} | '
+                 f'{e["usd_day"]:+.3f} | {e["usd_per_hour"]:+.4f} | {e["usd_day"] - e["placebo_usd_day"]:+.3f} | '
+                 f'{e["folds_won"]}/6 / {h.get("folds_won")}/{h.get("folds")} | {h.get("terciles_won", 0)}/{h.get("terciles_covered", 0)} | '
+                 f'{fmt(e["hit"], ".3f")} vs {fmt(e["base_hit"], ".3f")} | {e["p"]:.2g} | {v["p_bhy_all"]:.2g} | '
+                 f'{"pass" if v["rules_pass"] else "fail"} | {s.get("lockbox_rank") or "-"} |')
+    if doc.get('notes'):
+        L += ['', '## Notes', ''] + [f'- {n}' for n in doc['notes']]
+    L += ['', '## Known limits', ''] + [f'- {n}' for n in KNOWN_LIMITS['all'] + KNOWN_LIMITS.get(ct, [])]
+    L.append('')
+    return '\n'.join(L)
+
+
+def esc_md(x) -> str:
+    return str(x).replace('|', '\\|')
+
+
+def run_all(a) -> dict:
+    """--all-confirmed (OR-AMEND-1): score EVERY setup of confirm.jsonl on HO-1, each traded and judged exactly as a frozen
+    setup (no book). The frozen file's SHA-256 check stays (it names the mined parts); it may hold zero setups."""
+    log = log_to(a.quiet)
+    doc, sha = load_frozen(a.frozen, a.sha256)          # refused here, before any part is opened, on a hash mismatch
+    if not a.confirm:
+        raise SystemExit('--all-confirmed needs --confirm (the miner\'s confirm.jsonl)')
+    ct = doc['ct']
+    setups, csha = load_confirm(a.confirm, ct)
+    reg, reg_path, reg_sha = load_registry(a.registry)
+    fam = f'oracle-{ct}-allconf-v1'
+    if CONTRACT_TYPE[ct] not in reg.CONTRACT_TYPES:
+        raise SystemExit(f'contract type {CONTRACT_TYPE[ct]} not in the registry')
+    params = {'seeds': 8, 'block': 5.0, 'draws': 2000, 'q': 0.10, 'seed': 7}
+    params.update({k_: doc.get('params', {})[k_] for k_ in params if k_ in doc.get('params', {})})
+    code_sha = a.code_sha or git_code_sha()
+    notes = [f'{AMEND}: a descriptive trial of every confirmed setup; HO-1 is no longer a clean final test for them, and a '
+             f'later pre-registered frozen opening of {ct} is no longer clean either']
+    if doc.get('m_confirmed') is not None and int(doc['m_confirmed']) != len(setups):
+        notes.append(f'confirm.jsonl has {len(setups)} setups, the frozen file says m_confirmed {doc["m_confirmed"]}')
+    log(f'{ct}: frozen sha256 {sha} verified ({len(doc.get("setups") or [])} frozen); confirm.jsonl {csha[:16]} '
+        f'{len(setups)} setups; all-confirmed mode ({AMEND}); registry {reg_path}')
+    hps = resolve_parts(doc, a.parts, ct)
+    by_scope = {hp.scope: hp for hp in hps}
+    log('parts: ' + ', '.join(f'{hp.dir} {hp.hold_rows} hold rows' for hp in hps))
+    strata = Strata(ct, a.labels, hps)
+    scope_parts = lambda s: [hp for hp in hps if scope_has(s['scope'], hp)] if is_pooled(s['scope']) else [by_scope[s['scope']]] if s['scope'] in by_scope else None
+
+    results = []
+    for i, s in enumerate(setups):
+        sp = scope_parts(s)
+        if not sp:
+            raise SystemExit(f'setup {s["id"]}: no part for scope {s["scope"]}')
+        seed = (zlib.crc32(s['id'].encode()) ^ int(params['seed'])) & 0x7FFFFFFF        # the frozen mode's seed
+        legs = setup_legs(s, sp)
+        ev = evaluate(legs, params, seed, strata, sp)
+        cells = [hp.cell(s['side'], int(s['h'])) for hp in sp]
+        adv = mine_adversary(s, cells, HOLD_SPAN, None)
+        results.append({'setup': s, 'eval': ev, 'adversary': adv, 'modules': setup_modules(s, sp), 'seed': seed,
+                        'seeds': int(params['seeds'])})
+        if (i + 1) % 50 == 0:
+            log(f'  scored {i + 1}/{len(setups)}')
+
+    ctl_hours = strata.hours(hps)
+    order = [hp.scope for hp in hps] if ct == 'tennis' else list(TERCILES)
+    control_terc = {k_: {'pnl': 0.0, 'hours': ctl_hours.get(k_, 0.0)} for k_ in order}
+    rows, ctl = build_rows(reg, ct, fam, sha, code_sha, a.run, results, None, control_terc, hps, confirm_sha=csha)
+    reg.ho1_fill(rows)
+    byid = {r['trial_id']: r for r in rows}
+    q = float(params['q'])
+    m_all = len(results)                                # BHY at m = every confirmed setup of the type
+    adj = [float(x) for x in bhy_adjust([c['eval']['p'] for c in results])] if results else []
+    fails: dict = {}
+    for i, c in enumerate(results):
+        r = byid[c['trial_id']]
+        ok, why = reg.ho1_pass(r['heldout'], reg.contract_type_of(r), r['data'].get('engine'))
+        e = c['eval']
+        hit_ok = e['hit'] is not None and e['hit'] > e['base_hit']
+        reasons = ([f'HO-1: {x}' for x in why.split('; ') if x] if not ok else [])
+        reasons += ([] if e['beats_placebo'] or 'placebo' in why else ['does not beat its placebo'])
+        reasons += ([] if hit_ok else ['hit rate not above the matched base'])
+        rules = bool(ok and e['beats_placebo'] and hit_ok)
+        for x in reasons:
+            k_ = re.sub(r'^HO-1: \d+ held-out days < \d+$', 'HO-1: too few held-out days', re.sub(r'won \d+/\d+ folds', 'too few folds won', x))
+            fails[k_] = fails.get(k_, 0) + 1
+        c['heldout'] = r['heldout']
+        c['verdict'] = {'rules_pass': rules, 'pass': False, 'ho1_pass': bool(ok), 'ho1_why': why, 'beats_placebo': e['beats_placebo'],
+                        'hit_above_base': bool(hit_ok), 'p_bhy_all': adj[i], 'bhy_pass_all': bool(adj[i] <= q),
+                        'rules_and_bhy_pass': bool(rules and adj[i] <= q), 'why': reasons,
+                        'note': f'{AMEND} descriptive trial: not a pre-registered pass; lockbox L1 decides'}
+        v = c['verdict']
+        r['verdict'] = (f'all-confirmed descriptive trial ({AMEND}; not a pre-registered pass): HO-1 rules '
+                        + ('pass' if rules else 'fail: ' + '; '.join(reasons))
+                        + f'; p {e["p"]:.2g}, p BHY {adj[i]:.2g} at m {m_all} (every confirmed setup)'
+                        + f' (${e["usd_per_hour"]:+.4f}/h)')
+        r['raw']['verdict'] = {k_: v[k_] for k_ in ('rules_pass', 'ho1_pass', 'beats_placebo', 'hit_above_base', 'p_bhy_all',
+                                                    'bhy_pass_all', 'rules_and_bhy_pass')}
+        if (e['folds_won'] >= 4) != ((r['heldout'].get('folds_won') or 0) >= 4):
+            notes.append(f'{r["arm"]}: registry folds won {r["heldout"].get("folds_won")} vs {e["folds_won"]} on 16-day folds '
+                         '(ho1_fill counts Nov 4 twice in fold 6)')
+
+    bad = []
+    for r in rows:
+        err, fl = reg.validate(r)
+        if err:
+            bad.append(f'{r["arm"]}: {"; ".join(err)}')
+        r['flags'] = sorted(set((r.get('flags') or []) + fl + list(getattr(a, 'flag', None) or [])))
+    if bad:
+        raise SystemExit('invalid registry rows (nothing written):\n  ' + '\n  '.join(bad))
+    if ct == 'tennis':
+        notes.append('tennis strata are the tours; a single-tour setup has one stratum and cannot meet "2 strata won"')
+
+    os.makedirs(a.out, exist_ok=True)
+    with open(os.path.join(a.out, 'rows.jsonl'), 'w') as f:
+        for r in rows:
+            f.write(json.dumps(clean(r), sort_keys=True, allow_nan=False) + '\n')
+    pub = lambda e: {k_: v for k_, v in e.items() if not k_.startswith('_')}
+    out_setups = []
+    for c in results:
+        s = c['setup']
+        out_setups.append({'arm': s['id'], 'id': s['id'], 'rank': int(s['rank']), 'rank_A': s.get('rank_A'), 'scope': s['scope'],
+                           'side': s['side'], 'h': int(s['h']), 'items': s['items'], 'modules': c['modules'],
+                           'frozen': s['frozen'], 'survivor_B': s['survivor'], 'trial_id': c['trial_id'],
+                           'placebo_trial_id': c['placebo_trial_id'], 'ho1': pub(c['eval']), 'heldout': c['heldout'],
+                           'verdict': c['verdict'], 'adversary': c['adversary'], 'dev_B': (s.get('dev') or {}).get('B')})
+    lb = lockbox_select(out_setups)
+    for i, s in enumerate(lb, 1):
+        s['lockbox_rank'] = i
+    top = sorted(out_setups, key=lambda s: (-s['ho1']['usd_day'], s['id']))[:20]
+    asha = amend_sha()
+    if asha is None:
+        notes.append(f'python/oracle/prereg/{AMEND}.md not found beside the code: the selection rule is the one in this code')
+    lockbox = [{'rank_lockbox': s['lockbox_rank'], 'id': s['id'], 'ct': ct, 'scope': s['scope'], 'side': s['side'], 'h': s['h'],
+                'items': s['items'], 'trial_id': s['trial_id'], 'usd_per_hour': s['ho1']['usd_per_hour'], 'usd_day': s['ho1']['usd_day'],
+                'trades': s['ho1']['trades'], 'placebo_usd_day': s['ho1']['placebo_usd_day'], 'hit': s['ho1']['hit'],
+                'base_hit': s['ho1']['base_hit'], 'p': s['ho1']['p'], 'p_bhy_all': s['verdict']['p_bhy_all'],
+                'bhy_pass_all': s['verdict']['bhy_pass_all'], 'heldout': s['heldout']} for s in lb]
+    counts = {'confirmed': len(setups), 'scored': len(results), 'traded': sum(1 for s in out_setups if s['ho1']['trades'] > 0),
+              'rules_pass': sum(1 for s in out_setups if s['verdict']['rules_pass']),
+              'bhy_pass': sum(1 for s in out_setups if s['verdict']['rules_and_bhy_pass']),
+              'bhy_pass_any': sum(1 for s in out_setups if s['verdict']['bhy_pass_all']), 'lockbox': len(lb)}
+    summary = {'schema': 'oracle-ho1-all-1', 'mode': ALL_FLAG, 'amendment': f'python/oracle/prereg/{AMEND}.md', 'amendment_sha256': asha,
+               'ct': ct, 'family': fam, 'thread': THREAD, 'contract_type': CONTRACT_TYPE[ct], 'frozen_sha256': sha,
+               'n_frozen': len(doc.get('setups') or []), 'confirm_sha256': csha, 'run': str(a.run), 'code_sha': code_sha,
+               'registry_sha256': reg_sha, 'params': params,
+               'hold': {'from': HOLD_DAYS[0], 'to': HOLD_DAYS[-1], 'days': len(HOLD_DAYS), 'hours': HOLD_HOURS},
+               'parts': [{'dir': hp.dir, 'scope': hp.scope, 'rows_total': hp.rows_total, 'hold_rows': hp.hold_rows} for hp in hps],
+               'strata_keys': list(control_terc), 'strata_hours': {k_: v['hours'] for k_, v in control_terc.items()},
+               'n_rows': len(rows), 'm_all': m_all, 'counts': counts,
+               'fail_reasons': sorted(fails.items(), key=lambda kv: (-kv[1], kv[0])),
+               'usd_day_dist': quantiles([s['ho1']['usd_day'] for s in out_setups]),
+               'usd_per_hour_dist': quantiles([s['ho1']['usd_per_hour'] for s in out_setups]),
+               'control_trial_id': ctl['trial_id'], 'top': top, 'lockbox': lockbox, 'setups': out_setups, 'book': None, 'notes': notes}
+    write_json(os.path.join(a.out, 'ho1-all.json'), summary)
+    cand = {'schema': 'oracle-lockbox-candidates-1', 'rule': f'python/oracle/prereg/{AMEND}.md', 'rule_sha256': asha, 'ct': ct,
+            'family': fam, 'contract_type': CONTRACT_TYPE[ct], 'run': str(a.run), 'code_sha': code_sha, 'frozen_sha256': sha,
+            'confirm_sha256': csha, 'selected_by': 'HO-1 rules pass (registry ho1_pass, beats its matched placebo, hit rate above '
+                                                  f'the matched base; before BHY), ranked by HO-1 $/h, top {LOCKBOX_TOP}',
+            'lockbox': dict(LOCKBOX, pass_rule=f'beats its matched placebo (8 seeds) on lockbox $ and >= {LOCKBOX["days_won_min"]} '
+                                               f'of {LOCKBOX["days"]} lockbox days won; only lockbox passers can enter rulebooks'),
+            'size_usd': SIZE[ct], 'exit': EXITS[ct], 'n_rules_pass': counts['rules_pass'], 'setups': lockbox}
+    write_json(os.path.join(a.out, 'lockbox_candidates.json'), cand)
+    with open(os.path.join(a.out, 'ho1-all.md'), 'w') as f:
+        f.write(report_all_md(summary))
+    log(f'{ct} all-confirmed: {counts["rules_pass"]} of {len(results)} pass the HO-1 rules, {counts["bhy_pass"]} also BHY at m '
+        f'{m_all}; {len(lb)} lockbox candidate(s); {len(rows)} registry rows validated -> {a.out}/rows.jsonl')
+    return {'summary': summary, 'rows': rows, 'lockbox': cand, 'results': results, 'book': None}
+
+
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description='Oracle setups HO-1 scorer (SPEC 4): score a frozen file once on Aug 1 - Nov 4 2026.')
     ap.add_argument('--frozen', required=True, help="the miner's frozen.json")
@@ -855,6 +1143,9 @@ def parser() -> argparse.ArgumentParser:
                          'family BHY m as p = 1')
     ap.add_argument('--flag', action='append', default=[], help='a flag added to every registry row (repeatable), e.g. '
                                                                 'ho1-reopen:<earlier runs>')
+    ap.add_argument('--all-confirmed', action='store_true',
+                    help='OR-AMEND-1: score EVERY setup of --confirm on HO-1 (descriptive trial, no book): writes rows.jsonl, '
+                         'ho1-all.json, ho1-all.md and lockbox_candidates.json; the frozen file\'s SHA-256 check stays')
     ap.add_argument('--quiet', action='store_true')
     return ap
 

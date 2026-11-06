@@ -24,14 +24,28 @@
 #   [ho1-reopen:<ct,...>]                   with [protocol:ho1]: allow a second opening of a contract type's family (another
 #                                           frozen file); logged in the ledger and on every registry row, and the earlier
 #                                           openings' frozen setups join the family BHY m (as p = 1)
+#   [protocol:ho1] [ho1-from:<run>] [ho1-all-confirmed] [oracle-ct:<ct>]
+#                                           OR-AMEND-1 (python/oracle/prereg/OR-AMEND-1.md): score EVERY confirmed setup
+#                                           (confirm.jsonl) of run <run> on HO-1 as a descriptive trial (ho1.py --all-confirmed:
+#                                           ho1-all.md, lockbox_candidates.json, registry family oracle-<ct>-allconf-v1), for the
+#                                           named type (any of perp,pp15,pp60,tennis,perp-rev) or every type the run has; it runs
+#                                           when the run froze zero setups. Ledger rows carry mode 'all-confirmed' under their own
+#                                           key: not blocked by and not consuming a pre-registered frozen opening, but once a
+#                                           type's confirmed setups have seen HO-1 a later frozen opening of that type is REFUSED
+#                                           (open a run's frozen file first). Also runs the loser study on HO-1 (losers.py --ho1).
+#   [oracle-losers:<run>] [oracle-ct:<ct>]  the loser study (python/oracle/losers.py) of run <run>'s confirmed setups on
+#                                           discovery B (plus HO-1 rows when the ledger holds an all-confirmed opening of that
+#                                           type from that run); outputs to models/oracle-setups/runs/<run>/losers/<ct>[-ho1]/.
+#                                           Every mine job also runs it on discovery B after mining.
 # One study run at a time (the plan refuses a study run while an earlier-started one is active), so at most 9 jobs run.
 # Jobs (at most 9 at once: coin 4 + hourly 3 + tennis 2; then pp60 3, mine 4, ho1 4):
 #   test -> plan -> coin (perp + spot parts, pp15) | hourly (KX<A>D backfill) | tennis -> pp60 -> mine -> card
 #   test -> plan -> ho1_open (the one-time opening) -> ho1 -> card
+#   test -> plan -> losers (max 4) -> card
 # Drive (via .github/actions/drive-setup and deploy/drive_lab.sh; registry/ paths with rclone copyto). Read only:
 # derived/perp-ta/grids, raw/perp-ta-history/<A> (hourly bars, 1-minute spot), raw/kalshi-history/kalshi/KX<A>15M,
 # raw/tennis-history/kalshi/<S>.tar.gz, registry/regime-v1 labels. Written: models/oracle-setups/runs/<run>/{parts,
-# status,mine,ho1}, derived/oracle-setups/modcache (the analyzer walk), raw/oracle-history/kalshi/KX<A>D (the hourly
+# status,mine,ho1,losers}, derived/oracle-setups/modcache (the analyzer walk), raw/oracle-history/kalshi/KX<A>D (the hourly
 # backfill, resumed and put back, never deleted), models/oracle-setups/ho1/openings.jsonl, registry/shards/oracle-setups.
 # Public repository: per-decision rows stay on Drive; logs and the commit comment carry aggregates of discovery rows only
 # (and, after the opening, HO-1 aggregates). No Kalshi day file dated 2026-11-05 or later is downloaded; the builders cap
@@ -53,7 +67,7 @@ permissions:
 # A study run (any of its tags) has its own group, so study runs never cancel each other; a test-only push cancels the
 # branch's earlier test-only push.
 concurrency:
-  group: ${{ (contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]')) && format('oracle-setups-study-{0}', github.run_id) || format('oracle-setups-{0}-other', github.ref) }}
+  group: ${{ (contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]') || contains(github.event.head_commit.message, '[oracle-losers:')) && format('oracle-setups-study-{0}', github.run_id) || format('oracle-setups-{0}-other', github.ref) }}
   cancel-in-progress: true
 
 defaults:
@@ -121,7 +135,7 @@ jobs:
 
   plan:
     needs: test
-    if: contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]')
+    if: contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]') || contains(github.event.head_commit.message, '[oracle-losers:')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -140,6 +154,8 @@ jobs:
       partial: ${{ steps.go.outputs.partial }}
       reopen: ${{ steps.go.outputs.reopen }}
       targets: ${{ steps.go.outputs.targets }}
+      allconf: ${{ steps.go.outputs.allconf }}
+      losers: ${{ steps.lpresent.outputs.losers }}
     steps:
       - uses: actions/checkout@v5
       - name: Read the tags
@@ -178,6 +194,13 @@ jobs:
 
           ho1, study, mine_from, ho1_from, proto = '[protocol:ho1]' in msg, '[oracle]' in msg, tag('oracle-mine'), tag('ho1-from'), tag('protocol')
           partial, reopen_raw = '[oracle-partial]' in msg, tag('ho1-reopen')
+          allconf, losers_from = '[ho1-all-confirmed]' in msg, tag('oracle-losers')
+          if allconf and not ho1:
+              die('[ho1-all-confirmed] needs [protocol:ho1] [ho1-from:<run>]')
+          if allconf and reopen_raw is not None:
+              die('[ho1-reopen:...] is for pre-registered frozen openings, not [ho1-all-confirmed]')
+          if losers_from is not None and (ho1 or study or mine_from is not None or partial):
+              die('[oracle-losers:<run>] runs alone: no [oracle], [oracle-mine:], [protocol:ho1] or [oracle-partial] in the same push')
           if proto is not None and proto != 'ho1':
               die(f'[protocol:{proto}]: only [protocol:ho1] exists here')
           if ho1 and (study or mine_from is not None):
@@ -190,10 +213,16 @@ jobs:
               die('[oracle-partial] is for building / mining: a partial run is never opened')
           reopen = pick(reopen_raw, CTS + REVT, False) if reopen_raw is not None else []
           ct_raw, parts_raw, targets_raw = tag('oracle-ct'), tag('oracle-parts'), tag('oracle-targets')
-          rev = pick(ct_raw, REVT, False) if ct_raw is not None else []
           assets = pick(tag('oracle-assets'), ASSETS, True)
-          # [oracle-ct:perp-rev] alone selects only the reversal type; with [oracle-parts:] the union.
-          cts = (pick(parts_raw, CTS, False) if parts_raw is not None or ct_raw is None else []) + rev
+          if allconf or losers_from is not None:
+              # OR-AMEND-1 modes: [oracle-ct:<ct>] names any contract type (default: every type the run has; absent ones skip).
+              if parts_raw is not None or targets_raw is not None:
+                  die('[oracle-parts:] / [oracle-targets:] are for building: use [oracle-ct:<ct>] with [ho1-all-confirmed] / [oracle-losers:]')
+              rev, cts = [], (pick(ct_raw, CTS + REVT, False) if ct_raw is not None else CTS + REVT)
+          else:
+              rev = pick(ct_raw, REVT, False) if ct_raw is not None else []
+              # [oracle-ct:perp-rev] alone selects only the reversal type; with [oracle-parts:] the union.
+              cts = (pick(parts_raw, CTS, False) if parts_raw is not None or ct_raw is None else []) + rev
           if targets_raw is not None and not rev:
               die('[oracle-targets:...] needs [oracle-ct:perp-rev]')
           targets = []
@@ -208,6 +237,10 @@ jobs:
               if not re.fullmatch(r'[0-9]+', ho1_from or ''):
                   die('[protocol:ho1] needs [ho1-from:<run id>]: the run whose frozen.json files are opened')
               mode, src = 'ho1', ''
+          elif losers_from is not None:
+              if not re.fullmatch(r'[0-9]+', losers_from):
+                  die(f'[oracle-losers:{losers_from}]: a run id')
+              mode, src = 'losers', losers_from
           elif mine_from is not None:
               if not re.fullmatch(r'[0-9]+', mine_from):
                   die(f'[oracle-mine:{mine_from}]: a run id')
@@ -236,22 +269,27 @@ jobs:
                     'perp-rev': [f'perp-rev-{a}-m{m}' for a in assets for m in targets]}
           folders = []
           if mode == 'build':
-              folders = [f'parts/{p}' for c in cts for p in expect[c]] + [f'parts/spot-{a}' for a in coin] + [f'mine/{c}' for c in cts] + ['status']
+              folders = [f'parts/{p}' for c in cts for p in expect[c]] + [f'parts/spot-{a}' for a in coin] + [f'mine/{c}' for c in cts] + [f'losers/{c}' for c in cts] + ['status']
           else:
               coin, hourly, tennis = [], [], []
-          mine = [{'ct': c, 'expect': ' '.join(expect[c]) if mode == 'build' else ''} for c in cts] if mode != 'ho1' else []
+          mine = [{'ct': c, 'expect': ' '.join(expect[c]) if mode == 'build' else ''} for c in cts] if mode in ('build', 'mine') else []
           j = lambda x: json.dumps(x, separators=(',', ':'))
           out = {'mode': mode, 'src': src, 'from': ho1_from or '', 'cts': ','.join(cts), 'assets': ','.join(assets), 'coin': j(coin),
                  'hourly': j(hourly), 'tennis': j(tennis), 'mine': j(mine), 'folders': ' '.join(folders),
                  'kxd': ' '.join(f'KX{a}D' for a in hourly), 'modcache': 'true' if coin else 'false',
-                 'partial': 'true' if partial else 'false', 'reopen': ','.join(reopen), 'targets': ','.join(map(str, targets))}
+                 'partial': 'true' if partial else 'false', 'reopen': ','.join(reopen), 'targets': ','.join(map(str, targets)),
+                 'allconf': 'true' if allconf else 'false'}
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.writelines(f'{k}={v}\n' for k, v in out.items())
-          summary = [f'mode {mode}' + (f' (parts of run {src})' if mode == 'mine' else f' (frozen files of run {ho1_from})' if mode == 'ho1' else ''),
+          summary = [f'mode {mode}' + (f' (parts of run {src})' if mode == 'mine' else f' (confirmed setups of run {src})' if mode == 'losers'
+                                       else f' (frozen files of run {ho1_from})' if mode == 'ho1' and not allconf
+                                       else f' (EVERY confirmed setup of run {ho1_from}: OR-AMEND-1 all-confirmed, descriptive)' if mode == 'ho1' else ''),
                      f'contract types {",".join(cts)}', f'coins {",".join(assets)}' + (' (not used by HO-1: the frozen setups fix their scopes)' if mode == 'ho1' else ''),
                      f'coin jobs {coin}', f'reversal targets {targets}', f'hourly jobs {hourly}', f'tennis jobs {tennis}', f'mine jobs {[m["ct"] for m in mine]}']
           if partial:
               summary.append('PARTIAL run ([oracle-partial]): its frozen files are never opened')
+          if allconf:
+              summary.append('all-confirmed (OR-AMEND-1): a later pre-registered frozen opening of these contract types will be refused')
           if reopen:
               summary.append(f're-opening allowed for {",".join(reopen)} ([ho1-reopen]): logged, flagged, earlier setups join the BHY m')
           print('\n'.join(summary))
@@ -273,7 +311,7 @@ jobs:
               --jq '.workflow_runs[] | {id, run_started_at, msg: (.head_commit.message // "")}' >> "$RUNNER_TEMP/active.json"
           done
           busy=$(jq -sr --arg me "$me" --argjson id "$GITHUB_RUN_ID" \
-            '[.[] | select(.id != $id and (.msg | test("\\[oracle\\]|\\[oracle-mine:|\\[protocol:ho1\\]")) and ([.run_started_at, .id] < [$me, $id])) | .id] | unique | map(tostring) | join(" ")' \
+            '[.[] | select(.id != $id and (.msg | test("\\[oracle\\]|\\[oracle-mine:|\\[protocol:ho1\\]|\\[oracle-losers:")) and ([.run_started_at, .id] < [$me, $id])) | .id] | unique | map(tostring) | join(" ")' \
             "$RUNNER_TEMP/active.json")
           [ -z "$busy" ] || { echo "::error::another study run is active (run $busy): one study run at a time (SPEC 5: at most 10 jobs); push again when it has finished"; exit 1; }
           echo "no other study run is active"
@@ -316,8 +354,34 @@ jobs:
           sel=$(jq -c --arg have "$have" '[.[] | select(.ct as $c | ($have | split(",") | index($c)))]' <<< "$MINE")
           [ "$sel" != '[]' ] || { echo "::error::run $SRC has no part of the requested contract types"; exit 1; }
           echo "mine=$sel" >> "$GITHUB_OUTPUT"
-          for ct in $(jq -r '.[].ct' <<< "$sel"); do rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/mine/$ct"; done
+          for ct in $(jq -r '.[].ct' <<< "$sel"); do rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/mine/$ct"; rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/losers/$ct"; done
           echo "contract types to mine: $(jq -r '[.[].ct] | join(",")' <<< "$sel")"
+      # [oracle-losers:<run>]: the contract types of that run with a confirm.jsonl, and the run that built their parts.
+      - name: The confirmed setups of the run to study
+        id: lpresent
+        if: steps.go.outputs.mode == 'losers'
+        env:
+          SRC: ${{ steps.go.outputs.src }}
+          CTS: ${{ steps.go.outputs.cts }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SRC" --jq '"\(.name)|\(.status)"') || { echo "::error::run $SRC not found"; exit 1; }
+          [ "$st" = "Oracle setups|completed" ] || { echo "::error::run $SRC is '$st', not a completed Oracle setups run"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$SRC/mine" 2>&1 | grep -v '^$' | tail -5 || true
+          sel='[]'
+          for ct in ${CTS//,/ }; do
+            d="$R/models/oracle-setups/runs/$SRC/mine/$ct"
+            have=$(rclone lsf "$d" --files-only 2>/dev/null || true)
+            if ! grep -qxF confirm.jsonl <<< "$have" || ! grep -qxF workflow_source.json <<< "$have"; then echo "$ct: no confirm.jsonl / workflow_source.json in run $SRC: skipped"; continue; fi
+            pr=$(rclone cat "$d/workflow_source.json" | jq -r '.parts_run // empty')
+            [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::$ct: bad parts run '$pr' in workflow_source.json"; exit 1; }
+            sel=$(jq -c --arg ct "$ct" --arg pr "$pr" '. + [{ct: $ct, parts_run: $pr}]' <<< "$sel")
+            rclone mkdir "$R/models/oracle-setups/runs/$SRC/losers/$ct"
+            echo "$ct: confirm.jsonl present, parts of run $pr"
+          done
+          [ "$sel" != '[]' ] || { echo "::error::run $SRC has no confirm.jsonl of the requested contract types"; exit 1; }
+          echo "losers=$sel" >> "$GITHUB_OUTPUT"
 
   # Per coin: the perp part and the spot part (research/oracle/oracleExport.ts, SPEC 2a), then the pp15 part
   # (python/oracle/pp.py --kind 15, SPEC 2b) from Kalshi's real 15-minute candles.
@@ -817,6 +881,15 @@ jobs:
           jq -n --arg run "$RUN" --arg src "$SRC" --arg ct "$CT" --arg sha "$GITHUB_SHA" --arg parts "$(find data/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)" --arg utc "$(date -u +%FT%TZ)" \
             '{run: $run, parts_run: $src, ct: $ct, code_sha: $sha, parts: ($parts | split(" ")), at_utc: $utc}' > "$RUNNER_TEMP/workflow_source.json"
           rclone copyto "$RUNNER_TEMP/workflow_source.json" "$R/models/oracle-setups/runs/$RUN/mine/$CT/workflow_source.json"
+      # OR-AMEND-1 loser study on discovery B rows only (python/oracle/losers.py: nothing at or after DEV_END is read). After
+      # the mining outputs are kept, and never fails the job.
+      - name: Loser study on discovery B (python/oracle/losers.py)
+        continue-on-error: true
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -m oracle.losers --ct "$CT" --parts ../data/parts --confirm "../out/$CT/confirm.jsonl" --out "../out/losers/$CT" 2>&1 | tail -40
+          bash ../deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/losers/$CT" "../out/losers/$CT"
 
   # HO-1, once per frozen file (prereg "Confirmation and freeze", "HO-1"): every check that does not read an HO-1 number
   # comes first, then the openings are logged on Drive, and only then does any job read the hold. A frozen file already
@@ -838,6 +911,7 @@ jobs:
     env:
       FROM: ${{ needs.plan.outputs.from }}
       CTS: ${{ needs.plan.outputs.cts }}
+      ALLCONF: ${{ needs.plan.outputs.allconf }}
       RUN: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v5
@@ -857,12 +931,15 @@ jobs:
           [ "$st" = "Oracle setups|completed" ] || { echo "::error::run $FROM is '$st', not a completed Oracle setups run: refused"; exit 1; }
           rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$FROM" 2>&1 | grep -v '^$' | tail -5 || true
           mkdir -p frozen
-          rc=0; bash deploy/drive_lab.sh get "models/oracle-setups/runs/$FROM/mine" frozen --include "/*/frozen.json" --include "/*/frozen.sha256" --include "/*/workflow_source.json" || rc=$?
+          inc=(--include "/*/frozen.json" --include "/*/frozen.sha256" --include "/*/workflow_source.json")
+          [ "$ALLCONF" != true ] || inc+=(--include "/*/confirm.jsonl")
+          rc=0; bash deploy/drive_lab.sh get "models/oracle-setups/runs/$FROM/mine" frozen "${inc[@]}" || rc=$?
           [ "$rc" = 0 ] || { echo "::error::run $FROM has no mining outputs on Drive ($rc)"; exit 1; }
           python3 -I - <<'EOF'
           import hashlib, json, os, re, sys
           die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
           frm, cts = os.environ['FROM'], os.environ['CTS'].split(',')
+          allconf = os.environ.get('ALLCONF') == 'true'
           rows = []
           for ct in cts:
               d = os.path.join('frozen', ct)
@@ -879,14 +956,30 @@ jobs:
                   die(f'{ct}: frozen.json (sha256 {sha[:16]}) does not match the miner frozen.sha256: refused')
               fz = json.load(open(f))
               n = len(fz) if isinstance(fz, list) else len(fz['setups']) if isinstance(fz, dict) and isinstance(fz.get('setups'), list) else -1
-              if n == 0:
+              extra = {}
+              if allconf:
+                  # OR-AMEND-1: every confirmed setup; the frozen file (any number of setups, zero included) is still
+                  # hash-checked because it names the mined parts.
+                  cf = os.path.join(d, 'confirm.jsonl')
+                  if not os.path.exists(cf):
+                      print(f'{ct}: no confirm.jsonl in run {frm}: nothing to score')
+                      continue
+                  body = open(cf, 'rb').read()
+                  m_conf = sum(1 for line in body.decode().splitlines() if line.strip())
+                  if m_conf == 0:
+                      print(f'{ct}: confirm.jsonl is empty (nothing confirmed): nothing to score')
+                      continue
+                  extra = {'mode': 'all-confirmed', 'key': f'{ct}:all-confirmed', 'confirmed': m_conf,
+                           'confirm_sha256': hashlib.sha256(body).hexdigest()}
+              elif n == 0:
                   print(f'{ct}: nothing frozen (no setup survived confirmation): nothing to open')
                   continue
               parts_run = str(json.load(open(os.path.join(d, 'workflow_source.json'))).get('parts_run') or frm)
               if not re.fullmatch(r'[0-9]+', parts_run):
                   die(f'{ct}: bad parts run {parts_run}')
-              rows.append({'ct': ct, 'sha256': sha, 'setups': n, 'parts_run': parts_run})
-              print(f'{ct}: frozen.json sha256 {sha}, {n if n >= 0 else "?"} setup(s), parts of run {parts_run}')
+              rows.append({'ct': ct, 'sha256': sha, 'setups': n, 'parts_run': parts_run, **extra})
+              print(f'{ct}: frozen.json sha256 {sha}, {n if n >= 0 else "?"} frozen setup(s), parts of run {parts_run}'
+                    + (f'; ALL {extra["confirmed"]} confirmed setups (confirm.jsonl sha256 {extra["confirm_sha256"]}) will be scored (OR-AMEND-1, descriptive)' if extra else ''))
           json.dump(rows, open('frozen/rows.json', 'w'))
           EOF
           # Before anything is logged: the parts each frozen file reads, the regime v1 labels and the registry code exist.
@@ -901,7 +994,7 @@ jobs:
           if ! { git fetch -q --depth 1 origin claude/project-thread-79ntof && git cat-file -e FETCH_HEAD:research/registry.py; }; then
             echo "::error::research/registry.py not readable on claude/project-thread-79ntof"; exit 1
           fi
-          echo "matrix=$(jq -c '[.[] | {ct, sha256, parts_run}]' frozen/rows.json)" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -c '[.[] | {ct, sha256, parts_run, mode: (.mode // "frozen"), confirm_sha256: (.confirm_sha256 // "")}]' frozen/rows.json)" >> "$GITHUB_OUTPUT"
       - name: The frozen file's parts are the mined ones (checked before anything is logged)
         run: |
           set -euo pipefail
@@ -934,12 +1027,17 @@ jobs:
       - name: Log the openings (models/oracle-setups/ho1/openings.jsonl), before any HO-1 number
         id: log
         if: steps.check.outputs.matrix != '[]'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           D="$R/models/oracle-setups/ho1"
           rclone mkdir "$D"
           rclone mkdir "$R/registry/shards/oracle-setups"
-          for ct in $(jq -r '.[].ct' frozen/rows.json); do rclone mkdir "$R/models/oracle-setups/runs/$RUN/ho1/$ct"; done
+          for ct in $(jq -r '.[].ct' frozen/rows.json); do
+            rclone mkdir "$R/models/oracle-setups/runs/$RUN/ho1/$ct"
+            [ "$ALLCONF" != true ] || rclone mkdir "$R/models/oracle-setups/runs/$FROM/losers/$ct-ho1"
+          done
           # A ledger that exists but cannot be read is never replaced: listing first, and a failed listing refuses.
           L=$(rclone lsf "$D" --files-only) || { echo "::error::ledger listing failed: refused"; exit 1; }
           if grep -qxF openings.jsonl <<< "$L"; then rclone copyto "$D/openings.jsonl" ledger.jsonl; else : > ledger.jsonl; fi
@@ -947,19 +1045,56 @@ jobs:
           echo "ledger: $(wc -l < ledger.jsonl) opening(s) so far"
           # Once per CONTRACT TYPE, not per file hash: a re-mine of the same parts (other code, seed, top or beam) makes a new
           # hash, so a hash-only guard would let HO-1 feed back into selection (review finding, critical).
+          # OR-AMEND-1: all-confirmed openings (mode 'all-confirmed', key '<ct>:all-confirmed') neither consume nor are
+          # blocked by a pre-registered frozen opening; once a type's confirmed setups have all seen HO-1, a pre-registered
+          # frozen opening of that type is no longer clean: refused. So when the run froze setups, its frozen file must be
+          # opened first (enforced here, not only in prose). One all-confirmed opening per contract type (it fixes the
+          # lockbox candidates); a retry is allowed only when every earlier all-confirmed opening of the type is of the same
+          # confirm.jsonl, its run has completed, and it wrote no lockbox_candidates.json (it failed before the selection).
+          : > retries.json
           for ct in $(jq -r '.[].ct' frozen/rows.json); do
-            by=$(jq -r --arg ct "$ct" --arg run "$RUN" 'select(.ct == $ct and (.run | tostring) != $run) | .run' ledger.jsonl | head -1)
-            [ -z "$by" ] || { echo "::error::HO-1 for $ct was already opened by run $by: it is opened once per contract type (refused, nothing logged)"; exit 1; }
+            if [ "$ALLCONF" = true ]; then
+              nfz=$(jq -r --arg ct "$ct" '.[] | select(.ct == $ct) | .setups' frozen/rows.json)
+              fz=$(jq -r --arg ct "$ct" 'select(.ct == $ct and (.mode // "frozen") != "all-confirmed") | .run' ledger.jsonl | head -1)
+              if [ -z "$fz" ] && [ "$nfz" != 0 ]; then
+                echo "::error::$ct: run $FROM froze $nfz setup(s) (-1 = unreadable count) and no pre-registered frozen opening of $ct is in the ledger; open its frozen file first ([protocol:ho1] [ho1-from:$FROM] [oracle-ct:$ct]), then [ho1-all-confirmed]: refused, nothing logged"
+                exit 1
+              fi
+              csha=$(jq -r --arg ct "$ct" '.[] | select(.ct == $ct) | .confirm_sha256' frozen/rows.json)
+              prev=()
+              for by in $(jq -r --arg ct "$ct" --arg run "$RUN" 'select(.ct == $ct and .mode == "all-confirmed" and (.run | tostring) != $run) | "\(.run)|\(.from)|\(.confirm_sha256)"' ledger.jsonl); do
+                br=${by%%|*}; rest=${by#*|}; bf=${rest%%|*}; bc=${rest#*|}
+                [[ "$br" =~ ^[0-9]+$ ]] || { echo "::error::bad ledger run $br: refused"; exit 1; }
+                [ "$bf" = "$FROM" ] && [ "$bc" = "$csha" ] || { echo "::error::all-confirmed HO-1 for $ct was already opened by run $br (from run $bf, another confirm.jsonl): its lockbox candidates are fixed: refused, nothing logged"; exit 1; }
+                bst=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$br" --jq .status) || { echo "::error::run $br not found: refused"; exit 1; }
+                [ "$bst" = completed ] || { echo "::error::the all-confirmed opening of $ct by run $br is still $bst: refused, nothing logged"; exit 1; }
+                lb=$(rclone lsf "$R/models/oracle-setups/runs/$br/ho1/$ct" --files-only --include lockbox_candidates.json) || { echo "::error::listing run $br's HO-1 outputs failed: refused"; exit 1; }
+                [ -z "$lb" ] || { echo "::error::all-confirmed HO-1 for $ct was already opened by run $br and wrote its lockbox candidates (fixed): refused, nothing logged"; exit 1; }
+                echo "::warning::$ct: the all-confirmed opening by run $br (same confirm.jsonl) wrote no lockbox_candidates.json: this run retries it (logged as retry_of)"
+                prev+=("$br")
+              done
+              jq -n --arg ct "$ct" '$ARGS.positional' --args "${prev[@]}" | jq -c --arg ct "$ct" '{ct: $ct, retry_of: .}' >> retries.json
+              [ -z "$fz" ] && echo "$ct: run $FROM froze nothing; every confirmed setup now sees HO-1 (OR-AMEND-1, descriptive), and a later pre-registered frozen opening of $ct is refused" \
+                           || echo "$ct: the pre-registered frozen opening (run $fz) came first; it stands"
+            else
+              ac=$(jq -r --arg ct "$ct" 'select(.ct == $ct and .mode == "all-confirmed") | "run \(.run) (from run \(.from), \(.confirmed) confirmed setups, \(.opened_utc))"' ledger.jsonl | head -1)
+              [ -z "$ac" ] || { echo "::error::$ct: every confirmed setup already saw HO-1 in the all-confirmed trial ($ac; OR-AMEND-1): a pre-registered frozen opening of $ct is no longer clean: REFUSED, nothing logged"; exit 1; }
+              by=$(jq -r --arg ct "$ct" --arg run "$RUN" 'select(.ct == $ct and (.mode // "frozen") != "all-confirmed" and (.run | tostring) != $run) | .run' ledger.jsonl | head -1)
+              [ -z "$by" ] || { echo "::error::HO-1 for $ct was already opened by run $by: it is opened once per contract type (refused, nothing logged)"; exit 1; }
+            fi
           done
           utc=$(date -u +%FT%TZ)
           jq -c --arg run "$RUN" --arg att "$GITHUB_RUN_ATTEMPT" --arg from "$FROM" --arg sha "$GITHUB_SHA" --arg utc "$utc" \
-            '.[] | {run: $run, run_attempt: $att, from: $from, ct, sha256, setups, parts_run, code_sha: $sha, opened_utc: $utc}' frozen/rows.json > new.jsonl
+            --slurpfile rt retries.json \
+            '.[] | . as $r | {run: $run, run_attempt: $att, from: $from, ct, sha256, setups, parts_run, code_sha: $sha, opened_utc: $utc}
+                 + (if .mode == "all-confirmed" then {mode, key, confirmed, confirm_sha256,
+                      retry_of: ([$rt[] | select(.ct == $r.ct) | .retry_of[]])} else {mode: "frozen", key: .ct} end)' frozen/rows.json > new.jsonl
           cat new.jsonl >> ledger.jsonl
           rclone copyto ledger.jsonl "$D/openings.jsonl"
           rclone copyto "$D/openings.jsonl" landed.jsonl
           cmp -s landed.jsonl ledger.jsonl || { echo "::error::the openings did not land on Drive: refused"; exit 1; }
           echo "opened=$(jq -sc . new.jsonl)" >> "$GITHUB_OUTPUT"
-          jq -r '"opened \(.ct): \(.sha256) (\(.setups) setup(s), parts of run \(.parts_run)) at \(.opened_utc)"' new.jsonl
+          jq -r '"opened \(.ct) [\(.mode)]: \(.sha256) (\(.setups) frozen setup(s)\(if .mode == "all-confirmed" then ", ALL \(.confirmed) confirmed setups scored" else "" end), parts of run \(.parts_run)) at \(.opened_utc)"' new.jsonl
 
   # Per opened contract type: python/oracle/ho1.py (SPEC 4) scores the frozen setups once on Aug 1 - Nov 4 against the
   # flat control and the matched random-entry placebo, writes registry rows (validated with research/registry.py from
@@ -979,11 +1114,15 @@ jobs:
       CT: ${{ matrix.ct }}
       SHA: ${{ matrix.sha256 }}
       PARTS_RUN: ${{ matrix.parts_run }}
+      MODE: ${{ matrix.mode }}
+      CSHA: ${{ matrix.confirm_sha256 }}
       FROM: ${{ needs.plan.outputs.from }}
       RUN: ${{ github.run_id }}
     steps:
       - name: The contract type
-        run: '[[ "$CT" =~ ^(perp|pp15|pp60|tennis|perp-rev)$ ]] && [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] && [[ "$PARTS_RUN$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad matrix entry"; exit 1; }'
+        run: |
+          [[ "$CT" =~ ^(perp|pp15|pp60|tennis|perp-rev)$ ]] && [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] && [[ "$PARTS_RUN$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad matrix entry"; exit 1; }
+          [[ "$MODE" = frozen || ( "$MODE" = all-confirmed && "$CSHA" =~ ^[0-9a-f]{64}$ ) ]] || { echo "::error::bad mode $MODE"; exit 1; }
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
@@ -1004,6 +1143,10 @@ jobs:
           mkdir -p in/parts
           rclone copyto "$R/models/oracle-setups/runs/$FROM/mine/$CT/frozen.json" in/frozen.json
           [ "$(sha256sum in/frozen.json | cut -c1-64)" = "$SHA" ] || { echo "::error::frozen.json of $CT is not the file opened ($SHA)"; exit 1; }
+          if [ "$MODE" = all-confirmed ]; then
+            rclone copyto "$R/models/oracle-setups/runs/$FROM/mine/$CT/confirm.jsonl" in/confirm.jsonl
+            [ "$(sha256sum in/confirm.jsonl | cut -c1-64)" = "$CSHA" ] || { echo "::error::confirm.jsonl of $CT is not the file logged ($CSHA)"; exit 1; }
+          fi
           bash deploy/drive_lab.sh get "models/oracle-setups/runs/$PARTS_RUN/parts" in/parts --include "/$CT-[A-Z]*/**"
           for d in in/parts/*/; do [ -d "$d" ] && [ ! -f "$d/meta.json" ] && rm -rf "$d"; done; true
           have=$(find in/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
@@ -1018,8 +1161,11 @@ jobs:
         working-directory: python
         run: |
           # --sha256: the hash ho1_open logged (only frozen.json is copied here, so there is no frozen.sha256 beside it).
+          # all-confirmed (OR-AMEND-1): every setup of confirm.jsonl, descriptive; ho1-all.md + lockbox_candidates.json.
+          set -o pipefail
+          extra=(); [ "$MODE" != all-confirmed ] || extra=(--all-confirmed --confirm ../in/confirm.jsonl)
           python3 -m oracle.ho1 --frozen ../in/frozen.json --sha256 "$SHA" --parts ../in/parts --labels ../in/labels.csv.gz --out "../out/ho1/$CT" \
-            --run "$RUN" --code-sha "$GITHUB_SHA" --registry "$RUNNER_TEMP/registry.py" 2>&1 | tail -80
+            --run "$RUN" --code-sha "$GITHUB_SHA" --registry "$RUNNER_TEMP/registry.py" "${extra[@]}" 2>&1 | tail -80
       - name: Keep the HO-1 outputs on Drive
         if: always()
         run: '[ ! -d "out/ho1/$CT" ] || bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/ho1/$CT" "out/ho1/$CT"'
@@ -1034,14 +1180,131 @@ jobs:
             shard=${js[0]}
           fi
           python3 -I "$RUNNER_TEMP/registry.py" validate "$shard" | tail -20
-          rclone copyto "$shard" "$R/registry/shards/oracle-setups/$RUN-$CT.jsonl"
-          echo "registry shard: registry/shards/oracle-setups/$RUN-$CT.jsonl ($(wc -l < "$shard") rows)"
+          name="$RUN-$CT"; [ "$MODE" != all-confirmed ] || name="$RUN-$CT-allconf"
+          rclone copyto "$shard" "$R/registry/shards/oracle-setups/$name.jsonl"
+          echo "registry shard: registry/shards/oracle-setups/$name.jsonl ($(wc -l < "$shard") rows)"
+      # OR-AMEND-1: once every confirmed setup of the type has seen HO-1, the loser study also reads the HO-1 rows
+      # (reported separately from discovery B). Never fails the job.
+      - name: Loser study on discovery B and HO-1 (python/oracle/losers.py --ho1)
+        if: matrix.mode == 'all-confirmed'
+        continue-on-error: true
+        working-directory: python
+        run: |
+          set -eo pipefail
+          # Only the frozen file's mined parts (same dir, rows and builder code sha), as ho1.py resolve_parts and the
+          # losers job use: other same-type parts under in/parts are never read here.
+          python3 -I - "$CT" <<'EOF'
+          import json, os, sys
+          ct = sys.argv[1]
+          fz = json.load(open('../in/frozen.json'))
+          want = {e['dir']: e for e in fz.get('parts', [])}
+          if not want:
+              print('::error::the frozen file lists no parts: refused'); sys.exit(1)
+          os.makedirs('../in/lparts')
+          for d, e in sorted(want.items()):
+              mp = os.path.join('../in/parts', d, 'meta.json')
+              if not os.path.exists(mp):
+                  print(f'::error::mined part {d} missing: refused'); sys.exit(1)
+              m = json.load(open(mp))
+              if int(m['n']) != int(e['rows_total']) or (e.get('code_sha') and m.get('code_sha') != e['code_sha']):
+                  print(f'::error::{d} differs from the mined part: refused'); sys.exit(1)
+              os.symlink(os.path.abspath(os.path.join('../in/parts', d)), os.path.join('../in/lparts', d))
+          extra = sorted(set(os.listdir('../in/parts')) - set(want))
+          print(f'{ct}: {len(want)} mined part(s)' + (f'; not used: {", ".join(extra)}' if extra else ''))
+          EOF
+          python3 -m oracle.losers --ct "$CT" --parts ../in/lparts --confirm ../in/confirm.jsonl --out "../out/losers/$CT-ho1" --ho1 2>&1 | tail -40
+          bash ../deploy/drive_lab.sh put "models/oracle-setups/runs/$FROM/losers/$CT-ho1" "../out/losers/$CT-ho1"
+
+  # [oracle-losers:<run>] (OR-AMEND-1): the loser study of run <run>'s confirmed setups, per contract type, on discovery B
+  # (python/oracle/losers.py reads nothing at or after DEV_END), plus HO-1 rows only when the openings ledger holds an
+  # all-confirmed opening of that type from that run (every confirmed setup has then seen HO-1). Outputs to
+  # models/oracle-setups/runs/<run>/losers/<ct>/ (B only) or <ct>-ho1/ (B and HO-1).
+  losers:
+    needs: plan
+    if: needs.plan.outputs.mode == 'losers' && needs.plan.outputs.losers != '[]' && needs.plan.outputs.losers != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.losers) }}
+    name: losers (${{ matrix.ct }})
+    env:
+      CT: ${{ matrix.ct }}
+      PARTS_RUN: ${{ matrix.parts_run }}
+      SRC: ${{ needs.plan.outputs.src }}
+    steps:
+      - name: The contract type
+        run: '[[ "$CT" =~ ^(perp|pp15|pp60|tennis|perp-rev)$ ]] && [[ "$PARTS_RUN$SRC" =~ ^[0-9]+$ ]] || { echo "::error::bad matrix entry"; exit 1; }'
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The confirmed setups, the mined parts, and whether HO-1 is open for all of them
+        id: inp
+        run: |
+          set -euo pipefail
+          mkdir -p in/parts
+          rclone copyto "$R/models/oracle-setups/runs/$SRC/mine/$CT/confirm.jsonl" in/confirm.jsonl
+          rclone copyto "$R/models/oracle-setups/runs/$SRC/mine/$CT/frozen.json" in/frozen.json
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$PARTS_RUN/parts" in/parts --include "/$CT-[A-Z]*/**"
+          for d in in/parts/*/; do [ -d "$d" ] && [ ! -f "$d/meta.json" ] && rm -rf "$d"; done; true
+          have=$(find in/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+          if grep -qi doge <<< "$have"; then echo "::error::a DOGE part: refused"; exit 1; fi
+          [ -n "$have" ] || { echo "::error::no $CT parts in run $PARTS_RUN"; exit 1; }
+          # The parts are the mined ones (the frozen file lists them: dir, rows, builder code sha); others are removed.
+          python3 -I - "$CT" <<'EOF'
+          import json, os, shutil, sys
+          ct = sys.argv[1]
+          fz = json.load(open('in/frozen.json'))
+          want = {e['dir']: e for e in fz.get('parts', [])}
+          for d in sorted(os.listdir('in/parts')):
+              if d not in want:
+                  print(f'{d}: not a mined part of this run, removed'); shutil.rmtree(os.path.join('in/parts', d)); continue
+              m = json.load(open(os.path.join('in/parts', d, 'meta.json')))
+              e = want[d]
+              if int(m['n']) != int(e['rows_total']) or (e.get('code_sha') and m.get('code_sha') != e['code_sha']):
+                  print(f'::error::{d} differs from the mined part'); sys.exit(1)
+          miss = sorted(set(want) - set(os.listdir('in/parts')))
+          if miss:
+              print(f'::error::mined parts missing: {miss}'); sys.exit(1)
+          print(f'{ct}: {len(want)} mined part(s) present')
+          EOF
+          ho1=false
+          L=$(rclone lsf "$R/models/oracle-setups/ho1" --files-only 2>/dev/null || true)
+          if grep -qxF openings.jsonl <<< "$L"; then
+            rclone copyto "$R/models/oracle-setups/ho1/openings.jsonl" ledger.jsonl
+            n=$(jq -r --arg ct "$CT" --arg src "$SRC" 'select(.ct == $ct and .mode == "all-confirmed" and (.from | tostring) == $src) | .run' ledger.jsonl | head -1)
+            [ -z "$n" ] || ho1=true
+          fi
+          if [ "$ho1" = true ]; then echo "HO-1 rows: yes (all-confirmed opening of $CT from run $SRC, by run $n)"; else echo "HO-1 rows: no (no all-confirmed opening of $CT from run $SRC): discovery B only"; fi
+          echo "ho1=$ho1" >> "$GITHUB_OUTPUT"
+      - name: Loser study (python/oracle/losers.py)
+        working-directory: python
+        env:
+          HO1: ${{ steps.inp.outputs.ho1 }}
+        run: |
+          set -o pipefail
+          dir="$CT"; extra=(); [ "$HO1" != true ] || { dir="$CT-ho1"; extra=(--ho1); }
+          python3 -m oracle.losers --ct "$CT" --parts ../in/parts --confirm ../in/confirm.jsonl --out "../out/losers/$dir" "${extra[@]}" 2>&1 | tail -60
+          bash ../deploy/drive_lab.sh put "models/oracle-setups/runs/$SRC/losers/$dir" "../out/losers/$dir"
 
   # One commit comment per run, aggregates only (public repository): per part rows, base hit rates on discovery rows only,
   # mining counts, confirmations, frozen setups with their discovery-B statistics; or, for HO-1, the openings and each
   # contract type's ho1.md.
   card:
-    needs: [plan, coin, hourly, pp60, tennis, mine, ho1_open, ho1]
+    needs: [plan, coin, hourly, pp60, tennis, mine, ho1_open, ho1, losers]
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1052,6 +1315,7 @@ jobs:
       SRC: ${{ needs.plan.outputs.src }}
       FROM: ${{ needs.plan.outputs.from }}
       CTS: ${{ needs.plan.outputs.cts }}
+      ALLCONF: ${{ needs.plan.outputs.allconf }}
       RUN: ${{ github.run_id }}
       NEEDS: ${{ toJSON(needs) }}
     steps:
@@ -1068,12 +1332,19 @@ jobs:
       - name: The run's aggregates from Drive
         run: |
           set -euo pipefail
-          D=data; mkdir -p $D/parts $D/mine $D/status $D/ho1
+          D=data; mkdir -p $D/parts $D/mine $D/status $D/ho1 $D/losers
+          # The loser study's reports (losers.md, aggregates only) of this run's mode.
+          case "$MODE" in
+            losers) bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/losers" $D/losers --include "/*/losers.md" || echo "no loser study on Drive" ;;
+            ho1) [ "$ALLCONF" != true ] || bash deploy/drive_lab.sh get "models/oracle-setups/runs/$FROM/losers" $D/losers --include "/*-ho1/losers.md" || echo "no HO-1 loser study on Drive" ;;
+            *) bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/losers" $D/losers --include "/*/losers.md" || echo "no loser study on Drive" ;;
+          esac
+          [ "$MODE" != losers ] || exit 0
           if [ "$MODE" = ho1 ]; then
-            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/ho1" $D/ho1 --include "/*/ho1.md" || echo "no HO-1 outputs on Drive"
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/ho1" $D/ho1 --include "/*/ho1.md" --include "/*/ho1-all.md" || echo "no HO-1 outputs on Drive"
             for d in "$D"/ho1/*/; do
               [ -d "$d" ] || continue
-              ct=$(basename "$d"); f="$R/registry/shards/oracle-setups/$RUN-$ct.jsonl"
+              ct=$(basename "$d"); sfx=""; [ "$ALLCONF" != true ] || sfx="-allconf"; f="$R/registry/shards/oracle-setups/$RUN-$ct$sfx.jsonl"
               if [ -n "$(rclone lsf "${f%/*}" --files-only --include "${f##*/}")" ]; then rclone cat "$f" | wc -l > "$d/shard.count"; fi
             done
             exit 0
@@ -1115,29 +1386,68 @@ jobs:
 
 
           sha = os.environ.get('GITHUB_SHA', '')[:7]
-          if mode == 'ho1':
-              w(f'## Oracle setups HO-1, run {run}: the frozen files of run {frm}')
+          allconf = os.environ.get('ALLCONF') == 'true'
+
+
+          def loser_mds(limit, details):
+              mds = sorted(glob.glob(os.path.join(data, 'losers', '*', 'losers.md')))
+              if not mds:
+                  return
               w('')
-              w(f'Jobs: {jobs}. Code {sha}. Each frozen file is opened once (models/oracle-setups/ho1/openings.jsonl, logged before any HO-1 number); nothing is re-selected.')
+              w('### Loser study (python/oracle/losers.py, OR-AMEND-1; descriptive, aggregates only)')
+              for md in mds:
+                  name = os.path.basename(os.path.dirname(md))
+                  w('')
+                  if details:
+                      w(f'<details><summary>{esc(name)}: losers.md</summary>')
+                      w('')
+                  else:
+                      w(f'#### {esc(name)}')
+                  w(capped(md, limit))
+                  if details:
+                      w('')
+                      w('</details>')
+
+
+          if mode == 'losers':
+              w(f'## Oracle setups loser study, run {run}: the confirmed setups of run {src}')
+              w('')
+              w(f'Jobs: {jobs}. Code {sha}. Discovery B rows (whole horizon before 2026-08-01); HO-1 rows only for a contract type '
+                'whose confirmed setups were all opened on HO-1 (all-confirmed, OR-AMEND-1). Descriptive: nothing is selected.')
+              loser_mds(11000, False)
+              sys.exit(0)
+          if mode == 'ho1':
+              if allconf:
+                  w(f'## Oracle setups HO-1, run {run}: EVERY confirmed setup of run {frm} (OR-AMEND-1, descriptive trial)')
+                  w('')
+                  w(f'Jobs: {jobs}. Code {sha}. Steven, 2026-11-06 14:03 UTC: "let all of them trial on real unseen data". Not a '
+                    'pre-registered pass: only lockbox L1 (2026-11-06T05:00Z to 2026-11-13T05:00Z, whole horizon inside; read once, no earlier than 2026-11-14T05:00Z) '
+                    'decides rulebook entry. A later pre-registered frozen opening of these contract types is refused.')
+              else:
+                  w(f'## Oracle setups HO-1, run {run}: the frozen files of run {frm}')
+                  w('')
+                  w(f'Jobs: {jobs}. Code {sha}. Each frozen file is opened once (models/oracle-setups/ho1/openings.jsonl, logged before any HO-1 number); nothing is re-selected.')
               opened = json.loads(needs.get('ho1_open', {}).get('outputs', {}).get('opened') or '[]')
               if opened:
                   w('')
-                  w('| type | frozen.json sha256 | setups | parts of run | opened (UTC) |')
-                  w('|---|---|---|---|---|')
+                  w('| type | mode | frozen.json sha256 | frozen setups | confirmed setups scored | parts of run | opened (UTC) |')
+                  w('|---|---|---|---|---|---|---|')
                   for r in opened:
-                      w(f'| {esc(r["ct"])} | `{esc(r["sha256"])}` | {num(r.get("setups"))} | {esc(r.get("parts_run"))} | {esc(r.get("opened_utc"))} |')
+                      w(f'| {esc(r["ct"])} | {esc(r.get("mode", "frozen"))} | `{esc(r["sha256"])}` | {num(r.get("setups"))} | {num(r.get("confirmed"))} | '
+                        f'{esc(r.get("parts_run"))} | {esc(r.get("opened_utc"))} |')
               else:
                   w('')
-                  w('Nothing was opened (no frozen setup, or the opening was refused: see the ho1_open job).')
+                  w('Nothing was opened (no frozen / confirmed setup, or the opening was refused: see the ho1_open job).')
               for d in sorted(glob.glob(os.path.join(data, 'ho1', '*', ''))):
                   ct = os.path.basename(os.path.dirname(d))
                   w('')
-                  w(f'### {ct}: HO-1')
+                  w(f'### {ct}: HO-1' + (' (all confirmed setups)' if allconf else ''))
                   cnt = os.path.join(d, 'shard.count')
                   if os.path.exists(cnt):
-                      w(f'Registry shard registry/shards/oracle-setups/{run}-{ct}.jsonl: {open(cnt).read().strip()} rows.')
-                  md = os.path.join(d, 'ho1.md')
-                  w(capped(md, 20000) if os.path.exists(md) else 'no ho1.md on Drive')
+                      w(f'Registry shard registry/shards/oracle-setups/{run}-{ct}{"-allconf" if allconf else ""}.jsonl: {open(cnt).read().strip()} rows.')
+                  md = os.path.join(d, 'ho1-all.md' if allconf else 'ho1.md')
+                  w(capped(md, 9000 if allconf else 20000) if os.path.exists(md) else f'no {os.path.basename(md)} on Drive')
+              loser_mds(6000, True)
               sys.exit(0)
 
           w(f'## Oracle setups (OR-H1), run {run}: ' + ('parts built and mined' if mode == 'build' else f'the parts of run {src} mined again'))
@@ -1218,6 +1528,7 @@ jobs:
                   w(capped(rep, 12000))
                   w('')
                   w('</details>')
+          loser_mds(5000, True)
           EOF
           wc -c "$RUNNER_TEMP/card.md"
           cat "$RUNNER_TEMP/card.md" >> "$GITHUB_STEP_SUMMARY"

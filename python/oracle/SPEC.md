@@ -92,8 +92,20 @@ Writes registry rows (thread `oracle-setups`, family `oracle-<ct>-v1`, contract_
 tennis, roles candidate / control (flat) / placebo, by_day on all 96 HO-1 days with zeros, by_tercile, data.source
 'history', data.metric 'usd'), validated with research/registry.py (from origin/claude/project-thread-79ntof), plus
 `ho1.md`. Book rows per contract type. Nothing is re-selected.
+`--all-confirmed --confirm confirm.jsonl` (prereg/OR-AMEND-1.md): every confirmed setup scored the same way as a
+descriptive trial (family `oracle-<ct>-allconf-v1`, flags `all-confirmed`, `DEV:all-confirmed-descriptive`, no book, BHY at
+m = every confirmed setup); writes `ho1-all.md`, `ho1-all.json`, `lockbox_candidates.json` (HO-1 rules pass before BHY,
+by HO-1 $/h, top 10 per contract type, for lockbox L1: decisions whose whole horizon lies in 2026-11-06T05:00Z..2026-11-13T05:00Z, read once no earlier than
+2026-11-14T05:00Z).
+## 4b. Loser study: python/oracle/losers.py
+`cd python && python3 -m oracle.losers --ct <ct> --parts <dir> --confirm confirm.jsonl --out out/losers [--ho1]`: every
+confirmed setup's trades (the confirmation's trade simulation) split into winners / losers on discovery B (and HO-1 with
+--ho1, separately): loser share, mean loser $, exit kinds, best_ thresholds (an upper bound), hold, over-represented states,
+take-profit at 25/50/75 % of the target (upper bound). `losers.md` (aggregates) + `losers.json`.
 ## 5. Workflow: .github/workflows/oracle-setups.yml
 Push-triggered on branch claude/project-thread-nvd096. Tags in the head commit message: `[oracle]` builds parts and mines;
 `[oracle-parts:perp,pp15,pp60,tennis]`; `[oracle-assets:BTC,ETH,SOL,XRP]`; `[oracle-mine:<run>]` re-mines an earlier run's
-parts; `[protocol:ho1] [ho1-from:<run>]` opens HO-1 once for that run's frozen.json. <= 10 concurrent jobs. Results to
+parts; `[protocol:ho1] [ho1-from:<run>]` opens HO-1 once for that run's frozen.json. `[protocol:ho1] [ho1-from:<run>] [ho1-all-confirmed]
+[oracle-ct:<ct>]` scores every confirmed setup (OR-AMEND-1; ledger mode 'all-confirmed'; blocks a later frozen opening of
+that type); `[oracle-losers:<run>] [oracle-ct:<ct>]` runs the loser study (the mine job also runs it on discovery B). <= 10 concurrent jobs. Results to
 Drive `models/oracle-setups/runs/<run>/...`; an aggregates-only card as a commit comment (public repo).
