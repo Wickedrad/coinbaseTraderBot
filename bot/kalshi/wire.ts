@@ -207,6 +207,8 @@ export function parseMarket(m: Obj): MarketInfo | undefined {
     capStrike: cap !== undefined && cap > 0 ? cap : undefined,
     strikeType: tickerStrikeOf(String(m.ticker))?.kind === 'B' ? 'between' : m.strike_type ? String(m.strike_type) : undefined,
     tickerStrike: tickerStrikeOf(String(m.ticker)),
+    yesBid: parseDollars(m.yes_bid_dollars) ?? parseDollars(m.yes_bid, true),
+    yesAsk: parseDollars(m.yes_ask_dollars) ?? parseDollars(m.yes_ask, true),
     yesMid: (() => {
       const b = parseDollars(m.yes_bid_dollars) ?? parseDollars(m.yes_bid, true);
       const k = parseDollars(m.yes_ask_dollars) ?? parseDollars(m.yes_ask, true);
@@ -285,4 +287,12 @@ export function parseTransfer(r: Obj, kind: 'deposit' | 'withdrawal'): { id: str
   const cents = Number(r.amount_cents), sec = Number(r.finalized_ts ?? r.created_ts);
   if (!r.id || !Number.isFinite(cents) || !Number.isFinite(sec)) return undefined;
   return { id: String(r.id), kind, amount: cents / 100, status: String(r.status ?? ''), ts: sec < 1e12 ? sec * 1000 : sec };
+}
+
+/** The listing quote strike selection may trust (bot/marketdata/marketData.ts nearestStrikes): the YES bid/ask mid when
+ *  0 < bid < ask < 1 and the spread is at most maxSpread, else nothing. Never the last price: a dead 1c/99c listing reads
+ *  50c by its mid and an old last price says nothing about where the market is now. */
+export function listingPickMid(bid: number | undefined, ask: number | undefined, maxSpread: number): number | undefined {
+  if (bid === undefined || ask === undefined || !(bid > 0 && ask > bid && ask < 1)) return undefined;
+  return ask - bid <= maxSpread + 1e-9 ? (bid + ask) / 2 : undefined;
 }
