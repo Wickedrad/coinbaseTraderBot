@@ -1887,7 +1887,7 @@ export class Engine {
       },
       exitPolicy: S.exitPolicy,
       takeProfitBench: tp ? { scored: tp.scored, netUsd: tp.netUsd, benched: Boolean(tp.benched), enforce: tp.enforce } : null,
-      probation: pr ? Object.fromEntries(Object.entries(pr).filter(([k]) => k !== 'mode').map(([k, b]) => { const s = b as { trades: number; netUsd: number; benched: unknown }; return [k, { trades: s.trades, netUsd: s.netUsd, benched: Boolean(s.benched) }]; })) : null,
+      probation: pr ? Object.fromEntries(Object.entries(pr).filter(([k]) => k !== 'mode').map(([k, b]) => { const s = b as { trades: number; netUsd: number; benchActive: boolean; wouldBench: boolean }; return [k, { trades: s.trades, netUsd: s.netUsd, benched: s.benchActive, wouldBench: s.wouldBench }]; })) : null,
       indexAgeMs: Object.fromEntries([...this.d.md.index].map(([a, idx]) => [a, idx.health(now).ageMs])),
       maxIndexAgeMs: this.d.cfg.risk.maxIndexAgeMs,
       marketState: Object.fromEntries(this.marketState.assets().map((a) => [a, this.marketState.reading(a, now)])),

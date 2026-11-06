@@ -437,7 +437,9 @@ test('the bot\'s validation gates: monitor lets unvalidated models trade unless 
     assert.equal(gatePasses('kalshi', false), true);
     const file = path.join(tmp(), 'probation.json');
     fs.writeFileSync(file, JSON.stringify({ kalshi: { results: [-5], since: 0, benched: { at: 1, reason: 'lost' } } }));
-    assert.deepEqual(installProbation(cfg, file), ['kalshi']);
+    assert.deepEqual(installProbation(cfg, file), [], 'PROBATION_BENCH=false (default): a stored verdict turns nothing off');
+    assert.equal(gatePasses('kalshi', false), true);
+    assert.deepEqual(installProbation(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PROBATION_BENCH: 'true' }), file), ['kalshi']);
     assert.equal(gatePasses('kalshi', false), false);
     assert.equal(gatePasses('kalshi', true), true);
     assert.equal(fs.readFileSync(file, 'utf8').includes('"benched"'), true, 'the bot\'s file is only read');

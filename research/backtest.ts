@@ -350,9 +350,9 @@ export async function engineModels(cfg: Config, o: { trialsFile?: string } = {})
 }
 
 /** The validation gates as the bot runs them (bot/main.ts): with VALIDATION_GATES=monitor (the default) a model that
- *  has not passed validation (the fill model, the take model) trades on probation unless its book is benched. `stateFile`
- *  is the bot's probation.json, read from a private copy (nothing is written back). Process-wide, as in the bot; returns
- *  the benched books. */
+ *  has not passed validation (the fill model, the take model) trades on probation unless its book is benched, which only
+ *  happens with PROBATION_BENCH=true. `stateFile` is the bot's probation.json, read from a private copy (nothing is
+ *  written back). Process-wide, as in the bot; returns the benched books. */
 export function installProbation(cfg: Config, stateFile?: string): string[] {
   let file: string | undefined;
   if (stateFile && fs.existsSync(stateFile)) {

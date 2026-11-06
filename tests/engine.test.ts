@@ -25,6 +25,8 @@ import { SinuousEntryGate, type EntryVerdict } from '../bot/strategy/sinuousEntr
 import { AccuracyGate } from '../bot/strategy/accuracyGate';
 import { SinuousExitGate, type CrossCheck } from '../bot/strategy/sinuousExit';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
+import { DEFAULT_PROBATION, Probation, setProbation } from '../bot/risk/probation';
+import type { FillModel } from '../bot/tca/fillModel';
 
 async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel } = {}) {
   const dir = tmpDir();
@@ -995,4 +997,27 @@ test('the dashboard\'s snipe badge: the hour\'s target and the held position\'s 
     await engine.tick();
     assert.equal(Math.round(engine.status.get(market.ticker)!.snipe!.nowUsd! * 100) / 100, 0.71);
   }
+});
+
+test('probation score-only (default): the unvalidated fill model stays active while the Kalshi book would bench', async () => {
+  const { engine } = await setup();
+  engine.setFillModel({ validated: false } as FillModel);
+  const p = new Probation(DEFAULT_PROBATION);
+  try {
+    setProbation(p);
+    p.record('kalshi', -30);
+    assert.equal(p.status().kalshi.wouldBench, true);
+    assert.equal(engine.fillModelActive, true);
+    const rows = engine.moduleLedger();
+    assert.equal(rows.find((r) => r.module === 'fill model')?.state, 'on');
+    const row = rows.find((r) => r.module === 'probation: kalshi')!;
+    assert.equal(row.state, 'on');
+    assert.deepEqual(row.flags, ['would bench (score-only, nothing turned off): iterate it']);
+    // The owner's gate on: the same book is benched and the fill model goes back behind its gate.
+    const gated = new Probation({ ...DEFAULT_PROBATION, bench: true });
+    setProbation(gated);
+    gated.record('kalshi', -30);
+    assert.equal(engine.fillModelActive, false);
+    assert.equal(engine.moduleLedger().find((r) => r.module === 'probation: kalshi')?.state, 'benched');
+  } finally { setProbation(undefined); }
 });

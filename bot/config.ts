@@ -313,7 +313,9 @@ export interface Config {
    *  validated model or an open probation; an exit always goes out. */
   liveAllowUnvalidated: boolean;
   /** VALIDATION_GATES=monitor (default): models that have not passed validation trade anyway, on probation; a book whose
-   *  results are unacceptable is benched (bot/risk/probation.ts). enforce: every validation gate blocks as before. */
+   *  results are unacceptable raises an "iterate this book" alert and nothing is turned off (bot/risk/probation.ts).
+   *  PROBATION_BENCH=true (default false, the same in paper and live) is the owner's emergency gate: such a book is
+   *  benched until its window recovers. enforce: every validation gate blocks as before. */
   probation: ProbationParams;
   /** SINUOUS_EXIT, the same in paper and live: cross (default) sells on a confirmed cross (SINUOUS_CROSS) and holds
    *  nothing (bot/strategy/sinuousExit.ts); gate holds a profit-taking exit for the curve's signal; monitor shows the
@@ -1269,6 +1271,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       maxLossUsd: num(env, 'PROBATION_MAX_LOSS_USD', DEFAULT_PROBATION.maxLossUsd, 0, 1e9),
       maxLossPct: num(env, 'PROBATION_MAX_LOSS_PCT', DEFAULT_PROBATION.maxLossPct, 0, 1),
       window: num(env, 'PROBATION_WINDOW', DEFAULT_PROBATION.window, 10, 100_000),
+      // Owner-only emergency gate, off by default in paper and live: on, a book that would bench is benched, and it
+      // clears by itself once the window recovers (or on a new model or a reset).
+      bench: bool(env, 'PROBATION_BENCH', DEFAULT_PROBATION.bench),
     },
     sinuousExit: {
       mode: oneOf(env, 'SINUOUS_EXIT', DEFAULT_SINUOUS_EXIT.mode, ['gate', 'monitor', 'rest', 'cross', 'off'] as const),
