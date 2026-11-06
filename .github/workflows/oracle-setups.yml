@@ -442,6 +442,8 @@ jobs:
           echo "$S: $n day files, ${first%.jsonl} .. ${last%.jsonl}, $markets markets; 2026-11-04: $nov4 of 96 windows"
           # Some Drive copies of the Nov 4 file are partial (63 KB of ~260 KB, saved 05:32 UTC that day).
           [ "$nov4" -ge 96 ] || echo "::warning::$S 2026-11-04.jsonl holds $nov4 of 96 windows: HO-1 fold 6 is short for $A"
+          # A twin or partial Drive copy must not feed the study silently: all 206 days 2026-04-13..2026-11-04 are required.
+          [ "$n" -ge 206 ] || { echo "::error::$S has $n day files, 206 are required (2026-04-13..2026-11-04): a twin or partial copy was read"; exit 1; }
           mkdir -p status
           jq -n --arg s "$S" --argjson n "$n" --arg first "${first%.jsonl}" --arg last "${last%.jsonl}" --argjson m "$markets" --argjson nov4 "$nov4" \
             '{kind: "pp15", series: $s, day_files: $n, first: $first, last: $last, markets: $m, nov4_windows: $nov4, nov4_short: ($nov4 < 96)}' > "status/pp15-$A.json"
@@ -587,7 +589,7 @@ jobs:
             '{kind: "hourly", series: $s, complete: $c, step: $o, summary: $line, day_files: $n, market_lines: $m}' > "$RUNNER_TEMP/hourly-$S.json"
           jq -c . "$RUNNER_TEMP/hourly-$S.json"
           rclone copyto "$RUNNER_TEMP/hourly-$S.json" "$R/models/oracle-setups/runs/$RUN/status/hourly-$S.json"
-          [ "$complete" = true ] || echo "::warning::the $S backfill is not complete: push again with [oracle] [oracle-parts:pp60] [oracle-assets:$A] to resume"
+          [ "$complete" = true ] || echo "::warning::the $S backfill is not complete: push again with [oracle] [oracle-parts:pp60] to resume (all hourly coins; a finished backfill resumes in minutes)"
 
   # pp60 needs the coin's spot part (written by the coin job) and the complete backfill (the hourly job): the simplest
   # correct order is to wait for both and read them from Drive, instead of running the exporter a second time.
@@ -628,7 +630,7 @@ jobs:
           set -euo pipefail
           rclone copyto "$R/models/oracle-setups/runs/$RUN/status/hourly-$S.json" "$RUNNER_TEMP/status.json" || { echo "::error::no backfill status for $S: the hourly job did not finish"; exit 1; }
           jq -c . "$RUNNER_TEMP/status.json"
-          jq -e '.complete == true' "$RUNNER_TEMP/status.json" > /dev/null || { echo "::error::the $S backfill is not complete: no pp60 part from partial history (push [oracle] [oracle-parts:pp60] [oracle-assets:$A] to resume)"; exit 1; }
+          jq -e '.complete == true' "$RUNNER_TEMP/status.json" > /dev/null || { echo "::error::the $S backfill is not complete: no pp60 part from partial history (push [oracle] [oracle-parts:pp60] to resume (all hourly coins; a finished backfill resumes in minutes))"; exit 1; }
       - name: The hourly ladders and the coin's spot part
         run: |
           set -euo pipefail
@@ -852,6 +854,29 @@ jobs:
             echo "::error::research/registry.py not readable on claude/project-thread-79ntof"; exit 1
           fi
           echo "matrix=$(jq -c '[.[] | {ct, sha256, parts_run}]' frozen/rows.json)" >> "$GITHUB_OUTPUT"
+      - name: The frozen file's parts are the mined ones (checked before anything is logged)
+        run: |
+          set -euo pipefail
+          mkdir -p pmeta
+          for row in $(jq -c '.[]' frozen/rows.json); do
+            ct=$(jq -r .ct <<< "$row"); pr=$(jq -r .parts_run <<< "$row"); [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::bad parts run"; exit 1; }
+            mkdir -p "pmeta/$ct"
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$pr/parts" "pmeta/$ct" --include "/$ct-*/meta.json"
+            python3 -I - "$ct" <<'EOF'
+          import json, os, sys
+          ct = sys.argv[1]
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          fz = json.load(open(f'frozen/{ct}/frozen.json'))
+          for e in fz.get('parts', []):
+              mp = os.path.join('pmeta', ct, e['dir'], 'meta.json')
+              if not os.path.exists(mp):
+                  die(f'{ct}: part {e["dir"]} listed by the frozen file is not on Drive: refused, nothing logged')
+              m = json.load(open(mp))
+              if int(m['n']) != int(e['rows_total']) or (e.get('code_sha') and m.get('code_sha') != e['code_sha']):
+                  die(f'{ct}: part {e["dir"]} differs from the mined one (rows {m["n"]} vs {e["rows_total"]}): refused, nothing logged')
+          print(f'{ct}: {len(fz.get("parts", []))} part(s) match the frozen file')
+          EOF
+          done
       - name: Log the openings (models/oracle-setups/ho1/openings.jsonl), before any HO-1 number
         id: log
         if: steps.check.outputs.matrix != '[]'
