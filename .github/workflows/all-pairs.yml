@@ -36,7 +36,7 @@ permissions:
 # Every study runs to the end (hypothesis batches pushed one after another must not cancel each other); a push without a
 # study cancels the branch's earlier push without one.
 concurrency:
-  group: ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[all-pairs]')) && format('all-pairs-study-{0}', github.run_id) || format('all-pairs-{0}-other', github.ref) }}
+  group: ${{ (github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[all-pairs]') || contains(github.event.head_commit.message, '[all-pairs-skill]')) && format('all-pairs-study-{0}', github.run_id) || format('all-pairs-{0}-other', github.ref) }}
   cancel-in-progress: true
 
 env:
@@ -55,6 +55,9 @@ jobs:
       diag_only: ${{ steps.go.outputs.diag_only }}
       registry: ${{ steps.go.outputs.registry }}
       configs: ${{ steps.go.outputs.configs }}
+      protocol: ${{ steps.go.outputs.protocol }}
+      skill: ${{ steps.go.outputs.skill }}
+      ap_ref: ${{ steps.go.outputs.ap_ref }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -81,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           # A push may name its arms and its hypothesis configs in the commit message: [arms:base,stress] [config:a,b]
-          ARMS=$(printf '%s' "$MSG" | sed -nE 's/.*\[arms:([a-z0-9,]+)\].*/\1/p' | head -1)
+          ARMS=$(printf '%s' "$MSG" | sed -nE 's/.*\[arms:([a-z0-9_,]+)\].*/\1/p' | head -1)
           ARMS=${ARMS:-$ARMS_IN}
           CONFIGS=$(printf '%s' "$MSG" | sed -nE 's/.*\[config:([A-Za-z0-9_,-]+)\].*/\1/p' | head -1)
           CONFIGS=${CONFIGS:-$CONFIG_IN}
@@ -93,9 +96,19 @@ jobs:
           if printf '%s' "$MSG" | grep -qF '[all-pairs-registry]'; then echo "registry=true" >> "$GITHUB_OUTPUT"; else echo "registry=false" >> "$GITHUB_OUTPUT"; fi
           rr=$(printf '%s' "$MSG" | sed -nE 's/.*\[all-pairs-report:([0-9]+)\].*/\1/p' | head -1)
           echo "report_run=$rr" >> "$GITHUB_OUTPUT"
+          # "[protocol:ho1]": the project's held-out standard HO-1 (choose and fit on Apr 18-Jul 31, score once on
+          # Aug 1-Nov 4 in 6 folds of 16 days); otherwise the purged walk-forward of the config.
+          PROTOCOL=$(printf '%s' "$MSG" | sed -nE 's/.*\[protocol:(ho1|walk)\].*/\1/p' | head -1)
+          PROTOCOL=${PROTOCOL:-walk}
+          echo "protocol=$PROTOCOL" >> "$GITHUB_OUTPUT"
+          # "[all-pairs-skill]": the P2b settlement-skill job of prereg/AP-H1b.md (H-DEV fit, H-HOLD score, once).
+          if printf '%s' "$MSG" | grep -qF '[all-pairs-skill]'; then echo "skill=true" >> "$GITHUB_OUTPUT"; else echo "skill=false" >> "$GITHUB_OUTPUT"; fi
+          # "[ap-ref:<run id>]": the AP-H1b / AP-H2 readout against that run's kept results (prereg/AP-H2.md).
+          ref=$(printf '%s' "$MSG" | sed -nE 's/.*\[ap-ref:([0-9]+)\].*/\1/p' | head -1)
+          echo "ap_ref=$ref" >> "$GITHUB_OUTPUT"
           # Per config: base folds over 4 jobs, stress and synth1h over 2, synth15 1; at most 5 jobs at once (the project
           # shares ~50 runners, this thread ~10).
-          python3 - "$ARMS" "$CONFIGS" >> "$GITHUB_OUTPUT" <<'EOF'
+          python3 - "$ARMS" "$CONFIGS" "$PROTOCOL" >> "$GITHUB_OUTPUT" <<'EOF'
           import json, os, re, sys
           # base, stress and tight always run: the gate needs all three (a missing arm counts as not passed).
           want = {a.strip() for a in sys.argv[1].split(',') if a.strip()} | {'base', 'stress', 'tight'}
@@ -103,7 +116,9 @@ jobs:
           for c in configs:
               if not re.fullmatch(r'[A-Za-z0-9_-]+', c) or not os.path.exists(f'python/allpairs/hypotheses/{c}.json'):
                   sys.exit(f'unknown config {c!r}')
-          parts = {'base': 4, 'stress': 2, 'tight': 2, 'synth15': 1, 'synth1h': 2}
+          parts = {'base': 4, 'stress': 2, 'tight': 2, 'strict': 2, 'tight_strict': 2, 'synth15': 1, 'synth1h': 2}
+          if sys.argv[3] == 'ho1':   # one model per arm, fitted once: one job scores all 6 held-out folds
+              parts = {a: 1 for a in parts}
           inc = [{'config': c, 'arm': a, 'part': p, 'parts': n} for c in configs for a, n in parts.items() if a in want for p in range(n)]
           print('matrix=' + json.dumps({'include': inc}))
           print('configs=' + ','.join(configs))
@@ -158,6 +173,46 @@ jobs:
           { echo "All-pairs data diagnostics, run ${{ github.run_id }}"; echo; echo '```'; cut -c1-700 "$RUNNER_TEMP/diag.txt"; echo '```'; } > "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
 
+  # P2b of prereg/AP-H1b.md: two settlement classifiers (base vs lead_btc features) fitted on H-DEV, scored once on
+  # H-HOLD's tight-book minutes. Only aggregates leave the job (skill.json on Drive, read by the report).
+  skill:
+    needs: test
+    if: needs.test.outputs.skill == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/allpairs/requirements.txt
+      - run: pip install --quiet -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Kalshi 15-minute candles and Binance 1-minute bars from Drive (no DOGE)
+        run: |
+          set -euo pipefail
+          args=()
+          for a in ${ASSETS//,/ }; do
+            [ "$a" = "DOGE" ] && continue
+            args+=(--include "/kalshi/KX${a}15M/*.jsonl" --include "/binance-1m/${a}/1m.csv")
+          done
+          bash deploy/drive_lab.sh get raw/history data/history "${args[@]}"
+      - name: Settlement skill, base vs lead_btc features
+        working-directory: python
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/skill"
+          python -W ignore -m allpairs.skill --history ../data/history --assets "$ASSETS" --out "$RUNNER_TEMP/skill/skill.json" 2>&1 | tail -40
+      - name: Keep the result on Drive
+        env:
+          # Under the scored run, where the report reads it (this run, or the run a report-only rerun names).
+          DEST: ${{ needs.test.outputs.report_run || github.run_id }}
+        run: bash deploy/drive_lab.sh put "models/all-pairs/runs/$DEST/skill" "$RUNNER_TEMP/skill"
+
   study:
     needs: test
     if: needs.test.outputs.study == 'true'
@@ -196,10 +251,11 @@ jobs:
         env:
           CONFIG: ${{ matrix.config }}
           DAYS: ${{ inputs.days || '0' }}
+          PROTOCOL: ${{ needs.test.outputs.protocol || 'walk' }}
         run: |
           set -euo pipefail
-          [[ "$CONFIG" =~ ^[A-Za-z0-9_-]+$ ]] && [[ "$DAYS" =~ ^[0-9]+$ ]] || { echo "bad input"; exit 1; }
-          python -W ignore -m allpairs.run --history ../data/history --config "allpairs/hypotheses/$CONFIG.json" \
+          [[ "$CONFIG" =~ ^[A-Za-z0-9_-]+$ ]] && [[ "$DAYS" =~ ^[0-9]+$ ]] && [[ "$PROTOCOL" =~ ^(walk|ho1)$ ]] || { echo "bad input"; exit 1; }
+          python -W ignore -m allpairs.run --history ../data/history --config "allpairs/hypotheses/$CONFIG.json" --protocol "$PROTOCOL" \
             --arm ${{ matrix.arm }} --part ${{ matrix.part }} --parts ${{ matrix.parts }} --assets "$ASSETS" --days "$DAYS" \
             --out "$RUNNER_TEMP/parts/$CONFIG/${{ matrix.arm }}-${{ matrix.part }}.json" 2>&1 | tail -80
       # The part holds per-trade rows: it goes to Drive, never to a public artifact.
@@ -211,7 +267,7 @@ jobs:
           bash deploy/drive_lab.sh put "models/all-pairs/runs/${{ github.run_id }}/parts" "$RUNNER_TEMP/parts"
 
   report:
-    needs: [test, study]
+    needs: [test, study, skill]
     if: always() && (needs.test.outputs.study == 'true' || needs.test.outputs.report_run != '')
     runs-on: ubuntu-latest
     # One report at a time: each reads, appends to and writes back the shared trial ledger.
@@ -239,6 +295,7 @@ jobs:
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SRC: ${{ needs.test.outputs.report_run || github.run_id }}
+          AP_REF: ${{ needs.test.outputs.ap_ref }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/state" "$RUNNER_TEMP/results" "$RUNNER_TEMP/parts"
@@ -275,11 +332,32 @@ jobs:
           elif [ "$rc" = 3 ] && [ "$SRC" != "${{ github.run_id }}" ]; then
             bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC" "$RUNNER_TEMP/results/base" --include "/*.json"
           else echo "no parts for run $SRC ($rc)"; exit 1; fi
+          # HO-1 runs: the registry's held-out block per arm (folds, RV terciles from the frozen regime v1 labels, placebo).
+          if grep -lq '"protocol": "ho1"' "$RUNNER_TEMP"/results/*/*.json 2>/dev/null; then
+            if rclone copyto "$R/registry/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz" "$RUNNER_TEMP/labels.csv.gz"; then
+              python -W ignore -m allpairs.ho1 --results "$RUNNER_TEMP/results" --labels "$RUNNER_TEMP/labels.csv.gz"
+            else echo "::warning::regime v1 labels not readable: no HO-1 block"; fi
+          fi
           # One gate and card per config, in order; each config scored here counts as a trial for the next.
           for d in "$RUNNER_TEMP"/results/*/; do
             python -W ignore -m allpairs.report --results "$d" --ledger "$RUNNER_TEMP/state/trials.jsonl" \
               --champion "$RUNNER_TEMP/state/champion.json" --card "${d}card.md" --run-url "$RUN_URL" --run-id "$SRC"
           done
+          # AP-H1b / AP-H2 readout (prereg/): against the reference run's kept results; outside results/ so no gate,
+          # registry or HO-1 step reads it.
+          if [ -n "$AP_REF" ]; then
+            mkdir -p "$RUNNER_TEMP/ap/ref" "$RUNNER_TEMP/ap/out" "$RUNNER_TEMP/ap/skill"
+            rc=0; bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$AP_REF" "$RUNNER_TEMP/ap/ref" --exclude "/parts/**" --exclude "/skill/**" --exclude "/ap/**" || rc=$?
+            if [ "$rc" != 0 ]; then
+              echo "::warning::reference run $AP_REF not readable ($rc)"
+              printf '## AP-H1b and AP-H2 follow-up (reference run %s)\n\nNot scored: the reference run could not be read from Drive (drive_lab.sh exit %s).\n' "$AP_REF" "$rc" > "$RUNNER_TEMP/ap/out/aph.md"
+            else
+              rc=0; bash ../deploy/drive_lab.sh get "models/all-pairs/runs/$SRC/skill" "$RUNNER_TEMP/ap/skill" || rc=$?
+              [ "$rc" = 0 ] || echo "no skill result for run $SRC ($rc)"
+              python -W ignore -m allpairs.aph --results "$RUNNER_TEMP/results" --ref "$RUNNER_TEMP/ap/ref" --ref-run "$AP_REF" \
+                --skill "$RUNNER_TEMP/ap/skill/skill.json" --out "$RUNNER_TEMP/ap/out" | tail -30 || echo "::warning::AP readout failed"
+            fi
+          fi
       - name: Trial-registry shard of the run (registry/shards/all-pairs/<run>.jsonl)
         if: always()
         working-directory: python
@@ -300,6 +378,7 @@ jobs:
           # Under the scored run: a report-only rerun recombines that run's parts and replaces its kept results (the
           # registry backfill reads them from there).
           [ ! -d "$RUNNER_TEMP/results" ] || bash deploy/drive_lab.sh put "models/all-pairs/runs/$SRC" "$RUNNER_TEMP/results"
+          [ ! -f "$RUNNER_TEMP/ap/out/aph.json" ] || bash deploy/drive_lab.sh put "models/all-pairs/runs/$SRC/ap" "$RUNNER_TEMP/ap/out" || echo "::warning::AP readout not kept on Drive"
           # The ledger goes back only when it was read first (or Drive confirmed it has none), and never shorter than
           # the copy on Drive (a ledger only grows).
           if [ -f "$RUNNER_TEMP/state/.fetched" ] && [ -f "$RUNNER_TEMP/state/trials.jsonl" ]; then
@@ -314,7 +393,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           { echo "All-pairs matrix run ${{ github.run_id }} (study ${{ needs.study.result }}${{ needs.test.outputs.report_run && format(', parts of run {0}', needs.test.outputs.report_run) || '' }})"; echo
-            found=0; for f in "$RUNNER_TEMP"/results/*/card.md; do [ -f "$f" ] || continue; found=1; cat "$f"; echo; done
+            found=0; for f in "$RUNNER_TEMP"/results/*/card.md "$RUNNER_TEMP/ap/out/aph.md"; do [ -f "$f" ] || continue; found=1; cat "$f"; echo; done
             [ "$found" = 1 ] || echo "no card"; } > "$RUNNER_TEMP/comment.md"
           gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$RUNNER_TEMP/comment.md" --silent || echo "could not post the comment"
 

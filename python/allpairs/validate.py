@@ -41,6 +41,40 @@ def walk_forward(days: np.ndarray, train_days: int, test_days: int, embargo_days
     return folds
 
 
+# Held-out standard HO-1 (project-wide, Nov 5; Steven: "held out data should be a large chunk of time"): every setting
+# and model is chosen on H-DEV only, then scored once on H-HOLD, split into 6 consecutive 16-day folds.
+HO1_DEV_FROM, HO1_HOLD_FROM, HO1_HOLD_TO, HO1_FOLDS = '2026-04-18', '2026-08-01', '2026-11-04', 6
+
+
+def _day(iso: str) -> int:
+    import datetime as dt
+    return (dt.date.fromisoformat(iso) - dt.date(1970, 1, 1)).days
+
+
+def ho1_folds(days: np.ndarray, dev_from: str = HO1_DEV_FROM, hold_from: str = HO1_HOLD_FROM, hold_to: str = HO1_HOLD_TO,
+              n_folds: int = HO1_FOLDS, embargo_days: int = 2):
+    """HO-1 folds over the sorted unique `days`: one training span, every H-DEV day before the purge gap ahead of
+    H-HOLD (the same array in every fold: one model, fitted once), and H-HOLD (hold_from..hold_to, inclusive) cut
+    into `n_folds` consecutive calendar spans of equal length (the last takes any remainder). A fold with no data
+    day is left out."""
+    u = np.unique(days)
+    d_dev, d_hold, d_end = _day(dev_from), _day(hold_from), _day(hold_to)
+    if not d_dev < d_hold <= d_end:
+        raise ValueError(f'HO-1 spans out of order: {dev_from} {hold_from} {hold_to}')
+    tr = u[(u >= d_dev) & (u < d_hold - embargo_days)]
+    span = (d_end - d_hold + 1) // n_folds
+    if span < 1 or not len(tr):
+        return []
+    folds = []
+    for k in range(n_folds):
+        lo = d_hold + k * span
+        hi = d_end + 1 if k == n_folds - 1 else lo + span
+        te = u[(u >= lo) & (u < hi)]
+        if len(te):
+            folds.append((tr, te))
+    return folds
+
+
 def inner_split(train: np.ndarray, inner_days: int, embargo_days: int = 1):
     """(fit days, validation days) inside a training span: the last `inner_days` validate, after an embargo."""
     u = np.unique(train)
