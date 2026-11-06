@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import dataclasses
 import hashlib
 import json
 import os
@@ -27,7 +28,7 @@ from . import DEFAULT_ASSETS, EXCLUDED_ASSETS
 from .data import MIN, Windows, allowed_assets, load_kalshi, load_spot
 from .features import BASE_NAMES, cross_at, side_quotes, spot_at, spot_features, window_features
 from .fees import contracts_for_stake, taker_fee
-from .matrix import Costs, _cap, all_pairs
+from .matrix import EPS, TICK, Costs, _cap, all_pairs
 from .policy import EntryConfig, entry_rows, fit_entry, maker_attempts, pnl_stats, random_entry_placebo, simulate
 from .snell import STATE_EXTRA, Book, ExitConfig, build_positions, solve_exits
 from .synthetic import calibrate, hourly_windows, price_windows
@@ -68,6 +69,10 @@ ARMS = {
     'stress': {'costs': {'slip': 0.01, 'taker_mult': 1.25, 'maker_mult': 1.0, 'strict_maker': True}, 'placebo': {'shuffles': 0}},
     # Robustness: no entry on a book wider than 10c (a lead must survive it; SNN thread's ladder-strike finding, Nov 5).
     'tight': {'costs': {'max_spread': 0.10}, 'placebo': {'shuffles': 0}},
+    # Fill-rule tests (prereg/AP-H1b.md, AP-H2.md): strict maker fills only (a maker entry or exit fills when the next
+    # minute trades a tick through our price), fees and slippage unchanged; and the same under the 10c spread cap.
+    'strict': {'costs': {'strict_maker': True}, 'placebo': {'shuffles': 0}},
+    'tight_strict': {'costs': {'max_spread': 0.10, 'strict_maker': True}, 'placebo': {'shuffles': 0}},
     'placebo': {'placebo': {'shuffles': 3}},
     'synth15': {'kind': 'synth15', 'placebo': {'shuffles': 0}},
     'synth1h': {'kind': 'synth1h', 'exit': {'rows_per_fit': 100_000}, 'placebo': {'shuffles': 0}},
@@ -81,14 +86,27 @@ def merge(a: dict, b: dict) -> dict:
     return out
 
 
+# Arms judged under HO-1 against their own shuffled-label refits (base has them by default).
+HO1_OWN_PLACEBO = ('stress', 'tight', 'strict', 'tight_strict')
+# Kalshi's live tier of the candle history starts here (earlier days are its historical tier); a report split only.
+LIVE_TIER_DAY = 20708   # 2026-09-12
+
+
 def arm_config(file_cfg: dict, arm: str, protocol: str = 'walk') -> dict:
     """The run's configuration: the engine defaults, the hypothesis file, then the arm's overrides."""
     cfg = merge(merge(DEFAULTS, file_cfg), ARMS[arm])
-    if protocol == 'ho1' and arm in ('stress', 'tight'):
+    if protocol == 'ho1' and arm in HO1_OWN_PLACEBO:
         # HO-1 judges every gated arm against its own placebos (the arm is fitted once, so its shuffled-label refits are
         # cheap); placebo is not part of the config hash.
         cfg['placebo']['shuffles'] = max(int(cfg['placebo']['shuffles']), int(DEFAULTS['placebo']['shuffles']))
     return cfg
+
+
+def _num(x):
+    """A trade-log value for JSON: floats to 5 decimals, NaN as None (null), integers as int."""
+    if isinstance(x, (float, np.floating)):
+        return None if x != x else round(float(x), 5)
+    return int(x)
 
 
 def config_hash(cfg: dict) -> str:
@@ -98,6 +116,34 @@ def config_hash(cfg: dict) -> str:
 
 def log(m: str):
     print(f'[all-pairs {time.strftime("%H:%M:%S", time.gmtime())}] {m}', flush=True)
+
+
+def window_inputs(w: Windows, spots: dict, sfeats: dict, assets: list, cfg: dict):
+    """(S, F, X, names) of the windows under a config: the own spot close and features, the cross-asset leads and the
+    extra features (features.window_features).
+
+    cross_shift_min (lead_shift24, prereg/AP-H1b.md P3) takes every lead feature from that many minutes earlier: the
+    cross columns, and the extra features built from them, which then pair the earlier lead with the window asset's own
+    return at the same earlier minute (lag_btc_1 stays exactly 0 on BTC windows, as in lead_btc). The same distribution,
+    no information about the window. Read with .get, so older configs keep their hash."""
+    S, F = spot_at(w, spots, sfeats)
+    shift_ms = int(cfg.get('cross_shift_min') or 0) * MIN
+    cross = {}
+    for lab in cfg.get('cross_assets') or []:
+        if lab in EXCLUDED_ASSETS or lab not in assets or assets.index(lab) not in spots:
+            raise SystemExit(f'cross asset {lab} is not loaded (assets {assets})')
+        ai = assets.index(lab)
+        cross.update(cross_at(w, spots[ai], sfeats[ai], lab, shift_ms=shift_ms))
+    X, names = window_features(w, S, F, cfg.get('extra_features'), cross)
+    if shift_ms and cfg.get('extra_features'):
+        w_sh = dataclasses.replace(w, open_ms=w.open_ms - shift_ms)
+        S_sh, F_sh = spot_at(w_sh, spots, sfeats)
+        X_sh, _ = window_features(w_sh, S_sh, F_sh, cfg['extra_features'], cross)
+        for e in cfg['extra_features']:
+            j = names.index(e['name'])
+            X[..., j] = X_sh[..., j]
+        del X_sh
+    return S, F, X, names
 
 
 def regime_tags(trades: dict, cuts: dict) -> list[str]:
@@ -277,14 +323,7 @@ def main(argv=None):
             log(f'synthetic hourly windows: {len(w)}')
     trainable = clean_q if kind != 'synth1h' else np.ones(len(w), dtype=bool)
     N = w.n
-    S, F = spot_at(w, spots, sfeats)
-    cross = {}
-    for lab in cfg.get('cross_assets') or []:
-        if lab in EXCLUDED_ASSETS or lab not in real.assets or real.assets.index(lab) not in spots:
-            raise SystemExit(f'cross asset {lab} is not loaded (assets {real.assets})')
-        ai = real.assets.index(lab)
-        cross.update(cross_at(w, spots[ai], sfeats[ai], lab))
-    X, names = window_features(w, S, F, cfg.get('extra_features'), cross)
+    S, F, X, names = window_inputs(w, spots, sfeats, real.assets, cfg)
     state_names = names + STATE_EXTRA
     entry_names = names + ['entry_maker']
     bid, ask, nbl, nbh, nal, nah, settle = side_quotes(w)
@@ -430,16 +469,39 @@ def main(argv=None):
         ci = chosen
         wi = rows_te['w'][ci]; si = rows_te['s'][ci]; ii = rows_te['i'][ci]
         side_price = np.where(si == 0, w.ask[te_idx][wi, ii], 1 - w.bid[te_idx][wi, ii])
-        trades = dict(asset=w.asset[te_idx][wi].astype(int), side=si.astype(int), i=ii.astype(int), mode=rows_te['mode'][ci].astype(int),
+        # Per-trade readouts for the fill-rule tests (prereg/AP-H1b.md, AP-H2.md); no decision reads them. paid: the side
+        # price paid (maker: the side bid; taker: the side ask + slip); mid: the side mid at the decision minute; strict:
+        # a maker entry that the strict rule would also fill (the next minute's side ask a tick through the bid; -1 for a
+        # taker); mk1: the side mid at t(i+1) minus paid; mk60/mk300: the side mid 60 s and 300 s after the end of the fill
+        # (a maker fills in (t(i), t(i+1)]: t(i+2), t(i+6); a taker at t(i): t(i+1), t(i+5)) minus paid, per contract
+        # (None past the window).
+        tw = te_idx[wi]
+        md = rows_te['mode'][ci].astype(int)
+        s_bid = np.where(si == 0, w.bid[tw, ii], 1 - w.ask[tw, ii])
+        s_ask = np.where(si == 0, w.ask[tw, ii], 1 - w.bid[tw, ii])
+        s_nal = np.where(si == 0, w.nask_lo[tw, ii], 1 - w.nbid_hi[tw, ii])
+        paid = np.where(md == 1, s_bid, s_ask + costs.slip)
+        with np.errstate(invalid='ignore'):
+            strict_ok = np.where(md == 1, (s_nal <= s_bid - TICK + EPS).astype(int), -1)
+
+        def side_mid_at(k):
+            kk = np.minimum(k, N - 1)
+            m_ = (w.bid[tw, kk] + w.ask[tw, kk]) / 2
+            return np.where(k <= N - 1, np.where(si == 0, m_, 1 - m_), np.nan)
+
+        trades = dict(asset=w.asset[te_idx][wi].astype(int), side=si.astype(int), i=ii.astype(int), mode=md,
                       pnl=y, rv60=F['rv60'][te_idx][wi, ii].astype(np.float64), tau_frac=(N - ii) / N, price=side_price,
-                      day=days[te_idx][wi], spread=(w.ask - w.bid)[te_idx][wi, ii])
+                      day=days[te_idx][wi], spread=(w.ask - w.bid)[te_idx][wi, ii],
+                      pred=pred[ci].astype(np.float64), mid=(s_bid + s_ask) / 2, paid=paid, strict=strict_ok,
+                      mk1=side_mid_at(ii + 1) - paid, mk60=side_mid_at(ii + (md == 1) + 1) - paid,
+                      mk300=side_mid_at(ii + (md == 1) + 5) - paid)
         folds.append(dict(fold=fi, train=[int(tr_days[0]), int(tr_days[-1])], test=[int(te_days[0]), int(te_days[-1])],
                           test_days=[int(d) for d in te_days], hurdle=hurdle,
                           val_per_hour={str(k): round(v, 3) for k, v in val_scores.items()}, oos=st, n_hours=n_hours,
                           random_placebo=[round(float(x), 4) for x in rp], shuffled_per_hour=[round(x, 4) for x in shuf],
                           train_positions=tsp['n_pos'], test_positions=len(pte), seconds=round(time.time() - t_f),
                           hourly=[round(float(x), 4) for x in series], exit_quality=eq, val_exit_quality=eq_val, diag=diag,
-                          trades={k: [round(float(x), 5) if isinstance(x, (float, np.floating)) else int(x) for x in np.asarray(v).tolist()] for k, v in trades.items()}))
+                          trades={k: [_num(x) for x in np.asarray(v).tolist()] for k, v in trades.items()}))
         log(f'fold {fi}: test {te_days[0]}..{te_days[-1]} hurdle {hurdle}: {st["trades"]} trades {st["per_hour"]:+.2f} $/h '
             f'(random {np.median(rp):+.2f}, shuffled {[round(x, 2) for x in shuf]}) [{time.time() - t_f:.0f} s]')
         if fi == last_fold:
@@ -473,13 +535,59 @@ def main(argv=None):
     return result
 
 
+def _arr(v: list) -> np.ndarray:
+    """A trade-log column from JSON: null (NaN) back to nan."""
+    return np.asarray([np.nan if x is None else x for x in v])
+
+
+def _split(pnl: np.ndarray, hours: int, groups: dict) -> dict:
+    return {k: dict(n=int(sel.sum()), per_hour=round(float(pnl[sel].sum()) / hours, 3) if hours else 0.0,
+                    avg=round(float(pnl[sel].mean()), 3))
+            for k, sel in groups.items() if sel.any()}
+
+
+def fill_readouts(tr: dict, pnl: np.ndarray, hours: int) -> dict:
+    """The fill-rule readouts of an arm's trades (prereg/AP-H1b.md, AP-H2.md), when its parts logged them: P&L by entry
+    spread, by tier and by side and price paid; markouts per fill by entry mode; the share of maker entries that the
+    strict rule would also have filled. Report only: nothing here feeds a decision."""
+    if not len(pnl) or 'mk60' not in tr:
+        return {}
+    sp = np.nan_to_num(np.asarray(tr['spread'], dtype=np.float64), nan=1.0)
+    day = np.asarray(tr['day'])
+    side = np.asarray(tr['side'])
+    paid = np.asarray(tr['paid'], dtype=np.float64)
+    mode = np.asarray(tr['mode'])
+    out = dict(
+        by_spread=_split(pnl, hours, {'<=5c': sp <= 0.05 + 1e-9, '5-10c': (sp > 0.05 + 1e-9) & (sp <= 0.10 + 1e-9), '>10c': sp > 0.10 + 1e-9}),
+        by_tier=_split(pnl, hours, {'historical': day < LIVE_TIER_DAY, 'live': day >= LIVE_TIER_DAY}),
+        by_side_price=_split(pnl, hours, {f'{sn} {pn}': (side == s_) & sel for s_, sn in ((0, 'YES'), (1, 'NO'))
+                                          for pn, sel in (('<25c', paid < 0.25), ('25-75c', (paid >= 0.25) & (paid <= 0.75)), ('>75c', paid > 0.75))}))
+    mk = {}
+    for m_, mn in ((0, 'taker'), (1, 'maker')):
+        sel = mode == m_
+        if not sel.any():
+            continue
+        row = dict(n=int(sel.sum()))
+        for k in ('mk1', 'mk60', 'mk300'):
+            v = np.asarray(tr[k], dtype=np.float64)[sel]
+            fin = np.isfinite(v)
+            row[k] = round(float(v[fin].mean()), 5) if fin.any() else None
+            row[f'n_{k}'] = int(fin.sum())
+        mk[mn] = row
+    out['markout'] = mk
+    st = np.asarray(tr['strict'])
+    if (mode == 1).any():
+        out['strict_fill_share'] = round(float(np.mean(st[mode == 1] == 1)), 4)
+    return out
+
+
 def aggregate(parts: list[dict]) -> dict:
     """One arm's result from its parts (each a subset of the walk-forward folds)."""
     p0 = parts[0]
     folds = sorted([f for p in parts for f in p['folds']], key=lambda f: f['fold'])
     hourly = np.concatenate([np.array(f['hourly'], dtype=np.float64) for f in folds]) if folds else np.zeros(0)
     total_hours = len(hourly)
-    tr = {k: np.concatenate([np.array(f['trades'][k]) for f in folds]) for k in folds[0]['trades']} if folds else {}
+    tr = {k: np.concatenate([_arr(f['trades'][k]) for f in folds]) for k in folds[0]['trades']} if folds else {}
     pnl = tr.get('pnl', np.zeros(0)).astype(np.float64)
     oos = pnl_stats(pnl, total_hours)
     daily = hourly[: (len(hourly) // 24) * 24].reshape(-1, 24).sum(axis=1) if len(hourly) >= 24 else hourly
@@ -509,6 +617,7 @@ def aggregate(parts: list[dict]) -> dict:
         sp = np.asarray(tr['spread'], dtype=np.float64)
         tot = float(np.abs(pnl).sum())
         wide = round(float(np.abs(pnl[np.nan_to_num(sp, nan=1.0) > 0.10 + 1e-9]).sum()) / tot, 4) if tot > 0 else 0.0
+    fills = fill_readouts(tr, pnl, total_hours)
     pk = [f['diag']['p_yes'][0] for f in folds if (f.get('diag') or {}).get('p_yes')]
     pa = [f['diag']['p_yes_train_all'] for f in folds if (f.get('diag') or {}).get('p_yes_train_all') is not None]
     pyes = [round(float(np.mean(pk)), 4), round(float(np.mean(pa)), 4)] if pk and len(pa) == len(pk) else None
@@ -536,7 +645,7 @@ def aggregate(parts: list[dict]) -> dict:
         losing_clusters=clusters[:3], winning_clusters=clusters[::-1][:3],
         shap_entry=shap_e, shap_exit_hold=shap_x, hourly_pnl=[round(float(x), 3) for x in hourly], fidelity=p0.get('fidelity'),
         trials_this_arm=p0['trials_this_arm'], seconds=sum(p.get('seconds', 0) for p in parts), parts=len(parts),
-        wide_spread_share=wide, pyes=pyes,
+        wide_spread_share=wide, pyes=pyes, **fills,
     )
 
 

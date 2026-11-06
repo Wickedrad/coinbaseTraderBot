@@ -145,8 +145,9 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '', heldout:
     L.append('|---|---|---|---|---|')
     notes = {'base': 'real 15m Kalshi quotes', 'stress': '+1c every taker leg, maker fee, strict maker fills', 'placebo': 'same + shuffled-label refits',
              'synth15': 'real windows, synthetic quotes (pricer fidelity)', 'synth1h': 'synthetic hourly (not gated)',
-             'tight': 'no entry on a book wider than 10c'}
-    for name in ('base', 'stress', 'tight', 'placebo', 'synth15', 'synth1h'):
+             'tight': 'no entry on a book wider than 10c', 'strict': 'strict maker fills only (fees unchanged)',
+             'tight_strict': 'no entry on a book wider than 10c, strict maker fills (fees unchanged)'}
+    for name in ('base', 'stress', 'tight', 'strict', 'tight_strict', 'placebo', 'synth15', 'synth1h'):
         r = arms.get(name)
         if not r:
             continue
@@ -180,7 +181,7 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '', heldout:
                  ', '.join(f'{_day(a)}..{_day(b)} ({m:+.2f} $/h)' for a, b, m in g['suspect_folds']) + ': those results are not evidence.')
     if heldout:
         from .ho1 import verdict
-        for name in ('base', 'stress', 'tight'):
+        for name in ('base', 'stress', 'tight', 'strict', 'tight_strict'):
             b = heldout.get(name)
             if not b:
                 continue
@@ -196,6 +197,16 @@ def card(arms: dict, g: dict, champion: dict | None, run_url: str = '', heldout:
         v = base.get(key) or {}
         if v:
             L.append(f'{title}: ' + '; '.join(f'{k} {x["per_hour"]:+.2f} $/h ({x["n"]})' for k, x in v.items()) + '.')
+    for name in ('base', 'stress', 'tight', 'strict', 'tight_strict'):
+        r = arms.get(name) or {}
+        if not r.get('by_spread'):
+            continue
+        fmt = lambda d: ', '.join(f'{k} {x["per_hour"]:+.2f} ({x["n"]})' for k, x in d.items())
+        mk = '; '.join(f'{m} markout +60 s {x.get("mk60")} $ ({x.get("n_mk60")}), +300 s {x.get("mk300")} $ ({x.get("n_mk300")})'
+                       for m, x in (r.get('markout') or {}).items())
+        L.append(f'Fills {name} ($/h, trades): entry spread {fmt(r["by_spread"])}; tier {fmt(r.get("by_tier") or {})}; '
+                 f'side and price paid {fmt(r.get("by_side_price") or {})}; {mk}'
+                 + (f'; maker entries the strict rule also fills {r["strict_fill_share"]:.0%}' if r.get('strict_fill_share') is not None else '') + '.')
     bm = base.get('by_entry_minute') or {}
     if bm:
         L.append('By entry minute: ' + ', '.join(f'{k}: {x["per_hour"]:+.2f}' for k, x in sorted(bm.items(), key=lambda kv: int(kv[0]))) + ' $/h.')

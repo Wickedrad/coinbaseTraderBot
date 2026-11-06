@@ -34,7 +34,7 @@ import os
 
 import numpy as np
 
-GATED = ('base', 'stress', 'tight')
+GATED = ('base', 'stress', 'tight', 'strict', 'tight_strict')
 TERCILES = ('LOW', 'MID', 'HIGH')
 MIN_TERCILE_HOURS = 100
 CODE = {'LOW': 0, 'MID': 1, 'HIGH': 2}

@@ -25,7 +25,7 @@ import os
 
 THREAD = 'all-pairs'
 FAMILY = 'all-pairs-policy'     # every configuration asks one question: does a learned entry/exit policy beat $0?
-GATED = ('base', 'stress', 'tight')
+GATED = ('base', 'stress', 'tight', 'strict', 'tight_strict')
 # Runs without their own base configuration: (control run, control config). Same out-of-sample days as the run.
 CONTROLS = {
     '42060065859': ('42054088258', 'base'),          # taker_only, early_entries, exit_allow vs base (4a628f9)
