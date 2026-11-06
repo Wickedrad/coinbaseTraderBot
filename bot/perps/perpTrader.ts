@@ -89,7 +89,8 @@ export interface PerpDecisionInput {
   halt?: string;
   /** New entries not allowed (existing positions are still managed). */
   noEntry?: string;
-  /** Share of total capital locked in binary bets until settlement (inflates the perp's sigma). */
+  /** Share of the event-contract pool held in open binaries until settlement (inflates the perp's sigma). Not perp margin,
+   *  which is a separate account in both modes. */
   lockedFrac?: number;
   /** The net dollars a position must be up for its sale now (the quota pacer, bot/risk/quotaPacer.ts); undefined = off. */
   pacerUsd?: number;
@@ -163,8 +164,9 @@ export function decidePerp(i: PerpDecisionInput, p: PerpTraderParams): PerpDecis
     return { target: 0, urgent: false, reason: `edge ${entryNet(best).toFixed(1)} bps below entry threshold ${p.entryEdgeBps} (mu ${i.muBps.toFixed(1)} bps, costs ${(2 * p.makerBps + fundingBps(best)).toFixed(1)} bps)`, netEdgeBps: entryNet(best) };
   }
 
-  // Size: fractional Kelly on the net edge, with every cap. Capital locked in binaries cannot buffer
-  // margin, so the perp's assumed volatility is inflated by that share (smaller perp size).
+  // Size: fractional Kelly on the net edge, with every cap. The perp's assumed volatility is inflated by the share of the
+  // event-contract pool held in open binaries (smaller perp size). This is a conservative, direction-blind inflation, not a
+  // margin constraint: perp margin is a separate account in both modes. PERP_LOCKED_VOL_MULT=0 turns it off.
   const sigma = (i.sigmaHBps / 1e4) * (1 + (p.lockedVolMult ?? 1) * Math.max(0, Math.min(1, i.lockedFrac ?? 0)));
   const kellyLev = (p.kellyFraction * Math.max(0, net) / 1e4) / (sigma * sigma);
   // Liquidation beyond the stop: the equity left after the other positions (their stop losses and maintenance,
