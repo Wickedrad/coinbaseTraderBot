@@ -320,3 +320,129 @@ test('the parts feed the Python pieces: Part, pp.py (15 and 60) on the spot part
   }
   assert.ok(o.perp.dev_ok && o.perp.dev_rows > 0 && o.perp.dev_rows < o.perp.rows_total, JSON.stringify(o.perp));
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// OR-H2 reversal export (python/oracle/prereg/OR-H2.md): triple-barrier labels, sizing, parts per (coin, M), features.
+import { revFeatures, REV_TFS } from '../research/oracle/reversalFeatures';
+import { revPlan, revNotional, revTpBps } from '../research/oracle/oracleExport';
+
+test('reversal plan: S = M/2, 5 minutes only for M <= 60, notional min($300, $5/(M/1e4)), refusals', () => {
+  const p = revPlan('BTC', [30, 60, 100, 170]);
+  assert.deepEqual(p.map((x) => x.dir), ['perp-rev-BTC-m30', 'perp-rev-BTC-m60', 'perp-rev-BTC-m100', 'perp-rev-BTC-m170']);
+  assert.deepEqual(p.map((x) => x.S), [15, 30, 50, 85]);
+  assert.deepEqual(p.map((x) => x.horizons), [[5, 15, 60], [5, 15, 60], [15, 60], [15, 60]]);
+  near(p[0].notional, 300, 1e-9); near(p[2].notional, 300, 1e-9); near(p[3].notional, 5e4 / 170, 1e-9); near(revNotional(40), 300, 1e-9);
+  assert.equal(revPlan('ETH', [60], [20], [15, 5])[0].S, 20);
+  assert.deepEqual(revPlan('ETH', [60], undefined, [60, 5, 15, 5])[0].horizons, [5, 15, 60]);
+  assert.throws(() => revPlan('BTC', [60, 100], [10, 20, 30]), /one value or one per target/);
+  assert.throws(() => revPlan('BTC', [0]), /positive/);
+  assert.throws(() => revPlan('BTC', [60, 60]), /duplicate/);
+  assert.throws(() => revPlan('BTC', [100], undefined, [5]), /no horizon left/);
+  near(revTpBps(60, costsFor('BTC')), 60 + 12 + 0.19 + 5 + 2, 1e-9);
+});
+
+test('reversal labels: hand-computed triple barrier (take-profit, stop, both in one bar, time exit), sizing, part layout', async (tc) => {
+  const dir = tmpDir('oracle-rev-');
+  tc.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const t0 = Date.UTC(2021, 0, 4), g = flatGrid('BTC', t0, 3 * 1440);
+  g.c.ph[1008] = 101;                                   // decision 1004: long take-profit (79.19 bps) in minute 1008; the short's 30 bps stop is hit there
+  g.c.ph[2007] = 100.4;                                 // decision 2004: short stopped in 2007; the long neither fills nor stops (time exit)
+  g.c.ph[3006] = 101; g.c.pl[3006] = 99.5;              // decision 3004: one bar reaches both the long take-profit and the long stop: the stop
+  const file = path.join(dir, 'BTC.bin');
+  writeGrid(g, file);
+  const r = await exportAsset({ grid: file, out: path.join(dir, 'parts'), modules: false, targetBps: [60, 170], log: quiet });
+  assert.deepEqual(r.parts.map((p) => path.basename(p)), ['perp-rev-BTC-m60', 'perp-rev-BTC-m170']);
+  assert.ok(!fs.existsSync(path.join(dir, 'parts', 'perp-BTC')) && !fs.existsSync(path.join(dir, 'parts', 'spot-BTC')), 'no perp or spot part in reversal mode');
+  const P = r.parts[0], P2 = r.parts[1];
+  const t = num(P, 't'), rowOf = (i: number) => t.indexOf(t0 + (i + 1) * MIN), v = (name: string, i: number) => num(P, name)[rowOf(i)];
+  const taker = 12 + 0.19, N = 300, usd = (bps: number) => (bps / 1e4) * N;
+  // (a) 1004: long TP nets M + 2 = 62 bps (tp 79.19 - taker 12.19 - maker 5); short stopped at -30 bps price: -30 - 2 x 12.19.
+  assert.equal(v('hit_L5', 1004), 1); assert.equal(v('hold_L5', 1004), 4);
+  near(v('trade_L5', 1004), usd(62), 1e-3, 'trade_L5'); near(v('trade_L15', 1004), usd(62), 1e-3); near(v('trade_L60', 1004), usd(62), 1e-3);
+  assert.equal(v('hit_S5', 1004), 0); assert.equal(v('hold_S5', 1004), 4);
+  near(v('trade_S5', 1004), usd(-30 - 2 * taker), 1e-3, 'trade_S5 stop');
+  // cost stress: taker 17 / maker 10, TP re-derived (still +62 bps), the stop costs 30 + 2 x 17.19.
+  near(v('tradeCost_L5', 1004), usd(62), 1e-3, 'tradeCost_L5'); near(v('tradeCost_S5', 1004), usd(-30 - 2 * (taker + 5)), 1e-3, 'tradeCost_S5');
+  // (b) 2004: the long times out flat at the close of minute 2009 (both legs taker); the short is stopped in 2007 (hold 3).
+  assert.equal(v('hit_L5', 2004), 0); assert.equal(v('hold_L5', 2004), 5);
+  near(v('trade_L5', 2004), usd(-2 * taker), 1e-3, 'time exit'); near(v('trade_L60', 2004), usd(-2 * taker), 1e-3);
+  assert.equal(v('hold_S5', 2004), 3); near(v('trade_S5', 2004), usd(-30 - 2 * taker), 1e-3);
+  // (c) 3004: a bar that reaches both the take-profit and the stop is the stop (hit 0), for the long and (ph 101 >= 100.3) the short.
+  assert.equal(v('hit_L5', 3004), 0); near(v('trade_L5', 3004), usd(-30 - 2 * taker), 1e-3, 'both in one bar');
+  assert.equal(v('hit_L15', 3004), 0); near(v('trade_L15', 3004), usd(-30 - 2 * taker), 1e-3);
+  // notional per row, meta, layout.
+  const meta = JSON.parse(fs.readFileSync(path.join(P, 'meta.json'), 'utf8'));
+  assert.equal(meta.ct, 'perp-rev'); assert.equal(meta.scope, 'BTC-m60'); assert.equal(meta.target_bps, 60); assert.equal(meta.stop_bps, 30);
+  assert.deepEqual(meta.horizons, [5, 15, 60]); assert.deepEqual(meta.sides, ['L', 'S']); assert.equal(meta.n, t.length); assert.equal(meta.step_min, 5);
+  assert.ok(num(P, 'notional').every((x) => x === 300));
+  for (const f of ['vwap_dist60@1m', 'vwap_distday@1m', 'ma_stack@5m', 'rsi70_30@5m', 'dist_hi12@15m', 'since_lo48@1m', 'tflow_spike@5m']) assert.ok(meta.features.some((x: { name: string }) => x.name === `rev:${f}`), f);
+  assert.ok(meta.features.every((x: { desc: string }) => x.desc.length > 10));
+  assert.ok(fs.existsSync(path.join(P, 'trade_L5.npy')) && !fs.existsSync(path.join(P, 'hit2_L5.npy')) && !fs.existsSync(path.join(P, 'trade2_L15.npy')));
+  assert.ok(t.every((x, k) => ((x - t0) / MIN - 1) % 5 === 4 && (k === 0 || x > t[k - 1])));
+  const meta2 = JSON.parse(fs.readFileSync(path.join(P2, 'meta.json'), 'utf8'));
+  assert.equal(meta2.scope, 'BTC-m170'); assert.deepEqual(meta2.horizons, [15, 60]); near(meta2.notional_usd, 5e4 / 170, 1e-3);
+  assert.ok(!fs.existsSync(path.join(P2, 'trade_L5.npy')));
+  // M = 170: take-profit 189.19 bps never reached here, stop 85: the 1008 spike (+100 bps) is below the TP: long times out; the short is stopped (> 85 bps).
+  const t2 = num(P2, 't'), row2 = t2.indexOf(t0 + 1005 * MIN), N2 = 5e4 / 170;
+  near(num(P2, 'trade_L15')[row2], ((-2 * taker) / 1e4) * N2, 1e-3, 'M170 long time exit');
+  near(num(P2, 'trade_S15')[row2], ((-85 - 2 * taker) / 1e4) * N2, 1e-3, 'M170 short stop');
+  if (python) {
+    const q = spawnSync(python, ['-c', 'import sys, json\nfrom oracle.common import Part, list_parts, group_of\nr = sys.argv[1]\nprint(json.dumps([[Part(p).scope, group_of(Part(p).meta), Part(p).n] for p in list_parts(r, "perp-rev")]))', path.join(dir, 'parts')], { cwd: path.join(process.cwd(), 'python'), encoding: 'utf8' });
+    if (q.status === 0) assert.deepEqual(JSON.parse(q.stdout.trim()).map((x: unknown[]) => [x[0], x[1]]), [['BTC-m170', 'm170'], ['BTC-m60', 'm60']]);
+  }
+});
+
+function rampGrid(n: number, f: (i: number) => number): Grid {
+  const g = flatGrid('BTC', Date.UTC(2021, 0, 4), n);
+  for (let i = 0; i < n; i++) for (const k of ['so', 'sh', 'sl', 'sc', 'po', 'ph', 'pl', 'pc'] as const) g.c[k][i] = f(i);
+  return g;
+}
+
+test('reversal features: vwap_dist buckets and ma_stack by hand; every reading is closed-bar and causal', () => {
+  const at = (fs_: ReturnType<typeof revFeatures>, name: string) => fs_.find((x) => x.name === name)!.at;
+  // VWAP: flat 100, minute 200 closes at 100.3 (30 bps): rolling 60 = 100 + 0.3/60, day-anchored = 100 + 0.3/201.
+  const g = flatGrid('BTC', Date.UTC(2021, 0, 4), 1000);
+  g.c.sc[200] = 100.3; g.c.sh[200] = 100.3;
+  let f = revFeatures(g, g.n);
+  const roll = at(f, 'rev:vwap_dist60@1m'), day = at(f, 'rev:vwap_distday@1m');
+  const c3 = Math.fround(100.3);
+  near(((c3 - (100 + (c3 - 100) / 60)) / c3) * 1e4, 29.4, 0.1, 'hand value of the rolling distance (bps)'); // bucket 3 is 15..50
+  assert.equal(roll(200), 3); assert.equal(day(200), 3); assert.equal(roll(201), 2, 'back to ~0 next minute');
+  assert.equal(roll(30), -1, 'rolling VWAP needs 60 bars'); assert.equal(day(30), 2, 'the day-anchored one exists from the first bar');
+  g.c.sc[500] = 100.6; g.c.sh[500] = 100.6;                   // 60 bps: > 50
+  f = revFeatures(g, g.n);
+  assert.equal(at(f, 'rev:vwap_dist60@1m')(500), 4); assert.equal(at(f, 'rev:vwap_distday@1m')(500), 4);
+  g.c.sc[700] = 99.4; g.c.sl[700] = 99.4;                     // -60 bps
+  f = revFeatures(g, g.n);
+  assert.equal(at(f, 'rev:vwap_dist60@1m')(700), 0);
+  // MA stack on 5m closes: a rising ramp stacks +1 once 200 five-minute bars exist (minute 999), falling -1, flat 0.
+  const up = revFeatures(rampGrid(3000, (i) => 100 + 0.01 * i), 3000), dn = revFeatures(rampGrid(3000, (i) => 200 - 0.01 * i), 3000), fl = revFeatures(rampGrid(3000, () => 100), 3000);
+  assert.equal(at(up, 'rev:ma_stack@5m')(2999), 1); assert.equal(at(dn, 'rev:ma_stack@5m')(2999), -1); assert.equal(at(fl, 'rev:ma_stack@5m')(2999), 0);
+  assert.equal(at(up, 'rev:ma_stack@5m')(900), 0, 'fewer than 200 five-minute bars: no reading');
+  assert.equal(at(up, 'rev:ma_stack@5m')(1003), 1);
+  assert.equal(at(up, 'rev:ma_stack@5m')(1003), at(up, 'rev:ma_stack@5m')(1004 - 1)); // the bar closed at minute 1004 is not readable at 1003
+  const kinds = new Set(up.map((x) => x.kind));
+  assert.ok(kinds.has('state') && kinds.has('bucket') && REV_TFS.length === 3);
+  assert.ok(up.every((x) => x.name.startsWith('rev:') && x.desc.length > 10));
+});
+
+test('reversal features: no lookahead (every value after minute i* perturbed leaves every reading at <= i* unchanged)', () => {
+  const t0 = Date.UTC(2026, 6, 24), n = 6 * 1440, a = synthGrid('SOL', t0, n, 5), b = synthGrid('SOL', t0, n, 5);
+  const iStar = 3 * 1440 + 12 * 60 + 4;
+  for (let j = iStar + 1; j < n; j++) {
+    const f = 1 + 0.04 * Math.sin(j / 5);
+    for (const k of ['so', 'sh', 'sl', 'sc'] as const) b.c[k][j] *= f;
+    b.c.sv[j] *= 4; b.c.stb[j] *= 0.1;
+  }
+  const fa = revFeatures(a, n), fb = revFeatures(b, n);
+  assert.deepEqual(fa.map((x) => x.name), fb.map((x) => x.name));
+  assert.ok(fa.length >= 75, `${fa.length} reversal features`);
+  let live = 0, later = 0;
+  for (let k = 0; k < fa.length; k++) {
+    for (let i = 0; i <= iStar; i += 1) if (fa[k].at(i) !== fb[k].at(i)) assert.fail(`${fa[k].name} at minute ${i} (<= i*) changed`);
+    for (let i = iStar + 1; i < n; i += 7) if (fa[k].at(i) !== fb[k].at(i)) { later++; break; }
+    if (Array.from({ length: 400 }, (_, q) => fa[k].at(1000 + q * 7)).some((x) => x !== fa[k].at(1000))) live++;
+  }
+  assert.ok(later > 20, `the perturbation reaches later readings (${later} features)`);
+  assert.ok(live > 40, `${live} features vary on the synthetic grid`);
+});

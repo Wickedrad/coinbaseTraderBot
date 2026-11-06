@@ -51,14 +51,14 @@ import zlib
 import numba as nb
 import numpy as np
 
-from .common import DEV_END, HORIZONS, MIN, SIDES, SPLITS, STEP_MIN, Part, dev_rows, iso_day, key, list_parts
+from .common import (CTS, DEV_END, HORIZONS, MIN, POOLED, SIDES, SPLITS, STEP_MIN, Part, dev_rows, group_of, is_perp, is_pooled, iso_day,
+                     key, list_parts, pooled_name)
 from .sim import (ArrayPart, PlaceboPool, bhy_adjust, busy_key, daily_vec, fire_mask, items_of, shift_index, side_columns,
                   split_rows, span_days, stationary_bootstrap_test, trade_sim)
 
-POOLED = 'ALL'
 LABELS = ('ok', 'hit', 'trade', 'hold', 'best', 'tradeLat', 'tradeCost', 'tradeSettle')
 REQUIRED = ('ok', 'hit', 'trade', 'hold')
-OPTIONAL = ('rv', 'hour', 'mkt', 'close', 'event', 'kmin', 'tmin')
+OPTIONAL = ('rv', 'hour', 'mkt', 'close', 'event', 'kmin', 'tmin', 'notional')
 if sys.byteorder != 'little':                               # the bit-packed firing sets assume it
     raise RuntimeError('oracle.mine needs a little-endian machine')
 
@@ -280,6 +280,18 @@ def freeze_scopes(ct: str, scopes: list) -> list:
     return pooled if ct == 'tennis' else list(scopes) + pooled
 
 
+def scope_names(views: list) -> list:
+    """Every scope mined: each part's, then one pooled scope per pooling group with several parts ('ALL' for the OR-H1 types;
+    'ALL-m<M>' for the OR-H2 reversal parts of target M: parts of different targets are never pooled)."""
+    gs = [group_of(v.meta) for v in views]
+    return [v.scope for v in views] + [pooled_name(g) for g in dict.fromkeys(gs) if gs.count(g) > 1]
+
+
+def freeze_scopes_for(ct: str, views: list) -> list:
+    names = scope_names(views)
+    return [n for n in names if is_pooled(n)] if ct == 'tennis' else names
+
+
 def deviations(ct: str, views: list) -> list:
     """Departures from the OR-H1 text that this frozen file carries: the parts' own (meta.deviations) and the miner's."""
     out = sorted({str(d) for v in views for d in (v.meta.get('deviations') or [])})
@@ -345,6 +357,12 @@ class PartCell:
         self.items = items_of(v, side)
         self.cols = np.array(sorted({it.col for it in self.items}), dtype=np.int64)
         self.sums = None          # {(f, v): [n, srt, srh, strade, srt2, shit]}
+
+    def release(self) -> None:
+        """Drop the stage-1 arrays (A residuals, labels, group ids, item sums) once stage 1 and the instance lists are
+        written: stage 2 and the adversary need only B, the matched B means and the part (memory: 16 reversal parts x 6 cells)."""
+        for nm in ('trade', 'hit', 'st', 'rt', 'rh', 'gid', 'sums'):
+            setattr(self, nm, None)
 
     def value_sums(self) -> dict:
         """Single-item sufficient statistics for every candidate item (one numba pass over the A rows)."""
@@ -435,7 +453,7 @@ def score_prelim(st, ct, step, h, min_n):
     n = np.rint(st[0])
     with np.errstate(divide='ignore', invalid='ignore'):
         valid = (n >= min_n) & (st[3] / n > 0) & (st[2] / n > 0)
-    fac = step / h if ct == 'perp' else 1.0
+    fac = step / h if is_perp(ct) else 1.0
     return valid, t_of(n, st[1], st[4], n * fac)
 
 
@@ -537,7 +555,7 @@ def mine_cell(views, scopes, ct, side, h, a, log):
 
     # shortlist, exact statistics, deflated t, Jaccard dedupe, top
     setups, summaries = [], {}
-    kalshi = ct != 'perp'
+    kalshi = not is_perp(ct)
     for sc in scopes:
         sets = np.concatenate([c[0] for c in sc.cands]).astype(np.int64)
         stats = np.concatenate([c[1] for c in sc.cands], axis=1)
@@ -622,11 +640,11 @@ def lift_table(pcs, parts, supported, ct, step, h) -> list:
         n = float(s[0])
         if n <= 0:
             continue
-        fac = step / h if ct == 'perp' else 1.0
+        fac = step / h if is_perp(ct) else 1.0
         t = float(t_of(np.array([n]), np.array([s[1]]), np.array([s[4]]), np.array([n * fac]))[0])
         rows.append({'f': f, 'v': int(v), 'n': int(n), 'support': n / tot, 'hit': s[5] / n, 'base_hit': (s[5] - s[2]) / n,
                      'hit_uplift': s[2] / n, 'ev': s[3] / n, 'uplift': s[1] / n,
-                     't' if ct == 'perp' else 't_undeflated': t, 'supported': (f, v) in sup})
+                     't' if is_perp(ct) else 't_undeflated': t, 'supported': (f, v) in sup})
     rows.sort(key=lambda r: -r['uplift'])
     return rows
 
@@ -667,6 +685,7 @@ def confirm(setup, pbs, span, a, seed):
     nd = span_days(span)[1] - span_days(span)[0]
     daily, plac = np.zeros(nd), np.zeros(nd)
     trades, hits, base = 0, 0.0, 0.0
+    bps, pbps, bps_n = 0.0, 0.0, 0
     info = {'same_day': 0, 'fallback': 0, 'unmatched': 0}
     for pb in pbs:
         fire = np.zeros(pb.v.n, dtype=bool)
@@ -679,16 +698,29 @@ def confirm(setup, pbs, span, a, seed):
         for k_ in info:
             info[k_] += inf[k_]
         plac += daily_vec(pb.t[rows], pv, span)
+        notional = pb.v.meta.get('notional_usd')               # OR-H2 reversal parts: trade $ = net bps / 1e4 x notional
+        if notional:
+            bps += float(pb.trade[rows].sum()) / notional * 1e4
+            pbps += float(pv.sum()) / notional * 1e4
+            bps_n += len(rows)
         trades += len(rows)
         hits += float(pb.hit[rows].sum())
         base += float(pb.pc.mhB[pb.st[rows]].sum())
     ev = stationary_bootstrap_test(daily, a.block, a.draws, seed)
     up = stationary_bootstrap_test(daily - plac, a.block, a.draws, seed + 1)
-    return {'trades': trades, 'days': nd, 'active_days': int(np.count_nonzero(daily)), 'usd_day': float(daily.mean()),
-            'usd_total': float(daily.sum()), 'placebo_usd_day': float(plac.mean()),
-            'hit': hits / trades if trades else None, 'base_hit': base / trades if trades else None,
-            'p_ev': ev['p'], 'p_up': up['p'], 'p': max(ev['p'], up['p']), 'p_ev_emp': ev['p_emp'], 'p_up_emp': up['p_emp'],
-            'placebo': info}
+    out = {'trades': trades, 'days': nd, 'active_days': int(np.count_nonzero(daily)), 'usd_day': float(daily.mean()),
+           'usd_total': float(daily.sum()), 'placebo_usd_day': float(plac.mean()),
+           'hit': hits / trades if trades else None, 'base_hit': base / trades if trades else None,
+           'p_ev': ev['p'], 'p_up': up['p'], 'p': max(ev['p'], up['p']), 'p_ev_emp': ev['p_emp'], 'p_up_emp': up['p_emp'],
+           'placebo': info}
+    if bps_n:
+        # OR-H2 per-cell reporting: net bps per trade, the matched random-entry placebo's, and the difference (the gross edge
+        # over matched random: both legs bear the same cost structure, so it is the edge before costs, to within the stop /
+        # take-profit exit mix); trades per day; $/day above is the projected $ per day at one position at a time per coin.
+        out.update({'net_bps': bps / bps_n, 'placebo_bps': pbps / bps_n, 'edge_bps': (bps - pbps) / bps_n,
+                    'trades_day': trades / nd if nd else None, 'precision_lift': (hits - base) / trades if trades else None,
+                    'notional_usd': float(notional)})
+    return out
 
 
 def adversary(setup, pbs, span, a):
@@ -787,8 +819,9 @@ def base_rates(pc: PartCell) -> dict:
     return out
 
 
-def report_md(ct, a, summaries, confirmed, frozen, timing, n_raw) -> str:
-    L = [f'# Oracle miner: {ct}', '', 'Prereg python/oracle/prereg/OR-H1.md; SPEC 3. Aggregates only (no rows).', '',
+def report_md(ct, a, summaries, confirmed, frozen, timing, n_raw, brates=None) -> str:
+    prereg = 'OR-H2' if ct == 'perp-rev' else 'OR-H1'
+    L = [f'# Oracle miner: {ct}', '', f'Prereg python/oracle/prereg/{prereg}.md; SPEC 3. Aggregates only (no rows).', '',
          f'Parameters: top {a.top}, beam {a.beam}, shortlist {a.shortlist}, min n {a.min_n}, support {a.support}, '
          f'Jaccard {a.jaccard}, bootstrap block {a.block} days x {a.draws} draws, placebo seeds {a.seeds}, BHY q {a.q}.', '',
          f'N_raw (every conjunction evaluated, all cells): **{n_raw}**. Stage-2 setups (BHY m): **{len(confirmed)}**. '
@@ -804,6 +837,8 @@ def report_md(ct, a, summaries, confirmed, frozen, timing, n_raw) -> str:
     for k_, cs in by.items():
         L.append(f'| {k_} | {len(cs)} | {max(c["dev"]["B"]["usd_day"] for c in cs):+.3f} | '
                  f'{min(c["dev"]["B"]["p"] for c in cs):.2g} | {sum(c["bhy_pass"] for c in cs)} | {sum(c["survivor"] for c in cs)} |')
+    if ct == 'perp-rev':
+        L += reversal_cells_md(confirmed, brates)
     L += ['', '## Frozen setups', '']
     if frozen:
         L += ['| rank | id | items | A n / EV / uplift / t | B trades / $ per day / hit vs base / p / p_bhy | adversary $/day '
@@ -822,6 +857,47 @@ def report_md(ct, a, summaries, confirmed, frozen, timing, n_raw) -> str:
     return '\n'.join(L)
 
 
+def reversal_cells_md(confirmed, brates) -> list:
+    """OR-H2 per-cell table (scope = coin x target M, or the pooled coins of a target; side; horizon), discovery B, aggregates
+    only: the unconditional base of the cell (hit rate, net bps per decision), then its best confirmed setup by B $/day (the
+    best of N setups: NOT corrected for the selection, read it with the BHY column): trades/day, precision (hit rate) vs the
+    matched base, net bps per trade, the gross edge over the matched random-entry placebo in bps, projected $/day (one position
+    at a time per coin, at the sized notional) and its p / BHY-adjusted p."""
+    L = ['', '## Reversal cells (OR-H2, discovery B, aggregates only)', '',
+         'Per cell: the best confirmed setup by B $/day (selection NOT corrected; see p BHY, m = all confirmed setups of the type). '
+         'Edge = mean net bps of the setup\'s trades minus the matched random-entry placebo\'s (same stratum and day, 8 seeds), the '
+         'edge before costs since both bear them. $/day = projected, one position at a time per coin, trade $ = net bps x notional '
+         '(min($300, $5 / (M / 1e4))). Precision = take-profit hit rate vs the matched base.', '',
+         '| cell | base hit B | base net bps | setups | best setup | trades/day | precision | vs base | net bps | edge bps | $/day | p | p BHY | BHY pass |',
+         '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+    by = {}
+    for c in confirmed:
+        by.setdefault((c['scope'], c['side'], c['h']), []).append(c)
+    parts = (brates or {}).get('parts', {})
+    g = lambda x, f: 'n/a' if x is None else format(x, f)
+
+    def base_of(scope, side, h):
+        """B base of a cell: the part's own; for a pooled scope ('ALL-m60') the B-row-weighted mean of its parts'."""
+        if not is_pooled(scope):
+            return (parts.get(f'{scope}-{side}{h}') or {}).get('B') or {}
+        sfx = scope[len(POOLED):]
+        es = [e['B'] for k_, e in parts.items() if k_.endswith(f'{sfx}-{side}{h}') and e.get('B') and e['B'].get('rows')]
+        n = sum(e['rows'] for e in es)
+        return {k_: sum(e['rows'] * e[k_] for e in es) / n for k_ in ('hit', 'ev')} if n else {}
+
+    for (scope, side, h), cs in sorted(by.items()):
+        best = max(cs, key=lambda c: c['dev']['B']['usd_day'])
+        B = best['dev']['B']
+        base = base_of(scope, side, h)
+        notional = B.get('notional_usd')
+        base_bps = g(base['ev'] / notional * 1e4, '+.2f') if base.get('ev') is not None and notional else 'n/a'
+        L.append(f'| {scope} {side}{h} | {g(base.get("hit"), ".3f")} | {base_bps} | {len(cs)} | {best["id"].rsplit("-", 1)[-1]} k{best["k"]} | '
+                 f'{g(B.get("trades_day"), ".2f")} | {g(B.get("hit"), ".3f")} | {g(B.get("precision_lift"), "+.3f")} | '
+                 f'{g(B.get("net_bps"), "+.2f")} | {g(B.get("edge_bps"), "+.2f")} | {B["usd_day"]:+.3f} | {B["p"]:.2g} | '
+                 f'{best["p_bhy"]:.2g} | {"yes" if best["bhy_pass"] else "no"} |')
+    return L
+
+
 # ---------------------------------------------------------------- driver
 
 def run(a) -> dict:
@@ -834,33 +910,40 @@ def run(a) -> dict:
         raise SystemExit(f'no {ct}-* parts under {a.parts}')
     views = [load_dev(p, ct) for p in paths]
     names = [v.scope for v in views]
-    if len(set(names)) != len(names) or POOLED in names:
+    if len(set(names)) != len(names) or any(is_pooled(n) for n in names):
         raise ValueError(f'scope names must be distinct and not {POOLED!r}: {names}')
     log(f'{ct}: {len(views)} parts {names}; dev rows {[v.meta["dev_rows"] for v in views]} of '
         f'{[v.meta["rows_total"] for v in views]} (rows with t + h > DEV_END are never read)')
     timing['load'] = time.time() - t0
     os.makedirs(a.out, exist_ok=True)
-    sides, hs = views[0].meta['sides'], views[0].meta['horizons']
+    sides = views[0].meta['sides']
+    if any(v.meta['sides'] != sides for v in views):
+        raise ValueError('parts of one contract type must share their sides')
+    hs = sorted({h for v in views for h in v.meta['horizons']})           # a reversal part has its own horizons (5 only for M <= 60)
 
     stage1, summaries, cells = [], {}, {}
     brates = {'ct': ct, 'cells': {}, 'parts': {}}
     t1 = time.time()
     for h in hs:
         for side in sides:
-            scopes = [ScopeCell(v.scope, [i]) for i, v in enumerate(views)]
-            if len(views) > 1:
-                scopes.append(ScopeCell(POOLED, list(range(len(views)))))
-            setups, summ, lifts, pcs = mine_cell(views, scopes, ct, side, h, a, log)
+            vs = [v for v in views if h in v.meta['horizons']]            # this cell's parts; scope part indexes are local to vs
+            scopes = [ScopeCell(v.scope, [i]) for i, v in enumerate(vs)]
+            gs = [group_of(v.meta) for v in vs]
+            for g in dict.fromkeys(gs):
+                if gs.count(g) > 1:
+                    scopes.append(ScopeCell(pooled_name(g), [i for i, x in enumerate(gs) if x == g]))
+            setups, summ, lifts, pcs = mine_cell(vs, scopes, ct, side, h, a, log)
             stage1 += setups
             summaries.update(summ)
             cells[(side, h)] = (scopes, pcs)
             for sc, rows in lifts.items():
                 write_csv(os.path.join(a.out, 'lift', f'{sc}-{side}{h}.csv'), rows,
                           ['f', 'v', 'n', 'support', 'hit', 'base_hit', 'hit_uplift', 'ev', 'uplift',
-                           't' if ct == 'perp' else 't_undeflated', 'supported'])
+                           't' if is_perp(ct) else 't_undeflated', 'supported'])
             for pc in pcs:
                 n_inst = write_instances(os.path.join(a.out, 'instances', f'{pc.v.scope}-{side}{h}.csv.gz'), pc)
                 brates['parts'][f'{pc.v.scope}-{side}{h}'] = {**base_rates(pc), 'instances': n_inst}
+                pc.release()
             for k_, s in summ.items():
                 brates['cells'][k_] = s
     timing['stage1'] = time.time() - t1
@@ -903,7 +986,8 @@ def run(a) -> dict:
     # meet registry ho1_pass's "2 strata won"; freezing it would spend a slot and raise the HO-1 BHY m for nothing.
     t3 = time.time()
     frozen = []
-    for sc_name in freeze_scopes(ct, [v.scope for v in views]):
+    fscopes = freeze_scopes_for(ct, views)
+    for sc_name in fscopes:
         surv = sorted([c for c in confirmed if c['survivor'] and c['scope'] == sc_name], key=lambda c: -c['dev']['B']['usd_day'])
         for r, c in enumerate(surv[:a.max_frozen], 1):
             c['frozen'] = True
@@ -925,13 +1009,13 @@ def run(a) -> dict:
     with open(os.path.join(a.out, 'confirm.jsonl'), 'w') as f:
         for c in confirmed:
             f.write(json.dumps(clean(c)) + '\n')
-    doc = {'schema': 'oracle-frozen-1', 'ct': ct, 'prereg': 'python/oracle/prereg/OR-H1.md', 'code_sha': a.code_sha or code_sha(),
+    doc = {'schema': 'oracle-frozen-1', 'ct': ct, 'prereg': f'python/oracle/prereg/{"OR-H2" if ct == "perp-rev" else "OR-H1"}.md', 'code_sha': a.code_sha or code_sha(),
            'parts': [{'dir': v.meta['part_dir'], 'scope': v.scope, 'code_sha': v.meta.get('code_sha'),
                       'rows_total': v.meta['rows_total'], 'dev_rows': v.meta['dev_rows']} for v in views],
            'params': {k_: getattr(a, k_) for k_ in ('top', 'beam', 'shortlist', 'min_n', 'support', 'jaccard', 'block',
                                                     'draws', 'seeds', 'q', 'max_frozen', 'seed')},
            'N_raw': n_raw, 'm_confirmed': len(confirmed), 'bhy_q': a.q,
-           'freeze_scopes': freeze_scopes(ct, [v.scope for v in views]),
+           'freeze_scopes': fscopes,
            'deviations': deviations(ct, views), 'setups': fz}
     body = canonical(doc)
     with open(os.path.join(a.out, 'frozen.json'), 'wb') as f:
@@ -946,14 +1030,14 @@ def run(a) -> dict:
     with open(os.path.join(a.out, 'base_rates.json'), 'w') as f:
         json.dump(clean(brates), f, indent=1)
     with open(os.path.join(a.out, 'report.md'), 'w') as f:
-        f.write(report_md(ct, a, summaries, confirmed, fz, timing, n_raw))
+        f.write(report_md(ct, a, summaries, confirmed, fz, timing, n_raw, brates))
     log(f'frozen {len(fz)} setups, sha256 {sha}; outputs in {a.out}; total {timing["total"]:.1f}s, peak RSS {peak_gb():.2f} GB')
     return {'stage1': stage1, 'confirmed': confirmed, 'frozen': doc, 'sha256': sha, 'summaries': summaries, 'n_raw': n_raw}
 
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description='Oracle setups miner (SPEC 3): stage 1 on discovery A, stage 2 on B, freeze.')
-    ap.add_argument('--ct', required=True, choices=('perp', 'pp15', 'pp60', 'tennis'))
+    ap.add_argument('--ct', required=True, choices=tuple(CTS))
     ap.add_argument('--parts', required=True, help='parts root holding <ct>-<scope>/ directories')
     ap.add_argument('--out', required=True)
     ap.add_argument('--top', type=int, default=40, help='setups kept per (scope, h, side)')

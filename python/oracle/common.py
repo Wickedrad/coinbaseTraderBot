@@ -16,7 +16,7 @@ DAY = 86_400_000
 SCHEMA = 'oracle-part-1'
 TARGET_USD = 5.0
 ASSETS = ['BTC', 'ETH', 'SOL', 'XRP']          # never DOGE
-CTS = ['perp', 'pp15', 'pp60', 'tennis']
+CTS = ['perp', 'pp15', 'pp60', 'tennis', 'perp-rev']
 
 
 def ms(iso: str) -> int:
@@ -42,12 +42,36 @@ SPLITS = {
     'pp60': {'A': (ms('2026-04-18'), ms('2026-06-15')), 'B': (ms('2026-06-15'), DEV_END)},
     'tennis': {'A': (ms('2026-04-27T05:00'), ms('2026-06-22')), 'B': (ms('2026-06-22'), ms('2026-07-31'))},
 }
-SIZE = {'perp': 300.0, 'pp15': 20.0, 'pp60': 20.0, 'tennis': 10.0}
-SIZE2 = {'perp': 1000.0, 'pp15': 10.0, 'pp60': 10.0, 'tennis': 20.0}
+SPLITS['perp-rev'] = dict(SPLITS['perp'])          # OR-H2: the same perpetual A / B discovery split
+SIZE = {'perp': 300.0, 'pp15': 20.0, 'pp60': 20.0, 'tennis': 10.0, 'perp-rev': 300.0}      # perp-rev: the cap; each part sizes min(300, 5 / (M / 1e4))
+SIZE2 = {'perp': 1000.0, 'pp15': 10.0, 'pp60': 10.0, 'tennis': 20.0, 'perp-rev': 1000.0}
 MAX_CONTRACTS = {'pp15': 250, 'pp60': 250, 'tennis': 100}
-SIDES = {'perp': ['L', 'S'], 'pp15': ['Y', 'N'], 'pp60': ['Y', 'N'], 'tennis': ['Y', 'N']}
-HORIZONS = {'perp': [15, 60], 'pp15': [15], 'pp60': [60], 'tennis': [15, 60]}
-STEP_MIN = {'perp': 5, 'pp15': 1, 'pp60': 1, 'tennis': 1}
+SIDES = {'perp': ['L', 'S'], 'pp15': ['Y', 'N'], 'pp60': ['Y', 'N'], 'tennis': ['Y', 'N'], 'perp-rev': ['L', 'S']}
+HORIZONS = {'perp': [15, 60], 'pp15': [15], 'pp60': [60], 'tennis': [15, 60], 'perp-rev': [5, 15, 60]}   # perp-rev: the part's meta.horizons rules
+STEP_MIN = {'perp': 5, 'pp15': 1, 'pp60': 1, 'tennis': 1, 'perp-rev': 5}
+POOLED = 'ALL'
+
+
+def is_perp(ct: str) -> bool:
+    """Perpetual contract types: the OR-H1 perp and the OR-H2 reversal variant (5-minute decisions, per-coin parts)."""
+    return ct in ('perp', 'perp-rev')
+
+
+def group_of(meta: dict):
+    """The pooling group of a part: 'm<M>' for a reversal part of target M bps (its pooled scope is 'ALL-m<M>': parts of
+    different targets have different labels and are never pooled together), None for every other part (pooled scope 'ALL')."""
+    tb = meta.get('target_bps')
+    if tb is None:
+        return None
+    return 'm' + (str(int(tb)) if float(tb) == int(tb) else str(tb).replace('.', 'p'))
+
+
+def pooled_name(group) -> str:
+    return POOLED if group is None else f'{POOLED}-{group}'
+
+
+def is_pooled(scope: str) -> bool:
+    return scope == POOLED or scope.startswith(POOLED + '-')
 
 
 def split_of(t: np.ndarray, h: int, ct: str) -> np.ndarray:
@@ -141,8 +165,9 @@ class Part:
 def list_parts(root: str, ct: str) -> list:
     """Part directories of one contract type under root (perp-BTC, pp15-ETH, tennis-ATP ...), sorted; DOGE refused."""
     out = []
+    longer = [c + '-' for c in CTS if c != ct and c.startswith(ct + '-')]       # 'perp' must not take 'perp-rev-*'
     for d in sorted(os.listdir(root)):
-        if d.startswith(ct + '-') and os.path.exists(os.path.join(root, d, 'meta.json')):
+        if d.startswith(ct + '-') and not any(d.startswith(x) for x in longer) and os.path.exists(os.path.join(root, d, 'meta.json')):
             if 'DOGE' in d.upper():
                 raise ValueError('DOGE part refused')
             out.append(os.path.join(root, d))

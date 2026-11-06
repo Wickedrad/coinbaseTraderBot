@@ -28,7 +28,7 @@ import os
 
 import numpy as np
 
-from .common import DAY, HOLD_TO, HORIZONS, MIN, SIDES, SIZE, SIZE2, SPLITS, STEP_MIN, key, write_part
+from .common import DAY, HOLD_TO, HORIZONS, MIN, SIDES, SIZE, SIZE2, SPLITS, STEP_MIN, group_of, is_perp, key, write_part
 
 HOUR = 60 * MIN
 PLANTED_ITEMS = [{'f': 'fb01', 'v': 2}, {'f': 'fs03', 'v': 1}]
@@ -45,7 +45,7 @@ def _rows(ct: str, hours: int, rng, start_ms: int | None = None, end_ms: int = H
     d0 = int((start_ms if start_ms is not None else SPLITS[ct]['A'][0]) // DAY)
     d1 = int(end_ms // DAY)
     days = np.arange(d0, d1, dtype=np.int64)
-    if ct == 'perp':
+    if is_perp(ct):
         per = hours * 60 // 5
         off = (days[:, None] * 5 % 24) * 60 + 5 * np.arange(per)[None, :]
         t = days[:, None] * DAY + (off % 1440) * MIN
@@ -78,12 +78,19 @@ def _rows(ct: str, hours: int, rng, start_ms: int | None = None, end_ms: int = H
 
 
 def make_part(root: str, ct: str = 'perp', scope: str = 'BTC', mode: str = 'planted', seed: int = 1, hours: int = 2,
-              n_state: int = 12, n_bucket: int = 6, start_ms: int | None = None) -> str:
-    """Write one synthetic part <root>/<ct>-<scope>/ and return its path (see the module docstring)."""
+              n_state: int = 12, n_bucket: int = 6, start_ms: int | None = None, target_bps: float | None = None,
+              horizons: list | None = None) -> str:
+    """Write one synthetic part <root>/<ct>-<scope>/ and return its path (see the module docstring). ct perp-rev (OR-H2) is
+    a perp part with meta.target_bps (default 60; the scope must end in -m<M>, e.g. BTC-m60), its own horizons (default
+    5/15/60, 15/60 above 60 bps) and a per-row notional.npy = min(300, 5 / (M / 1e4))."""
     if 'DOGE' in scope.upper():
         raise ValueError('never DOGE')
     if mode not in ('planted', 'null'):
         raise ValueError('mode is planted or null')
+    if ct == 'perp-rev':
+        target_bps = 60 if target_bps is None else target_bps
+        horizons = horizons or ([5, 15, 60] if target_bps <= 60 else [15, 60])
+    hzs = list(horizons or HORIZONS[ct])
     rng = np.random.default_rng(seed)
     R = _rows(ct, hours, rng, start_ms)
     t = R['t'].astype(np.int64)
@@ -105,12 +112,12 @@ def make_part(root: str, ct: str = 'perp', scope: str = 'BTC', mode: str = 'plan
     rare = np.where(rng.random(n) < 0.005, 3, rng.integers(0, 3, n)).astype(np.int8)
     add('fb_rare', 'bucket', range(4), rare, 'fixture: level 3 at 0.5% (under the 1% support)')
 
-    blk = t // (2 * HOUR) if ct == 'perp' else R['group']                      # RV tercile constant over a block
+    blk = t // (2 * HOUR) if is_perp(ct) else R['group']                      # RV tercile constant over a block
     rv_blk = np.random.default_rng(seed + 1000).integers(0, 3, int(blk.max()) + 1)
     rv = rv_blk[blk].astype(np.int8) if ct != 'tennis' else np.full(n, -1, dtype=np.int8)
     side_features = None
     strata = {}
-    if ct == 'perp':
+    if is_perp(ct):
         h4 = (hour // 4).astype(np.int8)
         add('ctx:hour4', 'bucket', range(6), h4, 'UTC hour / 4')
         add('ctx:rv', 'bucket', range(3), rv, 'RV tercile')
@@ -149,12 +156,15 @@ def make_part(root: str, ct: str = 'perp', scope: str = 'BTC', mode: str = 'plan
         if extra in R:
             arrays[extra] = R[extra]
     size, size2 = SIZE[ct], SIZE2[ct]
+    if ct == 'perp-rev':
+        size = min(300.0, 5.0 / (target_bps / 1e4))
+        arrays['notional'] = np.full(n, size, dtype=np.float32)
     for s in SIDES[ct]:
         arrays[f'stratum_{s}'] = strata[s]
         p_row = np.clip((P_BASE if mode == 'planted' else 1 / 6) + lift(s), 0.02, 0.9)
         if mode == 'planted' and s == SIDES[ct][0]:
             p_row = np.where(planted, P_PLANTED, p_row)
-        for h in HORIZONS[ct]:
+        for h in hzs:
             ok = (rng.random(n) < 0.97) & (strata[s] >= 0)
             hit = (rng.random(n) < p_row) & ok
             win = 5.0 + 0.5 * rng.random(n)
@@ -177,9 +187,9 @@ def make_part(root: str, ct: str = 'perp', scope: str = 'BTC', mode: str = 'plan
             arrays[key('trade2', s, h)] = (trade * size2 / size).astype(np.float32)
             arrays[key('tradeLat', s, h)] = (trade + rng.normal(0, 0.3, n)).astype(np.float32)
             arrays[key('tradeCost', s, h)] = (trade - 0.15).astype(np.float32)
-            if ct == 'perp':
+            if is_perp(ct):
                 arrays[key('bestbps', s, h)] = (best / size * 1e4).astype(np.float32)
-    meta = {'ct': ct, 'scope': scope, 'assets': [scope], 'sides': SIDES[ct], 'horizons': HORIZONS[ct], 'size_usd': size,
+    meta = {'ct': ct, 'scope': scope, 'assets': [scope], 'sides': SIDES[ct], 'horizons': hzs, 'size_usd': size,
             'size2_usd': size2, 'step_min': STEP_MIN[ct], 'code_sha': 'fixture', 'features': feats,
             'strata_desc': 'fixture strata (perp hour4 x 3 + rv; pp15 (price x 3 + tau) x 4 + rv; tennis price x 3 + phase)',
             'notes': f'SYNTHETIC fixture part (oracle/fixtures_parts.py), mode {mode}, seed {seed}: not real data',
@@ -187,6 +197,11 @@ def make_part(root: str, ct: str = 'perp', scope: str = 'BTC', mode: str = 'plan
                         'planted_side': SIDES[ct][0] if mode == 'planted' else None}}
     if side_features:
         meta['side_features'] = side_features
+    if ct == 'perp-rev':
+        meta['assets'] = [scope.split('-')[0]]                    # the coin (scope = <coin>-m<M>)
+        meta.update({'target_bps': target_bps, 'stop_bps': target_bps / 2, 'notional_usd': size,
+                     'costs': {'takerBps': 12, 'makerBps': 5, 'halfSpreadBps': 0.19, 'ttBps': 1}})
+        assert group_of(meta) is not None and scope.endswith('-' + group_of(meta)), 'perp-rev scope must end in -m<M>'
     path = os.path.join(root, f'{ct}-{scope}')
     write_part(path, meta, arrays)
     return path
@@ -200,7 +215,7 @@ def make_parts(root: str, ct: str = 'perp', scopes=('BTC', 'ETH'), mode: str = '
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description='Write synthetic oracle parts (fixtures, not real data).')
     ap.add_argument('--out', required=True)
-    ap.add_argument('--ct', default='perp', choices=('perp', 'pp15', 'tennis'))
+    ap.add_argument('--ct', default='perp', choices=('perp', 'pp15', 'tennis', 'perp-rev'))
     ap.add_argument('--scopes', default='BTC,ETH')
     ap.add_argument('--mode', default='planted', choices=('planted', 'null'))
     ap.add_argument('--seed', type=int, default=1)

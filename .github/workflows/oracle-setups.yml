@@ -9,6 +9,13 @@
 #   [oracle]                                build the parts, then mine each requested contract type
 #   [oracle-parts:perp,pp15,pp60,tennis]    contract types (default all four)
 #   [oracle-assets:BTC,ETH,SOL,XRP]         coins (default all four; never DOGE; pp60 has BTC, ETH and SOL only)
+#   [oracle-ct:perp-rev]                    the OR-H2 reversal contract type (python/oracle/prereg/OR-H2.md). Without
+#                                           [oracle-parts:] it is the ONLY type built / mined / opened (the OR-H1 perp opening
+#                                           stays unopened); with both, their union. HO-1 for it: [protocol:ho1] [ho1-from:<run>]
+#                                           [oracle-ct:perp-rev]. One opening per contract type: 'perp-rev' has its own ledger key
+#   [oracle-targets:30,60,100,170]          with perp-rev: the net-bps targets M (whole numbers 10..500, default 30,60,100,170);
+#                                           the coin job writes one part per coin x M (perp-rev-<A>-m<M>), S = M/2, horizons
+#                                           5/15/60 (5 only for M <= 60); the miner pools coins per target (ALL-m<M>)
 #   [oracle-mine:<run>]                     skip building: mine run <run>'s parts again (outputs under this run); refused
 #                                           for a contract type whose frozen file from those parts was already opened
 #   [oracle-partial]                        allow a build or re-mine with fewer than all coins / tours of a contract type
@@ -132,6 +139,7 @@ jobs:
       mine: ${{ steps.present.outputs.mine || steps.go.outputs.mine }}
       partial: ${{ steps.go.outputs.partial }}
       reopen: ${{ steps.go.outputs.reopen }}
+      targets: ${{ steps.go.outputs.targets }}
     steps:
       - uses: actions/checkout@v5
       - name: Read the tags
@@ -143,6 +151,7 @@ jobs:
           import json, os, re, sys
           msg, run = os.environ.get('MSG', ''), os.environ['GITHUB_RUN_ID']
           ASSETS, HOURLY, CTS, TOURS = ['BTC', 'ETH', 'SOL', 'XRP'], ['BTC', 'ETH', 'SOL'], ['perp', 'pp15', 'pp60', 'tennis'], ['ATP', 'WTA']
+          REVT, REV_DEFAULT = ['perp-rev'], [30, 60, 100, 170]
 
 
           def die(why):
@@ -179,8 +188,22 @@ jobs:
               die('[ho1-reopen:<ct,...>] needs [protocol:ho1]')
           if partial and ho1:
               die('[oracle-partial] is for building / mining: a partial run is never opened')
-          reopen = pick(reopen_raw, CTS, False) if reopen_raw is not None else []
-          assets, cts = pick(tag('oracle-assets'), ASSETS, True), pick(tag('oracle-parts'), CTS, False)
+          reopen = pick(reopen_raw, CTS + REVT, False) if reopen_raw is not None else []
+          ct_raw, parts_raw, targets_raw = tag('oracle-ct'), tag('oracle-parts'), tag('oracle-targets')
+          rev = pick(ct_raw, REVT, False) if ct_raw is not None else []
+          assets = pick(tag('oracle-assets'), ASSETS, True)
+          # [oracle-ct:perp-rev] alone selects only the reversal type; with [oracle-parts:] the union.
+          cts = (pick(parts_raw, CTS, False) if parts_raw is not None or ct_raw is None else []) + rev
+          if targets_raw is not None and not rev:
+              die('[oracle-targets:...] needs [oracle-ct:perp-rev]')
+          targets = []
+          if rev:
+              try:
+                  targets = sorted({int(x) for x in (targets_raw if targets_raw is not None else ','.join(map(str, REV_DEFAULT))).split(',') if x.strip()})
+              except ValueError:
+                  die(f'[oracle-targets:{targets_raw}]: whole numbers')
+              if not targets or len(targets) > 4 or any(x < 10 or x > 500 for x in targets):
+                  die(f'[oracle-targets:{targets_raw}]: one to four whole numbers 10..500 (net bps)')
           if ho1:
               if not re.fullmatch(r'[0-9]+', ho1_from or ''):
                   die('[protocol:ho1] needs [ho1-from:<run id>]: the run whose frozen.json files are opened')
@@ -199,15 +222,18 @@ jobs:
           # The prereg mines each asset AND all assets pooled: a build with some coins only would freeze a different
           # pooled scope (or none) and a smaller BHY family. Refused unless [oracle-partial] says it is a partial run.
           if mode == 'build' and not partial:
-              if ('perp' in cts or 'pp15' in cts) and assets != ASSETS:
-                  die(f'perp / pp15 with coins {",".join(assets)}: the study uses all of {",".join(ASSETS)} (add [oracle-partial] for a partial run, which never opens HO-1)')
+              if ('perp' in cts or 'pp15' in cts or 'perp-rev' in cts) and assets != ASSETS:
+                  die(f'perp / pp15 / perp-rev with coins {",".join(assets)}: the study uses all of {",".join(ASSETS)} (add [oracle-partial] for a partial run, which never opens HO-1)')
+              if 'perp-rev' in cts and targets != sorted(REV_DEFAULT):
+                  die(f'perp-rev targets {targets}: the OR-H2 ladder is {REV_DEFAULT} (add [oracle-partial] for a partial run, which never opens HO-1)')
               if 'pp60' in cts and hourly != HOURLY:
                   die(f'pp60 with coins {",".join(hourly)}: the hourly ladders are {",".join(HOURLY)} (resume with [oracle] [oracle-parts:pp60]; [oracle-partial] for a partial run)')
           # The exporter writes the perp and the spot part together: pp15 and pp60 need the coin's spot part.
-          coin = assets if ('perp' in cts or 'pp15' in cts) else hourly
+          coin = assets if ('perp' in cts or 'pp15' in cts or 'perp-rev' in cts) else hourly
           tennis = TOURS if 'tennis' in cts else []
           expect = {'perp': [f'perp-{a}' for a in assets], 'pp15': [f'pp15-{a}' for a in assets],
-                    'pp60': [f'pp60-{a}' for a in hourly], 'tennis': [f'tennis-{t}' for t in TOURS]}
+                    'pp60': [f'pp60-{a}' for a in hourly], 'tennis': [f'tennis-{t}' for t in TOURS],
+                    'perp-rev': [f'perp-rev-{a}-m{m}' for a in assets for m in targets]}
           folders = []
           if mode == 'build':
               folders = [f'parts/{p}' for c in cts for p in expect[c]] + [f'parts/spot-{a}' for a in coin] + [f'mine/{c}' for c in cts] + ['status']
@@ -218,12 +244,12 @@ jobs:
           out = {'mode': mode, 'src': src, 'from': ho1_from or '', 'cts': ','.join(cts), 'assets': ','.join(assets), 'coin': j(coin),
                  'hourly': j(hourly), 'tennis': j(tennis), 'mine': j(mine), 'folders': ' '.join(folders),
                  'kxd': ' '.join(f'KX{a}D' for a in hourly), 'modcache': 'true' if coin else 'false',
-                 'partial': 'true' if partial else 'false', 'reopen': ','.join(reopen)}
+                 'partial': 'true' if partial else 'false', 'reopen': ','.join(reopen), 'targets': ','.join(map(str, targets))}
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.writelines(f'{k}={v}\n' for k, v in out.items())
           summary = [f'mode {mode}' + (f' (parts of run {src})' if mode == 'mine' else f' (frozen files of run {ho1_from})' if mode == 'ho1' else ''),
                      f'contract types {",".join(cts)}', f'coins {",".join(assets)}' + (' (not used by HO-1: the frozen setups fix their scopes)' if mode == 'ho1' else ''),
-                     f'coin jobs {coin}', f'hourly jobs {hourly}', f'tennis jobs {tennis}', f'mine jobs {[m["ct"] for m in mine]}']
+                     f'coin jobs {coin}', f'reversal targets {targets}', f'hourly jobs {hourly}', f'tennis jobs {tennis}', f'mine jobs {[m["ct"] for m in mine]}']
           if partial:
               summary.append('PARTIAL run ([oracle-partial]): its frozen files are never opened')
           if reopen:
@@ -286,7 +312,7 @@ jobs:
           rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$SRC/parts" 2>&1 | grep -v '^$' | tail -5 || true
           dirs=$(rclone lsf "$R/models/oracle-setups/runs/$SRC/parts" --dirs-only) || { echo "::error::run $SRC: no parts folder readable on Drive"; exit 1; }
           echo "run $SRC parts: $(printf '%s\n' "$dirs" | paste -sd' ' -)"
-          have=$(printf '%s\n' "$dirs" | sed -nE 's#^(perp|pp15|pp60|tennis)-(BTC|ETH|SOL|XRP|ATP|WTA)/$#\1#p' | sort -u | paste -sd, -)
+          have=$(printf '%s\n' "$dirs" | sed -nE 's#^(perp-rev|perp|pp15|pp60|tennis)-(BTC|ETH|SOL|XRP|ATP|WTA)(-m[0-9]+)?/$#\1#p' | sort -u | paste -sd, -)
           sel=$(jq -c --arg have "$have" '[.[] | select(.ct as $c | ($have | split(",") | index($c)))]' <<< "$MINE")
           [ "$sel" != '[]' ] || { echo "::error::run $SRC has no part of the requested contract types"; exit 1; }
           echo "mine=$sel" >> "$GITHUB_OUTPUT"
@@ -311,6 +337,9 @@ jobs:
       RUN: ${{ github.run_id }}
       PERP: ${{ contains(format(',{0},', needs.plan.outputs.cts), ',perp,') }}
       PP15: ${{ contains(format(',{0},', needs.plan.outputs.cts), ',pp15,') }}
+      REV: ${{ contains(format(',{0},', needs.plan.outputs.cts), ',perp-rev,') }}
+      REVONLY: ${{ needs.plan.outputs.cts == 'perp-rev' }}
+      TARGETS: ${{ needs.plan.outputs.targets }}
     steps:
       - name: The coin (never DOGE)
         run: '[[ "$A" =~ ^(BTC|ETH|SOL|XRP)$ ]] || { echo "::error::bad or excluded coin: $A"; exit 1; }'
@@ -394,12 +423,23 @@ jobs:
       - name: The cached analyzer walk (derived/oracle-setups/modcache)
         run: bash deploy/drive_lab.sh get derived/oracle-setups/modcache data/modcache --include "/$A-*.bin" || echo "no cached analyzer walk for $A yet (it is walked and kept)"
       - name: Perp and spot parts (research/oracle/oracleExport.ts)
+        if: env.REVONLY != 'true'
         env:
           NODE_OPTIONS: --max-old-space-size=14000
         run: |
           node --import tsx research/oracle/oracleExport.ts --grid "data/grids/$A.bin" --history "data/hist-$A" --cache-dir data/modcache \
             --out parts --spot-from 2026-04-12 --spot-to 2026-11-05 --code-sha "$GITHUB_SHA" 2>&1 | { grep -v 'analyzer walk [0-9]' || true; } | tail -120
           for k in perp spot; do [ -f "parts/$k-$A/meta.json" ] || { echo "::error::no $k-$A part written"; exit 1; }; done
+          du -sh parts/* | cat
+      # OR-H2: one feature build (the cached analyzer walk is reused), one labelled part per target M; no spot part.
+      - name: Reversal parts (research/oracle/oracleExport.ts --target-bps)
+        if: env.REV == 'true'
+        env:
+          NODE_OPTIONS: --max-old-space-size=14000
+        run: |
+          node --import tsx research/oracle/oracleExport.ts --grid "data/grids/$A.bin" --history "data/hist-$A" --cache-dir data/modcache \
+            --out parts --target-bps "$TARGETS" --code-sha "$GITHUB_SHA" 2>&1 | { grep -v 'analyzer walk [0-9]' || true; } | tail -120
+          for m in ${TARGETS//,/ }; do [ -f "parts/perp-rev-$A-m$m/meta.json" ] || { echo "::error::no perp-rev-$A-m$m part written"; exit 1; }; done
           du -sh parts/* | cat
       - name: Keep the analyzer walk on Drive
         if: always()
@@ -414,6 +454,14 @@ jobs:
             [ -f "$d/meta.json" ] || { echo "no $k-$A part"; continue; }
             if [ "$k" = perp ] && [ "$PERP" != true ]; then echo "perp not requested: perp-$A is not kept"; continue; fi
             bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/parts/$k-$A" "$d"
+          done
+      - name: Keep the reversal parts on Drive
+        if: always() && env.REV == 'true'
+        run: |
+          set -euo pipefail
+          for m in ${TARGETS//,/ }; do
+            d="parts/perp-rev-$A-m$m"
+            if [ -f "$d/meta.json" ]; then bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/parts/perp-rev-$A-m$m" "$d"; else echo "no perp-rev-$A-m$m part"; fi
           done
       # Only this coin's series, only .jsonl day files (a day kept only in compact form is decoded), close days
       # 2026-04-13 .. 2026-11-04 (no file dated 2026-11-05 or later is downloaded).
@@ -726,7 +774,7 @@ jobs:
       RUN: ${{ github.run_id }}
     steps:
       - name: The contract type
-        run: '[[ "$CT" =~ ^(perp|pp15|pp60|tennis)$ ]] && [[ "$SRC" =~ ^[0-9]+$ ]] || { echo "::error::bad contract type or run: $CT $SRC"; exit 1; }'
+        run: '[[ "$CT" =~ ^(perp|pp15|pp60|tennis|perp-rev)$ ]] && [[ "$SRC" =~ ^[0-9]+$ ]] || { echo "::error::bad contract type or run: $CT $SRC"; exit 1; }'
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
@@ -745,7 +793,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p data/parts
-          rc=0; bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/parts" data/parts --include "/$CT-*/**" || rc=$?
+          rc=0; bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/parts" data/parts --include "/$CT-[A-Z]*/**" || rc=$?
           [ "$rc" = 0 ] || { echo "::error::the parts of run $SRC are not readable ($rc)"; exit 1; }
           for d in data/parts/*/; do [ -d "$d" ] && [ ! -f "$d/meta.json" ] && rm -rf "$d"; done; true
           have=$(find data/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
@@ -845,7 +893,7 @@ jobs:
           for row in $(jq -r '.[] | "\(.ct):\(.parts_run)"' frozen/rows.json); do
             ct=${row%%:*}; pr=${row#*:}
             [ "$pr" = "$FROM" ] || rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$pr/parts" 2>&1 | grep -v '^$' | tail -5 || true
-            p=$(rclone lsf "$R/models/oracle-setups/runs/$pr/parts" --dirs-only | grep -E "^$ct-[A-Z]+/$" | paste -sd' ' -) || true
+            p=$(rclone lsf "$R/models/oracle-setups/runs/$pr/parts" --dirs-only | grep -E "^$ct-[A-Z]+(-m[0-9]+)?/$" | paste -sd' ' -) || true
             [ -n "$p" ] || { echo "::error::$ct: no parts in run $pr"; exit 1; }
             echo "$ct parts (run $pr): $p"
           done
@@ -861,7 +909,7 @@ jobs:
           for row in $(jq -c '.[]' frozen/rows.json); do
             ct=$(jq -r .ct <<< "$row"); pr=$(jq -r .parts_run <<< "$row"); [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::bad parts run"; exit 1; }
             mkdir -p "pmeta/$ct"
-            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$pr/parts" "pmeta/$ct" --include "/$ct-*/meta.json"
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$pr/parts" "pmeta/$ct" --include "/$ct-[A-Z]*/meta.json"
             python3 -I - "$ct" <<'EOF'
           import json, os, sys
           ct = sys.argv[1]
@@ -874,6 +922,12 @@ jobs:
               m = json.load(open(mp))
               if int(m['n']) != int(e['rows_total']) or (e.get('code_sha') and m.get('code_sha') != e['code_sha']):
                   die(f'{ct}: part {e["dir"]} differs from the mined one (rows {m["n"]} vs {e["rows_total"]}): refused, nothing logged')
+          if ct == 'perp-rev':
+              # OR-H2: only the full prereg ladder on all four coins may use the type's single opening.
+              want = {f'perp-rev-{a}-m{t}' for a in ('BTC', 'ETH', 'SOL', 'XRP') for t in (30, 60, 100, 170)}
+              got = {e['dir'] for e in fz.get('parts', [])}
+              if got != want:
+                  die(f'perp-rev: the frozen file was mined on {len(got)} part(s), not the OR-H2 ladder of 16 (partial run): refused, nothing logged')
           print(f'{ct}: {len(fz.get("parts", []))} part(s) match the frozen file')
           EOF
           done
@@ -929,7 +983,7 @@ jobs:
       RUN: ${{ github.run_id }}
     steps:
       - name: The contract type
-        run: '[[ "$CT" =~ ^(perp|pp15|pp60|tennis)$ ]] && [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] && [[ "$PARTS_RUN$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad matrix entry"; exit 1; }'
+        run: '[[ "$CT" =~ ^(perp|pp15|pp60|tennis|perp-rev)$ ]] && [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] && [[ "$PARTS_RUN$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad matrix entry"; exit 1; }'
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
@@ -950,7 +1004,7 @@ jobs:
           mkdir -p in/parts
           rclone copyto "$R/models/oracle-setups/runs/$FROM/mine/$CT/frozen.json" in/frozen.json
           [ "$(sha256sum in/frozen.json | cut -c1-64)" = "$SHA" ] || { echo "::error::frozen.json of $CT is not the file opened ($SHA)"; exit 1; }
-          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$PARTS_RUN/parts" in/parts --include "/$CT-*/**"
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$PARTS_RUN/parts" in/parts --include "/$CT-[A-Z]*/**"
           for d in in/parts/*/; do [ -d "$d" ] && [ ! -f "$d/meta.json" ] && rm -rf "$d"; done; true
           have=$(find in/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
           if grep -qi doge <<< "$have"; then echo "::error::a DOGE part: refused"; exit 1; fi

@@ -65,7 +65,8 @@ from datetime import datetime, timezone
 import numpy as np
 
 from allpairs.ho1 import hour_terciles
-from .common import CTS, DAY, FOLD_EDGES, HOLD_FROM, HOLD_TO, HORIZONS, MIN, SIDES, SIZE, Part, fold_of, key, list_parts
+from .common import (CTS, DAY, FOLD_EDGES, HOLD_FROM, HOLD_TO, HORIZONS, MIN, POOLED, SIDES, SIZE, Part, fold_of, group_of, is_perp, is_pooled,
+                     key, list_parts, pooled_name)
 from .mine import adversary as mine_adversary
 from .mine import clean, code_sha as git_code_sha
 from .sim import (ArrayPart, PlaceboPool, bhy, bhy_adjust, busy_key, daily_vec, day_labels, fire_mask, resolve,
@@ -73,8 +74,8 @@ from .sim import (ArrayPart, PlaceboPool, bhy, bhy_adjust, busy_key, daily_vec, 
 
 THREAD = 'oracle-setups'
 FROZEN_SCHEMA = 'oracle-frozen-1'
-POOLED = 'ALL'
-CONTRACT_TYPE = {'perp': 'perpetual', 'pp15': 'price_prediction', 'pp60': 'price_prediction', 'tennis': 'tennis'}
+CONTRACT_TYPE = {'perp': 'perpetual', 'pp15': 'price_prediction', 'pp60': 'price_prediction', 'tennis': 'tennis', 'perp-rev': 'perpetual'}
+PREREG = {'perp-rev': 'OR-H2'}                         # every other type: OR-H1
 HOLD_SPAN = (HOLD_FROM, HOLD_TO)
 HOLD_DAYS = day_labels(HOLD_SPAN)                       # 2026-08-01 .. 2026-11-04
 assert len(HOLD_DAYS) == 96 and HOLD_DAYS[0] == '2026-08-01' and HOLD_DAYS[-1] == '2026-11-04'
@@ -99,6 +100,10 @@ EXITS = {
               'bid", which is not causal: the last candle of a match is known only after it ended)',
 }
 EXITS['pp60'] = EXITS['pp15']
+EXITS['perp-rev'] = ('taker entry at the next perp minute open (+12 bps + half spread), notional min($300, $5 / (M / 1e4)) for the '
+                     'part\'s target M net bps; resting maker take-profit at M bps net of entry / exit costs and a 2 bps funding '
+                     'buffer (fills on a 1 bp trade-through); stop at S = M/2 bps (taker, at the stop or a worse open; a minute '
+                     'reaching both is the stop); else a taker exit at the close of minute i+H')
 # Reported under "Known limits" in ho1.md (prereg "Known limits" plus what the review of Nov 6 found).
 KNOWN_LIMITS = {
     'all': ['live exits (pacer, take-profit floors) would pre-empt a +$5 take-profit unless the setup\'s tagged exit '
@@ -112,6 +117,7 @@ KNOWN_LIMITS = {
                'last candle was not causal and was dropped before any opening)'],
 }
 KNOWN_LIMITS['pp60'] = KNOWN_LIMITS['pp15']
+KNOWN_LIMITS['perp-rev'] = KNOWN_LIMITS['perp'] + ['reversal labels: a stop and a take-profit in one 1-minute bar count as the stop; the stop exit is a taker fill at the stop price (no slippage beyond the open gap)']
 # Module families a setup's items read (registry `modules`), from the builders' feature names / descriptions.
 ANALYZER = ('ta:', 'book:', 'conf:', 'conv:')
 TALIB = ('cdl_', 'tl_', 'ta_')
@@ -218,6 +224,7 @@ class HoldPart:
             raise SystemExit(f'{path}: X shape {arrays["X"].shape} vs {len(part.features)} features')
         self.dir = os.path.basename(os.path.normpath(path))
         self.scope = part.scope
+        self.group = group_of(meta)
         self.assets = [str(a) for a in (meta.get('assets') or [part.scope])]
         self.index = index
         self.rows_total = part.n
@@ -355,6 +362,12 @@ class Strata:
 
 # ---------------------------------------------------------------- trading
 
+def scope_has(scope: str, hp) -> bool:
+    """Whether a frozen setup of `scope` reads this part: its own scope, or the pooled scope of the part's pooling group
+    ('ALL' for the OR-H1 types; 'ALL-m<M>' for the reversal parts of target M)."""
+    return scope == hp.scope or (is_pooled(scope) and scope == pooled_name(hp.group))
+
+
 def setup_legs(setup: dict, hps: list) -> list:
     """[(cell, taken rows)] of one frozen setup over its scope's parts: one position at a time per asset (event)."""
     legs = []
@@ -375,7 +388,7 @@ def book_legs(setups: list, hps: list, ct: str) -> tuple:
         n = len(hp.v['t'])
         best = np.full(n, -1, dtype=np.int64)
         for j, s in enumerate(ranked):
-            if s['scope'] not in (POOLED, hp.scope):
+            if not scope_has(s['scope'], hp):
                 continue
             f = hp.cell(s['side'], int(s['h'])).fire(s)
             best[f & (best < 0)] = j
@@ -386,7 +399,7 @@ def book_legs(setups: list, hps: list, ct: str) -> tuple:
             T.append(c.t[sel]); HO.append(c.hold[sel]); TR.append(c.trade[sel])
             R.append(np.full(len(sel), int(ranked[j]['rank']))); P.append(np.full(len(sel), p)); J.append(np.full(len(sel), j))
             ROW.append(sel)
-            if ct == 'perp':
+            if is_perp(ct):
                 K.append(np.zeros(len(sel), dtype=np.int64))
             elif ct == 'tennis':
                 K.append(p * (1 << 40) + np.asarray(hp.v['group'], dtype=np.int64)[sel])
@@ -485,6 +498,8 @@ def feature_info(hps: list, side: str, f: str) -> tuple:
 def module_of(name: str, desc: str) -> str:
     """Module family of a feature (registry `modules`): contract-state, ta-primitives, ta-analyzer, ta-lib or context."""
     base = name.split('@')[0]
+    if base.startswith('rev:'):
+        return 'ta-primitives'
     if base.startswith('k_'):
         return 'contract-state'
     if desc.startswith('buildPrims'):
@@ -507,7 +522,9 @@ def items_str(items) -> str:
 
 
 def setup_env(s: dict, ct: str, sha: str) -> dict:
-    return {'ORACLE_SETUP': s['id'], 'ORACLE_SCOPE': s['scope'], 'ORACLE_SIDE': s['side'], 'ORACLE_H_MIN': str(int(s['h'])),
+    tg = re.search(r'-m([0-9p]+)$', str(s['scope'])) if ct == 'perp-rev' else None
+    extra = {'ORACLE_TARGET_BPS': tg.group(1).replace('p', '.')} if tg else {}
+    return {**extra, 'ORACLE_SETUP': s['id'], 'ORACLE_SCOPE': s['scope'], 'ORACLE_SIDE': s['side'], 'ORACLE_H_MIN': str(int(s['h'])),
             'ORACLE_ITEMS': items_str(s['items']), 'ORACLE_SIZE_USD': f'{SIZE[ct]:g}', 'ORACLE_EXIT': 'primary',
             'ORACLE_FROZEN_RANK': str(int(s['rank'])), 'ORACLE_FROZEN_SHA256': sha[:16]}
 
@@ -544,8 +561,8 @@ def build_rows(reg, ct, fam, sha, code_sha, run, results, book, control_terc, hp
             raw = {'run': str(run), 'ct': ct, 'frozen_sha256': sha, 'setup': {k_: s[k_] for k_ in ('id', 'scope', 'side', 'h', 'items', 'rank')}}
         else:
             env = {'ORACLE_BOOK': 'all frozen setups, best frozen rank first', 'ORACLE_SETUPS': ','.join(x['setup']['id'] for x in results),
-                   'ORACLE_POSITIONS': {'perp': 'one $300 position at a time across all coins', 'tennis': 'one position per event at a time'}
-                   .get(ct, 'one position per market and per asset at a time'), 'ORACLE_EXIT': 'primary',
+                   'ORACLE_POSITIONS': ({'perp': 'one $300 position at a time across all coins', 'perp-rev': 'one position at a time across all coins, notional min($300, $5 / (M / 1e4))'}[ct] if is_perp(ct) else 'one position per event at a time' if ct == 'tennis'
+                                        else 'one position per market and per asset at a time'), 'ORACLE_EXIT': 'primary',
                    'ORACLE_FROZEN_SHA256': sha[:16]}
             mods = ['oracle-setups'] + sorted({m for x in results for m in x['modules']})
             raw = {'run': str(run), 'ct': ct, 'frozen_sha256': sha, 'book_of': len(results)}
@@ -554,7 +571,7 @@ def build_rows(reg, ct, fam, sha, code_sha, run, results, book, control_terc, hp
         c = row(arm, 'candidate', env, ev['_daily'], ev['by_tercile'],
                 {'control': ctl['trial_id'], 'modules': mods, 'fills': ev['trades'], 'by_cell': ev['by_cell'],
                  'raw': dict(raw, ho1=stats)})
-        if ct != 'perp':
+        if not is_perp(ct):
             c['markets'] = ev['markets']
         penv = dict(env, ORACLE_PLACEBO='matched random entry: same stratum and UTC day, '
                                         f'{res.get("seeds", 8)} seeds averaged, booked on the trade day')
@@ -579,7 +596,7 @@ def fmt(x, f='+.2f'):
 def report_md(doc) -> str:
     ct = doc['ct']
     L = [f'# Oracle setups HO-1: {ct} ({doc["family"]})', '',
-         'Prereg python/oracle/prereg/OR-H1.md "HO-1"; SPEC 4. Scored once on Aug 1 - Nov 4 2026 (96 days, 2,304 h); '
+         f'Prereg python/oracle/prereg/{PREREG.get(doc["ct"], "OR-H1")}.md "HO-1"; SPEC 4. Scored once on Aug 1 - Nov 4 2026 (96 days, 2,304 h); '
          'aggregates only.', '',
          f'Frozen file sha256 `{doc["frozen_sha256"]}` ({doc["n_setups"]} setups); parts '
          + ', '.join(f'{p["dir"]} ({p["hold_rows"]} hold rows)' for p in doc['parts']) + '.',
@@ -664,7 +681,7 @@ def run(a) -> dict:
         notes.append(f'parts under --parts not in the frozen file, not used: {", ".join(extra)}')
     log('parts: ' + ', '.join(f'{hp.dir} {hp.hold_rows} hold rows' for hp in hps))
     strata = Strata(ct, a.labels, hps)
-    scope_parts = lambda s: hps if s['scope'] == POOLED else [by_scope[s['scope']]] if s['scope'] in by_scope else None
+    scope_parts = lambda s: [hp for hp in hps if scope_has(s['scope'], hp)] if is_pooled(s['scope']) else [by_scope[s['scope']]] if s['scope'] in by_scope else None
 
     # --- every frozen setup, traded as confirmation traded it
     results = []
@@ -763,7 +780,7 @@ def run(a) -> dict:
     if blocking:
         notes.append(f'validator flags on rows: {", ".join(blocking)}')
     if ct == 'tennis':
-        single = [s['id'] for s in setups if s['scope'] != POOLED]
+        single = [s['id'] for s in setups if not is_pooled(s['scope'])]
         notes.append('tennis strata are the tours (research/tennis_ta_report.py convention; no RV regime for matches); the '
                      'miner freezes tennis setups from the pooled scope only, since a single-tour setup has one stratum and '
                      'cannot meet "2 strata won"' + (f'; this frozen file still holds {len(single)} single-tour setup(s), '
@@ -790,11 +807,11 @@ def run(a) -> dict:
         out_book = {'arm': 'book', 'trial_id': book['trial_id'], 'placebo_trial_id': book['placebo_trial_id'],
                     'ho1': pub(book['eval']), 'heldout': book['heldout'], 'verdict': book['verdict'],
                     'candidates': bt['candidates'], 'setups_used': {i: bt['setup'].count(i) for i in sorted(set(bt['setup']))},
-                    'positions': {'perp': 'one $300 position at a time across all coins',
-                                  'tennis': 'one position per event at a time'}.get(ct, 'one position per asset (and market) at a time')}
+                    'positions': ({'perp': 'one $300 position at a time across all coins', 'perp-rev': 'one position at a time across all coins, notional min($300, $5 / (M / 1e4))'}[ct]
+                                  if is_perp(ct) else 'one position per event at a time' if ct == 'tennis' else 'one position per asset (and market) at a time')}
     summary = {'schema': 'oracle-ho1-1', 'ct': ct, 'family': fam, 'thread': THREAD, 'contract_type': CONTRACT_TYPE[ct],
                'frozen_sha256': sha, 'run': str(a.run), 'code_sha': code_sha, 'registry_sha256': reg_sha,
-               'prereg': 'python/oracle/prereg/OR-H1.md', 'params': params,
+               'prereg': f'python/oracle/prereg/{PREREG.get(ct, "OR-H1")}.md', 'params': params,
                'hold': {'from': HOLD_DAYS[0], 'to': HOLD_DAYS[-1], 'days': len(HOLD_DAYS), 'hours': HOLD_HOURS},
                'parts': [{'dir': hp.dir, 'scope': hp.scope, 'rows_total': hp.rows_total, 'hold_rows': hp.hold_rows} for hp in hps],
                'strata_keys': list(control_terc), 'strata_hours': {k_: v['hours'] for k_, v in control_terc.items()},
