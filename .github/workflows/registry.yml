@@ -7,6 +7,7 @@
 #   backfill-cellsweep <full sha> <thread> <control> <own|paper> [family]   cell-sweep Drive folder -> a shard
 #   backfill-foreign <drive path under kalshi-bot-archive> <thread> <family> another thread's own ledger -> a shard
 #   regime [from YYYY-MM-DD] [to YYYY-MM-DD] [fixture YYYY-MM-DD]          labels (+ one-day fixture artifact)
+#   flb-fit [boot]                                                          H-A part 1: FLB map on H-DEV Kalshi candles
 #   inbox                                                                   copy .github/registry-inbox/<thread>/*.jsonl to Drive
 #   drop <thread>/<file>.jsonl                                              delete one superseded shard of ours
 #   merge                                                                   merge every shard and post the report
@@ -27,7 +28,7 @@ jobs:
   run:
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 90
+    timeout-minutes: 240
     env:
       REG: gdrive:kalshi-bot-archive/registry
     steps:
@@ -92,6 +93,19 @@ jobs:
                 rclone copyto "cs-report-$a1.md" "$SRC/report.md"; [ -f "cs-report-$a1.json" ] && rclone copyto "cs-report-$a1.json" "$SRC/report.json"
                 { echo "**Cell sweep score** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · REPLAY_NOTE=cell-score"; echo; head -c 60000 "cs-report-$a1.md"; } > comment-cs.md
                 jq -n --rawfile body comment-cs.md '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$a1/comments" --input - --jq '.html_url' || true;;
+              flb-fit)
+                # H-A part 1 / cheap-NO Stage A: FLB map on H-DEV real Kalshi candles (research/flbMap.py). Never reads Aug 1 on.
+                python3 -c 'import numpy' 2>/dev/null || pip install -q numpy
+                mkdir -p kh
+                rclone copy gdrive:kalshi-bot-archive/raw/history/kalshi kh --include '*/2026-04-1[89].jsonl*' --include '*/2026-04-[23]?.jsonl*' --include '*/2026-0[567]-??.jsonl*' --exclude 'KXDOGE*/**' --transfers 8 2>&1 | grep -v "Duplicate" | tail -3 || true
+                echo "kalshi history: $(ls kh | paste -sd' ') ; $(find kh -name '*.jsonl*' | wc -l) day files, $(du -sh kh | cut -f1)"
+                rclone copyto "$REG/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz" labels.csv.gz
+                sha=$(git rev-parse HEAD)
+                python3 -I research/flbMap.py fit kh flb-out --labels labels.csv.gz --boot "${a1:-1000}" --sha "$sha" || { echo "::error::flb fit failed"; rc=1; continue; }
+                rclone copy flb-out "$REG/flb-map/$sha"
+                echo "flb map: $REG/flb-map/$sha/flb-map.json"
+                { echo "**FLB map v1 (H-A part 1)** run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · Drive registry/flb-map/$sha"; echo; head -c 60000 flb-out/flb-report.md; } > comment-flb.md
+                jq -n --rawfile body comment-flb.md '{body: $body}' | gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input - --jq '.html_url' || true;;
               inbox)
                 # Shards from threads without Drive access, committed under .github/registry-inbox/<thread>/<file>.jsonl.
                 for f in .github/registry-inbox/*/*.jsonl; do
