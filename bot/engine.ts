@@ -1121,7 +1121,8 @@ export class Engine {
   }
 
   /** The risk gateway's per-order, window and total caps for crypto orders: the tier's, widened to fit the paper order
-   *  size or the order band's top (one order, PAPER_WINDOW_ORDERS in markets closing together, PAPER_TOTAL_ORDERS in all). */
+   *  size or the order band's top (one order, PAPER_WINDOW_ORDERS in markets closing together, PAPER_TOTAL_ORDERS in all).
+   *  They bind only with RISK_SIZE_CAPS=true (off by default since Nov 5). */
   private orderLimits(t: Tier, bankroll = this.bankroll() ?? 0): Partial<RiskLimits> {
     const lim = this.tierLimits(t);
     const usd = this.paperOrderUsd(bankroll) || (this.orderBandUsd(bankroll)?.max ?? 0);
@@ -1179,7 +1180,8 @@ export class Engine {
     return m ? m.kind === 'match' : this.d.cfg.tennis.series.some((s) => ticker.startsWith(`${s}-`));
   }
 
-  /** Risk a new crypto order could still add: room under the tier's window and total caps and in the shard's free cash. */
+  /** Risk a new crypto order could still add: room under the tier's window and total caps (RISK_SIZE_CAPS=true) and in
+   *  the shard's free cash; the free cash alone with RISK_SIZE_CAPS off (the default). */
   private newRiskRoom(m: ActiveMarket, bankroll: number, tier: Tier): number {
     const totals = this.riskTotals(m.closeTime);
     const free = this.freeCash(this.shardOf(m.ticker));
@@ -2652,7 +2654,8 @@ export class Engine {
     };
     if (training) ctx.skipEdgeCollar = true;
     if (tennis?.killExit) ctx.killExit = true;
-    // An adversary-boosted entry may use proportionally more of the per-order caps (window / total caps unchanged).
+    // An adversary-boosted entry may use proportionally more of the per-order caps (window / total caps unchanged; with
+    // RISK_SIZE_CAPS off no crypto cap binds).
     if (p.boost && p.boost > 1 && !tennis) {
       const lim = ctx.limitOverrides ?? {};
       ctx.limitOverrides = { ...lim, maxOrderRiskFrac: (lim.maxOrderRiskFrac ?? cfg.risk.maxOrderRiskFrac) * p.boost, maxContractsPerOrder: (lim.maxContractsPerOrder ?? cfg.risk.maxContractsPerOrder) * p.boost };

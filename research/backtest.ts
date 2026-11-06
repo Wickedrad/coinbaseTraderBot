@@ -899,8 +899,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const pNow = pos.get(m.ticker);
       // As the engine: the open contracts' price, an earlier exit's profit already on the pacer's clock.
       const entrySide = openSidePrice(pNow);
-      // As the engine (Engine.newRiskRoom): a new order fits the room left under the window and total caps and in the
-      // free cash, so near the caps an order shrinks instead of being refused. Paper's cash holds nothing back for
+      // As the engine (Engine.newRiskRoom): a new order fits the room left under the window and total caps (with
+      // RISK_SIZE_CAPS=true) and in the free cash, so near them an order shrinks instead of being refused. Paper's cash holds nothing back for
       // resting orders, as the bot reads it.
       let newRiskRoomUsd: number | undefined;
       if (reason) {
