@@ -65,9 +65,10 @@ permissions:
 
 concurrency:
   # A fidelity-only run never cancels a sweep in progress; a study cancels only an earlier study of the same run.
-  # A one-time opening (slow-sealed, blind) gets a group of its own: a second dispatch must never cancel one already logged.
-  group: perp-ta-sweep-${{ github.ref }}-${{ inputs.only || 'all' }}${{ inputs.only == 'study' && format('-{0}', inputs.study_run) || '' }}${{ (inputs.only == 'slow-sealed' || inputs.only == 'blind') && format('-{0}', github.run_id) || '' }}
-  cancel-in-progress: true
+  # A one-time opening (slow-sealed, blind) is never cancelled and never runs beside another: a second dispatch waits as
+  # pending (at most one pending, which has logged nothing), then finds the first run's ledger row and is refused.
+  group: perp-ta-sweep-${{ github.ref }}-${{ inputs.only || 'all' }}${{ inputs.only == 'study' && format('-{0}', inputs.study_run) || '' }}
+  cancel-in-progress: ${{ inputs.only != 'slow-sealed' && inputs.only != 'blind' }}
 
 jobs:
   # The blind test's first step (research/perpTaBlind.ts; pre-registered in /mnt/project-files/perp-ta/preregistration.md):
@@ -85,6 +86,8 @@ jobs:
     outputs:
       has: ${{ steps.freeze.outputs.has }}
       coins: ${{ steps.freeze.outputs.coins }}
+      # A re-run of a later job reuses this job's outputs: the sealed reads run only in the attempt that logged the opening.
+      attempt: ${{ steps.log.outputs.attempt }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -138,17 +141,24 @@ jobs:
           echo "has=$(jq -r 'if (.cands | length) > 0 then "true" else "false" end' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
           echo "coins=$(jq -c '[.cands[].a] | unique' frozen/frozen.json)" >> "$GITHUB_OUTPUT"
       - name: Log the opening (before the sealed block is read)
+        id: log
         if: steps.freeze.outputs.has == 'true'
         run: |
           set -euo pipefail
           H=$(jq -r .hash frozen/frozen.json)
-          L=gdrive:kalshi-bot-archive/models/perp-ta/blind/openings.jsonl
-          rclone cat "$L" > ledger.jsonl 2>/dev/null || : > ledger.jsonl
-          if jq -e --arg h "$H" 'select(.set_hash == $h)' ledger.jsonl > /dev/null && [ -z "$REASON" ]; then echo "frozen set $H was already opened: refused (see $L)"; exit 1; fi
-          jq -nc --arg h "$H" --arg run "$GITHUB_RUN_ID" --arg from "$BLIND_RUN" --arg why "$REASON" --arg utc "$(date -u +%FT%TZ)" --arg et "$(TZ=America/New_York date '+%F %T %Z')" --slurpfile f frozen/frozen.json \
-            '{set_hash: $h, blind_run: $run, frozen_from_run: $from, n: ($f[0].cands | length), coins: ([$f[0].cands[].a] | unique), at_utc: $utc, at_eastern: $et, reopen_reason: (if $why == "" then null else $why end)}' >> ledger.jsonl
+          D=gdrive:kalshi-bot-archive/models/perp-ta/blind
+          L=$D/openings.jsonl
+          # A listing that fails is fatal (an unread ledger must never be overwritten); only a missing ledger reads as empty.
+          if HAS=$(rclone lsf "$D/" --files-only --include openings.jsonl 2> lsf.err); then :; else
+            grep -qi 'directory not found' lsf.err || { cat lsf.err; echo "ledger listing failed: refused"; exit 1; }; HAS=""; fi
+          if [ -n "$HAS" ]; then rclone cat "$L" > ledger.jsonl; else : > ledger.jsonl; fi
+          jq -c . ledger.jsonl > /dev/null || { echo "the ledger does not parse: refused"; exit 1; }
+          if [ -n "$(jq -c --arg h "$H" 'select(.set_hash == $h)' ledger.jsonl)" ] && [ -z "$REASON" ]; then echo "frozen set $H was already opened: refused (see $L)"; exit 1; fi
+          jq -nc --arg h "$H" --arg run "$GITHUB_RUN_ID" --arg att "$GITHUB_RUN_ATTEMPT" --arg from "$BLIND_RUN" --arg why "$REASON" --arg utc "$(date -u +%FT%TZ)" --arg et "$(TZ=America/New_York date '+%F %T %Z')" --slurpfile f frozen/frozen.json \
+            '{set_hash: $h, blind_run: $run, run_attempt: $att, frozen_from_run: $from, n: ($f[0].cands | length), coins: ([$f[0].cands[].a] | unique), at_utc: $utc, at_eastern: $et, reopen_reason: (if $why == "" then null else $why end)}' >> ledger.jsonl
           rclone rcat "$L" < ledger.jsonl
-          tail -n 1 ledger.jsonl
+          rclone cat "$L" | tail -n 1 | jq -e --arg run "$GITHUB_RUN_ID" --arg att "$GITHUB_RUN_ATTEMPT" '.blind_run == $run and .run_attempt == $att' || { echo "the opening did not land on Drive: refused"; exit 1; }
+          echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: frozen
@@ -157,7 +167,7 @@ jobs:
 
   sweep:
     needs: [blind-open]
-    if: ${{ !cancelled() && inputs.only != 'fidelity' && inputs.only != 'agree' && inputs.only != 'registry' && inputs.only != 'slow' && inputs.only != 'slow-sealed' && inputs.only != 'decay' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true')) && (inputs.only != 'study' || inputs.study_run != '') }}
+    if: ${{ !cancelled() && inputs.only != 'fidelity' && inputs.only != 'agree' && inputs.only != 'registry' && inputs.only != 'slow' && inputs.only != 'slow-sealed' && inputs.only != 'decay' && (inputs.only != 'blind' || (needs.blind-open.result == 'success' && needs.blind-open.outputs.has == 'true' && needs.blind-open.outputs.attempt == github.run_attempt)) && (inputs.only != 'study' || inputs.study_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     strategy:
@@ -552,6 +562,10 @@ jobs:
       GATES_RUN: ${{ inputs.gates_run }}
       REASON: ${{ inputs.reopen_reason }}
       RS_ASSETS: ${{ inputs.assets || '["BTC","ETH","SOL","XRP"]' }}
+    outputs:
+      # 'Re-run failed jobs' / 'Re-run this job' reuse this job's success: slow-macro and slow read the sealed block only in
+      # the attempt that logged the opening. A re-run cannot reopen; a new dispatch with reopen_reason can (and is logged).
+      attempt: ${{ steps.log.outputs.attempt }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -585,6 +599,7 @@ jobs:
             || { jq -c '{mode, pass, hash, assets}' gates/gates.json; echo "this code's rule is $H: refused"; exit 1; }
           echo "H=$H" >> "$GITHUB_ENV"
       - name: Log the opening (before the sealed block is read)
+        id: log
         run: |
           set -euo pipefail
           D=gdrive:kalshi-bot-archive/models/perp-ta/slow
@@ -595,10 +610,11 @@ jobs:
           jq -c . ledger.jsonl > /dev/null || { echo "the ledger does not parse: refused"; exit 1; }
           if [ -n "$(jq -c 'select(.rule == "PTA-R4-slow")' ledger.jsonl)" ] && [ -z "$REASON" ]; then
             echo "PTA-R4-slow was already opened (any hash counts; see $D/openings.jsonl): refused without reopen_reason"; exit 1; fi
-          jq -nc --arg h "$H" --arg run "$GITHUB_RUN_ID" --arg g "$GATES_RUN" --arg why "$REASON" --arg sha "$GITHUB_SHA" --arg utc "$(date -u +%FT%TZ)" --arg et "$(TZ=America/New_York date '+%F %T %Z')" \
-            '{rule: "PTA-R4-slow", rule_hash: $h, sealed_run: $run, gates_run: $g, coins: ["BTC","ETH","SOL","XRP"], code_sha: $sha, at_utc: $utc, at_eastern: $et, reopen_reason: (if $why == "" then null else $why end)}' >> ledger.jsonl
+          jq -nc --arg h "$H" --arg run "$GITHUB_RUN_ID" --arg att "$GITHUB_RUN_ATTEMPT" --arg g "$GATES_RUN" --arg why "$REASON" --arg sha "$GITHUB_SHA" --arg utc "$(date -u +%FT%TZ)" --arg et "$(TZ=America/New_York date '+%F %T %Z')" \
+            '{rule: "PTA-R4-slow", rule_hash: $h, sealed_run: $run, run_attempt: $att, gates_run: $g, coins: ["BTC","ETH","SOL","XRP"], code_sha: $sha, at_utc: $utc, at_eastern: $et, reopen_reason: (if $why == "" then null else $why end)}' >> ledger.jsonl
           rclone rcat "$D/openings.jsonl" < ledger.jsonl
-          rclone cat "$D/openings.jsonl" | tail -n 1 | jq -e --arg run "$GITHUB_RUN_ID" '.sealed_run == $run' || { echo "the opening did not land on Drive: refused"; exit 1; }
+          rclone cat "$D/openings.jsonl" | tail -n 1 | jq -e --arg run "$GITHUB_RUN_ID" --arg att "$GITHUB_RUN_ATTEMPT" '.sealed_run == $run and .run_attempt == $att' || { echo "the opening did not land on Drive: refused"; exit 1; }
+          echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: slow-gates
@@ -610,7 +626,7 @@ jobs:
   # lockbox cap, only after slow-open logged the opening. The rule runs without it when it fails (reported as not run).
   slow-macro:
     needs: [slow-open]
-    if: ${{ !cancelled() && (inputs.only == 'slow' || (inputs.only == 'slow-sealed' && needs.slow-open.result == 'success')) }}
+    if: ${{ !cancelled() && (inputs.only == 'slow' || (inputs.only == 'slow-sealed' && needs.slow-open.result == 'success' && needs.slow-open.outputs.attempt == github.run_attempt)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 200
     strategy:
@@ -620,6 +636,7 @@ jobs:
     env:
       A: ${{ matrix.asset }}
       END: ${{ inputs.only == 'slow-sealed' && 'lockbox' || 'seal' }}
+      OPEN_ATTEMPT: ${{ needs.slow-open.outputs.attempt }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -653,6 +670,7 @@ jobs:
         timeout-minutes: ${{ inputs.only == 'slow-sealed' && 170 || 60 }}
         run: |
           set -o pipefail
+          if [ "$END" = lockbox ] && [ "$GITHUB_RUN_ATTEMPT" != "$OPEN_ATTEMPT" ]; then echo "a re-run cannot reopen the sealed block: dispatch with reopen_reason"; exit 1; fi
           node --max-old-space-size=14000 --import tsx research/perpTaSlow.ts macro --assets "$A" --data "data/perp-ta/$A.bin" --history "data/hist-$A" --module-cache data/modcache --end "$END" --out "out/macro/$A.json" 2>&1 | grep -v 'analyzer walk [0-9]' | tail -20
       - uses: actions/upload-artifact@v4
         with:
@@ -665,12 +683,13 @@ jobs:
   # (shards/perp-ta/slow-<mode>-run-<id>.jsonl); the summary is this run's step summary (no commit comment).
   slow:
     needs: [slow-open, slow-macro]
-    if: ${{ !cancelled() && (inputs.only == 'slow' || (inputs.only == 'slow-sealed' && needs.slow-open.result == 'success')) }}
+    if: ${{ !cancelled() && (inputs.only == 'slow' || (inputs.only == 'slow-sealed' && needs.slow-open.result == 'success' && needs.slow-open.outputs.attempt == github.run_attempt)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       MODE: ${{ inputs.only == 'slow-sealed' && 'sealed' || 'gates' }}
       RS_ASSETS: ${{ inputs.assets || '["BTC","ETH","SOL","XRP"]' }}
+      OPEN_ATTEMPT: ${{ needs.slow-open.outputs.attempt }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -723,6 +742,7 @@ jobs:
         if: env.MODE == 'sealed'
         run: |
           set -o pipefail
+          [ "$GITHUB_RUN_ATTEMPT" = "$OPEN_ATTEMPT" ] || { echo "a re-run cannot reopen the sealed block (opened in attempt $OPEN_ATTEMPT): dispatch with reopen_reason"; exit 1; }
           node --max-old-space-size=12000 --import tsx research/perpTaSlow.ts sealed --assets "$ASSETS" --grids data/perp-ta --history data --gates gates/gates.json --macro data/macro --out out/slow 2>&1 | tail -60
       - name: Results to Drive, the registry shard and the summary
         if: always()
