@@ -13,7 +13,9 @@ import { FEATURE_NAMES } from '../bot/model/features';
 import { Oms } from '../bot/oms/oms';
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { KillSwitch } from '../bot/risk/killSwitch';
-import { RiskGateway } from '../bot/risk/riskGateway';
+import { RiskGateway, type RiskContext } from '../bot/risk/riskGateway';
+import type { OrderIntent } from '../bot/oms/oms';
+import { setMacro, type MacroService } from '../bot/macro/macroService';
 import { Reconciler } from '../bot/recon/reconciler';
 import { openExchange, tmpAudit, tmpDir } from './helpers';
 import { Vault } from '../bot/vault/vault';
@@ -997,6 +999,36 @@ test('the dashboard\'s snipe badge: the hour\'s target and the held position\'s 
     await engine.tick();
     assert.equal(Math.round(engine.status.get(market.ticker)!.snipe!.nowUsd! * 100) / 100, 0.71);
   }
+});
+
+test('RISK_SIZE_CAPS off (default): the engine still sends the tennis budget and the armed waterfall total to the gateway', async () => {
+  const g = await setup();
+  assert.equal(g.cfg.risk.sizeCaps, false);
+  g.engine.balance = (await g.recon.run('startup'))!.balance;
+  const seen: Array<{ intent: OrderIntent; ctx: RiskContext }> = [];
+  const real = new RiskGateway(g.cfg.risk);
+  (g.engine as any).d.risk = { check: (intent: OrderIntent, ctx: RiskContext) => { seen.push({ intent, ctx }); return real.check(intent, ctx); } };
+  const m = g.md.markets.get(g.market.ticker)!;
+  const plan = { side: 'bid' as const, price: 0.5, count: 10, timeInForce: 'good_till_canceled' as const, postOnly: true, reduceOnly: false, purpose: 'entry' as const, edge: 0.1, why: 'test entry' };
+  const over = (ctx: RiskContext, window: number, total: number) => real.check(seen[seen.length - 1].intent, { ...ctx, windowRisk: window, totalRisk: total });
+  // Tennis: its own per-order / per-match / total budget holds with the crypto caps off.
+  await (g.engine as any).placeChecked(m, plan, 0.6, 'd-tennis', { event: 'EVT' });
+  const t = seen[seen.length - 1].ctx;
+  assert.equal(t.limitOverrides?.sizeCaps, true, 'tennis overrides keep the caps on');
+  assert.match(over(t, 1e6, 1e6).reasons.join(';'), /window risk.*total risk/);
+  // Waterfall armed: Kalshi binaries held to its total share of the bank; order and window caps stay off.
+  setMacro({ policy: () => ({ level: 'armed', tennisBlocked: true, kalshiBlocked: false, kalshiMaxFrac: 0.125, perpMult: () => 1, why: 'armed (test)' }) } as unknown as MacroService);
+  try {
+    await (g.engine as any).placeChecked(m, plan, 0.6, 'd-wf');
+  } finally { setMacro(undefined); }
+  const w = seen[seen.length - 1].ctx;
+  assert.equal(w.limitOverrides?.sizeCaps, true);
+  assert.equal(w.limitOverrides?.maxTotalRiskFrac, 0.125);
+  assert.deepEqual(over(w, 1e6, 1e6).reasons.filter((r) => /risk \$/.test(r)).map((r) => r.split(' $')[0]), ['total risk']);
+  // No waterfall, crypto: no size caps at all.
+  await (g.engine as any).placeChecked(m, plan, 0.6, 'd-plain');
+  const c = seen[seen.length - 1].ctx;
+  assert.equal(over(c, 1e6, 1e6).reasons.filter((r) => /risk \$/.test(r)).length, 0);
 });
 
 test('probation score-only (default): the unvalidated fill model stays active while the Kalshi book would bench', async () => {
