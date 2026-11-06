@@ -31,7 +31,7 @@ import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, newRiskRoomUsd, RiskContext, RiskGateway, tennisLimits, waterfallLimits } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
-import { decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
+import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
@@ -994,7 +994,9 @@ export class Engine {
     };
   }
 
-  /** Share of equity locked in open binary positions until they settle (it cannot buffer perp margin). */
+  /** Share of the event-contract pool held in open binaries until they settle (max loss over event-contract equity). Perp
+   *  margin is a separate account in both modes (the margin subaccount live, PaperPerpExchange in paper), so this says nothing
+   *  about perp margin. PerpTrader uses it only to inflate its assumed volatility; SetupTrader ignores it on purpose (I116). */
   lockedFraction(): number {
     const eq = this.equity();
     if (!(eq && eq > 0)) return 0;
@@ -1405,6 +1407,8 @@ export class Engine {
           // The quota snipe's measure, as on the crypto contracts: the open contracts' cost basis, entry fee in (an earlier
           // exit's profit is already on the pacer's clock, so it is not counted again).
           netAtBid: pos && pos.yes > 0 ? positionNetAtBid(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, b, a, md.feesFor(m.ticker)) : undefined,
+          // The profit-taking exits' floor: the lowest price that nets at least zero after the exit fee on the open contracts' cost.
+          breakEven: pos && pos.yes > 0 ? breakEvenExit(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, md.feesFor(m.ticker)) : undefined,
           quote: { bid: b?.price, ask: a?.price, bidSize: b?.size, askSize: a?.size },
           book: usable ? book : undefined,
           flow: (() => {
@@ -1885,7 +1889,7 @@ export class Engine {
       },
       exitPolicy: S.exitPolicy,
       takeProfitBench: tp ? { scored: tp.scored, netUsd: tp.netUsd, benched: Boolean(tp.benched), enforce: tp.enforce } : null,
-      probation: pr ? Object.fromEntries(Object.entries(pr).filter(([k]) => k !== 'mode').map(([k, b]) => { const s = b as { trades: number; netUsd: number; benched: unknown }; return [k, { trades: s.trades, netUsd: s.netUsd, benched: Boolean(s.benched) }]; })) : null,
+      probation: pr ? Object.fromEntries(Object.entries(pr).filter(([k]) => k !== 'mode').map(([k, b]) => { const s = b as { trades: number; netUsd: number; benchActive: boolean; wouldBench: boolean }; return [k, { trades: s.trades, netUsd: s.netUsd, benched: s.benchActive, wouldBench: s.wouldBench }]; })) : null,
       indexAgeMs: Object.fromEntries([...this.d.md.index].map(([a, idx]) => [a, idx.health(now).ageMs])),
       maxIndexAgeMs: this.d.cfg.risk.maxIndexAgeMs,
       marketState: Object.fromEntries(this.marketState.assets().map((a) => [a, this.marketState.reading(a, now)])),

@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { archiveModel, championDecision, promoteIfChampion, validatedParts } from '../research/champion';
 import { calibrated, fitPlatt } from '../bot/ta/taNet';
 import { blendVersions } from '../bot/ta/taNetEnsemble';
+import { taDrift } from '../bot/strategy/taConviction';
 import { tmpDir } from './helpers';
 
 test('champion: a worse retrain never replaces a better live model', () => {
@@ -49,6 +50,25 @@ test('calibration: overconfident probabilities are shrunk and score better', () 
   assert.ok(c.after < c.before, `${c.after} < ${c.before}`);
   assert.equal(calibrated(0.7, undefined), 0.7);
   assert.ok(Math.abs(calibrated(0.7, c) - 0.5) < Math.abs(0.7 - 0.5));
+});
+
+test('ensemble: a validated head reads only the versions that validated it; the trial still reads every version', () => {
+  const v = (up1: number, validated: boolean) => ({ up1, up4: up1, skill1: 0, skill4: 0, graded1: 100, graded4: 100, validated1: validated, validated4: validated });
+  // A validated champion and two archives whose heads failed: the champion holds exactly half the weight.
+  const r = blendVersions([
+    { version: 'champ', prior: 1, champion: true, v: v(0.7, true) },
+    { version: 'a1', prior: 0.5, champion: false, v: v(0.3, false) },
+    { version: 'a2', prior: 0.5, champion: false, v: v(0.3, false) },
+  ])!;
+  assert.equal(r.view.validated1, true);
+  assert.ok(Math.abs(r.view.up1! - 0.7) < 1e-9, `failed heads stay out of the validated forecast: ${r.view.up1}`);
+  assert.ok(Math.abs(r.view.raw1! - 0.5) < 1e-9, 'raw1 blends every version');
+  const priced = taDrift(r.view, 3600, { maxZ: 1, live: true })!, trial = taDrift(r.view, 3600, { maxZ: 1, live: true, full: true })!;
+  assert.ok(priced.k > 0 && trial.k < priced.k, 'pricing reads the validated head; the trial reads every version');
+  // Not validated (the weight behind it is under half): every version, as before.
+  const n = blendVersions([{ version: 'champ', prior: 1, champion: true, v: v(0.7, false) }, { version: 'a1', prior: 0.5, champion: false, v: v(0.4, true) }])!;
+  assert.equal(n.view.validated1, false);
+  assert.ok(Math.abs(n.view.up1! - 0.6) < 1e-9);
 });
 
 test('ensemble: versions that keep performing gain weight; nothing is thrown away', () => {
