@@ -542,11 +542,13 @@ export class Engine {
     const { balanceMonitor: mon } = this.d;
     if (!mon) return;
     const now = this.now();
-    this.d.kalshiCheck?.onBalance(balance, mon.state.expected);
+    // The cash ledger counts what resting entries hold (Kalshi's balance leaves it out; placing an order moves no money).
+    const cash = balance + this.heldAtRead();
+    this.d.kalshiCheck?.onBalance(cash, mon.state.expected);
     // Quiet = nothing awaiting settlement and no settlement in the last 10 minutes.
     const awaiting = this.d.oms.positions.unsettled().some((m) => m.closeTs && m.closeTs < now);
     const quiet = !awaiting && now - this.lastSettleTs > 10 * 60_000;
-    const res = mon.check(balance, quiet);
+    const res = mon.check(cash, quiet);
     this.saveMonitor();
     if (!res.deposit && !res.withdrawal) return;
     // Paper: nobody moves money in or out of a paper book (the bot's own refills are noted as they
@@ -1006,7 +1008,18 @@ export class Engine {
   /** Cash + committed premium (before vault/pocket reservations): the drawdown reference. */
   equity(): number | undefined {
     if (this.balance === undefined) return undefined;
-    return this.balance + this.d.oms.positions.open().reduce((s, m) => s + PositionBook.maxLoss(m), 0);
+    return this.balance + this.heldAtRead() + this.d.oms.positions.open().reduce((s, m) => s + PositionBook.maxLoss(m), 0);
+  }
+
+  /** What the entry orders resting at the last balance read hold: Kalshi's balance leaves it out, yet it is still the
+   *  account's money (equity and the bankroll count it; freeCash does not). */
+  private heldAtRead(): number {
+    let held = 0;
+    for (const o of this.d.oms.liveOrders()) {
+      if (o.reduceOnly || o.purpose === 'exit' || o.createdTs > this.balanceTs) continue;
+      held += (o.side === 'bid' ? o.price : 1 - o.price) * Math.max(0, o.remainingCount);
+    }
+    return held;
   }
 
   /** Adverse-selection buffer for maker entries: -(average 60 s maker markout), clamped; default until 30 maker fills. */
@@ -1094,7 +1107,7 @@ export class Engine {
     // Vaulted and pocketed profit is not the bot's to trade, in paper as in live (the owner, Oct 28: paper behaves as
     // live; VAULT_IN_PAPER is no longer read).
     const reserved = this.d.vault?.reserved() ?? 0;
-    return Math.max(0, this.balance + committed - reserved);
+    return Math.max(0, this.balance + this.heldAtRead() + committed - reserved);
   }
 
   /** Paper order size in dollars: PAPER_ORDER_FRAC of the bankroll (10%, the owner's choice on Oct 24: orders shrink as

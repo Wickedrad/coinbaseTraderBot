@@ -599,12 +599,12 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       refillAt = st.now;
       // The engine's bankroll (bot/engine.ts bankroll), as the supervisor reads it: vaulted and pocketed profit is not
       // the pool's to trade, so it neither counts toward the floor nor stops a refill.
-      const bank = Math.max(0, (await ex.getBalance()) + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0) - (vault?.reserved() ?? 0));
+      const bank = Math.max(0, ex.cash() + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0) - (vault?.reserved() ?? 0));
       if (bank < strategy.minTradableBankrollUsd && bank < opts.refillUsd) {
         for (const o of await ex.getOpenOrders()) await cancelNow(o.orderId);
         const usd = Math.round((opts.refillUsd - bank) * 100) / 100;
         ex.refill(usd);
-        const eq = (await ex.getBalance()) + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0);
+        const eq = ex.cash() + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0);
         guard.resetEpoch(eq, st.now, eq);
         (res.refills ??= []).push({ t: st.now, usd });
       }
@@ -649,7 +649,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
             b.pnl += p.realized ?? 0;
             res.windows.set(m.closeTime, b);
             res.pnl += p.realized ?? 0;
-            if (p.realized) guard.onTradeResult(p.realized > 0, (await ex.getBalance()) + pos.open().reduce((x, q) => x + PositionBook.maxLoss(q), 0), st.now);
+            if (p.realized) guard.onTradeResult(p.realized > 0, ex.cash() + pos.open().reduce((x, q) => x + PositionBook.maxLoss(q), 0), st.now);
             if ((p.realized ?? 0) > 0) vault?.onSettled(p.realized!, m.ticker, st.now, peakBank);
             const sk = sessionState(m.openTime).key;
             const sb = res.bySession[sk] ?? { windows: 0, pnl: 0, contracts: 0, fees: 0 };
@@ -761,7 +761,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const ret = idx!.trailingLogReturn(st.now, strategy.fastMoveWindowSec * 1000);
       const fastMove = ret !== undefined && Math.abs(ret) > strategy.fastMoveSigmas * vol.sigmaPerSqrtSec * Math.sqrt(strategy.fastMoveWindowSec);
       vault?.tick(st.now);
-      const bankroll = Math.max(0, (await ex.getBalance()) + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0) - (vault?.reserved() ?? 0));
+      const bankroll = Math.max(0, ex.cash() + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0) - (vault?.reserved() ?? 0));
       peakBank = Math.max(peakBank, bankroll);
       // The tier from the tradable high-water mark, as the engine picks it (EquityGuard.tierReference).
       const tier = tierAt(tiers, guard.tierReference(bankroll));
@@ -1043,7 +1043,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     }
   }
   exits.avgSlippage = slipN ? slipSum / slipN : null;
-  res.end = { balance: await ex.getBalance(), openPositions: pos.open().length, openMaxLoss: pos.open().reduce((a, p) => a + PositionBook.maxLoss(p), 0), openOrders: (await ex.getOpenOrders()).length };
+  res.end = { balance: ex.cash(), openPositions: pos.open().length, openMaxLoss: pos.open().reduce((a, p) => a + PositionBook.maxLoss(p), 0), openOrders: (await ex.getOpenOrders()).length };
   res.days = Math.max(1 / 24, (st.now - firstTs) / 86_400_000);
   res.takerThin = ex.takerStats;
   res.vaultEnd = vault?.vaultTotal ?? 0;
