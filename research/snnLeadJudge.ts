@@ -237,7 +237,7 @@ export function hb(rows: LRow[], label: string): string[] {
   const line = (name: string, c: ReturnType<typeof cluster>) => `| ${name} | ${c.n} | ${c.markets} | ${f2(c.mean)}c | ${f2(c.t)} |`;
   L.push('| signed mid change | rows | markets | mean | t (clustered by market) |', '|---|---|---|---|---|');
   for (const h of [60, 300]) {
-    const gap: { k: string; x: number }[] = [], ret: { k: string; x: number }[] = [], plc: { k: string; x: number }[] = [];
+    const gap: { k: string; x: number }[] = [], ret: { k: string; x: number }[] = [], plc: { k: string; x: number }[] = [], fair: { k: string; x: number }[] = [], bounce: { k: string; x: number }[] = [];
     for (const r of rows) {
       const n = byKT.get(`${r.k}|${r.t + h * 1000}`);
       if (!n || r.g === undefined) continue;
@@ -245,10 +245,18 @@ export function hb(rows: LRow[], label: string): string[] {
       if (Math.abs(r.g) >= 0.5) gap.push({ k: r.k, x: Math.sign(r.g) * dm });
       const min = Math.floor(r.t / 60_000), b0 = btc.get(min), b1 = btc.get(min - 1);
       if (mono(r.kd) && b0 && b1 && b0 !== b1) ret.push({ k: r.k, x: Math.sign(b0 - b1) * dm });
+      // Spot-only leg (all-pairs, Nov 6: the gap holds the mid's own quote noise, which reverts with no lag at all):
+      // the fair value's own move over the last minute, and the quote-bounce null (the mid's own last-minute move).
+      const p0 = byKT.get(`${r.k}|${r.t - 60_000}`);
+      if (p0) {
+        const df = (r.f - p0.f) * 100, dm0 = (r.m - p0.m) * 100;
+        if (Math.abs(df) >= 0.25) fair.push({ k: r.k, x: Math.sign(df) * dm });
+        if (dm0 !== 0) bounce.push({ k: r.k, x: -Math.sign(dm0) * dm });
+      }
       const gp = colGap.get(`${r.c}|${Math.floor((r.t - DAY) / 60_000)}`);
       if (gp !== undefined && Math.abs(gp) >= 0.5) plc.push({ k: r.k, x: Math.sign(gp) * dm });
     }
-    L.push(line(`+${h / 60} min, toward the gap (|gap| >= 0.5c)`, cluster(gap)), line(`+${h / 60} min, with the lagged 1-min BTC return`, cluster(ret)), line(`+${h / 60} min, toward the 24 h-shifted gap (placebo)`, cluster(plc)));
+    L.push(line(`+${h / 60} min, toward the gap (|gap| >= 0.5c)`, cluster(gap)), line(`+${h / 60} min, with the lagged 1-min BTC return`, cluster(ret)), line(`+${h / 60} min, toward the 24 h-shifted gap (placebo)`, cluster(plc)), line(`+${h / 60} min, with the fair value's own last-minute move (spot-only leg)`, cluster(fair)), line(`+${h / 60} min, against the mid's own last-minute move (quote-bounce null)`, cluster(bounce)));
   }
   L.push('', 'Gap still open after 60 s, in the gap\'s direction, minus fee plus half-spread (fee 7 p(1-p) c, half-spread 50 x spread c), by pre-registered state:', '', '| state | rows | markets | mean excess | t |', '|---|---|---|---|---|');
   const states: [string, (r: LRow, ret: number) => boolean][] = [
@@ -268,7 +276,7 @@ export function hb(rows: LRow[], label: string): string[] {
     }
     L.push(line(name, cluster(xs)));
   }
-  L.push('', 'Confirmed if the +1 and +5 min responses toward the gap and with the BTC return have t >= 3, the 24 h placebo does not, and at least one state keeps a positive excess with t >= 3. History quotes are minute candles: the latency curve (0 to 2000 ms) needs the recorded books (research/midLagLatency.ts).', '');
+  L.push('', 'Confirmed if the +1 and +5 min responses with the BTC return and with the fair value own move (spot-only legs) have t >= 3, the 24 h placebo does not, the toward-the-gap response is not explained by the quote-bounce row, and at least one state keeps a positive excess with t >= 3. History quotes are minute candles: the latency curve (0 to 2000 ms) needs the recorded books (research/midLagLatency.ts).', '');
   return L;
 }
 
