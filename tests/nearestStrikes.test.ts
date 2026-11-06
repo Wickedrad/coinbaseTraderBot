@@ -81,3 +81,24 @@ test('strike cap: tight tails outside 10-90c never place the money over a fresh 
   const out1 = nearestStrikes(one, kindOf, 'KXBTCD', 104, 2, new Set(), { maxSpread: 0.1 }).map((m) => Number(m.ticker.slice(1)));
   assert.ok(out1.every((k) => Math.abs(k - 104) <= 1), out1.join(','));
 });
+
+test('strike cap: one stale wrong-side quote below the money cannot move it; the crossing nearest the index wins', () => {
+  // The money is at 110-111 (60c / 40c). A stale 40c at 102 above a 60c at 101 makes a second crossing far below.
+  const ms = [q('S101', 101, 0.59, 0.61), q('S102', 102, 0.39, 0.41), ...Array.from({ length: 7 }, (_, i) => q(`W${103 + i}`, 103 + i, 0.01, 0.99)), q('S110', 110, 0.59, 0.61), q('S111', 111, 0.39, 0.41), q('W112', 112, 0.01, 0.99)];
+  const got = pick(ms, 2, 0.1, 110.5);
+  assert.deepEqual(got, ['S110', 'S111']);
+  // Without an index the ladder's middle decides between the crossings: with it at 109.5, 110-111 is the nearer one.
+  const up = [...ms, ...Array.from({ length: 6 }, (_, i) => q(`X${113 + i}`, 113 + i, 0.01, 0.99))];
+  assert.deepEqual(pick(up, 2, 0.1), ['S110', 'S111']);
+});
+
+test('strike cap: no index: one in-band tight quote places the money; tight tails outside 10-90c alone do not', () => {
+  const dead = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => q(`W${from + i}`, from + i, 0.01, 0.99));
+  // A 97c tail and a 46c strike at 108: the 46c quote alone places the money (no index to defer to).
+  const lone = [q('A100', 100, 0.96, 0.98), ...dead(101, 107), q('A108', 108, 0.45, 0.47), ...dead(109, 112)];
+  assert.ok(pick(lone, 2, 0.1).includes('A108'), `lone in-band quote: ${pick(lone, 2, 0.1)}`);
+  // A 95c tail at 100 and a 2c tail at 112: neither places the money (both filters), so the ladder's middle (106) does.
+  const tails = [q('B100', 100, 0.94, 0.96), ...dead(101, 111), q('B112', 112, 0.01, 0.03)];
+  const got = pick(tails, 2, 0.1);
+  assert.ok(!got.includes('B100') && !got.includes('W101') && !got.includes('B112') && !got.includes('W111'), `tails only: ${got}`);
+});

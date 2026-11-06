@@ -731,9 +731,13 @@ export function nearestStrikes<M extends { ticker: string; eventTicker?: string;
         // outranks tight tails. Without a tight quote between 10c and 90c, the index decides.
         // Only quotes between 10c and 90c place it: two tight tails (97c and 2c) would put the crossing anywhere between them.
         const pts = ms.filter((m) => mid.has(m)).map((m) => ({ k: ref(m)!, v: mid.get(m)! })).filter((x) => x.v >= 0.1 && x.v <= 0.9).sort((a, b) => a.k - b.k);
-        for (let i = 0; i + 1 < pts.length && money === undefined; i++) {
+        // Several crossings (a stale quote on the wrong side of the money): the one nearest the index (or the ladder's
+        // middle) wins, so one stale in-band quote cannot move the money.
+        for (let i = 0; i + 1 < pts.length; i++) {
           const a = pts[i], b = pts[i + 1];
-          if ((a.v - 0.5) * (b.v - 0.5) <= 0 && a.v !== b.v) money = a.k + ((0.5 - a.v) / (b.v - a.v)) * (b.k - a.k);
+          if (!((a.v - 0.5) * (b.v - 0.5) <= 0 && a.v !== b.v)) continue;
+          const x = a.k + ((0.5 - a.v) / (b.v - a.v)) * (b.k - a.k);
+          if (money === undefined || Math.abs(x - p) < Math.abs(money - p)) money = x;
         }
         // No crossing inside the band: one quote alone places the money only without an index.
         const nearest = pts.sort((a, b) => Math.abs(a.v - 0.5) - Math.abs(b.v - 0.5))[0];
