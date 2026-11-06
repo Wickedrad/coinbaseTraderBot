@@ -72,6 +72,7 @@ import { ConfluenceRatchetExit, DEFAULT_HUNT, DEFAULT_RATCHET, EXIT_POLICIES, Ex
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from '../bot/risk/quotaPacer';
 import { readRecordings, ReplayState } from './replay';
 import { AccuracyGate, type AccuracyGateConfig } from '../bot/strategy/accuracyGate';
+import { MarketAnchor } from '../bot/model/marketAnchor';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
 import { compactReading, MarketState, observeMarket } from '../bot/marketdata/marketState';
 import { dynamicEdge } from '../bot/strategy/dynamicEdge';
@@ -122,7 +123,7 @@ export interface ExitStats {
 export interface SessionBreakdown { windows: number; pnl: number; contracts: number; fees: number }
 
 /** One traded contract (a market in which a position was taken), settled. */
-export interface TradeResult { ticker: string; closeTs: number; pnl: number; contracts: number; kind: string }
+export interface TradeResult { ticker: string; closeTs: number; pnl: number; contracts: number; kind: string; /** The market's first fill (YES-scale price), the entry-type breakdown. */ first?: { side: 'bid' | 'ask'; price: number } }
 
 export interface BacktestResult {
   exitPolicy: ExitPolicyName;
@@ -175,6 +176,8 @@ export interface BacktestResult {
   exchangeRejected?: Record<string, number>;
   /** Taker contracts asked for / filled / refused because our own earlier takes had emptied the level (bot/paper/paperExchange.ts TAKEN_REPLENISH_MS), by series too. */
   takerThin?: PaperExchange['takerStats'];
+  /** The market anchor's weights and prequential log losses (bot/model/marketAnchor.ts), when it is on. */
+  marketAnchor?: ReturnType<MarketAnchor['status']>;
   /** The paper maker fills' 60 s markouts over the whole replay (mid then less the fill price, signed for the fill's
    *  side, in dollars a contract): negative when the price moved against the resting order once it filled. */
   makerMarkout?: { n: number; mean: number };
@@ -454,6 +457,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     if (!opts.accuracyGateFile) return -Infinity;
     try { const g = JSON.parse(fs.readFileSync(opts.accuracyGateFile, 'utf8')) as { rows?: Record<string, Array<{ ts: number }>> }; return Math.max(-Infinity, ...Object.values(g.rows ?? {}).flat().map((r) => r.ts)); } catch { return -Infinity; }
   })();
+  const anchor = strategy.marketAnchor?.enabled ? new MarketAnchor(strategy.marketAnchor, undefined, () => st.now) : undefined;
   // The bench's markets scored from the first trading moment on (the replay check sets them beside paper's).
   const tpScored = (e: { event: string; ticker?: string; usd?: unknown; contracts?: unknown }) => {
     if (e.event !== 'scored' || st.now < (opts.tradeFromMs ?? -Infinity)) return;
@@ -501,7 +505,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     }
     return Number.isFinite(ofCache.cap) ? Math.max(ofCache.cap, o.paperFloor * orderFrac) : ofCache.cap;
   };
+  const firstFill = new Map<string, { side: 'bid' | 'ask'; price: number }>();
   ex.on('fill', (f) => {
+    if (!firstFill.has(f.ticker)) firstFill.set(f.ticker, { side: f.side, price: f.price });
     const bookAfter = pos.applyFill({ ticker: f.ticker, side: f.side, count: f.count, price: f.price, fee: f.fee ?? 0 }, { closeTs: closeOf.get(f.ticker) });
     pacerAt(st.now).onFill(f, f.fee ?? 0, bookAfter, st.now);
     const w = closeOf.get(f.ticker)!;
@@ -623,6 +629,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           for (const x of ofOpen.get(m.ticker) ?? []) ofRows.push({ ts: st.now, ticker: m.ticker, cost: x.cost, count: x.count, won: (x.side === 'bid') === (result === 'yes') });
           ofOpen.delete(m.ticker);
           if (!(opts.accuracyGateFile && opts.tradeFromMs !== undefined && st.now < opts.tradeFromMs && st.now <= gateSeededUntil)) gate?.settle(m.ticker, result);
+          anchor?.settle(m.ticker, result);
           if (tpBench) { tpBench.settled(m.ticker, result, st.now); if (res.paper!.takeProfitBenchedAt === undefined && ownBenched()) res.paper!.takeProfitBenchedAt = st.now; }
           for (const x of exitLedger.get(m.ticker) ?? []) {
             const won = (x.sideSign > 0) === (result === 'yes');
@@ -644,7 +651,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
             pos.settle(m.ticker, result, st.now);
             pacer?.onSettled(m.ticker, p.realized ?? 0, st.now);
             const traded = res.windows.get(m.closeTime)?.contracts ?? 0;
-            if (traded > 0) res.trades.push({ ticker: m.ticker, closeTs: m.closeTime, pnl: p.realized ?? 0, contracts: traded, kind: m.kind });
+            if (traded > 0) res.trades.push({ ticker: m.ticker, closeTs: m.closeTime, pnl: p.realized ?? 0, contracts: traded, kind: m.kind, first: firstFill.get(m.ticker) });
+            firstFill.delete(m.ticker);
             const b = res.windows.get(m.closeTime) ?? { pnl: 0, contracts: 0, fees: 0 };
             b.pnl += p.realized ?? 0;
             res.windows.set(m.closeTime, b);
@@ -753,6 +761,13 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         const rb = activeRuleBook()?.trialRead(taSnapOf(m.asset), tauSec, ctx?.character(m.asset)?.cls, strategy.taPricingMaxZ);
         ruleShift = rb ? tilt(rb.k, 1) : 0;
         if (ruleShift) pYes = Math.max(0.001, Math.min(0.999, pYes + ruleShift));
+      }
+      // The market anchor, as the engine applies it (bot/model/marketAnchor.ts).
+      if (anchor && !((anchor.cfg.maxSpread ?? 0) > 0 && ask.price - bid.price > (anchor.cfg.maxSpread ?? 0))) {
+        const pMkt = anchor.cfg.rawMid ? mid : model.marketProbability(mid);
+        const actx = { asset: m.asset, sigma: vol.sigmaPerSqrtSec };
+        anchor.observe(m.ticker, tauSec, pMkt, pYes, actx);
+        pYes = anchor.price(m.ticker, tauSec, pMkt, pYes, actx);
       }
       const mRead = observeMarket(mstate, { asset: m.asset, ticker: m.ticker, index: idx!, now: st.now, bid, ask, trades: st.features.micro.get(m.ticker)?.tradesIn(st.now, 300_000) });
       opts.onEval?.({ ticker: m.ticker, now: st.now, pYes, fv: fv.pYes, bid: bid.price, ask: ask.price, position: pos.position(m.ticker), spot: spot.value, strike: terms.strike, sigma: vol.sigmaPerSqrtSec, sigmaPricing: sigmaFv,
@@ -922,6 +937,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         ...(() => { const b = tpBenched(); return b ? { takeProfitBenched: b } : {}; })(),
         newRiskRoomUsd,
         tauSec, noEntryBeforeCloseSec: limits.noEntryBeforeCloseSec, fastMove, tickSize: m.tickSize, fees: DEFAULT_FEES,
+        wildRegime: anchor?.isWild({ asset: m.asset, sigma: vol!.sigmaPerSqrtSec }) ?? false,
         restingBid: rb, restingAsk: ra, nowSec: Math.floor(st.now / 1000), closeSec: Math.floor(m.closeTime / 1000),
         pMarket, pStd: pred.std, makerBuffer: (res.makerBufferEnd = makerBuffer()), entrySidePrice: entrySide !== undefined && entrySide > 0 && entrySide < 1 ? entrySide : undefined,
         entryFeePerContract: openEntryFee(pNow),
@@ -1046,6 +1062,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   res.end = { balance: ex.cash(), openPositions: pos.open().length, openMaxLoss: pos.open().reduce((a, p) => a + PositionBook.maxLoss(p), 0), openOrders: (await ex.getOpenOrders()).length };
   res.days = Math.max(1 / 24, (st.now - firstTs) / 86_400_000);
   res.takerThin = ex.takerStats;
+  res.marketAnchor = anchor?.status();
   res.vaultEnd = vault?.vaultTotal ?? 0;
   res.pocketEnd = vault?.pocketTotal ?? 0;
   return res;

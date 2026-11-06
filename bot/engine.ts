@@ -43,6 +43,7 @@ import { kalshiMaintenance, sessionEdge, sessionState, type SessionState } from 
 import type { EquityGuard } from './risk/equityGuard';
 import type { ModelHealth } from './model/modelHealth';
 import type { AccuracyGate } from './strategy/accuracyGate';
+import type { MarketAnchor } from './model/marketAnchor';
 import type { Tca } from './tca/tca';
 import type { MacroEvent } from './model/featureEngine';
 import { ladderQuotes } from './model/ladder';
@@ -206,6 +207,9 @@ export interface MarketStatus {
   /** TA conviction overlay (bot/strategy/taConviction.ts): probability before the TA network's drift,
    *  the shift it applied, signal breadth, the altcoin risk-on rule, and the selection priority. */
   pBeforeTa?: number;
+  /** The bot's price before the market anchor, and the anchor's weight on its disagreement (bot/model/marketAnchor.ts). */
+  pBeforeAnchor?: number;
+  anchorW?: number;
   taShift?: number;
   /** Sigma multiplier from the TA network's validated volatility forecast (1 = none). */
   taVolMult?: number;
@@ -317,6 +321,8 @@ export interface EngineDeps {
   taHealth?: ModelHealth;
   /** Bot vs market mid log loss per time-to-close bucket; paper opens no entries where the market has been better. */
   accuracyGate?: AccuracyGate;
+  /** The bot's price anchored on the calibrated market (bot/model/marketAnchor.ts). */
+  marketAnchor?: MarketAnchor;
   /** Scheduled macro releases (CPI, FOMC, NFP, PCE) for calendar features. */
   calendar?: MacroEvent[];
   /** Perp delta hedge of the binary book (stage 2). */
@@ -636,11 +642,12 @@ export class Engine {
         this.d.taHealth?.onResult(e.ticker, e.result);
         this.d.trials?.onResult(e.ticker, e.result, this.now());
         this.d.accuracyGate?.settle(e.ticker, e.result);
+        this.d.marketAnchor?.settle(e.ticker, e.result);
         this.snnSettle(e.ticker, e.result);
       }
     });
     // Official results of every scanned market (traded or not): the SNN's settlement labels.
-    md.on('result', (e: { ticker: string; result: 'yes' | 'no' }) => { this.d.taHealth?.onResult(e.ticker, e.result); this.d.trials?.onResult(e.ticker, e.result, this.now()); this.d.scoreboard?.onResult(e.ticker, e.result); this.d.accuracyGate?.settle(e.ticker, e.result); this.snnSettle(e.ticker, e.result); });
+    md.on('result', (e: { ticker: string; result: 'yes' | 'no' }) => { this.d.taHealth?.onResult(e.ticker, e.result); this.d.trials?.onResult(e.ticker, e.result, this.now()); this.d.scoreboard?.onResult(e.ticker, e.result); this.d.accuracyGate?.settle(e.ticker, e.result); this.d.marketAnchor?.settle(e.ticker, e.result); this.snnSettle(e.ticker, e.result); });
     oms.on('order_error', (n: number, msg: string) => {
       if (n >= cfg.risk.maxConsecutiveOrderErrors) void kill.engage(`${n} consecutive order errors (last: ${msg})`, 'oms');
     });
@@ -976,6 +983,7 @@ export class Engine {
       tier: { ...t, orderRiskUsd: +(t.orderFrac * b).toFixed(2), dailyLossLimitUsd: +this.d.risk.dailyLossLimit(b, this.tierLimits(t)).toFixed(2) },
       paperOrderUsd: this.paperOrderUsd() || null, orderBandUsd: this.orderBandUsd() ?? null, paperOrderFrac: this.d.cfg.mode === 'paper' ? this.d.cfg.strategy.paperOrderFrac || null : null,
       accuracyGate: this.d.accuracyGate ? { ...this.d.accuracyGate.status(), enforced: this.d.cfg.strategy.accuracyGate.enabled } : null,
+      marketAnchor: this.d.marketAnchor?.cfg.enabled ? this.d.marketAnchor.status() : null,
       entryWindowUpdown: S.entryWindowUpdown, entryWindowHourly: S.entryWindowHourly,
       makerBuffer: this.makerBuffer(), makerMarkout60: this.d.tca?.makerMarkout60() ?? null, minQuoteContracts: S.minQuoteContracts,
       takeProfit: { floorPct: S.profitTargetPct, floorCents: +(S.profitTarget * 100).toFixed(2), giveBack: +S.profitGiveBack.toFixed(3) },
@@ -2162,6 +2170,20 @@ export class Engine {
     const rbTrial = trials ? activeRuleBook()?.trialRead(taSnap, tauSec, coinChar?.cls, S0.taPricingMaxZ) : undefined;
     const ruleShift = rbTrial ? tilt(rbTrial.k, 1) : undefined;
     if (trialOn('rules') && ruleShift) pYes = Math.max(0.001, Math.min(0.999, pYes + ruleShift));
+    // The market anchor (bot/model/marketAnchor.ts): the price starts from the calibrated mid and keeps the share of its
+    // disagreement that has been right before in this time-to-close bucket; the record learns from the raw price.
+    // MARKET_ANCHOR_MAX_SPREAD: a wide book's mid is not a price (a 1c bid and 99c ask make a 50c mid), so the anchor neither
+    // learns from nor prices such a book (SNN thread, Nov 5: its history edge came only from those quotes).
+    const anchorMaxSpread = this.d.marketAnchor?.cfg.maxSpread ?? 0;
+    const anchor = this.d.marketAnchor?.cfg.enabled && !(anchorMaxSpread > 0 && ask.price - bid.price > anchorMaxSpread) ? this.d.marketAnchor : undefined;
+    if (anchor) {
+      st.pBeforeAnchor = pYes;
+      st.anchorW = anchor.weight(m.ticker, tauSec);
+      const pAnchor = anchor.cfg.rawMid ? mid : pMarket;
+      const actx = { asset: m.asset, sigma: vol.sigmaPerSqrtSec };
+      anchor.observe(m.ticker, tauSec, pAnchor, pYes, actx);
+      pYes = anchor.price(m.ticker, tauSec, pAnchor, pYes, actx);
+    }
     if (trials) {
       const d = (x: number | undefined) => (x === undefined ? undefined : +x.toFixed(4));
       const snnP = snnTrial(pred.p);
@@ -2223,7 +2245,7 @@ export class Engine {
     const reason = this.cadence.check(m.ticker, { now, fairValue: pYes, entryWindowOpen, hasResting: Boolean(restingBid || restingAsk), bookThroughQuote: through(restingBid, bid.price) || through(restingAsk, ask.price), positionChanged });
     if (reason) st.lastEval = { reason, ts: now };
     st.entryWindow = entryWindowOpen;
-    if (reason && entryWindowOpen) this.d.modelHealth?.record(m.ticker, pred.p, pMarket, m.closeTime);
+    if (reason && entryWindowOpen) this.d.modelHealth?.record(m.ticker, anchor ? pYes : pred.p, pMarket, m.closeTime);
     if (reason && entryWindowOpen && taShift !== 0) this.d.taHealth?.record(m.ticker, Math.max(0.001, Math.min(0.999, pBase + taShift)), pBase, m.closeTime);
     // The trials score every contract in its entry window, traded or not: the meta-model's price with each contribution
     // and without it.
@@ -2276,6 +2298,7 @@ export class Engine {
       ...(() => { const r = st.position !== 0 && !fastMove ? this.d.curveExit?.restTarget(m.ticker, tauSec) : undefined; return r !== undefined ? { curveRestSidePrice: r } : {}; })(),
       newRiskRoomUsd: reason ? this.newRiskRoom(m, bankroll, tier) : undefined,
       tauSec, noEntryBeforeCloseSec: R.noEntryBeforeCloseSec, fastMove, tickSize: m.tickSize, fees: md.feesFor(m.ticker),
+      wildRegime: anchor?.isWild({ asset: m.asset, sigma: vol.sigmaPerSqrtSec }) ?? false,
       restingBid, restingAsk, nowSec: Math.floor(now / 1000), closeSec: Math.floor(m.closeTime / 1000),
       pMarket, pStd: pred.std, makerBuffer: this.makerBuffer(), entrySidePrice: entrySidePrice !== undefined && entrySidePrice > 0 && entrySidePrice < 1 ? entrySidePrice : undefined,
       entryFeePerContract: openEntryFee(pos),

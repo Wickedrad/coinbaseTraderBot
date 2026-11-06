@@ -14,6 +14,7 @@ import { DEFAULT_SINUOUS_EXIT, type SinuousExitParams } from './strategy/sinuous
 import { defaultTiers, validateTiers, type TierPoint } from './risk/sizingTiers';
 import type { AccuracyGateConfig } from './strategy/accuracyGate';
 import type { TaVetoConfig } from './model/taVeto';
+import type { MarketAnchorConfig } from './model/marketAnchor';
 import type { VaultConfig } from './vault/vault';
 import { DEFAULT_LIVE_LINE } from './strategy/liveLine';
 import { DEFAULT_TRIALS, TRIAL_NAMES, type TrialName, type TrialParams } from './strategy/componentTrials';
@@ -177,6 +178,9 @@ export interface StrategyConfig {
    *  than the bot's (temperature-calibrated) probability over the last settled markets (bot/strategy/accuracyGate.ts;
    *  the owner's choice on Oct 23). Live never blocks on it. */
   accuracyGate: AccuracyGateConfig;
+  /** The bot's price anchored on the calibrated market mid, its disagreement weighted by its track record per
+   *  time-to-close bucket (bot/model/marketAnchor.ts). Paper, live and the backtester alike. */
+  marketAnchor: MarketAnchorConfig;
   /** kelly = fractional Kelly on the model probability; target_ev = spec sizing (shrink to market, $ target, min EV). */
   sizing: 'kelly' | 'target_ev';
   kappa: number;
@@ -191,6 +195,17 @@ export interface StrategyConfig {
   minTradableBankrollUsd: number;
   /** Veto entries when |q - p_mkt| < this many ensemble standard deviations. */
   ensembleVetoSigmas: number;
+  /** Maker quotes open new risk only on the side where the bot's price is at least this far from the mid (0 = off):
+   *  with the market anchor's weight near 0 the price sits on the mid, and two-sided quotes there are plain market
+   *  making, picked off by informed flow (60 s markout about -1.1c). QUOTE_SIDE_GATE. */
+  quoteSideGate: number;
+  /** Extra edge asked of new NO risk that costs under noLongshotPrice (NO_LONGSHOT_EDGE, 0 = off; NO_LONGSHOT_PRICE). */
+  noLongshotEdge: number;
+  noLongshotPrice: number;
+  /** Lab placebo: charge the extra edge on YES longshots instead (NO_LONGSHOT_MIRROR). */
+  noLongshotMirror: boolean;
+  /** No extra edge in the market anchor's wild regime (NO_LONGSHOT_WILD_OFF). */
+  noLongshotWildOff: boolean;
   /** Scale Kelly by max(0, 1 - drawdown / ddScaleAt); pause entries 24 h after a 7-day loss beyond weeklyLossPause. */
   ddScaleAt: number;
   weeklyLossPause: number;
@@ -1188,6 +1203,25 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
     orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
     accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
+    marketAnchor: {
+      enabled: bool(env, 'MARKET_ANCHOR', false),
+      fixedW: env.MARKET_ANCHOR_W !== undefined && env.MARKET_ANCHOR_W !== '' ? num(env, 'MARKET_ANCHOR_W', 0.5, 0, 2) : undefined,
+      prior: num(env, 'MARKET_ANCHOR_PRIOR', 0.5, 0, 1.5),
+      priorSd: num(env, 'MARKET_ANCHOR_PRIOR_SD', 0.5, 0.01, 10),
+      window: num(env, 'MARKET_ANCHOR_WINDOW', 400, 20, 5000),
+      maxW: num(env, 'MARKET_ANCHOR_MAX_W', 1.5, 0, 3),
+      wildRatio: num(env, 'MARKET_ANCHOR_WILD_RATIO', 0, 0, 10),
+      wildW: num(env, 'MARKET_ANCHOR_WILD_W', 1, 0, 1.5),
+      wildHalfLifeH: num(env, 'MARKET_ANCHOR_WILD_HALF_LIFE_H', 48, 1, 720),
+      wildPlacebo: num(env, 'MARKET_ANCHOR_WILD_PLACEBO', 0, 0, 1),
+      wildLabels: env.MARKET_ANCHOR_WILD_LABELS || undefined,
+      split: bool(env, 'MARKET_ANCHOR_SPLIT', false),
+      shuffle: bool(env, 'MARKET_ANCHOR_SHUFFLE', false),
+      bySeries: bool(env, 'MARKET_ANCHOR_BY_SERIES', false),
+      rawMid: bool(env, 'MARKET_ANCHOR_RAW_MID', false),
+      maxSpread: num(env, 'MARKET_ANCHOR_MAX_SPREAD', 0, 0, 1),
+      minW: env.MARKET_ANCHOR_MIN_W !== undefined && env.MARKET_ANCHOR_MIN_W !== '' ? num(env, 'MARKET_ANCHOR_MIN_W', 0, 0, 2) : undefined,
+    },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
     kappa: num(env, 'STRATEGY_KAPPA', 0.5, 0, 1),
     targetEvUsd: num(env, 'STRATEGY_TARGET_EV_USD', 10, 0, 10000),
@@ -1196,6 +1230,17 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     minTradeEvFrac: num(env, 'STRATEGY_MIN_TRADE_EV_FRAC', 0.00016, 0, 1),
     minTradableBankrollUsd: num(env, 'MIN_TRADABLE_BANKROLL_USD', 10, 0, 1e7),
     ensembleVetoSigmas: num(env, 'STRATEGY_ENSEMBLE_VETO_SIGMAS', 2, 0, 10),
+    quoteSideGate: num(env, 'QUOTE_SIDE_GATE', 0, 0, 0.5),
+    noLongshotEdge: num(env, 'NO_LONGSHOT_EDGE', 0, 0, 0.5),
+    noLongshotPrice: num(env, 'NO_LONGSHOT_PRICE', 0.3, 0.01, 0.5),
+    noLongshotMirror: bool(env, 'NO_LONGSHOT_MIRROR', false),
+    // The wild regime comes from the market anchor: without MARKET_ANCHOR and a wild ratio the flag would do nothing (bot audit, Nov 5).
+    noLongshotWildOff: (() => {
+      const on = bool(env, 'NO_LONGSHOT_WILD_OFF', false);
+      if (on && (!bool(env, 'MARKET_ANCHOR', false) || !(num(env, 'MARKET_ANCHOR_WILD_RATIO', 0, 0, 10) > 0) && !env.MARKET_ANCHOR_WILD_LABELS))
+        throw new Error('NO_LONGSHOT_WILD_OFF needs MARKET_ANCHOR=true and MARKET_ANCHOR_WILD_RATIO > 0 or MARKET_ANCHOR_WILD_LABELS (the wild regime comes from the anchor)');
+      return on;
+    })(),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
     modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),
