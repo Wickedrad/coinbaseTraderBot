@@ -91,7 +91,7 @@ permissions:
 
 # Server-reading runs queue one at a time; all-Drive history training (hist_from=all) runs in parallel (Nov 5 limits).
 concurrency:
-  group: snn-ablation-${{ inputs.hist_from == 'all' && format('drive-{0}', github.run_id) || (inputs.hist_from != '' && 'history' || 'ablate') }}
+  group: snn-ablation-${{ inputs.hist_from == 'all' && format('drive-{0}', github.run_id) || (inputs.dev_range != '' && format('dev-{0}', github.run_id)) || (inputs.hist_from != '' && 'history' || 'ablate') }}
   cancel-in-progress: false
 
 # Steven, Nov 5: no DOGE for now (training, replays and scoring).
