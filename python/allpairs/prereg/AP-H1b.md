@@ -62,3 +62,31 @@ than 10c, not from lead information. BTC/ETH 1-minute returns are already in the
 - **Logging:** each trade logs entry spread, fill type, the model's predicted value, the decision mid and the tier.
   Logging must not change any result, which the reproduction check above verifies.
 - **Queued, not dropped:** hurdle_lcb and stale_quote.
+
+## Amendment 1 (2026-11-06 00:25 UTC / Nov 5 7:25 PM EST: after the HO-1 card of run 42127527423, before any follow-up result)
+- **G_base = 0.** In run 42127527423, lead_btc's base arm had 0 trades, and so did keep_crossed's (config `base`,
+  da11163cef). In both, the hurdle was off in all 6 folds: no hurdle paid on the H-DEV validation days. So the
+  "No gain to explain" branch applies: P1 is moot, and W is undefined because there are no trades.
+- **Dropped:** the strict arm for base and lead_btc, and their base-arm re-runs. G_strict is moot, and an arm with 0
+  trades cannot show whether the new logging changes results. The logging check moves to maker_only base and tight,
+  which must reproduce run 42127527423 exactly (see AP-H2). If they don't, the batch is void.
+- **P3:** P = lead_btc base $/h (0, from run 42127527423) - lead_shift24 base $/h (follow-up). It is read as
+  information, with the same band and the 24-hour block bootstrap of the paired hourly differences.
+- **P2b specification**, fixed here:
+  - **Rows:** every YES-side decision minute k >= 1 with a two-sided book, of BTC, ETH, SOL and XRP windows.
+  - **Fit:** on H-DEV, Apr 18 to Jul 29, using the run's training filters (min_real_frac 0.8, max_crossed 99).
+  - **Score:** on H-HOLD, Aug 1 to Nov 4, on minutes whose book is 10c wide or less at the decision minute.
+  - **Features:** the same as the configs, base.json against lead_btc.json.
+  - **Model:** LightGBM, binary objective. num_leaves 31, learning_rate 0.05, min_data_in_leaf 500, feature_fraction
+    0.8, bagging 0.8 every round, lambda_l2 1.0, seed 7.
+  - **Rounds:** at most 2,000, with early stopping (50 rounds) on the last 10 H-DEV days after a 1-day embargo.
+  - **FLB map:** an isotonic map of YES mid to settlement, fitted on the same H-DEV rows.
+  - **Score difference:** dBSS = (BS_base - BS_lead) / BS_ref, where BS_ref is the Brier score of the FLB-mapped mid on
+    the scored minutes.
+  - **Standard error:** from daily sums of the per-minute differences. It is the ratio estimator's Newey-West variance
+    across the held-out days, with Bartlett weights and lag 3.
+  - **TOST:** P2b holds if the 90% CI lies inside +/-0.002.
+  - **Diebold-Mariano:** two-sided p from the same t. The falsifier is dBSS > 0 with p < 0.05.
+- **Verdict:** P1 is moot, so AP-H1b cannot reach "Confirmed". It is reported as "no gain to explain", with P2a, P2b
+  and P3 as information. If a falsifier on P2a, P2b or P3 fires, it is reported as evidence of lead information that the
+  all-pairs policy did not turn into a tradable gain.
