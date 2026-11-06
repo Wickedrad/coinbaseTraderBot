@@ -84,6 +84,7 @@ SCHEMA = {
             'benches': {'enum': ['own', 'paper']},
             'copy': {'type': 'string', 'description': 'Drive copy / reuse_run the replay read'},
             'books': {'enum': ['recorded', 'synthetic']},
+            'metric': {'type': 'string', 'description': 'unit of by_day: usd (default) | trade_r | ... ; only usd rows reach the ledger'},
             'engine': {'type': 'string', 'description': 'simulator: replay (TS backtester, default) | cross_study (sizing lab) | ...'},
         }},
         'by_day': {'type': 'object', 'additionalProperties': {'type': 'number'}},
@@ -146,6 +147,8 @@ def validate(r: dict) -> tuple[list[str], list[str]]:
         fl.append('G0:paper-benches')  # Steven 13:51 UTC Nov 5: paper has no say in training
     if d.get('source') == 'history' and d.get('books') == 'synthetic' and any(BOOK_FLOW.search(k) for k in (r.get('env') or {})):
         fl.append('G1:synthetic-book-flow')  # order-flow inputs are fake on history books (TA thread, Nov 5)
+    if d.get('metric', 'usd') != 'usd':
+        fl.append('G1:non-dollar-metric')  # e.g. trade-R diagnostics: counted and scored for direction, never summed as $/h
     if d.get('engine') in RANK_ONLY:
         fl.append('G1:rank-only-level')  # level ($/h) not valid; compare only variants on the same entries
     env, bdef = r.get('env') or {}, r.get('base_defaults') or {}
