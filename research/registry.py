@@ -100,6 +100,7 @@ SCHEMA = {
         'raw': {'type': 'object', 'description': 'foreign ledger row kept verbatim'},
         'by_tercile': {'type': 'object', 'description': 'HO-1 history tier: {"LOW"|"MID"|"HIGH": {"pnl": $, "hours": h}} over H-HOLD, regime v1 labels'},
         'base': {'type': 'string', 'description': 'the base bot the arm is measured on: "<name>@<commit>" plus its non-main defaults in base_defaults; the ledger only adds results that share a base (default: code_sha)'},
+        'tainted_folds': {'type': 'array', 'description': 'put inside heldout: HO-1 folds (1-6) the arm was tuned on'},
         'base_defaults': {'type': 'object', 'description': 'flags where this base differs from main defaults'},
         'placebo_for': {'type': 'string', 'description': 'on a placebo row: the arm it mimics (HO-1 beats_placebo)'},
         'contract_type': {'enum': list(CONTRACT_TYPES), 'description': 'inferred from thread/env when absent (contract_type_of)'},
@@ -147,6 +148,14 @@ def validate(r: dict) -> tuple[list[str], list[str]]:
         fl.append('G1:synthetic-book-flow')  # order-flow inputs are fake on history books (TA thread, Nov 5)
     if d.get('engine') in RANK_ONLY:
         fl.append('G1:rank-only-level')  # level ($/h) not valid; compare only variants on the same entries
+    env, bdef = r.get('env') or {}, r.get('base_defaults') or {}
+    on = lambda v: str(v).lower() in ('true', '1', 'on', 'yes')
+    skill_on = on(env['MODEL_SKILL']) if 'MODEL_SKILL' in env else on(bdef.get('MODEL_SKILL', False))
+    cutoff = d.get('model_cutoff')  # last day the model trained on; a model trained before Aug 1 is not leaky
+    if skill_on and not (cutoff and cutoff < H_HOLD[0]) and any(x >= H_HOLD[0] for x in (r.get('by_day') or {})):
+        fl.append('G1:leaky-model')  # MODEL_SKILL on with a model trained over H-HOLD (failure diagnoses, Nov 6)
+    if (r.get('heldout') or {}).get('tainted_folds'):
+        fl.append('HO1:tainted-fold')  # a fold that was tuned on; HO-1 fails until it is re-scored clean
     if 'dev-choice' in (r.get('flags') or []):
         if any(x >= H_HOLD[0] for x in (r.get('by_day') or {})):
             fl.append('G0:dev-choice-reads-hold')  # an H-DEV choice run must not carry H-HOLD days
@@ -451,6 +460,8 @@ def ho1_fill(rows):
         rv = (r.get('data') or {}).get('replay_version')
         if rv is not None:
             h['replay_version'] = rv
+        if (r.get('heldout') or {}).get('tainted_folds'):
+            h['tainted_folds'] = r['heldout']['tainted_folds']
         r['heldout'] = h
     return rows
 
@@ -501,6 +512,7 @@ def ho1_pass(h, contract_type='price_prediction', engine='replay'):
         if (h.get('terciles_covered') or 0) < t['terciles'] or (h.get('terciles_won') or 0) < t['terciles']: why.append('fewer than 2 RV terciles won')
         if (h.get('worst_tercile_per_hour') if h.get('worst_tercile_per_hour') is not None else -1e9) < t['worst_tercile']: why.append('a tercile below -$0.50/h')
     if not h.get('beats_placebo'): why.append('does not beat its placebo')
+    if h.get('tainted_folds'): why.append(f'tuned on fold(s) {h["tainted_folds"]}')
     # REPLAY_VERSION is the Kalshi history replay's; perps run their own minute simulator on Binance bars (no version gate).
     if h['tier'] == 'history' and contract_type != 'perpetual' and engine in (None, 'replay') and (h.get('replay_version') or 0) < REPLAY_VERSION_MIN: why.append(f'replay version < {REPLAY_VERSION_MIN}')
     return not why, '; '.join(why)
@@ -696,6 +708,10 @@ def selftest():
     assert ho1_pass(hx)[0], ho1_pass(hx)
     dv = {**r, 'flags': ['dev-choice'], 'by_day': {'2026-07-30': 1.0, '2026-08-02': 1.0}, 'control': 'c'}
     assert 'G0:dev-choice-reads-hold' in validate(dv)[1] and 'DEV:choice-only' in validate(dv)[1]
+    lk = {**r, 'data': {'source': 'history', 'days': ['2026-08-02']}, 'by_day': {'2026-08-02': 1.0}, 'env': {'MODEL_SKILL': 'true'}}
+    assert 'G1:leaky-model' in validate(lk)[1]
+    assert 'G1:leaky-model' not in validate({**lk, 'env': {'MODEL_SKILL': 'false'}})[1]
+    assert not ho1_pass({**ok, 'tainted_folds': [6]})[0]
     print('registry selftest ok')
 
 
