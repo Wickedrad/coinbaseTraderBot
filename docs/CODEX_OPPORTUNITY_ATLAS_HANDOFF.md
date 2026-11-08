@@ -256,3 +256,26 @@ The 2017 BTC/ETH pilot validates joins/labels; it does not demonstrate predictiv
 skill, supply multi-era coverage, or train/validate SNN inputs and outputs. Joint
 path heads, calibration, causal SNN state integration, exact official-index contract
 labels and economic validation remain the next stages.
+
+## Initial joint learner after PR #305
+
+PR #305 was merged at `5ad1c74a076cd0b60bd78c0a29a99481a173e037`. Follow-on work
+on `feature/atlas-joint-path-learner` adds a verified keyed-dataset loader, purged
+expanding studies, conditional hazard heads and read-only competing-risk forecasts.
+It reuses existing GBDT, inference and beta-calibration modules without changing
+live callers. Risk curves remain coherent across integer-minute horizons; they
+do not reuse an hourly prediction as short-window confirmation.
+
+Feature selection, fitting, stopping, calibration and evaluation are chronological.
+This study uses only the original pre-2025 training period. Frozen development/final
+values are not encoded or used for internal tuning, and final labels are rejected.
+Right-censored paths supply only observed at-risk prefixes; horizon duplicates do
+not become separate episodes. Learned feature interactions are compared with a
+geometry baseline, not yet with all required full-parent ablations.
+
+The actual 2017 run is explicitly a short smoke test. It produces research artifacts
+and forecasts, not qualified trading models. Two conditional calibration heads
+remain insufficient and its weekly evidence spans only one block. SNN integration,
+smooth/sequence model comparisons, reversal/terminal/official-settlement heads,
+robust multi-era calibration, memory selection and economic validation remain
+pending. `calibrationRef` remains null and live entry remains disabled in this API.

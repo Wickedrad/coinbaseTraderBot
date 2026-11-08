@@ -471,3 +471,88 @@ No SNN embeddings were fabricated, and the SNN input/output wiring is still unch
 The next stages are the joint horizon-conditioned learner, calibration/validation,
 causal SNN state integration and official-index contract labels. This increment
 does not assert that the complete intelligent trading system is ready.
+
+## Initial joint path learner after merge
+
+The owner merged PR #305 at `5ad1c74a076cd0b60bd78c0a29a99481a173e037` and asked
+to continue. Work on `feature/atlas-joint-path-learner` adds a dataset reader,
+competing-risk tree learner, purged internal walk-forward study, conditional
+calibration and read-only integer-minute forecast queries. Existing tree training,
+tree inference and calibration implementations are reused; no bot/SNN/parameter,
+deployment or existing training-pipeline files changed.
+
+Current local verification:
+
+```bash
+node --import tsx --test tests/opportunity*.test.ts tests/treesFill.test.ts tests/relaxed.test.ts tests/model.test.ts
+npm run typecheck
+npm run build
+```
+
+**140 tests passed**, zero failures/skips, including ten new joint-learner tests.
+Coverage includes planted conditional learning, coherent nested cause curves,
+serialized prediction parity, model corruption/cycles, chronological stage and
+full-span purging, right censoring without fake survival, hash/join validation,
+future-column/schema rejection, exact reconstruction of interned inputs, and final
+label refusal after forged metadata hashes. Changing evaluation labels/columns
+leaves the fitted model and calibrator unchanged. The original 2025 development
+period and 2026 final period are excluded from internal fitting by timestamps,
+independently of input partition claims.
+
+Three real-data commands completed using the already exported datasets:
+
+```bash
+npm run research:opportunity-joint -- \
+  --dataset research/out/opportunity-decisions-2017-v1 \
+  --out research/out/opportunity-joint-2017-smoke-v2 --smoke-test --trees 16 --depth 2
+npm run research:opportunity-joint -- \
+  --dataset research/out/opportunity-decisions-2017-v1 \
+  --out research/out/opportunity-joint-2017-default-v2
+npm run research:opportunity-joint -- \
+  --dataset research/out/opportunity-decisions-final-audit-v1 \
+  --out research/out/opportunity-joint-final-refusal-v2 --smoke-test
+```
+
+The 2017 smoke run fitted one joint/geometry model pair from 1,384 training
+entry/side/grid episodes (11,208 at-risk minutes), with 476 completed evaluation
+episodes. It used 633 training-varying encoded inputs, a maximum risk horizon of
+60 minutes, and four supported BTC/ETH long/short one-ATR grid combinations.
+Fitting/stopping/calibration/evaluation windows and one-hour embargoes all remained
+inside the original 2017 training period. Censoring contributes only observed risk
+prefixes; alternate horizons do not multiply episodes.
+
+Internal smoke multiclass log loss was 0.78337 versus 0.82028 for the geometry
+baseline; multiclass Brier was 0.52737. These values are plumbing diagnostics from
+one short interval, not financial performance or robust skill evidence. Two of the
+three conditional calibration heads remain `insufficient` (event and ambiguity);
+only the clear target/stop head accepted its conditional fit. There is one weekly
+evaluation block, so the block confidence summary is null. The short sample also
+cannot warm the complete long-timeframe vocabulary during fitting. No global
+calibration approval, feature-retention decision, SNN competence or trading edge is
+established by this run.
+
+The normal study correctly reported `blocked-insufficient-history-or-rows` on the
+25-hour pilot. Its default multi-day windows were not silently shortened. The
+2026-only dataset also produced the blocked report, with no fitted model artifact
+and no encoded final input features. No final outcome label was read or scored.
+
+Saved-model checks then generated 72 forecasts from twelve actual BTC/ETH decision
+frames (both sides, horizons 1/9/60 minutes). Every probability was finite, within
+0..1, and normalized; first-hit cumulative probabilities increased with horizon
+while no-hit survival decreased. One- and nine-minute queries exactly matched the
+corresponding prefixes of the 60-minute curve. Artifact content ID/hash and current
+source hashes matched. Model availability is a simulated replay cutoff, not proof
+of a historically published model or real execution latency.
+
+All artifacts retain `researchOnly: true`, `liveEntryAllowed: false` and
+`calibrationRef: null`. The order-ambiguity range is not a statistical confidence
+interval, and these spot barrier probabilities are not official averaged-index
+contract settlement or reversal/terminal-price forecasts. The new learner has no
+live consumers or promotion route.
+
+Metadata-only reports and inference checks are committed in
+[OPPORTUNITY_ATLAS_JOINT_VALIDATION.json](OPPORTUNITY_ATLAS_JOINT_VALIDATION.json).
+Weights/raw study files remain ignored under `research/out/`. New collection remains
+tvdatafeed-only; this increment made no provider data requests. Smooth-surface/SNN
+comparisons, causal SNN integration, full-parent conditional selection, multi-era
+calibration, official settlement labels and economic validation remain pending.
