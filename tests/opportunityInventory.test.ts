@@ -84,12 +84,13 @@ test('inventory samples only the header/tail of large files and fails clearly wh
 test('inventory mode excludes every existing diagnostics/repair/study job for all flag combinations', () => {
   const yaml = fs.readFileSync('.github/workflows/diagnose.yml', 'utf8');
   const jobs = new Map([...yaml.matchAll(/^  ([a-z-]+):\n    if: (.+)$/gm)].map((m) => [m[1], m[2]]));
-  assert.deepEqual([...jobs.keys()].sort(), ['adversary', 'atlas-inventory', 'diagnose', 'kalshi-repair', 'ta-study']);
-  for (let flags = 0; flags < 16; flags++) {
-    const values: Record<string, string> = { atlas_inventory: 'true', adversary: flags & 1 ? 'true' : 'false',
+  assert.deepEqual([...jobs.keys()].sort(), ['adversary', 'atlas-drive-inventory', 'atlas-inventory', 'diagnose', 'kalshi-repair', 'ta-study']);
+  for (let flags = 0; flags < 32; flags++) {
+    const values: Record<string, string> = { atlas_drive_inventory: flags & 16 ? 'true' : 'false', atlas_inventory: 'true', adversary: flags & 1 ? 'true' : 'false',
       kalshi_repair: flags & 2 ? 'true' : 'false', ta_study: flags & 4 ? 'true' : 'false', pnl: flags & 8 ? 'true' : 'false' };
     const evaluate = (expr: string) => Function(`return (${expr.replace(/inputs\.(\w+)/g, (_, key: string) => JSON.stringify(values[key] ?? ''))})`)();
-    for (const [name, expr] of jobs) assert.equal(evaluate(expr), name === 'atlas-inventory', name);
+    for (const [name, expr] of jobs) assert.equal(evaluate(expr), name === (values.atlas_drive_inventory === 'true' ? 'atlas-drive-inventory' : 'atlas-inventory'), name);
+    values.atlas_drive_inventory = 'false';
     values.atlas_inventory = '';
     assert.equal(evaluate(jobs.get('atlas-inventory')!), false);
     assert.equal(evaluate(jobs.get('diagnose')!), values.kalshi_repair !== 'true' && values.ta_study !== 'true');

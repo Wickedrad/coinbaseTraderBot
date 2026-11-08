@@ -6,6 +6,10 @@ name: Server diagnostics
 on:
   workflow_dispatch:
     inputs:
+      atlas_drive_inventory:
+        description: 'Only list project Google Drive history metadata using RCLONE_CONF; no server access, data download/upload, training or deployment'
+        required: false
+        default: 'false'
       atlas_inventory:
         description: 'Only inventory historical CSV timestamps/sizes for the Opportunity Atlas; no bot configuration, data writes, training, repair, or deployment'
         required: false
@@ -63,8 +67,49 @@ permissions:
   contents: read
 
 jobs:
+  atlas-drive-inventory:
+    if: inputs.atlas_drive_inventory == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure existing Drive access and list archive metadata (read-only)
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF is unavailable in this Actions context"; exit 1; fi
+          if ! command -v rclone >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq rclone
+          fi
+          mkdir -p "$RUNNER_TEMP/atlas-drive"
+          chmod 700 "$RUNNER_TEMP/atlas-drive"
+          export RCLONE_CONFIG="$RUNNER_TEMP/atlas-drive/rclone.conf"
+          printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
+          chmod 600 "$RCLONE_CONFIG"
+          trap 'rm -f "$RCLONE_CONFIG"' EXIT
+          python3 -B research/opportunity/driveInventory.py --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+            > "$RUNNER_TEMP/atlas-drive-inventory.json"
+          python3 - "$RUNNER_TEMP/atlas-drive-inventory.json" <<'PYREPORT'
+          import json,sys
+          r=json.load(open(sys.argv[1]))
+          for root in r['roots']:
+              print(root['label'], 'accessible:', root['accessible'], 'files:', len(root['files']),
+                    'TV minute candidates:', len(root['tv_minute_candidates']), 'errors:', len(root['errors']))
+          PYREPORT
+      - name: Save Drive inventory metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-drive-inventory
+          path: ${{ runner.temp }}/atlas-drive-inventory.json
+          if-no-files-found: warn
+          retention-days: 7
+
   atlas-inventory:
-    if: inputs.atlas_inventory == 'true'
+    if: inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 10
@@ -110,7 +155,7 @@ jobs:
           retention-days: 7
 
   diagnose:
-    if: inputs.atlas_inventory != 'true' && inputs.ta_study != 'true' && inputs.kalshi_repair != 'true'
+    if: inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory != 'true' && inputs.ta_study != 'true' && inputs.kalshi_repair != 'true'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -258,7 +303,7 @@ jobs:
   # endpoint were saved with quotes 100x too small until PR #217. Writes only data/history/kalshi day files, through a
   # temp file and a rename; the bot's own state is not touched. Prints counts, posted as a comment on the commit.
   adversary:
-    if: inputs.atlas_inventory != 'true' && inputs.adversary == 'true'
+    if: inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory != 'true' && inputs.adversary == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 60
@@ -300,7 +345,7 @@ jobs:
         run: python3 deploy/adversary_report.py data 24 data/lags.txt
 
   kalshi-repair:
-    if: inputs.atlas_inventory != 'true' && inputs.kalshi_repair == 'true'
+    if: inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory != 'true' && inputs.kalshi_repair == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 30
@@ -351,7 +396,7 @@ jobs:
   # touched. The history and the replay days are cached between runs (keyed by coins and days), so a wider range only
   # builds what is new. Prints aggregates only (counts, log losses, the chosen set): this repository is public.
   ta-study:
-    if: inputs.atlas_inventory != 'true' && inputs.ta_study == 'true'
+    if: inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory != 'true' && inputs.ta_study == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 340
