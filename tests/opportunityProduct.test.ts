@@ -7,7 +7,7 @@ import { rng } from '../research/stats';
 import { ATLAS_FEATURE_SCHEMA, type AtlasFeatureFrame } from '../research/opportunity/features';
 import { TANET_SCHEMA } from '../bot/ta/taNet';
 import { buildContractObservation, digest, labelContract, type ContractObservation, type IndexEvidence, type TimelyMoveDefinition } from '../research/opportunity/contractDataset';
-import { contractRows, fitContractModel, scoreContractModel, contractProbabilities, validateContractModel, type ContractExample, type ContractStudyPlan } from '../research/opportunity/contractLearner';
+import { contractRows, fitContractModel, scoreContractModel, contractProbabilities, missingRequiredInputs, validateContractModel, type ContractExample, type ContractStudyPlan } from '../research/opportunity/contractLearner';
 import { runContractStudy, contractBounds, holmRetained, type ContractStudy } from '../research/opportunity/contractStudy';
 import { AtlasRegistry, createAtlasProduct } from '../research/opportunity/registry';
 import { evaluatePaperPosition, type PaperPolicy, type PaperQuote } from '../research/opportunity/paper';
@@ -76,6 +76,7 @@ test('smooth joint contract heads learn an interaction and produce coherent depe
   for (const p of [a, b]) assert.ok(Math.abs(Object.values(p).reduce((s, v) => s + v, 0) - 1) < 1e-12);
   const c = contractProbabilities(smooth, { 'value:spot_1m:x': 0.800001, 'value:spot_1m:z': 0.8 });
   assert.ok(Math.abs(c.both - a.both) < 0.0001, 'continuous response rather than indicator votes');
+  assert.ok(missingRequiredInputs(smooth, { 'value:spot_1m:z': 0.8 }).includes('value:spot_1m:x'), 'unseen missing TA cannot obtain confidence from its training mean');
   const copy = JSON.parse(JSON.stringify(smooth)); validateContractModel(copy); assert.deepEqual(contractProbabilities(copy, {}), contractProbabilities(smooth, {}));
   copy.heads.move.calibration.c += 1; assert.throws(() => validateContractModel(copy), /model\/ID/);
 });

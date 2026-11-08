@@ -18,6 +18,10 @@ on:
         description: 'With atlas_drive_inventory: bounded market archive metadata search including recorded index days and compressed history; no CSV probes'
         required: false
         default: 'false'
+      atlas_catalog_scope:
+        description: 'With atlas_catalog_only: optional located market-history namespace (raw/laptop-history, raw/oracle-history, raw/perp-ta-history); bounded CSV timestamp probes'
+        required: false
+        default: ''
       atlas_inventory:
         description: 'Only inventory historical CSV timestamps/sizes for the Opportunity Atlas; no bot configuration, data writes, training, repair, or deployment'
         required: false
@@ -130,6 +134,7 @@ jobs:
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
           ATLAS_CATALOG_ONLY: ${{ inputs.atlas_catalog_only }}
+          ATLAS_CATALOG_SCOPE: ${{ inputs.atlas_catalog_scope }}
         run: |
           set -euo pipefail
           if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF is unavailable in this Actions context"; exit 1; fi
@@ -144,7 +149,9 @@ jobs:
           chmod 600 "$RCLONE_CONFIG"
           trap 'rm -f "$RCLONE_CONFIG"' EXIT
           if [ "$ATLAS_CATALOG_ONLY" = 'true' ]; then
-            python3 -B research/opportunity/driveInventory.py --catalog-only --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+            atlas_catalog_probe_args=()
+            if [ -n "$ATLAS_CATALOG_SCOPE" ]; then atlas_catalog_probe_args+=(--probe-csv); fi
+            python3 -B research/opportunity/driveInventory.py --catalog-only --scope "$ATLAS_CATALOG_SCOPE" "${atlas_catalog_probe_args[@]}" --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
               > "$RUNNER_TEMP/atlas-market-catalog.json"
             ATLAS_REPORT="$RUNNER_TEMP/atlas-market-catalog.json"
           else

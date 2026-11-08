@@ -30,6 +30,7 @@ export interface ContractModel {
   featureSources: Record<string, string>;
   termsBases: ContractObservation['termsBasis'][];
   included: FeatureFamily[]; featureNames: string[]; heads: Record<HeadName, ContractHead>; support: Support[];
+  requiredFiniteFeatures: string[];
   snnIdentity: string | null; indexBasis: 'observed-index' | 'synthetic-fixture';
 }
 export interface JointContractProbabilities { neither: number; moveOnly: number; paysOnly: number; both: number }
@@ -157,6 +158,7 @@ export function fitContractModel(rows: { train: EncodedContractRow[]; stopping: 
     featureSchema: first.frame.schema, taSchema: first.frame.taSchema, engine: first.frame.engine, featureSources: frameSources(first),
     termsBases: [...new Set(rows.train.map((r) => r.observation.termsBasis))].sort(),
     knownAt: plan.calibration.through, trainedThrough: plan.train.through, included: [...included], featureNames: names,
+    requiredFiniteFeatures: names.filter((name) => rows.train.every((r) => Number.isFinite(r.values[name]))),
     heads: Object.fromEntries(HEADS.map((name) => [name, fitHead(name, family, all, names, options)])) as ContractModel['heads'],
     support: [...support.values()].sort((a, b) => a.key.localeCompare(b.key)),
     snnIdentity: included.includes('snn') ? snnIdentity(first) : null, indexBasis: first.index.basis };
@@ -166,6 +168,10 @@ export function contractProbabilities(model: ContractModel, values: Record<strin
   const x = model.featureNames.map((n) => values[n] ?? NaN);
   const [move, paysMove, paysNoMove] = HEADS.map((n) => applyBeta(raw(model.heads[n].model, x), model.heads[n].calibration));
   return { neither: (1 - move) * (1 - paysNoMove), moveOnly: move * (1 - paysMove), paysOnly: (1 - move) * paysNoMove, both: move * paysMove };
+}
+/** An unseen missingness pattern must not receive confidence by mean imputation. */
+export function missingRequiredInputs(model: ContractModel, values: Record<string, number>) {
+  return model.requiredFiniteFeatures.filter((name) => !Number.isFinite(values[name]));
 }
 export function contractModelSupports(model: ContractModel, o: ContractObservation) {
   const s = model.support.find((s) => s.key === contractSupportKey(o, model.included.includes('snn')));
@@ -183,6 +189,7 @@ export function validateContractModel(m: ContractModel) {
       m.knownAt < m.trainedThrough || !['observed-index', 'synthetic-fixture'].includes(m.indexBasis) ||
       (m.snnIdentity !== null && !/^[a-f0-9]{64}$/.test(m.snnIdentity)) || m.included.some((f) => !FEATURE_FAMILIES.includes(f)) ||
       !m.featureNames.length || m.featureNames.length > 10000 || new Set(m.featureNames).size !== m.featureNames.length || !m.support.length ||
+      !Array.isArray(m.requiredFiniteFeatures) || new Set(m.requiredFiniteFeatures).size !== m.requiredFiniteFeatures.length || m.requiredFiniteFeatures.some((n) => !m.featureNames.includes(n)) ||
       m.featureNames.some((n) => { const f = featureFamily(n); return !/^[a-zA-Z0-9_:-]+$/.test(n) || (f !== null && !m.included.includes(f)); }) ||
       Object.values(m.featureSources).some((s) => typeof s !== 'string' || !s) || m.support.some((s) => !/^[a-f0-9]{64}$/.test(s.key) ||
         ![s.minimumRemainingSec, s.maximumRemainingSec, s.minimumMoneyness, s.maximumMoneyness, s.minimumMoveBps, s.maximumMoveBps].every(Number.isFinite) ||

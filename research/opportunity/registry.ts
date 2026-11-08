@@ -1,6 +1,6 @@
 /** Content-addressed offline/paper registry. Loading an artifact never promotes a bot model. */
 import { digest, encodeContractObservation, type ContractObservation } from './contractDataset';
-import { contractModelSupports, contractProbabilities, contractSupportKey, validateContractModel, validateStudyPlan } from './contractLearner';
+import { contractModelSupports, contractProbabilities, contractSupportKey, missingRequiredInputs, validateContractModel, validateStudyPlan } from './contractLearner';
 import { CONTRACT_STUDY_SCHEMA, contractBounds, type ContractStudy } from './contractStudy';
 import type { ContractPathForecast } from './contractTiming';
 import { predictMovementMixture, validateMovementModel } from './movement';
@@ -78,6 +78,7 @@ export class AtlasRegistry {
     const availableAt = options.mode === 'historical-audit' ? s.plan.audit.through : Math.max(p.createdAt, s.plan.audit.through);
     if (q.asOf < availableAt) return { ...out, reason: 'product was not available at this query time' };
     if (!contractModelSupports(model, observation)) return { ...out, status: 'unsupported', reason: 'asset, terms, index, timing, feature/SNN identity or training geometry coverage differs' };
+    if (missingRequiredInputs(model, x).length) return { ...out, status: 'unsupported', reason: 'a selected input is missing in a pattern never observed in training; confidence cannot be inferred by mean imputation' };
     const joint = contractProbabilities(model, x), probs = { move: joint.moveOnly + joint.both, pays: joint.paysOnly + joint.both, both: joint.both };
     const supportKey = contractSupportKey(observation, model.included.includes('snn'));
     const cal = s.calibration, bounds = (k: 'move' | 'pays' | 'both') => cal ? contractBounds(cal, supportKey, k, probs[k]) :

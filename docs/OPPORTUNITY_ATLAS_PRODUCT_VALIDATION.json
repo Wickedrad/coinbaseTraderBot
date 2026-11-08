@@ -7,14 +7,15 @@
   "localValidation": {
     "typecheck": "passed on final source",
     "focusedTests": {
-      "passed": 34,
+      "passed": 40,
       "failed": 0,
       "skipped": 0,
       "files": [
         "opportunityProduct.test.ts",
         "opportunityContractData.test.ts",
         "opportunityJoint.test.ts",
-        "opportunityDrive.test.ts"
+        "opportunityDrive.test.ts",
+        "opportunityArchive.test.ts"
       ]
     },
     "repositorySuite": {
@@ -40,15 +41,15 @@
     ],
     "independent_neural_forecasts": 740,
     "maximum_probability_difference": 4.440892098500626e-16,
-    "model_id": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
-    "product_id": "49ddeafcf2a76694d0fbd79c05152780c826c20a11dfae2e20914710f9d96104",
+    "model_id": "b1442cd21e419f5a2ddbde73307d912f3b898e5d88a411e8a941e73d8edf56af",
+    "product_id": "97695ecfa20d2248fc668e09643725a43356babe251faaaa8095b8dfcacb1216",
     "dataset_sha256": "3bb36a4080c72668aa8a2c20e59b14c34af067daaa070431eff7d1256cfe1549",
     "real_market_qualification": false,
     "live_entry_allowed": false
   },
   "demo": {
-    "productId": "49ddeafcf2a76694d0fbd79c05152780c826c20a11dfae2e20914710f9d96104",
-    "selectedModelId": "e867ffac590829edd7adc30478dac523b705b7e420d82eada0d5811df4d691b8",
+    "productId": "97695ecfa20d2248fc668e09643725a43356babe251faaaa8095b8dfcacb1216",
+    "selectedModelId": "f51966e65b2030dedae3cb1c4ff2a716738e429d3dc454320abd87d9491fbb39",
     "status": "research-fit",
     "blockers": [
       "Synthetic fixtures are software checks, not observed-market evidence",
@@ -61,7 +62,7 @@
       {
         "selectionLogLoss": 0.8707015984681306,
         "selectionRows": 100,
-        "id": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
+        "id": "b1442cd21e419f5a2ddbde73307d912f3b898e5d88a411e8a941e73d8edf56af",
         "family": "smooth",
         "included": [
           "ta",
@@ -74,7 +75,7 @@
       {
         "selectionLogLoss": 0.9270818434822315,
         "selectionRows": 100,
-        "id": "00a249052fee1f624d106aa0a488829cae962162281357f22be245f73e346b94",
+        "id": "adf4d66e720750bfc25a3d57d91c568aae33fb2de7c863cef0546cc2103f901c",
         "family": "trees",
         "included": [
           "ta",
@@ -87,7 +88,7 @@
       {
         "selectionLogLoss": 1.2342917554528174,
         "selectionRows": 100,
-        "id": "53c063a706f6dc3fa83d9dd5390b9c7b55de8a1b078392d0e088d65295b0529d",
+        "id": "c32947a13a8a26973339e836ccc9f7289fc061892cdbcd59c7fa6fb73a1efb7c",
         "family": "temporal-linear",
         "included": [
           "ta",
@@ -105,32 +106,32 @@
       {
         "group": "ta",
         "decision": "insufficient-evidence",
-        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
-        "ablatedModelId": "c017e1d9a8a7b1cef72848007c0ae9ae2d2bbf0f3da19b0dc45eb9ba963044ae"
+        "fullParentModelId": "b1442cd21e419f5a2ddbde73307d912f3b898e5d88a411e8a941e73d8edf56af",
+        "ablatedModelId": "32ba5cca326bf60a4e53d0151b95ab93425a9d4ad8161d6b8ee1b0bbdd539db3"
       },
       {
         "group": "dominance",
         "decision": "insufficient-evidence",
-        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
-        "ablatedModelId": "2d0ba8b8eed662e8808b81e69fcba02fa2ec19e75e70ab9d7adfd84a084e065d"
+        "fullParentModelId": "b1442cd21e419f5a2ddbde73307d912f3b898e5d88a411e8a941e73d8edf56af",
+        "ablatedModelId": "c42a07fc4400dfa6ab6318b0a9f3467f6173f00613b70c0a965f64147beb2565"
       },
       {
         "group": "clock",
         "decision": "insufficient-evidence",
-        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
-        "ablatedModelId": "6a1726579e0fbb2e73b10fb5c39c03de233c437d73c910be54c96c00511f9456"
+        "fullParentModelId": "b1442cd21e419f5a2ddbde73307d912f3b898e5d88a411e8a941e73d8edf56af",
+        "ablatedModelId": "0d308c7da1584b0593711529121d21ceae90997c821030f764137540c33a7495"
       },
       {
         "group": "micro",
         "decision": "insufficient-evidence",
-        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
-        "ablatedModelId": "0ab47fa2f90cae9a55628c4476458d9090cca70dc4f7cb0286d0a7e2fc54a33e"
+        "fullParentModelId": "b1442cd21e419f5a2ddbde73307d912f3b898e5d88a411e8a941e73d8edf56af",
+        "ablatedModelId": "e2eba10765cfaa396ccba65fc04953cdc0369cb8d44cd5df16fbefe4055ad4fb"
       },
       {
         "group": "daily",
         "decision": "insufficient-evidence",
-        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
-        "ablatedModelId": "91dc8fd59eaf4c0a7fe11841ac835afa83cb7ca5079bfd15d124e94dc850a389"
+        "fullParentModelId": "b1442cd21e419f5a2ddbde73307d912f3b898e5d88a411e8a941e73d8edf56af",
+        "ablatedModelId": "9f50bd9dfe80f9c128d362fe489d92c2befb0a77f2819d7e639e6dd9d13fad86"
       }
     ]
   },
@@ -141,7 +142,7 @@
     "research/mlp.ts": "f9adc007a830a4e342754cf20e8cc6eda95096c7d82361d3db5cebe0b7e3e943",
     "research/opportunity/atlas.ts": "5e6bb8ddb9d2abc257471661455e3e9920ee61d075d690d3c275d6a66c3b42d6",
     "research/opportunity/contractDataset.ts": "f9e5adc00785f169a184287bfe8a65d124c51993c89f905688daa237158b590f",
-    "research/opportunity/contractLearner.ts": "792d2635342eba2ed7ca8495f3f5a01fcb983137b1ea9018ce3f498a6a7d4a99",
+    "research/opportunity/contractLearner.ts": "f468b7eb67183201ba7ead106f105feea9ad7c571290a50e4f036410557e578d",
     "research/opportunity/contractStudy.ts": "d9aea8d1b409ce0fd96cf5e846f2992f79581d5fb8c278945a7d24afb9b23775",
     "research/opportunity/contractTiming.ts": "88a4140dcf9bf0e72a9eace21b5da0649cb6f1637ae2313d9f270b25b2cc1873",
     "research/opportunity/decisionDataset.ts": "cf7da7f674a0561033ff35f92523975d6e8194968623008b653f0e768c69eed8",
@@ -158,7 +159,7 @@
     "research/opportunity/pathLabels.ts": "31cd05dcac25f031e01d6ac2f86a9c39fbd06da67172a9f8561d79ac668d7b47",
     "research/opportunity/productCli.ts": "60f86414840068d85bfe1fcd8aba121fae0775b82f9b8e8c081a9e63531e61dc",
     "research/opportunity/recordingImport.ts": "64e2ce1b0dc62f942aebcaf903648f1e1604ced1c766b74f2d6730a31033dbe0",
-    "research/opportunity/registry.ts": "8317a7d2adc5de378d4dcd698b3d8ad4f45bbeb813e1503c0c2da33381d310ff",
+    "research/opportunity/registry.ts": "8e19e0bb5678befc900521ffaedba8bc2a13f21eedffde15c41cb4d5b4f7f6c6",
     "research/opportunity/snnComparison.ts": "6342eb7455ca2d63dda6d535a00e24536a7c3c5ecf3df4049d5b36be331cefb5",
     "research/opportunity/snnReplay.ts": "202e27b6d35e9317623273938132d05cb1c9e7637ca1a93f5b4df5c542019e63",
     "research/opportunity/snnState.ts": "915e666638ce73e4ec69bef37094e4cb980c1b6af16cb8b7e66747d573b21428",

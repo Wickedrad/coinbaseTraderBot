@@ -276,6 +276,10 @@ selected because it returns the highest confidence. `forward-paper` requires
 actual artifact publication before the query; `--historical-audit` explicitly
 uses the simulated audit cutoff and makes no historical-publication claim.
 
+A selected input that was always observed during training cannot become silently
+missing at query time. The registry abstains for that unseen missingness pattern;
+mean imputation alone cannot create confidence for an unavailable relationship.
+
 An hourly direction forecast stays context for a 15m contract. The fresh query
 must match this ticker, strike/range, side, index, averaging rule, direction,
 event definition and exact remaining-time deadline. Neither a nominal TA

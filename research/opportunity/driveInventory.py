@@ -152,7 +152,7 @@ def inventory(folder_id=None, list_fn=listing, probe=False, read_fn=read_sample)
     return report
 
 
-def catalog(folder_id=None, list_fn=listing):
+def catalog(folder_id=None, list_fn=listing, scope="", probe=False, read_fn=read_sample):
     """Broader project metadata search, including compressed history and SNN/index tapes.
 
     No file contents are read. Restrict output to market-data paths; do not expose
@@ -160,17 +160,21 @@ def catalog(folder_id=None, list_fn=listing):
     """
     if folder_id and not re.fullmatch(r"[A-Za-z0-9_-]{10,100}", folder_id):
         raise ValueError("invalid shared folder id")
+    if scope not in ("", "raw/laptop-history", "raw/oracle-history", "raw/perp-ta-history", "raw/server-history", "raw/history"):
+        raise ValueError("scope must be a located market-history namespace")
     roots = [("configured-archive", "gdrive:kalshi-bot-archive", None)]
     if folder_id:
         roots.append(("linked-folder", "gdrive:", folder_id))
-    report = {"schema": "atlas-market-catalog-v1", "read_only": True, "contents_read": False,
-              "maximum_depth": 6, "roots": []}
+    report = {"schema": "atlas-market-catalog-v1", "read_only": True, "contents_read": probe,
+              "scope": scope or "project market-data metadata", "maximum_depth": 6, "roots": []}
+    probed = False
     private = re.compile(r"(?:^|[/_.-])(env|secret|credential|account|order|fill|audit|model|checkpoint|log)s?(?:[/_.-]|$)")
     market = re.compile(r"history|candle|recording|snn.?tape|index|market.?data|replay")
     for label, remote, override in roots:
+        scoped_remote = remote.rstrip("/") + "/" + scope if scope and not remote.endswith(":") else remote + scope if scope else remote
         result = {"label": label, "accessible": False, "errors": [], "scanned_folders": [],
                   "files": [], "truncated": False}
-        queue = [(remote, "", 0)]
+        queue = [(scoped_remote, scope, 0)]
         deadline = time.monotonic() + 90
         while queue and len(result["scanned_folders"]) < 30 and time.monotonic() < deadline:
             parent, relative, depth = queue.pop(0)
@@ -179,7 +183,7 @@ def catalog(folder_id=None, list_fn=listing):
                 result["errors"].append({"path": relative or ".", "error": error})
                 continue
             result["scanned_folders"].append(relative or ".")
-            if not relative:
+            if depth == 0:
                 result["accessible"] = True
             for f in files or []:
                 child = str(f.get("Path", f.get("Name", "")))
@@ -200,11 +204,29 @@ def catalog(folder_id=None, list_fn=listing):
                     result["truncated"] = True
                     break
             # Prioritize recorded index/tape days before traversing hundreds of per-asset history folders.
-            queue.sort(key=lambda item: (0 if re.search(r"recording|snn.?tape", item[1], re.I) else 1, item[2], item[1]))
+            queue.sort(key=lambda item: (0 if re.search(r"recording|snn.?tape", item[1], re.I) else 4 if "/." in item[1] else 1 if re.search(r"1m|tvdatafeed|tradingview", item[1], re.I) else 2, item[2], item[1]))
             if result["truncated"]:
                 break
         if queue:
             result["truncated"] = True
+        if probe and result["accessible"] and not probed:
+            probed = True
+            candidates = [f for f in result["files"] if f["path"].lower().endswith(".csv")]
+            candidates.sort(key=lambda f: (0 if re.search(r"(?:^|[/_-])1m(?:[/_.-]|$)", f["path"], re.I) else 1, f["path"]))
+            deadline = time.monotonic() + 90
+            for f in candidates[:20]:
+                if time.monotonic() >= deadline:
+                    break
+                file_remote = remote.rstrip("/") + "/" + f["path"] if not remote.endswith(":") else remote + f["path"]
+                head, error = read_fn(file_remote, False, override)
+                if error:
+                    f["csv_sample"] = {"error": error}
+                    continue
+                tail, error = read_fn(file_remote, True, override)
+                f["csv_sample"] = summarize_csv_samples(head, tail if not error else None, (f.get("size_bytes") or 0) > SAMPLE_BYTES)
+                if error:
+                    f["csv_sample"]["tail_error"] = error
+            result["probe_incomplete"] = sum("csv_sample" in f for f in candidates) < len(candidates)
         report["roots"].append(result)
     return report
 
@@ -214,8 +236,9 @@ def main():
     parser.add_argument("--folder-id")
     parser.add_argument("--probe-csv", action="store_true", help="Read bounded timestamp samples from existing archived CSVs")
     parser.add_argument("--catalog-only", action="store_true", help="List broader project market-data metadata, without reading files")
+    parser.add_argument("--scope", default="", help="A located project market-history namespace for bounded catalog discovery")
     args = parser.parse_args()
-    report = catalog(args.folder_id) if args.catalog_only else inventory(args.folder_id, probe=args.probe_csv)
+    report = catalog(args.folder_id, scope=args.scope, probe=args.probe_csv) if args.catalog_only else inventory(args.folder_id, probe=args.probe_csv)
     print(json.dumps(report, indent=2))
     return 0 if any(r["accessible"] for r in report["roots"]) else 1
 
