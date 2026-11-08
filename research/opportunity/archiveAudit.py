@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 import sys
 
@@ -71,12 +72,18 @@ def audit_file(file, root, interval_ms):
     return result
 
 
-def audit_archive(root):
+def audit_archive(root, source="binance-1m", assets=None):
     root = Path(root).resolve()
-    required = [f"binance-1m/{a}/1m.csv" for a in ASSETS]
+    assets = ASSETS if assets is None else list(assets)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", source):
+        raise ValueError("invalid archive source")
+    if not assets or len(set(assets)) != len(assets) or any(a not in ASSETS for a in assets):
+        raise ValueError("invalid archive assets")
+    required = [f"{source}/{a}/1m.csv" for a in assets]
     context = [f"yahoo/{a}/1d.csv" for a in ASSETS] + [f"tradingview/{a}/1d.csv" for a in ("BTC.D", "USDT.D")]
     report = {"schema": "atlas-archive-audit-v1", "research_only": True, "auto_promote": False,
-              "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "files": [], "missing": []}
+              "created_at": dt.datetime.now(dt.timezone.utc).isoformat(), "required_source": source,
+              "required_assets": assets, "files": [], "missing": []}
     for name in required + context:
         file = root / name
         if not file.is_file() or not file.resolve().is_relative_to(root):
@@ -92,9 +99,11 @@ def audit_archive(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("history")
+    parser.add_argument("--source", default="binance-1m")
+    parser.add_argument("--assets", default=",".join(ASSETS))
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    report = audit_archive(args.history)
+    report = audit_archive(args.history, args.source, args.assets.split(","))
     Path(args.out).write_text(json.dumps(report, indent=2) + "\n")
     print("Audited files:", len(report["files"]), "minute data ready:", report["ready"], "context ready:", report["context_ready"])
     return 0 if report["ready"] else 1

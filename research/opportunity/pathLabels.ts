@@ -48,9 +48,13 @@ export interface ReversalLabel extends ReversalDefinition {
   /** Null when the preceding window is unavailable or future observation is censored. */
   occurred: boolean | null;
 }
-export interface PathLabel {
+/** Minimal causal entry contract; generalized datasets keep full features in a separate keyed row. */
+export interface PathEntry {
+  ts: number; asset: string; price: number; f: { atrBps: number; knownAt: number };
+}
+export interface PathLabel<E extends PathEntry = OpportunityEntry> {
   schema: typeof PATH_LABEL_SCHEMA;
-  entry: OpportunityEntry;
+  entry: E;
   side: 'long' | 'short';
   horizonMin: number;
   targetAtr: number;
@@ -99,14 +103,15 @@ interface BarrierState {
   exit: number | null;
 }
 interface SideState { direction: 1 | -1; barriers: BarrierState[]; reversals: ReversalState[] }
-interface Pending {
-  entry: OpportunityEntry;
+interface Pending<E extends PathEntry> {
+  entry: E;
   observed: number;
   lastClose: number;
   high: number;
   low: number;
   sides: SideState[];
   nextHorizon: number;
+  horizonsMin: number[];
 }
 function integer(n: number, max: number): boolean { return Number.isInteger(n) && n > 0 && n <= max; }
 function validate(config: PathLabelConfig): void {
@@ -134,10 +139,10 @@ export function hypotheticalPayoff(entry: number, exit: number, direction: 1 | -
 
 /** Bounded by the longest horizon/lookback, with one barrier grid per entry/side,
  * shared across horizons. Entry candle extrema never enter a forward label. */
-export class PathLabeler {
+export class PathLabeler<E extends PathEntry = OpportunityEntry> {
   private readonly config: PathLabelConfig;
   private lastTs = -Infinity;
-  private pending: Pending[] = [];
+  private pending: Pending<E>[] = [];
   private history = new Map<number, number>();
   private readonly maxLookback: number;
   private readonly maxHorizon: number;
@@ -147,13 +152,14 @@ export class PathLabeler {
     this.maxLookback = Math.max(...config.reversals.map((d) => d.lookbackMin));
     this.maxHorizon = config.horizonsMin.at(-1)!;
   }
-  push(b: MinuteCandle, entry?: OpportunityEntry): PathLabel[] {
+  push(b: MinuteCandle, entry?: E, horizonsMin?: readonly number[]): PathLabel<E>[] {
     if (!Number.isInteger(b.ts / MIN) || b.ts < 0 || ![b.o, b.h, b.l, b.c, b.v].every(Number.isFinite) || b.l <= 0 || b.h < Math.max(b.o, b.c) || b.l > Math.min(b.o, b.c) || b.v < 0) throw new Error('invalid path candle');
     if (b.ts <= this.lastTs) throw new Error('path candles must have strictly increasing timestamps');
     if (entry && (entry.ts !== b.ts + MIN || entry.price !== b.c || !Number.isFinite(entry.f.knownAt) || entry.f.knownAt > entry.ts || !(entry.f.atrBps > 0) || !Number.isFinite(entry.f.atrBps))) throw new Error('invalid or noncausal path entry');
     // Every configured price level must be positive, including short targets and long stops.
     if (entry && Math.max(...this.config.targetsAtr, ...this.config.stopsAtr) * entry.f.atrBps >= 10_000) throw new Error('path barrier would have non-positive price');
-    const out: PathLabel[] = [];
+    if (horizonsMin && (!entry || !horizonsMin.length || horizonsMin.some((h, i) => !integer(h, this.maxHorizon) || (i > 0 && h <= horizonsMin[i - 1])))) throw new Error('entry horizons must be unique increasing minutes within the configured maximum');
+    const out: PathLabel<E>[] = [];
     if (Number.isFinite(this.lastTs) && b.ts !== this.lastTs + MIN) {
       out.push(...this.finish('gap', b.ts + MIN));
       this.history.clear();
@@ -173,25 +179,25 @@ export class PathLabeler {
           } else { r.run = 0; r.onset = null; }
         }
       }
-      if (p.observed === this.config.horizonsMin[p.nextHorizon]) {
-        out.push(...this.rows(p, this.config.horizonsMin[p.nextHorizon], null));
+      if (p.observed === p.horizonsMin[p.nextHorizon]) {
+        out.push(...this.rows(p, p.horizonsMin[p.nextHorizon], null));
         p.nextHorizon++;
       }
     }
-    this.pending = this.pending.filter((p) => p.observed < this.maxHorizon);
-    if (entry) this.pending.push(this.start(entry));
+    this.pending = this.pending.filter((p) => p.observed < p.horizonsMin.at(-1)!);
+    if (entry) this.pending.push(this.start(entry, horizonsMin ?? this.config.horizonsMin));
     this.history.set(b.ts + MIN, b.c);
     for (const t of this.history.keys()) { if (t < b.ts + MIN - this.maxLookback * MIN) this.history.delete(t); else break; }
     return out;
   }
   /** Unfinished horizons are emitted once, never silently treated as negative events. */
-  finish(reason: CensorReason = 'end-of-input', detectedAt?: number): PathLabel[] {
+  finish(reason: CensorReason = 'end-of-input', detectedAt?: number): PathLabel<E>[] {
     if (detectedAt !== undefined && !Number.isFinite(detectedAt)) throw new Error('invalid censor detection timestamp');
-    const out = this.pending.flatMap((p) => this.config.horizonsMin.slice(p.nextHorizon).flatMap((h) => this.rows(p, h, reason, detectedAt)));
+    const out = this.pending.flatMap((p) => p.horizonsMin.slice(p.nextHorizon).flatMap((h) => this.rows(p, h, reason, detectedAt)));
     this.pending = [];
     return out;
   }
-  private start(entry: OpportunityEntry): Pending {
+  private start(entry: E, horizonsMin: readonly number[]): Pending<E> {
     const snapshot = structuredClone(entry);
     const sides = ([1, -1] as const).map((direction): SideState => ({ direction,
       barriers: this.config.targetsAtr.flatMap((targetAtr) => this.config.stopsAtr.map((stopAtr): BarrierState => ({
@@ -207,9 +213,9 @@ export class PathLabeler {
         return { definition, priorMoveAtr, context, run: 0, onset: null, confirmed: null };
       }),
     }));
-    return { entry: snapshot, observed: 0, lastClose: entry.price, high: entry.price, low: entry.price, sides, nextHorizon: 0 };
+    return { entry: snapshot, observed: 0, lastClose: entry.price, high: entry.price, low: entry.price, sides, nextHorizon: 0, horizonsMin: [...horizonsMin] };
   }
-  private advanceBarriers(p: Pending, s: SideState, b: MinuteCandle): void {
+  private advanceBarriers(p: Pending<E>, s: SideState, b: MinuteCandle): void {
     for (const q of s.barriers) {
       const target = s.direction === 1 ? b.h >= q.targetPrice : b.l <= q.targetPrice;
       const stop = s.direction === 1 ? b.l <= q.stopPrice : b.h >= q.stopPrice;
@@ -225,11 +231,11 @@ export class PathLabeler {
       q.exit = q.hit === 'target' ? q.targetPrice : opensAtStop ? b.o : q.stopPrice;
     }
   }
-  private rows(p: Pending, horizonMin: number, censorReason: CensorReason | null, detectedAt?: number): PathLabel[] {
+  private rows(p: Pending<E>, horizonMin: number, censorReason: CensorReason | null, detectedAt?: number): PathLabel<E>[] {
     const plannedThrough = p.entry.ts + horizonMin * MIN;
     const observedThrough = p.entry.ts + p.observed * MIN;
     const labelKnownAt = Math.max(observedThrough, detectedAt ?? observedThrough);
-    return p.sides.flatMap((s) => s.barriers.map((q): PathLabel => {
+    return p.sides.flatMap((s) => s.barriers.map((q): PathLabel<E> => {
       const exit = q.exit ?? (censorReason === null ? p.lastClose : null);
       const reversals = s.reversals.map((r): ReversalLabel => ({ ...r.definition,
         priorMoveAtr: r.priorMoveAtr, context: r.context,

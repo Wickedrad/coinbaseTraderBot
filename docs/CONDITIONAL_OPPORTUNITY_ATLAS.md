@@ -56,8 +56,8 @@ it is suitable for merging a multi-year minute archive in one process.
 
 ## Scope and atlas command
 
-This contains **Phase 1, an opt-in path-label dataset, and an offline multi-timeframe
-feature provider**, research-only. It does
+This contains **Phase 1, an opt-in path-label dataset, an offline multi-timeframe
+feature provider, and joined minute-decision datasets**, research-only. It does
 not modify the trading engine, live strategy gates, SNN checkpoints, model promotion,
 or deployment. It is not evidence of a profitable strategy.
 
@@ -307,12 +307,99 @@ synthetic forecasts. Every assessment sets `researchOnly: true` and
 consumer-contract portion of the architecture, not proof that a trained system
 can identify these opportunities.
 
-Future training must also sample decisions inside contracts and label their exact
-remaining-time/settlement questions. The existing Phase 1 trainer still anchors
-entries at completed 15-minute candles and its fixed horizon labels are spot paths;
-they are not automatically exact remaining-time contract labels. The independent
-feature CLI can sample every minute (`--every-minutes 1`). Neither those entry
-labels nor the production SNN readouts were silently repurposed by this helper.
+Future training must label actual contract settlement questions. The existing
+Phase 1 trainer still anchors entries at completed 15-minute candles. The new joined
+dataset below samples inside reference windows and labels exact remaining-minute
+**spot paths**; neither dataset supplies official contract settlement outcomes.
+Production SNN readouts were not repurposed by these research helpers.
+
+## Joined minute-decision dataset
+
+`decisionDataset.ts` joins complete causal feature frames with future spot-path
+targets by a deterministic `decisionId`. It reuses the existing path labeler rather
+than adding a second reversal/first-touch algorithm. The path labeler now accepts a
+minimal generic entry and optional per-entry horizon list; existing Phase 1 callers
+retain their original entry shape, horizon list and output behavior.
+
+The dedicated `research:opportunity-decisions` command defaults to one observation
+per completed minute, without detector, RSI or 15-minute-candle gating. Every
+observation is retained even when TA groups are warming/missing. Targets require a
+finite positive, unclipped ATR14 scale computed with the existing built-in ATR over
+the last 1,440 contiguous minute bars. A gap restarts that window. This raw label
+scale is explicit and is not reconstructed from clipped normalized TA features.
+Zero/unknown ATR produces `unavailable-scale`, not fictional barriers or negative
+event labels. The full feature frame remains available for inspection.
+
+Reference clocks select the exact integer minutes to the next UTC quarter-hour
+and hour, in addition to base horizons (default 5, 15, 60, 240 and 1,440 minutes).
+For example, at 12:21 the additional horizons are nine and 39 minutes. At an exact
+boundary the next window begins. These clocks create **study horizons only**: they
+do not invent listed contracts, opening-average strikes, quotes, settlement-index
+observations or contract payout labels. Actual contracts still require the exact
+`contractTimingQuery` terms. One-minute OHLC labels do not establish fractional-minute
+settlement probabilities or intraminute event ordering.
+
+```bash
+npm run research:opportunity-decisions -- \
+  --archive data/opportunity-study-2017 --source binance-1m --assets BTC,ETH \
+  --max-minutes 1500 --out research/out/opportunity-decisions-study
+```
+
+This example reads the retained, audited historical sample. All new acquisition
+remains tvdatafeed-only. A verified tvdatafeed store can use the same archive wrapper:
+create an archive directory whose `history/` contains (or links to) the existing
+store, preserving its provenance sidecars and receipt files. Audit it explicitly:
+
+After setting `ATLAS_ARCHIVE` to that wrapper directory:
+
+```bash
+python3 -B research/opportunity/archiveAudit.py "$ATLAS_ARCHIVE/history" \
+  --source tvdatafeed-coinbase --assets BTC,ETH --out "$ATLAS_ARCHIVE/archive-validation.json"
+npm run research:opportunity-decisions -- --archive "$ATLAS_ARCHIVE" \
+  --source tvdatafeed-coinbase --assets BTC,ETH --max-minutes 1500 \
+  --out research/out/opportunity-decisions-tv
+```
+
+The source is explicit; the reader never substitutes another namespace. TV-named
+spot and present TradingView index inputs must also pass the existing provenance
+and content-hash checker. Yahoo context remains independently named. Audit readiness
+can be scoped to selected assets; missing daily inputs remain explicit rather than
+preventing an otherwise valid selected spot study. Folder names alone do not prove
+provider authenticity.
+
+The new output directory is published only after successful input/code rechecks:
+
+- `decisions.jsonl`: `opportunity-decisions-v1` observations, complete feature groups,
+  raw anchor, reference windows, requested horizons and label scheduling status.
+- `paths.jsonl`: `opportunity-decision-paths-v1` rows with minimal entries linked by
+  `entry.decisionId`, plus the underlying `opportunity-path-labels-v1` definition
+  version. The distinct export schema prevents confusion with legacy feature-rich
+  entries. Label values are never copied back into the feature frames.
+- `manifest.json`: counts, exact input/code/output hashes, source declarations,
+  partitions, label/volatility definitions, cost assumptions and unavailable inputs.
+  Both streams carry matching run metadata. IDs bind the exact input version and
+  decision timestamp; file revisions change IDs without making hashes model inputs.
+
+The CLI refuses an existing output directory or a path inside the input archive
+(including aliases through symlinks). Failed runs remove staging output. It defaults
+to 1,500 input minutes per asset and one target/stop ATR pair to keep initial exports
+manageable. Cadence, horizons and grids are configurable. Costs default explicitly
+to zero; `--fee-bps`, `--half-spread-bps` and `--slippage-bps` record hypothetical
+assumptions, not measured venue fills. Library callers can also configure reversal
+definitions and reference periods. Even sparse decision sampling advances pending
+labels through **every observed minute**.
+
+The frozen defaults remain training before 2025 and final from 2026. The new builder
+withholds final outcome labels unconditionally: final-period observations are marked
+`reserved-final`. Pending development labels are censored before consuming any candle
+overlapping the final boundary and still purged by their full planned span. Gaps,
+caps and end-of-input retain the existing censoring semantics. A censored early
+barrier result does not turn its unfinished full-horizon path into a complete example.
+
+This completes the initial feature/target data join. No model is fitted or scored,
+no SNN state is synthesized, and no official settlement data is inferred from spot.
+Future training must exclude purged/censored observations as appropriate and use
+blocked chronological validation; dense overlapping rows are not independent evidence.
 
 ## Module routing and implementation sequence
 

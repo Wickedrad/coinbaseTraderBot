@@ -229,3 +229,30 @@ as context, refuses stale/future forecasts and mismatched strikes/settlement bas
 and requires explicit confidence policy and future calibration metadata. It has no
 order consumers: `liveEntryAllowed` is always false. The trained heads, calibration
 artifact validation and SNN wiring are still pending, not implied by these tests.
+
+## Joined minute-decision export after PR #304
+
+PR #304 was merged at `5a53910ca5d517af2f73fe9c8d4ea26bea209bdf`. Follow-on work
+starts from that main commit on `feature/atlas-minute-decision-dataset`.
+
+`research:opportunity-decisions` now exports causal feature frames every minute,
+with deterministic IDs linking them to the existing reversal/first-touch/price-path
+labels. Additional per-entry horizons match the exact minutes remaining to reference
+quarter-hour/hour boundaries. These clocks are study durations, not invented listed
+contracts or official settlement labels. Entries no longer require an RSI/detector
+event or completed 15-minute indicator update. Missing/zero raw ATR retains the
+observation but withholds scale-dependent targets; missing TA stays null.
+
+The generic path labeler preserves existing callers. A separate keyed-label export
+schema identifies minimal entries, and complete features appear only once per
+decision. Bundles include input/code/output hashes and are published atomically.
+Explicit tvdatafeed sources require the existing provenance checker; no acquisition
+provider changed. New data collection must still use tvdatafeed.
+
+The new builder never emits final outcome labels. It stops pending label observation
+before the first candle overlapping the 2026 boundary and marks later feature-only
+observations `reserved-final`. This policy also applies to actual retained 2026 data.
+The 2017 BTC/ETH pilot validates joins/labels; it does not demonstrate predictive
+skill, supply multi-era coverage, or train/validate SNN inputs and outputs. Joint
+path heads, calibration, causal SNN state integration, exact official-index contract
+labels and economic validation remain the next stages.

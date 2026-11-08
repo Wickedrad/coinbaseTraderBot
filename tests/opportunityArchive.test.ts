@@ -62,3 +62,18 @@ test('archive export is exclusive, reads only fixed market files and keeps crede
   assert.match(job, /path: \$\{\{ runner.temp \}\}\/atlas-history-archive\//);
   assert.doesNotMatch(job, /LIGHTSAIL|ssh |npm |pipeline|rclone (?:sync|move|delete|purge)/);
 });
+
+test('archive audit can explicitly select a TV source and asset set without silently requiring another source', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-audit-source-'));
+  try {
+    const dir = path.join(root, 'tvdatafeed-coinbase/BTC'); fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '1m.csv'), header + bar(0) + bar(60000));
+    const out = path.join(root, 'audit.json');
+    const run = spawnSync('python3', ['-B', 'research/opportunity/archiveAudit.py', root, '--source', 'tvdatafeed-coinbase', '--assets', 'BTC', '--out', out], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    const r = JSON.parse(fs.readFileSync(out, 'utf8'));
+    assert.equal(r.ready, true); assert.deepEqual(r.required_assets, ['BTC']);
+    assert.equal(r.files[0].source, 'tvdatafeed-coinbase'); assert.equal(r.required_source, 'tvdatafeed-coinbase');
+    assert.ok(r.missing.every((name: string) => !name.startsWith('binance')));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

@@ -7,16 +7,21 @@ import { fileURLToPath } from 'node:url';
 import type { Candle } from '../../bot/ta/indicators';
 import { TANET_SCHEMA } from '../../bot/ta/taNet';
 import { taEngine } from '../../bot/ta/talib';
-import { ATLAS_FEATURE_SCHEMA, ATLAS_FEATURE_WINDOWS, AsOfDailyFeatures, CausalAtlasFeatures, type AtlasFeatureFrame } from './features';
+import { ATLAS_FEATURE_SCHEMA, ATLAS_FEATURE_WINDOWS, AsOfDailyFeatures, CausalAtlasFeatures, type AtlasFeatureFrame, type MinuteEntryAnchor } from './features';
 import { parseMinuteCsv } from './minuteCsv';
+import { verifyTvSeries } from './tvHistory';
 
 const DAY = 86400000;
 interface AuditFile { path: string; sha256: string; ready: boolean; rows: number; source: string }
 export interface FeatureRunOptions {
-  archiveDir: string; assets: string[]; everyMinutes?: number; maxMinutes?: number;
+  archiveDir: string; assets: string[]; source?: string; everyMinutes?: number; maxMinutes?: number;
   dailyLagMs?: number; dailyMaxAgeMs?: number;
   onFrame?: (frame: AtlasFeatureFrame) => void | Promise<void>;
   onProgress?: (message: string) => void;
+  /** Hooks are invoked in input order; labels must never be fed back into this provider. */
+  onAssetStart?: (asset: string) => void | Promise<void>;
+  onStep?: (bar: Readonly<Candle>, frame: AtlasFeatureFrame | undefined, anchor: Readonly<MinuteEntryAnchor> | undefined) => void | Promise<void>;
+  onAssetEnd?: (asset: string, limited: boolean) => void | Promise<void>;
 }
 export async function hashFile(file: string): Promise<string> {
   const digest = createHash('sha256');
@@ -38,8 +43,9 @@ async function* candles(file: string): AsyncGenerator<Candle> {
 }
 export async function buildFeatureReport(o: FeatureRunOptions) {
   const every = o.everyMinutes ?? 15, max = o.maxMinutes ?? Infinity;
+  const source = o.source ?? 'binance-1m';
   if (!Number.isSafeInteger(every) || every < 1 || !(max === Infinity || (Number.isSafeInteger(max) && max > 0)) ||
-      !o.assets.length || o.assets.some((a) => !['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'].includes(a))) throw new Error('invalid feature run options');
+      !/^[a-zA-Z0-9_-]+$/.test(source) || !o.assets.length || o.assets.some((a) => !['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'].includes(a))) throw new Error('invalid feature run options');
   const base = path.resolve(o.archiveDir), history = path.join(base, 'history');
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const codeHashes: Record<string, string> = {};
@@ -66,6 +72,7 @@ export async function buildFeatureReport(o: FeatureRunOptions) {
       context[key] = new AsOfDailyFeatures([], { source: name, sha256: null }, o.dailyLagMs, o.dailyMaxAgeMs, volume);
       return;
     }
+    if (source.startsWith('tvdatafeed-') && name.startsWith('tradingview/')) await verifyTvSeries(path.join(history, name), { asset: name.split('/')[1], source: 'tradingview', tf: '1d' });
     const bars: Candle[] = [];
     for await (const c of candles(path.join(history, name))) bars.push(c);
     context[key] = new AsOfDailyFeatures(bars, { source: name, sha256: record.sha256 }, o.dailyLagMs, o.dailyMaxAgeMs, volume);
@@ -73,15 +80,18 @@ export async function buildFeatureReport(o: FeatureRunOptions) {
   for (const symbol of ['BTC.D', 'USDT.D']) await daily(`tradingview/${symbol}/1d.csv`, `dominance_${symbol === 'BTC.D' ? 'btcd' : 'usdtd'}`, false);
   const reports = [];
   for (const asset of o.assets) {
-    const name = `binance-1m/${asset}/1m.csv`, record = (await verify(name, true))!;
+    const name = `${source}/${asset}/1m.csv`, record = (await verify(name, true))!;
+    if (source.startsWith('tvdatafeed-')) await verifyTvSeries(path.join(history, name), { asset, source, tf: '1m' });
     await daily(`yahoo/${asset}/1d.csv`, 'yahoo_daily', true);
     const provider = new CausalAtlasFeatures(asset, { source: name, sha256: record.sha256 }, { ...context });
+    await o.onAssetStart?.(asset);
     const groups: Record<string, { ready: number; warming: number; missing: number; stale: number; features: number; nullValues: number }> = {};
     let minutes = 0, frames = 0, first: number | null = null, last: number | null = null;
     for await (const bar of candles(path.join(history, name))) {
       provider.push(bar); minutes++; first ??= bar.ts; last = bar.ts;
+      let frame: AtlasFeatureFrame | undefined;
       if ((bar.ts / 60000 + 1) % every === 0) {
-        const frame = provider.snapshot(); frames++;
+        frame = provider.snapshot(); frames++;
         for (const [key, group] of Object.entries(frame.groups)) {
           if (group.knownAt !== null && group.knownAt > frame.decisionAt) throw new Error(`future feature: ${key}`);
           const counts = groups[key] ??= { ready: 0, warming: 0, missing: 0, stale: 0, features: Object.keys(group.values).length, nullValues: 0 };
@@ -90,9 +100,11 @@ export async function buildFeatureReport(o: FeatureRunOptions) {
         }
         await o.onFrame?.(frame);
       }
+      await o.onStep?.(Object.freeze({ ...bar }), frame, frame ? provider.entryAnchor() : undefined);
       if (minutes % 50000 === 0) o.onProgress?.(`${asset}: ${minutes} observed minutes, ${frames} feature frames`);
       if (minutes >= max) break;
     }
+    await o.onAssetEnd?.(asset, minutes >= max);
     reports.push({ asset, minutes, frames, firstOpen: first, lastOpen: last, gaps: provider.gaps, groups });
     delete context.yahoo_daily;
   }
@@ -123,6 +135,7 @@ async function main() {
   try {
     const maxArg = arg('max-minutes', '');
     const report = await buildFeatureReport({ archiveDir, assets: arg('assets', 'BTC,ETH').split(',').map((s) => s.trim().toUpperCase()),
+      source: arg('source', 'binance-1m'),
       maxMinutes: maxArg ? Number(maxArg) : undefined, everyMinutes: Number(arg('every-minutes', '15')),
       onProgress: console.log,
       onFrame: writer ? async (frame) => { await writer.writeFile(JSON.stringify(frame) + '\n'); } : undefined });

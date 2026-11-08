@@ -1,6 +1,6 @@
 /** Offline feature vocabulary. No fitting, rule votes, model loading or order consumers. */
 import { TIMEFRAMES, TF_MS, tfState } from '../../bot/ta/analyzer';
-import type { Candle } from '../../bot/ta/indicators';
+import { atr, type Candle } from '../../bot/ta/indicators';
 import type { Timeframe } from '../../bot/ta/knowledge';
 import { TANET_SCHEMA, TANET_D1_BARS, TANET_H1_BARS, TANET_M15_BARS, TF_OPTS, tfFeatures } from '../../bot/ta/taNet';
 import { taEngine } from '../../bot/ta/talib';
@@ -24,6 +24,10 @@ export interface AtlasFeatureFrame {
   schema: typeof ATLAS_FEATURE_SCHEMA; taSchema: string; engine: string;
   asset: string; decisionAt: number; session: SessionKey; gapsSeen: number;
   groups: Readonly<Record<string, Readonly<FeatureGroup>>>;
+}
+export interface MinuteEntryAnchor {
+  price: number; atrBps: number | null; knownAt: number; firstOpen: number;
+  definition: 'builtin-ATR14-over-last-1440-contiguous-1m-bars';
 }
 function finiteValues(values: Record<string, number>): Readonly<Record<string, number | null>> {
   return Object.freeze(Object.fromEntries(Object.entries(values).map(([k, v]) => [k, Number.isFinite(v) ? v : null])));
@@ -94,6 +98,13 @@ export class CausalAtlasFeatures {
   private previousClose?: number;
   gaps = 0;
   constructor(readonly asset: string, readonly source: FeatureSource, readonly daily: Record<string, AsOfDailyFeatures> = {}) {}
+  /** Unclipped label scale, kept separate from the normalized/clipped TA feature vocabulary. */
+  entryAnchor(): Readonly<MinuteEntryAnchor> {
+    if (!this.last) throw new Error('no observed closed minute');
+    const bars = this.closed.get('1m')!, value = atr(bars, 14).at(-1)!;
+    return Object.freeze({ price: this.last.c, atrBps: Number.isFinite(value) && value > 0 ? value / this.last.c * 10000 : null,
+      knownAt: this.last.ts + MIN, firstOpen: bars[0].ts, definition: 'builtin-ATR14-over-last-1440-contiguous-1m-bars' });
+  }
   push(candle: Candle): void {
     if (!valid(candle, MIN) || (this.last && candle.ts <= this.last.ts)) throw new Error('minute candles must be valid and strictly increasing');
     const gap = this.last && candle.ts !== this.last.ts + MIN;
