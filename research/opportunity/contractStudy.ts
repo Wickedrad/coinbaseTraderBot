@@ -48,8 +48,10 @@ export function pairedContractEvidence(full: ContractScore[], parent: ContractSc
   return { rows, weeks: gains.length, gain: gains.length >= 8 ? bootstrapMeanCi(gains, 0.05, 2000, 91) : null,
     p: gains.length >= 8 ? signFlip(gains) : null };
 }
-export function holmRetained(p: Array<number | null>, alpha = 0.05) {
-  const sorted = p.map((p, index) => ({ p: p ?? 1, index })).sort((a, b) => a.p - b.p), keep = new Set<number>();
+export function holmRetained(p: Array<number | null>, alpha = 0.05, registeredParentFamilies = 1) {
+  if (!Number.isInteger(registeredParentFamilies) || registeredParentFamilies < 1 || registeredParentFamilies > 64) throw new Error('invalid parent-family trial count');
+  const all = [...p, ...new Array(p.length * (registeredParentFamilies - 1)).fill(null)];
+  const sorted = all.map((p, index) => ({ p: p ?? 1, index })).sort((a, b) => a.p - b.p), keep = new Set<number>();
   for (let i = 0; i < sorted.length; i++) { if (sorted[i].p > alpha / (sorted.length - i)) break; keep.add(sorted[i].index); }
   return keep;
 }
@@ -145,8 +147,11 @@ export function runContractStudy(examples: ContractExample[], plan: ContractStud
       decision: 'insufficient-evidence', reason: 'Independent paired blocks and fee-net evidence required; memory retained with zero influence if unsupported' });
     core.candidates.push({ model: ablated, selectionLogLoss: meanLoss(score), selectionRows: score.length });
   }
-  // Both families of tests share one Holm correction rather than separate uncorrected passes.
-  const tests = core.retention.flatMap((r) => [r.predictive.p, r.economic.p]), retained = holmRetained(tests);
+  // Parent family selection used the same selection window. Count all three possible
+  // parents, assigning p=1 to unselected parent tests, rather than treating the winner
+  // as if it had been fixed independently. Predictive/economic tests share one family.
+  const tests = core.retention.flatMap((r) => [r.predictive.p, r.economic.p]);
+  const retained = holmRetained(tests, 0.05, 3);
   core.retention.forEach((r, i) => {
     const supported = retained.has(2 * i) && retained.has(2 * i + 1) && (r.predictive.gain?.lo ?? -Infinity) > 0 && (r.economic.gain?.lo ?? -Infinity) > 0;
     r.decision = supported ? 'retained' : r.predictive.p === null || r.economic.p === null ? 'insufficient-evidence' : 'suppressed';

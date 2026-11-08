@@ -102,6 +102,8 @@ test('relationship retention preserves insufficient evidence and never qualifies
   assert.deepEqual(s.selected!.included, []);
   assert.ok(s.retention.every((r) => r.fullParentModelId.length === 64 && r.ablatedModelId.length === 64));
   assert.deepEqual([...holmRetained([0.001, 0.02, 0.9])], [0, 1]);
+  assert.equal(holmRetained([0.02]).size, 1);
+  assert.equal(holmRetained([0.02], 0.05, 3).size, 0, 'a parent chosen among three families is not an independently fixed parent');
   const b = contractBounds(s.calibration!, s.selected!.support[0].key, 'pays', 0.8);
   assert.equal(b.supported, false); assert.deepEqual(b.bounds, { probability: 0.8, lower: 0, upper: 1 });
 });

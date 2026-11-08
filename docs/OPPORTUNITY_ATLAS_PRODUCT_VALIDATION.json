@@ -41,13 +41,13 @@
     "independent_neural_forecasts": 740,
     "maximum_probability_difference": 4.440892098500626e-16,
     "model_id": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
-    "product_id": "eeebe467044c9ecbd799f12234c637a876e513c50d587a85716fa7296b3230ea",
+    "product_id": "49ddeafcf2a76694d0fbd79c05152780c826c20a11dfae2e20914710f9d96104",
     "dataset_sha256": "3bb36a4080c72668aa8a2c20e59b14c34af067daaa070431eff7d1256cfe1549",
     "real_market_qualification": false,
     "live_entry_allowed": false
   },
   "demo": {
-    "productId": "eeebe467044c9ecbd799f12234c637a876e513c50d587a85716fa7296b3230ea",
+    "productId": "49ddeafcf2a76694d0fbd79c05152780c826c20a11dfae2e20914710f9d96104",
     "selectedModelId": "e867ffac590829edd7adc30478dac523b705b7e420d82eada0d5811df4d691b8",
     "status": "research-fit",
     "blockers": [
@@ -142,7 +142,7 @@
     "research/opportunity/atlas.ts": "5e6bb8ddb9d2abc257471661455e3e9920ee61d075d690d3c275d6a66c3b42d6",
     "research/opportunity/contractDataset.ts": "f9e5adc00785f169a184287bfe8a65d124c51993c89f905688daa237158b590f",
     "research/opportunity/contractLearner.ts": "792d2635342eba2ed7ca8495f3f5a01fcb983137b1ea9018ce3f498a6a7d4a99",
-    "research/opportunity/contractStudy.ts": "a437a4c51d5c8ee6e11b44615961b27953b77c36b760a17fd9b4dda9e8f1ca19",
+    "research/opportunity/contractStudy.ts": "d9aea8d1b409ce0fd96cf5e846f2992f79581d5fb8c278945a7d24afb9b23775",
     "research/opportunity/contractTiming.ts": "88a4140dcf9bf0e72a9eace21b5da0649cb6f1637ae2313d9f270b25b2cc1873",
     "research/opportunity/decisionDataset.ts": "cf7da7f674a0561033ff35f92523975d6e8194968623008b653f0e768c69eed8",
     "research/opportunity/decisionDatasetCli.ts": "ead745e305de9f8416ac2208d4d5096f652c90dc2d05446a8f5f6abc996b7b1c",

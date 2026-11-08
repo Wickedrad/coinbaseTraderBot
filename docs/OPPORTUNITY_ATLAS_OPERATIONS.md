@@ -223,7 +223,8 @@ Normalization and hyperparameters never read selection/audit columns or labels.
 Family selection uses common supported selection rows. Full-parent leave-one-
 family-out comparisons test TA, SNN, dominance, clock, micro/cross-asset and daily
 context. Paired fixed UTC seven-day blocks and a joint Holm correction cover
-predictive and fee-net tests. Unsupported families have zero influence in a new
+predictive and fee-net tests, counting all three possible selected parent families.
+Unsupported families have zero influence in a new
 reduced fit; their parent/ablation evidence remains in the retention ledger for
 later reconsideration. This is reversible consolidation of the Atlas's feature
 influence, not deletion of its source memories. Hyperparameter searching beyond
