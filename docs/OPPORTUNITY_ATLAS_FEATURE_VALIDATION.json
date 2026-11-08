@@ -1,0 +1,783 @@
+{
+  "schema": "opportunity-features-v1",
+  "createdAt": "2026-11-08T14:39:20.794Z",
+  "researchOnly": true,
+  "autoPromote": false,
+  "purpose": "causal feature/data validation only; no outcome scoring, model fitting or holdout reuse",
+  "taSchema": "6",
+  "engine": "talib",
+  "windows": {
+    "1m": 1440,
+    "5m": 288,
+    "15m": 256,
+    "1h": 280,
+    "4h": 280,
+    "1d": 250
+  },
+  "everyMinutes": 240,
+  "dailyPolicy": {
+    "lagMs": 86400000,
+    "maxAgeMs": 172800000,
+    "publicationTimesVerified": false
+  },
+  "sourceIdentity": "archive-path declarations; not independently provider authenticated",
+  "codeHashes": {
+    "research/opportunity/features.ts": "a9c94b66518d173a4e49a777fad5b94926d2a76e45616c7de9cd79fc87a5321b",
+    "research/opportunity/minuteCsv.ts": "a2effdf502dee260c4feb8fdc99b8accec7d42a6820de096fb9ec5f88eb738d8",
+    "research/opportunity/featuresCli.ts": "413d9124ed3fe38782bdf9ea61e6a4191fee2a05c2dfb2cd2bc7cb6d18928461",
+    "bot/model/sessions.ts": "2766846650752ffd7ce097ad243b3b7336f967d8eb3d65a29635e404b1667473",
+    "bot/ta/analyzer.ts": "84e64700a6624331e051f0022615cb88a7529c0f0b74dfbbb8676b4b0ce3fcbb",
+    "bot/ta/branchNet.ts": "9b681bfc9df557ddfddecd26a44d149aa3ade7f5cf148bb40344c17e450ae838",
+    "bot/ta/candleStore.ts": "78a58b584b64962a3190ae47aa453f1340244ddc3b11b808a4990162db2314f4",
+    "bot/ta/character.ts": "218b12206278bd98ba77b031b7101dc2ecffc6505856e7a116027535d898a7b2",
+    "bot/ta/crossGraph.ts": "3b54e6b08f2f280b566c123d99e036d7525cad593fa03a5f5b4debedf55412b3",
+    "bot/ta/crossLead.ts": "145a5a3ee5addd63b600a24ecbb17dedb096bfef41659b1832f3605f199314fe",
+    "bot/ta/fractal.ts": "db7a61e5c14f3bcb3f2102a2c565671b324d2ca53beb58c59b0e7b3c983528e4",
+    "bot/ta/indicators.ts": "06606a87a7bdd048c4ba304bfde56e4e4df7682d7cfb7ad8d69c87692e357360",
+    "bot/ta/knowledge.ts": "d27ac8f014abad1526ad9256db5303e84a591fdfc3cb2fbeeb6402471c7c21cc",
+    "bot/ta/librarian.ts": "867fe6d5aa0551c65cf6a232fa4db0e1d67dcfbfbce8ec2dcd03d4ff74bd105e",
+    "bot/ta/marketContext.ts": "24da80f94ef6a4b1d9f9d31927f6b42f7c9db176b07c80eb61e874c0171dd1b6",
+    "bot/ta/regime.ts": "06427ae662c09929e66374783f0e029536b3c0d809a890585a18645cd8a90106",
+    "bot/ta/structure.ts": "6fb7f8a66744584cccbc60fd2586cf3f7d1ca885a0488a7849f6529e4b423841",
+    "bot/ta/study.ts": "39af95feaa68ff3036499650547b9e0e701a839c97685a4e1f23fd3ab0c8ef51",
+    "bot/ta/taNet.ts": "eae89bb75e3740f5e5e5268afd187ba9556deb0a13c259dd451056a4d9286d67",
+    "bot/ta/taNetContext.ts": "7b96814d73c353fdb160d92136235b88c1b679172d65ab405ef09bf94a818106",
+    "bot/ta/taNetEnsemble.ts": "c75a3c538152ba9f3db1169440f15a64af622b95606c5202c51333dedd6dae2a",
+    "bot/ta/talib.ts": "d1218c1a4303ae9b4f329dba358420206c4d8c505519c09f7800724f35f4ac06"
+  },
+  "auditSha256": "c9e6ef17bad50ccf66d261b2f2c5e32b56552103e153283ba69f7c08144c9dfc",
+  "inputs": [
+    {
+      "path": "tradingview/BTC.D/1d.csv",
+      "source": "tradingview",
+      "interval_ms": 86400000,
+      "rows": 4570,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 1,
+      "missing_bars": 3,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1396310400000,
+      "last_open_ms": 1791331200000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "1378d8ae6608b3b88e2f7f82b6033832c7ab36af8ecceb1badbbeb6406c81aca",
+      "bytes": 380586,
+      "continuous": false
+    },
+    {
+      "path": "tradingview/USDT.D/1d.csv",
+      "source": "tradingview",
+      "interval_ms": 86400000,
+      "rows": 4232,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1425772800000,
+      "last_open_ms": 1791331200000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "3a76a5d9422bac1dee2fa5fcca230503a8dfc402c541563ef5ae4a3e957f40e8",
+      "bytes": 360218,
+      "continuous": true
+    },
+    {
+      "path": "binance-1m/BTC/1m.csv",
+      "source": "binance-1m",
+      "interval_ms": 60000,
+      "rows": 316800,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1775001600000,
+      "last_open_ms": 1794009540000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "66294890419ffc5a107303bb06a1b798a51053739ac807af95add024878eabc5",
+      "bytes": 20188864,
+      "continuous": true
+    },
+    {
+      "path": "yahoo/BTC/1d.csv",
+      "source": "yahoo",
+      "interval_ms": 86400000,
+      "rows": 3653,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1473206400000,
+      "last_open_ms": 1788739200000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "ba579f97ca1d70b6ff2b53a966dbf020d8a30497806fe3a7fff4dd70d353d208",
+      "bytes": 274823,
+      "continuous": true
+    },
+    {
+      "path": "binance-1m/ETH/1m.csv",
+      "source": "binance-1m",
+      "interval_ms": 60000,
+      "rows": 316800,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1775001600000,
+      "last_open_ms": 1794009540000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "1862ddeb6faa8635d9097c5bbbe603aa975f53b88c4ec528ec71f1e41fa3a5fb",
+      "bytes": 19532663,
+      "continuous": true
+    },
+    {
+      "path": "yahoo/ETH/1d.csv",
+      "source": "yahoo",
+      "interval_ms": 86400000,
+      "rows": 3225,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1510185600000,
+      "last_open_ms": 1788739200000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "e6fbdb47cfb669f9f1ac5740627d66b48395e148faa61c5832a98f05474de501",
+      "bytes": 231210,
+      "continuous": true
+    },
+    {
+      "path": "binance-1m/SOL/1m.csv",
+      "source": "binance-1m",
+      "interval_ms": 60000,
+      "rows": 316800,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1775001600000,
+      "last_open_ms": 1794009540000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "f6d1dc564f8663296e5568d7ca9d0875f0f9bf9f7b22ccc0f95178f30012e9b7",
+      "bytes": 17361820,
+      "continuous": true
+    },
+    {
+      "path": "yahoo/SOL/1d.csv",
+      "source": "yahoo",
+      "interval_ms": 86400000,
+      "rows": 2342,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1586476800000,
+      "last_open_ms": 1788739200000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "026df71380905608bc5ceccbad9fa705a5f9bd3179ea2acfa04c76a1f10ee2cd",
+      "bytes": 152408,
+      "continuous": true
+    },
+    {
+      "path": "binance-1m/XRP/1m.csv",
+      "source": "binance-1m",
+      "interval_ms": 60000,
+      "rows": 316800,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1775001600000,
+      "last_open_ms": 1794009540000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "3aab6c572261b7ed2caa97cf198977d620f9e02ba012a04bf0b94d65ac95082b",
+      "bytes": 17978393,
+      "continuous": true
+    },
+    {
+      "path": "yahoo/XRP/1d.csv",
+      "source": "yahoo",
+      "interval_ms": 86400000,
+      "rows": 3225,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1510185600000,
+      "last_open_ms": 1788739200000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "86c07e3f7f1a611935d570dac3948ec1b2a534b26ab27e70df8b580d8945d37d",
+      "bytes": 194399,
+      "continuous": true
+    },
+    {
+      "path": "binance-1m/DOGE/1m.csv",
+      "source": "binance-1m",
+      "interval_ms": 60000,
+      "rows": 316800,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1775001600000,
+      "last_open_ms": 1794009540000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "9c1cc2299f041c43a87e8e25d13a0d6fdad847ac4486919f000b87b32fead8b0",
+      "bytes": 18554354,
+      "continuous": true
+    },
+    {
+      "path": "yahoo/DOGE/1d.csv",
+      "source": "yahoo",
+      "interval_ms": 86400000,
+      "rows": 2923,
+      "invalid_rows": 0,
+      "duplicate_or_reversed": 0,
+      "misaligned": 0,
+      "gap_events": 0,
+      "missing_bars": 0,
+      "invalid_taker_volume": 0,
+      "first_open_ms": 1536278400000,
+      "last_open_ms": 1788739200000,
+      "ready": true,
+      "provider_identity": "archive-path-declaration; not independently authenticated",
+      "changed_during_audit": false,
+      "sha256": "4e18ddd54ba9bb95ce776fafce5c8b18abd6b4d2fab98dde42593d7a1d47e16f",
+      "bytes": 174500,
+      "continuous": true
+    }
+  ],
+  "assets": [
+    {
+      "asset": "BTC",
+      "minutes": 316800,
+      "frames": 1320,
+      "firstOpen": 1775001600000,
+      "lastOpen": 1794009540000,
+      "gaps": 0,
+      "groups": {
+        "spot_1m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 108
+        },
+        "spot_5m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 127
+        },
+        "spot_15m": {
+          "ready": 1319,
+          "warming": 1,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 303
+        },
+        "spot_1h": {
+          "ready": 1313,
+          "warming": 7,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 1048
+        },
+        "spot_4h": {
+          "ready": 1291,
+          "warming": 29,
+          "missing": 0,
+          "stale": 0,
+          "features": 99,
+          "nullValues": 3409
+        },
+        "spot_1d": {
+          "ready": 1141,
+          "warming": 174,
+          "missing": 5,
+          "stale": 0,
+          "features": 101,
+          "nullValues": 22327
+        },
+        "dominance_btcd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31422
+        },
+        "dominance_usdtd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31524
+        },
+        "yahoo_daily": {
+          "ready": 978,
+          "warming": 0,
+          "missing": 0,
+          "stale": 342,
+          "features": 101,
+          "nullValues": 34722
+        },
+        "micro": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 6,
+          "nullValues": 0
+        },
+        "clock": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 30,
+          "nullValues": 0
+        }
+      }
+    },
+    {
+      "asset": "ETH",
+      "minutes": 316800,
+      "frames": 1320,
+      "firstOpen": 1775001600000,
+      "lastOpen": 1794009540000,
+      "gaps": 0,
+      "groups": {
+        "spot_1m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 82
+        },
+        "spot_5m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 114
+        },
+        "spot_15m": {
+          "ready": 1319,
+          "warming": 1,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 299
+        },
+        "spot_1h": {
+          "ready": 1313,
+          "warming": 7,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 1062
+        },
+        "spot_4h": {
+          "ready": 1291,
+          "warming": 29,
+          "missing": 0,
+          "stale": 0,
+          "features": 99,
+          "nullValues": 3377
+        },
+        "spot_1d": {
+          "ready": 1141,
+          "warming": 174,
+          "missing": 5,
+          "stale": 0,
+          "features": 101,
+          "nullValues": 22279
+        },
+        "dominance_btcd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31422
+        },
+        "dominance_usdtd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31524
+        },
+        "yahoo_daily": {
+          "ready": 978,
+          "warming": 0,
+          "missing": 0,
+          "stale": 342,
+          "features": 101,
+          "nullValues": 34752
+        },
+        "micro": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 6,
+          "nullValues": 0
+        },
+        "clock": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 30,
+          "nullValues": 0
+        }
+      }
+    },
+    {
+      "asset": "SOL",
+      "minutes": 316800,
+      "frames": 1320,
+      "firstOpen": 1775001600000,
+      "lastOpen": 1794009540000,
+      "gaps": 0,
+      "groups": {
+        "spot_1m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 119
+        },
+        "spot_5m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 207
+        },
+        "spot_15m": {
+          "ready": 1319,
+          "warming": 1,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 330
+        },
+        "spot_1h": {
+          "ready": 1313,
+          "warming": 7,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 1090
+        },
+        "spot_4h": {
+          "ready": 1291,
+          "warming": 29,
+          "missing": 0,
+          "stale": 0,
+          "features": 99,
+          "nullValues": 3418
+        },
+        "spot_1d": {
+          "ready": 1141,
+          "warming": 174,
+          "missing": 5,
+          "stale": 0,
+          "features": 101,
+          "nullValues": 22267
+        },
+        "dominance_btcd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31422
+        },
+        "dominance_usdtd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31524
+        },
+        "yahoo_daily": {
+          "ready": 978,
+          "warming": 0,
+          "missing": 0,
+          "stale": 342,
+          "features": 101,
+          "nullValues": 34620
+        },
+        "micro": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 6,
+          "nullValues": 0
+        },
+        "clock": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 30,
+          "nullValues": 0
+        }
+      }
+    },
+    {
+      "asset": "XRP",
+      "minutes": 316800,
+      "frames": 1320,
+      "firstOpen": 1775001600000,
+      "lastOpen": 1794009540000,
+      "gaps": 0,
+      "groups": {
+        "spot_1m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 125
+        },
+        "spot_5m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 155
+        },
+        "spot_15m": {
+          "ready": 1319,
+          "warming": 1,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 313
+        },
+        "spot_1h": {
+          "ready": 1313,
+          "warming": 7,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 1109
+        },
+        "spot_4h": {
+          "ready": 1291,
+          "warming": 29,
+          "missing": 0,
+          "stale": 0,
+          "features": 99,
+          "nullValues": 3384
+        },
+        "spot_1d": {
+          "ready": 1141,
+          "warming": 174,
+          "missing": 5,
+          "stale": 0,
+          "features": 101,
+          "nullValues": 22381
+        },
+        "dominance_btcd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31422
+        },
+        "dominance_usdtd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31524
+        },
+        "yahoo_daily": {
+          "ready": 978,
+          "warming": 0,
+          "missing": 0,
+          "stale": 342,
+          "features": 101,
+          "nullValues": 34758
+        },
+        "micro": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 6,
+          "nullValues": 0
+        },
+        "clock": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 30,
+          "nullValues": 0
+        }
+      }
+    },
+    {
+      "asset": "DOGE",
+      "minutes": 316800,
+      "frames": 1320,
+      "firstOpen": 1775001600000,
+      "lastOpen": 1794009540000,
+      "gaps": 0,
+      "groups": {
+        "spot_1m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 136
+        },
+        "spot_5m": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 143
+        },
+        "spot_15m": {
+          "ready": 1319,
+          "warming": 1,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 315
+        },
+        "spot_1h": {
+          "ready": 1313,
+          "warming": 7,
+          "missing": 0,
+          "stale": 0,
+          "features": 102,
+          "nullValues": 1092
+        },
+        "spot_4h": {
+          "ready": 1291,
+          "warming": 29,
+          "missing": 0,
+          "stale": 0,
+          "features": 99,
+          "nullValues": 3427
+        },
+        "spot_1d": {
+          "ready": 1141,
+          "warming": 174,
+          "missing": 5,
+          "stale": 0,
+          "features": 101,
+          "nullValues": 22327
+        },
+        "dominance_btcd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31422
+        },
+        "dominance_usdtd": {
+          "ready": 1158,
+          "warming": 0,
+          "missing": 0,
+          "stale": 162,
+          "features": 101,
+          "nullValues": 31524
+        },
+        "yahoo_daily": {
+          "ready": 978,
+          "warming": 0,
+          "missing": 0,
+          "stale": 342,
+          "features": 101,
+          "nullValues": 34716
+        },
+        "micro": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 6,
+          "nullValues": 5
+        },
+        "clock": {
+          "ready": 1320,
+          "warming": 0,
+          "missing": 0,
+          "stale": 0,
+          "features": 30,
+          "nullValues": 0
+        }
+      }
+    }
+  ]
+}

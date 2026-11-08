@@ -278,3 +278,78 @@ copied to this workspace or included in artifacts. Both runs skipped every
 non-inventory job. The 54 atlas/inventory tests passed with no skips/failures;
 current typecheck and workflow linting passed. No bot files or service state were
 changed and main was not merged.
+
+## Fully copied archive and offline multi-timeframe features
+
+The owner's instruction to continue enabled copying the located existing market
+archive for offline work. No new Binance/Yahoo market-data download was performed;
+fresh acquisition remains tvdatafeed-only. The original path declarations remain
+Binance, Yahoo and TradingView rather than being relabeled as tvdatafeed.
+
+Actions run **42489751110** succeeded with only `atlas-archive-export` active:
+https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42489751110
+
+This exclusive mode uses existing RCLONE_CONF to read five fixed minute paths from
+`raw/history` and seven fixed daily paths from `raw/server-history`. Credentials
+stay outside the artifact and are removed from runner temporary storage. It does
+not connect to Lightsail, run a trainer, modify Drive files or deploy. The artifact
+`atlas-history-archive` has seven-day retention; the original files remain on Drive.
+The exported archive is local at `data/opportunity-archive-42489751110` (ignored by
+Git). `archiveAudit.py` hashes exact bytes and streams every canonical OHLCV row.
+The metadata-only [audit](OPPORTUNITY_ATLAS_ARCHIVE_AUDIT.json) is committed.
+
+All five minute files contain **316,800** rows each, for **1,584,000** total:
+2026-04-01 00:00 through 2026-11-06 23:59 UTC (candle opens). Each has zero invalid
+OHLCV/taker-volume rows, timestamp duplicates/reversals, off-grid opens or gaps.
+All seven context files also pass content/order checks. BTC.D has one three-day
+gap; the audit preserves it. All twelve downloaded file hashes match the runner
+audit. These checks establish content consistency/coverage, not independently
+authenticated provider identity or proof of historical publication availability.
+
+The next implementation adds an independent causal feature provider reusing
+`tfState`, `tfFeatures`, their TA-Lib keys and the existing clock/session functions.
+It supplies six minute-derived timeframes, observed microstructure and separate
+daily-source groups with explicit lag/freshness assumptions. No existing bot source
+files, live callers, promotion code or training pipeline were changed. See the
+architecture document for windows, warmup, missing-volume masks and gap behavior.
+
+The full data-flow validation was:
+
+```bash
+npm run research:opportunity-features -- \
+  --archive data/opportunity-archive-42489751110 --assets BTC,ETH,SOL,XRP,DOGE \
+  --every-minutes 240 --out research/out/opportunity-features-archive-42489751110.json
+```
+
+It read all **1,584,000 minutes** and produced availability diagnostics for **6,600
+frames**, sampling every four hours rather than computing every default 15-minute
+snapshot. It used the native `talib` engine. Every input and code hash was checked
+again before publishing the report. The metadata-only
+[feature report](OPPORTUNITY_ATLAS_FEATURE_VALIDATION.json) records exact hashes,
+parameters, bar counts and per-group status/null counts. Each asset has 1,320 frames
+and zero minute gaps. Spot daily TA becomes ready after 30 completed days (1,141
+ready frames per asset). Daily Yahoo context is stale in the last 342 frames per
+asset; BTC.D and USDT.D are stale in the last 162, with their numeric features null.
+No later daily data is backfilled into these periods.
+
+Verification:
+
+- Broader focused run: **90 tests passed**, zero failures/skips, covering Atlas,
+  path labels, acquisition, archive inventory/audit, features, sessions, existing
+  TA network training/row-cache contracts and native TA-Lib/TradingView behavior.
+- Final feature suite after the microstructure provenance adjustment: **8 tests
+  passed**, zero failures/skips, including completed daily candles and future-suffix
+  poisoning. This includes the additional daily-close test added after the broader
+  run started. These two counts overlap and must not be added together.
+- Current typecheck, production build, workflow lint and diff whitespace checks passed.
+- A real BTC JSONL pilot at the default 15-minute cadence read 1,500 minutes and
+  exported 100 frames; every group's known-at time was at or before its decision.
+- The previous 1,142-test whole-repository result documented earlier predates these
+  archive/feature additions; a fresh whole-repository CI result is not claimed.
+
+This is data/feature validation only. No price-path outcomes were scored, no Atlas
+relationships were fitted/selected, and the original **2026 final holdout remains
+frozen**. Existing TA regression tests train only their own temporary synthetic
+fixtures, not these archived minute prices. Generalized path heads, conditional
+selection, SNN integration and economic validation remain pending. Nothing was
+merged into main, deployed or enabled for live trading.

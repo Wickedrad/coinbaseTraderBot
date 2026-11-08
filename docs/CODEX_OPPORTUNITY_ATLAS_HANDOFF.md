@@ -96,7 +96,7 @@ consumers, model promotion, or modify existing TA/SNN modules. See the architect
 document for exact definitions, units, assumptions and data-volume limits.
 
 This is the label-generation portion of follow-on task 2. It is not completion of
-the broader learning architecture: generalized causal features, rigorous model
+the broader learning architecture: rigorous model
 selection, calibrated path heads, SNN integration, episode evidence and executable
 venue validation still require implementation and independent historical checks.
 
@@ -182,3 +182,31 @@ had only 60-second intervals and observed endpoints from 2026-04-01 through
 not 2017 coverage or a fully validated dataset. Exact sample scope, time limits,
 paths and Actions run links are documented in the validation report. Provider
 labels remain distinct; no archived data was used for training in this search.
+
+## Archive export and causal feature increment
+
+The owner subsequently authorized continuing implementation with the located
+archives. Actions run 42489751110 exclusively exported the fixed five minute files
+and seven daily context files using Drive read access; it did not connect to the
+server, invoke a trainer or deploy. `archiveAudit.py` streamed all rows and recorded
+exact byte hashes without cleaning or changing input prices. All five minute files
+contain 316,800 consecutive valid rows (2026-04-01 through 2026-11-06 UTC).
+The downloaded files matched all twelve runner hashes. Their original Binance,
+Yahoo and TradingView path declarations are preserved; provider identity is not
+independently authenticated. New provider acquisition remains tvdatafeed-only.
+
+The new `features.ts` / `featuresCli.ts` implement the first portion of task 3:
+closed-candle TA on six timeframes using existing TA functions, minute microstructure,
+independent causal daily joins, BTC identity, DST-aware clock/session, explicit
+freshness/lag assumptions, immutable snapshots and bounded rolling windows.
+The CLI verifies the audited source bytes before/after replay and records code
+hashes. It can export a feature dataset or just availability diagnostics. It never
+fits or scores a model. Detailed contracts and commands are in the architecture
+document; audit metadata and validation evidence are committed alongside this file.
+
+Keep the original 2026 final holdout frozen. This archive is usable for data and
+feature engineering checks, not iterative relationship selection on final outcomes.
+Before fitting generalized path heads, obtain covered pre-final minute history or
+explicitly establish a different chronological study with a newly untouched final
+period. Funding/open interest, cross-asset lead/lag, SNN state, rigorous joint model
+selection, calibrated heads, execution validation and promotion remain future work.

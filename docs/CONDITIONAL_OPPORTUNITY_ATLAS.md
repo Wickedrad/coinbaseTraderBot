@@ -56,7 +56,8 @@ it is suitable for merging a multi-year minute archive in one process.
 
 ## Scope and atlas command
 
-This contains **Phase 1 plus an opt-in path-label dataset**, research-only. It does
+This contains **Phase 1, an opt-in path-label dataset, and an offline multi-timeframe
+feature provider**, research-only. It does
 not modify the trading engine, live strategy gates, SNN checkpoints, model promotion,
 or deployment. It is not evidence of a profitable strategy.
 
@@ -177,6 +178,81 @@ Disk output scales with all grid combinations: the default grid produces 144 row
 decision, so start with a minute cap or a single target/stop pair before exporting years.
 No path dataset is consumed by the live bot, SNNs, Phase 1 selector or promotion pipeline.
 
+## Offline multi-timeframe features
+
+`research/opportunity/features.ts` implements the first part of the generalized
+feature schema. It reuses `tfState` and `tfFeatures` from the existing TA modules,
+including their TA-Lib vocabulary, across 1m, 5m, 15m, 1h, 4h and 1d. It does not
+call the rule-vote evaluator, load a fitted model, inspect outcomes, or change any
+live caller. The schema is `opportunity-features-v1`, with the reused TA schema and
+actual indicator engine recorded separately. This is not an existing TaNet model's
+input vector: its windows, timeframe coverage and context are explicitly different.
+
+`CausalAtlasFeatures.push` accepts strictly increasing, valid observed minutes.
+Only complete consecutive UTC-aligned buckets enter TA. A stream beginning in the
+middle of a bucket withholds that bucket. A timestamp gap clears all minute-derived
+windows and pending buckets; independently supplied daily context remains separate.
+This deliberately favors missing features over indicators spanning an outage.
+Rolling windows are bounded to 1,440 minute bars, 288 five-minute bars, 256 fifteen-minute
+bars, 280 hourly/four-hourly bars and 250 daily bars. The intraday windows cover a
+full UTC day for the shared session VWAP calculation. Shared 4h feature options omit
+SMA200 and VWAP, as in the existing TA vocabulary.
+
+A snapshot is available after each observed minute close. Its immutable groups
+carry source path, exact input SHA256, first/last contributing candle opens, latest
+known-at time, bar count, timeframe, availability status and numeric values.
+Individual values remain null until their own warmup completes; `ready` means the
+shared TA state exists (at least 30 closed bars), not that every indicator is finite.
+Entire missing/stale groups have null values. Spot daily TA therefore needs 30 complete
+days of contiguous minute observations. No daily bars are fabricated from coarser
+Yahoo prices. The clock carries a code-source reference rather than an input-data
+hash; report-level code hashes identify its implementation and the TA implementation.
+Provenance fields are metadata, not predictive numeric inputs.
+
+`AsOfDailyFeatures` joins each daily source independently at `open + 24h + lag`.
+The default lag is an additional 24 hours, with a maximum age of two days after
+that assumed availability time. Historical publication times are **unverified**;
+this is a recorded conservative timing assumption, not proof of actual historical
+availability. Lookup works for backwards queries, never uses an unfinished/future
+suffix, and restarts the indicator prefix after a daily timestamp gap. Archived Yahoo
+asset context, TradingView BTC.D and TradingView USDT.D keep distinct namespaces;
+there is no hindsight cross-source scaling. Yahoo volume conventions are unverified
+and its volume features are source-specific. CRYPTOCAP volume is treated as an
+unobserved placeholder: volume/profile/divergence/breakout derivatives are null.
+Funding, open interest, SNN state and cross-asset lead/lag are still unimplemented.
+
+Minute microstructure includes close-to-close/open log returns, range fraction,
+close location and observed taker imbalance. Missing taker-buy volume stays null,
+distinct from an observed zero. No spread, order-book depth or fill quality is inferred
+from OHLCV. BTC-versus-alt identity and the existing DST-aware clock/session features
+are descriptive inputs rather than trading gates.
+
+The dedicated command reads an exported, audited archive layout:
+
+```bash
+npm run research:opportunity-features -- \
+  --archive data/opportunity-archive-42489751110 --assets BTC,ETH,SOL,XRP,DOGE \
+  --out research/out/opportunity-features.json
+```
+
+The archive contains `archive-validation.json` and `history/<source>/<asset>/<tf>.csv`.
+The CLI verifies each selected input's audited readiness and exact hash before and
+after replay, and records source-code hashes checked for changes during the run.
+Absent daily inputs yield explicit missing groups; a present but invalid/modified
+audited input fails. Optional `--max-minutes 50000` bounds each asset; the default
+processes its whole file. Snapshots are sampled at UTC closes every 15 minutes by
+default (`--every-minutes`). Optional `--frames research/out/opportunity-features.jsonl`
+exports the actual groups for later joins by asset and decision timestamp; without it,
+only availability/count diagnostics are saved. JSONL output may be large. Reports and
+frames must be outside the input archive. Files are published only after a successful
+run. No fitting, label scoring or relationship selection occurs in this command.
+
+The existing archived Binance-labelled files were located at the owner's request
+to search minute history regardless of provider. They retain that identity; copying
+an existing archive is separate from new provider acquisition, which remains
+tvdatafeed-only. The 2026 archive overlaps the original frozen final period. Its
+data/feature validation does not authorize moving the split or fitting/tuning on it.
+
 ## Module routing and implementation sequence
 
 | Existing module | Required next change | Evidence required |
@@ -198,9 +274,11 @@ No path dataset is consumed by the live bot, SNNs, Phase 1 selector or promotion
    continuation, first-target/stop, excursions and censoring labels. Next validate these
    definitions on actual history, estimate independent episodes and model venue-specific
    executable fills before training or claiming profitable target/horizon predictions.
-2. **Generalized feature schema:** multi-timeframe full TA-Lib, derivatives funding/open
-   interest, session timing, cross-lead, SNN state and dominance with explicit known-at
-   timestamps. Every feature must use completed source candles as of its decision time.
+2. **Generalized feature schema follow-up:** the independent offline provider now
+   supplies multi-timeframe TA, minute microstructure, daily-source freshness and
+   session timing with explicit assumed known-at timestamps. Add derivatives funding/open
+   interest, cross-lead, SNN state and verified historical publication timing. Join
+   features to path labels without recycling final data for selection.
 3. **Sparse joint nonlinear learner:** compare smooth basis splines, boosted trees and
    sequence/SNN encodings. Select useful interaction groups by *incremental*
    validated prediction and fee-net payoff, not standalone correlations. Keep suppressed
