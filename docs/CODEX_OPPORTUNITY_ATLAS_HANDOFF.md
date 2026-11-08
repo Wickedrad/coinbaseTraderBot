@@ -153,3 +153,13 @@ archive remains unlocated. Do not infer minute coverage or provider verification
 from coarse bars/folder names. Full scope, timestamps and run link are in the
 validation report. No server changes, model promotion, main merge or bot deployment
 were performed. The feature branch is now pushed for review.
+
+
+Google Drive access through GitHub Actions is now confirmed in run 42481866272.
+`atlas_drive_inventory=true` exclusively runs a metadata-only rclone inventory,
+using existing RCLONE_CONF. Both the configured project archive and the owner's
+linked folder were accessible. The checked namespaces contained 72 TV-layout
+files and five native Binance minute CSVs; no TV minute candidates were found.
+Do not use the native-minute files under the current tvdatafeed-only requirement.
+No market-data files were copied from Drive, and all server jobs were skipped.
+See the validation report for exact scope, file categories and artifact location.

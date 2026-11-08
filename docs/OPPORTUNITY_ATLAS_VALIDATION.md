@@ -164,3 +164,37 @@ historical one-minute observations for the 2017 atlas study.
 The full inventory metadata is retained in the run's `atlas-archive-inventory`
 artifact (seven-day retention) and locally at
 `/workspace/scratch/atlas-inventory-42480623621/atlas-archive-inventory.json`.
+
+
+## Read-only Google Drive inventory through GitHub Actions
+
+Run 42481866272 succeeded using the existing `RCLONE_CONF` binding entirely on the
+GitHub runner:
+https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42481866272
+
+The configured `gdrive:kalshi-bot-archive` and the owner's explicitly linked folder
+`14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J` were both accessible. Each listing returned the
+same 77 history-file metadata entries in the checked namespaces, with no listing
+errors or truncation. These are two access routes to matching inventory, not 154
+independent files. The checked folders were `raw/history/binance-1m`,
+`raw/server-history/tradingview` and `raw/server-history/tvspot`.
+
+- 72 files used TradingView/tvspot directory layouts; no minute-named file was found
+  in these namespaces. File naming is evidence, not cryptographic provider verification.
+- Five minute CSVs existed under the explicitly non-TV `binance-1m` namespace:
+  BTC, ETH, SOL, XRP and DOGE. Only their names/sizes/modification metadata were listed;
+  candle date coverage and file contents were not inspected. These files were not
+  downloaded or used for training because the owner's tvdatafeed-only requirement
+  remains in force.
+- Only `atlas-drive-inventory` ran. The SSH inventory and every diagnostics, repair,
+  adversary and study job were skipped. There was no Lightsail access, Drive upload,
+  data-file download, bot restart, model promotion, main merge or bot deployment.
+
+The workflow passed actionlint; nine inventory/Drive tests and current typecheck
+passed. The metadata artifact is `atlas-drive-inventory` (seven-day retention), also
+saved locally at
+`/workspace/scratch/atlas-drive-inventory-42481866272/atlas-drive-inventory.json`.
+The Drive helper uses only `rclone lsjson`, bounds directory discovery, separates
+provider evidence, and retains partial listing errors rather than interpreting an
+unreadable directory as absent history. OAuth configuration remains on the runner
+and is excluded from artifacts/logs. No new credentials were requested.
