@@ -140,6 +140,8 @@ jobs:
           trap 'rm -f "$RCLONE_CONFIG"' EXIT
           python3 -B research/opportunity/driveInventory.py --probe-csv --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
             > "$RUNNER_TEMP/atlas-drive-inventory.json"
+          python3 -B research/opportunity/driveInventory.py --catalog-only --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+            > "$RUNNER_TEMP/atlas-market-catalog.json"
           python3 - "$RUNNER_TEMP/atlas-drive-inventory.json" <<'PYREPORT'
           import json,sys
           r=json.load(open(sys.argv[1]))
@@ -152,7 +154,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: atlas-drive-inventory
-          path: ${{ runner.temp }}/atlas-drive-inventory.json
+          path: |
+            ${{ runner.temp }}/atlas-drive-inventory.json
+            ${{ runner.temp }}/atlas-market-catalog.json
           if-no-files-found: warn
           retention-days: 7
 

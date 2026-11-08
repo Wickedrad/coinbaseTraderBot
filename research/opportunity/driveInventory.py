@@ -26,7 +26,7 @@ def classify_error(text):
 
 
 def listing(remote, recursive=False, folder_id=None):
-    args = ["rclone", "lsjson", remote, "--max-depth", "4" if recursive else "1",
+    args = ["rclone", "lsjson", remote, "--max-depth", "6" if recursive else "1",
             "--contimeout", "15s", "--timeout", "30s", "--retries", "1", "--low-level-retries", "2"]
     if recursive:
         args += ["--recursive", "--files-only"]
@@ -152,12 +152,50 @@ def inventory(folder_id=None, list_fn=listing, probe=False, read_fn=read_sample)
     return report
 
 
+def catalog(folder_id=None, list_fn=listing):
+    """Broader project metadata search, including compressed history and SNN/index tapes.
+
+    No file contents are read. Restrict output to market-data paths; do not expose
+    credentials, account logs, orders or learned checkpoint filenames.
+    """
+    if folder_id and not re.fullmatch(r"[A-Za-z0-9_-]{10,100}", folder_id):
+        raise ValueError("invalid shared folder id")
+    roots = [("configured-archive", "gdrive:kalshi-bot-archive", None)]
+    if folder_id:
+        roots.append(("linked-folder", "gdrive:", folder_id))
+    report = {"schema": "atlas-market-catalog-v1", "read_only": True, "contents_read": False,
+              "maximum_depth": 6, "roots": []}
+    for label, remote, override in roots:
+        files, error = list_fn(remote, True, override)
+        result = {"label": label, "accessible": error is None, "error": error,
+                  "files": [], "truncated": False}
+        for f in files or []:
+            name = str(f.get("Path", f.get("Name", "")))
+            lower = name.lower()
+            if f.get("IsDir") or not lower.endswith((".csv", ".csv.gz", ".zip", ".zst", ".parquet", ".npz", ".tape", ".jsonl", ".bin")):
+                continue
+            if re.search(r"(?:^|[/_.-])(env|secret|credential|account|order|fill|audit|model|checkpoint|log)s?(?:[/_.-]|$)", lower):
+                continue
+            if not re.search(r"history|candle|recording|snn.?tape|index|market.?data|replay", lower):
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9_/ .()=-]+", name) or ".." in name.split("/"):
+                continue
+            result["files"].append({"path": name, "size_bytes": f.get("Size"), "modified": f.get("ModTime"),
+                                    "coverage_verified": False, "provenance_verified": False})
+            if len(result["files"]) >= 5000:
+                result["truncated"] = True
+                break
+        report["roots"].append(result)
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--folder-id")
     parser.add_argument("--probe-csv", action="store_true", help="Read bounded timestamp samples from existing archived CSVs")
+    parser.add_argument("--catalog-only", action="store_true", help="List broader project market-data metadata, without reading files")
     args = parser.parse_args()
-    report = inventory(args.folder_id, probe=args.probe_csv)
+    report = catalog(args.folder_id) if args.catalog_only else inventory(args.folder_id, probe=args.probe_csv)
     print(json.dumps(report, indent=2))
     return 0 if any(r["accessible"] for r in report["roots"]) else 1
 

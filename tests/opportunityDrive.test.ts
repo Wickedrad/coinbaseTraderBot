@@ -114,3 +114,20 @@ test('CSV probes find actual minute spacing in generic Coinbase filenames and re
   assert.ok(r.reads.every((read: { remote: string }) => /coinbase|binance-1m/.test(read.remote)));
   assert.ok(!r.text.includes(',100,101,99'));
 });
+
+test('broader catalog reports only market archive metadata including tapes and compressed histories', () => {
+  const code = `
+import json,runpy
+m=runpy.run_path('research/opportunity/driveInventory.py')
+files=[{'Path':p,'Size':123,'Token':'DO_NOT_PRINT'} for p in ['raw/recordings/2024/index.jsonl','old/history-2017.zip','raw/snn-tape/2024.tape','raw/models/snn.jsonl','raw/history/account.csv','../history/escape.csv','bot.env']]
+r=m['catalog'](list_fn=lambda *args: (files,None))
+print(json.dumps(r))
+`;
+  const r = spawnSync('python3', ['-B', '-c', code], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.contents_read, false);
+  assert.deepEqual(report.roots[0].files.map((f: { path: string }) => f.path),
+    ['raw/recordings/2024/index.jsonl', 'old/history-2017.zip', 'raw/snn-tape/2024.tape']);
+  assert.ok(!r.stdout.includes('DO_NOT_PRINT'));
+});
