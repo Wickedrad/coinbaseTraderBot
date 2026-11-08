@@ -6,6 +6,10 @@ name: Server diagnostics
 on:
   workflow_dispatch:
     inputs:
+      atlas_inventory:
+        description: 'Only inventory historical CSV timestamps/sizes for the Opportunity Atlas; no bot configuration, data writes, training, repair, or deployment'
+        required: false
+        default: 'false'
       paths:
         description: 'Optional: extra read-only dashboard API paths to print, space separated (e.g. /api/snn /api/autotrain)'
         required: false
@@ -59,8 +63,54 @@ permissions:
   contents: read
 
 jobs:
+  atlas-inventory:
+    if: inputs.atlas_inventory == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Inventory market history over SSH (read-only)
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER_NAME: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          PORT: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_KEY" && test -n "$HOST"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          mkdir -p "$RUNNER_TEMP/atlas-ssh"
+          chmod 700 "$RUNNER_TEMP/atlas-ssh"
+          key="$RUNNER_TEMP/atlas-ssh/key"
+          printf '%s\n' "$SSH_KEY" > "$key"
+          chmod 600 "$key"
+          trap 'rm -f "$key"' EXIT
+          # The script is sent on stdin; no script or data is written on Lightsail.
+          # It never reads bot.env, private keys, logs, account state or models.
+          ssh -i "$key" -p "$PORT" -o BatchMode=yes -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$RUNNER_TEMP/atlas-ssh/known_hosts" \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "$USER_NAME@$HOST" 'nice -n 19 python3 -B - --root "$HOME/bot/data/history" --incoming "$HOME/bot/data/incoming/tradingview"' \
+            < research/opportunity/archiveInventory.py > "$RUNNER_TEMP/atlas-archive-inventory.json"
+          python3 - "$RUNNER_TEMP/atlas-archive-inventory.json" <<'PYREPORT'
+          import json,sys
+          r=json.load(open(sys.argv[1]))
+          print('CSV files inventoried:',len(r['files']))
+          print('Candidate tvdatafeed minute files:',len(r['tv_minute_candidates']))
+          print('Provenance still requires validation; no prices or secrets printed.')
+          PYREPORT
+      - name: Save inventory metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-archive-inventory
+          path: ${{ runner.temp }}/atlas-archive-inventory.json
+          if-no-files-found: warn
+          retention-days: 7
+
   diagnose:
-    if: inputs.ta_study != 'true' && inputs.kalshi_repair != 'true'
+    if: inputs.atlas_inventory != 'true' && inputs.ta_study != 'true' && inputs.kalshi_repair != 'true'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -208,7 +258,7 @@ jobs:
   # endpoint were saved with quotes 100x too small until PR #217. Writes only data/history/kalshi day files, through a
   # temp file and a rename; the bot's own state is not touched. Prints counts, posted as a comment on the commit.
   adversary:
-    if: inputs.adversary == 'true'
+    if: inputs.atlas_inventory != 'true' && inputs.adversary == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 60
@@ -250,7 +300,7 @@ jobs:
         run: python3 deploy/adversary_report.py data 24 data/lags.txt
 
   kalshi-repair:
-    if: inputs.kalshi_repair == 'true'
+    if: inputs.atlas_inventory != 'true' && inputs.kalshi_repair == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 30
@@ -301,7 +351,7 @@ jobs:
   # touched. The history and the replay days are cached between runs (keyed by coins and days), so a wider range only
   # builds what is new. Prints aggregates only (counts, log losses, the chosen set): this repository is public.
   ta-study:
-    if: inputs.ta_study == 'true'
+    if: inputs.atlas_inventory != 'true' && inputs.ta_study == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 340
