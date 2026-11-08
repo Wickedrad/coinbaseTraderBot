@@ -391,3 +391,83 @@ https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42491152911
 Its CodeQL and Windows packaging checks passed as well. That CI result belongs to
 the preceding commit; it does not claim that CI has already rerun the new timing
 increment. No live modules, data-source policy, holdout dates or deployments changed.
+
+## Joined minute-decision dataset after merge
+
+The owner merged PR #304 at main `5a53910ca5d517af2f73fe9c8d4ea26bea209bdf` and
+authorized continuation. This increment uses a new branch,
+`feature/atlas-minute-decision-dataset`. It joins the causal feature exporter to
+the existing path labeler at one-minute decisions. Per-entry horizons include exact
+minutes remaining to reference quarter-hour/hour boundaries. These are study clocks,
+not listed contracts or official settlement labels. Existing Phase 1 callers retain
+their original behavior. No bot/TA/SNN, deployment, parameter or pipeline files changed.
+
+Local checks passed:
+
+```bash
+node --import tsx --test tests/opportunity*.test.ts tests/fairValue.test.ts
+npm run typecheck
+npm run build
+```
+
+**96 tests passed**, no failures or skips. New coverage includes keyed minute
+observations, exact remaining-time labels, sparse-cadence processing of intervening
+minutes, separate asset lifecycles, raw ATR warmup/gap reset/precision, variable
+horizon schedules, output transaction cleanup, TV provenance requirements, and
+selected-source/asset auditing. Final-boundary tests change all later prices and
+assert identical exported pre-final targets; they also cover a cut inside a minute.
+
+The preceding timing commit `4af48cc344ee25297b7df565fb64deff321182c8` completed
+GitHub CI with **1,189 tests passed**, no failures or skips:
+https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42494828180
+That validates the merged base; it is not a completed CI result for this new dataset
+increment. The new draft PR will run the repository checks again.
+
+The retained `data/atlas-history-sample` BTC/ETH files were copied locally, without
+new provider requests, into an audited study wrapper. Each contains 21,360 valid
+minute rows, 2017-08-17 04:00 through 2017-08-31 23:59 UTC. Existing archived Yahoo
+and raw TradingView daily context was copied with its identity preserved. This is
+a two-asset sample, not a complete five-asset or multi-year minute archive. No claim
+of independent provider authentication or historical publication vintages is made.
+
+Three real-data exports succeeded:
+
+| Run | Input | Decisions | Spot-path labels |
+| --- | --- | ---: | ---: |
+| Retained 2017 BTC/ETH pilot | First 1,500 minutes per asset | 3,000 | 39,240 |
+| Archived 2026 BTC final-feature audit | First 60 minutes | 60 | 0 |
+| Retained tvdatafeed BTC/ETH final-feature audit | First 40 minutes per asset | 80 | 0 |
+
+The 2017 command used default one-minute cadence, reference periods 15/60 minutes,
+base horizons 5/15/60/240/1440, one target/stop ATR pair and explicitly zero assumed
+costs. Each asset retained 13 scale-warmup observations and scheduled 1,487 entries.
+Each produced 19,620 labels, including 3,520 censored by the processing cap. All
+labels belong to the original training period; censored rows are not complete
+negative events. This 25-hour pilot does not warm minute-derived 30-day TA; missing
+higher-timeframe history remains explicit. Daily source context is joined separately.
+
+An independent Python source scan checked all 3,000 decision timestamps/causal
+group metadata, every one of the 39,240 decision/label joins, and both output hashes.
+It directly recalculated MFE/MAE, barrier-touch minutes/order, hypothetical exits,
+zero-cost payoffs and label known-at timestamps for 128 completed rows across the
+source candles. All matched. Across the pilot, labels covered every integer horizon
+from one to 60 minutes, plus 240 and 1,440 minutes, without rounding a longer horizon.
+The full source/code hashes also matched. These are data/label checks, not prediction
+scoring or financial performance evidence.
+
+The 2026 audits marked every observation `reserved-final` and emitted zero future
+labels. The TV audit used only the already collected store, preserved its sidecars
+and passed the existing identity/content-hash verifier. No fresh acquisition was
+needed; future collection remains tvdatafeed-only. No final prices were used for
+model fitting, selection or outcome scoring. The reference-window labels remain
+spot-price outcomes and do not infer official averaged-index contract payouts.
+
+Metadata-only evidence, including all three manifests and the independent-check
+summary, is committed in
+[OPPORTUNITY_ATLAS_DECISION_VALIDATION.json](OPPORTUNITY_ATLAS_DECISION_VALIDATION.json).
+Raw datasets remain ignored under `research/out/`. The bundles have distinct keyed
+decision/path schemas, input/output hashes, code hashes and transactional publication.
+No SNN embeddings were fabricated, and the SNN input/output wiring is still unchanged.
+The next stages are the joint horizon-conditioned learner, calibration/validation,
+causal SNN state integration and official-index contract labels. This increment
+does not assert that the complete intelligent trading system is ready.

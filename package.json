@@ -39,6 +39,7 @@
     "research:opportunity-history": "tsx research/opportunity/tvHistory.ts",
     "research:opportunity-atlas": "tsx research/opportunity/train.ts",
     "research:opportunity-features": "tsx research/opportunity/featuresCli.ts",
+    "research:opportunity-decisions": "tsx research/opportunity/decisionDatasetCli.ts",
     "research:ta-net-oos": "tsx research/taNetOos.ts",
     "research:librarian": "tsx research/librarian.ts",
     "research:oracle-cull": "tsx research/oracleCull.ts",
