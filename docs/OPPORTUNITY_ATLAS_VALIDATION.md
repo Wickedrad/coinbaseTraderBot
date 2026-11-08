@@ -235,3 +235,46 @@ Daily history can be considered for future long-term context with its source and
 known-at semantics preserved, but cannot supply observed one-minute paths. No
 training-source policy was silently relaxed. The 51 atlas/inventory tests passed
 without skips/failures, as did current typecheck and workflow linting.
+
+
+## Search for minute history independent of provider
+
+The owner requested a provider-independent search, mentioning possible Coinbase
+history. The inventory was extended to inspect actual timestamp spacing, including
+generic and nested CSV filenames. Strict ISO and numeric epoch timestamps are
+normalized; intervals are measured within each bounded sample, never across the
+unsampled middle. Only metadata/dates/counts leave the Actions job, not price rows.
+
+- Lightsail run 42486277606 succeeded and sampled 201 CSVs in the checked history
+  store. No 60-second intervals were observed, including among its 50 Coinbase
+  files. Coinbase samples showed hourly/daily spacing.
+  https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42486277606
+- Drive run 42486274726 succeeded. It listed 210 files in the configured project
+  archive and content-probed 63 CSVs before the four-minute budget expired. All five
+  minute-named files and all 46 Coinbase CSVs were probed first. There were no sample
+  errors. None of the Coinbase samples showed 60-second spacing. The other CSVs and
+  linked-folder alias were not content-probed after the budget expired; this is not
+  a claim of exhaustive absence outside the checked scope.
+  https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42486274726
+
+The following existing Drive files all had strictly 60-second intervals in their
+head and tail samples. Their observed endpoint spans were identical: 2026-04-01
+00:00 UTC through the bar opening at 2026-11-06 23:59 UTC.
+
+| Archive path | Size (bytes) | Sampled 60-second intervals |
+| --- | ---: | ---: |
+| raw/history/binance-1m/BTC/1m.csv | 20,188,864 | 507 |
+| raw/history/binance-1m/ETH/1m.csv | 19,532,663 | 530 |
+| raw/history/binance-1m/SOL/1m.csv | 17,361,820 | 610 |
+| raw/history/binance-1m/XRP/1m.csv | 17,978,393 | 574 |
+| raw/history/binance-1m/DOGE/1m.csv | 18,554,354 | 562 |
+
+These are located existing minute archives, stored under the Binance namespace.
+This is not cryptographic provider verification, a complete CSV audit, proof of
+continuity throughout the unsampled interval, or 2017 minute coverage. No new
+exchange data was fetched and no training/model promotion was run. The sampled
+archive bytes were read through rclone on the runner; full price CSVs were not
+copied to this workspace or included in artifacts. Both runs skipped every
+non-inventory job. The 54 atlas/inventory tests passed with no skips/failures;
+current typecheck and workflow linting passed. No bot files or service state were
+changed and main was not merged.

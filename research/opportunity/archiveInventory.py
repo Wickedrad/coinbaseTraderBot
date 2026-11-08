@@ -69,7 +69,7 @@ def summarize_csv_samples(head, tail=b"", tail_partial=False):
             seconds = (dt.datetime.fromisoformat(b.replace("Z", "+00:00")) - dt.datetime.fromisoformat(a.replace("Z", "+00:00"))).total_seconds()
             intervals[str(int(seconds)) if seconds.is_integer() else str(seconds)] += 1
     return {"header": "recognized", "first_open_utc": first[0] if first else None,
-            "last_open_utc": (last[-1] if last else first[-1] if first and tail else None),
+            "last_open_utc": (last[-1] if last else first[-1] if first and tail == head else None),
             "sampled_cadence_seconds": dict(intervals), "sampled_rows": len(first) + len(last),
             "has_60_second_steps": intervals.get("60", 0) > 0,
             "all_sampled_steps_60_seconds": bool(intervals) and set(intervals) == {"60"},

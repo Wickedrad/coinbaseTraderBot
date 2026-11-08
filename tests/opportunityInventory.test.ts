@@ -76,6 +76,9 @@ test('inventory samples only the header/tail of large files and fails clearly wh
     assert.equal(r.status, 0, r.stderr);
     assert.equal(r.report.files[0].sampled_bytes, 32768);
     assert.ok(r.report.files[0].size_bytes > 1000000);
+    fs.appendFileSync(file, 'not a candle\n'.repeat(2000));
+    const invalidTail = invoke(root, path.join(root, 'missing'));
+    assert.equal(invalidTail.report.files[0].last_open_utc, null, 'a bad tail cannot reuse an early head timestamp as the archive end');
     const missing = invoke(path.join(root, 'missing'), path.join(root, 'missing'));
     assert.equal(missing.status, 1); assert.equal(missing.report.root_exists, false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }

@@ -172,3 +172,13 @@ The inventories now preserve all known source namespaces, rather than examining
 only TV and minute files. Source/timeframe evidence must remain distinct; no daily
 bars were substituted for minute observations or copied into training, and new
 acquisition remains through tvdatafeed.
+
+
+A provider-independent minute search subsequently confirmed existing Drive files at
+`raw/history/binance-1m/{BTC,ETH,SOL,XRP,DOGE}/1m.csv`. Bounded head/tail samples
+had only 60-second intervals and observed endpoints from 2026-04-01 through
+2026-11-06 UTC. No minute spacing was observed in the checked Lightsail store or
+46 sampled Drive Coinbase CSVs. These findings locate a recent minute archive,
+not 2017 coverage or a fully validated dataset. Exact sample scope, time limits,
+paths and Actions run links are documented in the validation report. Provider
+labels remain distinct; no archived data was used for training in this search.
