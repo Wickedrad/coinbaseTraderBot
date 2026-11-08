@@ -198,3 +198,40 @@ The Drive helper uses only `rclone lsjson`, bounds directory discovery, separate
 provider evidence, and retains partial listing errors rather than interpreting an
 unreadable directory as absent history. OAuth configuration remains on the runner
 and is excluded from artifacts/logs. No new credentials were requested.
+
+
+## Broader archived-source discovery after the Yahoo clarification
+
+The owner noted that some existing history came from Yahoo Finance rather than
+tvdatafeed. The read-only inventories were broadened to retain all canonical
+server CSV timeframes and known Drive market-history namespaces, including Yahoo.
+This changes discovery only; no provider was relabeled, no archived price file was
+copied into training, and the acquisition module remains tvdatafeed-only.
+
+- Server run 42482262887 succeeded with only `atlas-inventory` active:
+  https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42482262887
+- Drive run 42482260857 succeeded with only `atlas-drive-inventory` active:
+  https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42482260857
+
+The server inventory found 201 canonical CSVs across binance (69), binance-index (1),
+bot-index (3), coinbase (50), tradingview (26), tvspot (47) and yahoo (5). Both Drive
+access routes found the same 210 metadata entries in their checked namespaces,
+including five Yahoo daily files at `raw/server-history/yahoo/<ASSET>/1d.csv`.
+Neither inventory was truncated; Drive reported no listing errors. Differences
+between the server and its archive are retained rather than assumed away.
+
+Observed Yahoo-labelled server CSV timestamp spans (daily candle opens, UTC):
+
+| Asset | First open | Last open |
+| --- | --- | --- |
+| BTC | 2016-09-07 | 2026-09-07 |
+| ETH | 2017-11-09 | 2026-09-07 |
+| XRP | 2017-11-09 | 2026-09-07 |
+| DOGE | 2018-09-07 | 2026-09-07 |
+| SOL | 2020-04-10 | 2026-09-07 |
+
+These are metadata/header-tail checks, not full content or provider verification.
+Daily history can be considered for future long-term context with its source and
+known-at semantics preserved, but cannot supply observed one-minute paths. No
+training-source policy was silently relaxed. The 51 atlas/inventory tests passed
+without skips/failures, as did current typecheck and workflow linting.

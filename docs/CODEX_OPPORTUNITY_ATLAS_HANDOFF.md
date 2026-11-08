@@ -163,3 +163,12 @@ files and five native Binance minute CSVs; no TV minute candidates were found.
 Do not use the native-minute files under the current tvdatafeed-only requirement.
 No market-data files were copied from Drive, and all server jobs were skipped.
 See the validation report for exact scope, file categories and artifact location.
+
+
+The owner's Yahoo clarification led to broader read-only archive discovery.
+Both Lightsail and Drive contain five Yahoo-labelled daily series (BTC, ETH, XRP,
+DOGE, SOL); the validation report records actual date spans and successful run links.
+The inventories now preserve all known source namespaces, rather than examining
+only TV and minute files. Source/timeframe evidence must remain distinct; no daily
+bars were substituted for minute observations or copied into training, and new
+acquisition remains through tvdatafeed.
