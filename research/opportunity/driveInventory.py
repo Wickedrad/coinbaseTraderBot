@@ -165,26 +165,46 @@ def catalog(folder_id=None, list_fn=listing):
         roots.append(("linked-folder", "gdrive:", folder_id))
     report = {"schema": "atlas-market-catalog-v1", "read_only": True, "contents_read": False,
               "maximum_depth": 6, "roots": []}
+    private = re.compile(r"(?:^|[/_.-])(env|secret|credential|account|order|fill|audit|model|checkpoint|log)s?(?:[/_.-]|$)")
+    market = re.compile(r"history|candle|recording|snn.?tape|index|market.?data|replay")
     for label, remote, override in roots:
-        files, error = list_fn(remote, True, override)
-        result = {"label": label, "accessible": error is None, "error": error,
+        result = {"label": label, "accessible": False, "errors": [], "scanned_folders": [],
                   "files": [], "truncated": False}
-        for f in files or []:
-            name = str(f.get("Path", f.get("Name", "")))
-            lower = name.lower()
-            if f.get("IsDir") or not lower.endswith((".csv", ".csv.gz", ".zip", ".zst", ".parquet", ".npz", ".tape", ".jsonl", ".bin")):
+        queue = [(remote, "", 0)]
+        deadline = time.monotonic() + 90
+        while queue and len(result["scanned_folders"]) < 30 and time.monotonic() < deadline:
+            parent, relative, depth = queue.pop(0)
+            files, error = list_fn(parent, False, override)
+            if error:
+                result["errors"].append({"path": relative or ".", "error": error})
                 continue
-            if re.search(r"(?:^|[/_.-])(env|secret|credential|account|order|fill|audit|model|checkpoint|log)s?(?:[/_.-]|$)", lower):
-                continue
-            if not re.search(r"history|candle|recording|snn.?tape|index|market.?data|replay", lower):
-                continue
-            if not re.fullmatch(r"[A-Za-z0-9_/ .()=-]+", name) or ".." in name.split("/"):
-                continue
-            result["files"].append({"path": name, "size_bytes": f.get("Size"), "modified": f.get("ModTime"),
-                                    "coverage_verified": False, "provenance_verified": False})
-            if len(result["files"]) >= 5000:
-                result["truncated"] = True
+            result["scanned_folders"].append(relative or ".")
+            if not relative:
+                result["accessible"] = True
+            for f in files or []:
+                child = str(f.get("Path", f.get("Name", "")))
+                name = f"{relative}/{child}".lstrip("/")
+                lower = name.lower()
+                if private.search(lower) or not re.fullmatch(r"[A-Za-z0-9_/ .()=-]+", name) or ".." in name.split("/"):
+                    continue
+                if f.get("IsDir"):
+                    if depth < 6 and (market.search(lower) or child.lower() in {"raw", "data", "derived", "work", "kalshi-bot-archive", "server-history"}):
+                        next_remote = parent.rstrip("/") + "/" + child if not parent.endswith(":") else parent + child
+                        queue.append((next_remote, name, depth + 1))
+                    continue
+                if not market.search(lower) or not lower.endswith((".csv", ".csv.gz", ".zip", ".zst", ".parquet", ".npz", ".tape", ".jsonl", ".jsonl.gz", ".mdc", ".bin")):
+                    continue
+                result["files"].append({"path": name, "size_bytes": f.get("Size"), "modified": f.get("ModTime"),
+                                        "coverage_verified": False, "provenance_verified": False})
+                if len(result["files"]) >= 5000:
+                    result["truncated"] = True
+                    break
+            # Prioritize recorded index/tape days before traversing hundreds of per-asset history folders.
+            queue.sort(key=lambda item: (0 if re.search(r"recording|snn.?tape", item[1], re.I) else 1, item[2], item[1]))
+            if result["truncated"]:
                 break
+        if queue:
+            result["truncated"] = True
         report["roots"].append(result)
     return report
 

@@ -14,6 +14,10 @@ on:
         description: 'Inspect archived market-history metadata and bounded CSV timestamps using RCLONE_CONF; no server access, uploads, training or deployment'
         required: false
         default: 'false'
+      atlas_catalog_only:
+        description: 'With atlas_drive_inventory: bounded market archive metadata search including recorded index days and compressed history; no CSV probes'
+        required: false
+        default: 'false'
       atlas_inventory:
         description: 'Only inventory historical CSV timestamps/sizes for the Opportunity Atlas; no bot configuration, data writes, training, repair, or deployment'
         required: false
@@ -125,6 +129,7 @@ jobs:
       - name: Inspect existing Drive history (read-only)
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          ATLAS_CATALOG_ONLY: ${{ inputs.atlas_catalog_only }}
         run: |
           set -euo pipefail
           if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF is unavailable in this Actions context"; exit 1; fi
@@ -138,11 +143,16 @@ jobs:
           printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
           chmod 600 "$RCLONE_CONFIG"
           trap 'rm -f "$RCLONE_CONFIG"' EXIT
-          python3 -B research/opportunity/driveInventory.py --probe-csv --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
-            > "$RUNNER_TEMP/atlas-drive-inventory.json"
-          python3 -B research/opportunity/driveInventory.py --catalog-only --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
-            > "$RUNNER_TEMP/atlas-market-catalog.json"
-          python3 - "$RUNNER_TEMP/atlas-drive-inventory.json" <<'PYREPORT'
+          if [ "$ATLAS_CATALOG_ONLY" = 'true' ]; then
+            python3 -B research/opportunity/driveInventory.py --catalog-only --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+              > "$RUNNER_TEMP/atlas-market-catalog.json"
+            ATLAS_REPORT="$RUNNER_TEMP/atlas-market-catalog.json"
+          else
+            python3 -B research/opportunity/driveInventory.py --probe-csv --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+              > "$RUNNER_TEMP/atlas-drive-inventory.json"
+            ATLAS_REPORT="$RUNNER_TEMP/atlas-drive-inventory.json"
+          fi
+          python3 - "$ATLAS_REPORT" <<'PYREPORT'
           import json,sys
           r=json.load(open(sys.argv[1]))
           for root in r['roots']:
