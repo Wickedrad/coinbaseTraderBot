@@ -144,3 +144,12 @@ Every existing diagnostics, repair and study job is excluded in this mode, even 
 other flags are set. It does not read bot.env/keys/logs/model state, write server
 files, acquire data, change the running bot or deploy a release. CSV folder names
 and sidecar declarations identify candidates, not verified source provenance.
+
+
+The read-only inventory run 42480623621 succeeded; all pre-existing jobs were skipped.
+It found 73 TradingView/tvspot CSVs in the canonical store and raw export location,
+but no one-minute files there. Daily/hourly/four-hour data exists; the earlier-minute
+archive remains unlocated. Do not infer minute coverage or provider verification
+from coarse bars/folder names. Full scope, timestamps and run link are in the
+validation report. No server changes, model promotion, main merge or bot deployment
+were performed. The feature branch is now pushed for review.

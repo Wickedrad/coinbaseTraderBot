@@ -115,3 +115,52 @@ Earlier minute history still requires an accumulated tvdatafeed archive. A fresh
 5,000-bar request cannot reconstruct the 2017 minute study. The real daily download
 removes the missing-dominance prerequisite for that era, but does not supply the
 missing historical price minutes.
+
+
+## Read-only Lightsail archive inventory
+
+The owner confirmed GitHub Actions as the existing server access route. A new
+`atlas_inventory=true` mode on the feature branch's existing `Server diagnostics`
+workflow succeeded in run 42480623621:
+https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42480623621
+
+Only `atlas-inventory` ran; `diagnose`, `adversary`, `kalshi-repair` and `ta-study`
+were all skipped. The script was sent on SSH stdin, ran at low priority, sampled
+at most 16 KiB from each CSV end, and did not copy scripts to the server or change
+bot files, services, configuration, models or orders. Credentials stayed on the
+GitHub runner. The workflow passed actionlint 1.7.12 (official archive SHA-256
+verified). The atlas/inventory tests passed 45 cases with zero skips/failures;
+current typecheck passed. This is not another full-suite or deployment claim.
+
+Scope: canonical `~/bot/data/history/<source>/<asset>/<timeframe>.csv`, plus
+recognized raw exports immediately under `~/bot/data/incoming/tradingview`.
+The root existed, discovery was not truncated, and 73 CSV files matched:
+
+| Stored source | Timeframes and counts |
+| --- | --- |
+| tradingview | 9 daily, 9 four-hour, 8 hourly |
+| tvspot | 5 daily, 20 four-hour, 20 hourly, 2 fifteen-minute |
+
+No one-minute CSVs were found in these locations, including no tvdatafeed minute
+candidates. This does not prove that no other server folder or external archive
+contains minutes. Relevant observed timestamp spans (open times, UTC) included:
+
+| Series | First | Last |
+| --- | --- | --- |
+| BTC.D daily | 2014-04-01 | 2026-10-07 |
+| USDT.D daily | 2015-03-08 | 2026-10-07 |
+| BTC hourly | 2026-03-30 | 2026-10-24 12:00 |
+| BTC four-hour | 2024-07-12 04:00 | 2026-10-25 12:00 |
+| ETH daily | 2016-05-23 | 2026-10-30 |
+| ETH hourly | 2026-03-30 | 2026-10-24 12:00 |
+| ETH four-hour | 2024-07-12 04:00 | 2026-10-25 12:00 |
+
+These are bounded header/tail metadata observations, not full candle validation or
+cryptographic provider verification. Directory names and optional sidecar declarations
+are explicitly treated as source evidence, not verified provenance. None of the
+server data was fitted or promoted. Coarser bars cannot be expanded into genuine
+historical one-minute observations for the 2017 atlas study.
+
+The full inventory metadata is retained in the run's `atlas-archive-inventory`
+artifact (seven-day retention) and locally at
+`/workspace/scratch/atlas-inventory-42480623621/atlas-archive-inventory.json`.
