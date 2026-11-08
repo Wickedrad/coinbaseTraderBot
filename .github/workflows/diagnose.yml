@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       atlas_drive_inventory:
-        description: 'Only list project Google Drive history metadata using RCLONE_CONF; no server access, data download/upload, training or deployment'
+        description: 'Inspect archived market-history metadata and bounded CSV timestamps using RCLONE_CONF; no server access, uploads, training or deployment'
         required: false
         default: 'false'
       atlas_inventory:
@@ -74,7 +74,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
-      - name: Configure existing Drive access and list archive metadata (read-only)
+      - name: Inspect existing Drive history (read-only)
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
         run: |
@@ -90,14 +90,14 @@ jobs:
           printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
           chmod 600 "$RCLONE_CONFIG"
           trap 'rm -f "$RCLONE_CONFIG"' EXIT
-          python3 -B research/opportunity/driveInventory.py --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+          python3 -B research/opportunity/driveInventory.py --probe-csv --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
             > "$RUNNER_TEMP/atlas-drive-inventory.json"
           python3 - "$RUNNER_TEMP/atlas-drive-inventory.json" <<'PYREPORT'
           import json,sys
           r=json.load(open(sys.argv[1]))
           for root in r['roots']:
               print(root['label'], 'accessible:', root['accessible'], 'files:', len(root['files']),
-                    'TV minute candidates:', len(root['tv_minute_candidates']), 'errors:', len(root['errors']))
+                    'minute samples:', len(root.get('minute_samples_confirmed', [])), 'errors:', len(root['errors']))
           PYREPORT
       - name: Save Drive inventory metadata
         if: always()
@@ -142,7 +142,7 @@ jobs:
           import json,sys
           r=json.load(open(sys.argv[1]))
           print('CSV files inventoried:',len(r['files']))
-          print('Candidate tvdatafeed minute files:',len(r['tv_minute_candidates']))
+          print('Minute CSVs confirmed in bounded samples:',len(r.get('minute_samples_confirmed', [])))
           print('Provenance still requires validation; no prices or secrets printed.')
           PYREPORT
       - name: Save inventory metadata

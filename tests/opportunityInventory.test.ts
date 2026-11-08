@@ -94,6 +94,36 @@ test('server inventory includes coarser Yahoo and exchange history and retains e
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('minute discovery uses timestamp spacing for generic, nested and misnamed Coinbase CSVs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-inventory-'));
+  try {
+    fixture(root, 'coinbase/BTC/candles.csv');
+    fixture(root, 'coinbase/ETH/1m/history.csv');
+    fixture(root, 'coinbase/SOL-USD.csv');
+    const r = invoke(root, path.join(root, 'missing'));
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.report.minute_samples_confirmed.length, 3);
+    assert.ok(r.report.files.every((f: { sampled_cadence_seconds: Record<string, number> }) => f.sampled_cadence_seconds['60'] > 0));
+    assert.ok(r.report.files.every((f: { full_file_validation: boolean }) => f.full_file_validation === false));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('quoted ISO timestamps and coarse Yahoo daily samples retain their true cadence', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-inventory-'));
+  try {
+    const minute = fixture(root, 'coinbase/BTC/candles.csv');
+    fs.writeFileSync(minute, 'Date,Open,High,Low,Close,Volume\n"2026-01-01T00:00:00Z",100,101,99,100,1\n"2026-01-01T00:01:00Z",100,101,99,100,1\n');
+    const daily = fixture(root, 'yahoo/ETH/1d.csv');
+    fs.writeFileSync(daily, 'Date,Open,High,Low,Close,Adj Close,Volume\n2026-01-01,100,101,99,100,100,1\n2026-01-02,100,101,99,100,100,1\n');
+    const r = invoke(root, path.join(root, 'missing'));
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(r.report.minute_samples_confirmed, ['coinbase/BTC/candles.csv']);
+    const yahoo = r.report.files.find((f: { source: string }) => f.source === 'yahoo');
+    assert.ok(yahoo.sampled_cadence_seconds['86400'] > 0);
+    assert.equal(yahoo.all_sampled_steps_60_seconds, false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('inventory mode excludes every existing diagnostics/repair/study job for all flag combinations', () => {
   const yaml = fs.readFileSync('.github/workflows/diagnose.yml', 'utf8');
   const jobs = new Map([...yaml.matchAll(/^  ([a-z-]+):\n    if: (.+)$/gm)].map((m) => [m[1], m[2]]));

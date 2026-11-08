@@ -5,6 +5,10 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from archiveInventory import summarize_csv_samples, SAMPLE_BYTES
 
 CONTAINERS = {"raw", "history", "server-history", "data", "incoming", "tradingview", "tvspot", "tvdatafeed", "tv-history", "kalshi-bot-archive"}
 HISTORY_SOURCES = {"binance", "binance-1m", "binance-um", "binance-index", "binance-oi",
@@ -42,7 +46,21 @@ def listing(remote, recursive=False, folder_id=None):
         return None, type(error).__name__
 
 
-def inventory(folder_id=None, list_fn=listing):
+def read_sample(remote, tail=False, folder_id=None):
+    args = ["rclone", "cat", remote, "--tail" if tail else "--head", str(SAMPLE_BYTES),
+            "--contimeout", "10s", "--timeout", "20s", "--retries", "1", "--low-level-retries", "1"]
+    if folder_id:
+        args += ["--drive-root-folder-id", folder_id]
+    try:
+        result = subprocess.run(args, capture_output=True, timeout=25)
+        if result.returncode:
+            return None, classify_error(result.stderr.decode("utf-8", errors="replace"))
+        return result.stdout[:SAMPLE_BYTES], None
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return None, type(error).__name__
+
+
+def inventory(folder_id=None, list_fn=listing, probe=False, read_fn=read_sample):
     roots = [("configured-archive", "gdrive:kalshi-bot-archive", None)]
     if folder_id:
         if not re.fullmatch(r"[A-Za-z0-9_-]{10,100}", folder_id):
@@ -51,6 +69,7 @@ def inventory(folder_id=None, list_fn=listing):
     report = {"schema": "atlas-drive-inventory-v1", "read_only": True,
               "scope": "project archive containers and known market-history source namespaces; metadata only", "roots": []}
     deadline = time.monotonic() + 240
+    probed_root = False
     for label, root, override in roots:
         result = {"label": label, "accessible": False, "files": [], "scanned_folders": [], "errors": [], "truncated": False}
         queue = [(root, "", 0)]
@@ -102,6 +121,33 @@ def inventory(folder_id=None, list_fn=listing):
         result["tv_minute_candidates"] = [f["path"] for f in result["files"] if f["minute_named"] and f["source_evidence"] == "tv-layout"]
         result["other_minute_files"] = [f["path"] for f in result["files"] if f["minute_named"] and f["source_evidence"] != "tv-layout"]
         result["yahoo_layout_files"] = [f["path"] for f in result["files"] if f["source_evidence"] == "yahoo-layout"]
+        if probe and result["accessible"] and not probed_root:
+            probed_root = True
+            csv_files = [f for f in result["files"] if f["path"].lower().endswith(".csv")]
+            # Check named minute files and the user's Coinbase hypothesis first.
+            csv_files.sort(key=lambda f: (0 if f["minute_named"] else 1 if "coinbase" in f["source_namespace"].lower() else 2, f["path"]))
+            checked = 0
+            for file in csv_files[:250]:
+                if time.monotonic() >= deadline:
+                    break
+                remote = root.rstrip("/") + "/" + file["path"] if not root.endswith(":") else root + file["path"]
+                head, error = read_fn(remote, False, override)
+                if error:
+                    file["csv_sample"] = {"error": error}; checked += 1; continue
+                sample = summarize_csv_samples(head)
+                if sample.get("has_60_second_steps") or file["minute_named"]:
+                    tail, error = read_fn(remote, True, override)
+                    if error:
+                        sample["tail_error"] = error
+                    else:
+                        sample = summarize_csv_samples(head, tail, (file.get("size_bytes") or 0) > SAMPLE_BYTES)
+                file["csv_sample"] = sample
+                checked += 1
+            result["content_probe"] = {"checked_csvs": checked, "total_csvs": len(csv_files),
+                                       "incomplete": checked < len(csv_files), "sample_bytes_per_end": SAMPLE_BYTES,
+                                       "full_file_validation": False}
+            result["minute_spacing_observed"] = [f["path"] for f in csv_files if f.get("csv_sample", {}).get("has_60_second_steps")]
+            result["minute_samples_confirmed"] = [f["path"] for f in csv_files if f.get("csv_sample", {}).get("all_sampled_steps_60_seconds")]
         report["roots"].append(result)
     return report
 
@@ -109,8 +155,9 @@ def inventory(folder_id=None, list_fn=listing):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--folder-id")
+    parser.add_argument("--probe-csv", action="store_true", help="Read bounded timestamp samples from existing archived CSVs")
     args = parser.parse_args()
-    report = inventory(args.folder_id)
+    report = inventory(args.folder_id, probe=args.probe_csv)
     print(json.dumps(report, indent=2))
     return 0 if any(r["accessible"] for r in report["roots"]) else 1
 

@@ -2,19 +2,23 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 
-function simulate(tree: Record<string, unknown>, folderId?: string) {
+function simulate(tree: Record<string, unknown>, folderId?: string, samples: Record<string, string> = {}) {
   const code = `
 import json,sys,runpy
 module=runpy.run_path('research/opportunity/driveInventory.py')
-tree=json.loads(sys.argv[1]);calls=[]
+tree=json.loads(sys.argv[1]);calls=[];samples=json.loads(sys.argv[3]);reads=[]
 def listing(remote,recursive=False,folder_id=None):
     calls.append({'remote':remote,'recursive':recursive,'folder_id':folder_id})
     value=tree.get(remote)
     return (None,'directory not found') if value is None else (None,value) if isinstance(value,str) else (value,None)
-report=module['inventory'](sys.argv[2] or None,list_fn=listing)
-print(json.dumps({'report':report,'calls':calls}))
+def read_sample(remote,tail=False,folder_id=None):
+    reads.append({'remote':remote,'tail':tail,'folder_id':folder_id})
+    value=samples.get(remote)
+    return (value.encode(),None) if value is not None else (None,'sample unavailable')
+report=module['inventory'](sys.argv[2] or None,list_fn=listing,probe=bool(samples),read_fn=read_sample)
+print(json.dumps({'report':report,'calls':calls,'reads':reads}))
 `;
-  const r = spawnSync('python3', ['-B', '-c', code, JSON.stringify(tree), folderId ?? ''], { encoding: 'utf8', timeout: 10000 });
+  const r = spawnSync('python3', ['-B', '-c', code, JSON.stringify(tree), folderId ?? '', JSON.stringify(samples)], { encoding: 'utf8', timeout: 10000 });
   assert.equal(r.status, 0, r.stderr);
   return { ...JSON.parse(r.stdout), text: r.stdout };
 }
@@ -85,4 +89,28 @@ test('Yahoo Finance and other stored history are inventoried without being relab
   assert.deepEqual(root.other_minute_files, ['raw/server-history/coinbase/ETH/1m.csv']);
   assert.ok(root.files.filter((f: { source_namespace: string }) => /yahoo/i.test(f.source_namespace))
     .every((f: { source_evidence: string }) => f.source_evidence === 'yahoo-layout'));
+});
+
+test('CSV probes find actual minute spacing in generic Coinbase filenames and reject misleading minute names', () => {
+  const start = Date.UTC(2026, 0, 1);
+  const csv = (step: number) => `ts,o,h,l,c,v\n${[0, 1, 2].map((i) => `${start + i * step},100,101,99,100,1`).join('\n')}\n`;
+  const r = simulate({
+    'gdrive:kalshi-bot-archive': [dir('raw')],
+    'gdrive:kalshi-bot-archive/raw': [dir('history')],
+    'gdrive:kalshi-bot-archive/raw/history': [dir('coinbase'), dir('binance-1m')],
+    'gdrive:kalshi-bot-archive/raw/history/coinbase': [file('BTC/candles.csv', 200)],
+    'gdrive:kalshi-bot-archive/raw/history/binance-1m': [file('ETH/1m.csv', 200)],
+  }, undefined, {
+    'gdrive:kalshi-bot-archive/raw/history/coinbase/BTC/candles.csv': csv(60000),
+    'gdrive:kalshi-bot-archive/raw/history/binance-1m/ETH/1m.csv': csv(900000),
+  });
+  const root = r.report.roots[0];
+  assert.deepEqual(root.minute_samples_confirmed, ['raw/history/coinbase/BTC/candles.csv']);
+  assert.equal(root.content_probe.incomplete, false);
+  const sample = root.files.find((f: { source_namespace: string }) => f.source_namespace === 'coinbase').csv_sample;
+  assert.equal(sample.first_open_utc, '2026-01-01T00:00:00Z');
+  assert.equal(sample.last_open_utc, '2026-01-01T00:02:00Z');
+  assert.equal(sample.full_file_validation, false);
+  assert.ok(r.reads.every((read: { remote: string }) => /coinbase|binance-1m/.test(read.remote)));
+  assert.ok(!r.text.includes(',100,101,99'));
 });
