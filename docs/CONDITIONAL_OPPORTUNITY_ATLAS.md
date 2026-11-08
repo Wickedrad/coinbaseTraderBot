@@ -253,6 +253,67 @@ an existing archive is separate from new provider acquisition, which remains
 tvdatafeed-only. The 2026 archive overlaps the original frozen final period. Its
 data/feature validation does not authorize moving the split or fitting/tuning on it.
 
+## Contract duration, forecast timing and remaining life
+
+The owner explicitly requires contract-aware timing: a likely reversal within an
+hour can inform an hourly contract, but an hourly forecast alone cannot justify a
+15-minute entry. As the setup unfolds, the system must recompute a short-window
+conditional forecast; a fresh high-confidence move within the actual remaining
+contract time can then become relevant. Nominal duration and remaining life are
+different: a 15-minute contract entered six minutes after opening has nine minutes
+left. An hourly contract with nine minutes left has the same immediate deadline,
+while its strike, opening reference and lifetime context can differ.
+
+The new research-only `contractTiming.ts` makes this requirement explicit:
+
+- `contractTimingQuery` binds an as-of feature frame to the exact asset, ticker,
+  opening/closing timestamps, known strike/range terms, settlement index and
+  averaging window. It supplies continuous remaining-time/lifetime geometry for
+  future learners, plus an explicit execution buffer and an exact effect deadline.
+  The query clock can be between minute closes; it records the last feature-frame
+  timestamp and age. The default maximum frame age is one minute and can be
+  explicitly configured. Future or older-than-policy frames are refused.
+- A forecast for a later horizon remains contextual evidence. It is not rounded,
+  interpolated or substituted for a shorter deadline. An old hourly probability
+  does not become a fresh short-window probability just because time has elapsed.
+  Context probabilities retain direction, event definition and absolute deadline.
+- `assessContractTiming` requires a fresh exact-contract, exact-deadline forecast
+  for timing support. It distinguishes the probability of the directional event
+  by the deadline, the selected YES/NO side paying under the actual settlement
+  terms, and their **joint** probability. It does not multiply marginals or equate
+  a spot target touch/spot close with the official averaged-index settlement.
+- Confidence lower-bound requirements are explicit caller-specified research
+  policy, not fixed RSI/MACD votes. Timing and joint thresholds are separate; there
+  is no universal requirement that a trade have an 80% settlement-win probability.
+  `timing-supported` only describes the supplied timing policy. Quotes, fees,
+  fill quality, expected value and hard execution/risk checks remain separate.
+- A missing calibration reference produces `unvalidated`; invalid probabilities,
+  future/stale inputs or mismatched terms cannot supply exact timing support.
+  The reference is metadata for the future model loader, not verified calibration
+  evidence created by this helper. Multiple matching models require validated
+  upstream aggregation; this helper never picks the highest confidence after the fact.
+
+The predictive horizon is distinct from a TA candle timeframe. A learner can read
+1m/5m/15m/1h states jointly to predict a move in the next seven minutes. It need not
+wait for a particular candle size or require a fixed checklist of indicator votes.
+SNN state/readouts must eventually participate in this same contract/window query,
+rather than using only the current nominal 15/60-minute column selection. Existing
+SNN callers, inputs, outputs and live entry logic are unchanged by this increment.
+
+This module accepts forecast outputs; it does not generate them, train a model,
+authenticate calibration artifacts or wire the SNN. Its tests use explicitly
+synthetic forecasts. Every assessment sets `researchOnly: true` and
+`liveEntryAllowed: false`, including `timing-supported` results. This is the first
+consumer-contract portion of the architecture, not proof that a trained system
+can identify these opportunities.
+
+Future training must also sample decisions inside contracts and label their exact
+remaining-time/settlement questions. The existing Phase 1 trainer still anchors
+entries at completed 15-minute candles and its fixed horizon labels are spot paths;
+they are not automatically exact remaining-time contract labels. The independent
+feature CLI can sample every minute (`--every-minutes 1`). Neither those entry
+labels nor the production SNN readouts were silently repurposed by this helper.
+
 ## Module routing and implementation sequence
 
 | Existing module | Required next change | Evidence required |

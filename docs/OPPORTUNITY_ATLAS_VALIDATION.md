@@ -353,3 +353,41 @@ frozen**. Existing TA regression tests train only their own temporary synthetic
 fixtures, not these archived minute prices. Generalized path heads, conditional
 selection, SNN integration and economic validation remain pending. Nothing was
 merged into main, deployed or enabled for live trading.
+
+## Contract-window timing clarification
+
+The owner required time-to-move forecasts to match each price-prediction contract:
+an hourly setup alone cannot justify a 15-minute entry; a later fresh short-window
+forecast can make the same evolving setup relevant. `contractTiming.ts` implements
+the offline query/assessment contract for the future learner. It uses actual
+remaining time, exact strike/index/averaging terms, explicit execution buffer,
+current forecast time and continuous timing/settlement/joint probabilities.
+It does not substitute a nominal hourly/quarter-hour probability for an exact
+deadline or multiply marginal event probabilities. Confidence policies are explicit;
+entry price, fees, fill quality, SNN wiring and trained forecast generation remain
+outside this helper. `liveEntryAllowed` is always false.
+
+Current verification for this increment:
+
+```bash
+node --import tsx --test tests/opportunity*.test.ts tests/fairValue.test.ts
+npm run typecheck
+```
+
+**86 tests passed**, zero failures/skips, including nine new timing tests. They
+cover hourly context versus a quarter-hour question, a fresh later short forecast,
+nine minutes remaining in contracts of different nominal lengths, fractional-minute
+execution buffers and averaging windows, strike/side/index/proxy mismatches, stale
+and future evidence, weak uncertainty bounds, missing calibration metadata and
+multiple-model ambiguity. Forecasts and calibration references in these tests are
+explicitly synthetic. No learned probability, trading edge or SNN correctness is
+established by this fixture. Contract geometry is immutable and stale feature frames
+are refused rather than moved forward in time.
+
+The preceding feature commit `3eaddf539a912247ad0ef34e08e9d04f23891daa` also completed
+whole-repository GitHub CI: **1,180 tests passed**, zero failures/skips, plus
+typecheck and production build. Run:
+https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42491152911
+Its CodeQL and Windows packaging checks passed as well. That CI result belongs to
+the preceding commit; it does not claim that CI has already rerun the new timing
+increment. No live modules, data-source policy, holdout dates or deployments changed.

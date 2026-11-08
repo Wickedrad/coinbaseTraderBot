@@ -210,3 +210,22 @@ Before fitting generalized path heads, obtain covered pre-final minute history o
 explicitly establish a different chronological study with a newly untouched final
 period. Funding/open interest, cross-asset lead/lag, SNN state, rigorous joint model
 selection, calibrated heads, execution validation and promotion remain future work.
+
+## Contract timing requirement and offline query
+
+The owner clarified that forecast time-to-move must match the contract's remaining
+life. An hourly setup is context for a 15-minute contract until an updated short-window
+forecast supplies confident directional evidence before that contract expires.
+The nominal 15/60-minute SNN column choice is insufficient for this requirement.
+Do not infer short-horizon confidence by counting down or reusing an old hourly
+probability. Model all relevant TA/SNN state jointly; do not turn candle sizes into
+mandatory independent indicator votes.
+
+`research/opportunity/contractTiming.ts` now prepares exact contract/window queries
+and assesses supplied forecasts offline. It separates nominal lifetime, remaining
+time, execution buffer, averaged-index settlement terms, directional timing,
+settlement probability and their joint uncertainty. It leaves later-horizon forecasts
+as context, refuses stale/future forecasts and mismatched strikes/settlement bases,
+and requires explicit confidence policy and future calibration metadata. It has no
+order consumers: `liveEntryAllowed` is always false. The trained heads, calibration
+artifact validation and SNN wiring are still pending, not implied by these tests.
