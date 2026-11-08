@@ -279,3 +279,24 @@ remain insufficient and its weekly evidence spans only one block. SNN integratio
 smooth/sequence model comparisons, reversal/terminal/official-settlement heads,
 robust multi-era calibration, memory selection and economic validation remain
 pending. `calibrationRef` remains null and live entry remains disabled in this API.
+
+## Offline/paper product after the initial joint learner
+
+Continuous owner-authorized implementation on PR #306 adds the separate
+`research:opportunity-product` workflow. It supplies native observed-recording
+conversion, official-index settlement/timely-move joint labels, volatility-relative
+reversal/continuation definitions, read-only SNN embeddings, causal S5/S6 tape
+replay/comparison, smooth/GBDT/linear contract candidates, full-parent conditional
+retention, independent audit calibration, a content-addressed registry, conditional
+movement summaries and dynamic paper position recommendations. Existing live
+modules, callers, parameters and training/promotion pipelines are preserved.
+
+The software does not manufacture missing historical inputs or validate a model
+through implementation alone. The original 2026 final period remains frozen.
+Located bot recording names are also from 2026; catalog metadata does not prove
+their contents or permit recycling their outcomes for development. Qualified
+observed-market SNN, fee-net and fill/replay evidence remains outstanding, so the
+current release must abstain from new entries. See
+[OPPORTUNITY_ATLAS_OPERATIONS.md](OPPORTUNITY_ATLAS_OPERATIONS.md) for commands,
+schemas, limits and the distinction between a complete research workflow and
+qualified production intelligence.

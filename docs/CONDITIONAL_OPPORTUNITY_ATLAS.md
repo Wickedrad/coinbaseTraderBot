@@ -568,3 +568,36 @@ significance across all candidate groups and horizons. This prototype does not
 provide executable returns, calibrated path distributions, rolling-origin
 validation or full source/known-at provenance for every individual feature.
 Do not use it as evidence of trading readiness.
+
+## Offline/paper product workflow
+
+The separate `research:opportunity-product` command now connects recorded market
+inputs to a locked artifact and paper-position queries. Its operating contract is
+documented in [OPPORTUNITY_ATLAS_OPERATIONS.md](OPPORTUNITY_ATLAS_OPERATIONS.md).
+This extends the preceding research components; it does not change their label
+semantics or reinterpret their spot forecasts as contract win probabilities.
+
+The contract model learns the joint distribution of a sustained timely move and
+this exact contract side paying. It compares the existing repository's weighted
+tanh MLP and GBDT implementations with a simpler temporal linear baseline.
+Family selection and full-parent ablations use a separate selection period;
+unsupported input families receive zero influence in a locked reduced fit, with
+their evidence retained. Independent audit groups supply explicitly qualified
+frequency bands, with abstention for unsupported coverage or stale calibration.
+
+Observed SNN rates, predictive-coding latents, errors and readouts are captured
+without mutating the network. A separate offline adapter compares S5/S6 on the
+same source tape and freezes learning at the study cutoff. A same-period
+comparison against S5 and a simpler baseline is required before retained S6
+features can qualify for paper use. The SNN governor is not repurposed as an
+unvalidated memory selector.
+
+Official settlement reconstruction reuses the existing 60-second index rule and
+preserves reported-result disagreement and missing coverage. Contract timing,
+price geometry, source/availability, observed quote depth and explicit costs
+remain distinct from TA candle timeframes. Holding an existing paper position
+compares future payout with net liquidation value; its entry cost is sunk.
+
+All artifacts remain research/paper-only, with no automatic production promotion
+or order client. Software tests and synthetic demonstrations do not qualify the
+available historical samples, establish executed profit or approve live trading.

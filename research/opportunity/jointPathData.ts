@@ -33,13 +33,13 @@ export async function sha256File(file: string) {
 const stamp = (x: number) => Number.isSafeInteger(x) && x >= 0;
 
 /** Numeric inputs only: IDs, source hashes, raw timestamps and label fields are never encoded. */
-export function encodePathFrame(frame: AtlasFeatureFrame): Record<string, number> {
-  if (frame.schema !== ATLAS_FEATURE_SCHEMA || frame.taSchema !== TANET_SCHEMA || !stamp(frame.decisionAt) || frame.decisionAt % MIN || !PATH_ASSETS.includes(frame.asset) || !['talib', 'builtin'].includes(frame.engine)) throw new Error('incompatible path feature frame');
+export function encodePathFrame(frame: AtlasFeatureFrame, allowArrivalTimeSnapshot = false): Record<string, number> {
+  if (frame.schema !== ATLAS_FEATURE_SCHEMA || frame.taSchema !== TANET_SCHEMA || !stamp(frame.decisionAt) || (!allowArrivalTimeSnapshot && frame.decisionAt % MIN) || !PATH_ASSETS.includes(frame.asset) || !['talib', 'builtin'].includes(frame.engine)) throw new Error('incompatible path feature frame');
   const out: Record<string, number> = {};
   for (const asset of PATH_ASSETS) out[`asset:${asset}`] = frame.asset === asset ? 1 : 0;
   let n = 0;
   for (const [name, group] of Object.entries(frame.groups)) {
-    if (!/^[a-z0-9_]+$/.test(name) || !['ready', 'warming', 'missing', 'stale'].includes(group.status) ||
+    if (!/^[a-z0-9_]+$/.test(name) || typeof group.source !== 'string' || !group.source || !['ready', 'warming', 'missing', 'stale'].includes(group.status) ||
         (group.knownAt !== null && (!stamp(group.knownAt) || group.knownAt > frame.decisionAt))) throw new Error('noncausal path feature group');
     for (const status of ['ready', 'warming', 'missing', 'stale']) out[`status:${name}:${status}`] = group.status === status ? 1 : 0;
     out[`age:${name}`] = group.knownAt === null ? NaN : Math.log1p((frame.decisionAt - group.knownAt) / 1000);

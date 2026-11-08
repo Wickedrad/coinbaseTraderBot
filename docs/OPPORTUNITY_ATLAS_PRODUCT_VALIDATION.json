@@ -1,0 +1,277 @@
+{
+  "schema": "atlas-paper-product-validation-v1",
+  "checkedAt": "2026-11-08T20:30:53.685807+00:00",
+  "liveTradingChanged": false,
+  "autoPromotionAdded": false,
+  "original2026HoldoutPreserved": true,
+  "localValidation": {
+    "typecheck": "passed on final source",
+    "focusedTests": {
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "files": [
+        "opportunityProduct.test.ts",
+        "opportunityContractData.test.ts",
+        "opportunityJoint.test.ts",
+        "opportunityDrive.test.ts"
+      ]
+    },
+    "repositorySuite": {
+      "tests": 1226,
+      "passed": 1217,
+      "failed": 0,
+      "skipped": 9,
+      "durationMs": 691912.849237,
+      "skipReason": "Optional PyTorch tests; torch is not installed locally",
+      "scope": "Full run before final import/domain/timestamp hardening; final hardening passed the focused run above. Exact final-commit full suite is required in GitHub CI."
+    },
+    "productionBuild": "passed; production call sites unchanged"
+  },
+  "independentSyntheticCheck": {
+    "schema": "atlas-independent-product-check-v1",
+    "synthetic": true,
+    "labels_checked": 740,
+    "category_counts": [
+      271,
+      106,
+      98,
+      265
+    ],
+    "independent_neural_forecasts": 740,
+    "maximum_probability_difference": 4.440892098500626e-16,
+    "model_id": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
+    "product_id": "eeebe467044c9ecbd799f12234c637a876e513c50d587a85716fa7296b3230ea",
+    "dataset_sha256": "3bb36a4080c72668aa8a2c20e59b14c34af067daaa070431eff7d1256cfe1549",
+    "real_market_qualification": false,
+    "live_entry_allowed": false
+  },
+  "demo": {
+    "productId": "eeebe467044c9ecbd799f12234c637a876e513c50d587a85716fa7296b3230ea",
+    "selectedModelId": "e867ffac590829edd7adc30478dac523b705b7e420d82eada0d5811df4d691b8",
+    "status": "research-fit",
+    "blockers": [
+      "Synthetic fixtures are software checks, not observed-market evidence",
+      "Contract terms require recorded venue evidence; declared/computed strikes remain research-only",
+      "Locked model lacks independent weekly predictive gain",
+      "Locked model lacks independent weekly fee-net gain under the fixed quote policy",
+      "No independently audited calibration group has sufficient coverage"
+    ],
+    "candidates": [
+      {
+        "selectionLogLoss": 0.8707015984681306,
+        "selectionRows": 100,
+        "id": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
+        "family": "smooth",
+        "included": [
+          "ta",
+          "dominance",
+          "clock",
+          "micro",
+          "daily"
+        ]
+      },
+      {
+        "selectionLogLoss": 0.9270818434822315,
+        "selectionRows": 100,
+        "id": "00a249052fee1f624d106aa0a488829cae962162281357f22be245f73e346b94",
+        "family": "trees",
+        "included": [
+          "ta",
+          "dominance",
+          "clock",
+          "micro",
+          "daily"
+        ]
+      },
+      {
+        "selectionLogLoss": 1.2342917554528174,
+        "selectionRows": 100,
+        "id": "53c063a706f6dc3fa83d9dd5390b9c7b55de8a1b078392d0e088d65295b0529d",
+        "family": "temporal-linear",
+        "included": [
+          "ta",
+          "dominance",
+          "clock",
+          "micro",
+          "daily"
+        ]
+      }
+    ],
+    "paperActions": {
+      "abstain": 1
+    },
+    "retention": [
+      {
+        "group": "ta",
+        "decision": "insufficient-evidence",
+        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
+        "ablatedModelId": "c017e1d9a8a7b1cef72848007c0ae9ae2d2bbf0f3da19b0dc45eb9ba963044ae"
+      },
+      {
+        "group": "dominance",
+        "decision": "insufficient-evidence",
+        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
+        "ablatedModelId": "2d0ba8b8eed662e8808b81e69fcba02fa2ec19e75e70ab9d7adfd84a084e065d"
+      },
+      {
+        "group": "clock",
+        "decision": "insufficient-evidence",
+        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
+        "ablatedModelId": "6a1726579e0fbb2e73b10fb5c39c03de233c437d73c910be54c96c00511f9456"
+      },
+      {
+        "group": "micro",
+        "decision": "insufficient-evidence",
+        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
+        "ablatedModelId": "0ab47fa2f90cae9a55628c4476458d9090cca70dc4f7cb0286d0a7e2fc54a33e"
+      },
+      {
+        "group": "daily",
+        "decision": "insufficient-evidence",
+        "fullParentModelId": "d94ab0f2f560cee3a0e32ffebd7d863da23232346c741711571e34c111d8e97e",
+        "ablatedModelId": "91dc8fd59eaf4c0a7fe11841ac835afa83cb7ca5079bfd15d124e94dc850a389"
+      }
+    ]
+  },
+  "codeHashes": {
+    "bot/model/calibration.ts": "9ef258cb0e113ee4cf6a32496b1804fd6ab6ef71e34df3cc79523cf218df5c4e",
+    "bot/model/trees.ts": "939a0a002a92791d27789fc4eaa29fc1274a0227ea8dd7660d534c75f3dccda5",
+    "research/gbdt.ts": "cea6d335970139d169ddfc5bf8d12adb182e1a93a21ab32cb7cf478dddee9103",
+    "research/mlp.ts": "f9adc007a830a4e342754cf20e8cc6eda95096c7d82361d3db5cebe0b7e3e943",
+    "research/opportunity/atlas.ts": "5e6bb8ddb9d2abc257471661455e3e9920ee61d075d690d3c275d6a66c3b42d6",
+    "research/opportunity/contractDataset.ts": "f9e5adc00785f169a184287bfe8a65d124c51993c89f905688daa237158b590f",
+    "research/opportunity/contractLearner.ts": "792d2635342eba2ed7ca8495f3f5a01fcb983137b1ea9018ce3f498a6a7d4a99",
+    "research/opportunity/contractStudy.ts": "a437a4c51d5c8ee6e11b44615961b27953b77c36b760a17fd9b4dda9e8f1ca19",
+    "research/opportunity/contractTiming.ts": "88a4140dcf9bf0e72a9eace21b5da0649cb6f1637ae2313d9f270b25b2cc1873",
+    "research/opportunity/decisionDataset.ts": "cf7da7f674a0561033ff35f92523975d6e8194968623008b653f0e768c69eed8",
+    "research/opportunity/decisionDatasetCli.ts": "ead745e305de9f8416ac2208d4d5096f652c90dc2d05446a8f5f6abc996b7b1c",
+    "research/opportunity/demo.ts": "6584758a268cbedfad753cae4e846eb1ed1b2e7c04242df5df9f6e43be9fe191",
+    "research/opportunity/features.ts": "850580305d673ac73aab55beeb0f028a337955d78b4872b0c7ed940de745182f",
+    "research/opportunity/featuresCli.ts": "708015bf80aa9ea4c0d28f28332d274474e4298cbd7152366539b154e0e509c0",
+    "research/opportunity/jointPathCli.ts": "1c4852fd1ed0d13818157768d54316aafd463e8ed95692b1a1954474c86c85e9",
+    "research/opportunity/jointPathData.ts": "9168e0075be716999091ca05903e7ac2cf38451ac8d919fc92de35c0bb8ebef8",
+    "research/opportunity/jointPathLearner.ts": "7f6f35cdd634b27cc1baa94535a0b96943b6b3cf28b406d4e9dc9fb3322b6198",
+    "research/opportunity/minuteCsv.ts": "a2effdf502dee260c4feb8fdc99b8accec7d42a6820de096fb9ec5f88eb738d8",
+    "research/opportunity/movement.ts": "6aa970196956aab64b7ac1e1f3c03f523acbea38aa9ca27a8f5a94cd448ca75a",
+    "research/opportunity/paper.ts": "79bb1582ad6e105cee0095008aab09489b631bb3ce95398056bcb455c13270be",
+    "research/opportunity/pathLabels.ts": "31cd05dcac25f031e01d6ac2f86a9c39fbd06da67172a9f8561d79ac668d7b47",
+    "research/opportunity/productCli.ts": "60f86414840068d85bfe1fcd8aba121fae0775b82f9b8e8c081a9e63531e61dc",
+    "research/opportunity/recordingImport.ts": "64e2ce1b0dc62f942aebcaf903648f1e1604ced1c766b74f2d6730a31033dbe0",
+    "research/opportunity/registry.ts": "8317a7d2adc5de378d4dcd698b3d8ad4f45bbeb813e1503c0c2da33381d310ff",
+    "research/opportunity/snnComparison.ts": "6342eb7455ca2d63dda6d535a00e24536a7c3c5ecf3df4049d5b36be331cefb5",
+    "research/opportunity/snnReplay.ts": "202e27b6d35e9317623273938132d05cb1c9e7637ca1a93f5b4df5c542019e63",
+    "research/opportunity/snnState.ts": "915e666638ce73e4ec69bef37094e4cb980c1b6af16cb8b7e66747d573b21428",
+    "research/opportunity/train.ts": "80fdd8df543f19106214bfd18e9daf902c9480f56197b03499661b205654a9ca",
+    "research/opportunity/tvHistory.ts": "21ff74e7e64aedc980a78e75f05b7ec83ed5188d78567413e3b142056c98e483"
+  },
+  "archiveSearch": {
+    "successfulRun": 42517257689,
+    "metadataSha256": "339cbf55055cfbf10a9707939ee4a8c241dcd254b675bae37214369e5b9890d0",
+    "readOnly": true,
+    "fileContentsVerified": false,
+    "roots": [
+      {
+        "label": "configured-archive",
+        "accessible": true,
+        "files": 1182,
+        "truncated": true,
+        "errors": [],
+        "recordingNames": [
+          "recordings/md-2026-10-21.jsonl.gz",
+          "recordings/md-2026-10-21.mdc",
+          "recordings/md-2026-10-22.jsonl.gz",
+          "recordings/md-2026-10-22.mdc",
+          "recordings/md-2026-10-23.jsonl.gz",
+          "recordings/md-2026-10-23.mdc",
+          "recordings/md-2026-10-24.jsonl.gz",
+          "recordings/md-2026-10-24.mdc",
+          "recordings/md-2026-10-25.jsonl.gz",
+          "recordings/md-2026-10-25.mdc",
+          "recordings/md-2026-10-26.jsonl.gz",
+          "recordings/md-2026-10-26.mdc",
+          "recordings/md-2026-10-27.jsonl.gz",
+          "recordings/md-2026-10-27.mdc",
+          "recordings/md-2026-10-28.jsonl.gz",
+          "recordings/md-2026-10-28.mdc",
+          "recordings/md-2026-10-29.jsonl.gz",
+          "recordings/md-2026-10-29.mdc",
+          "recordings/md-2026-10-30.jsonl.gz",
+          "recordings/md-2026-10-30.mdc",
+          "recordings/md-2026-10-31.jsonl.gz",
+          "recordings/md-2026-10-31.mdc",
+          "recordings/md-2026-11-01.jsonl.gz",
+          "recordings/md-2026-11-01.mdc",
+          "recordings/md-2026-11-02.jsonl.gz",
+          "recordings/md-2026-11-02.mdc",
+          "recordings/md-2026-11-03.jsonl.gz",
+          "recordings/md-2026-11-03.mdc",
+          "recordings/md-2026-11-04.jsonl.gz",
+          "recordings/md-2026-11-04.mdc",
+          "recordings/md-2026-11-05.jsonl.gz",
+          "recordings/md-2026-11-05.mdc",
+          "recordings/md-2026-11-06.jsonl.gz",
+          "recordings/md-2026-11-06.mdc",
+          "recordings/md-2026-11-07.jsonl.gz",
+          "recordings/md-2026-11-07.mdc"
+        ]
+      },
+      {
+        "label": "linked-folder",
+        "accessible": true,
+        "files": 1182,
+        "truncated": true,
+        "errors": [],
+        "recordingNames": [
+          "recordings/md-2026-10-21.jsonl.gz",
+          "recordings/md-2026-10-21.mdc",
+          "recordings/md-2026-10-22.jsonl.gz",
+          "recordings/md-2026-10-22.mdc",
+          "recordings/md-2026-10-23.jsonl.gz",
+          "recordings/md-2026-10-23.mdc",
+          "recordings/md-2026-10-24.jsonl.gz",
+          "recordings/md-2026-10-24.mdc",
+          "recordings/md-2026-10-25.jsonl.gz",
+          "recordings/md-2026-10-25.mdc",
+          "recordings/md-2026-10-26.jsonl.gz",
+          "recordings/md-2026-10-26.mdc",
+          "recordings/md-2026-10-27.jsonl.gz",
+          "recordings/md-2026-10-27.mdc",
+          "recordings/md-2026-10-28.jsonl.gz",
+          "recordings/md-2026-10-28.mdc",
+          "recordings/md-2026-10-29.jsonl.gz",
+          "recordings/md-2026-10-29.mdc",
+          "recordings/md-2026-10-30.jsonl.gz",
+          "recordings/md-2026-10-30.mdc",
+          "recordings/md-2026-10-31.jsonl.gz",
+          "recordings/md-2026-10-31.mdc",
+          "recordings/md-2026-11-01.jsonl.gz",
+          "recordings/md-2026-11-01.mdc",
+          "recordings/md-2026-11-02.jsonl.gz",
+          "recordings/md-2026-11-02.mdc",
+          "recordings/md-2026-11-03.jsonl.gz",
+          "recordings/md-2026-11-03.mdc",
+          "recordings/md-2026-11-04.jsonl.gz",
+          "recordings/md-2026-11-04.mdc",
+          "recordings/md-2026-11-05.jsonl.gz",
+          "recordings/md-2026-11-05.mdc",
+          "recordings/md-2026-11-06.jsonl.gz",
+          "recordings/md-2026-11-06.mdc",
+          "recordings/md-2026-11-07.jsonl.gz",
+          "recordings/md-2026-11-07.mdc"
+        ]
+      }
+    ],
+    "earlierRecursiveRun": {
+      "id": 42516136739,
+      "status": "catalog-timeout; inventory artifact still recorded known minute files",
+      "absenceEstablished": false
+    }
+  },
+  "qualification": {
+    "observedMarketModelQualified": false,
+    "executedProfitVerified": false,
+    "independentSnnEdgeVerified": false,
+    "nextEvidence": "An approved sufficiently deep joined study and forward paper evidence; existing located minute/recording archives are in frozen 2026"
+  }
+}
