@@ -67,3 +67,22 @@ test('unknown names and parent-path names cannot redirect discovery outside the 
   assert.equal(r.report.roots[0].accessible, true);
   assert.equal(r.report.roots[0].truncated, false);
 });
+
+test('Yahoo Finance and other stored history are inventoried without being relabeled as tvdatafeed', () => {
+  const r = simulate({
+    'gdrive:kalshi-bot-archive': [dir('raw')],
+    'gdrive:kalshi-bot-archive/raw': [dir('server-history')],
+    'gdrive:kalshi-bot-archive/raw/server-history': [dir('yahoo'), dir('Yahoo Finance'), dir('binance'), dir('coinbase')],
+    'gdrive:kalshi-bot-archive/raw/server-history/yahoo': [file('BTC/1d.csv', 222)],
+    'gdrive:kalshi-bot-archive/raw/server-history/Yahoo Finance': [file('ETH/1h.csv', 333)],
+    'gdrive:kalshi-bot-archive/raw/server-history/binance': [file('BTC/15m.csv', 444)],
+    'gdrive:kalshi-bot-archive/raw/server-history/coinbase': [file('ETH/1m.csv', 555)],
+  });
+  const root = r.report.roots[0];
+  assert.equal(root.files.length, 4);
+  assert.equal(root.yahoo_layout_files.length, 2);
+  assert.deepEqual(root.tv_minute_candidates, []);
+  assert.deepEqual(root.other_minute_files, ['raw/server-history/coinbase/ETH/1m.csv']);
+  assert.ok(root.files.filter((f: { source_namespace: string }) => /yahoo/i.test(f.source_namespace))
+    .every((f: { source_evidence: string }) => f.source_evidence === 'yahoo-layout'));
+});

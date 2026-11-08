@@ -7,7 +7,10 @@ import sys
 import time
 
 CONTAINERS = {"raw", "history", "server-history", "data", "incoming", "tradingview", "tvspot", "tvdatafeed", "tv-history", "kalshi-bot-archive"}
-NATIVE_MINUTES = {"binance-1m", "coinbase-1m"}
+HISTORY_SOURCES = {"binance", "binance-1m", "binance-um", "binance-index", "binance-oi",
+                   "coinbase", "coinbase-1m", "bitstamp", "kraken", "gemini", "cdd", "bittrex", "other",
+                   "yahoo", "yfinance", "yahoo-finance", "yahoo-history"}
+YAHOO_SOURCES = {"yahoo", "yfinance", "yahoo-finance", "yahoo-history"}
 
 
 def classify_error(text):
@@ -46,7 +49,7 @@ def inventory(folder_id=None, list_fn=listing):
             raise ValueError("invalid shared folder id")
         roots.append(("linked-folder", "gdrive:", folder_id))
     report = {"schema": "atlas-drive-inventory-v1", "read_only": True,
-              "scope": "project archive containers and TV/native-minute namespaces; metadata only", "roots": []}
+              "scope": "project archive containers and known market-history source namespaces; metadata only", "roots": []}
     deadline = time.monotonic() + 240
     for label, root, override in roots:
         result = {"label": label, "accessible": False, "files": [], "scanned_folders": [], "errors": [], "truncated": False}
@@ -65,12 +68,13 @@ def inventory(folder_id=None, list_fn=listing):
                 result["accessible"] = True
             for entry in entries:
                 name = entry.get("Name", "")
-                if not isinstance(name, str) or name in (".", "..") or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                if not isinstance(name, str) or name in (".", "..") or not re.fullmatch(r"[A-Za-z0-9_. -]+", name):
                     continue
                 child_rel = f"{relative}/{name}".lstrip("/")
                 child = f"{remote.rstrip('/')}/{name}" if not remote.endswith(":") else remote + name
-                tv = name in ("tradingview", "tvspot", "tvdatafeed", "tv-history") or name.startswith("tvdatafeed-")
-                if entry.get("IsDir") and (tv or name in NATIVE_MINUTES):
+                canonical = name.lower().replace("_", "-").replace(" ", "-")
+                tv = canonical in ("tradingview", "tvspot", "tvdatafeed", "tv-history") or canonical.startswith("tvdatafeed-")
+                if entry.get("IsDir") and (tv or canonical in HISTORY_SOURCES):
                     files, error = list_fn(child, True, override)
                     if error:
                         result["errors"].append({"path": child_rel, "error": error})
@@ -83,19 +87,21 @@ def inventory(folder_id=None, list_fn=listing):
                         minute = bool(re.search(r"(?:^|[/_-])1m(?:[/_.-]|$)", file_path))
                         result["files"].append({"path": f"{child_rel}/{file_path}", "size_bytes": file.get("Size"),
                                                 "modified": file.get("ModTime"), "minute_named": minute,
-                                                "source_evidence": "tv-layout" if tv else "non-tv-layout",
+                                                "source_namespace": name,
+                                                "source_evidence": "tv-layout" if tv else "yahoo-layout" if canonical in YAHOO_SOURCES else "non-tv-layout",
                                                 "provenance_verified": False})
                         if len(result["files"]) >= 5000:
                             result["truncated"] = True
                             break
-                elif entry.get("IsDir") and name in CONTAINERS and depth < 4:
+                elif entry.get("IsDir") and canonical in CONTAINERS and depth < 4:
                     queue.append((child, child_rel, depth + 1))
             if result["truncated"]:
                 break
         if queue:
             result["truncated"] = True
         result["tv_minute_candidates"] = [f["path"] for f in result["files"] if f["minute_named"] and f["source_evidence"] == "tv-layout"]
-        result["other_minute_files"] = [f["path"] for f in result["files"] if f["minute_named"] and f["source_evidence"] == "non-tv-layout"]
+        result["other_minute_files"] = [f["path"] for f in result["files"] if f["minute_named"] and f["source_evidence"] != "tv-layout"]
+        result["yahoo_layout_files"] = [f["path"] for f in result["files"] if f["source_evidence"] == "yahoo-layout"]
         report["roots"].append(result)
     return report
 

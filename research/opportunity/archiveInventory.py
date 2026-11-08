@@ -74,12 +74,11 @@ def inventory(root, incoming=None, max_files=5000):
         for source in sorted(root.iterdir()):
             if not source.is_dir() or not source.resolve().is_relative_to(root.resolve()):
                 continue
-            tv = source.name in ("tradingview", "tvspot") or source.name.startswith("tvdatafeed-")
             for asset in sorted(source.iterdir()):
                 if not asset.is_dir() or not asset.resolve().is_relative_to(root.resolve()):
                     continue
                 for file in sorted(asset.glob("*.csv")):
-                    if file.stem in TIMEFRAMES and (tv or file.stem == "1m"):
+                    if file.stem in TIMEFRAMES:
                         candidates.append((file, root, source.name, asset.name, file.stem))
     if incoming and Path(incoming).expanduser().is_dir():
         raw = Path(incoming).expanduser()

@@ -81,6 +81,19 @@ test('inventory samples only the header/tail of large files and fails clearly wh
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('server inventory includes coarser Yahoo and exchange history and retains each source namespace', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-inventory-'));
+  try {
+    fixture(root, 'yahoo/BTC/1d.csv'); fixture(root, 'yahoo/ETH/1d.csv');
+    fixture(root, 'binance/BTC/15m.csv'); fixture(root, 'coinbase/BTC/1h.csv');
+    const r = invoke(root, path.join(root, 'missing'));
+    assert.equal(r.status, 0, r.stderr); assert.equal(r.report.files.length, 4);
+    assert.deepEqual(r.report.files.filter((f: { source: string }) => f.source === 'yahoo').map((f: { asset: string }) => f.asset), ['BTC', 'ETH']);
+    assert.ok(r.report.files.every((f: { tv_evidence: string }) => f.tv_evidence === 'non-tv-layout'));
+    assert.deepEqual(r.report.tv_minute_candidates, []);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('inventory mode excludes every existing diagnostics/repair/study job for all flag combinations', () => {
   const yaml = fs.readFileSync('.github/workflows/diagnose.yml', 'utf8');
   const jobs = new Map([...yaml.matchAll(/^  ([a-z-]+):\n    if: (.+)$/gm)].map((m) => [m[1], m[2]]));
