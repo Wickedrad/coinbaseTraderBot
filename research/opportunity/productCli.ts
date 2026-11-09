@@ -50,19 +50,20 @@ function newDestination(file: string) {
   if (!allowed.some((root) => dest.startsWith(root + path.sep)) || fs.existsSync(dest)) throw new Error('output must be a new path under research/out or the system temporary directory');
   return dest;
 }
-async function codeHashes() {
-  const names = new Set(['package.json', 'package-lock.json', 'tsconfig.json', 'research/mlp.ts', 'research/gbdt.ts', 'research/stats.ts', 'research/snnTape.ts', 'research/snnReplay.ts', 'research/replay.ts']);
+export async function codeHashes() {
+  const names = new Set(['package.json', 'package-lock.json', 'tsconfig.json', 'research/mlp.ts', 'research/gbdt.ts', 'research/stats.ts', 'research/snnTape.ts', 'research/snnReplay.ts', 'research/replay.ts',
+    'bot/fees.ts', 'bot/kalshi/feeSchedule.ts', 'bot/risk/quotaPacer.ts', 'bot/strategy/fairValueStrategy.ts']);
   for (const dir of ['research/opportunity', 'research/history', 'bot/snn', 'bot/ta', 'bot/model', 'bot/util', 'bot/marketdata'])
     for (const name of fs.readdirSync(path.join(repo, dir))) if (name.endsWith('.ts') || name.endsWith('.py')) names.add(`${dir}/${name}`);
   const out: Record<string, string> = {};
   for (const name of [...names].sort()) out[name] = await sha256File(path.join(repo, name));
   return out;
 }
-async function unchanged(inputs: Record<string, string>, code: Record<string, string>) {
+export async function unchanged(inputs: Record<string, string>, code: Record<string, string>) {
   for (const [name, hash] of Object.entries(inputs)) if (await sha256File(name) !== hash) throw new Error('input changed during processing');
   for (const [name, hash] of Object.entries(code)) if (await sha256File(path.join(repo, name)) !== hash) throw new Error('code changed during processing');
 }
-async function atomicDirectory<T>(outDir: string, action: (staging: string) => Promise<T>) {
+export async function atomicDirectory<T>(outDir: string, action: (staging: string) => Promise<T>) {
   const out = newDestination(outDir);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   const staging = `${out}.${randomUUID()}.tmp`; fs.mkdirSync(staging);
@@ -72,7 +73,7 @@ async function atomicDirectory<T>(outDir: string, action: (staging: string) => P
     fs.renameSync(staging, out); return result;
   } catch (e) { fs.rmSync(staging, { recursive: true, force: true }); throw e; }
 }
-async function readJsonLines<T>(file: string, maxRows = 100000): Promise<T[]> {
+export async function readJsonLines<T>(file: string, maxRows = 100000): Promise<T[]> {
   if (fs.statSync(file).size > 512 * 1024 * 1024) throw new Error('JSONL input exceeds 512 MiB');
   const input = fs.createReadStream(file), reader = readline.createInterface({ input, crlfDelay: Infinity }), rows: T[] = [];
   try { for await (const line of reader) { if (line.length > 2 * 1024 * 1024) throw new Error('JSONL row exceeds 2 MiB');
@@ -82,11 +83,11 @@ async function readJsonLines<T>(file: string, maxRows = 100000): Promise<T[]> {
 }
 /** Audit an arbitrarily long time-ordered index stream, retaining only predeclared
  * feature/label windows. The sampling schedule is fixed before reading outcomes. */
-async function readNeededIndex(file: string, decisions: RecordedDecision[], asset: string, reference: string, finalFrom: number): Promise<OfficialPrint[]> {
+export async function readNeededIndex(file: string, decisions: RecordedDecision[], asset: string, reference: string, finalFrom: number, plannedThrough?: (d: RecordedDecision) => number): Promise<OfficialPrint[]> {
   const spans = decisions.filter((d) => d.contract.asset === asset && d.contract.settlementReference === reference).map((d) => {
-    const at = d.asOf ?? d.frame.decisionAt, reserved = at >= finalFrom || d.contract.closeTime >= finalFrom;
+    const at = d.asOf ?? d.frame.decisionAt, through = plannedThrough?.(d) ?? d.contract.closeTime, reserved = at >= finalFrom || through >= finalFrom;
     return { from: Math.min(at - d.event.priorWindowSec * 1000 - 3000, d.contract.closeTime - (d.contract.averagingSec ?? 60) * 1000 - 3000),
-      through: reserved ? at : d.contract.closeTime };
+      through: reserved ? at : through };
   }).sort((a, b) => a.from - b.from);
   const windows: Array<{ from: number; through: number }> = [];
   for (const s of spans) { const last = windows.at(-1); if (last && s.from <= last.through) last.through = Math.max(last.through, s.through); else windows.push({ ...s }); }
@@ -104,7 +105,7 @@ async function readNeededIndex(file: string, decisions: RecordedDecision[], asse
   } } finally { reader.close(); input.destroy(); }
   return out;
 }
-async function source(base: string, r: Receipt) {
+export async function source(base: string, r: Receipt) {
   if (!r || path.isAbsolute(r.file) || r.file.split(/[\\/]/).includes('..') || !/^[a-f0-9]{64}$/.test(r.sha256)) throw new Error('invalid source receipt');
   const file = fs.realpathSync(path.join(base, r.file));
   if (!file.startsWith(fs.realpathSync(base) + path.sep) || await sha256File(file) !== r.sha256) throw new Error('source path/hash mismatch');

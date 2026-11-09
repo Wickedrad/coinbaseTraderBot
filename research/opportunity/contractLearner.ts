@@ -43,7 +43,7 @@ export interface ContractFitOptions { epochs?: number; hidden?: number; trees?: 
 const WEEK = 7 * 86400000;
 export function featureFamily(name: string): FeatureFamily | null {
   if (name.startsWith('snn:')) return 'snn';
-  if (name.startsWith('contract:') || name.startsWith('missing:contract:') || name.startsWith('asset:')) return null;
+  if (name.startsWith('movement:') || name.startsWith('contract:') || name.startsWith('missing:contract:') || name.startsWith('asset:')) return null;
   if (/btcd|usdtd|dominance/.test(name)) return 'dominance';
   if (name.includes('clock')) return 'clock';
   if (name.includes('micro') || name.includes('cross_asset') || name.includes('funding')) return 'micro';
@@ -59,7 +59,7 @@ export const contractSupportKey = (o: ContractObservation, withSnn = true) => di
   o.event.thresholdAtr || o.event.priorDriftAtr ? o.anchor?.definition : null, o.termsBasis, withSnn ? snnIdentity(o) : null]);
 const moneyness = (o: ContractObservation) => Math.log(o.index.value / (o.query.contract.terms.strike ?? o.query.contract.terms.cap!));
 const capMoneyness = (o: ContractObservation) => o.query.contract.terms.cap ? Math.log(o.index.value / o.query.contract.terms.cap) : null;
-const frameSources = (o: ContractObservation) => Object.fromEntries(Object.entries(o.frame.groups).map(([k, g]) => [k, g.source]).sort(([a], [b]) => a.localeCompare(b)));
+export const frameSources = (o: ContractObservation) => Object.fromEntries(Object.entries(o.frame.groups).map(([k, g]) => [k, g.source]).sort(([a], [b]) => a.localeCompare(b)));
 export function validateStudyPlan(p: ContractStudyPlan) {
   const policy = studyPolicy(p.studyPolicyId);
   const windows = [p.train, p.stopping, p.calibration, p.selection, p.audit];
@@ -99,12 +99,14 @@ const target = (r: EncodedContractRow, name: HeadName) => Number(name === 'move'
 function raw(h: HeadModel, x: number[]) {
   return h.kind === 'prior' ? h.p : sigmoid(h.kind === 'trees' ? gbdtLogit(h.model, x) : predictLogits(h.layers, h.norm, [x], -1)[0]);
 }
-function fitHead(name: HeadName, family: ModelFamily, rows: EncodedContractRow[][], names: string[], options: ContractFitOptions): ContractHead {
-  const [tr, st, ca] = rows.map((rs) => rs.filter((r) => relevant(r, name)));
-  const X = (rs: EncodedContractRow[]) => rs.map((r) => names.map((n) => r.values[n] ?? NaN));
-  const Y = (rs: EncodedContractRow[]) => rs.map((r) => target(r, name));
-  const W = (rs: EncodedContractRow[]) => rs.map((r) => r.weight);
-  const sw = tr.reduce((s, r) => s + r.weight, 0), sy = tr.reduce((s, r) => s + r.weight * target(r, name), 0);
+export interface BinaryResponseRow { values: Record<string, number>; target: number; weight: number; eventKey: string }
+export function fitBinaryResponse(family: ModelFamily, rows: BinaryResponseRow[][], names: string[], options: ContractFitOptions = {}): ContractHead {
+  const [tr, st, ca] = rows;
+  if (rows.length !== 3 || !names.length || rows.some((rs) => rs.some((r) => ![0, 1].includes(r.target) || !(r.weight > 0) || !Number.isFinite(r.weight)))) throw new Error('invalid binary response rows');
+  const X = (rs: BinaryResponseRow[]) => rs.map((r) => names.map((n) => r.values[n] ?? NaN));
+  const Y = (rs: BinaryResponseRow[]) => rs.map((r) => r.target);
+  const W = (rs: BinaryResponseRow[]) => rs.map((r) => r.weight);
+  const sw = tr.reduce((s, r) => s + r.weight, 0), sy = tr.reduce((s, r) => s + r.weight * r.target, 0);
   const prior = (sy + 0.5) / (sw + 1), events = new Set(tr.map((r) => r.eventKey)).size;
   let model: HeadModel = { kind: 'prior', p: prior };
   if (events >= 20 && st.length >= 10 && new Set(Y(tr)).size === 2) {
@@ -131,6 +133,11 @@ function fitHead(name: HeadName, family: ModelFamily, rows: EncodedContractRow[]
   }
   return h;
 }
+export const binaryResponseProbability = (h: ContractHead, x: number[]) => applyBeta(raw(h.model, x), h.calibration);
+function fitHead(name: HeadName, family: ModelFamily, rows: EncodedContractRow[][], names: string[], options: ContractFitOptions): ContractHead {
+  return fitBinaryResponse(family, rows.map((rs) => rs.filter((r) => relevant(r, name)).map((r) => ({ values: r.values, target: target(r, name), weight: r.weight, eventKey: r.eventKey }))), names, options);
+}
+
 export function fitContractModel(rows: { train: EncodedContractRow[]; stopping: EncodedContractRow[]; calibration: EncodedContractRow[] },
   plan: ContractStudyPlan, family: ModelFamily, included: FeatureFamily[], options: ContractFitOptions = {}): ContractModel {
   validateStudyPlan(plan);
@@ -182,7 +189,7 @@ export function contractProbabilities(model: ContractModel, values: Record<strin
   return { neither: (1 - move) * (1 - paysNoMove), moveOnly: move * (1 - paysMove), paysOnly: (1 - move) * paysNoMove, both: move * paysMove };
 }
 /** An unseen missingness pattern must not receive confidence by mean imputation. */
-export function missingRequiredInputs(model: ContractModel, values: Record<string, number>) {
+export function missingRequiredInputs(model: Pick<ContractModel, 'requiredFiniteFeatures'>, values: Record<string, number>) {
   return model.requiredFiniteFeatures.filter((name) => !Number.isFinite(values[name]));
 }
 export function contractModelSupports(model: ContractModel, o: ContractObservation) {
@@ -211,29 +218,7 @@ export function validateContractModel(m: ContractModel) {
         s.minimumFrameAgeSec < 0 || s.minimumFrameAgeSec > s.maximumFrameAgeSec ||
         s.minimumRemainingSec <= 0 || s.maximumRemainingSec > 86400 || s.minimumRemainingSec > s.maximumRemainingSec ||
         s.minimumMoneyness > s.maximumMoneyness || s.minimumMoveBps <= 0 || s.minimumMoveBps > s.maximumMoveBps)) throw new Error('invalid contract model/ID');
-  for (const n of HEADS) {
-    const h = m.heads[n], a = h.model;
-    if (![h.calibration.a, h.calibration.b, h.calibration.c].every(Number.isFinite) || h.calibration.a < 0 || h.calibration.b < 0) throw new Error('invalid contract calibration');
-    if (a.kind === 'prior') { if (!(a.p > 0 && a.p < 1)) throw new Error('invalid contract prior'); }
-    else if (a.kind === 'trees') {
-      validateGbdt(a.model, m.featureNames.length);
-      for (const tree of a.model.trees) {
-        const visit = (i: number, seen: Set<number>) => {
-          if (!Number.isInteger(i) || seen.has(i) || seen.size > 32 || !tree[i]) throw new Error('invalid or cyclic contract tree');
-          const node = tree[i]; if (node.f < 0) return;
-          const next = new Set(seen).add(i); visit(node.l, next); visit(node.r, next);
-        }; visit(0, new Set());
-      }
-    } else if (a.kind === 'smooth') {
-      if (a.norm.mean.length !== m.featureNames.length || a.norm.std.length !== m.featureNames.length || a.norm.mean.some((v) => !Number.isFinite(v)) || a.norm.std.some((v) => !Number.isFinite(v) || v <= 0) || !a.layers.length || a.layers.length > 2) throw new Error('invalid contract normalization');
-      let inputs = m.featureNames.length;
-      for (const l of a.layers) {
-        if (!['linear', 'tanh'].includes(l.activation ?? '') || !l.weights.length || l.weights.length !== l.bias.length || l.weights.some((r) => r.length !== inputs || r.some((v) => !Number.isFinite(v))) || l.bias.some((v) => !Number.isFinite(v))) throw new Error('invalid contract dense layer');
-        inputs = l.bias.length;
-      }
-      if (inputs !== 1) throw new Error('invalid contract output');
-    } else throw new Error('unknown contract head');
-  }
+  for (const n of HEADS) validateBinaryResponse(m.heads[n], m.featureNames.length);
 }
 export interface ContractScore { key: string; at: number; week: number; eventKey: string; weight: number; loss: number; brier: number; p: JointContractProbabilities; row: EncodedContractRow }
 export function scoreContractModel(m: ContractModel, rows: EncodedContractRow[]): ContractScore[] {
@@ -243,4 +228,30 @@ export function scoreContractModel(m: ContractModel, rows: EncodedContractRow[])
     return { key: r.observation.id, at: r.observation.query.asOf, week: Math.floor(r.observation.query.asOf / WEEK), eventKey: r.eventKey, weight: r.weight,
       loss: -Math.log(Math.max(1e-9, p[actual])), brier: keys.reduce((s, k) => s + (p[k] - Number(k === actual)) ** 2, 0), p, row: r };
   });
+}
+
+/** Shared validation for the existing contract heads and independent movement head. */
+export function validateBinaryResponse(h: ContractHead, inputCount: number) {
+  const a = h.model;
+  if (typeof h.calibrationFitted !== 'boolean' || !Number.isSafeInteger(h.trainingEvents) || h.trainingEvents < 0) throw new Error('invalid binary response evidence');
+    if (![h.calibration.a, h.calibration.b, h.calibration.c].every(Number.isFinite) || h.calibration.a < 0 || h.calibration.b < 0) throw new Error('invalid contract calibration');
+    if (a.kind === 'prior') { if (!(a.p > 0 && a.p < 1)) throw new Error('invalid contract prior'); }
+    else if (a.kind === 'trees') {
+      validateGbdt(a.model, inputCount);
+      for (const tree of a.model.trees) {
+        const visit = (i: number, seen: Set<number>) => {
+          if (!Number.isInteger(i) || seen.has(i) || seen.size > 32 || !tree[i]) throw new Error('invalid or cyclic contract tree');
+          const node = tree[i]; if (node.f < 0) return;
+          const next = new Set(seen).add(i); visit(node.l, next); visit(node.r, next);
+        }; visit(0, new Set());
+      }
+    } else if (a.kind === 'smooth') {
+      if (a.norm.mean.length !== inputCount || a.norm.std.length !== inputCount || a.norm.mean.some((v) => !Number.isFinite(v)) || a.norm.std.some((v) => !Number.isFinite(v) || v <= 0) || !a.layers.length || a.layers.length > 2) throw new Error('invalid contract normalization');
+      let inputs = inputCount;
+      for (const l of a.layers) {
+        if (!['linear', 'tanh'].includes(l.activation ?? '') || !l.weights.length || l.weights.length !== l.bias.length || l.weights.some((r) => r.length !== inputs || r.some((v) => !Number.isFinite(v))) || l.bias.some((v) => !Number.isFinite(v))) throw new Error('invalid contract dense layer');
+        inputs = l.bias.length;
+      }
+      if (inputs !== 1) throw new Error('invalid contract output');
+    } else throw new Error('unknown contract head');
 }

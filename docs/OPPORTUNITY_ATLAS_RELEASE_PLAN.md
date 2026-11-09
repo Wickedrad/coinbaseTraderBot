@@ -1,5 +1,11 @@
 # Opportunity Atlas release acceptance
 
+The owner clarified that the predictive requirement is reliable advance movement.
+Normal profit-taking uses the existing dynamic $4.50/hour clock and maintained
+Kalshi fee schedule. Settlement prediction is a separate diagnostic; profitable
+positions may use the configured final-window exception. See
+[the updated objective and commands](OPPORTUNITY_ATLAS_PROFIT_OBJECTIVE.md).
+
 The owner authorized continuous implementation through a finished product. The
 core workflow merged in PR #306; PR #307 verifies the recorded-input follow-up.
 Intermediate components do not require separate approval.
@@ -81,7 +87,7 @@ also passed. The final evidence update changes documentation only.
 The software checklist is separate from these unfulfilled evidence requirements:
 
 - [ ] Adequate observed training/development coverage under an approved study plan.
-- [ ] Independent predictive, conditional, S5/S6 and fee-net qualification.
+- [ ] Independent advance-movement predictive/calibration and conditional S5/S6 evidence.
 - [ ] Measured venue fill/replay fidelity and a completed forward paper trial.
 - [ ] Owner-approved production integration, deployment and live enablement.
 

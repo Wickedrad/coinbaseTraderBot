@@ -1,5 +1,12 @@
 # Codex handoff: rebuild the historical learning pipeline toward conditional price-path intelligence
 
+The owner clarified on November 9 that the required predictive edge is reliable
+advance price movement. The existing fee-aware $4.50/hour profit pacer owns normal
+sales; settlement is the profitable late-window exception. Movement qualification
+and conditional/SNN retention must not require settlement-win or fee-net
+settlement predictions. This clarification supersedes those older objective
+requirements below. See [the current objective](OPPORTUNITY_ATLAS_PROFIT_OBJECTIVE.md).
+
 Current implementation and validation are described in
 [the operating guide](OPPORTUNITY_ATLAS_OPERATIONS.md) and
 [release acceptance](OPPORTUNITY_ATLAS_RELEASE_PLAN.md). This handoff and its

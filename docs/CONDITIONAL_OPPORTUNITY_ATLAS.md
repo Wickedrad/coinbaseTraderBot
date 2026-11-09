@@ -1,5 +1,9 @@
 # Conditional Opportunity Atlas — historical discovery architecture
 
+The current primary objective is advance movement reliability, paired with the
+existing fee-aware hourly profit exits. Settlement studies remain diagnostics.
+See [the owner's clarified objective](OPPORTUNITY_ATLAS_PROFIT_OBJECTIVE.md).
+
 For current commands, capabilities and evidence, see
 [the operating guide](OPPORTUNITY_ATLAS_OPERATIONS.md) and
 [release acceptance](OPPORTUNITY_ATLAS_RELEASE_PLAN.md). The phase notes below

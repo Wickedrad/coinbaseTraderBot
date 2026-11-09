@@ -34,20 +34,27 @@ function realized(s: ContractScore, policy: PaperPolicy): number | null {
 }
 /** Paired UTC-week blocks; the same row/event weights and the same fixed execution policy.
  * Bootstrap and sign flips assume reasonably independent/exchangeable week blocks. */
-export function pairedContractEvidence(full: ContractScore[], parent: ContractScore[], economicPolicy?: PaperPolicy): PairedEvidence {
+export interface PredictiveScore { key: string; week: number; weight: number; loss: number }
+export function pairedPredictiveEvidence(full: PredictiveScore[], parent: PredictiveScore[]): PairedEvidence {
   const lookup = new Map(parent.map((s) => [s.key, s])), blocks = new Map<number, { sum: number; weight: number }>();
   let rows = 0;
   for (const s of full) {
     const b = lookup.get(s.key); if (!b) continue;
-    const a = economicPolicy ? realized(s, economicPolicy) : s.loss, p = economicPolicy ? realized(b, economicPolicy) : b.loss;
-    if (a === null || p === null) continue;
-    const gain = economicPolicy ? a - p : p - a, v = blocks.get(s.week) ?? { sum: 0, weight: 0 };
+    const gain = b.loss - s.loss, v = blocks.get(s.week) ?? { sum: 0, weight: 0 };
     v.sum += gain * s.weight; v.weight += s.weight; blocks.set(s.week, v); rows++;
   }
   const gains = [...blocks.values()].map((b) => b.sum / b.weight);
   return { rows, weeks: gains.length, gain: gains.length >= 8 ? bootstrapMeanCi(gains, 0.05, 2000, 91) : null,
     p: gains.length >= 8 ? signFlip(gains) : null };
 }
+export function pairedContractEvidence(full: ContractScore[], parent: ContractScore[], economicPolicy?: PaperPolicy): PairedEvidence {
+  if (!economicPolicy) return pairedPredictiveEvidence(full, parent);
+  const losses = (rows: ContractScore[]) => rows.flatMap((s) => {
+    const value = realized(s, economicPolicy); return value === null ? [] : [{ ...s, loss: -value }];
+  });
+  return pairedPredictiveEvidence(losses(full), losses(parent));
+}
+
 export function holmRetained(p: Array<number | null>, alpha = 0.05, registeredParentFamilies = 1) {
   if (!Number.isInteger(registeredParentFamilies) || registeredParentFamilies < 1 || registeredParentFamilies > 64) throw new Error('invalid parent-family trial count');
   const all = [...p, ...new Array(p.length * (registeredParentFamilies - 1)).fill(null)];
