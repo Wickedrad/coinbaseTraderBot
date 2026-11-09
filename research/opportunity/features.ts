@@ -14,6 +14,7 @@ const optsFor = (tf: Timeframe) => OPTIONS[tf] ?? { sma200: true, vwap: true };
 const windowFor = (tf: Timeframe) => tf === '1m' ? 1440 : tf === '5m' ? 288 : tf === '1d' ? TANET_D1_BARS : tf === '15m' ? TANET_M15_BARS : TANET_H1_BARS;
 export const ATLAS_FEATURE_WINDOWS = Object.fromEntries(TIMEFRAMES.map((tf) => [tf, windowFor(tf)]));
 export interface FeatureSource { source: string; sha256: string | null }
+export interface AsOfFeatureSeries { at(decisionAt: number): Readonly<FeatureGroup> }
 export interface FeatureGroup extends FeatureSource {
   timeframe: Timeframe | 'clock' | 'micro'; status: 'ready' | 'warming' | 'missing' | 'stale';
   bars: number; firstOpen: number | null; lastOpen: number | null; knownAt: number | null;
@@ -88,6 +89,27 @@ export class AsOfDailyFeatures {
   }
 }
 
+/** Archived paid funding rates, with explicit conservative availability and staleness.
+ * Publication time is not independently verified; a rate never appears before its event. */
+export class AsOfFundingFeatures implements AsOfFeatureSeries {
+  private readonly points: Array<{ ts: number; rate: number }>;
+  constructor(points: Array<{ ts: number; rate: number }>, readonly source: FeatureSource,
+    readonly lagMs = 60000, readonly maxAgeMs = 9 * 3600000) {
+    if (![lagMs, maxAgeMs].every((v) => Number.isSafeInteger(v) && v >= 0) || points.some((p, i) =>
+      !Number.isSafeInteger(p.ts) || p.ts < 0 || !Number.isFinite(p.rate) || (i > 0 && p.ts <= points[i - 1].ts))) throw new Error('invalid funding series/availability');
+    this.points = points.map((p) => ({ ...p }));
+  }
+  at(at: number): Readonly<FeatureGroup> {
+    let lo = 0, hi = this.points.length;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (this.points[mid].ts + this.lagMs <= at) lo = mid + 1; else hi = mid; }
+    const p = this.points[lo - 1], previous = this.points[lo - 2], stale = !!p && at - p.ts - this.lagMs > this.maxAgeMs;
+    return Object.freeze({ ...this.source, timeframe: 'micro', status: !p ? 'missing' : stale ? 'stale' : 'ready', bars: lo,
+      firstOpen: this.points[0]?.ts ?? null, lastOpen: p?.ts ?? null, knownAt: p ? p.ts + this.lagMs : null,
+      publicationLagMs: this.lagMs, timing: 'archived funding event plus declared lag; vendor publication timing unverified',
+      values: Object.freeze({ funding_rate: p && !stale ? p.rate : null, funding_rate_change: p && previous && !stale ? p.rate - previous.rate : null }) });
+  }
+}
+
 interface Bucket { bar: Candle; count: number }
 /** Aggregates only complete, consecutive, UTC-aligned minutes; resets on any gap. */
 export class CausalAtlasFeatures {
@@ -97,7 +119,7 @@ export class CausalAtlasFeatures {
   private last?: Candle;
   private previousClose?: number;
   gaps = 0;
-  constructor(readonly asset: string, readonly source: FeatureSource, readonly daily: Record<string, AsOfDailyFeatures> = {}) {}
+  constructor(readonly asset: string, readonly source: FeatureSource, readonly daily: Record<string, AsOfFeatureSeries> = {}) {}
   /** Unclipped label scale, kept separate from the normalized/clipped TA feature vocabulary. */
   entryAnchor(): Readonly<MinuteEntryAnchor> {
     if (!this.last) throw new Error('no observed closed minute');

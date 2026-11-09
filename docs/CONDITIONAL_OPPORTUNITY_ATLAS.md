@@ -57,7 +57,8 @@ it is suitable for merging a multi-year minute archive in one process.
 ## Scope and atlas command
 
 This contains **Phase 1, an opt-in path-label dataset, an offline multi-timeframe
-feature provider, and joined minute-decision datasets**, research-only. It does
+feature provider, joined minute-decision datasets, and an initial joint path learner**,
+research-only. It does
 not modify the trading engine, live strategy gates, SNN checkpoints, model promotion,
 or deployment. It is not evidence of a profitable strategy.
 
@@ -401,6 +402,106 @@ no SNN state is synthesized, and no official settlement data is inferred from sp
 Future training must exclude purged/censored observations as appropriate and use
 blocked chronological validation; dense overlapping rows are not independent evidence.
 
+## Initial joint competing-risk learner
+
+`jointPathData.ts`, `jointPathLearner.ts` and `jointPathCli.ts` implement the first
+learned joint path candidate. They reuse the repository's gradient-boosted tree
+trainer, tree inference and beta calibration functions. This candidate reads
+continuous TA/context inputs together with side, target/stop ATR multiples and
+elapsed minutes. Trees can learn conditional feature interactions without a fixed
+indicator-vote checklist. Their responses are piecewise constant: this does not
+complete the planned smooth-surface/sequence/SNN model comparisons.
+
+The model learns three conditional minute hazards: any first barrier hit,
+ambiguous order given a hit, and target-first given a clear hit. Their chain-rule
+factorization produces target, stop, ambiguous and no-hit probabilities. Accumulating
+them through survival gives coherent curves: all four probabilities sum to one;
+first-hit probabilities are nondecreasing with horizon, and no-hit probability
+decreases. A nine-minute query is a prefix of the same 60-minute forecast. New
+feature frames produce fresh forecasts; old hourly probabilities are not counted
+down and rebranded as new short-window evidence.
+
+The loader verifies both stream hashes, metadata, row counts, IDs, joins, causal
+timestamps, feature schema/backend, anchor definitions and full label spans. A
+schema has a consistent feature vocabulary. Common input values are interned and
+at-risk rows share each decision's context rather than duplicating the entire
+feature vector. Numeric inputs exclude hashes/IDs, raw timestamps and future label
+fields. Feature selection removes training-constant inputs only, never culling by
+marginal label correlation. Explicit missing indicators and the shared tree
+learner's missing-value handling preserve unavailable context.
+
+Each entry/side/barrier grid contributes one longest eligible prefix in a given
+time window. This prevents treating its many overlapping horizon records as
+different paths. Eligible labels must fit wholly inside the window by both planned
+end and label-known-at, including early barrier hits. At-risk minutes stop at the
+first hit or the observed censoring prefix; unobserved minutes do not become negative
+examples. Query weights divide by side/grid multiplicity within a decision. As in
+ordinary survival modeling, informative missingness/censoring still needs validation;
+dense minute rows are not independent episodes.
+
+The default expanding study uses three days for tree fitting, one day for early
+stopping, one day for conditional calibration and one day for evaluation, with an
+hour of embargo between stages. Evaluation windows do not overlap. All stages stay
+inside the original **pre-2025 training period**; the 2025 development and 2026 final
+periods are not recycled for this internal study, even if input partition flags or
+manifest dates are changed. Final values are not encoded. Reserved final outcome
+rows are refused rather than trusted after relabeling.
+
+The benchmark uses the same competing-risk family with only asset/barrier/time
+geometry. It is a first joint-feature comparison, not the required full-parent
+conditional ablation/memory-retention procedure. Beta calibration is fitted on its
+own later window only when observations/classes support it and the fit is finite,
+monotone and stable. Otherwise the head retains identity calibration and is marked
+`insufficient`. This does not certify calibration of the resulting horizon curves.
+Paired score differences are aggregated in fixed UTC seven-day blocks; a bootstrap
+summary is omitted below eight blocks. This is exploratory evidence, not a
+multiple-testing-controlled promotion gate.
+
+```bash
+npm run research:opportunity-joint -- \
+  --dataset research/out/opportunity-decisions-study \
+  --out research/out/opportunity-joint-study
+```
+
+The short retained pilot cannot cover those default windows. A deliberately separate
+plumbing smoke test can exercise fitting on that original training-period sample:
+
+```bash
+npm run research:opportunity-joint -- \
+  --dataset research/out/opportunity-decisions-2017-v1 \
+  --out research/out/opportunity-joint-2017-smoke \
+  --smoke-test --trees 16 --depth 2
+```
+
+The smoke preset uses six fitting hours, two stopping hours, two calibration hours
+and two evaluation hours, with an hour between stages. It is explicitly marked
+`smoke-test-only`. Insufficient normal coverage produces a diagnostic report and
+no fitted artifacts. The CLI supports explicit fold durations, tree parameters and
+resource limits; it never changes the frozen study dates. Defaults cap reading at
+20,000 decisions/500,000 path rows, risk sets at 200,000 minutes per stage, and head
+matrices at 20 million cells. Larger studies require suitable data/cadence/resources.
+
+Each successful study writes `report.json` and separate joint/geometry model JSONs
+per fold, with input/code/artifact hashes. Output must be a new directory outside
+the dataset. Inputs and source code are rechecked before publication; failed runs
+do not publish partial artifacts. Models stay under the research output directory
+and have no production model kind, loader hooks or promotion route.
+
+`predictJointPath` is a read-only spot-barrier query. It checks feature schema,
+indicator backend, label-scale definition, as-of cutoff and training-supported
+asset/side/grid parameters. Only integer-minute horizons within the trained risk
+range are supported; fractional/longer horizons are not silently rounded. Model
+known-at is an explicitly **simulated replay cutoff**, not evidence that the model
+was published historically or that retraining/execution had zero latency.
+
+The returned order range includes identified target-first mass and optionally
+ambiguous mass. It is **not a statistical confidence interval**. These forecasts
+are not reversal-onset, terminal direction, fees/fills, or official averaged-index
+contract settlement probabilities, and cannot be substituted for them in the
+contract timing helper. All artifacts/queries remain `researchOnly: true`,
+`liveEntryAllowed: false`, with `calibrationRef: null`. SNN state, full-parent
+retention, multi-era evidence and economic validation remain pending.
+
 ## Module routing and implementation sequence
 
 | Existing module | Required next change | Evidence required |
@@ -427,8 +528,9 @@ blocked chronological validation; dense overlapping rows are not independent evi
    session timing with explicit assumed known-at timestamps. Add derivatives funding/open
    interest, cross-lead, SNN state and verified historical publication timing. Join
    features to path labels without recycling final data for selection.
-3. **Sparse joint nonlinear learner:** compare smooth basis splines, boosted trees and
-   sequence/SNN encodings. Select useful interaction groups by *incremental*
+3. **Sparse joint nonlinear learner follow-up:** an initial competing-risk boosted
+   tree candidate and geometry baseline now exist independently of the live models.
+   Compare them with smooth basis splines and sequence/SNN encodings. Select useful interaction groups by *incremental*
    validated prediction and fee-net payoff, not standalone correlations. Keep suppressed
    relationship evidence for regime-dependent reactivation.
 4. **Dynamic query interface:** output conditional path distributions and price target/horizon
@@ -466,3 +568,36 @@ significance across all candidate groups and horizons. This prototype does not
 provide executable returns, calibrated path distributions, rolling-origin
 validation or full source/known-at provenance for every individual feature.
 Do not use it as evidence of trading readiness.
+
+## Offline/paper product workflow
+
+The separate `research:opportunity-product` command now connects recorded market
+inputs to a locked artifact and paper-position queries. Its operating contract is
+documented in [OPPORTUNITY_ATLAS_OPERATIONS.md](OPPORTUNITY_ATLAS_OPERATIONS.md).
+This extends the preceding research components; it does not change their label
+semantics or reinterpret their spot forecasts as contract win probabilities.
+
+The contract model learns the joint distribution of a sustained timely move and
+this exact contract side paying. It compares the existing repository's weighted
+tanh MLP and GBDT implementations with a simpler temporal linear baseline.
+Family selection and full-parent ablations use a separate selection period;
+unsupported input families receive zero influence in a locked reduced fit, with
+their evidence retained. Independent audit groups supply explicitly qualified
+frequency bands, with abstention for unsupported coverage or stale calibration.
+
+Observed SNN rates, predictive-coding latents, errors and readouts are captured
+without mutating the network. A separate offline adapter compares S5/S6 on the
+same source tape and freezes learning at the study cutoff. A same-period
+comparison against S5 and a simpler baseline is required before retained S6
+features can qualify for paper use. The SNN governor is not repurposed as an
+unvalidated memory selector.
+
+Official settlement reconstruction reuses the existing 60-second index rule and
+preserves reported-result disagreement and missing coverage. Contract timing,
+price geometry, source/availability, observed quote depth and explicit costs
+remain distinct from TA candle timeframes. Holding an existing paper position
+compares future payout with net liquidation value; its entry cost is sunk.
+
+All artifacts remain research/paper-only, with no automatic production promotion
+or order client. Software tests and synthetic demonstrations do not qualify the
+available historical samples, establish executed profit or approve live trading.

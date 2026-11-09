@@ -2,6 +2,7 @@
 # Changes nothing on the server: prints the service state, load, memory, disk, the busiest processes,
 # how fast the dashboard API answers, and the bot's recent log.
 name: Server diagnostics
+run-name: ${{ (inputs.atlas_archive_export == 'true' || inputs.atlas_drive_inventory == 'true') && 'Atlas archive/research (GitHub runner only)' || 'Server diagnostics' }}
 
 on:
   workflow_dispatch:
@@ -10,10 +11,30 @@ on:
         description: 'Copy the fixed five minute archives and seven context CSVs from Drive to a runner artifact, with full OHLCV audit; no server access, fitting or deployment'
         required: false
         default: 'false'
+      atlas_archive_source:
+        description: 'With atlas_archive_export: recent, laptop, or recording-probe; fixed public market-data allowlist only'
+        required: false
+        default: 'recent'
+      atlas_offline_history_study:
+        description: 'With atlas_archive_export: quarantine, label and train on the GitHub runner only; no server access or promotion'
+        required: false
+        default: 'false'
+      atlas_study_policy:
+        description: 'With atlas_offline_history_study: registered study ID'
+        required: false
+        default: 'legacy-pre2025-frozen2026-v1'
       atlas_drive_inventory:
         description: 'Inspect archived market-history metadata and bounded CSV timestamps using RCLONE_CONF; no server access, uploads, training or deployment'
         required: false
         default: 'false'
+      atlas_catalog_only:
+        description: 'With atlas_drive_inventory: bounded market archive metadata search including recorded index days and compressed history; no CSV probes'
+        required: false
+        default: 'false'
+      atlas_catalog_scope:
+        description: 'With atlas_catalog_only: optional located market-history namespace (raw/laptop-history, raw/oracle-history, raw/perp-ta-history); bounded CSV timestamp probes'
+        required: false
+        default: ''
       atlas_inventory:
         description: 'Only inventory historical CSV timestamps/sizes for the Opportunity Atlas; no bot configuration, data writes, training, repair, or deployment'
         required: false
@@ -75,12 +96,14 @@ jobs:
     if: inputs.atlas_archive_export == 'true'
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 15
+    timeout-minutes: ${{ inputs.atlas_offline_history_study == 'true' && 180 || 15 }}
     steps:
       - uses: actions/checkout@v5
       - name: Export only the located historical files (Drive read-only)
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          ATLAS_ARCHIVE_SOURCE: ${{ inputs.atlas_archive_source }}
+          ATLAS_DO_STUDY: ${{ inputs.atlas_offline_history_study }}
         run: |
           set -euo pipefail
           test -n "$RCLONE_CONF"
@@ -96,16 +119,71 @@ jobs:
           printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
           chmod 600 "$RCLONE_CONFIG"
           trap 'rm -f "$RCLONE_CONFIG"' EXIT
+          if [ "$ATLAS_ARCHIVE_SOURCE" = 'recording-probe' ]; then
+            rclone cat gdrive:kalshi-bot-archive/recordings/md-2026-10-21.jsonl.gz --head 16777216 > "$cfg/recording-prefix.gz"
+            python3 -B research/opportunity/recordingPrefix.py "$cfg/recording-prefix.gz" \
+              --out "$dest/recordings/md-2026-10-21.jsonl" --report "$dest/recording-probe.json"
+            exit 0
+          fi
+          case "$ATLAS_ARCHIVE_SOURCE" in
+            laptop) atlas_history_remote='gdrive:kalshi-bot-archive/raw/laptop-history'; atlas_transfer_limit='1536Mi' ;;
+            recent|'') atlas_history_remote='gdrive:kalshi-bot-archive/raw/history'; atlas_transfer_limit='180Mi' ;;
+            *) echo '::error::Unknown archive source'; exit 1 ;;
+          esac
           for asset in BTC ETH SOL XRP DOGE; do
             printf 'binance-1m/%s/1m.csv\n' "$asset" >> "$cfg/minutes.txt"
             printf 'yahoo/%s/1d.csv\n' "$asset" >> "$cfg/context.txt"
           done
-          printf 'tradingview/BTC.D/1d.csv\ntradingview/USDT.D/1d.csv\n' >> "$cfg/context.txt"
-          rclone copy gdrive:kalshi-bot-archive/raw/history "$dest/history" \
-            --files-from "$cfg/minutes.txt" --transfers 2 --checkers 4 --max-transfer 180Mi
+          printf 'tradingview/BTC.D/1d.csv\ntradingview/USDT.D/1d.csv\n' > "$cfg/dominance.txt"
+          rclone copy "$atlas_history_remote" "$dest/history" \
+            --files-from "$cfg/minutes.txt" --transfers 2 --checkers 4 --max-transfer "$atlas_transfer_limit"
           rclone copy gdrive:kalshi-bot-archive/raw/server-history "$dest/history" \
             --files-from "$cfg/context.txt" --transfers 2 --checkers 4 --max-transfer 40Mi
-          python3 -B research/opportunity/archiveAudit.py "$dest/history" --out "$dest/archive-validation.json"
+          if [ "$ATLAS_ARCHIVE_SOURCE" = 'laptop' ]; then
+            rclone copy "$atlas_history_remote" "$dest/history" \
+              --files-from "$cfg/dominance.txt" --transfers 2 --checkers 4 --max-transfer 8Mi
+            for asset in BTC ETH SOL DOGE; do printf 'binance-funding/%s/funding.csv\n' "$asset" >> "$cfg/funding.txt"; done
+            rclone copy "$atlas_history_remote" "$dest/history" \
+              --files-from "$cfg/funding.txt" --transfers 2 --checkers 4 --max-transfer 8Mi
+          else
+            rclone copy gdrive:kalshi-bot-archive/raw/server-history "$dest/history" \
+              --files-from "$cfg/dominance.txt" --transfers 2 --checkers 4 --max-transfer 8Mi
+          fi
+          python3 - "$dest" "$atlas_history_remote" <<'PYPROVENANCE'
+          import json,sys
+          from pathlib import Path
+          Path(sys.argv[1],'export-provenance.json').write_text(json.dumps({'schema':'atlas-drive-export-v1','read_only':True,'minute_and_optional_funding_namespace':sys.argv[2],'yahoo_namespace':'gdrive:kalshi-bot-archive/raw/server-history','provider_authentication':'archive declaration; content hashes in archive-validation.json'},indent=2)+'\n')
+          PYPROVENANCE
+          if ! python3 -B research/opportunity/archiveAudit.py "$dest/history" --out "$dest/archive-validation.json"; then
+            if [ "$ATLAS_DO_STUDY" != 'true' ]; then exit 1; fi
+          fi
+      - name: Set up Node for opted-in GitHub research
+        if: inputs.atlas_offline_history_study == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Quarantine and train on the GitHub runner (explicit opt-in only)
+        if: inputs.atlas_offline_history_study == 'true'
+        env:
+          ATLAS_STUDY_POLICY: ${{ inputs.atlas_study_policy }}
+          OMP_NUM_THREADS: '2'
+          MKL_NUM_THREADS: '2'
+        run: |
+          set -euo pipefail
+          python3 -B research/opportunity/quarantineArchive.py "$RUNNER_TEMP/atlas-history-archive" \
+            --out "$RUNNER_TEMP/atlas-study-filtered" > "$RUNNER_TEMP/atlas-derivation.json"
+          npm ci
+          node --import tsx research/opportunity/runHistoryStudy.ts --archive "$RUNNER_TEMP/atlas-study-filtered" \
+            --out research/out/atlas-history-study --study-policy "$ATLAS_STUDY_POLICY" --every-minutes 1441
+      - name: Save opted-in research results
+        if: always() && inputs.atlas_offline_history_study == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-history-study
+          path: research/out/atlas-history-study/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Save research archive and audit (credentials excluded)
         if: always()
         uses: actions/upload-artifact@v4
@@ -125,6 +203,8 @@ jobs:
       - name: Inspect existing Drive history (read-only)
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          ATLAS_CATALOG_ONLY: ${{ inputs.atlas_catalog_only }}
+          ATLAS_CATALOG_SCOPE: ${{ inputs.atlas_catalog_scope }}
         run: |
           set -euo pipefail
           if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF is unavailable in this Actions context"; exit 1; fi
@@ -138,9 +218,18 @@ jobs:
           printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
           chmod 600 "$RCLONE_CONFIG"
           trap 'rm -f "$RCLONE_CONFIG"' EXIT
-          python3 -B research/opportunity/driveInventory.py --probe-csv --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
-            > "$RUNNER_TEMP/atlas-drive-inventory.json"
-          python3 - "$RUNNER_TEMP/atlas-drive-inventory.json" <<'PYREPORT'
+          if [ "$ATLAS_CATALOG_ONLY" = 'true' ]; then
+            atlas_catalog_probe_args=()
+            if [ -n "$ATLAS_CATALOG_SCOPE" ]; then atlas_catalog_probe_args+=(--probe-csv); fi
+            python3 -B research/opportunity/driveInventory.py --catalog-only --scope "$ATLAS_CATALOG_SCOPE" "${atlas_catalog_probe_args[@]}" --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+              > "$RUNNER_TEMP/atlas-market-catalog.json"
+            ATLAS_REPORT="$RUNNER_TEMP/atlas-market-catalog.json"
+          else
+            python3 -B research/opportunity/driveInventory.py --probe-csv --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+              > "$RUNNER_TEMP/atlas-drive-inventory.json"
+            ATLAS_REPORT="$RUNNER_TEMP/atlas-drive-inventory.json"
+          fi
+          python3 - "$ATLAS_REPORT" <<'PYREPORT'
           import json,sys
           r=json.load(open(sys.argv[1]))
           for root in r['roots']:
@@ -152,7 +241,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: atlas-drive-inventory
-          path: ${{ runner.temp }}/atlas-drive-inventory.json
+          path: |
+            ${{ runner.temp }}/atlas-drive-inventory.json
+            ${{ runner.temp }}/atlas-market-catalog.json
           if-no-files-found: warn
           retention-days: 7
 

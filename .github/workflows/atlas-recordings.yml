@@ -1,0 +1,80 @@
+name: Opportunity Atlas observed recordings (GitHub only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-prefix:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        day: ['2026-10-22', '2026-10-29', '2026-11-01', '2026-11-04', '2026-11-06', '2026-11-07']
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read a fixed bounded prefix from already archived market recordings
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          RECORDING_DAY: ${{ matrix.day }}
+        run: |
+          set -euo pipefail
+          test -n "$RCLONE_CONF"
+          if ! command -v rclone >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq rclone
+          fi
+          cfg=$(mktemp -d "$RUNNER_TEMP/atlas-public-XXXXXX")
+          chmod 700 "$cfg"
+          trap 'rm -rf "$cfg"' EXIT
+          export RCLONE_CONFIG="$cfg/rclone.conf"
+          printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
+          chmod 600 "$RCLONE_CONFIG"
+          rclone cat "gdrive:kalshi-bot-archive/recordings/md-$RECORDING_DAY.jsonl.gz" --head 134217728 > "$cfg/prefix.gz"
+          mkdir -p research/out/atlas-public-recordings
+          python3 -B research/opportunity/recordingPrefix.py "$cfg/prefix.gz" \
+            --out "research/out/atlas-public-recordings/md-$RECORDING_DAY.jsonl.gz" \
+            --report "research/out/atlas-public-recordings/public-$RECORDING_DAY.json" \
+            --max-decompressed-mib 4096 --book-every-ms 0 --observed-only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-public-${{ matrix.day }}
+          path: research/out/atlas-public-recordings/
+          retention-days: 7
+          if-no-files-found: error
+  contract-study:
+    needs: public-prefix
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      REPLAY_EXCLUDE: ''
+      SNN_BACKFILL_DIR: ''
+      OMP_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atlas-public-*
+          path: ${{ runner.temp }}/atlas-recordings
+          merge-multiple: true
+      - name: Register and run the observed contract and S5/S6 engineering study
+        run: |
+          node --import tsx research/opportunity/runRecordingStudy.ts --recordings "$RUNNER_TEMP/atlas-recordings" \
+            --out research/out/atlas-recording-study
+      - name: Save study, provenance and paper abstention evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-recording-study
+          path: research/out/atlas-recording-study/
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,0 +1,304 @@
+{
+  "schema": "opportunity-joint-validation-v1",
+  "research_only": true,
+  "base_main_commit": "5ad1c74a076cd0b60bd78c0a29a99481a173e037",
+  "runs": {
+    "2017_smoke": {
+      "schema": "opportunity-competing-risk-v1",
+      "researchOnly": true,
+      "liveEntryAllowed": false,
+      "autoPromote": false,
+      "calibrationRef": null,
+      "status": "smoke-test-only",
+      "dataset": {
+        "manifestSha256": "8cdbb8fa48653b12015dba4e2dea48507fbc73b2d09febc9f9a049aac3daccc1",
+        "inputHashes": {
+          "manifest.json": "8cdbb8fa48653b12015dba4e2dea48507fbc73b2d09febc9f9a049aac3daccc1",
+          "decisions.jsonl": "0b21a45fd30497c1f13012d9034949ec0e90f112a303dd3af3639a04b3a4853f",
+          "paths.jsonl": "338b78546439a1a74da8a40049a28295e4dc25df3581b7761c0f306df4d886ab"
+        },
+        "runId": "ea2748e1-5ad4-4b1c-85bf-7f837e8376f3",
+        "counts": {
+          "decisions": 3000,
+          "reserved": 0,
+          "paths": 39240,
+          "eligiblePaths": 27344
+        },
+        "trainBefore": 1735689600000,
+        "finalFrom": 1767225600000
+      },
+      "plan": {
+        "trainMs": 21600000,
+        "stoppingMs": 7200000,
+        "calibrationMs": 7200000,
+        "evaluationMs": 7200000,
+        "stepMs": 7200000,
+        "embargoMs": 3600000,
+        "maxFolds": 1
+      },
+      "params": {
+        "nTrees": 16,
+        "learningRate": 0.06,
+        "maxDepth": 2,
+        "minLeafWeight": 5,
+        "lambda": 2,
+        "featureFraction": 0.5,
+        "baggingFraction": 1,
+        "maxBins": 16,
+        "patience": 10,
+        "seed": 17,
+        "loss": "logistic"
+      },
+      "folds": [
+        {
+          "fold": {
+            "train": {
+              "from": 1502942460000,
+              "through": 1502964060000
+            },
+            "stopping": {
+              "from": 1502967660000,
+              "through": 1502974860000
+            },
+            "calibration": {
+              "from": 1502978460000,
+              "through": 1502985660000
+            },
+            "evaluation": {
+              "from": 1502989260000,
+              "through": 1502996460000
+            }
+          },
+          "trainingEpisodes": 1384,
+          "riskRows": 11208,
+          "evaluationEpisodes": 476,
+          "modelLoss": 0.7833695203035888,
+          "baselineLoss": 0.8202752286163354,
+          "brier": 0.5273694148067739,
+          "artifacts": {
+            "joint": {
+              "file": "fold-1-joint.json",
+              "sha256": "f3b6d39e3f4b4169456c7ec7046240cc5d8e69167ead5652b723a579907334fd",
+              "modelId": "874eabc60047f52c620822192296cbf66124c5012618067526dfed5d047155c7"
+            },
+            "geometry": {
+              "file": "fold-1-geometry.json",
+              "sha256": "f9422cf0c35a5f7932cfb0f842a352c2eab12fbeb90ee1e9481f4ad9bfd967a8",
+              "modelId": "9dc748bf8f3b86556077ee8a63f8a45443da68e1289bb2057e947643125bde58"
+            }
+          }
+        }
+      ],
+      "weeklyEvidence": {
+        "blocks": 1,
+        "pairedLogLossGain": null,
+        "interpretation": "Exploratory weekly-block diagnostics against the geometry baseline; not full-parent ablation or a multiple-testing-controlled promotion gate."
+      },
+      "limitations": [
+        "No SNN state integration",
+        "No official contract settlement probabilities",
+        "No feature/memory retention selection",
+        "Tree responses are piecewise constant; smooth-surface/sequence comparisons remain pending",
+        "No live or economic validation"
+      ],
+      "createdAt": "2026-11-08T18:13:46.336Z",
+      "codeHashes": {
+        "research/opportunity/jointPathData.ts": "e00cdd32f0d69f467755c7e39cc77b97bbde17f109b0d7a15f768450b7e82448",
+        "research/opportunity/jointPathLearner.ts": "7f6f35cdd634b27cc1baa94535a0b96943b6b3cf28b406d4e9dc9fb3322b6198",
+        "research/opportunity/jointPathCli.ts": "1c4852fd1ed0d13818157768d54316aafd463e8ed95692b1a1954474c86c85e9",
+        "research/gbdt.ts": "cea6d335970139d169ddfc5bf8d12adb182e1a93a21ab32cb7cf478dddee9103",
+        "research/stats.ts": "f2839c9a57b857c13cfa1ec5048364b80fe73be7fce72b2296a7b356b3f4482a",
+        "bot/model/trees.ts": "939a0a002a92791d27789fc4eaa29fc1274a0227ea8dd7660d534c75f3dccda5",
+        "bot/model/calibration.ts": "9ef258cb0e113ee4cf6a32496b1804fd6ab6ef71e34df3cc79523cf218df5c4e",
+        "bot/util/num.ts": "9557ad2b7734145c9110e2b7b6c79e23eb4eb992444f1203575bdad47f00ba36"
+      }
+    },
+    "2017_default_blocked": {
+      "schema": "opportunity-competing-risk-v1",
+      "researchOnly": true,
+      "liveEntryAllowed": false,
+      "autoPromote": false,
+      "calibrationRef": null,
+      "status": "blocked-insufficient-history-or-rows",
+      "dataset": {
+        "manifestSha256": "8cdbb8fa48653b12015dba4e2dea48507fbc73b2d09febc9f9a049aac3daccc1",
+        "inputHashes": {
+          "manifest.json": "8cdbb8fa48653b12015dba4e2dea48507fbc73b2d09febc9f9a049aac3daccc1",
+          "decisions.jsonl": "0b21a45fd30497c1f13012d9034949ec0e90f112a303dd3af3639a04b3a4853f",
+          "paths.jsonl": "338b78546439a1a74da8a40049a28295e4dc25df3581b7761c0f306df4d886ab"
+        },
+        "runId": "ea2748e1-5ad4-4b1c-85bf-7f837e8376f3",
+        "counts": {
+          "decisions": 3000,
+          "reserved": 0,
+          "paths": 39240,
+          "eligiblePaths": 27344
+        },
+        "trainBefore": 1735689600000,
+        "finalFrom": 1767225600000
+      },
+      "plan": {
+        "trainMs": 259200000,
+        "stoppingMs": 86400000,
+        "calibrationMs": 86400000,
+        "evaluationMs": 86400000,
+        "stepMs": 86400000,
+        "embargoMs": 3600000,
+        "maxFolds": 8
+      },
+      "params": {
+        "nTrees": 48,
+        "learningRate": 0.06,
+        "maxDepth": 3,
+        "minLeafWeight": 5,
+        "lambda": 2,
+        "featureFraction": 0.5,
+        "baggingFraction": 1,
+        "maxBins": 16,
+        "patience": 10,
+        "seed": 17,
+        "loss": "logistic"
+      },
+      "folds": [],
+      "weeklyEvidence": {
+        "blocks": 0,
+        "pairedLogLossGain": null,
+        "interpretation": "Exploratory weekly-block diagnostics against the geometry baseline; not full-parent ablation or a multiple-testing-controlled promotion gate."
+      },
+      "limitations": [
+        "No SNN state integration",
+        "No official contract settlement probabilities",
+        "No feature/memory retention selection",
+        "Tree responses are piecewise constant; smooth-surface/sequence comparisons remain pending",
+        "No live or economic validation"
+      ],
+      "createdAt": "2026-11-08T18:13:42.218Z",
+      "codeHashes": {
+        "research/opportunity/jointPathData.ts": "e00cdd32f0d69f467755c7e39cc77b97bbde17f109b0d7a15f768450b7e82448",
+        "research/opportunity/jointPathLearner.ts": "7f6f35cdd634b27cc1baa94535a0b96943b6b3cf28b406d4e9dc9fb3322b6198",
+        "research/opportunity/jointPathCli.ts": "1c4852fd1ed0d13818157768d54316aafd463e8ed95692b1a1954474c86c85e9",
+        "research/gbdt.ts": "cea6d335970139d169ddfc5bf8d12adb182e1a93a21ab32cb7cf478dddee9103",
+        "research/stats.ts": "f2839c9a57b857c13cfa1ec5048364b80fe73be7fce72b2296a7b356b3f4482a",
+        "bot/model/trees.ts": "939a0a002a92791d27789fc4eaa29fc1274a0227ea8dd7660d534c75f3dccda5",
+        "bot/model/calibration.ts": "9ef258cb0e113ee4cf6a32496b1804fd6ab6ef71e34df3cc79523cf218df5c4e",
+        "bot/util/num.ts": "9557ad2b7734145c9110e2b7b6c79e23eb4eb992444f1203575bdad47f00ba36"
+      }
+    },
+    "2026_final_blocked": {
+      "schema": "opportunity-competing-risk-v1",
+      "researchOnly": true,
+      "liveEntryAllowed": false,
+      "autoPromote": false,
+      "calibrationRef": null,
+      "status": "blocked-insufficient-history-or-rows",
+      "dataset": {
+        "manifestSha256": "123a1201b627d0d95aaf53018791236a2977be2d2c9983873f5a6c2db7fd99a2",
+        "inputHashes": {
+          "manifest.json": "123a1201b627d0d95aaf53018791236a2977be2d2c9983873f5a6c2db7fd99a2",
+          "decisions.jsonl": "71867785151b4db1d2548a3d032319ae8fe5edec7ed988207b7d1e5e0edd3d29",
+          "paths.jsonl": "42f0e99d37d29f574f8fc073183d1fb2bc66dd496b85ae8e9dc10b9e03d9a714"
+        },
+        "runId": "a6c05595-bf34-4da2-9536-709e75e660cf",
+        "counts": {
+          "decisions": 60,
+          "reserved": 60,
+          "paths": 0,
+          "eligiblePaths": 0
+        },
+        "trainBefore": 1735689600000,
+        "finalFrom": 1767225600000
+      },
+      "plan": {
+        "trainMs": 21600000,
+        "stoppingMs": 7200000,
+        "calibrationMs": 7200000,
+        "evaluationMs": 7200000,
+        "stepMs": 7200000,
+        "embargoMs": 3600000,
+        "maxFolds": 1
+      },
+      "params": {
+        "nTrees": 48,
+        "learningRate": 0.06,
+        "maxDepth": 3,
+        "minLeafWeight": 5,
+        "lambda": 2,
+        "featureFraction": 0.5,
+        "baggingFraction": 1,
+        "maxBins": 16,
+        "patience": 10,
+        "seed": 17,
+        "loss": "logistic"
+      },
+      "folds": [],
+      "weeklyEvidence": {
+        "blocks": 0,
+        "pairedLogLossGain": null,
+        "interpretation": "Exploratory weekly-block diagnostics against the geometry baseline; not full-parent ablation or a multiple-testing-controlled promotion gate."
+      },
+      "limitations": [
+        "No SNN state integration",
+        "No official contract settlement probabilities",
+        "No feature/memory retention selection",
+        "Tree responses are piecewise constant; smooth-surface/sequence comparisons remain pending",
+        "No live or economic validation"
+      ],
+      "createdAt": "2026-11-08T18:13:29.599Z",
+      "codeHashes": {
+        "research/opportunity/jointPathData.ts": "e00cdd32f0d69f467755c7e39cc77b97bbde17f109b0d7a15f768450b7e82448",
+        "research/opportunity/jointPathLearner.ts": "7f6f35cdd634b27cc1baa94535a0b96943b6b3cf28b406d4e9dc9fb3322b6198",
+        "research/opportunity/jointPathCli.ts": "1c4852fd1ed0d13818157768d54316aafd463e8ed95692b1a1954474c86c85e9",
+        "research/gbdt.ts": "cea6d335970139d169ddfc5bf8d12adb182e1a93a21ab32cb7cf478dddee9103",
+        "research/stats.ts": "f2839c9a57b857c13cfa1ec5048364b80fe73be7fce72b2296a7b356b3f4482a",
+        "bot/model/trees.ts": "939a0a002a92791d27789fc4eaa29fc1274a0227ea8dd7660d534c75f3dccda5",
+        "bot/model/calibration.ts": "9ef258cb0e113ee4cf6a32496b1804fd6ab6ef71e34df3cc79523cf218df5c4e",
+        "bot/util/num.ts": "9557ad2b7734145c9110e2b7b6c79e23eb4eb992444f1203575bdad47f00ba36"
+      }
+    }
+  },
+  "models": [
+    {
+      "modelId": "874eabc60047f52c620822192296cbf66124c5012618067526dfed5d047155c7",
+      "featureCount": 633,
+      "maxHorizonMin": 60,
+      "headStatus": {
+        "event": {
+          "mode": "trees",
+          "trainingRows": 11208,
+          "calibrationStatus": "insufficient",
+          "calibrationDecisions": 238
+        },
+        "ambiguous": {
+          "mode": "prior",
+          "trainingRows": 1316,
+          "calibrationStatus": "insufficient",
+          "calibrationDecisions": 236
+        },
+        "targetGivenClear": {
+          "mode": "trees",
+          "trainingRows": 1316,
+          "calibrationStatus": "fitted",
+          "calibrationDecisions": 218
+        }
+      }
+    }
+  ],
+  "inferenceCheck": {
+    "modelId": "874eabc60047f52c620822192296cbf66124c5012618067526dfed5d047155c7",
+    "checkedForecasts": 72,
+    "decisionsPerAsset": {
+      "BTC": 6,
+      "ETH": 6
+    },
+    "horizonsMin": [
+      1,
+      9,
+      60
+    ],
+    "serializedArtifactHashVerified": true,
+    "finiteNormalizedNestedCurves": true,
+    "prefixQueriesMatch": true,
+    "approvedForLive": false,
+    "contractSettlementProbabilities": false
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "minimumMoveLowerBound": 0.8,
+  "minimumJointLowerBound": 0.7,
+  "minimumEntryEdge": 0.02,
+  "maximumQuoteAgeMs": 2000,
+  "maximumPosition": 1
+}

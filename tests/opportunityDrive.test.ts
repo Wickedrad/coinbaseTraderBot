@@ -114,3 +114,43 @@ test('CSV probes find actual minute spacing in generic Coinbase filenames and re
   assert.ok(r.reads.every((read: { remote: string }) => /coinbase|binance-1m/.test(read.remote)));
   assert.ok(!r.text.includes(',100,101,99'));
 });
+
+test('broader catalog reports only market archive metadata including tapes and compressed histories', () => {
+  const code = `
+import json,runpy
+m=runpy.run_path('research/opportunity/driveInventory.py')
+files=[{'Path':p,'Size':123,'Token':'DO_NOT_PRINT'} for p in ['raw/recordings/2024/index.jsonl','old/history-2017.zip','raw/snn-tape/2024.tape','raw/models/snn.jsonl','raw/history/account.csv','../history/escape.csv','bot.env']]
+r=m['catalog'](list_fn=lambda *args: (files,None))
+print(json.dumps(r))
+`;
+  const r = spawnSync('python3', ['-B', '-c', code], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.contents_read, false);
+  assert.deepEqual(report.roots[0].files.map((f: { path: string }) => f.path),
+    ['raw/recordings/2024/index.jsonl', 'old/history-2017.zip', 'raw/snn-tape/2024.tape']);
+  assert.ok(!r.stdout.includes('DO_NOT_PRINT'));
+});
+
+test('scoped discovery checks located laptop archives without broader Drive traversal or credential contents', () => {
+  const code = `
+import json,runpy
+m=runpy.run_path('research/opportunity/driveInventory.py'); calls=[]; reads=[]
+root='gdrive:kalshi-bot-archive/raw/laptop-history'
+tree={root:[{'Name':'binance-1m','IsDir':True},{'Name':'models','IsDir':True}],root+'/binance-1m':[{'Name':'BTC','IsDir':True}],root+'/binance-1m/BTC':[{'Name':'1m.csv','Size':90000}]}
+def listing(remote,recursive=False,folder_id=None):
+ calls.append(remote); return (tree.get(remote,[]),None)
+def read(remote,tail=False,folder_id=None):
+ reads.append(remote); return (b'ts,o,h,l,c,v\\n1502942400000,100,101,99,100,1\\n1502942460000,100,101,99,100,1\\n',None)
+r=m['catalog'](scope='raw/laptop-history',list_fn=listing,probe=True,read_fn=read)
+try: m['catalog'](scope='../models',list_fn=listing); raise AssertionError('accepted unsafe scope')
+except ValueError: pass
+print(json.dumps({'report':r,'calls':calls,'reads':reads}))
+`;
+  const r = spawnSync('python3', ['-B', '-c', code], { encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr);
+  const { report, calls, reads } = JSON.parse(r.stdout);
+  assert.equal(report.roots[0].accessible, true); assert.equal(report.contents_read, true);
+  assert.ok(calls.every((p: string) => p.startsWith('gdrive:kalshi-bot-archive/raw/laptop-history') && !p.includes('models')));
+  assert.ok(reads.every((p: string) => p.endsWith('raw/laptop-history/binance-1m/BTC/1m.csv')));
+  assert.equal(report.roots[0].files[0].csv_sample.has_60_second_steps, true);
+});

@@ -1,0 +1,148 @@
+name: Opportunity Atlas research (GitHub only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      archive_run:
+        description: 'Run containing the fixed atlas-history-archive artifact (market data only)'
+        default: '42522123037'
+        required: true
+      dataset_run:
+        description: 'Optional atlas-history-study run; reuse its verified dataset for the fixed smooth/tree comparison'
+        default: ''
+        required: false
+      study_policy:
+        description: 'Registered study: prospective-2026-11-09-v1 or legacy-pre2025-frozen2026-v1'
+        default: 'prospective-2026-11-09-v1'
+        required: true
+      every_minutes:
+        description: 'Predetermined observation spacing; 1441 rotates the UTC observation minute across days'
+        default: '1441'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  history-study:
+    if: inputs.dataset_run == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      STUDY_POLICY: ${{ inputs.study_policy }}
+      OBSERVATION_SPACING: ${{ inputs.every_minutes }}
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install research dependencies on this runner
+        run: npm ci
+      - name: Read the archived market artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: atlas-history-archive
+          path: ${{ runner.temp }}/atlas-source
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.archive_run }}
+      - name: Quarantine off-grid rows without changing the archived inputs
+        run: |
+          python3 -B research/opportunity/quarantineArchive.py "$RUNNER_TEMP/atlas-source" \
+            --out "$RUNNER_TEMP/atlas-filtered" > "$RUNNER_TEMP/atlas-derivation.json"
+      - name: Register the study before constructing labels
+        run: |
+          mkdir -p research/out/atlas-history-study
+          cp "$RUNNER_TEMP/atlas-filtered/archive-validation.json" research/out/atlas-history-study/
+          cp "$RUNNER_TEMP/atlas-filtered/derivation.json" research/out/atlas-history-study/
+          node --import tsx --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import { studyPolicy } from './research/opportunity/studyPolicy.ts';
+          const policy = studyPolicy(process.env.STUDY_POLICY);
+          const spacing = Number(process.env.OBSERVATION_SPACING);
+          if (!Number.isSafeInteger(spacing) || spacing < 60 || spacing > 10080) throw new Error('invalid predetermined spacing');
+          fs.writeFileSync('research/out/atlas-history-study/registration.json', JSON.stringify({ policy, spacing,
+            declaredBeforeLabels: true, rollingPlan: { trainDays:90, stoppingDays:30, calibrationDays:30, evaluationDays:30,
+              stepDays:400, folds:9, embargoMinutes:60 }, targetsAtr:[1], stopsAtr:[1], maximumRiskHorizonMinutes:15,
+            purpose:'Exploratory spot-path study; not official contract settlement, SNN or executed-profit qualification',
+            researchOnly:true, liveEntryAllowed:false, autoPromote:false }, null, 2)+'\n');
+          JS
+      - name: Build multi-era causal features and observed path labels
+        run: |
+          npm run research:opportunity-decisions -- \
+            --archive "$RUNNER_TEMP/atlas-filtered" --source archive-binance-1m-quarantined-v1 \
+            --assets BTC,ETH,SOL,XRP,DOGE --max-minutes 6000000 --every-minutes "$OBSERVATION_SPACING" \
+            --study-policy "$STUDY_POLICY" --horizons-min 5,15,60,240,1440 \
+            --fee-bps 2 --half-spread-bps 0.5 --slippage-bps 1 \
+            --out research/out/atlas-history-study/dataset
+      - name: Fit purged rolling spot-path candidates on this runner
+        run: |
+          npm run research:opportunity-joint -- \
+            --dataset research/out/atlas-history-study/dataset --out research/out/atlas-history-study/trees \
+            --study-policy "$STUDY_POLICY" --max-horizon-min 15 --max-decisions 20000 --max-paths 500000 \
+            --rolling --train-days 90 --stopping-days 30 --calibration-days 30 --evaluation-days 30 \
+            --step-days 400 --embargo-minutes 60 --folds 9 --trees 16 --depth 3
+      - name: Save research evidence and models (no production promotion)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-history-study
+          path: research/out/atlas-history-study/
+          if-no-files-found: warn
+          retention-days: 7
+  family-comparison:
+    if: inputs.dataset_run != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      STUDY_POLICY: ${{ inputs.study_policy }}
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install research dependencies on this runner
+        run: |
+          npm ci
+          python -m pip install --quiet numpy
+          python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Read an existing research dataset artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: atlas-history-study
+          path: ${{ runner.temp }}/atlas-existing
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.dataset_run }}
+      - name: Locate one unambiguous dataset in old or current artifact layouts
+        id: dataset
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          found = list(Path(os.environ['RUNNER_TEMP'], 'atlas-existing').rglob('dataset/manifest.json'))
+          if len(found) != 1: raise ValueError('one unambiguous decision dataset required')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out: out.write('path=' + str(found[0].parent) + '\n')
+          PY
+      - name: Compare fixed smooth and tree candidates on identical purged folds
+        env:
+          ATLAS_DATASET: ${{ steps.dataset.outputs.path }}
+        run: |
+          node --import tsx research/opportunity/runHistoryComparison.ts --dataset "$ATLAS_DATASET" \
+            --out research/out/atlas-history-comparison --study-policy "$STUDY_POLICY" --mlp-engine torch
+      - name: Save family comparison evidence (no production promotion)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-history-comparison
+          path: research/out/atlas-history-comparison/
+          if-no-files-found: warn
+          retention-days: 7
