@@ -3,6 +3,8 @@
 The owner's current objective is **reliable advance movement followed by a
 fee-net sale using the existing dynamic hourly profit clock**. Start with
 [advance movement and profit-taking](OPPORTUNITY_ATLAS_PROFIT_OBJECTIVE.md).
+For the owner's full-history request, use the
+[every-minute Oracle and frozen-block run](OPPORTUNITY_ATLAS_ORACLE_BLOCKS.md).
 The older joint settlement workflow below remains a separate diagnostic;
 settlement wins and its payout calibration are not the movement learning target.
 

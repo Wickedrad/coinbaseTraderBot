@@ -64,7 +64,12 @@ export class OpportunityLabeler {
   private lastTs = -Infinity;
   private i = -1;
   private pending = new Map<number, OpportunityEntry>();
-  private extrema = HORIZONS_MIN.map(() => new Extrema());
+  private extrema: Extrema[];
+  constructor(private readonly horizons: readonly HorizonMin[] = HORIZONS_MIN) {
+    if (!horizons.length || new Set(horizons).size !== horizons.length || horizons.some((h) => !HORIZONS_MIN.includes(h))) throw new Error('invalid observed horizons');
+    this.horizons = [...horizons].sort((a, b) => a - b);
+    this.extrema = this.horizons.map(() => new Extrema());
+  }
   gaps = 0;
   reset(): void {
     this.i = -1;
@@ -78,8 +83,8 @@ export class OpportunityLabeler {
     this.lastTs = b.ts;
     this.i++;
     const out: Outcome[] = [];
-    for (let h = 0; h < HORIZONS_MIN.length; h++) {
-      const n = HORIZONS_MIN[h];
+    for (let h = 0; h < this.horizons.length; h++) {
+      const n = this.horizons[h];
       const q = this.extrema[h];
       q.add(this.i, b, n);
       const e = this.pending.get(this.i - n);
@@ -91,7 +96,7 @@ export class OpportunityLabeler {
       out.push({ entry: e, horizonMin: n, resolvedAt: b.ts + MINUTE, up: returnBps > 0,
         returnBps, maxUpBps, maxDownBps, upOneAtr: t > 0 && maxUpBps >= t, downOneAtr: t > 0 && maxDownBps >= t });
     }
-    this.pending.delete(this.i - HORIZONS_MIN[HORIZONS_MIN.length - 1]);
+    this.pending.delete(this.i - this.horizons[this.horizons.length - 1]);
     if (entry) {
       if (entry.ts !== b.ts + MINUTE || entry.price !== b.c || entry.f.knownAt > entry.ts) throw new Error('entry/feature lookahead');
       this.pending.set(this.i, entry);
@@ -102,6 +107,10 @@ export class OpportunityLabeler {
 
 /** One-minute history -> completed 15-minute Wilder RSI, MACD, Bollinger and ATR. */
 export class FifteenMinuteIndicators {
+  /** Optional closed-bar period for the dense research replay; existing callers use 15m. */
+  constructor(private readonly periodMin = 15) {
+    if (!Number.isSafeInteger(periodMin) || periodMin < 1 || periodMin > 1440) throw new Error('invalid indicator period');
+  }
   private first = -Infinity;
   private count = 0;
   private aggregate?: MinuteCandle;
@@ -125,7 +134,7 @@ export class FifteenMinuteIndicators {
     this.seed12 = this.seed26 = this.seedSignal = this.signalN = 0; this.last20 = [];
   }
   push(b: MinuteCandle): Omit<AtlasFeatures, 'session' | 'etHour' | 'btcdDailyChange' | 'usdtdDailyChange' | 'knownAt'> | undefined {
-    const start = Math.floor(b.ts / (15 * MINUTE)) * (15 * MINUTE);
+    const start = Math.floor(b.ts / (this.periodMin * MINUTE)) * (this.periodMin * MINUTE);
     if (start !== this.first) {
       this.first = start; this.count = 0;
       this.aggregate = { ...b, ts: start };
@@ -136,7 +145,7 @@ export class FifteenMinuteIndicators {
       this.aggregate.v += b.v;
     }
     this.count++;
-    if (this.count !== 15 || !this.aggregate || b.ts + MINUTE !== start + 15 * MINUTE) return undefined;
+    if (this.count !== this.periodMin || !this.aggregate || b.ts + MINUTE !== start + this.periodMin * MINUTE) return undefined;
     const c = this.aggregate.c;
     const prior = this.lastClose;
     this.seen++;
