@@ -27,6 +27,10 @@ on:
         type: boolean
         default: false
         required: false
+      direction_snapshot_run:
+        description: 'Optional completed atlas-direction-snapshots run; reuse its exact receipt-checked inputs'
+        default: ''
+        required: false
 
 permissions:
   contents: read
@@ -152,7 +156,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
   snapshots:
-    if: inputs.direction_iterations && inputs.study_run != '' && inputs.source_run != ''
+    if: inputs.direction_iterations && inputs.study_run != '' && inputs.source_run != '' && inputs.direction_snapshot_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -191,12 +195,14 @@ jobs:
           if-no-files-found: error
   native-direction:
     needs: snapshots
+    if: ${{ !cancelled() && inputs.direction_iterations && inputs.study_run != '' && (needs.snapshots.result == 'success' || inputs.direction_snapshot_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
       OMP_NUM_THREADS: '2'
       REPLAY_EXCLUDE: ''
       SNN_BACKFILL_DIR: ''
+      NODE_OPTIONS: --max-old-space-size=4096
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -214,6 +220,8 @@ jobs:
         with:
           name: atlas-direction-snapshots
           path: ${{ runner.temp }}/snapshots
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.direction_snapshot_run != '' && inputs.direction_snapshot_run || github.run_id }}
       - name: Train native S5/S6 and continuous small-move decoders; freeze before later periods
         run: |
           node --import tsx research/opportunity/runNativeDirectionStudy.ts \

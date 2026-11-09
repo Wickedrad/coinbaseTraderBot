@@ -45,6 +45,16 @@ test('NO positions use the actual opposite book, and partial sales retain the un
   r = a.report(); assert.equal(r.unresolvedPositions.length, 0); assert.ok(r.simulatedNetRealizedUsd > 0);
   assert.ok(Math.abs(r.endingCash - 200 - r.simulatedNetRealizedUsd) < 1e-9);
 });
+test('many small fee-net sales can satisfy the hourly goal without a per-trade $4.50 gate', async () => {
+  const a = new DirectionPaperAccount(policy, profit, T);
+  for (let i = 0; i < 15; i++) {
+    const at = T + i * 10000, ticker = `SMALL-${i}`, c = contract(ticker);
+    await a.observe(c, quote(at, 0.39, 0.40, 20, ticker), fees, signal(at));
+    await a.observe(c, quote(at + 1000, 0.45, 0.46, 20, ticker), fees, null);
+  }
+  const r = a.report(); assert.equal(r.sales, 15); assert.ok(r.simulatedNetRealizedUsd > 4.5);
+  assert.ok(r.hourly[0].goalMet); assert.ok(Math.abs(r.endingCash - 200 - r.simulatedNetRealizedUsd) < 1e-9);
+});
 test('snapshot cash study never invents liquidity, refills cash or marks an unresolved expiry profitable', async () => {
   const a = new DirectionPaperAccount({ ...policy, maximumOpenPositions: 1 }, profit, T), c = contract();
   await a.observe(c, quote(T, 0.39, 0.40), fees, signal());

@@ -17,7 +17,7 @@ export async function prepareDirectionSnapshots(recordings: string, out: string)
     receipts.push({ day: f.day, ...receipt });
   }
   const config = { studyPolicyId: policy.id, assets: ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'], events: directionStudyEvents(),
-    everyMs: 1000, snapshotDecisionsOnly: true, sampleEveryMs: 0, executionBufferMs: 30000, maximumDecisions: 20000,
+    everyMs: 1000, snapshotDecisionsOnly: true, executionBufferMs: 30000, maximumDecisions: 6000, maximumDecisionsPerDay: 750,
     fromDay: '2026-10-22', toDay: '2026-11-07', costs: { entryFee: 0, exitFee: 0, settlementFee: 0, slippage: 0 } };
   const configFile = path.join(path.dirname(path.resolve(out)), 'snapshot-import-config.json');
   fs.mkdirSync(path.dirname(configFile), { recursive: true }); fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n', { flag: 'wx' });

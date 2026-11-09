@@ -32,7 +32,7 @@ export async function runNativeDirectionStudy(o: { source: string; plan: string;
   const spec = JSON.parse(fs.readFileSync(specPath, 'utf8')) as AssemblySpec;
   if (spec.studyPolicyId !== policy.id) throw new Error('source policy differs');
   const originalDecisions = await readJsonLines<RecordedDecision>(await source(inputsDir, spec.decisions), 20000);
-  const raw = originalDecisions.filter((d) => d.event.kind === 'move').flatMap((d) => directionStudyEvents()
+  const raw = originalDecisions.filter((d) => d.event.kind === 'move' && d.side === 'yes').flatMap((d) => directionStudyEvents()
     .filter((e) => e.direction === d.event.direction).map((event) => ({ ...d, event })));
   const extraDir = o.snapshots ? path.resolve(o.snapshots) : undefined;
   const extraSpec = extraDir ? JSON.parse(fs.readFileSync(path.join(extraDir, 'spec.json'), 'utf8')) as AssemblySpec : undefined;

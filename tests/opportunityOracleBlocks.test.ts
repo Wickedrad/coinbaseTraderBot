@@ -11,6 +11,7 @@ import { buildFullOracle, queryFullOracle, walkFullOracle } from '../research/op
 import { ORACLE_AXES, ORACLE_EMBARGO_MS, ORACLE_HORIZON_SIZE, ORACLE_STATS, ORACLE_SURFACES, OracleFeatures, OracleMatrix,
   oracleAnswer, oracleCoordinates, oracleEntry, oracleQuarter, ORACLE_LAYOUT_ID } from '../research/opportunity/oracleMatrix';
 import { ORACLE_BLOCK_STUDY_ID, PROSPECTIVE_STUDY_ID, studyPolicy } from '../research/opportunity/studyPolicy';
+import { runOracleImportance } from '../research/opportunity/oracleImportanceCli';
 
 const MIN = 60000;
 const bar = (ts: number, c = 100) => ({ ts, o: c, h: c + 0.1, l: c - 0.1, c, v: 10 });
@@ -127,6 +128,14 @@ test('Oracle-first block exports and unseen-to-fold replay exclude future blocks
   await assert.rejects(queryFullOracle(model, { ...request, source: 'tvdatafeed-coinbase' }), /source/);
   const csv = gunzipSync(fs.readFileSync(path.join(root, 'a/walk/relationship-spectra.csv.gz'))).toString();
   assert.ok(csv.startsWith('horizon_min,relationship')); assert.ok(csv.includes('m1:rsi x m1:macd_hist_atr'));
+  const weighted = await runOracleImportance({ archive: path.join(root, 'a/archive'), asset: 'BTC', oracle: path.join(root, 'a/oracle'),
+    out: path.join(root, 'a/importance'), minimumTrainingDays: 1 });
+  const changed = await runOracleImportance({ archive: path.join(root, 'b/archive'), asset: 'BTC', oracle: path.join(root, 'b/oracle'),
+    out: path.join(root, 'b/importance'), minimumTrainingDays: 1 });
+  assert.deepEqual(weighted.quarters.find((q) => q.quarter === '2017-Q4'), changed.quarters.find((q) => q.quarter === '2017-Q4'), 'later prices cannot alter earlier importance forecasts');
+  assert.equal(weighted.learnedImportance, true); assert.equal(weighted.relationshipCountUnchanged, 406);
+  assert.ok(weighted.pooled.every((p) => p.weighted.rows === p.uniform.rows && p.weighted.rows > 0));
+  assert.equal(weighted.freshFinalUsed, false); assert.equal(weighted.executableContractProfitVerified, false);
   const manifest = path.join(root, 'a/oracle/2017-Q3/manifest.json'); fs.appendFileSync(manifest, ' ');
   await assert.rejects(walkFullOracle({ archive: path.join(root, 'a/archive'), asset: 'BTC', oracle: path.join(root, 'a/oracle'), out: path.join(root, 'bad') }), /block changed/);
 });
