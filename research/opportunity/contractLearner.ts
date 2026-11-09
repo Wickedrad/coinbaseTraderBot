@@ -42,7 +42,7 @@ const WEEK = 7 * 86400000;
 export function featureFamily(name: string): FeatureFamily | null {
   if (name.startsWith('snn:')) return 'snn';
   if (name.startsWith('contract:') || name.startsWith('missing:contract:') || name.startsWith('asset:')) return null;
-  if (/btcd|usdtd/.test(name)) return 'dominance';
+  if (/btcd|usdtd|dominance/.test(name)) return 'dominance';
   if (name.includes('clock')) return 'clock';
   if (name.includes('micro') || name.includes('cross_asset') || name.includes('funding')) return 'micro';
   if (name.includes('yahoo') || name.includes('daily')) return 'daily';

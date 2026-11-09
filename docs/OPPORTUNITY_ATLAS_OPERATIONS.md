@@ -59,6 +59,13 @@ feature provider. BTC-relative returns use observed index marks. Missing daily
 dominance, funding, open interest, taker flow and other unavailable observations
 remain missing. Additional historical daily context can be supplied through the
 existing audited feature builder, without a hindsight source splice.
+Observed native dominance snapshots and perp funding/open-interest snapshots are
+also exposed directly to their conditional feature families. They retain actual
+arrival times, a 60-second source-age limit and missing masks. Per-contract marks
+require a recorded contract size before conversion to per-coin premium; unknown
+units never become a spot premium. These snapshots are not relabeled as daily TV
+or exchange-published history. Crypto and perps SNNs consume their existing input
+mappings separately, then join only same-time states with both provenances.
 
 Terms carry a basis as well as their source hash. Recorded venue strikes use
 `recorded-contract`; a missing Up/Down strike may be reconstructed from the

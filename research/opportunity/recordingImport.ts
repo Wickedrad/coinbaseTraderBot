@@ -15,6 +15,7 @@ import type { AtlasSnnState } from './snnState';
 import { validateSnnState } from './snnState';
 import type { ContractTerms } from '../../bot/model/fairValue';
 import { studyPolicy } from './studyPolicy';
+import { RecordedMarketContext } from './recordingContext';
 
 export interface RecordingImportOptions {
   studyPolicyId?: string;
@@ -40,7 +41,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   if (!files.length) throw new Error('no recordings in requested dates');
   const inputs: Record<string, string> = {};
   for (const f of files) inputs[fs.realpathSync(f.file)] = await sha256File(f.file);
-  const combinedHash = digest(inputs), states = options.snnStates ?? [];
+  const combinedHash = digest(inputs), states = options.snnStates ?? [], context = new RecordedMarketContext(combinedHash);
   for (let i = 0; i < states.length; i++) {
     validateSnnState(states[i], states[i].asOf);
     if (i && (states[i].asOf < states[i - 1].asOf || states[i].version !== states[0].version || states[i].provenance.variant !== states[0].provenance.variant)) throw new Error('incompatible or unordered imported SNN states');
@@ -74,11 +75,12 @@ export async function writeRecordingInputs(dir: string, staging: string, options
     return null;
   };
   try {
-    for await (const e of readRecordings(dir, '', options.fromDay, options.toDay, (k) => ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap'].includes(k))) {
+    for await (const e of readRecordings(dir, '', options.fromDay, options.toDay, (k) => ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap', 'perp', 'dominance'].includes(k))) {
       if (!stamp(e.t) || e.t < lastAt) throw new Error('recording arrival timestamps are not ordered');
       lastAt = e.t; counts.events++;
       if (stoppedEarly && e.t > selectedThrough + 300000) break;
       if (e.hist || e.synth) { counts.proxyOrSyntheticSkipped++; continue; }
+      context.observe(e);
       if (e.k === 'market' && options.assets.includes(e.asset) && ['updown', 'greater', 'between', 'less'].includes(e.kind)) {
         markets.set(e.ticker, { ticker: e.ticker, asset: e.asset, series: e.series, kind: e.kind, openTime: e.openTime,
           closeTime: e.closeTime, strike: e.strike, cap: e.cap, tickSize: e.tickSize ?? 0.01, knownAt: e.t });
@@ -158,6 +160,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
           status: btcReturn === null ? 'warming' : 'ready', bars: btcSeries?.length ?? 0, firstOpen: null, lastOpen: null,
           knownAt: e.t, publicationLagMs: 0, timing: 'causal observed one-second index marks; unavailable gaps remain null',
           values: { btc_log_return_60s: btcReturn, relative_to_btc_60s: btcReturn === null || assetReturn === null ? null : assetReturn - btcReturn } };
+        Object.assign(groups, context.at(m.asset, e.t, idx.value));
         const frame = { ...baseFrame, decisionAt: e.t, session: sessionAt(e.t), groups };
         // Existing recordings do not reliably persist every websocket gap/sequence event.
         // Use a fresh observed snapshot for economic evidence, never assume replayed deltas stayed intact.

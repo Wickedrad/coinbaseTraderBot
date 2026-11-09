@@ -261,6 +261,8 @@ test('native recording import retains arrival latency, both sides, exact books a
     entries.push({ t: at, k: 'index', asset: 'BTC', value: sec >= 20 ? 100.3 : 100, ts: at - 200, src: 'kalshi' });
     if (sec === 0) entries.push({ t: at, k: 'candles', asset: 'BTC', tf: '1m', rows: Array.from({ length: 16 }, (_, i) =>
       [(start - (16 - i) * MIN) / 1000, 99, 101, 100, 100, 1, 0.4]) });
+    if (sec === 0) entries.push({ t: at, ts: at - 100, k: 'perp', asset: 'BTC', mark: 1, contractSize: 0.01, fundingRate: 0, openInterest: 123 },
+      { t: at, ts: at - 100, k: 'dominance', btcd: 60, usdtd: 6, covered: 0.8 });
     entries.push({ t: at, k: 'book', ticker: 'OBSERVED-FIXTURE', bids: [{ price: 0.4, size: 5 }], asks: [{ price: 0.5, size: 6 }] });
     if (sec === 130) entries.push({ t: at, k: 'result', ticker: 'OBSERVED-FIXTURE', result: 'yes' });
   }
@@ -275,6 +277,10 @@ test('native recording import retains arrival latency, both sides, exact books a
   assert.equal(yes.observation.query.asOf, start + 200); assert.equal(yes.observation.frame.decisionAt, start + 200);
   assert.equal(yes.observation.frame.groups.spot_1m.knownAt, start + 200);
   assert.equal(yes.observation.anchor!.atrBps, 200, 'native second timestamps and low/high/open order must reach the ATR anchor');
+  assert.equal(yes.observation.frame.groups.micro_perp.values.open_interest_contracts, 123);
+  assert.equal(yes.observation.frame.groups.micro_perp.values.mark_per_coin, 100);
+  assert.equal(yes.observation.frame.groups.micro_perp.values.funding_rate, 0);
+  assert.equal(yes.observation.frame.groups.observed_dominance.values.btcd, 60);
   assert.equal(yes.quote!.ask, 0.5); assert.equal(no.quote!.ask, 0.6);
   assert.equal(yes.outcome.sidePays, true); assert.equal(no.outcome.sidePays, false); assert.equal(yes.outcome.officialResultConfirmed, true);
   const sampledConfig = path.join(dir, 'sampled-config.json');
