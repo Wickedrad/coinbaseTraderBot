@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { gzipSync } from 'node:zlib';
 
 function audit(rows: string, extra?: (root: string) => void) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-audit-'));
@@ -105,4 +106,19 @@ test('Atlas research workflow has no server credentials or deployment path', () 
   assert.doesNotMatch(yaml, /LIGHTSAIL|ssh-action|deploy\/activate|deploy\/install|TRADING_MODE/);
   const deploy = fs.readFileSync('.github/workflows/deploy.yml', 'utf8');
   assert.match(deploy, /!contains\(github\.event\.head_commit\.message, '\[skip deploy\]'\)/, 'approved research merges can avoid a server restart');
+});
+
+test('recording prefix extraction handles gzip members and strips account, model and private nested fields', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-public-prefix-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const secret = 'MUST_NOT_LEAVE_THE_RAW_PREFIX';
+  const a = [{ t: 0, k: 'index', asset: 'BTC', ts: 0, value: 100, src: 'kalshi', secret }, { t: 1, k: 'account', balance: 100, token: secret }];
+  const b = [{ t: 2, k: 'candles', asset: 'BTC', tf: '1m', rows: [{ ts: 0, o: 100, h: 101, l: 99, c: 100, v: 1, secret }] },
+    { t: 3, k: 'book', ticker: 'KXBTC-TEST', bids: [{ price: 0.4, size: 2, secret }], asks: [{ price: 0.5, size: 2 }], secret },
+    { t: 4, k: 'snn', weights: secret }];
+  const prefix = path.join(dir, 'prefix.gz'), out = path.join(dir, 'public.jsonl'), report = path.join(dir, 'report.json');
+  fs.writeFileSync(prefix, Buffer.concat([gzipSync(a.map((x) => JSON.stringify(x)).join('\n') + '\n'), gzipSync(b.map((x) => JSON.stringify(x)).join('\n') + '\n').subarray(0, -5)]));
+  const r = spawnSync('python3', ['-B', 'research/opportunity/recordingPrefix.py', prefix, '--out', out, '--report', report], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr); assert.ok(!fs.readFileSync(out, 'utf8').includes(secret));
+  const m = JSON.parse(fs.readFileSync(report, 'utf8')); assert.equal(m.complete_original_archive, false); assert.equal(m.index_sources.kalshi, 1);
+  assert.equal(m.candle_timeframes['1m'], 1); assert.deepEqual(m.event_counts, { index: 1, candles: 1, book: 1 });
 });

@@ -12,7 +12,7 @@ on:
         required: false
         default: 'false'
       atlas_archive_source:
-        description: 'With atlas_archive_export: recent (raw/history) or laptop (located older archive); fixed market-data allowlist only'
+        description: 'With atlas_archive_export: recent, laptop, or recording-probe; fixed public market-data allowlist only'
         required: false
         default: 'recent'
       atlas_offline_history_study:
@@ -119,6 +119,12 @@ jobs:
           printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
           chmod 600 "$RCLONE_CONFIG"
           trap 'rm -f "$RCLONE_CONFIG"' EXIT
+          if [ "$ATLAS_ARCHIVE_SOURCE" = 'recording-probe' ]; then
+            rclone cat gdrive:kalshi-bot-archive/recordings/md-2026-10-21.jsonl.gz --head 16777216 > "$cfg/recording-prefix.gz"
+            python3 -B research/opportunity/recordingPrefix.py "$cfg/recording-prefix.gz" \
+              --out "$dest/recordings/md-2026-10-21.jsonl" --report "$dest/recording-probe.json"
+            exit 0
+          fi
           case "$ATLAS_ARCHIVE_SOURCE" in
             laptop) atlas_history_remote='gdrive:kalshi-bot-archive/raw/laptop-history'; atlas_transfer_limit='1536Mi' ;;
             recent|'') atlas_history_remote='gdrive:kalshi-bot-archive/raw/history'; atlas_transfer_limit='180Mi' ;;
