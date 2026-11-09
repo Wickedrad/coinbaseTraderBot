@@ -298,6 +298,14 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
     return this.st.balance;
   }
 
+  /** Read-only preview for research takers: own earlier takes remain absent until
+   * displayed depth increases or the configured replenishment interval expires. */
+  availableTakerQuantity(ticker: string, bookSide: 'bid' | 'ask', price: number, displayed: number): number {
+    const taken = this.taken.get(`${ticker}|${bookSide}|${price}`);
+    return !taken || this.takenReplenishMs <= 0 || this.now() - taken.ts >= this.takenReplenishMs
+      ? displayed : Math.max(0, displayed - taken.taken);
+  }
+
   /** What resting orders hold: the cost of each one's opening part. Orders that only close a held position hold nothing. */
   held(): number {
     const cover = new Map<string, number>();

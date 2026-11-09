@@ -31,6 +31,15 @@ on:
         description: 'Optional completed atlas-direction-snapshots run; reuse its exact receipt-checked inputs'
         default: ''
         required: false
+      direction_snapshot_only:
+        description: 'Prepare the receipt-checked snapshot/trade inputs only; reuse them after the native study finishes'
+        type: boolean
+        default: false
+        required: false
+      paper_native_run:
+        description: 'Optional completed atlas-native-direction run; reuse its actual weights for cash paper replay without retraining'
+        default: ''
+        required: false
 
 permissions:
   contents: read
@@ -195,7 +204,7 @@ jobs:
           if-no-files-found: error
   native-direction:
     needs: snapshots
-    if: ${{ !cancelled() && inputs.direction_iterations && inputs.study_run != '' && (needs.snapshots.result == 'success' || inputs.direction_snapshot_run != '') }}
+    if: ${{ !cancelled() && inputs.direction_iterations && !inputs.direction_snapshot_only && inputs.paper_native_run == '' && inputs.study_run != '' && (needs.snapshots.result == 'success' || inputs.direction_snapshot_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -237,6 +246,43 @@ jobs:
           path: research/out/atlas-native-direction/
           retention-days: 90
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-direction-paper
+          path: research/out/atlas-direction-paper/
+          retention-days: 90
+          if-no-files-found: warn
+  cash-paper-only:
+    needs: snapshots
+    if: ${{ !cancelled() && inputs.direction_iterations && inputs.paper_native_run != '' && (needs.snapshots.result == 'success' || inputs.direction_snapshot_run != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-native-direction
+          path: ${{ runner.temp }}/native
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.paper_native_run }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-direction-snapshots
+          path: ${{ runner.temp }}/snapshots
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.direction_snapshot_run != '' && inputs.direction_snapshot_run || github.run_id }}
+      - name: Replay $200 accounts with actual printed-trade maker exits and snapshot taker exits
+        run: |
+          node --import tsx research/opportunity/runDirectionPaperStudy.ts --native "$RUNNER_TEMP/native" \
+            --snapshots "$RUNNER_TEMP/snapshots" --out research/out/atlas-direction-paper
       - uses: actions/upload-artifact@v4
         if: always()
         with:

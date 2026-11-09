@@ -4,7 +4,7 @@ import { OrderBook } from '../../bot/marketdata/orderBook';
 import { orderFee, type FeeSchedule } from '../../bot/fees';
 import { HourlyQuotaPacer } from '../../bot/risk/quotaPacer';
 import type { ExchangeFill } from '../../bot/kalshi/types';
-import { profitAtSideBid, validateProfitPolicy, type ProfitPolicy } from './profitExit';
+import { validateProfitPolicy, type ProfitPolicy } from './profitExit';
 import { stamp } from './contractDataset';
 import type { TimedPriceContract } from './contractTiming';
 
@@ -13,6 +13,7 @@ export interface DirectionPaperPolicy {
   minimumNetTakeUsd: number; targetContractRoi: number; minimumSignalProbability: number;
   maximumQuoteAgeMs: number; maximumSignalAgeMs: number; saleBufferMs: number;
   targetUnderlyingReturn?: number;
+  exitMode?: 'snapshot-taker' | 'resting-maker';
 }
 export interface PaperFeeTerms {
   schedule: FeeSchedule; knownAt: number; effectiveFrom: number; sourceSha256: string;
@@ -27,6 +28,10 @@ export interface SnapshotEvidence {
   bids: Array<{ price: number; size: number }>; asks: Array<{ price: number; size: number }>;
   underlying?: { price: number; knownAt: number };
 }
+export interface PaperTradePrint {
+  ticker: string; at: number; exchangeAt: number; price: number; quantity: number; takerSide: 'yes' | 'no'; sourceSha256: string;
+  underlying?: { price: number; knownAt: number };
+}
 interface Position { contract: TimedPriceContract; side: 'yes' | 'no'; quantity: number; basis: number; entryNotional: number; entryUnderlying: number | null; direction: 'up' | 'down' }
 const hash = (s: string) => /^[a-f0-9]{64}$/.test(s);
 export function validateDirectionPaperPolicy(p: DirectionPaperPolicy) {
@@ -34,6 +39,7 @@ export function validateDirectionPaperPolicy(p: DirectionPaperPolicy) {
       !Number.isSafeInteger(p.maximumContracts) || p.maximumContracts < 1 || !Number.isSafeInteger(p.maximumOpenPositions) || p.maximumOpenPositions < 1 ||
       !Number.isFinite(p.targetContractRoi) || p.targetContractRoi < 0 || p.targetContractRoi > 1 || !Number.isFinite(p.minimumSignalProbability) ||
       p.minimumSignalProbability < 0 || p.minimumSignalProbability > 1 || ![p.maximumQuoteAgeMs, p.maximumSignalAgeMs, p.saleBufferMs].every(stamp) ||
+      (p.exitMode !== undefined && !['snapshot-taker', 'resting-maker'].includes(p.exitMode)) || (p.exitMode === 'resting-maker' && p.targetUnderlyingReturn !== undefined) ||
       (p.targetUnderlyingReturn !== undefined && (!Number.isFinite(p.targetUnderlyingReturn) || p.targetUnderlyingReturn < 0 || p.targetUnderlyingReturn > 1))) throw new Error('invalid direction paper policy');
 }
 export class DirectionPaperAccount {
@@ -42,6 +48,7 @@ export class DirectionPaperAccount {
   private readonly fees = new Map<string, PaperFeeTerms>();
   private readonly positions = new Map<string, Position>();
   private readonly context = new Map<string, { kind: 'entry' | 'exit'; contract: TimedPriceContract; side: 'yes' | 'no'; underlying: number | null; reason: string; direction?: 'up' | 'down' }>();
+  private readonly maker = new Map<string, { orderId: string; client: string; placedAt: number }>();
   private readonly seenQuotes = new Set<string>();
   private readonly exchange: PaperExchange;
   private readonly pacer: HourlyQuotaPacer;
@@ -81,7 +88,45 @@ export class DirectionPaperAccount {
       if (p.quantity < 1e-9) this.positions.delete(f.ticker);
     }
     if (this.exchange.cash() < -1e-7 || Math.abs(this.exchange.cash() - this.expectedCash) > 1e-6) throw new Error('paper cash/fee/basis reconciliation failed');
-    this.fills.push({ at: f.ts, ticker: f.ticker, side: c.side, action: c.kind, quantity: f.count, sidePrice, fee: f.fee, cashAfter: this.exchange.cash() });
+    this.fills.push({ at: f.ts, ticker: f.ticker, side: c.side, action: c.kind, quantity: f.count, sidePrice, fee: f.fee, isTaker: f.isTaker, cashAfter: this.exchange.cash() });
+  }
+  private async cancelMaker(ticker: string) {
+    const pending = this.maker.get(ticker); if (!pending) return;
+    await this.exchange.cancelOrder(pending.orderId); this.context.delete(pending.client); this.maker.delete(ticker);
+  }
+  private async placeMaker(p: Position, fees: FeeSchedule) {
+    // Rounded fractional maker fees can exceed a tiny fill's profit. This initial
+    // maker study requires an explicit zero maker fee instead of inventing fills.
+    if (fees.makerMultiplier !== 0) return this.outcome('maker-fees-require-separate-partial-fill-policy');
+    const entryPrice = p.entryNotional / p.quantity;
+    let price: number | null = null;
+    for (let tick = Math.max(1, Math.ceil(entryPrice * (1 + this.policy.targetContractRoi) * 100 - 1e-9)); tick < 100; tick++) {
+      const bid = tick / 100;
+      if (p.quantity * bid - p.basis - orderFee(p.quantity, 1 - bid, false, fees) >= this.policy.minimumNetTakeUsd - 1e-9) { price = bid; break; }
+    }
+    if (price === null) return this.outcome('no-fee-net-maker-price');
+    const client = `direction-maker-${++this.count}`;
+    this.context.set(client, { kind: 'exit', contract: p.contract, side: p.side, underlying: null, reason: 'observed-trade-maker-fee-net-take' });
+    const order = await this.exchange.createOrder({ ticker: p.contract.ticker, side: p.side === 'yes' ? 'ask' : 'bid',
+      price: p.side === 'yes' ? price : 1 - price, count: p.quantity, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false,
+      expirationTime: Math.floor((p.contract.closeTime - this.policy.saleBufferMs) / 1000), selfTradePrevention: 'taker_at_cross', clientOrderId: client });
+    this.maker.set(p.contract.ticker, { orderId: order.orderId, client, placedAt: this.now });
+    return this.outcome('resting-profit-order');
+  }
+  /** Actual public prints, not a bar's high, are the only maker-fill evidence.
+   * Require a strictly later exchange-second bucket to exclude arrival/rounding ties. */
+  observeTrade(t: PaperTradePrint) {
+    if (!stamp(t.at) || t.at < this.now) throw new Error('paper trade arrivals are not ordered'); this.now = t.at;
+    const p = this.positions.get(t.ticker), pending = this.maker.get(t.ticker);
+    if (!p || !pending) return;
+    if (!stamp(t.exchangeAt) || t.exchangeAt > t.at || Math.floor(t.exchangeAt / 1000) <= Math.floor(pending.placedAt / 1000) ||
+        !hash(t.sourceSha256) || !Number.isFinite(t.price) || t.price <= 0 || t.price >= 1 || !Number.isFinite(t.quantity) || t.quantity <= 0 ||
+        Math.abs(t.quantity * 100 - Math.round(t.quantity * 100)) > 1e-6 || !['yes', 'no'].includes(t.takerSide)) return;
+    const c = this.context.get(pending.client)!;
+    c.underlying = t.underlying && stamp(t.underlying.knownAt) && t.underlying.knownAt <= this.now && this.now - t.underlying.knownAt <= 3000 &&
+      Number.isFinite(t.underlying.price) && t.underlying.price > 0 ? t.underlying.price : null;
+    this.exchange.onTrade(t.ticker, t.price, t.quantity, t.takerSide, t.exchangeAt);
+    if (!this.positions.has(t.ticker)) { this.maker.delete(t.ticker); this.context.delete(pending.client); }
   }
   async observe(contract: TimedPriceContract, q: SnapshotEvidence, fees: PaperFeeTerms, signal: DirectionPaperSignal | null) {
     if (!stamp(q.knownAt) || q.knownAt < this.now) throw new Error('paper arrivals are not ordered'); this.now = q.knownAt;
@@ -104,14 +149,20 @@ export class DirectionPaperAccount {
       const old = held.contract;
       if (old.asset !== contract.asset || old.openTime !== contract.openTime || old.closeTime !== contract.closeTime || old.settlementReference !== contract.settlementReference ||
           old.terms.kind !== contract.terms.kind || old.terms.strike !== contract.terms.strike || old.terms.cap !== contract.terms.cap) return this.outcome('changed-held-contract-terms');
+      const deadline = this.now >= contract.closeTime - this.policy.saleBufferMs;
+      if (deadline) await this.cancelMaker(q.ticker);
       if (this.now >= contract.closeTime) return this.outcome('expired-unresolved-exposure');
+      if (this.maker.has(q.ticker) && !deadline) return this.outcome('manage-resting-profit-order');
       const level = held.side === 'yes' ? book.bestBid() : book.bestAsk(); if (!level) return this.outcome('no-exit-depth');
-      const bid = held.side === 'yes' ? level.price : 1 - level.price, depth = Math.min(held.quantity, level.size);
-      const basis = held.basis / held.quantity, net = profitAtSideBid({ ticker: q.ticker, side: held.side, quantity: held.quantity, averageEntryCost: basis }, bid, f, 0, depth);
+      const bid = held.side === 'yes' ? level.price : 1 - level.price;
+      const depth = Math.min(held.quantity, this.exchange.availableTakerQuantity(q.ticker, held.side === 'yes' ? 'bid' : 'ask', level.price, level.size));
+      if (depth <= 0) return this.outcome('no-exit-depth');
+      // Native closing orders pay on the opposite-side order price. Fractional
+      // balance rounding can differ from charging on the held side's sale price.
+      const basis = held.basis / held.quantity, net = depth * (bid - basis) - orderFee(depth, 1 - bid, true, f);
       const roi = bid / (held.entryNotional / held.quantity) - 1;
       const underlyingReached = this.policy.targetUnderlyingReturn === undefined || (held.entryUnderlying !== null && index !== null &&
         (index / held.entryUnderlying - 1) * (held.direction === 'up' ? 1 : -1) >= this.policy.targetUnderlyingReturn - 1e-9);
-      const deadline = this.now >= contract.closeTime - this.policy.saleBufferMs;
       if (!deadline && !(net >= this.policy.minimumNetTakeUsd - 1e-9 && roi >= this.policy.targetContractRoi - 1e-9 && underlyingReached)) return this.outcome('manage');
       const client = `direction-exit-${++this.count}`;
       this.context.set(client, { kind: 'exit', contract, side: held.side, underlying: index, reason: deadline ? 'sale-deadline' : 'small-fee-net-take' });
@@ -128,13 +179,16 @@ export class DirectionPaperAccount {
     if (this.positions.size >= this.policy.maximumOpenPositions) return this.outcome('position-limit');
     const level = side === 'yes' ? book.bestAsk() : book.bestBid(); if (!level) return this.outcome('no-entry-depth');
     const price = side === 'yes' ? level.price : 1 - level.price, budget = Math.min(this.policy.maximumPositionCost, this.exchange.cash());
-    let quantity = Math.min(this.policy.maximumContracts, Math.floor(level.size), Math.floor(budget / price));
+    const available = this.exchange.availableTakerQuantity(q.ticker, side === 'yes' ? 'ask' : 'bid', level.price, level.size);
+    let quantity = Math.min(this.policy.maximumContracts, Math.floor(available), Math.floor(budget / price));
     while (quantity > 0 && quantity * price + orderFee(quantity, price, true, f) > budget + 1e-9) quantity--;
     if (!quantity) return this.outcome('insufficient-funded-risk-budget');
     const client = `direction-entry-${++this.count}`; this.context.set(client, { kind: 'entry', contract, side, underlying: index, reason: 'direction-only-paper-entry', direction: signal.direction });
     await this.exchange.createOrder({ ticker: q.ticker, side: side === 'yes' ? 'bid' : 'ask', price: level.price, count: quantity,
       timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, selfTradePrevention: 'taker_at_cross', clientOrderId: client });
-    this.context.delete(client); return this.outcome('entry-attempt');
+    this.context.delete(client);
+    const opened = this.positions.get(q.ticker); if (opened && this.policy.exitMode === 'resting-maker') await this.placeMaker(opened, f);
+    return this.outcome('entry-attempt');
   }
   report() {
     const net = this.sales.reduce((n, s) => n + Number(s.netUsd), 0);
@@ -142,7 +196,8 @@ export class DirectionPaperAccount {
       remainingCostBasisUsd: [...this.positions.values()].reduce((n, p) => n + p.basis, 0), unresolvedPositions: [...this.positions].map(([ticker, p]) => ({ ticker, quantity: p.quantity, side: p.side, basis: p.basis })),
       hourly: [...this.hourly].map(([hour, p]) => ({ from: hour * 3600000, ...p, goalMet: p.netUsd >= 4.5 - 1e-9 })), pacer: this.pacer.status(this.now),
       fills: this.fills.length, sales: this.sales.length, decisions: this.decisions, noRefills: true, liquidityReplenishedByTimer: false,
+      makerSales: this.fills.filter((f) => f.action === 'exit' && !f.isTaker).length, makerFillBasis: 'Observed public trades, visible initial queue and strict later exchange-second bucket',
       feeAsOfVerified: !this.feeAssumptionsUsed, liveEntryAllowed: false, researchOnly: true, actualVenueProfitVerified: false,
-      interpretation: 'Conservative snapshot-taker paper account, not real venue fills; unresolved exposure is not settled or counted as profit' };
+      interpretation: 'Full-snapshot entries, snapshot-taker or observed-trade maker exits; paper fills, not venue fills; unresolved exposure is not settled or counted as profit' };
   }
 }

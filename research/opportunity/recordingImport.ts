@@ -62,10 +62,11 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   const bookKnownAt = new Map<string, number>(), lastDecision = new Map<string, number>();
   const snapshotIntact = new Map<string, boolean>();
   const counts = { events: 0, decisions: 0, proxyOrSyntheticSkipped: 0, formingCandlesSkipped: 0,
-    staleOrMissingState: 0, lateIndexDropped: 0, finalResultsWithheld: 0, rangeKindCanonicalized: 0 };
+    staleOrMissingState: 0, lateIndexDropped: 0, finalResultsWithheld: 0, rangeKindCanonicalized: 0, tradePrints: 0 };
   const decisionsFile = path.join(staging, 'decisions.jsonl'), resultsFile = path.join(staging, 'results.jsonl');
   const decisionsFd = fs.openSync(decisionsFile, 'wx'), resultsFd = fs.openSync(resultsFile, 'wx');
   const snapshotFd = options.snapshotDecisionsOnly ? fs.openSync(path.join(staging, 'snapshots.jsonl'), 'wx') : undefined;
+  const tradeFd = options.snapshotDecisionsOnly ? fs.openSync(path.join(staging, 'trades.jsonl'), 'wx') : undefined;
   let lastAt = 0, stoppedEarly = false, selectedThrough = 0, lastAttemptAt = -Infinity;
   const allEventsNeedAnchor = options.events.every((event) => event.thresholdAtr || event.priorDriftAtr);
   const reported = new Map<string, string>();
@@ -84,7 +85,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   };
   try {
     for await (const e of readRecordings(dir, '', options.fromDay, options.toDay, (k) =>
-      (options.snapshotDecisionsOnly ? ['market', 'index', 'candles', 'book', 'gap', 'perp', 'dominance'] : ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap', 'perp', 'dominance']).includes(k))) {
+      (options.snapshotDecisionsOnly ? ['market', 'index', 'candles', 'book', 'trade', 'gap', 'perp', 'dominance'] : ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap', 'perp', 'dominance']).includes(k))) {
       if (!stamp(e.t) || e.t < lastAt) throw new Error('recording arrival timestamps are not ordered');
       lastAt = e.t; counts.events++;
       if (stoppedEarly && e.t > selectedThrough + 300000) break;
@@ -134,6 +135,14 @@ export async function writeRecordingInputs(dir: string, staging: string, options
           if (reported.has(e.ticker) && reported.get(e.ticker) !== e.result) throw new Error('conflicting recorded settlement result');
           if (!reported.has(e.ticker)) fs.writeSync(resultsFd, JSON.stringify({ ticker: e.ticker, yes: e.result === 'yes', knownAt: e.t }) + '\n');
           reported.set(e.ticker, e.result);
+        }
+      }
+      if (tradeFd !== undefined && e.k === 'trade' && e.t < policy.finalFrom) {
+        const m = markets.get(e.ticker), idx = m && trackers.get(m.asset)?.fresh(e.t, 3000);
+        if (m && ['updown', 'greater', 'less'].includes(m.kind)) {
+          fs.writeSync(tradeFd, JSON.stringify({ ticker: e.ticker, at: e.t, exchangeAt: e.ts ?? e.t, price: e.price, quantity: e.count,
+            takerSide: e.takerSide, sourceSha256: combinedHash,
+            ...(idx ? { underlying: { price: idx.value, knownAt: e.t } } : {}) }) + '\n'); counts.tradePrints++;
         }
       }
       if (snapshotFd !== undefined && e.k === 'book') {
@@ -231,7 +240,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       // must not truncate a selected label's future evidence. Further decisions are disabled.
       for (const asset of sampled) lastAssetSample.set(asset, e.t);
     }
-  } finally { fs.closeSync(decisionsFd); fs.closeSync(resultsFd); if (snapshotFd !== undefined) fs.closeSync(snapshotFd); for (const stream of printFiles.values()) fs.closeSync(stream.fd); }
+  } finally { fs.closeSync(decisionsFd); fs.closeSync(resultsFd); if (snapshotFd !== undefined) fs.closeSync(snapshotFd); if (tradeFd !== undefined) fs.closeSync(tradeFd); for (const stream of printFiles.values()) fs.closeSync(stream.fd); }
   const indices: AssemblySpec['indices'] = [];
   for (const [asset, stream] of printFiles) if (stream.rows) {
     const name = stream.file, file = path.join(staging, name);
@@ -247,6 +256,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       sampleEveryMs: options.sampleEveryMs ?? 0, snapshotOnlyEconomicEvidence: true, snapshotDecisionsOnly: options.snapshotDecisionsOnly ?? false },
     decisionsByDay: Object.fromEntries(decisionsByDay),
     ...(snapshotFd !== undefined ? { snapshots: { file: 'snapshots.jsonl', sha256: await sha256File(path.join(staging, 'snapshots.jsonl')) } } : {}),
+    ...(tradeFd !== undefined ? { trades: { file: 'trades.jsonl', sha256: await sha256File(path.join(staging, 'trades.jsonl')) } } : {}),
     limitations: ['Historical candle provider identity remains whatever the recording establishes; no provider fallback or relabeling',
       'No reconstructed price bridges or minute-derived ticks', 'Missing daily context remains absent',
       'The existing recording reader tolerates torn lines; sampled path gaps still fail closed',

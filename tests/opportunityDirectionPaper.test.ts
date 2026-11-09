@@ -55,6 +55,43 @@ test('many small fee-net sales can satisfy the hourly goal without a per-trade $
   const r = a.report(); assert.equal(r.sales, 15); assert.ok(r.simulatedNetRealizedUsd > 4.5);
   assert.ok(r.hourly[0].goalMet); assert.ok(Math.abs(r.endingCash - 200 - r.simulatedNetRealizedUsd) < 1e-9);
 });
+test('tiny partial sales must cover their own native rounded closing fee', async () => {
+  const a = new DirectionPaperAccount({ ...policy, maximumContracts: 1, minimumNetTakeUsd: 0.001 }, profit, T), c = contract();
+  await a.observe(c, quote(T, 0.39, 0.40, 1), fees, signal());
+  assert.equal(await a.observe(c, quote(T + 1000, 0.58, 0.59, 0.03), fees, null), 'manage');
+  assert.equal(a.report().sales, 0, '0.03 contracts would lose $0.0026 after the native closing fee');
+});
+test('resting profit exits need later observed trades, respect the initial queue, and credit actual partial net sales', async () => {
+  const a = new DirectionPaperAccount({ ...policy, exitMode: 'resting-maker' }, profit, T), c = contract();
+  const q = quote(T, 0.39, 0.4); q.asks.push({ price: 0.42, size: 5 });
+  await a.observe(c, q, fees, signal());
+  const trade = { ticker: c.ticker, at: T + 2000, exchangeAt: T + 2000, price: 0.42, quantity: 10, takerSide: 'yes' as const, sourceSha256: sha };
+  a.observeTrade({ ...trade, exchangeAt: T, at: T + 500 });
+  assert.equal(a.report().sales, 0, 'a delayed same-second print cannot fill an order created after it');
+  a.observeTrade(trade);
+  assert.equal(a.report().unresolvedPositions[0].quantity, 15, 'five ahead in the initial queue are consumed before five of ours');
+  assert.ok(a.report().simulatedNetRealizedUsd > 0);
+  a.observeTrade({ ...trade, at: T + 3000, exchangeAt: T + 3000, quantity: 15 });
+  const r = a.report(); assert.equal(r.unresolvedPositions.length, 0); assert.equal(r.makerSales, 2);
+  assert.ok(Math.abs(r.endingCash - 200.06) < 1e-9); assert.ok(Math.abs(r.paidFees - 0.34) < 1e-9);
+});
+test('unobserved maker exits and trades after the sale deadline never become assumed profits', async () => {
+  const a = new DirectionPaperAccount({ ...policy, exitMode: 'resting-maker' }, profit, T), c = contract();
+  await a.observe(c, quote(T, 0.39, 0.4), fees, signal());
+  await a.observe(c, quote(T + 1000, 0.5, 0.51), fees, null);
+  assert.equal(a.report().sales, 0, 'a crossed later snapshot is not a printed maker fill');
+  a.observeTrade({ ticker: c.ticker, at: T + 880000, exchangeAt: T + 880000, price: 0.6, quantity: 100, takerSide: 'yes', sourceSha256: sha });
+  assert.equal(a.report().sales, 0); assert.equal(a.report().unresolvedPositions.length, 1);
+});
+test('NO maker exits use actual NO-taker prints and the complementary YES order price', async () => {
+  const a = new DirectionPaperAccount({ ...policy, exitMode: 'resting-maker' }, profit, T), c = contract();
+  await a.observe(c, quote(T, 0.60, 0.61), fees, signal(T, 'down'));
+  const trade = { ticker: c.ticker, at: T + 1000, exchangeAt: T + 1000, price: 0.58, quantity: 20, takerSide: 'yes' as const, sourceSha256: sha };
+  a.observeTrade(trade); assert.equal(a.report().sales, 0);
+  a.observeTrade({ ...trade, at: T + 2000, exchangeAt: T + 2000, takerSide: 'no' });
+  const r = a.report(); assert.equal(r.unresolvedPositions.length, 0); assert.equal(r.makerSales, 1);
+  assert.ok(Math.abs(r.endingCash - 200.06) < 1e-9);
+});
 test('snapshot cash study never invents liquidity, refills cash or marks an unresolved expiry profitable', async () => {
   const a = new DirectionPaperAccount({ ...policy, maximumOpenPositions: 1 }, profit, T), c = contract();
   await a.observe(c, quote(T, 0.39, 0.40), fees, signal());

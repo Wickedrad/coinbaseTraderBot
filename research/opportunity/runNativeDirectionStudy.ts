@@ -27,6 +27,10 @@ const metric = (scores: MovementScore[]) => {
 export async function runNativeDirectionStudy(o: { source: string; plan: string; policy: string; out: string; snapshots?: string }) {
   const root = path.resolve(o.out), original = path.resolve(o.source), plan = JSON.parse(fs.readFileSync(o.plan, 'utf8')) as ContractStudyPlan;
   const profit = JSON.parse(fs.readFileSync(o.policy, 'utf8')) as ProfitPolicy, policy = studyPolicy(plan.studyPolicyId);
+  const sourceRegistration = JSON.parse(fs.readFileSync(path.join(original, 'registration.json'), 'utf8'));
+  const sourceSummary = JSON.parse(fs.readFileSync(path.join(original, 'summary.json'), 'utf8'));
+  if (sourceRegistration.policy.id !== policy.id || sourceRegistration.snnReplayPolicy.maximumInputPriceAgeMs !== 3000 ||
+      sourceRegistration.snnReplayPolicy.maximumInputGapMs !== 3000) throw new Error('native source lacks the observed-price/gap producer receipt');
   if (fs.existsSync(root)) throw new Error('new native-direction output required'); fs.mkdirSync(root, { recursive: true });
   const inputsDir = path.join(original, 'base/inputs'), specPath = path.join(inputsDir, 'spec.json');
   const spec = JSON.parse(fs.readFileSync(specPath, 'utf8')) as AssemblySpec;
@@ -51,6 +55,8 @@ export async function runNativeDirectionStudy(o: { source: string; plan: string;
     const domains: Map<number, AtlasSnnState>[] = [];
     for (const domain of ['crypto', 'perps'] as const) {
       const file = path.join(original, `observed-${domain}.tape`), sha256 = await sha256File(file), selected = new Map<number, AtlasSnnState>();
+      const receipt = sourceSummary.replayReports.find((r: { domain: string }) => r.domain === domain);
+      if (!receipt || receipt.sourceSha256 !== sha256 || receipt.maximumInputPriceAgeMs !== 3000 || receipt.lastAt >= policy.finalFrom) throw new Error('native tape hash, age policy or reserved boundary differs');
       console.log(`Native ${variant}/${domain}: direction-only replay, freeze ${new Date(policy.trainBefore).toISOString()}`);
       const report = replayAtlasSnnTape(file, { variant, domain, sourceSha256: sha256, studyPolicyId: policy.id,
         directionOnly: true, maximumInputPriceAgeMs: 3000, maximumInputGapMs: 3000, inputLagMs: 1000,
