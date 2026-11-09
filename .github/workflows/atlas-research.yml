@@ -28,6 +28,10 @@ on:
         description: 'Optional earlier run with a successful atlas-oracle-input artifact; reuse the same audited data without recopying/quarantining'
         default: ''
         required: false
+      results_run:
+        description: 'Optional completed Oracle run with five atlas-oracle-result artifacts; produce the combined summary only, with no retraining'
+        default: ''
+        required: false
 
 permissions:
   contents: read
@@ -35,7 +39,7 @@ permissions:
 
 jobs:
   history-study:
-    if: inputs.dataset_run == '' && !inputs.oracle_blocks
+    if: inputs.dataset_run == '' && !inputs.oracle_blocks && inputs.results_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -103,7 +107,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
   family-comparison:
-    if: inputs.dataset_run != '' && !inputs.oracle_blocks
+    if: inputs.dataset_run != '' && !inputs.oracle_blocks && inputs.results_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -156,7 +160,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
   oracle-prepare:
-    if: inputs.oracle_blocks && inputs.prepared_run == ''
+    if: inputs.oracle_blocks && inputs.prepared_run == '' && inputs.results_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -178,7 +182,7 @@ jobs:
           retention-days: 7
   oracle-train:
     needs: oracle-prepare
-    if: ${{ !cancelled() && inputs.oracle_blocks && (needs.oracle-prepare.result == 'success' || (needs.oracle-prepare.result == 'skipped' && inputs.prepared_run != '')) }}
+    if: ${{ !cancelled() && inputs.oracle_blocks && inputs.results_run == '' && (needs.oracle-prepare.result == 'success' || (needs.oracle-prepare.result == 'skipped' && inputs.prepared_run != '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -220,6 +224,7 @@ jobs:
           retention-days: 90
   oracle-summary:
     needs: oracle-train
+    if: ${{ !cancelled() && (needs.oracle-train.result == 'success' || inputs.results_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -233,6 +238,8 @@ jobs:
         with:
           pattern: atlas-oracle-result-*
           path: ${{ runner.temp }}/atlas-oracle-results
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.results_run != '' && inputs.results_run || github.run_id }}
       - name: Summarize all-minute coverage and frozen-block prediction evidence
         run: |
           mkdir -p research/out/atlas-oracle-summary

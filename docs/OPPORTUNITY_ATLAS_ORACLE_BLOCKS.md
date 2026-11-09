@@ -99,6 +99,8 @@ five asset jobs. Each completes its Oracle pass before its walk. There is no
 observation cap or sparse spacing.
 An earlier successful preparation can be reused with `-f prepared_run=<run-id>`;
 all input hashes are checked again before the asset runs.
+The combined summary alone can be regenerated from saved result artifacts with
+`-f results_run=<completed-run-id>`, without repeating training.
 
 Artifacts `atlas-oracle-result-BTC`, `-ETH`, `-SOL`, `-XRP`, `-DOGE` contain:
 
@@ -127,3 +129,6 @@ Read-only queries supply asset, exact source, as-of/features-known clocks, layou
 metadata, incompatible sources/layouts and backdated/future features. Returned
 frequencies have no independent calibration or executable-profit claim and
 cannot enable entries.
+These direct queries are research evaluations. Their supplied historical timestamps
+do not establish that the artifact existed then; genuine forward capture still
+requires a publication receipt and an observed request after publication.
