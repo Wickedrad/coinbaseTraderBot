@@ -148,6 +148,8 @@ Future-trained checkpoints, stale states and mislabeled S5/S6 configurations are
 rejected. These provenance declarations must come from the collector; file mtime
 does not establish them. Hashes, IDs and raw timestamps stay out of numeric inputs.
 The domain is explicit: crypto and perps networks cannot be silently exchanged.
+Representation identity also includes the starting checkpoint and its availability
+time; matching network parameters alone cannot substitute a different lineage.
 `combineSnnStates` can join both isolated networks at the same causal time with
 separate provenance and column names. A model trained with both requires both.
 `trainedThrough` describes weight learning; running state and grading history
