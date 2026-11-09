@@ -263,7 +263,9 @@ test('native recording import retains arrival latency, both sides, exact books a
       [(start - (16 - i) * MIN) / 1000, 99, 101, 100, 100, 1, 0.4]) });
     if (sec === 0) entries.push({ t: at, ts: at - 100, k: 'perp', asset: 'BTC', mark: 1, contractSize: 0.01, fundingRate: 0, openInterest: 123 },
       { t: at, ts: at - 100, k: 'dominance', btcd: 60, usdtd: 6, covered: 0.8 });
-    entries.push({ t: at, k: 'book', ticker: 'OBSERVED-FIXTURE', bids: [{ price: 0.4, size: 5 }], asks: [{ price: 0.5, size: 6 }] });
+    if (sec === 1) entries.push({ t: at, k: 'delta', ticker: 'OBSERVED-FIXTURE', side: 'yes', price: 0.4, delta: -1 },
+      { t: at, ts: at, k: 'perp', asset: 'BTC', mark: 1, contractSize: 0.01, fundingRate: 0, openInterest: 124 });
+    else entries.push({ t: at, k: 'book', ticker: 'OBSERVED-FIXTURE', bids: [{ price: 0.4, size: 5 }], asks: [{ price: 0.5, size: 6 }] });
     if (sec === 130) entries.push({ t: at, k: 'result', ticker: 'OBSERVED-FIXTURE', result: 'yes' });
   }
   fs.writeFileSync(path.join(recordingDir, 'md-2023-01-02.jsonl'), entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
@@ -296,6 +298,13 @@ test('native recording import retains arrival latency, both sides, exact books a
   const ranges = (await loadContractDataset(path.join(dir, 'ranges-dataset'))).examples.filter((e) => e.observation.query.contract.ticker.endsWith('-B115'));
   assert.equal(ranges.length, 2); assert.equal(ranges[0].observation.query.contract.terms.kind, 'between');
   assert.equal(ranges[0].observation.query.contract.terms.cap, 120); assert.equal(ranges[0].outcome.sidePays, false);
+  const invalidatedConfig = path.join(dir, 'invalidated-config.json');
+  fs.writeFileSync(invalidatedConfig, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), maximumDecisions: 4,
+    everyMs: 1000, sampleEveryMs: 1000, maximumContractsPerAsset: 1 }));
+  await exportRecordingInputs(recordingDir, invalidatedConfig, path.join(dir, 'invalidated-inputs'));
+  const invalidated = fs.readFileSync(path.join(dir, 'invalidated-inputs/decisions.jsonl'), 'utf8').trim().split('\n').map((s) => JSON.parse(s));
+  assert.ok(invalidated[0].quote); assert.equal(invalidated[2].asOf, start + 1200);
+  assert.equal(invalidated[2].quote, undefined, 'an observed delta invalidates economic snapshot evidence until a new full snapshot');
 });
 
 test('S5 and S6 are compared on identical contract observations and short evidence cannot qualify either', (t) => {
