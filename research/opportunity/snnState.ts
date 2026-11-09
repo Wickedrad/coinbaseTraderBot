@@ -16,6 +16,8 @@ export interface SnnProvenance {
   maximumInputPriceAgeMs?: number;
   /** Latest arrival used by the caller's causal replay, including input and settlement messages. */
   inputKnownAt: number; basis: 'observed-tape' | 'forward-paper'; variant: 'S5' | 'S6';
+  /** Direction-only research replay never consumes contract score/settlement labels. */
+  replayProfile?: 'direction-inputs-only-v1';
 }
 export interface AtlasSnnState {
   schema: typeof ATLAS_SNN_SCHEMA; asOf: number; stateAt: number; version: string;
@@ -39,6 +41,7 @@ export function validateSnnState(s: AtlasSnnState, asOf: number, maximumAgeMs = 
       !s.flags.lateral || !s.flags.pc || (p.variant === 'S6' ? !s.flags.plasticity || !s.flags.pcLearn : s.flags.plasticity || s.flags.pcLearn) ||
       !/^[a-f0-9]{64}$/.test(p.checkpointSha256) || !['S5', 'S6'].includes(p.variant) ||
       !['observed-tape', 'forward-paper'].includes(p.basis) ||
+      (p.replayProfile !== undefined && p.replayProfile !== 'direction-inputs-only-v1') ||
       ![s.asOf, s.stateAt, p.checkpointKnownAt, p.trainedThrough, p.inputKnownAt, asOf].every(timestamp) ||
       s.asOf !== asOf || s.stateAt > asOf || asOf - s.stateAt > maximumAgeMs ||
       Math.max(p.checkpointKnownAt, p.trainedThrough, p.inputKnownAt) > asOf ||
@@ -103,6 +106,7 @@ export function combineSnnStates(states: AtlasSnnState[]): AtlasSnnState {
     (s.provenance.inputLagMs ?? 0) !== (first.provenance.inputLagMs ?? 0) ||
     s.provenance.maximumInputGapMs !== first.provenance.maximumInputGapMs ||
     s.provenance.maximumInputPriceAgeMs !== first.provenance.maximumInputPriceAgeMs) throw new Error('incompatible SNN variants/bases/input clocks'); }
+  if (ordered.some((s) => s.provenance.replayProfile !== first.provenance.replayProfile)) throw new Error('SNN replay profiles differ');
   const hash = (x: unknown) => createHash('sha256').update(JSON.stringify(x)).digest('hex');
   const components = ordered.map((s) => ({ domain: s.provenance.domain as 'crypto' | 'perps', version: s.version,
     flagsSha256: s.flagsSha256, checkpointSha256: s.provenance.checkpointSha256, inputSourceSha256: s.provenance.inputSourceSha256 }));
@@ -112,6 +116,7 @@ export function combineSnnStates(states: AtlasSnnState[]): AtlasSnnState {
     provenance: { domain: 'combined', variant: first.provenance.variant, basis: first.provenance.basis,
       checkpointSha256: hash(components.map((c) => c.checkpointSha256)), inputSourceSha256: hash(components.map((c) => c.inputSourceSha256)),
       checkpointKnownAt: Math.max(...ordered.map((s) => s.provenance.checkpointKnownAt)),
+      ...(first.provenance.replayProfile ? { replayProfile: first.provenance.replayProfile } : {}),
       inputLagMs: Math.max(...ordered.map((s) => s.provenance.inputLagMs ?? 0)),
       ...(first.provenance.maximumInputGapMs !== undefined ? { maximumInputGapMs: first.provenance.maximumInputGapMs } : {}),
       ...(first.provenance.maximumInputPriceAgeMs !== undefined ? { maximumInputPriceAgeMs: first.provenance.maximumInputPriceAgeMs } : {}),

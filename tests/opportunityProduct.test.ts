@@ -326,6 +326,17 @@ test('native recording import retains arrival latency, both sides, exact books a
   const invalidated = fs.readFileSync(path.join(dir, 'invalidated-inputs/decisions.jsonl'), 'utf8').trim().split('\n').map((s) => JSON.parse(s));
   assert.ok(invalidated[0].quote); assert.equal(invalidated[2].asOf, start + 1200);
   assert.equal(invalidated[2].quote, undefined, 'an observed delta invalidates economic snapshot evidence until a new full snapshot');
+  const snapshotConfig = path.join(dir, 'snapshot-config.json');
+  fs.writeFileSync(snapshotConfig, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), maximumDecisions: 1000,
+    everyMs: 1000, snapshotDecisionsOnly: true }));
+  const only = path.join(dir, 'snapshot-inputs');
+  const onlyReport = await exportRecordingInputs(recordingDir, snapshotConfig, only);
+  const snapshotRows = fs.readFileSync(path.join(only, 'snapshots.jsonl'), 'utf8').trim().split('\n').map((s) => JSON.parse(s));
+  const snapshotDecisions = fs.readFileSync(path.join(only, 'decisions.jsonl'), 'utf8').trim().split('\n').map((s) => JSON.parse(s));
+  assert.equal(onlyReport.sampling.snapshotDecisionsOnly, true);
+  assert.ok(snapshotRows.length > 2); assert.ok(snapshotDecisions.every((d) => d.quote && d.quote.knownAt === d.asOf));
+  assert.ok(snapshotDecisions.every((d) => d.contract.ticker === 'OBSERVED-FIXTURE'));
+  assert.equal(fs.readFileSync(path.join(only, 'results.jsonl'), 'utf8'), '', 'snapshot research does not read settlement results');
 });
 
 test('S5 and S6 are compared on identical contract observations and short evidence cannot qualify either', (t) => {

@@ -24,6 +24,8 @@ export interface RecordingImportOptions {
   fromDay?: string; toDay?: string; maximumDecisions?: number;
   /** Predetermined sampling across a long archive, independent of labels/detector signals. */
   sampleEveryMs?: number; maximumContractsPerAsset?: number;
+  /** Study actual full snapshots at arrival; never reconstruct economics from deltas. */
+  snapshotDecisionsOnly?: boolean;
   costs: { entryFee: number; exitFee: number; settlementFee: number; slippage: number };
   /** Optional states produced by snn-replay, in time order, from one variant only. */
   snnStates?: AtlasSnnState[];
@@ -61,6 +63,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
     staleOrMissingState: 0, lateIndexDropped: 0, finalResultsWithheld: 0, rangeKindCanonicalized: 0 };
   const decisionsFile = path.join(staging, 'decisions.jsonl'), resultsFile = path.join(staging, 'results.jsonl');
   const decisionsFd = fs.openSync(decisionsFile, 'wx'), resultsFd = fs.openSync(resultsFile, 'wx');
+  const snapshotFd = options.snapshotDecisionsOnly ? fs.openSync(path.join(staging, 'snapshots.jsonl'), 'wx') : undefined;
   let lastAt = 0, stoppedEarly = false, selectedThrough = 0, lastAttemptAt = -Infinity;
   const allEventsNeedAnchor = options.events.every((event) => event.thresholdAtr || event.priorDriftAtr);
   const reported = new Map<string, string>();
@@ -77,7 +80,8 @@ export async function writeRecordingInputs(dir: string, staging: string, options
     return null;
   };
   try {
-    for await (const e of readRecordings(dir, '', options.fromDay, options.toDay, (k) => ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap', 'perp', 'dominance'].includes(k))) {
+    for await (const e of readRecordings(dir, '', options.fromDay, options.toDay, (k) =>
+      (options.snapshotDecisionsOnly ? ['market', 'index', 'candles', 'book', 'gap', 'perp', 'dominance'] : ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap', 'perp', 'dominance']).includes(k))) {
       if (!stamp(e.t) || e.t < lastAt) throw new Error('recording arrival timestamps are not ordered');
       lastAt = e.t; counts.events++;
       if (stoppedEarly && e.t > selectedThrough + 300000) break;
@@ -129,12 +133,23 @@ export async function writeRecordingInputs(dir: string, staging: string, options
           reported.set(e.ticker, e.result);
         }
       }
+      if (snapshotFd !== undefined && e.k === 'book') {
+        const m = markets.get(e.ticker), terms = m && termsAt(m, e.t);
+        if (m && terms && e.t < policy.finalFrom) {
+          const idx = trackers.get(m.asset)?.fresh(e.t, 3000);
+          fs.writeSync(snapshotFd, JSON.stringify({ contract: { ticker: m.ticker, asset: m.asset, openTime: m.openTime, closeTime: m.closeTime,
+            termsKnownAt: terms.knownAt, terms: terms.terms, settlementReference: `CF-RTI:${m.asset}:kalshi` },
+            quote: { ticker: m.ticker, at: e.t, knownAt: e.t, sourceSha256: combinedHash, bids: e.bids ?? [], asks: e.asks ?? [],
+              ...(idx ? { underlying: { price: idx.value, knownAt: e.t } } : {}) } }) + '\n');
+        }
+      }
       if (e.tie || e.k === 'skip') continue;
       // Deltas make snapshots unusable for economic evidence; rebuilding a partial
       // book cannot improve that evidence. All deltas remain in the original input
       // for the separate native SNN replay. Only actual input arrivals or a fresh
       // snapshot can trigger a sampled observation; bound attempts to 1 Hz.
       if (!['market', 'index', 'candles', 'book', 'perp', 'dominance'].includes(e.k)) continue;
+      if (options.snapshotDecisionsOnly && e.k !== 'book') continue;
       if (e.k !== 'book' && e.t - lastAttemptAt < 1000) continue;
       lastAttemptAt = e.t;
       while (stateIndex + 1 < states.length && states[stateIndex + 1].asOf <= e.t) latestState = states[++stateIndex];
@@ -155,6 +170,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       for (const m of orderedMarkets) {
         if (m.closeTime <= e.t) { markets.delete(m.ticker); books.delete(m.ticker); bookKnownAt.delete(m.ticker); snapshotIntact.delete(m.ticker); lastDecision.delete(m.ticker); continue; }
         if (stoppedEarly) continue;
+        if (options.snapshotDecisionsOnly && m.ticker !== e.ticker) continue;
         if (options.sampleEveryMs && e.t - (lastAssetSample.get(m.asset) ?? 0) < options.sampleEveryMs) continue;
         if ((contractsPerAsset.get(m.asset) ?? 0) >= (options.maximumContractsPerAsset ?? 100)) continue;
         if (m.openTime > e.t || m.closeTime - options.executionBufferMs <= e.t || m.closeTime - e.t > 86400000 ||
@@ -207,7 +223,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       // must not truncate a selected label's future evidence. Further decisions are disabled.
       for (const asset of sampled) lastAssetSample.set(asset, e.t);
     }
-  } finally { fs.closeSync(decisionsFd); fs.closeSync(resultsFd); for (const stream of printFiles.values()) fs.closeSync(stream.fd); }
+  } finally { fs.closeSync(decisionsFd); fs.closeSync(resultsFd); if (snapshotFd !== undefined) fs.closeSync(snapshotFd); for (const stream of printFiles.values()) fs.closeSync(stream.fd); }
   const indices: AssemblySpec['indices'] = [];
   for (const [asset, stream] of printFiles) if (stream.rows) {
     const name = stream.file, file = path.join(staging, name);
@@ -220,7 +236,8 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   fs.writeFileSync(path.join(staging, 'spec.json'), JSON.stringify(spec, null, 2) + '\n');
   const report = { counts, inputHashes: inputs, aggregateSha256: combinedHash, stoppedEarly,
     sampling: { decisionAttemptIntervalMs: 1000, freshSnapshotsMayTriggerImmediately: true,
-      sampleEveryMs: options.sampleEveryMs ?? 0, snapshotOnlyEconomicEvidence: true },
+      sampleEveryMs: options.sampleEveryMs ?? 0, snapshotOnlyEconomicEvidence: true, snapshotDecisionsOnly: options.snapshotDecisionsOnly ?? false },
+    ...(snapshotFd !== undefined ? { snapshots: { file: 'snapshots.jsonl', sha256: await sha256File(path.join(staging, 'snapshots.jsonl')) } } : {}),
     limitations: ['Historical candle provider identity remains whatever the recording establishes; no provider fallback or relabeling',
       'No reconstructed price bridges or minute-derived ticks', 'Missing daily context remains absent',
       'The existing recording reader tolerates torn lines; sampled path gaps still fail closed',

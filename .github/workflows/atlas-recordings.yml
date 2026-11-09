@@ -22,6 +22,12 @@ on:
         default: false
         required: false
 
+      direction_iterations:
+        description: "Train direction-only native weights, continuous small-move decoders and separate $200 snapshot paper accounts from cached artifacts"
+        type: boolean
+        default: false
+        required: false
+
 permissions:
   contents: read
   actions: read
@@ -110,7 +116,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
   refit-study:
-    if: inputs.study_run != ''
+    if: inputs.study_run != '' && !inputs.direction_iterations
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -145,3 +151,88 @@ jobs:
           path: ${{ inputs.movement_only && 'research/out/atlas-movement-study/' || 'research/out/atlas-recording-refit/' }}
           if-no-files-found: warn
           retention-days: 90
+  snapshots:
+    if: inputs.direction_iterations && inputs.study_run != '' && inputs.source_run != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      REPLAY_EXCLUDE: ''
+      SNN_BACKFILL_DIR: ''
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atlas-public-*
+          path: ${{ runner.temp }}/prefixes
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atlas-public-*
+          path: ${{ runner.temp }}/prefixes
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.study_run }}
+      - name: Build fresh-snapshot decisions without consuming deltas or settlement labels
+        run: |
+          node --import tsx research/opportunity/prepareDirectionSnapshots.ts \
+            --recordings "$RUNNER_TEMP/prefixes" --out research/out/atlas-direction-snapshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-direction-snapshots
+          path: research/out/atlas-direction-snapshots/
+          retention-days: 90
+          if-no-files-found: error
+  native-direction:
+    needs: snapshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      OMP_NUM_THREADS: '2'
+      REPLAY_EXCLUDE: ''
+      SNN_BACKFILL_DIR: ''
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-recording-study
+          path: ${{ runner.temp }}/source
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.study_run }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-direction-snapshots
+          path: ${{ runner.temp }}/snapshots
+      - name: Train native S5/S6 and continuous small-move decoders; freeze before later periods
+        run: |
+          node --import tsx research/opportunity/runNativeDirectionStudy.ts \
+            --source "$RUNNER_TEMP/source" --snapshots "$RUNNER_TEMP/snapshots" --out research/out/atlas-native-direction
+      - name: Replay separate $200 accounts on observed contract snapshots
+        run: |
+          node --import tsx research/opportunity/runDirectionPaperStudy.ts \
+            --native research/out/atlas-native-direction --snapshots "$RUNNER_TEMP/snapshots" --out research/out/atlas-direction-paper
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-native-direction
+          path: research/out/atlas-native-direction/
+          retention-days: 90
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-direction-paper
+          path: research/out/atlas-direction-paper/
+          retention-days: 90
+          if-no-files-found: warn
