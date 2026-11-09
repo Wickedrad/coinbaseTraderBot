@@ -11,6 +11,13 @@ The subsequent full-history request adds an
 by separately frozen quarterly prediction folds for 15-minute and one-hour
 up/sideways/down outcomes. It preserves the fresh November 9 holdout and reports
 native SNN and executable contract-profit evidence separately.
+That full run is complete: 21,070,767 valid minute bars through October 13, 2026,
+167 quarterly asset blocks and 36,122,686 frozen-model historical predictions.
+All eligible Oracle answers are fitted. Forecast scores improved slightly over
+the historical class prior; no forecast reached the registered 0.60 threshold.
+The model source passed 1,264 tests with no failures/skips. Native SNN training
+and executable contract profit remain separate, unverified claims; see
+[the Oracle validation record](OPPORTUNITY_ATLAS_ORACLE_VALIDATION.json).
 
 The owner authorized continuous implementation through a finished product. The
 core workflow merged in PR #306; PR #307 verifies the recorded-input follow-up.

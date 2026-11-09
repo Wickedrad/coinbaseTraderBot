@@ -1,0 +1,903 @@
+{
+  "schema": "atlas-full-oracle-validation-v1",
+  "checkedAt": "2026-11-09T16:04:02.252309+00:00",
+  "sourceCommit": "3b97fbddc5e58619f5bbc40bb0713c77423d4644",
+  "pullRequest": "https://github.com/Wickedrad/coinbaseTraderBot/pull/309",
+  "objective": "Full-history Oracle relationship answers, followed by frozen-quarter 15m/1h up/sideways/down prediction",
+  "studyId": "oracle-full-history-2026-11-09-v1",
+  "partitions": {
+    "trainBefore": "2026-11-08T23:00:00Z",
+    "freshFinalFrom": "2026-11-09T00:00:00Z",
+    "oldStudyRegistrationsUnchanged": true,
+    "freshFinalUsed": false,
+    "labelEmbargoMs": 3600000,
+    "historicalReplayInterpretation": "Unseen to each frozen prefix model; reused development history is not a genuine prospective trial"
+  },
+  "validation": {
+    "local": {
+      "typecheck": "passed",
+      "testsPassed": 35,
+      "testsFailed": 0,
+      "testsSkipped": 0,
+      "actionlint": "passed"
+    },
+    "ci": {
+      "runId": 42643733874,
+      "url": "https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42643733874",
+      "metrics": {
+        "tests": 1264,
+        "pass": 1264,
+        "fail": 0,
+        "skipped": 0,
+        "duration_ms": 504072.896411
+      },
+      "typecheck": "passed",
+      "build": "passed",
+      "python": "3.12; PyTorch CPU installed"
+    },
+    "windows": {
+      "runId": 42643733724,
+      "conclusion": "success"
+    },
+    "codeQL": {
+      "runId": 42643722406,
+      "conclusion": "success",
+      "languages": [
+        "actions",
+        "c-cpp",
+        "javascript-typescript",
+        "python"
+      ]
+    },
+    "regressionCases": [
+      "Native RSI and default-15m parity",
+      "Future-window and gap censoring",
+      "Neutral band from past ATR only",
+      "Fractional single/pair evidence conservation and missing axes",
+      "Conditional XOR with smooth interpolation",
+      "Future-block changes cannot alter earlier scores or frozen model hash",
+      "Embargo tails become learnable later",
+      "Final training row count equals all eligible Oracle answers",
+      "Model/source/clock integrity and fresh-final exclusion"
+    ]
+  },
+  "execution": {
+    "runId": 42643723640,
+    "url": "https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42643723640",
+    "conclusion": "success",
+    "location": "GitHub Actions only",
+    "rawArchiveRunId": 42522123037,
+    "rawArchiveArtifactId": 13634095981,
+    "preparedInputRunId": 42641935610,
+    "preparedInputArtifactId": 13685253482,
+    "preparedInputJobSucceeded": true,
+    "supersededAttempt": "42641935610: stopped before outcome review to correct permanent embargo-tail exclusions; its successful audited preparation was reused",
+    "newAcquisition": false,
+    "lightsailAccessed": false,
+    "artifacts": [
+      {
+        "id": 13689432249,
+        "name": "atlas-oracle-result-ETH",
+        "size_in_bytes": 142798000,
+        "digest": "sha256:a5b8dbe8b845dec7249627f96481ea064f4f5fa6ec991986ee6afb6fed490cf6",
+        "expires_at": "2027-02-07T15:20:48Z"
+      },
+      {
+        "id": 13689336232,
+        "name": "atlas-oracle-result-DOGE",
+        "size_in_bytes": 112806802,
+        "digest": "sha256:00f0c668de52dc5c5d43f0ba05ceb8bf177cfc183dc18371e076630820c02f74",
+        "expires_at": "2027-02-07T15:20:48Z"
+      },
+      {
+        "id": 13687872045,
+        "name": "atlas-oracle-result-SOL",
+        "size_in_bytes": 94151627,
+        "digest": "sha256:218e8aea527c8dc4fc809983e3136e207517f7fb86a259c70e8b937d28bd13de",
+        "expires_at": "2027-02-07T15:20:48Z"
+      },
+      {
+        "id": 13687677531,
+        "name": "atlas-oracle-result-BTC",
+        "size_in_bytes": 145932455,
+        "digest": "sha256:358bf271e9200a1ad986a0e922ae97e58e11cd2dc61f63544bf81817d025b7d7",
+        "expires_at": "2027-02-07T15:20:48Z"
+      },
+      {
+        "id": 13687613524,
+        "name": "atlas-oracle-result-XRP",
+        "size_in_bytes": 128464641,
+        "digest": "sha256:c639f582d18a0bd1c29dbcd8902b9592b688f5e26f17a0bd2a433b5cd965af24",
+        "expires_at": "2027-02-07T15:20:48Z"
+      }
+    ],
+    "combinedSummary": {
+      "runId": 42650027513,
+      "conclusion": "success",
+      "workflowCommit": "1b1b7836ac1b52d0cfe82d0466e5785ed5b2d46b",
+      "modelSourceUnchanged": true,
+      "reason": "Explicit status condition fixes GitHub transitive skip after cached preparation; this run summarized saved results only, without retraining",
+      "artifacts": [
+        {
+          "id": 13690350045,
+          "name": "atlas-oracle-summary",
+          "size_in_bytes": 2616,
+          "digest": "sha256:9f967f9b7425d232b0d979aee52a44bd894cb4331c0b29c23490c83d3582bf59",
+          "expires_at": "2027-02-07T15:58:34Z"
+        }
+      ]
+    }
+  },
+  "coverage": {
+    "observedMinutes": 21070767,
+    "quarantinedOffGridRows": 43204,
+    "sparseObservationSpacing": null,
+    "sampling": "Every valid minute from each asset's real first observation; no processing cap",
+    "btcEthStart": "2017; other assets later",
+    "features": 28,
+    "singleAndPairRelationships": 406,
+    "latestAvailableMinuteClose": "2026-10-13T00:00:00Z",
+    "quarterlyAssetBlocks": 167,
+    "horizonsMinutes": [
+      15,
+      60
+    ],
+    "oracleAnswers": "Terminal direction, return and signed future high/low log distances",
+    "neutralBand": "max(1bp, 0.25 * current completed 15m ATRbps * sqrt(horizon/15))",
+    "assets": [
+      {
+        "asset": "BTC",
+        "observedMinutes": 4784957,
+        "blocks": 38,
+        "answers": {
+          "15": 4777061,
+          "60": 4775621
+        },
+        "firstAsOf": 1502942460000,
+        "lastAsOf": 1791849600000,
+        "modelId": "b774a98e786b33f18a55caa95b9f6e0b6740f9fc018bf5bbdc40787eb07740ea",
+        "modelSha256": "115ad6609a4bb0b9d02a2c5aff5f9984f450dcedf04b33d1978ca0018e8a7479",
+        "trainedThrough": 1791849600000,
+        "sourceReceiptFiles": 4,
+        "checkedCodeFiles": 144,
+        "metrics": {
+          "15": {
+            "rows": 4214168,
+            "accuracy": 0.3646741183550347,
+            "meanLogLoss": 1.0936523797164692,
+            "baselineMeanLogLoss": 1.0968800154243177,
+            "predictiveGain": 0.003227635707848329
+          },
+          "60": {
+            "rows": 4211648,
+            "accuracy": 0.37964450020514534,
+            "meanLogLoss": 1.090626691828585,
+            "baselineMeanLogLoss": 1.0940427434756534,
+            "predictiveGain": 0.003416051647068506
+          }
+        },
+        "fullMinuteCoverage": true,
+        "quarterHashesChecked": true,
+        "trainingClockChecked": true,
+        "finalWithheld": true
+      },
+      {
+        "asset": "ETH",
+        "observedMinutes": 4784956,
+        "blocks": 38,
+        "answers": {
+          "15": 4777060,
+          "60": 4775620
+        },
+        "firstAsOf": 1502942460000,
+        "lastAsOf": 1791849600000,
+        "modelId": "4971f90aa1df283a42070ea73e815618bfe5ae10c7b87df1d770a40592414d3d",
+        "modelSha256": "8860485fc4d108dfa08088d7a7aaf01835559f64f418cf82b51eda8f3cc6b38e",
+        "trainedThrough": 1791849600000,
+        "sourceReceiptFiles": 4,
+        "checkedCodeFiles": 144,
+        "metrics": {
+          "15": {
+            "rows": 4214167,
+            "accuracy": 0.3638973016494126,
+            "meanLogLoss": 1.094422640578743,
+            "baselineMeanLogLoss": 1.097070339349717,
+            "predictiveGain": 0.002647698770974126
+          },
+          "60": {
+            "rows": 4211647,
+            "accuracy": 0.3755098658553293,
+            "meanLogLoss": 1.092140649332858,
+            "baselineMeanLogLoss": 1.0947531559166557,
+            "predictiveGain": 0.0026125065837976436
+          }
+        },
+        "fullMinuteCoverage": true,
+        "quarterHashesChecked": true,
+        "trainingClockChecked": true,
+        "finalWithheld": true
+      },
+      {
+        "asset": "SOL",
+        "observedMinutes": 3243975,
+        "blocks": 26,
+        "answers": {
+          "15": 3241102,
+          "60": 3240562
+        },
+        "firstAsOf": 1597125660000,
+        "lastAsOf": 1791849600000,
+        "modelId": "528abc4e62dd40288935d6a5857223c7cfafb85380652b3b732e2946ea22acaa",
+        "modelSha256": "c62bc41bc82333bb3177b7dd70431ca36c3bda6206e7708626a1c5b3debc1c24",
+        "trainedThrough": 1791849600000,
+        "sourceReceiptFiles": 4,
+        "checkedCodeFiles": 144,
+        "metrics": {
+          "15": {
+            "rows": 2645842,
+            "accuracy": 0.35629262820682417,
+            "meanLogLoss": 1.096738951020439,
+            "baselineMeanLogLoss": 1.098269459523916,
+            "predictiveGain": 0.0015305085034770178
+          },
+          "60": {
+            "rows": 2644807,
+            "accuracy": 0.36000320628310495,
+            "meanLogLoss": 1.0963476429804189,
+            "baselineMeanLogLoss": 1.0976665189271562,
+            "predictiveGain": 0.0013188759467372918
+          }
+        },
+        "fullMinuteCoverage": true,
+        "quarterHashesChecked": true,
+        "trainingClockChecked": true,
+        "finalWithheld": true
+      },
+      {
+        "asset": "XRP",
+        "observedMinutes": 4434588,
+        "blocks": 35,
+        "answers": {
+          "15": 4428049,
+          "60": 4426834
+        },
+        "firstAsOf": 1525421520000,
+        "lastAsOf": 1791849600000,
+        "modelId": "7aa246b38f283cbc7a965fe39aab36383289c2dc812fa8042384991fa52e3217",
+        "modelSha256": "0614bf4b904ae54a423770885e2e5e505eebe4f861bd9ba686e0f2a95390b146",
+        "trainedThrough": 1791849600000,
+        "sourceReceiptFiles": 4,
+        "checkedCodeFiles": 144,
+        "metrics": {
+          "15": {
+            "rows": 3823939,
+            "accuracy": 0.35837914778452273,
+            "meanLogLoss": 1.0956129091172608,
+            "baselineMeanLogLoss": 1.0982435416577574,
+            "predictiveGain": 0.0026306325404966695
+          },
+          "60": {
+            "rows": 3821779,
+            "accuracy": 0.363438597574585,
+            "meanLogLoss": 1.0941507189319473,
+            "baselineMeanLogLoss": 1.0972007399986095,
+            "predictiveGain": 0.003050021066662019
+          }
+        },
+        "fullMinuteCoverage": true,
+        "quarterHashesChecked": true,
+        "trainingClockChecked": true,
+        "finalWithheld": true
+      },
+      {
+        "asset": "DOGE",
+        "observedMinutes": 3822291,
+        "blocks": 30,
+        "answers": {
+          "15": 3817668,
+          "60": 3816813
+        },
+        "firstAsOf": 1562328060000,
+        "lastAsOf": 1791849600000,
+        "modelId": "1ef2778e5c3da833bcd68e2a2e9c86fbe6fa0afee18253690f9457d897297484",
+        "modelSha256": "39f2ff12b010b77cea94a73908a122304324d2d12127d81450764ed193a5c345",
+        "trainedThrough": 1791849600000,
+        "sourceReceiptFiles": 4,
+        "checkedCodeFiles": 144,
+        "metrics": {
+          "15": {
+            "rows": 3168132,
+            "accuracy": 0.37053601301965955,
+            "meanLogLoss": 1.0944479142029637,
+            "baselineMeanLogLoss": 1.0976614579689346,
+            "predictiveGain": 0.003213543765970786
+          },
+          "60": {
+            "rows": 3166557,
+            "accuracy": 0.3715521305948385,
+            "meanLogLoss": 1.0923579951056797,
+            "baselineMeanLogLoss": 1.0957510533078876,
+            "predictiveGain": 0.0033930582022079197
+          }
+        },
+        "fullMinuteCoverage": true,
+        "quarterHashesChecked": true,
+        "trainingClockChecked": true,
+        "finalWithheld": true
+      }
+    ]
+  },
+  "learner": {
+    "kind": "Continuous empirical single/pair response matrix",
+    "storageKnots": 17,
+    "inference": "Fixed equal mixture of available interpolated curves, each shrunk by 100 observations toward the past class prior",
+    "oracleRelationshipsCulled": false,
+    "futureAnswersAreInputs": false,
+    "minimumEarlierCalendarDaysBeforeFoldPredictions": 365,
+    "finalAllHistoryModelUsedForEarlierPredictions": false,
+    "temporarilyEmbargoedAnswersReleasedLater": true,
+    "finalFitIncludesEveryEligibleAnswer": true,
+    "unavailable": [
+      "Native subsecond SNN input state",
+      "Funding/open interest",
+      "Complete TA-Lib vocabulary",
+      "Full-history contract quotes, depth and fills"
+    ]
+  },
+  "walkForward": {
+    "assets": [
+      {
+        "asset": "BTC",
+        "observedMinutes": 4784957,
+        "quarters": 38,
+        "answers": {
+          "15": 4777061,
+          "60": 4775621
+        },
+        "gaps": 33,
+        "targets": [
+          {
+            "horizonMinutes": 15,
+            "rows": 4214168,
+            "accuracy": 0.3646741183550347,
+            "meanLogLoss": 1.0936523797164694,
+            "baselineMeanLogLoss": 1.096880015424318,
+            "predictiveGain": 0.003227635707848329,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          },
+          {
+            "horizonMinutes": 60,
+            "rows": 4211648,
+            "accuracy": 0.37964450020514534,
+            "meanLogLoss": 1.0906266918285847,
+            "baselineMeanLogLoss": 1.0940427434756537,
+            "predictiveGain": 0.003416051647068948,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          }
+        ],
+        "model": "atlas-oracle-result-BTC/walk/model.json",
+        "spectra": "atlas-oracle-result-BTC/walk/relationship-spectra.csv.gz"
+      },
+      {
+        "asset": "ETH",
+        "observedMinutes": 4784956,
+        "quarters": 38,
+        "answers": {
+          "15": 4777060,
+          "60": 4775620
+        },
+        "gaps": 33,
+        "targets": [
+          {
+            "horizonMinutes": 15,
+            "rows": 4214167,
+            "accuracy": 0.3638973016494126,
+            "meanLogLoss": 1.094422640578743,
+            "baselineMeanLogLoss": 1.097070339349717,
+            "predictiveGain": 0.002647698770974126,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          },
+          {
+            "horizonMinutes": 60,
+            "rows": 4211647,
+            "accuracy": 0.3755098658553293,
+            "meanLogLoss": 1.0921406493328578,
+            "baselineMeanLogLoss": 1.0947531559166557,
+            "predictiveGain": 0.0026125065837978648,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          }
+        ],
+        "model": "atlas-oracle-result-ETH/walk/model.json",
+        "spectra": "atlas-oracle-result-ETH/walk/relationship-spectra.csv.gz"
+      },
+      {
+        "asset": "SOL",
+        "observedMinutes": 3243975,
+        "quarters": 26,
+        "answers": {
+          "15": 3241102,
+          "60": 3240562
+        },
+        "gaps": 11,
+        "targets": [
+          {
+            "horizonMinutes": 15,
+            "rows": 2645842,
+            "accuracy": 0.35629262820682417,
+            "meanLogLoss": 1.0967389510204386,
+            "baselineMeanLogLoss": 1.0982694595239157,
+            "predictiveGain": 0.0015305085034771936,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          },
+          {
+            "horizonMinutes": 60,
+            "rows": 2644807,
+            "accuracy": 0.36000320628310495,
+            "meanLogLoss": 1.0963476429804189,
+            "baselineMeanLogLoss": 1.0976665189271564,
+            "predictiveGain": 0.0013188759467374679,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          }
+        ],
+        "model": "atlas-oracle-result-SOL/walk/model.json",
+        "spectra": "atlas-oracle-result-SOL/walk/relationship-spectra.csv.gz"
+      },
+      {
+        "asset": "XRP",
+        "observedMinutes": 4434588,
+        "quarters": 35,
+        "answers": {
+          "15": 4428049,
+          "60": 4426834
+        },
+        "gaps": 27,
+        "targets": [
+          {
+            "horizonMinutes": 15,
+            "rows": 3823939,
+            "accuracy": 0.35837914778452273,
+            "meanLogLoss": 1.0956129091172606,
+            "baselineMeanLogLoss": 1.0982435416577572,
+            "predictiveGain": 0.0026306325404966695,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          },
+          {
+            "horizonMinutes": 60,
+            "rows": 3821779,
+            "accuracy": 0.363438597574585,
+            "meanLogLoss": 1.0941507189319475,
+            "baselineMeanLogLoss": 1.0972007399986095,
+            "predictiveGain": 0.0030500210666618973,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          }
+        ],
+        "model": "atlas-oracle-result-XRP/walk/model.json",
+        "spectra": "atlas-oracle-result-XRP/walk/relationship-spectra.csv.gz"
+      },
+      {
+        "asset": "DOGE",
+        "observedMinutes": 3822291,
+        "quarters": 30,
+        "answers": {
+          "15": 3817668,
+          "60": 3816813
+        },
+        "gaps": 19,
+        "targets": [
+          {
+            "horizonMinutes": 15,
+            "rows": 3168132,
+            "accuracy": 0.37053601301965955,
+            "meanLogLoss": 1.0944479142029637,
+            "baselineMeanLogLoss": 1.0976614579689346,
+            "predictiveGain": 0.003213543765970639,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          },
+          {
+            "horizonMinutes": 60,
+            "rows": 3166557,
+            "accuracy": 0.3715521305948385,
+            "meanLogLoss": 1.0923579951056797,
+            "baselineMeanLogLoss": 1.0957510533078874,
+            "predictiveGain": 0.0033930582022077727,
+            "highConfidence": 0,
+            "highConfidenceAccuracy": null
+          }
+        ],
+        "model": "atlas-oracle-result-DOGE/walk/model.json",
+        "spectra": "atlas-oracle-result-DOGE/walk/relationship-spectra.csv.gz"
+      }
+    ],
+    "exploratoryTimeBlockEvidence": [
+      {
+        "horizonMinutes": 15,
+        "blocks": [
+          {
+            "quarter": "2018-Q4",
+            "gain": 0.0042196713665819474,
+            "rows": 262714
+          },
+          {
+            "quarter": "2019-Q1",
+            "gain": 0.003866247949173515,
+            "rows": 257972
+          },
+          {
+            "quarter": "2019-Q2",
+            "gain": 0.0031410080411901956,
+            "rows": 259772
+          },
+          {
+            "quarter": "2019-Q3",
+            "gain": 0.0032711627039564884,
+            "rows": 395238
+          },
+          {
+            "quarter": "2019-Q4",
+            "gain": 0.003112154593793252,
+            "rows": 394926
+          },
+          {
+            "quarter": "2020-Q1",
+            "gain": 0.0030572918624553,
+            "rows": 389298
+          },
+          {
+            "quarter": "2020-Q2",
+            "gain": 0.003340701743809916,
+            "rows": 390561
+          },
+          {
+            "quarter": "2020-Q3",
+            "gain": 0.0027119664020110604,
+            "rows": 397395
+          },
+          {
+            "quarter": "2020-Q4",
+            "gain": 0.004278898702475651,
+            "rows": 525589
+          },
+          {
+            "quarter": "2021-Q1",
+            "gain": 0.003449293435663691,
+            "rows": 515752
+          },
+          {
+            "quarter": "2021-Q2",
+            "gain": 0.002540733918215525,
+            "rows": 520453
+          },
+          {
+            "quarter": "2021-Q3",
+            "gain": 0.002429538112978704,
+            "rows": 526388
+          },
+          {
+            "quarter": "2021-Q4",
+            "gain": 0.002654347514033774,
+            "rows": 662325
+          },
+          {
+            "quarter": "2022-Q1",
+            "gain": 0.0026199182444980114,
+            "rows": 647925
+          },
+          {
+            "quarter": "2022-Q2",
+            "gain": 0.002119213733831481,
+            "rows": 655125
+          },
+          {
+            "quarter": "2022-Q3",
+            "gain": 0.0024356962165226867,
+            "rows": 662325
+          },
+          {
+            "quarter": "2022-Q4",
+            "gain": 0.003278582268231813,
+            "rows": 662325
+          },
+          {
+            "quarter": "2023-Q1",
+            "gain": 0.0032032691102244206,
+            "rows": 646085
+          },
+          {
+            "quarter": "2023-Q2",
+            "gain": 0.0032459401897052304,
+            "rows": 655125
+          },
+          {
+            "quarter": "2023-Q3",
+            "gain": 0.0029550102603528466,
+            "rows": 662325
+          },
+          {
+            "quarter": "2023-Q4",
+            "gain": 0.0024497362817011274,
+            "rows": 662325
+          },
+          {
+            "quarter": "2024-Q1",
+            "gain": 0.0024301175128895024,
+            "rows": 655125
+          },
+          {
+            "quarter": "2024-Q2",
+            "gain": 0.002925142102472104,
+            "rows": 655125
+          },
+          {
+            "quarter": "2024-Q3",
+            "gain": 0.0024296002789286077,
+            "rows": 662325
+          },
+          {
+            "quarter": "2024-Q4",
+            "gain": 0.0026150710179663524,
+            "rows": 662325
+          },
+          {
+            "quarter": "2025-Q1",
+            "gain": 0.0018712961819329166,
+            "rows": 647925
+          },
+          {
+            "quarter": "2025-Q2",
+            "gain": 0.0019226954020788575,
+            "rows": 655125
+          },
+          {
+            "quarter": "2025-Q3",
+            "gain": 0.001882718117321045,
+            "rows": 662325
+          },
+          {
+            "quarter": "2025-Q4",
+            "gain": 0.002054830894237577,
+            "rows": 662325
+          },
+          {
+            "quarter": "2026-Q1",
+            "gain": 0.002647856220745345,
+            "rows": 647925
+          },
+          {
+            "quarter": "2026-Q2",
+            "gain": 0.0023906991488355438,
+            "rows": 655125
+          },
+          {
+            "quarter": "2026-Q3",
+            "gain": 0.0023898475295901747,
+            "rows": 662325
+          },
+          {
+            "quarter": "2026-Q4",
+            "gain": 0.0023761882870909877,
+            "rows": 86330
+          }
+        ],
+        "exploratoryMeanQuarterGain": {
+          "mean": 0.0027974680407725962,
+          "lo": 0.0026033185187000736,
+          "hi": 0.0030046449424549542
+        },
+        "interpretation": "Same-quarter assets pooled; quarter bootstrap is exploratory and assumes reasonably independent stable time blocks. Reused history remains development evidence."
+      },
+      {
+        "horizonMinutes": 60,
+        "blocks": [
+          {
+            "quarter": "2018-Q4",
+            "gain": 0.00427425294058668,
+            "rows": 262444
+          },
+          {
+            "quarter": "2019-Q1",
+            "gain": 0.005330231802379373,
+            "rows": 257792
+          },
+          {
+            "quarter": "2019-Q2",
+            "gain": 0.0036126170170570518,
+            "rows": 259502
+          },
+          {
+            "quarter": "2019-Q3",
+            "gain": 0.004273668573615197,
+            "rows": 394968
+          },
+          {
+            "quarter": "2019-Q4",
+            "gain": 0.0040998879629431,
+            "rows": 394521
+          },
+          {
+            "quarter": "2020-Q1",
+            "gain": 0.003802825557351304,
+            "rows": 388758
+          },
+          {
+            "quarter": "2020-Q2",
+            "gain": 0.004200303123918067,
+            "rows": 390156
+          },
+          {
+            "quarter": "2020-Q3",
+            "gain": 0.0035858340929562976,
+            "rows": 397260
+          },
+          {
+            "quarter": "2020-Q4",
+            "gain": 0.00494605980339163,
+            "rows": 524869
+          },
+          {
+            "quarter": "2021-Q1",
+            "gain": 0.003154297260342556,
+            "rows": 515212
+          },
+          {
+            "quarter": "2021-Q2",
+            "gain": 0.0018824614284447992,
+            "rows": 519913
+          },
+          {
+            "quarter": "2021-Q3",
+            "gain": 0.002631761559117958,
+            "rows": 525848
+          },
+          {
+            "quarter": "2021-Q4",
+            "gain": 0.003153522710795083,
+            "rows": 662100
+          },
+          {
+            "quarter": "2022-Q1",
+            "gain": 0.0027365238971326523,
+            "rows": 647700
+          },
+          {
+            "quarter": "2022-Q2",
+            "gain": 0.0022907929369285246,
+            "rows": 654900
+          },
+          {
+            "quarter": "2022-Q3",
+            "gain": 0.0025002683461658967,
+            "rows": 662100
+          },
+          {
+            "quarter": "2022-Q4",
+            "gain": 0.0031251502782249697,
+            "rows": 662100
+          },
+          {
+            "quarter": "2023-Q1",
+            "gain": 0.0030029061094090158,
+            "rows": 645590
+          },
+          {
+            "quarter": "2023-Q2",
+            "gain": 0.003753174551600514,
+            "rows": 654900
+          },
+          {
+            "quarter": "2023-Q3",
+            "gain": 0.0036706297566924586,
+            "rows": 662100
+          },
+          {
+            "quarter": "2023-Q4",
+            "gain": 0.0023218468665457256,
+            "rows": 662100
+          },
+          {
+            "quarter": "2024-Q1",
+            "gain": 0.0024238750774404796,
+            "rows": 654900
+          },
+          {
+            "quarter": "2024-Q2",
+            "gain": 0.0027565124550057696,
+            "rows": 654900
+          },
+          {
+            "quarter": "2024-Q3",
+            "gain": 0.001980113782260107,
+            "rows": 662100
+          },
+          {
+            "quarter": "2024-Q4",
+            "gain": 0.0027816738042906286,
+            "rows": 662100
+          },
+          {
+            "quarter": "2025-Q1",
+            "gain": 0.0015022596802764284,
+            "rows": 647700
+          },
+          {
+            "quarter": "2025-Q2",
+            "gain": 0.001572504325232232,
+            "rows": 654900
+          },
+          {
+            "quarter": "2025-Q3",
+            "gain": 0.0018748605347058188,
+            "rows": 662100
+          },
+          {
+            "quarter": "2025-Q4",
+            "gain": 0.0019538601071226024,
+            "rows": 662100
+          },
+          {
+            "quarter": "2026-Q1",
+            "gain": 0.0020462736944280107,
+            "rows": 647700
+          },
+          {
+            "quarter": "2026-Q2",
+            "gain": 0.0023804631384022504,
+            "rows": 654900
+          },
+          {
+            "quarter": "2026-Q3",
+            "gain": 0.002773654095301816,
+            "rows": 662100
+          },
+          {
+            "quarter": "2026-Q4",
+            "gain": 0.0018750614802868274,
+            "rows": 86105
+          }
+        ],
+        "exploratoryMeanQuarterGain": {
+          "mean": 0.0029778826894046,
+          "lo": 0.002665059883084835,
+          "hi": 0.003310110579457271
+        },
+        "interpretation": "Same-quarter assets pooled; quarter bootstrap is exploratory and assumes reasonably independent stable time blocks. Reused history remains development evidence."
+      }
+    ],
+    "qualification": "Observed development evidence only. Quarter bootstrap assumes reasonably independent stable time blocks; no prospective, calibration or contract-profit qualification follows automatically.",
+    "aggregateTargets": [
+      {
+        "horizonMinutes": 15,
+        "rows": 18066248,
+        "accuracy": 0.36296097562703666,
+        "weightedPredictiveGain": 0.0027149763906016895,
+        "highConfidencePredictionsAtPointSix": 0
+      },
+      {
+        "horizonMinutes": 60,
+        "rows": 18056438,
+        "accuracy": 0.37095389467180623,
+        "weightedPredictiveGain": 0.0028399374008984788,
+        "highConfidencePredictionsAtPointSix": 0
+      }
+    ]
+  },
+  "profitAndSnn": {
+    "hourlyProfitTargetUsd": 4.5,
+    "cycleProfitTargetUsd": 108,
+    "exitAuthority": "Existing fee-aware profit clock, actual entry basis, current side bid/depth and maintained as-of Kalshi fees",
+    "contractProfitVerified": false,
+    "nativeSnnTrained": false,
+    "forwardPaperTrial": false,
+    "interpretation": "A minute-price forecast is not an executable Kalshi fill or dollar profit. Native SNN/contract replay remains separately evidenced."
+  },
+  "liveTradingChanged": false,
+  "autoPromotionAdded": false
+}

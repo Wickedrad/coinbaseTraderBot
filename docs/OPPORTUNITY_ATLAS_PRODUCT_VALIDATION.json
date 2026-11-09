@@ -1,6 +1,6 @@
 {
   "schema": "atlas-paper-product-validation-v1",
-  "checkedAt": "2026-11-09T08:18:02.342113+00:00",
+  "checkedAt": "2026-11-09T16:04:02.252309+00:00",
   "liveTradingChanged": false,
   "autoPromotionAdded": false,
   "localValidation": {
@@ -1779,5 +1779,16 @@
   },
   "primaryObjective": "advance-price-movement",
   "currentMovementEvidence": "OPPORTUNITY_ATLAS_MOVEMENT_VALIDATION.json",
-  "priorStudyInterpretation": "The earlier joint movement/settlement studies remain separate diagnostics. Their settlement/economic conditions do not gate current movement reliability."
+  "priorStudyInterpretation": "The earlier joint movement/settlement studies remain separate diagnostics. Their settlement/economic conditions do not gate current movement reliability.",
+  "currentFullHistoryOracleEvidence": "OPPORTUNITY_ATLAS_ORACLE_VALIDATION.json",
+  "fullHistoryOracleSummary": {
+    "runId": 42643723640,
+    "observedMinutes": 21070767,
+    "features": 28,
+    "relationships": 406,
+    "allEligibleAnswersFitted": true,
+    "nativeSnnTrained": false,
+    "contractProfitVerified": false,
+    "liveTradingChanged": false
+  }
 }

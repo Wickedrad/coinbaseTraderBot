@@ -132,3 +132,29 @@ cannot enable entries.
 These direct queries are research evaluations. Their supplied historical timestamps
 do not establish that the artifact existed then; genuine forward capture still
 requires a publication receipt and an observed request after publication.
+
+## Completed full-history run
+
+[Run 42643723640](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42643723640)
+completed all five assets on model source `3b97fbddc5e58619f5bbc40bb0713c77423d4644`.
+It processed 21,070,767 valid minutes in 167 asset/quarter blocks. The located
+archive ends at the October 13, 2026 minute close; it is not history through today.
+The final fits contain all 21,040,940 eligible 15m answers and 21,035,450 eligible
+one-hour answers. The 43,204 off-grid rows remain in quarantine.
+
+The frozen walk scored 18,066,248 15m predictions and 18,056,438 one-hour
+predictions. Row-weighted log-loss gain over the historical-frequency baseline
+was 0.002715 and 0.002840, respectively. Same-quarter assets pooled into 33
+time blocks give exploratory mean-gain intervals [0.002603, 0.003005] and
+[0.002665, 0.003310] under the stated stable, independent-quarter assumption.
+Three-way accuracy was 36.30% and 37.10%; no forecast reached the registered
+0.60 diagnostic threshold. This is a small forecast-score improvement, not
+independent probability calibration or a verified profitable contract strategy.
+
+[Summary-only run 42650027513](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42650027513)
+completed the cached-results aggregation after fixing GitHub's transitive skip
+condition. No models were retrained for that workflow-only correction.
+The model source passed full CI: 1,264 tests, zero failures/skips, typecheck and
+build; Windows packaging and all CodeQL languages passed. All 167 block hashes,
+final-model hashes/row totals, source hashes and training clocks were reviewed.
+See [the complete receipts](OPPORTUNITY_ATLAS_ORACLE_VALIDATION.json).
