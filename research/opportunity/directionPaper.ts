@@ -133,6 +133,7 @@ export class DirectionPaperAccount {
     if (![contract.openTime, contract.closeTime, contract.termsKnownAt].every(stamp) || contract.termsKnownAt > this.now || contract.closeTime <= contract.openTime) return this.outcome('unavailable-contract-terms');
     if (q.ticker !== contract.ticker || !stamp(q.at) || q.at > this.now || this.now - q.at > this.policy.maximumQuoteAgeMs || !hash(q.sourceSha256) ||
         [...q.bids, ...q.asks].some((l) => !Number.isFinite(l.price) || l.price <= 0 || l.price >= 1 || !Number.isFinite(l.size) || l.size < 0 || Math.abs(l.size * 100 - Math.round(l.size * 100)) > 1e-6)) return this.outcome('unavailable-book');
+    if (!q.bids.length && !q.asks.length) return this.outcome('empty-observed-book');
     const quoteKey = `${q.ticker}:${q.at}:${q.sourceSha256}`;
     if (this.seenQuotes.has(quoteKey)) return this.outcome('duplicate-book'); this.seenQuotes.add(quoteKey);
     const f = fees.schedule;
@@ -197,7 +198,7 @@ export class DirectionPaperAccount {
       hourly: [...this.hourly].map(([hour, p]) => ({ from: hour * 3600000, ...p, goalMet: p.netUsd >= 4.5 - 1e-9 })), pacer: this.pacer.status(this.now),
       fills: this.fills.length, sales: this.sales.length, decisions: this.decisions, noRefills: true, liquidityReplenishedByTimer: false,
       makerSales: this.fills.filter((f) => f.action === 'exit' && !f.isTaker).length, makerFillBasis: 'Observed public trades, visible initial queue and strict later exchange-second bucket',
-      feeAsOfVerified: !this.feeAssumptionsUsed, liveEntryAllowed: false, researchOnly: true, actualVenueProfitVerified: false,
+      feeAsOfVerified: this.fills.length ? !this.feeAssumptionsUsed : null, liveEntryAllowed: false, researchOnly: true, actualVenueProfitVerified: false,
       interpretation: 'Full-snapshot entries, snapshot-taker or observed-trade maker exits; paper fills, not venue fills; unresolved exposure is not settled or counted as profit' };
   }
 }

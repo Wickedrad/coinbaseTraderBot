@@ -200,8 +200,12 @@ export class KalshiWs extends EventEmitter {
         case 'orderbook_snapshot': {
           const ticker = String(msg.market_ticker);
           if (sid !== undefined) this.sidTicker.set(sid, ticker);
-          const yes = lv(msg.yes_dollars ?? msg.yes, !msg.yes_dollars);
-          const no = lv(msg.no_dollars ?? msg.no, !msg.no_dollars);
+          // Current websocket snapshots use *_dollars_fp (fractional count strings).
+          // Reading only the older aliases silently published empty full books.
+          const yesDollars = msg.yes_dollars_fp ?? msg.yes_dollars;
+          const noDollars = msg.no_dollars_fp ?? msg.no_dollars;
+          const yes = lv(yesDollars ?? msg.yes, yesDollars === undefined);
+          const no = lv(noDollars ?? msg.no, noDollars === undefined);
           this.emit('book_snapshot', {
             ticker,
             bids: yes,

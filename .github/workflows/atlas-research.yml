@@ -42,6 +42,11 @@ on:
         type: boolean
         default: false
         required: false
+      capture_public_books:
+        description: 'Collect 16 minutes of public contract depth on GitHub; holdout evidence only, no credentials, forecasts, fitting or orders'
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -49,7 +54,7 @@ permissions:
 
 jobs:
   history-study:
-    if: inputs.dataset_run == '' && !inputs.oracle_blocks && inputs.results_run == ''
+    if: inputs.dataset_run == '' && !inputs.oracle_blocks && inputs.results_run == '' && !inputs.capture_public_books
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -311,5 +316,26 @@ jobs:
         with:
           name: atlas-oracle-importance-${{ matrix.asset }}
           path: research/out/atlas-importance-${{ matrix.asset }}/
+          if-no-files-found: warn
+          retention-days: 90
+  capture-public-books:
+    if: inputs.capture_public_books
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Capture public GET-only books; preserve the fresh holdout for later locked evaluation
+        run: |
+          node --import tsx research/opportunity/collectContractBooks.ts --cycles 192 --out research/out/atlas-forward-contract-books
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-forward-contract-books
+          path: research/out/atlas-forward-contract-books/
           if-no-files-found: warn
           retention-days: 90

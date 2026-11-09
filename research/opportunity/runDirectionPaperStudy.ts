@@ -26,6 +26,8 @@ export async function runDirectionPaperStudy(o: { native: string; snapshots: str
   inputs[snapshotFile] = receipt.snapshots.sha256;
   const snapshots = await readJsonLines<{ contract: TimedPriceContract; quote: SnapshotEvidence }>(snapshotFile, 100000);
   if (!snapshots.length || snapshots.some((s, i) => s.quote.knownAt >= registered.finalFrom || (i > 0 && s.quote.knownAt < snapshots[i - 1].quote.knownAt))) throw new Error('reserved or unordered snapshots');
+  const depthCoverage = { snapshots: snapshots.length, withBids: snapshots.filter((s) => s.quote.bids.length > 0).length,
+    withAsks: snapshots.filter((s) => s.quote.asks.length > 0).length, bothSides: snapshots.filter((s) => s.quote.bids.length > 0 && s.quote.asks.length > 0).length };
   const fees: PaperFeeTerms = { basis: 'assumed-schedule', knownAt: Date.now(), effectiveFrom: 0,
     schedule: { ...DEFAULT_FEES, balancePrecision: 0.01, takerRate: 0.07, makerRate: 0.0175 }, sourceSha256: digest(DEFAULT_FEES) };
   const variants = [
@@ -39,17 +41,20 @@ export async function runDirectionPaperStudy(o: { native: string; snapshots: str
   if (tradeFile && await sha256File(tradeFile) !== receipt.trades.sha256) throw new Error('public trade receipt differs');
   if (tradeFile) inputs[tradeFile] = receipt.trades.sha256;
   if (tradeFile) settings.push(...[0, 0.05, 0.1, 0.25].map((targetContractRoi) => ({ name: `maker-contract-${targetContractRoi}`, targetContractRoi, exitMode: 'resting-maker' as const })));
+  // Development sensitivity study, not a post-hoc confidence claim or live selector.
+  // Zero means rank directions without a probability admission cutoff.
+  const probabilityCutoffs = [0, 0.5, 0.6];
   const basePolicy: DirectionPaperPolicy = { startingCash: 200, maximumPositionCost: 20, maximumContracts: 40, maximumOpenPositions: 8,
     minimumNetTakeUsd: 0.01, targetContractRoi: 0, minimumSignalProbability: 0.6, maximumQuoteAgeMs: 2000, maximumSignalAgeMs: 2000, saleBufferMs: profit.saleBufferMs };
   const registration = { schema: 'atlas-direction-cash-paper-v1', policy: registered, plan, basePolicy, settings, fees,
-    fixedBeforeReadingMovementOutcomes: true, onlyPredictorPointProbabilityUsedForExploratoryEntry: true,
-    historicalCounterfactual: true, qualification: 'Research-only; point probability >= 0.60 is not a verified win rate',
+    depthCoverage, fixedBeforeReadingMovementOutcomes: true, probabilityCutoffs, onlyPredictorPointProbabilityUsedForExploratoryEntry: true,
+    historicalCounterfactual: true, qualification: 'Research sensitivity comparison; cutoffs are point probabilities, not verified win rates; zero is unfiltered direction ranking',
     sourceSnapshotSha256: receipt.snapshots.sha256, sourceTradesSha256: receipt.trades?.sha256 ?? null,
     sourceNativeSummarySha256: await sha256File(path.join(o.native, 'summary.json')), codeHashes: code };
   fs.writeFileSync(path.join(root, 'registration.json'), JSON.stringify(registration, null, 2) + '\n');
   const reports = [];
   const accounts: Array<{ account: DirectionPaperAccount; model: string; modelId: string; setting: typeof settings[number];
-    signals: Map<string, DirectionPaperSignal[]>; counts: Record<string, number> }> = [];
+    minimumSignalProbability: number; signals: Map<string, DirectionPaperSignal[]>; counts: Record<string, number> }> = [];
   for (const v of variants) {
     const modelFile = path.join(o.native, v.key, `${v.model}.json`); inputs[modelFile] = await sha256File(modelFile);
     const model = JSON.parse(fs.readFileSync(modelFile, 'utf8')) as AdvanceModel;
@@ -71,9 +76,9 @@ export async function runDirectionPaperStudy(o: { native: string; snapshots: str
       list.push({ id: observation.id, modelId: model.id, asOf: at, producedAt: at, featuresKnownAt: observation.query.featuresKnownAt,
         byAt: e.byAt, direction: observation.event.direction, probability: p }); signals.set(key, list); counts.predicted++;
     }
-    for (const setting of settings) {
-      const policy = { ...basePolicy, ...setting }, account = new DirectionPaperAccount(policy, profit, snapshots[0].quote.knownAt);
-      accounts.push({ account, model: v.model, modelId: model.id, setting, signals, counts });
+    for (const setting of settings) for (const minimumSignalProbability of probabilityCutoffs) {
+      const policy = { ...basePolicy, ...setting, minimumSignalProbability }, account = new DirectionPaperAccount(policy, profit, snapshots[0].quote.knownAt);
+      accounts.push({ account, model: v.model, modelId: model.id, setting, minimumSignalProbability, signals, counts });
     }
   }
   let observed = 0, snapshotIndex = 0, tradeCount = 0;
@@ -98,17 +103,18 @@ export async function runDirectionPaperStudy(o: { native: string; snapshots: str
     } } finally { reader.close(); stream.destroy(); }
   }
   while (snapshotIndex < snapshots.length) await snapshot(snapshots[snapshotIndex++]);
-  for (const { account, model, modelId, setting, counts } of accounts) {
-      const report = { model, modelId, setting, observedSnapshots: observed, observedTrades: tradeCount, forecastCounts: counts, ...account.report(),
+  for (const { account, model, modelId, setting, minimumSignalProbability, counts } of accounts) {
+      const report = { model, modelId, setting, minimumSignalProbability, observedSnapshots: observed, observedTrades: tradeCount, forecastCounts: counts, ...account.report(),
         underlyingThresholdSales: [0.05, 0.1, 0.25].map((threshold) => ({ threshold, count: account.sales.filter((s) => s.underlyingMoveBps !== null &&
           Number(s.underlyingMoveBps) * (s.direction === 'up' ? 1 : -1) >= threshold * 10000).length })) };
-      const prefix = path.join(root, `${model}-${setting.name}`);
+      const prefix = path.join(root, `${model}-${setting.name}-p${minimumSignalProbability}`);
       fs.writeFileSync(`${prefix}-report.json`, JSON.stringify(report, null, 2) + '\n');
       fs.writeFileSync(`${prefix}-sales.jsonl`, account.sales.map((s) => JSON.stringify(s)).join('\n') + '\n');
       fs.writeFileSync(`${prefix}-fills.jsonl`, account.fills.map((s) => JSON.stringify(s)).join('\n') + '\n');
       reports.push(report);
   }
-  const summary = { ...registration, reports, researchOnly: true, liveEntryAllowed: false, autoPromote: false, actualVenueProfitVerified: false,
+  const summary = { ...registration, reports, status: depthCoverage.withAsks + depthCoverage.withBids === 0 ? 'missing-executable-depth' : 'historical-paper-research',
+    researchOnly: true, liveEntryAllowed: false, autoPromote: false, actualVenueProfitVerified: false,
     limitations: ['Historical snapshot-entry and optional observed-trade maker simulation, not private fills or a forward paper trial',
       'Published standard fees are explicit assumptions; archived per-series as-of fee schedules were not present',
       'Snapshot-only coverage cannot certify an exit between snapshots; missing exits retain cash-funded unresolved exposure',

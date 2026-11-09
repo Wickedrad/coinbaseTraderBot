@@ -72,6 +72,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   const reported = new Map<string, string>();
   const lastAssetSample = new Map<string, number>();
   const decisionsByDay = new Map<string, number>();
+  const snapshotDepth = { snapshots: 0, nonemptyBids: 0, nonemptyAsks: 0, bothSides: 0 };
   const termsAt = (m: RecMarket & { knownAt: number }, at: number): { terms: ContractTerms; knownAt: number; basis: 'recorded-contract' | 'computed-opening-index' } | null => {
     if (m.kind === 'updown') {
       if (m.strike && m.knownAt >= m.openTime) return { terms: { kind: 'updown', strike: m.strike }, knownAt: m.knownAt, basis: 'recorded-contract' };
@@ -148,6 +149,8 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       if (snapshotFd !== undefined && e.k === 'book') {
         const m = markets.get(e.ticker), terms = m && termsAt(m, e.t);
         if (m && terms && e.t < policy.finalFrom) {
+          snapshotDepth.snapshots++; snapshotDepth.nonemptyBids += Number(!!e.bids?.length); snapshotDepth.nonemptyAsks += Number(!!e.asks?.length);
+          snapshotDepth.bothSides += Number(!!e.bids?.length && !!e.asks?.length);
           const idx = trackers.get(m.asset)?.fresh(e.t, 3000);
           fs.writeSync(snapshotFd, JSON.stringify({ contract: { ticker: m.ticker, asset: m.asset, openTime: m.openTime, closeTime: m.closeTime,
             termsKnownAt: terms.knownAt, terms: terms.terms, settlementReference: `CF-RTI:${m.asset}:kalshi` },
@@ -255,6 +258,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
     sampling: { decisionAttemptIntervalMs: 1000, freshSnapshotsMayTriggerImmediately: true,
       sampleEveryMs: options.sampleEveryMs ?? 0, snapshotOnlyEconomicEvidence: true, snapshotDecisionsOnly: options.snapshotDecisionsOnly ?? false },
     decisionsByDay: Object.fromEntries(decisionsByDay),
+    snapshotDepth,
     ...(snapshotFd !== undefined ? { snapshots: { file: 'snapshots.jsonl', sha256: await sha256File(path.join(staging, 'snapshots.jsonl')) } } : {}),
     ...(tradeFd !== undefined ? { trades: { file: 'trades.jsonl', sha256: await sha256File(path.join(staging, 'trades.jsonl')) } } : {}),
     limitations: ['Historical candle provider identity remains whatever the recording establishes; no provider fallback or relabeling',

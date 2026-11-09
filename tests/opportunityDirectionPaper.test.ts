@@ -35,6 +35,11 @@ test('$200 paper ledger charges both fees, rejects a fee-negative 5% move, then 
   assert.equal(r.unresolvedPositions.length, 0); assert.equal(r.hourly[0].goalMet, false);
   assert.ok(Math.abs(r.pacer.realizedHourUsd - 0.31) < 1e-9); assert.ok(Number(a.sales[0].underlyingMoveBps) > 0);
 });
+test('empty archived snapshots explicitly block executable-profit verification', async () => {
+  const a = new DirectionPaperAccount(policy, profit, T), c = contract();
+  assert.equal(await a.observe(c, { ...quote(T, 0.39, 0.4), bids: [], asks: [] }, fees, signal()), 'empty-observed-book');
+  assert.equal(a.report().endingCash, 200); assert.equal(a.report().fills, 0); assert.equal(a.report().feeAsOfVerified, null);
+});
 test('NO positions use the actual opposite book, and partial sales retain the unsold basis', async () => {
   const a = new DirectionPaperAccount(policy, profit, T), c = contract();
   await a.observe(c, quote(T, 0.60, 0.61), fees, signal(T, 'down'));
