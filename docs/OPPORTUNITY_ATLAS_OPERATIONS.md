@@ -5,6 +5,9 @@ fee-net sale using the existing dynamic hourly profit clock**. Start with
 [advance movement and profit-taking](OPPORTUNITY_ATLAS_PROFIT_OBJECTIVE.md).
 For the owner's full-history request, use the
 [every-minute Oracle and frozen-block run](OPPORTUNITY_ATLAS_ORACLE_BLOCKS.md).
+For learned curve importance, native checkpoints and funded contract studies, see
+[the direction iteration](../OPPORTUNITY_ATLAS_DIRECTION_ITERATIONS.md) and its
+[run evidence](../OPPORTUNITY_ATLAS_DIRECTION_VALIDATION.json).
 The older joint settlement workflow below remains a separate diagnostic;
 settlement wins and its payout calibration are not the movement learning target.
 
