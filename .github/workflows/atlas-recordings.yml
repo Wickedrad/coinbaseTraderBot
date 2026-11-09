@@ -11,6 +11,11 @@ on:
         description: 'Optional completed atlas-recording-study run; refit its frozen datasets without archive processing or SNN replay'
         default: ''
         required: false
+      expand_training:
+        description: 'Add fixed October 24 and 27 archive prefixes to exercise non-prior fits; preserves the plan, audit and final holdout'
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -18,14 +23,14 @@ permissions:
 
 jobs:
   public-prefix:
-    if: inputs.source_run == '' && inputs.study_run == ''
+    if: inputs.study_run == '' && (inputs.source_run == '' || inputs.expand_training)
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        day: ['2026-10-22', '2026-10-29', '2026-11-01', '2026-11-04', '2026-11-06', '2026-11-07']
+        day: ${{ fromJSON(inputs.source_run != '' && '["2026-10-24","2026-10-27"]' || inputs.expand_training && '["2026-10-22","2026-10-24","2026-10-27","2026-10-29","2026-11-01","2026-11-04","2026-11-06","2026-11-07"]' || '["2026-10-22","2026-10-29","2026-11-01","2026-11-04","2026-11-06","2026-11-07"]') }}
     steps:
       - uses: actions/checkout@v5
       - name: Read a fixed bounded prefix from already archived market recordings
@@ -59,7 +64,7 @@ jobs:
           if-no-files-found: error
   contract-study:
     needs: public-prefix
-    if: ${{ !cancelled() && inputs.study_run == '' && (needs.public-prefix.result == 'success' || inputs.source_run != '') }}
+    if: ${{ !cancelled() && inputs.study_run == '' && (needs.public-prefix.result == 'success' || (needs.public-prefix.result == 'skipped' && inputs.source_run != '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -74,7 +79,7 @@ jobs:
           cache: npm
       - run: npm ci
       - uses: actions/download-artifact@v4
-        if: inputs.source_run == ''
+        if: needs.public-prefix.result == 'success'
         with:
           pattern: atlas-public-*
           path: ${{ runner.temp }}/atlas-recordings
