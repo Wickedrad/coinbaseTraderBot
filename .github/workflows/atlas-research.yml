@@ -19,6 +19,11 @@ on:
         description: 'Predetermined observation spacing; 1441 rotates the UTC observation minute across days'
         default: '1441'
         required: true
+      oracle_blocks:
+        description: 'Use every minute: quarterly Oracle response tables first, then separate frozen-block 15m/1h direction replay (GitHub only)'
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -26,7 +31,7 @@ permissions:
 
 jobs:
   history-study:
-    if: inputs.dataset_run == ''
+    if: inputs.dataset_run == '' && !inputs.oracle_blocks
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -94,7 +99,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
   family-comparison:
-    if: inputs.dataset_run != ''
+    if: inputs.dataset_run != '' && !inputs.oracle_blocks
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -145,4 +150,89 @@ jobs:
           name: atlas-history-comparison
           path: research/out/atlas-history-comparison/
           if-no-files-found: warn
+          retention-days: 90
+  oracle-prepare:
+    if: inputs.oracle_blocks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-history-archive
+          path: ${{ runner.temp }}/atlas-source
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.archive_run }}
+      - name: Preserve raw archive; quarantine off-grid rows once on this runner
+        run: |
+          python3 -B research/opportunity/quarantineArchive.py "$RUNNER_TEMP/atlas-source" \
+            --out "$RUNNER_TEMP/atlas-oracle-input"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-oracle-input
+          path: ${{ runner.temp }}/atlas-oracle-input/
+          retention-days: 7
+  oracle-train:
+    needs: oracle-prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        asset: [BTC, ETH, SOL, XRP, DOGE]
+    env:
+      ORACLE_ASSET: ${{ matrix.asset }}
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-oracle-input
+          path: ${{ runner.temp }}/atlas-oracle-input
+      - name: First pass -- every-minute future answers and quarterly relationship tables
+        run: |
+          npm run research:opportunity-oracle -- oracle --archive "$RUNNER_TEMP/atlas-oracle-input" \
+            --asset "$ORACLE_ASSET" --out "research/out/atlas-oracle-$ORACLE_ASSET/oracle"
+      - name: Second pass -- freeze prior blocks, predict the next block, then advance
+        run: |
+          npm run research:opportunity-oracle -- walk --archive "$RUNNER_TEMP/atlas-oracle-input" \
+            --asset "$ORACLE_ASSET" --oracle "research/out/atlas-oracle-$ORACLE_ASSET/oracle" \
+            --out "research/out/atlas-oracle-$ORACLE_ASSET/walk"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-oracle-result-${{ matrix.asset }}
+          path: research/out/atlas-oracle-${{ matrix.asset }}/
+          if-no-files-found: warn
+          retention-days: 90
+  oracle-summary:
+    needs: oracle-train
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atlas-oracle-result-*
+          path: ${{ runner.temp }}/atlas-oracle-results
+      - name: Summarize all-minute coverage and frozen-block prediction evidence
+        run: |
+          mkdir -p research/out/atlas-oracle-summary
+          node --import tsx research/opportunity/oracleSummary.ts "$RUNNER_TEMP/atlas-oracle-results" \
+            research/out/atlas-oracle-summary/summary.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-oracle-summary
+          path: research/out/atlas-oracle-summary/
           retention-days: 90
