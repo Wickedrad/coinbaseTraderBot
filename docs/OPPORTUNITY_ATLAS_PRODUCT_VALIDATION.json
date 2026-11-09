@@ -1,6 +1,6 @@
 {
   "schema": "atlas-paper-product-validation-v1",
-  "checkedAt": "2026-11-09T06:25:01.390346+00:00",
+  "checkedAt": "2026-11-09T08:18:02.342113+00:00",
   "liveTradingChanged": false,
   "autoPromotionAdded": false,
   "localValidation": {
@@ -245,7 +245,11 @@
     "observedMarketModelQualified": false,
     "executedProfitVerified": false,
     "independentSnnEdgeVerified": false,
-    "nextEvidence": "Independent observed-contract/calibration weeks and executable quote/fill evidence, then a genuine forward paper trial; completed bounded studies remain exploratory"
+    "nextEvidence": [
+      "Adequate approved development coverage and independent advance-movement/calibration weeks",
+      "Genuine forward paper forecasts published before their measured movement",
+      "Separately measured venue fills, fee-net realized exits and approved production integration"
+    ]
   },
   "studyPolicy": {
     "legacyStudy": "legacy-pre2025-frozen2026-v1",
@@ -361,9 +365,9 @@
     "perpSnapshotMessages": 2670
   },
   "pendingReleaseEvidence": [
-    "Adequate multi-era observed-contract coverage and independent weekly predictive, fee-net and conditional/SNN evidence",
-    "Verified venue fill and replay fidelity, followed by a fresh forward paper trial",
-    "Approved production integration, deployment and live enablement"
+    "Adequate approved development coverage and independent advance-movement/calibration weeks",
+    "Genuine forward paper forecasts published before their measured movement",
+    "Separately measured venue fills, fee-net realized exits and approved production integration"
   ],
   "historicalDemoCodeHashes": {
     "bot/model/calibration.ts": "9ef258cb0e113ee4cf6a32496b1804fd6ab6ef71e34df3cc79523cf218df5c4e",
@@ -1772,5 +1776,8 @@
     "interpretation": "Actual smooth/tree/linear conditional fits are exercised. The locked geometry-only tree heads remain unqualified: one audit week, two confirmed audit events, no executable audit quotes, and insufficient conditional calibration. No indicator or SNN group has retained influence. Every historical paper query abstains; none is forward evidence.",
     "liveEntryAllowed": false,
     "autoPromote": false
-  }
+  },
+  "primaryObjective": "advance-price-movement",
+  "currentMovementEvidence": "OPPORTUNITY_ATLAS_MOVEMENT_VALIDATION.json",
+  "priorStudyInterpretation": "The earlier joint movement/settlement studies remain separate diagnostics. Their settlement/economic conditions do not gate current movement reliability."
 }

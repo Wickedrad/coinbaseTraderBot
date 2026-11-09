@@ -117,3 +117,15 @@ feature timestamp. Late publication is explicitly ineligible.
 Historical replay requires `--historical-audit`
 and never contributes forward evidence. Profit and fill-performance evidence is
 reported separately from movement reliability.
+
+## Observed verification
+
+GitHub run [42583415334](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42583415334)
+completed this movement-only path on the archived inputs. It produced 1,550
+complete deduplicated base examples and 1,526 for each SNN variant. All three
+candidate families fitted; trees won selection. The audit contains only one
+independent week, so neither movement reliability nor a conditional/SNN edge is
+established. All 918 retrospective queries stayed unsupported or unqualified.
+No replay was counted as forward evidence. See
+[the validation record](OPPORTUNITY_ATLAS_MOVEMENT_VALIDATION.json) for source,
+artifact, model, coverage and CI receipts.
