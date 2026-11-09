@@ -23,7 +23,7 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
       !Number.isSafeInteger(maximumInputGapMs) || maximumInputGapMs < 1000 || maximumInputGapMs > 60000) throw new Error('invalid SNN tape replay policy');
   const params = { ...(options.params ?? DEFAULT_SNN), flags: { ...(options.params ?? DEFAULT_SNN).flags, ...stageFlags(options.variant) } };
   const net = new SnnNetwork(params), initialSha = digest(net.serialize());
-  let firstAt = 0, lastAt = 0, learnedThrough = 0, previousStep = 0, snapshots = 0, gaps = 0, nextSnapshot = 0, gapResets = 0, awaitingInput = false;
+  let firstAt = 0, lastAt = 0, learnedThrough = 0, previousStep = 0, snapshots = 0, gaps = 0, nextSnapshot = 0, gapResets = 0, awaitingInput = false, unavailableSnapshots = 0;
   function advance(at: number, inputs: ColumnInput[]) {
     if (!stamp(at) || at < lastAt) throw new Error('unordered tape arrival time');
     if (!firstAt) firstAt = at;
@@ -55,6 +55,9 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
       if (at <= previousStep) throw new Error('duplicate or reversed SNN step');
       awaitingInput = false; advance(at, op.inputs); previousStep = at;
       if (at >= nextSnapshot) {
+        // Native tapes can begin with a book event before any index/asset input.
+        // Advance that observed clock, but do not invent an initialized SNN state.
+        if (!net.columns.size) { unavailableSnapshots++; continue; }
         const state = captureSnnState(net, at, { checkpointSha256: initialSha, checkpointKnownAt: firstAt,
           inputSourceSha256: options.sourceSha256, domain: options.domain ?? 'crypto', inputLagMs, maximumInputGapMs,
           trainedThrough: learnedThrough, inputKnownAt: at, variant: options.variant, basis: 'observed-tape' });
@@ -67,7 +70,7 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
       else if (op.label !== undefined) net.settle(op.ticker, op.label ? 'yes' : 'no', at);
     }
   }
-  return { variant: options.variant, studyPolicyId: policy.id, domain: options.domain ?? 'crypto', inputLagMs, maximumInputGapMs, sourceSha256: options.sourceSha256, firstAt, lastAt, learnedThrough, snapshots, gaps, gapResets,
+  return { variant: options.variant, studyPolicyId: policy.id, domain: options.domain ?? 'crypto', inputLagMs, maximumInputGapMs, sourceSha256: options.sourceSha256, firstAt, lastAt, learnedThrough, snapshots, unavailableSnapshots, gaps, gapResets,
     version: net.version, checkpointSha256: digest(net.serialize()),
     semantics: 'Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff' };
 }

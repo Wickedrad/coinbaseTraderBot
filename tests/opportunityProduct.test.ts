@@ -210,6 +210,17 @@ test('unobserved SNN intervals cannot grade pending calls on stale held or later
   assert.equal(states.at(-1)!.provenance.maximumInputGapMs, 3000);
 });
 
+test('native tapes may start before any asset input, without publishing an invented empty state', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-tape-start-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'startup.tape'), w = new TapeWriter(file), states: ReturnType<typeof captureSnnState>[] = [];
+  w.step(start, []); w.score(start, [], []);
+  w.step(start + 1000, [{ key: 'BTC-15m', asset: 'BTC', price: 100, mid: undefined, values: {} }]); w.close();
+  const r = replayAtlasSnnTape(file, { variant: 'S5', sourceSha256: sha, everyMs: 1000,
+    params: { ...DEFAULT_SNN, nE: 8, nI: 2, nL1: 4 }, onState: (s) => states.push(s) });
+  assert.equal(r.unavailableSnapshots, 1); assert.equal(states.length, 1);
+  assert.equal(states[0].asOf, start + 2000); assert.equal(states[0].columns[0].asset, 'BTC');
+});
+
 test('assembly, persisted study, registry query and shadow logging run end to end with checked receipts', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-product-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const first = planted()[0], at = first.observation.query.asOf;
