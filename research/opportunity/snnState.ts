@@ -12,6 +12,8 @@ export interface SnnProvenance {
   inputLagMs?: number;
   /** Longer observed-input gaps clear transient state and pending labels in research replay. */
   maximumInputGapMs?: number;
+  /** The source tape emitted a column only while its observed index price met this age limit. */
+  maximumInputPriceAgeMs?: number;
   /** Latest arrival used by the caller's causal replay, including input and settlement messages. */
   inputKnownAt: number; basis: 'observed-tape' | 'forward-paper'; variant: 'S5' | 'S6';
 }
@@ -33,6 +35,7 @@ export function validateSnnState(s: AtlasSnnState, asOf: number, maximumAgeMs = 
       !['crypto', 'perps', 'combined'].includes(p.domain) ||
       !Number.isSafeInteger(p.inputLagMs ?? 0) || (p.inputLagMs ?? 0) < 0 || (p.inputLagMs ?? 0) > 60000 ||
       (p.maximumInputGapMs !== undefined && (!Number.isSafeInteger(p.maximumInputGapMs) || p.maximumInputGapMs < 1000 || p.maximumInputGapMs > 60000)) ||
+      (p.maximumInputPriceAgeMs !== undefined && (!Number.isSafeInteger(p.maximumInputPriceAgeMs) || p.maximumInputPriceAgeMs < 1 || p.maximumInputPriceAgeMs > 60000)) ||
       !s.flags.lateral || !s.flags.pc || (p.variant === 'S6' ? !s.flags.plasticity || !s.flags.pcLearn : s.flags.plasticity || s.flags.pcLearn) ||
       !/^[a-f0-9]{64}$/.test(p.checkpointSha256) || !['S5', 'S6'].includes(p.variant) ||
       !['observed-tape', 'forward-paper'].includes(p.basis) ||
@@ -41,6 +44,8 @@ export function validateSnnState(s: AtlasSnnState, asOf: number, maximumAgeMs = 
       Math.max(p.checkpointKnownAt, p.trainedThrough, p.inputKnownAt) > asOf ||
       !s.columns.length || s.columns.length > 64 || new Set(s.columns.map((c) => c.key)).size !== s.columns.length) throw new Error('unavailable, stale or noncausal SNN state');
   for (const c of s.columns) {
+    if (p.maximumInputPriceAgeMs !== undefined && (![0, 1].includes(c.values.observed_input_available!) ||
+        (c.values.observed_input_available === 0 && Object.entries(c.values).some(([k, v]) => k !== 'observed_input_available' && v !== null)))) throw new Error('missing observed SNN input must be explicitly masked');
     if (!/^[A-Za-z0-9_-]+$/.test(c.key) || !/^[A-Z]+$/.test(c.asset) || !(c.horizonSec > 0) || !Number.isFinite(c.horizonSec) ||
         Object.keys(c.values).length > 256 || Object.entries(c.values).some(([k, v]) => !/^[a-z0-9_]+$/.test(k) || (v !== null && !Number.isFinite(v)))) throw new Error('invalid SNN column');
     const domain = p.domain === 'combined' ? c.key.split('_')[0] : p.domain;
@@ -53,8 +58,9 @@ export function validateSnnState(s: AtlasSnnState, asOf: number, maximumAgeMs = 
 /** Pool actual rates and predictive-coding latents, rather than the distance-gated contract
  * features (which erase pooled rates at d=0). Provenance is supplied by the recorder, never
  * inferred from a checkpoint's mtime. A later-trained checkpoint is invalid in an earlier replay. */
-export function captureSnnState(net: SnnNetwork, asOf: number, provenance: SnnProvenance): AtlasSnnState {
+export function captureSnnState(net: SnnNetwork, asOf: number, provenance: SnnProvenance, availableKeys?: ReadonlySet<string>): AtlasSnnState {
   if (provenance.domain === 'combined') throw new Error('use combineSnnStates for the isolated network fleet');
+  if (provenance.maximumInputPriceAgeMs !== undefined && !availableKeys) throw new Error('observed input availability is required for the declared price-age policy');
   const dirs = new Map(net.directions().map((d) => [d.key, d]));
   const columns = net.sortedColumns().filter((c) => c.kind === 'crypto').map((c) => {
     const values: Record<string, number | null> = {};
@@ -74,6 +80,11 @@ export function captureSnnState(net: SnnNetwork, asOf: number, provenance: SnnPr
       salience: finite(net.salience[c.key]), readout_p_up: finite(d.pUp), readout_move_bps: finite(d.expMove),
       readout_signed_bps: finite(d.expSignedMove), readout_skill: finite(d.skill), readout_calibration: finite(d.calConf),
       readout_contract_skill: finite(d.contractSkill), readout_labelled: finite(d.labelled) });
+    if (provenance.maximumInputPriceAgeMs !== undefined) {
+      const available = availableKeys!.has(c.key);
+      if (!available) for (const key of Object.keys(values)) values[key] = null;
+      values.observed_input_available = Number(available);
+    }
     return { key: c.key, asset: c.asset, horizonSec: c.horizonSec, values };
   });
   const s: AtlasSnnState = { schema: ATLAS_SNN_SCHEMA, asOf, stateAt: net.lastTs, version: net.version,
@@ -90,7 +101,8 @@ export function combineSnnStates(states: AtlasSnnState[]): AtlasSnnState {
   const ordered = [...states].sort((a, b) => a.provenance.domain.localeCompare(b.provenance.domain)), first = ordered[0];
   for (const s of ordered) { validateSnnState(s, first.asOf); if (s.provenance.variant !== first.provenance.variant || s.provenance.basis !== first.provenance.basis ||
     (s.provenance.inputLagMs ?? 0) !== (first.provenance.inputLagMs ?? 0) ||
-    s.provenance.maximumInputGapMs !== first.provenance.maximumInputGapMs) throw new Error('incompatible SNN variants/bases/input clocks'); }
+    s.provenance.maximumInputGapMs !== first.provenance.maximumInputGapMs ||
+    s.provenance.maximumInputPriceAgeMs !== first.provenance.maximumInputPriceAgeMs) throw new Error('incompatible SNN variants/bases/input clocks'); }
   const hash = (x: unknown) => createHash('sha256').update(JSON.stringify(x)).digest('hex');
   const components = ordered.map((s) => ({ domain: s.provenance.domain as 'crypto' | 'perps', version: s.version,
     flagsSha256: s.flagsSha256, checkpointSha256: s.provenance.checkpointSha256, inputSourceSha256: s.provenance.inputSourceSha256 }));
@@ -102,6 +114,7 @@ export function combineSnnStates(states: AtlasSnnState[]): AtlasSnnState {
       checkpointKnownAt: Math.max(...ordered.map((s) => s.provenance.checkpointKnownAt)),
       inputLagMs: Math.max(...ordered.map((s) => s.provenance.inputLagMs ?? 0)),
       ...(first.provenance.maximumInputGapMs !== undefined ? { maximumInputGapMs: first.provenance.maximumInputGapMs } : {}),
+      ...(first.provenance.maximumInputPriceAgeMs !== undefined ? { maximumInputPriceAgeMs: first.provenance.maximumInputPriceAgeMs } : {}),
       trainedThrough: Math.max(...ordered.map((s) => s.provenance.trainedThrough)), inputKnownAt: Math.max(...ordered.map((s) => s.provenance.inputKnownAt)) },
     columns: ordered.flatMap((s) => s.columns.map((c) => ({ ...c, key: `${s.provenance.domain}_${c.key}`, values: { ...c.values } }))) };
   validateSnnState(combined, combined.asOf); return combined;

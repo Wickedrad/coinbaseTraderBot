@@ -36,6 +36,7 @@ export interface ContractModel {
   included: FeatureFamily[]; featureNames: string[]; heads: Record<HeadName, ContractHead>; support: Support[];
   requiredFiniteFeatures: string[];
   snnIdentity: string | null; indexBasis: 'observed-index' | 'synthetic-fixture';
+  snnPriceAgeLimitMs?: number | null;
 }
 export interface JointContractProbabilities { neither: number; moveOnly: number; paysOnly: number; both: number }
 export interface ContractFitOptions { epochs?: number; hidden?: number; trees?: number; seed?: number }
@@ -51,7 +52,8 @@ export function featureFamily(name: string): FeatureFamily | null {
 }
 export const snnIdentity = (o: ContractObservation) => o.snn ? digest([o.snn.version, o.snn.flagsSha256, o.snn.provenance.domain, o.snn.provenance.variant, o.snn.provenance.inputLagMs ?? 0,
   o.snn.provenance.checkpointSha256, o.snn.provenance.checkpointKnownAt,
-  ...(o.snn.provenance.maximumInputGapMs !== undefined ? [o.snn.provenance.maximumInputGapMs] : [])]) : null;
+  ...(o.snn.provenance.maximumInputGapMs !== undefined ? [o.snn.provenance.maximumInputGapMs] : []),
+  ...(o.snn.provenance.maximumInputPriceAgeMs !== undefined ? ['observed-price-age', o.snn.provenance.maximumInputPriceAgeMs] : [])]) : null;
 export const contractSupportKey = (o: ContractObservation, withSnn = true) => digest([o.query.asset, o.query.side, o.query.contract.terms.kind,
   o.query.contract.settlementReference, o.query.contract.averagingSec, o.query.geometry.life_sec, o.query.executionBufferMs, o.event,
   o.event.thresholdAtr || o.event.priorDriftAtr ? o.anchor?.definition : null, o.termsBasis, withSnn ? snnIdentity(o) : null]);
@@ -170,7 +172,8 @@ export function fitContractModel(rows: { train: EncodedContractRow[]; stopping: 
     requiredFiniteFeatures: names.filter((name) => rows.train.every((r) => Number.isFinite(r.values[name]))),
     heads: Object.fromEntries(HEADS.map((name) => [name, fitHead(name, family, all, names, options)])) as ContractModel['heads'],
     support: [...support.values()].sort((a, b) => a.key.localeCompare(b.key)),
-    snnIdentity: included.includes('snn') ? snnIdentity(first) : null, indexBasis: first.index.basis };
+    snnIdentity: included.includes('snn') ? snnIdentity(first) : null, indexBasis: first.index.basis,
+    snnPriceAgeLimitMs: included.includes('snn') ? first.snn?.provenance.maximumInputPriceAgeMs ?? null : null };
   const model = { ...core, id: digest(core) }; validateContractModel(model); return model;
 }
 export function contractProbabilities(model: ContractModel, values: Record<string, number>): JointContractProbabilities {
@@ -199,6 +202,7 @@ export function validateContractModel(m: ContractModel) {
       !['smooth', 'trees', 'temporal-linear'].includes(m.family) || !stamp(m.knownAt) || !stamp(m.trainedThrough) || m.trainedThrough > policy.trainBefore || m.knownAt >= policy.finalFrom ||
       m.knownAt < m.trainedThrough || !['observed-index', 'synthetic-fixture'].includes(m.indexBasis) ||
       (m.snnIdentity !== null && !/^[a-f0-9]{64}$/.test(m.snnIdentity)) || m.included.some((f) => !FEATURE_FAMILIES.includes(f)) ||
+      (m.snnPriceAgeLimitMs != null && (!Number.isSafeInteger(m.snnPriceAgeLimitMs) || m.snnPriceAgeLimitMs < 1 || m.snnPriceAgeLimitMs > 60000)) ||
       !m.featureNames.length || m.featureNames.length > 10000 || new Set(m.featureNames).size !== m.featureNames.length || !m.support.length ||
       !Array.isArray(m.requiredFiniteFeatures) || new Set(m.requiredFiniteFeatures).size !== m.requiredFiniteFeatures.length || m.requiredFiniteFeatures.some((n) => !m.featureNames.includes(n)) ||
       m.featureNames.some((n) => { const f = featureFamily(n); return !/^[a-zA-Z0-9_:-]+$/.test(n) || (f !== null && !m.included.includes(f)); }) ||

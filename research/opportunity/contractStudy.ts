@@ -177,6 +177,7 @@ export function runContractStudy(examples: ContractExample[], plan: ContractStud
   if (core.audit.confirmedResults < 50 || core.audit.quoteRows < 100) core.blockers.push('Insufficient confirmed settlement events or executable quote examples');
   if (!core.calibration.bins.some((b) => b.weeks >= 8 && b.events >= 50)) core.blockers.push('No independently audited calibration group has sufficient coverage');
   if (core.selected.included.includes('snn')) core.blockers.push('Retained SNN state requires a same-period S5/S6 versus simpler-baseline comparison');
+  if (core.selected.included.includes('snn') && !(core.selected.snnPriceAgeLimitMs! > 0 && core.selected.snnPriceAgeLimitMs! <= 3000)) core.blockers.push('Retained SNN state needs an explicit observed-price freshness policy of at most three seconds');
   if (!core.blockers.length) core.status = 'paper-qualified';
   return finish();
 }

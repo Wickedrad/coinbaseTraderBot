@@ -180,6 +180,11 @@ adapter advances previously observed inputs before the next observation. Longer
 input gaps clear transient state, held inputs and pending direction/contract tags
 while preserving learned weights. Missing horizon prices cannot grade old calls.
 The gap policy is part of state/model compatibility. Learning
+in the observed-recording study also requires a price no older than three seconds.
+The source tape omits stale columns; replay clears their pending calls, masks the
+unavailable state and conservatively pauses learning until required inputs return.
+The legacy replay default is unchanged. This policy is explicit in provenance and
+required for retained SNN state to qualify. Learning
 freezes at the selected registered study's training cutoff; no future settlement
 trains an earlier state. The default legacy study still uses the pre-2025 cutoff.
 The adapter starts from a fresh network and does not transplant today's weights
