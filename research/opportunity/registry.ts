@@ -25,11 +25,14 @@ export function validateAtlasProduct(p: AtlasProduct) {
       Object.values({ ...p.codeHashes, ...p.inputHashes }).some((h) => !/^[a-f0-9]{64}$/.test(h))) throw new Error('invalid Atlas product or study content ID');
   validateStudyPlan(s.plan);
   if (!['blocked-insufficient-data', 'research-fit', 'paper-qualified'].includes(s.status) || (s.status !== 'blocked-insufficient-data' && (!s.selected || !s.calibration || !s.audit))) throw new Error('incomplete or invalid study status');
-  for (const c of s.candidates) { validateContractModel(c.model); if (studyPolicy(c.model.studyPolicyId).id !== studyPolicy(s.plan.studyPolicyId).id) throw new Error('model/study partition registration differs'); }
-  if (s.selected) validateContractModel(s.selected);
-  if (s.baseline) validateContractModel(s.baseline);
+  for (const model of [...s.candidates.map((c) => c.model), ...[s.selected, s.baseline].filter((m) => m !== null)]) {
+    validateContractModel(model);
+    if (studyPolicy(model.studyPolicyId).id !== studyPolicy(s.plan.studyPolicyId).id ||
+        model.trainedThrough !== s.plan.train.through || model.knownAt !== s.plan.calibration.through) throw new Error('model/study partition registration or fitting dates differ');
+  }
   if (s.selected && s.selected.included.some((g) => !s.retention.some((r) => r.group === g && r.decision === 'retained'))) throw new Error('selected input lacks retention evidence');
-  if (s.movement) { validateMovementModel(s.movement); if (s.movement.parentModelId !== s.selected?.id) throw new Error('movement parent differs'); }
+  if (s.movement) { validateMovementModel(s.movement); if (s.movement.parentModelId !== s.selected?.id ||
+    digest(s.movement.featureNames) !== digest(s.selected.featureNames)) throw new Error('movement parent or selected inputs differ'); }
   if (s.selected?.included.includes('snn') && s.status === 'paper-qualified') {
     const e = s.snnComparison, variant = e?.recommended;
     if (!e || !variant || variant === 'none' || e.modelIds[variant] !== s.selected.id || e.knownAt !== s.plan.audit.through) throw new Error('SNN same-period qualification absent');

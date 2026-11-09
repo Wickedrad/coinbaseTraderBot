@@ -84,13 +84,14 @@ export async function runRecordingStudy(o: { recordings: string; config: string;
     : { status: 'blocked-insufficient-contract-rows', recommended: 'none', liveEntryAllowed: false };
   const data = await loadContractDataset(path.join(base, 'dataset'));
   const requests = path.join(root, 'paper-requests.jsonl');
-  fs.writeFileSync(requests, data.examples.filter((e) => e.observation.query.asOf >= plan.audit.from)
+  fs.writeFileSync(requests, data.examples.filter((e) => e.observation.query.asOf >= plan.audit.through)
     .map((e) => JSON.stringify({ observation: e.observation, quote: e.quote ?? null, position: null,
       allowance: { riskApprovedQuantity: 1, remainingRiskDollars: 1 } })).join('\n') + '\n');
   const shadow = await exportPaperShadow(path.join(base, 'study/product.json'), requests, o.paperPolicy, path.join(root, 'paper-shadow'), 86400000, 'historical-audit');
   const report = { policy, imported, dataset: assembled.counts, base: { status: study.status, blockers: study.blockers, productId: study.productId },
     replayReports, variants, comparison, shadow, researchOnly: true, liveEntryAllowed: false, autoPromote: false,
     limitations: ['Bounded prefixes cover selected hours, not full days or all recorded data',
+      'Post-audit paper queries use explicit historical-audit mode and are not prospective forecasts made before their outcomes',
       'Source arrival and original websocket gap fidelity still require independent verification',
       'Sparse-day SNN gaps reset transients using the existing network policy; no unobserved market paths are synthesized',
       'Fresh forward-paper observations and independent weeks remain required; this job cannot qualify live trading'] };
@@ -100,7 +101,7 @@ export async function runRecordingStudy(o: { recordings: string; config: string;
 const arg = (name: string, fallback: string) => { const i = process.argv.indexOf(`--${name}`); return i < 0 ? fallback : process.argv[i + 1]; };
 if (process.argv[1] && /(^|[/\\])runRecordingStudy\.(ts|js)$/.test(process.argv[1])) void runRecordingStudy({
   recordings: arg('recordings', 'research/out/atlas-recordings'), config: arg('config', 'research/opportunity/examples/prospective-prefix-import.json'),
-  plan: arg('plan', 'research/opportunity/examples/prospective-study-plan.json'), paperPolicy: arg('paper-policy', 'research/opportunity/examples/paper-policy.json'),
+  plan: arg('plan', 'research/opportunity/examples/prospective-prefix-plan.json'), paperPolicy: arg('paper-policy', 'research/opportunity/examples/paper-policy.json'),
   out: arg('out', 'research/out/atlas-recording-study') })
   .then((r) => console.log(`Recording study ${r.base.status}; SNN recommendation ${r.comparison.recommended}; no promotion.`))
   .catch((e) => { console.error(e instanceof Error ? e.stack : e); process.exitCode = 1; });

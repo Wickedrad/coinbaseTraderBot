@@ -281,6 +281,9 @@ geometry coverage, availability and calibration freshness. A model cannot be
 selected because it returns the highest confidence. `forward-paper` requires
 actual artifact publication before the query; `--historical-audit` explicitly
 uses the simulated audit cutoff and makes no historical-publication claim.
+Forward shadow logging additionally requires capture within five seconds of the
+request and publication before expiry. Each row records its wall-clock capture
+time and mode; retrospective requests cannot be published as a forward trial.
 
 A selected input that was always observed during training cannot become silently
 missing at query time. The registry abstains for that unseen missingness pattern;
@@ -340,6 +343,9 @@ run ID. The second reads fixed bounded prefixes from existing Drive recordings,
 fits exact-contract candidates and compares S5/S6 on identical observations. Its
 short sample cannot satisfy the eight-week evidence gates. Outputs are research
 artifacts, never production model files. No source secrets enter those artifacts.
+The prefix-specific plan audits November 6 and uses November 7 for explicitly
+retrospective post-audit paper queries. Those queries are not prospective paper
+observations, regardless of whether a model would have entered.
 
 The owner authorized the separate prospective study and main merges. Use a merge
 commit subject containing `[skip deploy]`; the deploy workflow skips that push.

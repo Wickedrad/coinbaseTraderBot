@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        day: ['2026-10-22', '2026-10-29', '2026-11-01', '2026-11-04', '2026-11-06']
+        day: ['2026-10-22', '2026-10-29', '2026-11-01', '2026-11-04', '2026-11-06', '2026-11-07']
     steps:
       - uses: actions/checkout@v5
       - name: Read a fixed bounded prefix from already archived market recordings

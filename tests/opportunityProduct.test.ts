@@ -118,10 +118,26 @@ test('registry enforces publication, identity, coverage, calibration and content
   assert.equal(registry.query(product.id, o, { maximumCalibrationAgeMs: 1000 }).status, 'expired');
   const futurePublication = createAtlasProduct(s, { source: sha }, {}, o.query.asOf + 1), r2 = new AtlasRegistry(); r2.register(futurePublication);
   assert.equal(r2.query(futurePublication.id, o, { maximumCalibrationAgeMs: 86400000 }).forecast, null);
+  assert.ok(r2.query(futurePublication.id, o, { maximumCalibrationAgeMs: 86400000, mode: 'historical-audit' }).forecast,
+    'post-audit retrospective queries require an explicit mode and never establish forward publication');
   const tampered = structuredClone(product); tampered.study.selected!.heads.move.calibration.c += 1;
   assert.throws(() => registry.register(tampered), /content ID/);
   const wrong = structuredClone(o); wrong.query.contract.terms.strike = 90;
   assert.throws(() => registry.query(product.id, wrong, { maximumCalibrationAgeMs: 86400000 }), /observation/);
+});
+
+test('locked selected and baseline models cannot switch study policy or fitting dates inside an otherwise hashed artifact', () => {
+  for (const kind of ['selected', 'baseline'] as const) {
+    const s = structuredClone(studied()), { id: _modelId, ...core } = s[kind]!;
+    const changed = { ...core, studyPolicyId: 'prospective-2026-11-09-v1' };
+    s[kind] = { ...changed, id: digest(changed) };
+    const { id: _studyId, ...studyCore } = s; s.id = digest(studyCore);
+    assert.throws(() => createAtlasProduct(s, {}, {}), /partition registration/);
+  }
+  const s = structuredClone(studied()), { id: _modelId, ...core } = s.selected!;
+  const changed = { ...core, trainedThrough: core.trainedThrough + MIN }; s.selected = { ...changed, id: digest(changed) };
+  const { id: _studyId, ...studyCore } = s; s.id = digest(studyCore);
+  assert.throws(() => createAtlasProduct(s, {}, {}), /fitting dates/);
 });
 
 function confident(o: ContractObservation, p = 0.95): ContractPathForecast {
@@ -193,7 +209,9 @@ test('assembly, persisted study, registry query and shadow logging run end to en
   assert.equal(report.status, 'blocked-insufficient-data');
   const requestsFile = path.join(dir, 'requests.jsonl'); fs.writeFileSync(requestsFile, JSON.stringify({ observation: loaded.examples[0].observation, quote: first.quote,
     position: null, allowance: { riskApprovedQuantity: 1, remainingRiskDollars: 1 } }) + '\n');
-  const shadow = await exportPaperShadow(path.join(output, 'product.json'), requestsFile, policyFile, path.join(dir, 'shadow'), 86400000);
+  await assert.rejects(exportPaperShadow(path.join(output, 'product.json'), requestsFile, policyFile, path.join(dir, 'fake-forward'), 86400000), /forward-paper capture/);
+  assert.ok(!fs.existsSync(path.join(dir, 'fake-forward')), 'historical requests cannot publish a forward paper ledger');
+  const shadow = await exportPaperShadow(path.join(output, 'product.json'), requestsFile, policyFile, path.join(dir, 'shadow'), 86400000, 'historical-audit');
   assert.equal(shadow.requests, 1); assert.equal(shadow.actions.abstain, 1);
   await assert.rejects(() => assembleContractDataset(specFile, dataset), /new path/);
   fs.appendFileSync(indexFile, '{}\n'); await assert.rejects(() => assembleContractDataset(specFile, path.join(dir, 'corrupt')), /hash mismatch/);

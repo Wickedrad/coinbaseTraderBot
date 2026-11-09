@@ -53,7 +53,7 @@ function newDestination(file: string) {
 async function codeHashes() {
   const names = new Set(['package.json', 'package-lock.json', 'tsconfig.json', 'research/mlp.ts', 'research/gbdt.ts', 'research/stats.ts', 'research/snnTape.ts', 'research/snnReplay.ts', 'research/replay.ts']);
   for (const dir of ['research/opportunity', 'research/history', 'bot/snn', 'bot/ta', 'bot/model', 'bot/util', 'bot/marketdata'])
-    for (const name of fs.readdirSync(path.join(repo, dir))) if (name.endsWith('.ts')) names.add(`${dir}/${name}`);
+    for (const name of fs.readdirSync(path.join(repo, dir))) if (name.endsWith('.ts') || name.endsWith('.py')) names.add(`${dir}/${name}`);
   const out: Record<string, string> = {};
   for (const name of [...names].sort()) out[name] = await sha256File(path.join(repo, name));
   return out;
@@ -206,19 +206,27 @@ export async function exportPaperShadow(productFile: string, requestsFile: strin
   const requests = await readJsonLines<PaperRequest>(requestsFile, 20000);
   return atomicDirectory(outDir, async (staging) => {
     const fd = fs.openSync(path.join(staging, 'shadow.jsonl'), 'wx'), counts: Record<string, number> = {};
-    let lastAt = 0;
+    let lastAt = 0, earliestClose = Infinity;
     try { for (const r of requests) {
       encodeContractObservation(r.observation);
       if (r.observation.query.asOf < lastAt) throw new Error('paper requests must be in arrival order'); lastAt = r.observation.query.asOf;
+      const recordedAt = Date.now(), close = r.observation.query.contract.closeTime;
+      earliestClose = Math.min(earliestClose, close);
+      if (mode === 'forward-paper' && (lastAt > recordedAt || recordedAt - lastAt > 5000 || recordedAt >= close)) {
+        throw new Error('forward-paper capture requires a current request within five seconds and before expiry; replay requires explicit historical-audit mode');
+      }
       const result = registry.query(product.id, r.observation, { maximumCalibrationAgeMs, mode });
       const decision = evaluatePaperPosition(r.observation, result.forecast, r.quote, r.position, policy, r.allowance);
       counts[decision.action] = (counts[decision.action] ?? 0) + 1;
-      fs.writeSync(fd, JSON.stringify({ observationId: r.observation.id, asOf: lastAt, forecast: result, decision, position: r.position, quote: r.quote }) + '\n');
+      fs.writeSync(fd, JSON.stringify({ observationId: r.observation.id, asOf: lastAt, recordedAt, mode,
+        forecast: result, decision, position: r.position, quote: r.quote }) + '\n');
     } } finally { fs.closeSync(fd); }
     await unchanged(inputs, code);
     const report = { productId: product.id, researchOnly: true, liveEntryAllowed: false, autoPromote: false, mode,
-      requests: requests.length, actions: counts, positionBasis: 'Caller-reported positions; recommendations are not fills',
+      requests: requests.length, actions: counts, preparedAt: Date.now(), maximumForwardCaptureLagMs: 5000,
+      positionBasis: 'Caller-reported positions; recommendations are not fills',
       inputs, codeHashes: code, outputSha256: await sha256File(path.join(staging, 'shadow.jsonl')) };
+    if (mode === 'forward-paper' && Date.now() >= earliestClose) throw new Error('forward-paper batch expired before publication');
     fs.writeFileSync(path.join(staging, 'report.json'), JSON.stringify(report, null, 2) + '\n'); return report;
   });
 }
