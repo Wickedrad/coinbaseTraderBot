@@ -242,7 +242,11 @@ export class MarketData extends EventEmitter {
       this.indexSource = 'kalshi';
       this.ws.on('book_snapshot', (e) => { const b = this.book(e.ticker); b.applySnapshot(e, e.ts); this.features.onBook(e.ticker, b, e.ts); this.recorder.write('book', e); });
       this.ws.on('book_delta', (e) => { const b = this.book(e.ticker); b.applyDelta(e.side, e.price, e.delta, e.ts); this.features.onBook(e.ticker, b, e.ts); this.recorder.write('delta', e); });
-      this.ws.on('book_gap', (e) => { if (e.ticker) this.books.get(e.ticker)?.invalidate(); this.emit('gap', e); });
+      this.ws.on('book_gap', (e) => {
+        if (e.ticker) this.books.get(e.ticker)?.invalidate();
+        this.recorder.write('gap', { ticker: e.ticker, ts: Date.now() });
+        this.emit('gap', e);
+      });
       this.ws.on('trade', (e) => { this.features.onTrade(e.ticker, e.count, e.takerSide, e.ts); this.recorder.write('trade', e); this.emit('trade', e); });
       this.ws.on('index', (e) => this.onIndex(e.indexId, e.value, e.ts));
       this.ws.on('lifecycle', (e) => {
@@ -255,6 +259,7 @@ export class MarketData extends EventEmitter {
       this.ws.on('disconnected', () => {
         this.wsConnected = false;
         for (const b of this.books.values()) b.invalidate();
+        this.recorder.write('gap', { ts: Date.now() });
         this.emit('disconnected');
       });
       this.ws.connect();

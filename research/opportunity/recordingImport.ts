@@ -24,6 +24,9 @@ export interface RecordingImportOptions {
   fromDay?: string; toDay?: string; maximumDecisions?: number;
   /** Predetermined sampling across a long archive, independent of labels/detector signals. */
   sampleEveryMs?: number; maximumContractsPerAsset?: number;
+  /** Study actual full snapshots at arrival; never reconstruct economics from deltas. */
+  snapshotDecisionsOnly?: boolean;
+  maximumDecisionsPerDay?: number;
   costs: { entryFee: number; exitFee: number; settlementFee: number; slippage: number };
   /** Optional states produced by snn-replay, in time order, from one variant only. */
   snnStates?: AtlasSnnState[];
@@ -36,6 +39,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       !Object.values(options.costs).every((v) => Number.isFinite(v) && v >= 0) ||
       (options.sampleEveryMs !== undefined && (!Number.isSafeInteger(options.sampleEveryMs) || options.sampleEveryMs < 1000)) ||
       (options.maximumContractsPerAsset !== undefined && (!Number.isInteger(options.maximumContractsPerAsset) || options.maximumContractsPerAsset < 1 || options.maximumContractsPerAsset > 100)) ||
+      (options.maximumDecisionsPerDay !== undefined && (!Number.isInteger(options.maximumDecisionsPerDay) || options.maximumDecisionsPerDay < 1 || options.maximumDecisionsPerDay > 20000)) ||
       (options.maximumDecisions !== undefined && (!Number.isInteger(options.maximumDecisions) || options.maximumDecisions < 1 || options.maximumDecisions > 20000))) throw new Error('invalid recording import policy');
   options.events.forEach(validateEvent);
   const files = recordingFiles(dir).filter((f) => (!options.fromDay || f.day >= options.fromDay) && (!options.toDay || f.day <= options.toDay));
@@ -58,13 +62,17 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   const bookKnownAt = new Map<string, number>(), lastDecision = new Map<string, number>();
   const snapshotIntact = new Map<string, boolean>();
   const counts = { events: 0, decisions: 0, proxyOrSyntheticSkipped: 0, formingCandlesSkipped: 0,
-    staleOrMissingState: 0, lateIndexDropped: 0, finalResultsWithheld: 0, rangeKindCanonicalized: 0 };
+    staleOrMissingState: 0, lateIndexDropped: 0, finalResultsWithheld: 0, rangeKindCanonicalized: 0, tradePrints: 0 };
   const decisionsFile = path.join(staging, 'decisions.jsonl'), resultsFile = path.join(staging, 'results.jsonl');
   const decisionsFd = fs.openSync(decisionsFile, 'wx'), resultsFd = fs.openSync(resultsFile, 'wx');
+  const snapshotFd = options.snapshotDecisionsOnly ? fs.openSync(path.join(staging, 'snapshots.jsonl'), 'wx') : undefined;
+  const tradeFd = options.snapshotDecisionsOnly ? fs.openSync(path.join(staging, 'trades.jsonl'), 'wx') : undefined;
   let lastAt = 0, stoppedEarly = false, selectedThrough = 0, lastAttemptAt = -Infinity;
   const allEventsNeedAnchor = options.events.every((event) => event.thresholdAtr || event.priorDriftAtr);
   const reported = new Map<string, string>();
   const lastAssetSample = new Map<string, number>();
+  const decisionsByDay = new Map<string, number>();
+  const snapshotDepth = { snapshots: 0, nonemptyBids: 0, nonemptyAsks: 0, bothSides: 0 };
   const termsAt = (m: RecMarket & { knownAt: number }, at: number): { terms: ContractTerms; knownAt: number; basis: 'recorded-contract' | 'computed-opening-index' } | null => {
     if (m.kind === 'updown') {
       if (m.strike && m.knownAt >= m.openTime) return { terms: { kind: 'updown', strike: m.strike }, knownAt: m.knownAt, basis: 'recorded-contract' };
@@ -77,7 +85,8 @@ export async function writeRecordingInputs(dir: string, staging: string, options
     return null;
   };
   try {
-    for await (const e of readRecordings(dir, '', options.fromDay, options.toDay, (k) => ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap', 'perp', 'dominance'].includes(k))) {
+    for await (const e of readRecordings(dir, '', options.fromDay, options.toDay, (k) =>
+      (options.snapshotDecisionsOnly ? ['market', 'index', 'candles', 'book', 'trade', 'gap', 'perp', 'dominance'] : ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap', 'perp', 'dominance']).includes(k))) {
       if (!stamp(e.t) || e.t < lastAt) throw new Error('recording arrival timestamps are not ordered');
       lastAt = e.t; counts.events++;
       if (stoppedEarly && e.t > selectedThrough + 300000) break;
@@ -129,12 +138,33 @@ export async function writeRecordingInputs(dir: string, staging: string, options
           reported.set(e.ticker, e.result);
         }
       }
+      if (tradeFd !== undefined && e.k === 'trade' && e.t < policy.finalFrom) {
+        const m = markets.get(e.ticker), idx = m && trackers.get(m.asset)?.fresh(e.t, 3000);
+        if (m && ['updown', 'greater', 'less'].includes(m.kind)) {
+          fs.writeSync(tradeFd, JSON.stringify({ ticker: e.ticker, at: e.t, exchangeAt: e.ts ?? e.t, price: e.price, quantity: e.count,
+            takerSide: e.takerSide, sourceSha256: combinedHash,
+            ...(idx ? { underlying: { price: idx.value, knownAt: e.t } } : {}) }) + '\n'); counts.tradePrints++;
+        }
+      }
+      if (snapshotFd !== undefined && e.k === 'book') {
+        const m = markets.get(e.ticker), terms = m && termsAt(m, e.t);
+        if (m && terms && e.t < policy.finalFrom) {
+          snapshotDepth.snapshots++; snapshotDepth.nonemptyBids += Number(!!e.bids?.length); snapshotDepth.nonemptyAsks += Number(!!e.asks?.length);
+          snapshotDepth.bothSides += Number(!!e.bids?.length && !!e.asks?.length);
+          const idx = trackers.get(m.asset)?.fresh(e.t, 3000);
+          fs.writeSync(snapshotFd, JSON.stringify({ contract: { ticker: m.ticker, asset: m.asset, openTime: m.openTime, closeTime: m.closeTime,
+            termsKnownAt: terms.knownAt, terms: terms.terms, settlementReference: `CF-RTI:${m.asset}:kalshi` },
+            quote: { ticker: m.ticker, at: e.t, knownAt: e.t, sourceSha256: combinedHash, bids: e.bids ?? [], asks: e.asks ?? [],
+              ...(idx ? { underlying: { price: idx.value, knownAt: e.t } } : {}) } }) + '\n');
+        }
+      }
       if (e.tie || e.k === 'skip') continue;
       // Deltas make snapshots unusable for economic evidence; rebuilding a partial
       // book cannot improve that evidence. All deltas remain in the original input
       // for the separate native SNN replay. Only actual input arrivals or a fresh
       // snapshot can trigger a sampled observation; bound attempts to 1 Hz.
       if (!['market', 'index', 'candles', 'book', 'perp', 'dominance'].includes(e.k)) continue;
+      if (options.snapshotDecisionsOnly && e.k !== 'book') continue;
       if (e.k !== 'book' && e.t - lastAttemptAt < 1000) continue;
       lastAttemptAt = e.t;
       while (stateIndex + 1 < states.length && states[stateIndex + 1].asOf <= e.t) latestState = states[++stateIndex];
@@ -155,6 +185,10 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       for (const m of orderedMarkets) {
         if (m.closeTime <= e.t) { markets.delete(m.ticker); books.delete(m.ticker); bookKnownAt.delete(m.ticker); snapshotIntact.delete(m.ticker); lastDecision.delete(m.ticker); continue; }
         if (stoppedEarly) continue;
+        if (options.snapshotDecisionsOnly && m.ticker !== e.ticker) continue;
+        if (options.snapshotDecisionsOnly && !['updown', 'greater', 'less'].includes(m.kind)) continue;
+        const day = new Date(e.t).toISOString().slice(0, 10);
+        if ((decisionsByDay.get(day) ?? 0) >= (options.maximumDecisionsPerDay ?? Infinity)) continue;
         if (options.sampleEveryMs && e.t - (lastAssetSample.get(m.asset) ?? 0) < options.sampleEveryMs) continue;
         if ((contractsPerAsset.get(m.asset) ?? 0) >= (options.maximumContractsPerAsset ?? 100)) continue;
         if (m.openTime > e.t || m.closeTime - options.executionBufferMs <= e.t || m.closeTime - e.t > 86400000 ||
@@ -184,7 +218,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
         const snn = latestState && e.t - latestState.stateAt <= 2000 ? { ...latestState, asOf: e.t } : null;
         lastDecision.set(m.ticker, e.t);
         let written = false;
-        writeDecisions: for (const event of options.events) for (const side of ['yes', 'no'] as const) {
+        writeDecisions: for (const event of options.events) for (const side of (options.snapshotDecisionsOnly ? ['yes'] : ['yes', 'no']) as Array<'yes' | 'no'>) {
           if ((event.thresholdAtr || event.priorDriftAtr) && !anchor?.atrBps) continue;
           const d: RecordedDecision = { frame, anchor: anchor ? { ...anchor, knownAt: Math.max(anchor.knownAt, arrival) } : null,
             contract: { ticker: m.ticker, asset: m.asset, openTime: m.openTime, closeTime: m.closeTime, termsKnownAt: terms.knownAt,
@@ -196,9 +230,11 @@ export async function writeRecordingInputs(dir: string, staging: string, options
             bidSize: Math.floor((side === 'yes' ? bid : ask)?.size ?? 0), askSize: Math.floor((side === 'yes' ? ask : bid)?.size ?? 0),
             ...options.costs, sourceSha256: combinedHash };
           fs.writeSync(decisionsFd, JSON.stringify(d) + '\n'); counts.decisions++;
+          decisionsByDay.set(day, (decisionsByDay.get(day) ?? 0) + 1);
           written = true;
           selectedThrough = Math.max(selectedThrough, m.closeTime);
           if (counts.decisions >= (options.maximumDecisions ?? 20000)) { stoppedEarly = true; break writeDecisions; }
+          if ((decisionsByDay.get(day) ?? 0) >= (options.maximumDecisionsPerDay ?? Infinity)) break writeDecisions;
         }
         if (written) { sampled.add(m.asset); contractsPerAsset.set(m.asset, (contractsPerAsset.get(m.asset) ?? 0) + 1); }
         if (stoppedEarly) break;
@@ -207,7 +243,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       // must not truncate a selected label's future evidence. Further decisions are disabled.
       for (const asset of sampled) lastAssetSample.set(asset, e.t);
     }
-  } finally { fs.closeSync(decisionsFd); fs.closeSync(resultsFd); for (const stream of printFiles.values()) fs.closeSync(stream.fd); }
+  } finally { fs.closeSync(decisionsFd); fs.closeSync(resultsFd); if (snapshotFd !== undefined) fs.closeSync(snapshotFd); if (tradeFd !== undefined) fs.closeSync(tradeFd); for (const stream of printFiles.values()) fs.closeSync(stream.fd); }
   const indices: AssemblySpec['indices'] = [];
   for (const [asset, stream] of printFiles) if (stream.rows) {
     const name = stream.file, file = path.join(staging, name);
@@ -220,7 +256,11 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   fs.writeFileSync(path.join(staging, 'spec.json'), JSON.stringify(spec, null, 2) + '\n');
   const report = { counts, inputHashes: inputs, aggregateSha256: combinedHash, stoppedEarly,
     sampling: { decisionAttemptIntervalMs: 1000, freshSnapshotsMayTriggerImmediately: true,
-      sampleEveryMs: options.sampleEveryMs ?? 0, snapshotOnlyEconomicEvidence: true },
+      sampleEveryMs: options.sampleEveryMs ?? 0, snapshotOnlyEconomicEvidence: true, snapshotDecisionsOnly: options.snapshotDecisionsOnly ?? false },
+    decisionsByDay: Object.fromEntries(decisionsByDay),
+    snapshotDepth,
+    ...(snapshotFd !== undefined ? { snapshots: { file: 'snapshots.jsonl', sha256: await sha256File(path.join(staging, 'snapshots.jsonl')) } } : {}),
+    ...(tradeFd !== undefined ? { trades: { file: 'trades.jsonl', sha256: await sha256File(path.join(staging, 'trades.jsonl')) } } : {}),
     limitations: ['Historical candle provider identity remains whatever the recording establishes; no provider fallback or relabeling',
       'No reconstructed price bridges or minute-derived ticks', 'Missing daily context remains absent',
       'The existing recording reader tolerates torn lines; sampled path gaps still fail closed',

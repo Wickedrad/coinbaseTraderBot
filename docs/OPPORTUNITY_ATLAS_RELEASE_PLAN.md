@@ -15,9 +15,18 @@ That full run is complete: 21,070,767 valid minute bars through October 13, 2026
 167 quarterly asset blocks and 36,122,686 frozen-model historical predictions.
 All eligible Oracle answers are fitted. Forecast scores improved slightly over
 the historical class prior; no forecast reached the registered 0.60 threshold.
-The model source passed 1,264 tests with no failures/skips. Native SNN training
-and executable contract profit remain separate, unverified claims; see
+The original model source passed 1,264 tests with no failures/skips; see
 [the Oracle validation record](OPPORTUNITY_ATLAS_ORACLE_VALIDATION.json).
+
+The next [direction and $200 paper iteration](../OPPORTUNITY_ATLAS_DIRECTION_ITERATIONS.md)
+audits all 4,060 spectra, learns curve importance from earlier quarters, and exports
+four genuinely trained native S5/S6 checkpoints. Its complete source passed 1,283
+tests, TypeScript and the production build. Native qualification and executable
+profit remain unproven: every archived full book was empty. The snapshot-field
+parser is repaired in source, and a separate GitHub public capture obtained 927
+nonempty books as protected future evidence. No deployment or model promotion
+was performed. Exact receipts are in the
+[new validation record](../OPPORTUNITY_ATLAS_DIRECTION_VALIDATION.json).
 
 The owner authorized continuous implementation through a finished product. The
 core workflow merged in PR #306; PR #307 verifies the recorded-input follow-up.
@@ -50,6 +59,11 @@ reported separately; neither tests nor synthetic demonstrations establish an edg
 - [x] Independent advance-movement labels/models, movement-only S5/S6 comparison,
       actual forecast-publication lead and native profit-clock/fee exit queries.
 
+- [x] Complete spectrum audit and learned earlier-quarter curve importance.
+- [x] Direction-only native checkpoint export with actual weight-change evidence.
+- [x] Funded $200 native paper accounts with small fee-net sales and observed-trade maker exits.
+- [x] Empty-book diagnostics, fixed-point snapshot repair, recorded gaps and GitHub-only public quote capture.
+
 ## Qualification
 
 The original `legacy-pre2025-frozen2026-v1` study remains separately identified.
@@ -58,7 +72,7 @@ development, and observations from November 9 onward are a fresh holdout. Reused
 2026 data is no longer unseen validation evidence. A forecast must also follow
 the actual publication of its artifact; a calendar boundary cannot backdate it.
 Existing archives retain their declared provider identity. Fresh acquisition
-remains tvdatafeed-only. Official ticks and SNN states are not invented from OHLC.
+of underlying OHLC history remains tvdatafeed-only. Contract quotes and venue fee terms use Kalshi itself. Official ticks and SNN states are not invented from OHLC.
 
 GitHub run [42538058087](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42538058087)
 processed the located multi-year archive: 21,070,767 usable minute rows, 14,618

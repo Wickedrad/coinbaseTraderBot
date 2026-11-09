@@ -32,6 +32,21 @@ on:
         description: 'Optional completed Oracle run with five atlas-oracle-result artifacts; produce the combined summary only, with no retraining'
         default: ''
         required: false
+      audit_spectra:
+        description: 'With results_run, audit every saved continuous response surface and export the offline spectrum inspector'
+        type: boolean
+        default: false
+        required: false
+      importance_iteration:
+        description: 'With results_run and prepared_run, learn curve importance only from earlier-quarter predictions; compare the same terminal targets'
+        type: boolean
+        default: false
+        required: false
+      capture_public_books:
+        description: 'Collect 16 minutes of public contract depth on GitHub; holdout evidence only, no credentials, forecasts, fitting or orders'
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -39,7 +54,7 @@ permissions:
 
 jobs:
   history-study:
-    if: inputs.dataset_run == '' && !inputs.oracle_blocks && inputs.results_run == ''
+    if: inputs.dataset_run == '' && !inputs.oracle_blocks && inputs.results_run == '' && !inputs.capture_public_books
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -224,7 +239,7 @@ jobs:
           retention-days: 90
   oracle-summary:
     needs: oracle-train
-    if: ${{ !cancelled() && (needs.oracle-train.result == 'success' || inputs.results_run != '') }}
+    if: ${{ !cancelled() && !inputs.importance_iteration && (needs.oracle-train.result == 'success' || inputs.results_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -245,8 +260,82 @@ jobs:
           mkdir -p research/out/atlas-oracle-summary
           node --import tsx research/opportunity/oracleSummary.ts "$RUNNER_TEMP/atlas-oracle-results" \
             research/out/atlas-oracle-summary/summary.json
+      - name: Verify weighted spectra independently and export the inspector
+        if: inputs.audit_spectra
+        run: |
+          node --import tsx research/opportunity/spectrumAudit.ts "$RUNNER_TEMP/atlas-oracle-results" \
+            research/out/atlas-spectrum-audit
       - uses: actions/upload-artifact@v4
         with:
           name: atlas-oracle-summary
           path: research/out/atlas-oracle-summary/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: inputs.audit_spectra
+        with:
+          name: atlas-spectrum-audit
+          path: research/out/atlas-spectrum-audit/
+          retention-days: 90
+  oracle-importance:
+    if: inputs.importance_iteration && inputs.results_run != '' && inputs.prepared_run != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        asset: [BTC, ETH, SOL, XRP, DOGE]
+    env:
+      ORACLE_ASSET: ${{ matrix.asset }}
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-oracle-input
+          path: ${{ runner.temp }}/input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.prepared_run }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-oracle-result-${{ matrix.asset }}
+          path: ${{ runner.temp }}/oracle
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.results_run }}
+      - name: Learn importance from earlier blocks and compare frozen mixtures on later blocks
+        run: |
+          node --import tsx research/opportunity/oracleImportanceCli.ts --archive "$RUNNER_TEMP/input" \
+            --asset "$ORACLE_ASSET" --oracle "$RUNNER_TEMP/oracle/oracle" --out "research/out/atlas-importance-$ORACLE_ASSET"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-oracle-importance-${{ matrix.asset }}
+          path: research/out/atlas-importance-${{ matrix.asset }}/
+          if-no-files-found: warn
+          retention-days: 90
+  capture-public-books:
+    if: inputs.capture_public_books
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Capture public GET-only books; preserve the fresh holdout for later locked evaluation
+        run: |
+          node --import tsx research/opportunity/collectContractBooks.ts --cycles 192 --out research/out/atlas-forward-contract-books
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-forward-contract-books
+          path: research/out/atlas-forward-contract-books/
+          if-no-files-found: warn
           retention-days: 90

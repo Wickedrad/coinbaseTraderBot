@@ -21,13 +21,13 @@ const MIN = 60000, DAY = 86400000;
 const SOURCE = 'archive-binance-1m-quarantined-v1';
 const logicalInputs = (inputs: Record<string, string>) => Object.fromEntries(Object.entries(inputs).map(([file, sha]) => [file.includes('/history/') ? file.split('/history/').at(-1)! : path.basename(file), sha]).sort(([a], [b]) => a.localeCompare(b)));
 interface Tail { answer: OracleAnswer; raw: Array<number | null> }
-interface Block {
+export interface Block {
   schema: typeof ORACLE_SCHEMA; layoutId: string; asset: string; quarter: ReturnType<typeof oracleQuarter>;
   observedMinutes: number; firstAsOf: number; lastAsOf: number; knownThrough: number; fitKnownThrough: number;
   boundaryTail: Tail[]; answers: Record<number, number>; featureRanges: Array<{ name: string; minimum: number | null; maximum: number | null; available: number }>;
   matrix: { file: string; sha256: string; encoding: 'float64-le-gzip' };
 }
-async function* bars(file: string) {
+export async function* bars(file: string) {
   const input = fs.createReadStream(file), reader = readline.createInterface({ input, crlfDelay: Infinity }); let previous = -1;
   try { for await (const line of reader) {
     if (line === 'ts,o,h,l,c,v' || line === 'ts,o,h,l,c,v,tb') continue;
@@ -35,7 +35,7 @@ async function* bars(file: string) {
     if (!b || b.ts <= previous) throw new Error('invalid or unordered audited Oracle candles'); previous = b.ts; yield b;
   } } finally { reader.close(); input.destroy(); }
 }
-async function verifiedInputs(archive: string, asset: string) {
+export async function verifiedInputs(archive: string, asset: string) {
   const root = fs.realpathSync(archive), history = fs.realpathSync(path.join(root, 'history'));
   const auditFile = path.join(root, 'archive-validation.json'), auditHash = await sha256File(auditFile);
   const audit = JSON.parse(fs.readFileSync(auditFile, 'utf8'));
@@ -70,7 +70,7 @@ async function readBlock(root: string, block: Block) {
   return m;
 }
 /** Oracle contains all descriptive answers; the causal learner removes the embargo tail. */
-async function fitEarlierBlock(root: string, block: Block, before: number) {
+export async function fitEarlierBlock(root: string, block: Block, before: number) {
   if (block.quarter.through > before || block.fitKnownThrough + ORACLE_EMBARGO_MS > before) throw new Error('walk-forward attempted a future Oracle block');
   const m = await readBlock(root, block);
   let knownThrough = block.fitKnownThrough;

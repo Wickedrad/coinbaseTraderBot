@@ -1,11 +1,17 @@
 /** Optional offline adapter for the repository's existing observed-input SNN tapes. */
-import { SnnNetwork, type ColumnInput } from '../../bot/snn/network';
+import { SnnNetwork, type ColumnInput, type SnnModelFile } from '../../bot/snn/network';
 import { DEFAULT_SNN, stageFlags, type SnnParams } from '../../bot/snn/params';
 import { readTape, TAPE_OP } from '../snnTape';
 import { FROZEN_TRAIN_BEFORE } from './jointPathData';
 import { captureSnnState, type AtlasSnnState } from './snnState';
 import { digest, stamp } from './contractDataset';
 import { studyPolicy } from './studyPolicy';
+
+export interface FrozenSnnEvidence {
+  learningBefore: number; trainedThrough: number; lastObservedAt: number; capturedAt: number; profile: string;
+  initializedColumns: number; changedColumnArrays: number; changedDirectionHeads: number; changedContractHeads: number;
+  initialWeightsSha256: string; frozenWeightsSha256: string;
+}
 
 /** S5 and S6 consume identical inputs. New observations are applied at their timestamp,
  * never smeared into earlier seconds by SnnNetwork.step's normal catch-up behavior.
@@ -18,6 +24,8 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
   maximumInputPriceAgeMs?: number;
   /** Observing fewer instants must not change the replayed network's evolution. */
   captureAt?: ReadonlySet<number>;
+  directionOnly?: boolean;
+  onFrozenModel?: (model: SnnModelFile, evidence: FrozenSnnEvidence) => void;
   learningBefore?: number; everyMs?: number; params?: SnnParams; onState: (state: AtlasSnnState) => void }) {
   const policy = studyPolicy(options.studyPolicyId), learningBefore = options.learningBefore ?? policy.trainBefore, every = options.everyMs ?? 60000, inputLagMs = options.inputLagMs ?? 1000;
   const maximumInputGapMs = options.maximumInputGapMs ?? 3000;
@@ -31,6 +39,8 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
   const net = new SnnNetwork(params), initialSha = digest(net.serialize());
   let firstAt = 0, lastAt = 0, learnedThrough = 0, previousStep = 0, snapshots = 0, gaps = 0, nextSnapshot = 0, gapResets = 0, awaitingInput = false, unavailableSnapshots = 0;
   let availableKeys = new Set<string>(), unavailableKeys = new Set<string>(), unavailableColumnResets = 0;
+  let frozenExported = false, ignoredContractOperations = 0;
+  const initialColumns: NonNullable<SnnModelFile['columns']> = {}, initialDirections: NonNullable<SnnModelFile['dirReadouts']> = {}, initialContracts: NonNullable<SnnModelFile['readouts']> = {};
   const sourceMissing = () => maximumInputPriceAgeMs !== undefined && (!availableKeys.size || unavailableKeys.size > 0);
   function advance(at: number, inputs: ColumnInput[]) {
     if (!stamp(at) || at < lastAt) throw new Error('unordered tape arrival time');
@@ -60,6 +70,27 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
       // direction/contract tags. A missing interval cannot supply a horizon label.
       net.rewind(); awaitingInput = true; gapResets++;
     }
+    if (!frozenExported && options.onFrozenModel && at >= learningBefore && net.columns.size) {
+      // Finish the last eligible observed hold before exporting; later inputs and
+      // their labels must never change the checkpoint consumed by the study.
+      if (net.lastTs && net.lastTs < learningBefore && !awaitingInput && !sourceMissing()) {
+        if (learningBefore - 1000 > net.lastTs) net.step(learningBefore - 1000, []);
+        if (!net.pauseLearning) learnedThrough = Math.max(learnedThrough, Math.min(net.lastTs, learningBefore - 1));
+      }
+      net.pauseLearning = true;
+      const model = structuredClone(net.exportModel('Research-only native SNN weights; no deployment or promotion'));
+      const keys = Object.keys(model.columns ?? {}).sort(), ordered = (x: Record<string, unknown>) => keys.map((key) => [key, x[key]]);
+      options.onFrozenModel(model,
+        { learningBefore, trainedThrough: learnedThrough, lastObservedAt: previousStep, capturedAt: at,
+          profile: options.directionOnly ? 'direction-inputs-only-v1' : 'native-all-events', initializedColumns: Object.keys(initialColumns).length,
+          changedColumnArrays: keys.reduce((n, key) => n + Object.keys(model.columns![key]).filter((name) => initialColumns[key]?.[name] !== undefined && initialColumns[key][name] !== model.columns![key][name]).length, 0),
+          changedDirectionHeads: keys.filter((key) => initialDirections[key] && digest(initialDirections[key]) !== digest(model.dirReadouts?.[key])).length,
+          changedContractHeads: keys.filter((key) => initialContracts[key] && digest(initialContracts[key]) !== digest(model.readouts?.[key])).length,
+          initialWeightsSha256: digest([ordered(initialColumns), ordered(initialDirections), ordered(initialContracts)]),
+          frozenWeightsSha256: digest([ordered(model.columns ?? {}), ordered(model.dirReadouts ?? {}), ordered(model.readouts ?? {})]) });
+      frozenExported = true;
+    }
+    if (options.directionOnly && op.op !== TAPE_OP.STEP) { ignoredContractOperations++; lastAt = at; continue; }
     if (op.op === TAPE_OP.STEP) {
       if (at <= previousStep) throw new Error('duplicate or reversed SNN step');
       let inputs = op.inputs;
@@ -75,6 +106,10 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
         inputs = [...inputs.filter((i) => availableKeys.has(i.key)), ...[...missing].map((key) => ({ key,
           asset: net.columns.get(key)!.asset, price: undefined, mid: undefined, values: {} }))];
       }
+      if (options.onFrozenModel) for (const input of inputs) if (!net.columns.has(input.key)) {
+        const c = net.column(input.key, input.asset);
+        if (c) { const initial = net.exportModel(); initialColumns[input.key] = initial.columns![input.key]; initialDirections[input.key] = initial.dirReadouts![input.key]; initialContracts[input.key] = initial.readouts![input.key]; }
+      }
       awaitingInput = false; advance(at, inputs); previousStep = at;
       if (at >= nextSnapshot && (!options.captureAt || options.captureAt.has(at))) {
         // Native tapes can begin with a book event before any index/asset input.
@@ -82,6 +117,7 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
         if (!net.columns.size || (maximumInputPriceAgeMs !== undefined && !availableKeys.size)) { unavailableSnapshots++; continue; }
         const state = captureSnnState(net, at, { checkpointSha256: initialSha, checkpointKnownAt: firstAt,
           inputSourceSha256: options.sourceSha256, domain: options.domain ?? 'crypto', inputLagMs, maximumInputGapMs,
+          ...(options.directionOnly ? { replayProfile: 'direction-inputs-only-v1' as const } : {}),
           ...(maximumInputPriceAgeMs !== undefined ? { maximumInputPriceAgeMs } : {}),
           trainedThrough: learnedThrough, inputKnownAt: at, variant: options.variant, basis: 'observed-tape' },
           maximumInputPriceAgeMs !== undefined ? availableKeys : undefined);
@@ -98,6 +134,7 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
   return { variant: options.variant, studyPolicyId: policy.id, domain: options.domain ?? 'crypto', inputLagMs, maximumInputGapMs, maximumInputPriceAgeMs,
     sourceSha256: options.sourceSha256, firstAt, lastAt, learnedThrough, snapshots, requestedCaptureInstants: options.captureAt?.size ?? null,
     unavailableSnapshots, unavailableColumnResets, gaps, gapResets,
+    frozenModelExported: frozenExported, ignoredContractOperations, directionOnly: options.directionOnly ?? false,
     version: net.version, checkpointSha256: digest(net.serialize()),
     semantics: 'Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff' };
 }

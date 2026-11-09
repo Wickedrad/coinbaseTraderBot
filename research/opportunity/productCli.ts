@@ -52,7 +52,7 @@ function newDestination(file: string) {
 }
 export async function codeHashes() {
   const names = new Set(['package.json', 'package-lock.json', 'tsconfig.json', 'research/mlp.ts', 'research/gbdt.ts', 'research/stats.ts', 'research/snnTape.ts', 'research/snnReplay.ts', 'research/replay.ts',
-    'bot/fees.ts', 'bot/kalshi/feeSchedule.ts', 'bot/risk/quotaPacer.ts', 'bot/strategy/fairValueStrategy.ts']);
+    'bot/fees.ts', 'bot/kalshi/feeSchedule.ts', 'bot/risk/quotaPacer.ts', 'bot/strategy/fairValueStrategy.ts', 'bot/paper/paperExchange.ts']);
   for (const dir of ['research/opportunity', 'research/history', 'bot/snn', 'bot/ta', 'bot/model', 'bot/util', 'bot/marketdata'])
     for (const name of fs.readdirSync(path.join(repo, dir))) if (name.endsWith('.ts') || name.endsWith('.py')) names.add(`${dir}/${name}`);
   const out: Record<string, string> = {};

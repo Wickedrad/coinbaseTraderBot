@@ -100,11 +100,17 @@ test('production and research replay compute identical features from the same ev
   emit('book_delta', { ticker: T, side: 'ask', price: 0.54, delta: -4, ts: now - 10_000 });
   for (let s = 1200; s >= 0; s -= 1) md.onDominance({ usdtd: 4.8 * Math.exp(-1e-6 * (1200 - s) + 1e-5 * (s % 5)), btcd: 55 + 0.001 * (s % 11), ts: now - s * 1000 });
   for (let i = 0; i < 15; i++) emit('trade', { ticker: T, price: 0.52, count: 2 + i, takerSide: i % 3 ? 'yes' : 'no', ts: now - 40_000 + i * 2000 });
+  emit('book_gap', { ticker: T, sid: 1 });
+  assert.equal(md.book(T).isUsable(now, 60000), false);
+  emit('disconnected', {});
+  emit('book_snapshot', { ticker: T, bids: [{ price: 0.51, size: 6 }, { price: 0.5, size: 20 }], asks: [{ price: 0.54, size: 8 }], ts: now });
   rec.close();
   await new Promise((r) => setTimeout(r, 100));
 
   const st = new ReplayState();
-  for await (const e of readRecordings(recDir)) st.apply(e);
+  const recordedGaps: object[] = [];
+  for await (const e of readRecordings(recDir)) { if (e.k === 'gap') recordedGaps.push(e); st.apply(e); }
+  assert.equal(recordedGaps.length, 2, 'subscription gaps and socket disconnects are persisted for future replay');
 
   const base = { now, fairValue: 0.56, mid: 0.525, tauSec: 200, sigmaPerSqrtSec: 1e-4, referenceSigma: 1e-4, inWindow: false };
   const live = computeFeatureMap({ ...base, book: md.book(T), micro: md.features.micro.get(T), index: md.index.get('BTC')!, spot: md.spot.get('BTC'), asset: 'BTC', usdtd: md.usdtd, btcd: md.btcd });
