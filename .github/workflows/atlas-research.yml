@@ -32,6 +32,11 @@ on:
         description: 'Optional completed Oracle run with five atlas-oracle-result artifacts; produce the combined summary only, with no retraining'
         default: ''
         required: false
+      audit_spectra:
+        description: 'With results_run, audit every saved continuous response surface and export the offline spectrum inspector'
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -245,8 +250,19 @@ jobs:
           mkdir -p research/out/atlas-oracle-summary
           node --import tsx research/opportunity/oracleSummary.ts "$RUNNER_TEMP/atlas-oracle-results" \
             research/out/atlas-oracle-summary/summary.json
+      - name: Verify weighted spectra independently and export the inspector
+        if: inputs.audit_spectra
+        run: |
+          node --import tsx research/opportunity/spectrumAudit.ts "$RUNNER_TEMP/atlas-oracle-results" \
+            research/out/atlas-spectrum-audit
       - uses: actions/upload-artifact@v4
         with:
           name: atlas-oracle-summary
           path: research/out/atlas-oracle-summary/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: inputs.audit_spectra
+        with:
+          name: atlas-spectrum-audit
+          path: research/out/atlas-spectrum-audit/
           retention-days: 90
