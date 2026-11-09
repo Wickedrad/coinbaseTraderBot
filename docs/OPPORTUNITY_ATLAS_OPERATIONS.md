@@ -303,6 +303,10 @@ time and mode; retrospective requests cannot be published as a forward trial.
 A selected input that was always observed during training cannot become silently
 missing at query time. The registry abstains for that unseen missingness pattern;
 mean imputation alone cannot create confidence for an unavailable relationship.
+The execution buffer is part of exact target support, and frame age must remain
+inside its training range. A model fitted on current frames cannot silently accept
+an older snapshot or a different movement deadline. Refit earlier artifacts with
+the current support metadata before querying them with the updated registry.
 
 An hourly direction forecast stays context for a 15m contract. The fresh query
 must match this ticker, strike/range, side, index, averaging rule, direction,
@@ -351,6 +355,8 @@ gh workflow run atlas-research.yml --ref main \
 gh workflow run atlas-recordings.yml --ref main
 # Reuse all six public-prefix artifacts when investigating a later processing step:
 gh workflow run atlas-recordings.yml --ref main -f source_run=42543176283
+# After a complete replay, reuse its checked datasets for a model-only refit:
+gh workflow run atlas-recordings.yml --ref main -f study_run=COMPLETED_RECORDING_RUN
 ```
 
 The first command reuses a checked `atlas-history-study` artifact for the fixed

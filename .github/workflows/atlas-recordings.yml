@@ -7,6 +7,10 @@ on:
         description: 'Optional earlier run containing atlas-public-* artifacts; reuse the exact observed prefixes without another Drive copy'
         default: ''
         required: false
+      study_run:
+        description: 'Optional completed atlas-recording-study run; refit its frozen datasets without archive processing or SNN replay'
+        default: ''
+        required: false
 
 permissions:
   contents: read
@@ -14,7 +18,7 @@ permissions:
 
 jobs:
   public-prefix:
-    if: inputs.source_run == ''
+    if: inputs.source_run == '' && inputs.study_run == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 40
@@ -55,7 +59,7 @@ jobs:
           if-no-files-found: error
   contract-study:
     needs: public-prefix
-    if: ${{ !cancelled() && (needs.public-prefix.result == 'success' || inputs.source_run != '') }}
+    if: ${{ !cancelled() && inputs.study_run == '' && (needs.public-prefix.result == 'success' || inputs.source_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -93,5 +97,35 @@ jobs:
         with:
           name: atlas-recording-study
           path: research/out/atlas-recording-study/
+          if-no-files-found: warn
+          retention-days: 90
+  refit-study:
+    if: inputs.study_run != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      OMP_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-recording-study
+          path: ${{ runner.temp }}/atlas-recording-source
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.study_run }}
+      - name: Refit only the verified datasets and evaluate their locked paper queries
+        run: |
+          node --import tsx research/opportunity/refitRecordingStudy.ts --source "$RUNNER_TEMP/atlas-recording-source" \
+            --out research/out/atlas-recording-refit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-recording-refit
+          path: research/out/atlas-recording-refit/
           if-no-files-found: warn
           retention-days: 90

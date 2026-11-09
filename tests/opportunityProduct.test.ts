@@ -120,6 +120,16 @@ test('registry enforces publication, identity, coverage, calibration and content
   assert.equal(r2.query(futurePublication.id, o, { maximumCalibrationAgeMs: 86400000 }).forecast, null);
   assert.ok(r2.query(futurePublication.id, o, { maximumCalibrationAgeMs: 86400000, mode: 'historical-audit' }).forecast,
     'post-audit retrospective queries require an explicit mode and never establish forward publication');
+  const evidence: IndexEvidence = { asset: 'BTC', reference: 'fixture-index', sourceSha256: sha, basis: 'synthetic-fixture',
+    prints: [{ ts: o.query.asOf, knownAt: o.query.asOf, value: 100 }] };
+  const differentDeadline = buildContractObservation(o.frame, o.query.contract, event, evidence,
+    { side: 'yes', executionBufferMs: 0, termsSourceSha256: sha });
+  assert.equal(registry.query(product.id, differentDeadline, { maximumCalibrationAgeMs: 86400000 }).status, 'unsupported',
+    'a changed execution buffer changes the movement deadline, even for the same remaining contract time');
+  const olderFrame = buildContractObservation(frame(o.query.asOf - 30000), o.query.contract, event, evidence,
+    { side: 'yes', executionBufferMs: 10000, termsSourceSha256: sha, asOf: o.query.asOf });
+  assert.equal(registry.query(product.id, olderFrame, { maximumCalibrationAgeMs: 86400000 }).status, 'unsupported',
+    'a model fitted only on current frames cannot silently substitute a thirty-second-old frame');
   const tampered = structuredClone(product); tampered.study.selected!.heads.move.calibration.c += 1;
   assert.throws(() => registry.register(tampered), /content ID/);
   const wrong = structuredClone(o); wrong.query.contract.terms.strike = 90;
