@@ -2,12 +2,19 @@ name: Opportunity Atlas observed recordings (GitHub only)
 
 on:
   workflow_dispatch:
+    inputs:
+      source_run:
+        description: 'Optional earlier run containing atlas-public-* artifacts; reuse the exact observed prefixes without another Drive copy'
+        default: ''
+        required: false
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   public-prefix:
+    if: inputs.source_run == ''
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 40
@@ -48,6 +55,7 @@ jobs:
           if-no-files-found: error
   contract-study:
     needs: public-prefix
+    if: ${{ !cancelled() && (needs.public-prefix.result == 'success' || inputs.source_run != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -62,10 +70,19 @@ jobs:
           cache: npm
       - run: npm ci
       - uses: actions/download-artifact@v4
+        if: inputs.source_run == ''
         with:
           pattern: atlas-public-*
           path: ${{ runner.temp }}/atlas-recordings
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        if: inputs.source_run != ''
+        with:
+          pattern: atlas-public-*
+          path: ${{ runner.temp }}/atlas-recordings
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run }}
       - name: Register and run the observed contract and S5/S6 engineering study
         run: |
           node --import tsx research/opportunity/runRecordingStudy.ts --recordings "$RUNNER_TEMP/atlas-recordings" \
@@ -77,4 +94,4 @@ jobs:
           name: atlas-recording-study
           path: research/out/atlas-recording-study/
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 90

@@ -1,6 +1,6 @@
 {
   "schema": "atlas-paper-product-validation-v1",
-  "checkedAt": "2026-11-09T00:24:17.411791+00:00",
+  "checkedAt": "2026-11-09T01:10:18.090058+00:00",
   "liveTradingChanged": false,
   "autoPromotionAdded": false,
   "localValidation": {
@@ -273,6 +273,19 @@
       "skipped": 0,
       "build": "passed",
       "scope": "Includes registered prospective study/funding; before smooth spot-path/native-candle hardening and runner orchestration"
+    },
+    {
+      "run": 42541125207,
+      "commit": "19afc358731b44ccd709265a454adc4cda70fcd4",
+      "result": "success",
+      "tests": 1238,
+      "passed": 1238,
+      "failed": 0,
+      "skipped": 0,
+      "build": "passed",
+      "windowsPackagingRun": 42541125222,
+      "windowsPackaging": "passed; legacy fresh-history smoke is replaced by an offline fixture in the follow-up",
+      "scope": "Merged core implementation; follow-up checkpoint/context/range hardening has separate targeted checks and exact-head CI"
     }
   ],
   "multiYearObservedHistory": {
@@ -313,12 +326,14 @@
     ],
     "publicFieldsOnly": true,
     "bookFidelity": "Diagnostic minute-sampled snapshots; not the inputs for a qualified SNN comparison",
-    "nativeCandleTupleImporterCorrection": "Implemented after this diagnostic probe; focused tests cover second timestamps and low/high/open ordering"
+    "nativeCandleTupleImporterCorrection": "Implemented after this diagnostic probe; focused tests cover second timestamps and low/high/open ordering",
+    "refreshedRun": 42541177252,
+    "nativeCandleArraysConfirmed": true,
+    "perpSnapshotMessages": 2670
   },
   "pendingReleaseEvidence": [
-    "Exact final-code GitHub CI and build",
-    "Smooth/tree comparison on the checked multi-year dataset",
-    "Bounded observed contract/S5/S6 end-to-end study",
+    "Exact follow-up-code GitHub CI and offline Windows package smoke",
+    "Corrected bounded observed contract/S5/S6 end-to-end study using cached public-prefix inputs",
     "Independent predictive/economic/calibration qualification and a fresh prospective paper trial"
   ],
   "historicalDemoCodeHashes": {
@@ -351,5 +366,255 @@
     "research/opportunity/snnState.ts": "915e666638ce73e4ec69bef37094e4cb980c1b6af16cb8b7e66747d573b21428",
     "research/opportunity/train.ts": "80fdd8df543f19106214bfd18e9daf902c9480f56197b03499661b205654a9ca",
     "research/opportunity/tvHistory.ts": "21ff74e7e64aedc980a78e75f05b7ec83ed5188d78567413e3b142056c98e483"
+  },
+  "multiYearSmoothComparison": {
+    "run": 42543173621,
+    "commit": "7ff2f8282f72a642a408e3fe8bbc9583d860ce2c",
+    "status": "exploratory-family-comparison",
+    "datasetManifestSha256": "ddf8c8aca97e23e06d8f2162c46a3183daf7d50e2521d1b96149b510917adacf",
+    "backend": {
+      "requested": "torch",
+      "available": "cpu, PyTorch 2.15.0+cpu",
+      "notes": []
+    },
+    "evaluationFolds": 8,
+    "folds": [
+      {
+        "fold": {
+          "train": {
+            "from": 1503020640000,
+            "through": 1510796640000
+          },
+          "stopping": {
+            "from": 1510800240000,
+            "through": 1513392240000
+          },
+          "calibration": {
+            "from": 1513395840000,
+            "through": 1515987840000
+          },
+          "evaluation": {
+            "from": 1515991440000,
+            "through": 1518583440000
+          }
+        },
+        "evaluationEpisodes": 100,
+        "treesLogLoss": 0.7042836171553456,
+        "smoothLogLoss": 0.8480192313785372,
+        "treesBrier": 0.49147467183712584,
+        "smoothBrier": 0.5621922712800075,
+        "smoothMinusTreesLoss": 0.1437356142231916
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1537580640000,
+            "through": 1545356640000
+          },
+          "stopping": {
+            "from": 1545360240000,
+            "through": 1547952240000
+          },
+          "calibration": {
+            "from": 1547955840000,
+            "through": 1550547840000
+          },
+          "evaluation": {
+            "from": 1550551440000,
+            "through": 1553143440000
+          }
+        },
+        "evaluationEpisodes": 180,
+        "treesLogLoss": 0.8146751164326609,
+        "smoothLogLoss": 0.833972743456052,
+        "treesBrier": 0.5219937708465023,
+        "smoothBrier": 0.5226581177474017,
+        "smoothMinusTreesLoss": 0.019297627023391106
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1572140640000,
+            "through": 1579916640000
+          },
+          "stopping": {
+            "from": 1579920240000,
+            "through": 1582512240000
+          },
+          "calibration": {
+            "from": 1582515840000,
+            "through": 1585107840000
+          },
+          "evaluation": {
+            "from": 1585111440000,
+            "through": 1587703440000
+          }
+        },
+        "evaluationEpisodes": 240,
+        "treesLogLoss": 0.9383533052648538,
+        "smoothLogLoss": 0.9722169490730881,
+        "treesBrier": 0.5332698331960556,
+        "smoothBrier": 0.5332347018486032,
+        "smoothMinusTreesLoss": 0.033863643808234256
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1606700640000,
+            "through": 1614476640000
+          },
+          "stopping": {
+            "from": 1614480240000,
+            "through": 1617072240000
+          },
+          "calibration": {
+            "from": 1617075840000,
+            "through": 1619667840000
+          },
+          "evaluation": {
+            "from": 1619671440000,
+            "through": 1622263440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.9108848665420309,
+        "smoothLogLoss": 1.171733560388879,
+        "treesBrier": 0.5265357913131307,
+        "smoothBrier": 0.5712533372645716,
+        "smoothMinusTreesLoss": 0.26084869384684806
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1641260640000,
+            "through": 1649036640000
+          },
+          "stopping": {
+            "from": 1649040240000,
+            "through": 1651632240000
+          },
+          "calibration": {
+            "from": 1651635840000,
+            "through": 1654227840000
+          },
+          "evaluation": {
+            "from": 1654231440000,
+            "through": 1656823440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.7299359298062177,
+        "smoothLogLoss": 1.3215569600372723,
+        "treesBrier": 0.5059792928123942,
+        "smoothBrier": 0.8268447403329942,
+        "smoothMinusTreesLoss": 0.5916210302310546
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1675820640000,
+            "through": 1683596640000
+          },
+          "stopping": {
+            "from": 1683600240000,
+            "through": 1686192240000
+          },
+          "calibration": {
+            "from": 1686195840000,
+            "through": 1688787840000
+          },
+          "evaluation": {
+            "from": 1688791440000,
+            "through": 1691383440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.7807385853531496,
+        "smoothLogLoss": 0.7585330747304524,
+        "treesBrier": 0.5534423532137452,
+        "smoothBrier": 0.516326854303578,
+        "smoothMinusTreesLoss": -0.022205510622697155
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1710380640000,
+            "through": 1718156640000
+          },
+          "stopping": {
+            "from": 1718160240000,
+            "through": 1720752240000
+          },
+          "calibration": {
+            "from": 1720755840000,
+            "through": 1723347840000
+          },
+          "evaluation": {
+            "from": 1723351440000,
+            "through": 1725943440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.8222767239171889,
+        "smoothLogLoss": 0.8644934165568039,
+        "treesBrier": 0.5128806852703938,
+        "smoothBrier": 0.5199183950668206,
+        "smoothMinusTreesLoss": 0.04221669263961503
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1744940640000,
+            "through": 1752716640000
+          },
+          "stopping": {
+            "from": 1752720240000,
+            "through": 1755312240000
+          },
+          "calibration": {
+            "from": 1755315840000,
+            "through": 1757907840000
+          },
+          "evaluation": {
+            "from": 1757911440000,
+            "through": 1760503440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.6984336354745511,
+        "smoothLogLoss": 0.6989554662983903,
+        "treesBrier": 0.5000330236032746,
+        "smoothBrier": 0.5000553665002463,
+        "smoothMinusTreesLoss": 0.0005218308238392755
+      }
+    ],
+    "weeklyEvidenceAgainstSameFamilyGeometryBaseline": {
+      "blocks": 41,
+      "pairedLogLossGain": {
+        "mean": -0.1765043595866534,
+        "lo": -0.27625659018475557,
+        "hi": -0.09104485758962767
+      },
+      "interpretation": "Exploratory weekly-block diagnostics against the geometry baseline; not full-parent ablation or a multiple-testing-controlled promotion gate."
+    },
+    "selectedFamily": null,
+    "liveEntryAllowed": false,
+    "interpretation": "Smooth full-context candidate was generally worse on this fixed exploratory comparison. Neither family establishes predictive/economic qualification."
+  },
+  "coreMerge": {
+    "pullRequest": 306,
+    "commit": "23c46d4b4b5f9445e365eeccff2b012699574995",
+    "pushAutomationSuppressed": true,
+    "lightsailDeployTriggered": false,
+    "trainerReleasePublished": false,
+    "lastLightsailDeployRunUnchanged": 42498822979
+  },
+  "latestTargetedValidation": {
+    "typecheck": "passed",
+    "tests": 24,
+    "passed": 24,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Product/range-label, observed-context and archive checks after checkpoint/context/range corrections; final workflow changes are verified by GitHub packaging/CI"
   }
 }

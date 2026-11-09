@@ -14,6 +14,7 @@ import type { AssemblySpec, RecordedDecision } from './productCli';
 import type { AtlasSnnState } from './snnState';
 import { validateSnnState } from './snnState';
 import type { ContractTerms } from '../../bot/model/fairValue';
+import { isRangeTicker } from '../../bot/model/fairValue';
 import { studyPolicy } from './studyPolicy';
 import { RecordedMarketContext } from './recordingContext';
 
@@ -57,7 +58,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   const bookKnownAt = new Map<string, number>(), lastDecision = new Map<string, number>();
   const snapshotIntact = new Map<string, boolean>();
   const counts = { events: 0, decisions: 0, proxyOrSyntheticSkipped: 0, formingCandlesSkipped: 0,
-    staleOrMissingState: 0, lateIndexDropped: 0, finalResultsWithheld: 0 };
+    staleOrMissingState: 0, lateIndexDropped: 0, finalResultsWithheld: 0, rangeKindCanonicalized: 0 };
   const decisionsFile = path.join(staging, 'decisions.jsonl'), resultsFile = path.join(staging, 'results.jsonl');
   const decisionsFd = fs.openSync(decisionsFile, 'wx'), resultsFd = fs.openSync(resultsFile, 'wx');
   let lastAt = 0, stoppedEarly = false, selectedThrough = 0;
@@ -82,7 +83,11 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       if (e.hist || e.synth) { counts.proxyOrSyntheticSkipped++; continue; }
       context.observe(e);
       if (e.k === 'market' && options.assets.includes(e.asset) && ['updown', 'greater', 'between', 'less'].includes(e.kind)) {
-        markets.set(e.ticker, { ticker: e.ticker, asset: e.asset, series: e.series, kind: e.kind, openTime: e.openTime,
+        // Older recordings label some B-range tickers as greater. Reuse ReplayState's
+        // venue ontology, requiring the actual recorded bounds in termsAt below.
+        const kind = isRangeTicker(e.ticker) ? 'between' : e.kind;
+        if (kind !== e.kind) counts.rangeKindCanonicalized++;
+        markets.set(e.ticker, { ticker: e.ticker, asset: e.asset, series: e.series, kind, openTime: e.openTime,
           closeTime: e.closeTime, strike: e.strike, cap: e.cap, tickSize: e.tickSize ?? 0.01, knownAt: e.t });
       } else if (e.k === 'index' && options.assets.includes(e.asset)) {
         if (e.src !== 'kalshi') { counts.proxyOrSyntheticSkipped++; continue; }

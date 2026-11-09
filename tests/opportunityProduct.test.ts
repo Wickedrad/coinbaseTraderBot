@@ -254,8 +254,8 @@ test('native recording import retains arrival latency, both sides, exact books a
   const recordingDir = path.join(dir, 'recordings'); fs.mkdirSync(recordingDir);
   const entries: object[] = [{ t: start - 60000, k: 'market', ticker: 'OBSERVED-FIXTURE', asset: 'BTC', series: 'fixture', kind: 'greater',
     openTime: start - 780000, closeTime: start + 120000, strike: 100.05 }];
-  entries.unshift({ t: start - 60000, k: 'market', ticker: 'FARTHER-FIXTURE', asset: 'BTC', series: 'fixture', kind: 'greater',
-    openTime: start - 780000, closeTime: start + 120000, strike: 110 });
+  entries.unshift({ t: start - 60000, k: 'market', ticker: 'KXBTC-23JAN0201-B115', asset: 'BTC', series: 'fixture', kind: 'greater',
+    openTime: start - 780000, closeTime: start + 120000, strike: 110, cap: 120 });
   for (let sec = -60; sec <= 130; sec++) {
     const at = start + sec * 1000 + 200;
     entries.push({ t: at, k: 'index', asset: 'BTC', value: sec >= 20 ? 100.3 : 100, ts: at - 200, src: 'kalshi' });
@@ -271,6 +271,7 @@ test('native recording import retains arrival latency, both sides, exact books a
     executionBufferMs: 10000, maximumDecisions: 2, costs: { entryFee: 0.01, exitFee: 0.01, settlementFee: 0, slippage: 0 } }));
   const out = path.join(dir, 'inputs'), report = await exportRecordingInputs(recordingDir, config, out);
   assert.equal(report.counts.decisions, 2); assert.equal(report.stoppedEarly, true);
+  assert.equal(report.counts.rangeKindCanonicalized, 1);
   const manifest = await assembleContractDataset(path.join(out, 'spec.json'), path.join(dir, 'dataset'));
   assert.equal(manifest.counts.complete, 2, 'row cap must not truncate selected future labels');
   const ds = await loadContractDataset(path.join(dir, 'dataset')), [yes, no] = ds.examples;
@@ -288,6 +289,13 @@ test('native recording import retains arrival latency, both sides, exact books a
   const sampled = await exportRecordingInputs(recordingDir, sampledConfig, path.join(dir, 'sampled-inputs'));
   assert.equal(sampled.counts.decisions, 2, 'predeclared sampling cadence and geometry limit govern all later observations');
   assert.equal(sampled.stoppedEarly, false);
+  const rangesConfig = path.join(dir, 'ranges-config.json');
+  fs.writeFileSync(rangesConfig, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), maximumDecisions: 4 }));
+  await exportRecordingInputs(recordingDir, rangesConfig, path.join(dir, 'ranges-inputs'));
+  await assembleContractDataset(path.join(dir, 'ranges-inputs/spec.json'), path.join(dir, 'ranges-dataset'));
+  const ranges = (await loadContractDataset(path.join(dir, 'ranges-dataset'))).examples.filter((e) => e.observation.query.contract.ticker.endsWith('-B115'));
+  assert.equal(ranges.length, 2); assert.equal(ranges[0].observation.query.contract.terms.kind, 'between');
+  assert.equal(ranges[0].observation.query.contract.terms.cap, 120); assert.equal(ranges[0].outcome.sidePays, false);
 });
 
 test('S5 and S6 are compared on identical contract observations and short evidence cannot qualify either', (t) => {

@@ -73,6 +73,9 @@ then-known opening index average as `computed-opening-index`, available no earli
 than that query. Manually supplied terms default to `declared-contract`. Declared
 or reconstructed terms can support research labels but cannot qualify an artifact
 for paper entry until the venue terms are recorded and the study is rebuilt.
+Some older DOGE messages call `B` range tickers `greater`. The importer uses the
+existing venue range-ticker rule with the recorded lower/upper bounds, and counts
+the canonicalized messages. It does not invent a missing range bound.
 
 The importer creates both YES and NO examples for every configured event at each
 eligible observation, independent of the bot's setup detectors. Add up/down move,
@@ -346,6 +349,8 @@ All heavy data processing and fitting run on GitHub, without contacting Lightsai
 gh workflow run atlas-research.yml --ref main \
   -f dataset_run=42538058087 -f study_policy=prospective-2026-11-09-v1
 gh workflow run atlas-recordings.yml --ref main
+# Reuse all six public-prefix artifacts when investigating a later processing step:
+gh workflow run atlas-recordings.yml --ref main -f source_run=42543176283
 ```
 
 The first command reuses a checked `atlas-history-study` artifact for the fixed
@@ -360,7 +365,9 @@ retrospective post-audit paper queries. Those queries are not prospective paper
 observations, regardless of whether a model would have entered.
 
 The owner authorized the separate prospective study and main merges. Use a merge
-commit subject containing `[skip deploy]`; the deploy workflow skips that push.
+commit subject containing `[skip deploy]`; deployment and automatic trainer
+publishing skip that push. Windows package smoke checks use a local synthetic ZIP
+and exclude history downloads; fresh Atlas acquisition stays tvdatafeed-only.
 Deployment/live enablement still require approval. Models stay paper-only, and
 unsupported queries abstain. New holdout observations must follow real artifact
 publication; no retrospective prediction may be counted as a forward result.
