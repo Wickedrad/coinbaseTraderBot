@@ -16,6 +16,8 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
   maximumInputGapMs?: number;
   /** Requires a source tape built with this observed-price age limit. */
   maximumInputPriceAgeMs?: number;
+  /** Observing fewer instants must not change the replayed network's evolution. */
+  captureAt?: ReadonlySet<number>;
   learningBefore?: number; everyMs?: number; params?: SnnParams; onState: (state: AtlasSnnState) => void }) {
   const policy = studyPolicy(options.studyPolicyId), learningBefore = options.learningBefore ?? policy.trainBefore, every = options.everyMs ?? 60000, inputLagMs = options.inputLagMs ?? 1000;
   const maximumInputGapMs = options.maximumInputGapMs ?? 3000;
@@ -74,7 +76,7 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
           asset: net.columns.get(key)!.asset, price: undefined, mid: undefined, values: {} }))];
       }
       awaitingInput = false; advance(at, inputs); previousStep = at;
-      if (at >= nextSnapshot) {
+      if (at >= nextSnapshot && (!options.captureAt || options.captureAt.has(at))) {
         // Native tapes can begin with a book event before any index/asset input.
         // Advance that observed clock, but do not invent an initialized SNN state.
         if (!net.columns.size || (maximumInputPriceAgeMs !== undefined && !availableKeys.size)) { unavailableSnapshots++; continue; }
@@ -94,7 +96,8 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
     }
   }
   return { variant: options.variant, studyPolicyId: policy.id, domain: options.domain ?? 'crypto', inputLagMs, maximumInputGapMs, maximumInputPriceAgeMs,
-    sourceSha256: options.sourceSha256, firstAt, lastAt, learnedThrough, snapshots, unavailableSnapshots, unavailableColumnResets, gaps, gapResets,
+    sourceSha256: options.sourceSha256, firstAt, lastAt, learnedThrough, snapshots, requestedCaptureInstants: options.captureAt?.size ?? null,
+    unavailableSnapshots, unavailableColumnResets, gaps, gapResets,
     version: net.version, checkpointSha256: digest(net.serialize()),
     semantics: 'Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff' };
 }

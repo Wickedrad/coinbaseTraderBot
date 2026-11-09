@@ -60,7 +60,8 @@ export async function runRecordingStudy(o: { recordings: string; config: string;
       const selected = new Map<number, AtlasSnnState>(); domainStates[domain][variant] = selected;
       console.log(`Replaying ${domain} ${variant}; weights freeze at ${new Date(policy.trainBefore).toISOString()}`);
       replayReports.push(replayAtlasSnnTape(tape, { variant, domain, sourceSha256: tapeHash, studyPolicyId: policy.id,
-        everyMs: 1000, maximumInputPriceAgeMs: 3000, params: domainParams(domain), onState: (state) => { if (desiredSeconds.has(state.asOf)) selected.set(state.asOf, state); } }));
+        everyMs: 1000, maximumInputPriceAgeMs: 3000, captureAt: desiredSeconds, params: domainParams(domain),
+        onState: (state) => selected.set(state.asOf, state) }));
     }
   }
   for (const variant of ['S5', 'S6'] as const) {

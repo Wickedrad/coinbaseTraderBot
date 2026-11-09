@@ -43,4 +43,10 @@ test('one missing asset cannot earn direction labels from held prices while anot
   assert.ok(Object.entries(missing.values).every(([k, v]) => k === 'observed_input_available' || v === null));
   assert.equal(r.unavailableColumnResets, 1); assert.equal(r.gapResets, 0);
   assert.equal(final[0].columns.find((c) => c.asset === 'BTC')!.values.readout_labelled, 0);
+  const sparse: AtlasSnnState[] = [];
+  const sparseReport = replayAtlasSnnTape(file, { variant: 'S6', sourceSha256: sha, params, inputLagMs: 0, maximumInputPriceAgeMs: 3000,
+    everyMs: 1000, captureAt: new Set([start + 900000, start + 901000]), onState: (s) => sparse.push(s) });
+  assert.deepEqual(sparse, [states[0], final[0]]);
+  assert.equal(sparseReport.checkpointSha256, r.checkpointSha256, 'sampling observers cannot change learned weights or running state');
+  assert.equal(sparseReport.snapshots, 2);
 });
