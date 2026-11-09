@@ -26,6 +26,7 @@ export async function runRecordingStudy(o: { recordings: string; config: string;
   const parameters = { epochs: 40, hidden: 6, trees: 12, seed: 17 };
   fs.writeFileSync(path.join(root, 'registration.json'), JSON.stringify({ policy, config,
     plan, parameters, declaredBeforeLabels: true,
+    snnReplayPolicy: { domains: ['crypto', 'perps'], maximumInputPriceAgeMs: 3000, maximumInputGapMs: 3000, roundedInputLagMs: 1000 },
     purpose: 'Observed bounded-prefix engineering and exploratory study, not complete-archive or live replay qualification',
     researchOnly: true, liveEntryAllowed: false, autoPromote: false }, null, 2) + '\n');
   const receiptDays = new Set<string>();
@@ -53,13 +54,14 @@ export async function runRecordingStudy(o: { recordings: string; config: string;
     const tape = path.join(root, `observed-${domain}.tape`); domainStates[domain] = {};
     console.log(`Recording the existing ${domain} SNN input mapping on observed prefixes`);
     await recordSnnTape(o.recordings, tape, { params: domainParams(domain), domain, lean: true,
-      skipModel: true, fromDay: config.fromDay, toDay: config.toDay, scoreEverySec: 60, assetEverySec: 5 });
+      skipModel: true, fromDay: config.fromDay, toDay: config.toDay, scoreEverySec: 60, assetEverySec: 5, maximumInputPriceAgeMs: 3000 });
     const tapeHash = await sha256File(tape);
     for (const variant of ['S5', 'S6'] as const) {
       const selected = new Map<number, AtlasSnnState>(); domainStates[domain][variant] = selected;
       console.log(`Replaying ${domain} ${variant}; weights freeze at ${new Date(policy.trainBefore).toISOString()}`);
       replayReports.push(replayAtlasSnnTape(tape, { variant, domain, sourceSha256: tapeHash, studyPolicyId: policy.id,
-        everyMs: 1000, params: domainParams(domain), onState: (state) => { if (desiredSeconds.has(state.asOf)) selected.set(state.asOf, state); } }));
+        everyMs: 1000, maximumInputPriceAgeMs: 3000, captureAt: desiredSeconds, params: domainParams(domain),
+        onState: (state) => selected.set(state.asOf, state) }));
     }
   }
   for (const variant of ['S5', 'S6'] as const) {

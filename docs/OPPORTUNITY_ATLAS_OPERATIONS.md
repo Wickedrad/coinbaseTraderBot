@@ -43,9 +43,10 @@ npm run research:opportunity-product -- assemble \
   --out research/out/atlas-contract-dataset-v1
 ```
 
-The importer reads observed `market`, `index`, `candles`, `book`, `delta` and
-`result` messages. It accepts only index messages explicitly marked `src: kalshi`
-for official contract reconstruction. It excludes `hist`, `synth` and proxy data,
+The importer reads observed `market`, `index`, `candles`, `book`, `delta`, `perp`,
+`dominance`, `gap` and `result` messages. It accepts only index messages explicitly
+marked `src: kalshi` for official contract reconstruction. It excludes `hist`,
+`synth` and proxy data,
 never invokes the historical replay's synthetic price bridge, and never builds
 ticks from minute OHLC. An unspecified historical candle provider is recorded as
 unspecified; a recording is not tvdatafeed provenance or independent proof that a
@@ -59,6 +60,13 @@ feature provider. BTC-relative returns use observed index marks. Missing daily
 dominance, funding, open interest, taker flow and other unavailable observations
 remain missing. Additional historical daily context can be supplied through the
 existing audited feature builder, without a hindsight source splice.
+Observed native dominance snapshots and perp funding/open-interest snapshots are
+also exposed directly to their conditional feature families. They retain actual
+arrival times, a 60-second source-age limit and missing masks. Per-contract marks
+require a recorded contract size before conversion to per-coin premium; unknown
+units never become a spot premium. These snapshots are not relabeled as daily TV
+or exchange-published history. Crypto and perps SNNs consume their existing input
+mappings separately, then join only same-time states with both provenances.
 
 Terms carry a basis as well as their source hash. Recorded venue strikes use
 `recorded-contract`; a missing Up/Down strike may be reconstructed from the
@@ -66,6 +74,9 @@ then-known opening index average as `computed-opening-index`, available no earli
 than that query. Manually supplied terms default to `declared-contract`. Declared
 or reconstructed terms can support research labels but cannot qualify an artifact
 for paper entry until the venue terms are recorded and the study is rebuilt.
+Some older DOGE messages call `B` range tickers `greater`. The importer uses the
+existing venue range-ticker rule with the recorded lower/upper bounds, and counts
+the canonicalized messages. It does not invent a missing range bound.
 
 The importer creates both YES and NO examples for every configured event at each
 eligible observation, independent of the bot's setup detectors. Add up/down move,
@@ -148,6 +159,8 @@ Future-trained checkpoints, stale states and mislabeled S5/S6 configurations are
 rejected. These provenance declarations must come from the collector; file mtime
 does not establish them. Hashes, IDs and raw timestamps stay out of numeric inputs.
 The domain is explicit: crypto and perps networks cannot be silently exchanged.
+Representation identity also includes the starting checkpoint and its availability
+time; matching network parameters alone cannot substitute a different lineage.
 `combineSnnStates` can join both isolated networks at the same causal time with
 separate provenance and column names. A model trained with both requires both.
 `trainedThrough` describes weight learning; running state and grading history
@@ -168,6 +181,11 @@ adapter advances previously observed inputs before the next observation. Longer
 input gaps clear transient state, held inputs and pending direction/contract tags
 while preserving learned weights. Missing horizon prices cannot grade old calls.
 The gap policy is part of state/model compatibility. Learning
+in the observed-recording study also requires a price no older than three seconds.
+The source tape omits stale columns; replay clears their pending calls, masks the
+unavailable state and conservatively pauses learning until required inputs return.
+The legacy replay default is unchanged. This policy is explicit in provenance and
+required for retained SNN state to qualify. Learning
 freezes at the selected registered study's training cutoff; no future settlement
 trains an earlier state. The default legacy study still uses the pre-2025 cutoff.
 The adapter starts from a fresh network and does not transplant today's weights
@@ -291,6 +309,10 @@ time and mode; retrospective requests cannot be published as a forward trial.
 A selected input that was always observed during training cannot become silently
 missing at query time. The registry abstains for that unseen missingness pattern;
 mean imputation alone cannot create confidence for an unavailable relationship.
+The execution buffer is part of exact target support, and frame age must remain
+inside its training range. A model fitted on current frames cannot silently accept
+an older snapshot or a different movement deadline. Refit earlier artifacts with
+the current support metadata before querying them with the updated registry.
 
 An hourly direction forecast stays context for a 15m contract. The fresh query
 must match this ticker, strike/range, side, index, averaging rule, direction,
@@ -336,7 +358,13 @@ All heavy data processing and fitting run on GitHub, without contacting Lightsai
 ```sh
 gh workflow run atlas-research.yml --ref main \
   -f dataset_run=42538058087 -f study_policy=prospective-2026-11-09-v1
-gh workflow run atlas-recordings.yml --ref main
+gh workflow run atlas-recordings.yml --ref main -f expand_training=true
+# Reuse all six public-prefix artifacts when investigating a later processing step:
+gh workflow run atlas-recordings.yml --ref main -f source_run=42543176283
+# Add two fixed pre-cutoff days while reusing the original six prefixes:
+gh workflow run atlas-recordings.yml --ref main -f source_run=42543176283 -f expand_training=true
+# After a complete replay, reuse its checked datasets for a model-only refit:
+gh workflow run atlas-recordings.yml --ref main -f study_run=COMPLETED_RECORDING_RUN
 ```
 
 The first command reuses a checked `atlas-history-study` artifact for the fixed
@@ -350,8 +378,43 @@ The prefix-specific plan audits November 6 and uses November 7 for explicitly
 retrospective post-audit paper queries. Those queries are not prospective paper
 observations, regardless of whether a model would have entered.
 
+The initial six-prefix run, `42549662484`, completed with 3,876 complete base
+outcomes and 3,804 matched SNN outcomes per variant. It has only 19 distinct
+training settlement events, below the learner's fixed 20-event minimum, so its
+contract heads remain fallback priors. All 1,080 historical paper queries abstain;
+the one-week audit has no executable quote or confirmed-result evidence.
+`expand_training=true` adds fixed October 24 and 27 archive prefixes before the
+October 29 training cutoff. It preserves the model parameters, selection/audit
+windows and November 9 final boundary. With `source_run`, only the two additional
+prefixes are copied; if either fails, the study cannot silently use the old six.
+This extends development coverage and cannot establish independent qualification.
+
+The expanded run `42568366333` completed on the same tested source with all three
+contract heads fitted. It processed 140,129,400 events across 19.99 observed hours,
+producing 5,340 complete base outcomes (201 distinct asset/settlement events) and
+5,244 complete outcomes per matched SNN variant. The base has 66 distinct training
+events; the SNN variants have 64. The selected tree models retain no indicator/SNN
+family because evidence remains insufficient. Their audit spans one week with two
+confirmed events and zero executable quotes; a conditional calibration head also
+remains unsupported. All 1,080 retrospective paper queries abstain.
+
+Download the checked artifact to inspect the real fitted product without another
+archive copy or fit:
+
+```sh
+gh run download 42568366333 --name atlas-recording-study --dir research/out/atlas-observed-42568366333
+npm run research:opportunity-product -- status --product research/out/atlas-observed-42568366333/base/study/product.json
+```
+
+The artifact expires on February 7, 2027. After prefix-cache expiry, omit
+`source_run` and keep `expand_training=true` to copy all eight fixed archived
+prefixes on GitHub. Source/model/dataset hashes, actual fitted head types and
+current-code validation are recorded in `OPPORTUNITY_ATLAS_PRODUCT_VALIDATION.json`.
+
 The owner authorized the separate prospective study and main merges. Use a merge
-commit subject containing `[skip deploy]`; the deploy workflow skips that push.
+commit subject containing `[skip deploy]`; deployment and automatic trainer
+publishing skip that push. Windows package smoke checks use a local synthetic ZIP
+and exclude history downloads; fresh Atlas acquisition stays tvdatafeed-only.
 Deployment/live enablement still require approval. Models stay paper-only, and
 unsupported queries abstain. New holdout observations must follow real artifact
 publication; no retrospective prediction may be counted as a forward result.

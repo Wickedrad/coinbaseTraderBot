@@ -1,5 +1,10 @@
 # Conditional Opportunity Atlas — historical discovery architecture
 
+For current commands, capabilities and evidence, see
+[the operating guide](OPPORTUNITY_ATLAS_OPERATIONS.md) and
+[release acceptance](OPPORTUNITY_ATLAS_RELEASE_PLAN.md). The phase notes below
+preserve the implementation history; later increments supersede earlier gaps.
+
 ## Required data source and setup
 
 All new data acquisition must use **tvdatafeed**. The dedicated research command

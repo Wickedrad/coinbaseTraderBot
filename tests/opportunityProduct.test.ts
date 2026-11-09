@@ -7,7 +7,7 @@ import { rng } from '../research/stats';
 import { ATLAS_FEATURE_SCHEMA, type AtlasFeatureFrame } from '../research/opportunity/features';
 import { TANET_SCHEMA } from '../bot/ta/taNet';
 import { buildContractObservation, digest, labelContract, type ContractObservation, type IndexEvidence, type TimelyMoveDefinition } from '../research/opportunity/contractDataset';
-import { contractRows, fitContractModel, scoreContractModel, contractProbabilities, missingRequiredInputs, validateContractModel, type ContractExample, type ContractStudyPlan } from '../research/opportunity/contractLearner';
+import { contractRows, fitContractModel, scoreContractModel, contractProbabilities, contractModelSupports, missingRequiredInputs, validateContractModel, type ContractExample, type ContractStudyPlan } from '../research/opportunity/contractLearner';
 import { runContractStudy, contractBounds, holmRetained, type ContractStudy } from '../research/opportunity/contractStudy';
 import { AtlasRegistry, createAtlasProduct } from '../research/opportunity/registry';
 import { evaluatePaperPosition, type PaperPolicy, type PaperQuote } from '../research/opportunity/paper';
@@ -120,6 +120,16 @@ test('registry enforces publication, identity, coverage, calibration and content
   assert.equal(r2.query(futurePublication.id, o, { maximumCalibrationAgeMs: 86400000 }).forecast, null);
   assert.ok(r2.query(futurePublication.id, o, { maximumCalibrationAgeMs: 86400000, mode: 'historical-audit' }).forecast,
     'post-audit retrospective queries require an explicit mode and never establish forward publication');
+  const evidence: IndexEvidence = { asset: 'BTC', reference: 'fixture-index', sourceSha256: sha, basis: 'synthetic-fixture',
+    prints: [{ ts: o.query.asOf, knownAt: o.query.asOf, value: 100 }] };
+  const differentDeadline = buildContractObservation(o.frame, o.query.contract, event, evidence,
+    { side: 'yes', executionBufferMs: 0, termsSourceSha256: sha });
+  assert.equal(registry.query(product.id, differentDeadline, { maximumCalibrationAgeMs: 86400000 }).status, 'unsupported',
+    'a changed execution buffer changes the movement deadline, even for the same remaining contract time');
+  const olderFrame = buildContractObservation(frame(o.query.asOf - 30000), o.query.contract, event, evidence,
+    { side: 'yes', executionBufferMs: 10000, termsSourceSha256: sha, asOf: o.query.asOf });
+  assert.equal(registry.query(product.id, olderFrame, { maximumCalibrationAgeMs: 86400000 }).status, 'unsupported',
+    'a model fitted only on current frames cannot silently substitute a thirty-second-old frame');
   const tampered = structuredClone(product); tampered.study.selected!.heads.move.calibration.c += 1;
   assert.throws(() => registry.register(tampered), /content ID/);
   const wrong = structuredClone(o); wrong.query.contract.terms.strike = 90;
@@ -200,6 +210,17 @@ test('unobserved SNN intervals cannot grade pending calls on stale held or later
   assert.equal(states.at(-1)!.provenance.maximumInputGapMs, 3000);
 });
 
+test('native tapes may start before any asset input, without publishing an invented empty state', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-tape-start-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'startup.tape'), w = new TapeWriter(file), states: ReturnType<typeof captureSnnState>[] = [];
+  w.step(start, []); w.score(start, [], []);
+  w.step(start + 1000, [{ key: 'BTC-15m', asset: 'BTC', price: 100, mid: undefined, values: {} }]); w.close();
+  const r = replayAtlasSnnTape(file, { variant: 'S5', sourceSha256: sha, everyMs: 1000,
+    params: { ...DEFAULT_SNN, nE: 8, nI: 2, nL1: 4 }, onState: (s) => states.push(s) });
+  assert.equal(r.unavailableSnapshots, 1); assert.equal(states.length, 1);
+  assert.equal(states[0].asOf, start + 2000); assert.equal(states[0].columns[0].asset, 'BTC');
+});
+
 test('assembly, persisted study, registry query and shadow logging run end to end with checked receipts', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-product-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const first = planted()[0], at = first.observation.query.asOf;
@@ -254,14 +275,18 @@ test('native recording import retains arrival latency, both sides, exact books a
   const recordingDir = path.join(dir, 'recordings'); fs.mkdirSync(recordingDir);
   const entries: object[] = [{ t: start - 60000, k: 'market', ticker: 'OBSERVED-FIXTURE', asset: 'BTC', series: 'fixture', kind: 'greater',
     openTime: start - 780000, closeTime: start + 120000, strike: 100.05 }];
-  entries.unshift({ t: start - 60000, k: 'market', ticker: 'FARTHER-FIXTURE', asset: 'BTC', series: 'fixture', kind: 'greater',
-    openTime: start - 780000, closeTime: start + 120000, strike: 110 });
+  entries.unshift({ t: start - 60000, k: 'market', ticker: 'KXBTC-23JAN0201-B115', asset: 'BTC', series: 'fixture', kind: 'greater',
+    openTime: start - 780000, closeTime: start + 120000, strike: 110, cap: 120 });
   for (let sec = -60; sec <= 130; sec++) {
     const at = start + sec * 1000 + 200;
     entries.push({ t: at, k: 'index', asset: 'BTC', value: sec >= 20 ? 100.3 : 100, ts: at - 200, src: 'kalshi' });
     if (sec === 0) entries.push({ t: at, k: 'candles', asset: 'BTC', tf: '1m', rows: Array.from({ length: 16 }, (_, i) =>
       [(start - (16 - i) * MIN) / 1000, 99, 101, 100, 100, 1, 0.4]) });
-    entries.push({ t: at, k: 'book', ticker: 'OBSERVED-FIXTURE', bids: [{ price: 0.4, size: 5 }], asks: [{ price: 0.5, size: 6 }] });
+    if (sec === 0) entries.push({ t: at, ts: at - 100, k: 'perp', asset: 'BTC', mark: 1, contractSize: 0.01, fundingRate: 0, openInterest: 123 },
+      { t: at, ts: at - 100, k: 'dominance', btcd: 60, usdtd: 6, covered: 0.8 });
+    if (sec === 1) entries.push({ t: at, k: 'delta', ticker: 'OBSERVED-FIXTURE', side: 'yes', price: 0.4, delta: -1 },
+      { t: at, ts: at, k: 'perp', asset: 'BTC', mark: 1, contractSize: 0.01, fundingRate: 0, openInterest: 124 });
+    else entries.push({ t: at, k: 'book', ticker: 'OBSERVED-FIXTURE', bids: [{ price: 0.4, size: 5 }], asks: [{ price: 0.5, size: 6 }] });
     if (sec === 130) entries.push({ t: at, k: 'result', ticker: 'OBSERVED-FIXTURE', result: 'yes' });
   }
   fs.writeFileSync(path.join(recordingDir, 'md-2023-01-02.jsonl'), entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
@@ -269,12 +294,17 @@ test('native recording import retains arrival latency, both sides, exact books a
     executionBufferMs: 10000, maximumDecisions: 2, costs: { entryFee: 0.01, exitFee: 0.01, settlementFee: 0, slippage: 0 } }));
   const out = path.join(dir, 'inputs'), report = await exportRecordingInputs(recordingDir, config, out);
   assert.equal(report.counts.decisions, 2); assert.equal(report.stoppedEarly, true);
+  assert.equal(report.counts.rangeKindCanonicalized, 1);
   const manifest = await assembleContractDataset(path.join(out, 'spec.json'), path.join(dir, 'dataset'));
   assert.equal(manifest.counts.complete, 2, 'row cap must not truncate selected future labels');
   const ds = await loadContractDataset(path.join(dir, 'dataset')), [yes, no] = ds.examples;
   assert.equal(yes.observation.query.asOf, start + 200); assert.equal(yes.observation.frame.decisionAt, start + 200);
   assert.equal(yes.observation.frame.groups.spot_1m.knownAt, start + 200);
   assert.equal(yes.observation.anchor!.atrBps, 200, 'native second timestamps and low/high/open order must reach the ATR anchor');
+  assert.equal(yes.observation.frame.groups.micro_perp.values.open_interest_contracts, 123);
+  assert.equal(yes.observation.frame.groups.micro_perp.values.mark_per_coin, 100);
+  assert.equal(yes.observation.frame.groups.micro_perp.values.funding_rate, 0);
+  assert.equal(yes.observation.frame.groups.observed_dominance.values.btcd, 60);
   assert.equal(yes.quote!.ask, 0.5); assert.equal(no.quote!.ask, 0.6);
   assert.equal(yes.outcome.sidePays, true); assert.equal(no.outcome.sidePays, false); assert.equal(yes.outcome.officialResultConfirmed, true);
   const sampledConfig = path.join(dir, 'sampled-config.json');
@@ -282,6 +312,20 @@ test('native recording import retains arrival latency, both sides, exact books a
   const sampled = await exportRecordingInputs(recordingDir, sampledConfig, path.join(dir, 'sampled-inputs'));
   assert.equal(sampled.counts.decisions, 2, 'predeclared sampling cadence and geometry limit govern all later observations');
   assert.equal(sampled.stoppedEarly, false);
+  const rangesConfig = path.join(dir, 'ranges-config.json');
+  fs.writeFileSync(rangesConfig, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), maximumDecisions: 4 }));
+  await exportRecordingInputs(recordingDir, rangesConfig, path.join(dir, 'ranges-inputs'));
+  await assembleContractDataset(path.join(dir, 'ranges-inputs/spec.json'), path.join(dir, 'ranges-dataset'));
+  const ranges = (await loadContractDataset(path.join(dir, 'ranges-dataset'))).examples.filter((e) => e.observation.query.contract.ticker.endsWith('-B115'));
+  assert.equal(ranges.length, 2); assert.equal(ranges[0].observation.query.contract.terms.kind, 'between');
+  assert.equal(ranges[0].observation.query.contract.terms.cap, 120); assert.equal(ranges[0].outcome.sidePays, false);
+  const invalidatedConfig = path.join(dir, 'invalidated-config.json');
+  fs.writeFileSync(invalidatedConfig, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), maximumDecisions: 4,
+    everyMs: 1000, sampleEveryMs: 1000, maximumContractsPerAsset: 1 }));
+  await exportRecordingInputs(recordingDir, invalidatedConfig, path.join(dir, 'invalidated-inputs'));
+  const invalidated = fs.readFileSync(path.join(dir, 'invalidated-inputs/decisions.jsonl'), 'utf8').trim().split('\n').map((s) => JSON.parse(s));
+  assert.ok(invalidated[0].quote); assert.equal(invalidated[2].asOf, start + 1200);
+  assert.equal(invalidated[2].quote, undefined, 'an observed delta invalidates economic snapshot evidence until a new full snapshot');
 });
 
 test('S5 and S6 are compared on identical contract observations and short evidence cannot qualify either', (t) => {
@@ -304,6 +348,12 @@ test('S5 and S6 are compared on identical contract observations and short eviden
   const comparison = compareSnnStudies(studies.S5, data.S5, studies.S6, data.S6);
   assert.ok(comparison.rows > 0); assert.equal(comparison.recommended, 'none');
   assert.equal(comparison.liveEntryAllowed, false);
+  const parent = studies.S5.candidates.find((c) => c.model.included.includes('snn'))!.model;
+  const original = data.S5.find((e) => contractModelSupports(parent, e.observation))!.observation;
+  const replaced = structuredClone(original);
+  replaced.snn!.provenance.checkpointSha256 = 'f'.repeat(64);
+  const { id: _id, ...core } = replaced; replaced.id = digest(core);
+  assert.equal(contractModelSupports(parent, replaced), false, 'matching parameters cannot substitute a different starting SNN checkpoint');
   assert.throws(() => qualifySnnStudy(studies.S5, comparison), /does not qualify/);
   const changed = structuredClone(data.S6); changed.at(-1)!.outcome.category = 0;
   assert.throws(() => compareSnnStudies(studies.S5, data.S5, studies.S6, changed), /matching datasets/);

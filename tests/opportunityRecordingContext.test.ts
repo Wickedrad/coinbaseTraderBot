@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { RecordedMarketContext } from '../research/opportunity/recordingContext';
+import { featureFamily } from '../research/opportunity/contractLearner';
+const sha = 'a'.repeat(64);
+test('recorded funding, open interest and dominance use observed arrivals and correct per-contract units', () => {
+  const c = new RecordedMarketContext(sha);
+  c.observe({ t: 1200, ts: 1000, k: 'perp', asset: 'BTC', mark: 1, contractSize: 0.01, fundingRate: 0, openInterest: 100 });
+  c.observe({ t: 1300, ts: 1200, k: 'dominance', btcd: 60, usdtd: 6, covered: 0.8 });
+  let g = c.at('BTC', 1500, 100);
+  assert.equal(g.micro_perp.values.funding_rate, 0); assert.equal(g.micro_perp.values.mark_per_coin, 100);
+  assert.equal(g.micro_perp.values.premium_bps, 0); assert.equal(g.micro_perp.knownAt, 1500);
+  assert.equal(g.observed_dominance.values.btcd, 60); assert.equal(g.observed_dominance.knownAt, 1300);
+  assert.equal(g.observed_dominance.values.btcdom, null);
+  c.observe({ t: 2200, ts: 2000, k: 'perp', asset: 'BTC', mark: 1.01, contractSize: 0.01, fundingRate: 0.0001, openInterest: 105 });
+  g = c.at('BTC', 2300, 100);
+  assert.equal(g.micro_perp.values.funding_change, 0.0001); assert.equal(g.micro_perp.values.open_interest_change, 5);
+  assert.ok(Math.abs(g.micro_perp.values.premium_bps! - 100) < 1e-9);
+  assert.equal(featureFamily('status:observed_dominance:ready'), 'dominance');
+  assert.equal(featureFamily('value:micro_perp:funding_rate'), 'micro');
+});
+test('recorded context masks absent/stale values and never rewinds to late snapshots or invents funding changes across gaps', () => {
+  const c = new RecordedMarketContext(sha);
+  assert.equal(c.at('BTC', 1000, 100).micro_perp.status, 'missing');
+  c.observe({ t: 2000, ts: 2000, k: 'perp', asset: 'BTC', fundingRate: 0.1 });
+  c.observe({ t: 2500, ts: 1000, k: 'perp', asset: 'BTC', fundingRate: 99 });
+  assert.equal(c.at('BTC', 3000, 100).micro_perp.values.funding_rate, 0.1);
+  assert.equal(c.at('BTC', 3000, 100).micro_perp.values.mark_per_coin, null);
+  const stale = c.at('BTC', 63000, 100).micro_perp;
+  assert.equal(stale.status, 'stale'); assert.ok(Object.values(stale.values).every((v) => v === null));
+  c.observe({ t: 70000, ts: 70000, k: 'perp', asset: 'BTC', fundingRate: 0.2 });
+  assert.equal(c.at('BTC', 70000, 100).micro_perp.values.funding_change, null);
+  assert.throws(() => c.observe({ t: 71000, ts: 72000, k: 'dominance', btcd: 60 }), /future/);
+  assert.throws(() => c.at('BTC', 60000, 100), /future/);
+});

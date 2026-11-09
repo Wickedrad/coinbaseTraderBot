@@ -1,6 +1,6 @@
 {
   "schema": "atlas-paper-product-validation-v1",
-  "checkedAt": "2026-11-09T00:24:17.411791+00:00",
+  "checkedAt": "2026-11-09T06:25:01.390346+00:00",
   "liveTradingChanged": false,
   "autoPromotionAdded": false,
   "localValidation": {
@@ -26,7 +26,8 @@
       "skipped": 9,
       "durationMs": 691912.849237,
       "skipReason": "Optional PyTorch tests; torch is not installed locally",
-      "scope": "Full run before final import/domain/timestamp hardening; final hardening passed the focused run above. Exact final-commit full suite is required in GitHub CI."
+      "scope": "Full run before final import/domain/timestamp hardening; final hardening passed the focused run above. Exact final-commit full suite is required in GitHub CI.",
+      "supersededByGitHubRun": 42550621974
     },
     "productionBuild": "passed; production call sites unchanged"
   },
@@ -244,7 +245,7 @@
     "observedMarketModelQualified": false,
     "executedProfitVerified": false,
     "independentSnnEdgeVerified": false,
-    "nextEvidence": "Same-period observed contract/S5/S6 study under the approved prospective policy, then independent weeks, venue fidelity and a fresh forward paper trial"
+    "nextEvidence": "Independent observed-contract/calibration weeks and executable quote/fill evidence, then a genuine forward paper trial; completed bounded studies remain exploratory"
   },
   "studyPolicy": {
     "legacyStudy": "legacy-pre2025-frozen2026-v1",
@@ -273,6 +274,47 @@
       "skipped": 0,
       "build": "passed",
       "scope": "Includes registered prospective study/funding; before smooth spot-path/native-candle hardening and runner orchestration"
+    },
+    {
+      "run": 42541125207,
+      "commit": "19afc358731b44ccd709265a454adc4cda70fcd4",
+      "result": "success",
+      "tests": 1238,
+      "passed": 1238,
+      "failed": 0,
+      "skipped": 0,
+      "build": "passed",
+      "windowsPackagingRun": 42541125222,
+      "windowsPackaging": "passed; legacy fresh-history smoke is replaced by an offline fixture in the follow-up",
+      "scope": "Merged core implementation; follow-up checkpoint/context/range hardening has separate targeted checks and exact-head CI"
+    },
+    {
+      "run": 42550621974,
+      "commit": "39e7fe3563f87629fc2264bbc88e913c924d014f",
+      "result": "success",
+      "tests": 1243,
+      "passed": 1243,
+      "failed": 0,
+      "skipped": 0,
+      "build": "passed",
+      "windowsPackagingRun": 42550622010,
+      "windowsPackaging": "passed; offline ZIP fixture, history stages excluded, trainer publishing skipped",
+      "securityScans": "all passed",
+      "scope": "Final source implementation including strict observed-price availability, checkpoint/timing guards and observer-only sampling. Later workflow/evidence changes are identified separately."
+    },
+    {
+      "run": 42568299149,
+      "commit": "2f894b7235e8b1a4a9d2d60db484412f55f62a24",
+      "result": "success",
+      "tests": 1243,
+      "passed": 1243,
+      "failed": 0,
+      "skipped": 0,
+      "build": "passed",
+      "windowsPackagingRun": 42568299188,
+      "windowsPackaging": "passed; offline fixture, no history acquisition, no release publishing",
+      "securityScans": "all passed",
+      "scope": "Exact final executable source and workflow changes; subsequent release evidence edits are documentation only."
     }
   ],
   "multiYearObservedHistory": {
@@ -313,13 +355,15 @@
     ],
     "publicFieldsOnly": true,
     "bookFidelity": "Diagnostic minute-sampled snapshots; not the inputs for a qualified SNN comparison",
-    "nativeCandleTupleImporterCorrection": "Implemented after this diagnostic probe; focused tests cover second timestamps and low/high/open ordering"
+    "nativeCandleTupleImporterCorrection": "Implemented after this diagnostic probe; focused tests cover second timestamps and low/high/open ordering",
+    "refreshedRun": 42541177252,
+    "nativeCandleArraysConfirmed": true,
+    "perpSnapshotMessages": 2670
   },
   "pendingReleaseEvidence": [
-    "Exact final-code GitHub CI and build",
-    "Smooth/tree comparison on the checked multi-year dataset",
-    "Bounded observed contract/S5/S6 end-to-end study",
-    "Independent predictive/economic/calibration qualification and a fresh prospective paper trial"
+    "Adequate multi-era observed-contract coverage and independent weekly predictive, fee-net and conditional/SNN evidence",
+    "Verified venue fill and replay fidelity, followed by a fresh forward paper trial",
+    "Approved production integration, deployment and live enablement"
   ],
   "historicalDemoCodeHashes": {
     "bot/model/calibration.ts": "9ef258cb0e113ee4cf6a32496b1804fd6ab6ef71e34df3cc79523cf218df5c4e",
@@ -351,5 +395,1382 @@
     "research/opportunity/snnState.ts": "915e666638ce73e4ec69bef37094e4cb980c1b6af16cb8b7e66747d573b21428",
     "research/opportunity/train.ts": "80fdd8df543f19106214bfd18e9daf902c9480f56197b03499661b205654a9ca",
     "research/opportunity/tvHistory.ts": "21ff74e7e64aedc980a78e75f05b7ec83ed5188d78567413e3b142056c98e483"
+  },
+  "multiYearSmoothComparison": {
+    "run": 42543173621,
+    "commit": "7ff2f8282f72a642a408e3fe8bbc9583d860ce2c",
+    "status": "exploratory-family-comparison",
+    "datasetManifestSha256": "ddf8c8aca97e23e06d8f2162c46a3183daf7d50e2521d1b96149b510917adacf",
+    "backend": {
+      "requested": "torch",
+      "available": "cpu, PyTorch 2.15.0+cpu",
+      "notes": []
+    },
+    "evaluationFolds": 8,
+    "folds": [
+      {
+        "fold": {
+          "train": {
+            "from": 1503020640000,
+            "through": 1510796640000
+          },
+          "stopping": {
+            "from": 1510800240000,
+            "through": 1513392240000
+          },
+          "calibration": {
+            "from": 1513395840000,
+            "through": 1515987840000
+          },
+          "evaluation": {
+            "from": 1515991440000,
+            "through": 1518583440000
+          }
+        },
+        "evaluationEpisodes": 100,
+        "treesLogLoss": 0.7042836171553456,
+        "smoothLogLoss": 0.8480192313785372,
+        "treesBrier": 0.49147467183712584,
+        "smoothBrier": 0.5621922712800075,
+        "smoothMinusTreesLoss": 0.1437356142231916
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1537580640000,
+            "through": 1545356640000
+          },
+          "stopping": {
+            "from": 1545360240000,
+            "through": 1547952240000
+          },
+          "calibration": {
+            "from": 1547955840000,
+            "through": 1550547840000
+          },
+          "evaluation": {
+            "from": 1550551440000,
+            "through": 1553143440000
+          }
+        },
+        "evaluationEpisodes": 180,
+        "treesLogLoss": 0.8146751164326609,
+        "smoothLogLoss": 0.833972743456052,
+        "treesBrier": 0.5219937708465023,
+        "smoothBrier": 0.5226581177474017,
+        "smoothMinusTreesLoss": 0.019297627023391106
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1572140640000,
+            "through": 1579916640000
+          },
+          "stopping": {
+            "from": 1579920240000,
+            "through": 1582512240000
+          },
+          "calibration": {
+            "from": 1582515840000,
+            "through": 1585107840000
+          },
+          "evaluation": {
+            "from": 1585111440000,
+            "through": 1587703440000
+          }
+        },
+        "evaluationEpisodes": 240,
+        "treesLogLoss": 0.9383533052648538,
+        "smoothLogLoss": 0.9722169490730881,
+        "treesBrier": 0.5332698331960556,
+        "smoothBrier": 0.5332347018486032,
+        "smoothMinusTreesLoss": 0.033863643808234256
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1606700640000,
+            "through": 1614476640000
+          },
+          "stopping": {
+            "from": 1614480240000,
+            "through": 1617072240000
+          },
+          "calibration": {
+            "from": 1617075840000,
+            "through": 1619667840000
+          },
+          "evaluation": {
+            "from": 1619671440000,
+            "through": 1622263440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.9108848665420309,
+        "smoothLogLoss": 1.171733560388879,
+        "treesBrier": 0.5265357913131307,
+        "smoothBrier": 0.5712533372645716,
+        "smoothMinusTreesLoss": 0.26084869384684806
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1641260640000,
+            "through": 1649036640000
+          },
+          "stopping": {
+            "from": 1649040240000,
+            "through": 1651632240000
+          },
+          "calibration": {
+            "from": 1651635840000,
+            "through": 1654227840000
+          },
+          "evaluation": {
+            "from": 1654231440000,
+            "through": 1656823440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.7299359298062177,
+        "smoothLogLoss": 1.3215569600372723,
+        "treesBrier": 0.5059792928123942,
+        "smoothBrier": 0.8268447403329942,
+        "smoothMinusTreesLoss": 0.5916210302310546
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1675820640000,
+            "through": 1683596640000
+          },
+          "stopping": {
+            "from": 1683600240000,
+            "through": 1686192240000
+          },
+          "calibration": {
+            "from": 1686195840000,
+            "through": 1688787840000
+          },
+          "evaluation": {
+            "from": 1688791440000,
+            "through": 1691383440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.7807385853531496,
+        "smoothLogLoss": 0.7585330747304524,
+        "treesBrier": 0.5534423532137452,
+        "smoothBrier": 0.516326854303578,
+        "smoothMinusTreesLoss": -0.022205510622697155
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1710380640000,
+            "through": 1718156640000
+          },
+          "stopping": {
+            "from": 1718160240000,
+            "through": 1720752240000
+          },
+          "calibration": {
+            "from": 1720755840000,
+            "through": 1723347840000
+          },
+          "evaluation": {
+            "from": 1723351440000,
+            "through": 1725943440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.8222767239171889,
+        "smoothLogLoss": 0.8644934165568039,
+        "treesBrier": 0.5128806852703938,
+        "smoothBrier": 0.5199183950668206,
+        "smoothMinusTreesLoss": 0.04221669263961503
+      },
+      {
+        "fold": {
+          "train": {
+            "from": 1744940640000,
+            "through": 1752716640000
+          },
+          "stopping": {
+            "from": 1752720240000,
+            "through": 1755312240000
+          },
+          "calibration": {
+            "from": 1755315840000,
+            "through": 1757907840000
+          },
+          "evaluation": {
+            "from": 1757911440000,
+            "through": 1760503440000
+          }
+        },
+        "evaluationEpisodes": 300,
+        "treesLogLoss": 0.6984336354745511,
+        "smoothLogLoss": 0.6989554662983903,
+        "treesBrier": 0.5000330236032746,
+        "smoothBrier": 0.5000553665002463,
+        "smoothMinusTreesLoss": 0.0005218308238392755
+      }
+    ],
+    "weeklyEvidenceAgainstSameFamilyGeometryBaseline": {
+      "blocks": 41,
+      "pairedLogLossGain": {
+        "mean": -0.1765043595866534,
+        "lo": -0.27625659018475557,
+        "hi": -0.09104485758962767
+      },
+      "interpretation": "Exploratory weekly-block diagnostics against the geometry baseline; not full-parent ablation or a multiple-testing-controlled promotion gate."
+    },
+    "selectedFamily": null,
+    "liveEntryAllowed": false,
+    "interpretation": "Smooth full-context candidate was generally worse on this fixed exploratory comparison. Neither family establishes predictive/economic qualification."
+  },
+  "coreMerge": {
+    "pullRequest": 306,
+    "commit": "23c46d4b4b5f9445e365eeccff2b012699574995",
+    "pushAutomationSuppressed": true,
+    "lightsailDeployTriggered": false,
+    "trainerReleasePublished": false,
+    "lastLightsailDeployRunUnchanged": 42498822979
+  },
+  "latestTargetedValidation": {
+    "typecheck": "passed",
+    "tests": 16,
+    "passed": 16,
+    "failed": 0,
+    "skipped": 0,
+    "scope": "Product and SNN freshness tests after observer sampling; sparse snapshots and final network checkpoint match the full observer replay",
+    "earlierFreshnessAndNativeTapeParityBatch": {
+      "tests": 28,
+      "passed": 28,
+      "failed": 0,
+      "skipped": 0,
+      "scope": "Product, exact-contract data, observed-price freshness, native crypto/perps tape parity and tournament ranking"
+    }
+  },
+  "initialBoundedRecordingStudy": {
+    "run": 42549662484,
+    "commit": "064b38e4910eff3695615342cedde647e145665c",
+    "status": "success",
+    "artifact": {
+      "name": "atlas-recording-study",
+      "id": 13645636869,
+      "sha256": "f5750b40aae0625c104c7609aeb2b4efdabe673275913df99aec1af7316af1fd",
+      "expiresAt": "2027-02-07T02:12:50Z"
+    },
+    "summarySha256": "a38c649301291c97c39f08acc6e4c62bc9b50199491945f5c852f94d4a76d89f",
+    "prefixHours": 14.580981666666666,
+    "sourceRun": 42543176283,
+    "events": 105519127,
+    "dataset": {
+      "observations": 4752,
+      "complete": 3876,
+      "withheld": 0,
+      "pending": 108,
+      "missing": 768,
+      "disagreement": 0
+    },
+    "variants": [
+      {
+        "variant": "S5",
+        "missingSnn": 72,
+        "dataset": {
+          "observations": 4680,
+          "complete": 3804,
+          "withheld": 0,
+          "pending": 108,
+          "missing": 768,
+          "disagreement": 0
+        },
+        "status": "research-fit",
+        "blockers": [
+          "One or more conditional heads lack independent beta calibration evidence",
+          "Locked model lacks independent weekly predictive gain",
+          "Locked model lacks independent weekly fee-net gain under the fixed quote policy",
+          "Insufficient confirmed settlement events or executable quote examples",
+          "No independently audited calibration group has sufficient coverage"
+        ],
+        "productId": "68a72b43a7dbe6cd1ccefe2d9261bb99382aac94844fc3c573bdc092d4eae3e9"
+      },
+      {
+        "variant": "S6",
+        "missingSnn": 72,
+        "dataset": {
+          "observations": 4680,
+          "complete": 3804,
+          "withheld": 0,
+          "pending": 108,
+          "missing": 768,
+          "disagreement": 0
+        },
+        "status": "research-fit",
+        "blockers": [
+          "One or more conditional heads lack independent beta calibration evidence",
+          "Locked model lacks independent weekly predictive gain",
+          "Locked model lacks independent weekly fee-net gain under the fixed quote policy",
+          "Insufficient confirmed settlement events or executable quote examples",
+          "No independently audited calibration group has sufficient coverage"
+        ],
+        "productId": "af3ab03c8c57fdda09e2a7aabbcd79e847ed2a6fbca62cd83172755e1444d9bc"
+      }
+    ],
+    "replayReports": [
+      {
+        "variant": "S5",
+        "studyPolicyId": "prospective-2026-11-09-v1",
+        "domain": "crypto",
+        "inputLagMs": 1000,
+        "maximumInputGapMs": 3000,
+        "maximumInputPriceAgeMs": 3000,
+        "sourceSha256": "128270a6086d845e3a59d48051d8c06cd85e37f792fe6bdea4de4849cf4099a4",
+        "firstAt": 1792627201000,
+        "lastAt": 1794022321000,
+        "learnedThrough": 1792634957000,
+        "snapshots": 52152,
+        "unavailableSnapshots": 60,
+        "unavailableColumnResets": 330,
+        "gaps": 23,
+        "gapResets": 32,
+        "version": "86fda74db3429dac",
+        "checkpointSha256": "e0b4dc0a9be2d11037b8574097a37cc0ecce981950fbb4c04317212dfe58e707",
+        "semantics": "Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff"
+      },
+      {
+        "variant": "S6",
+        "studyPolicyId": "prospective-2026-11-09-v1",
+        "domain": "crypto",
+        "inputLagMs": 1000,
+        "maximumInputGapMs": 3000,
+        "maximumInputPriceAgeMs": 3000,
+        "sourceSha256": "128270a6086d845e3a59d48051d8c06cd85e37f792fe6bdea4de4849cf4099a4",
+        "firstAt": 1792627201000,
+        "lastAt": 1794022321000,
+        "learnedThrough": 1792634957000,
+        "snapshots": 52152,
+        "unavailableSnapshots": 60,
+        "unavailableColumnResets": 330,
+        "gaps": 23,
+        "gapResets": 32,
+        "version": "f45d2b3ec93b3b1d",
+        "checkpointSha256": "ff0d515d02983392461e386a5528ce98286161ee6aaa95e20812fa4d0bfcfb37",
+        "semantics": "Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff"
+      },
+      {
+        "variant": "S5",
+        "studyPolicyId": "prospective-2026-11-09-v1",
+        "domain": "perps",
+        "inputLagMs": 1000,
+        "maximumInputGapMs": 3000,
+        "maximumInputPriceAgeMs": 3000,
+        "sourceSha256": "bb4744af5fdeae8d454285be82dfe7df7dcbbf26988b633f101da03358c84868",
+        "firstAt": 1792627201000,
+        "lastAt": 1794022321000,
+        "learnedThrough": 1792634957000,
+        "snapshots": 52152,
+        "unavailableSnapshots": 60,
+        "unavailableColumnResets": 330,
+        "gaps": 23,
+        "gapResets": 32,
+        "version": "aafaf1d00e22bf50",
+        "checkpointSha256": "41cd1c915c71898343fcded06dc3e15fa2d21a2e024441c4cf5f84c6e15f6c7e",
+        "semantics": "Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff"
+      },
+      {
+        "variant": "S6",
+        "studyPolicyId": "prospective-2026-11-09-v1",
+        "domain": "perps",
+        "inputLagMs": 1000,
+        "maximumInputGapMs": 3000,
+        "maximumInputPriceAgeMs": 3000,
+        "sourceSha256": "bb4744af5fdeae8d454285be82dfe7df7dcbbf26988b633f101da03358c84868",
+        "firstAt": 1792627201000,
+        "lastAt": 1794022321000,
+        "learnedThrough": 1792634957000,
+        "snapshots": 52152,
+        "unavailableSnapshots": 60,
+        "unavailableColumnResets": 330,
+        "gaps": 23,
+        "gapResets": 32,
+        "version": "98a434543dc60ba4",
+        "checkpointSha256": "b96ba383ffacfb2369d5f28b4587092d2fff95112f68856ce6aa281a687e3cbd",
+        "semantics": "Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff"
+      }
+    ],
+    "products": [
+      {
+        "name": "base",
+        "productId": "f545c8fe503291810fb0431f6109a6252920de025bee6345bb42bc6a395cca7e",
+        "sha256": "11a5eec131681dcecbadfb7ca02999ff8e76cb56d4e39761370effe6ffbed4d9",
+        "selectedModelId": "5d83308c7d72440b95991f7d761a92912f9ac8d932613001b2b94c6d9871b8e4",
+        "selectedFamily": "smooth",
+        "selectedGroups": [],
+        "status": "research-fit",
+        "retention": [
+          {
+            "group": "ta",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "dominance",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "clock",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "micro",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "daily",
+            "decision": "insufficient-evidence"
+          }
+        ],
+        "audit": {
+          "predictive": {
+            "rows": 48,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "rows": 48,
+          "confirmedResults": 0,
+          "quoteRows": 0
+        },
+        "conditionalHeads": {
+          "move": {
+            "kind": "prior",
+            "trainingEvents": 19,
+            "calibrationFitted": true
+          },
+          "paysGivenMove": {
+            "kind": "prior",
+            "trainingEvents": 15,
+            "calibrationFitted": false
+          },
+          "paysGivenNoMove": {
+            "kind": "prior",
+            "trainingEvents": 19,
+            "calibrationFitted": true
+          }
+        },
+        "examplesSha256": "2e108063a750e98e9a2bfda2029a34ebcdb80445b8b827a573dd2b3ca9c9da82"
+      },
+      {
+        "name": "S5",
+        "productId": "68a72b43a7dbe6cd1ccefe2d9261bb99382aac94844fc3c573bdc092d4eae3e9",
+        "sha256": "1ba3e6946d50ec70ab636f2552fc597cd330939b720f2a3116c103f32ba71fdf",
+        "selectedModelId": "7e433b345344d755933305c69da749b19e5b4e4f4283e20152e9bae9fa2ec85a",
+        "selectedFamily": "smooth",
+        "selectedGroups": [],
+        "status": "research-fit",
+        "retention": [
+          {
+            "group": "ta",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "snn",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "dominance",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "clock",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "micro",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "daily",
+            "decision": "insufficient-evidence"
+          }
+        ],
+        "audit": {
+          "predictive": {
+            "rows": 48,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "rows": 48,
+          "confirmedResults": 0,
+          "quoteRows": 0
+        },
+        "conditionalHeads": {
+          "move": {
+            "kind": "prior",
+            "trainingEvents": 19,
+            "calibrationFitted": true
+          },
+          "paysGivenMove": {
+            "kind": "prior",
+            "trainingEvents": 15,
+            "calibrationFitted": false
+          },
+          "paysGivenNoMove": {
+            "kind": "prior",
+            "trainingEvents": 19,
+            "calibrationFitted": true
+          }
+        },
+        "examplesSha256": "3fef7f35b28f301abfc7efaa3558b48a56a9e9e44bc1dafef42d71f99fee0ab9"
+      },
+      {
+        "name": "S6",
+        "productId": "af3ab03c8c57fdda09e2a7aabbcd79e847ed2a6fbca62cd83172755e1444d9bc",
+        "sha256": "459306d64c4898f84d213a6c771b580f5a43eb881a0b0bae2fffcd003b85aa36",
+        "selectedModelId": "7e433b345344d755933305c69da749b19e5b4e4f4283e20152e9bae9fa2ec85a",
+        "selectedFamily": "smooth",
+        "selectedGroups": [],
+        "status": "research-fit",
+        "retention": [
+          {
+            "group": "ta",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "snn",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "dominance",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "clock",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "micro",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "daily",
+            "decision": "insufficient-evidence"
+          }
+        ],
+        "audit": {
+          "predictive": {
+            "rows": 48,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "rows": 48,
+          "confirmedResults": 0,
+          "quoteRows": 0
+        },
+        "conditionalHeads": {
+          "move": {
+            "kind": "prior",
+            "trainingEvents": 19,
+            "calibrationFitted": true
+          },
+          "paysGivenMove": {
+            "kind": "prior",
+            "trainingEvents": 15,
+            "calibrationFitted": false
+          },
+          "paysGivenNoMove": {
+            "kind": "prior",
+            "trainingEvents": 19,
+            "calibrationFitted": true
+          }
+        },
+        "examplesSha256": "d2ae41493298e9e9bfe3f6970e84df6bc811fbbd3d3f5f72802a8473ba3a9ff7"
+      }
+    ],
+    "statesValidatedWithCurrentCode": [
+      {
+        "variant": "S5",
+        "count": 129,
+        "firstAt": 1792627885000,
+        "lastAt": 1794021961000,
+        "missingColumns": 0
+      },
+      {
+        "variant": "S6",
+        "count": 129,
+        "firstAt": 1792627885000,
+        "lastAt": 1794021961000,
+        "missingColumns": 0
+      }
+    ],
+    "comparison": {
+      "schema": "opportunity-snn-comparison-v1",
+      "studyIds": {
+        "S5": "663313878f848cfce09df6ac5264cec60e878b960271eeec60212cf18e089497",
+        "S6": "d4b9bd825996822031da92bd6d4c460c1ca452a45b35356f81d276c831afa3a5"
+      },
+      "modelIds": {
+        "S5": "7e433b345344d755933305c69da749b19e5b4e4f4283e20152e9bae9fa2ec85a",
+        "S6": "7e433b345344d755933305c69da749b19e5b4e4f4283e20152e9bae9fa2ec85a"
+      },
+      "inputIds": {
+        "S5": "a682648c1ad341ccf53ddec735c0c0daecb23c8de89911a094bf3a26a87b6bc1",
+        "S6": "99ca635ff3916e2897fcbf9a59ff55e46289bafc87c5c5e8d0f1d20b2a4960e3"
+      },
+      "recommended": "none",
+      "rows": 48,
+      "tests": [
+        {
+          "contrast": "S5-vs-simple",
+          "predictive": {
+            "rows": 48,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "accepted": false
+        },
+        {
+          "contrast": "S6-vs-simple",
+          "predictive": {
+            "rows": 48,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "accepted": false
+        },
+        {
+          "contrast": "S6-vs-S5",
+          "predictive": {
+            "rows": 48,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "accepted": false
+        }
+      ],
+      "knownAt": 1794009600000,
+      "researchOnly": true,
+      "liveEntryAllowed": false,
+      "id": "6b9c62c670203d5699b9ecdfb86039f4076ace161f71d9e011067633dc9a6f7a"
+    },
+    "paperShadow": {
+      "statuses": {
+        "unsupported": 1068,
+        "unqualified": 12
+      },
+      "actions": {
+        "abstain": 1080
+      },
+      "rows": 1080,
+      "forecasts": 12,
+      "forwardRows": 0
+    },
+    "currentRegistryValidatedAllProducts": true,
+    "changedSourceSinceRun": [
+      "research/opportunity/runRecordingStudy.ts",
+      "research/opportunity/snnReplay.ts"
+    ],
+    "sourceChangeScope": "Observer-only sampling, with state and final checkpoint parity verified; model/label/registry source hashes match",
+    "interpretation": "Successful engineering path, not learned contract relationship or profit evidence. Distinct training settlement events are below the fixed 20-event minimum, so contract heads remain prior fallbacks. All relationships have zero retained influence. Audit spans one week with no executable quotes or confirmed results; all historical paper queries abstain.",
+    "liveEntryAllowed": false,
+    "autoPromote": false,
+    "sampleCoverage": {
+      "completeDistinctAssetSettlementEvents": 154,
+      "confirmedOutcomeRows": 156,
+      "confirmedDistinctContracts": 12,
+      "confirmedDistinctAssetSettlementEvents": 7,
+      "quoteRows": 0,
+      "supportedAuditQuoteRows": 0,
+      "supportedAuditConfirmedEvents": 0
+    }
+  },
+  "expandedBoundedRecordingStudy": {
+    "run": 42568366333,
+    "commit": "2f894b7235e8b1a4a9d2d60db484412f55f62a24",
+    "status": "success",
+    "artifact": {
+      "name": "atlas-recording-study",
+      "id": 13653876879,
+      "sha256": "a2cfc86816b2355ac8d620cda4250123cd9eb265f2015f9c62ba35e3e82c0be9",
+      "expiresAt": "2027-02-07T05:37:22Z"
+    },
+    "summarySha256": "4e30194c2529af7a0bd133487503cf6362d1a3c5e28749164020c85ed84688e5",
+    "sourceRun": 42543176283,
+    "additionalFixedTrainingDays": [
+      "2026-10-24",
+      "2026-10-27"
+    ],
+    "hyperparametersUnchanged": true,
+    "auditAndFinalWindowsUnchanged": true,
+    "prefixHours": 19.992503055555556,
+    "events": 140129400,
+    "aggregateInputSha256": "c1aa2a3595c63d2a8a2fcd65966552175e1fdcf2c5869357f014605305e1b562",
+    "dataset": {
+      "observations": 6480,
+      "complete": 5340,
+      "withheld": 0,
+      "pending": 108,
+      "missing": 1032,
+      "disagreement": 0
+    },
+    "sampleCoverage": {
+      "completeDistinctAssetSettlementEvents": 201,
+      "confirmedOutcomeRows": 156,
+      "confirmedDistinctContracts": 12,
+      "confirmedDistinctAssetSettlementEvents": 7,
+      "quoteRows": 0,
+      "supportedAuditQuoteRows": 0,
+      "supportedAuditConfirmedEvents": 2
+    },
+    "variants": [
+      {
+        "variant": "S5",
+        "missingSnn": 144,
+        "dataset": {
+          "observations": 6336,
+          "complete": 5244,
+          "withheld": 0,
+          "pending": 108,
+          "missing": 984,
+          "disagreement": 0
+        },
+        "status": "research-fit",
+        "blockers": [
+          "One or more conditional heads lack independent beta calibration evidence",
+          "Locked model lacks independent weekly predictive gain",
+          "Locked model lacks independent weekly fee-net gain under the fixed quote policy",
+          "Insufficient confirmed settlement events or executable quote examples",
+          "No independently audited calibration group has sufficient coverage"
+        ],
+        "productId": "bd8f1136bc7c17780d0de9b026518726e7e8c6d552d4144eb6cbdba1a3825fed"
+      },
+      {
+        "variant": "S6",
+        "missingSnn": 144,
+        "dataset": {
+          "observations": 6336,
+          "complete": 5244,
+          "withheld": 0,
+          "pending": 108,
+          "missing": 984,
+          "disagreement": 0
+        },
+        "status": "research-fit",
+        "blockers": [
+          "One or more conditional heads lack independent beta calibration evidence",
+          "Locked model lacks independent weekly predictive gain",
+          "Locked model lacks independent weekly fee-net gain under the fixed quote policy",
+          "Insufficient confirmed settlement events or executable quote examples",
+          "No independently audited calibration group has sufficient coverage"
+        ],
+        "productId": "9e1b570e023eef05085fb15e410bc7f36753461b90cb4dae070203937b4c3f7a"
+      }
+    ],
+    "replayReports": [
+      {
+        "variant": "S5",
+        "studyPolicyId": "prospective-2026-11-09-v1",
+        "domain": "crypto",
+        "inputLagMs": 1000,
+        "maximumInputGapMs": 3000,
+        "maximumInputPriceAgeMs": 3000,
+        "sourceSha256": "c9569cca7c4d7e5baaeb5b4418842142d4675d3ed24132688b2d48323f81584c",
+        "firstAt": 1792627201000,
+        "lastAt": 1794022321000,
+        "learnedThrough": 1793067261000,
+        "snapshots": 175,
+        "requestedCaptureInstants": 178,
+        "unavailableSnapshots": 3,
+        "unavailableColumnResets": 470,
+        "gaps": 33,
+        "gapResets": 43,
+        "version": "86fda74db3429dac",
+        "checkpointSha256": "f373dc1d4a91c8aa8fcd8801a7e3819e7d8ec02a6c55ce915f2b7e53875ee9b8",
+        "semantics": "Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff"
+      },
+      {
+        "variant": "S6",
+        "studyPolicyId": "prospective-2026-11-09-v1",
+        "domain": "crypto",
+        "inputLagMs": 1000,
+        "maximumInputGapMs": 3000,
+        "maximumInputPriceAgeMs": 3000,
+        "sourceSha256": "c9569cca7c4d7e5baaeb5b4418842142d4675d3ed24132688b2d48323f81584c",
+        "firstAt": 1792627201000,
+        "lastAt": 1794022321000,
+        "learnedThrough": 1793067261000,
+        "snapshots": 175,
+        "requestedCaptureInstants": 178,
+        "unavailableSnapshots": 3,
+        "unavailableColumnResets": 470,
+        "gaps": 33,
+        "gapResets": 43,
+        "version": "f45d2b3ec93b3b1d",
+        "checkpointSha256": "32dc1b56a2c83fb22da32b4b6e0289bd2021f4f56314fc7a3b19d5fd855d4b38",
+        "semantics": "Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff"
+      },
+      {
+        "variant": "S5",
+        "studyPolicyId": "prospective-2026-11-09-v1",
+        "domain": "perps",
+        "inputLagMs": 1000,
+        "maximumInputGapMs": 3000,
+        "maximumInputPriceAgeMs": 3000,
+        "sourceSha256": "bed12bad1f3bdd98e8e27bd6b016aa80bf009ea9ff3af4448d008924fb63bcd0",
+        "firstAt": 1792627201000,
+        "lastAt": 1794022321000,
+        "learnedThrough": 1793067261000,
+        "snapshots": 175,
+        "requestedCaptureInstants": 178,
+        "unavailableSnapshots": 3,
+        "unavailableColumnResets": 470,
+        "gaps": 33,
+        "gapResets": 43,
+        "version": "aafaf1d00e22bf50",
+        "checkpointSha256": "e33fd2237b279ef10d705884563676cd85a623a93ddf4bbf38b62fb36f331144",
+        "semantics": "Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff"
+      },
+      {
+        "variant": "S6",
+        "studyPolicyId": "prospective-2026-11-09-v1",
+        "domain": "perps",
+        "inputLagMs": 1000,
+        "maximumInputGapMs": 3000,
+        "maximumInputPriceAgeMs": 3000,
+        "sourceSha256": "bed12bad1f3bdd98e8e27bd6b016aa80bf009ea9ff3af4448d008924fb63bcd0",
+        "firstAt": 1792627201000,
+        "lastAt": 1794022321000,
+        "learnedThrough": 1793067261000,
+        "snapshots": 175,
+        "requestedCaptureInstants": 178,
+        "unavailableSnapshots": 3,
+        "unavailableColumnResets": 470,
+        "gaps": 33,
+        "gapResets": 43,
+        "version": "98a434543dc60ba4",
+        "checkpointSha256": "77d49a48ad8ff3309a3c6ccd6c4967165fd3c7d156604d4456e66e6ec4170a2f",
+        "semantics": "Observed input calls with bounded holds; longer gaps clear transients, inputs and pending labels while preserving weights; no invented ticks; learning frozen at declared cutoff"
+      }
+    ],
+    "products": [
+      {
+        "name": "base",
+        "productId": "a465330310a2b42c68adcd6e61035f85aa8af204181887dffa7c572b256c309f",
+        "sha256": "3765bd99789bfac5354bd2e79d995f5b256f4c26f7e6a105e4c4d00f5443e2ee",
+        "selectedModelId": "7e6fe75de37b4e989ec4c760373b30afe51ef5b8009ce1287ecbee4e71639e1f",
+        "selectedFamily": "trees",
+        "selectedGroups": [],
+        "status": "research-fit",
+        "retention": [
+          {
+            "group": "ta",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "dominance",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "clock",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "micro",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "daily",
+            "decision": "insufficient-evidence"
+          }
+        ],
+        "audit": {
+          "predictive": {
+            "rows": 144,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "rows": 144,
+          "confirmedResults": 2,
+          "quoteRows": 0
+        },
+        "conditionalHeads": {
+          "move": {
+            "kind": "trees",
+            "trainingEvents": 66,
+            "calibrationFitted": true
+          },
+          "paysGivenMove": {
+            "kind": "trees",
+            "trainingEvents": 46,
+            "calibrationFitted": false
+          },
+          "paysGivenNoMove": {
+            "kind": "trees",
+            "trainingEvents": 66,
+            "calibrationFitted": true
+          }
+        },
+        "fullContextCandidates": [
+          {
+            "family": "smooth",
+            "included": [
+              "ta",
+              "dominance",
+              "clock",
+              "micro",
+              "daily"
+            ],
+            "selectionRows": 96,
+            "selectionLogLoss": 1.2458173766586769,
+            "headKinds": {
+              "move": "smooth",
+              "paysGivenMove": "smooth",
+              "paysGivenNoMove": "smooth"
+            }
+          },
+          {
+            "family": "trees",
+            "included": [
+              "ta",
+              "dominance",
+              "clock",
+              "micro",
+              "daily"
+            ],
+            "selectionRows": 96,
+            "selectionLogLoss": 0.837282214913046,
+            "headKinds": {
+              "move": "trees",
+              "paysGivenMove": "trees",
+              "paysGivenNoMove": "trees"
+            }
+          },
+          {
+            "family": "temporal-linear",
+            "included": [
+              "ta",
+              "dominance",
+              "clock",
+              "micro",
+              "daily"
+            ],
+            "selectionRows": 96,
+            "selectionLogLoss": 1.4038095575489062,
+            "headKinds": {
+              "move": "smooth",
+              "paysGivenMove": "smooth",
+              "paysGivenNoMove": "smooth"
+            }
+          }
+        ],
+        "examplesSha256": "e03b969c07ce33ec960c0281d11d3c1b82d6cd0847bef3d51ecf50a4eb831482"
+      },
+      {
+        "name": "S5",
+        "productId": "bd8f1136bc7c17780d0de9b026518726e7e8c6d552d4144eb6cbdba1a3825fed",
+        "sha256": "1a1bb8a35da482e053d7dfca94c5abe9aefa551a78060d52d1b011123200fbf1",
+        "selectedModelId": "78ba147c80ed7813e914acffad147613a73220d58e014b5eb0c9fc6b4bdd67cd",
+        "selectedFamily": "trees",
+        "selectedGroups": [],
+        "status": "research-fit",
+        "retention": [
+          {
+            "group": "ta",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "snn",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "dominance",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "clock",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "micro",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "daily",
+            "decision": "insufficient-evidence"
+          }
+        ],
+        "audit": {
+          "predictive": {
+            "rows": 144,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "rows": 144,
+          "confirmedResults": 2,
+          "quoteRows": 0
+        },
+        "conditionalHeads": {
+          "move": {
+            "kind": "trees",
+            "trainingEvents": 64,
+            "calibrationFitted": true
+          },
+          "paysGivenMove": {
+            "kind": "trees",
+            "trainingEvents": 46,
+            "calibrationFitted": false
+          },
+          "paysGivenNoMove": {
+            "kind": "trees",
+            "trainingEvents": 64,
+            "calibrationFitted": true
+          }
+        },
+        "fullContextCandidates": [
+          {
+            "family": "smooth",
+            "included": [
+              "ta",
+              "snn",
+              "dominance",
+              "clock",
+              "micro",
+              "daily"
+            ],
+            "selectionRows": 96,
+            "selectionLogLoss": 1.2591724952946433,
+            "headKinds": {
+              "move": "smooth",
+              "paysGivenMove": "smooth",
+              "paysGivenNoMove": "smooth"
+            }
+          },
+          {
+            "family": "trees",
+            "included": [
+              "ta",
+              "snn",
+              "dominance",
+              "clock",
+              "micro",
+              "daily"
+            ],
+            "selectionRows": 96,
+            "selectionLogLoss": 1.057072366299908,
+            "headKinds": {
+              "move": "trees",
+              "paysGivenMove": "trees",
+              "paysGivenNoMove": "trees"
+            }
+          },
+          {
+            "family": "temporal-linear",
+            "included": [
+              "ta",
+              "snn",
+              "dominance",
+              "clock",
+              "micro",
+              "daily"
+            ],
+            "selectionRows": 96,
+            "selectionLogLoss": 11.486534260770773,
+            "headKinds": {
+              "move": "smooth",
+              "paysGivenMove": "smooth",
+              "paysGivenNoMove": "smooth"
+            }
+          }
+        ],
+        "examplesSha256": "3f8bcee9400cc38616072f0ba4312eb57b10499fe92359ced0cc8eab1ad00be2"
+      },
+      {
+        "name": "S6",
+        "productId": "9e1b570e023eef05085fb15e410bc7f36753461b90cb4dae070203937b4c3f7a",
+        "sha256": "a0cb10b08a99ccb975c9760960a6564de2a3804cc48ed1d32f7bbe0887dc0bc6",
+        "selectedModelId": "78ba147c80ed7813e914acffad147613a73220d58e014b5eb0c9fc6b4bdd67cd",
+        "selectedFamily": "trees",
+        "selectedGroups": [],
+        "status": "research-fit",
+        "retention": [
+          {
+            "group": "ta",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "snn",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "dominance",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "clock",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "micro",
+            "decision": "insufficient-evidence"
+          },
+          {
+            "group": "daily",
+            "decision": "insufficient-evidence"
+          }
+        ],
+        "audit": {
+          "predictive": {
+            "rows": 144,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "rows": 144,
+          "confirmedResults": 2,
+          "quoteRows": 0
+        },
+        "conditionalHeads": {
+          "move": {
+            "kind": "trees",
+            "trainingEvents": 64,
+            "calibrationFitted": true
+          },
+          "paysGivenMove": {
+            "kind": "trees",
+            "trainingEvents": 46,
+            "calibrationFitted": false
+          },
+          "paysGivenNoMove": {
+            "kind": "trees",
+            "trainingEvents": 64,
+            "calibrationFitted": true
+          }
+        },
+        "fullContextCandidates": [
+          {
+            "family": "smooth",
+            "included": [
+              "ta",
+              "snn",
+              "dominance",
+              "clock",
+              "micro",
+              "daily"
+            ],
+            "selectionRows": 96,
+            "selectionLogLoss": 1.259173169767284,
+            "headKinds": {
+              "move": "smooth",
+              "paysGivenMove": "smooth",
+              "paysGivenNoMove": "smooth"
+            }
+          },
+          {
+            "family": "trees",
+            "included": [
+              "ta",
+              "snn",
+              "dominance",
+              "clock",
+              "micro",
+              "daily"
+            ],
+            "selectionRows": 96,
+            "selectionLogLoss": 0.8542450811208605,
+            "headKinds": {
+              "move": "trees",
+              "paysGivenMove": "trees",
+              "paysGivenNoMove": "trees"
+            }
+          },
+          {
+            "family": "temporal-linear",
+            "included": [
+              "ta",
+              "snn",
+              "dominance",
+              "clock",
+              "micro",
+              "daily"
+            ],
+            "selectionRows": 96,
+            "selectionLogLoss": 6.934346493184084,
+            "headKinds": {
+              "move": "smooth",
+              "paysGivenMove": "smooth",
+              "paysGivenNoMove": "smooth"
+            }
+          }
+        ],
+        "examplesSha256": "6f6b47ee60920f8cdedf5a2856e61e7907ace4dd18df2763e9c3c7074a715c60"
+      }
+    ],
+    "statesValidatedWithCurrentCode": [
+      {
+        "variant": "S5",
+        "count": 175,
+        "firstAt": 1792627885000,
+        "lastAt": 1794021961000,
+        "missingColumns": 0
+      },
+      {
+        "variant": "S6",
+        "count": 175,
+        "firstAt": 1792627885000,
+        "lastAt": 1794021961000,
+        "missingColumns": 0
+      }
+    ],
+    "comparison": {
+      "schema": "opportunity-snn-comparison-v1",
+      "studyIds": {
+        "S5": "c6615997e0853c93b605d8b69fb716841d42a5cc8512c4528890022c2980d3e2",
+        "S6": "42da3f48fa19dff539ef69c8ca2969365bbfcb62e7302fa5d03c74664757a45b"
+      },
+      "modelIds": {
+        "S5": "78ba147c80ed7813e914acffad147613a73220d58e014b5eb0c9fc6b4bdd67cd",
+        "S6": "78ba147c80ed7813e914acffad147613a73220d58e014b5eb0c9fc6b4bdd67cd"
+      },
+      "inputIds": {
+        "S5": "9122b8f37131aed0561d327f175cd4d11a476363286f6f46f832d68dbd791086",
+        "S6": "0a5025145d16b24797a9ea345f23ee8008a26fe5c01120223b43e3fedad6a43b"
+      },
+      "recommended": "none",
+      "rows": 144,
+      "tests": [
+        {
+          "contrast": "S5-vs-simple",
+          "predictive": {
+            "rows": 144,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "accepted": false
+        },
+        {
+          "contrast": "S6-vs-simple",
+          "predictive": {
+            "rows": 144,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "accepted": false
+        },
+        {
+          "contrast": "S6-vs-S5",
+          "predictive": {
+            "rows": 144,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "economic": {
+            "rows": 0,
+            "weeks": 0,
+            "gain": null,
+            "p": null
+          },
+          "accepted": false
+        }
+      ],
+      "knownAt": 1794009600000,
+      "researchOnly": true,
+      "liveEntryAllowed": false,
+      "id": "7bb0330a2e27585ca96693d396f91c7df1543ab86fae35522d54eb2b30610cf6"
+    },
+    "paperShadow": {
+      "statuses": {
+        "unsupported": 648,
+        "unqualified": 432
+      },
+      "actions": {
+        "abstain": 1080
+      },
+      "rows": 1080,
+      "forecasts": 432,
+      "forwardRows": 0
+    },
+    "allModelCodeHashesMatchCurrentSource": true,
+    "finalPeriodUsedForDevelopment": false,
+    "interpretation": "Actual smooth/tree/linear conditional fits are exercised. The locked geometry-only tree heads remain unqualified: one audit week, two confirmed audit events, no executable audit quotes, and insufficient conditional calibration. No indicator or SNN group has retained influence. Every historical paper query abstains; none is forward evidence.",
+    "liveEntryAllowed": false,
+    "autoPromote": false
   }
 }

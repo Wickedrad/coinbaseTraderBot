@@ -1,5 +1,11 @@
 # Codex handoff: rebuild the historical learning pipeline toward conditional price-path intelligence
 
+Current implementation and validation are described in
+[the operating guide](OPPORTUNITY_ATLAS_OPERATIONS.md) and
+[release acceptance](OPPORTUNITY_ATLAS_RELEASE_PLAN.md). This handoff and its
+progress notes preserve the original requirements. The owner subsequently
+authorized main merges; deployment and live enablement still require approval.
+
 Repository: `Wickedrad/coinbaseTraderBot`. Start from the latest `main` and apply the
 `opportunity_atlas_v1.patch` supplied with this handoff on a **new branch**.
 Never push or merge into `main` without explicit user review. No credentials, API keys,
@@ -292,11 +298,12 @@ movement summaries and dynamic paper position recommendations. Existing live
 modules, callers, parameters and training/promotion pipelines are preserved.
 
 The software does not manufacture missing historical inputs or validate a model
-through implementation alone. The original 2026 final period remains frozen.
-Located bot recording names are also from 2026; catalog metadata does not prove
-their contents or permit recycling their outcomes for development. Qualified
-observed-market SNN, fee-net and fill/replay evidence remains outstanding, so the
-current release must abstain from new entries. See
+through implementation alone. The original legacy study remains separately
+identified. The owner subsequently approved `prospective-2026-11-09-v1`, using
+earlier 2026 data for development and November 9 onward as a fresh holdout.
+Archived native prefixes have now been verified and processed on GitHub runners;
+their observed contract and SNN evidence remains insufficient for qualification.
+The current research products abstain from new entries. See
 [OPPORTUNITY_ATLAS_OPERATIONS.md](OPPORTUNITY_ATLAS_OPERATIONS.md) for commands,
 schemas, limits and the distinction between a complete research workflow and
 qualified production intelligence.

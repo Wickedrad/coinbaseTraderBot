@@ -14,7 +14,9 @@ import type { AssemblySpec, RecordedDecision } from './productCli';
 import type { AtlasSnnState } from './snnState';
 import { validateSnnState } from './snnState';
 import type { ContractTerms } from '../../bot/model/fairValue';
+import { isRangeTicker } from '../../bot/model/fairValue';
 import { studyPolicy } from './studyPolicy';
+import { RecordedMarketContext } from './recordingContext';
 
 export interface RecordingImportOptions {
   studyPolicyId?: string;
@@ -40,7 +42,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   if (!files.length) throw new Error('no recordings in requested dates');
   const inputs: Record<string, string> = {};
   for (const f of files) inputs[fs.realpathSync(f.file)] = await sha256File(f.file);
-  const combinedHash = digest(inputs), states = options.snnStates ?? [];
+  const combinedHash = digest(inputs), states = options.snnStates ?? [], context = new RecordedMarketContext(combinedHash);
   for (let i = 0; i < states.length; i++) {
     validateSnnState(states[i], states[i].asOf);
     if (i && (states[i].asOf < states[i - 1].asOf || states[i].version !== states[0].version || states[i].provenance.variant !== states[0].provenance.variant)) throw new Error('incompatible or unordered imported SNN states');
@@ -56,10 +58,11 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   const bookKnownAt = new Map<string, number>(), lastDecision = new Map<string, number>();
   const snapshotIntact = new Map<string, boolean>();
   const counts = { events: 0, decisions: 0, proxyOrSyntheticSkipped: 0, formingCandlesSkipped: 0,
-    staleOrMissingState: 0, lateIndexDropped: 0, finalResultsWithheld: 0 };
+    staleOrMissingState: 0, lateIndexDropped: 0, finalResultsWithheld: 0, rangeKindCanonicalized: 0 };
   const decisionsFile = path.join(staging, 'decisions.jsonl'), resultsFile = path.join(staging, 'results.jsonl');
   const decisionsFd = fs.openSync(decisionsFile, 'wx'), resultsFd = fs.openSync(resultsFile, 'wx');
-  let lastAt = 0, stoppedEarly = false, selectedThrough = 0;
+  let lastAt = 0, stoppedEarly = false, selectedThrough = 0, lastAttemptAt = -Infinity;
+  const allEventsNeedAnchor = options.events.every((event) => event.thresholdAtr || event.priorDriftAtr);
   const reported = new Map<string, string>();
   const lastAssetSample = new Map<string, number>();
   const termsAt = (m: RecMarket & { knownAt: number }, at: number): { terms: ContractTerms; knownAt: number; basis: 'recorded-contract' | 'computed-opening-index' } | null => {
@@ -74,13 +77,18 @@ export async function writeRecordingInputs(dir: string, staging: string, options
     return null;
   };
   try {
-    for await (const e of readRecordings(dir, '', options.fromDay, options.toDay, (k) => ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap'].includes(k))) {
+    for await (const e of readRecordings(dir, '', options.fromDay, options.toDay, (k) => ['market', 'index', 'candles', 'book', 'delta', 'result', 'gap', 'perp', 'dominance'].includes(k))) {
       if (!stamp(e.t) || e.t < lastAt) throw new Error('recording arrival timestamps are not ordered');
       lastAt = e.t; counts.events++;
       if (stoppedEarly && e.t > selectedThrough + 300000) break;
       if (e.hist || e.synth) { counts.proxyOrSyntheticSkipped++; continue; }
+      context.observe(e);
       if (e.k === 'market' && options.assets.includes(e.asset) && ['updown', 'greater', 'between', 'less'].includes(e.kind)) {
-        markets.set(e.ticker, { ticker: e.ticker, asset: e.asset, series: e.series, kind: e.kind, openTime: e.openTime,
+        // Older recordings label some B-range tickers as greater. Reuse ReplayState's
+        // venue ontology, requiring the actual recorded bounds in termsAt below.
+        const kind = isRangeTicker(e.ticker) ? 'between' : e.kind;
+        if (kind !== e.kind) counts.rangeKindCanonicalized++;
+        markets.set(e.ticker, { ticker: e.ticker, asset: e.asset, series: e.series, kind, openTime: e.openTime,
           closeTime: e.closeTime, strike: e.strike, cap: e.cap, tickSize: e.tickSize ?? 0.01, knownAt: e.t });
       } else if (e.k === 'index' && options.assets.includes(e.asset)) {
         if (e.src !== 'kalshi') { counts.proxyOrSyntheticSkipped++; continue; }
@@ -106,9 +114,10 @@ export async function writeRecordingInputs(dir: string, staging: string, options
         }
       } else if (e.k === 'book' || e.k === 'delta') {
         if (!markets.has(e.ticker)) continue;
-        let b = books.get(e.ticker); if (!b) { b = new OrderBook(e.ticker); books.set(e.ticker, b); }
-        if (e.k === 'book') { b.applySnapshot({ bids: e.bids ?? [], asks: e.asks ?? [] }, e.t); snapshotIntact.set(e.ticker, true); }
-        else { b.applyDelta(e.side, e.price, e.delta, e.t); snapshotIntact.set(e.ticker, false); }
+        if (e.k === 'book') {
+          let b = books.get(e.ticker); if (!b) { b = new OrderBook(e.ticker); books.set(e.ticker, b); }
+          b.applySnapshot({ bids: e.bids ?? [], asks: e.asks ?? [] }, e.t); snapshotIntact.set(e.ticker, true);
+        } else snapshotIntact.set(e.ticker, false);
         bookKnownAt.set(e.ticker, e.t);
       } else if (e.k === 'gap') {
         for (const b of books.values()) b.invalidate();
@@ -121,6 +130,13 @@ export async function writeRecordingInputs(dir: string, staging: string, options
         }
       }
       if (e.tie || e.k === 'skip') continue;
+      // Deltas make snapshots unusable for economic evidence; rebuilding a partial
+      // book cannot improve that evidence. All deltas remain in the original input
+      // for the separate native SNN replay. Only actual input arrivals or a fresh
+      // snapshot can trigger a sampled observation; bound attempts to 1 Hz.
+      if (!['market', 'index', 'candles', 'book', 'perp', 'dominance'].includes(e.k)) continue;
+      if (e.k !== 'book' && e.t - lastAttemptAt < 1000) continue;
+      lastAttemptAt = e.t;
       while (stateIndex + 1 < states.length && states[stateIndex + 1].asOf <= e.t) latestState = states[++stateIndex];
       const sampleEveryMs = options.sampleEveryMs ?? 0;
       if (sampleEveryMs && options.assets.every((asset) => e.t - (lastAssetSample.get(asset) ?? 0) < sampleEveryMs)) continue;
@@ -145,7 +161,9 @@ export async function writeRecordingInputs(dir: string, staging: string, options
             e.t - (lastDecision.get(m.ticker) ?? 0) < options.everyMs) continue;
         const idx = trackers.get(m.asset)?.fresh(e.t, 3000), minute = minutes.get(m.asset), terms = termsAt(m, e.t);
         if (!idx || minute === undefined || minute + 60000 > e.t || e.t - (minute + 60000) > 60000 || !terms) { counts.staleOrMissingState++; continue; }
-        const provider = providers.get(m.asset)!, baseFrame = provider.snapshot(), arrival = arrivals.get(m.asset)!;
+        const provider = providers.get(m.asset)!, anchor = provider.entryAnchor();
+        if (allEventsNeedAnchor && !anchor?.atrBps) continue;
+        const baseFrame = provider.snapshot(), arrival = arrivals.get(m.asset)!;
         const groups: Record<string, Readonly<FeatureGroup>> = Object.fromEntries(Object.entries(baseFrame.groups).map(([key, g]) => [key,
           { ...g, knownAt: g.knownAt === null ? null : Math.max(g.knownAt, arrival), timing: 'completed observed bars, available no earlier than recorded arrival' }]));
         groups.clock = { ...baseFrame.groups.clock, knownAt: e.t, values: marketClockFeatures(e.t), timing: 'deterministic clock at actual recorded decision arrival' };
@@ -158,10 +176,11 @@ export async function writeRecordingInputs(dir: string, staging: string, options
           status: btcReturn === null ? 'warming' : 'ready', bars: btcSeries?.length ?? 0, firstOpen: null, lastOpen: null,
           knownAt: e.t, publicationLagMs: 0, timing: 'causal observed one-second index marks; unavailable gaps remain null',
           values: { btc_log_return_60s: btcReturn, relative_to_btc_60s: btcReturn === null || assetReturn === null ? null : assetReturn - btcReturn } };
+        Object.assign(groups, context.at(m.asset, e.t, idx.value));
         const frame = { ...baseFrame, decisionAt: e.t, session: sessionAt(e.t), groups };
         // Existing recordings do not reliably persist every websocket gap/sequence event.
         // Use a fresh observed snapshot for economic evidence, never assume replayed deltas stayed intact.
-        const anchor = provider.entryAnchor(), book = books.get(m.ticker), validBook = snapshotIntact.get(m.ticker) && book?.isUsable(e.t, 2000), bid = validBook ? book!.bestBid() : undefined, ask = validBook ? book!.bestAsk() : undefined;
+        const book = books.get(m.ticker), validBook = snapshotIntact.get(m.ticker) && book?.isUsable(e.t, 2000), bid = validBook ? book!.bestBid() : undefined, ask = validBook ? book!.bestAsk() : undefined;
         const snn = latestState && e.t - latestState.stateAt <= 2000 ? { ...latestState, asOf: e.t } : null;
         lastDecision.set(m.ticker, e.t);
         let written = false;
@@ -200,6 +219,8 @@ export async function writeRecordingInputs(dir: string, staging: string, options
     decisions: { file: 'decisions.jsonl', sha256: await sha256File(decisionsFile) }, results: { file: 'results.jsonl', sha256: await sha256File(resultsFile) } };
   fs.writeFileSync(path.join(staging, 'spec.json'), JSON.stringify(spec, null, 2) + '\n');
   const report = { counts, inputHashes: inputs, aggregateSha256: combinedHash, stoppedEarly,
+    sampling: { decisionAttemptIntervalMs: 1000, freshSnapshotsMayTriggerImmediately: true,
+      sampleEveryMs: options.sampleEveryMs ?? 0, snapshotOnlyEconomicEvidence: true },
     limitations: ['Historical candle provider identity remains whatever the recording establishes; no provider fallback or relabeling',
       'No reconstructed price bridges or minute-derived ticks', 'Missing daily context remains absent',
       'The existing recording reader tolerates torn lines; sampled path gaps still fail closed',

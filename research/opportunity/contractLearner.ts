@@ -25,6 +25,7 @@ export interface ContractHead { model: HeadModel; calibration: BetaCal; calibrat
 const HEADS = ['move', 'paysGivenMove', 'paysGivenNoMove'] as const;
 type HeadName = typeof HEADS[number];
 interface Support { key: string; minimumRemainingSec: number; maximumRemainingSec: number; minimumMoneyness: number; maximumMoneyness: number;
+  minimumFrameAgeSec: number; maximumFrameAgeSec: number;
   minimumMoveBps: number; maximumMoveBps: number; minimumCapMoneyness: number | null; maximumCapMoneyness: number | null }
 export interface ContractModel {
   studyPolicyId: string;
@@ -35,6 +36,7 @@ export interface ContractModel {
   included: FeatureFamily[]; featureNames: string[]; heads: Record<HeadName, ContractHead>; support: Support[];
   requiredFiniteFeatures: string[];
   snnIdentity: string | null; indexBasis: 'observed-index' | 'synthetic-fixture';
+  snnPriceAgeLimitMs?: number | null;
 }
 export interface JointContractProbabilities { neither: number; moveOnly: number; paysOnly: number; both: number }
 export interface ContractFitOptions { epochs?: number; hidden?: number; trees?: number; seed?: number }
@@ -42,16 +44,18 @@ const WEEK = 7 * 86400000;
 export function featureFamily(name: string): FeatureFamily | null {
   if (name.startsWith('snn:')) return 'snn';
   if (name.startsWith('contract:') || name.startsWith('missing:contract:') || name.startsWith('asset:')) return null;
-  if (/btcd|usdtd/.test(name)) return 'dominance';
+  if (/btcd|usdtd|dominance/.test(name)) return 'dominance';
   if (name.includes('clock')) return 'clock';
   if (name.includes('micro') || name.includes('cross_asset') || name.includes('funding')) return 'micro';
   if (name.includes('yahoo') || name.includes('daily')) return 'daily';
   return 'ta';
 }
 export const snnIdentity = (o: ContractObservation) => o.snn ? digest([o.snn.version, o.snn.flagsSha256, o.snn.provenance.domain, o.snn.provenance.variant, o.snn.provenance.inputLagMs ?? 0,
-  ...(o.snn.provenance.maximumInputGapMs !== undefined ? [o.snn.provenance.maximumInputGapMs] : [])]) : null;
+  o.snn.provenance.checkpointSha256, o.snn.provenance.checkpointKnownAt,
+  ...(o.snn.provenance.maximumInputGapMs !== undefined ? [o.snn.provenance.maximumInputGapMs] : []),
+  ...(o.snn.provenance.maximumInputPriceAgeMs !== undefined ? ['observed-price-age', o.snn.provenance.maximumInputPriceAgeMs] : [])]) : null;
 export const contractSupportKey = (o: ContractObservation, withSnn = true) => digest([o.query.asset, o.query.side, o.query.contract.terms.kind,
-  o.query.contract.settlementReference, o.query.contract.averagingSec, o.query.geometry.life_sec, o.event,
+  o.query.contract.settlementReference, o.query.contract.averagingSec, o.query.geometry.life_sec, o.query.executionBufferMs, o.event,
   o.event.thresholdAtr || o.event.priorDriftAtr ? o.anchor?.definition : null, o.termsBasis, withSnn ? snnIdentity(o) : null]);
 const moneyness = (o: ContractObservation) => Math.log(o.index.value / (o.query.contract.terms.strike ?? o.query.contract.terms.cap!));
 const capMoneyness = (o: ContractObservation) => o.query.contract.terms.cap ? Math.log(o.index.value / o.query.contract.terms.cap) : null;
@@ -152,12 +156,13 @@ export function fitContractModel(rows: { train: EncodedContractRow[]; stopping: 
   if (names.length > 10000 || names.length * all.reduce((s, rs) => s + rs.length, 0) > 20000000) throw new Error('contract learner matrix limit exceeded');
   const support = new Map<string, Support>();
   for (const r of rows.train) {
-    const o = r.observation, key = contractSupportKey(o, included.includes('snn')), remaining = o.query.geometry.remaining_sec, m = moneyness(o), move = moveThresholdBps(o), cap = capMoneyness(o);
+    const o = r.observation, key = contractSupportKey(o, included.includes('snn')), remaining = o.query.geometry.remaining_sec, m = moneyness(o), move = moveThresholdBps(o), cap = capMoneyness(o), frameAge = o.query.geometry.feature_snapshot_age_sec;
     const s = support.get(key) ?? { key, minimumRemainingSec: remaining, maximumRemainingSec: remaining, minimumMoneyness: m, maximumMoneyness: m,
-      minimumMoveBps: move, maximumMoveBps: move, minimumCapMoneyness: cap, maximumCapMoneyness: cap };
+      minimumMoveBps: move, maximumMoveBps: move, minimumCapMoneyness: cap, maximumCapMoneyness: cap, minimumFrameAgeSec: frameAge, maximumFrameAgeSec: frameAge };
     s.minimumRemainingSec = Math.min(s.minimumRemainingSec, remaining); s.maximumRemainingSec = Math.max(s.maximumRemainingSec, remaining);
     s.minimumMoneyness = Math.min(s.minimumMoneyness, m); s.maximumMoneyness = Math.max(s.maximumMoneyness, m);
     s.minimumMoveBps = Math.min(s.minimumMoveBps, move); s.maximumMoveBps = Math.max(s.maximumMoveBps, move);
+    s.minimumFrameAgeSec = Math.min(s.minimumFrameAgeSec, frameAge); s.maximumFrameAgeSec = Math.max(s.maximumFrameAgeSec, frameAge);
     if (cap !== null) { s.minimumCapMoneyness = Math.min(s.minimumCapMoneyness!, cap); s.maximumCapMoneyness = Math.max(s.maximumCapMoneyness!, cap); } support.set(key, s);
   }
   const core: Omit<ContractModel, 'id'> = { schema: CONTRACT_MODEL_SCHEMA, studyPolicyId: studyPolicy(plan.studyPolicyId).id, family, researchOnly: true, liveEntryAllowed: false,
@@ -167,7 +172,8 @@ export function fitContractModel(rows: { train: EncodedContractRow[]; stopping: 
     requiredFiniteFeatures: names.filter((name) => rows.train.every((r) => Number.isFinite(r.values[name]))),
     heads: Object.fromEntries(HEADS.map((name) => [name, fitHead(name, family, all, names, options)])) as ContractModel['heads'],
     support: [...support.values()].sort((a, b) => a.key.localeCompare(b.key)),
-    snnIdentity: included.includes('snn') ? snnIdentity(first) : null, indexBasis: first.index.basis };
+    snnIdentity: included.includes('snn') ? snnIdentity(first) : null, indexBasis: first.index.basis,
+    snnPriceAgeLimitMs: included.includes('snn') ? first.snn?.provenance.maximumInputPriceAgeMs ?? null : null };
   const model = { ...core, id: digest(core) }; validateContractModel(model); return model;
 }
 export function contractProbabilities(model: ContractModel, values: Record<string, number>): JointContractProbabilities {
@@ -182,6 +188,7 @@ export function missingRequiredInputs(model: ContractModel, values: Record<strin
 export function contractModelSupports(model: ContractModel, o: ContractObservation) {
   const s = model.support.find((s) => s.key === contractSupportKey(o, model.included.includes('snn')));
   return !!s && o.query.asOf >= model.knownAt && o.frame.schema === model.featureSchema && o.frame.taSchema === model.taSchema && o.frame.engine === model.engine &&
+    o.query.geometry.feature_snapshot_age_sec >= s.minimumFrameAgeSec && o.query.geometry.feature_snapshot_age_sec <= s.maximumFrameAgeSec &&
     digest(frameSources(o)) === digest(model.featureSources) && moveThresholdBps(o) >= s.minimumMoveBps && moveThresholdBps(o) <= s.maximumMoveBps &&
     (capMoneyness(o) === null ? s.minimumCapMoneyness === null : capMoneyness(o)! >= s.minimumCapMoneyness! - 1e-12 && capMoneyness(o)! <= s.maximumCapMoneyness! + 1e-12) &&
     o.index.basis === model.indexBasis && (model.snnIdentity === null || snnIdentity(o) === model.snnIdentity) &&
@@ -195,11 +202,13 @@ export function validateContractModel(m: ContractModel) {
       !['smooth', 'trees', 'temporal-linear'].includes(m.family) || !stamp(m.knownAt) || !stamp(m.trainedThrough) || m.trainedThrough > policy.trainBefore || m.knownAt >= policy.finalFrom ||
       m.knownAt < m.trainedThrough || !['observed-index', 'synthetic-fixture'].includes(m.indexBasis) ||
       (m.snnIdentity !== null && !/^[a-f0-9]{64}$/.test(m.snnIdentity)) || m.included.some((f) => !FEATURE_FAMILIES.includes(f)) ||
+      (m.snnPriceAgeLimitMs != null && (!Number.isSafeInteger(m.snnPriceAgeLimitMs) || m.snnPriceAgeLimitMs < 1 || m.snnPriceAgeLimitMs > 60000)) ||
       !m.featureNames.length || m.featureNames.length > 10000 || new Set(m.featureNames).size !== m.featureNames.length || !m.support.length ||
       !Array.isArray(m.requiredFiniteFeatures) || new Set(m.requiredFiniteFeatures).size !== m.requiredFiniteFeatures.length || m.requiredFiniteFeatures.some((n) => !m.featureNames.includes(n)) ||
       m.featureNames.some((n) => { const f = featureFamily(n); return !/^[a-zA-Z0-9_:-]+$/.test(n) || (f !== null && !m.included.includes(f)); }) ||
       Object.values(m.featureSources).some((s) => typeof s !== 'string' || !s) || m.support.some((s) => !/^[a-f0-9]{64}$/.test(s.key) ||
-        ![s.minimumRemainingSec, s.maximumRemainingSec, s.minimumMoneyness, s.maximumMoneyness, s.minimumMoveBps, s.maximumMoveBps].every(Number.isFinite) ||
+        ![s.minimumRemainingSec, s.maximumRemainingSec, s.minimumMoneyness, s.maximumMoneyness, s.minimumMoveBps, s.maximumMoveBps, s.minimumFrameAgeSec, s.maximumFrameAgeSec].every(Number.isFinite) ||
+        s.minimumFrameAgeSec < 0 || s.minimumFrameAgeSec > s.maximumFrameAgeSec ||
         s.minimumRemainingSec <= 0 || s.maximumRemainingSec > 86400 || s.minimumRemainingSec > s.maximumRemainingSec ||
         s.minimumMoneyness > s.maximumMoneyness || s.minimumMoveBps <= 0 || s.minimumMoveBps > s.maximumMoveBps)) throw new Error('invalid contract model/ID');
   for (const n of HEADS) {

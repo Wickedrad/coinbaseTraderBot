@@ -75,7 +75,7 @@
     "settlementFee": 0,
     "slippage": 0.01
   },
-  "sampleEveryMs": 900000,
+  "sampleEveryMs": 1800000,
   "maximumContractsPerAsset": 3,
   "studyPolicyId": "prospective-2026-11-09-v1",
   "fromDay": "2026-10-22",

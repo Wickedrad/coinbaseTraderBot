@@ -34,6 +34,7 @@ export function validateAtlasProduct(p: AtlasProduct) {
   if (s.movement) { validateMovementModel(s.movement); if (s.movement.parentModelId !== s.selected?.id ||
     digest(s.movement.featureNames) !== digest(s.selected.featureNames)) throw new Error('movement parent or selected inputs differ'); }
   if (s.selected?.included.includes('snn') && s.status === 'paper-qualified') {
+    if (!(s.selected.snnPriceAgeLimitMs! > 0 && s.selected.snnPriceAgeLimitMs! <= 3000)) throw new Error('SNN observed-price freshness qualification absent');
     const e = s.snnComparison, variant = e?.recommended;
     if (!e || !variant || variant === 'none' || e.modelIds[variant] !== s.selected.id || e.knownAt !== s.plan.audit.through) throw new Error('SNN same-period qualification absent');
     const { id: evidenceId, ...evidenceCore } = e;

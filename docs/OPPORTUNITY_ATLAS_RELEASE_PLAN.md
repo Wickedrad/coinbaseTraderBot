@@ -1,7 +1,8 @@
 # Opportunity Atlas release acceptance
 
-The owner authorized continuous implementation through a finished product. Work
-continues on PR #306; intermediate components do not require separate approval.
+The owner authorized continuous implementation through a finished product. The
+core workflow merged in PR #306; PR #307 verifies the recorded-input follow-up.
+Intermediate components do not require separate approval.
 The owner subsequently authorized main merges. Deployment and live entry changes
 still require approval; research merges use `[skip deploy]` to avoid a server restart.
 Data work and training run on GitHub runners, without Lightsail access.
@@ -44,11 +45,38 @@ in raw inputs and excluded in a receipt-checked derived copy, without shifting
 their timestamps. The first tree fit did not show reliable gain over geometry:
 exploratory weekly log-loss gain -0.01388, interval [-0.03719, 0.00635].
 
+The fixed smooth/tree comparison completed on the same 14,618 decision frames.
+The smooth full-context candidate was generally worse; neither family established
+predictive or economic qualification.
+
 The archived recording probe confirmed official Kalshi index messages, native
-Coinbase 1m candle arrays, recorded strikes, and both 15m/hourly contracts. Prefix
-checks establish selected observed minutes, not complete-archive coverage or fill
-fidelity. The bounded contract/S5/S6 engineering study and smooth historical
-comparison use GitHub runners. No trained model is qualified for live trading.
+Coinbase 1m candle arrays, recorded strikes, and both 15m/hourly contracts.
+GitHub run [42549662484](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42549662484)
+completed the bounded contract/S5/S6 path on 105,519,127 observed events across
+14.58 hours: 3,876 complete base outcomes and 3,804 matched SNN outcomes per
+variant. All 1,080 historical paper queries abstained. The first sample has only
+19 distinct training settlement events, so its heads remain fallback priors;
+the fixed 20-event fitting minimum is preserved. Its audit has one week and no
+confirmed results or executable quotes. This is successful software verification,
+not evidence for learned contract relationships or profit. Prefix checks establish
+selected observed hours, not complete-archive coverage or fill fidelity.
+All data processing and training use GitHub runners. No model is live-qualified.
+
+The expanded fixed-prefix run
+[42568366333](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42568366333)
+adds October 24 and 27 before the training cutoff, preserving all model settings,
+audit dates and the final boundary. It completed 5,340 base outcomes and 5,244 per
+SNN variant across 19.99 observed hours. All three contract heads now fit actual
+models, with 66 distinct training events in the base and 64 per SNN variant.
+All three candidate families were exercised; trees won the selection window.
+No indicator/SNN family was retained. The audit has one week, two confirmed events,
+zero executable quotes and insufficient conditional calibration. All 1,080
+historical paper queries abstained; there is no forward-trial evidence yet.
+
+The final executable source and workflow revision passed GitHub CI
+[42568299149](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42568299149):
+1,243 tests, zero failures/skips, typecheck and build. Windows packaging and CodeQL
+also passed. The final evidence update changes documentation only.
 
 The software checklist is separate from these unfulfilled evidence requirements:
 
