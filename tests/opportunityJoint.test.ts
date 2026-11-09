@@ -44,6 +44,44 @@ function planted(): JointPathDataset {
 }
 let cached: ReturnType<typeof trainJointPaths> | undefined;
 const fitted = () => cached ??= trainJointPaths(planted(), { plan, params });
+const smoothOptions = { plan, family: 'smooth' as const, mlpEngine: 'ts' as const,
+  smoothParams: { hidden: 12, maxEpochs: 160, patience: 30, l2: 0.0005 } };
+let cachedSmooth: ReturnType<typeof trainJointPaths> | undefined;
+const smoothFitted = () => cachedSmooth ??= trainJointPaths(planted(), smoothOptions);
+
+test('smooth competing risks learn interactions, vary continuously and preserve coherent horizon curves', async () => {
+  const result = await smoothFitted(), f = result.folds[0], model = f.model, at = model.knownAt + MIN;
+  assert.equal(result.family, 'smooth'); assert.equal(model.heads.targetGivenClear.mode, 'smooth');
+  assert.equal(model.heads.targetGivenClear.trainingEngine, 'typescript');
+  assert.ok(f.modelLoss < f.baselineLoss - 0.01, `${f.modelLoss} vs ${f.baselineLoss}`);
+  const q = { side: 'long' as const, targetAtr: 1, stopAtr: 1, horizonMin: 3 };
+  const base = predictJointPath(model, frame(at), anchor(at), q)!;
+  const nearby = predictJointPath(model, frame(at, 0.8 + 1e-6), anchor(at), q)!;
+  const difference = Math.abs(base.probabilities.target - nearby.probabilities.target);
+  assert.ok(difference > 1e-12 && difference < 1e-4, `continuous nonconstant response: ${difference}`);
+  for (const [index, p] of base.curve.entries()) {
+    assert.ok(Math.abs(Object.values(p).reduce((a, b) => a + b, 0) - 1) < 1e-12);
+    assert.deepEqual(p, predictJointPath(model, frame(at), anchor(at), { ...q, horizonMin: index + 1 })!.probabilities);
+    if (index) for (const key of ['target', 'stop', 'ambiguous'] as const) assert.ok(p[key] >= base.curve[index - 1][key]);
+  }
+  const copy = JSON.parse(JSON.stringify(model)); validateRiskModel(copy);
+  assert.deepEqual(predictJointPath(copy, frame(at), anchor(at), q), base);
+  copy.heads.targetGivenClear.smooth.norm.std[0] = 0;
+  assert.throws(() => validateRiskModel(copy), /normalization/);
+  assert.equal(result.liveEntryAllowed, false); assert.equal(result.calibrationRef, null);
+});
+
+test('smooth fitting and normalization cannot consume evaluation-only inputs or outcomes', async () => {
+  const data = planted(), cut = planRiskFolds(data, plan)[0].evaluation.from;
+  for (const d of data.decisions.values()) if (d.at >= cut) {
+    d.values['value:micro:future_only'] = 999; d.values['value:micro:x'] = 1e9;
+  }
+  for (const p of data.paths) if (p.at >= cut) { p.cause = 'none'; p.hitMinute = null; }
+  const changed = await trainJointPaths(data, smoothOptions), original = await smoothFitted();
+  assert.deepEqual(changed.folds[0].model, original.folds[0].model);
+  assert.ok(!changed.folds[0].model.featureNames.includes('value:micro:future_only'));
+  await assert.rejects(trainJointPaths(data, { ...smoothOptions, smoothParams: { residual: 0 } }), /smooth learner/);
+});
 
 test('joint risk learner learns the planted conditional relationship beyond the geometry baseline', async () => {
   const r = await fitted();

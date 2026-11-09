@@ -165,7 +165,7 @@ test('actual SNN tape adapter advances old inputs before new arrivals and freeze
   const expected = captureSnnState(net, start + 5000, { ...states[1].provenance });
   assert.deepEqual(states[1].columns, expected.columns); assert.equal(report.learnedThrough, start + 2000); assert.ok(report.gaps > 0);
   const legacy = path.join(dir, 'legacy.tape'), l = new TapeWriter(legacy);
-  l.step(start, a); l.settle('ungraded', undefined, start + 1200); l.step(start + 1000, b); l.close();
+  l.step(start, a); l.settle('ungraded', undefined, start + 600); l.step(start + 1000, b); l.close();
   const delayed: ReturnType<typeof captureSnnState>[] = [];
   const guarded = replayAtlasSnnTape(legacy, { variant: 'S5', sourceSha256: sha, everyMs: 1000, params, onState: (s) => delayed.push(s) });
   assert.equal(guarded.inputLagMs, 1000); assert.deepEqual(delayed.map((s) => s.asOf), [start + 1000, start + 2000]);
@@ -229,8 +229,8 @@ test('native recording import retains arrival latency, both sides, exact books a
   for (let sec = -60; sec <= 130; sec++) {
     const at = start + sec * 1000 + 200;
     entries.push({ t: at, k: 'index', asset: 'BTC', value: sec >= 20 ? 100.3 : 100, ts: at - 200, src: 'kalshi' });
-    if (sec === 0) entries.push({ t: at, k: 'candles', asset: 'BTC', tf: '1m', rows: Array.from({ length: 14 }, (_, i) =>
-      ({ ts: start - (14 - i) * MIN, o: 100, h: 101, l: 99, c: 100, v: 1 })) });
+    if (sec === 0) entries.push({ t: at, k: 'candles', asset: 'BTC', tf: '1m', rows: Array.from({ length: 16 }, (_, i) =>
+      [(start - (16 - i) * MIN) / 1000, 99, 101, 100, 100, 1, 0.4]) });
     entries.push({ t: at, k: 'book', ticker: 'OBSERVED-FIXTURE', bids: [{ price: 0.4, size: 5 }], asks: [{ price: 0.5, size: 6 }] });
     if (sec === 130) entries.push({ t: at, k: 'result', ticker: 'OBSERVED-FIXTURE', result: 'yes' });
   }
@@ -244,6 +244,7 @@ test('native recording import retains arrival latency, both sides, exact books a
   const ds = await loadContractDataset(path.join(dir, 'dataset')), [yes, no] = ds.examples;
   assert.equal(yes.observation.query.asOf, start + 200); assert.equal(yes.observation.frame.decisionAt, start + 200);
   assert.equal(yes.observation.frame.groups.spot_1m.knownAt, start + 200);
+  assert.equal(yes.observation.anchor!.atrBps, 200, 'native second timestamps and low/high/open order must reach the ATR anchor');
   assert.equal(yes.quote!.ask, 0.5); assert.equal(no.quote!.ask, 0.6);
   assert.equal(yes.outcome.sidePays, true); assert.equal(no.outcome.sidePays, false); assert.equal(yes.outcome.officialResultConfirmed, true);
   const sampledConfig = path.join(dir, 'sampled-config.json');

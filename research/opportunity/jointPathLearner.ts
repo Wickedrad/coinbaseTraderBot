@@ -10,17 +10,23 @@ import { FROZEN_FINAL_FROM, FROZEN_TRAIN_BEFORE, encodePathFrame, pathQueryValue
 import { ATLAS_FEATURE_SCHEMA, type AtlasFeatureFrame, type MinuteEntryAnchor } from './features';
 import { TANET_SCHEMA } from '../../bot/ta/taNet';
 import { studyPolicy } from './studyPolicy';
+import { predictLogits, type Normalization, type TrainOptions } from '../mlp';
+import { MlpTorch, trainMlp } from '../mlpTorch';
+import type { DenseLayer } from '../../bot/model/metaModel';
 
 export const JOINT_PATH_SCHEMA = 'opportunity-competing-risk-v1';
 const MIN = 60000, DAY = 86400000, WEEK = 7 * DAY;
 const HEADS = ['event', 'ambiguous', 'targetGivenClear'] as const;
 type HeadName = typeof HEADS[number];
 interface Head {
-  model: GbdtModel; calibration: BetaCal; mode: 'trees' | 'prior'; trainingRows: number;
+  model: GbdtModel; calibration: BetaCal; mode: 'trees' | 'smooth' | 'prior'; trainingRows: number;
+  smooth?: { layers: DenseLayer[]; norm: Normalization };
+  trainingEngine?: 'typescript' | 'pytorch';
   calibrationStatus: 'fitted' | 'insufficient'; calibrationDecisions: number;
 }
 export interface RiskModel {
   studyPolicyId?: string;
+  family?: 'trees' | 'smooth';
   schema: typeof JOINT_PATH_SCHEMA; researchOnly: true; liveEntryAllowed: false; calibrationRef: null;
   id: string; featureSchema: string; taSchema: string; engine: string; anchorDefinition: string;
   availabilityBasis: 'simulated-replay-cutoff';
@@ -68,8 +74,12 @@ function selectFeatures(rows: RiskRow[], geometryOnly: boolean): string[] {
     return found && missing;
   }); // No marginal predictive culling; interaction-only inputs survive if they vary.
 }
-function predictHead(head: Head, x: number[]) { return applyBeta(sigmoid(gbdtLogit(head.model, x)), head.calibration); }
-function fitHead(train: RiskRow[], stop: RiskRow[], calibration: RiskRow[], names: string[], name: HeadName, params: Partial<GbdtParams>): Head {
+function headLogit(head: Pick<Head, 'model' | 'smooth'>, x: number[]) {
+  return head.smooth ? predictLogits(head.smooth.layers, head.smooth.norm, [x], -1)[0] : gbdtLogit(head.model, x);
+}
+function predictHead(head: Head, x: number[]) { return applyBeta(sigmoid(headLogit(head, x)), head.calibration); }
+async function fitHead(train: RiskRow[], stop: RiskRow[], calibration: RiskRow[], names: string[], name: HeadName,
+  params: Partial<GbdtParams>, family: 'trees' | 'smooth', smoothParams: TrainOptions, torch?: MlpTorch, log?: (message: string) => void): Promise<Head> {
   const tr = headRows(train, name), va = headRows(stop, name), ca = headRows(calibration, name);
   if ((tr.length + va.length + ca.length) * names.length > 20000000) throw new Error('learner matrix exceeds 20 million cells; reduce dataset or fold duration');
   const w = tr.map((r) => r.weight), y = tr.map((r) => outcome(r, name));
@@ -77,15 +87,23 @@ function fitHead(train: RiskRow[], stop: RiskRow[], calibration: RiskRow[], name
   const prior = (positives + 0.5) / (total + 1), base = Math.log(prior / (1 - prior));
   const vector = (r: RiskRow) => names.map((n) => riskValue(r, n));
   let model: GbdtModel = { trees: [], baseScore: base }, mode: Head['mode'] = 'prior';
+  let smooth: Head['smooth'], trainingEngine: Head['trainingEngine'] = 'typescript';
   if (tr.length >= 20 && va.length && new Set(y).size > 1) {
+    if (family === 'smooth') {
+      trainingEngine = torch ? 'pytorch' : 'typescript';
+      const fit = await trainMlp(torch, tr.map(vector), y, va.map(vector), va.map((r) => outcome(r, name)), smoothParams,
+        w, va.map((r) => r.weight), (message) => { trainingEngine = 'typescript'; log?.(message); });
+      smooth = { layers: fit.layers, norm: fit.norm }; mode = 'smooth';
+    } else {
     const fit = trainGbdt(tr.map(vector), y, w, tr.map(() => base), va.map(vector), va.map((r) => outcome(r, name)), va.map((r) => r.weight), va.map(() => base),
       params);
     model = { ...fit.model, baseScore: base }; mode = model.trees.length ? 'trees' : 'prior';
+    }
   }
-  const head: Head = { model, mode, trainingRows: tr.length, calibration: { ...IDENTITY_BETA }, calibrationStatus: 'insufficient', calibrationDecisions: new Set(ca.map((r) => r.decisionId)).size };
+  const head: Head = { model, mode, ...(smooth ? { smooth } : {}), trainingEngine, trainingRows: tr.length, calibration: { ...IDENTITY_BETA }, calibrationStatus: 'insufficient', calibrationDecisions: new Set(ca.map((r) => r.decisionId)).size };
   const cy = ca.map((r) => outcome(r, name)), cw = ca.map((r) => r.weight);
   if (tr.length && head.calibrationDecisions >= 30 && cy.filter((v) => v === 1).length >= 5 && cy.filter((v) => v === 0).length >= 5) {
-    const cp = ca.map((r) => sigmoid(gbdtLogit(model, vector(r)))), beta = fitBeta(cp, cy, cw);
+    const cp = ca.map((r) => sigmoid(headLogit(head, vector(r)))), beta = fitBeta(cp, cy, cw);
     if ([beta.a, beta.b, beta.c].every(Number.isFinite) && beta.a >= 0 && beta.b >= 0 &&
         weightedLogLoss(cp.map((p) => applyBeta(p, beta)), cy, cw) <= weightedLogLoss(cp, cy, cw) + 1e-9) {
       head.calibration = beta; head.calibrationStatus = 'fitted';
@@ -93,11 +111,13 @@ function fitHead(train: RiskRow[], stop: RiskRow[], calibration: RiskRow[], name
   }
   return head;
 }
-function fitRiskModel(data: JointPathDataset, episodes: PathObservation[], train: RiskRow[], stopping: RiskRow[], calibration: RiskRow[], fold: RiskFold, geometryOnly: boolean, params: Partial<GbdtParams>): RiskModel {
+async function fitRiskModel(data: JointPathDataset, episodes: PathObservation[], train: RiskRow[], stopping: RiskRow[], calibration: RiskRow[], fold: RiskFold, geometryOnly: boolean,
+  params: Partial<GbdtParams>, family: 'trees' | 'smooth', smoothParams: TrainOptions, torch?: MlpTorch, log?: (message: string) => void): Promise<RiskModel> {
   const names = selectFeatures(train, geometryOnly); if (!names.length) names.push('query:minute');
   const first = data.decisions.get(episodes[0].decisionId)!;
-  const heads = Object.fromEntries(HEADS.map((name) => [name, fitHead(train, stopping, calibration, names, name, params)])) as Record<HeadName, Head>;
-  const core: Omit<RiskModel, 'id'> = { schema: JOINT_PATH_SCHEMA, studyPolicyId: studyPolicy(data.studyPolicyId).id, researchOnly: true as const, liveEntryAllowed: false as const, calibrationRef: null,
+  const heads = {} as Record<HeadName, Head>;
+  for (const name of HEADS) heads[name] = await fitHead(train, stopping, calibration, names, name, params, family, smoothParams, torch, log);
+  const core: Omit<RiskModel, 'id'> = { schema: JOINT_PATH_SCHEMA, family, studyPolicyId: studyPolicy(data.studyPolicyId).id, researchOnly: true as const, liveEntryAllowed: false as const, calibrationRef: null,
     featureSchema: ATLAS_FEATURE_SCHEMA, taSchema: TANET_SCHEMA, engine: first.engine, anchorDefinition: first.anchorDefinition,
     availabilityBasis: 'simulated-replay-cutoff' as const,
     knownAt: fold.calibration.through, featureNames: names, maxHorizonMin: Math.min(data.maxHorizonMin, train.reduce((m, r) => Math.max(m, r.minute), 0)),
@@ -136,9 +156,24 @@ export function predictJointPath(model: RiskModel, frame: AtlasFeatureFrame, anc
 export function validateRiskModel(model: RiskModel) {
   const policy = studyPolicy(model.studyPolicyId);
   if (model.schema !== JOINT_PATH_SCHEMA || model.researchOnly !== true || model.liveEntryAllowed !== false || model.calibrationRef !== null || model.availabilityBasis !== 'simulated-replay-cutoff' || !model.featureNames.length || model.featureNames.length > 10000 || new Set(model.featureNames).size !== model.featureNames.length ||
+      (model.family !== undefined && !['trees', 'smooth'].includes(model.family)) ||
       !Number.isSafeInteger(model.knownAt) || model.knownAt > policy.trainBefore || !Number.isInteger(model.maxHorizonMin) || model.maxHorizonMin < 1 || model.maxHorizonMin > 1440) throw new Error('invalid risk model');
   for (const name of HEADS) {
     const h = model.heads[name]; validateGbdt(h.model, model.featureNames.length);
+    if (!['trees', 'smooth', 'prior'].includes(h.mode) || (h.mode === 'smooth') !== Boolean(h.smooth) ||
+        (h.mode === 'smooth' && model.family !== 'smooth') || (h.mode === 'trees' && model.family === 'smooth')) throw new Error('invalid risk head family');
+    if (h.smooth) {
+      const { layers, norm } = h.smooth;
+      if (norm.mean.length !== model.featureNames.length || norm.std.length !== model.featureNames.length ||
+          norm.mean.some((v) => !Number.isFinite(v)) || norm.std.some((v) => !Number.isFinite(v) || v <= 0) || layers.length !== 2) throw new Error('invalid risk normalization');
+      let inputs = model.featureNames.length;
+      for (const [index, l] of layers.entries()) {
+        if (l.activation !== (index === 0 ? 'tanh' : 'linear') || !l.weights.length || l.weights.length > 64 || l.weights.length !== l.bias.length ||
+            l.weights.some((r) => r.length !== inputs || r.some((v) => !Number.isFinite(v))) || l.bias.some((v) => !Number.isFinite(v))) throw new Error('invalid risk dense layer');
+        inputs = l.bias.length;
+      }
+      if (inputs !== 1) throw new Error('invalid risk dense output');
+    }
     for (const tree of h.model.trees) {
       const walk = (index: number, ancestors: Set<number>) => {
         if (ancestors.has(index) || ancestors.size >= 64) throw new Error('cyclic or excessive risk tree');
@@ -156,7 +191,8 @@ export function validateRiskModel(model: RiskModel) {
   if (createHash('sha256').update(JSON.stringify(core)).digest('hex') !== id) throw new Error('risk model content ID mismatch');
 }
 interface ScoreRow { at: number; weight: number; modelLoss: number; baselineLoss: number; brier: number }
-export async function trainJointPaths(data: JointPathDataset, options: { plan?: FoldPlan; smokeTest?: boolean; params?: Partial<GbdtParams>; maxRiskRows?: number; onProgress?: (message: string) => void } = {}) {
+export async function trainJointPaths(data: JointPathDataset, options: { plan?: FoldPlan; smokeTest?: boolean; params?: Partial<GbdtParams>; maxRiskRows?: number;
+  family?: 'trees' | 'smooth'; mlpEngine?: 'ts' | 'torch' | 'auto'; smoothParams?: Partial<TrainOptions>; onProgress?: (message: string) => void } = {}) {
   const policy = studyPolicy(data.studyPolicyId);
   if (data.trainBefore > policy.trainBefore || data.finalFrom > policy.finalFrom ||
       (options.maxRiskRows !== undefined && (!Number.isSafeInteger(options.maxRiskRows) || options.maxRiskRows < 1))) throw new Error('frozen study dates or risk limits violated');
@@ -166,9 +202,20 @@ export async function trainJointPaths(data: JointPathDataset, options: { plan?: 
       !Number.isInteger(params.maxBins) || params.maxBins < 2 || params.maxBins > 64 || !Number.isInteger(params.patience) || params.patience < 0 || !Number.isSafeInteger(params.seed) ||
       ![params.learningRate, params.minLeafWeight, params.lambda, params.featureFraction, params.baggingFraction].every(Number.isFinite) || params.learningRate <= 0 || params.learningRate > 1 || params.minLeafWeight <= 0 || params.lambda < 0 ||
       params.featureFraction <= 0 || params.featureFraction > 1 || params.baggingFraction <= 0 || params.baggingFraction > 1) throw new Error('invalid joint learner parameters');
+  const family = options.family ?? 'trees', mlpEngine = options.mlpEngine ?? 'ts';
+  const smoothParams: TrainOptions = { hidden: 8, l2: 0.002, lr: 0.015, maxEpochs: 100, patience: 20, seed: 17, residual: -1, ...options.smoothParams };
+  if (!['trees', 'smooth'].includes(family) || !['ts', 'torch', 'auto'].includes(mlpEngine) ||
+      !Number.isInteger(smoothParams.hidden) || smoothParams.hidden < 1 || smoothParams.hidden > 64 ||
+      !Number.isInteger(smoothParams.maxEpochs) || smoothParams.maxEpochs < 1 || smoothParams.maxEpochs > 500 ||
+      !Number.isInteger(smoothParams.patience) || smoothParams.patience < 0 || !Number.isSafeInteger(smoothParams.seed) || smoothParams.residual !== -1 ||
+      !Number.isFinite(smoothParams.lr) || smoothParams.lr <= 0 || smoothParams.lr > 1 || !Number.isFinite(smoothParams.l2) || smoothParams.l2 < 0) throw new Error('invalid smooth learner parameters');
   const plan = options.plan ?? (options.smokeTest ? SMOKE_FOLD_PLAN : DEFAULT_FOLD_PLAN), folds = planRiskFolds(data, plan);
   const results: Array<{ fold: RiskFold; trainingEpisodes: number; riskRows: number; evaluationEpisodes: number; modelLoss: number; baselineLoss: number; brier: number; model: RiskModel; baseline: RiskModel }> = [];
   const scores: ScoreRow[] = [];
+  const torch = family === 'smooth' && folds.length ? await MlpTorch.start({ engine: mlpEngine, log: options.onProgress }) : undefined;
+  const backend = { requested: mlpEngine, available: torch ? torch.device : 'typescript', notes: [] as string[] };
+  const log = (message: string) => { backend.notes.push(message); options.onProgress?.(message); };
+  try {
   for (const [index, fold] of folds.entries()) {
     const training = selectPathEpisodes(data, fold.train), support = new Set(training.map((p) => supportKey(p.asset, p)));
     const stopping = selectPathEpisodes(data, fold.stopping).filter((p) => support.has(supportKey(p.asset, p)));
@@ -179,9 +226,9 @@ export async function trainJointPaths(data: JointPathDataset, options: { plan?: 
     const va = riskRows(data, stopping, options.maxRiskRows).filter((r) => r.minute <= lastRisk), ca = riskRows(data, calibration, options.maxRiskRows).filter((r) => r.minute <= lastRisk);
     if (![tr, va, ca].every((rows) => rows.length > 0)) continue;
     options.onProgress?.(`Fold ${index + 1}: ${training.length} training episodes, ${tr.length} at-risk minutes; fitting joint and geometry baseline`);
-    const model = fitRiskModel(data, training, tr, va, ca, fold, false, params);
-    const baseline = fitRiskModel(data, training, tr, va, ca, fold, true, params);
-    validateRiskModel(model);
+    const model = await fitRiskModel(data, training, tr, va, ca, fold, false, params, family, smoothParams, torch, log);
+    const baseline = await fitRiskModel(data, training, tr, va, ca, fold, true, params, family, smoothParams, torch, log);
+    validateRiskModel(model); validateRiskModel(baseline);
     const multiplicity = new Map<string, number>();
     for (const e of evaluation) multiplicity.set(e.decisionId, (multiplicity.get(e.decisionId) ?? 0) + 1);
     const current: ScoreRow[] = [];
@@ -197,6 +244,7 @@ export async function trainJointPaths(data: JointPathDataset, options: { plan?: 
     results.push({ fold, trainingEpisodes: training.length, riskRows: tr.length, evaluationEpisodes: current.length,
       modelLoss: mean('modelLoss'), baselineLoss: mean('baselineLoss'), brier: mean('brier'), model, baseline });
   }
+  } finally { await torch?.close(); }
   const blocks = new Map<number, { gain: number; weight: number }>();
   for (const s of scores) { const key = Math.floor(s.at / WEEK), b = blocks.get(key) ?? { gain: 0, weight: 0 }; b.gain += s.weight * (s.baselineLoss - s.modelLoss); b.weight += s.weight; blocks.set(key, b); }
   const gains = [...blocks.values()].map((b) => b.gain / b.weight);
@@ -204,8 +252,8 @@ export async function trainJointPaths(data: JointPathDataset, options: { plan?: 
   return { schema: JOINT_PATH_SCHEMA, researchOnly: true, liveEntryAllowed: false, autoPromote: false, calibrationRef: null,
     status: results.length ? options.smokeTest ? 'smoke-test-only' : 'research-fit' : 'blocked-insufficient-history-or-rows',
     dataset: { studyPolicyId: policy.id, manifestSha256: data.manifestSha256, inputHashes: data.inputHashes, runId: data.runId, counts: data.counts, trainBefore: data.trainBefore, finalFrom: data.finalFrom },
-    plan, params, folds: results, weeklyEvidence: { blocks: gains.length, pairedLogLossGain: evidence,
+    plan, family, params, ...(family === 'smooth' ? { smoothParams, backend } : {}), folds: results, weeklyEvidence: { blocks: gains.length, pairedLogLossGain: evidence,
       interpretation: 'Exploratory weekly-block diagnostics against the geometry baseline; not full-parent ablation or a multiple-testing-controlled promotion gate.' },
     limitations: ['No SNN state integration', 'No official contract settlement probabilities', 'No feature/memory retention selection',
-      'Tree responses are piecewise constant; smooth-surface/sequence comparisons remain pending', 'No live or economic validation'] };
+      family === 'trees' ? 'Tree responses are piecewise constant; smooth-family comparison remains separate' : 'Smooth tanh responses; no independent sequence-family or family-selection qualification', 'No live or economic validation'] };
 }

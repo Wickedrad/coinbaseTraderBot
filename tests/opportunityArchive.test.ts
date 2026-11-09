@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { gzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync } from 'node:zlib';
 
 function audit(rows: string, extra?: (root: string) => void) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-audit-'));
@@ -112,7 +112,7 @@ test('recording prefix extraction handles gzip members and strips account, model
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-public-prefix-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const secret = 'MUST_NOT_LEAVE_THE_RAW_PREFIX';
   const a = [{ t: 0, k: 'index', asset: 'BTC', ts: 0, value: 100, src: 'kalshi', secret }, { t: 1, k: 'account', balance: 100, token: secret }];
-  const b = [{ t: 2, k: 'candles', asset: 'BTC', tf: '1m', rows: [{ ts: 0, o: 100, h: 101, l: 99, c: 100, v: 1, secret }] },
+  const b = [{ t: 2, k: 'candles', asset: 'BTC', tf: '1m', rows: [{ ts: 0, o: 100, h: 101, l: 99, c: 100, v: 1, secret }, [0, 99, 101, 100, 100, 1, 0.4]] },
     { t: 3, k: 'book', ticker: 'KXBTC-TEST', bids: [{ price: 0.4, size: 2, secret }], asks: [{ price: 0.5, size: 2 }], secret },
     { t: 4, k: 'snn', weights: secret }];
   const prefix = path.join(dir, 'prefix.gz'), out = path.join(dir, 'public.jsonl'), report = path.join(dir, 'report.json');
@@ -121,4 +121,30 @@ test('recording prefix extraction handles gzip members and strips account, model
   assert.equal(r.status, 0, r.stderr); assert.ok(!fs.readFileSync(out, 'utf8').includes(secret));
   const m = JSON.parse(fs.readFileSync(report, 'utf8')); assert.equal(m.complete_original_archive, false); assert.equal(m.index_sources.kalshi, 1);
   assert.equal(m.candle_timeframes['1m'], 1); assert.deepEqual(m.event_counts, { index: 1, candles: 1, book: 1 });
+  const candles = fs.readFileSync(out, 'utf8').trim().split('\n').map((s) => JSON.parse(s)).find((e) => e.k === 'candles');
+  assert.deepEqual(candles.rows[1], [0, 99, 101, 100, 100, 1, 0.4], 'native Coinbase tuples retain their wire format');
+});
+
+test('observed-prefix studies keep every public book update and reject proxy and fabricated replay inputs', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-observed-prefix-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const prefix = path.join(dir, 'prefix.gz'), out = path.join(dir, 'public.jsonl.gz'), report = path.join(dir, 'report.json');
+  const events = [
+    { t: 1, k: 'index', asset: 'BTC', value: 100, src: 'proxy' },
+    { t: 2, k: 'index', asset: 'BTC', value: 100, src: 'kalshi', hist: true },
+    { t: 3, k: 'market', ticker: 'KXBTC-TEST', synth: true },
+    { t: 4, k: 'index', asset: 'BTC', value: 100, src: 'kalshi' },
+    { t: 5, k: 'book', ticker: 'KXBTC-TEST', bids: [{ price: 0.4, size: 2 }], asks: [] },
+    { t: 6, k: 'book', ticker: 'KXBTC-TEST', bids: [{ price: 0.41, size: 2 }], asks: [] },
+    { t: 7, k: 'delta', ticker: 'KXBTC-TEST', side: 'yes', price: 0.41, delta: -1, token: 'PRIVATE_VALUE' },
+    { t: 8, k: 'perp', ticker: 'KXBTCPERP', asset: 'BTC', mark: 100, fundingRate: 0.0001, account: 'PRIVATE_VALUE' },
+  ];
+  fs.writeFileSync(prefix, gzipSync(events.map((e) => JSON.stringify(e)).join('\n') + '\n'));
+  const r = spawnSync('python3', ['-B', 'research/opportunity/recordingPrefix.py', prefix, '--out', out, '--report', report, '--observed-only', '--book-every-ms', '0'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const text = gunzipSync(fs.readFileSync(out)).toString(); assert.ok(!text.includes('PRIVATE_VALUE'));
+  const rows = text.trim().split('\n').map((s) => JSON.parse(s));
+  assert.deepEqual(rows.map((e) => e.k), ['index', 'book', 'book', 'delta', 'perp']);
+  assert.equal(rows[3].delta, -1); assert.equal(rows[4].fundingRate, 0.0001);
+  const m = JSON.parse(fs.readFileSync(report, 'utf8')); assert.equal(m.proxy_or_synthetic_skipped, 3); assert.equal(m.book_every_ms, 0);
+  assert.equal(m.filtered_sha256, createHash('sha256').update(fs.readFileSync(out)).digest('hex'));
 });

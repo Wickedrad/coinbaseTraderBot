@@ -181,10 +181,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: atlas-history-study
-          path: |
-            research/out/atlas-history-study/
-            ${{ runner.temp }}/atlas-derivation.json
-            ${{ runner.temp }}/atlas-study-filtered/archive-validation.json
+          path: research/out/atlas-history-study/
           if-no-files-found: warn
           retention-days: 7
       - name: Save research archive and audit (credentials excluded)

@@ -2,7 +2,9 @@
 
 The owner authorized continuous implementation through a finished product. Work
 continues on PR #306; intermediate components do not require separate approval.
-The existing restrictions on deployment, live entry changes and main merges remain.
+The owner subsequently authorized main merges. Deployment and live entry changes
+still require approval; research merges use `[skip deploy]` to avoid a server restart.
+Data work and training run on GitHub runners, without Lightsail access.
 
 The release target is a usable offline/paper research product with the complete
 data-to-forecast-to-position-query path, explicit validation evidence and no bypass
@@ -26,21 +28,27 @@ reported separately; neither tests nor synthetic demonstrations establish an edg
 
 ## Qualification
 
-The original study retains pre-2025 training, 2025 development and a frozen 2026
-final period. Existing archives may be read with their actual provider identity;
-all fresh acquisition remains tvdatafeed-only. Official index samples, observed
-contract terms/quotes and causal SNN state are not invented from minute candles.
+The original `legacy-pre2025-frozen2026-v1` study remains separately identified.
+The owner authorized `prospective-2026-11-09-v1`: earlier 2026 data may be used for
+development, and observations from November 9 onward are a fresh holdout. Reused
+2026 data is no longer unseen validation evidence. A forecast must also follow
+the actual publication of its artifact; a calendar boundary cannot backdate it.
+Existing archives retain their declared provider identity. Fresh acquisition
+remains tvdatafeed-only. Official ticks and SNN states are not invented from OHLC.
 
-Current evidence contains a short pre-2025 minute sample and a larger 2026 archive.
-Expanded archive discovery is required before asserting adequate historical
-coverage. Release evidence must state missing coverage, calibration failures,
-assumptions and any remaining qualification blockers. An absent qualified model
-must produce abstention rather than an invented confident forecast.
+GitHub run [42538058087](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42538058087)
+processed the located multi-year archive: 21,070,767 usable minute rows, 14,618
+decision frames, 192,932 path labels and eight purged rolling evaluation folds.
+BTC/ETH begin in 2017; other assets start later. Off-grid BTC/ETH rows are preserved
+in raw inputs and excluded in a receipt-checked derived copy, without shifting
+their timestamps. The first tree fit did not show reliable gain over geometry:
+exploratory weekly log-loss gain -0.01388, interval [-0.03719, 0.00635].
 
-Read-only catalog run 42517257689 also located recording filenames dated
-2026-10-21 through 2026-11-07. The bounded catalog is partial and does not establish
-their official-index contents. They remain in the frozen period. No sufficiently
-deep prefinal joined official-index, contract, quote and SNN dataset is qualified.
+The archived recording probe confirmed official Kalshi index messages, native
+Coinbase 1m candle arrays, recorded strikes, and both 15m/hourly contracts. Prefix
+checks establish selected observed minutes, not complete-archive coverage or fill
+fidelity. The bounded contract/S5/S6 engineering study and smooth historical
+comparison use GitHub runners. No trained model is qualified for live trading.
 
 The software checklist is separate from these unfulfilled evidence requirements:
 

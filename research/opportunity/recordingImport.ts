@@ -93,7 +93,11 @@ export async function writeRecordingInputs(dir: string, staging: string, options
         if (!trackers.has(e.asset)) trackers.set(e.asset, new IndexTracker(e.asset, 2 * 3600000));
         trackers.get(e.asset)!.add(e.value, ts);
       } else if (e.k === 'candles' && e.tf === '1m' && providers.has(e.asset)) {
-        const rows = [...(e.rows ?? [])] as Candle[];
+        // Native Coinbase recorder rows use seconds and [time, low, high, open, close,
+        // volume, optional taker-buy volume], unlike the historical CSV's Candle objects.
+        const rows = (e.rows ?? []).map((r: Candle | number[]): Candle => Array.isArray(r)
+          ? { ts: r[0] * 1000, o: r[3], h: r[2], l: r[1], c: r[4], v: r[5], ...(r.length === 7 ? { tb: r[6] } : {}) }
+          : r) as Candle[];
         rows.sort((a, b) => a.ts - b.ts);
         for (const bar of rows) {
           if (bar.ts + 60000 > e.t) { counts.formingCandlesSkipped++; continue; }
@@ -199,6 +203,6 @@ export async function writeRecordingInputs(dir: string, staging: string, options
     limitations: ['Historical candle provider identity remains whatever the recording establishes; no provider fallback or relabeling',
       'No reconstructed price bridges or minute-derived ticks', 'Missing daily context remains absent',
       'The existing recording reader tolerates torn lines; sampled path gaps still fail closed',
-      'Quoted costs are explicit import assumptions, not measured fills; results in 2026 remain withheld'] };
+      'Quoted costs are explicit import assumptions, not measured fills; final outcomes remain withheld under the registered study policy'] };
   fs.writeFileSync(path.join(staging, 'import-report.json'), JSON.stringify(report, null, 2) + '\n'); return report;
 }

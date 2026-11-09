@@ -9,6 +9,10 @@ export async function runHistoryStudy(options: { archive: string; out: string; p
   const policy = studyPolicy(options.policyId), root = path.resolve(options.out);
   if (fs.existsSync(root) || !Number.isSafeInteger(options.spacing) || options.spacing < 60 || options.spacing > 10080) throw new Error('new output and valid predetermined spacing required');
   fs.mkdirSync(root, { recursive: true });
+  for (const name of ['archive-validation.json', 'derivation.json', 'export-provenance.json']) {
+    const file = path.join(options.archive, name);
+    if (fs.existsSync(file)) fs.copyFileSync(file, path.join(root, name));
+  }
   const plan = { expanding: false, trainMs: 90 * 86400000, stoppingMs: 30 * 86400000, calibrationMs: 30 * 86400000,
     evaluationMs: 30 * 86400000, stepMs: 400 * 86400000, maxFolds: 9, embargoMs: 3600000 };
   fs.writeFileSync(path.join(root, 'registration.json'), JSON.stringify({ policy, spacing: options.spacing, plan,

@@ -38,8 +38,10 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
   }
   for (const op of readTape(file)) {
     // Legacy step/score T is floor(recorded arrival / 1s), whereas settlement now
-    // retains milliseconds. Delay rounded calls a full second by default.
-    const at = op.op === TAPE_OP.SETTLE ? op.now : op.T + inputLagMs;
+    // retains milliseconds. Put settlements in the same conservative arrival bucket,
+    // so a settlement within a rounded step's second cannot rewind the network.
+    const at = op.op === TAPE_OP.SETTLE
+      ? Math.max(op.now, Math.floor(op.now / 1000) * 1000 + inputLagMs) : op.T + inputLagMs;
     if (op.op === TAPE_OP.STEP) {
       if (at <= previousStep) throw new Error('duplicate or reversed SNN step');
       advance(at, op.inputs); previousStep = at;

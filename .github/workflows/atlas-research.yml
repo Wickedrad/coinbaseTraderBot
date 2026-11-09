@@ -7,6 +7,10 @@ on:
         description: 'Run containing the fixed atlas-history-archive artifact (market data only)'
         default: '42522123037'
         required: true
+      dataset_run:
+        description: 'Optional atlas-history-study run; reuse its verified dataset for the fixed smooth/tree comparison'
+        default: ''
+        required: false
       study_policy:
         description: 'Registered study: prospective-2026-11-09-v1 or legacy-pre2025-frozen2026-v1'
         default: 'prospective-2026-11-09-v1'
@@ -22,6 +26,7 @@ permissions:
 
 jobs:
   history-study:
+    if: inputs.dataset_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -51,6 +56,8 @@ jobs:
       - name: Register the study before constructing labels
         run: |
           mkdir -p research/out/atlas-history-study
+          cp "$RUNNER_TEMP/atlas-filtered/archive-validation.json" research/out/atlas-history-study/
+          cp "$RUNNER_TEMP/atlas-filtered/derivation.json" research/out/atlas-history-study/
           node --import tsx --input-type=module <<'JS'
           import fs from 'node:fs';
           import { studyPolicy } from './research/opportunity/studyPolicy.ts';
@@ -83,9 +90,59 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: atlas-history-study
-          path: |
-            research/out/atlas-history-study/
-            ${{ runner.temp }}/atlas-derivation.json
-            ${{ runner.temp }}/atlas-filtered/archive-validation.json
+          path: research/out/atlas-history-study/
+          if-no-files-found: warn
+          retention-days: 7
+  family-comparison:
+    if: inputs.dataset_run != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      STUDY_POLICY: ${{ inputs.study_policy }}
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install research dependencies on this runner
+        run: |
+          npm ci
+          python -m pip install --quiet numpy
+          python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Read an existing research dataset artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: atlas-history-study
+          path: ${{ runner.temp }}/atlas-existing
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.dataset_run }}
+      - name: Locate one unambiguous dataset in old or current artifact layouts
+        id: dataset
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          found = list(Path(os.environ['RUNNER_TEMP'], 'atlas-existing').rglob('dataset/manifest.json'))
+          if len(found) != 1: raise ValueError('one unambiguous decision dataset required')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out: out.write('path=' + str(found[0].parent) + '\n')
+          PY
+      - name: Compare fixed smooth and tree candidates on identical purged folds
+        env:
+          ATLAS_DATASET: ${{ steps.dataset.outputs.path }}
+        run: |
+          node --import tsx research/opportunity/runHistoryComparison.ts --dataset "$ATLAS_DATASET" \
+            --out research/out/atlas-history-comparison --study-policy "$STUDY_POLICY" --mlp-engine torch
+      - name: Save family comparison evidence (no production promotion)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-history-comparison
+          path: research/out/atlas-history-comparison/
           if-no-files-found: warn
           retention-days: 7

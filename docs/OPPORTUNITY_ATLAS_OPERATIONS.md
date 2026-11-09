@@ -36,7 +36,7 @@ repository's existing recording reader.
 ```sh
 npm run research:opportunity-product -- recordings \
   --recordings data/recordings \
-  --config research/opportunity/examples/recording-import.json \
+  --config research/opportunity/examples/prospective-recording-import.json \
   --out research/out/atlas-recording-inputs-v1
 npm run research:opportunity-product -- assemble \
   --spec research/out/atlas-recording-inputs-v1/spec.json \
@@ -158,13 +158,15 @@ Their latest observed arrivals are included in `inputKnownAt`.
 npm run research:opportunity-product -- snn-replay \
   --tape research/out/observed-inputs.tape \
   --domain crypto \
+  --study-policy prospective-2026-11-09-v1 \
   --out research/out/atlas-snn-states-v1
 ```
 
 This reuses the repository's observed-input SNN tape format and emits S5/S6 JSONL
 states. Both variants receive the same calls. Across a gap the adapter advances
 the previously observed inputs before introducing the next observation. Learning
-freezes at the pre-2025 cutoff; no future settlement trains an earlier state.
+freezes at the selected registered study's training cutoff; no future settlement
+trains an earlier state. The default legacy study still uses the pre-2025 cutoff.
 The adapter starts from a fresh network and does not transplant today's weights
 into a historical study. Its report records gaps and the tape's content hash.
 Legacy tapes round step/score timestamps down to the second while settlement
@@ -206,15 +208,19 @@ weights, or mistake the existing governor for validated selective memory.
 ```sh
 npm run research:opportunity-product -- study \
   --dataset research/out/atlas-contract-dataset-v1 \
-  --plan research/opportunity/examples/frozen-study-plan.json \
+  --plan research/opportunity/examples/prospective-study-plan.json \
   --policy research/opportunity/examples/paper-policy.json \
   --out research/out/atlas-contract-study-v1
 ```
 
-The preserved study policy fits before 2025, uses distinct stopping, beta
-calibration, family/group selection and independent audit roles, and withholds
-2026 final outcomes. The example uses separate 2025 development periods with
-embargoes. A row's full planned contract span and actual label availability must
+The approved `prospective-2026-11-09-v1` study fits before October 29, 2026, uses
+distinct stopping, beta calibration, family/group selection and independent audit
+roles before November 9, and withholds outcomes from November 9 onward. Its
+example plan has too few independent weeks to qualify a model. Use the matching
+`prospective-recording-import.json` or `prospective-prefix-import.json` when
+building its input dataset. The older `frozen-study-plan.json` remains a separate
+pre-2025/2025/frozen-2026 study; its results cannot be relabeled as prospective.
+A row's full planned contract span and actual label availability must
 fit its role. All snapshots of an asset/index/settlement event share one unit of
 weight; dense sampling or more ladder strikes cannot manufacture independent
 evidence. Training-only variable selection preserves interaction-only inputs.
@@ -296,18 +302,47 @@ no route around the risk gateway or into an order client.
 
 ## Current data and release readiness
 
-The retained pre-2025 minute sample is about 14.8 days of BTC/ETH from August
-2017. It validates software and source/label checks, not a multi-regime edge.
-The large located minute archive and observed bot recording dates are in 2026.
-Read-only catalog run `42517257689` found recording names dated October 21 through
-November 7. The bounded search is partial; filenames/size metadata do not prove
-the contents' official-index coverage. The earlier recursive catalog timed out
-and cannot establish absence of older data.
+Drive's `raw/laptop-history` namespace contains the older minute archive, with
+BTC/ETH starting August 17, 2017, and all five assets extending through October
+12, 2026. The derived archive contains 21,070,767 valid minute rows. Each of
+BTC/ETH has 21,602 off-grid rows that are retained unchanged in the raw archive
+and excluded without time shifting in the derived copy. Hashes establish which
+bytes were used, not independent provider authentication. Gaps remain gaps.
+Stored Yahoo daily context, TradingView BTC.D/USDT.D and four funding series are
+available; absent/stale features remain null. Funding uses an explicit 60-second
+publication assumption, not a verified exchange publication timestamp.
 
-Under the original frozen plan, there is currently no adequately deep joined
-prefinal official-index/contract/SNN/quote dataset. Software tests and the demo
-must not be presented as trained-model qualification, measured fill fidelity or
-readiness for real money. The 2026 outcomes remain withheld pending an explicit
-separate-study decision, or usable older archives. A forward paper trial can
-collect new evidence through the existing recorder. Deployment/live enablement
-and main merges still require owner approval of the reviewed result.
+GitHub run `42538058087` exported 14,618 sparse causal decision frames and 192,932
+path labels and fitted eight purged multi-era folds. The initial tree candidate
+did not reliably beat the simpler geometry baseline. The smooth comparison is
+an exploratory development study on the exact same exported dataset. Neither
+result establishes official-contract or economic qualification.
+
+The October 21 recording prefix contained 32,570 official Kalshi index messages,
+native Coinbase candle arrays, recorded strikes and 15m/hourly contracts. That
+probe sampled books and is diagnostic. The separate bounded engineering study
+keeps every public book snapshot/delta within selected prefixes, rejects proxy/
+synthetic inputs, and checks hashes before SNN replay. Full original days, venue
+fills and upstream websocket gap fidelity remain unverified.
+
+All heavy data processing and fitting run on GitHub, without contacting Lightsail:
+
+```sh
+gh workflow run atlas-research.yml --ref main \
+  -f dataset_run=42538058087 -f study_policy=prospective-2026-11-09-v1
+gh workflow run atlas-recordings.yml --ref main
+```
+
+The first command reuses a checked `atlas-history-study` artifact for the fixed
+smooth/tree comparison. Artifacts have finite retention; after expiry create a
+fresh export with `diagnose.yml`'s explicit Atlas archive options and provide its
+run ID. The second reads fixed bounded prefixes from existing Drive recordings,
+fits exact-contract candidates and compares S5/S6 on identical observations. Its
+short sample cannot satisfy the eight-week evidence gates. Outputs are research
+artifacts, never production model files. No source secrets enter those artifacts.
+
+The owner authorized the separate prospective study and main merges. Use a merge
+commit subject containing `[skip deploy]`; the deploy workflow skips that push.
+Deployment/live enablement still require approval. Models stay paper-only, and
+unsupported queries abstain. New holdout observations must follow real artifact
+publication; no retrospective prediction may be counted as a forward result.

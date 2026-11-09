@@ -7,6 +7,7 @@ import { loadJointPathDataset, sha256File } from './jointPathData';
 import { DEFAULT_FOLD_PLAN, JOINT_PATH_SCHEMA, trainJointPaths, type FoldPlan } from './jointPathLearner';
 import type { GbdtParams } from '../gbdt';
 import { studyPolicy } from './studyPolicy';
+import type { TrainOptions } from '../mlp';
 
 function realOutput(file: string) {
   const tail: string[] = []; let cursor = path.resolve(file);
@@ -15,6 +16,7 @@ function realOutput(file: string) {
 }
 export async function exportJointPathStudy(o: { datasetDir: string; outDir: string; smokeTest?: boolean; plan?: FoldPlan;
   studyPolicyId?: string;
+  family?: 'trees' | 'smooth'; mlpEngine?: 'ts' | 'torch' | 'auto'; smoothParams?: Partial<TrainOptions>;
   params?: Partial<GbdtParams>; maxHorizonMin?: number; maxDecisions?: number; maxPaths?: number; maxRiskRows?: number;
   onProgress?: (message: string) => void }) {
   const input = fs.realpathSync(o.datasetDir), out = realOutput(o.outDir), rel = path.relative(input, out);
@@ -22,7 +24,8 @@ export async function exportJointPathStudy(o: { datasetDir: string; outDir: stri
   if (fs.existsSync(out)) throw new Error('study output already exists');
   const repo = fileURLToPath(new URL('../../', import.meta.url)), codeHashes: Record<string, string> = {};
   for (const name of ['research/opportunity/jointPathData.ts', 'research/opportunity/jointPathLearner.ts', 'research/opportunity/jointPathCli.ts',
-    'research/opportunity/studyPolicy.ts', 'research/gbdt.ts', 'research/stats.ts', 'bot/model/trees.ts', 'bot/model/calibration.ts', 'bot/util/num.ts']) codeHashes[name] = await sha256File(path.join(repo, name));
+    'research/opportunity/studyPolicy.ts', 'research/gbdt.ts', 'research/mlp.ts', 'research/mlpTorch.ts', 'python/mlp/fit.py',
+    'bot/model/metaModel.ts', 'research/stats.ts', 'bot/model/trees.ts', 'bot/model/calibration.ts', 'bot/util/num.ts']) codeHashes[name] = await sha256File(path.join(repo, name));
   const data = await loadJointPathDataset(input, o);
   const fitted = await trainJointPaths(data, o);
   for (const [name, hash] of Object.entries(data.inputHashes)) if (await sha256File(path.join(input, name)) !== hash) throw new Error('dataset changed during fit');
@@ -51,6 +54,7 @@ async function main() {
   const smokeTest = process.argv.includes('--smoke-test'), day = 86400000;
   const report = await exportJointPathStudy({ datasetDir: path.resolve(arg('dataset', 'research/out/opportunity-decisions')),
     studyPolicyId: arg('study-policy', studyPolicy().id),
+    family: arg('family', 'trees') as 'trees' | 'smooth', mlpEngine: arg('mlp-engine', 'ts') as 'ts' | 'torch' | 'auto',
     outDir: path.resolve(arg('out', 'research/out/opportunity-joint-study')), smokeTest,
     params: { nTrees: Number(arg('trees', '48')), maxDepth: Number(arg('depth', '3')) },
     maxHorizonMin: Number(arg('max-horizon-min', '60')), maxDecisions: Number(arg('max-decisions', '20000')),
