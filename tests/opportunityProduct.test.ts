@@ -175,7 +175,7 @@ test('actual SNN tape adapter advances old inputs before new arrivals and freeze
   const a = [{ key: 'BTC-15m', asset: 'BTC', price: 100, mid: undefined, values: {} }], b = [{ ...a[0], price: 200 }];
   w.step(start, a); w.step(start + 5000, b); w.close();
   const states: ReturnType<typeof captureSnnState>[] = [];
-  const report = replayAtlasSnnTape(tape, { variant: 'S5', sourceSha256: sha, inputLagMs: 0, everyMs: 1000, params, learningBefore: start + 3000, onState: (s) => states.push(s) });
+  const report = replayAtlasSnnTape(tape, { variant: 'S5', sourceSha256: sha, inputLagMs: 0, maximumInputGapMs: 10000, everyMs: 1000, params, learningBefore: start + 3000, onState: (s) => states.push(s) });
   const net = new SnnNetwork({ ...params, flags: stageFlags('S5') });
   net.step(start, a); net.step(start + 2000, []); net.pauseLearning = true; net.step(start + 4000, []); net.step(start + 5000, b);
   const expected = captureSnnState(net, start + 5000, { ...states[1].provenance });
@@ -186,6 +186,18 @@ test('actual SNN tape adapter advances old inputs before new arrivals and freeze
   const guarded = replayAtlasSnnTape(legacy, { variant: 'S5', sourceSha256: sha, everyMs: 1000, params, onState: (s) => delayed.push(s) });
   assert.equal(guarded.inputLagMs, 1000); assert.deepEqual(delayed.map((s) => s.asOf), [start + 1000, start + 2000]);
   assert.equal(delayed[1].provenance.inputKnownAt, start + 2000, 'rounded tape calls cannot claim subsecond availability');
+});
+
+test('unobserved SNN intervals cannot grade pending calls on stale held or later prices', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-tape-gap-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'gapped.tape'), w = new TapeWriter(file), states: ReturnType<typeof captureSnnState>[] = [];
+  const input = (price: number) => [{ key: 'BTC-15m', asset: 'BTC', price, mid: undefined, values: {} }];
+  w.step(start, input(100)); w.step(start + 1000, input(110)); w.step(start + 1801000, input(200)); w.close();
+  const result = replayAtlasSnnTape(file, { variant: 'S6', sourceSha256: sha, inputLagMs: 0, everyMs: 1000,
+    params: { ...DEFAULT_SNN, nE: 8, nI: 2, nL1: 4 }, onState: (s) => states.push(s) });
+  assert.equal(result.gapResets, 1); assert.equal(result.maximumInputGapMs, 3000);
+  assert.equal(states.at(-1)!.columns[0].values.readout_labelled, 0, 'missing horizon must not become a direction-learning example');
+  assert.equal(states.at(-1)!.provenance.maximumInputGapMs, 3000);
 });
 
 test('assembly, persisted study, registry query and shadow logging run end to end with checked receipts', async (t) => {

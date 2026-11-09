@@ -163,8 +163,11 @@ npm run research:opportunity-product -- snn-replay \
 ```
 
 This reuses the repository's observed-input SNN tape format and emits S5/S6 JSONL
-states. Both variants receive the same calls. Across a gap the adapter advances
-the previously observed inputs before introducing the next observation. Learning
+states. Both variants receive the same calls. For holds up to three seconds the
+adapter advances previously observed inputs before the next observation. Longer
+input gaps clear transient state, held inputs and pending direction/contract tags
+while preserving learned weights. Missing horizon prices cannot grade old calls.
+The gap policy is part of state/model compatibility. Learning
 freezes at the selected registered study's training cutoff; no future settlement
 trains an earlier state. The default legacy study still uses the pre-2025 cutoff.
 The adapter starts from a fresh network and does not transplant today's weights

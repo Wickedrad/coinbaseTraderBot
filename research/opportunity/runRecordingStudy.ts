@@ -6,7 +6,7 @@ import { recordSnnTape } from '../snnTape';
 import { domainParams } from '../../bot/snn/params';
 import { recordingFiles } from '../../bot/marketdata/recordingFiles';
 import { replayAtlasSnnTape } from './snnReplay';
-import type { AtlasSnnState } from './snnState';
+import { combineSnnStates, type AtlasSnnState } from './snnState';
 import { sha256File } from './jointPathData';
 import { studyPolicy } from './studyPolicy';
 import { assembleContractDataset, exportContractStudy, exportPaperShadow, exportRecordingInputs, exportSnnComparison,
@@ -47,17 +47,27 @@ export async function runRecordingStudy(o: { recordings: string; config: string;
   const study = await exportContractStudy(path.join(base, 'dataset'), o.plan, o.paperPolicy, path.join(base, 'study'), parameters);
   const desiredSeconds = new Set<number>();
   for await (const d of decisions(path.join(base, 'inputs/decisions.jsonl'))) desiredSeconds.add(Math.floor(d.asOf! / 1000) * 1000);
-  const tape = path.join(root, 'observed-crypto.tape');
-  console.log('Recording the existing crypto SNN input mapping on these observed prefixes');
-  await recordSnnTape(o.recordings, tape, { params: domainParams('crypto'), domain: 'crypto', lean: true,
-    skipModel: true, fromDay: config.fromDay, toDay: config.toDay, scoreEverySec: 60, assetEverySec: 5 });
-  const tapeHash = await sha256File(tape), snapshots: Record<string, Map<number, AtlasSnnState>> = {};
-  const replayReports = [];
+  const snapshots: Record<string, Map<number, AtlasSnnState>> = {}, replayReports = [];
+  const domainStates: Record<string, Record<string, Map<number, AtlasSnnState>>> = {};
+  for (const domain of ['crypto', 'perps'] as const) {
+    const tape = path.join(root, `observed-${domain}.tape`); domainStates[domain] = {};
+    console.log(`Recording the existing ${domain} SNN input mapping on observed prefixes`);
+    await recordSnnTape(o.recordings, tape, { params: domainParams(domain), domain, lean: true,
+      skipModel: true, fromDay: config.fromDay, toDay: config.toDay, scoreEverySec: 60, assetEverySec: 5 });
+    const tapeHash = await sha256File(tape);
+    for (const variant of ['S5', 'S6'] as const) {
+      const selected = new Map<number, AtlasSnnState>(); domainStates[domain][variant] = selected;
+      console.log(`Replaying ${domain} ${variant}; weights freeze at ${new Date(policy.trainBefore).toISOString()}`);
+      replayReports.push(replayAtlasSnnTape(tape, { variant, domain, sourceSha256: tapeHash, studyPolicyId: policy.id,
+        everyMs: 1000, params: domainParams(domain), onState: (state) => { if (desiredSeconds.has(state.asOf)) selected.set(state.asOf, state); } }));
+    }
+  }
   for (const variant of ['S5', 'S6'] as const) {
     const selected = new Map<number, AtlasSnnState>(); snapshots[variant] = selected;
-    console.log(`Replaying ${variant}; weights freeze at ${new Date(policy.trainBefore).toISOString()}`);
-    replayReports.push(replayAtlasSnnTape(tape, { variant, domain: 'crypto', sourceSha256: tapeHash, studyPolicyId: policy.id,
-      everyMs: 1000, params: domainParams('crypto'), onState: (state) => { if (desiredSeconds.has(state.asOf)) selected.set(state.asOf, state); } }));
+    for (const second of [...desiredSeconds].sort((a, b) => a - b)) {
+      const states = ['crypto', 'perps'].map((domain) => domainStates[domain][variant].get(second));
+      if (states.every((s) => s !== undefined)) selected.set(second, combineSnnStates(states as AtlasSnnState[]));
+    }
     fs.writeFileSync(path.join(root, `states-${variant}.jsonl`), [...selected.values()].map((s) => JSON.stringify(s)).join('\n') + '\n');
   }
   const spec = JSON.parse(fs.readFileSync(baseSpecFile, 'utf8')) as AssemblySpec;
@@ -93,7 +103,7 @@ export async function runRecordingStudy(o: { recordings: string; config: string;
     limitations: ['Bounded prefixes cover selected hours, not full days or all recorded data',
       'Post-audit paper queries use explicit historical-audit mode and are not prospective forecasts made before their outcomes',
       'Source arrival and original websocket gap fidelity still require independent verification',
-      'Sparse-day SNN gaps reset transients using the existing network policy; no unobserved market paths are synthesized',
+      'Missing SNN input intervals clear transients and pending labels while preserving weights; no unobserved market paths are synthesized',
       'Fresh forward-paper observations and independent weeks remain required; this job cannot qualify live trading'] };
   fs.writeFileSync(path.join(root, 'summary.json'), JSON.stringify(report, null, 2) + '\n');
   return report;

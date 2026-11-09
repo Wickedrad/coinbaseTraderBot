@@ -48,7 +48,8 @@ export function featureFamily(name: string): FeatureFamily | null {
   if (name.includes('yahoo') || name.includes('daily')) return 'daily';
   return 'ta';
 }
-export const snnIdentity = (o: ContractObservation) => o.snn ? digest([o.snn.version, o.snn.flagsSha256, o.snn.provenance.domain, o.snn.provenance.variant, o.snn.provenance.inputLagMs ?? 0]) : null;
+export const snnIdentity = (o: ContractObservation) => o.snn ? digest([o.snn.version, o.snn.flagsSha256, o.snn.provenance.domain, o.snn.provenance.variant, o.snn.provenance.inputLagMs ?? 0,
+  ...(o.snn.provenance.maximumInputGapMs !== undefined ? [o.snn.provenance.maximumInputGapMs] : [])]) : null;
 export const contractSupportKey = (o: ContractObservation, withSnn = true) => digest([o.query.asset, o.query.side, o.query.contract.terms.kind,
   o.query.contract.settlementReference, o.query.contract.averagingSec, o.query.geometry.life_sec, o.event,
   o.event.thresholdAtr || o.event.priorDriftAtr ? o.anchor?.definition : null, o.termsBasis, withSnn ? snnIdentity(o) : null]);

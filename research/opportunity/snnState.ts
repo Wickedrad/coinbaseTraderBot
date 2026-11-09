@@ -10,6 +10,8 @@ export interface SnnProvenance {
   domain: 'crypto' | 'perps' | 'combined';
   /** Conservative lag for rounded legacy tape calls; zero for an exact observed clock. */
   inputLagMs?: number;
+  /** Longer observed-input gaps clear transient state and pending labels in research replay. */
+  maximumInputGapMs?: number;
   /** Latest arrival used by the caller's causal replay, including input and settlement messages. */
   inputKnownAt: number; basis: 'observed-tape' | 'forward-paper'; variant: 'S5' | 'S6';
 }
@@ -30,6 +32,7 @@ export function validateSnnState(s: AtlasSnnState, asOf: number, maximumAgeMs = 
       Object.values(s.flags).some((v) => typeof v !== 'boolean') || !/^[a-f0-9]{64}$/.test(p.inputSourceSha256) ||
       !['crypto', 'perps', 'combined'].includes(p.domain) ||
       !Number.isSafeInteger(p.inputLagMs ?? 0) || (p.inputLagMs ?? 0) < 0 || (p.inputLagMs ?? 0) > 60000 ||
+      (p.maximumInputGapMs !== undefined && (!Number.isSafeInteger(p.maximumInputGapMs) || p.maximumInputGapMs < 1000 || p.maximumInputGapMs > 60000)) ||
       !s.flags.lateral || !s.flags.pc || (p.variant === 'S6' ? !s.flags.plasticity || !s.flags.pcLearn : s.flags.plasticity || s.flags.pcLearn) ||
       !/^[a-f0-9]{64}$/.test(p.checkpointSha256) || !['S5', 'S6'].includes(p.variant) ||
       !['observed-tape', 'forward-paper'].includes(p.basis) ||
@@ -86,7 +89,8 @@ export function combineSnnStates(states: AtlasSnnState[]): AtlasSnnState {
   if (states.length !== 2 || states.some((s) => s.provenance.domain === 'combined') || new Set(states.map((s) => s.provenance.domain)).size !== 2) throw new Error('one crypto and one perps SNN state required');
   const ordered = [...states].sort((a, b) => a.provenance.domain.localeCompare(b.provenance.domain)), first = ordered[0];
   for (const s of ordered) { validateSnnState(s, first.asOf); if (s.provenance.variant !== first.provenance.variant || s.provenance.basis !== first.provenance.basis ||
-    (s.provenance.inputLagMs ?? 0) !== (first.provenance.inputLagMs ?? 0)) throw new Error('incompatible SNN variants/bases/input clocks'); }
+    (s.provenance.inputLagMs ?? 0) !== (first.provenance.inputLagMs ?? 0) ||
+    s.provenance.maximumInputGapMs !== first.provenance.maximumInputGapMs) throw new Error('incompatible SNN variants/bases/input clocks'); }
   const hash = (x: unknown) => createHash('sha256').update(JSON.stringify(x)).digest('hex');
   const components = ordered.map((s) => ({ domain: s.provenance.domain as 'crypto' | 'perps', version: s.version,
     flagsSha256: s.flagsSha256, checkpointSha256: s.provenance.checkpointSha256, inputSourceSha256: s.provenance.inputSourceSha256 }));
@@ -97,6 +101,7 @@ export function combineSnnStates(states: AtlasSnnState[]): AtlasSnnState {
       checkpointSha256: hash(components.map((c) => c.checkpointSha256)), inputSourceSha256: hash(components.map((c) => c.inputSourceSha256)),
       checkpointKnownAt: Math.max(...ordered.map((s) => s.provenance.checkpointKnownAt)),
       inputLagMs: Math.max(...ordered.map((s) => s.provenance.inputLagMs ?? 0)),
+      ...(first.provenance.maximumInputGapMs !== undefined ? { maximumInputGapMs: first.provenance.maximumInputGapMs } : {}),
       trainedThrough: Math.max(...ordered.map((s) => s.provenance.trainedThrough)), inputKnownAt: Math.max(...ordered.map((s) => s.provenance.inputKnownAt)) },
     columns: ordered.flatMap((s) => s.columns.map((c) => ({ ...c, key: `${s.provenance.domain}_${c.key}`, values: { ...c.values } }))) };
   validateSnnState(combined, combined.asOf); return combined;
