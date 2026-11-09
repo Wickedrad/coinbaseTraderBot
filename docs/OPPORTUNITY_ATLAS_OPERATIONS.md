@@ -1,5 +1,11 @@
 # Conditional Opportunity Atlas: offline and paper operation
 
+The owner's current objective is **reliable advance movement followed by a
+fee-net sale using the existing dynamic hourly profit clock**. Start with
+[advance movement and profit-taking](OPPORTUNITY_ATLAS_PROFIT_OBJECTIVE.md).
+The older joint settlement workflow below remains a separate diagnostic;
+settlement wins and its payout calibration are not the movement learning target.
+
 This release supplies the data-to-query research workflow. It does **not** include
 a qualified trading model. It never submits orders, changes the bot's parameters,
 promotes a production model, deploys, or merges. The existing bot, TA network,

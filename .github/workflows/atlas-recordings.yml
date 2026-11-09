@@ -16,6 +16,11 @@ on:
         type: boolean
         default: false
         required: false
+      movement_only:
+        description: 'With study_run, learn advance movement from its inputs; ignores settlement outcomes and preserves the live profit pacer'
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -124,13 +129,19 @@ jobs:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.study_run }}
       - name: Refit only the verified datasets and evaluate their locked paper queries
+        if: ${{ !inputs.movement_only }}
         run: |
           node --import tsx research/opportunity/refitRecordingStudy.ts --source "$RUNNER_TEMP/atlas-recording-source" \
             --out research/out/atlas-recording-refit
+      - name: Learn advance movement independently of settlement and quoted payouts
+        if: inputs.movement_only
+        run: |
+          npm run research:opportunity-movement -- run --source "$RUNNER_TEMP/atlas-recording-source" \
+            --out research/out/atlas-movement-study
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: atlas-recording-refit
-          path: research/out/atlas-recording-refit/
+          name: ${{ inputs.movement_only && 'atlas-movement-study' || 'atlas-recording-refit' }}
+          path: ${{ inputs.movement_only && 'research/out/atlas-movement-study/' || 'research/out/atlas-recording-refit/' }}
           if-no-files-found: warn
           retention-days: 90

@@ -1,7 +1,15 @@
 # Opportunity Atlas release acceptance
 
+The owner clarified that the predictive requirement is reliable advance movement.
+Normal profit-taking uses the existing dynamic $4.50/hour clock and maintained
+Kalshi fee schedule. Settlement prediction is a separate diagnostic; profitable
+positions may use the configured final-window exception. See
+[the updated objective and commands](OPPORTUNITY_ATLAS_PROFIT_OBJECTIVE.md).
+
 The owner authorized continuous implementation through a finished product. The
 core workflow merged in PR #306; PR #307 verifies the recorded-input follow-up.
+PR #308 adds the independent advance-movement objective and reuses the existing
+fee-aware profit clock through a read-only adapter.
 Intermediate components do not require separate approval.
 The owner subsequently authorized main merges. Deployment and live entry changes
 still require approval; research merges use `[skip deploy]` to avoid a server restart.
@@ -26,6 +34,8 @@ reported separately; neither tests nor synthetic demonstrations establish an edg
 - [x] Paper entry/hold/reduce/exit evaluation from probabilities, quotes and costs.
 - [x] End-to-end recording/replay/study/query/status commands and operating guide.
 - [x] Regression, causal invariants, failure cases and end-to-end verification.
+- [x] Independent advance-movement labels/models, movement-only S5/S6 comparison,
+      actual forecast-publication lead and native profit-clock/fee exit queries.
 
 ## Qualification
 
@@ -73,15 +83,37 @@ No indicator/SNN family was retained. The audit has one week, two confirmed even
 zero executable quotes and insufficient conditional calibration. All 1,080
 historical paper queries abstained; there is no forward-trial evidence yet.
 
-The final executable source and workflow revision passed GitHub CI
+The preceding recording source and workflow revision passed GitHub CI
 [42568299149](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42568299149):
 1,243 tests, zero failures/skips, typecheck and build. Windows packaging and CodeQL
 also passed. The final evidence update changes documentation only.
 
+The movement-only replay
+[42583415334](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42583415334)
+reuses those archived inputs without consuming settlement results or payout
+models. Physical queries are deduplicated across sides/strikes: 1,550 complete
+base movement examples and 1,526 per SNN variant. Smooth, tree and temporal-linear
+heads all fit real data; trees won selection, with 65 distinct base training events
+and 63 per SNN variant. No conditional feature family had sufficient independent
+retention evidence. The supported audit cohort contains 74 rows in one week;
+movement predictive gain and calibration remain unqualified. All 918 retrospective
+queries remain unsupported/unqualified, with zero forward observations.
+
+The movement source `a84af4197fe27447245b277fa2f813d4fb2a9aed` passed GitHub CI
+[42583417179](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42583417179):
+1,257 tests, zero failures/skips, typecheck and production build. Windows
+packaging and all CodeQL languages passed. The subsequent evidence changes
+only documentation; no executable source differs from that tested revision.
+
+The movement evidence and exact source CI results are recorded in
+[OPPORTUNITY_ATLAS_MOVEMENT_VALIDATION.json](OPPORTUNITY_ATLAS_MOVEMENT_VALIDATION.json).
+Settlement wins and executable quotes do not gate movement qualification; actual
+sale/fill performance remains a separate claim.
+
 The software checklist is separate from these unfulfilled evidence requirements:
 
 - [ ] Adequate observed training/development coverage under an approved study plan.
-- [ ] Independent predictive, conditional, S5/S6 and fee-net qualification.
+- [ ] Independent advance-movement predictive/calibration and conditional S5/S6 evidence.
 - [ ] Measured venue fill/replay fidelity and a completed forward paper trial.
 - [ ] Owner-approved production integration, deployment and live enablement.
 

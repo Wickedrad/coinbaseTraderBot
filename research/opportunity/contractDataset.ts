@@ -152,6 +152,48 @@ export function encodeContractObservation(o: ContractObservation): Record<string
   return x;
 }
 
+export interface TimelyMovementOutcome {
+  schema: 'opportunity-timely-movement-v1'; observationId: string; plannedThrough: number; knownAt: number;
+  status: 'complete' | 'pending' | 'missing-index'; timelyMove: boolean | null; advanceMove: boolean | null;
+  firstMoveAt: number | null; minimumLeadMs: number; leadMs: number | null; mfeBps: number | null; maeBps: number | null;
+  reason: string | null;
+}
+/** A future movement label, independent of whether the contract eventually settles YES.
+ * The same observed path and sustain algorithm is used by the older joint diagnostic. */
+export function labelTimelyMovement(o: ContractObservation, evidence: IndexEvidence, knownBy: number,
+  byAt = o.query.effectBy, minimumLeadMs = 0): TimelyMovementOutcome {
+  encodeContractObservation(o); validateIndex(evidence);
+  const q = o.query, e = o.event;
+  if (!stamp(knownBy) || !stamp(byAt) || byAt <= q.asOf || byAt > q.effectBy || !stamp(minimumLeadMs) || minimumLeadMs > 86400000 ||
+      evidence.asset !== q.asset || evidence.reference !== o.index.reference || evidence.sourceSha256 !== o.index.sourceSha256) throw new Error('invalid movement label provenance/deadline');
+  const out: TimelyMovementOutcome = { schema: 'opportunity-timely-movement-v1', observationId: o.id, plannedThrough: byAt, knownAt: knownBy,
+    status: 'pending', timelyMove: null, advanceMove: null, firstMoveAt: null, minimumLeadMs, leadMs: null, mfeBps: null, maeBps: null, reason: null };
+  if (knownBy < byAt) return out;
+  const unavailable = (reason: string): TimelyMovementOutcome => ({ ...out, status: 'missing-index', reason });
+  let labelKnownAt = byAt, firstMoveAt: number | null = null;
+  const sign = e.direction === 'up' ? 1 : -1, start = o.index.value;
+  const prior = e.priorWindowSec ? point(evidence, q.asOf - e.priorWindowSec * 1000, q.asOf) : null;
+  if (e.kind !== 'move' && !prior) return unavailable('preceding drift unavailable');
+  const priorDrift = prior ? sign * Math.log(start / prior.value) * 10000 : 0;
+  const eligible = e.kind === 'move' || (e.kind === 'reversal' ? priorDrift <= -priorThresholdBps(o) : priorDrift >= priorThresholdBps(o));
+  const moves: number[] = [], times: number[] = [];
+  for (let mark = q.asOf + 1000; mark <= byAt; mark += 1000) {
+    const p = point(evidence, mark, knownBy);
+    if (!p) return unavailable('movement grid has an index gap');
+    labelKnownAt = Math.max(labelKnownAt, p.knownAt);
+    moves.push(sign * (p.value / start - 1) * 10000); times.push(mark);
+  }
+  // Fractional last seconds are explicitly outside this one-second event definition.
+  for (let i = 0; eligible && i < moves.length; i++) {
+    if (moves[i] < moveThresholdBps(o) || i + e.sustainSec >= moves.length) continue;
+    if (moves.slice(i, i + e.sustainSec + 1).every((m) => m >= moveThresholdBps(o) * e.sustainFraction)) { firstMoveAt = times[i]; break; }
+  }
+
+  const leadMs = firstMoveAt === null ? null : firstMoveAt - q.asOf;
+  return { ...out, knownAt: labelKnownAt, status: 'complete', firstMoveAt, leadMs, timelyMove: firstMoveAt !== null,
+    advanceMove: leadMs !== null && leadMs >= minimumLeadMs, mfeBps: Math.max(0, ...moves), maeBps: Math.min(0, ...moves) };
+}
+
 /** Labels use a decision-anchored one-second movement grid and the existing official
  * sixty-mark settlement rule. No minute closes, interpolation or missing-index NO labels. */
 export function labelContract(o: ContractObservation, evidence: IndexEvidence, knownBy: number,
@@ -172,27 +214,14 @@ export function labelContract(o: ContractObservation, evidence: IndexEvidence, k
   let labelKnownAt = c.closeTime;
   for (let mark = c.closeTime - (c.averagingSec! - 1) * 1000; mark <= c.closeTime; mark += 1000)
     labelKnownAt = Math.max(labelKnownAt, point(evidence, mark, knownBy)!.knownAt);
-  const sign = e.direction === 'up' ? 1 : -1, start = o.index.value;
-  const prior = e.priorWindowSec ? point(evidence, q.asOf - e.priorWindowSec * 1000, q.asOf) : null;
-  if (e.kind !== 'move' && !prior) return unavailable('preceding drift unavailable');
-  const priorDrift = prior ? sign * Math.log(start / prior.value) * 10000 : 0;
-  const eligible = e.kind === 'move' || (e.kind === 'reversal' ? priorDrift <= -priorThresholdBps(o) : priorDrift >= priorThresholdBps(o));
-  const moves: number[] = [], times: number[] = [];
-  for (let mark = q.asOf + 1000; mark <= q.effectBy; mark += 1000) {
-    const p = point(evidence, mark, knownBy);
-    if (!p) return unavailable('movement grid has an index gap');
-    labelKnownAt = Math.max(labelKnownAt, p.knownAt);
-    moves.push(sign * (p.value / start - 1) * 10000); times.push(mark);
-  }
-  // Fractional last seconds are explicitly outside this one-second event definition.
-  for (let i = 0; eligible && i < moves.length; i++) {
-    if (moves[i] < moveThresholdBps(o) || i + e.sustainSec >= moves.length) continue;
-    if (moves.slice(i, i + e.sustainSec + 1).every((m) => m >= moveThresholdBps(o) * e.sustainFraction)) { out.firstMoveAt = times[i]; break; }
-  }
+  const movement = labelTimelyMovement(o, evidence, knownBy);
+  if (movement.status !== 'complete') return unavailable(movement.reason ?? 'movement path unavailable');
+  labelKnownAt = Math.max(labelKnownAt, movement.knownAt);
+  out.firstMoveAt = movement.firstMoveAt;
   const a = settlement.avg, terms = c.terms;
   const yes = terms.kind === 'less' ? a < terms.cap! : a >= terms.strike! && (terms.kind !== 'between' || a < terms.cap!);
   out.settlementAverage = a; out.timelyMove = out.firstMoveAt !== null; out.sidePays = q.side === 'yes' ? yes : !yes;
-  out.mfeBps = Math.max(0, ...moves); out.maeBps = Math.min(0, ...moves); out.terminalMoveBps = (a / start - 1) * 10000;
+  out.mfeBps = movement.mfeBps; out.maeBps = movement.maeBps; out.terminalMoveBps = (a / o.index.value - 1) * 10000;
   out.officialResultConfirmed = !!actualResult && actualResult.knownAt <= knownBy;
   if (out.officialResultConfirmed) labelKnownAt = Math.max(labelKnownAt, actualResult!.knownAt);
   out.knownAt = labelKnownAt;
