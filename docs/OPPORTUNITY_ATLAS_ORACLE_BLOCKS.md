@@ -35,6 +35,8 @@ cumulative model rather than historical row count. Quarterly tables survive a
 later block failure. Feature checkpoints document continuity, not a complete
 resume protocol for pending labels. The all-history matrix is saved separately
 after the historical forecasts and never predicts its own earlier training dates.
+Embargoed answers become learnable in later blocks when their delay has elapsed;
+the final fit includes all resolved answers before the global training cutoff.
 These folds are unseen to their particular model; reused history remains development
 evidence rather than a fresh prospective trial.
 
@@ -54,6 +56,9 @@ adjacent knots, with periodic wrapping and continuous inference interpolation.
 These knots are storage coordinates, not trading triggers. Tables retain effective
 evidence, up/sideways/down frequencies, return moments and future excursions;
 raw observed ranges are recorded per block.
+Excursion columns preserve the existing labeler's signed log distances to the
+future high and low; a distance can be negative when every future price stays on
+the other side of entry. They describe observed extrema, not fillable exit prices.
 
 Sideways means terminal return inside
 `max(1bp, 0.25 * current completed 15m ATRbps * sqrt(horizon/15))`. This causal
@@ -92,6 +97,8 @@ gh workflow run atlas-research.yml --ref feature/atlas-oracle-blocks \
 GitHub reads the fixed raw artifact once and shares the audited derivative with
 five asset jobs. Each completes its Oracle pass before its walk. There is no
 observation cap or sparse spacing.
+An earlier successful preparation can be reused with `-f prepared_run=<run-id>`;
+all input hashes are checked again before the asset runs.
 
 Artifacts `atlas-oracle-result-BTC`, `-ETH`, `-SOL`, `-XRP`, `-DOGE` contain:
 

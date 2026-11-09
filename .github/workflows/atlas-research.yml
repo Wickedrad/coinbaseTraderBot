@@ -12,7 +12,7 @@ on:
         default: ''
         required: false
       study_policy:
-        description: 'Registered study: prospective-2026-11-09-v1 or legacy-pre2025-frozen2026-v1'
+        description: 'Registered study ID; Oracle mode uses oracle-full-history-2026-11-09-v1'
         default: 'prospective-2026-11-09-v1'
         required: true
       every_minutes:
@@ -23,6 +23,10 @@ on:
         description: 'Use every minute: quarterly Oracle response tables first, then separate frozen-block 15m/1h direction replay (GitHub only)'
         type: boolean
         default: false
+        required: false
+      prepared_run:
+        description: 'Optional earlier run with a successful atlas-oracle-input artifact; reuse the same audited data without recopying/quarantining'
+        default: ''
         required: false
 
 permissions:
@@ -152,7 +156,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
   oracle-prepare:
-    if: inputs.oracle_blocks
+    if: inputs.oracle_blocks && inputs.prepared_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -174,6 +178,7 @@ jobs:
           retention-days: 7
   oracle-train:
     needs: oracle-prepare
+    if: ${{ !cancelled() && inputs.oracle_blocks && (needs.oracle-prepare.result == 'success' || (needs.oracle-prepare.result == 'skipped' && inputs.prepared_run != '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -195,6 +200,8 @@ jobs:
         with:
           name: atlas-oracle-input
           path: ${{ runner.temp }}/atlas-oracle-input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.prepared_run != '' && inputs.prepared_run || github.run_id }}
       - name: First pass -- every-minute future answers and quarterly relationship tables
         run: |
           npm run research:opportunity-oracle -- oracle --archive "$RUNNER_TEMP/atlas-oracle-input" \

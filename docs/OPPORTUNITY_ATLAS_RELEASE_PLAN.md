@@ -6,6 +6,12 @@ Kalshi fee schedule. Settlement prediction is a separate diagnostic; profitable
 positions may use the configured final-window exception. See
 [the updated objective and commands](OPPORTUNITY_ATLAS_PROFIT_OBJECTIVE.md).
 
+The subsequent full-history request adds an
+[every-minute Oracle-first block study](OPPORTUNITY_ATLAS_ORACLE_BLOCKS.md), followed
+by separately frozen quarterly prediction folds for 15-minute and one-hour
+up/sideways/down outcomes. It preserves the fresh November 9 holdout and reports
+native SNN and executable contract-profit evidence separately.
+
 The owner authorized continuous implementation through a finished product. The
 core workflow merged in PR #306; PR #307 verifies the recorded-input follow-up.
 PR #308 adds the independent advance-movement objective and reuses the existing

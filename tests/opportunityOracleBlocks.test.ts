@@ -87,9 +87,9 @@ async function fixture(root: string, futureScale: number) {
   const archive = path.join(root, 'archive'), file = path.join(archive, 'history/archive-binance-1m-quarantined-v1/BTC/1m.csv');
   fs.mkdirSync(path.dirname(file), { recursive: true });
   let csv = 'ts,o,h,l,c,v\n';
-  for (const [segment, start] of [Date.UTC(2017, 8, 28), Date.UTC(2017, 9, 1), Date.UTC(2018, 0, 1)].entries()) {
-    for (let j = 0; j < 900; j++) {
-      const c = 100 + (segment === 2 ? futureScale : 1) * Math.sin(j / 19) + j / 1000;
+  for (const [segment, start] of [Date.UTC(2017, 8, 28), Date.UTC(2017, 8, 30, 18), Date.UTC(2017, 9, 1), Date.UTC(2018, 0, 1)].entries()) {
+    for (let j = 0; j < (segment === 1 ? 360 : 900); j++) {
+      const c = 100 + (segment === 3 ? futureScale : 1) * Math.sin(j / 19) + j / 1000;
       csv += [start + j * MIN, c, c + 0.1, c - 0.1, c, 10].join(',') + '\n';
     }
   }
@@ -105,11 +105,13 @@ async function fixture(root: string, futureScale: number) {
 test('Oracle-first block exports and unseen-to-fold replay exclude future blocks, reserved final labels, SNN claims and invented contract profit', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-oracle-blocks-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const first = await fixture(path.join(root, 'a'), 1), changedFuture = await fixture(path.join(root, 'b'), 4);
-  assert.equal(first.oracle.observedMinutes, 2700); assert.equal(first.oracle.blocks.length, 3);
+  assert.equal(first.oracle.observedMinutes, 3060); assert.equal(first.oracle.blocks.length, 3);
   assert.ok(first.oracle.completedAnswers[15] > 1800); assert.ok(first.oracle.completedAnswers[60] > 1700);
   const earlier = first.walk.folds.find((f) => f.quarter === '2017-Q4')!;
   assert.ok(earlier.targets[15].rows > 500); assert.deepEqual(earlier, changedFuture.walk.folds.find((f) => f.quarter === earlier.quarter));
   assert.deepEqual(first.walk.frozenModels[1], changedFuture.walk.frozenModels[1]);
+  assert.ok(first.oracle.blocks[0].embargoedAnswers > 0, 'fixture exercises a real embargo tail');
+  assert.equal(first.walk.frozenModels[2].rows15, first.oracle.blocks[0].answers[15] + first.oracle.blocks[1].answers[15], 'an older embargo tail becomes learnable in a later quarter');
   for (const s of first.walk.frozenModels) {
     const match = /^(\d{4})-Q([1-4])$/.exec(String(s.quarter))!;
     assert.ok(Number(s.trainedThrough) + ORACLE_EMBARGO_MS <= Date.UTC(Number(match[1]), (Number(match[2]) - 1) * 3, 1));
@@ -118,6 +120,7 @@ test('Oracle-first block exports and unseen-to-fold replay exclude future blocks
   const model = path.join(root, 'a/walk/model.json'), at = Date.UTC(2018, 0, 2);
   const request = { asset: 'BTC', source: 'archive-binance-1m-quarantined-v1', asOf: at, featuresKnownAt: at, layoutId: ORACLE_LAYOUT_ID, horizon: 15 as const, raw: ORACLE_AXES.map(() => 0.5) };
   const q = await queryFullOracle(model, request);
+  assert.equal(q.trainingRows, first.oracle.completedAnswers[15], 'the final full-history fit includes all eligible Oracle answers');
   assert.ok(Math.abs(Object.values(q.probabilities).reduce((a, b) => a + b, 0) - 1) < 1e-9); assert.equal(q.liveEntryAllowed, false);
   await assert.rejects(queryFullOracle(model, { ...request, asOf: Date.UTC(2017, 9, 1), featuresKnownAt: Date.UTC(2017, 9, 1) }), /future/);
   await assert.rejects(queryFullOracle(model, { ...request, featuresKnownAt: at + MIN }), /clock/);

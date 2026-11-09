@@ -73,8 +73,12 @@ async function readBlock(root: string, block: Block) {
 async function fitEarlierBlock(root: string, block: Block, before: number) {
   if (block.quarter.through > before || block.fitKnownThrough + ORACLE_EMBARGO_MS > before) throw new Error('walk-forward attempted a future Oracle block');
   const m = await readBlock(root, block);
-  for (const e of block.boundaryTail) m.add(e.answer, oracleCoordinates(e.raw.map((v) => v ?? NaN)), -1);
-  m.trainedThrough = block.fitKnownThrough; return m;
+  let knownThrough = block.fitKnownThrough;
+  for (const e of block.boundaryTail) {
+    if (e.answer.knownAt + ORACLE_EMBARGO_MS > before || e.answer.knownAt >= studyPolicy(ORACLE_BLOCK_STUDY_ID).trainBefore) m.add(e.answer, oracleCoordinates(e.raw.map((v) => v ?? NaN)), -1);
+    else knownThrough = Math.max(knownThrough, e.answer.knownAt);
+  }
+  m.trainedThrough = knownThrough; return m;
 }
 export async function buildFullOracle(o: { archive: string; asset: string; out: string; onProgress?: (s: string) => void }) {
   const policy = studyPolicy(ORACLE_BLOCK_STUDY_ID), verified = await verifiedInputs(o.archive, o.asset), code = await codeHashes();
@@ -160,12 +164,20 @@ export async function walkFullOracle(o: { archive: string; asset: string; oracle
     const model = new OracleMatrix(), features = new OracleFeatures(), labeler = new OpportunityLabeler(ORACLE_HORIZONS);
     const scores = new Map<string, Record<number, Score>>(), snapshots: Array<Record<string, unknown>> = [];
     let q: ReturnType<typeof oracleQuarter> | undefined, nextBlock = 0, observedMinutes = 0, boundaryPurged = 0;
+    let deferred: Tail[] = [];
     for await (const b of bars(verified.spot)) {
       const at = b.ts + MIN; if (at >= policy.finalFrom) break;
       const current = oracleQuarter(at);
       if (q?.id !== current.id) {
+        const stillDeferred: Tail[] = [];
+        for (const e of deferred) {
+          if (e.answer.knownAt + ORACLE_EMBARGO_MS <= current.from) model.add(e.answer, oracleCoordinates(e.raw.map((v) => v ?? NaN)));
+          else stillDeferred.push(e);
+        }
+        deferred = stillDeferred;
         while (nextBlock < blocks.length && blocks[nextBlock].quarter.through <= current.from) {
-          model.merge(await fitEarlierBlock(root, blocks[nextBlock++], current.from));
+          const block = blocks[nextBlock++]; model.merge(await fitEarlierBlock(root, block, current.from));
+          deferred.push(...block.boundaryTail.filter((e) => e.answer.knownAt < policy.trainBefore && e.answer.knownAt + ORACLE_EMBARGO_MS > current.from));
         }
         q = current; scores.set(q.id, { 15: freshScore(), 60: freshScore() });
         snapshots.push({ quarter: q.id, trainedThrough: model.trainedThrough, modelSha256: await hashMatrix(model), priorBlocks: nextBlock,
@@ -186,19 +198,25 @@ export async function walkFullOracle(o: { archive: string; asset: string; oracle
         score(scores.get(decisionQuarter.id)![y.horizon], y, p);
       }
     }
-    // Final fitted tables are a separate artifact, produced AFTER every fold forecast.
-    for (const block of blocks.slice(nextBlock)) {
+    // Final fitted tables include every resolved development answer, including old
+    // embargo tails now available. They are produced AFTER every fold forecast.
+    const finalModel = new OracleMatrix();
+    for (const block of blocks) {
       const m = await readBlock(root, block);
-      for (const e of block.boundaryTail) m.add(e.answer, oracleCoordinates(e.raw.map((v) => v ?? NaN)), -1);
-      m.trainedThrough = block.fitKnownThrough; model.merge(m);
+      let knownThrough = block.fitKnownThrough;
+      for (const e of block.boundaryTail) {
+        if (e.answer.knownAt >= policy.trainBefore) m.add(e.answer, oracleCoordinates(e.raw.map((v) => v ?? NaN)), -1);
+        else knownThrough = Math.max(knownThrough, e.answer.knownAt);
+      }
+      m.trainedThrough = knownThrough; finalModel.merge(m);
     }
-    fs.writeFileSync(path.join(dir, 'full-history-model.f64.gz'), matrixBytes(model));
+    fs.writeFileSync(path.join(dir, 'full-history-model.f64.gz'), matrixBytes(finalModel));
     const exported = { schema: ORACLE_SCHEMA, asset: o.asset, layoutId: ORACLE_LAYOUT_ID,
-      trainedThrough: model.trainedThrough, file: 'full-history-model.f64.gz', sha256: await sha256File(path.join(dir, 'full-history-model.f64.gz')),
+      trainedThrough: finalModel.trainedThrough, trainingRows: Object.fromEntries(ORACLE_HORIZONS.map((h) => [h, finalModel.rows(h)])), file: 'full-history-model.f64.gz', sha256: await sha256File(path.join(dir, 'full-history-model.f64.gz')),
       axes: ORACLE_AXES, relationships: ORACLE_SURFACES, horizons: ORACLE_HORIZONS, source: SOURCE, researchOnly: true, liveEntryAllowed: false,
       notUsedForEarlierFoldForecasts: true, oracleReportSha256: reportHash, inputs: verified.inputs, codeHashes: code };
     fs.writeFileSync(path.join(dir, 'model.json'), JSON.stringify({ ...exported, id: digest(exported) }, null, 2) + '\n');
-    await exportOracleSpectra(model, path.join(dir, 'relationship-spectra.csv.gz'));
+    await exportOracleSpectra(finalModel, path.join(dir, 'relationship-spectra.csv.gz'));
     if (await sha256File(reportFile) !== reportHash) throw new Error('Oracle changed during walk'); await unchanged(verified.inputs, code);
     const result = { schema: ORACLE_SCHEMA, asset: o.asset, observedMinutes, boundaryPurged, oracleReportSha256: reportHash, frozenModels: snapshots,
       folds: [...scores].map(([quarter, targets]) => ({ quarter, targets: Object.fromEntries(Object.entries(targets).map(([h, s]) => [h, { ...s,
