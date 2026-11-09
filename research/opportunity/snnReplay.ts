@@ -5,15 +5,17 @@ import { readTape, TAPE_OP } from '../snnTape';
 import { FROZEN_TRAIN_BEFORE } from './jointPathData';
 import { captureSnnState, type AtlasSnnState } from './snnState';
 import { digest, stamp } from './contractDataset';
+import { studyPolicy } from './studyPolicy';
 
 /** S5 and S6 consume identical inputs. New observations are applied at their timestamp,
  * never smeared into earlier seconds by SnnNetwork.step's normal catch-up behavior.
  * This adapter owns a separate research network, not the running bot's network. */
 export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'; sourceSha256: string;
+  studyPolicyId?: string;
   domain?: 'crypto' | 'perps'; inputLagMs?: number;
   learningBefore?: number; everyMs?: number; params?: SnnParams; onState: (state: AtlasSnnState) => void }) {
-  const learningBefore = options.learningBefore ?? FROZEN_TRAIN_BEFORE, every = options.everyMs ?? 60000, inputLagMs = options.inputLagMs ?? 1000;
-  if (!stamp(learningBefore) || learningBefore > FROZEN_TRAIN_BEFORE || !Number.isSafeInteger(every) || every < 1000 || every % 1000 ||
+  const policy = studyPolicy(options.studyPolicyId), learningBefore = options.learningBefore ?? policy.trainBefore, every = options.everyMs ?? 60000, inputLagMs = options.inputLagMs ?? 1000;
+  if (!stamp(learningBefore) || learningBefore > policy.trainBefore || !Number.isSafeInteger(every) || every < 1000 || every % 1000 ||
       !/^[a-f0-9]{64}$/.test(options.sourceSha256) || !['S5', 'S6'].includes(options.variant) ||
       !Number.isSafeInteger(inputLagMs) || inputLagMs < 0 || inputLagMs > 60000 || inputLagMs % 1000) throw new Error('invalid SNN tape replay policy');
   const params = { ...(options.params ?? DEFAULT_SNN), flags: { ...(options.params ?? DEFAULT_SNN).flags, ...stageFlags(options.variant) } };
@@ -54,7 +56,7 @@ export function replayAtlasSnnTape(file: string, options: { variant: 'S5' | 'S6'
       else if (op.label !== undefined) net.settle(op.ticker, op.label ? 'yes' : 'no', at);
     }
   }
-  return { variant: options.variant, domain: options.domain ?? 'crypto', inputLagMs, sourceSha256: options.sourceSha256, firstAt, lastAt, learnedThrough, snapshots, gaps,
+  return { variant: options.variant, studyPolicyId: policy.id, domain: options.domain ?? 'crypto', inputLagMs, sourceSha256: options.sourceSha256, firstAt, lastAt, learnedThrough, snapshots, gaps,
     version: net.version, checkpointSha256: digest(net.serialize()),
     semantics: 'Recorded input calls; previous inputs held causally through gaps, no minute-OHLC ticks invented; learning frozen at declared cutoff' };
 }

@@ -2,6 +2,7 @@
 # Changes nothing on the server: prints the service state, load, memory, disk, the busiest processes,
 # how fast the dashboard API answers, and the bot's recent log.
 name: Server diagnostics
+run-name: ${{ (inputs.atlas_archive_export == 'true' || inputs.atlas_drive_inventory == 'true') && 'Atlas archive/research (GitHub runner only)' || 'Server diagnostics' }}
 
 on:
   workflow_dispatch:
@@ -14,6 +15,14 @@ on:
         description: 'With atlas_archive_export: recent (raw/history) or laptop (located older archive); fixed market-data allowlist only'
         required: false
         default: 'recent'
+      atlas_offline_history_study:
+        description: 'With atlas_archive_export: quarantine, label and train on the GitHub runner only; no server access or promotion'
+        required: false
+        default: 'false'
+      atlas_study_policy:
+        description: 'With atlas_offline_history_study: registered study ID'
+        required: false
+        default: 'legacy-pre2025-frozen2026-v1'
       atlas_drive_inventory:
         description: 'Inspect archived market-history metadata and bounded CSV timestamps using RCLONE_CONF; no server access, uploads, training or deployment'
         required: false
@@ -87,13 +96,14 @@ jobs:
     if: inputs.atlas_archive_export == 'true'
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 15
+    timeout-minutes: ${{ inputs.atlas_offline_history_study == 'true' && 180 || 15 }}
     steps:
       - uses: actions/checkout@v5
       - name: Export only the located historical files (Drive read-only)
         env:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
           ATLAS_ARCHIVE_SOURCE: ${{ inputs.atlas_archive_source }}
+          ATLAS_DO_STUDY: ${{ inputs.atlas_offline_history_study }}
         run: |
           set -euo pipefail
           test -n "$RCLONE_CONF"
@@ -138,7 +148,39 @@ jobs:
           from pathlib import Path
           Path(sys.argv[1],'export-provenance.json').write_text(json.dumps({'schema':'atlas-drive-export-v1','read_only':True,'minute_and_optional_funding_namespace':sys.argv[2],'yahoo_namespace':'gdrive:kalshi-bot-archive/raw/server-history','provider_authentication':'archive declaration; content hashes in archive-validation.json'},indent=2)+'\n')
           PYPROVENANCE
-          python3 -B research/opportunity/archiveAudit.py "$dest/history" --out "$dest/archive-validation.json"
+          if ! python3 -B research/opportunity/archiveAudit.py "$dest/history" --out "$dest/archive-validation.json"; then
+            if [ "$ATLAS_DO_STUDY" != 'true' ]; then exit 1; fi
+          fi
+      - name: Set up Node for opted-in GitHub research
+        if: inputs.atlas_offline_history_study == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Quarantine and train on the GitHub runner (explicit opt-in only)
+        if: inputs.atlas_offline_history_study == 'true'
+        env:
+          ATLAS_STUDY_POLICY: ${{ inputs.atlas_study_policy }}
+          OMP_NUM_THREADS: '2'
+          MKL_NUM_THREADS: '2'
+        run: |
+          set -euo pipefail
+          python3 -B research/opportunity/quarantineArchive.py "$RUNNER_TEMP/atlas-history-archive" \
+            --out "$RUNNER_TEMP/atlas-study-filtered" > "$RUNNER_TEMP/atlas-derivation.json"
+          npm ci
+          node --import tsx research/opportunity/runHistoryStudy.ts --archive "$RUNNER_TEMP/atlas-study-filtered" \
+            --out research/out/atlas-history-study --study-policy "$ATLAS_STUDY_POLICY" --every-minutes 1441
+      - name: Save opted-in research results
+        if: always() && inputs.atlas_offline_history_study == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-history-study
+          path: |
+            research/out/atlas-history-study/
+            ${{ runner.temp }}/atlas-derivation.json
+            ${{ runner.temp }}/atlas-study-filtered/archive-validation.json
+          if-no-files-found: warn
+          retention-days: 7
       - name: Save research archive and audit (credentials excluded)
         if: always()
         uses: actions/upload-artifact@v4

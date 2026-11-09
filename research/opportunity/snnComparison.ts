@@ -20,7 +20,7 @@ export function compareSnnStudies(s5: ContractStudy, data5: ContractExample[], s
   if (digest(s5.plan) !== digest(s6.plan) || digest(s5.policy) !== digest(s6.policy) || !s5.selected || !s6.selected || !s5.baseline || !s6.baseline ||
       s5.inputId !== digest(data5) || s6.inputId !== digest(data6) ||
       data5.some((r) => r.observation.snn?.provenance.variant !== 'S5') || data6.some((r) => r.observation.snn?.provenance.variant !== 'S6')) throw new Error('SNN comparison requires two locked same-period variant studies and matching datasets');
-  const rows5 = contractRows(data5, s5.plan.audit), rows6 = contractRows(data6, s6.plan.audit);
+  const rows5 = contractRows(data5, s5.plan.audit, s5.plan.studyPolicyId), rows6 = contractRows(data6, s6.plan.audit, s6.plan.studyPolicyId);
   const a = align(scoreContractModel(s5.selected, rows5)), b = align(scoreContractModel(s6.selected, rows6));
   const simple5 = align(scoreContractModel(s5.baseline, rows5)), simple6 = align(scoreContractModel(s6.baseline, rows6));
   const sets = [a, b, simple5, simple6].map((rs) => new Set(rs.map((s) => s.key))), common = new Set(a.map((s) => s.key).filter((key) => sets.every((set) => set.has(key))));

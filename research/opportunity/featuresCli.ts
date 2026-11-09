@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import type { Candle } from '../../bot/ta/indicators';
 import { TANET_SCHEMA } from '../../bot/ta/taNet';
 import { taEngine } from '../../bot/ta/talib';
-import { ATLAS_FEATURE_SCHEMA, ATLAS_FEATURE_WINDOWS, AsOfDailyFeatures, CausalAtlasFeatures, type AtlasFeatureFrame, type MinuteEntryAnchor } from './features';
+import { ATLAS_FEATURE_SCHEMA, ATLAS_FEATURE_WINDOWS, AsOfDailyFeatures, AsOfFundingFeatures, CausalAtlasFeatures, type AsOfFeatureSeries, type AtlasFeatureFrame, type MinuteEntryAnchor } from './features';
 import { parseMinuteCsv } from './minuteCsv';
 import { verifyTvSeries } from './tvHistory';
 
@@ -65,7 +65,7 @@ export async function buildFeatureReport(o: FeatureRunOptions) {
         !fs.realpathSync(file).startsWith(fs.realpathSync(history) + path.sep) || await hashFile(file) !== record.sha256) throw new Error(`Input audit/hash mismatch: ${name}`);
     verified.set(name, record); return record;
   };
-  const context: Record<string, AsOfDailyFeatures> = {};
+  const context: Record<string, AsOfFeatureSeries> = {};
   const daily = async (name: string, key: string, volume: boolean) => {
     const record = await verify(name, false);
     if (!record) {
@@ -83,6 +83,14 @@ export async function buildFeatureReport(o: FeatureRunOptions) {
     const name = `${source}/${asset}/1m.csv`, record = (await verify(name, true))!;
     if (source.startsWith('tvdatafeed-')) await verifyTvSeries(path.join(history, name), { asset, source, tf: '1m' });
     await daily(`yahoo/${asset}/1d.csv`, 'yahoo_daily', true);
+    const fundingName = `binance-funding/${asset}/funding.csv`, funding = await verify(fundingName, false);
+    const points: Array<{ ts: number; rate: number }> = [];
+    if (funding) {
+      const rows = fs.readFileSync(path.join(history, fundingName), 'utf8').trim().split(/\r?\n/);
+      if (rows.shift() !== 'ts,rate') throw new Error('invalid audited funding header');
+      for (const row of rows) { const [ts, rate, extra] = row.split(','); if (extra !== undefined || !ts.trim() || !rate?.trim()) throw new Error('invalid funding row'); points.push({ ts: Number(ts), rate: Number(rate) }); }
+    }
+    context.funding = new AsOfFundingFeatures(points, { source: fundingName, sha256: funding?.sha256 ?? null });
     const provider = new CausalAtlasFeatures(asset, { source: name, sha256: record.sha256 }, { ...context });
     await o.onAssetStart?.(asset);
     const groups: Record<string, { ready: number; warming: number; missing: number; stale: number; features: number; nullValues: number }> = {};
@@ -107,6 +115,7 @@ export async function buildFeatureReport(o: FeatureRunOptions) {
     await o.onAssetEnd?.(asset, minutes >= max);
     reports.push({ asset, minutes, frames, firstOpen: first, lastOpen: last, gaps: provider.gaps, groups });
     delete context.yahoo_daily;
+    delete context.funding;
   }
   // Detect changes during the replay, too; do not publish a report for mixed input versions.
   for (const [name, record] of verified) if (await hashFile(path.join(history, name)) !== record.sha256) throw new Error(`Input changed during feature run: ${name}`);

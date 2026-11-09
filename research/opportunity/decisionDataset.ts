@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { buildFeatureReport, hashFile, type FeatureRunOptions } from './featuresCli';
 import type { AtlasFeatureFrame, MinuteEntryAnchor } from './features';
 import { defaultPathConfig, PathLabeler, type PathEntry, type PathLabel, type PathLabelConfig } from './pathLabels';
+import { studyPolicy } from './studyPolicy';
 
 export const DECISION_DATASET_SCHEMA = 'opportunity-decisions-v1';
 export const DECISION_PATH_SCHEMA = 'opportunity-decision-paths-v1';
@@ -28,6 +29,7 @@ export interface DecisionObservation {
   labelStatus: 'scheduled' | 'unavailable-scale' | 'reserved-final';
 }
 export interface DecisionDatasetOptions extends Pick<FeatureRunOptions, 'archiveDir' | 'assets' | 'source' | 'maxMinutes' | 'dailyLagMs' | 'dailyMaxAgeMs' | 'onProgress'> {
+  studyPolicyId?: string;
   everyMinutes?: number; trainBefore?: number; finalFrom?: number;
   referencePeriodsMin?: number[];
   path?: Partial<Pick<PathLabelConfig, 'horizonsMin' | 'targetsAtr' | 'stopsAtr' | 'reversals' | 'costs'>>;
@@ -35,7 +37,8 @@ export interface DecisionDatasetOptions extends Pick<FeatureRunOptions, 'archive
   onLabels?: (rows: PathLabel<DecisionPathEntry>[]) => void | Promise<void>;
 }
 export async function buildDecisionDataset(o: DecisionDatasetOptions) {
-  const trainBefore = o.trainBefore ?? Date.parse('2025-01-01'), finalFrom = o.finalFrom ?? Date.parse('2026-01-01');
+  const policy = studyPolicy(o.studyPolicyId), trainBefore = o.trainBefore ?? policy.trainBefore, finalFrom = o.finalFrom ?? policy.finalFrom;
+  if (trainBefore > policy.trainBefore || finalFrom > policy.finalFrom) throw new Error('decision partitions exceed registered study policy');
   const periods = [...(o.referencePeriodsMin ?? [15, 60])];
   referenceWindows(0, periods); // validate before callbacks or output
   const defaults = defaultPathConfig('validate', trainBefore, finalFrom);
@@ -47,7 +50,7 @@ export async function buildDecisionDataset(o: DecisionDatasetOptions) {
   new PathLabeler<DecisionPathEntry>(pathConfig);
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const codeHashes: Record<string, string> = {};
-  for (const name of ['research/opportunity/decisionDataset.ts', 'research/opportunity/decisionDatasetCli.ts', 'research/opportunity/pathLabels.ts']) codeHashes[name] = await hashFile(path.join(root, name));
+  for (const name of ['research/opportunity/decisionDataset.ts', 'research/opportunity/decisionDatasetCli.ts', 'research/opportunity/pathLabels.ts', 'research/opportunity/studyPolicy.ts']) codeHashes[name] = await hashFile(path.join(root, name));
   const assets: Array<{ asset: string; decisions: number; scheduled: number; unavailableScale: number; reservedFinal: number;
     labels: number; censored: number; partitions: Record<'train' | 'development' | 'final' | 'purged', number> }> = [];
   let labeler: PathLabeler<DecisionPathEntry> | undefined;
@@ -91,7 +94,7 @@ export async function buildDecisionDataset(o: DecisionDatasetOptions) {
     async onAssetEnd(_asset, limited) { if (labeler) await emit(labeler.finish(limited ? 'processing-limit' : 'end-of-input')); labeler = undefined; },
   });
   for (const [name, digest] of Object.entries(codeHashes)) if (await hashFile(path.join(root, name)) !== digest) throw new Error(`Code changed during dataset run: ${name}`);
-  return { schema: DECISION_DATASET_SCHEMA, createdAt: new Date().toISOString(), researchOnly: true, autoPromote: false, liveEntryAllowed: false,
+  return { schema: DECISION_DATASET_SCHEMA, studyPolicyId: policy.id, createdAt: new Date().toISOString(), researchOnly: true, autoPromote: false, liveEntryAllowed: false,
     purpose: 'minute decision features joined to observed spot-path targets; no fitting, scoring or official contract settlement labels',
     partitions: { trainBefore, finalFrom, finalOutcomesWithheld: true },
     labelPolicy: { ...pathConfig, source: 'per-asset audited input path', baseHorizonsMin: baseHorizons, referencePeriodsMin: periods,

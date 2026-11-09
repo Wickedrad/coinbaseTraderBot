@@ -113,8 +113,8 @@ export function runContractStudy(examples: ContractExample[], plan: ContractStud
   options: ContractFitOptions & { onProgress?: (message: string) => void } = {}): ContractStudy {
   validateStudyPlan(plan); validatePaperPolicy(policy);
   // Every role is collected separately. No evaluation columns participate in vocabulary or normalization.
-  const rows = { train: contractRows(examples, plan.train), stopping: contractRows(examples, plan.stopping),
-    calibration: contractRows(examples, plan.calibration), selection: contractRows(examples, plan.selection), audit: contractRows(examples, plan.audit) };
+  const rows = { train: contractRows(examples, plan.train, plan.studyPolicyId), stopping: contractRows(examples, plan.stopping, plan.studyPolicyId),
+    calibration: contractRows(examples, plan.calibration, plan.studyPolicyId), selection: contractRows(examples, plan.selection, plan.studyPolicyId), audit: contractRows(examples, plan.audit, plan.studyPolicyId) };
   const core: Omit<ContractStudy, 'id'> = { schema: CONTRACT_STUDY_SCHEMA, researchOnly: true, liveEntryAllowed: false, autoPromote: false,
     status: 'blocked-insufficient-data', blockers: [], plan, policy, candidates: [], selected: null, baseline: null,
     calibration: null, movement: null, snnComparison: null, retention: [], audit: null, inputId: digest(examples),

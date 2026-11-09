@@ -14,8 +14,10 @@ import type { AssemblySpec, RecordedDecision } from './productCli';
 import type { AtlasSnnState } from './snnState';
 import { validateSnnState } from './snnState';
 import type { ContractTerms } from '../../bot/model/fairValue';
+import { studyPolicy } from './studyPolicy';
 
 export interface RecordingImportOptions {
+  studyPolicyId?: string;
   assets: string[]; events: TimelyMoveDefinition[]; everyMs: number; executionBufferMs: number;
   fromDay?: string; toDay?: string; maximumDecisions?: number;
   /** Predetermined sampling across a long archive, independent of labels/detector signals. */
@@ -26,6 +28,7 @@ export interface RecordingImportOptions {
 }
 /** Writes into a caller-owned NEW staging directory. The CLI commits it atomically. */
 export async function writeRecordingInputs(dir: string, staging: string, options: RecordingImportOptions) {
+  const policy = studyPolicy(options.studyPolicyId);
   if (!options.assets.length || options.assets.some((a) => !PATH_ASSETS.includes(a)) || !options.events.length ||
       !Number.isSafeInteger(options.everyMs) || options.everyMs < 1000 || !Number.isSafeInteger(options.executionBufferMs) || options.executionBufferMs < 0 ||
       !Object.values(options.costs).every((v) => Number.isFinite(v) && v >= 0) ||
@@ -106,7 +109,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
       } else if (e.k === 'gap') {
         for (const b of books.values()) b.invalidate();
       } else if (e.k === 'result') {
-        if (e.t >= FROZEN_FINAL_FROM) { counts.finalResultsWithheld++; continue; }
+        if (e.t >= policy.finalFrom) { counts.finalResultsWithheld++; continue; }
         if (e.result === 'yes' || e.result === 'no') {
           if (reported.has(e.ticker) && reported.get(e.ticker) !== e.result) throw new Error('conflicting recorded settlement result');
           if (!reported.has(e.ticker)) fs.writeSync(resultsFd, JSON.stringify({ ticker: e.ticker, yes: e.result === 'yes', knownAt: e.t }) + '\n');
@@ -189,7 +192,7 @@ export async function writeRecordingInputs(dir: string, staging: string, options
   }
   if (!indices.length) throw new Error('no observed Kalshi index prints; proxy/synthetic data cannot satisfy contract labels');
   for (const [file, hash] of Object.entries(inputs)) if (await sha256File(file) !== hash) throw new Error('recording changed during import');
-  const spec: AssemblySpec = { schema: 'opportunity-recording-spec-v1', knownBy: lastAt, indices,
+  const spec: AssemblySpec = { schema: 'opportunity-recording-spec-v1', studyPolicyId: policy.id, knownBy: lastAt, indices,
     decisions: { file: 'decisions.jsonl', sha256: await sha256File(decisionsFile) }, results: { file: 'results.jsonl', sha256: await sha256File(resultsFile) } };
   fs.writeFileSync(path.join(staging, 'spec.json'), JSON.stringify(spec, null, 2) + '\n');
   const report = { counts, inputHashes: inputs, aggregateSha256: combinedHash, stoppedEarly,

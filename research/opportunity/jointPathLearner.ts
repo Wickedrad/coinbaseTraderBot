@@ -9,6 +9,7 @@ import { FROZEN_FINAL_FROM, FROZEN_TRAIN_BEFORE, encodePathFrame, pathQueryValue
   type FirstCause, type JointPathDataset, type PathDecision, type PathObservation, type RiskRow, type TimeWindow } from './jointPathData';
 import { ATLAS_FEATURE_SCHEMA, type AtlasFeatureFrame, type MinuteEntryAnchor } from './features';
 import { TANET_SCHEMA } from '../../bot/ta/taNet';
+import { studyPolicy } from './studyPolicy';
 
 export const JOINT_PATH_SCHEMA = 'opportunity-competing-risk-v1';
 const MIN = 60000, DAY = 86400000, WEEK = 7 * DAY;
@@ -19,13 +20,14 @@ interface Head {
   calibrationStatus: 'fitted' | 'insufficient'; calibrationDecisions: number;
 }
 export interface RiskModel {
+  studyPolicyId?: string;
   schema: typeof JOINT_PATH_SCHEMA; researchOnly: true; liveEntryAllowed: false; calibrationRef: null;
   id: string; featureSchema: string; taSchema: string; engine: string; anchorDefinition: string;
   availabilityBasis: 'simulated-replay-cutoff';
   knownAt: number; featureNames: string[]; maxHorizonMin: number; support: string[]; heads: Record<HeadName, Head>;
 }
 export interface RiskFold { train: TimeWindow; stopping: TimeWindow; calibration: TimeWindow; evaluation: TimeWindow }
-export interface FoldPlan { trainMs: number; stoppingMs: number; calibrationMs: number; evaluationMs: number; stepMs: number; embargoMs: number; maxFolds: number }
+export interface FoldPlan { expanding?: boolean; trainMs: number; stoppingMs: number; calibrationMs: number; evaluationMs: number; stepMs: number; embargoMs: number; maxFolds: number }
 export const DEFAULT_FOLD_PLAN: FoldPlan = { trainMs: 3 * DAY, stoppingMs: DAY, calibrationMs: DAY,
   evaluationMs: DAY, stepMs: DAY, embargoMs: 60 * MIN, maxFolds: 8 };
 export const SMOKE_FOLD_PLAN: FoldPlan = { trainMs: 6 * 60 * MIN, stoppingMs: 2 * 60 * MIN, calibrationMs: 2 * 60 * MIN,
@@ -41,7 +43,7 @@ export function planRiskFolds(data: JointPathDataset, p: FoldPlan): RiskFold[] {
     const calibration = { from: stopping.through + p.embargoMs, through: stopping.through + p.embargoMs + p.calibrationMs };
     const evaluation = { from: calibration.through + p.embargoMs, through: calibration.through + p.embargoMs + p.evaluationMs };
     if (evaluation.through > last) break;
-    folds.push({ train: { from, through: end }, stopping, calibration, evaluation });
+    folds.push({ train: { from: p.expanding === false ? end - p.trainMs : from, through: end }, stopping, calibration, evaluation });
   }
   return folds;
 }
@@ -95,7 +97,7 @@ function fitRiskModel(data: JointPathDataset, episodes: PathObservation[], train
   const names = selectFeatures(train, geometryOnly); if (!names.length) names.push('query:minute');
   const first = data.decisions.get(episodes[0].decisionId)!;
   const heads = Object.fromEntries(HEADS.map((name) => [name, fitHead(train, stopping, calibration, names, name, params)])) as Record<HeadName, Head>;
-  const core: Omit<RiskModel, 'id'> = { schema: JOINT_PATH_SCHEMA, researchOnly: true as const, liveEntryAllowed: false as const, calibrationRef: null,
+  const core: Omit<RiskModel, 'id'> = { schema: JOINT_PATH_SCHEMA, studyPolicyId: studyPolicy(data.studyPolicyId).id, researchOnly: true as const, liveEntryAllowed: false as const, calibrationRef: null,
     featureSchema: ATLAS_FEATURE_SCHEMA, taSchema: TANET_SCHEMA, engine: first.engine, anchorDefinition: first.anchorDefinition,
     availabilityBasis: 'simulated-replay-cutoff' as const,
     knownAt: fold.calibration.through, featureNames: names, maxHorizonMin: Math.min(data.maxHorizonMin, train.reduce((m, r) => Math.max(m, r.minute), 0)),
@@ -132,8 +134,9 @@ export function predictJointPath(model: RiskModel, frame: AtlasFeatureFrame, anc
     caution: 'Order ambiguity range is not a statistical confidence interval; spot-barrier forecasts are not contract settlement probabilities.' };
 }
 export function validateRiskModel(model: RiskModel) {
+  const policy = studyPolicy(model.studyPolicyId);
   if (model.schema !== JOINT_PATH_SCHEMA || model.researchOnly !== true || model.liveEntryAllowed !== false || model.calibrationRef !== null || model.availabilityBasis !== 'simulated-replay-cutoff' || !model.featureNames.length || model.featureNames.length > 10000 || new Set(model.featureNames).size !== model.featureNames.length ||
-      !Number.isSafeInteger(model.knownAt) || !Number.isInteger(model.maxHorizonMin) || model.maxHorizonMin < 1 || model.maxHorizonMin > 1440) throw new Error('invalid risk model');
+      !Number.isSafeInteger(model.knownAt) || model.knownAt > policy.trainBefore || !Number.isInteger(model.maxHorizonMin) || model.maxHorizonMin < 1 || model.maxHorizonMin > 1440) throw new Error('invalid risk model');
   for (const name of HEADS) {
     const h = model.heads[name]; validateGbdt(h.model, model.featureNames.length);
     for (const tree of h.model.trees) {
@@ -154,7 +157,8 @@ export function validateRiskModel(model: RiskModel) {
 }
 interface ScoreRow { at: number; weight: number; modelLoss: number; baselineLoss: number; brier: number }
 export async function trainJointPaths(data: JointPathDataset, options: { plan?: FoldPlan; smokeTest?: boolean; params?: Partial<GbdtParams>; maxRiskRows?: number; onProgress?: (message: string) => void } = {}) {
-  if (data.trainBefore > FROZEN_TRAIN_BEFORE || data.finalFrom > FROZEN_FINAL_FROM ||
+  const policy = studyPolicy(data.studyPolicyId);
+  if (data.trainBefore > policy.trainBefore || data.finalFrom > policy.finalFrom ||
       (options.maxRiskRows !== undefined && (!Number.isSafeInteger(options.maxRiskRows) || options.maxRiskRows < 1))) throw new Error('frozen study dates or risk limits violated');
   const params: GbdtParams = { ...DEFAULT_GBDT, nTrees: 48, learningRate: 0.06, maxDepth: 3, minLeafWeight: 5,
     lambda: 2, maxBins: 16, patience: 10, featureFraction: 0.5, baggingFraction: 1, seed: 17, ...options.params };
@@ -199,7 +203,7 @@ export async function trainJointPaths(data: JointPathDataset, options: { plan?: 
   const evidence = gains.length >= 8 ? bootstrapMeanCi(gains, 0.05, 2000, 17) : null;
   return { schema: JOINT_PATH_SCHEMA, researchOnly: true, liveEntryAllowed: false, autoPromote: false, calibrationRef: null,
     status: results.length ? options.smokeTest ? 'smoke-test-only' : 'research-fit' : 'blocked-insufficient-history-or-rows',
-    dataset: { manifestSha256: data.manifestSha256, inputHashes: data.inputHashes, runId: data.runId, counts: data.counts, trainBefore: data.trainBefore, finalFrom: data.finalFrom },
+    dataset: { studyPolicyId: policy.id, manifestSha256: data.manifestSha256, inputHashes: data.inputHashes, runId: data.runId, counts: data.counts, trainBefore: data.trainBefore, finalFrom: data.finalFrom },
     plan, params, folds: results, weeklyEvidence: { blocks: gains.length, pairedLogLossGain: evidence,
       interpretation: 'Exploratory weekly-block diagnostics against the geometry baseline; not full-parent ablation or a multiple-testing-controlled promotion gate.' },
     limitations: ['No SNN state integration', 'No official contract settlement probabilities', 'No feature/memory retention selection',

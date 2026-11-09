@@ -40,7 +40,7 @@ jobs:
       contents: read
       actions: read
     # Pushes deploy unless AUTO_DEPLOY is set to 'false'; manual runs always deploy.
-    if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY != 'false'
+    if: github.event_name == 'workflow_dispatch' || (vars.AUTO_DEPLOY != 'false' && !contains(github.event.head_commit.message, '[skip deploy]'))
     runs-on: ubuntu-latest
     environment: production
     steps:

@@ -7,6 +7,7 @@ import { ATLAS_FEATURE_SCHEMA, type AtlasFeatureFrame } from './features';
 import { DECISION_DATASET_SCHEMA, DECISION_PATH_SCHEMA, type DecisionObservation } from './decisionDataset';
 import { PATH_LABEL_SCHEMA, pathPartition } from './pathLabels';
 import { TANET_SCHEMA } from '../../bot/ta/taNet';
+import { studyPolicy } from './studyPolicy';
 
 export const FROZEN_TRAIN_BEFORE = Date.parse('2025-01-01'), FROZEN_FINAL_FROM = Date.parse('2026-01-01');
 const MIN = 60000;
@@ -22,6 +23,7 @@ export interface PathObservation {
   plannedThrough: number; knownAt: number; censored: boolean;
 }
 export interface JointPathDataset {
+  studyPolicyId?: string;
   decisions: Map<string, PathDecision>; paths: PathObservation[];
   manifestSha256: string; runId: string; trainBefore: number; finalFrom: number; maxHorizonMin: number;
   inputHashes: Record<string, string>;
@@ -57,14 +59,16 @@ async function* jsonLines(file: string) {
   try { for await (const line of reader) { if (line.length > 2 * 1024 * 1024) throw new Error('dataset JSONL line exceeds limit'); if (line.trim()) yield JSON.parse(line); } }
   finally { reader.close(); input.destroy(); }
 }
-export async function loadJointPathDataset(dir: string, limits: { maxHorizonMin?: number; maxDecisions?: number; maxPaths?: number } = {}): Promise<JointPathDataset> {
+export async function loadJointPathDataset(dir: string, limits: { studyPolicyId?: string; maxHorizonMin?: number; maxDecisions?: number; maxPaths?: number } = {}): Promise<JointPathDataset> {
   const root = fs.realpathSync(dir), mf = path.join(root, 'manifest.json'), manifestSha256 = await sha256File(mf);
   const m = JSON.parse(fs.readFileSync(mf, 'utf8'));
   const maxHorizonMin = limits.maxHorizonMin ?? 60, maxDecisions = limits.maxDecisions ?? 20000, maxPaths = limits.maxPaths ?? 500000;
   if (![maxHorizonMin, maxDecisions, maxPaths].every((n) => Number.isSafeInteger(n) && n > 0) || maxHorizonMin > 1440 ||
       m.schema !== DECISION_DATASET_SCHEMA || m.researchOnly !== true || m.partitions?.finalOutcomesWithheld !== true ||
       !stamp(m.partitions.trainBefore) || !stamp(m.partitions.finalFrom) || m.partitions.trainBefore >= m.partitions.finalFrom || !m.runId) throw new Error('invalid joint dataset/limits');
-  const trainBefore = Math.min(m.partitions.trainBefore, FROZEN_TRAIN_BEFORE), finalFrom = Math.min(m.partitions.finalFrom, FROZEN_FINAL_FROM);
+  const policy = studyPolicy(limits.studyPolicyId);
+  if (studyPolicy(m.studyPolicyId).id !== policy.id) throw new Error('dataset/study registration mismatch');
+  const trainBefore = Math.min(m.partitions.trainBefore, policy.trainBefore), finalFrom = Math.min(m.partitions.finalFrom, policy.finalFrom);
   const hashes = new Map<string, string>();
   for (const [stream, name] of [['decisions', 'decisions.jsonl'], ['paths', 'paths.jsonl']]) {
     const record = m.outputs?.[stream], file = path.join(root, name);
@@ -132,7 +136,7 @@ export async function loadJointPathDataset(dir: string, limits: { maxHorizonMin?
   if (await sha256File(mf) !== manifestSha256) throw new Error('manifest changed during joint read');
   for (const [file, hash] of hashes) if (await sha256File(file) !== hash) throw new Error('dataset changed during joint read');
   counts.eligiblePaths = paths.length;
-  return { decisions, paths, manifestSha256, runId: m.runId, trainBefore, finalFrom, maxHorizonMin, counts,
+  return { studyPolicyId: policy.id, decisions, paths, manifestSha256, runId: m.runId, trainBefore, finalFrom, maxHorizonMin, counts,
     inputHashes: { 'manifest.json': manifestSha256, ...Object.fromEntries([...hashes].map(([file, hash]) => [path.basename(file), hash])) } };
 }
 

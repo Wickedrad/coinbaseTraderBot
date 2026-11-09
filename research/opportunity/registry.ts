@@ -4,6 +4,7 @@ import { contractModelSupports, contractProbabilities, contractSupportKey, missi
 import { CONTRACT_STUDY_SCHEMA, contractBounds, type ContractStudy } from './contractStudy';
 import type { ContractPathForecast } from './contractTiming';
 import { predictMovementMixture, validateMovementModel } from './movement';
+import { studyPolicy } from './studyPolicy';
 
 export const ATLAS_PRODUCT_SCHEMA = 'opportunity-paper-product-v1';
 export interface AtlasProduct {
@@ -24,7 +25,7 @@ export function validateAtlasProduct(p: AtlasProduct) {
       Object.values({ ...p.codeHashes, ...p.inputHashes }).some((h) => !/^[a-f0-9]{64}$/.test(h))) throw new Error('invalid Atlas product or study content ID');
   validateStudyPlan(s.plan);
   if (!['blocked-insufficient-data', 'research-fit', 'paper-qualified'].includes(s.status) || (s.status !== 'blocked-insufficient-data' && (!s.selected || !s.calibration || !s.audit))) throw new Error('incomplete or invalid study status');
-  for (const c of s.candidates) validateContractModel(c.model);
+  for (const c of s.candidates) { validateContractModel(c.model); if (studyPolicy(c.model.studyPolicyId).id !== studyPolicy(s.plan.studyPolicyId).id) throw new Error('model/study partition registration differs'); }
   if (s.selected) validateContractModel(s.selected);
   if (s.baseline) validateContractModel(s.baseline);
   if (s.selected && s.selected.included.some((g) => !s.retention.some((r) => r.group === g && r.decision === 'retained'))) throw new Error('selected input lacks retention evidence');

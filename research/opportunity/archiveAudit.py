@@ -93,7 +93,44 @@ def audit_archive(root, source="binance-1m", assets=None):
     by_path = {f["path"]: f for f in report["files"]}
     report["ready"] = all(name in by_path and by_path[name]["ready"] for name in required)
     report["context_ready"] = all(name in by_path and by_path[name]["ready"] for name in context)
+    for asset in ASSETS:
+        funding = root / 'binance-funding' / asset / 'funding.csv'
+        if funding.is_file() and funding.resolve().is_relative_to(root):
+            report['files'].append(audit_funding(funding, root))
     return report
+
+
+def audit_funding(file, root):
+    result = {'path': file.relative_to(root).as_posix(), 'source': 'binance-funding', 'rows': 0,
+              'invalid_rows': 0, 'duplicate_or_reversed': 0, 'first_open_ms': None, 'last_open_ms': None,
+              'provider_identity': 'archive-path-declaration; not independently authenticated', 'ready': False}
+    before = file.stat(); last = None; h = hashlib.sha256()
+    with file.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            h.update(chunk)
+    with file.open(newline='') as stream:
+        reader = csv.reader(stream)
+        if next(reader, []) != ['ts', 'rate']:
+            result['error'] = 'unrecognized funding header'
+        else:
+            for row in reader:
+                if not row:
+                    continue
+                result['rows'] += 1
+                try:
+                    if len(row) != 2 or any(not s.strip() for s in row): raise ValueError()
+                    ts, rate = map(float, row)
+                    if not math.isfinite(ts) or ts < 0 or ts != int(ts) or not math.isfinite(rate): raise ValueError()
+                    ts = int(ts)
+                except (ValueError, OverflowError):
+                    result['invalid_rows'] += 1; continue
+                if last is not None and ts <= last: result['duplicate_or_reversed'] += 1
+                if result['first_open_ms'] is None: result['first_open_ms'] = ts
+                result['last_open_ms'] = last = ts
+    after = file.stat(); result.update(sha256=h.hexdigest(), bytes=before.st_size,
+        changed_during_audit=(before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns))
+    result['ready'] = result['rows'] > 0 and not any(result[k] for k in ('invalid_rows', 'duplicate_or_reversed', 'changed_during_audit')) and 'error' not in result
+    return result
 
 
 def main():

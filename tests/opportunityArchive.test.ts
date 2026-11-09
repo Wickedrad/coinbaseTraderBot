@@ -60,7 +60,8 @@ test('archive export is exclusive, reads only fixed market files and keeps crede
   assert.match(job, /--files-from/); assert.match(job, /archiveAudit\.py/);
   assert.match(job, /RCLONE_CONFIG="\$cfg\/rclone.conf"/);
   assert.match(job, /path: \$\{\{ runner.temp \}\}\/atlas-history-archive\//);
-  assert.doesNotMatch(job, /LIGHTSAIL|ssh |npm |pipeline|rclone (?:sync|move|delete|purge)/);
+  assert.doesNotMatch(job, /LIGHTSAIL|ssh |pipeline|rclone (?:sync|move|delete|purge)/);
+  assert.match(job, /if: inputs\.atlas_offline_history_study == 'true'/, 'fitting is a separate explicit runner-only opt-in');
 });
 
 test('archive audit can explicitly select a TV source and asset set without silently requiring another source', () => {
@@ -76,4 +77,32 @@ test('archive audit can explicitly select a TV source and asset set without sile
     assert.equal(r.files[0].source, 'tvdatafeed-coinbase'); assert.equal(r.required_source, 'tvdatafeed-coinbase');
     assert.ok(r.missing.every((name: string) => !name.startsWith('binance')));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('off-grid quarantine preserves input bytes, excludes rather than shifts rows, and records real gaps', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-quarantine-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const input = path.join(root, 'raw'), history = path.join(input, 'history'), output = path.join(root, 'derived');
+  const rows = header + bar(0) + bar(60017) + bar(120000);
+  for (const asset of ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE']) {
+    const file = path.join(history, 'binance-1m', asset, '1m.csv'); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, rows);
+  }
+  const a = spawnSync('python3', ['-B', 'research/opportunity/archiveAudit.py', history, '--out', path.join(input, 'archive-validation.json')], { encoding: 'utf8' });
+  assert.equal(a.status, 1, 'original misalignment must fail the audit');
+  const d = spawnSync('python3', ['-B', 'research/opportunity/quarantineArchive.py', input, '--out', output], { encoding: 'utf8' });
+  assert.equal(d.status, 0, d.stderr);
+  const derived = JSON.parse(fs.readFileSync(path.join(output, 'archive-validation.json'), 'utf8'));
+  assert.equal(derived.ready, true); assert.equal(derived.files[0].missing_bars, 1);
+  assert.equal(fs.readFileSync(path.join(history, 'binance-1m/BTC/1m.csv'), 'utf8'), rows);
+  assert.equal(fs.readFileSync(path.join(output, 'history/archive-binance-1m-quarantined-v1/BTC/1m.csv'), 'utf8'), header + bar(0) + bar(120000));
+  const metadata = JSON.parse(fs.readFileSync(path.join(output, 'derivation.json'), 'utf8'));
+  assert.equal(metadata.files[0].quarantined, 1);
+  assert.equal(spawnSync('python3', ['-B', 'research/opportunity/quarantineArchive.py', input, '--out', output]).status, 1);
+});
+
+test('Atlas research workflow has no server credentials or deployment path', () => {
+  const yaml = fs.readFileSync('.github/workflows/atlas-research.yml', 'utf8');
+  assert.match(yaml, /runs-on: ubuntu-latest/); assert.match(yaml, /workflow_dispatch/);
+  assert.doesNotMatch(yaml, /LIGHTSAIL|ssh-action|deploy\/activate|deploy\/install|TRADING_MODE/);
+  const deploy = fs.readFileSync('.github/workflows/deploy.yml', 'utf8');
+  assert.match(deploy, /!contains\(github\.event\.head_commit\.message, '\[skip deploy\]'\)/, 'approved research merges can avoid a server restart');
 });

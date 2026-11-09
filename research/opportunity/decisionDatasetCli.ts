@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { buildDecisionDataset, DECISION_DATASET_SCHEMA, DECISION_PATH_SCHEMA, type DecisionDatasetOptions } from './decisionDataset';
 import { hashFile } from './featuresCli';
 import { PATH_LABEL_SCHEMA } from './pathLabels';
+import { studyPolicy } from './studyPolicy';
 
 function prospectiveRealPath(file: string): string {
   const tail: string[] = [];
@@ -60,11 +61,12 @@ export async function exportDecisionDataset(o: DecisionDatasetOptions & { outDir
 }
 function arg(name: string, fallback: string) { const i = process.argv.indexOf(`--${name}`); return i < 0 ? fallback : process.argv[i + 1] ?? fallback; }
 async function main() {
+  const policy = studyPolicy(arg('study-policy', studyPolicy().id));
   const report = await exportDecisionDataset({ archiveDir: path.resolve(arg('archive', 'data/opportunity-archive')),
     outDir: path.resolve(arg('out', 'research/out/opportunity-decisions')), assets: arg('assets', 'BTC,ETH').split(',').map((s) => s.trim().toUpperCase()),
     source: arg('source', 'binance-1m'),
     maxMinutes: Number(arg('max-minutes', '1500')), everyMinutes: Number(arg('every-minutes', '1')),
-    trainBefore: Date.parse(arg('train-before', '2025-01-01')), finalFrom: Date.parse(arg('final-from', '2026-01-01')),
+    studyPolicyId: policy.id, trainBefore: Date.parse(arg('train-before', new Date(policy.trainBefore).toISOString())), finalFrom: Date.parse(arg('final-from', new Date(policy.finalFrom).toISOString())),
     path: { horizonsMin: arg('horizons-min', '5,15,60,240,1440').split(',').map(Number),
       targetsAtr: arg('targets-atr', '1').split(',').map(Number), stopsAtr: arg('stops-atr', '1').split(',').map(Number),
       costs: { feePerSideBps: Number(arg('fee-bps', '0')), halfSpreadBps: Number(arg('half-spread-bps', '0')), slippagePerSideBps: Number(arg('slippage-bps', '0')) } },

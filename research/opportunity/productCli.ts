@@ -19,10 +19,12 @@ import { replayAtlasSnnTape } from './snnReplay';
 import { writeRecordingInputs, type RecordingImportOptions } from './recordingImport';
 import { compareSnnStudies, qualifySnnStudy } from './snnComparison';
 import { writeProductDemoInputs } from './demo';
+import { studyPolicy } from './studyPolicy';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 interface Receipt { file: string; sha256: string }
 export interface AssemblySpec {
+  studyPolicyId?: string;
   schema: 'opportunity-recording-spec-v1'; knownBy: number;
   indices: Array<Receipt & { asset: string; reference: string; basis: IndexEvidence['basis'] }>;
   decisions: Receipt; results?: Receipt;
@@ -34,6 +36,7 @@ export interface RecordedDecision {
   termsBasis?: ContractObservation['termsBasis'];
 }
 interface DatasetManifest {
+  studyPolicyId?: string;
   schema: typeof CONTRACT_DATASET_SCHEMA; researchOnly: true; finalOutcomesWithheld: true;
   inputs: Record<string, string>; codeHashes: Record<string, string>; outputs: { examples: Receipt }; counts: Record<string, number>;
 }
@@ -79,9 +82,9 @@ async function readJsonLines<T>(file: string, maxRows = 100000): Promise<T[]> {
 }
 /** Audit an arbitrarily long time-ordered index stream, retaining only predeclared
  * feature/label windows. The sampling schedule is fixed before reading outcomes. */
-async function readNeededIndex(file: string, decisions: RecordedDecision[], asset: string, reference: string): Promise<OfficialPrint[]> {
+async function readNeededIndex(file: string, decisions: RecordedDecision[], asset: string, reference: string, finalFrom: number): Promise<OfficialPrint[]> {
   const spans = decisions.filter((d) => d.contract.asset === asset && d.contract.settlementReference === reference).map((d) => {
-    const at = d.asOf ?? d.frame.decisionAt, reserved = at >= FROZEN_FINAL_FROM || d.contract.closeTime >= FROZEN_FINAL_FROM;
+    const at = d.asOf ?? d.frame.decisionAt, reserved = at >= finalFrom || d.contract.closeTime >= finalFrom;
     return { from: Math.min(at - d.event.priorWindowSec * 1000 - 3000, d.contract.closeTime - (d.contract.averagingSec ?? 60) * 1000 - 3000),
       through: reserved ? at : d.contract.closeTime };
   }).sort((a, b) => a.from - b.from);
@@ -119,6 +122,7 @@ export async function exportRecordingInputs(recordingsDir: string, configFile: s
 export async function assembleContractDataset(specFile: string, outDir: string) {
   const specPath = fs.realpathSync(specFile), spec = JSON.parse(fs.readFileSync(specPath, 'utf8')) as AssemblySpec;
   const base = path.dirname(specPath), inputs: Record<string, string> = { [specPath]: await sha256File(specPath) }, code = await codeHashes();
+  const policy = studyPolicy(spec.studyPolicyId);
   if (spec.schema !== 'opportunity-recording-spec-v1' || !Number.isSafeInteger(spec.knownBy) || spec.knownBy < 0 ||
       !spec.indices.length || spec.indices.length > 10 || new Set(spec.indices.map((i) => `${i.asset}:${i.reference}`)).size !== spec.indices.length) throw new Error('invalid recording spec');
   const decisionsFile = await source(base, spec.decisions); inputs[decisionsFile] = spec.decisions.sha256;
@@ -127,13 +131,13 @@ export async function assembleContractDataset(specFile: string, outDir: string) 
   for (const r of spec.indices) {
     const file = await source(base, r); inputs[file] = r.sha256;
     indices.push(freezeIndexEvidence({ asset: r.asset, reference: r.reference, basis: r.basis, sourceSha256: r.sha256,
-      prints: await readNeededIndex(file, decisions, r.asset, r.reference) }));
+      prints: await readNeededIndex(file, decisions, r.asset, r.reference, policy.finalFrom) }));
   }
   const results = new Map<string, { yes: boolean; knownAt: number }>();
   if (spec.results) {
     const file = await source(base, spec.results); inputs[file] = spec.results.sha256;
     for (const row of await readJsonLines<{ ticker: string; yes: boolean; knownAt: number }>(file)) {
-      if (row.knownAt >= FROZEN_FINAL_FROM) throw new Error('reported results include frozen-final outcomes');
+      if (row.knownAt >= policy.finalFrom) throw new Error('reported results include frozen-final outcomes');
       if (results.has(row.ticker)) throw new Error('duplicate reported settlement'); results.set(row.ticker, row);
     }
   }
@@ -144,8 +148,8 @@ export async function assembleContractDataset(specFile: string, outDir: string) 
       if (!evidence) throw new Error('decision has no exact index source');
       const o = buildContractObservation(d.frame, d.contract, d.event, evidence, { side: d.side, executionBufferMs: d.executionBufferMs,
         termsSourceSha256: spec.decisions.sha256, asOf: d.asOf, snn: d.snn, anchor: d.anchor, termsBasis: d.termsBasis });
-      const reserved = o.query.asOf >= FROZEN_FINAL_FROM || o.query.contract.closeTime >= FROZEN_FINAL_FROM;
-      const cutoff = Math.min(spec.knownBy, FROZEN_FINAL_FROM - 1);
+      const reserved = o.query.asOf >= policy.finalFrom || o.query.contract.closeTime >= policy.finalFrom;
+      const cutoff = Math.min(spec.knownBy, policy.finalFrom - 1);
       const y: ContractOutcome = reserved ? { schema: CONTRACT_LABEL_SCHEMA, observationId: o.id, plannedThrough: o.query.contract.closeTime, knownAt: cutoff,
         status: 'pending' as const, category: null, timelyMove: null, sidePays: null, settlementAverage: null, officialResultConfirmed: false,
         firstMoveAt: null, mfeBps: null, maeBps: null, terminalMoveBps: null, basis: 'reconstructed-official-index-rule' as const, reason: 'frozen-final-outcomes-withheld' }
@@ -158,7 +162,7 @@ export async function assembleContractDataset(specFile: string, outDir: string) 
       else if (y.status === 'missing-index') counts.missing++;
       else counts.disagreement++;
     } } finally { fs.closeSync(fd); }
-    const manifest: DatasetManifest = { schema: CONTRACT_DATASET_SCHEMA, researchOnly: true, finalOutcomesWithheld: true, inputs, codeHashes: code,
+    const manifest: DatasetManifest = { schema: CONTRACT_DATASET_SCHEMA, studyPolicyId: policy.id, researchOnly: true, finalOutcomesWithheld: true, inputs, codeHashes: code,
       outputs: { examples: { file: 'examples.jsonl', sha256: await sha256File(file) } }, counts };
     await unchanged(inputs, code);
     fs.writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n'); return manifest;
@@ -171,7 +175,7 @@ export async function loadContractDataset(dir: string) {
   const file = await source(root, manifest.outputs.examples), examples = await readJsonLines<ContractExample>(file, 20000);
   if (examples.length !== manifest.counts.observations) throw new Error('contract dataset counts differ');
   // Validate all nonfinal observations/labels, including joins and duplicate timestamps.
-  contractRows(examples, { from: 0, through: FROZEN_FINAL_FROM });
+  contractRows(examples, { from: 0, through: studyPolicy(manifest.studyPolicyId).finalFrom }, manifest.studyPolicyId);
   return { examples, manifest, hashes: { [manifestFile]: manifestHash, [file]: manifest.outputs.examples.sha256 } };
 }
 export async function exportContractStudy(datasetDir: string, planFile: string, policyFile: string, outDir: string,
@@ -179,6 +183,7 @@ export async function exportContractStudy(datasetDir: string, planFile: string, 
   const data = await loadContractDataset(datasetDir), code = await codeHashes();
   const inputs = { ...data.hashes, [fs.realpathSync(planFile)]: await sha256File(planFile), [fs.realpathSync(policyFile)]: await sha256File(policyFile) };
   const plan = JSON.parse(fs.readFileSync(planFile, 'utf8')) as ContractStudyPlan, policy = JSON.parse(fs.readFileSync(policyFile, 'utf8')) as PaperPolicy;
+  if (studyPolicy(plan.studyPolicyId).id !== studyPolicy(data.manifest.studyPolicyId).id) throw new Error('dataset and study use different registered partitions');
   const study = runContractStudy(data.examples, plan, policy, options), product = createAtlasProduct(study, code, inputs);
   return atomicDirectory(outDir, async (staging) => {
     await unchanged(inputs, code);
@@ -277,7 +282,7 @@ async function main() {
       for (const variant of ['S5', 'S6'] as const) {
         const fd = fs.openSync(path.join(staging, `${variant}.jsonl`), 'wx');
         const domain = arg('domain', 'crypto'); if (!['crypto', 'perps'].includes(domain)) throw new Error('SNN domain must be crypto or perps');
-        try { reports.push(replayAtlasSnnTape(tape, { variant, domain: domain as 'crypto' | 'perps', inputLagMs: Number(arg('input-lag-ms', '1000')), sourceSha256: hash, onState: (state) => fs.writeSync(fd, JSON.stringify(state) + '\n') })); }
+        try { reports.push(replayAtlasSnnTape(tape, { variant, domain: domain as 'crypto' | 'perps', studyPolicyId: arg('study-policy', studyPolicy().id), inputLagMs: Number(arg('input-lag-ms', '1000')), sourceSha256: hash, onState: (state) => fs.writeSync(fd, JSON.stringify(state) + '\n') })); }
         finally { fs.closeSync(fd); }
       }
       await unchanged({ [tape]: hash }, code);

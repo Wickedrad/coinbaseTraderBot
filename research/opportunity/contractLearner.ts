@@ -8,6 +8,7 @@ import { sigmoid } from '../../bot/util/num';
 import { digest, encodeContractObservation, moveThresholdBps, stamp, CONTRACT_LABEL_SCHEMA, type ContractObservation, type ContractOutcome } from './contractDataset';
 import { FROZEN_TRAIN_BEFORE, FROZEN_FINAL_FROM, type TimeWindow } from './jointPathData';
 import type { PaperQuote } from './paper';
+import { studyPolicy } from './studyPolicy';
 
 export const CONTRACT_MODEL_SCHEMA = 'opportunity-contract-model-v1';
 export type FeatureFamily = 'ta' | 'snn' | 'dominance' | 'clock' | 'micro' | 'daily';
@@ -15,6 +16,7 @@ export const FEATURE_FAMILIES: FeatureFamily[] = ['ta', 'snn', 'dominance', 'clo
 export type ModelFamily = 'smooth' | 'trees' | 'temporal-linear';
 export interface ContractExample { observation: ContractObservation; outcome: ContractOutcome; quote?: PaperQuote }
 export interface ContractStudyPlan {
+  studyPolicyId?: string;
   train: TimeWindow; stopping: TimeWindow; calibration: TimeWindow; selection: TimeWindow; audit: TimeWindow; embargoMs: number;
 }
 export interface EncodedContractRow extends ContractExample { values: Record<string, number>; weight: number; eventKey: string }
@@ -25,6 +27,7 @@ type HeadName = typeof HEADS[number];
 interface Support { key: string; minimumRemainingSec: number; maximumRemainingSec: number; minimumMoneyness: number; maximumMoneyness: number;
   minimumMoveBps: number; maximumMoveBps: number; minimumCapMoneyness: number | null; maximumCapMoneyness: number | null }
 export interface ContractModel {
+  studyPolicyId: string;
   schema: typeof CONTRACT_MODEL_SCHEMA; id: string; family: ModelFamily; researchOnly: true; liveEntryAllowed: false;
   featureSchema: string; taSchema: string; engine: string; knownAt: number; trainedThrough: number;
   featureSources: Record<string, string>;
@@ -41,7 +44,7 @@ export function featureFamily(name: string): FeatureFamily | null {
   if (name.startsWith('contract:') || name.startsWith('missing:contract:') || name.startsWith('asset:')) return null;
   if (/btcd|usdtd/.test(name)) return 'dominance';
   if (name.includes('clock')) return 'clock';
-  if (name.includes('micro') || name.includes('cross_asset')) return 'micro';
+  if (name.includes('micro') || name.includes('cross_asset') || name.includes('funding')) return 'micro';
   if (name.includes('yahoo') || name.includes('daily')) return 'daily';
   return 'ta';
 }
@@ -53,21 +56,23 @@ const moneyness = (o: ContractObservation) => Math.log(o.index.value / (o.query.
 const capMoneyness = (o: ContractObservation) => o.query.contract.terms.cap ? Math.log(o.index.value / o.query.contract.terms.cap) : null;
 const frameSources = (o: ContractObservation) => Object.fromEntries(Object.entries(o.frame.groups).map(([k, g]) => [k, g.source]).sort(([a], [b]) => a.localeCompare(b)));
 export function validateStudyPlan(p: ContractStudyPlan) {
+  const policy = studyPolicy(p.studyPolicyId);
   const windows = [p.train, p.stopping, p.calibration, p.selection, p.audit];
   if (!Number.isSafeInteger(p.embargoMs) || p.embargoMs < 1000 || windows.some((w, i) =>
     ![w.from, w.through].every(stamp) || w.from >= w.through || (i && w.from < windows[i - 1].through + p.embargoMs)) ||
-    p.train.through > FROZEN_TRAIN_BEFORE || p.audit.through > FROZEN_FINAL_FROM) throw new Error('invalid, overlapping or frozen-period study plan');
+    p.train.through > policy.trainBefore || p.audit.through > policy.finalFrom) throw new Error('invalid, overlapping or frozen-period study plan');
 }
 /** Reserved final rows are never encoded. A final outcome in an input is rejected even when
  * the caller selected an earlier window. Full contract spans and label arrivals are purged. */
-export function contractRows(examples: ContractExample[], w: TimeWindow): EncodedContractRow[] {
-  if (examples.length > 100000 || ![w.from, w.through].every(stamp) || w.from >= w.through || w.through > FROZEN_FINAL_FROM) throw new Error('invalid contract dataset/window');
+export function contractRows(examples: ContractExample[], w: TimeWindow, studyPolicyId?: string): EncodedContractRow[] {
+  const policy = studyPolicy(studyPolicyId);
+  if (examples.length > 100000 || ![w.from, w.through].every(stamp) || w.from >= w.through || w.through > policy.finalFrom) throw new Error('invalid contract dataset/window');
   const ids = new Set<string>(), decisions = new Set<string>(), selected: EncodedContractRow[] = [];
   for (const e of examples) {
     const o = e.observation, y = e.outcome, at = o.query.asOf;
     if (ids.has(o.id) || y.observationId !== o.id || y.schema !== CONTRACT_LABEL_SCHEMA || !stamp(y.knownAt) ||
         y.plannedThrough !== o.query.contract.closeTime || (y.status === 'complete' &&
-        (at >= FROZEN_FINAL_FROM || y.knownAt >= FROZEN_FINAL_FROM || y.plannedThrough >= FROZEN_FINAL_FROM))) throw new Error('duplicate, incompatible or reserved-final outcome');
+        (at >= policy.finalFrom || y.knownAt >= policy.finalFrom || y.plannedThrough >= policy.finalFrom))) throw new Error('duplicate, incompatible or reserved-final outcome');
     ids.add(o.id);
     const decisionKey = digest([o.query.asset, o.query.contract.ticker, at, o.query.side, o.event]);
     if (decisions.has(decisionKey)) throw new Error('duplicate contract decision');
@@ -154,7 +159,7 @@ export function fitContractModel(rows: { train: EncodedContractRow[]; stopping: 
     s.minimumMoveBps = Math.min(s.minimumMoveBps, move); s.maximumMoveBps = Math.max(s.maximumMoveBps, move);
     if (cap !== null) { s.minimumCapMoneyness = Math.min(s.minimumCapMoneyness!, cap); s.maximumCapMoneyness = Math.max(s.maximumCapMoneyness!, cap); } support.set(key, s);
   }
-  const core: Omit<ContractModel, 'id'> = { schema: CONTRACT_MODEL_SCHEMA, family, researchOnly: true, liveEntryAllowed: false,
+  const core: Omit<ContractModel, 'id'> = { schema: CONTRACT_MODEL_SCHEMA, studyPolicyId: studyPolicy(plan.studyPolicyId).id, family, researchOnly: true, liveEntryAllowed: false,
     featureSchema: first.frame.schema, taSchema: first.frame.taSchema, engine: first.frame.engine, featureSources: frameSources(first),
     termsBases: [...new Set(rows.train.map((r) => r.observation.termsBasis))].sort(),
     knownAt: plan.calibration.through, trainedThrough: plan.train.through, included: [...included], featureNames: names,
@@ -184,8 +189,9 @@ export function contractModelSupports(model: ContractModel, o: ContractObservati
 }
 export function validateContractModel(m: ContractModel) {
   const { id, ...core } = m;
+  const policy = studyPolicy(m.studyPolicyId);
   if (m.schema !== CONTRACT_MODEL_SCHEMA || m.researchOnly !== true || m.liveEntryAllowed !== false || digest(core) !== id ||
-      !['smooth', 'trees', 'temporal-linear'].includes(m.family) || !stamp(m.knownAt) || !stamp(m.trainedThrough) || m.trainedThrough > FROZEN_TRAIN_BEFORE || m.knownAt >= FROZEN_FINAL_FROM ||
+      !['smooth', 'trees', 'temporal-linear'].includes(m.family) || !stamp(m.knownAt) || !stamp(m.trainedThrough) || m.trainedThrough > policy.trainBefore || m.knownAt >= policy.finalFrom ||
       m.knownAt < m.trainedThrough || !['observed-index', 'synthetic-fixture'].includes(m.indexBasis) ||
       (m.snnIdentity !== null && !/^[a-f0-9]{64}$/.test(m.snnIdentity)) || m.included.some((f) => !FEATURE_FAMILIES.includes(f)) ||
       !m.featureNames.length || m.featureNames.length > 10000 || new Set(m.featureNames).size !== m.featureNames.length || !m.support.length ||
