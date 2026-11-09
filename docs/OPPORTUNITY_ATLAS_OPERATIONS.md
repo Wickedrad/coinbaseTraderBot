@@ -43,9 +43,10 @@ npm run research:opportunity-product -- assemble \
   --out research/out/atlas-contract-dataset-v1
 ```
 
-The importer reads observed `market`, `index`, `candles`, `book`, `delta` and
-`result` messages. It accepts only index messages explicitly marked `src: kalshi`
-for official contract reconstruction. It excludes `hist`, `synth` and proxy data,
+The importer reads observed `market`, `index`, `candles`, `book`, `delta`, `perp`,
+`dominance`, `gap` and `result` messages. It accepts only index messages explicitly
+marked `src: kalshi` for official contract reconstruction. It excludes `hist`,
+`synth` and proxy data,
 never invokes the historical replay's synthetic price bridge, and never builds
 ticks from minute OHLC. An unspecified historical candle provider is recorded as
 unspecified; a recording is not tvdatafeed provenance or independent proof that a
@@ -357,9 +358,11 @@ All heavy data processing and fitting run on GitHub, without contacting Lightsai
 ```sh
 gh workflow run atlas-research.yml --ref main \
   -f dataset_run=42538058087 -f study_policy=prospective-2026-11-09-v1
-gh workflow run atlas-recordings.yml --ref main
+gh workflow run atlas-recordings.yml --ref main -f expand_training=true
 # Reuse all six public-prefix artifacts when investigating a later processing step:
 gh workflow run atlas-recordings.yml --ref main -f source_run=42543176283
+# Add two fixed pre-cutoff days while reusing the original six prefixes:
+gh workflow run atlas-recordings.yml --ref main -f source_run=42543176283 -f expand_training=true
 # After a complete replay, reuse its checked datasets for a model-only refit:
 gh workflow run atlas-recordings.yml --ref main -f study_run=COMPLETED_RECORDING_RUN
 ```
@@ -374,6 +377,39 @@ artifacts, never production model files. No source secrets enter those artifacts
 The prefix-specific plan audits November 6 and uses November 7 for explicitly
 retrospective post-audit paper queries. Those queries are not prospective paper
 observations, regardless of whether a model would have entered.
+
+The initial six-prefix run, `42549662484`, completed with 3,876 complete base
+outcomes and 3,804 matched SNN outcomes per variant. It has only 19 distinct
+training settlement events, below the learner's fixed 20-event minimum, so its
+contract heads remain fallback priors. All 1,080 historical paper queries abstain;
+the one-week audit has no executable quote or confirmed-result evidence.
+`expand_training=true` adds fixed October 24 and 27 archive prefixes before the
+October 29 training cutoff. It preserves the model parameters, selection/audit
+windows and November 9 final boundary. With `source_run`, only the two additional
+prefixes are copied; if either fails, the study cannot silently use the old six.
+This extends development coverage and cannot establish independent qualification.
+
+The expanded run `42568366333` completed on the same tested source with all three
+contract heads fitted. It processed 140,129,400 events across 19.99 observed hours,
+producing 5,340 complete base outcomes (201 distinct asset/settlement events) and
+5,244 complete outcomes per matched SNN variant. The base has 66 distinct training
+events; the SNN variants have 64. The selected tree models retain no indicator/SNN
+family because evidence remains insufficient. Their audit spans one week with two
+confirmed events and zero executable quotes; a conditional calibration head also
+remains unsupported. All 1,080 retrospective paper queries abstain.
+
+Download the checked artifact to inspect the real fitted product without another
+archive copy or fit:
+
+```sh
+gh run download 42568366333 --name atlas-recording-study --dir research/out/atlas-observed-42568366333
+npm run research:opportunity-product -- status --product research/out/atlas-observed-42568366333/base/study/product.json
+```
+
+The artifact expires on February 7, 2027. After prefix-cache expiry, omit
+`source_run` and keep `expand_training=true` to copy all eight fixed archived
+prefixes on GitHub. Source/model/dataset hashes, actual fitted head types and
+current-code validation are recorded in `OPPORTUNITY_ATLAS_PRODUCT_VALIDATION.json`.
 
 The owner authorized the separate prospective study and main merges. Use a merge
 commit subject containing `[skip deploy]`; deployment and automatic trainer
