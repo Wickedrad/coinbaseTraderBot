@@ -1,6 +1,7 @@
 /** Audit locked forward trials; never fit, select a model, or promote one. */
 import fs from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { bootstrapMeanCi } from '../stats';
 import { digest } from './contractDataset';
 import { readJsonLines } from './productCli';
@@ -66,6 +67,7 @@ export function firstSustainedRank(f: EdgeForecast, closes: ReadonlyMap<number, 
 export async function aggregateOracleEdge(dirs: string[]) {
   let protocol: string | undefined;
   const trials: EdgeTrialResult[] = [], outcomes: ReturnType<typeof scoreEdgeForecast>[] = [], pathScores: ReturnType<typeof scoreEdgeForecast>[] = [], inputs: Record<string, string> = {};
+  const pathCounts = new Map<number, { up: number; down: number; noMove: number; unavailable: number }>();
   for (const dir of dirs) {
     const file = path.join(dir, 'report.json'), r = JSON.parse(fs.readFileSync(file, 'utf8')); inputs[file] = await sha256File(file);
     if (r.schema !== 'atlas-oracle-forward-edge-v1' || r.mode !== 'locked-forward-trial' || r.policy.id !== EDGE_POLICY.id || r.noFit !== true || r.primary !== 'weighted') throw new Error('Only registered locked forward trials may enter edge qualification');
@@ -75,6 +77,7 @@ export async function aggregateOracleEdge(dirs: string[]) {
       const file = path.join(dir, name); if (await sha256File(file) !== expected) throw new Error('changed forward evidence file'); inputs[file] = expected;
     }
     const forecasts = await readJsonLines<EdgeForecast>(path.join(dir, 'forecasts.jsonl')), byId = new Map(forecasts.map((f) => [f.id, f]));
+    if (byId.size !== forecasts.length) throw new Error('duplicate published forecast');
     const prices = new Map<string, Map<number, number>>();
     for (const a of await readJsonLines<any>(path.join(dir, 'acquisitions.jsonl'))) if (a.report && a.knownAt <= r.endedAt) {
       const rawFile = path.join(dir, 'tv-history/tvdatafeed-receipts', path.basename(a.report.rawFile));
@@ -88,17 +91,24 @@ export async function aggregateOracleEdge(dirs: string[]) {
     for (const f of forecasts) { const { id, ...core } = f;
       if (digest(core) !== id || f.publishedAt < r.startedAt || f.publishedAt > r.endedAt || f.featuresKnownAt > f.publishedAt || f.featureAt > f.featuresKnownAt || f.byAt <= f.publishedAt ||
           !r.models.some((m: { id: string; asset: string; learnedThrough: number }) => m.id === f.modelId && m.asset === f.asset && m.learnedThrough + 3600000 <= f.featureAt)) throw new Error('backdated, changed or future-trained forecast'); }
-    let internalMissing = 0;
+    let internalMissing = 0; const outcomeIds = new Set<string>();
     for (const y of await readJsonLines<ReturnType<typeof scoreEdgeForecast>>(path.join(dir, 'outcomes.jsonl'))) {
       const f = byId.get(y.id); if (!f) throw new Error('outcome lacks a published forecast');
+      if (outcomeIds.has(y.id)) throw new Error('duplicate forward outcome'); outcomeIds.add(y.id);
+      const expected = r.rejectedAssets.includes(f.asset) ? { id: f.id, status: 'revised-source-unavailable' }
+        : scoreEdgeForecast(f, prices.get(f.asset) ?? new Map(), r.endedAt);
+      if (!isDeepStrictEqual(y, expected)) throw new Error('forward outcome does not match raw first-observed prices');
       if (y.status === 'complete' && (y.byAt !== f.byAt || y.publishedAt !== f.publishedAt || y.byAt > r.endedAt)) throw new Error('unexpired outcome or changed target');
       outcomes.push(y);
       if (y.status === 'missing-price' && f.byAt <= Math.max(0, ...prices.get(f.asset)?.keys() ?? [])) internalMissing++;
       if (y.status === 'complete') {
         const early = firstSustainedRank(f, prices.get(f.asset) ?? new Map());
+        const counts = pathCounts.get(f.horizon) ?? { up: 0, down: 0, noMove: 0, unavailable: 0 }; pathCounts.set(f.horizon, counts);
+        if (!early.available) counts.unavailable++; else counts[early.first ?? 'noMove']++;
         if (early.available) pathScores.push({ ...y, weightedLoss: 1 - early.weightedHit, priorLoss: 1 - early.priorHit, uniformLoss: 1 - early.uniformHit });
       }
     }
+    if (outcomeIds.size !== forecasts.length) throw new Error('missing forward outcomes');
     const books = await readJsonLines<SavedEdgeBook>(path.join(dir, 'books.jsonl'));
     const arms = [];
     for (const p of r.paper) {
@@ -113,8 +123,12 @@ export async function aggregateOracleEdge(dirs: string[]) {
     trials.push({ startedAt: r.startedAt, endedAt: r.endedAt,
       failure: r.failure ?? ((r.rejectedAssets.length || internalMissing) ? 'Revised or internally missing price evidence' : null), arms });
   }
-  const terminal = edgeEvidence(outcomes), direction = edgeEvidence(pathScores).map(({ calibration, ...score }) => ({ ...score,
-    target: 'First confirmed two-minute sustained direction after actual forecast publication; missing paths unavailable, no-move cases count as misses for every ranking', loss: '0/1 directional-ranking miss' }));
+  const terminal = edgeEvidence(outcomes), direction = edgeEvidence(pathScores).map(({ calibration, ...score }) => {
+    const rows = pathScores.filter((r): r is Extract<typeof r, { status: 'complete' }> => r.status === 'complete' && r.horizon === score.horizon);
+    const mean = (name: 'weightedLoss' | 'priorLoss' | 'uniformLoss') => rows.length ? rows.reduce((s, r) => s + 1 - r[name], 0) / rows.length : null;
+    return { ...score, pathCounts: pathCounts.get(score.horizon) ?? { up: 0, down: 0, noMove: 0, unavailable: 0 },
+    descriptiveHitRate: { weighted: mean('weightedLoss'), prior: mean('priorLoss'), uniform: mean('uniformLoss'), interpretation: 'All available minute forecasts; overlapping rows are descriptive, not independent evidence' },
+    target: 'First confirmed two-minute sustained direction after actual forecast publication; missing paths unavailable, no-move cases count as misses for every ranking', loss: '0/1 directional-ranking miss' }; });
   return { schema: 'atlas-oracle-edge-assessment-v1', acceptance: EDGE_ACCEPTANCE, protocol, inputs, direction, terminal, trials,
     assessment: qualifyEdgeTrials(trials, direction), stressMeaning: 'Fixed recorded fills with one cent adverse price per fill and recomputed fees; this is a cost sensitivity, not a second fill simulation' };
 }

@@ -94,5 +94,12 @@ test('artifact assessment runs from sealed forecasts through raw prices and nati
   const assessed = await aggregateOracleEdge([dir]); assert.equal(assessed.assessment.edgeVerified, false); assert.equal(assessed.trials.length, 1);
   const result = assessed.trials[0].arms.find((a) => a.arm === 'weighted')!; assert.ok(Math.abs(result.net - 0.31) < 1e-8); assert.ok(result.stressedNet < 0);
   assert.equal(assessed.direction[0].nonOverlappingUtcHourGroups, 1);
+  assert.equal(assessed.direction[0].pathCounts.up, 1); assert.equal(assessed.direction[0].descriptiveHitRate.weighted, 1);
+  assert.equal(assessed.direction[0].descriptiveHitRate.prior, 0);
   fs.appendFileSync(path.join(dir, 'books.jsonl'), ' '); await assert.rejects(aggregateOracleEdge([dir]), /changed forward evidence/);
+  const report = JSON.parse(fs.readFileSync(path.join(dir, 'report.json'), 'utf8'));
+  report.booksSha256 = await sha256File(path.join(dir, 'books.jsonl'));
+  const outcome = JSON.parse(fs.readFileSync(path.join(dir, 'outcomes.jsonl'), 'utf8'));
+  save('outcomes.jsonl', { ...outcome, weightedLoss: 0 }); report.outcomesSha256 = await sha256File(path.join(dir, 'outcomes.jsonl')); save('report.json', report);
+  await assert.rejects(aggregateOracleEdge([dir]), /raw first-observed prices/, 'a new manifest hash cannot replace independent outcome reconstruction');
 });

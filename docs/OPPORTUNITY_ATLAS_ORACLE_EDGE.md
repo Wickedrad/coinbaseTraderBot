@@ -22,7 +22,7 @@ Public series fee types, scheduled changes and event overrides are captured. The
 
 ## How the assessment decides
 
-The assessment independently checks every fill against same-arrival book depth, recomputes fees and the entire cash/basis ledger, and reconciles the saved account. It then applies a fixed-fill sensitivity of one cent adverse price on both entry and exit, with fees recalculated at those prices. This is cost stress, not invented fills at a new price.
+The assessment independently reconstructs each outcome from the first-observed raw tvdatafeed receipts and rejects missing, duplicated or inconsistent outcome records. It checks every fill against same-arrival book depth, recomputes fees and the entire cash/basis ledger, and reconciles the saved account. It then applies a fixed-fill sensitivity of one cent adverse price on both entry and exit, with fees recalculated at those prices. This is cost stress, not invented fills at a new price.
 
 Early sustained-direction ranking gain is compared with the frozen prior. Terminal-close log loss and calibration are separate diagnostics. Overlapping minute predictions are not treated as independent: the first forecast per asset in each UTC-hour group is selected by time, and a group is omitted from inference if its target interval overlaps the preceding selected group. Assets in the same interval stay grouped. Forecast and outcome counts remain fully reported.
 
