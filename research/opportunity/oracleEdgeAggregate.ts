@@ -1,5 +1,6 @@
 /** Audit locked forward trials; never fit, select a model, or promote one. */
 import fs from 'node:fs';
+import { oracleProfitWindows, PROFIT_WINDOW_POLICY, type ProfitWindowBook } from './oracleProfitWindow';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { bootstrapMeanCi } from '../stats';
@@ -66,6 +67,7 @@ export function firstSustainedRank(f: EdgeForecast, closes: ReadonlyMap<number, 
 }
 export async function aggregateOracleEdge(dirs: string[]) {
   let protocol: string | undefined;
+  const profitWindows: ReturnType<typeof oracleProfitWindows> = [];
   const trials: EdgeTrialResult[] = [], outcomes: ReturnType<typeof scoreEdgeForecast>[] = [], pathScores: ReturnType<typeof scoreEdgeForecast>[] = [], inputs: Record<string, string> = {};
   const pathCounts = new Map<number, { up: number; down: number; noMove: number; unavailable: number }>();
   for (const dir of dirs) {
@@ -113,6 +115,7 @@ export async function aggregateOracleEdge(dirs: string[]) {
     }
     if (outcomeIds.size !== forecasts.length) throw new Error('missing forward outcomes');
     const books = await readJsonLines<SavedEdgeBook>(path.join(dir, 'books.jsonl'));
+    profitWindows.push(...oracleProfitWindows(forecasts, books as ProfitWindowBook[], r.endedAt));
     const arms = [];
     for (const p of r.paper) {
       const fills = await readJsonLines<SavedEdgeFill>(path.join(dir, `${p.arm}-fills.jsonl`));
@@ -133,6 +136,7 @@ export async function aggregateOracleEdge(dirs: string[]) {
     descriptiveHitRate: { weighted: mean('weightedLoss'), prior: mean('priorLoss'), uniform: mean('uniformLoss'), interpretation: 'All available minute forecasts; overlapping rows are descriptive, not independent evidence' },
     target: 'First confirmed two-minute sustained direction after actual forecast publication; missing paths unavailable, no-move cases count as misses for every ranking', loss: '0/1 directional-ranking miss' }; });
   return { schema: 'atlas-oracle-edge-assessment-v1', acceptance: EDGE_ACCEPTANCE, protocol, inputs, direction, terminal, trials,
+    profitWindowStudy: { policy: PROFIT_WINDOW_POLICY, rows: profitWindows, interpretation: 'Separate counterfactual entry labels, not summed portfolio profit or calibrated model probabilities. Sampled quote support does not prove continuous liquidity or private fills. Missing entries and censored coverage remain visible; terminal probabilities and original acceptance are unchanged.' },
     assessment: qualifyEdgeTrials(trials, direction), stressMeaning: 'Fixed recorded fills with one cent adverse price per fill and recomputed fees; this is a cost sensitivity, not a second fill simulation' };
 }
 if (process.argv[1] && /(^|[/\\])oracleEdgeAggregate\.(ts|js)$/.test(process.argv[1])) {
