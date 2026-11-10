@@ -97,7 +97,8 @@ export async function aggregateOracleEdge(dirs: string[]) {
       if (outcomeIds.has(y.id)) throw new Error('duplicate forward outcome'); outcomeIds.add(y.id);
       const expected = r.rejectedAssets.includes(f.asset) ? { id: f.id, status: 'revised-source-unavailable' }
         : scoreEdgeForecast(f, prices.get(f.asset) ?? new Map(), r.endedAt);
-      if (!isDeepStrictEqual(y, expected)) throw new Error('forward outcome does not match raw first-observed prices');
+      // JSON receipts normalize -0 to 0; compare the same serialized representation.
+      if (!isDeepStrictEqual(y, JSON.parse(JSON.stringify(expected)))) throw new Error('forward outcome does not match raw first-observed prices');
       if (y.status === 'complete' && (y.byAt !== f.byAt || y.publishedAt !== f.publishedAt || y.byAt > r.endedAt)) throw new Error('unexpired outcome or changed target');
       outcomes.push(y);
       if (y.status === 'missing-price' && f.byAt <= Math.max(0, ...prices.get(f.asset)?.keys() ?? [])) internalMissing++;
