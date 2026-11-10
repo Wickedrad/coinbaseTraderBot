@@ -10,6 +10,8 @@ Fresh minute history comes only from **tvdatafeed**, requesting `BINANCE:*USDT` 
 
 The price target is anchored at the last completed minute, exactly as in Oracle training. Actual publication lag shortens the remaining lead and is recorded. Future labels use the exact later minute close. Terminal up/sideways/down probabilities are scored against that original target. An additional path analysis checks which direction first confirms a sustained move on two closed minutes after publication. A later terminal reversal cannot erase an early correct direction in this path diagnostic. Missing paths remain unavailable; no-move cases are retained as misses for both rankings. These minute labels cannot certify intraminute reversal onset.
 
+Those future closes establish sustained support relative to the feature anchor; they cannot prove the move began after publication within that minute. Paper P/L instead begins at the actual observed entry ask after publication. The two claims remain separate.
+
 ## Contracts and the $200 accounts
 
 A 15-minute forecast can open a paper position only when its target fits before the contract's sale deadline. This trial uses monotone hourly threshold contracts for those entries. The one-hour forecast remains a price forecast; a shorter active contract cannot borrow that horizon. Active 15-minute contracts require a trained shorter-window forecast and are not admitted by pretending the saved 15-minute horizon is shorter.
@@ -30,6 +32,8 @@ The registered research acceptance requires at least 20 non-overlapping, same-pr
 
 ## Commands
 
+The initial run's forecast engine and primary account were committed before launch. Its sustained-direction/stressed-profit assessment criteria were committed at `2026-11-10T02:20:51Z` (`9b8330b`), during collection but before the first 15-minute target matured and before any outcome review. Keep that timing distinction in the evidence record. Subsequent trials on this source lock both the engine and assessment before collection.
+
 Start a short source/protocol probe (it cannot qualify as edge evidence):
 
 ```sh
@@ -42,6 +46,8 @@ Start a locked trial long enough to observe both horizons:
 gh workflow run atlas-recordings.yml --ref main -f oracle_edge=true -f edge_cycles=72
 ```
 
+Choose the collection duration before launch. Contract close must fall at least one minute before the planned collection end, and the forecast must fit before close minus 30 seconds. A 72-minute run started late in the hour can have no eligible entries. Use a separately registered 90-minute protocol when needed to include the following hourly close; never pool trials with different durations or implementations.
+
 The run produces `atlas-oracle-edge` with registration, forecast publications, raw tvdatafeed receipts, books, fee evidence, outcomes, fills and account reports. Current workflow versions automatically assess locked trials. A short probe has no matured 15-minute or one-hour outcomes.
 
 Assess completed locked trial artifacts without recollecting or refitting:
@@ -51,3 +57,33 @@ gh workflow run atlas-recordings.yml --ref main -f oracle_edge=true -f source_ru
 ```
 
 For a complete same-protocol cohort, supply its run IDs separated by commas. The evaluator rejects changed models, policies, implementation, overlapping trial periods, changed artifacts and backdated forecasts. The assessment artifact is `atlas-oracle-edge-assessment`.
+
+## First forward result
+
+GitHub run [42740737188](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42740737188) published **720 forecasts** from the frozen tables and importance. All 72 tvdatafeed acquisitions succeeded, with no used OHLC revisions; all five assets produced both forecasts each cycle. It captured 2,996 books, 2,995 nonempty: 618 were two-sided and 2,377 had asks only. The exact later closes graded 285 fifteen-minute and 60 one-hour forecasts. Another 365 remained pending and ten target closes were outside the last acquired prices; no outcomes were invented.
+
+The first-sustained-direction hit rate was **48.1% versus 41.4% for the prior** at 15 minutes, and **21.7% versus 41.7%** at one hour. These are descriptive rates across heavily overlapping forecasts. Only two and one non-overlapping UTC-hour groups were available, respectively. The grouped 15-minute gain was zero. This does not establish reliable direction gain.
+
+Every account began with $200. The ledger was independently reconciled to the observed books and native fees:
+
+| Account | Ending cash | Realized sale net | Unresolved positions | Stressed cash change |
+| --- | ---: | ---: | ---: | ---: |
+| Learned importance | $188.35 | +$0.07 | 4 | −$13.12 |
+| Uniform curves | $188.35 | +$0.07 | 4 | −$13.12 |
+| Historical prior | $188.35 | +$0.07 | 4 | −$13.12 |
+| Reversed learned ranking | $201.28 | +$1.28 | 0 | −$1.70 |
+| Always up | $188.35 | +$0.07 | 4 | −$13.12 |
+| Always down | $201.28 | +$1.28 | 0 | −$1.70 |
+| Seeded random | $189.22 | +$0.53 | 4 | −$14.37 |
+
+Cash excludes funded unresolved exposure; its change is **not** a fully realized account return. No exit or settlement payout is imputed. The learned account made one positive sale, paid $0.90 total fees and retained $11.72 of unresolved entry basis. Its behavior matched the prior/uniform/up controls during eligible entries. No account reached the hourly goal. Fees remained cached-rate assumptions. The assessment verdict is **`edge-not-established`**; there is no promotion.
+
+The original collector selected from only the first 100 open markets. That page mixed hourly and later contracts and omitted nearer strikes; BTC's first selected strike was $82,899.99 against a $74,960 feature anchor. This is an execution-study limitation, not proof about the unobserved nearer contracts. The final source filters the close window, reads every page, saves listing receipts and refuses partial selections. A separate short engineering probe verifies that correction; its outcomes cannot be pooled with the original trial. Implementation hashes enforce that separation. The frozen Oracle tables and importance are unchanged.
+
+The corrected probe, run [42749966754](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42749966754), published 20 forecasts and captured **99 two-sided books out of 99**, with no acquisition, request, revision or listing failures. It saved 20 market-page receipts. BTC's selected strike was $74,599.99 against a $74,649.37 anchor. BTC, ETH, SOL and XRP had eligible hourly terms; DOGE had none and remained price-only. The two-minute probe has no matured horizon outcomes or eligible entries and is explicitly excluded from edge qualification.
+
+Input coverage was partial: BTC/ETH/SOL/XRP used 23 axes and 276 curves each; DOGE used 20 axes and 210 curves. The missing higher-timeframe inputs remain unavailable. One flat return also exposed JavaScript negative-zero serialization in the independent check. The checker now compares JSON representations, with a regression case, and reproduces the unchanged first-trial results.
+
+Exact source IDs, artifact hashes, assessment, fee assumptions and software checks are recorded in [the validation record](OPPORTUNITY_ATLAS_ORACLE_EDGE_VALIDATION.json). The first result supplies neither qualified native SNN evidence nor a verified tradable edge.
+
+Final source `99bfcae4dbd4787de6ba2209a136f0b5c7de9af7` passed GitHub CI [42749913829](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42749913829): **1,321 tests, zero failures/skips**, TypeScript and production build. All four CodeQL languages, 21 focused local tests and workflow lint passed. Final-source assessment [42750390525](https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42750390525) successfully reproduces the unchanged first-trial result. The closing evidence update changes documentation only.

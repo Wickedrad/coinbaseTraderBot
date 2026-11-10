@@ -28,6 +28,18 @@ nonempty books as protected future evidence. No deployment or model promotion
 was performed. Exact receipts are in the
 [new validation record](../OPPORTUNITY_ATLAS_DIRECTION_VALIDATION.json).
 
+The [frozen Oracle forward trial](OPPORTUNITY_ATLAS_ORACLE_EDGE.md) now connects
+those actual curves and learned importance directly to published 15m/1h forecasts
+and seven separate $200 public-book paper accounts. Its independent assessment
+reconstructs price outcomes and cash ledgers, then compares sustained-direction
+ranking and adverse-price-stressed profit against fixed controls. Qualification
+requires adequate non-overlapping trials; one completed run cannot establish edge.
+The first run published 720 forecasts and reconciled real public-book paper fills,
+but did not qualify: overlapping direction evidence, unresolved exits and cached
+fees remain limiting. A first-page contract-listing defect was corrected without
+changing the learned weights; the separate probe captured 99/99 two-sided books.
+See [the forward validation record](OPPORTUNITY_ATLAS_ORACLE_EDGE_VALIDATION.json).
+
 The owner authorized continuous implementation through a finished product. The
 core workflow merged in PR #306; PR #307 verifies the recorded-input follow-up.
 PR #308 adds the independent advance-movement objective and reuses the existing
@@ -63,6 +75,7 @@ reported separately; neither tests nor synthetic demonstrations establish an edg
 - [x] Direction-only native checkpoint export with actual weight-change evidence.
 - [x] Funded $200 native paper accounts with small fee-net sales and observed-trade maker exits.
 - [x] Empty-book diagnostics, fixed-point snapshot repair, recorded gaps and GitHub-only public quote capture.
+- [x] Frozen Oracle forecast publication, future-price reconstruction, funded paper controls and independent stressed-profit assessment.
 
 ## Qualification
 

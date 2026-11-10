@@ -8,6 +8,11 @@ For the owner's full-history request, use the
 For learned curve importance, native checkpoints and funded contract studies, see
 [the direction iteration](../OPPORTUNITY_ATLAS_DIRECTION_ITERATIONS.md) and its
 [run evidence](../OPPORTUNITY_ATLAS_DIRECTION_VALIDATION.json).
+To evaluate the saved Oracle curves and learned importance directly on published
+future forecasts and public-book $200 accounts, use the
+[frozen Oracle forward trial](OPPORTUNITY_ATLAS_ORACLE_EDGE.md).
+That workflow reports sustained-direction gain and stressed fee-net profit against
+fixed controls without fitting weights or activating live trading.
 The older joint settlement workflow below remains a separate diagnostic;
 settlement wins and its payout calibration are not the movement learning target.
 
