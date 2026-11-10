@@ -49,6 +49,8 @@ export async function runOracleEdge(o: { models: string; weights: string; out: s
   const feeBook = new FeeBook(0.01, undefined, publishedSnapshot as PublishedSchedule); let publicationFresh = false;
   const counts = { requests: 0, requestFailures: 0, acquisitions: 0, acquisitionFailures: 0, forecasts: 0, books: 0, depthBooks: 0, revisedAssets: 0, timingRejected: 0, missingFeatures: 0 };
   let failure: string | null = null;
+  let eventFeesKnown = false, eventFeesSha = '';
+  const seriesChangesKnown = new Set<string>();
   async function get(route: string) {
     counts.requests++; const requestedAt = Date.now();
     try { const r = await fetch(BASE + route, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(15000) }); if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -59,9 +61,15 @@ export async function runOracleEdge(o: { models: string; weights: string; out: s
     const r = await get(`/series/${series}`); if (!r) return;
     const info = parseSeriesFees(r.data); feeBook.setSeries(series, info, r.knownAt);
     if (!info) return;
+    const changes = await get(`/series/fee_changes?series_ticker=${series}`);
+    if (changes) {
+      feeBook.setSeriesChanges(series, (changes.data.series_fee_change_arr ?? []).map((c: any) => ({ feeType: c.fee_type ? String(c.fee_type) : undefined,
+        multiplier: c.fee_multiplier === null ? undefined : Number(c.fee_multiplier), scheduledTs: Date.parse(String(c.scheduled_ts)) })).filter((c: { scheduledTs: number }) => Number.isFinite(c.scheduledTs)));
+      append('fees', { series, changes }); seriesChangesKnown.add(series);
+    }
     const schedule = feeBook.feesFor(series, undefined, r.knownAt);
     const receipt: PaperFeeTerms = { schedule, knownAt: r.knownAt, effectiveFrom: r.knownAt, sourceSha256: r.sourceSha256,
-      basis: publicationFresh && schedule.source === 'api, matches the published schedule' ? 'observed-as-of' : 'assumed-schedule' };
+      basis: publicationFresh && eventFeesKnown && seriesChangesKnown.has(series) && schedule.source === 'api, matches the published schedule' ? 'observed-as-of' : 'assumed-schedule' };
     append('fees', { series, ...r, info, receipt }); feeInfo.set(series, receipt);
   }
   function signal(f: EdgeForecast, arm: Arm): DirectionPaperSignal | null {
@@ -105,7 +113,21 @@ export async function runOracleEdge(o: { models: string; weights: string; out: s
           }
         }
       } catch (e) { counts.acquisitionFailures++; append('acquisitions', { cycle, failedAt: Date.now(), error: String(e) }); }
-      if (!acquired && cycle === 0) throw new Error('tvdatafeed bootstrap failed; no alternate history source is allowed');
+      if (cycle === 0 && (!acquired || !counts.forecasts)) throw new Error('tvdatafeed bootstrap produced no eligible features; no alternate history source is allowed');
+      const eventChanges: Array<{ eventTicker: string; seriesTicker: string; type: string | null; multiplier: number | null; scheduledTs: number }> = [];
+      let cursor = ''; eventFeesKnown = false;
+      for (let page = 0; page < 5; page++) {
+        const r = await get(`/events/fee_changes?limit=1000${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`); if (!r) break;
+        append('fees', { events: r }); eventFeesSha = digest([eventFeesSha, r.sourceSha256]);
+        for (const c of r.data.event_fee_changes ?? []) {
+          const scheduledTs = Date.parse(String(c.scheduled_ts)); if (!c.event_ticker || !Number.isFinite(scheduledTs)) continue;
+          eventChanges.push({ eventTicker: String(c.event_ticker), seriesTicker: String(c.series_ticker ?? String(c.event_ticker).split('-')[0]),
+            type: c.fee_type_override ? String(c.fee_type_override) : null, multiplier: c.fee_multiplier_override == null ? null : Number(c.fee_multiplier_override), scheduledTs });
+        }
+        cursor = r.data.cursor ? String(r.data.cursor) : ''; if (!cursor) { eventFeesKnown = true; break; }
+      }
+      if (eventFeesKnown) feeBook.setEventChanges(eventChanges, (series) => assets.some((a) => series === `KX${a}D`), Date.now());
+      seriesChangesKnown.clear();
       for (const asset of assets) {
         const series = `KX${asset}D`, r = await get(`/markets?series_ticker=${series}&status=open&limit=100`);
         if (r) {
@@ -124,9 +146,13 @@ export async function runOracleEdge(o: { models: string; weights: string; out: s
         const selected = new Map([...markets.values()].flat().map((m) => [m.ticker, m]));
         for (const [ticker, c] of terms) if (c.closeTime > Date.now()) selected.set(ticker, { ticker, seriesTicker: `KX${c.asset}D` } as MarketInfo);
         for (const m of selected.values()) {
-          const c = terms.get(m.ticker)!, fees = feeInfo.get(m.seriesTicker); if (!fees || c.closeTime <= Date.now()) continue;
+          const c = terms.get(m.ticker)!, feeBase = feeInfo.get(m.seriesTicker); if (!feeBase || c.closeTime <= Date.now()) continue;
           const r = await get(`/markets/${encodeURIComponent(m.ticker)}/orderbook?depth=50`); if (!r) continue;
           const book = parseOrderbook(r.data), q = { ticker: m.ticker, at: r.requestedAt, knownAt: r.knownAt, sourceSha256: r.sourceSha256, ...book };
+          const schedule = feeBook.feesFor(m.seriesTicker, m.eventTicker ?? m.ticker.slice(0, m.ticker.lastIndexOf('-')), r.knownAt);
+          const fees = { ...feeBase, schedule, sourceSha256: digest([feeBase.sourceSha256, eventFeesSha, schedule]),
+            basis: publicationFresh && eventFeesKnown && seriesChangesKnown.has(m.seriesTicker) && schedule.source === 'api, matches the published schedule'
+              ? 'observed-as-of' as const : 'assumed-schedule' as const };
           counts.books++; counts.depthBooks += Number(!!book.bids.length || !!book.asks.length); append('books', { contract: c, quote: q, fees });
           const f = latest.get(c.asset), isSelected = markets.get(c.asset)?.some((x) => x.ticker === m.ticker);
           const timely = f && f.byAt <= c.closeTime - EDGE_POLICY.saleBufferMs && f.byAt > r.knownAt && c.closeTime <= stopAt - MIN;
@@ -151,6 +177,7 @@ export async function runOracleEdge(o: { models: string; weights: string; out: s
   const report = { ...registration, endedAt: knownAt, counts, failure, rejectedAssets: [...rejectedAssets],
     direction: edgeEvidence(scored.filter((r): r is ReturnType<typeof scoreEdgeForecast> => r.status !== 'revised-source-unavailable')),
     paper, forecastsSha256: await sha256File(path.join(root, 'forecasts.jsonl')), booksSha256: await sha256File(path.join(root, 'books.jsonl')),
+    outcomesSha256: await sha256File(path.join(root, 'outcomes.jsonl')),
     edgeVerified: false, qualification: 'Research evidence only; no promotion. Require adequate non-overlapping time groups, calibration and fee-net performance beyond matched controls.',
     limitations: ['Explicit Binance archive to TradingView BINANCE transfer, with missing warmup axes reported', 'Minute-close targets do not establish intraminute reversal timing',
       'Only the saved Oracle relationships and learned importance produce the predictions; controls are predeclared', 'Polled public-book taker simulation, not private fills; unresolved exposure is not settlement profit',
