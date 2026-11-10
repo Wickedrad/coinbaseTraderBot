@@ -60,7 +60,7 @@ export function firstSustainedRank(f: EdgeForecast, closes: ReadonlyMap<number, 
     if (future && prevDown && -move >= threshold * 0.75 && down === null) down = at;
     prevUp = future && move >= threshold; prevDown = future && -move >= threshold;
   }
-  const first = up === null && down === null ? null : down === null || (up !== null && up < down) ? 'up' : 'down';
+  const first: 'up' | 'down' | null = up === null && down === null ? null : down === null || (up !== null && up < down) ? 'up' : 'down';
   const hit = (p: number[]) => Number(first !== null && edgeDirection(p) === first);
   return { available: true as const, first, upConfirmedAt: up, downConfirmedAt: down, weightedHit: hit(f.p), priorHit: hit(f.prior), uniformHit: hit(f.uniform) };
 }
