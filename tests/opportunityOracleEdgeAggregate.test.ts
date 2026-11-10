@@ -4,8 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { aggregateOracleEdge, firstSustainedRank, qualifyEdgeTrials, type EdgeTrialResult } from '../research/opportunity/oracleEdgeAggregate';
-import type { EdgeForecast } from '../research/opportunity/oracleEdge';
+import { EDGE_POLICY, scoreEdgeForecast, type EdgeForecast } from '../research/opportunity/oracleEdge';
 import { auditEdgeLedger, type SavedEdgeBook, type SavedEdgeFill } from '../research/opportunity/oracleEdgeLedger';
+import { DirectionPaperAccount } from '../research/opportunity/directionPaper';
+import { digest } from '../research/opportunity/contractDataset';
+import { sha256File } from '../research/opportunity/jointPathData';
+import { codeHashes } from '../research/opportunity/productCli';
 import type { edgeEvidence } from '../research/opportunity/oracleEdge';
 
 const positiveDirection = [{ horizon: 15, status: 'positive-direction-evidence' }] as ReturnType<typeof edgeEvidence>;
@@ -55,4 +59,40 @@ test('independent fill audit recomputes net cash and stressed fees from the obse
   assert.ok(r.stressCost > 0.39); assert.ok(r.endingCash - 200 - r.stressCost < 0, 'a tiny fee-net gain is not robust to one cent adverse at both fills');
   assert.throws(() => auditEdgeLedger([{ ...fills[0], quantity: 21 }], books), /depth/);
   assert.throws(() => auditEdgeLedger([{ ...fills[0], fee: 0 }], books), /fee/);
+});
+test('artifact assessment runs from sealed forecasts through raw prices and native paper fills, then rejects changed books', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oracle-edge-artifacts-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const save = (name: string, x: unknown) => fs.writeFileSync(path.join(dir, name), JSON.stringify(x) + '\n');
+  const core = { modelId: 'a'.repeat(64), asset: 'BTC', publishedAt: start + 2000, featureAt: start, featuresKnownAt: start + 1000, byAt: start + 900000,
+    horizon: 15 as const, anchor: 100, atrBps: 20, p: [0.6, 0.2, 0.2], uniform: [0.4, 0.3, 0.3], prior: [0.2, 0.3, 0.5],
+    availableAxes: ['m1:rsi'], activeCurves: 1, trainingSource: 'archive-binance-1m-quarantined-v1', inputSource: 'tvdatafeed-binance' as const, providerTransfer: true as const };
+  const f = { ...core, id: digest(core) }, prices = new Map(Array.from({ length: 16 }, (_, i) => [start + i * 60000, 100 + i / 100]));
+  save('forecasts.jsonl', f); save('outcomes.jsonl', scoreEdgeForecast(f, prices, start + 72 * 60000));
+  const policy = { startingCash: 200, maximumPositionCost: 20, maximumContracts: 20, maximumOpenPositions: 5, minimumNetTakeUsd: 0.01,
+    targetContractRoi: 0, minimumSignalProbability: 0, maximumQuoteAgeMs: 2000, maximumSignalAgeMs: 90000, saleBufferMs: 30000 };
+  const profit = JSON.parse(fs.readFileSync('research/opportunity/examples/profit-policy.json', 'utf8'));
+  const c = { ticker: 'T', asset: 'BTC', openTime: start - 3600000, closeTime: start + 3600000, termsKnownAt: start, terms: { kind: 'greater' as const, strike: 100 }, settlementReference: 'fixture' };
+  const fees = { schedule: { takerMultiplier: 1, makerMultiplier: 0, balancePrecision: 0.01 }, knownAt: start, effectiveFrom: start, sourceSha256: 'b'.repeat(64), basis: 'observed-as-of' as const };
+  const books = [3000, 5000].map((ms) => ({ contract: c, fees, quote: { ticker: 'T', at: start + ms, knownAt: start + ms, sourceSha256: 'b'.repeat(64),
+    bids: [{ price: ms === 3000 ? 0.39 : 0.45, size: 20 }], asks: [{ price: ms === 3000 ? 0.40 : 0.46, size: 20 }] } }));
+  fs.writeFileSync(path.join(dir, 'books.jsonl'), books.map((b) => JSON.stringify(b)).join('\n') + '\n');
+  const paper = [];
+  for (const arm of ['weighted', 'uniform', 'prior', 'reversed', 'always-up', 'always-down', 'random']) {
+    const account = new DirectionPaperAccount(policy, profit, start - 10000);
+    if (arm === 'weighted') for (const b of books) await account.observe(c, b.quote, fees, { id: f.id, modelId: f.modelId, asOf: f.publishedAt,
+      producedAt: f.publishedAt, featuresKnownAt: f.featuresKnownAt, byAt: f.byAt, direction: 'up', probability: f.p[0] });
+    paper.push({ arm, ...account.report() }); fs.writeFileSync(path.join(dir, `${arm}-fills.jsonl`), account.fills.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  }
+  fs.mkdirSync(path.join(dir, 'tv-history/tvdatafeed-receipts'), { recursive: true });
+  const rawFile = path.join(dir, 'tv-history/tvdatafeed-receipts/fixture.json');
+  fs.writeFileSync(rawFile, JSON.stringify({ payload: { series: [{ id: 'BTC:1m', error: null, rows: [...prices].map(([at, value]) => [at - 60000, value, value, value, value, 1]) }] } }));
+  save('acquisitions.jsonl', { knownAt: start + 72 * 60000 - 1, report: { rawFile: '/old/fixture.json', acquiredAt: new Date(start + 72 * 60000 - 2).toISOString(), rawSha256: await sha256File(rawFile) } });
+  save('report.json', { schema: 'atlas-oracle-forward-edge-v1', mode: 'locked-forward-trial', policy: EDGE_POLICY, primary: 'weighted', noFit: true,
+    models: [{ id: f.modelId, asset: 'BTC', learnedThrough: start - 86400000 }], assets: ['BTC'], cycles: 72, codeHashes: await codeHashes(),
+    startedAt: start - 10000, endedAt: start + 72 * 60000, failure: null, rejectedAssets: [], paper,
+    forecastsSha256: await sha256File(path.join(dir, 'forecasts.jsonl')), outcomesSha256: await sha256File(path.join(dir, 'outcomes.jsonl')), booksSha256: await sha256File(path.join(dir, 'books.jsonl')) });
+  const assessed = await aggregateOracleEdge([dir]); assert.equal(assessed.assessment.edgeVerified, false); assert.equal(assessed.trials.length, 1);
+  const result = assessed.trials[0].arms.find((a) => a.arm === 'weighted')!; assert.ok(Math.abs(result.net - 0.31) < 1e-8); assert.ok(result.stressedNet < 0);
+  assert.equal(assessed.direction[0].nonOverlappingUtcHourGroups, 1);
+  fs.appendFileSync(path.join(dir, 'books.jsonl'), ' '); await assert.rejects(aggregateOracleEdge([dir]), /changed forward evidence/);
 });
