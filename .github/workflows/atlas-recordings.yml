@@ -368,7 +368,9 @@ jobs:
           const dirs = [], provenance = [];
           for (const id of ids) {
             const dir = path.join(process.env.RUNNER_TEMP, 'oracle-edge-trials', id);
-            execFileSync('gh', ['run','watch',id,'--repo',process.env.GITHUB_REPOSITORY,'--interval','30'], {stdio:'inherit'});
+            // Automatic assessment shares the collector's run: its artifact is already uploaded.
+            // Waiting for that same run would wait for this assessment itself.
+            if (id !== process.env.GITHUB_RUN_ID) execFileSync('gh', ['run','watch',id,'--repo',process.env.GITHUB_REPOSITORY,'--interval','30'], {stdio:'inherit'});
             execFileSync('gh', ['run','download',id,'--repo',process.env.GITHUB_REPOSITORY,'--name','atlas-oracle-edge','--dir',dir], {stdio:'inherit'});
             const meta = JSON.parse(execFileSync('gh',['api',`repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${id}`],{encoding:'utf8'}));
             provenance.push({id,headSha:meta.head_sha,startedAt:meta.run_started_at,conclusion:meta.conclusion}); dirs.push(dir);
