@@ -1,6 +1,6 @@
 {
   "schema": "atlas-oracle-forward-edge-validation-v1",
-  "checkedAt": "2026-11-10T03:48:02.610387+00:00",
+  "checkedAt": "2026-11-10T03:51:42.291966+00:00",
   "pullRequest": "https://github.com/Wickedrad/coinbaseTraderBot/pull/311",
   "objective": "Verify the frozen Oracle relationships on published future direction forecasts and separate funded $200 paper controls",
   "sourceCommit": "99bfcae4dbd4787de6ba2209a136f0b5c7de9af7",
@@ -21,7 +21,11 @@
       "skipped": 0
     },
     "typecheck": "passed",
-    "build": "passed"
+    "build": "passed",
+    "testedMergeCommit": "d3b08e02d3c1117717be5e6bc1907f18bfea1f7b",
+    "testedBaseCommit": "c630fa8682e807d3c8116d2a3608c46121780206",
+    "mergedExecutableTreeMatchesTestedMerge": true,
+    "interpretation": "CI checked the PR merge with concurrent main changes, not the isolated head alone. Its 1,321 passing tests include those main changes; merged executable files match that tested tree."
   },
   "focusedTests": {
     "pass": 21,
@@ -1270,12 +1274,6 @@
     "active15mContracts": "unsupported fixed 15m forecast does not fit the shorter remaining sale window",
     "execution": "public polled-book paper fills with fixed-fill adverse price sensitivity; private venue profit remains unverified"
   },
-  "unchangedProductionBaseline": {
-    "deployRun": 42498822979,
-    "deployCommit": "5ad1c74a076cd0b60bd78c0a29a99481a173e037",
-    "trainerRelease": 438369738,
-    "trainerPublishedAt": "2026-11-08T16:31:07Z"
-  },
   "correctedListingProbe": {
     "runId": 42749966754,
     "sourceCommit": "99bfcae4dbd4787de6ba2209a136f0b5c7de9af7",
@@ -1355,5 +1353,38 @@
     "interpretation": "Engineering verification after a first-page truncation defect; different engine hashes require a separate locked study. No model weights changed."
   },
   "firstTrialAssessmentReproducedByFinalSource": true,
-  "frozenRelationshipsIdenticalAcrossListingCorrection": true
+  "frozenRelationshipsIdenticalAcrossListingCorrection": true,
+  "productionObservations": {
+    "startOfWork": {
+      "deployRun": 42498822979,
+      "deployCommit": "5ad1c74a076cd0b60bd78c0a29a99481a173e037",
+      "trainerRelease": 438369738,
+      "trainerPublishedAt": "2026-11-08T16:31:07Z"
+    },
+    "atCompletion": {
+      "deployRun": 42749577345,
+      "deployCommit": "c630fa8682e807d3c8116d2a3608c46121780206",
+      "deployStartedAt": "2026-11-10T03:27:38Z",
+      "deployCompletedAt": "2026-11-10T03:44:49Z",
+      "trainerRelease": 439913306,
+      "trainerPublishedAt": "2026-11-10T03:30:42Z",
+      "relatedPullRequest": 298
+    },
+    "oraclePullRequest": 311,
+    "oracleMergedAt": "2026-11-10T03:49:17Z",
+    "oracleMergeCommit": "9703627dbc80900b046b44a6ba58e42a5bed45f6",
+    "oracleMergeSkipDeploy": true,
+    "oracleMergeSkipCi": true,
+    "interpretation": "Concurrent PR #298 deployed and published a trainer before the Oracle PR merged. This Oracle work did not deploy, publish a trainer, access Lightsail or enable a model. Global production state did change during the session through that separate work."
+  },
+  "correctedForwardTrial": {
+    "runId": 42751926270,
+    "sourceCommit": "9703627dbc80900b046b44a6ba58e42a5bed45f6",
+    "url": "https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42751926270",
+    "cycles": 90,
+    "statusAtRecordTime": "in_progress",
+    "conclusionAtRecordTime": null,
+    "createdAt": "2026-11-10T03:49:38Z",
+    "interpretation": "Fresh separate protocol with corrected complete listings and 90-minute capture, locked before observing its outcomes. Running at this evidence update; no results claimed or pooled with the first trial."
+  }
 }
