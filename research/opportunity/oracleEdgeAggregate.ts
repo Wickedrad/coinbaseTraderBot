@@ -76,6 +76,8 @@ export async function aggregateOracleEdge(dirs: string[]) {
     for (const [name, expected] of [['forecasts.jsonl', r.forecastsSha256], ['books.jsonl', r.booksSha256], ['outcomes.jsonl', r.outcomesSha256]]) {
       const file = path.join(dir, name); if (await sha256File(file) !== expected) throw new Error('changed forward evidence file'); inputs[file] = expected;
     }
+    if (r.marketsSha256) { const file = path.join(dir, 'markets.jsonl');
+      if (await sha256File(file) !== r.marketsSha256) throw new Error('changed market listing evidence'); inputs[file] = r.marketsSha256; }
     const forecasts = await readJsonLines<EdgeForecast>(path.join(dir, 'forecasts.jsonl')), byId = new Map(forecasts.map((f) => [f.id, f]));
     if (byId.size !== forecasts.length) throw new Error('duplicate published forecast');
     const prices = new Map<string, Map<number, number>>();
@@ -122,7 +124,7 @@ export async function aggregateOracleEdge(dirs: string[]) {
         unresolved: p.unresolvedPositions.length, verifiedFees: p.feeAsOfVerified === true });
     }
     trials.push({ startedAt: r.startedAt, endedAt: r.endedAt,
-      failure: r.failure ?? ((r.rejectedAssets.length || internalMissing) ? 'Revised or internally missing price evidence' : null), arms });
+      failure: r.failure ?? ((r.rejectedAssets.length || internalMissing || r.counts?.marketListingFailures) ? 'Revised/missing price evidence or incomplete contract listing' : null), arms });
   }
   const terminal = edgeEvidence(outcomes), direction = edgeEvidence(pathScores).map(({ calibration, ...score }) => {
     const rows = pathScores.filter((r): r is Extract<typeof r, { status: 'complete' }> => r.status === 'complete' && r.horizon === score.horizon);

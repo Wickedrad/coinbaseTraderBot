@@ -21,6 +21,21 @@ const BASE = 'https://external-api.kalshi.com/trade-api/v2', MIN = 60000;
 const ARMS = ['weighted', 'uniform', 'prior', 'reversed', 'always-up', 'always-down', 'random'] as const;
 type Arm = typeof ARMS[number];
 const write = (file: string, value: unknown) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n');
+type MarketPage = { data: { markets?: Record<string, any>[]; cursor?: string }; knownAt: number; sourceSha256: string };
+/** Select from a complete current-window listing, never a truncated first page. */
+export async function edgeListedMarkets(series: string, now: number, get: (route: string) => Promise<MarketPage | null>, save: (r: MarketPage) => void = () => {}) {
+  const rows = new Map<string, MarketInfo>(), cursors = new Set<string>(); let cursor = '', knownAt = now;
+  const window = `series_ticker=${encodeURIComponent(series)}&status=open&limit=100&min_close_ts=${Math.floor(now / 1000)}&max_close_ts=${Math.floor((now + 3600000) / 1000)}`;
+  for (let page = 0; page < 20; page++) {
+    const r = await get(`/markets?${window}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+    if (!r || !Array.isArray(r.data.markets)) throw new Error('incomplete current-window market listing'); save(r); knownAt = r.knownAt;
+    for (const raw of r.data.markets) { const m = parseMarket(raw);
+      if (m && m.seriesTicker === series && m.openTime <= knownAt && m.closeTime > knownAt && m.closeTime <= now + 3600000 && m.floorStrike !== undefined && m.strikeType !== 'between' && /^.*-T/.test(m.ticker)) rows.set(m.ticker, m); }
+    cursor = r.data.cursor ?? ''; if (!cursor) return { knownAt, markets: [...rows.values()].filter((m) => m.closeTime > knownAt) };
+    if (cursors.has(cursor)) throw new Error('repeating market listing cursor'); cursors.add(cursor);
+  }
+  throw new Error('market listing page limit reached; no partial selection');
+}
 export async function runOracleEdge(o: { models: string; weights: string; out: string; cycles: number; python?: string; assets?: string[] }) {
   if (!Number.isInteger(o.cycles) || o.cycles < 2 || o.cycles > 90) throw new Error('edge cycles must be 2..90 minutes');
   const assets = o.assets ?? [...EDGE_POLICY.assets];
@@ -35,10 +50,10 @@ export async function runOracleEdge(o: { models: string; weights: string; out: s
       minimumNetTakeUsd: 0.01, targetContractRoi: 0, minimumSignalProbability: 0, maximumQuoteAgeMs: 2000, maximumSignalAgeMs: 90000, saleBufferMs: 30000 },
     publication: 'Fsynced forecast record and public Actions log before consuming any subsequent book or outcome',
     priceTarget: 'Return from the last completed minute close to its exact 15m/60m future close; actual publication lag and remaining lead recorded',
-    contracts: 'Monotone hourly threshold contracts closing within the collection window; 15m Oracle horizon must fit before sale deadline',
+    contracts: 'Nearest monotone hourly threshold from a complete close-filtered paginated listing; 15m Oracle horizon must fit before sale deadline',
     noFit: true, liveEntryAllowed: false, actualVenueProfitVerified: false, codeHashes: code };
   write(path.join(root, 'registration.json'), registration); console.log(`LOCKED_EDGE_REGISTRATION ${digest(registration)}`);
-  const fds = Object.fromEntries(['forecasts', 'books', 'fees', 'acquisitions'].map((name) => [name, fs.openSync(path.join(root, `${name}.jsonl`), 'wx')]));
+  const fds = Object.fromEntries(['forecasts', 'books', 'fees', 'acquisitions', 'markets'].map((name) => [name, fs.openSync(path.join(root, `${name}.jsonl`), 'wx')]));
   const append = (name: string, value: unknown, sync = false) => { fs.writeSync(fds[name], JSON.stringify(value) + '\n'); if (sync) fs.fsyncSync(fds[name]); };
   const profit = JSON.parse(fs.readFileSync('research/opportunity/examples/profit-policy.json', 'utf8')) as ProfitPolicy;
   const accounts = new Map<Arm, DirectionPaperAccount>(ARMS.map((arm) => [arm, new DirectionPaperAccount(registration.paper, profit, startedAt)]));
@@ -47,7 +62,7 @@ export async function runOracleEdge(o: { models: string; weights: string; out: s
   const forecasts: EdgeForecast[] = [], lastForecast = new Map<string, number>(), latest = new Map<string, EdgeForecast>();
   const markets = new Map<string, MarketInfo[]>(), terms = new Map<string, TimedPriceContract>(), feeInfo = new Map<string, PaperFeeTerms>();
   const feeBook = new FeeBook(0.01, undefined, publishedSnapshot as PublishedSchedule); let publicationFresh = false;
-  const counts = { requests: 0, requestFailures: 0, acquisitions: 0, acquisitionFailures: 0, forecasts: 0, books: 0, depthBooks: 0, revisedAssets: 0, timingRejected: 0, missingFeatures: 0 };
+  const counts = { requests: 0, requestFailures: 0, acquisitions: 0, acquisitionFailures: 0, forecasts: 0, books: 0, depthBooks: 0, revisedAssets: 0, timingRejected: 0, missingFeatures: 0, marketListingFailures: 0 };
   let failure: string | null = null;
   let eventFeesKnown = false, eventFeesSha = '';
   const seriesChangesKnown = new Set<string>();
@@ -129,16 +144,16 @@ export async function runOracleEdge(o: { models: string; weights: string; out: s
       if (eventFeesKnown) feeBook.setEventChanges(eventChanges, (series) => assets.some((a) => series === `KX${a}D`), Date.now());
       seriesChangesKnown.clear();
       for (const asset of assets) {
-        const series = `KX${asset}D`, r = await get(`/markets?series_ticker=${series}&status=open&limit=100`);
-        if (r) {
+        const series = `KX${asset}D`;
+        try {
+          const r = await edgeListedMarkets(series, Date.now(), get, (page) => append('markets', { series, ...page }));
           const anchor = [...closes.get(asset)!.values()].at(-1);
-          const ms = (r.data.markets ?? []).map(parseMarket).filter((m: MarketInfo | undefined): m is MarketInfo => !!m && m.seriesTicker === series &&
-            m.openTime <= r.knownAt && m.closeTime > r.knownAt && m.closeTime <= r.knownAt + 60 * MIN && m.floorStrike !== undefined && m.strikeType !== 'between' && /^.*-T/.test(m.ticker));
+          const ms = r.markets;
           ms.sort((a: MarketInfo, b: MarketInfo) => Math.abs((a.floorStrike ?? 0) - (anchor ?? 0)) - Math.abs((b.floorStrike ?? 0) - (anchor ?? 0)) || a.ticker.localeCompare(b.ticker));
           markets.set(asset, ms.slice(0, 1));
           for (const m of ms.slice(0, 1)) if (!terms.has(m.ticker)) terms.set(m.ticker, { ticker: m.ticker, asset, openTime: m.openTime, closeTime: m.closeTime,
             termsKnownAt: r.knownAt, terms: { kind: 'greater', strike: m.floorStrike! }, settlementReference: `CF-RTI:${asset}:kalshi` });
-        }
+        } catch (e) { counts.marketListingFailures++; markets.set(asset, []); append('markets', { series, failedAt: Date.now(), error: String(e) }); }
         await refreshFees(series);
       }
       do {
@@ -177,6 +192,7 @@ export async function runOracleEdge(o: { models: string; weights: string; out: s
   const report = { ...registration, endedAt: knownAt, counts, failure, rejectedAssets: [...rejectedAssets],
     direction: edgeEvidence(scored.filter((r): r is ReturnType<typeof scoreEdgeForecast> => r.status !== 'revised-source-unavailable')),
     paper, forecastsSha256: await sha256File(path.join(root, 'forecasts.jsonl')), booksSha256: await sha256File(path.join(root, 'books.jsonl')),
+    marketsSha256: await sha256File(path.join(root, 'markets.jsonl')),
     outcomesSha256: await sha256File(path.join(root, 'outcomes.jsonl')),
     edgeVerified: false, qualification: 'Research evidence only; no promotion. Require adequate non-overlapping time groups, calibration and fee-net performance beyond matched controls.',
     limitations: ['Explicit Binance archive to TradingView BINANCE transfer, with missing warmup axes reported', 'Minute-close targets do not establish intraminute reversal timing',

@@ -9,6 +9,7 @@ import { OracleMatrix, oracleCoordinates, ORACLE_AXES, ORACLE_SCHEMA, ORACLE_LAY
 import { IMPORTANCE_EXPERTS } from '../research/opportunity/oracleImportance';
 import { loadEdgeOracle, scoreEdgeForecast, edgeEvidence, edgeDirection } from '../research/opportunity/oracleEdge';
 import { sha256File } from '../research/opportunity/jointPathData';
+import { edgeListedMarkets } from '../research/opportunity/oracleEdgeCli';
 
 const T = Date.UTC(2026, 10, 10), MIN = 60000;
 async function model(dir: string) {
@@ -51,4 +52,15 @@ test('overlapping minute predictions do not manufacture independent edge evidenc
     predictedClass: 0, probabilities: [0.8, 0.1, 0.1], firstSustainedCloseAt: null, missingPath: false };
   const result = edgeEvidence(Array.from({ length: 1000 }, (_, i) => ({ ...row, id: `${i}`, publishedAt: T + i * 1000 })))[1];
   assert.equal(result.rows, 1000); assert.equal(result.nonOverlappingUtcHourGroups, 1); assert.equal(result.status, 'insufficient-evidence'); assert.equal(result.groupedInterval, null);
+});
+test('contract selection consumes every close-filtered market page and rejects partial listings', async () => {
+  const m = (ticker: string, floor: number, close = T + 3600000) => ({ ticker, series_ticker: 'KXBTCD', open_time: new Date(T - MIN).toISOString(), close_time: new Date(close).toISOString(), floor_strike: floor });
+  const routes: string[] = [];
+  const r = await edgeListedMarkets('KXBTCD', T, async (route) => { routes.push(route); return { knownAt: T + 1000, sourceSha256: 'a'.repeat(64),
+    data: route.includes('cursor=next') ? { markets: [m('KXBTCD-H-T75000', 75000)], cursor: '' }
+      : { markets: [m('KXBTCD-H-T83000', 83000), m('KXBTCD-FUTURE-T75000', 75000, T + 7200000)], cursor: 'next' } }; });
+  assert.equal(routes.length, 2); assert.ok(routes.every((s) => s.includes('min_close_ts=') && s.includes('max_close_ts=')));
+  assert.equal(r.markets.length, 2); assert.equal(r.markets.sort((a, b) => Math.abs(a.floorStrike! - 75000) - Math.abs(b.floorStrike! - 75000))[0].floorStrike, 75000);
+  await assert.rejects(edgeListedMarkets('KXBTCD', T, async (route) => route.includes('cursor=next') ? null : { knownAt: T, sourceSha256: '', data: { markets: [m('KXBTCD-H-T83000', 83000)], cursor: 'next' } }), /incomplete/);
+  await assert.rejects(edgeListedMarkets('KXBTCD', T, async () => ({ knownAt: T, sourceSha256: '', data: { markets: [], cursor: 'same' } })), /repeating/);
 });
