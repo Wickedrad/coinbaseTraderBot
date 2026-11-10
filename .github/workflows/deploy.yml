@@ -118,7 +118,7 @@ jobs:
             if p.exists():
                 for line in p.read_text().splitlines():
                     key, sep, value = line.strip().partition('=')
-                    if sep and key == 'TRADING_MODE':
+                    if sep and key.strip() == 'TRADING_MODE':
                         mode = value.strip().strip('"\'')
             if mode != 'paper':
                 raise SystemExit('Deployment blocked: TRADING_MODE must be paper for this release')
