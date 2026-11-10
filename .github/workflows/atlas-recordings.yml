@@ -40,6 +40,15 @@ on:
         description: 'Optional completed atlas-native-direction run; reuse its actual weights for cash paper replay without retraining'
         default: ''
         required: false
+      oracle_edge:
+        description: 'Publish frozen Oracle forecasts and verify future prices and separate $200 paper controls; public GET only, tvdatafeed history only'
+        type: boolean
+        default: false
+        required: false
+      edge_cycles:
+        description: 'Minute cycles: 2 for a data probe, 72 for both 15m and 1h outcomes; 2..90'
+        default: '72'
+        required: false
 
 permissions:
   contents: read
@@ -47,7 +56,7 @@ permissions:
 
 jobs:
   public-prefix:
-    if: inputs.study_run == '' && (inputs.source_run == '' || inputs.expand_training)
+    if: ${{ !inputs.oracle_edge && inputs.study_run == '' && (inputs.source_run == '' || inputs.expand_training) }}
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 40
@@ -288,5 +297,47 @@ jobs:
         with:
           name: atlas-direction-paper
           path: research/out/atlas-direction-paper/
+          retention-days: 90
+          if-no-files-found: warn
+  frozen-oracle-edge:
+    if: inputs.oracle_edge
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    env:
+      EDGE_CYCLES: ${{ inputs.edge_cycles }}
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - name: Install the existing tvdatafeed bridge on this GitHub runner
+        run: python -m pip install --quiet 'tvdatafeed @ https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atlas-oracle-result-*
+          path: ${{ runner.temp }}/oracle-models
+          github-token: ${{ github.token }}
+          run-id: '42643723640'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atlas-oracle-importance-*
+          path: ${{ runner.temp }}/oracle-weights
+          github-token: ${{ github.token }}
+          run-id: '42667008829'
+      - name: Register and publish frozen forecasts before observing their outcomes
+        run: |
+          node --import tsx research/opportunity/oracleEdgeCli.ts --models "$RUNNER_TEMP/oracle-models" \
+            --weights "$RUNNER_TEMP/oracle-weights" --cycles "$EDGE_CYCLES" --out research/out/atlas-oracle-edge
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-oracle-edge
+          path: research/out/atlas-oracle-edge/
           retention-days: 90
           if-no-files-found: warn
