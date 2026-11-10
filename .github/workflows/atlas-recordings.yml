@@ -345,7 +345,7 @@ jobs:
     needs: frozen-oracle-edge
     if: ${{ !cancelled() && inputs.oracle_edge && ((needs.frozen-oracle-edge.result == 'success' && fromJSON(inputs.edge_cycles) >= 65) || inputs.source_run != '') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 150
     env:
       EDGE_RUNS: ${{ inputs.source_run != '' && inputs.source_run || github.run_id }}
       GH_TOKEN: ${{ github.token }}
@@ -368,6 +368,9 @@ jobs:
           const dirs = [], provenance = [];
           for (const id of ids) {
             const dir = path.join(process.env.RUNNER_TEMP, 'oracle-edge-trials', id);
+            // Automatic assessment shares the collector's run: its artifact is already uploaded.
+            // Waiting for that same run would wait for this assessment itself.
+            if (id !== process.env.GITHUB_RUN_ID) execFileSync('gh', ['run','watch',id,'--repo',process.env.GITHUB_REPOSITORY,'--interval','30'], {stdio:'inherit'});
             execFileSync('gh', ['run','download',id,'--repo',process.env.GITHUB_REPOSITORY,'--name','atlas-oracle-edge','--dir',dir], {stdio:'inherit'});
             const meta = JSON.parse(execFileSync('gh',['api',`repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${id}`],{encoding:'utf8'}));
             provenance.push({id,headSha:meta.head_sha,startedAt:meta.run_started_at,conclusion:meta.conclusion}); dirs.push(dir);

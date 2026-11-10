@@ -23,6 +23,10 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
+      paper_only:
+        description: 'Require paper mode before activation and verify the running process afterwards'
+        type: boolean
+        default: false
       tag:
         description: 'Optional: release tag to deploy instead of the current branch (e.g. v2.0.0)'
         required: false
@@ -96,6 +100,30 @@ jobs:
           # of the lockfile and the TA-Lib sources so the server can tell when nothing changed.
           git clean -fdxq vendor/talib
           { sha256sum package-lock.json; git ls-files -s vendor/talib; } | sha256sum | cut -d' ' -f1 > deploy/deps.fingerprint
+
+      - name: Verify paper mode before deploying this release
+        if: inputs.paper_only
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+          script_stop: true
+          script: |
+            python3 - <<'PYMODE'
+            import pathlib
+            p = pathlib.Path.home() / 'bot/bot.env'
+            mode = 'paper'
+            if p.exists():
+                for line in p.read_text().splitlines():
+                    key, sep, value = line.strip().partition('=')
+                    if sep and key.strip() == 'TRADING_MODE':
+                        mode = value.strip().strip('"\'')
+            if mode != 'paper':
+                raise SystemExit('Deployment blocked: TRADING_MODE must be paper for this release')
+            print('Verified configured TRADING_MODE=paper; no environment values changed')
+            PYMODE
 
       # A full disk stops the upload and the bot alike. Recordings (one file per day in ~/bot/data/recordings)
       # are almost all of the disk: below 5 GB free, the oldest days go (never the newest two) until 10 GB is
@@ -190,3 +218,23 @@ jobs:
             # Keep the 5 newest releases (plus whatever current/previous point to).
             keep="$(readlink ~/bot/current):$(readlink ~/bot/previous 2>/dev/null || true)"
             ls -dt ~/releases/*/ | tail -n +6 | while read -r d; do d="${d%/}"; case ":$keep:" in *":$d:"*) ;; *) rm -rf "$d";; esac; done
+
+      - name: Verify running paper process
+        if: inputs.paper_only
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+          script_stop: true
+          script: |
+            systemctl is-active --quiet kalshi-bot
+            python3 - <<'PYMODE'
+            import pathlib, subprocess
+            pid = subprocess.check_output(['systemctl','show','--property=MainPID','--value','kalshi-bot'], text=True).strip()
+            values = dict(x.split(b'=',1) for x in pathlib.Path('/proc',pid,'environ').read_bytes().split(b'\0') if b'=' in x)
+            if values.get(b'TRADING_MODE', b'paper') != b'paper':
+                raise SystemExit('Running process is not in paper mode')
+            print('Verified active kalshi-bot process in paper mode')
+            PYMODE
