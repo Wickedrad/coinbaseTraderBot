@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_run:
-        description: 'Optional earlier run containing atlas-public-* artifacts; reuse the exact observed prefixes without another Drive copy'
+        description: 'Earlier public-prefix run, or comma-separated completed Oracle-edge runs when oracle_edge=true to assess without recollection'
         default: ''
         required: false
       study_run:
@@ -97,7 +97,7 @@ jobs:
           if-no-files-found: error
   contract-study:
     needs: public-prefix
-    if: ${{ !cancelled() && inputs.study_run == '' && (needs.public-prefix.result == 'success' || (needs.public-prefix.result == 'skipped' && inputs.source_run != '')) }}
+    if: ${{ !cancelled() && !inputs.oracle_edge && inputs.study_run == '' && (needs.public-prefix.result == 'success' || (needs.public-prefix.result == 'skipped' && inputs.source_run != '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -138,7 +138,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
   refit-study:
-    if: inputs.study_run != '' && !inputs.direction_iterations
+    if: inputs.study_run != '' && !inputs.direction_iterations && !inputs.oracle_edge
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -300,7 +300,7 @@ jobs:
           retention-days: 90
           if-no-files-found: warn
   frozen-oracle-edge:
-    if: inputs.oracle_edge
+    if: inputs.oracle_edge && inputs.source_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 140
     env:
@@ -339,5 +339,48 @@ jobs:
         with:
           name: atlas-oracle-edge
           path: research/out/atlas-oracle-edge/
+          retention-days: 90
+          if-no-files-found: warn
+  assess-oracle-edge:
+    needs: frozen-oracle-edge
+    if: ${{ !cancelled() && inputs.oracle_edge && ((needs.frozen-oracle-edge.result == 'success' && fromJSON(inputs.edge_cycles) >= 65) || inputs.source_run != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EDGE_RUNS: ${{ inputs.source_run != '' && inputs.source_run || github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Audit registered forward forecasts, observed fills, fee accounting and stressed incremental profit
+        run: |
+          node --import tsx --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+          import { aggregateOracleEdge } from './research/opportunity/oracleEdgeAggregate.ts';
+          const ids = process.env.EDGE_RUNS.split(',').map(s => s.trim());
+          if (!ids.length || ids.length > 30 || new Set(ids).size !== ids.length || ids.some(id => !/^\d+$/.test(id))) throw Error('Supply 1..30 unique completed run IDs');
+          const dirs = [], provenance = [];
+          for (const id of ids) {
+            const dir = path.join(process.env.RUNNER_TEMP, 'oracle-edge-trials', id);
+            execFileSync('gh', ['run','download',id,'--repo',process.env.GITHUB_REPOSITORY,'--name','atlas-oracle-edge','--dir',dir], {stdio:'inherit'});
+            const meta = JSON.parse(execFileSync('gh',['api',`repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${id}`],{encoding:'utf8'}));
+            provenance.push({id,headSha:meta.head_sha,startedAt:meta.run_started_at,conclusion:meta.conclusion}); dirs.push(dir);
+          }
+          const assessment = await aggregateOracleEdge(dirs);
+          fs.mkdirSync('research/out/atlas-oracle-edge-assessment',{recursive:true});
+          fs.writeFileSync('research/out/atlas-oracle-edge-assessment/report.json',JSON.stringify({...assessment,provenance},null,2)+'\n');
+          console.log(JSON.stringify(assessment.assessment));
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-oracle-edge-assessment
+          path: research/out/atlas-oracle-edge-assessment/
           retention-days: 90
           if-no-files-found: warn

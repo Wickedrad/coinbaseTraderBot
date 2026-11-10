@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { aggregateOracleEdge, firstSustainedRank, qualifyEdgeTrials, type EdgeTrialResult } from '../research/opportunity/oracleEdgeAggregate';
 import type { EdgeForecast } from '../research/opportunity/oracleEdge';
+import { auditEdgeLedger, type SavedEdgeBook, type SavedEdgeFill } from '../research/opportunity/oracleEdgeLedger';
 import type { edgeEvidence } from '../research/opportunity/oracleEdge';
 
 const positiveDirection = [{ horizon: 15, status: 'positive-direction-evidence' }] as ReturnType<typeof edgeEvidence>;
@@ -44,4 +45,14 @@ test('early sustained-direction credit survives a later terminal reversal and ne
   const r = firstSustainedRank(f, prices); assert.equal(r.available, true);
   if (r.available) { assert.equal(r.first, 'up'); assert.equal(r.weightedHit, 1); assert.equal(r.priorHit, 0); }
   prices.delete(start + 4 * 60000); assert.equal(firstSustainedRank(f, prices).available, false);
+});
+test('independent fill audit recomputes net cash and stressed fees from the observed book', () => {
+  const books: SavedEdgeBook[] = [0, 1000].map((ms) => ({ contract: { ticker: 'T' }, quote: { knownAt: start + ms,
+    bids: [{ price: ms ? 0.45 : 0.39, size: 20 }], asks: [{ price: ms ? 0.46 : 0.40, size: 20 }] }, fees: { schedule: { takerMultiplier: 1, makerMultiplier: 0, balancePrecision: 0.01 } } }));
+  const fills: SavedEdgeFill[] = [{ ticker: 'T', at: start, side: 'yes', action: 'entry', sidePrice: 0.4, quantity: 20, fee: 0.34 },
+    { ticker: 'T', at: start + 1000, side: 'yes', action: 'exit', sidePrice: 0.45, quantity: 20, fee: 0.35 }];
+  const r = auditEdgeLedger(fills, books); assert.ok(Math.abs(r.endingCash - 200.31) < 1e-8); assert.equal(r.unresolved, 0);
+  assert.ok(r.stressCost > 0.39); assert.ok(r.endingCash - 200 - r.stressCost < 0, 'a tiny fee-net gain is not robust to one cent adverse at both fills');
+  assert.throws(() => auditEdgeLedger([{ ...fills[0], quantity: 21 }], books), /depth/);
+  assert.throws(() => auditEdgeLedger([{ ...fills[0], fee: 0 }], books), /fee/);
 });

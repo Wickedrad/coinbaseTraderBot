@@ -1,12 +1,12 @@
 /** Audit locked forward trials; never fit, select a model, or promote one. */
 import fs from 'node:fs';
 import path from 'node:path';
-import { orderFee } from '../../bot/fees';
 import { bootstrapMeanCi } from '../stats';
 import { digest } from './contractDataset';
 import { readJsonLines } from './productCli';
 import { sha256File } from './jointPathData';
 import { EDGE_POLICY, edgeDirection, edgeEvidence, scoreEdgeForecast, type EdgeForecast } from './oracleEdge';
+import { auditEdgeLedger, type SavedEdgeBook, type SavedEdgeFill } from './oracleEdgeLedger';
 
 export const EDGE_ACCEPTANCE = Object.freeze({ minimumTrials: 20, adversePricePerFill: 0.01, confidence: 0.95, minimumOutcomeGroups: 20,
   controls: ['uniform', 'prior', 'reversed', 'always-up', 'always-down', 'random'],
@@ -88,31 +88,30 @@ export async function aggregateOracleEdge(dirs: string[]) {
     for (const f of forecasts) { const { id, ...core } = f;
       if (digest(core) !== id || f.publishedAt < r.startedAt || f.publishedAt > r.endedAt || f.featuresKnownAt > f.publishedAt || f.featureAt > f.featuresKnownAt || f.byAt <= f.publishedAt ||
           !r.models.some((m: { id: string; asset: string; learnedThrough: number }) => m.id === f.modelId && m.asset === f.asset && m.learnedThrough + 3600000 <= f.featureAt)) throw new Error('backdated, changed or future-trained forecast'); }
+    let internalMissing = 0;
     for (const y of await readJsonLines<ReturnType<typeof scoreEdgeForecast>>(path.join(dir, 'outcomes.jsonl'))) {
       const f = byId.get(y.id); if (!f) throw new Error('outcome lacks a published forecast');
       if (y.status === 'complete' && (y.byAt !== f.byAt || y.publishedAt !== f.publishedAt || y.byAt > r.endedAt)) throw new Error('unexpired outcome or changed target');
       outcomes.push(y);
+      if (y.status === 'missing-price' && f.byAt <= Math.max(0, ...prices.get(f.asset)?.keys() ?? [])) internalMissing++;
       if (y.status === 'complete') {
         const early = firstSustainedRank(f, prices.get(f.asset) ?? new Map());
         if (early.available) pathScores.push({ ...y, weightedLoss: 1 - early.weightedHit, priorLoss: 1 - early.priorHit, uniformLoss: 1 - early.uniformHit });
       }
     }
-    const books = await readJsonLines<{ contract: { ticker: string }; quote: { knownAt: number }; fees: { schedule: Parameters<typeof orderFee>[3] } }>(path.join(dir, 'books.jsonl'));
-    const schedules = new Map(books.map((b) => [`${b.contract.ticker}:${b.quote.knownAt}`, b.fees.schedule]));
+    const books = await readJsonLines<SavedEdgeBook>(path.join(dir, 'books.jsonl'));
     const arms = [];
     for (const p of r.paper) {
-      const fills = await readJsonLines<{ at: number; ticker: string; action: string; sidePrice: number; quantity: number; fee: number }>(path.join(dir, `${p.arm}-fills.jsonl`));
-      let stressCost = 0;
-      for (const f of fills) {
-        const schedule = schedules.get(`${f.ticker}:${f.at}`); if (!schedule) throw new Error('fill lacks same-arrival fee/book evidence');
-        const price = Math.max(0, Math.min(1, f.sidePrice + (f.action === 'entry' ? 1 : -1) * EDGE_ACCEPTANCE.adversePricePerFill));
-        stressCost += f.quantity * Math.abs(price - f.sidePrice) + orderFee(f.quantity, f.action === 'entry' ? price : 1 - price, true, schedule) - f.fee;
-      }
+      const fills = await readJsonLines<SavedEdgeFill>(path.join(dir, `${p.arm}-fills.jsonl`));
+      const audit = auditEdgeLedger(fills, books, EDGE_ACCEPTANCE.adversePricePerFill);
       if (p.startingCash !== 200 || !p.noRefills || !Number.isFinite(p.endingCash) || fills.length !== p.fills) throw new Error('paper funding or fill count differs');
-      arms.push({ arm: p.arm, net: p.endingCash - 200, stressedNet: p.endingCash - 200 - stressCost, fills: p.fills,
+      if (Math.abs(audit.endingCash - p.endingCash) > 1e-6 || Math.abs(audit.paidFees - p.paidFees) > 1e-6 || Math.abs(audit.realized - p.simulatedNetRealizedUsd) > 1e-6 ||
+          Math.abs(audit.openBasis - p.remainingCostBasisUsd) > 1e-6 || audit.unresolved !== p.unresolvedPositions.length) throw new Error('saved paper account does not reconcile to its observed fills');
+      arms.push({ arm: p.arm, net: p.endingCash - 200, stressedNet: p.endingCash - 200 - audit.stressCost, fills: p.fills,
         unresolved: p.unresolvedPositions.length, verifiedFees: p.feeAsOfVerified === true });
     }
-    trials.push({ startedAt: r.startedAt, endedAt: r.endedAt, failure: r.failure, arms });
+    trials.push({ startedAt: r.startedAt, endedAt: r.endedAt,
+      failure: r.failure ?? ((r.rejectedAssets.length || internalMissing) ? 'Revised or internally missing price evidence' : null), arms });
   }
   const terminal = edgeEvidence(outcomes), direction = edgeEvidence(pathScores).map(({ calibration, ...score }) => ({ ...score,
     target: 'First confirmed two-minute sustained direction after actual forecast publication; missing paths unavailable, no-move cases count as misses for every ranking', loss: '0/1 directional-ranking miss' }));
