@@ -6,13 +6,18 @@ import type { TimedPriceContract } from './contractTiming';
 export const PROFIT_WINDOW_POLICY = Object.freeze({ id: 'oracle-observed-profit-15s-v1', sustainMs: 15000, maximumGapMs: 7500,
   maximumQuoteAgeMs: 2000, maximumEntryDelayMs: 90000, maximumPositionCost: 20, maximumContracts: 40, minimumNetUsd: 0.01, saleBufferMs: 30000 });
 export interface ProfitWindowBook { contract: TimedPriceContract; quote: SnapshotEvidence; fees: PaperFeeTerms }
+export interface ProfitWindowLabel {
+  forecastId: string; horizon: 15 | 60; status: string; direction?: 'up' | 'down'; side?: string; ticker?: string;
+  entryAt?: number; deadline?: number; remainingWindowMs?: number; quantity?: number; entryBasisUsd?: number;
+  firstProfitAt?: number | null; confirmedAt?: number | null; bestObservedNetUsd?: number | null; samples?: number; maximumGapMs?: number; verifiedFees?: boolean;
+}
 export function oracleProfitWindows(forecasts: EdgeForecast[], books: ProfitWindowBook[], endedAt: number) {
   const ordered = [...books].sort((a,b) => a.quote.knownAt-b.quote.knownAt);
   const usable = (b: ProfitWindowBook) => b.quote.at <= b.quote.knownAt && b.quote.knownAt-b.quote.at <= 2000 && b.quote.knownAt <= endedAt &&
     [...b.quote.bids,...b.quote.asks].every(l=>Number.isFinite(l.price)&&l.price>0&&l.price<1&&Number.isFinite(l.size)&&l.size>=0) &&
     b.fees.knownAt <= b.quote.knownAt && b.fees.effectiveFrom <= b.quote.knownAt && b.contract.termsKnownAt <= b.quote.knownAt &&
     !(b.quote.bids.length && b.quote.asks.length && Math.max(...b.quote.bids.map(l=>l.price)) >= Math.min(...b.quote.asks.map(l=>l.price)));
-  return forecasts.flatMap(f => {
+  return forecasts.flatMap<ProfitWindowLabel>(f => {
     const first = ordered.find(b => usable(b) && b.contract.asset===f.asset && ['greater','less','updown'].includes(b.contract.terms.kind) &&
       b.contract.openTime<=b.quote.knownAt && b.quote.knownAt>=f.publishedAt && b.quote.knownAt-f.publishedAt<=90000 &&
       Math.min(f.byAt,b.contract.closeTime-30000)>b.quote.knownAt && b.quote.bids.length && b.quote.asks.length);
