@@ -1,10 +1,10 @@
 // Operator run control from the dashboard, persisted in DATA_DIR/control.json so a restart keeps the
 // operator's choices:
 //  - PLAY / STOP: STOP pauses new entries (open positions are still managed and exited).
-//  - Kill-switch override (ON unless switched off; paper mode only): the automatic brakes that would halt
-//    trading (daily loss kill, weekly loss pause, model-health halt, drawdown sizing to zero) turn into
-//    size reductions, and an exhausted paper cash pool is refilled as a new training epoch
-//    (bot/training/supervisor.ts). Live trading always keeps every brake.
+//  - Kill-switch override (ON unless switched off; paper and live alike): the automatic loss brakes that would
+//    halt trading (daily loss kill, weekly loss pause, perps and setups daily loss halts, and the model-health
+//    halt, which is itself off unless MODEL_HEALTH_HALT=true) no longer stop it. Paper only: an exhausted paper
+//    cash pool is refilled as a new training epoch (bot/training/supervisor.ts).
 
 import fs from 'fs';
 import path from 'path';
@@ -20,7 +20,7 @@ export class RunControl {
 
   get active(): boolean { return this.state.active !== false; }
 
-  /** Kill-switch override (default ON). Only takes effect in paper mode. */
+  /** Kill-switch override (default ON), paper and live alike (bot/engine.ts overrideActive has no mode check). */
   get killOverride(): boolean { return this.state.killOverride !== false; }
 
   set(active: boolean, by = 'dashboard'): void {

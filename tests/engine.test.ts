@@ -10,6 +10,7 @@ import type { KalshiRest } from '../bot/kalshi/rest';
 import type { MarketInfo } from '../bot/kalshi/types';
 import { MarketData, Recorder } from '../bot/marketdata/marketData';
 import { MetaModel } from '../bot/model/metaModel';
+import { ModelHealth } from '../bot/model/modelHealth';
 import { FEATURE_NAMES } from '../bot/model/features';
 import { Oms } from '../bot/oms/oms';
 import { PaperExchange } from '../bot/paper/paperExchange';
@@ -31,7 +32,7 @@ import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
 import { DEFAULT_PROBATION, Probation, setProbation } from '../bot/risk/probation';
 import type { FillModel } from '../bot/tca/fillModel';
 
-async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel } = {}) {
+async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel; modelHealth?: ModelHealth } = {}) {
   const dir = tmpDir();
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, RISK_DAILY_LOSS_USD: opts.dailyLossUsd ?? '10', DOMINANCE_FEED: 'false', SPOT_FEED: 'false', EXIT_POLICY: opts.exitPolicy, STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_ENABLED: 'false', ...opts.env });
   const now = Date.now();
@@ -61,7 +62,7 @@ async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy
   paper.on('fill', (f) => oms.onFill(f));
   paper.on('order', (o) => oms.onExchangeOrder(o));
   const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: (r) => void kill.engage(r, 'recon') });
-  const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: opts.model ?? MetaModel.identity(), vault: opts.vault, balanceMonitor: opts.monitor, exchangeStatus: openExchange(), curveExit: opts.curveExit, takeProfitBench: opts.takeProfitBench, curveEntry: opts.curveEntry, accuracyGate: opts.accuracyGate, liveLines: opts.liveLines, trials: opts.trials });
+  const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: opts.model ?? MetaModel.identity(), vault: opts.vault, balanceMonitor: opts.monitor, exchangeStatus: openExchange(), curveExit: opts.curveExit, takeProfitBench: opts.takeProfitBench, curveEntry: opts.curveEntry, accuracyGate: opts.accuracyGate, liveLines: opts.liveLines, trials: opts.trials, modelHealth: opts.modelHealth });
   return { cfg, md, paper, oms, kill, recon, engine, market, audit };
 }
 
@@ -781,6 +782,28 @@ test('a manually recorded withdrawal is not counted again by the detector', asyn
   engine.onBalance(170);
   engine.onBalance(170);
   assert.equal(vault.status().withdrawnTotal, 30);
+});
+
+test('model-health halt is off by default in paper and live: a model worse than the market is reported, entries stay open', async () => {
+  // A model confidently wrong for 60 settlement windows: significantly worse than the market, so the score says halt.
+  const worse = () => {
+    const h = new ModelHealth({ minWindows: 50 });
+    for (let w = 0; w < 60; w++) { const y = w % 2 ? 'yes' : 'no'; h.record(`A${w}`, y === 'yes' ? 0.3 : 0.7, 0.5, w); h.onResult(`A${w}`, y); }
+    return h;
+  };
+  const key = path.join(tmpDir(), 'k.pem');
+  fs.writeFileSync(key, 'x', { mode: 0o600 });
+  const live = { TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' };
+  const halted = (e: Engine) => e.entryGuards().some((r) => /model log loss significantly worse/.test(r));
+  for (const env of [{}, live]) {
+    const { engine, cfg } = await setup({ env, modelHealth: worse() });
+    assert.equal(cfg.strategy.modelHealthHalt, false, `${cfg.mode}: MODEL_HEALTH_HALT defaults to false`);
+    assert.equal(engine.guardStatus().modelHealth?.halt, true, `${cfg.mode}: the score is still computed and reported`);
+    assert.equal(halted(engine), false, `${cfg.mode}: no entry halt from it`);
+    // MODEL_HEALTH_HALT=true still turns the old halt on (no kill-switch override here).
+    const on = await setup({ env: { ...env, MODEL_HEALTH_HALT: 'true' }, modelHealth: worse() });
+    assert.equal(halted(on.engine), true, `${cfg.mode}: MODEL_HEALTH_HALT=true halts new entries`);
+  }
 });
 
 test('no new risk below the $10 hard floor; $20 trades on the aggressive tier', async () => {

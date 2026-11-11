@@ -395,23 +395,26 @@ test('backtest: a pool that ran dry is refilled as paper\'s training supervisor 
   assert.ok(Math.abs(paperBankrollAt(86.69, a, Date.parse('2026-10-28T00:05:00.000Z')) - 100) < 1e-9, 'after the refill: equity now less what settled since');
 });
 
-test('backtest: no new entries in a session edge, as the engine\'s SESSION_EDGE_NO_ENTRY keeps them out', async () => {
+test('backtest: a session edge keeps new entries out only with SESSION_EDGE_NO_ENTRY=true, as in the engine; off by default', async () => {
   const dir = path.join(tmp(), 'rec');
   // From Thursday, Jan 1 2026, 00:00 UTC: Tokyo opens then, so the Asia open's edge runs to 00:40.
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
-  assert.deepEqual(cfg.sessionEdge, { minutes: 40, noEntry: true }, 'on by default in the bot');
+  assert.deepEqual(cfg.sessionEdge, { minutes: 40, noEntry: false }, 'off by default in the bot');
+  const on = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', SESSION_EDGE_NO_ENTRY: 'true' }).sessionEdge;
   const base = { exitPolicy: 'take_profit' as const, paper: { orderFrac: 0.1, orderUsd: 0 } };
   const edgeEnd = Date.parse('2026-01-01T00:40:00Z');
   const tradedBy = (r: Awaited<ReturnType<typeof runBacktest>>) => [...r.windows].filter(([close, w]) => close <= edgeEnd && (w.fills ?? 0) > 0).length;
   const open = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, base);
   assert.ok(tradedBy(open) > 0, 'unset: it trades the windows inside the edge');
-  const edge = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { ...base, sessionEdge: cfg.sessionEdge });
+  const edge = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { ...base, sessionEdge: on });
   assert.equal(tradedBy(edge), 0, 'no fill in the windows that closed inside the edge');
   assert.ok(edge.fills > 0, 'it trades once the edge is over');
   assert.ok(edge.paper!.sessionEdgeBlocks! > 0);
-  const off = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { ...base, sessionEdge: { minutes: 40, noEntry: false } });
-  assert.equal(off.fills, open.fills, 'SESSION_EDGE_NO_ENTRY=false: no block');
+  // The replays pass the bot's own setting (research/replayCheck.ts, research/randomSweep.ts): the default blocks nothing.
+  const off = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { ...base, sessionEdge: cfg.sessionEdge });
+  assert.equal(off.fills, open.fills, 'default (SESSION_EDGE_NO_ENTRY=false): no block');
+  assert.equal(off.paper!.sessionEdgeBlocks, 0);
 });
 
 test('backtest tickPhaseMs: the markets evaluated on the engine\'s 1 s timer, that far into each second', async () => {

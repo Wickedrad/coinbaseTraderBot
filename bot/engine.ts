@@ -778,7 +778,7 @@ export class Engine {
     return book.isUsable(now, this.d.cfg.risk.maxBookAgeMs) && !this.feedLagHalt();
   }
 
-  /** Guards that stop NEW risk (exits stay allowed): weekly loss pause, model health, maintenance. */
+  /** Guards that stop NEW risk (exits stay allowed): weekly loss pause, model health (MODEL_HEALTH_HALT, off by default), maintenance. */
   entryGuards(now = this.now()): string[] {
     const r: string[] = [];
     const override = this.overrideActive();
@@ -809,8 +809,10 @@ export class Engine {
   trainingGuard?: () => string | undefined;
 
   /**
-   * Training time: no new entries in a session edge (first/last minutes of a market session, the
-   * training windows) or while the Friday-midnight weekend training run is still going.
+   * Training time: no new entries while the Friday-midnight weekend training run is still going, and, only with
+   * SESSION_EDGE_NO_ENTRY on, none in a session edge (first/last minutes of a market session, the AUTO_TRAIN=windows
+   * training windows). Unset, it is on only with AUTO_TRAIN=windows, paper and live alike; training runs remotely by
+   * default, and session timing belongs in the heat curve.
    */
   sessionEdgeBlock(now = this.now()): string | undefined {
     const e = this.d.cfg.sessionEdge;

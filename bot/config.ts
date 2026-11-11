@@ -194,7 +194,9 @@ export interface StrategyConfig {
   /** Scale Kelly by max(0, 1 - drawdown / ddScaleAt); pause entries 24 h after a 7-day loss beyond weeklyLossPause. */
   ddScaleAt: number;
   weeklyLossPause: number;
-  /** Halt new risk when the rolling log-loss advantage vs the calibrated market is significantly negative. */
+  /** Halt new risk when the rolling log-loss advantage vs the calibrated market is significantly negative. Off by
+   *  default, paper and live alike (MODEL_HEALTH_HALT=true turns it on): it scores the old model against the market and
+   *  would stop every entry, heat-map entries included. The score is still computed and reported (Telemetry). */
   modelHealthHalt: boolean;
   /** Paper exploration: occasionally enter a borderline opportunity (edge within exploreBand below the
    *  threshold, still fee-net positive) at minimum size, logged with its probability, so the fill model
@@ -374,8 +376,11 @@ export interface Config {
   taCandles: boolean;
   /** Clock-skew guard: halt new risk when the local clock is confidently off Kalshi's by more than this (ms); 0 disables. */
   clockSkewMaxMs: number;
-  /** Session edges (first/last N minutes of the Asia, London and New York sessions): no new entries there
-   *  (noEntry) and, with AUTO_TRAIN=windows, the only time the training pipeline runs. */
+  /** Session edges (first/last N minutes of the Asia, London and New York sessions): with AUTO_TRAIN=windows the only
+   *  time the training pipeline runs, and, when noEntry is set (SESSION_EDGE_NO_ENTRY), no new entries there. Unset,
+   *  noEntry follows AUTO_TRAIN, paper and live alike: on with windows (training never shares the CPU with trading),
+   *  off with every other mode, the default included (AUTO_TRAIN=remote: training runs remotely, and session timing
+   *  should become an input to the heat curve, not a halt on entries). */
   sessionEdge: { minutes: number; noEntry: boolean };
   /** The server's env file, rewritten by the dashboard's PAPER / LIVE switch (BOT_ENV_FILE, default ~/bot/bot.env). */
   botEnvFile: string;
@@ -1198,7 +1203,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     ensembleVetoSigmas: num(env, 'STRATEGY_ENSEMBLE_VETO_SIGMAS', 2, 0, 10),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
-    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),
+    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', false),
     paperExplore: bool(env, 'PAPER_EXPLORE', false),
     exploreRate: num(env, 'PAPER_EXPLORE_RATE', 0.1, 0, 1),
     exploreBand: num(env, 'PAPER_EXPLORE_BAND', 0.02, 0, 0.1),
@@ -1353,7 +1358,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     dominanceFeed: bool(env, 'DOMINANCE_FEED', true),
     taCandles: bool(env, 'TA_CANDLES', true),
     clockSkewMaxMs: num(env, 'CLOCK_SKEW_MAX_MS', 2000, 0, 60_000),
-    sessionEdge: { minutes: num(env, 'SESSION_EDGE_MIN', 40, 5, 120), noEntry: bool(env, 'SESSION_EDGE_NO_ENTRY', true) },
+    // Off unless AUTO_TRAIN=windows, whose pipeline runs only in these windows and must not share the CPU with trading.
+    sessionEdge: { minutes: num(env, 'SESSION_EDGE_MIN', 40, 5, 120), noEntry: bool(env, 'SESSION_EDGE_NO_ENTRY', env.AUTO_TRAIN === 'windows') },
     botEnvFile: path.resolve(env.BOT_ENV_FILE ?? path.join(os.homedir(), 'bot', 'bot.env')),
     clockSkewWarnMs: num(env, 'CLOCK_SKEW_WARN_MS', 1000, 0, 60_000),
     settlementAvg: oneOf(env, 'SETTLEMENT_AVG', 'official', ['official', 'continuous'] as const),
