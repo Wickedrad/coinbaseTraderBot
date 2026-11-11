@@ -21,6 +21,7 @@ import type { VaultConfig } from './vault/vault';
 import { DEFAULT_LIVE_LINE } from './strategy/liveLine';
 import { DEFAULT_TRIALS, TRIAL_NAMES, type TrialName, type TrialParams } from './strategy/componentTrials';
 import { DEFAULT_SCOREBOARD, type ScoreboardParams } from './health/scoreboard';
+import type { HeatConfig } from './heat/types';
 import os from 'os';
 import path from 'path';
 
@@ -407,6 +408,11 @@ export interface Config {
    *  off with every other mode, the default included (AUTO_TRAIN=remote: training runs remotely, and session timing
    *  should become an input to the heat curve, not a halt on entries). */
   sessionEdge: { minutes: number; noEntry: boolean };
+  /** The heat entry lane (bot/heat, docs/HEAT_LANE.md): the oracle's direction curves, read from the reader's file
+   *  (HEAT_CALLS_FILE), open immediate-or-cancel entries on the 15-minute and hourly contracts, and with HEAT_PERPS the
+   *  hour's and the 4 hours' calls open perps entries, the day's call as direction context. HEAT_LANE is off by default
+   *  (new behaviour is off until it is approved); the same settings in paper and live. */
+  heat: HeatConfig;
   /** The server's env file, rewritten by the dashboard's PAPER / LIVE switch (BOT_ENV_FILE, default ~/bot/bot.env). */
   botEnvFile: string;
   clockSkewWarnMs: number;
@@ -1085,6 +1091,63 @@ export function paperEnv(env: Env): Env {
   return out;
 }
 
+/** The heat entry lane's settings (HEAT_*, docs/HEAT_LANE.md), one set for paper and live. */
+function heatConfig(env: Env, dataDir: string): HeatConfig {
+  const list = (key: string, def: string) => (env[key] || def).split(',').map((x) => x.trim()).filter(Boolean);
+  const whole = (key: string, def: number, lo: number, hi: number) => {
+    const v = num(env, key, def, lo, hi);
+    if (!Number.isInteger(v)) throw new ConfigError(`${key}=${env[key]} must be a whole number`);
+    return v;
+  };
+  // No DOGE in this project, whatever the list says; the reader drops it the same way.
+  const assets = [...new Set(list('HEAT_ASSETS', 'BTC,ETH,SOL,XRP').map((a) => a.toUpperCase()))].filter((a) => !a.startsWith('DOGE'));
+  const horizons = [...new Set(list('HEAT_HORIZONS', '15,60').map(Number))];
+  if (!horizons.length || horizons.some((h) => !Number.isInteger(h) || h <= 0 || h > 1440)) throw new ConfigError(`HEAT_HORIZONS=${env.HEAT_HORIZONS} must list horizons in whole minutes (15 = the 15-minute contract, 60 = the hourly)`);
+  // The perp packs' horizons never open a Kalshi contract (none runs 4 hours or a day): refused here rather than skipped.
+  if (horizons.some((h) => h === 240 || h === 1440)) {
+    throw new ConfigError(`HEAT_HORIZONS=${env.HEAT_HORIZONS}: 240 and 1440 are perps horizons, never a Kalshi contract (the 4-hour call trades perps through HEAT_PERP_HORIZONS, the daily call is perps context through HEAT_PERPS_DAILY)`);
+  }
+  const perpHorizons = [...new Set(list('HEAT_PERP_HORIZONS', '60,240').map(Number))].sort((a, b) => a - b);
+  if (perpHorizons.some((h) => h !== 60 && h !== 240)) {
+    throw new ConfigError(`HEAT_PERP_HORIZONS=${env.HEAT_PERP_HORIZONS} may list 60 (the 1h heat setup) and 240 (the 4h heat setup) only; the daily call is direction context (HEAT_PERPS_DAILY), never an entry`);
+  }
+  return {
+    enabled: bool(env, 'HEAT_LANE', false),
+    callsFile: path.resolve(env.HEAT_CALLS_FILE || path.join(dataDir, 'heat_calls.json')),
+    assets,
+    horizons,
+    topN: whole('HEAT_TOP_N', 10, 0, 1000),
+    maxAgeSec: num(env, 'HEAT_MAX_AGE_SEC', 90, 5, 3600),
+    entryLagSec: num(env, 'HEAT_ENTRY_LAG_SEC', 45, 0, 600),
+    sizing: bool(env, 'HEAT_SIZING', true),
+    context: oneOf(env, 'HEAT_CONTEXT', 'size', ['size', 'block', 'off'] as const),
+    contextBoost: num(env, 'HEAT_CONTEXT_BOOST', 0.25, 0, 1),
+    maxOpen: whole('HEAT_MAX_OPEN', 2, 0, 20),
+    maxPerCoin: whole('HEAT_MAX_PER_COIN', 1, 1, 10),
+    cooldownSec: num(env, 'HEAT_COOLDOWN_SEC', 60, 0, 86_400),
+    reenterAfterLoss: bool(env, 'HEAT_REENTER_AFTER_LOSS', false),
+    flatTrips: whole('HEAT_FLAT_TRIPS', 30, 0, 100_000),
+    pilotLossUsd: num(env, 'HEAT_PILOT_LOSS_USD', 15, 0, 1e6),
+    feeNetCheck: bool(env, 'HEAT_FEE_NET_CHECK', false),
+    perps: oneOf(env, 'HEAT_PERPS', 'entry', ['off', 'log', 'gate', 'entry'] as const),
+    perpHorizons,
+    // No 'entry': the daily curves are not above chance on their own (no daily row above the no-signal twin's best).
+    perpsDaily: oneOf(env, 'HEAT_PERPS_DAILY', 'context', ['context', 'off'] as const),
+    pairConflict: oneOf(env, 'HEAT_PAIR_CONFLICT', 'skip', ['skip', 'pair'] as const),
+  };
+}
+
+/** HEAT_LANE=true refuses to start where the lane could not work as written: without the plan exits (PLAN_RULES) a heat
+ *  position would be sold by the old model's exit on its next tick, and without the order band (ORDER_USD_MIN above 0)
+ *  every heat stake would be one contract. Throws a plain configuration error; nothing to check with the lane off. */
+export function heatStartCheck(cfg: Pick<Config, 'heat' | 'strategy'>, planRulesOn: boolean): void {
+  if (!cfg.heat.enabled) return;
+  const why: string[] = [];
+  if (!planRulesOn) why.push('the plan exits must own its positions (PLAN_RULES=true): without them the old model\'s exit would sell a heat position on its next tick');
+  if (!(cfg.strategy.orderUsdMin > 0)) why.push('ORDER_USD_MIN must be above 0: heat stakes are sized inside the ORDER_USD_MIN..ORDER_USD_MAX band');
+  if (why.length) throw new ConfigError(`HEAT_LANE=true: ${why.join('; ')}`);
+}
+
 export function loadConfig(env: Env = process.env): Readonly<Config> {
   const mode = oneOf<TradingMode>(env, 'TRADING_MODE', 'paper', ['paper', 'shadow', 'live']);
   const kalshiEnv = oneOf<KalshiEnv>(env, 'KALSHI_ENV', 'demo', ['demo', 'prod']);
@@ -1422,6 +1485,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     clockSkewMaxMs: num(env, 'CLOCK_SKEW_MAX_MS', 2000, 0, 60_000),
     // Off unless AUTO_TRAIN=windows, whose pipeline runs only in these windows and must not share the CPU with trading.
     sessionEdge: { minutes: num(env, 'SESSION_EDGE_MIN', 40, 5, 120), noEntry: bool(env, 'SESSION_EDGE_NO_ENTRY', env.AUTO_TRAIN === 'windows') },
+    heat: heatConfig(env, dataDir),
     botEnvFile: path.resolve(env.BOT_ENV_FILE ?? path.join(os.homedir(), 'bot', 'bot.env')),
     clockSkewWarnMs: num(env, 'CLOCK_SKEW_WARN_MS', 1000, 0, 60_000),
     settlementAvg: oneOf(env, 'SETTLEMENT_AVG', 'official', ['official', 'continuous'] as const),

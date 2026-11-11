@@ -25,6 +25,7 @@ export type AuditKind =
   | 'snn'
   | 'modules'
   | 'waterfall'
+  | 'heat'
   | 'alert' | 'error';
 
 export interface AuditRecord {

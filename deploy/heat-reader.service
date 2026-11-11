@@ -1,0 +1,51 @@
+# /etc/systemd/system/heat-reader.service
+# deploy/heat_reader_install.sh installs this with the server's own user and home filled in, and starts it only
+# while HEAT_LANE=true in ~/bot/bot.env.
+# The curve reader: once a minute it reads Binance spot minutes, asks the oracle engine which heat-map keys fire and
+# writes ~/bot/data/heat_calls.json (and heat_calls.status.json beside it), the only things the bot reads from it
+# (docs/HEAT_READER.md). It holds no secret and does not read bot.env: its few settings are copied into
+# ~/bot/heat-reader.env by the install script. The oracle code and the packs come from the release itself, so a
+# deploy moves code and curves together.
+[Unit]
+Description=Heat curve reader (writes the calls file the Kalshi bot reads)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/bot/current/python
+Environment=DATA_DIR=/home/ubuntu/bot/data
+Environment=HEAT_READER_DIR=/home/ubuntu/bot/data/heat_reader
+Environment=HEAT_PACK_DIR=/home/ubuntu/bot/current/research/oracle_heat/latest
+Environment=HEAT_ORACLE_PATH=/home/ubuntu/bot/current/python
+Environment=PYTHONUNBUFFERED=1
+# One thread per numeric library: more threads buy no time on 3,000 bars and each keeps its own buffers.
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
+EnvironmentFile=-/home/ubuntu/bot/heat-reader.env
+ExecStart=/home/ubuntu/bot/.venv-heat-reader/bin/python -m heat_reader
+# The reader exits on its own only after ten minutes without one good pass; a fresh start is the cure, so always.
+Restart=always
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=20
+# The bot comes first on this small server. The reader idles near 90 MB and peaks near 150 MB when it reads a coin's
+# 60-minute timeframe on 150 days of minutes (its first pass, then once an hour per coin; measured on 4 coins with
+# the real packs, and again by .github/workflows/heat-reader-check.yml): above 180 MB the kernel squeezes it, at
+# 220 MB it is killed and restarted, and when the whole server runs out of memory it is the first process to go
+# (the bot's score stays at 0).
+MemoryHigh=180M
+MemoryMax=220M
+OOMScoreAdjust=900
+Nice=10
+CPUQuota=50%
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/bot/data
+
+[Install]
+WantedBy=multi-user.target
