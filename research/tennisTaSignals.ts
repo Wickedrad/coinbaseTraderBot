@@ -175,6 +175,22 @@
 // Output: exportCells() (contract C3) gives every cell with a real or placebo entry: entries, the first four moments of net
 // per entry, breaches, gross, fees, stressSum, per-unit and per-day [n, sum, placebo n, placebo sum], and the distinct
 // markets each arm entered.
+//
+// Window (Amendment 4, Steven's one test; research/tennisTaWindow.ts holds the rule): every real entry of a TA reading
+//   cell (never a placebo one, never a confluence primitive: a family B hot spot is one TA-Lib reading and its direction on
+//   the 1 m or 5 m bars) is also a signal instance of the window test, one per direction that took the entry: a taker buy
+//   of the called market (follow: the side the trigger names; fade: the other) at the event study's own entry, the ask at
+//   the fill sample (decision + latency), C = max(1, floor($10 / ask)) contracts (contractsFor: the amendment's $10, no lot
+//   cap), level = levelFor(ask, C, FEES), judged by windowOutcome on that market's minute candles (MatchGrid.candles, set
+//   by the sweep through the sim; a grid without candles records nothing and is counted, diagnostics noCandles) under the
+//   end rule endRuleTs (the match's latched progress reaching 1 - 0.30, else the close sample's time t0 + closeIdx s: a
+//   MatchGrid carries no close time), with three twins (drawTwins, seeded `${event}|${row id}|${entry minute}`, the entry
+//   minute's end as YYYY-MM-DDTHH:MM, as the sim seeds family A's). Rows (exportWindow, contract C12 under the shard's
+//   'familyBWindow'): one per reading x bar x direction of the stratum's design, instances or none, id
+//   '<reading>|<bar>|<follow|fade>', no leg, per-event arrays indexed by the study's own event list (the matches with
+//   candles, in the order first seen; the sweep re-maps them onto the shard's events). The window test reads the event
+//   study's entries and changes none of them, nor its exits or its placebo; the twins are its random yardstick (no placebo
+//   windows).
 
 import { loadConfig, paperEnv } from '../bot/config';
 import { orderFee, type FeeSchedule } from '../bot/fees';
@@ -182,6 +198,9 @@ import { positionNetAtBid } from '../bot/strategy/fairValueStrategy';
 import { taEngine, taEngineError, tl } from '../bot/ta/talib';
 import { PROGRESS_LATCH_MS } from '../bot/tennis/tennisStrategy';
 import type { FamilyBCell, FamilyBExport, MatchGrid } from './tennisTaTypes';
+import {
+  contractsFor, drawTwins, endRuleTs, levelFor, ORDER_USD, PLACEBO_SEED, SETTLE_FRAC, TWINS, WINDOW_VERSION, WindowAgg, windowOutcome, type WindowRow,
+} from './tennisTaWindow';
 
 /** Tennis pays maker and taker fees (multiplier 1 each); every order rounds up to the cent. */
 export const FEES: FeeSchedule = { takerMultiplier: 1, makerMultiplier: 1 };
@@ -199,6 +218,8 @@ const N_PB = PHASES.length * BUCKETS.length; // 25 context slots per tour series
 const MAX_TOURS = 64;
 const CTX_STRIDE = 1 + N_PB * MAX_TOURS;
 const DIRS = ['follow', 'fade'];
+/** The window test's phase names (research/tennisTaSim.ts phaseLabel, contract C12 byPhase) of the study's PHASES. */
+const WINDOW_PHASES = ['pre', 'e20', 'p1', 'p2', 'p3'];
 
 const TIME_STOP = [120, 600, 900, 900, 900];
 /** The longest time stop: a position held past it rides (or waits for a bid). */
@@ -377,6 +398,10 @@ export interface SignalDiagnostics {
   spanWindow: SpanWindowDiag;
   /** Matches whose grid carried production's latched progress (g.progressHigh); the others latched g.progress here. */
   progressHighFromGrid: number;
+  /** The window test (Amendment 4; header, Window): matches whose grid carried no minute candles (no instance recorded for
+   *  them), and the instances recorded (one per direction of every real TA entry of a match with candles). */
+  noCandles: number;
+  windowInstances: number;
 }
 
 /** Positions (direction x exit) and their net $ after fees around the placebo exclusion (header, Placebo). Its window: the
@@ -479,6 +504,9 @@ export function latchedProgress(prog: ArrayLike<number>, n = prog.length, stepMs
   return out;
 }
 
+/** The window test's row id of a TA series and a direction (contract C12, family B): '<reading>|<bar>|<follow|fade>'. */
+function windowRowId(s: number, dir: number): string { return `${SERIES[s].reading}|${SERIES[s].bar}|${DIRS[dir]}`; }
+
 const logit = (p: number) => { const q = p < 0.01 ? 0.01 : p > 0.99 ? 0.99 : p; return Math.log(q / (1 - q)); };
 const tick = (x: number) => Math.round(x * 1e4) / 1e4;
 const nz = (x: number) => (x === x ? x : 0);
@@ -519,6 +547,7 @@ export class SignalStudy {
     jumpMasked: 0, fadeBand: 0, endBlocked: 0, gapBars: 0, hCapped: 0, rOver100: 0,
     kinds: { time: 0, tp: 0, sl: 0, trail: 0, cut: 0, ride: 0, breach: 0 },
     outOfOrderGrids: 0, placeboSpanSource: 0, placeboSpanExcluded: 0, spanWindow: spanWindowZero(), progressHighFromGrid: 0,
+    noCandles: 0, windowInstances: 0,
   };
 
   // ---- per-match state (buffers reused across matches) ----
@@ -539,6 +568,17 @@ export class SignalStudy {
   private shareIdx = 0;
   /** Did this match's grid carry production's latched progress? */
   private highFromGrid = false;
+  /** The match's latched progress a sample (progressHighOf), kept for the window test's end rule. */
+  private high: ArrayLike<number> = new Float64Array(0);
+  // ---- the window test (Amendment 4; header, Window) ----
+  /** Rows by series x direction (key s * 2 + dir), all indexed by winIndex: event -> index of winEvents (the matches with
+   *  candles, in the order first seen). */
+  private readonly winAggs = new Map<number, WindowAgg>();
+  private readonly winEvents: string[] = [];
+  private readonly winIndex = new Map<string, number>();
+  /** The current match carries candles (its entries are instances), and its end-rule time (ms). */
+  private winOn = false;
+  private winEndTs = 0;
   private readonly f64: Float64Array[] = [];
   private readonly i32: Int32Array[] = [];
   private trig = new Int32Array(4096);
@@ -652,6 +692,7 @@ export class SignalStudy {
     this.tour = tour;
     this.diag.matches++;
     if (this.highFromGrid) this.diag.progressHighFromGrid++;
+    this.prepareWindow();
     this.nTrig = 0;
     const onR = !this.onH;
     this.buildBarSeries(onR);
@@ -691,6 +732,7 @@ export class SignalStudy {
     const cutAt = 1 - frac - 1e-9, blockAt = 1 - frac - this.endEntryMargin - 1e-9;
     this.cutIdx = n; this.entryEnd = n; this.shareIdx = n;
     const high = this.progressHighOf(n), prog = g.progress;
+    this.high = high;
     if (frac > 0) {
       for (let i = 0; i < n; i++) if (high[i] >= blockAt) { this.entryEnd = i; break; }
       for (let i = 0; i < n; i++) if (high[i] >= cutAt) { this.cutIdx = i; break; }
@@ -745,6 +787,39 @@ export class SignalStudy {
       if (own![i] < own![i - 1] - 1e-12) throw new Error(`tennisTaSignals: grid ${g.event} progressHigh falls at sample ${i} (${own![i - 1]} -> ${own![i]}): production's latch never falls`);
     }
     return own!;
+  }
+
+  /** The window test's state of the match (header, Window): nothing without candles (counted, diagnostics noCandles); else
+   *  the event's index and the end-rule time: research/tennisTaWindow.ts endRuleTs over the match's latched progress (the
+   *  same latch the end cut reads), SETTLE_FRAC 0.30 whatever the study's settleFrac (the amendment fixes it), the close
+   *  sample's time as the close (a MatchGrid has closeIdx, not the market's close time; the sim sets closeIdx = floor((close
+   *  - t0) / 1 s), so the two agree to the second). */
+  private prepareWindow(): void {
+    const g = this.g, n = this.n;
+    const cand = g.candles;
+    this.winOn = cand !== undefined && cand !== null;
+    if (!this.winOn) { this.diag.noCandles++; return; }
+    if (!this.winIndex.has(g.event)) { this.winIndex.set(g.event, this.winEvents.length); this.winEvents.push(g.event); }
+    const high = this.high;
+    const view = (high instanceof Float64Array ? high : Float64Array.from(high)).subarray(0, n);
+    this.winEndTs = endRuleTs(view, g.t0, 1000, g.t0 + this.closeIdx * 1000, SETTLE_FRAC);
+  }
+
+  /** One real TA entry as a signal instance of the window test (header, Window): series s, direction dir, the called side
+   *  (0 = A, 1 = B) bought at `ask` at the fill sample e, phase = the study's phase index at the decision. Its twins are
+   *  seeded `${event}|${row id}|${entry minute}`. */
+  private windowInstance(s: number, dir: number, side: number, e: number, ask: number, phase: number): void {
+    const g = this.g, cand = g.candles!;
+    const key = s * 2 + dir;
+    let agg = this.winAggs.get(key);
+    if (!agg) { agg = new WindowAgg(windowRowId(s, dir), undefined, this.winIndex); this.winAggs.set(key, agg); }
+    const t = g.t0 + e * 1000;
+    const C = contractsFor(ask, ORDER_USD), level = levelFor(ask, C, FEES);
+    const outcome = windowOutcome(side ? cand.b : cand.a, t, ask, level, this.winEndTs);
+    const minute = new Date(Math.ceil(t / 60_000) * 60_000).toISOString().slice(0, 16);
+    const twins = drawTwins(cand.a, cand.b, t, this.winEndTs, `${g.event}|${agg.id}|${minute}`, TWINS, ORDER_USD, side ? 'b' : 'a');
+    agg.add({ event: g.event, side: side ? 'b' : 'a', leg: DIRS[dir], t, ask, C, level, phase: WINDOW_PHASES[phase], outcome, twins });
+    this.diag.windowInstances++;
   }
 
   /** Bars, TA-Lib readings (per gap-free segment) and their triggers for the TA series of this stratum. */
@@ -1032,6 +1107,9 @@ export class SignalStudy {
         const costPer = ask + feeIn / count;
         // Context: tour series, phase at the decision, bucket of the ask paid.
         const phase = live < 0 || d < live ? 0 : d < live + FIRST_PHASE_SEC ? 1 : !(prog[d] >= 1 / 3) ? 2 : prog[d] < 2 / 3 ? 3 : 4;
+        // The window test (Amendment 4; header, Window): every real TA entry is a signal instance of its reading x bar x
+        // direction row, on this direction's called side at its ask. It reads the entry and changes nothing below.
+        if (!placebo && isTa && this.winOn) this.windowInstance(s, dir, side, e, ask, phase);
         const bucket = ask >= 0.08 - EPS && ask < 0.15 - EPS ? 0 : ask >= 0.15 - EPS && ask < 0.25 - EPS ? 1
           : ask >= 0.75 - EPS && ask < 0.85 - EPS ? 2 : ask >= 0.85 - EPS && ask <= 0.92 + EPS ? 3 : 4;
         const ctx = tourBase + phase * BUCKETS.length + bucket;
@@ -1193,6 +1271,25 @@ export class SignalStudy {
     this.xKind = ride ? K_RIDE : K_BREACH;
   }
 
+  /** The window test's rows (contract C12, the shard's 'familyBWindow' block; header, Window): one per TA reading x bar x
+   *  direction of this stratum's design, in design order, instances or none; `events` is the study's own event list (the
+   *  matches with candles, in the order first seen), which the rows' per-event arrays index. Throws without a stratum, as
+   *  exportCells does (the design differs between H and R). The study can keep running after it. */
+  exportWindow(): { events: string[]; rows: WindowRow[] } {
+    const stratum = this.stratum;
+    if (stratum === undefined) {
+      throw new Error('tennisTaSignals: exportWindow of a study that has no stratum (pass opts.stratum to new SignalStudy: a slice without a grid cannot tell H from R, and their designs differ)');
+    }
+    const onR = stratum === 'R';
+    const rows: WindowRow[] = [];
+    for (let s = 0; s < FIRST_PRIM; s++) {
+      const sp = SERIES[s];
+      if ((sp.rOnly && !onR) || !this.barOn[sp.b]) continue;
+      for (let dir = 0; dir < 2; dir++) rows.push((this.winAggs.get(s * 2 + dir) ?? new WindowAgg(windowRowId(s, dir), undefined, this.winIndex)).row());
+    }
+    return { events: [...this.winEvents], rows };
+  }
+
   /** Every cell with a real or placebo entry, in design order (contract C3); the study can keep running after it. Throws
    *  when the stratum is unknown (none given to the constructor and no grid seen): the design differs between H and R. */
   exportCells(): FamilyBExport {
@@ -1234,6 +1331,8 @@ export class SignalStudy {
           progressLatchMs: PROGRESS_LATCH_MS,
           stress: `every sale ${this.stressTicks} tick(s) lower (F2), every fee x${this.stressFeeMult}`, stressTicks: this.stressTicks, stressFeeMult: this.stressFeeMult,
           taEngine: taEngine(),
+          // The window test (header, Window): its rule's constants, as the shard's 'window' block records them.
+          window: { version: WINDOW_VERSION, settleFrac: SETTLE_FRAC, orderUsd: ORDER_USD, twins: TWINS, seed: PLACEBO_SEED },
         },
       },
       cells: out,

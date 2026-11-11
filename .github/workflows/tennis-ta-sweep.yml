@@ -5,16 +5,19 @@ name: Tennis TA sweep
 # Nov 5 2026; request format in research/tennis-ta/README.md). Each run is asked for by a commit to
 # research/tennis-ta/sweep-request.json (stage, pool, date range, shards, familyB), so every counting run is a deliberate,
 # logged commit. prep validates the request (HO-1, C9 / C10: pool 'disc' = H-DEV at stages 1 and 2, 'old' = H0 at stage 2,
-# 'hold' = H-HOLD at stage hold only, whose frozen list research/tennis-ta/hold-specs.json is refused when its hash is
-# already in the openings ledger models/tennis-ta/state/openings.jsonl on Drive) and cuts the pool's units into shards
+# 'hold' = H-HOLD at stage hold only: the one read of Amendment 4, whose batch research/tennis-ta/hold-batch.json (the 10
+# hottest hot spots of the league, listed in the registry and the project calendar before the push) is refused when the
+# file's sha256 is already in the openings ledger models/tennis-ta/state/openings.jsonl on Drive) and cuts the pool's units into shards
 # and each shard into 4 sub-slices, at unit edges only (a unit is never split, so cross-match state restarts only at
 # unit edges). Shards replay the Kalshi tennis history kept on Drive
 # (raw/tennis-history/kalshi, its sha256 recorded as the data version) through the production tennis strategy over the
 # stage's configs; a shard first checks that the history is complete over its span (the download's complete-listing
 # record and every traded market's tape) and fails before sweeping if not. The report job runs only when every shard
-# leg succeeded, every planned shard file is on Drive exactly once with one data version, and every slice's history is
-# complete; a hold run's opening is then appended to the openings ledger (once per run id) before anything is scored; it
-# scores every cell over the pool's universe, writes the run's trial rows (registry v1, validated with the project's
+# leg succeeded, every planned shard file is on Drive exactly once with one data version, every slice's history is
+# complete and every file's window block is whole (C12); a hold run's opening is then appended to the openings ledger
+# (once per run id) before anything is scored, so a broken block never spends a batch's one read; it
+# scores every cell over the pool's universe, runs the one test's league on a disc run (league.md, league.csv,
+# league.json beside the report), writes the run's trial rows (registry v1, validated with the project's
 # research/registry.py) and uploads them once to the registry (registry/shards/tennis-ta/<run>.jsonl).
 # Outputs stay on Drive (models/tennis-ta/runs/<run>/); the report is posted once as a comment on the commit. A run id
 # that has been scored (its registry rows are in runs/<run>/report) is never overwritten: "Re-run all jobs" on it fails
@@ -60,10 +63,11 @@ jobs:
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
-      - name: Openings ledger (the frozen lists already scored on H-HOLD)
+      - name: Openings ledger (the batches already read on H-HOLD)
         run: |
           set -euo pipefail
-          # C10: prep refuses a stage hold request whose frozen list (sha256 of its canonical spec list) is in the ledger.
+          # C10 / Amendment 4: prep refuses a stage hold request whose batch (sha256 of research/tennis-ta/hold-batch.json)
+          # is in the ledger.
           # Each level is listed only when its parent lists it, so a listing error fails the step; a ledger that does not
           # exist yet reads as empty, and any other read error fails.
           mkdir -p prep
@@ -84,9 +88,9 @@ jobs:
           mkdir -p prep
           cat research/tennis-ta/sweep-request.json
           # Validates the request (stage 1, 2 or hold; pool 'disc', 'old' at stage 2 or 'hold' at stage hold; [from, to]
-          # covering the start of every pool unit it touches, the whole hold block for hold; the stage's spec file; a hold
-          # list not yet in the openings ledger) and the unit table (calendar, Slams), then plans shards and sub-slices at
-          # unit edges.
+          # covering the start of every pool unit it touches, the whole hold block for hold; the stage's spec file, or at
+          # stage hold the batch research/tennis-ta/hold-batch.json, whose file hash is not yet in the openings ledger) and
+          # the unit table (calendar, Slams), then plans shards and sub-slices at unit edges.
           node --import tsx research/tennisTaSweep.ts prep --request research/tennis-ta/sweep-request.json \
             --units models/tennis-ta/state/units.json --openings prep/openings.jsonl --out prep/plan.json
           echo "plan=$(jq -c '.plan' prep/plan.json)" >> "$GITHUB_OUTPUT"
@@ -95,7 +99,7 @@ jobs:
           echo "pool=$(jq -r '.pool' prep/plan.json)" >> "$GITHUB_OUTPUT"
           echo "family_b=$(jq -r '.familyB' prep/plan.json)" >> "$GITHUB_OUTPUT"
           jq -r '.plan[] | "shard \(.k): \(.from) to \(.to), \(.units | length) unit(s): \(.units | join(" "))"' prep/plan.json
-          jq -r 'if .stage == "hold" then "stage hold: frozen list \(.specsHash) (\(.specIds | length) specs), not in the openings ledger (\(.openingsRead) row(s) read); folds " + ([.holdFolds[] | "\(.fold) \(.from)..\(.to)"] | join(", ")) else "specs \(.specsHash[0:16]) (\(.configs))" end' prep/plan.json
+          jq -r 'if .stage == "hold" then "stage hold: batch \(.batchHash) off league run \(.leagueRun) (\(.batch | length) hot spot(s): " + ([.batch[] | "\(.id)/\(.leg)"] | join(", ")) + "; \(.specIds | length) arms), not in the openings ledger (\(.openingsRead) row(s) read); folds " + ([.holdFolds[] | "\(.fold) \(.from)..\(.to)"] | join(", ")) else "specs \(.specsHash[0:16]) (\(.configs))" end' prep/plan.json
       - name: Run id not already scored
         run: |
           set -euo pipefail
@@ -290,7 +294,7 @@ jobs:
           git show "$SRC:research/registry.py" > /tmp/registry.py
           python3 -I /tmp/registry.py schema > /dev/null
           echo "registry.py from $SRC $(git rev-parse --short "$SRC"), sha256 $(sha256sum /tmp/registry.py | cut -c1-16)"
-      - name: Shards (every planned file on Drive exactly once, one run, one request, one data version, history complete)
+      - name: Shards (every planned file on Drive exactly once, one run, one request, one data version, history complete, window block whole)
         run: |
           set -euo pipefail
           D="gdrive:kalshi-bot-archive/models/tennis-ta/runs/$GITHUB_RUN_ID/shards"
@@ -299,19 +303,26 @@ jobs:
           echo "$(wc -l < listed.txt) file(s) listed on Drive, $(ls shards | wc -l) copied"
           mkdir -p report
           # The completeness check: exits 1 (failing the job before anything is scored or uploaded) on any problem, and
-          # writes its summary with the problem list to report/shards-check.json either way.
+          # writes its summary with the problem list to report/shards-check.json either way. It reads every file's
+          # window block too (C12: the plan's window arms x legs, the matchList's events, the row shapes, meta's counts;
+          # at stage hold every batch member's |window rows), so a hold run with a broken or incomplete block fails
+          # HERE, before the ledger step below spends the batch's one read (the report's own read_shard gate would
+          # otherwise be the first to see it, after the append).
           node --import tsx research/tennisTaSweep.ts check --dir shards --listing listed.txt --prep prep/plan.json --run "$GITHUB_RUN_ID" --out report/shards-check.json
       - name: Openings ledger (stage hold, once the shard set is complete and before anything is scored)
         run: |
           set -euo pipefail
-          # C10: H-HOLD is scored once per frozen spec list. The opening is recorded here, after the completeness check
-          # passed and before the report reads a number, so every hold run that is scored at all is in the ledger. The
-          # row is {hash, run, ts, ids, pool: "hold"}; a re-run of this job keeps the run's row (idempotent by run id) and
-          # fails if the ledger holds this list under another run, or this run with another list.
+          # C10 / Amendment 4 item 7: H-HOLD is read once per batch (research/tennis-ta/hold-batch.json, keyed by the
+          # file's sha256, prep's batchHash). The opening is recorded here, after the completeness check (the window block
+          # included) passed and before the report reads a number, so every hold run that is scored at all is in the
+          # ledger. The row is {hash, run,
+          # ts, ids, pool: "hold"} (ids = the arms run: each batch config's |window and |F1); a re-run of this job keeps the
+          # run's row (idempotent by run id) and fails if the ledger holds this batch under another run, or this run with
+          # another batch.
           if [ "$STAGE" != hold ]; then echo "stage $STAGE: not a hold run, no opening to record"; exit 0; fi
           RUN="$GITHUB_RUN_ID"
-          H=$(jq -r '.specsHash // ""' prep/plan.json)
-          if ! [[ "$H" =~ ^[0-9a-f]{64}$ ]]; then echo "::error::prep/plan.json carries no frozen-list hash (specsHash): nothing is scored"; exit 1; fi
+          H=$(jq -r '.batchHash // ""' prep/plan.json)
+          if ! [[ "$H" =~ ^[0-9a-f]{64}$ ]]; then echo "::error::prep/plan.json carries no batch hash (batchHash): nothing is scored"; exit 1; fi
           LEDGER=gdrive:kalshi-bot-archive/models/tennis-ta/state/openings.jsonl
           HAVE=yes; P=gdrive:kalshi-bot-archive
           for c in models/ tennis-ta/ state/; do
@@ -325,23 +336,29 @@ jobs:
           jq -s -e 'all(.[]; type == "object" and (.hash | type) == "string")' openings.jsonl > /dev/null \
             || { echo "::error::$LEDGER is not JSON lines of {hash, ...}: not overwritten, nothing is scored"; exit 1; }
           OTHER=$(jq -s -r --arg r "$RUN" --arg h "$H" '[.[] | select(.hash == $h and (.run | tostring) != $r) | .run | tostring] | first // ""' openings.jsonl)
-          if [ -n "$OTHER" ]; then echo "::error::frozen list $H was already opened on H-HOLD by run $OTHER: HO-1 scores a list once, nothing is scored"; exit 1; fi
+          if [ -n "$OTHER" ]; then echo "::error::batch $H was already opened on H-HOLD by run $OTHER: the one read is one run per batch, nothing is scored"; exit 1; fi
           MINE=$(jq -s -r --arg r "$RUN" '[.[] | select((.run | tostring) == $r) | .hash] | unique | join(",")' openings.jsonl)
           if [ "$MINE" = "$H" ]; then echo "run $RUN's opening of $H is already in the ledger (a re-run of this job): kept"; exit 0; fi
-          if [ -n "$MINE" ]; then echo "::error::the ledger holds run $RUN with another list ($MINE): nothing is scored"; exit 1; fi
+          if [ -n "$MINE" ]; then echo "::error::the ledger holds run $RUN with another batch ($MINE): nothing is scored"; exit 1; fi
           if [ -s openings.jsonl ] && [ -n "$(tail -c 1 openings.jsonl)" ]; then echo >> openings.jsonl; fi
           jq -nc --arg h "$H" --arg r "$RUN" --arg ts "$(date -u +%FT%TZ)" --slurpfile p prep/plan.json \
             '{hash: $h, run: $r, ts: $ts, ids: $p[0].specIds, pool: "hold"}' >> openings.jsonl
           rclone copyto openings.jsonl "$LEDGER"
           rclone cat "$LEDGER" | jq -s -e --arg r "$RUN" --arg h "$H" '[.[] | select((.run | tostring) == $r and .hash == $h)] | length == 1' > /dev/null \
             || { echo "::error::the opening did not land in $LEDGER: nothing is scored"; exit 1; }
-          echo "recorded the opening of frozen list $H (run $RUN, $(jq '.specIds | length' prep/plan.json) spec(s)) in $LEDGER"
+          echo "recorded the opening of batch $H (run $RUN, $(jq '.batch | length' prep/plan.json) hot spot(s), $(jq '.specIds | length' prep/plan.json) arm(s)) in $LEDGER"
       - name: Report
         run: |
           set -euo pipefail
           python research/tennis_ta_report.py --shards shards --pool "$POOL" --run "$GITHUB_RUN_ID" --out report --plan prep/plan.json \
             --registry-py /tmp/registry.py --sha "$GITHUB_SHA" | tail -60
           cp prep/plan.json report/plan.json
+          # The one test's league (Amendment 4 item 7) runs on H-DEV only: a disc run's report writes league.md, league.csv
+          # and league.json beside the report, and they go to Drive with it (the next steps copy the report directory).
+          if [ "$POOL" = disc ]; then
+            for f in league.md league.csv league.json; do [ -s "report/$f" ] || { echo "::error::the report wrote no report/$f (the one test's league of a disc run): nothing is kept or uploaded"; exit 1; }; done
+            echo "league: $(wc -l < report/league.csv) line(s) in report/league.csv, report/league.md, report/league.json"
+          fi
           # Run mechanics, stated with every report.
           jq -r '"## Run mechanics\n\(.shards) shard(s) x up to 4 sub-slices = \(.subSlices) slice(s) over \(.units) unit(s), cut at unit edges only: cross-match state (tennis-only pacer, 25% / 10% caps, coin-placebo stream, family B placebo reservoir) restarts only at unit edges. Families \(.families | join("+")). Data version \(.dataVersion). \(.matches) owned matches, \(.noPublishedStart) without a published start (unit and pool from the earliest market-line time); by pool: " + ([(.pools // {}) | to_entries[] | "\(.key) \(.value.matches) in \(.value.units) unit(s)"] | join(", ")) + " (nostart = start-era matches without a published start: excluded and counted). " + ([.series | to_entries[] | "\(.key): history \(.value.first // "-") to \(.value.last // "-"), \(.value.spanDays - (.value.missing | length)) of \(.value.spanDays) swept days with a file (the download listed every close from \(.value.listed.from // "?" | .[0:10]) to \(.value.listed.to // "?" | .[0:10]) completely, so a day without one had no market closing), \(.value.tapesMissing // 0) traded market(s) without a tape"] | join("; ")) + "."' report/shards-check.json > report/run-mechanics.md
           cat report/run-mechanics.md
@@ -365,6 +382,8 @@ jobs:
           set -euo pipefail
           RUN="$GITHUB_RUN_ID"
           R="gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/report"
+          # The whole report directory goes up: the report, the registry rows, the shard check, the plan and, on a disc
+          # run, the league (league.md, league.csv, league.json).
           # A scored run (its registry rows already on Drive: a re-run of this job after a later step failed) keeps its
           # Drive copy, which the registry upload and the comment then come from. Rows that differ are refused (their
           # write time aside): the report is deterministic given the shards, so a difference means the inputs changed

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -8,13 +9,15 @@ import { test } from 'node:test';
 import { REPLAY_VERSION, buildHistoryReplay } from '../research/history/historyReplay';
 import { SignalStudy } from '../research/tennisTaSignals';
 import {
-  DEV_TO, H_HOLD, HARD_CUTOFF, HARNESS_RULES, HISTORY_FROM, HOLD_FOLDS, HOLD_FROM, HOLD_SPECS, LOCKBOX_FROM, OPENINGS_LEDGER, SIM_VERSION, SLAMS, START_ERA_FROM,
-  SUB_SHARDS, assertPool, buildUnits, canonicalSpecs, checkShards, cmdRun, configKeys, holdFold, holdFoldEdges, holdFolds, lockboxOf, lockboxes, mondayEdge,
-  parseOpenings, parseRequest, partition, planUnits, poolInterval, poolOf, poolSpans, poolUnitsOf, prepare, readShardMeta, requestUnits, runTags, shardFile,
-  slamUnits, specsFor, specsHash, stage1Specs, STICK_KEYS, unitOf, unitPools, validateHoldSpecs, validateStage2Specs, verifyUnits,
-  type Pool, type Prep, type ShardMeta, type ShardOut, type SweepSpec, type Unit,
+  ARMS, DEV_TO, FULL_BOOK_FROM, H_HOLD, HARD_CUTOFF, HARNESS_RULES, HISTORY_FROM, HOLD_BATCH, HOLD_BATCH_MAX, HOLD_FOLDS, HOLD_FROM, LOCKBOX_FROM, OPENINGS_LEDGER,
+  POOLS, SIM_VERSION, SLAMS, START_ERA_FROM, SUB_SHARDS, armOf, assertPool, buildUnits, candleIndex, canonicalSpecs, checkShards, cmdRun, configKeys, configOf,
+  holdBatchFile, holdFold, holdFoldEdges, holdFolds, lockboxOf, lockboxes, mondayEdge, parseOpenings, parseRequest, partition, planUnits, poolInterval, poolOf,
+  poolRefusal, poolSpans, poolUnitsOf, prepare, readShardMeta, readShardParts, recordedPoolOf, requestUnits, runTags, shardFile, slamUnits, specsFor, specsHash, stage1Specs,
+  STICK_KEYS, tourOf, unitOf, unitPools, validateHoldBatch, validateStage2Specs, verifyUnits, windowArmsOf, windowBlockProblems,
+  type Pool, type Prep, type ShardBlocks, type ShardMeta, type ShardOut, type SweepSpec, type Unit,
 } from '../research/tennisTaSweep';
-import { writeTaHistory } from './tennisTaFixture';
+import { HIST_EDGES, ORDER_USD, PLACEBO_SEED, SETTLE_FRAC, TWINS, WINDOW_VERSION, WindowAgg, eligibleMinutes, minuteCandles } from '../research/tennisTaWindow';
+import { writeTaHistory, writeTaRecording } from './tennisTaFixture';
 
 const DAY = 86_400_000, H = 3_600_000;
 const REPO = path.join(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -296,24 +299,43 @@ print(json.dumps({'hold': list(reg.H_HOLD), 'fold': fold, 'perFold': [[h['days']
   assert.deepEqual(out.all, [96, 6]);
 });
 
-test('stage1Specs: 81 configs x F1/F2/coin + 2 sticks, ratchet off everywhere, sticks flagged', () => {
+test('stage1Specs: 81 configs x F1/F2/coin/window/coinwindow + 2 sticks x F1/window, ratchet off everywhere, sticks flagged', () => {
   const s = stage1Specs();
-  assert.equal(s.length, 245);
-  assert.equal(new Set(s.map((x) => x.id)).size, 245);
+  assert.equal(s.length, 409);
+  assert.equal(new Set(s.map((x) => x.id)).size, 409);
   assert.ok(s.every((x) => x.overrides.TENNIS_TRAIL_RATCHET === false));
   assert.ok(s.every((x) => !('HARNESS_LOSER_CUT' in x.overrides)));
-  assert.equal(s.filter((x) => x.fill === 'F1' && !x.placebo && !x.stick).length, 81);
+  assert.equal(s.filter((x) => x.fill === 'F1' && !x.placebo && !x.stick && !x.window).length, 81);
   assert.equal(s.filter((x) => x.fill === 'F2').length, 81);
-  assert.equal(s.filter((x) => x.placebo === 'coin').length, 81);
+  assert.equal(s.filter((x) => x.placebo === 'coin' && !x.window).length, 81);
+  // The one test (Amendment 4): every grid config's window arm and the window arm's coin placebo, fill F1 by convention.
+  const win = s.filter((x) => x.window && !x.placebo && !x.stick), coinWin = s.filter((x) => x.window && x.placebo === 'coin');
+  assert.equal(win.length, 81);
+  assert.equal(coinWin.length, 81);
+  assert.ok([...win, ...coinWin].every((x) => x.fill === 'F1'));
+  assert.ok(win.every((x) => x.id.endsWith('|window') && s.some((y) => y.id === `${configOf(x.id)}|F1` && JSON.stringify(y.overrides) === JSON.stringify(x.overrides))));
+  assert.ok(coinWin.every((x) => x.id.endsWith('|coinwindow') && s.some((y) => y.id === `${configOf(x.id)}|window`)));
+  // The sticks: each under F1 and as a window arm.
   const sticks = s.filter((x) => x.stick);
-  assert.deepEqual(sticks.map((x) => x.id), ['A|s1|prod|settlehold|F1', 'A|s1|prod|nopacer|F1']);
+  assert.deepEqual(sticks.map((x) => x.id), ['A|s1|prod|settlehold|F1', 'A|s1|prod|settlehold|window', 'A|s1|prod|nopacer|F1', 'A|s1|prod|nopacer|window']);
+  assert.deepEqual(sticks.map((x) => x.window ?? false), [false, true, false, true]);
   assert.equal(sticks[0].overrides.TENNIS_END_LOSER_CUT, false);
-  assert.equal(sticks[1].overrides.HARNESS_PACER, 'off');
-  assert.ok(!('TENNIS_END_LOSER_CUT' in sticks[1].overrides));
+  assert.deepEqual(sticks[1].overrides, sticks[0].overrides);
+  assert.equal(sticks[2].overrides.HARNESS_PACER, 'off');
+  assert.ok(!('TENNIS_END_LOSER_CUT' in sticks[2].overrides));
+  assert.ok(sticks.every((x) => x.placebo === undefined));
   assert.ok(s.every((x) => /^A\|s1\|/.test(x.id) && Number(x.overrides.TENNIS_CONF_WINDOW_SEC) >= 60));
-  // Every stage 1 id carries its arm, as stage 2's must.
-  assert.ok(s.every((x) => x.id.endsWith(x.placebo ? '|coin' : `|${x.fill}`)));
+  // Every stage 1 id carries its arm, as stage 2's must; the arm is what the spec's fields say (armOf) and configOf strips it.
+  assert.deepEqual([...ARMS], ['F0', 'F1', 'F2', 'coin', 'window', 'coinwindow']);
+  assert.ok(s.every((x) => x.id.endsWith(`|${armOf(x)}`) && ARMS.includes(armOf(x) as typeof ARMS[number]) && `${configOf(x.id)}|${armOf(x)}` === x.id));
+  assert.equal(configOf('A|s1|m0.01|f0.2|o0.01|w60|coinwindow'), 'A|s1|m0.01|f0.2|o0.01|w60');
+  assert.equal(configOf('A|s1|prod|settlehold'), 'A|s1|prod|settlehold');
+  assert.equal(s.filter((x) => configOf(x.id) === 'A|s1|m0.01|f0.2|o0.01|w60').length, 5);
   assert.ok(s.some((x) => x.id === 'A|s1|m0.01|f0.2|o0.01|w60|F1'), 'production\'s grid point (the registry control)');
+  assert.ok(s.some((x) => x.id === 'A|s1|m0.01|f0.2|o0.01|w60|window'), 'production\'s grid point under the one test');
+  // The runs[] tags carry the window flag (the report reads the arm from the id and the flag from the run).
+  assert.deepEqual(runTags(s).get('A|s1|m0.01|f0.2|o0.01|w60|window'), { window: true });
+  assert.deepEqual(runTags(s).get('A|s1|prod|nopacer|window'), { stick: true, window: true });
   assert.throws(() => specsFor('1', 'R'), /H design/);
 });
 
@@ -349,7 +371,7 @@ test('stage 2 specs: validated, ratchet forced off on H, clear failures', () => 
   bad([{ id: 'A|s2|x|F1', overrides: {}, fill: 'F1' }, { id: 'A|s2|x|coin', overrides: {}, fill: 'F2' }], /x\|coin/);
   // Sticks: stick: true and the 'A|s2|prod|<name>|<fill>' form go together; a stick has no placebo.
   bad([{ id: 'A|s2|prod|nopacer|F1', overrides: { HARNESS_PACER: 'off' }, fill: 'F1' }], /are measuring sticks: set stick: true/);
-  bad([{ id: 'A|s2|nopacer|F1', overrides: { HARNESS_PACER: 'off' }, fill: 'F1', stick: true }], /a measuring stick's id is 'A\|s2\|prod\|<name>\|<fill>'/);
+  bad([{ id: 'A|s2|nopacer|F1', overrides: { HARNESS_PACER: 'off' }, fill: 'F1', stick: true }], /a measuring stick's id is 'A\|s2\|prod\|<name>\|<arm>'/);
   bad([{ id: 'A|s2|prod|c|coin', overrides: {}, fill: 'F1', placebo: 'coin', stick: true }], /a measuring stick has no placebo arm/);
   // F2 and coin arms need their config's F1 arm, with the same overrides.
   bad([{ id: 'A|s2|a|coin', overrides: { TENNIS_ENTRY_MIN_SIGNALS_PRE: 0 }, fill: 'F1', placebo: 'coin' }], /its config has no F1 arm \(A\|s2\|a\|F1\)/);
@@ -389,6 +411,28 @@ test('stage 2 specs: validated, ratchet forced off on H, clear failures', () => 
   bad([{ id: 'A|s2|x|F1', overrides: { TENNIS_CONF_FLOW: 'abc' }, fill: 'F1' }], /loadConfig refuses the overrides/);
   bad([{ id: 'A|s2|prod|x|F1', overrides: { HARNESS_FEE_MULT: 2 }, fill: 'F1', stick: true }, { id: 'A|s2|prod|y|F1', overrides: { HARNESS_FEE_MULT: '2' }, fill: 'F1', stick: true }], /runs exactly as A\|s2\|prod\|x\|F1/);
   bad([{ id: 'A|s2|x|F1', overrides: { TENNIS_CONF_FLOW: 0.4 }, fill: 'F1' }, { id: 'A|s2|y|F1', overrides: { TENNIS_CONF_FLOW: '0.4' }, fill: 'F1' }], /runs exactly as A\|s2\|x\|F1/);
+  // The window arms (Amendment 4): |window is fill F1 with window: true, |coinwindow its coin placebo; a config's |F1 and
+  // |window arms are two arms, not twins; a coinwindow arm needs the config's window arm; the id names the arm.
+  const w1 = { id: 'A|s2|w|F1', overrides: { TENNIS_CONF_FLOW: 0.4 }, fill: 'F1' };
+  const ww = { id: 'A|s2|w|window', overrides: { TENNIS_CONF_FLOW: 0.4 }, fill: 'F1', window: true };
+  const wc = { id: 'A|s2|w|coinwindow', overrides: { TENNIS_CONF_FLOW: 0.4 }, fill: 'F1', placebo: 'coin', window: true };
+  const wok = validateStage2Specs([w1, ww, wc, { id: 'A|s2|prod|settlehold|window', overrides: { TENNIS_END_LOSER_CUT: false }, fill: 'F1', stick: true, window: true }]);
+  assert.deepEqual(wok.map((x) => [x.id, x.window ?? false, x.placebo ?? null, x.stick ?? false]), [['A|s2|w|F1', false, null, false], ['A|s2|w|window', true, null, false], ['A|s2|w|coinwindow', true, 'coin', false], ['A|s2|prod|settlehold|window', true, null, true]]);
+  assert.deepEqual(validateStage2Specs([ww]).map((x) => x.id), ['A|s2|w|window'], 'a window arm stands alone');
+  bad([{ ...ww, window: 'yes' }], /window must be true when set/);
+  bad([{ ...ww, fill: 'F2', id: 'A|s2|w|window' }], /a window arm runs fill F1/);
+  bad([{ ...ww, window: undefined }], /id ends \|window but the spec is fill F1 \(\|F1\)/);
+  bad([{ ...w1, id: 'A|s2|w|window' }], /id ends \|window but the spec is fill F1/);
+  bad([{ ...ww, id: 'A|s2|w|F1' }], /id ends \|F1 but the spec is a window arm \(\|window\)/);
+  bad([{ ...wc, id: 'A|s2|w|coin' }], /id ends \|coin but the spec is the window arm's coin placebo \(\|coinwindow\)/);
+  bad([{ ...wc, id: 'A|s2|w|window' }], /id ends \|window but the spec is the window arm's coin placebo/);
+  bad([wc], /its config has no window arm \(A\|s2\|w\|window\)/);
+  bad([ww, { ...wc, overrides: { TENNIS_CONF_FLOW: 0.05 } }], /A\|s2\|w\|coinwindow: overrides differ from A\|s2\|w\|window's/);
+  bad([ww, { ...ww, id: 'A|s2|w2|window' }], /runs exactly as A\|s2\|w\|window/);
+  bad([{ ...ww, id: 'A|s2|prod|x|window' }], /are measuring sticks/);
+  bad([{ ...wc, id: 'A|s2|prod|x|coinwindow', stick: true }], /a measuring stick has no placebo arm/);
+  // The canonical form carries the window flag (the |F1 and |window arms of one config are two specs).
+  assert.notEqual(canonicalSpecs([ww as SweepSpec]), canonicalSpecs([{ ...ww, id: 'A|s2|w|F1', window: undefined } as SweepSpec]));
   const dir = tmp();
   assert.throws(() => specsFor('2', 'H', path.join(dir, 'stage2-specs.json')), /does not exist/);
   fs.writeFileSync(path.join(dir, 'stage2-specs.json'), '[{"id": "A|s2|x|F1", "overrides": {}, "fill": "F1"}]');
@@ -420,14 +464,23 @@ import importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location('tennis_ta_report', sys.argv[1])
 rep = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rep)
-out = {'stickKeys': rep.STICK_KEYS, 'lists': {}}
+out = {'stickKeys': rep.STICK_KEYS, 'arms': list(getattr(rep, 'ARMS', ())), 'lists': {}}
 for f in sorted(os.listdir(sys.argv[2])):
     info, data = rep.read_shard(os.path.join(sys.argv[2], f))
     out['lists'][f[:-len('.json.gz')]] = info['problems'] + rep.check_runs([data['runs']], info['meta'].get('stratum') or 'H')
 print(json.dumps(out))
 `;
 
-function reportCheckRuns(lists: Record<string, { specs: SweepSpec[]; stratum: 'H' | 'R' }>): { status: number | null; out?: { stickKeys: Record<string, unknown>; lists: Record<string, string[]> }; err: string } {
+/** The arms research/tennis_ta_report.py knows (its ARMS): until it learns the window arms (Amendment 4), the lists piped
+ *  through its check_runs leave them out. */
+function reportArms(): string[] {
+  const r = spawnSync('python3', ['-I', '-c', `import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('tennis_ta_report', sys.argv[1]); rep = importlib.util.module_from_spec(spec); spec.loader.exec_module(rep)
+print(json.dumps(list(getattr(rep, 'ARMS', ()))))`, path.join(REPO, 'research', 'tennis_ta_report.py')], { encoding: 'utf8' });
+  try { return JSON.parse(r.stdout) as string[]; } catch { return []; }
+}
+
+function reportCheckRuns(lists: Record<string, { specs: SweepSpec[]; stratum: 'H' | 'R' }>): { status: number | null; out?: { stickKeys: Record<string, unknown>; arms: string[]; lists: Record<string, string[]> }; err: string } {
   const dir = tmp(), shards = path.join(dir, 'shards');
   fs.mkdirSync(shards);
   for (const [name, { specs, stratum }] of Object.entries(lists)) {
@@ -435,13 +488,17 @@ function reportCheckRuns(lists: Record<string, { specs: SweepSpec[]; stratum: 'H
     // ConfigSim.run()'s fields (tennisTaSim.ts), then cmdRun's tags.
     const runs = specs.map((s) => ({ id: s.id, overrides: s.overrides, fill: s.fill, ...(s.placebo ? { placebo: s.placebo } : {}), stratum, days: [], pnl: [], episodes: [], ...tags.get(s.id) }));
     const meta = { stratum, sticks: specs.filter((s) => s.stick).map((s) => s.id) };
-    fs.writeFileSync(path.join(shards, `${name}.json.gz`), zlib.gzipSync(JSON.stringify({ meta, matchList: [], runs })));
+    // cmdRun's 'window' block (contract C12) over the empty match list: both legs' rows of every window arm, no instance.
+    const eventIndex = new Map<string, number>();
+    const rows = specs.filter((s) => s.window).flatMap((s) => ['underdog', 'fav'].map((leg) => new WindowAgg(s.id, leg, eventIndex).row()));
+    const window = { version: WINDOW_VERSION, settleFrac: SETTLE_FRAC, orderUsd: ORDER_USD, twins: TWINS, seed: PLACEBO_SEED, events: [], rows };
+    fs.writeFileSync(path.join(shards, `${name}.json.gz`), zlib.gzipSync(JSON.stringify({ meta, matchList: [], runs, window })));
   }
   return checkRunsDir(shards);
 }
 
 /** read_shard + check_runs of research/tennis_ta_report.py on every shard file in a directory. */
-function checkRunsDir(shards: string): { status: number | null; out?: { stickKeys: Record<string, unknown>; lists: Record<string, string[]> }; err: string } {
+function checkRunsDir(shards: string): { status: number | null; out?: { stickKeys: Record<string, unknown>; arms: string[]; lists: Record<string, string[]> }; err: string } {
   const dir = tmp();
   fs.writeFileSync(path.join(dir, 'check_runs.py'), CHECK_RUNS);
   const r = spawnSync('python3', ['-I', path.join(dir, 'check_runs.py'), path.join(REPO, 'research', 'tennis_ta_report.py'), shards], { encoding: 'utf8' });
@@ -456,8 +513,12 @@ test('stage 2 specs the sweep accepts pass the report\'s check_runs; what it ref
   const v = (x: unknown[], stratum: 'H' | 'R' = 'H') => ({ specs: validateStage2Specs(x, stratum), stratum });
   const cfg = (name: string, o: Record<string, unknown>, arms = ['F0', 'F1', 'F2', 'coin'], extra: Record<string, unknown> = {}) =>
     arms.map((a) => ({ id: `A|s2|${name}|${a}`, overrides: o, fill: a === 'coin' ? 'F1' : a, ...(a === 'coin' ? { placebo: 'coin' } : {}), ...extra }));
+  // The window arms (Amendment 4) go through check_runs: the report knows them (its ARMS), and the piped lists carry them.
+  assert.deepEqual(reportArms().filter((a) => a === 'window' || a === 'coinwindow'), ['window', 'coinwindow'], 'research/tennis_ta_report.py ARMS must know the window arms');
   const accepted = {
     stage1: { specs: stage1Specs(), stratum: 'H' as const },
+    windows: { specs: validateStage2Specs([...cfg('w', { TENNIS_CONF_FLOW: 0.4 }, ['F1', 'F2', 'coin']),
+      { id: 'A|s2|w|window', overrides: { TENNIS_CONF_FLOW: 0.4 }, fill: 'F1', window: true }, { id: 'A|s2|w|coinwindow', overrides: { TENNIS_CONF_FLOW: 0.4 }, fill: 'F1', placebo: 'coin', window: true }]), stratum: 'H' as const },
     rich: v([...cfg('a', { TENNIS_ENTRY_MIN_SIGNALS_PRE: 0 }), ...cfg('b', { TENNIS_CONF_FLOW: 0.4, HARNESS_FEE_MULT: '1', HARNESS_LOSER_STOP: 0.5 }),
       ...cfg('c', { TENNIS_END_ENTRY_MARGIN: 0.1 }, ['F1', 'F2'], { offsetMs: 1500 }),
       { id: 'A|s2|prod|settlehold|F1', overrides: { TENNIS_END_LOSER_CUT: false }, fill: 'F1', stick: true, offsetMs: 2500 },
@@ -522,36 +583,43 @@ test('requests: pool disc, old at stage 2, hold at stage hold only; defaults; ot
   assert.throws(() => assertPool('check'), /no longer exists/);
 });
 
-function prepOf(req: object, specs?: string, openings?: string): Prep {
-  return prepare(JSON.stringify(req), unitsText, specs, { openings });
+function prepOf(req: object, specs?: string, openings?: string, stage2?: string): Prep {
+  return prepare(JSON.stringify(req), unitsText, specs, { openings, stage2Path: stage2 });
 }
 
+/** A stage 2 list: one config under F1 and as a window arm (the one test), and a noise-floor stick. */
 function specFile(): string {
   const f = path.join(tmp(), 'stage2-specs.json');
+  const loose = { TENNIS_ENTRY_MIN_SIGNALS_PRE: 0, TENNIS_ENTRY_MIN_SIGNALS_LIVE: 0, TENNIS_FAV_ENTRY_MIN_SIGNALS: 0 };
   fs.writeFileSync(f, JSON.stringify([
-    { id: 'A|s2|loose|F1', overrides: { TENNIS_ENTRY_MIN_SIGNALS_PRE: 0, TENNIS_ENTRY_MIN_SIGNALS_LIVE: 0, TENNIS_FAV_ENTRY_MIN_SIGNALS: 0 }, fill: 'F1' },
+    { id: 'A|s2|loose|F1', overrides: loose, fill: 'F1' },
+    { id: 'A|s2|loose|window', overrides: loose, fill: 'F1', window: true },
     { id: 'A|s2|prod|nopacer|F1', overrides: { HARNESS_PACER: 'off' }, fill: 'F1', stick: true, offsetMs: 1500 },
   ]));
   return f;
 }
 
-/** A frozen hold list: one candidate with its F2 neighbour and coin placebo, and the production-default F1 control. */
-const HOLD_LIST = [
-  { id: 'A|hold|loose|F1', overrides: { TENNIS_ENTRY_MIN_SIGNALS_PRE: 0, TENNIS_CONF_FLOW: 0.4 }, fill: 'F1' },
-  { id: 'A|hold|loose|F2', overrides: { TENNIS_ENTRY_MIN_SIGNALS_PRE: 0, TENNIS_CONF_FLOW: 0.4 }, fill: 'F2' },
-  { id: 'A|hold|loose|coin', overrides: { TENNIS_ENTRY_MIN_SIGNALS_PRE: 0, TENNIS_CONF_FLOW: 0.4 }, fill: 'F1', placebo: 'coin' },
-  { id: 'A|hold|prod|F1', overrides: {}, fill: 'F1' },
-];
+/** A batch of the one read (Amendment 4 item 7): three hot spots off a league run, three stage 1 grid configs (production's
+ *  grid point, one 'both', one 'fav'); a measuring stick is never one (validateHoldBatch refuses it). */
+const BATCH = {
+  league_run: '19876543210',
+  batch: [{ id: 'A|s1|m0.01|f0.2|o0.01|w60', leg: 'underdog' }, { id: 'A|s1|m0.02|f0.4|o0.02|w300', leg: 'both' }, { id: 'A|s1|m0.005|f0.05|o0.005|w120', leg: 'fav' }],
+};
+/** What the read runs for BATCH: each config's |window and |F1 arms, in batch order, nothing else. */
+const BATCH_IDS = ['A|s1|m0.01|f0.2|o0.01|w60|window', 'A|s1|m0.01|f0.2|o0.01|w60|F1', 'A|s1|m0.02|f0.4|o0.02|w300|window', 'A|s1|m0.02|f0.4|o0.02|w300|F1', 'A|s1|m0.005|f0.05|o0.005|w120|window', 'A|s1|m0.005|f0.05|o0.005|w120|F1'];
 
-function holdFile(list: unknown = HOLD_LIST, text?: string): string {
-  const f = path.join(tmp(), 'hold-specs.json');
-  fs.writeFileSync(f, text ?? JSON.stringify(list));
+function batchFile(obj: unknown = BATCH, text?: string): string {
+  const f = path.join(tmp(), 'hold-batch.json');
+  fs.writeFileSync(f, text ?? JSON.stringify(obj));
   return f;
 }
+const fileHash = (f: string) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
 
 test('prepare: plan, sub-plans and expected files; refuses a request that cuts a unit, names another pool or lacks stage 2 specs', () => {
   const p = prepOf({ stage: '1', pool: 'disc', from: '2026-04-27', to: '2026-07-30', shards: 8, familyB: true });
-  assert.equal(p.configs, 245);
+  assert.equal(p.configs, 409);
+  assert.equal(p.windowVersion, WINDOW_VERSION);
+  assert.deepEqual([p.batchHash, p.leagueRun, p.batch], [undefined, undefined, undefined]);
   assert.equal(p.plan.length, 8);
   assert.equal(p.subPlans.length, 8);
   assert.deepEqual(p.units, disc.map((u) => u.id));
@@ -564,7 +632,9 @@ test('prepare: plan, sub-plans and expected files; refuses a request that cuts a
   assert.equal(p.familyB, true);
   assert.equal(p.simVersion, SIM_VERSION);
   assert.equal(p.replayVersion, REPLAY_VERSION);
-  assert.equal(p.replayVersion, 8);
+  // Pinned: the replay version the tennis history is built with (9 since the Nov 5 strike-cap merge; a bump means every
+  // registry row's data.replay_version moves, so the README's number moves with it).
+  assert.equal(p.replayVersion, 9);
   assert.equal(p.stratumLabel, 'H');
   assert.deepEqual(p.era, { historyFrom: '2025-06-18T00:00:00.000Z', startEraFrom: '2026-04-27T05:00:00.000Z', devTo: '2026-07-31T00:00:00.000Z', holdFrom: '2026-08-01T00:00:00.000Z', cutoff: '2026-11-05T02:00:00.000Z' });
   assert.deepEqual(p.holdFolds, holdFolds());
@@ -588,73 +658,91 @@ test('prepare: plan, sub-plans and expected files; refuses a request that cuts a
   assert.throws(() => prepare(JSON.stringify({ stage: '1' }), JSON.stringify(units.map((u, i) => (i === 7 ? { ...u, end: u.end + H } : u)))), /Monday 05:00 UTC/);
 });
 
-test('prepare, stage hold: the frozen list scored once on the whole hold block; a reopened hash is refused', () => {
-  const f = holdFile();
+test('prepare, stage hold: the batch read once on the whole hold block (Amendment 4 item 7); a batch already in the ledger is refused', () => {
+  const f = batchFile();
   const p = prepOf({ stage: 'hold', shards: 4 }, f, '');
-  assert.deepEqual([p.stage, p.pool, p.stratumLabel, p.configs, p.openingsRead], ['hold', 'hold', 'H', 4, 0]);
+  assert.deepEqual([p.stage, p.pool, p.stratumLabel, p.configs, p.openingsRead], ['hold', 'hold', 'H', 6, 0]);
   assert.deepEqual(p.units, hold.map((u) => u.id));
   assert.equal(p.plan.length, 4);
   assert.equal(p.expected[0], 'a-shold-0-0.json.gz');
   assert.equal(p.poolSpans.reduce((x, s) => x + s.hours, 0), 96 * 24 + 2);
-  assert.deepEqual(p.specIds, HOLD_LIST.map((x) => x.id));
-  const specs = validateHoldSpecs(HOLD_LIST);
-  assert.equal(p.specsHash, specsHash(specs));
-  assert.match(p.specsHash, /^[0-9a-f]{64}$/);
-  // The openings ledger: required, read strictly, and a hash already in it is refused.
+  // What the read runs: each batch config's |window and |F1 arms, nothing else, in batch order.
+  assert.deepEqual(p.specIds, BATCH_IDS);
+  const b = validateHoldBatch(BATCH);
+  assert.deepEqual([b.leagueRun, b.batch], ['19876543210', BATCH.batch]);
+  assert.deepEqual(b.specs.map((x) => x.id), BATCH_IDS);
+  assert.ok(b.specs.every((x) => x.fill === 'F1' && x.placebo === undefined && x.overrides.TENNIS_TRAIL_RATCHET === false));
+  assert.deepEqual(b.specs.map((x) => x.window ?? false), [true, false, true, false, true, false]);
+  assert.ok(b.specs.every((x) => !x.stick));
+  assert.deepEqual(b.specs[0].overrides, stage1Specs().find((x) => x.id === BATCH_IDS[0])!.overrides);
+  assert.equal(p.specsHash, specsHash(b.specs));
+  assert.deepEqual([p.leagueRun, p.batch, p.windowVersion], ['19876543210', BATCH.batch, WINDOW_VERSION]);
+  // The batch's identity is the file's sha256 (the file as pushed, listed in the registry and the calendar): re-spacing
+  // it is a new batch, though the same arms run.
+  assert.equal(p.batchHash, fileHash(f));
+  assert.match(p.batchHash!, /^[0-9a-f]{64}$/);
+  const f2 = batchFile(undefined, JSON.stringify(BATCH, null, 2));
+  assert.notEqual(prepOf({ stage: 'hold' }, f2, '').batchHash, p.batchHash);
+  assert.equal(prepOf({ stage: 'hold' }, f2, '').specsHash, p.specsHash);
+  // The openings ledger: required, read strictly, keyed by the batch hash, and a hash already in it is refused.
   assert.throws(() => prepOf({ stage: 'hold' }, f), /stage hold needs the openings ledger/);
   const row = (hash: string, run = '41') => JSON.stringify({ hash, run, ts: '2026-11-06T03:00:00Z', ids: p.specIds, pool: 'hold' });
-  assert.throws(() => prepOf({ stage: 'hold' }, f, `${row('ab'.repeat(32))}\n${row(p.specsHash)}\n`), /was already opened on H-HOLD \(run 41, 2026-11-06T03:00:00Z\)/);
+  assert.throws(() => prepOf({ stage: 'hold' }, f, `${row('ab'.repeat(32))}\n${row(p.batchHash!)}\n`), /the batch .* was already read on H-HOLD \(run 41, 2026-11-06T03:00:00Z\)/);
   assert.equal(prepOf({ stage: 'hold' }, f, `${row('ab'.repeat(32))}\n\n`).openingsRead, 1);
+  assert.equal(prepOf({ stage: 'hold' }, f, `${row(p.specsHash)}\n`).openingsRead, 1, 'the ledger is keyed by the batch file hash, not the spec hash');
   assert.throws(() => prepOf({ stage: 'hold' }, f, `${row('ab'.repeat(32))}\n{"hash": 1}\n`), /line 2: not an object with a string hash/);
   assert.throws(() => prepOf({ stage: 'hold' }, f, '{"hash": "x"\n'), /line 1: not JSON/);
   assert.deepEqual(parseOpenings(`${row('cd')}\n`).map((x) => x.hash), ['cd']);
-  // The hash is the list's canonical form: re-ordering, re-spacing and re-spelling a number keep it (still refused);
-  // a changed value or a renamed arm is another list.
-  const shuffled = [HOLD_LIST[3], HOLD_LIST[1], HOLD_LIST[0], HOLD_LIST[2]].map((x) => ({
-    overrides: Object.fromEntries(Object.entries(x.overrides).reverse().map(([k, v]) => [k, k === 'TENNIS_CONF_FLOW' ? '0.40' : v])),
-    ...Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'overrides').reverse()),
-  }));
-  const f2 = holdFile(undefined, JSON.stringify(shuffled, null, 3));
-  assert.equal(specsHash(validateHoldSpecs(shuffled)), p.specsHash);
-  assert.throws(() => prepOf({ stage: 'hold' }, f2, row(p.specsHash)), /already opened/);
-  const changed = HOLD_LIST.map((x) => (x.id.includes('loose') ? { ...x, overrides: { ...x.overrides, TENNIS_CONF_FLOW: 0.05 } } : x));
-  assert.notEqual(specsHash(validateHoldSpecs(changed)), p.specsHash);
-  assert.equal(prepOf({ stage: 'hold' }, holdFile(changed), row(p.specsHash)).openingsRead, 1);
-  const renamed = HOLD_LIST.map((x) => ({ ...x, id: x.id.replace('|loose|', '|loose2|') }));
-  assert.notEqual(specsHash(validateHoldSpecs(renamed)), p.specsHash);
-  assert.ok(canonicalSpecs(specs).startsWith('[["A|hold|loose|F1","F1",null,false,0,'));
-  // Hold refusals: not the whole block, family B, another pool, a missing or invalid list.
+  assert.ok(canonicalSpecs(b.specs).startsWith('[["A|s1|m0.005|f0.05|o0.005|w120|F1","F1",null,false,0,false,'));
+  // A stage 2 hot spot resolves against the stage 2 spec list: its own |window arm when the list has one, else its F1
+  // arm as a window arm.
+  const s2 = specFile();
+  const pb = prepOf({ stage: 'hold' }, batchFile({ league_run: '1', batch: [{ id: 'A|s2|loose', leg: 'fav' }] }), '', s2);
+  assert.deepEqual([pb.specIds, pb.configs], [['A|s2|loose|window', 'A|s2|loose|F1'], 2]);
+  const sl = holdBatchFile(batchFile({ league_run: '1', batch: [{ id: 'A|s2|loose', leg: 'fav' }] }), s2);
+  assert.deepEqual([sl.specs[0].window, sl.specs[0].fill, sl.specs[0].overrides], [true, 'F1', sl.specs[1].overrides]);
+  assert.equal(sl.hash.length, 64);
+  // Hold refusals: not the whole block, family B, another pool, a missing or invalid batch.
   assert.throws(() => prepOf({ stage: 'hold', from: '2026-08-03' }, f, ''), /whole of H-HOLD/);
   assert.throws(() => prepOf({ stage: 'hold', familyB: true }, f, ''), /discovery design/);
   assert.throws(() => prepOf({ stage: 'hold', pool: 'disc' }, f, ''), /scores pool 'hold'/);
-  assert.throws(() => prepOf({ stage: 'hold' }, path.join(tmp(), 'none.json'), ''), /stage hold reads its frozen spec list from .*, which does not exist/);
-  assert.throws(() => prepOf({ stage: 'hold' }, holdFile(HOLD_LIST.slice(0, 3)), ''), /no production-default F1 control/);
-  assert.equal(HOLD_SPECS, 'research/tennis-ta/hold-specs.json');
+  assert.throws(() => prepOf({ stage: 'hold' }, path.join(tmp(), 'none.json'), ''), /stage hold reads its batch from .*, which does not exist/);
+  assert.throws(() => prepOf({ stage: 'hold' }, batchFile(undefined, '{'), ''), /not valid JSON/);
+  assert.throws(() => prepOf({ stage: 'hold' }, batchFile({ league_run: '1', batch: [] }), ''), /batch is empty/);
+  assert.equal(HOLD_BATCH, 'research/tennis-ta/hold-batch.json');
+  assert.equal(HOLD_BATCH_MAX, 10);
 });
 
-test('validateHoldSpecs: stage 2\'s rules on A|hold| ids, one control, every candidate with its F2 neighbour and coin placebo', () => {
-  const ok = validateHoldSpecs([...HOLD_LIST, { id: 'A|hold|loose|F0', overrides: { TENNIS_ENTRY_MIN_SIGNALS_PRE: 0, TENNIS_CONF_FLOW: 0.4 }, fill: 'F0' },
-    { id: 'A|hold|prod|settlehold|F1', overrides: { TENNIS_END_LOSER_CUT: false }, fill: 'F1', stick: true }]);
-  assert.equal(ok.length, 6);
-  assert.ok(ok.every((x) => x.overrides.TENNIS_TRAIL_RATCHET === false));
-  // A control with a harness rule written at its default is still production's.
-  assert.equal(validateHoldSpecs([...HOLD_LIST.slice(0, 3), { id: 'A|hold|base|F1', overrides: { HARNESS_FEE_MULT: '1', HARNESS_LOSER_STOP: 0 }, fill: 'F1' }]).length, 4);
-  const bad = (x: unknown[], re: RegExp) => assert.throws(() => validateHoldSpecs(x), re);
-  bad(HOLD_LIST.slice(0, 3), /hold specs: 1 problem\(s\):\n  no production-default F1 control/);
-  bad([HOLD_LIST[3]], /the list holds no candidate/);
-  bad([HOLD_LIST[0], HOLD_LIST[2], HOLD_LIST[3]], /A\|hold\|loose\|F1: a hold candidate needs its F2 neighbour \(A\|hold\|loose\|F2\)/);
-  bad([HOLD_LIST[0], HOLD_LIST[1], HOLD_LIST[3]], /needs its coin placebo \(A\|hold\|loose\|coin\)/);
-  bad([HOLD_LIST[0], HOLD_LIST[3]], /needs its F2 neighbour \(A\|hold\|loose\|F2\) and coin placebo/);
-  bad([...HOLD_LIST, { id: 'A|hold|x|F0', overrides: { TENNIS_CONF_FLOW: 0.05 }, fill: 'F0' }], /A\|hold\|x: a hold config needs its F1 arm/);
-  // A control that is not production's (a harness rule moved, a clock phase) is a candidate without its arms.
-  bad([...HOLD_LIST.slice(0, 3), { id: 'A|hold|base|F1', overrides: { HARNESS_LOSER_STOP: 0.5 }, fill: 'F1' }], /no production-default F1 control[\s\S]*A\|hold\|base\|F1: a hold candidate needs/);
-  // Two controls are twins (the base rule), stage 2 ids and sticks without A|hold| are refused.
-  bad([...HOLD_LIST, { id: 'A|hold|prod2|F1', overrides: {}, fill: 'F1' }], /runs exactly as A\|hold\|prod\|F1/);
-  bad([{ ...HOLD_LIST[0], id: 'A|s2|loose|F1' }, ...HOLD_LIST.slice(1)], /id must be a string starting 'A\|hold\|'/);
-  bad([...HOLD_LIST, { id: 'A|hold|prod|nopacer|F1', overrides: { HARNESS_PACER: 'off' }, fill: 'F1' }], /ids 'A\|hold\|prod\|<name>\|<arm>' are measuring sticks/);
-  // Stage 2 keeps its own prefix and has no control rule.
-  assert.equal(validateStage2Specs([{ id: 'A|s2|a|F1', overrides: { TENNIS_CONF_FLOW: 0.4 }, fill: 'F1' }]).length, 1);
-  assert.throws(() => validateStage2Specs(HOLD_LIST), /stage 2 specs: \d+ problem[\s\S]*starting 'A\|s2\|'/);
+test('validateHoldBatch: at most 10 hot spots, config ids without an arm, legs underdog / fav / both, each once, resolvable', () => {
+  const bad = (x: unknown, re: RegExp) => assert.throws(() => validateHoldBatch(x, []), re);
+  const one = (id: string, leg = 'underdog') => ({ league_run: '7', batch: [{ id, leg }] });
+  // A measuring stick is never a hot spot (C4, Amendment 4 item 1): refused at prep, on stage 1 and on a stage 2 list alike.
+  bad(one('A|s1|prod|nopacer', 'both'), /A\|s1\|prod\|nopacer is a measuring stick .*it cannot be read on H-HOLD/);
+  bad(one('A|s1|prod|settlehold'), /is a measuring stick/);
+  assert.throws(() => validateHoldBatch(one('A|s2|prod|settlehold'), validateStage2Specs([{ id: 'A|s2|prod|settlehold|F1', overrides: { TENNIS_END_LOSER_CUT: false }, fill: 'F1', stick: true }])), /A\|s2\|prod\|settlehold is a measuring stick/);
+  bad([], /expected a JSON object/);
+  bad({ league_run: '7', batch: [{ id: 'A|s1|m0.01|f0.2|o0.01|w60', leg: 'fav' }], extra: 1 }, /unknown key extra/);
+  bad({ batch: [] }, /league_run must be the league run's GitHub run id/);
+  bad({ league_run: 'run 1', batch: [] }, /league_run must be/);
+  bad({ league_run: '7' }, /batch must be an array/);
+  bad({ league_run: '7', batch: Array.from({ length: 11 }, (_, i) => ({ id: configOf(stage1Specs()[i * 5].id), leg: 'fav' })) }, /names 11 hot spots: at most 10/);
+  bad(one('A|s1|m0.01|f0.2|o0.01|w60|window'), /ends with an arm: a hot spot is a config \(A\|s1\|m0.01\|f0.2\|o0.01\|w60\)/);
+  bad(one('A|s1|m0.01|f0.2|o0.01|w60|F1'), /ends with an arm/);
+  bad(one('A|s1|m0.01|f0.2|o0.01|w60', 'underdogs'), /leg must be 'underdog', 'fav' or 'both'/);
+  bad({ league_run: '7', batch: [{ id: 'A|s1|m0.01|f0.2|o0.01|w60', leg: 'fav' }, { id: 'A|s1|m0.01|f0.2|o0.01|w60', leg: 'fav' }] }, /is listed twice/);
+  bad(one('A|s1|m0.03|f0.2|o0.01|w60'), /is not a stage 1 grid config or measuring stick/);
+  bad(one('A|hold|loose'), /must start 'A\|s1\|'/);
+  bad({ league_run: '7', batch: [{ id: 'A|s1|m0.01|f0.2|o0.01|w60', leg: 'fav', note: 'x' }] }, /unknown key note/);
+  bad({ league_run: '7', batch: [7] }, /not an object/);
+  bad(one('A|s2|loose'), /is not a stage 2 config/);
+  assert.throws(() => validateHoldBatch(one('A|s2|loose'), path.join(tmp(), 'none.json')), /names a stage 2 config but the stage 2 spec list cannot be read: stage 2 reads its spec list from/);
+  // A config listed with two legs runs once (its two arms); the two hot spots share them.
+  const two = validateHoldBatch({ league_run: '7', batch: [{ id: 'A|s1|m0.01|f0.2|o0.01|w60', leg: 'underdog' }, { id: 'A|s1|m0.01|f0.2|o0.01|w60', leg: 'fav' }] }, []);
+  assert.deepEqual([two.specs.length, two.batch.length], [2, 2]);
+  // The stage 2 list resolves a stage 2 hot spot by its F1 arm, with its own window arm when it has one.
+  const s2 = validateStage2Specs([{ id: 'A|s2|w|F1', overrides: { TENNIS_CONF_FLOW: 0.4 }, fill: 'F1' }, { id: 'A|s2|w|window', overrides: { TENNIS_CONF_FLOW: 0.4 }, fill: 'F1', window: true }]);
+  assert.deepEqual(validateHoldBatch(one('A|s2|w'), s2).specs.map((x) => [x.id, x.window ?? false]), [['A|s2|w|window', true], ['A|s2|w|F1', false]]);
+  assert.deepEqual(validateHoldBatch(one('A|s2|w'), s2.slice(0, 1)).specs.map((x) => [x.id, x.window ?? false]), [['A|s2|w|window', true], ['A|s2|w|F1', false]]);
 });
 
 function metaOf(p: Prep, k: number, j: number, over: Partial<ShardMeta> = {}): ShardMeta {
@@ -662,7 +750,7 @@ function metaOf(p: Prep, k: number, j: number, over: Partial<ShardMeta> = {}): S
   return {
     simVersion: SIM_VERSION, stage: p.stage, pool: p.pool, run: '42', k, j, shards: p.plan.length, subShards: p.subPlans[k].length, from: s.from, to: s.to,
     units: s.units, dataVersion: 'KXATPMATCH:sha256:aa,KXWTAMATCH:sha256:bb', requestSha: p.requestSha, families: p.familyB ? ['A', 'B'] : ['A'], unitsSha: p.unitsSha,
-    replayVersion: p.replayVersion, specsHash: p.specsHash,
+    replayVersion: p.replayVersion, specsHash: p.specsHash, windowVersion: p.windowVersion, ...(p.batchHash !== undefined ? { batchHash: p.batchHash } : {}),
     coverage: { span: [s.from, s.to], series: { KXATPMATCH: { first: '2025-06-20', last: '2026-11-04', files: 500, spanDays: 7, withFile: 7, withTrades: 7, missing: [] } }, matches: 10, noPublishedStart: 1, noPublishedStartEvents: ['E'],
       pools: { disc: { matches: 9, units: s.units.length }, nostart: { matches: 1, units: 1 } } },
     ...over,
@@ -704,8 +792,15 @@ test('checkShards: the full set passes; missing, duplicate, extra, mixed data ve
   // Another replay version (a slice built its days on another history replay) or another spec list.
   const rv = all();
   rv[0].meta.replayVersion = 7;
-  assert.ok(checkShards(p, [...p.expected], rv, '42').problems.some((x) => x.includes('replayVersion 7, expected 8')));
+  assert.ok(checkShards(p, [...p.expected], rv, '42').problems.some((x) => x.includes(`replayVersion 7, expected ${REPLAY_VERSION}`)));
+  assert.ok(checkShards(p, [...p.expected], rv, '42').problems.some((x) => x.includes('replayVersion 7, expected 9')));
   assert.ok(checkShards(p, [...p.expected], rv, '42').problems.some((x) => x.startsWith('replayVersion differs')));
+  // Every shard carries the one test's 'window' block at one version (contract C12).
+  const wv = all();
+  wv[0].meta.windowVersion = 'tennis-ta-window/0';
+  assert.ok(checkShards(p, [...p.expected], wv, '42').problems.some((x) => x.includes('windowVersion "tennis-ta-window/0", expected "tennis-ta-window/1"')));
+  assert.ok(checkShards(p, [...p.expected], wv, '42').problems.some((x) => x.startsWith('windowVersion differs')));
+  assert.equal(good.summary.windowVersion, WINDOW_VERSION);
   const sh = all();
   sh[1].meta.specsHash = 'ff'.repeat(32);
   assert.ok(checkShards(p, [...p.expected], sh, '42').problems.some((x) => x.includes(`specsHash "${'ff'.repeat(32)}", expected "${p.specsHash}"`)));
@@ -720,11 +815,15 @@ test('checkShards: the full set passes; missing, duplicate, extra, mixed data ve
   const noB = pb.expected.map((f, j) => ({ file: f, meta: metaOf(pb, 0, j, { families: ['A'] }) }));
   assert.ok(checkShards(pb, [...pb.expected], noB, '42').problems.some((x) => x.includes('family B missing')));
   // A hold run's files (a-shold-<k>-<j>.json.gz) check the same way.
-  const ph = prepOf({ stage: 'hold', shards: 3 }, holdFile(), '');
+  const ph = prepOf({ stage: 'hold', shards: 3 }, batchFile(), '');
   const hm = ph.expected.map((f) => { const m = /a-shold-(\d+)-(\d+)/.exec(f)!; return { file: f, meta: metaOf(ph, Number(m[1]), Number(m[2]), { coverage: { ...metaOf(ph, 0, 0).coverage, pools: { hold: { matches: 3, units: 1 } } } }) }; });
   const hc = checkShards(ph, [...ph.expected], hm, '42');
   assert.deepEqual(hc.problems, []);
-  assert.deepEqual([hc.summary.stage, hc.summary.pool, hc.summary.units], ['hold', 'hold', 13]);
+  assert.deepEqual([hc.summary.stage, hc.summary.pool, hc.summary.units, hc.summary.batchHash], ['hold', 'hold', 13, ph.batchHash]);
+  // A hold shard that ran another batch than the one prep checked against the ledger fails.
+  hm[1].meta.batchHash = 'ee'.repeat(32);
+  const hb = checkShards(ph, [...ph.expected], hm, '42').problems;
+  assert.ok(hb.some((x) => x.includes(`batchHash "${'ee'.repeat(32)}", expected "${ph.batchHash}"`)) && hb.some((x) => x.startsWith('batchHash differs')));
 });
 
 test('readShardMeta reads the head of a gzip shard file without the rest', async () => {
@@ -740,6 +839,19 @@ test('readShardMeta reads the head of a gzip shard file without the rest', async
   const h = path.join(dir, 'cut.json.gz');
   fs.writeFileSync(h, zlib.gzipSync('{"meta":{"a":[1,2'));
   await assert.rejects(readShardMeta(h), /never closes/);
+  // readShardParts: any top-level members in one pass, the others (runs, the bulk) streamed past unbuffered, a member
+  // the file lacks left out, the kept bytes bounded.
+  const w = { version: WINDOW_VERSION, events: [{ event: 'E0' }], rows: [] };
+  const k = path.join(dir, 'parts.json.gz');
+  fs.writeFileSync(k, zlib.gzipSync(JSON.stringify({ meta, matchList: big.slice(0, 3), runs: big, scalar: 7, s: 'x,y}"', window: w, t: true, last: null })));
+  assert.deepEqual(await readShardParts(k, ['window', 'meta', 'scalar', 's', 'absent', 't', 'last']), { meta, window: w, scalar: 7, s: 'x,y}"', t: true, last: null });
+  assert.deepEqual(await readShardParts(k, ['matchList']), { matchList: big.slice(0, 3) });
+  assert.deepEqual(await readShardParts(k, ['meta'], 1000), { meta }, 'the bound counts the kept members only');
+  await assert.rejects(readShardParts(k, ['runs'], 1000), /runs member\(s\) are longer than 1000 bytes/);
+  await assert.rejects(readShardParts(g, ['window']), /not a shard file/);
+  const cut = path.join(dir, 'cut2.json.gz');
+  fs.writeFileSync(cut, zlib.gzipSync('{"meta":{},"runs":[1,2],"window":{"rows":[{'));
+  await assert.rejects(readShardParts(cut, ['window']), /the window object never closes/);
 });
 
 test('mondayEdge: Monday 05:00 UTC at or before t', () => {
@@ -807,16 +919,40 @@ test('run: one sub-slice end to end on the fixture writes a C4 shard file the re
   assert.deepEqual(out.matchList.map((x) => [x.event, x.pool, x.unit, x.startPublished, x.fold]), [
     ['KXATPMATCH-20260714M1', 'disc', 'W-2026-07-13', true, null], ['KXATPMATCH-20260714M2', 'disc', 'W-2026-07-13', true, null], ['KXATPMATCH-20260714M3', 'nostart', 'W-2026-07-13', false, null],
   ]);
-  assert.deepEqual(out.runs.map((r) => [r.id, r.stick ?? false, r.overrides.TENNIS_TRAIL_RATCHET, r.offsetMs]), [['A|s2|loose|F1', false, false, undefined], ['A|s2|prod|nopacer|F1', true, false, 1500]]);
-  assert.ok(out.runs.every((r) => r.pnl.length === 3));
+  assert.deepEqual(out.runs.map((r) => [r.id, r.stick ?? false, r.window ?? false, r.overrides.TENNIS_TRAIL_RATCHET, r.offsetMs]),
+    [['A|s2|loose|F1', false, false, false, undefined], ['A|s2|loose|window', false, true, false, undefined], ['A|s2|prod|nopacer|F1', true, false, false, 1500]]);
+  assert.ok(out.runs.filter((r) => !r.window).every((r) => r.pnl.length === 3));
+  assert.ok(out.runs.every((r) => !('instances' in r)), 'the window instances live in the window block, aggregated, not in runs[]');
   assert.equal(out.familyB, undefined);
+  // The one test's block (contract C12): the slice's events in matchList order with their end rule, one row per window arm
+  // and leg (empty rows included: the report pools the legs into 'both' itself), and the candle index behind them.
+  const wb = out.window;
+  assert.deepEqual([wb.version, wb.settleFrac, wb.orderUsd, wb.twins, wb.seed], [WINDOW_VERSION, 0.3, 10, 3, 20261105]);
+  assert.deepEqual(wb.events.map((e) => [e.event, e.series, e.tour, e.unit, e.day]), out.matchList.map((x) => [x.event, x.series, 'ATP', x.unit, x.day]));
+  assert.ok(wb.events.every((e, i) => e.start === out.matchList[i].start && e.close === out.matchList[i].close && e.endRule <= e.close && e.endRule > e.start), JSON.stringify(wb.events));
+  assert.deepEqual(wb.rows.map((r) => [r.id, r.leg]), [['A|s2|loose|window', 'underdog'], ['A|s2|loose|window', 'fav']]);
+  for (const r of wb.rows) {
+    assert.deepEqual([r.n.length, r.w.length, r.tn.length, r.tw.length], [3, 3, 3, 3]);
+    assert.deepEqual(Object.keys(r.byPhase), ['pre', 'e20', 'p1', 'p2', 'p3']);
+    assert.deepEqual([r.hist.tWin.length, r.hist.lenWin.length, r.hist.dip.length, r.hist.held.length], [HIST_EDGES.tWin.length + 1, HIST_EDGES.lenWin.length + 1, HIST_EDGES.dip.length + 1, HIST_EDGES.held.length + 1]);
+    assert.equal(r.asks[0], r.n.reduce((s, x) => s + x, 0));
+    assert.ok(r.w.every((w, i) => w <= r.n[i]) && r.tw.every((w, i) => w <= r.tn[i]) && r.endNoWin <= r.asks[0]);
+  }
+  assert.deepEqual([m.windowVersion, m.windowArms, m.windowRows, m.candleMarkets, m.batchHash], [WINDOW_VERSION, 1, 2, 6, undefined]);
+  // The candle index's minutes and the substitutions of a close for a missing low (information): the fixture stores no low.
+  assert.ok(typeof m.candleMinutes === 'number' && m.candleMinutes > 0 && m.candlesNoLow === m.candleMinutes, JSON.stringify([m.candleMinutes, m.candlesNoLow]));
+  assert.equal(typeof m.windowInstances, 'number');
+  assert.equal(out.familyBWindow, undefined);
   const meta = await readShardMeta(file);
   assert.deepEqual(meta, m);
   // The report reads the file's runs (offsetMs included) and its check_runs gate passes them.
   if (spawnSync('python3', ['-I', '-c', 'import numpy, scipy'], { encoding: 'utf8' }).status === 0) {
     const cr = checkRunsDir(path.dirname(file));
     assert.equal(cr.status, 0, cr.err.slice(-2000));
-    assert.deepEqual(cr.out!.lists, { [prep.expected[0].replace(/\.json\.gz$/, '')]: [] });
+    const key = prep.expected[0].replace(/\.json\.gz$/, '');
+    // The report knows the window arms (Amendment 4, its ARMS): the file's window arm and its block pass its gate.
+    assert.ok(cr.out!.arms.includes('window'), 'research/tennis_ta_report.py ARMS must know the window arms');
+    assert.deepEqual(cr.out!.lists, { [key]: [] });
   }
   const chk = checkShards(prep, [...prep.expected], [{ file: prep.expected[0], meta }], '42');
   assert.deepEqual(chk.problems, []);
@@ -827,6 +963,7 @@ test('run: one sub-slice end to end on the fixture writes a C4 shard file the re
   const o = JSON.parse(zlib.gunzipSync(fs.readFileSync(other)).toString('utf8')) as ShardOut;
   assert.equal(o.matchList.length, 0);
   assert.deepEqual(o.meta.coverage.pools, { disc: { matches: 0, units: 0 }, nostart: { matches: 0, units: 0 } });
+  assert.deepEqual([o.window.version, o.window.events, o.window.rows.map((r) => [r.id, r.leg, r.n, r.asks])], [WINDOW_VERSION, [], [['A|s2|loose|window', 'underdog', [], [0, 0]], ['A|s2|loose|window', 'fav', [], [0, 0]]]]);
   await assert.rejects(cmdRun({ replay, from: '2026-07-13', to: '2026-07-21', stage: '1', pool: 'check', units: UNITS_FILE, out: other }), /no longer exists/);
   await assert.rejects(cmdRun({ replay, from: '2026-07-13', to: '2026-07-21', stage: '2', specs, pool: 'hold', units: UNITS_FILE, out: other }), /scored only by stage 'hold'/);
   await assert.rejects(cmdRun({ replay, from: '2026-07-13', to: '2026-07-21', stage: '1', pool: 'old', units: UNITS_FILE, out: other }), /stage 2 finalists only/);
@@ -861,20 +998,35 @@ test('run on the straddling unit W-2026-07-27: hold owns the Aug 2 matches (fold
   writeTaHistory(hist, 3, ['2026-07-30', '2026-07-31', '2026-08-02']);
   dropStart(hist, '2026-08-02', 'KXATPMATCH-20260802M2');
   await buildHistoryReplay({ historyDir: hist, outDir: replay, assets: [], fromDay: '2026-07-29', toDay: '2026-08-04', tennisSeries: ['KXATPMATCH'], log: () => {} });
-  const specs = holdFile();
+  const specs = batchFile();
   const base = { replay, from: '2026-07-27', to: '2026-08-04', 'units-list': 'W-2026-07-27', units: UNITS_FILE };
   const read = (f: string) => JSON.parse(zlib.gunzipSync(fs.readFileSync(f)).toString('utf8')) as ShardOut;
   const h = path.join(dir, 'a-shold-0-0.json.gz');
   await cmdRun({ ...base, stage: 'hold', specs, out: h }); // pool defaults to hold at stage hold
   const ho = read(h);
-  assert.deepEqual([ho.meta.stage, ho.meta.pool, ho.meta.replayVersion, ho.meta.specsHash], ['hold', 'hold', REPLAY_VERSION, specsHash(validateHoldSpecs(HOLD_LIST))]);
+  assert.deepEqual([ho.meta.stage, ho.meta.pool, ho.meta.replayVersion, ho.meta.specsHash], ['hold', 'hold', REPLAY_VERSION, specsHash(validateHoldBatch(BATCH).specs)]);
+  // The read's identity: the batch file's hash, the league run and the hot spots, with every window arm's rows.
+  assert.deepEqual([ho.meta.batchHash, ho.meta.leagueRun, ho.meta.batch, ho.meta.windowVersion, ho.meta.windowArms], [fileHash(specs), '19876543210', BATCH.batch, WINDOW_VERSION, 3]);
+  assert.deepEqual(ho.window.rows.map((r) => [r.id, r.leg]), BATCH_IDS.filter((id) => id.endsWith('|window')).flatMap((id) => [[id, 'underdog'], [id, 'fav']]));
+  assert.deepEqual(ho.window.events.map((e) => e.event), ho.matchList.map((x) => x.event));
+  // The window gate at stage hold (checkShards, before the ledger step): every batch member's |window rows in the file,
+  // or the problem names the member and the file fails before the opening is recorded.
+  const hp = { specIds: BATCH_IDS, windowVersion: WINDOW_VERSION, stage: 'hold' as const };
+  assert.deepEqual(windowArmsOf(BATCH_IDS), BATCH_IDS.filter((id) => id.endsWith('|window')));
+  const hblocks: ShardBlocks = { events: ho.matchList.map((x) => x.event), window: ho.window };
+  assert.deepEqual(windowBlockProblems('a-shold-0-0.json.gz', hp, ho.meta, hblocks), []);
+  const cut = { ...ho.window, rows: ho.window.rows.filter((r) => r.id !== 'A|s1|m0.005|f0.05|o0.005|w120|window') };
+  const why = " (a batch member's read: every member's |window rows must be in every file before the opening is recorded)";
+  assert.deepEqual(windowBlockProblems('a-shold-0-0.json.gz', hp, { ...ho.meta, windowRows: cut.rows.length }, { ...hblocks, window: cut }), [
+    `a-shold-0-0.json.gz: window block row A|s1|m0.005|f0.05|o0.005|w120|window / underdog missing${why}`, `a-shold-0-0.json.gz: window block row A|s1|m0.005|f0.05|o0.005|w120|window / fav missing${why}`,
+  ]);
   assert.match(String(ho.meta.evidence), /H-HOLD/);
   assert.deepEqual(ho.meta.holdFolds, holdFolds());
   assert.deepEqual(ho.matchList.map((x) => [x.event, x.day, x.pool, x.fold]), [
     ['KXATPMATCH-20260802M1', '2026-08-02', 'hold', 1], ['KXATPMATCH-20260802M2', '2026-08-02', 'nostart', null], ['KXATPMATCH-20260802M3', '2026-08-02', 'hold', 1],
   ]);
   assert.deepEqual(ho.meta.coverage.pools, { hold: { matches: 2, units: 1 }, nostart: { matches: 1, units: 1 } });
-  assert.deepEqual(ho.runs.map((r) => r.id), HOLD_LIST.map((x) => x.id));
+  assert.deepEqual(ho.runs.map((r) => r.id), BATCH_IDS);
   assert.deepEqual(ho.meta.poolSpans, poolSpans(units, 'hold', HARD_CUTOFF, new Set(['W-2026-07-27'])));
   // The same unit swept as disc (stage 2) owns the Jul 30 matches only; the Jul 31 ones are embargoed in both.
   const d = path.join(dir, 'd.json.gz');
@@ -898,7 +1050,11 @@ test('run with familyB: one SignalStudy per sub-slice, grids tagged with unit an
   assert.equal(out.meta.familyBStartMismatch, 0);
   // The nostart match is left out of family B too.
   assert.equal(out.meta.familyBNoStart, 1);
-  assert.deepEqual(checkShards(prep, [...prep.expected], [{ file: prep.expected[0], meta: await readShardMeta(file) }], '42').problems, []);
+  const parts = await readShardParts(file, ['meta', 'matchList', 'window', 'familyBWindow']);
+  assert.deepEqual(parts.meta, out.meta);
+  assert.deepEqual(parts.familyBWindow, out.familyBWindow);
+  const blocks: ShardBlocks = { events: (parts.matchList as Array<{ event: string }>).map((m) => m.event), window: parts.window, familyBWindow: parts.familyBWindow };
+  assert.deepEqual(checkShards(prep, [...prep.expected], [{ file: prep.expected[0], meta: parts.meta as ShardMeta, blocks }], '42').problems, []);
   // A slice that owns no match (an embargoed or empty unit) still writes its family B export: the sweep gives the study
   // its stratum up front, since there is no grid to take it from.
   const empty = path.join(path.dirname(file), 'empty.json.gz');
@@ -908,6 +1064,99 @@ test('run with familyB: one SignalStudy per sub-slice, grids tagged with unit an
   assert.deepEqual(e.meta.families, ['A', 'B']);
   assert.equal(e.familyB!.stratum, 'H');
   assert.ok(e.familyB!.designSize > 0 && e.familyB!.cells.length === 0);
+});
+
+test('check: the window block (C12) is gated by the sweep\'s check itself, before a hold run\'s opening is recorded', async () => {
+  const { prep, out, file } = await sliceRun(false);
+  const parts = await readShardParts(file, ['meta', 'matchList', 'window', 'familyBWindow']);
+  assert.deepEqual([parts.meta, parts.window, parts.familyBWindow], [out.meta, out.window, undefined]);
+  const blocksOf = (o: ShardOut): ShardBlocks => ({ events: o.matchList.map((m) => m.event), window: o.window, ...(o.familyBWindow ? { familyBWindow: o.familyBWindow } : {}) });
+  const check = (o: ShardOut) => checkShards(prep, [...prep.expected], [{ file: prep.expected[0], meta: o.meta, blocks: blocksOf(o) }], '42');
+  const good = check(out);
+  assert.deepEqual(good.problems, []);
+  assert.deepEqual([good.summary.windowArms, good.summary.windowBlocks, good.summary.windowInstances], [1, 1, out.meta.windowInstances]);
+  // Without the blocks only the meta is checked (the command always reads them; the summary says how many it read).
+  assert.equal(checkShards(prep, [...prep.expected], [{ file: prep.expected[0], meta: out.meta }], '42').summary.windowBlocks, 0);
+  const clone = () => JSON.parse(JSON.stringify(out)) as ShardOut;
+  const broken = (f: (o: ShardOut) => void, re: RegExp) => { const o = clone(); f(o); const pr = check(o).problems; assert.ok(pr.some((x) => re.test(x)), `${re}: ${JSON.stringify(pr)}`); };
+  broken((o) => { delete (o as Partial<ShardOut>).window; }, /no window block with events and rows \(C12\): the plan's 1 window arm\(s\) have no rows/);
+  broken((o) => { o.window.version = 'tennis-ta-window/0'; }, /window block version "tennis-ta-window\/0", expected "tennis-ta-window\/1"/);
+  broken((o) => { o.window.seed = 1; }, /window block seed 1, the one test's is 20261105/);
+  broken((o) => { o.window.settleFrac = 0.25; }, /window block settleFrac 0\.25, the one test's is 0\.3/);
+  broken((o) => { o.window.events.reverse(); }, /events are not in matchList order \(first at index 0\)/);
+  broken((o) => { o.window.events.pop(); }, /lists 2 event\(s\) for a matchList of 3/);
+  broken((o) => { o.window.events[1].endRule = o.window.events[1].close + 1; }, /event 1 \("KXATPMATCH-20260714M2"\) lacks an event, tour, day, start, close or an end rule at or before its close/);
+  broken((o) => { o.window.rows.pop(); }, /window block row A\|s2\|loose\|window \/ fav missing$/);
+  broken((o) => { o.window.rows.push({ ...o.window.rows[0] }); }, /row "A\|s2\|loose\|window" \/ underdog: appears twice/);
+  broken((o) => { o.window.rows.push({ ...o.window.rows[0], id: 'A|s2|other|window' }); }, /row "A\|s2\|other\|window" \/ underdog: not a window arm of the plan/);
+  broken((o) => { (o.window.rows[0] as { leg: string }).leg = 'both'; }, /row "A\|s2\|loose\|window" \/ both: no id, or a leg that is not underdog or fav/);
+  broken((o) => { o.window.rows[0].n.push(0); }, /row "A\|s2\|loose\|window" \/ underdog: n is not a list of counts over the 3 event\(s\)/);
+  broken((o) => { o.window.rows[0].tw = [-1, 0, 0]; }, /tw is not a list of counts/);
+  broken((o) => { o.window.rows[0].w = o.window.rows[0].n.map((x) => x + 1); }, /more windows than instances on an event/);
+  broken((o) => { o.window.rows[0].hist.dip.pop(); }, /hist is not \{tWin, lenWin, dip, held\} counts over the HIST_EDGES bins/);
+  broken((o) => { delete o.window.rows[0].byPhase.p3; }, /byPhase is not \{pre, e20, p1, p2, p3: \[n, w\]\}/);
+  broken((o) => { (o.window.rows[0] as { endNoWin: unknown }).endNoWin = '0'; }, /endNoWin is not a count/);
+  broken((o) => { o.window.rows[0].asks = [1] as unknown as [number, number]; }, /asks is not \[n, sum of asks\]/);
+  broken((o) => { o.meta.windowRows = 1; }, /meta\.windowRows 1, the block has 2 row\(s\)/);
+  broken((o) => { o.meta.windowArms = 2; }, /meta\.windowArms 2, the plan has 1 window arm\(s\)/);
+  broken((o) => { o.matchList.pop(); }, /matchList has 2 match\(es\), meta\.coverage\.matches says 3/);
+  broken((o) => { o.familyBWindow = { version: WINDOW_VERSION, rows: [{ ...o.window.rows[0], id: 'rsi|1m|up', leg: undefined, n: [1, 2, 3, 4] }] } as unknown as ShardOut['familyBWindow']; },
+    /familyBWindow block row "rsi\|1m\|up": n is not a list of counts over the 3 event\(s\)/);
+  broken((o) => { o.familyBWindow = { version: 'tennis-ta-window/0', rows: [] }; }, /familyBWindow block version "tennis-ta-window\/0" differs from the window block's/);
+  broken((o) => { o.meta.familyBWindowRows = 3; }, /meta\.familyBWindowRows is set but the file has no familyBWindow block/);
+  // A well-formed file passes with every row intact, so the gate is on the shape, never on a number.
+  const zero = clone();
+  for (const r of zero.window.rows) { r.w = r.w.map(() => 0); r.tw = r.tw.map(() => 0); }
+  assert.deepEqual(check(zero).problems, []);
+  // The check command as the workflow runs it before the ledger step: exit 0 and the summary on the good set; exit 1
+  // with the problem in --out when a file's block lacks a row (here: the rows of the plan's one window arm). The
+  // fixture's history has no complete-download record, so the file gets the one a finished download writes (the
+  // history gate has its own tests): the window gate is what runs here.
+  const dir = path.dirname(file), listing = path.join(dir, 'listed.txt'), planFile = path.join(dir, 'plan.json'), outFile = path.join(dir, 'shards-check.json');
+  fs.writeFileSync(listing, prep.expected.join('\n') + '\n');
+  fs.writeFileSync(planFile, JSON.stringify(prep));
+  const listed = (o: ShardOut) => { const c = o.meta.coverage.series!.KXATPMATCH; c.listed = { from: c.need!.from, to: c.need!.to }; return o; };
+  const run = () => spawnSync('node', ['--import', 'tsx', path.join(REPO, 'research', 'tennisTaSweep.ts'), 'check', '--dir', dir, '--listing', listing, '--prep', planFile, '--run', '42', '--out', outFile], { encoding: 'utf8', cwd: REPO });
+  fs.writeFileSync(file, zlib.gzipSync(JSON.stringify(listed(clone()))));
+  const ok = run();
+  assert.equal(ok.status, 0, ok.stderr.slice(-2000));
+  const okOut = JSON.parse(fs.readFileSync(outFile, 'utf8')) as { problems: string[]; windowBlocks: number; windowArms: number };
+  assert.deepEqual([okOut.problems, okOut.windowBlocks, okOut.windowArms], [[], 1, 1]);
+  assert.match(ok.stdout, /window block \(C12\): 1 arm\(s\) x 2 legs in the plan, read in 1 of 1 file\(s\)/);
+  const bad = listed(clone());
+  bad.window.rows = [];
+  fs.writeFileSync(file, zlib.gzipSync(JSON.stringify(bad)));
+  const fail = run();
+  assert.equal(fail.status, 1);
+  assert.match(fail.stderr, /::error::.*window block row A\|s2\|loose\|window \/ underdog missing/);
+  const failOut = JSON.parse(fs.readFileSync(outFile, 'utf8')) as { problems: string[] };
+  assert.ok(failOut.problems.some((x) => x.endsWith('window block row A|s2|loose|window / fav missing')) && failOut.problems.some((x) => x.includes('meta.windowRows 2, the block has 0 row(s)')), JSON.stringify(failOut.problems));
+});
+
+test('run on R: a recorded match before FULL_BOOK_FROM (practice, Amendment 4 item 9) is never owned, only counted', async () => {
+  const dir = tmp(), rec = path.join(dir, 'rec');
+  // KXATPMATCH-R1: start Jul 14 10:00 UTC (unit W-2026-07-13), close a week on. By the H rules its times are disc; on R
+  // it is practice (the bot's recordings before the Nov 10 book fix), and the run's admit() must label it so.
+  const plan = writeTaRecording(rec, '2026-07-14');
+  const pm = { start: plan.start, close: plan.start + 7 * DAY, startPublished: true };
+  assert.deepEqual([poolOf(pm, units), recordedPoolOf(pm, units), unitOf(plan.start, units)], ['disc', 'practice', 'W-2026-07-13']);
+  const out = path.join(dir, 'r.json.gz');
+  await cmdRun({ replay: rec, stratum: 'R', from: '2026-07-13', to: '2026-07-21', 'units-list': 'W-2026-07-13', stage: '2', specs: specFile(), pool: 'disc', units: UNITS_FILE, out });
+  const o = JSON.parse(zlib.gunzipSync(fs.readFileSync(out)).toString('utf8')) as ShardOut;
+  assert.deepEqual([o.meta.stratum, o.meta.stratumLabel, o.meta.lookbackDays, o.meta.evidence], ['R', 'R', 7, 'recorded books']);
+  // Nothing of the practice match reaches the file: no matchList row, episode, P&L, window event or instance.
+  assert.deepEqual(o.matchList, []);
+  assert.deepEqual(o.meta.coverage.pools, { disc: { matches: 0, units: 0 }, nostart: { matches: 0, units: 0 }, practice: { matches: 1, units: 1 } });
+  assert.deepEqual([o.meta.coverage.matches, o.meta.matches, o.meta.windowInstances], [0, 0, 0]);
+  assert.ok(o.runs.every((r) => r.pnl.length === 0 && r.episodes.length === 0), JSON.stringify(o.runs.map((r) => [r.id, r.pnl.length, r.episodes.length])));
+  assert.deepEqual([o.window.events, o.window.rows.map((r) => [r.id, r.leg, r.n, r.asks, r.endNoWin])], [[], [['A|s2|loose|window', 'underdog', [], [0, 0], 0], ['A|s2|loose|window', 'fav', [], [0, 0], 0]]]);
+  // The same recording swept by a unit list without its unit counts nothing: the practice count is of the slice's own.
+  const other = path.join(dir, 'other.json.gz');
+  await cmdRun({ replay: rec, stratum: 'R', from: '2026-07-13', to: '2026-07-21', 'units-list': 'WIM-2026-06-29', stage: '2', specs: specFile(), pool: 'disc', units: UNITS_FILE, out: other });
+  assert.deepEqual((JSON.parse(zlib.gunzipSync(fs.readFileSync(other)).toString('utf8')) as ShardOut).meta.coverage.pools, { disc: { matches: 0, units: 0 }, nostart: { matches: 0, units: 0 }, practice: { matches: 0, units: 0 } });
+  // An H run reports no practice count (Kalshi's own history is unaffected).
+  const { out: h } = await sliceRun(false);
+  assert.equal(h.meta.coverage.pools!.practice, undefined);
 });
 
 // The workflow: PyYAML parses it and bash -n parses every run block (GitHub expressions replaced first). The same helper
@@ -984,8 +1233,18 @@ test('workflow: YAML parses, every run block parses in bash, the report job vali
   // C10, report: the hold run's opening is appended after the completeness check and before the report reads anything.
   const lidx = idx(/^Openings ledger/);
   assert.ok(lidx > idx(/^Shards/) && lidx < idx(/^Report$/), `${lidx}`);
+  // The completeness check (the sweep's own, before the ledger step) is the C12 window gate: a broken block never
+  // reaches the append.
+  assert.match(body(/^Shards/), /node --import tsx research\/tennisTaSweep\.ts check --dir shards --listing listed\.txt --prep prep\/plan\.json --run "\$GITHUB_RUN_ID" --out report\/shards-check\.json/);
+  assert.match(report[idx(/^Shards/)].name, /window block whole/);
+  assert.match(body(/^Shards/), /window block[\s\S]*before the ledger step/);
   assert.ok(body(/^Openings ledger/).includes(`LEDGER=${OPENINGS_LEDGER}`));
   assert.match(body(/^Openings ledger/), /\{hash: \$h, run: \$r, ts: \$ts, ids: \$p\[0\]\.specIds, pool: "hold"\}/);
+  // Amendment 4: the blind-open is keyed by the batch file's hash, and a disc run's report carries the league.
+  assert.match(body(/^Openings ledger/), /jq -r '\.batchHash \/\/ ""' prep\/plan\.json/);
+  assert.ok(!body(/^Openings ledger/).includes('.specsHash'));
+  assert.match(body(/^Report$/), /league\.md league\.csv league\.json/);
+  assert.match(body(/^Report$/), /\[ "\$POOL" = disc \]/);
   assert.match(text, /STAGE: \$\{\{ needs\.prep\.outputs\.stage \}\}/);
   // The helper catches a broken block.
   const broken = path.join(tmp(), 'broken.yml');
@@ -1026,7 +1285,7 @@ test('workflow ledger steps: prep reads the ledger strictly; the report job appe
   let x = run(readStep);
   assert.equal(x.status, 0, x.stderr);
   assert.equal(fs.readFileSync(path.join(work, 'prep', 'openings.jsonl'), 'utf8'), '');
-  const f = holdFile();
+  const f = batchFile();
   const p = prepare(JSON.stringify({ stage: 'hold' }), unitsText, f, { openings: fs.readFileSync(path.join(work, 'prep', 'openings.jsonl'), 'utf8') });
   fs.writeFileSync(path.join(work, 'prep', 'plan.json'), JSON.stringify(p));
   // A Drive that cannot be read fails the read (never "not opened").
@@ -1039,7 +1298,7 @@ test('workflow ledger steps: prep reads the ledger strictly; the report job appe
   x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '100' });
   assert.equal(x.status, 0, x.stderr + x.stdout);
   const rows = () => fs.readFileSync(ledger, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
-  assert.deepEqual(rows().map((o) => [o.hash, o.run, o.ids, o.pool, Object.keys(o).sort()]), [[p.specsHash, '100', p.specIds, 'hold', ['hash', 'ids', 'pool', 'run', 'ts']]]);
+  assert.deepEqual(rows().map((o) => [o.hash, o.run, o.ids, o.pool, Object.keys(o).sort()]), [[p.batchHash, '100', p.specIds, 'hold', ['hash', 'ids', 'pool', 'run', 'ts']]]);
   assert.match(String(rows()[0].ts), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   // A re-run of the report job keeps the one row (idempotent by run id).
   x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '100' });
@@ -1049,25 +1308,72 @@ test('workflow ledger steps: prep reads the ledger strictly; the report job appe
   // prep now reads the row and refuses the list; another run of it fails in the report job too.
   x = run(readStep);
   assert.equal(x.status, 0, x.stderr);
-  assert.throws(() => prepare(JSON.stringify({ stage: 'hold' }), unitsText, f, { openings: fs.readFileSync(path.join(work, 'prep', 'openings.jsonl'), 'utf8') }), /already opened on H-HOLD \(run 100,/);
+  assert.throws(() => prepare(JSON.stringify({ stage: 'hold' }), unitsText, f, { openings: fs.readFileSync(path.join(work, 'prep', 'openings.jsonl'), 'utf8') }), /already read on H-HOLD \(run 100,/);
   x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '101' });
   assert.notEqual(x.status, 0);
   assert.match(x.stdout, /already opened on H-HOLD by run 100/);
   assert.equal(rows().length, 1);
   // Another list appends after a ledger line without its newline; a damaged ledger is never overwritten.
   fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').trimEnd());
-  const p2 = { ...p, specsHash: 'ab'.repeat(32), specIds: ['A|hold|x|F1'] };
+  const p2 = { ...p, batchHash: 'ab'.repeat(32), specIds: ['A|s1|m0.02|f0.4|o0.02|w300|window', 'A|s1|m0.02|f0.4|o0.02|w300|F1'] };
   fs.writeFileSync(path.join(work, 'prep', 'plan.json'), JSON.stringify(p2));
   x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '102' });
   assert.equal(x.status, 0, x.stderr + x.stdout);
-  assert.deepEqual(rows().map((o) => [o.hash, o.run]), [[p.specsHash, '100'], ['ab'.repeat(32), '102']]);
-  // The ledger naming this run with another list fails.
-  fs.writeFileSync(path.join(work, 'prep', 'plan.json'), JSON.stringify({ ...p2, specsHash: 'cd'.repeat(32) }));
+  assert.deepEqual(rows().map((o) => [o.hash, o.run]), [[p.batchHash, '100'], ['ab'.repeat(32), '102']]);
+  // The ledger naming this run with another batch fails; a plan without a batch hash (not a hold plan) records nothing.
+  fs.writeFileSync(path.join(work, 'prep', 'plan.json'), JSON.stringify({ ...p2, batchHash: 'cd'.repeat(32) }));
   x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '102' });
   assert.notEqual(x.status, 0);
-  assert.match(x.stdout, /holds run 102 with another list/);
+  assert.match(x.stdout, /holds run 102 with another batch/);
+  fs.writeFileSync(path.join(work, 'prep', 'plan.json'), JSON.stringify({ ...p2, batchHash: undefined }));
+  x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '104' });
+  assert.notEqual(x.status, 0);
+  assert.match(x.stdout, /no batch hash/);
+  assert.equal(rows().length, 2);
   fs.writeFileSync(ledger, '{"hash": "x"}\n{broken\n');
   x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '103' });
   assert.notEqual(x.status, 0);
   assert.equal(fs.readFileSync(ledger, 'utf8'), '{"hash": "x"}\n{broken\n');
+});
+
+test('practice (Amendment 4 item 9): recorded matches before FULL_BOOK_FROM are pool practice, never requestable or scored', () => {
+  assert.equal(FULL_BOOK_FROM, Date.parse('2026-11-10T03:44:00Z'));
+  assert.ok(POOLS.includes('practice'));
+  const m = (start: number) => ({ start, close: start + 3 * H, startPublished: true });
+  // A recorded match before the book fix is practice whatever the H rules would say of its time; from the fix on, the H
+  // rules apply (under the Nov 5 cutoff every later match is out until a later cutoff opens its lockbox week).
+  assert.equal(recordedPoolOf(m(Date.parse('2026-10-25T14:00:00Z')), units), 'practice');
+  assert.equal(poolOf(m(Date.parse('2026-10-25T14:00:00Z')), units), 'hold');
+  assert.equal(recordedPoolOf(m(Date.parse('2026-07-14T14:00:00Z')), units), 'practice');
+  assert.equal(recordedPoolOf(m(FULL_BOOK_FROM - 1), units), 'practice');
+  assert.equal(recordedPoolOf(m(FULL_BOOK_FROM), units), poolOf(m(FULL_BOOK_FROM), units));
+  assert.equal(recordedPoolOf(m(FULL_BOOK_FROM), units), 'out');
+  assert.match(poolRefusal('practice')!, /never scored[\s\S]*practice data/);
+  assert.throws(() => parseRequest({ stage: '1', pool: 'practice' }, units), /pool 'practice' is never scored/);
+  assert.throws(() => assertPool('practice', '2'), /practice data/);
+  for (const u of units) assert.equal(poolInterval(u, 'practice'), undefined);
+  assert.ok(units.every((u) => !unitPools(u).includes('practice')));
+  assert.equal(tourOf('KXWTAMATCH'), 'WTA');
+  assert.equal(tourOf('KXATPMATCH'), 'ATP');
+});
+
+test('candleIndex: the window rule\'s view of every market the slice reads, parsed once from the history day files', () => {
+  const dir = tmp(), hist = path.join(dir, 'hist');
+  writeTaHistory(hist, 3, ['2026-07-14']);
+  const series = path.join(hist, 'kalshi', 'KXATPMATCH');
+  const idx = candleIndex([series], '2026-07-13', '2026-07-21', 1);
+  assert.equal(idx.size, 6);
+  const lines = fs.readFileSync(path.join(series, '2026-07-14.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { ticker: string; closeTime: number; candles: Parameters<typeof minuteCandles>[0] });
+  for (const m of lines) {
+    const mc = idx.get(m.ticker)!;
+    assert.deepEqual(mc, minuteCandles(m.candles, m.closeTime));
+    assert.ok(mc.length > 1 && mc.every((c, i) => (i === 0 || c.ts > mc[i - 1].ts) && c.ts <= m.closeTime && c.twoSided), m.ticker);
+    assert.ok(eligibleMinutes(mc, m.closeTime).length > 0);
+  }
+  // The span the slice reads: from its first day minus the lookback to its last day plus the close tail.
+  assert.equal(candleIndex([series], '2026-07-17', '2026-07-21', 1).size, 0);
+  assert.equal(candleIndex([series], '2026-07-15', '2026-07-21', 1).size, 6, 'the lookback day');
+  assert.equal(candleIndex([series], '2026-07-01', '2026-07-13', 1).size, 6, 'the close tail');
+  assert.equal(candleIndex([series], '2026-07-01', '2026-07-11', 1).size, 0);
+  assert.equal(candleIndex([path.join(hist, 'kalshi', 'NONE')], '2026-07-13', '2026-07-21').size, 0);
 });

@@ -4,6 +4,8 @@
 // FamilyBExport) and research/tennisTaSweep.ts (the CLI the workflow runs, which writes both into the shard files) speak
 // these.
 
+import type { MinuteCandles } from './tennisTaWindow';
+
 /** One match's quotes on a 1-second grid, built causally while the replay streams (no lookahead: index i holds the book
  *  as it stood at t0 + i*1000 after every event stamped <= that time). Market A = the event's markets sorted by ticker [0]. */
 export interface MatchGrid {
@@ -43,6 +45,10 @@ export interface MatchGrid {
   unit?: string;
   /** True when `start` is Kalshi's published start, false when it is the earliest market-line time (bookkeeping only). */
   startPublished?: boolean;
+  /** Window mode (Amendment 4, research/tennisTaWindow.ts): the window rule's view of each market's Kalshi minute candles
+   *  (SweepOpts.candlesOf through the sim: the first stored candle dropped, ending at or before the market's close; [] for a
+   *  market without candles), set before onGrid delivers the grid when the sweep supplies candlesOf; absent otherwise. */
+  candles?: { a: MinuteCandles; b: MinuteCandles };
 }
 
 /** Family B (research/tennisTaSignals.ts): one cell of the entry-locked event study, totals over a slice. Every value is
@@ -140,6 +146,9 @@ export interface ConfigRun {
   overrides: Record<string, string | number | boolean>;
   fill: 'F0' | 'F1' | 'F2';
   placebo?: 'coin';
+  /** Window mode (Amendment 4, research/tennisTaSim.ts SimSpec.window): the run traded nothing; its signal instances are
+   *  SimRun.instances (pnl all 0, no entry, no episode). */
+  window?: true;
   stratum: 'H' | 'R';
   days: ConfigDay[];
 }

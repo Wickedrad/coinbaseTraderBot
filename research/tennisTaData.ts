@@ -9,7 +9,8 @@
 //              table START_ERA_FROM (research/tennisTaSweep.ts) is read off
 //   recorded   one recorded day (the bot's own md-DAY file: real books, real tape, live scores) cut to its tennis lines,
 //              with 'beat' and 'ws_beat' lines that keep the feed's and the Kalshi socket's liveness, every silence of
-//              either over 6 s exactly as long as in the source (contract C8, see recordedTennis)
+//              either over 6 s exactly as long as in the source (contract C8, see recordedTennis); its stats row labels a
+//              day before the Nov 10 03:44 UTC book fix (FULL_BOOK_FROM) as practice data (Amendment 4 item 9)
 //
 // Contract prices come from Kalshi, not from the Live Tennis API: that API serves live scores only (free tier 100 calls a
 // day), so scores exist only where the bot recorded them.
@@ -200,6 +201,13 @@ export const SOCKET_BEAT = 'ws_beat';
 /** The Kalshi socket's lines, as feedTimeline (research/tennisTaSim.ts) counts them on a raw file: book, delta, trade and
  *  lifecycle lines of any market (bot/marketdata/marketData.ts writes them from the socket's messages). */
 const SOCKET_KINDS: ReadonlySet<string> = new Set(['book', 'delta', 'trade', 'lifecycle', SOCKET_BEAT]);
+/** Amendment 4 item 9 (Steven, Nov 11): the bot's recordings before Nov 10 03:44 UTC (Nov 9 10:44 PM EST) sat on empty
+ *  order-book reads and are practice data: a recorded day whose every line is before it is pool 'practice' (CutStats
+ *  .practice), never scored, never pooled with later days; on a later day the lines before it are counted (thinLines).
+ *  A copy of research/tennisTaSweep.ts FULL_BOOK_FROM (the sweep's recordedPoolOf labels a recorded match by its start);
+ *  not imported, so the download job does not load the sim and the bot's config (tests/tennisTaData.test.ts holds the
+ *  two together). */
+export const FULL_BOOK_FROM = Date.parse('2026-11-10T03:44:00Z');
 
 const TICKER = /"ticker":"([^"]+)"/;
 const HEAD = /^\{"t":(-?\d+(?:\.\d+)?),"k":"([^"]+)"/;
@@ -219,6 +227,9 @@ export function matchSeriesTest(): (ticker: string) => boolean {
 
 export interface CutStats {
   cut: string;
+  /** FULL_BOOK_FROM as an ISO time; practice: every source line of the day is stamped before it (pool 'practice': never
+   *  scored); thinLines: tennis lines kept (beats aside) stamped before it, on a practice day every one of them. */
+  fullBookFrom: string; practice: boolean; thinLines: number;
   /** Source lines read, lines written (beat and ws_beat lines included), beat lines and ws_beat lines written. */
   lines: number; kept: number; beats: number; sockBeats: number;
   /** Match tickers with any line kept; of them, those whose market line is not in this day's file (listed on an earlier day). */
@@ -262,7 +273,7 @@ export async function recordedTennis(inFile: string, outFile: string): Promise<C
   // for ever (pipe() unpipes on a write error, so the drain never comes and node would exit 0 with a truncated file).
   const done = new Promise<void>((res, rej) => { ws.on('finish', () => res()); ws.on('error', rej); gz.on('error', rej); });
   done.catch(() => { /* awaited below */ });
-  let lines = 0, kept = 0, beats = 0, sockBeats = 0, markets = 0, scores = 0;
+  let lines = 0, kept = 0, beats = 0, sockBeats = 0, markets = 0, scores = 0, thinLines = 0, lastT = -Infinity;
   const write = async (l: string) => { kept++; if (!gz.write(`${l}\n`)) await Promise.race([new Promise<void>((r) => gz.once('drain', () => r())), done]); };
   const due = (t: number, last: number) => t >= last + BEAT_MS || t < last - BEAT_MS;
   // The source clock: its last beat and the previous source line.
@@ -294,6 +305,7 @@ export async function recordedTennis(inFile: string, outFile: string): Promise<C
       // pending line is marked now (as it would be then) and the held lines go out.
       if (finite && pend !== undefined && t - pend > BEAT_MS) await settle(true);
       if (finite) {
+        lastT = Math.max(lastT, t);
         if (due(t, lastBeat)) {
           if (prevT > lastBeat && t - prevT > BEAT_PAUSE_MS) await beat(prevT);
           await beat(t);
@@ -316,7 +328,7 @@ export async function recordedTennis(inFile: string, outFile: string): Promise<C
         else if (due(t, lastMark)) { lastMark = t; sockBeats++; await write(JSON.stringify({ t, k: SOCKET_BEAT })); }
         else pend = t;
       }
-      if (keep) await emit(line);
+      if (keep) { if (finite && t < FULL_BOOK_FROM) thinLines++; await emit(line); }
     }
     // The file's last socket line and last source line (the next day's file starts its own clocks).
     await settle(true);
@@ -329,7 +341,7 @@ export async function recordedTennis(inFile: string, outFile: string): Promise<C
   }
   let carried = 0;
   for (const tk of tickers) if (!listed.has(tk)) carried++;
-  return { cut: CUT_VERSION, lines, kept, beats, sockBeats, matches: tickers.size, carried, markets, scores };
+  return { cut: CUT_VERSION, fullBookFrom: new Date(FULL_BOOK_FROM).toISOString(), practice: Number.isFinite(lastT) && lastT < FULL_BOOK_FROM, thinLines, lines, kept, beats, sockBeats, matches: tickers.size, carried, markets, scores };
 }
 
 async function main() {

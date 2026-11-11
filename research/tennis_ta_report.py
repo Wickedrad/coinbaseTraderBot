@@ -74,6 +74,21 @@ research/tennisTaSweep.ts run (gzip JSON, one per sub-slice, contract C4):
               day without a trade), by_tercile {'ATP'|'WTA': {pnl, hours}} (the tours as the RV-tercile stand-in, hours =
               the tour's live-match hours), then the registry's ho1_fill fills each paired row's heldout block and each
               candidate's verdict is its ho1_pass; report.md scores each candidate per fold, per tour and against its placebo.
+  one test    Amendment 4 (the contract; /mnt/project-files/tennis-ta/preregistration.md): the shard files' 'window' block
+              (contract C12: one row per window arm '<config>|window' / '<config>|coinwindow' and leg, per-event instance
+              and window counts n / w and twin counts tn / tw, the item 8 histograms, phases, end-rule count and asks)
+              gives every hot spot (config x leg; 'both' = the legs pooled per event) its window rate, random rate, gap,
+              cluster-robust SE by match (gap_stats, item 6, the same arithmetic as research/tennisTaWindow.ts gapStats),
+              z = gap / SE and PASS = gap >= 2 x SE. A disc run writes the league (league.md: the top 40 by z, the
+              production config's legs and the sticks; league.csv and league.json: every row with every information
+              column; hold-batch-candidate.json: the 10 hottest family A hot spots by z, ties by gap, the batch a person
+              copies to research/tennis-ta/hold-batch.json). A hold run with a batch (meta.batch, else the plan's, else
+              research/tennis-ta/hold-batch.json) scores each member on the hold pool and writes hold-league.md /
+              hold-league.json ('direction found' on a pass; the folds, tours, item 8 columns and the HO-1 money table as
+              information). Registry rows (item 10): one per hot spot, arm '<config>|window|<leg>', data.metric
+              window_gap (by_day and by_tercile hold the gap, never $), its coin placebo '|coinwindow|<leg>' as placebo_for,
+              and on the read the registry's one-test heldout block. The HO-1 money bars, the discovery screen, SPA, DSR
+              and PBO stay as information: nothing but the one test cuts a hot spot, and nothing in the report cuts a row.
 
 Usage: tennis_ta_report.py --shards DIR --pool disc|old|hold --run RUN_ID --out DIR --registry-py registry.py --sha SHA
        [--plan prep/plan.json] [--units models/tennis-ta/state/units.json] [--boot 2000] [--block 1] [--seed 20261105]
@@ -98,7 +113,7 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 DEFAULT_UNITS = os.path.join(REPO, 'models', 'tennis-ta', 'state', 'units.json')
 PHASES = ['pre', 'e20', 'p1', 'p2', 'p3']
 BUCKETS = ['8-15', '15-25', '75-85', '85-92', 'other']
-ARMS = ('F0', 'F1', 'F2', 'coin')
+ARMS = ('F0', 'F1', 'F2', 'coin', 'window', 'coinwindow')  # the P&L arms and the one test's window arms (Amendment 4)
 EULER = 0.5772156649015329
 DAY_MS = 86_400_000
 HOUR_MS = 3_600_000
@@ -278,6 +293,27 @@ def dumps(o, **kw):
     return json.dumps(clean(o), allow_nan=False, **kw)
 
 
+def z_json(z):
+    """A z for JSON and CSV: JSON has no infinity (json.dumps writes the non-standard Infinity, or refuses it), so an infinite
+    z (SE 0 with a gap, gap_stats) is spelt '+inf' / '-inf'; a finite z stays a number, none stays None."""
+    if z is None or isinstance(z, str):
+        return z
+    z = float(z)
+    return z if math.isfinite(z) else None if math.isnan(z) else '+inf' if z > 0 else '-inf'
+
+
+def spell_inf(o):
+    """o with every infinite float spelt '+inf' / '-inf' (z_json): the one test's files and registry rows, where an infinite z
+    (SE 0 with a gap) must survive the JSON (clean() would write null)."""
+    if isinstance(o, dict):
+        return {k: spell_inf(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [spell_inf(v) for v in o]
+    if isinstance(o, (float, np.floating)) and math.isinf(float(o)):
+        return z_json(o)
+    return o
+
+
 def finite(x):
     return x is not None and isinstance(x, (int, float, np.floating, np.integer)) and math.isfinite(float(x))
 
@@ -337,21 +373,25 @@ def check_runs(run_lists, stratum='H'):
         for rid, r in rl.items():
             q = ref.get(rid)
             if q is not None and any(json.dumps(q.get(k), sort_keys=True) != json.dumps(r.get(k), sort_keys=True)
-                                     for k in ('overrides', 'fill', 'placebo', 'stick', 'offsetMs')):
-                p.append(f'run {rid}: its overrides, fill, placebo, stick or offset differ across the shard files')
+                                     for k in ('overrides', 'fill', 'placebo', 'stick', 'offsetMs', 'window')):
+                p.append(f'run {rid}: its overrides, fill, placebo, stick, offset or window flag differ across the shard files')
     cfg_ov, twins = {}, {}
     for rid in sorted(ref):
         r = ref[rid]
         if r['stick']:
             continue
         parts = rid.rsplit('|', 1)
-        want = 'coin' if r.get('placebo') == 'coin' else (r.get('fill') or 'F1')
+        win = r.get('window') is True
+        want = (('coinwindow' if r.get('placebo') == 'coin' else 'window') if win
+                else 'coin' if r.get('placebo') == 'coin' else (r.get('fill') or 'F1'))
         if len(parts) != 2 or parts[1] not in ARMS:
-            p.append(f"run {rid}: a non-stick run's id must end in its arm (|F0, |F1, |F2 or |coin) so its arms link to one config "
-                     f"(a measuring stick carries stick: true)")
+            p.append(f"run {rid}: a non-stick run's id must end in its arm (|F0, |F1, |F2 or |coin; |window or |coinwindow for the one "
+                     f"test's window arms, Amendment 4) so its arms link to one config (a measuring stick carries stick: true)")
             continue
         if parts[1] != want:
-            p.append(f"run {rid}: its id names arm {parts[1]} but it runs {'the coin placebo' if want == 'coin' else 'fill ' + want}")
+            runs_what = {'coin': 'the coin placebo', 'window': 'a window arm (window: true)',
+                         'coinwindow': "a window arm's coin placebo (window: true, placebo coin)"}.get(want, 'fill ' + want)
+            p.append(f"run {rid}: its id names arm {parts[1]} but it runs {runs_what}")
         ov = json.dumps(r['overrides'], sort_keys=True)
         if parts[0] in cfg_ov and cfg_ov[parts[0]][0] != ov:
             p.append(f'config {parts[0]}: its arms {cfg_ov[parts[0]][1]} and {rid} run different overrides')
@@ -360,7 +400,7 @@ def check_runs(run_lists, stratum='H'):
         if moved:
             p.append(f"run {rid}: moves {', '.join(moved)} (a stress adversary or measuring setting, never a hypothesis) but is not a "
                      f"measuring stick: mark it stick: true")
-        if want != 'coin':
+        if want not in ('coin', 'window', 'coinwindow'):  # a window arm trades nothing: never a twin of its F1 arm
             key = (canon_overrides(r['overrides']), r.get('fill'), r.get('offsetMs') or 0)
             if key in twins:
                 p.append(f'runs {twins[key]} and {rid} run the same overrides and fill: arms that differ only in the decision-clock '
@@ -690,20 +730,36 @@ def read_shard(path):
         if len(ep['m']) and (ep['m'].min() < 0 or ep['m'].max() >= n):
             problems.append(f'{name}: run {rid} has episodes outside its match list')
         rd[rid] = {'id': rid, 'overrides': r.get('overrides') or {}, 'fill': r.get('fill'), 'placebo': r.get('placebo'),
-                   'stick': r.get('stick') is True or rid in sticks, 'offsetMs': r.get('offsetMs'), 'pnl': np.asarray(pnl, dtype=np.float64), 'ep': ep}
+                   'stick': r.get('stick') is True or rid in sticks, 'offsetMs': r.get('offsetMs'), 'window': r.get('window') is True,
+                   'pnl': np.asarray(pnl, dtype=np.float64), 'ep': ep}
     fb = d.get('familyB')
     events = [m.get('event') for m in ml]
+    # The one test's blocks (contract C12): 'window' (family A's window arms) and 'familyBWindow' (family B's readings).
+    win, fbw = d.get('window'), d.get('familyBWindow')
+    win_keys, fbw_keys = (), ()
+    if win is not None:
+        wp, win_keys = check_window_block(name, win, events, 'window')
+        problems += wp
+    if fbw is not None:
+        if win is None:
+            problems.append(f'{name}: a familyBWindow block without the window block its rows index into')
+        else:
+            wp, fbw_keys = check_window_block(name, fbw, events, 'familyBWindow')
+            problems += wp
+    if win is None and any(r['window'] for r in rd.values()):
+        problems.append(f"{name}: window arm(s) ({', '.join(sorted(k for k, r in rd.items() if r['window'])[:3])}) but no window block (C12)")
     b_diag = (fb.get('diagnostics') or {}) if isinstance(fb, dict) else {}
     info = {'file': name, 'meta': meta, 'events': events, 'run_ids': tuple(sorted(rd)), 'has_b': fb is not None,
             'b_design': fb.get('designSize') if isinstance(fb, dict) else None, 'b_stratum': fb.get('stratum') if isinstance(fb, dict) else None,
             'b_tours': b_diag.get('tours'), 'b_phases': (b_diag.get('settings') or {}).get('phasesInDesign'),
             'row_units': {m.get('unit') for m in ml}, 'b_units': ({u for c in fb.get('cells', []) for u in (c.get('units') or {})} if isinstance(fb, dict) else set()),
-            'problems': problems}
-    return info, {'matches': ml, 'runs': rd, 'familyB': fb}
+            'has_window': win is not None, 'window_version': win.get('version') if isinstance(win, dict) else None, 'window_keys': win_keys,
+            'has_fbw': fbw is not None, 'fbw_keys': fbw_keys, 'problems': problems}
+    return info, {'matches': ml, 'runs': rd, 'familyB': fb, 'window': win, 'familyBWindow': fbw}
 
 
 CONSISTENT = ('run', 'stage', 'pool', 'simVersion', 'dataVersion', 'families', 'shards')
-CONSISTENT_IF_SET = ('requestSha', 'unitsSha', 'stratum', 'era', 'replayVersion', 'specsHash')
+CONSISTENT_IF_SET = ('requestSha', 'unitsSha', 'stratum', 'era', 'replayVersion', 'specsHash', 'windowVersion', 'batchHash', 'leagueRun')
 REQUIRED = ('run', 'stage', 'pool', 'simVersion', 'dataVersion', 'families', 'shards', 'subShards', 'k', 'j', 'from', 'to', 'units')
 
 
@@ -816,6 +872,18 @@ def check_shard_set(infos, table, plan=None, run=None, allow_unversioned=False, 
         if i['run_ids'] != ref['run_ids']:
             miss, extra = set(ref['run_ids']) - set(i['run_ids']), set(i['run_ids']) - set(ref['run_ids'])
             p.append(f"{i['file']}: its runs differ from {ref['file']} ({len(miss)} missing, {len(extra)} extra)")
+    # The one test's blocks (C12): the window block in every file or in none, one version, the same rows (window arms x
+    # legs, family B readings) in every file.
+    has_w = [bool(i.get('has_window')) for i in infos]
+    if any(has_w) and not all(has_w):
+        p.append('the window block (C12) is in some shard files and not in others: ' + ', '.join(i['file'] for i in infos if not i.get('has_window'))[:300])
+    if len({i.get('window_version') for i in infos if i.get('has_window')}) > 1:
+        p.append('the window block version differs across the shard files')
+    for i in infos[1:]:
+        if i.get('has_window') and ref.get('has_window') and i.get('window_keys') != ref.get('window_keys'):
+            p.append(f"{i['file']}: its window rows differ from {ref['file']}")
+        if bool(i.get('has_fbw')) != bool(ref.get('has_fbw')) or (i.get('has_fbw') and i.get('fbw_keys') != ref.get('fbw_keys')):
+            p.append(f"{i['file']}: its familyBWindow rows differ from {ref['file']}")
 
     # Match events unique across the set.
     seen = {}
@@ -977,7 +1045,8 @@ def load(shard_dir, table, plan=None, run=None, allow_unversioned=False):
         matches.extend(d['matches'])
         for rid, r in d['runs'].items():
             acc = runs.setdefault(rid, {'id': rid, 'overrides': r['overrides'], 'fill': r['fill'], 'placebo': r['placebo'],
-                                        'stick': r['stick'], 'offsetMs': r.get('offsetMs'), 'pnl': [], 'ep': defaultdict(list)})
+                                        'stick': r['stick'], 'offsetMs': r.get('offsetMs'), 'window': r.get('window', False), 'pnl': [],
+                                        'ep': defaultdict(list)})
             acc['stick'] = acc['stick'] or r['stick']
             acc['pnl'].append(r['pnl'])
             for c, arr in r['ep'].items():
@@ -1005,8 +1074,11 @@ def load(shard_dir, table, plan=None, run=None, allow_unversioned=False):
         fam_b = {'stratum': fbs[0].get('stratum'), 'designSize': design_b(infos)[0], 'diagnostics': diag, 'cells': b_cells,
                  # per-day placebo sums in every day row of the export (the registry's family B placebo rows need them)
                  'day_placebo': bool(cols) and min(cols) >= 4}
+    # The one test's blocks (C12), every file's in slice order: the row arrays index into the merged event list.
+    wparts = [(datas[i]['window'], datas[i].get('familyBWindow')) for i in order if datas[i].get('window') is not None]
+    wd = merge_window(wparts) if wparts else None
     metas = [infos[i]['meta'] for i in order]
-    return {'matches': matches, 'runs': runs, 'familyB': fam_b, 'metas': metas, 'files': [infos[i]['file'] for i in order]}
+    return {'matches': matches, 'runs': runs, 'familyB': fam_b, 'metas': metas, 'files': [infos[i]['file'] for i in order], 'window': wd}
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1256,6 +1328,762 @@ def onc(corr, seed, max_k=None, n_init=3, dim=256, diag=None):
 
 # ---------------------------------------------------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------------------------------------------------
+# The one test (Amendment 4): the shard files' 'window' block (contract C12), gap_stats as research/tennisTaWindow.ts
+# gapStats computes it (item 6), the league (item 7), the information columns (item 8), the batch of the read and the
+# registry's one-test rows (item 10). No other statistical bar exists: everything that is not the one test is information.
+
+WINDOW_VERSION = 'tennis-ta-window/1'
+WINDOW_ARMS = ('window', 'coinwindow')
+HOLD_LEGS = ('underdog', 'fav', 'both')
+HOLD_BATCH_FILE = os.path.join(REPO, 'research', 'tennis-ta', 'hold-batch.json')
+HOLD_BATCH_MAX = 10
+TWINS = 3              # twins an instance (item 5); a coin side with no eligible minute draws no twin (drawTwins), so a row's tn_i can fall short of TWINS x n_i
+STICK_ID = re.compile(r'^A\|s[12]\|prod\|')   # a measuring stick's config id (the sweep's stage1Specs sticks / S2_STICK): reported, never a hot spot of the batch (item 1, C4)
+ONE_TEST_K = 2.0       # PASS = gap >= ONE_TEST_K x SE (item 6)
+LEAGUE_TOP = 40        # league.md shows the top 40 by z (league.csv / league.json hold every row)
+HIST_EDGES = {'tWin': [1, 2, 3, 5, 10, 15, 30, 60, 120], 'lenWin': [1, 2, 3, 5, 10, 20, 40],
+              'dip': [0, -0.01, -0.02, -0.03, -0.05, -0.08, -0.12, -0.20], 'held': [0, 1, 2, 5, 10, 20, 40, 80]}
+HIST_KEYS = ('tWin', 'lenWin', 'dip', 'held')
+HIST_NAMES = {'tWin': 'minutes to the window', 'lenWin': 'window length (minutes at or above the level)',
+              'dip': 'wrong-way dip before the window (lowest bid minus entry, $)', 'held': 'minutes held at or above the level'}
+CALENDAR = '/mnt/project-files/registry/edge-pipeline/calendar.md'
+ONE_TEST_RULE = ('hot spot = one config and one leg (underdog, fav, or both pooled); instance = the first decision at which '
+                 "production's decideMatch emits the leg's entry plan for a flat market, a taker buy of the called market at its ask, "
+                 'C = max(1, floor($10 / ask)); level L = entry + both taker fees + 1c a contract; window = the first one-minute '
+                 "candle of the called market starting at or after the entry (a full minute after the buy, Amendment 4a), ending at or before the end rule (latched progress 1 - 0.30, else "
+                 'the close), two-sided, with its lowest bid >= L; three random twins per instance (same match, same UTC hour, the '
+                 'instance\'s own called market, Amendment 4a); gap = window rate - random rate, SE cluster-robust by match (item 6: d_i = w_i/n_i - '
+                 'tw_i/tn_i, gap = sum(n_i d_i) / sum(n_i), SE = sqrt(sum(n_i^2 (d_i - gap)^2)) / sum(n_i)); PASS = gap >= 2 x SE; '
+                 'z = gap / SE (as research/tennisTaWindow.ts gapStats), no z without an instance, a twin '
+                 'or a contributing match, or on SE 0 (the chance wobble cannot be measured, Amendment 4a)')
+
+
+def gap_stats(n, w, tn, tw, twins=TWINS):
+    """Amendment 4 item 6, exactly as research/tennisTaWindow.ts gapStats: over the matches i (array index) with n_i > 0 and
+    tn_i > 0, d_i = w_i / n_i - tw_i / tn_i, gap = sum(n_i d_i) / sum(n_i), SE = sqrt(sum(n_i^2 (d_i - gap)^2)) / sum(n_i),
+    z = gap / SE (None without a contributing match or on SE 0, Amendment 4a item 2, as the TS), PASS = gap >= 2 x SE
+    (with a z). rate = w / n and random = tw / tn over every match (NaN on 0). Arrays of unequal length pad with 0. matches = the
+    matches with an instance, clustered = those that contribute a d_i. Beside them: rate_weighted = sum(w_i) / sum(n_i) and
+    random_weighted = sum(n_i tw_i / tn_i) / sum(n_i) over the contributing matches, so that gap = rate_weighted -
+    random_weighted exactly (the registry's one-test block carries these two, one_test_block); the pooled rate - random
+    equals that gap only when every instance drew `twins` twins and every match with an instance has one. twins_short =
+    sum(max(0, twins n_i - tn_i)), the twins the instances drew short of `twins` each (item 5: a coin side with no eligible
+    minute draws none), over events_short matches (information: it says when the pooled difference is not the gap)."""
+    L = max(len(n), len(w), len(tn), len(tw))
+    N = W = TN = TW = 0
+    sum_n = sum_nd = sum_w = sum_r = 0.0
+    ds = []
+    matches = twins_short = events_short = 0
+    for i in range(L):
+        ni = n[i] if i < len(n) else 0
+        wi = w[i] if i < len(w) else 0
+        tni = tn[i] if i < len(tn) else 0
+        twi = tw[i] if i < len(tw) else 0
+        N += ni
+        W += wi
+        TN += tni
+        TW += twi
+        if ni > 0:
+            matches += 1
+            if tni < twins * ni:
+                events_short += 1
+                twins_short += twins * ni - tni
+        if ni > 0 and tni > 0:
+            d = wi / ni - twi / tni
+            ds.append((ni, d))
+            sum_n += ni
+            sum_nd += ni * d
+            sum_w += wi
+            sum_r += ni * (twi / tni)
+    nan = float('nan')
+    rate = W / N if N > 0 else nan
+    random = TW / TN if TN > 0 else nan
+    out = {'n': N, 'w': W, 'tn': TN, 'tw': TW, 'rate': rate, 'random': random, 'matches': matches, 'clustered': len(ds),
+           'twins_short': twins_short, 'events_short': events_short}
+    if not ds:
+        out.update(gap=nan, se=nan, z=None, rate_weighted=nan, random_weighted=nan, **{'pass': False})
+        return out
+    gap = sum_nd / sum_n
+    out.update(rate_weighted=sum_w / sum_n, random_weighted=sum_r / sum_n)
+    ss = 0.0
+    for ni, d in ds:
+        ss += ni * ni * (d - gap) * (d - gap)
+    se = math.sqrt(ss) / sum_n
+    # As research/tennisTaWindow.ts gapStats: z = gap / SE when SE > 0; None on SE 0 (one contributing match, or identical d_i:
+    # the chance wobble cannot be measured, Amendment 4a item 2; the registry refuses se 0 too). PASS = gap >= 2 x SE with a z.
+    z = gap / se if se > 0 else None
+    out.update(gap=gap, se=se, z=z, **{'pass': z is not None and gap >= ONE_TEST_K * se})
+    return out
+
+
+def window_arm_of(rid):
+    """(config, arm) of a window-arm run id ('<config>|window' or '<config>|coinwindow'); None for any other id."""
+    cfg, _, arm = str(rid).rpartition('|')
+    return (cfg, arm) if arm in WINDOW_ARMS and cfg else None
+
+
+def hist_bins(edges):
+    """The bin labels of a HIST_EDGES list (ascending: < e0, [e0, e1), ..., >= last; dip's descending list: > 0,
+    (-0.01, 0], ..., <= -0.20), one per count of a row's hist array."""
+    desc = len(edges) > 1 and edges[1] < edges[0]
+    out = []
+    for k in range(len(edges) + 1):
+        if k == 0:
+            out.append(f'>{edges[0]:g}' if desc else f'<{edges[0]:g}')
+        elif k == len(edges):
+            out.append(f'<={edges[-1]:g}' if desc else f'>={edges[-1]:g}')
+        else:
+            out.append(f'{edges[k]:g}..{edges[k - 1]:g}' if desc else f'{edges[k - 1]:g}..{edges[k]:g}')
+    return out
+
+
+def hist_quantile(edges, counts, q):
+    """The bin (its label) holding the q-quantile of a binned sample: the first bin at which the cumulative count reaches
+    q x total; None when the histogram is empty. The bins are the resolution the shard files keep (C12), so the quartiles
+    are bins, not numbers."""
+    labels = hist_bins(edges)
+    total = sum(counts)
+    if total <= 0:
+        return None
+    target = q * total
+    acc = 0
+    for k, c in enumerate(counts[:len(labels)]):
+        acc += c
+        if acc >= target:
+            return labels[k]
+    return labels[min(len(counts), len(labels)) - 1]
+
+
+def hist_summary(kind, counts):
+    edges = HIST_EDGES[kind]
+    counts = [int(c) for c in counts]
+    return {'bins': hist_bins(edges), 'counts': counts, 'total': sum(counts), 'q1': hist_quantile(edges, counts, 0.25),
+            'median': hist_quantile(edges, counts, 0.5), 'q3': hist_quantile(edges, counts, 0.75)}
+
+
+def check_window_block(name, block, ml_events, kind='window'):
+    """Problems with one shard file's 'window' (or 'familyBWindow') block (C12): events (the slice's, in matchList order:
+    at least the matchList's rows, each with its event) and rows with per-event count arrays no longer than the events,
+    hist counts of HIST_EDGES' bins, byPhase, endNoWin and asks. Returns (problems, the sorted (id, leg) row keys)."""
+    p = []
+    if not isinstance(block, dict) or not isinstance(block.get('rows'), list):
+        return [f'{name}: the {kind} block is not an object with rows'], ()
+    if kind == 'window':
+        ev = block.get('events')
+        if not isinstance(ev, list) or len(ev) < len(ml_events) or any(not isinstance(e, dict) or not e.get('event') for e in ev):
+            return [f"{name}: the window block's events are not a list of at least the matchList's {len(ml_events)} events"], ()
+        bad = [i for i, e in enumerate(ml_events) if ev[i].get('event') != e]
+        if bad:
+            p.append(f"{name}: the window block's events are not in matchList order (first at index {bad[0]})")
+        if block.get('version') != WINDOW_VERSION:
+            p.append(f"{name}: window block version {block.get('version')!r}, this report reads {WINDOW_VERSION}")
+        n_ev = len(ev)
+    else:
+        n_ev = None
+    keys = []
+    for r in block['rows']:
+        rid = r.get('id') if isinstance(r, dict) else None
+        if not isinstance(rid, str) or not rid:
+            p.append(f'{name}: a {kind} row has no id')
+            continue
+        leg = r.get('leg')
+        key = (rid, leg)
+        if key in keys:
+            p.append(f'{name}: {kind} row {rid} / {leg} appears twice')
+        keys.append(key)
+        at = f'{name}: {kind} row {rid}' + (f' / {leg}' if leg is not None else '')
+        for k in ('n', 'w', 'tn', 'tw'):
+            v = r.get(k)
+            if not isinstance(v, list) or (n_ev is not None and len(v) > n_ev) \
+                    or any(isinstance(x, bool) or not isinstance(x, (int, float)) or x < 0 for x in v):
+                p.append(f'{at}: {k} is not a list of counts over the events')
+        h = r.get('hist')
+        if not isinstance(h, dict) or any(not isinstance(h.get(k), list) or len(h[k]) != len(HIST_EDGES[k]) + 1 for k in HIST_KEYS):
+            p.append(f'{at}: hist is not {{tWin, lenWin, dip, held}} counts over the HIST_EDGES bins')
+        bp = r.get('byPhase')
+        if not isinstance(bp, dict) or any(not (isinstance(v, list) and len(v) == 2) for v in bp.values()):
+            p.append(f'{at}: byPhase is not {{phase: [n, w]}}')
+        if isinstance(r.get('endNoWin'), bool) or not isinstance(r.get('endNoWin'), (int, float)):
+            p.append(f'{at}: endNoWin is not a count')
+        asks = r.get('asks')
+        if not (isinstance(asks, list) and len(asks) == 2 and all(isinstance(x, (int, float)) for x in asks)):
+            p.append(f'{at}: asks is not [n, sum of asks]')
+    return p, tuple(sorted(keys, key=lambda k: (k[0], str(k[1]))))
+
+
+def merge_window(parts):
+    """parts: per shard file in slice order, (its 'window' block, its 'familyBWindow' block or None) -> the run's one-test
+    data: events (every file's, in order; the row arrays index into it), rows {(id, leg): row} with the per-event arrays
+    laid end to end (0 where a file has no row) and hist / byPhase / endNoWin / asks added, family B rows the same way
+    (rows_b; they index into the same events), and the block's constants from the first file."""
+    events, rows, rows_b = [], {}, {}
+
+    def acc(store, row, off, n_ev):
+        key = (str(row['id']), row.get('leg'))
+        r = store.get(key)
+        if r is None:
+            r = store[key] = {'id': str(row['id']), 'leg': row.get('leg'), 'n': [], 'w': [], 'tn': [], 'tw': [],
+                              'hist': {k: [0] * (len(HIST_EDGES[k]) + 1) for k in HIST_KEYS}, 'byPhase': {ph: [0, 0] for ph in PHASES},
+                              'endNoWin': 0, 'asks': [0.0, 0.0]}
+        for k in ('n', 'w', 'tn', 'tw'):
+            arr = r[k]
+            arr.extend([0] * (off - len(arr)))
+            vals = list(row.get(k) or [])[:n_ev]
+            arr.extend(vals + [0] * (n_ev - len(vals)))
+        for k in HIST_KEYS:
+            for i, v in enumerate((row.get('hist') or {}).get(k) or []):
+                if i < len(r['hist'][k]):
+                    r['hist'][k][i] += v
+        for ph, v in (row.get('byPhase') or {}).items():
+            cur = r['byPhase'].setdefault(ph, [0, 0])
+            cur[0] += v[0]
+            cur[1] += v[1]
+        r['endNoWin'] += row.get('endNoWin') or 0
+        a_ = row.get('asks') or [0, 0]
+        r['asks'][0] += a_[0]
+        r['asks'][1] += a_[1]
+
+    first = None
+    for win, fbw in parts:
+        off = len(events)
+        ev = win['events']
+        events.extend(ev)
+        for row in win['rows']:
+            acc(rows, row, off, len(ev))
+        for row in (fbw or {}).get('rows') or []:
+            acc(rows_b, row, off, len(ev))
+        first = first or win
+    for store in (rows, rows_b):
+        for r in store.values():
+            for k in ('n', 'w', 'tn', 'tw'):
+                r[k].extend([0] * (len(events) - len(r[k])))
+    consts = {k: first.get(k) for k in ('version', 'settleFrac', 'orderUsd', 'twins', 'seed')} if first else {}
+    return dict(consts, events=events, rows=rows, rows_b=rows_b)
+
+
+def pool_window_rows(rows, rid, leg='both'):
+    """The 'both' row of a config: the legs' rows pooled (n / w / tn / tw add per event, hist / byPhase / endNoWin / asks
+    add), as research/tennisTaWindow.ts poolRows."""
+    L = max([len(r['n']) for r in rows] + [0])
+    out = {'id': rid, 'leg': leg, 'hist': {k: [0] * (len(HIST_EDGES[k]) + 1) for k in HIST_KEYS}, 'byPhase': {ph: [0, 0] for ph in PHASES},
+           'endNoWin': 0, 'asks': [0.0, 0.0]}
+    for k in ('n', 'w', 'tn', 'tw'):
+        arr = [0] * L
+        for r in rows:
+            for i, v in enumerate(r[k]):
+                arr[i] += v
+        out[k] = arr
+    for r in rows:
+        for k in HIST_KEYS:
+            for i, v in enumerate(r['hist'][k]):
+                out['hist'][k][i] += v
+        for ph, v in r['byPhase'].items():
+            cur = out['byPhase'].setdefault(ph, [0, 0])
+            cur[0] += v[0]
+            cur[1] += v[1]
+        out['endNoWin'] += r['endNoWin']
+        out['asks'][0] += r['asks'][0]
+        out['asks'][1] += r['asks'][1]
+    return out
+
+
+def one_test_of(row, idx, events, fold_of=None, twins=TWINS):
+    """One hot spot's one test over the events at indices idx (the scored pool's matches): gap_stats, then the item 8
+    information: by tour, by UTC match day, by HO-1 fold (a hold run, nothing judged), the binned minutes to the window,
+    window length, wrong-way dip and minutes held, the phases, the share resolved by the end rule or the close without a
+    window and the mean entry ask. The histograms, phases, end-rule share and asks are the row's totals over every
+    instance the arm recorded in the slices (C12 keeps them per row, not per event; n_all says how many), the counts and
+    the test are over the pool's matches only."""
+    def pick(key, sel):
+        return [row[key][i] for i in sel]
+
+    def sub(sel):
+        return gap_stats(*(pick(k, sel) for k in ('n', 'w', 'tn', 'tw')), twins=twins)
+    g = sub(idx)
+    tours = {t: sub([i for i in idx if events[i].get('tour') == t]) for t in ('ATP', 'WTA')}
+    days = defaultdict(list)
+    for i in idx:
+        days[str(events[i].get('day'))].append(i)
+    by_day = {d: {k: v[k] for k in ('n', 'w', 'tn', 'tw', 'gap')} for d, sel in sorted(days.items()) for v in [sub(sel)]}
+    by_fold = None
+    if fold_of is not None:
+        fsel = defaultdict(list)
+        for i in idx:
+            f = fold_of(str(events[i].get('day')))
+            if f is not None:
+                fsel[f].append(i)
+        by_fold = {str(f): sub(fsel.get(f, [])) for f in range(1, HO1_FOLDS + 1)}
+    n_all = sum(row['n'])
+    return dict(g, n_all=n_all, by_tour=tours, by_day=by_day, by_fold=by_fold,
+                hist={k: hist_summary(k, row['hist'][k]) for k in HIST_KEYS},
+                by_phase={ph: {'n': int(v[0]), 'w': int(v[1]), 'rate': (v[1] / v[0]) if v[0] else None} for ph, v in row['byPhase'].items()},
+                end_no_window=row['endNoWin'], end_no_window_share=(row['endNoWin'] / n_all) if n_all else None,
+                mean_ask=(row['asks'][1] / row['asks'][0]) if row['asks'][0] else None)
+
+
+def rank_league(rows):
+    """The league order (item 7): by z, ties by gap; rows without a z last (by gap, then id and leg). Sets rank."""
+    def key(r):
+        z, g = r.get('z'), r.get('gap')
+        return (z is None, -(z if z is not None else 0.0), -(g if finite(g) else -1e18), str(r['id']), str(r.get('leg')))
+    rows.sort(key=key)
+    for i, r in enumerate(rows):
+        r['rank'] = i + 1
+    return rows
+
+
+def league_table(wd, idx, runs, cells, by_id, fold_of=None):
+    """Family A's league rows: one per hot spot (config x leg, 'both' = the two legs pooled per event) from the merged
+    'window' rows, each with its coin placebo's own one test (the |coinwindow row of the same config and leg) and the
+    after-fee P&L per entry of the config's production exits (the F1 and F2 all/all/all cells, or the stick's F1 cell)."""
+    twins = int(wd.get('twins') or TWINS)
+    configs = {}
+    for (rid, leg), row in wd['rows'].items():
+        wa = window_arm_of(rid)
+        if not wa or leg not in ('underdog', 'fav'):
+            continue
+        cfg, arm = wa
+        configs.setdefault(cfg, {'window': {}, 'coinwindow': {}})[arm][leg] = row
+    out = []
+    for cfg in sorted(configs):
+        c = configs[cfg]
+        if not c['window']:
+            continue
+        legs = dict(c['window'])
+        legs['both'] = pool_window_rows(list(c['window'].values()), f'{cfg}|window', 'both')
+        coins = dict(c['coinwindow'])
+        if coins:
+            coins['both'] = pool_window_rows(list(c['coinwindow'].values()), f'{cfg}|coinwindow', 'both')
+        stick = bool((runs.get(f'{cfg}|window') or {}).get('stick'))
+        f1 = cells[by_id[(cfg, 'F1', 'all', 'all', 'all')]] if (cfg, 'F1', 'all', 'all', 'all') in by_id \
+            else cells[by_id[(f'{cfg}|F1', 'stick', 'all', 'all', 'all')]] if (f'{cfg}|F1', 'stick', 'all', 'all', 'all') in by_id else None
+        f2 = cells[by_id[(cfg, 'F2', 'all', 'all', 'all')]] if (cfg, 'F2', 'all', 'all', 'all') in by_id else None
+        pnl = {k: ({'arm': x['run'], 'entries': x['entries'], 'net': x['net'], 'per_entry': (x['net'] / x['entries']) if x['entries'] else None}
+                   if x is not None else None) for k, x in (('f1', f1), ('f2', f2))}
+        for leg in HOLD_LEGS:
+            if leg not in legs:
+                continue
+            ot = one_test_of(legs[leg], idx, wd['events'], fold_of, twins)
+            coin = None
+            if leg in coins:
+                cg = one_test_of(coins[leg], idx, wd['events'], fold_of, twins)
+                coin = {k: cg[k] for k in ('n', 'w', 'tn', 'tw', 'rate', 'random', 'gap', 'se', 'z', 'pass', 'matches', 'clustered', 'twins_short',
+                                           'events_short', 'rate_weighted', 'random_weighted', 'n_all', 'by_tour', 'by_day')}
+                coin['id'] = f'{cfg}|coinwindow'
+            out.append(dict({'family': 'A', 'id': f'{cfg}|window', 'config': cfg, 'leg': leg, 'hot_spot': f'{cfg}|{leg}', 'stick': stick,
+                             'production': False}, **ot, coin=coin, f1=pnl['f1'], f2=pnl['f2']))
+    return rank_league(out)
+
+
+def league_table_b(wd, idx, fold_of=None):
+    """Family B's league rows (its own table): one per reading x bar x direction row of the 'familyBWindow' blocks."""
+    out = []
+    for (rid, leg), row in sorted(wd['rows_b'].items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+        ot = one_test_of(row, idx, wd['events'], fold_of, int(wd.get('twins') or TWINS))
+        out.append(dict({'family': 'B', 'id': rid, 'config': rid, 'leg': leg, 'hot_spot': rid if leg is None else f'{rid}|{leg}', 'stick': False,
+                         'production': False}, **ot, coin=None, f1=None, f2=None))
+    return rank_league(out)
+
+
+def batch_candidate(league_a, run_id):
+    """The batch for the read (item 7): the HOLD_BATCH_MAX hottest family A hot spots by z on the league (ties by gap),
+    as research/tennis-ta/hold-batch.json takes them ({league_run, batch: [{id, leg}]} and nothing else: the sweep's
+    validateHoldBatch refuses any other key), with this league's run id. A measuring stick is never one of them: a hot
+    spot is a config of the gradient matrix (item 1) and a stick is reported, never screened or counted (C4); the sticks
+    stay in the league as information. Only a disc run writes it (item 7: the league runs on H-DEV only)."""
+    hot = [r for r in league_a if r.get('z') is not None and not r.get('stick')][:HOLD_BATCH_MAX]
+    return {'league_run': str(run_id), 'batch': [{'id': r['config'], 'leg': r['leg']} for r in hot]}
+
+
+def no_z_why(r):
+    """Why a row has no z: no instance, no twin, no contributing match (no match with both), or SE 0 (Amendment 4a item 2)."""
+    return ('no instance' if not r['n'] else 'no twin' if not r['tn'] else 'no contributing match (no match with both an instance and a twin)'
+            if not r['clustered'] else 'SE 0: the per-match differences do not vary (one contributing match, or identical ones), so the chance wobble cannot be measured')
+
+
+def twins_short_note(r):
+    """The twin shortfall of a row, named beside its figures (item 5: an instance whose coin side had no eligible minute drew
+    fewer than TWINS twins); then the pooled rates' difference is not the item 6 gap, and the registry block's rates are
+    item 6's weighted ones (one_test_block). '' when every instance drew its TWINS twins."""
+    k = int(r.get('twins_short') or 0)
+    if not k:
+        return ''
+    note = f"; {k} twin(s) short of {TWINS} an instance over {int(r.get('events_short') or 0)} match(es)"
+    if finite(r.get('gap')) and finite(r.get('rate')) and finite(r.get('random')):
+        note += (f", so the pooled rate - random ({r['rate'] - r['random']:+.4f}) is not the gap: the registry block's rates are item 6's "
+                 f"weighted ones")
+    return note
+
+
+def one_test_verdict(r, read=False, pool='disc'):
+    """The verdict text of a hot spot's row: the one test's figures; on the read, 'direction found' when it passes; on a
+    scored pool that is neither the league's (disc) nor the read's (hold), information only (item 7)."""
+    if r.get('z') is None:
+        figs = f"n {int(r['n'])}, windows {int(r['w'])}, twins {int(r['tn'])} / {int(r['tw'])}: no z ({no_z_why(r)})"
+        return ('not found: ' if read else 'one test (information, no read): ') + figs + twins_short_note(r)
+    figs = (f"n {int(r['n'])}, windows {int(r['w'])} (rate {r['rate']:.3f}), twins {int(r['tn'])} / {int(r['tw'])} (random {r['random']:.3f}), "
+            f"gap {r['gap']:+.4f}, SE {r['se']:.4f}, z {_zf(r)}, {'gap >= 2 x SE' if r['pass'] else 'gap < 2 x SE'}") + twins_short_note(r)
+    if read:
+        return ('direction found: ' if r['pass'] else 'not found: ') + figs
+    if pool == 'disc':
+        return 'one test (league, information: the read is stage hold): ' + figs
+    return f'one test (information: pool {pool} has no league, the league is pool disc; the read is stage hold): ' + figs
+
+
+def one_test_block(r, days, rv, hot_spot):
+    """The registry's one-test heldout block of a row of the read (research/registry.py validate: standard 'one-test',
+    finite window_rate, random_rate, se, n, twins >= 0, gap = window_rate - random_rate within 1e-6; the registry
+    recomputes pass as window_rate - random_rate >= 2 x se, and that recomputed verdict is the one it uses). So the block's
+    rates are item 6's: window_rate = windows over instances and random_rate = the instance-weighted twin rate, both over
+    the matches with an instance and a twin (gap_stats rate_weighted / random_weighted), whose difference IS the item 6
+    cluster-weighted gap the row's own pass is judged on; the registry therefore judges by the amendment's gap and SE and
+    agrees with the row by construction. They equal the pooled rates (windows / instances, twin windows / twins) whenever
+    every instance drew TWINS twins and every match with an instance has a twin; the pooled rates, the twin shortfall and
+    the match counts stand beside them as information (window_rate_pooled, random_rate_pooled, twins_short, matches,
+    clustered; raw.one_test has them too). Without a contributing match (no z) the block carries the pooled rates, their
+    difference and se 0, which the registry's one_test_pass refuses as the row's own verdict does."""
+    pooled_rate = r['rate'] if finite(r['rate']) else 0.0
+    pooled_random = r['random'] if finite(r['random']) else 0.0
+    if finite(r.get('gap')) and finite(r.get('rate_weighted')) and finite(r.get('random_weighted')):
+        rate, random, gap = r['rate_weighted'], r['random_weighted'], r['gap']
+    else:
+        rate, random, gap = pooled_rate, pooled_random, pooled_rate - pooled_random
+    se = r['se'] if finite(r['se']) else 0.0
+    h = {'standard': 'one-test', 'tier': 'history', 'days': len(days), 'window_rate': rate, 'random_rate': random, 'gap': gap, 'se': se,
+         'n': int(r['n']), 'twins': int(r['tn']), 'pass': bool(r['pass']), 'hot_spot': hot_spot, 'horizon': 'match',
+         'rates': 'item 6: instance-weighted over the matches with a twin, so gap = window_rate - random_rate is the cluster-weighted gap',
+         'window_rate_pooled': pooled_rate, 'random_rate_pooled': pooled_random, 'twins_short': int(r.get('twins_short') or 0),
+         'matches': int(r['matches']), 'clustered': int(r['clustered'])}
+    if rv is not None:
+        h['replay_version'] = rv
+    return h
+
+
+def hold_batch_of(meta, plan=None, path=HOLD_BATCH_FILE):
+    """Stage hold's batch (Amendment 4 item 7) -> {batch, source, league_run, hash, league_pool} or {problem}: the shard
+    metas' batch (the sweep stores the validated batch there with batchHash and leagueRun), else the plan's, else the
+    checkout's research/tennis-ta/hold-batch.json; None when there is none (a hold run of the retired frozen-list design).
+    league_pool = the pool of the league the batch was read off when the source states it (meta / plan leaguePool, the
+    file's league_pool; None otherwise: the sweep's batch file admits league_run and batch only), checked by
+    hold_batch_problems (item 7: the league runs on pool disc only)."""
+    for src, m in (('the shard metas (meta.batch)', meta or {}), ('the plan', plan or {})):
+        if isinstance(m, dict) and m.get('batch') is not None:
+            return {'batch': m['batch'], 'source': src, 'league_run': m.get('leagueRun'), 'hash': m.get('batchHash'), 'league_pool': m.get('leaguePool')}
+    if os.path.exists(path):
+        try:
+            with open(path, 'rb') as fh:
+                buf = fh.read()
+            raw = json.loads(buf)
+        except (OSError, ValueError) as e:
+            return {'problem': f'{path}: unreadable ({e})'}
+        if not isinstance(raw, dict):
+            return {'problem': f'{path}: not a JSON object {{league_run, batch}}'}
+        return {'batch': raw.get('batch'), 'source': path, 'league_run': raw.get('league_run'), 'hash': hashlib.sha256(buf).hexdigest(),
+                'league_pool': raw.get('league_pool')}
+    return None
+
+
+def hold_batch_problems(batch, runs, wd, league_pool=None):
+    """A hold run's batch against its runs and 'window' rows (empty = sound): at most HOLD_BATCH_MAX members {id, leg}, the
+    id a config without an arm and never a measuring stick (item 1: a hot spot is a config of the gradient matrix; C4: a
+    stick is never screened or counted), the leg underdog / fav / both, no (id, leg) twice, each config's |window run
+    (window: true, with both legs' rows in the window block) and |F1 run present; a league pool the source states must
+    be 'disc' (item 7: the league runs on H-DEV only)."""
+    p = []
+    if league_pool is not None and str(league_pool) != 'disc':
+        p.append(f"the batch was read off a pool {league_pool} league: the league runs on H-DEV (pool disc) only (item 7)")
+    if not isinstance(batch, list):
+        return p + ['the batch is not a list of {id, leg}']
+    if not batch:
+        p.append('the batch is empty: the read needs at least one hot spot')
+    if len(batch) > HOLD_BATCH_MAX:
+        p.append(f'the batch names {len(batch)} hot spots: at most {HOLD_BATCH_MAX} (the {HOLD_BATCH_MAX} hottest family A hot spots by z on the league)')
+    seen = set()
+    for i, m in enumerate(batch):
+        at = f'batch[{i}]'
+        if not isinstance(m, dict) or not isinstance(m.get('id'), str) or m.get('leg') not in HOLD_LEGS:
+            p.append(f'{at}: not {{id: <config without its arm>, leg: underdog | fav | both}}: {json.dumps(m)[:120]}')
+            continue
+        cid, leg = m['id'], m['leg']
+        if cid.rpartition('|')[2] in ARMS:
+            p.append(f'{at}: {cid} ends with an arm: a hot spot is a config and a leg')
+            continue
+        if STICK_ID.match(cid) or (runs.get(f'{cid}|window') or {}).get('stick'):
+            p.append(f'{at}: {cid} is a measuring stick: reported, never screened or counted (C4), never a hot spot of the batch (item 1: a '
+                     f'config of the gradient matrix); the sticks stand in the league as information')
+            continue
+        if (cid, leg) in seen:
+            p.append(f'{at}: {cid} / {leg} is listed twice')
+        seen.add((cid, leg))
+        wr = runs.get(f'{cid}|window')
+        if wr is None or not wr.get('window'):
+            p.append(f"{at}: {cid}: no {cid}|window run (window: true) in the shards: the read runs each batch config's |window and |F1 arms")
+        elif wd is None or any((f'{cid}|window', lg) not in wd['rows'] for lg in ('underdog', 'fav')):
+            p.append(f"{at}: {cid}: the window block has no rows for {cid}|window (both legs)")
+        if f'{cid}|F1' not in runs:
+            p.append(f'{at}: {cid}: no {cid}|F1 run in the shards (the production P&L reported beside the read)')
+    return p
+
+
+def league_csv_row(r):
+    """One flat league.csv row."""
+    h = r['hist']
+    out = {'family': r['family'], 'rank': r.get('rank'), 'hot_spot': r['hot_spot'], 'id': r['id'], 'config': r['config'], 'leg': r.get('leg'),
+           'stick': r['stick'], 'production': r.get('production'), 'n': r['n'], 'w': r['w'], 'tn': r['tn'], 'tw': r['tw'], 'rate': r['rate'],
+           'random': r['random'], 'gap': r['gap'], 'se': r['se'], 'z': r['z'], 'pass': r['pass'], 'matches': r['matches'],
+           'clustered': r['clustered'], 'twins_short': r.get('twins_short'), 'events_short': r.get('events_short'),
+           'rate_weighted': r.get('rate_weighted'), 'random_weighted': r.get('random_weighted'), 'n_all': r['n_all'], 'mean_ask': r['mean_ask'],
+           't_win_q1': h['tWin']['q1'], 't_win_median': h['tWin']['median'], 't_win_q3': h['tWin']['q3'],
+           'len_win_median': h['lenWin']['median'], 'dip_median': h['dip']['median'], 'held_median': h['held']['median'],
+           'end_no_window': r['end_no_window'], 'end_no_window_share': r['end_no_window_share']}
+    for ph in PHASES:
+        v = r['by_phase'].get(ph) or {'n': 0, 'w': 0, 'rate': None}
+        out[f'{ph}_n'], out[f'{ph}_w'], out[f'{ph}_rate'] = v['n'], v['w'], v['rate']
+    for t in ('ATP', 'WTA'):
+        v = r['by_tour'][t]
+        for k in ('n', 'w', 'tn', 'tw', 'gap', 'se', 'z'):
+            out[f'{t}_{k}'] = v[k]
+    c = r.get('coin') or {}
+    for k in ('n', 'w', 'tn', 'tw', 'gap', 'se', 'z'):
+        out[f'coin_{k}'] = c.get(k)
+    for k in ('f1', 'f2'):
+        v = r.get(k) or {}
+        out[f'{k}_entries'], out[f'{k}_net'], out[f'{k}_per_entry'] = v.get('entries'), v.get('net'), v.get('per_entry')
+    if r.get('by_fold'):
+        for f, v in sorted(r['by_fold'].items()):
+            out[f'fold{f}_gap'], out[f'fold{f}_n'] = v['gap'], v['n']
+    return {k: ('' if v is None or (isinstance(v, float) and math.isnan(v)) else z_json(v) if isinstance(v, float) and math.isinf(v) else v)
+            for k, v in out.items()}
+
+
+def _zf(r, k='z'):
+    """z for a table: '+inf' / '-inf' for an infinite z (SE 0 with a gap, gap_stats), '-' for none."""
+    v = r.get(k)
+    if isinstance(v, str):
+        return v
+    return '-' if v is None or math.isnan(v) else '+inf' if v == math.inf else '-inf' if v == -math.inf else f'{v:.2f}'
+
+
+def _gf(v, spec='+.4f'):
+    return '-' if v is None or (isinstance(v, float) and not math.isfinite(v)) else format(v, spec)
+
+
+def league_md_row(r):
+    """One league.md table row of a hot spot."""
+    h = r['hist']
+    ph = '/'.join(('-' if (r['by_phase'].get(p) or {}).get('rate') is None else f"{r['by_phase'][p]['rate']:.2f}") for p in PHASES)
+    tours = ' | '.join(f"{_gf(r['by_tour'][t]['gap'])} ({_zf(r['by_tour'][t])}, n {int(r['by_tour'][t]['n'])})" for t in ('ATP', 'WTA'))
+    c = r.get('coin')
+    coin = f"{_gf(c['gap'])} ({_zf(c)})" if c else '-'
+    pnl = ' | '.join('-' if not r.get(k) or r[k]['per_entry'] is None else f"{r[k]['per_entry']:+.4f} ({r[k]['entries']})" for k in ('f1', 'f2'))
+    tag = ' (stick)' if r['stick'] else ' (production)' if r.get('production') else ''
+    return (f"| {r.get('rank', '-')} | {md(r['config'])}{tag} | {r.get('leg') or '-'} | {int(r['n'])} | {int(r['w'])} | {_gf(r['rate'], '.3f')} | "
+            f"{int(r['tn'])} | {int(r['tw'])} | {int(r.get('twins_short') or 0)} | {_gf(r['random'], '.3f')} | {_gf(r['gap'])} | {_gf(r['se'], '.4f')} | {_zf(r)} | "
+            f"{'yes' if r['pass'] else '-' if r['z'] is None else 'no'} | {r['matches']} ({r['clustered']}) | "
+            f"{h['tWin']['q1'] or '-'} / {h['tWin']['median'] or '-'} / {h['tWin']['q3'] or '-'} | {h['lenWin']['median'] or '-'} | "
+            f"{h['dip']['median'] or '-'} | {h['held']['median'] or '-'} | {_gf(r['end_no_window_share'], '.2f')} | {ph} | {tours} | {coin} | {pnl} |")
+
+
+LEAGUE_HEAD = ('| rank | hot spot | leg | n | windows | rate | twins | twin windows | twins short | random | gap | SE | z | gap >= 2 SE | '
+               'matches (clustered) | to window q1 / med / q3 (min) | window length (med, min) | dip (med, $) | held (med, min) | end rule, no window | '
+               'pre/e20/p1/p2/p3 rate | ATP gap (z, n) | WTA gap (z, n) | coin gap (z) | F1 $/entry (n) | F2 $/entry (n) |')
+LEAGUE_SEP = '|' + '---|' * 27
+
+
+def render_league(s, league_a, league_b, cand, wd, pool_txt):
+    """league.md: the one test's league of a disc run (item 7) and the batch a person copies for the read."""
+    L = [f"## The one test's league (Amendment 4), run {s['run']}, pool {pool_txt} (H-DEV), stage {s['stage']}"]
+    L.append(f"Rule: {ONE_TEST_RULE}. The league ranks hot spots by z, ties by gap; a hot spot without a z ranks last. Every other column "
+             f"is information (item 8): nothing in it cuts a hot spot. Window block {wd.get('version')}, settle fraction {wd.get('settleFrac')}, "
+             f"order ${wd.get('orderUsd')}, {wd.get('twins')} twins an instance, seed {wd.get('seed')}; {s['matches']} scored {pool_txt} matches "
+             f"(the window block's events in the pool); histograms, phases, the end-rule share and the mean ask are over every instance the "
+             f"arm recorded in the slices (n_all in league.csv), the counts and the test over the pool's matches. 'twins short' = the twins "
+             f"the instances drew short of {TWINS} each (item 5: a coin side with no eligible minute draws none; information): when it is not 0, "
+             f"the pooled rate - random is not the gap, which is item 6's cluster-weighted one (rate_weighted - random_weighted in league.csv). "
+             f"The F1 / F2 columns are the config's production exits' after-fee P&L per entry over the pool (information). Every row is in "
+             f"league.csv and league.json.")
+    n_z = sum(1 for r in league_a if r['z'] is not None)
+    L.append('')
+    L.append(f"### Family A: {len(league_a)} hot spots ({len({r['config'] for r in league_a})} configs x legs), {n_z} with a z, "
+             f"{sum(1 for r in league_a if r['pass'])} with gap >= 2 x SE; the top {LEAGUE_TOP} by z, then the production default config's legs "
+             f"and the measuring sticks")
+    L.append(LEAGUE_HEAD)
+    L.append(LEAGUE_SEP)
+    shown = set()
+    for r in league_a[:LEAGUE_TOP]:
+        L.append(league_md_row(r))
+        shown.add(id(r))
+    extra = [r for r in league_a if id(r) not in shown and (r.get('production') or r['stick'])]
+    if extra:
+        L.append(LEAGUE_SEP.replace('---', '...'))
+        for r in extra:
+            L.append(league_md_row(r))
+    if not league_a:
+        L.append('| - | no family A window row | | | | | | | | | | | | | | | | | | | | | | | | |')
+    L.append('')
+    if league_b:
+        L.append(f"### Family B: {len(league_b)} hot spots (reading x bar x direction, SignalStudy's event sample), its own table; "
+                 f"{sum(1 for r in league_b if r['z'] is not None)} with a z, {sum(1 for r in league_b if r['pass'])} with gap >= 2 x SE. "
+                 f"Family B hot spots are not read on H-HOLD in this amendment.")
+        L.append(LEAGUE_HEAD)
+        L.append(LEAGUE_SEP)
+        for r in league_b[:LEAGUE_TOP]:
+            L.append(league_md_row(r))
+        L.append('')
+    else:
+        L.append('### Family B: no familyBWindow rows in the shards (family B not run, or an older export).')
+        L.append('')
+    L.append('### The batch for the read (item 7)')
+    L.append(f"hold-batch-candidate.json beside this file holds the {HOLD_BATCH_MAX} hottest family A hot spots by z (ties by gap), as "
+             f"research/tennis-ta/hold-batch.json takes them, with this league's run id (league_run {s['run']}; measuring sticks are never "
+             f"in it: a hot spot is a config of the gradient matrix, item 1, and a stick is reported, never screened or counted, C4): "
+             + (', '.join(f"{m['id']} / {m['leg']}" for m in cand['batch']) if cand['batch'] else 'none (no hot spot has a z)') + '.')
+    L.append(f"A person copies it to research/tennis-ta/hold-batch.json with the league run id, lists it in the registry and in the project "
+             f"calendar ({CALENDAR}), and only then commits the hold request (stage hold, pool hold: one run on H-HOLD, refused by prep when "
+             f"the batch hash is already in the openings ledger). A hot spot that passes on the read is 'direction found' for tennis.")
+    return L
+
+
+def render_hold_league(s, members, league_a, hold_score, ho1, f1_folds, h_hold, batch):
+    """hold-league.md: the read's result per batch member (the one test on the hold pool), then information: the six folds,
+    both tours, the item 8 columns, the coin placebo and the HO-1 money table."""
+    L = [f"## The one read (Amendment 4 item 7): stage hold, run {s['run']}, batch {batch.get('hash') or '-'} off league run "
+         f"{batch.get('league_run') or '-'} ({batch.get('source')})"]
+    L.append(f"The one test on the hold pool (H-HOLD, {h_hold[0]} to {h_hold[1]}, {s['matches']} matches with a tape): PASS = gap >= 2 x SE, "
+             f"clustered by match (item 6). A pass is 'direction found' for tennis; nothing else below judges a hot spot. Rule: {ONE_TEST_RULE}.")
+    L.append('')
+    L.append(f"'twins short' = the twins a member's instances drew short of {TWINS} each (item 5; information): when it is not 0 the pooled "
+             f"rate - random is not the gap (item 6's cluster-weighted one), and the member's registry block carries item 6's weighted rates, "
+             f"whose difference is that gap, so the registry's recomputed verdict is the one here.")
+    L.append('| hot spot | leg | n | windows | rate | twins | twin windows | twins short | random | gap | SE | z | result |')
+    L.append('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    for m in members:
+        r = m['row']
+        res = 'DIRECTION FOUND (gap >= 2 x SE)' if r['pass'] else ('no z: ' + no_z_why(r) if r['z'] is None else 'not found (gap < 2 x SE)')
+        L.append(f"| {md(r['config'])} | {r['leg']} | {int(r['n'])} | {int(r['w'])} | {_gf(r['rate'], '.3f')} | {int(r['tn'])} | {int(r['tw'])} | "
+                 f"{int(r.get('twins_short') or 0)} | {_gf(r['random'], '.3f')} | {_gf(r['gap'])} | {_gf(r['se'], '.4f')} | {_zf(r)} | {res} |")
+    if not members:
+        L.append('| - | no batch member scored | | | | | | | | | | | |')
+    L.append('')
+    L.append('### Information (item 8, nothing judged): the six 16-day HO-1 folds, gap (n instances / tn twins) per fold')
+    L.append('| hot spot | leg | ' + ' | '.join(f'fold {k} ({f["from"]} to {f["to"]})' for k, f in enumerate(s['ho1_folds'], 1)) + ' |')
+    L.append('|' + '---|' * (2 + len(s['ho1_folds'])))
+    for m in members:
+        r = m['row']
+        L.append(f"| {md(r['config'])} | {r['leg']} | " + ' | '.join(f"{_gf(v['gap'])} ({int(v['n'])} / {int(v['tn'])})" for _, v in sorted((r.get('by_fold') or {}).items())) + ' |')
+    L.append('')
+    L.append('### Both tours (information): gap (z, n)')
+    L.append('| hot spot | leg | ATP | WTA |')
+    L.append('|---|---|---|---|')
+    for m in members:
+        r = m['row']
+        L.append(f"| {md(r['config'])} | {r['leg']} | " + ' | '.join(f"{_gf(r['by_tour'][t]['gap'])} ({_zf(r['by_tour'][t])}, n {int(r['by_tour'][t]['n'])})" for t in ('ATP', 'WTA')) + ' |')
+    L.append('')
+    L.append('### Minutes to the window, window length, dip, minutes held, the end rule, the phases, the coin placebo, the production exits (information)')
+    L.append(LEAGUE_HEAD.replace('| rank |', '| |'))
+    L.append(LEAGUE_SEP)
+    for m in members:
+        L.append(league_md_row(dict(m['row'], rank='-')))
+    other = [r for r in league_a if (r['config'], r['leg']) not in {(m['row']['config'], m['row']['leg']) for m in members}]
+    if other:
+        L.append('')
+        L.append(f"The batch configs' other legs (information, not read; no registry row): " + '; '.join(
+            f"{r['config']} / {r['leg']}: gap {_gf(r['gap'])}, SE {_gf(r['se'], '.4f')}, z {_zf(r)}, n {int(r['n'])}" for r in other) + '.')
+    L.append('')
+    L.append('### The HO-1 money table (information): the production exits of each batch config on H-HOLD, after fees')
+    if hold_score and hold_score.get('candidates'):
+        L.append(f"Paired against the production control {hold_score['control']} (in the batch): gain by fold as $/h over 24 h a day, folds won, "
+                 f"the tours per live-match hour, the registry's HO-1 block (ho1_fill / ho1_pass) beside it. Nothing here judges a hot spot.")
+        nf = len(s['ho1_folds'])
+        L.append('| F1 arm | gain | $/h | ' + ' | '.join(f'fold {k + 1} $/h' for k in range(nf)) + ' | folds won | worst fold $/h | ATP $/live h | WTA $/live h | HO-1 (information) |')
+        L.append('|' + '---|' * (8 + nf))
+        for c in hold_score['candidates']:
+            ho = c.get('ho1')
+            ho_txt = ('pass' if ho['pass'] else f"fail: {ho['why']}") if ho else 'no registry block'
+            L.append(f"| {md(c['arm'])} | {usd(c['gain'])} | {f4(c['gain_per_hour'])} | " + ' | '.join(f4(f['gain_per_hour']) for f in c['folds'])
+                     + f" | {c['folds_won']}/{sum(1 for f in c['folds'] if f['days'])} | {f4(c['worst_fold_per_hour'])} | "
+                     f"{f4(c['tours']['ATP']['gain_per_live_hour'])} | {f4(c['tours']['WTA']['gain_per_live_hour'])} | {md(ho_txt)} |")
+    else:
+        L.append("No production control in the batch (the read runs the batch configs' |window and |F1 arms only), so no paired HO-1 gain: "
+                 "each F1 arm's own net by fold ($ after fees, and $/h over 24 h a day) and the registry's HO-1 block when it has one.")
+    nf = len(s['ho1_folds'])
+    L.append('')
+    L.append('| F1 arm | net | entries | ' + ' | '.join(f'fold {k + 1} net ($/h)' for k in range(nf)) + ' | ATP net | WTA net | registry HO-1 block |')
+    L.append('|' + '---|' * (6 + nf))
+    for m in members:
+        f = f1_folds.get(m['row']['config'])
+        if not f:
+            L.append(f"| {md(m['row']['config'] + '|F1')} | no F1 run | | " + ' | '.join('-' for _ in range(nf)) + ' | - | - | - |')
+            continue
+        ho = ho1.get(f['arm'])
+        ho_txt = (f"{ho['heldout'].get('days')} days, {ho['heldout'].get('folds_won')}/{ho['heldout'].get('folds')} folds won, worst "
+                  f"{f4(ho['heldout'].get('worst_fold_per_hour'))} $/h: ho1_pass {'PASS' if ho['pass'] else 'FAIL (' + ho['why'] + ')'}") if ho and ho.get('heldout') else 'none'
+        L.append(f"| {md(f['arm'])} | {usd(f['net'])} | {f['entries']} | " + ' | '.join(f"{usd(x['net'])} ({f4(x['per_hour'])})" for x in f['folds'])
+                 + f" | {usd(f['tours']['ATP'])} | {usd(f['tours']['WTA'])} | {md(ho_txt)} |")
+    return L
+
+
+def write_one_test_files(out, s, league_a, league_b, members, wd, pools, hold_run, batch, hold_score, h_hold, run_id, run_days, run_tour,
+                         cells, by_id, day_set, fold_edges, ho1, reg_rows):
+    """A disc run: league.md, league.csv, league.json and hold-batch-candidate.json (item 7: the league runs on H-DEV, pool
+    disc, only; another scored pool's one test is information in summary.json and the registry rows, with no league file and
+    no candidate). A hold run with a batch: hold-league.md and hold-league.json (the read's result per member, then
+    information)."""
+    pool_txt = ','.join(pools)
+    consts = {k: wd.get(k) for k in ('version', 'settleFrac', 'orderUsd', 'twins', 'seed')}
+    if not hold_run:
+        if pools != ['disc']:
+            return
+        cand = batch_candidate(league_a, run_id)
+        with open(os.path.join(out, 'hold-batch-candidate.json'), 'w') as fh:
+            fh.write(json.dumps(cand, indent=2) + '\n')
+        with open(os.path.join(out, 'league.json'), 'w') as fh:
+            fh.write(dumps({'version': 'tennis-ta-league/1', 'run': str(run_id), 'pool': pool_txt, 'stage': s['stage'], 'window': consts,
+                            'events': len(wd['events']), 'events_scored': s['one_test']['events_scored'], 'matches': s['matches'], 'rule': ONE_TEST_RULE,
+                            'ranking': 'by z = gap / SE, ties by gap; rows without a z last', 'A': spell_inf(league_a), 'B': spell_inf(league_b),
+                            'batch_candidate': cand}))
+        import csv
+        flat = [league_csv_row(r) for r in league_a + league_b]
+        cols = []
+        for r in flat:
+            for k in r:
+                if k not in cols:
+                    cols.append(k)
+        with open(os.path.join(out, 'league.csv'), 'w', newline='') as fh:
+            w = csv.DictWriter(fh, fieldnames=cols)
+            w.writeheader()
+            for r in flat:
+                w.writerow(r)
+        with open(os.path.join(out, 'league.md'), 'w') as fh:
+            fh.write('\n'.join(render_league(s, league_a, league_b, cand, wd, pool_txt)) + '\n')
+        return
+    f1_folds = {}
+    fold_days = [[d for d in day_set if ho1_fold_of(d, fold_edges) == k + 1] for k in range(len(fold_edges))]
+    for m in members:
+        rid = f"{m['id']}|F1"
+        if rid not in run_days:
+            continue
+        rd = run_days[rid]
+        i = by_id.get((m['id'], 'F1', 'all', 'all', 'all'))
+        if i is None:
+            i = by_id.get((rid, 'stick', 'all', 'all', 'all'))
+        f1_folds[m['id']] = {'arm': rid, 'net': sum(rd.values()), 'entries': cells[i]['entries'] if i is not None else None,
+                             'folds': [{'fold': k + 1, 'days': len(fd), 'net': sum(rd.get(d, 0.0) for d in fd),
+                                        'per_hour': (sum(rd.get(d, 0.0) for d in fd) / (24.0 * len(fd))) if fd else None} for k, fd in enumerate(fold_days)],
+                             'tours': run_tour[rid]}
+    reg_by_arm = {r['arm']: r for r in (reg_rows or [])}
+    with open(os.path.join(out, 'hold-league.json'), 'w') as fh:
+        fh.write(dumps(spell_inf({'version': 'tennis-ta-league/1', 'run': str(run_id), 'pool': pool_txt, 'stage': s['stage'], 'window': consts, 'rule': ONE_TEST_RULE,
+                        'batch': {k: batch.get(k) for k in ('source', 'league_run', 'hash')}, 'h_hold': list(h_hold), 'folds': s['ho1_folds'],
+                        'members': [dict(m['row'], verdict=m['verdict'], direction_found=bool(m['row']['pass']), f1_money=f1_folds.get(m['id']),
+                                         registry=(reg_by_arm.get(f"{m['id']}|window|{m['leg']}") or {}).get('heldout')) for m in members],
+                        'other_legs': [r for r in league_a if (r['config'], r['leg']) not in {(m['id'], m['leg']) for m in members}],
+                        'ho1_money': hold_score})))
+    with open(os.path.join(out, 'hold-league.md'), 'w') as fh:
+        fh.write('\n'.join(render_hold_league(s, members, league_a, hold_score, ho1, f1_folds, h_hold, batch)) + '\n')
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description='Tennis TA trial report: scores families A and B from a checked shard set.')
     ap.add_argument('--shards', required=True, help='directory of the shard files (gzip JSON)')
@@ -1285,6 +2113,9 @@ def parse_args(argv=None):
     ap.add_argument('--sha', default=None, help='code_sha of the rows: the commit the run swept and scored ($GITHUB_SHA; default: that env var)')
     ap.add_argument('--ref', default=None, help=f'the rows\' ref (default: {DRIVE_RUNS}/<run>)')
     ap.add_argument('--no-registry', action='store_true', help='local runs only: score and report without writing registry rows')
+    ap.add_argument('--hold-batch', default=HOLD_BATCH_FILE,
+                    help="stage hold: the batch file read when the shard metas and the plan carry no batch (default research/tennis-ta/hold-batch.json "
+                         "of the checkout, as the sweep stores it)")
     ap.add_argument('--live-median-hours', default=None,
                     help="live-match hours a match stands in for when its pool has no published start at all (H0): a number, "
                          "SERIES=HOURS,... or a start-era run's summary.json (its live_median_hours); without it such a pool's "
@@ -1389,13 +2220,26 @@ def main(argv=None):
         live_given = parse_live_medians(a.live_median_hours)
     except (OSError, ValueError, TypeError, AttributeError) as e:
         sys.exit(f'--live-median-hours {a.live_median_hours}: {e}: nothing is scored and no registry rows are written')
-    matches, runs, fam_b = data['matches'], data['runs'], data['familyB']
+    matches, runs, fam_b, wd = data['matches'], data['runs'], data['familyB'], data.get('window')
+    batch = None
     if hold_run:
-        hp = hold_list_problems(runs, stratum)
+        # Amendment 4 item 7: the read runs the batch (the shard metas' batch, else the plan's, else the checkout's
+        # research/tennis-ta/hold-batch.json); without one, the retired frozen-list design (C10) is checked as before.
+        batch = hold_batch_of(meta, plan, a.hold_batch)
+        if batch is not None and batch.get('problem'):
+            sys.exit(f"stage hold: {batch['problem']}: nothing is scored and no registry rows are written")
+        if batch is not None:
+            hp = hold_batch_problems(batch['batch'], runs, wd, batch.get('league_pool'))
+            if wd is None:
+                hp.append("the shards carry no window block (C12): the read is the one test on the batch's |window arms")
+            what = f"the hold batch ({batch['source']})"
+        else:
+            hp = hold_list_problems(runs, stratum)
+            what = 'the frozen hold list (C10, validated like stage 2)'
         if hp:
             for x in hp[:40]:
                 print(f'hold list: {x}', file=sys.stderr)
-            sys.exit(f'{len(hp)} problem(s) with the frozen hold list (C10, validated like stage 2): nothing is scored and no registry rows are written')
+            sys.exit(f'{len(hp)} problem(s) with {what}: nothing is scored and no registry rows are written')
     if a.baseline and not any(not r['stick'] and r.get('placebo') != 'coin' and r.get('fill') == 'F1' and rid.rsplit('|', 1)[0] == a.baseline
                               for rid, r in runs.items()):
         sys.exit(f'--baseline {a.baseline}: no F1 config of that id in the shards (a config is a run id without its arm, e.g. A|s2|center): '
@@ -1518,6 +2362,8 @@ def main(argv=None):
     warn = 0
     for rid in sorted(runs):
         r = runs[rid]
+        if r.get('window'):
+            continue  # a window arm trades nothing (Amendment 4): its instances are the one test's, below, never P&L cells
         last = rid.rsplit('|', 1)
         if r['stick']:
             arm = 'stick'
@@ -1822,8 +2668,41 @@ def main(argv=None):
     else:
         # Every UTC match day of the pool's matches (with a tape or not) and every family B day.
         day_set = sorted({matches[i]['day'] for i in in_pool} | {d for c in b_cells for d in c['days']})
-    hold_score = hold_scoring(cells, by_id, run_days, run_tour, tour_hours, configs_arms, prod_rid, day_set, fold_edges) if hold_run else None
+    hold_score = hold_scoring(cells, by_id, run_days, run_tour, tour_hours, configs_arms, prod_rid, day_set, fold_edges) if hold_run and prod_rid else None
+
+    # ---- the one test (Amendment 4): every hot spot's gap, SE and z over the scored pool's matches (items 6 and 8); the
+    # league (item 7) on a disc run, the read's result per batch member on a hold run
+    league_a, league_b, members, one_test = [], [], [], {'run': False}
+    if wd is not None:
+        scored = {matches[i].get('event') for i in in_pool}
+        w_idx = [i for i, e in enumerate(wd['events']) if e.get('event') in scored]
+        fold_of = (lambda d: ho1_fold_of(d, fold_edges)) if hold_run else None
+        league_a = league_table(wd, w_idx, runs, cells, by_id, fold_of)
+        for r_ in league_a:
+            r_['production'] = prod_cfg is not None and r_['config'] == prod_cfg
+        league_b = league_table_b(wd, w_idx, fold_of)
+        one_test = {'run': True, 'version': wd.get('version'), 'events': len(wd['events']), 'events_scored': len(w_idx), 'rows_a': len(league_a),
+                    'rows_b': len(league_b), 'with_z': sum(1 for r_ in league_a if r_['z'] is not None), 'pass': sum(1 for r_ in league_a if r_['pass']),
+                    'hottest': [r_['hot_spot'] for r_ in league_a[:3]], 'batch': None, 'rule': ONE_TEST_RULE,
+                    # item 7: the league (and the batch candidate) runs on H-DEV only; pool old's one test is information
+                    'league': pools == ['disc'], 'league_pool': 'disc',
+                    'league_reason': None if pools == ['disc'] or hold_run else
+                    f"the league runs on H-DEV (pool disc) only (item 7): pool {','.join(pools)}'s one test is information (no league files, no hold-batch-candidate.json)"}
+        if hold_run and batch is not None:
+            by_hs = {(r_['config'], r_['leg']): r_ for r_ in league_a}
+            for m_ in batch['batch']:
+                r_ = by_hs.get((m_['id'], m_['leg']))
+                if r_ is not None:
+                    members.append({'id': m_['id'], 'leg': m_['leg'], 'row': r_, 'verdict': one_test_verdict(r_, True)})
+            one_test['batch'] = {'source': batch['source'], 'league_run': batch['league_run'], 'hash': batch['hash'],
+                                 'members': [dict({k: m_['row'][k] for k in ('hot_spot', 'config', 'leg', 'n', 'w', 'tn', 'tw', 'rate', 'random', 'gap', 'se', 'z', 'pass',
+                                                                              'twins_short', 'events_short', 'rate_weighted', 'random_weighted')},
+                                                  verdict=m_['verdict'], direction_found=bool(m_['row']['pass'])) for m_ in members]}
+    else:
+        one_test['reason'] = ('the shards carry no window block (C12): no one test, no league'
+                              + (' (an older sweep without window arms)' if not any(r_.get('window') for r_ in runs.values()) else ''))
     registry, reg_rows = None, None
+    ho1, one_test_reg = {}, {}
     if a.no_registry:
         registry = {'written': False, 'reason': '--no-registry (a local run): no registry rows'}
     else:
@@ -1858,6 +2737,8 @@ def main(argv=None):
                       'evidence': meta.get('evidence'), 'days_utc': [from_d, to_d], 'days_eastern': days_eastern, 'doge_excluded': True}
         a_runs = []
         for rid in sorted(runs):
+            if runs[rid].get('window'):
+                continue  # the one test's rows (w_runs) are built below
             info = run_info[rid]
             i = by_id[(info['config'], info['arm'], 'all', 'all', 'all')]
             c = cells[i]
@@ -1886,6 +2767,50 @@ def main(argv=None):
                 # with its hold matches' live-match hours.
                 ar['by_tercile'] = {t: {'pnl': round(run_tour[rid][t], 6), 'hours': round(tour_hours[t], 6)} for t in ('ATP', 'WTA')}
             a_runs.append(ar)
+        # Amendment 4 item 10: one row per hot spot of the league (arm '<config>|window|<leg>', the leg, by_day and by_tercile
+        # of its gap, verdict = the one test's figures) and its coin placebo's row (placebo_for); on the read, rows of the
+        # batch members only, each with the registry's one-test heldout block.
+        w_runs = []
+        if wd is not None:
+            read_keys = {(m_['id'], m_['leg']) for m_ in members} if hold_run else None
+            fin = lambda v: v if finite(v) else None  # noqa: E731
+
+            def gap_or_0(v):
+                return v if finite(v) else 0.0
+            ot_keys = ('n', 'w', 'tn', 'tw', 'rate', 'random', 'gap', 'se', 'z', 'pass', 'matches', 'clustered', 'twins_short', 'events_short',
+                       'rate_weighted', 'random_weighted', 'n_all')
+            for r_ in league_a:
+                if read_keys is not None and (r_['config'], r_['leg']) not in read_keys:
+                    continue
+                ov = runs[f"{r_['config']}|window"]['overrides']
+                terc = {t: {'pnl': gap_or_0(v['gap']), 'hours': round(tour_hours[t], 6), 'gap': fin(v['gap']), 'se': fin(v['se']), 'z': v['z'],
+                            'n': v['n'], 'w': v['w'], 'tn': v['tn'], 'tw': v['tw']} for t, v in r_['by_tour'].items()}
+                raw = dict(common_raw, hot_spot=r_['hot_spot'], config=r_['config'], leg=r_['leg'], arm='window', stick=r_['stick'], rank=r_['rank'],
+                           one_test={k: r_[k] for k in ot_keys}, by_fold=r_.get('by_fold'), hist=r_['hist'], by_phase=r_['by_phase'],
+                           end_no_window=r_['end_no_window'], end_no_window_share=r_['end_no_window_share'], mean_ask=r_['mean_ask'],
+                           coin=r_.get('coin'), f1=r_['f1'], f2=r_['f2'],
+                           metric='window_gap: by_day and by_tercile.pnl hold the gap (window rate - random rate) of that day or tour, never $',
+                           gate='one-test (the read)' if hold_run else 'league (information; the read is stage hold)' if pools == ['disc']
+                           else f"one test (information: pool {','.join(pools)} has no league, item 7; the read is stage hold)")
+                wr = {'id': f"{r_['config']}|window|{r_['leg']}", 'config': r_['config'], 'leg': r_['leg'], 'kind': 'window', 'overrides': ov,
+                      'by_day': {d: v['gap'] for d, v in r_['by_day'].items() if finite(v['gap'])}, 'by_tercile': terc, 'fills': int(r_['n']),
+                      'markets': int(r_['matches']), 'verdict': one_test_verdict(r_, hold_run, pools[0]), 'raw': raw,
+                      'placebo_id': f"{r_['config']}|coinwindow|{r_['leg']}" if r_.get('coin') else None}
+                if hold_run:
+                    wr['heldout'] = one_test_block(r_, day_set, rv, r_['hot_spot'])
+                w_runs.append(wr)
+                c_ = r_.get('coin')
+                if c_:
+                    craw = dict(common_raw, hot_spot=r_['hot_spot'], config=r_['config'], leg=r_['leg'], arm='coinwindow', placebo='coin',
+                                one_test={k: c_[k] for k in ot_keys}, metric='window_gap: by_day and by_tercile.pnl hold the gap, never $',
+                                gate='coin placebo (information)')
+                    w_runs.append({'id': wr['placebo_id'], 'config': r_['config'], 'leg': r_['leg'], 'kind': 'coinwindow',
+                                   'overrides': (runs.get(f"{r_['config']}|coinwindow") or {}).get('overrides', ov),
+                                   'by_day': {d: v['gap'] for d, v in c_['by_day'].items() if finite(v['gap'])},
+                                   'by_tercile': {t: {'pnl': gap_or_0(v['gap']), 'hours': round(tour_hours[t], 6), 'gap': fin(v['gap']), 'se': fin(v['se']),
+                                                      'z': v['z'], 'n': v['n'], 'w': v['w'], 'tn': v['tn'], 'tw': v['tw']} for t, v in c_['by_tour'].items()},
+                                   'fills': int(c_['n']), 'markets': int(c_['matches']), 'placebo_for': wr['id'], 'raw': craw,
+                                   'verdict': 'coin placebo of the one test (information): ' + one_test_verdict(c_).split(': ', 1)[1]})
         b_rules, b_notes = [], []
         if fam_b:
             fb_by_id = {r_['id']: r_ for r_ in fb_rows}
@@ -1926,8 +2851,14 @@ def main(argv=None):
                 b_notes.append('family B rows carry no by_tercile (the export has no per-tour sums), so their HO-1 block cannot pass the '
                                'tercile test: family B is scored on H-HOLD for the record only')
         rows, problems, notes = registry_rows(reg.make_id, sha, day_set, pool_hours, reg_data, reg_flags, ref, epoch, ts, a_runs, b_rules,
-                                              stratum, label=stratum_label, base=base_name, base_defaults=base_defaults)
+                                              stratum, label=stratum_label, base=base_name, base_defaults=base_defaults, w_runs=w_runs)
         notes += b_notes
+        if w_runs:
+            notes.append(f"{len(w_runs)} one-test row(s) (Amendment 4 item 10: arm '<config>|window|<leg>' per hot spot and its coin placebo "
+                         f"'<config>|coinwindow|<leg>' as placebo_for; data.metric window_gap: by_day and by_tercile hold the gap, never $, so the "
+                         f"validator flags them G1:non-dollar-metric; data.regime_proxy tour)"
+                         + (f"; the read's {sum(1 for x in w_runs if x.get('heldout'))} row(s) carry the registry's one-test heldout block"
+                            if hold_run else '; no heldout block on a league run (the read is stage hold)'))
         if stratum_label != 'H':
             notes.append(f'stratum {stratum_label}: families {fam_a} / {fam_b_name}, apart from the start-era history families '
                          f'{REG_FAMILY_A} / {REG_FAMILY_B} (the strata are never pooled in a test, and the registry scores a family over '
@@ -1945,14 +2876,21 @@ def main(argv=None):
                              f'cutoff: no H-HOLD match, left out of the score and the rows')
         notes.append(f"base {base_name}, base_defaults {json.dumps(base_defaults, sort_keys=True)} (the overrides every spec of the run "
                      f"shares that differ from production); data.replay_version {rv} ({rv_src}), data.engine {REG_ENGINE}")
-        reg_rows = [json.loads(dumps(r)) for r in rows]
-        ho1 = {}
+        reg_rows = [json.loads(dumps(spell_inf(r))) for r in rows]  # an infinite z (SE 0 with a gap) spelt, not nulled
+        ho1, one_test_reg = {}, {}
         if hold_run:
-            # The registry's own HO-1 block (folds, terciles = tours, placebo, replay version) for every paired row.
+            # The registry's own HO-1 block (folds, terciles = tours, placebo, replay version) for every paired row; the read's
+            # one-test rows keep their block (ho1_fill leaves standard 'one-test' as written) and the registry recomputes
+            # their pass (one_test_pass): a difference from the row's own reading is its OT:declared-pass-differs flag.
             reg.ho1_fill(reg_rows)
             ct_of = getattr(reg, 'contract_type_of', lambda r: 'tennis')
+            ot_pass = getattr(reg, 'one_test_pass', None)
             for r in reg_rows:
                 if r.get('heldout') is None:
+                    continue
+                if r['heldout'].get('standard') == 'one-test':
+                    ok, why = ot_pass(r['heldout']) if callable(ot_pass) else (None, 'the registry module has no one_test_pass')
+                    one_test_reg[r['arm']] = {'pass': ok, 'why': why, 'declared': r['heldout'].get('pass'), 'heldout': r['heldout']}
                     continue
                 ok, why = reg.ho1_pass(r['heldout'], ct_of(r), (r.get('data') or {}).get('engine'))
                 ho1[r['arm']] = {'pass': bool(ok), 'why': why, 'heldout': r['heldout'], 'role': r['role'], 'family': r['family']}
@@ -1989,14 +2927,15 @@ def main(argv=None):
                     'family_b': fam_b_name, 'base': base_name, 'base_defaults': base_defaults,
                     'days': len(day_set), 'hours': pool_hours, 'flags': reg_flags, 'validator_flags': dict(vflags), 'notes': notes,
                     'b_placebo_rows': bool(fam_b and fam_b.get('day_placebo')), 'ref': ref,
-                    'ho1': ({arm: {k: v for k, v in x.items() if k != 'heldout'} for arm, x in ho1.items()} if hold_run else None)}
+                    'ho1': ({arm: {k: v for k, v in x.items() if k != 'heldout'} for arm, x in ho1.items()} if hold_run else None),
+                    'one_test_rows': len(w_runs), 'one_test': (one_test_reg if hold_run else None)}
 
     # ---- outputs (only now: everything above was checked)
     os.makedirs(a.out, exist_ok=True)
     if reg_rows is not None:
         with open(os.path.join(a.out, registry['file']), 'w') as fh:
             for r in reg_rows:
-                fh.write(json.dumps(r, sort_keys=True, allow_nan=False) + '\n')
+                fh.write(json.dumps(spell_inf(r), sort_keys=True, allow_nan=False) + '\n')
     slim = [{k: v for k, v in c.items() if k != 'fold_means'} for c in cells]
     with gzip.open(os.path.join(a.out, 'cells.json.gz'), 'wt') as fh:
         fh.write(dumps(slim))
@@ -2032,7 +2971,10 @@ def main(argv=None):
         k_range = {'from': 2, 'to': onc_diag['k_hi'], 'n': onc_diag.get('n'), 'cap': onc_diag.get('k_cap'),
                    'grid': f'every k to {ONC_DENSE_K}, a geometric grid above (steps of at most {ONC_K_RATIO - 1:.0%}), the gaps next '
                            f'to the {ONC_REFINE_TOP} best filled in until adjacent', 'scanned': onc_diag.get('scanned')}
+    league_files = (['league.md', 'league.csv', 'league.json', 'hold-batch-candidate.json'] if one_test['run'] and one_test.get('league')
+                    else ['hold-league.md', 'hold-league.json'] if one_test['run'] and hold_run and batch is not None else [])
     summary = dict(run=run_id, pools=pools, stage=stage, sim_version=sim_version, data_version=data_version, files=data['files'],
+                   one_test=dict(one_test, files=league_files),
                    era={k: datetime.fromtimestamp(v / 1000, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') for k, v in era.items()},
                    era_source=era_src, era_rule=era_text(era, h_hold), stratum_label=stratum_label, by_pool=by_pool, hold_run=hold_run,
                    h_hold=list(h_hold), ho1_folds=[{'fold': i + 1, 'from': x, 'to': y} for i, (x, y) in enumerate(fold_edges)],
@@ -2056,6 +2998,9 @@ def main(argv=None):
                    breach_configs=sorted({cells[i]['config'] for i in f1 if cells[i]['config_breaches'] > 0}))
     with open(os.path.join(a.out, 'summary.json'), 'w') as fh:
         fh.write(dumps(summary, indent=1))
+    if league_files:
+        write_one_test_files(a.out, summary, league_a, league_b, members, wd, pools, hold_run, batch, hold_score, h_hold, run_id,
+                             run_days, run_tour, cells, by_id, day_set, fold_edges, ho1, reg_rows)
 
     L = render(a, summary, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_last, pools)
     if summary['registry'] and summary['registry'].get('written'):
@@ -2404,7 +3349,7 @@ def full_days(by_day, day_set):
 
 
 def registry_rows(make_id, sha, day_set, hours, data, flags, ref, epoch, ts, a_runs, b_rules, stratum='H', label=None, base=None,
-                  base_defaults=None):
+                  base_defaults=None, w_runs=()):
     """The C7 registry v1 rows of one run -> (rows, problems, notes). Problems stop the write; notes are reported.
     a_runs: one per family A spec {id, config, arm (F0 / F1 / F2 / coin / stick), overrides, production (the F1 run of
     the config equal to production by value), by_day, fills, markets, verdict, raw}. b_rules: one per family B reading x
@@ -2417,12 +3362,17 @@ def registry_rows(make_id, sha, day_set, hours, data, flags, ref, epoch, ts, a_r
     each run's overrides against production (spec_modules), the same rule for sticks and hypotheses. C11: every row
     carries base ('tennis-ta@<sha>') and base_defaults when given; a placebo row names the arm it mimics (placebo_for: the
     config's F1 arm; family B: its reading x exit); an a_run's by_tercile (a hold run: {'ATP'|'WTA': {pnl, hours}}) is
-    copied onto its row."""
+    copied onto its row. w_runs (Amendment 4 item 10): one per hot spot {id ('<config>|window|<leg>'), config, leg, kind
+    'window' | 'coinwindow', overrides, by_day (the gap per UTC match day), by_tercile ({'ATP'|'WTA': {pnl: the gap, hours, ...}}),
+    fills (instances), markets (matches with an instance), verdict, raw, placebo_id (the coin placebo's id) | placebo_for
+    (on a coinwindow row), heldout (the read's one-test block)}: a window row is a candidate whose control is its coin
+    placebo row (role placebo, placebo_for the window row's arm, seed PLACEBO_SEED), data.metric 'window_gap' and
+    data.regime_proxy 'tour'."""
     rows, problems, notes = [], [], []
     fam_a, fam_b = reg_families(label or stratum)
     day_set = sorted(day_set)
     days = set(day_set)
-    for x in list(a_runs) + list(b_rules) + [b['placebo'] for b in b_rules if b.get('placebo')]:
+    for x in list(a_runs) + list(b_rules) + list(w_runs) + [b['placebo'] for b in b_rules if b.get('placebo')]:
         extra = set(x['by_day']) - days
         if extra:
             problems.append(f"{x.get('id') or x.get('rule')}: by_day names day(s) outside the run's day set: {sorted(extra)[:3]}")
@@ -2466,6 +3416,23 @@ def registry_rows(make_id, sha, day_set, hours, data, flags, ref, epoch, ts, a_r
         row.update(by_day=full_days(r['by_day'], day_set), fills=int(r['fills']), markets=int(r['markets']), verdict=r['verdict'], raw=r['raw'])
         if r.get('by_tercile'):
             row['by_tercile'] = {k: {'pnl': float(v['pnl']), 'hours': float(v['hours'])} for k, v in sorted(r['by_tercile'].items())}
+        rows.append(row)
+    w_data = dict(data, metric='window_gap', regime_proxy='tour')
+    for r in w_runs:
+        ids[r['id']] = tid(fam_a, r['id'], PLACEBO_SEED if r['kind'] == 'coinwindow' else None, r['overrides'])
+    for r in sorted(w_runs, key=lambda x: x['id']):
+        coin = r['kind'] == 'coinwindow'
+        row = dict(common, trial_id=ids[r['id']], family=fam_a, arm=r['id'], leg=r['leg'], env=r['overrides'], data=w_data,
+                   seed=PLACEBO_SEED if coin else None, modules=spec_modules(r['overrides'], stratum), role='placebo' if coin else 'candidate')
+        if coin:
+            row['placebo_for'] = r['placebo_for']
+        elif r.get('placebo_id') in ids:
+            row['control'] = ids[r['placebo_id']]
+        row.update(by_day=full_days(r['by_day'], day_set), fills=int(r['fills']), markets=int(r['markets']), verdict=r['verdict'], raw=r['raw'])
+        if r.get('by_tercile'):
+            row['by_tercile'] = {k: dict(v, pnl=float(v['pnl']), hours=float(v['hours'])) for k, v in sorted(r['by_tercile'].items())}
+        if r.get('heldout'):
+            row['heldout'] = dict(r['heldout'])
         rows.append(row)
     for b in sorted(b_rules, key=lambda x: x['rule']):
         row = dict(common, trial_id=tid(fam_b, b['rule'], None, {}), family=fam_b, arm=b['rule'], role='candidate', env={},
@@ -2524,6 +3491,13 @@ def render_hold(s):
     h = s['hold']
     L = ['### H-HOLD score (HO-1, once per frozen spec list)']
     nd = len(hold_days(tuple(s['h_hold'])))
+    L.append('Under Amendment 4 this section is information: the HO-1 money bars (ho1_pass, the folds, the tours, the placebo) cut nothing; '
+             'the read is the one test on the batch (hold-league.md).')
+    if not h.get('control'):
+        L.append(f"- no production control among the run's F1 arms (a batch runs its configs' |window and |F1 arms only): no paired HO-1 "
+                 f"score; {len(h.get('spec_ids') or [])} spec(s), hash {h.get('specs_sha') or 'not in the shard metas or the plan'}; the F1 arms' own "
+                 f"P&L by fold is in hold-league.md")
+        return L
     L.append(f"Frozen list: {len(h['spec_ids'])} spec(s), hash {h['specs_sha'] or 'not in the shard metas or the plan'}; control "
              f"{h['control']}; {h['days']} of H-HOLD's {nd} days ({s['h_hold'][0]} to {s['h_hold'][1]}). Each candidate is scored by its "
              f"paired gain over the control ($ after fees, candidate minus control by day), per fold as $/h over 24 h a day as "
@@ -2613,6 +3587,21 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
              f"smallest p is {bf['p_min']:.1e} and BH at q = {a.alpha} rejects nothing unless at least {bf['A_cells_at_floor_needed']} of the "
              f"{bf['A_m']} F1 cells sit at that floor" + (f" ({bf['B_cells_at_floor_needed']} of family B's {bf['B_m']})" if fb else '') + '.')
     L.append('')
+    ot = s.get('one_test') or {}
+    L.append('### The one test (Amendment 4: the only statistical bar; everything else in this report is information)')
+    if ot.get('run'):
+        L.append(f"- Window block {ot.get('version')}: {ot['events_scored']} of its {ot['events']} events in pool {pool_txt}; {ot['rows_a']} family A hot "
+                 f"spots (config x leg), {ot['with_z']} with a z, {ot['pass']} with gap >= 2 x SE; {ot['rows_b']} family B hot spots. "
+                 + (f"The read (stage hold): {len((ot.get('batch') or {}).get('members') or [])} batch member(s) scored in hold-league.md; "
+                    f"{sum(1 for m_ in (ot.get('batch') or {}).get('members') or [] if m_['direction_found'])} direction found."
+                    if s['hold_run'] else f"The league (ranked by z, ties by gap; hottest {', '.join(ot['hottest']) or '-'}) is in league.md, "
+                                          f"league.csv and league.json beside this report, the batch candidate in hold-batch-candidate.json "
+                                          f"(the {HOLD_BATCH_MAX} hottest by z, measuring sticks excepted)." if ot.get('league')
+                    else f"No league: {ot.get('league_reason')}; hottest {', '.join(ot['hottest']) or '-'}.")
+                 + ' Rule: ' + ot.get('rule', '') + '.')
+    else:
+        L.append(f"- not run: {ot.get('reason', 'no window block')}.")
+    L.append('')
     L.append('### Family A (the production rulebook)')
     L.append(f"Production (by value: every override at production's default{', the ratchet off on H' if s['stratum'] == 'H' else ''}; momentum 1c, "
              f"flow 0.2, opponent 1c, window 60 s; end loser cut on, tennis-only pacer): config {s['production_config'] or '-'}")
@@ -2635,13 +3624,15 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
     if s['hold_run']:
         L += render_hold(s)
         L.append('')
-        L.append('The discovery screen below is descriptive on H-HOLD (the settings were chosen on H-DEV; HO-1 above is the test):')
+        L.append('The discovery screen below is descriptive on H-HOLD (the settings were chosen on H-DEV; HO-1 above is information, '
+                 'the one test on the batch is the read):')
     g = s['gates_A']
-    L.append(f"Screen: BH q = {a.alpha} rejects {s['bh_rejections']} of {s['f1_cells']} F1 cells; gates passed: "
+    L.append(f"Discovery screen (information under Amendment 4: no cell is cut by it, the one test is the only bar): BH q = {a.alpha} "
+             f"rejects {s['bh_rejections']} of {s['f1_cells']} F1 cells; gates met: "
              + ', '.join(f'{k} {g.get(k, 0)}' for k in ('BH', 'entries>=100', 'days>=30', 'mean>0', 'folds>=60%', 'F2 net>0', 'config breaches=0'))
-             + f"; {g.get('all', 0)} pass every discovery condition.")
+             + f"; {g.get('all', 0)} meet every discovery condition (information).")
     if s['breach_configs']:
-        L.append(f"{len(s['breach_configs'])} config(s) had a settlement breach in some cell of some arm, so none of their cells can pass: "
+        L.append(f"{len(s['breach_configs'])} config(s) had a settlement breach in some cell of some arm, so none of their cells meets the screen (information): "
                  + ', '.join(s['breach_configs'][:8]) + (', ...' if len(s['breach_configs']) > 8 else '') + '.')
     if s['spa']:
         sp = s['spa']
@@ -2710,6 +3701,9 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
                  + (f"; validator flags {', '.join(f'{k} {v}' for k, v in sorted(rg['validator_flags'].items()))}" if rg['validator_flags'] else '') + '.')
         for x in rg.get('notes') or []:
             L.append(f"- {x}.")
+        if s['hold_run']:
+            L.append("- HO-1 verdicts (HO-1 pass / fail) and the discovery flags are information under Amendment 4; a hot spot's result is its "
+                     "one-test row (direction found on a pass of the read).")
     else:
         L.append(f"Registry: no rows ({rg.get('reason', 'not written')}).")
     L.append('')

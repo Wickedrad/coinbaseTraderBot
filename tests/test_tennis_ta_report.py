@@ -3,7 +3,9 @@
 sticks, F1 / F2 / coin arms, 'nostart', 'old', 'embargo' and 'hold' rows beside the pool's (C9), and a family B export;
 an H-DEV choice run (pool disc), an H0 stress run (pool old) and an H-HOLD scoring run of a frozen list (pool hold, stage
 hold, C10); the registry v1 rows (C7 / C11) are checked with the project's research/registry.py (make_id, validate,
-ho1_fill, ho1_pass).
+ho1_fill, ho1_pass). The one test (Amendment 4): shard sets with the window arms and the C12 'window' block give the
+league (league.md / .csv / .json, hold-batch-candidate.json), the read of a batch at stage hold (hold-league.md / .json,
+the rows' one-test heldout block) and gap_stats against the hand-computed fixture of tests/tennisTaWindow.test.ts.
 
 Run: python3 -m pytest -q tests/test_tennis_ta_report.py, or python3 tests/test_tennis_ta_report.py (no pytest needed).
 research/registry.py is another thread's code: $TENNIS_TA_REGISTRY_PY when set, else research/registry.py in this tree,
@@ -1221,7 +1223,8 @@ def hold():
         root = tmpdir()
         units, shards, plan = build(root, pool='hold', stage='hold', b_day_placebo=True, meta_extra={'specsHash': SPECS_HASH})
         out = os.path.join(root, 'out')
-        r = run_report(units, shards, out, '--plan', plan, pool='hold')
+        # No batch: the retired frozen-list design (C10); --hold-batch keeps a checkout's research/tennis-ta/hold-batch.json out of it.
+        r = run_report(units, shards, out, '--plan', plan, '--hold-batch', os.path.join(root, 'no-batch.json'), pool='hold')
         assert r.returncode == 0, r.stderr[-3000:] + r.stdout[-2000:]
         with open(os.path.join(out, 'summary.json')) as fh:
             summary = strict_json(fh.read())
@@ -1253,7 +1256,10 @@ def test_hold_rows_validate_and_carry_the_ho1_block():
             assert 'heldout' not in r and (r['role'] == 'control' or r['family'] == 'tennis-ta-B'), r['arm']
             continue
         hb = r['heldout']
-        assert hb['standard'] == 'HO-1' and hb['tier'] == 'history' and hb['days'] == 96 and hb['folds'] == 6 and hb['replay_version'] == 8, r['arm']
+        # The block's replay version is the data's (data.replay_version: the shard meta's replayVersion, which the sweep sets from
+        # the code's REPLAY_VERSION), never a literal: main bumped historyReplay.ts to 9 after this test pinned 8.
+        assert hb['standard'] == 'HO-1' and hb['tier'] == 'history' and hb['days'] == 96 and hb['folds'] == 6 \
+            and hb['replay_version'] == replay_version_in_code() == r['data']['replay_version'], r['arm']
     win, lose = a['A|s2|fm0.65|F1'], a['A|s2|tp0.2|F1']
     assert win['role'] == lose['role'] == 'candidate' and win['control'] == lose['control'] == ctrl['trial_id']
     assert reg.ho1_pass(win['heldout'], 'tennis', 'replay')[0] and win['verdict'] == 'HO-1 pass', win['heldout']
@@ -1382,6 +1388,8 @@ def _hold_refused(mutate=None, *extra, registry=None, **build_kw):
         mutate(shards, plan)
     out = os.path.join(root, 'out')
     reg = ['--registry-py', registry or registry_path(), '--sha', SHA]
+    if '--hold-batch' not in extra:
+        extra = (*extra, '--hold-batch', os.path.join(root, 'no-batch.json'))
     r = subprocess.run([sys.executable, SCRIPT, '--shards', shards, '--pool', 'hold', '--run', '4242', '--out', out, '--units', units,
                         '--boot', '49', *reg, *extra], capture_output=True, text=True, timeout=600)
     assert r.returncode != 0, r.stdout[-2000:]
@@ -1418,7 +1426,7 @@ def test_hold_runs_refuse_wrong_folds_lists_and_registries():
     units, shards, plan = build(root, pool='hold', stage='hold', families_b=False)
     plan_folds(shards, plan)
     out = os.path.join(root, 'out')
-    r = run_report(units, shards, out, '--plan', plan, pool='hold', boot=49)
+    r = run_report(units, shards, out, '--plan', plan, '--hold-batch', os.path.join(root, 'no-batch.json'), pool='hold', boot=49)
     assert r.returncode != 0 and "holdFolds" in r.stderr and not os.path.exists(out), r.stderr[-1000:]
     # A frozen list without a candidate's coin placebo, or without the production control.
     no_coin = [x for x in HOLD_RUNS if x[0] != 'A|s2|tp0.2|coin']
@@ -1483,6 +1491,695 @@ def test_unit_folds_never_split_a_unit():
 def test_clean_makes_json_strict():
     s = R.dumps({'a': float('nan'), 'b': [float('inf'), np.float32(1.5), np.int64(2)], 'c': np.bool_(True)})
     assert strict_json(s) == {'a': None, 'b': [None, 1.5, 2], 'c': True}
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The one test (Amendment 4): the 'window' block (contract C12), gap_stats, the league, the batch, the read and the rows
+
+W_RATES = {  # config -> (underdog window rate, fav window rate, random rate); the coin placebo runs at the random rate
+    'A|s1|m0.01|f0.2|o0.01|w60': (0.75, 0.55, 0.25),
+    'A|s1|m0.02|f0.2|o0.01|w60': (0.35, 0.30, 0.25),
+    'A|s1|m0.005|f0.05|o0.005|w120': (0.25, 0.25, 0.25),
+    'A|s1|prod|settlehold': (0.50, 0.50, 0.25),
+}
+BW_RATES = {'RSI14L|1m|follow': (0.6, 0.25), 'MACD|5m|fade': (0.25, 0.25)}  # family B reading|bar|dir -> (window rate, random rate)
+HIST_N = {k: len(v) + 1 for k, v in R.HIST_EDGES.items()}
+
+
+def window_arm_runs(configs, n_matches, coin=True):
+    """The |window (and |coinwindow) runs of configs [(id, overrides, stick)]: window: true, fill F1, no P&L, no episodes."""
+    runs = []
+    for cid, ov, stick in configs:
+        base = {'overrides': ov, 'fill': 'F1', 'stratum': 'H', 'days': [], 'pnl': [0.0] * n_matches, 'episodes': [], 'window': True}
+        runs.append(dict(base, id=f'{cid}|window', **({'stick': True} if stick else {})))
+        if coin and not stick:
+            runs.append(dict(base, id=f'{cid}|coinwindow', placebo='coin'))
+    return runs
+
+
+def window_row(rid, leg, matches, rate, random, rng, phase_of, twins_of=None):
+    """One C12 row: an instance in 4 of 5 matches with a tape, 3 twins an instance (twins_of(i) of them when given: a coin
+    side with no eligible minute draws none, Amendment 4 item 5, so tn_i falls short of 3 n_i), windows at `rate`, twin
+    windows at `random`; the histograms hold the windows (tWin, lenWin) and the instances (dip, held), the phases split the
+    counts."""
+    n, w, tn, tw = [], [], [], []
+    hist = {k: [0] * HIST_N[k] for k in R.HIST_EDGES}
+    by_phase = {ph: [0, 0] for ph in R.PHASES}
+    for i, m in enumerate(matches):
+        has = m['trades'] > 0 and (i + {'underdog': 0, 'fav': 1}.get(leg, 2)) % 5 != 2
+        ni = 1 if has else 0
+        wi = int(rng.random() < rate) if has else 0
+        k = twins_of(i) if twins_of else 3
+        tni = k * ni
+        twi = int(rng.binomial(k, random)) if has else 0
+        n.append(ni)
+        w.append(wi)
+        tn.append(tni)
+        tw.append(twi)
+        if has:
+            ph = phase_of(i)
+            by_phase[ph][0] += ni
+            by_phase[ph][1] += wi
+            hist['dip'][3] += 1  # (-0.03, -0.02]
+            hist['held'][2 if wi else 0] += 1
+            if wi:
+                hist['tWin'][3] += 1  # [3, 5) minutes
+                hist['lenWin'][2] += 1  # [2, 3)
+    sn, sw = sum(n), sum(w)
+    return {'id': rid, 'leg': leg, 'n': n, 'w': w, 'tn': tn, 'tw': tw, 'hist': hist, 'byPhase': by_phase, 'endNoWin': sn - sw,
+            'asks': [sn, round(0.35 * sn, 6)]}
+
+
+def with_window(shards, configs, seed=11, batch=None, family_b=True, rates=W_RATES, coin=True, short=()):
+    """Rewrite a built shard set with the window arms' runs and the C12 'window' block (and familyBWindow): one row per
+    window arm and leg (the coin placebo arms too unless coin is False: the read runs none); the batch (meta.batch /
+    batchHash / leagueRun) on a hold run. The fav leg of a config in `short` draws 2 twins on every third instance (item 5:
+    a coin side with no eligible minute draws no twin), so its pooled rates' difference is not the item 6 gap."""
+    rng = np.random.default_rng(seed)
+    for f in sorted(os.listdir(shards)):
+        p = os.path.join(shards, f)
+        with gzip.open(p, 'rt') as fh:
+            d = json.load(fh)
+        ml = d['matchList']
+        d['runs'] += window_arm_runs(configs, len(ml), coin)
+        events = [{'event': m['event'], 'series': m['series'], 'tour': 'WTA' if 'WTA' in m['series'] else 'ATP', 'unit': m['unit'], 'day': m['day'],
+                   'start': m['start'], 'close': m['close'], 'endRule': m['close'] - 30 * 60_000} for m in ml]
+        rows = []
+        phase_of = lambda i: R.PHASES[i % 5]  # noqa: E731
+        for cid, _ov, stick in configs:
+            ru, rf, rr = rates[cid]
+            for leg, rate in (('underdog', ru), ('fav', rf)):
+                twins_of = (lambda i: 2 if i % 3 == 0 else 3) if (cid in short and leg == 'fav') else None
+                rows.append(window_row(f'{cid}|window', leg, ml, rate, rr, rng, phase_of, twins_of))
+                if coin and not stick:
+                    rows.append(window_row(f'{cid}|coinwindow', leg, ml, rr, rr, rng, phase_of))
+        d['window'] = {'version': 'tennis-ta-window/1', 'settleFrac': 0.30, 'orderUsd': 10, 'twins': 3, 'seed': 20261105, 'events': events, 'rows': rows}
+        if family_b and 'B' in d['meta']['families']:
+            brows = [window_row(bid, None, ml, r_, rr_, rng, phase_of) for bid, (r_, rr_) in sorted(BW_RATES.items())]
+            for b in brows:
+                b.pop('leg')
+            d['familyBWindow'] = {'version': 'tennis-ta-window/1', 'rows': brows}
+        d['meta']['windowVersion'] = 'tennis-ta-window/1'
+        if batch is not None:
+            d['meta'].update(batch=batch, batchHash='ab' * 32, leagueRun='777')
+        with gzip.open(p, 'wt') as fh:
+            json.dump(d, fh)
+
+
+def window_arrays(shards, pool, rid, leg, day_lo=None, day_hi=None):
+    """The merged per-event arrays of a window row over the pool's matches (the test's own merge, from the files)."""
+    n, w, tn, tw, ev = [], [], [], [], []
+    for f in sorted(os.listdir(shards)):
+        with gzip.open(os.path.join(shards, f), 'rt') as fh:
+            d = json.load(fh)
+        row = next(r for r in d['window']['rows'] + (d.get('familyBWindow') or {}).get('rows', []) if r['id'] == rid and r.get('leg') == leg)
+        for i, m in enumerate(d['matchList']):
+            if m['pool'] != pool or (day_lo and not (day_lo <= m['day'] <= day_hi)):
+                continue
+            n.append(row['n'][i])
+            w.append(row['w'][i])
+            tn.append(row['tn'][i])
+            tw.append(row['tw'][i])
+            ev.append(d['window']['events'][i])
+    return n, w, tn, tw, ev
+
+
+STAGE_WINDOW = [('A|s1|m0.01|f0.2|o0.01|w60', PROD, False), ('A|s1|m0.02|f0.2|o0.01|w60', BREACH, False),
+                ('A|s1|m0.005|f0.05|o0.005|w120', NULL, False), ('A|s1|prod|settlehold', dict(PROD, TENNIS_END_LOSER_CUT=False), True)]
+_LEAGUE = {}
+
+
+def league():
+    """One disc run with the window arms and the C12 block beside STAGE_RUNS: the league of Amendment 4."""
+    if not _LEAGUE:
+        root = tmpdir()
+        units, shards, plan = build(root)
+        with_window(shards, STAGE_WINDOW)
+        out = os.path.join(root, 'out')
+        r = run_report(units, shards, out, '--plan', plan)
+        assert r.returncode == 0, r.stderr[-3000:] + r.stdout[-2000:]
+        with open(os.path.join(out, 'summary.json')) as fh:
+            summary = strict_json(fh.read())
+        with open(os.path.join(out, 'league.json')) as fh:
+            lg = strict_json(fh.read())
+        with open(os.path.join(out, 'league.md')) as fh:
+            md = fh.read()
+        with open(os.path.join(out, 'report.md')) as fh:
+            report = fh.read()
+        with open(os.path.join(out, 'hold-batch-candidate.json')) as fh:
+            cand = strict_json(fh.read())
+        _LEAGUE.update(root=root, out=out, shards=shards, summary=summary, league=lg, md=md, report=report, cand=cand, rows=read_registry(out),
+                       matches=read_matches(shards))
+    return _LEAGUE
+
+
+def test_gap_stats_agrees_with_the_ts_fixture():
+    # tests/tennisTaWindow.test.ts: match 1 n 2 w 2 tn 6 tw 2 (d 2/3), match 2 1/0/3/1 (d -1/3), match 3 1/1/3/0 (d 1):
+    # gap 0.5, SE sqrt(38) / 24, z 1.9467 < 2.
+    g = R.gap_stats([2, 1, 1], [2, 0, 1], [6, 3, 3], [2, 1, 0])
+    assert (g['n'], g['w'], g['tn'], g['tw'], g['matches'], g['clustered']) == (4, 3, 12, 3, 3, 3)
+    for got, want in ((g['rate'], 0.75), (g['random'], 0.25), (g['gap'], 0.5), (g['se'], math.sqrt(38) / 24), (g['z'], 0.5 / (math.sqrt(38) / 24))):
+        assert abs(got - want) <= 1e-12, (got, want)
+    assert g['pass'] is False
+    # A pass: d = [5/6, 1, 1/3], weights 2: gap 13/18, SE sqrt(78) / 54, z 4.42.
+    g = R.gap_stats([2, 2, 2], [2, 2, 1], [6, 6, 6], [1, 0, 1])
+    assert abs(g['gap'] - 13 / 18) <= 1e-12 and abs(g['se'] - math.sqrt(78) / 54) <= 1e-12 and g['pass'] and 4.4 < g['z'] < 4.43
+    # SE 0 (one contributing match, or identical d_i): the chance wobble cannot be measured, so no z and no pass whatever the
+    # gap, exactly as the core's gapStats (Amendment 4a item 2; the registry refuses se 0 too); a match with instances but no
+    # twin is pooled into the rates, not into the cluster gap; nothing at all; twins without instances; unequal lengths pad with 0.
+    se0 = 'SE 0: the per-match differences do not vary (one contributing match, or identical ones), so the chance wobble cannot be measured'
+    s = R.gap_stats([1, 0], [1, 0], [3, 0], [0, 0])
+    assert (s['n'], s['w'], s['tn'], s['tw'], s['rate'], s['random'], s['gap'], s['se'], s['z'], s['pass']) == (1, 1, 3, 0, 1, 0, 1, 0, None, False)
+    assert R.no_z_why(s) == se0
+    s = R.gap_stats([1, 1, 1], [1, 1, 1], [3, 3, 3], [0, 0, 0])
+    assert s['z'] is None and not s['pass'] and s['clustered'] == 3
+    s = R.gap_stats([1, 1, 1], [0, 0, 0], [3, 3, 3], [3, 3, 3])
+    assert (s['gap'], s['se'], s['z'], s['pass']) == (-1, 0, None, False)
+    s = R.gap_stats([1, 2], [1, 1], [3, 6], [3, 3])
+    assert (s['gap'], s['se'], s['z'], s['pass']) == (0, 0, None, False) and R.no_z_why(s) == se0
+    s = R.gap_stats([1, 1], [1, 0], [3, 0], [0, 0])
+    assert (s['n'], s['w'], s['tn'], s['tw'], s['rate'], s['random'], s['gap'], s['se'], s['z']) == (2, 1, 3, 0, 0.5, 0, 1, 0, None)
+    assert R.no_z_why(R.gap_stats([1, 0], [1, 0], [0, 3], [0, 0])) == 'no contributing match (no match with both an instance and a twin)'
+    # pass <=> gap >= 2 x SE wherever there is a z (the written rule), over a spread of fixtures.
+    for args in (([2, 1, 1], [2, 0, 1], [6, 3, 3], [2, 1, 0]), ([2, 2, 2], [2, 2, 1], [6, 6, 6], [1, 0, 1]), ([3, 1], [1, 1], [9, 3], [2, 0])):
+        s = R.gap_stats(*args)
+        assert s['z'] is not None and s['pass'] == (s['gap'] >= 2 * s['se']), args
+    s = R.gap_stats([], [], [], [])
+    assert (s['n'], s['z'], s['pass']) == (0, None, False) and all(math.isnan(s[k]) for k in ('rate', 'gap', 'se'))
+    s = R.gap_stats([0, 0], [0, 0], [3, 3], [1, 0])
+    assert (s['n'], s['tn'], s['tw'], s['z'], s['pass']) == (0, 6, 1, None, False)
+    s = R.gap_stats([2, 1, 1], [2, 0, 1], [6, 3, 3, 0], [2, 1])
+    assert abs(s['gap'] - 0.5) <= 1e-12 and abs(s['se'] - math.sqrt(38) / 24) <= 1e-12
+    # Every instance with its 3 twins and every match with a twin: the weighted rates are the pooled ones, nothing short.
+    g = R.gap_stats([2, 1, 1], [2, 0, 1], [6, 3, 3], [2, 1, 0])
+    assert (g['twins_short'], g['events_short']) == (0, 0) and abs(g['rate_weighted'] - g['rate']) <= 1e-12 and abs(g['random_weighted'] - g['random']) <= 1e-12
+    # Twins short (item 5: a coin side with no eligible minute draws none): match 2 drew 4 of its 6. The item 6 gap is
+    # (3 (2/3 - 3/9) + 2 (1/2 - 2/4) + 1 (1 - 0)) / 6 = 1/3 = rate_weighted 4/6 - random_weighted (3/3 + 2/2 + 0) / 6; the pooled
+    # difference 4/6 - 5/16 = 0.3542 is another number.
+    g = R.gap_stats([3, 2, 1], [2, 1, 1], [9, 4, 3], [3, 2, 0])
+    assert (g['twins_short'], g['events_short'], g['clustered']) == (2, 1, 3)
+    assert abs(g['gap'] - 1 / 3) <= 1e-12 and abs(g['rate_weighted'] - 4 / 6) <= 1e-12 and abs(g['random_weighted'] - 1 / 3) <= 1e-12
+    assert abs(g['gap'] - (g['rate_weighted'] - g['random_weighted'])) <= 1e-12 and abs((g['rate'] - g['random']) - (4 / 6 - 5 / 16)) <= 1e-12
+    assert abs((g['rate'] - g['random']) - g['gap']) > 0.02
+    # A match with instances but no twin: all its twins short, pooled into the rates, not into the weighted ones.
+    s = R.gap_stats([1, 1], [1, 0], [3, 0], [0, 0])
+    assert (s['twins_short'], s['events_short'], s['rate_weighted'], s['random_weighted']) == (3, 1, 1.0, 0.0)
+    s = R.gap_stats([1, 1], [1, 0], [0, 0], [0, 0])
+    assert (s['twins_short'], s['events_short']) == (6, 2) and math.isnan(s['rate_weighted']) and math.isnan(s['random_weighted'])
+    # The twins an instance are the block's (C12 twins): at 2 an instance nothing here is short.
+    assert R.gap_stats([2], [1], [4], [1], twins=2)['twins_short'] == 0
+
+
+def test_an_infinite_z_is_spelt_in_json_and_csv_and_ranks_first():
+    # SE 0 with a gap (one contributing match): z = +inf as the core has it; JSON has no infinity, so league.json, hold-league.json
+    # and the registry rows spell it '+inf' / '-inf' (z_json, spell_inf), the tables print it (_zf), the verdict names it, and the
+    # league ranks it first (z, ties by gap), a -inf z last among the rows with a z, rows without a z after them.
+    assert R.z_json(math.inf) == '+inf' and R.z_json(-math.inf) == '-inf' and R.z_json(1.5) == 1.5 and R.z_json(None) is None
+    assert R.z_json(float('nan')) is None and R.z_json('+inf') == '+inf'
+    row = {'z': math.inf, 'by_tour': {'ATP': {'z': -math.inf, 'gap': -0.5}, 'WTA': {'z': None}}, 'gap': 1.0, 'se': 0.0}
+    out = json.loads(R.dumps(R.spell_inf(row)))
+    assert out == {'z': '+inf', 'by_tour': {'ATP': {'z': '-inf', 'gap': -0.5}, 'WTA': {'z': None}}, 'gap': 1.0, 'se': 0.0}
+    assert json.loads(json.dumps(R.spell_inf(row), allow_nan=False))['z'] == '+inf'
+    assert R._zf({'z': math.inf}) == '+inf' and R._zf({'z': -math.inf}) == '-inf' and R._zf({'z': None}) == '-' and R._zf({'z': 2.345}) == '2.35'
+    # gap_stats itself never makes an infinite z since Amendment 4a item 2 (SE 0 -> no z): one match reads 'no z' in the
+    # verdict, on the league and on the read alike; the spelling above stays for any infinite z a file may still carry.
+    s = dict(R.gap_stats([1, 0], [1, 0], [3, 0], [0, 0]), hot_spot='x|fav')
+    v = R.one_test_verdict(s)
+    assert s['z'] is None and v.startswith('one test (information, no read): ') and 'no z (SE 0' in v
+    assert R.one_test_verdict(s, read=True).startswith('not found: ') and 'no z (SE 0' in R.one_test_verdict(s, read=True)
+    p = R.gap_stats([2, 2, 2], [2, 2, 1], [6, 6, 6], [1, 0, 1])
+    assert R.one_test_verdict(p, read=True).startswith('direction found: ') and 'gap >= 2 x SE' in R.one_test_verdict(p)
+    neg = R.gap_stats([2, 1, 1], [0, 0, 1], [6, 3, 3], [3, 1, 0])
+    assert neg['z'] is not None and neg['z'] < 0 and 'gap < 2 x SE' in R.one_test_verdict(neg)
+    rows = [{'id': 'b', 'leg': 'fav', 'z': 2.0, 'gap': 0.2}, {'id': 'a', 'leg': 'fav', 'z': math.inf, 'gap': 1.0}, {'id': 'd', 'leg': 'fav', 'z': None, 'gap': 0.0},
+            {'id': 'c', 'leg': 'fav', 'z': -math.inf, 'gap': -1.0}, {'id': 'e', 'leg': 'fav', 'z': math.inf, 'gap': 0.5}]
+    assert [r['id'] for r in R.rank_league(rows)] == ['a', 'e', 'b', 'c', 'd'] and [r['rank'] for r in rows] == [1, 2, 3, 4, 5]
+    csv_row = R.league_csv_row({'family': 'A', 'hot_spot': 'x', 'id': 'x|window', 'config': 'x', 'leg': 'fav', 'stick': False, 'n': 1, 'w': 1, 'tn': 3,
+                                'tw': 0, 'rate': 1.0, 'random': 0.0, 'gap': 1.0, 'se': 0.0, 'z': math.inf, 'pass': True, 'matches': 1, 'clustered': 1,
+                                'n_all': 1, 'mean_ask': 0.5, 'hist': {k: {'q1': None, 'median': None, 'q3': None} for k in ('tWin', 'lenWin', 'dip', 'held')},
+                                'end_no_window': 0, 'end_no_window_share': 0.0, 'by_phase': {}, 'coin': None,
+                                'by_tour': {t: {'n': 0, 'w': 0, 'tn': 0, 'tw': 0, 'gap': float('nan'), 'se': float('nan'), 'z': None} for t in ('ATP', 'WTA')}})
+    assert csv_row['z'] == '+inf' and csv_row['ATP_gap'] == '' and csv_row['ATP_z'] == ''
+    assert 'no z without an instance, a twin or a contributing match, or on SE 0' in R.ONE_TEST_RULE and 'starting at or after the entry' in R.ONE_TEST_RULE
+    assert 'inf' not in R.ONE_TEST_RULE
+
+
+def test_one_test_block_carries_the_item_6_gap_and_the_registry_recomputes_the_same_pass():
+    """Nov 11 finding: with an instance short of its 3 twins the pooled window rate - random rate is not the item 6 gap, and
+    the block used to carry that pooled difference as gap beside item 6's SE and pass, so the registry's recomputed verdict
+    (the one it uses) could differ from the row's. The block's rates are now item 6's weighted ones, gap their difference."""
+    reg = registry_module()
+    # n (1, 1, 1), tn (1, 1, 2): item 6 gap 0.5 >= 2 x SE 0.4714 (a pass); the pooled difference 1/3 (2/3 - 1/4 = 0.4167) is below it.
+    g = R.gap_stats([1, 1, 1], [0, 1, 1], [1, 1, 2], [0, 0, 1])
+    assert g['pass'] and abs(g['gap'] - 0.5) <= 1e-12 and (g['rate'] - g['random']) < 2 * g['se'] < g['gap']
+    h = R.one_test_block(g, ['2026-08-%02d' % d for d in range(1, 11)], 8, 'x|both')
+    assert abs(h['gap'] - g['gap']) <= 1e-12 and h['pass'] is True and abs(h['se'] - g['se']) <= 1e-12
+    assert abs(h['gap'] - (h['window_rate'] - h['random_rate'])) <= 1e-12 and abs(h['window_rate'] - 2 / 3) <= 1e-12 and abs(h['random_rate'] - 1 / 6) <= 1e-12
+    assert (h['n'], h['twins'], h['days'], h['replay_version'], h['twins_short'], h['matches'], h['clustered']) == (3, 4, 10, 8, 5, 3, 3)
+    assert abs(h['window_rate_pooled'] - 2 / 3) <= 1e-12 and abs(h['random_rate_pooled'] - 1 / 4) <= 1e-12 and h['rates'].startswith('item 6')
+    assert h['standard'] == 'one-test' and h['tier'] == 'history' and h['horizon'] == 'match' and h['hot_spot'] == 'x|both'
+    assert reg.one_test_pass(h) == (True, '')
+    # The old block (the pooled difference as gap) had the registry turn that pass into 'not found'.
+    old = dict(h, window_rate=g['rate'], random_rate=g['random'], gap=g['rate'] - g['random'])
+    assert not reg.one_test_pass(old)[0] and 'gap' in reg.one_test_pass(old)[1]
+    # The finding's hand case: gap 1/3 against a pooled 0.3542, both a pass; the block and the registry agree on 1/3.
+    g = R.gap_stats([3, 2, 1], [2, 1, 1], [9, 4, 3], [3, 2, 0])
+    h = R.one_test_block(g, ['d'] * 96, 8, 'y|fav')
+    assert abs(h['gap'] - 1 / 3) <= 1e-12 and abs(h['window_rate'] - 4 / 6) <= 1e-12 and abs(h['random_rate'] - 1 / 3) <= 1e-12 and reg.one_test_pass(h)[0]
+    assert 'short of 3 an instance' in R.one_test_verdict(g, True) and "item 6's weighted" in R.one_test_verdict(g, True) and '+0.3542' in R.one_test_verdict(g, True)
+    # Nothing short: the block's rates are the pooled ones and the verdict says nothing of twins.
+    g = R.gap_stats([2, 2, 2], [2, 2, 1], [6, 6, 6], [1, 0, 1])
+    h = R.one_test_block(g, ['d'], None, 'z|both')
+    assert abs(h['window_rate'] - g['rate']) <= 1e-12 and abs(h['random_rate'] - g['random']) <= 1e-12 and h['twins_short'] == 0 and 'replay_version' not in h
+    assert 'short of' not in R.one_test_verdict(g, True) and R.one_test_verdict(g, True).startswith('direction found: ')
+    # No contributing match (no z): the pooled rates, their difference, se 0 and pass False; the registry refuses se 0 too.
+    g = R.gap_stats([1, 1], [1, 0], [0, 0], [0, 0])
+    h = R.one_test_block(g, ['d'], 8, 'w|underdog')
+    assert (h['window_rate'], h['random_rate'], h['gap'], h['se'], h['pass'], h['twins'], h['twins_short']) == (0.5, 0.0, 0.5, 0.0, False, 0, 6)
+    assert not reg.one_test_pass(h)[0] and R.one_test_verdict(g, True).startswith('not found: ') and 'no z (no twin)' in R.one_test_verdict(g, True)
+    assert R.one_test_verdict(g, True).endswith('6 twin(s) short of 3 an instance over 2 match(es)')
+    # Off pool old the verdict is information with no league.
+    assert R.one_test_verdict(R.gap_stats([2, 2, 2], [2, 2, 1], [6, 6, 6], [1, 0, 1]), False, 'old').startswith('one test (information: pool old has no league')
+
+
+def test_league_ranks_hot_spots_by_z_and_writes_the_files():
+    e = league()
+    s, lg = e['summary'], e['league']
+    assert s['one_test']['run'] and s['one_test']['files'] == ['league.md', 'league.csv', 'league.json', 'hold-batch-candidate.json']
+    assert all(os.path.exists(os.path.join(e['out'], f)) for f in s['one_test']['files'])
+    A = lg['A']
+    # One row per hot spot: config x leg, 'both' included, sticks included; ranked by z, ties by gap, rows without a z last.
+    assert {(r['config'], r['leg']) for r in A} == {(c, leg) for c, _, _ in STAGE_WINDOW for leg in ('underdog', 'fav', 'both')}
+    assert all(r['id'] == r['config'] + '|window' and r['hot_spot'] == f"{r['config']}|{r['leg']}" for r in A)
+    zs = [r['z'] for r in A if r['z'] is not None]
+    assert zs == sorted(zs, reverse=True) and [r['rank'] for r in A] == list(range(1, len(A) + 1))
+    assert all(r['z'] is None for r in A[len(zs):])
+    # The strong config leads, its underdog leg hottest; the null config has no pass.
+    assert A[0]['config'] == 'A|s1|m0.01|f0.2|o0.01|w60' and A[0]['pass'] and A[0]['gap'] > 0.3
+    assert not any(r['pass'] for r in A if r['config'] == 'A|s1|m0.005|f0.05|o0.005|w120')
+    assert any(r['stick'] for r in A) and sum(1 for r in A if r['production']) == 3
+    # Each row's one test is gap_stats over the pool's events of the file arrays (the test's own merge), to 1e-12; the 'both'
+    # row is the per-event sum of the two legs.
+    for r in A:
+        legs = ['underdog', 'fav'] if r['leg'] == 'both' else [r['leg']]
+        arrs = [window_arrays(e['shards'], 'disc', r['id'], leg) for leg in legs]
+        n, w, tn, tw = ([sum(x) for x in zip(*[a[k] for a in arrs])] for k in range(4))
+        g = R.gap_stats(n, w, tn, tw)
+        assert (r['n'], r['w'], r['tn'], r['tw']) == (g['n'], g['w'], g['tn'], g['tw']), r['hot_spot']
+        for k in ('rate', 'random', 'gap', 'se'):
+            assert abs(r[k] - g[k]) <= 1e-12, (r['hot_spot'], k)
+        assert (r['z'] is None) == (g['z'] is None) and (r['z'] is None or R.z_json(r['z']) == R.z_json(g['z'])
+                                                          or abs(r['z'] - g['z']) <= 1e-12) and r['pass'] == g['pass']
+        # By tour: the same over the tour's events; both tours add up to the row.
+        ev = arrs[0][4]
+        for t in ('ATP', 'WTA'):
+            sel = [i for i, x in enumerate(ev) if x['tour'] == t]
+            gt = R.gap_stats(*([a[i] for i in sel] for a in (n, w, tn, tw)))
+            assert r['by_tour'][t]['n'] == gt['n']
+            if gt['clustered']:
+                assert abs(r['by_tour'][t]['gap'] - gt['gap']) <= 1e-12 and abs(r['by_tour'][t]['se'] - gt['se']) <= 1e-12
+            else:
+                assert r['by_tour'][t]['gap'] is None
+        assert r['by_tour']['ATP']['n'] + r['by_tour']['WTA']['n'] == r['n']
+        # Information columns (item 8): the binned quartiles, the phases, the end-rule share, the coin placebo, the F1 / F2 P&L.
+        h = r['hist']
+        assert h['tWin']['median'] == '3..5' and h['lenWin']['median'] == '2..3' and h['dip']['median'] == '-0.03..-0.02' and h['tWin']['total'] >= r['w']
+        assert set(r['by_phase']) == set(PHASES_T) and sum(v['n'] for v in r['by_phase'].values()) == r['n_all'] >= r['n']
+        assert r['end_no_window'] == r['n_all'] - sum(v['w'] for v in r['by_phase'].values()) and 0 <= r['end_no_window_share'] <= 1
+        assert abs(r['mean_ask'] - 0.35) < 1e-6
+        if r['stick']:
+            assert r['coin'] is None and r['f2'] is None and r['f1']['arm'] == r['config'] + '|F1' and r['f1']['entries'] > 0
+        else:
+            assert r['coin']['id'] == r['config'] + '|coinwindow' and r['coin']['n'] > 0 and r['f1']['per_entry'] is not None and r['f2']['entries'] > 0
+            assert abs(r['coin']['gap']) < 0.2  # the coin placebo runs at the random rate
+    # Family B: its own table, no legs, no coin, no P&L columns.
+    B = lg['B']
+    assert [r['id'] for r in B] and all(r['leg'] is None and r['coin'] is None and r['f1'] is None for r in B)
+    assert B[0]['config'] == 'RSI14L|1m|follow' and B[0]['pass']
+    # league.csv: every row, one line each, with the information columns.
+    with open(os.path.join(e['out'], 'league.csv')) as fh:
+        lines = [x for x in fh.read().splitlines() if x]
+    assert len(lines) == 1 + len(A) + len(B) and lines[0].startswith('family,rank,hot_spot,id,config,leg,stick,production,n,w,tn,tw,rate,random,gap,se,z,pass')
+    assert all(c in lines[0].split(',') for c in ('t_win_median', 'dip_median', 'end_no_window_share', 'p3_rate', 'ATP_gap', 'WTA_z', 'coin_gap', 'f1_per_entry', 'f2_per_entry',
+                                                   'twins_short', 'events_short', 'rate_weighted', 'random_weighted'))
+    # Every instance of the fixture drew its 3 twins: nothing short, the weighted rates are the pooled ones (league.json).
+    assert all(r['twins_short'] == 0 and r['events_short'] == 0 and abs(r['rate_weighted'] - r['rate']) <= 1e-12 for r in A + B if r['z'] is not None)
+    # league.md: the top rows, the production legs and the stick, the rule, the batch instruction.
+    md = e['md']
+    assert "## The one test's league (Amendment 4)" in md and 'PASS = gap >= 2 x SE' in md and '| rank | hot spot | leg |' in md
+    assert '(stick)' in md and '(production)' in md and 'Family B' in md and 'RSI14L' in md and '| twins short |' in md
+    assert 'hold-batch-candidate.json' in md and 'research/tennis-ta/hold-batch.json' in md and 'calendar' in md and 'only then commits the hold request' in md
+    assert 'measuring sticks are never in it' in md
+    assert 'nothing in it cuts a hot spot' in md
+    # report.md names the one test as the only bar and the discovery screen as information.
+    rep = e['report']
+    assert '### The one test (Amendment 4' in rep and 'league.md' in rep and 'Discovery screen (information' in rep and 'meet every discovery condition (information)' in rep
+
+
+PHASES_T = ['pre', 'e20', 'p1', 'p2', 'p3']
+
+
+def test_batch_candidate_is_the_ten_hottest_by_z_and_never_a_stick():
+    e = league()
+    A = e['league']['A']
+    cand = e['cand']
+    with_z = [r for r in A if r['z'] is not None]
+    hot = [r for r in with_z if not r['stick']]
+    # The settle-hold stick's three legs have a z and rank among the ten hottest, and still are not in the batch (item 1: a
+    # hot spot is a config of the gradient matrix; C4: a stick is reported, never screened or counted): the batch is the
+    # hottest non-stick rows, fewer than 10 when the league has fewer.
+    assert len(with_z) >= 10 and sum(1 for r in with_z[:10] if r['stick']) >= 1 and 3 <= len(hot) <= 9
+    assert cand['league_run'] == '4242' and set(cand) == {'league_run', 'batch'} and len(cand['batch']) == len(hot)
+    assert cand['batch'] == [{'id': r['config'], 'leg': r['leg']} for r in hot[:10]]
+    assert not any(m['id'].startswith('A|s1|prod|') for m in cand['batch'])
+    assert all(not any(m['id'].endswith('|' + arm) for arm in R.ARMS) and m['leg'] in ('underdog', 'fav', 'both') for m in cand['batch'])
+    assert e['league']['batch_candidate'] == cand
+    # batch_candidate itself: a stick in the top ten is skipped and the next row taken; at most HOLD_BATCH_MAX; no z, no place.
+    rows = [dict(config=f'c{i}', leg='both', z=20 - i, gap=0.5, stick=(i == 1)) for i in range(12)] + [dict(config='nz', leg='fav', z=None, gap=0.9, stick=False)]
+    assert R.batch_candidate(rows, 'run9') == {'league_run': 'run9', 'batch': [{'id': f'c{i}', 'leg': 'both'} for i in [0] + list(range(2, 11))]}
+    assert R.batch_candidate([dict(config='s', leg='both', z=9.0, gap=0.5, stick=True)], '1') == {'league_run': '1', 'batch': []}
+
+
+def test_hold_batch_refuses_a_stick_and_a_league_off_another_pool():
+    """Item 1: a hot spot of the batch is a config of the gradient matrix, never a measuring stick (C4); item 7: the league
+    the batch is read off runs on pool disc only."""
+    runs = {'A|s2|x|window': {'window': True}, 'A|s2|x|F1': {}, 'A|s2|y|window': {'window': True, 'stick': True}, 'A|s2|y|F1': {}}
+    wd = {'rows': {('A|s2|x|window', 'underdog'): {}, ('A|s2|x|window', 'fav'): {}, ('A|s2|y|window', 'underdog'): {}, ('A|s2|y|window', 'fav'): {}}}
+    assert R.hold_batch_problems([{'id': 'A|s2|x', 'leg': 'both'}], runs, wd) == []
+    assert R.hold_batch_problems([{'id': 'A|s2|x', 'leg': 'both'}], runs, wd, 'disc') == []
+    # A stick by its id (stage 1 or 2, the sweep's 'A|s<n>|prod|<name>') or by its |window run's tag.
+    for sid in ('A|s1|prod|settlehold', 'A|s2|prod|nopacer', 'A|s2|y'):
+        p = R.hold_batch_problems([{'id': sid, 'leg': 'underdog'}], runs, wd)
+        assert len(p) == 1 and 'measuring stick' in p[0] and sid in p[0] and 'item 1' in p[0], p
+    # A stated league pool that is not disc.
+    p = R.hold_batch_problems([{'id': 'A|s2|x', 'leg': 'both'}], runs, wd, 'old')
+    assert len(p) == 1 and 'pool old league' in p[0] and 'pool disc' in p[0] and 'item 7' in p[0]
+    assert R.hold_batch_problems('x', runs, wd, 'old')[0].startswith('the batch was read off')
+    # hold_batch_of carries the pool the source states (the file's league_pool, the metas' / plan's leaguePool), None otherwise.
+    root = tmpdir()
+    bfile = os.path.join(root, 'hold-batch.json')
+    with open(bfile, 'w') as fh:
+        json.dump({'league_run': '777', 'batch': HOLD_BATCH, 'league_pool': 'old'}, fh)
+    b = R.hold_batch_of({}, None, bfile)
+    assert b['league_pool'] == 'old' and b['batch'] == HOLD_BATCH and b['league_run'] == '777' and b['source'] == bfile
+    with open(bfile, 'w') as fh:
+        json.dump({'league_run': '777', 'batch': HOLD_BATCH}, fh)
+    assert R.hold_batch_of({}, None, bfile)['league_pool'] is None
+    assert R.hold_batch_of({'batch': HOLD_BATCH, 'leagueRun': '1', 'batchHash': 'h', 'leaguePool': 'disc'}, None, bfile)['league_pool'] == 'disc'
+    assert R.hold_batch_of({}, {'batch': HOLD_BATCH, 'leagueRun': '1'}, bfile)['league_pool'] is None
+    # End to end: a stick in the batch, and a batch file read off a pool old league, each refuse the read before scoring.
+    def fixture(batch):
+        return lambda s, p: with_window(s, HOLD_WINDOW, seed=5, batch=batch, family_b=False, rates=HOLD_RATES, coin=False)
+    err = _hold_refused(fixture(HOLD_BATCH + [{'id': 'A|s1|prod|settlehold', 'leg': 'both'}]), runs_def=HOLD_BATCH_RUNS)
+    assert 'measuring stick' in err and 'A|s1|prod|settlehold' in err and 'no registry rows' in err
+    with open(bfile, 'w') as fh:
+        json.dump({'league_run': '777', 'batch': HOLD_BATCH, 'league_pool': 'old'}, fh)
+    err = _hold_refused(fixture(None), '--hold-batch', bfile, runs_def=HOLD_BATCH_RUNS)
+    assert 'read off a pool old league' in err and 'no registry rows' in err
+
+
+def test_pool_old_has_no_league_and_no_batch_candidate():
+    """Item 7: the league runs on H-DEV (pool disc) only. A stage 2 pool old run with a window block scores the one test as
+    information (summary.json, the registry rows) and writes no league file and no hold-batch-candidate.json."""
+    root = tmpdir()
+    units, shards, _ = build(root, families_b=False, pool='old', stage='2', t0='2025-07-07T05:00:00', replay_meta=False)
+    with_window(shards, STAGE_WINDOW, family_b=False)
+    out = os.path.join(root, 'out')
+    r = run_report(units, shards, out, pool='old', boot=49)
+    assert r.returncode == 0, r.stderr[-3000:] + r.stdout[-2000:]
+    with open(os.path.join(out, 'summary.json')) as fh:
+        s = strict_json(fh.read())
+    ot = s['one_test']
+    assert s['pools'] == ['old'] and ot['run'] and ot['rows_a'] == 12 and ot['with_z'] >= 10 and not ot['league'] and ot['league_pool'] == 'disc'
+    assert ot['files'] == [] and 'pool disc' in ot['league_reason'] and 'item 7' in ot['league_reason'] and "pool old's one test is information" in ot['league_reason']
+    assert not any(os.path.exists(os.path.join(out, f)) for f in ('league.md', 'league.csv', 'league.json', 'hold-batch-candidate.json', 'hold-league.md'))
+    rows = read_registry(out)
+    w = [x for x in rows if '|window|' in x['arm']]
+    assert len(w) == 12 and all(x['verdict'].startswith('one test (information: pool old has no league') and 'heldout' not in x for x in w)
+    assert all(x['raw']['gate'].startswith('one test (information: pool old has no league') for x in w)
+    assert all(registry_module().validate(x)[0] == [] for x in w)
+    with open(os.path.join(out, 'report.md')) as fh:
+        rep = fh.read()
+    assert 'No league: the league runs on H-DEV (pool disc) only (item 7)' in rep and 'league.md' not in rep.split('### The one test (Amendment 4')[1].split('\n')[1]
+
+
+def test_league_registry_rows_are_one_per_hot_spot_with_the_gap_by_day_and_tour():
+    reg = registry_module()
+    e = league()
+    rows = e['rows']
+    wrows = {r['arm']: r for r in rows if '|window|' in r['arm']}
+    crows = {r['arm']: r for r in rows if '|coinwindow|' in r['arm']}
+    assert len(wrows) == 4 * 3 and len(crows) == 3 * 3
+    A = {(r['config'], r['leg']): r for r in e['league']['A']}
+    cfg_ov = {c: ov for c, ov, _ in STAGE_WINDOW}
+    for arm, r in wrows.items():
+        cfg, leg = arm.split('|window|')
+        lr = A[(cfg, leg)]
+        err, fl = reg.validate(r)
+        assert err == [] and 'DEV:choice-only' in fl and 'G1:non-dollar-metric' in fl and not any(f.startswith('G0:') for f in fl), (arm, err, fl)
+        assert r['family'] == 'tennis-ta-A' and r['contract_type'] == 'tennis' and r['role'] == 'candidate' and r['leg'] == leg and r['flags'] == ['dev-choice']
+        assert r['data']['metric'] == 'window_gap' and r['data']['regime_proxy'] == 'tour' and r['data']['replay_version'] == replay_version_in_code()
+        assert r['modules'] == (['exits'] if 'settlehold' in cfg else ['tennis-ta']) and r['env'] == cfg_ov[cfg]
+        assert r['trial_id'] == reg.make_id(r['thread'], r['family'], r['arm'], r['code_sha'], r['data']['days'], r['seed'], [], r['env'])
+        assert r['seed'] is None and 'heldout' not in r and r['fills'] == lr['n'] and r['markets'] == lr['matches']
+        # by_day = the gap per UTC match day over the day set (0 on a day without one); by_tercile = the gap per tour.
+        assert sorted(r['by_day']) == r['data']['days']
+        for d, v in lr['by_day'].items():
+            assert abs(r['by_day'][d] - (v['gap'] if v['gap'] is not None else 0.0)) < 1e-6, (arm, d)
+        assert set(r['by_tercile']) == {'ATP', 'WTA'}
+        for t in ('ATP', 'WTA'):
+            assert r['by_tercile'][t]['n'] == lr['by_tour'][t]['n'] and abs(r['by_tercile'][t]['pnl'] - (lr['by_tour'][t]['gap'] or 0.0)) < 1e-6
+        assert 'gap' in r['verdict'] and 'SE' in r['verdict'] and r['verdict'].startswith('one test (league, information')
+        assert r['raw']['one_test']['z'] == lr['z'] and r['raw']['gate'].startswith('league')
+        if 'settlehold' in cfg:
+            assert 'control' not in r
+        else:
+            c = crows[f'{cfg}|coinwindow|{leg}']
+            assert r['control'] == c['trial_id'] and c['placebo_for'] == arm and c['role'] == 'placebo' and c['seed'] == 20261105
+            assert reg.validate(c)[0] == [] and 'control' not in c and c['verdict'].startswith('coin placebo of the one test')
+    # The P&L rows are as before: the window arms never become P&L cells or rows.
+    assert not any(r['arm'].endswith('|window') or r['arm'].endswith('|coinwindow') for r in rows)
+    assert len([r for r in rows if r['family'] == 'tennis-ta-A' and '|window|' not in r['arm'] and '|coinwindow|' not in r['arm']]) == 11
+    assert e['summary']['registry']['one_test_rows'] == 21 and e['summary']['f1_cells'] == league_f1_cells(e)
+
+
+def league_f1_cells(e):
+    with gzip.open(os.path.join(e['out'], 'cells.json.gz'), 'rt') as fh:
+        cells = strict_json(fh.read())
+    assert not any('window' in c['run'] for c in cells)
+    return sum(1 for c in cells if c['arm'] == 'F1')
+
+
+HOLD_BATCH_RUNS = [(CTRL + '|F1', PROD, 'F1', None, False, 0.0), ('A|s2|fm0.65|F1', WIN, 'F1', None, False, 0.5), ('A|s2|tp0.2|F1', LOSE, 'F1', None, False, -0.3)]
+HOLD_WINDOW = [(CTRL, PROD, False), ('A|s2|fm0.65', WIN, False), ('A|s2|tp0.2', LOSE, False)]
+HOLD_RATES = {CTRL: (0.45, 0.40, 0.25), 'A|s2|fm0.65': (0.80, 0.70, 0.25), 'A|s2|tp0.2': (0.25, 0.25, 0.25)}
+HOLD_BATCH = [{'id': 'A|s2|fm0.65', 'leg': 'both'}, {'id': CTRL, 'leg': 'underdog'}, {'id': 'A|s2|tp0.2', 'leg': 'fav'}]
+_READ = {}
+
+
+def read():
+    """One stage hold run of a batch (Amendment 4 item 7): the batch configs' |window and |F1 arms, the production config in it."""
+    if not _READ:
+        root = tmpdir()
+        units, shards, plan = build(root, pool='hold', stage='hold', families_b=False, runs_def=HOLD_BATCH_RUNS, meta_extra={'specsHash': SPECS_HASH})
+        with_window(shards, HOLD_WINDOW, seed=5, batch=HOLD_BATCH, family_b=False, rates=HOLD_RATES, coin=False, short=('A|s2|tp0.2',))
+        out = os.path.join(root, 'out')
+        r = run_report(units, shards, out, '--plan', plan, pool='hold')
+        assert r.returncode == 0, r.stderr[-3000:] + r.stdout[-2000:]
+        with open(os.path.join(out, 'summary.json')) as fh:
+            summary = strict_json(fh.read())
+        with open(os.path.join(out, 'hold-league.json')) as fh:
+            hl = strict_json(fh.read())
+        with open(os.path.join(out, 'hold-league.md')) as fh:
+            md = fh.read()
+        with open(os.path.join(out, 'report.md')) as fh:
+            report = fh.read()
+        _READ.update(root=root, out=out, shards=shards, summary=summary, hl=hl, md=md, report=report, rows=read_registry(out))
+    return _READ
+
+
+def test_hold_batch_run_scores_each_member_with_the_one_test():
+    e = read()
+    s, hl, md = e['summary'], e['hl'], e['md']
+    assert s['one_test']['run'] and s['one_test']['files'] == ['hold-league.md', 'hold-league.json']
+    assert not any(os.path.exists(os.path.join(e['out'], f)) for f in ('league.md', 'league.csv', 'league.json', 'hold-batch-candidate.json'))
+    b = s['one_test']['batch']
+    assert b['source'] == 'the shard metas (meta.batch)' and b['league_run'] == '777' and b['hash'] == 'ab' * 32
+    mem = {(m['config'], m['leg']): m for m in b['members']}
+    assert set(mem) == {(x['id'], x['leg']) for x in HOLD_BATCH} and [(m['config'], m['leg']) for m in b['members']] == [(x['id'], x['leg']) for x in HOLD_BATCH]
+    win, ctrl, lose = mem[('A|s2|fm0.65', 'both')], mem[(CTRL, 'underdog')], mem[('A|s2|tp0.2', 'fav')]
+    assert win['direction_found'] and win['verdict'].startswith('direction found: ') and win['gap'] >= 2 * win['se']
+    assert not lose['direction_found'] and lose['verdict'].startswith('not found: ') and lose['gap'] < 2 * lose['se']
+    # Each member's one test is gap_stats over the hold pool's H-HOLD matches of the file arrays, the 'both' leg per-event summed.
+    for m in b['members']:
+        legs = ['underdog', 'fav'] if m['leg'] == 'both' else [m['leg']]
+        arrs = [window_arrays(e['shards'], 'hold', m['config'] + '|window', leg, H_HOLD[0], H_HOLD[1]) for leg in legs]
+        n, w, tn, tw = ([sum(x) for x in zip(*[a[k] for a in arrs])] for k in range(4))
+        g = R.gap_stats(n, w, tn, tw)
+        assert (m['n'], m['w'], m['tn'], m['tw']) == (g['n'], g['w'], g['tn'], g['tw']) and abs(m['gap'] - g['gap']) <= 1e-12 and abs(m['se'] - g['se']) <= 1e-12
+        assert m['pass'] == g['pass'] == (g['z'] is not None and g['gap'] >= 2 * g['se'])
+    # hold-league.json: the members with the six folds, both tours and the F1 money; the other legs as information.
+    hm = {(m['config'], m['leg']): m for m in hl['members']}
+    assert set(hm) == set(mem) and hl['batch'] == {'source': b['source'], 'league_run': '777', 'hash': 'ab' * 32}
+    for m in hm.values():
+        assert sorted(m['by_fold']) == ['1', '2', '3', '4', '5', '6'] and sum(v['n'] for v in m['by_fold'].values()) == m['n']
+        assert set(m['by_tour']) == {'ATP', 'WTA'} and m['by_tour']['ATP']['n'] + m['by_tour']['WTA']['n'] == m['n']
+        assert m['f1_money']['arm'] == m['config'] + '|F1' and len(m['f1_money']['folds']) == 6 and m['registry']['standard'] == 'one-test'
+    assert {(r['config'], r['leg']) for r in hl['other_legs']} == {(c, leg) for c, _, _ in HOLD_WINDOW for leg in ('underdog', 'fav', 'both')} - set(mem)
+    # The HO-1 money table is paired against the production control (in the batch) and carries the registry's block: information.
+    assert hl['ho1_money']['control'] == CTRL + '|F1' and {c['arm'] for c in hl['ho1_money']['candidates']} == {'A|s2|fm0.65|F1', 'A|s2|tp0.2|F1'}
+    # hold-league.md: the result per member, the folds, the tours, the money table, nothing judged but the one test.
+    assert '## The one read (Amendment 4 item 7)' in md and 'DIRECTION FOUND' in md and 'not found (gap < 2 x SE)' in md and '| twins short |' in md
+    assert 'the six 16-day HO-1 folds' in md and '### Both tours (information)' in md and '### The HO-1 money table (information)' in md
+    assert "The batch configs' other legs (information, not read; no registry row)" in md
+    assert 'Paired against the production control' in md and '| A\\|s2\\|fm0.65\\|F1 |' in md
+    rep = e['report']
+    assert 'Under Amendment 4 this section is information' in rep and 'direction found' in rep and 'hold-league.md' in rep
+
+
+def test_hold_batch_rows_carry_the_one_test_block_and_validate():
+    reg = registry_module()
+    e = read()
+    rows = e['rows']
+    wrows = {r['arm']: r for r in rows if '|window|' in r['arm']}
+    # Rows of the read only: one per batch member (no row for the other legs, no coin placebo ran), every one valid.
+    assert set(wrows) == {f"{x['id']}|window|{x['leg']}" for x in HOLD_BATCH} and not any('coinwindow' in r['arm'] for r in rows)
+    hm = {(m['config'], m['leg']): m for m in e['hl']['members']}
+    for arm, r in wrows.items():
+        err, fl = reg.validate(r)
+        # No coin placebo runs on the read (README: the batch configs' |window and |F1 arms only), so the row has no control and
+        # the validator says G2:unpaired (a money flag; the registry's OT_BLOCKING leaves a direction test alone).
+        assert err == [] and not any(f.startswith(('DEV:', 'G0:', 'OT:')) for f in fl) and 'G1:non-dollar-metric' in fl and 'G2:unpaired' in fl, (arm, err, fl)
+        assert r['flags'] == [] and r['role'] == 'candidate' and 'control' not in r and r['data']['days'] == all_hold_days()
+        h = r['heldout']
+        m = hm[(r['raw']['config'], r['leg'])]
+        assert h['standard'] == 'one-test' and h['tier'] == 'history' and h['days'] == 96 and h['horizon'] == 'match' and h['hot_spot'] == m['hot_spot']
+        # The block's gap is the item 6 (cluster-weighted) gap the verdict was judged on, decomposed into item 6's weighted
+        # rates, so the registry, which recomputes pass from window_rate - random_rate against se, judges by that number;
+        # the pooled rates and the twin shortfall stand beside them.
+        assert h['n'] == m['n'] and h['twins'] == m['tn'] and abs(h['gap'] - m['gap']) < 1e-12 and abs(h['se'] - m['se']) < 1e-12 and h['pass'] == m['pass']
+        assert abs(h['window_rate'] - m['rate_weighted']) < 1e-12 and abs(h['random_rate'] - m['random_weighted']) < 1e-12
+        assert abs(h['gap'] - (h['window_rate'] - h['random_rate'])) <= 1e-12
+        assert abs(h['window_rate_pooled'] - m['rate']) < 1e-12 and abs(h['random_rate_pooled'] - m['random']) < 1e-12
+        assert h['twins_short'] == m['twins_short'] and (h['matches'], h['clustered']) == (m['matches'], m['clustered']) and h['rates'].startswith('item 6')
+        assert h['replay_version'] == replay_version_in_code()
+        ok, why = reg.one_test_pass(h)
+        assert ok == m['pass'] and ok == m['direction_found'] and 'OT:declared-pass-differs' not in fl, (arm, why, fl)
+        assert r['verdict'].startswith('direction found: ' if ok else 'not found: ')
+        if m['twins_short']:
+            # tp0.2's fav leg drew 2 twins on every third instance (the fixture): the pooled difference is not the gap, and the
+            # verdict and the md say so.
+            assert abs((m['rate'] - m['random']) - m['gap']) > 1e-6 and 'short of 3 an instance' in r['verdict'] and "item 6's weighted" in r['verdict']
+            assert f"| {m['tn']} | {m['tw']} | {m['twins_short']} |" in e['md']
+        else:
+            assert abs(h['window_rate'] - m['rate']) < 1e-12 and abs(h['random_rate'] - m['random']) < 1e-12 and 'short of' not in r['verdict']
+        assert sorted(r['by_day']) == all_hold_days() and set(r['by_tercile']) == {'ATP', 'WTA'}
+    assert [k for k, m in hm.items() if m['twins_short']] == [('A|s2|tp0.2', 'fav')] and hm[('A|s2|tp0.2', 'fav')]['events_short'] > 0
+    # The registry's own ho1_fill leaves a one-test block as written.
+    again = reg.ho1_fill([dict(r) for r in rows])
+    assert {x['arm']: x['heldout'] for x in again if x['arm'] in wrows} == {arm: r['heldout'] for arm, r in wrows.items()}
+    ot = e['summary']['registry']['one_test']
+    assert set(ot) == set(wrows) and all(ot[arm]['pass'] == wrows[arm]['heldout']['pass'] for arm in wrows)
+    # The F1 rows keep their HO-1 block as information: the registry's verdict beside the one test, cutting nothing.
+    a = {r['arm']: r for r in rows if r['family'] == 'tennis-ta-A' and '|window|' not in r['arm']}
+    assert set(a) == {CTRL + '|F1', 'A|s2|fm0.65|F1', 'A|s2|tp0.2|F1'} and a['A|s2|fm0.65|F1']['verdict'].startswith('HO-1 ')
+    assert a[CTRL + '|F1']['role'] == 'control' and a['A|s2|fm0.65|F1']['heldout']['standard'] == 'HO-1'
+    v = subprocess.run([sys.executable, '-I', registry_path(), 'validate', os.path.join(e['out'], ROWS_FILE)], capture_output=True, text=True, timeout=120)
+    assert v.returncode == 0 and 'INVALID' not in v.stdout, v.stdout[-2000:]
+
+
+def test_hold_batch_without_the_production_config_has_no_paired_money_table():
+    root = tmpdir()
+    runs_def = [x for x in HOLD_BATCH_RUNS if not x[0].startswith(CTRL)]
+    units, shards, plan = build(root, pool='hold', stage='hold', families_b=False, runs_def=runs_def, meta_extra={'specsHash': SPECS_HASH})
+    with_window(shards, [x for x in HOLD_WINDOW if x[0] != CTRL], seed=5, batch=[x for x in HOLD_BATCH if x['id'] != CTRL], family_b=False, rates=HOLD_RATES, coin=False)
+    out = os.path.join(root, 'out')
+    r = run_report(units, shards, out, '--plan', plan, pool='hold', boot=49)
+    assert r.returncode == 0, r.stderr[-3000:]
+    with open(os.path.join(out, 'hold-league.md')) as fh:
+        md = fh.read()
+    with open(os.path.join(out, 'report.md')) as fh:
+        rep = fh.read()
+    assert 'No production control in the batch' in md and 'DIRECTION FOUND' in md and "each F1 arm's own net by fold" in md
+    assert 'no production control among the run' in rep
+    rows = read_registry(out)
+    assert {r['arm'] for r in rows if '|window|' in r['arm']} == {'A|s2|fm0.65|window|both', 'A|s2|tp0.2|window|fav'}
+    assert all(r['verdict'].startswith('HO-1: no held-out block') for r in rows if r['arm'].endswith('|F1'))
+
+
+def test_hold_batch_is_refused_without_its_window_arms_or_block():
+    # A batch member whose |window arm did not run.
+    def no_window(shards, plan):
+        for f in os.listdir(shards):
+            p = os.path.join(shards, f)
+            with gzip.open(p, 'rt') as fh:
+                d = json.load(fh)
+            d['runs'] = [x for x in d['runs'] if x['id'] != 'A|s2|tp0.2|window']
+            d['window']['rows'] = [x for x in d['window']['rows'] if x['id'] != 'A|s2|tp0.2|window']
+            with gzip.open(p, 'wt') as fh:
+                json.dump(d, fh)
+    def batch_fixture(shards, plan, batch=HOLD_BATCH):
+        with_window(shards, HOLD_WINDOW, seed=5, batch=batch, family_b=False, rates=HOLD_RATES, coin=False)
+    err = _hold_refused(lambda s, p: (batch_fixture(s, p), no_window(s, p)), runs_def=HOLD_BATCH_RUNS)
+    assert 'hold batch' in err and 'A|s2|tp0.2|window' in err and 'no registry rows' in err
+    # A batch (from the file) but shards without the window block.
+    root = tmpdir()
+    bfile = os.path.join(root, 'hold-batch.json')
+    with open(bfile, 'w') as fh:
+        json.dump({'league_run': '777', 'batch': HOLD_BATCH}, fh)
+    err = _hold_refused(None, '--hold-batch', bfile, runs_def=HOLD_BATCH_RUNS)
+    assert 'no window block' in err and bfile in err
+    # A batch member with an arm, a leg that is not one, a member twice, eleven members.
+    bad = [dict(HOLD_BATCH[0], id='A|s2|fm0.65|F1'), dict(HOLD_BATCH[1], leg='underdogs'), HOLD_BATCH[2], HOLD_BATCH[2]] + [{'id': CTRL, 'leg': 'both'}] * 7
+    err = _hold_refused(lambda s, p: batch_fixture(s, p, bad), runs_def=HOLD_BATCH_RUNS)
+    assert 'ends with an arm' in err and 'underdogs' in err and 'listed twice' in err and 'at most 10' in err
+    # The window block in some files and not in others, and a window arm without the block.
+    def drop_block(shards, plan):
+        f = sorted(os.listdir(shards))[0]
+        p = os.path.join(shards, f)
+        with gzip.open(p, 'rt') as fh:
+            d = json.load(fh)
+        del d['window']
+        with gzip.open(p, 'wt') as fh:
+            json.dump(d, fh)
+    err = _hold_refused(lambda s, p: (batch_fixture(s, p), drop_block(s, p)), runs_def=HOLD_BATCH_RUNS)
+    assert 'but no window block' in err
+
+
+def test_window_arms_are_checked_like_the_other_arms():
+    def run(rid, ov, fill='F1', placebo=None, stick=False, window=False):
+        return rid, {'id': rid, 'overrides': ov, 'fill': fill, 'placebo': placebo, 'stick': stick, 'offsetMs': None, 'window': window}
+    good = dict([run(CTRL + '|F1', PROD), run(CTRL + '|coin', PROD, 'F1', 'coin'), run(CTRL + '|window', PROD, window=True),
+                 run(CTRL + '|coinwindow', PROD, 'F1', 'coin', window=True), run('A|s1|prod|settlehold|window', dict(PROD, TENNIS_END_LOSER_CUT=False), stick=True, window=True)])
+    assert R.check_runs([good, good]) == []
+    # A window arm is never a twin of its F1 arm; its id must say |window (|coinwindow for its coin placebo).
+    assert any('names arm F1' in x and 'window arm' in x for x in R.check_runs([dict([run('A|s2|x|F1', WIN, window=True)])]))
+    assert any('names arm window' in x for x in R.check_runs([dict([run('A|s2|x|window', WIN, 'F1', 'coin', window=True)])]))
+    assert any('must end in its arm' in x and '|window' in x for x in R.check_runs([dict([run('A|s2|x', WIN, window=True)])]))
+    other = dict(good)
+    other[CTRL + '|window'] = dict(other[CTRL + '|window'], window=False)
+    assert any('window flag differ' in x for x in R.check_runs([good, other]))
+    assert R.window_arm_of('A|s1|x|window') == ('A|s1|x', 'window') and R.window_arm_of('A|s1|x|coinwindow') == ('A|s1|x', 'coinwindow')
+    assert R.window_arm_of('A|s1|x|F1') is None and R.window_arm_of('window') is None
+
+
+def test_hist_bins_and_quantiles():
+    assert R.hist_bins([1, 2, 5]) == ['<1', '1..2', '2..5', '>=5'] and R.hist_bins([0, -0.01, -0.2]) == ['>0', '-0.01..0', '-0.2..-0.01', '<=-0.2']
+    assert R.hist_quantile([1, 2, 5], [0, 0, 0, 0], 0.5) is None
+    assert R.hist_quantile([1, 2, 5], [1, 2, 1, 0], 0.5) == '1..2' and R.hist_quantile([1, 2, 5], [1, 2, 1, 0], 0.25) == '<1'
+    # The 3rd of 4 binned values (q 0.75) is still in '1..2'; the 4th (q 1) is in '2..5'.
+    assert R.hist_quantile([1, 2, 5], [1, 2, 1, 0], 0.75) == '1..2' and R.hist_quantile([1, 2, 5], [1, 2, 1, 0], 1.0) == '2..5'
+    assert R.hist_quantile([1, 2, 5], [0, 0, 0, 3], 0.5) == '>=5'
+    s = R.hist_summary('tWin', [0] * 3 + [4] + [0] * 6)
+    assert s['median'] == s['q1'] == s['q3'] == '3..5' and s['total'] == 4 and len(s['bins']) == 10
+
+
+def test_a_run_without_the_window_block_has_no_league_and_says_so():
+    e = e2e()
+    ot = e['summary']['one_test']
+    assert not ot['run'] and 'no window block' in ot['reason'] and ot['files'] == []
+    assert not os.path.exists(os.path.join(e['out'], 'league.md')) and '- not run: the shards carry no window block' in e['report']
+    assert e['summary']['registry']['one_test_rows'] == 0
 
 
 if __name__ == '__main__':

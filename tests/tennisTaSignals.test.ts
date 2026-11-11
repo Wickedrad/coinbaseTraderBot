@@ -7,8 +7,10 @@ import { orderFee } from '../bot/fees';
 import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { positionNetAtBid } from '../bot/strategy/fairValueStrategy';
 import { MatchTracker, PROGRESS_LATCH_MS } from '../bot/tennis/tennisStrategy';
+import type { KalshiCandle } from '../research/history/kalshiHistory';
 import { FEES, H_LOT_CAP, latchedProgress, PLACEBO_MIN_SEC, SIGNAL_SPEC, SignalStudy, type EntryTrace } from '../research/tennisTaSignals';
 import type { FamilyBCell, MatchGrid } from '../research/tennisTaTypes';
+import { contractsFor, drawTwins, endRuleTs, levelFor, minuteCandles, WindowAgg, windowOutcome, type MinuteCandles } from '../research/tennisTaWindow';
 
 // Synthetic MatchGrids (stratum H, one-level 1c books, imbalance 0) for family B of the tennis TA trial.
 
@@ -840,4 +842,185 @@ test('design size covers every reported cell', () => {
   const wide = new SignalStudy({ settleFrac: 0.2, endEntryMargin: 0.05 });
   wide.addMatch(grid(rwPath(40, 2 * 3600), { seed: 60, day: '2026-04-01', live: 600, progEnd: 1, resultA: 1 }));
   assert.equal(wide.designSize(), 38 * 2 * 26 * 5);
+});
+
+// ---- The window test (Amendment 4, research/tennisTaWindow.ts through SignalStudy.exportWindow) -------------------------
+
+/** A path that holds one level a whole minute: level(m) of minute m, rounded to the cent. */
+const minutePath = (n: number, level: (m: number) => number) => pathOf(n, (i) => Math.round(level(Math.floor(i / 60)) * 100) / 100);
+
+/** 0.60 until minute m0, then a 1c-a-minute fall of `down` minutes and a 1c-a-minute rise of `up` minutes, then flat. */
+const vPath = (n: number, m0: number, down: number, up: number) =>
+  minutePath(n, (m) => (m < m0 ? 0.60 : m < m0 + down ? 0.60 - 0.01 * (m - m0 + 1) : m < m0 + down + up ? 0.60 - 0.01 * down + 0.01 * (m - m0 - down + 1) : 0.60 - 0.01 * (down - up)));
+
+/** Kalshi-style minute candles of a grid's two markets from its own books (close = the minute's last sample, low = the
+ *  minute's lowest bid), behind a listing candle at t0 that minuteCandles drops, cut at the close sample's time. */
+function candlesOf(g: MatchGrid): { a: MinuteCandles; b: MinuteCandles } {
+  const empty = { bidO: null, bidH: null, askO: null, askH: null, askL: null, last: null, volume: null, oi: null };
+  const mk = (bid: Float64Array, ask: Float64Array): MinuteCandles => {
+    const raw: KalshiCandle[] = [{ ts: g.t0, bidL: null, bidC: null, askC: null, ...empty }];
+    for (let k = 0; (k + 1) * 60 <= g.n; k++) {
+      let lo = Infinity;
+      for (let i = k * 60; i < (k + 1) * 60; i++) if (bid[i] < lo) lo = bid[i];
+      const last = (k + 1) * 60 - 1;
+      raw.push({ ts: g.t0 + (k + 1) * 60_000, bidL: lo, bidC: bid[last], askC: ask[last], ...empty });
+    }
+    return minuteCandles(raw, g.t0 + g.closeIdx * 1000);
+  };
+  return { a: mk(g.bidA, g.askA), b: mk(g.bidB, g.askB) };
+}
+const RSI1M = 'RSI14L|1m|exitExt';
+/** The study's phase names (the trace's context) -> the window rows' (research/tennisTaSim.ts phaseLabel, C12). */
+const C12_PHASE: Record<string, string> = { pre: 'pre', first20: 'e20', t1: 'p1', t2: 'p2', t3: 'p3' };
+const entryMinute = (t: number) => new Date(Math.ceil(t / 60_000) * 60_000).toISOString().slice(0, 16);
+/** The instance the core builds from a traced entry: at the fill sample's ask, C = floor($10 / ask), the level after both
+ *  fees and 1c, the window on the called market's candles under `end`, twins seeded event|row id|entry minute. */
+function coreInstance(g: MatchGrid, cand: { a: MinuteCandles; b: MinuteCandles }, tr: EntryTrace, id: string, end: number) {
+  const side: 'a' | 'b' = tr.side === 'A' ? 'a' : 'b';
+  const t = g.t0 + tr.fill * 1000, ask = tr.entryPx, C = contractsFor(ask), level = levelFor(ask, C, FEES);
+  const outcome = windowOutcome(cand[side], t, ask, level, end);
+  const twins = drawTwins(cand.a, cand.b, t, end, `${g.event}|${id}|${entryMinute(t)}`, 3, 10, side);
+  return { inst: { event: g.event, side, leg: tr.dir, t, ask, C, level, phase: C12_PHASE[tr.context.split(':')[1]], outcome, twins }, ask, C, level, outcome, twins };
+}
+
+test('window: one RSI entry is one instance per direction at the fill ask, with the level, the outcome and 3 deterministic twins', () => {
+  const trips: EntryTrace[] = [];
+  const st = new SignalStudy({ trace: (t) => trips.push(t) });
+  // 0.60; from minute 10 a 30-minute 1c-a-minute fall to 0.30, a 30-minute rise back, flat after: RSI14 on 1 m bars leaves
+  // 30 once, on the way up (long A); the flat tail is masked.
+  const g = grid(vPath(3 * 3600, 10, 30, 30), { seed: 7, day: '2026-04-01', live: 0, progEnd: 0.5, resultA: 1, event: 'EV-WIN' });
+  const cand = candlesOf(g);
+  g.candles = cand;
+  st.addMatch(g);
+  const real = trips.filter((t) => !t.placebo && t.series === RSI1M && t.exit === 'ts2m');
+  assert.equal(real.length, 2, `one RSI entry, taken by both directions: ${real.map((t) => `${t.dir}@${t.decision}`).join(', ')}`);
+  const follow = real.find((t) => t.dir === 'follow')!, fade = real.find((t) => t.dir === 'fade')!;
+  assert.equal(follow.side, 'A');
+  assert.equal(fade.side, 'B');
+  assert.equal(follow.fill, fade.fill);
+  const bw = st.exportWindow();
+  assert.deepEqual(bw.events, ['EV-WIN']);
+  // The design on H: 11 readings x 2 bars x 2 directions, instances or none, no leg key, one slot per event.
+  assert.equal(bw.rows.length, 44);
+  assert.equal(new Set(bw.rows.map((r) => r.id)).size, 44);
+  for (const r of bw.rows) {
+    assert.ok(!('leg' in r), r.id);
+    assert.match(r.id, /^[A-Z0-9_]+\|(1m|5m)\|(follow|fade)$/);
+    for (const k of ['n', 'w', 'tn', 'tw'] as const) assert.equal(r[k].length, 1);
+    assert.deepEqual(Object.keys(r.byPhase), ['pre', 'e20', 'p1', 'p2', 'p3']);
+  }
+  assert.equal(bw.rows[0].id, 'RSI14L|1m|follow');
+  assert.equal(bw.rows[1].id, 'RSI14L|1m|fade');
+  assert.equal(bw.rows[2].id, 'RSI14L|5m|follow');
+  assert.equal(st.diagnostics().noCandles, 0);
+  assert.ok(st.diagnostics().windowInstances >= 2);
+  // The end rule never fires (progress ends at 0.5): the close sample's time.
+  const end = endRuleTs(latchedProgress(g.progress), g.t0, 1000, g.t0 + g.closeIdx * 1000);
+  assert.equal(end, g.t0 + g.closeIdx * 1000);
+  // Follow: A bought on the way up near 0.35; the level a few cents above; A keeps rising 1c a minute: a window within
+  // minutes. The row is the core's own row of that instance.
+  const f = coreInstance(g, cand, follow, 'RSI14L|1m|follow', end);
+  assert.ok(f.ask >= 0.31 && f.ask <= 0.40, `follow ask ${f.ask}`);
+  assert.equal(f.C, Math.floor(10 / f.ask + 1e-9));
+  assert.ok(f.level > f.ask + 0.01 && f.level < f.ask + 0.08, `level ${f.level} for ask ${f.ask}`);
+  assert.ok(f.outcome.win && f.outcome.tWin! > 0 && f.outcome.tWin! <= 10, `follow window ${JSON.stringify(f.outcome)}`);
+  assert.equal(f.twins.length, 3);
+  const exp = new WindowAgg('RSI14L|1m|follow', undefined, new Map([['EV-WIN', 0]]));
+  exp.add(f.inst);
+  const row = bw.rows.find((r) => r.id === 'RSI14L|1m|follow')!;
+  assert.deepEqual(row, exp.row());
+  assert.deepEqual(row.n, [1]);
+  assert.deepEqual(row.w, [1]);
+  assert.deepEqual(row.tn, [3]);
+  assert.equal(row.tw[0], f.twins.filter((x) => x.outcome.win).length);
+  assert.deepEqual(row.asks, [1, f.ask]);
+  assert.equal(row.endNoWin, 0);
+  assert.deepEqual(row.byPhase[f.inst.phase], [1, 1]);
+  // Fade: B bought while it falls, never back at the level: no window, resolved by the close (the end rule never fired).
+  const fd = coreInstance(g, cand, fade, 'RSI14L|1m|fade', end);
+  assert.ok(fd.ask >= 0.60 && fd.ask <= 0.70, `fade ask ${fd.ask}`);
+  assert.ok(!fd.outcome.win && fd.outcome.resolvedBy === 'close', JSON.stringify(fd.outcome));
+  const expF = new WindowAgg('RSI14L|1m|fade', undefined, new Map([['EV-WIN', 0]]));
+  expF.add(fd.inst);
+  const frow = bw.rows.find((r) => r.id === 'RSI14L|1m|fade')!;
+  assert.deepEqual(frow, expF.row());
+  assert.deepEqual(frow.n, [1]);
+  assert.deepEqual(frow.w, [0]);
+  assert.deepEqual(frow.tn, [3]);
+  assert.equal(frow.endNoWin, 1);
+  // The twins are the instance's own draw: another row id (the seed key) draws differently from the same minute.
+  assert.notDeepEqual(f.twins.map((x) => [x.side, x.ts]), fd.twins.map((x) => [x.side, x.ts]));
+  // Deterministic: the same grid in a new study gives the same rows.
+  const st2 = new SignalStudy();
+  st2.addMatch(g);
+  assert.deepEqual(st2.exportWindow(), bw);
+});
+
+test('window: a reading that fires twice in a match has n = 2, each entry an instance with its own twins', () => {
+  const trips: EntryTrace[] = [];
+  const st = new SignalStudy({ trace: (t) => trips.push(t) });
+  // Two Vs: 0.60 -> 0.30 -> 0.40 (RSI leaves 30 on the way up and ends near 50, never above 70), flat, then 0.40 -> 0.30 ->
+  // 0.40 (leaves 30 again), flat after. No fall crosses 70 from above, so the RSI series fires exactly twice, both long A,
+  // more than 30 min apart (the first entry's lock is long over).
+  const p = minutePath(3 * 3600, (m) => (m < 10 ? 0.60 : m < 40 ? 0.60 - 0.01 * (m - 9) : m < 50 ? 0.30 + 0.01 * (m - 39) : m < 100 ? 0.40 : m < 110 ? 0.40 - 0.01 * (m - 99) : m < 120 ? 0.30 + 0.01 * (m - 109) : 0.40));
+  const g = grid(p, { seed: 8, day: '2026-04-02', live: 0, progEnd: 0.5, resultA: 1, event: 'EV-TWICE' });
+  const cand = candlesOf(g);
+  g.candles = cand;
+  st.addMatch(g);
+  const real = trips.filter((t) => !t.placebo && t.series === RSI1M && t.dir === 'follow' && t.exit === 'ts2m');
+  assert.equal(real.length, 2, `RSI entries at ${real.map((t) => t.decision).join(', ')}`);
+  assert.ok(real.every((t) => t.side === 'A'));
+  assert.ok(real[1].decision - real[0].decision > 1800);
+  const bw = st.exportWindow();
+  assert.deepEqual(bw.events, ['EV-TWICE']);
+  const row = bw.rows.find((r) => r.id === 'RSI14L|1m|follow')!;
+  assert.deepEqual(row.n, [2]);
+  assert.deepEqual(row.tn, [6]);
+  assert.equal(row.asks[0], 2);
+  assert.ok(Math.abs(row.asks[1] - (real[0].entryPx + real[1].entryPx)) < 1e-9);
+  const end = endRuleTs(latchedProgress(g.progress), g.t0, 1000, g.t0 + g.closeIdx * 1000);
+  const exp = new WindowAgg('RSI14L|1m|follow', undefined, new Map([['EV-TWICE', 0]]));
+  const insts = real.map((tr) => coreInstance(g, cand, tr, 'RSI14L|1m|follow', end));
+  for (const x of insts) exp.add(x.inst);
+  assert.deepEqual(row, exp.row());
+  // Each entry's twins are seeded by its own minute.
+  assert.notEqual(entryMinute(insts[0].inst.t), entryMinute(insts[1].inst.t));
+  assert.notDeepEqual(insts[0].twins.map((x) => [x.side, x.ts]), insts[1].twins.map((x) => [x.side, x.ts]));
+  // The fade row holds the same two entries on B.
+  const frow = bw.rows.find((r) => r.id === 'RSI14L|1m|fade')!;
+  assert.deepEqual(frow.n, [2]);
+  assert.deepEqual(frow.tn, [6]);
+});
+
+test('window: a grid without candles is counted and gets no slot; the event study is the same with or without candles', () => {
+  const mk = () => [
+    grid(vPath(2 * 3600, 10, 30, 30), { seed: 11, day: '2026-04-03', live: 0, progEnd: 0.5, resultA: 1, event: 'EV-C' }),
+    grid(rwPath(31, 2 * 3600), { seed: 12, day: '2026-04-03', live: 600, progEnd: 1, resultA: 0, event: 'EV-NOC' }),
+  ];
+  const [a1, b1] = mk();
+  a1.candles = candlesOf(a1);
+  const st = new SignalStudy();
+  st.addMatch(b1);
+  st.addMatch(a1);
+  assert.equal(st.diagnostics().noCandles, 1);
+  assert.ok(st.diagnostics().windowInstances > 0);
+  const bw = st.exportWindow();
+  assert.deepEqual(bw.events, ['EV-C']);
+  for (const r of bw.rows) for (const k of ['n', 'w', 'tn', 'tw'] as const) assert.equal(r[k].length, 1);
+  assert.ok(bw.rows.some((r) => r.n[0] > 0));
+  // The event study's cells do not depend on the candles (the window test only reads its entries).
+  const [a2, b2] = mk();
+  const bare = new SignalStudy();
+  bare.addMatch(b2);
+  bare.addMatch(a2);
+  assert.deepEqual(st.exportCells().cells, bare.exportCells().cells);
+  assert.equal(bare.diagnostics().noCandles, 2);
+  assert.equal(bare.diagnostics().windowInstances, 0);
+  const none = bare.exportWindow();
+  assert.deepEqual(none.events, []);
+  assert.equal(none.rows.length, 44);
+  for (const r of none.rows) { assert.deepEqual(r.n, []); assert.equal(r.endNoWin, 0); assert.deepEqual(r.asks, [0, 0]); }
+  // The settings record the rule's constants; no stratum (no grid, none given) throws as exportCells does.
+  assert.deepEqual((st.exportCells().diagnostics as { settings: { window: unknown } }).settings.window, { version: 'tennis-ta-window/1', settleFrac: 0.3, orderUsd: 10, twins: 3, seed: 20261105 });
+  assert.throws(() => new SignalStudy().exportWindow(), /stratum/);
 });

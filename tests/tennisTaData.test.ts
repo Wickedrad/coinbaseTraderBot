@@ -7,11 +7,11 @@ import { test } from 'node:test';
 import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles';
 import { buildHistoryReplay } from '../research/history/historyReplay';
 import {
-  BEAT_KIND, BEAT_MS, BEAT_PAUSE_MS, CUT_VERSION, SOCKET_BEAT, inventory, matchSeriesTest, matchTime, recordedTennis, startEraWeek,
+  BEAT_KIND, BEAT_MS, BEAT_PAUSE_MS, CUT_VERSION, FULL_BOOK_FROM, SOCKET_BEAT, inventory, matchSeriesTest, matchTime, recordedTennis, startEraWeek,
   weekEdge, weekOf, type WeekRow,
 } from '../research/tennisTaData';
 import { FEED_SILENCE_MS, HEARTBEAT_KIND, SOCKET_BEAT_KIND, feedTimeline } from '../research/tennisTaSim';
-import { CHECK_FROM, HISTORY_FROM, LOCKBOX_FROM, START_ERA_FROM, mondayEdge } from '../research/tennisTaSweep';
+import { CHECK_FROM, FULL_BOOK_FROM as SWEEP_FULL_BOOK_FROM, HISTORY_FROM, LOCKBOX_FROM, START_ERA_FROM, mondayEdge, recordedPoolOf } from '../research/tennisTaSweep';
 
 const DAY = 86_400_000, H = 3_600_000, MIN = 60_000;
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'tta-data-'));
@@ -69,9 +69,40 @@ test('the cut keeps a tennis match\'s lines on a day without its market line and
   assert.ok(!got.some((l) => l.ticker === BTC || l.k === 'spot' || l.k === 'snn'), 'crypto, price and SNN lines dropped');
   // Beats: the first source line (a crypto market line) and the file's last line. No ws_beat: every crypto socket line
   // comes within 5 s of a tennis one and right before the next (the tennis socket lines mark the socket themselves).
-  assert.deepEqual(r, { cut: CUT_VERSION, lines: src.length, kept: got.length, beats: 2, sockBeats: 0, matches: 3, carried: 2, markets: 1, scores: 1 });
+  // Nov 5 is before the Nov 10 03:44 UTC book fix: a practice day, every tennis line kept thin (Amendment 4 item 9).
+  assert.deepEqual(r, { cut: CUT_VERSION, fullBookFrom: '2026-11-10T03:44:00.000Z', practice: true, thinLines: data.length, lines: src.length, kept: got.length, beats: 2, sockBeats: 0, matches: 3, carried: 2, markets: 1, scores: 1 });
   assert.deepEqual(got[0], { t: T0 + 1000, k: 'beat' }, 'the first source line (a crypto market line) starts the beat');
   assert.deepEqual(got[got.length - 1], { t: T0 + 2500, k: 'beat' }, 'the last source line is marked');
+});
+
+test('the cut labels a recorded day before FULL_BOOK_FROM as practice data, and counts the thin lines of the day the fix landed', async () => {
+  // The cut's copy of the sweep's constant (the download job does not load the sim): the two must agree.
+  assert.equal(FULL_BOOK_FROM, SWEEP_FULL_BOOK_FROM);
+  assert.equal(FULL_BOOK_FROM, Date.parse('2026-11-10T03:44:00Z'));
+  const d = tmp();
+  const day = async (name: string, ts: number[]) => {
+    const src = ts.flatMap((t, i) => [
+      { t, k: 'book', ticker: TEN, bids: [[0.55, 10]], asks: [[0.57, 12]], ts: t },
+      { t: t + 100, k: 'trade', ticker: TEN2, price: 0.44, count: i + 1, takerSide: 'no', ts: t + 100 },
+    ]);
+    return recordedTennis(writeDay(path.join(d, 'rec'), name, src), path.join(d, 'cut', `md-${name}.jsonl.gz`));
+  };
+  // The day before the fix: every line thin, the day is practice.
+  const before = await day('2026-11-09', [Date.parse('2026-11-09T01:00:00Z'), Date.parse('2026-11-09T23:59:00Z')]);
+  assert.deepEqual([before.practice, before.thinLines, before.kept - before.beats - before.sockBeats], [true, 4, 4]);
+  // The day the fix landed: the lines before 03:44 UTC are thin and counted, the day is not practice.
+  const fix = await day('2026-11-10', [Date.parse('2026-11-10T03:00:00Z'), Date.parse('2026-11-10T03:43:59Z'), Date.parse('2026-11-10T03:44:00Z'), Date.parse('2026-11-10T12:00:00Z')]);
+  assert.deepEqual([fix.practice, fix.thinLines, fix.kept - fix.beats - fix.sockBeats], [false, 4, 8]);
+  // A later day: full books, nothing thin.
+  const after = await day('2026-11-11', [Date.parse('2026-11-11T14:00:00Z')]);
+  assert.deepEqual([after.practice, after.thinLines, after.fullBookFrom], [false, 0, '2026-11-10T03:44:00.000Z']);
+  // A file with no timed line is not called practice.
+  const none = await recordedTennis(writeDay(path.join(d, 'rec'), '2026-11-08', [{ k: 'note' }]), path.join(d, 'cut', 'md-2026-11-08.jsonl.gz'));
+  assert.deepEqual([none.practice, none.thinLines, none.lines], [false, 0, 1]);
+  // The sweep labels a recorded match the same way, by its start (research/tennisTaSweep.ts recordedPoolOf).
+  const units = JSON.parse(fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'models', 'tennis-ta', 'state', 'units.json'), 'utf8'));
+  assert.equal(recordedPoolOf({ start: Date.parse('2026-11-09T01:00:00Z'), close: Date.parse('2026-11-09T04:00:00Z'), startPublished: true }, units), 'practice');
+  assert.notEqual(recordedPoolOf({ start: FULL_BOOK_FROM, close: FULL_BOOK_FROM + 3 * H, startPublished: true }, units), 'practice');
 });
 
 test('the beat kinds are the ones the sim reads', () => {

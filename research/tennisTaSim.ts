@@ -88,9 +88,32 @@
 // the spec id (rng(PLACEBO_SEED ^ hash32(spec.id))), so each coin config has its own stream and a re-run reproduces it.
 // Amendment 3 is drafted and goes into the pre-registration before the stage 1 counting run; until it does, the registered
 // text (section 7, Placebo A: a coin flip per signal at the match's firing rate) differs from this control.
+//
+// Window mode (Amendment 4, Steven's one test; research/tennisTaWindow.ts holds the rule): a SimSpec with `window` trades
+// nothing. At the first decision at which production's decideMatch (the config's TennisConfig, the production profit
+// rules, the fair-value block and the spread rule as production has them) emits a leg's entry plan (underdog_entry,
+// fav_entry) for a flat market, the arm records a signal instance: a taker buy of the called market at the ask the
+// decision saw (the sim's quote view, the synthetic book's ask on H: the last candle close or trade, never a later one),
+// C = contractsFor(ask) contracts, its level levelFor(ask, C) on WINDOW_FEES (item 3: the tennis taker multiplier 1, the
+// schedule the twins and family B are judged on, whatever the market's dated schedule says; the virtual position's held
+// fields still carry production's fee view). The market is then held virtually, so the tracker and decideMatch go on as
+// production does after a fill (MatchTracker.underdogEntered / favEntered: each leg fires at most once a match), with the
+// budget view as if flat (no cap binds), no fee, pacer or risk accounting, and every exit plan ignored (no sell, no pacer,
+// no end cut). The virtual position is released, the market flat again, at the first decision at or after its window
+// minute (the first candle minute of the called market, SweepOpts.candlesOf, ending after the entry, two-sided, with its
+// lowest bid at or above the level), or once the match reached the end rule at an earlier decision (the config's own
+// tracker's latched progressHigh at 1 - SETTLE_FRAC), or at the close; so the favourite leg can fire after the underdog's
+// resolution. No entry plan at or after the end-rule decision is an instance (items 2 and 4: the instance is taken under
+// the H end rule, and a window must end after the entry and at or before the end rule, so such an entry has no horizon
+// while its twins would have one): production's entry block stops those plans itself, the settle-hold stick (the cut off)
+// does not, and its released position being flat again, it would emit the leg's plan at every later decision. At the
+// match's end every instance gets its verdict from windowOutcome under the end rule (the first decision at which the
+// tracker's progressHigh reached 1 - SETTLE_FRAC, else the strategy's close) and its twins from drawTwins, seeded
+// `${event}|${spec id}|${leg}|${entry minute}` (the entry minute's end, YYYY-MM-DDTHH:MM). Without candlesOf an instance
+// resolves 'none' and has no twin. The P&L path is untouched for every other arm.
 
 import { loadConfig, paperEnv, type TennisConfig } from '../bot/config';
-import { orderFee } from '../bot/fees';
+import { orderFee, takerFee } from '../bot/fees';
 import { contractKind } from '../bot/model/fairValue';
 import type { OrderBook } from '../bot/marketdata/orderBook';
 import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
@@ -102,10 +125,12 @@ import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles
 import { decideMatch, MatchTracker, type MatchMarket, type TennisPlan, type TennisProfitRules } from '../bot/tennis/tennisStrategy';
 import { readRecordings, ReplayState, type LineFilter, type RecEvent } from './replay';
 import type { ConfigDay, ConfigRun, MatchGrid } from './tennisTaTypes';
+import { contractsFor, drawTwins, levelFor, ORDER_USD, SETTLE_FRAC, TWINS, WINDOW_FEES, windowOutcome, type MinuteCandles, type WindowInstance } from './tennisTaWindow';
 
 /** Tennis match series: quadratic_with_maker_fees, multiplier 1 (Kalshi GET /series/fee_changes, since 2025-11-15). */
 export const FEES: FeeSchedule = { takerMultiplier: 1, makerMultiplier: 1 };
 const DEC_MS = 5000;
+const MIN = 60_000;
 const TAKEN_REPLENISH_MS = 60_000;
 const DAY = 86_400_000;
 /** Production marks books alive only while the socket has had a message within this long (bot/marketdata/marketData.ts). */
@@ -146,6 +171,11 @@ export interface SimSpec {
   placebo?: 'coin';
   /** Decision clock phase (noise-floor runs): ms after every 5 s boundary, 0..4999. */
   offsetMs?: number;
+  /** Window mode (Amendment 4, research/tennisTaWindow.ts; the header): the arm trades nothing and records a signal instance
+   *  at the first decision at which decideMatch emits a leg's entry plan for a flat market (SimRun.instances). The sweep
+   *  builds its ids ('...|window', '...|coinwindow'); fill 'F1' by convention (no order rests: the fill model plays no part);
+   *  placebo 'coin' allowed. */
+  window?: true;
 }
 
 interface SimOrder {
@@ -169,10 +199,35 @@ export interface Episode {
   br?: 1;
 }
 interface OpenEp { event: string; ticker: string; t: number; leg: string; px: number; n: number; ph: string; sig: number; base: number }
+/** Window mode: one virtual position (Amendment 4 item 2), a taker buy of C contracts of the called market at the ask the
+ *  decision saw, held until the online release (the window minute, the end rule) or the match's end. */
+interface VirtualPos {
+  event: string; ticker: string; side: 'a' | 'b'; leg: 'underdog' | 'fav'; t: number; ask: number; C: number;
+  /** levelFor(ask, C) on WINDOW_FEES (Amendment 4 item 3), the twins' schedule. */
+  level: number;
+  /** The entry fee a contract (the taker fee on C at the ask, the market's stressed, dated schedule): the open contracts'
+   *  cost as production's held fields carry it (openSidePrice + openEntryFee); production's fee view, not the level's. */
+  feePer: number;
+  phase: string; sig: number;
+  /** Next candle of the called market to read for the window minute (the online release). */
+  scan: number;
+}
+/** Window mode: a live match's state in one config. */
+interface WinEvent {
+  tickers: string[];
+  /** The strategy's close (the earliest market close): the end rule when the latched progress never reaches it. */
+  closeTime: number;
+  /** The window rule's candles of markets A and B (SweepOpts.candlesOf), fetched once; [] without. */
+  candles?: [MinuteCandles, MinuteCandles];
+  /** The end rule: the first decision at which the config's tracker's latched progress reached 1 - SETTLE_FRAC. */
+  endRuleAt?: number;
+  insts: VirtualPos[];
+}
 /** One owned match, in the order every config finished it. `start` is the published start, else the earliest market-line
  *  time (bookkeeping only: ownership, day, unit); `startPublished` says which. */
 export interface MatchInfo { event: string; series: string; day: string; start: number; startPublished: boolean; close: number; tickers: string[]; trades: number; unresolved: boolean; resultA?: 0 | 1 }
-export type SimRun = ConfigRun & { pnl: number[]; episodes: Episode[] };
+/** A config's run; `instances` (every signal instance of the owned matches, in finish order) only on a window arm. */
+export type SimRun = ConfigRun & { pnl: number[]; episodes: Episode[]; instances?: WindowInstance[] };
 type Sig = { score: number; momentum: boolean; flow: boolean; depth: boolean; crossMarket: boolean };
 export const sigBits = (s: Omit<Sig, 'score'>) => (+s.momentum) | (+s.flow << 1) | (+s.depth << 2) | (+s.crossMarket << 3);
 export const sigOf = (b: number): Sig => {
@@ -297,6 +352,16 @@ export class ConfigSim {
   readonly placebo?: PlaceboReservoir;
   private nextId = 1;
   private readonly beCache = new Map<string, { key: string; be: number | undefined }>();
+  /** Window mode (SimSpec.window, Amendment 4): no order, no fill; signal instances with virtual positions instead. */
+  readonly window: boolean;
+  /** Window mode: the window rule's candles of a market (SweepOpts.candlesOf, set by the sweep); undefined = none (an
+   *  instance then resolves 'none', without twins). */
+  candlesOf?: (ticker: string) => MinuteCandles | undefined;
+  /** Window mode: the virtual positions by ticker, each live match's state, and the instances of the finished owned
+   *  matches in finish order (SimRun.instances). */
+  private readonly virtual = new Map<string, VirtualPos>();
+  private readonly winEv = new Map<string, WinEvent>();
+  readonly instances: WindowInstance[] = [];
 
   constructor(readonly spec: SimSpec) {
     if ('HARNESS_LOSER_CUT' in spec.overrides) throw new Error(`${spec.id}: HARNESS_LOSER_CUT no longer exists (the settle-hold stick is TENNIS_END_LOSER_CUT=false)`);
@@ -313,6 +378,7 @@ export class ConfigSim {
     this.latency = (spec.fill === 'F0' ? 0 : 1000) + Math.max(0, Number(spec.overrides.HARNESS_LATENCY_MS ?? 0));
     this.slipTicks = spec.fill === 'F2' ? 1 : 0;
     this.offset = Math.max(0, Math.min(DEC_MS - 1, spec.offsetMs ?? 0));
+    this.window = spec.window === true;
     if (spec.placebo === 'coin') this.placebo = new PlaceboReservoir(rng((PLACEBO_SEED ^ hash32(spec.id)) >>> 0));
   }
 
@@ -358,6 +424,7 @@ export class ConfigSim {
    *  cost openSidePrice + openEntryFee with this market's (stressed, dated) fee schedule; costPer the same cost, only for the
    *  research loser stop and only when positive. Undefined when flat. */
   held(ticker: string, bid: { price: number } | undefined, ask: { price: number } | undefined): HeldFields | undefined {
+    if (this.window) return this.heldVirtual(ticker, bid, ask);
     const p = this.pos.get(ticker);
     if (!p || p.settled || Math.abs(p.yes) < 1e-9) return undefined;
     if (!(p.yes > 0)) return { position: p.yes };
@@ -370,6 +437,103 @@ export class ConfigSim {
     const out: HeldFields = { position: p.yes, avgEntry, netAtBid: positionNetAtBid(p.yes, cost, bid, ask, fees), breakEven: be.be };
     if (this.loserStopFrac !== undefined && cost > 1e-9) out.costPer = cost;
     return out;
+  }
+
+  /** Window mode: the virtual position's fields as production's held fields would carry a taker fill at the ask (position C,
+   *  avgEntry the ask, netAtBid and breakEven on the cost ask + the entry fee a contract); undefined when flat. */
+  private heldVirtual(ticker: string, bid: { price: number } | undefined, ask: { price: number } | undefined): HeldFields | undefined {
+    const v = this.virtual.get(ticker);
+    if (!v) return undefined;
+    const fees = this.fees(ticker);
+    const cost = v.ask + v.feePer;
+    const out: HeldFields = { position: v.C, avgEntry: v.ask, netAtBid: positionNetAtBid(v.C, cost, bid, ask, fees), breakEven: breakEvenExit(v.C, cost, fees) };
+    if (this.loserStopFrac !== undefined && cost > 1e-9) out.costPer = cost;
+    return out;
+  }
+
+  /** Window mode: the candles of a match's market 'a' | 'b' (fetched once a match; [] without). */
+  private windowCandles(ws: WinEvent, side: 'a' | 'b'): MinuteCandles {
+    if (!ws.candles) {
+      const get = (t: string | undefined) => (t !== undefined ? this.candlesOf?.(t) : undefined) ?? [];
+      ws.candles = [get(ws.tickers[0]), get(ws.tickers[1])];
+    }
+    return ws.candles[side === 'a' ? 0 : 1];
+  }
+
+  /** Window mode, before a decision at `now`: a virtual position is released (its market flat to the tracker and decideMatch
+   *  from here) once the match reached the end rule at an earlier decision, or at the first decision at or after its window
+   *  minute: the first candle minute of the called market ending after the entry, two-sided, with its lowest bid at or above
+   *  the level. Candles are read up to `now` only. The verdict itself is windowOutcome's at the match's end (finish); this
+   *  release only lets the next leg fire, as production's tracker sees a closed position. */
+  windowRelease(event: string, now: number): void {
+    const ws = this.winEv.get(event);
+    if (!ws) return;
+    for (const t of ws.tickers) {
+      const v = this.virtual.get(t);
+      if (!v) continue;
+      if (ws.endRuleAt !== undefined && ws.endRuleAt <= now) { this.virtual.delete(t); continue; }
+      const mc = this.windowCandles(ws, v.side);
+      while (v.scan < mc.length && mc[v.scan].ts <= now) {
+        const c = mc[v.scan++];
+        if (c.ts > v.t && c.twoSided && c.bidL >= v.level - 1e-9) { this.virtual.delete(t); break; }
+      }
+    }
+  }
+
+  /** Window mode, after a decision at `now` (Amendment 4 items 1-4): the plans of decideMatch. First the end rule is
+   *  latched: the first decision at which the config's tracker's progressHigh (production's latch, updated inside
+   *  decideMatch) reached 1 - SETTLE_FRAC; from that decision on no entry plan is an instance (a window must end after the
+   *  entry and at or before the end rule: such an entry has no horizon, while its twins would have one; production's entry
+   *  block stops these plans itself, the settle-hold stick does not). Before it, the entry plan of a leg (underdog_entry ->
+   *  'underdog', fav_entry -> 'fav') for a market with no virtual position is a signal instance, taken at this decision as a
+   *  taker buy of the called market at the ask the decision saw (`markets`, the sim's quote view, never a later candle),
+   *  C = contractsFor(ask), level = levelFor(ask, C) on WINDOW_FEES (item 3: the tennis taker multiplier 1, the twins'
+   *  schedule, never the market's dated one), with the match's phase label and the last confluence reading; the market is
+   *  held virtually from here. Every other plan (the exits, the pacer's, the end cut) is ignored: nothing is placed,
+   *  nothing fills. */
+  windowDecision(event: string, tickers: string[], closeTime: number, plans: TennisPlan[], markets: MatchMarket[], tr: MatchTracker, now: number): void {
+    let ws = this.winEv.get(event);
+    if (!ws) { ws = { tickers: [...tickers], closeTime, insts: [] }; this.winEv.set(event, ws); }
+    else if (ws.tickers.length !== tickers.length || ws.tickers.some((t, i) => t !== tickers[i])) { ws.tickers = [...tickers]; ws.candles = undefined; }
+    ws.closeTime = closeTime;
+    if (ws.endRuleAt === undefined && tr.progressHigh >= 1 - SETTLE_FRAC - 1e-9) ws.endRuleAt = now;
+    if (ws.endRuleAt !== undefined) return;
+    for (const p of plans) {
+      if (p.side !== 'bid' || p.reduceOnly || (p.leg !== 'underdog_entry' && p.leg !== 'fav_entry') || this.virtual.has(p.ticker)) continue;
+      const k = tickers.indexOf(p.ticker);
+      if (k !== 0 && k !== 1) continue;
+      const ask = markets.find((m) => m.ticker === p.ticker)?.quote.ask;
+      if (ask === undefined || !(ask > 0)) continue;
+      const side: 'a' | 'b' = k === 0 ? 'a' : 'b';
+      const C = contractsFor(ask);
+      const level = levelFor(ask, C, WINDOW_FEES);
+      const mc = this.windowCandles(ws, side);
+      let scan = 0;
+      while (scan < mc.length && mc[scan].ts <= now) scan++;
+      const v: VirtualPos = { event, ticker: p.ticker, side, leg: p.leg === 'underdog_entry' ? 'underdog' : 'fav', t: now, ask, C, level, feePer: takerFee(C, ask, this.fees(p.ticker)) / C, phase: this.phaseOf.get(event) ?? 'pre', sig: this.lastSig.get(p.ticker) ?? 0, scan };
+      this.virtual.set(p.ticker, v);
+      ws.insts.push(v);
+    }
+  }
+
+  /** Window mode, at a match's end: every instance's verdict (windowOutcome under the end rule: the first decision at which
+   *  the tracker's progressHigh reached 1 - SETTLE_FRAC, else the strategy's close) and its twins (drawTwins, seeded
+   *  `${event}|${spec id}|${leg}|${entry minute}`, the entry minute's end as YYYY-MM-DDTHH:MM), into `instances` (owned
+   *  matches only); the virtual positions dropped. */
+  private finishWindow(event: string, tickers: string[], owned: boolean): void {
+    const ws = this.winEv.get(event);
+    for (const t of [...tickers, ...(ws?.tickers ?? [])]) this.virtual.delete(t);
+    if (!ws) return;
+    this.winEv.delete(event);
+    if (!owned) return;
+    const endRuleTs = Math.min(ws.endRuleAt ?? ws.closeTime, ws.closeTime);
+    const mcA = this.windowCandles(ws, 'a'), mcB = this.windowCandles(ws, 'b');
+    for (const v of ws.insts) {
+      const outcome = windowOutcome(v.side === 'a' ? mcA : mcB, v.t, v.ask, v.level, endRuleTs);
+      const minute = new Date(Math.ceil(v.t / MIN) * MIN).toISOString().slice(0, 16);
+      const twins = drawTwins(mcA, mcB, v.t, endRuleTs, `${event}|${this.spec.id}|${v.leg}|${minute}`, TWINS, ORDER_USD, v.side);
+      this.instances.push({ event, side: v.side, leg: v.leg, t: v.t, ask: v.ask, C: v.C, level: v.level, phase: v.phase, sig: v.sig, outcome, twins });
+    }
   }
 
   /** The settlement audit at a decision: may each held market ride to settlement, by production's ride rule as of now?
@@ -575,6 +739,7 @@ export class ConfigSim {
   /** Close a match into its day (an unresolved match's open positions are dropped, counted as breaches, and their realized
    *  P&L reaches the pacer as a settlement would). */
   finish(event: string, tickers: string[], day: string, unresolved: boolean, ts: number, owned = true): void {
+    if (this.window) this.finishWindow(event, tickers, owned);
     for (const t of tickers) {
       this.resting.delete(t);
       this.pending = this.pending.filter((o) => o.ticker !== t);
@@ -615,7 +780,7 @@ export class ConfigSim {
 
   run(stratum: 'H' | 'R'): SimRun {
     const days = [...this.days.values()].sort((a, b) => a.day.localeCompare(b.day)).map((d) => ({ ...d, pnl: r4(d.pnl), gross: r4(d.gross), fees: r4(d.fees) }));
-    return { id: this.spec.id, overrides: this.spec.overrides, fill: this.spec.fill, ...(this.spec.placebo ? { placebo: this.spec.placebo } : {}), stratum, days, pnl: this.matchPnl, episodes: this.episodes };
+    return { id: this.spec.id, overrides: this.spec.overrides, fill: this.spec.fill, ...(this.spec.placebo ? { placebo: this.spec.placebo } : {}), ...(this.window ? { window: true as const } : {}), stratum, days, pnl: this.matchPnl, episodes: this.episodes, ...(this.window ? { instances: this.instances } : {}) };
   }
 }
 
@@ -819,6 +984,11 @@ export interface SweepOpts {
    *  released once it is over and no owned match of that day or earlier is still live, or 36 h after it ended; a grid
    *  that finishes after its day was released is not delivered (SweepResult.lateGrids). */
   onGrid?: (g: MatchGrid) => void;
+  /** Window mode (Amendment 4): the window rule's candles of a market (research/tennisTaWindow.ts minuteCandles: the first
+   *  stored candle dropped, ending at or before the market's close), for the window arms' instances and twins and for
+   *  MatchGrid.candles; undefined for a market without. Asked at most once per market (cached until the match finishes).
+   *  Unset: no candles (a window arm's instances resolve 'none' without twins; grids carry no candles). */
+  candlesOf?: (ticker: string) => MinuteCandles | undefined;
   log?: (m: string) => void;
   /** R: days before fromDay that are read too (from their start), so a match the bot listed up to 36 h before its start
    *  keeps its market line and its book snapshots (default 7). H reads one day before fromDay (history lists a match
@@ -861,7 +1031,10 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
   const phaseOf = new Map<string, string>();
   const seriesOf = new Map<string, string>();
   const feeFor = (ticker: string) => (o.feeAt ? o.feeAt(seriesOf.get(ticker) ?? '', st.now) : FEES);
-  for (const sim of sims) { sim.phaseOf = phaseOf; sim.feeFor = feeFor; }
+  // Window mode: each market's candles asked of the sweep once, shared by every window arm and the grid.
+  const candleCache = new Map<string, MinuteCandles | undefined>();
+  const candlesOf = o.candlesOf ? (t: string): MinuteCandles | undefined => { if (!candleCache.has(t)) candleCache.set(t, o.candlesOf!(t)); return candleCache.get(t); } : undefined;
+  for (const sim of sims) { sim.phaseOf = phaseOf; sim.feeFor = feeFor; sim.candlesOf = candlesOf; }
   const matchList: MatchInfo[] = [];
   const full = configOf({});
   const defaultCfg = full.tennis;
@@ -960,6 +1133,8 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
       const tick = st.markets.get(ev.tickers[0])?.tickSize ?? 0.01;
       const flows = new Map<number, Array<number | undefined>>();
       for (const sim of cl.sims) {
+        // Window mode: a virtual position whose window minute has ended, or whose match reached the end rule, is released first.
+        if (sim.window) sim.windowRelease(ev.event, now);
         const w = sim.cfg.confWindowSec;
         let fl = flows.get(w);
         if (!fl) { fl = ev.tickers.map((t) => flowOf(t, now, w)); flows.set(w, fl); }
@@ -967,10 +1142,18 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
           const h = sim.held(x.t, x.bb, x.ba);
           return h ? { ...plain[i], flow: fl![i], ...h } : { ...plain[i], flow: fl![i] };
         });
+        const tr = sim.tracker(ev.event);
+        if (sim.window) {
+          // Amendment 4: production's decision with the budget view as if flat (no cap binds); its plans go to the window path
+          // (an entry plan is an instance, every other plan is ignored), nothing is placed and no audit runs.
+          const out = decideMatch(tr, { event: ev.event, now, startTime, markets, closeTime: ev.closeMin, score }, sim.cfg, { bankroll: sim.bankroll, tennisRisk: 0, matchRisk: 0 }, tick, sim.rulesAt(now));
+          decisions++;
+          sim.windowDecision(ev.event, ev.tickers, ev.closeMin, out.plans, markets, tr, now);
+          continue;
+        }
         const held = sim.tickers();
         const tennisRisk = held.length ? held.reduce((s, t) => s + sim.worst(t), 0) : 0;
         const matchRisk = held.length ? ev.tickers.reduce((s, t) => s + (held.includes(t) ? sim.worst(t) : 0), 0) : 0;
-        const tr = sim.tracker(ev.event);
         const out = decideMatch(tr, { event: ev.event, now, startTime, markets, closeTime: ev.closeMin, score }, sim.cfg, { bankroll: sim.bankroll, tennisRisk, matchRisk }, tick, sim.rulesAt(now));
         decisions++;
         // The settlement audit: may each held position ride, by production's ride rule as of now?
@@ -1008,13 +1191,18 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
       for (const sim of sims) sim.finish(ev.event, ev.tickers, ev.day, unresolved, ts);
       const rA = ev.results.get(ev.tickers[0]);
       matchList.push({ event: ev.event, series: ev.series, day: ev.day, start: ev.start, startPublished: ev.startPublished, close: ev.closeMax, tickers: ev.tickers, trades: ev.trades, unresolved, ...(rA ? { resultA: rA === 'yes' ? 1 as const : 0 as const } : {}) });
-      if (ev.grid && ev.tickers.length >= 2 && rA && ev.grid.n > 0) queueGrid(ev.grid.build(ev, o.stratum, rA === 'yes' ? 1 : 0));
+      if (ev.grid && ev.tickers.length >= 2 && rA && ev.grid.n > 0) {
+        const g = ev.grid.build(ev, o.stratum, rA === 'yes' ? 1 : 0);
+        // Window mode: the window rule's candles of both markets ride on the grid (family B's windows).
+        if (candlesOf) g.candles = { a: candlesOf(ev.tickers[0]) ?? [], b: candlesOf(ev.tickers[1]) ?? [] };
+        queueGrid(g);
+      }
     } else {
       // Not owned (outside the slice, or out of the pool): configs never traded it; drop any state.
       for (const sim of sims) sim.finish(ev.event, ev.tickers, ev.day, unresolved, ts, false);
     }
     phaseOf.delete(ev.event);
-    for (const t of ev.tickers) { st.forget(t); st.results.delete(t); evOfTicker.delete(t); seriesOf.delete(t); }
+    for (const t of ev.tickers) { st.forget(t); st.results.delete(t); evOfTicker.delete(t); seriesOf.delete(t); candleCache.delete(t); }
     live.delete(ev.event);
   };
 

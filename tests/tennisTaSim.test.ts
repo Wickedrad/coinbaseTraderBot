@@ -4,15 +4,17 @@ import os from 'os';
 import path from 'path';
 import { test } from 'node:test';
 import { loadConfig, paperEnv } from '../bot/config';
-import { orderFee, type FeeSchedule } from '../bot/fees';
+import { orderFee, takerFee, type FeeSchedule } from '../bot/fees';
 import { OrderBook } from '../bot/marketdata/orderBook';
 import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { HourlyQuotaPacer, QuotaFloors } from '../bot/risk/quotaPacer';
 import { breakEvenExit, positionNetAtBid } from '../bot/strategy/fairValueStrategy';
 import { MatchTracker, PROGRESS_LATCH_MS, type MatchMarket, type TennisPlan } from '../bot/tennis/tennisStrategy';
 import { buildHistoryReplay } from '../research/history/historyReplay';
+import type { KalshiCandle } from '../research/history/kalshiHistory';
 import { ConfigSim, FEES, feedTimeline, hash32, PLACEBO_RESERVOIR, PLACEBO_SEED, PlaceboReservoir, phaseLabel, RESYNC_WINDOW_MS, rng, runSweep, sigBits, SOCKET_BEAT_KIND, type GridWithHigh, type SimSpec } from '../research/tennisTaSim';
 import type { MatchGrid } from '../research/tennisTaTypes';
+import { contractsFor, drawTwins, levelFor, minuteCandles, SETTLE_FRAC, WINDOW_FEES, windowOutcome, type MinuteCandles } from '../research/tennisTaWindow';
 import { comeback, writeRecordingLines, writeScriptedHistory, writeTaHistory, writeTaRecording, type RecordedFeed } from './tennisTaFixture';
 
 const MIN = 60_000;
@@ -764,4 +766,316 @@ test('R: grids reach onGrid in day order; one that finishes after its day was re
     admit: (m) => { seen2.push(`listed ${m.event}`); return true; }, onGrid: (g) => seen2.push(`grid ${g.day} ${g.event}`) });
   assert.deepEqual(seen2, ['listed KXATPMATCH-X', 'listed KXATPMATCH-Y', 'grid 2026-03-04 KXATPMATCH-X', 'listed KXATPMATCH-Z', 'grid 2026-03-05 KXATPMATCH-Y']);
   assert.equal(r2.lateGrids, 0);
+});
+
+// ---- Window mode (Amendment 4): signal instances, virtual positions, the one test's inputs ----------------------------
+
+/** The window rule's candles of every market of a fixture history day file (research/tennisTaWindow.ts minuteCandles on the
+ *  stored candles: the fixtures store closes only, so bidL is the close). */
+function candlesOfHistory(hist: string, day: string): (ticker: string) => MinuteCandles | undefined {
+  const by = new Map<string, MinuteCandles>();
+  for (const l of fs.readFileSync(path.join(hist, 'kalshi', 'KXATPMATCH', `${day}.jsonl`), 'utf8').split('\n')) {
+    if (!l) continue;
+    const m = JSON.parse(l) as { ticker: string; closeTime: number; candles: Array<{ ts: number; bidC: number; askC: number; last: number; volume: number }> };
+    const kc: KalshiCandle[] = m.candles.map((c) => ({ ts: c.ts, bidO: null, bidH: null, bidL: null, bidC: c.bidC, askO: null, askH: null, askL: null, askC: c.askC, last: c.last, volume: c.volume, oi: null }));
+    by.set(m.ticker, minuteCandles(kc, m.closeTime));
+  }
+  return (t) => by.get(t);
+}
+
+/** The entry minute's end as the sim seeds the twins with it. */
+const minuteKey = (t: number) => new Date(Math.ceil(t / MIN) * MIN).toISOString().slice(0, 16);
+
+test('window mode: an entry plan is an instance at the decision\'s ask, held virtually as production holds a fill; released at its window minute or by the end rule; exits are ignored', () => {
+  const EV = 'KXATPMATCH-W0', A = `${EV}-A`, B = `${EV}-B`;
+  const close = T0 + 150 * MIN;
+  // B's minutes: bid 0.19 / ask 0.21, its bid at 0.27 from the minute ending T0 + 12 min for eight minutes; A mirrors it.
+  const mcB: MinuteCandles = [];
+  for (let i = 1; i <= 150; i++) { const up = i >= 12 && i < 20; mcB.push({ ts: T0 + i * MIN, bidL: up ? 0.27 : 0.19, bidC: up ? 0.27 : 0.19, askC: up ? 0.29 : 0.21, twoSided: true }); }
+  const mcA: MinuteCandles = mcB.map((c) => ({ ts: c.ts, bidL: +(1 - c.askC).toFixed(2), bidC: +(1 - c.askC).toFixed(2), askC: +(1 - c.bidC).toFixed(2), twoSided: true }));
+  const s = new ConfigSim({ id: 'w', overrides: {}, fill: 'F1', window: true });
+  assert.equal(s.window, true);
+  s.candlesOf = (t) => (t === A ? mcA : t === B ? mcB : undefined);
+  const tr = s.tracker(EV);
+  const mk = (ticker: string, bid: number, ask: number): MatchMarket => ({ ticker, position: 0, quote: { bid, ask } });
+  const markets = [mk(A, 0.79, 0.81), mk(B, 0.19, 0.21)];
+  const t1 = T0 + 5 * MIN + 5000;
+  const entry = plan({ ticker: B, price: 0.19, count: 40 });
+  const exit = plan({ ticker: A, side: 'ask', price: 0.79, count: 10, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'end_cut' });
+  s.windowDecision(EV, [A, B], close, [entry, exit], markets, tr, t1);
+  // The instance is a taker buy at the ask the decision saw (0.21), not at the plan's maker bid; held as production's fields
+  // would carry such a fill (position C, avgEntry the ask, netAtBid and breakEven on ask + the taker fee a contract).
+  const C = contractsFor(0.21), level = levelFor(0.21, C, FEES), cost = 0.21 + takerFee(C, 0.21, FEES) / C;
+  const h = s.held(B, { price: 0.19 }, { price: 0.21 })!;
+  assert.equal(h.position, C);
+  assert.equal(h.avgEntry, 0.21);
+  assert.equal(h.breakEven, breakEvenExit(C, cost, FEES));
+  assert.equal(h.netAtBid, positionNetAtBid(C, cost, { price: 0.19 }, { price: 0.21 }, FEES));
+  assert.equal(h.costPer, undefined);
+  assert.equal(s.held(A, { price: 0.79 }, { price: 0.81 }), undefined, 'the exit plan placed nothing');
+  assert.equal(s.busy(B), false, 'no order, no position in the book');
+  assert.equal(s.pos.get(B), undefined);
+  // Another entry plan while held is no instance; the release waits for the window minute (candles read up to now only).
+  s.windowRelease(EV, t1 + 5000);
+  s.windowDecision(EV, [A, B], close, [entry], markets, tr, t1 + 5000);
+  s.windowRelease(EV, T0 + 12 * MIN - 5000);
+  assert.ok(s.held(B, { price: 0.19 }, { price: 0.21 }), 'held until the window minute ends');
+  s.windowRelease(EV, T0 + 12 * MIN);
+  assert.equal(s.held(B, { price: 0.19 }, { price: 0.21 }), undefined, 'released at the first decision at or after the window minute\'s end');
+  // The favourite leg after the release, on A, the match still short of the end rule: held (A's bid never reaches its level).
+  const t2 = T0 + 12 * MIN;
+  const favPlan = plan({ ticker: A, price: 0.79, count: 10, leg: 'fav_entry' });
+  s.windowDecision(EV, [A, B], close, [favPlan], markets, tr, t2);
+  assert.equal(s.held(A, { price: 0.79 }, { price: 0.81 })!.position, contractsFor(0.81));
+  s.windowRelease(EV, t2 + 5000);
+  assert.ok(s.held(A, { price: 0.79 }, { price: 0.81 }), 'held: no window, no end rule yet');
+  // The end-rule decision: the tracker's latched progress (production's latch, updated inside decideMatch) reached
+  // 1 - SETTLE_FRAC at t3. An entry plan for the flat market B at this decision is no instance (its window would have to end
+  // after the entry and at or before the end rule), nor is any later one (the settle-hold stick emits them: its cut is off,
+  // and the released market is flat again at every later decision); the next decision releases A by the end rule.
+  tr.progressHigh = 1 - SETTLE_FRAC;
+  const t3 = T0 + 13 * MIN;
+  s.windowDecision(EV, [A, B], close, [entry], markets, tr, t3);
+  assert.equal(s.held(B, { price: 0.19 }, { price: 0.21 }), undefined, 'an entry plan at the end-rule decision is no instance');
+  assert.ok(s.held(A, { price: 0.79 }, { price: 0.81 }), 'A is held through the end-rule decision');
+  s.windowRelease(EV, t3 + 5000);
+  assert.equal(s.held(A, { price: 0.79 }, { price: 0.81 }), undefined, 'released by the end rule');
+  for (const t of [t3 + 5000, t3 + 10_000, close - 5000]) {
+    s.windowDecision(EV, [A, B], close, [entry, favPlan], markets, tr, t);
+    assert.equal(s.held(A, { price: 0.79 }, { price: 0.81 }), undefined, `no entry plan after the end rule is an instance (${(t - t3) / 1000} s after)`);
+    assert.equal(s.held(B, { price: 0.19 }, { price: 0.21 }), undefined);
+  }
+  s.finish(EV, [A, B], '2026-03-02', false, close + 1000);
+  const run = s.run('H');
+  assert.equal(run.window, true);
+  assert.deepEqual(run.pnl, [0]);
+  assert.equal(run.episodes.length, 0);
+  assert.equal(run.days[0].entries, 0);
+  assert.deepEqual(run.days[0].legs, {});
+  assert.equal(run.instances!.length, 2);
+  const [u, f] = run.instances!;
+  assert.deepEqual({ ...u, outcome: undefined, twins: undefined }, { event: EV, side: 'b', leg: 'underdog', t: t1, ask: 0.21, C, level, phase: 'pre', sig: 0, outcome: undefined, twins: undefined });
+  assert.deepEqual(u.outcome, windowOutcome(mcB, t1, 0.21, level, t3));
+  assert.equal(u.outcome.resolvedBy, 'window');
+  assert.equal(u.outcome.resolvedAt, T0 + 12 * MIN);
+  // The horizon runs to the end-rule minute (ts == endRuleTs counts): minutes 12 and 13 at the level, so the run and the
+  // minutes held are 2.
+  assert.equal(u.outcome.lenWin, 2);
+  assert.equal(u.outcome.held, 2);
+  assert.equal(u.twins.length, 3);
+  assert.deepEqual(u.twins, drawTwins(mcA, mcB, t1, t3, `${EV}|w|underdog|${minuteKey(t1)}`, 3, 10, u.side));
+  assert.equal(minuteKey(t1), '2026-03-02T16:06');
+  assert.deepEqual({ ...f, outcome: undefined, twins: undefined }, { event: EV, side: 'a', leg: 'fav', t: t2, ask: 0.81, C: contractsFor(0.81), level: levelFor(0.81, contractsFor(0.81), FEES), phase: 'pre', sig: 0, outcome: undefined, twins: undefined });
+  // A's bid in minute 13 (the one horizon minute, 0.71) is under the level: resolved by the end rule, the dip 10c, held 0.
+  assert.deepEqual(f.outcome, windowOutcome(mcA, t2, 0.81, f.level, t3));
+  assert.equal(f.outcome.resolvedBy, 'end');
+  assert.equal(f.outcome.resolvedAt, t3);
+  assert.equal(f.outcome.held, 0);
+  assert.ok(Math.abs(f.outcome.dip - (0.71 - 0.81)) < 1e-9);
+  assert.deepEqual(f.twins, drawTwins(mcA, mcB, t2, t3, `${EV}|w|fav|${minuteKey(t2)}`, 3, 10, f.side));
+  // Without candles: the instance resolves 'none' and has no twin; only the end rule or the close releases it.
+  const s2 = new ConfigSim({ id: 'w2', overrides: {}, fill: 'F1', window: true });
+  const tr2 = s2.tracker(EV);
+  s2.windowDecision(EV, [A, B], close, [entry], markets, tr2, t1);
+  s2.windowRelease(EV, close);
+  assert.ok(s2.held(B, { price: 0.19 }, { price: 0.21 }), 'no candle releases it');
+  s2.finish(EV, [A, B], '2026-03-02', false, close + 1000);
+  const i2 = s2.run('H').instances![0];
+  assert.equal(i2.outcome.resolvedBy, 'none');
+  assert.deepEqual(i2.twins, []);
+  // A match not owned leaves nothing behind.
+  const s3 = new ConfigSim({ id: 'w3', overrides: {}, fill: 'F1', window: true });
+  s3.windowDecision(EV, [A, B], close, [entry], markets, s3.tracker(EV), t1);
+  s3.finish(EV, [A, B], '2026-03-02', false, close + 1000, false);
+  assert.equal(s3.run('H').instances!.length, 0);
+  assert.equal(s3.held(B, { price: 0.19 }, { price: 0.21 }), undefined);
+  // The level is the amendment's (item 3: WINDOW_FEES, the tennis taker multiplier 1, the schedule the twins are judged on),
+  // whatever the market's dated schedule (feeFor, the sweep's --fees lookup) says; the held view, production's fee view,
+  // does carry that schedule.
+  const dear: FeeSchedule = { takerMultiplier: 2, makerMultiplier: 2 };
+  assert.notEqual(levelFor(0.21, C, dear), levelFor(0.21, C), 'the dated schedule would set another level');
+  const s4 = new ConfigSim({ id: 'w4', overrides: {}, fill: 'F1', window: true });
+  s4.feeFor = () => dear;
+  s4.candlesOf = s.candlesOf;
+  s4.windowDecision(EV, [A, B], close, [entry], markets, s4.tracker(EV), t1);
+  const h4 = s4.held(B, { price: 0.19 }, { price: 0.21 })!;
+  const cost4 = 0.21 + takerFee(C, 0.21, dear) / C;
+  assert.equal(h4.breakEven, breakEvenExit(C, cost4, dear));
+  assert.equal(h4.netAtBid, positionNetAtBid(C, cost4, { price: 0.19 }, { price: 0.21 }, dear));
+  s4.finish(EV, [A, B], '2026-03-02', false, close + 1000);
+  const i4 = s4.run('H').instances![0];
+  assert.equal(i4.level, levelFor(0.21, C));
+  assert.equal(i4.level, levelFor(0.21, C, WINDOW_FEES));
+  assert.deepEqual(i4.outcome, windowOutcome(mcB, t1, 0.21, i4.level, close));
+  assert.equal(i4.twins.length, 3);
+  for (const x of i4.twins) assert.equal(x.level, levelFor(x.ask, x.C), 'the twins on the same schedule');
+  for (const x of i4.twins) if (x.side === 'b' && x.ask === 0.21) assert.equal(x.level, i4.level, 'a twin at the instance\'s ask shares its level');
+  // A match whose first entry plan comes once the latch stands leaves no instance at all.
+  const s5 = new ConfigSim({ id: 'w5', overrides: {}, fill: 'F1', window: true });
+  s5.candlesOf = s.candlesOf;
+  const tr5 = s5.tracker(EV);
+  tr5.progressHigh = 1 - SETTLE_FRAC;
+  s5.windowDecision(EV, [A, B], close, [entry], markets, tr5, t1);
+  assert.equal(s5.held(B, { price: 0.19 }, { price: 0.21 }), undefined);
+  s5.windowDecision(EV, [A, B], close, [entry, favPlan], markets, tr5, t1 + 5000);
+  s5.finish(EV, [A, B], '2026-03-02', false, close + 1000);
+  assert.deepEqual(s5.run('H').instances, []);
+});
+
+/** The windowed match: B the underdog at 20c before the start (the underdog entry pre-match), B's bid up to 27c for a quarter
+ *  hour from the fifth minute (the underdog's window), then A climbs to 85c and holds it through the middle (the favourite
+ *  entry, whose level its bid never reaches), and collapses in the last third (B wins; the end rule by the latched progress). */
+const windowed = (min: number): number => (min < 5 ? 0.8 : min < 20 ? 0.72 : min < 50 ? 0.72 + ((min - 20) / 30) * 0.13 : min < 100 ? 0.85 : min < 130 ? 0.85 - ((min - 100) / 30) * 0.83 : 0.02);
+
+test('tennis TA sweep, window arm: one underdog instance at the first entry plan, the favourite after the window, no sells, twins, the end rule from the latched progress; the P&L arms are unchanged', async () => {
+  const hist = fs.mkdtempSync(path.join(os.tmpdir(), 'ttw-')), dir = path.join(hist, 'replay');
+  const day = '2026-03-06', EV = 'KXATPMATCH-W1', A = `${EV}-A`, B = `${EV}-B`;
+  writeScriptedHistory(hist, day, [{ id: 'W1', winA: false, startHour: 10, p: windowed }]);
+  await buildHistoryReplay({ historyDir: hist, outDir: dir, assets: [], fromDay: day, toDay: '2026-03-07', tennisSeries: ['KXATPMATCH'], log: () => {} });
+  const candlesOf = candlesOfHistory(hist, day);
+  const mcA = candlesOf(A)!, mcB = candlesOf(B)!;
+  assert.equal(mcA.length, 210, 'the first stored candle dropped');
+  const pnl: SimSpec[] = [{ id: 'A|s1|t', overrides: { ...LOOSE }, fill: 'F1' }, { id: 'A|s1|t|f0', overrides: { ...LOOSE }, fill: 'F0' }];
+  const win: SimSpec = { id: 'A|s1|t|window', overrides: { ...LOOSE }, fill: 'F1', window: true };
+  const coin: SimSpec = { id: 'A|s1|t|coinwindow', overrides: { ...LOOSE }, fill: 'F1', placebo: 'coin', window: true };
+  const grids: MatchGrid[] = [];
+  const r = await runSweep({ dir, fromDay: day, toDay: '2026-03-07', stratum: 'H', specs: [...pnl, win, coin], candlesOf, onGrid: (g) => grids.push(g) });
+  assert.equal(r.matches, 1);
+  // The P&L arms are what they are without the window arms (lock-step: shared data, their own state).
+  const alone = await runSweep({ dir, fromDay: day, toDay: '2026-03-07', stratum: 'H', specs: pnl });
+  assert.deepEqual(r.runs.slice(0, 2), alone.runs);
+  assert.ok(alone.runs[1].episodes.length > 0, 'the F0 arm trades the match');
+  assert.equal(r.runs[0].instances, undefined);
+  assert.equal(r.runs[0].window, undefined);
+  // The window arm: no order, no fill, nothing sold; every match 0; its instances instead.
+  const w = r.runs[2];
+  assert.equal(w.window, true);
+  assert.deepEqual(w.pnl, [0]);
+  assert.equal(w.episodes.length, 0);
+  assert.equal(w.days[0].matches, 1);
+  assert.equal(w.days[0].entries, 0);
+  assert.deepEqual(w.days[0].legs, {});
+  const g = grids[0] as GridWithHigh;
+  assert.deepEqual(g.candles, { a: mcA, b: mcB }, 'the grid carries the window rule\'s candles for family B');
+  const start = Date.parse(`${day}T10:00:00Z`);
+  const closeT = g.t0 + g.closeIdx * 1000;
+  // The end rule: the first decision at which the latched progress reached 1 - SETTLE_FRAC (the sample 1 s after a decision
+  // holds that decision's readings), before the close here (the collapse).
+  const iHigh = Array.from(g.progressHigh).findIndex((p) => p >= 1 - SETTLE_FRAC - 1e-9);
+  assert.ok(iHigh > 0, 'the match reached its last share by the latch');
+  const endRule = g.t0 + iHigh * 1000 - 1000;
+  assert.equal(endRule % 5000, 0);
+  assert.ok(endRule > start + 120 * MIN && endRule < closeT, `end rule at ${(endRule - start) / MIN} min`);
+  const insts = w.instances!;
+  assert.equal(insts.length, 2, 'each leg fires once');
+  const [u, f] = insts;
+  // The underdog, pre-match: at the first decision with a two-sided book in the 30 minutes before the start (the first
+  // decision sees no book yet), at B's ask as the decision saw it (the grid's ask at that second), C and the level by the rule.
+  assert.equal(u.event, EV);
+  assert.equal(u.leg, 'underdog');
+  assert.equal(u.side, 'b');
+  assert.equal(u.phase, 'pre');
+  assert.equal(u.t, start - 30 * MIN + 5000);
+  assert.equal(u.ask, g.askB[(u.t - g.t0) / 1000]);
+  assert.equal(u.ask, 0.2);
+  assert.equal(u.C, contractsFor(0.2));
+  assert.equal(u.level, levelFor(0.2, u.C, FEES));
+  assert.ok(u.sig !== undefined && u.sig >= 0 && u.sig < 16, 'the confluence reading of the decision');
+  // Its window: B's bid is at 27c from the candle ending 5 minutes into the match; the verdict is windowOutcome's under the end rule.
+  assert.deepEqual(u.outcome, windowOutcome(mcB, u.t, u.ask, u.level, endRule));
+  assert.equal(u.outcome.resolvedBy, 'window');
+  assert.equal(u.outcome.resolvedAt, start + 5 * MIN);
+  assert.ok(Math.abs(u.outcome.tWin! - (35 - 5 / 60)) < 1e-9);
+  // The favourite, after the underdog's release: once the match is 'late' and A holds 85c, on A at the ask the decision saw;
+  // its level is above any bid A shows, so no window: resolved by the end rule, held 0 minutes at the level.
+  assert.equal(f.leg, 'fav');
+  assert.equal(f.side, 'a');
+  assert.ok(f.t > u.outcome.resolvedAt! && f.t > start + 50 * MIN && f.t < start + 100 * MIN, `favourite at ${(f.t - start) / MIN} min`);
+  assert.equal(f.t % 5000, 0);
+  assert.equal(f.ask, g.askA[(f.t - g.t0) / 1000]);
+  assert.equal(f.ask, 0.85);
+  assert.equal(f.level, levelFor(0.85, contractsFor(0.85), FEES));
+  assert.equal(f.phase, 'p2');
+  assert.deepEqual(f.outcome, windowOutcome(mcA, f.t, f.ask, f.level, endRule));
+  assert.equal(f.outcome.win, false);
+  assert.equal(f.outcome.resolvedBy, 'end');
+  assert.equal(f.outcome.resolvedAt, endRule);
+  assert.equal(f.outcome.held, 0);
+  // Twins: three each, drawn by the rule under the same end rule, seeded by event | config | leg | entry minute.
+  for (const x of insts) {
+    assert.equal(x.twins.length, 3);
+    assert.deepEqual(x.twins, drawTwins(mcA, mcB, x.t, endRule, `${EV}|${win.id}|${x.leg}|${minuteKey(x.t)}`, 3, 10, x.side));
+  }
+  // The coin placebo window arm: the same instances under the loose config (no signal needed), its own twins' seeds.
+  const c = r.runs[3];
+  assert.equal(c.placebo, 'coin');
+  assert.deepEqual(c.instances!.map((x) => [x.leg, x.t, x.ask, x.outcome]), insts.map((x) => [x.leg, x.t, x.ask, x.outcome]));
+  assert.deepEqual(c.instances![0].twins, drawTwins(mcA, mcB, u.t, endRule, `${EV}|${coin.id}|underdog|${minuteKey(u.t)}`, 3, 10, u.side));
+  assert.notDeepEqual(c.instances![0].twins, u.twins);
+  // Without candles: the underdog instance is the same, resolves 'none' without twins, and is never released by a window, so
+  // the favourite leg cannot fire while it is held.
+  const none = await runSweep({ dir, fromDay: day, toDay: '2026-03-07', stratum: 'H', specs: [win] });
+  const n0 = none.runs[0].instances!;
+  assert.equal(n0.length, 1);
+  assert.deepEqual([n0[0].leg, n0[0].t, n0[0].ask, n0[0].C, n0[0].level], ['underdog', u.t, u.ask, u.C, u.level]);
+  assert.equal(n0[0].outcome.resolvedBy, 'none');
+  assert.deepEqual(n0[0].twins, []);
+  const nog: MatchGrid[] = [];
+  await runSweep({ dir, fromDay: day, toDay: '2026-03-07', stratum: 'H', specs: [], onGrid: (g2) => nog.push(g2) });
+  assert.equal(nog[0].candles, undefined, 'no candlesOf: the grid carries no candles');
+});
+
+/** The settle-hold stick's match: B the underdog at 22c before the start (its window: B at 30c from the fifth minute), A at
+ *  70c through the middle (no favourite: under favMin), then a step to 4c at 100 minutes (B at 96c, over favMax: no favourite
+ *  either, and the latched progress reaches 1 - SETTLE_FRAC: the end rule) and to 12c at 125 minutes (B at 88c, in the
+ *  band, stable from 130): the favourite leg on B is placeable only after the end rule, which production's entry block
+ *  stops and the settle-hold stick (TENNIS_END_LOSER_CUT=false) does not. */
+const lateFav = (min: number): number => (min < 5 ? 0.78 : min < 100 ? 0.7 : min < 125 ? 0.04 : 0.12);
+
+test('tennis TA sweep, window arm under the settle-hold stick: an entry plan at or after the end rule is no instance (each leg at most once a match) though the stick\'s P&L arm takes it', async () => {
+  const hist = fs.mkdtempSync(path.join(os.tmpdir(), 'tth-')), dir = path.join(hist, 'replay');
+  const day = '2026-03-06', EV = 'KXATPMATCH-H1', A = `${EV}-A`, B = `${EV}-B`;
+  writeScriptedHistory(hist, day, [{ id: 'H1', winA: false, startHour: 10, p: lateFav }]);
+  await buildHistoryReplay({ historyDir: hist, outDir: dir, assets: [], fromDay: day, toDay: '2026-03-07', tennisSeries: ['KXATPMATCH'], log: () => {} });
+  const candlesOf = candlesOfHistory(hist, day);
+  const mcA = candlesOf(A)!, mcB = candlesOf(B)!;
+  const HOLD = { ...LOOSE, TENNIS_END_LOSER_CUT: false };
+  // The P&L arms under F0 (the scripted prints wobble a cent around the price: a resting F1 bid never sees one through it).
+  const specs: SimSpec[] = [
+    { id: 'A|s1|prod|settlehold|F0', overrides: HOLD, fill: 'F0' },
+    { id: 'A|s1|t|F0', overrides: { ...LOOSE }, fill: 'F0' },
+    { id: 'A|s1|prod|settlehold|window', overrides: HOLD, fill: 'F1', window: true },
+    { id: 'A|s1|t|window', overrides: { ...LOOSE }, fill: 'F1', window: true },
+  ];
+  const grids: MatchGrid[] = [];
+  const r = await runSweep({ dir, fromDay: day, toDay: '2026-03-07', stratum: 'H', specs, candlesOf, onGrid: (g) => grids.push(g) });
+  assert.equal(r.matches, 1);
+  const g = grids[0] as GridWithHigh;
+  const start = Date.parse(`${day}T10:00:00Z`);
+  const iHigh = Array.from(g.progressHigh).findIndex((p) => p >= 1 - SETTLE_FRAC - 1e-9);
+  const endRule = g.t0 + iHigh * 1000 - 1000;
+  assert.ok(endRule > start + 100 * MIN && endRule < start + 125 * MIN, `end rule at ${(endRule - start) / MIN} min`);
+  const [pnl, pnlCut, hold, cut] = r.runs;
+  // The stick's P&L arm does take the favourite (B) after the end rule, the cut being off (and holds it to settlement);
+  // production's entry block stops that plan.
+  const favEp = pnl.episodes.find((e) => e.leg === 'fav_entry');
+  assert.ok(favEp !== undefined && favEp.t >= start + 125 * MIN, `the settle-hold P&L arm enters the favourite after the end rule (${favEp ? (favEp.t - start) / MIN : 'never'})`);
+  assert.ok(favEp!.t > endRule);
+  assert.equal(favEp!.x, 'settle');
+  assert.ok(pnlCut.episodes.length > 0 && !pnlCut.episodes.some((e) => e.leg === 'fav_entry'), 'production\'s cut places no entry from the end-entry margin on');
+  // Its window arm: the underdog instance only, once (not one per decision after the end rule), as under production's cut.
+  assert.equal(hold.window, true);
+  assert.deepEqual(hold.pnl, [0]);
+  assert.equal(hold.episodes.length, 0);
+  assert.equal(hold.instances!.length, 1, 'no entry plan at or after the end rule is an instance');
+  const [u] = hold.instances!;
+  assert.equal(u.leg, 'underdog');
+  assert.equal(u.side, 'b');
+  assert.equal(u.phase, 'pre');
+  assert.ok(u.t < endRule);
+  assert.deepEqual(u.outcome, windowOutcome(mcB, u.t, u.ask, u.level, endRule));
+  assert.equal(u.outcome.resolvedBy, 'window');
+  assert.equal(u.twins.length, 3);
+  assert.deepEqual(u.twins, drawTwins(mcA, mcB, u.t, endRule, `${EV}|${specs[2].id}|underdog|${minuteKey(u.t)}`, 3, 10, u.side));
+  assert.deepEqual(cut.instances!.map((x) => [x.leg, x.t, x.ask, x.C, x.level, x.outcome]), hold.instances!.map((x) => [x.leg, x.t, x.ask, x.C, x.level, x.outcome]));
 });
