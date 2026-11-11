@@ -71,6 +71,7 @@ import { ProfitPeaks } from '../bot/strategy/profitPeaks';
 import { exitOnlyPlan, exitOnlyView, heldSideBid } from '../bot/strategy/exitOnlyLane';
 import { ConfluenceRatchetExit, DEFAULT_HUNT, DEFAULT_RATCHET, EXIT_POLICIES, ExitPolicyName, HuntParams, LiquidityRatchet, RatchetParams } from '../bot/strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from '../bot/risk/quotaPacer';
+import { HoldExits } from '../bot/strategy/holdExit';
 import { readRecordings, ReplayState } from './replay';
 import { AccuracyGate, type AccuracyGateConfig } from '../bot/strategy/accuracyGate';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
@@ -116,6 +117,12 @@ export interface ExitStats {
    *  decisions to sell a position whose profit fell below its floor (their fills count among the quota snipes). */
   floorArms?: number;
   floorSales?: number;
+  /** HOLD_EXIT (bot/strategy/holdExit.ts): sales and the contracts they sold, and entry evaluations its re-entry rule closed;
+   *  hunt stops queued on an evaluation whose hold exit or quota snipe sold instead (the engine drops them the same way). */
+  holdExits?: number;
+  holdExitContracts?: number;
+  reentryBlocks?: number;
+  huntYielded?: number;
   /** Mean (stop - fill price) in side terms for ratchet exits; positive = filled below the stop. */
   avgSlippage: number | null;
 }
@@ -392,12 +399,14 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const pos = new PositionBook();
   const ex = new PaperExchange(undefined, bankroll0, (t) => st.books.get(t), () => DEFAULT_FEES, () => st.now);
   const gateway = new RiskGateway(limits);
-  const exits: ExitStats = { orders: 0, fills: 0, contracts: 0, proceeds: 0, regret: 0, stoppedWinners: 0, ratchetTriggers: 0, gaps: 0, hybridHolds: 0, huntActivations: 0, huntDeactivations: 0, huntProfitTakes: 0, lockSales: 0, lockHolds: 0, wallAsks: 0, wallFills: 0, quotaSnipes: 0, quotaSnipeContracts: 0, floorArms: 0, floorSales: 0, avgSlippage: null };
+  const exits: ExitStats = { orders: 0, fills: 0, contracts: 0, proceeds: 0, regret: 0, stoppedWinners: 0, ratchetTriggers: 0, gaps: 0, hybridHolds: 0, huntActivations: 0, huntDeactivations: 0, huntProfitTakes: 0, lockSales: 0, lockHolds: 0, wallAsks: 0, wallFills: 0, quotaSnipes: 0, quotaSnipeContracts: 0, floorArms: 0, floorSales: 0, holdExits: 0, holdExitContracts: 0, reentryBlocks: 0, huntYielded: 0, avgSlippage: null };
   // The hourly quota pacer on the replay's clock (PACER, bot/risk/quotaPacer.ts), as the engine runs it.
   let pacer: HourlyQuotaPacer | undefined;
   const pacerAt = (now: number) => (pacer ??= new HourlyQuotaPacer(strategy.pacer, now));
   const snipeGroup = new SnipeGroup();
   const quotaFloors = new QuotaFloors();
+  // HOLD_EXIT (Steven, Nov 11): the hold exit and its re-entry rule, as the engine runs them.
+  const holdExits = new HoldExits(strategy.holdExit);
   const vault = opts.vault ? new Vault(opts.vault, undefined, () => st.now) : undefined;
   const res: BacktestResult = { exitPolicy: policy, label: policy === 'confluence_ratchet' ? `confluence_ratchet[m=${(opts.hunt ?? DEFAULT_HUNT).targetMargin},f=${(opts.ratchet ?? DEFAULT_RATCHET).minFillRatio}]` : policy, huntParams: policy === 'confluence_ratchet' ? { hunt: opts.hunt ?? DEFAULT_HUNT, ratchet: opts.ratchet ?? DEFAULT_RATCHET } : undefined, vaultEnd: 0, pocketEnd: 0, bySession: {}, exits, trades: [], takeProfitFills: 0, latency: { orderMs: opts.latency?.orderMs ?? 0, cancelMs: opts.latency?.cancelMs ?? opts.latency?.orderMs ?? 0, jitterMs: opts.latency?.jitterMs ?? 0, sent: 0, cancelRaceFills: 0, cancelRaceContracts: 0, lateKills: 0 }, entryEvaluations: 0, days: 0, minEdge: strategy.minEdge, windows: new Map(), fills: 0, contracts: 0, fees: 0, pnl: 0 };
   const cadence = new CadenceGate(strategy);
@@ -426,7 +435,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const closeOf = new Map<string, number>();
   const ratchets = new Map<string, LiquidityRatchet>();
   const hunts = new Map<string, ConfluenceRatchetExit>();
-  const pending = new Map<string, { side: 'bid' | 'ask'; price: number; count: number; kind: 'fv' | 'tp' | 'rt' | 'snipe'; stop?: number }>();
+  const pending = new Map<string, { side: 'bid' | 'ask'; price: number; count: number; kind: 'fv' | 'tp' | 'rt' | 'snipe' | 'hold'; stop?: number; liquidation?: { hold: boolean } }>();
+  // HOLD_EXIT: hold exits and quota snipes sent, until their fills mark the contract (as the engine does on the fill).
+  const liquidations = new Map<string, boolean>();
   let exitSeq = 0;
   // The paper bot's exploration entries and training trades (with the paper options; see below).
   const exploreTs: number[] = [], trainTs: number[] = [];
@@ -503,7 +514,13 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     return Number.isFinite(ofCache.cap) ? Math.max(ofCache.cap, o.paperFloor * orderFrac) : ofCache.cap;
   };
   ex.on('fill', (f) => {
+    const before = pos.position(f.ticker);
     const bookAfter = pos.applyFill({ ticker: f.ticker, side: f.side, count: f.count, price: f.price, fee: f.fee ?? 0 }, { closeTs: closeOf.get(f.ticker) });
+    // HOLD_EXIT, as the engine's fill handler: a position flat or on the other side starts its count afresh; a hold exit's or a
+    // quota snipe's fill starts the re-entry rule.
+    holdExits.onFill(f.ticker, before, pos.position(f.ticker));
+    const sold = f.clientOrderId ? liquidations.get(f.clientOrderId) : undefined;
+    if (sold !== undefined && f.count > 0) holdExits.soldBy(f.ticker, closeOf.get(f.ticker)!, st.now, sold);
     pacerAt(st.now).onFill(f, f.fee ?? 0, bookAfter, st.now);
     const w = closeOf.get(f.ticker)!;
     const b = res.windows.get(w) ?? { pnl: 0, contracts: 0, fees: 0 };
@@ -524,6 +541,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     if (opts.fillLog) (res.fillLog ??= []).push({ t: st.now, ticker: f.ticker, side: f.side, price: f.price, count: f.count, taker: Boolean(f.isTaker), coid: f.clientOrderId, ...(f.clientOrderId && entryWhy.has(f.clientOrderId) ? { why: entryWhy.get(f.clientOrderId) } : {}) });
     if (f.clientOrderId?.endsWith('-exit-wall')) exits.wallFills += f.count;
     if (f.clientOrderId?.endsWith('-exit-snipe')) { exits.quotaSnipes++; exits.quotaSnipeContracts += f.count; }
+    if (f.clientOrderId?.endsWith('-exit-hold')) { exits.holdExits!++; exits.holdExitContracts! += f.count; }
     const hour = new Date(st.now).toISOString().slice(0, 13);
     res.contractsByHour![hour] = (res.contractsByHour![hour] ?? 0) + f.count;
     if (cancelInFlight.has(f.orderId)) { L.cancelRaceFills++; L.cancelRaceContracts += f.count; }
@@ -635,6 +653,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           hunts.delete(m.ticker);
           snipeGroup.forget(m.ticker);
           quotaFloors.forget(m.ticker);
+          holdExits.forget(m.ticker);
           cadence.forget(m.ticker);
           pending.delete(m.ticker);
           priority.delete(m.ticker);
@@ -693,6 +712,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         });
         if (d.ok) {
           const id = `${m.ticker}-${st.now}-${++exitSeq}-exit-${due.kind}`;
+          if (due.liquidation) liquidations.set(id, due.liquidation.hold);
           if (due.stop !== undefined) stopByOrder.set(id, due.stop);
           exits.orders++;
           await send(m.ticker, 'order', async () => { try { await ex.createOrder({ ticker: m.ticker, side: due.side, count, price: due.price, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, selfTradePrevention: 'taker_at_cross', clientOrderId: id }); } catch { /* no fill */ } });
@@ -712,6 +732,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           entrySidePrice: openSidePrice(pL), entryFeePerContract: openEntryFee(pL), profitPeakSidePrice: peaks.update(m.ticker, posL, sideBid), takeProfitBenched: tpBenched(),
         })!;
         await fireExit(view.pYes, bid?.price, ask?.price);
+        // HOLD_EXIT: the seconds in profit keep counting on the fresh book; the hold exit does not sell from the lane.
+        if (strategy.holdExit.enabled) holdExits.sample(m.ticker, posL, netProfitAtBid(view), st.now);
         const lane = exitOnlyPlan(view, stratRun, {
           why, exits: policy !== 'hold' && policy !== 'liquidity_ratchet', hunt: policy === 'confluence_ratchet' ? hunts.get(m.ticker) : undefined,
           pacerUsd: pacerAt(st.now).neededUsd(st.now), pacerFloor: strategy.pacer.floor === 'off' ? undefined : quotaFloors.floor(m.ticker, posL),
@@ -724,7 +746,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           const hunt = p === lane.huntPlan;
           if (hunt) exits.ratchetTriggers++;
           if (p === lane.floorSale) exits.floorSales!++;
-          pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: hunt ? 'rt' : p.why.startsWith('take-profit') ? 'tp' : p.why.startsWith('quota snipe') ? 'snipe' : 'fv', ...(hunt ? { stop: lane.hunt!.plan!.stop } : {}) });
+          pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: hunt ? 'rt' : p.why.startsWith('take-profit') ? 'tp' : p.why.startsWith('quota snipe') ? 'snipe' : 'fv', ...(hunt ? { stop: lane.hunt!.plan!.stop } : {}), ...(p.liquidation ? { liquidation: p.liquidation } : {}) });
         }
         if (opts.paper) await fireExit(view.pYes, bid?.price, ask?.price);
       };
@@ -862,6 +884,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       let huntMode = false;
       let huntRest: number | undefined;
       let huntHold = false;
+      let huntQueued = false;
       if (policy === 'confluence_ratchet') {
         const posH = pos.position(m.ticker);
         let h = hunts.get(m.ticker);
@@ -893,6 +916,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         if (d.plan && !pending.has(m.ticker) && !heldH) {
           exits.ratchetTriggers++;
           pending.set(m.ticker, { side: d.plan.side, price: d.plan.price, count: d.plan.count, kind: 'rt', stop: d.plan.stop });
+          huntQueued = true;
         }
       }
 
@@ -909,7 +933,10 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const guarded = mt.inside || mt.minutesTo <= 30 || bankroll < strategy.minTradableBankrollUsd || (opts.killOverride === false && guard.paused(st.now)) || edge !== undefined;
       gate?.observe(m.ticker, tauSec, pYes, mid);
       const accuracyBlock = kindWindow && !guarded && gate ? gate.block(m.ticker, tauSec) : undefined;
-      const entryWindowOpen = kindWindow && !guarded && !accuracyBlock;
+      // HOLD_EXIT's re-entry rule, as the engine: after a hold exit or a quota snipe here, entries only while more than half the window
+      // (open to close, uncapped) is left.
+      const reentryBlock = kindWindow && !guarded ? holdExits.reentryBlock(m.ticker, tauSec, shareWindowSec(m.openTime, m.closeTime, 0)) : undefined;
+      const entryWindowOpen = kindWindow && !guarded && !accuracyBlock && !reentryBlock;
       const rb = q('bid'), ra = q('ask');
       const through = (r: { price: number } | undefined, best: number) => r !== undefined && Math.abs(best - r.price) >= 2 * strategy.requoteThreshold - 1e-9;
       const posC = pos.position(m.ticker);
@@ -926,9 +953,11 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         if (mt.inside || mt.minutesTo <= 30) add('maintenance');
         if (bankroll < strategy.minTradableBankrollUsd) add('pool under tradable minimum');
         if (accuracyBlock) add('accuracy gate');
+        if (reentryBlock) add('hold-exit re-entry rule');
         if (entryWindowOpen) add('entry window open');
       }
       if (reason && accuracyBlock) res.paper!.accuracyBlocks++;
+      if (reason && reentryBlock) exits.reentryBlocks!++;
       if (reason && kindWindow && edge !== undefined && res.paper) res.paper.sessionEdgeBlocks!++;
       const pNow = pos.get(m.ticker);
       // As the engine: the open contracts' price, an earlier exit's profit already on the pacer's clock.
@@ -967,6 +996,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const strat = { ...stratRun, kellyFraction: tier.kellyFraction * sizeScale, minEdge: Math.max(0, strategy.minEdge + sessRisk.minEdgeAdd + dynamicEdge(strategy.dynamicEdge, mRead, pred.std).add), inventorySkewPerContract: strategy.inventorySkewPerContract * sessRisk.skewMult };
       const pacerUsdNow = pacerAt(st.now).neededUsd(st.now);
       const group = pacerUsdNow !== undefined && strategy.pacer.group ? snipeGroup.judge(m.ticker, view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsdNow, st.now) : undefined;
+      // HOLD_EXIT, as the engine: the position's seconds in profit after fees at the bid, on the replay's clock.
+      const hold = strategy.holdExit.enabled ? holdExits.sample(m.ticker, view.position, netProfitAtBid(view), st.now) : undefined;
       const plan = decide(view, strat, {
         exits: policy === 'fair_value' || policy === 'take_profit' || policy === 'hybrid' || (policy === 'confluence_ratchet' && !huntMode),
         blockReductions: huntMode && !huntHold,
@@ -976,6 +1007,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         ...(group?.sell ? { pacerGroup: group } : {}),
         // PACER_FLOOR, as the engine: the hunt trailing its stop rides a winner (riding mode).
         ...(strategy.pacer.floor === 'off' ? {} : { pacerFloor: quotaFloors.floor(m.ticker, view.position), ...(strategy.pacer.floor === 'riding' && huntMode && !huntHold ? { pacerHigher: 'the hunt riding its stop' } : {}) }),
+        ...(hold ? { holdExit: hold } : {}),
       });
       if (plan.pacerArm && quotaFloors.arm(m.ticker, view.position, plan.pacerArm.usd)) exits.floorArms!++;
       if (plan.place.some((p) => p.purpose === 'exit' && p.why.startsWith('quota snipe (floor)'))) exits.floorSales!++;
@@ -1019,6 +1051,14 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           }
         }
       }
+      // As the engine (Engine.liquidate): a hold exit or a quota snipe sells the whole position with nothing else; the hunt's stop
+      // queued this evaluation gives way to it, and this market's resting orders are pulled.
+      const liquidation = strategy.holdExit.enabled ? plan.place.find((p) => p.liquidation && p.reduceOnly && p.timeInForce === 'immediate_or_cancel') : undefined;
+      if (liquidation) {
+        plan.place = [liquidation];
+        if (huntQueued && pending.get(m.ticker)?.kind === 'rt') { pending.delete(m.ticker); exits.huntYielded!++; }
+        for (const o of await ex.getOpenOrders()) if (o.ticker === m.ticker && !plan.cancel.some((c) => c.clientOrderId === o.orderId)) plan.cancel.push({ clientOrderId: o.orderId, reason: 'a hold exit or quota snipe sells the position' });
+      }
       for (const c of plan.cancel) if (!cancelInFlight.has(c.clientOrderId)) await send(m.ticker, 'cancel', () => cancelNow(c.clientOrderId), c.clientOrderId);
 
       for (const p of plan.place) {
@@ -1028,7 +1068,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         // price it never rested, so every replay filled 0 contracts on wall asks). Immediate exits queue for next tick.
         if (p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel') {
           // Queue for next tick, like every other exit (a take-profit keeps its name: its fills feed the bench).
-          if (!pending.has(m.ticker)) pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: p.why.startsWith('take-profit') ? 'tp' : p.why.startsWith('quota snipe') ? 'snipe' : 'fv' });
+          if (!pending.has(m.ticker)) pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: p.why.startsWith('take-profit') ? 'tp' : p.why.startsWith('quota snipe') ? 'snipe' : p.why.startsWith('hold exit') ? 'hold' : 'fv', ...(p.liquidation ? { liquidation: p.liquidation } : {}) });
           continue;
         }
         // A taker entry against an existing position is an early exit in disguise

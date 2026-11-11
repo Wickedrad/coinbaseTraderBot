@@ -33,13 +33,14 @@ import { DEFAULT_PROBATION, Probation, setProbation } from '../bot/risk/probatio
 import type { FillModel } from '../bot/tca/fillModel';
 import { decide, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { ConfluenceRatchetExit } from '../bot/strategy/exitPolicies';
+import type { HoldExits } from '../bot/strategy/holdExit';
 import { exitOnlyPlan } from '../bot/strategy/exitOnlyLane';
 
-async function setup(opts: { historySec?: number; askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel; modelHealth?: ModelHealth; closeIn?: number } = {}) {
+async function setup(opts: { historySec?: number; askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel; modelHealth?: ModelHealth; closeIn?: number; now?: () => number; openAgo?: number } = {}) {
   const dir = tmpDir();
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, RISK_DAILY_LOSS_USD: opts.dailyLossUsd ?? '10', DOMINANCE_FEED: 'false', SPOT_FEED: 'false', EXIT_POLICY: opts.exitPolicy, STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_ENABLED: 'false', ...opts.env });
   const now = Date.now();
-  const market: MarketInfo = { ticker: 'KXBTC15M-TEST', seriesTicker: 'KXBTC15M', status: 'open', openTime: now - 300_000, closeTime: now + (opts.closeIn ?? 600_000), floorStrike: 60000, tickSize: 0.01 };
+  const market: MarketInfo = { ticker: 'KXBTC15M-TEST', seriesTicker: 'KXBTC15M', status: 'open', openTime: now - (opts.openAgo ?? 300_000), closeTime: now + (opts.closeIn ?? 600_000), floorStrike: 60000, tickSize: 0.01 };
   const rest = {
     getSeriesFees: async () => ({ feeType: 'quadratic', multiplier: 1 }),
     getOpenMarkets: async () => [market],
@@ -66,7 +67,7 @@ async function setup(opts: { historySec?: number; askSize?: number; dailyLossUsd
   paper.on('fill', (f) => oms.onFill(f));
   paper.on('order', (o) => oms.onExchangeOrder(o));
   const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: (r) => void kill.engage(r, 'recon') });
-  const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: opts.model ?? MetaModel.identity(), vault: opts.vault, balanceMonitor: opts.monitor, exchangeStatus: openExchange(), curveExit: opts.curveExit, takeProfitBench: opts.takeProfitBench, curveEntry: opts.curveEntry, accuracyGate: opts.accuracyGate, liveLines: opts.liveLines, trials: opts.trials, modelHealth: opts.modelHealth });
+  const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: opts.model ?? MetaModel.identity(), vault: opts.vault, balanceMonitor: opts.monitor, exchangeStatus: openExchange(), curveExit: opts.curveExit, takeProfitBench: opts.takeProfitBench, curveEntry: opts.curveEntry, accuracyGate: opts.accuracyGate, liveLines: opts.liveLines, trials: opts.trials, modelHealth: opts.modelHealth, now: opts.now });
   return { cfg, md, paper, oms, kill, recon, engine, market, audit };
 }
 
@@ -1409,4 +1410,195 @@ test('exit-only lane: an armed hunt stop sells below its stop; the take-profit s
       assert.equal(hunt.active, true);
     }
   }
+});
+
+// ---- The hold exit and its re-entry rule (HOLD_EXIT, Steven Nov 11) ----------------------------------------------------
+// The engine's clock steps a second an evaluation; the book and the index are refreshed at each step, as the feeds would.
+
+function liveEnv(): Record<string, string> {
+  const key = path.join(tmpDir(), 'k.pem');
+  fs.writeFileSync(key, 'x', { mode: 0o600 });
+  return { TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' };
+}
+
+/** EXIT_POLICY=hold (no take-profit or model exit in the way): 10 YES bought at the 0.40 ask (a $0.17 taker fee). */
+async function heldOnClock(env: Record<string, string>, closeIn: number, openAgo?: number) {
+  const clock = { t: Date.now() };
+  const s = await setup({ exitPolicy: 'hold', closeIn, now: () => clock.t, env, openAgo });
+  s.engine.balance = (await s.recon.run('startup'))!.balance;
+  const t = s.market.ticker;
+  const idx = s.md.index.get('BTC')!;
+  const step = async (bid: number, ask = Math.round((bid + 0.02) * 100) / 100) => {
+    clock.t += 1000;
+    s.md.book(t).applySnapshot({ bids: [{ price: bid, size: 50 }], asks: [{ price: ask, size: 50 }] }, clock.t);
+    idx.add(idx.latest()!.value, clock.t);
+    await s.engine.tick();
+  };
+  s.md.book(t).applySnapshot({ bids: [{ price: 0.38, size: 50 }], asks: [{ price: 0.4, size: 50 }] }, clock.t);
+  await s.oms.submit({ ticker: t, asset: 'BTC', windowCloseTs: s.market.closeTime, side: 'bid', price: 0.4, count: 10, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', fairValue: 0.5, modelId: 'm', decisionId: 'e' });
+  assert.equal(s.oms.positions.position(t), 10);
+  const st = () => s.engine.status.get(t)!;
+  const exits = () => s.oms.allOrders(500).filter((o) => o.ticker === t && o.reduceOnly);
+  const pacer = (event: string) => s.audit.tail(500, 'pacer').map((r) => r.data as Record<string, unknown>).filter((d) => d.event === event);
+  const placed = () => s.audit.tail(500, 'decision').flatMap((r) => (r.data as { place?: Array<{ why: string }> }).place ?? []).map((p) => p.why);
+  return { ...s, t, clock, step, st, exits, pacer, placed };
+}
+
+test('hold exit: sold at the bid once +$1.50 after fees for 10 s in all (a dip pauses the count) and +$1.00 for the last 3 s in a row; audited; paper and live alike', async () => {
+  for (const env of [{}, liveEnv()]) {
+    // 200 s to the close of a 500 s window: outside the entry window, so only exits trade.
+    const { engine, oms, cfg, t, step, st, exits, pacer, placed } = await heldOnClock(env, 200_000);
+    const notes = () => `${cfg.mode}: ${st().notes.join(' | ')}`;
+    // At a 0.59 bid the 10 are up $1.90 less the $0.17 entry and $0.17 exit fees, +$1.56; at 0.50, +$0.65. A fresh pacer
+    // needs $4.50: no snipe.
+    for (let i = 0; i < 6; i++) await step(0.59);
+    assert.deepEqual(st().hold, { fire: false, cumSec: 5, runSec: 5 }, notes());
+    assert.match(notes(), /hold exit: 5\.0 of 10 s in all at \+\$1\.50 or more, 5\.0 of 3 s in a row at \+\$1\.00 or more/);
+    await step(0.5);
+    await step(0.5);
+    assert.deepEqual(st().hold, { fire: false, cumSec: 5, runSec: 0 }, 'the dip keeps the count and ends the run');
+    for (let i = 0; i < 5; i++) await step(0.59);
+    assert.deepEqual(st().hold, { fire: false, cumSec: 9, runSec: 4 });
+    assert.equal(exits().length, 0, notes());
+    await step(0.59);
+    assert.equal(exits().length, 1, notes());
+    const x = exits()[0];
+    assert.deepEqual([x.side, x.price, x.count, x.purpose, x.timeInForce], ['ask', 0.59, 10, 'exit', 'immediate_or_cancel']);
+    assert.equal(oms.positions.position(t), 0, `${cfg.mode}: filled at the bid`);
+    const why = 'hold exit: +$1.56 net on 10 at bid 0.59, 10.0 s in all at +$1.50 or more, the last 5.0 s in a row at +$1.00 or more';
+    assert.ok(placed().includes(why), placed().join(' | '));
+    assert.deepEqual(pacer('hold_exit'), [{ event: 'hold_exit', ticker: t, cumSec: 10, runSec: 5, netUsd: 1.56, count: 10, price: 0.59, why }]);
+    assert.equal(pacer('snipe').length, 0);
+    // The sale starts the re-entry rule on this contract (the next test shows it closing and opening the entry window).
+    const rule = (engine as unknown as { holdExits: { reentryBlock(t: string, tauSec: number, windowSec: number): string | undefined } }).holdExits;
+    assert.match(rule.reentryBlock(t, 185, 500) ?? '', /^re-entry after a hold exit or quota snipe: 185 s of the 500 s window left/);
+    assert.equal(rule.reentryBlock(t, 251, 500), undefined);
+    // Flat, and a same-side position reopened before the next evaluation (a resting YES bid filling just after the sale, 10 at
+    // 0.61): never sampled flat, it starts from nothing and is not sold at its first +$1.09.
+    await oms.submit({ ticker: t, asset: 'BTC', windowCloseTs: Date.now() + 200_000, side: 'bid', price: 0.61, count: 10, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', fairValue: 0.5, modelId: 'm', decisionId: 'again' });
+    assert.equal(oms.positions.position(t), 10);
+    await step(0.75);
+    assert.deepEqual(st().hold, { fire: false, cumSec: 0, runSec: 0 }, notes());
+    assert.equal(exits().length, 1, notes());
+  }
+});
+
+test('quota snipe unchanged beside the hold exit: sold at once at its target; then the contract is entered again only while more than half its window is left (paper and live)', async () => {
+  for (const env of [{}, liveEnv()]) {
+    for (const closeIn of [200_000, 600_000]) {
+      // PACER_HOURLY_USD=1: the hour needs $1.00, so +$1.56 is sniped at the first evaluation. Entries open until 60 s before the
+      // close. The window runs open to close: 500 s with 200 s left (not more than half), 900 s with 600 s left (more than half).
+      const { cfg, oms, t, step, st, exits, pacer, engine, audit, market, clock } = await heldOnClock({ ...env, PACER_HOURLY_USD: '1', ENTRY_WINDOW_15M: '840,60' }, closeIn);
+      const what = `${cfg.mode}, ${closeIn / 1000} s left`;
+      // A maker ask resting from an earlier evaluation, sized with the position (it carries the unwind).
+      const ask = await oms.submit({ ticker: t, asset: 'BTC', windowCloseTs: market.closeTime, side: 'ask', price: 0.7, count: 15, timeInForce: 'good_till_canceled', postOnly: true, reduceOnly: false, purpose: 'quote', fairValue: 0.5, modelId: 'm', decisionId: 'q' });
+      const before = new Set(oms.allOrders(500).map((o) => o.clientOrderId));
+      await step(0.59);
+      assert.equal(exits().length, 1, what);
+      // The sale's own evaluation sends nothing else (no quote sized with the position, no entry at half the window or less) and
+      // pulls the resting ask, which would sell the position a second time once it fills.
+      const added = oms.allOrders(500).filter((o) => o.ticker === t && !before.has(o.clientOrderId));
+      assert.deepEqual(added.map((o) => [o.purpose, o.reduceOnly]), [['exit', true]], `${what}: ${JSON.stringify(added.map((o) => [o.side, o.price, o.count, o.purpose]))}`);
+      assert.ok(!oms.liveOrders().some((o) => o.clientOrderId === ask.clientOrderId && !o.cancelRequested), `${what}: the resting ask is pulled`);
+      const sent = audit.tail(50, 'decision').map((r) => r.data as { place?: Array<{ purpose: string }> }).filter((d) => d.place?.length).at(-1);
+      assert.deepEqual(sent?.place?.map((x) => x.purpose), ['exit'], what);
+      assert.match(String(pacer('snipe')[0]?.why), /^quota snipe: \+\$1\.56 net on 10 at bid 0\.59 covers the \$1\.00 the hour needs/, what);
+      assert.deepEqual(st().hold, { fire: false, cumSec: 0, runSec: 0 }, 'no hold time needed');
+      assert.equal(oms.positions.position(t), 0, what);
+      // The setup's 0.45 / 0.60 book, where the strategy quotes.
+      await step(0.45, 0.6);
+      const resting = oms.liveOrders().filter((o) => o.ticker === t && !o.reduceOnly && !o.cancelRequested);
+      if (closeIn === 200_000) {
+        assert.match(st().reentryBlock ?? '', /^re-entry after a hold exit or quota snipe: 19\d s of the 500 s window left, not more than 50%/, what);
+        assert.equal(st().entryWindow, false);
+        assert.equal(resting.length, 0, `${what}: ${JSON.stringify(resting.map((o) => [o.side, o.price, o.purpose, o.state]))}`);
+        assert.ok(Object.keys(engine.entryDiagnosis().reasons).some((k) => k.startsWith('re-entry after a hold exit or quota snipe')), what);
+        // Nothing was left to cancel, so the next decision record is the half-minute one; it names the block.
+        clock.t += 30_000;
+        await step(0.45, 0.6);
+        const blocks = audit.tail(50, 'decision').map((r) => (r.data as { entryBlock?: string }).entryBlock).filter(Boolean);
+        assert.match(blocks.at(-1) ?? '', /^re-entry after a hold exit or quota snipe/, what);
+      } else {
+        assert.equal(st().reentryBlock, undefined, what);
+        assert.equal(st().entryWindow, true, what);
+        assert.ok(resting.some((o) => o.purpose === 'quote'), `${what}: the normal entry signal quotes again`);
+      }
+    }
+  }
+});
+
+test('re-entry rule: a quota snipe the risk gateway refuses sold nothing and marks nothing; the one that fills does (paper and live)', async () => {
+  for (const env of [{}, liveEnv()]) {
+    const { engine, oms, t, step, st, exits, pacer, cfg } = await heldOnClock({ ...env, PACER_HOURLY_USD: '1', ENTRY_WINDOW_15M: '840,60' }, 200_000);
+    const risk = (engine as unknown as { d: { risk: RiskGateway } }).d.risk;
+    const check = risk.check.bind(risk);
+    risk.check = (i: OrderIntent, c: RiskContext) => (i.reduceOnly ? { ok: false, reasons: ['order rate at limit'] } : check(i, c));
+    await step(0.59);
+    await step(0.59);
+    assert.equal(pacer('snipe').length, 2, `${cfg.mode}: the snipe decided twice`);
+    assert.equal(exits().length, 0, 'refused: nothing sent');
+    assert.equal(oms.positions.position(t), 10);
+    assert.equal(st().reentryBlock, undefined, `${cfg.mode}: no sale, no mark`);
+    risk.check = check;
+    await step(0.59);
+    assert.equal(oms.positions.position(t), 0);
+    await step(0.45, 0.6);
+    assert.match(st().reentryBlock ?? '', /^re-entry after a hold exit or quota snipe/, cfg.mode);
+  }
+});
+
+test('re-entry rule: the window is the contract\'s whole open to close, not the last-share rule\'s hour', async () => {
+  // Listed 3 h before its close and sniped with 40 min left: 40 of 180 minutes is not more than half, so no entry opens, although
+  // 40 minutes is more than half of an hour.
+  const { t, step, st, oms } = await heldOnClock({ PACER_HOURLY_USD: '1', ENTRY_WINDOW_15M: '3000,60' }, 2_400_000, 8_400_000);
+  await step(0.59);
+  assert.equal(oms.positions.position(t), 0);
+  await step(0.45, 0.6);
+  assert.match(st().reentryBlock ?? '', /^re-entry after a hold exit or quota snipe: 239\d s of the 10800 s window left, not more than 50%/, st().notes.join(' | '));
+});
+
+test('hold exit held by the exit curve\'s gate: the hunt\'s protective stop that triggered on the same evaluation still goes out', async () => {
+  const curveExit = new SinuousExitGate({ mode: 'gate', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
+  const { engine, recon, market, md, oms, audit } = await setup({ exitPolicy: 'confluence_ratchet', curveExit, closeIn: 200_000 });
+  engine.balance = (await recon.run('startup'))!.balance;
+  const t = market.ticker;
+  const now = Date.now();
+  // Long 10 YES bought at 0.30 as a maker.
+  oms.onFill({ tradeId: 'h8', orderId: '', ticker: t, side: 'bid', count: 10, price: 0.3, isTaker: false, fee: 0, ts: now }, { closeTs: market.closeTime, asset: 'BTC' });
+  const book = md.book(t);
+  book.applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, now);
+  // A hunt that activated earlier: entry value 0.45 + the 2c margin, its stop locked at 0.47.
+  const hunt = new ConfluenceRatchetExit({ targetMargin: 0.02, minConfluence: 2, lockSale: 'off' });
+  assert.equal(hunt.update({ position: 10, qSide: 0.45, sideBid: 0.5, confluence: 3, book, now, tick: 0.01, fees: md.feesFor(t) }).stop, 0.47);
+  (engine as unknown as { hunts: Map<string, ConfluenceRatchetExit> }).hunts.set(t, hunt);
+  // The hold exit's count: 12 s at +$2.00 up to a second ago.
+  const holds = (engine as unknown as { holdExits: HoldExits }).holdExits;
+  for (let k = 12; k >= 1; k--) holds.sample(t, 10, 2, Date.now() - k * 1000);
+  // 0.46: the stop triggers (protective), and +$1.42 after fees keeps the hold exit's run: both sell on this evaluation. The
+  // curve has no reading yet and holds the profit exit; the hunt's stop is not held.
+  book.applySnapshot({ bids: [{ price: 0.46, size: 50 }], asks: [{ price: 0.48, size: 50 }] }, Date.now());
+  await engine.tick();
+  const st = engine.status.get(t)!;
+  const notes = st.notes.join(' | ');
+  assert.equal(st.hold?.fire, true, notes);
+  assert.match(notes, /curve: holding the profit exit at 0\.46/);
+  const exits = oms.allOrders(500).filter((o) => o.ticker === t && o.reduceOnly);
+  assert.deepEqual(exits.map((o) => [o.side, o.price, o.count]), [['ask', 0.46, 10]], notes);
+  const why = audit.tail(50, 'decision').flatMap((r) => (r.data as { place?: Array<{ why: string }> }).place ?? []).map((p) => p.why);
+  assert.deepEqual(why, ['confluence ratchet stop 0.47'], notes);
+});
+
+test('HOLD_EXIT=false: today\'s behaviour, no hold exit and no re-entry limit after a quota snipe', async () => {
+  const held = await heldOnClock({ HOLD_EXIT: 'false' }, 200_000);
+  assert.equal(held.cfg.strategy.holdExit.enabled, false);
+  for (let i = 0; i < 20; i++) await held.step(0.59);
+  assert.equal(held.exits().length, 0, held.st().notes.join(' | '));
+  assert.equal(held.st().hold, undefined);
+  assert.ok(!held.st().notes.some((n) => n.startsWith('hold exit')));
+  const sniped = await heldOnClock({ HOLD_EXIT: 'false', PACER_HOURLY_USD: '1', ENTRY_WINDOW_15M: '840,60' }, 200_000);
+  await sniped.step(0.59);
+  assert.equal(sniped.pacer('snipe').length, 1);
+  await sniped.step(0.45, 0.6);
+  assert.equal(sniped.st().reentryBlock, undefined);
+  assert.equal(sniped.st().entryWindow, true);
 });

@@ -1,0 +1,159 @@
+// Steven's hold exit (Nov 11 2026, 13:42-13:45 UTC): "once it's $1.50 after profit it should count seconds it is in profit and
+// exit after it remains there for 10 seconds. it can reenter if there is still more than 50% of the window time left and it
+// has a signal on the same contract. The Snipe is just an immediate exit once it hits it." Then: "10 seconds cumulatively, not
+// consecutively, though as an exit rule it should also have 5 seconds consecutively in +$1 profit after fees", "both must be
+// true together", "and 3 instead of 5 seconds".
+//
+// One rule, two conditions true together at the moment of sale, both on the whole position's profit after the entry fee and
+// the exit fee at the bid (netProfitAtBid, the quota snipe's measure, bot/strategy/fairValueStrategy.ts):
+//   total   at least HOLD_EXIT_SEC (10) seconds in all at or above HOLD_EXIT_USD ($1.50); a dip below does not reset it
+//   run     the last HOLD_EXIT_RUN_SEC (3) seconds or more in a row at or above HOLD_EXIT_RUN_USD ($1.00), up to now
+// The sale is the quota snipe's: the whole position at the bid, where and when the snipe could sell (decide()). The snipe is
+// unchanged; whichever fires first sells. Nothing else goes out with either sale, and the market's resting quotes are pulled
+// (bot/engine.ts liquidate). Once the rule has sold part of the position (a thin bid), the rest is sold at the next bids while
+// it is not at a loss after fees: the rule decided to exit the whole position, and the rest's own, smaller profit must not
+// undo that.
+// Time comes from the evaluations' timestamps, never from counting ticks: a stretch between two evaluations counts toward the
+// total only when both were at the level and it is at most HOLD_EXIT_MAX_GAP_MS long (plus HOLD_EXIT_JOIN_SLACK_MS for timer
+// jitter: a market skipped one tick as busy is sampled a little over 2 s later), and then at most 2 s of it. A longer gap (a
+// data gap, a stalled loop) counts nothing and restarts the run; an evaluation older than the last one changes nothing. No
+// profit measure (no bid) is not in profit. A position that goes flat or changes side starts from nothing, also when no
+// evaluation saw it flat (onFill). The count is kept in memory: after a restart it starts again.
+// Re-entry: after a hold exit or a quota snipe sold on a contract (marked on the sale's fill), a new entry there opens only
+// while more than HOLD_EXIT_REENTRY_SHARE (half) of the contract's window (open to close) is left, and only on the bot's
+// normal entry signal. The marks are saved (hold_exit_state.json beside the pacer's state) and kept until the market closes.
+// Tennis is not covered: its snipe (bot/tennis/tennisStrategy.ts) marks nothing and its entries are not limited, since a
+// match contract's open-to-close times say nothing about how much of the match is left; that is for Steven to settle.
+// The engine (paper and live alike) and the replay (research/backtest.ts) run this class on their own clocks.
+
+import fs from 'fs';
+import path from 'path';
+
+export interface HoldExitConfig {
+  /** HOLD_EXIT: the hold exit and its re-entry rule are on. */
+  enabled: boolean;
+  /** HOLD_EXIT_USD (1.50) and HOLD_EXIT_SEC (10): the profit after fees, and the seconds in all at or above it. */
+  usd: number;
+  sec: number;
+  /** HOLD_EXIT_RUN_USD (1.00) and HOLD_EXIT_RUN_SEC (3): the profit after fees, and the seconds in a row at or above it. */
+  runUsd: number;
+  runSec: number;
+  /** HOLD_EXIT_REENTRY_SHARE (0.5): after a hold exit or a quota snipe, an entry on the same contract only while more than this
+   *  share of its window is left. 0 = no limit. */
+  reentryShare: number;
+}
+
+/** The longest stretch between two evaluations that counts as time in profit (one evaluation a second, with room for a slow one). */
+export const HOLD_EXIT_MAX_GAP_MS = 2000;
+/** Timer jitter on top of it: two 1 s ticks plus event-loop lag still join (at most 2 s of the stretch is counted). */
+export const HOLD_EXIT_JOIN_SLACK_MS = 500;
+
+export interface HoldReading {
+  /** Sell the position: both conditions hold now, or the rule already sold part of it and the rest is not at a loss. */
+  fire: boolean;
+  /** Seconds in all at or above `usd` since the position was opened, and of the current run at or above `runUsd`. */
+  cumSec: number;
+  runSec: number;
+  /** The rule sold part of the position; this is the rest. */
+  rest?: boolean;
+}
+
+const EPS = 1e-9;
+
+interface Track {
+  sign: number; lastTs: number; lastNet: number | undefined; cumMs: number; runFrom: number | undefined;
+  /** The rule's sale filled part of the position: the rest is sold too. */
+  selling: boolean;
+}
+
+export class HoldExits {
+  private readonly tracks = new Map<string, Track>();
+  /** Contracts a hold exit or a quota snipe has sold, with their markets' close (ms): the re-entry rule applies to them. */
+  private readonly sold = new Map<string, number>();
+
+  /** `file`: where the re-entry marks are saved (undefined: memory only, as in the replay); `now` drops marks of closed markets. */
+  constructor(readonly cfg: HoldExitConfig, private readonly file?: string, now = Date.now(), private readonly maxGapMs = HOLD_EXIT_MAX_GAP_MS) {
+    this.load(now);
+  }
+
+  /** Records the position's profit after fees at its bid (`netUsd`; undefined: none) at `now` (ms) and says whether it sells. */
+  sample(ticker: string, position: number, netUsd: number | undefined, now: number): HoldReading {
+    if (!(Math.abs(position) > EPS)) {
+      this.tracks.delete(ticker);
+      return { fire: false, cumSec: 0, runSec: 0 };
+    }
+    const sign = Math.sign(position);
+    let t = this.tracks.get(ticker);
+    if (!t || t.sign !== sign) {
+      t = { sign, lastTs: -Infinity, lastNet: undefined, cumMs: 0, runFrom: undefined, selling: false };
+      this.tracks.set(ticker, t);
+    }
+    // An evaluation older than the last one (overlapping ticks under the kill switch) adds nothing and sells nothing: the newer
+    // one already judged the position.
+    if (now < t.lastTs) return { fire: false, cumSec: t.cumMs / 1000, runSec: t.runFrom === undefined ? 0 : (t.lastTs - t.runFrom) / 1000 };
+    const net = netUsd !== undefined && Number.isFinite(netUsd) ? netUsd : undefined;
+    const at = (x: number | undefined, usd: number) => x !== undefined && x >= usd - EPS;
+    const dt = now - t.lastTs;
+    const joined = dt <= this.maxGapMs + HOLD_EXIT_JOIN_SLACK_MS;
+    if (joined && at(t.lastNet, this.cfg.usd) && at(net, this.cfg.usd)) t.cumMs += Math.min(dt, this.maxGapMs);
+    if (!at(net, this.cfg.runUsd)) t.runFrom = undefined;
+    else if (t.runFrom === undefined || !joined) t.runFrom = now;
+    t.lastTs = now;
+    t.lastNet = net;
+    const runMs = t.runFrom === undefined ? 0 : now - t.runFrom;
+    const met = t.runFrom !== undefined && t.cumMs >= this.cfg.sec * 1000 - EPS && runMs >= this.cfg.runSec * 1000 - EPS;
+    const rest = !met && t.selling && at(net, 0);
+    return { fire: met || rest, cumSec: t.cumMs / 1000, runSec: runMs / 1000, ...(rest ? { rest: true } : {}) };
+  }
+
+  /** A fill moved the position from `before` to `after`: flat or on the other side, the next position starts from nothing
+   *  (a same-side position reopened between two evaluations must not inherit the old one's seconds). */
+  onFill(ticker: string, before: number, after: number): void {
+    if (!(Math.abs(after) > EPS) || Math.sign(after) !== Math.sign(before)) this.tracks.delete(ticker);
+  }
+
+  /** A hold exit or a quota snipe sold on this contract (a fill of its order; call onFill first), whose market closes at
+   *  `closeTs` (ms). `hold`: the hold exit had fired, so what a thin bid left of the position is sold as well. */
+  soldBy(ticker: string, closeTs: number, now: number, hold = false): void {
+    const t = this.tracks.get(ticker);
+    if (hold && t) t.selling = true;
+    for (const [k, c] of this.sold) if (c <= now) this.sold.delete(k);
+    this.sold.set(ticker, closeTs);
+    this.save();
+  }
+
+  /** Why no entry may open on this contract now (undefined: it may): a hold exit or a quota snipe sold it, and no more than
+   *  reentryShare of its window (`windowSec`, open to close) is left. */
+  reentryBlock(ticker: string, tauSec: number, windowSec: number | undefined): string | undefined {
+    const share = this.cfg.reentryShare;
+    if (!this.cfg.enabled || !(share > 0) || !this.sold.has(ticker) || windowSec === undefined || tauSec > share * windowSec) return undefined;
+    return `re-entry after a hold exit or quota snipe: ${Math.max(0, Math.round(tauSec))} s of the ${Math.round(windowSec)} s window left, not more than ${Math.round(share * 100)}%`;
+  }
+
+  /** The market is no longer watched (the engine's prune): its count goes; its re-entry mark stays until the market closes. */
+  unwatch(ticker: string): void {
+    this.tracks.delete(ticker);
+  }
+
+  /** The market settled or is gone. */
+  forget(ticker: string): void {
+    this.tracks.delete(ticker);
+    if (this.sold.delete(ticker)) this.save();
+  }
+
+  private save(): void {
+    if (!this.file) return;
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      fs.writeFileSync(this.file, JSON.stringify({ sold: Object.fromEntries(this.sold) }));
+    } catch { /* best effort: the next mark tries again */ }
+  }
+
+  private load(now: number): void {
+    if (!this.file || !fs.existsSync(this.file)) return;
+    try {
+      const s = JSON.parse(fs.readFileSync(this.file, 'utf8')) as { sold?: Record<string, unknown> };
+      for (const [k, c] of Object.entries(s.sold ?? {})) if (typeof c === 'number' && c > now) this.sold.set(k, c);
+    } catch { /* unreadable state: no marks */ }
+  }
+}

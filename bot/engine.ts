@@ -31,11 +31,12 @@ import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, newRiskRoomUsd, RiskContext, RiskGateway, tennisLimits, waterfallLimits } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
-import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
+import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec, type StrategyOutput } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { exitOnlyPlan, exitOnlyView, heldSideBid } from './strategy/exitOnlyLane';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
+import { HoldExits, type HoldReading } from './strategy/holdExit';
 import type { SinuousEntryGate } from './strategy/sinuousEntry';
 import { tennisHighLeverage, type CurveReading, type SinuousExitGate } from './strategy/sinuousExit';
 import type { TakeProfitBench } from './strategy/takeProfitBench';
@@ -238,6 +239,8 @@ export interface MarketStatus {
   accuracyBlock?: string;
   /** Why new entries wait for the market's fee schedule (exits still go out). */
   feeBlock?: string;
+  /** HOLD_EXIT's re-entry rule: why no new entry opens here after a hold exit or a quota snipe (bot/strategy/holdExit.ts). */
+  reentryBlock?: string;
   /** Why the last full (entry) evaluation ran under the relaxed cadence. */
   lastEval?: { reason: CadenceReason; ts: number };
   bestBid?: number;
@@ -262,6 +265,9 @@ export interface MarketStatus {
    *  undefined with the pacer off) and the position's whole profit after fees if sold at its side's bid now (`nowUsd`); `rides`
    *  when it is in profit in the last share of the window (it rides to settlement), `closed` in the final minute. */
   snipe?: { atUsd?: number; nowUsd?: number; rides: boolean; closed: boolean };
+  /** The hold exit on the held position (HOLD_EXIT, bot/strategy/holdExit.ts): seconds in all at its level, seconds of the
+   *  current run, and whether both are met. */
+  hold?: HoldReading;
   /** The held position's reading of its coin's live line (bot/strategy/liveLine.ts): the break and the heads-up. */
   line?: LiveLineReading;
   /** Current values of the macro/confluence inputs for display. */
@@ -370,6 +376,8 @@ export class Engine {
   private readonly snipeGroup = new SnipeGroup();
   /** PACER_FLOOR: each held market's quota floor (bot/risk/quotaPacer.ts). */
   private readonly quotaFloors = new QuotaFloors();
+  /** HOLD_EXIT: each held market's seconds in profit, and the contracts a hold exit or a quota snipe sold (re-entry rule). */
+  private readonly holdExits: HoldExits;
   private readonly cadence: CadenceGate;
   private readonly lastPosition = new Map<string, number>();
   private timers: NodeJS.Timeout[] = [];
@@ -425,6 +433,8 @@ export class Engine {
     const sf = (k: string) => (d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.dataDir, `streak_${k}.json`) : undefined);
     this.streak = { crypto: new StreakScaler(DEFAULT_STREAK, sf('crypto')), tennis: new StreakScaler(DEFAULT_STREAK, sf('tennis')) };
     this.cadence = new CadenceGate(d.cfg.strategy);
+    // Its re-entry marks are saved beside the pacer's state: a restart inside a window must not reopen a sold contract.
+    this.holdExits = new HoldExits(d.cfg.strategy.holdExit, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'hold_exit_state.json') : undefined, this.now());
     this.volFc = new VolForecaster(d.cfg.strategy.volModel ? d.volModel : undefined);
     if (d.fillLogDir) this.fillLog = new FillLog(d.fillLogDir, (t) => d.md.books.get(t)?.mid(), this.now);
     this.pacer = new HourlyQuotaPacer(d.cfg.strategy.pacer, this.now(), d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'quota_pacer_state.json') : undefined);
@@ -439,6 +449,11 @@ export class Engine {
       const book = d.oms.positions.get(f.ticker);
       if (book) { const c = this.pacer.onFill(f, fee, book, this.now()); if (Math.abs(c) > 1e-9) d.audit.write('pacer', { event: 'credit', ticker: f.ticker, usd: Math.round(c * 1e4) / 1e4, ...this.pacer.status(this.now()) }); }
       const signed = f.side === 'bid' ? f.count : -f.count;
+      // HOLD_EXIT: a position that went flat or changed side starts its count afresh, also between two evaluations; the fill
+      // of a hold exit or a quota snipe starts the re-entry rule (bot/strategy/holdExit.ts).
+      this.holdExits.onFill(f.ticker, positionAfter - signed, positionAfter);
+      const sold = rec?.decisionId ? this.liquidations.get(`${rec.decisionId}|${rec.side}|${rec.price}`) : undefined;
+      if (sold && f.count > 0) this.holdExits.soldBy(f.ticker, sold.closeTs, this.now(), sold.hold);
       const cash = fillCashDelta(f.side, f.count, f.price, fee, positionAfter - signed);
       d.balanceMonitor?.onCash(cash);
       d.kalshiCheck?.onBotCash(cash);
@@ -487,6 +502,7 @@ export class Engine {
       // The quota pacer credits what the market's realized total still lacks after its exits.
       this.snipeGroup.forget(e.ticker);
       this.quotaFloors.forget(e.ticker);
+      this.holdExits.forget(e.ticker);
       { const c = this.pacer.onSettled(e.ticker, e.realized ?? 0, this.now()); if (Math.abs(c) > 1e-9) d.audit.write('pacer', { event: 'settled', ticker: e.ticker, usd: Math.round(c * 1e4) / 1e4, ...this.pacer.status(this.now()) }); }
       // One probation result per settled market that traded (VALIDATION_GATES=monitor: bot/risk/probation.ts).
       if (e.realized) probation()?.record(this.isTennis(e.ticker) ? 'tennis' : 'kalshi', e.realized, this.now());
@@ -985,6 +1001,7 @@ export class Engine {
       entryWindowUpdown: S.entryWindowUpdown, entryWindowHourly: S.entryWindowHourly,
       makerBuffer: this.makerBuffer(), makerMarkout60: this.d.tca?.makerMarkout60() ?? null, minQuoteContracts: S.minQuoteContracts,
       takeProfit: { floorPct: S.profitTargetPct, floorCents: +(S.profitTarget * 100).toFixed(2), giveBack: +S.profitGiveBack.toFixed(3) },
+      holdExit: S.holdExit,
       orders: { perMinute: this.d.cfg.risk.maxOrdersPerMinute, newRiskPerMinute: Math.max(1, Math.floor(this.d.cfg.risk.maxOrdersPerMinute * (1 - EXIT_RATE_RESERVE))), quoteTtlSec: S.orderTtlSec },
       // The flat sigma multiplier in use until a validated vol forecast takes over (null once one does).
       volFallbackMult: this.volFc.model?.validated ? null : S.volFallbackMult,
@@ -1335,7 +1352,7 @@ export class Engine {
       const why = !st ? 'not evaluated yet'
         : st.blocked ? st.blocked
         : resting.has(m.ticker) ? undefined
-        : !st.entryWindow ? (st.feeBlock ?? st.accuracyBlock ?? this.entryGuards(now)[0] ?? 'outside the entry window (time to close / price band)')
+        : !st.entryWindow ? (st.feeBlock ?? st.accuracyBlock ?? st.reentryBlock ?? this.entryGuards(now)[0] ?? 'outside the entry window (time to close / price band)')
         : 'no edge after fees';
       if (why) reasons[why] = (reasons[why] ?? 0) + 1; else quoting++;
     }
@@ -2049,6 +2066,7 @@ export class Engine {
         this.hunts.delete(t);
         this.profitPeaks.forget(t);
         this.quotaFloors.forget(t);
+        this.holdExits.unwatch(t);
         this.cadence.forget(t);
         this.lastPosition.delete(t);
         this.d.modelHealth?.forget(t);
@@ -2273,9 +2291,14 @@ export class Engine {
     // (cryptoKillExits evaluates only those: a sample picked by the result).
     if (!killExit) this.d.accuracyGate?.observe(m.ticker, tauSec, pYes, mid);
     const accuracyBlock = kindWindow && guards.length === 0 ? this.d.accuracyGate?.block(m.ticker, tauSec) : undefined;
-    const entryWindowOpen = kindWindow && guards.length === 0 && !accuracyBlock && !feeBlock;
+    // Steven's re-entry rule (Nov 11, HOLD_EXIT): after a hold exit or a quota snipe here, a new entry opens only while more than
+    // half of the contract's window is left, and only on the normal entry signal (bot/strategy/holdExit.ts). The window is its
+    // whole open to close, without the last-share rule's hour cap (STRATEGY_SHARE_WINDOW_MAX_SEC).
+    const reentryBlock = kindWindow && guards.length === 0 ? this.holdExits.reentryBlock(m.ticker, tauSec, shareWindowSec(m.openTime, m.closeTime, 0)) : undefined;
+    const entryWindowOpen = kindWindow && guards.length === 0 && !accuracyBlock && !feeBlock && !reentryBlock;
     st.accuracyBlock = accuracyBlock;
     st.feeBlock = feeBlock;
+    st.reentryBlock = reentryBlock;
     const restingBid = quote('bid');
     const restingAsk = quote('ask');
     const through = (r: { price: number } | undefined, best: number) => r !== undefined && Math.abs(best - r.price) >= 2 * S.requoteThreshold - 1e-9;
@@ -2426,11 +2449,18 @@ export class Engine {
     // winner (riding mode); its lock hold rides to settlement, which the quota still takes (Oct 29).
     const pacerFloor = this.quotaFloors.floor(m.ticker, view.position);
     const floorOpts = S.pacer.floor === 'off' ? {} : { pacerFloor, ...(S.pacer.floor === 'riding' && huntMode && !huntHold ? { pacerHigher: `the hunt riding its stop ${st.huntStop ?? ''}`.trim() } : {}) };
-    const plan = decide(view, strat, { exits: !huntMode && S.exitPolicy !== 'hold', blockReductions: huntMode && !huntHold, entries: Boolean(reason), profitMandate: S.profitMandate && (!huntMode || huntHold) ? S.profitMandateMin : undefined, pacerUsd, ...(group?.sell ? { pacerGroup: group } : {}), ...floorOpts });
+    // HOLD_EXIT (Steven, Nov 11): the position's seconds in profit after fees at the bid, on this evaluation's clock.
+    const hold = S.holdExit.enabled ? this.holdExits.sample(m.ticker, view.position, netProfitAtBid(view), now) : undefined;
+    st.hold = view.position !== 0 ? hold : undefined;
+    const plan = decide(view, strat, { exits: !huntMode && S.exitPolicy !== 'hold', blockReductions: huntMode && !huntHold, entries: Boolean(reason), profitMandate: S.profitMandate && (!huntMode || huntHold) ? S.profitMandateMin : undefined, pacerUsd, ...(group?.sell ? { pacerGroup: group } : {}), ...floorOpts, ...(hold ? { holdExit: hold } : {}) });
     if (plan.pacerArm && this.quotaFloors.arm(m.ticker, view.position, plan.pacerArm.usd)) this.d.audit.write('pacer', { event: 'floor', ticker: m.ticker, usd: plan.pacerArm.usd, why: plan.pacerArm.why, ...this.pacer.status(now) });
-    // A quota snipe liquidates the position: the hunt's stop order would only double it. The decision is audited with the clock.
+    // A quota snipe liquidates the position: the hunt's stop order would only double it (with HOLD_EXIT on, dropped in
+    // liquidate(), once the curve gate and the kill switch have let the sale through). The decision is audited with the clock.
     const snipe = plan.place.find((p) => p.purpose === 'exit' && p.why.startsWith('quota snipe'));
-    if (snipe) { huntPlan = undefined; this.d.audit.write('pacer', { event: 'snipe', ticker: m.ticker, why: snipe.why, count: snipe.count, price: snipe.price, ...this.pacer.status(now) }); }
+    if (snipe && !S.holdExit.enabled) huntPlan = undefined;
+    if (snipe) this.d.audit.write('pacer', { event: 'snipe', ticker: m.ticker, why: snipe.why, count: snipe.count, price: snipe.price, ...this.pacer.status(now) });
+    // So does a hold exit (audited when it goes out, below).
+    const holdSale = plan.place.find((p) => p.purpose === 'exit' && p.why.startsWith('hold exit'));
     // The MLP decides whether each entry is worth taking (take/skip head, once validated).
     if (S.takeGate === 'validated') applyTakeGate(plan, model.params.take, { pYes, features, tauSec, bid: bid.price, ask: ask.price, pStd: pred.std, margin: S.takeMargin, fees: md.feesFor(m.ticker) });
     // The TA rework's contrarian veto (job 6): skip entries the order flow, confluence or a busy tape already chased.
@@ -2624,6 +2654,7 @@ export class Engine {
         plan.notes.push('kill switch engaged: exit waits, one attempt per market every 30 s');
       }
     }
+    this.liquidate(m.ticker, plan);
     st.notes = plan.notes;
 
     const decisionId = crypto.randomUUID();
@@ -2642,8 +2673,8 @@ export class Engine {
         tauSec, fv: fv.pYes, regime: fv.regime, pYes, ...(full ? { features, drivers: why.drivers } : {}), modelShift: why.shiftFromFairValue, bid: bid.price, ask: ask.price, position: st.position, fastMove, mstate: compactReading(mState), ...(dynamicEdgeOn(cfg.strategy.dynamicEdge) ? { edgeAdd: +dEdge.add.toFixed(4) } : {}), ...(regimeScaleOn(cfg.strategy.regimeScale) ? { regimeMult: +reg.mult.toFixed(3) } : {}),
         place: plan.place.map((p) => ({ side: p.side, price: p.price, count: p.count, purpose: p.purpose, edge: p.edge, why: p.why })),
         cancel: plan.cancel,
-        // Why no entry could open here (the fee schedule or the accuracy gate), so studies need not recompute it.
-        ...(st.feeBlock ?? st.accuracyBlock ? { entryBlock: st.feeBlock ?? st.accuracyBlock } : {}),
+        // Why no entry could open here (the fee schedule, the accuracy gate or the hold exit's re-entry rule), so studies need not recompute it.
+        ...(st.feeBlock ?? st.accuracyBlock ?? st.reentryBlock ? { entryBlock: st.feeBlock ?? st.accuracyBlock ?? st.reentryBlock } : {}),
       });
     }
 
@@ -2664,7 +2695,10 @@ export class Engine {
     await Promise.all(plan.cancel.map((c) => oms.cancel(c.clientOrderId, c.reason)));
     // Orders carry the decision probability (q_adj under target-EV sizing): the gateway's fee-net
     // edge collar and TCA's edge-at-decision then judge the same number the strategy traded on.
-    for (const p of plan.place) await this.placeChecked(m, p, st.q ?? pYes, decisionId, undefined, killExit ? { killExit: true } : undefined);
+    for (const p of plan.place) {
+      if (p === holdSale) this.d.audit.write('pacer', { event: 'hold_exit', ticker: m.ticker, cumSec: hold!.cumSec, runSec: hold!.runSec, netUsd: Math.round((netProfitAtBid(view) ?? 0) * 1e4) / 1e4, count: p.count, price: p.price, why: p.why });
+      await this.placeChecked(m, p, st.q ?? pYes, decisionId, undefined, killExit ? { killExit: true } : undefined);
+    }
   }
 
   /** Hunt mode may run (EXIT_POLICY=confluence_ratchet): in paper; in live once the backtest evaluated it, or while unvalidated
@@ -2704,6 +2738,9 @@ export class Engine {
     });
     const { plan, hunt } = lane;
     if (lane.floorSale) this.d.audit.write('pacer', { event: 'snipe', ticker: m.ticker, why: lane.floorSale.why, count: lane.floorSale.count, price: lane.floorSale.price, lane: why, ...this.pacer.status(now) });
+    // HOLD_EXIT: the book is fresh, so the seconds in profit keep counting; the hold exit itself, like the quota snipe, does not
+    // sell from this lane.
+    st.hold = S.holdExit.enabled ? this.holdExits.sample(m.ticker, position, netProfitAtBid(view), now) : undefined;
     // The exit-in-profit curve's gate, as in a full evaluation (on its last reading: the curve is not fed this tick). The
     // hunt's stop, a gap sale and the take-profit's last tick above its floor never wait.
     const curve = this.d.curveExit;
@@ -2721,6 +2758,7 @@ export class Engine {
         return g.allow;
       });
     }
+    this.liquidate(m.ticker, plan);
     st.notes = plan.notes;
     if (!plan.place.length) return;
     const decisionId = crypto.randomUUID();
@@ -2731,7 +2769,7 @@ export class Engine {
     });
     // As in a full evaluation: an exit never trades against one of the bot's own resting orders, and a resting sell of the held
     // side (the curve's, the hunt's wall ask; not reduce-only on Kalshi) is pulled so the two cannot sell more than is held.
-    const cancels = new Map<string, string>();
+    const cancels = new Map<string, string>(plan.cancel.map((c) => [c.clientOrderId, c.reason]));
     for (const p of plan.place) {
       for (const o of this.crossingOwnOrders(m.ticker, p.side, p.price)) cancels.set(o.clientOrderId, 'would cross our own exit');
       for (const o of oms.liveOrders()) {
@@ -2879,6 +2917,8 @@ export class Engine {
     // Tagged before it is sent: a paper fill arrives inside submit(), a live one may beat its acknowledgement.
     if (p.purpose === 'exit' && p.why.startsWith('exit curve: cross')) this.tagScoredExit('cross', decisionId, p);
     else if (p.purpose === 'exit' && p.why.startsWith('take-profit') && !tennis) this.tagScoredExit('take-profit', decisionId, p);
+    // HOLD_EXIT: the re-entry mark waits for the sale's fill (a refused or unfilled order sold nothing).
+    if (p.liquidation && !tennis && cfg.strategy.holdExit.enabled) this.tagLiquidation(decisionId, p, m.closeTime);
     const rec = await oms.submit(intent);
     if (cfg.mode === 'paper' && !tennis) this.tagLiveBlock(rec.clientOrderId, p);
     const fx = this.fillX.get(p);
@@ -2917,6 +2957,14 @@ export class Engine {
    *  curve's cross and the take-profit, by decision, side and price (the one exit a decision sends across the book).
    *  Forgotten after an hour. */
   private readonly scoredExits = new Map<string, { kind: 'cross' | 'take-profit'; sign: 1 | -1; ts: number }>();
+  /** Hold exits and quota snipes sent, by decision, side and price, until their fills mark the contract (HOLD_EXIT). */
+  private readonly liquidations = new Map<string, { closeTs: number; hold: boolean; ts: number }>();
+
+  private tagLiquidation(decisionId: string, p: OrderPlan, closeTs: number): void {
+    const now = this.now();
+    if (this.liquidations.size >= 500) for (const [k, v] of this.liquidations) if (now - v.ts > 3_600_000) this.liquidations.delete(k);
+    this.liquidations.set(`${decisionId}|${p.side}|${p.price}`, { closeTs, hold: p.liquidation?.hold === true, ts: now });
+  }
 
   private tagScoredExit(kind: 'cross' | 'take-profit', decisionId: string, p: OrderPlan): void {
     const now = this.now();
@@ -2938,6 +2986,24 @@ export class Engine {
     if (!t) return;
     this.liveBlocks.delete(clientOrderId!);
     this.d.audit.write('paper_live_block', { clientOrderId, reasons: t.reasons });
+  }
+
+  /** A hold exit or a quota snipe that got through the curve gate and the kill switch liquidates the position (HOLD_EXIT, Steven
+   *  Nov 11): nothing else goes out with it (the hunt's stop would only double it), and this market's resting orders are pulled,
+   *  since a quote was sized with the position (the held side's ask carries its unwind) and one filling after the sale would
+   *  reopen it, with half the window or less left as well. The next evaluation quotes from the new position where the re-entry
+   *  rule lets it. Paper and live alike; the replay does the same (research/backtest.ts). */
+  private liquidate(ticker: string, plan: StrategyOutput): void {
+    // HOLD_EXIT off: the quota snipe goes out as it did before the rule.
+    if (!this.d.cfg.strategy.holdExit.enabled) return;
+    const sale = plan.place.find((p) => p.liquidation && p.reduceOnly && p.timeInForce === 'immediate_or_cancel');
+    if (!sale) return;
+    if (plan.place.length > 1) plan.notes.push(`${sale.liquidation!.hold ? 'the hold exit' : 'the quota snipe'} sells the whole position: ${plan.place.length - 1} other order${plan.place.length === 2 ? '' : 's'} not placed`);
+    plan.place = [sale];
+    for (const o of this.d.oms.liveOrders()) {
+      if (o.ticker !== ticker || o.reduceOnly || o.cancelRequested || !isLive(o) || plan.cancel.some((c) => c.clientOrderId === o.clientOrderId)) continue;
+      plan.cancel.push({ clientOrderId: o.clientOrderId, reason: 'a hold exit or quota snipe sells the position' });
+    }
   }
 
   /** The bot's resting orders an immediate order at `price` on `side` would trade against. */
