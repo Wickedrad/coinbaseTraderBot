@@ -173,7 +173,7 @@ test('re-entry: after a hold exit or a quota snipe, the same contract only while
   assert.equal(h.reentryBlock('T', 300, 900), undefined, 'nothing sold here: no limit');
   h.soldBy('T', T0 + 900_000, T0);
   assert.equal(h.reentryBlock('T', 451, 900), undefined, 'more than half left');
-  assert.match(h.reentryBlock('T', 450, 900) ?? '', /^re-entry after a hold exit or quota snipe: 450 s of the 900 s window left, not more than 50%/);
+  assert.match(h.reentryBlock('T', 450, 900) ?? '', /^re-entry after a hold exit, quota snipe or profit ratchet: 450 s of the 900 s window left, not more than 50%/);
   assert.ok(h.reentryBlock('T', 120, 900));
   assert.equal(h.reentryBlock('U', 120, 900), undefined, 'another contract is not affected');
   assert.equal(h.reentryBlock('T', 120, undefined), undefined, 'no window known: no limit');
@@ -196,7 +196,7 @@ test('re-entry marks: saved and restored across a restart until the market close
   a.unwatch('T');
   assert.ok(a.reentryBlock('T', 400, 900), 'not evaluated for a while: the mark stays');
   const b = new HoldExits(CFG, file, T0 + 500_000);
-  assert.match(b.reentryBlock('T', 400, 900) ?? '', /^re-entry after a hold exit or quota snipe/, 'restarted with 400 s left: still marked');
+  assert.match(b.reentryBlock('T', 400, 900) ?? '', /^re-entry after a hold exit, quota snipe or profit ratchet/, 'restarted with 400 s left: still marked');
   assert.equal(new HoldExits(CFG, file, close).reentryBlock('T', 0, 900), undefined, 'market closed: not restored');
   b.forget('T');
   assert.equal(new HoldExits(CFG, file, T0 + 500_000).reentryBlock('T', 400, 900), undefined, 'settled: gone from the file too');
@@ -274,8 +274,9 @@ test('hold exit sale: the quota snipe is unchanged and still sells at once; on t
 test('replay: the same hold exit and re-entry rule as the engine; HOLD_EXIT=false sells nothing early under the hold policy', async () => {
   const dir = path.join(tmpDir(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 9, marketNoise: 0.05 });
-  // EXIT_POLICY=hold with the quota snipe and the profit mandate off: every early sale is the hold exit's.
-  const env = { DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_CADENCE: 'continuous', PROFIT_MANDATE: 'false', PACER: 'false' };
+  // EXIT_POLICY=hold with the quota snipe, the profit mandate and the profit ratchet off: every early sale is the hold exit's.
+  // (With the ratchet: the test after next.)
+  const env = { DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_CADENCE: 'continuous', PROFIT_MANDATE: 'false', PACER: 'false', RATCHET: 'false' };
   const run = (holdExit: string) => { const c = loadConfig({ ...env, HOLD_EXIT: holdExit }); return runBacktest(dir, MetaModel.identity(), c.strategy, c.risk, 200, { exitPolicy: 'hold', fillLog: true }); };
   const off = await run('false');
   assert.deepEqual([off.exits.orders, off.exits.holdExits, off.exits.reentryBlocks], [0, 0, 0]);
@@ -307,8 +308,9 @@ test('replay: a hunt stop queued on the evaluation where the hold exit fires giv
   const dir = path.join(tmpDir(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 3, marketNoise: 0.05 });
   // EXIT_POLICY=confluence_ratchet with a hunt that starts easily and sells at the bid every tick once it has (the lock sale):
-  // its stop and the hold exit meet on some evaluations. The quota snipe is off: every liquidation is the hold exit's.
-  const env = { DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_CADENCE: 'continuous', PROFIT_MANDATE: 'false', PACER: 'false' };
+  // its stop and the hold exit meet on some evaluations. The quota snipe and the profit ratchet are off: every liquidation is
+  // the hold exit's.
+  const env = { DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_CADENCE: 'continuous', PROFIT_MANDATE: 'false', PACER: 'false', RATCHET: 'false' };
   const run = (holdExit: string) => {
     const c = loadConfig({ ...env, HOLD_EXIT: holdExit });
     return runBacktest(dir, MetaModel.identity(), c.strategy, c.risk, 200, { exitPolicy: 'confluence_ratchet', fillLog: true, hunt: { targetMargin: 0.005, minConfluence: 0, lockSale: 'fair_value', lockSaleElse: 'exit', lockSaleAt: 'lock' } });

@@ -21,9 +21,16 @@
 // evaluation saw it flat (onFill). The count is kept in memory: after a restart it starts again.
 // Re-entry: after a hold exit or a quota snipe sold on a contract (marked on the sale's fill), a new entry there opens only
 // while more than HOLD_EXIT_REENTRY_SHARE (half) of the contract's window (open to close) is left, and only on the bot's
-// normal entry signal. The marks are saved (hold_exit_state.json beside the pacer's state) and kept until the market closes.
+// normal entry signal. A profit ratchet sale marks it too: it sells the runners the hold exit would have sold. The marks are saved (hold_exit_state.json beside the pacer's state) and kept until the market closes.
 // Tennis is not covered: its snipe (bot/tennis/tennisStrategy.ts) marks nothing and its entries are not limited, since a
 // match contract's open-to-close times say nothing about how much of the match is left; that is for Steven to settle.
+// Plan positions too (Steven, Nov 11 8:52 AM EST / 13:52 UTC): the hold exit sells a plan position (PLAN_RULES) as any other;
+// whichever of it and the plan's ratchet or end rule fires first sells.
+// A runner rides the ratchet (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC; bot/strategy/profitRatchet.ts): while the
+// position's ratchet is armed and its profit set a new best in the last HOLD_EXIT_RUN_SEC (3 s), the hold exit stands aside;
+// the ratchet's stop, $0.50 under the best, sells it on the way down. A position sitting near $1.50 sets no new best and is
+// sold at 10 s as before. With no ratchet armed (RATCHET=false, or not yet armed) nothing stands aside. The best is the
+// highest profit any evaluation of the position saw, on the same timestamps.
 // The engine (paper and live alike) and the replay (research/backtest.ts) run this class on their own clocks.
 
 import fs from 'fs';
@@ -56,19 +63,24 @@ export interface HoldReading {
   runSec: number;
   /** The rule sold part of the position; this is the rest. */
   rest?: boolean;
+  /** Both conditions are met but the profit is still climbing under an armed ratchet: the hold exit stands aside. */
+  climbing?: boolean;
 }
 
 const EPS = 1e-9;
 
 interface Track {
   sign: number; lastTs: number; lastNet: number | undefined; cumMs: number; runFrom: number | undefined;
+  /** The best profit seen and when it was last raised. */
+  best: number | undefined; bestAt: number;
   /** The rule's sale filled part of the position: the rest is sold too. */
   selling: boolean;
 }
 
 export class HoldExits {
   private readonly tracks = new Map<string, Track>();
-  /** Contracts a hold exit or a quota snipe has sold, with their markets' close (ms): the re-entry rule applies to them. */
+  /** Contracts a hold exit, a quota snipe or a profit ratchet sale has sold, with their markets' close (ms): the re-entry rule
+   *  applies to them (the ratchet sells the runners the hold exit would have sold). */
   private readonly sold = new Map<string, number>();
 
   /** `file`: where the re-entry marks are saved (undefined: memory only, as in the replay); `now` drops marks of closed markets. */
@@ -76,8 +88,9 @@ export class HoldExits {
     this.load(now);
   }
 
-  /** Records the position's profit after fees at its bid (`netUsd`; undefined: none) at `now` (ms) and says whether it sells. */
-  sample(ticker: string, position: number, netUsd: number | undefined, now: number): HoldReading {
+  /** Records the position's profit after fees at its bid (`netUsd`; undefined: none) at `now` (ms) and says whether it sells.
+   *  `ratchetArmed`: the position's profit ratchet is armed, so the hold exit stands aside while the profit is still climbing. */
+  sample(ticker: string, position: number, netUsd: number | undefined, now: number, ratchetArmed = false): HoldReading {
     if (!(Math.abs(position) > EPS)) {
       this.tracks.delete(ticker);
       return { fire: false, cumSec: 0, runSec: 0 };
@@ -85,7 +98,7 @@ export class HoldExits {
     const sign = Math.sign(position);
     let t = this.tracks.get(ticker);
     if (!t || t.sign !== sign) {
-      t = { sign, lastTs: -Infinity, lastNet: undefined, cumMs: 0, runFrom: undefined, selling: false };
+      t = { sign, lastTs: -Infinity, lastNet: undefined, cumMs: 0, runFrom: undefined, best: undefined, bestAt: -Infinity, selling: false };
       this.tracks.set(ticker, t);
     }
     // An evaluation older than the last one (overlapping ticks under the kill switch) adds nothing and sells nothing: the newer
@@ -100,10 +113,14 @@ export class HoldExits {
     else if (t.runFrom === undefined || !joined) t.runFrom = now;
     t.lastTs = now;
     t.lastNet = net;
+    if (net !== undefined && (t.best === undefined || net > t.best + EPS)) { t.best = net; t.bestAt = now; }
     const runMs = t.runFrom === undefined ? 0 : now - t.runFrom;
     const met = t.runFrom !== undefined && t.cumMs >= this.cfg.sec * 1000 - EPS && runMs >= this.cfg.runSec * 1000 - EPS;
+    // A new best within the last HOLD_EXIT_RUN_SEC under an armed ratchet: the runner rides the ratchet. Once the rule has sold
+    // part of the position, the rest is not held back.
+    const climbing = met && !t.selling && ratchetArmed && now - t.bestAt < this.cfg.runSec * 1000 - EPS;
     const rest = !met && t.selling && at(net, 0);
-    return { fire: met || rest, cumSec: t.cumMs / 1000, runSec: runMs / 1000, ...(rest ? { rest: true } : {}) };
+    return { fire: (met && !climbing) || rest, cumSec: t.cumMs / 1000, runSec: runMs / 1000, ...(rest ? { rest: true } : {}), ...(climbing ? { climbing: true } : {}) };
   }
 
   /** A fill moved the position from `before` to `after`: flat or on the other side, the next position starts from nothing
@@ -122,12 +139,12 @@ export class HoldExits {
     this.save();
   }
 
-  /** Why no entry may open on this contract now (undefined: it may): a hold exit or a quota snipe sold it, and no more than
-   *  reentryShare of its window (`windowSec`, open to close) is left. */
+  /** Why no entry may open on this contract now (undefined: it may): a hold exit, a quota snipe or a profit ratchet sale sold
+   *  it, and no more than reentryShare of its window (`windowSec`, open to close) is left. */
   reentryBlock(ticker: string, tauSec: number, windowSec: number | undefined): string | undefined {
     const share = this.cfg.reentryShare;
     if (!this.cfg.enabled || !(share > 0) || !this.sold.has(ticker) || windowSec === undefined || tauSec > share * windowSec) return undefined;
-    return `re-entry after a hold exit or quota snipe: ${Math.max(0, Math.round(tauSec))} s of the ${Math.round(windowSec)} s window left, not more than ${Math.round(share * 100)}%`;
+    return `re-entry after a hold exit, quota snipe or profit ratchet: ${Math.max(0, Math.round(tauSec))} s of the ${Math.round(windowSec)} s window left, not more than ${Math.round(share * 100)}%`;
   }
 
   /** The market is no longer watched (the engine's prune): its count goes; its re-entry mark stays until the market closes. */

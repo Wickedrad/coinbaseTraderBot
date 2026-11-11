@@ -37,6 +37,9 @@ import { exitOnlyPlan, exitOnlyView, heldSideBid } from './strategy/exitOnlyLane
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
 import { HoldExits, type HoldReading } from './strategy/holdExit';
+import { ProfitRatchets, type RatchetReading } from './strategy/profitRatchet';
+import { PlanPositions, type PlanPosition } from './plan/planPositions';
+import { planMarkTried, planStep, type PlanEvent, type PlanSale } from './plan/planRatchet';
 import type { SinuousEntryGate } from './strategy/sinuousEntry';
 import { tennisHighLeverage, type CurveReading, type SinuousExitGate } from './strategy/sinuousExit';
 import type { TakeProfitBench } from './strategy/takeProfitBench';
@@ -204,6 +207,10 @@ function readProcWriteBytes(): number | undefined {
   try { const m = /write_bytes:\s*(\d+)/.exec(fs.readFileSync('/proc/self/io', 'utf8')); return m ? Number(m[1]) : undefined; } catch { return undefined; }
 }
 
+/** One evaluation of a plan position (Engine.planEvaluate): the order to place, if any, the pure module's sale behind it, and
+ *  the events planRecord audits once the sale's fate is known. */
+interface PlanRun { sale?: OrderPlan; planSale?: PlanSale; notes: string[]; events: PlanEvent[] }
+
 export interface MarketStatus {
   /** TA conviction overlay (bot/strategy/taConviction.ts): probability before the TA network's drift,
    *  the shift it applied, signal breadth, the altcoin risk-on rule, and the selection priority. */
@@ -270,6 +277,11 @@ export interface MarketStatus {
   hold?: HoldReading;
   /** The held position's reading of its coin's live line (bot/strategy/liveLine.ts): the break and the heads-up. */
   line?: LiveLineReading;
+  /** PLAN_RULES on and the position opened by a plan rule: its ratchet (bot/plan/planRatchet.ts), for the dashboard. */
+  plan?: { ruleId: string; side: 'yes' | 'no'; armed: boolean; stop?: number; best?: number; selling?: 'ratchet' | 'end'; failedTries: number; gaps: number };
+  /** The profit ratchet on a held position that is not a plan position (RATCHET, bot/strategy/profitRatchet.ts): armed, its best
+   *  and its stop in dollars for the whole position, and whether it sells. */
+  ratchet?: RatchetReading;
   /** Current values of the macro/confluence inputs for display. */
   macro?: Record<string, number | null>;
   /** SNN: model-only probability, p_snn, confidence c, alpha applied, and why it is not voting. */
@@ -378,6 +390,11 @@ export class Engine {
   private readonly quotaFloors = new QuotaFloors();
   /** HOLD_EXIT: each held market's seconds in profit, and the contracts a hold exit or a quota snipe sold (re-entry rule). */
   private readonly holdExits: HoldExits;
+  /** RATCHET: the profit ratchet of each held position that is not a plan position (bot/strategy/profitRatchet.ts), in memory. */
+  private readonly profitRatchets: ProfitRatchets;
+  /** Positions opened by plan rules, with their ratchets (bot/plan/planPositions.ts): saved in the book folder across restarts.
+   *  The plan's entry lane (E01, not built yet) tags them; with PLAN_RULES on, the plan's ratchet and end rule manage them. */
+  readonly planPositions: PlanPositions;
   private readonly cadence: CadenceGate;
   private readonly lastPosition = new Map<string, number>();
   private timers: NodeJS.Timeout[] = [];
@@ -438,6 +455,9 @@ export class Engine {
     this.volFc = new VolForecaster(d.cfg.strategy.volModel ? d.volModel : undefined);
     if (d.fillLogDir) this.fillLog = new FillLog(d.fillLogDir, (t) => d.md.books.get(t)?.mid(), this.now);
     this.pacer = new HourlyQuotaPacer(d.cfg.strategy.pacer, this.now(), d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'quota_pacer_state.json') : undefined);
+    // One ratchet (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC): a plan position's defaults are the profit ratchet's dollars.
+    this.planPositions = new PlanPositions(d.cfg.strategy.profitRatchet, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'plan_positions.json') : undefined);
+    this.profitRatchets = new ProfitRatchets(d.cfg.strategy.profitRatchet);
     if (d.snn) this.attachBlender(d.snn.blender);
     // Registered before the startup reconciliation replays fills, so the
     // balance monitor sees every cash movement the bot's trading causes.
@@ -449,11 +469,15 @@ export class Engine {
       const book = d.oms.positions.get(f.ticker);
       if (book) { const c = this.pacer.onFill(f, fee, book, this.now()); if (Math.abs(c) > 1e-9) d.audit.write('pacer', { event: 'credit', ticker: f.ticker, usd: Math.round(c * 1e4) / 1e4, ...this.pacer.status(this.now()) }); }
       const signed = f.side === 'bid' ? f.count : -f.count;
-      // HOLD_EXIT: a position that went flat or changed side starts its count afresh, also between two evaluations; the fill
-      // of a hold exit or a quota snipe starts the re-entry rule (bot/strategy/holdExit.ts).
+      // HOLD_EXIT and RATCHET: a position that went flat or changed side starts its count and its ratchet afresh, also between
+      // two evaluations; the fill of a hold exit, a quota snipe or a profit ratchet sale starts the re-entry rule
+      // (bot/strategy/holdExit.ts).
       this.holdExits.onFill(f.ticker, positionAfter - signed, positionAfter);
+      this.profitRatchets.onFill(f.ticker, positionAfter - signed, positionAfter);
       const sold = rec?.decisionId ? this.liquidations.get(`${rec.decisionId}|${rec.side}|${rec.price}`) : undefined;
       if (sold && f.count > 0) this.holdExits.soldBy(f.ticker, sold.closeTs, this.now(), sold.hold);
+      // A plan position's tag clears once a fill leaves the market flat.
+      if (Math.abs(positionAfter) < 1e-9) this.planPositions.flat(f.ticker, positionAfter - signed);
       const cash = fillCashDelta(f.side, f.count, f.price, fee, positionAfter - signed);
       d.balanceMonitor?.onCash(cash);
       d.kalshiCheck?.onBotCash(cash);
@@ -503,6 +527,8 @@ export class Engine {
       this.snipeGroup.forget(e.ticker);
       this.quotaFloors.forget(e.ticker);
       this.holdExits.forget(e.ticker);
+      this.profitRatchets.forget(e.ticker);
+      this.planPositions.forget(e.ticker);
       { const c = this.pacer.onSettled(e.ticker, e.realized ?? 0, this.now()); if (Math.abs(c) > 1e-9) d.audit.write('pacer', { event: 'settled', ticker: e.ticker, usd: Math.round(c * 1e4) / 1e4, ...this.pacer.status(this.now()) }); }
       // One probation result per settled market that traded (VALIDATION_GATES=monitor: bot/risk/probation.ts).
       if (e.realized) probation()?.record(this.isTennis(e.ticker) ? 'tennis' : 'kalshi', e.realized, this.now());
@@ -1002,6 +1028,7 @@ export class Engine {
       makerBuffer: this.makerBuffer(), makerMarkout60: this.d.tca?.makerMarkout60() ?? null, minQuoteContracts: S.minQuoteContracts,
       takeProfit: { floorPct: S.profitTargetPct, floorCents: +(S.profitTarget * 100).toFixed(2), giveBack: +S.profitGiveBack.toFixed(3) },
       holdExit: S.holdExit,
+      profitRatchet: S.profitRatchet,
       orders: { perMinute: this.d.cfg.risk.maxOrdersPerMinute, newRiskPerMinute: Math.max(1, Math.floor(this.d.cfg.risk.maxOrdersPerMinute * (1 - EXIT_RATE_RESERVE))), quoteTtlSec: S.orderTtlSec },
       // The flat sigma multiplier in use until a validated vol forecast takes over (null once one does).
       volFallbackMult: this.volFc.model?.validated ? null : S.volFallbackMult,
@@ -1596,7 +1623,8 @@ export class Engine {
    *  reduce-only and immediate-or-cancel. One in profit is not dumped: its market is evaluated as usual, so its take-profit,
    *  quota floor and hunt stop keep running, while entryGuards blocks every entry. Only reduce-only immediate-or-cancel exits
    *  go, marked for the gateway (RiskContext.killExit), at most one attempt per market every 30 s. The final seconds before
-   *  the close (STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC) hold a loser too, as they hold every position outside the kill. An
+   *  the close (STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC) hold a loser too, as they hold every position outside the kill, except a
+   *  plan position (PLAN_RULES on), whose market is evaluated there so its end rule and ratchet still run. An
    *  operator's STOP ALL (KillSwitch.manual: it engaged the switch, or was pressed on top of an automatic trip) leaves
    *  crypto positions alone, as before. */
   private async cryptoKillExits(): Promise<void> {
@@ -1613,8 +1641,13 @@ export class Engine {
       const net = positionNetAtBid(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, b, a, md.feesFor(m.ticker));
       if (net === undefined) continue;
       if (net > 1e-9) { await this.evaluate(m, now, true); continue; }
-      // The same no-exit window decide() keeps (exitWindowOpen): spreads widen in the settlement-averaging window.
-      if ((m.closeTime - now) / 1000 <= cfg.strategy.noExitBeforeCloseSec) continue;
+      // The same no-exit window decide() keeps (exitWindowOpen): spreads widen in the settlement-averaging window. A plan
+      // position (PLAN_RULES) is not held there: the plan's end rule ("settle only in profit") sells a loser inside the final
+      // seconds too, so its market is evaluated under the kill as a winner's is, and the plan's own rules decide.
+      if ((m.closeTime - now) / 1000 <= cfg.strategy.noExitBeforeCloseSec) {
+        if (this.planHeld(m.ticker, pos.yes, now)) await this.evaluate(m, now, true);
+        continue;
+      }
       if (oms.liveOrders().some((o) => o.ticker === m.ticker && isLive(o) && !o.cancelRequested)) continue;
       if (!this.killExitDue(m.ticker, now)) continue;
       // A YES position sells YES at the bid; a NO position sells NO at its bid, 1 - the YES ask (buys YES at the ask).
@@ -2067,6 +2100,7 @@ export class Engine {
         this.profitPeaks.forget(t);
         this.quotaFloors.forget(t);
         this.holdExits.unwatch(t);
+        this.profitRatchets.forget(t);
         this.cadence.forget(t);
         this.lastPosition.delete(t);
         this.d.modelHealth?.forget(t);
@@ -2123,7 +2157,7 @@ export class Engine {
     // Past the feed-lag and book-age checks a missing price input stops quoting, but a held position still gets its exits
     // already armed that need no model (the exit-only lane, E06): about 2 minutes after every restart the volatility is
     // warming up, and an index or strike can be late at any time.
-    const blockHeld = async (why: string) => { await block(why); await this.exitOnlyLane(m, st, book, why, now); };
+    const blockHeld = async (why: string) => { await block(why); await this.exitOnlyLane(m, st, book, why, now, killExit); };
     const spot = idx?.fresh(now, R.maxIndexAgeMs);
     if (!spot) return blockHeld('index stale');
     const vol = idx!.vol();
@@ -2326,6 +2360,8 @@ export class Engine {
       this.d.scoreboard.record(m.ticker, m.asset, m.closeTime, { market: pMarket, fair_value: fv.pYes, meta_model: pred.p, bot_price: pYes, snn: blended.pSnn, ta_tilt: taShiftFull !== undefined ? clampP(pred.p + taShiftFull) : undefined }, now);
     }
     const pos = oms.positions.get(m.ticker);
+    // PLAN_RULES on and a position opened by a plan rule: the plan's ratchet and end rule sell it; today's exits leave it alone.
+    const planPos = this.planHeld(m.ticker, st.position, now);
     // The open contracts' price (an earlier exit's profit is on the pacer's clock already): the snipe, the take-profit and
     // the ride-to-settlement judge them, not the market's whole P&L.
     const entrySidePrice = openSidePrice(pos);
@@ -2357,7 +2393,7 @@ export class Engine {
       // Exit curve, rest mode: the held position's sell rests at the curve's swing-top estimate (the strategy places it);
       // not in the stand-down before the close, and pulled during a fast index move (a resting sell is lifted exactly
       // when the contract is suddenly worth more).
-      ...(() => { const r = st.position !== 0 && !fastMove ? this.d.curveExit?.restTarget(m.ticker, tauSec) : undefined; return r !== undefined ? { curveRestSidePrice: r } : {}; })(),
+      ...(() => { const r = st.position !== 0 && !fastMove && !planPos ? this.d.curveExit?.restTarget(m.ticker, tauSec) : undefined; return r !== undefined ? { curveRestSidePrice: r } : {}; })(),
       newRiskRoomUsd: reason ? this.newRiskRoom(m, bankroll, tier) : undefined,
       tauSec, noEntryBeforeCloseSec: R.noEntryBeforeCloseSec, fastMove, tickSize: m.tickSize, fees: md.feesFor(m.ticker),
       restingBid, restingAsk, nowSec: Math.floor(now / 1000), closeSec: Math.floor(m.closeTime / 1000),
@@ -2383,7 +2419,7 @@ export class Engine {
     const vh = model.validatedHunt();
     const huntAllowed = this.huntAllowed();
     const huntNote = cfg.strategy.exitPolicy === 'confluence_ratchet' && !huntAllowed ? 'hunt mode not validated by the backtest: fair-value exit in live' : undefined;
-    if (huntAllowed) {
+    if (huntAllowed && !planPos) {
       let h = this.hunts.get(m.ticker);
       if (!h) {
         const S = cfg.strategy;
@@ -2422,6 +2458,9 @@ export class Engine {
         huntPlan = { side: d.plan.side, price: d.plan.price, count: d.plan.count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge: 0, why: `confluence ratchet stop ${d.plan.stop}` };
         huntProtective = d.event === 'triggered' || d.event === 'profit_take_gap';
       }
+    } else if (planPos) {
+      // A plan position is never hunted; a hunt left from before cannot carry over to a later position.
+      this.hunts.delete(m.ticker);
     } else {
       st.exitMode = 'fair_value';
       // A hunt that sits out (bench, unvalidated hunt in live) never sees the position go flat, and the hunt keeps state
@@ -2442,25 +2481,39 @@ export class Engine {
     // mandate (PROFIT_MANDATE, off by default) sells any position in profit outside the last share of the window, a hunt trailing
     // its stop excepted; a hunt that holds (HUNT_LOCK_SALE_ELSE=hold) is not excepted, so its reductions are not blocked.
     const pacerUsd = this.pacer.neededUsd(now);
-    if (view.position !== 0) st.snipe = { atUsd: pacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false };
+    // A plan position: the pacer reports pace only (Steven's decision 13): no target on it, no snipe, no floor, no group.
+    if (view.position !== 0) st.snipe = planPos ? { atUsd: undefined, nowUsd: netProfitAtBid(view), rides: false, closed: false } : { atUsd: pacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false };
     // Steven's group rule (PACER_GROUP): this position, in profit after fees, is sold when the positions in profit together cover the target.
-    const group = pacerUsd !== undefined && S.pacer.group ? this.snipeGroup.judge(m.ticker, view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsd, now) : undefined;
+    const group = pacerUsd !== undefined && S.pacer.group ? this.snipeGroup.judge(m.ticker, !planPos && view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsd, now) : undefined;
     // PACER_FLOOR (Steven, Oct 31): under a higher target the quota is the position's stop. The hunt trailing its stop rides a
     // winner (riding mode); its lock hold rides to settlement, which the quota still takes (Oct 29).
     const pacerFloor = this.quotaFloors.floor(m.ticker, view.position);
     const floorOpts = S.pacer.floor === 'off' ? {} : { pacerFloor, ...(S.pacer.floor === 'riding' && huntMode && !huntHold ? { pacerHigher: `the hunt riding its stop ${st.huntStop ?? ''}`.trim() } : {}) };
-    // HOLD_EXIT (Steven, Nov 11): the position's seconds in profit after fees at the bid, on this evaluation's clock.
-    const hold = S.holdExit.enabled ? this.holdExits.sample(m.ticker, view.position, netProfitAtBid(view), now) : undefined;
+    const netNow = netProfitAtBid(view);
+    // RATCHET (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC): the profit ratchet of a position that is not a plan position,
+    // on this evaluation's net; a plan position has the plan's (planEvaluate, the same core).
+    const ratchet = this.ratchetStep(m.ticker, st, view.position, netNow, now, planPos !== undefined);
+    // The plan's ratchet and end rule (bot/plan/planRatchet.ts), on every evaluation, the final seconds included; before
+    // decide() so that no taker entry buys back what the plan's sale sells in the same tick.
+    const planRun = planPos ? this.planEvaluate(m, st, planPos, bid, ask, now) : undefined;
+    const planSale = planRun?.sale;
+    // HOLD_EXIT (Steven, Nov 11): the position's seconds in profit after fees at the bid, on this evaluation's clock. It stands
+    // aside while the profit climbs under an armed ratchet (the plan's for a plan position), and beside a plan sale under way.
+    const hold = S.holdExit.enabled ? this.holdExits.sample(m.ticker, view.position, netNow, now, planPos ? planPos.state.armed : ratchet?.armed === true) : undefined;
     st.hold = view.position !== 0 ? hold : undefined;
-    const plan = decide(view, strat, { exits: !huntMode && S.exitPolicy !== 'hold', blockReductions: huntMode && !huntHold, entries: Boolean(reason), profitMandate: S.profitMandate && (!huntMode || huntHold) ? S.profitMandateMin : undefined, pacerUsd, ...(group?.sell ? { pacerGroup: group } : {}), ...floorOpts, ...(hold ? { holdExit: hold } : {}) });
+    const holdOpt = hold && !(planPos && (planSale !== undefined || planPos.state.selling !== undefined)) ? { holdExit: hold } : {};
+    const plan = decide(view, strat, planPos
+      ? { exits: false, entries: Boolean(reason), planHeld: true, planSelling: planSale !== undefined, ...holdOpt }
+      : { exits: !huntMode && S.exitPolicy !== 'hold', blockReductions: huntMode && !huntHold, entries: Boolean(reason), profitMandate: S.profitMandate && (!huntMode || huntHold) ? S.profitMandateMin : undefined, pacerUsd, ...(group?.sell ? { pacerGroup: group } : {}), ...floorOpts, ...holdOpt, ...(ratchet ? { ratchet } : {}) });
     if (plan.pacerArm && this.quotaFloors.arm(m.ticker, view.position, plan.pacerArm.usd)) this.d.audit.write('pacer', { event: 'floor', ticker: m.ticker, usd: plan.pacerArm.usd, why: plan.pacerArm.why, ...this.pacer.status(now) });
     // A quota snipe liquidates the position: the hunt's stop order would only double it (with HOLD_EXIT on, dropped in
     // liquidate(), once the curve gate and the kill switch have let the sale through). The decision is audited with the clock.
     const snipe = plan.place.find((p) => p.purpose === 'exit' && p.why.startsWith('quota snipe'));
     if (snipe && !S.holdExit.enabled) huntPlan = undefined;
     if (snipe) this.d.audit.write('pacer', { event: 'snipe', ticker: m.ticker, why: snipe.why, count: snipe.count, price: snipe.price, ...this.pacer.status(now) });
-    // So does a hold exit (audited when it goes out, below).
+    // So do a hold exit and a profit ratchet sale (audited when they go out, below).
     const holdSale = plan.place.find((p) => p.purpose === 'exit' && p.why.startsWith('hold exit'));
+    const ratchetSale = plan.place.find((p) => p.purpose === 'exit' && p.liquidation?.ratchet === true);
     // The MLP decides whether each entry is worth taking (take/skip head, once validated).
     if (S.takeGate === 'validated') applyTakeGate(plan, model.params.take, { pYes, features, tauSec, bid: bid.price, ask: ask.price, pStd: pred.std, margin: S.takeMargin, fees: md.feesFor(m.ticker) });
     // The TA rework's contrarian veto (job 6): skip entries the order flow, confluence or a busy tape already chased.
@@ -2472,8 +2525,9 @@ export class Engine {
     // confluence evidence earns up to ADVERSARIAL_MAX_BOOST x, scaled by how much edge survived and how many
     // TA / confluence signals agree (breadth). The altcoin risk-on rule (USDT.D falling, RSI > 50) gives
     // altcoin entries long the underlying ALT_RISKON_BOOST x. Combined, at most CONVICTION_MAX_TOTAL x the
-    // normal size; the entry is re-sized by Kelly with the multiplier (Kelly fraction and per-order caps).
-    {
+    // normal size; the entry is re-sized by Kelly with the multiplier (Kelly fraction and per-order caps). Not in a market
+    // holding a plan position.
+    if (!planPos) {
       const sigma1m = sigmaPricing * Math.sqrt(60);
       const taFeatures = Object.keys(features).filter((k) => ADVERSARY_GROUPS.has(FEATURES[k]?.group ?? (k.startsWith('ta_') ? 'ta' : '')));
       for (let i = 0; i < plan.place.length; i++) {
@@ -2563,6 +2617,8 @@ export class Engine {
     if (dEdge.add !== 0) plan.notes.push(`market state ${dEdge.add > 0 ? '+' : ''}${dEdge.add.toFixed(4)} edge`);
     if (sessRisk.applied.length) plan.notes.push(`session risk ${sessRisk.applied.join('+')}: size x${sessRisk.sizeMult}, +${sessRisk.minEdgeAdd} edge`);
     if (huntPlan) plan.place.unshift(huntPlan);
+    if (planRun) plan.notes.push(...planRun.notes);
+    if (planSale) plan.place.unshift(planSale);
     // Entry curve (strategy/sinuousEntry.ts): a quote that adds to the position is against the curve when the book's
     // projection runs against the side it buys. Monitor mode notes it; gate mode does not place it and pulls a resting one.
     const entryCurve = this.d.curveEntry;
@@ -2588,8 +2644,9 @@ export class Engine {
     }
     // Exit-in-profit curve (strategy/sinuousExit.ts): a profit-taking exit also needs the curve's signal (a spike above
     // it, or a roll-over below its projection). The hunt's trailing stop, a gap through it and loss cuts never wait.
+    // A plan position: the curve neither holds the plan's sale nor sells it.
     const curve = this.d.curveExit;
-    if (curve && st.position !== 0 && view.entrySidePrice !== undefined) {
+    if (curve && st.position !== 0 && view.entrySidePrice !== undefined && !planPos) {
       const sign = st.position > 0 ? 1 : -1;
       const fees = md.feesFor(m.ticker);
       const held = Math.abs(st.position);
@@ -2640,7 +2697,7 @@ export class Engine {
           }
         }
       }
-    } else curve?.flat(m.ticker, now);
+    } else if (!planPos) curve?.flat(m.ticker, now);
     if (huntMode) plan.notes.push(huntHeld ?? `hunting: stop ${st.huntStop ?? 'forming'}`);
     if (huntNote) plan.notes.push(huntNote);
     // Under the kill switch (cryptoKillExits) only reduce-only immediate-or-cancel exits go (all the gateway lets through: a
@@ -2683,7 +2740,7 @@ export class Engine {
     // Rest mode: an exit that crosses the book also cancels the position's resting curve sell on its side (a resting
     // order cannot be reduce-only on Kalshi; together they could sell more than is held); the next evaluation rests one
     // again for what is left.
-    const restMode = this.d.curveExit?.p.mode === 'rest' || huntMode;
+    const restMode = this.d.curveExit?.p.mode === 'rest' || huntMode || planSale !== undefined;
     for (const p of plan.place) {
       if (!p.reduceOnly || p.timeInForce !== 'immediate_or_cancel') continue;
       for (const o of this.crossingOwnOrders(m.ticker, p.side, p.price)) {
@@ -2695,10 +2752,15 @@ export class Engine {
     await Promise.all(plan.cancel.map((c) => oms.cancel(c.clientOrderId, c.reason)));
     // Orders carry the decision probability (q_adj under target-EV sizing): the gateway's fee-net
     // edge collar and TCA's edge-at-decision then judge the same number the strategy traded on.
+    let planSaleSent = false;
     for (const p of plan.place) {
-      if (p === holdSale) this.d.audit.write('pacer', { event: 'hold_exit', ticker: m.ticker, cumSec: hold!.cumSec, runSec: hold!.runSec, netUsd: Math.round((netProfitAtBid(view) ?? 0) * 1e4) / 1e4, count: p.count, price: p.price, why: p.why });
-      await this.placeChecked(m, p, st.q ?? pYes, decisionId, undefined, killExit ? { killExit: true } : undefined);
+      if (p === holdSale) this.d.audit.write('pacer', { event: 'hold_exit', ticker: m.ticker, cumSec: hold!.cumSec, runSec: hold!.runSec, netUsd: Math.round((netNow ?? 0) * 1e4) / 1e4, count: p.count, price: p.price, why: p.why, ...(planPos ? { ruleId: planPos.ruleId } : {}) });
+      if (p === ratchetSale) this.auditRatchetSale(m.ticker, ratchet, netNow, p, now);
+      const sent = await this.placeChecked(m, p, st.q ?? pYes, decisionId, undefined, killExit ? { killExit: true } : undefined);
+      if (p === planSale) planSaleSent = sent;
     }
+    // The plan's events, once its sale's try is known to have gone out or not (the kill switch's throttle, a refusal).
+    if (planRun) this.planRecord(m.ticker, planRun, planSaleSent, now);
   }
 
   /** Hunt mode may run (EXIT_POLICY=confluence_ratchet): in paper; in live once the backtest evaluated it, or while unvalidated
@@ -2716,7 +2778,7 @@ export class Engine {
    *  gate judges them, as in a full evaluation. No model exit (the loser cut), no quota snipe and no entry goes out here; the
    *  risk gateway judges the exit against the book's mid (the held side's touch on a one-sided book). Feed lag and a stale
    *  book never reach this lane. Paper and live alike; the replay runs the same plan (research/backtest.ts). */
-  private async exitOnlyLane(m: ActiveMarket, st: MarketStatus, book: OrderBook, why: string, now: number): Promise<void> {
+  private async exitOnlyLane(m: ActiveMarket, st: MarketStatus, book: OrderBook, why: string, now: number, killExit = false): Promise<void> {
     const { cfg, md, oms } = this.d;
     const S = cfg.strategy;
     const position = st.position;
@@ -2724,6 +2786,10 @@ export class Engine {
     const bid = book.bestBid(), ask = book.bestAsk();
     const sideBid = heldSideBid(position, bid, ask);
     if (sideBid === undefined) { st.notes = [`exit-only lane (${why}): no bid for the held side`]; return; }
+    // A plan position needs no model: its ratchet and end rule run here as in a full evaluation (under the kill switch too, as
+    // cryptoKillExits' evaluation), and nothing else. `killExit` reaches only this plan path.
+    const planPos = this.planHeld(m.ticker, position, now);
+    if (planPos) return this.planExitOnly(m, st, planPos, bid, ask, why, now, killExit);
     const pos = oms.positions.get(m.ticker);
     const fees = md.feesFor(m.ticker);
     const view = exitOnlyView({
@@ -2732,15 +2798,19 @@ export class Engine {
       takeProfitBenched: this.d.takeProfitBench?.benched,
     })!;
     const fairValue = view.pYes;
+    const netNow = netProfitAtBid(view);
+    // RATCHET: the profit ratchet needs no model; its stop sells from this lane as the quota floor does.
+    const ratchet = this.ratchetStep(m.ticker, st, position, netNow, now, false);
     const lane = exitOnlyPlan(view, S, {
       why, exits: S.exitPolicy !== 'hold', hunt: this.huntAllowed() ? this.hunts.get(m.ticker) : undefined,
       pacerUsd: this.pacer.neededUsd(now), pacerFloor: S.pacer.floor === 'off' ? undefined : this.quotaFloors.floor(m.ticker, position),
+      ...(ratchet ? { ratchet } : {}),
     });
     const { plan, hunt } = lane;
     if (lane.floorSale) this.d.audit.write('pacer', { event: 'snipe', ticker: m.ticker, why: lane.floorSale.why, count: lane.floorSale.count, price: lane.floorSale.price, lane: why, ...this.pacer.status(now) });
     // HOLD_EXIT: the book is fresh, so the seconds in profit keep counting; the hold exit itself, like the quota snipe, does not
     // sell from this lane.
-    st.hold = S.holdExit.enabled ? this.holdExits.sample(m.ticker, position, netProfitAtBid(view), now) : undefined;
+    st.hold = S.holdExit.enabled ? this.holdExits.sample(m.ticker, position, netNow, now, ratchet?.armed === true) : undefined;
     // The exit-in-profit curve's gate, as in a full evaluation (on its last reading: the curve is not fed this tick). The
     // hunt's stop, a gap sale and the take-profit's last tick above its floor never wait.
     const curve = this.d.curveExit;
@@ -2777,7 +2847,115 @@ export class Engine {
       }
     }
     await Promise.all([...cancels].map(([id, reason]) => oms.cancel(id, reason)));
-    for (const p of plan.place) await this.placeChecked(m, p, fairValue, decisionId);
+    for (const p of plan.place) {
+      if (p === lane.ratchetSale) this.auditRatchetSale(m.ticker, ratchet, netNow, p, now, why);
+      await this.placeChecked(m, p, fairValue, decisionId);
+    }
+  }
+
+  /** RATCHET: one evaluation of the profit ratchet of a position that is not a plan position (bot/strategy/profitRatchet.ts);
+   *  undefined when it is off or the position is a plan position (the plan's ratchet runs that one). Its arming is audited. */
+  private ratchetStep(ticker: string, st: MarketStatus, position: number, netUsd: number | undefined, now: number, plan: boolean): RatchetReading | undefined {
+    if (plan || !this.d.cfg.strategy.profitRatchet.enabled) {
+      this.profitRatchets.forget(ticker);
+      st.ratchet = undefined;
+      return undefined;
+    }
+    const r = this.profitRatchets.step(ticker, position, netUsd, now);
+    st.ratchet = Math.abs(position) > 1e-9 ? r : undefined;
+    if (r.event === 'arm') this.d.audit.write('pacer', { event: 'ratchet_arm', ticker, netUsd: r.best, stop: r.stop, position });
+    return r;
+  }
+
+  /** The profit ratchet's sale goes out (audited as the hold exit's is, under the pacer's kind). */
+  private auditRatchetSale(ticker: string, r: RatchetReading | undefined, netUsd: number | undefined, p: OrderPlan, now: number, lane?: string): void {
+    this.d.audit.write('pacer', { event: 'profit_ratchet', ticker, netUsd: Math.round((netUsd ?? 0) * 1e4) / 1e4, stop: r?.stop, best: r?.best, rest: r?.rest === true, count: p.count, price: p.price, why: p.why, ...(lane ? { lane } : {}), ...this.pacer.status(now) });
+  }
+
+  /** PLAN_RULES on: the market's plan position (bot/plan/planPositions.ts) while it is held on its side; undefined when the
+   *  switch is off, the market untagged, or the tag cleared (flat, reversed, never filled). */
+  private planHeld(ticker: string, position: number, now: number): PlanPosition | undefined {
+    if (!this.d.cfg.strategy.plan.enabled) return undefined;
+    return this.planPositions.sync(ticker, position, now);
+  }
+
+  /** One evaluation of a plan position's ratchet and end rule (bot/plan/planRatchet.ts), the same function the replay runs:
+   *  its state saved, the 3-failed-tries alert raised, and the sale to send (reduce-only, immediate-or-cancel, at the held
+   *  side's bid less 2 ticks). Its events are audited by planRecord once the sale's fate is known. An exit of ours still
+   *  working on the market (live: not yet acknowledged) is waited for. */
+  private planEvaluate(m: ActiveMarket, st: MarketStatus, pp: PlanPosition, bid: { price: number; size: number } | undefined, ask: { price: number; size: number } | undefined, now: number): PlanRun {
+    const { oms, md, cfg } = this.d;
+    const pos = oms.positions.get(m.ticker);
+    const entry = openSidePrice(pos);
+    const working = oms.liveOrders().some((o) => o.ticker === m.ticker && o.reduceOnly && o.timeInForce === 'immediate_or_cancel' && isLive(o) && !o.cancelRequested);
+    const r = planStep({
+      ticker: m.ticker, side: pp.side, ruleId: pp.ruleId, position: st.position, bid, ask,
+      entryPrice: entry !== undefined && entry > 0 && entry < 1 ? entry : undefined, entryFeePerContract: openEntryFee(pos), fees: md.feesFor(m.ticker), tick: m.tickSize, now,
+      tauSec: (m.closeTime - now) / 1000, windowSec: shareWindowSec(m.openTime, m.closeTime, cfg.strategy.shareWindowMaxSec),
+      settings: pp.settings, state: pp.state, orderInFlight: working,
+    });
+    if (r.alert) this.d.alerter.notify('warn', `plan-sale-${m.ticker}`, r.alert);
+    this.planPositions.setState(m.ticker, r.state);
+    st.plan = { ruleId: pp.ruleId, side: pp.side, armed: r.state.armed, stop: r.state.stop, best: r.state.best, selling: r.state.selling?.kind, failedTries: r.state.failedTries, gaps: r.state.gaps.length };
+    if (!r.sale) return { notes: r.notes, events: r.events };
+    return { notes: r.notes, events: r.events, planSale: r.sale, sale: { side: r.sale.side, price: r.sale.price, count: r.sale.count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge: 0, why: r.sale.why, protective: true } };
+  }
+
+  /** After the plan's sale was placed or held back: a try that went out is marked (the next evaluation judges whether it emptied
+   *  the position; a gap it carries is listed), and the evaluation's events are audited (kind 'plan': plan_ratchet_arm / _raise
+   *  / _sell / _gap / _retry, plan_end_rule_sell / _cancel). An event of a sale's try says whether that try went out (`sent`;
+   *  the kill switch's 30 s throttle or a risk-gateway refusal holds one back); a resend of a try held back before is written
+   *  only once it goes out, so the event that says `sent: true` is when the sale actually left. */
+  private planRecord(ticker: string, run: PlanRun, sent: boolean, now: number): void {
+    if (run.planSale && sent) {
+      // A fill that emptied the position already cleared the tag (the fill handler): nothing left to mark.
+      const p = this.planPositions.get(ticker);
+      if (p) this.planPositions.setState(ticker, planMarkTried(p.state, now, run.planSale));
+    }
+    for (const e of run.events) {
+      if (e.limit === null) { this.d.audit.write('plan', e); continue; }
+      if (e.resend && !sent) continue;
+      this.d.audit.write('plan', { ...e, sent });
+    }
+  }
+
+  /** The exit-only lane for a plan position (the index stale, the volatility warming up after a restart, the strike unknown, a
+   *  one-sided book, no fair value): its ratchet and end rule need no model, so they run as in a full evaluation; no other
+   *  exit and no entry goes out. The gateway judges the sale against the book's mid (the held side's touch when one-sided). */
+  private async planExitOnly(m: ActiveMarket, st: MarketStatus, pp: PlanPosition, bid: { price: number; size: number } | undefined, ask: { price: number; size: number } | undefined, why: string, now: number, killExit = false): Promise<void> {
+    const { oms, md, cfg } = this.d;
+    const run = this.planEvaluate(m, st, pp, bid, ask, now);
+    st.notes = [`exit-only lane (${why}): the plan position's ratchet and end rule only`, ...run.notes];
+    // HOLD_EXIT: the seconds in profit keep counting on the fresh book; the hold exit does not sell from this lane.
+    if (cfg.strategy.holdExit.enabled) {
+      const pos = oms.positions.get(m.ticker);
+      const entry = openSidePrice(pos);
+      const net = entry !== undefined && entry > 0 && entry < 1 ? positionNetAtBid(st.position, entry + (openEntryFee(pos) ?? 0), bid, ask, md.feesFor(m.ticker)) : undefined;
+      st.hold = this.holdExits.sample(m.ticker, st.position, net, now, pp.state.armed);
+    } else st.hold = undefined;
+    const sale = run.sale;
+    // Under the kill switch (cryptoKillExits' evaluation), as in a full evaluation: at most one attempt per market every 30 s,
+    // marked for the gateway (RiskContext.killExit).
+    if (sale && killExit && !this.killExitDue(m.ticker, now)) {
+      st.notes.push('kill switch engaged: exit waits, one attempt per market every 30 s');
+      return this.planRecord(m.ticker, run, false, now);
+    }
+    if (!sale) return this.planRecord(m.ticker, run, false, now);
+    const fairValue = bid && ask ? (bid.price + ask.price) / 2 : st.position > 0 ? bid!.price : ask!.price;
+    const decisionId = crypto.randomUUID();
+    this.d.audit.write('decision', {
+      decisionId, ticker: m.ticker, model: this.d.model.id, lane: 'exit_only', blocked: why, tauSec: (m.closeTime - now) / 1000, bid: bid?.price ?? null, ask: ask?.price ?? null, position: st.position,
+      fairValue, place: [{ side: sale.side, price: sale.price, count: sale.count, purpose: sale.purpose, edge: sale.edge, why: sale.why }],
+    });
+    // As in a full evaluation: never against one of our own resting orders, and a resting sell of the held side is pulled.
+    const cancels = new Map<string, string>();
+    for (const o of this.crossingOwnOrders(m.ticker, sale.side, sale.price)) cancels.set(o.clientOrderId, 'would cross our own exit');
+    for (const o of oms.liveOrders()) {
+      if (o.ticker === m.ticker && o.side === sale.side && !o.cancelRequested && isLive(o) && !o.reduceOnly) cancels.set(o.clientOrderId, 'the plan sale crosses the book: resting sell pulled');
+    }
+    await Promise.all([...cancels].map(([id, reason]) => oms.cancel(id, reason)));
+    const sent = await this.placeChecked(m, sale, fairValue, decisionId, undefined, killExit ? { killExit: true } : undefined);
+    this.planRecord(m.ticker, run, sent, now);
   }
 
   /** Conservative-only target scale in [0.85, 1] (blend mode with target scaling on), else 1. */
@@ -2817,14 +2995,15 @@ export class Engine {
     return { contracts, fStar, edgePerDay: timeNormalizedEdge(candidate) };
   }
 
-  /** `opts.killExit`: a crypto exit sent under the kill switch (cryptoKillExits), marked for the gateway as tennis's are. */
-  private async placeChecked(m: ActiveMarket, p: OrderPlan, pYes: number, decisionId: string, tennis?: { event: string; killExit?: boolean }, opts?: { killExit?: boolean }): Promise<void> {
+  /** `opts.killExit`: a crypto exit sent under the kill switch (cryptoKillExits), marked for the gateway as tennis's are.
+   *  True when the order went to the OMS (past the risk gateway); false when it was dropped or refused here. */
+  private async placeChecked(m: ActiveMarket, p: OrderPlan, pYes: number, decisionId: string, tennis?: { event: string; killExit?: boolean }, opts?: { killExit?: boolean }): Promise<boolean> {
     const { cfg, md, oms, risk, kill, model } = this.d;
     const now = this.now();
     const T = cfg.tennis;
     // Snap to the market's price grid (bands taper near $0 / $1): bids down, asks up, never through.
     const snapped = snapToGrid(p.price, m.priceRanges, m.tickSize, p.side === 'bid' ? -1 : 1);
-    if (snapped === undefined || !(snapped > 0 && snapped < 1)) return;
+    if (snapped === undefined || !(snapped > 0 && snapped < 1)) return false;
     if (snapped !== p.price) p = { ...p, price: snapped };
     // Tennis orders are rules-based (no model probability to size an edge from): budgeted separately.
     // Paper training trades are 1 contract with no edge requirement (they exist to produce trades).
@@ -2832,7 +3011,7 @@ export class Engine {
     const pk = tennis || training || this.paperOrderUsd() > 0 || this.orderBandUsd() ? undefined : this.portfolioCap(m, p, pYes, now);
     if (pk && pk.contracts < p.count) {
       this.d.audit.write('decision', { decisionId, ticker: m.ticker, event: 'portfolio_kelly_cap', from: p.count, to: pk.contracts, fStar: +pk.fStar.toFixed(4), edgePerDay: +pk.edgePerDay.toFixed(4) });
-      if (pk.contracts <= 0) return;
+      if (pk.contracts <= 0) return false;
       p = { ...p, count: pk.contracts };
     }
     const intent: OrderIntent = {
@@ -2897,14 +3076,14 @@ export class Engine {
       if (tennis ? wf.tennisBlocked : wf.kalshiBlocked) {
         const key = `${m.ticker}:waterfall:${wf.level}`;
         if (now - (this.lastRejectAudit.get(key) ?? 0) > 60_000) { this.lastRejectAudit.set(key, now); this.d.audit.write('risk_reject', { decisionId, intent, reasons: [`waterfall mode: ${wf.why}`] }); }
-        return;
+        return false;
       }
       if (!tennis && wf.kalshiMaxFrac !== undefined) {
         ctx.limitOverrides = waterfallLimits(ctx.limitOverrides ?? {}, cfg.risk, wf.kalshiMaxFrac);
       }
     }
     const decision = risk.check(intent, ctx);
-    if (decision.tripKill && await kill.engage(decision.tripKill, 'risk')) return;
+    if (decision.tripKill && await kill.engage(decision.tripKill, 'risk')) return false;
     if (!decision.ok) {
       // Strip numbers so the same kind of rejection dedupes.
       const key = `${m.ticker}:${p.side}:${p.purpose}:${decision.reasons[0].replace(/[-\d.$%]+/g, '#')}`;
@@ -2912,7 +3091,7 @@ export class Engine {
         this.lastRejectAudit.set(key, now);
         this.d.audit.write('risk_reject', { decisionId, intent, reasons: decision.reasons });
       }
-      return;
+      return false;
     }
     // Tagged before it is sent: a paper fill arrives inside submit(), a live one may beat its acknowledgement.
     if (p.purpose === 'exit' && p.why.startsWith('exit curve: cross')) this.tagScoredExit('cross', decisionId, p);
@@ -2923,6 +3102,7 @@ export class Engine {
     if (cfg.mode === 'paper' && !tennis) this.tagLiveBlock(rec.clientOrderId, p);
     const fx = this.fillX.get(p);
     if (fx && !tennis) this.fillLog?.onQuote({ ticker: m.ticker, side: p.side, price: p.price, count: p.count, x: fx, coid: rec.clientOrderId });
+    return true;
   }
 
   /** Paper: why live would not have sent this order under its own rules: an entry while the model has not passed
@@ -2988,21 +3168,22 @@ export class Engine {
     this.d.audit.write('paper_live_block', { clientOrderId, reasons: t.reasons });
   }
 
-  /** A hold exit or a quota snipe that got through the curve gate and the kill switch liquidates the position (HOLD_EXIT, Steven
-   *  Nov 11): nothing else goes out with it (the hunt's stop would only double it), and this market's resting orders are pulled,
+  /** A hold exit, a quota snipe or a profit ratchet sale that got through the curve gate and the kill switch liquidates the
+   *  position (HOLD_EXIT and RATCHET, Steven Nov 11): nothing else goes out with it (the hunt's stop would only double it), and this market's resting orders are pulled,
    *  since a quote was sized with the position (the held side's ask carries its unwind) and one filling after the sale would
    *  reopen it, with half the window or less left as well. The next evaluation quotes from the new position where the re-entry
    *  rule lets it. Paper and live alike; the replay does the same (research/backtest.ts). */
   private liquidate(ticker: string, plan: StrategyOutput): void {
-    // HOLD_EXIT off: the quota snipe goes out as it did before the rule.
-    if (!this.d.cfg.strategy.holdExit.enabled) return;
-    const sale = plan.place.find((p) => p.liquidation && p.reduceOnly && p.timeInForce === 'immediate_or_cancel');
+    // HOLD_EXIT off: the quota snipe goes out as it did before the rule; the profit ratchet's sale still goes alone.
+    const hold = this.d.cfg.strategy.holdExit.enabled;
+    const sale = plan.place.find((p) => p.liquidation && (hold || p.liquidation.ratchet) && p.reduceOnly && p.timeInForce === 'immediate_or_cancel');
     if (!sale) return;
-    if (plan.place.length > 1) plan.notes.push(`${sale.liquidation!.hold ? 'the hold exit' : 'the quota snipe'} sells the whole position: ${plan.place.length - 1} other order${plan.place.length === 2 ? '' : 's'} not placed`);
+    const who = sale.liquidation!.hold ? 'the hold exit' : sale.why.startsWith('profit ratchet') ? 'the profit ratchet' : 'the quota snipe';
+    if (plan.place.length > 1) plan.notes.push(`${who} sells the whole position: ${plan.place.length - 1} other order${plan.place.length === 2 ? '' : 's'} not placed`);
     plan.place = [sale];
     for (const o of this.d.oms.liveOrders()) {
       if (o.ticker !== ticker || o.reduceOnly || o.cancelRequested || !isLive(o) || plan.cancel.some((c) => c.clientOrderId === o.clientOrderId)) continue;
-      plan.cancel.push({ clientOrderId: o.clientOrderId, reason: 'a hold exit or quota snipe sells the position' });
+      plan.cancel.push({ clientOrderId: o.clientOrderId, reason: 'a hold exit, quota snipe or profit ratchet sells the position' });
     }
   }
 
