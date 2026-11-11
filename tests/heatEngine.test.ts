@@ -306,6 +306,24 @@ test('a stale calls file is ignored and said once, never thrown', async () => {
   assert.match(g.engine.guardStatus().heat!.notes.join(), /calls file ignored/);
 });
 
+test('a perps call (240 or 1440 minutes) is audited when new or changed, not each time it fires again', async () => {
+  const g = await setup();
+  // BTC's 4-hour and daily rows fired at a bar `back` ms ago (each a new call for the lane), the 4-hour one on side `dir4`.
+  const perps = (back: number, dir4: 1 | -1 = 1): HeatSnapshot => {
+    const barClose = Date.now() - back;
+    const four: HeatCallRow = { key: '5m:WAD=low (falling in)', kind: 'single', tf: 5, h: 240, dir: dir4, rank: 1, of: 40, heat: 17.4, share: 0.6, odds: 2, barClose };
+    const day: HeatCallRow = { ...four, key: '60m:DONCHIAN20pos=low (falling in)', tf: 60, h: 1440, dir: 1, heat: 5.19 };
+    return { source: 'oracle-heat', run: 'R1', packSha: 'pack', writtenAt: barClose + 2_000, coins: new Map([['BTC', { asOf: barClose, tableSha: 'table', ok: true, calls: [four, day] }]]) };
+  };
+  const audited = (h: number) => rows(g.audit, 'heat').filter((r) => r.key && r.h === h).map((r) => [r.dir, r.skip.slice(0, 13)]);
+  for (const back of [9_000, 8_000, 7_000]) { g.source.set(perps(back)); await g.engine.tick(); }
+  assert.deepEqual([audited(240), audited(1440)], [[[1, 'perps context']], [[1, 'perps context']]], 'one row each while the call holds');
+  g.source.set(perps(6_000, -1));
+  await g.engine.tick();
+  assert.deepEqual([audited(240), audited(1440)], [[[1, 'perps context'], [-1, 'perps context']], [[1, 'perps context']]], 'a new row when the side turns');
+  assert.equal(heatOrders(g.oms).length, 0);
+});
+
 test('lane off (HEAT_LANE=false): the engine leaves the calls alone', async () => {
   const g = await setup({ env: { HEAT_LANE: 'false' } });
   g.source.set(fired());
@@ -331,12 +349,19 @@ test('settings: every HEAT_* name with its default, DOGE dropped, values checked
   assert.deepEqual(c, {
     enabled: false, callsFile: path.resolve('/tmp/heat-cfg/heat_calls.json'), assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90,
     entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reenterAfterLoss: false, flatTrips: 30,
-    pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', pairConflict: 'skip',
+    pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip',
   });
-  const set = loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_LANE: 'true', HEAT_ASSETS: 'btc, DOGE ,eth', HEAT_PERPS: 'gate', HEAT_PAIR_CONFLICT: 'pair', HEAT_CONTEXT: 'block', HEAT_CALLS_FILE: '/srv/calls.json' }).heat;
-  assert.deepEqual([set.enabled, set.assets, set.perps, set.pairConflict, set.context, set.callsFile], [true, ['BTC', 'ETH'], 'gate', 'pair', 'block', '/srv/calls.json']);
-  for (const [k, v] of [['HEAT_PERPS', 'true'], ['HEAT_PAIR_CONFLICT', 'average'], ['HEAT_TOP_N', '2.5'], ['HEAT_HORIZONS', '15,x'], ['HEAT_CONTEXT_BOOST', '2'], ['HEAT_LANE', 'yes']]) {
+  const set = loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_LANE: 'true', HEAT_ASSETS: 'btc, DOGE ,eth', HEAT_PERPS: 'gate', HEAT_PAIR_CONFLICT: 'pair', HEAT_CONTEXT: 'block', HEAT_CALLS_FILE: '/srv/calls.json', HEAT_PERP_HORIZONS: '240', HEAT_PERPS_DAILY: 'off' }).heat;
+  assert.deepEqual([set.enabled, set.assets, set.perps, set.pairConflict, set.context, set.callsFile, set.perpHorizons, set.perpsDaily], [true, ['BTC', 'ETH'], 'gate', 'pair', 'block', '/srv/calls.json', [240], 'off']);
+  assert.deepEqual(loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_PERP_HORIZONS: '240, 60,60' }).heat.perpHorizons, [60, 240], 'sorted, each once');
+  for (const [k, v] of [['HEAT_PERPS', 'true'], ['HEAT_PAIR_CONFLICT', 'average'], ['HEAT_TOP_N', '2.5'], ['HEAT_HORIZONS', '15,x'], ['HEAT_CONTEXT_BOOST', '2'], ['HEAT_LANE', 'yes'],
+    // The daily curve is never an entry (no daily row above the no-signal twin's best), and the perps enter on 60 and 240 only.
+    ['HEAT_PERPS_DAILY', 'entry'], ['HEAT_PERP_HORIZONS', '60,1440'], ['HEAT_PERP_HORIZONS', '15'], ['HEAT_PERP_HORIZONS', '60,x']]) {
     assert.throws(() => loadConfig({ DASHBOARD_TOKEN: TOKEN, [k]: v }), ConfigError, `${k}=${v}`);
+  }
+  // The perps horizons never open a Kalshi contract: listing them under HEAT_HORIZONS stops the start with the reason.
+  for (const v of ['15,60,240', '1440']) {
+    assert.throws(() => loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_HORIZONS: v }), /HEAT_HORIZONS=.*240 and 1440 are perps horizons, never a Kalshi contract/, v);
   }
 });
 

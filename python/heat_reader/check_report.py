@@ -12,6 +12,9 @@ Files it looks for in --dir (a missing one becomes a "not measured" line, never 
   calls/loop/        the files the loop wrote: heat_calls-*.jsonl (one line each) and heat_calls.status.json
   calls/once/        the same for the single pass
   parity.json        heat_reader.replay's result, when the parity replay ran
+
+The per-coin table counts the h15 and h60 rows (the main packs). The perp packs' rows (h240 and h1440) get their own
+lines: whether the packs were found, and how many rows the loop published at each horizon. Neither fails the job.
 """
 import argparse
 import glob
@@ -22,6 +25,7 @@ import statistics
 import sys
 
 KINDS = ('single', 'pair', 'triple')
+PERP_H = (240, 1440)           # the perp packs' horizons; every other horizon is a main pack's
 
 
 def _json(path: str):
@@ -78,7 +82,8 @@ def rss_samples(text: str) -> list:
 
 
 def fired(lines: list) -> dict:
-    """Per coin, over every written file: files, files with the coin ok, rows fired by kind, the keys fired."""
+    """Per coin, over every written file: files, files with the coin ok, and the rows fired: of the main packs by kind
+    and key (kinds, keys), of the perp packs by horizon and kind (perp: {h: {kind: n}}) and by key (perpKeys)."""
     out = {}
     for line in lines:
         try:
@@ -86,14 +91,37 @@ def fired(lines: list) -> dict:
         except ValueError:
             continue
         for coin, c in (obj.get('coins') or {}).items():
-            o = out.setdefault(coin, {'files': 0, 'ok': 0, 'rows': 0, 'kinds': dict.fromkeys(KINDS, 0), 'keys': {}})
+            o = out.setdefault(coin, {'files': 0, 'ok': 0, 'rows': 0, 'kinds': dict.fromkeys(KINDS, 0), 'keys': {},
+                                      'perp': {h: dict.fromkeys(KINDS, 0) for h in PERP_H}, 'perpKeys': {}})
             o['files'] += 1
             o['ok'] += bool(c.get('ok'))
             for row in c.get('calls') or []:
                 o['rows'] += 1
-                o['kinds'][row.get('kind', 'single')] = o['kinds'].get(row.get('kind', 'single'), 0) + 1
+                kind = row.get('kind', 'single')
+                if row.get('h') in PERP_H:
+                    o['perp'][row['h']][kind] = o['perp'][row['h']].get(kind, 0) + 1
+                    o['perpKeys'][row.get('key')] = o['perpKeys'].get(row.get('key'), 0) + 1
+                    continue
+                o['kinds'][kind] = o['kinds'].get(kind, 0) + 1
                 o['keys'][row.get('key')] = o['keys'].get(row.get('key'), 0) + 1
     return out
+
+
+def perp_line(side: dict, fr: dict) -> str:
+    """Whether the perp packs were found and used, and how many h240 and h1440 rows the loop published."""
+    packs = side.get('packs') or {}
+    n = {h: sum(sum(f.get('perp', {}).get(h, {}).values()) for f in fr.values()) for h in PERP_H}
+    kinds = {h: ' / '.join(str(sum(f.get('perp', {}).get(h, {}).get(k, 0) for f in fr.values())) for k in KINDS) for h in PERP_H}
+    published = (f'the loop published {n[240]} rows at h240 and {n[1440]} at h1440 (single / pair / triple: {kinds[240]} and '
+                 f'{kinds[1440]}).')
+    if 'perpPacks' not in side:
+        return 'Perp packs (h240 and h1440): not reported (no status file, or a reader from before them).'
+    if not side.get('perpPacks'):
+        return f'Perp packs (h240 and h1440): off (HEAT_PERP_PACKS=false); {published}'
+    if 'perp_pack.json' in packs and 'perp_pair_pack.json' in packs:
+        return (f'Perp packs (h240 and h1440): found, perp {_short(packs["perp_pack.json"].get("sha256"))}, perp pairs '
+                f'{_short(packs["perp_pair_pack.json"].get("sha256"))}; {published}')
+    return f'Perp packs (h240 and h1440): **not used**: {side.get("perpProblem") or "not found"}; {published}'
 
 
 def _lines(d: str, which: str) -> list:
@@ -132,6 +160,7 @@ def build(d: str, oracle: str = '', note: str = '', python: str = '', venv_mb: s
               f'{", clock " + _short(packs["clock_pack.json"]["sha256"]) if "clock_pack.json" in packs else ""}; run {side.get("run", "unknown")}; '
               f'HEAT_READER_MAX_RANK {side.get("maxRank", "n/a")}, clock pack {"on" if side.get("clockPack") else "off"}.')
     md.append(f'Python {python or "unknown"}, venv {venv_mb or "not measured"} MB on disk.')
+    md.append(perp_line(side, fr))
     if side.get('problem'):
         md.append(f'**The packs could not be used:** {side["problem"]}')
     md += ['', '| coin | read ok (loop files) | minutes loaded | rows wanted: single / pair / triple / clock | rows skipped, by reason | '
@@ -158,6 +187,16 @@ def build(d: str, oracle: str = '', note: str = '', python: str = '', venv_mb: s
         if keys:
             shown = ', '.join(f'`{k}` x{n}' for k, n in keys[:8])
             md.append(f'- {c} fired: {shown}{f" and {len(keys) - 8} more" if len(keys) > 8 else ""}')
+        rows = st.get(c, {}).get('rows') or (side.get('coins') or {}).get(c, {}).get('rows') or {}
+        pr = rows.get('perp')
+        if pr:
+            skipped = ', '.join(f'{k} {v}' for k, v in sorted((pr.get('skipped') or {}).items())) or 'none'
+            md.append(f'- {c} perp rows wanted (single / pair / triple): {" / ".join(str((pr.get("wanted") or {}).get(k, 0)) for k in KINDS)}; '
+                      f'skipped: {skipped}{"; not used: " + pr["problem"] if pr.get("problem") else ""}')
+        keys = sorted(fr.get(c, {}).get('perpKeys', {}).items(), key=lambda kv: (-kv[1], str(kv[0])))
+        if keys:
+            shown = ', '.join(f'`{k}` x{n}' for k, n in keys[:5])
+            md.append(f'- {c} fired at h240 or h1440: {shown}{f" and {len(keys) - 5} more" if len(keys) > 5 else ""}')
         why = st.get(c, {}).get('why')
         if why:
             md.append(f'- {c} last file: {why}')

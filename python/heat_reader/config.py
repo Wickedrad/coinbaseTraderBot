@@ -55,7 +55,7 @@ def parse_assets(text: str) -> tuple:
 class Settings:
     calls_file: str          # HEAT_CALLS_FILE: the file the bot reads
     reader_dir: str          # HEAT_READER_DIR: the minute cache and status.json
-    pack_dir: str            # HEAT_PACK_DIR: traded_pack.json, pair_pack.json, clock_pack.json and live_meta.json
+    pack_dir: str            # HEAT_PACK_DIR: traded_pack.json, pair_pack.json, clock_pack.json, live_meta.json and the perp packs
     oracle_path: str         # HEAT_ORACLE_PATH: the folder that holds the oracle package
     assets: list             # HEAT_ASSETS
     refused: list            # coins left out of HEAT_ASSETS (DOGE)
@@ -64,6 +64,7 @@ class Settings:
     run: str                 # HEAT_RUN: overrides the run id read from the pack's stamp ('' = read it from the pack)
     max_rank: int = DEFAULT_MAX_RANK   # HEAT_READER_MAX_RANK: traded pack rows with a higher rank_coin are never published
     clock_pack: bool = False # HEAT_CLOCK_PACK: also load clock_pack.json (off until the oracle thread says it is worth it)
+    perp_packs: bool = True  # HEAT_PERP_PACKS: also load perp_pack.json and perp_pair_pack.json (h240 and h1440 rows for perps)
     once: bool = False
 
 
@@ -80,6 +81,7 @@ def _args(argv) -> argparse.Namespace:
     ap.add_argument('--run', help='HEAT_RUN')
     ap.add_argument('--max-rank', help='HEAT_READER_MAX_RANK')
     ap.add_argument('--clock-pack', help='HEAT_CLOCK_PACK (true or false)')
+    ap.add_argument('--perp-packs', help='HEAT_PERP_PACKS (true or false)')
     return ap.parse_args(argv)
 
 
@@ -122,12 +124,13 @@ def load(argv=None, env=None) -> Settings:
     if max_rank < 1:
         raise ConfigError(f'HEAT_READER_MAX_RANK: {max_rank} is below 1 (no row could be published)')
     clock = parse_bool(pick(a.clock_pack, 'HEAT_CLOCK_PACK', 'false'), 'HEAT_CLOCK_PACK')
+    perp = parse_bool(pick(a.perp_packs, 'HEAT_PERP_PACKS', 'true'), 'HEAT_PERP_PACKS')
     api = pick(a.binance_api, 'HEAT_BINANCE_API', DEFAULT_BINANCE_API).rstrip('/')
     if not re.match(r'^https?://[^/\s]+', api):
         raise ConfigError('HEAT_BINANCE_API must be an http or https address')
     return Settings(calls_file=os.path.abspath(calls_file), reader_dir=os.path.abspath(reader_dir), pack_dir=os.path.abspath(pack_dir),
                     oracle_path=os.path.abspath(oracle_path), assets=assets, refused=refused, window_bars=window, binance_api=api,
-                    run=pick(a.run, 'HEAT_RUN', ''), max_rank=max_rank, clock_pack=clock, once=bool(a.once))
+                    run=pick(a.run, 'HEAT_RUN', ''), max_rank=max_rank, clock_pack=clock, perp_packs=perp, once=bool(a.once))
 
 
 def status_path(calls_file: str) -> str:

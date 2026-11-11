@@ -1,7 +1,9 @@
 // The perpetuals hook of the heat lane (bot/setups/setupTrader.ts `heat` dependency): the four HEAT_PERPS modes, the
 // hourly gate, the hourly heat setup (at most one offer per coin per clock hour, never with an open trade), its own
 // minimum weight, the re-read at the re-check, the carry through an hourly close, the optimal-f history, and a
-// provider that throws. The harness is the one tests/setups.test.ts uses: synthetic candles, a candle set, a perp
+// provider that throws. Then the 4-hour heat setup (240-minute calls, HEAT_PERP_HORIZONS): its 4h ATR stop and 4-hour
+// hold, its carry, one heat entry per coin per clock hour across both horizons (the hotter weight, a tie to 4h), and
+// the day's direction (1440-minute calls, HEAT_PERPS_DAILY): no offer and no entry against it, never a gate on charts. The harness is the one tests/setups.test.ts uses: synthetic candles, a candle set, a perp
 // hub with one quote, a fake gateway that only knows the balance, and a rule-only setup model.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -17,8 +19,8 @@ import { LaneBook, minScoreFor, type LaneBookParams, type LaneParams } from '../
 import { SETUP_FEATURES } from '../bot/setups/features';
 import { SETUP_SCHEMA } from '../bot/setups/setupModel';
 import { SetupTrader, defaultSetupParams, type HeatPerpsMode, type SetupHeatDeps, type SetupTraderDeps } from '../bot/setups/setupTrader';
-import { heatWeight } from '../bot/heat/heatLane';
-import type { HeatContext, HeatDecided, HeatDirection } from '../bot/heat/types';
+import { HeatLane, heatWeight } from '../bot/heat/heatLane';
+import type { HeatCallRow, HeatConfig, HeatContext, HeatDecided, HeatDirection, HeatSnapshot } from '../bot/heat/types';
 import { DEFAULT_PROBATION, Probation, setProbation } from '../bot/risk/probation';
 
 const MIN = 60_000, HOUR = 3_600_000;
@@ -54,9 +56,13 @@ const lanes = (): LaneBookParams => ({
 });
 
 /** The curve provider as the lane would be, in memory: `fire` is a decided 60-minute call (it also becomes the hour's
- *  direction, as in the lane); every question asked is written down. */
+ *  direction, as in the lane), `fire4` a decided 240-minute call (it also becomes the 4 hours' direction), `daily` the
+ *  day's direction; every question asked is written down. */
 class FakeHeat implements HeatDirection {
   readonly ctx = new Map<string, HeatContext>();
+  readonly ctx4 = new Map<string, HeatContext>();
+  readonly ctxDay = new Map<string, HeatContext>();
+  /** The latest call per coin and horizon (`asset:h`). */
   readonly calls = new Map<string, HeatDecided>();
   readonly asked: string[] = [];
   lagMs = 45_000;
@@ -67,20 +73,39 @@ class FakeHeat implements HeatDirection {
   }
   fired(asset: string, h: number, now: number): HeatDecided | undefined {
     this.asked.push(`fired:${asset}:${h}`);
-    const d = this.calls.get(asset);
+    const d = this.calls.get(`${asset}:${h}`);
     return d && d.h === h && now - d.row.barClose >= 0 && now - d.row.barClose <= this.lagMs ? d : undefined;
   }
-  day(asset: string, _now: number): HeatContext | undefined {
+  four(asset: string, now: number): HeatContext | undefined {
+    this.asked.push(`four:${asset}`);
+    const c = this.ctx4.get(asset);
+    return c && now < c.until ? c : undefined;
+  }
+  day(asset: string, now: number): HeatContext | undefined {
     this.asked.push(`day:${asset}`);
-    return undefined;
+    const c = this.ctxDay.get(asset);
+    return c && now < c.until ? c : undefined;
   }
   context(asset: string, dir: 1 | -1, barClose: number, rank = 1, of = 40): void {
     this.ctx.set(asset, { asset, dir, key: `1m:RSI14=${dir > 0 ? 'very low' : 'very high'}`, rank, of, heat: 50 - rank, barClose, until: barClose + HOUR });
   }
   fire(asset: string, dir: 1 | -1, barClose: number, rank = 1, of = 40): void {
     const key = `1m:RSI14=${dir > 0 ? 'very low' : 'very high'}`;
-    this.calls.set(asset, { asset, h: 60, fired: 3, against: 0, row: { key, kind: 'single', tf: 1, h: 60, dir, rank, of, heat: 50 - rank, share: 0.56, odds: 6, barClose } });
+    this.calls.set(`${asset}:60`, { asset, h: 60, fired: 3, against: 0, row: { key, kind: 'single', tf: 1, h: 60, dir, rank, of, heat: 50 - rank, share: 0.56, odds: 6, barClose } });
     this.context(asset, dir, barClose, rank, of);
+  }
+  /** The 4 hours' direction: a 240-minute call's, valid for 4 hours from its bar close. */
+  context4(asset: string, dir: 1 | -1, barClose: number, rank = 1, of = 40): void {
+    this.ctx4.set(asset, { asset, dir, key: `5m:WAD=${dir > 0 ? 'low' : 'high'}`, rank, of, heat: 20 - rank / 10, barClose, until: barClose + 4 * HOUR });
+  }
+  fire4(asset: string, dir: 1 | -1, barClose: number, rank = 1, of = 40): void {
+    const key = `5m:WAD=${dir > 0 ? 'low' : 'high'}`;
+    this.calls.set(`${asset}:240`, { asset, h: 240, fired: 2, against: 0, row: { key, kind: 'single', tf: 5, h: 240, dir, rank, of, heat: 20 - rank / 10, share: 0.55, odds: 3.4, barClose } });
+    this.context4(asset, dir, barClose, rank, of);
+  }
+  /** The day's direction: a 1440-minute call's, valid for a day from its bar close. */
+  daily(asset: string, dir: 1 | -1, barClose: number): void {
+    this.ctxDay.set(asset, { asset, dir, key: `15m:ASI=${dir > 0 ? 'high' : 'low'}`, rank: 1, of: 40, heat: 6.9, barClose, until: barClose + 24 * HOUR });
   }
 }
 
@@ -349,7 +374,7 @@ test('mode entry: never DOGE, and the provider is not even asked about it', asyn
   assert.equal(r.trader.book.positions.size, 0);
   assert.equal(r.signals.length, 0);
   assert.equal(r.heat.asked.some((a) => a.includes('DOGE')), false);
-  assert.ok(r.heat.asked.includes('fired:BTC:60'), 'only the 60-minute call is asked for');
+  assert.deepEqual(r.heat.asked.filter((a) => a.startsWith('fired')).sort(), ['fired:BTC:240', 'fired:BTC:60'], 'the 60- and 240-minute calls are asked for, nothing else');
 });
 
 test('mode entry: one offer per coin per clock hour, once per call, and never while the coin has an open trade', async () => {
@@ -571,6 +596,7 @@ test('a provider that throws never breaks targets(): logged once, read as no cal
   const boom: HeatDirection = {
     hour() { throw new Error('hour blew up'); },
     fired() { throw new Error('fired blew up'); },
+    four() { throw new Error('four blew up'); },
     day() { throw new Error('day blew up'); },
   };
   const warns: string[] = [];
@@ -606,4 +632,286 @@ test('a provider that throws never breaks targets(): logged once, read as no cal
     const end = await run(r.H + HOUR + 95_000);
     assert.deepEqual([end.target, end.reason], [0, 'exit: time'], 'no call at the hourly close: the trade ends on time');
   } finally { console.error = realError; }
+});
+
+// ---- The 4-hour heat setup (240-minute calls) and the day's direction (1440-minute calls) ----
+
+/** The 4h ATR the trader sets a 4h heat stop with: the candle store's 4h bars, built from complete groups of four 1h bars. */
+const atr4 = (r: { set: CandleSet }): number => atrOf(r.set.bars['4h']!);
+
+test('heat setup signal on 4h: the timeframe\'s ATR, known at the call\'s bar close, ends at the next 4-hour close', () => {
+  const call = { dir: -1 as const, key: '5m:WAD=high', rank: 1, of: 40, heat: 17.4, barClose: Date.UTC(2026, 10, 11, 18, 9) };
+  const s = heatSignal('BTC', call, 1, 100, 1.5, { atrMult: 2, minBps: 50 }, '4h')!;
+  assert.deepEqual([s.lane, s.kind, s.tf, s.dir, s.ref, s.atr], ['fast', 'heat', '4h', -1, 100, 1.5]);
+  assert.ok(Math.abs(s.stop - 103) < 1e-9, '2 x the 4h ATR above the entry');
+  assert.equal(s.ts + 4 * HOUR, call.barClose, 'known at the call\'s bar close');
+  assert.deepEqual(s.plan, { trailAtr: 2, maxBars: 1 }, 'no target, one 4-hour bar');
+  // Its own minimum is keyed by its own type: "4h heat".
+  assert.equal(minScoreFor({ maxPositions: 3, riskFrac: 0.004, ttlBars: 2, minScore: 0.3, refScore: 0.2, maxChaseR: 0.3, ownMinScore: { '4h heat': 0.2 } }, s), 0.2);
+});
+
+test('the candle store builds the 4h bars the 4h heat setup needs from complete groups of four 1h bars', () => {
+  const r = hourly();
+  const h4 = r.set.bars['4h']!;
+  assert.equal(h4.length, 30, '120 hourly bars, aligned to 00 UTC');
+  assert.equal(h4[h4.length - 1].ts + 4 * HOUR, r.H, 'the last 4h bar closes at H');
+  assert.ok(atr4(r) > r.atr, 'a 4h ATR is wider than the 1h ATR');
+  r.closeHour(r.H); r.closeHour(r.H + HOUR); r.closeHour(r.H + 2 * HOUR);
+  assert.equal(r.set.bars['4h']!.length, 30, 'three hours of the next 4h bar: not a bar yet');
+  r.closeHour(r.H + 3 * HOUR);
+  assert.equal(r.set.bars['4h']![30].ts, r.H, 'the fourth hour completes it');
+});
+
+test('mode entry: a fired 240-minute call opens a fast-lane 4h heat trade with the 4h ATR stop, held to the next 4-hour close', async () => {
+  const r = hourly();
+  const now = r.H + 5 * MIN + 5_000;
+  r.heat.fire4('BTC', 1, r.H + 5 * MIN, 1, 40);
+  const t = await r.btc(now);
+  assert.ok(t.target > 0, `long: ${t.reason}`);
+  const p = r.trader.book.positions.get('BTC')!;
+  assert.deepEqual([p.lane, p.kind, p.tf, p.dir, p.plan.maxBars, p.plan.target1, p.plan.target2], ['fast', 'heat', '4h', 1, 1, undefined, undefined]);
+  const dist = Math.max(2 * atr4(r), 0.005 * r.px.v);
+  assert.ok(Math.abs(p.stop - (r.px.v - dist)) < 1e-9, 'stop: 2 x the 4h ATR, at least 50 bps');
+  assert.equal(p.score, 1);
+  assert.ok(Math.abs(p.notional! - (10_000 * 0.004 * 1.5) / (dist / r.px.v)) < 1e-6, `sized like any heat setup: ${p.notional}`);
+  assert.deepEqual(p.heat, { key: '5m:WAD=low', rank: 1, of: 40, heat: 19.9, barClose: r.H + 5 * MIN, weight: 1, extended: 0 });
+  assert.match(t.reason, /^fast 4h heat long from [\d.]+: stop [\d.]+, until the 4-hour close$/);
+  const s = r.signals[0];
+  assert.deepEqual([s.kind, s.tf, s.call_h, s.queued, s.score, s.why, s.heat_four_dir, s.heat_four_agree, s.heat_four_key], ['heat', '4h', 240, true, 1, null, 1, 1, '5m:WAD=low']);
+  assert.deepEqual([r.trades[0].event, r.trades[0].tf, r.trades[0].heat_four_dir], ['opened', '4h', 1]);
+  assert.equal(r.again().book.positions.get('BTC')!.tf, '4h', 'a restarted trader resumes the 4h heat trade');
+  // Held through the hourly closes inside its 4 hours.
+  for (let k = 0; k < 3; k++) {
+    r.closeHour(r.H + k * HOUR);
+    assert.equal(Math.sign((await r.btc(r.H + (k + 1) * HOUR + 95_000)).target), 1, `hour ${k + 1}`);
+  }
+  assert.equal(r.trader.book.positions.get('BTC')!.bars, 0);
+  // The fourth hour completes the 4h bar: ruled on 90 s after the close, and ended on time (the entry's own call reaches
+  // only 5 minutes into the next 4 hours, so it carries nothing).
+  r.closeHour(r.H + 3 * HOUR);
+  assert.ok((await r.btc(r.H + 4 * HOUR + 30_000)).target > 0, 'inside the wait after the close');
+  const end = await r.btc(r.H + 4 * HOUR + 95_000);
+  assert.deepEqual([end.target, end.reason], [0, 'exit: time']);
+  assert.deepEqual([r.trader.status().recentTrades[0].kind, r.trader.status().recentTrades[0].tf, r.trader.status().recentTrades[0].reason], ['heat', '4h', 'time']);
+});
+
+test('mode entry: a 4h heat trade is carried through its 4-hour close while the 4 hours keep its side, never against the day', async () => {
+  const start = async () => {
+    const r = hourly();
+    r.heat.fire4('BTC', 1, r.H + 5 * MIN);
+    assert.ok((await r.btc(r.H + 5 * MIN + 5_000)).target > 0);
+    for (let k = 0; k < 4; k++) r.closeHour(r.H + k * HOUR);
+    return r;
+  };
+  const C = (r: { H: number }) => r.H + 4 * HOUR; // the 4-hour close the trade is due to end at
+  // A 240-minute call in the last two hours of the bar, on the trade's side: it covers most of the next 4 hours.
+  const a = await start();
+  a.heat.fire4('BTC', 1, a.H + 3 * HOUR, 4, 40);
+  await a.btc(a.H + 3 * HOUR + 5_000);
+  assert.equal(a.signals[a.signals.length - 1].why, 'the coin has an open 4h heat trade');
+  const size = (await a.btc(C(a) + 95_000)).target;
+  assert.ok(size > 0);
+  const p = a.trader.book.positions.get('BTC')!;
+  assert.deepEqual([p.bars, p.plan.maxBars, p.heat!.extended, p.heat!.barClose, p.heat!.rank], [1, 2, 1, a.H + 3 * HOUR, 4]);
+  assert.deepEqual(a.trades.filter((t) => t.event === 'extended').map((t) => [t.tf, t.close, t.extended]), [['4h', C(a), 1]]);
+  // The next 4 hours turn: it ends on time at their close.
+  for (let k = 0; k < 4; k++) a.closeHour(C(a) + k * HOUR);
+  a.heat.context4('BTC', -1, C(a) + 3 * HOUR);
+  const end = await a.btc(C(a) + 4 * HOUR + 95_000);
+  assert.deepEqual([end.target, end.reason], [0, 'exit: time']);
+  assert.equal(a.trades[a.trades.length - 1].extended, 1);
+
+  // Not carried: the 4 hours point the other way, the call is too old (it covers less than half of the next bar), the day
+  // points against the trade (a carry stands for a new entry), or the hour alone agrees (a 4h trade reads the 4 hours).
+  for (const how of ['against', 'old call', 'day against', 'hour only'] as const) {
+    const n = await start();
+    if (how === 'against') n.heat.context4('BTC', -1, n.H + 3 * HOUR);
+    if (how === 'old call') n.heat.context4('BTC', 1, n.H + 2 * HOUR - MIN);
+    if (how === 'day against') { n.heat.context4('BTC', 1, n.H + 3 * HOUR); n.heat.daily('BTC', -1, n.H + 3 * HOUR); }
+    if (how === 'hour only') { n.heat.ctx4.delete('BTC'); n.heat.context('BTC', 1, C(n) - MIN); }
+    const out = await n.btc(C(n) + 95_000);
+    assert.deepEqual([out.target, out.reason], [0, 'exit: time'], how);
+    assert.equal(n.trades.filter((t) => t.event === 'extended').length, 0, how);
+  }
+});
+
+test('mode entry: one heat entry per coin per clock hour across 1h and 4h; the same minute goes to the hotter weight, a tie to 4h', async () => {
+  // rank 1 of the top 10 weighs 1, rank 5 weighs 5/9.
+  for (const [rank60, rank240, want] of [[1, 5, '1h'], [5, 1, '4h'], [1, 1, '4h'], [3, 3, '4h']] as const) {
+    const r = hourly();
+    r.heat.fire('BTC', 1, r.H + 5 * MIN, rank60, 40);
+    r.heat.fire4('BTC', 1, r.H + 5 * MIN, rank240, 40);
+    assert.ok((await r.btc(r.H + 5 * MIN + 5_000)).target > 0);
+    assert.equal(r.trader.book.positions.get('BTC')!.tf, want, `${rank60} vs ${rank240}`);
+    const lose = want === '1h' ? '4h' : '1h';
+    assert.deepEqual(r.signals.map((s) => [s.tf, s.queued, s.why]), [
+      [want, true, null],
+      [lose, false, `the ${want} heat call of this minute was offered (the hotter weight, a tie to 4h): one heat entry per coin per clock hour`],
+    ], `${rank60} vs ${rank240}`);
+    assert.equal(r.trader.status().lanes.fast.queue.length, 0);
+  }
+
+  // The hour used by a 1h heat entry is used for the 4h too: after a stop-out, a 4h call the same clock hour is not
+  // offered; the next clock hour it is.
+  const r = hourly();
+  r.heat.fire('BTC', 1, r.H + 5 * MIN);
+  assert.ok((await r.btc(r.H + 5 * MIN + 5_000)).target > 0);
+  const p = r.trader.book.positions.get('BTC')!;
+  const entry = r.px.v;
+  r.px.v = p.stop - 0.001;
+  assert.equal((await r.btc(r.H + 7 * MIN)).reason, 'exit: stop');
+  r.px.v = entry;
+  r.heat.fire4('BTC', 1, r.H + 20 * MIN);
+  assert.equal((await r.btc(r.H + 20 * MIN + 5_000)).target, 0);
+  assert.deepEqual([r.signals[1].tf, r.signals[1].queued, r.signals[1].why], ['4h', false, 'a heat entry was already offered for this coin this clock hour']);
+  r.heat.fire4('BTC', -1, r.H + HOUR + 2 * MIN);
+  assert.ok((await r.btc(r.H + HOUR + 2 * MIN + 5_000)).target < 0);
+  assert.equal(r.trader.book.positions.get('BTC')!.tf, '4h');
+
+  // When the hotter call cannot be offered for a reason that leaves the hour free (here: against the day), the other
+  // horizon's call of the same minute still gets its turn.
+  const d = hourly();
+  d.heat.daily('BTC', -1, d.H - 2 * HOUR);
+  d.heat.fire('BTC', 1, d.H + 5 * MIN, 1, 40);
+  d.heat.fire4('BTC', -1, d.H + 5 * MIN, 5, 40);
+  assert.ok((await d.btc(d.H + 5 * MIN + 5_000)).target < 0);
+  assert.equal(d.trader.book.positions.get('BTC')!.tf, '4h');
+  assert.deepEqual(d.signals.map((s) => [s.tf, s.queued, s.why]), [['1h', false, "against the day's direction (15m:ASI=low)"], ['4h', true, null]]);
+});
+
+test('daily context: a heat offer (1h or 4h) against the coin\'s live daily call is not made, and the clock hour stays open', async () => {
+  const r = hourly();
+  r.heat.daily('BTC', -1, r.H - 3 * HOUR);
+  r.heat.fire('BTC', 1, r.H + 5 * MIN);
+  assert.equal((await r.btc(r.H + 5 * MIN + 5_000)).target, 0);
+  r.heat.fire4('BTC', 1, r.H + 6 * MIN);
+  assert.equal((await r.btc(r.H + 6 * MIN + 5_000)).target, 0);
+  assert.equal(r.trader.book.positions.size, 0);
+  assert.deepEqual(r.signals.map((s) => [s.tf, s.queued, s.why, s.ref, s.heat_day_dir, s.heat_day_agree, s.heat_day_key]), [
+    ['1h', false, "against the day's direction (15m:ASI=low)", null, -1, -1, '15m:ASI=low'],
+    ['4h', false, "against the day's direction (15m:ASI=low)", null, -1, -1, '15m:ASI=low'],
+  ]);
+  assert.equal(r.audits.filter((x) => x.kind === 'setup_signal').length, 0, 'no setup was built');
+  // A call on the day's side later the same clock hour: offered and entered (the refused calls did not use the hour).
+  r.heat.fire('BTC', -1, r.H + 8 * MIN);
+  assert.ok((await r.btc(r.H + 8 * MIN + 5_000)).target < 0);
+  assert.equal(r.signals[2].heat_day_agree, 1);
+
+  // A daily call whose day is over has no say; neither has the day with HEAT_PERPS_DAILY=off (it is not even asked).
+  const e = hourly();
+  e.heat.daily('BTC', -1, e.H + 5 * MIN - 24 * HOUR);
+  e.heat.fire('BTC', 1, e.H + 5 * MIN);
+  assert.ok((await e.btc(e.H + 5 * MIN + 5_000)).target > 0, 'expired');
+  const o = hourly({ heat: { daily: 'off' } });
+  o.heat.daily('BTC', -1, o.H - 3 * HOUR);
+  o.heat.fire4('BTC', 1, o.H + 5 * MIN);
+  assert.ok((await o.btc(o.H + 5 * MIN + 5_000)).target > 0, 'HEAT_PERPS_DAILY=off');
+  assert.equal(o.heat.asked.some((a) => a.startsWith('day:')), false);
+  assert.deepEqual([o.signals[0].heat_day_dir, o.trader.status().inputs.heat!.daily], [null, 'off']);
+});
+
+test('re-check: a waiting heat candidate is dropped once the day points against it; a 4h candidate is re-read against the 4 hours', async () => {
+  const start = async (tf: '1h' | '4h') => {
+    const r = hourly();
+    if (tf === '4h') r.heat.fire4('BTC', 1, r.H + 5 * MIN); else r.heat.fire('BTC', 1, r.H + 5 * MIN);
+    assert.equal((await r.btc(r.H + 5 * MIN + 5_000, { noEntry: 'paused' })).target, 0);
+    assert.deepEqual(r.trader.status().lanes.fast.queue.map((c) => [c.kind, c.tf, c.dir]), [['heat', tf, 1]]);
+    return r;
+  };
+  const resume = async (r: Rig & { H: number }, why: string) => {
+    assert.equal((await r.btc(r.H + 7 * MIN + 5_000)).target, 0);
+    assert.equal(r.trader.book.positions.size, 0);
+    assert.equal(r.trader.status().recentSkips[0].reason, why);
+    assert.equal(r.trader.status().lanes.fast.queue.length, 0);
+    assert.equal(r.audits.filter((x) => x.kind === 'setup_skip' && x.data.reason === why).length, 1);
+  };
+  // The day turns against the waiting long, 1h and 4h alike.
+  for (const tf of ['1h', '4h'] as const) {
+    const a = await start(tf);
+    a.heat.daily('BTC', -1, a.H + 6 * MIN);
+    await resume(a, "heat: against the day's direction (15m:ASI=low)");
+  }
+  // A 4h candidate reads the 4 hours: turned, or gone.
+  const b = await start('4h');
+  b.heat.context4('BTC', -1, b.H + 6 * MIN, 2, 40);
+  await resume(b, 'heat: the 4-hour direction turned down (5m:WAD=high)');
+  const c = await start('4h');
+  c.heat.ctx4.delete('BTC');
+  await resume(c, 'heat: no live 4-hour direction left for this call');
+  // The hour turning does not touch a 4h candidate, and a daily call on its side lets it through: it enters, scored by
+  // the weight of the 4 hours' direction now.
+  const d = await start('4h');
+  d.heat.context('BTC', -1, d.H + 6 * MIN);
+  d.heat.daily('BTC', 1, d.H + 6 * MIN);
+  d.heat.context4('BTC', 1, d.H + 6 * MIN, 5, 40);
+  assert.ok((await d.btc(d.H + 7 * MIN + 5_000)).target > 0);
+  assert.deepEqual([d.trader.book.positions.get('BTC')!.tf, d.trader.book.positions.get('BTC')!.score], ['4h', heatWeight(5, 40, 10)]);
+});
+
+test('HEAT_PERP_HORIZONS: only the listed horizons are asked for and offered', async () => {
+  const a = hourly({ heat: { horizons: [60] } });
+  a.heat.fire4('BTC', 1, a.H + 5 * MIN);
+  assert.equal((await a.btc(a.H + 5 * MIN + 5_000)).target, 0);
+  assert.deepEqual([a.signals.length, a.heat.asked.filter((x) => x.startsWith('fired')), a.trader.status().inputs.heat!.horizons], [0, ['fired:BTC:60'], [60]]);
+  const b = hourly({ heat: { horizons: [240] } });
+  b.heat.fire('BTC', 1, b.H + 5 * MIN);
+  assert.equal((await b.btc(b.H + 5 * MIN + 5_000)).target, 0);
+  assert.deepEqual([b.signals.length, b.heat.asked.filter((x) => x.startsWith('fired'))], [0, ['fired:BTC:240']]);
+  b.heat.fire4('BTC', 1, b.H + 6 * MIN);
+  assert.ok((await b.btc(b.H + 6 * MIN + 5_000)).target > 0);
+  // A 4h candidate left in the queue is not entered once 240 is no longer listed.
+  const c = hourly();
+  c.heat.fire4('BTC', 1, c.H + 5 * MIN);
+  assert.equal((await c.btc(c.H + 5 * MIN + 5_000, { noEntry: 'paused' })).target, 0);
+  const only60 = rig({ bars: { '1h': c.set.bars['1h']! }, now: c.H + 6 * MIN, px0: c.px.v, heat: { horizons: [60] } });
+  fs.copyFileSync(path.join(c.dir, 'state.json'), path.join(only60.dir, 'state.json'));
+  const restarted = only60.again();
+  only60.heat.context4('BTC', 1, c.H + 5 * MIN);
+  only60.hub.apply({ ticker: 'BTC-PERP', asset: 'BTC', ts: c.H + 6 * MIN, bid: c.px.v * 1.001 - 0.01, ask: c.px.v * 1.001 + 0.01, fractional: true });
+  assert.equal((await restarted.targets({ positions: new Map(), hedge: [], now: c.H + 6 * MIN }, {})).find((x) => x.asset === 'BTC')!.target, 0);
+  assert.equal(restarted.status().recentSkips[0].reason, 'heat: 4h heat entries are off (HEAT_PERP_HORIZONS)');
+});
+
+test('gate mode: the day gates nothing (only journaled); log mode journals the 4 hours and the day beside every setup', async () => {
+  for (const mode of ['gate', 'log'] as const) {
+    const g = chart('1h', 7, { mode });
+    const against = -g.sig.dir as 1 | -1;
+    g.heat.daily('BTC', against, g.now - HOUR);
+    g.heat.context4('BTC', against, g.now - HOUR);
+    const t = await g.btc(g.now);
+    assert.equal(Math.sign(t.target), g.sig.dir, `${mode}: a 1h chart setup against the day and the 4 hours still enters: ${t.reason}`);
+    for (const rec of [g.signals[0], g.trades[0]]) {
+      assert.deepEqual([rec.heat_four_dir, rec.heat_four_agree, rec.heat_four_key, rec.heat_day_dir, rec.heat_day_agree, rec.heat_day_key],
+        [against, -1, `5m:WAD=${against > 0 ? 'low' : 'high'}`, against, -1, `15m:ASI=${against > 0 ? 'high' : 'low'}`], mode);
+    }
+    assert.equal(g.heat.asked.some((a) => a.startsWith('fired')), false, `${mode} never asks for a fired call`);
+  }
+});
+
+test('end to end with the lane: the reader\'s 240-minute row opens a 4h heat trade; its daily row against keeps it out', async () => {
+  const cfg: HeatConfig = {
+    enabled: true, callsFile: '', assets: ['BTC'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25,
+    maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reenterAfterLoss: false, flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry',
+    perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip',
+  };
+  // Trimmed from the oracle's perp_pack.json at 52edf4c (BTC): the hottest 4-hour single (up) and the hottest daily single (down).
+  const four = (barClose: number): HeatCallRow => ({ key: '1m:MFI14=very low', kind: 'single', tf: 1, h: 240, dir: 1, rank: 1, of: 40, heat: 18.013, share: 0.54442, odds: 3.4784, barClose });
+  const day = (barClose: number): HeatCallRow => ({ key: '15m:ASI=high (rising in)', kind: 'single', tf: 15, h: 1440, dir: -1, rank: 1, of: 40, heat: 6.9474, share: 0.56695, odds: 8.2643, barClose });
+  const snap = (t: number, calls: HeatCallRow[]): HeatSnapshot => ({ source: 'oracle-heat', run: 'R1', packSha: 'p', writtenAt: t + 2_000, coins: new Map([['BTC', { asOf: t, tableSha: 't', ok: true, calls }]]) });
+  for (const withDay of [false, true]) {
+    const lane = new HeatLane(cfg);
+    const r = hourly({ provider: lane.direction });
+    const t = r.H + 5 * MIN;
+    // The daily row fired two hours earlier (the lane keeps it for a day), the 4-hour row now.
+    if (withDay) lane.pending(t - 2 * HOUR + 5_000, snap(t - 2 * HOUR, [day(t - 2 * HOUR)]));
+    lane.pending(t + 5_000, snap(t, [four(t)]));
+    const out = await r.btc(t + 5_000);
+    if (!withDay) {
+      assert.ok(out.target > 0, out.reason);
+      assert.deepEqual([r.trader.book.positions.get('BTC')!.tf, r.trader.book.positions.get('BTC')!.heat!.key], ['4h', '1m:MFI14=very low']);
+    } else {
+      assert.equal(out.target, 0);
+      assert.deepEqual([r.signals[0].tf, r.signals[0].queued, r.signals[0].why], ['4h', false, "against the day's direction (15m:ASI=high (rising in))"]);
+    }
+  }
 });

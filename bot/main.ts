@@ -396,7 +396,7 @@ async function main(): Promise<void> {
   // folder so paper and live each keep theirs. Built only with HEAT_LANE on (the start check above refuses it without exits).
   const heatLane = cfg.heat.enabled ? new HeatLane(cfg.heat, path.join(cfg.bookDir, 'heat_lane_state.json')) : undefined;
   const heatSource = heatLane ? new FileHeatSource(cfg.heat.callsFile) : undefined;
-  if (heatLane) log.info('heat lane on', { callsFile: cfg.heat.callsFile, assets: cfg.heat.assets, horizons: cfg.heat.horizons, perps: cfg.heat.perps });
+  if (heatLane) log.info('heat lane on', { callsFile: cfg.heat.callsFile, assets: cfg.heat.assets, horizons: cfg.heat.horizons, perps: cfg.heat.perps, perpHorizons: cfg.heat.perpHorizons, perpsDaily: cfg.heat.perpsDaily });
   let engineRef: Engine | undefined;
   let hedger: PerpHedger | undefined;
   let perpTrader: PerpTrader | undefined;
@@ -488,7 +488,8 @@ async function main(): Promise<void> {
           };
         })(),
         snn: (asset) => engineRef?.snnContext(asset, undefined, 'perps'),
-        heat: heatLane && cfg.heat.perps !== 'off' ? { dir: heatLane.direction, mode: cfg.heat.perps, topN: cfg.heat.topN, stopAtrMult: P.stopAtrMult, minStopBps: P.minStopBps } : undefined,
+        // The curves on the perps: entries on the hour and on 4 hours (HEAT_PERP_HORIZONS), the day as context (HEAT_PERPS_DAILY).
+        heat: heatLane && cfg.heat.perps !== 'off' ? { dir: heatLane.direction, mode: cfg.heat.perps, topN: cfg.heat.topN, stopAtrMult: P.stopAtrMult, minStopBps: P.minStopBps, horizons: cfg.heat.perpHorizons, daily: cfg.heat.perpsDaily } : undefined,
         journal: new SetupJournal(path.join(cfg.dataDir, 'setups'), (e) => log.warn(`setup journal: ${String(e)}`)),
         snnGatePath: () => path.join(cfg.autoTrain.dir, 'setup_snn_gate.json'),
         trainingOverride, streak: perpsStreak, breakEven: perpsBreakEven, lossAt: cfg.strategy.ddScaleAt,

@@ -26,11 +26,12 @@
 //             recent bullish fair value gap (a 3-bar gap: low above the high two bars earlier) and reclaims the
 //             21 EMA on a green bar -> long; mirror -> short. Stop under the gap / the last 3 bars; 1R (half off)
 //             then 3R; ATR trail. Checked before the plain pullback for those coins.
-// Curve-led (fast lane, 1h, only with HEAT_PERPS=entry; heatSignal below):
-//   heat      no chart pattern: the side is the coin's decided 60-minute call from the direction curves (bot/heat).
-//             Stop: the perp stop rule (a multiple of the 1h ATR from the entry, at least a minimum in bps). No target
-//             and no trail: the trade ends at the next hourly close, the horizon the curve measured. Scored by the
-//             heat weight, not by the setup model (the model never saw this type).
+// Curve-led (fast lane, 1h and 4h, only with HEAT_PERPS=entry; heatSignal below):
+//   heat      no chart pattern: the side is the coin's decided 60-minute call (on 1h) or 240-minute call (on 4h) from
+//             the direction curves (bot/heat). Stop: the perp stop rule (a multiple of the timeframe's ATR from the
+//             entry, at least a minimum in bps). No target and no trail: the trade ends at the next close of its
+//             timeframe, the horizon the curve measured. Scored by the heat weight, not by the setup model (the model
+//             never saw this type).
 //
 // The higher-timeframe trend uses simple averages (exact over a finite window), so the live candle
 // store's 320 bars give the same values as the full history.
@@ -260,18 +261,19 @@ export function detectLast(asset: string, tf: Timeframe, cs: Candle[], daily?: C
   return detectAt(asset, tf, setupSeries(cs, tf), cs.length - 1, daily && daily.length >= 60 ? setupSeries(daily, '1d') : undefined, o);
 }
 
-/** The hourly heat setup: fast lane, kind `heat`, timeframe 1h, the side the coin's decided 60-minute curve call names.
- *  `px` is the spot price now (the reference entry) and `atr1h` the 1h ATR. The stop is the perp stop rule: atrMult x
- *  the 1h ATR from the entry, never nearer than minBps. The plan has no target and no trail (a fast-lane trade only
- *  trails after a first target): maxBars 1 ends the trade at the next hourly close, the horizon the curve measured.
- *  The signal bar is the hour ending at the call's bar close, so the setup is known at ts + 1h like every other one.
- *  Undefined without a price or a 1h ATR: no stop can be set, so there is no setup. */
-export function heatSignal(asset: string, call: { dir: 1 | -1; key: string; rank: number; of: number; heat: number; barClose: number }, weight: number, px: number, atr1h: number, stop: { atrMult: number; minBps: number }): SetupSignal | undefined {
-  if (!(px > 0) || !(atr1h > 0) || !(call.dir === 1 || call.dir === -1) || !Number.isFinite(call.barClose)) return undefined;
-  const dist = Math.max(stop.atrMult * atr1h, (stop.minBps / 1e4) * px);
+/** The heat setup: fast lane, kind `heat`, on `tf` (1h for a 60-minute call, 4h for a 240-minute call), the side the
+ *  coin's decided curve call names. `px` is the spot price now (the reference entry) and `atr` the ATR of `tf`. The stop
+ *  is the perp stop rule: atrMult x that ATR from the entry, never nearer than minBps. The plan has no target and no
+ *  trail (a fast-lane trade only trails after a first target): maxBars 1 ends the trade at the next close of `tf` (the
+ *  next hourly close, or the next 4-hour close at 00/04/08/12/16/20 UTC), the horizon the curve measured. The signal
+ *  bar is the `tf` bar ending at the call's bar close, so the setup is known at ts + tf like every other one.
+ *  Undefined without a price or an ATR: no stop can be set, so there is no setup. */
+export function heatSignal(asset: string, call: { dir: 1 | -1; key: string; rank: number; of: number; heat: number; barClose: number }, weight: number, px: number, atr: number, stop: { atrMult: number; minBps: number }, tf: '1h' | '4h' = '1h'): SetupSignal | undefined {
+  if (!(px > 0) || !(atr > 0) || !(call.dir === 1 || call.dir === -1) || !Number.isFinite(call.barClose)) return undefined;
+  const dist = Math.max(stop.atrMult * atr, (stop.minBps / 1e4) * px);
   if (!(dist > 0) || !(dist < px)) return undefined;
   return {
-    asset, lane: 'fast', kind: 'heat', tf: '1h', dir: call.dir, ts: call.barClose - TF_MS['1h']!, ref: px, stop: px - call.dir * dist, atr: atr1h,
+    asset, lane: 'fast', kind: 'heat', tf, dir: call.dir, ts: call.barClose - TF_MS[tf]!, ref: px, stop: px - call.dir * dist, atr,
     plan: { trailAtr: stop.atrMult, maxBars: 1 },
     info: { rsi: NaN, pctB: NaN, flow: NaN, bandwidth: NaN, volRatio: NaN },
     heat: { key: call.key, rank: call.rank, of: call.of, heat: call.heat, barClose: call.barClose, weight },

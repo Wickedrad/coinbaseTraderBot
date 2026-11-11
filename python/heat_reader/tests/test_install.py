@@ -88,7 +88,7 @@ def test_lane_off_installs_nothing_and_stops_a_running_reader(box):
 
 def test_lane_on_installs_starts_and_is_idempotent(box):
     secret = 'KALSHI_API_KEY_ID=never-copy-this\nDASHBOARD_PASSWORD=nor-this\n'
-    box.env(secret + 'HEAT_LANE=true\nHEAT_ASSETS=BTC,ETH\nHEAT_WINDOW_BARS="3000"\nHEAT_TOP_N=10\nHEAT_READER_MAX_RANK=20\nHEAT_CLOCK_PACK=false\n')
+    box.env(secret + 'HEAT_LANE=true\nHEAT_ASSETS=BTC,ETH\nHEAT_WINDOW_BARS="3000"\nHEAT_TOP_N=10\nHEAT_READER_MAX_RANK=20\nHEAT_CLOCK_PACK=false\nHEAT_PERP_PACKS=false\n')
     box.fake_venv()
     before = (box.home / 'bot' / 'bot.env').read_text()
     rc, out, log = box.run()
@@ -105,7 +105,8 @@ def test_lane_on_installs_starts_and_is_idempotent(box):
         assert f'\n{line}\n' in unit
     # only the reader's own settings are copied out of bot.env: no secret, no lane setting
     renv = (box.home / 'bot' / 'heat-reader.env').read_text()
-    assert [x for x in renv.splitlines() if not x.startswith('#')] == ['HEAT_ASSETS=BTC,ETH', 'HEAT_WINDOW_BARS=3000', 'HEAT_READER_MAX_RANK=20', 'HEAT_CLOCK_PACK=false']
+    assert [x for x in renv.splitlines() if not x.startswith('#')] == ['HEAT_ASSETS=BTC,ETH', 'HEAT_WINDOW_BARS=3000', 'HEAT_READER_MAX_RANK=20', 'HEAT_CLOCK_PACK=false',
+                                                                       'HEAT_PERP_PACKS=false']
     assert not (box.home / 'bot' / 'data' / 'heat_reader').exists()           # nothing is copied out of the release
     sysctl = [x for x in log.splitlines() if x.startswith('systemctl ')]
     assert sysctl == ['systemctl daemon-reload', 'systemctl enable heat-reader', 'systemctl restart heat-reader', 'systemctl is-active --quiet heat-reader',

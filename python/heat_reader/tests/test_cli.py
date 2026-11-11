@@ -63,7 +63,7 @@ def test_once_writes_the_file_and_exits_zero(world, oracle_path, server, tmp_pat
     p = run('heat_reader', ['--once'], env)
     assert p.returncode == 0, p.stdout + p.stderr
     assert 'DOGE is in HEAT_ASSETS and is refused (never DOGE)' in p.stdout
-    assert f'packs {pack} (rank up to 40, clock pack off)' in p.stdout
+    assert f'packs {pack} (rank up to 40, clock pack off, perp packs on)' in p.stdout
     assert re.search(r'^heat-reader pass BTC 8 fired in [0-9.]+ s \| ETH 8 fired in [0-9.]+ s \([0-9.]+ s\)$', p.stdout, re.M), p.stdout
     obj = json.load(open(data / 'heat_calls.json'))                           # HEAT_CALLS_FILE defaults to <DATA_DIR>/heat_calls.json
     assert_contract(obj)
@@ -93,7 +93,8 @@ def test_exit_codes(world, oracle_path, server, tmp_path):
     assert json.load(open(tmp_path / 'c.json'))['coins']['BTC']['ok'] is False               # and the file says so
     for bad, text in ((['--window-bars', '10'], 'HEAT_WINDOW_BARS: 10 is below 300'), (['--assets', 'DOGE'], 'names no coin'),
                       (['--binance-api', 'file:///etc/passwd'], 'must be an http or https address'),
-                      (['--max-rank', '0'], 'HEAT_READER_MAX_RANK: 0 is below 1'), (['--clock-pack', 'perhaps'], 'neither true nor false')):
+                      (['--max-rank', '0'], 'HEAT_READER_MAX_RANK: 0 is below 1'), (['--clock-pack', 'perhaps'], 'neither true nor false'),
+                      (['--perp-packs', 'maybe'], 'HEAT_PERP_PACKS: \'maybe\' is neither true nor false')):
         p = run('heat_reader', flags + ['--oracle-path', oracle_path] + bad)
         assert p.returncode == 2 and text in p.stdout                                         # a setting it cannot run with
 

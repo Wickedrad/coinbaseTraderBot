@@ -15,9 +15,9 @@
 // lane's reference score) and the conviction multiplier, then capped by the lane's optimal f (the
 // bootstrap 25th percentile of the growth-optimal risk on its trade history, bot/strategy/optimalF.ts)
 // and halved while its drawdown is beyond the history's 95th percentile; capped per asset and in total.
-// A setup type that is not scored by the setup model (the hourly heat setup: its score is the heat weight, 0..1) has
-// its own minimum (ownMinScore). It wins over the model's thresholds, so such a type queues and enters by its own
-// rule whether the model lists it or not, on probation or not.
+// A setup type that is not scored by the setup model (the heat setups on 1h and 4h: their score is the heat weight,
+// 0..1) has its own minimum (ownMinScore). It wins over the model's thresholds, so such a type queues and enters by its
+// own rule whether the model lists it or not, on probation or not.
 
 import type { Lane, SetupSignal } from './detectors';
 import { TF_MS } from './detectors';

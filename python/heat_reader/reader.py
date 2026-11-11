@@ -10,7 +10,8 @@ The 60-minute readings a pair conditions on need the long window (3,000 hourly b
 their level changes only when an hourly bar closes. So the long window is read once an hour per coin (or after a
 restart) and the levels are kept until the next hourly close; every other minute reads only the window the 1-, 5-
 and 15-minute readings need. The minute cache on disk always holds the long window, so the hourly read downloads
-nothing extra.
+nothing extra. A 60-minute single (the perp packs have them at h1440) fires only when its hourly bar closes, which is
+exactly the minute the long window is read.
 
 A coin the reader cannot vouch for is written with ok false, a plain reason and no calls; the bot then opens nothing
 on it. A network or engine error never ends the loop: it is counted, the coin is marked not ok, and after a network
@@ -183,7 +184,7 @@ class Reader:
         self._now = now_ms or (lambda: time.time() * 1000.0)
         self._sleep = sleep
         self.source = source or Binance(settings.binance_api, now_ms=self._now, sleep=sleep)
-        self.tables = Tables(settings.pack_dir, settings.assets, settings.run, settings.max_rank, settings.clock_pack)
+        self.tables = Tables(settings.pack_dir, settings.assets, settings.run, settings.max_rank, settings.clock_pack, settings.perp_packs)
         self.engine = None
         self.engine_why = None
         self.caches = {c: minute_cache.MinuteCache(os.path.join(settings.reader_dir, 'minutes', f'{c}.min')) for c in settings.assets}
@@ -329,11 +330,14 @@ class Reader:
 
     def sidecar(self, written: int, coins: dict, facts: dict) -> dict:
         """The status beside the calls file, for the bot's status: per coin whether it is read, what fired this
-        minute by kind, and the rows of the packs it asks for and leaves out, by reason."""
+        minute by kind, and the rows of the packs it asks for and leaves out, by reason (the perp packs' under
+        rows.perp). perpProblem says why the perp packs are not used while HEAT_PERP_PACKS is on."""
         out = {'v': 1, 'writtenAt': written, 'run': self.tables.run, 'packSha': self.tables.pack_sha, 'maxRank': self.s.max_rank,
-               'clockPack': self.s.clock_pack, 'packs': self.tables.files, 'coins': {}}
+               'clockPack': self.s.clock_pack, 'perpPacks': self.s.perp_packs, 'packs': self.tables.files, 'coins': {}}
         if self.tables.problem:
             out['problem'] = self.tables.problem
+        if self.tables.perp_problem:
+            out['perpProblem'] = self.tables.perp_problem
         for c, v in coins.items():
             f = facts.get(c, {})
             out['coins'][c] = {'ok': v['ok'], 'fired': f.get('firedBy', {}), 'rows': f.get('rows')}

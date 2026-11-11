@@ -99,7 +99,7 @@ def _fires(key: str, aliases, res: dict, blind: dict) -> bool:
 
 def fired_triggers(table, res: dict, window: int) -> set:
     """The `when` events of the coin's pair and triple rows that fire now, whether or not the conditions hold (what
-    the parity replay compares with the full engine's events)."""
+    the parity replay compares with the full engine's events). The main packs only: the replay checks h15 and h60."""
     blind, _ = _blind(table, res, window)
     return {p['when'] for p in table.pairs if _fires(p['when'], table.aliases.get(p['when']), res, blind)}
 
@@ -116,7 +116,10 @@ def join(table, top: int, res: dict, window: int, held: dict = None) -> tuple:
     A pair or triple fires when its `when` fires by the same rule AND every condition reading holds its level at the
     last closed bar of its own timeframe (held: reading to level or None, the engine's states with the cached
     60-minute ones). A state on a timeframe with fewer bars than the window is not trusted: it does not hold.
-    barClose of every fired row is the engine's ts."""
+    barClose of every fired row is the engine's ts.
+
+    The perp rows (h240, h1440) fire by the same rules; their `of` is the perp pack's top, and a perp pair's trigger
+    fires through the aliases of the perp singles too."""
     held = res.get('states', {}) if held is None else held
     blind, short = _blind(table, res, window)
     if res.get('gap_last'):
@@ -124,10 +127,12 @@ def join(table, top: int, res: dict, window: int, held: dict = None) -> tuple:
     if 1 in blind:
         return [], blind[1], []
     res = dict(res, events=set(res['events']), closed=set(res['closed']))
-    calls = [call_row(r, top, res['ts']) for r in table.rows if _fires(r['key'], r.get('aliases'), res, blind)]
-    for p in table.pairs:
-        if _fires(p['when'], table.aliases.get(p['when']), res, blind) and \
-                all(held.get(rd) == lv and key_tf(rd) not in short for rd, lv in p['conds']):
-            calls.append(pair_call(p, p['rank'], top, res['ts']))
+    calls = [call_row(r, of, res['ts']) for rows, of in ((table.rows, top), (table.perp_rows, table.perp_top))
+             for r in rows if _fires(r['key'], r.get('aliases'), res, blind)]
+    for pairs, aliases, of in ((table.pairs, table.aliases, top), (table.perp_pairs, table.perp_aliases, table.perp_top)):
+        for p in pairs:
+            if _fires(p['when'], aliases.get(p['when']), res, blind) and \
+                    all(held.get(rd) == lv and key_tf(rd) not in short for rd, lv in p['conds']):
+                calls.append(pair_call(p, p['rank'], of, res['ts']))
     calls.sort(key=lambda c: (c['h'], c['rank'], KIND_ORDER[c['kind']], c['key']))
     return calls, None, [blind[k] for k in sorted(blind)]

@@ -18,7 +18,7 @@ import pytest
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 PACKAGE = os.path.dirname(TESTS)
-FIXTURES = os.path.join(PACKAGE, 'fixtures')       # trimmed copies of the oracle run's packs and live_meta.json (fd88805)
+FIXTURES = os.path.join(PACKAGE, 'fixtures')       # trimmed copies of the oracle run's packs and live_meta.json (52edf4c)
 PYTHON_DIR = os.path.dirname(PACKAGE)
 REPO = os.path.dirname(PYTHON_DIR)
 if PYTHON_DIR not in sys.path:
@@ -93,6 +93,7 @@ class FakeBinance:
 
 
 STAMP = 'tables of run 43030435253; pack job 43057668061 at commit c6db27c'
+LONG_STAMP = 'long tables of run 43030435253; long job 43070798519 at commit 3a8d444'
 
 
 def pack_row(coin: str, key: str, h: int = 15, rank: int = 1, aliases=(), direction: int = 1, sha: str = 'sha-' + 'x' * 8, **over) -> dict:
@@ -124,9 +125,30 @@ def pair_row(coin: str, when: str, conds, h: int = 15, direction: int = 1, oheat
     return row
 
 
-def write_packs(folder, rows: list, shas: dict, pairs=(), meta: dict = None, clock=None, top: int = 40, stamp: str = STAMP) -> str:
+def perp_row(coin: str, key: str, h: int = 240, rank: int = 1, sha: str = 'long-sha-' + 'x' * 8, **over) -> dict:
+    """A perp pack row (python/oracle/heat_pack.py on the long tables): a traded pack row with no live_parity, its
+    readings, and edges_as_main."""
+    row = pack_row(coin, key, h=h, rank=rank, sha=sha, **over)
+    del row['live_parity']
+    row.setdefault('readings', sorted({k.rsplit('=', 1)[0] for k in [key] + row['aliases']}))
+    row.setdefault('edges_as_main', True)
+    return row
+
+
+def perp_pair(coin: str, when: str, conds, h: int = 240, sha: str = 'long-sha-' + 'x' * 8, **over) -> dict:
+    """A perp pair pack row: a pair pack row with no live_parity, and edges_as_main."""
+    row = pair_row(coin, when, conds, h=h, sha=sha, **over)
+    del row['live_parity']
+    row.setdefault('edges_as_main', True)
+    return row
+
+
+def write_packs(folder, rows: list, shas: dict, pairs=(), meta: dict = None, clock=None, top: int = 40, stamp: str = STAMP,
+                perp=None, perp_pairs=(), perp_head: dict = None) -> str:
     """A pack folder as the oracle commit lays it out: traded_pack.json, pair_pack.json, live_meta.json and, when
-    `clock` is a list of rows, clock_pack.json. meta: {coin: meta}; None leaves live_meta.json as it is."""
+    `clock` is a list of rows, clock_pack.json. meta: {coin: meta}; None leaves live_meta.json as it is. perp: a list of
+    perp_pack.json rows (perp_pair_pack.json gets perp_pairs), on the long tables 'long-<sha>' of the same run;
+    perp_head overrides the perp files' top-level fields."""
     folder = str(folder)
     os.makedirs(folder, exist_ok=True)
     head = {'horizons': [15, 60], 'top': top, 'table_sha256': shas, 'stamp': stamp}
@@ -140,6 +162,14 @@ def write_packs(folder, rows: list, shas: dict, pairs=(), meta: dict = None, clo
     if meta is not None:
         with open(os.path.join(folder, 'live_meta.json'), 'w') as f:
             json.dump(meta, f)
+    if perp is not None:
+        ph = {'horizons': [240, 1440], 'top': 40, 'table_sha256': {c: f'long-{v}' for c, v in shas.items()}, 'stamp': LONG_STAMP,
+              'edges_as_main_tables': {c: {'same': 624, 'different': [], 'n_different': 0, 'price_step_same': True} for c in shas}}
+        ph.update(perp_head or {})
+        with open(os.path.join(folder, 'perp_pack.json'), 'w') as f:
+            json.dump(dict(ph, schema='oracle-heat-pack-1', rows=list(perp)), f)
+        with open(os.path.join(folder, 'perp_pair_pack.json'), 'w') as f:
+            json.dump(dict(ph, schema='oracle-heat-pairs-1', rows=list(perp_pairs)), f)
     return folder
 
 
@@ -310,5 +340,5 @@ def world(engine):
     return World(engine)
 
 
-__all__ = ['FakeBinance', 'FetchError', 'World', 'assert_contract', 'bot_parse', 'contract', 'kline', 'pack_row', 'pair_row', 'reader_for', 'settings',
-           'walk', 'write_packs', 'FIXTURES', 'STAMP', 'T0', 'REPO', 'PACKAGE']
+__all__ = ['FakeBinance', 'FetchError', 'World', 'assert_contract', 'bot_parse', 'contract', 'kline', 'pack_row', 'pair_row', 'perp_pair', 'perp_row',
+           'reader_for', 'settings', 'walk', 'write_packs', 'FIXTURES', 'LONG_STAMP', 'STAMP', 'T0', 'REPO', 'PACKAGE']

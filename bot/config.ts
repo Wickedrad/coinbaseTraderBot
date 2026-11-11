@@ -410,8 +410,8 @@ export interface Config {
   sessionEdge: { minutes: number; noEntry: boolean };
   /** The heat entry lane (bot/heat, docs/HEAT_LANE.md): the oracle's direction curves, read from the reader's file
    *  (HEAT_CALLS_FILE), open immediate-or-cancel entries on the 15-minute and hourly contracts, and with HEAT_PERPS the
-   *  hour's call informs the perps. HEAT_LANE is off by default (new behaviour is off until it is approved); the same
-   *  settings in paper and live. */
+   *  hour's and the 4 hours' calls open perps entries, the day's call as direction context. HEAT_LANE is off by default
+   *  (new behaviour is off until it is approved); the same settings in paper and live. */
   heat: HeatConfig;
   /** The server's env file, rewritten by the dashboard's PAPER / LIVE switch (BOT_ENV_FILE, default ~/bot/bot.env). */
   botEnvFile: string;
@@ -1103,6 +1103,14 @@ function heatConfig(env: Env, dataDir: string): HeatConfig {
   const assets = [...new Set(list('HEAT_ASSETS', 'BTC,ETH,SOL,XRP').map((a) => a.toUpperCase()))].filter((a) => !a.startsWith('DOGE'));
   const horizons = [...new Set(list('HEAT_HORIZONS', '15,60').map(Number))];
   if (!horizons.length || horizons.some((h) => !Number.isInteger(h) || h <= 0 || h > 1440)) throw new ConfigError(`HEAT_HORIZONS=${env.HEAT_HORIZONS} must list horizons in whole minutes (15 = the 15-minute contract, 60 = the hourly)`);
+  // The perp packs' horizons never open a Kalshi contract (none runs 4 hours or a day): refused here rather than skipped.
+  if (horizons.some((h) => h === 240 || h === 1440)) {
+    throw new ConfigError(`HEAT_HORIZONS=${env.HEAT_HORIZONS}: 240 and 1440 are perps horizons, never a Kalshi contract (the 4-hour call trades perps through HEAT_PERP_HORIZONS, the daily call is perps context through HEAT_PERPS_DAILY)`);
+  }
+  const perpHorizons = [...new Set(list('HEAT_PERP_HORIZONS', '60,240').map(Number))].sort((a, b) => a - b);
+  if (perpHorizons.some((h) => h !== 60 && h !== 240)) {
+    throw new ConfigError(`HEAT_PERP_HORIZONS=${env.HEAT_PERP_HORIZONS} may list 60 (the 1h heat setup) and 240 (the 4h heat setup) only; the daily call is direction context (HEAT_PERPS_DAILY), never an entry`);
+  }
   return {
     enabled: bool(env, 'HEAT_LANE', false),
     callsFile: path.resolve(env.HEAT_CALLS_FILE || path.join(dataDir, 'heat_calls.json')),
@@ -1122,6 +1130,9 @@ function heatConfig(env: Env, dataDir: string): HeatConfig {
     pilotLossUsd: num(env, 'HEAT_PILOT_LOSS_USD', 15, 0, 1e6),
     feeNetCheck: bool(env, 'HEAT_FEE_NET_CHECK', false),
     perps: oneOf(env, 'HEAT_PERPS', 'entry', ['off', 'log', 'gate', 'entry'] as const),
+    perpHorizons,
+    // No 'entry': the daily curves are not above chance on their own (no daily row above the no-signal twin's best).
+    perpsDaily: oneOf(env, 'HEAT_PERPS_DAILY', 'context', ['context', 'off'] as const),
     pairConflict: oneOf(env, 'HEAT_PAIR_CONFLICT', 'skip', ['skip', 'pair'] as const),
   };
 }

@@ -21,7 +21,8 @@ export interface HeatCallRow {
   trig?: string;
   /** Timeframe of the trigger reading's bars, minutes: 1, 5, 15 or 60. */
   tf: number;
-  /** Horizon in minutes the row's direction was measured over (1, 5, 15, 30, 60, later 240 / 1440). */
+  /** Horizon in minutes the row's direction was measured over: 15 and 60 (the traded and pair packs), 240 and 1440 (the
+   *  perp packs: perps only, never a Kalshi contract). */
   h: number;
   /** The called side of the coin: +1 up, -1 down. */
   dir: 1 | -1;
@@ -100,7 +101,8 @@ export interface HeatConfig {
   callsFile: string;
   /** HEAT_ASSETS: coins the lane trades (never DOGE). */
   assets: string[];
-  /** HEAT_HORIZONS: horizons that open contracts: 15 = the 15-minute contract, 60 = the hourly contract. */
+  /** HEAT_HORIZONS: horizons that open contracts: 15 = the 15-minute contract, 60 = the hourly contract. The perps
+   *  horizons (240, 1440) are refused here at config load: no Kalshi contract trades them. */
   horizons: number[];
   /** HEAT_TOP_N: only rows ranked this or hotter trade (the pack's batch size); 0 = every row in the pack. */
   topN: number;
@@ -133,10 +135,18 @@ export interface HeatConfig {
   /** HEAT_FEE_NET_CHECK: also require the row's odds to beat fee plus half the spread (the risk gateway's edge
    *  collar on the heat-implied value). Off by default: the proof standard is the one test, not a cost bar. */
   feeNetCheck: boolean;
-  /** HEAT_PERPS: what the hour's direction does on the perps (bot/setups/setupTrader.ts), only with HEAT_LANE on: 'log'
-   *  journals it beside every setup, 'gate' also keeps a 1h setup against it out, 'entry' (default) also opens a setup of
-   *  kind heat when a 60-minute call fires; 'off' leaves the perps alone. Daily once a daily curve exists. */
+  /** HEAT_PERPS: what the curves do on the perps (bot/setups/setupTrader.ts), only with HEAT_LANE on: 'log' journals the
+   *  hour's, the 4 hours' and the day's direction beside every setup, 'gate' also keeps a 1h setup against the hour out,
+   *  'entry' (default) also opens a setup of kind heat when a 60-minute or 240-minute call fires (HEAT_PERP_HORIZONS);
+   *  'off' leaves the perps alone (and the lane then reads no 240- or 1440-minute rows). */
   perps: 'off' | 'log' | 'gate' | 'entry';
+  /** HEAT_PERP_HORIZONS: the horizons whose calls open a perps heat setup (HEAT_PERPS=entry): 60 = on 1h, held to the next
+   *  hourly close; 240 = on 4h, held to the next 4-hour close. Default both. */
+  perpHorizons: number[];
+  /** HEAT_PERPS_DAILY: the daily (1440-minute) call on the perps. 'context' (default): a heat perp entry against the
+   *  coin's live daily call is not made; 'off': the lane reads no daily rows. Never an entry of its own: no daily row is
+   *  above the no-signal twin's best (top heat 6.9 against the twin's 9.3). */
+  perpsDaily: 'context' | 'off';
   /** HEAT_PAIR_CONFLICT: a refining pair or triple that calls the other side from the single it replaces: 'skip' (default)
    *  makes no entry ("pair against single"), 'pair' trades the pair's side. */
   pairConflict: 'skip' | 'pair';
@@ -154,7 +164,9 @@ export interface HeatDecided {
   single?: HeatCallRow;
 }
 
-/** The hour's direction for a coin: its latest decided 60-minute call, valid until `until`. */
+/** A coin's direction at one horizon: its latest decided call, valid until `until` (the bar close plus the horizon). The
+ *  hour's direction (60 minutes) sizes the 15-minute contract and gates the perps; the 4 hours' (240) and the day's
+ *  (1440) are the perps' only. */
 export interface HeatContext {
   asset: string;
   dir: 1 | -1;
@@ -250,6 +262,10 @@ export interface HeatBookState {
   lossTickers: Record<string, number>;
   /** Per coin: the hour's direction. */
   context: Record<string, HeatContext>;
+  /** Per coin: the 4 hours' and the day's direction (the perps' context). Absent in a file written before the perp packs:
+   *  read as empty. */
+  four?: Record<string, HeatContext>;
+  day?: Record<string, HeatContext>;
   /** Calls already acted on: `${asset}:${h}:${barClose}` -> barClose, pruned after two hours. */
   acted: Record<string, number>;
 }
@@ -280,8 +296,11 @@ export interface HeatTag {
 export interface HeatDirection {
   /** The hour's direction for a coin: its latest decided 60-minute call still inside its hour, else undefined. */
   hour(asset: string, now: number): HeatContext | undefined;
-  /** The coin's decided call at horizon `h` that fired within the entry lag, else undefined. */
+  /** The coin's decided call at horizon `h` (60 or 240 for the perps) that fired within the entry lag, else undefined. */
   fired(asset: string, h: number, now: number): HeatDecided | undefined;
-  /** The day's direction: undefined until a daily curve exists (today's curves stop at 60 minutes). */
+  /** The 4 hours' direction: the latest decided 240-minute call while its bar close plus 240 minutes is still ahead. */
+  four(asset: string, now: number): HeatContext | undefined;
+  /** The day's direction: the latest decided 1440-minute call while its bar close plus 1440 minutes is still ahead;
+   *  always undefined with HEAT_PERPS_DAILY=off. */
   day(asset: string, now: number): HeatContext | undefined;
 }

@@ -1,5 +1,6 @@
 // Heat entry lane: the book. What the lane has open, what its finished round trips made, and the few memories its
-// rules need across a restart (the hour's direction per coin, calls already acted on, contracts left at a loss).
+// rules need across a restart (the hour's, the 4 hours' and the day's direction per coin, calls already acted on,
+// contracts left at a loss).
 //
 // The lane (heatLane.ts) decides; this file only keeps the record straight against the position book. Everything
 // here works on a plain state object and takes the time as an input, so the tests need no files and no clock.
@@ -56,12 +57,12 @@ export interface HeatSyncResult {
 }
 
 export function emptyHeatState(): HeatLaneState {
-  return { v: 1, trips: 0, wins: 0, pnl: 0, open: [], lastExit: {}, lossTickers: {}, context: {}, acted: {}, traded: {} };
+  return { v: 1, trips: 0, wins: 0, pnl: 0, open: [], lastExit: {}, lossTickers: {}, context: {}, four: {}, day: {}, acted: {}, traded: {} };
 }
 
 /** Load the saved state, or start empty when there is no file. A file that parses but is not a heat state stops the
  *  start instead of being reset: it holds the pilot budget's running loss, and guessing it away would hand the lane
- *  a fresh budget. */
+ *  a fresh budget. A file written before the perp packs (no `four`, no `day`) loads with both empty. */
 export function loadHeatState(file: string | undefined): HeatLaneState {
   const saved = file ? readJson<Partial<HeatLaneState>>(file) : undefined;
   if (saved === undefined) return emptyHeatState();
@@ -76,12 +77,14 @@ export function loadHeatState(file: string | undefined): HeatLaneState {
     lastExit: rec(saved.lastExit) ? saved.lastExit : e.lastExit,
     lossTickers: rec(saved.lossTickers) ? saved.lossTickers : e.lossTickers,
     context: rec(saved.context) ? saved.context : e.context,
+    four: rec(saved.four) ? saved.four : {},
+    day: rec(saved.day) ? saved.day : {},
     acted: rec(saved.acted) ? saved.acted : e.acted,
     traded: rec(saved.traded) ? saved.traded : {},
   };
 }
 
-/** Forget what can no longer matter: old claims, contracts that are over, an hour's direction past its hour.
+/** Forget what can no longer matter: old claims, contracts that are over, a direction past its horizon.
  *  Returns whether anything went, so the caller saves only then. */
 export function pruneHeatState(st: HeatLaneState, now: number): boolean {
   let changed = false;
@@ -92,6 +95,8 @@ export function pruneHeatState(st: HeatLaneState, now: number): boolean {
   drop(st.lossTickers, (closeTs) => closeTs <= now);
   drop(st.traded, (closeTs) => closeTs <= now);
   drop(st.context, (c) => c.until <= now);
+  drop(st.four, (c) => c.until <= now);
+  drop(st.day, (c) => c.until <= now);
   return changed;
 }
 

@@ -21,7 +21,7 @@ const NOW = T0 + 5 * S;
 const DEFAULTS = {
   enabled: true, callsFile: '', assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45,
   sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reenterAfterLoss: false,
-  flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', pairConflict: 'skip',
+  flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip',
 };
 const settings = (o: Partial<HeatConfig> = {}): HeatConfig => ({ ...DEFAULTS, ...o }) as HeatConfig;
 /** The engine's default windows: 15-minute contracts 840..300 s before close, hourly 3300..600 s and 10c..90c. */
@@ -31,6 +31,9 @@ const WINDOWS: HeatWindows = { entryWindowUpdown: [840, 300], entryWindowHourly:
 const row = (o: Partial<HeatCallRow> = {}): HeatCallRow => ({ key: '1m:RSI14=very low', kind: 'single', tf: 1, h: 15, dir: 1, rank: 1, of: 40, heat: 100, share: 0.53, odds: 3, barClose: T0, ...o });
 /** The hour's call: a 60-minute row. */
 const hourRow = (o: Partial<HeatCallRow> = {}): HeatCallRow => row({ key: '1m:ADX14=high', h: 60, ...o });
+/** The perp packs' rows: a 240-minute call (the 4 hours) and a 1440-minute call (the day). */
+const fourRow = (o: Partial<HeatCallRow> = {}): HeatCallRow => row({ key: '5m:WAD=low (falling in)', tf: 5, h: 240, heat: 17.4, ...o });
+const dayRow = (o: Partial<HeatCallRow> = {}): HeatCallRow => row({ key: '60m:DONCHIAN20pos=low (falling in)', tf: 60, h: 1440, heat: 5.19, ...o });
 const coin = (calls: HeatCallRow[], o: Partial<HeatCoinCalls> = {}): HeatCoinCalls => ({ asOf: T0, tableSha: 'table', ok: true, calls, ...o });
 /** The reader's file, written two seconds after the bar closed. A coin given as a list of rows is a healthy coin. */
 const snap = (coins: Record<string, HeatCallRow[] | HeatCoinCalls>, o: Partial<HeatSnapshot> = {}): HeatSnapshot => ({
@@ -627,8 +630,128 @@ test('perps side: reading fired() does not consume the engine\'s claim', () => {
   assert.equal(lane.decide(NOW, file, [hourly('A', 0.5)], OPTS).plans.length, 1);
 });
 
-test('perps side: there is no daily direction yet', () => {
-  assert.equal(entered().direction.day('BTC', NOW), undefined);
+test('perps side: no daily call, no daily direction; no 240-minute call, no 4-hour direction', () => {
+  const lane = entered();
+  assert.deepEqual([lane.direction.day('BTC', NOW), lane.direction.four('BTC', NOW)], [undefined, undefined]);
+});
+
+// ---- The perps' horizons: 240 minutes (the 4 hours) and 1440 minutes (the day) ----
+
+test('perps side: four() is the latest decided 240-minute call until its bar close plus 240 minutes', () => {
+  const lane = new HeatLane(settings());
+  lane.decide(NOW, snap({ BTC: [fourRow({ dir: -1, rank: 3 })] }), [], OPTS);
+  const f = lane.direction.four('BTC', NOW)!;
+  assert.deepEqual(f, { asset: 'BTC', dir: -1, key: '5m:WAD=low (falling in)', rank: 3, of: 40, heat: 17.4, barClose: T0, until: T0 + 240 * MIN });
+  assert.equal(lane.direction.four('BTC', T0 + 240 * MIN - 1)?.dir, -1, 'still live one ms before its 4 hours are over');
+  assert.equal(lane.direction.four('BTC', T0 + 240 * MIN), undefined, 'over at bar close + 240 minutes');
+  assert.equal(lane.direction.hour('BTC', NOW), undefined, 'a 240-minute call is not the hour\'s direction');
+  assert.equal(lane.direction.four('ETH', NOW), undefined);
+  // A later call replaces it, whichever side it calls, and its own 4 hours start from its bar close.
+  lane.decide(NOW + 30 * MIN, snapAt(T0 + 30 * MIN, { BTC: [fourRow({ key: '1m:MFI14=very low', dir: 1 })] }), [], OPTS);
+  assert.deepEqual([lane.four('BTC', NOW + 30 * MIN)?.dir, lane.four('BTC', NOW + 30 * MIN)?.key, lane.four('BTC', T0 + 260 * MIN)?.until], [1, '1m:MFI14=very low', T0 + 270 * MIN]);
+});
+
+test('perps side: day() is the latest decided 1440-minute call until its bar close plus 1440 minutes', () => {
+  const lane = new HeatLane(settings());
+  lane.decide(NOW, snap({ BTC: [dayRow({ dir: -1 })], ETH: [dayRow()] }), [], OPTS);
+  assert.deepEqual(lane.direction.day('BTC', NOW), { asset: 'BTC', dir: -1, key: '60m:DONCHIAN20pos=low (falling in)', rank: 1, of: 40, heat: 5.19, barClose: T0, until: T0 + 1440 * MIN });
+  assert.equal(lane.direction.day('ETH', T0 + 1440 * MIN - 1)?.dir, 1);
+  assert.equal(lane.direction.day('ETH', T0 + 1440 * MIN), undefined, 'over at bar close + 1440 minutes');
+  assert.deepEqual([lane.direction.hour('BTC', NOW), lane.direction.four('BTC', NOW)], [undefined, undefined], 'the day is its own context');
+  // The newer daily call wins.
+  lane.decide(NOW + 3 * MIN, snapAt(T0 + 3 * MIN, { BTC: [dayRow({ key: '5m:CCI50=very low', dir: 1 })] }), [], OPTS);
+  assert.deepEqual([lane.day('BTC', NOW + 3 * MIN)?.dir, lane.day('BTC', NOW + 3 * MIN)?.key], [1, '5m:CCI50=very low']);
+});
+
+test('perps side: fired() serves the 240-minute call inside the entry lag, as it does the 60-minute one', () => {
+  const lane = new HeatLane(settings());
+  lane.pending(NOW, snap({ BTC: [fourRow(), hourRow({ rank: 2 })] }));
+  assert.equal(lane.direction.fired('BTC', 240, NOW)?.row.key, '5m:WAD=low (falling in)');
+  assert.equal(lane.direction.fired('BTC', 60, NOW)?.row.key, '1m:ADX14=high');
+  assert.equal(lane.direction.fired('BTC', 240, T0 + 46 * S), undefined, 'the lag is over');
+  assert.equal(lane.direction.four('BTC', NOW)?.key, '5m:WAD=low (falling in)', 'the cheap look keeps the 4 hours\' direction too');
+});
+
+test('perps side: the 240-minute call is decided like the others: a refining pair replaces its single, a pair against it gives no direction', () => {
+  const single = fourRow({ key: 's4', rank: 2 });
+  const lane = new HeatLane(settings());
+  lane.decide(NOW, snap({ BTC: [single, fourRow({ key: 's4+1h:ADX14=high', kind: 'pair', trig: 's4', rank: 30 })] }), [], OPTS);
+  assert.deepEqual([lane.four('BTC', NOW)?.key, lane.four('BTC', NOW)?.rank], ['s4+1h:ADX14=high', 2]);
+  const against = new HeatLane(settings());
+  const r = against.decide(NOW, snap({ BTC: [single, fourRow({ key: 's4+1h:ADX14=high', kind: 'pair', trig: 's4', rank: 30, dir: -1 })] }), [], OPTS);
+  assert.equal(against.four('BTC', NOW), undefined);
+  assert.match(reasons(r)[0], /^pair against single/);
+});
+
+test('Kalshi: 240- and 1440-minute calls never open a contract, even listed in HEAT_HORIZONS; their record says perps context', () => {
+  // HEAT_HORIZONS refuses 240 and 1440 at config load (tests/heatEngine.test.ts); a setting built in code that lists them
+  // still never trades them here, and the coin's 15-minute call keeps its one entry.
+  const cfg = settings({ horizons: [15, 60, 240, 1440] });
+  const r = decide({ cfg, snapshot: snap({ BTC: [row({ rank: 3 }), fourRow(), dayRow()] }), markets: [m15(), hourly('A', 0.5)] });
+  assert.deepEqual(r.plans.map((p) => [p.h, p.ticker]), [[15, 'KXBTC15M-1015']]);
+  assert.deepEqual(r.decided.map((d) => d.h).sort((a, b) => a - b), [15, 240, 1440], 'each ruled on once and recorded');
+  const why = (h: number) => r.skips.find((x) => x.h === h)?.reason;
+  assert.equal(why(240), 'perps context: the 4-hour call is for the perps (a 4h heat setup and its context), no Kalshi contract trades it');
+  assert.equal(why(1440), 'perps context: the daily call is the perps\' direction for the day, no Kalshi contract trades it');
+  // With entries blocked they still read as perps context, not as a failure.
+  const blocked = decide({ snapshot: snap({ BTC: [fourRow(), dayRow()] }), markets: [m15(), hourly('A', 0.5)], entriesBlocked: 'soft pause' });
+  assert.deepEqual(blocked.skips.map((x) => x.reason.slice(0, 13)), ['perps context', 'perps context']);
+  assert.equal(blocked.plans.length, 0);
+});
+
+test('lane: a 240- or 1440-minute call is ruled on once and its direction kept, never in the last calls', () => {
+  const lane = new HeatLane(settings());
+  const file = snap({ BTC: [row({ rank: 3 }), fourRow(), dayRow()] });
+  assert.equal(lane.pending(NOW, file).length, 3, 'all three wait to be ruled on');
+  lane.decide(NOW, file, [m15()], OPTS);
+  assert.equal(lane.pending(NOW + S, file).length, 0);
+  assert.equal(lane.decide(NOW + S, file, [m15()], OPTS).decided.length, 0);
+  // The perps' calls fire again minute after minute, for every coin: they never push the Kalshi rulings out.
+  for (let k = 1; k <= 12; k++) {
+    const t = T0 + k * MIN;
+    lane.decide(NOW + k * MIN, snapAt(t, { BTC: [fourRow(), dayRow()], ETH: [fourRow(), dayRow()], SOL: [fourRow(), dayRow()], XRP: [fourRow(), dayRow()] }), [m15()], OPTS);
+  }
+  const st = lane.status(NOW + 12 * MIN);
+  assert.deepEqual(st.lastCalls.map((c) => [c.asset, c.h, c.outcome]), [['BTC', 15, 'plan']], 'the 15-minute ruling stays');
+  assert.deepEqual([st.four.map((c) => [c.asset, c.dir]), st.day.map((c) => [c.asset, c.dir]), st.context], [
+    [['BTC', 1], ['ETH', 1], ['SOL', 1], ['XRP', 1]], [['BTC', 1], ['ETH', 1], ['SOL', 1], ['XRP', 1]], []]);
+});
+
+test('HEAT_PERPS_DAILY=off: no daily row is read, and day() is empty even for a direction saved before the switch', () => {
+  const file = path.join(tmpDir(), 'heat_state.json');
+  new HeatLane(settings(), file).decide(NOW, snap({ BTC: [dayRow()] }), [], OPTS);
+  assert.equal(new HeatLane(settings(), file).day('BTC', NOW)?.dir, 1, 'saved under context');
+  const off = new HeatLane(settings({ perpsDaily: 'off' }), file);
+  assert.equal(off.direction.day('BTC', NOW), undefined);
+  assert.deepEqual(off.status(NOW).day, []);
+  const r = off.decide(NOW + MIN, snapAt(T0 + MIN, { BTC: [dayRow({ dir: -1 }), fourRow()] }), [], OPTS);
+  assert.deepEqual(r.decided.map((d) => d.h), [240], 'the daily row is not read at all');
+  assert.equal(off.direction.four('BTC', NOW + MIN)?.dir, 1, 'the 4 hours are unaffected');
+});
+
+test('HEAT_PERPS=off: the lane reads no 240- or 1440-minute rows (they serve the perps only)', () => {
+  const r = decide({ cfg: settings({ perps: 'off' }), snapshot: snap({ BTC: [fourRow(), dayRow(), hourRow()] }) });
+  assert.deepEqual(r.decided.map((d) => d.h), [60]);
+});
+
+test('book: a state file written before the perp packs loads, and the 4 hours\' and the day\'s directions survive a restart', () => {
+  const file = path.join(tmpDir(), 'heat_state.json');
+  // The part 2 layout: no `four`, no `day`.
+  const old = { v: 1, trips: 4, wins: 3, pnl: 1.25, open: [], lastExit: {}, lossTickers: {}, context: { BTC: hourUp() }, acted: {}, traded: {} };
+  fs.writeFileSync(file, JSON.stringify(old));
+  const lane = new HeatLane(settings(), file);
+  assert.deepEqual([lane.status(NOW).trips, lane.hour('BTC', NOW)?.key, lane.four('BTC', NOW), lane.day('BTC', NOW)], [4, '1m:ADX14=high', undefined, undefined]);
+  lane.decide(NOW, snap({ BTC: [fourRow({ dir: -1 }), dayRow()] }), [], OPTS);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as HeatLaneState;
+  assert.deepEqual([saved.four?.BTC?.dir, saved.day?.BTC?.dir, saved.trips], [-1, 1, 4]);
+  const restarted = new HeatLane(settings(), file);
+  assert.deepEqual([restarted.four('BTC', NOW)?.dir, restarted.day('BTC', NOW)?.key, restarted.hour('BTC', NOW)?.dir], [-1, '60m:DONCHIAN20pos=low (falling in)', 1]);
+  // Pruned once over: the 4 hours after 240 minutes, the day after 1440.
+  restarted.sync(T0 + 241 * MIN, positions());
+  const later = JSON.parse(fs.readFileSync(file, 'utf8')) as HeatLaneState;
+  assert.deepEqual([later.four, Object.keys(later.day ?? {})], [{}, ['BTC']]);
+  restarted.sync(T0 + 1441 * MIN, positions());
+  assert.deepEqual((JSON.parse(fs.readFileSync(file, 'utf8')) as HeatLaneState).day, {});
 });
 
 // ---- The lane: the book ----

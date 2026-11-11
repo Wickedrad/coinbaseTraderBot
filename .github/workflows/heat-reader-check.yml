@@ -3,6 +3,8 @@ name: Heat reader check
 # it, on real public Binance minutes, against the oracle's code and packs at a pinned commit, and posts what it
 # measured as ONE commit comment: per coin the minutes loaded, the pack rows wanted and skipped, what fired, the
 # seconds per pass, the memory, and the share of published keys that agree with the full engine (Dec 29 to 31, 2025).
+# The perp packs (h240 and h1440) are optional: the comment says whether they were found and how many h240 and h1440
+# rows the loop published, and their absence never fails the run. The parity replay checks h15 and h60 only.
 # Public market data only: no secret, no Drive, no server. docs/HEAT_READER.md says how to read the comment.
 # Started by a commit that changes python/heat_reader/CHECK_RUN (lines: oracle=<commit sha>, note=<free text>).
 on:
@@ -52,6 +54,14 @@ jobs:
           ls "$RUNNER_TEMP/oracle/research/oracle_heat/latest"
           for f in traded_pack.json pair_pack.json live_meta.json; do
             [ -s "$RUNNER_TEMP/oracle/research/oracle_heat/latest/$f" ] || { echo "::error::the oracle commit has no research/oracle_heat/latest/$f"; exit 1; }
+          done
+          # The perp packs are reported, never required: without them the reader publishes h15 and h60 only.
+          for f in perp_pack.json perp_pair_pack.json; do
+            if [ -s "$RUNNER_TEMP/oracle/research/oracle_heat/latest/$f" ]; then
+              echo "perp pack found: $f"
+            else
+              echo "::notice::the oracle commit has no research/oracle_heat/latest/$f: the reader publishes no h240 or h1440 rows (the check goes on)"
+            fi
           done
           [ -f "$RUNNER_TEMP/oracle/python/oracle/heat_live.py" ] || { echo "::error::the oracle commit has no python/oracle/heat_live.py"; exit 1; }
       # The same install the server does (deploy/heat_reader_install.sh): binary wheels only, every file's hash pinned.

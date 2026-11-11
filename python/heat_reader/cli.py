@@ -17,7 +17,8 @@ def main(argv=None) -> int:
     for name in s.refused:
         log(f'heat-reader: {name} is in HEAT_ASSETS and is refused (never DOGE)')
     log(f'heat-reader: coins {",".join(s.assets)}; window {s.window_bars} bars; calls file {s.calls_file}; cache {s.reader_dir}; '
-        f'packs {s.pack_dir} (rank up to {s.max_rank}, clock pack {"on" if s.clock_pack else "off"}); oracle {s.oracle_path}')
+        f'packs {s.pack_dir} (rank up to {s.max_rank}, clock pack {"on" if s.clock_pack else "off"}, perp packs {"on" if s.perp_packs else "off"}); '
+        f'oracle {s.oracle_path}')
     reader = Reader(s, log=log)
     if not s.once:
         return reader.run()

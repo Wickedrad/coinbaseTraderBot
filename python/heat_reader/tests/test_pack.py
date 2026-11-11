@@ -1,16 +1,19 @@
 """The packs, live_meta.json and the join: which rows are published, which fire, and what a fired row looks like to
-the bot. The fixtures are trimmed copies of the oracle run's own files (fd88805): real field names, real schemas."""
+the bot. The fixtures are trimmed copies of the oracle run's own files (the main packs as at fd88805, the perp packs and
+live_meta.json of 52edf4c): real field names, real schemas."""
 import hashlib
 import json
 import os
+import shutil
 
 import pytest
 
-from conftest import FIXTURES, pack_row, pair_row, write_packs
+from conftest import FIXTURES, pack_row, pair_row, perp_pair, perp_row, write_packs
 from heat_reader import config
 from heat_reader.engine import join
-from heat_reader.pack import (CLOCK_SCHEMA, PAIR_SCHEMA, SKIP_DOMINANCE, SKIP_HASH, SKIP_PARITY, SKIP_RANK, SKIP_RUN, SKIP_TWIN, Tables, base_of,
-                              call_row, check_pair, effective_rank, key_tf, load_meta, pair_call, tf_minutes)
+from heat_reader.pack import (CLOCK_SCHEMA, PAIR_SCHEMA, SKIP_DOMINANCE, SKIP_HASH, SKIP_PARITY, SKIP_PERP_EDGES, SKIP_PERP_H, SKIP_PERP_RUN, SKIP_RANK,
+                              SKIP_RUN, SKIP_TWIN, Tables, base_of, call_row, check_pair, effective_rank, indicator_of, key_tf, load_meta, pair_call,
+                              parity_off, row_names, tf_minutes)
 
 ZONE_EVENTS = {'very low', 'low (falling in)', 'low (recovering)', 'high (rising in)', 'high (cooling)', 'very high'}
 ZONE_STATES = {'very low', 'low', 'mid', 'high', 'very high'}
@@ -22,19 +25,21 @@ def fixture(name):
     return json.load(open(os.path.join(FIXTURES, name)))
 
 
-def tables(tmp_path, rows, coins=('BTC',), sha=None, meta_sha=None, edges=None, pairs=(), clock=None, **kw):
-    """Packs in a folder with a live_meta.json whose edges cover every reading the rows name (or `edges`)."""
+def tables(tmp_path, rows, coins=('BTC',), sha=None, meta_sha=None, edges=None, pairs=(), clock=None, perp=None, perp_pairs=(), perp_head=None, **kw):
+    """Packs in a folder with a live_meta.json whose edges cover every reading the rows name (or `edges`). perp: rows
+    of perp_pack.json (and perp_pairs of perp_pair_pack.json), loaded with the perp packs on."""
     sha = sha or {c: 'sha-xxxxxxxx' for c in coins}
     meta = {}
     for c in coins:
         e = edges
         if e is None:
-            names = {k for r in rows if r['coin'] == c for k in [r['key']] + r['aliases']}
-            names |= {x for p in list(pairs) + list(clock or []) if p['coin'] == c for x in [p['when']] + [f'{a}=x' for a, _ in p['conds']]}
+            names = {k for r in rows + list(perp or []) if r['coin'] == c for k in [r['key']] + r['aliases']}
+            names |= {x for p in list(pairs) + list(clock or []) + list(perp_pairs) if p['coin'] == c
+                      for x in [p['when']] + [f'{a}=x' for a, _ in p['conds']]}
             e = {base_of(k): [-2.0, -1.0, 1.0, 2.0] for k in names if key_tf(k)}
         meta[c] = {'edges': e, 'price_step': 0.01, 'table_sha256': (meta_sha or sha).get(c), 'no_edges': []}
-    folder = write_packs(tmp_path / 'packs', rows, sha, pairs=pairs, meta=meta, clock=clock)
-    t = Tables(folder, list(coins), **kw)
+    folder = write_packs(tmp_path / 'packs', rows, sha, pairs=pairs, meta=meta, clock=clock, perp=perp, perp_pairs=perp_pairs, perp_head=perp_head)
+    t = Tables(folder, list(coins), perp=perp is not None, **kw)
     assert t.refresh()
     return t
 
@@ -355,16 +360,24 @@ def test_never_doge(tmp_path):
     rows = [pack_row('DOGE', '1m:RSI7=very low'), pack_row('BTC', '1m:RSI7=very low')]
     t = tables(tmp_path, rows, coins=('BTC', 'DOGE'))
     assert list(t.coins) == ['BTC']
+    # nor DOGE rows of the perp packs; and the perp fixtures hold none
+    t = tables(tmp_path / 'perp', rows, coins=('BTC', 'DOGE'), perp=[perp_row('DOGE', '1m:MFI14=very low'), perp_row('BTC', '1m:MFI14=very low')],
+               perp_pairs=[perp_pair('DOGE', '1m:MFI14=very low', [('1m:AD sign', 'below 0')])])
+    assert list(t.coins) == ['BTC'] and [r['coin'] for r in t.coins['BTC'].perp_rows] == ['BTC'] and t.coins['BTC'].perp_pairs == []
+    for name in ('perp_pack.json', 'perp_pair_pack.json'):
+        pk = fixture(name)
+        assert {r['coin'] for r in pk['rows']} == set(COINS) and not any('DOGE' in c.upper() for c in pk['table_sha256'])
 
 
 def test_settings():
     s = config.load([], env={})
     assert s.pack_dir == os.path.join(config.REPO_DIR, 'research', 'oracle_heat', 'latest') and s.oracle_path == config.PYTHON_DIR
-    assert s.max_rank == 40 and s.clock_pack is False
-    s = config.load(['--max-rank', '10'], env={'HEAT_CLOCK_PACK': 'true', 'HEAT_PACK_DIR': '/x/packs', 'HEAT_READER_MAX_RANK': '25'})
-    assert s.max_rank == 10 and s.clock_pack is True and s.pack_dir == '/x/packs'
+    assert s.max_rank == 40 and s.clock_pack is False and s.perp_packs is True
+    s = config.load(['--max-rank', '10'], env={'HEAT_CLOCK_PACK': 'true', 'HEAT_PACK_DIR': '/x/packs', 'HEAT_READER_MAX_RANK': '25', 'HEAT_PERP_PACKS': 'false'})
+    assert s.max_rank == 10 and s.clock_pack is True and s.pack_dir == '/x/packs' and s.perp_packs is False
+    assert config.load(['--perp-packs', 'on'], env={'HEAT_PERP_PACKS': 'off'}).perp_packs is True          # the flag wins
     for env, text in (({'HEAT_READER_MAX_RANK': '0'}, 'is below 1'), ({'HEAT_READER_MAX_RANK': 'all'}, 'not a whole number'),
-                      ({'HEAT_CLOCK_PACK': 'maybe'}, 'neither true nor false')):
+                      ({'HEAT_CLOCK_PACK': 'maybe'}, 'neither true nor false'), ({'HEAT_PERP_PACKS': 'entry'}, 'HEAT_PERP_PACKS')):
         with pytest.raises(config.ConfigError, match=text):
             config.load([], env=env)
     assert config.status_path('/d/heat_calls.json') == '/d/heat_calls.status.json' and config.status_path('/d/calls') == '/d/calls.status.json'
@@ -389,3 +402,200 @@ def test_tables_reload_when_a_file_changes(tmp_path):
     open(os.path.join(folder, 'pair_pack.json'), 'w').write('{"schema": "oracle-heat-pack-1", "rows": []}')
     assert t.refresh() and t.problem == 'pair_pack.json is not of schema oracle-heat-pairs-1'          # no pairs, no coin: they change the bet
     assert Tables(folder, ['BTC'], run='777').run == '777'      # HEAT_RUN wins
+
+
+PERP_FILES = ['live_meta.json', 'pair_pack.json', 'perp_pack.json', 'perp_pair_pack.json', 'traded_pack.json']
+
+
+def test_the_real_perp_packs():
+    """perp_pack.json and perp_pair_pack.json (52edf4c, trimmed): loaded only with perp on, h240 and h1440 rows on their
+    own ladders with of = the perp pack's top, and the main rows exactly as without them."""
+    off, on = Tables(FIXTURES, COINS), Tables(FIXTURES, COINS, perp=True)
+    assert off.refresh() and on.refresh() and on.problem is None and on.perp_problem is None and off.perp_problem is None
+    assert sorted(on.files) == PERP_FILES and on.files['perp_pack.json']['schema'] == 'oracle-heat-pack-1'
+    assert on.files['perp_pair_pack.json']['schema'] == 'oracle-heat-pairs-1' and on.files['perp_pack.json']['rows'] == 44
+    assert not any(x.perp_rows or x.perp_pairs or 'perp' in x.counts() for x in off.coins.values())
+    for x in on.coins.values():
+        x.check_edges(ZONE_EVENTS, ZONE_STATES)
+    assert {c: x.problem for c, x in on.coins.items()} == dict.fromkeys(COINS)
+    for c in COINS:                                         # the main rows do not change with the perp packs
+        a, b = off.coins[c], on.coins[c]
+        assert a.rows == b.rows and [p['key'] for p in a.pairs] == [p['key'] for p in b.pairs] and a.aliases == b.aliases
+        assert a.counts() == {k: v for k, v in b.counts().items() if k != 'perp'} and a.want <= b.want and a.states <= b.states
+    assert {c: x.counts()['perp'] for c, x in on.coins.items()} == {
+        'BTC': {'wanted': {'single': 8, 'pair': 3, 'triple': 2}, 'skipped': {SKIP_PARITY: 3, SKIP_RANK: 2}},
+        'ETH': {'wanted': {'single': 9, 'pair': 4, 'triple': 2}, 'skipped': {SKIP_PARITY: 2, SKIP_RANK: 2}},
+        'SOL': {'wanted': {'single': 9, 'pair': 3, 'triple': 1}, 'skipped': {SKIP_PARITY: 2, SKIP_RANK: 2}},
+        'XRP': {'wanted': {'single': 7, 'pair': 2, 'triple': 2}, 'skipped': {SKIP_PARITY: 1, SKIP_RANK: 2}}}
+    btc = on.coins['BTC']
+    assert {r['h'] for r in btc.perp_rows} == {p['h'] for p in btc.perp_pairs} == {240, 1440} and btc.perp_top == 40
+    assert all(r['rank_coin'] <= 40 for x in on.coins.values() for r in x.perp_rows)
+    # no row on PVI (live_parity false in the main packs) is asked for, whether by key, trigger or condition
+    assert not any(indicator_of(n) == 'PVI' for x in on.coins.values() for r in x.perp_rows + [p['row'] for p in x.perp_pairs] for n in row_names(r))
+    assert not any('PVI' in k for x in on.coins.values() for k in x.want | x.states)
+    # 60-minute singles at h1440: XRP, which reads no 60-minute timeframe for h15 and h60, now does
+    assert off.coins['XRP'].tfs == [1, 5, 15] and on.coins['XRP'].tfs == [1, 5, 15, 60] and '60m:ERIbear13 sign=above 0' in on.coins['XRP'].want
+    # a perp pair's rank is on the perp singles' ladder of its horizon (rank_coin up to the top, a parity-skipped one included)
+    ranks = {(p['h'], p['key']): p['rank'] for p in btc.perp_pairs}
+    assert ranks[(240, '1m:AROONup25=very high | 1m:PVO12/26 sign=above 0 | 60m:SQZMOM sign=above 0')] == 1      # 20.80 over 18.01
+    assert ranks[(1440, 'UTC4h=16-20 | 15m:ADOSC sign=below 0')] == 6     # 3.70: five singles hotter, the PVI one at 4.82 among them
+    assert next(p for p in btc.perp_pairs if p['when'] == 'UTC4h=16-20')['tf'] == 15                    # a context trigger: 15-minute closes
+    # what fires: h15 and h60 from the main packs, h240 and h1440 from the perp packs, each row once per horizon
+    ev = {'1m:MFI14=very low', '1m:AROONup25=very high', '60m:C-AVGPRICE=high (rising in)', '1m:RSI14=very low'}
+    held = {'1m:PVO12/26 sign': 'above 0', '60m:SQZMOM sign': 'above 0'}
+    calls, problem, notes = join(btc, 40, res(ev, closed=(1, 5, 15, 60), states=held), 3000)
+    assert problem is None and notes == []
+    assert [(c['h'], c['rank'], c['kind'], c['key'], c['of']) for c in calls] == [
+        (15, 2, 'single', '1m:AROONup25=very high', 40), (60, 9, 'single', '1m:AROONup25=very high', 40),
+        (240, 1, 'single', '1m:MFI14=very low', 40),
+        (240, 1, 'triple', '1m:AROONup25=very high | 1m:PVO12/26 sign=above 0 | 60m:SQZMOM sign=above 0', 40),
+        (240, 30, 'single', '1m:CMO14=very low', 40),                                                    # through its alias 1m:RSI14
+        (1440, 9, 'single', '60m:C-AVGPRICE=high (rising in)', 40)]                                     # a 60-minute single at the hourly close
+    assert calls[2] == {'key': '1m:MFI14=very low', 'kind': 'single', 'aliases': [], 'tf': 1, 'h': 240, 'dir': 1, 'rank': 1, 'of': 40, 'heat': 18.013,
+                        'share': 0.54442, 'odds': 3.4784, 'hold': 49.514, 'dip': -25.268, 'move': 1.3351, 'barClose': TS}
+    assert calls[3]['trig'] == '1m:AROONup25=very high' and calls[3]['dir'] == -1 and calls[3]['heat'] == 20.8012 and calls[3]['share'] == 0.55198
+    # the 60-minute bar did not close: the h1440 single cannot fire
+    assert '60m:C-AVGPRICE=high (rising in)' not in [c['key'] for c in join(btc, 40, res(ev, closed=(1, 5), states=held), 3000)[0]]
+
+
+def test_missing_perp_packs_leave_the_main_rows_alone(tmp_path):
+    p = tmp_path / 'p'
+    os.makedirs(p)
+    for name in ('traded_pack.json', 'pair_pack.json', 'live_meta.json'):
+        shutil.copy(os.path.join(FIXTURES, name), p / name)
+    main = Tables(FIXTURES, COINS)
+    main.refresh()
+    t = Tables(str(p), COINS, perp=True)
+    assert t.refresh() and t.problem is None and t.perp_problem == f'perp_pack.json cannot be read in {p} (FileNotFoundError)'
+    assert sorted(t.files) == ['live_meta.json', 'pair_pack.json', 'traded_pack.json']
+    assert {c: x.counts() for c, x in t.coins.items()} == {c: x.counts() for c, x in main.coins.items()}
+    assert all(x.perp is None and x.perp_rows == x.perp_pairs == [] and x.tfs == main.coins[c].tfs for c, x in t.coins.items())
+    # the pairs refine the singles, so one file without the other is not used either
+    shutil.copy(os.path.join(FIXTURES, 'perp_pack.json'), p / 'perp_pack.json')
+    assert t.refresh() and t.perp_problem == f'perp_pair_pack.json cannot be read in {p} (FileNotFoundError)' and 'perp_pack.json' not in t.files
+    open(p / 'perp_pair_pack.json', 'w').write('{"schema": "oracle-heat-pack-1", "rows": []}')
+    assert t.refresh() and t.perp_problem == 'perp_pair_pack.json is not of schema oracle-heat-pairs-1' and t.problem is None
+    shutil.copy(os.path.join(FIXTURES, 'perp_pair_pack.json'), p / 'perp_pair_pack.json')
+    assert t.refresh() and t.perp_problem is None and sorted(t.files) == PERP_FILES and len(t.coins['BTC'].perp_rows) == 8
+    pk = fixture('perp_pack.json')
+    json.dump(dict(pk, top=0), open(p / 'perp_pack.json', 'w'))
+    assert t.refresh() and t.perp_problem == 'perp_pack.json has no `top`' and all(x.problem is None and x.rows for x in t.coins.values())
+    open(p / 'perp_pack.json', 'w').write('{not json')
+    assert t.refresh() and t.perp_problem == 'perp_pack.json is not JSON' and t.problem is None
+    # with perp off the files are not even looked at
+    assert Tables(str(p), COINS).refresh() is True
+
+
+def test_perp_rows_fire_with_their_horizon(tmp_path):
+    """Synthetic perp packs with a `top` of 30: of is the perp pack's top, ranks are on each horizon's own ladder, a
+    pair on 240 fires when its trigger fires and its conditions hold, and an event of a main single at h15 is a second
+    row at h240 (another horizon, another bet)."""
+    rows = [pack_row('BTC', '1m:RSI7=very low', h=15, rank=1), pack_row('BTC', '1m:X=very high', h=60, rank=1)]
+    perp = [perp_row('BTC', '1m:RSI7=very low', rank=2, oheat_B=17.0),
+            perp_row('BTC', '1m:MFI14=very low', rank=1, oheat_B=18.0, aliases=['1m:MFIX=very low']),
+            perp_row('BTC', '5m:WAD=low (falling in)', rank=3, tf='5m', oheat_B=12.0),
+            perp_row('BTC', '60m:C-AVGPRICE=high (rising in)', h=1440, rank=1, tf='60m', oheat_B=6.9, direction=-1),
+            perp_row('BTC', '1m:Y=very low', h=1440, rank=41, oheat_B=9.0)]                              # share-only: never asked for
+    pp = [perp_pair('BTC', '1m:MFI14=very low', [('60m:SQZMOM sign', 'above 0')], oheat=17.5),                 # 18.0 is hotter: rank 2
+          perp_pair('BTC', '1m:MFI14=very low', [('1m:PVO12/26 sign', 'above 0'), ('60m:SQZMOM sign', 'above 0')], oheat=20.0),
+          perp_pair('BTC', '1m:MFI14=very low', [('60m:SQZMOM sign', 'below 0')], oheat=30.0),                 # its condition does not hold
+          perp_pair('BTC', '1m:RSI7=very low', [('5m:MOM10 sign', 'above 0')], h=1440, oheat=5.0)]             # the h1440 ladder: 6.9 hotter
+    t = tables(tmp_path, rows, perp=perp, perp_pairs=pp, perp_head={'top': 30}).coins['BTC']
+    assert t.counts()['perp'] == {'wanted': {'single': 4, 'pair': 3, 'triple': 1}, 'skipped': {SKIP_RANK: 1}} and t.perp_top == 30
+    assert [p['rank'] for p in t.perp_pairs] == [2, 1, 1, 2] and t.tfs == [1, 5, 60] and '60m:SQZMOM sign' in t.long_states
+    held = {'60m:SQZMOM sign': 'above 0', '1m:PVO12/26 sign': 'above 0', '5m:MOM10 sign': 'above 0'}
+    calls, problem, _ = join(t, 40, res({'1m:MFIX=very low', '1m:RSI7=very low', '5m:WAD=low (falling in)'}, closed=(1, 5), states=held), 3000)
+    assert problem is None
+    assert [(c['h'], c['rank'], c['kind'], c['key'], c['of']) for c in calls] == [
+        (15, 1, 'single', '1m:RSI7=very low', 40),
+        (240, 1, 'single', '1m:MFI14=very low', 30),                                               # fired through its alias
+        (240, 1, 'triple', '1m:MFI14=very low | 1m:PVO12/26 sign=above 0 | 60m:SQZMOM sign=above 0', 30),
+        (240, 2, 'single', '1m:RSI7=very low', 30),
+        (240, 2, 'pair', '1m:MFI14=very low | 60m:SQZMOM sign=above 0', 30),
+        (240, 3, 'single', '5m:WAD=low (falling in)', 30),
+        (1440, 2, 'pair', '1m:RSI7=very low | 5m:MOM10 sign=above 0', 30)]
+    assert all(c['trig'] == c['key'].split(' | ')[0] for c in calls if c['kind'] != 'single') and all(c['barClose'] == TS for c in calls)
+    # the 60-minute state turns: the pair conditioned on the other side fires instead
+    calls, _, _ = join(t, 40, res({'1m:MFI14=very low'}, states={'60m:SQZMOM sign': 'below 0'}), 3000)
+    assert [(c['h'], c['rank'], c['kind'], c['key']) for c in calls] == [(240, 1, 'single', '1m:MFI14=very low'),
+                                                                        (240, 1, 'pair', '1m:MFI14=very low | 60m:SQZMOM sign=below 0')]
+    # a 60-minute single fires at the hourly close only
+    hour = res({'60m:C-AVGPRICE=high (rising in)'}, closed=(1, 5, 15, 60), states=held)
+    assert [(c['h'], c['rank'], c['tf'], c['dir'], c['of']) for c in join(t, 40, hour, 3000)[0]] == [(1440, 1, 60, -1, 30)]
+    assert join(t, 40, res({'60m:C-AVGPRICE=high (rising in)'}, closed=(1, 5)), 3000)[0] == []
+
+
+def test_perp_rows_on_an_indicator_the_main_packs_mark_are_skipped(tmp_path):
+    assert indicator_of('5m:PVI sign=above 0') == indicator_of('1m:PVI') == indicator_of('PVI') == indicator_of('60m:PVI sign') == 'PVI'
+    assert indicator_of('60m:PVO12/26 sign') == 'PVO12/26' and indicator_of('UTC4h=12-16') == 'UTC4h' and indicator_of('15m:NVI=low') == 'NVI'
+    # the real main packs mark PVI: the traded pack's parity section, the pair pack's list and the SOL rows marked false
+    assert parity_off(fixture('traded_pack.json'), fixture('pair_pack.json')) == {'PVI'}
+    assert parity_off(dict(fixture('traded_pack.json'), live_reader_parity={}), {}) == {'PVI'}                # the rows alone say it too
+    assert parity_off({'rows': [pack_row('SOL', '1m:RSI7=very low')]}, {'indicators_that_differ_live': ['OBV']}) == {'OBV'}
+    assert parity_off({'rows': [pack_row('SOL', '1m:RSI7=very low')]}, {}) == set()
+    rows = [pack_row('SOL', '1m:PVI=high (rising in)', rank=6, live_parity=False), pack_row('SOL', '1m:RSI7=very low', rank=1)]
+    perp = [perp_row('SOL', '5m:PVI=low (falling in)', rank=1, tf='5m'),                       # on PVI by its key, on another timeframe
+            perp_row('SOL', '1m:CMO14=very low', rank=2, aliases=['1m:PVI=very low']),         # by an alias
+            perp_row('SOL', '1m:RSI7=very low', rank=3),
+            perp_row('SOL', '1m:RSI2=very low', h=1440, rank=1)]
+    pp = [perp_pair('SOL', '1m:RSI7=very low', [('60m:PVI sign', 'below 0')]),                 # by a condition
+          perp_pair('SOL', '1m:PVI=very low', [('15m:MDI14', 'high')], h=1440),               # by its trigger
+          perp_pair('SOL', '1m:RSI7=very low', [('1m:AD sign', 'below 0')], readings=['1m:AD', '1m:RSI7', '5m:PVI']),   # by its readings
+          perp_pair('SOL', '1m:CMO14=very low', [('15m:MDI14', 'high')]),                     # by its trigger's alias (join fires it on PVI)
+          perp_pair('SOL', '1m:RSI7=very low', [('1m:AD sign', 'below 0'), ('15m:MDI14', 'high')])]
+    t = tables(tmp_path, rows, coins=('SOL',), perp=perp, perp_pairs=pp).coins['SOL']
+    assert t.counts()['perp'] == {'wanted': {'single': 2, 'pair': 0, 'triple': 1}, 'skipped': {SKIP_PARITY: 6}}
+    assert not any('PVI' in k for k in t.want | t.states)
+    ev = {'5m:PVI=low (falling in)', '1m:PVI=very low', '1m:RSI7=very low', '1m:RSI2=very low', '1m:PVI=high (rising in)'}
+    held = {'60m:PVI sign': 'below 0', '15m:MDI14': 'high', '1m:AD sign': 'below 0'}
+    calls, _, _ = join(t, 40, res(ev, closed=(1, 5), states=held), 3000)
+    assert [(c['h'], c['kind'], c['key']) for c in calls] == [(15, 'single', '1m:RSI7=very low'), (240, 'single', '1m:RSI7=very low'),
+                                                             (240, 'triple', '1m:RSI7=very low | 1m:AD sign=below 0 | 15m:MDI14=high'),
+                                                             (1440, 'single', '1m:RSI2=very low')]
+    # main packs that mark nothing: the same perp rows are published
+    t = tables(tmp_path / 'b', [pack_row('SOL', '1m:RSI7=very low')], coins=('SOL',), perp=perp, perp_pairs=pp).coins['SOL']
+    assert t.counts()['perp'] == {'wanted': {'single': 4, 'pair': 4, 'triple': 1}, 'skipped': {}}
+
+
+def test_perp_rows_the_reader_cannot_vouch_for(tmp_path):
+    rows = [pack_row('BTC', '1m:RSI7=very low'), pack_row('BTC', '1m:RSI2=very low', h=60, rank=2), pack_row('ETH', '1m:RSI7=very low')]
+    good = [perp_row('BTC', '1m:MFI14=very low'), perp_row('ETH', '1m:MFI14=very low')]
+    pp = [perp_pair('BTC', '1m:MFI14=very low', [('60m:SQZMOM sign', 'above 0')]),
+          perp_pair('BTC', '1m:MFI14=very low', [('BTC.D 1d', 'up')]),                                      # needs the dominance feed
+          perp_pair('BTC', '1m:MFI14=very low', [('1m:OBV sign', 'below 0')], sha='long-old'),              # another table than perp_pack's
+          perp_pair('BTC', '1m:MFI14=very low', [('1m:AD sign', 'below 0')], h=60)]                         # h60 belongs to the main packs
+    t = tables(tmp_path, rows, coins=('BTC', 'ETH'), perp=good + [perp_row('BTC', '1m:WAD=very low', h=60, rank=2)], perp_pairs=pp)
+    btc = t.coins['BTC']
+    assert btc.counts()['perp'] == {'wanted': {'single': 1, 'pair': 1, 'triple': 0}, 'skipped': {SKIP_DOMINANCE: 1, SKIP_HASH: 1, SKIP_PERP_H: 2}}
+    assert t.coins['ETH'].counts()['perp'] == {'wanted': {'single': 1, 'pair': 0, 'triple': 0}, 'skipped': {}}
+    # long-table edges the oracle did not find equal to live_meta's (the file says so, or the row does): not read with them
+    head = {'edges_as_main_tables': {'BTC': {'same': 600, 'n_different': 24, 'price_step_same': True},
+                                     'ETH': {'same': 624, 'n_different': 0, 'price_step_same': True}}}
+    t = tables(tmp_path / 'e', rows, coins=('BTC', 'ETH'), perp=good + [perp_row('ETH', '1m:WAD=very low', rank=2, edges_as_main=False)], perp_head=head)
+    assert t.coins['BTC'].counts()['perp']['skipped'] == {SKIP_PERP_EDGES: 1} and t.coins['ETH'].counts()['perp'] == \
+        {'wanted': {'single': 1, 'pair': 0, 'triple': 0}, 'skipped': {SKIP_PERP_EDGES: 1}}
+    # perp packs of another oracle run than the traded pack's
+    t = tables(tmp_path / 'r', rows, coins=('BTC', 'ETH'), perp=good, perp_pairs=pp[:1], perp_head={'stamp': 'long tables of run 555000111'})
+    assert t.coins['BTC'].counts()['perp'] == {'wanted': {'single': 0, 'pair': 0, 'triple': 0}, 'skipped': {SKIP_PERP_RUN: 2}}
+    # a row the bot must not trade from: that coin's perp rows are left out, never its main rows or another coin's
+    t = tables(tmp_path / 'b', rows, coins=('BTC', 'ETH'), perp=[perp_row('BTC', '1m:MFI14=very low', direction=0)] + good, perp_pairs=pp)
+    btc = t.coins['BTC']
+    assert btc.problem is None and len(btc.rows) == 2 and btc.perp_rows == btc.perp_pairs == []
+    assert btc.counts()['perp'] == {'wanted': {'single': 0, 'pair': 0, 'triple': 0}, 'skipped': {},
+                                    'problem': 'perp_pack.json row 1 of this coin (1m:MFI14=very low): dir is neither 1 nor -1'}
+    assert t.coins['ETH'].perp_rows and t.coins['ETH'].counts()['perp'].get('problem') is None
+    t = tables(tmp_path / 'c', rows, coins=('BTC',), perp=good, perp_pairs=[perp_pair('BTC', '1m:MFI14=very low', [('1m:AD sign', 'below 0')], kind='quad')])
+    assert t.coins['BTC'].counts()['perp']['problem'].startswith('perp_pair_pack.json row 1 of this coin') and t.coins['BTC'].rows
+    assert t.coins['BTC'].counts()['perp']['skipped'] == {} and t.coins['BTC'].perp_rows == []
+    t = tables(tmp_path / 'd', rows, coins=('BTC',), perp=good, perp_head={'table_sha256': {'ETH': 'long-x'}})
+    assert t.coins['BTC'].counts()['perp']['problem'] == 'perp_pack.json has no table hash for this coin'
+    t = tables(tmp_path / 'n', rows, coins=('BTC', 'ETH'), perp=good[1:])
+    assert t.coins['BTC'].counts()['perp']['problem'] == 'perp_pack.json has no rows for this coin' and t.coins['ETH'].perp_rows
+    # a perp row without zone edges in live_meta.json: the coin's perp rows go, h15 and h60 stay, and so does the window
+    t = tables(tmp_path / 'z', rows, coins=('BTC',), perp=good, perp_pairs=pp[:1], edges={'1m:RSI7': [1, 2, 3, 4], '1m:RSI2': [1, 2, 3, 4]})
+    btc = t.coins['BTC']
+    assert btc.tfs == [1, 60] and '1m:MFI14=very low' in btc.want
+    btc.check_edges(ZONE_EVENTS, ZONE_STATES)
+    assert btc.problem is None and btc.perp_rows == btc.perp_pairs == [] and btc.tfs == [1] and btc.want == {'1m:RSI7=very low', '1m:RSI2=very low'}
+    assert btc.counts()['perp']['problem'] == 'live_meta.json has no zone edges for 2 perp row(s), first 1m:MFI14=very low'
+    assert btc.counts()['perp']['wanted'] == {'single': 0, 'pair': 0, 'triple': 0} and btc.states == set()

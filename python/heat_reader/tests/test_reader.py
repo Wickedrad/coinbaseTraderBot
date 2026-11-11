@@ -11,12 +11,12 @@ import os
 import numpy as np
 import pytest
 
-from conftest import T0, FetchError, World, assert_contract, bot_parse, pack_row, pair_row, reader_for, settings, write_packs
+from conftest import T0, FetchError, World, assert_contract, bot_parse, pack_row, pair_row, perp_pair, perp_row, reader_for, settings, write_packs
 from heat_reader import MIN
 from heat_reader import cache as mc
 from heat_reader import reader as rd
 from heat_reader.config import status_path
-from heat_reader.pack import SKIP_DOMINANCE, SKIP_PARITY, base_of
+from heat_reader.pack import SKIP_DOMINANCE, SKIP_PARITY, SKIP_RANK, base_of, indicator_of
 
 
 def held_states(world, coin: str, end: int, tfs=(1, 5)) -> dict:
@@ -31,13 +31,14 @@ def held_states(world, coin: str, end: int, tfs=(1, 5)) -> dict:
     return {k: v for k, v in sorted(got.items()) if v is not None}
 
 
-def build(world, tmp_path, coins=('BTC', 'ETH'), end=None, eth_sha=None, pairs=False):
+def build(world, tmp_path, coins=('BTC', 'ETH'), end=None, eth_sha=None, pairs=False, perp=False):
     """A pack folder whose rows are picked from what the engine fires at `end` (and some that do not fire),
     live_meta.json with the engine's own edges, and the expected calls per coin as (h, rank, kind, key).
     pairs: also a pair pack with rows whose conditions hold at `end`, rows whose conditions do not, a dominance row
-    and a row the parity check marked."""
+    and a row the parity check marked. perp: also the perp packs (top 30) with h240 and h1440 singles and pairs, a
+    share-only row, and a row on the indicator the traded pack marks live_parity false."""
     end = world.end if end is None else end
-    rows, prs, want = [], [], {}
+    rows, prs, want, per, pprs = [], [], {}, [], []
     for c in coins:
         ev = world.events(c, end)
         assert ev['ts'] == end and ev['closed'] == [1, 5] and ev['no_reading'] == []
@@ -71,9 +72,28 @@ def build(world, tmp_path, coins=('BTC', 'ETH'), end=None, eth_sha=None, pairs=F
                     pair_row(c, one[0], [(b, lb)], oheat=300.0, live_parity=False, sha=sha)]  # never: the parity check marked it
             want[c] += [(15, 1, 'pair', f'{one[0]} | {a}={la}'), (15, 7, 'pair', f'{quiet[0]} | {b}={lb}'),
                         (15, 5, 'triple', f'{one[1]} | {b}={lb} | {a}={la}')]
-            want[c].sort(key=lambda x: (x[0], x[1], ('single', 'pair', 'triple').index(x[2]), x[3]))
+        if perp:
+            off = indicator_of(one[3])                                                    # its h15 row above is marked live_parity false
+            pk = [k for k in one if indicator_of(k) != off]
+            st = [(k, v) for k, v in held_states(world, c, end).items() if indicator_of(k) != off]
+            (a, la), (b, lb) = [x for x in st if x[0].startswith('1m:')][0], [x for x in st if x[0].startswith('5m:')][0]
+            other = next(x for x in ('below 0', 'above 0', 'above', 'below') if x != la)
+            assert len(pk) >= 3, (c, one)
+            psha = f'long-sha-{c}'
+            per += [perp_row(c, pk[0], h=240, rank=1, sha=psha), perp_row(c, five[0], h=240, rank=2, tf='5m', sha=psha),
+                    perp_row(c, quiet[4], h=240, rank=3, sha=psha),                       # does not fire
+                    perp_row(c, one[3], h=240, rank=4, sha=psha),                         # fires, on the indicator the traded pack marks
+                    perp_row(c, pk[1], h=1440, rank=2, sha=psha),
+                    perp_row(c, pk[2], h=240, rank=41, sha=psha)]                         # a share-only row: never asked for
+            pprs += [perp_pair(c, pk[0], [(a, la)], oheat=98.5, sha=psha),                # holds: rank 2 on the 240 ladder (99 is hotter)
+                     perp_pair(c, pk[0], [(a, other)], oheat=120.0, sha=psha),            # its condition does not hold
+                     perp_pair(c, pk[1], [(b, lb)], h=1440, oheat=99.0, sha=psha)]        # holds: rank 1 on the 1440 ladder
+            want[c] += [(240, 1, 'single', pk[0]), (240, 2, 'single', five[0]), (240, 2, 'pair', f'{pk[0]} | {a}={la}'),
+                        (1440, 1, 'pair', f'{pk[1]} | {b}={lb}'), (1440, 2, 'single', pk[1])]
+        want[c].sort(key=lambda x: (x[0], x[1], ('single', 'pair', 'triple').index(x[2]), x[3]))
     meta = {c: dict(world.meta[c], table_sha256=(eth_sha if c != 'BTC' and eth_sha else world.meta[c]['table_sha256'])) for c in coins}
-    folder = write_packs(tmp_path / 'packs', rows, {c: f'sha-{c}' for c in coins}, pairs=prs, meta=meta)
+    folder = write_packs(tmp_path / 'packs', rows, {c: f'sha-{c}' for c in coins}, pairs=prs, meta=meta,
+                         perp=per if perp else None, perp_pairs=pprs, perp_head={'top': 30})
     return folder, want
 
 
@@ -118,6 +138,8 @@ def test_one_pass_end_to_end(world, oracle_path, tmp_path):
     assert side['v'] == 1 and side['writtenAt'] == obj['writtenAt'] and side['maxRank'] == 40 and side['clockPack'] is False
     assert sorted(side['packs']) == ['live_meta.json', 'pair_pack.json', 'traded_pack.json'] and side['packSha'] == obj['packSha']
     assert side['coins']['BTC'] == {'ok': True, 'fired': {'single': 5}, 'rows': status['coins']['BTC']['rows']}
+    # HEAT_PERP_PACKS is on by default and this folder has no perp packs: the sidecar says so, the h15 and h60 rows are as above
+    assert side['perpPacks'] is True and side['perpProblem'] == f'perp_pack.json cannot be read in {pack} (FileNotFoundError)'
     assert status['coins']['BTC']['closed'] == [1, 5] and status['coins']['BTC']['minutes'] >= world.window * 5
     got = bot_parse(open(s.calls_file).read())
     if got is not None:                                                     # the bot's own reader takes the file as it is
@@ -150,6 +172,39 @@ def test_pairs_end_to_end(world, oracle_path, tmp_path):
     parsed = bot_parse(open(s.calls_file).read())
     if parsed is not None:                                                  # the bot's own reader takes pairs and triples as they are
         assert parsed['coins']['BTC'] == {'ok': True, 'calls': 8, 'asOf': world.end}
+
+
+def test_perp_rows_end_to_end(world, oracle_path, tmp_path):
+    """The perp packs with the real engine: h240 and h1440 rows published beside h15 and h60, with of = the perp pack's
+    top (30 here), a pair on 240 that fires when its condition holds at its last closed bar, and a row on the indicator
+    the traded pack marks live_parity false left out although it fires. HEAT_PERP_PACKS=false gives h15 and h60 only."""
+    pack, want = build(world, tmp_path, pairs=True, perp=True)
+    s = settings(tmp_path, pack, oracle_path, window=world.window)
+    obj = reader_for(s, world.fake()).pass_once()
+    assert_contract(obj)
+    for c in ('BTC', 'ETH'):
+        coin = obj['coins'][c]
+        assert coin['ok'] and 'why' not in coin and called(coin) == want[c]
+        assert {x['h'] for x in coin['calls']} == {15, 60, 240, 1440} and all(x['of'] == (30 if x['h'] > 60 else 40) for x in coin['calls'])
+        pair = next(x for x in coin['calls'] if x['h'] == 240 and x['kind'] == 'pair')
+        assert pair['trig'] == next(x for x in coin['calls'] if x['h'] == 240 and x['rank'] == 1)['key'] and pair['heat'] == 98.5 and pair['tf'] == 1
+        assert all(x['barClose'] == world.end for x in coin['calls'])
+    side = json.load(open(status_path(s.calls_file)))
+    assert side['perpPacks'] is True and 'perpProblem' not in side
+    assert sorted(side['packs']) == ['live_meta.json', 'pair_pack.json', 'perp_pack.json', 'perp_pair_pack.json', 'traded_pack.json']
+    assert side['coins']['BTC']['rows']['perp'] == {'wanted': {'single': 4, 'pair': 3, 'triple': 0}, 'skipped': {SKIP_PARITY: 1, SKIP_RANK: 1}}
+    assert side['coins']['BTC']['rows']['wanted'] == {'single': 7, 'pair': 4, 'triple': 1, 'clock': 0}
+    assert side['coins']['BTC']['fired'] == {'single': 8, 'pair': 4, 'triple': 1}
+    parsed = bot_parse(open(s.calls_file).read())
+    if parsed is not None:                                                  # the bot's own reader takes the h240 and h1440 rows
+        assert parsed['coins']['BTC'] == {'ok': True, 'calls': 13, 'asOf': world.end}
+    off = settings(tmp_path / 'off', pack, oracle_path, window=world.window, perp_packs='false')
+    obj = reader_for(off, world.fake()).pass_once()
+    for c in ('BTC', 'ETH'):
+        assert called(obj['coins'][c]) == [x for x in want[c] if x[0] in (15, 60)]
+    side = json.load(open(status_path(off.calls_file)))
+    assert side['perpPacks'] is False and 'perpProblem' not in side and 'perp' not in side['coins']['BTC']['rows']
+    assert sorted(side['packs']) == ['live_meta.json', 'pair_pack.json', 'traded_pack.json']
 
 
 @pytest.fixture(scope='session')

@@ -9,7 +9,10 @@
 //      inside that hour and it is what the perps side asks for;
 //   3. a 15-minute call buys the called side of the coin's 15-minute contract, a 60-minute call the hourly strike
 //      nearest 50c, each at most once per call, one entry per coin, two heat positions in all (the hottest at heat
-//      size, the next at ORDER_USD_MIN), the book's first trips flat at ORDER_USD_MIN, and in live a loss budget.
+//      size, the next at ORDER_USD_MIN), the book's first trips flat at ORDER_USD_MIN, and in live a loss budget;
+//   4. the 240-minute and 1440-minute calls (the perp packs) are the perps' only: the 4 hours' call opens a perps heat
+//      setup and is its context, the day's call is direction context for every perps heat entry. They never open a
+//      Kalshi contract (no contract runs 4 hours or a day); each is ruled on once and recorded as "perps context".
 //
 // decideHeat is pure: no file, no clock, no config lookup. The time, the markets as the engine shows them, the
 // order band, the entry windows and the book state all come in as inputs, so a replay decides exactly as the server
@@ -38,6 +41,15 @@ const MIN_MS = 60_000;
 const HOUR_MS = 60 * MIN_MS;
 /** The 60-minute call is always decided, traded or not: it is the context of the 15-minute contract and the perps. */
 const CONTEXT_H = 60;
+/** The perps' own horizons (the perp packs): the 4 hours' call and the day's call. Never a Kalshi contract. */
+const FOUR_H = 240;
+const DAY_H = 1440;
+/** Where each horizon's direction is kept in the book and how long it holds: for the horizon its curve measured. */
+const CONTEXT_OF: Record<number, { field: 'context' | 'four' | 'day'; ms: number }> = {
+  [CONTEXT_H]: { field: 'context', ms: HOUR_MS },
+  [FOUR_H]: { field: 'four', ms: FOUR_H * MIN_MS },
+  [DAY_H]: { field: 'day', ms: DAY_H * MIN_MS },
+};
 /** How many ruled calls status() shows. */
 const LAST_CALLS = 12;
 
@@ -120,6 +132,21 @@ export function heatStake(weight: number, slot: 1 | 2, trips: number, cfg: Pick<
 /** DOGE is not traded anywhere in this project, whatever the settings list. */
 const isDoge = (asset: string): boolean => asset.trim().toUpperCase().startsWith('DOGE');
 
+/** The horizons the lane decides calls at: the contracts' (HEAT_HORIZONS), the hour (always: the 15-minute contract's
+ *  context and the perps'), and while the perps hook is on, the 4 hours and (unless HEAT_PERPS_DAILY=off) the day. */
+export function heatReadHorizons(cfg: Pick<HeatConfig, 'horizons' | 'perps' | 'perpsDaily'>): number[] {
+  const perps = cfg.perps === 'off' ? [] : [FOUR_H, ...(cfg.perpsDaily === 'off' ? [] : [DAY_H])];
+  return [...new Set([...cfg.horizons, CONTEXT_H, ...perps])].sort((a, b) => a - b);
+}
+
+/** Why a call at this horizon never opens a Kalshi contract, or undefined for the contracts' horizons. The 240- and
+ *  1440-minute calls are the perps' (no contract runs that long), whatever HEAT_HORIZONS says. */
+export function perpsContextOnly(h: number): string | undefined {
+  if (h === FOUR_H) return 'perps context: the 4-hour call is for the perps (a 4h heat setup and its context), no Kalshi contract trades it';
+  if (h === DAY_H) return 'perps context: the daily call is the perps\' direction for the day, no Kalshi contract trades it';
+  return undefined;
+}
+
 const KIND_ORDER: Record<HeatCallRow['kind'], number> = { single: 0, pair: 1, triple: 2 };
 /** Hotter first: the lower rank; equal ranks by heat, then by key so the choice never depends on the file's order. */
 const hotter = (a: HeatCallRow, b: HeatCallRow): number => a.rank - b.rank || b.heat - a.heat || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
@@ -197,7 +224,7 @@ export function readHeatCalls(now: number, cfg: HeatConfig, snap: HeatSnapshot |
   if (now - snap.writtenAt > 2 * cfg.maxAgeSec * 1000) {
     return { fresh, unfit, notes: [`calls file ignored: written ${secs(now - snap.writtenAt)} s ago (limit ${2 * cfg.maxAgeSec} s)`] };
   }
-  const horizons = [...new Set([...cfg.horizons, CONTEXT_H])].sort((a, b) => a - b);
+  const horizons = heatReadHorizons(cfg);
   const lagMs = cfg.entryLagSec * 1000;
   for (const asset of cfg.assets) {
     if (isDoge(asset)) { notes.push(`${asset}: not traded (no DOGE)`); continue; }
@@ -220,11 +247,13 @@ export function readHeatCalls(now: number, cfg: HeatConfig, snap: HeatSnapshot |
   return { fresh, unfit, notes };
 }
 
-/** The hour's direction a decided 60-minute call stands for: it holds for the hour after its bar closed. */
-function hourContext(c: HeatDecided): HeatContext {
+/** The direction a decided call stands for: it holds for the horizon its curve measured, from its bar close (the hour
+ *  for a 60-minute call, 4 hours for a 240-minute call, a day for a 1440-minute call). */
+function contextOf(c: HeatDecided, ms: number): HeatContext {
   const { row } = c;
-  return { asset: c.asset, dir: row.dir, key: row.key, rank: row.rank, of: row.of, heat: row.heat, barClose: row.barClose, until: row.barClose + HOUR_MS };
+  return { asset: c.asset, dir: row.dir, key: row.key, rank: row.rank, of: row.of, heat: row.heat, barClose: row.barClose, until: row.barClose + ms };
 }
+const hourContext = (c: HeatDecided): HeatContext => contextOf(c, HOUR_MS);
 
 type TwoSided = HeatMarketView & { yesBid: number; yesAsk: number };
 /** A bid and an ask, both real prices and not crossed: without both there is no touch to trade at and no mid. */
@@ -336,6 +365,9 @@ export function decideHeat(i: HeatDecideInput): HeatDecideResult {
   for (const c of fresh) {
     if (claimed(c)) continue;
     rule(c);
+    // The 4 hours' and the day's calls are the perps' (their direction is kept above): ruled on and recorded, never traded here.
+    const perpsOnly = perpsContextOnly(c.h);
+    if (perpsOnly) { skip(c, perpsOnly); continue; }
     if (entriesBlocked) { skip(c, entriesBlocked); continue; }
     if (!cfg.horizons.includes(c.h)) { skip(c, `the ${c.h}-minute call is context only (HEAT_HORIZONS)`); continue; }
     if (pilotSpent) { skip(c, `pilot budget spent: heat P&L ${state.pnl.toFixed(2)}, limit -${cfg.pilotLossUsd.toFixed(2)} (HEAT_PILOT_LOSS_USD)`); continue; }
@@ -436,6 +468,9 @@ export interface HeatLaneStatus {
   pilot: { lossUsd: number; left: number | null; spent: boolean; enforced: boolean };
   /** The hour's direction per coin, while it holds. */
   context: HeatContext[];
+  /** The 4 hours' and the day's direction per coin (the perps' context), while each holds. */
+  four: HeatContext[];
+  day: HeatContext[];
   lastCalls: HeatCallStatus[];
   /** Why the file or a coin gave nothing at the last look. */
   notes: string[];
@@ -462,19 +497,20 @@ export class HeatLane implements HeatDirection {
   readonly direction: HeatDirection = {
     hour: (asset, now) => { try { return this.hour(asset, now); } catch { return undefined; } },
     fired: (asset, h, now) => { try { return this.fired(asset, h, now); } catch { return undefined; } },
-    day: () => undefined,
+    four: (asset, now) => { try { return this.four(asset, now); } catch { return undefined; } },
+    day: (asset, now) => { try { return this.day(asset, now); } catch { return undefined; } },
   };
 
   constructor(private readonly cfg: HeatConfig, private readonly file?: string) {
     this.st = loadHeatState(file);
   }
 
-  /** The cheap look the engine takes every second, before it builds any market view: stores the hour contexts and
-   *  the latest calls, and returns the calls now firing that have not been ruled on yet. */
+  /** The cheap look the engine takes every second, before it builds any market view: stores the contexts (hour, 4 hours,
+   *  day) and the latest calls, and returns the calls now firing that have not been ruled on yet. */
   pending(now: number, snapshot: HeatSnapshot | undefined): HeatDecided[] {
     const { fresh, unfit, notes } = readHeatCalls(now, this.cfg, snapshot);
     this.notes = notes;
-    if (this.remember(fresh, fresh.filter((c) => c.h === CONTEXT_H).map(hourContext))) this.save();
+    if (this.remember(fresh)) this.save();
     return [...fresh, ...unfit].filter((c) => this.st.acted[heatCallKey(c.asset, c.h, c.row.barClose)] === undefined);
   }
 
@@ -484,10 +520,13 @@ export class HeatLane implements HeatDirection {
     this.live = o.live;
     const res = decideHeat({ ...o, now, cfg: this.cfg, snapshot, markets, state: this.st });
     this.notes = res.notes;
-    let changed = this.remember(res.calls, res.contexts);
+    let changed = this.remember(res.calls);
     for (const [key, barClose] of Object.entries(res.acted)) { this.st.acted[key] = barClose; changed = true; }
     this.planClose = new Map(res.plans.map((p) => [p.ticker, p.closeTs]));
     for (const d of res.decided) {
+      // The 240- and 1440-minute calls fire again minute after minute and are shown as `four` and `day`: kept out here so
+      // they never push the Kalshi lane's own rulings out of the last calls.
+      if (perpsContextOnly(d.h)) continue;
       const plan = res.plans.find((p) => p.asset === d.asset && p.h === d.h);
       const skip = res.skips.find((s) => s.asset === d.asset && s.h === d.h);
       this.lastCalls.push({
@@ -563,9 +602,18 @@ export class HeatLane implements HeatDirection {
     return age >= 0 && age <= this.cfg.entryLagSec * 1000 ? d : undefined;
   }
 
-  /** No daily curve exists yet: today's curves stop at 60 minutes. */
-  day(_asset: string, _now: number): HeatContext | undefined {
-    return undefined;
+  /** The 4 hours' direction for a coin: its latest decided 240-minute call, until its bar close plus 240 minutes. */
+  four(asset: string, now: number): HeatContext | undefined {
+    const c = this.st.four?.[asset];
+    return c && now < c.until ? { ...c } : undefined;
+  }
+
+  /** The day's direction for a coin: its latest decided 1440-minute call, until its bar close plus 1440 minutes. Nothing
+   *  with HEAT_PERPS_DAILY=off, even a direction saved before the switch. */
+  day(asset: string, now: number): HeatContext | undefined {
+    if (this.cfg.perpsDaily === 'off') return undefined;
+    const c = this.st.day?.[asset];
+    return c && now < c.until ? { ...c } : undefined;
   }
 
   status(now: number): HeatLaneStatus {
@@ -581,6 +629,8 @@ export class HeatLane implements HeatDirection {
         enforced: this.live,
       },
       context: Object.values(st.context).filter((c) => now < c.until).map((c) => ({ ...c })),
+      four: Object.values(st.four ?? {}).filter((c) => now < c.until).map((c) => ({ ...c })),
+      day: cfg.perpsDaily === 'off' ? [] : Object.values(st.day ?? {}).filter((c) => now < c.until).map((c) => ({ ...c })),
       lastCalls: this.lastCalls.map((c) => ({ ...c })),
       notes: [...this.notes],
     };
@@ -590,17 +640,22 @@ export class HeatLane implements HeatDirection {
     return this.cfg.pilotLossUsd > 0 && this.st.pnl <= -this.cfg.pilotLossUsd;
   }
 
-  /** Keep the latest calls (memory) and the hour contexts (saved). Returns whether the saved state changed. */
-  private remember(calls: HeatDecided[], contexts: HeatContext[]): boolean {
+  /** Keep the latest calls (memory) and, from the fresh decided calls at 60, 240 and 1440 minutes, each coin's direction
+   *  at that horizon (saved): the latest call wins, whichever side it calls. Returns whether the saved state changed. */
+  private remember(calls: HeatDecided[]): boolean {
     for (const c of calls) {
       const had = this.latest.get(`${c.asset}:${c.h}`);
       if (!had || c.row.barClose >= had.row.barClose) this.latest.set(`${c.asset}:${c.h}`, c);
     }
     let changed = false;
-    for (const ctx of contexts) {
-      const had = this.st.context[ctx.asset];
+    for (const c of calls) {
+      const at = CONTEXT_OF[c.h];
+      if (!at) continue;
+      const ctx = contextOf(c, at.ms);
+      const map = (this.st[at.field] ??= {});
+      const had = map[ctx.asset];
       if (had && (had.barClose > ctx.barClose || (had.barClose === ctx.barClose && had.key === ctx.key && had.dir === ctx.dir))) continue;
-      this.st.context[ctx.asset] = ctx;
+      map[ctx.asset] = ctx;
       changed = true;
     }
     return changed;

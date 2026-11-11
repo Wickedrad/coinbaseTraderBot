@@ -5,8 +5,9 @@
 // pipeline's setup-snn step (research/setupSnnStudy.ts) tests whether trades the SNN agreed with did
 // better, and switches an SNN filter on only once that is proven.
 // With HEAT_PERPS on, every signal and open also carries the direction curves' reading for the coin (heat_* fields:
-// the hour's direction, whether it is with or against the setup, which row called it and how hot it is; heat_day_dir
-// stays null until a daily curve exists), so the curves can be measured on real perp trades the same way.
+// the hour's direction, whether it is with or against the setup, which row called it and how hot it is; heat_four_* and
+// heat_day_* the same for the 4 hours' and the day's direction, null while none is live), so the curves can be measured
+// on real perp trades the same way. A heat signal also says which horizon called it (call_h: 60 or 240).
 
 import fs from 'fs';
 import path from 'path';

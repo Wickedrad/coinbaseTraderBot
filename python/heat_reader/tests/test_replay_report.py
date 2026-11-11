@@ -69,7 +69,41 @@ def test_report_text(tmp_path):
     assert '| BTC | 1358 | 222840 | 100.00% | 2650 | 0 | 0 | 100.00% | 312 | 2 | 140.2 |' in md
     assert '| SOL | 1358 | n/a | 99.62% | 2660 | 6 | 4 | 99.00% | 0 | 0 | 150.0 |' in md
     assert 'differ most: `1m:PVI=high (rising in)` x7' in md and '| XRP | skipped: no fixture for this coin |' in md
+    assert 'Perp packs (h240 and h1440): not reported' in md
     assert cr.main(['--dir', str(d)]) == 0
+
+
+def test_report_on_the_perp_packs(tmp_path):
+    """The perp packs get their own lines: found or not, the rows the loop published at h240 and h1440. The per-coin
+    table keeps counting the h15 and h60 rows."""
+    d = tmp_path
+    os.makedirs(d / 'calls' / 'loop')
+    rows = {'wanted': {'single': 80, 'pair': 89, 'triple': 8, 'clock': 0}, 'skipped': {'rank beyond HEAT_READER_MAX_RANK': 40},
+            'perp': {'wanted': {'single': 79, 'pair': 66, 'triple': 41}, 'skipped': {'live_parity false': 3, 'rank beyond HEAT_READER_MAX_RANK': 37}}}
+    side = {'v': 1, 'run': '43030435253', 'maxRank': 40, 'clockPack': False, 'perpPacks': True, 'coins': {'BTC': {'ok': True, 'rows': rows}},
+            'packs': {'traded_pack.json': {'sha256': 'e6cb06b5cb97b38bb2'}, 'perp_pack.json': {'sha256': 'a1b2c3d4e5f6a7b8c9'},
+                      'perp_pair_pack.json': {'sha256': 'f1e2d3c4b5a6f7e8d9'}}}
+    json.dump(side, open(d / 'calls' / 'loop' / 'heat_calls.status.json', 'w'))
+    row = lambda k, h, kind='single': {'key': k, 'kind': kind, 'h': h}
+    files = [{'coins': {'BTC': {'ok': True, 'calls': [row('1m:RSI7=very low', 15), row('1m:MFI14=very low', 240),
+                                                      row('1m:MFI14=very low | 60m:SQZMOM sign=above 0', 240, 'pair'), row('60m:IMI14=high (rising in)', 1440)]}}},
+             {'coins': {'BTC': {'ok': True, 'calls': [row('1m:MFI14=very low', 240)]}, 'ETH': {'ok': True, 'calls': [row('1m:CG10=very low', 1440)]}}}]
+    open(d / 'calls' / 'loop' / 'heat_calls-2026-11-11.jsonl', 'w').write('\n'.join(json.dumps(f) for f in files) + '\n')
+    md = cr.build(str(d), oracle='52edf4c', note='perp packs (h240 and h1440)')
+    assert ('Perp packs (h240 and h1440): found, perp a1b2c3d4e5f6, perp pairs f1e2d3c4b5a6; the loop published 3 rows at h240 and 2 at h1440 '
+            '(single / pair / triple: 2 / 1 / 0 and 2 / 0 / 0).') in md
+    assert '| BTC | 2 of 2 | n/a | 80 / 89 / 8 / 0 | rank beyond HEAT_READER_MAX_RANK 40 | 1 / 0 / 0 |' in md        # h15 and h60 only
+    assert '| ETH | 1 of 1 | n/a | n/a | n/a | 0 / 0 / 0 |' in md
+    assert '- BTC fired: `1m:RSI7=very low` x1' in md
+    assert '- BTC perp rows wanted (single / pair / triple): 79 / 66 / 41; skipped: live_parity false 3, rank beyond HEAT_READER_MAX_RANK 37' in md
+    assert '- BTC fired at h240 or h1440: `1m:MFI14=very low` x2, `1m:MFI14=very low | 60m:SQZMOM sign=above 0` x1, `60m:IMI14=high (rising in)` x1' in md
+    # not found: said, not failed
+    json.dump(dict(side, packs={}, perpProblem='perp_pack.json cannot be read in /x (FileNotFoundError)'), open(d / 'calls' / 'loop' / 'heat_calls.status.json', 'w'))
+    md = cr.build(str(d))
+    assert ('Perp packs (h240 and h1440): **not used**: perp_pack.json cannot be read in /x (FileNotFoundError); the loop published 3 rows at h240 '
+            'and 2 at h1440') in md
+    json.dump(dict(side, perpPacks=False), open(d / 'calls' / 'loop' / 'heat_calls.status.json', 'w'))
+    assert 'Perp packs (h240 and h1440): off (HEAT_PERP_PACKS=false)' in cr.build(str(d))
 
 
 def test_report_with_nothing_measured(tmp_path):

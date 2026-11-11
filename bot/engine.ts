@@ -104,7 +104,7 @@ import { activeGpSignals } from './gp/gpSignals';
 import { marketContext } from './ta/marketContext';
 import { binaryTrades, optimalF, recencyWeight, type OptimalFReport } from './strategy/optimalF';
 import { altcoinRiskOn, confluenceBreadth, orientedSignals, selectionPriority, taDrift, taNetDirection, viewOf, type TaNetView } from './strategy/taConviction';
-import type { HeatLane, HeatLanePlan } from './heat/heatLane';
+import { perpsContextOnly, type HeatLane, type HeatLanePlan } from './heat/heatLane';
 import type { HeatHooks, HeatMarketView, HeatSnapshot, HeatSource } from './heat/types';
 
 /** Paper fixed size: how many fixed-size orders the window cap (markets closing together) and the total cap hold. */
@@ -3292,6 +3292,10 @@ export class Engine {
   private heatRunning = false;
   /** Passes in a row that waited for a market's busy lock before ruling (see heatPass). */
   private heatBusyWaits = 0;
+  /** Per coin and horizon, the 240- or 1440-minute call (the perps') last written to the audit: its key and side, and until
+   *  when it holds. Those calls fire again minute after minute, so a row is written only when the call or its side
+   *  changes, or after the last one ran out. */
+  private heatPerpsAudited = new Map<string, { call: string; until: number }>();
   /** The exits' re-entry rule for heat entries when the deps give none: after a hold exit or a quota snipe on a contract, no
    *  entry once no more than HOLD_EXIT_REENTRY_SHARE of its window is left (Steven, Nov 11). */
   private readonly heatReentry = (ticker: string, tauSec: number, windowSec: number | undefined): string | undefined => this.holdExits.reentryBlock(ticker, tauSec, windowSec);
@@ -3359,8 +3363,13 @@ export class Engine {
       }
       sent.set(`${p.asset}:${p.h}`, out ?? 'sent');
     }
-    // One compact row per call ruled on, traded or not.
+    // One compact row per call ruled on, traded or not; a perps call (240 or 1440 minutes) only when it is new.
     for (const d of res.decided) {
+      if (perpsContextOnly(d.h)) {
+        const k = `${d.asset}:${d.h}`, call = `${d.row.key}|${d.row.dir}`, had = this.heatPerpsAudited.get(k);
+        this.heatPerpsAudited.set(k, { call, until: Math.max(d.row.barClose + d.h * 60_000, had?.call === call ? had.until : 0) });
+        if (had && had.call === call && d.row.barClose < had.until) continue;
+      }
       const plan = res.plans.find((p) => p.asset === d.asset && p.h === d.h);
       const skip = plan ? undefined : res.skips.find((s) => s.asset === d.asset && s.h === d.h);
       const hour = d.h === 15 ? h.lane.hour(d.asset, now) : undefined;

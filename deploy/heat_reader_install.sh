@@ -102,7 +102,7 @@ fi
 tmp="$(mktemp "$READER_ENV.XXXX")"
 echo "# Written by deploy/heat_reader_install.sh from $ENV. Edit bot.env, then run that script again." > "$tmp"
 for name in HEAT_CALLS_FILE HEAT_ASSETS HEAT_WINDOW_BARS HEAT_READER_DIR HEAT_PACK_DIR HEAT_ORACLE_PATH HEAT_RUN HEAT_BINANCE_API \
-            HEAT_READER_MAX_RANK HEAT_CLOCK_PACK; do
+            HEAT_READER_MAX_RANK HEAT_CLOCK_PACK HEAT_PERP_PACKS; do
   v="$(val "$name")"
   [ -n "$v" ] && printf '%s=%s\n' "$name" "$v" >> "$tmp"
 done

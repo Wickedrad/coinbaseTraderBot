@@ -12,6 +12,16 @@ Four files from one oracle commit (HEAT_PACK_DIR, research/oracle_heat/latest):
   live_meta.json    {COIN: {price_step, table_sha256, edges, no_edges}}: what places a live reading in a level. A coin
                     whose table hash differs from the traded pack's is refused: its edges belong to another table.
 
+Two more files for perpetuals (spec Addendum 4), loaded only with HEAT_PERP_PACKS=true (the default):
+  perp_pack.json       schema oracle-heat-pack-1 with horizons 240 and 1440: singles as in the traded pack, on the long
+                       tables of the same run. Their hash is not the coin's main table hash; they are read with the main
+                       edges because the oracle checked that the long tables' edges equal them (edges_as_main).
+  perp_pair_pack.json  schema oracle-heat-pairs-1 at 240 and 1440, with the pair pack's fire rule.
+Their rows go into the calls file like the main rows, with h 240 or 1440, of = perp_pack's `top`, and a pair's rank on
+the perp singles' ladder of its horizon. They carry no live_parity: a perp row that stands on an indicator the main
+packs mark live_parity false (PVI at fd88805) is skipped. Missing or unusable perp files, or a bad perp row of a coin,
+never touch the main rows: the perp rows are left out and the status says why.
+
 Rows the parity check marked (live_parity false) and rows that need a dominance feed (the reader has none yet) are
 never published; they are counted per coin with the reason, so the bot's status can show what was left out.
 call_row() and pair_call() are the ONLY places a pack row becomes a row of the calls file (HeatCallRow in
@@ -29,6 +39,7 @@ PACK_SCHEMA = 'oracle-heat-pack-1'
 PAIR_SCHEMA = 'oracle-heat-pairs-1'
 CLOCK_SCHEMA = 'oracle-heat-clock-pack-1'
 TRADED, PAIRS, CLOCK, META = 'traded_pack.json', 'pair_pack.json', 'clock_pack.json', 'live_meta.json'
+PERP, PERP_PAIRS = 'perp_pack.json', 'perp_pair_pack.json'
 SOURCE = 'oracle-heat'
 MAX_PACK_BYTES = 32 * 1024 * 1024
 MAX_META_BYTES = 64 * 1024 * 1024
@@ -42,6 +53,10 @@ SKIP_DOMINANCE = 'dominance (no feed)'
 SKIP_HASH = 'table hash differs'
 SKIP_RUN = 'clock pack of another run'
 SKIP_TWIN = 'clock row not above the twin'
+SKIP_PERP_RUN = 'perp pack of another run'
+SKIP_PERP_EDGES = 'perp edges not those of live_meta'
+SKIP_PERP_H = 'perp row on a main horizon'
+DOMINANCE = ('BTC.D', 'USDT.D', 'Dom')
 
 
 def tf_minutes(tf) -> int:
@@ -160,6 +175,54 @@ def base_of(key: str) -> str:
     return b[:-5] if b.endswith(' sign') else b
 
 
+def indicator_of(name: str) -> str:
+    """The indicator behind a key or reading name, without timeframe, level or ' sign': '5m:PVI sign=above 0', '1m:PVI'
+    and 'PVI' all give 'PVI'. A context or clock state keeps its name ('UTC4h')."""
+    b = re.sub(r'^\d+m:', '', str(name).rsplit('=', 1)[0])
+    return b[:-5] if b.endswith(' sign') else b
+
+
+def row_names(row: dict) -> list:
+    """Every key and reading name a pack row stands on: its key and aliases (a pair key split at ' | '), `when`,
+    the `conds` readings, `readings` and `reading`."""
+    names = []
+    for k in [row.get('key'), row.get('when'), row.get('reading')] + list(row.get('aliases') or []) + list(row.get('readings') or []):
+        if isinstance(k, str) and k:
+            names += k.split(' | ')
+    for c in row.get('conds') or []:
+        if isinstance(c, (list, tuple)) and c and isinstance(c[0], str):
+            names.append(c[0])
+    return names
+
+
+def parity_off(pack: dict, pairs: dict) -> set:
+    """The indicators the main packs say the live reader does not reproduce exactly (live_parity false: PVI at
+    fd88805): the traded pack's live_reader_parity.indicators_that_differ, the pair pack's indicators_that_differ_live,
+    and the indicator of every traded row marked live_parity false. The perp packs carry no live_parity, so a perp row
+    on one of these indicators is skipped by this set."""
+    out = set()
+    lrp = pack.get('live_reader_parity')
+    for src in ((lrp.get('indicators_that_differ') if isinstance(lrp, dict) else None), pairs.get('indicators_that_differ_live')):
+        if isinstance(src, list):
+            out.update(indicator_of(x) for x in src if isinstance(x, str) and x)
+    for r in pack.get('rows') or []:
+        if isinstance(r, dict) and r.get('live_parity') is False and isinstance(r.get('key'), str):
+            out.add(indicator_of(r['key']))
+    return out
+
+
+def _dominance(row: dict, p: dict) -> bool:
+    """A row that needs the dominance feed the reader does not have yet."""
+    return row.get('dominance') is True or any(rd.split(' ')[0] in DOMINANCE for rd, _ in p['conds']) or p['when'].split(' ')[0] in DOMINANCE
+
+
+def _edges_as_main(src: dict, coin: str) -> bool:
+    """The perp file says the coin's long-table edges and price step are the main tables' (what live_meta.json holds)."""
+    e = src.get('edges_as_main_tables') if isinstance(src.get('edges_as_main_tables'), dict) else {}
+    e = e.get(coin)
+    return isinstance(e, dict) and e.get('n_different') == 0 and e.get('price_step_same') is True
+
+
 def run_of(pack: dict) -> str:
     m = re.search(r'run (\d{6,})', f"{pack.get('run', '')} {pack.get('stamp', '')}")
     return m.group(1) if m else ''
@@ -198,28 +261,61 @@ class CoinTable:
         self.problem = None
         self.wanted = {'single': 0, 'pair': 0, 'triple': 0, 'clock': 0}
         self.skipped = {}         # reason: rows of the packs not published for it
+        # The perp packs (h240, h1440), kept apart so a problem with them never touches the rows above.
+        self.perp = None          # None when the perp packs are not loaded, else {'wanted', 'skipped', 'problem'}
+        self.perp_rows = []       # perp singles published when they fire
+        self.perp_pairs = []      # perp pairs and triples (check_pair, plus 'rank' on the perp ladder)
+        self.perp_aliases = {}    # the aliases a perp pair's trigger fires through: the main ones and the perp singles'
+        self.perp_top = 0         # perp_pack's `top`: the `of` of every perp row
 
     def skip(self, reason: str) -> None:
         self.skipped[reason] = self.skipped.get(reason, 0) + 1
 
+    def perp_skip(self, reason: str) -> None:
+        self.perp['skipped'][reason] = self.perp['skipped'].get(reason, 0) + 1
+
+    def drop_perp(self, why: str) -> None:
+        """Leave out every perp row of the coin, say why, and ask the engine only for what the main rows need."""
+        self.perp['problem'] = why
+        self.perp_rows, self.perp_pairs = [], []
+        self.perp['wanted'] = dict.fromkeys(self.perp['wanted'], 0)
+        self.index()
+
     def counts(self) -> dict:
-        return {'wanted': dict(self.wanted), 'skipped': dict(sorted(self.skipped.items()))}
+        out = {'wanted': dict(self.wanted), 'skipped': dict(sorted(self.skipped.items()))}
+        if self.perp is not None:
+            out['perp'] = {'wanted': dict(self.perp['wanted']), 'skipped': dict(sorted(self.perp['skipped'].items()))}
+            if self.perp['problem']:
+                out['perp']['problem'] = self.perp['problem']
+        return out
+
+    def index(self) -> set:
+        """want, states and tfs from the rows the coin publishes. Returns the readings behind them (what the meta must
+        hold edges for)."""
+        want, states = set(), set()
+        for r in self.rows + self.perp_rows:
+            want.add(r['key'])
+            want.update(r.get('aliases') or [])
+        for pairs, aliases in ((self.pairs, self.aliases), (self.perp_pairs, self.perp_aliases)):
+            for p in pairs:
+                want.add(p['when'])
+                want.update(aliases.get(p['when'], []))
+                states.update(rd for rd, _ in p['conds'])
+        self.want, self.states = want, states
+        timed = [k for k in want | states if key_tf(k) is not None]    # a context trigger or state needs no timeframe of bars
+        self.tfs = sorted({key_tf(k) for k in timed})
+        return {base_of(k) for k in timed}
 
     @property
     def long_states(self) -> set:
         return {s for s in self.states if key_tf(s) == LONG_TF}
 
-    def check_edges(self, zone_events: set, zone_states: set) -> None:
-        """A row whose reading has no zone edges in the meta could never fire, and the lane would then trade a colder
-        row in its place without anyone knowing. That is a pack and a meta that do not belong together: the coin is
-        refused. zone_events, zone_states: the engine's names of the zone events and of the zone levels."""
-        if self.problem or self.meta is None:
-            return
+    def _missing_edges(self, rows: list, pairs: list, zone_events: set, zone_states: set) -> list:
         no_edges = set(self.meta.get('no_edges') or [])
         need = []
-        for r in self.rows:
+        for r in rows:
             need += [(k, k.rsplit('=', 1)[-1], zone_events) for k in [r['key']] + list(r.get('aliases') or [])]
-        for p in self.pairs:
+        for p in pairs:
             need.append((p['when'], p['when'].rsplit('=', 1)[-1], zone_events))
             need += [(f'{rd}={lv}', lv, zone_states) for rd, lv in p['conds']]
         missing = []
@@ -229,17 +325,36 @@ class CoinTable:
                 continue
             if b not in self.meta['edges']:
                 missing.append(name)
+        return missing
+
+    def check_edges(self, zone_events: set, zone_states: set) -> None:
+        """A row whose reading has no zone edges in the meta could never fire, and the lane would then trade a colder
+        row in its place without anyone knowing. That is a pack and a meta that do not belong together: the coin is
+        refused. A perp row without edges leaves out the coin's perp rows only (h15 and h60 go on). zone_events,
+        zone_states: the engine's names of the zone events and of the zone levels."""
+        if self.problem or self.meta is None:
+            return
+        missing = self._missing_edges(self.rows, self.pairs, zone_events, zone_states)
         if missing:
             self.problem = f'{META} has no zone edges for {len(missing)} row(s), first {missing[0]}'
+            return
+        if self.perp is not None and (self.perp_rows or self.perp_pairs):
+            missing = self._missing_edges(self.perp_rows, self.perp_pairs, zone_events, zone_states)
+            if missing:
+                self.drop_perp(f'{META} has no zone edges for {len(missing)} perp row(s), first {missing[0]}')
 
 
 class Tables:
-    """The packs and live_meta.json on disk, reloaded when a file changes (a new pack needs no restart)."""
+    """The packs and live_meta.json on disk, reloaded when a file changes (a new pack needs no restart).
 
-    def __init__(self, pack_dir: str, assets: list, run: str = '', max_rank: int = 40, clock: bool = False):
+    perp: also load perp_pack.json and perp_pair_pack.json. The reader passes HEAT_PERP_PACKS (default true); the parity
+    replay leaves them out, because its fixtures check h15 and h60 only."""
+
+    def __init__(self, pack_dir: str, assets: list, run: str = '', max_rank: int = 40, clock: bool = False, perp: bool = False):
         self.pack_dir, self.assets, self.run_override = pack_dir, list(assets), run
-        self.max_rank, self.clock = int(max_rank), bool(clock)
+        self.max_rank, self.clock, self.perp = int(max_rank), bool(clock), bool(perp)
         self.problem = 'tables not loaded yet'     # a reason no coin can be read (a pack itself), else None
+        self.perp_problem = None                   # with perp on: why the perp packs are not used (the main rows go on)
         self.pack_sha, self.run, self.top = '', run or 'unknown', 0
         self.files = {}                            # pack name: {'sha256', 'rows', 'schema'} of what was loaded
         self.coins = {}
@@ -250,7 +365,7 @@ class Tables:
 
     def _signature(self) -> tuple:
         sig = []
-        for name in (TRADED, PAIRS, META) + ((CLOCK,) if self.clock else ()):
+        for name in (TRADED, PAIRS, META) + ((CLOCK,) if self.clock else ()) + ((PERP, PERP_PAIRS) if self.perp else ()):
             try:
                 st = os.stat(self.path(name))
                 sig.append((name, st.st_mtime_ns, st.st_size, st.st_ino))
@@ -290,6 +405,7 @@ class Tables:
     def _load(self) -> None:
         self.coins, self.pack_sha, self.top, self.files = {}, '', 0, {}
         self.run = self.run_override or 'unknown'
+        self.perp_problem = None
         try:
             pack = self._file(TRADED, PACK_SCHEMA)
             top = pack.get('top')
@@ -306,12 +422,29 @@ class Tables:
         if not self.run_override:
             self.run = run_of(pack) or 'unknown'
         self.problem = None
+        perp = self._perp_files() if self.perp else None
+        off = parity_off(pack, pairs) if perp else set()
         shas = pack.get('table_sha256') if isinstance(pack.get('table_sha256'), dict) else {}
         for coin in self.assets:
             if not is_doge(coin):
-                self.coins[coin] = self._coin(coin, pack, pairs, clock, meta, shas.get(coin))
+                self.coins[coin] = self._coin(coin, pack, pairs, clock, meta, shas.get(coin), perp, off)
 
-    def _coin(self, coin: str, pack: dict, pairs: dict, clock, meta: dict, sha) -> CoinTable:
+    def _perp_files(self):
+        """(perp_pack, perp_pair_pack), or None with perp_problem saying why. The two go together: a perp pair replaces
+        the perp single it refines, so without the pair pack the perp singles would be another bet."""
+        try:
+            perp = self._file(PERP, PACK_SCHEMA)
+            top = perp.get('top')
+            if isinstance(top, bool) or not isinstance(top, int) or top < 1:
+                raise ValueError(f'{PERP} has no `top`')
+            return perp, self._file(PERP_PAIRS, PAIR_SCHEMA)
+        except ValueError as e:
+            self.perp_problem = str(e)
+            self.files.pop(PERP, None)
+            self.files.pop(PERP_PAIRS, None)
+            return None
+
+    def _coin(self, coin: str, pack: dict, pairs: dict, clock, meta: dict, sha, perp=None, off=frozenset()) -> CoinTable:
         t = CoinTable(coin)
         top = self.top
         mine = [r for r in pack['rows'] if isinstance(r, dict) and r.get('coin') == coin]
@@ -322,7 +455,7 @@ class Tables:
             t.problem = f'{TRADED} has no table hash for this coin'
             return t
         t.table_sha = sha
-        tfs, bases, ladder = set(), set(), {}
+        ladder = {}
         for i, r in enumerate(mine):
             try:
                 call_row(r, top, 0)
@@ -341,21 +474,17 @@ class Tables:
             else:
                 t.rows.append(r)
                 t.wanted['single'] += 1
-                t.want.add(r['key'])
-                t.want.update(r.get('aliases') or [])
-                tfs.add(tf_minutes(r['tf']))
         for name, src in ((PAIRS, pairs), (CLOCK, clock)):
             if src is None:
                 continue
-            problem = self._pairs(t, name, src, pack, ladder, tfs)
+            problem = self._pairs(t, name, src, pack, ladder)
             if problem:
                 t.problem = problem
                 return t
-        for k in t.want | t.states:                 # a context trigger or state needs no timeframe of bars
-            if key_tf(k) is not None:
-                tfs.add(key_tf(k))
-                bases.add(base_of(k))
-        t.tfs = sorted(tfs)
+        if perp is not None:
+            main_h = {int(r['h']) for r in mine} | {h for h in (pack.get('horizons') or []) if isinstance(h, int)}
+            self._perp_coin(t, pack, perp[0], perp[1], off, main_h)
+        bases = t.index()
         try:
             m = load_meta(meta, coin)
         except ValueError as e:
@@ -369,7 +498,7 @@ class Tables:
                   'no_edges': [b for b in (m.get('no_edges') or []) if b in bases]}
         return t
 
-    def _pairs(self, t: CoinTable, name: str, src: dict, pack: dict, ladder: dict, tfs: set):
+    def _pairs(self, t: CoinTable, name: str, src: dict, pack: dict, ladder: dict):
         """Add the coin's publishable rows of the pair or clock pack to t. Returns a reason to refuse the coin (a row
         the bot must not trade from), else None."""
         is_clock = name == CLOCK
@@ -386,8 +515,7 @@ class Tables:
                 t.skip(SKIP_RUN)
             elif r.get('table_sha256') != expect or (not is_clock and file_sha not in (None, t.table_sha)):
                 t.skip(SKIP_HASH)
-            elif r.get('dominance') is True or any(rd.split(' ')[0] in ('BTC.D', 'USDT.D', 'Dom') for rd, _ in p['conds']) \
-                    or p['when'].split(' ')[0] in ('BTC.D', 'USDT.D', 'Dom'):
+            elif _dominance(r, p):
                 t.skip(SKIP_DOMINANCE)
             elif r.get('live_parity') is False:
                 t.skip(SKIP_PARITY)
@@ -397,7 +525,81 @@ class Tables:
                 p['rank'] = effective_rank(p['heat'], ladder.get(p['h'], []))
                 t.pairs.append(p)
                 t.wanted['clock' if is_clock else p['kind']] += 1
-                t.want.add(p['when'])
-                t.want.update(t.aliases.get(p['when'], []))
-                t.states.update(rd for rd, _ in p['conds'])
         return None
+
+    def _perp_coin(self, t: CoinTable, pack: dict, perp: dict, pairs: dict, off: set, main_h: set) -> None:
+        """Add the coin's publishable rows of the perp packs to t (t.perp_rows, t.perp_pairs), with the same rules as the
+        main packs: singles up to HEAT_READER_MAX_RANK, pairs ranked on the perp singles' ladder of their horizon,
+        dominance rows skipped. Also skipped: rows on a main horizon (the main packs own h15 and h60), rows of another
+        run than the traded pack, rows whose long-table edges are not live_meta's, and rows on an indicator in `off`
+        (parity_off). A row the bot must not trade from leaves out all the coin's perp rows, never its main ones."""
+        t.perp = {'wanted': {'single': 0, 'pair': 0, 'triple': 0}, 'skipped': {}, 'problem': None}
+        t.perp_top = top = perp['top']
+        t.perp_aliases = {k: list(v) for k, v in t.aliases.items()}
+
+        def fail(why: str) -> None:
+            t.perp.update(skipped={}, problem=why)
+
+        mine = [r for r in perp['rows'] if isinstance(r, dict) and r.get('coin') == t.coin]
+        shas = perp.get('table_sha256') if isinstance(perp.get('table_sha256'), dict) else {}
+        sha = shas.get(t.coin)
+        if not mine:
+            return fail(f'{PERP} has no rows for this coin')
+        if not isinstance(sha, str) or not sha:
+            return fail(f'{PERP} has no table hash for this coin')
+        other_run = run_of(perp) != run_of(pack)
+        edges_ok = _edges_as_main(perp, t.coin)
+        ladder, rows = {}, []
+        for i, r in enumerate(mine):
+            try:
+                call_row(r, top, 0)
+                if r.get('table_sha256') not in (None, sha):
+                    raise ValueError(f'its table hash is not the coin\'s in {PERP}')
+            except ValueError as e:
+                return fail(f'{PERP} row {i + 1} of this coin ({str(r.get("key"))[:60]}): {e}')
+            have = t.perp_aliases.setdefault(r['key'], [])
+            have += [a for a in r.get('aliases') or [] if a not in have]
+            if int(r['h']) in main_h:
+                t.perp_skip(SKIP_PERP_H)
+                continue
+            if r['rank_coin'] <= top:
+                ladder.setdefault(int(r['h']), []).append(r['oheat_B'])
+            if r['rank_coin'] > self.max_rank:
+                t.perp_skip(SKIP_RANK)
+            elif other_run:
+                t.perp_skip(SKIP_PERP_RUN)
+            elif not edges_ok or r.get('edges_as_main') is not True:
+                t.perp_skip(SKIP_PERP_EDGES)
+            elif any(indicator_of(n) in off for n in row_names(r)):
+                t.perp_skip(SKIP_PARITY)
+            else:
+                rows.append(r)
+        file_sha = pairs.get('table_sha256').get(t.coin) if isinstance(pairs.get('table_sha256'), dict) else None
+        other_run = run_of(pairs) != run_of(pack)
+        edges_ok = _edges_as_main(pairs, t.coin)
+        prs = []
+        for i, r in enumerate(x for x in pairs['rows'] if isinstance(x, dict) and x.get('coin') == t.coin):
+            try:
+                p = check_pair(r, top, PAIR_SCHEMA)
+            except ValueError as e:
+                return fail(f'{PERP_PAIRS} row {i + 1} of this coin ({str(r.get("key"))[:60]}): {e}')
+            if p['h'] in main_h:
+                t.perp_skip(SKIP_PERP_H)
+            elif other_run:
+                t.perp_skip(SKIP_PERP_RUN)
+            elif r.get('table_sha256') != sha or file_sha not in (None, sha):
+                t.perp_skip(SKIP_HASH)
+            elif _dominance(r, p):
+                t.perp_skip(SKIP_DOMINANCE)
+            elif not edges_ok or r.get('edges_as_main') is not True:
+                t.perp_skip(SKIP_PERP_EDGES)
+            elif any(indicator_of(n) in off for n in row_names(r) + t.perp_aliases.get(p['when'], [])):
+                # the trigger fires through its aliases too (join), so a PVI alias of the trigger counts as PVI
+                t.perp_skip(SKIP_PARITY)
+            else:
+                p['rank'] = effective_rank(p['heat'], ladder.get(p['h'], []))
+                prs.append(p)
+        t.perp_rows, t.perp_pairs = rows, prs
+        t.perp['wanted']['single'] = len(rows)
+        for p in prs:
+            t.perp['wanted'][p['kind']] += 1

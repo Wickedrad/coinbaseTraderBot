@@ -45,6 +45,20 @@ test('parseHeatCalls: a good file becomes a snapshot with the coins in a map and
   assert.deepEqual(s.coins.get('BTC'), f.coins.BTC);
 });
 
+test('parseHeatCalls: the perp packs\' rows (240 and 1440 minutes, 60-minute readings) come through unchanged', () => {
+  // Trimmed from the oracle's perp_pack.json and perp_pair_pack.json at 52edf4c (BTC): a 4-hour single, a 4-hour pair, the
+  // hottest daily single and a daily single on 60-minute bars. Shares are fractions here, as the reader writes them.
+  const four = row({ key: '1m:MFI14=very low', tf: 1, h: 240, dir: 1, rank: 1, heat: 18.013, share: 0.54442, odds: 3.4784, hold: 49.514, dip: -25.268, move: 1.3351 });
+  const pair = row({ key: '5m:C-SWAK_BUTTER20=low (falling in) | 60m:SQZMOM sign=below 0', kind: 'pair', trig: '5m:C-SWAK_BUTTER20=low (falling in)', tf: 5, h: 240, dir: 1, rank: 1, heat: 20.7434, share: 0.58486, odds: 7.5131 });
+  const day = row({ key: '15m:ASI=high (rising in)', tf: 15, h: 1440, dir: -1, rank: 1, heat: 6.9474, share: 0.56695, odds: 8.2643, hold: 60.718, dip: -67.347, move: 25.731 });
+  const hourly = row({ key: '60m:DONCHIAN20pos=low (falling in)', tf: 60, h: 1440, dir: 1, rank: 10, heat: 5.1886, share: 0.60313, odds: 8.7439 });
+  const f = file({ coins: { BTC: coin({ calls: [four, pair, day, hourly] }) } });
+  const c = parseHeatCalls(JSON.stringify(f)).snapshot!.coins.get('BTC')!;
+  assert.equal(c.ok, true);
+  assert.deepEqual(c.calls, [four, pair, day, hourly]);
+  assert.deepEqual(c.calls.map((r) => [r.h, r.tf]), [[240, 1], [240, 5], [1440, 15], [1440, 60]]);
+});
+
 test('parseHeatCalls: fields the contract does not name are left out, null means an optional field is absent, an empty trig is none', () => {
   const raw = { ...file(), extra: 1, coins: { BTC: { ...coin(), why: null, note: 'x', calls: [{ ...row(), aliases: null, trig: '', hold: null, n_B: 33719 }] } } };
   const c = parseHeatCalls(JSON.stringify(raw)).snapshot!.coins.get('BTC')!;
