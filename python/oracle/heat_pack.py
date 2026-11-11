@@ -3,7 +3,8 @@ pass mark (python/oracle/prereg/OR-HM1.md, Amendments 3 and 4).
 
   python3 -m oracle.heat_pack --direction <direction_all.csv.gz | league_direction.csv.gz> --summary <summary.json>
                               --out <traded_pack.json> [--horizons 15,60] [--top 40] [--top-share 20]
-                              [--parity <dir of <COIN>/parity.json>] [--metas <dir of <COIN>/meta.json> --live-meta <live_meta.json>]
+                              [--parity <dir of <COIN>/parity.json>] [--metas <dir of <COIN>/meta.json> --live-meta <live_meta.json>
+                               [--pair-pack <pair_pack.json>]]
 
 Per coin and horizon: the `top` event levels by heat on B (windows per day x odds points) and the `top-share` by share
 right over the base rate (at least DIR_MIN_WD windows per day). Readings that are the same event under two names
@@ -113,16 +114,17 @@ def add_parity(pack: dict, parity: dict) -> dict:
     return pack
 
 
-def live_meta(pack: dict, metas: dict) -> dict:
-    """metas: {COIN: that coin's meta.json}. The zone edges of every reading behind a pack row (aliases included)."""
+def live_meta(pack: dict, metas: dict, more: dict = None) -> dict:
+    """metas: {COIN: that coin's meta.json}. The zone edges of every reading behind a pack row (aliases included).
+    more: {COIN: further reading names} (the pair pack's triggers and conditions)."""
     out = {}
-    for coin in sorted({r['coin'] for r in pack['rows']}):
+    for coin in sorted({r['coin'] for r in pack['rows']} | set(more or {})):
         m = metas.get(coin)
         if m is None:
             raise SystemExit(f'{coin}: no meta.json')
         if m.get('table_sha256') != pack['table_sha256'].get(coin):
             raise SystemExit(f'{coin}: meta.json is of another table than the pack')
-        names = set()
+        names = {n.removesuffix(' sign') for n in (more or {}).get(coin, ())}
         for r in pack['rows']:
             if r['coin'] == coin:
                 for k in [r['key']] + r['aliases']:
@@ -157,6 +159,7 @@ def main():
     ap.add_argument('--parity', default='')
     ap.add_argument('--metas', default='')
     ap.add_argument('--live-meta', default='')
+    ap.add_argument('--pair-pack', default='')
     a = ap.parse_args()
     d = pd.read_csv(a.direction)
     pack = build(d, json.load(open(a.summary)), tuple(int(x) for x in a.horizons.split(',')), a.top, a.top_share, source=a.direction.rsplit('/', 1)[-1])
@@ -167,7 +170,12 @@ def main():
         print('live parity: indicators that differ on a window:', pack['live_reader_parity']['indicators_that_differ'],
               '; rows flagged:', [(r['coin'], r['h'], r['key'], r['rank_coin']) for r in pack['rows'] if r['live_parity'] is False])
     if a.live_meta:
-        lm = live_meta(pack, _coin_files(a.metas, 'meta.json'))
+        more = {}
+        if a.pair_pack and os.path.isfile(a.pair_pack):             # keep the pair pack's readings in the edges file
+            with open(a.pair_pack) as f:
+                for r in json.load(f).get('rows', []):
+                    more.setdefault(r['coin'], set()).update(r['readings'])
+        lm = live_meta(pack, _coin_files(a.metas, 'meta.json'), more=more)
         with open(a.live_meta, 'w') as f:
             json.dump(lm, f, separators=(',', ':'), allow_nan=False)
         print(f'{a.live_meta}: ' + ', '.join(f'{c} {len(v["edges"])} readings with edges, {len(v["no_edges"])} without, step {v["price_step"]}' for c, v in lm.items()))

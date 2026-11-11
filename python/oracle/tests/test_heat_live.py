@@ -5,7 +5,7 @@ import pandas as pd
 import json
 import pytest
 
-from oracle import heat, heat_live, heat_parity
+from oracle import heat, heat_live, heat_pack, heat_parity
 from oracle.common import DAY, MIN, ms
 
 
@@ -75,6 +75,23 @@ def test_live_reader_matches_engine(tmp_path):
     w = df[df.ts >= m['t0'] + hi * MIN - 60 * DAY]
     assert heat_live.active_keys(heat_live.grid(w), meta, want=set(one))['events'] == one
 
+    # 3. states: the level a pair row conditions on = the engine's read_state (last closed bar of the reading's own
+    #    timeframe), at minutes where the longer timeframes do NOT close; asking for states changes no event
+    names = [R['name'] for R in readings if not R.get('ctx') and R.get('cond', True)]
+    pick = sorted(names)[::max(1, len(names) // 60)] + ['UTC4h']
+    ok = n_st = 0
+    for row in (hi - 2, hi - 8, hi - 23, hi - 1 - 240 - 37):
+        end = m['t0'] + (row + 1) * MIN
+        w = df[(df.ts < end) & (df.ts >= end - 60 * DAY)]
+        a = heat_live.active_keys(heat_live.grid(w), meta, want=set(), states=set(pick))
+        assert a['events'] == [] and set(a['states']) == set(pick)
+        for nm in pick:
+            R = eng[nm]
+            code = int(heat.read_state(R, np.array([row]))[0])
+            n_st += 1
+            ok += a['states'][nm] == (R['levels'][code] if code >= 0 else None)
+    assert n_st > 200 and ok / n_st >= 0.985, (ok, n_st)
+
 
 def test_context_and_gap_rules():
     # UTC4h is the block of the entry minute; the state fires on 15-minute closes only
@@ -140,3 +157,62 @@ def test_pack_parity_flag_and_live_meta():
     assert lm['SOL']['no_edges'] == ['UTC4h'] and lm['SOL']['price_step'] == 0.01
     with pytest.raises(SystemExit):
         heat_pack.live_meta(pack, {'SOL': dict(meta, table_sha256='other')})
+
+
+def test_pair_view_and_pack(tmp_path):
+    """heat_pairs: cells signed in A's direction, identical events collapse, the per-trigger cap, the twins' scale."""
+    from oracle import heat_pairs
+    base = dict(split='A', coin='SOL', n=4000, days=900, per_day=4.0, wd=3.0, excess=1.0, se=0.5, t=2.0, edge_p=0.03, t_p=4.0, excessL=0.5, tick=0.1,
+                deff=800.0, deff_p=800.0, p_up=0.53, p_dn=0.45, dip_up=4.0, dip_dn=5.0, hold_up=9.0, hold_dn=7.0, lift=1.0, t_lift=3.0, liftp=0.02,
+                t_liftp=3.0, rest_n=5000, lift2=0.5, t_lift2=2.5, liftp2=0.01, t_liftp2=2.5)
+    rows = []
+
+    def cell(kind, trig, cond, lv, h, eA, eB, nB=800, coin='SOL', wdB=2.0):
+        key = f'{trig} | {cond}={lv}'
+        rows.append(dict(base, coin=coin, kind=kind, key=key, trig=trig, cond=cond, lv=lv, h=h, edge_p=eA, liftp=eA / 2))
+        rows.append(dict(base, coin=coin, split='B', kind=kind, key=key, trig=trig, cond=cond, lv=lv, h=h, n=nB, days=300, per_day=nB / 365, wd=wdB,
+                         edge_p=eB, t_p=eB * 100, liftp=eB / 2, t_liftp=eB * 50))
+    for h in heat.HORIZONS:
+        for i, lv in enumerate(['very low', 'low', 'high', 'very high']):              # one trigger, four cells: the cap keeps three
+            cell('pair', '1m:RSI2=low (falling in)', '60m:ADX14', lv, h, -0.04, -0.01 * (i + 2))
+        cell('pair', '5m:CCI14=high (rising in)', '5m:MACD12/26 sign', 'above 0', h, 0.03, 0.02)
+        cell('pair', '5m:CCI14=high (rising in)', '5m:PPO12/26 sign', 'above 0', h, 0.03, 0.02)      # the same event under another name
+        cell('pair', '5m:CCI14=high (rising in)', 'UTC4h', '12-16', h, 0.02, -0.01)                  # direction lost on B
+        cell('pair', '5m:CCI14=high (rising in)', '15m:PVI', 'high', h, 0.02, 0.01, nB=20)           # no sample on B: not scored
+        cell('triple', '15m:WILLR14=very high | 60m:CG10=high', 'BTC.D 1d', 'up', h, -0.02, -0.03)
+        rows.append(dict(base, kind='single', key='1m:RSI2=low (falling in)', h=h))
+        rows.append(dict(base, split='B', kind='single', key='1m:RSI2=low (falling in)', h=h, n=3000, days=300, per_day=8.0, wd=6.0, edge_p=0.015, t_p=3.0))
+    d = tmp_path / 'SOL'
+    d.mkdir()
+    pd.DataFrame(rows).to_csv(d / 'heat.csv.gz', index=False)
+    (d / 'meta.json').write_text(json.dumps({'label': 'SOL', 'asset': 'SOL', 'twin': 0, 'table_sha256': 'abc',
+                                             'base': {'B': {str(h): {'p_up': 0.49, 'p_dn': 0.49} for h in heat.HORIZONS} | {'hold_up': 7.0, 'hold_dn': 7.0}}}))
+    t = tmp_path / 'SOL-twin1'
+    t.mkdir()
+    tw = pd.DataFrame(rows)
+    tw = tw[tw.kind != 'single'].assign(coin='SOL~twin1')
+    tw.loc[tw.split == 'B', 'edge_p'] *= 0.1
+    tw.to_csv(t / 'heat.csv.gz', index=False)
+    (t / 'meta.json').write_text(json.dumps({'label': 'SOL~twin1', 'asset': 'SOL', 'twin': 1, 'table_sha256': 'tw', 'base': {'B': {}}}))
+    single = {'table_sha256': {'SOL': 'abc'}, 'rows': [{'coin': 'SOL', 'h': 15, 'key': '1m:RSI2=low (falling in)', 'aliases': [], 'rank_coin': 4}]}
+    pp = heat_pairs.build(str(tmp_path), single, horizons=(15, 60), top=40, top_lift=20, per_trigger=3, all_dir=str(tmp_path / 'all'), log=lambda *a: None)
+    r15 = [r for r in pp['rows'] if r['h'] == 15]
+    assert len(r15) == len(pp['rows']) // 2 == 6 and (tmp_path / 'all' / 'pairs_SOL.csv.gz').exists()
+    rsi = [r for r in r15 if r['when'] == '1m:RSI2=low (falling in)']
+    assert {tuple(r['conds'][0]) for r in rsi} == {('60m:ADX14', 'very high'), ('60m:ADX14', 'high'), ('60m:ADX14', 'low')}      # the cap: three of four
+    top = min(r15, key=lambda r: r['rank_coin'])
+    assert top['conds'] == [['60m:ADX14', 'very high']] and top['dir'] == -1 and top['call'] == 'down' and abs(top['odds_B'] - 5.0) < 1e-6
+    assert abs(top['oheat_B'] - 10.0) < 1e-6 and abs(top['lift_B'] - 2.5) < 1e-6 and abs(top['share_B'] - 45.0) < 1e-6 and top['above_twin_max']
+    assert top['trigger'] == {'dir': 1, 'odds_B': 1.5, 'wd_B': 6.0, 'oheat_B': 9.0, 'rank_coin': 4} and top['readings'] == ['1m:RSI2', '60m:ADX14']
+    al = [r for r in r15 if r['aliases']]
+    assert len(al) == 1 and al[0]['key'].endswith('5m:MACD12/26 sign=above 0') and al[0]['readings'] == ['5m:CCI14', '5m:MACD12/26', '5m:PPO12/26']
+    clock = [r for r in r15 if r['clock']][0]
+    assert clock['odds_B'] == -1.0 and clock['dir'] == 1 and not clock['dominance']                 # kept in the pack, scored as it is
+    tri = [r for r in r15 if r['kind'] == 'triple'][0]
+    assert tri['when'] == '15m:WILLR14=very high' and tri['conds'] == [['60m:CG10', 'high'], ['BTC.D 1d', 'up']] and tri['dominance'] and tri['trigger'] is None
+    assert not any('15m:PVI' in r['key'] for r in pp['rows'])
+    ch = pp['chance']['15']
+    assert ch['real']['cells'] == 8 and ch['twin']['cells'] == 8 and ch['real']['kept_direction_on_B'] == 0.875 and ch['twin']['max_oheat_B'] == 1.0
+    lm = heat_pack.live_meta(single, {'SOL': {'price_step': 0.01, 'table_sha256': 'abc', 'edges': {'1m:RSI2': [1, 2, 3, 4], '60m:ADX14': [5, 6, 7, 8]}}},
+                             more={'SOL': {x for r in pp['rows'] for x in r['readings']}})
+    assert sorted(lm['SOL']['edges']) == ['1m:RSI2', '60m:ADX14'] and 'UTC4h' in lm['SOL']['no_edges'] and '5m:MACD12/26' in lm['SOL']['no_edges']

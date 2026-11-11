@@ -13,12 +13,16 @@ name: Oracle heat live reader
 #                            committed to this branch under research/oracle_heat/latest/
 #   [heat-parity:<run id>]   per coin: the engine's keys for the last 3 days of 2025 (fixture) against the live reader on
 #                            a window; summaries and fixtures committed under research/oracle_heat/parity/
+#   [heat-pairs:<run id>]    pair_pack.json (python/oracle/heat_pairs.py, OR-HM1 Amendment 5): the best pair and triple
+#                            cells of that run's stored tables per coin at 15 and 60 minutes, with the twins' scale;
+#                            live_meta.json is rewritten with the pair pack's readings added. Reads the stored tables
+#                            only (aggregates), no coin minute. Use one of the pack and pairs tags per push.
 
 on:
   push:
     branches: [claude/project-thread-nvd096]
     paths: ['.github/workflows/oracle-heat-live.yml', 'python/oracle/heat_live.py', 'python/oracle/heat_pack.py',
-            'python/oracle/heat_parity.py', 'python/oracle/tests/test_heat_live.py']
+            'python/oracle/heat_parity.py', 'python/oracle/heat_pairs.py', 'python/oracle/tests/test_heat_live.py']
 
 permissions:
   contents: read
@@ -42,6 +46,7 @@ jobs:
     outputs:
       pack: ${{ steps.plan.outputs.pack }}
       parity: ${{ steps.plan.outputs.parity }}
+      pairs: ${{ steps.plan.outputs.pairs }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -61,7 +66,7 @@ jobs:
           MSG: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
-          for t in pack parity; do
+          for t in pack parity pairs; do
             v=$(grep -oE "\[heat-$t:[0-9]+\]" <<< "$MSG" | head -1 | grep -oE '[0-9]+' || true)
             echo "$t=$v" >> "$GITHUB_OUTPUT"; echo "$t of run: ${v:-none}"
           done
@@ -109,7 +114,7 @@ jobs:
           mkdir -p out/pack
           (cd python && python3 -m oracle.heat_pack --direction ../data/league/direction_all.csv.gz --summary ../data/league/summary.json \
             --out ../out/pack/traded_pack.json --stamp "tables of run $SRC_RUN; pack job $GITHUB_RUN_ID at commit $GITHUB_SHA" \
-            "${PAR[@]}" --metas ../data/metas --live-meta ../out/pack/live_meta.json)
+            "${PAR[@]}" --metas ../data/metas --live-meta ../out/pack/live_meta.json --pair-pack ../research/oracle_heat/latest/pair_pack.json)
           ls -la out/pack
           bash deploy/drive_lab.sh put "models/oracle-heat/runs/$SRC_RUN/league" out/pack
       - name: Commit the pack to this branch (aggregates only; a bot push starts no workflow)
@@ -128,6 +133,63 @@ jobs:
             sleep $((2 ** i))
           done
           echo "::error::could not push the pack"; exit 1
+
+  pairs:
+    needs: test
+    if: needs.test.outputs.pairs != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      SRC_RUN: ${{ needs.test.outputs.pairs }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Pair pack (the stored tables only, aggregates, no coin minute)
+        run: |
+          set -euo pipefail
+          [ -s research/oracle_heat/latest/traded_pack.json ] || { echo "::error::no traded pack on the branch"; exit 1; }
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/$SRC_RUN" data/coins --include "/*/heat.csv.gz" --include "/*/meta.json"
+          ls data/coins
+          PAR=()
+          if [ -f research/oracle_heat/parity/RUN ] && [ "$(cut -d' ' -f1 research/oracle_heat/parity/RUN)" = "$SRC_RUN" ]; then
+            PAR=(--parity ../research/oracle_heat/parity)
+          fi
+          mkdir -p out/pairs out/pairs_all
+          (cd python && python3 -m oracle.heat_pairs --tables ../data/coins --pack ../research/oracle_heat/latest/traded_pack.json \
+            --out ../out/pairs/pair_pack.json --all ../out/pairs_all --stamp "tables of run $SRC_RUN; pairs job $GITHUB_RUN_ID at commit $GITHUB_SHA" \
+            "${PAR[@]}" --metas ../data/coins --live-meta ../out/pairs/live_meta.json) | tail -60
+          ls -la out/pairs out/pairs_all
+          bash deploy/drive_lab.sh put "models/oracle-heat/runs/$SRC_RUN/league" out/pairs
+          bash deploy/drive_lab.sh put "models/oracle-heat/runs/$SRC_RUN/league/pairs" out/pairs_all
+      - name: Commit the pair pack to this branch (aggregates only; a bot push starts no workflow)
+        env:
+          BR: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p research/oracle_heat/latest
+          cp out/pairs/pair_pack.json out/pairs/live_meta.json research/oracle_heat/latest/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/oracle_heat/latest/pair_pack.json research/oracle_heat/latest/live_meta.json
+          git commit -q -m "Oracle heat map: pair pack of run $SRC_RUN (written by the oracle-heat-live workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::error::could not push the pair pack"; exit 1
 
   parity:
     needs: test

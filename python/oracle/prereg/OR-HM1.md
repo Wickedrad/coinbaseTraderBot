@@ -297,3 +297,34 @@ the different keys is rounding at the size the product reaches after six years (
 Additions, neither changes a table or a rank: (a) each pack row carries `live_parity` (False for a PVI row on any
 coin) and the pack a `live_reader_parity` block; (b) `research/oracle_heat/latest/live_meta.json`, the zone edges
 and price step behind the pack's rows at the tables' precision, so a reader on the server needs no Drive access.
+
+# Amendment 5 (written 2026-11-11 16:31 UTC, Nov 11 11:31 AM EST, AFTER the league of run 43030435253 was read)
+
+Steven, Nov 11 16:17 UTC (11:17 AM EST): "do these heat map curves also sit on a kind of gradient matrix like the Chat
+GPT version was supposed to, comparing TA to others from the TA-lib plus times of day if that correlation exists as
+well". The tables hold that matrix (pairs and triples; the clock and dominance states as readings); the traded pack
+of Amendment 4 carries single event levels only. This amendment adds the matrix to what a bot lane can load. It
+changes no table and no rank of Amendment 4.
+
+**What had been seen when this was written.** The league's hot-spot counts by kind, the top rows of its four lists
+(which hold some hot pairs and triples), the 120 best-replicating relationships per coin in the viewer, and the
+clock rows of the direction table. The full ranking of pair cells on 2025 had not been computed.
+
+1. **Pair pack** (`python/oracle/heat_pairs.py` -> `research/oracle_heat/latest/pair_pack.json`, schema
+   `oracle-heat-pairs-1`). Universe: every pair and triple cell the tables stored, at 15 and 60 minutes, with a
+   sample on both periods (30 events on 30 / 20 days, and as many of the trigger's other events). No pass mark removes
+   a row. Direction: the sign of the cell's odds on A; every B number is signed in it. Per coin and horizon: the 40
+   cells with the highest heat (windows per day x odds points on B) and the 20 with the highest lift heat (windows
+   per day x the odds points the cell has over its trigger's other events on B), at most 3 rows of one trigger in each
+   list. Cells with identical samples and numbers on both periods are one row. Each row carries its trigger's own
+   numbers, the league's hot and replicated marks (information only) and whether it is above the best twin cell.
+2. **Chance scale.** The same view on the 12 no-signal twins: cells, share that kept direction, share whose lift kept
+   its sign, the largest and 99th-percentile heat and lift heat.
+3. **Live reader.** `heat_live.active_keys(..., states=...)` returns the level a reading holds at the last closed bar
+   of its own timeframe at any minute (the engine's `read_state`, what a pair cell conditions on). Test: it equals
+   the engine on a synthetic history (at least 98.5% of sampled states).
+4. **Limits.** Only relationships with a cell that was hot on A were stored (BTC and ETH: the 150,000 strongest by
+   lift on A), the 170 strongest triggers per coin were crossed with every reading and every other event level only
+   with the clock and dominance states. The clock is six 4-hour UTC blocks; hour of day, weekday and the New York
+   open are not in these tables. Rows of one trigger are close relatives. A map on coin price, not a Kalshi-price
+   result.

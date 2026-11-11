@@ -199,47 +199,67 @@ def dominance_levels(dom: dict, day_ms: int) -> dict:
     return out
 
 
-def active_keys(m: dict, meta: dict, want: set = None, dom: dict = None, window: int = WINDOW_BARS, tfs=None, levels: bool = False) -> dict:
+def active_keys(m: dict, meta: dict, want: set = None, dom: dict = None, window: int = WINDOW_BARS, tfs=None, levels: bool = False,
+                states: set = None) -> dict:
     """The event keys that fire at the close of the grid's last minute.
 
     m: grid(...) of one coin, ending at the last closed minute. meta: that coin's meta.json (edges, price_step).
     want: only these keys (the tables' `key` spelling); None = every key. dom: daily dominance closes for the context
     states (optional). Only timeframes whose bar closes at this minute are computed. levels=True also returns the level
-    every computed reading holds now (for pair / triple conditions).
+    every computed reading holds now. states: reading names of ANY timeframe (a pair row's `conds`, e.g. '60m:ADX14',
+    '5m:MOM10 sign', 'UTC4h') whose level at the last CLOSED bar of their own timeframe is wanted, whether or not that
+    bar closes at this minute: the engine's heat.read_state, what a pair or triple cell conditions on.
 
     Returns {'ts': close time in ms (= the entry minute's open), 'closed': [timeframes], 'events': [keys],
-             'no_reading': [timeframes whose last bar is stale after a data gap], 'levels': {reading: level}}."""
+             'no_reading': [timeframes whose last bar is stale after a data gap], 'levels': {reading: level},
+             'states': {reading: level, or None when it has no reading now}}."""
     n, t0 = m['n'], m['t0']
     ts = t0 + n * MIN
     edges, step = meta.get('edges', {}), meta.get('price_step')
     bases = None if want is None else {k.rsplit('=', 1)[0] for k in want}
     bases = None if bases is None else bases | {b[:-5] for b in bases if b.endswith(' sign')}
     ev, closed, dead, lv_now = [], [], [], {}
+    st = None if states is None else {s: None for s in states}
     for k in (tfs or heat.TFS):
-        if n % k or n // k < 2:
+        if n // k < 2:
             continue
-        closed.append(k)
-        R, _, _ = tf_codes(m, k, edges, step, window, want_bases=bases)
-        if m['gap'][n - k:n].any():
-            dead.append(k)
+        closes = n % k == 0
+        sb = set() if st is None else {(s[:-5] if s.endswith(' sign') else s) for s in st if s.startswith(f'{k}m:')}
+        if not closes and not sb:
+            continue
+        wb = (None if bases is None else bases | sb) if closes else sb
+        R, _, _ = tf_codes(m, k, edges, step, window, want_bases=wb)   # the bars of k complete at this minute: the last one is the last closed bar
+        if closes:
+            closed.append(k)
+            if m['gap'][n - k:n].any():
+                dead.append(k)
         for r in R:
-            for lname in _fires(r):
-                ev.append(f'{r["name"]}={lname}')
-            if levels and r['codes'][-1] >= 0:
-                lv_now[r['name']] = r['levels'][int(r['codes'][-1])]
-    if n % 15 == 0:                                                 # context states: every 15-minute close while they hold
+            if closes:
+                for lname in _fires(r):
+                    ev.append(f'{r["name"]}={lname}')
+                if levels and r['codes'][-1] >= 0:
+                    lv_now[r['name']] = r['levels'][int(r['codes'][-1])]
+            if st is not None and r['name'] in st and r['codes'][-1] >= 0:
+                st[r['name']] = r['levels'][int(r['codes'][-1])]
+    want_ctx = st is not None and any(not s[:1].isdigit() for s in st)
+    if n % 15 == 0 or want_ctx:
         ctx = {'UTC4h': f'{4 * ((n // 240) % 6):02d}-{4 * ((n // 240) % 6) + 4:02d}'}
         ctx.update(dominance_levels(dom, ts) if dom else {})
         for name, lv in ctx.items():
-            if lv not in heat.NEUTRAL:
-                ev.append(f'{name}={lv}')
-            if levels:
-                lv_now[name] = lv
+            if n % 15 == 0:                                         # context states fire on every 15-minute close while they hold
+                if lv not in heat.NEUTRAL:
+                    ev.append(f'{name}={lv}')
+                if levels:
+                    lv_now[name] = lv
+            if st is not None and name in st:
+                st[name] = lv
     if want is not None:
         ev = [k for k in ev if k in want]
     out = {'ts': int(ts), 'closed': closed, 'events': sorted(set(ev)), 'no_reading': dead}
     if levels:
         out['levels'] = lv_now
+    if st is not None:
+        out['states'] = st
     return out
 
 
