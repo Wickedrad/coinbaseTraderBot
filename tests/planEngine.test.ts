@@ -52,7 +52,9 @@ async function setup(o: { env?: Record<string, string>; historySec?: number; clo
   for (let s = o.historySec ?? 600; s >= 0; s--) { x += 0.0002 * (rand() - 0.5); idx.add(Math.exp(x), now - s * 1000); }
   const paper = new PaperExchange(undefined, 200, (t) => md.books.get(t), () => ({ takerMultiplier: 1, makerMultiplier: 0 }));
   const kill = new KillSwitch(path.join(dir, 'kill.json'), audit);
-  const oms = new Oms({ gateway: paper, audit, statePath: path.join(dir, 'oms.json'), feesFor: (t) => md.feesFor(t), sleep: async () => undefined });
+  // A clocked test drives the OMS's clock too, as one clock runs both in the bot: the in-flight exit guard compares an order's
+  // send time with the evaluation's.
+  const oms = new Oms({ gateway: paper, audit, statePath: path.join(dir, 'oms.json'), feesFor: (t) => md.feesFor(t), sleep: async () => undefined, ...(clock ? { now: () => clock.t } : {}) });
   kill.bindCancelAll((r) => oms.cancelAll(r));
   paper.on('fill', (f) => oms.onFill(f));
   paper.on('order', (ord) => oms.onExchangeOrder(ord));
@@ -591,4 +593,86 @@ test('PLAN_RULES on, HOLD_EXIT=false: a plan position sitting at +$1.56 is held;
   for (let i = 0; i < 15; i++) { g.advance(1000); await g.yesAt(0.59); }
   assert.deepEqual(g.exits(), [], g.notes());
   assert.equal(g.engine.status.get(g.t)?.hold, undefined);
+});
+
+// ---- Review fixes (Nov 11): the in-flight guard on the plan's sale, the trade after a partial sale of a plan position ------
+
+function liveEnv(): Record<string, string> {
+  const key = path.join(tmpDir(), 'k.pem');
+  fs.writeFileSync(key, 'x', { mode: 0o600 });
+  return { TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' };
+}
+
+test('PLAN_RULES on, in-flight exit guard: live, a plan sale whose fills are not booked yet is waited for: no new order, no failed try, no alert; booked, the rest goes again; never booked, it lets go at 2 s', async () => {
+  type Fill = Parameters<Oms['onFill']>[0];
+  const armed = async () => {
+    const clock = { t: Date.now() };
+    const g = await setup({ env: { ...PLAN_ON, ...liveEnv() }, clock });
+    await g.hold('bid', 0.4, 10);
+    g.tag('yes');
+    // Live's order of events: the acknowledgement says what filled; the fills reach the books when the test books them.
+    const queued: Fill[] = [];
+    g.paper.removeAllListeners('fill');
+    g.paper.on('fill', (f: Fill) => queued.push(f));
+    const at = async (bid: number, bidSize = 50, ms = 1000) => { g.advance(ms); g.book(bid, Math.round((bid + 0.02) * 100) / 100, bidSize); await g.engine.tick(); };
+    await at(0.59);
+    await at(0.62);
+    // 0.57 with 4 bid: the plan's sale (10 at 0.55) takes the 4; the books still hold 10.
+    await at(0.57, 4);
+    assert.deepEqual(g.exits().map((o) => [o.price, o.count, o.exchangeFillCount, o.filledCount]), [[0.55, 10, 4, 0]], g.notes());
+    assert.equal(g.oms.positions.position(g.t), 10);
+    const state = () => g.engine.planPositions.get(g.t)!.state;
+    return { ...g, at, state, book: () => { for (const f of queued.splice(0)) g.oms.onFill(f); } };
+  };
+  const g = await armed();
+  // A second later: the sale's fills are still on their way. Nothing is sent and no try has failed.
+  await g.at(0.57, 4);
+  assert.equal(g.exits().length, 1, g.notes());
+  assert.ok(g.notes().includes('plan ratchet sale: an order is still working'), g.notes());
+  assert.deepEqual([g.state().failedTries, g.state().selling?.tries], [0, 1]);
+  // Booked: 6 left. The try left the position open: one failed try, and the 6 go again at the bid less 2 ticks.
+  g.book();
+  assert.equal(g.oms.positions.position(g.t), 6);
+  await g.at(0.57, 4, 500);
+  assert.deepEqual(g.exits().map((o) => [o.price, o.count]), [[0.55, 10], [0.55, 6]], g.notes());
+  assert.equal(g.state().failedTries, 1);
+  assert.deepEqual(g.planEvents().filter((e) => e.event === 'plan_ratchet_retry').map((e) => [e.failedTries, e.count, e.resend ?? false]), [[1, 6, false]]);
+  assert.equal(g.audit.tail(50, 'alert').length, 0);
+  // Fills never booked (lost): the guard lets go 2 s after the sale was sent, whatever its state.
+  const h = await armed();
+  await h.at(0.57, 4);
+  await h.at(0.57, 4, 500);
+  assert.deepEqual([h.exits().length, h.state().failedTries], [1, 0], '1.5 s after it: still waited for');
+  await h.at(0.57, 4, 500);
+  assert.deepEqual(h.exits().map((o) => o.count), [10, 10], h.notes());
+});
+
+test('PLAN_RULES on, after a partial sale of a plan position: the hold exit and the plan\'s ratchet measure the trade (banked plus the rest); the rest is sold by the hold exit at 10 s, not on a fake drop; paper and live alike', async () => {
+  for (const env of [PLAN_ON, { ...PLAN_ON, ...liveEnv() }]) {
+    const clock = { t: Date.now() };
+    const g = await setup({ env, clock });
+    const mode = g.cfg.mode;
+    await g.hold('bid', 0.4, 10);
+    g.tag('yes');
+    const at = async (b: number) => { g.advance(1000); await g.yesAt(b); };
+    // +$1.56 at 0.59: the plan's ratchet arms (stop +$1.06); 5 s at +$1.50 or more.
+    for (let i = 0; i < 6; i++) await at(0.59);
+    assert.deepEqual([g.engine.planPositions.get(g.t)?.state.stop, g.engine.status.get(g.t)?.hold?.cumSec], [1.06, 5], g.notes());
+    // 6 of the 10 sold at 0.59 bank +$0.93: the 4 left net +$0.62 at that bid, under the plan's stop and under the hold
+    // exit's levels; the trade is +$1.55.
+    await g.oms.submit({ ticker: g.t, asset: 'BTC', windowCloseTs: g.market.closeTime, side: 'ask', price: 0.59, count: 6, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', fairValue: 0.5, modelId: 'm', decisionId: 'part' });
+    assert.equal(g.oms.positions.position(g.t), 4);
+    // 0.60: the trade +$1.59 sets a new best (the stop rises to +$1.09), its event carrying what was banked.
+    await at(0.6);
+    const raise = g.planEvents().filter((e) => e.event === 'plan_ratchet_raise');
+    assert.deepEqual(raise.map((e) => [e.count, e.banked, e.stop, e.best]), [[4, 0.928, 1.09, 1.59]], `${mode}: ${g.notes()}`);
+    for (let i = 0; i < 3; i++) await at(0.59);
+    assert.equal(g.exits().length, 1, `${mode}: only the sale by hand: ${g.notes()}`);
+    assert.equal(g.engine.status.get(g.t)?.hold?.cumSec, 9);
+    // 10 s in all at +$1.50 or more on the trade: the hold exit sells the 4 at the bid.
+    await at(0.59);
+    assert.deepEqual(g.exits().map((o) => [o.side, o.price, o.count, o.filledCount]), [['ask', 0.59, 6, 6], ['ask', 0.59, 4, 4]], `${mode}: ${g.notes()}`);
+    assert.ok(g.whys().includes('hold exit: +$1.55 net (+$0.93 banked by partial sales) on 4 at bid 0.59, 10.0 s in all at +$1.50 or more, the last 10.0 s in a row at +$1.00 or more'), g.whys().join(' | '));
+    assert.deepEqual(g.planEvents().map((e) => e.event), ['plan_ratchet_arm', 'plan_ratchet_raise'], 'the plan did not sell');
+  }
 });

@@ -74,7 +74,7 @@ import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from '../bot/risk/quotaPace
 import { HoldExits } from '../bot/strategy/holdExit';
 import { ProfitRatchets, type RatchetReading } from '../bot/strategy/profitRatchet';
 import { PlanPositions, type PlanPosition } from '../bot/plan/planPositions';
-import { planMarkTried, planStep, type PlanEvent, type PlanRatchetSettings, type PlanSale } from '../bot/plan/planRatchet';
+import { planBreakEvenUsd, planMarkTried, planStep, type PlanEvent, type PlanRatchetSettings, type PlanSale } from '../bot/plan/planRatchet';
 import { exitInFlight, type GuardOrder } from '../bot/oms/exitGuard';
 import { readRecordings, ReplayState } from './replay';
 import { AccuracyGate, type AccuracyGateConfig } from '../bot/strategy/accuracyGate';
@@ -427,10 +427,13 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const holdExits = new HoldExits(strategy.holdExit);
   // RATCHET (Steven, Nov 11): the profit ratchet of every position that is not a plan position, as the engine runs it.
   const profitRatchets = new ProfitRatchets(strategy.profitRatchet);
-  /** One evaluation of the profit ratchet (the engine's Engine.ratchetStep); undefined when off or a plan position. */
-  const ratchetAt = (ticker: string, position: number, netUsd: number | undefined, plan: boolean): RatchetReading | undefined => {
+  /** One evaluation of the profit ratchet (the engine's Engine.ratchetStep, with the plan ratchet's fee break-even); undefined
+   *  when off or a plan position. */
+  const ratchetAt = (ticker: string, position: number, netUsd: number | undefined, plan: boolean, tick: number): RatchetReading | undefined => {
     if (plan || !strategy.profitRatchet.enabled) { profitRatchets.forget(ticker); return undefined; }
-    const r = profitRatchets.step(ticker, position, netUsd, st.now);
+    const p = pos.get(ticker);
+    const side = openSidePrice(p);
+    const r = profitRatchets.step(ticker, position, netUsd, st.now, planBreakEvenUsd(Math.abs(position), side !== undefined && side > 0 && side < 1 ? side : undefined, openEntryFee(p) ?? 0, openBankedUsd(p), tick, DEFAULT_FEES));
     if (r.event === 'arm') exits.ratchetArms!++;
     return r;
   };
@@ -462,9 +465,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const closeOf = new Map<string, number>();
   const ratchets = new Map<string, LiquidityRatchet>();
   const hunts = new Map<string, ConfluenceRatchetExit>();
-  const pending = new Map<string, { side: 'bid' | 'ask'; price: number; count: number; kind: 'fv' | 'tp' | 'rt' | 'snipe' | 'hold' | 'ratchet' | 'plan'; stop?: number; liquidation?: { hold: boolean; ratchet?: boolean }; plan?: PlanSale }>();
-  // HOLD_EXIT: hold exits, quota snipes and profit ratchet sales sent, until their fills mark the contract (as the engine does
-  // on the fill).
+  const pending = new Map<string, { side: 'bid' | 'ask'; price: number; count: number; kind: 'fv' | 'tp' | 'rt' | 'snipe' | 'hold' | 'ratchet' | 'plan'; stop?: number; liquidation?: { hold: boolean; snipe?: boolean; ratchet?: boolean }; plan?: PlanSale; why?: string }>();
+  // HOLD_EXIT: hold exits and quota snipes sent, until their fills mark the contract (as the engine does on the fill); a profit
+  // ratchet sale alone marks nothing.
   const liquidations = new Map<string, boolean>();
   /** The pending kind of an immediate exit, by its label (a take-profit keeps its name: its fills feed the bench). */
   const exitKindOf = (why: string): 'tp' | 'snipe' | 'hold' | 'ratchet' | 'fv' => why.startsWith('take-profit') ? 'tp' : why.startsWith('quota snipe') ? 'snipe' : why.startsWith('hold exit') ? 'hold' : why.startsWith('profit ratchet') ? 'ratchet' : 'fv';
@@ -499,7 +502,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     if (r.alert) planStats.alerts++;
     planPositions.setState(m.ticker, r.state);
     if (!r.sale || (opts.tradeFromMs !== undefined && st.now < opts.tradeFromMs)) return false;
-    pending.set(m.ticker, { side: r.sale.side, price: r.sale.price, count: r.sale.count, kind: 'plan', plan: r.sale });
+    pending.set(m.ticker, { side: r.sale.side, price: r.sale.price, count: r.sale.count, kind: 'plan', plan: r.sale, why: r.sale.why });
     return true;
   };
   // The paper bot's exploration entries and training trades (with the paper options; see below).
@@ -519,7 +522,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const stopByOrder = new Map<string, number>();
   const exitLedger = new Map<string, Array<{ sideSign: number; n: number; proceeds: number }>>();
   let slipSum = 0, slipN = 0;
-  /** The plan's reason for each entry order (opts.fillLog), carried onto its fills. */
+  /** The plan's reason for each entry order (opts.fillLog), carried onto its fills; an immediate exit's whole reason too, as the
+   *  paper bot's decision audit has it (its net, banked and stop read as the engine's). */
   const entryWhy = new Map<string, string>();
   const gate = opts.accuracyGate?.enabled ? new AccuracyGate(opts.accuracyGate, opts.accuracyGateFile, () => st.now) : undefined;
   // The seeded scorecard covers settlements up to its newest row; the warm-up settles the rest into the gate (Nov 4: paper's
@@ -792,8 +796,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         if (d.ok && exitInFlight(exitSends, m.ticker, st.now)) return;
         if (d.ok) {
           const id = `${m.ticker}-${st.now}-${++exitSeq}-exit-${due.kind}`;
-          if (due.liquidation) liquidations.set(id, due.liquidation.hold);
+          if (due.liquidation && (due.liquidation.hold || due.liquidation.snipe)) liquidations.set(id, due.liquidation.hold);
           if (due.stop !== undefined) stopByOrder.set(id, due.stop);
+          if (opts.fillLog && due.why) entryWhy.set(id, due.why);
           exits.orders++;
           // The plan's try goes out (Engine.planRecord): the next evaluation judges it; a gap it carries is listed.
           const pp = due.plan ? planPositions.get(m.ticker) : undefined;
@@ -832,7 +837,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           return;
         }
         // RATCHET: the profit ratchet needs no model; its stop sells from the lane as the quota floor does.
-        const ratchetL = ratchetAt(m.ticker, posL, netL, false);
+        const ratchetL = ratchetAt(m.ticker, posL, netL, false, m.tickSize);
         // HOLD_EXIT: the seconds in profit keep counting on the fresh book; the hold exit does not sell from the lane.
         if (strategy.holdExit.enabled) holdExits.sample(m.ticker, posL, netL, st.now, ratchetL?.armed === true);
         const lane = exitOnlyPlan(view, stratRun, {
@@ -848,7 +853,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           const hunt = p === lane.huntPlan;
           if (hunt) exits.ratchetTriggers++;
           if (p === lane.floorSale) exits.floorSales!++;
-          pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: hunt ? 'rt' : exitKindOf(p.why), ...(hunt ? { stop: lane.hunt!.plan!.stop } : {}), ...(p.liquidation ? { liquidation: p.liquidation } : {}) });
+          pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: hunt ? 'rt' : exitKindOf(p.why), ...(hunt ? { stop: lane.hunt!.plan!.stop } : {}), ...(p.liquidation ? { liquidation: p.liquidation } : {}), why: p.why });
         }
         if (opts.paper) await fireExit(view.pYes, bid?.price, ask?.price);
       };
@@ -1035,7 +1040,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const restR = positionNetAtBid(pos.position(m.ticker), sideR !== undefined && sideR > 0 && sideR < 1 ? sideR + (openEntryFee(pR) ?? 0) : undefined, bid, ask, DEFAULT_FEES);
       // The trade's net: what partial sales banked plus the rest at the bid (tradeNetAtBid).
       const netR = restR === undefined ? undefined : restR + openBankedUsd(pR);
-      const ratchet = ratchetAt(m.ticker, pos.position(m.ticker), netR, planPos !== undefined);
+      const ratchet = ratchetAt(m.ticker, pos.position(m.ticker), netR, planPos !== undefined, m.tickSize);
       if (inflightFor(m.ticker)) { // orders/cancels still travelling: no new plan until they land
         if (planSelling && opts.paper) await fireExit(pYes, bid.price, ask.price);
         continue;
@@ -1192,7 +1197,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         // price it never rested, so every replay filled 0 contracts on wall asks). Immediate exits queue for next tick.
         if (p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel') {
           // Queue for next tick, like every other exit (a take-profit keeps its name: its fills feed the bench).
-          if (!pending.has(m.ticker)) pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: exitKindOf(p.why), ...(p.liquidation ? { liquidation: p.liquidation } : {}) });
+          if (!pending.has(m.ticker)) pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: exitKindOf(p.why), ...(p.liquidation ? { liquidation: p.liquidation } : {}), why: p.why });
           continue;
         }
         // A taker entry against an existing position is an early exit in disguise

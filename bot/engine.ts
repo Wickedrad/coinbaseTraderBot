@@ -40,7 +40,7 @@ import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
 import { HoldExits, type HoldReading } from './strategy/holdExit';
 import { ProfitRatchets, type RatchetReading } from './strategy/profitRatchet';
 import { PlanPositions, type PlanPosition } from './plan/planPositions';
-import { planMarkTried, planStep, type PlanEvent, type PlanSale } from './plan/planRatchet';
+import { planBreakEvenUsd, planMarkTried, planStep, type PlanEvent, type PlanSale } from './plan/planRatchet';
 import type { SinuousEntryGate } from './strategy/sinuousEntry';
 import { tennisHighLeverage, type CurveReading, type SinuousExitGate } from './strategy/sinuousExit';
 import type { TakeProfitBench } from './strategy/takeProfitBench';
@@ -458,7 +458,8 @@ export class Engine {
     this.pacer = new HourlyQuotaPacer(d.cfg.strategy.pacer, this.now(), d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'quota_pacer_state.json') : undefined);
     // One ratchet (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC): a plan position's defaults are the profit ratchet's dollars.
     this.planPositions = new PlanPositions(d.cfg.strategy.profitRatchet, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'plan_positions.json') : undefined);
-    this.profitRatchets = new ProfitRatchets(d.cfg.strategy.profitRatchet);
+    // Saved beside them as the plan's ratchets are: a restart or deploy must not lower an armed stop.
+    this.profitRatchets = new ProfitRatchets(d.cfg.strategy.profitRatchet, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'profit_ratchet_state.json') : undefined, this.now());
     if (d.snn) this.attachBlender(d.snn.blender);
     // Registered before the startup reconciliation replays fills, so the
     // balance monitor sees every cash movement the bot's trading causes.
@@ -471,7 +472,7 @@ export class Engine {
       if (book) { const c = this.pacer.onFill(f, fee, book, this.now()); if (Math.abs(c) > 1e-9) d.audit.write('pacer', { event: 'credit', ticker: f.ticker, usd: Math.round(c * 1e4) / 1e4, ...this.pacer.status(this.now()) }); }
       const signed = f.side === 'bid' ? f.count : -f.count;
       // HOLD_EXIT and RATCHET: a position that went flat or changed side starts its count and its ratchet afresh, also between
-      // two evaluations; the fill of a hold exit, a quota snipe or a profit ratchet sale starts the re-entry rule
+      // two evaluations (the ratchet after an add too); the fill of a hold exit or a quota snipe starts the re-entry rule
       // (bot/strategy/holdExit.ts).
       this.holdExits.onFill(f.ticker, positionAfter - signed, positionAfter);
       this.profitRatchets.onFill(f.ticker, positionAfter - signed, positionAfter);
@@ -2496,7 +2497,7 @@ export class Engine {
     const netNow = tradeNetAtBid(view);
     // RATCHET (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC): the profit ratchet of a position that is not a plan position,
     // on this evaluation's net; a plan position has the plan's (planEvaluate, the same core).
-    const ratchet = this.ratchetStep(m.ticker, st, view.position, netNow, now, planPos !== undefined);
+    const ratchet = this.ratchetStep(m.ticker, st, view, netNow, now, planPos !== undefined);
     // The plan's ratchet and end rule (bot/plan/planRatchet.ts), on every evaluation, the final seconds included; before
     // decide() so that no taker entry buys back what the plan's sale sells in the same tick.
     const planRun = planPos ? this.planEvaluate(m, st, planPos, bid, ask, now) : undefined;
@@ -2818,7 +2819,7 @@ export class Engine {
     // The trade's net (banked by partial sales plus the rest at the bid), as in a full evaluation.
     const netNow = tradeNetAtBid(view);
     // RATCHET: the profit ratchet needs no model; its stop sells from this lane as the quota floor does.
-    const ratchet = this.ratchetStep(m.ticker, st, position, netNow, now, false);
+    const ratchet = this.ratchetStep(m.ticker, st, view, netNow, now, false);
     const lane = exitOnlyPlan(view, S, {
       why, exits: S.exitPolicy !== 'hold', hunt: this.huntAllowed() ? this.hunts.get(m.ticker) : undefined,
       pacerUsd: this.pacer.neededUsd(now), pacerFloor: S.pacer.floor === 'off' ? undefined : this.quotaFloors.floor(m.ticker, position),
@@ -2873,14 +2874,16 @@ export class Engine {
   }
 
   /** RATCHET: one evaluation of the profit ratchet of a position that is not a plan position (bot/strategy/profitRatchet.ts);
-   *  undefined when it is off or the position is a plan position (the plan's ratchet runs that one). Its arming is audited. */
-  private ratchetStep(ticker: string, st: MarketStatus, position: number, netUsd: number | undefined, now: number, plan: boolean): RatchetReading | undefined {
+   *  undefined when it is off or the position is a plan position (the plan's ratchet runs that one). Its arming is audited.
+   *  The fee break-even is the plan ratchet's (planBreakEvenUsd): one stop for every position. */
+  private ratchetStep(ticker: string, st: MarketStatus, view: MarketView, netUsd: number | undefined, now: number, plan: boolean): RatchetReading | undefined {
     if (plan || !this.d.cfg.strategy.profitRatchet.enabled) {
       this.profitRatchets.forget(ticker);
       st.ratchet = undefined;
       return undefined;
     }
-    const r = this.profitRatchets.step(ticker, position, netUsd, now);
+    const position = view.position;
+    const r = this.profitRatchets.step(ticker, position, netUsd, now, planBreakEvenUsd(Math.abs(position), view.entrySidePrice, view.entryFeePerContract ?? 0, view.bankedUsd ?? 0, view.tickSize, view.fees));
     st.ratchet = Math.abs(position) > 1e-9 ? r : undefined;
     if (r.event === 'arm') this.d.audit.write('pacer', { event: 'ratchet_arm', ticker, netUsd: r.best, stop: r.stop, position });
     return r;
@@ -3132,8 +3135,9 @@ export class Engine {
     // Tagged before it is sent: a paper fill arrives inside submit(), a live one may beat its acknowledgement.
     if (p.purpose === 'exit' && p.why.startsWith('exit curve: cross')) this.tagScoredExit('cross', decisionId, p);
     else if (p.purpose === 'exit' && p.why.startsWith('take-profit') && !tennis) this.tagScoredExit('take-profit', decisionId, p);
-    // HOLD_EXIT: the re-entry mark waits for the sale's fill (a refused or unfilled order sold nothing).
-    if (p.liquidation && !tennis && cfg.strategy.holdExit.enabled) this.tagLiquidation(decisionId, p, m.closeTime);
+    // HOLD_EXIT: the re-entry mark waits for the sale's fill (a refused or unfilled order sold nothing). Only a hold exit's or a
+    // quota snipe's (Steven, Nov 11 8:42-8:45 AM EST / 13:42-13:45 UTC): a profit ratchet sale alone marks nothing.
+    if (p.liquidation && (p.liquidation.hold || p.liquidation.snipe) && !tennis && cfg.strategy.holdExit.enabled) this.tagLiquidation(decisionId, p, m.closeTime);
     const rec = await oms.submit(intent);
     if (cfg.mode === 'paper' && !tennis) this.tagLiveBlock(rec.clientOrderId, p);
     const fx = this.fillX.get(p);

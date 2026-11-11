@@ -221,7 +221,7 @@ test('re-entry: after a hold exit or a quota snipe, the same contract only while
   assert.equal(h.reentryBlock('T', 300, 900), undefined, 'nothing sold here: no limit');
   h.soldBy('T', T0 + 900_000, T0);
   assert.equal(h.reentryBlock('T', 451, 900), undefined, 'more than half left');
-  assert.match(h.reentryBlock('T', 450, 900) ?? '', /^re-entry after a hold exit, quota snipe or profit ratchet: 450 s of the 900 s window left, not more than 50%/);
+  assert.match(h.reentryBlock('T', 450, 900) ?? '', /^re-entry after a hold exit or quota snipe: 450 s of the 900 s window left, not more than 50%/);
   assert.ok(h.reentryBlock('T', 120, 900));
   assert.equal(h.reentryBlock('U', 120, 900), undefined, 'another contract is not affected');
   assert.equal(h.reentryBlock('T', 120, undefined), undefined, 'no window known: no limit');
@@ -244,7 +244,7 @@ test('re-entry marks: saved and restored across a restart until the market close
   a.unwatch('T');
   assert.ok(a.reentryBlock('T', 400, 900), 'not evaluated for a while: the mark stays');
   const b = new HoldExits(CFG, file, T0 + 500_000);
-  assert.match(b.reentryBlock('T', 400, 900) ?? '', /^re-entry after a hold exit, quota snipe or profit ratchet/, 'restarted with 400 s left: still marked');
+  assert.match(b.reentryBlock('T', 400, 900) ?? '', /^re-entry after a hold exit or quota snipe/, 'restarted with 400 s left: still marked');
   assert.equal(new HoldExits(CFG, file, close).reentryBlock('T', 0, 900), undefined, 'market closed: not restored');
   b.forget('T');
   assert.equal(new HoldExits(CFG, file, T0 + 500_000).reentryBlock('T', 400, 900), undefined, 'settled: gone from the file too');
@@ -305,8 +305,8 @@ test('hold exit sale: the quota snipe is unchanged and still sells at once; on t
   assert.match(sale(long(), { pacerUsd: 0.75 })!.why, /^quota snipe: \+\$1\.6\d net on 10 at bid 0\.58 covers the \$0\.75 the hour needs/);
   assert.match(sale(long(), { pacerUsd: 0.75, holdExit: { fire: false, cumSec: 0, runSec: 0 } })!.why, /^quota snipe: /);
   assert.match(sale(long(), { pacerUsd: 0.75, holdExit: FIRE })!.why, /^quota snipe: /);
-  assert.deepEqual(sale(long(), { pacerUsd: 0.75 })!.liquidation, { hold: false }, 'a snipe liquidates as well');
-  assert.deepEqual(sale(long(), { pacerUsd: 0.75, holdExit: FIRE })!.liquidation, { hold: true });
+  assert.deepEqual(sale(long(), { pacerUsd: 0.75 })!.liquidation, { hold: false, snipe: true }, 'a snipe liquidates as well');
+  assert.deepEqual(sale(long(), { pacerUsd: 0.75, holdExit: FIRE })!.liquidation, { hold: true, snipe: true });
   // A take-profit selling on the evaluation the hold exit fires keeps its name, and the sale still counts as the hold exit's.
   const tp = decide(long({ profitPeakSidePrice: 0.75 }), { ...cfg, exitPolicy: 'take_profit' }, { exits: true, holdExit: FIRE }).place.find((p) => p.purpose === 'exit')!;
   assert.match(tp.why, /^take-profit/);

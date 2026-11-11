@@ -103,8 +103,9 @@ test('replay: with orders and cancels 2.5 s in flight the ratchet still runs on 
       m.set(st.now, { bid: b.bestBid()?.price, ask: b.bestAsk()?.price });
     }
   }
-  // At the evaluation before each arm (the same position held, no fill since), the whole position was not yet up the arm level
-  // after both fees: the ratchet did not skip an evaluation while an order or cancel of ours was travelling.
+  // At the evaluation before each arm (the same position held, no fill since), the trade (what partial sales banked plus the
+  // whole rest at the bid, after both fees) was not yet up the arm level: the ratchet did not skip an evaluation while an order
+  // or cancel of ours was travelling.
   let checked = 0;
   for (const e of arms) {
     const ticks = [...(books.get(e.ticker)?.keys() ?? [])].filter((t) => t < e.at);
@@ -117,8 +118,34 @@ test('replay: with orders and cancels 2.5 s in flight the ratchet still runs on 
     const n = e.count;
     const cost = e.bid! - (e.net! + orderFee(n, e.bid!, true, DEFAULT_FEES)) / n;
     const netPrev = n * (sideBid - cost) - orderFee(n, sideBid, true, DEFAULT_FEES);
-    assert.ok(netPrev < armUsd - 1e-9, `${e.ticker} armed at ${e.at}, but at ${prev} its bid ${sideBid} was already $${netPrev.toFixed(2)} up`);
+    const tradePrev = netPrev + (e.banked ?? 0);
+    assert.ok(tradePrev < armUsd - 1e-9, `${e.ticker} armed at ${e.at}, but at ${prev} its bid ${sideBid} had the trade already $${tradePrev.toFixed(2)} up`);
     checked++;
   }
   assert.ok(checked >= 10, `checked ${checked} of ${arms.length}`);
+});
+
+test('replay: a plan position\'s ratchet judges the trade, what partial sales banked plus the rest at the bid (the answer given to Steven, Nov 11 9:10 AM EST / 14:10 UTC), so a partial sale is no drop', async () => {
+  const dir = path.join(tmpDir(), 'rec');
+  writeSyntheticRecordings(dir, { windows: 8, seed: 7, marketNoise: 0.06 });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PLAN_RULES: 'true' });
+  const r = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, {
+    exitPolicy: 'take_profit', paper: { orderFrac: 0.1, orderUsd: 0 }, fillLog: true, planTag: () => ({ ruleId: 'synthetic' }),
+  });
+  const ev = r.plan!.events ?? [];
+  // The maker quotes trim plan positions here too: the events name what was banked.
+  assert.ok(ev.filter((e) => e.banked).length >= 3, JSON.stringify(r.plan));
+  const trade = (e: (typeof ev)[number]) => e.net! + (e.banked ?? 0);
+  for (const e of ev) {
+    // Its best is the trade's net when it arms or rises, and it sells once the trade's net is at or under the stop.
+    if (e.event === 'plan_ratchet_arm' || e.event === 'plan_ratchet_raise') assert.ok(Math.abs(e.best! - trade(e)) < 1e-3, JSON.stringify(e));
+    if (e.event === 'plan_ratchet_sell') assert.ok(trade(e) <= e.stop! + 1e-9, JSON.stringify(e));
+  }
+  // The sale's reason names the trade's net and what was banked.
+  const sales = (r.fillLog ?? []).filter((f) => f.coid?.endsWith('-exit-plan') && f.why?.includes('banked by partial sales'));
+  assert.ok(sales.length > 0, JSON.stringify((r.fillLog ?? []).filter((f) => f.coid?.endsWith('-exit-plan')).map((f) => f.why)));
+  for (const f of sales) {
+    const m = /^plan ratchet: net ([+-]\$[\d.]+).* at or under its stop ([+-]\$[\d.]+)/.exec(f.why!);
+    if (m) assert.ok(Number(m[1].replace('$', '')) <= Number(m[2].replace('$', '')) + 0.006, f.why);
+  }
 });

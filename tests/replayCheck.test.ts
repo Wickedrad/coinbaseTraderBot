@@ -86,6 +86,27 @@ test('replay check: paper side read from the audit log (crypto only, exits by ki
   assert.deepEqual(p.rejected, { 'quote: window risk # > # cap': 2, 'order: exchange: insufficient balance': 1 }, 'crypto only, numbers folded');
 });
 
+test('replay check: paper\'s exits by kind keep the profit ratchet, the hold exit and a plan position\'s sales apart from the hunt\'s ratchet stop', async () => {
+  const dir = tmp();
+  const L = (kind: string, ts: string, data: object) => JSON.stringify({ ts, kind, data });
+  const sale = (n: number, why: string, count: number) => [
+    L('decision', `2026-10-22T10:0${n}:00.000Z`, { decisionId: `d${n}`, place: [{ purpose: 'exit', side: 'ask', price: 0.6, why }] }),
+    L('order_new', `2026-10-22T10:0${n}:00.100Z`, { clientOrderId: `o${n}`, decisionId: `d${n}`, side: 'ask', price: 0.6, purpose: 'exit' }),
+    L('fill', `2026-10-22T10:0${n}:01.000Z`, { fill: { ticker: 'KXBTC15M-X', count, price: 0.6, side: 'ask' }, fee: 0.01, clientOrderId: `o${n}` }),
+  ];
+  fs.writeFileSync(path.join(dir, 'audit-2026-10-22.jsonl'), [
+    ...sale(1, 'profit ratchet: +$2.17 net on 10 at bid 0.65 is at or under its stop +$2.18 (best +$2.68)', 10),
+    ...sale(2, 'profit ratchet, the rest: +$1.40 net on 6 at bid 0.6; its stop +$2.18 was reached and the sale goes on until flat', 6),
+    ...sale(3, 'hold exit: +$1.56 net on 10 at bid 0.59, 10.0 s in all at +$1.50 or more, the last 10.0 s in a row at +$1.00 or more', 3),
+    ...sale(4, 'plan ratchet: net +$1.35 at bid 0.57 at or under its stop +$1.36 (best +$1.86); limit 0.55 (bid less 2 ticks)', 2),
+    ...sale(5, 'plan end rule: 85 s to the close, net -$0.37 at bid 0.38; limit 0.36 (bid less 2 ticks)', 1),
+    ...sale(6, 'confluence ratchet stop 0.47', 5),
+    L('settlement', '2026-10-22T10:15:30.000Z', { ticker: 'KXBTC15M-X', result: 'no', realized: 1 }),
+  ].join('\n') + '\n');
+  const p = await paperFromAudit(dir, ['2026-10-22']);
+  assert.deepEqual(p.exits, { 'profit ratchet': 16, 'hold exit': 3, plan: 3, ratchet: 5 });
+});
+
 test('replay check verdict: same sign and within 25% of paper', () => {
   const side = (pnl: number, contracts: number, byHour: Record<string, number>) => ({ fills: 1, contracts, fees: 0, pnl, markets: 1, exits: {}, byHour, byPurpose: {}, contractsByHour: {}, bySeries: {} });
   assert.equal(verdict(side(-90, 1000, { a: -90 }), side(-100, 1000, { a: -100 })).close, true);

@@ -21,8 +21,8 @@
 // evaluation saw it flat (onFill). The count is kept in memory: after a restart it starts again.
 // Re-entry: after a hold exit or a quota snipe sold on a contract (marked on the sale's fill), a new entry there opens only
 // while more than HOLD_EXIT_REENTRY_SHARE (half) of the contract's window (open to close) is left, and only on the bot's
-// normal entry signal. A profit ratchet sale marks it too: it sells the runners the hold exit would have sold. The marks are
-// saved (hold_exit_state.json beside the pacer's state) and kept until the market closes.
+// normal entry signal. A profit ratchet sale alone marks nothing (the rule names these two). The marks are saved
+// (hold_exit_state.json beside the pacer's state) and kept until the market closes.
 // Tennis is not covered: its snipe (bot/tennis/tennisStrategy.ts) marks nothing and its entries are not limited, since a
 // match contract's open-to-close times say nothing about how much of the match is left; that is for Steven to settle.
 // Plan positions too (Steven, Nov 11 8:52 AM EST / 13:52 UTC): the hold exit sells a plan position (PLAN_RULES) as any other;
@@ -61,7 +61,8 @@ export interface HoldExitConfig {
    *  share of its window is left. 0 = no limit. */
   reentryShare: number;
   /** HOLD_EXIT_LINE_AFTER_FAILS (5): after this many failed tries on a position the line exit may sell it as a last resort,
-   *  SINUOUS_CROSS off or not. 0 = never. */
+   *  SINUOUS_CROSS off or not. 0 = never. The tries are counted only with `enabled`: HOLD_EXIT=false restores the behaviour
+   *  before the hold exit, the last resort off as well. */
   lineAfterFails: number;
 }
 
@@ -99,8 +100,7 @@ interface Track {
 
 export class HoldExits {
   private readonly tracks = new Map<string, Track>();
-  /** Contracts a hold exit, a quota snipe or a profit ratchet sale has sold, with their markets' close (ms): the re-entry rule
-   *  applies to them (the ratchet sells the runners the hold exit would have sold). */
+  /** Contracts a hold exit or a quota snipe has sold, with their markets' close (ms): the re-entry rule applies to them. */
   private readonly sold = new Map<string, number>();
 
   /** `file`: where the re-entry marks are saved (undefined: memory only, as in the replay); `now` drops marks of closed markets. */
@@ -172,12 +172,12 @@ export class HoldExits {
     this.save();
   }
 
-  /** Why no entry may open on this contract now (undefined: it may): a hold exit, a quota snipe or a profit ratchet sale sold
-   *  it, and no more than reentryShare of its window (`windowSec`, open to close) is left. */
+  /** Why no entry may open on this contract now (undefined: it may): a hold exit or a quota snipe sold it, and no more than
+   *  reentryShare of its window (`windowSec`, open to close) is left. */
   reentryBlock(ticker: string, tauSec: number, windowSec: number | undefined): string | undefined {
     const share = this.cfg.reentryShare;
     if (!this.cfg.enabled || !(share > 0) || !this.sold.has(ticker) || windowSec === undefined || tauSec > share * windowSec) return undefined;
-    return `re-entry after a hold exit, quota snipe or profit ratchet: ${Math.max(0, Math.round(tauSec))} s of the ${Math.round(windowSec)} s window left, not more than ${Math.round(share * 100)}%`;
+    return `re-entry after a hold exit or quota snipe: ${Math.max(0, Math.round(tauSec))} s of the ${Math.round(windowSec)} s window left, not more than ${Math.round(share * 100)}%`;
   }
 
   /** The market is no longer watched (the engine's prune): its count goes; its re-entry mark stays until the market closes. */

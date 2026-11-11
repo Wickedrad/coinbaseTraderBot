@@ -10,10 +10,12 @@ import { test } from 'node:test';
 import { loadConfig } from '../bot/config';
 import { PlanPositions, PLAN_TAG_UNFILLED_MS } from '../bot/plan/planPositions';
 import {
-  assertPlanStopNotLowered, freshPlanState, planEndWindow, planFeeFloorPrice, planMarkTried, planNetAt, planStep,
+  assertPlanStopNotLowered, freshPlanState, planBreakEvenUsd, planEndWindow, planFeeFloorPrice, planMarkTried, planNetAt, planStep,
   type PlanRatchetSettings, type PlanRatchetState, type PlanStepInput, type PlanStepResult,
 } from '../bot/plan/planRatchet';
+import { orderFee } from '../bot/fees';
 import { shareWindowSec } from '../bot/strategy/fairValueStrategy';
+import { ProfitRatchets } from '../bot/strategy/profitRatchet';
 import { tmpDir } from './helpers';
 
 const T0 = Date.parse('2026-11-11T15:00:30Z'); // Nov 11, 10:00:30 AM EST
@@ -168,20 +170,94 @@ test('after a partial sale the ratchet measures the trade, what the sale banked 
   assert.equal(w.events('plan_ratchet_arm')[0].banked, undefined, 'nothing banked: not listed');
 });
 
-test('after a partial sale the fee break-even counts what was banked: the stop holds at the trade net with the rest at the fee floor price', () => {
+test('after a partial sale the fee break-even is the trade\'s, as every position\'s ratchet gets it: what was banked lowers it; the rest sells where the trade breaks even', () => {
   const settings: PlanRatchetSettings = { armUsd: 1.5, stopMinUsd: 0, trailUsd: 3, clock: 'tick' };
   const w = new Walk({ settings });
-  w.at(0.57); w.at(0.6);
+  // Any other position's ratchet fed the same trade nets and the same break-even keeps the same stop at every step.
+  const other = new ProfitRatchets(settings);
+  const both = (bid: number, position = 10, bankedUsd = 0, now = T0) => {
+    const r = w.at(bid, { position, bankedUsd, now });
+    const trade = bankedUsd + position * planNetAt(position, bid, 0.4, 0);
+    assert.equal(other.step('T', position, trade, now, planBreakEvenUsd(position, 0.4, 0, bankedUsd, TICK)).stop, w.state.stop, `bid ${bid}`);
+    return r;
+  };
+  both(0.57); both(0.6, 10, 0, T0 + 1000);
   assert.equal(w.state.stop, 0.02);
-  // 5 sold at 0.60 banked +$0.91. The 5 left break even at 0.42 (+$0.01): the stop rises to +$0.92, raise-only.
-  w.at(0.6, { position: 5, bankedUsd: 0.91 });
-  assert.equal(w.state.stop, 0.92);
-  assert.deepEqual(w.events('plan_ratchet_raise').map((e) => [e.prevStop, e.stop, e.banked]), [[0.02, 0.92, 0.91]]);
-  assert.equal(w.at(0.43, { position: 5, bankedUsd: 0.91 }).sale, undefined);
-  const r = w.at(0.42, { position: 5, bankedUsd: 0.91 });
-  assert.deepEqual([r.sale?.count, r.sale?.kind], [5, 'ratchet']);
-  assert.ok(w.events('plan_ratchet_sell')[0].net! >= 0, 'the rest sold at the fee floor price is not below fees');
-  assert.equal(w.events('plan_ratchet_gap').length, 0);
+  // 5 sold at 0.60 banked +$0.91. With the 5 left the trade breaks even at 0.24 (+$0.04): the stop rises there, raise-only.
+  // The rest's own fee floor price (0.42, where the trade is +$0.92) is not the trade's: a stop there would be a second ratchet.
+  both(0.6, 5, 0.91, T0 + 2000);
+  assert.equal(w.state.stop, 0.04);
+  assert.deepEqual(w.events('plan_ratchet_raise').map((e) => [e.prevStop, e.stop, e.banked]), [[0.02, 0.04, 0.91]]);
+  for (const b of [0.42, 0.3, 0.25]) assert.equal(both(b, 5, 0.91, T0 + 3000).sale, undefined, `held at ${b}`);
+  const r = both(0.24, 5, 0.91, T0 + 4000);
+  assert.deepEqual([r.sale?.count, r.sale?.kind, r.sale?.sideLimit], [5, 'ratchet', 0.22]);
+  const sell = w.events('plan_ratchet_sell')[0];
+  assert.ok(sell.net! + sell.banked! >= 0, `the trade sold at its break-even is not below fees: ${sell.net} + ${sell.banked}`);
+  // The rest went under its own fee floor price: listed as a gap, as always.
+  assert.deepEqual(w.events('plan_ratchet_gap').map((g) => [g.bid, g.feeFloor, g.shortfallC]), [[0.24, 0.42, 18]]);
+});
+
+// One ratchet (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC): the plan's stop is every other position's, whatever the
+// position's size or partial sales.
+test('one ratchet: a large position whose first tick in profit is over $1.50 arms there at the +$1.00 stop and rides; it does not sell on the tick it arms', () => {
+  // 300 YES at 0.50 with the 1.75c taker fee: -$1.49 at 0.53, +$1.53 at 0.54 (the fee floor price), +$4.55 at 0.55.
+  const fee = orderFee(300, 0.5, true) / 300;
+  const w = new Walk({ position: 300, entryPrice: 0.5, entryFeePerContract: fee });
+  const other = new ProfitRatchets(DEFAULTS);
+  const both = (bid: number, now: number) => {
+    const r = w.at(bid, { now });
+    const o = other.step('T', 300, Math.round(300 * planNetAt(300, bid, 0.5, fee) * 1e4) / 1e4, now, planBreakEvenUsd(300, 0.5, fee, 0, TICK));
+    assert.deepEqual([o.stop, o.sell], [w.state.stop, r.sale !== undefined], `bid ${bid}`);
+    return r;
+  };
+  assert.equal(both(0.54, T0).sale, undefined);
+  assert.deepEqual([w.state.armed, w.state.best, w.state.stop], [true, 1.53, 1.03]);
+  assert.equal(both(0.54, T0 + 1000).sale, undefined);
+  // 0.55: best +$4.55, stop +$4.05. Back to 0.54 (+$1.53, its break-even) it sells there, a tick above a loss.
+  assert.equal(both(0.55, T0 + 2000).sale, undefined);
+  assert.equal(w.state.stop, 4.05);
+  const r = both(0.54, T0 + 3000);
+  assert.deepEqual([r.sale?.kind, r.sale?.count, r.sale?.sideLimit], ['ratchet', 300, 0.52]);
+});
+
+test('one ratchet: after a partial sale that banked more than the rest can lose, the plan\'s stop is the agreed max(+$1.00, best - $0.50), as any other position\'s', () => {
+  // 10 YES bought at 0.50 (1.8c entry fee a contract), 8 sold at 0.75 banking +$1.75: the 2 left net -$0.08 at a 0.50 bid, the
+  // trade +$1.67. No bid takes the trade under $0, so no break-even lifts the stop.
+  const banked = 1.746;
+  const w = new Walk({ position: 2, entryPrice: 0.5, entryFeePerContract: 0.018, bankedUsd: banked });
+  const other = new ProfitRatchets(DEFAULTS);
+  const both = (bid: number, now: number) => {
+    const r = w.at(bid, { now });
+    const o = other.step('T', 2, banked + 2 * planNetAt(2, bid, 0.5, 0.018), now, planBreakEvenUsd(2, 0.5, 0.018, banked, TICK));
+    assert.deepEqual([o.stop, o.sell], [w.state.stop, r.sale !== undefined], `bid ${bid}`);
+    return r;
+  };
+  assert.equal(both(0.5, T0).sale, undefined, 'armed at +$1.67, not sold on the tick it arms');
+  assert.deepEqual([w.state.armed, w.state.best, w.state.stop], [true, 1.67, 1.17]);
+  assert.equal(both(0.48, T0 + 1000).sale, undefined, 'the trade +$1.63: above the stop');
+  assert.equal(both(0.25, T0 + 2000).sale, undefined, 'the trade +$1.18 at 0.25');
+  assert.equal(both(0.24, T0 + 3000).sale?.kind, 'ratchet', 'the trade +$1.16 at 0.24: at or under the stop');
+});
+
+test('an add to a plan position starts its ratchet afresh, and drops a sale under way: the added lot\'s spread and fees are no drop', () => {
+  const w = new Walk();
+  w.at(0.57); w.at(0.62);
+  assert.deepEqual([w.state.armed, w.state.stop, w.state.size], [true, 1.53, 10]);
+  // 10 more bought at 0.62: the 20 net less at 0.60 than the 10 did. Judged on the old stop they would be sold; the 20 start
+  // from nothing (the next tick arms again on their own profit).
+  const r = w.at(0.6, { position: 20, entryPrice: 0.51 });
+  assert.equal(r.sale, undefined);
+  assert.deepEqual([w.state.armed, w.state.stop, w.state.best, w.state.size, w.state.failedTries], [false, undefined, undefined, 20, 0]);
+  assert.ok(r.notes.includes('plan ratchet: the position grew; its ratchet starts afresh'), r.notes.join(' | '));
+  // A sale under way (decided, a try sent and failed) is dropped by an add too; a partial sale keeps it.
+  const s = new Walk();
+  s.at(0.57); s.at(0.62); s.at(0.57);
+  assert.equal(s.state.selling?.kind, 'ratchet');
+  s.sent();
+  assert.equal(s.at(0.57, { position: 6 }).sale?.count, 6, 'a partial fill: the rest goes again');
+  s.sent();
+  assert.equal(s.at(0.57, { position: 16, entryPrice: 0.48 }).sale, undefined);
+  assert.deepEqual([s.state.selling, s.state.failedTries, s.state.armed], [undefined, 0, false]);
 });
 
 test('a price gap under the fee floor still sells, and the gap is listed with its shortfall', () => {
@@ -445,7 +521,8 @@ test('plan positions: a second tag on a plan position open on the same side keep
   reg.sync('A', 10, T0 + 1000);
   const armed: PlanRatchetState = { ...freshPlanState(), armed: true, armedAt: T0 + 2000, best: 2.5, stop: 2.2 };
   reg.setState('A', armed);
-  // The entry lane adds to it under another rule: the position keeps its tag (a fresh ratchet would drop the +$2.20 stop).
+  // The entry lane adds to it under another rule: the position keeps its tag, rule and settings (planStep starts the ratchet
+  // afresh once it sees the larger position: the test above).
   const again = reg.tag({ ticker: 'A', side: 'yes', ruleId: 'r2' }, T0 + 3000);
   assert.deepEqual([again.ruleId, again.openedAt, again.settings, again.state], ['r1', T0, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.3, clock: 'tick' }, armed]);
   assert.deepEqual(new PlanPositions(DEFAULTS, file).get('A')?.state, armed);

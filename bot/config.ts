@@ -156,7 +156,8 @@ export interface StrategyConfig {
    *  HOLD_EXIT_RUN_SEC. After a hold exit or a quota snipe the same contract is entered again only while more than
    *  HOLD_EXIT_REENTRY_SHARE (0.5) of its window is left. Its profit is the trade's: what partial sales banked plus the rest at
    *  the bid. After HOLD_EXIT_LINE_AFTER_FAILS (5; 0 = never) failed tries on a position (up to $1.00, back under it for 3 s,
-   *  never $1.50) the line exit may sell it as a last resort with SINUOUS_CROSS off (Steven, Nov 11 9:21 AM EST / 14:21 UTC). */
+   *  never $1.50) the line exit may sell it as a last resort with SINUOUS_CROSS off (Steven, Nov 11 9:21 AM EST / 14:21 UTC);
+   *  the tries are this rule's count, so HOLD_EXIT=false (the behaviour before it) turns the last resort off too. */
   holdExit: HoldExitConfig;
   /** RATCHET (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC; bot/strategy/profitRatchet.ts): one ratchet for every position,
    *  in dollars for the whole position after both fees. It arms at RATCHET_ARM_USD (1.50); its stop starts at

@@ -129,10 +129,11 @@ export interface OrderPlan {
   /** A protective exit (the take-profit's last tick above its floor): the exit-in-profit curve never holds it. */
   protective?: boolean;
   /** A hold exit, a quota snipe or the profit ratchet sells the whole position here, whichever label won (HOLD_EXIT,
-   *  bot/strategy/holdExit.ts; RATCHET, bot/strategy/profitRatchet.ts): nothing else goes out with it, its fill starts the
-   *  re-entry rule, and with `hold` (the hold exit fired) what a thin bid leaves is sold as well (the ratchet sells its rest on
-   *  its own). `ratchet`: the profit ratchet fired, so the sale goes alone with HOLD_EXIT off too. */
-  liquidation?: { hold: boolean; ratchet?: boolean };
+   *  bot/strategy/holdExit.ts; RATCHET, bot/strategy/profitRatchet.ts): nothing else goes out with it, and with `hold` (the
+   *  hold exit fired) what a thin bid leaves is sold as well (the ratchet sells its rest on its own). Its fill starts the
+   *  re-entry rule only with `hold` or `snipe` (the quota snipe fired): Steven's rule names those two, not the ratchet.
+   *  `ratchet`: the profit ratchet fired, so the sale goes alone with HOLD_EXIT off too. */
+  liquidation?: { hold: boolean; snipe?: boolean; ratchet?: boolean };
 }
 
 export interface StrategyOutput {
@@ -400,7 +401,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     const rt = ratcheting && n > 0;
     if (n > 0 && ((modelExit && edge >= margin) || (exits && tp?.sell) || pm || snipe || hold || rt)) {
       out.place.push({ side: 'ask', price: bid.price, count: round(n, 2), timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge,
-        ...((tp?.sell && tp.protective) || rt ? { protective: true } : {}), ...(snipe || hold || rt ? { liquidation: { hold, ...(rt ? { ratchet: true } : {}) } } : {}),
+        ...((tp?.sell && tp.protective) || rt ? { protective: true } : {}), ...(snipe || hold || rt ? { liquidation: { hold, ...(snipe ? { snipe: true } : {}), ...(rt ? { ratchet: true } : {}) } } : {}),
         why: tp?.sell ? tp.why : snipe ? (call.sell === 'floor' ? `quota snipe (floor): ${netUsd < 0 ? '-' : '+'}$${Math.abs(netUsd).toFixed(2)} net on ${v.position} at bid ${bid.price} fell below its $${opts.pacerFloor!.toFixed(2)} floor`
             : call.sell === 'snipe' ? `quota snipe: +$${netUsd.toFixed(2)} net on ${v.position} at bid ${bid.price} covers the $${pacerUsd!.toFixed(2)} the hour needs`
             : `quota snipe (group): +$${netUsd.toFixed(2)} net on ${v.position} at bid ${bid.price}, with ${opts.pacerGroup!.members - 1} other position${opts.pacerGroup!.members === 2 ? '' : 's'} in profit (+$${opts.pacerGroup!.sumUsd.toFixed(2)} together) covers the $${pacerUsd!.toFixed(2)} the hour needs`)
@@ -423,7 +424,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     const rt = ratcheting && n > 0;
     if (n > 0 && ((modelExit && edge >= margin) || (exits && tp?.sell) || pm || snipe || hold || rt)) {
       out.place.push({ side: 'bid', price: ask.price, count: round(n, 2), timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge,
-        ...((tp?.sell && tp.protective) || rt ? { protective: true } : {}), ...(snipe || hold || rt ? { liquidation: { hold, ...(rt ? { ratchet: true } : {}) } } : {}),
+        ...((tp?.sell && tp.protective) || rt ? { protective: true } : {}), ...(snipe || hold || rt ? { liquidation: { hold, ...(snipe ? { snipe: true } : {}), ...(rt ? { ratchet: true } : {}) } } : {}),
         why: tp?.sell ? tp.why : snipe ? (call.sell === 'floor' ? `quota snipe (floor): ${netUsd < 0 ? '-' : '+'}$${Math.abs(netUsd).toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)} fell below its $${opts.pacerFloor!.toFixed(2)} floor`
             : call.sell === 'snipe' ? `quota snipe: +$${netUsd.toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)} covers the $${pacerUsd!.toFixed(2)} the hour needs`
             : `quota snipe (group): +$${netUsd.toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)}, with ${opts.pacerGroup!.members - 1} other position${opts.pacerGroup!.members === 2 ? '' : 's'} in profit (+$${opts.pacerGroup!.sumUsd.toFixed(2)} together) covers the $${pacerUsd!.toFixed(2)} the hour needs`)

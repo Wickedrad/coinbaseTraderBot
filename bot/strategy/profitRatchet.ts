@@ -11,11 +11,18 @@
 // The 10 s hold exit (bot/strategy/holdExit.ts) stands aside while the ratchet is armed and the profit set a new best in the
 // last HOLD_EXIT_RUN_SEC (3 s), so a runner rides the ratchet; a sitter is still sold by the hold exit. The quota snipe and the
 // quota floor (PACER_FLOOR) are unchanged: two stops, whichever triggers first sells.
-// This file is the core: ratchetStep is pure and both sales run it. A plan position's (bot/plan/planRatchet.ts, PLAN_RULES)
-// adds the plan's own sale (the bid less 2 ticks, retries, the 3-failure alert, gaps, the minute clock) and its end rule. Any
-// other position's goes through decide() with the quota snipe's order (bot/strategy/fairValueStrategy.ts), on the state kept
-// here by ProfitRatchets, in memory as the quota floors are. The engine (paper and live alike) and the replay
-// (research/backtest.ts) run the same code.
+// This file is the core: ratchetStep is pure and both sales run it, with the same fee break-even (planBreakEvenUsd). A plan
+// position's (bot/plan/planRatchet.ts, PLAN_RULES) adds the plan's own sale (the bid less 2 ticks, retries, the 3-failure
+// alert, gaps, the minute clock) and its end rule. Any other position's goes through decide() with the quota snipe's order
+// (bot/strategy/fairValueStrategy.ts), on the state kept here by ProfitRatchets, saved in the book folder as the plan's is, so
+// a restart or deploy never lowers an armed stop. An add to the position starts its ratchet afresh, as the quota floor and the
+// take-profit's mark do: the added lot's spread and fees are no drop of the smaller position's profit. The engine (paper and
+// live alike) and the replay (research/backtest.ts, in memory) run the same code.
+
+import { logger } from '../util/log';
+import { readJson, writeJsonAtomic } from '../util/persist';
+
+const log = logger('ratchet');
 
 export interface RatchetSettings {
   /** RATCHET_ARM_USD (1.50): the profit after fees, whole position, that arms the ratchet. */
@@ -54,10 +61,12 @@ const EPS = 1e-9;
 const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
 
 /** The stop for a best net: the trail under it, never under the stop's minimum nor under the fee break-even. `breakEvenUsd`:
- *  the smallest net at or above $0 the position can sell for on the price grid (the plan passes the net at its fee floor price,
- *  so a stop held at break-even sells on that tick, not a tick under it); $0 when not given. */
+ *  the smallest net at or above $0 the trade can sell for on the price grid (planBreakEvenUsd, so a stop held at break-even
+ *  sells on that tick, not a tick under it); $0 when not given. It counts only once the
+ *  best is above it: on a coarse grid (a large position) the first tick in profit can already be over $1.50, and a stop there
+ *  would sell on the tick it arms, before any trail. */
 export function ratchetStopFor(best: number, s: RatchetSettings, breakEvenUsd = 0): number {
-  return r4(Math.max(s.stopMinUsd, best - s.trailUsd, breakEvenUsd, 0));
+  return r4(Math.max(s.stopMinUsd, best - s.trailUsd, breakEvenUsd < best - EPS ? breakEvenUsd : 0, 0));
 }
 
 /** The stop is never lowered: throws if a computation would. */
@@ -104,29 +113,39 @@ export interface RatchetReading {
   prevStop?: number;
 }
 
-interface Track { sign: number; lastTs: number; state: RatchetState; selling: boolean }
+interface Track { sign: number; size: number; lastTs: number; state: RatchetState; selling: boolean }
+interface SavedTrack extends Track { ticker: string }
 
-/** The ratchet of each held position that is not a plan position, by market. A position that goes flat or changes side starts
- *  from nothing, also when no evaluation saw it flat (onFill). In memory: after a restart it arms again from the next profit it
- *  sees, as the quota floors do. */
+/** A saved track older than this is dropped on load: no crypto contract is held that long. */
+const SAVED_MAX_AGE_MS = 24 * 3_600_000;
+
+/** The ratchet of each held position that is not a plan position, by market. A position that goes flat, changes side or grows
+ *  (an add) starts from nothing, also when no evaluation saw it (onFill); a partial sale keeps it. Saved to `file` on every
+ *  change (the book folder, beside hold_exit_state.json), so a restart resumes an armed stop where it was: the stop is never
+ *  lowered, a deploy included. Without a file (the replay), in memory. */
 export class ProfitRatchets {
   private readonly tracks = new Map<string, Track>();
 
-  constructor(readonly cfg: RatchetSettings) {}
+  constructor(readonly cfg: RatchetSettings, private readonly file?: string, now = Date.now()) {
+    this.load(now);
+  }
 
   /** Records the trade's net (`netUsd`, tradeNetAtBid; undefined: no bid, nothing is decided) at `now` and says whether it
-   *  sells. */
-  step(ticker: string, position: number, netUsd: number | undefined, now: number): RatchetReading {
+   *  sells. `breakEvenUsd`: planBreakEvenUsd of the position, as the plan's ratchet gets it. */
+  step(ticker: string, position: number, netUsd: number | undefined, now: number, breakEvenUsd = 0): RatchetReading {
     if (!(Math.abs(position) > EPS)) {
-      this.tracks.delete(ticker);
+      this.drop(ticker);
       return { armed: false, sell: false };
     }
-    const sign = Math.sign(position);
+    const sign = Math.sign(position), size = Math.abs(position);
     let t = this.tracks.get(ticker);
-    if (!t || t.sign !== sign) {
-      t = { sign, lastTs: -Infinity, state: { armed: false }, selling: false };
+    if (!t || t.sign !== sign || size > t.size + EPS) {
+      if (t) this.drop(ticker);
+      t = { sign, size, lastTs: -Infinity, state: { armed: false }, selling: false };
       this.tracks.set(ticker, t);
     }
+    // A partial sale keeps the track, at its new size (saved: an add after a restart is judged against it).
+    if (size < t.size - EPS) { t.size = size; if (t.state.armed) this.save(); }
     const read = (fresh?: RatchetStep): RatchetReading => {
       const x = t!.state;
       return {
@@ -139,19 +158,49 @@ export class ProfitRatchets {
     if (now < t.lastTs || netUsd === undefined || !Number.isFinite(netUsd)) return read();
     t.lastTs = now;
     if (t.selling) return read();
-    const r = ratchetStep(t.state, netUsd, this.cfg, now);
+    const r = ratchetStep(t.state, netUsd, this.cfg, now, breakEvenUsd);
     t.state = r.state;
     if (r.sell) t.selling = true;
+    if (r.event || r.sell) this.save();
     return read(r);
   }
 
-  /** A fill moved the position from `before` to `after`: flat or on the other side, the next position starts from nothing. */
+  /** A fill moved the position from `before` to `after`: flat, on the other side or added to, the next position starts from
+   *  nothing. */
   onFill(ticker: string, before: number, after: number): void {
-    if (!(Math.abs(after) > EPS) || Math.sign(after) !== Math.sign(before)) this.tracks.delete(ticker);
+    if (!(Math.abs(after) > EPS) || Math.sign(after) !== Math.sign(before) || Math.abs(after) > Math.abs(before) + EPS) this.drop(ticker);
   }
 
   /** The market settled, is no longer watched, or its position became a plan position. */
   forget(ticker: string): void {
+    this.drop(ticker);
+  }
+
+  private drop(ticker: string): void {
+    const t = this.tracks.get(ticker);
+    if (!t) return;
     this.tracks.delete(ticker);
+    // An unarmed track was never saved.
+    if (t.state.armed) this.save();
+  }
+
+  private save(): void {
+    if (!this.file) return;
+    const tracks: SavedTrack[] = [...this.tracks].filter(([, t]) => t.state.armed).map(([ticker, t]) => ({ ticker, ...t }));
+    try {
+      writeJsonAtomic(this.file, { v: 1, tracks }, { compact: true });
+    } catch (e) {
+      log.warn('profit ratchets not saved', { file: this.file, error: String(e) });
+    }
+  }
+
+  private load(now: number): void {
+    if (!this.file) return;
+    const s = readJson<{ v?: number; tracks?: SavedTrack[] }>(this.file, { quarantine: true });
+    for (const x of s?.tracks ?? []) {
+      if (!x || typeof x.ticker !== 'string' || (x.sign !== 1 && x.sign !== -1) || !(x.size > 0) || !x.state?.armed || !Number.isFinite(x.state.stop)) continue;
+      if (!(now - x.lastTs < SAVED_MAX_AGE_MS)) continue;
+      this.tracks.set(x.ticker, { sign: x.sign, size: x.size, lastTs: x.lastTs, state: x.state, selling: x.selling === true });
+    }
   }
 }

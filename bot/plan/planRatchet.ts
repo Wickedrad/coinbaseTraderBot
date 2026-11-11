@@ -16,10 +16,15 @@
 //                   answer given to Steven, Nov 11 9:10 AM EST / 14:10 UTC: a thin bid that took part of it is no drop);
 //                   the same as net at bid until a partial sale
 //   fee floor price the lowest tick price whose net is at least 0: break-even after both fees
-//   arm             trade net >= armUsd: best = trade net, stop = max(stopMinUsd, best - trailUsd), never under the fee
-//                   break-even (the trade net with the rest sold at the fee floor price, at least $0)
+//   break-even      the trade's smallest net at or above $0 on the price grid (planBreakEvenUsd: banked plus the rest at the
+//                   lowest price that does not leave the trade under $0): every position's ratchet gets the same one, a plan
+//                   position's and any other's, so there is one stop. It counts only once the best is above it
+//                   (ratchetStopFor): a stop at the arming net would sell on the tick it arms
+//   arm             trade net >= armUsd: best = trade net, stop = max(stopMinUsd, best - trailUsd), never under the break-even
 //   raise           while armed, each evaluation on the rule's clock: best = max(best, trade net), stop = max(stop,
 //                   stopMinUsd, best - trailUsd, the break-even). The stop is never lowered (asserted).
+//   add             a position that grew (an add on the same side) starts its ratchet and any sale under way afresh, as the
+//                   profit ratchet of every other position does: the added lot's spread and fees are no drop
 //   sell            armed and trade net <= stop: one reduce-only immediate-or-cancel sale of the whole position at a limit of the
 //                   bid less 2 ticks (Stage 0: "sales at bid minus 2 ticks"), never below 1 tick. A bid already under the
 //                   fee floor price when it triggers (a price gap) still sells, and the gap is listed with its shortfall.
@@ -91,6 +96,8 @@ export interface PlanRatchetState extends RatchetState {
   /** The minute clock: the minute (ms / 60 000, floored) of the last evaluation it saw. */
   lastMinute?: number;
   selling?: PlanSelling;
+  /** Contracts held at the last evaluation: more now is an add, and the ratchet starts afresh. */
+  size?: number;
 }
 
 export const freshPlanState = (): PlanRatchetState => ({ armed: false, failedTries: 0, gaps: [] });
@@ -130,6 +137,20 @@ export function planFeeFloorPrice(count: number, entryPrice: number, entryFee: n
     if (planNetAt(count, p, entryPrice, entryFee, fees) >= -EPS) return p;
   }
   return undefined;
+}
+
+/** The fee break-even of the ratchet's stop, dollars: the trade's smallest net at or above $0 on the price grid, the rest sold
+ *  at the lowest tick price where what partial sales banked (`bankedUsd`) plus the rest's net is not under $0. $0 when no price
+ *  breaks even, or when even the lowest price leaves the trade at $0 or more (nothing to guard). Every position's ratchet, a
+ *  plan position's or any other's, gets this same number (bot/engine.ts, research/backtest.ts): one stop. */
+export function planBreakEvenUsd(count: number, entryPrice: number | undefined, entryFee: number, bankedUsd: number, tick: number, fees?: FeeSchedule): number {
+  if (!(count > 0) || !(tick > 0) || entryPrice === undefined || !Number.isFinite(entryPrice)) return 0;
+  const last = Math.round(1 / tick) - 1;
+  for (let k = 1; k <= last; k++) {
+    const v = bankedUsd + count * planNetAt(count, r4(k * tick), entryPrice, entryFee, fees);
+    if (v >= -EPS) return k === 1 ? 0 : r4(Math.max(0, v));
+  }
+  return 0;
 }
 
 /** In the last tenth of the window (`windowSec`: shareWindowSec, bot/strategy/fairValueStrategy.ts). */
@@ -234,9 +255,13 @@ export interface PlanStepResult {
 /** One evaluation of a plan position: the retry of a sale under way, the ratchet on its clock, then the end rule. The input
  *  state is not changed; the returned one replaces it. */
 export function planStep(i: PlanStepInput): PlanStepResult {
-  const s: PlanRatchetState = { ...i.state, gaps: [...i.state.gaps], ...(i.state.selling ? { selling: { ...i.state.selling } } : {}) };
-  const out: PlanStepResult = { state: s, events: [], notes: [] };
+  let s: PlanRatchetState = { ...i.state, gaps: [...i.state.gaps], ...(i.state.selling ? { selling: { ...i.state.selling } } : {}) };
   const count = Math.abs(i.position);
+  // An add on the same side: the ratchet and any sale under way start afresh (the gaps listed and the minute clock stay).
+  const grew = s.size !== undefined && count > s.size + EPS;
+  if (grew) s = { ...freshPlanState(), gaps: s.gaps, ...(s.lastMinute !== undefined ? { lastMinute: s.lastMinute } : {}) };
+  if (count > 1e-9) s.size = count;
+  const out: PlanStepResult = { state: s, events: [], notes: grew ? ['plan ratchet: the position grew; its ratchet starts afresh'] : [] };
   if (!(count > 1e-9)) return out;
   const { armUsd, stopMinUsd, trailUsd, clock } = i.settings;
   const tick = i.tick;
@@ -311,11 +336,9 @@ export function planStep(i: PlanStepInput): PlanStepResult {
     if (s.lastMinute === undefined || minute > s.lastMinute) s.lastMinute = minute;
   }
   if (decide) {
-    // The profit ratchet's core (bot/strategy/profitRatchet.ts): the same arm, stop and trail as every other position's.
-    // Raise-only: ratchetStep throws before it would lower the stop. Never under the fee break-even: the stop is at least the
-    // trade net with the rest sold at the fee floor price, so a stop held there sells on that tick, the rest in profit after
-    // both fees.
-    const breakEven = feeFloor !== undefined ? r4(banked + count * planNetAt(count, feeFloor, cost, fee, i.fees)) : 0;
+    // The profit ratchet's core (bot/strategy/profitRatchet.ts): the same arm, stop, trail and fee break-even as every other
+    // position's. Raise-only: ratchetStep throws before it would lower the stop.
+    const breakEven = planBreakEvenUsd(count, cost, fee, banked, tick, i.fees);
     const r = ratchetStep({ armed: s.armed, armedAt: s.armedAt, best: s.best, stop: s.stop }, trade, i.settings, i.now, breakEven);
     s.armed = r.state.armed;
     if (r.state.armedAt !== undefined) s.armedAt = r.state.armedAt;

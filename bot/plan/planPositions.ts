@@ -4,8 +4,8 @@
 // restart or deploy resumes an armed ratchet at its stop. In memory only without a file (the replay).
 //
 // The plan's entry lane (E01, not built yet) tags a position as it opens it: tag(...). Nothing else tags; the tests tag
-// directly. A second tag on a plan position already open on the same side keeps the first (its ratchet's stop is never
-// lowered). A tag clears itself once the position is flat (a fill or the settlement that empties it, or an evaluation that finds
+// directly. A second tag on a plan position already open on the same side keeps the first (its rule and settings); the add
+// itself starts the ratchet afresh at the next evaluation (planStep), as every position's ratchet does. A tag clears itself once the position is flat (a fill or the settlement that empties it, or an evaluation that finds
 // it flat), with PLAN_RULES on or off, when the position turns to the other side, and when a tag never saw its position open
 // within 5 minutes (an entry that did not fill).
 
@@ -51,8 +51,8 @@ export class PlanPositions {
   }
 
   /** The entry lane's call: `t.ticker` is now a plan position. A tag on a ticker whose plan position is already open on the
-   *  same side (an add) keeps that position's tag as it is, its rule, settings and ratchet state: re-arming from scratch would
-   *  lower an armed stop. Otherwise (none, the other side, or an entry never seen open) the new tag replaces the old. */
+   *  same side (an add) keeps that position's tag as it is, its rule and settings; planStep starts the ratchet afresh once it
+   *  sees the larger position. Otherwise (none, the other side, or an entry never seen open) the new tag replaces the old. */
   tag(t: PlanTag, now: number): PlanPosition {
     const held = this.m.get(t.ticker);
     if (held && held.seenOpen && held.side === t.side) {

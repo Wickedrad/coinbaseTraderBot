@@ -9,9 +9,11 @@ import { test } from 'node:test';
 import { loadConfig, type StrategyConfig } from '../bot/config';
 import { DEFAULT_FEES, orderFee } from '../bot/fees';
 import { MetaModel } from '../bot/model/metaModel';
+import { openBankedUsd, openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { PlanPositions } from '../bot/plan/planPositions';
+import { planBreakEvenUsd } from '../bot/plan/planRatchet';
 import { exitOnlyPlan } from '../bot/strategy/exitOnlyLane';
-import { decide, netProfitAtBid, type MarketView } from '../bot/strategy/fairValueStrategy';
+import { decide, netProfitAtBid, positionNetAtBid, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { HoldExits, type HoldExitConfig, type HoldReading } from '../bot/strategy/holdExit';
 import { assertStopNotLowered, ProfitRatchets, ratchetStep, ratchetStopFor, type RatchetReading, type RatchetSettings, type RatchetState } from '../bot/strategy/profitRatchet';
 import { runBacktest } from '../research/backtest';
@@ -110,6 +112,24 @@ test('core: never under the fee break-even: the stop is at least $0 and at least
   assert.deepEqual(r.map((x) => x.sell), [false, false, false, true]);
   // The smallest net at or above $0 the position can sell for is +$0.05 (the price grid): the stop holds there.
   assert.deepEqual(walk([0.3, 0.45, 0.06, 0.05], loose, 0.05).map((x) => [x.state.stop, x.sell]), [[0.05, false], [0.05, false], [0.05, false], [0.05, true]]);
+  // It counts only once the best is above it. 300 YES bought at 0.50 (taker) first net +$1.53 at 0.54, their break-even price
+  // (+$4.55 at 0.55, -$1.49 at 0.53): armed there the stop is +$1.03, not +$1.53, which would sell on the tick it arms.
+  assert.equal(planBreakEvenUsd(300, 0.5, orderFee(300, 0.5, true) / 300, 0, 0.01), 1.53);
+  assert.equal(ratchetStopFor(1.53, S, 1.53), 1.03);
+  assert.deepEqual(walk([1.53, 1.53, 4.55, 1.53], S, 1.53).map((x) => [x.state.stop, x.sell]), [[1.03, false], [1.03, false], [4.05, false], [4.05, true]]);
+});
+
+test('core: the break-even is the trade\'s, the same for every position: banked by partial sales counts, and nothing to guard when the trade cannot lose', () => {
+  // 10 YES at 0.40, no entry fee, nothing banked: +$0.02 at 0.42, the first tick that breaks even.
+  assert.equal(planBreakEvenUsd(10, 0.4, 0, 0, 0.01), 0.02);
+  // 5 of them sold for +$0.91: the trade breaks even with the 5 left at 0.24 (+$0.04; at 0.23 it is -$0.01).
+  assert.equal(planBreakEvenUsd(5, 0.4, 0, 0.91, 0.01), 0.04);
+  // 8 of 10 bought at 0.50 sold at 0.75 banked +$1.75: no price of the 2 left takes the trade under $0, so none is guarded.
+  assert.equal(planBreakEvenUsd(2, 0.5, 0.018, 1.746, 0.01), 0);
+  // No price breaks even, no cost basis, nothing held: none.
+  assert.equal(planBreakEvenUsd(10, 0.99, 0, 0, 0.01), 0);
+  assert.equal(planBreakEvenUsd(10, undefined, 0, 0, 0.01), 0);
+  assert.equal(planBreakEvenUsd(0, 0.4, 0, 0, 0.01), 0);
 });
 
 test('ProfitRatchets: per market; once its stop is reached the sale goes on until flat; flat, reversed or a fill that empties it starts from nothing', () => {
@@ -135,12 +155,70 @@ test('ProfitRatchets: per market; once its stop is reached the sale goes on unti
   p.onFill('T', -10, 0);
   p.onFill('T', 0, -10);
   assert.deepEqual(p.step('T', -10, 1.2, T0 + 11_000), { armed: false, sell: false });
-  // A partial sale or an add keeps it.
+  // A partial sale keeps it (an add does not: below).
   p.step('T', -10, 2, T0 + 12_000);
   p.onFill('T', -10, -6);
   assert.equal(p.step('T', -6, 1.6, T0 + 13_000).armed, true);
   p.forget('T');
   assert.equal(p.step('T', -6, 1.2, T0 + 14_000).armed, false);
+});
+
+test('ProfitRatchets: an add starts from nothing, seen at an evaluation or on its fill: the added lot\'s spread and fees are no drop of the smaller position\'s profit', () => {
+  const book = new PositionBook();
+  const fill = (side: 'bid' | 'ask', count: number, price: number) => book.applyFill({ ticker: 'T', side, count, price, fee: orderFee(count, price, true) });
+  const net = (bid: number) => { const p = book.get('T')!; return Math.round((positionNetAtBid(p.yes, openSidePrice(p)! + openEntryFee(p)!, { price: bid }, undefined)! + openBankedUsd(p)) * 1e4) / 1e4; };
+  // 10 YES bought at 0.55 (taker): +$1.58 at a 0.74 bid arms the ratchet with its stop at +$1.08; +$1.37 at 0.72 holds.
+  fill('bid', 10, 0.55);
+  const p = new ProfitRatchets(S);
+  assert.deepEqual(p.step('T', 10, net(0.74), T0), { armed: true, best: 1.58, stop: 1.08, sell: false, event: 'arm' });
+  assert.equal(p.step('T', 10, net(0.72), T0 + 1000).sell, false);
+  // 20 more bought at the 0.73 ask: the 30 net +$0.61 at the same bid. On the old stop all 30 would be sold, the 10 still above
+  // their own stop and the 20 a tick under their cost; the larger position starts from nothing.
+  fill('bid', 20, 0.73);
+  assert.equal(net(0.72), 0.61);
+  assert.deepEqual(p.step('T', 30, net(0.72), T0 + 2000), { armed: false, sell: false });
+  // It arms again on the larger position's own profit.
+  assert.equal(p.step('T', 30, 1.6, T0 + 3000).event, 'arm');
+  // An add seen only on its fill (a sale under way included), or a partial sale and an add between two evaluations: from
+  // nothing too. A partial sale alone keeps it (above).
+  const q = new ProfitRatchets(S);
+  q.step('T', 10, 2.2, T0);
+  assert.equal(q.step('T', 10, 1.7, T0 + 1000).sell, true);
+  q.onFill('T', 10, 12);
+  assert.deepEqual(q.step('T', 12, 1.2, T0 + 2000), { armed: false, sell: false });
+  q.step('T', 12, 2.2, T0 + 3000);
+  q.onFill('T', 12, 8);
+  q.onFill('T', 8, 12);
+  assert.deepEqual(q.step('T', 12, 1.2, T0 + 4000), { armed: false, sell: false });
+});
+
+test('ProfitRatchets: an armed stop is saved on every change and resumed after a restart; flat, reversed or grown by then it starts from nothing', () => {
+  const file = path.join(tmpDir(), 'profit_ratchet_state.json');
+  const a = new ProfitRatchets(S, file, T0);
+  a.step('T', 10, 1.4, T0);
+  assert.equal(fs.existsSync(file), false, 'unarmed: nothing to save');
+  // T arms at +$2.60 (stop +$2.10); U at +$1.80; V arms at +$1.90 and its stop (+$1.40) is reached: its sale is under way;
+  // W arms with 10 held, then a partial sale leaves 6.
+  a.step('T', 10, 2.6, T0 + 1000);
+  a.step('U', -5, 1.8, T0 + 1000);
+  a.step('V', 5, 1.9, T0 + 1000);
+  assert.equal(a.step('V', 5, 1.2, T0 + 2000).sell, true);
+  a.step('W', 10, 2, T0 + 1000);
+  a.step('W', 6, 1.9, T0 + 2000);
+  // A deploy restarts the bot. T at +$1.90 is under its stop: sold at once (a fresh ratchet would arm there with a +$1.40
+  // stop, $0.70 lower).
+  const b = new ProfitRatchets(S, file, T0 + 60_000);
+  assert.deepEqual(b.step('T', 10, 1.9, T0 + 61_000), { armed: true, best: 2.6, stop: 2.1, sell: true });
+  assert.deepEqual(b.step('V', 5, 1.5, T0 + 61_000), { armed: true, best: 1.9, stop: 1.4, sell: true, rest: true }, 'the sale goes on');
+  // U turned to the other side while the bot was down, W was added to (8 against the 6 saved): both start from nothing.
+  assert.deepEqual(b.step('U', 5, 1.2, T0 + 61_000), { armed: false, sell: false });
+  assert.deepEqual(b.step('W', 8, 1.2, T0 + 61_000), { armed: false, sell: false });
+  // Flat: dropped from the file too.
+  b.step('T', 0, undefined, T0 + 62_000);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { tracks: Array<{ ticker: string }> };
+  assert.deepEqual(saved.tracks.map((x) => x.ticker), ['V']);
+  // A day later a leftover track (its market settled while the bot was down) is not read.
+  assert.deepEqual(new ProfitRatchets(S, file, T0 + 25 * 3_600_000).step('V', 5, 1.2, T0 + 25 * 3_600_000), { armed: false, sell: false });
 });
 
 // ---- The hold exit standing aside (bot/strategy/holdExit.ts) ---------------------------------------------------------------
@@ -227,7 +305,7 @@ test('ratchet sale: where the quota snipe could not sell, neither can it; the hu
 
 test('ratchet sale beside the other exits: the quota snipe and floor are unchanged and keep their names; it outranks the hold exit\'s name; one sale', () => {
   assert.match(sale(long(), { pacerUsd: 0.75, ratchet: SELL })!.why, /^quota snipe: /);
-  assert.deepEqual(sale(long(), { pacerUsd: 0.75, ratchet: SELL })!.liquidation, { hold: false, ratchet: true });
+  assert.deepEqual(sale(long(), { pacerUsd: 0.75, ratchet: SELL })!.liquidation, { hold: false, snipe: true, ratchet: true });
   assert.match(sale(long(), { pacerUsd: 4.5, ratchet: SELL })!.why, /^profit ratchet: /, 'the snipe\'s target not reached');
   // The quota floor (PACER_FLOOR): a profit under an armed floor sells, labelled the floor's; the ratchet is a second stop.
   const fl: StrategyConfig = { ...cfg, pacer: { ...cfg.pacer!, floor: 'riding', floorTicks: 0 } };
@@ -272,4 +350,43 @@ test('replay: the same ratchet as the engine sells positions on synthetic data; 
   const both = await runBacktest(dir, MetaModel.identity(), loadConfig({ ...env, HOLD_EXIT: 'true' }).strategy, loadConfig(env).risk, 200, { exitPolicy: 'hold', fillLog: true });
   const kinds = new Set((both.fillLog ?? []).filter((f) => f.coid?.includes('-exit-')).map((f) => f.coid!.replace(/^.*-exit-/, '')));
   assert.ok([...kinds].every((k) => k === 'ratchet' || k === 'hold') && kinds.has('ratchet'), [...kinds].join(', '));
+});
+
+test('replay: the ratchet and the hold exit judge the trade (banked plus the rest), so a partial sale is no drop; with orders 2.5 s in flight no second exit on a market goes out within 2 s', async () => {
+  const dir = path.join(tmpDir(), 'rec');
+  writeSyntheticRecordings(dir, { windows: 8, seed: 7, marketNoise: 0.05 });
+  const c = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_CADENCE: 'continuous', PROFIT_MANDATE: 'false', PACER: 'false' });
+  const run = (latency?: { orderMs: number; cancelMs: number; jitterMs: number }) =>
+    runBacktest(dir, MetaModel.identity(), c.strategy, c.risk, 200, { exitPolicy: 'hold', fillLog: true, ...(latency ? { latency } : {}) });
+  const r = await run();
+  const exitFills = (r.fillLog ?? []).filter((f) => f.coid?.includes('-exit-'));
+  // The maker quotes trim positions here, so many sales follow a partial one; each names what it banked.
+  assert.ok(exitFills.filter((f) => f.why?.includes('banked by partial sales')).length >= 5, JSON.stringify(exitFills.map((f) => f.why).slice(0, 5)));
+  const usd = (s: string) => Number(s.replace('$', ''));
+  let ratchets = 0;
+  let holds = 0;
+  for (const f of exitFills) {
+    // The first sale's reason names the trade's net it judged: at or under the stop for the ratchet, at or over the run
+    // level for the hold exit. Judged on the rest alone, a trade that banked a profit would sell over its stop.
+    const rt = /^profit ratchet: ([+-]\$[\d.]+) net.* at or under its stop ([+-]\$[\d.]+)/.exec(f.why ?? '');
+    if (rt) { ratchets++; assert.ok(usd(rt[1]) <= usd(rt[2]) + 0.006, f.why); }
+    const ho = /^hold exit: ([+-]\$[\d.]+) net/.exec(f.why ?? '');
+    if (ho) { holds++; assert.ok(usd(ho[1]) >= c.strategy.holdExit.runUsd - 0.006, f.why); }
+  }
+  assert.ok(ratchets >= 5 && holds >= 1, `${ratchets} ratchet and ${holds} hold exit sales`);
+
+  // Orders and cancels 2.5 s in flight: an exit still travelling holds the next one on its market back (the in-flight guard,
+  // the answer given to Steven, Nov 11 9:10 AM EST / 14:10 UTC).
+  const late = await run({ orderMs: 2500, cancelMs: 2500, jitterMs: 0 });
+  const sends = new Map<string, Set<number>>();
+  for (const f of late.fillLog ?? []) {
+    const m = /-(\d{13})-\d+-exit-/.exec(f.coid ?? '');
+    if (m) sends.set(f.ticker, (sends.get(f.ticker) ?? new Set()).add(Number(m[1])));
+  }
+  let pairs = 0;
+  for (const [t, s] of sends) {
+    const at = [...s].sort((a, b) => a - b);
+    for (let i = 1; i < at.length; i++, pairs++) assert.ok(at[i] - at[i - 1] >= 2000, `${t}: exits sent at ${at[i - 1]} and ${at[i]}`);
+  }
+  assert.ok(pairs >= 10, `${pairs} pairs`);
 });
