@@ -4,7 +4,7 @@ name: Heat map live test diagnostics
 on:
   push:
     branches: [claude/project-thread-rvpht4]
-    paths: ['.github/workflows/heatmap-live-diag.yml', 'research/heatmap_live/**']
+    paths: ['.github/workflows/heatmap-live-diag.yml', 'research/heatmap_live/atlas_calls_diag.py']
   workflow_dispatch:
 permissions:
   contents: write
