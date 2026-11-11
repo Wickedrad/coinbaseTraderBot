@@ -310,6 +310,9 @@ export interface CrossCheck {
   spot: SpotTurn;
   /** The position's reading of its coin's live line (the 'line' source). */
   line?: LiveLineReading;
+  /** The line exit's last resort (HOLD_EXIT_LINE_AFTER_FAILS, bot/strategy/holdExit.ts): the position failed enough tries, so
+   *  the cross may sell it with SINUOUS_CROSS off; every other condition of the cross still holds. */
+  lastResort?: boolean;
 }
 
 const DEFAULT_REST_STAND_DOWN_SEC = 120;
@@ -424,9 +427,10 @@ export class SinuousExitGate {
   get crossing(): boolean { return this.p.mode === 'rest' || this.p.mode === 'cross'; }
 
   /** Rest and cross modes: sell the position at the bid now? On a confirmed roll-over (see the header) that clears the
-   *  take-profit floor. What the order fills is scored (crossFilled), not the call. */
+   *  take-profit floor. What the order fills is scored (crossFilled), not the call. SINUOUS_CROSS off, only as the line exit's
+   *  last resort (e.lastResort). */
   cross(ticker: string, e: CrossCheck, now: number): { sell: boolean; why?: string; note?: string } {
-    if (!this.crossing || this.p.cross === false || e.tauSec <= this.standDownSec) return { sell: false };
+    if (!this.crossing || (this.p.cross === false && e.lastResort !== true) || e.tauSec <= this.standDownSec) return { sell: false };
     if (this.p.crossSource === 'line') return this.lineCross(ticker, e);
     const k = this.trackers.get(ticker);
     const r = k?.reading;

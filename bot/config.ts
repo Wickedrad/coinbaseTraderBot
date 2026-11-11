@@ -154,7 +154,9 @@ export interface StrategyConfig {
    *  HOLD_EXIT_RUN_SEC (3) seconds in a row is sold at the bid, where the quota snipe could sell it. Plan positions too (Steven,
    *  Nov 11 8:52 AM EST / 13:52 UTC). With the profit ratchet armed it stands aside while the profit set a new best in the last
    *  HOLD_EXIT_RUN_SEC. After a hold exit or a quota snipe the same contract is entered again only while more than
-   *  HOLD_EXIT_REENTRY_SHARE (0.5) of its window is left. */
+   *  HOLD_EXIT_REENTRY_SHARE (0.5) of its window is left. Its profit is the trade's: what partial sales banked plus the rest at
+   *  the bid. After HOLD_EXIT_LINE_AFTER_FAILS (5; 0 = never) failed tries on a position (up to $1.00, back under it for 3 s,
+   *  never $1.50) the line exit may sell it as a last resort with SINUOUS_CROSS off (Steven, Nov 11 9:21 AM EST / 14:21 UTC). */
   holdExit: HoldExitConfig;
   /** RATCHET (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC; bot/strategy/profitRatchet.ts): one ratchet for every position,
    *  in dollars for the whole position after both fees. It arms at RATCHET_ARM_USD (1.50); its stop starts at
@@ -1236,6 +1238,8 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       runUsd: num(env, 'HOLD_EXIT_RUN_USD', 1, 0, 10_000),
       runSec: num(env, 'HOLD_EXIT_RUN_SEC', 3, 0, 600),
       reentryShare: num(env, 'HOLD_EXIT_REENTRY_SHARE', 0.5, 0, 1),
+      // Steven's card (Nov 11 9:21 AM EST / 14:21 UTC): the line exit after 5 failed tries. A count: 2.5 means 3.
+      lineAfterFails: Math.ceil(num(env, 'HOLD_EXIT_LINE_AFTER_FAILS', 5, 0, 1000)),
     },
     profitRatchet: profitRatchetConfig(env),
     plan: planConfig(env),

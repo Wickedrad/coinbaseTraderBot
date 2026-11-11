@@ -4,15 +4,15 @@
 // consecutively, though as an exit rule it should also have 5 seconds consecutively in +$1 profit after fees", "both must be
 // true together", "and 3 instead of 5 seconds".
 //
-// One rule, two conditions true together at the moment of sale, both on the whole position's profit after the entry fee and
-// the exit fee at the bid (netProfitAtBid, the quota snipe's measure, bot/strategy/fairValueStrategy.ts):
+// One rule, two conditions true together at the moment of sale, both on the trade's profit after the entry fee and the exit
+// fee at the bid (the quota snipe's measure, netProfitAtBid in bot/strategy/fairValueStrategy.ts, plus what partial sales
+// banked: see "The trade" below):
 //   total   at least HOLD_EXIT_SEC (10) seconds in all at or above HOLD_EXIT_USD ($1.50); a dip below does not reset it
 //   run     the last HOLD_EXIT_RUN_SEC (3) seconds or more in a row at or above HOLD_EXIT_RUN_USD ($1.00), up to now
 // The sale is the quota snipe's: the whole position at the bid, where and when the snipe could sell (decide()). The snipe is
 // unchanged; whichever fires first sells. Nothing else goes out with either sale, and the market's resting quotes are pulled
 // (bot/engine.ts liquidate). Once the rule has sold part of the position (a thin bid), the rest is sold at the next bids while
-// it is not at a loss after fees: the rule decided to exit the whole position, and the rest's own, smaller profit must not
-// undo that.
+// the trade is not at a loss after fees: the rule decided to exit the whole position.
 // Time comes from the evaluations' timestamps, never from counting ticks: a stretch between two evaluations counts toward the
 // total only when both were at the level and it is at most HOLD_EXIT_MAX_GAP_MS long (plus HOLD_EXIT_JOIN_SLACK_MS for timer
 // jitter: a market skipped one tick as busy is sampled a little over 2 s later), and then at most 2 s of it. A longer gap (a
@@ -21,7 +21,8 @@
 // evaluation saw it flat (onFill). The count is kept in memory: after a restart it starts again.
 // Re-entry: after a hold exit or a quota snipe sold on a contract (marked on the sale's fill), a new entry there opens only
 // while more than HOLD_EXIT_REENTRY_SHARE (half) of the contract's window (open to close) is left, and only on the bot's
-// normal entry signal. A profit ratchet sale marks it too: it sells the runners the hold exit would have sold. The marks are saved (hold_exit_state.json beside the pacer's state) and kept until the market closes.
+// normal entry signal. A profit ratchet sale marks it too: it sells the runners the hold exit would have sold. The marks are
+// saved (hold_exit_state.json beside the pacer's state) and kept until the market closes.
 // Tennis is not covered: its snipe (bot/tennis/tennisStrategy.ts) marks nothing and its entries are not limited, since a
 // match contract's open-to-close times say nothing about how much of the match is left; that is for Steven to settle.
 // Plan positions too (Steven, Nov 11 8:52 AM EST / 13:52 UTC): the hold exit sells a plan position (PLAN_RULES) as any other;
@@ -31,6 +32,17 @@
 // the ratchet's stop, $0.50 under the best, sells it on the way down. A position sitting near $1.50 sets no new best and is
 // sold at 10 s as before. With no ratchet armed (RATCHET=false, or not yet armed) nothing stands aside. The best is the
 // highest profit any evaluation of the position saw, on the same timestamps.
+// The trade, not the rest (the answer given to Steven, Nov 11 9:10 AM EST / 14:10 UTC): the profit sampled is what partial
+// sales of the position banked since it opened plus the rest at the bid (tradeNetAtBid, bot/strategy/fairValueStrategy.ts), so
+// a thin bid that took part of the position (on any exit) is not a drop, and the rest is not left under a $1.50 bar meant for
+// the whole position.
+// Failed tries (Steven's idea, Nov 11 9:15 AM EST / 14:15 UTC, and his card at 9:21 AM EST / 14:21 UTC): a try starts when the
+// trade's profit reaches HOLD_EXIT_RUN_USD ($1.00) and ends once it has stayed under it for HOLD_EXIT_RUN_SEC (3 s) in a row;
+// it failed when it never touched HOLD_EXIT_USD ($1.50) on the way. Back at $1.00 within the 3 s, the same try goes on; the
+// next rise to $1.00 after a try ended starts a new one. Same clock and joins as the count above (a gap restarts the 3 s, no
+// profit measure is under $1.00). After HOLD_EXIT_LINE_AFTER_FAILS (5) failed tries on the position, the line exit (the exit
+// curve's cross, bot/engine.ts) may sell it with SINUOUS_CROSS off, on its own conditions: its last resort. 0 turns that off.
+// Not a plan position: the curve neither holds nor sells one (its tries are counted all the same).
 // The engine (paper and live alike) and the replay (research/backtest.ts) run this class on their own clocks.
 
 import fs from 'fs';
@@ -48,6 +60,9 @@ export interface HoldExitConfig {
   /** HOLD_EXIT_REENTRY_SHARE (0.5): after a hold exit or a quota snipe, an entry on the same contract only while more than this
    *  share of its window is left. 0 = no limit. */
   reentryShare: number;
+  /** HOLD_EXIT_LINE_AFTER_FAILS (5): after this many failed tries on a position the line exit may sell it as a last resort,
+   *  SINUOUS_CROSS off or not. 0 = never. */
+  lineAfterFails: number;
 }
 
 /** The longest stretch between two evaluations that counts as time in profit (one evaluation a second, with room for a slow one). */
@@ -65,6 +80,8 @@ export interface HoldReading {
   rest?: boolean;
   /** Both conditions are met but the profit is still climbing under an armed ratchet: the hold exit stands aside. */
   climbing?: boolean;
+  /** Failed tries on this position so far (set once there is one): reached $1.00, back under it for 3 s, never $1.50. */
+  fails?: number;
 }
 
 const EPS = 1e-9;
@@ -75,6 +92,9 @@ interface Track {
   best: number | undefined; bestAt: number;
   /** The rule's sale filled part of the position: the rest is sold too. */
   selling: boolean;
+  /** The try under way (undefined: none): whether it touched `usd`, and since when it has been under `runUsd`. */
+  attempt: { touched: boolean; underFrom: number | undefined } | undefined;
+  fails: number;
 }
 
 export class HoldExits {
@@ -88,8 +108,9 @@ export class HoldExits {
     this.load(now);
   }
 
-  /** Records the position's profit after fees at its bid (`netUsd`; undefined: none) at `now` (ms) and says whether it sells.
-   *  `ratchetArmed`: the position's profit ratchet is armed, so the hold exit stands aside while the profit is still climbing. */
+  /** Records the trade's profit after fees (`netUsd`: banked by partial sales plus the rest at its bid, tradeNetAtBid;
+   *  undefined: none) at `now` (ms) and says whether it sells. `ratchetArmed`: the position's profit ratchet is armed, so the
+   *  hold exit stands aside while the profit is still climbing. */
   sample(ticker: string, position: number, netUsd: number | undefined, now: number, ratchetArmed = false): HoldReading {
     if (!(Math.abs(position) > EPS)) {
       this.tracks.delete(ticker);
@@ -98,12 +119,12 @@ export class HoldExits {
     const sign = Math.sign(position);
     let t = this.tracks.get(ticker);
     if (!t || t.sign !== sign) {
-      t = { sign, lastTs: -Infinity, lastNet: undefined, cumMs: 0, runFrom: undefined, best: undefined, bestAt: -Infinity, selling: false };
+      t = { sign, lastTs: -Infinity, lastNet: undefined, cumMs: 0, runFrom: undefined, best: undefined, bestAt: -Infinity, selling: false, attempt: undefined, fails: 0 };
       this.tracks.set(ticker, t);
     }
     // An evaluation older than the last one (overlapping ticks under the kill switch) adds nothing and sells nothing: the newer
     // one already judged the position.
-    if (now < t.lastTs) return { fire: false, cumSec: t.cumMs / 1000, runSec: t.runFrom === undefined ? 0 : (t.lastTs - t.runFrom) / 1000 };
+    if (now < t.lastTs) return { fire: false, cumSec: t.cumMs / 1000, runSec: t.runFrom === undefined ? 0 : (t.lastTs - t.runFrom) / 1000, ...(t.fails ? { fails: t.fails } : {}) };
     const net = netUsd !== undefined && Number.isFinite(netUsd) ? netUsd : undefined;
     const at = (x: number | undefined, usd: number) => x !== undefined && x >= usd - EPS;
     const dt = now - t.lastTs;
@@ -111,6 +132,18 @@ export class HoldExits {
     if (joined && at(t.lastNet, this.cfg.usd) && at(net, this.cfg.usd)) t.cumMs += Math.min(dt, this.maxGapMs);
     if (!at(net, this.cfg.runUsd)) t.runFrom = undefined;
     else if (t.runFrom === undefined || !joined) t.runFrom = now;
+    // Failed tries: a try runs from the rise to runUsd until 3 s in a row under it (runSec), and fails unless it touched usd.
+    if (at(net, this.cfg.runUsd)) {
+      t.attempt ??= { touched: false, underFrom: undefined };
+      t.attempt.underFrom = undefined;
+      if (at(net, this.cfg.usd)) t.attempt.touched = true;
+    } else if (t.attempt) {
+      if (t.attempt.underFrom === undefined || !joined) t.attempt.underFrom = now;
+      if (now - t.attempt.underFrom >= this.cfg.runSec * 1000 - EPS) {
+        if (!t.attempt.touched) t.fails++;
+        t.attempt = undefined;
+      }
+    }
     t.lastTs = now;
     t.lastNet = net;
     if (net !== undefined && (t.best === undefined || net > t.best + EPS)) { t.best = net; t.bestAt = now; }
@@ -120,7 +153,7 @@ export class HoldExits {
     // part of the position, the rest is not held back.
     const climbing = met && !t.selling && ratchetArmed && now - t.bestAt < this.cfg.runSec * 1000 - EPS;
     const rest = !met && t.selling && at(net, 0);
-    return { fire: (met && !climbing) || rest, cumSec: t.cumMs / 1000, runSec: runMs / 1000, ...(rest ? { rest: true } : {}), ...(climbing ? { climbing: true } : {}) };
+    return { fire: (met && !climbing) || rest, cumSec: t.cumMs / 1000, runSec: runMs / 1000, ...(rest ? { rest: true } : {}), ...(climbing ? { climbing: true } : {}), ...(t.fails ? { fails: t.fails } : {}) };
   }
 
   /** A fill moved the position from `before` to `after`: flat or on the other side, the next position starts from nothing

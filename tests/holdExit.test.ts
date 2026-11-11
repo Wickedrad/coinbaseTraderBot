@@ -4,14 +4,14 @@ import { test } from 'node:test';
 import { loadConfig, type StrategyConfig } from '../bot/config';
 import { DEFAULT_FEES, orderFee } from '../bot/fees';
 import { MetaModel } from '../bot/model/metaModel';
-import { decide, netProfitAtBid, type MarketView } from '../bot/strategy/fairValueStrategy';
+import { decide, netProfitAtBid, tradeNetAtBid, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { HOLD_EXIT_JOIN_SLACK_MS, HOLD_EXIT_MAX_GAP_MS, HoldExits, type HoldExitConfig, type HoldReading } from '../bot/strategy/holdExit';
 import { runBacktest } from '../research/backtest';
 import { writeSyntheticRecordings } from '../research/synthetic';
 import { tmpDir } from './helpers';
 
 // Steven's rule (Nov 11): $1.50 after fees for 10 s in all, and $1.00 after fees for the last 3 s in a row, both at once.
-const CFG: HoldExitConfig = { enabled: true, usd: 1.5, sec: 10, runUsd: 1, runSec: 3, reentryShare: 0.5 };
+const CFG: HoldExitConfig = { enabled: true, usd: 1.5, sec: 10, runUsd: 1, runSec: 3, reentryShare: 0.5, lineAfterFails: 5 };
 const T0 = 1_700_000_000_000;
 
 /** Feeds `nets` one a second (or at the given offsets in ms) and returns every reading. */
@@ -24,7 +24,7 @@ test('settings: on by default at $1.50 for 10 s in all, $1.00 for 3 s in a row, 
   assert.deepEqual(loadConfig(env).strategy.holdExit, CFG);
   assert.equal(loadConfig({ ...env, HOLD_EXIT: 'false' }).strategy.holdExit.enabled, false);
   assert.deepEqual(loadConfig({ ...env, HOLD_EXIT_USD: '2', HOLD_EXIT_SEC: '20', HOLD_EXIT_RUN_USD: '1.25', HOLD_EXIT_RUN_SEC: '5', HOLD_EXIT_REENTRY_SHARE: '0.25' }).strategy.holdExit,
-    { enabled: true, usd: 2, sec: 20, runUsd: 1.25, runSec: 5, reentryShare: 0.25 });
+    { enabled: true, usd: 2, sec: 20, runUsd: 1.25, runSec: 5, reentryShare: 0.25, lineAfterFails: 5 });
   assert.throws(() => loadConfig({ ...env, HOLD_EXIT_REENTRY_SHARE: '1.5' }), /HOLD_EXIT_REENTRY_SHARE/);
   assert.throws(() => loadConfig({ ...env, HOLD_EXIT_SEC: '-1' }), /HOLD_EXIT_SEC/);
 });
@@ -167,6 +167,54 @@ test('hold exit: a flat position or a reversed one starts from nothing; other co
   assert.equal(h.sample('T', 10, 1.62, T0 + 12_000).cumSec, 0);
 });
 
+// Failed tries (Steven's idea, Nov 11 9:15 AM EST / 14:15 UTC, his card 9:21 AM EST / 14:21 UTC): reached $1.00, then under it
+// for 3 s in a row without touching $1.50 on the way.
+test('failed tries: reaching $1.00 and then 3 s in a row under it, never touching $1.50, is one; touching $1.50 is none', () => {
+  const fails = (r: HoldReading[]) => r.map((x) => x.fails ?? 0);
+  // Read at the evaluation that completes the 3 s under $1.00 (1 s, 2 s, 3 s after the first one under), and kept after.
+  assert.deepEqual(fails(feed(new HoldExits(CFG), [1.2, 0.8, 0.8, 0.8, 0.8, 0.8])), [0, 0, 0, 0, 1, 1]);
+  assert.deepEqual(fails(feed(new HoldExits(CFG), [1.0, 0.99, 0.99, 0.99, 0.99])), [0, 0, 0, 0, 1], 'exactly $1.00 starts a try');
+  // Touching $1.50 on the way up, or between two dips: no failure.
+  assert.ok(feed(new HoldExits(CFG), [1.2, 1.5, 1.2, 0.8, 0.8, 0.8, 0.8, 0.8]).every((x) => !x.fails));
+  assert.ok(feed(new HoldExits(CFG), [1.2, 0.8, 0.8, 1.62, 0.8, 0.8, 0.8, 0.8]).every((x) => !x.fails));
+  // Never at $1.00: no try, no failure.
+  assert.ok(feed(new HoldExits(CFG), Array(20).fill(0.8)).every((x) => !x.fails));
+  // Each try counts once; the next rise to $1.00 starts a new one.
+  const cycle = [1.15, 0.85, 0.85, 0.85, 0.85];
+  assert.deepEqual(fails(feed(new HoldExits(CFG), [...cycle, ...cycle, ...cycle])), [0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3]);
+});
+
+test('failed tries: one-tick wiggles under $1.00 for less than 3 s are no failure; a gap restarts the 3 s; no bid is under $1.00', () => {
+  // A tick under and back, then 2 s under and back: the same try goes on, nothing failed.
+  const h = new HoldExits(CFG);
+  const w = feed(h, [1.05, 0.95, 1.05, 0.95, 0.95, 0.95, 1.05, 0.95, 1.0]);
+  assert.ok(w.every((x) => !x.fails), JSON.stringify(w));
+  // Uneven ticks: 2.9 s under is not 3 s.
+  assert.ok(feed(new HoldExits(CFG), [1.2, 0.8, 0.8, 0.8], { at: [0, 1000, 2500, 3900] }).every((x) => !x.fails));
+  // The same try, now 3 s under: one failure.
+  assert.equal(feed(h, [0.95, 0.95, 0.95, 0.95], { from: T0 + 9000 }).at(-1)!.fails, 1);
+  // A data gap (or a stalled loop) counts nothing: the 3 s start again after it.
+  const g = new HoldExits(CFG);
+  assert.ok(feed(g, [1.2, 0.8, 0.8, 0.8, 0.8], { at: [0, 1000, 2000, 6000, 7000] }).every((x) => !x.fails));
+  assert.deepEqual(feed(g, [0.8, 0.8], { from: T0 + 8000 }).map((x) => x.fails ?? 0), [0, 1], '3 s after the gap');
+  // No profit measure (no bid) is under $1.00, as for the run.
+  assert.equal(feed(new HoldExits(CFG), [1.2, undefined, undefined, undefined, undefined]).at(-1)!.fails, 1);
+});
+
+test('failed tries: counted on the position; a partial sale keeps them, flat or the other side starts from nothing', () => {
+  const cycle = [1.15, 0.85, 0.85, 0.85, 0.85];
+  const h = new HoldExits(CFG);
+  assert.equal(feed(h, [...cycle, ...cycle]).at(-1)!.fails, 2);
+  assert.equal(h.sample('U', 10, 0.85, T0 + 10_000).fails, undefined, 'another contract has its own count');
+  h.onFill('T', 10, 6);
+  assert.equal(h.sample('T', 6, 0.85, T0 + 10_000).fails, 2, 'a partial sale keeps the count');
+  h.onFill('T', 6, 0);
+  h.onFill('T', 0, 10);
+  assert.equal(h.sample('T', 10, 0.85, T0 + 11_000).fails, undefined, 'flat in between: from nothing');
+  assert.equal(feed(h, [...cycle], { from: T0 + 12_000 }).at(-1)!.fails, 1);
+  assert.equal(h.sample('T', -10, 0.85, T0 + 17_000).fails, undefined, 'reversed: from nothing');
+});
+
 test('re-entry: after a hold exit or a quota snipe, the same contract only while more than half its window is left; others unaffected', () => {
   const h = new HoldExits(CFG);
   // A 15-minute contract: a 900 s window, half of it 450 s.
@@ -267,6 +315,27 @@ test('hold exit sale: the quota snipe is unchanged and still sells at once; on t
   // The snipe's target not reached: the hold exit sells.
   assert.match(sale(long(), { pacerUsd: 4.5, holdExit: FIRE })!.why, /^hold exit: /);
   assert.equal(decide(long(), cfg, { exits: false, pacerUsd: 4.5, holdExit: FIRE }).place.filter((p) => p.purpose === 'exit').length, 1, 'one sale');
+});
+
+test('hold exit and ratchet sales after a partial sale: the trade\'s net (banked plus the rest); the quota snipe still sees the rest alone', () => {
+  // 6 of 10 left (YES at 0.40); the 4 sold earlier banked +$0.60 after fees (openBankedUsd).
+  const v = long({ position: 6, bankedUsd: 0.6 });
+  const rest = netProfitAtBid(v)!;
+  const trade = rest + 0.6;
+  assert.ok(Math.abs(tradeNetAtBid(v)! - trade) < 1e-9);
+  assert.equal(tradeNetAtBid(long({ bestBid: undefined, bankedUsd: 0.6 })), undefined, 'no bid: no measure');
+  const h = sale(v, { holdExit: FIRE })!;
+  assert.deepEqual([h.count, h.liquidation], [6, { hold: true }]);
+  assert.equal(h.why, `hold exit: +$${trade.toFixed(2)} net (+$0.60 banked by partial sales) on 6 at bid 0.58, 10.0 s in all at +$1.50 or more, the last 3.0 s in a row at +$1.00 or more`);
+  assert.equal(sale(v, { holdExit: { fire: true, cumSec: 10, runSec: 0, rest: true } })!.why, `hold exit, the rest: +$${trade.toFixed(2)} net (+$0.60 banked by partial sales) on 6 at bid 0.58; the rule fired and a thin bid took part of the position`);
+  const r = sale(v, { ratchet: { armed: true, best: 2.3, stop: 1.8, sell: true } })!;
+  assert.equal(r.why, `profit ratchet: +$${trade.toFixed(2)} net (+$0.60 banked by partial sales) on 6 at bid 0.58 is at or under its stop +$1.80 (best +$2.30)`);
+  // The quota snipe measures what selling now brings, the rest alone: +$1.20 needed, the rest has less, so nothing.
+  assert.ok(rest < 1.2 && trade > 1.2, `${rest} ${trade}`);
+  assert.equal(sale(v, { pacerUsd: 1.2 }), undefined);
+  assert.ok(sale(v, { pacerUsd: 0.75 })!.why.startsWith(`quota snipe: +$${rest.toFixed(2)} net on 6 at bid 0.58 covers`));
+  // Nothing banked: no note, as before.
+  assert.doesNotMatch(sale(long(), { holdExit: FIRE })!.why, /banked/);
 });
 
 // ---- The replay (research/backtest.ts) ------------------------------------------------------------------------------------

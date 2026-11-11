@@ -1,8 +1,9 @@
 // One profit ratchet for every position (Steven, Nov 11 2026). 8:53 AM EST / 13:53 UTC: "the ratchet should allow for the
 // profit after fees price to go higher if it runs past the $1.50 profit and ratchet stop loss after that"; 8:58 AM EST / 13:58
 // UTC: trail $0.50. The design he accepted:
-//   net     the position's profit after the entry fee and the taker exit fee if all of it sold at the held side's bid now
-//           (netProfitAtBid, the quota snipe's and the hold exit's measure), in dollars for the whole position
+//   net     the trade's profit after fees, in dollars: what partial sales of the position banked since it opened plus the rest
+//           sold at the held side's bid now after the entry fee and the taker exit fee (tradeNetAtBid, the hold exit's measure;
+//           the answer given to Steven, Nov 11 9:10 AM EST / 14:10 UTC: a thin bid that took part of the position is no drop)
 //   arm     net >= RATCHET_ARM_USD ($1.50): best = net, stop = max(RATCHET_STOP_MIN_USD $1.00, best - RATCHET_TRAIL_USD $0.50)
 //   raise   each evaluation after: best = max(best, net), stop = max(stop, $1.00, best - $0.50). Never lowered (asserted), and
 //           never under $0, the fee break-even (net is after both fees)
@@ -113,7 +114,8 @@ export class ProfitRatchets {
 
   constructor(readonly cfg: RatchetSettings) {}
 
-  /** Records the position's net (`netUsd`; undefined: no bid, nothing is decided) at `now` and says whether it sells. */
+  /** Records the trade's net (`netUsd`, tradeNetAtBid; undefined: no bid, nothing is decided) at `now` and says whether it
+   *  sells. */
   step(ticker: string, position: number, netUsd: number | undefined, now: number): RatchetReading {
     if (!(Math.abs(position) > EPS)) {
       this.tracks.delete(ticker);

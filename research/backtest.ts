@@ -51,12 +51,12 @@ import type { MacroEvent } from '../bot/model/featureEngine';
 import { loadCalendar } from '../bot/model/calendar';
 import { GO_LIVE_GATES, MetaModel } from '../bot/model/metaModel';
 import type { OrderIntent } from '../bot/oms/oms';
-import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
+import { openBankedUsd, openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { EquityGuard } from '../bot/risk/equityGuard';
 import { newRiskRoomUsd as riskRoomUsd, RiskGateway } from '../bot/risk/riskGateway';
-import { decide, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, type MarketView } from '../bot/strategy/fairValueStrategy';
+import { decide, decisionProbability, netProfitAtBid, positionNetAtBid, shareWindowSec, tradeNetAtBid, type MarketView } from '../bot/strategy/fairValueStrategy';
 import { ComponentTrials, type TrialName } from '../bot/strategy/componentTrials';
 import { activeRuleBook, RuleBook, setRuleBook } from '../bot/strategy/ruleBook';
 import { altcoinRiskOn, confluenceBreadth, orientedSignals, selectionPriority, taDrift, taNetDirection } from '../bot/strategy/taConviction';
@@ -75,6 +75,7 @@ import { HoldExits } from '../bot/strategy/holdExit';
 import { ProfitRatchets, type RatchetReading } from '../bot/strategy/profitRatchet';
 import { PlanPositions, type PlanPosition } from '../bot/plan/planPositions';
 import { planMarkTried, planStep, type PlanEvent, type PlanRatchetSettings, type PlanSale } from '../bot/plan/planRatchet';
+import { exitInFlight, type GuardOrder } from '../bot/oms/exitGuard';
 import { readRecordings, ReplayState } from './replay';
 import { AccuracyGate, type AccuracyGateConfig } from '../bot/strategy/accuracyGate';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
@@ -482,7 +483,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     const entry = openSidePrice(pNow);
     const r = planStep({
       ticker: m.ticker, side: pp.side, ruleId: pp.ruleId, position: pos.position(m.ticker), bid, ask,
-      entryPrice: entry !== undefined && entry > 0 && entry < 1 ? entry : undefined, entryFeePerContract: openEntryFee(pNow), fees: DEFAULT_FEES, tick: m.tickSize, now: st.now,
+      entryPrice: entry !== undefined && entry > 0 && entry < 1 ? entry : undefined, entryFeePerContract: openEntryFee(pNow), bankedUsd: openBankedUsd(pNow), fees: DEFAULT_FEES, tick: m.tickSize, now: st.now,
       tauSec: (m.closeTime - st.now) / 1000, windowSec: shareWindowSec(m.openTime, m.closeTime, strategy.shareWindowMaxSec),
       settings: pp.settings, state: pp.state, orderInFlight: pending.has(m.ticker) || inflight.some((x) => x.ticker === m.ticker && x.orderId === undefined),
     });
@@ -655,6 +656,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
     if (kind === 'cancel' && orderId) cancelInFlight.add(orderId);
   };
   const inflightFor = (t: string) => inflight.some((x) => x.ticker === t);
+  /** Immediate exits sent, for the in-flight exit guard (fireExit). */
+  const exitSends: GuardOrder[] = [];
   const cancelNow = async (orderId: string) => { cancelInFlight.delete(orderId); try { await ex.cancelOrder(orderId); } catch { /* already gone: the cancel lost the race */ L.lateKills++; } };
 
   let lastTick = 0, nextTick = -Infinity, refillAt = -Infinity;
@@ -783,6 +786,10 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           indexFresh: true, marketCloseTs: m.closeTime, tickSize: m.tickSize, fees: DEFAULT_FEES, position: curPos, marketRiskNow: 0, marketRiskWith: 0,
           windowRisk: 0, totalRisk: 0, ordersLastMinute: 0, openOrders: 0, modelLiveBlockers: [],
         });
+        // The in-flight exit guard, as the engine (bot/oms/exitGuard.ts): an exit of ours sent here less than 2 s ago still
+        // travelling holds this one back; the next evaluation decides again. Without latency every exit has landed by now.
+        while (exitSends.length && st.now - exitSends[0].createdTs >= 60_000) exitSends.shift();
+        if (d.ok && exitInFlight(exitSends, m.ticker, st.now)) return;
         if (d.ok) {
           const id = `${m.ticker}-${st.now}-${++exitSeq}-exit-${due.kind}`;
           if (due.liquidation) liquidations.set(id, due.liquidation.hold);
@@ -791,7 +798,10 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           // The plan's try goes out (Engine.planRecord): the next evaluation judges it; a gap it carries is listed.
           const pp = due.plan ? planPositions.get(m.ticker) : undefined;
           if (pp && due.plan) { planPositions.setState(m.ticker, planMarkTried(pp.state, st.now, due.plan)); if (due.plan.gap) planStats.gaps++; }
-          await send(m.ticker, 'order', async () => { try { await ex.createOrder({ ticker: m.ticker, side: due.side, count, price: due.price, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, selfTradePrevention: 'taker_at_cross', clientOrderId: id }); } catch { /* no fill */ } });
+          // Travelling until it lands; the paper exchange books its fills as it lands (the record is then finished).
+          const sent: GuardOrder = { ticker: m.ticker, purpose: 'exit', reduceOnly: true, timeInForce: 'immediate_or_cancel', state: 'PENDING_NEW', createdTs: st.now, filledCount: 0, exchangeFillCount: 0 };
+          exitSends.push(sent);
+          await send(m.ticker, 'order', async () => { try { await ex.createOrder({ ticker: m.ticker, side: due.side, count, price: due.price, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, selfTradePrevention: 'taker_at_cross', clientOrderId: id }); } catch { /* no fill */ } sent.state = 'FILLED'; });
         }
       };
       // The exit-only lane (E06, bot/strategy/exitOnlyLane.ts), as the engine runs it: the book fresh but the market unpriced
@@ -806,9 +816,11 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         const view = exitOnlyView({
           ticker: m.ticker, position: posL, bid, ask, now: st.now, openTime: m.openTime, closeTime: m.closeTime, tickSize: m.tickSize, fees: DEFAULT_FEES, strategy, risk: limits,
           entrySidePrice: openSidePrice(pL), entryFeePerContract: openEntryFee(pL), profitPeakSidePrice: peaks.update(m.ticker, posL, sideBid), takeProfitBenched: tpBenched(),
+          bankedUsd: openBankedUsd(pL),
         })!;
         await fireExit(view.pYes, bid?.price, ask?.price);
-        const netL = netProfitAtBid(view);
+        // The trade's net (banked by partial sales plus the rest at the bid), as the engine.
+        const netL = tradeNetAtBid(view);
         // A plan position needs no model: its ratchet and end rule run here as in a full evaluation, and nothing else.
         // Every evaluation, as the engine (an order of ours still travelling holds a retry back: planStep's orderInFlight).
         const planPosL = planHeld(m.ticker);
@@ -1020,7 +1032,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       // runs; its sale, once decided, waits for decide() below and goes on until flat.
       const pR = pos.get(m.ticker);
       const sideR = openSidePrice(pR);
-      const netR = positionNetAtBid(pos.position(m.ticker), sideR !== undefined && sideR > 0 && sideR < 1 ? sideR + (openEntryFee(pR) ?? 0) : undefined, bid, ask, DEFAULT_FEES);
+      const restR = positionNetAtBid(pos.position(m.ticker), sideR !== undefined && sideR > 0 && sideR < 1 ? sideR + (openEntryFee(pR) ?? 0) : undefined, bid, ask, DEFAULT_FEES);
+      // The trade's net: what partial sales banked plus the rest at the bid (tradeNetAtBid).
+      const netR = restR === undefined ? undefined : restR + openBankedUsd(pR);
       const ratchet = ratchetAt(m.ticker, pos.position(m.ticker), netR, planPos !== undefined);
       if (inflightFor(m.ticker)) { // orders/cancels still travelling: no new plan until they land
         if (planSelling && opts.paper) await fireExit(pYes, bid.price, ask.price);
@@ -1093,6 +1107,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         restingBid: rb, restingAsk: ra, nowSec: Math.floor(st.now / 1000), closeSec: Math.floor(m.closeTime / 1000),
         pMarket, pStd: pred.std, makerBuffer: (res.makerBufferEnd = makerBuffer()), entrySidePrice: entrySide !== undefined && entrySide > 0 && entrySide < 1 ? entrySide : undefined,
         entryFeePerContract: openEntryFee(pNow),
+        ...(openBankedUsd(pNow) ? { bankedUsd: openBankedUsd(pNow) } : {}),
         profitPeakSidePrice: peaks.update(m.ticker, posC, posC > 0 ? bid.price : posC < 0 ? Math.round((1 - ask.price) * 1e4) / 1e4 : undefined),
         entryWindowOpen, exitWindowOpen: tauSec > strategy.noExitBeforeCloseSec,
         settleShare: ((w) => w !== undefined && tauSec <= strategy.noExitBeforeCloseFrac * w)(shareWindowSec(m.openTime, m.closeTime, strategy.shareWindowMaxSec)),
@@ -1103,7 +1118,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const group = pacerUsdNow !== undefined && strategy.pacer.group ? snipeGroup.judge(m.ticker, !planPos && view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsdNow, st.now) : undefined;
       // HOLD_EXIT, as the engine: the position's seconds in profit after fees at the bid, on the replay's clock; it stands aside
       // while the profit climbs under an armed ratchet (the plan's for a plan position), and beside a plan sale under way.
-      const hold = strategy.holdExit.enabled ? holdExits.sample(m.ticker, view.position, netProfitAtBid(view), st.now, planPos ? planPos.state.armed : ratchet?.armed === true) : undefined;
+      const hold = strategy.holdExit.enabled ? holdExits.sample(m.ticker, view.position, tradeNetAtBid(view), st.now, planPos ? planPos.state.armed : ratchet?.armed === true) : undefined;
       const holdOpt = hold && !(planPos && (planSelling || planPos.state.selling !== undefined)) ? { holdExit: hold } : {};
       const plan = planPos ? decide(view, strat, { exits: false, entries: Boolean(reason), planHeld: true, planSelling, ...holdOpt }) : decide(view, strat, {
         exits: policy === 'fair_value' || policy === 'take_profit' || policy === 'hybrid' || (policy === 'confluence_ratchet' && !huntMode),

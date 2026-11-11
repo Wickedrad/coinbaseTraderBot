@@ -29,6 +29,8 @@ export function exitOnlyView(i: {
   ticker: string; position: number; bid: Level | undefined; ask: Level | undefined; now: number; openTime: number; closeTime: number; tickSize: number; fees: FeeSchedule;
   strategy: Pick<StrategyConfig, 'noExitBeforeCloseSec' | 'noExitBeforeCloseFrac' | 'shareWindowMaxSec'>; risk: Pick<RiskLimits, 'minSidePrice' | 'noEntryBeforeCloseSec'>;
   entrySidePrice: number | undefined; entryFeePerContract: number | undefined; profitPeakSidePrice: number | undefined; takeProfitBenched: string | undefined;
+  /** openBankedUsd: what partial sales of the position banked since it opened (the profit ratchet measures the trade). */
+  bankedUsd?: number;
 }): MarketView | undefined {
   if (Math.abs(i.position) < 1e-9 || heldSideBid(i.position, i.bid, i.ask) === undefined) return undefined;
   const pYes = i.bid && i.ask ? (i.bid.price + i.ask.price) / 2 : i.position > 0 ? i.bid!.price : i.ask!.price;
@@ -40,6 +42,7 @@ export function exitOnlyView(i: {
     tickSize: i.tickSize, fees: i.fees, nowSec: Math.floor(i.now / 1000), closeSec: Math.floor(i.closeTime / 1000),
     entrySidePrice: i.entrySidePrice !== undefined && i.entrySidePrice > 0 && i.entrySidePrice < 1 ? i.entrySidePrice : undefined,
     entryFeePerContract: i.entryFeePerContract,
+    ...(i.bankedUsd ? { bankedUsd: i.bankedUsd } : {}),
     profitPeakSidePrice: i.profitPeakSidePrice,
     ...(i.takeProfitBenched ? { takeProfitBenched: i.takeProfitBenched } : {}),
     entryWindowOpen: false, exitWindowOpen: tauSec > S.noExitBeforeCloseSec,

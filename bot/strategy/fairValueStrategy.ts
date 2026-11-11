@@ -96,6 +96,9 @@ export interface MarketView {
   entrySidePrice?: number;
   /** Fees already paid, a contract held (the profit target nets them out). */
   entryFeePerContract?: number;
+  /** Profit after fees the position's partial sales banked since it opened (openBankedUsd, bot/oms/positions.ts). The hold
+   *  exit and the profit ratchet measure the trade, this plus the rest at the bid (tradeNetAtBid); the quota snipe does not. */
+  bankedUsd?: number;
   /** Best price the held side could have been sold at (its bid) since the position was opened, reversed or added to:
    *  the take-profit's high-water mark (ProfitPeaks). Without it the current bid is the best seen. */
   profitPeakSidePrice?: number;
@@ -181,6 +184,15 @@ export function breakEvenExit(count: number, cost: number, fees?: FeeSchedule): 
 export function netProfitAtBid(v: MarketView): number | undefined {
   const cost = v.entrySidePrice !== undefined ? v.entrySidePrice + (v.entryFeePerContract ?? 0) : undefined;
   return positionNetAtBid(v.position, cost, v.bestBid, v.bestAsk, v.fees);
+}
+
+/** The trade's profit after fees (the answer given to Steven, Nov 11 9:10 AM EST / 14:10 UTC): what partial sales of the
+ *  position banked since it opened plus the rest sold at the bid now (netProfitAtBid), so a partial sale is not a drop and the
+ *  rest is not left under a bar meant for the whole position. The hold exit, the profit ratchet and the failed tries before
+ *  the line exit's last resort measure it. */
+export function tradeNetAtBid(v: MarketView): number | undefined {
+  const rest = netProfitAtBid(v);
+  return rest === undefined ? undefined : rest + (v.bankedUsd ?? 0);
 }
 
 /** The window the last share (STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC) measures: open to close, at most `maxSec`
@@ -366,19 +378,22 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     }
     return { call, grouped: opts.pacerGroup !== undefined && netUsd > 1e-9 && higher === undefined };
   };
+  // Both name the trade's net (tradeNetAtBid), and what earlier partial sales banked of it.
+  const bankedNote = Math.abs(v.bankedUsd ?? 0) > 0.005 ? ` (${usdSigned(v.bankedUsd!)} banked by partial sales)` : '';
   const ratchetWhy = (netUsd: number, held: string, at: string) => opts.ratchet!.rest
-    ? `profit ratchet, the rest: ${usdSigned(netUsd)} net on ${held} at bid ${at}; its stop ${usdSigned(opts.ratchet!.stop ?? 0)} was reached and the sale goes on until flat`
-    : `profit ratchet: ${usdSigned(netUsd)} net on ${held} at bid ${at} is at or under its stop ${usdSigned(opts.ratchet!.stop ?? 0)} (best ${usdSigned(opts.ratchet!.best ?? 0)})`;
+    ? `profit ratchet, the rest: ${usdSigned(netUsd)} net${bankedNote} on ${held} at bid ${at}; its stop ${usdSigned(opts.ratchet!.stop ?? 0)} was reached and the sale goes on until flat`
+    : `profit ratchet: ${usdSigned(netUsd)} net${bankedNote} on ${held} at bid ${at} is at or under its stop ${usdSigned(opts.ratchet!.stop ?? 0)} (best ${usdSigned(opts.ratchet!.best ?? 0)})`;
   const holdWhy = (netUsd: number, held: string, at: string) => opts.holdExit!.rest
-    ? `hold exit, the rest: ${netUsd < 0 ? '-' : '+'}$${Math.abs(netUsd).toFixed(2)} net on ${held} at bid ${at}; the rule fired and a thin bid took part of the position`
-    : `hold exit: +$${netUsd.toFixed(2)} net on ${held} at bid ${at}, ${opts.holdExit!.cumSec.toFixed(1)} s in all at +$${cfg.holdExit.usd.toFixed(2)} or more, the last ${opts.holdExit!.runSec.toFixed(1)} s in a row at +$${cfg.holdExit.runUsd.toFixed(2)} or more`;
+    ? `hold exit, the rest: ${usdSigned(netUsd)} net${bankedNote} on ${held} at bid ${at}; the rule fired and a thin bid took part of the position`
+    : `hold exit: ${usdSigned(netUsd)} net${bankedNote} on ${held} at bid ${at}, ${opts.holdExit!.cumSec.toFixed(1)} s in all at +$${cfg.holdExit.usd.toFixed(2)} or more, the last ${opts.holdExit!.runSec.toFixed(1)} s in a row at +$${cfg.holdExit.runUsd.toFixed(2)} or more`;
   if ((exits || mandate || sniping || holding || ratcheting) && v.position > 0 && bid) {
     const n = Math.min(v.position, bid.size);
     const fee = n > 0 ? orderFee(n, bid.price, true, v.fees) / n : 0;
     const edge = bid.price - q - fee;
     const tp = exits && n > 0 ? takeProfit(n, bid.price, fee, '') : undefined;
     const pm = mandate && n > 0 && bid.price - fee >= cost! + mandateMin! - 1e-9;
-    const netUsd = sniping || holding || ratcheting ? netProfitAtBid(v) ?? 0 : 0;
+    const netUsd = sniping ? netProfitAtBid(v) ?? 0 : 0;
+    const tradeUsd = holding || ratcheting ? tradeNetAtBid(v) ?? 0 : 0;
     const { call, grouped } = quota(netUsd, bid.price, q + fee + margin, tp, exits && (edge >= margin || tp?.sell === true));
     const snipe = sniping && n > 0 && (call.sell !== undefined || grouped);
     const hold = holding && n > 0;
@@ -389,8 +404,8 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
         why: tp?.sell ? tp.why : snipe ? (call.sell === 'floor' ? `quota snipe (floor): ${netUsd < 0 ? '-' : '+'}$${Math.abs(netUsd).toFixed(2)} net on ${v.position} at bid ${bid.price} fell below its $${opts.pacerFloor!.toFixed(2)} floor`
             : call.sell === 'snipe' ? `quota snipe: +$${netUsd.toFixed(2)} net on ${v.position} at bid ${bid.price} covers the $${pacerUsd!.toFixed(2)} the hour needs`
             : `quota snipe (group): +$${netUsd.toFixed(2)} net on ${v.position} at bid ${bid.price}, with ${opts.pacerGroup!.members - 1} other position${opts.pacerGroup!.members === 2 ? '' : 's'} in profit (+$${opts.pacerGroup!.sumUsd.toFixed(2)} together) covers the $${pacerUsd!.toFixed(2)} the hour needs`)
-          : rt ? ratchetWhy(netUsd, String(v.position), String(bid.price))
-          : hold ? holdWhy(netUsd, String(v.position), String(bid.price))
+          : rt ? ratchetWhy(tradeUsd, String(v.position), String(bid.price))
+          : hold ? holdWhy(tradeUsd, String(v.position), String(bid.price))
           : modelExit && edge >= margin ? `bid ${bid.price} - fee > q ${q.toFixed(3)} + ${margin}` : `profit mandate exit: bid ${bid.price} - fee ${fee.toFixed(3)} >= cost ${cost!.toFixed(3)} + ${mandateMin}` });
     }
   } else if ((exits || mandate || sniping || holding || ratcheting) && v.position < 0 && ask) {
@@ -400,7 +415,8 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     const edge = q - ask.price - fee;
     const tp = exits && n > 0 ? takeProfit(n, noBid, fee, ' NO') : undefined;
     const pm = mandate && n > 0 && noBid - fee >= cost! + mandateMin! - 1e-9;
-    const netUsd = sniping || holding || ratcheting ? netProfitAtBid(v) ?? 0 : 0;
+    const netUsd = sniping ? netProfitAtBid(v) ?? 0 : 0;
+    const tradeUsd = holding || ratcheting ? tradeNetAtBid(v) ?? 0 : 0;
     const { call, grouped } = quota(netUsd, noBid, 1 - q + fee + margin, tp, exits && (edge >= margin || tp?.sell === true));
     const snipe = sniping && n > 0 && (call.sell !== undefined || grouped);
     const hold = holding && n > 0;
@@ -411,8 +427,8 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
         why: tp?.sell ? tp.why : snipe ? (call.sell === 'floor' ? `quota snipe (floor): ${netUsd < 0 ? '-' : '+'}$${Math.abs(netUsd).toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)} fell below its $${opts.pacerFloor!.toFixed(2)} floor`
             : call.sell === 'snipe' ? `quota snipe: +$${netUsd.toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)} covers the $${pacerUsd!.toFixed(2)} the hour needs`
             : `quota snipe (group): +$${netUsd.toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)}, with ${opts.pacerGroup!.members - 1} other position${opts.pacerGroup!.members === 2 ? '' : 's'} in profit (+$${opts.pacerGroup!.sumUsd.toFixed(2)} together) covers the $${pacerUsd!.toFixed(2)} the hour needs`)
-          : rt ? ratchetWhy(netUsd, `${-v.position} NO`, noBid.toFixed(2))
-          : hold ? holdWhy(netUsd, `${-v.position} NO`, noBid.toFixed(2))
+          : rt ? ratchetWhy(tradeUsd, `${-v.position} NO`, noBid.toFixed(2))
+          : hold ? holdWhy(tradeUsd, `${-v.position} NO`, noBid.toFixed(2))
           : modelExit && edge >= margin ? `NO bid ${noBid.toFixed(2)} - fee > q + ${margin}` : `profit mandate exit: NO bid ${noBid.toFixed(2)} - fee ${fee.toFixed(3)} >= cost ${cost!.toFixed(3)} + ${mandateMin}` });
     }
   }

@@ -12,12 +12,15 @@
 //   net at bid      what the whole position nets sold at that bid: count x (bid - entry price - entry fee a contract) less the
 //                   taker exit fee on the whole order (Kalshi rounds each order's fee up to the cent), with THE cost basis of
 //                   the open contracts (openSidePrice / openEntryFee, bot/oms/positions.ts): netProfitAtBid's number
+//   trade net       the ratchet's measure: net at bid plus what partial sales of the position banked since it opened (the
+//                   answer given to Steven, Nov 11 9:10 AM EST / 14:10 UTC: a thin bid that took part of it is no drop);
+//                   the same as net at bid until a partial sale
 //   fee floor price the lowest tick price whose net is at least 0: break-even after both fees
-//   arm             net >= armUsd: best = net, stop = max(stopMinUsd, best - trailUsd), never under the fee break-even (the
-//                   net at the fee floor price, at least $0)
-//   raise           while armed, each evaluation on the rule's clock: best = max(best, net), stop = max(stop, stopMinUsd,
-//                   best - trailUsd, the break-even). The stop is never lowered (asserted).
-//   sell            armed and net <= stop: one reduce-only immediate-or-cancel sale of the whole position at a limit of the
+//   arm             trade net >= armUsd: best = trade net, stop = max(stopMinUsd, best - trailUsd), never under the fee
+//                   break-even (the trade net with the rest sold at the fee floor price, at least $0)
+//   raise           while armed, each evaluation on the rule's clock: best = max(best, trade net), stop = max(stop,
+//                   stopMinUsd, best - trailUsd, the break-even). The stop is never lowered (asserted).
+//   sell            armed and trade net <= stop: one reduce-only immediate-or-cancel sale of the whole position at a limit of the
 //                   bid less 2 ticks (Stage 0: "sales at bid minus 2 ticks"), never below 1 tick. A bid already under the
 //                   fee floor price when it triggers (a price gap) still sells, and the gap is listed with its shortfall.
 //   retry           a try that leaves the position open (unfilled or part filled) counts as failed and the sale goes again
@@ -148,9 +151,12 @@ export interface PlanEvent {
   count: number;
   /** Held-side bid now (null: none). */
   bid: number | null;
-  /** Net at that bid, dollars for the whole position. */
+  /** Net at that bid, dollars for the whole position held. */
   net: number | null;
-  /** The ratchet's stop and best net since arming, dollars for the whole position. */
+  /** What partial sales of the position banked since it opened (set when not 0): net plus this is the trade's net, the
+   *  ratchet's measure. */
+  banked?: number;
+  /** The ratchet's stop and best trade net since arming, dollars. */
   stop: number | null;
   best: number | null;
   /** The sale's limit (side terms), on a sale or retry. */
@@ -201,6 +207,9 @@ export interface PlanStepInput {
   /** openSidePrice / openEntryFee of the open position (bot/oms/positions.ts). */
   entryPrice: number | undefined;
   entryFeePerContract: number | undefined;
+  /** openBankedUsd (bot/oms/positions.ts): what partial sales of the position banked since it opened; the ratchet measures
+   *  this plus the net at the bid. 0 when not given. */
+  bankedUsd?: number;
   fees?: FeeSchedule;
   tick: number;
   now: number;
@@ -236,10 +245,14 @@ export function planStep(i: PlanStepInput): PlanStepResult {
   const fee = i.entryFeePerContract ?? 0;
   // The whole position's net at the bid, dollars (netProfitAtBid's number): the one ratchet's measure.
   const net = bid !== undefined && cost !== undefined ? r4(count * planNetAt(count, bid, cost, fee, i.fees)) : undefined;
+  // The trade's net, the ratchet's measure: the rest at the bid plus what partial sales banked. The end rule judges the rest.
+  const banked = r4(i.bankedUsd ?? 0);
+  const trade = net !== undefined ? r4(net + banked) : undefined;
+  const bankedNote = Math.abs(banked) > 0.005 ? ` (${usd(banked)} banked by partial sales)` : '';
   const feeFloor = cost !== undefined ? planFeeFloorPrice(count, cost, fee, tick, i.fees) : undefined;
   const ev = (event: PlanEventName, x: Partial<PlanEvent> = {}): PlanEvent => {
     const e: PlanEvent = {
-      event, ticker: i.ticker, side: i.side, ruleId: i.ruleId, count, bid: bid ?? null, net: net ?? null, stop: s.stop ?? null, best: s.best ?? null, limit: null,
+      event, ticker: i.ticker, side: i.side, ruleId: i.ruleId, count, bid: bid ?? null, net: net ?? null, ...(banked !== 0 ? { banked } : {}), stop: s.stop ?? null, best: s.best ?? null, limit: null,
       feeFloor: feeFloor ?? null, armUsd, stopMinUsd, trailUsd, clock, at: i.now, tauSec: Math.round(i.tauSec * 10) / 10,
       ...(s.armedAt !== undefined ? { armedAt: s.armedAt } : {}), ...x,
     };
@@ -287,7 +300,7 @@ export function planStep(i: PlanStepInput): PlanStepResult {
     }
   }
   if (bid === undefined) { out.notes.push('plan position: no bid for the held side'); return out; }
-  if (cost === undefined || net === undefined) { out.notes.push('plan position: no cost basis'); return out; }
+  if (cost === undefined || net === undefined || trade === undefined) { out.notes.push('plan position: no cost basis'); return out; }
 
   // 2. The ratchet, on its clock.
   const minute = Math.floor(i.now / 60_000);
@@ -300,9 +313,10 @@ export function planStep(i: PlanStepInput): PlanStepResult {
   if (decide) {
     // The profit ratchet's core (bot/strategy/profitRatchet.ts): the same arm, stop and trail as every other position's.
     // Raise-only: ratchetStep throws before it would lower the stop. Never under the fee break-even: the stop is at least the
-    // net at the fee floor price, so a stop held there sells on that tick, in profit after both fees.
-    const breakEven = feeFloor !== undefined ? r4(count * planNetAt(count, feeFloor, cost, fee, i.fees)) : 0;
-    const r = ratchetStep({ armed: s.armed, armedAt: s.armedAt, best: s.best, stop: s.stop }, net, i.settings, i.now, breakEven);
+    // trade net with the rest sold at the fee floor price, so a stop held there sells on that tick, the rest in profit after
+    // both fees.
+    const breakEven = feeFloor !== undefined ? r4(banked + count * planNetAt(count, feeFloor, cost, fee, i.fees)) : 0;
+    const r = ratchetStep({ armed: s.armed, armedAt: s.armedAt, best: s.best, stop: s.stop }, trade, i.settings, i.now, breakEven);
     s.armed = r.state.armed;
     if (r.state.armedAt !== undefined) s.armedAt = r.state.armedAt;
     if (r.state.best !== undefined) s.best = r.state.best;
@@ -311,14 +325,14 @@ export function planStep(i: PlanStepInput): PlanStepResult {
     else if (r.event === 'raise') ev('plan_ratchet_raise', { prevStop: r.prevStop });
     if (r.sell) {
       s.selling = { kind: 'ratchet', since: i.now, tries: 0 };
-      const sale = sell('ratchet', `plan ratchet: net ${usd(net)} at bid ${bid.toFixed(2)} at or under its stop ${usd(s.stop!)} (best ${usd(s.best!)})`);
+      const sale = sell('ratchet', `plan ratchet: net ${usd(trade)}${bankedNote} at bid ${bid.toFixed(2)} at or under its stop ${usd(s.stop!)} (best ${usd(s.best!)})`);
       gap(sale);
       ev('plan_ratchet_sell', { limit: sale.sideLimit, since: i.now });
       return out;
     }
   }
-  if (s.armed) out.notes.push(`plan ratchet armed: bid ${bid.toFixed(2)}, net ${usd(net)}, stop ${usd(s.stop!)}, best ${usd(s.best!)}`);
-  else out.notes.push(`plan ratchet: net ${usd(net)}, arms at ${usd(armUsd)} (${clock} clock)`);
+  if (s.armed) out.notes.push(`plan ratchet armed: bid ${bid.toFixed(2)}, net ${usd(trade)}${bankedNote}, stop ${usd(s.stop!)}, best ${usd(s.best!)}`);
+  else out.notes.push(`plan ratchet: net ${usd(trade)}${bankedNote}, arms at ${usd(armUsd)} (${clock} clock)`);
 
   // 3. The end rule: out of profit in the last tenth of the window is sold; a winner rides.
   if (planEndWindow(i.tauSec, i.windowSec)) {

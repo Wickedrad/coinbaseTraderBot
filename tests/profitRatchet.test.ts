@@ -145,7 +145,7 @@ test('ProfitRatchets: per market; once its stop is reached the sale goes on unti
 
 // ---- The hold exit standing aside (bot/strategy/holdExit.ts) ---------------------------------------------------------------
 
-const HOLD: HoldExitConfig = { enabled: true, usd: 1.5, sec: 10, runUsd: 1, runSec: 3, reentryShare: 0.5 };
+const HOLD: HoldExitConfig = { enabled: true, usd: 1.5, sec: 10, runUsd: 1, runSec: 3, reentryShare: 0.5, lineAfterFails: 5 };
 const feed = (h: HoldExits, nets: number[], armed: boolean, from = T0): HoldReading[] => nets.map((n, i) => h.sample('T', 10, n, from + i * 1000, armed));
 
 test('hold exit beside the ratchet: a runner setting a new best every second is not sold at 10 s; it is once the best is 3 s old; a sitter is sold at 10 s', () => {

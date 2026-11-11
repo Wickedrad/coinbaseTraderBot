@@ -25,13 +25,14 @@ import { ADVERSARY_GROUPS, evaluateEntry, seedOf, type AdversaryVerdict } from '
 import { priceContract, SETTLEMENT_AVG_SEC } from './model/fairValue';
 import { explain, type Driver, type MetaModel } from './model/metaModel';
 import type { Oms, OrderIntent } from './oms/oms';
+import { EXIT_GUARD_MS, exitInFlight, exitInFlightWhy, isExitOrder } from './oms/exitGuard';
 import { isLive } from './oms/orderState';
-import { openEntryFee, openSidePrice, PositionBook } from './oms/positions';
+import { openBankedUsd, openEntryFee, openSidePrice, PositionBook } from './oms/positions';
 import { marketWorstLoss, RestingLike } from './risk/exposure';
 import type { KillSwitch } from './risk/killSwitch';
 import { EXIT_RATE_RESERVE, newRiskRoomUsd, RiskContext, RiskGateway, tennisLimits, waterfallLimits } from './risk/riskGateway';
 import type { Reconciler } from './recon/reconciler';
-import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec, type StrategyOutput } from './strategy/fairValueStrategy';
+import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec, tradeNetAtBid, type StrategyOutput } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { exitOnlyPlan, exitOnlyView, heldSideBid } from './strategy/exitOnlyLane';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
@@ -1601,7 +1602,7 @@ export class Engine {
       const pos = oms.positions.get(m.ticker);
       if (!pos || !(pos.yes > 0)) continue;
       if (now - (this.killExitTs.get(m.ticker) ?? -Infinity) < 30_000) continue;
-      if (oms.liveOrders().some((o) => o.ticker === m.ticker && isLive(o) && !o.cancelRequested)) continue;
+      if (oms.liveOrders().some((o) => o.ticker === m.ticker && isLive(o) && !o.cancelRequested) || this.exitInFlight(m.ticker, now)) continue;
       const book = md.book(m.ticker);
       if (!this.bookUsable(book, now)) continue;
       const b = book.bestBid(), a = book.bestAsk();
@@ -1648,7 +1649,7 @@ export class Engine {
         if (this.planHeld(m.ticker, pos.yes, now)) await this.evaluate(m, now, true);
         continue;
       }
-      if (oms.liveOrders().some((o) => o.ticker === m.ticker && isLive(o) && !o.cancelRequested)) continue;
+      if (oms.liveOrders().some((o) => o.ticker === m.ticker && isLive(o) && !o.cancelRequested) || this.exitInFlight(m.ticker, now)) continue;
       if (!this.killExitDue(m.ticker, now)) continue;
       // A YES position sells YES at the bid; a NO position sells NO at its bid, 1 - the YES ask (buys YES at the ask).
       const yes = pos.yes > 0;
@@ -2399,6 +2400,7 @@ export class Engine {
       restingBid, restingAsk, nowSec: Math.floor(now / 1000), closeSec: Math.floor(m.closeTime / 1000),
       pMarket, pStd: pred.std, makerBuffer: this.makerBuffer(), entrySidePrice: entrySidePrice !== undefined && entrySidePrice > 0 && entrySidePrice < 1 ? entrySidePrice : undefined,
       entryFeePerContract: openEntryFee(pos),
+      ...(openBankedUsd(pos) ? { bankedUsd: openBankedUsd(pos) } : {}),
       profitPeakSidePrice: this.profitPeaks.update(m.ticker, st.position, st.position > 0 ? bid.price : st.position < 0 ? Math.round((1 - ask.price) * 1e4) / 1e4 : undefined),
       ...(this.d.takeProfitBench?.benched ? { takeProfitBenched: this.d.takeProfitBench.benched } : {}),
       entryWindowOpen, exitWindowOpen: tauSec > S.noExitBeforeCloseSec,
@@ -2489,7 +2491,9 @@ export class Engine {
     // winner (riding mode); its lock hold rides to settlement, which the quota still takes (Oct 29).
     const pacerFloor = this.quotaFloors.floor(m.ticker, view.position);
     const floorOpts = S.pacer.floor === 'off' ? {} : { pacerFloor, ...(S.pacer.floor === 'riding' && huntMode && !huntHold ? { pacerHigher: `the hunt riding its stop ${st.huntStop ?? ''}`.trim() } : {}) };
-    const netNow = netProfitAtBid(view);
+    // The trade's net (the answer given to Steven, Nov 11 9:10 AM EST / 14:10 UTC): what partial sales banked plus the rest at
+    // the bid, so a thin bid that took part of the position is no drop. The hold exit's and the ratchet's measure.
+    const netNow = tradeNetAtBid(view);
     // RATCHET (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC): the profit ratchet of a position that is not a plan position,
     // on this evaluation's net; a plan position has the plan's (planEvaluate, the same core).
     const ratchet = this.ratchetStep(m.ticker, st, view.position, netNow, now, planPos !== undefined);
@@ -2651,7 +2655,9 @@ export class Engine {
       const fees = md.feesFor(m.ticker);
       const held = Math.abs(st.position);
       const entrySide = view.entrySidePrice;
-      const entryFeePer = pos && Math.abs(pos.yes) > 1e-9 ? pos.fees / Math.abs(pos.yes) : 0;
+      // The open position's own entry fee a contract, as decide() and the take-profit measure it: the market's fees (pos.fees)
+      // also hold earlier round trips' and partial exits' fees.
+      const entryFeePer = openEntryFee(pos) ?? 0;
       const sideBid = sign > 0 ? bid.price : Math.round((1 - ask.price) * 1e4) / 1e4;
       st.curve = curve.observe(m.ticker, shortContract ? 'crypto_15m' : 'crypto_1h', {
         now, sign, bid, ask, entrySidePrice: entrySide, entryFeePer, exitFeePer: orderFee(held, sideBid, true, fees) / held, tauSec,
@@ -2661,7 +2667,15 @@ export class Engine {
       // The band's wiggles start when the contract's window opened (at most its 15 or 60 minutes).
       st.line = orient === undefined ? undefined : this.d.liveLines?.read(m.asset, orient, !shortContract, now, Math.max(m.openTime, m.closeTime - (shortContract ? 900_000 : 3_600_000)));
       if (st.line?.peak) plan.notes.push(`live line: the move is fading for the side; its momentum tops out near ${st.line.peak.top}`);
+      // The line exit's last resort (Steven's idea, Nov 11 9:15 AM EST / 14:15 UTC, his card at 9:21 AM EST / 14:21 UTC): after
+      // HOLD_EXIT_LINE_AFTER_FAILS (5) failed tries on this position (bot/strategy/holdExit.ts: up to +$1.00 on the trade, back
+      // under it for 3 s, never +$1.50), the cross may sell it with SINUOUS_CROSS off, on all of its own conditions below.
+      const fails = hold?.fails ?? 0;
+      const afterFails = S.holdExit.lineAfterFails;
+      const lastResort = curve.p.cross === false && afterFails > 0 && fails >= afterFails;
       if (st.line?.broke && curve.p.cross === false) plan.notes.push(`live line: outside its wiggle band for ${st.line.breakSec} s (${st.line.underSd} sd; the cross would sell; it is off, SINUOUS_CROSS)`);
+      if (lastResort) plan.notes.push(`line exit: ${fails} failed tries (HOLD_EXIT_LINE_AFTER_FAILS ${afterFails}): the cross may sell this position as a last resort`);
+      else if (curve.p.cross === false && afterFails > 0 && fails > 0) plan.notes.push(`line exit: ${fails} of ${afterFails} failed tries before its last resort`);
       plan.place = plan.place.filter((p) => {
         if (!p.reduceOnly || p.timeInForce !== 'immediate_or_cancel' || !(p.count > 0)) return true;
         const sidePrice = sign > 0 ? p.price : Math.round((1 - p.price) * 1e4) / 1e4;
@@ -2687,19 +2701,22 @@ export class Engine {
           const turn = ret === undefined || direction === 0 || Math.abs(ret) < 0.25 * vol.sigmaPerSqrtSec * Math.sqrt(win) ? 'flat' : Math.sign(ret) * direction * sign < 0 ? 'against' : 'with';
           const exitFeePer = orderFee(n, sideBid, true, fees) / n;
           const floor = Math.max(S.profitTarget ?? 0, (S.profitTargetPct ?? 0) * (entrySide + entryFeePer));
-          const c = curve.cross(m.ticker, { sidePrice: sideBid, count: n, exitFeePer, entrySidePrice: entrySide, entryFeePer, floor, tauSec, spot: turn, line: st.line }, now);
+          const c = curve.cross(m.ticker, { sidePrice: sideBid, count: n, exitFeePer, entrySidePrice: entrySide, entryFeePer, floor, tauSec, spot: turn, line: st.line, ...(lastResort ? { lastResort } : {}) }, now);
           if (c.note) plan.notes.push(c.note);
           if (c.sell) {
             const q = st.q ?? pYes;
             plan.place = plan.place.filter((p) => !(p.purpose === 'exit' && p.timeInForce === 'good_till_canceled'));
             plan.place.push({ side: sign > 0 ? 'ask' : 'bid', price: top.price, count: n, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit',
-              edge: sign > 0 ? top.price - q - exitFeePer : q - top.price - exitFeePer, why: c.why! });
+              edge: sign > 0 ? top.price - q - exitFeePer : q - top.price - exitFeePer, why: lastResort ? `${c.why!}; last resort after ${fails} failed tries (HOLD_EXIT_LINE_AFTER_FAILS)` : c.why! });
           }
         }
       }
     } else if (!planPos) curve?.flat(m.ticker, now);
     if (huntMode) plan.notes.push(huntHeld ?? `hunting: stop ${st.huntStop ?? 'forming'}`);
     if (huntNote) plan.notes.push(huntNote);
+    // An exit of ours sent here less than 2 s ago and not booked yet (bot/oms/exitGuard.ts): no exit now; a sale that would sell
+    // the whole position takes nothing else with it either. Before the kill switch's 30 s throttle, which it must not use up.
+    this.holdForExitInFlight(m.ticker, plan, now);
     // Under the kill switch (cryptoKillExits) only reduce-only immediate-or-cancel exits go (all the gateway lets through: a
     // resting sell waits for the reset), at most one attempt per market every 30 s.
     if (killExit) {
@@ -2754,8 +2771,8 @@ export class Engine {
     // edge collar and TCA's edge-at-decision then judge the same number the strategy traded on.
     let planSaleSent = false;
     for (const p of plan.place) {
-      if (p === holdSale) this.d.audit.write('pacer', { event: 'hold_exit', ticker: m.ticker, cumSec: hold!.cumSec, runSec: hold!.runSec, netUsd: Math.round((netNow ?? 0) * 1e4) / 1e4, count: p.count, price: p.price, why: p.why, ...(planPos ? { ruleId: planPos.ruleId } : {}) });
-      if (p === ratchetSale) this.auditRatchetSale(m.ticker, ratchet, netNow, p, now);
+      if (p === holdSale) this.d.audit.write('pacer', { event: 'hold_exit', ticker: m.ticker, cumSec: hold!.cumSec, runSec: hold!.runSec, netUsd: Math.round((netNow ?? 0) * 1e4) / 1e4, ...(view.bankedUsd ? { bankedUsd: Math.round(view.bankedUsd * 1e4) / 1e4 } : {}), count: p.count, price: p.price, why: p.why, ...(planPos ? { ruleId: planPos.ruleId } : {}) });
+      if (p === ratchetSale) this.auditRatchetSale(m.ticker, ratchet, netNow, p, now, undefined, view.bankedUsd);
       const sent = await this.placeChecked(m, p, st.q ?? pYes, decisionId, undefined, killExit ? { killExit: true } : undefined);
       if (p === planSale) planSaleSent = sent;
     }
@@ -2795,10 +2812,11 @@ export class Engine {
     const view = exitOnlyView({
       ticker: m.ticker, position, bid, ask, now, openTime: m.openTime, closeTime: m.closeTime, tickSize: m.tickSize, fees, strategy: S, risk: cfg.risk,
       entrySidePrice: openSidePrice(pos), entryFeePerContract: openEntryFee(pos), profitPeakSidePrice: this.profitPeaks.update(m.ticker, position, sideBid),
-      takeProfitBenched: this.d.takeProfitBench?.benched,
+      takeProfitBenched: this.d.takeProfitBench?.benched, bankedUsd: openBankedUsd(pos),
     })!;
     const fairValue = view.pYes;
-    const netNow = netProfitAtBid(view);
+    // The trade's net (banked by partial sales plus the rest at the bid), as in a full evaluation.
+    const netNow = tradeNetAtBid(view);
     // RATCHET: the profit ratchet needs no model; its stop sells from this lane as the quota floor does.
     const ratchet = this.ratchetStep(m.ticker, st, position, netNow, now, false);
     const lane = exitOnlyPlan(view, S, {
@@ -2816,7 +2834,7 @@ export class Engine {
     const curve = this.d.curveExit;
     if (curve && view.entrySidePrice !== undefined) {
       const sign = position > 0 ? 1 : -1;
-      const entryFeePer = pos && Math.abs(pos.yes) > 1e-9 ? pos.fees / Math.abs(pos.yes) : 0;
+      const entryFeePer = openEntryFee(pos) ?? 0;
       const huntProtective = hunt?.event === 'triggered' || hunt?.event === 'profit_take_gap';
       plan.place = plan.place.filter((p) => {
         const sidePrice = sign > 0 ? p.price : Math.round((1 - p.price) * 1e4) / 1e4;
@@ -2829,6 +2847,7 @@ export class Engine {
       });
     }
     this.liquidate(m.ticker, plan);
+    this.holdForExitInFlight(m.ticker, plan, now);
     st.notes = plan.notes;
     if (!plan.place.length) return;
     const decisionId = crypto.randomUUID();
@@ -2848,7 +2867,7 @@ export class Engine {
     }
     await Promise.all([...cancels].map(([id, reason]) => oms.cancel(id, reason)));
     for (const p of plan.place) {
-      if (p === lane.ratchetSale) this.auditRatchetSale(m.ticker, ratchet, netNow, p, now, why);
+      if (p === lane.ratchetSale) this.auditRatchetSale(m.ticker, ratchet, netNow, p, now, why, view.bankedUsd);
       await this.placeChecked(m, p, fairValue, decisionId);
     }
   }
@@ -2868,8 +2887,8 @@ export class Engine {
   }
 
   /** The profit ratchet's sale goes out (audited as the hold exit's is, under the pacer's kind). */
-  private auditRatchetSale(ticker: string, r: RatchetReading | undefined, netUsd: number | undefined, p: OrderPlan, now: number, lane?: string): void {
-    this.d.audit.write('pacer', { event: 'profit_ratchet', ticker, netUsd: Math.round((netUsd ?? 0) * 1e4) / 1e4, stop: r?.stop, best: r?.best, rest: r?.rest === true, count: p.count, price: p.price, why: p.why, ...(lane ? { lane } : {}), ...this.pacer.status(now) });
+  private auditRatchetSale(ticker: string, r: RatchetReading | undefined, netUsd: number | undefined, p: OrderPlan, now: number, lane?: string, bankedUsd?: number): void {
+    this.d.audit.write('pacer', { event: 'profit_ratchet', ticker, netUsd: Math.round((netUsd ?? 0) * 1e4) / 1e4, ...(bankedUsd ? { bankedUsd: Math.round(bankedUsd * 1e4) / 1e4 } : {}), stop: r?.stop, best: r?.best, rest: r?.rest === true, count: p.count, price: p.price, why: p.why, ...(lane ? { lane } : {}), ...this.pacer.status(now) });
   }
 
   /** PLAN_RULES on: the market's plan position (bot/plan/planPositions.ts) while it is held on its side; undefined when the
@@ -2887,10 +2906,12 @@ export class Engine {
     const { oms, md, cfg } = this.d;
     const pos = oms.positions.get(m.ticker);
     const entry = openSidePrice(pos);
-    const working = oms.liveOrders().some((o) => o.ticker === m.ticker && o.reduceOnly && o.timeInForce === 'immediate_or_cancel' && isLive(o) && !o.cancelRequested);
+    // A sale of ours still working, or an exit sent less than 2 s ago whose fills are not booked yet (the in-flight guard).
+    const working = oms.liveOrders().some((o) => o.ticker === m.ticker && o.reduceOnly && o.timeInForce === 'immediate_or_cancel' && isLive(o) && !o.cancelRequested)
+      || this.exitInFlight(m.ticker, now) !== undefined;
     const r = planStep({
       ticker: m.ticker, side: pp.side, ruleId: pp.ruleId, position: st.position, bid, ask,
-      entryPrice: entry !== undefined && entry > 0 && entry < 1 ? entry : undefined, entryFeePerContract: openEntryFee(pos), fees: md.feesFor(m.ticker), tick: m.tickSize, now,
+      entryPrice: entry !== undefined && entry > 0 && entry < 1 ? entry : undefined, entryFeePerContract: openEntryFee(pos), bankedUsd: openBankedUsd(pos), fees: md.feesFor(m.ticker), tick: m.tickSize, now,
       tauSec: (m.closeTime - now) / 1000, windowSec: shareWindowSec(m.openTime, m.closeTime, cfg.strategy.shareWindowMaxSec),
       settings: pp.settings, state: pp.state, orderInFlight: working,
     });
@@ -2930,10 +2951,17 @@ export class Engine {
     if (cfg.strategy.holdExit.enabled) {
       const pos = oms.positions.get(m.ticker);
       const entry = openSidePrice(pos);
-      const net = entry !== undefined && entry > 0 && entry < 1 ? positionNetAtBid(st.position, entry + (openEntryFee(pos) ?? 0), bid, ask, md.feesFor(m.ticker)) : undefined;
-      st.hold = this.holdExits.sample(m.ticker, st.position, net, now, pp.state.armed);
+      const rest = entry !== undefined && entry > 0 && entry < 1 ? positionNetAtBid(st.position, entry + (openEntryFee(pos) ?? 0), bid, ask, md.feesFor(m.ticker)) : undefined;
+      // The trade's net: what partial sales banked plus the rest at the bid.
+      st.hold = this.holdExits.sample(m.ticker, st.position, rest === undefined ? undefined : rest + openBankedUsd(pos), now, pp.state.armed);
     } else st.hold = undefined;
     const sale = run.sale;
+    // An exit of ours still in flight here (bot/oms/exitGuard.ts): the sale waits, as one the gateway holds back.
+    const flying = sale ? this.exitInFlight(m.ticker, now) : undefined;
+    if (flying) {
+      st.notes.push(exitInFlightWhy(flying, now));
+      return this.planRecord(m.ticker, run, false, now);
+    }
     // Under the kill switch (cryptoKillExits' evaluation), as in a full evaluation: at most one attempt per market every 30 s,
     // marked for the gateway (RiskContext.killExit).
     if (sale && killExit && !this.killExitDue(m.ticker, now)) {
@@ -3004,6 +3032,14 @@ export class Engine {
     // Snap to the market's price grid (bands taper near $0 / $1): bids down, asks up, never through.
     const snapped = snapToGrid(p.price, m.priceRanges, m.tickSize, p.side === 'bid' ? -1 : 1);
     if (snapped === undefined || !(snapped > 0 && snapped < 1)) return false;
+    // The in-flight exit guard on every path that sells (bot/oms/exitGuard.ts): the evaluations drop such exits earlier, with a
+    // note; this catches the rest (tennis, the kill switch's exits) and two evaluations of one market overlapping.
+    const flying = isExitOrder(p) ? this.exitInFlight(m.ticker, now) : undefined;
+    if (flying) {
+      const key = `${m.ticker}:exit_in_flight`;
+      if (now - (this.lastRejectAudit.get(key) ?? 0) > 60_000) { this.lastRejectAudit.set(key, now); this.d.audit.write('decision', { decisionId, ticker: m.ticker, event: 'exit_in_flight', why: exitInFlightWhy(flying, now), held: { side: p.side, price: p.price, count: p.count, why: p.why } }); }
+      return false;
+    }
     if (snapped !== p.price) p = { ...p, price: snapped };
     // Tennis orders are rules-based (no model probability to size an edge from): budgeted separately.
     // Paper training trades are 1 contract with no edge requirement (they exist to produce trades).
@@ -3185,6 +3221,23 @@ export class Engine {
       if (o.ticker !== ticker || o.reduceOnly || o.cancelRequested || !isLive(o) || plan.cancel.some((c) => c.clientOrderId === o.clientOrderId)) continue;
       plan.cancel.push({ clientOrderId: o.clientOrderId, reason: 'a hold exit, quota snipe or profit ratchet sells the position' });
     }
+  }
+
+  /** The in-flight exit guard (bot/oms/exitGuard.ts) on this market's orders: the exit sent less than 2 s ago that is still
+   *  travelling or whose fills are not booked yet; undefined when none. Paper books its fills inside submit: never there. */
+  private exitInFlight(ticker: string, now: number) {
+    return exitInFlight(this.d.oms.recentOrders(ticker, now - EXIT_GUARD_MS), ticker, now);
+  }
+
+  /** With an exit in flight here, the plan's exits wait (noted); a sale that sells the whole position (a hold exit, a quota
+   *  snipe, a profit ratchet sale) takes the rest of the plan with it, as liquidate() would have. */
+  private holdForExitInFlight(ticker: string, plan: StrategyOutput, now: number): void {
+    if (!plan.place.some((p) => isExitOrder(p))) return;
+    const flying = this.exitInFlight(ticker, now);
+    if (!flying) return;
+    const whole = plan.place.some((p) => p.liquidation && (this.d.cfg.strategy.holdExit.enabled || p.liquidation.ratchet) && isExitOrder(p));
+    plan.place = whole ? [] : plan.place.filter((p) => !isExitOrder(p));
+    plan.notes.push(exitInFlightWhy(flying, now));
   }
 
   /** The bot's resting orders an immediate order at `price` on `side` would trade against. */
