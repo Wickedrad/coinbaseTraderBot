@@ -71,6 +71,8 @@ import { ProfitPeaks } from '../bot/strategy/profitPeaks';
 import { exitOnlyPlan, exitOnlyView, heldSideBid } from '../bot/strategy/exitOnlyLane';
 import { ConfluenceRatchetExit, DEFAULT_HUNT, DEFAULT_RATCHET, EXIT_POLICIES, ExitPolicyName, HuntParams, LiquidityRatchet, RatchetParams } from '../bot/strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from '../bot/risk/quotaPacer';
+import { PlanPositions, type PlanPosition } from '../bot/plan/planPositions';
+import { planMarkTried, planStep, type PlanEvent, type PlanRatchetSettings, type PlanSale } from '../bot/plan/planRatchet';
 import { readRecordings, ReplayState } from './replay';
 import { AccuracyGate, type AccuracyGateConfig } from '../bot/strategy/accuracyGate';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
@@ -183,6 +185,10 @@ export interface BacktestResult {
    *  strategy, the take gate and the fill model. For the fidelity check's diagnostics. */
   funnel?: Record<string, number>;
   end?: { balance: number; openPositions: number; openMaxLoss: number; openOrders: number; lastFillAt?: number };
+  /** PLAN_RULES (bot/plan/planRatchet.ts): the plan ratchet's events over the run, counted (with opts.fillLog, every event):
+   *  the replay match reads these beside the engine's audit. `retries` counts failed tries retried (not a resend of a try held
+   *  back); `gaps` the armed tries sent with the bid under the fee floor price; `endRuleCancels` end-rule sales called off. */
+  plan?: { tagged: number; arms: number; raises: number; sales: number; endRuleSales: number; endRuleCancels: number; gaps: number; retries: number; alerts: number; events?: PlanEvent[] };
 }
 
 /**
@@ -225,6 +231,11 @@ export interface BacktestOpts { fillLog?: boolean; exitPolicy?: ExitPolicyName; 
    *  benched. */
   takeProfitBench?: { enforce: boolean; rule: Pick<ProbationParams, 'minTrades' | 't' | 'maxLossUsd' | 'window'>; stateFile?: string;
     follow?: { benched: string | null; events: Array<{ t: number; benched: string | null }> } };
+  /** The plan's entry lane in the replay (E01, not built yet): called on each entry fill that opens a position (or adds to an
+   *  untagged one); a rule id back tags the market's position as the engine's PlanPositions.tag does, with the rule's ratchet
+   *  settings (PLAN_RATCHET_ARM_C / PLAN_RATCHET_TRAIL_C and the tick clock for any it leaves out). With PLAN_RULES on
+   *  (strategy.plan.enabled) a tagged position gets the plan's ratchet and end rule, as in the engine; off, today's exits. */
+  planTag?: (e: { ticker: string; side: 'yes' | 'no'; count: number; price: number; t: number; coid?: string }) => { ruleId: string; settings?: Partial<PlanRatchetSettings> } | undefined;
   /** Replay from this time (ms) on: what the recordings hold before it is skipped, so the books, features and gate
    *  start empty there (research/replayCheck.ts starts hours before the stretch it compares). */
   startMs?: number;
@@ -426,8 +437,41 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const closeOf = new Map<string, number>();
   const ratchets = new Map<string, LiquidityRatchet>();
   const hunts = new Map<string, ConfluenceRatchetExit>();
-  const pending = new Map<string, { side: 'bid' | 'ask'; price: number; count: number; kind: 'fv' | 'tp' | 'rt' | 'snipe'; stop?: number }>();
+  const pending = new Map<string, { side: 'bid' | 'ask'; price: number; count: number; kind: 'fv' | 'tp' | 'rt' | 'snipe' | 'plan'; stop?: number; plan?: PlanSale }>();
   let exitSeq = 0;
+  // Positions opened by plan rules (opts.planTag), in memory, with their ratchets (bot/plan/planPositions.ts).
+  const planPositions = new PlanPositions(strategy.plan);
+  const planStats: NonNullable<BacktestResult['plan']> = { tagged: 0, arms: 0, raises: 0, sales: 0, endRuleSales: 0, endRuleCancels: 0, gaps: 0, retries: 0, alerts: 0, ...(opts.fillLog ? { events: [] } : {}) };
+  res.plan = planStats;
+  /** PLAN_RULES on: the market's plan position while it is held on its side (the engine's Engine.planHeld). */
+  const planHeld = (ticker: string): PlanPosition | undefined => (strategy.plan.enabled ? planPositions.sync(ticker, pos.position(ticker), st.now) : undefined);
+  /** The plan's ratchet and end rule on one evaluation, as the engine runs them (Engine.planEvaluate): the sale queues as every
+   *  exit does and goes out on the next evaluation (with the paper options, at the end of this one); fireExit marks the try
+   *  once it goes out (Engine.planRecord). True when a sale was queued. */
+  const planEvaluate = (m: { ticker: string; openTime: number; closeTime: number; tickSize: number }, pp: PlanPosition, bid: { price: number; size: number } | undefined, ask: { price: number; size: number } | undefined): boolean => {
+    const pNow = pos.get(m.ticker);
+    const entry = openSidePrice(pNow);
+    const r = planStep({
+      ticker: m.ticker, side: pp.side, ruleId: pp.ruleId, position: pos.position(m.ticker), bid, ask,
+      entryPrice: entry !== undefined && entry > 0 && entry < 1 ? entry : undefined, entryFeePerContract: openEntryFee(pNow), fees: DEFAULT_FEES, tick: m.tickSize, now: st.now,
+      tauSec: (m.closeTime - st.now) / 1000, windowSec: shareWindowSec(m.openTime, m.closeTime, strategy.shareWindowMaxSec),
+      settings: pp.settings, state: pp.state, orderInFlight: pending.has(m.ticker) || inflight.some((x) => x.ticker === m.ticker && x.orderId === undefined),
+    });
+    for (const e of r.events) {
+      if (e.event === 'plan_ratchet_arm') planStats.arms++;
+      else if (e.event === 'plan_ratchet_raise') planStats.raises++;
+      else if (e.event === 'plan_ratchet_sell') planStats.sales++;
+      else if (e.event === 'plan_end_rule_sell') planStats.endRuleSales++;
+      else if (e.event === 'plan_end_rule_cancel') planStats.endRuleCancels++;
+      else if (e.event === 'plan_ratchet_retry' && !e.resend) planStats.retries++;
+      planStats.events?.push(e);
+    }
+    if (r.alert) planStats.alerts++;
+    planPositions.setState(m.ticker, r.state);
+    if (!r.sale || (opts.tradeFromMs !== undefined && st.now < opts.tradeFromMs)) return false;
+    pending.set(m.ticker, { side: r.sale.side, price: r.sale.price, count: r.sale.count, kind: 'plan', plan: r.sale });
+    return true;
+  };
   // The paper bot's exploration entries and training trades (with the paper options; see below).
   const exploreTs: number[] = [], trainTs: number[] = [];
   const trainTicker = new Set<string>();
@@ -505,6 +549,13 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   ex.on('fill', (f) => {
     const bookAfter = pos.applyFill({ ticker: f.ticker, side: f.side, count: f.count, price: f.price, fee: f.fee ?? 0 }, { closeTs: closeOf.get(f.ticker) });
     pacerAt(st.now).onFill(f, f.fee ?? 0, bookAfter, st.now);
+    // A plan position's tag clears once a fill leaves the market flat; the entry lane's hook tags an entry that opens one.
+    if (Math.abs(bookAfter.yes) < 1e-9) planPositions.flat(f.ticker, f.side === 'bid' ? -f.count : f.count);
+    else if (opts.planTag && purposeOf(f.clientOrderId) !== 'exit' && !planPositions.get(f.ticker) && (f.side === 'bid') === (bookAfter.yes > 0)) {
+      const side = bookAfter.yes > 0 ? 'yes' : 'no';
+      const t = opts.planTag({ ticker: f.ticker, side, count: f.count, price: side === 'yes' ? f.price : Math.round((1 - f.price) * 1e4) / 1e4, t: st.now, coid: f.clientOrderId });
+      if (t) { planPositions.tag({ ticker: f.ticker, side, ruleId: t.ruleId, settings: t.settings, openedAt: st.now }, st.now); planStats.tagged++; }
+    }
     const w = closeOf.get(f.ticker)!;
     const b = res.windows.get(w) ?? { pnl: 0, contracts: 0, fees: 0 };
     b.contracts += f.count;
@@ -635,6 +686,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           hunts.delete(m.ticker);
           snipeGroup.forget(m.ticker);
           quotaFloors.forget(m.ticker);
+          planPositions.forget(m.ticker);
           cadence.forget(m.ticker);
           pending.delete(m.ticker);
           priority.delete(m.ticker);
@@ -695,6 +747,9 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           const id = `${m.ticker}-${st.now}-${++exitSeq}-exit-${due.kind}`;
           if (due.stop !== undefined) stopByOrder.set(id, due.stop);
           exits.orders++;
+          // The plan's try goes out (Engine.planRecord): the next evaluation judges it; a gap it carries is listed.
+          const pp = due.plan ? planPositions.get(m.ticker) : undefined;
+          if (pp && due.plan) { planPositions.setState(m.ticker, planMarkTried(pp.state, st.now, due.plan)); if (due.plan.gap) planStats.gaps++; }
           await send(m.ticker, 'order', async () => { try { await ex.createOrder({ ticker: m.ticker, side: due.side, count, price: due.price, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, selfTradePrevention: 'taker_at_cross', clientOrderId: id }); } catch { /* no fill */ } });
         }
       };
@@ -712,6 +767,14 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           entrySidePrice: openSidePrice(pL), entryFeePerContract: openEntryFee(pL), profitPeakSidePrice: peaks.update(m.ticker, posL, sideBid), takeProfitBenched: tpBenched(),
         })!;
         await fireExit(view.pYes, bid?.price, ask?.price);
+        // A plan position needs no model: its ratchet and end rule run here as in a full evaluation, and nothing else.
+        // Every evaluation, as the engine (an order of ours still travelling holds a retry back: planStep's orderInFlight).
+        const planPosL = planHeld(m.ticker);
+        if (planPosL) {
+          planEvaluate(m, planPosL, bid, ask);
+          if (opts.paper) await fireExit(view.pYes, bid?.price, ask?.price);
+          return;
+        }
         const lane = exitOnlyPlan(view, stratRun, {
           why, exits: policy !== 'hold' && policy !== 'liquidity_ratchet', hunt: policy === 'confluence_ratchet' ? hunts.get(m.ticker) : undefined,
           pacerUsd: pacerAt(st.now).neededUsd(st.now), pacerFloor: strategy.pacer.floor === 'off' ? undefined : quotaFloors.floor(m.ticker, posL),
@@ -840,10 +903,12 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       }
       const q = (side: 'bid' | 'ask') => { const o = open.find((x) => x.side === side); return o ? { clientOrderId: o.orderId, price: o.price, remaining: o.remainingCount } : undefined; };
       await fireExit(pYes, bid.price, ask.price);
+      // PLAN_RULES on and a plan position: its ratchet and end rule sell it (below); the exits here leave it alone.
+      const planPos = planHeld(m.ticker);
 
       // Ratchet / hybrid: evaluate the order-book-anchored stop.
       const posNow = pos.position(m.ticker);
-      if ((policy === 'liquidity_ratchet' || policy === 'hybrid') && posNow !== 0) {
+      if ((policy === 'liquidity_ratchet' || policy === 'hybrid') && posNow !== 0 && !planPos) {
         let r = ratchets.get(m.ticker);
         if (!r) { r = new LiquidityRatchet(opts.ratchet ?? DEFAULT_RATCHET); ratchets.set(m.ticker, r); }
         const out = r.evaluate({ position: posNow, book, now: st.now, tick: m.tickSize, fees: DEFAULT_FEES, qSide: posNow > 0 ? pYes : 1 - pYes, hybrid: policy === 'hybrid' });
@@ -862,7 +927,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       let huntMode = false;
       let huntRest: number | undefined;
       let huntHold = false;
-      if (policy === 'confluence_ratchet') {
+      if (policy === 'confluence_ratchet' && !planPos) {
         const posH = pos.position(m.ticker);
         let h = hunts.get(m.ticker);
         if (!h) { h = new ConfluenceRatchetExit(opts.hunt ?? DEFAULT_HUNT, opts.ratchet ?? DEFAULT_RATCHET); hunts.set(m.ticker, h); }
@@ -896,7 +961,14 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         }
       }
 
-      if (inflightFor(m.ticker)) continue; // orders/cancels still travelling: no new plan until they land
+      // The plan's ratchet and end rule (bot/plan/planRatchet.ts), as the engine runs them: on every evaluation, an order or
+      // cancel still travelling included (planStep waits only for a sale of ours in flight), and before decide() so that no
+      // taker entry buys back the sale this tick.
+      const planSelling = planPos ? planEvaluate(m, planPos, bid, ask) : false;
+      if (inflightFor(m.ticker)) { // orders/cancels still travelling: no new plan until they land
+        if (planSelling && opts.paper) await fireExit(pYes, bid.price, ask.price);
+        continue;
+      }
 
       // Relaxed cadence and entry windows, mirroring the engine.
       const mt = kalshiMaintenance(st.now);
@@ -966,8 +1038,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       };
       const strat = { ...stratRun, kellyFraction: tier.kellyFraction * sizeScale, minEdge: Math.max(0, strategy.minEdge + sessRisk.minEdgeAdd + dynamicEdge(strategy.dynamicEdge, mRead, pred.std).add), inventorySkewPerContract: strategy.inventorySkewPerContract * sessRisk.skewMult };
       const pacerUsdNow = pacerAt(st.now).neededUsd(st.now);
-      const group = pacerUsdNow !== undefined && strategy.pacer.group ? snipeGroup.judge(m.ticker, view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsdNow, st.now) : undefined;
-      const plan = decide(view, strat, {
+      const group = pacerUsdNow !== undefined && strategy.pacer.group ? snipeGroup.judge(m.ticker, !planPos && view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsdNow, st.now) : undefined;
+      const plan = planPos ? decide(view, strat, { exits: false, entries: Boolean(reason), planHeld: true, planSelling }) : decide(view, strat, {
         exits: policy === 'fair_value' || policy === 'take_profit' || policy === 'hybrid' || (policy === 'confluence_ratchet' && !huntMode),
         blockReductions: huntMode && !huntHold,
         entries: Boolean(reason),

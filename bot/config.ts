@@ -5,6 +5,7 @@
 import type { DynamicEdgeParams } from './strategy/dynamicEdge';
 import type { RegimeScaleParams } from './strategy/regimeScale';
 import { type PacerConfig, validZone } from './risk/quotaPacer';
+import type { PlanConfig } from './plan/planRatchet';
 import fs from 'fs';
 import { parseSessionRisk, type SessionRiskProfile } from './model/sessionRisk';
 import { DEFAULT_PROBATION, type ProbationParams } from './risk/probation';
@@ -146,6 +147,11 @@ export interface StrategyConfig {
    *  window a position in profit rides to settlement instead, and a hunted position is never held for settlement
    *  (HUNT_LOCK_SALE_ELSE=exit). */
   pacer: PacerConfig;
+  /** PLAN_RULES (off by default, the same in paper and live; Steven's decisions 3 and 13, Nov 11 8:03 AM EST / 13:03 UTC): a
+   *  position opened by a plan rule (bot/plan/planPositions.ts) is managed by the plan's one written ratchet and its end rule
+   *  (bot/plan/planRatchet.ts), and the pacer only reports pace for it. Off, every position is managed as before. Also on
+   *  Config as cfg.plan (the same object). */
+  plan: PlanConfig;
   /** PROFIT_MANDATE (off by default; Steven's first wording, Oct 29 23:22 UTC): outside that final share of the window a position
    *  whose side bid net of the exit fee clears its entry cost (entry fee in) by PROFIT_MANDATE_MIN is sold at the bid whatever the
    *  exit policy or the model says, a hunt trailing its stop excepted. On, a penny of profit sells before the pacer's threshold is
@@ -436,6 +442,8 @@ export interface Config {
   optimalF: OptimalFConfig;
   /** Fractal Alignment Engine and waterfall mode (bot/macro). */
   macro: MacroConfig;
+  /** PLAN_RULES and the plan ratchet's default settings: the same object as strategy.plan. */
+  plan: PlanConfig;
 }
 
 export interface MacroConfig {
@@ -940,6 +948,17 @@ function pacerConfig(env: Env): PacerConfig {
   };
 }
 
+/** PLAN_RULES and the plan ratchet's default settings (bot/plan/planRatchet.ts), the same in paper and live. */
+function planConfig(env: Env): PlanConfig {
+  return {
+    enabled: bool(env, 'PLAN_RULES', false),
+    // UNTESTED placeholders (Nov 11): no replay has tested these values. Each frozen rule passes its own tested settings when
+    // it tags a position; these apply only to a tag that passes none.
+    armC: num(env, 'PLAN_RATCHET_ARM_C', 6, 0, 99),
+    trailC: num(env, 'PLAN_RATCHET_TRAIL_C', 8, 0, 99),
+  };
+}
+
 function bool(env: Env, key: string, def: boolean): boolean {
   const raw = env[key];
   if (raw === undefined || raw === '') return def;
@@ -1183,6 +1202,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     noExitBeforeCloseFrac: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC', 0.10, 0, 0.9),
     shareWindowMaxSec: num(env, 'STRATEGY_SHARE_WINDOW_MAX_SEC', 3600, 0, 7 * 86_400),
     pacer: pacerConfig(env),
+    plan: planConfig(env),
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),
     // Maker discount for the measured adverse move a minute after a fill: at least 1.5c, up to 3c.
@@ -1383,6 +1403,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     alertWebhookUrl: env.ALERT_WEBHOOK_URL || undefined,
     risk,
     strategy,
+    plan: strategy.plan,
     vault: {
       enabled: bool(env, 'VAULT_ENABLED', true),
       quotaUsd: num(env, 'VAULT_QUOTA_USD', 100, 0, 1e7),

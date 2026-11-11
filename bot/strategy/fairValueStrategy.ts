@@ -199,6 +199,15 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
    *  book's mid): only exits already armed that need no model run, the take-profit trailing its best and the quota floor. No
    *  model exit, no quota snipe or floor arming, no entries. */
   armedOnly?: boolean;
+  /** PLAN_RULES on and the held position opened by a plan rule (bot/plan/planPositions.ts): the plan's ratchet and end rule
+   *  sell it (bot/plan/planRatchet.ts, run by the caller). No exit of this function sells it or rests a sell for it: no model
+   *  exit, take-profit, profit mandate, quota snipe or quota floor, Mode B take-profit or exit-curve resting sell, and no
+   *  taker entry against the held side (a "take NO" while long YES is the model's exit in disguise). Other entries and the
+   *  quotes are decided as usual. */
+  planHeld?: boolean;
+  /** The plan's sale of the held position goes out this evaluation (the caller's reduce-only immediate-or-cancel order): no
+   *  selective taking, as while any immediate exit crosses the book, so the sale is not bought back in the same tick. */
+  planSelling?: boolean;
 } = {}): StrategyOutput {
   const out: StrategyOutput = { place: [], cancel: [], notes: [] };
   const tick = v.tickSize;
@@ -252,9 +261,13 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   // The final minute holds every position; the last share of the window (settleShare) holds one in profit after fees.
   const riding = ridesToSettlement(v);
   const exitWindow = v.exitWindowOpen !== false && !riding;
-  if (v.exitWindowOpen === false && v.position !== 0) out.notes.push('final minute: riding to settlement');
-  if (riding) out.notes.push('final share of the window, in profit after fees: riding to settlement');
-  const exits = opts.exits !== false && exitWindow;
+  if (opts.planHeld) {
+    if (v.position !== 0) out.notes.push('plan position: its own ratchet and end rule sell it; no other exit');
+  } else {
+    if (v.exitWindowOpen === false && v.position !== 0) out.notes.push('final minute: riding to settlement');
+    if (riding) out.notes.push('final share of the window, in profit after fees: riding to settlement');
+  }
+  const exits = opts.exits !== false && exitWindow && !opts.planHeld;
   const modelExit = exits && opts.armedOnly !== true;
   const margin = cfg.exitMargin ?? cfg.takerBuffer;
   // Take-profit: what selling the held side at its touch banks a contract over its cost, net of every fee. The floor is
@@ -295,9 +308,10 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   // covers the target, so it is sold at the bid whatever its own net profit (bot/risk/quotaPacer.ts SnipeGroup).
   const mandateMin = opts.profitMandate;
   const cost = v.entrySidePrice !== undefined ? v.entrySidePrice + (v.entryFeePerContract ?? 0) : undefined;
-  const mandate = mandateMin !== undefined && cost !== undefined && exitWindow;
+  const mandate = mandateMin !== undefined && cost !== undefined && exitWindow && !opts.planHeld;
   const pacerUsd = opts.pacerUsd;
-  const sniping = pacerUsd !== undefined && cost !== undefined && exitWindow;
+  // A plan position: the pacer only reports pace (Steven's decision 13): no snipe at the hour's need, no floor.
+  const sniping = pacerUsd !== undefined && cost !== undefined && exitWindow && !opts.planHeld;
   // PACER_FLOOR (Steven, Oct 31): while another exit rule aims higher than the quota, the quota is the position's stop, not its
   // sale (bot/risk/quotaPacer.ts quotaCall): its profit covering the need arms a floor there, and the position is sold once the
   // profit falls below it. A set sell price above the bid and below the payout aims higher in either mode: the model exit's
@@ -407,7 +421,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   }
   // Mode B: a resting maker take-profit on the held side at entry + TP, never below
   // the model's value of the position + exitMargin (then holding is better).
-  if (quoting && cfg.exitPolicy === 'take_profit' && v.position !== 0 && v.entrySidePrice !== undefined && !opts.blockReductions) {
+  if (quoting && cfg.exitPolicy === 'take_profit' && v.position !== 0 && v.entrySidePrice !== undefined && !opts.blockReductions && !opts.planHeld) {
     const long = v.position > 0;
     const qSide = long ? q : 1 - q;
     const sidePx = Math.max(v.entrySidePrice + cfg.takeProfit, qSide + margin);
@@ -428,7 +442,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   // reduce-only on immediate-or-cancel orders only). Not while an exit crosses the book this tick, nor while a hunt runs
   // the winner (blockReductions).
   let restSide: 'bid' | 'ask' | undefined;
-  if (quoting && v.curveRestSidePrice !== undefined && v.position !== 0 && v.entrySidePrice !== undefined && !opts.blockReductions) {
+  if (quoting && v.curveRestSidePrice !== undefined && v.position !== 0 && v.entrySidePrice !== undefined && !opts.blockReductions && !opts.planHeld) {
     const exiting = out.place.some((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
     const n = round(Math.abs(v.position), 2);
     const cost = v.entrySidePrice + (v.entryFeePerContract ?? 0);
@@ -470,9 +484,9 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   reconcileQuote(v.restingAsk, desiredAsk, cfg.requoteThreshold, v.nowSec, out, restSide === 'ask');
 
   // ---- Selective taking -------------------------------------------------------
-  if ((cfg.style === 'taker' || cfg.style === 'both') && newRisk && !v.fastMove && out.place.every((p) => p.purpose !== 'exit' || p.timeInForce !== 'immediate_or_cancel')) {
-    const mayBuyYes = !(opts.blockReductions && v.position < 0);
-    const mayBuyNo = !(opts.blockReductions && v.position > 0);
+  if ((cfg.style === 'taker' || cfg.style === 'both') && newRisk && !v.fastMove && !opts.planSelling && out.place.every((p) => p.purpose !== 'exit' || p.timeInForce !== 'immediate_or_cancel')) {
+    const mayBuyYes = !((opts.blockReductions || opts.planHeld) && v.position < 0);
+    const mayBuyNo = !((opts.blockReductions || opts.planHeld) && v.position > 0);
     if (mayBuyYes && ask && ask.price >= v.minSidePrice && ask.price <= 1 - v.minSidePrice) {
       const fee1 = orderFee(1, ask.price, true, v.fees);
       const k = size('yes', ask.price, fee1, Math.min(v.maxContracts, ask.size));
