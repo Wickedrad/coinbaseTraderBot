@@ -195,6 +195,10 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   /** PACER_FLOOR: the position's armed floor in dollars (QuotaFloors); why a rule outside this function rides a winner (the
    *  hunt trailing its stop, from the engine); set sell prices of rules outside it (side terms, e.g. the TA's take-profit). */
   pacerFloor?: number; pacerHigher?: string; higherTargets?: Array<{ why: string; sidePrice: number }>;
+  /** The exit-only lane (bot/strategy/exitOnlyLane.ts: no index, volatility, strike or fair value this tick; v.pYes is the
+   *  book's mid): only exits already armed that need no model run, the take-profit trailing its best and the quota floor. No
+   *  model exit, no quota snipe or floor arming, no entries. */
+  armedOnly?: boolean;
 } = {}): StrategyOutput {
   const out: StrategyOutput = { place: [], cancel: [], notes: [] };
   const tick = v.tickSize;
@@ -251,6 +255,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   if (v.exitWindowOpen === false && v.position !== 0) out.notes.push('final minute: riding to settlement');
   if (riding) out.notes.push('final share of the window, in profit after fees: riding to settlement');
   const exits = opts.exits !== false && exitWindow;
+  const modelExit = exits && opts.armedOnly !== true;
   const margin = cfg.exitMargin ?? cfg.takerBuffer;
   // Take-profit: what selling the held side at its touch banks a contract over its cost, net of every fee. The floor is
   // the larger of the cents minimum and the percentage of what a contract cost (price plus the entry fee). A winner
@@ -313,7 +318,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   };
   const quota = (netUsd: number, sideBid: number, modelPx: number, tp: { sell: boolean; riding?: boolean } | undefined, selling: boolean) => {
     const higher = sniping && !selling ? aimsHigher(sideBid, modelPx, tp) : undefined;
-    const call = sniping ? quotaCall(netUsd, pacerUsd, opts.pacerFloor, higher, (cfg.pacer?.floorTicks ?? 0) * tick * Math.abs(v.position)) : {};
+    const call = sniping ? quotaCall(netUsd, opts.armedOnly ? undefined : pacerUsd, opts.pacerFloor, higher, (cfg.pacer?.floorTicks ?? 0) * tick * Math.abs(v.position)) : {};
     if (call.arm !== undefined) {
       out.pacerArm = { usd: call.arm, why: higher! };
       out.notes.push(`quota floor: +$${netUsd.toFixed(2)} net covers the $${call.arm.toFixed(2)} the hour needs; held for ${higher}, sold if the profit falls below its floor`);
@@ -329,13 +334,13 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     const netUsd = sniping ? netProfitAtBid(v) ?? 0 : 0;
     const { call, grouped } = quota(netUsd, bid.price, q + fee + margin, tp, exits && (edge >= margin || tp?.sell === true));
     const snipe = sniping && n > 0 && (call.sell !== undefined || grouped);
-    if (n > 0 && ((exits && (edge >= margin || tp?.sell)) || pm || snipe)) {
+    if (n > 0 && ((modelExit && edge >= margin) || (exits && tp?.sell) || pm || snipe)) {
       out.place.push({ side: 'ask', price: bid.price, count: round(n, 2), timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge,
         ...(tp?.sell && tp.protective ? { protective: true } : {}),
         why: tp?.sell ? tp.why : snipe ? (call.sell === 'floor' ? `quota snipe (floor): ${netUsd < 0 ? '-' : '+'}$${Math.abs(netUsd).toFixed(2)} net on ${v.position} at bid ${bid.price} fell below its $${opts.pacerFloor!.toFixed(2)} floor`
             : call.sell === 'snipe' ? `quota snipe: +$${netUsd.toFixed(2)} net on ${v.position} at bid ${bid.price} covers the $${pacerUsd!.toFixed(2)} the hour needs`
             : `quota snipe (group): +$${netUsd.toFixed(2)} net on ${v.position} at bid ${bid.price}, with ${opts.pacerGroup!.members - 1} other position${opts.pacerGroup!.members === 2 ? '' : 's'} in profit (+$${opts.pacerGroup!.sumUsd.toFixed(2)} together) covers the $${pacerUsd!.toFixed(2)} the hour needs`)
-          : exits && edge >= margin ? `bid ${bid.price} - fee > q ${q.toFixed(3)} + ${margin}` : `profit mandate exit: bid ${bid.price} - fee ${fee.toFixed(3)} >= cost ${cost!.toFixed(3)} + ${mandateMin}` });
+          : modelExit && edge >= margin ? `bid ${bid.price} - fee > q ${q.toFixed(3)} + ${margin}` : `profit mandate exit: bid ${bid.price} - fee ${fee.toFixed(3)} >= cost ${cost!.toFixed(3)} + ${mandateMin}` });
     }
   } else if ((exits || mandate || sniping) && v.position < 0 && ask) {
     const n = Math.min(-v.position, ask.size);
@@ -347,17 +352,17 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     const netUsd = sniping ? netProfitAtBid(v) ?? 0 : 0;
     const { call, grouped } = quota(netUsd, noBid, 1 - q + fee + margin, tp, exits && (edge >= margin || tp?.sell === true));
     const snipe = sniping && n > 0 && (call.sell !== undefined || grouped);
-    if (n > 0 && ((exits && (edge >= margin || tp?.sell)) || pm || snipe)) {
+    if (n > 0 && ((modelExit && edge >= margin) || (exits && tp?.sell) || pm || snipe)) {
       out.place.push({ side: 'bid', price: ask.price, count: round(n, 2), timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge,
         ...(tp?.sell && tp.protective ? { protective: true } : {}),
         why: tp?.sell ? tp.why : snipe ? (call.sell === 'floor' ? `quota snipe (floor): ${netUsd < 0 ? '-' : '+'}$${Math.abs(netUsd).toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)} fell below its $${opts.pacerFloor!.toFixed(2)} floor`
             : call.sell === 'snipe' ? `quota snipe: +$${netUsd.toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)} covers the $${pacerUsd!.toFixed(2)} the hour needs`
             : `quota snipe (group): +$${netUsd.toFixed(2)} net on ${-v.position} NO at bid ${noBid.toFixed(2)}, with ${opts.pacerGroup!.members - 1} other position${opts.pacerGroup!.members === 2 ? '' : 's'} in profit (+$${opts.pacerGroup!.sumUsd.toFixed(2)} together) covers the $${pacerUsd!.toFixed(2)} the hour needs`)
-          : exits && edge >= margin ? `NO bid ${noBid.toFixed(2)} - fee > q + ${margin}` : `profit mandate exit: NO bid ${noBid.toFixed(2)} - fee ${fee.toFixed(3)} >= cost ${cost!.toFixed(3)} + ${mandateMin}` });
+          : modelExit && edge >= margin ? `NO bid ${noBid.toFixed(2)} - fee > q + ${margin}` : `profit mandate exit: NO bid ${noBid.toFixed(2)} - fee ${fee.toFixed(3)} >= cost ${cost!.toFixed(3)} + ${mandateMin}` });
     }
   }
 
-  if (opts.entries === false) return out;
+  if (opts.entries === false || opts.armedOnly) return out;
 
   const entriesAllowed = (v.entryWindowOpen ?? true) && v.tauSec >= v.noEntryBeforeCloseSec;
   // Ensemble veto: the model's disagreement with the market must exceed its own uncertainty.
