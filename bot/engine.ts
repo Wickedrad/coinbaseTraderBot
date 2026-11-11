@@ -778,9 +778,11 @@ export class Engine {
     return book.isUsable(now, this.d.cfg.risk.maxBookAgeMs) && !this.feedLagHalt();
   }
 
-  /** Guards that stop NEW risk (exits stay allowed): weekly loss pause, model health, maintenance. */
+  /** Guards that stop NEW risk (exits stay allowed): the kill switch, weekly loss pause, model health, maintenance. */
   entryGuards(now = this.now()): string[] {
     const r: string[] = [];
+    // The kill switch's own exits still go out (tennisKillExits, cryptoKillExits); a new entry never does.
+    if (this.d.kill.engaged) r.push('kill switch engaged');
     const override = this.overrideActive();
     const paused = this.d.equityGuard?.paused(now);
     if (paused && !override) r.push(paused);
@@ -1258,6 +1260,8 @@ export class Engine {
       // Steven's rule (Nov 5): nothing is held to settlement unless it is in profit, the kill switch included. A tennis
       // position not in profit after fees is sold at the bid; one in profit is held.
       await this.tennisKillExits();
+      // Crypto: a position not in profit after fees is sold at the bid; a winner keeps its take-profit and floor.
+      await this.cryptoKillExits();
       return;
     }
 
@@ -1337,7 +1341,7 @@ export class Engine {
   // ---- ATP tennis (bot/tennis/tennisStrategy.ts) --------------------------------------
   private readonly matches = new Map<string, MatchTracker>();
   private lastTennisTick = 0;
-  /** The last kill-switch exit attempt per tennis market (tennisKillExits). */
+  /** The last kill-switch exit attempt per market (tennisKillExits, cryptoKillExits). */
   private readonly killExitTs = new Map<string, number>();
   /** Live tennis scores (TENNIS_SCORE_FEED=kalshi): milestone per event, last poll, raw payload. */
   private readonly scores = new Map<string, { milestone?: { id: string; type: string } | null; polledTs: number; score?: TennisScore; raw?: unknown; error?: string; pAtPoll?: number; prev?: LiveTennisMatch; breaks?: [number, number]; breaksTotal?: [number, number] }>();
@@ -1564,6 +1568,52 @@ export class Engine {
       this.d.audit.write('decision', { decisionId, ticker: m.ticker, strategy: 'tennis', event, leg: 'kill_exit', why, price: b.price, count: pos.yes, side: 'ask' });
       await this.placeChecked(m, plan, a ? (b.price + a.price) / 2 : b.price, decisionId, { event, killExit: true });
     }
+  }
+
+  /** Crypto under the kill switch, by the same rule: a held position, YES or NO, whose whole profit after fees at its side's
+   *  bid (the open contracts' own cost, entry fee in: openSidePrice + openEntryFee) is not positive is sold at that bid,
+   *  reduce-only and immediate-or-cancel. One in profit is not dumped: its market is evaluated as usual, so its take-profit,
+   *  quota floor and hunt stop keep running, while entryGuards blocks every entry. Only reduce-only immediate-or-cancel exits
+   *  go, marked for the gateway (RiskContext.killExit), at most one attempt per market every 30 s. The final seconds before
+   *  the close (STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC) hold a loser too, as they hold every position outside the kill. An
+   *  operator's STOP ALL (KillSwitch.manual: it engaged the switch, or was pressed on top of an automatic trip) leaves
+   *  crypto positions alone, as before. */
+  private async cryptoKillExits(): Promise<void> {
+    const { cfg, md, oms, kill } = this.d;
+    if (kill.manual) return;
+    const now = this.now();
+    for (const m of md.activeMarkets(now)) {
+      if (m.kind === 'match') continue;
+      const pos = oms.positions.get(m.ticker);
+      if (!pos || Math.abs(pos.yes) < 1e-9) continue;
+      const book = md.book(m.ticker);
+      if (!this.bookUsable(book, now)) continue;
+      const b = book.bestBid(), a = book.bestAsk();
+      const net = positionNetAtBid(pos.yes, openSidePrice(pos)! + openEntryFee(pos)!, b, a, md.feesFor(m.ticker));
+      if (net === undefined) continue;
+      if (net > 1e-9) { await this.evaluate(m, now, true); continue; }
+      // The same no-exit window decide() keeps (exitWindowOpen): spreads widen in the settlement-averaging window.
+      if ((m.closeTime - now) / 1000 <= cfg.strategy.noExitBeforeCloseSec) continue;
+      if (oms.liveOrders().some((o) => o.ticker === m.ticker && isLive(o) && !o.cancelRequested)) continue;
+      if (!this.killExitDue(m.ticker, now)) continue;
+      // A YES position sells YES at the bid; a NO position sells NO at its bid, 1 - the YES ask (buys YES at the ask).
+      const yes = pos.yes > 0;
+      const top = yes ? b! : a!;
+      const sideBid = yes ? top.price : Math.round((1 - top.price) * 1e4) / 1e4;
+      const count = Math.abs(pos.yes);
+      const why = `kill switch engaged: ${net < 0 ? '-' : '+'}$${Math.abs(net).toFixed(2)} after fees at ${yes ? '' : 'NO '}bid ${sideBid}, not in profit, not held to settlement`;
+      const plan: OrderPlan = { side: yes ? 'ask' : 'bid', price: top.price, count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge: 0, why: `kill_exit: ${why}` };
+      const decisionId = crypto.randomUUID();
+      this.d.audit.write('decision', { decisionId, ticker: m.ticker, leg: 'kill_exit', why, price: top.price, count, side: plan.side, position: pos.yes });
+      await this.placeChecked(m, plan, b && a ? (b.price + a.price) / 2 : top.price, decisionId, undefined, { killExit: true });
+    }
+  }
+
+  /** At most one crypto kill-switch exit attempt per market every 30 s (cryptoKillExits): true when one may go now (stamped). */
+  private killExitDue(ticker: string, now: number): boolean {
+    if (now - (this.killExitTs.get(ticker) ?? -Infinity) < 30_000) return false;
+    this.killExitTs.set(ticker, now);
+    return true;
   }
 
   /** Directional perp targets for the executor, or undefined without a trader. `halt` flattens. */
@@ -2014,11 +2064,12 @@ export class Engine {
     return taNetView(asset, this.d.md.features.candles.get(asset), now);
   }
 
-  private async evaluate(m: ActiveMarket, now = this.now()): Promise<void> {
+  /** `killExit`: the kill switch is engaged and this held position is managed under it (cryptoKillExits). */
+  private async evaluate(m: ActiveMarket, now = this.now(), killExit = false): Promise<void> {
     if (this.busy.has(m.ticker)) return;
     this.busy.add(m.ticker);
     try {
-      await this.evaluateInner(m, now);
+      await this.evaluateInner(m, now, killExit);
     } catch (e) {
       log.error('evaluate failed', { ticker: m.ticker, error: String(e) });
       this.d.audit.write('error', { where: 'evaluate', ticker: m.ticker, error: String(e) });
@@ -2027,7 +2078,7 @@ export class Engine {
     }
   }
 
-  private async evaluateInner(m: ActiveMarket, now: number): Promise<void> {
+  private async evaluateInner(m: ActiveMarket, now: number, killExit = false): Promise<void> {
     const { cfg, md, oms, model } = this.d;
     const R = cfg.risk;
     const book = md.book(m.ticker);
@@ -2209,8 +2260,9 @@ export class Engine {
       ? inEntryWindow(m.kind, tauSec, S.entryWindowUpdown, S.entryWindowHourly) && (m.kind === 'updown' || (mid >= S.hourlyMidBand[0] && mid <= S.hourlyMidBand[1]))
       : true;
     // Paper: no new entry where the market's own price has called recent results better than the bot (the owner's
-    // choice on Oct 23; bot/strategy/accuracyGate.ts). Every evaluation feeds the gate's scorecard, live included.
-    this.d.accuracyGate?.observe(m.ticker, tauSec, pYes, mid);
+    // choice on Oct 23; bot/strategy/accuracyGate.ts). Every evaluation feeds the gate's scorecard, live included, except a
+    // winner's under the kill switch (cryptoKillExits evaluates only those: a sample picked by the result).
+    if (!killExit) this.d.accuracyGate?.observe(m.ticker, tauSec, pYes, mid);
     const accuracyBlock = kindWindow && guards.length === 0 ? this.d.accuracyGate?.block(m.ticker, tauSec) : undefined;
     const entryWindowOpen = kindWindow && guards.length === 0 && !accuracyBlock && !feeBlock;
     st.accuracyBlock = accuracyBlock;
@@ -2227,7 +2279,7 @@ export class Engine {
     if (reason && entryWindowOpen && taShift !== 0) this.d.taHealth?.record(m.ticker, Math.max(0.001, Math.min(0.999, pBase + taShift)), pBase, m.closeTime);
     // The trials score every contract in its entry window, traded or not: the meta-model's price with each contribution
     // and without it.
-    if (reason && kindWindow && trials) {
+    if (reason && kindWindow && trials && !killExit) {
       const clampP = (x: number) => Math.max(0.001, Math.min(0.999, x));
       // The trained model against the math fair value it refines.
       trials.record('mlp', m.ticker, m.asset, m.closeTime, pred.p, fv.pYes, now);
@@ -2237,7 +2289,7 @@ export class Engine {
       if (ruleShift !== undefined) trials.record('rules', m.ticker, m.asset, m.closeTime, clampP(pred.p + ruleShift), pred.p, now);
     }
     // The scoreboard: every price against the market, same cadence, traded or not (bot/health/scoreboard.ts).
-    if (reason && kindWindow && this.d.scoreboard) {
+    if (reason && kindWindow && this.d.scoreboard && !killExit) {
       const clampP = (x: number) => Math.max(0.001, Math.min(0.999, x));
       this.d.scoreboard.record(m.ticker, m.asset, m.closeTime, { market: pMarket, fair_value: fv.pYes, meta_model: pred.p, bot_price: pYes, snn: blended.pSnn, ta_tilt: taShiftFull !== undefined ? clampP(pred.p + taShiftFull) : undefined }, now);
     }
@@ -2552,6 +2604,17 @@ export class Engine {
     } else curve?.flat(m.ticker, now);
     if (huntMode) plan.notes.push(huntHeld ?? `hunting: stop ${st.huntStop ?? 'forming'}`);
     if (huntNote) plan.notes.push(huntNote);
+    // Under the kill switch (cryptoKillExits) only reduce-only immediate-or-cancel exits go (all the gateway lets through: a
+    // resting sell waits for the reset), at most one attempt per market every 30 s.
+    if (killExit) {
+      const before = plan.place.length;
+      plan.place = plan.place.filter((p) => p.reduceOnly && p.timeInForce === 'immediate_or_cancel');
+      if (plan.place.length < before) plan.notes.push('kill switch engaged: resting orders wait for the reset');
+      if (plan.place.length && !this.killExitDue(m.ticker, now)) {
+        plan.place = [];
+        plan.notes.push('kill switch engaged: exit waits, one attempt per market every 30 s');
+      }
+    }
     st.notes = plan.notes;
 
     const decisionId = crypto.randomUUID();
@@ -2592,7 +2655,7 @@ export class Engine {
     await Promise.all(plan.cancel.map((c) => oms.cancel(c.clientOrderId, c.reason)));
     // Orders carry the decision probability (q_adj under target-EV sizing): the gateway's fee-net
     // edge collar and TCA's edge-at-decision then judge the same number the strategy traded on.
-    for (const p of plan.place) await this.placeChecked(m, p, st.q ?? pYes, decisionId);
+    for (const p of plan.place) await this.placeChecked(m, p, st.q ?? pYes, decisionId, undefined, killExit ? { killExit: true } : undefined);
   }
 
   /** Conservative-only target scale in [0.85, 1] (blend mode with target scaling on), else 1. */
@@ -2632,7 +2695,8 @@ export class Engine {
     return { contracts, fStar, edgePerDay: timeNormalizedEdge(candidate) };
   }
 
-  private async placeChecked(m: ActiveMarket, p: OrderPlan, pYes: number, decisionId: string, tennis?: { event: string; killExit?: boolean }): Promise<void> {
+  /** `opts.killExit`: a crypto exit sent under the kill switch (cryptoKillExits), marked for the gateway as tennis's are. */
+  private async placeChecked(m: ActiveMarket, p: OrderPlan, pYes: number, decisionId: string, tennis?: { event: string; killExit?: boolean }, opts?: { killExit?: boolean }): Promise<void> {
     const { cfg, md, oms, risk, kill, model } = this.d;
     const now = this.now();
     const T = cfg.tennis;
@@ -2687,7 +2751,7 @@ export class Engine {
       dailyLossAdvisory: this.overrideActive(),
     };
     if (training) ctx.skipEdgeCollar = true;
-    if (tennis?.killExit) ctx.killExit = true;
+    if (tennis?.killExit || opts?.killExit) ctx.killExit = true;
     // An adversary-boosted entry may use proportionally more of the per-order caps (window / total caps unchanged; with
     // RISK_SIZE_CAPS off no crypto cap binds).
     if (p.boost && p.boost > 1 && !tennis) {
