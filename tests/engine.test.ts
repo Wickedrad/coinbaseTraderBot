@@ -32,11 +32,11 @@ import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
 import { DEFAULT_PROBATION, Probation, setProbation } from '../bot/risk/probation';
 import type { FillModel } from '../bot/tca/fillModel';
 
-async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel; modelHealth?: ModelHealth } = {}) {
+async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel; modelHealth?: ModelHealth; closeIn?: number } = {}) {
   const dir = tmpDir();
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, RISK_DAILY_LOSS_USD: opts.dailyLossUsd ?? '10', DOMINANCE_FEED: 'false', SPOT_FEED: 'false', EXIT_POLICY: opts.exitPolicy, STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_ENABLED: 'false', ...opts.env });
   const now = Date.now();
-  const market: MarketInfo = { ticker: 'KXBTC15M-TEST', seriesTicker: 'KXBTC15M', status: 'open', openTime: now - 300_000, closeTime: now + 600_000, floorStrike: 60000, tickSize: 0.01 };
+  const market: MarketInfo = { ticker: 'KXBTC15M-TEST', seriesTicker: 'KXBTC15M', status: 'open', openTime: now - 300_000, closeTime: now + (opts.closeIn ?? 600_000), floorStrike: 60000, tickSize: 0.01 };
   const rest = {
     getSeriesFees: async () => ({ feeType: 'quadratic', multiplier: 1 }),
     getOpenMarkets: async () => [market],
@@ -315,6 +315,139 @@ test('daily loss limit trips the persistent kill switch and cancels everything',
   assert.equal(kill.engaged, true);
   assert.equal((await paper.getOpenOrders()).length, 0);
   assert.ok(engine.status.get(market.ticker));
+});
+
+/** A crypto position bought on the paper exchange (a reduce-only exit needs it there too), then the book moved to `book`. */
+async function heldUnderKill(side: 'bid' | 'ask', price: number, count: number, book: [number, number], opts: { topSize?: number; source?: string; closeIn?: number; curveExit?: SinuousExitGate; accuracyGate?: AccuracyGate; trials?: ComponentTrials } = {}) {
+  const g = await setup({ env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' }, closeIn: opts.closeIn, curveExit: opts.curveExit, accuracyGate: opts.accuracyGate, trials: opts.trials });
+  g.engine.balance = (await g.recon.run('startup'))!.balance;
+  const t = g.market.ticker;
+  g.md.book(t).applySnapshot(side === 'bid' ? { bids: [{ price: price - 0.02, size: 100 }], asks: [{ price, size: 100 }] } : { bids: [{ price, size: 100 }], asks: [{ price: price + 0.02, size: 100 }] }, Date.now());
+  await g.oms.submit({ ticker: t, asset: 'BTC', windowCloseTs: g.market.closeTime, side, price, count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', fairValue: 0.5, modelId: 'm', decisionId: 'e' });
+  assert.equal(g.oms.positions.position(t), side === 'bid' ? count : -count);
+  g.md.book(t).applySnapshot({ bids: [{ price: book[0], size: opts.topSize ?? 50 }], asks: [{ price: book[1], size: opts.topSize ?? 50 }] }, Date.now());
+  await g.kill.engage('5 consecutive order errors (test)', opts.source ?? 'oms');
+  const sent = () => g.oms.allOrders(500).filter((o) => o.ticker === t && o.decisionId !== 'e');
+  const killExits = () => g.audit.tail(500, 'decision').map((x) => x.data as Record<string, unknown>).filter((x) => x.leg === 'kill_exit');
+  return { ...g, t, sent, killExits, notes: () => g.engine.status.get(t)?.notes.join(' | ') ?? 'not evaluated' };
+}
+
+test('kill switch engaged: a crypto YES position not in profit after fees is sold at the bid, once, reduce-only; no entry', async () => {
+  // 30 YES bought at 0.60, the book now 0.20 / 0.25.
+  const g = await heldUnderKill('bid', 0.6, 30, [0.2, 0.25]);
+  assert.ok(g.engine.entryGuards().includes('kill switch engaged'), 'the kill switch is an entry guard');
+  await g.engine.tick();
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count, o.reduceOnly, o.timeInForce, o.purpose]), [['ask', 0.2, 30, true, 'immediate_or_cancel', 'exit']]);
+  assert.equal(g.oms.positions.position(g.t), 0);
+  assert.equal(g.killExits().length, 1);
+  assert.match(String(g.killExits()[0].why), /^kill switch engaged: -\$12\.\d\d after fees at bid 0\.2, not in profit, not held to settlement$/);
+  assert.equal(g.audit.tail(500, 'risk_reject').length, 0);
+});
+
+test('kill switch engaged: a crypto NO position not in profit is sold at its bid (YES bought at the ask); a thin bid retries after 30 s', async () => {
+  // 30 NO bought at 0.40 (YES sold at 0.60); the book now 0.75 / 0.80, a NO bid of 0.20 for 10 contracts only.
+  const g = await heldUnderKill('ask', 0.6, 30, [0.75, 0.8], { topSize: 10 });
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count, o.reduceOnly, o.timeInForce]), [['bid', 0.8, 30, true, 'immediate_or_cancel']]);
+  assert.equal(g.oms.positions.position(g.t), -20, 'the IOC took the 10 on offer');
+  assert.match(String(g.killExits()[0].why), /^kill switch engaged: -\$\d+\.\d\d after fees at NO bid 0\.2, not in profit/);
+  // At most one attempt per market every 30 s.
+  await g.engine.tick();
+  assert.equal(g.sent().length, 1);
+  const stamps = (g.engine as unknown as { killExitTs: Map<string, number> }).killExitTs;
+  stamps.set(g.t, stamps.get(g.t)! - 30_000);
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count]).sort((x, y) => Number(y[2]) - Number(x[2])), [['bid', 0.8, 30], ['bid', 0.8, 20]]);
+  assert.equal(g.audit.tail(500, 'risk_reject').length, 0);
+});
+
+/** An accuracy gate and component trials that count the evaluations fed to their scorecards. */
+class CountingAccuracyGate extends AccuracyGate {
+  observed = 0;
+  override observe(ticker: string, tauSec: number, pYes: number, mid: number): void { this.observed++; super.observe(ticker, tauSec, pYes, mid); }
+}
+class CountingTrials extends ComponentTrials {
+  recorded = 0;
+  override record(): void { this.recorded++; }
+}
+
+test('kill switch engaged: a crypto winner is not dumped; its take-profit still sells it once it gives back a third of its best', async () => {
+  // 10 YES bought at 0.40; at a 0.56 bid it is about +$1.25 after fees: held, the take-profit armed, nothing sent.
+  const gate = new CountingAccuracyGate({ enabled: true, window: 150, minMarkets: 40 });
+  const trials = new CountingTrials(DEFAULT_TRIALS);
+  const g = await heldUnderKill('bid', 0.4, 10, [0.56, 0.58], { accuracyGate: gate, trials });
+  await g.engine.tick();
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), [], g.notes());
+  assert.equal(g.oms.positions.position(g.t), 10);
+  assert.equal(g.killExits().length, 0);
+  assert.match(g.notes(), /take-profit armed/);
+  assert.match(g.notes(), /kill switch engaged/);
+  // Only winners are evaluated under the kill: they do not feed the accuracy gate's or the trials' scorecards (a sample
+  // picked by the result).
+  assert.deepEqual([gate.observed, trials.recorded], [0, 0]);
+  // Back to 0.50 with only 4 bid: more than a third of the best gain given back. The take-profit sells the 4 on offer at
+  // the bid, through the kill.
+  g.md.book(g.t).applySnapshot({ bids: [{ price: 0.5, size: 4 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count, o.reduceOnly, o.timeInForce]), [['ask', 0.5, 4, true, 'immediate_or_cancel']], g.notes());
+  assert.equal(g.oms.positions.position(g.t), 6);
+  // At most one attempt per market every 30 s, the winner's exits included.
+  await g.engine.tick();
+  assert.equal(g.sent().length, 1, g.notes());
+  assert.match(g.notes(), /kill switch engaged: exit waits, one attempt per market every 30 s/);
+  const stamps = (g.engine as unknown as { killExitTs: Map<string, number> }).killExitTs;
+  stamps.set(g.t, stamps.get(g.t)! - 30_000);
+  g.md.book(g.t).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count]).sort((x, y) => Number(y[2]) - Number(x[2])), [['ask', 0.5, 6], ['ask', 0.5, 4]], g.notes());
+  assert.equal(g.oms.positions.position(g.t), 0);
+  const why = g.audit.tail(200, 'decision').flatMap((d) => ((d.data as { place?: Array<{ why: string }> }).place ?? []).map((p) => p.why));
+  assert.ok(why.some((w) => w.startsWith('take-profit: ')), why.join(' | '));
+  assert.equal(g.killExits().length, 0);
+  assert.equal(g.audit.tail(500, 'risk_reject').length, 0);
+  assert.deepEqual([gate.observed, trials.recorded], [0, 0]);
+});
+
+test('kill switch engaged: a crypto winner\'s resting sell (exit curve rest mode) waits for the reset; nothing is refused', async () => {
+  // 10 YES bought at 0.40, bid 0.45: in profit after fees. Outside the kill the curve rests a sell at 0.55 (good till cancelled).
+  const curveExit = new (class extends SinuousExitGate { override restTarget(): number | undefined { return 0.55; } })({ mode: 'rest', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
+  const g = await heldUnderKill('bid', 0.4, 10, [0.45, 0.47], { curveExit });
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), [], g.notes());
+  assert.match(g.notes(), /kill switch engaged: resting orders wait for the reset/);
+  assert.equal(g.audit.tail(500, 'risk_reject').length, 0);
+  assert.equal(g.oms.positions.position(g.t), 10);
+});
+
+test('kill switch engaged: a crypto loser in the final seconds before the close rides to settlement, as outside the kill', async () => {
+  // 30 YES bought at 0.60, book 0.20 / 0.25, the market closing in 45 s (inside STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC, 60 s).
+  const g = await heldUnderKill('bid', 0.6, 30, [0.2, 0.25], { closeIn: 45_000 });
+  assert.ok(g.cfg.strategy.noExitBeforeCloseSec >= 45, String(g.cfg.strategy.noExitBeforeCloseSec));
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), []);
+  assert.equal(g.killExits().length, 0);
+  assert.equal(g.oms.positions.position(g.t), 30);
+});
+
+test('kill switch engaged by STOP ALL (an operator): crypto positions are left alone, as before', async () => {
+  const g = await heldUnderKill('bid', 0.6, 30, [0.2, 0.25], { source: 'api:127.0.0.1' });
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), []);
+  assert.equal(g.oms.positions.position(g.t), 30);
+});
+
+test('kill switch: STOP ALL pressed after an automatic trip also leaves crypto positions alone', async () => {
+  // The order-error trip engaged the switch; the operator then presses STOP ALL (POST /api/kill).
+  const g = await heldUnderKill('bid', 0.6, 30, [0.2, 0.25], { source: 'oms' });
+  await g.kill.engage('operator STOP ALL', 'api:127.0.0.1');
+  assert.equal(g.kill.status().source, 'oms', 'the first trip stays the recorded cause');
+  assert.equal(g.kill.manual, true);
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), []);
+  assert.equal(g.killExits().length, 0);
+  assert.equal(g.oms.positions.position(g.t), 30);
 });
 
 test('opt-in confluence ratchet runs in the engine and starts in fair-value mode', async () => {
