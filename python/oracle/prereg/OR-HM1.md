@@ -387,3 +387,11 @@ stored table, hash, league or pack, and no line of heat.py.
    days as independent, so they run high; the twin carries the same overlap, so every count is read against it. One
    twin per coin is a coarse scale. Daily timeframe readings (bars of 4 hours or a day) are not in the vocabulary: the
    4-hour and day-ahead calls come from the 1-, 5-, 15- and 60-minute readings and the daily dominance states.
+
+**Result of Amendment 7 (2026-11-11 18:09 UTC, 1:09 PM EST; run 43070798519, perp packs at b097ee2).** Zone edges and
+price step identical to the main tables on all 624 readings of each coin. Direction kept on 2025, every event level
+(19,055 per horizon; twin 19,033): 240 minutes 69.6% (twin 51.1%), t of 2 or more 13.2% (twin 2.0%), top odds heat
+18.3 (twin 12.6); 1440 minutes 66.5% (twin 51.0%), t of 2 or more 8.5% (twin 2.8%), top odds heat 6.9 (twin 9.3).
+Pairs: direction kept 86.4% / 85.2% (twin 49.5% / 49.0%), lift kept 67.9% / 69.3% (twin 48.5% / 47.1%). Reading: the
+4-hour calls stand clear of chance; the day-ahead calls keep their direction on average but the hottest are not
+above the twin's best, so they are context, not a trigger.

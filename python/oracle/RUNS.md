@@ -35,3 +35,5 @@ Nov 11: OR-HM1 third run 43030435253: league built at 15:59 UTC (10:59 AM EST) b
 | XRP twin1 | `e339acec7d510050cd71a8ea044988352991121b788621ab774af59039db7f4c` |
 | XRP twin2 | `e15a9eec9b69e1049d9eb927369d0e93abd98e8c1081783bd219d1ca1d9a5760` |
 | XRP twin3 | `c095147bb4efd57f47f203268f8b33b43abf6cd9cf433fd9303ada8e276dc418` |
+
+Nov 11: OR-HM1 add-ons on the stored run 43030435253 (no stored table changed). Clock (Amendment 6, run 43061625967, 12:24 PM EST / 17:24 UTC): the UTC hour, New York half hour and weekday add little against the twin (clock_pack.json). Long horizons (Amendment 7, run 43070798519, 1:03 PM EST / 18:03 UTC): 240 and 1440 minutes, same zone edges as the main tables; direction kept on 2025 69.6% and 66.5% (twins 51.1% and 51.0%); perp_pack.json and perp_pair_pack.json; long tables on Drive under models/oracle-heat/runs/43030435253/long/.
