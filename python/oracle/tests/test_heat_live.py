@@ -203,6 +203,7 @@ def test_pair_view_and_pack(tmp_path):
     top = min(r15, key=lambda r: r['rank_coin'])
     assert top['conds'] == [['60m:ADX14', 'very high']] and top['dir'] == -1 and top['call'] == 'down' and abs(top['odds_B'] - 5.0) < 1e-6
     assert abs(top['oheat_B'] - 10.0) < 1e-6 and abs(top['lift_B'] - 2.5) < 1e-6 and abs(top['share_B'] - 45.0) < 1e-6 and top['above_twin_max']
+    assert abs(top['rest_wd_B'] - 12.5) < 1e-6 and abs(top['lheat_B'] - 5.0) < 1e-6        # 2 windows a day of 14.5: the smaller side x the lift
     assert top['trigger'] == {'dir': 1, 'odds_B': 1.5, 'wd_B': 6.0, 'oheat_B': 9.0, 'rank_coin': 4} and top['readings'] == ['1m:RSI2', '60m:ADX14']
     al = [r for r in r15 if r['aliases']]
     assert len(al) == 1 and al[0]['key'].endswith('5m:MACD12/26 sign=above 0') and al[0]['readings'] == ['5m:CCI14', '5m:MACD12/26', '5m:PPO12/26']
@@ -216,3 +217,48 @@ def test_pair_view_and_pack(tmp_path):
     lm = heat_pack.live_meta(single, {'SOL': {'price_step': 0.01, 'table_sha256': 'abc', 'edges': {'1m:RSI2': [1, 2, 3, 4], '60m:ADX14': [5, 6, 7, 8]}}},
                              more={'SOL': {x for r in pp['rows'] for x in r['readings']}})
     assert sorted(lm['SOL']['edges']) == ['1m:RSI2', '60m:ADX14'] and 'UTC4h' in lm['SOL']['no_edges'] and '5m:MACD12/26' in lm['SOL']['no_edges']
+
+
+def test_clock_add_on(tmp_path, monkeypatch):
+    """heat_clock: the clock states are those of the entry minute (New York follows daylight saving), the coin job
+    writes tables the league's judge and the pair builder read, and the live reader reports the same clock."""
+    from oracle import heat_clock, heat_pairs
+    # 2025-03-09 07:00 UTC is 03:00 in New York (clocks went forward at 02:00); the day before 07:00 UTC was 02:00
+    assert heat_clock.levels_at(ms('2025-03-08') + 7 * 60 * MIN) == {'UTC1h': '07', 'NY30m': '02:00', 'Weekday': 'Sat'}
+    assert heat_clock.levels_at(ms('2025-03-09') + 7 * 60 * MIN) == {'UTC1h': '07', 'NY30m': '03:00', 'Weekday': 'Sun'}
+    assert heat_clock.levels_at(ms('2025-11-11') + (14 * 60 + 30) * MIN)['NY30m'] == '09:30'              # the stock open in winter
+    m = {'t0': ms('2025-03-01'), 'n': 20 * 1440}
+    R = {r['name']: r for r in heat_clock.clock_readings(m)}
+    for row in (0, 14, 29, 59, 12 * 1440 + 419, 12 * 1440 + 420, 19 * 1440 - 1):
+        want = heat_clock.levels_at(m['t0'] + (row + 1) * MIN)                                             # the entry minute opens at the row's close
+        for nm, r in R.items():
+            code = int(heat.read_state(r, np.array([row]))[0])
+            assert (r['levels'][code] if code >= 0 else None) == (want[nm] if row + 1 >= r['k'] else None), (row, nm)
+
+    start = heat.HEAT_END - 120 * DAY
+    monkeypatch.setattr(heat, 'SPLITS', {'A': (start, start + 90 * DAY), 'B': (start + 90 * DAY, heat.HEAT_END)})
+    p = str(tmp_path / 'X.csv')
+    df = _csv(p, start, 120, seed=5)
+    tabs = tmp_path / 'tabs'
+    mt = heat_clock.run_coin('X', p, str(tmp_path), str(tabs / 'X'), procs=1, log=lambda *a: None)
+    assert mt['clock_levels_alone'] == 24 + 48 + 7 and mt['tested']['pair'] > 10_000 and mt['twin'] == 0
+    t = pd.read_csv(tabs / 'X' / 'heat.csv.gz', low_memory=False)
+    assert set(t.kind) <= {'single', 'pair'} and (t[t.kind == 'single'].key.str.split('=').str[0].isin(heat_clock.NAMES)).all()
+    assert (t.kind == 'pair').sum() == 0 or set(t[t.kind == 'pair'].cond) <= set(heat_clock.NAMES)
+    heat_clock.run_coin('X', p, str(tmp_path), str(tabs / 'X-twin1'), twin=1, procs=1, log=lambda *a: None)
+    pp = heat_clock.league(str(tabs), {'table_sha256': {}, 'rows': []}, str(tmp_path / 'clock_pack.json'), log=lambda *a: None)
+    assert pp['schema'] == 'oracle-heat-clock-pack-1' and set(pp['counts_against_twins']) == {'real', 'twin'}
+    assert pp['counts_against_twins']['real']['pair_cells_tested'] == mt['tested']['pair'] and len(pp['alone']) > 50
+    assert all(r['clock'] and not r['dominance'] and r['conds'][0][0] in heat_clock.NAMES for r in pp['rows'])
+    json.load(open(tmp_path / 'clock_pack.json'))
+
+    # the live reader: the finer clock as states at any minute, and as events only when asked for
+    end = start + 100 * DAY + 37 * MIN
+    g = heat_live.grid(df[(df.ts < end) & (df.ts >= end - 3 * DAY)])
+    a = heat_live.active_keys(g, {'edges': {}}, want=set(), states={'UTC1h', 'NY30m', 'Weekday', 'UTC4h'}, tfs=[1440])
+    assert a['states'] == dict(heat_clock.levels_at(end), UTC4h='00-04') and a['events'] == []
+    end = start + 100 * DAY + 45 * MIN
+    g = heat_live.grid(df[(df.ts < end) & (df.ts >= end - 3 * DAY)])
+    lv = heat_clock.levels_at(end)
+    assert heat_live.active_keys(g, {'edges': {}}, want={f'NY30m={lv["NY30m"]}', 'UTC1h=23'}, tfs=[1440])['events'] == [f'NY30m={lv["NY30m"]}']
+    assert heat_live.active_keys(g, {'edges': {}}, tfs=[1440])['events'] == ['UTC4h=00-04']

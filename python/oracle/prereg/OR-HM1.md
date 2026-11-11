@@ -328,3 +328,34 @@ clock rows of the direction table. The full ranking of pair cells on 2025 had no
    with the clock and dominance states. The clock is six 4-hour UTC blocks; hour of day, weekday and the New York
    open are not in these tables. Rows of one trigger are close relatives. A map on coin price, not a Kalshi-price
    result.
+
+**Correction to Amendment 5, point 1 (2026-11-11 16:43 UTC, 11:43 AM EST, written AFTER the first pair pack was read).**
+The first pair pack (job 43059268176) ranked its second list by windows per day x lift. That list came out
+degenerate for a structural reason, not because of which rows won: a cell that holds almost all of its trigger's
+events has a "rest" of a few dozen events, so its lift is a noisy number multiplied by the trigger's whole frequency
+(the top rows had the same windows per day as their trigger). Lift heat is now lift x the SMALLER of the cell's
+windows per day and the windows per day of the trigger's other events: how often the second reading changes the
+call, times by how much. Nothing else in Amendment 5 changes; the heat list and every other number are the same.
+First pack, for the record: 1,011,763 cells per horizon on the four coins; direction kept on 2025 in 91.7% (15 min)
+and 83.0% (60 min) of cells, twins 51.0% and 50.4%; the lift kept its sign in 69.2% and 64.8%, twins 50.0%; lift t of
+2 or more in 16.2% and 10.5%, twins 2.4% and 2.6%; no clock (UTC4h) row reached either list.
+
+# Amendment 6 (written 2026-11-11 16:43 UTC, Nov 11 11:43 AM EST, AFTER the league and the first pair pack were read)
+
+The tables' only clock is the UTC 4-hour block. Steven asked (Nov 11 16:17 UTC) whether a time-of-day relationship
+exists. What had been seen: the six 4-hour blocks on their own show no stable direction (largest build-years effect,
+XRP 16:00-20:00 UTC, about 2 to 3 odds points, under 1 point on 2025), and no 4-hour-block pair reached the pair
+pack's lists. This amendment adds a finer clock as an ADD-ON: it changes no stored table, hash, league or pack.
+
+1. **Clock states** (`python/oracle/heat_clock.py`), each the state of the entry minute: `UTC1h` (24 hours),
+   `NY30m` (48 New York half hours, daylight saving followed; 09:30 is the half hour from the stock open) and
+   `Weekday` (7, UTC). Fixed before any of them was computed.
+2. **Per coin and its first no-signal twin**: the engine's own readings, labels and statistics (heat.py unchanged) on
+   coin minutes 2020-01-01 to 2025-12-31 (the tables' cut and loader). (a) Every clock level on its own, entered at
+   every 15-minute close while it holds. (b) Every event level of every TA reading crossed with the three states; a
+   relationship is written when a cell is hot on the build years (the tables' rule), with all its levels.
+3. **What is reported**: against the twin, the cells tested, hot on the build years and replicated on 2025; the
+   share of clock levels that kept their build-years direction on 2025; and `clock_pack.json` with the pair pack's
+   rule on these tables (top 40 by heat, top 20 by lift heat, at most 3 per trigger, no pass mark as a filter).
+4. **Reading it**: "a time-of-day relationship exists" only if the real coins stand clear of the twin on the
+   replicated share and on the direction kept. One twin per coin is a coarse scale (the tables used three).

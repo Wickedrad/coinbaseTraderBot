@@ -4,7 +4,7 @@ pass mark (python/oracle/prereg/OR-HM1.md, Amendments 3 and 4).
   python3 -m oracle.heat_pack --direction <direction_all.csv.gz | league_direction.csv.gz> --summary <summary.json>
                               --out <traded_pack.json> [--horizons 15,60] [--top 40] [--top-share 20]
                               [--parity <dir of <COIN>/parity.json>] [--metas <dir of <COIN>/meta.json> --live-meta <live_meta.json>
-                               [--pair-pack <pair_pack.json>]]
+                               [--pair-pack <pair_pack.json>[,<clock_pack.json>]]]
 
 Per coin and horizon: the `top` event levels by heat on B (windows per day x odds points) and the `top-share` by share
 right over the base rate (at least DIR_MIN_WD windows per day). Readings that are the same event under two names
@@ -135,6 +135,17 @@ def live_meta(pack: dict, metas: dict, more: dict = None) -> dict:
     return out
 
 
+def more_readings(paths) -> dict:
+    """{COIN: reading names} of the rows of pair / clock packs (files that do not exist are skipped)."""
+    more = {}
+    for p in paths:
+        if p and os.path.isfile(p):
+            with open(p) as f:
+                for r in json.load(f).get('rows', []):
+                    more.setdefault(r['coin'], set()).update(r['readings'])
+    return more
+
+
 def _coin_files(d: str, name: str) -> dict:
     out = {}
     for c in sorted(os.listdir(d)):
@@ -171,10 +182,7 @@ def main():
               '; rows flagged:', [(r['coin'], r['h'], r['key'], r['rank_coin']) for r in pack['rows'] if r['live_parity'] is False])
     if a.live_meta:
         more = {}
-        if a.pair_pack and os.path.isfile(a.pair_pack):             # keep the pair pack's readings in the edges file
-            with open(a.pair_pack) as f:
-                for r in json.load(f).get('rows', []):
-                    more.setdefault(r['coin'], set()).update(r['readings'])
+        more = more_readings(a.pair_pack.split(','))                # keep the pair and clock packs' readings in the edges file
         lm = live_meta(pack, _coin_files(a.metas, 'meta.json'), more=more)
         with open(a.live_meta, 'w') as f:
             json.dump(lm, f, separators=(',', ':'), allow_nan=False)

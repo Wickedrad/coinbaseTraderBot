@@ -253,6 +253,15 @@ def active_keys(m: dict, meta: dict, want: set = None, dom: dict = None, window:
                     lv_now[name] = lv
             if st is not None and name in st:
                 st[name] = lv
+    fine = set() if st is None else {s for s in st if s in ('UTC1h', 'NY30m', 'Weekday')}
+    fine |= {k.split('=', 1)[0] for k in (want or ()) if k.split('=', 1)[0] in ('UTC1h', 'NY30m', 'Weekday')}
+    if fine:                                                        # the finer clock of oracle.heat_clock (not in the tables' own vocabulary)
+        from oracle.heat_clock import levels_at
+        for name, lv in levels_at(ts).items():
+            if st is not None and name in st:
+                st[name] = lv
+            if n % 15 == 0 and want is not None and f'{name}={lv}' in want:
+                ev.append(f'{name}={lv}')                           # a clock level on its own: only when asked for
     if want is not None:
         ev = [k for k in ev if k in want]
     out = {'ts': int(ts), 'closed': closed, 'events': sorted(set(ev)), 'no_reading': dead}

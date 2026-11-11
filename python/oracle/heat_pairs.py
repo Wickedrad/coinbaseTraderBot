@@ -16,7 +16,9 @@ on A, per coin at most the heat.N_REL_WRITE strongest by lift on A.
 
   oheat_B   windows per day x odds points of the cell on B (how often x how sure): the cell as a call of its own
   lift_B    odds points of the cell over the trigger's OTHER events on B: what the second reading adds
-  lheat_B   windows per day x lift_B: how often x how much the second reading adds
+  rest_wd_B windows per day of the trigger's other events (the cell's windows scaled by the event counts)
+  lheat_B   lift_B x the smaller of wd_B and rest_wd_B: how often the second reading CHANGES the call x by how much
+            (a cell that holds almost all of its trigger's events is the trigger itself: its "rest" is a handful)
   lift2_B   odds points over the condition level's own effect (all minutes at that level)
 
 Per coin and horizon the pack keeps the `top` cells by oheat_B and the `top-lift` by lheat_B, at most `per-trigger`
@@ -33,10 +35,11 @@ import pandas as pd
 
 from oracle import heat, heat_pack
 
-NUM = ['share_A', 'share_B', 'share_over_B', 'odds_A', 'odds_B', 't_A', 't_B', 'oheat_B', 'lift_A', 'lift_B', 't_lift_A', 't_lift_B', 'lheat_B',
+NUM = ['share_A', 'share_B', 'share_over_B', 'odds_A', 'odds_B', 't_A', 't_B', 'oheat_B', 'lift_A', 'lift_B', 't_lift_A', 't_lift_B', 'rest_wd_B', 'lheat_B',
        'lift2_A', 'lift2_B', 't_lift2_A', 't_lift2_B', 'move_B', 'hold_B', 'hold_over_B', 'dip_B', 'wd_B', 'tick_B']
 SAME = ['coin', 'h', 'dir', 'n_A', 'n_B', 'days_B', 'share_A', 'share_B', 'odds_A', 'odds_B', 't_A', 't_B', 'lift_A', 'lift_B', 'hold_B', 'dip_B']
 SEP = '\x1f'
+CLOCK = {'UTC4h', 'UTC1h', 'NY30m', 'Weekday'}                      # clock states (UTC4h: the tables; the others: oracle.heat_clock)
 
 
 def view(j: pd.DataFrame, horizons) -> pd.DataFrame:
@@ -56,7 +59,8 @@ def view(j: pd.DataFrame, horizons) -> pd.DataFrame:
     v['oheat_B'] = v.wd_B * v.odds_B
     v['lift_A'], v['lift_B'] = x.liftp_A * d * 100, x.liftp_B * d * 100                  # over the trigger's other events
     v['t_lift_A'], v['t_lift_B'] = x.t_liftp_A * d, x.t_liftp_B * d
-    v['lheat_B'] = v.wd_B * v.lift_B
+    v['rest_wd_B'] = v.wd_B * x.rest_n_B / x.n_B                                         # the trigger's other events, in windows per day
+    v['lheat_B'] = np.minimum(v.wd_B, v.rest_wd_B) * v.lift_B
     v['lift2_A'], v['lift2_B'] = x.liftp2_A * d * 100, x.liftp2_B * d * 100              # over the condition level's own effect
     v['t_lift2_A'], v['t_lift2_B'] = x.t_liftp2_A * d, x.t_liftp2_B * d
     v['move_B'] = x.excess_B * d
@@ -125,7 +129,9 @@ def capped(c: pd.DataFrame, by: str, n: int, per_trigger: int) -> list:
     return out
 
 
-def build(tables: str, pack: dict, horizons=(15, 60), top: int = 40, top_lift: int = 20, per_trigger: int = 3, all_dir: str = '', log=print) -> dict:
+def build(tables: str, pack: dict, horizons=(15, 60), top: int = 40, top_lift: int = 20, per_trigger: int = 3, all_dir: str = '', log=print,
+          same_table: bool = True) -> dict:
+    """same_table False: the tables are not the ones the traded pack came from (the clock add-on's own tables)."""
     dirs = [d for d in sorted(os.listdir(tables)) if os.path.exists(os.path.join(tables, d, 'heat.csv.gz'))]
     if not dirs:
         raise SystemExit('no coin tables')
@@ -146,7 +152,7 @@ def build(tables: str, pack: dict, horizons=(15, 60), top: int = 40, top_lift: i
             log(f'{mt["label"]}: {len(v):,} cells (twin)')
             del j, v
             continue
-        if mt.get('table_sha256') != pack.get('table_sha256', {}).get(coin):
+        if same_table and mt.get('table_sha256') != pack.get('table_sha256', {}).get(coin):
             raise SystemExit(f'{coin}: the table is not the one the traded pack was built from')
         sha[coin] = mt.get('table_sha256')
         s = heat._direction(j)                                      # the triggers on their own (every single event level)
@@ -181,9 +187,10 @@ def build(tables: str, pack: dict, horizons=(15, 60), top: int = 40, top_lift: i
                              'n_A': int(r.n_A), 'n_B': int(r.n_B), 'days_B': int(r.days_B),
                              **{k: _f(getattr(r, k)) for k in NUM},
                              'hot_A': bool(r.hot), 'replicated_B': bool(r.rep),
-                             'trigger': None if tr is None else {'dir': int(tr.dir), 'odds_B': _f(tr.odds_B), 'wd_B': _f(tr.wd_B), 'oheat_B': _f(tr.oheat_B),
-                                                                 'rank_coin': single_rank.get((coin, int(h), r.when))},
-                             'clock': any(n == 'UTC4h' for n in names), 'dominance': any(not n[:1].isdigit() and n != 'UTC4h' for n in names),
+                             'trigger': ({'rank_coin': single_rank[(coin, int(h), r.when)]} if (coin, int(h), r.when) in single_rank else None) if tr is None else
+                                        {'dir': int(tr.dir), 'odds_B': _f(tr.odds_B), 'wd_B': _f(tr.wd_B), 'oheat_B': _f(tr.oheat_B),
+                                         'rank_coin': single_rank.get((coin, int(h), r.when))},
+                             'clock': any(n in CLOCK for n in names), 'dominance': any(not n[:1].isdigit() and n not in CLOCK for n in names),
                              'readings': sorted({base_of(n) for n in names}), 'table_sha256': sha[coin]})
     chance = {}
     for h in horizons:
@@ -208,7 +215,8 @@ def build(tables: str, pack: dict, horizons=(15, 60), top: int = 40, top_lift: i
             'rule': 'Every pair and triple cell the tables stored, with a sample on both periods; no pass mark is used as a filter. Per coin and horizon: the top '
                     f'{top} by oheat_B and the top {top_lift} by lheat_B, at most {per_trigger} rows of one trigger in each list. rank_coin / rank_lift_coin: among '
                     'all distinct pair and triple events of the coin at that horizon. Identical events are one row (aliases).',
-            'units': {'oheat_B': 'windows per day x odds points', 'lift_B': 'odds points over the trigger\'s other events', 'lheat_B': 'windows per day x lift_B',
+            'units': {'oheat_B': 'windows per day x odds points', 'lift_B': 'odds points over the trigger\'s other events', 'rest_wd_B': 'windows per day of the trigger\'s other events',
+                      'lheat_B': 'lift_B x the smaller of wd_B and rest_wd_B',
                       'lift2_B': 'odds points over the condition level\'s own effect', 'share_B': '% of events beyond the entry on the called side at the horizon',
                       'odds_B': 'points (half the shift in P(up) - P(down))', 'hold_B': 'minutes on the called side', 'dip_B': 'bps', 'wd_B': 'windows per day',
                       'trigger': 'the `when` event on its own at the same horizon (rank_coin: its rank in the traded pack, when it is in it)',
@@ -231,6 +239,7 @@ def main():
     ap.add_argument('--parity', default='')
     ap.add_argument('--metas', default='')
     ap.add_argument('--live-meta', default='')
+    ap.add_argument('--more-packs', default='')                      # other packs whose readings stay in the edges file (the clock pack)
     ap.add_argument('--stamp', default='')
     a = ap.parse_args()
     with open(a.pack) as f:
@@ -250,7 +259,7 @@ def main():
     print(f'{a.out}: {len(pp["rows"])} rows; per coin and horizon: {dict(n)}')
     print('chance:', json.dumps(pp['chance']))
     if a.live_meta:
-        more = {}
+        more = heat_pack.more_readings(a.more_packs.split(','))
         for r in pp['rows']:
             more.setdefault(r['coin'], set()).update(r['readings'])
         lm = heat_pack.live_meta(pack, heat_pack._coin_files(a.metas, 'meta.json'), more=more)
