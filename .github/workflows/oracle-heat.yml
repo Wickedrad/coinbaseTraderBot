@@ -22,7 +22,7 @@ on:
   push:
     branches: [claude/project-thread-nvd096]
     paths: ['.github/workflows/oracle-heat.yml', 'python/oracle/heat.py', 'python/oracle/heat_vocab.py',
-            'python/oracle/tests/test_heat.py', 'python/oracle/prereg/OR-HM1.md']
+            'python/oracle/tests/test_heat.py', 'python/oracle/prereg/OR-HM1.md', '.github/actions/drive-setup/action.yml']
 
 permissions:
   contents: read
