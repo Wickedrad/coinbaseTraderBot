@@ -47,6 +47,7 @@ fee-aware profit clock through a read-only adapter.
 Intermediate components do not require separate approval.
 The owner subsequently authorized main merges. Deployment and live entry changes
 still require approval; research merges use `[skip deploy]` to avoid a server restart.
+Since Nov 11 the deploy decides by changed files instead of the tag: research-only merges skip the restart, and bot-code changes deploy even when tagged (not with `[skip ci]`, which starts no deploy run).
 Data work and training run on GitHub runners, without Lightsail access.
 
 The release target is a usable offline/paper research product with the complete

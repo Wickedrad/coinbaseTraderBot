@@ -6,6 +6,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { gzipSync, gunzipSync } from 'node:zlib';
+import { researchOnly } from '../deploy/deploy-scope';
 
 function audit(rows: string, extra?: (root: string) => void) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'atlas-audit-'));
@@ -105,7 +106,11 @@ test('Atlas research workflow has no server credentials or deployment path', () 
   assert.match(yaml, /runs-on: ubuntu-latest/); assert.match(yaml, /workflow_dispatch/);
   assert.doesNotMatch(yaml, /LIGHTSAIL|ssh-action|deploy\/activate|deploy\/install|TRADING_MODE/);
   const deploy = fs.readFileSync('.github/workflows/deploy.yml', 'utf8');
-  assert.match(deploy, /!contains\(github\.event\.head_commit\.message, '\[skip deploy\]'\)/, 'approved research merges can avoid a server restart');
+  // Approved research merges avoid a server restart by what they change (deploy/deploy-scope.ts), not by "[skip deploy]".
+  assert.match(deploy, /needs\.scope\.outputs\.deploy != 'false'/, 'approved research merges can avoid a server restart');
+  for (const f of ['.github/workflows/atlas-research.yml', 'docs/OPPORTUNITY_ATLAS_OPERATIONS.md', 'research/opportunity/archiveAudit.py', 'research/opportunity/atlas.ts', 'tests/opportunityArchive.test.ts']) {
+    assert.equal(researchOnly(f, new Set(['bot/main.ts'])), true, f);
+  }
 });
 
 test('recording prefix extraction handles gzip members and strips account, model and private nested fields', (t) => {
