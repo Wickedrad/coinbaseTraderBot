@@ -212,6 +212,38 @@ def join_spot(t: np.ndarray, t_end: np.ndarray) -> np.ndarray:
 
 # ---------- build ----------
 
+def load_windows(kind: int, history: str, asset: str, log=print):
+    """The windows a part is built from (load_kalshi, then: no window closing after HOLD_TO, no duplicate ticker, hourly
+    threshold strikes only), in load_kalshi's open-time order: a part's group.npy indexes these. oracle/cut.py reloads
+    them to label the same rows (it checks every row against the part's own labels)."""
+    cfg = KINDS[int(kind)]
+    ct, n = cfg['ct'], cfg['n']
+    asset = check_asset(asset, int(kind))
+    series = cfg['series'].format(asset=asset)
+    prescan(history, series)
+    w = load_kalshi(history, [asset], n=n, series_fmt=cfg['series'], log=log, skip_days=forbidden_days())
+    close_ms = w.open_ms + n * MIN
+    keep = close_ms <= HOLD_TO
+    seen: set = set()
+    dup = np.zeros(len(w), dtype=bool)
+    for i, tk in enumerate(w.tickers):
+        if tk and tk in seen:
+            dup[i] = True
+        seen.add(tk)
+    keep &= ~dup
+    nonthr = np.zeros(len(w), dtype=bool)
+    if kind == 60:   # greater-than ladder strikes only (ticker ...-T<strike>); a range bucket would break z and fair
+        nonthr = np.array([bool(tk) and not tk.rsplit('-', 1)[-1].startswith('T') for tk in w.tickers], dtype=bool)
+        keep &= ~nonthr
+    log(f'{ct}-{asset}: {len(w)} windows loaded; dropped {int((close_ms > HOLD_TO).sum())} closing after HOLD_TO, '
+        f'{int(dup.sum())} duplicate tickers, {int(nonthr.sum())} non-threshold tickers')
+    w = w.subset(np.nonzero(keep)[0])
+    W = len(w)
+    if not W:
+        raise SystemExit('no windows left')
+    return w
+
+
 def build(kind: int, history: str, spot_dir: str, asset: str, out_root: str, code_sha: str | None = None, log=print) -> str:
     kind = int(kind)
     if kind not in KINDS:
@@ -236,27 +268,8 @@ def build(kind: int, history: str, spot_dir: str, asset: str, out_root: str, cod
         raise ValueError(f'spot X {sp_X.shape} does not match {len(sp_feats)} meta features')
 
     series = cfg['series'].format(asset=asset)
-    prescan(history, series)
-    w = load_kalshi(history, [asset], n=n, series_fmt=cfg['series'], log=log, skip_days=forbidden_days())
-    close_ms = w.open_ms + n * MIN
-    keep = close_ms <= HOLD_TO
-    seen: set = set()
-    dup = np.zeros(len(w), dtype=bool)
-    for i, tk in enumerate(w.tickers):
-        if tk and tk in seen:
-            dup[i] = True
-        seen.add(tk)
-    keep &= ~dup
-    nonthr = np.zeros(len(w), dtype=bool)
-    if kind == 60:   # greater-than ladder strikes only (ticker ...-T<strike>); a range bucket would break z and fair
-        nonthr = np.array([bool(tk) and not tk.rsplit('-', 1)[-1].startswith('T') for tk in w.tickers], dtype=bool)
-        keep &= ~nonthr
-    log(f'{ct}-{asset}: {len(w)} windows loaded; dropped {int((close_ms > HOLD_TO).sum())} closing after HOLD_TO, '
-        f'{int(dup.sum())} duplicate tickers, {int(nonthr.sum())} non-threshold tickers')
-    w = w.subset(np.nonzero(keep)[0])
+    w = load_windows(kind, history, asset, log)
     W = len(w)
-    if not W:
-        raise SystemExit('no windows left')
 
     bid, ask, _, _, _, _, settle = side_quotes(w)          # (W, 2, n); NO bid = 1 - YES ask, NO ask = 1 - YES bid
     K = np.arange(k_lo, k_hi + 1)

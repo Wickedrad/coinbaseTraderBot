@@ -51,3 +51,8 @@ placebo). Only then may it go into the Price Prediction rulebook, with exactly t
 ## Known limits
 Kalshi history is top-of-book, 1-minute candles: a cut fills at the candle's bid, not intra-minute. A cut is a taker sale (fee
 and spread paid). Live exit pacing / take-profit floors must not pre-empt this exit (tagged exit, as OR-H1 notes).
+
+## Erratum (2026-11-11 02:10 UTC, before any OR-H3 label or result exists)
+F3's gloss "(spot within about one sigma of the strike)" is wrong. k_z is side-relative (pp.py Z_EDGES): levels 0-1 are
+z < -0.75 for the side, i.e. the side is well out of the money. F3 stays as written (skip k_z in {0, 1}), because those levels
+are the ones the loser study found over-represented. Only the description changes.
