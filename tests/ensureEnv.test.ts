@@ -35,6 +35,15 @@ test('ensure-env: an unpinned bot.env is unchanged and the run is idempotent', (
   assert.doesNotMatch(second.out, /removed/);
 });
 
+test('ensure-env: a bot.env pinning the old hunt session guard drops the line; HUNT_SESSION_GUARD=false stays', () => {
+  const { env, out } = run(['TRADING_MODE=paper', 'HUNT_SESSION_GUARD=true', 'PORT=3000']);
+  assert.deepEqual(env, ['TRADING_MODE=paper', 'PORT=3000']);
+  assert.match(out, /HUNT_SESSION_GUARD=true removed/);
+  assert.deepEqual(run(['TRADING_MODE=paper', 'HUNT_SESSION_GUARD=1']).env, ['TRADING_MODE=paper']);
+  const kept = ['TRADING_MODE=paper', 'HUNT_SESSION_GUARD=false', 'HUNT_TRANSITION_BUFFER_MIN=10'];
+  assert.deepEqual(run(kept).env, kept);
+});
+
 // The heat lane's switches (Steven, Nov 11): set only from a release that ships the curve reader's installer, only where
 // bot.env has no line of its own. Run a copy of the script from a scratch deploy/ folder, with and without the installer.
 function runFrom(lines: string[], withInstaller: boolean): { env: string[]; out: string } {

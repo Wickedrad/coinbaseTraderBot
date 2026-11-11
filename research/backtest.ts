@@ -1002,7 +1002,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           position: posH, qSide: posH >= 0 ? pYes : 1 - pYes, sideBid: posH > 0 ? bid.price : posH < 0 ? 1 - ask.price : undefined,
           confluence: fmap.conf_count, book, now: st.now, tick: m.tickSize, fees: DEFAULT_FEES,
           fvSide: posH > 0 ? pYes : posH < 0 ? 1 - pYes : undefined, // our side's price for the lock sale (the engine passes the math fair value; no taker-flow feature here)
-          sessionBlocked: (opts.huntSessionGuard ?? true) ? huntBlockedBySession(sess, opts.huntTransitionBufferMin ?? 10) : undefined,
+          sessionBlocked: (opts.huntSessionGuard ?? false) ? huntBlockedBySession(sess, opts.huntTransitionBufferMin ?? 10) : undefined,
         });
         huntMode = d.mode === 'hunt';
         huntRest = d.rest;
