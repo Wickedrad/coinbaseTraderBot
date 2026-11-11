@@ -359,3 +359,31 @@ pack's lists. This amendment adds a finer clock as an ADD-ON: it changes no stor
    rule on these tables (top 40 by heat, top 20 by lift heat, at most 3 per trigger, no pass mark as a filter).
 4. **Reading it**: "a time-of-day relationship exists" only if the real coins stand clear of the twin on the
    replicated share and on the direction kept. One twin per coin is a coarse scale (the tables used three).
+
+**Result of Amendment 6 (2026-11-11 17:28 UTC, 12:28 PM EST; clock job 43061625967, clock_pack.json at fd88805).**
+A clock level alone kept its build-years direction on 2025 in 52.9% of cases, the twin 52.5%. TA x clock: 120,640
+cells hot on the build years (twin 12,307), 5,175 replicated on 2025 (twin 100), share 4.3% (twin 0.8%; TA x TA
+12.7% vs 0.7%); the lift kept its sign in 52% (twin 50%); the top lift heat is 27.9 against the twin's 29.0 at 15
+minutes. Reading: the clock adds little; it is not used by default.
+
+# Amendment 7 (written 2026-11-11 17:38 UTC, Nov 11 12:38 PM EST, AFTER the league, the pair pack and the clock pack were read)
+
+The bot's perpetual lane takes direction on the hourly and the daily timeframe (Steven, Nov 11 15:29 UTC). The tables
+stop at 60 minutes. This amendment adds the horizons 240 and 1440 minutes (4 hours, a day) as an ADD-ON: it changes no
+stored table, hash, league or pack, and no line of heat.py.
+
+1. **The engine as it is** (`python/oracle/heat_long.py`): heat.run_coin with the horizons [240, 1440] in place of
+   [1, 5, 15, 30, 60]: the same readings, levels, statistics, singles, pair and triple stages, on coin minutes
+   2020-01-01 to 2025-12-31 (the tables' cut and loader), per coin and its first no-signal twin. Only the labels reach
+   further (a day ahead; holds and first touches as int16). A row counts only when no data gap falls in its next day.
+2. **No leak across the split**: the build years' rows end a day before 2025, the check year's a day before 2026.
+3. **Same levels as the main tables**: the zone edges, curve edges and price step come from the build-year bars the
+   main tables used (they end 60 minutes before 2025), so every key means what it means in the main packs and the
+   live reader. The league checks this against the main run's meta.json; a row whose reading differs is flagged.
+4. **What is reported**: the engine's league on these tables (direction kept on 2025 against the twin), and for the
+   bot `perp_pack.json` (singles, the traded pack's rule) and `perp_pair_pack.json` (TA x TA, the pair pack's rule)
+   at 240 and 1440 minutes. No pass mark as a filter.
+5. **Known limits**: day-wide windows overlap (events hours apart share most of their next day) and the t values count
+   days as independent, so they run high; the twin carries the same overlap, so every count is read against it. One
+   twin per coin is a coarse scale. Daily timeframe readings (bars of 4 hours or a day) are not in the vocabulary: the
+   4-hour and day-ahead calls come from the 1-, 5-, 15- and 60-minute readings and the daily dominance states.

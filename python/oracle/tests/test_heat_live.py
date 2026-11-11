@@ -262,3 +262,33 @@ def test_clock_add_on(tmp_path, monkeypatch):
     lv = heat_clock.levels_at(end)
     assert heat_live.active_keys(g, {'edges': {}}, want={f'NY30m={lv["NY30m"]}', 'UTC1h=23'}, tfs=[1440])['events'] == [f'NY30m={lv["NY30m"]}']
     assert heat_live.active_keys(g, {'edges': {}}, tfs=[1440])['events'] == ['UTC4h=00-04']
+
+
+def test_long_horizons_labels_and_edges(tmp_path, monkeypatch):
+    """heat_long (OR-HM1 Amendment 7): its labels equal the engine's at the engine's horizons; at 240 and 1440 minutes the
+    holds pass 127 minutes (int16) and the day-ahead move is the close 1,440 minutes after the decision against the next
+    open; the zone edges and price step are the main tables' (build-year bars up to 60 minutes before split B), while
+    the long rows of split A end a day before split B; the engine's horizons come back after the block."""
+    from oracle import heat_long
+    start = heat.HEAT_END - 120 * DAY
+    monkeypatch.setattr(heat, 'SPLITS', {'A': (start, start + 90 * DAY), 'B': (start + 90 * DAY, heat.HEAT_END)})
+    p = str(tmp_path / 'X.csv')
+    _csv(p, start, 120, seed=5)
+    m = heat.load_minutes(p, start=start)
+    a, b = heat.labels(m), heat_long.labels(m)
+    assert set(a) == set(b)
+    for k in a:
+        assert np.array_equal(np.asarray(a[k], np.float64), np.asarray(b[k], np.float64), equal_nan=True), k
+    e0, st0 = (lambda r: (r[2], r[4]))(heat.build_readings(m, heat.Grid(m, a), str(tmp_path), log=lambda *x: None))
+    with heat_long.long_horizons():
+        assert heat.HORIZONS == [240, 1440] and heat.HMAX == 1440
+        lab = heat.labels(m)
+        assert lab['holdU'].dtype == np.int16 and max(int(lab['holdU'].max()), int(lab['holdD'].max())) > 127
+        i = 5000
+        assert lab['ret1440'][i] == np.float32((m['c'][i + 1440] / m['o'][i + 1] - 1) * 1e4)
+        assert not lab['valid'][m['n'] - 1441:].any()
+        g = heat.Grid(m, lab)
+        assert g.sp['A'].hi + 1440 - 60 == heat_long.main_cut_hi(g)
+        e1, st1 = (lambda r: (r[2], r[4]))(heat.build_readings(m, g, str(tmp_path), log=lambda *x: None))
+    assert e1 == e0 and st1 == st0 and len(e0) > 500
+    assert heat.HORIZONS == [1, 5, 15, 30, 60] and heat.HMAX == 60 and heat.labels is not heat_long.labels
