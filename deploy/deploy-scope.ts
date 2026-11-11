@@ -19,6 +19,14 @@
 // scripts/, the deploy workflow and any path not listed. A file the release bundles is bot code wherever it lives.
 // Whatever this cannot tell (the last deploy could not be looked up, no commit to compare with, git failing) deploys.
 //
+// The heat curve reader is the one part of python/ and research/ that reaches the server: it runs beside the bot from
+// the release itself (docs/HEAT_READER.md). HEAT_SHIP lists its files: python/heat_reader and python/oracle (the
+// engine it imports) without their tests, fixtures and preregistration notes, and the oracle run's packs
+// (research/oracle_heat/latest/*.json and RUN). They are bot code, changed or deleted, and the release ships exactly
+// these: the deploy job's "Stage the heat reader files" step runs this file with --stage-heat, so the upload and this
+// check read the same list. Their neighbours stay research-only as before: the reader's and the engine's tests and
+// fixtures, the league tables (latest/*.csv.gz, league.md), the rest of research/oracle_heat and the rest of python/.
+//
 // The comparison is with the commit of the newest run whose deploy job succeeded. A tag deployed by a manual run,
 // or a rollback on the server, therefore stays in place through research-only pushes until bot code changes.
 //
@@ -27,6 +35,9 @@
 // HEAD_MESSAGE, ESBUILD (an esbuild binary, or empty: no bundle check).
 // Outputs: deploy=true|false in $GITHUB_OUTPUT, a summary in $GITHUB_STEP_SUMMARY, a ::warning:: when the tag
 // is ignored or when earlier pushes changed bot code without a deploy of their own (batched into this one).
+//
+// With `--stage-heat <dir>` (the deploy job) it decides nothing: it copies the heat reader set tracked at HEAD into
+// <dir> at the same paths and writes files=<count> to $GITHUB_OUTPUT (0: nothing to upload).
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -35,8 +46,23 @@ import { pathToFileURL } from 'node:url';
 
 export const SKIP_TAG = '[skip deploy]';
 
+// The heat curve reader's files, shipped with every release that has them (none until the reader and the oracle
+// engine reach main: the deploy then ships nothing extra). `dir`: the folder each pattern lies in; `re`: the files of
+// it that ship. Every module the reader can import ships: all of python/oracle but tests/ and prereg/ (the
+// preregistration notes, read by no module the reader loads). Of research/oracle_heat only latest/'s packs (*.json)
+// and RUN: not the league tables (*.csv.gz, league.md), the viewer (viewer.json.gz) or the parity fixtures.
+export const HEAT_SHIP: readonly { dir: string; re: RegExp }[] = [
+  { dir: 'python/heat_reader', re: /^python\/heat_reader\/(?!(tests|fixtures)\/)./ },
+  { dir: 'python/oracle', re: /^python\/oracle\/(?!(tests|prereg)\/)./ },
+  { dir: 'research/oracle_heat/latest', re: /^research\/oracle_heat\/latest\/([^/]+\.json|RUN)$/ },
+];
+
+/** True for a file of the heat reader set (HEAT_SHIP): the release ships it, so a change to it deploys. */
+export const heatShipped = (file: string) => HEAT_SHIP.some((h) => h.re.test(file));
+
 // Paths that never reach the server. The release is dist/ (built by `npm run build`), web/dist, params/, deploy/,
-// vendor/, package.json and package-lock.json (the workflow's upload step); none of those is listed here.
+// vendor/, package.json and package-lock.json (the workflow's upload step), and the heat reader set above (its own
+// upload step); none of those is listed here, and the heat reader set wins over this list.
 export const RESEARCH_ONLY: readonly RegExp[] = [
   /^python\//,
   /^docs\//,
@@ -68,6 +94,7 @@ const above = (file: string, bundled: ReadonlySet<string>) => {
  * `deleted`: the path is gone at HEAD, so the bundle check cannot have seen it.
  */
 export function researchOnly(file: string, bundled: ReadonlySet<string> | null, deleted = false): boolean {
+  if (heatShipped(file)) return false; // the heat reader upload ships it (deleted: the release no longer has it)
   if (bundled?.has(file)) return false;
   if (BUILD_CONFIG.test(file) && (!RESEARCH_TREES.test(file) || (bundled !== null && above(file, bundled)))) return false;
   if (RESEARCH_ONLY.some((re) => re.test(file))) return true;
@@ -204,6 +231,37 @@ export function changedFiles(root: string, from: string, to = 'HEAD'): { files: 
   return { files: diff([]), deleted: new Set(diff(['--diff-filter=D'])) };
 }
 
+/**
+ * Copies the heat reader set tracked at `root`'s HEAD (HEAT_SHIP) into `dest`, a plain folder name under `root`
+ * (removed first), at the same paths, for the deploy job's heat upload. Returns the files copied: none when the
+ * commit has none of them, and then `dest` is not created.
+ */
+export function stageHeat(root: string, dest: string): string[] {
+  if (!/^\w[\w.-]*$/.test(dest)) throw new Error(`--stage-heat takes a plain folder name, not ${JSON.stringify(dest)}`);
+  const files = git(root, ['ls-files', '-z', '--', ...HEAT_SHIP.map((h) => h.dir)]).split('\0').filter((f) => f && heatShipped(f));
+  const out = path.join(root, dest);
+  fs.rmSync(out, { recursive: true, force: true });
+  for (const f of files) {
+    fs.mkdirSync(path.dirname(path.join(out, f)), { recursive: true });
+    fs.copyFileSync(path.join(root, f), path.join(out, f));
+  }
+  return files;
+}
+
+/** --stage-heat: stages the set, prints and summarises what it staged, and writes files=<count> to $GITHUB_OUTPUT. */
+export function stageHeatMain(dest: string, env: NodeJS.ProcessEnv = process.env, root = process.cwd()): string[] {
+  const files = stageHeat(root, dest);
+  const bytes = files.reduce((n, f) => n + fs.statSync(path.join(root, dest, f)).size, 0);
+  const per = HEAT_SHIP.map((h) => `${h.dir} ${files.filter((f) => h.re.test(f)).length}`).join(', ');
+  const line = files.length > 0
+    ? `Heat reader set: ${files.length} files, ${(bytes / 1e6).toFixed(1)} MB, staged in ${dest}/ for upload (${per}).`
+    : 'Heat reader set: none on this commit (no python/heat_reader, python/oracle or research/oracle_heat/latest packs); nothing extra to upload.';
+  console.log(line);
+  if (env.GITHUB_STEP_SUMMARY) fs.appendFileSync(env.GITHUB_STEP_SUMMARY, `${line}\n`);
+  if (env.GITHUB_OUTPUT) fs.appendFileSync(env.GITHUB_OUTPUT, `files=${files.length}\n`);
+  return files;
+}
+
 export interface Undeployed { sha: string; subject: string; bot: string[] }
 
 /**
@@ -286,4 +344,8 @@ export function main(env: NodeJS.ProcessEnv = process.env, root = process.cwd())
 const runAsScript = () => {
   try { return import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1] ?? '')).href; } catch { return false; }
 };
-if (runAsScript()) main();
+if (runAsScript()) {
+  const at = process.argv.indexOf('--stage-heat');
+  if (at >= 0) stageHeatMain(process.argv[at + 1] ?? '');
+  else main();
+}

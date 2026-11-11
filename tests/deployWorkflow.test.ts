@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
-import { buildRuns, bundleInputs, chooseBase, decide, researchOnly } from '../deploy/deploy-scope';
+import { buildRuns, bundleInputs, chooseBase, decide, HEAT_SHIP, heatShipped, researchOnly, stageHeat } from '../deploy/deploy-scope';
 
 // One job's steps, cut out of deploy.yml by indentation (the repo has no YAML library), with the bodies of their
 // `script: |` (ssh-action) and `run: |` blocks.
@@ -241,6 +241,59 @@ test('deploy scope: no research-only path is part of the uploaded release or use
   assert.doesNotMatch(fs.readFileSync('.github/workflows/deploy.yml', 'utf8'), /\.\/\.github|\.github\/(scripts|actions)/);
 });
 
+// The heat curve reader runs beside the bot from the release (docs/HEAT_READER.md): its files ship and are bot code.
+const HEAT_FILES = ['python/heat_reader/__init__.py', 'python/heat_reader/__main__.py', 'python/heat_reader/cli.py', 'python/heat_reader/requirements.txt',
+  'python/heat_reader/CHECK_RUN', 'python/heat_reader/sub/part.py', 'python/oracle/__init__.py', 'python/oracle/heat_live.py', 'python/oracle/heat.py',
+  'python/oracle/common.py', 'python/oracle/cut.py', 'python/oracle/requirements.txt', 'python/oracle/SPEC.md',
+  'research/oracle_heat/latest/traded_pack.json', 'research/oracle_heat/latest/pair_pack.json', 'research/oracle_heat/latest/clock_pack.json',
+  'research/oracle_heat/latest/live_meta.json', 'research/oracle_heat/latest/summary.json', 'research/oracle_heat/latest/RUN'];
+// Beside them, research-only as before (python/ always; the rest of research/ once the bundle check ran).
+const HEAT_NEIGHBOURS_PYTHON = ['python/heat_reader/tests/test_cli.py', 'python/heat_reader/tests/conftest.py', 'python/heat_reader/fixtures/traded_pack.json',
+  'python/oracle/tests/test_heat_live.py', 'python/oracle/tests/__init__.py', 'python/oracle/prereg/OR-H1.md', 'python/heat_reader_old/cli.py',
+  'python/oracle.py', 'python/oracles/heat.py', 'python/allpairs/run.py'];
+const HEAT_NEIGHBOURS_RESEARCH = ['research/oracle_heat/latest/league_ta.csv.gz', 'research/oracle_heat/latest/league_direction.csv.gz',
+  'research/oracle_heat/latest/league.md', 'research/oracle_heat/latest/viewer.json.gz', 'research/oracle_heat/latest/RUN.bak',
+  'research/oracle_heat/latest/old/traded_pack.json', 'research/oracle_heat/long/summary.json', 'research/oracle_heat/parity/BTC/parity.json',
+  'research/oracle_heat/parity/RUN', 'research/oracle_heat_latest/traded_pack.json'];
+
+test('deploy scope: the heat reader set is bot code, changed or deleted; its neighbours keep their research-only classification', () => {
+  for (const file of HEAT_FILES) {
+    assert.equal(heatShipped(file), true, file);
+    for (const bundled of [BUNDLED, null]) for (const deleted of [new Set<string>(), new Set([file])]) {
+      const d = push([file], 'x', bundled, deleted);
+      assert.equal(d.deploy, true, `${file} (${bundled ? 'bundle check' : 'no bundle check'}, ${deleted.size ? 'deleted' : 'changed'})`);
+      assert.deepEqual(d.bot, [file]); assert.deepEqual(d.research, []);
+    }
+  }
+  // python/ outside the set stays research-only in every case, deleted too.
+  for (const file of HEAT_NEIGHBOURS_PYTHON) {
+    assert.equal(heatShipped(file), false, file);
+    for (const bundled of [BUNDLED, null]) for (const deleted of [new Set<string>(), new Set([file])]) {
+      assert.equal(push([file], 'x', bundled, deleted).deploy, false, `${file} ${bundled ? '' : 'without the bundle check'} ${deleted.size ? 'deleted' : ''}`);
+    }
+  }
+  // The rest of research/oracle_heat is research-only once the bundle check ran (the markdown always), as any research/ file.
+  for (const file of HEAT_NEIGHBOURS_RESEARCH) {
+    assert.equal(heatShipped(file), false, file);
+    assert.equal(push([file], 'x', BUNDLED).deploy, false, file);
+    assert.equal(researchOnly(file, BUNDLED), researchOnly(file.replace('research/oracle_heat', 'research/other_study'), BUNDLED), `${file} like any research/ file`);
+    for (const deleted of [false, true]) for (const bundled of [BUNDLED, null]) {
+      assert.equal(researchOnly(file, bundled, deleted), researchOnly(file.replace('research/oracle_heat', 'research/other_study'), bundled, deleted), `${file} unchanged`);
+    }
+  }
+  assert.equal(push(['research/oracle_heat/latest/league.md'], 'x', null, new Set(['research/oracle_heat/latest/league.md'])).deploy, false);
+  // An oracle run that rewrites the packs, the league tables and the engine's tests deploys, listing each side.
+  const run = push(['research/oracle_heat/latest/traded_pack.json', 'research/oracle_heat/latest/league_ta.csv.gz', 'python/oracle/tests/test_heat.py', 'python/oracle/heat.py']);
+  assert.equal(run.deploy, true);
+  assert.deepEqual(run.bot, ['research/oracle_heat/latest/traded_pack.json', 'python/oracle/heat.py']);
+  assert.deepEqual(run.research, ['research/oracle_heat/latest/league_ta.csv.gz', 'python/oracle/tests/test_heat.py']);
+  // Only the reader's own tests changed: no deploy.
+  assert.equal(push(['python/heat_reader/tests/test_cli.py', 'python/heat_reader/fixtures/pair_pack.json', 'python/oracle/prereg/OR-HM1.md']).deploy, false);
+  // Each pattern lies in its folder, and nothing outside python/heat_reader, python/oracle and research/oracle_heat/latest ships.
+  for (const h of HEAT_SHIP) assert.equal(HEAT_FILES.filter((f) => h.re.test(f)).every((f) => f.startsWith(`${h.dir}/`)), true, h.dir);
+  assert.deepEqual(HEAT_SHIP.map((h) => h.dir), ['python/heat_reader', 'python/oracle', 'research/oracle_heat/latest']);
+});
+
 test('deploy workflow: a push deploys on the scope job, never on the message tag; manual runs always deploy', () => {
   const yaml = fs.readFileSync('.github/workflows/deploy.yml', 'utf8');
   const job = (name: string) => yaml.slice(yaml.indexOf(`\n  ${name}:\n`), yaml.indexOf('\n    steps:\n', yaml.indexOf(`\n  ${name}:\n`)));
@@ -427,4 +480,83 @@ test('deploy job: the merges log uses the last deployed commit the scope job fou
   assert.match(m.summary, new RegExp(`Previous deploy: \`${r.deployed.slice(0, 7)}\`\nBrings: #5,#6`));
   m = r.run('deploy', 'Merges this deploy brings', { PREV: '' });
   assert.equal(m.outputs.prev, ''); assert.equal(m.outputs.prs, ''); assert.match(m.summary, /Brings: none found/);
+});
+
+// Every file under a folder, as repo-relative paths.
+const walk = (dir: string, base = dir): string[] => !fs.existsSync(dir) ? [] : fs.readdirSync(dir, { withFileTypes: true })
+  .flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name), base) : [path.relative(base, path.join(dir, e.name)).split(path.sep).join('/')]));
+
+test('deploy job: the heat upload ships the heat reader set at its own paths and nothing else; the bot upload is unchanged', { skip: !strip && 'needs node with type stripping' }, (t) => {
+  const names = deploySteps().map((s) => s.name);
+  const at = (name: string) => { const i = names.indexOf(name); assert.ok(i >= 0, name); return i; };
+  // Staged after the build, uploaded right after the bot's own upload into the same release folder, before activation.
+  assert.ok(at('Install (lockfile only), verify, build') < at('Stage the heat reader files'));
+  assert.ok(at('Stage the heat reader files') < at('Upload release to server'));
+  assert.equal(at('Upload the heat reader files'), at('Upload release to server') + 1);
+  assert.ok(at('Upload the heat reader files') < at('Activate release (keeps previous for rollback)'));
+  const bot = step('Upload release to server'), heat = step('Upload the heat reader files'), stage = step('Stage the heat reader files');
+  const key = (text: string, k: string) => new RegExp(`^ {6}(?:- | {2}| {4})${k}: (.+)$`, 'm').exec(text)?.[1];
+  assert.equal(key(bot.text, 'source'), '"dist,web/dist,params,package.json,package-lock.json,deploy,vendor"', 'what the bot upload ships today');
+  assert.equal(key(heat.text, 'uses'), key(bot.text, 'uses'));
+  assert.equal(key(heat.text, 'target'), key(bot.text, 'target'));
+  assert.equal(key(heat.text, 'source'), '"heat-release"');
+  assert.equal(key(heat.text, 'strip_components'), '1');
+  assert.equal(key(heat.text, 'if'), 'steps.heat.outputs.files > 0');
+  assert.equal(key(heat.text, 'rm'), undefined, 'rm would empty the release the bot upload just sent');
+  // Neither step can stop the bot's deploy.
+  assert.equal(key(heat.text, 'continue-on-error'), 'true'); assert.equal(key(stage.text, 'continue-on-error'), 'true');
+  assert.equal(key(stage.text, 'id'), 'heat');
+  assert.match(stage.run, /deploy\/deploy-scope\.ts --stage-heat heat-release\n/);
+  for (const k of ['host', 'username', 'key', 'port']) assert.equal(key(heat.text, k), key(bot.text, k), k);
+
+  const r = scopeRepo(t);
+  const out = path.join(r.repo, 'heat-release');
+  // Main before the reader lands: nothing staged, the upload is skipped.
+  let s = r.run('deploy', 'Stage the heat reader files', {});
+  assert.equal(s.outputs.files, '0'); assert.equal(fs.existsSync(out), false);
+  assert.match(s.summary, /Heat reader set: none on this commit/);
+
+  const files: Record<string, string> = {};
+  for (const f of [...HEAT_FILES, ...HEAT_NEIGHBOURS_PYTHON, ...HEAT_NEIGHBOURS_RESEARCH]) files[f] = `${f}\n`;
+  r.commit(files, 'Heat reader and oracle (#8)');
+  // Left in the checkout but not tracked: never shipped. A stale folder from an earlier run is replaced.
+  fs.mkdirSync(path.join(r.repo, 'python/heat_reader/__pycache__'), { recursive: true });
+  fs.writeFileSync(path.join(r.repo, 'python/heat_reader/__pycache__/cli.cpython-312.pyc'), 'x');
+  fs.writeFileSync(path.join(r.repo, 'research/oracle_heat/latest/scratch.json'), '{}\n');
+  fs.mkdirSync(path.join(out, 'python'), { recursive: true }); fs.writeFileSync(path.join(out, 'python/stale.py'), '');
+  s = r.run('deploy', 'Stage the heat reader files', {});
+  const staged = walk(out).sort();
+  assert.deepEqual(staged, [...HEAT_FILES].sort());
+  assert.equal(s.outputs.files, String(HEAT_FILES.length));
+  for (const f of staged) {
+    assert.equal(fs.readFileSync(path.join(out, f), 'utf8'), `${f}\n`, f);
+    // What ships is what the scope check counts as bot code (changed or deleted).
+    assert.equal(researchOnly(f, BUNDLED), false, f); assert.equal(researchOnly(f, null, true), false, f);
+  }
+  assert.match(s.stdout, new RegExp(`Heat reader set: ${HEAT_FILES.length} files, .* \\(python/heat_reader 6, python/oracle 7, research/oracle_heat/latest 6\\)`));
+  assert.match(s.summary, /Heat reader set: 19 files/);
+
+  // A tag from before the list (its deploy-scope.ts has no HEAT_SHIP): nothing staged, nothing uploaded.
+  fs.rmSync(out, { recursive: true, force: true });
+  r.commit({ 'deploy/deploy-scope.ts': 'export {};\n' }, 'Older deploy scope (#9)');
+  s = r.run('deploy', 'Stage the heat reader files', {});
+  assert.equal(s.outputs.files, '0'); assert.match(s.stdout, /lists no heat reader files/); assert.equal(fs.existsSync(out), false);
+  // The folder is a plain name under the checkout, never a path out of it.
+  for (const bad of ['', '.', '..', '../x', '/tmp/x', 'a/b']) assert.throws(() => stageHeat(r.repo, bad), /plain folder name/, bad);
+});
+
+test('deploy job: the activate step leaves room for a first heat reader install on top of the old 30 minutes', () => {
+  const s = step('Activate release (keeps previous for rollback)');
+  const minutes = Number(/^\s*command_timeout: (\d+)m$/m.exec(s.text)?.[1]);
+  const bound = Number(/HEAT_READER_INSTALL_TIMEOUT:-(\d+)/.exec(fs.readFileSync('deploy/heat_reader_follow.sh', 'utf8'))?.[1]);
+  assert.ok(bound > 0 && bound <= 20 * 60, `installer bound ${bound} s`);
+  // The bot's own worst case (a TA-Lib compile, the start, Caddy) kept its 30 minutes; the installer's bound and its
+  // 30 s kill grace come on top, with room to spare.
+  assert.ok(minutes * 60 >= 30 * 60 + bound + 30 + 10 * 60, `command_timeout ${minutes}m`);
+  const yaml = fs.readFileSync('.github/workflows/deploy.yml', 'utf8');
+  const job = yaml.slice(yaml.indexOf('\n  deploy:\n'), yaml.indexOf('\n    steps:\n', yaml.indexOf('\n  deploy:\n')));
+  const jobLimit = /\n    timeout-minutes: (\d+)/.exec(job)?.[1];
+  assert.ok(jobLimit === undefined || Number(jobLimit) > minutes + 30, `job timeout-minutes ${jobLimit}`);
+  // The deploy log line is written after activate.sh, in the same script: activate.sh must not fail on the reader.
+  assert.match(s.script, /bash deploy\/activate\.sh [^\n]+\n(.*\n)*.*>> ~\/bot\/deploys\.log/);
 });

@@ -13,6 +13,11 @@
 #  - Run manually from the Actions tab to redeploy main, or to deploy an existing release tag
 #    (v1.2.3) by entering it.
 #  - Rollback is one command on the server: `bash ~/bot/current/deploy/rollback.sh`.
+#  - The heat curve reader (docs/HEAT_READER.md) ships with the release when the commit has it: python/heat_reader,
+#    python/oracle and the packs in research/oracle_heat/latest (the HEAT_SHIP list in deploy/deploy-scope.ts; unlike
+#    the rest of python/ and research/, a change to them deploys). activate.sh runs its installer after the bot is up;
+#    it is off until HEAT_LANE=true in ~/bot/bot.env and never fails a deploy. Before those files reach main, nothing
+#    extra ships.
 #
 # Switching to reviewed, tag-only deploys later (more secure): set the repository variable
 # AUTO_DEPLOY=false (Settings > Secrets and variables > Actions > Variables) and add required
@@ -174,6 +179,23 @@ jobs:
           git clean -fdxq vendor/talib
           { sha256sum package-lock.json; git ls-files -s vendor/talib; } | sha256sum | cut -d' ' -f1 > deploy/deps.fingerprint
 
+      # The heat curve reader's files (HEAT_SHIP in deploy/deploy-scope.ts, the same list the scope job counts as bot
+      # code): the tracked files of python/heat_reader and python/oracle without their tests, fixtures and
+      # preregistration notes, and research/oracle_heat/latest/*.json and RUN. Copied at their own paths into
+      # heat-release/ for "Upload the heat reader files". A commit without them (main before the reader lands, or a
+      # tag from before this list) stages nothing and that upload is skipped. Optional like the reader itself: a
+      # failure here never stops the bot's deploy (the reader's installer then says what the release lacks).
+      - name: Stage the heat reader files
+        id: heat
+        continue-on-error: true
+        run: |
+          if grep -qs 'HEAT_SHIP' deploy/deploy-scope.ts; then
+            node --experimental-strip-types --disable-warning=ExperimentalWarning deploy/deploy-scope.ts --stage-heat heat-release
+          else
+            echo "deploy/deploy-scope.ts on this commit lists no heat reader files: nothing extra to upload"
+            echo "files=0" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Verify paper mode before deploying this release
         if: inputs.paper_only
         uses: appleboy/ssh-action@v1.0.3
@@ -251,6 +273,24 @@ jobs:
           source: "dist,web/dist,params,package.json,package-lock.json,deploy,vendor"
           target: "~/releases/${{ steps.rel.outputs.name }}"
 
+      # Into the same release folder, heat-release/ stripped off: python/heat_reader, python/oracle and
+      # research/oracle_heat/latest land at their repository paths, where the reader's unit runs them from
+      # (~/bot/current/python, packs in ~/bot/current/research/oracle_heat/latest). Never with rm: that would empty
+      # the release the step above uploaded. A failure here leaves the bot's deploy going; the installer then names
+      # what is missing and the reader stays off.
+      - name: Upload the heat reader files
+        if: steps.heat.outputs.files > 0
+        continue-on-error: true
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+          source: "heat-release"
+          strip_components: 1
+          target: "~/releases/${{ steps.rel.outputs.name }}"
+
       - name: Activate release (keeps previous for rollback)
         uses: appleboy/ssh-action@v1.0.3
         env:
@@ -263,8 +303,11 @@ jobs:
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
           script_stop: true
-          # A fresh TA-Lib compile on a busy small instance can take several minutes.
-          command_timeout: 30m
+          # A fresh TA-Lib compile on the small instance takes 15-25 minutes (deploy/install.sh), the bot's start up to
+          # 3 more, and the heat reader's first install (activate.sh: a pip venv build) is cut off at 15 minutes
+          # (deploy/heat_reader_follow.sh). 60 minutes covers all of them at once, so a first reader install can neither
+          # cut off the deploy log line below nor turn the deploy red. The job itself keeps GitHub's 360-minute limit.
+          command_timeout: 60m
           script: |
             set -euo pipefail
             cd ~/releases/${{ steps.rel.outputs.name }}
