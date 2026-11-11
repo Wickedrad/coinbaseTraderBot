@@ -107,10 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$RCLONE_CONF"
-          if ! command -v rclone >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq rclone
-          fi
+          bash .github/scripts/install-rclone.sh
           cfg="$RUNNER_TEMP/atlas-archive-config"
           dest="$RUNNER_TEMP/atlas-history-archive"
           mkdir -p "$cfg" "$dest/history"
@@ -208,10 +205,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF is unavailable in this Actions context"; exit 1; fi
-          if ! command -v rclone >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq rclone
-          fi
+          bash .github/scripts/install-rclone.sh
           mkdir -p "$RUNNER_TEMP/atlas-drive"
           chmod 700 "$RUNNER_TEMP/atlas-drive"
           export RCLONE_CONFIG="$RUNNER_TEMP/atlas-drive/rclone.conf"
