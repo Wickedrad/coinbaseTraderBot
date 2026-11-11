@@ -8,16 +8,10 @@ import path from 'node:path';
 
 const script = path.resolve('deploy/ensure-env.sh');
 
+// The release's deploy/ folder ships the heat reader's installer since #327, and ensure-env then turns the heat lane on
+// (tested below). These older tests check other rules, so they run a copy of the script from a folder without it.
 function run(lines: string[]): { env: string[]; out: string } {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ensure-env-'));
-  try {
-    fs.mkdirSync(path.join(home, 'bot'));
-    fs.writeFileSync(path.join(home, 'bot', 'bot.env'), lines.join('\n') + '\n');
-    const out = execFileSync('bash', [script], { env: { PATH: process.env.PATH ?? '', HOME: home }, encoding: 'utf8' });
-    return { env: fs.readFileSync(path.join(home, 'bot', 'bot.env'), 'utf8').split('\n').filter(Boolean), out };
-  } finally {
-    fs.rmSync(home, { recursive: true, force: true });
-  }
+  return runFrom(lines, false);
 }
 
 test('ensure-env: a bot.env pinning the session-edge blackout or the model-health halt on drops the line (#321 defaults)', () => {
