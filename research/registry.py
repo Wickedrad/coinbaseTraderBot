@@ -21,6 +21,7 @@ Commands:
   cellsweep SRC_DIR SHA THREAD   turn a cell-sweep Drive folder (d<dd>-<tag>.json.gz) into registry rows on stdout
   foreign FILE THREAD FAMILY     wrap another thread's own ledger (one JSON object a line) into registry rows
   ho1 SHARD                      fill each paired row's HO-1 heldout block (folds, terciles, placebo) -> stdout
+                                 (rows with heldout.standard "one-test" are left as written; see ONE_TEST_K)
   selftest                       run the built-in checks
 
 Statistics (no scipy; tests in selftest):
@@ -108,11 +109,21 @@ SCHEMA = {
         'modules': {'type': 'array', 'items': {'type': 'string'}, 'description': 'bot modules the arm changes; inferred from env when absent'},
         'held_out': {'type': 'boolean', 'description': 'legacy: by_day is out of sample (not enough for the ledger without heldout)'},
         'heldout': {'type': 'object', 'description': 'held-out standard HO-1 evidence (see HO1 below and the README)', 'properties': {
-            'standard': {'const': 'HO-1'}, 'tier': {'enum': ['history', 'recorded']},
+            'standard': {'enum': ['HO-1', 'one-test']}, 'tier': {'enum': ['history', 'recorded']},
             'days': {'type': 'number'}, 'folds': {'type': 'integer'}, 'folds_won': {'type': 'integer'},
             'worst_fold_per_hour': {'type': 'number'}, 'terciles_covered': {'type': 'integer'},
             'terciles_won': {'type': 'integer'}, 'worst_tercile_per_hour': {'type': 'number'},
-            'beats_placebo': {'type': 'boolean'}, 'replay_version': {'type': 'integer'}}},
+            'beats_placebo': {'type': 'boolean'}, 'replay_version': {'type': 'integer'},
+            # one-test block (Steven 13:17 UTC Nov 11; see ONE_TEST below): direction holds >= 1 min so a profitable exit is possible
+            'window_rate': {'type': 'number', 'description': 'one-test: share of signals with a profit window'},
+            'random_rate': {'type': 'number', 'description': 'one-test: same share for random-minute entries in the same contracts and hours'},
+            'gap': {'type': 'number', 'description': 'one-test: window_rate - random_rate'},
+            'se': {'type': 'number', 'description': "one-test: the gap's own standard error"},
+            'n': {'type': 'integer', 'description': 'one-test: signals counted'},
+            'twins': {'type': 'integer', 'description': 'one-test: random-minute entries counted'},
+            'pass': {'type': 'boolean', 'description': "one-test: the thread's own verdict (the registry recomputes it)"},
+            'hot_spot': {'type': 'string', 'description': 'one-test: the hot spot, fixed before the days were read'},
+            'horizon': {'type': 'string', 'description': 'one-test: contract horizon, e.g. 15m | hourly | match'}}},
     },
 }
 
@@ -159,6 +170,21 @@ def validate(r: dict) -> tuple[list[str], list[str]]:
         fl.append('G1:leaky-model')  # MODEL_SKILL on with a model trained over H-HOLD (failure diagnoses, Nov 6)
     if (r.get('heldout') or {}).get('tainted_folds'):
         fl.append('HO1:tainted-fold')  # a fold that was tuned on; HO-1 fails until it is re-scored clean
+    h = r.get('heldout') or {}
+    if h.get('standard') == 'one-test':
+        for k in ('window_rate', 'random_rate', 'se', 'n', 'twins'):
+            v = h.get(k)
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v < 0:
+                err.append(f'heldout.{k} must be a finite number >= 0 on a one-test row')
+        if not err and h.get('gap') is not None and abs(h['gap'] - (h['window_rate'] - h['random_rate'])) > 1e-6:
+            err.append('heldout.gap != window_rate - random_rate')
+        if not err and 'pass' in h and bool(h['pass']) != one_test_pass(h)[0]:
+            fl.append('OT:declared-pass-differs')  # informational: the registry's recomputed verdict is the one used
+        dd = d.get('days') or []
+        if d.get('source') == 'history' and any(not (H_HOLD[0] <= x <= H_HOLD[1]) for x in dd):
+            fl.append('OT:days-outside-unseen')  # history one-test counts only on Aug 1-Nov 4 2026 (heat map never saw them)
+        if d.get('source') == 'recorded' and any(x < THIN_BOOK_END for x in dd):
+            fl.append('G0:thin-book-recording')  # Steven Nov 11: no recordings from before Nov 10 03:44 UTC
     if 'dev-choice' in (r.get('flags') or []):
         if any(x >= H_HOLD[0] for x in (r.get('by_day') or {})):
             fl.append('G0:dev-choice-reads-hold')  # an H-DEV choice run must not carry H-HOLD days
@@ -374,7 +400,18 @@ def merge(shard_dir, out_dir, S=6):
     fams = defaultdict(list)
     for r in rows.values():
         fams[(r['thread'], r['family'])].append(r)
-    rep = {'n_rows': len(rows), 'n_bad': len(bad), 'bad': bad[:200], 'families': []}
+    rep = {'n_rows': len(rows), 'n_bad': len(bad), 'bad': bad[:200], 'families': [], 'one_test': []}
+    for r in rows.values():
+        h = r.get('heldout') or {}
+        if h.get('standard') == 'one-test':
+            ok, why = one_test_pass(h)
+            blk = [f for f in r['flags'] if f.startswith(OT_BLOCKING)]
+            rep['one_test'].append({'trial_id': r['trial_id'], 'thread': r['thread'], 'family': r['family'], 'arm': r['arm'],
+                                    'role': r['role'], 'contract_type': contract_type_of(r), 'modules': modules_of(r),
+                                    'hot_spot': h.get('hot_spot'), 'horizon': h.get('horizon'), 'n': h.get('n'), 'twins': h.get('twins'),
+                                    'window_rate': h.get('window_rate'), 'random_rate': h.get('random_rate'),
+                                    'gap': h['window_rate'] - h['random_rate'], 'se': h.get('se'), 'days': len(r['data'].get('days') or []),
+                                    'pass': ok and not blk and r['role'] != 'placebo', 'why': '; '.join([why] * bool(why) + blk), 'flags': r['flags']})
     for (th, fam), rs in sorted(fams.items()):
         scored = [r for r in rs if r['by_day']]
         days = sorted(set.intersection(*[set(r['by_day']) for r in scored])) if scored else []
@@ -434,10 +471,14 @@ def ho1_fill(rows):
     plac = {(r['family'], r.get('placebo_for')): r for r in rows if r['role'] == 'placebo' and r.get('placebo_for')}
     for r in rows:
         c = byid.get(r.get('control'))
-        if r['role'] == 'control' or not c or 'dev-choice' in (r.get('flags') or []):
+        if r['role'] == 'control' or not c or 'dev-choice' in (r.get('flags') or []) or (r.get('heldout') or {}).get('standard') == 'one-test':
             continue
         tier = 'history' if r['data']['source'] == 'history' else 'recorded'
         d0, d1 = (date.fromisoformat(H_HOLD[0]), date.fromisoformat(H_HOLD[1])) if tier == 'history' else (None, None)
+        # A day the replay ran but the row left out of by_day (no trades) is a $0 day, not a missing one (anchor thread, Nov 6).
+        for x in (r, c):
+            for d in (x.get('data') or {}).get('days') or []:
+                x['by_day'].setdefault(d, 0.0)
         days = sorted(d for d in r['by_day'] if d in c['by_day'] and (tier == 'recorded' or H_HOLD[0] <= d <= H_HOLD[1]))
         hpd = 24.0
         if tier == 'history':
@@ -521,6 +562,37 @@ def ho1_pass(h, contract_type='price_prediction', engine='replay'):
     return not why, '; '.join(why)
 
 
+# The one test (Steven 13:17 UTC / 8:17 AM EST Nov 11: "the only thing that we need to know is if we can detect direction,
+# sustaining for at least 1 minute or long enough for an exit to take place in profit"; edge-iteration-pipeline rev 28).
+#   On each hot-spot signal buy the called side at the ask; window = >= 1 full minute with the bid >= entry + both fees + 1c
+#   before the last 90 s of a 15-minute contract (6 min on hourly). window_rate = share of signals with a window;
+#   random_rate = the same for random-minute entries in the same contracts and hours. PASS = gap >= ONE_TEST_K x se, on
+#   days the heat map was not built on. A pass = "direction found". Not a $/h result: it never adds to the ledger total.
+#   ONE_TEST_K = 2 is the pipeline thread's reading; if Steven says "any amount above random", set it to 0.
+ONE_TEST_K = 2.0
+THIN_BOOK_END = '2026-11-10'  # recordings before Nov 10 03:44 UTC are thin-book (day granularity: Nov 10 itself is allowed)
+
+
+def one_test_pass(h):
+    """(passes, why) for a one-test heldout block; recomputed here, the row's own `pass` is informational."""
+    if not isinstance(h, dict) or h.get('standard') != 'one-test':
+        return False, 'no one-test block'
+    try:
+        gap, se, n, tw = h['window_rate'] - h['random_rate'], float(h['se']), int(h['n']), int(h['twins'])
+    except (KeyError, TypeError, ValueError):
+        return False, 'one-test block incomplete'
+    why = []
+    if n <= 0 or tw <= 0: why.append('no signals or no random twins')
+    if not se > 0: why.append('se must be > 0')
+    elif gap < ONE_TEST_K * se: why.append(f'gap {gap:+.3f} < {ONE_TEST_K:g} x se {se:.3f}')
+    return not why, '; '.join(why)
+
+
+# Flags that stop a one-test row from counting as "direction found" (money-only flags such as no-daily-pnl, unpaired or
+# non-dollar metric do not apply to a direction test).
+OT_BLOCKING = ('G0:', 'G1:synthetic-book-flow', 'G1:leaky-model', 'G1b:', 'G1c:', 'LOCKBOX:', 'DEV:', 'OT:days-outside-unseen')
+
+
 BLOCKING_EXTRA = ('DEV:',)
 BLOCKING = ('G0:', 'G1:', 'G1b:', 'G1c:', 'G2:', 'LOCKBOX:')
 
@@ -570,6 +642,14 @@ def contract_ledger(rep, target=4.50):
                 if c['above_2noise'] is False: why.append('under 2x noise')
                 if c['role'] != 'candidate': why.append(c['role'])
                 L.append(f'| {", ".join(c["modules"])} | {c["thread"]} / {c["family"]} | {c["arm"]} | {c["gain_per_day"] / c["hours_per_day"]:+.2f} | {"; ".join(why)} |')
+        ot = sorted([o for o in rep.get('one_test', []) if o['contract_type'] == ct], key=lambda o: (not o['pass'], -o['gap']))
+        if ot:
+            nf = sum(o['pass'] for o in ot)
+            L += ['', f'Direction found (one test, gap >= {ONE_TEST_K:g} x se on unseen days; not $/h, not in the total): {nf} of {len(ot)} hot spot(s) pass.',
+                  '| hot spot | horizon | thread / family | arm | n | window | random | gap | se | days | verdict |', '|---|---|---|---|---|---|---|---|---|---|---|']
+            for o in ot[:20]:
+                L.append(f'| {o["hot_spot"] or "-"} | {o["horizon"] or "-"} | {o["thread"]} / {o["family"]} | {o["arm"]} | {o["n"]} | {o["window_rate"]:.3f}'
+                         f' | {o["random_rate"]:.3f} | {o["gap"]:+.3f} | {o["se"]:.3f} | {o["days"]} | {"DIRECTION FOUND" if o["pass"] else "no: " + o["why"]} |')
         L.append('')
     return '\n'.join(L).replace('nan', 'n/a') + '\n'
 
@@ -715,6 +795,23 @@ def selftest():
     assert 'G1:leaky-model' in validate(lk)[1]
     assert 'G1:leaky-model' not in validate({**lk, 'env': {'MODEL_SKILL': 'false'}})[1]
     assert not ho1_pass({**ok, 'tainted_folds': [6]})[0]
+    # missing zero-trade days count as $0 (anchor thread bug, Nov 6): candidate omits half its days, still 96 scored
+    rows = [dict(base, trial_id='c', arm='C', role='control', by_day={d: -1.0 for d in hd}),
+            dict(base, trial_id='x', arm='X', role='candidate', control='c', by_day={d: 0.5 for d in hd[::2]})]
+    hx = ho1_fill(rows)[1]['heldout']
+    assert hx['days'] == 96 and hx['folds_won'] == 6, hx
+    # one-test rows
+    ot = {'standard': 'one-test', 'window_rate': 0.62, 'random_rate': 0.50, 'gap': 0.12, 'se': 0.04, 'n': 300, 'twins': 3000,
+          'pass': True, 'hot_spot': 'h1', 'horizon': '15m'}
+    assert one_test_pass(ot)[0] and not one_test_pass({**ot, 'se': 0.07})[0] and not one_test_pass({**ot, 'n': 0})[0]
+    otr = {**r, 'data': {'source': 'history', 'days': ['2026-08-02', '2026-09-01']}, 'by_day': {}, 'heldout': ot, 'contract_type': 'tennis'}
+    err, fl = validate(otr)
+    assert not err and not any(f.startswith(OT_BLOCKING) for f in fl), (err, fl)
+    assert 'OT:days-outside-unseen' in validate({**otr, 'data': {'source': 'history', 'days': ['2026-07-02']}})[1]
+    assert 'G0:thin-book-recording' in validate({**otr, 'data': {'source': 'recorded', 'days': ['2026-11-09']}})[1]
+    assert 'OT:declared-pass-differs' in validate({**otr, 'heldout': {**ot, 'se': 0.07}})[1]
+    assert validate({**otr, 'heldout': {**ot, 'gap': 0.5}})[0] and validate({**otr, 'heldout': {**ot, 'se': None}})[0]
+    assert ho1_fill([dict(otr, trial_id='y', control='c'), dict(otr, trial_id='c', role='control')])[0]['heldout'] is ot
     print('registry selftest ok')
 
 
