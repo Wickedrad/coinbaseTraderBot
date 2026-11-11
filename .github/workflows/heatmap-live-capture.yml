@@ -1,0 +1,94 @@
+name: Heat map live shadow capture
+# Research only (thread "Test weighted heat maps on live Kalshi"). Public data in, public data out:
+# the frozen Atlas tables' calls each minute and public Kalshi books. No secrets, no server, no orders.
+# Started by a commit that changes research/heatmap_live/CAPTURE_START with [capture-start] (or
+# [capture-smoke] for a 6-minute check) in its message. Stop: cancel the run, or add
+# research/heatmap_live/CAPTURE_STOP to the branch (later segments then exit at once).
+on:
+  push:
+    branches: [claude/project-thread-rvpht4]
+    paths: ['research/heatmap_live/CAPTURE_START']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: heatmap-live-capture
+  cancel-in-progress: false
+jobs:
+  capture:
+    if: ${{ contains(github.event.head_commit.message, '[capture-start]') || contains(github.event.head_commit.message, '[capture-smoke]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 215
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        segment: ${{ fromJSON(contains(github.event.head_commit.message, '[capture-smoke]') && '[0]' || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80]') }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NODE_OPTIONS: --max-old-space-size=3072
+      SMOKE: ${{ contains(github.event.head_commit.message, '[capture-smoke]') }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: claude/project-thread-rvpht4
+      - name: Stop file check
+        id: go
+        run: |
+          if [ -f research/heatmap_live/CAPTURE_STOP ] && [ "$SMOKE" != "true" ]; then echo "run=false" >> "$GITHUB_OUTPUT"; echo "stop file present"; else echo "run=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@v5
+        if: steps.go.outputs.run == 'true'
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        if: steps.go.outputs.run == 'true'
+        with:
+          python-version: '3.12'
+      - run: npm ci
+        if: steps.go.outputs.run == 'true'
+      - name: Install the tvdatafeed bridge (daily dominance readings only)
+        if: steps.go.outputs.run == 'true'
+        continue-on-error: true
+        run: python -m pip install --quiet 'tvdatafeed @ https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip'
+      - uses: actions/download-artifact@v4
+        if: steps.go.outputs.run == 'true'
+        with:
+          pattern: atlas-oracle-result-*
+          path: ${{ runner.temp }}/oracle-models
+          github-token: ${{ github.token }}
+          run-id: '42643723640'
+      - uses: actions/download-artifact@v4
+        if: steps.go.outputs.run == 'true'
+        with:
+          pattern: atlas-oracle-importance-*
+          path: ${{ runner.temp }}/oracle-weights
+          github-token: ${{ github.token }}
+          run-id: '42667008829'
+      - name: Capture the heat maps' calls and the public Kalshi books
+        if: steps.go.outputs.run == 'true'
+        run: |
+          extra=""; if [ "$SMOKE" = "true" ]; then extra="--minutes 6"; fi
+          node --import tsx research/heatmap_live/captureCli.ts --models "$RUNNER_TEMP/oracle-models" \
+            --weights "$RUNNER_TEMP/oracle-weights" --out "$RUNNER_TEMP/heat-shadow" --segment "${{ matrix.segment }}" $extra
+      - name: Pack
+        if: ${{ always() && steps.go.outputs.run == 'true' }}
+        run: |
+          cd "$RUNNER_TEMP/heat-shadow" 2>/dev/null || exit 0
+          for f in forecasts books markets events; do [ -f "$f.jsonl" ] && gzip -9 "$f.jsonl"; done
+          ls -la
+          python3 "$GITHUB_WORKSPACE/research/heatmap_live/segment_note.py" . "${{ matrix.segment }}" > "$RUNNER_TEMP/note.json" || true
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.go.outputs.run == 'true' }}
+        with:
+          name: heat-shadow-${{ github.run_id }}-${{ matrix.segment }}
+          path: |
+            ${{ runner.temp }}/heat-shadow/*.jsonl.gz
+            ${{ runner.temp }}/heat-shadow/meta.json
+            ${{ runner.temp }}/heat-shadow/summary.json
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Health note (counts only) as a commit comment
+        if: ${{ always() && steps.go.outputs.run == 'true' }}
+        run: |
+          [ -s "$RUNNER_TEMP/note.json" ] && gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input "$RUNNER_TEMP/note.json" --jq .html_url || true

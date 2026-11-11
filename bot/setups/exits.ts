@@ -13,7 +13,7 @@
 // exits, and perp funding while the position is open.
 
 import type { Candle } from '../ta/indicators';
-import { TF_MS, type ExitPlan, type Lane, type SetupKind } from './detectors';
+import { TF_MS, type ExitPlan, type HeatBasis, type Lane, type SetupKind } from './detectors';
 import type { Timeframe } from '../ta/knowledge';
 
 export interface CostModel {
@@ -61,11 +61,14 @@ export interface OpenTrade {
   /** Model score at entry and the size (fraction of equity at risk / notional), for the record. */
   score?: number;
   notional?: number;
+  /** Only on a heat trade: the curve call it stands on now (the entry's, then each one that extended it) and how many
+   *  hourly closes it was carried through instead of being closed and opened again. */
+  heat?: HeatBasis & { extended: number };
 }
 
 /** Open a trade at `px` (next bar's open in research, the market live). Undefined when the price has
  *  already run through the stop or the first target (the setup is gone). */
-export function openTrade(s: { asset: string; lane: Lane; kind: SetupKind; tf: Timeframe; dir: 1 | -1; stop: number; plan: ExitPlan; atr: number }, px: number, ts: number, costs: CostModel = DEFAULT_COSTS): OpenTrade | undefined {
+export function openTrade(s: { asset: string; lane: Lane; kind: SetupKind; tf: Timeframe; dir: 1 | -1; stop: number; plan: ExitPlan; atr: number; heat?: HeatBasis }, px: number, ts: number, costs: CostModel = DEFAULT_COSTS): OpenTrade | undefined {
   const d = s.dir;
   if (!(px > 0) || !(d * (px - s.stop) > 0.1 * s.atr)) return undefined;
   if (s.plan.target1 !== undefined && !(d * (s.plan.target1 - px) > 0)) return undefined;
@@ -73,6 +76,7 @@ export function openTrade(s: { asset: string; lane: Lane; kind: SetupKind; tf: T
   return {
     asset: s.asset, lane: s.lane, kind: s.kind, tf: s.tf, dir: d, entry: px, entryTs: ts, initialStop: s.stop, stop: s.stop, plan: { ...s.plan },
     frac: 1, partialDone: false, best: px, bars: 0, realized: 0, costs: costs.entry,
+    ...(s.heat ? { heat: { ...s.heat, extended: 0 } } : {}),
   };
 }
 

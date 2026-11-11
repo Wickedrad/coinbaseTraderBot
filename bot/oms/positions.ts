@@ -24,6 +24,12 @@ export interface MarketPosition {
    *  reads net cash, as before) until its next fill. */
   openCost?: number;
   openFees?: number;
+  /** Profit after fees already banked by partial sales of the open position since it opened: each reduction's proceeds less
+   *  its share of the open cost and entry fees and less its own fee. 0 when flat; a fill through zero starts the new side at 0.
+   *  Unset on a position saved before Nov 11 (read as 0). The hold exit, the profit ratchet and the line exit's failed tries
+   *  measure the trade (this plus the rest at the bid), so a partial sale is not a drop (the answer given to Steven, Nov 11
+   *  9:10 AM EST / 14:10 UTC). */
+  openBanked?: number;
   settled: boolean;
   result?: 'yes' | 'no';
   /** Realized PnL once settled (net of fees). */
@@ -54,6 +60,13 @@ export function openEntryFee(pos: Pick<MarketPosition, 'yes' | 'fees' | 'openFee
   return (pos.openFees ?? pos.fees) / Math.abs(pos.yes);
 }
 
+/** Profit after fees the open position's partial sales have banked since it opened (0 when flat or none): plus the rest's
+ *  net at the bid it is the trade's profit (bot/strategy/fairValueStrategy.ts tradeNetAtBid). */
+export function openBankedUsd(pos: Pick<MarketPosition, 'yes' | 'openBanked'> | undefined): number {
+  if (!pos || Math.abs(pos.yes) < 1e-9) return 0;
+  return pos.openBanked ?? 0;
+}
+
 export class PositionBook {
   private readonly markets = new Map<string, MarketPosition>();
 
@@ -64,7 +77,7 @@ export class PositionBook {
   ensure(ticker: string, meta: { closeTs?: number; asset?: string } = {}): MarketPosition {
     let m = this.markets.get(ticker);
     if (!m) {
-      m = { ticker, closeTs: meta.closeTs ?? 0, asset: meta.asset ?? '', yes: 0, netCash: 0, fees: 0, openCost: 0, openFees: 0, settled: false };
+      m = { ticker, closeTs: meta.closeTs ?? 0, asset: meta.asset ?? '', yes: 0, netCash: 0, fees: 0, openCost: 0, openFees: 0, openBanked: 0, settled: false };
       this.markets.set(ticker, m);
     } else {
       if (meta.closeTs && !m.closeTs) m.closeTs = meta.closeTs;
@@ -84,23 +97,26 @@ export class PositionBook {
       m.openFees = Math.abs(before) > 1e-9 ? m.fees : 0;
     }
     const sidePx = signed > 0 ? f.price : 1 - f.price;
+    if (Math.abs(before) < 1e-9) m.openBanked = 0;
     if (Math.abs(before) < 1e-9 || Math.sign(before) === Math.sign(signed)) {
       m.openCost += f.count * sidePx;
       m.openFees += f.fee;
     } else {
-      // A reduction takes its share of the cost and the entry fees at the average; its own fee is an exit fee. The part of a
-      // fill that goes through zero opens the other side.
+      // A reduction takes its share of the cost and the entry fees at the average; its own fee is an exit fee. What it sold
+      // for (the held side's price, 1 - sidePx) less those is banked. The part of a fill that goes through zero opens the
+      // other side, which starts with nothing banked.
       const n = Math.min(f.count, Math.abs(before));
       const keep = 1 - n / Math.abs(before);
+      m.openBanked = (m.openBanked ?? 0) + n * (1 - sidePx) - m.openCost * (1 - keep) - m.openFees * (1 - keep) - f.fee * (n / f.count);
       m.openCost *= keep;
       m.openFees *= keep;
       const rest = round2(f.count - n);
-      if (rest > 1e-9) { m.openCost = rest * sidePx; m.openFees = f.fee * (rest / f.count); }
+      if (rest > 1e-9) { m.openCost = rest * sidePx; m.openFees = f.fee * (rest / f.count); m.openBanked = 0; }
     }
     m.yes = round2(m.yes + signed);
     m.netCash -= signed * f.price;
     m.fees += f.fee;
-    if (Math.abs(m.yes) < 1e-9) { m.openCost = 0; m.openFees = 0; }
+    if (Math.abs(m.yes) < 1e-9) { m.openCost = 0; m.openFees = 0; m.openBanked = 0; }
     return m;
   }
 
@@ -116,6 +132,7 @@ export class PositionBook {
     m.yes = 0;
     m.openCost = 0;
     m.openFees = 0;
+    m.openBanked = 0;
     return m;
   }
 

@@ -151,11 +151,7 @@ export class LiquidityRatchet {
         const feePer = orderFee(n, this.stop, true, i.fees) / n;
         if (i.qSide >= this.stop + feePer) return { event: 'hybrid_hold', stop: this.stop };
       }
-      const limitSide = round(Math.max(i.tick, this.stop - slip), 4);
-      const plan: ExitOrderPlan = sign > 0
-        ? { side: 'ask', price: limitSide, count: round(n, 2), stop: this.stop }
-        : { side: 'bid', price: round(1 - limitSide, 4), count: round(n, 2), stop: this.stop };
-      return { plan, event: 'triggered', stop: this.stop };
+      return { plan: this.stopPlan(sign, n, i.tick), event: 'triggered', stop: this.stop };
     }
 
     // Ratchet: the highest persistent wall the price has moved past.
@@ -165,6 +161,26 @@ export class LiquidityRatchet {
       this.stop = candidate;
     }
     return { event, stop: this.stop };
+  }
+
+  /** The stop's sale: reduce-only, limited to the stop less the slippage (YES terms for the order). */
+  private stopPlan(sign: number, n: number, tick: number): ExitOrderPlan {
+    const limitSide = round(Math.max(tick, this.stop! - this.p.slippageTicks * tick), 4);
+    return sign > 0
+      ? { side: 'ask', price: limitSide, count: round(n, 2), stop: this.stop! }
+      : { side: 'bid', price: round(1 - limitSide, 4), count: round(n, 2), stop: this.stop! };
+  }
+
+  /** Read only, for the exit-only lane (ConfluenceRatchetExit.armed): what the stop already armed calls for at the best exit price
+   *  `best` (side terms), the same test as evaluate() with the profit lock `floor`, without tracking walls, ratcheting or
+   *  falling back. 'gapped': through the stop by more than the slippage (no order; the caller decides). */
+  peek(position: number, best: number, tick: number, floor?: number): { plan?: ExitOrderPlan; event?: 'triggered' | 'gapped' } {
+    const sign = Math.sign(position);
+    if (this.stop === undefined || sign === 0 || sign !== this.sign) return {};
+    const hit = floor !== undefined ? best < this.stop - 1e-9 : best <= this.stop + 1e-9;
+    if (!hit) return {};
+    if (best < this.stop - this.p.slippageTicks * tick - 1e-9) return { event: 'gapped' };
+    return { plan: this.stopPlan(sign, Math.abs(position), tick), event: 'triggered' };
   }
 }
 
@@ -293,7 +309,7 @@ export class ConfluenceRatchetExit {
     this.ratchet.reset();
   }
 
-  private sellAtBid(i: HuntInput, sign: number): ExitOrderPlan {
+  private sellAtBid(i: Pick<HuntInput, 'position' | 'sideBid'>, sign: number): ExitOrderPlan {
     const n = round(Math.abs(i.position), 2);
     const px = i.sideBid!;
     return sign > 0 ? { side: 'ask', price: round(px, 4), count: n, stop: px } : { side: 'bid', price: round(1 - px, 4), count: n, stop: px };
@@ -406,4 +422,42 @@ export class ConfluenceRatchetExit {
     }
     return r.plan ? { mode: 'hunt', plan: r.plan, event: r.event, target, stop: r.stop } : { mode: 'hunt', event: wallEvent ?? r.event, target, stop: r.stop, rest };
   }
+
+  /** Read only, for the exit-only lane (bot/strategy/exitOnlyLane.ts: no fair value, volatility or confluence this tick):
+   *  whether the hunt runs the position (nothing else may reduce it) or holds it, and the sale its already-armed stop calls
+   *  for at the side bid. Only what needs no model sells: a lock sale already made keeps selling at the bid; the trailing stop
+   *  sells below its stop (with the hybrid rule on, that waits for the model), and a gap through it sells at the bid while
+   *  still at or above the entry value (HUNT_SELL_INTO_GAP). Where update() would hand the position to the normal exit
+   *  whatever the data say, the hunt lets go here too (hunting false), so the lane's armed take-profit may sell it: a gap
+   *  below the entry value (the hunt ends), and the lock sale's first-dip judgement under HUNT_LOCK_SALE_ELSE=exit (a hit
+   *  sells at the bid, a miss hands the position over: either way a take-profit sale at the bid stands). Under
+   *  HUNT_LOCK_SALE_ELSE=hold a miss holds, so that judgement waits for the fair value. The hunt's state is left as it is for
+   *  the next full evaluation. */
+  armed(i: { position: number; sideBid: number | undefined; tick: number }): HuntArmed {
+    const sign = Math.sign(i.position);
+    if (!this.active || sign === 0 || sign !== this.sign) return { hunting: false, hold: false };
+    if (this.holding) return { hunting: true, hold: true, stop: this.floor };
+    if (this.lockSold) return i.sideBid === undefined ? { hunting: true, hold: false, stop: this.floor } : { hunting: true, hold: false, plan: this.sellAtBid(i, sign), event: 'lock_sale', stop: this.floor };
+    const stop = this.ratchet.stop;
+    if (i.sideBid === undefined) return { hunting: true, hold: false, stop };
+    const r = this.ratchet.peek(i.position, i.sideBid, i.tick, this.floor);
+    if ((this.h.lockSale ?? 'off') !== 'off') {
+      // Judged at the trigger (judged at the lock, an active hunt has always sold or holds: both above).
+      if (r.event !== undefined && (this.h.lockSaleElse ?? 'hold') === 'exit') {
+        return { hunting: false, hold: false, stop, note: `hunt: bid ${i.sideBid} under its stop ${stop}; the lock sale's judgement waits for the fair value, the take-profit armed meanwhile may sell` };
+      }
+      return { hunting: true, hold: false, stop };
+    }
+    if (r.event === 'gapped') {
+      if (this.h.sellIntoGap === false) return { hunting: true, hold: false, stop };
+      if (i.sideBid >= this.entryQ! - 1e-9) return { hunting: true, hold: false, plan: this.sellAtBid(i, sign), event: 'profit_take_gap', stop };
+      return { hunting: false, hold: false, stop, note: `hunt: bid ${i.sideBid} gapped under its stop ${stop} and the entry value; the take-profit armed may sell` };
+    }
+    if (r.event === 'triggered' && !this.h.hybrid) return { hunting: true, hold: false, plan: r.plan, event: 'triggered', stop };
+    return { hunting: true, hold: false, stop };
+  }
 }
+
+/** ConfluenceRatchetExit.armed(): whether the hunt runs the position (`hunting`: nothing else reduces it) or holds it, the sale
+ *  its armed stop calls for now, and `note` when it lets the normal exit's armed take-profit act. */
+export interface HuntArmed { hunting: boolean; hold: boolean; plan?: ExitOrderPlan; event?: HuntEvent; stop?: number; note?: string }

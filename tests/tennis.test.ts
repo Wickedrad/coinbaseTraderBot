@@ -300,6 +300,15 @@ test('quota floor on tennis (PACER_FLOOR, Steven Oct 31): a leg aiming higher ke
   assert.equal(at(0.83, 4.4, { pacerUsd: 3, floorMode: 'riding', floorTicks: 2 }).plans.length, 0);
   assert.equal(at(0.82, 3.95, { pacerUsd: 3, floorMode: 'riding', floorTicks: 2 }).plans.length, 0);
   assert.equal(at(0.81, 3.8, { pacerUsd: 3, floorMode: 'riding', floorTicks: 2 }).plans[0]?.why, '+$3.80 net on 30 at bid 0.81 fell below its $4.50 floor');
+  // E22: the default 8 ticks on 30 contracts is a $2.40 cushion, more than a $0.75 floor (alone, a line at -$1.65); the line is
+  // never below the smaller of the floor and 1 tick a contract of profit after fees ($0.30 on 30): +$0.35 holds, +$0.05 sells.
+  floors.forget('Q-FAV');
+  assert.equal(at(0.84, 0.9, { pacerUsd: 0.75, floorMode: 'riding', floorTicks: 8 }).plans.length, 0);
+  assert.equal(floors.floor('Q-FAV', 30), 0.75);
+  assert.equal(at(0.83, 0.35, { pacerUsd: 3, floorMode: 'riding', floorTicks: 8 }).plans.length, 0);
+  const kept = at(0.82, 0.05, { pacerUsd: 3, floorMode: 'riding', floorTicks: 8 }).plans[0];
+  assert.deepEqual([kept?.leg, kept?.price, kept?.count, kept?.why], ['quota_snipe', 0.82, 30, '+$0.05 net on 30 at bid 0.82 fell below its $0.75 floor']);
+  assert.equal(at(0.78, -1.5, { pacerUsd: 3, floorMode: 'riding', floorTicks: 8 }).plans[0]?.leg, 'quota_snipe', 'a gap into a loss the cushion alone held to is sold');
   // targets counts the hunt start too; off sells at the quota as before.
   floors.forget('Q-FAV');
   assert.equal(at(0.84, 5, { pacerUsd: 4.5, floorMode: 'targets' }).plans.length, 0);

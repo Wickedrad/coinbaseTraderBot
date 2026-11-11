@@ -59,7 +59,8 @@ export interface PacerConfig {
   /** PACER_FLOOR: the quota as a stop under a higher target (riding by default). */
   floor: PacerFloorMode;
   /** PACER_FLOOR_TICKS (8): the floor sells once the position's profit is this many price ticks a contract under it, not
-   *  at the first dip below it (Kalshi contracts: crypto and tennis; perps have no contract tick and keep the floor as is). */
+   *  at the first dip below it, or sooner, once the profit after fees falls below the smaller of the floor and 1 tick a
+   *  contract (quotaCall's `keep`) (Kalshi contracts: crypto and tennis; perps have no contract tick and keep the floor as is). */
   floorTicks: number;
 }
 
@@ -248,10 +249,15 @@ export interface QuotaCall {
 /** The quota's call on one position: `net` its profit after fees at the touch now, `need` what the hour needs (undefined: the
  *  pacer is off or the position is not judged), `floor` its armed floor (QuotaFloors), `higher` why another exit rule aims
  *  higher (undefined: none, or PACER_FLOOR off). */
-export function quotaCall(net: number | undefined, need: number | undefined, floor: number | undefined, higher: string | undefined, cushion = 0): QuotaCall {
+export function quotaCall(net: number | undefined, need: number | undefined, floor: number | undefined, higher: string | undefined, cushion = 0, keep = 0): QuotaCall {
   if (net === undefined) return {};
   // `cushion` (PACER_FLOOR_TICKS, in dollars for the position): how far under the floor the profit may dip before it sells.
-  if (floor !== undefined && net < floor - cushion - 1e-9) return { sell: 'floor' };
+  // `keep` (1 tick a contract, in dollars for the position; `net` is already after fees): the cushion never takes the sale
+  // line below this much profit, nor below the floor itself when the floor is smaller (E22). The cushion grows with the
+  // contract count: 8 ticks on 30 contracts ($2.40) under a $0.75 floor had put the line at -$1.65; it is now +$0.30.
+  // This bounds the line, not the price the sale gets: the bid that crosses it can land a tick a contract lower (more where
+  // the fee steps up), so a sale can land just under zero after fees; and a floor under 1 tick a contract keeps no cushion.
+  if (floor !== undefined && net < Math.max(floor - cushion, Math.min(floor, keep)) - 1e-9) return { sell: 'floor' };
   if (need === undefined || net < need - 1e-9) return {};
   return higher !== undefined ? { arm: need } : { sell: 'snipe' };
 }

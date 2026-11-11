@@ -118,7 +118,7 @@ export function evaluateProfitExit(r: ProfitExitRequest, p: ProfitPolicy) {
   if (now >= normalExitBy && net <= 1e-9) return sell('normal sale deadline reached without a net profit; seek a sale rather than assume settlement');
   const higher = p.pacer.floor === 'off' ? undefined : r.higherTarget;
   const call = quotaCall(net, clock.neededUsd ?? undefined, p.pacer.enabled ? r.floor?.usd : undefined, higher,
-    p.pacer.floorTicks * q.tickSize * pos.quantity);
+    p.pacer.floorTicks * q.tickSize * pos.quantity, q.tickSize * pos.quantity);
   if (call.sell) return sell(call.sell === 'snipe' ? 'net liquidation profit covers the current hourly slice' : 'net profit fell through the existing quota floor');
   if (p.pacer.enabled && p.pacer.group && r.group?.sell && net > 1e-9 && higher === undefined) return sell('the existing SnipeGroup verdict calls for this profitable position to be sold');
   if (call.arm !== undefined) out.armFloorUsd = call.arm;

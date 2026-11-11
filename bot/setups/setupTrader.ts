@@ -18,6 +18,22 @@
 // bot/setups/journal.ts, so their value can be measured as recordings grow).
 // Guards: kill switch / halts flatten urgently; the perp daily loss stop flattens and halts for the
 // day; an unvalidated lane trades at pilot size (or not at all with PERP_REQUIRE_VALIDATION).
+//
+// The direction curves (the heat lane, bot/heat) reach this trader only through the `heat` dependency, and only as far
+// as its mode allows (HEAT_PERPS, with HEAT_LANE on):
+//   log    the hour's, the 4 hours' and the day's direction for the coin are written to the journal beside every
+//          signal and every open
+//   gate   also: a 1h setup whose side is against a live hour direction does not enter (no direction: it passes;
+//          15m and daily setups are never gated, and the day's direction gates nothing in this mode)
+//   entry  also: a coin's decided 60-minute call is offered as a fast-lane setup of kind `heat` on 1h, and its decided
+//          240-minute call as one on 4h (HEAT_PERP_HORIZONS). At most one heat offer per coin per clock hour across
+//          both (both in the same minute: the hotter weight, a tie to 4h), never while the coin has an open trade, and
+//          (HEAT_PERPS_DAILY=context) never against the coin's live daily call. A heat setup is scored by the heat
+//          weight, is dropped at the re-check unless its own horizon's direction (the hour, or the 4 hours) still
+//          points the same way and the day does not point against it, ends at the next close of its timeframe, and is
+//          carried through that close (not closed and opened again) while its horizon's direction still has its side.
+//          The daily call is never an entry of its own: no daily curve row is above the no-signal twin's best.
+// Sizing, caps, the liquidation rule, the exchange stop and flatten are the same for a heat trade as for any other.
 
 import { drawdownScale, optimalF, recencyWeight, type OptimalFReport, type WeightedTrade } from '../strategy/optimalF';
 import type { OptimalFConfig } from '../config';
@@ -32,7 +48,7 @@ import type { Timeframe } from '../ta/knowledge';
 import type { DirTarget, DirectionalContext, DirectionalGuards, PerpPacer } from '../perps/hedger';
 import type { PerpHub } from '../perps/perpData';
 import type { PerpGateway } from '../perps/perpRest';
-import { adaptToVol, applyRatchet, applyScaleOut, atr4hAt, detectLast, FAST_TFS, SLOW_TFS, SETUP_MIN_BARS, TF_MS, type Lane, type SetupSignal } from './detectors';
+import { adaptToVol, applyRatchet, applyScaleOut, atr4hAt, detectLast, heatSignal, FAST_TFS, SLOW_TFS, SETUP_MIN_BARS, TF_MS, type Lane, type SetupSignal } from './detectors';
 import { DEFAULT_COSTS, exitTrade, openTrade, stepTrade, tradeResult, type CostModel, type OpenTrade } from './exits';
 import { quotaCall, type PacerFloorMode } from '../risk/quotaPacer';
 import { activeCrossLead, crossLeadSetupReading, crossLeadSum, type CrossLeadReading } from '../ta/crossLead';
@@ -42,12 +58,17 @@ import { setupFeatureMap, setupVector, type SetupBars, type TaNetReading } from 
 import type { SnnContext } from '../model/featureEngine';
 import { playbook } from '../strategy/playbook';
 import { compensator } from '../strategy/compensator';
-import { DEFAULT_LANES, LaneBook, type Candidate, type LaneBookParams } from './lanes';
+import { DEFAULT_LANES, kindKey, LaneBook, type Candidate, type LaneBookParams } from './lanes';
 import { SetupModel } from './setupModel';
 import { maintenanceRate, maxSafeNotional, reservedFor, safeShare } from '../risk/liquidation';
 import { macro } from '../macro/macroService';
 import { gatePasses, probation } from '../risk/probation';
 import type { PerpRiskPosition } from '../perps/perpRest';
+import { heatWeight } from '../heat/heatLane';
+import type { HeatContext, HeatDecided, HeatDirection } from '../heat/types';
+import { logger } from '../util/log';
+
+const log = logger('setups');
 
 export interface SetupTraderParams {
   book: LaneBookParams;
@@ -61,6 +82,28 @@ export interface SetupTraderParams {
    *  half the initial margin implied by the exchange's leverage estimate). */
   liqBuffer?: number;
   maintMargin?: number;
+}
+
+/** How far the direction curves act on the perps (HEAT_PERPS; 'off' whenever HEAT_LANE is off). */
+export type HeatPerpsMode = 'off' | 'log' | 'gate' | 'entry';
+
+/** The direction curves as the setup trader is handed them. */
+export interface SetupHeatDeps {
+  /** The heat lane's view of the curves: the hour's, the 4 hours' and the day's direction per coin and the call that just fired. */
+  dir: HeatDirection;
+  mode: HeatPerpsMode;
+  /** HEAT_PERP_HORIZONS: the horizons whose calls open a heat setup in entry mode, 60 (on 1h) and 240 (on 4h). Default both. */
+  horizons?: number[];
+  /** HEAT_PERPS_DAILY: 'context' (default) keeps a heat entry against the coin's live daily call out; 'off' ignores the day. */
+  daily?: 'context' | 'off';
+  /** HEAT_TOP_N: the batch the heat weight is measured over (0 = every row the pack lists). Default 10. */
+  topN?: number;
+  /** The smallest heat weight (0..1) a heat setup needs to queue and to enter. Default 0: every decided call. */
+  minWeight?: number;
+  /** The perp stop rule for a heat setup: stopAtrMult x the 1h ATR from the entry, at least minStopBps
+   *  (PERP_STOP_ATR_MULT, PERP_MIN_STOP_BPS). Defaults 2 and 50. */
+  stopAtrMult?: number;
+  minStopBps?: number;
 }
 
 export interface SetupTraderDeps {
@@ -102,7 +145,26 @@ export interface SetupTraderDeps {
   /** Optimal f cap per lane (bot/strategy/optimalF.ts) from the model's out-of-sample trades and this
    *  trader's own closed trades; `paper` floors the cap at paperFloor x the lane's risk. */
   optimalF?: OptimalFConfig & { paper: boolean };
+  /** The direction curves (bot/heat), wired beside the SNN: journal, gate and hourly entries by `mode`. Unset = off. */
+  heat?: SetupHeatDeps;
 }
+
+const HOUR_MS = 3_600_000;
+/** The perps heat setups: the curve horizon (minutes) each timeframe trades, and the setup type keys (lanes.ts kindKey). */
+type HeatTf = '1h' | '4h';
+const HEAT_H: Record<HeatTf, number> = { '1h': 60, '4h': 240 };
+const HEAT_TF: Record<number, HeatTf | undefined> = { 60: '1h', 240: '4h' };
+const HEAT_KINDS = [kindKey({ tf: '1h', kind: 'heat' }), kindKey({ tf: '4h', kind: 'heat' })];
+/** Which saved mark says a coin's call at a horizon was ruled on (the hourly one keeps the name it had before 4h existed). */
+const heatCallMark = (asset: string, h: number): string => (h === 60 ? `heatcall|${asset}` : `heatcall${h}|${asset}`);
+/** A heat trade's close (hourly or 4-hour) is ruled on this long after the close at the earliest, so the reading taken at
+ *  the close itself (the reader publishes it some seconds later) is part of the decision to carry the trade or end it. */
+const HEAT_CLOSE_WAIT_MS = 90_000;
+/** DOGE is not traded on the curves anywhere in this project. */
+const isDoge = (asset: string): boolean => asset.trim().toUpperCase().startsWith('DOGE');
+const sideName = (dir: number): string => (dir > 0 ? 'up' : 'down');
+/** A direction the provider handed back, if it is one: a side of +1 or -1, still live now. */
+const live = (c: HeatContext | undefined, now: number): HeatContext | undefined => (c && (c.dir === 1 || c.dir === -1) && c.until > now ? c : undefined);
 
 /** Typical spread of a setup trade's result in R (stop = -1 R, targets at +1..3 R): standardises R for the streak scaler. */
 const R_SD = 1.2;
@@ -133,6 +195,9 @@ export class SetupTrader {
   private pacer?: PerpPacer;
   private readonly ddCut: Partial<Record<Lane, boolean>> = {};
   readonly capReports: Partial<Record<Lane, OptimalFReport & { liveTrades: number; liveDdR: number }>> = {};
+  /** The curve provider's last exception and how many there were (status); the first one is also logged. */
+  private heatError?: string;
+  private heatThrows = 0;
 
   constructor(private readonly d: SetupTraderDeps) {
     this.book = new LaneBook(d.params.book);
@@ -283,6 +348,197 @@ export class SetupTrader {
     return { snn_up1: v(c?.up?.[60]), snn_up4: v(c?.up?.[240]), snn_skill1: v(c?.conf?.[60]?.skill), snn_skill4: v(c?.conf?.[240]?.skill) };
   }
 
+  /** What the curves may do here: 'off' without the dependency or with a mode this code does not know. */
+  private heatMode(): HeatPerpsMode {
+    const m = this.d.heat?.mode;
+    return m === 'log' || m === 'gate' || m === 'entry' ? m : 'off';
+  }
+
+  /** One call into the curve provider. It is meant never to throw, but an exception inside targets() would skip the
+   *  whole perp executor tick (hedge orders and stop upkeep included), so every call goes through here: a throw is
+   *  logged once, counted for the status, and read as "no call". */
+  private heatAsk<T>(what: string, f: (h: HeatDirection) => T | undefined): T | undefined {
+    const h = this.d.heat?.dir;
+    if (!h) return undefined;
+    try { return f(h) ?? undefined; } catch (e) {
+      this.heatError = `${what}: ${String(e)}`;
+      if (this.heatThrows++ === 0) log.warn(`heat provider threw in ${what} (read as no call; later throws are only counted): ${String(e)}`);
+      return undefined;
+    }
+  }
+
+  /** The hour's direction for a coin: its latest decided 60-minute call still inside its hour (never for DOGE). */
+  private heatHour(asset: string, now: number): HeatContext | undefined {
+    if (this.heatMode() === 'off' || isDoge(asset)) return undefined;
+    return this.heatAsk('hour', (h) => live(h.hour(asset, now), now));
+  }
+
+  /** The 4 hours' direction for a coin: its latest decided 240-minute call until its bar close plus 4 hours (never DOGE). */
+  private heatFour(asset: string, now: number): HeatContext | undefined {
+    if (this.heatMode() === 'off' || isDoge(asset)) return undefined;
+    return this.heatAsk('four', (h) => live(h.four(asset, now), now));
+  }
+
+  /** The day's direction for a coin: its latest decided 1440-minute call until its bar close plus a day (never DOGE, and
+   *  nothing with HEAT_PERPS_DAILY=off). */
+  private heatDay(asset: string, now: number): HeatContext | undefined {
+    if (this.heatMode() === 'off' || this.d.heat?.daily === 'off' || isDoge(asset)) return undefined;
+    return this.heatAsk('day', (h) => live(h.day(asset, now), now));
+  }
+
+  /** The direction a heat setup on `tf` stands on: the hour's for 1h, the 4 hours' for 4h. */
+  private heatCtx(asset: string, tf: string, now: number): HeatContext | undefined {
+    return tf === '4h' ? this.heatFour(asset, now) : this.heatHour(asset, now);
+  }
+
+  /** The coin's live daily call when it points against `dir` (HEAT_PERPS_DAILY=context), else undefined. No daily call: no effect. */
+  private heatDayAgainst(asset: string, dir: number, now: number): HeatContext | undefined {
+    const d = this.heatDay(asset, now);
+    return d && d.dir !== dir ? d : undefined;
+  }
+
+  /** The horizons that open a heat setup (HEAT_PERP_HORIZONS): 60 and 240 only, both when the dependency names none. */
+  private heatHorizons(): number[] {
+    const hs = this.d.heat?.horizons ?? [60, 240];
+    return [60, 240].filter((h) => hs.includes(h));
+  }
+
+  /** The coin's decided call at horizon `h` (60 or 240) that just fired (inside the lane's entry lag), never for DOGE. */
+  private heatFired(asset: string, h: number, now: number): HeatDecided | undefined {
+    if (this.heatMode() !== 'entry' || isDoge(asset)) return undefined;
+    return this.heatAsk('fired', (p) => {
+      const d = p.fired(asset, h, now);
+      const r = d?.row;
+      return d && r && r.h === h && (r.dir === 1 || r.dir === -1) && Number.isFinite(r.barClose) && Number.isFinite(r.rank) && Number.isFinite(r.of) ? d : undefined;
+    });
+  }
+
+  /** Heat weight of a call by its rank (the lane's own formula, E07), measured over HEAT_TOP_N. */
+  private heatWeightOf(rank: number, of: number): number {
+    return heatWeight(rank, of, this.d.heat?.topN ?? 10);
+  }
+
+  /** The curves in the journal's flat form, for a setup or trade of side `dir`: the hour's direction, whether it is
+   *  with the trade (1) or against it (-1), which row called it and how hot it is; the same, shorter, for the 4 hours'
+   *  and the day's direction (null: none live, or HEAT_PERPS_DAILY=off for the day). Empty when HEAT_PERPS is off. */
+  private heatOf(asset: string, now: number, dir: number): Record<string, number | string | null> {
+    const mode = this.heatMode();
+    if (mode === 'off') return {};
+    const c = this.heatHour(asset, now), four = this.heatFour(asset, now), day = this.heatDay(asset, now);
+    return {
+      heat_mode: mode, heat_dir: c?.dir ?? null, heat_agree: c ? Math.sign(c.dir * dir) : null, heat_key: c?.key ?? null, heat_rank: c?.rank ?? null, heat_of: c?.of ?? null,
+      heat_w: c ? +this.heatWeightOf(c.rank, c.of).toFixed(4) : null, heat_bar_close: c?.barClose ?? null, heat_until: c?.until ?? null,
+      heat_four_dir: four?.dir ?? null, heat_four_agree: four ? Math.sign(four.dir * dir) : null, heat_four_key: four?.key ?? null,
+      heat_day_dir: day?.dir ?? null, heat_day_agree: day ? Math.sign(day.dir * dir) : null, heat_day_key: day?.key ?? null,
+    };
+  }
+
+  /** The curves' say when a candidate is re-checked. `drop`: why it does not enter. `weight`: a heat setup's fresh
+   *  score. Gate (modes gate and entry): a 1h setup against a live hour direction does not enter; no direction passes;
+   *  15m and daily setups are not gated, and the day gates no chart setup. A heat setup needs more: its own horizon's
+   *  direction (the hour for 1h, the 4 hours for 4h) must still point its way, because its call is the only reason for
+   *  the trade (a candidate can wait in the queue while the calls move on), and a live daily call must not point
+   *  against it (HEAT_PERPS_DAILY=context). */
+  private heatRecheck(sig: SetupSignal, now: number): { drop?: string; weight?: number } {
+    const mode = this.heatMode();
+    if (sig.kind === 'heat') {
+      if (mode !== 'entry') return { drop: 'heat entries are off (HEAT_PERPS)' };
+      if (!this.heatHorizons().includes(HEAT_H[sig.tf as HeatTf])) return { drop: `heat: ${sig.tf} heat entries are off (HEAT_PERP_HORIZONS)` };
+      // A candidate that waited (lane full, entries paused) past the clock hour it was offered in would make a second
+      // heat entry for the coin in the new hour, next to the new hour's own offer: one per coin per clock hour.
+      if ((this.seen.get(`heat|${sig.asset}`) ?? 0) < Math.floor(now / HOUR_MS) * HOUR_MS) return { drop: "heat: the clock hour it was offered in has passed" };
+      const four = sig.tf === '4h';
+      const c = this.heatCtx(sig.asset, sig.tf, now);
+      if (!c) return { drop: `heat: no live ${four ? '4-hour' : 'hour'} direction left for this call` };
+      if (c.dir !== sig.dir) return { drop: `heat: ${four ? 'the 4-hour direction' : "the hour's direction"} turned ${sideName(c.dir)} (${c.key})` };
+      const day = this.heatDayAgainst(sig.asset, sig.dir, now);
+      if (day) return { drop: `heat: against the day's direction (${day.key})` };
+      return { weight: this.heatWeightOf(c.rank, c.of) };
+    }
+    if ((mode !== 'gate' && mode !== 'entry') || sig.tf !== '1h') return {};
+    const c = this.heatHour(sig.asset, now);
+    return c && c.dir !== sig.dir ? { drop: `heat gate: the hour's direction is ${sideName(c.dir)} (${c.key}, rank ${c.rank}/${c.of}), against this ${sig.dir > 0 ? 'long' : 'short'}` } : {};
+  }
+
+  /** Rule on the coin's 60-minute and 240-minute calls that just fired (HEAT_PERPS=entry, HEAT_PERP_HORIZONS), each once:
+   *  offer it as a heat setup on 1h or 4h, or journal why not. The calls come from 1-minute readings and can fire many
+   *  times an hour, so a coin gets at most one heat offer per clock hour across both horizons. When both fire in the same
+   *  minute the hotter weight is offered first, a tie to the 4-hour call; the other is ruled on too, with the reason.
+   *  Returns whether the saved book changed. */
+  private heatOffer(asset: string, now: number): boolean {
+    const fresh: Array<{ call: HeatDecided; tf: HeatTf; weight: number }> = [];
+    for (const h of this.heatHorizons()) {
+      const call = this.heatFired(asset, h, now), tf = HEAT_TF[h];
+      if (!call || !tf) continue;
+      const mark = heatCallMark(asset, h);
+      if ((this.seen.get(mark) ?? 0) >= call.row.barClose) continue; // ruled on already (the executor ticks every few seconds)
+      this.seen.set(mark, call.row.barClose);
+      fresh.push({ call, tf, weight: this.heatWeightOf(call.row.rank, call.row.of) });
+    }
+    if (!fresh.length) return false;
+    // Hotter first; weights within a hair of each other are a tie, and a tie goes to 4h.
+    const w = (x: { weight: number }) => (Number.isFinite(x.weight) ? x.weight : -1);
+    fresh.sort((a, b) => (Math.abs(w(b) - w(a)) > 1e-9 ? w(b) - w(a) : HEAT_H[b.tf] - HEAT_H[a.tf]));
+    let offered: HeatTf | undefined;
+    for (const f of fresh) if (this.heatOfferOne(asset, f.call, f.tf, f.weight, now, offered)) offered = f.tf;
+    return true;
+  }
+
+  /** One fired call: offer it as a heat setup on `tf`, or journal why not. A coin gets none while it has an open trade (a
+   *  candidate waiting for the coin to free up would re-open the moment the trade closes), none once its clock hour is
+   *  used (`offered`: the other horizon's call of this minute just took it), and none against its live daily call.
+   *  Returns whether the offer queued. */
+  private heatOfferOne(asset: string, call: HeatDecided, tf: HeatTf, weight: number, now: number, offered: HeatTf | undefined): boolean {
+    const row = call.row, hourKey = `heat|${asset}`;
+    const H = this.d.heat!;
+    const hour = Math.floor(now / HOUR_MS) * HOUR_MS;
+    const open = this.book.positions.get(asset);
+    let sig: SetupSignal | undefined, why: string | undefined;
+    const day = open ? undefined : this.heatDayAgainst(asset, row.dir, now);
+    if (open) why = `the coin has an open ${open.tf} ${open.kind} trade`;
+    else if (offered) why = `the ${offered} heat call of this minute was offered (the hotter weight, a tie to 4h): one heat entry per coin per clock hour`;
+    else if ((this.seen.get(hourKey) ?? 0) >= hour) why = 'a heat entry was already offered for this coin this clock hour';
+    else if (day) why = `against the day's direction (${day.key})`;
+    else {
+      // The 4h bars come from the candle store (bot/ta/candleStore.ts builds them from complete groups of four 1h bars
+      // aligned to 00/04/08/12/16/20 UTC): the 4h ATR sets the stop and the 4-hour close ends the trade, as the 1h bars do
+      // for the hourly setup.
+      const px = this.d.spot(asset, now), cs = this.d.candles(asset)?.bars[tf];
+      sig = px !== undefined && cs ? heatSignal(asset, row, weight, px, atrOf(cs), { atrMult: H.stopAtrMult ?? 2, minBps: H.minStopBps ?? 50 }, tf) : undefined;
+      if (!sig) why = px !== undefined && px > 0 ? `no ${tf} ATR to set the stop` : 'no spot price';
+    }
+    const queued = sig !== undefined && Number.isFinite(weight) && this.book.offer(sig, weight, now);
+    // The clock hour is used up only by an offer that queued: a call too cool to queue leaves room for a hotter one.
+    if (queued) this.seen.set(hourKey, hour);
+    else if (sig) why = `heat weight ${weight.toFixed(3)} is under the minimum ${H.minWeight ?? 0}`;
+    if (sig) this.d.audit?.write('setup_signal', { asset, lane: 'fast', kind: 'heat', tf, dir: row.dir, ref: sig.ref, stop: sig.stop, score: weight, queued, heat: sig.heat });
+    this.d.journal?.signal({
+      ts: now, at: row.barClose, asset, lane: 'fast', kind: 'heat', tf, dir: row.dir, ref: sig?.ref ?? null, stop: sig?.stop ?? null, trailAtr: null,
+      score: Number.isFinite(weight) ? +weight.toFixed(4) : null, queued, why: why ?? null, call_h: row.h, call_key: row.key, call_rank: row.rank, call_of: row.of, call_fired: call.fired, call_against: call.against,
+      ...this.heatOf(asset, now, row.dir), ...this.snnOf(asset), model: null,
+    });
+    return queued;
+  }
+
+  /** A heat trade is due to end at the close `close` of its timeframe (hourly, or 4-hour). It is carried through that
+   *  close instead (one more bar) when its horizon's direction still has its side: the latest decided call at that
+   *  horizon (60 minutes for 1h, 240 for 4h) is live, points the trade's way and reaches at least half a bar past the
+   *  close, so it covers most of the bar that starts. That is the next bar's call on the same side; closing and opening
+   *  again would pay a round trip for the position already held. A carry stands for a new entry, so it is not made while
+   *  the coin's live daily call points against the trade, nor once the trade's horizon is no longer in
+   *  HEAT_PERP_HORIZONS. The carried bar counts as that clock hour's heat entry for the coin. */
+  private heatExtend(t: OpenTrade, close: number, now: number): void {
+    if (this.heatMode() !== 'entry' || !this.heatHorizons().includes(HEAT_H[t.tf as HeatTf])) return;
+    const c = this.heatCtx(t.asset, t.tf, now);
+    if (!c || c.dir !== t.dir || c.until < close + TF_MS[t.tf]! / 2) return;
+    if (this.heatDayAgainst(t.asset, t.dir, now)) return;
+    t.plan.maxBars = t.bars + 2;
+    t.heat = { key: c.key, rank: c.rank, of: c.of, heat: c.heat, barClose: c.barClose, weight: this.heatWeightOf(c.rank, c.of), extended: (t.heat?.extended ?? 0) + 1 };
+    this.seen.set(`heat|${t.asset}`, Math.floor(now / HOUR_MS) * HOUR_MS);
+    this.d.audit?.write('setup_trade', { event: 'extended', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entry: t.entry, stop: t.stop, close, heat: t.heat });
+    this.d.journal?.trade({ ts: now, event: 'extended', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entryTs: t.entryTs, entry: t.entry, close, extended: t.heat.extended, ...this.heatOf(t.asset, now, t.dir) });
+  }
+
   private record(t: OpenTrade, now: number): void {
     const res = tradeResult(t);
     if (Number.isFinite(res.r)) this.d.streak?.observe(res.r / R_SD, res.r > 0, now);
@@ -298,8 +554,8 @@ export class SetupTrader {
     this.pacer?.credit(usd, this.d.hub.get(t.asset)?.latest?.ticker ?? t.asset);
     this.pacer?.floors?.forget(`${t.asset}|${t.entryTs}`);
     this.history.push({ asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entry: t.entry, exit: t.closed?.px ?? NaN, entryTs: t.entryTs, exitTs: t.closed?.ts ?? now, reason: t.closed?.reason ?? 'manual', r: res.r, ret: res.ret, usd, score: t.score });
-    this.d.audit?.write('setup_trade', { event: 'closed', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entry: t.entry, exit: t.closed?.px, reason: t.closed?.reason, r: res.r, usd });
-    this.d.journal?.trade({ ts: now, event: 'closed', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entryTs: t.entryTs, entry: t.entry, exit: t.closed?.px ?? null, reason: t.closed?.reason ?? 'manual', r: res.r, ret: res.ret, usd, score: t.score ?? null });
+    this.d.audit?.write('setup_trade', { event: 'closed', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entry: t.entry, exit: t.closed?.px, reason: t.closed?.reason, r: res.r, usd, ...(t.heat ? { extended: t.heat.extended } : {}) });
+    this.d.journal?.trade({ ts: now, event: 'closed', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entryTs: t.entryTs, entry: t.entry, exit: t.closed?.px ?? null, reason: t.closed?.reason ?? 'manual', r: res.r, ret: res.ret, usd, score: t.score ?? null, ...(t.heat ? { extended: t.heat.extended } : {}) });
   }
 
   /** Directional targets for the executor (called after it synced positions). */
@@ -322,11 +578,15 @@ export class SetupTrader {
       const lastBar = cs?.[cs.length - 1];
       const key = `trail|${asset}|${t.tf}`;
       let tfClose: { close: number; atr: number } | undefined;
-      if (lastBar && lastBar.ts > t.entryTs - TF_MS[t.tf]! && (this.seen.get(key) ?? 0) < lastBar.ts) {
+      // A heat trade's close (hourly, or 4-hour) waits a moment (HEAT_CLOSE_WAIT_MS), so the reading taken at the close is in.
+      const heatWait = t.kind === 'heat' && this.heatMode() === 'entry' && lastBar !== undefined && now < lastBar.ts + TF_MS[t.tf]! + HEAT_CLOSE_WAIT_MS;
+      if (lastBar && !heatWait && lastBar.ts > t.entryTs - TF_MS[t.tf]! && (this.seen.get(key) ?? 0) < lastBar.ts) {
         this.seen.set(key, lastBar.ts);
         const atr = atrOf(cs!);
         if (atr > 0) tfClose = { close: lastBar.c, atr };
       }
+      // A heat trade that would end at this close is carried through it while its horizon's direction still points its way.
+      if (tfClose && lastBar && t.kind === 'heat' && t.bars + 1 >= t.plan.maxBars) this.heatExtend(t, lastBar.ts + TF_MS[t.tf]!, now);
       const bar: Candle = { ts: now, o: prev, h: Math.max(prev, px), l: Math.min(prev, px), c: px, v: 0 };
       const was = t.partialDone, wasFrac = t.frac;
       if (stepTrade(t, bar, 0, this.d.params.costs, tfClose)) { this.record(t, now); this.book.remove(asset); changed = true; if (t.closed?.reason !== 'target') exitNow.add(asset); continue; }
@@ -392,9 +652,16 @@ export class SetupTrader {
         const score = this.score(sig, at);
         const queued = Number.isFinite(score) && this.book.offer(sig, score, now);
         this.d.audit?.write('setup_signal', { asset, lane: sig.lane, kind: sig.kind, tf, dir: sig.dir, ref: sig.ref, stop: sig.stop, score, queued });
-        this.d.journal?.signal({ ts: now, at, asset, lane: sig.lane, kind: sig.kind, tf, dir: sig.dir, ref: sig.ref, stop: sig.stop, trailAtr: sig.plan.trailAtr, score: Number.isFinite(score) ? +score.toFixed(4) : null, queued, tn_up1: tn?.up1 ?? null, tn_up4: tn?.up4 ?? null, tn_vol: tn?.vol ?? null, ...this.snnOf(asset), model: this.model?.params.version ?? null });
+        this.d.journal?.signal({ ts: now, at, asset, lane: sig.lane, kind: sig.kind, tf, dir: sig.dir, ref: sig.ref, stop: sig.stop, trailAtr: sig.plan.trailAtr, score: Number.isFinite(score) ? +score.toFixed(4) : null, queued, tn_up1: tn?.up1 ?? null, tn_up4: tn?.up4 ?? null, tn_vol: tn?.vol ?? null, ...this.snnOf(asset), ...this.heatOf(asset, now, sig.dir), model: this.model?.params.version ?? null });
       }
     }
+    // 2b. The heat setups (HEAT_PERPS=entry): a coin's decided 60-minute call on 1h and 240-minute call on 4h, offered to
+    // the fast lane. Their minimum is their own in every validation mode: the model's per-type list does not know them, so
+    // without this they would trade at any weight while unlisted types are on probation and never queue once they are not.
+    const heatEntry = this.heatMode() === 'entry';
+    if (heatEntry) this.book.params.fast.ownMinScore = Object.fromEntries(HEAT_KINDS.map((k) => [k, this.d.heat?.minWeight ?? 0]));
+    else delete this.book.params.fast.ownMinScore;
+    if (heatEntry) for (const asset of assets) if (this.heatOffer(asset, now)) changed = true;
 
     // 3. Entries (re-checked on fresh data), unless entries are blocked.
     // Paper training override: the daily loss halt is advisory (it still shows in the status), not a stop.
@@ -417,6 +684,9 @@ export class SetupTrader {
         if (!(px && px > 0) || q?.bid === undefined || q.ask === undefined || q.isOpen === false) return undefined;
         if (this.d.params.requireValidation && !gatePasses('setups', Boolean(this.model?.validated(cand.sig.lane)))) return undefined;
         if (this.snnBlocks(cand.sig)) return undefined;
+        // The direction curves: the hourly gate, and for a heat setup the re-read of its horizon's direction and the day's.
+        const heat = this.heatRecheck(cand.sig, now);
+        if (heat.drop) { this.d.audit?.write('setup_skip', { asset: cand.sig.asset, lane: cand.sig.lane, kind: cand.sig.kind, reason: heat.drop }); return heat.drop; }
         const cv = this.conviction(cand.sig.asset, cand.sig.dir, now);
         // Strategy weight: the Compensator's ramp for this setup kind on the coin's Librarian reading
         // (bot/strategy/compensator.ts) when it is on, else the playbook's perps weight in this coin's confirmed regime
@@ -427,7 +697,8 @@ export class SetupTrader {
         const wfW = wf ? wf.perpMult(cand.sig.asset, cand.sig.dir) : 1;
         const weight = Math.min(2, (pbW ?? 1) * wfW);
         const weightWhy = wfW === 0 ? `waterfall mode: ${wf!.why}` : undefined;
-        return { px, score: this.score(cand.sig, now), mult: cv?.mult, priority: cv?.priority, why: cv?.why, weight, weightWhy };
+        // A heat setup is scored by the heat weight of its horizon's direction now, not by the setup model (which never saw the type).
+        return { px, score: heat.weight ?? this.score(cand.sig, now), mult: cv?.mult, priority: cv?.priority, why: cv?.why, weight, weightWhy };
       }, (cand) => this.conviction(cand.sig.asset, cand.sig.dir, now)?.priority ?? 0);
       for (const e of entries) {
         const t = openTrade(e.cand.sig, e.px, now, this.d.params.costs);
@@ -451,9 +722,9 @@ export class SetupTrader {
         this.book.add(t);
         this.lastPx.set(t.asset, e.px);
         changed = true;
-        this.d.audit?.write('setup_trade', { event: 'opened', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entry: t.entry, stop: t.stop, target1: t.plan.target1, target2: t.plan.target2, notional: t.notional, score: e.score, pilot, conviction: e.mult, convictionWhy: e.why ?? null, capped: e.capped ?? null });
+        this.d.audit?.write('setup_trade', { event: 'opened', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entry: t.entry, stop: t.stop, target1: t.plan.target1, target2: t.plan.target2, notional: t.notional, score: e.score, pilot, conviction: e.mult, convictionWhy: e.why ?? null, capped: e.capped ?? null, ...(t.heat ? { heat: t.heat } : {}) });
         const tnE = this.reading(t.asset, now);
-        this.d.journal?.trade({ ts: now, event: 'opened', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entryTs: t.entryTs, entry: t.entry, stop: t.stop, notional: t.notional, score: e.score, pilot, tn_up1: tnE?.up1 ?? null, tn_up4: tnE?.up4 ?? null, tn_vol: tnE?.vol ?? null, ...this.snnOf(t.asset) });
+        this.d.journal?.trade({ ts: now, event: 'opened', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entryTs: t.entryTs, entry: t.entry, stop: t.stop, notional: t.notional, score: e.score, pilot, tn_up1: tnE?.up1 ?? null, tn_up4: tnE?.up4 ?? null, tn_vol: tnE?.vol ?? null, ...this.snnOf(t.asset), ...this.heatOf(t.asset, now, t.dir) });
       }
     }
 
@@ -504,7 +775,7 @@ export class SetupTrader {
       const ratio = perpPx / spotPx;
       const contracts = Math.sign(t.dir) * Math.floor(((t.notional ?? 0) * t.frac) / perpPx / step + 1e-9) * step;
       const stopPrice = +(t.stop * ratio).toFixed(4);
-      const reason = `${t.lane} ${t.tf} ${t.kind} ${t.dir > 0 ? 'long' : 'short'} from ${t.entry.toFixed(4)}: stop ${t.stop.toFixed(4)}${t.partialDone ? (t.plan.scaleOut ? ` (${Math.round(100 * (1 - t.frac))}% taken off, stop at break-even or trailing)` : ' (half off, stop at break-even or trailing)') : ''}${t.plan.target1 !== undefined && !t.partialDone ? `, target ${t.plan.target1.toFixed(4)}` : ''}${t.plan.target2 !== undefined ? ` then ${t.plan.target2.toFixed(4)}` : ', trailing'}`;
+      const reason = `${t.lane} ${t.tf} ${t.kind} ${t.dir > 0 ? 'long' : 'short'} from ${t.entry.toFixed(4)}: stop ${t.stop.toFixed(4)}${t.partialDone ? (t.plan.scaleOut ? ` (${Math.round(100 * (1 - t.frac))}% taken off, stop at break-even or trailing)` : ' (half off, stop at break-even or trailing)') : ''}${t.plan.target1 !== undefined && !t.partialDone ? `, target ${t.plan.target1.toFixed(4)}` : ''}${t.plan.target2 !== undefined ? ` then ${t.plan.target2.toFixed(4)}` : t.kind === 'heat' ? (t.tf === '4h' ? ', until the 4-hour close' : ', until the hourly close') : ', trailing'}`;
       out.push({ asset, ticker: l.ticker, target: +contracts.toFixed(4), urgent: guarded.has(asset), reason: guarded.has(asset) ? `liquidation guard: cut so the liquidation sits beyond the stop; ${reason}` : reason, stopPrice });
       this.lastDecisions.set(l.ticker, { target: contracts, reason, stop: stopPrice });
     }
@@ -525,7 +796,9 @@ export class SetupTrader {
     for (const lane of ['fast', 'slow'] as const) {
       const hist = this.model?.params.sizing?.[lane];
       const trades: WeightedTrade[] = (hist?.trades ?? []).map(([ts, r]) => ({ ts, r, w: recencyWeight(ts, now, of.halfLifeDays) * (ts < (hist?.devUntil ?? 0) ? 0.5 : 1) }));
-      const live = this.history.filter((h) => h.lane === lane && Number.isFinite(h.r)).sort((a, b) => a.exitTs - b.exitTs);
+      // Heat trades stay out: the lane's optimal f is measured on the setup model's trades, and a few curve-led
+      // trades with their own exit rule would move the cap (to zero, in live) for every other setup in the lane.
+      const live = this.history.filter((h) => h.lane === lane && h.kind !== 'heat' && Number.isFinite(h.r)).sort((a, b) => a.exitTs - b.exitTs);
       for (const h of live) trades.push({ ts: h.exitTs, r: h.r, w: recencyWeight(h.exitTs, now, of.halfLifeDays, of.liveMult) });
       const rep = optimalF(trades, { quantile: of.quantile, minTrades: of.minTradesSetups, horizon: 100 });
       let cum = 0, pk = 0;
@@ -552,7 +825,10 @@ export class SetupTrader {
       modelError: this.modelError ?? null,
       // What the rest of the bot contributes: the TA network as model inputs (when the model kept them)
       // and as the volatility trail, the SNN gate (off until the journal proves it).
-      inputs: { taNetFeatures: m?.uses('tanet') ?? false, taNetChoice: m?.params.groupChoice ?? null, volTrailK: m?.params.volTrailK ?? 0, snnGate: (() => { const g = this.snnGate(); return g ? { enabled: g.enabled, minAgree: g.minAgree ?? null, reason: g.reason ?? null } : null; })() },
+      inputs: { taNetFeatures: m?.uses('tanet') ?? false, taNetChoice: m?.params.groupChoice ?? null, volTrailK: m?.params.volTrailK ?? 0, snnGate: (() => { const g = this.snnGate(); return g ? { enabled: g.enabled, minAgree: g.minAgree ?? null, reason: g.reason ?? null } : null; })(),
+        // The direction curves: the mode in force, the horizons that enter, the day's role, the heat setup's minimum
+        // weight, and the provider's last exception.
+        heat: this.d.heat ? { mode: this.heatMode(), horizons: this.heatHorizons(), daily: this.d.heat.daily === 'off' ? 'off' : 'context', minWeight: this.d.heat.minWeight ?? 0, topN: this.d.heat.topN ?? 10, throws: this.heatThrows, error: this.heatError ?? null } : null },
       equity: this.equity?.value ?? null, dayStartEquity: this.day?.start ?? null, dayHalt: this.dayHalt ?? null,
       dayHaltAdvisory: Boolean(this.dayHalt && this.d.trainingOverride?.()),
       breakEven: this.d.breakEven?.reference ?? null,

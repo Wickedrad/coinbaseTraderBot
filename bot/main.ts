@@ -10,13 +10,14 @@ import { createApi } from './api/server';
 import { KalshiCheck, type CheckSource } from './recon/kalshiCheck';
 import type { ExchangeFill } from './kalshi/types';
 import { AuditLog } from './audit/auditLog';
-import { ConfigError, loadConfig, publicConfig, type Config } from './config';
+import { ConfigError, heatStartCheck, loadConfig, publicConfig, type Config } from './config';
 import { Engine } from './engine';
 import { KalshiSigner } from './kalshi/auth';
 import { KalshiRest } from './kalshi/rest';
 import type { ExchangeGateway } from './kalshi/types';
 import { KalshiWs } from './kalshi/ws';
 import { MarketData, Recorder } from './marketdata/marketData';
+import { loadVolState, saveVolState, VOL_STATE_FILE } from './marketdata/volState';
 import { MetaModel } from './model/metaModel';
 import { loadVolProfile, type VolProfile } from './model/volSeasonality';
 import { loadSessionRiskFile } from './model/sessionRisk';
@@ -78,6 +79,9 @@ import { LiveLines } from './strategy/liveLine';
 import { ComponentTrials, TRIAL_LABEL } from './strategy/componentTrials';
 import { Scoreboard } from './health/scoreboard';
 import { DEFAULT_STREAK, StreakScaler } from './risk/streakScaler';
+import { FileHeatSource } from './heat/heatSource';
+import { HeatLane } from './heat/heatLane';
+import type { HeatTag } from './heat/types';
 
 const log = logger('main');
 
@@ -97,6 +101,8 @@ async function main(): Promise<void> {
         log.info('conditioning champion applied', { version: champ.version, params: c.params, skipped: c.skipped });
       } catch (e) { log.error('conditioning champion not applied: its settings do not pass the configuration checks; the configured settings stay', { version: champ.version, error: String(e) }); }
     }
+    // The heat lane needs the plan exits to own its positions (PLAN_RULES): HEAT_LANE=true without them does not start.
+    heatStartCheck(cfg, cfg.plan.enabled);
   } catch (e) {
     if (e instanceof ConfigError) {
       log.error(`configuration invalid: ${e.message}`);
@@ -229,6 +235,15 @@ async function main(): Promise<void> {
   const ws = signer ? new KalshiWs(cfg.wsUrl, signer, indexIds) : undefined;
   if (!signer) log.warn('no Kalshi API key (KALSHI_KEY_ID + KALSHI_PRIVATE_KEY_PATH): order books are polled over anonymous REST, which Kalshi rate limits hard; add the key even for paper trading');
   const md = new MarketData(cfg, rest, ws, new Recorder(path.join(cfg.dataDir, 'recordings'), { gzip: cfg.autoTrain.recordingsGzipLive }));
+  // The settlement index's volatility estimate from the last run (E06, bot/marketdata/volState.ts): saved every 30 s and on
+  // shutdown, continued at start when recent, so a restart does not leave every coin unpriced for about 2 minutes.
+  const volStateFile = path.join(cfg.dataDir, VOL_STATE_FILE);
+  try {
+    const restored = loadVolState(volStateFile, md.index, Date.now());
+    if (restored.length) log.info('index volatility carried over from the last run', { assets: restored });
+  } catch (e) { log.warn(`index volatility state not loaded: ${String(e)}`); }
+  const saveVol = () => { try { saveVolState(volStateFile, md.index, Date.now()); } catch (e) { log.warn(`index volatility state not saved: ${String(e)}`); } };
+  setInterval(saveVol, 30_000).unref();
   // The rounding grid an earlier run learned from Kalshi's charged fees wins over KALSHI_BALANCE_PRECISION.
   setBalancePrecision(md.feeBook.precision());
   // Recordings grow by a day file per day, gzipped as they are written (or, a day begun plain, after midnight: about
@@ -347,7 +362,8 @@ async function main(): Promise<void> {
   let perpsPaper: PaperPerpExchange | undefined;
   const modelHealth = new ModelHealth({ minWindows: cfg.strategy.modelHealthMinWindows }, path.join(cfg.dataDir, 'model_health.json'));
   const taHealth = new ModelHealth({ minWindows: 1e9 }, path.join(cfg.dataDir, 'ta_health.json'));
-  // Bot vs market per time-to-close bucket (each book its own scorecard); only paper blocks entries on it.
+  // Bot vs market per time-to-close bucket (one scorecard for paper and live, always kept); it blocks entries, in paper
+  // and live alike, only with ACCURACY_GATE on (off by default).
   const accuracyGate = new AccuracyGate(cfg.strategy.accuracyGate, path.join(cfg.dataDir, 'accuracy_gate.json'));
   // TA conviction for the perps (setup trader): features + the TA network's raw view, cached per asset per minute.
   const convCache = new Map<string, { ts: number; f: Record<string, number>; v: TaNetView | undefined; rb?: { score: number; n: number }; gp?: { exposure: number } }>();
@@ -376,6 +392,11 @@ async function main(): Promise<void> {
   // Perps: one executor per perps account drives each position to hedge (stage 2) + directional
   // (stage 3) targets, simulated against live perp quotes (paper) or with real orders (live).
   // The perps trader reads the SNN's direction calls from the engine (set once it exists).
+  // The heat entry lane (bot/heat, docs/HEAT_LANE.md): the reader's calls file and the lane's own book, saved in the book
+  // folder so paper and live each keep theirs. Built only with HEAT_LANE on (the start check above refuses it without exits).
+  const heatLane = cfg.heat.enabled ? new HeatLane(cfg.heat, path.join(cfg.bookDir, 'heat_lane_state.json')) : undefined;
+  const heatSource = heatLane ? new FileHeatSource(cfg.heat.callsFile) : undefined;
+  if (heatLane) log.info('heat lane on', { callsFile: cfg.heat.callsFile, assets: cfg.heat.assets, horizons: cfg.heat.horizons, perps: cfg.heat.perps, perpHorizons: cfg.heat.perpHorizons, perpsDaily: cfg.heat.perpsDaily });
   let engineRef: Engine | undefined;
   let hedger: PerpHedger | undefined;
   let perpTrader: PerpTrader | undefined;
@@ -467,6 +488,8 @@ async function main(): Promise<void> {
           };
         })(),
         snn: (asset) => engineRef?.snnContext(asset, undefined, 'perps'),
+        // The curves on the perps: entries on the hour and on 4 hours (HEAT_PERP_HORIZONS), the day as context (HEAT_PERPS_DAILY).
+        heat: heatLane && cfg.heat.perps !== 'off' ? { dir: heatLane.direction, mode: cfg.heat.perps, topN: cfg.heat.topN, stopAtrMult: P.stopAtrMult, minStopBps: P.minStopBps, horizons: cfg.heat.perpHorizons, daily: cfg.heat.perpsDaily } : undefined,
         journal: new SetupJournal(path.join(cfg.dataDir, 'setups'), (e) => log.warn(`setup journal: ${String(e)}`)),
         snnGatePath: () => path.join(cfg.autoTrain.dir, 'setup_snn_gate.json'),
         trainingOverride, streak: perpsStreak, breakEven: perpsBreakEven, lossAt: cfg.strategy.ddScaleAt,
@@ -605,7 +628,10 @@ async function main(): Promise<void> {
   // The exchange's own status and maintenance schedule gate new entries (exits stay allowed).
   const exchangeStatus = new ExchangeStatusMonitor(rest);
   exchangeStatus.start();
-  const engine: Engine = new Engine({ kalshiCheck, control, exchangeStatus, cfg, audit, alerter, md, gateway, oms, risk, kill, recon, model, volProfile, vault, balanceMonitor, balanceMonitorPath, tca, equityGuard, modelHealth, taHealth, accuracyGate, calendar, hedger, perpTrader: directionalTrader, clock, tennisScores, tennisFair, volModel, fillModel, fillLogDir: path.join(cfg.dataDir, 'fills'), snn, snnBlenderPath: path.join(cfg.snn.checkpointDir, 'blender.json'), curveExit, takeProfitBench, curveEntry, liveLines, trials, scoreboard });
+  const engine: Engine = new Engine({ kalshiCheck, control, exchangeStatus, cfg, audit, alerter, md, gateway, oms, risk, kill, recon, model, volProfile, vault, balanceMonitor, balanceMonitorPath, tca, equityGuard, modelHealth, taHealth, accuracyGate, calendar, hedger, perpTrader: directionalTrader, clock, tennisScores, tennisFair, volModel, fillModel, fillLogDir: path.join(cfg.dataDir, 'fills'), snn, snnBlenderPath: path.join(cfg.snn.checkpointDir, 'blender.json'), curveExit, takeProfitBench, curveEntry, liveLines, trials, scoreboard,
+    // The plan positions own the lane's entries (PLAN_RULES; checked at start): tagged before the order, forgotten when it
+    // filled nothing. The re-entry rule is the hold exits' own (the engine's default).
+    heat: heatLane && heatSource ? { lane: heatLane, source: heatSource, ...(cfg.plan.enabled ? { tag: (t: HeatTag, now: number) => { engine.planPositions.tag(t, now); }, untag: (t: string) => engine.planPositions.forget(t) } : {}) } : undefined });
   // The pipeline's session risk profile (session_risk.json), under SESSION_RISK; autotrain hot-swaps new ones.
   const sr = loadSessionRiskFile(modelPaths.session_risk);
   if (sr) { engine.setSessionRiskAuto(sr.profile); log.info(`session risk ${sr.version}${cfg.strategy.sessionRiskAuto ? '' : ' loaded, not applied (SESSION_RISK_AUTO off)'}`, { sessions: Object.keys(sr.profile) }); }
@@ -685,6 +711,7 @@ async function main(): Promise<void> {
     autoTrain.stop();
     try { engine.saveSnnBlender(); await Promise.all(Object.values(engine.snn?.units ?? {}).map((u) => u!.host.stop())); } catch (e) { log.error('SNN checkpoint on shutdown failed', { error: String(e) }); }
     audit.write('shutdown', { sig });
+    saveVol();
     md.stop();
     server.close(() => process.exit(code));
     setTimeout(() => process.exit(code), 5000).unref();
