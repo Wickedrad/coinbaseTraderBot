@@ -1,6 +1,6 @@
 # Heat maps vs the bot on live Kalshi: rules fixed before any result is read
 
-Written Wed Nov 11, 2026, 11:10 AM EST (16:10 UTC), before the capture started. Thread "Test weighted heat maps on live Kalshi". Research only: nothing here changes the bot.
+Written Wed Nov 11, 2026, 10:36 AM EST (15:36 UTC), before the capture started. Thread "Test weighted heat maps on live Kalshi". Research only: nothing here changes the bot.
 
 ## Question
 

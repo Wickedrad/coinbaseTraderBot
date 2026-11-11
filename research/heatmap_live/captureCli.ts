@@ -26,7 +26,7 @@ export const CAPTURE = Object.freeze({
 });
 
 /** The next segment end: the next UTC time-of-day on the 3-hour grid through 14:25 that is at least 20 minutes away. */
-export function segmentEnd(now: number, hours = CAPTURE.segmentHours, anchorMinute = CAPTURE.segmentAnchorMinute, minMinutes = CAPTURE.minSegmentMinutes): number {
+export function segmentEnd(now: number, hours: number = CAPTURE.segmentHours, anchorMinute: number = CAPTURE.segmentAnchorMinute, minMinutes: number = CAPTURE.minSegmentMinutes): number {
   const step = hours * 60 * MIN, anchor = anchorMinute * MIN;
   let end = Math.floor((now - anchor) / step) * step + anchor;
   while (end - now < minMinutes * MIN) end += step;
@@ -37,7 +37,7 @@ export function segmentEnd(now: number, hours = CAPTURE.segmentHours, anchorMinu
  *  the long indicators; a longer hole passes through and resets them (as in training). */
 export class MinuteStream {
   last?: MinuteCandle; filled = 0; breaks = 0;
-  constructor(private readonly maxFill = CAPTURE.maxFillMinutes) {}
+  constructor(private readonly maxFill: number = CAPTURE.maxFillMinutes) {}
   /** Returns the bars to push for one new bar (the fills, then the bar), or [] when it is not newer. */
   next(b: MinuteCandle): MinuteCandle[] {
     if (this.last && b.ts <= this.last.ts) return [];
@@ -54,7 +54,7 @@ export class MinuteStream {
 }
 
 /** The hourly strikes to watch: nearest a 50c YES mid when the listing is two-sided, else nearest the coin price. */
-export function pickHourly(markets: MarketInfo[], anchor: number | undefined, n = CAPTURE.hourlyStrikes): MarketInfo[] {
+export function pickHourly(markets: MarketInfo[], anchor: number | undefined, n: number = CAPTURE.hourlyStrikes): MarketInfo[] {
   const mid = (m: MarketInfo) => m.yesBid !== undefined && m.yesAsk !== undefined && m.yesBid > 0 && m.yesAsk < 1 && m.yesAsk > m.yesBid ? (m.yesBid + m.yesAsk) / 2 : undefined;
   const rows = markets.filter((m) => m.floorStrike !== undefined && m.strikeType !== 'between' && /-T/.test(m.ticker));
   const key = (m: MarketInfo): [number, number] => { const x = mid(m); return x !== undefined ? [0, Math.abs(x - 0.5)] : [1, anchor ? Math.abs(m.floorStrike! - anchor) / anchor : Infinity]; };
