@@ -64,6 +64,12 @@ done
 # The paper pool is $200 (the owner, Oct 30): a bot.env pinned to the old $100 drops it, so the new default applies (the
 # bot tops the paper account up to it once); any other value is left alone.
 if grep -qxF 'PAPER_BANKROLL_USD=100' "$ENV"; then edit_env '^PAPER_BANKROLL_USD=100$'; echo "PAPER_BANKROLL_USD=100 removed from $ENV (the paper pool is \$200)"; fi
+# Edge-plan cleanup (#321, Steven's go-ahead Nov 11, 8:05 AM EST / 13:05 UTC): the session-edge entry blackout and the
+# model-health halt are off by default (SESSION_EDGE_NO_ENTRY follows AUTO_TRAIN; MODEL_HEALTH_HALT false). A bot.env that
+# still pins either on drops the line, so the defaults apply; any other value is left alone.
+for old in 'SESSION_EDGE_NO_ENTRY=true' 'SESSION_EDGE_NO_ENTRY=1' 'MODEL_HEALTH_HALT=true' 'MODEL_HEALTH_HALT=1'; do
+  if grep -qxF "$old" "$ENV"; then edit_env "^${old}\$"; echo "${old} removed from $ENV (off by default since #321)"; fi
+done
 if [ -n "${DASHBOARD_PASSWORD:-}" ] && ! grep -qxF "DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD" "$ENV"; then
   edit_env '^DASHBOARD_PASSWORD=' "DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD"
   echo "dashboard password set from the deploy"
