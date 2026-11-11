@@ -40,12 +40,27 @@ jobs:
           IFS=, read -ra RUNS <<< "${{ steps.req.outputs.runs }}"
           for r in "${RUNS[@]}"; do gh run download "$r" --repo "$GITHUB_REPOSITORY" --pattern 'heat-shadow-*' --dir "$RUNNER_TEMP/capture/$r" || echo "::warning::no segments from run $r"; done
           echo "segments: $(find "$RUNNER_TEMP/capture" -name meta.json | wc -l)"
-      - uses: ./.github/actions/drive-setup
+      - name: rclone, with retries (the package mirror sometimes fails to resolve)
         if: steps.req.outputs.bot == 'true'
+        continue-on-error: true
+        run: |
+          for i in 1 2 3 4 5 6; do
+            command -v rclone >/dev/null && break
+            sudo apt-get update -qq >/dev/null 2>&1 || true
+            sudo apt-get install -y -qq rclone >/dev/null 2>&1 || sleep $((i * 20))
+          done
+          rclone version | head -1
+      # A Drive failure must not block the heat map side of a read: the report then says the bot side is missing.
+      - uses: ./.github/actions/drive-setup
+        id: drive
+        if: steps.req.outputs.bot == 'true'
+        continue-on-error: true
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
       - name: The bot's opening fills from its archived audit days (kept on the runner; counts only)
-        if: steps.req.outputs.bot == 'true'
+        id: fills
+        if: steps.req.outputs.bot == 'true' && steps.drive.outcome == 'success'
+        continue-on-error: true
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/audit"
@@ -61,6 +76,9 @@ jobs:
           set -euo pipefail
           node --import tsx research/heatmap_live/score.ts --capture "$RUNNER_TEMP/capture" --bot "$RUNNER_TEMP/bot-fills.jsonl" \
             --from "${{ steps.req.outputs.from }}" --to "${{ steps.req.outputs.to }}" --out "$RUNNER_TEMP/score" > /dev/null
+          if [ "${{ steps.req.outputs.bot }}" = "true" ] && [ ! -s "$RUNNER_TEMP/bot-fills.jsonl" ]; then
+            printf '\n**The bot side is missing from this read** (Drive step: %s, fill reader: %s). Rerun before comparing with the bot.\n' "${{ steps.drive.outcome }}" "${{ steps.fills.outcome }}" >> "$RUNNER_TEMP/score/score.md"
+          fi
           cat "$RUNNER_TEMP/score/score.md" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
