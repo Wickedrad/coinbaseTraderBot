@@ -241,6 +241,17 @@ test('quota floors (PACER_FLOOR, Steven Oct 31): armed at the need while a rule 
   // PACER_FLOOR_TICKS: the cushion (dollars for the position) lets the profit dip that far under the floor before it sells.
   assert.deepEqual(quotaCall(4.3, 4.5, 4.5, "the model's sell price 0.80", 0.5), {}, 'cushion: a $0.20 dip under the floor holds');
   assert.deepEqual(quotaCall(3.9, 4.5, 4.5, "the model's sell price 0.80", 0.5), { sell: 'floor' }, 'cushion: past it, sold');
+  // `keep` (1 tick a contract, dollars for the position; E22): the cushion never takes the line below that much profit after
+  // fees, nor below the floor when the floor is smaller. 8 ticks on 30 contracts is a $2.40 cushion under a $0.75 floor
+  // (alone, a line at -$1.65); keep $0.30 makes it +$0.30.
+  assert.deepEqual(quotaCall(0.35, 3, 0.75, "the model's sell price 0.80", 2.4, 0.3), {}, 'keep: +$0.35 holds');
+  assert.deepEqual(quotaCall(0.3, 3, 0.75, "the model's sell price 0.80", 2.4, 0.3), {}, 'keep: at the line, held');
+  assert.deepEqual(quotaCall(0.25, 3, 0.75, "the model's sell price 0.80", 2.4, 0.3), { sell: 'floor' }, 'keep: +$0.25 sells (the cushion alone held it)');
+  assert.deepEqual(quotaCall(-1.6, 3, 0.75, undefined, 2.4, 0.3), { sell: 'floor' }, 'keep: a loss the cushion alone held to is sold');
+  assert.deepEqual(quotaCall(4.3, 4.5, 4.5, "the model's sell price 0.80", 0.5, 0.3), {}, 'keep: the cushion still decides when it leaves more than keep');
+  assert.deepEqual(quotaCall(3.9, 4.5, 4.5, "the model's sell price 0.80", 0.5, 0.3), { sell: 'floor' }, 'keep: and past the cushion, sold');
+  assert.deepEqual(quotaCall(0.2, 3, 0.2, undefined, 2.4, 0.3), {}, 'keep above the floor: the line is the floor itself, at it held');
+  assert.deepEqual(quotaCall(0.19, 3, 0.2, undefined, 2.4, 0.3), { sell: 'floor' }, 'keep above the floor: under the floor, sold');
   assert.deepEqual(quotaCall(4.6, 6, 4.5, undefined), {}, 'nothing aims higher now but the need is above the profit: the floor holds it');
   assert.deepEqual(quotaCall(-0.5, 3, 4.5, undefined), { sell: 'floor' }, 'gapped through it into a loss: still the stop');
   assert.deepEqual(quotaCall(undefined, 4.5, 4.5, undefined), {});

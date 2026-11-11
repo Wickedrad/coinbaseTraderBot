@@ -109,8 +109,10 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
-          script_stop: true
+          # No script_stop here: it inserts an exit-code line after every script line, inside the Python heredoc too,
+          # which made this check a SyntaxError on every run. set -euo pipefail stops on the first failure instead.
           script: |
+            set -euo pipefail
             python3 - <<'PYMODE'
             import pathlib
             p = pathlib.Path.home() / 'bot/bot.env'
@@ -227,8 +229,9 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
-          script_stop: true
+          # No script_stop (see "Verify paper mode before deploying this release"): set -euo pipefail instead.
           script: |
+            set -euo pipefail
             systemctl is-active --quiet kalshi-bot
             python3 - <<'PYMODE'
             import pathlib, subprocess

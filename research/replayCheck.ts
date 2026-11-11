@@ -755,7 +755,8 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   const policy = (EXIT_POLICIES as readonly string[]).includes(S.exitPolicy) ? S.exitPolicy : 'fair_value';
   const curveBench = { ...cfg.probation, t: cfg.sinuousExit.benchT ?? cfg.probation.t, minTrades: cfg.sinuousExit.benchMinExits ?? cfg.probation.minTrades };
   // The take-profit bench and the accuracy gate start from paper's own scoreboards as they stood when the stretch began
-  // (private copies: both write as they go), not from empty ones.
+  // (private copies: both write as they go), not from empty ones. The gate only with ACCURACY_GATE on: off (the default
+  // since Nov 11) the backtester builds no gate, so there is nothing to seed and the report says so.
   const seedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-seed-'));
   const readState = (f?: string) => { try { return f && fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : undefined; } catch { return undefined; } };
   const seeded: string[] = [];
@@ -770,8 +771,9 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
       seeded.push(`take-profit bench (${b.results.length} markets scored${b.benched ? ', benched' : ''})`);
     } else seeded.push('take-profit bench reset during the stretch: started empty');
   }
-  const gateNow = readState(o.paperAccuracyGate);
-  if (gateNow) {
+  const gateNow = S.accuracyGate.enabled ? readState(o.paperAccuracyGate) : undefined;
+  if (!S.accuracyGate.enabled) seeded.push('accuracy gate off (ACCURACY_GATE=false): not replayed, nothing blocked');
+  else if (gateNow) {
     const g = gateAt(gateNow, from);
     gateFile = path.join(seedDir, 'accuracy_gate.json');
     fs.writeFileSync(gateFile, JSON.stringify(g));

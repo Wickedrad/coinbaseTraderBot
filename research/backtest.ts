@@ -68,6 +68,7 @@ import type { CandleRow } from '../bot/ta/candleStore';
 import type { Timeframe } from '../bot/ta/knowledge';
 import { setTaNetEnsemble, TaNetEnsemble, taNetView } from '../bot/ta/taNetEnsemble';
 import { ProfitPeaks } from '../bot/strategy/profitPeaks';
+import { exitOnlyPlan, exitOnlyView, heldSideBid } from '../bot/strategy/exitOnlyLane';
 import { ConfluenceRatchetExit, DEFAULT_HUNT, DEFAULT_RATCHET, EXIT_POLICIES, ExitPolicyName, HuntParams, LiquidityRatchet, RatchetParams } from '../bot/strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from '../bot/risk/quotaPacer';
 import { readRecordings, ReplayState } from './replay';
@@ -209,9 +210,9 @@ export interface BacktestOpts { fillLog?: boolean; exitPolicy?: ExitPolicyName; 
    *  there are minTradesKalshi), floored (paper and live alike) at paperFloor x the tier's per-order fraction. Starts from
    *  `seed` (settled entries before the replay, as trades.jsonl rows) when given, else from nothing. */
   optimalF?: { enabled: boolean; quantile: number; halfLifeDays: number; minTradesKalshi: number; paperFloor: number; seed?: Array<{ ts: number; ticker: string; cost: number; count: number; won: boolean }> };
-  /** The paper accuracy gate (bot/strategy/accuracyGate.ts): no new entry in a time-to-close bucket where the market's
-   *  own price has called the recent results better than the bot. Starts with an empty scorecard (no look-ahead), or
-   *  from accuracyGateFile. */
+  /** The accuracy gate (bot/strategy/accuracyGate.ts; paper and live, ACCURACY_GATE, off by default): no new entry in a
+   *  time-to-close bucket where the market's own price has called the recent results better than the bot. Starts with
+   *  an empty scorecard (no look-ahead), or from accuracyGateFile. */
   accuracyGate?: AccuracyGateConfig;
   /** The gate's scorecard to start from (a copy: the gate writes to it), e.g. the paper bot's as it stood at tradeFromMs.
    *  Markets settling before tradeFromMs are then not scored again: the scorecard already holds paper's own. */
@@ -675,9 +676,63 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       const idle = idleMs > 0 && pos.position(m.ticker) === 0 && !open.length && !inflightFor(m.ticker) && !pending.has(m.ticker) && st.now - (lastEval.get(m.ticker) ?? -Infinity) < idleMs;
       if (idle && tape?.mode !== 'record') continue;
       if (!idle) lastEval.set(m.ticker, st.now);
-      if (!book?.isUsable(st.now, limits.maxBookAgeMs) || !bid || !ask || !spot || !vol || !terms) {
+      // An exit queued on an evaluation goes out on the next one, a second later (the live bot's reaction); with the paper
+      // options it goes out at the end of the same evaluation, as the paper bot sends it to its in-process exchange. The risk
+      // check judges it against `fairValue` and the touch of the evaluation that sends it.
+      const fireExit = async (fairValue: number, bestBid: number | undefined, bestAsk: number | undefined) => {
+        const due = pending.get(m.ticker);
+        pending.delete(m.ticker);
+        const curPos = pos.position(m.ticker);
+        if (!due || Math.sign(curPos) !== (due.side === 'ask' ? 1 : -1)) return;
+        const count = Math.min(due.count, Math.abs(curPos));
+        const intent: OrderIntent = { ticker: m.ticker, asset: m.asset, windowCloseTs: m.closeTime, side: due.side, price: due.price, count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', fairValue, modelId: model.id, decisionId: 'bt' };
+        const d = gateway.check(intent, {
+          now: st.now, mode: 'paper', killEngaged: false, haltReasons: [], bankroll: 1, dailyPnl: 0, bookUsable: true, bestBid, bestAsk,
+          indexFresh: true, marketCloseTs: m.closeTime, tickSize: m.tickSize, fees: DEFAULT_FEES, position: curPos, marketRiskNow: 0, marketRiskWith: 0,
+          windowRisk: 0, totalRisk: 0, ordersLastMinute: 0, openOrders: 0, modelLiveBlockers: [],
+        });
+        if (d.ok) {
+          const id = `${m.ticker}-${st.now}-${++exitSeq}-exit-${due.kind}`;
+          if (due.stop !== undefined) stopByOrder.set(id, due.stop);
+          exits.orders++;
+          await send(m.ticker, 'order', async () => { try { await ex.createOrder({ ticker: m.ticker, side: due.side, count, price: due.price, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, selfTradePrevention: 'taker_at_cross', clientOrderId: id }); } catch { /* no fill */ } });
+        }
+      };
+      // The exit-only lane (E06, bot/strategy/exitOnlyLane.ts), as the engine runs it: the book fresh but the market unpriced
+      // this tick, a held position still gets the exits already armed that need no model (the take-profit, the quota floor,
+      // the hunt's stop), judged against the book's mid. A queued exit goes out into the fresh book first, as on a full
+      // evaluation; the lane's own exits queue and go out as every other exit does.
+      const exitOnly = async (why: string) => {
+        const posL = pos.position(m.ticker);
+        const sideBid = heldSideBid(posL, bid, ask);
+        if (sideBid === undefined) { pending.delete(m.ticker); return; }
+        const pL = pos.get(m.ticker);
+        const view = exitOnlyView({
+          ticker: m.ticker, position: posL, bid, ask, now: st.now, openTime: m.openTime, closeTime: m.closeTime, tickSize: m.tickSize, fees: DEFAULT_FEES, strategy, risk: limits,
+          entrySidePrice: openSidePrice(pL), entryFeePerContract: openEntryFee(pL), profitPeakSidePrice: peaks.update(m.ticker, posL, sideBid), takeProfitBenched: tpBenched(),
+        })!;
+        await fireExit(view.pYes, bid?.price, ask?.price);
+        const lane = exitOnlyPlan(view, stratRun, {
+          why, exits: policy !== 'hold' && policy !== 'liquidity_ratchet', hunt: policy === 'confluence_ratchet' ? hunts.get(m.ticker) : undefined,
+          pacerUsd: pacerAt(st.now).neededUsd(st.now), pacerFloor: strategy.pacer.floor === 'off' ? undefined : quotaFloors.floor(m.ticker, posL),
+        });
+        if (opts.tradeFromMs !== undefined && st.now < opts.tradeFromMs) return;
+        // An order of ours still travelling to this market: the next evaluation decides again once it has landed.
+        if (inflight.some((x) => x.ticker === m.ticker && x.orderId === undefined)) return;
+        for (const p of lane.plan.place) {
+          if (pending.has(m.ticker)) break;
+          const hunt = p === lane.huntPlan;
+          if (hunt) exits.ratchetTriggers++;
+          if (p === lane.floorSale) exits.floorSales!++;
+          pending.set(m.ticker, { side: p.side, price: p.price, count: p.count, kind: hunt ? 'rt' : p.why.startsWith('take-profit') ? 'tp' : p.why.startsWith('quota snipe') ? 'snipe' : 'fv', ...(hunt ? { stop: lane.hunt!.plan!.stop } : {}) });
+        }
+        if (opts.paper) await fireExit(view.pYes, bid?.price, ask?.price);
+      };
+      const bookFresh = book?.isUsable(st.now, limits.maxBookAgeMs) === true;
+      if (!bookFresh || !bid || !ask || !spot || !vol || !terms) {
         for (const o of open) if (!cancelInFlight.has(o.orderId)) await send(m.ticker, 'cancel', () => cancelNow(o.orderId), o.orderId);
-        pending.delete(m.ticker); // never fire a queued exit into a stale book later
+        if (bookFresh && pos.position(m.ticker) !== 0) await exitOnly(!spot ? 'index stale' : !vol ? 'volatility warming up' : !terms ? 'strike unknown' : 'one-sided book');
+        else pending.delete(m.ticker); // never fire a queued exit into a stale book later
         continue;
       }
       const tauSec = (m.closeTime - st.now) / 1000;
@@ -701,7 +756,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           ? volFc.multiplier(m.asset, st.now, vol.sigmaPerSqrtSec, tauSec, () => assetFeatureMap(m.asset, st.now, { index: idx, spot: st.spot.get(m.asset), bars: st.features.bars.get(m.asset), candles, usdtd: st.usdtd, btcd: st.btcd, perp: st.features.perps.get(m.asset) }))
           : strategy.volFallbackMult ?? 1) * taVolMult;
       const fv = priceContract(terms, { spot: spot.value, sigmaPerSqrtSec: sigmaFv, tauSec, observedAvg: observed, observedCount, nu: model.params.tNu });
-      if (!fv) continue;
+      if (!fv) { if (pos.position(m.ticker) !== 0) await exitOnly('fair value unavailable'); continue; }
       const mid = (bid.price + ask.price) / 2;
       let fmap: Record<string, number>, pred: { p: number; std?: number };
       if (tape?.mode === 'replay') {
@@ -784,28 +839,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
         tierLimits.maxTotalRiskFrac = Math.max(tier.totalFrac, (PAPER_TOTAL_ORDERS * fitUsd) / bankroll);
       }
       const q = (side: 'bid' | 'ask') => { const o = open.find((x) => x.side === side); return o ? { clientOrderId: o.orderId, price: o.price, remaining: o.remainingCount } : undefined; };
-      // An exit queued on an evaluation goes out on the next one, a second later (the live bot's reaction); with the paper
-      // options it goes out at the end of the same evaluation, as the paper bot sends it to its in-process exchange.
-      const fireExit = async () => {
-        const due = pending.get(m.ticker);
-        pending.delete(m.ticker);
-        const curPos = pos.position(m.ticker);
-        if (!due || Math.sign(curPos) !== (due.side === 'ask' ? 1 : -1)) return;
-        const count = Math.min(due.count, Math.abs(curPos));
-        const intent: OrderIntent = { ticker: m.ticker, asset: m.asset, windowCloseTs: m.closeTime, side: due.side, price: due.price, count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', fairValue: pYes, modelId: model.id, decisionId: 'bt' };
-        const d = gateway.check(intent, {
-          now: st.now, mode: 'paper', killEngaged: false, haltReasons: [], bankroll: 1, dailyPnl: 0, bookUsable: true, bestBid: bid.price, bestAsk: ask.price,
-          indexFresh: true, marketCloseTs: m.closeTime, tickSize: m.tickSize, fees: DEFAULT_FEES, position: curPos, marketRiskNow: 0, marketRiskWith: 0,
-          windowRisk: 0, totalRisk: 0, ordersLastMinute: 0, openOrders: 0, modelLiveBlockers: [],
-        });
-        if (d.ok) {
-          const id = `${m.ticker}-${st.now}-${++exitSeq}-exit-${due.kind}`;
-          if (due.stop !== undefined) stopByOrder.set(id, due.stop);
-          exits.orders++;
-          await send(m.ticker, 'order', async () => { try { await ex.createOrder({ ticker: m.ticker, side: due.side, count, price: due.price, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, selfTradePrevention: 'taker_at_cross', clientOrderId: id }); } catch { /* no fill */ } });
-        }
-      };
-      await fireExit();
+      await fireExit(pYes, bid.price, ask.price);
 
       // Ratchet / hybrid: evaluate the order-book-anchored stop.
       const posNow = pos.position(m.ticker);
@@ -1039,7 +1073,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           } catch (e) { /* rejected like the exchange would */ const k = (e as { code?: string }).code ?? 'error'; (res.exchangeRejected ??= {})[k] = (res.exchangeRejected[k] ?? 0) + 1; }
         });
       }
-      if (opts.paper && (opts.tradeFromMs === undefined || st.now >= opts.tradeFromMs)) await fireExit();
+      if (opts.paper && (opts.tradeFromMs === undefined || st.now >= opts.tradeFromMs)) await fireExit(pYes, bid.price, ask.price);
     }
   }
   exits.avgSlippage = slipN ? slipSum / slipN : null;

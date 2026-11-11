@@ -156,7 +156,9 @@ export function buildLedger(x: LedgerInput): ModuleRow[] {
   // Gates.
   if (x.accuracyGate) {
     const g = x.accuracyGate;
-    rows.push({ module: 'accuracy gate', area: 'gates', state: g.enabled ? 'on' : 'off', validated: null, score: { label: 'time-to-close buckets blocked', value: g.blocked, n: g.buckets }, flags: [] });
+    // Off (ACCURACY_GATE=false, the default): the scorecard is still kept, but the buckets it scores as lost block nothing.
+    const label = g.enabled ? 'time-to-close buckets blocked' : 'time-to-close buckets the market called better (gate off: none blocked)';
+    rows.push({ module: 'accuracy gate', area: 'gates', state: g.enabled ? 'on' : 'off', validated: null, score: { label, value: g.blocked, n: g.buckets }, flags: [] });
   }
   for (const [book, p] of Object.entries(x.probation ?? {})) {
     rows.push({ module: `probation: ${book}`, area: 'gates', state: p.benched ? 'benched' : 'on', validated: null, score: { label: 'net dollars on probation', value: +p.netUsd.toFixed(2), n: p.trades }, flags: p.wouldBench && !p.benched ? ['would bench (score-only, nothing turned off): iterate it'] : [] });
