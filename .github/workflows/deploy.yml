@@ -16,8 +16,9 @@
 #  - The heat curve reader (docs/HEAT_READER.md) ships with the release when the commit has it: python/heat_reader,
 #    python/oracle and the packs in research/oracle_heat/latest (the HEAT_SHIP list in deploy/deploy-scope.ts; unlike
 #    the rest of python/ and research/, a change to them deploys). activate.sh runs its installer after the bot is up;
-#    it is off until HEAT_LANE=true in ~/bot/bot.env and never fails a deploy. A commit without them ships nothing
-#    extra (python/oracle and the packs are on main since #328; the reader and its installer come with the heat lane). Their upload is part of the release's: when it fails, the run fails before activation.
+#    it runs while HEAT_LANE=true in ~/bot/bot.env (ensure-env.sh adds that line, and PLAN_RULES=true, when bot.env has
+#    none) and never fails a deploy. A commit without them ships nothing extra (python/oracle and the packs are on main
+#    since #328, the reader and its installer since #327). Their upload is part of the release's: when it fails, the run fails before activation.
 #
 # Switching to reviewed, tag-only deploys later (more secure): set the repository variable
 # AUTO_DEPLOY=false (Settings > Secrets and variables > Actions > Variables) and add required
