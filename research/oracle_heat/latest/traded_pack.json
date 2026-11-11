@@ -225,7 +225,8 @@
    "dip_B": -6.4824,
    "wd_B": 58.379,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -260,7 +261,8 @@
    "dip_B": -6.2855,
    "wd_B": 42.328,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -295,7 +297,8 @@
    "dip_B": -6.1188,
    "wd_B": 57.661,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -330,7 +333,8 @@
    "dip_B": -6.1921,
    "wd_B": 37.881,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -365,7 +369,8 @@
    "dip_B": -6.7764,
    "wd_B": 20.526,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -400,7 +405,8 @@
    "dip_B": -7.017,
    "wd_B": 41.865,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -435,7 +441,8 @@
    "dip_B": -6.2089,
    "wd_B": 40.459,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -470,7 +477,8 @@
    "dip_B": -6.8291,
    "wd_B": 42.753,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -505,7 +513,8 @@
    "dip_B": -5.7258,
    "wd_B": 34.02,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -540,7 +549,8 @@
    "dip_B": -6.2708,
    "wd_B": 41.928,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -575,7 +585,8 @@
    "dip_B": -5.7055,
    "wd_B": 34.133,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -612,7 +623,8 @@
    "dip_B": -6.2447,
    "wd_B": 28.924,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -647,7 +659,8 @@
    "dip_B": -5.689,
    "wd_B": 39.985,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -682,7 +695,8 @@
    "dip_B": -5.6736,
    "wd_B": 35.755,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -717,7 +731,8 @@
    "dip_B": -5.6085,
    "wd_B": 61.16,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -752,7 +767,8 @@
    "dip_B": -6.1841,
    "wd_B": 39.824,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -787,7 +803,8 @@
    "dip_B": -5.7329,
    "wd_B": 53.431,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -822,7 +839,8 @@
    "dip_B": -5.7561,
    "wd_B": 32.631,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -857,7 +875,8 @@
    "dip_B": -5.7548,
    "wd_B": 49.162,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -892,7 +911,8 @@
    "dip_B": -5.7236,
    "wd_B": 37.026,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -927,7 +947,8 @@
    "dip_B": -6.0013,
    "wd_B": 30.132,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -962,7 +983,8 @@
    "dip_B": -5.6144,
    "wd_B": 41.947,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -997,7 +1019,8 @@
    "dip_B": -5.9521,
    "wd_B": 62.092,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1032,7 +1055,8 @@
    "dip_B": -7.4566,
    "wd_B": 20.326,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1067,7 +1091,8 @@
    "dip_B": -6.9405,
    "wd_B": 25.833,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1102,7 +1127,8 @@
    "dip_B": -5.5093,
    "wd_B": 42.755,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1137,7 +1163,8 @@
    "dip_B": -5.7406,
    "wd_B": 41.728,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1172,7 +1199,8 @@
    "dip_B": -5.7246,
    "wd_B": 38.081,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1207,7 +1235,8 @@
    "dip_B": -6.6642,
    "wd_B": 38.922,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1242,7 +1271,8 @@
    "dip_B": -6.6824,
    "wd_B": 42.917,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1277,7 +1307,8 @@
    "dip_B": -6.0481,
    "wd_B": 54.324,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1315,7 +1346,8 @@
    "dip_B": -6.7163,
    "wd_B": 37.3,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1350,7 +1382,8 @@
    "dip_B": -5.6941,
    "wd_B": 32.48,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1385,7 +1418,8 @@
    "dip_B": -5.9982,
    "wd_B": 30.042,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1422,7 +1456,8 @@
    "dip_B": -6.7408,
    "wd_B": 30.217,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1457,7 +1492,8 @@
    "dip_B": -5.6544,
    "wd_B": 38.656,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1492,7 +1528,8 @@
    "dip_B": -6.934,
    "wd_B": 19.372,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1527,7 +1564,8 @@
    "dip_B": -6.1628,
    "wd_B": 26.535,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1562,7 +1600,8 @@
    "dip_B": -5.9413,
    "wd_B": 43.901,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1597,7 +1636,8 @@
    "dip_B": -5.7049,
    "wd_B": 34.79,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1632,7 +1672,8 @@
    "dip_B": -10.986,
    "wd_B": 0.9535,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1667,7 +1708,8 @@
    "dip_B": -6.9172,
    "wd_B": 0.6905,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1702,7 +1744,8 @@
    "dip_B": -8.0254,
    "wd_B": 0.6823,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1737,7 +1780,8 @@
    "dip_B": -9.7354,
    "wd_B": 0.5836,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1772,7 +1816,8 @@
    "dip_B": -12.138,
    "wd_B": 0.5507,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1810,7 +1855,8 @@
    "dip_B": -7.938,
    "wd_B": 0.4247,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1845,7 +1891,8 @@
    "dip_B": -16.451,
    "wd_B": 0.3041,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1880,7 +1927,8 @@
    "dip_B": -10.134,
    "wd_B": 0.3014,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1915,7 +1963,8 @@
    "dip_B": -11.023,
    "wd_B": 0.2795,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1950,7 +1999,8 @@
    "dip_B": -14.154,
    "wd_B": 0.3261,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -1985,7 +2035,8 @@
    "dip_B": -15.899,
    "wd_B": 0.3206,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -2020,7 +2071,8 @@
    "dip_B": -17.722,
    "wd_B": 0.2,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -2055,7 +2107,8 @@
    "dip_B": -16.671,
    "wd_B": 0.3206,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -2090,7 +2143,8 @@
    "dip_B": -5.1177,
    "wd_B": 0.2713,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -2125,7 +2179,8 @@
    "dip_B": -11.342,
    "wd_B": 0.2082,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -2160,7 +2215,8 @@
    "dip_B": -15.094,
    "wd_B": 0.2192,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -2195,7 +2251,8 @@
    "dip_B": -2.9621,
    "wd_B": 0.2356,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -2230,7 +2287,8 @@
    "dip_B": -7.7466,
    "wd_B": 0.2137,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -2265,7 +2323,8 @@
    "dip_B": -10.541,
    "wd_B": 0.2137,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -2300,7 +2359,8 @@
    "dip_B": -8.043,
    "wd_B": 0.2,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2335,7 +2395,8 @@
    "dip_B": -10.65,
    "wd_B": 58.609,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2370,7 +2431,8 @@
    "dip_B": -11.075,
    "wd_B": 42.465,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2405,7 +2467,8 @@
    "dip_B": -10.627,
    "wd_B": 30.047,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2440,7 +2503,8 @@
    "dip_B": -10.435,
    "wd_B": 45.128,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2475,7 +2539,8 @@
    "dip_B": -11.548,
    "wd_B": 57.752,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2510,7 +2575,8 @@
    "dip_B": -11.052,
    "wd_B": 36.777,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2547,7 +2613,8 @@
    "dip_B": -11.278,
    "wd_B": 27.469,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2582,7 +2649,8 @@
    "dip_B": -10.639,
    "wd_B": 28.384,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2617,7 +2685,8 @@
    "dip_B": -10.62,
    "wd_B": 28.168,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2652,7 +2721,8 @@
    "dip_B": -10.868,
    "wd_B": 62.325,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2687,7 +2757,8 @@
    "dip_B": -10.326,
    "wd_B": 42.227,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2722,7 +2793,8 @@
    "dip_B": -11.488,
    "wd_B": 22.967,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2757,7 +2829,8 @@
    "dip_B": -11.64,
    "wd_B": 44.476,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2792,7 +2865,8 @@
    "dip_B": -10.705,
    "wd_B": 22.915,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2827,7 +2901,8 @@
    "dip_B": -10.523,
    "wd_B": 38.632,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2862,7 +2937,8 @@
    "dip_B": -12.341,
    "wd_B": 41.029,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2897,7 +2973,8 @@
    "dip_B": -10.429,
    "wd_B": 32.034,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2932,7 +3009,8 @@
    "dip_B": -10.487,
    "wd_B": 34.508,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -2967,7 +3045,8 @@
    "dip_B": -10.511,
    "wd_B": 30.831,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3002,7 +3081,8 @@
    "dip_B": -10.698,
    "wd_B": 54.343,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3037,7 +3117,8 @@
    "dip_B": -10.464,
    "wd_B": 27.943,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3072,7 +3153,8 @@
    "dip_B": -11.326,
    "wd_B": 60.681,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3107,7 +3189,8 @@
    "dip_B": -10.306,
    "wd_B": 43.701,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3142,7 +3225,8 @@
    "dip_B": -10.178,
    "wd_B": 44.621,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3177,7 +3261,8 @@
    "dip_B": -13.319,
    "wd_B": 16.657,
    "tick_B": 0.033,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3212,7 +3297,8 @@
    "dip_B": -11.417,
    "wd_B": 22.449,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3247,7 +3333,8 @@
    "dip_B": -10.933,
    "wd_B": 20.408,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3282,7 +3369,8 @@
    "dip_B": -10.402,
    "wd_B": 35.278,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3320,7 +3408,8 @@
    "dip_B": -10.86,
    "wd_B": 37.191,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3355,7 +3444,8 @@
    "dip_B": -12.852,
    "wd_B": 19.769,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3390,7 +3480,8 @@
    "dip_B": -10.965,
    "wd_B": 22.915,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3425,7 +3516,8 @@
    "dip_B": -9.9612,
    "wd_B": 36.418,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3460,7 +3552,8 @@
    "dip_B": -10.62,
    "wd_B": 41.605,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3495,7 +3588,8 @@
    "dip_B": -11.723,
    "wd_B": 41.1,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3530,7 +3624,8 @@
    "dip_B": -10.153,
    "wd_B": 47.408,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3565,7 +3660,8 @@
    "dip_B": -9.8926,
    "wd_B": 23.674,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3600,7 +3696,8 @@
    "dip_B": -11.959,
    "wd_B": 43.682,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3635,7 +3732,8 @@
    "dip_B": -10.212,
    "wd_B": 46.276,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3670,7 +3768,8 @@
    "dip_B": -11.281,
    "wd_B": 41.887,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3705,7 +3804,8 @@
    "dip_B": -11.146,
    "wd_B": 26.34,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3740,7 +3840,8 @@
    "dip_B": -19.414,
    "wd_B": 0.8823,
    "tick_B": 0.0341,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3775,7 +3876,8 @@
    "dip_B": -20.841,
    "wd_B": 0.5288,
    "tick_B": 0.0338,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3810,7 +3912,8 @@
    "dip_B": -25.629,
    "wd_B": 0.4713,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3845,7 +3948,8 @@
    "dip_B": -21.424,
    "wd_B": 0.4603,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3880,7 +3984,8 @@
    "dip_B": -28.135,
    "wd_B": 0.3973,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3915,7 +4020,8 @@
    "dip_B": -24.612,
    "wd_B": 0.3918,
    "tick_B": 0.0321,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3950,7 +4056,8 @@
    "dip_B": -10.836,
    "wd_B": 0.274,
    "tick_B": 0.0305,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -3985,7 +4092,8 @@
    "dip_B": -36.761,
    "wd_B": 0.2822,
    "tick_B": 0.034,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4020,7 +4128,8 @@
    "dip_B": -26.149,
    "wd_B": 0.2576,
    "tick_B": 0.0338,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4055,7 +4164,8 @@
    "dip_B": -29.86,
    "wd_B": 0.2822,
    "tick_B": 0.0325,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4090,7 +4200,8 @@
    "dip_B": -30.098,
    "wd_B": 0.2877,
    "tick_B": 0.0317,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4125,7 +4236,8 @@
    "dip_B": -31.733,
    "wd_B": 0.2302,
    "tick_B": 0.0328,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4160,7 +4272,8 @@
    "dip_B": -19.904,
    "wd_B": 0.2384,
    "tick_B": 0.0331,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4195,7 +4308,8 @@
    "dip_B": -26.401,
    "wd_B": 0.2192,
    "tick_B": 0.0345,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4230,7 +4344,8 @@
    "dip_B": -14.638,
    "wd_B": 0.2247,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4265,7 +4380,8 @@
    "dip_B": -26.879,
    "wd_B": 0.2137,
    "tick_B": 0.0342,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4300,7 +4416,8 @@
    "dip_B": -15.312,
    "wd_B": 0.2302,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4335,7 +4452,8 @@
    "dip_B": -31.677,
    "wd_B": 0.2302,
    "tick_B": 0.0344,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4370,7 +4488,8 @@
    "dip_B": -26.716,
    "wd_B": 0.2,
    "tick_B": 0.0341,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -4405,7 +4524,8 @@
    "dip_B": -22.236,
    "wd_B": 0.2,
    "tick_B": 0.0321,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4440,7 +4560,8 @@
    "dip_B": -12.972,
    "wd_B": 43.925,
    "tick_B": 0.5986,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4475,7 +4596,8 @@
    "dip_B": -12.626,
    "wd_B": 59.305,
    "tick_B": 0.6007,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4510,7 +4632,8 @@
    "dip_B": -12.552,
    "wd_B": 43.569,
    "tick_B": 0.5963,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4545,7 +4668,8 @@
    "dip_B": -12.771,
    "wd_B": 39.141,
    "tick_B": 0.5917,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4580,7 +4704,8 @@
    "dip_B": -13.393,
    "wd_B": 58.831,
    "tick_B": 0.608,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4615,7 +4740,8 @@
    "dip_B": -14.538,
    "wd_B": 20.605,
    "tick_B": 0.5934,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4650,7 +4776,8 @@
    "dip_B": -13.022,
    "wd_B": 37.229,
    "tick_B": 0.5972,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4685,7 +4812,8 @@
    "dip_B": -13.03,
    "wd_B": 27.357,
    "tick_B": 0.5915,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4720,7 +4848,8 @@
    "dip_B": -9.816,
    "wd_B": 47.079,
    "tick_B": 0.6368,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4755,7 +4884,8 @@
    "dip_B": -13.506,
    "wd_B": 42.235,
    "tick_B": 0.6022,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4790,7 +4920,8 @@
    "dip_B": -12.689,
    "wd_B": 34.428,
    "tick_B": 0.5964,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4825,7 +4956,8 @@
    "dip_B": -13.767,
    "wd_B": 43.09,
    "tick_B": 0.603,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4860,7 +4992,8 @@
    "dip_B": -13.414,
    "wd_B": 53.559,
    "tick_B": 0.6015,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4895,7 +5028,8 @@
    "dip_B": -12.911,
    "wd_B": 27.718,
    "tick_B": 0.5996,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4930,7 +5064,8 @@
    "dip_B": -12.597,
    "wd_B": 28.984,
    "tick_B": 0.599,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -4965,7 +5100,8 @@
    "dip_B": -13.639,
    "wd_B": 35.555,
    "tick_B": 0.6032,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5000,7 +5136,8 @@
    "dip_B": -12.97,
    "wd_B": 24.008,
    "tick_B": 0.597,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5035,7 +5172,8 @@
    "dip_B": -14.03,
    "wd_B": 43.079,
    "tick_B": 0.6081,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5070,7 +5208,8 @@
    "dip_B": -13.001,
    "wd_B": 35.336,
    "tick_B": 0.5986,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5105,7 +5244,8 @@
    "dip_B": -12.676,
    "wd_B": 31.656,
    "tick_B": 0.5982,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5140,7 +5280,8 @@
    "dip_B": -12.642,
    "wd_B": 36.483,
    "tick_B": 0.6067,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5175,7 +5316,8 @@
    "dip_B": -12.706,
    "wd_B": 34.111,
    "tick_B": 0.5969,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5210,7 +5352,8 @@
    "dip_B": -13.213,
    "wd_B": 43.925,
    "tick_B": 0.5894,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5245,7 +5388,8 @@
    "dip_B": -13.285,
    "wd_B": 49.397,
    "tick_B": 0.5988,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5280,7 +5424,8 @@
    "dip_B": -13.053,
    "wd_B": 34.634,
    "tick_B": 0.5979,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5315,7 +5460,8 @@
    "dip_B": -12.24,
    "wd_B": 37.977,
    "tick_B": 0.5947,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5350,7 +5496,8 @@
    "dip_B": -12.558,
    "wd_B": 35.157,
    "tick_B": 0.5926,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5385,7 +5532,8 @@
    "dip_B": -12.852,
    "wd_B": 29.65,
    "tick_B": 0.5971,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5420,7 +5568,8 @@
    "dip_B": -14.894,
    "wd_B": 17.687,
    "tick_B": 0.5894,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5455,7 +5604,8 @@
    "dip_B": -12.439,
    "wd_B": 46.94,
    "tick_B": 0.5958,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5490,7 +5640,8 @@
    "dip_B": -13.431,
    "wd_B": 28.688,
    "tick_B": 0.5983,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5525,7 +5676,8 @@
    "dip_B": -12.569,
    "wd_B": 50.326,
    "tick_B": 0.5964,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5560,7 +5712,8 @@
    "dip_B": -13.394,
    "wd_B": 25.112,
    "tick_B": 0.5939,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": false
   },
   {
    "coin": "SOL",
@@ -5595,7 +5748,8 @@
    "dip_B": -13.736,
    "wd_B": 35.766,
    "tick_B": 0.6023,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5630,7 +5784,8 @@
    "dip_B": -12.744,
    "wd_B": 26.502,
    "tick_B": 0.5957,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5665,7 +5820,8 @@
    "dip_B": -13.624,
    "wd_B": 35.903,
    "tick_B": 0.6025,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5700,7 +5856,8 @@
    "dip_B": -13.246,
    "wd_B": 50.315,
    "tick_B": 0.5996,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5735,7 +5892,8 @@
    "dip_B": -12.741,
    "wd_B": 30.072,
    "tick_B": 0.5974,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5770,7 +5928,8 @@
    "dip_B": -13.464,
    "wd_B": 36.16,
    "tick_B": 0.6032,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5805,7 +5964,8 @@
    "dip_B": -12.834,
    "wd_B": 32.869,
    "tick_B": 0.5976,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5840,7 +6000,8 @@
    "dip_B": -19.448,
    "wd_B": 0.6686,
    "tick_B": 0.6131,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5875,7 +6036,8 @@
    "dip_B": -27.529,
    "wd_B": 0.4466,
    "tick_B": 0.6263,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5910,7 +6072,8 @@
    "dip_B": -11.954,
    "wd_B": 0.4192,
    "tick_B": 0.5534,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5945,7 +6108,8 @@
    "dip_B": -28.358,
    "wd_B": 0.4028,
    "tick_B": 0.6083,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -5980,7 +6144,8 @@
    "dip_B": -31.198,
    "wd_B": 0.3809,
    "tick_B": 0.6179,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6015,7 +6180,8 @@
    "dip_B": -30.91,
    "wd_B": 0.3809,
    "tick_B": 0.6179,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6050,7 +6216,8 @@
    "dip_B": -29.349,
    "wd_B": 0.263,
    "tick_B": 0.6495,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6085,7 +6252,8 @@
    "dip_B": -31.975,
    "wd_B": 0.3589,
    "tick_B": 0.6331,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6120,7 +6288,8 @@
    "dip_B": -32.185,
    "wd_B": 0.3589,
    "tick_B": 0.6179,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6155,7 +6324,8 @@
    "dip_B": -26.242,
    "wd_B": 0.337,
    "tick_B": 0.6331,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6190,7 +6360,8 @@
    "dip_B": -24.399,
    "wd_B": 0.2822,
    "tick_B": 0.6269,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6225,7 +6396,8 @@
    "dip_B": -26.247,
    "wd_B": 0.2548,
    "tick_B": 0.6799,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6260,7 +6432,8 @@
    "dip_B": -12.783,
    "wd_B": 0.2767,
    "tick_B": 0.5996,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6295,7 +6468,8 @@
    "dip_B": -15.693,
    "wd_B": 0.2904,
    "tick_B": 0.5568,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6330,7 +6504,8 @@
    "dip_B": -34.966,
    "wd_B": 0.2028,
    "tick_B": 0.6168,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6367,7 +6542,8 @@
    "dip_B": -31.538,
    "wd_B": 0.2219,
    "tick_B": 0.6335,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6402,7 +6578,8 @@
    "dip_B": -35.229,
    "wd_B": 0.2493,
    "tick_B": 0.6342,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6437,7 +6614,8 @@
    "dip_B": -32.788,
    "wd_B": 0.2356,
    "tick_B": 0.6423,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6472,7 +6650,8 @@
    "dip_B": -31.29,
    "wd_B": 0.2411,
    "tick_B": 0.6338,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -6507,7 +6686,8 @@
    "dip_B": -33.532,
    "wd_B": 0.2055,
    "tick_B": 0.6179,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6542,7 +6722,8 @@
    "dip_B": -12.929,
    "wd_B": 59.242,
    "tick_B": 0.4214,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6577,7 +6758,8 @@
    "dip_B": -13.415,
    "wd_B": 43.605,
    "tick_B": 0.4225,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6612,7 +6794,8 @@
    "dip_B": -12.088,
    "wd_B": 58.977,
    "tick_B": 0.4184,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6647,7 +6830,8 @@
    "dip_B": -12.338,
    "wd_B": 61.073,
    "tick_B": 0.4197,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6682,7 +6866,8 @@
    "dip_B": -12.815,
    "wd_B": 45.158,
    "tick_B": 0.4206,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6717,7 +6902,8 @@
    "dip_B": -12.339,
    "wd_B": 43.325,
    "tick_B": 0.4178,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6752,7 +6938,8 @@
    "dip_B": -12.788,
    "wd_B": 38.843,
    "tick_B": 0.4205,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6787,7 +6974,8 @@
    "dip_B": -12.706,
    "wd_B": 38.267,
    "tick_B": 0.4207,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6822,7 +7010,8 @@
    "dip_B": -11.934,
    "wd_B": 60.563,
    "tick_B": 0.4172,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6857,7 +7046,8 @@
    "dip_B": -11.687,
    "wd_B": 44.462,
    "tick_B": 0.4179,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6892,7 +7082,8 @@
    "dip_B": -13.25,
    "wd_B": 34.322,
    "tick_B": 0.421,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6927,7 +7118,8 @@
    "dip_B": -12.078,
    "wd_B": 39.056,
    "tick_B": 0.4165,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6962,7 +7154,8 @@
    "dip_B": -12.925,
    "wd_B": 36.785,
    "tick_B": 0.4211,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -6997,7 +7190,8 @@
    "dip_B": -13.502,
    "wd_B": 48.852,
    "tick_B": 0.42,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7032,7 +7226,8 @@
    "dip_B": -12.465,
    "wd_B": 36.541,
    "tick_B": 0.418,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7067,7 +7262,8 @@
    "dip_B": -13.494,
    "wd_B": 38.654,
    "tick_B": 0.4197,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7102,7 +7298,8 @@
    "dip_B": -11.915,
    "wd_B": 43.153,
    "tick_B": 0.4169,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7137,7 +7334,8 @@
    "dip_B": -11.914,
    "wd_B": 46.041,
    "tick_B": 0.4179,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7172,7 +7370,8 @@
    "dip_B": -13.111,
    "wd_B": 35.744,
    "tick_B": 0.4214,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7207,7 +7406,8 @@
    "dip_B": -12.824,
    "wd_B": 47.359,
    "tick_B": 0.4199,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7242,7 +7442,8 @@
    "dip_B": -12.146,
    "wd_B": 29.392,
    "tick_B": 0.4175,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7277,7 +7478,8 @@
    "dip_B": -12.04,
    "wd_B": 29.497,
    "tick_B": 0.4177,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7312,7 +7514,8 @@
    "dip_B": -11.71,
    "wd_B": 36.763,
    "tick_B": 0.4193,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7349,7 +7552,8 @@
    "dip_B": -12.69,
    "wd_B": 27.288,
    "tick_B": 0.4178,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7384,7 +7588,8 @@
    "dip_B": -13.032,
    "wd_B": 42.016,
    "tick_B": 0.4213,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7419,7 +7624,8 @@
    "dip_B": -11.881,
    "wd_B": 32.719,
    "tick_B": 0.4179,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7454,7 +7660,8 @@
    "dip_B": -13.141,
    "wd_B": 32.269,
    "tick_B": 0.4211,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7489,7 +7696,8 @@
    "dip_B": -13.686,
    "wd_B": 29.524,
    "tick_B": 0.4207,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7524,7 +7732,8 @@
    "dip_B": -12.682,
    "wd_B": 45.427,
    "tick_B": 0.42,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7559,7 +7768,8 @@
    "dip_B": -13.062,
    "wd_B": 36.248,
    "tick_B": 0.4208,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7594,7 +7804,8 @@
    "dip_B": -11.85,
    "wd_B": 48.83,
    "tick_B": 0.418,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7629,7 +7840,8 @@
    "dip_B": -11.938,
    "wd_B": 33.179,
    "tick_B": 0.4175,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7664,7 +7876,8 @@
    "dip_B": -12.766,
    "wd_B": 44.18,
    "tick_B": 0.4193,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7699,7 +7912,8 @@
    "dip_B": -12.81,
    "wd_B": 23.063,
    "tick_B": 0.4181,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7734,7 +7948,8 @@
    "dip_B": -12.18,
    "wd_B": 27.896,
    "tick_B": 0.4173,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7769,7 +7984,8 @@
    "dip_B": -12.475,
    "wd_B": 45.676,
    "tick_B": 0.4199,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7804,7 +8020,8 @@
    "dip_B": -13.157,
    "wd_B": 32.847,
    "tick_B": 0.421,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7839,7 +8056,8 @@
    "dip_B": -13.491,
    "wd_B": 32.02,
    "tick_B": 0.4217,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7874,7 +8092,8 @@
    "dip_B": -11.97,
    "wd_B": 27.458,
    "tick_B": 0.4172,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7909,7 +8128,8 @@
    "dip_B": -11.997,
    "wd_B": 30.165,
    "tick_B": 0.4178,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7944,7 +8164,8 @@
    "dip_B": -19.964,
    "wd_B": 0.5809,
    "tick_B": 0.4274,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -7979,7 +8200,8 @@
    "dip_B": -12.915,
    "wd_B": 0.5124,
    "tick_B": 0.4017,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8014,7 +8236,8 @@
    "dip_B": -10.743,
    "wd_B": 0.3507,
    "tick_B": 0.3957,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8049,7 +8272,8 @@
    "dip_B": -28.032,
    "wd_B": 0.4,
    "tick_B": 0.4227,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8084,7 +8308,8 @@
    "dip_B": -24.243,
    "wd_B": 0.3863,
    "tick_B": 0.422,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8119,7 +8344,8 @@
    "dip_B": -26.894,
    "wd_B": 0.4357,
    "tick_B": 0.4231,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8154,7 +8380,8 @@
    "dip_B": -26.123,
    "wd_B": 0.3973,
    "tick_B": 0.4231,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8189,7 +8416,8 @@
    "dip_B": -25.178,
    "wd_B": 0.3918,
    "tick_B": 0.4222,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8224,7 +8452,8 @@
    "dip_B": -18.101,
    "wd_B": 0.3233,
    "tick_B": 0.4353,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8259,7 +8488,8 @@
    "dip_B": -24.857,
    "wd_B": 0.3178,
    "tick_B": 0.4298,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8297,7 +8527,8 @@
    "dip_B": -29.352,
    "wd_B": 0.3206,
    "tick_B": 0.4257,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8332,7 +8563,8 @@
    "dip_B": -26.775,
    "wd_B": 0.263,
    "tick_B": 0.4272,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8367,7 +8599,8 @@
    "dip_B": -23.967,
    "wd_B": 0.263,
    "tick_B": 0.4348,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8402,7 +8635,8 @@
    "dip_B": -27.316,
    "wd_B": 0.211,
    "tick_B": 0.3978,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8437,7 +8671,8 @@
    "dip_B": -18.499,
    "wd_B": 0.2411,
    "tick_B": 0.4298,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8472,7 +8707,8 @@
    "dip_B": -17.488,
    "wd_B": 0.2411,
    "tick_B": 0.3957,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8507,7 +8743,8 @@
    "dip_B": -29.547,
    "wd_B": 0.2219,
    "tick_B": 0.4126,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8542,7 +8779,8 @@
    "dip_B": -26.928,
    "wd_B": 0.2219,
    "tick_B": 0.4026,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8577,7 +8815,8 @@
    "dip_B": -26.928,
    "wd_B": 0.2219,
    "tick_B": 0.4026,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -8612,7 +8851,8 @@
    "dip_B": -28.714,
    "wd_B": 0.2192,
    "tick_B": 0.4049,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8647,7 +8887,8 @@
    "dip_B": -13.092,
    "wd_B": 20.884,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8682,7 +8923,8 @@
    "dip_B": -13.207,
    "wd_B": 21.046,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8717,7 +8959,8 @@
    "dip_B": -11.33,
    "wd_B": 18.495,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8752,7 +8995,8 @@
    "dip_B": -11.318,
    "wd_B": 18.471,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8787,7 +9031,8 @@
    "dip_B": -12.375,
    "wd_B": 22.655,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8822,7 +9067,8 @@
    "dip_B": -12.349,
    "wd_B": 18.599,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8860,7 +9106,8 @@
    "dip_B": -12.972,
    "wd_B": 20.463,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8895,7 +9142,8 @@
    "dip_B": -13.748,
    "wd_B": 21.334,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8930,7 +9178,8 @@
    "dip_B": -11.765,
    "wd_B": 21.041,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -8965,7 +9214,8 @@
    "dip_B": -10.384,
    "wd_B": 19.172,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9000,7 +9250,8 @@
    "dip_B": -13.353,
    "wd_B": 14.755,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9035,7 +9286,8 @@
    "dip_B": -12.719,
    "wd_B": 23.474,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9070,7 +9322,8 @@
    "dip_B": -10.748,
    "wd_B": 18.706,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9105,7 +9358,8 @@
    "dip_B": -12.347,
    "wd_B": 18.572,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9140,7 +9394,8 @@
    "dip_B": -10.789,
    "wd_B": 21.12,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9175,7 +9430,8 @@
    "dip_B": -9.7982,
    "wd_B": 17.501,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9210,7 +9466,8 @@
    "dip_B": -12.237,
    "wd_B": 12.697,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9245,7 +9502,8 @@
    "dip_B": -10.635,
    "wd_B": 21.15,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9280,7 +9538,8 @@
    "dip_B": -10.835,
    "wd_B": 20.624,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9315,7 +9574,8 @@
    "dip_B": -11.238,
    "wd_B": 22.323,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9350,7 +9610,8 @@
    "dip_B": -12.841,
    "wd_B": 21.827,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9385,7 +9646,8 @@
    "dip_B": -10.897,
    "wd_B": 20.068,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9420,7 +9682,8 @@
    "dip_B": -12.967,
    "wd_B": 12.979,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9455,7 +9718,8 @@
    "dip_B": -12.017,
    "wd_B": 21.389,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9490,7 +9754,8 @@
    "dip_B": -10.796,
    "wd_B": 17.347,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9525,7 +9790,8 @@
    "dip_B": -11.002,
    "wd_B": 14.939,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9563,7 +9829,8 @@
    "dip_B": -12.307,
    "wd_B": 12.96,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9598,7 +9865,8 @@
    "dip_B": -12.607,
    "wd_B": 18.975,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9633,7 +9901,8 @@
    "dip_B": -13.426,
    "wd_B": 14.637,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9668,7 +9937,8 @@
    "dip_B": -10.736,
    "wd_B": 19.164,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9703,7 +9973,8 @@
    "dip_B": -10.081,
    "wd_B": 10.522,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9738,7 +10009,8 @@
    "dip_B": -12.613,
    "wd_B": 18.953,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9773,7 +10045,8 @@
    "dip_B": -11.703,
    "wd_B": 20.0,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9808,7 +10081,8 @@
    "dip_B": -10.525,
    "wd_B": 19.331,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9843,7 +10117,8 @@
    "dip_B": -10.693,
    "wd_B": 14.149,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9878,7 +10153,8 @@
    "dip_B": -10.055,
    "wd_B": 11.352,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9913,7 +10189,8 @@
    "dip_B": -12.146,
    "wd_B": 17.901,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9948,7 +10225,8 @@
    "dip_B": -11.671,
    "wd_B": 23.351,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -9983,7 +10261,8 @@
    "dip_B": -12.069,
    "wd_B": 21.03,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10020,7 +10299,8 @@
    "dip_B": -10.506,
    "wd_B": 12.897,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10055,7 +10335,8 @@
    "dip_B": -15.593,
    "wd_B": 0.559,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10090,7 +10371,8 @@
    "dip_B": -13.49,
    "wd_B": 0.3425,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10125,7 +10407,8 @@
    "dip_B": -11.066,
    "wd_B": 0.4548,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10160,7 +10443,8 @@
    "dip_B": -12.869,
    "wd_B": 0.3754,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10195,7 +10479,8 @@
    "dip_B": -10.881,
    "wd_B": 0.3452,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10230,7 +10515,8 @@
    "dip_B": -16.081,
    "wd_B": 0.3343,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10265,7 +10551,8 @@
    "dip_B": -15.437,
    "wd_B": 0.263,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10300,7 +10587,8 @@
    "dip_B": -16.907,
    "wd_B": 0.3096,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10335,7 +10623,8 @@
    "dip_B": -13.554,
    "wd_B": 0.2685,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10370,7 +10659,8 @@
    "dip_B": -15.045,
    "wd_B": 0.2356,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10405,7 +10695,8 @@
    "dip_B": -15.335,
    "wd_B": 0.2548,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10440,7 +10731,8 @@
    "dip_B": -14.455,
    "wd_B": 0.2247,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10475,7 +10767,8 @@
    "dip_B": -17.08,
    "wd_B": 0.2521,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10510,7 +10803,8 @@
    "dip_B": -14.985,
    "wd_B": 0.2137,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10545,7 +10839,8 @@
    "dip_B": -12.359,
    "wd_B": 0.2274,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10580,7 +10875,8 @@
    "dip_B": -12.668,
    "wd_B": 0.2192,
    "tick_B": 0.0009,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10615,7 +10911,8 @@
    "dip_B": -25.231,
    "wd_B": 0.2137,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10650,7 +10947,8 @@
    "dip_B": -13.595,
    "wd_B": 0.2,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10685,7 +10983,8 @@
    "dip_B": -18.022,
    "wd_B": 0.2137,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "BTC",
@@ -10720,7 +11019,8 @@
    "dip_B": -7.4173,
    "wd_B": 0.2,
    "tick_B": 0.001,
-   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -10755,7 +11055,8 @@
    "dip_B": -19.887,
    "wd_B": 21.139,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -10790,7 +11091,8 @@
    "dip_B": -19.03,
    "wd_B": 19.221,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -10827,7 +11129,8 @@
    "dip_B": -19.985,
    "wd_B": 15.988,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -10862,7 +11165,8 @@
    "dip_B": -18.964,
    "wd_B": 17.942,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -10900,7 +11204,8 @@
    "dip_B": -22.486,
    "wd_B": 20.246,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -10938,7 +11243,8 @@
    "dip_B": -22.114,
    "wd_B": 13.004,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -10973,7 +11279,8 @@
    "dip_B": -21.004,
    "wd_B": 14.999,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11008,7 +11315,8 @@
    "dip_B": -19.092,
    "wd_B": 17.503,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11043,7 +11351,8 @@
    "dip_B": -19.865,
    "wd_B": 19.802,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11078,7 +11387,8 @@
    "dip_B": -20.039,
    "wd_B": 14.602,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11113,7 +11423,8 @@
    "dip_B": -21.54,
    "wd_B": 11.708,
    "tick_B": 0.033,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11148,7 +11459,8 @@
    "dip_B": -19.558,
    "wd_B": 23.424,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11183,7 +11495,8 @@
    "dip_B": -19.08,
    "wd_B": 15.648,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11218,7 +11531,8 @@
    "dip_B": -21.794,
    "wd_B": 11.453,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11253,7 +11567,8 @@
    "dip_B": -18.497,
    "wd_B": 19.635,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11288,7 +11603,8 @@
    "dip_B": -18.718,
    "wd_B": 21.178,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11323,7 +11639,8 @@
    "dip_B": -19.095,
    "wd_B": 16.213,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11358,7 +11675,8 @@
    "dip_B": -22.26,
    "wd_B": 19.745,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11393,7 +11711,8 @@
    "dip_B": -19.235,
    "wd_B": 16.1,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11428,7 +11747,8 @@
    "dip_B": -18.751,
    "wd_B": 21.633,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11463,7 +11783,8 @@
    "dip_B": -19.057,
    "wd_B": 17.791,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11498,7 +11819,8 @@
    "dip_B": -20.887,
    "wd_B": 21.52,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11533,7 +11855,8 @@
    "dip_B": -19.09,
    "wd_B": 16.128,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11568,7 +11891,8 @@
    "dip_B": -18.972,
    "wd_B": 17.605,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11603,7 +11927,8 @@
    "dip_B": -20.165,
    "wd_B": 17.772,
    "tick_B": 0.0335,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11638,7 +11963,8 @@
    "dip_B": -21.303,
    "wd_B": 13.366,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11673,7 +11999,8 @@
    "dip_B": -20.11,
    "wd_B": 13.582,
    "tick_B": 0.0337,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11708,7 +12035,8 @@
    "dip_B": -19.065,
    "wd_B": 19.071,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11743,7 +12071,8 @@
    "dip_B": -19.357,
    "wd_B": 20.495,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11778,7 +12107,8 @@
    "dip_B": -18.708,
    "wd_B": 19.177,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11813,7 +12143,8 @@
    "dip_B": -18.675,
    "wd_B": 21.704,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11848,7 +12179,8 @@
    "dip_B": -19.08,
    "wd_B": 16.037,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11883,7 +12215,8 @@
    "dip_B": -19.221,
    "wd_B": 21.271,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11918,7 +12251,8 @@
    "dip_B": -20.277,
    "wd_B": 11.774,
    "tick_B": 0.0331,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11953,7 +12287,8 @@
    "dip_B": -19.862,
    "wd_B": 10.977,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -11988,7 +12323,8 @@
    "dip_B": -18.732,
    "wd_B": 18.479,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12023,7 +12359,8 @@
    "dip_B": -19.047,
    "wd_B": 21.583,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12058,7 +12395,8 @@
    "dip_B": -18.958,
    "wd_B": 20.052,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12093,7 +12431,8 @@
    "dip_B": -21.132,
    "wd_B": 21.227,
    "tick_B": 0.0333,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12128,7 +12467,8 @@
    "dip_B": -20.96,
    "wd_B": 13.325,
    "tick_B": 0.0332,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12163,7 +12503,8 @@
    "dip_B": -16.245,
    "wd_B": 0.7124,
    "tick_B": 0.0319,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12198,7 +12539,8 @@
    "dip_B": -31.694,
    "wd_B": 0.5645,
    "tick_B": 0.0334,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12233,7 +12575,8 @@
    "dip_B": -17.353,
    "wd_B": 0.422,
    "tick_B": 0.0361,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12268,7 +12611,8 @@
    "dip_B": -31.253,
    "wd_B": 0.4165,
    "tick_B": 0.0315,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12303,7 +12647,8 @@
    "dip_B": -20.929,
    "wd_B": 0.348,
    "tick_B": 0.0354,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12338,7 +12683,8 @@
    "dip_B": -42.276,
    "wd_B": 0.3343,
    "tick_B": 0.0342,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12373,7 +12719,8 @@
    "dip_B": -44.926,
    "wd_B": 0.2877,
    "tick_B": 0.035,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12408,7 +12755,8 @@
    "dip_B": -18.748,
    "wd_B": 0.2576,
    "tick_B": 0.03,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12443,7 +12791,8 @@
    "dip_B": -20.399,
    "wd_B": 0.3151,
    "tick_B": 0.0355,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12478,7 +12827,8 @@
    "dip_B": -41.751,
    "wd_B": 0.2822,
    "tick_B": 0.0325,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12513,7 +12863,8 @@
    "dip_B": -23.155,
    "wd_B": 0.2247,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12548,7 +12899,8 @@
    "dip_B": -41.025,
    "wd_B": 0.2877,
    "tick_B": 0.0317,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12583,7 +12935,8 @@
    "dip_B": -24.517,
    "wd_B": 0.2028,
    "tick_B": 0.0353,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12618,7 +12971,8 @@
    "dip_B": -23.182,
    "wd_B": 0.2411,
    "tick_B": 0.0341,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12653,7 +13007,8 @@
    "dip_B": -40.488,
    "wd_B": 0.2055,
    "tick_B": 0.0367,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12688,7 +13043,8 @@
    "dip_B": -45.187,
    "wd_B": 0.2329,
    "tick_B": 0.0344,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12723,7 +13079,8 @@
    "dip_B": -29.957,
    "wd_B": 0.2028,
    "tick_B": 0.0336,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12758,7 +13115,8 @@
    "dip_B": -43.13,
    "wd_B": 0.2302,
    "tick_B": 0.0328,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12793,7 +13151,8 @@
    "dip_B": -42.114,
    "wd_B": 0.2,
    "tick_B": 0.0341,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "ETH",
@@ -12828,7 +13187,8 @@
    "dip_B": -20.131,
    "wd_B": 0.211,
    "tick_B": 0.0316,
-   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -12863,7 +13223,8 @@
    "dip_B": -19.348,
    "wd_B": 20.29,
    "tick_B": 0.6368,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -12898,7 +13259,8 @@
    "dip_B": -25.451,
    "wd_B": 21.753,
    "tick_B": 0.6022,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -12933,7 +13295,8 @@
    "dip_B": -25.668,
    "wd_B": 15.994,
    "tick_B": 0.5996,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -12968,7 +13331,8 @@
    "dip_B": -25.264,
    "wd_B": 18.221,
    "tick_B": 0.6023,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13003,7 +13367,8 @@
    "dip_B": -25.095,
    "wd_B": 20.257,
    "tick_B": 0.6032,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13038,7 +13403,8 @@
    "dip_B": -24.03,
    "wd_B": 15.955,
    "tick_B": 0.5939,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": false
   },
   {
    "coin": "SOL",
@@ -13073,7 +13439,8 @@
    "dip_B": -25.555,
    "wd_B": 18.202,
    "tick_B": 0.6062,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13110,7 +13477,8 @@
    "dip_B": -26.413,
    "wd_B": 16.229,
    "tick_B": 0.6038,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13145,7 +13513,8 @@
    "dip_B": -25.417,
    "wd_B": 19.013,
    "tick_B": 0.5997,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13180,7 +13549,8 @@
    "dip_B": -24.516,
    "wd_B": 21.235,
    "tick_B": 0.6042,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13215,7 +13585,8 @@
    "dip_B": -25.513,
    "wd_B": 18.643,
    "tick_B": 0.6007,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13250,7 +13621,8 @@
    "dip_B": -25.095,
    "wd_B": 20.441,
    "tick_B": 0.6041,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13285,7 +13657,8 @@
    "dip_B": -25.136,
    "wd_B": 20.457,
    "tick_B": 0.6041,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13320,7 +13693,8 @@
    "dip_B": -25.248,
    "wd_B": 20.254,
    "tick_B": 0.6032,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13355,7 +13729,8 @@
    "dip_B": -24.024,
    "wd_B": 14.64,
    "tick_B": 0.5976,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13390,7 +13765,8 @@
    "dip_B": -23.404,
    "wd_B": 21.561,
    "tick_B": 0.6005,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13425,7 +13801,8 @@
    "dip_B": -25.788,
    "wd_B": 17.172,
    "tick_B": 0.6007,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13460,7 +13837,8 @@
    "dip_B": -25.527,
    "wd_B": 19.983,
    "tick_B": 0.6025,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13495,7 +13873,8 @@
    "dip_B": -25.424,
    "wd_B": 20.378,
    "tick_B": 0.6008,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13530,7 +13909,8 @@
    "dip_B": -26.27,
    "wd_B": 16.498,
    "tick_B": 0.5962,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": false
   },
   {
    "coin": "SOL",
@@ -13565,7 +13945,8 @@
    "dip_B": -25.809,
    "wd_B": 14.267,
    "tick_B": 0.6065,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13600,7 +13981,8 @@
    "dip_B": -25.148,
    "wd_B": 19.473,
    "tick_B": 0.6049,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13635,7 +14017,8 @@
    "dip_B": -25.213,
    "wd_B": 21.723,
    "tick_B": 0.6014,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13670,7 +14053,8 @@
    "dip_B": -25.524,
    "wd_B": 19.873,
    "tick_B": 0.6032,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13705,7 +14089,8 @@
    "dip_B": -25.729,
    "wd_B": 17.309,
    "tick_B": 0.6057,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13740,7 +14125,8 @@
    "dip_B": -23.602,
    "wd_B": 21.191,
    "tick_B": 0.5986,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13775,7 +14161,8 @@
    "dip_B": -24.333,
    "wd_B": 22.52,
    "tick_B": 0.5997,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13810,7 +14197,8 @@
    "dip_B": -20.608,
    "wd_B": 14.33,
    "tick_B": 0.6067,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13845,7 +14233,8 @@
    "dip_B": -26.226,
    "wd_B": 12.684,
    "tick_B": 0.591,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13880,7 +14269,8 @@
    "dip_B": -25.874,
    "wd_B": 13.092,
    "tick_B": 0.5936,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13915,7 +14305,8 @@
    "dip_B": -25.975,
    "wd_B": 18.205,
    "tick_B": 0.602,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13950,7 +14341,8 @@
    "dip_B": -26.897,
    "wd_B": 15.095,
    "tick_B": 0.603,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -13985,7 +14377,8 @@
    "dip_B": -25.438,
    "wd_B": 19.838,
    "tick_B": 0.6028,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14020,7 +14413,8 @@
    "dip_B": -26.937,
    "wd_B": 15.717,
    "tick_B": 0.6101,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14055,7 +14449,8 @@
    "dip_B": -26.165,
    "wd_B": 19.945,
    "tick_B": 0.6028,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14093,7 +14488,8 @@
    "dip_B": -26.079,
    "wd_B": 20.517,
    "tick_B": 0.6007,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14128,7 +14524,8 @@
    "dip_B": -25.684,
    "wd_B": 20.167,
    "tick_B": 0.6023,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14163,7 +14560,8 @@
    "dip_B": -26.741,
    "wd_B": 18.588,
    "tick_B": 0.6047,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14198,7 +14596,8 @@
    "dip_B": -25.282,
    "wd_B": 10.245,
    "tick_B": 0.5939,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14233,7 +14632,8 @@
    "dip_B": -24.557,
    "wd_B": 17.61,
    "tick_B": 0.5983,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14268,7 +14668,8 @@
    "dip_B": -29.818,
    "wd_B": 0.6549,
    "tick_B": 0.5958,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14303,7 +14704,8 @@
    "dip_B": -29.477,
    "wd_B": 0.6658,
    "tick_B": 0.5974,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14338,7 +14740,8 @@
    "dip_B": -37.398,
    "wd_B": 0.5288,
    "tick_B": 0.5898,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14373,7 +14776,8 @@
    "dip_B": -31.224,
    "wd_B": 0.5398,
    "tick_B": 0.5987,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14408,7 +14812,8 @@
    "dip_B": -24.188,
    "wd_B": 0.422,
    "tick_B": 0.5819,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14443,7 +14848,8 @@
    "dip_B": -25.977,
    "wd_B": 0.2904,
    "tick_B": 0.5568,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14478,7 +14884,8 @@
    "dip_B": -37.743,
    "wd_B": 0.2713,
    "tick_B": 0.6263,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14513,7 +14920,8 @@
    "dip_B": -40.506,
    "wd_B": 0.274,
    "tick_B": 0.6249,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14548,7 +14956,8 @@
    "dip_B": -48.969,
    "wd_B": 0.3425,
    "tick_B": 0.5576,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14583,7 +14992,8 @@
    "dip_B": -16.962,
    "wd_B": 0.2959,
    "tick_B": 0.6143,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14618,7 +15028,8 @@
    "dip_B": -36.74,
    "wd_B": 0.285,
    "tick_B": 0.6384,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14653,7 +15064,8 @@
    "dip_B": -22.759,
    "wd_B": 0.2822,
    "tick_B": 0.6191,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14688,7 +15100,8 @@
    "dip_B": -31.609,
    "wd_B": 0.2795,
    "tick_B": 0.5569,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14723,7 +15136,8 @@
    "dip_B": -26.454,
    "wd_B": 0.2548,
    "tick_B": 0.561,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14758,7 +15172,8 @@
    "dip_B": -44.39,
    "wd_B": 0.2055,
    "tick_B": 0.6179,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14793,7 +15208,8 @@
    "dip_B": -25.121,
    "wd_B": 0.2,
    "tick_B": 0.5887,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14828,7 +15244,8 @@
    "dip_B": -30.105,
    "wd_B": 0.2137,
    "tick_B": 0.6329,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14863,7 +15280,8 @@
    "dip_B": -35.775,
    "wd_B": 0.2247,
    "tick_B": 0.6079,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14898,7 +15316,8 @@
    "dip_B": -20.25,
    "wd_B": 0.2219,
    "tick_B": 0.6689,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "SOL",
@@ -14933,7 +15352,8 @@
    "dip_B": -24.31,
    "wd_B": 0.2493,
    "tick_B": 0.6515,
-   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -14968,7 +15388,8 @@
    "dip_B": -26.638,
    "wd_B": 14.799,
    "tick_B": 0.4208,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15003,7 +15424,8 @@
    "dip_B": -24.898,
    "wd_B": 13.634,
    "tick_B": 0.4205,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15038,7 +15460,8 @@
    "dip_B": -24.883,
    "wd_B": 20.474,
    "tick_B": 0.4196,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15073,7 +15496,8 @@
    "dip_B": -25.0,
    "wd_B": 18.473,
    "tick_B": 0.421,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15110,7 +15534,8 @@
    "dip_B": -22.649,
    "wd_B": 15.862,
    "tick_B": 0.4178,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15145,7 +15570,8 @@
    "dip_B": -22.599,
    "wd_B": 21.222,
    "tick_B": 0.4178,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15180,7 +15606,8 @@
    "dip_B": -22.684,
    "wd_B": 20.213,
    "tick_B": 0.4179,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15215,7 +15642,8 @@
    "dip_B": -24.199,
    "wd_B": 22.205,
    "tick_B": 0.4199,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15250,7 +15678,8 @@
    "dip_B": -23.984,
    "wd_B": 21.876,
    "tick_B": 0.42,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15285,7 +15714,8 @@
    "dip_B": -34.556,
    "wd_B": 13.785,
    "tick_B": 0.4167,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15320,7 +15750,8 @@
    "dip_B": -25.463,
    "wd_B": 22.583,
    "tick_B": 0.42,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15355,7 +15786,8 @@
    "dip_B": -25.408,
    "wd_B": 20.276,
    "tick_B": 0.4197,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15390,7 +15822,8 @@
    "dip_B": -22.511,
    "wd_B": 19.841,
    "tick_B": 0.418,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15428,7 +15861,8 @@
    "dip_B": -25.004,
    "wd_B": 20.728,
    "tick_B": 0.4195,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15463,7 +15897,8 @@
    "dip_B": -24.979,
    "wd_B": 21.805,
    "tick_B": 0.4192,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15498,7 +15933,8 @@
    "dip_B": -21.917,
    "wd_B": 21.712,
    "tick_B": 0.4183,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15533,7 +15969,8 @@
    "dip_B": -22.013,
    "wd_B": 15.687,
    "tick_B": 0.4173,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15568,7 +16005,8 @@
    "dip_B": -21.859,
    "wd_B": 18.218,
    "tick_B": 0.4174,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15603,7 +16041,8 @@
    "dip_B": -21.714,
    "wd_B": 16.627,
    "tick_B": 0.4177,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15638,7 +16077,8 @@
    "dip_B": -26.254,
    "wd_B": 12.363,
    "tick_B": 0.4198,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15673,7 +16113,8 @@
    "dip_B": -28.899,
    "wd_B": 12.371,
    "tick_B": 0.4225,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15708,7 +16149,8 @@
    "dip_B": -23.846,
    "wd_B": 22.666,
    "tick_B": 0.42,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15743,7 +16185,8 @@
    "dip_B": -21.674,
    "wd_B": 18.054,
    "tick_B": 0.4179,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15778,7 +16221,8 @@
    "dip_B": -24.855,
    "wd_B": 18.917,
    "tick_B": 0.4214,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15813,7 +16257,8 @@
    "dip_B": -24.165,
    "wd_B": 20.58,
    "tick_B": 0.4205,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15848,7 +16293,8 @@
    "dip_B": -23.706,
    "wd_B": 16.583,
    "tick_B": 0.4237,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15883,7 +16329,8 @@
    "dip_B": -21.556,
    "wd_B": 19.884,
    "tick_B": 0.4193,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15918,7 +16365,8 @@
    "dip_B": -22.811,
    "wd_B": 13.582,
    "tick_B": 0.4181,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15953,7 +16401,8 @@
    "dip_B": -28.482,
    "wd_B": 11.094,
    "tick_B": 0.4243,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -15988,7 +16437,8 @@
    "dip_B": -24.8,
    "wd_B": 11.544,
    "tick_B": 0.4154,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16023,7 +16473,8 @@
    "dip_B": -21.932,
    "wd_B": 16.128,
    "tick_B": 0.4178,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16058,7 +16509,8 @@
    "dip_B": -24.985,
    "wd_B": 20.734,
    "tick_B": 0.4217,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16096,7 +16548,8 @@
    "dip_B": -24.151,
    "wd_B": 12.673,
    "tick_B": 0.4188,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16131,7 +16584,8 @@
    "dip_B": -21.755,
    "wd_B": 16.599,
    "tick_B": 0.4175,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16166,7 +16620,8 @@
    "dip_B": -23.318,
    "wd_B": 16.062,
    "tick_B": 0.4222,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16201,7 +16656,8 @@
    "dip_B": -24.74,
    "wd_B": 23.189,
    "tick_B": 0.4189,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16236,7 +16692,8 @@
    "dip_B": -25.059,
    "wd_B": 17.265,
    "tick_B": 0.4219,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16271,7 +16728,8 @@
    "dip_B": -24.626,
    "wd_B": 21.09,
    "tick_B": 0.4213,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16306,7 +16764,8 @@
    "dip_B": -23.803,
    "wd_B": 22.257,
    "tick_B": 0.4202,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16341,7 +16800,8 @@
    "dip_B": -24.794,
    "wd_B": 19.18,
    "tick_B": 0.4206,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16376,7 +16836,8 @@
    "dip_B": -24.403,
    "wd_B": 0.7453,
    "tick_B": 0.417,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16411,7 +16872,8 @@
    "dip_B": -37.834,
    "wd_B": 0.4713,
    "tick_B": 0.4266,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16446,7 +16908,8 @@
    "dip_B": -23.551,
    "wd_B": 0.4987,
    "tick_B": 0.4285,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16481,7 +16944,8 @@
    "dip_B": -47.291,
    "wd_B": 0.4713,
    "tick_B": 0.4078,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16516,7 +16980,8 @@
    "dip_B": -26.626,
    "wd_B": 0.4466,
    "tick_B": 0.4283,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16551,7 +17016,8 @@
    "dip_B": -42.808,
    "wd_B": 0.3891,
    "tick_B": 0.4276,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16586,7 +17052,8 @@
    "dip_B": -31.341,
    "wd_B": 0.3014,
    "tick_B": 0.4083,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16621,7 +17088,8 @@
    "dip_B": -31.866,
    "wd_B": 0.3343,
    "tick_B": 0.4047,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16656,7 +17124,8 @@
    "dip_B": -47.114,
    "wd_B": 0.3178,
    "tick_B": 0.4298,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16691,7 +17160,8 @@
    "dip_B": -24.014,
    "wd_B": 0.274,
    "tick_B": 0.4138,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16726,7 +17196,8 @@
    "dip_B": -36.063,
    "wd_B": 0.3014,
    "tick_B": 0.4009,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16761,7 +17232,8 @@
    "dip_B": -19.986,
    "wd_B": 0.2521,
    "tick_B": 0.3832,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16798,7 +17270,8 @@
    "dip_B": -32.87,
    "wd_B": 0.2767,
    "tick_B": 0.4006,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16833,7 +17306,8 @@
    "dip_B": -49.645,
    "wd_B": 0.2904,
    "tick_B": 0.4371,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16868,7 +17342,8 @@
    "dip_B": -38.3,
    "wd_B": 0.2548,
    "tick_B": 0.4275,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16903,7 +17378,8 @@
    "dip_B": -31.327,
    "wd_B": 0.2904,
    "tick_B": 0.4185,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16938,7 +17414,8 @@
    "dip_B": -31.805,
    "wd_B": 0.2658,
    "tick_B": 0.4042,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -16973,7 +17450,8 @@
    "dip_B": -36.686,
    "wd_B": 0.263,
    "tick_B": 0.4135,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -17008,7 +17486,8 @@
    "dip_B": -32.778,
    "wd_B": 0.2603,
    "tick_B": 0.413,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   },
   {
    "coin": "XRP",
@@ -17045,8 +17524,87 @@
    "dip_B": -39.895,
    "wd_B": 0.2137,
    "tick_B": 0.3971,
-   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+   "live_parity": true
   }
  ],
- "stamp": "tables of run 43030435253; pack job 43054998730 at commit 2328763a2026d649e1eb1c1ee6e26fc666c55d72"
+ "stamp": "tables of run 43030435253; pack job 43057668061 at commit c6db27c7ea68c0d93fbabfe5f36b00921ad5cd72",
+ "live_reader_parity": {
+  "note": "The live reader (oracle.heat_live) on a window of bars against the engine on the whole history, on real minutes. live_parity False on a row = its indicator gave a different key on a window for at least one coin; such a row is in the tables but the live reader does not reproduce it exactly.",
+  "indicators_that_differ": [
+   "PVI"
+  ],
+  "coins": {
+   "BTC": {
+    "agreement": 1.0,
+    "window_bars": 3000,
+    "days": 3,
+    "minutes_checked": 1358,
+    "edges_same_as_meta": 624,
+    "edges_different": 0,
+    "keys_both": 95516,
+    "engine_only": 0,
+    "live_only": 0,
+    "readings_that_differ": [],
+    "table_sha256": "9d1ccb72747bc124153fc40e2fa9847351aaa08e7ef5285be4c6535c08d0f87d"
+   },
+   "ETH": {
+    "agreement": 0.99917,
+    "window_bars": 3000,
+    "days": 3,
+    "minutes_checked": 1358,
+    "edges_same_as_meta": 624,
+    "edges_different": 0,
+    "keys_both": 90379,
+    "engine_only": 3,
+    "live_only": 72,
+    "readings_that_differ": [
+     [
+      "1m:PVI",
+      69
+     ],
+     [
+      "5m:PVI",
+      6
+     ]
+    ],
+    "table_sha256": "9fe17794ba5fbbed13d787f1de81cf99f79c77604f28fb9526460adc074415d2"
+   },
+   "SOL": {
+    "agreement": 1.0,
+    "window_bars": 3000,
+    "days": 3,
+    "minutes_checked": 1358,
+    "edges_same_as_meta": 624,
+    "edges_different": 0,
+    "keys_both": 88361,
+    "engine_only": 0,
+    "live_only": 0,
+    "readings_that_differ": [],
+    "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad"
+   },
+   "XRP": {
+    "agreement": 0.99653,
+    "window_bars": 3000,
+    "days": 3,
+    "minutes_checked": 1358,
+    "edges_same_as_meta": 624,
+    "edges_different": 0,
+    "keys_both": 92514,
+    "engine_only": 0,
+    "live_only": 322,
+    "readings_that_differ": [
+     [
+      "1m:PVI",
+      197
+     ],
+     [
+      "1m:PVI sign",
+      125
+     ]
+    ],
+    "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75"
+   }
+  }
+ }
 }
