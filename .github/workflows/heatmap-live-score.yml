@@ -40,15 +40,20 @@ jobs:
           IFS=, read -ra RUNS <<< "${{ steps.req.outputs.runs }}"
           for r in "${RUNS[@]}"; do gh run download "$r" --repo "$GITHUB_REPOSITORY" --pattern 'heat-shadow-*' --dir "$RUNNER_TEMP/capture/$r" || echo "::warning::no segments from run $r"; done
           echo "segments: $(find "$RUNNER_TEMP/capture" -name meta.json | wc -l)"
-      - name: rclone, with retries (the package mirror sometimes fails to resolve)
+      # Same fallback as the oracle thread's Drive setup fix (c0ddecb): apt once, then the same rclone version from
+      # rclone's release page, checked against a pinned SHA-256. The runner could not reach the Ubuntu mirrors on Nov 11.
+      - name: rclone (apt once, else the pinned release file)
         if: steps.req.outputs.bot == 'true'
         continue-on-error: true
         run: |
-          for i in 1 2 3 4 5 6; do
-            command -v rclone >/dev/null && break
-            sudo apt-get update -qq >/dev/null 2>&1 || true
-            sudo apt-get install -y -qq rclone >/dev/null 2>&1 || sleep $((i * 20))
-          done
+          set -euo pipefail
+          command -v rclone >/dev/null && exit 0
+          if ! sudo timeout 120 apt-get install -y -qq rclone >/dev/null 2>&1; then
+            V=v1.60.1; SUM=1c89af499e9d81c3ee2af8fa74a88414c22657c3df439f4d812e803bff5671cd
+            curl -fsSL --retry 3 --retry-delay 5 --max-time 300 -o "$RUNNER_TEMP/rclone.deb" "https://github.com/rclone/rclone/releases/download/$V/rclone-$V-linux-amd64.deb"
+            echo "$SUM  $RUNNER_TEMP/rclone.deb" | sha256sum -c --status - || { echo "::error::the rclone release file does not match the pinned hash"; exit 1; }
+            sudo dpkg -i "$RUNNER_TEMP/rclone.deb" >/dev/null
+          fi
           rclone version | head -1
       # A Drive failure must not block the heat map side of a read: the report then says the bot side is missing.
       - uses: ./.github/actions/drive-setup
