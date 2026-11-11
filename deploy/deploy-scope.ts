@@ -49,8 +49,8 @@ import { pathToFileURL } from 'node:url';
 
 export const SKIP_TAG = '[skip deploy]';
 
-// The heat curve reader's files, shipped with every release that has them (none until the reader and the oracle
-// engine reach main: the deploy then ships nothing extra). `dir`: the folder each pattern lies in; `re`: the files of
+// The heat curve reader's files, shipped with every release that has them (a commit without them ships nothing extra;
+// python/oracle and the packs are on main since #328, Nov 11 2:36 PM EST / 19:36 UTC, the reader comes with the lane). `dir`: the folder each pattern lies in; `re`: the files of
 // it that ship. Every module the reader can import ships: all of python/oracle but tests/, prereg/ (the
 // preregistration notes) and markdown (RUNS.md, a run log, and SPEC.md: read by no module; an edit to them must not
 // restart the bot). Not narrowed to the modules heat_live imports: some imports are inside functions (heat.py imports
