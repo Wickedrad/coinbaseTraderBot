@@ -97,6 +97,9 @@ gh workflow run atlas-research.yml --ref feature/atlas-oracle-blocks \
 GitHub reads the fixed raw artifact once and shares the audited derivative with
 five asset jobs. Each completes its Oracle pass before its walk. There is no
 observation cap or sparse spacing.
+
+**Off since Nov 11, 2026 (8:05 AM EST / 13:05 UTC):** preparing that derivative (`atlas-oracle-input`, a copy of the Drive archive) is off because this repository is public; `oracle_blocks` now needs `prepared_run`, and the workflow is now `atlas-research-results.yml`.
+
 An earlier successful preparation can be reused with `-f prepared_run=<run-id>`;
 all input hashes are checked again before the asset runs.
 The combined summary alone can be regenerated from saved result artifacts with

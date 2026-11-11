@@ -34,16 +34,18 @@ The registered research acceptance requires at least 20 non-overlapping, same-pr
 
 The initial run's forecast engine and primary account were committed before launch. Its sustained-direction/stressed-profit assessment criteria were committed at `2026-11-10T02:20:51Z` (`9b8330b`), during collection but before the first 15-minute target matured and before any outcome review. Keep that timing distinction in the evidence record. Subsequent trials on this source lock both the engine and assessment before collection.
 
+**Renamed Nov 11, 2026 (8:05 AM EST / 13:05 UTC):** this workflow was `atlas-recordings.yml`; its observed-recording modes published copies of the bot's recordings (this repository is public) and are gone, and the old path stays off `main` so older branches' copies of it cannot be dispatched.
+
 Start a short source/protocol probe (it cannot qualify as edge evidence):
 
 ```sh
-gh workflow run atlas-recordings.yml --ref main -f oracle_edge=true -f edge_cycles=2
+gh workflow run atlas-oracle-edge.yml --ref main -f oracle_edge=true -f edge_cycles=2
 ```
 
 Start a locked trial long enough to observe both horizons:
 
 ```sh
-gh workflow run atlas-recordings.yml --ref main -f oracle_edge=true -f edge_cycles=72
+gh workflow run atlas-oracle-edge.yml --ref main -f oracle_edge=true -f edge_cycles=72
 ```
 
 Choose the collection duration before launch. Contract close must fall at least one minute before the planned collection end, and the forecast must fit before close minus 30 seconds. A 72-minute run started late in the hour can have no eligible entries. Use a separately registered 90-minute protocol when needed to include the following hourly close; never pool trials with different durations or implementations.
@@ -53,7 +55,7 @@ The run produces `atlas-oracle-edge` with registration, forecast publications, r
 Assess completed locked trial artifacts without recollecting or refitting:
 
 ```sh
-gh workflow run atlas-recordings.yml --ref main -f oracle_edge=true -f source_run=RUN_ID
+gh workflow run atlas-oracle-edge.yml --ref main -f oracle_edge=true -f source_run=RUN_ID
 ```
 
 For a complete same-protocol cohort, supply its run IDs separated by commas. The evaluator rejects changed models, policies, implementation, overlapping trial periods, changed artifacts and backdated forecasts. The assessment artifact is `atlas-oracle-edge-assessment`.

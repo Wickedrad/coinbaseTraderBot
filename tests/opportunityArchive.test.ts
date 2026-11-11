@@ -54,13 +54,14 @@ test('archive audit fails closed on malformed OHLCV and optional taker volume wi
   assert.equal(audit(header + bar(0, '')).status, 0, 'missing optional taker volume is distinct from zero');
 });
 
-test('archive export is exclusive, reads only fixed market files and keeps credentials out of its artifact', () => {
+test('archive export is exclusive, reads only fixed market files and keeps the copy on the runner', () => {
   const yaml = fs.readFileSync('.github/workflows/diagnose.yml', 'utf8');
   const job = yaml.split('  atlas-archive-export:')[1].split('  atlas-drive-inventory:')[0];
   assert.match(job, /gdrive:kalshi-bot-archive\/raw\/history/);
   assert.match(job, /--files-from/); assert.match(job, /archiveAudit\.py/);
   assert.match(job, /RCLONE_CONFIG="\$cfg\/rclone.conf"/);
-  assert.match(job, /path: \$\{\{ runner.temp \}\}\/atlas-history-archive\//);
+  // Nov 11, 2026 (8:05 AM EST / 13:05 UTC): the repository is public, so the copied Drive archive is never an artifact.
+  assert.doesNotMatch(job, /name: atlas-history-archive|path: .*atlas-history-archive/);
   assert.doesNotMatch(job, /LIGHTSAIL|ssh |pipeline|rclone (?:sync|move|delete|purge)/);
   assert.match(job, /if: inputs\.atlas_offline_history_study == 'true'/, 'fitting is a separate explicit runner-only opt-in');
 });
@@ -101,7 +102,7 @@ test('off-grid quarantine preserves input bytes, excludes rather than shifts row
 });
 
 test('Atlas research workflow has no server credentials or deployment path', () => {
-  const yaml = fs.readFileSync('.github/workflows/atlas-research.yml', 'utf8');
+  const yaml = fs.readFileSync('.github/workflows/atlas-research-results.yml', 'utf8');
   assert.match(yaml, /runs-on: ubuntu-latest/); assert.match(yaml, /workflow_dispatch/);
   assert.doesNotMatch(yaml, /LIGHTSAIL|ssh-action|deploy\/activate|deploy\/install|TRADING_MODE/);
   const deploy = fs.readFileSync('.github/workflows/deploy.yml', 'utf8');

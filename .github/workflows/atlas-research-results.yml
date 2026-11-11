@@ -1,5 +1,13 @@
-name: Opportunity Atlas research (GitHub only)
+name: Opportunity Atlas research results (GitHub only)
 
+# Nov 11, 2026 (8:05 AM EST / 13:05 UTC, Steven): this repository is public, so copies of server data (recordings,
+# audit logs, Drive history archives, or rows built from them) never become Actions artifacts. Preparing a new
+# atlas-oracle-input uploaded a quarantined copy of the Drive history archive: that mode is off (server-copies-off), and
+# oracle_blocks needs prepared_run. The history study keeps its dataset rows on this runner and uploads results only.
+# This file was atlas-research.yml. GitHub runs a dispatched workflow from the requested ref's copy of the file, as long
+# as a file at that path is on main, and older branches still hold oracle-prepare and the whole-folder history-study
+# upload (no secret needed: they re-upload the existing archive artifact). With no atlas-research.yml on main, none of
+# those copies can be dispatched.
 on:
   workflow_dispatch:
     inputs:
@@ -8,7 +16,7 @@ on:
         default: '42522123037'
         required: true
       dataset_run:
-        description: 'Optional atlas-history-study run; reuse its verified dataset for the fixed smooth/tree comparison'
+        description: 'Optional atlas-history-study run from before Nov 11, 2026 (later ones carry no dataset rows); reuse its verified dataset for the fixed smooth/tree comparison'
         default: ''
         required: false
       study_policy:
@@ -25,7 +33,7 @@ on:
         default: false
         required: false
       prepared_run:
-        description: 'Optional earlier run with a successful atlas-oracle-input artifact; reuse the same audited data without recopying/quarantining'
+        description: 'Earlier run with a successful atlas-oracle-input artifact; required with oracle_blocks (preparing a new one is off: it uploaded a Drive archive copy)'
         default: ''
         required: false
       results_run:
@@ -118,7 +126,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: atlas-history-study
-          path: research/out/atlas-history-study/
+          # Results only (registration, archive audit metadata, fitted folds and reports): the dataset/ rows are built from
+          # the Drive history archive and stay on this runner.
+          path: |
+            research/out/atlas-history-study/*.json
+            research/out/atlas-history-study/trees/
           if-no-files-found: warn
           retention-days: 90
   family-comparison:
@@ -174,30 +186,17 @@ jobs:
           path: research/out/atlas-history-comparison/
           if-no-files-found: warn
           retention-days: 90
-  oracle-prepare:
+  server-copies-off:
     if: inputs.oracle_blocks && inputs.prepared_run == '' && inputs.results_run == ''
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
-        with:
-          name: atlas-history-archive
-          path: ${{ runner.temp }}/atlas-source
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.archive_run }}
-      - name: Preserve raw archive; quarantine off-grid rows once on this runner
+      - name: Preparing a new Oracle input is off
         run: |
-          python3 -B research/opportunity/quarantineArchive.py "$RUNNER_TEMP/atlas-source" \
-            --out "$RUNNER_TEMP/atlas-oracle-input"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: atlas-oracle-input
-          path: ${{ runner.temp }}/atlas-oracle-input/
-          retention-days: 7
+          echo "::error::Off since Nov 11, 2026: preparing atlas-oracle-input uploaded a quarantined copy of the Drive history archive. This repository is public, so server copies never become Actions artifacts. Give prepared_run (an existing atlas-oracle-input) or results_run."
+          exit 1
   oracle-train:
-    needs: oracle-prepare
-    if: ${{ !cancelled() && inputs.oracle_blocks && inputs.results_run == '' && (needs.oracle-prepare.result == 'success' || (needs.oracle-prepare.result == 'skipped' && inputs.prepared_run != '')) }}
+    if: inputs.oracle_blocks && inputs.results_run == '' && inputs.prepared_run != ''
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -220,7 +219,7 @@ jobs:
           name: atlas-oracle-input
           path: ${{ runner.temp }}/atlas-oracle-input
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.prepared_run != '' && inputs.prepared_run || github.run_id }}
+          run-id: ${{ inputs.prepared_run }}
       - name: First pass -- every-minute future answers and quarterly relationship tables
         run: |
           npm run research:opportunity-oracle -- oracle --archive "$RUNNER_TEMP/atlas-oracle-input" \
