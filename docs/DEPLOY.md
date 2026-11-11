@@ -58,14 +58,13 @@ Right before the switch, run the go-live checklist in the README ("Right before 
    LIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK
    KALSHI_KEY_ID=<your key id>
    KALSHI_PRIVATE_KEY_PATH=/home/ubuntu/.kalshi/private_key.pem
-   PERP_TRADING=live
-   PERP_HEDGE=live
    # Optional: trade binary contracts even though the model hasn't passed validation (your risk).
    LIVE_ALLOW_UNVALIDATED_MODEL=true
    # Optional: a separate perps key instead of the one above.
    # KALSHI_PERPS_KEY_ID=...
    # KALSHI_PERPS_PRIVATE_KEY_PATH=...
    ```
+   The dashboard's LIVE switch (`POST /api/mode`) writes the first three lines and nothing else. Perps and tennis stay as configured and each needs its own switch: `PERP_TRADING=live` and `PERP_HEDGE=live` for real perps orders (a `paper` perps setting is off in live mode), `TENNIS_LIVE=true` for real tennis orders (without it tennis only tracks matches in live mode). Set `PERP_TRADING=live` / `PERP_HEDGE=live` only in a bot.env that already says `TRADING_MODE=live` (this edit, or after the LIVE switch, then restart): next to `TRADING_MODE=paper` they stop the bot from starting (exit code 2), and it stays down until bot.env is fixed. The dashboard's PAPER switch writes `TRADING_MODE=paper`, sets a `live` perps setting back to `paper` and writes `TENNIS_LIVE=false`. Both switches check bot.env as it is now and refuse, writing nothing, when the restart would not start; that includes LIVE with `LIVE_ALLOW_UNVALIDATED_MODEL=false`, an unvalidated model, a closed `kalshi` gate and no other live book (exit code 3).
 3. **Restart and check:** `sudo systemctl restart kalshi-bot`, then `journalctl -u kalshi-bot -f`.
    - `GET /margin/enabled says margin trading is not enabled` means Kalshi hasn't switched perps on for the account yet (it is rolling out member by member). Perp orders are rejected until it is. The prediction side still trades.
    - Perps trade from the margin balance. Moving money from the event-contract balance to margin needs Kalshi's transfer, which isn't available through the API yet, so do it on the website.
