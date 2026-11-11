@@ -37,15 +37,32 @@
 #                                           discovery B (plus HO-1 rows when the ledger holds an all-confirmed opening of that
 #                                           type from that run); outputs to models/oracle-setups/runs/<run>/losers/<ct>[-ho1]/.
 #                                           Every mine job also runs it on discovery B after mining.
+#   [oracle-cut] [oracle-cut-from:<run>]    OR-H3 (python/oracle/prereg/OR-H3.md, python/oracle/cut.py): the loser-cut sidecar
+#                                           labels of every pp15 / pp60 part of parts run <run> (default 42176343914), recomputed
+#                                           from the same Kalshi history the pp jobs read (the row identity check refuses a
+#                                           mismatch), then the 80-arm search per type on discovery A / B (nothing at or after
+#                                           DEV_END; the sidecar's windows/ is never downloaded for it); [oracle-ct:pp15|pp60]
+#                                           narrows the types. Outputs: models/oracle-setups/runs/<run>/cut/ (labels/<part>/,
+#                                           frozen-cut.json, frozen-cut.sha256, search.json, report-cut.md, workflow_source.json).
+#   [protocol:ho1] [ho1-from:<run>] [oracle-cut]
+#                                           OR-H3 HO-1: score the frozen arm of each type of search run <run>'s frozen-cut.json
+#                                           once (cut.py ho1; family oracle-<ct>-cut-v1). Ledger key '<ct>:cut' (mode 'cut'):
+#                                           refused when nothing is frozen, when the type's cut arm was already opened by another
+#                                           run, or when the file's SHA-256 does not match frozen-cut.sha256. Not blocked by and
+#                                           not blocking the OR-H1 / OR-AMEND-1 openings (OR-H3 is a rule, chosen on discovery
+#                                           only). The OR-AMEND-1 lockbox candidates (runs/42176343914/ho1/<ct>/, else the
+#                                           all-confirmed opening of run 42176343914 in the ledger) are scored with the frozen
+#                                           cut, descriptively. Outputs: models/oracle-setups/runs/<this run>/cut/ho1/<ct>/.
 # One study run at a time (the plan refuses a study run while an earlier-started one is active), so at most 9 jobs run.
-# Jobs (at most 9 at once: coin 4 + hourly 3 + tennis 2; then pp60 3, mine 4, ho1 4):
+# Jobs (at most 9 at once: coin 4 + hourly 3 + tennis 2; then pp60 3, mine 4, ho1 4; OR-H3: cut_labels 7, then 1):
 #   test -> plan -> coin (perp + spot parts, pp15) | hourly (KX<A>D backfill) | tennis -> pp60 -> mine -> card
-#   test -> plan -> ho1_open (the one-time opening) -> ho1 -> card
+#   test -> plan -> ho1_open (the one-time opening) -> ho1 | cut_ho1 -> card
 #   test -> plan -> losers (max 4) -> card
+#   test -> plan -> cut_labels (one per pp part, max 7) -> cut_search -> card
 # Drive (via .github/actions/drive-setup and deploy/drive_lab.sh; registry/ paths with rclone copyto). Read only:
 # derived/perp-ta/grids, raw/perp-ta-history/<A> (hourly bars, 1-minute spot), raw/kalshi-history/kalshi/KX<A>15M,
 # raw/tennis-history/kalshi/<S>.tar.gz, registry/regime-v1 labels. Written: models/oracle-setups/runs/<run>/{parts,
-# status,mine,ho1,losers}, derived/oracle-setups/modcache (the analyzer walk), raw/oracle-history/kalshi/KX<A>D (the hourly
+# status,mine,ho1,losers,cut}, derived/oracle-setups/modcache (the analyzer walk), raw/oracle-history/kalshi/KX<A>D (the hourly
 # backfill, resumed and put back, never deleted), models/oracle-setups/ho1/openings.jsonl, registry/shards/oracle-setups.
 # Public repository: per-decision rows stay on Drive; logs and the commit comment carry aggregates of discovery rows only
 # (and, after the opening, HO-1 aggregates). No Kalshi day file dated 2026-11-05 or later is downloaded; the builders cap
@@ -67,7 +84,7 @@ permissions:
 # A study run (any of its tags) has its own group, so study runs never cancel each other; a test-only push cancels the
 # branch's earlier test-only push.
 concurrency:
-  group: ${{ (contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]') || contains(github.event.head_commit.message, '[oracle-losers:')) && format('oracle-setups-study-{0}', github.run_id) || format('oracle-setups-{0}-other', github.ref) }}
+  group: ${{ (contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]') || contains(github.event.head_commit.message, '[oracle-losers:') || contains(github.event.head_commit.message, '[oracle-cut]')) && format('oracle-setups-study-{0}', github.run_id) || format('oracle-setups-{0}-other', github.ref) }}
   cancel-in-progress: true
 
 defaults:
@@ -135,7 +152,7 @@ jobs:
 
   plan:
     needs: test
-    if: contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]') || contains(github.event.head_commit.message, '[oracle-losers:')
+    if: contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]') || contains(github.event.head_commit.message, '[oracle-losers:') || contains(github.event.head_commit.message, '[oracle-cut]')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -156,6 +173,8 @@ jobs:
       targets: ${{ steps.go.outputs.targets }}
       allconf: ${{ steps.go.outputs.allconf }}
       losers: ${{ steps.lpresent.outputs.losers }}
+      cut: ${{ steps.go.outputs.cut }}
+      cutparts: ${{ steps.cpresent.outputs.cutparts }}
     steps:
       - uses: actions/checkout@v5
       - name: Read the tags
@@ -195,6 +214,14 @@ jobs:
           ho1, study, mine_from, ho1_from, proto = '[protocol:ho1]' in msg, '[oracle]' in msg, tag('oracle-mine'), tag('ho1-from'), tag('protocol')
           partial, reopen_raw = '[oracle-partial]' in msg, tag('ho1-reopen')
           allconf, losers_from = '[ho1-all-confirmed]' in msg, tag('oracle-losers')
+          cut, cut_from = '[oracle-cut]' in msg, tag('oracle-cut-from')
+          CUT_TYPES, CUT_DEFAULT_FROM = ['pp15', 'pp60'], '42176343914'
+          if cut_from is not None and not cut:
+              die('[oracle-cut-from:<run>] needs [oracle-cut]')
+          if cut and not ho1 and (study or mine_from is not None or losers_from is not None or partial or allconf):
+              die('[oracle-cut] runs alone: no [oracle], [oracle-mine:], [oracle-losers:], [oracle-partial] or [ho1-all-confirmed] in the same push')
+          if cut and ho1 and (allconf or cut_from is not None or tag('ho1-reopen') is not None):
+              die('[protocol:ho1] [oracle-cut]: [ho1-from:<run>] names the OR-H3 search run; no [ho1-all-confirmed], [ho1-reopen:] or [oracle-cut-from:] (the parts run is the search run\'s)')
           if allconf and not ho1:
               die('[ho1-all-confirmed] needs [protocol:ho1] [ho1-from:<run>]')
           if allconf and reopen_raw is not None:
@@ -214,7 +241,12 @@ jobs:
           reopen = pick(reopen_raw, CTS + REVT, False) if reopen_raw is not None else []
           ct_raw, parts_raw, targets_raw = tag('oracle-ct'), tag('oracle-parts'), tag('oracle-targets')
           assets = pick(tag('oracle-assets'), ASSETS, True)
-          if allconf or losers_from is not None:
+          if cut:
+              # OR-H3: Price Prediction only (pp15, pp60); [oracle-ct:] narrows it.
+              if parts_raw is not None or targets_raw is not None:
+                  die('[oracle-parts:] / [oracle-targets:] are for building: use [oracle-ct:pp15|pp60] with [oracle-cut]')
+              rev, cts = [], (pick(ct_raw, CUT_TYPES, False) if ct_raw is not None else CUT_TYPES)
+          elif allconf or losers_from is not None:
               # OR-AMEND-1 modes: [oracle-ct:<ct>] names any contract type (default: every type the run has; absent ones skip).
               if parts_raw is not None or targets_raw is not None:
                   die('[oracle-parts:] / [oracle-targets:] are for building: use [oracle-ct:<ct>] with [ho1-all-confirmed] / [oracle-losers:]')
@@ -237,6 +269,11 @@ jobs:
               if not re.fullmatch(r'[0-9]+', ho1_from or ''):
                   die('[protocol:ho1] needs [ho1-from:<run id>]: the run whose frozen.json files are opened')
               mode, src = 'ho1', ''
+          elif cut:
+              src = cut_from if cut_from is not None else CUT_DEFAULT_FROM
+              if not re.fullmatch(r'[0-9]+', src):
+                  die(f'[oracle-cut-from:{src}]: a run id')
+              mode = 'cut'
           elif losers_from is not None:
               if not re.fullmatch(r'[0-9]+', losers_from):
                   die(f'[oracle-losers:{losers_from}]: a run id')
@@ -278,10 +315,12 @@ jobs:
                  'hourly': j(hourly), 'tennis': j(tennis), 'mine': j(mine), 'folders': ' '.join(folders),
                  'kxd': ' '.join(f'KX{a}D' for a in hourly), 'modcache': 'true' if coin else 'false',
                  'partial': 'true' if partial else 'false', 'reopen': ','.join(reopen), 'targets': ','.join(map(str, targets)),
-                 'allconf': 'true' if allconf else 'false'}
+                 'allconf': 'true' if allconf else 'false', 'cut': 'true' if cut else 'false'}
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.writelines(f'{k}={v}\n' for k, v in out.items())
           summary = [f'mode {mode}' + (f' (parts of run {src})' if mode == 'mine' else f' (confirmed setups of run {src})' if mode == 'losers'
+                                       else f' (OR-H3 loser cut: sidecar labels and the arm search on the pp parts of run {src})' if mode == 'cut'
+                                       else f' (OR-H3: the frozen cut arms of search run {ho1_from})' if mode == 'ho1' and cut
                                        else f' (frozen files of run {ho1_from})' if mode == 'ho1' and not allconf
                                        else f' (EVERY confirmed setup of run {ho1_from}: OR-AMEND-1 all-confirmed, descriptive)' if mode == 'ho1' else ''),
                      f'contract types {",".join(cts)}', f'coins {",".join(assets)}' + (' (not used by HO-1: the frozen setups fix their scopes)' if mode == 'ho1' else ''),
@@ -311,7 +350,7 @@ jobs:
               --jq '.workflow_runs[] | {id, run_started_at, msg: (.head_commit.message // "")}' >> "$RUNNER_TEMP/active.json"
           done
           busy=$(jq -sr --arg me "$me" --argjson id "$GITHUB_RUN_ID" \
-            '[.[] | select(.id != $id and (.msg | test("\\[oracle\\]|\\[oracle-mine:|\\[protocol:ho1\\]|\\[oracle-losers:")) and ([.run_started_at, .id] < [$me, $id])) | .id] | unique | map(tostring) | join(" ")' \
+            '[.[] | select(.id != $id and (.msg | test("\\[oracle\\]|\\[oracle-mine:|\\[protocol:ho1\\]|\\[oracle-losers:|\\[oracle-cut\\]")) and ([.run_started_at, .id] < [$me, $id])) | .id] | unique | map(tostring) | join(" ")' \
             "$RUNNER_TEMP/active.json")
           [ -z "$busy" ] || { echo "::error::another study run is active (run $busy): one study run at a time (SPEC 5: at most 10 jobs); push again when it has finished"; exit 1; }
           echo "no other study run is active"
@@ -382,6 +421,42 @@ jobs:
           done
           [ "$sel" != '[]' ] || { echo "::error::run $SRC has no confirm.jsonl of the requested contract types"; exit 1; }
           echo "losers=$sel" >> "$GITHUB_OUTPUT"
+
+      # [oracle-cut]: the pp parts of the parts run (every coin of a type, or the type is refused), and the run's cut/
+      # folders made once before the parallel label jobs write into them (Drive twin folders).
+      - name: The pp parts for the OR-H3 cut labels
+        id: cpresent
+        if: steps.go.outputs.mode == 'cut'
+        env:
+          SRC: ${{ steps.go.outputs.src }}
+          CTS: ${{ steps.go.outputs.cts }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SRC" --jq '"\(.name)|\(.status)"') || { echo "::error::run $SRC not found"; exit 1; }
+          [ "$st" = "Oracle setups|completed" ] || { echo "::error::run $SRC is '$st', not a completed Oracle setups run"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$SRC/parts" 2>&1 | grep -v '^$' | tail -5 || true
+          dirs=$(rclone lsf "$R/models/oracle-setups/runs/$SRC/parts" --dirs-only) || { echo "::error::run $SRC: no parts folder readable on Drive"; exit 1; }
+          if grep -qi doge <<< "$dirs"; then echo "::error::a DOGE part in run $SRC: refused"; exit 1; fi
+          sel='[]'
+          for ct in ${CTS//,/ }; do
+            case "$ct" in pp15) want="BTC ETH SOL XRP" ;; pp60) want="BTC ETH SOL" ;; *) echo "::error::$ct is not a Price Prediction type"; exit 1 ;; esac
+            have=""; miss=""
+            for a in $want; do
+              if grep -qxF "$ct-$a/" <<< "$dirs" && [ -n "$(rclone lsf "$R/models/oracle-setups/runs/$SRC/parts/$ct-$a" --files-only --include meta.json)" ]; then have="$have $a"; else miss="$miss $a"; fi
+            done
+            if [ -z "$have" ]; then echo "::notice::$ct: no part in run $SRC: not searched"; continue; fi
+            [ -z "$miss" ] || { echo "::error::$ct: run $SRC lacks$miss (OR-H3 pools every coin of the type): refused"; exit 1; }
+            for a in $have; do sel=$(jq -c --arg ct "$ct" --arg a "$a" '. + [{ct: $ct, asset: $a}]' <<< "$sel"); done
+            echo "$ct: parts$have of run $SRC"
+          done
+          [ "$sel" != '[]' ] || { echo "::error::run $SRC has no pp15 / pp60 part: nothing to label"; exit 1; }
+          rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/cut"
+          for p in $(jq -r '.[] | "\(.ct)-\(.asset)"' <<< "$sel"); do
+            rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/cut/labels/$p"
+            rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/cut/labels/$p/windows"
+          done
+          echo "cutparts=$sel" >> "$GITHUB_OUTPUT"
 
   # Per coin: the perp part and the spot part (research/oracle/oracleExport.ts, SPEC 2a), then the pp15 part
   # (python/oracle/pp.py --kind 15, SPEC 2b) from Kalshi's real 15-minute candles.
@@ -907,11 +982,13 @@ jobs:
       actions: read
     outputs:
       matrix: ${{ steps.check.outputs.matrix }}
-      opened: ${{ steps.log.outputs.opened }}
+      cutmatrix: ${{ steps.ccheck.outputs.matrix }}
+      opened: ${{ steps.log.outputs.opened || steps.clog.outputs.opened }}
     env:
       FROM: ${{ needs.plan.outputs.from }}
       CTS: ${{ needs.plan.outputs.cts }}
       ALLCONF: ${{ needs.plan.outputs.allconf }}
+      CUT: ${{ needs.plan.outputs.cut }}
       RUN: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v5
@@ -921,6 +998,7 @@ jobs:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
       - name: The frozen files of the run and everything HO-1 will read
         id: check
+        if: env.CUT != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -996,6 +1074,7 @@ jobs:
           fi
           echo "matrix=$(jq -c '[.[] | {ct, sha256, parts_run, mode: (.mode // "frozen"), confirm_sha256: (.confirm_sha256 // "")}]' frozen/rows.json)" >> "$GITHUB_OUTPUT"
       - name: The frozen file's parts are the mined ones (checked before anything is logged)
+        if: env.CUT != 'true'
         run: |
           set -euo pipefail
           mkdir -p pmeta
@@ -1026,7 +1105,7 @@ jobs:
           done
       - name: Log the openings (models/oracle-setups/ho1/openings.jsonl), before any HO-1 number
         id: log
-        if: steps.check.outputs.matrix != '[]'
+        if: env.CUT != 'true' && steps.check.outputs.matrix != '[]'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -1055,7 +1134,7 @@ jobs:
           for ct in $(jq -r '.[].ct' frozen/rows.json); do
             if [ "$ALLCONF" = true ]; then
               nfz=$(jq -r --arg ct "$ct" '.[] | select(.ct == $ct) | .setups' frozen/rows.json)
-              fz=$(jq -r --arg ct "$ct" 'select(.ct == $ct and (.mode // "frozen") != "all-confirmed") | .run' ledger.jsonl | head -1)
+              fz=$(jq -r --arg ct "$ct" 'select(.ct == $ct and (.mode // "frozen") == "frozen") | .run' ledger.jsonl | head -1)
               if [ -z "$fz" ] && [ "$nfz" != 0 ]; then
                 echo "::error::$ct: run $FROM froze $nfz setup(s) (-1 = unreadable count) and no pre-registered frozen opening of $ct is in the ledger; open its frozen file first ([protocol:ho1] [ho1-from:$FROM] [oracle-ct:$ct]), then [ho1-all-confirmed]: refused, nothing logged"
                 exit 1
@@ -1079,7 +1158,7 @@ jobs:
             else
               ac=$(jq -r --arg ct "$ct" 'select(.ct == $ct and .mode == "all-confirmed") | "run \(.run) (from run \(.from), \(.confirmed) confirmed setups, \(.opened_utc))"' ledger.jsonl | head -1)
               [ -z "$ac" ] || { echo "::error::$ct: every confirmed setup already saw HO-1 in the all-confirmed trial ($ac; OR-AMEND-1): a pre-registered frozen opening of $ct is no longer clean: REFUSED, nothing logged"; exit 1; }
-              by=$(jq -r --arg ct "$ct" --arg run "$RUN" 'select(.ct == $ct and (.mode // "frozen") != "all-confirmed" and (.run | tostring) != $run) | .run' ledger.jsonl | head -1)
+              by=$(jq -r --arg ct "$ct" --arg run "$RUN" 'select(.ct == $ct and (.mode // "frozen") == "frozen" and (.run | tostring) != $run) | .run' ledger.jsonl | head -1)
               [ -z "$by" ] || { echo "::error::HO-1 for $ct was already opened by run $by: it is opened once per contract type (refused, nothing logged)"; exit 1; }
             fi
           done
@@ -1095,6 +1174,113 @@ jobs:
           cmp -s landed.jsonl ledger.jsonl || { echo "::error::the openings did not land on Drive: refused"; exit 1; }
           echo "opened=$(jq -sc . new.jsonl)" >> "$GITHUB_OUTPUT"
           jq -r '"opened \(.ct) [\(.mode)]: \(.sha256) (\(.setups) frozen setup(s)\(if .mode == "all-confirmed" then ", ALL \(.confirmed) confirmed setups scored" else "" end), parts of run \(.parts_run)) at \(.opened_utc)"' new.jsonl
+      # OR-H3 ([protocol:ho1] [ho1-from:<search run>] [oracle-cut]): the search run's frozen-cut.json (SHA-256 checked against
+      # its frozen-cut.sha256), the parts and cut labels it searched (dir, rows, builder code, labels sha256), the regime
+      # labels and the registry code; all before anything is logged. Nothing frozen = refused (OR-H3 falsified at discovery).
+      - name: OR-H3 - the frozen cut arms and everything their HO-1 reads
+        id: ccheck
+        if: env.CUT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad run id $FROM"; exit 1; }
+          st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FROM" --jq '"\(.name)|\(.status)"') || { echo "::error::run $FROM not found"; exit 1; }
+          [ "$st" = "Oracle setups|completed" ] || { echo "::error::run $FROM is '$st', not a completed Oracle setups run: refused"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$FROM/cut" 2>&1 | grep -v '^$' | tail -5 || true
+          mkdir -p cutin
+          for f in frozen-cut.json frozen-cut.sha256 workflow_source.json; do
+            rclone copyto "$R/models/oracle-setups/runs/$FROM/cut/$f" "cutin/$f" || { echo "::error::run $FROM has no cut/$f on Drive (not an OR-H3 search run, or its upload did not finish): refused"; exit 1; }
+          done
+          python3 -I - <<'EOF'
+          import hashlib, json, os, re, sys
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          frm, cts = os.environ['FROM'], os.environ['CTS'].split(',')
+          body = open('cutin/frozen-cut.json', 'rb').read()
+          sha = hashlib.sha256(body).hexdigest()
+          m = re.search(r'[0-9a-f]{64}', open('cutin/frozen-cut.sha256').read())
+          if not m or m.group(0) != sha:
+              die(f'frozen-cut.json (sha256 {sha[:16]}) does not match its frozen-cut.sha256: refused, nothing logged')
+          doc = json.loads(body)
+          if doc.get('schema') != 'oracle-cut-frozen-1':
+              die('frozen-cut.json is not an OR-H3 frozen file: refused')
+          ws = json.load(open('cutin/workflow_source.json'))
+          pr = str(ws.get('parts_run') or '')
+          if not re.fullmatch(r'[0-9]+', pr) or str(ws.get('frozen_sha256')) != sha:
+              die(f'workflow_source.json: parts run {pr!r}, frozen sha {str(ws.get("frozen_sha256"))[:16]} (not this file): refused')
+          rows = []
+          for ct in cts:
+              T = (doc.get('types') or {}).get(ct)
+              if T is None:
+                  print(f'{ct}: not searched in run {frm}')
+                  continue
+              fz = T.get('frozen')
+              if not fz:
+                  print(f'{ct}: nothing frozen (OR-H3 falsified at discovery for {ct}): nothing opens')
+                  continue
+              if 'DOGE' in json.dumps(T.get('parts')).upper():
+                  die('a DOGE part: refused')
+              rows.append({'ct': ct, 'sha256': sha, 'arm': fz['id'], 'setups': 1, 'parts_run': pr, 'parts': T['parts']})
+              print(f'{ct}: frozen arm {fz["id"]} (B ${fz["B"]["usd_day"]:+.3f}/day, p BHY {fz["B"]["p_bhy"]:.2g}), frozen-cut.json sha256 {sha}, parts of run {pr}')
+          if not rows:
+              die(f'nothing frozen in run {frm}\'s frozen-cut.json for {",".join(cts)}: OR-H3 falsified at discovery, nothing opens: refused')
+          json.dump(rows, open('cutin/rows.json', 'w'))
+          EOF
+          mkdir -p cmeta
+          for row in $(jq -c '.[] | {ct, parts_run}' cutin/rows.json); do
+            ct=$(jq -r .ct <<< "$row"); pr=$(jq -r .parts_run <<< "$row")
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$pr/parts" "cmeta/parts" --include "/$ct-[A-Z]*/meta.json"
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$FROM/cut/labels" "cmeta/labels" --include "/$ct-[A-Z]*/meta.json"
+          done
+          python3 -I - <<'EOF'
+          import json, os, sys
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          for r in json.load(open('cutin/rows.json')):
+              for e in r['parts']:
+                  pm, lm = os.path.join('cmeta/parts', e['dir'], 'meta.json'), os.path.join('cmeta/labels', e['dir'], 'meta.json')
+                  if not os.path.exists(pm) or not os.path.exists(lm):
+                      die(f'{r["ct"]}: part or cut labels {e["dir"]} not on Drive: refused, nothing logged')
+                  p, l = json.load(open(pm)), json.load(open(lm))
+                  if int(p['n']) != int(e['rows_total']) or p.get('code_sha') != e.get('code_sha'):
+                      die(f'{e["dir"]}: not the part the search read: refused, nothing logged')
+                  if l.get('labels_sha256') != e.get('labels_sha256') or int(l['n']) != int(p['n']):
+                      die(f'{e["dir"]}: not the cut labels the search read: refused, nothing logged')
+              print(f'{r["ct"]}: {len(r["parts"])} part(s) and cut labels match the frozen file')
+          EOF
+          [ -n "$(rclone lsf "${REGIME_LABELS%/*}" --files-only --include labels.csv.gz)" ] || { echo "::error::regime v1 labels not on Drive"; exit 1; }
+          if ! { git fetch -q --depth 1 origin claude/project-thread-79ntof && git cat-file -e FETCH_HEAD:research/registry.py; }; then
+            echo "::error::research/registry.py not readable on claude/project-thread-79ntof"; exit 1
+          fi
+          echo "matrix=$(jq -c '[.[] | {ct, sha256, parts_run, arm}]' cutin/rows.json)" >> "$GITHUB_OUTPUT"
+      # One OR-H3 opening per Price Prediction type: ledger key '<ct>:cut' (mode 'cut'). A re-run of the same run may
+      # score again; any other run that opened the type's cut arm refuses this one. OR-H1 / OR-AMEND-1 rows do not block it.
+      - name: OR-H3 - log the openings (models/oracle-setups/ho1/openings.jsonl), before any HO-1 number
+        id: clog
+        if: env.CUT == 'true' && steps.ccheck.outputs.matrix != '[]'
+        run: |
+          set -euo pipefail
+          D="$R/models/oracle-setups/ho1"
+          rclone mkdir "$D"
+          rclone mkdir "$R/registry/shards/oracle-setups"
+          for ct in $(jq -r '.[].ct' cutin/rows.json); do rclone mkdir "$R/models/oracle-setups/runs/$RUN/cut/ho1/$ct"; done
+          L=$(rclone lsf "$D" --files-only) || { echo "::error::ledger listing failed: refused"; exit 1; }
+          if grep -qxF openings.jsonl <<< "$L"; then rclone copyto "$D/openings.jsonl" ledger.jsonl; else : > ledger.jsonl; fi
+          jq -c . ledger.jsonl > /dev/null || { echo "::error::the ledger does not parse: refused"; exit 1; }
+          echo "ledger: $(wc -l < ledger.jsonl) opening(s) so far"
+          for ct in $(jq -r '.[].ct' cutin/rows.json); do
+            by=$(jq -r --arg k "$ct:cut" --arg run "$RUN" 'select(.key == $k and (.run | tostring) != $run) | "run \(.run) (from run \(.from), arm \(.arm), \(.opened_utc))"' ledger.jsonl | head -1)
+            [ -z "$by" ] || { echo "::error::OR-H3 HO-1 for $ct was already opened by $by: once per type: refused, nothing logged"; exit 1; }
+          done
+          utc=$(date -u +%FT%TZ)
+          jq -c --arg run "$RUN" --arg att "$GITHUB_RUN_ATTEMPT" --arg from "$FROM" --arg sha "$GITHUB_SHA" --arg utc "$utc" \
+            '.[] | {run: $run, run_attempt: $att, from: $from, ct, sha256, arm, setups, parts_run, code_sha: $sha, opened_utc: $utc,
+                    mode: "cut", key: "\(.ct):cut", prereg: "python/oracle/prereg/OR-H3.md"}' cutin/rows.json > new.jsonl
+          cat new.jsonl >> ledger.jsonl
+          rclone copyto ledger.jsonl "$D/openings.jsonl"
+          rclone copyto "$D/openings.jsonl" landed.jsonl
+          cmp -s landed.jsonl ledger.jsonl || { echo "::error::the openings did not land on Drive: refused"; exit 1; }
+          echo "opened=$(jq -sc . new.jsonl)" >> "$GITHUB_OUTPUT"
+          jq -r '"opened \(.ct) [cut]: arm \(.arm), frozen-cut.json \(.sha256), parts of run \(.parts_run) at \(.opened_utc)"' new.jsonl
 
   # Per opened contract type: python/oracle/ho1.py (SPEC 4) scores the frozen setups once on Aug 1 - Nov 4 against the
   # flat control and the matched random-entry placebo, writes registry rows (validated with research/registry.py from
@@ -1300,11 +1486,271 @@ jobs:
           python3 -m oracle.losers --ct "$CT" --parts ../in/parts --confirm ../in/confirm.jsonl --out "../out/losers/$dir" "${extra[@]}" 2>&1 | tail -60
           bash ../deploy/drive_lab.sh put "models/oracle-setups/runs/$SRC/losers/$dir" "../out/losers/$dir"
 
+  # [oracle-cut] (OR-H3, python/oracle/cut.py labels): per pp part of the parts run, the loser-cut sidecar labels from the
+  # Kalshi history the pp jobs read (the same downloads; the row identity check refuses a history that is not the one the
+  # part was built from). Outputs to models/oracle-setups/runs/<run>/cut/labels/<part>/ (with windows/ for HO-1 only).
+  cut_labels:
+    needs: plan
+    if: needs.plan.outputs.mode == 'cut' && needs.plan.outputs.cutparts != '[]' && needs.plan.outputs.cutparts != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.cutparts) }}
+    name: cut labels (${{ matrix.ct }}-${{ matrix.asset }})
+    env:
+      CT: ${{ matrix.ct }}
+      A: ${{ matrix.asset }}
+      SRC: ${{ needs.plan.outputs.src }}
+      RUN: ${{ github.run_id }}
+    steps:
+      - name: The part (pp15 BTC/ETH/SOL/XRP, pp60 BTC/ETH/SOL; never DOGE)
+        run: |
+          [[ "$SRC" =~ ^[0-9]+$ ]] || { echo "::error::bad parts run $SRC"; exit 1; }
+          [[ ( "$CT" = pp15 && "$A" =~ ^(BTC|ETH|SOL|XRP)$ ) || ( "$CT" = pp60 && "$A" =~ ^(BTC|ETH|SOL)$ ) ]] || { echo "::error::bad or excluded part $CT-$A"; exit 1; }
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - uses: actions/setup-node@v5
+        if: env.CT == 'pp15'
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules for scripts/mdc.ts; the key train.yml, history-build and perp-ta share)
+        id: deps
+        if: env.CT == 'pp15'
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: env.CT == 'pp15' && steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The pp part
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/parts/$CT-$A" "in/parts/$CT-$A" || { echo "::error::$CT-$A of run $SRC not readable"; exit 1; }
+          [ -f "in/parts/$CT-$A/meta.json" ] || { echo "::error::$CT-$A of run $SRC has no meta.json"; exit 1; }
+          echo "$CT-$A: $(jq -r '.n' "in/parts/$CT-$A/meta.json") rows, built by $(jq -r '.code_sha' "in/parts/$CT-$A/meta.json" | cut -c1-7), $(du -sh "in/parts/$CT-$A" | cut -f1)"
+      # The coin job's download: only this coin's series, only .jsonl day files (a day kept only in compact form is
+      # decoded), close days 2026-04-13 .. 2026-11-04 (no file dated 2026-11-05 or later is downloaded).
+      - name: Kalshi 15-minute candles (raw/kalshi-history/kalshi/KX<A>15M)
+        if: env.CT == 'pp15'
+        run: |
+          set -euo pipefail
+          S="KX${A}15M"; D="data/k15/kalshi/$S"; mkdir -p "$D"
+          x='{jsonl,jsonl.mdc}'
+          bash deploy/drive_lab.sh get "raw/kalshi-history/kalshi/$S" "$D" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+            --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-10-[0-3][0-9].$x" --include "/2026-11-0[1-4].$x" \
+            || { echo "::error::raw/kalshi-history/kalshi/$S not readable on Drive"; exit 1; }
+          shopt -s nullglob
+          for f in "$D"/*.jsonl.mdc; do [ ! -f "${f%.mdc}" ] || rm "$f"; done
+          mdc=("$D"/*.jsonl.mdc)
+          if [ "${#mdc[@]}" -gt 0 ]; then
+            echo "${#mdc[@]} day(s) only in compact form: decoded"
+            npx tsx scripts/mdc.ts expand "$D" > /dev/null
+            rm -f "${mdc[@]}"
+          fi
+          days=("$D"/*.jsonl); n=${#days[@]}
+          [ "$n" -gt 0 ] || { echo "::error::no $S day files on Drive"; exit 1; }
+          first=$(basename "${days[0]}"); last=$(basename "${days[$((n - 1))]}")
+          markets=$(cat "${days[@]}" | wc -l)
+          echo "$S: $n day files, ${first%.jsonl} .. ${last%.jsonl}, $markets markets"
+          [ "$n" -ge 206 ] || { echo "::error::$S has $n day files, 206 are required (2026-04-13..2026-11-04): a twin or partial copy was read"; exit 1; }
+          if rclone copyto "$R/models/oracle-setups/runs/$SRC/status/pp15-$A.json" "$RUNNER_TEMP/built.json" 2>/dev/null; then
+            echo "when the part was built: $(jq -c '{day_files, markets}' "$RUNNER_TEMP/built.json")"
+            [ "$(jq -r .markets "$RUNNER_TEMP/built.json")" = "$markets" ] || echo "::notice::$S has $markets markets now, $(jq -r .markets "$RUNNER_TEMP/built.json") when the part was built: rows are matched by open time and labels (cut.py map_rows)"
+          fi
+      # The pp60 job's download (the complete backfill the part was built from; resumed runs only add markets).
+      - name: The hourly ladders (raw/oracle-history/kalshi/KX<A>D)
+        if: env.CT == 'pp60'
+        run: |
+          set -euo pipefail
+          S="KX${A}D"; x='jsonl'
+          bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$S" "data/oh/kalshi/$S" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+            --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-10-[0-3][0-9].$x" --include "/2026-11-0[1-4].$x" \
+            || { echo "::error::raw/oracle-history/kalshi/$S not readable on Drive"; exit 1; }
+          echo "$S: $(find "data/oh/kalshi/$S" -maxdepth 1 -name '*.jsonl' | wc -l) day files, $(cat "data/oh/kalshi/$S"/*.jsonl | wc -l) market lines"
+      - name: Cut labels (python/oracle/cut.py labels)
+        working-directory: python
+        run: |
+          set -o pipefail
+          if [ "$CT" = pp15 ]; then kind=15; hist=../data/k15; else kind=60; hist=../data/oh; fi
+          python3 -m oracle.cut labels --kind "$kind" --history "$hist" --part "../in/parts/$CT-$A" --out ../out/labels --code-sha "$GITHUB_SHA" 2>&1 | tail -40
+          [ -f "../out/labels/$CT-$A/meta.json" ] && [ -f "../out/labels/$CT-$A/windows/meta.json" ] || { echo "::error::no cut labels written for $CT-$A"; exit 1; }
+          jq -c '{match, labels_sha256}' "../out/labels/$CT-$A/meta.json"
+      # Per-row labels and window paths: Drive only, never an artifact.
+      - name: Keep the cut labels on Drive
+        run: bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/cut/labels/$CT-$A" "out/labels/$CT-$A"
+
+  # [oracle-cut] (OR-H3, python/oracle/cut.py search): the 80 arms per type on discovery A (choose) and B (confirm); BHY
+  # over the 10 kept arms; frozen-cut.json. Discovery rows only (t + h <= DEV_END); the labels' windows/ (HO-1 paths) are
+  # not even downloaded. workflow_source.json goes last: the HO-1 opening reads the search only when it is there.
+  cut_search:
+    needs: [plan, cut_labels]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode == 'cut' && needs.cut_labels.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    name: cut search
+    env:
+      SRC: ${{ needs.plan.outputs.src }}
+      CUTPARTS: ${{ needs.plan.outputs.cutparts }}
+      RUN: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The pp parts and their cut labels (without windows/)
+        id: inp
+        run: |
+          set -euo pipefail
+          [[ "$SRC" =~ ^[0-9]+$ ]] || { echo "::error::bad parts run"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$RUN/cut" 2>&1 | grep -v '^$' | tail -5 || true
+          for p in $(jq -r '.[] | "\(.ct)-\(.asset)"' <<< "$CUTPARTS"); do
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/parts/$p" "in/parts/$p"
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/cut/labels/$p" "in/cut/$p" --exclude "/windows/**"
+            [ -f "in/parts/$p/meta.json" ] && [ -f "in/cut/$p/meta.json" ] || { echo "::error::$p: part or cut labels missing"; exit 1; }
+            [ ! -e "in/cut/$p/windows" ] || { echo "::error::windows/ was downloaded for the search"; exit 1; }
+          done
+          if find in -maxdepth 2 -iname '*doge*' | grep -q .; then echo "::error::a DOGE part: refused"; exit 1; fi
+          echo "types=$(jq -r '[.[].ct] | unique | join(",")' <<< "$CUTPARTS")" >> "$GITHUB_OUTPUT"
+          echo "parts: $(ls in/parts | paste -sd' ' -) ($(du -sh in | cut -f1))"
+      - name: The arm search (python/oracle/cut.py search)
+        working-directory: python
+        env:
+          TYPES: ${{ steps.inp.outputs.types }}
+        run: |
+          set -o pipefail
+          python3 -m oracle.cut search --parts ../in/parts --cut-labels ../in/cut --out ../out/cut --types "$TYPES" --code-sha "$GITHUB_SHA" 2>&1 | tail -40
+          [ -f ../out/cut/frozen-cut.json ] && [ -f ../out/cut/frozen-cut.sha256 ] || { echo "::error::no frozen-cut.json written"; exit 1; }
+      - name: Keep the search on Drive
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/cut" out/cut
+          sha=$(sha256sum out/cut/frozen-cut.json | cut -c1-64)
+          jq -n --arg run "$RUN" --arg src "$SRC" --arg sha "$GITHUB_SHA" --arg fz "$sha" --argjson parts "$CUTPARTS" --arg utc "$(date -u +%FT%TZ)" \
+            '{run: $run, parts_run: $src, labels: "models/oracle-setups/runs/\($run)/cut/labels", code_sha: $sha, frozen_sha256: $fz,
+              parts: [$parts[] | "\(.ct)-\(.asset)"], prereg: "python/oracle/prereg/OR-H3.md", at_utc: $utc}' > "$RUNNER_TEMP/workflow_source.json"
+          rclone copyto "$RUNNER_TEMP/workflow_source.json" "$R/models/oracle-setups/runs/$RUN/cut/workflow_source.json"
+          echo "frozen-cut.json sha256 $sha"
+
+  # [protocol:ho1] [ho1-from:<search run>] [oracle-cut] (OR-H3 "HO-1"): per opened type, cut.py ho1 scores the frozen arm
+  # once on Aug 1 - Nov 4 against the control (same entries, no cut, no filter) and the matched placebo; registry rows
+  # (family oracle-<ct>-cut-v1) validated with research/registry.py. Outputs: models/oracle-setups/runs/<run>/cut/ho1/<ct>/.
+  cut_ho1:
+    needs: [plan, ho1_open]
+    if: needs.ho1_open.outputs.cutmatrix != '[]' && needs.ho1_open.outputs.cutmatrix != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: ${{ fromJSON(needs.ho1_open.outputs.cutmatrix) }}
+    name: cut ho1 (${{ matrix.ct }})
+    env:
+      CT: ${{ matrix.ct }}
+      SHA: ${{ matrix.sha256 }}
+      PARTS_RUN: ${{ matrix.parts_run }}
+      FROM: ${{ needs.plan.outputs.from }}
+      RUN: ${{ github.run_id }}
+      LOCKBOX_RUN: '42176343914'
+    steps:
+      - name: The contract type
+        run: '[[ "$CT" =~ ^(pp15|pp60)$ ]] && [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] && [[ "$PARTS_RUN$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad matrix entry"; exit 1; }'
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The opened frozen-cut.json, its parts and cut labels, the regime v1 labels, research/registry.py, the lockbox candidates
+        id: inp
+        run: |
+          set -euo pipefail
+          mkdir -p in/parts in/cut
+          rclone copyto "$R/models/oracle-setups/runs/$FROM/cut/frozen-cut.json" in/frozen-cut.json
+          [ "$(sha256sum in/frozen-cut.json | cut -c1-64)" = "$SHA" ] || { echo "::error::frozen-cut.json is not the file opened ($SHA)"; exit 1; }
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$PARTS_RUN/parts" in/parts --include "/$CT-[A-Z]*/**"
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$FROM/cut/labels" in/cut --include "/$CT-[A-Z]*/**"
+          for d in in/parts/*/ in/cut/*/; do [ -d "$d" ] && [ ! -f "$d/meta.json" ] && rm -rf "$d"; done; true
+          have=$(find in/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+          if grep -qi doge <<< "$have"; then echo "::error::a DOGE part: refused"; exit 1; fi
+          [ -n "$have" ] || { echo "::error::no $CT parts in run $PARTS_RUN"; exit 1; }
+          echo "parts of run $PARTS_RUN: $have; cut labels of run $FROM: $(find in/cut -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)"
+          rclone copyto "$REGIME_LABELS" in/labels.csv.gz
+          git fetch -q --depth 1 origin claude/project-thread-79ntof
+          git show FETCH_HEAD:research/registry.py > "$RUNNER_TEMP/registry.py"
+          echo "research/registry.py from claude/project-thread-79ntof $(git rev-parse --short FETCH_HEAD), sha256 $(sha256sum "$RUNNER_TEMP/registry.py" | cut -c1-16)"
+          # Descriptive only: the OR-AMEND-1 lockbox candidates of run $LOCKBOX_RUN (runs/$LOCKBOX_RUN/ho1/<ct>/, else where
+          # the ledger's all-confirmed opening of that run wrote them). Their HO-1 trades only; nothing from the lockbox.
+          lb=""
+          for dir in "runs/$LOCKBOX_RUN/ho1/$CT" $(rclone cat "$R/models/oracle-setups/ho1/openings.jsonl" 2>/dev/null \
+                | jq -r --arg ct "$CT" --arg f "$LOCKBOX_RUN" 'select(.ct == $ct and .mode == "all-confirmed" and (.from | tostring) == $f) | "runs/\(.run)/ho1/\($ct)"' | sort -u); do
+            [[ "$dir" =~ ^runs/[0-9]+/ho1/(pp15|pp60)$ ]] || continue
+            if [ -n "$(rclone lsf "$R/models/oracle-setups/$dir" --files-only --include lockbox_candidates.json 2>/dev/null)" ]; then
+              rclone copyto "$R/models/oracle-setups/$dir/lockbox_candidates.json" in/lockbox_candidates.json
+              lb="$dir"; break
+            fi
+          done
+          if [ -n "$lb" ]; then echo "lockbox candidates: models/oracle-setups/$lb/lockbox_candidates.json ($(jq '.setups | length' in/lockbox_candidates.json) setups)"; else echo "no lockbox_candidates.json for $CT: not scored"; fi
+      - name: HO-1 score (python/oracle/cut.py ho1)
+        working-directory: python
+        run: |
+          set -o pipefail
+          extra=(); [ ! -f ../in/lockbox_candidates.json ] || extra=(--lockbox ../in/lockbox_candidates.json)
+          python3 -m oracle.cut ho1 --frozen ../in/frozen-cut.json --sha256 "$SHA" --ct "$CT" --parts ../in/parts --cut-labels ../in/cut \
+            --regime ../in/labels.csv.gz --registry "$RUNNER_TEMP/registry.py" --out "../out/cut-ho1/$CT" --run "$RUN" --code-sha "$GITHUB_SHA" "${extra[@]}" 2>&1 | tail -40
+          [ -f "../out/cut-ho1/$CT/rows.jsonl" ] || { echo "::error::no rows.jsonl written"; exit 1; }
+      - name: Keep the HO-1 outputs on Drive
+        if: always()
+        run: '[ ! -d "out/cut-ho1/$CT" ] || bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/cut/ho1/$CT" "out/cut-ho1/$CT"'
+      - name: The registry shard (validated, registry/shards/oracle-setups/<run>-<ct>-cut.jsonl)
+        run: |
+          set -euo pipefail
+          shard="out/cut-ho1/$CT/rows.jsonl"
+          python3 -I "$RUNNER_TEMP/registry.py" validate "$shard" | tail -20
+          rclone copyto "$shard" "$R/registry/shards/oracle-setups/$RUN-$CT-cut.jsonl"
+          echo "registry shard: registry/shards/oracle-setups/$RUN-$CT-cut.jsonl ($(wc -l < "$shard") rows)"
+
   # One commit comment per run, aggregates only (public repository): per part rows, base hit rates on discovery rows only,
   # mining counts, confirmations, frozen setups with their discovery-B statistics; or, for HO-1, the openings and each
   # contract type's ho1.md.
   card:
-    needs: [plan, coin, hourly, pp60, tennis, mine, ho1_open, ho1, losers]
+    needs: [plan, coin, hourly, pp60, tennis, mine, ho1_open, ho1, losers, cut_labels, cut_search, cut_ho1]
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1316,6 +1762,7 @@ jobs:
       FROM: ${{ needs.plan.outputs.from }}
       CTS: ${{ needs.plan.outputs.cts }}
       ALLCONF: ${{ needs.plan.outputs.allconf }}
+      CUT: ${{ needs.plan.outputs.cut }}
       RUN: ${{ github.run_id }}
       NEEDS: ${{ toJSON(needs) }}
     steps:
@@ -1332,7 +1779,21 @@ jobs:
       - name: The run's aggregates from Drive
         run: |
           set -euo pipefail
-          D=data; mkdir -p $D/parts $D/mine $D/status $D/ho1 $D/losers
+          D=data; mkdir -p $D/parts $D/mine $D/status $D/ho1 $D/losers $D/cut
+          # OR-H3: the search report and the labels' meta (match counts) of discovery rows; or the HO-1 reports.
+          if [ "$MODE" = cut ]; then
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/cut" $D/cut --include "/report-cut.md" --include "/labels/*/meta.json" || echo "no OR-H3 outputs on Drive"
+            exit 0
+          fi
+          if [ "$MODE" = ho1 ] && [ "$CUT" = true ]; then
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/cut/ho1" $D/cut --include "/*/ho1-cut.md" || echo "no OR-H3 HO-1 outputs on Drive"
+            for d in "$D"/cut/*/; do
+              [ -d "$d" ] || continue
+              ct=$(basename "$d"); f="$R/registry/shards/oracle-setups/$RUN-$ct-cut.jsonl"
+              if [ -n "$(rclone lsf "${f%/*}" --files-only --include "${f##*/}")" ]; then rclone cat "$f" | wc -l > "$d/shard.count"; fi
+            done
+            exit 0
+          fi
           # The loser study's reports (losers.md, aggregates only) of this run's mode.
           case "$MODE" in
             losers) bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/losers" $D/losers --include "/*/losers.md" || echo "no loser study on Drive" ;;
@@ -1409,6 +1870,52 @@ jobs:
                       w('</details>')
 
 
+          cutmode = os.environ.get('CUT') == 'true'
+          if mode == 'cut':
+              w(f'## Oracle setups OR-H3 loser cut, run {run}: cut labels and the arm search on the pp parts of run {src}')
+              w('')
+              w(f'Jobs: {jobs}. Code {sha}. Prereg python/oracle/prereg/OR-H3.md. Aggregates of discovery rows only (decision and '
+                'horizon before 2026-08-01); nothing from HO-1 or the lockbox is computed here. Never compared to paper. NEVER DOGE.')
+              lm = sorted(glob.glob(os.path.join(data, 'cut', 'labels', '*', 'meta.json')))
+              if lm:
+                  w('')
+                  w('### Cut labels (row identity: level none recomputed equal to the part\'s OR-H1 exit on every mapped row)')
+                  w('| part | rows | at their window | groups re-matched | rows without a window | labels sha256 |')
+                  w('|---|---|---|---|---|---|')
+                  for f in lm:
+                      j = json.load(open(f))
+                      mt = j.get('match') or {}
+                      w(f'| {esc(os.path.basename(os.path.dirname(f)))} | {num(mt.get("rows"))} | {num(mt.get("direct"))} | '
+                        f'{num(mt.get("groups_rematched"))} | {num(mt.get("rows_unmatched"))} | `{esc(str(j.get("labels_sha256"))[:16])}` |')
+              rep = os.path.join(data, 'cut', 'report-cut.md')
+              w('')
+              w(capped(rep, 50000) if os.path.exists(rep) else 'No report-cut.md on Drive (see the cut search job).')
+              sys.exit(0)
+          if mode == 'ho1' and cutmode:
+              w(f'## Oracle setups OR-H3 loser cut HO-1, run {run}: the frozen arms of search run {frm}')
+              w('')
+              w(f'Jobs: {jobs}. Code {sha}. Each Price Prediction type\'s frozen arm is opened once (ledger key <ct>:cut, logged before '
+                'any HO-1 number); scored once on 2026-08-01..2026-11-04. Never compared to paper. NEVER DOGE.')
+              opened = json.loads(needs.get('ho1_open', {}).get('outputs', {}).get('opened') or '[]')
+              if opened:
+                  w('')
+                  w('| type | arm | frozen-cut.json sha256 | parts of run | opened (UTC) |')
+                  w('|---|---|---|---|---|')
+                  for r in opened:
+                      w(f'| {esc(r["ct"])} | {esc(r.get("arm"))} | `{esc(r["sha256"])}` | {esc(r.get("parts_run"))} | {esc(r.get("opened_utc"))} |')
+              else:
+                  w('')
+                  w('Nothing was opened (nothing frozen, already opened, or a SHA mismatch: see the ho1_open job).')
+              for d in sorted(glob.glob(os.path.join(data, 'cut', '*', ''))):
+                  ct = os.path.basename(os.path.dirname(d))
+                  w('')
+                  w(f'### {ct}: OR-H3 HO-1')
+                  cnt = os.path.join(d, 'shard.count')
+                  if os.path.exists(cnt):
+                      w(f'Registry shard registry/shards/oracle-setups/{run}-{ct}-cut.jsonl: {open(cnt).read().strip()} rows.')
+                  md = os.path.join(d, 'ho1-cut.md')
+                  w(capped(md, 20000) if os.path.exists(md) else 'no ho1-cut.md on Drive')
+              sys.exit(0)
           if mode == 'losers':
               w(f'## Oracle setups loser study, run {run}: the confirmed setups of run {src}')
               w('')

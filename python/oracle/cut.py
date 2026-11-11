@@ -12,7 +12,8 @@ Route (task step 1): a SIDECAR, not a rebuild of the pp parts. `labels` reloads 
 OR-H1 primary exit for every row and side and REFUSES unless it equals the part's own trade_<s><h> on every mapped row
 (the row identity check; a part group whose window index moved, e.g. a history file that gained markets since the part
 was built, is matched by open time and by those labels). It then writes <out>/<ct>-<A>/, aligned row for row with the
-part: win.npy (row -> window), and per side s, horizon h and cut level L: tradeCut_<s><h>_<L> (float32 net $),
+part: win.npy (row -> window), t.npy (the part's t: the search and HO-1 refuse a sidecar whose rows are not
+the part's), and per side s, horizon h and cut level L: tradeCut_<s><h>_<L> (float32 net $),
 holdCut_<s><h>_<L> (uint8 minutes to the exit, settlement = to the close), cutMin_<s><h>_<L> (int8 decision minute of the
 cut sale, -1 = not cut) and tradeCutSettle_<s><h>_<L> (float32: every exit that is neither a take-profit nor a cut
 settles); <out>/<ct>-<A>/windows/ holds the referenced windows' side bid / ask paths and settlement (for the HO-1
@@ -228,7 +229,7 @@ def map_rows(part: Part, w, bid, ask, settle, n: int, stake: float, max_c: int, 
     open_r = t - kmin * MIN
     ok = [np.asarray(part[key('ok', s, h)]) == 1 for s in sides]
     tr = [np.asarray(part[key('trade', s, h)], dtype=np.float64) for s in sides]
-    W = len(w)
+    W = len(w.open_ms)
 
     def fits(rows, wins):
         """Bool per (row, window) pair: the recomputed primary trade equals the part's on each tradable side."""
@@ -332,7 +333,8 @@ def write_sidecar(part: Part, part_dir: str, out_root: str, open_ms, bid, ask, s
     used = np.unique(win[win >= 0])
     remap = np.full(len(open_ms), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
-    arrays = {'win': np.where(win >= 0, remap[np.maximum(win, 0)], -1).astype(np.int32)}
+    arrays = {'win': np.where(win >= 0, remap[np.maximum(win, 0)], -1).astype(np.int32),
+              't': np.asarray(part['t'], dtype=np.int64)}           # the part's own t: checked row for row at load time
     mism = 0
     for si, s in enumerate(sides):
         okm = (np.asarray(part[key('ok', s, h)]) == 1) & (win >= 0)
@@ -413,6 +415,14 @@ def check_sidecar(sc: Part, part: Part) -> None:
         raise SystemExit(f'{sc.path}: built for {b}, not for {os.path.basename(part.path)} (n {part.n}, code {part.meta.get("code_sha")}): refused')
     if sc.n != part.n:
         raise SystemExit(f'{sc.path}: {sc.n} rows != the part\'s {part.n}')
+
+
+def check_rows(sc: Part, t, lo: int, hi: int) -> None:
+    """Row identity at load time: the sidecar's copy of the part's t equals the loaded rows' t on [lo, hi)."""
+    if not sc.has('t'):
+        raise SystemExit(f'{sc.path}: no t.npy (sidecar of an older format): refused')
+    if not np.array_equal(np.asarray(sc['t'][lo:hi], dtype=np.int64), np.asarray(t, dtype=np.int64)):
+        raise SystemExit(f'{sc.path}: rows {lo}..{hi} are not the part\'s rows (t differs): refused')
 
 
 class Cell:
@@ -525,6 +535,7 @@ def load_cells_dev(ct: str, parts_root: str, cut_root: str, split: str, order_se
         h = int(v.meta['horizons'][0])
         if cut and int(np.asarray(v['t'])[-1]) + h * MIN > DEV_END:
             raise AssertionError('a row past DEV_END reached the search')
+        check_rows(sc, v['t'], 0, cut)
         lab = {}
         for s in v.meta['sides']:
             for lv in LEVEL_NAMES:
@@ -725,6 +736,7 @@ def load_cells_hold(ct: str, parts_root: str, cut_root: str, frozen_parts: list,
         tm = part['t']
         lo, hi = int(np.searchsorted(tm, HOLD_FROM, 'left')), int(np.searchsorted(tm, HOLD_TO, 'left'))
         t = np.array(tm[lo:hi], dtype=np.int64)
+        check_rows(sc, t, lo, hi)
         sides = part.meta['sides']
         h = int(part.meta['horizons'][0])
         arrays = {'t': t}
@@ -816,17 +828,22 @@ def placebo_trades(cells: list, level: str, fset, taken: list, seeds: int, seed:
     return out, info
 
 
-def variant_trade(c: Cell, level: str, name: str) -> np.ndarray:
-    """Per unit $ of a descriptive variant: settle (non-TP, non-cut exits settle), lat (+1 minute entry), cost (+1c)."""
+def variant_trade(c: Cell, level: str, name: str) -> tuple:
+    """(per unit $, per unit hold in minutes from the decision) of a descriptive variant: settle (non-TP, non-cut exits
+    settle at the close), lat (+1 minute entry), cost (+1c)."""
     if name == 'settle':
-        return c.tsettle[level]
+        ride = np.isfinite(c.tsettle[level]) & (c.tsettle[level] != c.trade[level])
+        return c.tsettle[level], np.where(ride, c.v.meta['window_min'] - c.kmin, c.hold[level])
     idx = np.nonzero(np.isfinite(c.trade['none']))[0]
-    out = np.full(c.U, np.nan)
+    out, hold = np.full(c.U, np.nan), np.array(c.hold[level], dtype=np.float64)
     if not len(idx):
-        return out
-    pth = c.paths(idx, k_shift=1) if name == 'lat' else c.paths(idx, cost=0.01)
-    out[idx] = pth.exit(pth.cut_mask(level))['trade']
-    return out
+        return out, hold
+    shift = 1 if name == 'lat' else 0
+    pth = c.paths(idx, k_shift=shift) if name == 'lat' else c.paths(idx, cost=0.01)
+    r = pth.exit(pth.cut_mask(level))
+    out[idx] = r['trade']
+    hold[idx] = r['hold'] + shift
+    return out, hold
 
 
 def run_ho1(a) -> dict:
@@ -860,8 +877,8 @@ def run_ho1(a) -> dict:
             taken.append(tk)
             usd = c.trade[level_][tk]
             if trade_of is not None:
-                alt = trade_of(c)
-                tk2 = c.take(level_, fset_, trade=alt, hold=c.hold[level_])
+                alt, alt_hold = trade_of(c)
+                tk2 = c.take(level_, fset_, trade=alt, hold=alt_hold)
                 usd, tk = alt[tk2], tk2
             t = c.t[tk]
             daily += daily_vec(t, usd, span)
