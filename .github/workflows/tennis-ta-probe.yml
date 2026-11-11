@@ -1,0 +1,65 @@
+name: Tennis TA probe
+
+# A read-only look at the stored Kalshi tennis history (research/tennisTaProbe.ts): how long match markets run from the
+# replay's begin to their close, why a stored market cannot be replayed, and how late-closing matches trade. Nothing is
+# swept, scored or counted. Asked for by a commit to research/tennis-ta/probe-request.json ({"from": "YYYY-MM-DD",
+# "to": "YYYY-MM-DD", "note": "why"}); the summary is posted as a comment on that commit and the full JSON is kept at
+# gdrive:kalshi-bot-archive/models/tennis-ta/probe/<run id>.json.
+on:
+  push:
+    branches: [claude/project-thread-7817be]
+    paths: [research/tennis-ta/probe-request.json]
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Tennis history from Drive
+        run: |
+          set -euo pipefail
+          mkdir -p data/tennis/kalshi
+          for S in KXATPMATCH KXWTAMATCH; do
+            rclone copy "gdrive:kalshi-bot-archive/raw/tennis-history/kalshi/$S.tar.gz" .
+            echo "$S: sha256 $(sha256sum "$S.tar.gz" | cut -d' ' -f1)"
+            tar -xzf "$S.tar.gz" -C data/tennis/kalshi && rm "$S.tar.gz"
+          done
+      - name: Probe
+        run: |
+          set -euo pipefail
+          F=research/tennis-ta/probe-request.json
+          FROM=$(jq -r '.from // "2026-04-19"' "$F"); TO=$(jq -r '.to // "2026-11-06"' "$F")
+          node --max-old-space-size=6144 --import tsx research/tennisTaProbe.ts --hist data/tennis/kalshi --series KXATPMATCH,KXWTAMATCH --from "$FROM" --to "$TO" --out probe.json | tee probe.txt
+          rclone copyto probe.json "gdrive:kalshi-bot-archive/models/tennis-ta/probe/$GITHUB_RUN_ID.json"
+      - name: Summary as a commit comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Tennis TA probe, run $GITHUB_RUN_ID ($(jq -r '.note // ""' research/tennis-ta/probe-request.json))"
+            echo; echo '```'; cat probe.txt; echo '```'; echo
+            echo '<details><summary>probe.json (cut at 50 kB)</summary>'; echo; echo '```json'; jq -c '.series | to_entries[] | {series: .key} + (.value | del(.samples))' probe.json; jq -c '.series | to_entries[] | {series: .key, samples: .value.samples}' probe.json | head -c 40000; echo; echo '```'; echo '</details>'
+          } > body.md
+          jq -Rs '{body: .}' body.md > req.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input req.json > /dev/null
