@@ -1,0 +1,107 @@
+name: Tennis TA rescore
+
+# Scores a finished tennis TA sweep run again from its shards on Drive, with the scoring code of this commit, when its
+# report job failed in a way a re-run cannot fix (a re-run checks out the sweep's own commit, so the same code fails the
+# same way) and a new sweep would mean hours of runner time, or, on the one read of H-HOLD, a batch whose opening is
+# already in the openings ledger. Asked for by a commit to research/tennis-ta/rescore-request.json:
+#   {"run": "<the sweep's run id>", "note": "why"}
+# The run must be a completed run of .github/workflows/tennis-ta-sweep.yml on this branch whose shard legs all
+# succeeded and that is not scored yet (no registry rows in runs/<run>/report on Drive). The report itself is
+# .github/workflows/tennis-ta-report.yml, the same job the sweep runs: its completeness check, the hold ledger
+# (idempotent by run id), the registry rows (code_sha = the sweep's commit, raw.report_sha = this commit), Drive, the
+# registry upload and the comment on the sweep's commit.
+on:
+  push:
+    branches: [claude/project-thread-7817be]
+    paths: [research/tennis-ta/rescore-request.json]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: tennis-ta-sweep
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      run_id: ${{ steps.req.outputs.run_id }}
+      sweep_sha: ${{ steps.req.outputs.sweep_sha }}
+      pool: ${{ steps.plan.outputs.pool }}
+      stage: ${{ steps.plan.outputs.stage }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Request and the run it names
+        id: req
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          F=research/tennis-ta/rescore-request.json
+          RUN=$(jq -r '.run | tostring' "$F")
+          [[ "$RUN" =~ ^[0-9]+$ ]] || { echo "::error::$F: run must be a sweep run id (digits), got $RUN"; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" > run.json
+          P=$(jq -r .path run.json); B=$(jq -r .head_branch run.json); S=$(jq -r .status run.json); SHA=$(jq -r .head_sha run.json)
+          [ "$P" = .github/workflows/tennis-ta-sweep.yml ] || { echo "::error::run $RUN is $P, not a tennis TA sweep"; exit 1; }
+          [ "$B" = "$GITHUB_REF_NAME" ] || { echo "::error::run $RUN swept branch $B, not $GITHUB_REF_NAME"; exit 1; }
+          [ "$S" = completed ] || { echo "::error::run $RUN is $S: only a finished sweep is rescored"; exit 1; }
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::run $RUN has no head sha"; exit 1; }
+          # Every shard leg of the run's latest attempt succeeded (the report scores only a complete shard set).
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/jobs?per_page=100" --paginate --jq '.jobs[] | [.name, .conclusion] | @tsv' > jobs.tsv
+          N=$(grep -c '^shard ' jobs.tsv || true); BAD=$(awk -F'\t' '$1 ~ /^shard / && $2 != "success"' jobs.tsv | cut -f1 | paste -sd, -)
+          if [ "$N" -lt 1 ] || [ -n "$BAD" ]; then echo "::error::run $RUN: $N shard leg(s), not all succeeded (${BAD:-none listed}): re-run its failed legs first"; exit 1; fi
+          echo "run_id=$RUN" >> "$GITHUB_OUTPUT"; echo "sweep_sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "rescore run $RUN (swept at ${SHA:0:10}, $N shard leg(s) succeeded) with the scoring code of ${GITHUB_SHA:0:10}: $(jq -r '.note // ""' "$F")"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Not scored yet
+        env:
+          RUN: ${{ steps.req.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          # The same test as the sweep's prep: each level is listed only when its parent lists it, so a listing error
+          # fails the step instead of reading as "not scored".
+          SCORED=yes; P=gdrive:kalshi-bot-archive
+          for c in models/ tennis-ta/ runs/ "$RUN/" report/; do
+            L=$(rclone lsf "$P" --dirs-only)
+            if ! grep -qxF "$c" <<< "$L"; then SCORED=no; break; fi
+            P="$P/${c%/}"
+          done
+          if [ "$SCORED" = yes ]; then L=$(rclone lsf "$P" --files-only); grep -qxE "registry-v1-$RUN\.jsonl|registry-tennis-ta-$RUN\.jsonl\.gz" <<< "$L" || SCORED=no; fi
+          if [ "$SCORED" = yes ]; then echo "::error::run $RUN is already scored: its report and registry rows stand and are never scored again"; exit 1; fi
+          echo "run $RUN has no scored report"
+      - uses: actions/download-artifact@v4
+        id: prep_artifact
+        continue-on-error: true
+        with:
+          name: prep
+          path: prep
+          run-id: ${{ steps.req.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Pool and stage of the run (its plan)
+        id: plan
+        env:
+          RUN: ${{ steps.req.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          if [ ! -s prep/plan.json ]; then
+            rclone copyto "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/prep/plan.json" prep/plan.json
+          fi
+          echo "pool=$(jq -r .pool prep/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "stage=$(jq -r '.stage | tostring' prep/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "run $RUN: stage $(jq -r .stage prep/plan.json), pool $(jq -r .pool prep/plan.json), $(jq '.plan | length' prep/plan.json) shard(s)"
+
+  report:
+    needs: resolve
+    uses: ./.github/workflows/tennis-ta-report.yml
+    with:
+      run_id: ${{ needs.resolve.outputs.run_id }}
+      sweep_sha: ${{ needs.resolve.outputs.sweep_sha }}
+      pool: ${{ needs.resolve.outputs.pool }}
+      stage: ${{ needs.resolve.outputs.stage }}
+    secrets: inherit

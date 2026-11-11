@@ -193,8 +193,9 @@ starts the hold run, and push it once: H-HOLD is read once per batch.
   the ledger, and a run whose files carry a broken or incomplete block fails before the batch's read is spent. A re-run of the report job
   keeps the run's line (the append is idempotent by run id). The job fails if the ledger holds the same batch under
   another run, or this run with another batch, and it never overwrites a damaged ledger. A report that fails after the
-  append has spent the batch: re-run the report job under the same run id ("Re-run failed jobs"). A new commit of the
-  same file is refused.
+  append has spent the batch: re-run the report job under the same run id ("Re-run failed jobs") when the failure was
+  passing (Drive, network), or rescore the run with fixed scoring code (Rescore, below) when the report code itself
+  failed. A new commit of the same batch file is refused.
 - A hot spot that passes the one test on the read is "direction found" for tennis. A changed hot spot is never read
   there again. Family B hot spots are not read on H-HOLD in this amendment.
 
@@ -299,6 +300,22 @@ overwritten. "Re-run all jobs" fetches fees and history again, so it fails in pr
 before it sweeps. A re-run report job (after a later step failed) keeps the Drive report and rows, uses them for the
 registry upload and the commit comment, and fails if its own rows differ. A new measurement is a new commit of the
 request.
+
+A re-run checks out the sweep's own commit, so a report that fails on its own code fails the same way again. Data
+version: a re-run leg downloads the history again and records its sha256, so do not run the data workflow between a
+sweep and a re-run of its legs (the report refuses a shard set with two data versions).
+
+### Rescore (a finished sweep whose report failed)
+
+`.github/workflows/tennis-ta-rescore.yml` scores a finished sweep's shards again, from Drive, with the scoring code of a
+newer commit. It is asked for by a commit to `research/tennis-ta/rescore-request.json`:
+`{"run": "<the sweep's run id>", "note": "why"}`. It refuses a run that is not a completed tennis TA sweep of this
+branch, one whose shard legs did not all succeed, and one that is already scored. The report is the same job the sweep
+runs (`.github/workflows/tennis-ta-report.yml`): the completeness check, the hold run's opening (idempotent by run id,
+so a hold run's rescore spends no second read), the report, the rows (`code_sha` = the sweep's commit, the code that
+produced the trades; `raw.report_sha` = the scoring commit), Drive, the registry upload and the comment on the sweep's
+commit. The plan comes from the run's prep artifact (30 days), else from `runs/<run>/prep/plan.json`, which prep keeps
+on Drive. Both workflows share the `tennis-ta-sweep` concurrency group, so a rescore waits for a running sweep.
 
 Cross-match state (the tennis-only pacer, the 25% / 10% caps, the coin-placebo stream and family B's placebo reservoir)
 restarts at each slice's first unit, so it restarts only at unit edges. The result depends on the shard count, which is

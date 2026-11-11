@@ -1,0 +1,252 @@
+name: Tennis TA report
+
+# The tennis TA sweep's report job (research/tennis_ta_report.py over a run's shards on Drive), as a reusable workflow so
+# it runs in two places: at the end of every sweep (.github/workflows/tennis-ta-sweep.yml, run_id = the sweep's own run)
+# and on its own for a finished sweep whose report failed (.github/workflows/tennis-ta-rescore.yml, a commit to
+# research/tennis-ta/rescore-request.json naming the run). A rescore scores the run's shards as they are on Drive with the
+# scoring code of the rescore's commit; the registry rows keep code_sha = the sweep's commit (the code that produced the
+# trades) and carry raw.report_sha = the scoring commit when it differs. A scored run (its registry rows in
+# runs/<run>/report) is never scored again: the Keep step refuses rows that differ, and the rescore trigger refuses such
+# a run before it starts. A hold run's opening in the openings ledger is idempotent by run id, so a rescore of a hold run
+# whose report failed after the opening does not spend another read.
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        description: The sweep run whose shards are scored (runs/<run_id>/shards on Drive)
+        type: string
+        required: true
+      sweep_sha:
+        description: The commit that swept the run (the shards' meta.sha; the rows' code_sha)
+        type: string
+        required: true
+      pool:
+        type: string
+        required: true
+      stage:
+        type: string
+        required: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RUN: ${{ inputs.run_id }}
+      SWEEP_SHA: ${{ inputs.sweep_sha }}
+      POOL: ${{ inputs.pool }}
+      STAGE: ${{ inputs.stage }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python packages
+        run: pip install --quiet numpy scipy scikit-learn
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      # The run's plan: its prep artifact (kept 30 days; by run id, so a rescore reads the swept run's own plan), else the
+      # copy prep keeps on Drive (runs/<run>/prep/plan.json).
+      - uses: actions/download-artifact@v4
+        id: prep_artifact
+        continue-on-error: true
+        with:
+          name: prep
+          path: prep
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Plan of the run
+        run: |
+          set -euo pipefail
+          if [ ! -s prep/plan.json ]; then
+            echo "no prep artifact for run $RUN (${{ steps.prep_artifact.outcome }}): the plan from Drive"
+            rclone copyto "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/prep/plan.json" prep/plan.json
+          fi
+          jq -e --arg p "$POOL" --arg s "$STAGE" '.pool == $p and (.stage | tostring) == $s' prep/plan.json > /dev/null \
+            || { echo "::error::prep/plan.json of run $RUN is pool $(jq -r .pool prep/plan.json) stage $(jq -r .stage prep/plan.json), not pool $POOL stage $STAGE"; exit 1; }
+          echo "plan of run $RUN: stage $STAGE, pool $POOL, $(jq '.plan | length' prep/plan.json) shard(s); swept at $SWEEP_SHA, scored at $GITHUB_SHA"
+      - name: Registry module (research/registry.py from main, else from the registry thread's branch)
+        run: |
+          set -euo pipefail
+          # The project's trial registry (row schema, make_id, validate) is another thread's code: it is read from main
+          # when it has landed there, else from that thread's branch, and never from this branch.
+          git fetch --no-tags --depth 1 origin +refs/heads/main:refs/remotes/origin/main
+          SRC=origin/main
+          if ! git cat-file -e "$SRC:research/registry.py" 2>/dev/null; then
+            SRC=origin/claude/project-thread-79ntof
+            git fetch --no-tags --depth 1 origin "+refs/heads/claude/project-thread-79ntof:refs/remotes/$SRC"
+            git cat-file -e "$SRC:research/registry.py" || { echo "::error::research/registry.py is on neither main nor claude/project-thread-79ntof"; exit 1; }
+          fi
+          git show "$SRC:research/registry.py" > /tmp/registry.py
+          python3 -I /tmp/registry.py schema > /dev/null
+          echo "registry.py from $SRC $(git rev-parse --short "$SRC"), sha256 $(sha256sum /tmp/registry.py | cut -c1-16)"
+      - name: Shards (every planned file on Drive exactly once, one run, one request, one data version, history complete, window block whole)
+        run: |
+          set -euo pipefail
+          D="gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/shards"
+          rclone lsf "$D" --files-only > listed.txt
+          rclone copy "$D" shards
+          echo "$(wc -l < listed.txt) file(s) listed on Drive, $(ls shards | wc -l) copied"
+          mkdir -p report
+          # The completeness check: exits 1 (failing the job before anything is scored or uploaded) on any problem, and
+          # writes its summary with the problem list to report/shards-check.json either way. It reads every file's
+          # window block too (C12: the plan's window arms x legs, the matchList's events, the row shapes, meta's counts;
+          # at stage hold every batch member's |window rows), so a hold run with a broken or incomplete block fails
+          # HERE, before the ledger step below spends the batch's one read (the report's own read_shard gate would
+          # otherwise be the first to see it, after the append).
+          node --import tsx research/tennisTaSweep.ts check --dir shards --listing listed.txt --prep prep/plan.json --run "$RUN" --out report/shards-check.json
+      - name: Openings ledger (stage hold, once the shard set is complete and before anything is scored)
+        run: |
+          set -euo pipefail
+          # C10 / Amendment 4 item 7: H-HOLD is read once per batch (research/tennis-ta/hold-batch.json, keyed by the
+          # file's sha256, prep's batchHash). The opening is recorded here, after the completeness check (the window block
+          # included) passed and before the report reads a number, so every hold run that is scored at all is in the
+          # ledger. The row is {hash, run,
+          # ts, ids, pool: "hold"} (ids = the arms run: each batch config's |window and |F1); a re-run of this job keeps the
+          # run's row (idempotent by run id) and fails if the ledger holds this batch under another run, or this run with
+          # another batch.
+          if [ "$STAGE" != hold ]; then echo "stage $STAGE: not a hold run, no opening to record"; exit 0; fi
+          H=$(jq -r '.batchHash // ""' prep/plan.json)
+          if ! [[ "$H" =~ ^[0-9a-f]{64}$ ]]; then echo "::error::prep/plan.json carries no batch hash (batchHash): nothing is scored"; exit 1; fi
+          LEDGER=gdrive:kalshi-bot-archive/models/tennis-ta/state/openings.jsonl
+          HAVE=yes; P=gdrive:kalshi-bot-archive
+          for c in models/ tennis-ta/ state/; do
+            L=$(rclone lsf "$P" --dirs-only)
+            if ! grep -qxF "$c" <<< "$L"; then HAVE=no; break; fi
+            P="$P/${c%/}"
+          done
+          if [ "$HAVE" = yes ]; then L=$(rclone lsf "$P" --files-only); grep -qxF openings.jsonl <<< "$L" || HAVE=no; fi
+          if [ "$HAVE" = yes ]; then rclone cat "$LEDGER" > openings.jsonl; else : > openings.jsonl; fi
+          # A damaged ledger fails here and is never overwritten.
+          jq -s -e 'all(.[]; type == "object" and (.hash | type) == "string")' openings.jsonl > /dev/null \
+            || { echo "::error::$LEDGER is not JSON lines of {hash, ...}: not overwritten, nothing is scored"; exit 1; }
+          OTHER=$(jq -s -r --arg r "$RUN" --arg h "$H" '[.[] | select(.hash == $h and (.run | tostring) != $r) | .run | tostring] | first // ""' openings.jsonl)
+          if [ -n "$OTHER" ]; then echo "::error::batch $H was already opened on H-HOLD by run $OTHER: the one read is one run per batch, nothing is scored"; exit 1; fi
+          MINE=$(jq -s -r --arg r "$RUN" '[.[] | select((.run | tostring) == $r) | .hash] | unique | join(",")' openings.jsonl)
+          if [ "$MINE" = "$H" ]; then echo "run $RUN's opening of $H is already in the ledger (a re-run of this job): kept"; exit 0; fi
+          if [ -n "$MINE" ]; then echo "::error::the ledger holds run $RUN with another batch ($MINE): nothing is scored"; exit 1; fi
+          if [ -s openings.jsonl ] && [ -n "$(tail -c 1 openings.jsonl)" ]; then echo >> openings.jsonl; fi
+          jq -nc --arg h "$H" --arg r "$RUN" --arg ts "$(date -u +%FT%TZ)" --slurpfile p prep/plan.json \
+            '{hash: $h, run: $r, ts: $ts, ids: $p[0].specIds, pool: "hold"}' >> openings.jsonl
+          rclone copyto openings.jsonl "$LEDGER"
+          rclone cat "$LEDGER" | jq -s -e --arg r "$RUN" --arg h "$H" '[.[] | select((.run | tostring) == $r and .hash == $h)] | length == 1' > /dev/null \
+            || { echo "::error::the opening did not land in $LEDGER: nothing is scored"; exit 1; }
+          echo "recorded the opening of batch $H (run $RUN, $(jq '.batch | length' prep/plan.json) hot spot(s), $(jq '.specIds | length' prep/plan.json) arm(s)) in $LEDGER"
+      - name: Report
+        run: |
+          set -euo pipefail
+          python research/tennis_ta_report.py --shards shards --pool "$POOL" --run "$RUN" --out report --plan prep/plan.json \
+            --registry-py /tmp/registry.py --sha "$SWEEP_SHA" --report-sha "$GITHUB_SHA" | tail -60
+          cp prep/plan.json report/plan.json
+          # The one test's league (Amendment 4 item 7) runs on H-DEV only: a disc run's report writes league.md, league.csv
+          # and league.json beside the report, and they go to Drive with it (the next steps copy the report directory).
+          if [ "$POOL" = disc ]; then
+            for f in league.md league.csv league.json; do [ -s "report/$f" ] || { echo "::error::the report wrote no report/$f (the one test's league of a disc run): nothing is kept or uploaded"; exit 1; }; done
+            echo "league: $(wc -l < report/league.csv) line(s) in report/league.csv, report/league.md, report/league.json"
+          fi
+          # Run mechanics, stated with every report.
+          jq -r '"## Run mechanics\n\(.shards) shard(s) x up to 4 sub-slices = \(.subSlices) slice(s) over \(.units) unit(s), cut at unit edges only: cross-match state (tennis-only pacer, 25% / 10% caps, coin-placebo stream, family B placebo reservoir) restarts only at unit edges. Families \(.families | join("+")). Data version \(.dataVersion). \(.matches) owned matches, \(.noPublishedStart) without a published start (unit and pool from the earliest market-line time); by pool: " + ([(.pools // {}) | to_entries[] | "\(.key) \(.value.matches) in \(.value.units) unit(s)"] | join(", ")) + " (nostart = start-era matches without a published start: excluded and counted). " + ([.series | to_entries[] | "\(.key): history \(.value.first // "-") to \(.value.last // "-"), \(.value.spanDays - (.value.missing | length)) of \(.value.spanDays) swept days with a file (the download listed every close from \(.value.listed.from // "?" | .[0:10]) to \(.value.listed.to // "?" | .[0:10]) completely, so a day without one had no market closing), \(.value.tapesMissing // 0) traded market(s) without a tape"] | join("; ")) + "."' report/shards-check.json > report/run-mechanics.md
+          cat report/run-mechanics.md
+      - name: Registry rows valid (research/registry.py validate, contract type tennis)
+        run: |
+          set -euo pipefail
+          ROWS="report/registry-v1-$RUN.jsonl"
+          if [ ! -s "$ROWS" ]; then echo "::error::the report wrote no registry rows ($ROWS): nothing is kept or uploaded"; exit 1; fi
+          rc=0; python3 -I /tmp/registry.py validate "$ROWS" > validate.txt || rc=$?
+          echo "$(grep -c . "$ROWS") row(s): $(grep -c ': INVALID ' validate.txt || true) invalid, $(grep -c ': flags ' validate.txt || true) with validator flags"
+          grep ': INVALID ' validate.txt | head -n 20 | sed 's/^/::error::/' || true
+          if [ "$rc" -ne 0 ]; then echo "::error::registry rows fail research/registry.py validate (exit $rc): nothing is kept or uploaded"; exit 1; fi
+          # Steven's rule (Nov 5 21:59 UTC): $/h is tracked per contract type, so every row names contract type tennis and
+          # the modules it changes; one day set for every row of the run; trial ids unique.
+          jq -s -e 'all(.[]; .contract_type == "tennis" and .thread == "tennis-ta" and (.modules | type == "array" and length > 0))' "$ROWS" > /dev/null \
+            || { echo "::error::a registry row lacks contract_type tennis, thread tennis-ta or its modules"; exit 1; }
+          jq -s -e '([.[].by_day | keys] | unique | length) == 1' "$ROWS" > /dev/null || { echo "::error::registry rows of one run differ in their day set"; exit 1; }
+          jq -s -e '([.[].trial_id] | length) == ([.[].trial_id] | unique | length)' "$ROWS" > /dev/null || { echo "::error::registry trial ids repeat"; exit 1; }
+      - name: Keep the report on Drive
+        run: |
+          set -euo pipefail
+          R="gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/report"
+          # The whole report directory goes up: the report, the registry rows, the shard check, the plan and, on a disc
+          # run, the league (league.md, league.csv, league.json).
+          # A scored run (its registry rows already on Drive: a re-run of this job after a later step failed) keeps its
+          # Drive copy, which the registry upload and the comment then come from. Rows that differ are refused (their
+          # write time aside): the report is deterministic given the shards, so a difference means the inputs changed
+          # under the same run id.
+          L=$(rclone lsf "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN" --dirs-only)
+          STORED=no
+          if grep -qx 'report/' <<< "$L"; then L=$(rclone lsf "$R" --files-only); if grep -qxF "registry-v1-$RUN.jsonl" <<< "$L"; then STORED=yes; fi; fi
+          if [ "$STORED" = yes ]; then
+            rclone copy "$R" stored-report
+            if ! cmp -s <(jq -c 'del(.ts)' "stored-report/registry-v1-$RUN.jsonl") <(jq -c 'del(.ts)' "report/registry-v1-$RUN.jsonl"); then
+              echo "::error::run $RUN is already scored and this attempt's registry rows differ from the ones on Drive: nothing is overwritten or uploaded"; exit 1
+            fi
+            # A Drive copy that lost files to an interrupted upload (the rows file goes up last, so this is rare) is
+            # completed from this attempt's identical report before it is used.
+            rclone copy report "$R" --ignore-existing
+            rclone copy "$R" stored-report --ignore-existing
+            rm -rf report && mv stored-report report
+            echo "run $RUN is already scored: its report on Drive (same registry rows) is kept and used below"
+          else
+            # The registry rows file marks a run as scored (prep, shard and this step test it), so it goes up last.
+            rclone copy report "$R" --exclude "registry-v1-$RUN.jsonl"
+            rclone copyto "report/registry-v1-$RUN.jsonl" "$R/registry-v1-$RUN.jsonl"
+          fi
+      - name: Registry upload (registry/shards/tennis-ta/<run>.jsonl, once, after the completeness check)
+        run: |
+          set -euo pipefail
+          ROWS="report/registry-v1-$RUN.jsonl"
+          # Only a run whose shard set and history passed the completeness check is uploaded (that step fails the job
+          # otherwise; its summary is checked here again).
+          jq -e '(.problems | length) == 0' report/shards-check.json > /dev/null || { echo "::error::the completeness check did not pass: registry rows are not uploaded"; exit 1; }
+          python3 -I /tmp/registry.py validate "$ROWS" > /dev/null
+          # Registry shards are append-only and never edited: an existing upload of this run must hold the same rows.
+          # Each level is listed only when its parent lists it, so a listing error fails the step instead of reading as
+          # "not uploaded".
+          HAVE=yes; P=gdrive:kalshi-bot-archive
+          for c in registry/ shards/ tennis-ta/; do
+            L=$(rclone lsf "$P" --dirs-only)
+            if ! grep -qxF "$c" <<< "$L"; then HAVE=no; break; fi
+            P="$P/${c%/}"
+          done
+          if [ "$HAVE" = yes ]; then L=$(rclone lsf "$P" --files-only); grep -qxF "$RUN.jsonl" <<< "$L" || HAVE=no; fi
+          if [ "$HAVE" = yes ]; then
+            rclone cat "$P/$RUN.jsonl" > uploaded.jsonl
+            if ! cmp -s <(jq -c 'del(.ts)' uploaded.jsonl) <(jq -c 'del(.ts)' "$ROWS"); then
+              echo "::error::registry/shards/tennis-ta/$RUN.jsonl already holds other rows: not overwritten"; exit 1
+            fi
+            echo "registry/shards/tennis-ta/$RUN.jsonl already holds this run's $(grep -c . "$ROWS") row(s)"
+          else
+            rclone copyto "$ROWS" "gdrive:kalshi-bot-archive/registry/shards/tennis-ta/$RUN.jsonl"
+            echo "uploaded $(grep -c . "$ROWS") registry row(s) to registry/shards/tennis-ta/$RUN.jsonl"
+          fi
+      - name: Report as a commit comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Posted on the commit that swept the run (a rescore's report sits with its run's request too).
+          MARK="Outputs: gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$SWEEP_SHA/comments" --paginate --jq '.[].body' > posted.txt
+          if grep -qF "$MARK" posted.txt; then
+            echo "the report of run $RUN is already posted on $SWEEP_SHA"; exit 0
+          fi
+          { head -c 54000 report/report.md; echo; head -c 4000 report/run-mechanics.md; echo; echo "$MARK"; } > body.md
+          jq -Rs '{body: .}' body.md > req.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$SWEEP_SHA/comments" --input req.json > /dev/null

@@ -2111,6 +2111,9 @@ def parse_args(argv=None):
     ap.add_argument('--registry-py', default=None,
                     help="the project's research/registry.py (make_id, validate): required to write the registry rows (C7)")
     ap.add_argument('--sha', default=None, help='code_sha of the rows: the commit the run swept and scored ($GITHUB_SHA; default: that env var)')
+    ap.add_argument('--report-sha', default=None,
+                    help='the commit whose scoring code runs, when it is not the sweep\'s (a rescore, .github/workflows/tennis-ta-rescore.yml): '
+                         'the rows keep code_sha = --sha (the code that produced the trades) and carry raw.report_sha')
     ap.add_argument('--ref', default=None, help=f'the rows\' ref (default: {DRIVE_RUNS}/<run>)')
     ap.add_argument('--no-registry', action='store_true', help='local runs only: score and report without writing registry rows')
     ap.add_argument('--hold-batch', default=HOLD_BATCH_FILE,
@@ -2735,6 +2738,9 @@ def main(argv=None):
         ts = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
         common_raw = {'run': run_id, 'stage': stage, 'pool': ','.join(pools), 'stratum': stratum_label, 'sim_version': sim_version,
                       'evidence': meta.get('evidence'), 'days_utc': [from_d, to_d], 'days_eastern': days_eastern, 'doge_excluded': True}
+        rescored_at = rescore_sha(a.report_sha, sha)
+        if rescored_at:
+            common_raw['report_sha'] = rescored_at
         a_runs = []
         for rid in sorted(runs):
             if runs[rid].get('window'):
@@ -3169,6 +3175,14 @@ def replay_version(path=HISTORY_REPLAY_TS):
     return int(m.group(1)) if m else None
 
 
+def rescore_sha(report_sha, swept_sha):
+    """The scoring commit of a rescore: report_sha when given and not the sweep's own commit, else None (a sweep's own report)."""
+    r = str(report_sha or '').strip()
+    if not r or r.lower() == str(swept_sha or '').strip().lower():
+        return None
+    return r
+
+
 def code_epoch(sim_version, rv):
     return f'{sim_version}; REPLAY_VERSION={rv}; {CODE_EPOCH_TAIL}'
 
@@ -3539,8 +3553,10 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
     L = []
     pool_txt = ','.join(pools)
     L.append(f"## Tennis TA sweep, stage {s['stage']}, pool {pool_txt}, stratum {s['stratum_label']} (run {s['run']})")
+    rescored_at = rescore_sha(getattr(a, 'report_sha', None), meta.get('sha'))
     L.append(f"Evidence: {meta.get('evidence', '-')}. sha {str(meta.get('sha') or '-')[:10]}, {s['sim_version']}, data version {s['data_version']}. "
-             f"Days {M[0]['day']} to {M[-1]['day']} UTC "
+             + (f"Scored at {rescored_at[:10]} (a rescore of the shards swept at {str(meta.get('sha'))[:10]}). " if rescored_at else '')
+             + f"Days {M[0]['day']} to {M[-1]['day']} UTC "
              f"({fmt_eastern(M[0]['start'], '%b %d %I:%M %p')} to {fmt_eastern(t_last, '%b %d %I:%M %p')}).")
     L.append('')
     L.append('### Run mechanics')

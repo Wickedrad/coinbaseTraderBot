@@ -1182,6 +1182,13 @@ print(json.dumps({'on': doc.get('on', doc.get(True)), 'jobs': jobs, 'runBlocks':
 sys.exit(1 if problems else 0)
 `;
 
+/** A workflow file as data (PyYAML; its `on` key, which YAML 1.1 reads as true, back under 'on'). */
+function yamlOf(file: string): unknown {
+  const r = spawnSync('python3', ['-I', '-c', 'import json, sys, yaml\nd = yaml.safe_load(open(sys.argv[1]))\nif True in d: d["on"] = d.pop(True)\nprint(json.dumps(d))', file], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+
 function ymlCheck(file: string): { status: number | null; out?: { on: unknown; jobs: Record<string, Array<{ name: string; run: string | null }>>; runBlocks: number; problems: string[] }; err: string } {
   const dir = tmp();
   fs.writeFileSync(path.join(dir, 'ymlcheck.py'), YML_CHECK);
@@ -1199,18 +1206,32 @@ test('workflow: YAML parses, every run block parses in bash, the report job vali
   assert.equal(r.status, 0, `${r.err}\n${(r.out?.problems ?? []).join('\n')}`);
   const { jobs, runBlocks, on } = r.out!;
   assert.deepEqual(Object.keys(jobs), ['prep', 'shard', 'report']);
-  assert.ok(runBlocks >= 15);
   assert.deepEqual(on, { push: { branches: ['claude/project-thread-7817be'], paths: ['research/tennis-ta/sweep-request.json'] } });
   const text = fs.readFileSync(wf, 'utf8');
   assert.ok(!text.includes('trials.jsonl'), 'the interim ledger append is gone');
-  const report = jobs.report;
+  // The report job is the reusable .github/workflows/tennis-ta-report.yml, called with the sweep's own run and commit
+  // (the rescore workflow calls it too, with a finished run's).
+  const doc = yamlOf(wf) as { jobs: Record<string, Record<string, unknown>>; permissions: Record<string, string> };
+  assert.deepEqual(doc.jobs.report, {
+    needs: ['prep', 'shard'], if: "${{ !cancelled() && needs.prep.result == 'success' && needs.shard.result == 'success' }}",
+    uses: './.github/workflows/tennis-ta-report.yml',
+    with: { run_id: '${{ github.run_id }}', sweep_sha: '${{ github.sha }}', pool: '${{ needs.prep.outputs.pool }}', stage: '${{ needs.prep.outputs.stage }}' },
+    secrets: 'inherit',
+  });
+  assert.deepEqual(doc.permissions, { contents: 'write', actions: 'read' });
+  const rf = path.join(REPO, '.github', 'workflows', 'tennis-ta-report.yml');
+  const rr = ymlCheck(rf);
+  assert.equal(rr.status, 0, `${rr.err}\n${(rr.out?.problems ?? []).join('\n')}`);
+  assert.ok(runBlocks + rr.out!.runBlocks >= 15);
+  assert.deepEqual(Object.keys((rr.out!.on as { workflow_call: { inputs: object } }).workflow_call.inputs), ['run_id', 'sweep_sha', 'pool', 'stage']);
+  const report = rr.out!.jobs.report;
   const idx = (re: RegExp) => report.findIndex((s) => re.test(s.name));
   const body = (re: RegExp) => report[idx(re)]?.run ?? '';
   // registry.py from main, else the registry thread's branch; passed to the report with the commit sha.
   assert.match(body(/^Registry module/), /refs\/heads\/main:refs\/remotes\/origin\/main/);
   assert.match(body(/^Registry module/), /claude\/project-thread-79ntof/);
   assert.match(body(/^Registry module/), /git show "\$SRC:research\/registry\.py" > \/tmp\/registry\.py/);
-  assert.match(body(/^Report$/), /--registry-py \/tmp\/registry\.py --sha "\$GITHUB_SHA"/);
+  assert.match(body(/^Report$/), /--registry-py \/tmp\/registry\.py --sha "\$SWEEP_SHA" --report-sha "\$GITHUB_SHA"/);
   assert.match(body(/^Registry rows valid/), /python3 -I \/tmp\/registry\.py validate "\$ROWS"/);
   assert.match(body(/^Registry rows valid/), /contract_type == "tennis"/);
   const up = body(/^Registry upload/);
@@ -1220,7 +1241,10 @@ test('workflow: YAML parses, every run block parses in bash, the report job vali
   const order = [/^Registry module/, /^Shards/, /^Report$/, /^Registry rows valid/, /^Keep the report/, /^Registry upload/, /^Report as a commit comment/].map(idx);
   assert.ok(order.every((x) => x >= 0), JSON.stringify(order));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
-  assert.match(body(/^Report as a commit comment/), /commits\/\$GITHUB_SHA\/comments/);
+  assert.match(body(/^Report as a commit comment/), /commits\/\$SWEEP_SHA\/comments/);
+  // The registry rows file marks a run scored, so the Keep step uploads it last.
+  assert.match(body(/^Keep the report/), /rclone copy report "\$R" --exclude "registry-v1-\$RUN\.jsonl"\n\s*rclone copyto "report\/registry-v1-\$RUN\.jsonl" "\$R\/registry-v1-\$RUN\.jsonl"/);
+  assert.ok(!fs.readFileSync(rf, 'utf8').includes('$GITHUB_RUN_ID'), 'the report names its run by input only');
   // The shard job builds replay days from the H lookback (1 day) on.
   assert.match(jobs.shard.find((s) => s.name === 'Replay days for the slice')!.run!, /date -u -d "\$FROM -1 day"/);
   // C10, prep: the openings ledger is read (Drive set up first) and handed to prep, which refuses a reopened hold list.
@@ -1235,7 +1259,7 @@ test('workflow: YAML parses, every run block parses in bash, the report job vali
   assert.ok(lidx > idx(/^Shards/) && lidx < idx(/^Report$/), `${lidx}`);
   // The completeness check (the sweep's own, before the ledger step) is the C12 window gate: a broken block never
   // reaches the append.
-  assert.match(body(/^Shards/), /node --import tsx research\/tennisTaSweep\.ts check --dir shards --listing listed\.txt --prep prep\/plan\.json --run "\$GITHUB_RUN_ID" --out report\/shards-check\.json/);
+  assert.match(body(/^Shards/), /node --import tsx research\/tennisTaSweep\.ts check --dir shards --listing listed\.txt --prep prep\/plan\.json --run "\$RUN" --out report\/shards-check\.json/);
   assert.match(report[idx(/^Shards/)].name, /window block whole/);
   assert.match(body(/^Shards/), /window block[\s\S]*before the ledger step/);
   assert.ok(body(/^Openings ledger/).includes(`LEDGER=${OPENINGS_LEDGER}`));
@@ -1275,7 +1299,8 @@ test('workflow ledger steps: prep reads the ledger strictly; the report job appe
   if (probe.status !== 0 || spawnSync('jq', ['--version']).status !== 0) { t.skip('python3 with PyYAML, or jq, is not available'); return; }
   const r = ymlCheck(path.join(REPO, '.github', 'workflows', 'tennis-ta-sweep.yml'));
   const step = (job: string, re: RegExp) => r.out!.jobs[job].find((s) => re.test(s.name))!.run!;
-  const readStep = step('prep', /^Openings ledger/), appendStep = step('report', /^Openings ledger/);
+  const rr = ymlCheck(path.join(REPO, '.github', 'workflows', 'tennis-ta-report.yml'));
+  const readStep = step('prep', /^Openings ledger/), appendStep = rr.out!.jobs.report.find((s) => /^Openings ledger/.test(s.name))!.run!;
   const dir = tmp(), bin = path.join(dir, 'bin'), drive = path.join(dir, 'drive'), work = path.join(dir, 'work');
   fs.mkdirSync(bin); fs.mkdirSync(path.join(drive, 'kalshi-bot-archive', 'models', 'tennis-ta'), { recursive: true }); fs.mkdirSync(path.join(work, 'prep'), { recursive: true });
   fs.writeFileSync(path.join(bin, 'rclone'), FAKE_RCLONE, { mode: 0o755 });
@@ -1292,16 +1317,16 @@ test('workflow ledger steps: prep reads the ledger strictly; the report job appe
   x = run(readStep, { FAKE_DRIVE_DOWN: '1' });
   assert.notEqual(x.status, 0);
   // report: a disc run records nothing; the hold run appends {hash, run, ts, ids, pool} once.
-  x = run(appendStep, { STAGE: '1', GITHUB_RUN_ID: '100' });
+  x = run(appendStep, { STAGE: '1', RUN: '100' });
   assert.equal(x.status, 0, x.stderr);
   assert.ok(!fs.existsSync(ledger));
-  x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '100' });
+  x = run(appendStep, { STAGE: 'hold', RUN: '100' });
   assert.equal(x.status, 0, x.stderr + x.stdout);
   const rows = () => fs.readFileSync(ledger, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
   assert.deepEqual(rows().map((o) => [o.hash, o.run, o.ids, o.pool, Object.keys(o).sort()]), [[p.batchHash, '100', p.specIds, 'hold', ['hash', 'ids', 'pool', 'run', 'ts']]]);
   assert.match(String(rows()[0].ts), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   // A re-run of the report job keeps the one row (idempotent by run id).
-  x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '100' });
+  x = run(appendStep, { STAGE: 'hold', RUN: '100' });
   assert.equal(x.status, 0, x.stderr);
   assert.match(x.stdout, /already in the ledger/);
   assert.equal(rows().length, 1);
@@ -1309,7 +1334,7 @@ test('workflow ledger steps: prep reads the ledger strictly; the report job appe
   x = run(readStep);
   assert.equal(x.status, 0, x.stderr);
   assert.throws(() => prepare(JSON.stringify({ stage: 'hold' }), unitsText, f, { openings: fs.readFileSync(path.join(work, 'prep', 'openings.jsonl'), 'utf8') }), /already read on H-HOLD \(run 100,/);
-  x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '101' });
+  x = run(appendStep, { STAGE: 'hold', RUN: '101' });
   assert.notEqual(x.status, 0);
   assert.match(x.stdout, /already opened on H-HOLD by run 100/);
   assert.equal(rows().length, 1);
@@ -1317,23 +1342,77 @@ test('workflow ledger steps: prep reads the ledger strictly; the report job appe
   fs.writeFileSync(ledger, fs.readFileSync(ledger, 'utf8').trimEnd());
   const p2 = { ...p, batchHash: 'ab'.repeat(32), specIds: ['A|s1|m0.02|f0.4|o0.02|w300|window', 'A|s1|m0.02|f0.4|o0.02|w300|F1'] };
   fs.writeFileSync(path.join(work, 'prep', 'plan.json'), JSON.stringify(p2));
-  x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '102' });
+  x = run(appendStep, { STAGE: 'hold', RUN: '102' });
   assert.equal(x.status, 0, x.stderr + x.stdout);
   assert.deepEqual(rows().map((o) => [o.hash, o.run]), [[p.batchHash, '100'], ['ab'.repeat(32), '102']]);
   // The ledger naming this run with another batch fails; a plan without a batch hash (not a hold plan) records nothing.
   fs.writeFileSync(path.join(work, 'prep', 'plan.json'), JSON.stringify({ ...p2, batchHash: 'cd'.repeat(32) }));
-  x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '102' });
+  x = run(appendStep, { STAGE: 'hold', RUN: '102' });
   assert.notEqual(x.status, 0);
   assert.match(x.stdout, /holds run 102 with another batch/);
   fs.writeFileSync(path.join(work, 'prep', 'plan.json'), JSON.stringify({ ...p2, batchHash: undefined }));
-  x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '104' });
+  x = run(appendStep, { STAGE: 'hold', RUN: '104' });
   assert.notEqual(x.status, 0);
   assert.match(x.stdout, /no batch hash/);
   assert.equal(rows().length, 2);
   fs.writeFileSync(ledger, '{"hash": "x"}\n{broken\n');
-  x = run(appendStep, { STAGE: 'hold', GITHUB_RUN_ID: '103' });
+  x = run(appendStep, { STAGE: 'hold', RUN: '103' });
   assert.notEqual(x.status, 0);
   assert.equal(fs.readFileSync(ledger, 'utf8'), '{"hash": "x"}\n{broken\n');
+});
+
+test('workflow rescore: a finished, complete, unscored sweep run is scored again by the same report job', (t) => {
+  const probe = spawnSync('python3', ['-I', '-c', 'import yaml'], { encoding: 'utf8' });
+  if (probe.status !== 0 || spawnSync('jq', ['--version']).status !== 0) { t.skip('python3 with PyYAML, or jq, is not available'); return; }
+  const wf = path.join(REPO, '.github', 'workflows', 'tennis-ta-rescore.yml');
+  const r = ymlCheck(wf);
+  assert.equal(r.status, 0, `${r.err}\n${(r.out?.problems ?? []).join('\n')}`);
+  const doc = yamlOf(wf) as { on: unknown; concurrency: unknown; permissions: unknown; jobs: Record<string, Record<string, unknown>> };
+  assert.deepEqual(doc.on, { push: { branches: ['claude/project-thread-7817be'], paths: ['research/tennis-ta/rescore-request.json'] } });
+  // The sweep's concurrency group: a rescore waits for a running sweep.
+  assert.deepEqual(doc.concurrency, (yamlOf(path.join(REPO, '.github', 'workflows', 'tennis-ta-sweep.yml')) as { concurrency: unknown }).concurrency);
+  assert.deepEqual(doc.permissions, { contents: 'write', actions: 'read' });
+  assert.deepEqual(doc.jobs.report, {
+    needs: 'resolve', uses: './.github/workflows/tennis-ta-report.yml', secrets: 'inherit',
+    with: { run_id: '${{ needs.resolve.outputs.run_id }}', sweep_sha: '${{ needs.resolve.outputs.sweep_sha }}', pool: '${{ needs.resolve.outputs.pool }}', stage: '${{ needs.resolve.outputs.stage }}' },
+  });
+  const steps = r.out!.jobs.resolve, at = (re: RegExp) => steps.findIndex((s) => re.test(s.name));
+  assert.ok(at(/^Request and the run it names$/) < at(/^Not scored yet$/) && at(/^Not scored yet$/) < at(/^Pool and stage/));
+  // The request step against a stand-in gh: only a completed tennis TA sweep of this branch whose shard legs all
+  // succeeded passes, and it hands on the run id and the sweep's commit.
+  const dir = tmp(), bin = path.join(dir, 'bin'), work = path.join(dir, 'work');
+  fs.mkdirSync(bin); fs.mkdirSync(path.join(work, 'research', 'tennis-ta'), { recursive: true });
+  fs.writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env bash
+case "$2" in
+  */jobs*) printf '%s\\n' "$FAKE_JOBS" ;;
+  *) printf '%s\\n' "$FAKE_RUN" ;;
+esac
+`, { mode: 0o755 });
+  const sha = 'ab'.repeat(20);
+  const runJson = (o: Record<string, string> = {}) => JSON.stringify({ path: '.github/workflows/tennis-ta-sweep.yml', head_branch: 'claude/project-thread-7817be', status: 'completed', head_sha: sha, ...o });
+  const go = (run: unknown, fakeRun: string, jobs = 'shard 0 (a)\tsuccess\nshard 1 (b)\tsuccess\nprep\tsuccess') => {
+    fs.writeFileSync(path.join(work, 'research', 'tennis-ta', 'rescore-request.json'), JSON.stringify({ run, note: 'test' }));
+    const out = path.join(dir, `out-${Math.random()}`);
+    const x = spawnSync('bash', ['-c', steps[at(/^Request and the run it names$/)].run!], { cwd: work, encoding: 'utf8',
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_RUN: fakeRun, FAKE_JOBS: jobs, GITHUB_OUTPUT: out, GITHUB_REPOSITORY: 'o/r', GITHUB_REF_NAME: 'claude/project-thread-7817be', GITHUB_SHA: 'cd'.repeat(20) } });
+    return { status: x.status, text: x.stdout + x.stderr, out: fs.existsSync(out) ? fs.readFileSync(out, 'utf8') : '' };
+  };
+  let x = go('43077154976', runJson());
+  assert.equal(x.status, 0, x.text);
+  assert.equal(x.out, `run_id=43077154976\nsweep_sha=${sha}\n`);
+  x = go(43077154976, runJson());
+  assert.equal(x.status, 0, x.text);
+  assert.notEqual(go('12a', runJson()).status, 0);
+  x = go('1', runJson({ path: '.github/workflows/tennis-ta-data.yml' }));
+  assert.ok(x.status !== 0 && /not a tennis TA sweep/.test(x.text), x.text);
+  x = go('1', runJson({ status: 'in_progress' }));
+  assert.ok(x.status !== 0 && /only a finished sweep/.test(x.text), x.text);
+  x = go('1', runJson({ head_branch: 'main' }));
+  assert.ok(x.status !== 0 && /swept branch main/.test(x.text), x.text);
+  x = go('1', runJson(), 'shard 0 (a)\tsuccess\nshard 1 (b)\tfailure');
+  assert.ok(x.status !== 0 && /shard 1 \(b\)/.test(x.text), x.text);
+  x = go('1', runJson(), 'prep\tfailure');
+  assert.ok(x.status !== 0 && /0 shard leg/.test(x.text), x.text);
 });
 
 test('practice (Amendment 4 item 9): recorded matches before FULL_BOOK_FROM are pool practice, never requestable or scored', () => {

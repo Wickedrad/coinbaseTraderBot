@@ -665,6 +665,19 @@ def test_registry_rows_need_the_registry_module():
     out5 = os.path.join(root, 'out5')
     r5 = run_report(units, shards, out5, '--sha', 'a' * 40, boot=49)
     assert r5.returncode != 0 and 'swept at' in r5.stderr and not os.path.exists(out5)
+    # A rescore (.github/workflows/tennis-ta-rescore.yml): --sha is still the sweep's commit, --report-sha the scoring
+    # commit. The rows keep code_sha = the sweep's and carry raw.report_sha; the report names both. The sweep's own report
+    # (--report-sha equal to --sha, or none) carries no report_sha.
+    out6 = os.path.join(root, 'out6')
+    r6 = run_report(units, shards, out6, '--report-sha', 'b' * 40, boot=49)
+    assert r6.returncode == 0, r6.stderr[-2000:]
+    rows6 = read_registry(out6)
+    assert rows6 and all(x['code_sha'] == SHA and x['raw']['report_sha'] == 'b' * 40 for x in rows6)
+    assert f"Scored at {'b' * 10} (a rescore of the shards swept at {SHA[:10]})" in open(os.path.join(out6, 'report.md')).read()
+    out7 = os.path.join(root, 'out7')
+    r7 = run_report(units, shards, out7, '--report-sha', SHA.upper(), boot=49)
+    assert r7.returncode == 0, r7.stderr[-2000:]
+    assert all('report_sha' not in x['raw'] for x in read_registry(out7)) and 'Scored at' not in open(os.path.join(out7, 'report.md')).read()
 
 
 def test_family_b_placebo_rows_when_the_export_has_day_sums():
