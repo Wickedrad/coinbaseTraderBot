@@ -235,7 +235,8 @@ jobs:
             pids+=($!)
           done
           rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done
-          tail -n 3 out/log-*.txt
+          # A failed sub-slice shows its error (the message sits above the stack, so 3 lines would show only the stack).
+          for f in out/log-*.txt; do echo "==> $f <=="; if [ "$rc" != 0 ]; then grep -v '^\[tennis-ta\]' "$f" | head -n 40 || true; fi; tail -n 3 "$f"; done
           exit $rc
       - name: Keep on Drive
         run: |
