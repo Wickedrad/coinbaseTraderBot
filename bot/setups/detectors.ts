@@ -26,6 +26,11 @@
 //             recent bullish fair value gap (a 3-bar gap: low above the high two bars earlier) and reclaims the
 //             21 EMA on a green bar -> long; mirror -> short. Stop under the gap / the last 3 bars; 1R (half off)
 //             then 3R; ATR trail. Checked before the plain pullback for those coins.
+// Curve-led (fast lane, 1h, only with HEAT_PERPS=entry; heatSignal below):
+//   heat      no chart pattern: the side is the coin's decided 60-minute call from the direction curves (bot/heat).
+//             Stop: the perp stop rule (a multiple of the 1h ATR from the entry, at least a minimum in bps). No target
+//             and no trail: the trade ends at the next hourly close, the horizon the curve measured. Scored by the
+//             heat weight, not by the setup model (the model never saw this type).
 //
 // The higher-timeframe trend uses simple averages (exact over a finite window), so the live candle
 // store's 320 bars give the same values as the full history.
@@ -35,7 +40,11 @@ import { aggregate } from '../ta/candleStore';
 import type { Timeframe } from '../ta/knowledge';
 
 export type Lane = 'fast' | 'slow';
-export type SetupKind = 'fade' | 'pullback' | 'burst' | 'breakout' | 'dip' | 'spotpb';
+export type SetupKind = 'fade' | 'pullback' | 'burst' | 'breakout' | 'dip' | 'spotpb' | 'heat';
+
+/** The curve call a heat setup stands on: which row of the direction table, its rank in the traded pack, when its bar
+ *  closed, and the heat weight (0..1) that scores it. */
+export interface HeatBasis { key: string; rank: number; of: number; heat: number; barClose: number; weight: number }
 
 export interface ExitPlan {
   /** First target: half the position off, stop to break-even. */
@@ -77,6 +86,8 @@ export interface SetupSignal {
   plan: ExitPlan;
   /** Readings that triggered it (also model inputs). */
   info: { rsi: number; pctB: number; flow: number; bandwidth: number; volRatio: number };
+  /** Only on a heat setup: the curve call it stands on. */
+  heat?: HeatBasis;
 }
 
 /** Momentum-burst thresholds and exits per side, from the per-side search (research/burstParamSearch.ts,
@@ -247,6 +258,24 @@ export const SPOT_PB: { assets: string[] } = { assets: [] };
 export function detectLast(asset: string, tf: Timeframe, cs: Candle[], daily?: Candle[], o: { spotPb?: boolean } = {}): SetupSignal | undefined {
   if (cs.length < SETUP_MIN_BARS) return undefined;
   return detectAt(asset, tf, setupSeries(cs, tf), cs.length - 1, daily && daily.length >= 60 ? setupSeries(daily, '1d') : undefined, o);
+}
+
+/** The hourly heat setup: fast lane, kind `heat`, timeframe 1h, the side the coin's decided 60-minute curve call names.
+ *  `px` is the spot price now (the reference entry) and `atr1h` the 1h ATR. The stop is the perp stop rule: atrMult x
+ *  the 1h ATR from the entry, never nearer than minBps. The plan has no target and no trail (a fast-lane trade only
+ *  trails after a first target): maxBars 1 ends the trade at the next hourly close, the horizon the curve measured.
+ *  The signal bar is the hour ending at the call's bar close, so the setup is known at ts + 1h like every other one.
+ *  Undefined without a price or a 1h ATR: no stop can be set, so there is no setup. */
+export function heatSignal(asset: string, call: { dir: 1 | -1; key: string; rank: number; of: number; heat: number; barClose: number }, weight: number, px: number, atr1h: number, stop: { atrMult: number; minBps: number }): SetupSignal | undefined {
+  if (!(px > 0) || !(atr1h > 0) || !(call.dir === 1 || call.dir === -1) || !Number.isFinite(call.barClose)) return undefined;
+  const dist = Math.max(stop.atrMult * atr1h, (stop.minBps / 1e4) * px);
+  if (!(dist > 0) || !(dist < px)) return undefined;
+  return {
+    asset, lane: 'fast', kind: 'heat', tf: '1h', dir: call.dir, ts: call.barClose - TF_MS['1h']!, ref: px, stop: px - call.dir * dist, atr: atr1h,
+    plan: { trailAtr: stop.atrMult, maxBars: 1 },
+    info: { rsi: NaN, pctB: NaN, flow: NaN, bandwidth: NaN, volRatio: NaN },
+    heat: { key: call.key, rank: call.rank, of: call.of, heat: call.heat, barClose: call.barClose, weight },
+  };
 }
 
 /** Volatility-adapted trail for fast-lane setups: the trail distance in ATRs is multiplied by

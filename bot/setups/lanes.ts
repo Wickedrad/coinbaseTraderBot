@@ -15,6 +15,9 @@
 // lane's reference score) and the conviction multiplier, then capped by the lane's optimal f (the
 // bootstrap 25th percentile of the growth-optimal risk on its trade history, bot/strategy/optimalF.ts)
 // and halved while its drawdown is beyond the history's 95th percentile; capped per asset and in total.
+// A setup type that is not scored by the setup model (the hourly heat setup: its score is the heat weight, 0..1) has
+// its own minimum (ownMinScore). It wins over the model's thresholds, so such a type queues and enters by its own
+// rule whether the model lists it or not, on probation or not.
 
 import type { Lane, SetupSignal } from './detectors';
 import { TF_MS } from './detectors';
@@ -39,6 +42,10 @@ export interface LaneParams {
   minScoreByKind?: Record<string, number>;
   /** Minimum score for the types missing from minScoreByKind (set while they trade on probation; unset = not traded). */
   unlistedMinScore?: number;
+  /** Per setup type ("1h heat") that carries its own score instead of the model's: its minimum. It wins over minScore,
+   *  minScoreByKind and unlistedMinScore: without it such a type would trade at any score while unlisted types are on
+   *  probation and never queue once they are not. */
+  ownMinScore?: Record<string, number>;
 }
 
 /** Setup type key ("15m fade", "1d breakout"). */
@@ -46,6 +53,8 @@ export const kindKey = (s: { tf: string; kind: string }) => `${s.tf} ${s.kind}`;
 
 /** Minimum score for a setup in its lane (undefined = this type is not traded). */
 export function minScoreFor(L: LaneParams, s: { tf: string; kind: string }): number | undefined {
+  const own = L.ownMinScore?.[kindKey(s)];
+  if (own !== undefined) return own;
   return L.minScoreByKind ? L.minScoreByKind[kindKey(s)] ?? L.unlistedMinScore : L.minScore;
 }
 
@@ -75,7 +84,8 @@ export interface Candidate { sig: SetupSignal; score: number; queuedAt: number; 
  *  optionally a conviction size multiplier (TA / confluence, altcoin risk-on rule; >= 1) and a priority. */
 /** weight: the strategy playbook's weight for the asset's regime (bot/strategy/playbook.ts) times waterfall mode's
  *  (bot/macro/waterfall.ts); 0 = skip (weightWhy says why), default 1. */
-export type Recheck = (c: Candidate) => { px: number; score: number; mult?: number; priority?: number; why?: string; weight?: number; weightWhy?: string } | undefined;
+/** A text instead: drop the candidate and show that text as the reason (undefined drops it as 'gone on re-check'). */
+export type Recheck = (c: Candidate) => { px: number; score: number; mult?: number; priority?: number; why?: string; weight?: number; weightWhy?: string } | string | undefined;
 
 export interface Entry { cand: Candidate; px: number; score: number; notional: number; mult: number; why?: string; capped?: string }
 
@@ -138,7 +148,7 @@ export class LaneBook {
         if (open >= L.maxPositions) { keep.push(c); continue; }
         if (busy.has(c.sig.asset)) { keep.push(c); continue; } // waits for the asset to free up
         const r = recheck(c);
-        if (!r) { this.skip(c, 'gone on re-check', now); continue; }
+        if (!r || typeof r === 'string') { this.skip(c, r || 'gone on re-check', now); continue; }
         const th = minScoreFor(L, c.sig) ?? Infinity;
         if (!(r.score >= th)) { this.skip(c, `re-scored ${r.score.toFixed(3)} below ${th}`, now); continue; }
         const s = c.sig, d = s.dir;
@@ -146,7 +156,9 @@ export class LaneBook {
         if (!(d * (r.px - s.stop) > 0)) { this.skip(c, 'price beyond the stop', now); continue; }
         if (d * (r.px - s.ref) > L.maxChaseR * risk) { this.skip(c, `price ran ${((d * (r.px - s.ref)) / risk).toFixed(2)}R toward the target: not chasing`, now); continue; }
         const riskPct = Math.abs(r.px - s.stop) / r.px;
-        const ref = L.minScoreByKind ? (1 + Math.max(0, th)) / 2 : L.refScore;
+        // A type with its own score runs 0..1 like the per-type scores, so its 1x point sits the same way: halfway
+        // between its minimum and 1 (the lane's refScore belongs to the model's scores).
+        const ref = L.minScoreByKind || L.ownMinScore?.[kindKey(c.sig)] !== undefined ? (1 + Math.max(0, th)) / 2 : L.refScore;
         const scale = ref > 0 ? Math.max(0.5, Math.min(1.5, r.score / ref)) : 1;
         const riskDollars = (L.riskUsd && L.riskUsd > 0 ? L.riskUsd : equity * L.riskFrac) * scale;
         const mult = r.mult !== undefined && Number.isFinite(r.mult) && r.mult > 1 ? r.mult : 1;
