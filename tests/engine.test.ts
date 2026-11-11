@@ -31,8 +31,11 @@ import { SinuousExitGate, type CrossCheck } from '../bot/strategy/sinuousExit';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
 import { DEFAULT_PROBATION, Probation, setProbation } from '../bot/risk/probation';
 import type { FillModel } from '../bot/tca/fillModel';
+import { decide, type MarketView } from '../bot/strategy/fairValueStrategy';
+import { ConfluenceRatchetExit } from '../bot/strategy/exitPolicies';
+import { exitOnlyPlan } from '../bot/strategy/exitOnlyLane';
 
-async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel; modelHealth?: ModelHealth; closeIn?: number } = {}) {
+async function setup(opts: { historySec?: number; askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel; modelHealth?: ModelHealth; closeIn?: number } = {}) {
   const dir = tmpDir();
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, RISK_DAILY_LOSS_USD: opts.dailyLossUsd ?? '10', DOMINANCE_FEED: 'false', SPOT_FEED: 'false', EXIT_POLICY: opts.exitPolicy, STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_ENABLED: 'false', ...opts.env });
   const now = Date.now();
@@ -51,7 +54,8 @@ async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy
   let seed = 1;
   const rand = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
   let x = Math.log(60010);
-  const span = opts.trend ? 1800 : 600;
+  // historySec: seconds of index history before the test starts (60: just after a restart, the volatility still warming up).
+  const span = opts.historySec ?? (opts.trend ? 1800 : 600);
   if (opts.trend) x -= opts.trend * span; // end just above the strike, as without a trend
   for (let s = span; s >= 0; s--) { x += (opts.trend ? 0.00004 : 0.0002) * (rand() - 0.5) + (opts.trend ?? 0); idx.add(Math.exp(x), now - s * 1000); }
 
@@ -1237,4 +1241,172 @@ test('equity counts what resting orders hold at a read: only the opening part, a
   assert.ok(Math.abs(engine.equity()! - eq) < 1e-6, `after the cancel ${engine.equity()}`);
   engine.onBalance(await paper.getBalance());
   assert.ok(Math.abs(engine.equity()! - eq) < 1e-6, `next read ${engine.equity()}`);
+});
+
+// ---- The exit-only lane (E06) ----------------------------------------------------------------------------------------
+// With only 60 s of index history the volatility (120 one-second returns) is still warming up, as for about 2 minutes after
+// every restart: the market cannot be priced, but a held position still gets the exits already armed that need no model.
+
+test('exit-only lane: 60 s after a restart (volatility warming up), the armed take-profit sells a held YES bought at 0.40; the final minute still holds it', async () => {
+  const { engine, recon, market, md, oms, audit } = await setup({ historySec: 60 });
+  engine.balance = (await recon.run('startup'))!.balance;
+  assert.equal(md.index.get('BTC')!.vol(), undefined, 'volatility still warming up');
+  // Long 10 YES bought at 0.40 as a maker (take-profit floor 4c). At a 0.56 bid: +14.2c net, armed; a winner at its best runs.
+  oms.onFill({ tradeId: 'l1', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+  const exits = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker && o.reduceOnly);
+  const notes = () => engine.status.get(market.ticker)!.notes.join(' | ');
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.56, size: 50 }], asks: [{ price: 0.58, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, 'volatility warming up');
+  assert.equal(exits().length, 0, notes());
+  assert.match(notes(), /^exit-only lane \(volatility warming up\): only exits already armed/);
+  assert.match(notes(), /take-profit armed: \+0\.142 now, best \+0\.142/);
+  // Back to 0.50 (more than a third of the best gain given back) inside the final minute: held to settlement, as always.
+  const m = md.markets.get(market.ticker)!;
+  const close = m.closeTime;
+  m.closeTime = Date.now() + 30_000;
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(exits().length, 0, notes());
+  assert.match(notes(), /final minute: riding to settlement/);
+  // Outside it the take-profit sells at the bid, the gateway judging the exit against the book's mid.
+  m.closeTime = close;
+  await engine.tick();
+  assert.equal(exits().length, 1, notes());
+  const x = exits()[0];
+  assert.deepEqual([x.side, x.price, x.count, x.purpose, x.timeInForce], ['ask', 0.5, 10, 'exit', 'immediate_or_cancel']);
+  assert.ok(Math.abs(x.fairValue - 0.51) < 1e-9, `fair value ${x.fairValue}`);
+  const d = audit.tail(50, 'decision').map((r) => r.data as { lane?: string; blocked?: string; place?: Array<{ why: string }> }).find((r) => r.lane === 'exit_only');
+  assert.equal(d?.blocked, 'volatility warming up');
+  assert.match(d!.place![0].why, /^take-profit: \+0\.082 a contract net of fees \(best \+0\.142, floor \+0\.040\)/);
+});
+
+test('exit-only lane: the exit curve in gate mode holds a profit take-profit as in a full evaluation; its protective last tick goes out', async () => {
+  const curveExit = new SinuousExitGate({ mode: 'gate', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
+  const { engine, recon, market, md, oms } = await setup({ historySec: 60, curveExit });
+  engine.balance = (await recon.run('startup'))!.balance;
+  oms.onFill({ tradeId: 'l5', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+  const exits = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker && o.reduceOnly);
+  const notes = () => engine.status.get(market.ticker)!.notes.join(' | ');
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.56, size: 50 }], asks: [{ price: 0.58, size: 50 }] }, Date.now());
+  await engine.tick();
+  // 0.50: the take-profit sells +0.082 a contract, a profit exit: the gate holds it for the curve's signal.
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, 'volatility warming up');
+  assert.equal(exits().length, 0, notes());
+  assert.match(notes(), /curve: holding the profit exit at 0\.5 /);
+  // 0.46: +0.042, the last tick above the 0.040 floor: protective, never held.
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.46, size: 50 }], asks: [{ price: 0.48, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(exits().length, 1, notes());
+  assert.deepEqual([exits()[0].side, exits()[0].price, exits()[0].count], ['ask', 0.46, 10]);
+});
+
+test('exit-only lane: no entry goes out through it; a flat market waits for its price, a held one gets reduce-only exits only', async () => {
+  const { engine, recon, market, md, oms, cfg } = await setup({ historySec: 60 });
+  engine.balance = (await recon.run('startup'))!.balance;
+  const orders = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker);
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, 'volatility warming up');
+  assert.equal(orders().length, 0, 'flat: nothing');
+  // Held YES on the setup's 0.45 / 0.60 book (a full evaluation quotes here): no quote, no entry, no training trade.
+  oms.onFill({ tradeId: 'l2', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+  await engine.tick();
+  assert.equal(orders().length, 0, engine.status.get(market.ticker)!.notes.join(' | '));
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.56, size: 50 }], asks: [{ price: 0.58, size: 50 }] }, Date.now());
+  await engine.tick();
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(orders().length, 1);
+  assert.ok(orders().every((o) => o.reduceOnly && o.purpose === 'exit'), JSON.stringify(orders().map((o) => [o.side, o.purpose, o.reduceOnly])));
+  // That is end to end, and the lane's view has no order room either. The lane's plan itself (exitOnlyPlan, the engine's and
+  // the replay's) on a view WITH order room: no entry or quote and no model exit, where a full decision has both (the model
+  // values the YES at 0.20, so it would sell at the 0.45 bid and quote the NO).
+  const view: MarketView = {
+    ticker: market.ticker, pYes: 0.2, bestBid: { price: 0.45, size: 50 }, bestAsk: { price: 0.47, size: 50 }, position: 10, bankroll: 200,
+    maxOrderRiskUsd: 20, maxContracts: 100, minSidePrice: cfg.risk.minSidePrice, tauSec: 600, noEntryBeforeCloseSec: cfg.risk.noEntryBeforeCloseSec, fastMove: false,
+    tickSize: 0.01, fees: { takerMultiplier: 1, makerMultiplier: 0 }, nowSec: 1000, closeSec: 1600, entrySidePrice: 0.4, entryFeePerContract: 0,
+  };
+  const full = decide(view, cfg.strategy, {});
+  assert.ok(full.place.some((p) => p.reduceOnly && p.why.startsWith('bid 0.45 - fee > q')), JSON.stringify(full.place));
+  assert.ok(full.place.some((p) => !p.reduceOnly), JSON.stringify(full.place));
+  assert.deepEqual(decide(view, cfg.strategy, { armedOnly: true }).place, []);
+  assert.deepEqual(exitOnlyPlan(view, cfg.strategy, { why: 'test', exits: true }).plan.place, []);
+  // With the take-profit armed (best bid 0.56 since the fill, 0.50 now) the lane sells, and only that.
+  const armed = exitOnlyPlan({ ...view, bestBid: { price: 0.5, size: 50 }, bestAsk: { price: 0.52, size: 50 }, profitPeakSidePrice: 0.56 }, cfg.strategy, { why: 'test', exits: true }).plan.place;
+  assert.deepEqual(armed.map((p) => [p.side, p.price, p.count, p.purpose, p.reduceOnly, p.timeInForce]), [['ask', 0.5, 10, 'exit', true, 'immediate_or_cancel']]);
+  assert.match(armed[0].why, /^take-profit: \+0\.082/);
+});
+
+test('exit-only lane: the index goes stale mid-session; the quota floor armed earlier still sells the held position', async () => {
+  // EXIT_POLICY=hold: no take-profit or model exit, the quota floor alone.
+  const { engine, recon, market, md, oms } = await setup({ exitPolicy: 'hold' });
+  engine.balance = (await recon.run('startup'))!.balance;
+  oms.onFill({ tradeId: 'l3', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+  const exits = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker && o.reduceOnly);
+  const notes = () => engine.status.get(market.ticker)!.notes.join(' | ');
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.56, size: 50 }], asks: [{ price: 0.58, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, undefined, 'a full evaluation first');
+  // A floor armed by an earlier evaluation: $2.00 on the 10 held (8 ticks of cushion: sold below $1.20 of profit).
+  assert.equal((engine as unknown as { quotaFloors: { arm(t: string, p: number, usd: number): boolean } }).quotaFloors.arm(market.ticker, 10, 2), true);
+  (md.index.get('BTC') as unknown as { points: Array<{ ts: number }> }).points.forEach((p) => { p.ts -= 60_000; });
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, 'index stale');
+  assert.equal(exits().length, 0, `+$1.42 at 0.56 holds: ${notes()}`);
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(exits().length, 1, notes());
+  assert.deepEqual([exits()[0].side, exits()[0].price, exits()[0].count], ['ask', 0.5, 10]);
+});
+
+test('exit-only lane: an armed hunt stop sells below its stop; the take-profit stays off while hunting; at the default lock sale the take-profit sells a dip through the stop', async () => {
+  for (const c of ['off', 'defaults', 'hold'] as const) {
+    const { engine, recon, market, md, oms, cfg, audit } = await setup({ historySec: 60 });
+    engine.balance = (await recon.run('startup'))!.balance;
+    oms.onFill({ tradeId: 'l4', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+    const exits = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker && o.reduceOnly);
+    const notes = () => engine.status.get(market.ticker)!.notes.join(' | ');
+    // A hunt that activated in an earlier evaluation: entry value 0.45 + the 2c margin, its stop locked at 0.47. 'defaults': the
+    // configured lock sale (HUNT_LOCK_SALE=fair_value, judged at the first dip, HUNT_LOCK_SALE_ELSE=exit); 'hold': the same
+    // judgement with HUNT_LOCK_SALE_ELSE=hold.
+    const S = cfg.strategy;
+    const params = c === 'off' ? { lockSale: 'off' as const }
+      : c === 'defaults' ? { lockSale: S.huntLockSale, lockSaleElse: S.huntLockSaleElse, lockSaleAt: S.huntLockSaleAt }
+      : { lockSale: 'fair_value' as const, lockSaleElse: 'hold' as const };
+    if (c === 'defaults') assert.deepEqual([S.huntLockSale, S.huntLockSaleElse, S.huntLockSaleAt], ['fair_value', 'exit', 'trigger']);
+    const book = md.book(market.ticker);
+    book.applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+    const hunt = new ConfluenceRatchetExit({ targetMargin: 0.02, minConfluence: 2, ...params });
+    const on = hunt.update({ position: 10, qSide: 0.45, sideBid: 0.5, confluence: 3, book, now: Date.now(), tick: 0.01, fees: md.feesFor(market.ticker) });
+    assert.deepEqual([on.mode, on.stop], ['hunt', 0.47]);
+    (engine as unknown as { hunts: Map<string, ConfluenceRatchetExit> }).hunts.set(market.ticker, hunt);
+    await engine.tick();
+    assert.equal(engine.status.get(market.ticker)!.blocked, 'volatility warming up');
+    assert.equal(exits().length, 0, notes());
+    assert.match(notes(), /hunting: stop 0\.47/);
+    assert.doesNotMatch(notes(), /take-profit armed/);
+    // 0.46: under the stop, within the 1-tick slippage.
+    book.applySnapshot({ bids: [{ price: 0.46, size: 50 }], asks: [{ price: 0.48, size: 50 }] }, Date.now());
+    await engine.tick();
+    if (c === 'off') {
+      assert.equal(exits().length, 1, notes());
+      assert.deepEqual([exits()[0].side, exits()[0].price, exits()[0].count], ['ask', 0.46, 10]);
+    } else if (c === 'defaults') {
+      // The first dip is judged against the fair value: a hit sells at the bid, a miss hands the position to the normal exit,
+      // whose take-profit sells here (+0.042 now against a best of +0.082, its last tick above the 0.040 floor). Either way that
+      // sale stands, so the lane makes it; the judgement itself waits for the data and the hunt is left as it was.
+      assert.equal(exits().length, 1, notes());
+      assert.deepEqual([exits()[0].side, exits()[0].price, exits()[0].count], ['ask', 0.46, 10]);
+      assert.match(notes(), /the lock sale's judgement waits for the fair value/);
+      const d = audit.tail(50, 'decision').map((r) => r.data as { lane?: string; place?: Array<{ why: string }> }).find((r) => r.lane === 'exit_only');
+      assert.match(d!.place![0].why, /^take-profit: \+0\.042 a contract net of fees \(best \+0\.082, floor \+0\.040\)/);
+      assert.equal(hunt.active, true);
+    } else {
+      // A miss would hold to settlement: nothing sells until the judgement can be made.
+      assert.equal(exits().length, 0, notes());
+      assert.equal(hunt.active, true);
+    }
+  }
 });

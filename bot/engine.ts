@@ -33,6 +33,7 @@ import { EXIT_RATE_RESERVE, newRiskRoomUsd, RiskContext, RiskGateway, tennisLimi
 import type { Reconciler } from './recon/reconciler';
 import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid, OrderPlan, positionNetAtBid, ridesToSettlement, shareWindowSec } from './strategy/fairValueStrategy';
 import { ProfitPeaks } from './strategy/profitPeaks';
+import { exitOnlyPlan, exitOnlyView, heldSideBid } from './strategy/exitOnlyLane';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
 import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
 import type { SinuousEntryGate } from './strategy/sinuousEntry';
@@ -2101,18 +2102,22 @@ export class Engine {
     const lagHalt = this.feedLagHalt();
     if (lagHalt) return block(lagHalt);
     if (!book.isUsable(now, R.maxBookAgeMs)) return block('book not usable');
+    // Past the feed-lag and book-age checks a missing price input stops quoting, but a held position still gets its exits
+    // already armed that need no model (the exit-only lane, E06): about 2 minutes after every restart the volatility is
+    // warming up, and an index or strike can be late at any time.
+    const blockHeld = async (why: string) => { await block(why); await this.exitOnlyLane(m, st, book, why, now); };
     const spot = idx?.fresh(now, R.maxIndexAgeMs);
-    if (!spot) return block('index stale');
+    if (!spot) return blockHeld('index stale');
     const vol = idx!.vol();
-    if (!vol) return block('volatility warming up');
+    if (!vol) return blockHeld('volatility warming up');
     // The live line: the coin's settlement index a point a second, one curve per coin (bot/strategy/liveLine.ts).
     this.d.liveLines?.observe(m.asset, spot.ts, spot.value, vol.sigmaPerSqrtSec);
     const terms = md.termsFor(m);
-    if (!terms) return block('strike unknown');
+    if (!terms) return blockHeld('strike unknown');
     const strike = terms.strike ?? terms.cap!;
     const bid = book.bestBid();
     const ask = book.bestAsk();
-    if (!bid || !ask) return block('one-sided book');
+    if (!bid || !ask) return blockHeld('one-sided book');
 
     const tauSec = (m.closeTime - now) / 1000;
     // The entry curve follows every crypto market's book, quoted or not (bot/strategy/sinuousEntry.ts).
@@ -2139,7 +2144,7 @@ export class Engine {
     const volFallback = this.volFc.model?.validated ? 1 : cfg.strategy.volFallbackMult;
     const sigmaPricing = effectiveSigma(vol.sigmaPerSqrtSec, this.d.volProfile, m.asset, now, m.closeTime) * volMult * taVolMult * volFallback;
     const fv = priceContract(terms, { spot: spot.value, sigmaPerSqrtSec: sigmaPricing, tauSec, observedAvg: observed, observedCount, nu: model.params.tNu });
-    if (!fv) return block('fair value unavailable');
+    if (!fv) return blockHeld('fair value unavailable');
     const sess = sessionState(now);
     const sessRisk = sessionRiskFor(this.sessionRiskProfile(), sess);
     // Strategy weight: the Compensator's ramp on the coin's Librarian reading (bot/strategy/compensator.ts) when it is
@@ -2353,7 +2358,7 @@ export class Engine {
     // parameters are used; in live mode an unevaluated (or losing) hunt falls back to the fair-value exit,
     // unless the model's validation does not gate live orders (LIVE_ALLOW_UNVALIDATED_MODEL, the default).
     const vh = model.validatedHunt();
-    const huntAllowed = cfg.strategy.exitPolicy === 'confluence_ratchet' && (cfg.mode !== 'live' || cfg.liveAllowUnvalidated || vh !== undefined || gatePasses('kalshi', false));
+    const huntAllowed = this.huntAllowed();
     const huntNote = cfg.strategy.exitPolicy === 'confluence_ratchet' && !huntAllowed ? 'hunt mode not validated by the backtest: fair-value exit in live' : undefined;
     if (huntAllowed) {
       let h = this.hunts.get(m.ticker);
@@ -2660,6 +2665,81 @@ export class Engine {
     // Orders carry the decision probability (q_adj under target-EV sizing): the gateway's fee-net
     // edge collar and TCA's edge-at-decision then judge the same number the strategy traded on.
     for (const p of plan.place) await this.placeChecked(m, p, st.q ?? pYes, decisionId, undefined, killExit ? { killExit: true } : undefined);
+  }
+
+  /** Hunt mode may run (EXIT_POLICY=confluence_ratchet): in paper; in live once the backtest evaluated it, or while unvalidated
+   *  models may trade live (LIVE_ALLOW_UNVALIDATED_MODEL) or the Kalshi probation passes. */
+  private huntAllowed(): boolean {
+    const { cfg, model } = this.d;
+    return cfg.strategy.exitPolicy === 'confluence_ratchet' && (cfg.mode !== 'live' || cfg.liveAllowUnvalidated || model.validatedHunt() !== undefined || gatePasses('kalshi', false));
+  }
+
+  /** The exit-only lane (E06, bot/strategy/exitOnlyLane.ts). The Kalshi feed is current and the book fresh, but this market
+   *  cannot be priced this tick (`why`: the index stale, the volatility warming up after a restart, the strike unknown, a
+   *  one-sided book, no fair value). A held position still gets the exits already armed that need no model: the take-profit
+   *  trailing its best (its high-water mark follows the side's bid here as in a full evaluation), the quota floor
+   *  (PACER_FLOOR) and the hunt's armed stop. The final minute and the settle-in-profit rule hold them, and the exit curve's
+   *  gate judges them, as in a full evaluation. No model exit (the loser cut), no quota snipe and no entry goes out here; the
+   *  risk gateway judges the exit against the book's mid (the held side's touch on a one-sided book). Feed lag and a stale
+   *  book never reach this lane. Paper and live alike; the replay runs the same plan (research/backtest.ts). */
+  private async exitOnlyLane(m: ActiveMarket, st: MarketStatus, book: OrderBook, why: string, now: number): Promise<void> {
+    const { cfg, md, oms } = this.d;
+    const S = cfg.strategy;
+    const position = st.position;
+    if (Math.abs(position) < 1e-9) return;
+    const bid = book.bestBid(), ask = book.bestAsk();
+    const sideBid = heldSideBid(position, bid, ask);
+    if (sideBid === undefined) { st.notes = [`exit-only lane (${why}): no bid for the held side`]; return; }
+    const pos = oms.positions.get(m.ticker);
+    const fees = md.feesFor(m.ticker);
+    const view = exitOnlyView({
+      ticker: m.ticker, position, bid, ask, now, openTime: m.openTime, closeTime: m.closeTime, tickSize: m.tickSize, fees, strategy: S, risk: cfg.risk,
+      entrySidePrice: openSidePrice(pos), entryFeePerContract: openEntryFee(pos), profitPeakSidePrice: this.profitPeaks.update(m.ticker, position, sideBid),
+      takeProfitBenched: this.d.takeProfitBench?.benched,
+    })!;
+    const fairValue = view.pYes;
+    const lane = exitOnlyPlan(view, S, {
+      why, exits: S.exitPolicy !== 'hold', hunt: this.huntAllowed() ? this.hunts.get(m.ticker) : undefined,
+      pacerUsd: this.pacer.neededUsd(now), pacerFloor: S.pacer.floor === 'off' ? undefined : this.quotaFloors.floor(m.ticker, position),
+    });
+    const { plan, hunt } = lane;
+    if (lane.floorSale) this.d.audit.write('pacer', { event: 'snipe', ticker: m.ticker, why: lane.floorSale.why, count: lane.floorSale.count, price: lane.floorSale.price, lane: why, ...this.pacer.status(now) });
+    // The exit-in-profit curve's gate, as in a full evaluation (on its last reading: the curve is not fed this tick). The
+    // hunt's stop, a gap sale and the take-profit's last tick above its floor never wait.
+    const curve = this.d.curveExit;
+    if (curve && view.entrySidePrice !== undefined) {
+      const sign = position > 0 ? 1 : -1;
+      const entryFeePer = pos && Math.abs(pos.yes) > 1e-9 ? pos.fees / Math.abs(pos.yes) : 0;
+      const huntProtective = hunt?.event === 'triggered' || hunt?.event === 'profit_take_gap';
+      plan.place = plan.place.filter((p) => {
+        const sidePrice = sign > 0 ? p.price : Math.round((1 - p.price) * 1e4) / 1e4;
+        const g = curve.check(m.ticker, {
+          sidePrice, count: p.count, exitFeePer: orderFee(p.count, sidePrice, true, fees) / p.count,
+          entrySidePrice: view.entrySidePrice!, entryFeePer, protective: (p === lane.huntPlan && huntProtective) || p.protective === true,
+        }, now);
+        if (g.note) plan.notes.push(g.note);
+        return g.allow;
+      });
+    }
+    st.notes = plan.notes;
+    if (!plan.place.length) return;
+    const decisionId = crypto.randomUUID();
+    this.d.audit.write('decision', {
+      decisionId, ticker: m.ticker, model: this.d.model.id, lane: 'exit_only', blocked: why, tauSec: view.tauSec, bid: bid?.price ?? null, ask: ask?.price ?? null, position,
+      fairValue, ...(hunt?.event ? { huntEvent: hunt.event } : {}),
+      place: plan.place.map((p) => ({ side: p.side, price: p.price, count: p.count, purpose: p.purpose, edge: p.edge, why: p.why })),
+    });
+    // As in a full evaluation: an exit never trades against one of the bot's own resting orders, and a resting sell of the held
+    // side (the curve's, the hunt's wall ask; not reduce-only on Kalshi) is pulled so the two cannot sell more than is held.
+    const cancels = new Map<string, string>();
+    for (const p of plan.place) {
+      for (const o of this.crossingOwnOrders(m.ticker, p.side, p.price)) cancels.set(o.clientOrderId, 'would cross our own exit');
+      for (const o of oms.liveOrders()) {
+        if (o.ticker === m.ticker && o.side === p.side && o.purpose === 'exit' && o.timeInForce === 'good_till_canceled' && !o.cancelRequested && isLive(o)) cancels.set(o.clientOrderId, 'an exit crosses the book: resting sell pulled');
+      }
+    }
+    await Promise.all([...cancels].map(([id, reason]) => oms.cancel(id, reason)));
+    for (const p of plan.place) await this.placeChecked(m, p, fairValue, decisionId);
   }
 
   /** Conservative-only target scale in [0.85, 1] (blend mode with target scaling on), else 1. */

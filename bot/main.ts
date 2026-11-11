@@ -17,6 +17,7 @@ import { KalshiRest } from './kalshi/rest';
 import type { ExchangeGateway } from './kalshi/types';
 import { KalshiWs } from './kalshi/ws';
 import { MarketData, Recorder } from './marketdata/marketData';
+import { loadVolState, saveVolState, VOL_STATE_FILE } from './marketdata/volState';
 import { MetaModel } from './model/metaModel';
 import { loadVolProfile, type VolProfile } from './model/volSeasonality';
 import { loadSessionRiskFile } from './model/sessionRisk';
@@ -229,6 +230,15 @@ async function main(): Promise<void> {
   const ws = signer ? new KalshiWs(cfg.wsUrl, signer, indexIds) : undefined;
   if (!signer) log.warn('no Kalshi API key (KALSHI_KEY_ID + KALSHI_PRIVATE_KEY_PATH): order books are polled over anonymous REST, which Kalshi rate limits hard; add the key even for paper trading');
   const md = new MarketData(cfg, rest, ws, new Recorder(path.join(cfg.dataDir, 'recordings'), { gzip: cfg.autoTrain.recordingsGzipLive }));
+  // The settlement index's volatility estimate from the last run (E06, bot/marketdata/volState.ts): saved every 30 s and on
+  // shutdown, continued at start when recent, so a restart does not leave every coin unpriced for about 2 minutes.
+  const volStateFile = path.join(cfg.dataDir, VOL_STATE_FILE);
+  try {
+    const restored = loadVolState(volStateFile, md.index, Date.now());
+    if (restored.length) log.info('index volatility carried over from the last run', { assets: restored });
+  } catch (e) { log.warn(`index volatility state not loaded: ${String(e)}`); }
+  const saveVol = () => { try { saveVolState(volStateFile, md.index, Date.now()); } catch (e) { log.warn(`index volatility state not saved: ${String(e)}`); } };
+  setInterval(saveVol, 30_000).unref();
   // The rounding grid an earlier run learned from Kalshi's charged fees wins over KALSHI_BALANCE_PRECISION.
   setBalancePrecision(md.feeBook.precision());
   // Recordings grow by a day file per day, gzipped as they are written (or, a day begun plain, after midnight: about
@@ -686,6 +696,7 @@ async function main(): Promise<void> {
     autoTrain.stop();
     try { engine.saveSnnBlender(); await Promise.all(Object.values(engine.snn?.units ?? {}).map((u) => u!.host.stop())); } catch (e) { log.error('SNN checkpoint on shutdown failed', { error: String(e) }); }
     audit.write('shutdown', { sig });
+    saveVol();
     md.stop();
     server.close(() => process.exit(code));
     setTimeout(() => process.exit(code), 5000).unref();
