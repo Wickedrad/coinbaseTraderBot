@@ -1,0 +1,206 @@
+name: Oracle heat live reader
+
+# The live side of the OR-HM1 heat map (python/oracle/prereg/OR-HM1.md, Amendment 4): the reader that turns a window of
+# 1-minute bars into the tables' event keys (python/oracle/heat_live.py), its parity with the engine on real history,
+# and the traded pack (the ranked 15- and 60-minute calls of the direction league, nothing cut by a pass mark).
+# Coin minutes 2020-01-01 to 2025-12-31 only: the file is cut at 2026-01-01 UTC before anything computes on it and the
+# loader refuses a later minute. NEVER DOGE.
+#
+# Pushes drive it. Tags in the HEAD commit message:
+#   none                     the live reader tests only
+#   [heat-pack:<run id>]     traded_pack.json from that run's league on Drive (direction_all.csv.gz), committed to this
+#                            branch under research/oracle_heat/latest/
+#   [heat-parity:<run id>]   per coin: the engine's keys for the last 3 days of 2025 (fixture) against the live reader on
+#                            a window; summaries and fixtures committed under research/oracle_heat/parity/
+
+on:
+  push:
+    branches: [claude/project-thread-nvd096]
+    paths: ['.github/workflows/oracle-heat-live.yml', 'python/oracle/heat_live.py', 'python/oracle/heat_pack.py',
+            'python/oracle/heat_parity.py', 'python/oracle/tests/test_heat_live.py']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-heat-live-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  R: gdrive:kalshi-bot-archive
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      pack: ${{ steps.plan.outputs.pack }}
+      parity: ${{ steps.plan.outputs.parity }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt pytest
+      - name: Live reader tests
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -m pytest -q oracle/tests/test_heat_live.py 2>&1 | tail -30
+      - name: Plan
+        id: plan
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          for t in pack parity; do
+            v=$(grep -oE "\[heat-$t:[0-9]+\]" <<< "$MSG" | head -1 | grep -oE '[0-9]+' || true)
+            echo "$t=$v" >> "$GITHUB_OUTPUT"; echo "$t of run: ${v:-none}"
+          done
+
+  pack:
+    needs: test
+    if: needs.test.outputs.pack != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      SRC_RUN: ${{ needs.test.outputs.pack }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Pack
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/$SRC_RUN/league" data/league --include "/direction_all.csv.gz" --include "/summary.json"
+          ls -la data/league
+          mkdir -p out/pack
+          (cd python && python3 -m oracle.heat_pack --direction ../data/league/direction_all.csv.gz --summary ../data/league/summary.json \
+            --out ../out/pack/traded_pack.json --stamp "tables of run $SRC_RUN; pack job $GITHUB_RUN_ID at commit $GITHUB_SHA")
+          bash deploy/drive_lab.sh put "models/oracle-heat/runs/$SRC_RUN/league" out/pack
+      - name: Commit the pack to this branch (aggregates only; a bot push starts no workflow)
+        env:
+          BR: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p research/oracle_heat/latest
+          cp out/pack/traded_pack.json research/oracle_heat/latest/
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/oracle_heat/latest/traded_pack.json
+          git commit -q -m "Oracle heat map: traded pack of run $SRC_RUN (written by the oracle-heat-live workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::error::could not push the pack"; exit 1
+
+  parity:
+    needs: test
+    if: needs.test.outputs.parity != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    env:
+      A: ${{ matrix.asset }}
+      SRC_RUN: ${{ needs.test.outputs.parity }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute spot history (raw/perp-ta-history/<A>, read only) and the coin's meta.json
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          f="data/hist/binance-1m/$A/1m.csv"; [ -s "$f" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          # the cut: rows at or after HEAT_END (2026-01-01 UTC) are dropped here, before anything computes on them
+          end=$(cd python && python3 -c "from oracle.heat import HEAT_END; print(HEAT_END)")
+          [ "$end" = 1767225600000 ] || { echo "::error::HEAT_END is $end, not 2026-01-01"; exit 1; }
+          awk -F, -v e="$end" 'NR == 1 || ($1 + 0) < e' "$f" > "$f.cut"
+          mv "$f.cut" "$f"
+          last=$(awk -F, 'NR > 1 && NF > 1 { x = $1 + 0 } END { printf "%.0f", x }' "$f")
+          [ "$last" -lt "$end" ] || { echo "::error::a row at or after the cut is still in the file"; exit 1; }
+          echo "$A: $(du -h "$f" | cut -f1), last $last (cut at $end)"
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/$SRC_RUN/$A" "data/coin" --include "/meta.json"
+          [ -s data/coin/meta.json ] || { echo "::error::no meta.json for $A in run $SRC_RUN"; exit 1; }
+      - name: Parity (engine keys of the last 3 days of 2025 against the live reader on a window)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_parity --asset "$A" --csv "../data/hist/binance-1m/$A/1m.csv" \
+            --meta ../data/coin/meta.json --dom ../research/btcd_fractal/data --out "../out/parity/$A" | tail -80
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+          ls -la "../out/parity/$A"
+          (cd .. && bash deploy/drive_lab.sh put "models/oracle-heat/runs/$SRC_RUN/parity/$A" "out/parity/$A")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: heat-parity-${{ matrix.asset }}
+          path: out/parity/${{ matrix.asset }}
+          retention-days: 30
+
+  parity-commit:
+    needs: [test, parity]
+    if: ${{ !cancelled() && needs.test.outputs.parity != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: heat-parity-*
+          path: got
+      - name: Commit the parity summaries and fixtures (public price data, keys only)
+        env:
+          BR: ${{ github.ref_name }}
+          SRC_RUN: ${{ needs.test.outputs.parity }}
+        run: |
+          set -euo pipefail
+          dst=research/oracle_heat/parity
+          rm -rf "$dst"; mkdir -p "$dst"
+          for d in got/heat-parity-*; do [ -d "$d" ] || continue; a="${d#got/heat-parity-}"; mkdir -p "$dst/$a"; cp "$d"/parity.json "$d"/fixture.json.gz "$dst/$a/"; done
+          echo "$SRC_RUN $GITHUB_SHA parity_run=$GITHUB_RUN_ID" > "$dst/RUN"
+          du -sh "$dst"; ls "$dst"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$dst"
+          git commit -q -m "Oracle heat map: live reader parity of run $SRC_RUN (written by the oracle-heat-live workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::error::could not push the parity files"; exit 1

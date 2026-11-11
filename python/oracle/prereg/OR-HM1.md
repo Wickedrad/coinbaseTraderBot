@@ -255,3 +255,35 @@ league at the 15- and 60-minute horizon, one row per coin and event. The one tes
 the called side at the ask; a profit window is one full minute whose lowest bid stays at or above entry plus both fees
 plus 1c; the window rate against random entries in the same contracts and hours. Horizon and contract type are picked
 on Apr 18 to Jul 31, 2026; Aug 1 to Nov 4 is read once per pre-fixed batch.
+
+---
+
+# Amendment 4 (written 2026-11-11 16:06 UTC, Nov 11 11:06 AM EST, AFTER the league of run 43030435253 was read)
+
+**Why.** Steven, Nov 11 15:49 UTC (10:49 AM EST): today's curves go into the bot's paper and live trading. The lane
+that places the entries (another thread) needs the calls in a file it can load and a way to read the same levels live.
+The league result was known when this was written (19,055 event levels; 79% kept their build-years direction on 2025
+at 15 minutes, the no-signal twins 50%), so nothing below may be read as fixed in advance.
+
+1. **Traded pack** (`python/oracle/heat_pack.py`, `research/oracle_heat/latest/traded_pack.json`). Per coin, for the
+   15- and 60-minute horizon: the 40 event levels with the most heat on B and the 20 with the highest share right over
+   base (at least 0.2 windows per day). No pass mark filters a row. **Readings that are the same event under two
+   names are one row**: identical sample and identical numbers on both periods (RSI14 and CMO14; PERCENTB20/2,
+   PERCENTB20/2.5 and ZSCORE20; close minus the typical, median and weighted price). This was chosen after seeing that
+   the top rows held such copies; the literal top 10 of Amendment 3 (copies counted separately) stays in the file under
+   `batch_amendment3_literal`, and `batch10` marks the ten hottest with copies counted once. The no-signal twins'
+   scale for the same horizon is in the file (`chance`), and each row says whether its heat is above the twins' maximum.
+2. **Live reader** (`python/oracle/heat_live.py`). The engine's vocabulary, bucket and event rules on a window of
+   1-minute bars, with the zone edges and price step stored in the coin's meta.json. Default window 3,000 bars per
+   timeframe. Tests: on a synthetic history it reproduces the engine's codes exactly on the whole grid, and a window
+   gives the engine's keys (agreement at least 98.5%).
+3. **Parity job** (`python/oracle/heat_parity.py`, workflow `oracle-heat-live.yml`). Per coin it recomputes every
+   reading on 2020-2025 the engine's way, requires the zone edges to equal the ones in meta.json, writes the keys the
+   engine fires in the last 3 days of 2025 (the fixture) and compares the live reader on a window with them. It reads
+   coin minutes 2020-01-01 to 2025-12-31 only (same cut, same loader) and computes no label or return.
+
+**Known limits.** The tables were built on Binance spot bars; a live feed from another exchange will not give the
+same levels every time (an earlier check in this project: about 91% signal agreement between Binance and Coinbase
+1-minute bars). The hottest 15- and 60-minute calls are close relatives (1-minute readings at an extreme, fading), so
+ten of them are far fewer than ten independent bets. The pack is a map on coin price; the one test on Kalshi prices
+has not been run.
