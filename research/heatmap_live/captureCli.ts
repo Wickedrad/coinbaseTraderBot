@@ -20,7 +20,7 @@ export const MIN = 60_000, DAY = 86_400_000;
 export const CAPTURE = Object.freeze({
   assets: ['BTC', 'ETH', 'SOL', 'XRP'], warmDays: 100, maxFillMinutes: 180, pollMs: 10_000, hourlyStrikes: 4,
   /** Segments end a few minutes before these UTC boundaries so one is always uploaded before 14:30 UTC (9:30 AM EST). */
-  segmentHours: 3, segmentAnchorMinute: 14 * 60 + 25, minSegmentMinutes: 20,
+  segmentHours: 3, segmentAnchorMinute: 14 * 60 + 25, minSegmentMinutes: 20, kalshiSpacingMs: 125,
   kalshi: ['https://api.elections.kalshi.com/trade-api/v2', 'https://external-api.kalshi.com/trade-api/v2'],
   binance: 'https://data-api.binance.vision/api/v3',
 });
@@ -98,8 +98,10 @@ export async function runCapture(o: { models: string; weights: string; out: stri
       return { status: 200, data: await r.json() };
     } catch { counts.failures++; return { status: -1 }; }
   }
+  let slot = 0;
   async function kalshi(route: string) {
-    if (Date.now() < pause) await sleep(pause - Date.now());
+    // At most 8 public requests a second, whatever the number of workers (the 6-minute trial drew a few 429s without this).
+    slot = Math.max(Date.now(), slot, pause) + CAPTURE.kalshiSpacingMs; await sleep(slot - CAPTURE.kalshiSpacingMs - Date.now());
     const r = await getJson(CAPTURE.kalshi[kalshiHost] + route);
     if (r.status === 200 || r.status === 429 || r.status === 404) return r;
     kalshiHost = (kalshiHost + 1) % CAPTURE.kalshi.length; // one retry on the other public host
