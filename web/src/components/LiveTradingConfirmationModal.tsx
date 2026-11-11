@@ -85,7 +85,7 @@ export function LiveTradingConfirmationModal({ isOpen, onClose, onConfirmSuccess
                   <div className="flex flex-col gap-1">
                     <span className="font-bold text-crypto-danger uppercase tracking-wider text-xs">REAL FINANCIAL CAPITAL WARNING</span>
                     <span className="text-[11px] text-white/90 leading-normal">
-                      You are switching from simulated Paper Trading to your real <strong>Kalshi USD Cash Pool</strong>. The bot will place live orders on Kalshi (and on perpetuals and tennis where those are enabled) with real money.
+                      You are switching from simulated Paper Trading to your real <strong>Kalshi USD Cash Pool</strong>. The bot will place live orders on Kalshi's binary crypto contracts with real money. Perpetuals and tennis stay as bot.env has them: they trade real money only if PERP_TRADING / PERP_HEDGE=live or TENNIS_LIVE=true is set there, so check those lines before switching.
                     </span>
                   </div>
                 </div>
