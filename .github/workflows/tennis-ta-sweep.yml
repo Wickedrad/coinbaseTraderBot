@@ -240,6 +240,21 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out/parts
+          # Telemetry: memory, swap, disk and each node process's RSS every 2 min, copied to Drive every 10 min, so a
+          # runner that dies mid-sweep (run 43077154976's shard 6 lost its runner after 3 h 18 min with no log) leaves a
+          # trace at runs/<run>/telemetry/shard-<k>.txt.
+          TEL="gdrive:kalshi-bot-archive/models/tennis-ta/runs/$GITHUB_RUN_ID/telemetry/shard-$K.txt"
+          (
+            set +euo pipefail
+            n=0
+            while true; do
+              { date -u +%FT%TZ; free -m | awk 'NR>1 {print "  " $1, "total", $2, "used", $3, "avail", $NF}'; df -m / | awk 'NR==2 {print "  disk / used", $3, "MB avail", $4, "MB"}'
+                ps -o pid=,rss=,etimes=,args= -C node | awk '{printf "  node pid %s rss %d MB up %d min %s\n", $1, $2/1024, $3/60, $NF}'; } >> out/telemetry.txt
+              n=$((n + 1)); if [ $((n % 5)) = 1 ]; then rclone copyto out/telemetry.txt "$TEL" >/dev/null 2>&1 || true; fi
+              sleep 120
+            done
+          ) &
+          TEL_PID=$!
           # The same cut prep made (prep/plan.json subPlans); the report job checks every file against it.
           SUB=$(node --import tsx research/tennisTaSweep.ts subplan --units models/tennis-ta/state/units.json --units-list "$UNITS" --parts 4)
           echo "$SUB" | jq -r '.[] | "sub-slice \(.k): \(.from) to \(.to): \(.units | join(" "))"'
@@ -248,13 +263,15 @@ jobs:
           # splits each sub-slice's configs over P processes (--spec-part i/P, every P-th config); the merge command joins
           # the parts into the sub-slice's one file. Each config's results are the same either way.
           P=$(( 4 / NSUB )); [ "$P" -ge 1 ] || P=1
-          echo "$NSUB sub-slice(s) x $P configs part(s)"
+          # Node heaps stay within ~13 GB of the runner's 16 GB together (the OS, the runner and buffers keep the rest).
+          HEAP=$(( 13312 / (NSUB * P) )); [ "$HEAP" -le 3584 ] || HEAP=3584
+          echo "$NSUB sub-slice(s) x $P configs part(s), heap $HEAP MB each"
           pids=()
           for j in $(echo "$SUB" | jq -r '.[].k'); do
             F=$(echo "$SUB" | jq -r ".[$j].from"); T=$(echo "$SUB" | jq -r ".[$j].to"); U=$(echo "$SUB" | jq -r ".[$j].units | join(\",\")")
             for i in $(seq 0 $((P - 1))); do
               if [ "$P" -gt 1 ]; then PART=(--spec-part "$i/$P"); OUT="out/parts/a-s$STAGE-$K-$j.p$i.json.gz"; else PART=(); OUT="out/a-s$STAGE-$K-$j.json.gz"; fi
-              node --max-old-space-size=3584 --import tsx research/tennisTaSweep.ts run --replay data/replay --hist data/tennis/kalshi \
+              node --max-old-space-size="$HEAP" --import tsx research/tennisTaSweep.ts run --replay data/replay --hist data/tennis/kalshi \
                 --from "$F" --to "$T" --units-list "$U" --stage "$STAGE" --pool "$POOL" --family-b "$FAMILY_B" \
                 --units models/tennis-ta/state/units.json --fees prep/fees.json --request research/tennis-ta/sweep-request.json \
                 --data-version "$DATA_VERSION" --run "$GITHUB_RUN_ID" --k "$K" --j "$j" --shards "$SHARDS" --sub-shards "$NSUB" \
@@ -263,6 +280,9 @@ jobs:
             done
           done
           rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done
+          kill "$TEL_PID" 2>/dev/null || true
+          echo "==> telemetry (last 12 lines) <=="; tail -n 12 out/telemetry.txt || true
+          rclone copyto out/telemetry.txt "$TEL" >/dev/null 2>&1 || true
           # A failed process shows its error (the message sits above the stack, so 3 lines would show only the stack).
           for f in out/log-*.txt; do echo "==> $f <=="; if [ "$rc" != 0 ]; then grep -v '^\[tennis-ta\]' "$f" | head -n 40 || true; fi; tail -n 3 "$f"; done
           [ "$rc" = 0 ] || exit 1
