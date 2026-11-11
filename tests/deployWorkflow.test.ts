@@ -400,7 +400,7 @@ test('deploy scope job: research/ build configuration and deleted research/ sour
     const head = r.commit(files, 'Config (#5)');
     const s = r.scope({ runs: runs(head), deployedRuns: '898', before: r.deployed });
     const [file] = Object.keys(files);
-    assert.equal(s.outputs.deploy, 'true', file); assert.match(s.summary, new RegExp(`Bot code: \`${file.replace(/\./g, '\\.')}\``));
+    assert.equal(s.outputs.deploy, 'true', file); assert.ok(s.summary.includes(`Bot code: \`${file}\``), `${file} listed as bot code`);
     assert.doesNotMatch(s.summary, /Bundle check unavailable/, 'the bundle check ran');
   }
   // Deleting research/shared.ts makes bot/main.ts bundle research/shared/index.ts, which did not change: only the
