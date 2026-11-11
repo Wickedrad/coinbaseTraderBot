@@ -16,6 +16,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -285,7 +286,8 @@ def build(root, families_b=True, seed=7, pool='disc', stage='1', t0='2026-04-27T
                 'coverage': {'span': [frm, to], 'series': {s: {'first': day_of(table[0]['start'] - 2 * DAY), 'last': day_of(table[-1]['end'] + DAY),
                                                                'files': 120, 'spanDays': 30, 'withFile': 30, 'withTrades': 30, 'missing': []}
                                                            for s in ('KXATPMATCH', 'KXWTAMATCH')},
-                             'matches': len(matches), 'noPublishedStart': sum(1 for m in matches if not m['startPublished']), 'noPublishedStartEvents': []},
+                             'matches': len(matches), 'noPublishedStart': sum(1 for m in matches if not m['startPublished']), 'noPublishedStartEvents': [],
+                             'replaySkips': {'byDay': {frm: {'noCandles': 1, 'noResult': 0, 'dup': 0, 'lateClose': 0, 'startAfterClose': 2}}, 'unbuilt': [], 'scanDays': 4}},
                 'requestSha': 'req-sha', 'families': ['A', 'B'] if families_b else ['A'], 'sha': SHA, 'unitsSha': 'units-sha',
                 'stratum': 'H', 'stratumLabel': 'H0' if pool == 'old' else 'H', 'era': ERA, 'evidence': 'history, synthetic depth',
                 'episodeCols': COLS, 'sticks': [r[0] for r in runs_def if r[4]],
@@ -674,6 +676,8 @@ def test_registry_rows_need_the_registry_module():
     rows6 = read_registry(out6)
     assert rows6 and all(x['code_sha'] == SHA and x['raw']['report_sha'] == 'b' * 40 for x in rows6)
     assert f"Scored at {'b' * 10} (a rescore of the shards swept at {SHA[:10]})" in open(os.path.join(out6, 'report.md')).read()
+    # The replay's skip counts (meta.coverage.replaySkips) are in the run mechanics.
+    assert re.search(r"- Replay: over \d+ read replay day\(s\), \d+ stored traded market line\(s\) were not replayed \(\d+ without candles", open(os.path.join(out6, 'report.md')).read())
     out7 = os.path.join(root, 'out7')
     r7 = run_report(units, shards, out7, '--report-sha', SHA.upper(), boot=49)
     assert r7.returncode == 0, r7.stderr[-2000:]
@@ -2209,3 +2213,14 @@ if __name__ == '__main__':
             print(f'FAIL {name}: {type(ex).__name__}: {ex}')
     print(f'{len(tests) - failed} passed, {failed} failed')
     sys.exit(1 if failed else 0)
+
+
+def test_replay_skips_union_by_day():
+    """The replay's skip counts over the shards: the union of their read days (a day two shards read counts once)."""
+    c = lambda **k: {**{x: 0 for x in R.REPLAY_SKIP_KEYS}, **k}
+    metas = [{'coverage': {'replaySkips': {'byDay': {'2026-05-01': c(noCandles=1), '2026-05-02': c(dup=2)}, 'unbuilt': ['2026-04-30'], 'scanDays': 4}}},
+             {'coverage': {'replaySkips': {'byDay': {'2026-05-02': c(dup=2), '2026-05-03': c(lateClose=1, startAfterClose=5)}, 'unbuilt': ['2026-05-01'], 'scanDays': 4}}},
+             {'coverage': {}}]
+    out = R.replay_skips_of(metas)
+    assert out == {'noCandles': 1, 'noResult': 0, 'dup': 2, 'lateClose': 1, 'startAfterClose': 5, 'days': 3, 'unbuilt': ['2026-04-30'], 'scanDays': '4'}
+    assert R.replay_skips_of([{'coverage': {}}, {}]) is None

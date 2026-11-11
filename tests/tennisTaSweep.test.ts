@@ -6,12 +6,12 @@ import os from 'os';
 import path from 'path';
 import zlib from 'zlib';
 import { test } from 'node:test';
-import { REPLAY_VERSION, buildHistoryReplay } from '../research/history/historyReplay';
+import { REPLAY_VERSION, TENNIS_CLOSE_SCAN_DAYS, buildHistoryReplay, noTennisSkips, tennisBegin, tennisLineHead } from '../research/history/historyReplay';
 import { SignalStudy } from '../research/tennisTaSignals';
 import {
-  ARMS, DEV_TO, FULL_BOOK_FROM, H_HOLD, HARD_CUTOFF, HARNESS_RULES, HISTORY_FROM, HOLD_BATCH, HOLD_BATCH_MAX, HOLD_FOLDS, HOLD_FROM, LOCKBOX_FROM, OPENINGS_LEDGER,
+  ARMS, CLOSE_TAIL_DAYS, DEV_TO, FULL_BOOK_FROM, H_HOLD, HARD_CUTOFF, HARNESS_RULES, HISTORY_FROM, HOLD_BATCH, HOLD_BATCH_MAX, HOLD_FOLDS, HOLD_FROM, LOCKBOX_FROM, OPENINGS_LEDGER,
   POOLS, SIM_VERSION, SLAMS, START_ERA_FROM, SUB_SHARDS, armOf, assertPool, buildUnits, candleIndex, canonicalSpecs, checkShards, cmdRun, configKeys, configOf,
-  holdBatchFile, holdFold, holdFoldEdges, holdFolds, lockboxOf, lockboxes, mondayEdge, parseOpenings, parseRequest, partition, planUnits, poolInterval, poolOf,
+  holdBatchFile, holdFold, mergeSpecParts, replaySkipsOf, specPartOf, sumTennisSkips, holdFoldEdges, holdFolds, lockboxOf, lockboxes, mondayEdge, parseOpenings, parseRequest, partition, planUnits, poolInterval, poolOf,
   poolRefusal, poolSpans, poolUnitsOf, prepare, readShardMeta, readShardParts, recordedPoolOf, requestUnits, runTags, shardFile, slamUnits, specsFor, specsHash, stage1Specs,
   STICK_KEYS, tourOf, unitOf, unitPools, validateHoldBatch, validateStage2Specs, verifyUnits, windowArmsOf, windowBlockProblems,
   type Pool, type Prep, type ShardBlocks, type ShardMeta, type ShardOut, type SweepSpec, type Unit,
@@ -19,7 +19,7 @@ import {
 import { HIST_EDGES, ORDER_USD, PLACEBO_SEED, SETTLE_FRAC, TWINS, WINDOW_VERSION, WindowAgg, eligibleMinutes, minuteCandles } from '../research/tennisTaWindow';
 import { writeTaHistory, writeTaRecording } from './tennisTaFixture';
 
-const DAY = 86_400_000, H = 3_600_000;
+const DAY = 86_400_000, H = 3_600_000, MIN = 60_000;
 const REPO = path.join(path.dirname(new URL(import.meta.url).pathname), '..');
 const UNITS_FILE = path.join(REPO, 'models', 'tennis-ta', 'state', 'units.json');
 const unitsText = fs.readFileSync(UNITS_FILE, 'utf8');
@@ -788,7 +788,7 @@ test('checkShards: the full set passes; missing, duplicate, extra, mixed data ve
   assert.ok(checkShards(p, [...p.expected], req, '42').problems.some((x) => x.includes('requestSha')));
   const sv = all();
   sv[0].meta.simVersion = 'tennis-ta-sim/2';
-  assert.ok(checkShards(p, [...p.expected], sv, '42').problems.some((x) => x.includes('simVersion "tennis-ta-sim/2", expected "tennis-ta-sim/3"')));
+  assert.ok(checkShards(p, [...p.expected], sv, '42').problems.some((x) => x.includes(`simVersion "tennis-ta-sim/2", expected "${SIM_VERSION}"`)));
   // Another replay version (a slice built its days on another history replay) or another spec list.
   const rv = all();
   rv[0].meta.replayVersion = 7;
@@ -875,7 +875,7 @@ function dropStart(hist: string, day: string, event: string): void {
 
 const DISC_DAY = '2026-07-14'; // unit W-2026-07-13 (disc: start era, closing before DEV_TO)
 
-async function sliceRun(familyB: boolean): Promise<{ prep: Prep; out: ShardOut; file: string; replay: string; specs: string }> {
+async function sliceRun(familyB: boolean, extra: Record<string, string> = {}): Promise<{ prep: Prep; out: ShardOut; file: string; replay: string; specs: string }> {
   const dir = tmp(), hist = path.join(dir, 'hist'), replay = path.join(dir, 'replay');
   writeTaHistory(hist, 3, [DISC_DAY]); // three KXATPMATCH matches on Jul 14
   dropStart(hist, DISC_DAY, 'KXATPMATCH-20260714M3');
@@ -889,14 +889,96 @@ async function sliceRun(familyB: boolean): Promise<{ prep: Prep; out: ShardOut; 
   const file = path.join(dir, 'shards', prep.expected[0]);
   await cmdRun({ replay, hist: path.join(hist, 'kalshi'), series: 'KXATPMATCH', from: sub.from, to: sub.to, 'units-list': sub.units.join(','), stage: '2', specs,
     pool: 'disc', units: UNITS_FILE, 'family-b': String(familyB), request: reqFile, 'data-version': 'KXATPMATCH:sha256:test', run: '42', k: '0', j: '0', shards: '1',
-    'sub-shards': String(prep.subPlans[0].length), out: file });
+    'sub-shards': String(prep.subPlans[0].length), out: file, ...extra });
   return { prep, out: JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString('utf8')) as ShardOut, file, replay, specs };
 }
+
+test('merge: a sub-slice run in configs parts (--spec-part i/n) and merged is the file one process writes', async () => {
+  const whole = await sliceRun(true);
+  const p0 = await sliceRun(true, { 'spec-part': '0/2' }), p1 = await sliceRun(true, { 'spec-part': '1/2' });
+  // Part 0 runs configs 0 and 2 and family B; part 1 runs config 1 and no family B; both list every config in the meta.
+  assert.deepEqual(p0.out.runs.map((r) => r.id), [whole.out.runs[0].id, whole.out.runs[2].id]);
+  assert.deepEqual(p1.out.runs.map((r) => r.id), [whole.out.runs[1].id]);
+  assert.ok(p0.out.familyB && !p1.out.familyB && !p1.out.familyBWindow);
+  assert.deepEqual([p0.out.meta.specPart, p1.out.meta.specPart], [{ i: 0, n: 2 }, { i: 1, n: 2 }]);
+  assert.deepEqual([p0.out.meta.configs, p1.out.meta.configs, p1.out.meta.specsHash, p1.out.meta.families], [3, 3, whole.out.meta.specsHash, ['A', 'B']]);
+  const merged = mergeSpecParts([p1.out, p0.out]);
+  const strip = (o: ShardOut) => JSON.parse(JSON.stringify({ ...o, meta: { ...o.meta, ms: 0, written_utc: '', written_eastern: '', specParts: undefined } }));
+  assert.equal(merged.meta.specParts, 2);
+  assert.equal(merged.meta.specPart, undefined);
+  assert.deepEqual(strip(merged), strip(whole.out));
+  // A part on its own never passes the report gate; a merge refuses a missing, doubled or foreign part.
+  assert.ok(checkShards(whole.prep, [...whole.prep.expected], [{ file: whole.prep.expected[0], meta: p0.out.meta }], '42').problems.some((x) => x.includes('not merged')));
+  assert.equal(checkShards(whole.prep, [...whole.prep.expected], [{ file: whole.prep.expected[0], meta: merged.meta }], '42').problems.length, 0);
+  assert.throws(() => mergeSpecParts([p0.out]), /1 file\(s\) for a split into 2/);
+  assert.throws(() => mergeSpecParts([p0.out, p0.out]), /part 0 given twice/);
+  assert.throws(() => mergeSpecParts([p0.out, whole.out]), /not a part of a spec split/);
+  assert.throws(() => mergeSpecParts([p0.out, { ...p1.out, matchList: p1.out.matchList.slice(1) }]), /another matchList/);
+  assert.throws(() => mergeSpecParts([p0.out, { ...p1.out, meta: { ...p1.out.meta, specsHash: 'x' } }]), /specsHash/);
+  assert.equal(specPartOf(undefined), undefined);
+  assert.deepEqual(specPartOf('3/4'), { i: 3, n: 4 });
+  for (const bad of ['4/4', '1/0', '-1/2', 'a/b', '1']) assert.throws(() => specPartOf(bad), /expected i\/n/);
+});
+
+test('replay: a tennis match closing days after it begins is replayed; what cannot be replayed is counted by reason', async () => {
+  const dir = tmp(), hist = path.join(dir, 'hist'), replay = path.join(dir, 'replay');
+  writeTaHistory(hist, 3, [DISC_DAY]); // M1 11:00, M2 14:00, M3 17:00 UTC on Jul 14, each closing 150 min after its start
+  const kal = path.join(hist, 'kalshi', 'KXATPMATCH');
+  type Line = { ticker: string; event: string; openTime: number; closeTime: number; startTime?: number; result?: string; candles: Array<{ ts: number }> };
+  const read = (f: string) => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Line);
+  const lines = read(path.join(kal, `${DISC_DAY}.jsonl`)), tapes = read(path.join(kal, 'trades', `${DISC_DAY}.jsonl`)) as unknown as Array<{ ticker: string }>;
+  const put = (day: string, ls: unknown[], trades: unknown[] = []) => {
+    fs.writeFileSync(path.join(kal, `${day}.jsonl`), ls.map((x) => JSON.stringify(x)).join('\n') + '\n');
+    if (trades.length) fs.writeFileSync(path.join(kal, 'trades', `${day}.jsonl`), trades.map((x) => JSON.stringify(x)).join('\n') + '\n');
+  };
+  const ev = (e: string) => lines.filter((m) => m.event.endsWith(e));
+  // M1 postponed: it closes 3 days later (filed under Jul 17); M3 published a start after its close; M2-A stored twice
+  // (a shorter copy on Jul 15); a traded market without candles, one without a result, and one closing 6 days after it
+  // began (beyond the scan) beside them.
+  const late = Date.parse('2026-07-17T13:30:00Z');
+  put('2026-07-17', ev('M1').map((m) => ({ ...m, closeTime: late })), tapes.filter((t) => t.ticker.includes('M1-')));
+  const m3 = ev('M3').map((m) => ({ ...m, startTime: m.closeTime + 3_600_000 }));
+  const m2 = ev('M2');
+  const base = { series: 'KXATPMATCH', openTime: Date.parse('2026-07-13T12:00:00Z'), startTime: Date.parse('2026-07-14T19:00:00Z'), closeTime: Date.parse('2026-07-14T21:00:00Z'), strike: null, cap: null };
+  put(DISC_DAY, [...m2, ...m3, { ...base, ticker: 'KXATPMATCH-X-NC', event: 'KXATPMATCH-X', result: 'yes', candles: [] }, { ...base, ticker: 'KXATPMATCH-X-NR', event: 'KXATPMATCH-X', candles: m2[0].candles },
+    { ...base, ticker: 'KXATPMATCH-X-UT', event: 'KXATPMATCH-X', result: 'no', candles: [], noVolume: true }], tapes.filter((t) => !t.ticker.includes('M1-')));
+  put('2026-07-15', [{ ...m2[0], candles: m2[0].candles.slice(0, 20) }]);
+  put('2026-07-20', [{ ...base, ticker: 'KXATPMATCH-Y-LATE', event: 'KXATPMATCH-Y', closeTime: Date.parse('2026-07-20T12:00:00Z'), result: 'yes', candles: m2[0].candles }]);
+  await buildHistoryReplay({ historyDir: hist, outDir: replay, assets: [], fromDay: '2026-07-13', toDay: '2026-07-21', tennisSeries: ['KXATPMATCH'], log: () => {} });
+  const manifest = JSON.parse(fs.readFileSync(path.join(replay, 'replay-manifest.json'), 'utf8')) as { tennis: Record<string, number>; tennisSkips: Record<string, unknown> };
+  assert.equal(manifest.tennis[DISC_DAY], 6);
+  assert.deepEqual(manifest.tennisSkips[DISC_DAY], { noCandles: 1, noResult: 1, dup: 1, lateClose: 0, startAfterClose: 2 });
+  assert.deepEqual(manifest.tennisSkips['2026-07-20'], { ...noTennisSkips(), lateClose: 1 });
+  assert.deepEqual(manifest.tennisSkips['2026-07-15'], noTennisSkips());
+  const recs = (day: string) => zlib.gunzipSync(fs.readFileSync(path.join(replay, `md-${day}.jsonl.gz`))).toString('utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+  const d14 = recs(DISC_DAY);
+  const mk = (t: string) => d14.find((r) => r.k === 'market' && r.ticker === t);
+  assert.ok(mk(ev('M1')[0].ticker), 'the postponed match is listed on its begin day');
+  assert.equal(mk(ev('M1')[0].ticker)!.closeTime, late);
+  assert.equal(mk(m3[0].ticker)!.startTime, undefined, 'a start after the close is no start');
+  assert.equal(d14.filter((r) => r.k === 'market' && r.ticker === m2[0].ticker).length, 1, 'a ticker stored twice is replayed once');
+  // The longest line was kept: the Jul 14 line's quotes reach past the 20 minutes the Jul 15 copy has.
+  const lastBook = Math.max(...d14.filter((r) => r.k === 'book' && r.ticker === m2[0].ticker).map((r) => r.t as number));
+  assert.ok(lastBook > m2[0].candles[20].ts);
+  assert.ok(!d14.some((r) => String(r.ticker ?? '').startsWith('KXATPMATCH-X-') || String(r.ticker ?? '').startsWith('KXATPMATCH-Y-')));
+  assert.ok(recs('2026-07-17').some((r) => r.k === 'result' && r.ticker === ev('M1')[0].ticker), 'its result comes on its close day');
+  // The sweep's view: the manifest's counts over the days a slice reads, and the union over shards in the check summary.
+  const rs = replaySkipsOf(replay, '2026-07-12', '2026-07-21');
+  assert.deepEqual(rs.unbuilt, ['2026-07-12']);
+  assert.deepEqual(sumTennisSkips(Object.values(rs.byDay)), { noCandles: 1, noResult: 1, dup: 1, lateClose: 1, startAfterClose: 2 });
+  // The head reader and the begin rule the scan uses.
+  const h = tennisLineHead(JSON.stringify(lines[0]))!;
+  assert.deepEqual([h.ticker, h.firstCandle, h.untraded, h.result], [lines[0].ticker, lines[0].candles[0].ts, false, lines[0].result]);
+  assert.equal(tennisLineHead(JSON.stringify({ ...base, ticker: 'U', candles: [], noVolume: true }))!.untraded, true);
+  assert.equal(tennisBegin({ openTime: 0, closeTime: 100 * MIN, startTime: 60 * MIN, firstCandle: 10 * MIN }), 30 * MIN);
+  assert.equal(tennisBegin({ openTime: 0, closeTime: 100 * MIN, startTime: 100 * MIN, firstCandle: 50 * MIN }), 20 * MIN);
+  assert.equal(tennisBegin({ openTime: 40 * MIN, closeTime: 100 * MIN, firstCandle: 50 * MIN }), 40 * MIN);
+});
 
 test('run: one sub-slice end to end on the fixture writes a C4 shard file the report gate accepts; nostart labelled and counted', async () => {
   const { prep, out, file, replay, specs } = await sliceRun(false);
   const m = out.meta;
-  assert.equal(m.simVersion, 'tennis-ta-sim/3');
+  assert.equal(m.simVersion, 'tennis-ta-sim/4');
   assert.equal(m.replayVersion, REPLAY_VERSION);
   assert.equal(m.specsHash, prep.specsHash);
   assert.deepEqual(m.era, prep.era);
@@ -1452,7 +1534,16 @@ test('candleIndex: the window rule\'s view of every market the slice reads, pars
   // The span the slice reads: from its first day minus the lookback to its last day plus the close tail.
   assert.equal(candleIndex([series], '2026-07-17', '2026-07-21', 1).size, 0);
   assert.equal(candleIndex([series], '2026-07-15', '2026-07-21', 1).size, 6, 'the lookback day');
-  assert.equal(candleIndex([series], '2026-07-01', '2026-07-13', 1).size, 6, 'the close tail');
-  assert.equal(candleIndex([series], '2026-07-01', '2026-07-11', 1).size, 0);
+  // Closes read up to CLOSE_TAIL_DAYS after the slice's end (the replay's close scan plus a day): the markets close Jul 14.
+  const endBefore = (k: number) => new Date(Date.parse('2026-07-14') - k * DAY).toISOString().slice(0, 10);
+  assert.equal(CLOSE_TAIL_DAYS, TENNIS_CLOSE_SCAN_DAYS + 1);
+  assert.equal(candleIndex([series], '2026-07-01', endBefore(CLOSE_TAIL_DAYS - 1), 1).size, 6, 'the close tail');
+  assert.equal(candleIndex([series], '2026-07-01', endBefore(CLOSE_TAIL_DAYS), 1).size, 0);
+  // A ticker stored on two lines keeps the line with the most candles, whichever day file comes first.
+  const one = lines[0];
+  fs.writeFileSync(path.join(series, '2026-07-13.jsonl'), `${JSON.stringify({ ...one, candles: one.candles.slice(0, 3) })}\n${JSON.stringify({ ...lines[1], candles: [] })}\n`);
+  const idx2 = candleIndex([series], '2026-07-13', '2026-07-21', 1);
+  assert.deepEqual(idx2.get(one.ticker), minuteCandles(one.candles, one.closeTime));
+  assert.deepEqual(idx2.get(lines[1].ticker), minuteCandles(lines[1].candles, lines[1].closeTime));
   assert.equal(candleIndex([path.join(hist, 'kalshi', 'NONE')], '2026-07-13', '2026-07-21').size, 0);
 });

@@ -12,7 +12,9 @@
 //   subplan --units F --units-list U,U [--parts 4]               a shard's sub-slices (JSON; the same cut prep made)
 //   run     --replay DIR --from D --to D --units-list U,U --stage 1|2|hold --pool disc|old|hold --units F --out F.json.gz
 //           [--fees F] [--hist DIR] [--family-b true] [--data-version S] [--request F] [--run ID] [--k K --j J
-//           --shards N --sub-shards M] [--specs F] [--stage2-specs F]   (--hist also feeds the one test's candle index)
+//           --shards N --sub-shards M] [--specs F] [--stage2-specs F] [--spec-part i/n]   (--hist also feeds the one
+//           test's candle index; --spec-part runs every n-th config from the i-th, family B in part 0 only)
+//   merge   --parts F,F,... --out F.json.gz   the n parts of one sub-slice's spec split joined into its one shard file
 //   coverage --hist DIR --from D --to D [--series S,S] [--stratum H|R]   the history is complete over a span (exit 1 if not)
 //   check   --dir DIR --listing F --prep F --run ID [--out F]   every planned shard file present once, one data version, the
 //           history complete over every slice (download listing and trade tapes) and every file's window block whole
@@ -57,7 +59,7 @@ import zlib from 'zlib';
 import { execSync } from 'child_process';
 import { loadConfig, paperEnv } from '../bot/config';
 import type { FeeSchedule } from '../bot/fees';
-import { REPLAY_VERSION, buildHistoryReplay } from './history/historyReplay';
+import { REPLAY_VERSION, TENNIS_CLOSE_SCAN_DAYS, buildHistoryReplay, noTennisSkips, type TennisSkips } from './history/historyReplay';
 import type { KalshiCandle } from './history/kalshiHistory';
 import { FEES, runSweep, type MatchInfo, type SimRun, type SimSpec, type SweepOpts } from './tennisTaSim';
 import { SignalStudy } from './tennisTaSignals';
@@ -67,7 +69,7 @@ import {
   type WindowInstance, type WindowRow,
 } from './tennisTaWindow';
 
-export const SIM_VERSION = 'tennis-ta-sim/3';
+export const SIM_VERSION = 'tennis-ta-sim/4';
 const DAY = 86_400_000;
 const WEEK = 7 * DAY;
 /** History and inventory stop here (Nov 4 9:00 PM EST). */
@@ -100,8 +102,11 @@ export const LOOKBACK_DAYS = 7;
 /** Days before a slice's first day whose market lines the sim reads on each stratum (runSweep in research/tennisTaSim.ts):
  *  1 on H (the workflow builds replay days from that day on), LOOKBACK_DAYS on R. */
 export const lookbackOf = (stratum: 'H' | 'R'): number => (stratum === 'R' ? LOOKBACK_DAYS : 1);
-/** Days after a slice's last day in which its matches may still close (the shard job builds replay days this far too). */
-export const CLOSE_TAIL_DAYS = 2;
+/** Days after a slice's end in which its matches may still close: the replay replays a market closing up to
+ *  TENNIS_CLOSE_SCAN_DAYS days after the day it begins, and one more day is kept as before. The sim reads replay days
+ *  through the slice's end plus CLOSE_TAIL_DAYS - 1 (SweepOpts.tailDays), the candle index and the coverage check read
+ *  closes this far, and the shard job builds replay days through TO + CLOSE_TAIL_DAYS. */
+export const CLOSE_TAIL_DAYS = TENNIS_CLOSE_SCAN_DAYS + 1;
 /** Sub-slices per shard job (one process per core of a GitHub runner). */
 export const SUB_SHARDS = 4;
 /** Family B (sterile event study) settings for every sweep that carries it. */
@@ -1079,6 +1084,11 @@ export interface Coverage {
   pools?: Partial<Record<Pool, { matches: number; units: number }>>;
   /** Tennis match tickers with book or trade lines but no market line in what the sim read (lost matches). */
   lostTickers?: number;
+  /** H: the stored tennis market lines the replay could not replay, per replay day the slice read (its lookback day and
+   *  owned days), by reason (research/history/historyReplay.ts TennisSkips, from the replay manifest; a day missing
+   *  from the manifest is listed in `unbuilt`). The report sums the union of the shards' days (a day read by two
+   *  slices counts once). */
+  replaySkips?: { byDay: Record<string, TennisSkips>; unbuilt: string[]; scanDays: number };
   /** The sim's feed bookkeeping (SweepResult): R feed outages (gaps, their ms, those found only by a resubscribe: blind
    *  days, or reconnects the beats masked), day files that show or hide the feed's liveness, and grids not delivered to
    *  family B because their day was already released. */
@@ -1135,14 +1145,18 @@ export const tourOf = (series: string): 'ATP' | 'WTA' => (/WTA/i.test(series) ? 
  *  candle dropped, sorted, ending at or before the market's close). The sim asks for them by ticker (SweepOpts.candlesOf)
  *  when a window arm takes an instance or draws its twins. */
 export function candleIndex(dirs: string[], from: string, to: string, lookbackDays = 1, stats?: MinuteCandleStats): Map<string, MinuteCandles> {
-  const index = new Map<string, MinuteCandles>();
+  const index = new Map<string, MinuteCandles>(), seen = new Map<string, number>();
   const needFrom = Date.parse(from) - lookbackDays * DAY, needTo = Math.min(Date.parse(to) + CLOSE_TAIL_DAYS * DAY, HARD_CUTOFF);
   for (const dir of dirs) for (let t = needFrom; t < needTo; t += DAY) {
     eachLine(path.join(dir, `${dayOf(t)}.jsonl`), (line) => {
       let m: { ticker?: unknown; closeTime?: unknown; candles?: unknown };
       try { m = JSON.parse(line); } catch { return; }
-      if (typeof m.ticker !== 'string' || !m.ticker || typeof m.closeTime !== 'number' || !Array.isArray(m.candles) || index.has(m.ticker)) return;
-      index.set(m.ticker, minuteCandles(m.candles as KalshiCandle[], m.closeTime, stats));
+      if (typeof m.ticker !== 'string' || !m.ticker || typeof m.closeTime !== 'number' || !Array.isArray(m.candles)) return;
+      // A ticker stored on two lines keeps the one with the most candles (the replay replays that line too).
+      const had = seen.get(m.ticker);
+      if (had !== undefined && had >= m.candles.length) return;
+      seen.set(m.ticker, m.candles.length);
+      index.set(m.ticker, minuteCandles(m.candles as KalshiCandle[], m.closeTime, had === undefined ? stats : undefined));
     });
   }
   return index;
@@ -1278,6 +1292,28 @@ export function poolCounts(matchList: Array<{ pool: Pool; unit?: string }>, pool
   return out;
 }
 
+/** `--spec-part i/n` (0 <= i < n): the part of a spec split this process runs; undefined when not given. */
+export function specPartOf(v: string | undefined): { i: number; n: number } | undefined {
+  if (v === undefined || v === '') return undefined;
+  const m = /^(\d+)\/(\d+)$/.exec(v);
+  const i = m ? Number(m[1]) : NaN, n = m ? Number(m[2]) : NaN;
+  if (!(Number.isInteger(i) && Number.isInteger(n) && n >= 1 && i >= 0 && i < n)) throw new Error(`--spec-part ${v}: expected i/n with 0 <= i < n`);
+  return { i, n };
+}
+
+/** The replay manifest's tennis skip counts (research/history/historyReplay.ts TennisSkips) for the replay days [from, to)
+ *  (Coverage.replaySkips); days the manifest does not list are returned as unbuilt. */
+export function replaySkipsOf(replayDir: string, from: string, to: string): { byDay: Record<string, TennisSkips>; unbuilt: string[]; scanDays: number } {
+  let skips: Record<string, TennisSkips> = {};
+  try { skips = (JSON.parse(fs.readFileSync(path.join(replayDir, 'replay-manifest.json'), 'utf8')) as { tennisSkips?: Record<string, TennisSkips> }).tennisSkips ?? {}; } catch { /* no manifest */ }
+  const byDay: Record<string, TennisSkips> = {}, unbuilt: string[] = [];
+  for (let t = Date.parse(from); t < Date.parse(to); t += DAY) {
+    const d = dayOf(t);
+    if (skips[d]) byDay[d] = { ...noTennisSkips(), ...skips[d] }; else unbuilt.push(d);
+  }
+  return { byDay, unbuilt, scanDays: TENNIS_CLOSE_SCAN_DAYS };
+}
+
 /** One sub-slice (the run command): sweep its units, write its shard file (C4). */
 export async function cmdRun(a: Args): Promise<void> {
   const unitsText = fs.readFileSync(a.units, 'utf8');
@@ -1293,9 +1329,15 @@ export async function cmdRun(a: Args): Promise<void> {
   const specsPath = a.specs ?? specsPathOf(stage);
   // Stage hold runs the batch's configs' |window and |F1 arms only (Amendment 4 item 7); the batch file's hash is recorded.
   const batch = stage === 'hold' ? holdBatchFile(specsPath, a['stage2-specs']) : undefined;
-  const specs = batch ? batch.specs : specsFor(stage, stratum, specsPath, a['stage2-specs']);
-  const sticks = new Set(specs.filter((s) => s.stick).map((s) => s.id));
-  const windowArms = specs.filter((s) => s.window).map((s) => s.id);
+  const allSpecs = batch ? batch.specs : specsFor(stage, stratum, specsPath, a['stage2-specs']);
+  // --spec-part i/n: this process runs every n-th spec from the i-th (a sub-slice's configs spread over the runner's
+  // cores when it has fewer sub-slices than cores; the merge command joins the parts into the sub-slice's one file).
+  // Each config's results do not depend on the others it runs beside (its own state, its own seeds).
+  const part = specPartOf(a['spec-part']);
+  const specs = part ? allSpecs.filter((_, i) => i % part.n === part.i) : allSpecs;
+  if (!specs.length) throw new Error(`--spec-part ${a['spec-part']}: no config in this part of ${allSpecs.length}`);
+  const sticks = new Set(allSpecs.filter((s) => s.stick).map((s) => s.id));
+  const windowArms = allSpecs.filter((s) => s.window).map((s) => s.id);
   // stick: true, window: true and the spec's offsetMs on each runs[] entry (the sim's run carries none of them).
   const tags = runTags(specs);
   const byId = new Map(units.map((u) => [u.id, u]));
@@ -1305,8 +1347,10 @@ export async function cmdRun(a: Args): Promise<void> {
   if (!unitIds.length) throw new Error(`no unit to sweep in [${a.from}, ${a.to})`);
   const unitSet = new Set(unitIds);
   const feeAt = a.fees ? feeLookup(JSON.parse(fs.readFileSync(a.fees, 'utf8'))) : undefined;
-  const familyB = a['family-b'] === 'true';
-  if (familyB && stage === 'hold') throw new Error('family B is a discovery design, never run on H-HOLD (stage hold reads family A\'s batch only, Amendment 4 item 7)');
+  const familyBAsked = a['family-b'] === 'true';
+  // Family B is one study of the slice's grids, whatever configs run: only part 0 of a spec split runs it.
+  const familyB = familyBAsked && (!part || part.i === 0);
+  if (familyBAsked && stage === 'hold') throw new Error('family B is a discovery design, never run on H-HOLD (stage hold reads family A\'s batch only, Amendment 4 item 7)');
   // The stratum is given up front: a slice with no owned two-market match has no grid to take it from, and exportCells
   // refuses a study without one.
   const study = familyB ? new SignalStudy({ ...FAMILY_B, stratum, ...(stratum === 'H' ? { bars: H_BARS } : {}) }) : undefined;
@@ -1335,7 +1379,7 @@ export async function cmdRun(a: Args): Promise<void> {
   const practice = new Map<string, string>();
   const t0 = Date.now();
   const sweepOpts: SweepOpts & { candlesOf?: (ticker: string) => MinuteCandles | undefined } = {
-    dir: a.replay, fromDay: a.from, toDay: a.to, lookbackDays: lookback, stratum, specs, feeAt,
+    dir: a.replay, fromDay: a.from, toDay: a.to, lookbackDays: lookback, tailDays: CLOSE_TAIL_DAYS - 1, stratum, specs, feeAt,
     candlesOf: (ticker) => candles.get(ticker),
     admit: (m) => {
       const u = unitOf(m.start, units);
@@ -1389,6 +1433,7 @@ export async function cmdRun(a: Args): Promise<void> {
     span: [a.from, a.to],
     series: seriesCov,
     matches: matchList.length, noPublishedStart: noStart.length, noPublishedStartEvents: noStart.slice(0, 50).map((m) => m.event), pools, lostTickers: r.lost,
+    ...(stratum === 'H' ? { replaySkips: replaySkipsOf(a.replay, dayOf(Date.parse(a.from) - lookback * DAY), a.to) } : {}),
     feed: { gaps: r.gaps, gapMs: r.gapMs, blindGaps: r.blindGaps, liveDays: r.liveDays, blindDays: r.blindDays, lateGrids: r.lateGrids },
   };
   let gridStartMismatch = 0;
@@ -1431,13 +1476,13 @@ export async function cmdRun(a: Args): Promise<void> {
       simVersion: SIM_VERSION, stage, pool, run: a.run ?? process.env.GITHUB_RUN_ID ?? 'local',
       k: Number(a.k ?? 0), j: Number(a.j ?? 0), shards: Number(a.shards ?? 1), subShards: Number(a['sub-shards'] ?? 1),
       from: a.from, to: a.to, units: unitIds, dataVersion: a['data-version'] ?? 'unversioned', coverage,
-      requestSha: a.request ? sha256(fs.readFileSync(a.request)) : 'none', families: familyB ? ['A', 'B'] : ['A'],
+      requestSha: a.request ? sha256(fs.readFileSync(a.request)) : 'none', families: familyBAsked ? ['A', 'B'] : ['A'],
       // Bookkeeping beyond C4 (sim_version is the name the report read before C4).
       sim_version: SIM_VERSION, replayVersion: REPLAY_VERSION, sha: gitSha(), unitsSha: sha256(unitsText), stratum, stratumLabel: stratumLabelOf(pool, stratum), era: eraEdges(),
       holdFolds: holdFolds(), lookbackDays: lookback,
       evidence: stratum === 'R' ? 'recorded books' : pool === 'old' ? 'history before the start era (H0: no published start, older settlement rule), synthetic depth'
         : pool === 'hold' ? 'history, H-HOLD (the one read: a batch read once), synthetic depth' : 'history, H-DEV, synthetic depth',
-      doge_excluded: true, configs: specs.length, specsHash: specsHash(specs),
+      doge_excluded: true, configs: allSpecs.length, specsHash: specsHash(allSpecs), ...(part ? { specPart: part } : {}),
       sticks: [...sticks], poolSpans: poolSpans(units, pool, HARD_CUTOFF, unitSet),
       // The one test (Amendment 4, contract C12): the 'window' block's version, its arms, instances and rows; the
       // candle index the instances were judged on; stage hold's batch.
@@ -1461,7 +1506,7 @@ export async function cmdRun(a: Args): Promise<void> {
   };
   fs.mkdirSync(path.dirname(path.resolve(a.out)), { recursive: true });
   fs.writeFileSync(a.out, zlib.gzipSync(JSON.stringify(out)));
-  console.log(`[tennis-ta] wrote ${a.out}: ${r.matches} matches (${noStart.length} without a published start; pools ${Object.entries(pools).map(([k, c]) => `${k} ${c!.matches}`).join(', ')}), ${unitIds.length} unit(s), ${specs.length} configs${exportB ? `, family B ${exportB.cells.length} cells` : ''}, ${r.decisions} decisions, window ${windowArms.length} arm(s) / ${windowInstances} instance(s) / ${window.rows.length} row(s) over ${candles.size} candle market(s) (${candleStats.candles} minute(s), ${candleStats.noLow} without a stored low), ${((Date.now() - t0) / 60_000).toFixed(1)} min`);
+  console.log(`[tennis-ta] wrote ${a.out}${part ? ` (configs part ${part.i} of ${part.n})` : ''}: ${r.matches} matches (${noStart.length} without a published start; pools ${Object.entries(pools).map(([k, c]) => `${k} ${c!.matches}`).join(', ')}), ${unitIds.length} unit(s), ${specs.length} configs${exportB ? `, family B ${exportB.cells.length} cells` : ''}, ${r.decisions} decisions, window ${windowArms.length} arm(s) / ${windowInstances} instance(s) / ${window.rows.length} row(s) over ${candles.size} candle market(s) (${candleStats.candles} minute(s), ${candleStats.noLow} without a stored low), ${((Date.now() - t0) / 60_000).toFixed(1)} min`);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1647,6 +1692,9 @@ export interface CheckSummary {
   /** Per series over every slice: history day files, the download's complete listing (one tarball, so one value) and
    *  traded markets without a tape (summed over slices; neighbouring slices read a few of the same days). */
   series: Record<string, { first?: string; last?: string; spanDays: number; missing: string[]; listed?: { from: string; to: string }; tapesMissing: number }>;
+  /** H: the stored market lines the replay could not replay over the union of the replay days the slices read (a day
+   *  read by two slices counts once), by reason, and the read days the replay manifest did not list (Coverage.replaySkips). */
+  replaySkips?: TennisSkips & { days: number; unbuilt: string[] };
 }
 
 /** Every problem with a run's shard set: `listing` = the names in the run's Drive shard folder (one line each, as
@@ -1700,6 +1748,8 @@ export function checkShards(prep: Prep, listing: string[], metas: Array<{ file: 
     want('families', meta.families, prep.familyB ? ['A', 'B'] : ['A']);
     want('shards', meta.shards, prep.plan.length);
     if (meta.unitsSha !== undefined) want('unitsSha', meta.unitsSha, prep.unitsSha);
+    // A part of a spec split is joined into its sub-slice's file (the merge command) before the file is kept.
+    if (meta.specPart !== undefined) p.push(`${file}: configs part ${JSON.stringify(meta.specPart)} of a spec split, not merged into its sub-slice's file`);
     const m = /^a-s(1|2|hold)-(\d+)-(\d+)\.json\.gz$/.exec(file);
     if (!m) { p.push(`${file}: not a shard file name`); continue; }
     const k = Number(m[2]), j = Number(m[3]);
@@ -1738,6 +1788,18 @@ export function checkShards(prep: Prep, listing: string[], metas: Array<{ file: 
     t.matches += c?.matches ?? 0;
     t.units += c?.units ?? 0;
   }
+  // Replay skips over the union of the read days (one value per day: every slice built the day from the same history).
+  const skipDays = new Map<string, TennisSkips>(), unbuilt = new Set<string>();
+  let anySkips = false;
+  for (const meta of ms) {
+    const rs = meta.coverage?.replaySkips;
+    if (!rs) continue;
+    anySkips = true;
+    for (const [d, c] of Object.entries(rs.byDay ?? {})) if (!skipDays.has(d)) skipDays.set(d, c);
+    for (const d of rs.unbuilt ?? []) unbuilt.add(d);
+  }
+  for (const d of skipDays.keys()) unbuilt.delete(d);
+  const replaySkips = anySkips ? { ...sumTennisSkips([...skipDays.values()]), days: skipDays.size, unbuilt: [...unbuilt].sort() } : undefined;
   const first = ms[0];
   return {
     problems: p,
@@ -1747,7 +1809,70 @@ export function checkShards(prep: Prep, listing: string[], metas: Array<{ file: 
       families: prep.familyB ? ['A', 'B'] : ['A'], shards: prep.plan.length, subSlices: prep.expected.length, units: unitSeen.size,
       matches: ms.reduce((s, m) => s + (m.coverage?.matches ?? 0), 0), noPublishedStart: ms.reduce((s, m) => s + (m.coverage?.noPublishedStart ?? 0), 0), pools, series,
       windowArms: windowArmsOf(prep.specIds ?? []).length, windowBlocks, windowInstances: ms.reduce((s, m) => s + (isCount(m.windowInstances) ? m.windowInstances : 0), 0),
+      ...(replaySkips ? { replaySkips } : {}),
     },
+  };
+}
+
+/** TennisSkips summed. */
+export function sumTennisSkips(xs: TennisSkips[]): TennisSkips {
+  const t = noTennisSkips();
+  for (const x of xs) for (const k of Object.keys(t) as Array<keyof TennisSkips>) t[k] += Number.isFinite(x?.[k]) ? x[k] : 0;
+  return t;
+}
+
+/** The merge command: the parts of one sub-slice's spec split (cmdRun --spec-part i/n, each a shard file of the same
+ *  slice with every n-th config) joined into the file one process running every config would have written. The parts
+ *  must be the n parts of one split of one slice (same run, k, j, span, units, specs, data and code) with the same
+ *  matches (the sim is deterministic, so the same matchList); runs and window rows are interleaved back into spec order,
+ *  family B and its rows come from part 0 (the only part that runs it), decisions and window instances are summed. */
+export function mergeSpecParts(parts: ShardOut[]): ShardOut {
+  if (!parts.length) throw new Error('merge: no part');
+  const sp = parts.map((x) => x.meta.specPart as { i: number; n: number } | undefined);
+  if (sp.some((x) => !x)) throw new Error('merge: a file is not a part of a spec split (no meta.specPart)');
+  const n = sp[0]!.n;
+  if (sp.some((x) => x!.n !== n) || parts.length !== n) throw new Error(`merge: ${parts.length} file(s) for a split into ${sp.map((x) => x!.n).join('/')}`);
+  const byI = new Map<number, ShardOut>();
+  for (const x of parts) { const i = (x.meta.specPart as { i: number }).i; if (byI.has(i)) throw new Error(`merge: part ${i} given twice`); byI.set(i, x); }
+  const ordered = Array.from({ length: n }, (_, i) => { const x = byI.get(i); if (!x) throw new Error(`merge: part ${i} of ${n} missing`); return x; });
+  const p0 = ordered[0];
+  const same = ['simVersion', 'replayVersion', 'stage', 'pool', 'run', 'k', 'j', 'shards', 'subShards', 'from', 'to', 'units', 'dataVersion', 'requestSha', 'families', 'sha', 'unitsSha',
+    'specsHash', 'configs', 'windowVersion', 'windowArms', 'batchHash', 'matches', 'oneLegged', 'unresolved', 'candleMarkets'];
+  for (const x of ordered.slice(1)) {
+    for (const k of same) if (JSON.stringify(x.meta[k]) !== JSON.stringify(p0.meta[k])) throw new Error(`merge: part ${(x.meta.specPart as { i: number }).i} has ${k} ${JSON.stringify(x.meta[k])}, part 0 ${JSON.stringify(p0.meta[k])}`);
+    if (JSON.stringify(x.matchList) !== JSON.stringify(p0.matchList)) throw new Error(`merge: part ${(x.meta.specPart as { i: number }).i} has another matchList than part 0`);
+    const evs = x.window.events.map((e) => JSON.stringify(e));
+    if (p0.window.events.length < evs.length || evs.some((e, j) => e !== JSON.stringify(p0.window.events[j]))) throw new Error(`merge: part ${(x.meta.specPart as { i: number }).i} has other window events than part 0`);
+    if (x.familyB || x.familyBWindow) throw new Error(`merge: part ${(x.meta.specPart as { i: number }).i} carries family B (only part 0 runs it)`);
+  }
+  // Round robin: spec index = position * n + part.
+  const runs: ShardOut['runs'] = [];
+  for (let pos = 0; ordered.some((x) => pos < x.runs.length); pos++) for (const x of ordered) if (pos < x.runs.length) runs.push(x.runs[pos]);
+  if (runs.length !== Number(p0.meta.configs)) throw new Error(`merge: ${runs.length} run(s) in the parts, the split's configs ${JSON.stringify(p0.meta.configs)}`);
+  const ids = new Set(runs.map((r) => r.id));
+  if (ids.size !== runs.length) throw new Error('merge: a config is in two parts');
+  // Window rows in the merged runs' order (both legs of an arm, underdog first, as WindowAgg lists them), sized to part 0's events.
+  const E = p0.window.events.length;
+  const pad = (a: number[]) => (a.length >= E ? a : [...a, ...new Array<number>(E - a.length).fill(0)]);
+  const rowsOf = new Map<string, WindowRow[]>();
+  for (const x of ordered) for (const r of x.window.rows) {
+    const rr = { ...r, n: pad(r.n), w: pad(r.w), tn: pad(r.tn), tw: pad(r.tw) };
+    const l = rowsOf.get(r.id); if (l) l.push(rr); else rowsOf.set(r.id, [rr]);
+  }
+  const rows: WindowRow[] = [];
+  for (const r of runs) { const l = rowsOf.get(r.id); if (l) { rows.push(...l); rowsOf.delete(r.id); } }
+  if (rowsOf.size) throw new Error(`merge: window rows of ${[...rowsOf.keys()].slice(0, 3).join(', ')} have no run`);
+  const sum = (k: string) => ordered.reduce((s, x) => s + (Number(x.meta[k]) || 0), 0);
+  const { specPart: _part, ...meta0 } = p0.meta;
+  const meta: ShardMeta = {
+    ...meta0, specParts: n, decisions: sum('decisions'), windowInstances: sum('windowInstances'), windowRows: rows.length,
+    ms: Math.max(...ordered.map((x) => Number(x.meta.ms) || 0)), written_utc: new Date().toISOString(), written_eastern: eastern(Date.now()),
+  } as ShardMeta;
+  return {
+    meta, matchList: p0.matchList, runs,
+    ...(p0.familyB ? { familyB: p0.familyB } : {}),
+    window: { ...p0.window, rows },
+    ...(p0.familyBWindow ? { familyBWindow: p0.familyBWindow } : {}),
   };
 }
 
@@ -1777,6 +1902,12 @@ async function cmdCheck(a: Args): Promise<void> {
   console.log(`[tennis-ta] ${s.matches} owned matches, ${s.noPublishedStart} without a published start (their unit and pool use the earliest market-line time); `
     + `by pool: ${Object.entries(s.pools).map(([k, c]) => `${k} ${c!.matches} in ${c!.units} unit(s)`).join(', ') || 'none recorded'}`);
   console.log(`[tennis-ta] window block (C12): ${s.windowArms} arm(s) x 2 legs in the plan, read in ${s.windowBlocks} of ${s.files} file(s), ${s.windowInstances} instance(s)`);
+  if (s.replaySkips) {
+    const x = s.replaySkips;
+    console.log(`[tennis-ta] replay over ${x.days} read day(s): stored traded market lines not replayed: ${x.noCandles} without candles, ${x.noResult} without a yes/no result, `
+      + `${x.dup} second line(s) of a ticker, ${x.lateClose} closing more than ${TENNIS_CLOSE_SCAN_DAYS} days after their begin; ${x.startAfterClose} replayed without a start `
+      + `(published at or after the close)${x.unbuilt.length ? `; ${x.unbuilt.length} read day(s) not in the replay manifest (${x.unbuilt.slice(0, 6).join(', ')})` : ''}`);
+  }
   for (const [k, c] of Object.entries(s.series)) {
     console.log(`[tennis-ta] ${k}: history ${c.first ?? '-'} to ${c.last ?? '-'}, ${c.spanDays - c.missing.length} of ${c.spanDays} swept days have a file${c.missing.length ? ` (missing ${c.missing.slice(0, 12).join(', ')}${c.missing.length > 12 ? ', ...' : ''})` : ''}; `
       + `complete listing ${c.listed ? `${c.listed.from.slice(0, 16)} to ${c.listed.to.slice(0, 16)} UTC` : 'none'}; ${c.tapesMissing} traded market(s) without a tape`);
@@ -1847,6 +1978,15 @@ async function main(): Promise<void> {
     case 'run':
       await cmdRun(a);
       break;
+    case 'merge': {
+      const files = (a.parts ?? '').split(',').filter(Boolean);
+      const merged = mergeSpecParts(files.map((f) => JSON.parse(zlib.gunzipSync(fs.readFileSync(f)).toString('utf8')) as ShardOut));
+      fs.mkdirSync(path.dirname(path.resolve(a.out)), { recursive: true });
+      fs.writeFileSync(`${a.out}.tmp`, zlib.gzipSync(JSON.stringify(merged)));
+      fs.renameSync(`${a.out}.tmp`, a.out);
+      console.log(`[tennis-ta] merged ${files.length} configs part(s) into ${a.out}: ${merged.runs.length} configs, ${merged.meta.decisions} decisions, window ${merged.meta.windowInstances} instance(s) / ${merged.window.rows.length} row(s)`);
+      break;
+    }
     case 'plan': {
       const pool = assertPool(a.pool ?? (a.stage === 'hold' ? 'hold' : 'disc'), a.stage);
       console.log(JSON.stringify(planUnits(requestUnits(loadUnits(), pool, a.from, a.to), Number(a.shards ?? 8))));
@@ -1874,7 +2014,7 @@ async function main(): Promise<void> {
       break;
     }
     default:
-      throw new Error(`unknown command ${cmd}: units | fees | days | prep | plan | subplan | run | coverage | check | pool-hours`);
+      throw new Error(`unknown command ${cmd}: units | fees | days | prep | plan | subplan | run | merge | coverage | check | pool-hours`);
   }
 }
 

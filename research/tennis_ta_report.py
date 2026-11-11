@@ -2954,6 +2954,7 @@ def main(argv=None):
                     'withFile': len(c['span'] - c['missing'])} for s, c in sorted(cov_series.items())}
     owned = len(matches)
     owned_no_start = sum(1 for m in matches if m.get('startPublished') is False)
+    replay_skips = replay_skips_of(metas)
     sub_counts = {}
     for mt in metas:
         sub_counts[mt['k']] = mt['subShards']
@@ -2986,7 +2987,7 @@ def main(argv=None):
                    h_hold=list(h_hold), ho1_folds=[{'fold': i + 1, 'from': x, 'to': y} for i, (x, y) in enumerate(fold_edges)],
                    hold=hold_summary(hold_score, hold_after, meta, plan, run_id, runs) if hold_run else None,
                    excluded={p: v['matches'] for p, v in by_pool.items() if not v['scored']},
-                   slicing=slicing, coverage=coverage, owned_matches=owned, owned_no_published_start=owned_no_start,
+                   slicing=slicing, coverage=coverage, owned_matches=owned, owned_no_published_start=owned_no_start, replay_skips=replay_skips,
                    matches=N, no_tape=no_tape, pool_no_published_start=no_start_pool, units=U, days=len(days), folds=folds,
                    pool_hours=pool_hours, pool_hours_unclipped=unclipped_hours, pool_hours_source=spans_src, data_span=[day_of(span_lo), day_of(span_hi - 1)],
                    data_span_source=span_src, live_hours=live_hours, live_hours_source=live_info['source'], live_estimated=live_info,
@@ -3173,6 +3174,30 @@ def replay_version(path=HISTORY_REPLAY_TS):
         return None
     m = re.search(r'^export const REPLAY_VERSION\s*=\s*(\d+)\s*;', text, re.M)
     return int(m.group(1)) if m else None
+
+
+REPLAY_SKIP_KEYS = ('noCandles', 'noResult', 'dup', 'lateClose', 'startAfterClose')
+
+
+def replay_skips_of(metas):
+    """The replay's skip counts (meta.coverage.replaySkips, research/history/historyReplay.ts TennisSkips) over the union of
+    the replay days the shards read (a day read by two shards counts once), or None when no shard carries them."""
+    by_day, unbuilt, seen, scan = {}, set(), False, set()
+    for mt in metas:
+        rs = (mt.get('coverage') or {}).get('replaySkips')
+        if not isinstance(rs, dict):
+            continue
+        seen = True
+        if rs.get('scanDays') is not None:
+            scan.add(rs['scanDays'])
+        for d, c in (rs.get('byDay') or {}).items():
+            by_day.setdefault(d, c or {})
+        unbuilt.update(rs.get('unbuilt') or [])
+    if not seen:
+        return None
+    out = {k: int(sum(int((c or {}).get(k) or 0) for c in by_day.values())) for k in REPLAY_SKIP_KEYS}
+    out.update(days=len(by_day), unbuilt=sorted(unbuilt - set(by_day)), scanDays='/'.join(str(x) for x in sorted(scan)) or '?')
+    return out
 
 
 def rescore_sha(report_sha, swept_sha):
@@ -3570,6 +3595,13 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
     L.append(f"- Coverage: {cov}. {s['owned_matches']} owned matches, {s['owned_no_published_start']} without a published start (unit and pool "
              f"from the earliest market-line time); in the pool {s['matches']} with a tape ({s['no_tape']} without one left out), "
              f"{s['pool_no_published_start']} of them without a published start.")
+    rsk = s.get('replay_skips')
+    if rsk:
+        L.append(f"- Replay: over {rsk['days']} read replay day(s), {rsk['noCandles'] + rsk['noResult'] + rsk['dup'] + rsk['lateClose']} stored traded market line(s) "
+                 f"were not replayed ({rsk['noCandles']} without candles, {rsk['noResult']} without a yes/no result, {rsk['dup']} second line(s) of a ticker, "
+                 f"{rsk['lateClose']} closing more than {rsk.get('scanDays', '?')} days after they began); {rsk['startAfterClose']} were replayed without a start "
+                 f"(their published start was at or after their close), so they count under 'nostart'"
+                 + (f"; {len(rsk['unbuilt'])} read day(s) were not in the replay manifest" if rsk['unbuilt'] else '') + '.')
     bp = s['by_pool']
     L.append("- Matches by pool (matchList): " + ', '.join(f"{p} {v['matches']} in {v['units']} unit(s)" + (' (scored)' if v['scored'] else ' (excluded, counted)')
                                                          for p, v in bp.items())

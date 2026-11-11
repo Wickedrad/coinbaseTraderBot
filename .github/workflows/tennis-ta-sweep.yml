@@ -227,32 +227,51 @@ jobs:
         run: |
           set -euo pipefail
           # This job sweeps history (H). The sim reads market lines from 1 day before a slice on H (lookbackOf('H'):
-          # history lists a match 30 min before its start; LOOKBACK_DAYS = 7 is the recorded stratum's) and reads on to
-          # the end of the slice's last day, so late matches finish within CLOSE_TAIL_DAYS = 2: replay days cover both.
-          A=$(date -u -d "$FROM -1 day" +%F); B=$(date -u -d "$TO +2 day" +%F)
+          # history lists a match 30 min before its start; LOOKBACK_DAYS = 7 is the recorded stratum's) and reads on
+          # CLOSE_TAIL_DAYS - 1 = 4 days past the slice's end (SweepOpts.tailDays), so a match that closes up to
+          # TENNIS_CLOSE_SCAN_DAYS = 4 days after it begins (rain, a moved start) finishes inside the read: replay days
+          # cover [FROM - 1, TO + CLOSE_TAIL_DAYS = 5].
+          A=$(date -u -d "$FROM -1 day" +%F); B=$(date -u -d "$TO +5 day" +%F)
           node --max-old-space-size=6144 --import tsx research/tennisTaSweep.ts days --hist data/tennis/kalshi --out data/replay --from "$A" --to "$B" --series KXATPMATCH,KXWTAMATCH 2>&1 | tail -5
-      - name: Sweep (4 processes on the runner's 4 cores, sub-slices cut at unit edges)
+          # What the replay could not replay over the slice's days, by reason (also in each shard file's coverage).
+          jq -c --arg a "$A" --arg b "$TO" '[.tennisSkips // {} | to_entries[] | select(.key >= $a and .key < $b) | .value]
+            | reduce .[] as $x ({}; reduce ($x | to_entries[]) as $e (.; .[$e.key] += $e.value))' data/replay/replay-manifest.json
+      - name: Sweep (4 processes on the runner's 4 cores, sub-slices cut at unit edges, configs split when fewer)
         run: |
           set -euo pipefail
-          mkdir -p out
+          mkdir -p out/parts
           # The same cut prep made (prep/plan.json subPlans); the report job checks every file against it.
           SUB=$(node --import tsx research/tennisTaSweep.ts subplan --units models/tennis-ta/state/units.json --units-list "$UNITS" --parts 4)
           echo "$SUB" | jq -r '.[] | "sub-slice \(.k): \(.from) to \(.to): \(.units | join(" "))"'
           NSUB=$(echo "$SUB" | jq length)
+          # A shard with fewer sub-slices than cores (a Slam fortnight or a Masters week is one unit, so one sub-slice)
+          # splits each sub-slice's configs over P processes (--spec-part i/P, every P-th config); the merge command joins
+          # the parts into the sub-slice's one file. Each config's results are the same either way.
+          P=$(( 4 / NSUB )); [ "$P" -ge 1 ] || P=1
+          echo "$NSUB sub-slice(s) x $P configs part(s)"
           pids=()
           for j in $(echo "$SUB" | jq -r '.[].k'); do
             F=$(echo "$SUB" | jq -r ".[$j].from"); T=$(echo "$SUB" | jq -r ".[$j].to"); U=$(echo "$SUB" | jq -r ".[$j].units | join(\",\")")
-            node --max-old-space-size=3584 --import tsx research/tennisTaSweep.ts run --replay data/replay --hist data/tennis/kalshi \
-              --from "$F" --to "$T" --units-list "$U" --stage "$STAGE" --pool "$POOL" --family-b "$FAMILY_B" \
-              --units models/tennis-ta/state/units.json --fees prep/fees.json --request research/tennis-ta/sweep-request.json \
-              --data-version "$DATA_VERSION" --run "$GITHUB_RUN_ID" --k "$K" --j "$j" --shards "$SHARDS" --sub-shards "$NSUB" \
-              --out "out/a-s$STAGE-$K-$j.json.gz" > "out/log-$j.txt" 2>&1 &
-            pids+=($!)
+            for i in $(seq 0 $((P - 1))); do
+              if [ "$P" -gt 1 ]; then PART=(--spec-part "$i/$P"); OUT="out/parts/a-s$STAGE-$K-$j.p$i.json.gz"; else PART=(); OUT="out/a-s$STAGE-$K-$j.json.gz"; fi
+              node --max-old-space-size=3584 --import tsx research/tennisTaSweep.ts run --replay data/replay --hist data/tennis/kalshi \
+                --from "$F" --to "$T" --units-list "$U" --stage "$STAGE" --pool "$POOL" --family-b "$FAMILY_B" \
+                --units models/tennis-ta/state/units.json --fees prep/fees.json --request research/tennis-ta/sweep-request.json \
+                --data-version "$DATA_VERSION" --run "$GITHUB_RUN_ID" --k "$K" --j "$j" --shards "$SHARDS" --sub-shards "$NSUB" \
+                "${PART[@]}" --out "$OUT" > "out/log-$j-$i.txt" 2>&1 &
+              pids+=($!)
+            done
           done
           rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done
-          # A failed sub-slice shows its error (the message sits above the stack, so 3 lines would show only the stack).
+          # A failed process shows its error (the message sits above the stack, so 3 lines would show only the stack).
           for f in out/log-*.txt; do echo "==> $f <=="; if [ "$rc" != 0 ]; then grep -v '^\[tennis-ta\]' "$f" | head -n 40 || true; fi; tail -n 3 "$f"; done
-          exit $rc
+          [ "$rc" = 0 ] || exit 1
+          if [ "$P" -gt 1 ]; then
+            for j in $(echo "$SUB" | jq -r '.[].k'); do
+              PARTS=$(ls out/parts/a-s"$STAGE"-"$K"-"$j".p*.json.gz | paste -sd, -)
+              node --max-old-space-size=6144 --import tsx research/tennisTaSweep.ts merge --parts "$PARTS" --out "out/a-s$STAGE-$K-$j.json.gz"
+            done
+          fi
       - name: Keep on Drive
         run: |
           set -euo pipefail

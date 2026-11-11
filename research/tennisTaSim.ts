@@ -994,6 +994,9 @@ export interface SweepOpts {
    *  keeps its market line and its book snapshots (default 7). H reads one day before fromDay (history lists a match
    *  30 min before its start). */
   lookbackDays?: number;
+  /** Day files read after toDay's (default 0: the reader stops at the end of toDay), so an owned match that closes days
+   *  after its start (a postponement) finishes inside the read. */
+  tailDays?: number;
 }
 
 export interface SweepResult {
@@ -1025,7 +1028,8 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
   const ownFrom = Date.parse(o.fromDay), ownTo = Date.parse(o.toDay);
   if (!(ownTo > ownFrom)) throw new Error(`runSweep: toDay ${o.toDay} must be after fromDay ${o.fromDay} (owned starts are [fromDay, toDay))`);
   const lookback = o.stratum === 'R' ? Math.max(1, Math.ceil(o.lookbackDays ?? 7)) : 1;
-  const readFrom = dayOf(ownFrom - lookback * DAY), readTo = o.toDay;
+  const tail = Math.max(0, Math.floor(o.tailDays ?? 0));
+  const readFrom = dayOf(ownFrom - lookback * DAY), readTo = dayOf(ownTo + tail * DAY);
   const st = new ReplayState();
   const sims = o.specs.map((s) => new ConfigSim(s));
   const phaseOf = new Map<string, string>();
@@ -1084,7 +1088,8 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
     // The earliest day of an owned match still live (its grid would come later).
     let liveDay: string | undefined;
     for (const ev of live.values()) if (ev.owned && !ev.done && ev.grid && (liveDay === undefined || ev.day < liveDay)) liveDay = ev.day;
-    // A day is released once it is over and no owned match of that day or earlier is live, or 36 h after it ended.
+    // A day is released once it is over and no owned match of that day or earlier is live, or 36 h after it ended (a
+    // match postponed past that is a late grid: counted, not given to family B, which is information only).
     while (gridQueue.length) {
       const d = gridQueue[0].day, end = Date.parse(d) + DAY;
       if (!(now >= end + 36 * 3_600_000 || (now >= end && !(liveDay !== undefined && liveDay <= d)))) break;

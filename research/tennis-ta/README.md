@@ -215,11 +215,25 @@ starts the hold run, and push it once: H-HOLD is read once per batch.
 2. **shard** jobs (8 at most in parallel): each downloads both history tarballs and records their sha256 as the data
    version. It fails if either tarball is missing. It then checks that the history is complete over the shard
    (`tennisTaSweep.ts coverage`, below) and fails before sweeping if it is not. It builds replay days from 1 day
-   before the shard to 2 days after it and runs 4 processes, one per sub-slice. Each process first builds the one
+   before the shard to 5 days after it (`CLOSE_TAIL_DAYS`, below) and runs 4 processes: one per sub-slice, and when a
+   shard has fewer sub-slices than cores (a Slam fortnight or a Masters week is one unit, so one sub-slice), each
+   sub-slice's configs split over `4 / sub-slices` processes (`run --spec-part i/n`: every n-th config from the i-th;
+   family B runs in part 0 only), joined back into the sub-slice's one file by `tennisTaSweep.ts merge`. A config's
+   results do not depend on the configs run beside it (its own state and seeds), so the merged file is the file one
+   process would write (`tests/tennisTaSweep.test.ts`, "merge:"); the report gate refuses an unmerged part. Each
+   process first builds the one
    test's candle index from the same history day files (`candleIndex`: every market closing in the span the slice
    reads, parsed once, kept as `MinuteCandles` only) and hands it to the sim as `candlesOf`. The sim reads market
    lines from 1 day before a slice on H (`lookbackOf('H')`), because history lists a match 30 min before its start,
-   and reads on so a slice's late matches finish within 2 days (`CLOSE_TAIL_DAYS`). The 7-day lookback
+   and reads `CLOSE_TAIL_DAYS - 1` = 4 day files past the slice's end (`SweepOpts.tailDays`), so a match that closes
+   days after it begins finishes inside the read. The replay (`research/history/historyReplay.ts` `tennisEvents`) lists
+   a market on the day it begins (30 min before its published start, else before its first candle) and reads the close
+   days `[begin day, begin day + TENNIS_CLOSE_SCAN_DAYS = 4]`: Kalshi files a market under its close day, and 11% of the
+   start era's markets close 2 or 3 days after they begin (rain, a moved start; `tennis-ta-probe.yml` run 43105674917
+   found none later). Until Nov 11 it read 1 close day only and dropped those matches uncounted. A published start at or
+   after the market's close (21% of start-era markets) is no start of the match: the replay lists such a market without
+   one, so it counts under `nostart`. What the replay cannot replay is counted per day in its manifest (`tennisSkips`)
+   and in each shard's `coverage.replaySkips` (below). The 7-day lookback
    (`LOOKBACK_DAYS`) belongs to the recorded stratum R only, where the bot lists a match up to 36 h early; this
    workflow does not run R. Each process writes `a-s<stage>-<k>-<j>.json.gz` (`a-shold-<k>-<j>.json.gz` at stage
    hold) to `gdrive:kalshi-bot-archive/models/tennis-ta/runs/<run>/shards/`. Compute: stage 1 runs 409 specs per
@@ -317,6 +331,14 @@ produced the trades; `raw.report_sha` = the scoring commit), Drive, the registry
 commit. The plan comes from the run's prep artifact (30 days), else from `runs/<run>/prep/plan.json`, which prep keeps
 on Drive. Both workflows share the `tennis-ta-sweep` concurrency group, so a rescore waits for a running sweep.
 
+### Probe (read-only look at the stored history)
+
+`.github/workflows/tennis-ta-probe.yml` runs `research/tennisTaProbe.ts` over the stored history on a commit to
+`research/tennis-ta/probe-request.json` (`{"from", "to", "note"}`): begin-to-close spans, close day minus begin day,
+markets that cannot be replayed by reason, published starts at or after the close, and samples. Nothing is swept, scored
+or counted; the summary is a comment on the commit and the JSON goes to `models/tennis-ta/probe/<run>.json` on Drive.
+Run 43105674917 (Nov 11, closes Apr 19 to Nov 6) sized `TENNIS_CLOSE_SCAN_DAYS`.
+
 Cross-match state (the tennis-only pacer, the 25% / 10% caps, the coin-placebo stream and family B's placebo reservoir)
 restarts at each slice's first unit, so it restarts only at unit edges. The result depends on the shard count, which is
 why the count should stay fixed across rounds.
@@ -324,7 +346,7 @@ why the count should stay fixed across rounds.
 ## Shard file (gzip JSON)
 
 ```
-{ meta: { simVersion: 'tennis-ta-sim/3', stage, pool, run, k, j, shards, subShards, from, to, units, dataVersion,
+{ meta: { simVersion: 'tennis-ta-sim/4', stage, pool, run, k, j, shards, subShards, from, to, units, dataVersion,
           coverage, requestSha, families: ['A'] | ['A','B'], replayVersion (REPLAY_VERSION of
           research/history/historyReplay.ts), specsHash (the spec list's canonical sha256), windowVersion
           ('tennis-ta-window/1', the window block's version), ...bookkeeping (sha, unitsSha, stratum, stratumLabel
@@ -377,6 +399,13 @@ why the count should stay fixed across rounds.
     leaves it out and counts it.
   - `lostTickers`: tennis match tickers with book or trade lines but no market line in what the sim read (lost
     matches).
+  - `replaySkips` (H, from `tennis-ta-sim/4`): the stored traded market lines the replay could not replay, per replay
+    day the slice read, `{ byDay: { <day>: { noCandles, noResult, dup, lateClose, startAfterClose } }, unbuilt,
+    scanDays }`: traded without candles, without a yes/no result, a ticker's second line (the line with the most
+    candles is replayed, and the candle index keeps the same one), closing more than `scanDays` after it began (counted
+    on its close day), and replayed without a start because the published one was at or after its close. `unbuilt`
+    lists read days the replay manifest lacks. The check summary and the report's run mechanics sum the union of the
+    shards' days (a day two slices read counts once).
   - `feed`: the sim's feed bookkeeping, `{ gaps, gapMs, blindGaps, liveDays, blindDays, lateGrids }`. These are R
     feed outages (count, total ms, and those found only by a resubscribe: blind days, or reconnects the beats
     masked), day files that show or hide the feed's liveness, and grids not delivered to family B because their day
