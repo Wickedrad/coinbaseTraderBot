@@ -263,6 +263,8 @@ jobs:
           # splits each sub-slice's configs over P processes (--spec-part i/P, every P-th config); the merge command joins
           # the parts into the sub-slice's one file. Each config's results are the same either way.
           P=$(( 4 / NSUB )); [ "$P" -ge 1 ] || P=1
+          # Never more parts than configs (a hold batch of one config runs 2 arms): an empty part would refuse to start.
+          NCFG=$(jq -r '.configs // 1' prep/plan.json); [ "$P" -le "$NCFG" ] || P=$NCFG
           # Node heaps stay within ~13 GB of the runner's 16 GB together (the OS, the runner and buffers keep the rest).
           HEAP=$(( 13312 / (NSUB * P) )); [ "$HEAP" -le 3584 ] || HEAP=3584
           echo "$NSUB sub-slice(s) x $P configs part(s), heap $HEAP MB each"

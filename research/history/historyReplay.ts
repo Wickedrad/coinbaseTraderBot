@@ -92,9 +92,10 @@ export const REPLAY_VERSION = 9;
  *  (11% of markets close 2 or 3 days after); one day more is read as a margin. A market closing later still is counted
  *  (TennisSkips.lateClose), never replayed. Part of a tennis replay's signature (`:tscan<N>`). */
 export const TENNIS_CLOSE_SCAN_DAYS = 4;
-/** Stored tennis market lines a replay day could not replay, by reason (ReplayManifest.tennisSkips). Every count but
- *  lateClose is of markets that begin on that day; lateClose is of markets closing on that day that began more than
- *  TENNIS_CLOSE_SCAN_DAYS days before it. Untraded markets (stored with noVolume or an API error) are not counted. */
+/** Stored tennis market lines a replay day could not replay, by reason, and the replayed lines published with a start
+ *  at or after their close (ReplayManifest.tennisSkips). noCandles, noResult and lateClose count the lines that close on
+ *  that day; dup and startAfterClose the lines of markets that begin on it. Untraded markets (stored with noVolume or
+ *  an API error) are not counted. */
 export interface TennisSkips {
   /** Traded, but stored with no candles (no quote to replay). */
   noCandles: number;
@@ -102,8 +103,9 @@ export interface TennisSkips {
   noResult: number;
   /** A second stored line of a ticker already replayed (the line with the most candles is kept). */
   dup: number;
+  /** Replayable, but begun more than TENNIS_CLOSE_SCAN_DAYS days before its close day (never replayed). */
   lateClose: number;
-  /** Replayed, but published with a start at or after its close: replayed as a market without a published start. */
+  /** Replayed with a published start at or after its close (kept on the market line: production's view). */
   startAfterClose: number;
 }
 export const noTennisSkips = (): TennisSkips => ({ noCandles: 0, noResult: 0, dup: 0, lateClose: 0, startAfterClose: 0 });
@@ -586,22 +588,27 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
   // next day's file, so every file stays in time order.
   let carry: Ev[] = [];
   const tennisSeries = o.tennisSeries ?? [];
-  const base = `${REPLAY_VERSION}:${assets.join(',')}:${synthetic ? 'synth' : 'real'}:${tennisSeries.join(',')}${tennisSeries.length ? `:tscan${TENNIS_CLOSE_SCAN_DAYS}` : ''}${o.requote ? ':requote' : ''}${o.requote && o.requoteLag ? `:lag${o.requoteLag.gInf}/${o.requoteLag.tauSec}` : ''}:cat${o.catalogStrikesPerEvent ?? 4}/${o.catalogHorizonMin ?? 90}/${o.catalogPickMaxSpread ?? 0.1}`;
+  // New tennis data on a close day rebuilds the TENNIS_CLOSE_SCAN_DAYS days before it: keep states that far back too.
+  const keepStates = tennisSeries.length ? Math.max(KEEP_STATES, TENNIS_CLOSE_SCAN_DAYS + 2) : KEEP_STATES;
+  const base = `${REPLAY_VERSION}:${assets.join(',')}:${synthetic ? 'synth' : 'real'}:${tennisSeries.join(',')}${o.requote ? ':requote' : ''}${o.requote && o.requoteLag ? `:lag${o.requoteLag.gInf}/${o.requoteLag.tauSec}` : ''}:cat${o.catalogStrikesPerEvent ?? 4}/${o.catalogHorizonMin ?? 90}/${o.catalogPickMaxSpread ?? 0.1}`;
   const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
   // A day's inputs: the Kalshi history it reads (a later download reached it), how far the 1-minute
   // history and funding rates reach into it, and the dominance anchors near it.
   const seriesDirs = fs.existsSync(kalshiDir) ? fs.readdirSync(kalshiDir).filter((x) => fs.statSync(path.join(kalshiDir, x)).isDirectory()) : [];
   const sigOf = (day: string) => {
-    const d0 = Date.parse(day), d1 = d0 + DAY;
-    // The Kalshi contracts read the close days [day, day + 1]; tennis reads [day, day + TENNIS_CLOSE_SCAN_DAYS].
-    const reach = tennisSeries.length ? Math.max(1, TENNIS_CLOSE_SCAN_DAYS) : 1;
+    const d0 = Date.parse(day), d1 = d0 + DAY, next = iso(d1);
     let bytes = 0;
-    for (const sd of seriesDirs) for (let k = 0; k <= reach; k++) {
+    for (const sd of seriesDirs) for (const f of [`${day}.jsonl`, `${next}.jsonl`, `trades/${day}.jsonl`, `trades/${next}.jsonl`]) { try { bytes += fs.statSync(path.join(kalshiDir, sd, f)).size; } catch { /* none */ } }
+    // Tennis reads the close days [day, day + TENNIS_CLOSE_SCAN_DAYS]: a day with any of them is signed with the scan and
+    // their bytes (a day without tennis files keeps the signature it had before the scan widened, so crypto-only days
+    // and the states before the tennis history are not rebuilt).
+    let tbytes = 0;
+    for (const sd of tennisSeries) for (let k = 0; k <= TENNIS_CLOSE_SCAN_DAYS; k++) {
       const d = iso(d0 + k * DAY);
-      for (const f of [`${d}.jsonl`, `trades/${d}.jsonl`]) { try { bytes += fs.statSync(path.join(kalshiDir, sd, f)).size; } catch { /* none */ } }
+      for (const f of [`${d}.jsonl`, `trades/${d}.jsonl`]) { try { tbytes += fs.statSync(path.join(kalshiDir, sd, f)).size; } catch { /* none */ } }
     }
     const cov = assets.map((a) => cover.get(a)!.map(([r, len]) => (!r ? 'n' : r.first >= d1 || r.last + len >= d1 ? '' : String(r.last))).join('/')).join(',');
-    return `${base}:${bytes}:${cov}:${anchorsIn(anchors, d0 - DAY, d1)}`;
+    return `${base}:${bytes}:${cov}:${anchorsIn(anchors, d0 - DAY, d1)}${tbytes > 0 ? `:tscan${TENNIS_CLOSE_SCAN_DAYS}/${tbytes}` : ''}`;
   };
   const fileOf = (day: string) => path.join(o.outDir, `md-${day}.jsonl.gz`);
   const needs = (day: string) => Boolean(o.force) || manifest.days[day] !== sigOf(day) || (manifest.n![day] !== 0 && !fs.existsSync(fileOf(day)));
@@ -815,7 +822,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     ev.sort((x, y) => x.t - y.t);
     const cut = ev.findIndex((e) => e.t >= d1);
     if (cut >= 0) carry = ev.splice(cut);
-    if (o.keepAllStates || to - d0 < KEEP_STATES * DAY || iso(d1).endsWith('-01')) {
+    if (o.keepAllStates || to - d0 < keepStates * DAY || iso(d1).endsWith('-01')) {
       const state: DayState = { carry, assets: Object.fromEntries([...st].map(([a, x]) => [a, { recent: x.recent, basis: x.basis, vPath: x.vPath, vMkt: x.vMkt, prints: x.prints, open: x.open }])), dom: dom.state };
       const sf: StateFile = { version: REPLAY_VERSION, sig: base, day, state };
       fs.writeFileSync(`${stateFileOf(day)}.tmp`, zlib.gzipSync(JSON.stringify(sf), { level: 6 }));
@@ -837,8 +844,8 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     manifest.days[day] = sigOf(day);
     saveManifest();
   }
-  // Kept states: the last KEEP_STATES days and every month's last day.
-  const keepFrom = iso(to - (KEEP_STATES - 1) * DAY);
+  // Kept states: the last keepStates days and every month's last day.
+  const keepFrom = iso(to - (keepStates - 1) * DAY);
   for (const f of fs.readdirSync(stateDir)) {
     const d = /^(\d{4}-\d{2}-\d{2})\.json\.gz$/.exec(f)?.[1];
     if (d && !o.keepAllStates && d < keepFrom && !iso(Date.parse(d) + DAY).endsWith('-01')) fs.rmSync(path.join(stateDir, f), { force: true });
@@ -955,9 +962,9 @@ export function requoteBetween(ev: Ev[], m: { ticker: string; kind: MarketKind; 
  *  quotes, alive marks every 5 s (the quotes stand between trades), the result after the close.
  *  A market is filed under its UTC close day, so the close days [day, day + TENNIS_CLOSE_SCAN_DAYS] are read: a match
  *  postponed or moved later closes days after its begin. A ticker stored on two lines is replayed once, from the line
- *  with the most candles (the longest). What cannot be replayed is counted in `skips` (TennisSkips). A published start
- *  at or after the close is no start of the match (it was over before it): the market begins at its first candle and
- *  is replayed without a start, as a market whose start was never published. */
+ *  with the most candles. What cannot be replayed is counted in `skips` (TennisSkips). A published start at or after the
+ *  close (the order-of-play slot of a match played earlier) stays on the market line, as production's listing carries
+ *  it; the market begins 30 min before its first candle then. */
 function tennisEvents(kalshiDir: string, series: string[], day: string, d0: number, d1: number, ev: Ev[], alive: Map<number, string[]>, skips: TennisSkips = noTennisSkips()): number {
   const closeDays = Array.from({ length: Math.max(1, TENNIS_CLOSE_SCAN_DAYS) + 1 }, (_, k) => new Date(d0 + k * DAY).toISOString().slice(0, 10));
   let n = 0;
@@ -975,17 +982,18 @@ function tennisEvents(kalshiDir: string, series: string[], day: string, d0: numb
         start = end + 1;
         const h = l ? tennisLineHead(l) : undefined;
         if (!h || h.untraded) continue;
+        const replayable = h.firstCandle !== undefined && (h.result === 'yes' || h.result === 'no');
         const begin = tennisBegin(h);
-        if (begin >= d1) continue;
-        if (begin < d0) {
-          // Closing today, begun before the scan of any day reaches back to it: never replayed.
-          if (d === day && begin < d0 - TENNIS_CLOSE_SCAN_DAYS * DAY) skips.lateClose++;
-          continue;
+        // A line that cannot be replayed is counted once, on its close day (today's file), whatever its begin.
+        if (d === day) {
+          if (h.firstCandle === undefined) skips.noCandles++;
+          else if (!replayable) skips.noResult++;
+          else if (begin < d0 - TENNIS_CLOSE_SCAN_DAYS * DAY) skips.lateClose++;
         }
-        if (!h.firstCandle) { skips.noCandles++; continue; }
-        if (h.result !== 'yes' && h.result !== 'no') { skips.noResult++; continue; }
+        if (!replayable || begin < d0 || begin >= d1) continue;
+        // A ticker on two lines: the one with the most candles (the first on a tie), as candleIndex keeps it.
         const had = picked.get(h.ticker);
-        if (had !== undefined) { skips.dup++; if (l.length <= had.length) continue; }
+        if (had !== undefined) { skips.dup++; if (candleCount(l) <= candleCount(had)) continue; }
         picked.set(h.ticker, l);
       }
     }
@@ -995,10 +1003,12 @@ function tennisEvents(kalshiDir: string, series: string[], day: string, d0: numb
       let m: KalshiHistMarket;
       try { m = JSON.parse(l); } catch { continue; }
       if (!m.candles?.length) continue;
-      const first = m.candles[0].ts;
-      const startOk = Boolean(m.startTime && m.startTime < m.closeTime);
-      if (m.startTime && !startOk) { skips.startAfterClose++; delete m.startTime; }
-      const begin = Math.max(m.openTime, (startOk ? m.startTime! : first) - 30 * MIN);
+      // A zero-time start is none. A start at or after the close stays on the market line (production's view: the
+      // listing carries it, so the strategy's tracker never sees the match live); the market begins before its first
+      // candle instead.
+      if (m.startTime !== undefined && !(m.startTime > 0)) delete m.startTime;
+      if (m.startTime !== undefined && m.startTime >= m.closeTime) skips.startAfterClose++;
+      const begin = tennisBegin({ openTime: m.openTime, closeTime: m.closeTime, startTime: m.startTime, firstCandle: m.candles[0].ts });
       n++;
       ev.push({ t: Math.max(d0, begin - 1000), k: 'market', ticker: m.ticker, series: s, asset: 'TENNIS', openTime: m.openTime, closeTime: m.closeTime, strike: null, cap: null, kind: 'match', event: m.event, title: m.title, startTime: m.startTime, tickSize: 0.01, hist: 1 });
       // The candles' quotes and the tape, merged in time; the book follows each trade.
@@ -1065,6 +1075,11 @@ export function tennisLineHead(line: string): TennisLineHead | undefined {
       untraded: Boolean(head.noVolume || head.error || flags.noVolume || flags.error),
     };
   } catch { return undefined; }
+}
+
+/** A stored market line's candle count (parsed: only for a ticker stored on two lines). */
+function candleCount(line: string): number {
+  try { const c = (JSON.parse(line) as { candles?: unknown[] }).candles; return Array.isArray(c) ? c.length : 0; } catch { return -1; }
 }
 
 /** The trade tapes of the picked tickers from the trades files of the close days (a tape is filed under its market's close

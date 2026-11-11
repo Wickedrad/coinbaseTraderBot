@@ -1149,13 +1149,15 @@ export function candleIndex(dirs: string[], from: string, to: string, lookbackDa
   const needFrom = Date.parse(from) - lookbackDays * DAY, needTo = Math.min(Date.parse(to) + CLOSE_TAIL_DAYS * DAY, HARD_CUTOFF);
   for (const dir of dirs) for (let t = needFrom; t < needTo; t += DAY) {
     eachLine(path.join(dir, `${dayOf(t)}.jsonl`), (line) => {
-      let m: { ticker?: unknown; closeTime?: unknown; candles?: unknown };
+      let m: { ticker?: unknown; closeTime?: unknown; candles?: unknown; result?: unknown; noVolume?: unknown; error?: unknown };
       try { m = JSON.parse(line); } catch { return; }
       if (typeof m.ticker !== 'string' || !m.ticker || typeof m.closeTime !== 'number' || !Array.isArray(m.candles)) return;
-      // A ticker stored on two lines keeps the one with the most candles (the replay replays that line too).
+      // A ticker stored on two lines keeps a line the replay could replay (traded, settled yes or no) over one it could
+      // not, then the one with the most candles, the first on a tie: the line the replay's tennisEvents keeps.
+      const rank = (m.noVolume || m.error || (m.result !== 'yes' && m.result !== 'no') ? 0 : 1e9) + m.candles.length;
       const had = seen.get(m.ticker);
-      if (had !== undefined && had >= m.candles.length) return;
-      seen.set(m.ticker, m.candles.length);
+      if (had !== undefined && had >= rank) return;
+      seen.set(m.ticker, rank);
       index.set(m.ticker, minuteCandles(m.candles as KalshiCandle[], m.closeTime, had === undefined ? stats : undefined));
     });
   }
@@ -1905,8 +1907,8 @@ async function cmdCheck(a: Args): Promise<void> {
   if (s.replaySkips) {
     const x = s.replaySkips;
     console.log(`[tennis-ta] replay over ${x.days} read day(s): stored traded market lines not replayed: ${x.noCandles} without candles, ${x.noResult} without a yes/no result, `
-      + `${x.dup} second line(s) of a ticker, ${x.lateClose} closing more than ${TENNIS_CLOSE_SCAN_DAYS} days after their begin; ${x.startAfterClose} replayed without a start `
-      + `(published at or after the close)${x.unbuilt.length ? `; ${x.unbuilt.length} read day(s) not in the replay manifest (${x.unbuilt.slice(0, 6).join(', ')})` : ''}`);
+      + `${x.dup} second line(s) of a ticker, ${x.lateClose} closing more than ${TENNIS_CLOSE_SCAN_DAYS} days after their begin; ${x.startAfterClose} replayed with a `
+      + `published start at or after the close (kept: production's view)${x.unbuilt.length ? `; ${x.unbuilt.length} read day(s) not in the replay manifest (${x.unbuilt.slice(0, 6).join(', ')})` : ''}`);
   }
   for (const [k, c] of Object.entries(s.series)) {
     console.log(`[tennis-ta] ${k}: history ${c.first ?? '-'} to ${c.last ?? '-'}, ${c.spanDays - c.missing.length} of ${c.spanDays} swept days have a file${c.missing.length ? ` (missing ${c.missing.slice(0, 12).join(', ')}${c.missing.length > 12 ? ', ...' : ''})` : ''}; `

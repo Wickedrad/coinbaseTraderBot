@@ -942,20 +942,26 @@ test('replay: a tennis match closing days after it begins is replayed; what cann
   const base = { series: 'KXATPMATCH', openTime: Date.parse('2026-07-13T12:00:00Z'), startTime: Date.parse('2026-07-14T19:00:00Z'), closeTime: Date.parse('2026-07-14T21:00:00Z'), strike: null, cap: null };
   put(DISC_DAY, [...m2, ...m3, { ...base, ticker: 'KXATPMATCH-X-NC', event: 'KXATPMATCH-X', result: 'yes', candles: [] }, { ...base, ticker: 'KXATPMATCH-X-NR', event: 'KXATPMATCH-X', candles: m2[0].candles },
     { ...base, ticker: 'KXATPMATCH-X-UT', event: 'KXATPMATCH-X', result: 'no', candles: [], noVolume: true }], tapes.filter((t) => !t.ticker.includes('M1-')));
-  put('2026-07-15', [{ ...m2[0], candles: m2[0].candles.slice(0, 20) }]);
-  put('2026-07-20', [{ ...base, ticker: 'KXATPMATCH-Y-LATE', event: 'KXATPMATCH-Y', closeTime: Date.parse('2026-07-20T12:00:00Z'), result: 'yes', candles: m2[0].candles }]);
+  // The Jul 15 copy has fewer candles but the longer line (a padding field): the candle count decides, not the length.
+  put('2026-07-15', [{ ...m2[0], candles: m2[0].candles.slice(0, 20), pad: 'x'.repeat(JSON.stringify(m2[0]).length) }]);
+  // Beside the late close, a line without candles begun as long before its close: counted as no candles, not late.
+  put('2026-07-20', [{ ...base, ticker: 'KXATPMATCH-Y-LATE', event: 'KXATPMATCH-Y', closeTime: Date.parse('2026-07-20T12:00:00Z'), result: 'yes', candles: m2[0].candles },
+    { ...base, ticker: 'KXATPMATCH-Y-NC', event: 'KXATPMATCH-Y', closeTime: Date.parse('2026-07-20T12:00:00Z'), result: 'yes', candles: [] }]);
   await buildHistoryReplay({ historyDir: hist, outDir: replay, assets: [], fromDay: '2026-07-13', toDay: '2026-07-21', tennisSeries: ['KXATPMATCH'], log: () => {} });
-  const manifest = JSON.parse(fs.readFileSync(path.join(replay, 'replay-manifest.json'), 'utf8')) as { tennis: Record<string, number>; tennisSkips: Record<string, unknown> };
+  const manifest = JSON.parse(fs.readFileSync(path.join(replay, 'replay-manifest.json'), 'utf8')) as { tennis: Record<string, number>; tennisSkips: Record<string, unknown>; days: Record<string, string> };
   assert.equal(manifest.tennis[DISC_DAY], 6);
   assert.deepEqual(manifest.tennisSkips[DISC_DAY], { noCandles: 1, noResult: 1, dup: 1, lateClose: 0, startAfterClose: 2 });
-  assert.deepEqual(manifest.tennisSkips['2026-07-20'], { ...noTennisSkips(), lateClose: 1 });
+  assert.deepEqual(manifest.tennisSkips['2026-07-20'], { ...noTennisSkips(), lateClose: 1, noCandles: 1 });
   assert.deepEqual(manifest.tennisSkips['2026-07-15'], noTennisSkips());
   const recs = (day: string) => zlib.gunzipSync(fs.readFileSync(path.join(replay, `md-${day}.jsonl.gz`))).toString('utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
   const d14 = recs(DISC_DAY);
   const mk = (t: string) => d14.find((r) => r.k === 'market' && r.ticker === t);
   assert.ok(mk(ev('M1')[0].ticker), 'the postponed match is listed on its begin day');
   assert.equal(mk(ev('M1')[0].ticker)!.closeTime, late);
-  assert.equal(mk(m3[0].ticker)!.startTime, undefined, 'a start after the close is no start');
+  // A start after the close stays on the market line (production's listing carries it); the market begins before its
+  // first candle.
+  assert.equal(mk(m3[0].ticker)!.startTime, m3[0].startTime, 'a start after the close is kept');
+  assert.ok((mk(m3[0].ticker)!.t as number) < m3[0].candles[0].ts);
   assert.equal(d14.filter((r) => r.k === 'market' && r.ticker === m2[0].ticker).length, 1, 'a ticker stored twice is replayed once');
   // The longest line was kept: the Jul 14 line's quotes reach past the 20 minutes the Jul 15 copy has.
   const lastBook = Math.max(...d14.filter((r) => r.k === 'book' && r.ticker === m2[0].ticker).map((r) => r.t as number));
@@ -965,7 +971,11 @@ test('replay: a tennis match closing days after it begins is replayed; what cann
   // The sweep's view: the manifest's counts over the days a slice reads, and the union over shards in the check summary.
   const rs = replaySkipsOf(replay, '2026-07-12', '2026-07-21');
   assert.deepEqual(rs.unbuilt, ['2026-07-12']);
-  assert.deepEqual(sumTennisSkips(Object.values(rs.byDay)), { noCandles: 1, noResult: 1, dup: 1, lateClose: 1, startAfterClose: 2 });
+  assert.deepEqual(sumTennisSkips(Object.values(rs.byDay)), { noCandles: 2, noResult: 1, dup: 1, lateClose: 1, startAfterClose: 2 });
+  // A day's signature carries the tennis scan only when a tennis file lies in its reach (Jul 21 reads Jul 21-25: none),
+  // so a day without tennis keeps the signature it had before the scan widened.
+  assert.match(manifest.days[DISC_DAY], new RegExp(`:tscan${TENNIS_CLOSE_SCAN_DAYS}/\\d+$`));
+  assert.doesNotMatch(manifest.days['2026-07-21'], /:tscan/);
   // The head reader and the begin rule the scan uses.
   const h = tennisLineHead(JSON.stringify(lines[0]))!;
   assert.deepEqual([h.ticker, h.firstCandle, h.untraded, h.result], [lines[0].ticker, lines[0].candles[0].ts, false, lines[0].result]);
@@ -1545,5 +1555,11 @@ test('candleIndex: the window rule\'s view of every market the slice reads, pars
   const idx2 = candleIndex([series], '2026-07-13', '2026-07-21', 1);
   assert.deepEqual(idx2.get(one.ticker), minuteCandles(one.candles, one.closeTime));
   assert.deepEqual(idx2.get(lines[1].ticker), minuteCandles(lines[1].candles, lines[1].closeTime));
+  // A line the replay could replay (settled yes or no) beats an earlier one it could not, on a tie of candles, as the
+  // replay's tennisEvents picks: the unsettled copy here closes 30 min earlier, so its view would differ.
+  const two = lines[2], early = { ...two, closeTime: two.closeTime - 30 * MIN, result: undefined };
+  assert.notDeepEqual(minuteCandles(two.candles, early.closeTime), minuteCandles(two.candles, two.closeTime));
+  fs.writeFileSync(path.join(series, '2026-07-12.jsonl'), `${JSON.stringify(early)}\n`);
+  assert.deepEqual(candleIndex([series], '2026-07-13', '2026-07-21', 1).get(two.ticker), minuteCandles(two.candles, two.closeTime));
   assert.equal(candleIndex([path.join(hist, 'kalshi', 'NONE')], '2026-07-13', '2026-07-21').size, 0);
 });

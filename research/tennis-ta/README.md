@@ -217,7 +217,8 @@ starts the hold run, and push it once: H-HOLD is read once per batch.
    (`tennisTaSweep.ts coverage`, below) and fails before sweeping if it is not. It builds replay days from 1 day
    before the shard to 5 days after it (`CLOSE_TAIL_DAYS`, below) and runs 4 processes: one per sub-slice, and when a
    shard has fewer sub-slices than cores (a Slam fortnight or a Masters week is one unit, so one sub-slice), each
-   sub-slice's configs split over `4 / sub-slices` processes (`run --spec-part i/n`: every n-th config from the i-th;
+   sub-slice's configs split over `4 / sub-slices` processes, never more than the configs (`run --spec-part i/n`: every
+   n-th config from the i-th;
    family B runs in part 0 only), joined back into the sub-slice's one file by `tennisTaSweep.ts merge`. A config's
    results do not depend on the configs run beside it (its own state and seeds), so the merged file is the file one
    process would write (`tests/tennisTaSweep.test.ts`, "merge:"); the report gate refuses an unmerged part. Each
@@ -231,9 +232,10 @@ starts the hold run, and push it once: H-HOLD is read once per batch.
    days `[begin day, begin day + TENNIS_CLOSE_SCAN_DAYS = 4]`: Kalshi files a market under its close day, and 11% of the
    start era's markets close 2 or 3 days after they begin (rain, a moved start; `tennis-ta-probe.yml` run 43105674917
    found none later). Until Nov 11 it read 1 close day only and dropped those matches uncounted. A published start at or
-   after the market's close (21% of start-era markets) is no start of the match: the replay lists such a market without
-   one, so it counts under `nostart`. What the replay cannot replay is counted per day in its manifest (`tennisSkips`)
-   and in each shard's `coverage.replaySkips` (below). The 7-day lookback
+   after the market's close (21% of start-era markets: the order-of-play slot of a match played earlier) stays on the
+   market line, as production's listing carries it (the strategy's tracker then never takes the match as live); the
+   market begins 30 min before its first candle. What the replay cannot replay is counted per day in its manifest
+   (`tennisSkips`) and in each shard's `coverage.replaySkips` (below). The 7-day lookback
    (`LOOKBACK_DAYS`) belongs to the recorded stratum R only, where the bot lists a match up to 36 h early; this
    workflow does not run R. Each process writes `a-s<stage>-<k>-<j>.json.gz` (`a-shold-<k>-<j>.json.gz` at stage
    hold) to `gdrive:kalshi-bot-archive/models/tennis-ta/runs/<run>/shards/`. Compute: stage 1 runs 409 specs per
@@ -401,11 +403,12 @@ why the count should stay fixed across rounds.
     matches).
   - `replaySkips` (H, from `tennis-ta-sim/4`): the stored traded market lines the replay could not replay, per replay
     day the slice read, `{ byDay: { <day>: { noCandles, noResult, dup, lateClose, startAfterClose } }, unbuilt,
-    scanDays }`: traded without candles, without a yes/no result, a ticker's second line (the line with the most
-    candles is replayed, and the candle index keeps the same one), closing more than `scanDays` after it began (counted
-    on its close day), and replayed without a start because the published one was at or after its close. `unbuilt`
-    lists read days the replay manifest lacks. The check summary and the report's run mechanics sum the union of the
-    shards' days (a day two slices read counts once).
+    scanDays }`, in market lines: traded without candles, without a yes/no result, and replayable but begun more than
+    `scanDays` before its close day (these three filed on a line's close day); a ticker's second line (the line with the
+    most candles is replayed, the first on a tie, and the candle index keeps the same one) and a replayed line whose
+    published start is at or after its close (both filed on the day the market begins). `unbuilt` lists read days the
+    replay manifest lacks. The check summary and the report's run mechanics sum the union of the shards' days (a day two
+    slices read counts once, each slice's lookback day included).
   - `feed`: the sim's feed bookkeeping, `{ gaps, gapMs, blindGaps, liveDays, blindDays, lateGrids }`. These are R
     feed outages (count, total ms, and those found only by a resubscribe: blind days, or reconnects the beats
     masked), day files that show or hide the feed's liveness, and grids not delivered to family B because their day

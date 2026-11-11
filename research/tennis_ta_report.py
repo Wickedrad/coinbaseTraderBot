@@ -3599,9 +3599,11 @@ def render(a, s, cells, f1, prod, loser_rows, prod_runs, fb_rows, meta, M, t_las
     if rsk:
         L.append(f"- Replay: over {rsk['days']} read replay day(s), {rsk['noCandles'] + rsk['noResult'] + rsk['dup'] + rsk['lateClose']} stored traded market line(s) "
                  f"were not replayed ({rsk['noCandles']} without candles, {rsk['noResult']} without a yes/no result, {rsk['dup']} second line(s) of a ticker, "
-                 f"{rsk['lateClose']} closing more than {rsk.get('scanDays', '?')} days after they began); {rsk['startAfterClose']} were replayed without a start "
-                 f"(their published start was at or after their close), so they count under 'nostart'"
-                 + (f"; {len(rsk['unbuilt'])} read day(s) were not in the replay manifest" if rsk['unbuilt'] else '') + '.')
+                 f"{rsk['lateClose']} closing more than {rsk.get('scanDays', '?')} days after they began); {rsk['startAfterClose']} replayed line(s) carry a "
+                 f"published start at or after their close, kept as production's listing carries it (its tracker never takes such a match as live)"
+                 + (f"; {len(rsk['unbuilt'])} read day(s) were not in the replay manifest" if rsk['unbuilt'] else '')
+                 + ". Market lines over every replay day the slices read (each slice's lookback day included): the first three filed on a line's close "
+                 "day, second lines and starts after the close on the day a market begins.")
     bp = s['by_pool']
     L.append("- Matches by pool (matchList): " + ', '.join(f"{p} {v['matches']} in {v['units']} unit(s)" + (' (scored)' if v['scored'] else ' (excluded, counted)')
                                                          for p, v in bp.items())
