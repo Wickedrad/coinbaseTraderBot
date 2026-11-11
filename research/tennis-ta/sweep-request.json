@@ -1,1 +1,1 @@
-{"stage":"1","pool":"disc","shards":8,"familyB":true,"note":"One-test league on H-DEV (Apr 20 to Jul 30, 2026), third start (TA-Lib binding now compiled in the shard job); calendar read log lines 10 to 10c."}
+{"stage":"1","pool":"disc","shards":8,"familyB":true,"note":"One-test league on H-DEV (Apr 20 to Jul 30, 2026), fourth start: late-closing matches replayed, exclusions counted by reason, configs split over cores (code fa29992); calendar read log lines 10 to 10e."}
