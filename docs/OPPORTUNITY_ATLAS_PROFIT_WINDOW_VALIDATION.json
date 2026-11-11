@@ -1,0 +1,57 @@
+{
+  "schema": "oracle-profit-window-validation-v1",
+  "checkedAt": "2026-11-10T04:32:24.562489+00:00",
+  "pullRequest": 313,
+  "ci": {
+    "runId": 42754606994,
+    "sourceHead": "a816ef8b85c84e88c1669316a0fc612437988d6f",
+    "conclusion": "success",
+    "metrics": {
+      "tests": 1325,
+      "pass": 1325,
+      "fail": 0,
+      "skipped": 0
+    },
+    "typecheck": "passed",
+    "build": "passed"
+  },
+  "additionalValidation": {
+    "focusedTestsPassed": 10,
+    "workflowLint": "passed",
+    "actualWorkflowOrchestrationSmoke": "passed: self-run skips watch, external source waits",
+    "actualDeploymentPythonSmoke": "passed: quoted/unquoted paper accepted; live/shadow rejected; runtime mode checked without secrets",
+    "sourceAfterCi": "Research and test files match CI source; final workflow-only fixes verified separately"
+  },
+  "retrospectiveAssessment": {
+    "runId": 42754692723,
+    "sourceTrial": 42740737188,
+    "reportSha256": "340b17b9fa612433c6c796229f93745c52ecf41416d2839898e1dcd77289e7ef",
+    "rows": 850,
+    "statusCounts": {
+      "no-eligible-entry": 590,
+      "observed-15s-profit-window": 146,
+      "incomplete-coverage": 81,
+      "pending": 33
+    },
+    "verifiedFeePositiveRows": 0,
+    "interpretation": "Both directions and overlapping forecasts; retrospective label engineering, not independent forecast wins or summed funded profit. Fee assumptions remain explicit. Original edge qualification is unchanged."
+  },
+  "policy": {
+    "id": "oracle-observed-profit-15s-v1",
+    "sustainMs": 15000,
+    "maximumGapMs": 7500,
+    "maximumQuoteAgeMs": 2000,
+    "maximumEntryDelayMs": 90000,
+    "maximumPositionCost": 20,
+    "maximumContracts": 40,
+    "minimumNetUsd": 0.01,
+    "saleBufferMs": 30000
+  },
+  "boundaries": {
+    "newModelFitted": false,
+    "terminalProbabilityReinterpreted": false,
+    "oracleLiveEntryEnabled": false,
+    "researchLocation": "GitHub Actions",
+    "deploymentAuthorized": "Owner explicitly requested merge and deployment for paper observation; manual deployment must use paper_only=true"
+  }
+}

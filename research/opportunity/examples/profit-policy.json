@@ -1,0 +1,20 @@
+{
+  "pacer": {
+    "enabled": true,
+    "group": false,
+    "hourlyUsd": 4.5,
+    "anchorHour": 10,
+    "anchorMinute": 0,
+    "tz": "America/New_York",
+    "mode": "slices",
+    "minTakeUsd": 0.75,
+    "maxTargetUsd": 6.5,
+    "floor": "riding",
+    "floorTicks": 8
+  },
+  "finalProfitFraction": 0.1,
+  "shareWindowMaxSec": 3600,
+  "saleBufferMs": 30000,
+  "maximumQuoteAgeMs": 2000,
+  "minimumLeadMs": 5000
+}

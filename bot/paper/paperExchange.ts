@@ -90,8 +90,11 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
     private readonly books: (ticker: string) => OrderBook | undefined,
     private readonly feesFor: (ticker: string) => FeeSchedule,
     private readonly now: () => number = Date.now,
+    /** Explicit research override; existing callers retain the current replenish policy. */
+    private readonly takenReplenishMs: number = TAKEN_REPLENISH_MS,
   ) {
     super();
+    if (!Number.isSafeInteger(takenReplenishMs) || takenReplenishMs < 0) throw new Error('invalid paper liquidity replenish interval');
     this.st = (file && readJson<PaperState>(file, { quarantine: true })) || { balance: startingBalance, funded: startingBalance, positions: {}, fills: [], orders: [] };
     // Accounts created before `funded` was recorded started with the old $20 default.
     const funded = this.st.funded ?? 20;
@@ -215,7 +218,7 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
         if (!through) break;
         const key = `${req.ticker}|${bookSide}|${lvl.price}`;
         let e = this.taken.get(key);
-        if (e && (TAKEN_REPLENISH_MS <= 0 || this.now() - e.ts >= TAKEN_REPLENISH_MS)) { this.taken.delete(key); e = undefined; }
+        if (e && (this.takenReplenishMs <= 0 || this.now() - e.ts >= this.takenReplenishMs)) { this.taken.delete(key); e = undefined; }
         // What we took is still missing from the level (size added since then is real); conservative while the
         // recorded level shrinks, since the public book never knew our take.
         const avail = e ? Math.max(0, lvl.size - e.taken) : lvl.size;
@@ -231,9 +234,9 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
         if (this.lastTake.size > 20000) for (const [k, v] of this.lastTake) if (this.now() - v.ts >= 600_000) this.lastTake.delete(k);
         this.fill(o, n, lvl.price, true);
         this.takerStats.filled += n; ser.filled += n;
-        if (TAKEN_REPLENISH_MS > 0) this.taken.set(key, { size: lvl.size, taken: (e?.taken ?? 0) + n, ts: this.now() });
+        if (this.takenReplenishMs > 0) this.taken.set(key, { size: lvl.size, taken: (e?.taken ?? 0) + n, ts: this.now() });
       }
-      if (this.taken.size > 5000) for (const [k, v] of this.taken) if (this.now() - v.ts >= TAKEN_REPLENISH_MS) this.taken.delete(k);
+      if (this.taken.size > 5000) for (const [k, v] of this.taken) if (this.now() - v.ts >= this.takenReplenishMs) this.taken.delete(k);
     }
     if (o.remainingCount > 1e-9) {
       if (req.timeInForce === 'good_till_canceled') {
@@ -293,6 +296,14 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
   /** The account's cash including what resting orders hold (for equity: a hold is still the account's money). */
   cash(): number {
     return this.st.balance;
+  }
+
+  /** Read-only preview for research takers: own earlier takes remain absent until
+   * displayed depth increases or the configured replenishment interval expires. */
+  availableTakerQuantity(ticker: string, bookSide: 'bid' | 'ask', price: number, displayed: number): number {
+    const taken = this.taken.get(`${ticker}|${bookSide}|${price}`);
+    return !taken || this.takenReplenishMs <= 0 || this.now() - taken.ts >= this.takenReplenishMs
+      ? displayed : Math.max(0, displayed - taken.taken);
   }
 
   /** What resting orders hold: the cost of each one's opening part. Orders that only close a held position hold nothing. */
