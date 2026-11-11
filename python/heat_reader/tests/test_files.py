@@ -5,10 +5,11 @@ import os
 
 import pytest
 
-from conftest import PACKAGE, T0, FakeBinance, assert_contract, bot_parse, contract, pack_row, reader_for, settings, walk, write_meta, write_pack
+from conftest import FIXTURES, T0, FakeBinance, assert_contract, bot_parse, contract, pack_row, reader_for, settings, walk, write_packs
 from heat_reader import DAY, MIN
 from heat_reader import reader as rd
-from heat_reader.pack import call_row
+from heat_reader.config import status_path
+from heat_reader.pack import Tables, call_row, pair_call
 
 
 def test_contract_field_names():
@@ -17,19 +18,27 @@ def test_contract_field_names():
     assert c['HeatCoinCalls'] == ({'asOf', 'tableSha', 'ok', 'calls'}, {'why'})
     assert c['HeatCallRow'][0] == {'key', 'kind', 'tf', 'h', 'dir', 'rank', 'of', 'heat', 'share', 'odds', 'barClose'}
     assert c['HeatCallRow'][1] == {'aliases', 'trig', 'hold', 'dip', 'move'}
-    # the one mapping function writes every required field and nothing the contract does not know
-    pack = json.load(open(os.path.join(PACKAGE, 'fixtures', 'traded_pack.first.json')))
+    # the two mapping functions write every required field and nothing the contract does not know
+    pack = json.load(open(os.path.join(FIXTURES, 'traded_pack.json')))
     for r in pack['rows']:
         row = call_row(r, pack['top'], T0)
         assert c['HeatCallRow'][0] <= set(row) <= c['HeatCallRow'][0] | c['HeatCallRow'][1]
-        assert 'trig' not in row                                   # every pack row is a single: nothing to refine
+        assert 'trig' not in row                                   # a single refines nothing
+    t = Tables(FIXTURES, ['BTC', 'ETH', 'SOL', 'XRP'], clock=True)
+    t.refresh()
+    pairs = [p for x in t.coins.values() for p in x.pairs]
+    assert len(pairs) == 38                                       # 33 pairs and triples, 5 clock rows above the twin
+    for p in pairs:
+        row = pair_call(p, p['rank'], t.top, T0)
+        assert c['HeatCallRow'][0] <= set(row) <= c['HeatCallRow'][0] | c['HeatCallRow'][1]
+        assert row['trig'] == p['when'] and row['kind'] in ('pair', 'triple')
 
 
 def test_a_file_with_no_coin_readable_still_fits_the_contract(tmp_path):
     """No oracle code at the given path: every coin is written not ok with the reason, in the bot's shape."""
-    pack = write_pack(tmp_path / 'pack.json', [pack_row('BTC', '1m:RSI7=very low')], {'BTC': 'sha-xxxxxxxx'})
-    write_meta(tmp_path / 'meta', 'BTC', {'edges': {'1m:RSI7': [1, 2, 3, 4]}, 'price_step': 0.01, 'table_sha256': 'sha-xxxxxxxx'})
-    s = settings(tmp_path, pack, tmp_path / 'meta', tmp_path / 'no-oracle-here', assets='BTC,ETH,DOGE')
+    pack = write_packs(tmp_path / 'packs', [pack_row('BTC', '1m:RSI7=very low')], {'BTC': 'sha-xxxxxxxx'},
+                       meta={'BTC': {'edges': {'1m:RSI7': [1, 2, 3, 4]}, 'price_step': 0.01, 'table_sha256': 'sha-xxxxxxxx'}})
+    s = settings(tmp_path, pack, tmp_path / 'no-oracle-here', assets='BTC,ETH,DOGE')
     fake = FakeBinance({'BTC': walk(10, T0 + 9 * MIN)}, now=T0 + 10 * MIN + 3000)
     r = reader_for(s, fake)
     obj = r.pass_once()
@@ -39,22 +48,28 @@ def test_a_file_with_no_coin_readable_still_fits_the_contract(tmp_path):
     assert obj['run'] == '43030435253' and len(obj['packSha']) == 64 and obj['writtenAt'] == T0 + 10 * MIN + 3000
     assert obj['coins']['BTC'] == {'asOf': T0 + 10 * MIN, 'tableSha': 'sha-xxxxxxxx', 'ok': False, 'calls': [],
                                    'why': f'no oracle/heat_live.py under {tmp_path / "no-oracle-here"} (HEAT_ORACLE_PATH)'}
-    assert obj['coins']['ETH']['why'] == 'the traded pack has no rows for this coin' and obj['coins']['ETH']['tableSha'] == ''
+    assert obj['coins']['ETH']['why'] == 'traded_pack.json has no rows for this coin' and obj['coins']['ETH']['tableSha'] == ''
     assert fake.klines() == []                                                          # nothing was asked of Binance for a coin that cannot be read
     status = json.load(open(os.path.join(s.reader_dir, 'status.json')))
     assert status['counts']['passes'] == 1 and status['counts']['goodPasses'] == 0 and status['coins']['BTC']['ok'] is False
+    side = json.load(open(status_path(s.calls_file)))                                   # the sidecar says the same, with the row counts
+    assert side['coins']['BTC']['ok'] is False and side['coins']['BTC']['why'] == obj['coins']['BTC']['why'] and side['coins']['BTC']['fired'] == {}
+    assert side['coins']['BTC']['rows'] == {'wanted': {'single': 1, 'pair': 0, 'triple': 0, 'clock': 0}, 'skipped': {}}
+    assert side['coins']['ETH']['rows'] == {'wanted': {'single': 0, 'pair': 0, 'triple': 0, 'clock': 0}, 'skipped': {}}
     got = bot_parse(open(s.calls_file).read())
     if got is not None:                                                                 # the bot's own reader takes the file
         assert 'error' not in got and got['run'] == '43030435253'
         assert got['coins']['BTC']['ok'] is False and got['coins']['BTC']['why'] == obj['coins']['BTC']['why']       # nothing in it is "malformed"
-        assert got['coins']['ETH']['why'] == 'the traded pack has no rows for this coin' and got['coins']['ETH']['asOf'] == T0 + 10 * MIN
+        assert got['coins']['ETH']['why'] == 'traded_pack.json has no rows for this coin' and got['coins']['ETH']['asOf'] == T0 + 10 * MIN
 
 
 def test_a_missing_pack_is_said_in_the_file(tmp_path):
-    s = settings(tmp_path, tmp_path / 'nope.json', tmp_path / 'meta', tmp_path / 'no-oracle', assets='BTC')
+    s = settings(tmp_path, tmp_path / 'nope', tmp_path / 'no-oracle', assets='BTC')
     obj = reader_for(s, FakeBinance({}, now=T0 + 3000)).pass_once()
     assert_contract(obj)
-    assert obj['run'] == 'unknown' and obj['packSha'] == '' and obj['coins']['BTC']['why'] == 'the traded pack cannot be read: nope.json (FileNotFoundError)'
+    assert obj['run'] == 'unknown' and obj['packSha'] == '' and obj['coins']['BTC']['why'] == f'traded_pack.json cannot be read in {tmp_path / "nope"} (FileNotFoundError)'
+    side = json.load(open(status_path(s.calls_file)))
+    assert side['problem'] == obj['coins']['BTC']['why'] and side['packs'] == {}
 
 
 def test_the_calls_file_is_replaced_whole(tmp_path, monkeypatch):
@@ -99,7 +114,7 @@ def test_daily_log_and_its_14_days(tmp_path):
 
 
 def test_the_reader_appends_each_file_and_rotates_at_the_day_change(tmp_path):
-    s = settings(tmp_path, tmp_path / 'nope.json', tmp_path / 'meta', tmp_path / 'no-oracle', assets='BTC')
+    s = settings(tmp_path, tmp_path / 'nope', tmp_path / 'no-oracle', assets='BTC')
     d = os.path.dirname(s.calls_file)
     os.makedirs(d)
     for i in range(1, 30):                                          # logs of the 29 days before

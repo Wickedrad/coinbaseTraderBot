@@ -11,8 +11,10 @@
 #        (python/heat_reader/requirements.txt: binary wheels only, pip refuses a file whose SHA-256 is not listed,
 #        nothing is compiled, the TA-Lib wheel carries its C library). Rebuilt only when that file or the Python
 #        version changes. Needs Python 3.11 to 3.14 with the venv module.
-#     2. copies the traded pack and the coin metas the release ships into ~/bot/data/heat_reader/tables (they stay
-#        there across releases),
+#     2. checks that the release ships what the reader runs on: python/heat_reader, python/oracle and the oracle
+#        run's packs in research/oracle_heat/latest (traded_pack.json, pair_pack.json, live_meta.json, and
+#        clock_pack.json when HEAT_CLOCK_PACK=true). The reader reads them from the release (~/bot/current), so code
+#        and curves always come from the same commit; nothing is copied out of the release.
 #     3. writes ~/bot/heat-reader.env from the reader's settings found in bot.env (a fixed list of HEAT_* names, no
 #        secret among them: the reader's unit never reads bot.env itself),
 #     4. installs or refreshes /etc/systemd/system/heat-reader.service, enables it and restarts it.
@@ -25,7 +27,6 @@ REL="$(dirname "$DIR")"
 BOT=~/bot
 ENV="$BOT/bot.env"
 VENV="$BOT/.venv-heat-reader"
-TABLES="$BOT/data/heat_reader/tables"
 READER_ENV="$BOT/heat-reader.env"
 UNIT=heat-reader
 UNIT_FILE="${HEAT_READER_UNIT_DIR:-/etc/systemd/system}/$UNIT.service"      # the folder is a setting only so the script can be tested
@@ -60,6 +61,15 @@ esac
 # ---- what the release must ship ----
 [ -f "$REQ" ] && [ -f "$REL/python/heat_reader/cli.py" ] || die "this release does not ship python/heat_reader (see docs/HEAT_READER.md, 'What the deploy needs')"
 [ -f "$REL/python/oracle/heat_live.py" ] || die "this release does not ship python/oracle (the engine the reader runs)"
+# The packs: HEAT_PACK_DIR when bot.env names one, else the release's own research/oracle_heat/latest (the reader's default).
+PACKS="$(val HEAT_PACK_DIR)"
+PACKS="${PACKS:-$REL/research/oracle_heat/latest}"
+want="traded_pack.json pair_pack.json live_meta.json"
+clock="$(val HEAT_CLOCK_PACK | tr '[:upper:]' '[:lower:]')"
+case "$clock" in true|1|yes|on) want="$want clock_pack.json" ;; esac
+for f in $want; do
+  [ -f "$PACKS/$f" ] || die "no $f in $PACKS: the release must ship the oracle run's packs (see docs/HEAT_READER.md, 'What the deploy needs')"
+done
 
 # ---- Python 3.11 to 3.14 with venv ----
 PY=""
@@ -88,27 +98,11 @@ fi
 # Compiled once here: the service runs with the home folder read-only and could not keep its own.
 "$VENV/bin/python" -m compileall -q "$REL/python/heat_reader" "$REL/python/oracle" >/dev/null 2>&1 || true
 
-# ---- the pack and the metas ----
-mkdir -p "$TABLES"
-put() { # put <source> <name in the tables folder>: copied only when different, swapped in whole
-  [ -f "$1" ] || return 1
-  cmp -s "$1" "$TABLES/$2" 2>/dev/null && return 0
-  cp "$1" "$TABLES/.$2.new" && mv "$TABLES/.$2.new" "$TABLES/$2" && say "tables: $2 from $(basename "$(dirname "$1")")/$(basename "$1")"
-}
-SHIPPED="$REL/research/oracle_heat/latest"
-put "$SHIPPED/traded_pack.json" traded_pack.json || true
-put "$SHIPPED/live_meta.json" live_meta.json || true
-# No pack from the oracle run in this release and none installed yet: the first pack, which ships with the reader.
-[ -f "$TABLES/traded_pack.json" ] || put "$REL/python/heat_reader/fixtures/traded_pack.first.json" traded_pack.json || true
-[ -f "$TABLES/traded_pack.json" ] || say "WARNING no traded pack in $TABLES: every coin will be written as not ok"
-if [ ! -f "$TABLES/live_meta.json" ] && ! ls "$TABLES"/*/meta.json >/dev/null 2>&1; then
-  say "WARNING no coin meta in $TABLES (live_meta.json, or <COIN>/meta.json from Drive models/oracle-heat/runs/<run>/): every coin will be written as not ok until it is there"
-fi
-
 # ---- the reader's settings: the HEAT_* names it reads, copied out of bot.env (no secret is among them) ----
 tmp="$(mktemp "$READER_ENV.XXXX")"
 echo "# Written by deploy/heat_reader_install.sh from $ENV. Edit bot.env, then run that script again." > "$tmp"
-for name in HEAT_CALLS_FILE HEAT_ASSETS HEAT_WINDOW_BARS HEAT_READER_DIR HEAT_PACK_FILE HEAT_META_DIR HEAT_ORACLE_PATH HEAT_RUN HEAT_BINANCE_API; do
+for name in HEAT_CALLS_FILE HEAT_ASSETS HEAT_WINDOW_BARS HEAT_READER_DIR HEAT_PACK_DIR HEAT_ORACLE_PATH HEAT_RUN HEAT_BINANCE_API \
+            HEAT_READER_MAX_RANK HEAT_CLOCK_PACK; do
   v="$(val "$name")"
   [ -n "$v" ] && printf '%s=%s\n' "$name" "$v" >> "$tmp"
 done
@@ -131,5 +125,6 @@ if ! systemctl is-active --quiet "$UNIT"; then
   sudo journalctl -u "$UNIT" -n 30 --no-pager 2>&1 || true
   die "the reader did not stay up"
 fi
-say "running ($(systemctl show -p MainPID --value "$UNIT" 2>/dev/null | sed 's/^/pid /')). The first start downloads the minute window (a few minutes); then one file a minute: ${calls:-$BOT/data/heat_calls.json}"
-say "look: sudo journalctl -u $UNIT -n 20 --no-pager; cat $BOT/data/heat_reader/status.json"
+say "running ($(systemctl show -p MainPID --value "$UNIT" 2>/dev/null | sed 's/^/pid /')), packs from $PACKS. The first start downloads about 150 days of minutes per coin (a few minutes); then one file a minute: ${calls:-$BOT/data/heat_calls.json}"
+side="${calls:-$BOT/data/heat_calls.json}"
+say "look: sudo journalctl -u $UNIT -n 20 --no-pager; cat ${side%.json}.status.json"

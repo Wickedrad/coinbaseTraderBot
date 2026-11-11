@@ -99,6 +99,8 @@ import { activeGpSignals } from './gp/gpSignals';
 import { marketContext } from './ta/marketContext';
 import { binaryTrades, optimalF, recencyWeight, type OptimalFReport } from './strategy/optimalF';
 import { altcoinRiskOn, confluenceBreadth, orientedSignals, selectionPriority, taDrift, taNetDirection, viewOf, type TaNetView } from './strategy/taConviction';
+import type { HeatLane, HeatLanePlan } from './heat/heatLane';
+import type { HeatHooks, HeatMarketView, HeatSnapshot, HeatSource } from './heat/types';
 
 /** Paper fixed size: how many fixed-size orders the window cap (markets closing together) and the total cap hold. */
 const PAPER_WINDOW_ORDERS = 3;
@@ -356,6 +358,9 @@ export interface EngineDeps {
   fillLogDir?: string;
   /** Live exchange status and maintenance schedule (bot/kalshi/exchangeStatus.ts). */
   exchangeStatus?: ExchangeStatusMonitor;
+  /** The heat entry lane (bot/heat, docs/HEAT_LANE.md): the reader's calls, the lane's book, and the hooks of whatever owns
+   *  its positions' exits. Unset, or HEAT_LANE off: nothing changes. */
+  heat?: { lane: HeatLane; source: HeatSource } & HeatHooks;
   now?: () => number;
 }
 
@@ -1000,6 +1005,7 @@ export class Engine {
       // Optimal f on the Kalshi pool's settled trades (cap on the stake per order, fraction of bankroll).
       optimalF: Object.fromEntries((['crypto', 'tennis'] as const).map((b) => { const f = this.kalshiOptimalF(b, now); const r = f.rep; return [b, r ? { trades: r.n, meanR: Number.isFinite(r.meanR) ? +r.meanR.toFixed(4) : null, gStar: +r.gStar.toFixed(4), gP25: Number.isFinite(r.gP25) ? +r.gP25.toFixed(4) : null, cap: Number.isFinite(f.cap) ? +f.cap.toFixed(4) : null, ddP95R: Number.isFinite(r.ddP95R) ? +r.ddP95R.toFixed(2) : null, note: r.note ?? null } : null]; })),
       entryGuards: this.entryGuards(now),
+      heat: this.heatStatus(now),
     };
   }
 
@@ -1304,6 +1310,8 @@ export class Engine {
     // work (index series, TA snapshot, ...) instead of each rebuilding it a few milliseconds apart.
     await Promise.all(run.map((m) => this.evaluate(m, t0)));
     this.cpu.note('evaluate', c0, run.length, ms.length);
+    // Heat entry lane (bot/heat): after the old lane's pass, before the perps read the hour's call; a failure never stops the tick.
+    await this.heatTick(this.now()).catch((e) => this.heatFailed(e));
     this.prune();
     // Stage 2: offset the binary book's net delta with perps (reduce-only when new risk is halted).
     // Perps: the hedge is reduce-only while binary risk is halted; directional trading has its own guards.
@@ -2426,7 +2434,7 @@ export class Engine {
     // winner (riding mode); its lock hold rides to settlement, which the quota still takes (Oct 29).
     const pacerFloor = this.quotaFloors.floor(m.ticker, view.position);
     const floorOpts = S.pacer.floor === 'off' ? {} : { pacerFloor, ...(S.pacer.floor === 'riding' && huntMode && !huntHold ? { pacerHigher: `the hunt riding its stop ${st.huntStop ?? ''}`.trim() } : {}) };
-    const plan = decide(view, strat, { exits: !huntMode && S.exitPolicy !== 'hold', blockReductions: huntMode && !huntHold, entries: Boolean(reason), profitMandate: S.profitMandate && (!huntMode || huntHold) ? S.profitMandateMin : undefined, pacerUsd, ...(group?.sell ? { pacerGroup: group } : {}), ...floorOpts });
+    const plan = decide(view, strat, { exits: !huntMode && S.exitPolicy !== 'hold', blockReductions: huntMode && !huntHold, entries: Boolean(reason) && !this.d.heat?.lane.holds(m.ticker), profitMandate: S.profitMandate && (!huntMode || huntHold) ? S.profitMandateMin : undefined, pacerUsd, ...(group?.sell ? { pacerGroup: group } : {}), ...floorOpts });
     if (plan.pacerArm && this.quotaFloors.arm(m.ticker, view.position, plan.pacerArm.usd)) this.d.audit.write('pacer', { event: 'floor', ticker: m.ticker, usd: plan.pacerArm.usd, why: plan.pacerArm.why, ...this.pacer.status(now) });
     // A quota snipe liquidates the position: the hunt's stop order would only double it. The decision is audited with the clock.
     const snipe = plan.place.find((p) => p.purpose === 'exit' && p.why.startsWith('quota snipe'));
@@ -2493,7 +2501,7 @@ export class Engine {
     // training weight these trades correctly; live mode never explores.
     // (A resting maker quote does not count: far from the touch it rarely fills, and blocked this before.)
     if (cfg.mode === 'paper' && S.paperExplore && reason && entryWindowOpen && st.position === 0 && !plan.place.some((p) => p.purpose === 'entry')) {
-      const relaxed = decide(view, { ...strat, minEdge: Math.max(0, strat.minEdge - S.exploreBand), style: 'both' }, { exits: false, blockReductions: false, entries: true });
+      const relaxed = decide(view, { ...strat, minEdge: Math.max(0, strat.minEdge - S.exploreBand), style: 'both' }, { exits: false, blockReductions: false, entries: !this.d.heat?.lane.holds(m.ticker) });
       const e = relaxed.place.find((p) => p.purpose === 'entry');
       if (e && this.exploreBudget(now) && Math.random() < S.exploreRate) {
         this.exploreTs.push(now);
@@ -2780,7 +2788,7 @@ export class Engine {
   }
 
   /** `opts.killExit`: a crypto exit sent under the kill switch (cryptoKillExits), marked for the gateway as tennis's are. */
-  private async placeChecked(m: ActiveMarket, p: OrderPlan, pYes: number, decisionId: string, tennis?: { event: string; killExit?: boolean }, opts?: { killExit?: boolean }): Promise<void> {
+  private async placeChecked(m: ActiveMarket, p: OrderPlan, pYes: number, decisionId: string, tennis?: { event: string; killExit?: boolean }, opts?: { killExit?: boolean; heat?: { modelId: string; edgeCollar: boolean } }): Promise<void> {
     const { cfg, md, oms, risk, kill, model } = this.d;
     const now = this.now();
     const T = cfg.tennis;
@@ -2836,6 +2844,14 @@ export class Engine {
     };
     if (training) ctx.skipEdgeCollar = true;
     if (tennis?.killExit || opts?.killExit) ctx.killExit = true;
+    // A heat entry (bot/heat): its own model id, and neither the old model's live validation nor, unless HEAT_FEE_NET_CHECK, the
+    // fee-net edge collar judges it (the lane's proof standard is the one test, not a cost bar).
+    if (opts?.heat) { intent.modelId = opts.heat.modelId; ctx.modelLiveBlockers = []; if (!opts.heat.edgeCollar) ctx.skipEdgeCollar = true; }
+    // Any other order that adds risk on a market the heat lane holds is refused, whichever evaluation built it. decide()'s
+    // entries flag keeps the old lane off such a market; this still holds where a decide() call misses that flag (once the plan
+    // exits land, a plan-held position has a decide() call of its own, and a filled heat position is one), so nothing adds to
+    // or flips it.
+    if (!opts?.heat && this.d.heat?.lane.holds(m.ticker)) ctx.haltReasons = [...ctx.haltReasons, 'the heat lane holds this market'];
     // An adversary-boosted entry may use proportionally more of the per-order caps (window / total caps unchanged; with
     // RISK_SIZE_CAPS off no crypto cap binds).
     if (p.boost && p.boost > 1 && !tennis) {
@@ -2894,6 +2910,8 @@ export class Engine {
     if (p.reduceOnly || p.purpose === 'exit') {
       return p.why.startsWith('confluence ratchet stop') && !cfg.liveAllowUnvalidated && !model.validatedHunt() && !gatePasses('kalshi', false) ? ['ratchet stop live would not run (hunt not validated, probation benched)'] : [];
     }
+    // A heat entry meets neither the old model's live gate (placeChecked's heat option) nor the paper-only trades below.
+    if (p.why.startsWith('heat ')) return [];
     const out: string[] = [];
     if (!cfg.liveAllowUnvalidated && !gatePasses('kalshi', false) && model.liveBlockers().length) out.push('model not validated, probation benched');
     if (p.why.startsWith('train (paper)')) out.push('paper training trade');
@@ -2955,7 +2973,204 @@ export class Engine {
     const quotes = this.d.oms.liveOrders().filter((o) => o.purpose === 'quote' && !o.cancelRequested);
     await Promise.all(quotes.map((q) => this.d.oms.cancel(q.clientOrderId, reason)));
   }
+
+  // ---- Heat entry lane (bot/heat, docs/HEAT_LANE.md) ----------------------------------------------------------------
+  // The lane picks a call and a contract; this places it through placeChecked like any other entry, paper and live alike,
+  // and whatever owns the plan positions' exits (the tag hook) manages the position from there. Entries only: no exit here.
+
+  /** Said once a process: the lane is on and nothing owns its exits, so it enters nothing. */
+  private heatNoOwnerSaid = false;
+  /** Whether the reader's file was usable at the last look: a change is logged and audited once. */
+  private heatFileOk: boolean | undefined;
+  /** The last heat failure logged and when: one a minute, not one a tick. */
+  private heatFailure = { text: '', at: 0 };
+  /** A pass is still placing its entries: tick() has no reentrancy guard, and the next second's pass must not overlap it. */
+  private heatRunning = false;
+  /** Passes in a row that waited for a market's busy lock before ruling (see heatPass). */
+  private heatBusyWaits = 0;
+
+  /** The lane's block in the status JSON (guards): the reader's file, the book, the flat phase, the pilot budget, the
+   *  hour contexts and the last calls. null without a lane. */
+  heatStatus(now = this.now()) {
+    const h = this.d.heat;
+    if (!h) return null;
+    return { enabled: this.d.cfg.heat.enabled, exitOwner: Boolean(h.tag), source: h.source.status(now), ...h.lane.status(now) };
+  }
+
+  /** One pass of the lane, after the old lane's evaluations. It runs every second, so it ends early unless a call waits. */
+  private async heatTick(now: number): Promise<void> {
+    const h = this.d.heat;
+    if (!h || !this.d.cfg.heat.enabled || this.heatRunning) return;
+    this.heatRunning = true;
+    try { await this.heatPass(h, now); } finally { this.heatRunning = false; }
+  }
+
+  private async heatPass(h: NonNullable<EngineDeps['heat']>, now: number): Promise<void> {
+    const { cfg, oms, audit } = this.d;
+    // The lane's book against the position book: entries seen open, round trips closed or settled, and entries that filled
+    // nothing, whose tag comes off (an old-lane fill on that market would otherwise become a plan position).
+    const sync = h.lane.sync(now, (t) => oms.positions.get(t));
+    for (const t of sync.dropped) h.untag?.(t);
+    for (const t of sync.opened) audit.write('heat', { event: 'opened', ticker: t });
+    if (sync.closed.length) {
+      const b = h.lane.status(now);
+      for (const c of sync.closed) audit.write('heat', { event: 'closed', ...c, trips: b.trips, wins: b.wins, pnl: b.pnl });
+    }
+    const snap = h.source.read(now);
+    this.heatFileCheck(h, snap, now);
+    // Keeps the hour contexts and the perps side's calls fresh; no call waiting to be ruled on ends the pass here.
+    if (!h.lane.pending(now, snap).length) { this.heatBusyWaits = 0; return; }
+    // No exits' owner, no entry: the old model's exit would sell the position on its next tick. The calls are still recorded.
+    let blocked: string | undefined;
+    if (!h.tag) {
+      blocked = 'no exit owner';
+      if (!this.heatNoOwnerSaid) { this.heatNoOwnerSaid = true; log.warn('heat lane needs the plan exits (PLAN_RULES): no heat entry until they own its positions'); }
+    }
+    // The soft pause or hard stop, then the guards the risk gateway would refuse new risk on anyway.
+    blocked ??= h.entryGate?.() ?? this.haltReasons()[0];
+    const markets = this.heatMarkets(h, now);
+    // A busy lock is a moment's overlap with an evaluation still running from an earlier tick. Ruling now would claim the
+    // call as a skip for its whole bar, so wait a few passes (about 10 s, well inside HEAT_ENTRY_LAG_SEC) for it to clear.
+    if (!blocked && markets.some((x) => x.blocked === HEAT_BUSY) && this.heatBusyWaits++ < 10) return;
+    this.heatBusyWaits = 0;
+    const res = h.lane.decide(now, snap, markets, {
+      orderMin: cfg.strategy.orderUsdMin, orderMax: cfg.strategy.orderUsdMax, minSide: cfg.risk.minSidePrice, live: cfg.mode === 'live',
+      windows: cfg.strategy, ...(blocked ? { entriesBlocked: blocked } : {}),
+    });
+    for (const a of res.alerts) this.d.alerter.notify('warn', 'heat-pilot', a);
+    const sent = new Map<string, string>();
+    for (const p of res.plans) {
+      // One plan that throws must not cost the other plans or the per-call audit rows below.
+      let out: string | undefined;
+      try {
+        out = await this.heatEnter(h, p, snap, now);
+      } catch (e) {
+        out = `failed: ${String(e).slice(0, 160)}`;
+        this.heatFailed(e);
+        // Let go only while nothing is held there: a position that did fill stays the lane's (and its tag's) to manage.
+        if (Math.abs(oms.positions.position(p.ticker)) < 1e-9 && h.lane.drop(p.ticker)) h.untag?.(p.ticker);
+      }
+      sent.set(`${p.asset}:${p.h}`, out ?? 'sent');
+    }
+    // One compact row per call ruled on, traded or not.
+    for (const d of res.decided) {
+      const plan = res.plans.find((p) => p.asset === d.asset && p.h === d.h);
+      const skip = plan ? undefined : res.skips.find((s) => s.asset === d.asset && s.h === d.h);
+      const hour = d.h === 15 ? h.lane.hour(d.asset, now) : undefined;
+      const context = plan?.context ?? (d.h !== 15 || cfg.heat.context === 'off' ? 'n/a' : !hour ? 'none' : hour.dir === d.row.dir ? 'agree' : 'against');
+      audit.write('heat', {
+        asset: d.asset, h: d.h, key: d.row.key, kind: d.row.kind, dir: d.row.dir, rank: d.row.rank, of: d.row.of, heat: d.row.heat, barClose: d.row.barClose,
+        fired: d.fired, against: d.against, ...(d.single ? { single: d.single.key } : {}), context, run: snap?.run ?? null,
+        ...(plan
+          ? { plan: { ticker: plan.ticker, side: plan.side, price: plan.price, count: plan.count, stakeUsd: plan.stakeUsd, weight: plan.weight, slot: plan.slot }, entry: sent.get(`${d.asset}:${d.h}`) }
+          : { skip: skip?.reason ?? 'no reason recorded', ...(skip?.ticker ? { ticker: skip.ticker } : {}) }),
+      });
+    }
+  }
+
+  /** The coins' 15-minute and hourly markets as the lane sees them: the book the evaluations use, what we hold and have
+   *  working there, and why one cannot take an entry now. */
+  private heatMarkets(h: NonNullable<EngineDeps['heat']>, now: number): HeatMarketView[] {
+    const { cfg, md, oms } = this.d;
+    const coins = new Set(cfg.heat.assets);
+    const working = new Map<string, number>();
+    for (const o of oms.liveOrders()) if (!o.cancelRequested) working.set(o.ticker, (working.get(o.ticker) ?? 0) + 1);
+    const out: HeatMarketView[] = [];
+    for (const m of md.activeMarkets(now)) {
+      // Up/Down is the 15-minute contract; the hourly ladder's strikes are 'greater' (YES above the strike, so UP buys YES).
+      const kind = m.kind === 'updown' ? '15m' : m.kind === 'greater' ? 'hourly' : undefined;
+      if (!kind || !coins.has(m.asset)) continue;
+      const book = md.book(m.ticker);
+      const blocked = !this.bookUsable(book, now) ? 'book not usable (stale, crossed or the Kalshi feed behind)'
+        : md.feeBlock(m.ticker) ?? (this.busy.has(m.ticker) ? HEAT_BUSY : undefined)
+          ?? h.reentryBlock?.(m.ticker, (m.closeTime - now) / 1000, shareWindowSec(m.openTime, m.closeTime, 0));
+      out.push({
+        ticker: m.ticker, asset: m.asset, kind, closeTs: m.closeTime, openTs: m.openTime, yesBid: book.bestBid()?.price, yesAsk: book.bestAsk()?.price,
+        position: oms.positions.position(m.ticker), working: working.get(m.ticker) ?? 0, ...(blocked ? { blocked } : {}),
+      });
+    }
+    return out;
+  }
+
+  /** Send one plan: the busy lock, our resting orders on the market pulled, the decision record, the tag, then the order
+   *  through placeChecked. Returns why it did not go out or filled nothing, else undefined. */
+  private async heatEnter(h: NonNullable<EngineDeps['heat']>, plan: HeatLanePlan, snap: HeatSnapshot | undefined, now: number): Promise<string | undefined> {
+    const { cfg, md, oms, audit } = this.d;
+    const m = md.markets.get(plan.ticker);
+    if (!m) return 'the market is no longer listed';
+    // Claimed before the first await: tick() has no reentrancy guard, and no evaluation may quote here meanwhile.
+    if (this.busy.has(plan.ticker)) return HEAT_BUSY;
+    this.busy.add(plan.ticker);
+    try {
+      // The market is flat, so every resting order of ours on it is an old-lane quote. One that crosses would make live
+      // Kalshi's self-trade prevention cancel the entry (the paper exchange does not simulate that), and one that does not
+      // could fill later and add to or flip the heat position: they all go first.
+      const ours = oms.liveOrders().filter((o) => o.ticker === plan.ticker && !o.cancelRequested);
+      await Promise.all(ours.map((o) => oms.cancel(o.clientOrderId, 'heat entry: the heat lane takes this market')));
+      // One of them filled while it was pulled: the lane never adds to or flips a position.
+      if (Math.abs(oms.positions.position(plan.ticker)) > 1e-9) return 'the market took a position while our orders were pulled';
+      const decisionId = crypto.randomUUID();
+      const modelId = `heat:${snap?.run ?? ''}`;
+      const order: OrderPlan = {
+        side: plan.side === 'yes' ? 'bid' : 'ask', price: plan.price, count: plan.count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry',
+        edge: +(plan.side === 'yes' ? plan.fair - plan.price : plan.price - plan.fair).toFixed(4), why: plan.why,
+      };
+      const r = plan.row;
+      const book = md.book(plan.ticker);
+      audit.write('decision', {
+        decisionId, ticker: plan.ticker, lane: 'heat', model: modelId, kind: m.kind, tauSec: (m.closeTime - now) / 1000, bid: book.bestBid()?.price, ask: book.bestAsk()?.price, position: 0,
+        heat: {
+          asset: plan.asset, h: plan.h, dir: r.dir, key: r.key, kind: r.kind, rank: r.rank, of: r.of, heat: r.heat, share: r.share, odds: r.odds, barClose: r.barClose,
+          context: plan.context, weight: plan.weight, slot: plan.slot, stake: plan.stakeUsd, count: plan.count, fair: plan.fair, ruleId: plan.ruleId, run: snap?.run ?? null, packSha: snap?.packSha ?? null,
+        },
+        place: [{ side: order.side, price: order.price, count: order.count, purpose: order.purpose, edge: order.edge, why: order.why }],
+        cancel: ours.map((o) => ({ clientOrderId: o.clientOrderId, reason: 'heat entry' })),
+      });
+      // Tagged before the order goes out: a paper fill arrives inside submit(), a live one may beat its acknowledgement.
+      h.tag?.({ ticker: plan.ticker, side: plan.side, ruleId: plan.ruleId }, now);
+      const pos = oms.positions.get(plan.ticker);
+      h.lane.sent(plan, now, pos?.netCash ?? 0, pos?.fees ?? 0);
+      await this.placeChecked(m, order, plan.fair, decisionId, undefined, { heat: { modelId, edgeCollar: cfg.heat.feeNetCheck } });
+      // No order record (refused before it went out), rejected, or an immediate-or-cancel that filled nothing: the lane lets
+      // go of the ticker now and the tag comes off, instead of both waiting out the 30 s rule.
+      const rec = oms.allOrders(50).find((o) => o.decisionId === decisionId);
+      const failed = !rec ? 'not sent: refused before it went out (see risk_reject)'
+        : rec.state === 'REJECTED' ? `rejected${rec.lastError ? `: ${rec.lastError}` : ''}`
+        : (rec.state === 'CANCELED' || rec.state === 'EXPIRED') && rec.filledCount === 0 && rec.exchangeFillCount === 0 ? 'nothing filled (immediate-or-cancel)'
+        : undefined;
+      if (failed && h.lane.drop(plan.ticker)) h.untag?.(plan.ticker);
+      return failed;
+    } finally {
+      this.busy.delete(plan.ticker);
+    }
+  }
+
+  /** A missing file, or one written more than twice HEAT_MAX_AGE_SEC ago, is ignored (the lane's status says so). The change
+   *  between usable and not is logged and audited once, never thrown. */
+  private heatFileCheck(h: NonNullable<EngineDeps['heat']>, snap: HeatSnapshot | undefined, now: number): void {
+    const ok = !!snap && now - snap.writtenAt <= 2 * this.d.cfg.heat.maxAgeSec * 1000;
+    if (ok === this.heatFileOk) return;
+    const first = this.heatFileOk === undefined;
+    this.heatFileOk = ok;
+    if (first && ok) return;
+    const why = ok ? 'heat calls file usable again'
+      : snap ? `heat calls file ignored: written ${Math.round((now - snap.writtenAt) / 1000)} s ago (limit ${2 * this.d.cfg.heat.maxAgeSec} s)`
+      : `heat calls file not usable: ${h.source.status(now).why ?? 'no file'}`;
+    if (ok) log.info(why); else log.warn(why);
+    this.d.audit.write('heat', { event: 'source', ok, why });
+  }
+
+  private heatFailed(e: unknown): void {
+    const text = String(e), now = this.now();
+    if (text === this.heatFailure.text && now - this.heatFailure.at < 60_000) return;
+    this.heatFailure = { text, at: now };
+    log.error('heat lane failed', { error: text });
+    this.d.audit.write('error', { where: 'heatTick', error: text });
+  }
 }
+
+/** Why a heat entry waits: an evaluation of the market (from an earlier tick) holds its busy lock. */
+const HEAT_BUSY = 'an evaluation of this market is in flight';
 
 /** Compact log row of a direction call with its confidence (see ReplayState 'snn' parsing). */
 function dirRow(d: DirectionPred): (string | number | null)[] {

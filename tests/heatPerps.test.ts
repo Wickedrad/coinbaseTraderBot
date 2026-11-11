@@ -460,6 +460,22 @@ test('mode entry: at the re-check a heat candidate is dropped unless the hour co
   assert.equal(restarted.status().recentSkips[0].reason, 'heat entries are off (HEAT_PERPS)');
 });
 
+test('mode entry: a heat candidate that waited past its clock hour is dropped, not entered next to the new hour', async () => {
+  const r = hourly();
+  r.heat.fire('BTC', 1, r.H + 5 * MIN);
+  assert.equal((await r.btc(r.H + 5 * MIN + 5_000, { noEntry: 'paused' })).target, 0);
+  assert.equal(r.trader.status().lanes.fast.queue.length, 1);
+  // Still paused at the end of the hour: it keeps waiting.
+  assert.equal((await r.btc(r.H + 59 * MIN, { noEntry: 'paused' })).target, 0);
+  assert.equal(r.trader.status().lanes.fast.queue.length, 1);
+  // Entries resume in the next clock hour, with the hour still pointing up: the old candidate is dropped.
+  r.heat.context('BTC', 1, r.H + HOUR + MIN);
+  assert.equal((await r.btc(r.H + HOUR + 2 * MIN)).target, 0);
+  assert.equal(r.trader.book.positions.size, 0);
+  assert.equal(r.trader.status().lanes.fast.queue.length, 0);
+  assert.equal(r.trader.status().recentSkips[0].reason, 'heat: the clock hour it was offered in has passed');
+});
+
 test('mode entry: a heat trade ends at the next hourly close, unless the hour still points its way: then it is carried, not closed and re-opened', async () => {
   const start = async () => {
     const r = hourly();

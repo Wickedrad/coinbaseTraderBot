@@ -3,7 +3,8 @@
 // The curve reader publishes, once a minute and per coin, the rows of the direction table that fired at the last
 // closed bar. This file turns them into entries:
 //   1. per coin and horizon, ONE decided call: the hottest row now firing (a pair or triple replaces the single it
-//      refines; nothing is averaged; a row's other names are the same event, never a second vote);
+//      refines, even when ranked beyond HEAT_TOP_N, and one calling against that single is skipped unless
+//      HEAT_PAIR_CONFLICT=pair; nothing is averaged; a row's other names are the same event, never a second vote);
 //   2. the 60-minute call is the hour's direction for the coin: it sizes (or blocks) a 15-minute contract entry
 //      inside that hour and it is what the perps side asks for;
 //   3. a 15-minute call buys the called side of the coin's 15-minute contract, a 60-minute call the hourly strike
@@ -137,20 +138,48 @@ function oneRowPerEvent(rows: HeatCallRow[]): HeatCallRow[] {
   return out;
 }
 
-/** A coin's decided call from the rows now firing at one horizon: the hottest row, replaced by the hottest firing
- *  triple (else pair) that refines it. Undefined when nothing fired. */
-export function decideCall(asset: string, h: number, firing: HeatCallRow[]): HeatDecided | undefined {
+/** Finer first (a triple before a pair), then the higher heat: the order refinements of one trigger replace in. */
+const finerThenHeat = (a: HeatCallRow, b: HeatCallRow): number => KIND_ORDER[b.kind] - KIND_ORDER[a.kind] || b.heat - a.heat || hotter(a, b);
+
+/** A coin's decided call from the rows now firing at one horizon (Addendum 2's pair rule). The decided single is the
+ *  hottest firing single inside the batch (`topN`, 0 = every row). The firing pairs and triples whose trigger (`trig`) is
+ *  that single, under its key or one of its aliases, refine it: the finest and hottest of them replaces it whatever its
+ *  own rank, and the replacement keeps the hotter of the two ranks (the single was already good enough to trade). A pair
+ *  on any other trigger stands on its own, inside the batch only. The hottest of these wins; nothing is averaged.
+ *  `single` on the result names the single a refinement replaced, so the caller can see a pair calling against it.
+ *  Undefined when nothing inside the batch fired. */
+export function decideCall(asset: string, h: number, firing: HeatCallRow[], topN = 0): HeatDecided | undefined {
   const events = oneRowPerEvent(firing);
-  if (!events.length) return undefined;
-  let row = events[0];
-  // A refinement names the single it was built on in `trig`. It replaces the chosen row when that is this row (under
-  // any of its names) or when both refine the same single; only a finer kind replaces (a pair never a hotter pair).
-  const names = new Set([row.key, ...(row.aliases ?? [])]);
-  const finer = events
-    .filter((r) => KIND_ORDER[r.kind] > KIND_ORDER[row.kind] && r.trig !== undefined && (names.has(r.trig) || r.trig === row.trig))
-    .sort((a, b) => KIND_ORDER[b.kind] - KIND_ORDER[a.kind] || hotter(a, b))[0];
-  if (finer) row = finer;
-  return { asset, h, row, fired: events.length, against: events.filter((r) => r.dir !== row.dir).length };
+  const inBatch = (r: HeatCallRow) => topN <= 0 || r.rank <= topN;
+  const single = events.find((r) => r.kind === 'single' && inBatch(r));
+  const own = new Set(single ? [single.key, ...(single.aliases ?? [])] : []);
+  const refines = (r: HeatCallRow) => r.kind !== 'single' && r.trig !== undefined && own.has(r.trig);
+  const refiner = events.filter(refines).sort(finerThenHeat)[0];
+  const lead = single && refiner ? { ...refiner, rank: Math.min(single.rank, refiner.rank) } : single;
+  // A pair or triple of another trigger: the hottest inside the batch, refined in turn by a finer row of its own trigger.
+  const loose = events.filter((r) => r.kind !== 'single' && !refines(r) && inBatch(r));
+  let row = lead;
+  for (const r of loose) if (!row || hotter(r, row) < 0) row = r;
+  if (!row) return undefined;
+  if (row !== lead) {
+    const pick = row;
+    row = loose.filter((r) => KIND_ORDER[r.kind] > KIND_ORDER[pick.kind] && r.trig !== undefined && r.trig === pick.trig).sort(finerThenHeat)[0] ?? pick;
+  }
+  const chosen = row;
+  // The rows that took part: everything inside the batch, and the refinements of the decided single beyond it.
+  const counted = events.filter((r) => inBatch(r) || refines(r));
+  return {
+    asset, h, row: chosen, fired: counted.length, against: counted.filter((r) => r.dir !== chosen.dir).length,
+    ...(chosen === lead && refiner ? { single } : {}),
+  };
+}
+
+/** Why a decided call is not traded although it fired: its refinement calls against the single it replaced and
+ *  HEAT_PAIR_CONFLICT says skip. */
+function pairConflict(c: HeatDecided, cfg: HeatConfig): string | undefined {
+  if (!c.single || c.single.dir === c.row.dir || cfg.pairConflict === 'pair') return undefined;
+  const word = (d: 1 | -1) => (d > 0 ? 'up' : 'down');
+  return `pair against single: ${c.row.key} calls ${word(c.row.dir)}, its single ${c.single.key} ${word(c.single.dir)} (HEAT_PAIR_CONFLICT skip)`;
 }
 
 /** A call that fired on a coin the reader cannot vouch for right now: recorded, never traded, never a context. */
@@ -179,10 +208,13 @@ export function readHeatCalls(now: number, cfg: HeatConfig, snap: HeatSnapshot |
       : undefined;
     if (why) notes.push(`${asset}: ${why}`);
     for (const h of horizons) {
-      const firing = (coin.calls ?? []).filter((r) => r.h === h && now - r.barClose >= 0 && now - r.barClose <= lagMs && (cfg.topN <= 0 || r.rank <= cfg.topN));
-      const call = decideCall(asset, h, firing);
+      // Every row inside the lag: the batch (HEAT_TOP_N) is applied by decideCall, since a refining pair may sit beyond it.
+      const firing = (coin.calls ?? []).filter((r) => r.h === h && now - r.barClose >= 0 && now - r.barClose <= lagMs);
+      const call = decideCall(asset, h, firing, cfg.topN);
       if (!call) continue;
-      if (why) unfit.push({ ...call, why }); else fresh.push(call);
+      // A pair against its single is no direction at all: recorded and skipped, never a context, never served to the perps.
+      const reason = why ?? pairConflict(call, cfg);
+      if (reason) unfit.push({ ...call, why: reason }); else fresh.push(call);
     }
   }
   return { fresh, unfit, notes };
@@ -276,7 +308,7 @@ export function decideHeat(i: HeatDecideInput): HeatDecideResult {
   const entriesBlocked = i.entriesBlocked ?? (cfg.enabled ? undefined : 'heat lane off (HEAT_LANE)');
   const claimed = (c: HeatDecided) => state.acted[heatCallKey(c.asset, c.h, c.row.barClose)] !== undefined;
   const rule = (c: HeatDecided) => {
-    res.decided.push({ asset: c.asset, h: c.h, row: c.row, fired: c.fired, against: c.against });
+    res.decided.push({ asset: c.asset, h: c.h, row: c.row, fired: c.fired, against: c.against, ...(c.single ? { single: c.single } : {}) });
     res.acted[heatCallKey(c.asset, c.h, c.row.barClose)] = c.row.barClose;
   };
   const skip = (c: HeatDecided, reason: string, ticker?: string) => {

@@ -10,7 +10,7 @@ import { createApi } from './api/server';
 import { KalshiCheck, type CheckSource } from './recon/kalshiCheck';
 import type { ExchangeFill } from './kalshi/types';
 import { AuditLog } from './audit/auditLog';
-import { ConfigError, loadConfig, publicConfig, type Config } from './config';
+import { ConfigError, heatStartCheck, loadConfig, publicConfig, type Config } from './config';
 import { Engine } from './engine';
 import { KalshiSigner } from './kalshi/auth';
 import { KalshiRest } from './kalshi/rest';
@@ -79,6 +79,8 @@ import { LiveLines } from './strategy/liveLine';
 import { ComponentTrials, TRIAL_LABEL } from './strategy/componentTrials';
 import { Scoreboard } from './health/scoreboard';
 import { DEFAULT_STREAK, StreakScaler } from './risk/streakScaler';
+import { FileHeatSource } from './heat/heatSource';
+import { HeatLane } from './heat/heatLane';
 
 const log = logger('main');
 
@@ -98,6 +100,8 @@ async function main(): Promise<void> {
         log.info('conditioning champion applied', { version: champ.version, params: c.params, skipped: c.skipped });
       } catch (e) { log.error('conditioning champion not applied: its settings do not pass the configuration checks; the configured settings stay', { version: champ.version, error: String(e) }); }
     }
+    // false until the cleanup thread's plan exits land: then it becomes cfg.plan.enabled (PLAN_RULES).
+    heatStartCheck(cfg, false);
   } catch (e) {
     if (e instanceof ConfigError) {
       log.error(`configuration invalid: ${e.message}`);
@@ -387,6 +391,11 @@ async function main(): Promise<void> {
   // Perps: one executor per perps account drives each position to hedge (stage 2) + directional
   // (stage 3) targets, simulated against live perp quotes (paper) or with real orders (live).
   // The perps trader reads the SNN's direction calls from the engine (set once it exists).
+  // The heat entry lane (bot/heat, docs/HEAT_LANE.md): the reader's calls file and the lane's own book, saved in the book
+  // folder so paper and live each keep theirs. Built only with HEAT_LANE on (the start check above refuses it without exits).
+  const heatLane = cfg.heat.enabled ? new HeatLane(cfg.heat, path.join(cfg.bookDir, 'heat_lane_state.json')) : undefined;
+  const heatSource = heatLane ? new FileHeatSource(cfg.heat.callsFile) : undefined;
+  if (heatLane) log.info('heat lane on', { callsFile: cfg.heat.callsFile, assets: cfg.heat.assets, horizons: cfg.heat.horizons, perps: cfg.heat.perps });
   let engineRef: Engine | undefined;
   let hedger: PerpHedger | undefined;
   let perpTrader: PerpTrader | undefined;
@@ -478,6 +487,7 @@ async function main(): Promise<void> {
           };
         })(),
         snn: (asset) => engineRef?.snnContext(asset, undefined, 'perps'),
+        heat: heatLane && cfg.heat.perps !== 'off' ? { dir: heatLane.direction, mode: cfg.heat.perps, topN: cfg.heat.topN, stopAtrMult: P.stopAtrMult, minStopBps: P.minStopBps } : undefined,
         journal: new SetupJournal(path.join(cfg.dataDir, 'setups'), (e) => log.warn(`setup journal: ${String(e)}`)),
         snnGatePath: () => path.join(cfg.autoTrain.dir, 'setup_snn_gate.json'),
         trainingOverride, streak: perpsStreak, breakEven: perpsBreakEven, lossAt: cfg.strategy.ddScaleAt,
@@ -616,7 +626,10 @@ async function main(): Promise<void> {
   // The exchange's own status and maintenance schedule gate new entries (exits stay allowed).
   const exchangeStatus = new ExchangeStatusMonitor(rest);
   exchangeStatus.start();
-  const engine: Engine = new Engine({ kalshiCheck, control, exchangeStatus, cfg, audit, alerter, md, gateway, oms, risk, kill, recon, model, volProfile, vault, balanceMonitor, balanceMonitorPath, tca, equityGuard, modelHealth, taHealth, accuracyGate, calendar, hedger, perpTrader: directionalTrader, clock, tennisScores, tennisFair, volModel, fillModel, fillLogDir: path.join(cfg.dataDir, 'fills'), snn, snnBlenderPath: path.join(cfg.snn.checkpointDir, 'blender.json'), curveExit, takeProfitBench, curveEntry, liveLines, trials, scoreboard });
+  const engine: Engine = new Engine({ kalshiCheck, control, exchangeStatus, cfg, audit, alerter, md, gateway, oms, risk, kill, recon, model, volProfile, vault, balanceMonitor, balanceMonitorPath, tca, equityGuard, modelHealth, taHealth, accuracyGate, calendar, hedger, perpTrader: directionalTrader, clock, tennisScores, tennisFair, volModel, fillModel, fillLogDir: path.join(cfg.dataDir, 'fills'), snn, snnBlenderPath: path.join(cfg.snn.checkpointDir, 'blender.json'), curveExit, takeProfitBench, curveEntry, liveLines, trials, scoreboard,
+    // Seam: no exits' owner on main yet, so the lane enters nothing. tag / untag become engine.planPositions.tag / forget and
+    // reentryBlock holdExits.reentryBlock when the cleanup thread's branches land.
+    heat: heatLane && heatSource ? { lane: heatLane, source: heatSource, tag: undefined, untag: undefined, reentryBlock: undefined } : undefined });
   // The pipeline's session risk profile (session_risk.json), under SESSION_RISK; autotrain hot-swaps new ones.
   const sr = loadSessionRiskFile(modelPaths.session_risk);
   if (sr) { engine.setSessionRiskAuto(sr.profile); log.info(`session risk ${sr.version}${cfg.strategy.sessionRiskAuto ? '' : ' loaded, not applied (SESSION_RISK_AUTO off)'}`, { sessions: Object.keys(sr.profile) }); }

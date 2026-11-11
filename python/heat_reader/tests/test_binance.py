@@ -111,3 +111,17 @@ def test_rate_limit_and_errors():
     # an unknown coin (HTTP 400) is an error, not an empty answer
     with pytest.raises(FetchError):
         list(b.minutes('NOPE', T0))
+
+
+def test_http_get_turns_a_cut_off_body_into_fetch_error(monkeypatch):
+    import http.client
+    import pytest
+    from heat_reader import binance
+
+    class Cut:
+        def open(self, req, timeout=None):
+            raise http.client.IncompleteRead(b'{"serverTi')
+
+    monkeypatch.setattr(binance, '_OPENER', Cut())
+    with pytest.raises(binance.FetchError):
+        binance.http_get('https://example.invalid/api/v3/time', 5)

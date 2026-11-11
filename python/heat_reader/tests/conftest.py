@@ -18,6 +18,7 @@ import pytest
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 PACKAGE = os.path.dirname(TESTS)
+FIXTURES = os.path.join(PACKAGE, 'fixtures')       # trimmed copies of the oracle run's packs and live_meta.json (fd88805)
 PYTHON_DIR = os.path.dirname(PACKAGE)
 REPO = os.path.dirname(PYTHON_DIR)
 if PYTHON_DIR not in sys.path:
@@ -91,6 +92,9 @@ class FakeBinance:
         return [u for u in self.urls if '/klines' in u]
 
 
+STAMP = 'tables of run 43030435253; pack job 43057668061 at commit c6db27c'
+
+
 def pack_row(coin: str, key: str, h: int = 15, rank: int = 1, aliases=(), direction: int = 1, sha: str = 'sha-' + 'x' * 8, **over) -> dict:
     """A traded pack row with the fields python/oracle/heat_pack.py writes."""
     tf, rest = key.split(':', 1)
@@ -98,30 +102,52 @@ def pack_row(coin: str, key: str, h: int = 15, rank: int = 1, aliases=(), direct
     row = {'coin': coin, 'h': h, 'key': key, 'aliases': list(aliases), 'tf': tf, 'reading': reading, 'level': level, 'dir': direction,
            'call': 'up' if direction > 0 else 'down', 'rank_coin': rank, 'rank_all': rank, 'batch10': False, 'rank_share_coin': rank,
            'above_twin_max': True, 'n_A': 1000, 'n_B': 200, 'days_B': 365, 'share_A': 54.0, 'share_B': 53.25, 'share_over_B': 3.2,
-           'odds_A': 5.0, 'odds_B': 3.25, 't_A': 9.0, 't_B': 4.0, 'oheat_B': 94.5, 'move_B': 0.31, 'hold_B': 8.2, 'hold_over_B': 0.7,
-           'best_B': 14.3, 'dip_B': -6.2, 'wd_B': 28.9, 'tick_B': 0.001, 'table_sha256': sha}
+           'odds_A': 5.0, 'odds_B': 3.25, 't_A': 9.0, 't_B': 4.0, 'oheat_B': 100.0 - rank, 'move_B': 0.31, 'hold_B': 8.2, 'hold_over_B': 0.7,
+           'best_B': 14.3, 'dip_B': -6.2, 'wd_B': 28.9, 'tick_B': 0.001, 'table_sha256': sha, 'live_parity': True}
     row.update(over)
     return row
 
 
-def write_pack(path, rows: list, shas: dict, top: int = 40, stamp: str = 'run 43030435253, test pack') -> str:
-    os.makedirs(os.path.dirname(str(path)), exist_ok=True)
-    with open(path, 'w') as f:
-        json.dump({'schema': 'oracle-heat-pack-1', 'horizons': [15, 60], 'top': top, 'table_sha256': shas, 'rows': rows, 'stamp': stamp}, f)
-    return str(path)
+def pair_row(coin: str, when: str, conds, h: int = 15, direction: int = 1, oheat: float = 50.0, sha: str = 'sha-' + 'x' * 8, aliases=(), **over) -> dict:
+    """A pair (one condition) or triple (two) row with the fields python/oracle/heat_pairs.py writes."""
+    conds = [list(c) for c in conds]
+    row = {'coin': coin, 'h': h, 'kind': 'pair' if len(conds) == 1 else 'triple', 'key': ' | '.join([when] + [f'{a}={b}' for a, b in conds]),
+           'aliases': list(aliases), 'when': when, 'conds': conds, 'dir': direction, 'call': 'up' if direction > 0 else 'down', 'rank_coin': 700,
+           'rank_lift_coin': 900, 'n_A': 500, 'n_B': 100, 'days_B': 365, 'share_A': 55.0, 'share_B': 54.5, 'share_over_B': 4.0, 'odds_A': 5.5,
+           'odds_B': 4.5, 't_A': 8.0, 't_B': 3.5, 'oheat_B': oheat, 'lift_A': 1.2, 'lift_B': 2.0, 't_lift_A': 3.0, 't_lift_B': 2.5, 'rest_wd_B': 10.0,
+           'lheat_B': 20.0, 'lift2_A': 2.0, 'lift2_B': 1.0, 't_lift2_A': 10.0, 't_lift2_B': 3.0, 'move_B': 0.7, 'hold_B': 8.3, 'hold_over_B': 0.8,
+           'dip_B': -6.5, 'wd_B': 11.0, 'tick_B': 0.001, 'hot_A': True, 'replicated_B': True,
+           'trigger': {'dir': direction, 'odds_B': 2.0, 'wd_B': 50.0, 'oheat_B': 100.0, 'rank_coin': None}, 'clock': False, 'dominance': False,
+           'readings': sorted({when.rsplit('=', 1)[0]} | {a.replace(' sign', '') for a, _ in conds}), 'table_sha256': sha, 'above_twin_max': True,
+           'lift_above_twin_max': True, 'live_parity': True}
+    row.update(over)
+    return row
 
 
-def write_meta(meta_dir, coin: str, meta: dict) -> None:
-    os.makedirs(os.path.join(meta_dir, coin), exist_ok=True)
-    with open(os.path.join(meta_dir, coin, 'meta.json'), 'w') as f:
-        json.dump(meta, f)
+def write_packs(folder, rows: list, shas: dict, pairs=(), meta: dict = None, clock=None, top: int = 40, stamp: str = STAMP) -> str:
+    """A pack folder as the oracle commit lays it out: traded_pack.json, pair_pack.json, live_meta.json and, when
+    `clock` is a list of rows, clock_pack.json. meta: {coin: meta}; None leaves live_meta.json as it is."""
+    folder = str(folder)
+    os.makedirs(folder, exist_ok=True)
+    head = {'horizons': [15, 60], 'top': top, 'table_sha256': shas, 'stamp': stamp}
+    with open(os.path.join(folder, 'traded_pack.json'), 'w') as f:
+        json.dump(dict(head, schema='oracle-heat-pack-1', rows=rows), f)
+    with open(os.path.join(folder, 'pair_pack.json'), 'w') as f:
+        json.dump(dict(head, schema='oracle-heat-pairs-1', rows=list(pairs), stamp=stamp.replace('pack job', 'pairs job')), f)
+    if clock is not None:
+        with open(os.path.join(folder, 'clock_pack.json'), 'w') as f:
+            json.dump(dict(head, schema='oracle-heat-clock-pack-1', rows=list(clock), stamp='clock ' + stamp), f)
+    if meta is not None:
+        with open(os.path.join(folder, 'live_meta.json'), 'w') as f:
+            json.dump(meta, f)
+    return folder
 
 
-def settings(tmp_path, pack: str, meta_dir: str, oracle: str, assets: str = 'BTC,ETH', window: int = 600, **flags):
+def settings(tmp_path, pack_dir: str, oracle: str, assets: str = 'BTC,ETH', window: int = 600, **flags):
     """The reader's settings for a test: everything under tmp_path, nothing from the real environment."""
     from heat_reader import config
-    argv = ['--calls-file', str(tmp_path / 'data' / 'heat_calls.json'), '--reader-dir', str(tmp_path / 'data' / 'heat_reader'), '--pack-file', str(pack),
-            '--meta-dir', str(meta_dir), '--oracle-path', str(oracle), '--assets', assets, '--window-bars', str(window)]
+    argv = ['--calls-file', str(tmp_path / 'data' / 'heat_calls.json'), '--reader-dir', str(tmp_path / 'data' / 'heat_reader'), '--pack-dir', str(pack_dir),
+            '--oracle-path', str(oracle), '--assets', assets, '--window-bars', str(window)]
     for k, v in flags.items():
         argv += [f'--{k.replace("_", "-")}', str(v)]
     return config.load(argv, env={})
@@ -167,8 +193,13 @@ def assert_contract(obj: dict) -> None:
         assert cc['ok'] or (isinstance(cc.get('why'), str) and cc['why'] and cc['calls'] == [])
         for row in cc['calls']:
             fields(row, 'HeatCallRow')
-            assert row['kind'] == 'single' and row['dir'] in (1, -1) and row['tf'] in (1, 5, 15, 60) and 0 <= row['share'] <= 1
-            assert isinstance(row['key'], str) and row['key'].startswith(f"{row['tf']}m:") and isinstance(row['aliases'], list)
+            assert row['kind'] in ('single', 'pair', 'triple') and row['dir'] in (1, -1) and row['tf'] in (1, 5, 15, 60) and 0 <= row['share'] <= 1
+            assert isinstance(row['key'], str) and isinstance(row['aliases'], list)
+            if row['kind'] == 'single':
+                assert row['key'].startswith(f"{row['tf']}m:") and 'trig' not in row
+            else:                                   # a pair names its trigger, on the trigger's bars (a context trigger: 15)
+                assert row['key'].startswith(row['trig'] + ' | ') and row['key'].count(' | ') == (1 if row['kind'] == 'pair' else 2)
+                assert row['trig'].startswith(f"{row['tf']}m:") or (row['tf'] == 15 and not row['trig'][:1].isdigit())
             assert row['barClose'] == cc['asOf'] and row['rank'] >= 1 and row['of'] >= 1 and isinstance(row['h'], int)
             assert all(isinstance(row[k], (int, float)) and not isinstance(row[k], bool) for k in ('heat', 'odds', 'rank', 'of'))
 
@@ -237,13 +268,13 @@ def engine(oracle_path):
 class World:
     """Synthetic minutes for a few coins, a meta made by the engine itself, and the keys the engine fires."""
 
-    def __init__(self, engine, coins=('BTC', 'ETH'), days: int = 8, window: int = 600, tfs=(1, 5), end_ms: int = None):
+    def __init__(self, engine, coins=('BTC', 'ETH'), days: int = 8, window: int = 600, tfs=(1, 5), end_ms: int = None, extra: int = 30):
         from heat_reader.engine import frame
         self.engine, self.window, self.tfs = engine, window, list(tfs)
         self.end = T0 + 5 * 60 * MIN if end_ms is None else end_ms            # a 5-minute close, so both timeframes close
         self.steps = {'BTC': 0.01, 'ETH': 0.01, 'SOL': 0.0001, 'XRP': 0.00001}
         self.data, self.meta, self.frame = {}, {}, frame
-        extra = 30                                                             # minutes after `end`, served as time moves on
+        # `extra`: minutes after `end`, served as time moves on
         for i, c in enumerate(coins):
             self.data[c] = walk(days * 1440 + extra, self.end + (extra - 1) * MIN, step=self.steps.get(c, 0.01),
                                 price=60_000.0 * self.steps.get(c, 0.01) / 0.01, seed=11 + i)
@@ -261,12 +292,14 @@ class World:
     def grid(self, coin: str, end_ms: int) -> dict:
         return self.engine.live.grid(self.frame(self.rows(coin, end_ms)), end_ms=end_ms)
 
-    def events(self, coin: str, end_ms: int, tfs=None) -> dict:
-        """The engine asked directly, with no reader in between: every key firing at end_ms."""
+    def events(self, coin: str, end_ms: int, tfs=None, states=None) -> dict:
+        """The engine asked directly, with no reader in between and no cache: every key firing at end_ms, and the
+        levels of `states` at their own last closed bar, on the whole window of every timeframe."""
         need = self.engine.need_minutes(self.window, self.tfs) * MIN
         r = self.rows(coin, end_ms)
         m = self.engine.live.grid(self.frame(r[r[:, 0] >= end_ms - need]), end_ms=end_ms)
-        return self.engine.live.active_keys(m, self.meta[coin], tfs=tfs or self.tfs, window=self.window, levels=True)
+        return self.engine.live.active_keys(m, self.meta[coin], tfs=tfs or self.tfs, window=self.window, levels=True,
+                                            states=None if states is None else set(states))
 
     def fake(self, now: float = None, skew_ms: float = 0.0) -> FakeBinance:
         return FakeBinance(self.data, self.end + 3000 if now is None else now, skew_ms)
@@ -277,5 +310,5 @@ def world(engine):
     return World(engine)
 
 
-__all__ = ['FakeBinance', 'FetchError', 'World', 'assert_contract', 'bot_parse', 'contract', 'kline', 'pack_row', 'reader_for', 'settings', 'walk',
-           'write_meta', 'write_pack', 'T0', 'REPO', 'PACKAGE']
+__all__ = ['FakeBinance', 'FetchError', 'World', 'assert_contract', 'bot_parse', 'contract', 'kline', 'pack_row', 'pair_row', 'reader_for', 'settings',
+           'walk', 'write_packs', 'FIXTURES', 'STAMP', 'T0', 'REPO', 'PACKAGE']

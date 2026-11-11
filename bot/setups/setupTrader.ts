@@ -398,6 +398,9 @@ export class SetupTrader {
     const mode = this.heatMode();
     if (sig.kind === 'heat') {
       if (mode !== 'entry') return { drop: 'heat entries are off (HEAT_PERPS)' };
+      // A candidate that waited (lane full, entries paused) past the clock hour it was offered in would make a second
+      // heat entry for the coin in the new hour, next to the new hour's own offer: one per coin per clock hour.
+      if ((this.seen.get(`heat|${sig.asset}`) ?? 0) < Math.floor(now / HOUR_MS) * HOUR_MS) return { drop: "heat: the clock hour it was offered in has passed" };
       const c = this.heatHour(sig.asset, now);
       if (!c) return { drop: 'heat: no live hour direction left for this call' };
       if (c.dir !== sig.dir) return { drop: `heat: the hour's direction turned ${sideName(c.dir)} (${c.key})` };

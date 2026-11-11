@@ -1,8 +1,16 @@
 """The reader's pass and loop: minutes in, the calls file out.
 
 One pass, one coin at a time (so only one coin's minutes are in memory): bring the minute cache up to date, ask the
-engine what fires at the last closed minute, join with the pack. Then the whole HeatCallsFile is written atomically
+engine what fires at the last closed minute, join with the packs. Then the whole HeatCallsFile is written atomically
 to HEAT_CALLS_FILE and the same object is appended as one line to the day's heat_calls-YYYY-MM-DD.jsonl beside it.
+Per coin, the rows the reader asks for and the rows it leaves out (by reason) go to the status sidecar beside the
+calls file (config.status_path: heat_calls.status.json), which the bot's status can show.
+
+The 60-minute readings a pair conditions on need the long window (3,000 hourly bars, about 150 days of minutes), but
+their level changes only when an hourly bar closes. So the long window is read once an hour per coin (or after a
+restart) and the levels are kept until the next hourly close; every other minute reads only the window the 1-, 5-
+and 15-minute readings need. The minute cache on disk always holds the long window, so the hourly read downloads
+nothing extra.
 
 A coin the reader cannot vouch for is written with ok false, a plain reason and no calls; the bot then opens nothing
 on it. A network or engine error never ends the loop: it is counted, the coin is marked not ok, and after a network
@@ -21,13 +29,16 @@ import signal
 import threading
 import time
 
+import numpy as np
+
 from heat_reader import MIN
 from heat_reader import cache as minute_cache
 from heat_reader.binance import Binance, FetchError, RateLimited
-from heat_reader.config import LOG_DAYS, Settings, is_doge
-from heat_reader.engine import Engine, EngineError, frame, join
-from heat_reader.pack import SOURCE, Tables
+from heat_reader.config import LOG_DAYS, Settings, is_doge, status_path
+from heat_reader.engine import Engine, EngineError, fired_triggers, frame, join
+from heat_reader.pack import LONG_TF, SOURCE, Tables
 
+HOUR = 60 * MIN
 WAKE_AFTER_MS = 3000           # the loop wakes this long after a minute closes
 GIVE_UP_SEC = 600              # no good pass for this long: exit so systemd restarts the reader
 LATE_TRIES = 3                 # extra looks for the last minute when Binance has not published it yet
@@ -113,14 +124,50 @@ def not_ok(table_sha: str, why: str, as_of: int = 0) -> dict:
     return {'asOf': int(as_of), 'tableSha': table_sha, 'ok': False, 'why': str(why)[:300], 'calls': []}
 
 
-def read_minutes(engine: Engine, table, top: int, minutes, end_ms: int, window: int) -> tuple:
-    """(HeatCoinCalls, facts) of one coin at the minute close end_ms. minutes: engine.frame() of the minutes ending
-    there. The live pass and the parity replay both go through this function, so what the replay measures is what
-    the server runs."""
-    res = engine.read(minutes, end_ms, table, window)
-    calls, problem, notes = join(table, top, res, window)
-    facts = {'minutes': res['minutes'], 'closed': res['closed'], 'noReading': res['no_reading'], 'fired': len(calls),
-             'keys': sorted({c['key'] for c in calls}), 'events': len(res['events'])}
+class LongStates:
+    """One coin's levels of the 60-minute readings at their last closed bar, and which bar that was. Valid until the
+    next hourly bar closes, for the table and window they were read with."""
+
+    def __init__(self):
+        self.table, self.window, self.bar, self.states, self.note = None, None, None, {}, None
+
+    def valid(self, table, window: int, bar: int) -> bool:
+        return self.table is table and self.window == window and self.bar == bar
+
+
+def read_coin(engine: Engine, table, top: int, rows: np.ndarray, end_ms: int, window: int, long: LongStates) -> tuple:
+    """(HeatCoinCalls, facts) of one coin at the minute close end_ms. rows: the cached minutes, oldest first, ending
+    with the minute that closed at end_ms. long: the coin's LongStates, read and updated here. The live pass and the
+    parity replay both go through this function, so what the replay measures is what the server runs.
+
+    The 60-minute timeframe is read only when its last closed bar is not the one the LongStates hold (an hourly
+    close, a restart, new tables). Otherwise only the minutes the shorter timeframes need are handed to the engine,
+    and the 60-minute levels come from LongStates."""
+    needs_long = LONG_TF in table.tfs
+    bar = int(end_ms) // HOUR * HOUR                              # close of the last closed hourly bar
+    fresh = needs_long and not long.valid(table, window, bar)
+    tfs = table.tfs if fresh or not needs_long else [k for k in table.tfs if k != LONG_TF]
+    long_names = table.long_states
+    states = table.states if fresh else table.states - long_names
+    i0 = int(np.searchsorted(rows[:, 0], end_ms - engine.need_minutes(window, tfs) * MIN))
+    res = engine.read(frame(rows[i0:]), end_ms, table, window, tfs, states)
+    if fresh:
+        bars = res['bars'].get(LONG_TF, 0)
+        note = f'only {bars} of {window} {LONG_TF}-minute bars are loaded' if bars < window else None
+        long.table, long.window, long.bar, long.note = table, window, bar, note
+        long.states = {s: (None if note else res['states'].get(s)) for s in long_names}
+    held = dict(res['states'])
+    if needs_long:
+        held.update(long.states)
+    calls, problem, notes = join(table, top, res, window, held)
+    if needs_long and long.note and not fresh:
+        notes = notes + [long.note]
+    kinds = {}
+    for c in calls:
+        kinds[c['kind']] = kinds.get(c['kind'], 0) + 1
+    facts = {'minutes': res['minutes'], 'closed': res['closed'], 'noReading': res['no_reading'], 'fired': len(calls), 'firedBy': kinds,
+             'keys': sorted({c['key'] for c in calls}), 'events': len(res['events']), 'long': ('read' if fresh else 'kept') if needs_long else None,
+             'triggers': sorted(fired_triggers(table, res, window)) if not problem else []}
     if problem:
         return not_ok(table.table_sha, problem, res['ts']), facts
     coin = {'asOf': int(res['ts']), 'tableSha': table.table_sha, 'ok': True, 'calls': calls}
@@ -136,7 +183,7 @@ class Reader:
         self._now = now_ms or (lambda: time.time() * 1000.0)
         self._sleep = sleep
         self.source = source or Binance(settings.binance_api, now_ms=self._now, sleep=sleep)
-        self.tables = Tables(settings.pack_file, settings.meta_dir, settings.assets, settings.run)
+        self.tables = Tables(settings.pack_dir, settings.assets, settings.run, settings.max_rank, settings.clock_pack)
         self.engine = None
         self.engine_why = None
         self.caches = {c: minute_cache.MinuteCache(os.path.join(settings.reader_dir, 'minutes', f'{c}.min')) for c in settings.assets}
@@ -144,6 +191,7 @@ class Reader:
         self.net_fails = 0
         self.pause_until = 0.0          # this machine's clock (ms): no Binance request before it
         self.read_end = {}              # per coin: the close of the last minute the engine read
+        self.long = {c: LongStates() for c in settings.assets}
         self.log_day = None
         self.stop = threading.Event()
 
@@ -155,7 +203,7 @@ class Reader:
             self.engine = Engine(self.s.oracle_path)
             self.engine_why = None
             for t in self.tables.coins.values():
-                t.check_edges(self.engine.zone_levels)
+                t.check_edges(self.engine.zone_levels, self.engine.zone_states)
         except EngineError as e:
             self.engine_why = str(e)
 
@@ -214,11 +262,9 @@ class Reader:
             last = int(rows[-1, 0]) + MIN if len(rows) else self._as_of(coin)
             return not_ok(sha, f'the minute that closed at {_hm(target)} UTC is not in the Binance answer yet', last), facts
         end_ms = int(rows[-1, 0]) + MIN
-        minutes = frame(rows)
-        del rows                                               # the frame holds its own copy: free the cache array before the engine works
         t1 = time.monotonic()
         try:
-            out, more = read_minutes(self.engine, table, self.tables.top, minutes, end_ms, self.s.window_bars)
+            out, more = read_coin(self.engine, table, self.tables.top, rows, end_ms, self.s.window_bars, self.long[coin])
         except Exception as e:                                 # whatever the engine raises: this coin is not ok, the loop goes on
             self.counts['engineErrors'] += 1
             return not_ok(sha, f'engine error: {type(e).__name__}: {e}'[:200], end_ms), facts
@@ -234,7 +280,7 @@ class Reader:
         self.counts['passes'] += 1
         if self.tables.refresh() and self.engine is not None:
             for t in self.tables.coins.values():
-                t.check_edges(self.engine.zone_levels)
+                t.check_edges(self.engine.zone_levels, self.engine.zone_states)
         self._load_engine()
         if self._now() >= self.pause_until:
             self.source.sync_clock()
@@ -242,6 +288,7 @@ class Reader:
         for coin in self.s.assets:
             if is_doge(coin):                                  # never DOGE, whatever the settings say
                 continue
+            c0 = time.monotonic()
             try:
                 coins[coin], facts[coin] = self._coin(coin)
             except Exception as e:                             # a bug or a full disk on one coin must not take the others
@@ -252,6 +299,10 @@ class Reader:
                 facts[coin] = {'ok': False}
             if not coins[coin]['ok']:
                 facts[coin]['why'] = coins[coin]['why']
+            facts[coin]['sec'] = round(time.monotonic() - c0, 3)
+            table = self.tables.coins.get(coin)
+            if table is not None:
+                facts[coin]['rows'] = table.counts()
             _trim()
         written = int(self._now())
         obj = {'v': 1, 'source': SOURCE, 'run': self.tables.run, 'packSha': self.tables.pack_sha, 'writtenAt': written, 'coins': coins}
@@ -268,11 +319,27 @@ class Reader:
                   'clockOffsetMs': None if self.source.offset_ms is None else round(self.source.offset_ms), **_rss_mb()}
         try:
             write_atomic(os.path.join(self.s.reader_dir, 'status.json'), json.dumps(status, indent=1) + '\n')
+            write_atomic(status_path(self.s.calls_file), json.dumps(self.sidecar(written, coins, facts), separators=(',', ':')) + '\n')
         except OSError:
             pass
         self.log('heat-reader pass ' + ' | '.join(
-            f'{c} {len(v["calls"])} fired' if v['ok'] else f'{c} NOT OK: {v["why"]}' for c, v in coins.items()) + f' ({sec} s)')
+            f'{c} {len(v["calls"])} fired in {facts[c].get("sec", 0)} s' if v['ok'] else f'{c} NOT OK: {v["why"]}' for c, v in coins.items())
+            + f' ({sec} s)')
         return obj
+
+    def sidecar(self, written: int, coins: dict, facts: dict) -> dict:
+        """The status beside the calls file, for the bot's status: per coin whether it is read, what fired this
+        minute by kind, and the rows of the packs it asks for and leaves out, by reason."""
+        out = {'v': 1, 'writtenAt': written, 'run': self.tables.run, 'packSha': self.tables.pack_sha, 'maxRank': self.s.max_rank,
+               'clockPack': self.s.clock_pack, 'packs': self.tables.files, 'coins': {}}
+        if self.tables.problem:
+            out['problem'] = self.tables.problem
+        for c, v in coins.items():
+            f = facts.get(c, {})
+            out['coins'][c] = {'ok': v['ok'], 'fired': f.get('firedBy', {}), 'rows': f.get('rows')}
+            if v.get('why'):
+                out['coins'][c]['why'] = v['why']
+        return out
 
     # ---- the loop ----
     def run(self) -> int:

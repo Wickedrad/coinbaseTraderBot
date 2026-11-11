@@ -21,7 +21,7 @@ const NOW = T0 + 5 * S;
 const DEFAULTS = {
   enabled: true, callsFile: '', assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45,
   sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reenterAfterLoss: false,
-  flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false,
+  flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', pairConflict: 'skip',
 };
 const settings = (o: Partial<HeatConfig> = {}): HeatConfig => ({ ...DEFAULTS, ...o }) as HeatConfig;
 /** The engine's default windows: 15-minute contracts 840..300 s before close, hourly 3300..600 s and 10c..90c. */
@@ -104,6 +104,81 @@ test('decided call: an alias is the same event, never a second row and never aga
   const d = decideCall('BTC', 15, [rsi, cmo])!;
   assert.equal(d.row.key, '1m:RSI14=high');
   assert.deepEqual([d.fired, d.against], [1, 0]);
+});
+
+// ---- Pairs and triples (Addendum 2) ----
+
+/** A pair that refines BTC's hottest 15-minute single, ranked `rank` on the single ladder. */
+const pairOf = (trig: string, o: Partial<HeatCallRow> = {}): HeatCallRow => row({ key: `${trig}+1h:ADX14=high`, kind: 'pair', trig, rank: 25, heat: 60, ...o });
+
+test('pairs: a refining pair replaces the decided single even ranked beyond HEAT_TOP_N, and keeps the single\'s rank', () => {
+  const single = row({ key: 's', rank: 3 });
+  const d = decideCall('BTC', 15, [single, pairOf('s', { rank: 25 })], 10)!;
+  assert.equal(d.row.key, 's+1h:ADX14=high');
+  assert.equal(d.row.rank, 3, 'rank = min(single 3, pair 25)');
+  assert.equal(d.single?.key, 's');
+  assert.deepEqual([d.fired, d.against], [2, 0], 'the pair beyond the batch counts as a row that fired');
+  // Through the lane: it trades the pair's key at the single's weight.
+  const [p] = decide({ snapshot: snap({ BTC: [single, pairOf('s', { rank: 25 })] }), markets: [m15()] }).plans;
+  assert.equal(p.ruleId, 'heat:R1:BTC:h15:s+1h:ADX14=high');
+  assert.equal(p.weight, 0.7778, 'the weight of rank 3 in a batch of 10');
+  // A pair hotter than its single keeps its own rank.
+  assert.equal(decideCall('BTC', 15, [single, pairOf('s', { rank: 1 })], 10)!.row.rank, 1);
+});
+
+test('pairs: the trigger may be one of the single\'s aliases', () => {
+  const single = row({ key: '1m:RSI14=high', aliases: ['1m:CMO14=high'], rank: 2 });
+  const d = decideCall('BTC', 15, [single, pairOf('1m:CMO14=high')], 10)!;
+  assert.equal(d.row.key, '1m:CMO14=high+1h:ADX14=high');
+});
+
+test('pairs: a triple replaces before a pair, then the higher heat', () => {
+  const single = row({ key: 's', rank: 1 });
+  const rows = [single, pairOf('s', { key: 'p1', heat: 90 }), pairOf('s', { key: 'p2', heat: 95 }), pairOf('s', { key: 't', kind: 'triple', heat: 10, rank: 40 })];
+  assert.equal(decideCall('BTC', 15, rows, 10)!.row.key, 't');
+  assert.equal(decideCall('BTC', 15, rows.slice(0, 3), 10)!.row.key, 'p2', 'two pairs: the hotter');
+});
+
+test('pairs: against its single, HEAT_PAIR_CONFLICT=skip (default) gives no entry and no hour context', () => {
+  const single = row({ key: 's', rank: 2 });
+  const down = pairOf('s', { dir: -1 });
+  const r = decide({ snapshot: snap({ BTC: [single, down] }), markets: [m15()] });
+  assert.equal(r.plans.length, 0);
+  assert.equal(r.decided.length, 1, 'still ruled on, once');
+  assert.match(reasons(r)[0], /^pair against single: s\+1h:ADX14=high calls down, its single s up/);
+  // The hour's call in conflict sets no context and is never what the perps side sees.
+  const hr = decide({ snapshot: snap({ BTC: [hourRow({ key: 'h', rank: 2 }), pairOf('h', { h: 60, dir: -1 })] }) });
+  assert.deepEqual([hr.contexts, hr.calls], [[], []]);
+  const lane = new HeatLane(settings());
+  lane.decide(NOW, snap({ BTC: [hourRow({ key: 'h', rank: 2 }), pairOf('h', { h: 60, dir: -1 })] }), [], { orderMin: 10, orderMax: 20, minSide: 0.1, live: false, windows: WINDOWS });
+  assert.equal(lane.fired('BTC', 60, NOW), undefined);
+  assert.equal(lane.hour('BTC', NOW), undefined);
+});
+
+test('pairs: HEAT_PAIR_CONFLICT=pair trades the pair\'s side', () => {
+  const r = decide({ cfg: settings({ pairConflict: 'pair' }), snapshot: snap({ BTC: [row({ key: 's', rank: 2 }), pairOf('s', { dir: -1 })] }), markets: [m15()] });
+  assert.deepEqual(r.plans.map((p) => [p.side, p.row.key, p.row.rank]), [['no', 's+1h:ADX14=high', 2]]);
+  assert.equal(r.decided[0].against, 1, 'the single counts against the pair');
+});
+
+test('pairs: a pair whose trigger is not the decided single trades on its own only inside HEAT_TOP_N', () => {
+  // Its trigger did not fire at all.
+  assert.equal(decideCall('BTC', 15, [pairOf('x', { rank: 11 })], 10), undefined);
+  assert.equal(decideCall('BTC', 15, [pairOf('x', { rank: 7 })], 10)!.row.key, 'x+1h:ADX14=high');
+  // Its trigger fired beyond the batch: that single is not the decided one, so the pair stands alone.
+  assert.equal(decideCall('BTC', 15, [row({ key: 'x', rank: 12 }), pairOf('x', { rank: 30 })], 10), undefined);
+  // Beside a decided single: the hotter of the two.
+  const d = decideCall('BTC', 15, [row({ key: 's', rank: 5 }), pairOf('x', { rank: 4 })], 10)!;
+  assert.equal(d.row.key, 'x+1h:ADX14=high');
+  assert.equal(d.single, undefined, 'it replaced nothing');
+  assert.equal(decideCall('BTC', 15, [row({ key: 's', rank: 3 }), pairOf('x', { rank: 4 })], 10)!.row.key, 's');
+});
+
+test('pairs: an alias of a pair is the same event, never a second row', () => {
+  const p = pairOf('s', { key: 'a', aliases: ['b'] });
+  const twin = pairOf('s', { key: 'b', aliases: ['a'], dir: -1 });
+  const d = decideCall('BTC', 15, [row({ key: 's', rank: 1 }), p, twin], 10)!;
+  assert.deepEqual([d.fired, d.against], [2, 0]);
 });
 
 test('fired rows: only inside the entry lag after the bar closed', () => {

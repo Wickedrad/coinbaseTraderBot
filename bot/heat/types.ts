@@ -133,8 +133,13 @@ export interface HeatConfig {
   /** HEAT_FEE_NET_CHECK: also require the row's odds to beat fee plus half the spread (the risk gateway's edge
    *  collar on the heat-implied value). Off by default: the proof standard is the one test, not a cost bar. */
   feeNetCheck: boolean;
-  /** HEAT_PERPS: the hour's direction gates and weights perp setups on the hourly timeframe (daily once a daily curve exists). */
-  perps: boolean;
+  /** HEAT_PERPS: what the hour's direction does on the perps (bot/setups/setupTrader.ts), only with HEAT_LANE on: 'log'
+   *  journals it beside every setup, 'gate' also keeps a 1h setup against it out, 'entry' (default) also opens a setup of
+   *  kind heat when a 60-minute call fires; 'off' leaves the perps alone. Daily once a daily curve exists. */
+  perps: 'off' | 'log' | 'gate' | 'entry';
+  /** HEAT_PAIR_CONFLICT: a refining pair or triple that calls the other side from the single it replaces: 'skip' (default)
+   *  makes no entry ("pair against single"), 'pair' trades the pair's side. */
+  pairConflict: 'skip' | 'pair';
 }
 
 /** A coin's decided call at one horizon: the hottest firing row (a pair or triple replaces the single it refines). */
@@ -145,6 +150,8 @@ export interface HeatDecided {
   /** Rows that fired for this coin and horizon this minute, and how many called the other side. */
   fired: number;
   against: number;
+  /** The decided single a pair or triple replaced (`row` is then the refinement, with the hotter of the two ranks). */
+  single?: HeatCallRow;
 }
 
 /** The hour's direction for a coin: its latest decided 60-minute call, valid until `until`. */

@@ -8,6 +8,7 @@ Only CLOSED minutes are used: a kline counts once its closeTime is before Binanc
 compared with Binance's once (GET /time) and the difference is carried, the same way research/heatmap_live/captureCli.ts
 does it. The HTTP call is a plain function handed in, so tests answer with canned responses.
 """
+import http.client
 import json
 import math
 import time
@@ -56,7 +57,9 @@ def http_get(url: str, timeout: float) -> tuple:
             return r.status, {k.lower(): v for k, v in r.headers.items()}, r.read()
     except urllib.error.HTTPError as e:
         return e.code, {k.lower(): v for k, v in (e.headers.items() if e.headers else [])}, b''
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    # http.client.HTTPException (IncompleteRead, BadStatusLine, RemoteDisconnected) is not an OSError: a body cut off
+    # mid-read would otherwise escape and cost the whole pass instead of marking one fetch failed.
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
         raise FetchError(f'network: {getattr(e, "reason", e)}'[:160]) from None
 
 
