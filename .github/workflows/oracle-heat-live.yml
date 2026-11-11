@@ -8,8 +8,9 @@ name: Oracle heat live reader
 #
 # Pushes drive it. Tags in the HEAD commit message:
 #   none                     the live reader tests only
-#   [heat-pack:<run id>]     traded_pack.json from that run's league on Drive (direction_all.csv.gz), committed to this
-#                            branch under research/oracle_heat/latest/
+#   [heat-pack:<run id>]     traded_pack.json from that run's league on Drive (direction_all.csv.gz) and live_meta.json
+#                            (the zone edges and price step behind the pack's rows, from each coin's meta.json on Drive),
+#                            committed to this branch under research/oracle_heat/latest/
 #   [heat-parity:<run id>]   per coin: the engine's keys for the last 3 days of 2025 (fixture) against the live reader on
 #                            a window; summaries and fixtures committed under research/oracle_heat/parity/
 
@@ -93,9 +94,23 @@ jobs:
           set -euo pipefail
           bash deploy/drive_lab.sh get "models/oracle-heat/runs/$SRC_RUN/league" data/league --include "/direction_all.csv.gz" --include "/summary.json"
           ls -la data/league
+          # each real coin's meta.json (zone edges at full precision, price step, table hash) for the slim live_meta.json
+          for A in BTC ETH SOL XRP; do
+            bash deploy/drive_lab.sh get "models/oracle-heat/runs/$SRC_RUN/$A" "data/metas/$A" --include "/meta.json"
+            [ -s "data/metas/$A/meta.json" ] || { echo "::error::no meta.json for $A in run $SRC_RUN"; exit 1; }
+          done
+          # the live reader's parity summaries of the same run, when they are on the branch (the rows' live_parity flag)
+          PAR=()
+          if [ -f research/oracle_heat/parity/RUN ] && [ "$(cut -d' ' -f1 research/oracle_heat/parity/RUN)" = "$SRC_RUN" ]; then
+            PAR=(--parity ../research/oracle_heat/parity)
+          else
+            echo "::warning::no parity summaries of run $SRC_RUN on the branch: the pack carries no live_parity flag"
+          fi
           mkdir -p out/pack
           (cd python && python3 -m oracle.heat_pack --direction ../data/league/direction_all.csv.gz --summary ../data/league/summary.json \
-            --out ../out/pack/traded_pack.json --stamp "tables of run $SRC_RUN; pack job $GITHUB_RUN_ID at commit $GITHUB_SHA")
+            --out ../out/pack/traded_pack.json --stamp "tables of run $SRC_RUN; pack job $GITHUB_RUN_ID at commit $GITHUB_SHA" \
+            "${PAR[@]}" --metas ../data/metas --live-meta ../out/pack/live_meta.json)
+          ls -la out/pack
           bash deploy/drive_lab.sh put "models/oracle-heat/runs/$SRC_RUN/league" out/pack
       - name: Commit the pack to this branch (aggregates only; a bot push starts no workflow)
         env:
@@ -103,10 +118,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p research/oracle_heat/latest
-          cp out/pack/traded_pack.json research/oracle_heat/latest/
+          cp out/pack/traded_pack.json out/pack/live_meta.json research/oracle_heat/latest/
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add research/oracle_heat/latest/traded_pack.json
+          git add research/oracle_heat/latest/traded_pack.json research/oracle_heat/latest/live_meta.json
           git commit -q -m "Oracle heat map: traded pack of run $SRC_RUN (written by the oracle-heat-live workflow)"
           for i in 1 2 3 4; do
             if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi

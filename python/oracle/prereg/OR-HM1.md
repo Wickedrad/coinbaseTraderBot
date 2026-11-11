@@ -287,3 +287,13 @@ same levels every time (an earlier check in this project: about 91% signal agree
 1-minute bars). The hottest 15- and 60-minute calls are close relatives (1-minute readings at an extreme, fading), so
 ten of them are far fewer than ten independent bets. The pack is a map on coin price; the one test on Kalshi prices
 has not been run.
+
+**Parity result and two additions (2026-11-11 16:20 UTC, 11:20 AM EST).** Parity job 43054998730 on the real
+2020-2025 minutes: all 624 zone edges per coin equal the ones in meta.json; on Dec 29-31, 2025 the live reader on a
+3,000-bar window gives the engine's keys in 100% of cases on BTC and SOL, 99.92% on ETH and 99.65% on XRP. The one
+indicator that differs is PVI (1- and 5-minute bars, ETH and XRP only on those days). PVI is a running product from
+the first bar of the series, so the engine's value and a window's value are not the same number; the likely cause of
+the different keys is rounding at the size the product reaches after six years (not checked further).
+Additions, neither changes a table or a rank: (a) each pack row carries `live_parity` (False for a PVI row on any
+coin) and the pack a `live_reader_parity` block; (b) `research/oracle_heat/latest/live_meta.json`, the zone edges
+and price step behind the pack's rows at the tables' precision, so a reader on the server needs no Drive access.

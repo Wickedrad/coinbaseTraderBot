@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 
 import json
+import pytest
 
 from oracle import heat, heat_live, heat_parity
 from oracle.common import DAY, MIN, ms
@@ -109,3 +110,33 @@ def test_parity_job_end_to_end(tmp_path, monkeypatch):
     assert par['edges']['different'] == 0 and par['edges']['same_as_meta'] == len(edges) > 400
     assert par['minutes_checked'] >= 30 and par['agreement'] >= 0.985, par
     assert (tmp_path / 'out' / 'fixture.json.gz').exists() and (tmp_path / 'out' / 'parity.json').exists()
+
+
+def test_pack_parity_flag_and_live_meta():
+    """The traded pack: aliases collapse, the live-parity flag marks the indicator that differs on a window, and the
+    slim meta carries the zone edges of every reading behind a row (aliases and sign readings included)."""
+    from oracle import heat_pack
+    base = dict(h=15, n_A=5000, n_B=900, days_B=300, share_A=53.0, odds_A=2.0, t_A=5.0, t_B=3.0, move_B=1.0, hold_B=9.0, hold_over_B=1.5, best_B=6.0,
+                dip_B=-4.0, wd_B=3.0, tick_B=0.1)
+    rows = [dict(base, coin='SOL', key='1m:RSI14=very low', dir=1, share_B=54.0, share_over_B=4.0, odds_B=4.0, oheat_B=12.0),
+            dict(base, coin='SOL', key='1m:CMO14=very low', dir=1, share_B=54.0, share_over_B=4.0, odds_B=4.0, oheat_B=12.0),      # the same event
+            dict(base, coin='SOL', key='1m:PVI=high (rising in)', dir=-1, share_B=53.0, share_over_B=3.0, odds_B=3.0, oheat_B=9.0),
+            dict(base, coin='SOL', key='5m:MOM10 sign=above 0', dir=-1, share_B=52.0, share_over_B=2.0, odds_B=2.0, oheat_B=6.0),
+            dict(base, coin='SOL', key='UTC4h=08-12', dir=1, share_B=51.0, share_over_B=1.0, odds_B=1.0, oheat_B=3.0),
+            dict(base, coin='SOL~twin1', key='1m:RSI14=very low', dir=1, share_B=50.0, share_over_B=0.0, odds_B=0.0, oheat_B=0.1)]
+    summary = {'metas': {'SOL': {'table_sha256': 'abc'}}, 'direction': {'15': {'twin': {'max_odds_heat_B': 5.0}}}}
+    pack = heat_pack.build(pd.DataFrame(rows), summary, horizons=(15,), top=40, top_share=20, source='direction_all.csv.gz')
+    assert [r['key'] for r in pack['rows']] == ['1m:CMO14=very low', '1m:PVI=high (rising in)', '5m:MOM10 sign=above 0', 'UTC4h=08-12']
+    assert pack['rows'][0]['aliases'] == ['1m:RSI14=very low'] and pack['rows'][0]['rank_coin'] == 1 and pack['rows'][0]['above_twin_max']
+    par = {'SOL': {'agreement': 1.0, 'readings_that_differ': [], 'table_sha256': 'abc', 'edges': {'same_as_meta': 3, 'different': 0}},
+           'XRP': {'agreement': 0.99, 'readings_that_differ': [['1m:PVI', 197], ['1m:PVI sign', 125]], 'table_sha256': None, 'edges': {}}}
+    heat_pack.add_parity(pack, par)
+    assert pack['live_reader_parity']['indicators_that_differ'] == ['PVI']
+    assert [r['live_parity'] for r in pack['rows']] == [True, False, True, True]
+    meta = {'price_step': 0.01, 'table_sha256': 'abc',
+            'edges': {'1m:RSI14': [1, 2, 3, 4], '1m:CMO14': [-2, -1, 1, 2], '1m:PVI': [-3, -1, 1, 3], '5m:MOM10': [-9, -4, 4, 9], '60m:ADX14': [5, 6, 7, 8]}}
+    lm = heat_pack.live_meta(pack, {'SOL': meta})
+    assert sorted(lm['SOL']['edges']) == ['1m:CMO14', '1m:PVI', '1m:RSI14', '5m:MOM10'] and lm['SOL']['edges']['5m:MOM10'] == [-9.0, -4.0, 4.0, 9.0]
+    assert lm['SOL']['no_edges'] == ['UTC4h'] and lm['SOL']['price_step'] == 0.01
+    with pytest.raises(SystemExit):
+        heat_pack.live_meta(pack, {'SOL': dict(meta, table_sha256='other')})
