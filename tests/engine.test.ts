@@ -745,12 +745,12 @@ test('paper size: by default the $10-$20 order band, as live; PAPER_ORDER_FRAC b
   assert.deepEqual(band.g.engine.guardStatus().orderBandUsd, { min: 10, max: 20 });
 });
 
-test('accuracy gate (paper): no new quote in a time-to-close bucket where the market mid called results better', async () => {
+test('accuracy gate (ACCURACY_GATE=true): no new quote in a time-to-close bucket where the market mid called results better; off by default, it keeps scoring and blocks nothing', async () => {
   const quote = (g: Awaited<ReturnType<typeof setup>>) => g.oms.liveOrders().find((o) => o.ticker === g.market.ticker && o.purpose === 'quote' && !o.cancelRequested);
   const env = { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' };
   // 50 settled 15-minute markets per bucket around 10 minutes out, where the mid leaned the right way and the bot sat at 0.5.
-  const scorecard = (enabled: boolean) => {
-    const gate = new AccuracyGate({ enabled, window: 150, minMarkets: 40 });
+  const scorecard = (cfg: { enabled: boolean; window: number; minMarkets: number }) => {
+    const gate = new AccuracyGate(cfg);
     for (let i = 0; i < 50; i++) for (const tau of [700, 520]) {
       const t = `KXETH15M-M${i}-${tau}`;
       gate.observe(t, tau, 0.5, i % 2 ? 0.65 : 0.35);
@@ -758,18 +758,28 @@ test('accuracy gate (paper): no new quote in a time-to-close bucket where the ma
     }
     return gate;
   };
-  const g = await setup({ env, accuracyGate: scorecard(true) });
+  const g = await setup({ env: { ...env, ACCURACY_GATE: 'true' }, accuracyGate: scorecard({ enabled: true, window: 150, minMarkets: 40 }) });
   g.engine.balance = (await g.recon.run('startup'))!.balance;
   await g.engine.tick();
   assert.equal(quote(g), undefined);
   const why = Object.keys(g.engine.entryDiagnosis().reasons);
   assert.ok(why.some((r) => /accuracy gate: the market has called results better (450-600|600-840) s before the close/.test(r)), why.join(' | '));
   assert.equal(g.engine.guardStatus().accuracyGate?.enforced, true);
-  // ACCURACY_GATE=false: the scorecard is kept, the quote goes out.
-  const off = await setup({ env, accuracyGate: scorecard(false) });
+  // The default (ACCURACY_GATE unset, off since Nov 11, paper and live alike): the same losing scorecard, built from the
+  // default settings as bot/main.ts builds it, blocks nothing; the quote goes out and the market is still scored.
+  const offGate = scorecard(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40) }).strategy.accuracyGate);
+  const off = await setup({ env, accuracyGate: offGate });
   off.engine.balance = (await off.recon.run('startup'))!.balance;
   await off.engine.tick();
   assert.ok(quote(off), JSON.stringify(off.engine.status.get(off.market.ticker)?.notes));
+  assert.equal(off.engine.status.get(off.market.ticker)?.accuracyBlock, undefined);
+  const ag = off.engine.guardStatus().accuracyGate;
+  assert.equal(ag?.enforced, false);
+  assert.equal(ag?.enabled, false);
+  assert.equal(ag?.groups.updown15m.buckets.filter((b) => !b.open).length, 2, 'the scorecard still reports the buckets the market called better');
+  assert.equal(offGate.status().pending, 1, 'the evaluation fed the scorecard with the gate off');
+  offGate.settle(off.market.ticker, 'yes');
+  assert.equal(offGate.status().groups.updown15m.buckets.reduce((a, b) => a + b.n, 0), 101, 'and its result is scored');
 });
 
 test('a manually recorded withdrawal is not counted again by the detector', async () => {

@@ -173,9 +173,10 @@ export interface StrategyConfig {
    *  order size (paperOrderUsd / paperOrderFrac) wins over it. */
   orderUsdMin: number;
   orderUsdMax: number;
-  /** Paper only: no new crypto entries in a time-to-close bucket where the market mid has scored a better log loss
-   *  than the bot's (temperature-calibrated) probability over the last settled markets (bot/strategy/accuracyGate.ts;
-   *  the owner's choice on Oct 23). Live never blocks on it. */
+  /** ACCURACY_GATE (paper and live alike): no new crypto entries in a time-to-close bucket where the market mid has
+   *  scored a better log loss than the bot's (temperature-calibrated) probability over the last settled markets
+   *  (bot/strategy/accuracyGate.ts; the owner's choice on Oct 23). Off by default since Nov 11 for the edge plan (it
+   *  scored the old pYes and closed 7 of 8 buckets); the scorecard is still kept and reported with it off. */
   accuracyGate: AccuracyGateConfig;
   /** kelly = fractional Kelly on the model probability; target_ev = spec sizing (shrink to market, $ target, min EV). */
   sizing: 'kelly' | 'target_ev';
@@ -1192,7 +1193,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0, 0, 1),
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
     orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
-    accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
+    accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', false), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
     kappa: num(env, 'STRATEGY_KAPPA', 0.5, 0, 1),
     targetEvUsd: num(env, 'STRATEGY_TARGET_EV_USD', 10, 0, 10000),

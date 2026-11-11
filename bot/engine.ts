@@ -233,7 +233,7 @@ export interface MarketStatus {
   q?: number;
   pStd?: number;
   entryWindow?: boolean;
-  /** The accuracy gate's reason when it closed the entry window (paper). */
+  /** The accuracy gate's reason when it closed the entry window (paper and live; ACCURACY_GATE, off by default). */
   accuracyBlock?: string;
   /** Why new entries wait for the market's fee schedule (exits still go out). */
   feeBlock?: string;
@@ -315,7 +315,8 @@ export interface EngineDeps {
   modelHealth?: ModelHealth;
   /** Scores the TA tilt: P with the TA network's drift vs the same P without it (advantage > 0 = it helps). */
   taHealth?: ModelHealth;
-  /** Bot vs market mid log loss per time-to-close bucket; paper opens no entries where the market has been better. */
+  /** Bot vs market mid log loss per time-to-close bucket (the scorecard is always kept); with ACCURACY_GATE on (off by
+   *  default since Nov 11) no new entries, paper or live, where the market has been better. */
   accuracyGate?: AccuracyGate;
   /** Scheduled macro releases (CPI, FOMC, NFP, PCE) for calendar features. */
   calendar?: MacroEvent[];
@@ -2210,8 +2211,9 @@ export class Engine {
     const kindWindow = S.cadence === 'relaxed'
       ? inEntryWindow(m.kind, tauSec, S.entryWindowUpdown, S.entryWindowHourly) && (m.kind === 'updown' || (mid >= S.hourlyMidBand[0] && mid <= S.hourlyMidBand[1]))
       : true;
-    // Paper: no new entry where the market's own price has called recent results better than the bot (the owner's
-    // choice on Oct 23; bot/strategy/accuracyGate.ts). Every evaluation feeds the gate's scorecard, live included.
+    // Paper and live alike, with ACCURACY_GATE on (off by default since Nov 11): no new entry where the market's own price
+    // has called recent results better than the bot (the owner's choice on Oct 23; bot/strategy/accuracyGate.ts). Every
+    // evaluation feeds the gate's scorecard, with the gate on or off.
     this.d.accuracyGate?.observe(m.ticker, tauSec, pYes, mid);
     const accuracyBlock = kindWindow && guards.length === 0 ? this.d.accuracyGate?.block(m.ticker, tauSec) : undefined;
     const entryWindowOpen = kindWindow && guards.length === 0 && !accuracyBlock && !feeBlock;
@@ -2572,7 +2574,7 @@ export class Engine {
         tauSec, fv: fv.pYes, regime: fv.regime, pYes, ...(full ? { features, drivers: why.drivers } : {}), modelShift: why.shiftFromFairValue, bid: bid.price, ask: ask.price, position: st.position, fastMove, mstate: compactReading(mState), ...(dynamicEdgeOn(cfg.strategy.dynamicEdge) ? { edgeAdd: +dEdge.add.toFixed(4) } : {}), ...(regimeScaleOn(cfg.strategy.regimeScale) ? { regimeMult: +reg.mult.toFixed(3) } : {}),
         place: plan.place.map((p) => ({ side: p.side, price: p.price, count: p.count, purpose: p.purpose, edge: p.edge, why: p.why })),
         cancel: plan.cancel,
-        // Why no entry could open here (paper's accuracy gate), so studies need not recompute it.
+        // Why no entry could open here (the fee schedule or the accuracy gate), so studies need not recompute it.
         ...(st.feeBlock ?? st.accuracyBlock ? { entryBlock: st.feeBlock ?? st.accuracyBlock } : {}),
       });
     }
