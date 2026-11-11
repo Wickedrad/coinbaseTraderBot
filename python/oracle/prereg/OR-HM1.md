@@ -211,3 +211,47 @@ were reviewed for v1 and are covered by the tests, but not re-reviewed for this 
 Everything else in Amendment 1: next-minute entry, the price-step rule, two tracks, windows-per-day heat, the vocabulary,
 the bars (hot on A two-sided p <= 0.0027, replicate on B one-sided p <= 0.0228, 30 events on 30 / 20 days), coin price
 only, never compared to paper, NEVER DOGE. A MAP, not a validated rule.
+
+---
+
+# Amendment 3 (written 2026-11-11 13:35 UTC, Nov 11 8:35 AM EST, before any result of run 43026335764 or of this code was seen)
+
+**Why.** Steven, Nov 11 13:17 UTC (8:17 AM EST): "the only thing that we need to know is if we can detect direction,
+sustaining for at least 1 minute or long enough for an exit to take place in profit"; he does not trust the testing
+thresholds ("cutting unnecessarily") and leaves after-fee profit to the bot's exits. The pipeline thread (13:29 UTC)
+turned the league into a ranking with no pass bar; the hottest readings go on as a batch to one test on Kalshi prices.
+Run 43026335764 (Amendments 1 and 2; 5/15/30/60 minutes) had started at 13:07 UTC. None of its results had been read
+when this was written; the run of this amendment replaces it.
+
+## What is added
+1. **A 1-minute horizon.** HORIZONS = 1, 5, 15, 30, 60. Entry stays the next minute's open; the 1-minute read is that
+   minute's close. Every statistic is computed for it as for the others (the "entered one minute later" column is zero
+   at this horizon by construction).
+2. **Minutes held.** Per event and side: how many consecutive minute closes, from the first one after entry, stay
+   beyond the entry by more than the dead band (1.5 price steps); 0 = the first close is not on that side, 60 = the whole
+   hour. Per cell the mean for each side; the league shows it in the reading's direction and against the same number
+   over all valid minutes of the period (the base).
+3. **The direction league: every event level, nothing cut.** A level is listed when it has a sample on both periods
+   (30 events on 30 days of A, 30 events on 20 days of B). These are sample floors, not significance bars. Its
+   direction is the sign of its odds on A; every B number is signed in that direction, so a level with no information
+   scores about zero. Columns per horizon: windows per day, share right on A and B, share right over base, odds points,
+   t, heat (windows per day x odds points: how often x how sure), minutes held and over base, best move, usual dip. Two
+   orders: by heat, and by share right over base among levels that fire at least 0.2 windows a day. The marks of
+   Amendments 1 and 2 (hot on A, replicates, BHY) stay as columns for information; they remove no row.
+4. **The chance scale stays beside it and judges nothing.** Per horizon: the share of levels whose direction carried
+   to B (a coin flip gives about one half), for the coins and for the no-signal twins, and the twins' best and 99th
+   percentile heat and share right over base.
+
+## Unchanged
+The data (coin minutes 2020-01-01 to 2025-12-31; build 2020-2024, check 2025; no minute of 2026), the entry, the
+price-step rule, the twins, the hash, the curves and the every-TA league. Pairs and triples are still built from the
+triggers that are hot on A: that is a limit on compute (the full cross is about 10^9 cells), not a judgment on singles.
+One more horizon makes each BHY family a quarter larger; BHY is now a column, not a gate.
+
+## Next (not this run)
+Default batch, fixed here before any result is read (the pipeline thread may fix another rule in the registry before
+the Kalshi read): for the 15-minute and the hourly contract, the 10 events with the most heat on B in the direction
+league at the 15- and 60-minute horizon, one row per coin and event. The one test (pipeline doc, "The one test"): buy
+the called side at the ask; a profit window is one full minute whose lowest bid stays at or above entry plus both fees
+plus 1c; the window rate against random entries in the same contracts and hours. Horizon and contract type are picked
+on Apr 18 to Jul 31, 2026; Aug 1 to Nov 4 is read once per pre-fixed batch.

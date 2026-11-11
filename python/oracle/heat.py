@@ -28,7 +28,7 @@ import pandas as pd
 
 from oracle.common import DAY, DEV_END, MIN, ms
 
-HORIZONS = [5, 15, 30, 60]
+HORIZONS = [1, 5, 15, 30, 60]   # Amendment 3: 1 minute added (does the direction hold for a minute after entry)
 HMAX = max(HORIZONS)
 TFS = [1, 5, 15, 60]
 TOUCH = [10, 25, 50]
@@ -218,7 +218,9 @@ def context_readings(m: dict, dom_dir: str) -> list:
 def labels(m: dict, chunk: int = 200_000) -> dict:
     """Per minute row m (decision at its close, entry e = the next minute's open): the move from e to the close H minutes
     after the decision (bps), the best high / worst low on the way, the dip before the best high and the pop before the
-    worst low, the same move entered one minute later (retL, a bid-ask bounce check), the first minute (1..60, 0 =
+    worst low, the minutes price HOLDS above / below the entry (holdU / holdD: consecutive minute closes from the first
+    one that stay beyond the entry by more than the dead band; 0 = the first close is not on that side, 60 = the whole
+    hour), the same move entered one minute later (retL, a bid-ask bounce check), the first minute (1..60, 0 =
     never) price touches e +X and e -X, the bounce (e vs the signal bar's close), the direction sg (the sign of the move,
     0 when it is within one price step: TICK_DEAD) and a validity mask (no gap at the row or within the next 60 minutes)."""
     from numpy.lib.stride_tricks import sliding_window_view
@@ -229,6 +231,9 @@ def labels(m: dict, chunk: int = 200_000) -> dict:
     hp = np.r_[h[1:], np.full(HMAX + 1, np.nan)]
     lp = np.r_[l[1:], np.full(HMAX + 1, np.nan)]
     Wh, Wl = sliding_window_view(hp, HMAX), sliding_window_view(lp, HMAX)       # row m: bars m+1 .. m+60
+    Wc = sliding_window_view(np.r_[c[1:], np.full(HMAX + 1, np.nan)], HMAX)     # the closes of the same bars
+    dead_a = np.broadcast_to(np.asarray(TICK_DEAD * m['tick'] if 'tick' in m else 0.0, np.float64), (n,))
+    out['holdU'], out['holdD'] = np.zeros(n, np.int8), np.zeros(n, np.int8)
     for H in HORIZONS:
         fut = np.r_[c[H:], np.full(H, np.nan)]
         out[f'ret{H}'] = ((fut / e - 1) * 1e4).astype(np.float32)
@@ -251,6 +256,12 @@ def labels(m: dict, chunk: int = 200_000) -> dict:
                 out[f'dn{H}'][s:t] = (b[ar, bm] / ee - 1) * 1e4
                 out[f'dipU{H}'][s:t] = (np.minimum.accumulate(b, 1)[ar, am] / ee - 1) * 1e4
                 out[f'dipD{H}'][s:t] = (np.maximum.accumulate(a, 1)[ar, bm] / ee - 1) * 1e4
+            rc = (Wc[s:t] / ee[:, None] - 1) * 1e4
+            dd = dead_a[s:t][:, None]
+            ab, be = rc > dd, rc < -dd
+            out['holdU'][s:t] = np.where(ab.all(1), HMAX, ab.argmin(1))
+            out['holdD'][s:t] = np.where(be.all(1), HMAX, be.argmin(1))
+            del rc, ab, be
             for X in TOUCH:
                 for W, up, arr in ((wh, True, out[f'tu{X}']), (wl, False, out[f'td{X}'])):
                     hit = (W >= ee[:, None] * (1 + X / 1e4)) if up else (W <= ee[:, None] * (1 - X / 1e4))
@@ -365,6 +376,7 @@ class Grid:
                 sp.bd_e[H] = np.bincount(dr, lab[f'ret{H}'][sp.rows].astype(np.float64) - full[H]['mean'], minlength=sp.ND)
                 sp.bd_s[H] = np.bincount(dr, lab[f'sg{H}'][sp.rows].astype(np.float64) - full[H]['msign'], minlength=sp.ND)
             sp.base['gap1'] = full['gap1']
+            sp.base['hold_up'], sp.base['hold_dn'] = full['hold_up'], full['hold_dn']
             sp.base['n'], sp.base['per_day'] = full['n'], full['per_day']
 
     def in_split(self, idx: np.ndarray, s: str) -> np.ndarray:
@@ -384,6 +396,7 @@ class Grid:
         out['days'] = int(len(np.unique(dr)))
         out['gap1'] = float(lab['gap1'][idx].mean())
         out['tick'] = float(np.median(lab['tick'][idx]))
+        out['hold_up'], out['hold_dn'] = float(lab['holdU'][idx].mean()), float(lab['holdD'][idx].mean())
         touch = {X: (lab[f'tu{X}'][idx], lab[f'td{X}'][idx]) for X in TOUCH}
         for H in HORIZONS:
             r = lab[f'ret{H}'][idx].astype(np.float64)
@@ -428,7 +441,7 @@ class Grid:
                 's': {H: lab[f'sg{H}'][E].astype(np.float64) - sp.base[H]['msign'] for H in HORIZONS},
                 'L': {H: lab[f'retL{H}'][E].astype(np.float64) - sp.base[H]['retL'] for H in HORIZONS},
                 'dU': {H: lab[f'dipU{H}'][E] for H in HORIZONS}, 'dD': {H: lab[f'dipD{H}'][E] for H in HORIZONS},
-                'sg': {H: lab[f'sg{H}'][E] for H in HORIZONS}}
+                'sg': {H: lab[f'sg{H}'][E] for H in HORIZONS}, 'hU': lab['holdU'][E], 'hD': lab['holdD'][E]}
 
     def cells(self, s: str, pre: dict, codes: np.ndarray, L: int, lift: bool, late: bool = True, win: bool = True, cb: dict = None) -> dict:
         """The events of `pre` split by `codes` (0..L-1, -1 = NA): per level and horizon the excess move and the odds
@@ -490,6 +503,9 @@ class Grid:
                         nw = self.n // H + 2
                         u = np.unique(lvc * nw + (pre['rows'] + 1) // H)
                         out[(H, 'wd')] = np.bincount(u // nw, minlength=L + 1)[:L] / sp.ndays
+            if late:
+                out['hU'] = np.bincount(lvc, pre['hU'], minlength=L + 1)[:L] / cnt        # minutes the price holds above the entry
+                out['hD'] = np.bincount(lvc, pre['hD'], minlength=L + 1)[:L] / cnt        # ... below it
         return out
 
 
@@ -630,6 +646,8 @@ def cell_rows(kind: str, key: str, s: str, g: Grid, cs: dict, levels: list, extr
                 row['p_up'], row['p_dn'] = float(cs[(H, 'pu')][i]), float(cs[(H, 'pd')][i])
             if (H, 'wd') in cs:
                 row['wd'] = float(cs[(H, 'wd')][i])
+            if 'hU' in cs:
+                row['hold_up'], row['hold_dn'] = float(cs['hU'][i]), float(cs['hD'][i])
             if (H, 'e_lift') in cs:
                 row.update(lift=float(cs[(H, 'e_lift')][i]), t_lift=float(cs[(H, 'e_tlift')][i]), liftp=float(cs[(H, 's_lift')][i]),
                            t_liftp=float(cs[(H, 's_tlift')][i]), rest_n=int(cs['rest_n'][i]))
@@ -662,7 +680,7 @@ def full_rows(kind: str, key: str, st_by_split: dict, tod=None) -> list:
             continue
         for H in HORIZONS:
             row = {'kind': kind, 'key': key, 'split': s, 'h': H, 'n': st['n'], 'per_day': st['per_day'], 'days': st['days'], 'gap1': st['gap1'],
-                   'tick': st['tick']}
+                   'tick': st['tick'], 'hold_up': st['hold_up'], 'hold_dn': st['hold_dn']}
             row.update({k: st[H][k] for k in FULL_COLS})
             if tod and (s, H) in tod:
                 row['tod_excess'], row['tod_edge_p'] = tod[(s, H)]
@@ -946,6 +964,7 @@ def run_coin(asset: str, csv: str, dom: str, out: str, end: int = HEAT_END, twin
         for chunk in iter(lambda: f.read(1 << 20), b''):
             sha.update(chunk)
     base = {s: {'n': g.sp[s].base.get('n', 0), 'per_day': g.sp[s].base.get('per_day', 0),
+                'hold_up': g.sp[s].base.get('hold_up'), 'hold_dn': g.sp[s].base.get('hold_dn'),
                 **{str(H): g.sp[s].base[H] for H in HORIZONS if H in g.sp[s].base}} for s in SPLITS}
     meta = {'schema': 'oracle-heat-2', 'asset': asset, 'label': label, 'twin': int(twin), 'minutes': m['n'], 'gaps': int(m['gap'].sum()),
             'from': str(pd.Timestamp(m['t0'], unit='ms')), 'end': str(pd.Timestamp(min(end, HEAT_END), unit='ms')), 'heat_end': str(pd.Timestamp(HEAT_END, unit='ms')),
@@ -965,9 +984,9 @@ def run_coin(asset: str, csv: str, dom: str, out: str, end: int = HEAT_END, twin
 # -------------------------------------------------------------------------------------------------------------- league
 TRACKS = {'move': ('excess', 't', 'lift', 't_lift', 'lift2', 't_lift2', 'deff'), 'odds': ('edge_p', 't_p', 'liftp', 't_liftp', 'liftp2', 't_liftp2', 'deff_p')}
 OPTIONAL = ['lift', 't_lift', 'liftp', 't_liftp', 'lift2', 't_lift2', 'liftp2', 't_liftp2', 'deff', 'deff_p', 'rest_n', 'tod_excess', 'tod_edge_p', 'trig', 'cond', 'lv', 'series', 'bin', 'lo', 'hi', 'gap1',
-            'best_up', 'best_dn', 'dip_up', 'dip_dn', 'bx_up25', 'bx_dn25', 'p_up', 'p_dn', 'median', 'tick', 'wd', 'size']
+            'best_up', 'best_dn', 'dip_up', 'dip_dn', 'bx_up25', 'bx_dn25', 'p_up', 'p_dn', 'median', 'tick', 'wd', 'size', 'hold_up', 'hold_dn']
 VIEW = ['coin', 'kind', 'key', 'h', 'hs', 'dir', 'passes', 'q', 'n_A', 'days_A', 'per_day_A', 'move_A', 'odds_A', 't_A', 'n_B', 'days_B', 'per_day_B', 'wd_B',
-        'move_B', 'odds_B', 'share_B', 'share_over_B', 't_B', 'heat_B', 'chance_heat', 'oheat_B', 'late_B', 'tod_B', 'lift_A', 't_lift_A', 'lift_B', 't_lift_B', 'lift2_B', 't_lift2_B',
+        'move_B', 'odds_B', 'share_B', 'share_over_B', 'hold_B', 'hold_over_B', 't_B', 'heat_B', 'chance_heat', 'oheat_B', 'late_B', 'tod_B', 'lift_A', 't_lift_A', 'lift_B', 't_lift_B', 'lift2_B', 't_lift2_B',
         'bx25_B', 'best_B', 'dip_B', 'size_B', 'gap1_B', 'tick_B', 'trig', 'cond', 'lv']
 TABLES = {'move_heat': ('move', 'heat_B', 0.0, 'by heat on B (windows per day x move, bps per day)'),
           'move_edge': ('move', 'move_B', 0.2, 'by move per event on B (bps; at least 0.2 windows per day)'),
@@ -1042,11 +1061,44 @@ def _view(H: pd.DataFrame, tr: str) -> pd.DataFrame:
         v[f'lift2_{s}'], v[f't_lift2_{s}'] = H[f'{lf2}_{s}'] * d * sc, H[f'{tl2}_{s}'] * d            # over the condition's own effect
     v['share_B'] = np.where(d > 0, H.p_up_B, H.p_dn_B) * 100                    # share of events that went the reading's way
     v['share_over_B'] = v.share_B - np.where(d > 0, H.bp_up_B, H.bp_dn_B) * 100  # ... in points over all minutes of the check period
+    v['hold_B'] = np.where(d > 0, H.hold_up_B, H.hold_dn_B)                      # minutes the price holds on the reading's side of the entry
+    v['hold_over_B'] = v.hold_B - np.where(d > 0, H.bh_up_B, H.bh_dn_B)          # ... over all minutes of the check period
     v['bx25_B'] = np.where(d > 0, H.bx_up25_B, H.bx_dn25_B)
     v['best_B'] = np.where(d > 0, H.best_up_B, -H.best_dn_B)
     v['dip_B'] = np.where(d > 0, H.dip_up_B, -H.dip_dn_B)
     v['gap1_B'], v['size_B'], v['tick_B'] = H.gap1_B * d, H.size_B, H.tick_B
     v['rep'], v['p'], v['q'], v['passes'] = H[f'rep_{tr}'], H[f'p_{tr}'], H[f'q_{tr}'], H[f'bhy_{tr}']
+    return v
+
+
+DIR_MIN_WD = 0.2            # windows per day a level needs to enter the share-right ranking (once in five days)
+DIR_COLS = ['coin', 'kind', 'key', 'h', 'hs', 'dir', 'passes', 'rep', 'hot', 'n_A', 'n_B', 'days_B', 'wd_B', 'share_A', 'share_B', 'share_over_B', 'odds_A', 'odds_B',
+            't_A', 't_B', 'oheat_B', 'move_B', 'hold_B', 'hold_over_B', 'best_B', 'dip_B', 'tick_B']
+
+
+def _direction(j: pd.DataFrame) -> pd.DataFrame:
+    """Amendment 3: EVERY event level with a sample on both periods (30 events on 30 / 20 days), nothing cut by a
+    significance bar. The direction is the one split A's odds showed; every B number is signed in that direction, so a
+    level with no information scores about zero. Share right: events where price is beyond the entry by more than 1.5
+    price steps in that direction at the horizon. Hold: minutes price stays on that side of the entry from the first
+    close. Heat: distinct windows per day x the odds points (how often x how sure)."""
+    x = j[(j.kind == 'single') & j.okA & (j.n_B >= MIN_EVENTS) & (j.days_B >= MIN_DAYS_B) & (j.d_odds != 0)]
+    d = x.d_odds.astype(float)
+    up = (d > 0).to_numpy()
+    v = x[['coin', 'kind', 'key', 'h', 'twin', 'tw', 'n_A', 'n_B', 'days_B', 'tick_B']].copy()
+    v['hs'] = x.h.astype(int).astype(str)
+    v['dir'] = d.astype(int)
+    v['wd_B'] = x.wd_B.fillna(x.per_day_B)
+    v['share_A'], v['share_B'] = np.where(up, x.p_up_A, x.p_dn_A) * 100, np.where(up, x.p_up_B, x.p_dn_B) * 100
+    v['share_over_B'] = v.share_B - np.where(up, x.bp_up_B, x.bp_dn_B) * 100
+    v['odds_A'], v['odds_B'] = x.edge_p_A * d * 100, x.edge_p_B * d * 100
+    v['t_A'], v['t_B'] = x.t_p_A * d, x.t_p_B * d
+    v['oheat_B'] = v.wd_B * v.odds_B
+    v['move_B'] = x.excess_B * d
+    v['hold_B'] = np.where(up, x.hold_up_B, x.hold_dn_B)
+    v['hold_over_B'] = v.hold_B - np.where(up, x.bh_up_B, x.bh_dn_B)
+    v['best_B'], v['dip_B'] = np.where(up, x.best_up_B, -x.best_dn_B), np.where(up, x.dip_up_B, -x.dip_dn_B)
+    v['hot'], v['rep'] = x.hot_odds.to_numpy(), x.rep_odds.to_numpy()
     return v
 
 
@@ -1161,17 +1213,17 @@ def league(inputs: str, out: str, top: int = 40) -> dict:
     for f in ('strips.csv.gz', 'curves.csv.gz', 'relations.csv.gz'):
         if os.path.exists(os.path.join(out, f)):
             os.remove(os.path.join(out, f))
-    metas, hots, counts, tt, viewer, tas, pads, sets = {}, [], {}, {}, {}, [], {}, {}
+    metas, hots, counts, tt, viewer, tas, pads, sets, dirs_ = {}, [], {}, {}, {}, [], {}, {}, []
     s_cols = ['coin', 'key', 'h', 'n_A', 'days_A', 'deff_A', 'per_day_A', 'wd_A', 'wd_B', 'tick_A', 'tick_B', 'excess_A', 't_A', 'edge_p_A', 't_p_A', 'tod_excess_A', 'excessL_A', 'gap1_A', 'p_up_A', 'p_dn_A',
-              'median_A', 'best_up_A', 'best_dn_A', 'dip_up_A', 'dip_dn_A', 'bx_up25_A', 'bx_dn25_A', 'n_B', 'days_B', 'per_day_B', 'excess_B', 'se_B', 't_B',
-              'edge_p_B', 't_p_B', 'tod_excess_B', 'excessL_B', 'best_up_B', 'best_dn_B', 'dip_up_B', 'dip_dn_B', 'bx_up25_B', 'bx_dn25_B',
+              'median_A', 'best_up_A', 'best_dn_A', 'dip_up_A', 'dip_dn_A', 'bx_up25_A', 'bx_dn25_A', 'hold_up_A', 'hold_dn_A', 'n_B', 'days_B', 'per_day_B', 'excess_B', 'se_B', 't_B',
+              'edge_p_B', 't_p_B', 'p_up_B', 'p_dn_B', 'hold_up_B', 'hold_dn_B', 'tod_excess_B', 'excessL_B', 'best_up_B', 'best_dn_B', 'dip_up_B', 'dip_dn_B', 'bx_up25_B', 'bx_dn25_B',
               'hot_move', 'rep_move', 'p_move', 'hot_odds', 'rep_odds', 'p_odds']
     c_cols = ['coin', 'series', 'bin', 'lo', 'hi', 'h', 'n_A', 'days_A', 'excess_A', 't_A', 'edge_p_A', 't_p_A', 'tick_A', 'p_up_A', 'p_dn_A', 'dip_up_A', 'dip_dn_A',
-              'n_B', 'days_B', 'excess_B', 't_B', 'edge_p_B', 't_p_B', 'tick_B', 'p_up_B', 'p_dn_B', 'dip_up_B', 'dip_dn_B', 'hot_move', 'rep_move', 'hot_odds', 'rep_odds']
+              'hold_up_A', 'hold_dn_A', 'n_B', 'days_B', 'excess_B', 't_B', 'edge_p_B', 't_p_B', 'tick_B', 'p_up_B', 'p_dn_B', 'dip_up_B', 'dip_dn_B', 'hold_up_B', 'hold_dn_B', 'hot_move', 'rep_move', 'hot_odds', 'rep_odds']
     r_cols = ['coin', 'kind', 'trig', 'cond', 'lv', 'h', 'n_A', 'days_A', 'excess_A', 't_A', 'lift_A', 't_lift_A', 'lift2_A', 't_lift2_A', 'edge_p_A', 't_p_A',
               'liftp_A', 't_liftp_A', 'liftp2_A', 't_liftp2_A', 'tick_A', 'p_up_A', 'p_dn_A', 'dip_up_A', 'dip_dn_A',
               'n_B', 'days_B', 'excess_B', 't_B', 'lift_B', 't_lift_B', 'lift2_B', 't_lift2_B', 'edge_p_B', 't_p_B', 'liftp_B', 't_liftp_B', 'liftp2_B', 't_liftp2_B',
-              'tick_B', 'p_up_B', 'p_dn_B', 'dip_up_B', 'dip_dn_B',
+              'tick_B', 'p_up_B', 'p_dn_B', 'dip_up_B', 'dip_dn_B', 'hold_up_B', 'hold_dn_B',
               'hot_move', 'rep_move', 'p_move', 'hot_odds', 'rep_odds', 'p_odds']
 
     def put(df, cols, name):
@@ -1193,6 +1245,7 @@ def league(inputs: str, out: str, top: int = 40) -> dict:
         bB = mt.get('base', {}).get('B', {})
         j['bp_up_B'] = j.h.map(lambda H: bB.get(str(int(H)), {}).get('p_up', np.nan))
         j['bp_dn_B'] = j.h.map(lambda H: bB.get(str(int(H)), {}).get('p_dn', np.nan))
+        j['bh_up_B'], j['bh_dn_B'] = bB.get('hold_up') or np.nan, bB.get('hold_dn') or np.nan      # base: minutes held on each side
         for kind in ('single', 'curve', 'pair', 'triple'):
             x = j[j.kind == kind]
             c = counts.setdefault((twi, kind), {'tested': 0, 'move': [0, 0], 'odds': [0, 0]})
@@ -1219,6 +1272,7 @@ def league(inputs: str, out: str, top: int = 40) -> dict:
                                                                                                 'ev_heat_A', 'ev_heat_B', 'ev_t_B') if c in x.columns}
                                        for r, x in ta.groupby('reading')}
         hots.append(j[(j.hot_move | j.hot_odds) & (j.kind != 'curve')])
+        dirs_.append(_direction(j))
         del j
     H = pd.concat(hots, ignore_index=True)
     for tr in TRACKS:                                           # BHY inside each family: the coins or one twin set x kind x track
@@ -1292,6 +1346,30 @@ def league(inputs: str, out: str, top: int = 40) -> dict:
     for nm, (tr, metric, min_pd, _) in TABLES.items():
         x = table(tr, metric, min_pd, twin=True)
         summary['twin_best'][nm] = None if x.empty else round(float(x[metric].max()), 3)
+    D = pd.concat(dirs_, ignore_index=True)
+    ps = views['odds'][['coin', 'key', 'h', 'passes']].drop_duplicates(['coin', 'key', 'h'])
+    D = D.merge(ps, on=['coin', 'key', 'h'], how='left')
+    D['passes'] = D.passes.fillna(False).astype(bool)
+    summary['direction'] = {}
+    for Hh in HORIZONS:                                         # does A's direction carry to B: every level, the coins beside the twins
+        for tw, nm in ((False, 'real'), (True, 'twin')):
+            x = D[(D.h == Hh) & (D.twin == tw)]
+            if len(x):
+                summary['direction'].setdefault(str(Hh), {})[nm] = {
+                    'levels': int(len(x)), 'kept_direction_on_B': round(float((x.odds_B > 0).mean()), 4), 't_B_2_or_more': round(float((x.t_B >= 2).mean()), 4),
+                    'median_odds_B': round(float(x.odds_B.median()), 3), 'p99_odds_heat_B': round(float(x.oheat_B.quantile(0.99)), 3),
+                    'max_odds_heat_B': round(float(x.oheat_B.max()), 3), 'median_hold_over_B': round(float(x.hold_over_B.median()), 3)}
+                y = x[x.wd_B >= DIR_MIN_WD].share_over_B.dropna()
+                if len(y):                                      # the share-right scale among levels that fire at least once in five days
+                    summary['direction'][str(Hh)][nm].update(p99_share_over_B=round(float(y.quantile(0.99)), 2), max_share_over_B=round(float(y.max()), 2))
+    DR = D[~D.twin].sort_values('oheat_B', ascending=False)
+    DR[DIR_COLS].to_csv(os.path.join(out, 'direction_all.csv.gz'), index=False, compression='gzip', float_format='%.5g')      # every level
+    DR[DIR_COLS].head(5000).to_csv(os.path.join(out, 'league_direction.csv.gz'), index=False, compression='gzip', float_format='%.5g')
+    # per horizon the 60 hottest levels and the 60 with the largest share right over base (the csv has every level)
+    dir_top = pd.concat([DR.groupby('h', sort=True).head(60),
+                         DR[DR.wd_B >= DIR_MIN_WD].sort_values('share_over_B', ascending=False).groupby('h', sort=True).head(60)]
+                        ).drop_duplicates(['coin', 'key', 'h']).sort_values('oheat_B', ascending=False)[DIR_COLS]
+    summary['twin_best']['direction'] = None if not D.twin.any() else round(float(D[D.twin].oheat_B.max()), 3)
     pd.concat([views[tr].assign(track=tr) for tr in TRACKS])[lambda x: ~x.twin].drop(columns='twin').to_csv(
         os.path.join(out, 'hot.csv.gz'), index=False, compression='gzip', float_format='%.6g')
     for nm, tdf in tabs.items():
@@ -1322,10 +1400,12 @@ def league(inputs: str, out: str, top: int = 40) -> dict:
     with open(os.path.join(out, 'summary.json'), 'w') as f:
         json.dump(summary, f, indent=1, allow_nan=False)
     with open(os.path.join(out, 'league.md'), 'w') as f:
-        f.write(league_md(summary, tabs, top, ta_top))
+        f.write(league_md(summary, tabs, top, ta_top, dir_top))
     import gzip
     vw = {'schema': 'oracle-heat-viewer-1', 'coins': coins, 'twins': twins, 'horizons': HORIZONS, 'by_kind': summary['by_kind'], 'twin_best': summary['twin_best'],
-          'league': {nm: json.loads(tdf.head(300).to_json(orient='records', double_precision=3)) for nm, tdf in tabs.items()},
+          'league': {'direction': json.loads(dir_top.to_json(orient='records', double_precision=3)),
+                     **{nm: json.loads(tdf.head(300).to_json(orient='records', double_precision=3)) for nm, tdf in tabs.items()}},
+          'direction': summary['direction'],
           'ta': summary.get('ta', {}), 'fee_points': FEE_POINTS, 'metas': summary['metas'],
           'edges': {k: {a: [round(float(q), 4) for q in e] for a, e in metas[k].get('edges', {}).items()} for k in coins}, 'coin': viewer}
     with gzip.open(os.path.join(out, 'viewer.json.gz'), 'wt') as f:
@@ -1333,7 +1413,7 @@ def league(inputs: str, out: str, top: int = 40) -> dict:
     return summary
 
 
-def league_md(summary: dict, tabs: dict, top: int, ta_top: dict = None) -> str:
+def league_md(summary: dict, tabs: dict, top: int, ta_top: dict = None, dir_top: pd.DataFrame = None) -> str:
     exp = ['BTC', 'ETH', 'SOL', 'XRP']
     md = ['# OR-HM1 heat map: league (coin price, discovery only)', '',
           f"Coins: {', '.join(summary['coins']) or 'none'}. No-signal twins: {', '.join(summary['twins']) or 'none'}.",
@@ -1376,6 +1456,44 @@ def league_md(summary: dict, tabs: dict, top: int, ta_top: dict = None) -> str:
         if x is None or (isinstance(x, float) and not np.isfinite(x)):
             return ''
         return f'{x:+.{p}f}' if plus else f'{x:.{p}f}'
+    if dir_top is not None and len(dir_top):
+        md += ['## Direction: every event level, nothing cut (Amendment 3)', '',
+               'The question: can direction be detected, and does it hold for at least a minute. Every event level with a sample on both periods '
+               '(30 events) is listed in direction_all.csv.gz (the 5,000 hottest in league_direction.csv.gz); no significance bar removes a row. The direction is the one the build years showed; the '
+               'check-year numbers are signed in it, so a level with no information scores about zero. Kept direction: the share of levels whose odds on '
+               'the check year point the same way (a coin flip gives about 0.5). The twin row is the same count on the no-signal twins.', '',
+               '| minutes | set | levels | kept direction on B | t B >= 2 | median odds B pts | 99th pct odds heat B | max odds heat B | median hold over base, min |',
+               '|---|---|---|---|---|---|---|---|---|']
+        for Hh, v in summary.get('direction', {}).items():
+            for nm in ('real', 'twin'):
+                if nm in v:
+                    w = v[nm]
+                    md.append(f"| {Hh} | {nm} | {w['levels']:,} | {w['kept_direction_on_B']} | {w['t_B_2_or_more']} | {w['median_odds_B']} | {w['p99_odds_heat_B']} | "
+                              f"{w['max_odds_heat_B']} | {w['median_hold_over_B']} |")
+        md += ['', 'Share right: events where price is beyond the entry (by more than 1.5 price steps) in the direction at that minute. Hold: minutes price stays '
+               'on that side of the entry from the first close; over base: against all minutes. Best move and usual dip: inside the window, bps. '
+               'Heat: windows per day x odds points. The marks (hot on A, replicates, BHY) are information only.', '']
+        for Hh in sorted(dir_top.h.unique()):
+            x = dir_top[dir_top.h == Hh].head(12)
+            md += [f'Top {len(x)} at {int(Hh)} minute{"s" if Hh != 1 else ""} by heat on B:', '',
+                   '| coin | event | dir | windows/day B | share right A % | share right B % | over base pts | odds B pts | t B | heat B | hold B min | over base | best move bps | usual dip bps | marks |',
+                   '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+            for r in x.itertuples():
+                marks = ', '.join(nm for nm, on in (('hot', r.hot), ('replicates', r.rep), ('BHY', r.passes)) if on) or 'none'
+                md.append(f"| {r.coin} | {str(r.key).replace('|', '/')} | {'up' if r.dir > 0 else 'down'} | {f(r.wd_B, 2)} | {f(r.share_A, 1)} | {f(r.share_B, 1)} | "
+                          f"{f(r.share_over_B, 1, True)} | {f(r.odds_B, 1, True)} | {f(r.t_B, 1, True)} | {f(r.oheat_B, 1)} | {f(r.hold_B, 1)} | {f(r.hold_over_B, 1, True)} | "
+                          f"{f(r.best_B, 1, True)} | {f(r.dip_B, 1, True)} | {marks} |")
+            md.append('')
+            y = dir_top[(dir_top.h == Hh) & (dir_top.wd_B >= DIR_MIN_WD)].sort_values('share_over_B', ascending=False).head(8)
+            sc = summary.get('direction', {}).get(str(int(Hh)), {}).get('twin', {})
+            md += [f'Top {len(y)} at {int(Hh)} minute{"s" if Hh != 1 else ""} by share right over base on B (at least {DIR_MIN_WD} windows per day; '
+                   f'the best twin level reaches {sc.get("max_share_over_B", "n/a")} points, the 99th percentile {sc.get("p99_share_over_B", "n/a")}):', '',
+                   '| coin | event | dir | windows/day B | events B | share right B % | over base pts | t B | hold B min | over base | usual dip bps | marks |', '|---|---|---|---|---|---|---|---|---|---|---|---|']
+            for r in y.itertuples():
+                marks = ', '.join(nm for nm, on in (('hot', r.hot), ('replicates', r.rep), ('BHY', r.passes)) if on) or 'none'
+                md.append(f"| {r.coin} | {str(r.key).replace('|', '/')} | {'up' if r.dir > 0 else 'down'} | {f(r.wd_B, 2)} | {int(r.n_B):,} | {f(r.share_B, 1)} | {f(r.share_over_B, 1, True)} | "
+                          f"{f(r.t_B, 1, True)} | {f(r.hold_B, 1)} | {f(r.hold_over_B, 1, True)} | {f(r.dip_B, 1, True)} | {marks} |")
+            md.append('')
     if ta_top:
         md += ['## Every TA by heat', '',
                'Each reading as a whole (all readings are in league_ta.csv.gz, cold ones too). Curve heat: act in every non-overlapping window in the '
@@ -1401,11 +1519,11 @@ def league_md(summary: dict, tabs: dict, top: int, ta_top: dict = None) -> str:
                'coarse-step coin many 5-minute outcomes are flat, so the fee scale is loose there). '
                'Share right: the share of events where price went the reading\'s way by more than 1.5 price steps; over base: against all minutes of the check period. '
                'Usual dip: the average move against the direction before the best point inside the window. Coin price only: Kalshi fees enter at the next stage.', '',
-               '| coin | kind | reading(s) | minutes | dir | BHY | windows/day B | move B bps | odds B pts | share right B % | over base pts | usual dip bps | t B | heat B | 1-min-late move | time-of-day part | lift B over trigger | lift B over condition | q |',
-               '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+               '| coin | kind | reading(s) | minutes | dir | BHY | windows/day B | move B bps | odds B pts | share right B % | over base pts | hold B min | usual dip bps | t B | heat B | 1-min-late move | time-of-day part | lift B over trigger | lift B over condition | q |',
+               '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
         for r in tdf.head(top).itertuples():
             md.append(f"| {r.coin} | {r.kind} | {str(r.key).replace('|', '/')} | {r.hs} | {'up' if r.dir > 0 else 'down'} | {'yes' if r.passes else 'no'} | {f(r.wd_B, 2)} | "
-                      f"{f(r.move_B, 1, True)} | {f(r.odds_B, 1, True)} | {f(r.share_B, 1)} | {f(r.share_over_B, 1, True)} | {f(r.dip_B, 1, True)} | {f(r.t_B, 1, True)} | {f(r.heat_B if tr == 'move' else r.oheat_B, 1)} | "
+                      f"{f(r.move_B, 1, True)} | {f(r.odds_B, 1, True)} | {f(r.share_B, 1)} | {f(r.share_over_B, 1, True)} | {f(r.hold_B, 1)} | {f(r.dip_B, 1, True)} | {f(r.t_B, 1, True)} | {f(r.heat_B if tr == 'move' else r.oheat_B, 1)} | "
                       f"{f(r.late_B, 1, True)} | {f(r.tod_B, 1, True)} | {f(r.lift_B, 1, True)} | {f(r.lift2_B, 1, True)} | {f(r.q, 3)} |")
         md.append('')
     md += ['## Tables', '', 'One table per series; the hash is the sha256 of the table text (heat.csv.gz, unzipped). No minute at or after the cut-off is read.', '',

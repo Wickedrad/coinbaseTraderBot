@@ -50,6 +50,11 @@ def test_labels_match_brute_force(tmp_path):
             assert abs(lab[f'dn{H}'][r] - (lo.min() / e - 1) * 1e4) < 2e-2
             assert abs(lab[f'dipU{H}'][r] - (lo[:hi.argmax() + 1].min() / e - 1) * 1e4) < 2e-2
             assert abs(lab[f'dipD{H}'][r] - (hi[:lo.argmin() + 1].max() / e - 1) * 1e4) < 2e-2
+        mv = (c[r + 1:r + 61] / e - 1) * 1e4                # minutes the price holds on each side of the entry (no price grid here: dead band 0)
+        dead = heat.TICK_DEAD * float(lab['tick'][r])
+        hu = next((k for k in range(60) if not mv[k] > dead), 60)
+        hd = next((k for k in range(60) if not mv[k] < -dead), 60)
+        assert lab['holdU'][r] == hu and lab['holdD'][r] == hd and min(hu, hd) == 0
         for X in heat.TOUCH:
             up = np.nonzero(h[r + 1:r + 61] >= e * (1 + X / 1e4))[0]
             dn = np.nonzero(l[r + 1:r + 61] <= e * (1 - X / 1e4))[0]
@@ -292,6 +297,18 @@ def test_planted_signal_end_to_end(tmp_path):
     json.load(open(tmp_path / 'league' / 'summary.json'))                           # valid JSON (no NaN)
     vw = json.load(gzip.open(tmp_path / 'league' / 'viewer.json.gz', 'rt'))
     assert vw['coins'] == ['BTC'] and '1m:BarBody' in vw['coin']['BTC']['curves'] and vw['coin']['BTC']['events']
+    # Amendment 3: the 1-minute horizon, minutes held, and the uncut direction league
+    assert heat.HORIZONS[0] == 1 and set(df.h) == set(heat.HORIZONS)
+    b1 = df[(df.key == '1m:BarBody=very low') & (df.h == 1)].set_index('split')         # the planted bounce shows at one minute and holds
+    assert b1.loc['B', 'p_up'] > meta['base']['B']['1']['p_up'] + 0.03 and b1.loc['B', 'hold_up'] > meta['base']['B']['hold_up']
+    dr = pd.read_csv(tmp_path / 'league' / 'direction_all.csv.gz')
+    assert len(dr) > 500 and set(dr.h) == set(heat.HORIZONS) and (dr.odds_B < 0).any()   # nothing cut: levels that failed on B are listed too
+    top1 = dr[dr.h == 1].iloc[0]                                                          # sorted by heat; the planted bounce is listed and holds
+    bb = dr[(dr.h == 1) & (dr.key == '1m:BarBody=very low')].iloc[0]
+    assert top1.share_over_B > 0 and bb.dir == 1 and bb.share_over_B > 3 and bb.hold_over_B > 0 and bb.oheat_B > 0
+    d1 = s['direction']['1']
+    assert d1['real']['levels'] > 100 and d1['twin']['levels'] > 100 and 'Direction: every event level' in md
+    assert vw['league']['direction'] and vw['horizons'] == heat.HORIZONS
     for nm in ('strips.csv.gz', 'curves.csv.gz', 'relations.csv.gz', 'hot.csv.gz'):
         assert os.path.getsize(tmp_path / 'league' / nm) > 100
 
