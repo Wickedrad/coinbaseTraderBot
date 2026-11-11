@@ -1,21 +1,25 @@
 name: Oracle heat map
 
-# OR-HM1 (python/oracle/prereg/OR-HM1.md; Steven's heat-map spec, Nov 11 2026): heat strips over the TA-Lib vocabulary
-# and candlestick patterns on 1m/5m/15m/1h bars, the pair and triple matrix with BTC.D / USDT.D, and the league table.
-# Coin price only, discovery data only (nothing at or after 2026-08-01 is read). NEVER DOGE.
+# OR-HM1 with Amendments 1 and 2 (python/oracle/prereg/OR-HM1.md; Steven's heat-map spec, Nov 11 2026): curves and
+# event strips over the TA-Lib vocabulary and candlestick patterns on 1m/5m/15m/1h bars, relationship curves (pairs,
+# triples) with BTC.D / USDT.D, and the leagues. Every coin also runs as three no-signal twins (the chance yardstick).
+# Coin price only. Build 2020-2024, check 2025: NO MINUTE AT OR AFTER 2026-01-01 IS READ (the file is cut before the
+# engine starts and the loader refuses a later minute). NEVER DOGE.
 #
 # Pushes drive it (a new workflow cannot be dispatched until it is on main). Tags in the HEAD commit message:
 #   none                     the heat tests only
-#   [oracle-heat]            the study: one job per coin (BTC, ETH, SOL, XRP), then the league
+#   [oracle-heat]            the study: per coin (BTC, ETH, SOL, XRP) two jobs (the coin + twin 1; twins 2 + 3), then the
+#                            league (10 jobs with the tests)
 #   [oracle-heat-assets:BTC] narrow the coins (never DOGE)
-# Outputs (aggregates only): Drive models/oracle-heat/runs/<run>/<coin>/ and league/; the league also as a run artifact
-# and a commit comment. No per-minute rows leave the runner.
+# Outputs (aggregates only): Drive models/oracle-heat/runs/<run>/<coin>[-twinN]/ and league/; the league also as a run
+# artifact and a commit comment; its small files (league.md, summary.json, the top tables and the viewer data) are
+# committed to this branch under research/oracle_heat/latest/. No per-minute rows leave the runner.
 
 on:
   push:
     branches: [claude/project-thread-nvd096]
-    paths: ['.github/workflows/oracle-heat.yml', 'python/oracle/heat.py', 'python/oracle/tests/test_heat.py',
-            'python/oracle/prereg/OR-HM1.md']
+    paths: ['.github/workflows/oracle-heat.yml', 'python/oracle/heat.py', 'python/oracle/heat_vocab.py',
+            'python/oracle/tests/test_heat.py', 'python/oracle/prereg/OR-HM1.md']
 
 permissions:
   contents: read
@@ -49,7 +53,9 @@ jobs:
       - run: pip install -q -r python/oracle/requirements.txt pytest
       - name: Heat tests
         working-directory: python
-        run: python3 -m pytest -q oracle/tests/test_heat.py 2>&1 | tail -20
+        run: |
+          set -o pipefail
+          python3 -m pytest -q oracle/tests/test_heat.py 2>&1 | tail -30
       - name: Plan
         id: plan
         env:
@@ -59,7 +65,7 @@ jobs:
           if grep -qF '[oracle-heat]' <<< "$MSG"; then echo "study=true" >> "$GITHUB_OUTPUT"; else echo "study=false" >> "$GITHUB_OUTPUT"; fi
           a=$(grep -oE '\[oracle-heat-assets:[A-Z,]+\]' <<< "$MSG" | head -1 | sed -E 's/.*:([A-Z,]+)\]/\1/' || true)
           [ -n "$a" ] || a=BTC,ETH,SOL,XRP
-          j=$(tr ',' '\n' <<< "$a" | grep -E '^(BTC|ETH|SOL|XRP)$' | jq -Rnc '[inputs]')
+          j=$(tr ',' '\n' <<< "$a" | { grep -E '^(BTC|ETH|SOL|XRP)$' || true; } | jq -Rnc '[inputs]')
           [ "$j" != '[]' ] || { echo "::error::no allowed coin in $a (BTC, ETH, SOL, XRP; never DOGE)"; exit 1; }
           echo "assets=$j" >> "$GITHUB_OUTPUT"; echo "coins: $j"
 
@@ -72,8 +78,10 @@ jobs:
       fail-fast: false
       matrix:
         asset: ${{ fromJSON(needs.test.outputs.assets) }}
+        twins: ['0 1', '2 3']               # 0 = the coin itself; n = its n-th no-signal twin
     env:
       A: ${{ matrix.asset }}
+      TWINS: ${{ matrix.twins }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -92,15 +100,28 @@ jobs:
           [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
           bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
           f="data/hist/binance-1m/$A/1m.csv"; [ -s "$f" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
-          echo "$A: $(du -h "$f" | cut -f1), header $(head -1 "$f"), first $(sed -n 2p "$f" | cut -d, -f1)"
-      - name: Heat strips, pairs, triples
+          # the cut: rows at or after HEAT_END (2026-01-01 UTC) are dropped here, before anything computes on them
+          end=$(cd python && python3 -c "from oracle.heat import HEAT_END; print(HEAT_END)")
+          [ "$end" = 1767225600000 ] || { echo "::error::HEAT_END is $end, not 2026-01-01"; exit 1; }
+          awk -F, -v e="$end" 'NR == 1 || ($1 + 0) < e' "$f" > "$f.cut"
+          mv "$f.cut" "$f"
+          last=$(awk -F, 'NR > 1 && NF > 1 { x = $1 + 0 } END { printf "%.0f", x }' "$f")
+          [ "$last" -lt "$end" ] || { echo "::error::a row at or after the cut is still in the file"; exit 1; }
+          echo "$A: $(du -h "$f" | cut -f1), header $(head -1 "$f"), first $(sed -n 2p "$f" | cut -d, -f1), last $last (cut at $end)"
+      - name: Curves, events, pairs, triples
         working-directory: python
         run: |
           set -euo pipefail
-          /usr/bin/time -v python3 -m oracle.heat coin --asset "$A" --csv "../data/hist/binance-1m/$A/1m.csv" \
-            --dom ../research/btcd_fractal/data --out "../out/$A" 2> >(grep -E 'Maximum resident|Elapsed|Error|error' >&2) | tail -40
-      - name: Keep on Drive
-        run: bash deploy/drive_lab.sh put "models/oracle-heat/runs/$GITHUB_RUN_ID/$A" "out/$A"
+          for tw in $TWINS; do
+            d="$A"; [ "$tw" = 0 ] || d="$A-twin$tw"
+            echo "::group::$d"
+            /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat coin --asset "$A" --twin "$tw" \
+              --csv "../data/hist/binance-1m/$A/1m.csv" --dom ../research/btcd_fractal/data --out "../out/$d" | tail -80
+            grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+            ls -la "../out/$d"
+            echo "::endgroup::"
+            (cd .. && bash deploy/drive_lab.sh put "models/oracle-heat/runs/$GITHUB_RUN_ID/$d" "out/$d")
+          done
 
   league:
     needs: [test, coin]
@@ -111,6 +132,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -126,8 +149,28 @@ jobs:
           set -euo pipefail
           bash deploy/drive_lab.sh get "models/oracle-heat/runs/$GITHUB_RUN_ID" data/coins --include "/*/heat.csv.gz" --include "/*/meta.json"
           ls data/coins
-          (cd python && python3 -m oracle.heat league --inputs ../data/coins --out ../out/league) | tail -40
+          (cd python && python3 -m oracle.heat league --inputs ../data/coins --out ../out/league) | tail -120
+          ls -la out/league
           bash deploy/drive_lab.sh put "models/oracle-heat/runs/$GITHUB_RUN_ID/league" out/league
+      - name: Commit the small league files to this branch (aggregates only; a bot push starts no workflow)
+        env:
+          BR: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dst=research/oracle_heat/latest
+          rm -rf "$dst"; mkdir -p "$dst"
+          cp out/league/league.md out/league/summary.json out/league/viewer.json.gz out/league/league_*.csv.gz "$dst/"
+          echo "$GITHUB_RUN_ID $GITHUB_SHA" > "$dst/RUN"
+          du -sh "$dst"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$dst"
+          git commit -q -m "Oracle heat map: league aggregates of run $GITHUB_RUN_ID (written by the oracle-heat workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::warning::could not push the league files"
       - uses: actions/upload-artifact@v4
         with:
           name: oracle-heat-league
@@ -137,5 +180,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          { echo "**Oracle heat map (OR-HM1)**, run $GITHUB_RUN_ID. Coin price, discovery only (A 2020-2024, B 2025-Jul 2026). Drive: models/oracle-heat/runs/$GITHUB_RUN_ID/"; echo; head -c 60000 out/league/league.md; } > "$RUNNER_TEMP/comment.md"
+          { echo "**Oracle heat map (OR-HM1, Amendments 1 and 2)**, run $GITHUB_RUN_ID. Coin price only: build 2020-2024, check 2025; no minute of 2026 is read. Drive: models/oracle-heat/runs/$GITHUB_RUN_ID/"; echo; head -c 60000 out/league/league.md; } > "$RUNNER_TEMP/comment.md"
           jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input - --jq .html_url || echo "::warning::could not post the comment"
