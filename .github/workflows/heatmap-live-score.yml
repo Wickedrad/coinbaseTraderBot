@@ -1,0 +1,98 @@
+name: Heat map live test score
+# Research only (thread "Test weighted heat maps on live Kalshi"). Scores the captured calls and public books
+# with the one test under research/heatmap_live/PREREG.md. The bot's own entries come from its audit day files
+# on the Drive archive (no server access); they stay on the runner and ONLY TOTALS are printed or posted.
+# Started by a commit that changes research/heatmap_live/SCORE_RUN (lines: from=ISO, to=ISO, runs=id[,id], bot=true|false).
+on:
+  push:
+    branches: [claude/project-thread-rvpht4]
+    paths: ['research/heatmap_live/SCORE_RUN']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: heatmap-live-score
+  cancel-in-progress: false
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: production
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Read the request
+        id: req
+        run: |
+          set -euo pipefail
+          get() { sed -nE "s/^$1=([A-Za-z0-9:.,TZ-]+)\$/\1/p" research/heatmap_live/SCORE_RUN | tail -1; }
+          for k in from to runs bot; do v=$(get "$k"); [ -n "$v" ] || { echo "::error::SCORE_RUN lacks $k"; exit 1; }; echo "$k=$v" >> "$GITHUB_OUTPUT"; done
+      - name: Fetch the capture segments (public data)
+        run: |
+          set -euo pipefail
+          IFS=, read -ra RUNS <<< "${{ steps.req.outputs.runs }}"
+          for r in "${RUNS[@]}"; do gh run download "$r" --repo "$GITHUB_REPOSITORY" --pattern 'heat-shadow-*' --dir "$RUNNER_TEMP/capture/$r" || echo "::warning::no segments from run $r"; done
+          echo "segments: $(find "$RUNNER_TEMP/capture" -name meta.json | wc -l)"
+      # Same fallback as the oracle thread's Drive setup fix (c0ddecb): apt once, then the same rclone version from
+      # rclone's release page, checked against a pinned SHA-256. The runner could not reach the Ubuntu mirrors on Nov 11.
+      - name: rclone (apt once, else the pinned release file)
+        if: steps.req.outputs.bot == 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          command -v rclone >/dev/null && exit 0
+          if ! sudo timeout 120 apt-get install -y -qq rclone >/dev/null 2>&1; then
+            V=v1.60.1; SUM=1c89af499e9d81c3ee2af8fa74a88414c22657c3df439f4d812e803bff5671cd
+            curl -fsSL --retry 3 --retry-delay 5 --max-time 300 -o "$RUNNER_TEMP/rclone.deb" "https://github.com/rclone/rclone/releases/download/$V/rclone-$V-linux-amd64.deb"
+            echo "$SUM  $RUNNER_TEMP/rclone.deb" | sha256sum -c --status - || { echo "::error::the rclone release file does not match the pinned hash"; exit 1; }
+            sudo dpkg -i "$RUNNER_TEMP/rclone.deb" >/dev/null
+          fi
+          rclone version | head -1
+      # A Drive failure must not block the heat map side of a read: the report then says the bot side is missing.
+      - uses: ./.github/actions/drive-setup
+        id: drive
+        if: steps.req.outputs.bot == 'true'
+        continue-on-error: true
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The bot's opening fills from its archived audit days (kept on the runner; counts only)
+        id: fills
+        if: steps.req.outputs.bot == 'true' && steps.drive.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/audit"
+          d=$(date -u -d "${{ steps.req.outputs.from }}" +%F); end=$(date -u -d "${{ steps.req.outputs.to }}" +%F)
+          while [ "$(date -u -d "$d" +%s)" -le "$(date -u -d "$end" +%s)" ]; do
+            bash deploy/drive_lab.sh audit "$d" "$RUNNER_TEMP/audit" >/dev/null 2>&1 || true
+            d=$(date -u -d "$d + 1 day" +%F)
+          done
+          echo "audit day files on the runner: $(ls "$RUNNER_TEMP/audit" | wc -l)"
+          node --import tsx research/heatmap_live/botFills.ts --audit "$RUNNER_TEMP/audit" --from "${{ steps.req.outputs.from }}" --to "${{ steps.req.outputs.to }}" --out "$RUNNER_TEMP/bot-fills.jsonl"
+      - name: Score (totals only)
+        run: |
+          set -euo pipefail
+          node --import tsx research/heatmap_live/score.ts --capture "$RUNNER_TEMP/capture" --bot "$RUNNER_TEMP/bot-fills.jsonl" \
+            --from "${{ steps.req.outputs.from }}" --to "${{ steps.req.outputs.to }}" --out "$RUNNER_TEMP/score" > /dev/null
+          if [ "${{ steps.req.outputs.bot }}" = "true" ] && [ ! -s "$RUNNER_TEMP/bot-fills.jsonl" ]; then
+            printf '\n**The bot side is missing from this read** (Drive step: %s, fill reader: %s). Rerun before comparing with the bot.\n' "${{ steps.drive.outcome }}" "${{ steps.fills.outcome }}" >> "$RUNNER_TEMP/score/score.md"
+          fi
+          cat "$RUNNER_TEMP/score/score.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: heat-shadow-score-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/score/score.md
+            ${{ runner.temp }}/score/score.json
+          retention-days: 90
+      - name: Post the totals as a commit comment
+        run: |
+          python3 -c 'import json,sys; print(json.dumps({"body": "Heat map live test: score " + sys.argv[2] + " to " + sys.argv[3] + " (totals only)\n\n" + open(sys.argv[1]).read()}))' "$RUNNER_TEMP/score/score.md" "${{ steps.req.outputs.from }}" "${{ steps.req.outputs.to }}" > "$RUNNER_TEMP/c.json"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input "$RUNNER_TEMP/c.json" --jq .html_url

@@ -1,0 +1,33 @@
+name: Heat map live test diagnostics
+# Research only (thread "Test weighted heat maps on live Kalshi"). Reads model
+# outputs from existing public Atlas artifacts; prints aggregates; no secrets.
+on:
+  push:
+    branches: [claude/project-thread-rvpht4]
+    paths: ['.github/workflows/heatmap-live-diag.yml', 'research/heatmap_live/atlas_calls_diag.py']
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+jobs:
+  atlas-calls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Fetch the two existing Atlas forward-trial forecast files
+        run: |
+          for r in 42740737188 42751926270; do
+            gh run download "$r" --repo "$GITHUB_REPOSITORY" --name atlas-oracle-edge --dir "$RUNNER_TEMP/t$r"
+          done
+          find "$RUNNER_TEMP" -name forecasts.jsonl -exec wc -l {} \;
+      - name: Do the heat maps ever disagree with their constant prior?
+        run: |
+          python3 research/heatmap_live/atlas_calls_diag.py $(find "$RUNNER_TEMP" -name forecasts.jsonl | sort) | tee "$RUNNER_TEMP/summary.md"
+          cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Post the aggregate table as a commit comment
+        run: |
+          python3 -c 'import json,sys; print(json.dumps({"body": "Heat map live test, step 0 (model outputs only)\n\n" + open(sys.argv[1]).read()}))' "$RUNNER_TEMP/summary.md" > "$RUNNER_TEMP/c.json"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input "$RUNNER_TEMP/c.json" --jq .html_url
