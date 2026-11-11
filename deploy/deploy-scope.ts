@@ -21,11 +21,14 @@
 //
 // The heat curve reader is the one part of python/ and research/ that reaches the server: it runs beside the bot from
 // the release itself (docs/HEAT_READER.md). HEAT_SHIP lists its files: python/heat_reader and python/oracle (the
-// engine it imports) without their tests, fixtures and preregistration notes, and the oracle run's packs
-// (research/oracle_heat/latest/*.json and RUN). They are bot code, changed or deleted, and the release ships exactly
-// these: the deploy job's "Stage the heat reader files" step runs this file with --stage-heat, so the upload and this
-// check read the same list. Their neighbours stay research-only as before: the reader's and the engine's tests and
-// fixtures, the league tables (latest/*.csv.gz, league.md), the rest of research/oracle_heat and the rest of python/.
+// engine it imports) without their tests, fixtures, preregistration notes and markdown (RUNS.md, SPEC.md: no module
+// reads them), and the oracle run's packs (research/oracle_heat/latest/*.json and RUN). They are bot code, changed or
+// deleted, and the release ships exactly these: the deploy job's "Stage the heat reader files" step runs this file
+// with --stage-heat, so the upload and this check read the same list. Their neighbours are research-only: the
+// reader's and the engine's tests, fixtures and markdown, the rest of python/, and the rest of research/oracle_heat
+// (the league tables latest/*.csv.gz and league.md, viewer.json.gz, long/, parity/) even when deleted or without the
+// bundle check, since nothing the release bundles reads that folder; only a JS/TS source there, or a file the release
+// bundles, or build configuration, follows the research/ rules above.
 //
 // The comparison is with the commit of the newest run whose deploy job succeeded. A tag deployed by a manual run,
 // or a rollback on the server, therefore stays in place through research-only pushes until bot code changes.
@@ -48,12 +51,15 @@ export const SKIP_TAG = '[skip deploy]';
 
 // The heat curve reader's files, shipped with every release that has them (none until the reader and the oracle
 // engine reach main: the deploy then ships nothing extra). `dir`: the folder each pattern lies in; `re`: the files of
-// it that ship. Every module the reader can import ships: all of python/oracle but tests/ and prereg/ (the
-// preregistration notes, read by no module the reader loads). Of research/oracle_heat only latest/'s packs (*.json)
-// and RUN: not the league tables (*.csv.gz, league.md), the viewer (viewer.json.gz) or the parity fixtures.
+// it that ship. Every module the reader can import ships: all of python/oracle but tests/, prereg/ (the
+// preregistration notes) and markdown (RUNS.md, a run log, and SPEC.md: read by no module; an edit to them must not
+// restart the bot). Not narrowed to the modules heat_live imports: some imports are inside functions (heat.py imports
+// oracle.sim lazily), and a module left behind would only show on the server. Of research/oracle_heat only latest/'s
+// packs (*.json) and RUN: not the league tables (*.csv.gz, league.md), the viewer (viewer.json.gz) or the parity
+// fixtures.
 export const HEAT_SHIP: readonly { dir: string; re: RegExp }[] = [
-  { dir: 'python/heat_reader', re: /^python\/heat_reader\/(?!(tests|fixtures)\/)./ },
-  { dir: 'python/oracle', re: /^python\/oracle\/(?!(tests|prereg)\/)./ },
+  { dir: 'python/heat_reader', re: /^python\/heat_reader\/(?!(tests|fixtures)\/)(?!.*\.md$)./ },
+  { dir: 'python/oracle', re: /^python\/oracle\/(?!(tests|prereg)\/)(?!.*\.md$)./ },
   { dir: 'research/oracle_heat/latest', re: /^research\/oracle_heat\/latest\/([^/]+\.json|RUN)$/ },
 ];
 
@@ -82,6 +88,8 @@ export const RESEARCH_ONLY: readonly RegExp[] = [
 // above a file the release bundles.
 export const BUILD_CONFIG = /(^|\/)((tsconfig|jsconfig)[^/]*\.json|package\.json|\.gitattributes|\.npmrc)$/;
 const RESEARCH_TREES = /^(python|docs|tests|packaging|\.github)\//;
+const HEAT_RESEARCH = /^research\/oracle_heat\//;
+const SOURCE = /\.[cm]?[jt]sx?$/; // JS/TS sources: an import of a deleted one may now resolve to another file
 
 const above = (file: string, bundled: ReadonlySet<string>) => {
   const dir = file.slice(0, file.lastIndexOf('/') + 1);
@@ -98,6 +106,9 @@ export function researchOnly(file: string, bundled: ReadonlySet<string> | null, 
   if (bundled?.has(file)) return false;
   if (BUILD_CONFIG.test(file) && (!RESEARCH_TREES.test(file) || (bundled !== null && above(file, bundled)))) return false;
   if (RESEARCH_ONLY.some((re) => re.test(file))) return true;
+  // research/oracle_heat outside the heat reader set (league tables, viewer, long/, parity/): research-only even when
+  // deleted or without the bundle check. Nothing the release bundles reads it, and esbuild has no loader for .gz.
+  if (HEAT_RESEARCH.test(file) && !SOURCE.test(file)) return true;
   // The rest of research/ is research-only when the bundle check ran and did not find it in the release. A deleted
   // file it cannot judge: an import that reached it may now resolve to another file.
   return bundled !== null && !deleted && file.startsWith('research/');

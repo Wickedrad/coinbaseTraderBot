@@ -17,7 +17,10 @@ echo "heat-reader: stand-in installer"
 echo "$(cd "$(dirname "$0")/.." && pwd) current=$(readlink "$HOME/bot/current")" >> "$HOME/installer.log"
 ${body}
 `;
+// FAILS stops at its checks before it touches the unit, as the real installer's die() does.
 const OK = installer('exit 0'), FAILS = installer('echo "heat-reader: no traded_pack.json"; exit 1'), HANGS = installer(`exec ${REAL_SLEEP} 30`);
+const STOPPED = ' heat-reader.service is stopped and disabled until an install succeeds.';
+const DISABLE = 'sudo systemctl disable --now heat-reader';
 
 function server(t: { after: (fn: () => void) => void }) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'heat-deploy-')));
@@ -87,17 +90,51 @@ test('activate: the release ships the installer and it succeeds: it runs once th
 });
 
 test('activate: the installer exits 1: one line says the reader is not running and why, the deploy goes on', (t) => {
-  const o = activate(t, FAILS);
+  let o = activate(t, FAILS);
   deployed(o);
   assert.equal(o.s.installs().length, 1);
   assert.deepEqual(o.heat, ['heat reader: NOT running: heat_reader_install.sh exited 1 (the heat-reader lines above say why). The bot is not affected.']);
+  assert.equal(o.s.calls().some((c) => c.includes('heat-reader')), false, 'no unit: nothing to stop');
+  // A reader installed by an earlier release: the installer died at its checks without touching it, so the step stops
+  // and disables it. The line is then true, and no reader runs an earlier release's code and packs beside this bot.
+  o = activate(t, FAILS, {}, true);
+  deployed(o);
+  assert.deepEqual(o.heat, [`heat reader: NOT running: heat_reader_install.sh exited 1 (the heat-reader lines above say why).${STOPPED} The bot is not affected.`]);
+  assert.deepEqual(o.s.calls().filter((c) => c.includes('heat-reader')), [DISABLE]);
+  // A success leaves the unit to the installer.
+  o = activate(t, OK, {}, true);
+  deployed(o);
+  assert.equal(o.s.calls().some((c) => c.includes('heat-reader')), false);
 });
 
 test('activate: an installer that does not finish is cut off at its bound and the deploy goes on', (t) => {
-  const o = activate(t, HANGS, { HEAT_READER_INSTALL_TIMEOUT: '1' });
+  let o = activate(t, HANGS, { HEAT_READER_INSTALL_TIMEOUT: '1' });
   deployed(o);
-  assert.equal(o.heat.length, 1); assert.match(o.heat[0], /^heat reader: NOT running: heat_reader_install\.sh did not finish within 1 s \(exit 124\)/);
+  assert.equal(o.heat.length, 1); assert.match(o.heat[0], /^heat reader: NOT running: heat_reader_install\.sh did not finish within 1 s \(exit 124\)\. The bot is not affected;/);
   assert.ok(o.r.ms < 20_000, `${o.r.ms} ms`);
+  // Cut off mid-build with the unit installed: disabled, so a reboot cannot start it on a half-built venv.
+  o = activate(t, HANGS, { HEAT_READER_INSTALL_TIMEOUT: '1' }, true);
+  deployed(o);
+  assert.equal(o.heat.length, 1); assert.ok(o.heat[0].includes(`(exit 124).${STOPPED} The bot is not affected;`), o.heat[0]);
+  assert.deepEqual(o.s.calls().filter((c) => c.includes('heat-reader')), [DISABLE]);
+});
+
+test('activate: the installer (pip with it) runs with oom_score_adj 1000; the bot\'s side keeps its own', { skip: !fs.existsSync('/proc/self/oom_score_adj') && 'needs Linux /proc' }, (t) => {
+  const base = fs.readFileSync('/proc/self/oom_score_adj', 'utf8').trim();
+  const s = server(t);
+  const oom = 'read -r a < /proc/self/oom_score_adj; echo "$a" >> "$HOME/$1.oom"';
+  fs.writeFileSync(path.join(s.home, 'stub-bin/sudo'), `#!/bin/bash\necho "sudo $*" >> "$CALLS"\n${oom.replace('$1', 'sudo')}\nexit 0\n`, { mode: 0o755 });
+  const old = s.release('old');
+  fs.symlinkSync(old, path.join(s.home, 'bot/current'));
+  const rel = s.release('new', installer(`${oom.replace('$1', 'installer')}\n( ${oom.replace('$1', 'pip')} )\nexit 1`));
+  s.unitInstalled();
+  const r = s.run(path.join(rel, 'deploy/activate.sh'), [rel]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const read = (n: string) => fs.readFileSync(path.join(s.home, `${n}.oom`), 'utf8').split('\n').filter(Boolean);
+  assert.deepEqual(read('installer'), ['1000']); assert.deepEqual(read('pip'), ['1000']);
+  // Every sudo call, the bot's restart and the reader's stop after the failure among them, ran at the deploy's own score.
+  assert.ok(s.calls().includes('sudo systemctl restart kalshi-bot') && s.calls().includes(DISABLE));
+  assert.deepEqual([...new Set(read('sudo'))], [base]);
 });
 
 test('activate: a release without the installer prints one line and goes on (stopping a reader left installed)', (t) => {
@@ -149,10 +186,18 @@ test('rollback: the reader follows the release now current: its installer runs a
   assert.ok(o.r.stdout.indexOf('heat-reader: stand-in installer') > o.r.stdout.indexOf('rolled back to'));
 });
 
-test('rollback: an installer that fails never fails the rollback', (t) => {
-  const o = rollback(t, FAILS);
+test('rollback: an installer that fails never fails the rollback, and the reader of the release rolled back from is stopped', (t) => {
+  let o = rollback(t, FAILS);
   assert.equal(o.s.installs().length, 1);
   assert.deepEqual(o.heat, ['heat reader: NOT running: heat_reader_install.sh exited 1 (the heat-reader lines above say why). The bot is not affected.']);
+  assert.equal(o.s.calls().some((c) => c.includes('heat-reader')), false);
+  // B's reader is installed and running: A's installer dies at its checks, so B's reader is stopped and disabled
+  // rather than left running B's code beside A's bot.
+  o = rollback(t, FAILS, true);
+  assert.deepEqual(o.s.installs(), [`${o.a} current=${o.a}`]);
+  assert.deepEqual(o.heat, [`heat reader: NOT running: heat_reader_install.sh exited 1 (the heat-reader lines above say why).${STOPPED} The bot is not affected.`]);
+  assert.deepEqual(o.s.calls().filter((c) => c.includes('heat-reader')), [DISABLE]);
+  assert.ok(o.s.calls().indexOf(DISABLE) > o.s.calls().indexOf('sudo systemctl restart kalshi-bot'));
 });
 
 test('rollback: to a release without the reader, an installed reader is stopped and disabled; with none installed nothing is done', (t) => {

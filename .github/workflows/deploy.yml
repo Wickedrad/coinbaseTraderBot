@@ -17,7 +17,7 @@
 #    python/oracle and the packs in research/oracle_heat/latest (the HEAT_SHIP list in deploy/deploy-scope.ts; unlike
 #    the rest of python/ and research/, a change to them deploys). activate.sh runs its installer after the bot is up;
 #    it is off until HEAT_LANE=true in ~/bot/bot.env and never fails a deploy. Before those files reach main, nothing
-#    extra ships.
+#    extra ships. Their upload is part of the release's: when it fails, the run fails before activation.
 #
 # Switching to reviewed, tag-only deploys later (more secure): set the repository variable
 # AUTO_DEPLOY=false (Settings > Secrets and variables > Actions > Variables) and add required
@@ -183,11 +183,12 @@ jobs:
       # code): the tracked files of python/heat_reader and python/oracle without their tests, fixtures and
       # preregistration notes, and research/oracle_heat/latest/*.json and RUN. Copied at their own paths into
       # heat-release/ for "Upload the heat reader files". A commit without them (main before the reader lands, or a
-      # tag from before this list) stages nothing and that upload is skipped. Optional like the reader itself: a
-      # failure here never stops the bot's deploy (the reader's installer then says what the release lacks).
+      # tag from before this list) stages nothing and that upload is skipped. A failure here or in that upload fails
+      # the run before "Activate", as a failed bot upload does: nothing on the server switches, the run does not count
+      # as a deploy (the scope job keeps comparing with the last good one) and a re-run ships the set. Never a green
+      # deploy whose release lacks the reader's files or has them half extracted.
       - name: Stage the heat reader files
         id: heat
-        continue-on-error: true
         run: |
           if grep -qs 'HEAT_SHIP' deploy/deploy-scope.ts; then
             node --experimental-strip-types --disable-warning=ExperimentalWarning deploy/deploy-scope.ts --stage-heat heat-release
@@ -276,11 +277,10 @@ jobs:
       # Into the same release folder, heat-release/ stripped off: python/heat_reader, python/oracle and
       # research/oracle_heat/latest land at their repository paths, where the reader's unit runs them from
       # (~/bot/current/python, packs in ~/bot/current/research/oracle_heat/latest). Never with rm: that would empty
-      # the release the step above uploaded. A failure here leaves the bot's deploy going; the installer then names
-      # what is missing and the reader stays off.
+      # the release the step above uploaded. A failure here fails the run before "Activate" (see "Stage the heat
+      # reader files"): the bot keeps running the release it ran.
       - name: Upload the heat reader files
         if: steps.heat.outputs.files > 0
-        continue-on-error: true
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}

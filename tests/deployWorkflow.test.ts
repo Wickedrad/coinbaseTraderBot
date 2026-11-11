@@ -242,53 +242,70 @@ test('deploy scope: no research-only path is part of the uploaded release or use
 });
 
 // The heat curve reader runs beside the bot from the release (docs/HEAT_READER.md): its files ship and are bot code.
+// All of python/oracle's modules ship, not only those heat_live imports at the top (heat.py imports oracle.sim inside a
+// function; tennis.py stands for the studies).
 const HEAT_FILES = ['python/heat_reader/__init__.py', 'python/heat_reader/__main__.py', 'python/heat_reader/cli.py', 'python/heat_reader/requirements.txt',
   'python/heat_reader/CHECK_RUN', 'python/heat_reader/sub/part.py', 'python/oracle/__init__.py', 'python/oracle/heat_live.py', 'python/oracle/heat.py',
-  'python/oracle/common.py', 'python/oracle/cut.py', 'python/oracle/requirements.txt', 'python/oracle/SPEC.md',
+  'python/oracle/common.py', 'python/oracle/sim.py', 'python/oracle/tennis.py', 'python/oracle/requirements.txt',
   'research/oracle_heat/latest/traded_pack.json', 'research/oracle_heat/latest/pair_pack.json', 'research/oracle_heat/latest/clock_pack.json',
   'research/oracle_heat/latest/live_meta.json', 'research/oracle_heat/latest/summary.json', 'research/oracle_heat/latest/RUN'];
-// Beside them, research-only as before (python/ always; the rest of research/ once the bundle check ran).
+// Beside them, research-only in every case, deleted and without the bundle check too: python/ outside the set (the
+// tests, fixtures, preregistration notes and the markdown no module reads: an edit to RUNS.md must not restart the
+// bot), and research/oracle_heat outside the packs.
 const HEAT_NEIGHBOURS_PYTHON = ['python/heat_reader/tests/test_cli.py', 'python/heat_reader/tests/conftest.py', 'python/heat_reader/fixtures/traded_pack.json',
-  'python/oracle/tests/test_heat_live.py', 'python/oracle/tests/__init__.py', 'python/oracle/prereg/OR-H1.md', 'python/heat_reader_old/cli.py',
+  'python/oracle/tests/test_heat_live.py', 'python/oracle/tests/__init__.py', 'python/oracle/prereg/OR-H1.md', 'python/oracle/RUNS.md',
+  'python/oracle/SPEC.md', 'python/oracle/notes/design.md', 'python/heat_reader/README.md', 'python/heat_reader_old/cli.py',
   'python/oracle.py', 'python/oracles/heat.py', 'python/allpairs/run.py'];
 const HEAT_NEIGHBOURS_RESEARCH = ['research/oracle_heat/latest/league_ta.csv.gz', 'research/oracle_heat/latest/league_direction.csv.gz',
-  'research/oracle_heat/latest/league.md', 'research/oracle_heat/latest/viewer.json.gz', 'research/oracle_heat/latest/RUN.bak',
-  'research/oracle_heat/latest/old/traded_pack.json', 'research/oracle_heat/long/summary.json', 'research/oracle_heat/parity/BTC/parity.json',
-  'research/oracle_heat/parity/RUN', 'research/oracle_heat_latest/traded_pack.json'];
+  'research/oracle_heat/latest/league_odds_edge_v2.csv.gz', 'research/oracle_heat/latest/league.md', 'research/oracle_heat/latest/viewer.json.gz',
+  'research/oracle_heat/latest/RUN.bak', 'research/oracle_heat/latest/old/traded_pack.json', 'research/oracle_heat/long/summary.json',
+  'research/oracle_heat/parity/BTC/parity.json', 'research/oracle_heat/parity/RUN'];
 
-test('deploy scope: the heat reader set is bot code, changed or deleted; its neighbours keep their research-only classification', () => {
+test('deploy scope: the heat reader set is bot code, changed or deleted; its neighbours are research-only', () => {
+  const cases = (file: string) => [BUNDLED, null].flatMap((bundled) => [new Set<string>(), new Set([file])].map((deleted) => ({
+    bundled, deleted, label: `${file} (${bundled ? 'bundle check' : 'no bundle check'}, ${deleted.size ? 'deleted' : 'changed'})`,
+  })));
   for (const file of HEAT_FILES) {
     assert.equal(heatShipped(file), true, file);
-    for (const bundled of [BUNDLED, null]) for (const deleted of [new Set<string>(), new Set([file])]) {
-      const d = push([file], 'x', bundled, deleted);
-      assert.equal(d.deploy, true, `${file} (${bundled ? 'bundle check' : 'no bundle check'}, ${deleted.size ? 'deleted' : 'changed'})`);
+    for (const c of cases(file)) {
+      const d = push([file], 'x', c.bundled, c.deleted);
+      assert.equal(d.deploy, true, c.label);
       assert.deepEqual(d.bot, [file]); assert.deepEqual(d.research, []);
     }
   }
-  // python/ outside the set stays research-only in every case, deleted too.
-  for (const file of HEAT_NEIGHBOURS_PYTHON) {
+  for (const file of [...HEAT_NEIGHBOURS_PYTHON, ...HEAT_NEIGHBOURS_RESEARCH]) {
     assert.equal(heatShipped(file), false, file);
-    for (const bundled of [BUNDLED, null]) for (const deleted of [new Set<string>(), new Set([file])]) {
-      assert.equal(push([file], 'x', bundled, deleted).deploy, false, `${file} ${bundled ? '' : 'without the bundle check'} ${deleted.size ? 'deleted' : ''}`);
+    for (const c of cases(file)) {
+      const d = push([file], 'x', c.bundled, c.deleted);
+      assert.equal(d.deploy, false, c.label); assert.deepEqual(d.research, [file]);
     }
   }
-  // The rest of research/oracle_heat is research-only once the bundle check ran (the markdown always), as any research/ file.
-  for (const file of HEAT_NEIGHBOURS_RESEARCH) {
-    assert.equal(heatShipped(file), false, file);
-    assert.equal(push([file], 'x', BUNDLED).deploy, false, file);
-    assert.equal(researchOnly(file, BUNDLED), researchOnly(file.replace('research/oracle_heat', 'research/other_study'), BUNDLED), `${file} like any research/ file`);
-    for (const deleted of [false, true]) for (const bundled of [BUNDLED, null]) {
-      assert.equal(researchOnly(file, bundled, deleted), researchOnly(file.replace('research/oracle_heat', 'research/other_study'), bundled, deleted), `${file} unchanged`);
-    }
+  // An oracle rerun that renames a league table and drops the viewer, and changes no pack, does not deploy.
+  const tables = ['research/oracle_heat/latest/league_odds_edge.csv.gz', 'research/oracle_heat/latest/league_odds_edge_v2.csv.gz', 'research/oracle_heat/latest/viewer.json.gz', 'research/oracle_heat/long/summary.json'];
+  for (const bundled of [BUNDLED, null]) {
+    assert.equal(push(tables, 'x', bundled, new Set([tables[0], tables[2], tables[3]])).deploy, false, bundled ? 'bundle check' : 'no bundle check');
   }
-  assert.equal(push(['research/oracle_heat/latest/league.md'], 'x', null, new Set(['research/oracle_heat/latest/league.md'])).deploy, false);
-  // An oracle run that rewrites the packs, the league tables and the engine's tests deploys, listing each side.
-  const run = push(['research/oracle_heat/latest/traded_pack.json', 'research/oracle_heat/latest/league_ta.csv.gz', 'python/oracle/tests/test_heat.py', 'python/oracle/heat.py']);
+  // Inside research/oracle_heat, what can reach the release still follows the research/ rules: a JS/TS source (bot code
+  // when deleted or without the bundle check), a file the release bundles, and build configuration.
+  const other = (f: string) => f.replace('research/oracle_heat/', 'research/other_study/');
+  for (const file of ['research/oracle_heat/viewer.ts', 'research/oracle_heat/lib/read.mjs', 'research/oracle_heat/package.json', 'research/oracle_heat/tsconfig.json']) {
+    for (const c of cases(file)) assert.equal(researchOnly(file, c.bundled, c.deleted.size > 0), researchOnly(other(file), c.bundled, c.deleted.size > 0), c.label);
+  }
+  assert.equal(researchOnly('research/oracle_heat/viewer.ts', BUNDLED, true), false);
+  assert.equal(researchOnly('research/oracle_heat/viewer.ts', null), false);
+  assert.equal(researchOnly('research/oracle_heat/viewer.ts', BUNDLED), true);
+  assert.equal(researchOnly('research/oracle_heat/long/summary.json', new Set([...BUNDLED, 'research/oracle_heat/long/summary.json'])), false, 'bundled: bot code wherever it lies');
+  // A folder that only starts like it is any research/ folder.
+  for (const c of cases('research/oracle_heat_latest/traded_pack.json')) {
+    assert.equal(researchOnly('research/oracle_heat_latest/traded_pack.json', c.bundled, c.deleted.size > 0), researchOnly('research/other_study/traded_pack.json', c.bundled, c.deleted.size > 0), c.label);
+  }
+  // An oracle run that rewrites the packs, the league tables, the run log and the engine's tests deploys, listing each side.
+  const run = push(['research/oracle_heat/latest/traded_pack.json', 'research/oracle_heat/latest/league_ta.csv.gz', 'python/oracle/tests/test_heat.py', 'python/oracle/RUNS.md', 'python/oracle/heat.py']);
   assert.equal(run.deploy, true);
   assert.deepEqual(run.bot, ['research/oracle_heat/latest/traded_pack.json', 'python/oracle/heat.py']);
-  assert.deepEqual(run.research, ['research/oracle_heat/latest/league_ta.csv.gz', 'python/oracle/tests/test_heat.py']);
-  // Only the reader's own tests changed: no deploy.
-  assert.equal(push(['python/heat_reader/tests/test_cli.py', 'python/heat_reader/fixtures/pair_pack.json', 'python/oracle/prereg/OR-HM1.md']).deploy, false);
+  assert.deepEqual(run.research, ['research/oracle_heat/latest/league_ta.csv.gz', 'python/oracle/tests/test_heat.py', 'python/oracle/RUNS.md']);
+  // Only the reader's own tests, the engine's notes and its run log changed: no deploy.
+  assert.equal(push(['python/heat_reader/tests/test_cli.py', 'python/heat_reader/fixtures/pair_pack.json', 'python/oracle/prereg/OR-HM1.md', 'python/oracle/RUNS.md', 'python/oracle/SPEC.md']).deploy, false);
   // Each pattern lies in its folder, and nothing outside python/heat_reader, python/oracle and research/oracle_heat/latest ships.
   for (const h of HEAT_SHIP) assert.equal(HEAT_FILES.filter((f) => h.re.test(f)).every((f) => f.startsWith(`${h.dir}/`)), true, h.dir);
   assert.deepEqual(HEAT_SHIP.map((h) => h.dir), ['python/heat_reader', 'python/oracle', 'research/oracle_heat/latest']);
@@ -503,8 +520,11 @@ test('deploy job: the heat upload ships the heat reader set at its own paths and
   assert.equal(key(heat.text, 'strip_components'), '1');
   assert.equal(key(heat.text, 'if'), 'steps.heat.outputs.files > 0');
   assert.equal(key(heat.text, 'rm'), undefined, 'rm would empty the release the bot upload just sent');
-  // Neither step can stop the bot's deploy.
-  assert.equal(key(heat.text, 'continue-on-error'), 'true'); assert.equal(key(stage.text, 'continue-on-error'), 'true');
+  // A failure to stage or upload the set fails the run before "Activate": nothing on the server switches, the run is
+  // not a successful deploy (the scope job's base stays put) and a re-run ships the set. Never a green deploy whose
+  // release lacks the reader's files, or has them half extracted.
+  assert.equal(key(heat.text, 'continue-on-error'), undefined); assert.equal(key(stage.text, 'continue-on-error'), undefined);
+  assert.match(stage.run, /^if grep -qs 'HEAT_SHIP' deploy\/deploy-scope\.ts; then\n/, 'a commit without the list stages nothing and does not fail');
   assert.equal(key(stage.text, 'id'), 'heat');
   assert.match(stage.run, /deploy\/deploy-scope\.ts --stage-heat heat-release\n/);
   for (const k of ['host', 'username', 'key', 'port']) assert.equal(key(heat.text, k), key(bot.text, k), k);
