@@ -2,7 +2,8 @@
 
 ## How it works now (open on the static IP, auto-deploy)
 
-- **Every push to `main` deploys.** Opening a PR only runs CI (typecheck, tests, build). When the PR is merged, the **Deploy** workflow tests and builds again, uploads the release to the server and restarts the bot. No manual step.
+- **Every push to `main` that changes bot code deploys.** Opening a PR only runs CI (typecheck, tests, build). When the PR is merged, the **Deploy** workflow tests and builds again, uploads the release to the server and restarts the bot. No manual step.
+- **Research-only pushes skip the deploy** (since Nov 11): when nothing changed since the last deploy reaches the server (docs, python, tests, other workflows, research files the release does not bundle; the list is in `deploy/deploy-scope.ts`), the run's summary says `research-only: <files>; bot not restarted`. `[skip deploy]` in the message no longer skips a push that changes bot code: it deploys with a warning. Do not put `[skip ci]` on merges to `main`: it stops GitHub from starting any workflow, so a bot change merged with it gets no deploy of its own and ships with the next deploy, whose summary warns that it was batched. When the last deploy cannot be looked up (GitHub API error), the push deploys.
 - The dashboard is at **http://54.145.7.203:3000/** (the Lightsail static IP). It opens without a login, unless you set a dashboard password (below).
 - A bad release rolls itself back: if the service doesn't start, or the dashboard doesn't answer on port 3000 after the restart, the previous release is put back.
 - Each release lives in `~/releases/<name>` on the server (the 5 newest are kept). `~/bot/current` points at the live one.
@@ -31,10 +32,10 @@ If the old bot is running under the same `kalshi-bot` service name, the first de
 |---|---|
 | Logs | `journalctl -u kalshi-bot -f` |
 | Status | `systemctl status kalshi-bot` |
-| Roll back to the previous release | `bash ~/bot/current/deploy/rollback.sh` |
+| Roll back to the previous release | `bash ~/bot/current/deploy/rollback.sh` (research-only pushes leave it in place; the next push that changes bot code deploys `main`) |
 | Change settings | edit `~/bot/bot.env`, then `sudo systemctl restart kalshi-bot` |
 | Redeploy without a code change | Actions tab → Deploy → Run workflow |
-| Deploy a tagged release | same, entering the tag (e.g. `v2.1.0`) |
+| Deploy a tagged release | same, entering the tag (e.g. `v2.1.0`); it stays until a push changes bot code |
 | Import history CSVs | `ssh ubuntu@54.145.7.203 mkdir -p ~/incoming`, `scp *.csv ubuntu@54.145.7.203:~/incoming/`, then `bash ~/bot/current/deploy/history.sh import ~/incoming` |
 | Download / refresh history now | `bash ~/bot/current/deploy/history.sh binance` and `... coinbase` (the daily pipeline does this too) |
 | One-off BTC.D / USDT.D history from TradingView | `bash ~/bot/current/deploy/history.sh tradingview` (needs `sudo apt install python3-venv git` once; docs/TA_NETWORK.md) |
