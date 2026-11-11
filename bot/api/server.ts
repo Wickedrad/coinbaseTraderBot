@@ -12,7 +12,6 @@ import crypto from 'crypto';
 import express, { NextFunction, Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
-import { parse as parseEnv } from 'dotenv';
 import type { AuditKind, AuditLog } from '../audit/auditLog';
 import { publicConfig, type Config } from '../config';
 import type { Engine } from '../engine';
@@ -45,7 +44,7 @@ import type { RunControl } from '../control';
 import { ConfigError, loadConfig } from '../config';
 import { latencySnapshot } from '../util/latency';
 import { cpuProfile } from '../util/profile';
-import { updateEnvFile } from '../util/envFile';
+import { readEnvFile, updateEnvFile } from '../util/envFile';
 import { studyFor, studyMeta } from '../ta/study';
 import { probation, PROBATION_BOOKS, type ProbationBook } from '../risk/probation';
 
@@ -454,14 +453,21 @@ export function createApi(d: ApiDeps): express.Express {
   // off perps setting is left as written: live mode reads paper perps as off (config.ts), so rewriting it from d.cfg
   // would turn paper perps off. The checks run on what the restart will load: bot.env as it is now (it may have been
   // edited since the start) over the server's environment, plus the changes.
+  let modeSwitched: 'paper' | 'live' | undefined;
   api.post('/mode', (req, res) => {
     const mode = req.body?.mode;
     if (mode !== 'paper' && mode !== 'live') return res.status(400).json({ error: 'mode must be paper or live' });
     if (mode === 'live' && req.body?.confirm !== 'LIVE') return res.status(400).json({ error: 'live mode needs the double-tap confirmation' });
     if (mode === d.cfg.mode) return res.json({ ok: true, mode, restarting: false });
-    if (!fs.existsSync(d.cfg.botEnvFile)) return res.status(400).json({ error: `bot.env not found at ${d.cfg.botEnvFile}` });
+    // One switch per process: once bot.env has been rewritten the bot is restarting, and a second request (a double
+    // click, a retry) would rewrite it again from the old running config.
+    if (modeSwitched) return res.status(409).json({ error: `a switch to ${modeSwitched} is already written; wait for the restart` });
     let env: NodeJS.ProcessEnv;
-    try { env = { ...process.env, ...parseEnv(fs.readFileSync(d.cfg.botEnvFile)) }; } catch (e) { return res.status(500).json({ error: `could not read bot.env: ${String(e)}` }); }
+    try {
+      const file = readEnvFile(d.cfg.botEnvFile);
+      if (!file) return res.status(400).json({ error: `bot.env not found at ${d.cfg.botEnvFile}` });
+      env = { ...process.env, ...file };
+    } catch (e) { return res.status(500).json({ error: `could not read bot.env: ${String(e)}` }); }
     const changes: Record<string, string> = mode === 'live'
       ? { TRADING_MODE: 'live', KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' }
       : {
@@ -488,6 +494,7 @@ export function createApi(d: ApiDeps): express.Express {
       }
     }
     try { updateEnvFile(d.cfg.botEnvFile, changes); } catch (e) { return res.status(500).json({ error: `could not write bot.env: ${String(e)}` }); }
+    modeSwitched = mode;
     d.audit.write('config', { event: 'mode_switch', from: d.cfg.mode, to: mode, changes: Object.keys(changes) });
     res.json({ ok: true, mode, restarting: Boolean(d.restart) });
     if (d.restart) setTimeout(d.restart, 500);

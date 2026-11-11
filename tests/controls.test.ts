@@ -65,6 +65,9 @@ test('PAPER / LIVE: live needs the confirmation and settings that would start; t
     assert.equal(ok.status, 200);
     const text = fs.readFileSync(envFile, 'utf8');
     assert.match(text, /TRADING_MODE=live/); assert.match(text, /KALSHI_ENV=prod/); assert.match(text, /LIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK/);
+    const again = await s.post('/mode', { mode: 'live', confirm: 'LIVE' });
+    assert.equal(again.status, 409, 'a second switch before the restart is refused');
+    assert.equal(fs.readFileSync(envFile, 'utf8'), text, 'and writes nothing');
     await new Promise((r) => setTimeout(r, 700));
     assert.equal(restarts, 1);
   } finally { process.env = saved; s.close(); }
