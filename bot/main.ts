@@ -81,6 +81,7 @@ import { Scoreboard } from './health/scoreboard';
 import { DEFAULT_STREAK, StreakScaler } from './risk/streakScaler';
 import { FileHeatSource } from './heat/heatSource';
 import { HeatLane } from './heat/heatLane';
+import type { HeatTag } from './heat/types';
 
 const log = logger('main');
 
@@ -100,8 +101,8 @@ async function main(): Promise<void> {
         log.info('conditioning champion applied', { version: champ.version, params: c.params, skipped: c.skipped });
       } catch (e) { log.error('conditioning champion not applied: its settings do not pass the configuration checks; the configured settings stay', { version: champ.version, error: String(e) }); }
     }
-    // false until the cleanup thread's plan exits land: then it becomes cfg.plan.enabled (PLAN_RULES).
-    heatStartCheck(cfg, false);
+    // The heat lane needs the plan exits to own its positions (PLAN_RULES): HEAT_LANE=true without them does not start.
+    heatStartCheck(cfg, cfg.plan.enabled);
   } catch (e) {
     if (e instanceof ConfigError) {
       log.error(`configuration invalid: ${e.message}`);
@@ -627,9 +628,9 @@ async function main(): Promise<void> {
   const exchangeStatus = new ExchangeStatusMonitor(rest);
   exchangeStatus.start();
   const engine: Engine = new Engine({ kalshiCheck, control, exchangeStatus, cfg, audit, alerter, md, gateway, oms, risk, kill, recon, model, volProfile, vault, balanceMonitor, balanceMonitorPath, tca, equityGuard, modelHealth, taHealth, accuracyGate, calendar, hedger, perpTrader: directionalTrader, clock, tennisScores, tennisFair, volModel, fillModel, fillLogDir: path.join(cfg.dataDir, 'fills'), snn, snnBlenderPath: path.join(cfg.snn.checkpointDir, 'blender.json'), curveExit, takeProfitBench, curveEntry, liveLines, trials, scoreboard,
-    // Seam: no exits' owner on main yet, so the lane enters nothing. tag / untag become engine.planPositions.tag / forget and
-    // reentryBlock holdExits.reentryBlock when the cleanup thread's branches land.
-    heat: heatLane && heatSource ? { lane: heatLane, source: heatSource, tag: undefined, untag: undefined, reentryBlock: undefined } : undefined });
+    // The plan positions own the lane's entries (PLAN_RULES; checked at start): tagged before the order, forgotten when it
+    // filled nothing. The re-entry rule is the hold exits' own (the engine's default).
+    heat: heatLane && heatSource ? { lane: heatLane, source: heatSource, ...(cfg.plan.enabled ? { tag: (t: HeatTag, now: number) => { engine.planPositions.tag(t, now); }, untag: (t: string) => engine.planPositions.forget(t) } : {}) } : undefined });
   // The pipeline's session risk profile (session_risk.json), under SESSION_RISK; autotrain hot-swaps new ones.
   const sr = loadSessionRiskFile(modelPaths.session_risk);
   if (sr) { engine.setSessionRiskAuto(sr.profile); log.info(`session risk ${sr.version}${cfg.strategy.sessionRiskAuto ? '' : ' loaded, not applied (SESSION_RISK_AUTO off)'}`, { sessions: Object.keys(sr.profile) }); }

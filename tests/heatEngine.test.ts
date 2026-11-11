@@ -25,7 +25,7 @@ import { openExchange, tmpAudit, tmpDir } from './helpers';
 const TOKEN = 'x'.repeat(40);
 
 /** An engine with one BTC 15-minute market ten minutes from its close, quoted 45c / 60c, and a heat lane on. */
-async function setup(opts: { env?: Record<string, string>; hooks?: HeatHooks; tagged?: HeatTag[]; untagged?: string[] } = {}) {
+async function setup(opts: { env?: Record<string, string>; hooks?: HeatHooks; tagged?: HeatTag[]; untagged?: string[]; plan?: boolean } = {}) {
   const dir = tmpDir();
   const cfg = loadConfig({ DASHBOARD_TOKEN: TOKEN, DATA_DIR: dir, RISK_DAILY_LOSS_USD: '10', DOMINANCE_FEED: 'false', SPOT_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_ENABLED: 'false', HEAT_LANE: 'true', ...opts.env });
   const now = Date.now();
@@ -50,7 +50,10 @@ async function setup(opts: { env?: Record<string, string>; hooks?: HeatHooks; ta
   const lane = new HeatLane(cfg.heat);
   const source = new MemoryHeatSource();
   const tagged = opts.tagged ?? [], untagged = opts.untagged ?? [];
-  const hooks: HeatHooks = opts.hooks ?? { tag: (t) => { tagged.push(t); }, untag: (t) => { untagged.push(t); } };
+  // `plan`: the hooks bot/main.ts gives the engine with PLAN_RULES on (the plan positions own the entries).
+  const hooks: HeatHooks = opts.hooks ?? (opts.plan
+    ? { tag: (t, at) => { engine.planPositions.tag(t, at); tagged.push(t); }, untag: (t) => { engine.planPositions.forget(t); untagged.push(t); } }
+    : { tag: (t) => { tagged.push(t); }, untag: (t) => { untagged.push(t); } });
   const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: MetaModel.identity(), exchangeStatus: openExchange(), heat: { lane, source, ...hooks } });
   engine.balance = (await recon.run('startup'))!.balance;
   return { cfg, md, paper, oms, kill, engine, market, audit, lane, source, tagged, untagged };
@@ -95,6 +98,29 @@ test('a fired call buys the called side with an immediate-or-cancel at the touch
   // The lane shows in the status JSON.
   const st = g.engine.guardStatus().heat!;
   assert.deepEqual([st.enabled, st.exitOwner, st.source.ok, st.open.length], [true, true, true, 1]);
+});
+
+test('with the plan exits on (PLAN_RULES), a heat fill is a plan position and no other order goes on its market', async () => {
+  const g = await setup({ env: { PLAN_RULES: 'true' }, plan: true });
+  heatStartCheck(g.cfg, g.cfg.plan.enabled);
+  g.source.set(fired());
+  await g.engine.tick();
+  assert.equal(g.oms.positions.position(g.market.ticker), 16);
+  const p = g.engine.planPositions.get(g.market.ticker)!;
+  assert.deepEqual([p.side, p.ruleId], ['yes', 'heat:R1:BTC:h15:1m:RSI14=very low']);
+  // The old lane's quote from this first tick was pulled before the entry, unfilled.
+  const before = g.oms.allOrders(100).filter((o) => o.ticker === g.market.ticker && !o.modelId.startsWith('heat:'));
+  assert.ok(before.every((o) => o.state === 'CANCELED' && o.filledCount === 0), JSON.stringify(before.map((o) => [o.purpose, o.state])));
+  const seen = new Set(before.map((o) => o.clientOrderId));
+  const newOthers = () => g.oms.allOrders(100).filter((o) => o.ticker === g.market.ticker && !o.modelId.startsWith('heat:') && !seen.has(o.clientOrderId));
+  for (let i = 0; i < 5; i++) await g.engine.tick();
+  assert.deepEqual(newOthers().map((o) => [o.side, o.purpose, o.price, o.count]), [], 'no old-lane order on the heat market');
+  assert.ok(g.engine.planPositions.get(g.market.ticker)?.seenOpen, 'the plan positions saw it open');
+  // The plan's ratchet arms at +$1.50 net: the bid moves to 75c (16 x 15c = $2.40 before fees), and the plan owns the exit.
+  g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.75, size: 50 }], asks: [{ price: 0.8, size: 50 }] }, Date.now());
+  await g.engine.tick();
+  assert.equal(g.engine.planPositions.get(g.market.ticker)?.state.armed, true);
+  assert.deepEqual(newOthers().filter((o) => o.purpose !== 'exit').map((o) => [o.side, o.purpose, o.price, o.count]), [], 'only the plan\'s exits may go on it');
 });
 
 test('no tag hook wired: no entry, and the call is recorded with the reason', async () => {

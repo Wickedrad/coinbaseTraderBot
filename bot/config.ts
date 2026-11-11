@@ -5,6 +5,9 @@
 import type { DynamicEdgeParams } from './strategy/dynamicEdge';
 import type { RegimeScaleParams } from './strategy/regimeScale';
 import { type PacerConfig, validZone } from './risk/quotaPacer';
+import type { HoldExitConfig } from './strategy/holdExit';
+import type { PlanConfig } from './plan/planRatchet';
+import type { RatchetConfig } from './strategy/profitRatchet';
 import fs from 'fs';
 import { parseSessionRisk, type SessionRiskProfile } from './model/sessionRisk';
 import { DEFAULT_PROBATION, type ProbationParams } from './risk/probation';
@@ -147,6 +150,27 @@ export interface StrategyConfig {
    *  window a position in profit rides to settlement instead, and a hunted position is never held for settlement
    *  (HUNT_LOCK_SALE_ELSE=exit). */
   pacer: PacerConfig;
+  /** HOLD_EXIT (Steven's rule, Nov 11; bot/strategy/holdExit.ts): a position whose profit after both fees, sold at the bid, has been at
+   *  least HOLD_EXIT_USD (1.50) for HOLD_EXIT_SEC (10) seconds in all and is at least HOLD_EXIT_RUN_USD (1.00) for the last
+   *  HOLD_EXIT_RUN_SEC (3) seconds in a row is sold at the bid, where the quota snipe could sell it. Plan positions too (Steven,
+   *  Nov 11 8:52 AM EST / 13:52 UTC). With the profit ratchet armed it stands aside while the profit set a new best in the last
+   *  HOLD_EXIT_RUN_SEC. After a hold exit or a quota snipe the same contract is entered again only while more than
+   *  HOLD_EXIT_REENTRY_SHARE (0.5) of its window is left. Its profit is the trade's: what partial sales banked plus the rest at
+   *  the bid. After HOLD_EXIT_LINE_AFTER_FAILS (5; 0 = never) failed tries on a position (up to $1.00, back under it for 3 s,
+   *  never $1.50) the line exit may sell it as a last resort with SINUOUS_CROSS off (Steven, Nov 11 9:21 AM EST / 14:21 UTC);
+   *  the tries are this rule's count, so HOLD_EXIT=false (the behaviour before it) turns the last resort off too. */
+  holdExit: HoldExitConfig;
+  /** RATCHET (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC; bot/strategy/profitRatchet.ts): one ratchet for every position,
+   *  in dollars for the whole position after both fees. It arms at RATCHET_ARM_USD (1.50); its stop starts at
+   *  RATCHET_STOP_MIN_USD (1.00) and trails RATCHET_TRAIL_USD (0.50) under the best profit since, never lowered; at or under the
+   *  stop the position is sold. A plan position's sale is the plan's own (bot/plan/planRatchet.ts, PLAN_RULES); any other
+   *  position's is the quota snipe's order. Off, the plan ratchet still runs for plan positions; no other position has one. */
+  profitRatchet: RatchetConfig;
+  /** PLAN_RULES (off by default, the same in paper and live; Steven's decisions 3 and 13, Nov 11 8:03 AM EST / 13:03 UTC): a
+   *  position opened by a plan rule (bot/plan/planPositions.ts) is managed by the plan's ratchet (the profit ratchet's numbers)
+   *  and its end rule (bot/plan/planRatchet.ts), and by the hold exit; the pacer only reports pace for it. Off, every position is
+   *  managed as before. Also on Config as cfg.plan (the same object). */
+  plan: PlanConfig;
   /** PROFIT_MANDATE (off by default; Steven's first wording, Oct 29 23:22 UTC): outside that final share of the window a position
    *  whose side bid net of the exit fee clears its entry cost (entry fee in) by PROFIT_MANDATE_MIN is sold at the bid whatever the
    *  exit policy or the model says, a hunt trailing its stop excepted. On, a penny of profit sells before the pacer's threshold is
@@ -442,6 +466,8 @@ export interface Config {
   optimalF: OptimalFConfig;
   /** Fractal Alignment Engine and waterfall mode (bot/macro). */
   macro: MacroConfig;
+  /** PLAN_RULES and the plan ratchet's default settings: the same object as strategy.plan. */
+  plan: PlanConfig;
 }
 
 export interface MacroConfig {
@@ -946,6 +972,28 @@ function pacerConfig(env: Env): PacerConfig {
   };
 }
 
+/** RATCHET: the profit ratchet for every position (bot/strategy/profitRatchet.ts), the same in paper and live. Steven, Nov 11
+ *  8:53 AM EST / 13:53 UTC ("the ratchet should allow for the profit after fees price to go higher if it runs past the $1.50
+ *  profit and ratchet stop loss after that"), trail $0.50 at 8:58 AM EST / 13:58 UTC. */
+function profitRatchetConfig(env: Env): RatchetConfig {
+  const armUsd = num(env, 'RATCHET_ARM_USD', 1.5, 0, 10_000);
+  const stopMinUsd = num(env, 'RATCHET_STOP_MIN_USD', 1, 0, 10_000);
+  // A stop at or above the arming level would sell the moment it arms.
+  if (stopMinUsd >= armUsd) throw new ConfigError(`RATCHET_STOP_MIN_USD=${stopMinUsd} must be under RATCHET_ARM_USD=${armUsd}`);
+  return { enabled: bool(env, 'RATCHET', true), armUsd, stopMinUsd, trailUsd: num(env, 'RATCHET_TRAIL_USD', 0.5, 0, 10_000) };
+}
+
+/** PLAN_RULES (bot/plan/planRatchet.ts), the same in paper and live. The plan ratchet takes the profit ratchet's dollars a
+ *  position (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD) since Nov 11 (Steven, 8:53-8:58 AM EST / 13:53-13:58 UTC):
+ *  one ratchet. Its old cents-a-contract settings cannot be carried over (a cent a contract is a different amount on every
+ *  position), so setting one stops the start rather than being read as something else. */
+function planConfig(env: Env): PlanConfig {
+  for (const k of ['PLAN_RATCHET_ARM_C', 'PLAN_RATCHET_TRAIL_C']) {
+    if (env[k] !== undefined && env[k] !== '') throw new ConfigError(`${k} is retired: the ratchet is in dollars for the whole position (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD)`);
+  }
+  return { enabled: bool(env, 'PLAN_RULES', false) };
+}
+
 function bool(env: Env, key: string, def: boolean): boolean {
   const raw = env[key];
   if (raw === undefined || raw === '') return def;
@@ -1235,6 +1283,19 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     noExitBeforeCloseFrac: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC', 0.10, 0, 0.9),
     shareWindowMaxSec: num(env, 'STRATEGY_SHARE_WINDOW_MAX_SEC', 3600, 0, 7 * 86_400),
     pacer: pacerConfig(env),
+    // Steven asked for it directly (Nov 11 2026, 13:42-13:45 UTC): on by default.
+    holdExit: {
+      enabled: bool(env, 'HOLD_EXIT', true),
+      usd: num(env, 'HOLD_EXIT_USD', 1.5, 0, 10_000),
+      sec: num(env, 'HOLD_EXIT_SEC', 10, 0, 3600),
+      runUsd: num(env, 'HOLD_EXIT_RUN_USD', 1, 0, 10_000),
+      runSec: num(env, 'HOLD_EXIT_RUN_SEC', 3, 0, 600),
+      reentryShare: num(env, 'HOLD_EXIT_REENTRY_SHARE', 0.5, 0, 1),
+      // Steven's card (Nov 11 9:21 AM EST / 14:21 UTC): the line exit after 5 failed tries. A count: 2.5 means 3.
+      lineAfterFails: Math.ceil(num(env, 'HOLD_EXIT_LINE_AFTER_FAILS', 5, 0, 1000)),
+    },
+    profitRatchet: profitRatchetConfig(env),
+    plan: planConfig(env),
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),
     // Maker discount for the measured adverse move a minute after a fill: at least 1.5c, up to 3c.
@@ -1436,6 +1497,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     alertWebhookUrl: env.ALERT_WEBHOOK_URL || undefined,
     risk,
     strategy,
+    plan: strategy.plan,
     vault: {
       enabled: bool(env, 'VAULT_ENABLED', true),
       quotaUsd: num(env, 'VAULT_QUOTA_USD', 100, 0, 1e7),

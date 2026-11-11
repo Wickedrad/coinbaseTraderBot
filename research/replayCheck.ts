@@ -160,8 +160,9 @@ const overlaps = (a: { from: string; to: string }, b: { from: string; to: string
 const HOUR = 3_600_000;
 const hourOf = (ms: number) => new Date(ms).toISOString().slice(0, 13);
 const isTennis = (t: string) => t.startsWith('KXATP') || t.startsWith('KXWTA');
-// The model exit names its prices ("bid 0.55 - fee > q 0.520 + 0.02", "NO bid 0.45 - fee > q + 0.02").
-const exitKind = (why: string) => /^quota snipe/.test(why) ? 'quota snipe' : /^profit mandate/.test(why) ? 'profit mandate' : /^take-profit/.test(why) ? 'take-profit' : /ratchet|stop/i.test(why) ? 'ratchet' : /cross|curve/i.test(why) ? 'cross' : /exit|fair|model|- fee > q/i.test(why) ? 'model exit' : 'other';
+// The model exit names its prices ("bid 0.55 - fee > q 0.520 + 0.02", "NO bid 0.45 - fee > q + 0.02"). A plan position's sale
+// (PLAN_RULES: its ratchet, a retry, its end rule) is its own kind, not the hunt's ratchet.
+const exitKind = (why: string) => /^quota snipe/.test(why) ? 'quota snipe' : /^hold exit/.test(why) ? 'hold exit' : /^profit ratchet/.test(why) ? 'profit ratchet' : /^plan (ratchet|end rule)/.test(why) ? 'plan' : /^profit mandate/.test(why) ? 'profit mandate' : /^take-profit/.test(why) ? 'take-profit' : /ratchet|stop/i.test(why) ? 'ratchet' : /cross|curve/i.test(why) ? 'cross' : /exit|fair|model|- fee > q/i.test(why) ? 'model exit' : 'other';
 /** A rejection reason with its numbers folded, so the same kind counts together (as research/backtest.ts folds them). */
 export const foldReason = (r: string) => r.replace(/[-+]?\$?\d[\d.,]*%?/g, '#');
 const empty = (): SideSummary => ({ fills: 0, contracts: 0, fees: 0, pnl: 0, markets: 0, exits: {}, byHour: {}, byPurpose: {}, contractsByHour: {}, bySeries: {} });
@@ -831,7 +832,7 @@ export async function replayCheck(o: ReplayCheckOpts): Promise<ReplayCheck> {
   if (tpContracts) replay.exits['take-profit'] = +tpContracts.toFixed(2);
   if (r.exits.contracts - tpContracts > 1e-9) replay.exits['model exit / ratchet'] = +(r.exits.contracts - tpContracts).toFixed(2);
   const x = r.exits;
-  if (x.huntActivations || x.wallAsks || x.quotaSnipes) replay.hunt = `hunt mode in the replay: ${x.huntActivations} activations, ${x.ratchetTriggers} stop triggers, ${x.gaps} gaps, ${x.huntProfitTakes} profit takes, ${x.lockSales} lock sales, ${x.lockHolds} lock holds, ${x.wallAsks} wall asks (${x.wallFills.toFixed(0)} contracts filled on them), ${x.quotaSnipes} quota snipes (${x.quotaSnipeContracts.toFixed(0)} contracts)${x.floorArms || x.floorSales ? `, ${x.floorArms ?? 0} quota floors armed, ${x.floorSales ?? 0} floor sale calls` : ''}`;
+  if (x.huntActivations || x.wallAsks || x.quotaSnipes || x.holdExits || x.profitRatchets) replay.hunt = `hunt mode in the replay: ${x.huntActivations} activations, ${x.ratchetTriggers} stop triggers, ${x.gaps} gaps, ${x.huntProfitTakes} profit takes, ${x.lockSales} lock sales, ${x.lockHolds} lock holds, ${x.wallAsks} wall asks (${x.wallFills.toFixed(0)} contracts filled on them), ${x.quotaSnipes} quota snipes (${x.quotaSnipeContracts.toFixed(0)} contracts)${x.floorArms || x.floorSales ? `, ${x.floorArms ?? 0} quota floors armed, ${x.floorSales ?? 0} floor sale calls` : ''}${x.holdExits ? `, ${x.holdExits} hold exits (${(x.holdExitContracts ?? 0).toFixed(0)} contracts)` : ''}${x.profitRatchets ? `, ${x.profitRatchets} profit ratchet sales (${(x.profitRatchetContracts ?? 0).toFixed(0)} contracts, ${x.ratchetArms ?? 0} arms)` : ''}`;
   const paper = paperSummary(audit, from, to);
   const dump = process.env.REPLAY_DUMP ? marketDump(process.env.REPLAY_DUMP, r, audit, from, to) : undefined;
   const upOnly = upTimeScore(r, audit, from, to);
