@@ -347,7 +347,8 @@ async function main(): Promise<void> {
   let perpsPaper: PaperPerpExchange | undefined;
   const modelHealth = new ModelHealth({ minWindows: cfg.strategy.modelHealthMinWindows }, path.join(cfg.dataDir, 'model_health.json'));
   const taHealth = new ModelHealth({ minWindows: 1e9 }, path.join(cfg.dataDir, 'ta_health.json'));
-  // Bot vs market per time-to-close bucket (each book its own scorecard); only paper blocks entries on it.
+  // Bot vs market per time-to-close bucket (one scorecard for paper and live, always kept); it blocks entries, in paper
+  // and live alike, only with ACCURACY_GATE on (off by default).
   const accuracyGate = new AccuracyGate(cfg.strategy.accuracyGate, path.join(cfg.dataDir, 'accuracy_gate.json'));
   // TA conviction for the perps (setup trader): features + the TA network's raw view, cached per asset per minute.
   const convCache = new Map<string, { ts: number; f: Record<string, number>; v: TaNetView | undefined; rb?: { score: number; n: number }; gp?: { exposure: number } }>();

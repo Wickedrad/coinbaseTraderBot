@@ -1,5 +1,7 @@
-// Market-accuracy gate (paper only; the owner's choice on Oct 23): no new entries in a time-to-close bucket where the
-// market's own price has called the results better than the bot.
+// Market-accuracy gate (the owner's choice on Oct 23; it acts in paper and live alike): no new entries in a
+// time-to-close bucket where the market's own price has called the results better than the bot. Off by default since
+// Nov 11 (ACCURACY_GATE=false) for the edge plan: it scores the old model's pYes, not the heat map's. The scorecard is
+// kept and reported either way; only the blocking waits on `enabled`.
 //
 // For every crypto market the bot prices, one snapshot per time-to-close bucket is kept: the evaluation nearest the
 // bucket's middle (the bot's probability and the market mid). When the market settles, its snapshots are scored. Per
@@ -18,7 +20,8 @@ import { readJson, writeJsonAtomic } from '../util/persist';
 export type AccuracyGroup = 'updown15m' | 'hourly';
 
 export interface AccuracyGateConfig {
-  /** Blocks entries where the market has been more accurate (the engine asks only in paper). */
+  /** Blocks entries where the market has been more accurate, in paper and live (ACCURACY_GATE, off by default). Off:
+   *  the scorecard is still kept and reported, nothing is blocked. */
   enabled: boolean;
   /** Settled markets scored per bucket (the most recent). */
   window: number;

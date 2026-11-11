@@ -209,9 +209,9 @@ export interface BacktestOpts { fillLog?: boolean; exitPolicy?: ExitPolicyName; 
    *  there are minTradesKalshi), floored (paper and live alike) at paperFloor x the tier's per-order fraction. Starts from
    *  `seed` (settled entries before the replay, as trades.jsonl rows) when given, else from nothing. */
   optimalF?: { enabled: boolean; quantile: number; halfLifeDays: number; minTradesKalshi: number; paperFloor: number; seed?: Array<{ ts: number; ticker: string; cost: number; count: number; won: boolean }> };
-  /** The paper accuracy gate (bot/strategy/accuracyGate.ts): no new entry in a time-to-close bucket where the market's
-   *  own price has called the recent results better than the bot. Starts with an empty scorecard (no look-ahead), or
-   *  from accuracyGateFile. */
+  /** The accuracy gate (bot/strategy/accuracyGate.ts; paper and live, ACCURACY_GATE, off by default): no new entry in a
+   *  time-to-close bucket where the market's own price has called the recent results better than the bot. Starts with
+   *  an empty scorecard (no look-ahead), or from accuracyGateFile. */
   accuracyGate?: AccuracyGateConfig;
   /** The gate's scorecard to start from (a copy: the gate writes to it), e.g. the paper bot's as it stood at tradeFromMs.
    *  Markets settling before tradeFromMs are then not scored again: the scorecard already holds paper's own. */
