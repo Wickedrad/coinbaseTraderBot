@@ -1,5 +1,6 @@
 // Session edges: the first/last 40 minutes of the Asia, London and New York sessions. No new entries
-// there; with AUTO_TRAIN=windows the training pipeline runs only there (frozen the rest of the time).
+// there only with SESSION_EDGE_NO_ENTRY on (unset: on only with AUTO_TRAIN=windows); with AUTO_TRAIN=windows
+// the training pipeline runs only there (frozen the rest of the time).
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,11 +42,24 @@ test('nextSessionEdge: the current or next window with its start and end', () =>
   assert.equal(fri.start, Date.UTC(2026, 9, 12, 0), 'Friday night -> Monday Tokyo open');
 });
 
-test('entry guard: no new entries at a session edge (SESSION_EDGE_NO_ENTRY=false turns it off)', () => {
+test('entry guard: a session edge halts no entries by default, paper and live alike (SESSION_EDGE_NO_ENTRY=true turns the old halt on)', () => {
   const block = (env: Record<string, string>, ts: number) => Engine.prototype.sessionEdgeBlock.call({ d: { cfg: loadConfig(env) } } as never, ts);
-  assert.match(block({}, at(13, 40))!, /New York open/);
-  assert.equal(block({}, at(12)), undefined);
-  assert.equal(block({ SESSION_EDGE_NO_ENTRY: 'false' }, at(13, 40)), undefined);
+  const key = path.join(tmpDir(), 'k.pem');
+  fs.writeFileSync(key, 'x', { mode: 0o600 });
+  const live = { TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' };
+  for (const mode of [{}, live]) {
+    // 13:40 UTC = 9:40 AM EDT: inside the New York open's edge.
+    assert.equal(block(mode, at(13, 40)), undefined, `${loadConfig(mode).mode}: no halt at a session edge by default`);
+    assert.match(block({ ...mode, SESSION_EDGE_NO_ENTRY: 'true' }, at(13, 40))!, /New York open/);
+    assert.equal(block({ ...mode, SESSION_EDGE_NO_ENTRY: 'true' }, at(12)), undefined, '12:00 UTC = 8:00 AM EDT: outside every edge');
+    assert.equal(block({ ...mode, AUTO_TRAIN: 'remote' }, at(13, 40)), undefined, 'AUTO_TRAIN=remote (the server\'s): no halt');
+    // AUTO_TRAIN=windows trains only in these windows: unset, the halt stays on there so training never shares the CPU
+    // with trading; SESSION_EDGE_NO_ENTRY=false still turns it off.
+    assert.match(block({ ...mode, AUTO_TRAIN: 'windows' }, at(13, 40))!, /New York open/, `${loadConfig(mode).mode}: AUTO_TRAIN=windows keeps the halt`);
+    assert.equal(block({ ...mode, AUTO_TRAIN: 'windows', SESSION_EDGE_NO_ENTRY: 'false' }, at(13, 40)), undefined);
+  }
+  // The server's env template writes the same default.
+  assert.match(fs.readFileSync(path.join(import.meta.dirname, '..', 'deploy', 'bot.env.template'), 'utf8'), /^SESSION_EDGE_NO_ENTRY=false$/m);
 });
 
 test('AUTO_TRAIN=windows: starts in the first window once a day is due, paused outside windows, resumed inside', async () => {

@@ -1,0 +1,80 @@
+{
+  "assets": [
+    "BTC",
+    "ETH",
+    "SOL",
+    "XRP",
+    "DOGE"
+  ],
+  "events": [
+    {
+      "id": "move-up-1atr-sustain5-v1",
+      "kind": "move",
+      "direction": "up",
+      "thresholdAtr": 1,
+      "sustainSec": 5,
+      "sustainFraction": 0.75,
+      "priorWindowSec": 0
+    },
+    {
+      "id": "reversal-up-1atr-sustain5-v1",
+      "kind": "reversal",
+      "direction": "up",
+      "thresholdAtr": 1,
+      "sustainSec": 5,
+      "sustainFraction": 0.75,
+      "priorWindowSec": 300,
+      "priorDriftAtr": 0.5
+    },
+    {
+      "id": "continuation-up-1atr-sustain5-v1",
+      "kind": "continuation",
+      "direction": "up",
+      "thresholdAtr": 1,
+      "sustainSec": 5,
+      "sustainFraction": 0.75,
+      "priorWindowSec": 300,
+      "priorDriftAtr": 0.5
+    },
+    {
+      "id": "move-down-1atr-sustain5-v1",
+      "kind": "move",
+      "direction": "down",
+      "thresholdAtr": 1,
+      "sustainSec": 5,
+      "sustainFraction": 0.75,
+      "priorWindowSec": 0
+    },
+    {
+      "id": "reversal-down-1atr-sustain5-v1",
+      "kind": "reversal",
+      "direction": "down",
+      "thresholdAtr": 1,
+      "sustainSec": 5,
+      "sustainFraction": 0.75,
+      "priorWindowSec": 300,
+      "priorDriftAtr": 0.5
+    },
+    {
+      "id": "continuation-down-1atr-sustain5-v1",
+      "kind": "continuation",
+      "direction": "down",
+      "thresholdAtr": 1,
+      "sustainSec": 5,
+      "sustainFraction": 0.75,
+      "priorWindowSec": 300,
+      "priorDriftAtr": 0.5
+    }
+  ],
+  "everyMs": 60000,
+  "executionBufferMs": 30000,
+  "maximumDecisions": 20000,
+  "costs": {
+    "entryFee": 0.02,
+    "exitFee": 0.02,
+    "settlementFee": 0,
+    "slippage": 0.01
+  },
+  "sampleEveryMs": 86400000,
+  "maximumContractsPerAsset": 3
+}

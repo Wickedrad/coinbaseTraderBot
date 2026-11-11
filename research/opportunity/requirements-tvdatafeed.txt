@@ -1,0 +1,2 @@
+# Same upstream used by research/tvSetup.ts, pinned for this research bridge.
+tvdatafeed @ https://github.com/rongardF/tvdatafeed/archive/e6f6aaa7de439ac6e454d9b26d2760ded8dc4923.zip

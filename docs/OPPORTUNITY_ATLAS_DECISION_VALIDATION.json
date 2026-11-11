@@ -1,0 +1,1356 @@
+{
+  "schema": "opportunity-decision-validation-evidence-v1",
+  "research_only": true,
+  "fitting_or_prediction_scoring": false,
+  "base_main_commit": "5a53910ca5d517af2f73fe9c8d4ea26bea209bdf",
+  "runs": {
+    "retained_2017_btc_eth": {
+      "schema": "opportunity-decisions-v1",
+      "createdAt": "2026-11-08T15:48:30.784Z",
+      "researchOnly": true,
+      "autoPromote": false,
+      "liveEntryAllowed": false,
+      "purpose": "minute decision features joined to observed spot-path targets; no fitting, scoring or official contract settlement labels",
+      "partitions": {
+        "trainBefore": 1735689600000,
+        "finalFrom": 1767225600000,
+        "finalOutcomesWithheld": true
+      },
+      "labelPolicy": {
+        "source": "per-asset audited input path",
+        "trainBefore": 1735689600000,
+        "finalFrom": 1767225600000,
+        "horizonsMin": [
+          5,
+          15,
+          60,
+          240,
+          1440
+        ],
+        "targetsAtr": [
+          1
+        ],
+        "stopsAtr": [
+          1
+        ],
+        "reversals": [
+          {
+            "id": "fast",
+            "lookbackMin": 15,
+            "precedingDriftAtr": 0.5,
+            "turnAtr": 0.5,
+            "sustainMin": 3
+          },
+          {
+            "id": "slow",
+            "lookbackMin": 60,
+            "precedingDriftAtr": 1,
+            "turnAtr": 1,
+            "sustainMin": 5
+          }
+        ],
+        "costs": {
+          "feePerSideBps": 0,
+          "halfSpreadBps": 0,
+          "slippagePerSideBps": 0
+        },
+        "baseHorizonsMin": [
+          5,
+          15,
+          60,
+          240,
+          1440
+        ],
+        "referencePeriodsMin": [
+          15,
+          60
+        ],
+        "anchor": "builtin-ATR14-over-last-1440-contiguous-1m-bars",
+        "finalBoundaryCensorReason": "processing-limit"
+      },
+      "unavailableInputs": [
+        "SNN temporal state",
+        "official settlement index/contract terms",
+        "funding/open interest",
+        "cross-asset lead-lag"
+      ],
+      "codeHashes": {
+        "research/opportunity/decisionDataset.ts": "cf7da7f674a0561033ff35f92523975d6e8194968623008b653f0e768c69eed8",
+        "research/opportunity/decisionDatasetCli.ts": "ead745e305de9f8416ac2208d4d5096f652c90dc2d05446a8f5f6abc996b7b1c",
+        "research/opportunity/pathLabels.ts": "31cd05dcac25f031e01d6ac2f86a9c39fbd06da67172a9f8561d79ac668d7b47"
+      },
+      "featureInputAudit": {
+        "schema": "opportunity-features-v1",
+        "createdAt": "2026-11-08T15:48:30.783Z",
+        "researchOnly": true,
+        "autoPromote": false,
+        "purpose": "causal feature/data validation only; no outcome scoring, model fitting or holdout reuse",
+        "taSchema": "6",
+        "engine": "talib",
+        "windows": {
+          "1m": 1440,
+          "5m": 288,
+          "15m": 256,
+          "1h": 280,
+          "4h": 280,
+          "1d": 250
+        },
+        "everyMinutes": 1,
+        "dailyPolicy": {
+          "lagMs": 86400000,
+          "maxAgeMs": 172800000,
+          "publicationTimesVerified": false
+        },
+        "sourceIdentity": "archive-path declarations; not independently provider authenticated",
+        "codeHashes": {
+          "research/opportunity/features.ts": "850580305d673ac73aab55beeb0f028a337955d78b4872b0c7ed940de745182f",
+          "research/opportunity/minuteCsv.ts": "a2effdf502dee260c4feb8fdc99b8accec7d42a6820de096fb9ec5f88eb738d8",
+          "research/opportunity/featuresCli.ts": "708015bf80aa9ea4c0d28f28332d274474e4298cbd7152366539b154e0e509c0",
+          "bot/model/sessions.ts": "2766846650752ffd7ce097ad243b3b7336f967d8eb3d65a29635e404b1667473",
+          "bot/ta/analyzer.ts": "84e64700a6624331e051f0022615cb88a7529c0f0b74dfbbb8676b4b0ce3fcbb",
+          "bot/ta/branchNet.ts": "9b681bfc9df557ddfddecd26a44d149aa3ade7f5cf148bb40344c17e450ae838",
+          "bot/ta/candleStore.ts": "78a58b584b64962a3190ae47aa453f1340244ddc3b11b808a4990162db2314f4",
+          "bot/ta/character.ts": "218b12206278bd98ba77b031b7101dc2ecffc6505856e7a116027535d898a7b2",
+          "bot/ta/crossGraph.ts": "3b54e6b08f2f280b566c123d99e036d7525cad593fa03a5f5b4debedf55412b3",
+          "bot/ta/crossLead.ts": "145a5a3ee5addd63b600a24ecbb17dedb096bfef41659b1832f3605f199314fe",
+          "bot/ta/fractal.ts": "db7a61e5c14f3bcb3f2102a2c565671b324d2ca53beb58c59b0e7b3c983528e4",
+          "bot/ta/indicators.ts": "06606a87a7bdd048c4ba304bfde56e4e4df7682d7cfb7ad8d69c87692e357360",
+          "bot/ta/knowledge.ts": "d27ac8f014abad1526ad9256db5303e84a591fdfc3cb2fbeeb6402471c7c21cc",
+          "bot/ta/librarian.ts": "867fe6d5aa0551c65cf6a232fa4db0e1d67dcfbfbce8ec2dcd03d4ff74bd105e",
+          "bot/ta/marketContext.ts": "24da80f94ef6a4b1d9f9d31927f6b42f7c9db176b07c80eb61e874c0171dd1b6",
+          "bot/ta/regime.ts": "06427ae662c09929e66374783f0e029536b3c0d809a890585a18645cd8a90106",
+          "bot/ta/structure.ts": "6fb7f8a66744584cccbc60fd2586cf3f7d1ca885a0488a7849f6529e4b423841",
+          "bot/ta/study.ts": "39af95feaa68ff3036499650547b9e0e701a839c97685a4e1f23fd3ab0c8ef51",
+          "bot/ta/taNet.ts": "eae89bb75e3740f5e5e5268afd187ba9556deb0a13c259dd451056a4d9286d67",
+          "bot/ta/taNetContext.ts": "7b96814d73c353fdb160d92136235b88c1b679172d65ab405ef09bf94a818106",
+          "bot/ta/taNetEnsemble.ts": "c75a3c538152ba9f3db1169440f15a64af622b95606c5202c51333dedd6dae2a",
+          "bot/ta/talib.ts": "d1218c1a4303ae9b4f329dba358420206c4d8c505519c09f7800724f35f4ac06"
+        },
+        "auditSha256": "faf106a772574969e4c1940bf9f46501a6aeb306c658c41eb7559a29b21ee53b",
+        "inputs": [
+          {
+            "path": "tradingview/BTC.D/1d.csv",
+            "source": "tradingview",
+            "interval_ms": 86400000,
+            "rows": 4570,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 1,
+            "missing_bars": 3,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1396310400000,
+            "last_open_ms": 1791331200000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "1378d8ae6608b3b88e2f7f82b6033832c7ab36af8ecceb1badbbeb6406c81aca",
+            "bytes": 380586,
+            "continuous": false
+          },
+          {
+            "path": "tradingview/USDT.D/1d.csv",
+            "source": "tradingview",
+            "interval_ms": 86400000,
+            "rows": 4232,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1425772800000,
+            "last_open_ms": 1791331200000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "3a76a5d9422bac1dee2fa5fcca230503a8dfc402c541563ef5ae4a3e957f40e8",
+            "bytes": 360218,
+            "continuous": true
+          },
+          {
+            "path": "binance-1m/BTC/1m.csv",
+            "source": "binance-1m",
+            "interval_ms": 60000,
+            "rows": 21360,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1502942400000,
+            "last_open_ms": 1504223940000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "51ee49e871b8f2bd938eb72bbbbc165ed4385bac78214aaa33fe590cfdf1a3b2",
+            "bytes": 1151595,
+            "continuous": true
+          },
+          {
+            "path": "yahoo/BTC/1d.csv",
+            "source": "yahoo",
+            "interval_ms": 86400000,
+            "rows": 3653,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1473206400000,
+            "last_open_ms": 1788739200000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "ba579f97ca1d70b6ff2b53a966dbf020d8a30497806fe3a7fff4dd70d353d208",
+            "bytes": 274823,
+            "continuous": true
+          },
+          {
+            "path": "binance-1m/ETH/1m.csv",
+            "source": "binance-1m",
+            "interval_ms": 60000,
+            "rows": 21360,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1502942400000,
+            "last_open_ms": 1504223940000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "05161c0b4b958f3dc7b476b16a3a9342ded2ebfe9729a9f27fed9ae159415f1f",
+            "bytes": 1091186,
+            "continuous": true
+          },
+          {
+            "path": "yahoo/ETH/1d.csv",
+            "source": "yahoo",
+            "interval_ms": 86400000,
+            "rows": 3225,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1510185600000,
+            "last_open_ms": 1788739200000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "e6fbdb47cfb669f9f1ac5740627d66b48395e148faa61c5832a98f05474de501",
+            "bytes": 231210,
+            "continuous": true
+          }
+        ],
+        "assets": [
+          {
+            "asset": "BTC",
+            "minutes": 1500,
+            "frames": 1500,
+            "firstOpen": 1502942400000,
+            "lastOpen": 1503032340000,
+            "gaps": 0,
+            "groups": {
+              "spot_1m": {
+                "ready": 1471,
+                "warming": 29,
+                "missing": 0,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 4254
+              },
+              "spot_5m": {
+                "ready": 1351,
+                "warming": 145,
+                "missing": 4,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 18793
+              },
+              "spot_15m": {
+                "ready": 1051,
+                "warming": 435,
+                "missing": 14,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 53030
+              },
+              "spot_1h": {
+                "ready": 0,
+                "warming": 1441,
+                "missing": 59,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 151619
+              },
+              "spot_4h": {
+                "ready": 0,
+                "warming": 1261,
+                "missing": 239,
+                "stale": 0,
+                "features": 99,
+                "nullValues": 147479
+              },
+              "spot_1d": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 1500,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 151500
+              },
+              "dominance_btcd": {
+                "ready": 1500,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 19500
+              },
+              "dominance_usdtd": {
+                "ready": 1500,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 19500
+              },
+              "yahoo_daily": {
+                "ready": 1500,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 1500
+              },
+              "micro": {
+                "ready": 1500,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 6,
+                "nullValues": 1544
+              },
+              "clock": {
+                "ready": 1500,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 30,
+                "nullValues": 0
+              }
+            }
+          },
+          {
+            "asset": "ETH",
+            "minutes": 1500,
+            "frames": 1500,
+            "firstOpen": 1502942400000,
+            "lastOpen": 1503032340000,
+            "gaps": 0,
+            "groups": {
+              "spot_1m": {
+                "ready": 1471,
+                "warming": 29,
+                "missing": 0,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 4021
+              },
+              "spot_5m": {
+                "ready": 1351,
+                "warming": 145,
+                "missing": 4,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 18733
+              },
+              "spot_15m": {
+                "ready": 1051,
+                "warming": 435,
+                "missing": 14,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 53105
+              },
+              "spot_1h": {
+                "ready": 0,
+                "warming": 1441,
+                "missing": 59,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 151619
+              },
+              "spot_4h": {
+                "ready": 0,
+                "warming": 1261,
+                "missing": 239,
+                "stale": 0,
+                "features": 99,
+                "nullValues": 147479
+              },
+              "spot_1d": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 1500,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 151500
+              },
+              "dominance_btcd": {
+                "ready": 1500,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 19500
+              },
+              "dominance_usdtd": {
+                "ready": 1500,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 19500
+              },
+              "yahoo_daily": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 1500,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 151500
+              },
+              "micro": {
+                "ready": 1500,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 6,
+                "nullValues": 1386
+              },
+              "clock": {
+                "ready": 1500,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 30,
+                "nullValues": 0
+              }
+            }
+          }
+        ]
+      },
+      "assets": [
+        {
+          "asset": "BTC",
+          "decisions": 1500,
+          "scheduled": 1487,
+          "unavailableScale": 13,
+          "reservedFinal": 0,
+          "labels": 19620,
+          "censored": 3520,
+          "partitions": {
+            "train": 19620,
+            "development": 0,
+            "final": 0,
+            "purged": 0
+          }
+        },
+        {
+          "asset": "ETH",
+          "decisions": 1500,
+          "scheduled": 1487,
+          "unavailableScale": 13,
+          "reservedFinal": 0,
+          "labels": 19620,
+          "censored": 3520,
+          "partitions": {
+            "train": 19620,
+            "development": 0,
+            "final": 0,
+            "purged": 0
+          }
+        }
+      ],
+      "runId": "ea2748e1-5ad4-4b1c-85bf-7f837e8376f3",
+      "outputs": {
+        "decisions": {
+          "file": "decisions.jsonl",
+          "sha256": "0b21a45fd30497c1f13012d9034949ec0e90f112a303dd3af3639a04b3a4853f",
+          "rows": 3000
+        },
+        "paths": {
+          "file": "paths.jsonl",
+          "sha256": "338b78546439a1a74da8a40049a28295e4dc25df3581b7761c0f306df4d886ab",
+          "rows": 39240
+        }
+      }
+    },
+    "archived_2026_final_features_only": {
+      "schema": "opportunity-decisions-v1",
+      "createdAt": "2026-11-08T15:48:03.560Z",
+      "researchOnly": true,
+      "autoPromote": false,
+      "liveEntryAllowed": false,
+      "purpose": "minute decision features joined to observed spot-path targets; no fitting, scoring or official contract settlement labels",
+      "partitions": {
+        "trainBefore": 1735689600000,
+        "finalFrom": 1767225600000,
+        "finalOutcomesWithheld": true
+      },
+      "labelPolicy": {
+        "source": "per-asset audited input path",
+        "trainBefore": 1735689600000,
+        "finalFrom": 1767225600000,
+        "horizonsMin": [
+          5,
+          15,
+          60,
+          240,
+          1440
+        ],
+        "targetsAtr": [
+          1
+        ],
+        "stopsAtr": [
+          1
+        ],
+        "reversals": [
+          {
+            "id": "fast",
+            "lookbackMin": 15,
+            "precedingDriftAtr": 0.5,
+            "turnAtr": 0.5,
+            "sustainMin": 3
+          },
+          {
+            "id": "slow",
+            "lookbackMin": 60,
+            "precedingDriftAtr": 1,
+            "turnAtr": 1,
+            "sustainMin": 5
+          }
+        ],
+        "costs": {
+          "feePerSideBps": 0,
+          "halfSpreadBps": 0,
+          "slippagePerSideBps": 0
+        },
+        "baseHorizonsMin": [
+          5,
+          15,
+          60,
+          240,
+          1440
+        ],
+        "referencePeriodsMin": [
+          15,
+          60
+        ],
+        "anchor": "builtin-ATR14-over-last-1440-contiguous-1m-bars",
+        "finalBoundaryCensorReason": "processing-limit"
+      },
+      "unavailableInputs": [
+        "SNN temporal state",
+        "official settlement index/contract terms",
+        "funding/open interest",
+        "cross-asset lead-lag"
+      ],
+      "codeHashes": {
+        "research/opportunity/decisionDataset.ts": "cf7da7f674a0561033ff35f92523975d6e8194968623008b653f0e768c69eed8",
+        "research/opportunity/decisionDatasetCli.ts": "ead745e305de9f8416ac2208d4d5096f652c90dc2d05446a8f5f6abc996b7b1c",
+        "research/opportunity/pathLabels.ts": "31cd05dcac25f031e01d6ac2f86a9c39fbd06da67172a9f8561d79ac668d7b47"
+      },
+      "featureInputAudit": {
+        "schema": "opportunity-features-v1",
+        "createdAt": "2026-11-08T15:48:03.559Z",
+        "researchOnly": true,
+        "autoPromote": false,
+        "purpose": "causal feature/data validation only; no outcome scoring, model fitting or holdout reuse",
+        "taSchema": "6",
+        "engine": "talib",
+        "windows": {
+          "1m": 1440,
+          "5m": 288,
+          "15m": 256,
+          "1h": 280,
+          "4h": 280,
+          "1d": 250
+        },
+        "everyMinutes": 1,
+        "dailyPolicy": {
+          "lagMs": 86400000,
+          "maxAgeMs": 172800000,
+          "publicationTimesVerified": false
+        },
+        "sourceIdentity": "archive-path declarations; not independently provider authenticated",
+        "codeHashes": {
+          "research/opportunity/features.ts": "850580305d673ac73aab55beeb0f028a337955d78b4872b0c7ed940de745182f",
+          "research/opportunity/minuteCsv.ts": "a2effdf502dee260c4feb8fdc99b8accec7d42a6820de096fb9ec5f88eb738d8",
+          "research/opportunity/featuresCli.ts": "708015bf80aa9ea4c0d28f28332d274474e4298cbd7152366539b154e0e509c0",
+          "bot/model/sessions.ts": "2766846650752ffd7ce097ad243b3b7336f967d8eb3d65a29635e404b1667473",
+          "bot/ta/analyzer.ts": "84e64700a6624331e051f0022615cb88a7529c0f0b74dfbbb8676b4b0ce3fcbb",
+          "bot/ta/branchNet.ts": "9b681bfc9df557ddfddecd26a44d149aa3ade7f5cf148bb40344c17e450ae838",
+          "bot/ta/candleStore.ts": "78a58b584b64962a3190ae47aa453f1340244ddc3b11b808a4990162db2314f4",
+          "bot/ta/character.ts": "218b12206278bd98ba77b031b7101dc2ecffc6505856e7a116027535d898a7b2",
+          "bot/ta/crossGraph.ts": "3b54e6b08f2f280b566c123d99e036d7525cad593fa03a5f5b4debedf55412b3",
+          "bot/ta/crossLead.ts": "145a5a3ee5addd63b600a24ecbb17dedb096bfef41659b1832f3605f199314fe",
+          "bot/ta/fractal.ts": "db7a61e5c14f3bcb3f2102a2c565671b324d2ca53beb58c59b0e7b3c983528e4",
+          "bot/ta/indicators.ts": "06606a87a7bdd048c4ba304bfde56e4e4df7682d7cfb7ad8d69c87692e357360",
+          "bot/ta/knowledge.ts": "d27ac8f014abad1526ad9256db5303e84a591fdfc3cb2fbeeb6402471c7c21cc",
+          "bot/ta/librarian.ts": "867fe6d5aa0551c65cf6a232fa4db0e1d67dcfbfbce8ec2dcd03d4ff74bd105e",
+          "bot/ta/marketContext.ts": "24da80f94ef6a4b1d9f9d31927f6b42f7c9db176b07c80eb61e874c0171dd1b6",
+          "bot/ta/regime.ts": "06427ae662c09929e66374783f0e029536b3c0d809a890585a18645cd8a90106",
+          "bot/ta/structure.ts": "6fb7f8a66744584cccbc60fd2586cf3f7d1ca885a0488a7849f6529e4b423841",
+          "bot/ta/study.ts": "39af95feaa68ff3036499650547b9e0e701a839c97685a4e1f23fd3ab0c8ef51",
+          "bot/ta/taNet.ts": "eae89bb75e3740f5e5e5268afd187ba9556deb0a13c259dd451056a4d9286d67",
+          "bot/ta/taNetContext.ts": "7b96814d73c353fdb160d92136235b88c1b679172d65ab405ef09bf94a818106",
+          "bot/ta/taNetEnsemble.ts": "c75a3c538152ba9f3db1169440f15a64af622b95606c5202c51333dedd6dae2a",
+          "bot/ta/talib.ts": "d1218c1a4303ae9b4f329dba358420206c4d8c505519c09f7800724f35f4ac06"
+        },
+        "auditSha256": "c9e6ef17bad50ccf66d261b2f2c5e32b56552103e153283ba69f7c08144c9dfc",
+        "inputs": [
+          {
+            "path": "tradingview/BTC.D/1d.csv",
+            "source": "tradingview",
+            "interval_ms": 86400000,
+            "rows": 4570,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 1,
+            "missing_bars": 3,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1396310400000,
+            "last_open_ms": 1791331200000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "1378d8ae6608b3b88e2f7f82b6033832c7ab36af8ecceb1badbbeb6406c81aca",
+            "bytes": 380586,
+            "continuous": false
+          },
+          {
+            "path": "tradingview/USDT.D/1d.csv",
+            "source": "tradingview",
+            "interval_ms": 86400000,
+            "rows": 4232,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1425772800000,
+            "last_open_ms": 1791331200000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "3a76a5d9422bac1dee2fa5fcca230503a8dfc402c541563ef5ae4a3e957f40e8",
+            "bytes": 360218,
+            "continuous": true
+          },
+          {
+            "path": "binance-1m/BTC/1m.csv",
+            "source": "binance-1m",
+            "interval_ms": 60000,
+            "rows": 316800,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1775001600000,
+            "last_open_ms": 1794009540000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "66294890419ffc5a107303bb06a1b798a51053739ac807af95add024878eabc5",
+            "bytes": 20188864,
+            "continuous": true
+          },
+          {
+            "path": "yahoo/BTC/1d.csv",
+            "source": "yahoo",
+            "interval_ms": 86400000,
+            "rows": 3653,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1473206400000,
+            "last_open_ms": 1788739200000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "ba579f97ca1d70b6ff2b53a966dbf020d8a30497806fe3a7fff4dd70d353d208",
+            "bytes": 274823,
+            "continuous": true
+          }
+        ],
+        "assets": [
+          {
+            "asset": "BTC",
+            "minutes": 60,
+            "frames": 60,
+            "firstOpen": 1775001600000,
+            "lastOpen": 1775005140000,
+            "gaps": 0,
+            "groups": {
+              "spot_1m": {
+                "ready": 31,
+                "warming": 29,
+                "missing": 0,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 3268
+              },
+              "spot_5m": {
+                "ready": 0,
+                "warming": 56,
+                "missing": 4,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 6069
+              },
+              "spot_15m": {
+                "ready": 0,
+                "warming": 46,
+                "missing": 14,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 6089
+              },
+              "spot_1h": {
+                "ready": 0,
+                "warming": 1,
+                "missing": 59,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 6120
+              },
+              "spot_4h": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 60,
+                "stale": 0,
+                "features": 99,
+                "nullValues": 5940
+              },
+              "spot_1d": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 60,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 6060
+              },
+              "dominance_btcd": {
+                "ready": 60,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 780
+              },
+              "dominance_usdtd": {
+                "ready": 60,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 780
+              },
+              "yahoo_daily": {
+                "ready": 60,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 0
+              },
+              "micro": {
+                "ready": 60,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 6,
+                "nullValues": 1
+              },
+              "clock": {
+                "ready": 60,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 30,
+                "nullValues": 0
+              }
+            }
+          }
+        ]
+      },
+      "assets": [
+        {
+          "asset": "BTC",
+          "decisions": 60,
+          "scheduled": 0,
+          "unavailableScale": 0,
+          "reservedFinal": 60,
+          "labels": 0,
+          "censored": 0,
+          "partitions": {
+            "train": 0,
+            "development": 0,
+            "final": 0,
+            "purged": 0
+          }
+        }
+      ],
+      "runId": "a6c05595-bf34-4da2-9536-709e75e660cf",
+      "outputs": {
+        "decisions": {
+          "file": "decisions.jsonl",
+          "sha256": "71867785151b4db1d2548a3d032319ae8fe5edec7ed988207b7d1e5e0edd3d29",
+          "rows": 60
+        },
+        "paths": {
+          "file": "paths.jsonl",
+          "sha256": "42f0e99d37d29f574f8fc073183d1fb2bc66dd496b85ae8e9dc10b9e03d9a714",
+          "rows": 0
+        }
+      }
+    },
+    "retained_tvdatafeed_final_features_only": {
+      "schema": "opportunity-decisions-v1",
+      "createdAt": "2026-11-08T15:51:14.564Z",
+      "researchOnly": true,
+      "autoPromote": false,
+      "liveEntryAllowed": false,
+      "purpose": "minute decision features joined to observed spot-path targets; no fitting, scoring or official contract settlement labels",
+      "partitions": {
+        "trainBefore": 1735689600000,
+        "finalFrom": 1767225600000,
+        "finalOutcomesWithheld": true
+      },
+      "labelPolicy": {
+        "source": "per-asset audited input path",
+        "trainBefore": 1735689600000,
+        "finalFrom": 1767225600000,
+        "horizonsMin": [
+          5,
+          15,
+          60,
+          240,
+          1440
+        ],
+        "targetsAtr": [
+          1
+        ],
+        "stopsAtr": [
+          1
+        ],
+        "reversals": [
+          {
+            "id": "fast",
+            "lookbackMin": 15,
+            "precedingDriftAtr": 0.5,
+            "turnAtr": 0.5,
+            "sustainMin": 3
+          },
+          {
+            "id": "slow",
+            "lookbackMin": 60,
+            "precedingDriftAtr": 1,
+            "turnAtr": 1,
+            "sustainMin": 5
+          }
+        ],
+        "costs": {
+          "feePerSideBps": 0,
+          "halfSpreadBps": 0,
+          "slippagePerSideBps": 0
+        },
+        "baseHorizonsMin": [
+          5,
+          15,
+          60,
+          240,
+          1440
+        ],
+        "referencePeriodsMin": [
+          15,
+          60
+        ],
+        "anchor": "builtin-ATR14-over-last-1440-contiguous-1m-bars",
+        "finalBoundaryCensorReason": "processing-limit"
+      },
+      "unavailableInputs": [
+        "SNN temporal state",
+        "official settlement index/contract terms",
+        "funding/open interest",
+        "cross-asset lead-lag"
+      ],
+      "codeHashes": {
+        "research/opportunity/decisionDataset.ts": "cf7da7f674a0561033ff35f92523975d6e8194968623008b653f0e768c69eed8",
+        "research/opportunity/decisionDatasetCli.ts": "ead745e305de9f8416ac2208d4d5096f652c90dc2d05446a8f5f6abc996b7b1c",
+        "research/opportunity/pathLabels.ts": "31cd05dcac25f031e01d6ac2f86a9c39fbd06da67172a9f8561d79ac668d7b47"
+      },
+      "featureInputAudit": {
+        "schema": "opportunity-features-v1",
+        "createdAt": "2026-11-08T15:51:14.563Z",
+        "researchOnly": true,
+        "autoPromote": false,
+        "purpose": "causal feature/data validation only; no outcome scoring, model fitting or holdout reuse",
+        "taSchema": "6",
+        "engine": "talib",
+        "windows": {
+          "1m": 1440,
+          "5m": 288,
+          "15m": 256,
+          "1h": 280,
+          "4h": 280,
+          "1d": 250
+        },
+        "everyMinutes": 1,
+        "dailyPolicy": {
+          "lagMs": 86400000,
+          "maxAgeMs": 172800000,
+          "publicationTimesVerified": false
+        },
+        "sourceIdentity": "archive-path declarations; not independently provider authenticated",
+        "codeHashes": {
+          "research/opportunity/features.ts": "850580305d673ac73aab55beeb0f028a337955d78b4872b0c7ed940de745182f",
+          "research/opportunity/minuteCsv.ts": "a2effdf502dee260c4feb8fdc99b8accec7d42a6820de096fb9ec5f88eb738d8",
+          "research/opportunity/featuresCli.ts": "708015bf80aa9ea4c0d28f28332d274474e4298cbd7152366539b154e0e509c0",
+          "bot/model/sessions.ts": "2766846650752ffd7ce097ad243b3b7336f967d8eb3d65a29635e404b1667473",
+          "bot/ta/analyzer.ts": "84e64700a6624331e051f0022615cb88a7529c0f0b74dfbbb8676b4b0ce3fcbb",
+          "bot/ta/branchNet.ts": "9b681bfc9df557ddfddecd26a44d149aa3ade7f5cf148bb40344c17e450ae838",
+          "bot/ta/candleStore.ts": "78a58b584b64962a3190ae47aa453f1340244ddc3b11b808a4990162db2314f4",
+          "bot/ta/character.ts": "218b12206278bd98ba77b031b7101dc2ecffc6505856e7a116027535d898a7b2",
+          "bot/ta/crossGraph.ts": "3b54e6b08f2f280b566c123d99e036d7525cad593fa03a5f5b4debedf55412b3",
+          "bot/ta/crossLead.ts": "145a5a3ee5addd63b600a24ecbb17dedb096bfef41659b1832f3605f199314fe",
+          "bot/ta/fractal.ts": "db7a61e5c14f3bcb3f2102a2c565671b324d2ca53beb58c59b0e7b3c983528e4",
+          "bot/ta/indicators.ts": "06606a87a7bdd048c4ba304bfde56e4e4df7682d7cfb7ad8d69c87692e357360",
+          "bot/ta/knowledge.ts": "d27ac8f014abad1526ad9256db5303e84a591fdfc3cb2fbeeb6402471c7c21cc",
+          "bot/ta/librarian.ts": "867fe6d5aa0551c65cf6a232fa4db0e1d67dcfbfbce8ec2dcd03d4ff74bd105e",
+          "bot/ta/marketContext.ts": "24da80f94ef6a4b1d9f9d31927f6b42f7c9db176b07c80eb61e874c0171dd1b6",
+          "bot/ta/regime.ts": "06427ae662c09929e66374783f0e029536b3c0d809a890585a18645cd8a90106",
+          "bot/ta/structure.ts": "6fb7f8a66744584cccbc60fd2586cf3f7d1ca885a0488a7849f6529e4b423841",
+          "bot/ta/study.ts": "39af95feaa68ff3036499650547b9e0e701a839c97685a4e1f23fd3ab0c8ef51",
+          "bot/ta/taNet.ts": "eae89bb75e3740f5e5e5268afd187ba9556deb0a13c259dd451056a4d9286d67",
+          "bot/ta/taNetContext.ts": "7b96814d73c353fdb160d92136235b88c1b679172d65ab405ef09bf94a818106",
+          "bot/ta/taNetEnsemble.ts": "c75a3c538152ba9f3db1169440f15a64af622b95606c5202c51333dedd6dae2a",
+          "bot/ta/talib.ts": "d1218c1a4303ae9b4f329dba358420206c4d8c505519c09f7800724f35f4ac06"
+        },
+        "auditSha256": "d4d09ba5c5d3815d427245dfefb359db042c9c43f018576f62f0a94afc9e98bd",
+        "inputs": [
+          {
+            "path": "tradingview/BTC.D/1d.csv",
+            "source": "tradingview",
+            "interval_ms": 86400000,
+            "rows": 4601,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 1,
+            "missing_bars": 3,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1396310400000,
+            "last_open_ms": 1794009600000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "ab3b2bebbe2c5d88e53e56244055d6022bfc9f32502f88223bd8229e39e45b23",
+            "bytes": 383170,
+            "continuous": false
+          },
+          {
+            "path": "tradingview/USDT.D/1d.csv",
+            "source": "tradingview",
+            "interval_ms": 86400000,
+            "rows": 4263,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1425772800000,
+            "last_open_ms": 1794009600000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "b1f0c38cbd2088b69b8a86ff19d1fc398a6b46ca65d1783098c1126b23eda074",
+            "bytes": 362799,
+            "continuous": true
+          },
+          {
+            "path": "tvdatafeed-coinbase/BTC/1m.csv",
+            "source": "tvdatafeed-coinbase",
+            "interval_ms": 60000,
+            "rows": 5004,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1793816100000,
+            "last_open_ms": 1794116280000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "c8f263fb03afc0d47636ea064512a93fb8de129c4c37e146b621bf4e31711a78",
+            "bytes": 301513,
+            "continuous": true
+          },
+          {
+            "path": "tvdatafeed-coinbase/ETH/1m.csv",
+            "source": "tvdatafeed-coinbase",
+            "interval_ms": 60000,
+            "rows": 5004,
+            "invalid_rows": 0,
+            "duplicate_or_reversed": 0,
+            "misaligned": 0,
+            "gap_events": 0,
+            "missing_bars": 0,
+            "invalid_taker_volume": 0,
+            "first_open_ms": 1793816100000,
+            "last_open_ms": 1794116280000,
+            "ready": true,
+            "provider_identity": "archive-path-declaration; not independently authenticated",
+            "changed_during_audit": false,
+            "sha256": "5e4b7b115d93b832b9d8d7e141993b714d77b75ebb6bb4cc21f4d934d0a0ceb3",
+            "bytes": 286789,
+            "continuous": true
+          }
+        ],
+        "assets": [
+          {
+            "asset": "BTC",
+            "minutes": 40,
+            "frames": 40,
+            "firstOpen": 1793816100000,
+            "lastOpen": 1793818440000,
+            "gaps": 0,
+            "groups": {
+              "spot_1m": {
+                "ready": 11,
+                "warming": 29,
+                "missing": 0,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 3075
+              },
+              "spot_5m": {
+                "ready": 0,
+                "warming": 36,
+                "missing": 4,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 4049
+              },
+              "spot_15m": {
+                "ready": 0,
+                "warming": 26,
+                "missing": 14,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 4069
+              },
+              "spot_1h": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 40,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 4080
+              },
+              "spot_4h": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 40,
+                "stale": 0,
+                "features": 99,
+                "nullValues": 3960
+              },
+              "spot_1d": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 40,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 4040
+              },
+              "dominance_btcd": {
+                "ready": 40,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 520
+              },
+              "dominance_usdtd": {
+                "ready": 40,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 520
+              },
+              "yahoo_daily": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 40,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 4040
+              },
+              "micro": {
+                "ready": 40,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 6,
+                "nullValues": 41
+              },
+              "clock": {
+                "ready": 40,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 30,
+                "nullValues": 0
+              }
+            }
+          },
+          {
+            "asset": "ETH",
+            "minutes": 40,
+            "frames": 40,
+            "firstOpen": 1793816100000,
+            "lastOpen": 1793818440000,
+            "gaps": 0,
+            "groups": {
+              "spot_1m": {
+                "ready": 11,
+                "warming": 29,
+                "missing": 0,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 3075
+              },
+              "spot_5m": {
+                "ready": 0,
+                "warming": 36,
+                "missing": 4,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 4049
+              },
+              "spot_15m": {
+                "ready": 0,
+                "warming": 26,
+                "missing": 14,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 4069
+              },
+              "spot_1h": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 40,
+                "stale": 0,
+                "features": 102,
+                "nullValues": 4080
+              },
+              "spot_4h": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 40,
+                "stale": 0,
+                "features": 99,
+                "nullValues": 3960
+              },
+              "spot_1d": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 40,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 4040
+              },
+              "dominance_btcd": {
+                "ready": 40,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 520
+              },
+              "dominance_usdtd": {
+                "ready": 40,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 520
+              },
+              "yahoo_daily": {
+                "ready": 0,
+                "warming": 0,
+                "missing": 40,
+                "stale": 0,
+                "features": 101,
+                "nullValues": 4040
+              },
+              "micro": {
+                "ready": 40,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 6,
+                "nullValues": 41
+              },
+              "clock": {
+                "ready": 40,
+                "warming": 0,
+                "missing": 0,
+                "stale": 0,
+                "features": 30,
+                "nullValues": 0
+              }
+            }
+          }
+        ]
+      },
+      "assets": [
+        {
+          "asset": "BTC",
+          "decisions": 40,
+          "scheduled": 0,
+          "unavailableScale": 0,
+          "reservedFinal": 40,
+          "labels": 0,
+          "censored": 0,
+          "partitions": {
+            "train": 0,
+            "development": 0,
+            "final": 0,
+            "purged": 0
+          }
+        },
+        {
+          "asset": "ETH",
+          "decisions": 40,
+          "scheduled": 0,
+          "unavailableScale": 0,
+          "reservedFinal": 40,
+          "labels": 0,
+          "censored": 0,
+          "partitions": {
+            "train": 0,
+            "development": 0,
+            "final": 0,
+            "purged": 0
+          }
+        }
+      ],
+      "runId": "46ee9d82-4b26-4f53-b804-17f3f54d8e9f",
+      "outputs": {
+        "decisions": {
+          "file": "decisions.jsonl",
+          "sha256": "ed4dbcdb9614d92aac910f67709a099633cf027262407484e07ad598130fefad",
+          "rows": 80
+        },
+        "paths": {
+          "file": "paths.jsonl",
+          "sha256": "84399abee8649b5ab153f321b958cfa5e93b508410afa94775a8c079ddbc52fa",
+          "rows": 0
+        }
+      }
+    }
+  },
+  "independent_source_scan": {
+    "decision_rows_verified": 3000,
+    "path_joins_verified": 39240,
+    "complete_rows_independently_scanned": 128,
+    "distinct_horizons_min": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      240,
+      1440
+    ],
+    "output_and_code_hashes_match": true,
+    "prediction_scoring_or_fitting": false
+  }
+}

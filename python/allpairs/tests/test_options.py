@@ -62,17 +62,21 @@ class ExitPolicyNaive(unittest.TestCase):
 
 class ConfigKeys(unittest.TestCase):
     OPTIONAL = {('exit', 'policy'): ('learned', 'naive'), ('entry', 'decision'): ('model', 'fair_edge'),
-                ('entry', 'taker_entries'): (True, False)}
+                ('entry', 'taker_entries'): (True, False), ('cross_shift_min',): (1440,)}
 
     def test_new_keys_do_not_rehash_existing_configs(self):
         """exit.policy / entry.decision are read with .get, never DEFAULTS keys: base keeps its hash (pinned at HEAD)."""
         self.assertNotIn('policy', DEFAULTS['exit'])
         self.assertNotIn('decision', DEFAULTS['entry'])
         self.assertNotIn('taker_entries', DEFAULTS['entry'])
+        self.assertNotIn('cross_shift_min', DEFAULTS)
         h = lambda f: config_hash(merge(merge(DEFAULTS, json.load(open(os.path.join(HYP, f)))), ARMS['base']))
         # max_crossed 99 became the default after keep_crossed (Nov 5): base is now the same trial as keep_crossed.
         self.assertEqual(h('base.json'), 'da11163cef')
         self.assertEqual(h('keep_crossed.json'), h('base.json'))
+        # The configs the AP-H1b/AP-H2 follow-up re-runs keep the hashes of run 42127527423 (reproduction check).
+        self.assertEqual(h('maker_only.json'), '15126867b0')
+        self.assertEqual(h('lead_btc.json'), '4b70e30e79')
 
     def test_hypothesis_keys_exist(self):
         """Every key a hypothesis file sets is a DEFAULTS key or a known optional key with a valid value (a typo would

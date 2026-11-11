@@ -18,6 +18,11 @@ export interface KillState {
   reason?: string;
   source?: string;
   engagedAt?: string;
+  /** An operator's STOP ALL pressed while an automatic trip already held the switch: the first trip's reason and source
+   *  stay, and this marks the switch as the operator's too (KillSwitch.manual). Cleared by the reset. */
+  manualSource?: string;
+  manualReason?: string;
+  manualAt?: string;
   resetAt?: string;
   resetBy?: string;
 }
@@ -51,6 +56,11 @@ export class KillSwitch {
     return this.state.engaged;
   }
 
+  /** Engaged by an operator (STOP ALL), first or on top of an automatic trip. */
+  get manual(): boolean {
+    return this.state.engaged && (KillSwitch.isManual(this.state.source) || KillSwitch.isManual(this.state.manualSource));
+  }
+
   status(): KillState {
     return { ...this.state };
   }
@@ -74,6 +84,11 @@ export class KillSwitch {
       writeJsonAtomic(this.file, this.state, { durable: true });
       this.audit.write('kill_engaged', this.state);
       this.alerter?.notify('critical', 'kill', `KILL SWITCH ENGAGED (${source}): ${reason}`);
+    } else if (KillSwitch.isManual(source) && !this.manual) {
+      // STOP ALL on a switch an automatic trip engaged: kept on disk, so the operator's stop survives a restart.
+      this.state = { ...this.state, manualSource: source, manualReason: reason, manualAt: new Date().toISOString() };
+      writeJsonAtomic(this.file, this.state, { durable: true });
+      this.audit.write('kill_engaged', this.state);
     }
     // Always (re)attempt cancellation, even if already engaged.
     if (this.cancelAllFn) {

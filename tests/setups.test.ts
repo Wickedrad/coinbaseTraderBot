@@ -223,6 +223,47 @@ test('live setup trader: detects on a closed candle, queues, re-checks, enters w
   assert.ok(st.recentTrades[0].r < -0.9);
 });
 
+test('I116 contract: SetupTrader ignores lockedFrac (0 and 0.9 give identical targets)', async () => {
+  // The current I116 contract: lockedFrac is the share of the event-contract pool held in open binaries, and perp margin is a
+  // separate account in both modes, so setups sizing does not read it. A deliberate, evaluated change may update this test.
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { CandleSet } = await import('../bot/ta/candleStore');
+  const { PerpHub } = await import('../bot/perps/perpData');
+  const { SetupTrader, defaultSetupParams } = await import('../bot/setups/setupTrader');
+  const { SETUP_FEATURES } = await import('../bot/setups/features');
+  const { SETUP_SCHEMA } = await import('../bot/setups/setupModel');
+  const { DEFAULT_LANES } = await import('../bot/setups/lanes');
+  const all = walk(3000, 11);
+  const s = setupSeries(all, '15m');
+  let at = -1;
+  for (let i = 1500; i < all.length - 50; i++) if (detectAt('BTC', '15m', s, i)?.lane === 'fast') { at = i; break; }
+  assert.ok(at > 0, 'a setup exists');
+  const sig = detectAt('BTC', '15m', s, at)!;
+  const now = all[at].ts + 900_000 + 5_000;
+  const run = async (lockedFrac: number) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'setups-i116-'));
+    const modelFile = path.join(dir, 'setup_model.json');
+    fs.writeFileSync(modelFile, JSON.stringify({
+      version: 'test', schema: SETUP_SCHEMA, features: SETUP_FEATURES, lanes: { fast: { meanR: 0.4, trades: 1000 }, slow: { meanR: 0.4, trades: 100 } },
+      book: { ...DEFAULT_LANES, fast: { ...DEFAULT_LANES.fast, minScore: 0.1, refScore: 0.4 } }, costs: {}, equityUsd: 10000,
+      validation: { fast: { periods: {}, trials: 1, passed: true, reasons: [] } }, trainedAt: '', data: {},
+    }));
+    const set = new CandleSet('BTC');
+    set.add('15m', all.slice(0, at + 1).slice(-320), now);
+    set.add('1h', all.slice(0, at + 1).filter((c) => c.ts % 3_600_000 === 0).slice(-320).map((c) => ({ ...c })), now);
+    const hub = new PerpHub();
+    hub.apply({ ticker: 'BTC-PERP', asset: 'BTC', ts: now, bid: sig.ref * 1.001 - 0.01, ask: sig.ref * 1.001 + 0.01, fractional: true });
+    const gateway = { name: 'fake', createOrder: async () => { throw new Error('no'); }, cancelOrder: async () => {}, getOpenOrders: async () => [], getPositions: async () => [], getBalance: async () => ({ equity: 10_000, available: 10_000 }) } as never;
+    const trader = new SetupTrader({ params: defaultSetupParams({ pilotMaxNotionalUsd: 1e9 }), hub, gateway, modelPath: modelFile, statePath: path.join(dir, 'state.json'), candles: (a) => (a === 'BTC' ? set : undefined), spot: () => sig.ref });
+    return trader.targets({ positions: new Map(), hedge: [], now }, { lockedFrac });
+  };
+  const free = await run(0), locked = await run(0.9);
+  assert.notEqual(free.find((t) => t.asset === 'BTC')!.target, 0, 'entered, so the size is compared');
+  assert.deepEqual(locked, free);
+});
+
 test('setupHigher (PACER_FLOOR): the first target not yet taken, then the final target, beyond the price now; riding adds the trailing stop', () => {
   const t = openTrade(fade(-1, 102, 98, 96), 100, 0, FREE)!;
   assert.equal(setupHigher(t, 99, 'riding'), "the setup's first target 98");

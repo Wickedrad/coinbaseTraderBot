@@ -1,0 +1,341 @@
+name: Opportunity Atlas research (GitHub only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      archive_run:
+        description: 'Run containing the fixed atlas-history-archive artifact (market data only)'
+        default: '42522123037'
+        required: true
+      dataset_run:
+        description: 'Optional atlas-history-study run; reuse its verified dataset for the fixed smooth/tree comparison'
+        default: ''
+        required: false
+      study_policy:
+        description: 'Registered study ID; Oracle mode uses oracle-full-history-2026-11-09-v1'
+        default: 'prospective-2026-11-09-v1'
+        required: true
+      every_minutes:
+        description: 'Predetermined observation spacing; 1441 rotates the UTC observation minute across days'
+        default: '1441'
+        required: true
+      oracle_blocks:
+        description: 'Use every minute: quarterly Oracle response tables first, then separate frozen-block 15m/1h direction replay (GitHub only)'
+        type: boolean
+        default: false
+        required: false
+      prepared_run:
+        description: 'Optional earlier run with a successful atlas-oracle-input artifact; reuse the same audited data without recopying/quarantining'
+        default: ''
+        required: false
+      results_run:
+        description: 'Optional completed Oracle run with five atlas-oracle-result artifacts; produce the combined summary only, with no retraining'
+        default: ''
+        required: false
+      audit_spectra:
+        description: 'With results_run, audit every saved continuous response surface and export the offline spectrum inspector'
+        type: boolean
+        default: false
+        required: false
+      importance_iteration:
+        description: 'With results_run and prepared_run, learn curve importance only from earlier-quarter predictions; compare the same terminal targets'
+        type: boolean
+        default: false
+        required: false
+      capture_public_books:
+        description: 'Collect 16 minutes of public contract depth on GitHub; holdout evidence only, no credentials, forecasts, fitting or orders'
+        type: boolean
+        default: false
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  history-study:
+    if: inputs.dataset_run == '' && !inputs.oracle_blocks && inputs.results_run == '' && !inputs.capture_public_books
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      STUDY_POLICY: ${{ inputs.study_policy }}
+      OBSERVATION_SPACING: ${{ inputs.every_minutes }}
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install research dependencies on this runner
+        run: npm ci
+      - name: Read the archived market artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: atlas-history-archive
+          path: ${{ runner.temp }}/atlas-source
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.archive_run }}
+      - name: Quarantine off-grid rows without changing the archived inputs
+        run: |
+          python3 -B research/opportunity/quarantineArchive.py "$RUNNER_TEMP/atlas-source" \
+            --out "$RUNNER_TEMP/atlas-filtered" > "$RUNNER_TEMP/atlas-derivation.json"
+      - name: Register the study before constructing labels
+        run: |
+          mkdir -p research/out/atlas-history-study
+          cp "$RUNNER_TEMP/atlas-filtered/archive-validation.json" research/out/atlas-history-study/
+          cp "$RUNNER_TEMP/atlas-filtered/derivation.json" research/out/atlas-history-study/
+          node --import tsx --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import { studyPolicy } from './research/opportunity/studyPolicy.ts';
+          const policy = studyPolicy(process.env.STUDY_POLICY);
+          const spacing = Number(process.env.OBSERVATION_SPACING);
+          if (!Number.isSafeInteger(spacing) || spacing < 60 || spacing > 10080) throw new Error('invalid predetermined spacing');
+          fs.writeFileSync('research/out/atlas-history-study/registration.json', JSON.stringify({ policy, spacing,
+            declaredBeforeLabels: true, rollingPlan: { trainDays:90, stoppingDays:30, calibrationDays:30, evaluationDays:30,
+              stepDays:400, folds:9, embargoMinutes:60 }, targetsAtr:[1], stopsAtr:[1], maximumRiskHorizonMinutes:15,
+            purpose:'Exploratory spot-path study; not official contract settlement, SNN or executed-profit qualification',
+            researchOnly:true, liveEntryAllowed:false, autoPromote:false }, null, 2)+'\n');
+          JS
+      - name: Build multi-era causal features and observed path labels
+        run: |
+          npm run research:opportunity-decisions -- \
+            --archive "$RUNNER_TEMP/atlas-filtered" --source archive-binance-1m-quarantined-v1 \
+            --assets BTC,ETH,SOL,XRP,DOGE --max-minutes 6000000 --every-minutes "$OBSERVATION_SPACING" \
+            --study-policy "$STUDY_POLICY" --horizons-min 5,15,60,240,1440 \
+            --fee-bps 2 --half-spread-bps 0.5 --slippage-bps 1 \
+            --out research/out/atlas-history-study/dataset
+      - name: Fit purged rolling spot-path candidates on this runner
+        run: |
+          npm run research:opportunity-joint -- \
+            --dataset research/out/atlas-history-study/dataset --out research/out/atlas-history-study/trees \
+            --study-policy "$STUDY_POLICY" --max-horizon-min 15 --max-decisions 20000 --max-paths 500000 \
+            --rolling --train-days 90 --stopping-days 30 --calibration-days 30 --evaluation-days 30 \
+            --step-days 400 --embargo-minutes 60 --folds 9 --trees 16 --depth 3
+      - name: Save research evidence and models (no production promotion)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-history-study
+          path: research/out/atlas-history-study/
+          if-no-files-found: warn
+          retention-days: 90
+  family-comparison:
+    if: inputs.dataset_run != '' && !inputs.oracle_blocks && inputs.results_run == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      STUDY_POLICY: ${{ inputs.study_policy }}
+      OMP_NUM_THREADS: '2'
+      MKL_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install research dependencies on this runner
+        run: |
+          npm ci
+          python -m pip install --quiet numpy
+          python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Read an existing research dataset artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: atlas-history-study
+          path: ${{ runner.temp }}/atlas-existing
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.dataset_run }}
+      - name: Locate one unambiguous dataset in old or current artifact layouts
+        id: dataset
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          found = list(Path(os.environ['RUNNER_TEMP'], 'atlas-existing').rglob('dataset/manifest.json'))
+          if len(found) != 1: raise ValueError('one unambiguous decision dataset required')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out: out.write('path=' + str(found[0].parent) + '\n')
+          PY
+      - name: Compare fixed smooth and tree candidates on identical purged folds
+        env:
+          ATLAS_DATASET: ${{ steps.dataset.outputs.path }}
+        run: |
+          node --import tsx research/opportunity/runHistoryComparison.ts --dataset "$ATLAS_DATASET" \
+            --out research/out/atlas-history-comparison --study-policy "$STUDY_POLICY" --mlp-engine torch
+      - name: Save family comparison evidence (no production promotion)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-history-comparison
+          path: research/out/atlas-history-comparison/
+          if-no-files-found: warn
+          retention-days: 90
+  oracle-prepare:
+    if: inputs.oracle_blocks && inputs.prepared_run == '' && inputs.results_run == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-history-archive
+          path: ${{ runner.temp }}/atlas-source
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.archive_run }}
+      - name: Preserve raw archive; quarantine off-grid rows once on this runner
+        run: |
+          python3 -B research/opportunity/quarantineArchive.py "$RUNNER_TEMP/atlas-source" \
+            --out "$RUNNER_TEMP/atlas-oracle-input"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-oracle-input
+          path: ${{ runner.temp }}/atlas-oracle-input/
+          retention-days: 7
+  oracle-train:
+    needs: oracle-prepare
+    if: ${{ !cancelled() && inputs.oracle_blocks && inputs.results_run == '' && (needs.oracle-prepare.result == 'success' || (needs.oracle-prepare.result == 'skipped' && inputs.prepared_run != '')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        asset: [BTC, ETH, SOL, XRP, DOGE]
+    env:
+      ORACLE_ASSET: ${{ matrix.asset }}
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-oracle-input
+          path: ${{ runner.temp }}/atlas-oracle-input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.prepared_run != '' && inputs.prepared_run || github.run_id }}
+      - name: First pass -- every-minute future answers and quarterly relationship tables
+        run: |
+          npm run research:opportunity-oracle -- oracle --archive "$RUNNER_TEMP/atlas-oracle-input" \
+            --asset "$ORACLE_ASSET" --out "research/out/atlas-oracle-$ORACLE_ASSET/oracle"
+      - name: Second pass -- freeze prior blocks, predict the next block, then advance
+        run: |
+          npm run research:opportunity-oracle -- walk --archive "$RUNNER_TEMP/atlas-oracle-input" \
+            --asset "$ORACLE_ASSET" --oracle "research/out/atlas-oracle-$ORACLE_ASSET/oracle" \
+            --out "research/out/atlas-oracle-$ORACLE_ASSET/walk"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-oracle-result-${{ matrix.asset }}
+          path: research/out/atlas-oracle-${{ matrix.asset }}/
+          if-no-files-found: warn
+          retention-days: 90
+  oracle-summary:
+    needs: oracle-train
+    if: ${{ !cancelled() && !inputs.importance_iteration && (needs.oracle-train.result == 'success' || inputs.results_run != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atlas-oracle-result-*
+          path: ${{ runner.temp }}/atlas-oracle-results
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.results_run != '' && inputs.results_run || github.run_id }}
+      - name: Summarize all-minute coverage and frozen-block prediction evidence
+        run: |
+          mkdir -p research/out/atlas-oracle-summary
+          node --import tsx research/opportunity/oracleSummary.ts "$RUNNER_TEMP/atlas-oracle-results" \
+            research/out/atlas-oracle-summary/summary.json
+      - name: Verify weighted spectra independently and export the inspector
+        if: inputs.audit_spectra
+        run: |
+          node --import tsx research/opportunity/spectrumAudit.ts "$RUNNER_TEMP/atlas-oracle-results" \
+            research/out/atlas-spectrum-audit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atlas-oracle-summary
+          path: research/out/atlas-oracle-summary/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: inputs.audit_spectra
+        with:
+          name: atlas-spectrum-audit
+          path: research/out/atlas-spectrum-audit/
+          retention-days: 90
+  oracle-importance:
+    if: inputs.importance_iteration && inputs.results_run != '' && inputs.prepared_run != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        asset: [BTC, ETH, SOL, XRP, DOGE]
+    env:
+      ORACLE_ASSET: ${{ matrix.asset }}
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-oracle-input
+          path: ${{ runner.temp }}/input
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.prepared_run }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: atlas-oracle-result-${{ matrix.asset }}
+          path: ${{ runner.temp }}/oracle
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.results_run }}
+      - name: Learn importance from earlier blocks and compare frozen mixtures on later blocks
+        run: |
+          node --import tsx research/opportunity/oracleImportanceCli.ts --archive "$RUNNER_TEMP/input" \
+            --asset "$ORACLE_ASSET" --oracle "$RUNNER_TEMP/oracle/oracle" --out "research/out/atlas-importance-$ORACLE_ASSET"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-oracle-importance-${{ matrix.asset }}
+          path: research/out/atlas-importance-${{ matrix.asset }}/
+          if-no-files-found: warn
+          retention-days: 90
+  capture-public-books:
+    if: inputs.capture_public_books
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Capture public GET-only books; preserve the fresh holdout for later locked evaluation
+        run: |
+          node --import tsx research/opportunity/collectContractBooks.ts --cycles 192 --out research/out/atlas-forward-contract-books
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-forward-contract-books
+          path: research/out/atlas-forward-contract-books/
+          if-no-files-found: warn
+          retention-days: 90

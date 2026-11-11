@@ -346,14 +346,17 @@ jobs:
           ARGS=(--recordings data/recordings --audit data/audit --days "${CHECK_DAYS_IN:-$(cat data/sweeps/check-days.txt)}" --from "$CHECK_FROM" --to "$TO_ARG"
             --min-hours "$MIN_HOURS" ${BAL:+--paper-balance-now "$BAL"} ${GUARD:+--paper-guard "$GUARD"} --kill-override "$OVERRIDE"
             --maker-markouts "$RUNNER_TEMP/maker-markouts.json" --paper-trials "$RUNNER_TEMP/paper-trials.json"
-            --paper-accuracy-gate "$RUNNER_TEMP/paper-accuracy-gate.json" --paper-trades "$RUNNER_TEMP/paper-trades.jsonl" --model data/models/model.json)
+            --paper-trades "$RUNNER_TEMP/paper-trades.jsonl" --model data/models/model.json)
           # Paper's benches (Steven, 2026-11-05 13:52 UTC: paper's P&L has no say in training until the bot makes money).
-          # A fidelity check (no overrides) still follows paper's take-profit bench and Kalshi probation, to compare like
-          # with like; a comparison run (overrides set) keeps its own, starting fresh, unless RS_PAPER_BENCHES=follow.
+          # A fidelity check (no overrides) still follows paper's take-profit bench, Kalshi probation and accuracy gate, to
+          # compare like with like; a comparison run (overrides set) keeps its own, starting fresh, unless
+          # RS_PAPER_BENCHES=follow. The accuracy gate counts as a bench: seeded from paper, paper's scored snapshots would
+          # block or open entries in every arm alike, so a comparison would partly read paper's state.
           if [ -z "$OVERRIDES" ] || [ "${RS_PAPER_BENCHES-own}" = follow ]; then
-            ARGS+=(--paper-probation "$RUNNER_TEMP/paper-probation.json" --paper-tp-bench "$RUNNER_TEMP/paper-tp-bench.json")
+            ARGS+=(--paper-probation "$RUNNER_TEMP/paper-probation.json" --paper-tp-bench "$RUNNER_TEMP/paper-tp-bench.json"
+              --paper-accuracy-gate "$RUNNER_TEMP/paper-accuracy-gate.json")
           else
-            ARGS+=(--own-bench); echo "paper's benches not followed (own take-profit bench and probation, fresh); RS_PAPER_BENCHES=follow to follow them"
+            ARGS+=(--own-bench); echo "paper's benches not followed (own take-profit bench, probation and accuracy gate, fresh); RS_PAPER_BENCHES=follow to follow them"
           fi
           T0=$(date +%s); mkdir -p data/sweeps/nearby; [ "$NEARBY" = none ] && NEARBY=''
           # The spot candles the bot held when the replay starts (its startup fetch from Coinbase, made for that time): a

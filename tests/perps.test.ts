@@ -63,6 +63,17 @@ test('perps REST client uses the /margin endpoints and the documented order body
 
 const snap = (o: Partial<PerpSnapshot> = {}): PerpSnapshot => ({ ticker: 'BTC-PERP', asset: 'BTC', ts: 1_800_000_000_000, bid: 99_990, ask: 100_010, contractSize: 0.0001, fractional: true, fundingRate: 0.0001, nextFundingTs: 1_800_000_000_000 + 3_600_000, openInterest: 100, ...o });
 
+test('perp state: an empty side of the book clears the old touch; static fields and funding carry over', () => {
+  const hub = new PerpHub();
+  hub.apply(snap({ ts: 1_800_000_000_000 }));
+  hub.apply({ ticker: 'BTC-PERP', asset: 'BTC', ts: 1_800_000_005_000, ask: 100_010 });
+  const l = hub.get('BTC')!.latest!;
+  assert.equal(l.bid, undefined, 'no bid in the new row: no bid now');
+  assert.equal(l.ask, 100_010);
+  assert.equal(l.ts, 1_800_000_005_000);
+  assert.deepEqual([l.contractSize, l.fractional, l.fundingRate], [0.0001, true, 0.0001], 'static fields and funding kept');
+});
+
 test('perp features: premium to the index, lead-lag, funding, open interest', () => {
   const hub = new PerpHub();
   const idx = new IndexTracker('BTC', 3 * 3_600_000);

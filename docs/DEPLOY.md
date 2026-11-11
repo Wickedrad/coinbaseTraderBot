@@ -46,6 +46,8 @@ If the old bot is running under the same `kalshi-bot` service name, the first de
 
 The deploy never changes `TRADING_MODE`. A new server starts in `paper`. Going live is done by hand in `~/bot/bot.env`.
 
+Right before the switch, run the go-live checklist in the README ("Right before switching to live", under Modes): the kill switch, PLAY / STOP, the kill-switch override, each book's probation against the live limit, `LIVE_ALLOW_UNVALIDATED_MODEL`, the margin balance and the cash split.
+
 ### Connecting the prediction and perps APIs (live)
 
 1. **Key:** in Kalshi's account settings, create an API key and download its private key. Copy the private key to the server (`scp key.pem ubuntu@54.145.7.203:~/.kalshi/private_key.pem`), then `chmod 600 ~/.kalshi/private_key.pem`. One key works for both the prediction API and the perps REST API (a separate perps key is optional).
@@ -56,20 +58,19 @@ The deploy never changes `TRADING_MODE`. A new server starts in `paper`. Going l
    LIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK
    KALSHI_KEY_ID=<your key id>
    KALSHI_PRIVATE_KEY_PATH=/home/ubuntu/.kalshi/private_key.pem
-   PERP_TRADING=live
-   PERP_HEDGE=live
    # Optional: trade binary contracts even though the model hasn't passed validation (your risk).
    LIVE_ALLOW_UNVALIDATED_MODEL=true
    # Optional: a separate perps key instead of the one above.
    # KALSHI_PERPS_KEY_ID=...
    # KALSHI_PERPS_PRIVATE_KEY_PATH=...
    ```
+   The dashboard's LIVE switch (`POST /api/mode`) writes the first three lines and nothing else. Perps and tennis stay as configured and each needs its own switch: `PERP_TRADING=live` and `PERP_HEDGE=live` for real perps orders (a `paper` perps setting is off in live mode), `TENNIS_LIVE=true` for real tennis orders (without it tennis only tracks matches in live mode). Set `PERP_TRADING=live` / `PERP_HEDGE=live` only in a bot.env that already says `TRADING_MODE=live` (this edit, or after the LIVE switch, then restart): next to `TRADING_MODE=paper` they stop the bot from starting (exit code 2), and it stays down until bot.env is fixed. The dashboard's PAPER switch writes `TRADING_MODE=paper`, sets a `live` perps setting back to `paper` and writes `TENNIS_LIVE=false`. Both switches check bot.env as it is now and refuse, writing nothing, when the restart would not start; that includes LIVE with `LIVE_ALLOW_UNVALIDATED_MODEL=false`, an unvalidated model, a closed `kalshi` gate and no other live book (exit code 3).
 3. **Restart and check:** `sudo systemctl restart kalshi-bot`, then `journalctl -u kalshi-bot -f`.
    - `GET /margin/enabled says margin trading is not enabled` means Kalshi hasn't switched perps on for the account yet (it is rolling out member by member). Perp orders are rejected until it is. The prediction side still trades.
    - Perps trade from the margin balance. Moving money from the event-contract balance to margin needs Kalshi's transfer, which isn't available through the API yet, so do it on the website.
 
 **What stays on while live, whatever the settings:**
-- the risk limits, the daily loss stops and the kill switch
+- the risk limits and the kill switch (the daily loss stops and the weekly pause halt live trading only with the kill-switch override off; it is ON by default, see the README checklist)
 - the exchange's own status and maintenance schedule: no new entries while trading is paused, during maintenance, or in the 10 minutes before a scheduled window
 - price-grid snapping (orders always land on the market's valid prices)
 - reconciliation against the exchange

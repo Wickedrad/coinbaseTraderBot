@@ -195,6 +195,23 @@ test('Kalshi index frames: parsed, counted, and the one-way transit measured fro
   assert.ok(ws.indexStats.transitMs! >= 95 && ws.indexStats.transitMs! < 1000, `Kalshi -> here ${ws.indexStats.transitMs}`);
   assert.ok(latencySnapshot().kalshiTransit! >= 95);
 });
+test('current fixed-point websocket snapshots preserve dollar prices and fractional depth, with legacy aliases retained', async () => {
+  const { KalshiWs } = await import('../bot/kalshi/ws');
+  const ws = new KalshiWs('wss://example.invalid/trade-api/ws/v2', undefined, []), snapshots: any[] = [];
+  ws.on('book_snapshot', (s) => snapshots.push(s));
+  const send = (msg: object, seq: number) => (ws as any).onMessage(JSON.stringify({ type: 'orderbook_snapshot', sid: 1, seq, msg: { market_ticker: 'T', ...msg } }));
+  send({ yes_dollars_fp: [['0.0800', '300.25']], no_dollars_fp: [['0.9100', '10.50']], yes: [[20, 999]], no: [[70, 999]] }, 1);
+  assert.deepEqual(snapshots[0].bids, [{ price: 0.08, size: 300.25 }]);
+  assert.deepEqual(snapshots[0].asks, [{ price: 0.09, size: 10.5 }]);
+  send({ yes_dollars: [['0.4100', '12.25']], no_dollars: [['0.5800', '5.00']] }, 2);
+  assert.deepEqual(snapshots[1].bids, [{ price: 0.41, size: 12.25 }]);
+  assert.deepEqual(snapshots[1].asks, [{ price: 0.42, size: 5 }]);
+  send({ yes: [[40, 10]], no: [[58, 11]] }, 3);
+  assert.deepEqual(snapshots[2].bids, [{ price: 0.4, size: 10 }]);
+  assert.deepEqual(snapshots[2].asks, [{ price: 0.42, size: 11 }]);
+  send({ yes_dollars_fp: [], no_dollars_fp: [], yes: [[40, 10]], no: [[58, 11]] }, 4);
+  assert.equal(snapshots[3].bids.length + snapshots[3].asks.length, 0, 'an explicit current empty book cannot fall back to old stale aliases');
+});
 
 test('Kalshi feed lag: measured from the send stamp (index frames), else from trade times; stale samples expire', async () => {
   const { KalshiWs } = await import('../bot/kalshi/ws');

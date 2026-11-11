@@ -30,6 +30,8 @@ export class IndexTracker {
   private readonly memo = new Map<number, number[] | undefined>();
   private ewmaVar: number | undefined;
   private volSamples = 0;
+  /** Time (ms) of the last return that fed the estimate. */
+  private volTs: number | undefined;
   private lastSampleSec: number | undefined;
   private lastSampleValue: number | undefined;
 
@@ -75,8 +77,24 @@ export class IndexTracker {
     const alpha = 1 - Math.pow(0.5, dt / this.volHalfLifeSec);
     this.ewmaVar = this.ewmaVar === undefined ? perSecVar : (1 - alpha) * this.ewmaVar + alpha * perSecVar;
     this.volSamples += 1;
+    this.volTs = ts;
     this.lastSampleSec = sec;
     this.lastSampleValue = value;
+  }
+
+  /** The volatility estimate's state, to carry it over a restart (bot/marketdata/volState.ts); undefined before any return. */
+  volState(): { ewmaVar: number; samples: number; ts: number } | undefined {
+    return this.ewmaVar === undefined || this.volTs === undefined ? undefined : { ewmaVar: this.ewmaVar, samples: this.volSamples, ts: this.volTs };
+  }
+
+  /** Startup: continue a saved estimate (this same EWMA on this same series) instead of warming up from nothing. Only before
+   *  this run's first return, and only a positive, finite variance; the return chain starts again at the next print. */
+  restoreVol(s: { ewmaVar: number; samples: number; ts: number }): boolean {
+    if (this.ewmaVar !== undefined || !(s.ewmaVar > 0) || !Number.isFinite(s.ewmaVar) || !(Number.isFinite(s.samples) && s.samples >= 1) || !Number.isFinite(s.ts)) return false;
+    this.ewmaVar = s.ewmaVar;
+    this.volSamples = Math.floor(s.samples);
+    this.volTs = s.ts;
+    return true;
   }
 
   /** Feed health: age of the last print, prints held, and volatility samples (vol needs 120). */

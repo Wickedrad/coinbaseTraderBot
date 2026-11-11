@@ -17,6 +17,7 @@ import { KalshiRest } from './kalshi/rest';
 import type { ExchangeGateway } from './kalshi/types';
 import { KalshiWs } from './kalshi/ws';
 import { MarketData, Recorder } from './marketdata/marketData';
+import { loadVolState, saveVolState, VOL_STATE_FILE } from './marketdata/volState';
 import { MetaModel } from './model/metaModel';
 import { loadVolProfile, type VolProfile } from './model/volSeasonality';
 import { loadSessionRiskFile } from './model/sessionRisk';
@@ -117,12 +118,22 @@ async function main(): Promise<void> {
   if (cfg.alertTelegramToken && cfg.alertTelegramChatId) sinks.push(new TelegramSink(cfg.alertTelegramToken, cfg.alertTelegramChatId));
   if (cfg.alertWebhookUrl) sinks.push(new WebhookSink(cfg.alertWebhookUrl));
   const alerter = new Alerter(sinks, audit);
-  // Probation (VALIDATION_GATES=monitor): unvalidated models trade, and a book whose results are unacceptable is benched.
-  const probationBooks = new Probation(cfg.probation, path.join(cfg.dataDir, 'probation.json'), (book, reason) => {
-    audit.write('probation', { event: 'benched', book, reason });
-    alerter.notify('warn', `probation-${book}`, `Probation: ${book} benched (its unvalidated models stop trading until the next model or a reset): ${reason}`);
+  // Probation (VALIDATION_GATES=monitor): unvalidated models trade, and their book's results are scored. A book whose
+  // results are unacceptable would bench: an "iterate this book" alert, nothing turned off, unless the owner set
+  // PROBATION_BENCH=true. Every change is audited; the alerts are at most one per book per 6 hours, and a change held
+  // back by that cap is sent when the 6 hours are up (the timer below) if the verdict has not changed back.
+  const probationBooks = new Probation(cfg.probation, path.join(cfg.dataDir, 'probation.json'), (e) => {
+    audit.write('probation', { event: e.event === 'bench' ? (e.active ? 'benched' : 'would_bench') : (e.active ? 'unbenched' : 'would_bench_cleared'), book: e.book, reason: e.reason, alerted: e.alert, ...(e.delayed ? { delayed: true } : {}) });
+    if (!e.alert) return;
+    if (e.event === 'bench') alerter.notify('warn', `probation-${e.book}`, e.active
+      ? `Probation: ${e.book} benched (PROBATION_BENCH=true: its unvalidated models stop trading until its results recover, the next model or a reset): ${e.reason}`
+      : `Probation: ${e.book} would bench (score-only, nothing turned off), iterate it: ${e.reason}`);
+    else alerter.notify('info', `probation-${e.book}`, e.active
+      ? `Probation: ${e.book} unbenched (its unvalidated models trade again): ${e.reason}`
+      : `Probation: ${e.book} no longer would bench: ${e.reason}`);
   });
   setProbation(probationBooks);
+  setInterval(() => probationBooks.flushAlerts(), 600_000).unref();
   if (cfg.probation.mode === 'monitor') log.info('validation gates: monitor (unvalidated models trade on probation)', { ...cfg.probation });
   // Exit-in-profit curve (SINUOUS_EXIT, bot/strategy/sinuousExit.ts), the same in paper and live (the owner, Oct 23: "It
   // can't just be paper mode. When I take it out of paper mode into live it needs to behave identical"): cross by
@@ -219,6 +230,15 @@ async function main(): Promise<void> {
   const ws = signer ? new KalshiWs(cfg.wsUrl, signer, indexIds) : undefined;
   if (!signer) log.warn('no Kalshi API key (KALSHI_KEY_ID + KALSHI_PRIVATE_KEY_PATH): order books are polled over anonymous REST, which Kalshi rate limits hard; add the key even for paper trading');
   const md = new MarketData(cfg, rest, ws, new Recorder(path.join(cfg.dataDir, 'recordings'), { gzip: cfg.autoTrain.recordingsGzipLive }));
+  // The settlement index's volatility estimate from the last run (E06, bot/marketdata/volState.ts): saved every 30 s and on
+  // shutdown, continued at start when recent, so a restart does not leave every coin unpriced for about 2 minutes.
+  const volStateFile = path.join(cfg.dataDir, VOL_STATE_FILE);
+  try {
+    const restored = loadVolState(volStateFile, md.index, Date.now());
+    if (restored.length) log.info('index volatility carried over from the last run', { assets: restored });
+  } catch (e) { log.warn(`index volatility state not loaded: ${String(e)}`); }
+  const saveVol = () => { try { saveVolState(volStateFile, md.index, Date.now()); } catch (e) { log.warn(`index volatility state not saved: ${String(e)}`); } };
+  setInterval(saveVol, 30_000).unref();
   // The rounding grid an earlier run learned from Kalshi's charged fees wins over KALSHI_BALANCE_PRECISION.
   setBalancePrecision(md.feeBook.precision());
   // Recordings grow by a day file per day, gzipped as they are written (or, a day begun plain, after midnight: about
@@ -330,13 +350,15 @@ async function main(): Promise<void> {
   const perpsStreak = new StreakScaler(DEFAULT_STREAK, path.join(cfg.dataDir, 'streak_perps.json'));
   const perpsBreakEven = new BreakEven(path.join(cfg.bookDir, 'perps_break_even.json'));
   // Probation's loss limit follows each account's size (PROBATION_MAX_LOSS_PCT of its break-even, at most
-  // PROBATION_MAX_LOSS_USD); a book already past it is benched now rather than at its next result.
+  // PROBATION_MAX_LOSS_USD); a book already past it would bench now rather than at its next result, and one that has
+  // recovered clears.
   probationBooks.setBreakEven((book) => (book === 'perps' || book === 'setups' ? perpsBreakEven.reference : equityGuard.reference));
   probationBooks.review();
   let perpsPaper: PaperPerpExchange | undefined;
   const modelHealth = new ModelHealth({ minWindows: cfg.strategy.modelHealthMinWindows }, path.join(cfg.dataDir, 'model_health.json'));
   const taHealth = new ModelHealth({ minWindows: 1e9 }, path.join(cfg.dataDir, 'ta_health.json'));
-  // Bot vs market per time-to-close bucket (each book its own scorecard); only paper blocks entries on it.
+  // Bot vs market per time-to-close bucket (one scorecard for paper and live, always kept); it blocks entries, in paper
+  // and live alike, only with ACCURACY_GATE on (off by default).
   const accuracyGate = new AccuracyGate(cfg.strategy.accuracyGate, path.join(cfg.dataDir, 'accuracy_gate.json'));
   // TA conviction for the perps (setup trader): features + the TA network's raw view, cached per asset per minute.
   const convCache = new Map<string, { ts: number; f: Record<string, number>; v: TaNetView | undefined; rb?: { score: number; n: number }; gp?: { exposure: number } }>();
@@ -674,6 +696,7 @@ async function main(): Promise<void> {
     autoTrain.stop();
     try { engine.saveSnnBlender(); await Promise.all(Object.values(engine.snn?.units ?? {}).map((u) => u!.host.stop())); } catch (e) { log.error('SNN checkpoint on shutdown failed', { error: String(e) }); }
     audit.write('shutdown', { sig });
+    saveVol();
     md.stop();
     server.close(() => process.exit(code));
     setTimeout(() => process.exit(code), 5000).unref();

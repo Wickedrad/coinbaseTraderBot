@@ -120,11 +120,13 @@ def spot_at(w: Windows, spots: dict[int, Spot], feats: dict[int, dict[str, np.nd
     return S, F
 
 
-def cross_at(w: Windows, spot: Spot, feats: dict[str, np.ndarray], label: str, names=('r1', 'r3', 'r5')) -> dict[str, np.ndarray]:
+def cross_at(w: Windows, spot: Spot, feats: dict[str, np.ndarray], label: str, names=('r1', 'r3', 'r5'),
+             shift_ms: int = 0) -> dict[str, np.ndarray]:
     """Another asset's spot returns at every decision time of every window ({f'lead_{label}_{name}': (W, N)}): the bar
     that closed at t_k, as for the window's own asset (no lookahead). For a lead-lag hypothesis: does a BTC move reach
-    the other assets' Kalshi quotes a minute late?"""
-    t = w.open_ms[:, None] + MIN * np.arange(w.n)[None, :]
+    the other assets' Kalshi quotes a minute late? shift_ms > 0 takes the bar that closed at t_k - shift_ms instead (a
+    placebo: lead_shift24 uses the same minute a day earlier)."""
+    t = w.open_ms[:, None] + MIN * np.arange(w.n)[None, :] - int(shift_ms)
     m = spot.bar_closing_at(t)
     ok = m >= 0
     mm = np.where(ok, m, 0)

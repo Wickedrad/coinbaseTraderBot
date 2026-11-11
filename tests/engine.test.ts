@@ -1,3 +1,4 @@
+import { PositionBook } from '../bot/oms/positions';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
@@ -9,11 +10,14 @@ import type { KalshiRest } from '../bot/kalshi/rest';
 import type { MarketInfo } from '../bot/kalshi/types';
 import { MarketData, Recorder } from '../bot/marketdata/marketData';
 import { MetaModel } from '../bot/model/metaModel';
+import { ModelHealth } from '../bot/model/modelHealth';
 import { FEATURE_NAMES } from '../bot/model/features';
 import { Oms } from '../bot/oms/oms';
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { KillSwitch } from '../bot/risk/killSwitch';
-import { RiskGateway } from '../bot/risk/riskGateway';
+import { RiskGateway, type RiskContext } from '../bot/risk/riskGateway';
+import type { OrderIntent } from '../bot/oms/oms';
+import { setMacro, type MacroService } from '../bot/macro/macroService';
 import { Reconciler } from '../bot/recon/reconciler';
 import { openExchange, tmpAudit, tmpDir } from './helpers';
 import { Vault } from '../bot/vault/vault';
@@ -25,12 +29,17 @@ import { SinuousEntryGate, type EntryVerdict } from '../bot/strategy/sinuousEntr
 import { AccuracyGate } from '../bot/strategy/accuracyGate';
 import { SinuousExitGate, type CrossCheck } from '../bot/strategy/sinuousExit';
 import { TakeProfitBench } from '../bot/strategy/takeProfitBench';
+import { DEFAULT_PROBATION, Probation, setProbation } from '../bot/risk/probation';
+import type { FillModel } from '../bot/tca/fillModel';
+import { decide, type MarketView } from '../bot/strategy/fairValueStrategy';
+import { ConfluenceRatchetExit } from '../bot/strategy/exitPolicies';
+import { exitOnlyPlan } from '../bot/strategy/exitOnlyLane';
 
-async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel } = {}) {
+async function setup(opts: { historySec?: number; askSize?: number; dailyLossUsd?: string; exitPolicy?: string; vault?: Vault; monitor?: BalanceMonitor; env?: Record<string, string>; trend?: number; curveExit?: SinuousExitGate; takeProfitBench?: TakeProfitBench; curveEntry?: SinuousEntryGate; accuracyGate?: AccuracyGate; liveLines?: LiveLines; trials?: ComponentTrials; model?: MetaModel; modelHealth?: ModelHealth; closeIn?: number } = {}) {
   const dir = tmpDir();
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, RISK_DAILY_LOSS_USD: opts.dailyLossUsd ?? '10', DOMINANCE_FEED: 'false', SPOT_FEED: 'false', EXIT_POLICY: opts.exitPolicy, STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_ENABLED: 'false', ...opts.env });
   const now = Date.now();
-  const market: MarketInfo = { ticker: 'KXBTC15M-TEST', seriesTicker: 'KXBTC15M', status: 'open', openTime: now - 300_000, closeTime: now + 600_000, floorStrike: 60000, tickSize: 0.01 };
+  const market: MarketInfo = { ticker: 'KXBTC15M-TEST', seriesTicker: 'KXBTC15M', status: 'open', openTime: now - 300_000, closeTime: now + (opts.closeIn ?? 600_000), floorStrike: 60000, tickSize: 0.01 };
   const rest = {
     getSeriesFees: async () => ({ feeType: 'quadratic', multiplier: 1 }),
     getOpenMarkets: async () => [market],
@@ -45,7 +54,8 @@ async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy
   let seed = 1;
   const rand = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
   let x = Math.log(60010);
-  const span = opts.trend ? 1800 : 600;
+  // historySec: seconds of index history before the test starts (60: just after a restart, the volatility still warming up).
+  const span = opts.historySec ?? (opts.trend ? 1800 : 600);
   if (opts.trend) x -= opts.trend * span; // end just above the strike, as without a trend
   for (let s = span; s >= 0; s--) { x += (opts.trend ? 0.00004 : 0.0002) * (rand() - 0.5) + (opts.trend ?? 0); idx.add(Math.exp(x), now - s * 1000); }
 
@@ -56,7 +66,7 @@ async function setup(opts: { askSize?: number; dailyLossUsd?: string; exitPolicy
   paper.on('fill', (f) => oms.onFill(f));
   paper.on('order', (o) => oms.onExchangeOrder(o));
   const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: (r) => void kill.engage(r, 'recon') });
-  const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: opts.model ?? MetaModel.identity(), vault: opts.vault, balanceMonitor: opts.monitor, exchangeStatus: openExchange(), curveExit: opts.curveExit, takeProfitBench: opts.takeProfitBench, curveEntry: opts.curveEntry, accuracyGate: opts.accuracyGate, liveLines: opts.liveLines, trials: opts.trials });
+  const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: opts.model ?? MetaModel.identity(), vault: opts.vault, balanceMonitor: opts.monitor, exchangeStatus: openExchange(), curveExit: opts.curveExit, takeProfitBench: opts.takeProfitBench, curveEntry: opts.curveEntry, accuracyGate: opts.accuracyGate, liveLines: opts.liveLines, trials: opts.trials, modelHealth: opts.modelHealth });
   return { cfg, md, paper, oms, kill, recon, engine, market, audit };
 }
 
@@ -311,6 +321,139 @@ test('daily loss limit trips the persistent kill switch and cancels everything',
   assert.ok(engine.status.get(market.ticker));
 });
 
+/** A crypto position bought on the paper exchange (a reduce-only exit needs it there too), then the book moved to `book`. */
+async function heldUnderKill(side: 'bid' | 'ask', price: number, count: number, book: [number, number], opts: { topSize?: number; source?: string; closeIn?: number; curveExit?: SinuousExitGate; accuracyGate?: AccuracyGate; trials?: ComponentTrials } = {}) {
+  const g = await setup({ env: { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' }, closeIn: opts.closeIn, curveExit: opts.curveExit, accuracyGate: opts.accuracyGate, trials: opts.trials });
+  g.engine.balance = (await g.recon.run('startup'))!.balance;
+  const t = g.market.ticker;
+  g.md.book(t).applySnapshot(side === 'bid' ? { bids: [{ price: price - 0.02, size: 100 }], asks: [{ price, size: 100 }] } : { bids: [{ price, size: 100 }], asks: [{ price: price + 0.02, size: 100 }] }, Date.now());
+  await g.oms.submit({ ticker: t, asset: 'BTC', windowCloseTs: g.market.closeTime, side, price, count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: false, purpose: 'entry', fairValue: 0.5, modelId: 'm', decisionId: 'e' });
+  assert.equal(g.oms.positions.position(t), side === 'bid' ? count : -count);
+  g.md.book(t).applySnapshot({ bids: [{ price: book[0], size: opts.topSize ?? 50 }], asks: [{ price: book[1], size: opts.topSize ?? 50 }] }, Date.now());
+  await g.kill.engage('5 consecutive order errors (test)', opts.source ?? 'oms');
+  const sent = () => g.oms.allOrders(500).filter((o) => o.ticker === t && o.decisionId !== 'e');
+  const killExits = () => g.audit.tail(500, 'decision').map((x) => x.data as Record<string, unknown>).filter((x) => x.leg === 'kill_exit');
+  return { ...g, t, sent, killExits, notes: () => g.engine.status.get(t)?.notes.join(' | ') ?? 'not evaluated' };
+}
+
+test('kill switch engaged: a crypto YES position not in profit after fees is sold at the bid, once, reduce-only; no entry', async () => {
+  // 30 YES bought at 0.60, the book now 0.20 / 0.25.
+  const g = await heldUnderKill('bid', 0.6, 30, [0.2, 0.25]);
+  assert.ok(g.engine.entryGuards().includes('kill switch engaged'), 'the kill switch is an entry guard');
+  await g.engine.tick();
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count, o.reduceOnly, o.timeInForce, o.purpose]), [['ask', 0.2, 30, true, 'immediate_or_cancel', 'exit']]);
+  assert.equal(g.oms.positions.position(g.t), 0);
+  assert.equal(g.killExits().length, 1);
+  assert.match(String(g.killExits()[0].why), /^kill switch engaged: -\$12\.\d\d after fees at bid 0\.2, not in profit, not held to settlement$/);
+  assert.equal(g.audit.tail(500, 'risk_reject').length, 0);
+});
+
+test('kill switch engaged: a crypto NO position not in profit is sold at its bid (YES bought at the ask); a thin bid retries after 30 s', async () => {
+  // 30 NO bought at 0.40 (YES sold at 0.60); the book now 0.75 / 0.80, a NO bid of 0.20 for 10 contracts only.
+  const g = await heldUnderKill('ask', 0.6, 30, [0.75, 0.8], { topSize: 10 });
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count, o.reduceOnly, o.timeInForce]), [['bid', 0.8, 30, true, 'immediate_or_cancel']]);
+  assert.equal(g.oms.positions.position(g.t), -20, 'the IOC took the 10 on offer');
+  assert.match(String(g.killExits()[0].why), /^kill switch engaged: -\$\d+\.\d\d after fees at NO bid 0\.2, not in profit/);
+  // At most one attempt per market every 30 s.
+  await g.engine.tick();
+  assert.equal(g.sent().length, 1);
+  const stamps = (g.engine as unknown as { killExitTs: Map<string, number> }).killExitTs;
+  stamps.set(g.t, stamps.get(g.t)! - 30_000);
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count]).sort((x, y) => Number(y[2]) - Number(x[2])), [['bid', 0.8, 30], ['bid', 0.8, 20]]);
+  assert.equal(g.audit.tail(500, 'risk_reject').length, 0);
+});
+
+/** An accuracy gate and component trials that count the evaluations fed to their scorecards. */
+class CountingAccuracyGate extends AccuracyGate {
+  observed = 0;
+  override observe(ticker: string, tauSec: number, pYes: number, mid: number): void { this.observed++; super.observe(ticker, tauSec, pYes, mid); }
+}
+class CountingTrials extends ComponentTrials {
+  recorded = 0;
+  override record(): void { this.recorded++; }
+}
+
+test('kill switch engaged: a crypto winner is not dumped; its take-profit still sells it once it gives back a third of its best', async () => {
+  // 10 YES bought at 0.40; at a 0.56 bid it is about +$1.25 after fees: held, the take-profit armed, nothing sent.
+  const gate = new CountingAccuracyGate({ enabled: true, window: 150, minMarkets: 40 });
+  const trials = new CountingTrials(DEFAULT_TRIALS);
+  const g = await heldUnderKill('bid', 0.4, 10, [0.56, 0.58], { accuracyGate: gate, trials });
+  await g.engine.tick();
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), [], g.notes());
+  assert.equal(g.oms.positions.position(g.t), 10);
+  assert.equal(g.killExits().length, 0);
+  assert.match(g.notes(), /take-profit armed/);
+  assert.match(g.notes(), /kill switch engaged/);
+  // Only winners are evaluated under the kill: they do not feed the accuracy gate's or the trials' scorecards (a sample
+  // picked by the result).
+  assert.deepEqual([gate.observed, trials.recorded], [0, 0]);
+  // Back to 0.50 with only 4 bid: more than a third of the best gain given back. The take-profit sells the 4 on offer at
+  // the bid, through the kill.
+  g.md.book(g.t).applySnapshot({ bids: [{ price: 0.5, size: 4 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count, o.reduceOnly, o.timeInForce]), [['ask', 0.5, 4, true, 'immediate_or_cancel']], g.notes());
+  assert.equal(g.oms.positions.position(g.t), 6);
+  // At most one attempt per market every 30 s, the winner's exits included.
+  await g.engine.tick();
+  assert.equal(g.sent().length, 1, g.notes());
+  assert.match(g.notes(), /kill switch engaged: exit waits, one attempt per market every 30 s/);
+  const stamps = (g.engine as unknown as { killExitTs: Map<string, number> }).killExitTs;
+  stamps.set(g.t, stamps.get(g.t)! - 30_000);
+  g.md.book(g.t).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await g.engine.tick();
+  assert.deepEqual(g.sent().map((o) => [o.side, o.price, o.count]).sort((x, y) => Number(y[2]) - Number(x[2])), [['ask', 0.5, 6], ['ask', 0.5, 4]], g.notes());
+  assert.equal(g.oms.positions.position(g.t), 0);
+  const why = g.audit.tail(200, 'decision').flatMap((d) => ((d.data as { place?: Array<{ why: string }> }).place ?? []).map((p) => p.why));
+  assert.ok(why.some((w) => w.startsWith('take-profit: ')), why.join(' | '));
+  assert.equal(g.killExits().length, 0);
+  assert.equal(g.audit.tail(500, 'risk_reject').length, 0);
+  assert.deepEqual([gate.observed, trials.recorded], [0, 0]);
+});
+
+test('kill switch engaged: a crypto winner\'s resting sell (exit curve rest mode) waits for the reset; nothing is refused', async () => {
+  // 10 YES bought at 0.40, bid 0.45: in profit after fees. Outside the kill the curve rests a sell at 0.55 (good till cancelled).
+  const curveExit = new (class extends SinuousExitGate { override restTarget(): number | undefined { return 0.55; } })({ mode: 'rest', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
+  const g = await heldUnderKill('bid', 0.4, 10, [0.45, 0.47], { curveExit });
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), [], g.notes());
+  assert.match(g.notes(), /kill switch engaged: resting orders wait for the reset/);
+  assert.equal(g.audit.tail(500, 'risk_reject').length, 0);
+  assert.equal(g.oms.positions.position(g.t), 10);
+});
+
+test('kill switch engaged: a crypto loser in the final seconds before the close rides to settlement, as outside the kill', async () => {
+  // 30 YES bought at 0.60, book 0.20 / 0.25, the market closing in 45 s (inside STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC, 60 s).
+  const g = await heldUnderKill('bid', 0.6, 30, [0.2, 0.25], { closeIn: 45_000 });
+  assert.ok(g.cfg.strategy.noExitBeforeCloseSec >= 45, String(g.cfg.strategy.noExitBeforeCloseSec));
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), []);
+  assert.equal(g.killExits().length, 0);
+  assert.equal(g.oms.positions.position(g.t), 30);
+});
+
+test('kill switch engaged by STOP ALL (an operator): crypto positions are left alone, as before', async () => {
+  const g = await heldUnderKill('bid', 0.6, 30, [0.2, 0.25], { source: 'api:127.0.0.1' });
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), []);
+  assert.equal(g.oms.positions.position(g.t), 30);
+});
+
+test('kill switch: STOP ALL pressed after an automatic trip also leaves crypto positions alone', async () => {
+  // The order-error trip engaged the switch; the operator then presses STOP ALL (POST /api/kill).
+  const g = await heldUnderKill('bid', 0.6, 30, [0.2, 0.25], { source: 'oms' });
+  await g.kill.engage('operator STOP ALL', 'api:127.0.0.1');
+  assert.equal(g.kill.status().source, 'oms', 'the first trip stays the recorded cause');
+  assert.equal(g.kill.manual, true);
+  await g.engine.tick();
+  assert.deepEqual(g.sent(), []);
+  assert.equal(g.killExits().length, 0);
+  assert.equal(g.oms.positions.position(g.t), 30);
+});
+
 test('opt-in confluence ratchet runs in the engine and starts in fair-value mode', async () => {
   const { engine, recon, market, cfg } = await setup({ exitPolicy: 'confluence_ratchet' });
   assert.equal(cfg.strategy.exitPolicy, 'confluence_ratchet');
@@ -319,6 +462,32 @@ test('opt-in confluence ratchet runs in the engine and starts in fair-value mode
   await engine.tick();
   // No position and no confluence data: normal fair-value behaviour, quotes still placed.
   assert.equal(engine.status.get(market.ticker)!.exitMode, 'fair_value');
+});
+
+test('a model hot swap keeps the hunt of a held position and drops the hunts of flat markets', async () => {
+  const { engine, recon, market, oms } = await setup({ exitPolicy: 'confluence_ratchet' });
+  const r = await recon.run('startup');
+  engine.balance = r!.balance;
+  oms.onFill({ tradeId: 'h1', orderId: '', ticker: market.ticker, side: 'bid', count: 5, price: 0.45, isTaker: true, fee: 0.05, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+  await engine.tick();
+  const hunts = (engine as unknown as { hunts: Map<string, unknown> }).hunts;
+  const held = hunts.get(market.ticker);
+  assert.ok(held, 'the held position has a hunt');
+  hunts.set('FLAT-MARKET', {});
+  engine.setModel(MetaModel.identity(4e-5));
+  assert.equal(hunts.get(market.ticker), held, 'same hunt object: anchor, stop and lock judgement intact');
+  assert.equal(hunts.has('FLAT-MARKET'), false);
+});
+
+test('a hunt that sits out drops itself once the market is flat (a later position starts a fresh hunt)', async () => {
+  // Hunting is not allowed here (another exit policy: the same branch as a bench or an unvalidated hunt in live).
+  const { engine, recon, market } = await setup({ exitPolicy: 'take_profit' });
+  const r = await recon.run('startup');
+  engine.balance = r!.balance;
+  const hunts = (engine as unknown as { hunts: Map<string, unknown> }).hunts;
+  hunts.set(market.ticker, { stale: true }); // a hunt left from a position that closed while hunting sat out
+  await engine.tick();
+  assert.equal(hunts.has(market.ticker), false, 'flat while sitting out: the stale hunt is gone');
 });
 
 test('exit curve: a profitable fair-value exit waits for a spike above the curve', async () => {
@@ -713,12 +882,12 @@ test('paper size: by default the $10-$20 order band, as live; PAPER_ORDER_FRAC b
   assert.deepEqual(band.g.engine.guardStatus().orderBandUsd, { min: 10, max: 20 });
 });
 
-test('accuracy gate (paper): no new quote in a time-to-close bucket where the market mid called results better', async () => {
+test('accuracy gate (ACCURACY_GATE=true): no new quote in a time-to-close bucket where the market mid called results better; off by default, it keeps scoring and blocks nothing', async () => {
   const quote = (g: Awaited<ReturnType<typeof setup>>) => g.oms.liveOrders().find((o) => o.ticker === g.market.ticker && o.purpose === 'quote' && !o.cancelRequested);
   const env = { PAPER_TRAINING_TRADES_PER_HOUR: '0', PAPER_EXPLORE: 'false' };
   // 50 settled 15-minute markets per bucket around 10 minutes out, where the mid leaned the right way and the bot sat at 0.5.
-  const scorecard = (enabled: boolean) => {
-    const gate = new AccuracyGate({ enabled, window: 150, minMarkets: 40 });
+  const scorecard = (cfg: { enabled: boolean; window: number; minMarkets: number }) => {
+    const gate = new AccuracyGate(cfg);
     for (let i = 0; i < 50; i++) for (const tau of [700, 520]) {
       const t = `KXETH15M-M${i}-${tau}`;
       gate.observe(t, tau, 0.5, i % 2 ? 0.65 : 0.35);
@@ -726,18 +895,28 @@ test('accuracy gate (paper): no new quote in a time-to-close bucket where the ma
     }
     return gate;
   };
-  const g = await setup({ env, accuracyGate: scorecard(true) });
+  const g = await setup({ env: { ...env, ACCURACY_GATE: 'true' }, accuracyGate: scorecard({ enabled: true, window: 150, minMarkets: 40 }) });
   g.engine.balance = (await g.recon.run('startup'))!.balance;
   await g.engine.tick();
   assert.equal(quote(g), undefined);
   const why = Object.keys(g.engine.entryDiagnosis().reasons);
   assert.ok(why.some((r) => /accuracy gate: the market has called results better (450-600|600-840) s before the close/.test(r)), why.join(' | '));
   assert.equal(g.engine.guardStatus().accuracyGate?.enforced, true);
-  // ACCURACY_GATE=false: the scorecard is kept, the quote goes out.
-  const off = await setup({ env, accuracyGate: scorecard(false) });
+  // The default (ACCURACY_GATE unset, off since Nov 11, paper and live alike): the same losing scorecard, built from the
+  // default settings as bot/main.ts builds it, blocks nothing; the quote goes out and the market is still scored.
+  const offGate = scorecard(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40) }).strategy.accuracyGate);
+  const off = await setup({ env, accuracyGate: offGate });
   off.engine.balance = (await off.recon.run('startup'))!.balance;
   await off.engine.tick();
   assert.ok(quote(off), JSON.stringify(off.engine.status.get(off.market.ticker)?.notes));
+  assert.equal(off.engine.status.get(off.market.ticker)?.accuracyBlock, undefined);
+  const ag = off.engine.guardStatus().accuracyGate;
+  assert.equal(ag?.enforced, false);
+  assert.equal(ag?.enabled, false);
+  assert.equal(ag?.groups.updown15m.buckets.filter((b) => !b.open).length, 2, 'the scorecard still reports the buckets the market called better');
+  assert.equal(offGate.status().pending, 1, 'the evaluation fed the scorecard with the gate off');
+  offGate.settle(off.market.ticker, 'yes');
+  assert.equal(offGate.status().groups.updown15m.buckets.reduce((a, b) => a + b.n, 0), 101, 'and its result is scored');
 });
 
 test('a manually recorded withdrawal is not counted again by the detector', async () => {
@@ -750,6 +929,28 @@ test('a manually recorded withdrawal is not counted again by the detector', asyn
   engine.onBalance(170);
   engine.onBalance(170);
   assert.equal(vault.status().withdrawnTotal, 30);
+});
+
+test('model-health halt is off by default in paper and live: a model worse than the market is reported, entries stay open', async () => {
+  // A model confidently wrong for 60 settlement windows: significantly worse than the market, so the score says halt.
+  const worse = () => {
+    const h = new ModelHealth({ minWindows: 50 });
+    for (let w = 0; w < 60; w++) { const y = w % 2 ? 'yes' : 'no'; h.record(`A${w}`, y === 'yes' ? 0.3 : 0.7, 0.5, w); h.onResult(`A${w}`, y); }
+    return h;
+  };
+  const key = path.join(tmpDir(), 'k.pem');
+  fs.writeFileSync(key, 'x', { mode: 0o600 });
+  const live = { TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' };
+  const halted = (e: Engine) => e.entryGuards().some((r) => /model log loss significantly worse/.test(r));
+  for (const env of [{}, live]) {
+    const { engine, cfg } = await setup({ env, modelHealth: worse() });
+    assert.equal(cfg.strategy.modelHealthHalt, false, `${cfg.mode}: MODEL_HEALTH_HALT defaults to false`);
+    assert.equal(engine.guardStatus().modelHealth?.halt, true, `${cfg.mode}: the score is still computed and reported`);
+    assert.equal(halted(engine), false, `${cfg.mode}: no entry halt from it`);
+    // MODEL_HEALTH_HALT=true still turns the old halt on (no kill-switch override here).
+    const on = await setup({ env: { ...env, MODEL_HEALTH_HALT: 'true' }, modelHealth: worse() });
+    assert.equal(halted(on.engine), true, `${cfg.mode}: MODEL_HEALTH_HALT=true halts new entries`);
+  }
 });
 
 test('no new risk below the $10 hard floor; $20 trades on the aggressive tier', async () => {
@@ -968,5 +1169,244 @@ test('the dashboard\'s snipe badge: the hour\'s target and the held position\'s 
     oms.onFill({ tradeId: 'p2', orderId: '', ticker: market.ticker, side: 'ask', count: 5, price: 0.56, isTaker: true, fee: 0.09, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
     await engine.tick();
     assert.equal(Math.round(engine.status.get(market.ticker)!.snipe!.nowUsd! * 100) / 100, 0.71);
+  }
+});
+
+test('RISK_SIZE_CAPS off (default): the engine still sends the tennis budget and the armed waterfall total to the gateway', async () => {
+  const g = await setup();
+  assert.equal(g.cfg.risk.sizeCaps, false);
+  g.engine.balance = (await g.recon.run('startup'))!.balance;
+  const seen: Array<{ intent: OrderIntent; ctx: RiskContext }> = [];
+  const real = new RiskGateway(g.cfg.risk);
+  (g.engine as any).d.risk = { check: (intent: OrderIntent, ctx: RiskContext) => { seen.push({ intent, ctx }); return real.check(intent, ctx); } };
+  const m = g.md.markets.get(g.market.ticker)!;
+  const plan = { side: 'bid' as const, price: 0.5, count: 10, timeInForce: 'good_till_canceled' as const, postOnly: true, reduceOnly: false, purpose: 'entry' as const, edge: 0.1, why: 'test entry' };
+  const over = (ctx: RiskContext, window: number, total: number) => real.check(seen[seen.length - 1].intent, { ...ctx, windowRisk: window, totalRisk: total });
+  // Tennis: its own per-order / per-match / total budget holds with the crypto caps off.
+  await (g.engine as any).placeChecked(m, plan, 0.6, 'd-tennis', { event: 'EVT' });
+  const t = seen[seen.length - 1].ctx;
+  assert.equal(t.limitOverrides?.sizeCaps, true, 'tennis overrides keep the caps on');
+  assert.match(over(t, 1e6, 1e6).reasons.join(';'), /window risk.*total risk/);
+  // Waterfall armed: Kalshi binaries held to its total share of the bank; order and window caps stay off.
+  setMacro({ policy: () => ({ level: 'armed', tennisBlocked: true, kalshiBlocked: false, kalshiMaxFrac: 0.125, perpMult: () => 1, why: 'armed (test)' }) } as unknown as MacroService);
+  try {
+    await (g.engine as any).placeChecked(m, plan, 0.6, 'd-wf');
+  } finally { setMacro(undefined); }
+  const w = seen[seen.length - 1].ctx;
+  assert.equal(w.limitOverrides?.sizeCaps, true);
+  assert.equal(w.limitOverrides?.maxTotalRiskFrac, 0.125);
+  assert.deepEqual(over(w, 1e6, 1e6).reasons.filter((r) => /risk \$/.test(r)).map((r) => r.split(' $')[0]), ['total risk']);
+  // No waterfall, crypto: no size caps at all.
+  await (g.engine as any).placeChecked(m, plan, 0.6, 'd-plain');
+  const c = seen[seen.length - 1].ctx;
+  assert.equal(over(c, 1e6, 1e6).reasons.filter((r) => /risk \$/.test(r)).length, 0);
+});
+
+test('probation score-only (default): the unvalidated fill model stays active while the Kalshi book would bench', async () => {
+  const { engine } = await setup();
+  engine.setFillModel({ validated: false } as FillModel);
+  const p = new Probation(DEFAULT_PROBATION);
+  try {
+    setProbation(p);
+    p.record('kalshi', -30);
+    assert.equal(p.status().kalshi.wouldBench, true);
+    assert.equal(engine.fillModelActive, true);
+    const rows = engine.moduleLedger();
+    assert.equal(rows.find((r) => r.module === 'fill model')?.state, 'on');
+    const row = rows.find((r) => r.module === 'probation: kalshi')!;
+    assert.equal(row.state, 'on');
+    assert.deepEqual(row.flags, ['would bench (score-only, nothing turned off): iterate it']);
+    // The owner's gate on: the same book is benched and the fill model goes back behind its gate.
+    const gated = new Probation({ ...DEFAULT_PROBATION, bench: true });
+    setProbation(gated);
+    gated.record('kalshi', -30);
+    assert.equal(engine.fillModelActive, false);
+    assert.equal(engine.moduleLedger().find((r) => r.module === 'probation: kalshi')?.state, 'benched');
+  } finally { setProbation(undefined); }
+});
+
+test('equity counts what resting orders hold at a read: only the opening part, and a cancel keeps it until the next read', async () => {
+  const { engine, paper, oms, market } = await setup();
+  const base = { ticker: market.ticker, asset: 'BTC', windowCloseTs: market.closeTime, timeInForce: 'good_till_canceled' as const, postOnly: true, reduceOnly: false, fairValue: 0.5, modelId: 'm', decisionId: 'e' };
+  // Long 50 YES at 60c (lifts the 60c ask), then a resting ask that only closes it and a resting bid that opens.
+  await oms.submit({ ...base, side: 'bid', price: 0.6, count: 50, timeInForce: 'immediate_or_cancel', postOnly: false, purpose: 'entry' });
+  await oms.submit({ ...base, side: 'ask', price: 0.8, count: 50, purpose: 'quote' });
+  const bid = await oms.submit({ ...base, side: 'bid', price: 0.4, count: 10, purpose: 'entry' });
+  const cash = paper.cash();
+  engine.onBalance(await paper.getBalance());
+  const eq = cash + oms.positions.open().reduce((x, m) => x + PositionBook.maxLoss(m), 0);
+  assert.ok(Math.abs(engine.equity()! - eq) < 1e-6, `equity ${engine.equity()} vs ${eq}: the closing ask holds nothing, the bid's $4 is added back`);
+  // Canceled after the read: the stale balance has not got the $4 back, so equity holds still.
+  await oms.cancel(bid.clientOrderId, 'test');
+  assert.ok(Math.abs(engine.equity()! - eq) < 1e-6, `after the cancel ${engine.equity()}`);
+  engine.onBalance(await paper.getBalance());
+  assert.ok(Math.abs(engine.equity()! - eq) < 1e-6, `next read ${engine.equity()}`);
+});
+
+// ---- The exit-only lane (E06) ----------------------------------------------------------------------------------------
+// With only 60 s of index history the volatility (120 one-second returns) is still warming up, as for about 2 minutes after
+// every restart: the market cannot be priced, but a held position still gets the exits already armed that need no model.
+
+test('exit-only lane: 60 s after a restart (volatility warming up), the armed take-profit sells a held YES bought at 0.40; the final minute still holds it', async () => {
+  const { engine, recon, market, md, oms, audit } = await setup({ historySec: 60 });
+  engine.balance = (await recon.run('startup'))!.balance;
+  assert.equal(md.index.get('BTC')!.vol(), undefined, 'volatility still warming up');
+  // Long 10 YES bought at 0.40 as a maker (take-profit floor 4c). At a 0.56 bid: +14.2c net, armed; a winner at its best runs.
+  oms.onFill({ tradeId: 'l1', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+  const exits = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker && o.reduceOnly);
+  const notes = () => engine.status.get(market.ticker)!.notes.join(' | ');
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.56, size: 50 }], asks: [{ price: 0.58, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, 'volatility warming up');
+  assert.equal(exits().length, 0, notes());
+  assert.match(notes(), /^exit-only lane \(volatility warming up\): only exits already armed/);
+  assert.match(notes(), /take-profit armed: \+0\.142 now, best \+0\.142/);
+  // Back to 0.50 (more than a third of the best gain given back) inside the final minute: held to settlement, as always.
+  const m = md.markets.get(market.ticker)!;
+  const close = m.closeTime;
+  m.closeTime = Date.now() + 30_000;
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(exits().length, 0, notes());
+  assert.match(notes(), /final minute: riding to settlement/);
+  // Outside it the take-profit sells at the bid, the gateway judging the exit against the book's mid.
+  m.closeTime = close;
+  await engine.tick();
+  assert.equal(exits().length, 1, notes());
+  const x = exits()[0];
+  assert.deepEqual([x.side, x.price, x.count, x.purpose, x.timeInForce], ['ask', 0.5, 10, 'exit', 'immediate_or_cancel']);
+  assert.ok(Math.abs(x.fairValue - 0.51) < 1e-9, `fair value ${x.fairValue}`);
+  const d = audit.tail(50, 'decision').map((r) => r.data as { lane?: string; blocked?: string; place?: Array<{ why: string }> }).find((r) => r.lane === 'exit_only');
+  assert.equal(d?.blocked, 'volatility warming up');
+  assert.match(d!.place![0].why, /^take-profit: \+0\.082 a contract net of fees \(best \+0\.142, floor \+0\.040\)/);
+});
+
+test('exit-only lane: the exit curve in gate mode holds a profit take-profit as in a full evaluation; its protective last tick goes out', async () => {
+  const curveExit = new SinuousExitGate({ mode: 'gate', minNetProfit: 0.015 }, { minTrades: 20, t: 1, maxLossUsd: 25, window: 200 });
+  const { engine, recon, market, md, oms } = await setup({ historySec: 60, curveExit });
+  engine.balance = (await recon.run('startup'))!.balance;
+  oms.onFill({ tradeId: 'l5', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+  const exits = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker && o.reduceOnly);
+  const notes = () => engine.status.get(market.ticker)!.notes.join(' | ');
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.56, size: 50 }], asks: [{ price: 0.58, size: 50 }] }, Date.now());
+  await engine.tick();
+  // 0.50: the take-profit sells +0.082 a contract, a profit exit: the gate holds it for the curve's signal.
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, 'volatility warming up');
+  assert.equal(exits().length, 0, notes());
+  assert.match(notes(), /curve: holding the profit exit at 0\.5 /);
+  // 0.46: +0.042, the last tick above the 0.040 floor: protective, never held.
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.46, size: 50 }], asks: [{ price: 0.48, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(exits().length, 1, notes());
+  assert.deepEqual([exits()[0].side, exits()[0].price, exits()[0].count], ['ask', 0.46, 10]);
+});
+
+test('exit-only lane: no entry goes out through it; a flat market waits for its price, a held one gets reduce-only exits only', async () => {
+  const { engine, recon, market, md, oms, cfg } = await setup({ historySec: 60 });
+  engine.balance = (await recon.run('startup'))!.balance;
+  const orders = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker);
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, 'volatility warming up');
+  assert.equal(orders().length, 0, 'flat: nothing');
+  // Held YES on the setup's 0.45 / 0.60 book (a full evaluation quotes here): no quote, no entry, no training trade.
+  oms.onFill({ tradeId: 'l2', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+  await engine.tick();
+  assert.equal(orders().length, 0, engine.status.get(market.ticker)!.notes.join(' | '));
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.56, size: 50 }], asks: [{ price: 0.58, size: 50 }] }, Date.now());
+  await engine.tick();
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(orders().length, 1);
+  assert.ok(orders().every((o) => o.reduceOnly && o.purpose === 'exit'), JSON.stringify(orders().map((o) => [o.side, o.purpose, o.reduceOnly])));
+  // That is end to end, and the lane's view has no order room either. The lane's plan itself (exitOnlyPlan, the engine's and
+  // the replay's) on a view WITH order room: no entry or quote and no model exit, where a full decision has both (the model
+  // values the YES at 0.20, so it would sell at the 0.45 bid and quote the NO).
+  const view: MarketView = {
+    ticker: market.ticker, pYes: 0.2, bestBid: { price: 0.45, size: 50 }, bestAsk: { price: 0.47, size: 50 }, position: 10, bankroll: 200,
+    maxOrderRiskUsd: 20, maxContracts: 100, minSidePrice: cfg.risk.minSidePrice, tauSec: 600, noEntryBeforeCloseSec: cfg.risk.noEntryBeforeCloseSec, fastMove: false,
+    tickSize: 0.01, fees: { takerMultiplier: 1, makerMultiplier: 0 }, nowSec: 1000, closeSec: 1600, entrySidePrice: 0.4, entryFeePerContract: 0,
+  };
+  const full = decide(view, cfg.strategy, {});
+  assert.ok(full.place.some((p) => p.reduceOnly && p.why.startsWith('bid 0.45 - fee > q')), JSON.stringify(full.place));
+  assert.ok(full.place.some((p) => !p.reduceOnly), JSON.stringify(full.place));
+  assert.deepEqual(decide(view, cfg.strategy, { armedOnly: true }).place, []);
+  assert.deepEqual(exitOnlyPlan(view, cfg.strategy, { why: 'test', exits: true }).plan.place, []);
+  // With the take-profit armed (best bid 0.56 since the fill, 0.50 now) the lane sells, and only that.
+  const armed = exitOnlyPlan({ ...view, bestBid: { price: 0.5, size: 50 }, bestAsk: { price: 0.52, size: 50 }, profitPeakSidePrice: 0.56 }, cfg.strategy, { why: 'test', exits: true }).plan.place;
+  assert.deepEqual(armed.map((p) => [p.side, p.price, p.count, p.purpose, p.reduceOnly, p.timeInForce]), [['ask', 0.5, 10, 'exit', true, 'immediate_or_cancel']]);
+  assert.match(armed[0].why, /^take-profit: \+0\.082/);
+});
+
+test('exit-only lane: the index goes stale mid-session; the quota floor armed earlier still sells the held position', async () => {
+  // EXIT_POLICY=hold: no take-profit or model exit, the quota floor alone.
+  const { engine, recon, market, md, oms } = await setup({ exitPolicy: 'hold' });
+  engine.balance = (await recon.run('startup'))!.balance;
+  oms.onFill({ tradeId: 'l3', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+  const exits = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker && o.reduceOnly);
+  const notes = () => engine.status.get(market.ticker)!.notes.join(' | ');
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.56, size: 50 }], asks: [{ price: 0.58, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, undefined, 'a full evaluation first');
+  // A floor armed by an earlier evaluation: $2.00 on the 10 held (8 ticks of cushion: sold below $1.20 of profit).
+  assert.equal((engine as unknown as { quotaFloors: { arm(t: string, p: number, usd: number): boolean } }).quotaFloors.arm(market.ticker, 10, 2), true);
+  (md.index.get('BTC') as unknown as { points: Array<{ ts: number }> }).points.forEach((p) => { p.ts -= 60_000; });
+  await engine.tick();
+  assert.equal(engine.status.get(market.ticker)!.blocked, 'index stale');
+  assert.equal(exits().length, 0, `+$1.42 at 0.56 holds: ${notes()}`);
+  md.book(market.ticker).applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await engine.tick();
+  assert.equal(exits().length, 1, notes());
+  assert.deepEqual([exits()[0].side, exits()[0].price, exits()[0].count], ['ask', 0.5, 10]);
+});
+
+test('exit-only lane: an armed hunt stop sells below its stop; the take-profit stays off while hunting; at the default lock sale the take-profit sells a dip through the stop', async () => {
+  for (const c of ['off', 'defaults', 'hold'] as const) {
+    const { engine, recon, market, md, oms, cfg, audit } = await setup({ historySec: 60 });
+    engine.balance = (await recon.run('startup'))!.balance;
+    oms.onFill({ tradeId: 'l4', orderId: '', ticker: market.ticker, side: 'bid', count: 10, price: 0.4, isTaker: false, fee: 0, ts: Date.now() }, { closeTs: market.closeTime, asset: 'BTC' });
+    const exits = () => oms.allOrders(500).filter((o) => o.ticker === market.ticker && o.reduceOnly);
+    const notes = () => engine.status.get(market.ticker)!.notes.join(' | ');
+    // A hunt that activated in an earlier evaluation: entry value 0.45 + the 2c margin, its stop locked at 0.47. 'defaults': the
+    // configured lock sale (HUNT_LOCK_SALE=fair_value, judged at the first dip, HUNT_LOCK_SALE_ELSE=exit); 'hold': the same
+    // judgement with HUNT_LOCK_SALE_ELSE=hold.
+    const S = cfg.strategy;
+    const params = c === 'off' ? { lockSale: 'off' as const }
+      : c === 'defaults' ? { lockSale: S.huntLockSale, lockSaleElse: S.huntLockSaleElse, lockSaleAt: S.huntLockSaleAt }
+      : { lockSale: 'fair_value' as const, lockSaleElse: 'hold' as const };
+    if (c === 'defaults') assert.deepEqual([S.huntLockSale, S.huntLockSaleElse, S.huntLockSaleAt], ['fair_value', 'exit', 'trigger']);
+    const book = md.book(market.ticker);
+    book.applySnapshot({ bids: [{ price: 0.5, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+    const hunt = new ConfluenceRatchetExit({ targetMargin: 0.02, minConfluence: 2, ...params });
+    const on = hunt.update({ position: 10, qSide: 0.45, sideBid: 0.5, confluence: 3, book, now: Date.now(), tick: 0.01, fees: md.feesFor(market.ticker) });
+    assert.deepEqual([on.mode, on.stop], ['hunt', 0.47]);
+    (engine as unknown as { hunts: Map<string, ConfluenceRatchetExit> }).hunts.set(market.ticker, hunt);
+    await engine.tick();
+    assert.equal(engine.status.get(market.ticker)!.blocked, 'volatility warming up');
+    assert.equal(exits().length, 0, notes());
+    assert.match(notes(), /hunting: stop 0\.47/);
+    assert.doesNotMatch(notes(), /take-profit armed/);
+    // 0.46: under the stop, within the 1-tick slippage.
+    book.applySnapshot({ bids: [{ price: 0.46, size: 50 }], asks: [{ price: 0.48, size: 50 }] }, Date.now());
+    await engine.tick();
+    if (c === 'off') {
+      assert.equal(exits().length, 1, notes());
+      assert.deepEqual([exits()[0].side, exits()[0].price, exits()[0].count], ['ask', 0.46, 10]);
+    } else if (c === 'defaults') {
+      // The first dip is judged against the fair value: a hit sells at the bid, a miss hands the position to the normal exit,
+      // whose take-profit sells here (+0.042 now against a best of +0.082, its last tick above the 0.040 floor). Either way that
+      // sale stands, so the lane makes it; the judgement itself waits for the data and the hunt is left as it was.
+      assert.equal(exits().length, 1, notes());
+      assert.deepEqual([exits()[0].side, exits()[0].price, exits()[0].count], ['ask', 0.46, 10]);
+      assert.match(notes(), /the lock sale's judgement waits for the fair value/);
+      const d = audit.tail(50, 'decision').map((r) => r.data as { lane?: string; place?: Array<{ why: string }> }).find((r) => r.lane === 'exit_only');
+      assert.match(d!.place![0].why, /^take-profit: \+0\.042 a contract net of fees \(best \+0\.082, floor \+0\.040\)/);
+      assert.equal(hunt.active, true);
+    } else {
+      // A miss would hold to settlement: nothing sells until the judgement can be made.
+      assert.equal(exits().length, 0, notes());
+      assert.equal(hunt.active, true);
+    }
   }
 });

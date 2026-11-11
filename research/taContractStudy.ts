@@ -35,7 +35,7 @@ import crypto from 'crypto';
 import { featuresInGroups, type FeatureGroup } from '../bot/model/featureEngine';
 import { MetaModel } from '../bot/model/metaModel';
 import { clamp, logit, sigmoid } from '../bot/util/num';
-import { buildDataset, readDataset, type DatasetRow } from './buildDataset';
+import { buildDataset, DATASET_REFERENCE_SIGMA, readDataset, type DatasetRow } from './buildDataset';
 import { downloadBinance } from './history/binanceVision';
 import { buildHistoryReplay, replayKalshiDays } from './history/historyReplay';
 import { downloadKalshiHistory, repairLegacyCents } from './history/kalshiHistory';
@@ -171,7 +171,7 @@ export async function taContractStudyMain(): Promise<StudyReport> {
   try {
     // Snapshots every 3 minutes (4 a contract; the trainer keeps one or two) and only the sampled contracts: the
     // feature vector is the expensive part, so neither is computed for a contract the rows will not hold.
-    await buildDataset(replay, Number(arg('every', '180')), 5e-5, {
+    await buildDataset(replay, Number(arg('every', '180')), DATASET_REFERENCE_SIGMA, {
       entryWindowOnly: true, includeSynthetic: true,
       skipMarket: (m) => (m.kind ?? 'updown') !== 'updown' || (!!m.synthetic && !keepContract(m.ticker)),
       // The 15-minute Up/Down contracts only: the replay's hourly ladder is another question (and four times the rows).

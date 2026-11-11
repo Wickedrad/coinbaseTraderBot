@@ -32,6 +32,10 @@ export interface RiskLimits {
   maxOrderRiskFrac: number;
   /** Max fraction of bankroll at risk across all correlated crypto markets closing in the same window. */
   maxWindowRiskFrac: number;
+  /** RISK_SIZE_CAPS: the order, window and total risk caps (shares of the bankroll) in the risk gateway and in the
+   *  new-risk room. Off by default since Nov 5 (Steven: other modules decide the size). Free cash, the fat-finger
+   *  count, stale data, the price collars, the daily loss limit and the kill switch stay on either way. */
+  sizeCaps?: boolean;
   /** Max fraction of bankroll at risk across all open positions and resting orders. */
   maxTotalRiskFrac: number;
   /** Daily loss (realized + mark-to-market, fee-inclusive) that trips the kill switch. */
@@ -169,9 +173,10 @@ export interface StrategyConfig {
    *  order size (paperOrderUsd / paperOrderFrac) wins over it. */
   orderUsdMin: number;
   orderUsdMax: number;
-  /** Paper only: no new crypto entries in a time-to-close bucket where the market mid has scored a better log loss
-   *  than the bot's (temperature-calibrated) probability over the last settled markets (bot/strategy/accuracyGate.ts;
-   *  the owner's choice on Oct 23). Live never blocks on it. */
+  /** ACCURACY_GATE (paper and live alike): no new crypto entries in a time-to-close bucket where the market mid has
+   *  scored a better log loss than the bot's (temperature-calibrated) probability over the last settled markets
+   *  (bot/strategy/accuracyGate.ts; the owner's choice on Oct 23). Off by default since Nov 11 for the edge plan (it
+   *  scored the old pYes and closed 7 of 8 buckets); the scorecard is still kept and reported with it off. */
   accuracyGate: AccuracyGateConfig;
   /** kelly = fractional Kelly on the model probability; target_ev = spec sizing (shrink to market, $ target, min EV). */
   sizing: 'kelly' | 'target_ev';
@@ -190,7 +195,9 @@ export interface StrategyConfig {
   /** Scale Kelly by max(0, 1 - drawdown / ddScaleAt); pause entries 24 h after a 7-day loss beyond weeklyLossPause. */
   ddScaleAt: number;
   weeklyLossPause: number;
-  /** Halt new risk when the rolling log-loss advantage vs the calibrated market is significantly negative. */
+  /** Halt new risk when the rolling log-loss advantage vs the calibrated market is significantly negative. Off by
+   *  default, paper and live alike (MODEL_HEALTH_HALT=true turns it on): it scores the old model against the market and
+   *  would stop every entry, heat-map entries included. The score is still computed and reported (Telemetry). */
   modelHealthHalt: boolean;
   /** Paper exploration: occasionally enter a borderline opportunity (edge within exploreBand below the
    *  threshold, still fee-net positive) at minimum size, logged with its probability, so the fill model
@@ -313,7 +320,9 @@ export interface Config {
    *  validated model or an open probation; an exit always goes out. */
   liveAllowUnvalidated: boolean;
   /** VALIDATION_GATES=monitor (default): models that have not passed validation trade anyway, on probation; a book whose
-   *  results are unacceptable is benched (bot/risk/probation.ts). enforce: every validation gate blocks as before. */
+   *  results are unacceptable raises an "iterate this book" alert and nothing is turned off (bot/risk/probation.ts).
+   *  PROBATION_BENCH=true (default false, the same in paper and live) is the owner's emergency gate: such a book is
+   *  benched until its window recovers. enforce: every validation gate blocks as before. */
   probation: ProbationParams;
   /** SINUOUS_EXIT, the same in paper and live: cross (default) sells on a confirmed cross (SINUOUS_CROSS) and holds
    *  nothing (bot/strategy/sinuousExit.ts); gate holds a profit-taking exit for the curve's signal; monitor shows the
@@ -356,6 +365,8 @@ export interface Config {
   /** Strike ladders and range brackets: track only the N strikes nearest the price in each event (0 = all).
    *  Far strikes sit at 1c / 99c and are never traded; tracking them only costs CPU. */
   catalogStrikesPerEvent: number;
+  /** Strike selection: largest listing spread whose mid is trusted (0 = legacy: any mid, else the last price). */
+  catalogPickMaxSpread: number;
   /** Allow using the Coinbase public ticker as an index proxy (basis risk; paper/shadow only). */
   allowProxyIndex: boolean;
   /** Stream Coinbase spot for lead-lag features and the dashboard (never a pricing input). */
@@ -366,8 +377,11 @@ export interface Config {
   taCandles: boolean;
   /** Clock-skew guard: halt new risk when the local clock is confidently off Kalshi's by more than this (ms); 0 disables. */
   clockSkewMaxMs: number;
-  /** Session edges (first/last N minutes of the Asia, London and New York sessions): no new entries there
-   *  (noEntry) and, with AUTO_TRAIN=windows, the only time the training pipeline runs. */
+  /** Session edges (first/last N minutes of the Asia, London and New York sessions): with AUTO_TRAIN=windows the only
+   *  time the training pipeline runs, and, when noEntry is set (SESSION_EDGE_NO_ENTRY), no new entries there. Unset,
+   *  noEntry follows AUTO_TRAIN, paper and live alike: on with windows (training never shares the CPU with trading),
+   *  off with every other mode, the default included (AUTO_TRAIN=remote: training runs remotely, and session timing
+   *  should become an input to the heat curve, not a halt on entries). */
   sessionEdge: { minutes: number; noEntry: boolean };
   /** The server's env file, rewritten by the dashboard's PAPER / LIVE switch (BOT_ENV_FILE, default ~/bot/bot.env). */
   botEnvFile: string;
@@ -1084,6 +1098,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     maxOrderRiskFrac: num(env, 'RISK_MAX_ORDER_FRAC', 0.02, 0.001, 0.05),
     maxWindowRiskFrac: num(env, 'RISK_MAX_WINDOW_FRAC', 0.03, 0.001, 0.1),
     maxTotalRiskFrac: num(env, 'RISK_MAX_TOTAL_FRAC', 0.10, 0.001, 0.25),
+    sizeCaps: bool(env, 'RISK_SIZE_CAPS', false),
     dailyLossLimitFrac: num(env, 'RISK_DAILY_LOSS_FRAC', 0.03, 0.001, 0.2),
     dailyLossLimitUsd: num(env, 'RISK_DAILY_LOSS_USD', 5, 0.01, 100000),
     minSidePrice: num(env, 'RISK_MIN_SIDE_PRICE', 0.10, 0.01, 0.45),
@@ -1181,7 +1196,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0, 0, 1),
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
     orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
-    accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
+    accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', false), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
     kappa: num(env, 'STRATEGY_KAPPA', 0.5, 0, 1),
     targetEvUsd: num(env, 'STRATEGY_TARGET_EV_USD', 10, 0, 10000),
@@ -1192,7 +1207,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     ensembleVetoSigmas: num(env, 'STRATEGY_ENSEMBLE_VETO_SIGMAS', 2, 0, 10),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
-    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),
+    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', false),
     paperExplore: bool(env, 'PAPER_EXPLORE', false),
     exploreRate: num(env, 'PAPER_EXPLORE_RATE', 0.1, 0, 1),
     exploreBand: num(env, 'PAPER_EXPLORE_BAND', 0.02, 0, 0.1),
@@ -1272,6 +1287,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       maxLossUsd: num(env, 'PROBATION_MAX_LOSS_USD', DEFAULT_PROBATION.maxLossUsd, 0, 1e9),
       maxLossPct: num(env, 'PROBATION_MAX_LOSS_PCT', DEFAULT_PROBATION.maxLossPct, 0, 1),
       window: num(env, 'PROBATION_WINDOW', DEFAULT_PROBATION.window, 10, 100_000),
+      // Owner-only emergency gate, off by default in paper and live: on, a book that would bench is benched, and it
+      // clears by itself once the window recovers (or on a new model or a reset).
+      bench: bool(env, 'PROBATION_BENCH', DEFAULT_PROBATION.bench),
     },
     sinuousExit: {
       mode: oneOf(env, 'SINUOUS_EXIT', DEFAULT_SINUOUS_EXIT.mode, ['gate', 'monitor', 'rest', 'cross', 'off'] as const),
@@ -1336,12 +1354,16 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     seriesAssetMap,
     catalogHorizonMin: num(env, 'CATALOG_HORIZON_MIN', 90, 16, 7 * 24 * 60),
     catalogStrikesPerEvent: num(env, 'CATALOG_STRIKES_PER_EVENT', 4, 0, 1000),
+    // Strike selection trusts a listing's mid only when its spread is at most this (0 = the legacy rule: any mid, else the
+    // last price). Institutional research decision 1, Nov 5 (a dead 1c/99c listing read 50c and took a strike slot).
+    catalogPickMaxSpread: num(env, 'CATALOG_PICK_MAX_SPREAD', 0.1, 0, 1),
     allowProxyIndex,
     spotFeed: bool(env, 'SPOT_FEED', true),
     dominanceFeed: bool(env, 'DOMINANCE_FEED', true),
     taCandles: bool(env, 'TA_CANDLES', true),
     clockSkewMaxMs: num(env, 'CLOCK_SKEW_MAX_MS', 2000, 0, 60_000),
-    sessionEdge: { minutes: num(env, 'SESSION_EDGE_MIN', 40, 5, 120), noEntry: bool(env, 'SESSION_EDGE_NO_ENTRY', true) },
+    // Off unless AUTO_TRAIN=windows, whose pipeline runs only in these windows and must not share the CPU with trading.
+    sessionEdge: { minutes: num(env, 'SESSION_EDGE_MIN', 40, 5, 120), noEntry: bool(env, 'SESSION_EDGE_NO_ENTRY', env.AUTO_TRAIN === 'windows') },
     botEnvFile: path.resolve(env.BOT_ENV_FILE ?? path.join(os.homedir(), 'bot', 'bot.env')),
     clockSkewWarnMs: num(env, 'CLOCK_SKEW_WARN_MS', 1000, 0, 60_000),
     settlementAvg: oneOf(env, 'SETTLEMENT_AVG', 'official', ['official', 'continuous'] as const),

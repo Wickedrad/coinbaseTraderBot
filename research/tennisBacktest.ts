@@ -90,7 +90,7 @@ export async function runTennisBacktest(dir: string, cfg: TennisConfig, bankroll
     const open = await ex.getOpenOrders();
     const tennisRisk = () => [...new Set([...pos.unsettled().map((p) => p.ticker), ...open.map((o) => o.ticker)])]
       .reduce((s, t) => s + marketWorstLoss(pos.get(t), open.filter((o) => o.ticker === t).map((o) => ({ ticker: t, side: o.side, price: o.price, remaining: o.remainingCount, isTaker: false })), FEES), 0);
-    const bankroll = Math.max(0, (await ex.getBalance()) + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0));
+    const bankroll = Math.max(0, ex.cash() + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0));
     for (const [event, tickers] of byEvent) {
       tickers.sort();
       const ms = tickers.map((t) => st.markets.get(t)!);
