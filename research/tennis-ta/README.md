@@ -63,7 +63,7 @@ and writes the per-row aggregates into each shard file's `window` block (contrac
 {
   "stage": "1",
   "pool": "disc",
-  "from": "2026-04-27",
+  "from": "2026-04-20",
   "to": "2026-07-30",
   "shards": 8,
   "familyB": false,
@@ -77,7 +77,7 @@ A hold run is `{ "stage": "hold", "shards": 8 }`: pool, from and to take their d
 |---|---|---|---|
 | `stage` | yes | | `"1"`, `"2"` or `"hold"` (1 and 2 may be numbers). Stage 1 is the 409-spec H grid built in code (`stage1Specs()`: 81 configs x F1, F2, coin, window, coinwindow + 2 sticks x F1, window). Stage 2 reads its specs from `research/tennis-ta/stage2-specs.json`, stage hold its batch from `research/tennis-ta/hold-batch.json` (both below). |
 | `pool` | no | `"disc"` (`"hold"` at stage hold) | `"disc"` (H-DEV, stages 1 and 2: every setting is chosen here, and the league runs here), `"old"` at stage 2 only (stratum H0: units before the start era, a stress test for finalists) or `"hold"` at stage hold only (H-HOLD; stage hold scores nothing else). `"nostart"`, `"embargo"`, `"out"` and `"practice"` are never scored and are refused. `"check"` and `"sealed"` no longer exist (C9: the hold block replaced them). |
-| `from`, `to` | no | the whole pool (`2026-04-27` to `2026-07-30` for disc; `2025-06-16` to `2026-04-26` for old; `2026-07-27` to `2026-11-04` for hold) | UTC days, inclusive. Each pool unit (a unit holding time of the pool) whose start falls in `[from, to]` is swept whole, so the plan can run past `to` to that unit's end. prep fails if `from` falls inside a pool unit, because that unit's start would not be covered and the unit would be swept only in part. A hold run scores the whole of H-HOLD once, so for hold they must be left out (or set to the defaults). |
+| `from`, `to` | no | the whole pool (`2026-04-20` to `2026-07-30` for disc; `2025-06-16` to `2026-04-19` for old; `2026-07-27` to `2026-11-04` for hold) | UTC days, inclusive. Each pool unit (a unit holding time of the pool) whose start falls in `[from, to]` is swept whole, so the plan can run past `to` to that unit's end. prep fails if `from` falls inside a pool unit, because that unit's start would not be covered and the unit would be swept only in part. A hold run scores the whole of H-HOLD once, so for hold they must be left out (or set to the defaults). |
 | `shards` | no | `8` | Shard jobs, from 1 to 16 (8 run in parallel). Keep the count fixed across rounds: cross-match state restarts at each shard and sub-slice edge (below). |
 | `familyB` | no | `false` | When true, each sub-slice also runs family B (TA-Lib event study, `research/tennisTaSignals.ts` `SignalStudy`, $15 orders, 1 s latency, seed 20261105, bars 1 m and 5 m on H) on the same matches. Its cells go into the shard files as `familyB`, and its one-test rows (`SignalStudy.exportWindow`) as `familyBWindow`. Matches labelled `nostart` are left out of it. Refused at stage hold: family B is a discovery design (every cell is a hypothesis), so it runs on disc, and Amendment 4 does not read family B hot spots on H-HOLD. |
 | `note` | no | | Free text, kept in the request's hash only. |
@@ -376,8 +376,9 @@ why the count should stay fixed across rounds.
 
 Kalshi's tennis match history starts on 2025-06-18 (`HISTORY_FROM`). Before about April 2026, markets had no published
 start time (`occurrence_datetime`) and settled on an older "advances past the round" rule. That is a different product,
-so the history is split at `START_ERA_FROM` (a Monday 05:00 UTC unit start). It is a placeholder, 2026-04-27 05:00 UTC,
-and is fixed from the weekly inventory before the first counting run. Each plan and shard file records the value it
+so the history is split at `START_ERA_FROM` (a Monday 05:00 UTC unit start), 2026-04-20 05:00 UTC, pinned on Nov 11
+2026 from the weekly inventory (Tennis TA data run 43067646856): the first week in which at least 95% of two-market events
+carry a published start (ATP 113 of 113, WTA 119 of 119; the week before, 11 of 35 and 13 of 42). Each plan and shard file records the value it
 used (`era`). In the start era, HO-1 splits the time into H-DEV and H-HOLD:
 
 - `DEV_TO` is 2026-07-31 00:00 UTC. A disc match closes before it.
@@ -400,13 +401,14 @@ A match takes the first pool below that applies:
 
 - The A3 hash seal and the dev-check pool are retired, because the contiguous hold block replaces them. The old era
   needs no seal, since nothing is chosen there. The `sealed` flags still in the committed unit table are ignored.
-- Lockbox weeks are keyed by id from a `[start, end)` table anchored at Nov 6 05:00 UTC in 7-day steps: L1 is Nov 6 to
-  Nov 13, L2 is Nov 13 to Nov 20, and so on. Under the Nov 5 02:00 UTC cutoff no pool match reaches one.
+- Sealed weeks (lockboxes) were removed project-wide by Steven on Nov 11 2026. The lockbox table still in the code
+  (keyed from Nov 6 05:00 UTC in 7-day steps) is inert: under the Nov 5 02:00 UTC cutoff no pool match reaches one. A
+  later cutoff drops it rather than sealing anything; new recordings are read as they come.
 - A match belongs to the unit that holds its start (the published start, else its earliest market-line time). Units
   stay Monday 05:00 UTC weeks (Slams whole) for the bootstrap and the slicing. A unit can hold matches of several
   pools: `W-2026-07-27` holds disc, embargo and hold matches, and both disc and hold runs sweep it, each owning its own.
-- On the committed unit table this gives 23 out units, 40 old (`W-2025-06-16` to `W-2026-04-20`), 11 disc
-  (`W-2026-04-27` to `W-2026-07-27`) and 13 hold (`W-2026-07-27` to `W-2026-11-02`), with `W-2026-07-27` in both.
+- On the committed unit table this gives 23 out units, 39 old (`W-2025-06-16` to `W-2026-04-13`), 12 disc
+  (`W-2026-04-20` to `W-2026-07-27`) and 13 hold (`W-2026-07-27` to `W-2026-11-02`), with `W-2026-07-27` in both.
 - Pool hours (`poolSpans`) count each pool unit's wall-clock part of the pool. That is the unit's span cut to the
   history (from 2025-06-18 to the hard cutoff), and in the start era cut to H-DEV (to Jul 31 00:00 UTC) or H-HOLD (from
   Aug 1 00:00 UTC). The embargo day is in no scored pool's hours. Disc has 2,275 h, hold has 2,306 h (96 days and 2 h),

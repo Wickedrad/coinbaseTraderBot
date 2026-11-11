@@ -79,9 +79,10 @@ export const HISTORY_FROM = Date.parse('2025-06-18T00:00:00Z');
 export const LOCKBOX_FROM = Date.parse('2026-11-06T05:00:00Z');
 /** The start era (C6, C9): units starting from here are the product the bot trades (a published start time, the current
  *  settlement rule); units starting earlier are pool 'old' (stratum H0). A Monday 05:00 UTC unit start.
- *  PLACEHOLDER: it is fixed from the weekly inventory (the first week in which Kalshi published occurrence_datetime on
- *  nearly every match) before the first counting run, and a change of it is a new request commit. */
-export const START_ERA_FROM = Date.parse('2026-04-27T05:00:00Z');
+ *  PINNED Nov 11 2026 from the weekly inventory (Tennis TA data run 43067646856, startEraWeek of both series): the week of
+ *  2026-04-20 is the first in which at least 95% of two-market events carry a published start (ATP 113 of 113, WTA 119 of
+ *  119; the week before, 11 of 35 and 13 of 42). */
+export const START_ERA_FROM = Date.parse('2026-04-20T05:00:00Z');
 /** H-DEV ends here (C9): a start-era match is 'disc' (H-DEV, where every setting is chosen) only if it closes before
  *  Jul 31 00:00 UTC. */
 export const DEV_TO = Date.parse('2026-07-31T00:00:00Z');

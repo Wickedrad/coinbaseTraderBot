@@ -160,11 +160,11 @@ HARD_CUTOFF = ms_of('2026-11-05T02:00:00Z')
 # history starts HISTORY_FROM; units starting before START_ERA_FROM are pool 'old' (stratum H0: no published start, the
 # older "advances past the round" settlement rule, a different product). In the start era a match needs a published start
 # (else 'nostart'); it is 'disc' (H-DEV) when it closes before DEV_TO, 'hold' (H-HOLD) when it starts from HOLD_FROM, and
-# 'embargo' in between (Jul 31 and the matches straddling DEV_TO). START_ERA_FROM is a placeholder there, fixed from the
-# weekly inventory before the first counting run, so a run's own edges are read from its shard metas (meta.era) and these
+# 'embargo' in between (Jul 31 and the matches straddling DEV_TO). START_ERA_FROM was pinned from the weekly inventory
+# (Nov 11, run 43067646856: the week of 2026-04-20); a run's own edges are read from its shard metas (meta.era) and these
 # are only the fallback.
 HISTORY_FROM = ms_of('2025-06-18T00:00:00Z')
-START_ERA_FROM = ms_of('2026-04-27T05:00:00Z')
+START_ERA_FROM = ms_of('2026-04-20T05:00:00Z')  # pinned Nov 11 from the weekly inventory (run 43067646856)
 DEV_TO = ms_of('2026-07-31T00:00:00Z')
 HOLD_FROM = ms_of('2026-08-01T00:00:00Z')
 DEFAULT_ERA = {'historyFrom': HISTORY_FROM, 'startEraFrom': START_ERA_FROM, 'devTo': DEV_TO, 'holdFrom': HOLD_FROM, 'cutoff': HARD_CUTOFF}

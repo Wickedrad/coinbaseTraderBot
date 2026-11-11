@@ -39,13 +39,13 @@ test('the committed unit table is sound: contiguous Monday 05:00 UTC edges; its 
   assert.ok(!p.some((x) => x.startsWith(`${broken[3].id}:`)), p.join('\n'));
   assert.ok(p.some((x) => x.includes(broken[5].id) && x.includes('Monday')));
   assert.ok(buildUnits('2026-07-01', '2026-08-31').every((u) => !('sealed' in u)));
-  // C9 pools over the committed table: history from 2025-06-18, the start era from the placeholder Apr 27, H-DEV to
+  // C9 pools over the committed table: history from 2025-06-18, the start era from Apr 20 (pinned from the inventory), H-DEV to
   // Jul 31 00:00 UTC, H-HOLD from Aug 1 00:00 UTC to the cutoff. W-2026-07-27 holds both disc and hold time.
   const count = (pool: Pool) => units.filter((u) => unitPools(u).includes(pool)).length;
-  assert.deepEqual((['out', 'old', 'disc', 'embargo', 'hold'] as Pool[]).map(count), [23, 40, 11, 1, 13]);
+  assert.deepEqual((['out', 'old', 'disc', 'embargo', 'hold'] as Pool[]).map(count), [23, 39, 12, 1, 13]);
   assert.deepEqual(unitPools(byId.get('W-2026-07-27')!), ['disc', 'embargo', 'hold']);
-  assert.deepEqual([disc[0].id, disc[disc.length - 1].id], ['W-2026-04-27', 'W-2026-07-27']);
-  assert.deepEqual([old[0].id, old[old.length - 1].id], ['W-2025-06-16', 'W-2026-04-20']);
+  assert.deepEqual([disc[0].id, disc[disc.length - 1].id], ['W-2026-04-20', 'W-2026-07-27']);
+  assert.deepEqual([old[0].id, old[old.length - 1].id], ['W-2025-06-16', 'W-2026-04-13']);
   assert.deepEqual([hold[0].id, hold[hold.length - 1].id], ['W-2026-07-27', 'W-2026-11-02']);
   // The start era begins at a unit start (Monday 05:00 UTC), so no unit straddles the old and start eras; H-DEV and
   // H-HOLD are UTC days (registry.py's H_HOLD), with the embargo day between them.
@@ -104,7 +104,7 @@ test('partition: contiguous, non-empty, balanced, deterministic', () => {
 });
 
 test('plan: shards and sub-slices cut at unit edges, every disc unit once, from/to per C5', () => {
-  const sel = requestUnits(units, 'disc', '2026-04-27', '2026-07-30');
+  const sel = requestUnits(units, 'disc', '2026-04-20', '2026-07-30');
   assert.deepEqual(sel.map((u) => u.id), disc.map((u) => u.id));
   const plan = planUnits(sel, 8);
   assert.equal(plan.length, 8);
@@ -124,8 +124,8 @@ test('plan: shards and sub-slices cut at unit edges, every disc unit once, from/
   }
   // A Slam (one unit of 2+ weeks) is never split.
   for (const slam of disc.filter((u) => u.slam)) assert.equal(plan.filter((e) => e.units.includes(slam.id)).length, 1);
-  // The old pool cuts the same way (40 units into 8 shards, balanced by unit length).
-  const op = planUnits(requestUnits(units, 'old', '2025-06-16', '2026-04-26'), 8);
+  // The old pool cuts the same way (39 units into 8 shards, balanced by unit length).
+  const op = planUnits(requestUnits(units, 'old', '2025-06-16', '2026-04-19'), 8);
   assert.deepEqual(op.flatMap((e) => e.units), old.map((u) => u.id));
   const od = op.map((e) => e.units.reduce((s, id) => s + (byId.get(id)!.end - byId.get(id)!.start) / DAY, 0));
   assert.ok(Math.max(...od) - Math.min(...od) <= 28, `balanced by unit length: ${od.join(',')}`);
@@ -147,8 +147,8 @@ test('requestUnits: [from, to] must cover the start of every pool unit it touche
   assert.throws(() => requestUnits(units, 'hold', '2026-08-01', H_HOLD[1]), /does not cover the start of hold unit W-2026-07-27/);
   assert.deepEqual(requestUnits(units, 'hold', '2026-07-27', H_HOLD[1]).map((u) => u.id), hold.map((u) => u.id));
   // The same rule on the old pool; a start-era span holds no old unit.
-  assert.throws(() => requestUnits(units, 'old', '2025-06-17', '2026-04-26'), /does not cover the start of old unit W-2025-06-16/);
-  assert.deepEqual(requestUnits(units, 'old', '2025-06-16', '2026-04-26').map((u) => u.id), old.map((u) => u.id));
+  assert.throws(() => requestUnits(units, 'old', '2025-06-17', '2026-04-19'), /does not cover the start of old unit W-2025-06-16/);
+  assert.deepEqual(requestUnits(units, 'old', '2025-06-16', '2026-04-19').map((u) => u.id), old.map((u) => u.id));
   assert.throws(() => requestUnits(units, 'old', '2026-05-18', '2026-07-30'), /holds no old unit/);
 });
 
@@ -181,11 +181,11 @@ test('poolOf: every pool (out, old, nostart, disc, embargo, hold) at every edge 
   assert.equal(pool(HARD_CUTOFF - H, HARD_CUTOFF + H), 'out');
   assert.equal(pool(HARD_CUTOFF, HARD_CUTOFF + H), 'out');
   assert.equal(pool(HARD_CUTOFF - 1, HARD_CUTOFF - 1), 'hold');
-  // START_ERA_FROM (a unit edge): a match starting 1 ms before it is old (the last old unit, W-2026-04-20) whatever its
+  // START_ERA_FROM (a unit edge): a match starting 1 ms before it is old (the last old unit, W-2026-04-13) whatever its
   // close or published start; one starting at it is in the start era.
   assert.equal(pool(START_ERA_FROM - 1, START_ERA_FROM + 3 * H), 'old');
   assert.equal(pool(START_ERA_FROM - 1, START_ERA_FROM + 3 * H, false), 'old');
-  assert.equal(unitOf(START_ERA_FROM - 1, units), 'W-2026-04-20');
+  assert.equal(unitOf(START_ERA_FROM - 1, units), 'W-2026-04-13');
   assert.equal(pool(START_ERA_FROM), 'disc');
   assert.equal(pool(START_ERA_FROM, undefined, false), 'nostart');
   // old: before the start era a published start does not matter (Kalshi published none then); no seal any more.
@@ -553,8 +553,8 @@ test('stage 2 specs the sweep accepts pass the report\'s check_runs; what it ref
 
 test('requests: pool disc, old at stage 2, hold at stage hold only; defaults; other pools and unknown keys refused', () => {
   const r = parseRequest({ stage: 1 }, units);
-  assert.deepEqual(r, { stage: '1', pool: 'disc', from: '2026-04-27', to: '2026-07-30', shards: 8, familyB: false });
-  assert.deepEqual(parseRequest({ stage: '2', pool: 'old' }, units), { stage: '2', pool: 'old', from: '2025-06-16', to: '2026-04-26', shards: 8, familyB: false });
+  assert.deepEqual(r, { stage: '1', pool: 'disc', from: '2026-04-20', to: '2026-07-30', shards: 8, familyB: false });
+  assert.deepEqual(parseRequest({ stage: '2', pool: 'old' }, units), { stage: '2', pool: 'old', from: '2025-06-16', to: '2026-04-19', shards: 8, familyB: false });
   assert.throws(() => parseRequest({ stage: '1', pool: 'old' }, units), /stress test for stage 2 finalists only/);
   // hold: stage hold only, the whole block, no family B.
   assert.deepEqual(parseRequest({ stage: 'hold' }, units), { stage: 'hold', pool: 'hold', from: '2026-07-27', to: '2026-11-04', shards: 8, familyB: false });
@@ -616,7 +616,7 @@ function batchFile(obj: unknown = BATCH, text?: string): string {
 const fileHash = (f: string) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
 
 test('prepare: plan, sub-plans and expected files; refuses a request that cuts a unit, names another pool or lacks stage 2 specs', () => {
-  const p = prepOf({ stage: '1', pool: 'disc', from: '2026-04-27', to: '2026-07-30', shards: 8, familyB: true });
+  const p = prepOf({ stage: '1', pool: 'disc', from: '2026-04-20', to: '2026-07-30', shards: 8, familyB: true });
   assert.equal(p.configs, 409);
   assert.equal(p.windowVersion, WINDOW_VERSION);
   assert.deepEqual([p.batchHash, p.leagueRun, p.batch], [undefined, undefined, undefined]);
@@ -627,7 +627,7 @@ test('prepare: plan, sub-plans and expected files; refuses a request that cuts a
   assert.equal(new Set(p.expected).size, p.expected.length);
   assert.equal(p.expected[0], shardFile('1', 0, 0));
   assert.deepEqual(p.subPlans.flat().flatMap((s) => s.units), p.units);
-  assert.equal(p.poolSpans.length, 11);
+  assert.equal(p.poolSpans.length, 12);
   assert.equal(p.poolSpans.reduce((x, s) => x + s.hours, 0), (DEV_TO - START_ERA_FROM) / H);
   assert.equal(p.familyB, true);
   assert.equal(p.simVersion, SIM_VERSION);
@@ -636,18 +636,18 @@ test('prepare: plan, sub-plans and expected files; refuses a request that cuts a
   // registry row's data.replay_version moves, so the README's number moves with it).
   assert.equal(p.replayVersion, 9);
   assert.equal(p.stratumLabel, 'H');
-  assert.deepEqual(p.era, { historyFrom: '2025-06-18T00:00:00.000Z', startEraFrom: '2026-04-27T05:00:00.000Z', devTo: '2026-07-31T00:00:00.000Z', holdFrom: '2026-08-01T00:00:00.000Z', cutoff: '2026-11-05T02:00:00.000Z' });
+  assert.deepEqual(p.era, { historyFrom: '2025-06-18T00:00:00.000Z', startEraFrom: '2026-04-20T05:00:00.000Z', devTo: '2026-07-31T00:00:00.000Z', holdFrom: '2026-08-01T00:00:00.000Z', cutoff: '2026-11-05T02:00:00.000Z' });
   assert.deepEqual(p.holdFolds, holdFolds());
-  assert.deepEqual(p.poolUnits, { out: 23, old: 40, disc: 11, embargo: 1, hold: 13 });
+  assert.deepEqual(p.poolUnits, { out: 23, old: 39, disc: 12, embargo: 1, hold: 13 });
   assert.equal(p.specsHash, specsHash(stage1Specs()));
   assert.deepEqual(p.specIds, stage1Specs().map((x) => x.id));
   assert.equal(p.openingsRead, undefined);
   // The old pool (stage 2 finalists): the same from/to rule, stratum H0.
   const specs = specFile();
   const po = prepOf({ stage: '2', pool: 'old', shards: 4 }, specs);
-  assert.deepEqual([po.pool, po.stratumLabel, po.units.length, po.plan.length], ['old', 'H0', 40, 4]);
+  assert.deepEqual([po.pool, po.stratumLabel, po.units.length, po.plan.length], ['old', 'H0', 39, 4]);
   assert.ok(po.poolSpans.every((s) => unitPools(byId.get(s.unit)!).includes('old')));
-  assert.throws(() => prepOf({ stage: '2', pool: 'old', from: '2025-06-25', to: '2026-04-26' }, specs), /W-2025-06-23/);
+  assert.throws(() => prepOf({ stage: '2', pool: 'old', from: '2025-06-25', to: '2026-04-19' }, specs), /W-2025-06-23/);
   // Refusals: a cut unit, every other pool, old at stage 1, missing stage 2 specs, a damaged unit table.
   assert.throws(() => prepOf({ stage: '1', from: '2026-05-20', to: '2026-07-30' }), /RG-2026-05-18/);
   for (const pool of ['check', 'sealed']) assert.throws(() => prepOf({ stage: '2', pool }, specs), /no longer exists/);
@@ -762,11 +762,11 @@ test('checkShards: the full set passes; missing, duplicate, extra, mixed data ve
   const all = () => p.expected.map((f) => { const m = /a-s1-(\d+)-(\d+)/.exec(f)!; return { file: f, meta: metaOf(p, Number(m[1]), Number(m[2])) }; });
   const good = checkShards(p, [...p.expected], all(), '42');
   assert.deepEqual(good.problems, []);
-  assert.equal(good.summary.units, 11);
+  assert.equal(good.summary.units, 12);
   assert.deepEqual([good.summary.replayVersion, good.summary.specsHash], [REPLAY_VERSION, p.specsHash]);
   assert.equal(good.summary.matches, 10 * p.expected.length);
   assert.equal(good.summary.noPublishedStart, p.expected.length);
-  assert.deepEqual(good.summary.pools, { disc: { matches: 9 * p.expected.length, units: 11 }, nostart: { matches: p.expected.length, units: p.expected.length } });
+  assert.deepEqual(good.summary.pools, { disc: { matches: 9 * p.expected.length, units: 12 }, nostart: { matches: p.expected.length, units: p.expected.length } });
   // Missing on Drive and not copied.
   const miss = checkShards(p, p.expected.slice(1), all().slice(1), '42');
   assert.ok(miss.problems.some((x) => x.startsWith(`${p.expected[0]}: missing on Drive`)));

@@ -34,6 +34,8 @@ DAY = 86_400_000
 HOUR = 3_600_000
 BOOT = 199
 SHA = 'c0ffee' * 6 + 'beef'  # 40 hex: the --sha the rows carry
+# The fixture runs carry their own era (meta.era wins over the module defaults); it starts a week after the pinned
+# START_ERA_FROM (Apr 20) so the synthetic unit table needs no Apr 20 week.
 ERA = {'historyFrom': '2025-06-18T00:00:00.000Z', 'startEraFrom': '2026-04-27T05:00:00.000Z', 'devTo': '2026-07-31T00:00:00.000Z',
        'holdFrom': '2026-08-01T00:00:00.000Z', 'cutoff': '2026-11-05T02:00:00.000Z'}
 H_HOLD = ('2026-08-01', '2026-11-04')
@@ -807,10 +809,10 @@ def test_era_edges_match_the_sweep():
     assert R.HOLD_FROM == R.day_ms(R.HO1_HOLD[0]) and R.DEV_TO == R.HOLD_FROM - DAY
     u = lambda iso, **k: dict({'start': R.ms_of(iso), 'end': R.ms_of(iso) + 7 * DAY}, **k)  # noqa: E731
     assert R.unit_pools(u('2025-06-09T05:00:00Z')) == {'out'}  # ends before the history starts
-    assert R.unit_pools(u('2025-06-16T05:00:00Z')) == {'old'} and R.unit_pools(u('2026-04-20T05:00:00Z')) == {'old'}
+    assert R.unit_pools(u('2025-06-16T05:00:00Z')) == {'old'} and R.unit_pools(u('2026-04-13T05:00:00Z')) == {'old'}
     assert R.unit_pools(u('2025-08-11T05:00:00Z', sealed=True)) == {'old'}  # the legacy seal is ignored (C9)
     # The start era seals nothing; its pools are per match, so a week can hold several.
-    assert R.unit_pools(u('2026-04-27T05:00:00Z')) == {'disc'} and R.unit_pools(u('2026-05-04T05:00:00Z', sealed=True)) == {'disc'}
+    assert R.unit_pools(u('2026-04-20T05:00:00Z')) == {'disc'} and R.unit_pools(u('2026-05-04T05:00:00Z', sealed=True)) == {'disc'}
     assert R.unit_pools(u('2026-07-27T05:00:00Z')) == {'disc', 'embargo', 'hold'}
     assert R.unit_pools(u('2026-08-03T05:00:00Z')) == {'hold'} and R.unit_pools(u('2026-11-02T05:00:00Z')) == {'hold'}
     assert R.unit_pools(u('2026-11-09T05:00:00Z')) == {'out'}
