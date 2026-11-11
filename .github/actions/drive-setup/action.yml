@@ -13,7 +13,18 @@ runs:
       run: |
         set -euo pipefail
         if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF secret is not set (see drive-archive.yml)"; exit 1; fi
-        command -v rclone >/dev/null || sudo apt-get install -y -qq rclone >/dev/null
+        # A stale package list on the runner makes a plain install fail (the listed .deb is gone from the mirror):
+        # refresh the list and try again before giving up.
+        if ! command -v rclone >/dev/null; then
+          ok=0
+          for i in 1 2 3; do
+            if sudo apt-get -o Acquire::Retries=3 install -y -qq rclone >/dev/null; then ok=1; break; fi
+            echo "::warning::rclone install failed (try $i), refreshing the package list"
+            sudo apt-get update -qq >/dev/null || true
+            sleep $((5 * i))
+          done
+          [ "$ok" = 1 ] || { echo "::error::could not install rclone"; exit 1; }
+        fi
         mkdir -p ~/.config/rclone
         printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
         bash deploy/drive_lab.sh days > "$RUNNER_TEMP/drive-days.txt"
