@@ -177,6 +177,15 @@ test('existing higher-target quota floors are preserved without using settlement
   const r = { ...exitRequest(), higherTarget: 'existing trailing target' }, armed = evaluateProfitExit(r, p);
   assert.equal(armed.action, 'hold-for-profit'); assert.equal(armed.armFloorUsd, 4.5);
   assert.equal(evaluateProfitExit({ ...r, quote: { ...r.quote!, bid: 0.64 }, floor: { usd: 4.5, knownAt: start } }, p).action, 'exit');
+  // E22, the bot's line: the policy's 8 ticks on 40 is a $3.20 cushion under a $0.75 floor (alone, a line at -$2.45); the line
+  // is never below the smaller of the floor and 1 tick a contract ($0.40 on 40): +$0.60 at 0.55 holds, +$0.20 at 0.54 exits.
+  assert.equal(policy.pacer.floorTicks, 8);
+  const low = { ...r, floor: { usd: 0.75, knownAt: start } };
+  const held = evaluateProfitExit({ ...low, quote: { ...low.quote!, bid: 0.55 } }, policy);
+  assert.ok(Math.abs(held.positionNetAtTouch! - 0.6) < 1e-9); assert.equal(held.action, 'hold-for-profit');
+  const fell = evaluateProfitExit({ ...low, quote: { ...low.quote!, bid: 0.54 } }, policy);
+  assert.ok(Math.abs(fell.positionNetAtTouch! - 0.2) < 1e-9); assert.equal(fell.action, 'exit');
+  assert.equal(fell.reason, 'net profit fell through the existing quota floor');
 });
 test('the adapter consumes the existing group verdict and rejects a future verdict', () => {
   const p = structuredClone(policy); p.pacer.group = true;

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'fs';
 import path from 'path';
 import { test } from 'node:test';
+import { loadConfig } from '../bot/config';
 import { AccuracyGate, accuracyBucket, accuracyGroup } from '../bot/strategy/accuracyGate';
 import { tmpDir } from './helpers';
 
@@ -100,4 +102,35 @@ test('accuracy gate: the window keeps the newest markets, and the scorecard surv
   const again = new AccuracyGate({ ...CFG, window: 50 }, file, () => now);
   assert.equal(again.status().groups.updown15m.buckets[0].n, 50);
   assert.equal(again.block('KXETH15M-X-00', 700), undefined);
+});
+
+test('accuracy gate: off by default in paper and live alike (ACCURACY_GATE=true turns it on); off, the scorecard is still kept, reported and saved', () => {
+  const token = 'x'.repeat(40);
+  const dir = tmpDir();
+  const key = path.join(dir, 'k.pem');
+  fs.writeFileSync(key, 'x', { mode: 0o600 });
+  const live = { DASHBOARD_TOKEN: token, TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' };
+  const paperCfg = loadConfig({ DASHBOARD_TOKEN: token }).strategy.accuracyGate;
+  const liveCfg = loadConfig(live).strategy.accuracyGate;
+  assert.equal(paperCfg.enabled, false);
+  assert.deepEqual(liveCfg, paperCfg, 'paper and live read the same setting');
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: token, ACCURACY_GATE: 'true' }).strategy.accuracyGate.enabled, true);
+  assert.equal(loadConfig({ ...live, ACCURACY_GATE: 'true' }).strategy.accuracyGate.enabled, true);
+
+  // The default gate on a record where the mid called results better: nothing is blocked, the bucket still shows as lost.
+  const file = path.join(dir, 'accuracy_gate.json');
+  let now = Date.parse('2026-11-11T12:00:00Z');
+  const g = new AccuracyGate(paperCfg, file, () => now);
+  run(g, 60, 700, () => 0.5, (y) => (y ? 0.65 : 0.35));
+  assert.equal(g.block('KXETH15M-X-00', 700), undefined);
+  const st = g.status();
+  assert.equal(st.enabled, false);
+  assert.equal(st.groups.updown15m.buckets[0].n, 60);
+  assert.equal(st.groups.updown15m.buckets[0].open, false, 'the scorecard still says the market called this bucket better');
+  now += 120_000;
+  g.flush();
+  // Turned back on over the same file: it blocks at once on the record kept while it was off.
+  const on = new AccuracyGate({ ...paperCfg, enabled: true }, file, () => now);
+  assert.equal(on.status().groups.updown15m.buckets[0].n, 60);
+  assert.match(on.block('KXETH15M-X-00', 700) ?? '', /600-840 s/);
 });

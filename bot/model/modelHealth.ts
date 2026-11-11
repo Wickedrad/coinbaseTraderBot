@@ -7,8 +7,10 @@
 // variable per asset/time), so scores are averaged per window. Over the most
 // recent windows we test the loss differential d = LL_model - LL_market with a
 // Diebold-Mariano statistic; if the model is significantly WORSE (one-sided
-// p < 0.05 with at least minWindows windows) new risk halts until a reviewed
-// redeploy. Also reports the realized advantage for the dashboard.
+// p < 0.05 with at least minWindows windows) status() sets `halt`. The engine
+// stops new risk on it only with MODEL_HEALTH_HALT=true (off by default, paper
+// and live alike); otherwise it is a report. Also reports the realized
+// advantage for the dashboard.
 
 import { readJson, writeJsonAtomic } from '../util/persist';
 import { normCdf } from '../util/num';

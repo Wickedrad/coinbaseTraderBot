@@ -1,6 +1,12 @@
 # Deploys to the Lightsail box (static IP, systemd service `kalshi-bot`).
 #
-#  - Every push to main (i.e. when a PR is merged) tests, builds and deploys automatically (Steven, Nov 5: no batching).
+#  - Every push to main (i.e. when a PR is merged) that changes bot code tests, builds and deploys automatically
+#    (Steven, Nov 5: no batching). A push that changes only research files (docs, python, tests, unbundled research,
+#    other workflows) skips the deploy and restart (Steven, Nov 11, 8:18 AM EST / 13:18 UTC). The scope job decides
+#    from the files changed since the last deploy (deploy/deploy-scope.ts), never from the message: "[skip deploy]"
+#    no longer skips a push that changes bot code (it deploys, with a warning). "[skip ci]" still stops GitHub from
+#    starting this workflow at all, so a bot change pushed with it gets no deploy of its own: the next deploy ships it
+#    and its summary names it as batched. Research-only merges need neither tag to skip it.
 #  - Every deploy is logged, so a problem can be matched to the merge and restart that caused it: one JSON line per
 #    deploy in ~/bot/deploys.log on the server (time, release, commit, the PRs it brought since the last deploy),
 #    and the same list in the run's summary.
@@ -39,12 +45,84 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Does this push change anything that reaches the server? Compares the files changed since the last deploy
+  # (deploy/deploy-scope.ts lists what counts as research-only). Also finds the last deployed commit for the deploy log.
+  scope:
+    if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY != 'false'
     permissions:
       contents: read
       actions: read
-    # Pushes deploy unless AUTO_DEPLOY is set to 'false'; manual runs always deploy.
-    if: github.event_name == 'workflow_dispatch' || (vars.AUTO_DEPLOY != 'false' && !contains(github.event.head_commit.message, '[skip deploy]'))
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.scope.outputs.deploy }}
+      prev: ${{ steps.prev.outputs.prev }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Last deployed commit
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Last earlier run of this workflow whose deploy job succeeded (its head commit). A run whose deploy was skipped
+          # (research-only) or failed does not count. A tag deployed by a manual run or a rollback on the server is not
+          # seen: research-only pushes leave it in place. A failed API call is not "no deploy found": lookup=failed makes
+          # the push deploy, since the comparison could miss an earlier bot change whose own deploy failed.
+          prev="" lookup=ok
+          if runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=100" --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); then
+            for run in $runs; do
+              [ "${run%%:*}" = "$GITHUB_RUN_ID" ] && continue
+              if ! ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${run%%:*}/jobs" --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length'); then
+                lookup=failed; break
+              fi
+              if [ "$ok" -gt 0 ]; then prev=${run#*:}; break; fi
+            done
+          else
+            lookup=failed
+          fi
+          echo "previous deploy: ${prev:-unknown} (lookup $lookup)"
+          { echo "prev=$prev"; echo "lookup=$lookup"; } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      # The lockfile's esbuild alone (no npm ci), for the bundle check: deploy-scope.ts repeats the build's esbuild runs
+      # with --metafile to list the research/ files the release bundles. Without it every research/ source file counts
+      # as bot code.
+      - name: Bundler for the bundle check
+        id: esbuild
+        if: github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          v=$(node -p "require('./package-lock.json').packages['node_modules/esbuild'].version")
+          mkdir -p "$RUNNER_TEMP/esbuild" && cd "$RUNNER_TEMP/esbuild" && echo '{"private":true}' > package.json
+          npm install --no-audit --no-fund --loglevel=error "esbuild@$v"
+          echo "bin=$RUNNER_TEMP/esbuild/node_modules/.bin/esbuild" >> "$GITHUB_OUTPUT"
+
+      - name: Does this push change bot code
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PREV_DEPLOY: ${{ steps.prev.outputs.prev }}
+          PREV_LOOKUP: ${{ steps.prev.outputs.lookup }}
+          BEFORE: ${{ github.event.before }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          ESBUILD: ${{ steps.esbuild.outputs.bin }}
+        run: |
+          # Writes deploy=true|false and the run summary; whatever it cannot tell (lookup failed, no base) deploys.
+          node --experimental-strip-types --disable-warning=ExperimentalWarning deploy/deploy-scope.ts || echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: scope
+    permissions:
+      contents: read
+    # Manual runs always deploy. A push deploys unless AUTO_DEPLOY is 'false' or the scope job found nothing that reaches
+    # the server changed since the last deploy; "[skip deploy]" in the message no longer decides. Only an explicit
+    # 'false' from the scope job skips: a failed scope job deploys.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (vars.AUTO_DEPLOY != 'false' && needs.scope.outputs.deploy != 'false')) }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -61,15 +139,10 @@ jobs:
       - name: Merges this deploy brings
         id: merges
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Last earlier run of this workflow whose deploy job succeeded (the scope job's "Last deployed commit").
+          PREV: ${{ needs.scope.outputs.prev }}
         run: |
-          # Last earlier run of this workflow whose deploy job succeeded.
-          prev=""
-          for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=30" --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); do
-            [ "${run%%:*}" = "$GITHUB_RUN_ID" ] && continue
-            ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${run%%:*}/jobs" --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length')
-            if [ "$ok" -gt 0 ]; then prev=${run#*:}; break; fi
-          done
+          prev="$PREV"
           prs=""
           if [ -n "$prev" ] && git cat-file -e "$prev^{commit}" 2>/dev/null; then
             prs=$(git log --first-parent --reverse --format=%s "$prev..HEAD" | grep -oE '#[0-9]+' | sort -u -t'#' -k2 -n | paste -sd, - || true)
@@ -109,8 +182,10 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
-          script_stop: true
+          # No script_stop here: it inserts an exit-code line after every script line, inside the Python heredoc too,
+          # which made this check a SyntaxError on every run. set -euo pipefail stops on the first failure instead.
           script: |
+            set -euo pipefail
             python3 - <<'PYMODE'
             import pathlib
             p = pathlib.Path.home() / 'bot/bot.env'
@@ -227,8 +302,9 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
-          script_stop: true
+          # No script_stop (see "Verify paper mode before deploying this release"): set -euo pipefail instead.
           script: |
+            set -euo pipefail
             systemctl is-active --quiet kalshi-bot
             python3 - <<'PYMODE'
             import pathlib, subprocess

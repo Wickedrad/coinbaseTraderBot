@@ -166,6 +166,27 @@ test('kill switch persists across restarts and cancels orders on engage', async 
   assert.equal(new KillSwitch(file, audit).engaged, false);
 });
 
+test('kill switch: STOP ALL on a switch an automatic trip engaged marks it manual, persisted, the first cause kept; a reset clears it', async () => {
+  const file = path.join(tmpDir(), 'kill.json');
+  const audit = tmpAudit();
+  const k = new KillSwitch(file, audit);
+  await k.engage('5 consecutive order errors', 'oms');
+  assert.equal(k.manual, false);
+  await k.engage('operator STOP ALL', 'api:127.0.0.1');
+  assert.equal(k.manual, true);
+  const k2 = new KillSwitch(file, audit);
+  assert.equal(k2.manual, true, 'survives a restart');
+  assert.deepEqual([k2.status().source, k2.status().reason, k2.status().manualSource, k2.status().manualReason], ['oms', '5 consecutive order errors', 'api:127.0.0.1', 'operator STOP ALL']);
+  // A later automatic trip does not undo it.
+  await k2.engage('reconciliation break', 'recon');
+  assert.equal(k2.manual, true);
+  k2.reset('tester');
+  assert.equal(k2.manual, false);
+  assert.equal(new KillSwitch(file, audit).status().manualSource, undefined);
+  await k2.engage('daily loss', 'risk');
+  assert.equal(k2.manual, false, 'a fresh automatic trip after the reset is not manual');
+});
+
 test('order rate: new risk stops at 80% of the per-minute limit, exits may use all of it', () => {
   const exit = intent({ side: 'ask', reduceOnly: true, purpose: 'exit', timeInForce: 'immediate_or_cancel', postOnly: false, price: 0.44, count: 1 });
   assert.ok(gw.check(intent(), ctx({ ordersLastMinute: 23 })).ok);

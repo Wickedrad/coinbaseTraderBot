@@ -134,6 +134,14 @@ export class Oms extends EventEmitter {
     return c ? this.orders.get(c) : undefined;
   }
 
+  /** This market's orders created at or after `sinceTs`, finished ones included (the in-flight exit guard, bot/oms/exitGuard.ts:
+   *  an exit acknowledged as filled is finished before its fills are booked). */
+  recentOrders(ticker: string, sinceTs: number): OrderRecord[] {
+    const out: OrderRecord[] = [];
+    for (const o of this.orders.values()) if (o.ticker === ticker && o.createdTs >= sinceTs) out.push(o);
+    return out;
+  }
+
   ordersSentInLast(ms: number): number {
     const cutoff = this.now() - ms;
     while (this.orderTimes.length && this.orderTimes[0] < cutoff) this.orderTimes.shift();
