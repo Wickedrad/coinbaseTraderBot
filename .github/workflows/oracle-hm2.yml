@@ -48,6 +48,8 @@ name: Oracle heat map HM2
 #   [heat-hm2-drill-parts:S]       with [heat-hm2-drill:<run>] (and with [heat-hm2-drill-league:<run>]: which parts to read)
 #   [heat-hm2-drill-twins:quarter] with [heat-hm2-drill:<run>]: the twins run tiers 1-2 and a seeded quarter of tier 3
 #   [heat-hm2-drill-league:<run>]  Part 3's league only, from the drill files already on Drive
+#   [heat-hm2-drill-partial]       bare tag, with [heat-hm2-drill-league:<run>] only: the league may run on an incomplete set of series or
+#                                  parts, labelled partial in league.md, summary.json and the pack (default: it stops when one is missing)
 #   [heat-hm2-drill-parity:<run>]  Part 3's parity of the gate rows, then live_ready (alone in its push)
 # One tagged study at a time: the plan step stops when another tagged oracle-hm2 run is queued or in progress, so the
 # thread never has more than 10 jobs up (9 series or drill jobs plus one). A bench never shares a push with the study
@@ -106,6 +108,7 @@ jobs:
       parts: ${{ steps.plan.outputs.parts }}
       drill_parts: ${{ steps.plan.outputs.drill_parts }}
       drill_twins: ${{ steps.plan.outputs.drill_twins }}
+      drill_partial: ${{ steps.plan.outputs.drill_partial }}
       patterns: ${{ steps.plan.outputs.patterns }}
       outside: ${{ steps.plan.outputs.outside }}
       series: ${{ steps.plan.outputs.series }}
@@ -130,6 +133,10 @@ jobs:
           run=$ids; any=false; [ -z "$run" ] || any=true
           num() { local v; v=$(grep -oE "\[heat-hm2$1:[0-9]+\]" <<< "$MSG" | head -1 | grep -oE ':[0-9]+' | tr -d : || true); echo "${v:-1}"; }
           parts=$((10#$(num -parts))); drill_parts=$((10#$(num -drill-parts)))
+          # [heat-hm2-drill-partial] (bare tag, with [heat-hm2-drill-league:<run>] only): the drill league may run on an incomplete set
+          # of series or parts, labelled as partial; without it the league stops when any of the 16 series x S parts is missing
+          if grep -qF '[heat-hm2-drill-partial]' <<< "$MSG"; then drill_partial=true; else drill_partial=false; fi
+          if [ "$drill_partial" = true ] && [ "$drill_league" != true ]; then echo "::error::[heat-hm2-drill-partial] goes with [heat-hm2-drill-league:<run>] only"; exit 1; fi
           for s in "$parts" "$drill_parts"; do
             [ "$s" -ge 1 ] && [ "$s" -le 16 ] || { echo "::error::parts must be 1 to 16, not $s"; exit 1; }
           done
@@ -190,7 +197,7 @@ jobs:
             echo "run=$run"; echo "drive=$drive"; echo "minutes=$minutes"
             echo "study=$study"; echo "bench=$bench"; echo "league=$league"; echo "parity=$parity"
             echo "drill=$drill"; echo "drill_bench=$drill_bench"; echo "drill_league=$drill_league"; echo "drill_parity=$drill_parity"
-            echo "parts=$parts"; echo "drill_parts=$drill_parts"; echo "drill_twins=$drill_twins"
+            echo "parts=$parts"; echo "drill_parts=$drill_parts"; echo "drill_twins=$drill_twins"; echo "drill_partial=$drill_partial"
             echo "patterns=$patterns"
             echo "outside=$outside"
             echo "series=$(m16 "$parts" false)"
@@ -763,9 +770,15 @@ jobs:
           set -euo pipefail
           W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs"
           mapfile -t F < "$W/data/flags.txt"
+          # (Nov 12 2026, bench run 43279761623 was killed after 27 silent minutes: "The runner has received a shutdown signal")
+          # memory telemetry every minute (total and the five biggest processes); 2 workers and 60 units so the bench finishes
+          # inside its 60 minutes and shows the memory of the parent and of a worker (the projection is rescaled to 3-4 workers by hand)
+          ( while sleep 60; do echo "[mem $(date -u +%H:%M)] $(free -m | awk '/Mem/{print "used "$3" avail "$7" MB"}') | $(ps -eo rss,comm --sort=-rss | head -6 | tail -5 | awk '{printf "%d MB %s; ", $1/1024, $2}')"; done ) &
+          MEMPID=$!
           /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2_drill bench "${F[@]}" --main-meta "$W/data/metas/BTC/meta.json" \
-            --twin 0 --units "$W/data/drill/units.json" --hm2-series "$W/data/hm2series" --n-units 200 --out "$W/out/drill-bench" \
+            --twin 0 --units "$W/data/drill/units.json" --hm2-series "$W/data/hm2series" --n-units 60 --procs 2 --out "$W/out/drill-bench" \
             2>&1 | tee "$W/out/logs/drill-bench.log"
+          kill $MEMPID 2>/dev/null || true
           grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
           echo "free disk: $(df -h --output=avail "$W" | tail -1 | tr -d ' ')"
           cat "$W/out/drill-bench/bench.json"
@@ -838,22 +851,37 @@ jobs:
             while sleep 120; do
               if [ -d "$sh" ]; then rclone move "$sh" "$R/$ds" --include '*.npz' --min-age 2m --transfers 4 -q || echo "::warning::shard move failed (retried)"; fi
               echo "[$(date -u +%H:%M)] free disk $(df -h --output=avail "$W" | tail -1 | tr -d ' '), local shards $(du -sh "$sh" 2>/dev/null | cut -f1)"
+              free -m | awk '/^Mem/{print "  memory: total "$2"M used "$3"M available "$7"M (all processes)"}' || true
             done
           }
           mover & MV=$!
           trap 'kill $MV 2>/dev/null || true' EXIT
+          # the drill's exit status is kept, so the last shards still move to Drive when it fails (pre-run audit W4)
+          set +e
           /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2_drill coin "${F[@]}" --main-meta "$W/data/metas/$LABEL/meta.json" \
             --twin "$TW" --units "$W/data/drill/units.json" --hm2-series "$W/data/hm2series" --out "$o" --shards "$sh" --part "$PI/$PS" --procs 4 "${X[@]}" \
             2>&1 | tee "$W/out/logs/drill-$TAG.log"
+          rc=${PIPESTATUS[0]}
+          set -e
           kill $MV 2>/dev/null || true
-          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
-          if [ -d "$sh" ]; then rclone move "$sh" "$R/$ds" --include '*.npz' --transfers 8; echo "drill shards on Drive: $ds"; fi
-          echo "free disk: $(df -h --output=avail "$W" | tail -1 | tr -d ' ')"; ls -la "$o"
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt" || true
+          if [ -d "$sh" ]; then
+            if rclone move "$sh" "$R/$ds" --include '*.npz' --transfers 8; then echo "drill shards on Drive: $ds"; else echo "::warning::final shard move failed (shards left in $sh)"; fi
+          fi
+          echo "free disk: $(df -h --output=avail "$W" | tail -1 | tr -d ' ')"; ls -la "$o" || true
+          if [ "$rc" -ne 0 ]; then echo "::error::the drill exited with status $rc"; exit "$rc"; fi
       - name: Put the drill's small files to Drive
+        if: ${{ !cancelled() }}           # a failed drill still puts what it wrote (a directory without meta.json is never read as a series)
         run: |
           set -euo pipefail
-          cp "out/logs/drill-$TAG.log" "out/drill/$SUB/"
-          bash deploy/drive_lab.sh put "$D/drill/$SUB" "out/drill/$SUB"
+          mkdir -p "out/drill/$SUB"
+          cp "out/logs/drill-$TAG.log" "out/drill/$SUB/" 2>/dev/null || echo "::warning::no drill log to copy"
+          if [ -s "out/drill/$SUB/meta.json" ]; then
+            bash deploy/drive_lab.sh put "$D/drill/$SUB" "out/drill/$SUB"
+          else                            # no meta.json of this run: never beside an earlier run's meta.json (its block files would mix in)
+            echo "::warning::the drill wrote no meta.json; its files go to $D/drill/$SUB/incomplete-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT (never read as a series)"
+            bash deploy/drive_lab.sh put "$D/drill/$SUB/incomplete-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "out/drill/$SUB"
+          fi
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
@@ -868,7 +896,8 @@ jobs:
     if: >-
       ${{ !cancelled() && needs.test.result == 'success'
       && (needs.test.outputs.drill == 'true' || needs.test.outputs.drill_league == 'true')
-      && (needs.drill-units.result == 'success' || (needs.drill-units.result == 'skipped' && needs.test.outputs.drill != 'true')) }}
+      && (needs.drill-units.result == 'success' || (needs.drill-units.result == 'skipped' && needs.test.outputs.drill != 'true'))
+      && (needs.test.outputs.drill != 'true' || needs.drill.result == 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
@@ -877,6 +906,7 @@ jobs:
       RUN: ${{ needs.test.outputs.run }}
       D: ${{ needs.test.outputs.drive }}
       DPS: ${{ needs.test.outputs.drill_parts }}
+      DPARTIAL: ${{ needs.test.outputs.drill_partial }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -894,7 +924,8 @@ jobs:
       - name: Every drill series' small files (all parts of S = the drill parts tag; no shard) and the units
         run: |
           set -euo pipefail
-          bash deploy/drive_lab.sh get "$D/drill" data/drill --exclude "*.npz" --include "/units.json" --include "/*/part*of${DPS}/**"
+          # the league reads the slim top tables (b*_top1.csv.gz: rank 1 of both lists and the first ranks of the main list), never the full b*_top.csv.gz
+          bash deploy/drive_lab.sh get "$D/drill" data/drill --exclude "*.npz" --exclude "*_top.csv.gz" --include "/units.json" --include "/*/part*of${DPS}/**"
           [ -s data/drill/units.json ] || { echo "::error::no units.json under $D/drill"; exit 1; }
           find data/drill -maxdepth 2 -type d | sort
       - name: Drill league (chance table, league views, cards, profiles, gate rows into hm2_pack.json)
@@ -902,10 +933,12 @@ jobs:
         run: |
           set -euo pipefail
           W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs"
+          PARTIAL=""; [ "${DPARTIAL:-false}" != true ] || PARTIAL="--allow-partial"
           # stops if hm2_pack.json's non-gate rows changed since the units were built (live_ready aside: heat_hm2_league.tier2_sha)
           python3 -m oracle.heat_hm2_drill league --inputs "$W/data/drill" --units "$W/data/drill/units.json" \
             --hm2-pack "$W/research/oracle_heat/latest/hm2_pack.json" --hm2-live-meta "$W/research/oracle_heat/latest/hm2_live_meta.json" \
             --hm2-league "$W/research/oracle_heat/hm2" --out "$W/out/drill-league" \
+            --parts "$DPS" $PARTIAL \
             --stamp "drill of run $RUN; drill league job $GITHUB_RUN_ID at commit $GITHUB_SHA" 2>&1 | tee "$W/out/logs/drill-league.log"
           ls -la "$W/out/drill-league"
       - name: Put the drill league to Drive

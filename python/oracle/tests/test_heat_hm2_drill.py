@@ -780,6 +780,7 @@ def test_cli_on_engine_readings(tmp_path, monkeypatch):
     assert bj['workers'] == {'1': 1, '2': 1, '3': 1}                       # --procs 1: one worker whatever the blocks
     assert bj['unit_days'] > 0 and bj['instances_total'] >= bj['instances'] and bj['units_total'] >= bj['units_run']
     assert bj['projected_minutes']['1'] == pytest.approx(bj['base_minutes'] + bj['worker_minutes'], abs=0.11) and bj['parts_needed'] >= 1
+    assert bj['units_unknown'] == 0 and bj['units_unknown_eg'] == []                # (W6) the whole unit set's unknown keys
     m1 = json.load(open(os.path.join(bo, 'meta.json')))
     assert m1['label'] == 'BTC~twin1' and not m1['real'] and m1['league_check'] is None and not os.path.isdir(os.path.join(bo, 'shards'))
     own = lambda names: [p for p in names if p.startswith('OWN:')]
@@ -992,3 +993,146 @@ def test_gate_live_ready(tmp_path):
     assert got['G1']['live_ready'] and got['G2']['live_ready'] and not got['G7']['live_ready']
     with pytest.raises(SystemExit):
         dr.main(['live-ready', '--pack', str(pk), '--parity', str(tmp_path / 'none')])
+
+
+# ------------------------------------------------------------------------------- the pre-run audit (Nov 12 2026)
+def _twice(x):
+    return 2 * x
+
+
+def _die_on_1(x):
+    import time as _t
+    if x == 1:
+        os._exit(9)                                         # as the OOM killer: the worker is gone, no exception
+    _t.sleep(0.3)
+    return x
+
+
+_SAFE = dr._block_safe
+
+
+def _block_die_1(bid):
+    if bid == 1:
+        os._exit(9)
+    return _SAFE(bid)
+
+
+def _block_raise_2(bid):
+    if bid == 2:
+        raise RuntimeError('block two broke')
+    return dr.__dict__['_block_job_orig'](bid)
+
+
+def test_fork_map_order_and_fail_fast():
+    """(W3) The drill's map gives results in item order (fork workers and serial alike) and a killed worker raises
+    BrokenProcessPool at once instead of hanging; what finished before stays in `done`."""
+    from concurrent.futures.process import BrokenProcessPool
+    assert dr._fork_map(_twice, range(7), 3) == [2 * i for i in range(7)] == dr._fork_map(_twice, range(7), 1)
+    done = []
+    assert dr._fork_map(_twice, [5], 4, done=done) == [10] and done == [(5, 10)]
+    done = []
+    with pytest.raises(BrokenProcessPool):
+        dr._fork_map(_die_on_1, [0, 1, 2, 3, 4, 5], 2, done=done)
+    assert all(r == x for x, r in done) and 1 not in [x for x, _ in done]
+
+
+def test_quarter_subset_ignores_chart_units():
+    """(F2/C6) The twin fallback's quarter depends on the units file and on unit ids only: the same file list with 650
+    or 661 chart units appended gives identical flags on every shared id; a chart unit's flag is crc32(id) % 4 == 0."""
+    import zlib
+    base = [dr._unit('X', 'level', f'1m:L{i}=high', 1 if i < 5 else 3, 'test') for i in range(400)]
+    chart = [dr._unit('X', 'chart', f'15m:CHART.z4.P{i}=break up', 3, 'chart') for i in range(661)]
+    a, b = dr.quarter_subset(base + chart[:650]), dr.quarter_subset(base + chart)
+    shared = {u['id'] for u in base + chart[:650]}
+    assert a & shared == b & shared and a == b - {u['id'] for u in chart[650:]}
+    assert a & {u['id'] for u in base} == dr.quarter_subset(base)
+    assert all((u['id'] in b) == (zlib.crc32(u['id'].encode()) % 4 == 0) for u in chart)
+    assert 0 < len(b & {u['id'] for u in chart}) < len(chart) and {u['id'] for u in base[:5]} <= a
+
+
+def test_failed_block_recorded_and_checks(noise, tmp_path, monkeypatch):
+    """(W4, W2, C3) A block that raises is recorded as missing (its files gone), every other block is kept; meta.json
+    is written before the checks and a failing league check is recorded, not raised; the slim top table holds the
+    full table's rank-1 rows and the main list's top TOP_FULL, unchanged; the pack check runs on the real coin."""
+    ctx = noise[0]['ctx']
+    monkeypatch.setattr(dr, 'BLOCK_UNIT_DAYS', 120)
+    monkeypatch.setitem(dr.__dict__, '_block_job_orig', dr._block_job)
+    monkeypatch.setattr(dr, '_block_job', _block_raise_2)
+    monkeypatch.setattr(dr, 'check_league', lambda *a, **k: (_ for _ in ()).throw(ValueError('league check broke')))
+    units = [(k, key, t, dict(e, extra={**e.get('extra', {}), 'pack': {'15': {'dir': 1, 'onset_dir_A': 1, 'n_A': 1, 'n_B': None}}})
+              if k == 'hm2' else e) for k, key, t, e in NOISE_UNITS]
+    out = str(tmp_path / 'X')
+    m = dr.run_series('X', '', out, _units(units, PACK), procs=2, ctx=ctx, log=NOOP)
+    assert m['blocks_total'] == len(NOISE_UNITS) and m['blocks_missing'] == [2] and [f['block'] for f in m['blocks_failed']] == [2]
+    assert 'block two broke' in m['blocks_failed'][0]['error'] and m['pool_error'] is None
+    with pytest.raises(SystemExit, match=r'1 blocks failed: \[2\]'):         # the coin job exits non-zero after meta.json
+        dr._exit_if_blocks_failed(m)
+    dr._exit_if_blocks_failed({**m, 'blocks_failed': []})                     # a complete series exits 0
+    assert not [f for f in os.listdir(out) if f.startswith('b00002_')] and os.path.isfile(os.path.join(out, 'b00003_top.csv.gz'))
+    assert m['league_check'] == {'error': "ValueError('league check broke')"} and json.load(open(os.path.join(out, 'meta.json')))['league_check'] == m['league_check']
+    assert m['pack_check']['checked'] == 1 and m['pack_check']['n_A_differ'] == 1 and m['pack_check']['n_B_differ'] == 0
+    for f in sorted(os.listdir(noise[0]['out'])):
+        if f.endswith('_top.csv.gz') and os.path.getsize(os.path.join(noise[0]['out'], f)) > 30:
+            T = pd.read_csv(os.path.join(noise[0]['out'], f))
+            T1 = pd.read_csv(os.path.join(noise[0]['out'], f.replace('_top.csv.gz', '_top1.csv.gz')))
+            want = T[((T['list'] == 'main') & (T['rank'] <= dr.TOP_FULL)) | (T['rank'] == 1)].reset_index(drop=True)
+            pd.testing.assert_frame_equal(T1, want)
+            assert len(T1) < len(T) and set(T1['rank']) <= set(range(1, dr.TOP_FULL + 1))
+
+
+def test_broken_pool_keeps_finished_blocks(noise, tmp_path, monkeypatch):
+    """(W3 with W4) A killed block worker stops the series job at once, after meta.json records the blocks that
+    finished; no file of an unfinished block stays."""
+    monkeypatch.setattr(dr, 'BLOCK_UNIT_DAYS', 120)
+    monkeypatch.setattr(dr, '_block_safe', _block_die_1)
+    out = str(tmp_path / 'X')
+    with pytest.raises(SystemExit, match='block pool failed'):
+        dr.run_series('X', '', out, _units(NOISE_UNITS, PACK), procs=2, ctx=noise[0]['ctx'], log=NOOP)
+    m = json.load(open(os.path.join(out, 'meta.json')))
+    assert 'BrokenProcessPool' in m['pool_error'] and 1 in m['blocks_missing'] and m['league_check'] is None
+    for b in range(m['blocks_total']):
+        has = bool([f for f in os.listdir(out) if f.startswith(f'b{b:05d}_')])
+        assert has == (b not in m['blocks_missing'])
+
+
+def test_unknown_units_twin_tolerated(noise, tmp_path):
+    """(W6) A unit key a series cannot resolve stops a real coin's job and is listed (and run around) on a twin."""
+    units = [NOISE_UNITS[0], ('level', '1m:NOPE=high', 3, {})]
+    U = _units(units)
+    with pytest.raises(SystemExit, match='unknown unit keys'):
+        dr.run_series('X', '', str(tmp_path / 'real'), U, procs=1, ctx=noise[0]['ctx'], log=NOOP)
+    m = dr.run_series('X', '', str(tmp_path / 'twin'), U, twin=1, procs=1, ctx=noise[1]['ctx'], log=NOOP)
+    assert m['units']['unknown_n'] == 1 and m['units']['unknown_eg'] == ['X|level|1m:NOPE=high'] and m['units']['run'] == 1
+    assert [x['id'] for x in m['units']['unknown']] == ['X|level|1m:NOPE=high'] and not m['units']['strict'] and m['pack_check'] is None
+
+
+def test_check_pack_toy(noise, tmp_path):
+    """(C3) build_units stores each HM2 pack call's dir, onset_dir_A and onset n_A / n_B per h (merged over the h rows
+    of one key); check_pack compares them with the drill's uncapped counts and direction (240 on the 240 grid)."""
+    pk = {'rows': [{'coin': 'BTC', 'kind': 'pair', 'key': 'F=x & G=y', 'h': 15, 'dir': 1, 'onset_dir_A': -1, 'conds': [['F', ['x']], ['G', ['y']]],
+                    'onset': {'n_A': 103148.0, 'n_B': 20622.0}},
+                   {'coin': 'BTC', 'kind': 'pair', 'key': 'F=x & G=y', 'h': 60, 'dir': 1, 'onset_dir_A': 1, 'conds': [['F', ['x']], ['G', ['y']]],
+                    'onset': {'n_A': 5.0, 'n_B': 6.0}},
+                   {'coin': 'BTC', 'kind': 'model', 'key': 'GBM.TA15=very high', 'h': 15, 'dir': -1, 'onset': {'n_A': 7.0, 'n_B': 8.0}}]}
+    dp = str(tmp_path / 'd.csv')
+    pd.DataFrame([{'coin': 'BTC', 'kind': 'single', 'key': '1m:A=high', 'h': 15, 'dir': 1, 'n_A': 9, 'n_B': 3, 'odds_A': 1.0}]).to_csv(dp, index=False)
+    us = {u['id']: u for u in dr.build_units(dp, '', '', pk, coins=['BTC'], chart=False)['coins']['BTC']}
+    assert us['BTC|hm2|F=x & G=y']['pack'] == {'15': {'dir': 1, 'onset_dir_A': -1, 'n_A': 103148, 'n_B': 20622},
+                                               '60': {'dir': 1, 'onset_dir_A': 1, 'n_A': 5, 'n_B': 6}}
+    assert us['BTC|model|GBM.TA15=very high']['pack'] == {'15': {'dir': -1, 'onset_dir_A': None, 'n_A': 7, 'n_B': 8}}
+    ctx = noise[0]['ctx']
+    k, key, t, e = NOISE_UNITS[3]
+    u = dr._unit('X', k, key, t, 'test', conds=e['conds'])
+    x = dr.split_instances(ctx, u, dr.unit_rows(ctx, u))
+    dr._ok240(ctx)
+    nA, nB = len(x.rA_all), len(ctx.g.in_split(x.fires, 'B'))
+    nA4, nB4 = int(ctx.ok240A[x.rA_all].sum()), int(ctx.ok240B[ctx.g.in_split(x.fires, 'B')].sum())
+    d = lambda H: int(x.d[dr.H_ALL.index(H)])                                         # noqa: E731
+    u['pack'] = {'15': {'dir': d(15), 'onset_dir_A': d(15), 'n_A': nA, 'n_B': nB}, '240': {'dir': -d(240), 'onset_dir_A': d(240), 'n_A': nA4, 'n_B': nB4},
+                 '60': {'dir': d(60), 'onset_dir_A': -d(60), 'n_A': nA + 1, 'n_B': None}}
+    v = dr._unit('X', 'level', '1m:R3=very high', 1, 'test', extra={'pack': {'15': {'n_A': 0}}})          # not an HM2 pack call: skipped
+    pc = dr.check_pack([u, v], {u['id']: x, v['id']: x}, ctx)
+    assert (pc['checked'], pc['n_A_differ'], pc['n_B_differ'], pc['onset_dir_differ'], pc['pack_dir_differ']) == (3, 1, 0, 1, 1)
+    assert pc['by_h']['240'] == {'checked': 1, 'n_A_differ': 0, 'n_B_differ': 0, 'onset_dir_differ': 0, 'pack_dir_differ': 1}
+    assert [(z['id'], z['h']) for z in pc['examples']] == [(u['id'], 60)] and pc['onset_dir_checked'] == 3
+    assert dr.check_pack([u], lambda w: x, ctx) == pc

@@ -171,6 +171,39 @@ def _read_json(p: str):
         return json.load(f)
 
 
+def _fork_map(fn, items, procs: int, done: list = None) -> list:
+    """(Pre-run audit W3) heat._pmap for the drill, failing fast: fork workers (they inherit _D and heat._W as under
+    multiprocessing.Pool) through concurrent.futures.ProcessPoolExecutor, results in the order of items. A worker
+    that dies (an OOM kill) raises BrokenProcessPool at once instead of hanging Pool.map until the job's time limit.
+    Serial when procs <= 1 or fewer than 2 items. done: when given, (item, result) of every finished item is appended
+    as it finishes, so a caller can keep what was finished before a broken pool."""
+    items = list(items)
+    if procs <= 1 or len(items) < 2:
+        res = []
+        for x in items:
+            r = fn(x)
+            res.append(r)
+            if done is not None:
+                done.append((x, r))
+        return res
+    import concurrent.futures as cf
+    import multiprocessing as mp
+    res = [None] * len(items)
+    with cf.ProcessPoolExecutor(min(int(procs), len(items)), mp_context=mp.get_context('fork')) as ex:
+        futs = {ex.submit(fn, x): i for i, x in enumerate(items)}
+        try:
+            for f in cf.as_completed(futs):
+                i = futs[f]
+                res[i] = f.result()
+                if done is not None:
+                    done.append((items[i], res[i]))
+        except BaseException:
+            for f in futs:
+                f.cancel()
+            raise
+    return res
+
+
 def _write_csv(df: pd.DataFrame, path: str) -> str:
     return hm._write_csv(df, path)
 
@@ -202,6 +235,26 @@ def _unit(coin, kind, key, tier, src, when=None, conds=None, aliases=(), extra=N
     if extra:
         u.update(extra)
     return u
+
+
+def _pack_count(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return int(round(v)) if math.isfinite(v) else None
+
+
+def _pack_block(r: dict) -> dict:
+    """(Pre-run audit C3) An HM2 pack row's own call at its h, stored on the unit as {'pack': {str(h): {dir,
+    onset_dir_A, n_A, n_B}}} (n_A / n_B: the row's onset counts) so the series job can compare the drill's fire rule
+    with the pack's (check_pack). A column only: nothing is filtered or flipped by it. {} when the row has no h."""
+    if r.get('h') is None:
+        return {}
+    on = r.get('onset') if isinstance(r.get('onset'), dict) else {}
+    od = r.get('onset_dir_A')
+    return {'pack': {str(int(r['h'])): {'dir': None if r.get('dir') is None else int(r['dir']), 'onset_dir_A': None if od is None else int(od),
+                                        'n_A': _pack_count(on.get('n_A')), 'n_B': _pack_count(on.get('n_B'))}}}
 
 
 def build_units(direction: str, direction_long: str = '', packs_dir: str = '', hm2_pack=None, coins=COINS, chart: bool = None) -> dict:
@@ -246,6 +299,8 @@ def build_units(direction: str, direction_long: str = '', packs_dir: str = '', h
                 v = seen[k]
                 v['source'] = sorted(set(v['source']) | set(u['source']))
                 v['aliases'] = sorted(set(v['aliases']) | set(u['aliases']))
+                if u.get('pack'):                   # an HM2 pack key listed at several h: one pack block per h
+                    v['pack'] = {**u['pack'], **v.get('pack', {})}
                 return
             seen[k] = u
 
@@ -266,11 +321,12 @@ def build_units(direction: str, direction_long: str = '', packs_dir: str = '', h
             for r in pack.get('rows', []):
                 if r.get('coin') != coin or r.get('kind') in GATE_KINDS:
                     continue
+                pb = _pack_block(r)                     # (pre-run audit C3) the pack's own call, for check_pack
                 if r.get('kind') == 'model':
-                    put(_unit(coin, 'model', r['key'], 2, 'hm2_pack.json', aliases=r.get('aliases', [])))
+                    put(_unit(coin, 'model', r['key'], 2, 'hm2_pack.json', aliases=r.get('aliases', []), extra=pb))
                 else:
                     put(_unit(coin, 'hm2', r['key'], 2, 'hm2_pack.json', conds=r.get('conds'), aliases=r.get('aliases', []),
-                              extra={'hm2_kind': r.get('kind')}))
+                              extra={'hm2_kind': r.get('kind'), **pb}))
         x = D[D['coin'] == coin]
         lg = {}
         for r in x.itertuples(index=False):
@@ -291,10 +347,15 @@ def build_units(direction: str, direction_long: str = '', packs_dir: str = '', h
 
 
 def quarter_subset(units: list) -> set:
-    """The twin fallback's units (fixed now): tier 1 and 2, plus a seeded quarter of tier 3 (the same on every twin)."""
-    t3 = [u['id'] for u in units if int(u['tier']) >= 3]
+    """The twin fallback's units (fixed now): tier 1 and 2, plus a seeded quarter of tier 3 (the same on every twin).
+    (Pre-run audit F2/C6) The quarter depends only on the units file and on unit ids, never on a series' own chart
+    units: the seeded permutation runs over the tier 3 units that are not of kind 'chart' (the units file's list, the
+    same on the coin and every twin); a chart unit is in the quarter when zlib.crc32(id) % 4 == 0, whatever the
+    other chart units of that series are."""
+    t3 = [u['id'] for u in units if int(u['tier']) >= 3 and u.get('kind') != 'chart']
     rng = np.random.default_rng(QUARTER_SEED)
     pick = set(np.asarray(t3, dtype=object)[rng.permutation(len(t3))[:int(math.ceil(len(t3) / 4))]]) if t3 else set()
+    pick |= {u['id'] for u in units if int(u['tier']) >= 3 and u.get('kind') == 'chart' and zlib.crc32(u['id'].encode()) % 4 == 0}
     return {u['id'] for u in units if int(u['tier']) < 3} | pick
 
 
@@ -517,6 +578,51 @@ def check_league(units: list, insts: dict, ctx) -> dict:
             out['d_differ'] += bad_d
             if (bad_n or bad_d) and len(out['examples']) < 20:
                 out['examples'].append({'id': u['id'], 'h': H, 'n_A': [nA, v['n_A']], 'n_B': [nB, v.get('n_B')], 'dir': [int(x.d[hi]), v['dir']]})
+    return out
+
+
+def check_pack(units: list, insts: dict, ctx) -> dict:
+    """(Pre-run audit C3 a/b) HM2 pack calls ('hm2' and 'model' units) on the real coins, modelled on check_league:
+    at each pack h, the drill's uncapped A instance count and B instance count against the pack row's onset n_A /
+    n_B, and the drill's direction d against the pack row's onset_dir_A (the onset's own A direction; a model row
+    has none, so only its counts are compared) and, apart, against the pack row's dir. Informational: it filters,
+    flips and stops nothing. 240 is included: HM2 counts the 240 onsets on the same h240() grid the drill's ctx.g240
+    is (heat_hm2._full_both: g240.full(g240.in_split(rows, split))), which ctx.ok240A / ok240B select as in
+    check_league. insts: unit id -> Inst, or a function unit -> Inst (built when needed, so a series job never holds
+    every pack unit's instances at once)."""
+    out = {'checked': 0, 'n_A_differ': 0, 'n_B_differ': 0, 'onset_dir_checked': 0, 'onset_dir_differ': 0, 'pack_dir_differ': 0,
+           'by_h': {}, 'examples': []}
+    _ok240(ctx)
+    for u in units:
+        pk = u.get('pack')
+        if not pk or u.get('kind') not in ('hm2', 'model'):
+            continue
+        x = insts(u) if callable(insts) else insts.get(u['id'])
+        if x is None:
+            continue
+        rB = ctx.g.in_split(x.fires, 'B')
+        for hs, v in sorted(pk.items(), key=lambda kv: int(kv[0])):
+            H = int(hs)
+            if H not in H_ALL:
+                continue
+            hi = H_ALL.index(H)
+            nA = int(len(x.rA_all)) if H < 240 else int(ctx.ok240A[x.rA_all].sum())
+            nB = int(len(rB)) if H < 240 else int(ctx.ok240B[rB].sum())
+            d = int(x.d[hi])
+            bh = out['by_h'].setdefault(str(H), {'checked': 0, 'n_A_differ': 0, 'n_B_differ': 0, 'onset_dir_differ': 0, 'pack_dir_differ': 0})
+            out['checked'] += 1
+            bh['checked'] += 1
+            bad_a = v.get('n_A') is not None and nA != int(v['n_A'])
+            bad_b = v.get('n_B') is not None and nB != int(v['n_B'])
+            bad_od = v.get('onset_dir_A') is not None and d != int(v['onset_dir_A'])
+            bad_pd = v.get('dir') is not None and d != int(v['dir'])
+            out['onset_dir_checked'] += v.get('onset_dir_A') is not None
+            for k, b in (('n_A_differ', bad_a), ('n_B_differ', bad_b), ('onset_dir_differ', bad_od), ('pack_dir_differ', bad_pd)):
+                out[k] += int(b)
+                bh[k] += int(b)
+            if (bad_a or bad_b or bad_od) and len(out['examples']) < 10:
+                out['examples'].append({'id': u['id'], 'h': H, 'n_A': [nA, v.get('n_A')], 'n_B': [nB, v.get('n_B')], 'dir': [d, v.get('onset_dir_A')],
+                                        'pack_dir': v.get('dir')})
     return out
 
 
@@ -1682,7 +1788,7 @@ def specific_all(ctx, params: list, procs: int = 1) -> dict:
     _spec_rows(ctx)
     _D.clear()
     _D.update(ctx=ctx, params=params)
-    res = heat._pmap(_spec_job, idx, procs)
+    res = _fork_map(_spec_job, idx, procs)
     _D.clear()
     cache = ctx.__dict__.setdefault('_drill_spec', {})
     for i, r in zip(idx, res):
@@ -2641,6 +2747,10 @@ def _block_job(bid: int) -> dict:
         Ld['twin'] = _D['twin']
     pre = os.path.join(out, f'b{bid:05d}')
     sha = _write_csv(T, pre + '_top.csv.gz')
+    # (pre-run audit W2) the slim copy the league's readers need (rank 1 of either list, the main list's top TOP_FULL):
+    # the same rows and columns as the full table, which stays as it is
+    T1 = T[((T['list'] == 'main') & (T['rank'] <= TOP_FULL)) | (T['rank'] == 1)] if len(T) else T
+    sha1 = _write_csv(T1, pre + '_top1.csv.gz')
     _write_csv(Ud, pre + '_units.csv.gz')
     _write_csv(Ld, pre + '_losers.csv.gz')
     _write_csv(D2, pre + '_depth2.csv.gz')
@@ -2649,7 +2759,38 @@ def _block_job(bid: int) -> dict:
     clipped = int(sum(x.clipped for x in insts))
     return {'block': bid, 'units': len(insts), 'instances': int(sum(len(x.rows) for x in insts)), 'unit_days': int(sum(x.G for x in insts)),
             'params': so.n_params, 'top_sha256': sha, 'shard_bytes': shard_bytes, 'clipped': clipped, 'seconds': round(time.time() - t0, 1),
-            'depth2_subsets': len(live)}
+            'depth2_subsets': len(live), 'top1_sha256': sha1, 'top1_rows': int(len(T1))}
+
+
+def _block_files(out: str, shards: str, bid: int) -> list:
+    pre = f'b{bid:05d}_'
+    fs = [os.path.join(out, f) for f in (sorted(os.listdir(out)) if os.path.isdir(out) else []) if f.startswith(pre)]
+    sp = os.path.join(shards, f'drill_{bid:05d}.npz') if shards else ''
+    return fs + ([sp] if sp and os.path.isfile(sp) else [])
+
+
+def _drop_block_files(out: str, shards: str, bid: int):
+    """A failed block's partial files go, so nothing on disk names a block meta.json does not list as done."""
+    for p in _block_files(out, shards, bid):
+        with contextlib.suppress(OSError):
+            os.remove(p)
+
+
+def _block_safe(bid: int) -> dict:
+    """(Pre-run audit W4) _block_job, with an exception recorded instead of raised: the block is reported as failed
+    (its partial files removed) and becomes one of meta.json's blocks_missing; every other block's result is kept."""
+    try:
+        t0 = time.time()
+        print(f'  block {bid}: start ({len(_D["blocks"][bid])} units, rss {_rss_mb()} MB)', flush=True)
+        r = _block_job(bid)
+        print(f'  block {bid}: done in {time.time() - t0:.0f}s, {r.get("instances")} instances, rss {_rss_mb()} MB', flush=True)
+        return r
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f'::warning::drill block {bid} failed: {e!r}\n{tb}', flush=True)
+        _drop_block_files(_D.get('out', ''), _D.get('shards', ''), bid)
+        return {'block': bid, 'error': repr(e), 'traceback': tb[-4000:]}
 
 
 def _parse_blocks(s: str):
@@ -2712,45 +2853,105 @@ def run_series(asset: str, csv: str, out: str, units, twin: int = 0, procs: int 
     if max_units:
         ulist = ulist[:max_units]
     t = time.time()
-    kept, unknown = prepare_units(ctx, ulist, log, strict=strict)
+    # (pre-run audit W6/F5) real coins stay strict; a twin lists the unit keys it cannot resolve and carries on (a
+    # unit with no reading on a twin has no fires there: it is absent from that twin, nothing is tuned toward the coin)
+    kept, unknown = prepare_units(ctx, ulist, log, strict=strict and not twin)
+    if unknown:
+        log(f'{label}: {len(unknown)} unit keys unknown on this series (kept running): {[x["id"] for x in unknown]}')
     sec['units'] = round(time.time() - t, 1)
     bl = plan_blocks(ctx, kept, part)
     todo = list(range(len(bl))) if blocks is None else [b for b in blocks if b < len(bl)]
+    shards = shards or os.path.join(out, 'shards')
     _D.clear()
-    _D.update(ctx=ctx, units=kept, blocks=bl, params=ctx.params, out=out, label=label, twin=int(twin), real=bool(ctx.real),
-              shards=shards or os.path.join(out, 'shards'))
-    t = time.time()
-    res = heat._pmap(_block_job, todo, procs)
-    sec['blocks'] = round(time.time() - t, 1)
-    lc = None
-    if not twin:
-        insts = {}
-        for u in kept[:2000]:
-            if u.get('league'):
-                insts[u['id']] = split_instances(ctx, u, u['rows'])
-        lc = check_league(kept, insts, ctx)
-        log(f'{label}: league check: {lc["checked"]} rows, {lc["n_differ"]} counts and {lc["d_differ"]} directions differ')
+    _D.update(ctx=ctx, units=kept, blocks=bl, params=ctx.params, out=out, label=label, twin=int(twin), real=bool(ctx.real), shards=shards)
     mp = os.path.join(out, 'meta.json')
     old = _read_json(mp) if blocks is not None else None
     done = {int(r['block']): r for r in (old or {}).get('blocks_done', [])}
-    for r in res:
-        done[int(r['block'])] = r
+    t = time.time()
+    # (pre-run audit W3/W4) a failed block is recorded (blocks_failed, blocks_missing), the other blocks are kept; a
+    # killed worker breaks the pool at once (BrokenProcessPool): what finished before is written to meta.json, the rest
+    # is missing, and the job then stops
+    fin, pool_error = [], None
+    rss_before = _rss_mb()
+    log(f'{label}: {len(todo)} blocks on {procs} workers; the process holds {rss_before} MB before the blocks')
+    try:
+        _fork_map(_block_safe, todo, procs, done=fin)
+    except Exception as e:                  # BrokenProcessPool (an OOM kill) or another pool failure
+        pool_error = repr(e)
+        log(f'::error::{label}: the block pool failed: {pool_error}; {len(fin)} of {len(todo)} blocks finished')
+    sec['blocks'] = round(time.time() - t, 1)
+    failed = []
+    fin_ids = {int(b) for b, _ in fin}
+    for b, r in fin:
+        if r is None or 'error' in r:
+            failed.append({'block': int(b), 'error': (r or {}).get('error', 'no result'), 'traceback': (r or {}).get('traceback')})
+            done.pop(int(b), None)
+        else:
+            done[int(r['block'])] = r
+    for b in todo:                          # a block the broken pool never finished: no file of it may stay
+        if int(b) not in fin_ids:
+            _drop_block_files(out, shards, int(b))
+            done.pop(int(b), None)
+            failed.append({'block': int(b), 'error': pool_error or 'not run', 'traceback': None})
+    for f in failed:
+        log(f'::warning::{label}: block {f["block"]} missing: {f["error"]}')
+    unk_ids = [x['id'] for x in unknown]
     meta = {'schema': SCHEMA_SERIES, 'asset': asset, 'label': label, 'twin': int(twin), 'real': bool(ctx.real), 'part': list(part),
             'units_sha256': U.get('sha256'), 'hm2_nongate_sha256': U.get('hm2_nongate_sha256'), 'twin_units': twin_units,
             'units': {'listed': len(ulist), 'run': len(kept), 'unknown': unknown, 'copies': sum(len(u.get('copies', [])) for u in kept),
-                      'tiers': {str(t_): sum(1 for u in kept if int(u['tier']) == t_) for t_ in (1, 2, 3)}},
+                      'tiers': {str(t_): sum(1 for u in kept if int(u['tier']) == t_) for t_ in (1, 2, 3)},
+                      'unknown_n': len(unknown), 'unknown_eg': unk_ids[:20], 'strict': bool(strict and not twin)},
             'blocks_total': len(bl), 'blocks_done': [done[k] for k in sorted(done)], 'blocks_missing': [b for b in range(len(bl)) if b not in done],
             'block_units': [[kept[i]['id'] for i in b] for b in bl],
-            'A_CAP': A_CAP, 'clipped': int(sum(r['clipped'] for r in done.values())), 'league_check': lc,
+            'A_CAP': A_CAP, 'clipped': int(sum(r['clipped'] for r in done.values())), 'league_check': None,
             'pct': getattr(ctx, 'pct_check', None), 'part_effects_check_max_abs_odds': getattr(ctx, 'part_check', None),
             'gbm': [R['name'] for R in ctx.gbm], 'chart': getattr(ctx, 'chart_info', None), 'params': len(ctx.params),
             'param_names': [p.name for p in ctx.params], 'horizons': H_ALL, 'tracks': list(TRACKS),
             'splits': {s: [str(pd.Timestamp(a, unit='ms')), str(pd.Timestamp(b, unit='ms'))] for s, (a, b) in heat.SPLITS.items()},
             'table_sha256': hashlib.sha256(''.join(done[k]['top_sha256'] or '' for k in sorted(done)).encode()).hexdigest(),
-            'seconds': {**sec, **getattr(ctx, 'drill_sec', {})}, 'seconds_total': round(time.time() - t_start, 1), 'peak_rss_mb': _rss_mb()}
-    _dump(meta, mp, indent=1)
-    log(f'{label}: {len(kept)} units in {len(bl)} blocks ({len(todo)} run) in {meta["seconds_total"]}s, peak {meta["peak_rss_mb"]} MB')
+            'blocks_failed': failed, 'pool_error': pool_error, 'pack_check': None,
+            'seconds': {**sec, **getattr(ctx, 'drill_sec', {})}, 'seconds_total': round(time.time() - t_start, 1), 'peak_rss_mb': _rss_mb(),
+            'rss_before_blocks_mb': rss_before, 'procs': int(procs)}
+    _dump(meta, mp, indent=1)               # (W4) on disk before the checks: a failing check never loses the blocks
+    if pool_error is not None:
+        raise SystemExit(f'{label}: the block pool failed ({pool_error}); meta.json lists {len(meta["blocks_missing"])} missing blocks')
+    if not twin:
+        insts = {}
+        try:
+            for u in kept[:2000]:
+                if u.get('league'):
+                    insts[u['id']] = split_instances(ctx, u, u['rows'])
+            lc = check_league(kept, insts, ctx)
+            log(f'{label}: league check: {lc["checked"]} rows, {lc["n_differ"]} counts and {lc["d_differ"]} directions differ')
+        except Exception as e:
+            lc = {'error': repr(e)}
+            log(f'::warning::{label}: league check failed: {e!r}')
+        meta['league_check'] = lc
+        del insts
+        try:                                # (pre-run audit C3) the HM2 pack's calls against the drill's fire rule
+            pc = check_pack(kept, lambda u: split_instances(ctx, u, u['rows']), ctx)     # one unit's instances at a time
+            log(f'{label}: pack check: {pc["checked"]} rows, n_A {pc["n_A_differ"]}, n_B {pc["n_B_differ"]}, onset direction '
+                f'{pc["onset_dir_differ"]} of {pc["onset_dir_checked"]} and pack direction {pc["pack_dir_differ"]} differ')
+        except Exception as e:
+            pc = {'error': repr(e)}
+            log(f'::warning::{label}: pack check failed: {e!r}')
+        meta['pack_check'] = pc
+        meta['seconds_total'] = round(time.time() - t_start, 1)
+        meta['peak_rss_mb'] = _rss_mb()
+        _dump(meta, mp, indent=1)
+    log(f'{label}: {len(kept)} units in {len(bl)} blocks ({len(todo)} run, {len(failed)} failed) in {meta["seconds_total"]}s, '
+        f'peak {meta["peak_rss_mb"]} MB')
     return meta
+
+
+def _exit_if_blocks_failed(meta: dict) -> None:
+    """(post-audit review of W4) run_series keeps a failed block's record in meta.json and returns; the series job
+    must still exit non-zero so the run shows the series is incomplete (the workflow moves the shards and puts the
+    small files first, then fails the step)."""
+    f = meta.get('blocks_failed') or []
+    if f:
+        raise SystemExit(f'{meta.get("label")}: {len(f)} blocks failed: {[int(x["block"]) for x in f]} '
+                         f'(meta.json lists them under blocks_failed and blocks_missing)')
 
 
 def bench(asset: str, csv: str, out: str, units, n_units: int = 200, procs: int = 0, hm2_series: str = '', log=print, chart: bool = True,
@@ -2788,7 +2989,7 @@ def bench(asset: str, csv: str, out: str, units, n_units: int = 200, procs: int 
     full = [dict(u) for u in ul]
     ids = {u['id'] for u in full}
     full += [u for u in chart_units(ctx, asset) if u['id'] not in ids]
-    kept_all, _ = prepare_units(ctx, full, strict=False)
+    kept_all, unk_all = prepare_units(ctx, full, log, strict=False)      # (pre-run audit W6) the unknown keys of the whole unit set
     inst_all = unit_days = 0
     for u in kept_all:
         r_ = np.r_[_cap(ctx.g.in_split(u['rows'], 'A'), u['key']), ctx.g.in_split(u['rows'], 'B')]
@@ -2810,7 +3011,14 @@ def bench(asset: str, csv: str, out: str, units, n_units: int = 200, procs: int 
            'unit_days': int(unit_days), 'workers': {str(S): workers(S) for S in (1, 2, 3)},
            'projected_minutes': {str(S): round(wall(S), 1) for S in (1, 2, 3)},
            'parts_needed': next((S for S in range(1, 65) if wall(S) <= 300.0), 64), 'projected_shard_gb': round(shard / 1e9, 2),
-           'peak_rss_mb': _rss_mb(), 'seconds': round(time.time() - t, 1), 'instances_total': int(inst_all)}
+           'peak_rss_mb': _rss_mb(), 'rss_before_blocks_mb': meta.get('rss_before_blocks_mb'), 'procs': int(procs), 'blocks_total_run': meta['blocks_total'],
+           'seconds': round(time.time() - t, 1), 'instances_total': int(inst_all),
+           'units_unknown': len(unk_all), 'units_unknown_eg': unk_all[:5],
+           # (post-audit review of W4) a bench block that failed is out of ms_per_instance_param: listed, never silent
+           'blocks_failed': [int(f['block']) for f in meta.get('blocks_failed', [])], 'blocks_total': meta['blocks_total']}
+    if res['blocks_failed']:
+        log(f'::warning::bench: {len(res["blocks_failed"])} of {meta["blocks_total"]} blocks failed {res["blocks_failed"]}; '
+            f'the projection is over the other blocks')
     _dump(res, os.path.join(out, 'bench.json'), indent=1)
     log(json.dumps(res, indent=1))
     return res
@@ -3682,6 +3890,8 @@ def main(argv=None):
     lg.add_argument('--out', required=True)
     lg.add_argument('--stamp', default='')
     lg.add_argument('--merge-only', default='')
+    lg.add_argument('--parts', type=int, default=0)                # S of the drill parts tag (0: whatever the metas say)
+    lg.add_argument('--allow-partial', action='store_true')       # [heat-hm2-drill-partial]: an incomplete set is labelled, not refused (the completeness check is the league batch)
     pr = sub.add_parser('parity')
     hm._inputs(pr)
     pr.add_argument('--units', required=True)
@@ -3708,6 +3918,7 @@ def main(argv=None):
         mt = run_series(a.asset, a.csv, a.out, a.units, twin=a.twin, procs=a.procs, part=(pi, S), blocks=_parse_blocks(a.blocks),
                         twin_units=a.twin_units, hm2_series=a.hm2_series, shards=a.shards, chart=not a.no_chart, **kw)
         print(json.dumps({k: v for k, v in mt.items() if k not in ('blocks_done', 'block_units', 'param_names')}, indent=1))
+        _exit_if_blocks_failed(mt)
     elif a.cmd == 'bench':
         kw = hm._kw(a)
         bench(a.asset, a.csv, a.out, a.units, a.n_units, a.procs, a.hm2_series, chart=not a.no_chart, **kw)

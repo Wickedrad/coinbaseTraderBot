@@ -584,3 +584,42 @@ profiles, meta), as in HM2.
    No pass bar was added: apart from the two fixes (the exit rule and the direction rule), every change is a column, an
    order, a stratum, a list kept apart or a compute step.
 
+
+## Departures found by the pre-run audit (Nov 12 2026)
+
+Written Nov 12 2026, 2:18 PM EST (19:18 UTC), before the full drill ran; from the pre-run audit's verified findings
+(series side and workflow only; the drill league's completeness check, the slim read and the gate-row horizon filter
+are a later batch). No pass bar was added and no unit, parameter, level or cell is cut. The twins run the same code
+path as the coins except where named below. No number a coin or twin computes changed; the only flag that changes is
+`subset` under the opt-in `[heat-hm2-drill-twins:quarter]` fallback when chart units exist (item 4), which was wrong.
+
+1. **A failed block no longer discards the series (W4).** Each block runs inside a guard: an exception is logged,
+   the block's partial files are removed and it is listed in meta.json (`blocks_failed`, `blocks_missing`); the
+   other blocks are kept. meta.json is written before the league check and again after it; a failing league check
+   is recorded as `{'error': ...}` and the job goes on. In the workflow's drill job the last shard move only warns,
+   the drill's exit status is kept until the shards have moved, the "Put the drill's small files" step runs whenever
+   the job was not cancelled (a log that is missing is tolerated), and a run that wrote no meta.json puts its files
+   under `incomplete-<run id>-<attempt>/` so they never sit beside an earlier run's meta.json. The 2-minute mover line
+   also logs total, used and available memory (all processes). The design's "a missing block is rerun with
+   `--blocks`" is still not reachable from the workflow: a failed series job is rerun whole.
+2. **A killed worker fails fast (W3).** The drill's two fork maps (blocks, specific_all) use a drill-local map on
+   `concurrent.futures.ProcessPoolExecutor` (fork; results in item order; serial at procs 1 or under 2 items), so an
+   OOM-killed worker raises BrokenProcessPool at once instead of hanging `Pool.map` until the 330-minute limit. The
+   blocks that finished are written to meta.json (`pool_error`), unfinished blocks leave no file, and the job stops.
+3. **Unknown unit keys on a twin (W6, F5).** Real coins stay strict (an unknown key stops the job). A twin lists the
+   keys it cannot resolve (log; meta `units.unknown`, `unknown_n`, `unknown_eg` first 20) and runs the rest: a unit
+   with no reading on a twin has no fires there. The bench reports `units_unknown` and the first 5 for the whole unit
+   set (it was computed and dropped).
+4. **The twin fallback's quarter is the same on every series (F2, C6).** The seeded permutation runs over the tier 3
+   units of the units file only (kind not 'chart'); a chart unit is in the quarter when `zlib.crc32(id) % 4 == 0`.
+   Before, the series' own chart units entered the permutation, so the coin and each twin drew different quarters.
+5. **A slim top table per block (W2, part 1).** Besides `b*_top.csv.gz` (unchanged, still put to Drive), each block
+   writes `b*_top1.csv.gz`: the rows with rank 1 (either list) or the main list's rank up to TOP_FULL (5), the only
+   rows the league's readers use (chance table, league views, family table, TA and column cards, gate rows,
+   gates_all). The league still reads the full table until the league batch.
+6. **The HM2 pack's calls checked against the drill's fire rule (C3 a, b).** build_units stores on each 'hm2' and
+   'model' unit the pack row's dir, onset_dir_A and onset n_A / n_B per h. On real coins the series job compares the
+   drill's uncapped A and B instance counts and its direction with them at every pack h (240 included: HM2 counts the
+   240 onsets on the same h240() grid) and writes the counts of differences, per h, and up to 10 examples into
+   meta.json's `pack_check`. Informational only; it never stops the job, and twins skip it. Gate rows are not yet
+   marked with the pack's direction (C3 c, league batch).
