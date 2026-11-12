@@ -91,6 +91,8 @@ step; this release changes no running exit behavior.
 
 ## Run on GitHub
 
+**Off since Nov 11, 2026 (8:05 AM EST / 13:05 UTC):** both commands below are gone (`atlas-movement.yml` deleted, `movement_only` removed): `atlas-movement-study` bundled rows built from the bot's recordings and this repository is public.
+
 The completed observed study's input receipts and frozen SNN states can be reused.
 The movement workflow ignores its settlement datasets and fitted payout models:
 

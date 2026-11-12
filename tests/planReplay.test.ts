@@ -128,10 +128,12 @@ test('replay: with orders and cancels 2.5 s in flight the ratchet still runs on 
 test('replay: a plan position\'s ratchet judges the trade, what partial sales banked plus the rest at the bid (the answer given to Steven, Nov 11 9:10 AM EST / 14:10 UTC), so a partial sale is no drop', async () => {
   const dir = path.join(tmpDir(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 7, marketNoise: 0.06 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PLAN_RULES: 'true' });
+  // The loser cut off (PLAN_LOSER_CUT_C=0): this test is about the ratchet's measure, and the cut would sell first.
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PLAN_RULES: 'true', PLAN_LOSER_CUT_C: '0' });
   const r = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, {
     exitPolicy: 'take_profit', paper: { orderFrac: 0.1, orderUsd: 0 }, fillLog: true, planTag: () => ({ ruleId: 'synthetic' }),
   });
+  assert.deepEqual([r.plan!.cutSales, r.plan!.cutCancels], [0, 0]);
   const ev = r.plan!.events ?? [];
   // The maker quotes trim plan positions here too: the events name what was banked.
   assert.ok(ev.filter((e) => e.banked).length >= 3, JSON.stringify(r.plan));
@@ -148,4 +150,36 @@ test('replay: a plan position\'s ratchet judges the trade, what partial sales ba
     const m = /^plan ratchet: net ([+-]\$[\d.]+).* at or under its stop ([+-]\$[\d.]+)/.exec(f.why!);
     if (m) assert.ok(Number(m[1].replace('$', '')) <= Number(m[2].replace('$', '')) + 0.006, f.why);
   }
+});
+
+test('replay: the loser cut (PLAN_LOSER_CUT_C, 10c a contract by default; Steven, Nov 11 6:56 PM EST / 23:56 UTC) sells a plan position whose held-side bid fell 10c under its entry; 0 turns it off', async () => {
+  const dir = path.join(tmpDir(), 'rec');
+  writeSyntheticRecordings(dir, { windows: 8, seed: 7, marketNoise: 0.06 });
+  const run = async (env: Record<string, string> = {}) => {
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PLAN_RULES: 'true', HOLD_EXIT: 'false', ...env });
+    return runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, {
+      exitPolicy: 'take_profit', paper: { orderFrac: 0.1, orderUsd: 0 }, fillLog: true, planTag: () => ({ ruleId: 'synthetic' }),
+    });
+  };
+  const on = await run();
+  const ev = on.plan!.events ?? [];
+  const cuts = ev.filter((e) => e.event === 'plan_loser_cut_sell');
+  assert.ok(cuts.length > 0 && cuts.length === on.plan!.cutSales, JSON.stringify(on.plan));
+  for (const e of cuts) {
+    assert.ok(e.bid! <= e.entry! - 0.1 + 1e-9, `cut only 10c or more under the entry: ${JSON.stringify(e)}`);
+    assert.equal(e.loserCut, 0.1);
+    assert.ok(e.net! < 0, `a cut is a loser: ${JSON.stringify(e)}`);
+    assert.equal(e.limit, Math.max(0.01, Math.round((e.bid! - 0.02) * 100) / 100), 'the bid less 2 ticks');
+  }
+  assert.equal(ev.filter((e) => e.event === 'plan_loser_cut_cancel').length, on.plan!.cutCancels);
+  const fills = (on.fillLog ?? []).filter((f) => f.coid?.endsWith('-exit-plan') && /^plan loser cut/.test(f.why ?? ''));
+  assert.ok(fills.length > 0, 'the cut\'s sales fill');
+  // Off: no cut.
+  const off = await run({ PLAN_LOSER_CUT_C: '0' });
+  assert.deepEqual([off.plan!.cutSales, (off.plan!.events ?? []).filter((e) => e.event.startsWith('plan_loser_cut')).length], [0, 0]);
+  // By dollars only ($0.50 of trade net): every cut is at or under -$0.50.
+  const usd = await run({ PLAN_LOSER_CUT_C: '0', PLAN_LOSER_CUT_USD: '0.5' });
+  const byUsd = (usd.plan!.events ?? []).filter((e) => e.event === 'plan_loser_cut_sell');
+  assert.ok(byUsd.length > 0, JSON.stringify(usd.plan));
+  for (const e of byUsd) assert.ok(e.net! + (e.banked ?? 0) <= -0.5 + 1e-9, JSON.stringify(e));
 });

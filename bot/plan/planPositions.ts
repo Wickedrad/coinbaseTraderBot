@@ -32,21 +32,26 @@ export interface PlanTag {
   side: 'yes' | 'no';
   ruleId: string;
   openedAt?: number;
-  /** The rule's tested ratchet settings (dollars for the whole position); what it leaves out comes from the profit ratchet's
-   *  (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD) and the tick clock. */
+  /** The rule's tested ratchet settings (dollars for the whole position) and loser cut; what it leaves out comes from the
+   *  profit ratchet's (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD), the tick clock and the plan's loser cut
+   *  (PLAN_LOSER_CUT_C, PLAN_LOSER_CUT_USD). */
   settings?: Partial<PlanRatchetSettings>;
 }
 
 /** A tag that never saw its position open is dropped after this long. */
 export const PLAN_TAG_UNFILLED_MS = 5 * 60_000;
 
-/** v2 since Nov 11 (one ratchet in dollars for the whole position); a v1 file's cents-a-contract ratchets are not read. */
+/** v2 since Nov 11 (one ratchet in dollars for the whole position); a v1 file's cents-a-contract ratchets are not read. A v2
+ *  position saved before the loser cut (no loserCut / loserCutUsd in its settings) takes the plan's when it is read. */
 interface Saved { v: 2; positions: PlanPosition[] }
+
+/** The defaults a tag's settings fall back on: the profit ratchet's dollars and the plan's loser cut. */
+export type PlanDefaults = RatchetSettings & { loserCut?: number; loserCutUsd?: number };
 
 export class PlanPositions {
   private readonly m = new Map<string, PlanPosition>();
 
-  constructor(private readonly defaults: RatchetSettings, private readonly file?: string) {
+  constructor(private readonly defaults: PlanDefaults, private readonly file?: string) {
     this.load();
   }
 
@@ -69,10 +74,13 @@ export class PlanPositions {
     return p;
   }
 
-  /** A rule's settings over the defaults (the profit ratchet's) and the tick clock. */
+  /** A rule's settings over the defaults (the profit ratchet's, the plan's loser cut) and the tick clock. */
   private settingsOf(o: Partial<PlanRatchetSettings> | undefined): PlanRatchetSettings {
     const d = this.defaults;
-    return { armUsd: o?.armUsd ?? d.armUsd, stopMinUsd: o?.stopMinUsd ?? d.stopMinUsd, trailUsd: o?.trailUsd ?? d.trailUsd, clock: o?.clock ?? 'tick' };
+    return {
+      armUsd: o?.armUsd ?? d.armUsd, stopMinUsd: o?.stopMinUsd ?? d.stopMinUsd, trailUsd: o?.trailUsd ?? d.trailUsd, clock: o?.clock ?? 'tick',
+      loserCut: o?.loserCut ?? d.loserCut ?? 0, loserCutUsd: o?.loserCutUsd ?? d.loserCutUsd ?? 0,
+    };
   }
 
   get(ticker: string): PlanPosition | undefined {

@@ -303,7 +303,9 @@ export interface StrategyConfig {
   /** Apply the pipeline's session_risk.json under SESSION_RISK (bot/model/sessionRisk.ts). */
   sessionRiskAuto: boolean;
   sessionRiskPath: string;
-  /** Block hunt mode in twilight/weekend liquidity and near session changes. */
+  /** HUNT_SESSION_GUARD: block hunt mode in twilight/weekend liquidity and within HUNT_TRANSITION_BUFFER_MIN of a session
+   *  change (a blocked hunt falls back to the fair-value exit). Off by default since Steven, Nov 11 2026 (6:42 PM EST /
+   *  23:42 UTC): "Don't block hunt mode anymore." true turns the old guard back on. */
   huntSessionGuard: boolean;
   huntTransitionBufferMin: number;
   /** Apply a fitted, validated intraday volatility profile to fair value. */
@@ -991,7 +993,13 @@ function planConfig(env: Env): PlanConfig {
   for (const k of ['PLAN_RATCHET_ARM_C', 'PLAN_RATCHET_TRAIL_C']) {
     if (env[k] !== undefined && env[k] !== '') throw new ConfigError(`${k} is retired: the ratchet is in dollars for the whole position (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD)`);
   }
-  return { enabled: bool(env, 'PLAN_RULES', false) };
+  // The loser cut (E05; Steven, Nov 11 6:56 PM EST / 23:56 UTC: "10c a contract"): cents a contract under the entry price, and
+  // dollars of trade net (off by default). 0 turns either off.
+  return {
+    enabled: bool(env, 'PLAN_RULES', false),
+    loserCut: num(env, 'PLAN_LOSER_CUT_C', 10, 0, 99) / 100,
+    loserCutUsd: num(env, 'PLAN_LOSER_CUT_USD', 0, 0, 1000),
+  };
 }
 
 function bool(env: Env, key: string, def: boolean): boolean {
@@ -1107,6 +1115,10 @@ function heatConfig(env: Env, dataDir: string): HeatConfig {
   if (horizons.some((h) => h === 240 || h === 1440)) {
     throw new ConfigError(`HEAT_HORIZONS=${env.HEAT_HORIZONS}: 240 and 1440 are perps horizons, never a Kalshi contract (the 4-hour call trades perps through HEAT_PERP_HORIZONS, the daily call is perps context through HEAT_PERPS_DAILY)`);
   }
+  // A yes/no switch is not a count: the old setting is not read as one (ensure-env drops it from the server's bot.env).
+  if (env.HEAT_REENTER_AFTER_LOSS !== undefined && env.HEAT_REENTER_AFTER_LOSS !== '') {
+    throw new ConfigError('HEAT_REENTER_AFTER_LOSS is retired: re-entries after a loss are counted (HEAT_REENTRIES_15M, HEAT_REENTRIES_HOURLY; 0 = never) and stop at HEAT_REENTRY_LOSS_STOP of one order');
+  }
   const perpHorizons = [...new Set(list('HEAT_PERP_HORIZONS', '60,240').map(Number))].sort((a, b) => a - b);
   if (perpHorizons.some((h) => h !== 60 && h !== 240)) {
     throw new ConfigError(`HEAT_PERP_HORIZONS=${env.HEAT_PERP_HORIZONS} may list 60 (the 1h heat setup) and 240 (the 4h heat setup) only; the daily call is direction context (HEAT_PERPS_DAILY), never an entry`);
@@ -1125,7 +1137,11 @@ function heatConfig(env: Env, dataDir: string): HeatConfig {
     maxOpen: whole('HEAT_MAX_OPEN', 2, 0, 20),
     maxPerCoin: whole('HEAT_MAX_PER_COIN', 1, 1, 10),
     cooldownSec: num(env, 'HEAT_COOLDOWN_SEC', 60, 0, 86_400),
-    reenterAfterLoss: bool(env, 'HEAT_REENTER_AFTER_LOSS', false),
+    // Re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC; his card at 7:05 PM EST / 00:05 UTC added the half-order
+    // loss stop; 8:08 PM EST / 01:08 UTC: "Maybe the re-entry should be more. Like 3 and 6 instead").
+    reentries15m: whole('HEAT_REENTRIES_15M', 3, 0, 20),
+    reentriesHourly: whole('HEAT_REENTRIES_HOURLY', 6, 0, 20),
+    reentryLossStop: num(env, 'HEAT_REENTRY_LOSS_STOP', 0.5, 0, 10),
     flatTrips: whole('HEAT_FLAT_TRIPS', 30, 0, 100_000),
     pilotLossUsd: num(env, 'HEAT_PILOT_LOSS_USD', 15, 0, 1e6),
     feeNetCheck: bool(env, 'HEAT_FEE_NET_CHECK', false),
@@ -1367,7 +1383,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     ratchetMinWallAgeSec: num(env, 'RATCHET_MIN_WALL_AGE_SEC', 3, 0, 120),
     ratchetSlippageTicks: num(env, 'RATCHET_SLIPPAGE_TICKS', 1, 0, 10),
     sessionRisk: (() => { try { return parseSessionRisk(env.SESSION_RISK); } catch (e) { throw new ConfigError((e as Error).message); } })(),
-    huntSessionGuard: bool(env, 'HUNT_SESSION_GUARD', true),
+    huntSessionGuard: bool(env, 'HUNT_SESSION_GUARD', false),
     huntTransitionBufferMin: num(env, 'HUNT_TRANSITION_BUFFER_MIN', 10, 0, 120),
     sessionRiskAuto: bool(env, 'SESSION_RISK_AUTO', true),
     sessionRiskPath: path.resolve(env.SESSION_RISK_PATH ?? './params/session_risk.json'),

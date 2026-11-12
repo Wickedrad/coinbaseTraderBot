@@ -202,7 +202,7 @@ export interface BacktestResult {
   /** PLAN_RULES (bot/plan/planRatchet.ts): the plan ratchet's events over the run, counted (with opts.fillLog, every event):
    *  the replay match reads these beside the engine's audit. `retries` counts failed tries retried (not a resend of a try held
    *  back); `gaps` the armed tries sent with the bid under the fee floor price; `endRuleCancels` end-rule sales called off. */
-  plan?: { tagged: number; arms: number; raises: number; sales: number; endRuleSales: number; endRuleCancels: number; gaps: number; retries: number; alerts: number; events?: PlanEvent[] };
+  plan?: { tagged: number; arms: number; raises: number; sales: number; cutSales: number; cutCancels: number; endRuleSales: number; endRuleCancels: number; gaps: number; retries: number; alerts: number; events?: PlanEvent[] };
 }
 
 /**
@@ -473,8 +473,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const exitKindOf = (why: string): 'tp' | 'snipe' | 'hold' | 'ratchet' | 'fv' => why.startsWith('take-profit') ? 'tp' : why.startsWith('quota snipe') ? 'snipe' : why.startsWith('hold exit') ? 'hold' : why.startsWith('profit ratchet') ? 'ratchet' : 'fv';
   let exitSeq = 0;
   // Positions opened by plan rules (opts.planTag), in memory, with their ratchets (bot/plan/planPositions.ts).
-  const planPositions = new PlanPositions(strategy.profitRatchet);
-  const planStats: NonNullable<BacktestResult['plan']> = { tagged: 0, arms: 0, raises: 0, sales: 0, endRuleSales: 0, endRuleCancels: 0, gaps: 0, retries: 0, alerts: 0, ...(opts.fillLog ? { events: [] } : {}) };
+  const planPositions = new PlanPositions({ ...strategy.profitRatchet, loserCut: strategy.plan.loserCut, loserCutUsd: strategy.plan.loserCutUsd });
+  const planStats: NonNullable<BacktestResult['plan']> = { tagged: 0, arms: 0, raises: 0, sales: 0, cutSales: 0, cutCancels: 0, endRuleSales: 0, endRuleCancels: 0, gaps: 0, retries: 0, alerts: 0, ...(opts.fillLog ? { events: [] } : {}) };
   res.plan = planStats;
   /** PLAN_RULES on: the market's plan position while it is held on its side (the engine's Engine.planHeld). */
   const planHeld = (ticker: string): PlanPosition | undefined => (strategy.plan.enabled ? planPositions.sync(ticker, pos.position(ticker), st.now) : undefined);
@@ -494,6 +494,8 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
       if (e.event === 'plan_ratchet_arm') planStats.arms++;
       else if (e.event === 'plan_ratchet_raise') planStats.raises++;
       else if (e.event === 'plan_ratchet_sell') planStats.sales++;
+      else if (e.event === 'plan_loser_cut_sell') planStats.cutSales++;
+      else if (e.event === 'plan_loser_cut_cancel') planStats.cutCancels++;
       else if (e.event === 'plan_end_rule_sell') planStats.endRuleSales++;
       else if (e.event === 'plan_end_rule_cancel') planStats.endRuleCancels++;
       else if (e.event === 'plan_ratchet_retry' && !e.resend) planStats.retries++;
@@ -1002,7 +1004,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
           position: posH, qSide: posH >= 0 ? pYes : 1 - pYes, sideBid: posH > 0 ? bid.price : posH < 0 ? 1 - ask.price : undefined,
           confluence: fmap.conf_count, book, now: st.now, tick: m.tickSize, fees: DEFAULT_FEES,
           fvSide: posH > 0 ? pYes : posH < 0 ? 1 - pYes : undefined, // our side's price for the lock sale (the engine passes the math fair value; no taker-flow feature here)
-          sessionBlocked: (opts.huntSessionGuard ?? true) ? huntBlockedBySession(sess, opts.huntTransitionBufferMin ?? 10) : undefined,
+          sessionBlocked: (opts.huntSessionGuard ?? false) ? huntBlockedBySession(sess, opts.huntTransitionBufferMin ?? 10) : undefined,
         });
         huntMode = d.mode === 'hunt';
         huntRest = d.rest;

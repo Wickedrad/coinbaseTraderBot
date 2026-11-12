@@ -2107,3 +2107,13 @@ test('exit curve in the exit-only lane: its gate measures the open position\'s o
   assert.equal(oms.allOrders(500).filter((o) => o.ticker === t && o.reduceOnly).length, 0, notes());
   assert.match(notes(), /curve: holding the profit exit at 0\.5 \(net \+6\.5c\)/);
 });
+
+test('hunt mode is not blocked in twilight by default; HUNT_SESSION_GUARD=true blocks it as before (Steven, Nov 11 2026)', async () => {
+  const twilight = Date.parse('2026-07-15T21:00:00Z');
+  const off = await setup({ exitPolicy: 'confluence_ratchet' });
+  assert.equal(off.cfg.strategy.huntSessionGuard, false);
+  assert.equal(off.engine.sessionStatus(twilight).key, 'twilight');
+  assert.equal(off.engine.sessionStatus(twilight).huntBlocked, undefined);
+  const on = await setup({ exitPolicy: 'confluence_ratchet', env: { HUNT_SESSION_GUARD: 'true' } });
+  assert.match(on.engine.sessionStatus(twilight).huntBlocked ?? '', /twilight/);
+});

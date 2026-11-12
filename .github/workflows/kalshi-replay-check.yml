@@ -337,6 +337,13 @@ jobs:
           set -a; . data/sweep-env/train.env; set +a
           # Replay-only overrides (an exit policy to compare, say) on top of the server's settings; paper's side is what it did.
           for kv in $OVERRIDES; do export "$kv"; echo "replay-only override: $kv"; done
+          # REPLAY_DUMP lists paper's audit-log fills market by market into the log and the replay-check artifact, and
+          # REPLAY_PEEK (with or without REPLAY_PEEK_ONLY) prints paper's raw audit records (decisions, orders, fills) into the
+          # log, whose head the commit comment posts: rows of the audit log, which this public repository never publishes
+          # (Nov 11, 2026, 8:05 AM EST / 13:05 UTC). Locally only.
+          for v in REPLAY_DUMP REPLAY_PEEK REPLAY_PEEK_ONLY; do
+            if [ -n "${!v:-}" ]; then echo "::error::$v is off on GitHub: it publishes audit-log rows (this repository is public). Run it locally."; exit 1; fi
+          done
           export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper
           BAL=$(cat "$RUNNER_TEMP/paper-balance" 2>/dev/null || true)
           GUARD="$RUNNER_TEMP/paper-guard.json"; [ -s "$GUARD" ] || GUARD=""

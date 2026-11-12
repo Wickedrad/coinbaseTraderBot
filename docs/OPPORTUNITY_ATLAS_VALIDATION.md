@@ -294,6 +294,9 @@ This exclusive mode uses existing RCLONE_CONF to read five fixed minute paths fr
 stay outside the artifact and are removed from runner temporary storage. It does
 not connect to Lightsail, run a trainer, modify Drive files or deploy. The artifact
 `atlas-history-archive` has seven-day retention; the original files remain on Drive.
+
+**Off since Nov 11, 2026 (8:05 AM EST / 13:05 UTC):** `diagnose.yml` no longer uploads `atlas-history-archive` (this repository is public); the copy stays on the runner and only study results are saved.
+
 The exported archive is local at `data/opportunity-archive-42489751110` (ignored by
 Git). `archiveAudit.py` hashes exact bytes and streams every canonical OHLCV row.
 The metadata-only [audit](OPPORTUNITY_ATLAS_ARCHIVE_AUDIT.json) is committed.

@@ -1,0 +1,2049 @@
+# Oracle setups (python/oracle/SPEC.md section 5; prereg python/oracle/prereg/OR-H1.md; thread "Find $5 trade setups
+# with a perfect-hindsight oracle", Steven, Nov 6 2026). Builds the oracle parts (SPEC 1-2: perp + spot from the perp TA
+# grids, Price Prediction 15-minute and hourly, tennis), mines and confirms setups on the discovery splits (SPEC 3; prereg
+# "Mining", "Confirmation and freeze") and opens HO-1 once per frozen file (SPEC 4; prereg "HO-1").
+#
+# A new workflow cannot be dispatched until it is on main, so pushes drive it. Tags in the HEAD commit message (only the
+# last commit of a push is read; [skip ci] in it would skip the run):
+#   none of the below                       the test job only (python oracle tests, the two TS tests, typecheck)
+#   [oracle]                                build the parts, then mine each requested contract type
+#   [oracle-parts:perp,pp15,pp60,tennis]    contract types (default all four)
+#   [oracle-assets:BTC,ETH,SOL,XRP]         coins (default all four; never DOGE; pp60 has BTC, ETH and SOL only)
+#   [oracle-ct:perp-rev]                    the OR-H2 reversal contract type (python/oracle/prereg/OR-H2.md). Without
+#                                           [oracle-parts:] it is the ONLY type built / mined / opened (the OR-H1 perp opening
+#                                           stays unopened); with both, their union. HO-1 for it: [protocol:ho1] [ho1-from:<run>]
+#                                           [oracle-ct:perp-rev]. One opening per contract type: 'perp-rev' has its own ledger key
+#   [oracle-targets:30,60,100,170]          with perp-rev: the net-bps targets M (whole numbers 10..500, default 30,60,100,170);
+#                                           the coin job writes one part per coin x M (perp-rev-<A>-m<M>), S = M/2, horizons
+#                                           5/15/60 (5 only for M <= 60); the miner pools coins per target (ALL-m<M>)
+#   [oracle-mine:<run>]                     skip building: mine run <run>'s parts again (outputs under this run); refused
+#                                           for a contract type whose frozen file from those parts was already opened
+#   [oracle-partial]                        allow a build or re-mine with fewer than all coins / tours of a contract type
+#                                           (the pooled scope then differs from the prereg's): its frozen files never open
+#   [protocol:ho1] [ho1-from:<run>]         log the opening of run <run>'s frozen files, then score HO-1 (Aug 1 - Nov 4)
+#   [ho1-reopen:<ct,...>]                   with [protocol:ho1]: allow a second opening of a contract type's family (another
+#                                           frozen file); logged in the ledger and on every registry row, and the earlier
+#                                           openings' frozen setups join the family BHY m (as p = 1)
+#   [protocol:ho1] [ho1-from:<run>] [ho1-all-confirmed] [oracle-ct:<ct>]
+#                                           OR-AMEND-1 (python/oracle/prereg/OR-AMEND-1.md): score EVERY confirmed setup
+#                                           (confirm.jsonl) of run <run> on HO-1 as a descriptive trial (ho1.py --all-confirmed:
+#                                           ho1-all.md, lockbox_candidates.json, registry family oracle-<ct>-allconf-v1), for the
+#                                           named type (any of perp,pp15,pp60,tennis,perp-rev) or every type the run has; it runs
+#                                           when the run froze zero setups. Ledger rows carry mode 'all-confirmed' under their own
+#                                           key: not blocked by and not consuming a pre-registered frozen opening, but once a
+#                                           type's confirmed setups have seen HO-1 a later frozen opening of that type is REFUSED
+#                                           (open a run's frozen file first). Also runs the loser study on HO-1 (losers.py --ho1).
+#   [oracle-losers:<run>] [oracle-ct:<ct>]  the loser study (python/oracle/losers.py) of run <run>'s confirmed setups on
+#                                           discovery B (plus HO-1 rows when the ledger holds an all-confirmed opening of that
+#                                           type from that run); outputs to models/oracle-setups/runs/<run>/losers/<ct>[-ho1]/.
+#                                           Every mine job also runs it on discovery B after mining.
+#   [oracle-cut] [oracle-cut-from:<run>]    OR-H3 (python/oracle/prereg/OR-H3.md, python/oracle/cut.py): the loser-cut sidecar
+#                                           labels of every pp15 / pp60 part of parts run <run> (default 42176343914), recomputed
+#                                           from the same Kalshi history the pp jobs read (the row identity check refuses a
+#                                           mismatch), then the 80-arm search per type on discovery A / B (nothing at or after
+#                                           DEV_END; the sidecar's windows/ is never downloaded for it); [oracle-ct:pp15|pp60]
+#                                           narrows the types. Outputs: models/oracle-setups/runs/<run>/cut/ (labels/<part>/,
+#                                           frozen-cut.json, frozen-cut.sha256, search.json, report-cut.md, workflow_source.json).
+#   [protocol:ho1] [ho1-from:<run>] [oracle-cut]
+#                                           OR-H3 HO-1: score the frozen arm of each type of search run <run>'s frozen-cut.json
+#                                           once (cut.py ho1; family oracle-<ct>-cut-v1). Ledger key '<ct>:cut' (mode 'cut'):
+#                                           refused when nothing is frozen, when the type's cut arm was already opened by another
+#                                           run, or when the file's SHA-256 does not match frozen-cut.sha256. Not blocked by and
+#                                           not blocking the OR-H1 / OR-AMEND-1 openings (OR-H3 is a rule, chosen on discovery
+#                                           only). The OR-AMEND-1 lockbox candidates (runs/42176343914/ho1/<ct>/, else the
+#                                           all-confirmed opening of run 42176343914 in the ledger) are scored with the frozen
+#                                           cut, descriptively. Outputs: models/oracle-setups/runs/<this run>/cut/ho1/<ct>/.
+# One study run at a time (the plan refuses a study run while an earlier-started one is active), so at most 9 jobs run.
+# Jobs (at most 9 at once: coin 4 + hourly 3 + tennis 2; then pp60 3, mine 4, ho1 4; OR-H3: cut_labels 7, then 1):
+#   test -> plan -> coin (perp + spot parts, pp15) | hourly (KX<A>D backfill) | tennis -> pp60 -> mine -> card
+#   test -> plan -> ho1_open (the one-time opening) -> ho1 | cut_ho1 -> card
+#   test -> plan -> losers (max 4) -> card
+#   test -> plan -> cut_labels (one per pp part, max 7) -> cut_search -> card
+# Drive (via .github/actions/drive-setup and deploy/drive_lab.sh; registry/ paths with rclone copyto). Read only:
+# derived/perp-ta/grids, raw/perp-ta-history/<A> (hourly bars, 1-minute spot), raw/kalshi-history/kalshi/KX<A>15M,
+# raw/tennis-history/kalshi/<S>.tar.gz, registry/regime-v1 labels. Written: models/oracle-setups/runs/<run>/{parts,
+# status,mine,ho1,losers,cut}, derived/oracle-setups/modcache (the analyzer walk), raw/oracle-history/kalshi/KX<A>D (the hourly
+# backfill, resumed and put back, never deleted), models/oracle-setups/ho1/openings.jsonl, registry/shards/oracle-setups.
+# Public repository: per-decision rows stay on Drive; logs and the commit comment carry aggregates of discovery rows only
+# (and, after the opening, HO-1 aggregates). No Kalshi day file dated 2026-11-05 or later is downloaded; the builders cap
+# every other input at 2026-11-05T00:00Z. NEVER DOGE.
+name: Oracle setups
+
+on:
+  push:
+    branches: [claude/project-thread-nvd096]
+    # Everything the jobs run or test: a change to any of it runs the test job (and a tagged commit touching only it
+    # still starts the study).
+    paths: ['.github/workflows/oracle-setups.yml', 'python/oracle/**', 'research/oracle/**', 'python/allpairs/**',
+            'tests/oracleExport.test.ts', 'tests/hourlyBackfill.test.ts', 'research/perpTaSweep.ts', 'research/perpTaModules.ts',
+            'research/history/kalshiHistory.ts', 'scripts/mdc.ts', 'deploy/drive_lab.sh', '.github/actions/drive-setup/**']
+
+permissions:
+  contents: read
+
+# A study run (any of its tags) has its own group, so study runs never cancel each other; a test-only push cancels the
+# branch's earlier test-only push.
+concurrency:
+  group: ${{ (contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]') || contains(github.event.head_commit.message, '[oracle-losers:') || contains(github.event.head_commit.message, '[oracle-cut]')) && format('oracle-setups-study-{0}', github.run_id) || format('oracle-setups-{0}-other', github.ref) }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  R: gdrive:kalshi-bot-archive
+  REGIME_LABELS: gdrive:kalshi-bot-archive/registry/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt pytest
+      # research/registry.py and research/regime.py live on the registry thread's branch; the HO-1, BHY and regime parity
+      # tests read them with `git show origin/claude/project-thread-79ntof:...` and skip without it.
+      - name: The registry thread's branch (for the tests that read research/registry.py and research/regime.py)
+        run: |
+          git fetch -q --depth 1 origin +refs/heads/claude/project-thread-79ntof:refs/remotes/origin/claude/project-thread-79ntof \
+            || echo "::warning::claude/project-thread-79ntof not fetched: the registry and regime parity tests skip"
+      - name: Python oracle tests
+        working-directory: python
+        run: python3 -m pytest -q oracle/tests 2>&1 | tail -40
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: TA-Lib loads
+        run: node -e "const t = require('talib'); if (typeof t.execute !== 'function') process.exit(1); console.log('TA-Lib', t.version || 'ok')"
+      - name: TypeScript tests (perp exporter, hourly backfill)
+        run: node --import tsx --test tests/oracleExport.test.ts tests/hourlyBackfill.test.ts 2>&1 | tail -40
+      # The program of research/oracle and the two tests (with everything they import); only errors in those files, or
+      # a config error, fail the job. Errors in imported code elsewhere are shown as a warning.
+      - name: Typecheck research/oracle
+        run: |
+          W="$GITHUB_WORKSPACE"
+          printf '{"extends": "%s/tsconfig.json", "compilerOptions": {"typeRoots": ["%s/node_modules/@types"]}, "include": ["%s/research/oracle", "%s/tests/oracleExport.test.ts", "%s/tests/hourlyBackfill.test.ts"]}\n' \
+            "$W" "$W" "$W" "$W" "$W" > "$RUNNER_TEMP/tsconfig.oracle.json"
+          rc=0; npx tsc --noEmit -p "$RUNNER_TEMP/tsconfig.oracle.json" > "$RUNNER_TEMP/tsc.txt" 2>&1 || rc=$?
+          if grep -E '^(research/oracle/|tests/(oracleExport|hourlyBackfill)\.test\.ts|error TS)' "$RUNNER_TEMP/tsc.txt"; then echo "::error::type errors in research/oracle"; exit 1; fi
+          if [ "$rc" != 0 ]; then echo "::warning::type errors outside research/oracle (imported code)"; head -20 "$RUNNER_TEMP/tsc.txt"; fi
+          echo "typecheck of research/oracle: ok"
+
+  plan:
+    needs: test
+    if: contains(github.event.head_commit.message, '[oracle]') || contains(github.event.head_commit.message, '[oracle-mine:') || contains(github.event.head_commit.message, '[protocol:ho1]') || contains(github.event.head_commit.message, '[oracle-losers:') || contains(github.event.head_commit.message, '[oracle-cut]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      mode: ${{ steps.go.outputs.mode }}
+      src: ${{ steps.go.outputs.src }}
+      from: ${{ steps.go.outputs.from }}
+      cts: ${{ steps.go.outputs.cts }}
+      assets: ${{ steps.go.outputs.assets }}
+      coin: ${{ steps.go.outputs.coin }}
+      hourly: ${{ steps.go.outputs.hourly }}
+      tennis: ${{ steps.go.outputs.tennis }}
+      mine: ${{ steps.present.outputs.mine || steps.go.outputs.mine }}
+      partial: ${{ steps.go.outputs.partial }}
+      reopen: ${{ steps.go.outputs.reopen }}
+      targets: ${{ steps.go.outputs.targets }}
+      allconf: ${{ steps.go.outputs.allconf }}
+      losers: ${{ steps.lpresent.outputs.losers }}
+      cut: ${{ steps.go.outputs.cut }}
+      cutparts: ${{ steps.cpresent.outputs.cutparts }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read the tags
+        id: go
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          python3 -I - <<'EOF'
+          import json, os, re, sys
+          msg, run = os.environ.get('MSG', ''), os.environ['GITHUB_RUN_ID']
+          ASSETS, HOURLY, CTS, TOURS = ['BTC', 'ETH', 'SOL', 'XRP'], ['BTC', 'ETH', 'SOL'], ['perp', 'pp15', 'pp60', 'tennis'], ['ATP', 'WTA']
+          REVT, REV_DEFAULT = ['perp-rev'], [30, 60, 100, 170]
+
+
+          def die(why):
+              print(f'::error::{why}')
+              sys.exit(1)
+
+
+          def tag(name):
+              vals = {v.strip() for v in re.findall(r'\[' + re.escape(name) + r':([^\]\n]*)\]', msg)}
+              if len(vals) > 1:
+                  die(f'[{name}:...] given twice with different values')
+              return vals.pop() if vals else None
+
+
+          def pick(raw, allowed, upper):
+              xs = [x.strip().upper() if upper else x.strip().lower() for x in (raw if raw is not None else ','.join(allowed)).split(',') if x.strip()]
+              if 'DOGE' in (x.upper() for x in xs):
+                  die('DOGE is never used (Steven, Nov 5)')
+              bad = [x for x in xs if x not in allowed]
+              if bad or not xs:
+                  die(f'unknown {bad or "empty list"}: allowed {",".join(allowed)}')
+              return [x for x in allowed if x in xs]
+
+
+          ho1, study, mine_from, ho1_from, proto = '[protocol:ho1]' in msg, '[oracle]' in msg, tag('oracle-mine'), tag('ho1-from'), tag('protocol')
+          partial, reopen_raw = '[oracle-partial]' in msg, tag('ho1-reopen')
+          allconf, losers_from = '[ho1-all-confirmed]' in msg, tag('oracle-losers')
+          cut, cut_from = '[oracle-cut]' in msg, tag('oracle-cut-from')
+          CUT_TYPES, CUT_DEFAULT_FROM = ['pp15', 'pp60'], '42176343914'
+          if cut_from is not None and not cut:
+              die('[oracle-cut-from:<run>] needs [oracle-cut]')
+          if cut and not ho1 and (study or mine_from is not None or losers_from is not None or partial or allconf):
+              die('[oracle-cut] runs alone: no [oracle], [oracle-mine:], [oracle-losers:], [oracle-partial] or [ho1-all-confirmed] in the same push')
+          if cut and ho1 and (allconf or cut_from is not None or tag('ho1-reopen') is not None):
+              die('[protocol:ho1] [oracle-cut]: [ho1-from:<run>] names the OR-H3 search run; no [ho1-all-confirmed], [ho1-reopen:] or [oracle-cut-from:] (the parts run is the search run\'s)')
+          if allconf and not ho1:
+              die('[ho1-all-confirmed] needs [protocol:ho1] [ho1-from:<run>]')
+          if allconf and reopen_raw is not None:
+              die('[ho1-reopen:...] is for pre-registered frozen openings, not [ho1-all-confirmed]')
+          if losers_from is not None and (ho1 or study or mine_from is not None or partial):
+              die('[oracle-losers:<run>] runs alone: no [oracle], [oracle-mine:], [protocol:ho1] or [oracle-partial] in the same push')
+          if proto is not None and proto != 'ho1':
+              die(f'[protocol:{proto}]: only [protocol:ho1] exists here')
+          if ho1 and (study or mine_from is not None):
+              die('[protocol:ho1] runs alone: no [oracle] or [oracle-mine:] in the same push')
+          if ho1_from is not None and not ho1:
+              die('[ho1-from:<run>] needs [protocol:ho1]')
+          if reopen_raw is not None and not ho1:
+              die('[ho1-reopen:<ct,...>] needs [protocol:ho1]')
+          if partial and ho1:
+              die('[oracle-partial] is for building / mining: a partial run is never opened')
+          reopen = pick(reopen_raw, CTS + REVT, False) if reopen_raw is not None else []
+          ct_raw, parts_raw, targets_raw = tag('oracle-ct'), tag('oracle-parts'), tag('oracle-targets')
+          assets = pick(tag('oracle-assets'), ASSETS, True)
+          if cut:
+              # OR-H3: Price Prediction only (pp15, pp60); [oracle-ct:] narrows it.
+              if parts_raw is not None or targets_raw is not None:
+                  die('[oracle-parts:] / [oracle-targets:] are for building: use [oracle-ct:pp15|pp60] with [oracle-cut]')
+              rev, cts = [], (pick(ct_raw, CUT_TYPES, False) if ct_raw is not None else CUT_TYPES)
+          elif allconf or losers_from is not None:
+              # OR-AMEND-1 modes: [oracle-ct:<ct>] names any contract type (default: every type the run has; absent ones skip).
+              if parts_raw is not None or targets_raw is not None:
+                  die('[oracle-parts:] / [oracle-targets:] are for building: use [oracle-ct:<ct>] with [ho1-all-confirmed] / [oracle-losers:]')
+              rev, cts = [], (pick(ct_raw, CTS + REVT, False) if ct_raw is not None else CTS + REVT)
+          else:
+              rev = pick(ct_raw, REVT, False) if ct_raw is not None else []
+              # [oracle-ct:perp-rev] alone selects only the reversal type; with [oracle-parts:] the union.
+              cts = (pick(parts_raw, CTS, False) if parts_raw is not None or ct_raw is None else []) + rev
+          if targets_raw is not None and not rev:
+              die('[oracle-targets:...] needs [oracle-ct:perp-rev]')
+          targets = []
+          if rev:
+              try:
+                  targets = sorted({int(x) for x in (targets_raw if targets_raw is not None else ','.join(map(str, REV_DEFAULT))).split(',') if x.strip()})
+              except ValueError:
+                  die(f'[oracle-targets:{targets_raw}]: whole numbers')
+              if not targets or len(targets) > 4 or any(x < 10 or x > 500 for x in targets):
+                  die(f'[oracle-targets:{targets_raw}]: one to four whole numbers 10..500 (net bps)')
+          if ho1:
+              if not re.fullmatch(r'[0-9]+', ho1_from or ''):
+                  die('[protocol:ho1] needs [ho1-from:<run id>]: the run whose frozen.json files are opened')
+              mode, src = 'ho1', ''
+          elif cut:
+              src = cut_from if cut_from is not None else CUT_DEFAULT_FROM
+              if not re.fullmatch(r'[0-9]+', src):
+                  die(f'[oracle-cut-from:{src}]: a run id')
+              mode = 'cut'
+          elif losers_from is not None:
+              if not re.fullmatch(r'[0-9]+', losers_from):
+                  die(f'[oracle-losers:{losers_from}]: a run id')
+              mode, src = 'losers', losers_from
+          elif mine_from is not None:
+              if not re.fullmatch(r'[0-9]+', mine_from):
+                  die(f'[oracle-mine:{mine_from}]: a run id')
+              mode, src = 'mine', mine_from
+          elif study:
+              mode, src = 'build', run
+          else:
+              die('no study tag')
+          hourly = [a for a in assets if a in HOURLY] if 'pp60' in cts else []
+          if mode == 'build' and 'pp60' in cts and not hourly:
+              die('pp60 needs BTC, ETH or SOL: there is no XRP hourly series')
+          # The prereg mines each asset AND all assets pooled: a build with some coins only would freeze a different
+          # pooled scope (or none) and a smaller BHY family. Refused unless [oracle-partial] says it is a partial run.
+          if mode == 'build' and not partial:
+              if ('perp' in cts or 'pp15' in cts or 'perp-rev' in cts) and assets != ASSETS:
+                  die(f'perp / pp15 / perp-rev with coins {",".join(assets)}: the study uses all of {",".join(ASSETS)} (add [oracle-partial] for a partial run, which never opens HO-1)')
+              if 'perp-rev' in cts and targets != sorted(REV_DEFAULT):
+                  die(f'perp-rev targets {targets}: the OR-H2 ladder is {REV_DEFAULT} (add [oracle-partial] for a partial run, which never opens HO-1)')
+              if 'pp60' in cts and hourly != HOURLY:
+                  die(f'pp60 with coins {",".join(hourly)}: the hourly ladders are {",".join(HOURLY)} (resume with [oracle] [oracle-parts:pp60]; [oracle-partial] for a partial run)')
+          # The exporter writes the perp and the spot part together: pp15 and pp60 need the coin's spot part.
+          coin = assets if ('perp' in cts or 'pp15' in cts or 'perp-rev' in cts) else hourly
+          tennis = TOURS if 'tennis' in cts else []
+          expect = {'perp': [f'perp-{a}' for a in assets], 'pp15': [f'pp15-{a}' for a in assets],
+                    'pp60': [f'pp60-{a}' for a in hourly], 'tennis': [f'tennis-{t}' for t in TOURS],
+                    'perp-rev': [f'perp-rev-{a}-m{m}' for a in assets for m in targets]}
+          folders = []
+          if mode == 'build':
+              folders = [f'parts/{p}' for c in cts for p in expect[c]] + [f'parts/spot-{a}' for a in coin] + [f'mine/{c}' for c in cts] + [f'losers/{c}' for c in cts] + ['status']
+          else:
+              coin, hourly, tennis = [], [], []
+          mine = [{'ct': c, 'expect': ' '.join(expect[c]) if mode == 'build' else ''} for c in cts] if mode in ('build', 'mine') else []
+          j = lambda x: json.dumps(x, separators=(',', ':'))
+          out = {'mode': mode, 'src': src, 'from': ho1_from or '', 'cts': ','.join(cts), 'assets': ','.join(assets), 'coin': j(coin),
+                 'hourly': j(hourly), 'tennis': j(tennis), 'mine': j(mine), 'folders': ' '.join(folders),
+                 'kxd': ' '.join(f'KX{a}D' for a in hourly), 'modcache': 'true' if coin else 'false',
+                 'partial': 'true' if partial else 'false', 'reopen': ','.join(reopen), 'targets': ','.join(map(str, targets)),
+                 'allconf': 'true' if allconf else 'false', 'cut': 'true' if cut else 'false'}
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.writelines(f'{k}={v}\n' for k, v in out.items())
+          summary = [f'mode {mode}' + (f' (parts of run {src})' if mode == 'mine' else f' (confirmed setups of run {src})' if mode == 'losers'
+                                       else f' (OR-H3 loser cut: sidecar labels and the arm search on the pp parts of run {src})' if mode == 'cut'
+                                       else f' (OR-H3: the frozen cut arms of search run {ho1_from})' if mode == 'ho1' and cut
+                                       else f' (frozen files of run {ho1_from})' if mode == 'ho1' and not allconf
+                                       else f' (EVERY confirmed setup of run {ho1_from}: OR-AMEND-1 all-confirmed, descriptive)' if mode == 'ho1' else ''),
+                     f'contract types {",".join(cts)}', f'coins {",".join(assets)}' + (' (not used by HO-1: the frozen setups fix their scopes)' if mode == 'ho1' else ''),
+                     f'coin jobs {coin}', f'reversal targets {targets}', f'hourly jobs {hourly}', f'tennis jobs {tennis}', f'mine jobs {[m["ct"] for m in mine]}']
+          if partial:
+              summary.append('PARTIAL run ([oracle-partial]): its frozen files are never opened')
+          if allconf:
+              summary.append('all-confirmed (OR-AMEND-1): a later pre-registered frozen opening of these contract types will be refused')
+          if reopen:
+              summary.append(f're-opening allowed for {",".join(reopen)} ([ho1-reopen]): logged, flagged, earlier setups join the BHY m')
+          print('\n'.join(summary))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as f:
+              f.write('### Oracle setups plan\n' + ''.join(f'- {s}\n' for s in summary))
+          EOF
+      # SPEC 5: at most 10 jobs at once. Each study run has its own concurrency group (study runs must never cancel each
+      # other), so two overlapping study runs would run 9 + 9 jobs: a study run is refused while another study run that
+      # started earlier is queued or running (in a race the earlier one goes on; a re-run attempt counts from its start).
+      - name: One study run at a time
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          me=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq '.run_started_at')
+          : > "$RUNNER_TEMP/active.json"
+          for st in queued in_progress waiting; do
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/oracle-setups.yml/runs?status=$st&per_page=100" \
+              --jq '.workflow_runs[] | {id, run_started_at, msg: (.head_commit.message // "")}' >> "$RUNNER_TEMP/active.json"
+          done
+          busy=$(jq -sr --arg me "$me" --argjson id "$GITHUB_RUN_ID" \
+            '[.[] | select(.id != $id and (.msg | test("\\[oracle\\]|\\[oracle-mine:|\\[protocol:ho1\\]|\\[oracle-losers:|\\[oracle-cut\\]")) and ([.run_started_at, .id] < [$me, $id])) | .id] | unique | map(tostring) | join(" ")' \
+            "$RUNNER_TEMP/active.json")
+          [ -z "$busy" ] || { echo "::error::another study run is active (run $busy): one study run at a time (SPEC 5: at most 10 jobs); push again when it has finished"; exit 1; }
+          echo "no other study run is active"
+      - name: Drive setup
+        if: steps.go.outputs.mode != 'ho1'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      # Google Drive lets two folders share a name: parallel first uploads into one new folder can each make a copy, and a
+      # reader then sees one twin only (all-pairs run 42100397043 lost a part that way). Every folder that more than one
+      # job writes into is made here, once, before any of them starts.
+      - name: Make the run's folders on Drive
+        if: steps.go.outputs.mode == 'build'
+        env:
+          FOLDERS: ${{ steps.go.outputs.folders }}
+          KXD: ${{ steps.go.outputs.kxd }}
+          MODCACHE: ${{ steps.go.outputs.modcache }}
+        run: |
+          set -euo pipefail
+          for f in $FOLDERS; do rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/$f"; done
+          for s in $KXD; do rclone mkdir "$R/raw/oracle-history/kalshi/$s"; done
+          [ "$MODCACHE" != true ] || rclone mkdir "$R/derived/oracle-setups/modcache"
+          echo "parts: $(rclone lsf "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/parts" --dirs-only | paste -sd' ' -)"
+      # [oracle-mine:<run>]: that run is finished, so its twin folders (if any) are merged once here, before any reader.
+      - name: The parts of the run to mine again
+        id: present
+        if: steps.go.outputs.mode == 'mine'
+        env:
+          SRC: ${{ steps.go.outputs.src }}
+          MINE: ${{ steps.go.outputs.mine }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SRC" --jq '"\(.name)|\(.status)"') || { echo "::error::run $SRC not found"; exit 1; }
+          [ "$st" = "Oracle setups|completed" ] || { echo "::error::run $SRC is '$st', not a completed Oracle setups run"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$SRC/parts" 2>&1 | grep -v '^$' | tail -5 || true
+          dirs=$(rclone lsf "$R/models/oracle-setups/runs/$SRC/parts" --dirs-only) || { echo "::error::run $SRC: no parts folder readable on Drive"; exit 1; }
+          echo "run $SRC parts: $(printf '%s\n' "$dirs" | paste -sd' ' -)"
+          have=$(printf '%s\n' "$dirs" | sed -nE 's#^(perp-rev|perp|pp15|pp60|tennis)-(BTC|ETH|SOL|XRP|ATP|WTA)(-m[0-9]+)?/$#\1#p' | sort -u | paste -sd, -)
+          sel=$(jq -c --arg have "$have" '[.[] | select(.ct as $c | ($have | split(",") | index($c)))]' <<< "$MINE")
+          [ "$sel" != '[]' ] || { echo "::error::run $SRC has no part of the requested contract types"; exit 1; }
+          echo "mine=$sel" >> "$GITHUB_OUTPUT"
+          for ct in $(jq -r '.[].ct' <<< "$sel"); do rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/mine/$ct"; rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/losers/$ct"; done
+          echo "contract types to mine: $(jq -r '[.[].ct] | join(",")' <<< "$sel")"
+      # [oracle-losers:<run>]: the contract types of that run with a confirm.jsonl, and the run that built their parts.
+      - name: The confirmed setups of the run to study
+        id: lpresent
+        if: steps.go.outputs.mode == 'losers'
+        env:
+          SRC: ${{ steps.go.outputs.src }}
+          CTS: ${{ steps.go.outputs.cts }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SRC" --jq '"\(.name)|\(.status)"') || { echo "::error::run $SRC not found"; exit 1; }
+          [ "$st" = "Oracle setups|completed" ] || { echo "::error::run $SRC is '$st', not a completed Oracle setups run"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$SRC/mine" 2>&1 | grep -v '^$' | tail -5 || true
+          sel='[]'
+          for ct in ${CTS//,/ }; do
+            d="$R/models/oracle-setups/runs/$SRC/mine/$ct"
+            have=$(rclone lsf "$d" --files-only 2>/dev/null || true)
+            if ! grep -qxF confirm.jsonl <<< "$have" || ! grep -qxF workflow_source.json <<< "$have"; then echo "$ct: no confirm.jsonl / workflow_source.json in run $SRC: skipped"; continue; fi
+            pr=$(rclone cat "$d/workflow_source.json" | jq -r '.parts_run // empty')
+            [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::$ct: bad parts run '$pr' in workflow_source.json"; exit 1; }
+            sel=$(jq -c --arg ct "$ct" --arg pr "$pr" '. + [{ct: $ct, parts_run: $pr}]' <<< "$sel")
+            rclone mkdir "$R/models/oracle-setups/runs/$SRC/losers/$ct"
+            echo "$ct: confirm.jsonl present, parts of run $pr"
+          done
+          [ "$sel" != '[]' ] || { echo "::error::run $SRC has no confirm.jsonl of the requested contract types"; exit 1; }
+          echo "losers=$sel" >> "$GITHUB_OUTPUT"
+
+      # [oracle-cut]: the pp parts of the parts run (every coin of a type, or the type is refused), and the run's cut/
+      # folders made once before the parallel label jobs write into them (Drive twin folders).
+      - name: The pp parts for the OR-H3 cut labels
+        id: cpresent
+        if: steps.go.outputs.mode == 'cut'
+        env:
+          SRC: ${{ steps.go.outputs.src }}
+          CTS: ${{ steps.go.outputs.cts }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SRC" --jq '"\(.name)|\(.status)"') || { echo "::error::run $SRC not found"; exit 1; }
+          [ "$st" = "Oracle setups|completed" ] || { echo "::error::run $SRC is '$st', not a completed Oracle setups run"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$SRC/parts" 2>&1 | grep -v '^$' | tail -5 || true
+          dirs=$(rclone lsf "$R/models/oracle-setups/runs/$SRC/parts" --dirs-only) || { echo "::error::run $SRC: no parts folder readable on Drive"; exit 1; }
+          if grep -qi doge <<< "$dirs"; then echo "::error::a DOGE part in run $SRC: refused"; exit 1; fi
+          sel='[]'
+          for ct in ${CTS//,/ }; do
+            case "$ct" in pp15) want="BTC ETH SOL XRP" ;; pp60) want="BTC ETH SOL" ;; *) echo "::error::$ct is not a Price Prediction type"; exit 1 ;; esac
+            have=""; miss=""
+            for a in $want; do
+              if grep -qxF "$ct-$a/" <<< "$dirs" && [ -n "$(rclone lsf "$R/models/oracle-setups/runs/$SRC/parts/$ct-$a" --files-only --include meta.json)" ]; then have="$have $a"; else miss="$miss $a"; fi
+            done
+            if [ -z "$have" ]; then echo "::notice::$ct: no part in run $SRC: not searched"; continue; fi
+            [ -z "$miss" ] || { echo "::error::$ct: run $SRC lacks$miss (OR-H3 pools every coin of the type): refused"; exit 1; }
+            for a in $have; do sel=$(jq -c --arg ct "$ct" --arg a "$a" '. + [{ct: $ct, asset: $a}]' <<< "$sel"); done
+            echo "$ct: parts$have of run $SRC"
+          done
+          [ "$sel" != '[]' ] || { echo "::error::run $SRC has no pp15 / pp60 part: nothing to label"; exit 1; }
+          rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/cut"
+          for p in $(jq -r '.[] | "\(.ct)-\(.asset)"' <<< "$sel"); do
+            rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/cut/labels/$p"
+            rclone mkdir "$R/models/oracle-setups/runs/$GITHUB_RUN_ID/cut/labels/$p/windows"
+          done
+          echo "cutparts=$sel" >> "$GITHUB_OUTPUT"
+
+  # Per coin: the perp part and the spot part (research/oracle/oracleExport.ts, SPEC 2a), then the pp15 part
+  # (python/oracle/pp.py --kind 15, SPEC 2b) from Kalshi's real 15-minute candles.
+  coin:
+    needs: plan
+    if: needs.plan.outputs.mode == 'build' && needs.plan.outputs.coin != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        asset: ${{ fromJSON(needs.plan.outputs.coin) }}
+    name: coin (${{ matrix.asset }})
+    env:
+      A: ${{ matrix.asset }}
+      RUN: ${{ github.run_id }}
+      PERP: ${{ contains(format(',{0},', needs.plan.outputs.cts), ',perp,') }}
+      PP15: ${{ contains(format(',{0},', needs.plan.outputs.cts), ',pp15,') }}
+      REV: ${{ contains(format(',{0},', needs.plan.outputs.cts), ',perp-rev,') }}
+      REVONLY: ${{ needs.plan.outputs.cts == 'perp-rev' }}
+      TARGETS: ${{ needs.plan.outputs.targets }}
+    steps:
+      - name: The coin (never DOGE)
+        run: '[[ "$A" =~ ^(BTC|ETH|SOL|XRP)$ ]] || { echo "::error::bad or excluded coin: $A"; exit 1; }'
+      - uses: actions/checkout@v5
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: TA-Lib loads
+        run: node -e "const t = require('talib'); if (typeof t.execute !== 'function') process.exit(1); console.log('TA-Lib', t.version || 'ok')"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The perp TA grid (derived/perp-ta/grids/<A>.bin, the newest copy across Drive's twin folders)
+        run: |
+          set -euo pipefail
+          mkdir -p data/grids
+          # derived/perp-ta exists twice on Drive (two folders made 0.8 s apart on Nov 5, each with a grids/ child) and a
+          # path read resolves to one of them. A --fast-list listing walks folder ids, so it shows every copy; the newest is
+          # read by its id. Nothing on Drive is changed (the folder belongs to the perp TA thread).
+          rclone lsjson -R --fast-list --files-only --include "/perp-ta/grids/$A.bin" "$R/derived" > "$RUNNER_TEMP/grids.json" || echo '[]' > "$RUNNER_TEMP/grids.json"
+          jq -r '.[] | "copy: derived/\(.Path), \(.Size) bytes, modified \(.ModTime)"' "$RUNNER_TEMP/grids.json"
+          ID=$(jq -r 'sort_by(.ModTime) | last | .ID // empty' "$RUNNER_TEMP/grids.json")
+          if [ -n "$ID" ]; then rclone backend copyid "$R" "$ID" "data/grids/$A.bin"
+          else bash deploy/drive_lab.sh get derived/perp-ta/grids data/grids --include "/$A.bin"; fi
+          # perpta1: one JSON header line (156 bytes for these grids), then 14 Float32 columns of n minutes: 156 + 56 n bytes.
+          python3 -I - "data/grids/$A.bin" "$A" <<'EOF'
+          import json, os, sys
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          from datetime import datetime, timezone
+          f, a = sys.argv[1], sys.argv[2]
+          with open(f, 'rb') as fh:
+              head = fh.read(65536)
+          nl = head.index(b'\n')
+          h = json.loads(head[:nl])
+          size, want = os.path.getsize(f), nl + 1 + 4 * len(h['cols']) * h['n']
+          iso = lambda ms: datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%MZ')
+          end = h['t0'] + h['n'] * 60000
+          print(f"{a}.bin: {h['schema']}, asset {h['asset']}, {iso(h['t0'])} .. {iso(end)} (n {h['n']}), header {nl + 1} B + {4 * len(h['cols'])} B x n = {want} B; file {size} B")
+          if h['schema'] != 'perpta1' or h['asset'] != a or 'DOGE' in str(h['asset']).upper():
+              die(f'{f}: not the {a} perp TA grid')
+          if size != want:
+              die(f'{f}: {size} bytes, the header says {want} (a short or partial copy)')
+          if nl + 1 != 156 or len(h['cols']) != 14:
+              print(f'::notice::header {nl + 1} B, {len(h["cols"])} columns (156 B and 14 expected): size still checked against the header')
+          if end > 1793836800000:
+              print('::notice::the grid runs past 2026-11-05T00:00Z: those minutes are never read (the exporter caps; the hourly backfill refuses such a grid)')
+          EOF
+      - name: Hourly bars of the four coins and this coin's 1-minute spot (raw/perp-ta-history/<A>, read only)
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist-$A" --include "/binance-1h/{BTC,ETH,SOL,XRP}/1h.csv" --include "/binance-1m/$A/1m.csv"
+          for x in BTC ETH SOL XRP; do
+            f="data/hist-$A/binance-1h/$x/1h.csv"
+            if [ -s "$f" ]; then echo "$x hourly bars: $(($(wc -l < "$f") - 1))"; else echo "::warning::no $x hourly bars in raw/perp-ta-history/$A (modulePrims notes it)"; fi
+          done
+          f="data/hist-$A/binance-1m/$A/1m.csv"
+          if [ -s "$f" ]; then echo "$A 1-minute spot CSV: $(du -h "$f" | cut -f1) (regime v1 from its float64 closes)"; else echo "::notice::no $A 1-minute CSV: regime v1 from the grid's spot bars"; fi
+      - name: The cached analyzer walk (derived/oracle-setups/modcache)
+        run: bash deploy/drive_lab.sh get derived/oracle-setups/modcache data/modcache --include "/$A-*.bin" || echo "no cached analyzer walk for $A yet (it is walked and kept)"
+      - name: Perp and spot parts (research/oracle/oracleExport.ts)
+        if: env.REVONLY != 'true'
+        env:
+          NODE_OPTIONS: --max-old-space-size=14000
+        run: |
+          node --import tsx research/oracle/oracleExport.ts --grid "data/grids/$A.bin" --history "data/hist-$A" --cache-dir data/modcache \
+            --out parts --spot-from 2026-04-12 --spot-to 2026-11-05 --code-sha "$GITHUB_SHA" 2>&1 | { grep -v 'analyzer walk [0-9]' || true; } | tail -120
+          for k in perp spot; do [ -f "parts/$k-$A/meta.json" ] || { echo "::error::no $k-$A part written"; exit 1; }; done
+          du -sh parts/* | cat
+      # OR-H2: one feature build (the cached analyzer walk is reused), one labelled part per target M; no spot part.
+      - name: Reversal parts (research/oracle/oracleExport.ts --target-bps)
+        if: env.REV == 'true'
+        env:
+          NODE_OPTIONS: --max-old-space-size=14000
+        run: |
+          node --import tsx research/oracle/oracleExport.ts --grid "data/grids/$A.bin" --history "data/hist-$A" --cache-dir data/modcache \
+            --out parts --target-bps "$TARGETS" --code-sha "$GITHUB_SHA" 2>&1 | { grep -v 'analyzer walk [0-9]' || true; } | tail -120
+          for m in ${TARGETS//,/ }; do [ -f "parts/perp-rev-$A-m$m/meta.json" ] || { echo "::error::no perp-rev-$A-m$m part written"; exit 1; }; done
+          du -sh parts/* | cat
+      - name: Keep the analyzer walk on Drive
+        if: always()
+        run: '[ -z "$(ls "data/modcache/$A"-*.bin 2>/dev/null)" ] || bash deploy/drive_lab.sh put derived/oracle-setups/modcache data/modcache --include "/$A-*.bin"'
+      # The parts hold per-decision rows: Drive only, never an artifact. The spot part is kept for pp15 / pp60.
+      - name: Keep the perp and spot parts on Drive
+        if: always()
+        run: |
+          set -euo pipefail
+          for k in perp spot; do
+            d="parts/$k-$A"
+            [ -f "$d/meta.json" ] || { echo "no $k-$A part"; continue; }
+            if [ "$k" = perp ] && [ "$PERP" != true ]; then echo "perp not requested: perp-$A is not kept"; continue; fi
+            bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/parts/$k-$A" "$d"
+          done
+      - name: Keep the reversal parts on Drive
+        if: always() && env.REV == 'true'
+        run: |
+          set -euo pipefail
+          for m in ${TARGETS//,/ }; do
+            d="parts/perp-rev-$A-m$m"
+            if [ -f "$d/meta.json" ]; then bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/parts/perp-rev-$A-m$m" "$d"; else echo "no perp-rev-$A-m$m part"; fi
+          done
+      # Only this coin's series, only .jsonl day files (a day kept only in compact form is decoded), close days
+      # 2026-04-13 .. 2026-11-04 (no file dated 2026-11-05 or later is downloaded).
+      - name: Kalshi 15-minute candles (raw/kalshi-history/kalshi/KX<A>15M)
+        if: env.PP15 == 'true'
+        run: |
+          set -euo pipefail
+          S="KX${A}15M"; D="data/k15/kalshi/$S"; mkdir -p "$D"
+          x='{jsonl,jsonl.mdc}'
+          bash deploy/drive_lab.sh get "raw/kalshi-history/kalshi/$S" "$D" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+            --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-10-[0-3][0-9].$x" --include "/2026-11-0[1-4].$x" \
+            || { echo "::error::raw/kalshi-history/kalshi/$S not readable on Drive"; exit 1; }
+          shopt -s nullglob
+          for f in "$D"/*.jsonl.mdc; do [ ! -f "${f%.mdc}" ] || rm "$f"; done
+          mdc=("$D"/*.jsonl.mdc)
+          if [ "${#mdc[@]}" -gt 0 ]; then
+            echo "${#mdc[@]} day(s) only in compact form: decoded"
+            npx tsx scripts/mdc.ts expand "$D" > /dev/null
+            rm -f "${mdc[@]}"
+          fi
+          days=("$D"/*.jsonl); n=${#days[@]}
+          [ "$n" -gt 0 ] || { echo "::error::no $S day files on Drive"; exit 1; }
+          first=$(basename "${days[0]}"); last=$(basename "${days[$((n - 1))]}")
+          markets=$(cat "${days[@]}" | wc -l)
+          nov4=0; [ ! -f "$D/2026-11-04.jsonl" ] || nov4=$(wc -l < "$D/2026-11-04.jsonl")
+          echo "$S: $n day files, ${first%.jsonl} .. ${last%.jsonl}, $markets markets; 2026-11-04: $nov4 of 96 windows"
+          # Some Drive copies of the Nov 4 file are partial (63 KB of ~260 KB, saved 05:32 UTC that day).
+          [ "$nov4" -ge 96 ] || echo "::warning::$S 2026-11-04.jsonl holds $nov4 of 96 windows: HO-1 fold 6 is short for $A"
+          # A twin or partial Drive copy must not feed the study silently: all 206 days 2026-04-13..2026-11-04 are required.
+          [ "$n" -ge 206 ] || { echo "::error::$S has $n day files, 206 are required (2026-04-13..2026-11-04): a twin or partial copy was read"; exit 1; }
+          mkdir -p status
+          jq -n --arg s "$S" --argjson n "$n" --arg first "${first%.jsonl}" --arg last "${last%.jsonl}" --argjson m "$markets" --argjson nov4 "$nov4" \
+            '{kind: "pp15", series: $s, day_files: $n, first: $first, last: $last, markets: $m, nov4_windows: $nov4, nov4_short: ($nov4 < 96)}' > "status/pp15-$A.json"
+          rclone copyto "status/pp15-$A.json" "$R/models/oracle-setups/runs/$RUN/status/pp15-$A.json"
+      - name: pp15 part (python/oracle/pp.py --kind 15)
+        if: env.PP15 == 'true'
+        working-directory: python
+        run: |
+          python3 -m oracle.pp --kind 15 --history ../data/k15 --spot "../parts/spot-$A" --asset "$A" --out ../parts --code-sha "$GITHUB_SHA" 2>&1 | tail -60
+          [ -f "../parts/pp15-$A/meta.json" ] || { echo "::error::no pp15-$A part written"; exit 1; }
+      - name: Keep the pp15 part on Drive
+        if: always() && env.PP15 == 'true'
+        run: '[ ! -f "parts/pp15-$A/meta.json" ] || bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/parts/pp15-$A" "parts/pp15-$A"'
+
+  # Per coin with an hourly ladder: the settled KX<A>D markets (research/oracle/hourlyBackfill.ts, SPEC 2d), resumed from
+  # and put back to Drive. It runs beside the coin job; pp60 below waits for both (it needs the coin's spot part).
+  hourly:
+    needs: plan
+    if: needs.plan.outputs.mode == 'build' && needs.plan.outputs.hourly != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        asset: ${{ fromJSON(needs.plan.outputs.hourly) }}
+    name: hourly (KX${{ matrix.asset }}D)
+    env:
+      A: ${{ matrix.asset }}
+      S: KX${{ matrix.asset }}D
+      RUN: ${{ github.run_id }}
+    steps:
+      - name: The coin (an hourly ladder exists for BTC, ETH and SOL only; never DOGE)
+        run: '[[ "$A" =~ ^(BTC|ETH|SOL)$ ]] || { echo "::error::no hourly ladder for $A"; exit 1; }'
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The perp TA grid (the spot close each strike pick reads)
+        run: |
+          set -euo pipefail
+          mkdir -p data/grids
+          # derived/perp-ta exists twice on Drive (two folders made 0.8 s apart on Nov 5, each with a grids/ child) and a
+          # path read resolves to one of them. A --fast-list listing walks folder ids, so it shows every copy; the newest is
+          # read by its id. Nothing on Drive is changed (the folder belongs to the perp TA thread).
+          rclone lsjson -R --fast-list --files-only --include "/perp-ta/grids/$A.bin" "$R/derived" > "$RUNNER_TEMP/grids.json" || echo '[]' > "$RUNNER_TEMP/grids.json"
+          jq -r '.[] | "copy: derived/\(.Path), \(.Size) bytes, modified \(.ModTime)"' "$RUNNER_TEMP/grids.json"
+          ID=$(jq -r 'sort_by(.ModTime) | last | .ID // empty' "$RUNNER_TEMP/grids.json")
+          if [ -n "$ID" ]; then rclone backend copyid "$R" "$ID" "data/grids/$A.bin"
+          else bash deploy/drive_lab.sh get derived/perp-ta/grids data/grids --include "/$A.bin"; fi
+          # perpta1: one JSON header line (156 bytes for these grids), then 14 Float32 columns of n minutes: 156 + 56 n bytes.
+          python3 -I - "data/grids/$A.bin" "$A" <<'EOF'
+          import json, os, sys
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          from datetime import datetime, timezone
+          f, a = sys.argv[1], sys.argv[2]
+          with open(f, 'rb') as fh:
+              head = fh.read(65536)
+          nl = head.index(b'\n')
+          h = json.loads(head[:nl])
+          size, want = os.path.getsize(f), nl + 1 + 4 * len(h['cols']) * h['n']
+          iso = lambda ms: datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%MZ')
+          end = h['t0'] + h['n'] * 60000
+          print(f"{a}.bin: {h['schema']}, asset {h['asset']}, {iso(h['t0'])} .. {iso(end)} (n {h['n']}), header {nl + 1} B + {4 * len(h['cols'])} B x n = {want} B; file {size} B")
+          if h['schema'] != 'perpta1' or h['asset'] != a or 'DOGE' in str(h['asset']).upper():
+              die(f'{f}: not the {a} perp TA grid')
+          if size != want:
+              die(f'{f}: {size} bytes, the header says {want} (a short or partial copy)')
+          if nl + 1 != 156 or len(h['cols']) != 14:
+              print(f'::notice::header {nl + 1} B, {len(h["cols"])} columns (156 B and 14 expected): size still checked against the header')
+          if end > 1793836800000:
+              print('::notice::the grid runs past 2026-11-05T00:00Z: those minutes are never read (the exporter caps; the hourly backfill refuses such a grid)')
+          EOF
+      - name: The ladders stored so far (raw/oracle-history/kalshi/KX<A>D, to resume)
+        id: seed
+        run: |
+          set -euo pipefail
+          D="data/oh/kalshi/$S"; mkdir -p "$D"
+          x='jsonl'
+          rc=0; bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$S" "$D" --include "/.index.json" --include "/2026-04-1[3-9].$x" \
+            --include "/2026-04-[23][0-9].$x" --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-10-[0-3][0-9].$x" --include "/2026-11-0[1-4].$x" || rc=$?
+          if [ "$rc" = 3 ]; then
+            # drive_lab.sh answers 3 for an empty listing and for a failed one: empty is believed only when listing succeeds.
+            L=$(rclone lsf "$R/raw/oracle-history/kalshi/$S") || { echo "::error::Drive listing failed: nothing would be put back"; exit 1; }
+            [ -z "$L" ] || { echo "::error::$S is on Drive but could not be read"; exit 1; }
+            echo "$S: nothing stored yet"
+          elif [ "$rc" != 0 ]; then echo "::error::download failed ($rc)"; exit 1; fi
+          echo "seeded=true" >> "$GITHUB_OUTPUT"
+          echo "$S: $(find "$D" -maxdepth 1 -name '*.jsonl' | wc -l) day file(s), $(cat "$D"/*.jsonl 2>/dev/null | wc -l) market line(s) stored"
+      - name: Backfill the settled hourly ladders (Kalshi public API, 10 requests/s, budgeted, resumable)
+        id: bf
+        timeout-minutes: 300
+        run: |
+          node --import tsx research/oracle/hourlyBackfill.ts --assets "$A" --grid "data/grids/$A.bin" --out data/oh/kalshi \
+            --from 2026-04-13 --to 2026-11-05 --budget-min 270 2>&1 | tee "$RUNNER_TEMP/backfill.log" | { grep -E '^\[hourly-backfill\]' || true; } | tail -40
+      # rclone copy never deletes; a day file shorter here than on Drive (a seed that was not whole) refuses the put.
+      - name: Put the ladders back on Drive
+        id: put
+        if: always() && steps.seed.outputs.seeded == 'true'
+        run: |
+          set -euo pipefail
+          D="data/oh/kalshi/$S"
+          [ -n "$(ls -A "$D" 2>/dev/null)" ] || { echo "nothing to put back"; exit 0; }
+          rclone lsjson --files-only "$R/raw/oracle-history/kalshi/$S" > "$RUNNER_TEMP/remote.json"
+          python3 -I - "$D" "$RUNNER_TEMP/remote.json" <<'EOF'
+          import json, os, sys
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          d, rj = sys.argv[1], sys.argv[2]
+          remote = {e['Path']: e['Size'] for e in json.load(open(rj))}
+          short = [p for p, s in remote.items() if p.endswith('.jsonl') and os.path.exists(os.path.join(d, p)) and os.path.getsize(os.path.join(d, p)) < s]
+          if short:
+              die(f'{len(short)} day file(s) here are shorter than on Drive: not put back')
+          EOF
+          bash deploy/drive_lab.sh put "raw/oracle-history/kalshi/$S" "$D"
+      - name: Backfill status (pp60 runs only on a complete backfill)
+        if: always() && steps.seed.outputs.seeded == 'true'
+        run: |
+          set -euo pipefail
+          line=$(grep -E '^\[hourly-backfill\] done:' "$RUNNER_TEMP/backfill.log" 2>/dev/null | tail -1 || true)
+          # Complete = the step succeeded, nothing is left or deferred, no market failed (failures are asked again by the
+          # next run) and the time budget was not hit.
+          complete=false
+          if [ "${{ steps.bf.outcome }}" = success ] && [ "${{ steps.put.outcome }}" = success ] && [ -n "$line" ] && ! grep -qE 'left for the next run|deferred|[1-9][0-9]* failed' <<< "$line" \
+            && ! grep -q 'time budget used up' "$RUNNER_TEMP/backfill.log"; then complete=true; fi
+          D="data/oh/kalshi/$S"
+          jq -n --arg s "$S" --argjson c "$complete" --arg line "${line#\[hourly-backfill\] }" --arg o "${{ steps.bf.outcome }}" \
+            --argjson n "$(find "$D" -maxdepth 1 -name '*.jsonl' | wc -l)" --argjson m "$(cat "$D"/*.jsonl 2>/dev/null | wc -l)" \
+            '{kind: "hourly", series: $s, complete: $c, step: $o, summary: $line, day_files: $n, market_lines: $m}' > "$RUNNER_TEMP/hourly-$S.json"
+          jq -c . "$RUNNER_TEMP/hourly-$S.json"
+          rclone copyto "$RUNNER_TEMP/hourly-$S.json" "$R/models/oracle-setups/runs/$RUN/status/hourly-$S.json"
+          [ "$complete" = true ] || echo "::warning::the $S backfill is not complete: push again with [oracle] [oracle-parts:pp60] to resume (all hourly coins; a finished backfill resumes in minutes)"
+
+  # pp60 needs the coin's spot part (written by the coin job) and the complete backfill (the hourly job): the simplest
+  # correct order is to wait for both and read them from Drive, instead of running the exporter a second time.
+  pp60:
+    needs: [plan, coin, hourly]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode == 'build' && needs.plan.outputs.hourly != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        asset: ${{ fromJSON(needs.plan.outputs.hourly) }}
+    name: pp60 (${{ matrix.asset }})
+    env:
+      A: ${{ matrix.asset }}
+      S: KX${{ matrix.asset }}D
+      RUN: ${{ github.run_id }}
+    steps:
+      - name: The coin (BTC, ETH and SOL only; never DOGE)
+        run: '[[ "$A" =~ ^(BTC|ETH|SOL)$ ]] || { echo "::error::no hourly ladder for $A"; exit 1; }'
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The backfill is complete (status from the hourly job)
+        run: |
+          set -euo pipefail
+          rclone copyto "$R/models/oracle-setups/runs/$RUN/status/hourly-$S.json" "$RUNNER_TEMP/status.json" || { echo "::error::no backfill status for $S: the hourly job did not finish"; exit 1; }
+          jq -c . "$RUNNER_TEMP/status.json"
+          jq -e '.complete == true' "$RUNNER_TEMP/status.json" > /dev/null || { echo "::error::the $S backfill is not complete: no pp60 part from partial history (push [oracle] [oracle-parts:pp60] to resume (all hourly coins; a finished backfill resumes in minutes))"; exit 1; }
+      - name: The hourly ladders and the coin's spot part
+        run: |
+          set -euo pipefail
+          x='jsonl'
+          bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$S" "data/oh/kalshi/$S" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+            --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-10-[0-3][0-9].$x" --include "/2026-11-0[1-4].$x"
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/parts/spot-$A" "parts/spot-$A" || true
+          [ -f "parts/spot-$A/meta.json" ] || { echo "::error::no spot-$A part on Drive (the coin job for $A failed)"; exit 1; }
+          echo "$S: $(find "data/oh/kalshi/$S" -maxdepth 1 -name '*.jsonl' | wc -l) day files; spot-$A: $(du -sh "parts/spot-$A" | cut -f1)"
+      - name: pp60 part (python/oracle/pp.py --kind 60)
+        working-directory: python
+        run: |
+          python3 -m oracle.pp --kind 60 --history ../data/oh --spot "../parts/spot-$A" --asset "$A" --out ../parts --code-sha "$GITHUB_SHA" 2>&1 | tail -60
+          [ -f "../parts/pp60-$A/meta.json" ] || { echo "::error::no pp60-$A part written"; exit 1; }
+      - name: Keep the pp60 part on Drive
+        if: always()
+        run: '[ ! -f "parts/pp60-$A/meta.json" ] || bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/parts/pp60-$A" "parts/pp60-$A"'
+
+  # Per tour: python/oracle/tennis.py (SPEC 2c) streams the Drive tarball (it skips every member dated 2026-11-05 or
+  # later unread); the tarball's sha256 is the data version.
+  tennis:
+    needs: plan
+    if: needs.plan.outputs.mode == 'build' && needs.plan.outputs.tennis != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        tour: ${{ fromJSON(needs.plan.outputs.tennis) }}
+    name: tennis (${{ matrix.tour }})
+    env:
+      T: ${{ matrix.tour }}
+      S: KX${{ matrix.tour }}MATCH
+      RUN: ${{ github.run_id }}
+    steps:
+      - name: The tour
+        run: '[[ "$T" =~ ^(ATP|WTA)$ ]] || { echo "::error::bad tour: $T"; exit 1; }'
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The tennis history tarball (raw/tennis-history/kalshi/<S>.tar.gz)
+        run: |
+          set -euo pipefail
+          n=$(rclone lsf "$R/raw/tennis-history/kalshi" --files-only --include "$S.tar.gz" | wc -l)
+          [ "$n" -ge 1 ] || { echo "::error::no $S.tar.gz on Drive"; exit 1; }
+          [ "$n" = 1 ] || echo "::warning::$n files named $S.tar.gz on Drive: reading the one rclone resolves"
+          mkdir -p data/tennis
+          rclone copyto "$R/raw/tennis-history/kalshi/$S.tar.gz" "data/tennis/$S.tar.gz"
+          H=$(sha256sum "data/tennis/$S.tar.gz" | cut -c1-64)
+          echo "$S.tar.gz: $(stat -c %s "data/tennis/$S.tar.gz") bytes, sha256 $H"
+          mkdir -p status
+          jq -n --arg s "$S" --arg h "$H" --argjson b "$(stat -c %s "data/tennis/$S.tar.gz")" '{kind: "tennis", series: $s, sha256: $h, bytes: $b}' > "status/tennis-$T.json"
+          rclone copyto "status/tennis-$T.json" "$R/models/oracle-setups/runs/$RUN/status/tennis-$T.json"
+      - name: Tennis part (python/oracle/tennis.py)
+        working-directory: python
+        run: |
+          python3 -m oracle.tennis --tar "../data/tennis/$S.tar.gz" --tour "$T" --out ../parts --code-sha "$GITHUB_SHA" 2>&1 | tail -60
+          [ -f "../parts/tennis-$T/meta.json" ] || { echo "::error::no tennis-$T part written"; exit 1; }
+      - name: Keep the tennis part on Drive
+        if: always()
+        run: '[ ! -f "parts/tennis-$T/meta.json" ] || bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/parts/tennis-$T" "parts/tennis-$T"'
+
+  # Per contract type: python/oracle/mine.py (SPEC 3) on discovery A, confirmation on B, freeze. Only a whole set of the
+  # planned parts is mined (a missing coin or tour would change the pooled scope). Outputs go under THIS run, also when
+  # an earlier run's parts are mined again, so a frozen file is never overwritten.
+  mine:
+    needs: [plan, coin, pp60, tennis]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.plan.outputs.mode == 'build' || needs.plan.outputs.mode == 'mine') && needs.plan.outputs.mine != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.mine) }}
+    name: mine (${{ matrix.ct }})
+    env:
+      CT: ${{ matrix.ct }}
+      EXPECT: ${{ matrix.expect }}
+      SRC: ${{ needs.plan.outputs.src }}
+      RUN: ${{ github.run_id }}
+    steps:
+      - name: The contract type
+        run: '[[ "$CT" =~ ^(perp|pp15|pp60|tennis|perp-rev)$ ]] && [[ "$SRC" =~ ^[0-9]+$ ]] || { echo "::error::bad contract type or run: $CT $SRC"; exit 1; }'
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The parts of this contract type
+        run: |
+          set -euo pipefail
+          mkdir -p data/parts
+          rc=0; bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/parts" data/parts --include "/$CT-[A-Z]*/**" || rc=$?
+          [ "$rc" = 0 ] || { echo "::error::the parts of run $SRC are not readable ($rc)"; exit 1; }
+          for d in data/parts/*/; do [ -d "$d" ] && [ ! -f "$d/meta.json" ] && rm -rf "$d"; done; true
+          have=$(find data/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+          if grep -qi doge <<< "$have"; then echo "::error::a DOGE part: refused"; exit 1; fi
+          missing=""; for e in $EXPECT; do [[ " $have " == *" $e "* ]] || missing="$missing $e"; done
+          [ -z "$missing" ] || { echo "::error::missing parts:$missing (re-run the failed builder jobs first): no partial mining"; exit 1; }
+          [ -n "$have" ] || { echo "::error::no $CT part in run $SRC"; exit 1; }
+          echo "parts of run $SRC: $have ($(du -sh data/parts | cut -f1))"
+      - name: Mine, confirm, freeze (python/oracle/mine.py)
+        working-directory: python
+        run: |
+          mkdir -p "../out/$CT"
+          python3 -m oracle.mine --ct "$CT" --parts ../data/parts --out "../out/$CT" --top 40 --beam 500 --code-sha "$GITHUB_SHA" 2>&1 | tail -100
+          [ -f "../out/$CT/frozen.json" ] || { echo "::error::no frozen.json written"; exit 1; }
+      # Per-instance lists and lift tables go to Drive only. workflow_source.json goes last: HO-1 opens a frozen file only
+      # when it is there (the upload finished) and names the parts' run.
+      - name: Keep the mining outputs on Drive
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/mine/$CT" "out/$CT"
+          jq -n --arg run "$RUN" --arg src "$SRC" --arg ct "$CT" --arg sha "$GITHUB_SHA" --arg parts "$(find data/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)" --arg utc "$(date -u +%FT%TZ)" \
+            '{run: $run, parts_run: $src, ct: $ct, code_sha: $sha, parts: ($parts | split(" ")), at_utc: $utc}' > "$RUNNER_TEMP/workflow_source.json"
+          rclone copyto "$RUNNER_TEMP/workflow_source.json" "$R/models/oracle-setups/runs/$RUN/mine/$CT/workflow_source.json"
+      # OR-AMEND-1 loser study on discovery B rows only (python/oracle/losers.py: nothing at or after DEV_END is read). After
+      # the mining outputs are kept, and never fails the job.
+      - name: Loser study on discovery B (python/oracle/losers.py)
+        continue-on-error: true
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -m oracle.losers --ct "$CT" --parts ../data/parts --confirm "../out/$CT/confirm.jsonl" --out "../out/losers/$CT" 2>&1 | tail -40
+          bash ../deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/losers/$CT" "../out/losers/$CT"
+
+  # HO-1, once per frozen file (prereg "Confirmation and freeze", "HO-1"): every check that does not read an HO-1 number
+  # comes first, then the openings are logged on Drive, and only then does any job read the hold. A frozen file already
+  # opened by a different run is refused (a re-run of the same run id may score again). One opening job at a time.
+  ho1_open:
+    needs: plan
+    if: needs.plan.outputs.mode == 'ho1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: oracle-setups-ho1-openings
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      matrix: ${{ steps.check.outputs.matrix }}
+      cutmatrix: ${{ steps.ccheck.outputs.matrix }}
+      opened: ${{ steps.log.outputs.opened || steps.clog.outputs.opened }}
+    env:
+      FROM: ${{ needs.plan.outputs.from }}
+      CTS: ${{ needs.plan.outputs.cts }}
+      ALLCONF: ${{ needs.plan.outputs.allconf }}
+      CUT: ${{ needs.plan.outputs.cut }}
+      RUN: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The frozen files of the run and everything HO-1 will read
+        id: check
+        if: env.CUT != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad run id $FROM"; exit 1; }
+          # The mining run is an Oracle setups run and has finished (its Drive folder is no longer written).
+          st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FROM" --jq '"\(.name)|\(.status)"') || { echo "::error::run $FROM not found"; exit 1; }
+          [ "$st" = "Oracle setups|completed" ] || { echo "::error::run $FROM is '$st', not a completed Oracle setups run: refused"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$FROM" 2>&1 | grep -v '^$' | tail -5 || true
+          mkdir -p frozen
+          inc=(--include "/*/frozen.json" --include "/*/frozen.sha256" --include "/*/workflow_source.json")
+          [ "$ALLCONF" != true ] || inc+=(--include "/*/confirm.jsonl")
+          rc=0; bash deploy/drive_lab.sh get "models/oracle-setups/runs/$FROM/mine" frozen "${inc[@]}" || rc=$?
+          [ "$rc" = 0 ] || { echo "::error::run $FROM has no mining outputs on Drive ($rc)"; exit 1; }
+          python3 -I - <<'EOF'
+          import hashlib, json, os, re, sys
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          frm, cts = os.environ['FROM'], os.environ['CTS'].split(',')
+          allconf = os.environ.get('ALLCONF') == 'true'
+          rows = []
+          for ct in cts:
+              d = os.path.join('frozen', ct)
+              f = os.path.join(d, 'frozen.json')
+              if not os.path.exists(f):
+                  print(f'{ct}: no frozen.json in run {frm}: nothing to open')
+                  continue
+              if not os.path.exists(os.path.join(d, 'workflow_source.json')):
+                  die(f'{ct}: no workflow_source.json: the mining upload of run {frm} did not finish')
+              sha = hashlib.sha256(open(f, 'rb').read()).hexdigest()
+              sf = os.path.join(d, 'frozen.sha256')
+              m = re.search(r'[0-9a-f]{64}', open(sf).read()) if os.path.exists(sf) else None
+              if not m or m.group(0) != sha:
+                  die(f'{ct}: frozen.json (sha256 {sha[:16]}) does not match the miner frozen.sha256: refused')
+              fz = json.load(open(f))
+              n = len(fz) if isinstance(fz, list) else len(fz['setups']) if isinstance(fz, dict) and isinstance(fz.get('setups'), list) else -1
+              extra = {}
+              if allconf:
+                  # OR-AMEND-1: every confirmed setup; the frozen file (any number of setups, zero included) is still
+                  # hash-checked because it names the mined parts.
+                  cf = os.path.join(d, 'confirm.jsonl')
+                  if not os.path.exists(cf):
+                      print(f'{ct}: no confirm.jsonl in run {frm}: nothing to score')
+                      continue
+                  body = open(cf, 'rb').read()
+                  m_conf = sum(1 for line in body.decode().splitlines() if line.strip())
+                  if m_conf == 0:
+                      print(f'{ct}: confirm.jsonl is empty (nothing confirmed): nothing to score')
+                      continue
+                  extra = {'mode': 'all-confirmed', 'key': f'{ct}:all-confirmed', 'confirmed': m_conf,
+                           'confirm_sha256': hashlib.sha256(body).hexdigest()}
+              elif n == 0:
+                  print(f'{ct}: nothing frozen (no setup survived confirmation): nothing to open')
+                  continue
+              parts_run = str(json.load(open(os.path.join(d, 'workflow_source.json'))).get('parts_run') or frm)
+              if not re.fullmatch(r'[0-9]+', parts_run):
+                  die(f'{ct}: bad parts run {parts_run}')
+              rows.append({'ct': ct, 'sha256': sha, 'setups': n, 'parts_run': parts_run, **extra})
+              print(f'{ct}: frozen.json sha256 {sha}, {n if n >= 0 else "?"} frozen setup(s), parts of run {parts_run}'
+                    + (f'; ALL {extra["confirmed"]} confirmed setups (confirm.jsonl sha256 {extra["confirm_sha256"]}) will be scored (OR-AMEND-1, descriptive)' if extra else ''))
+          json.dump(rows, open('frozen/rows.json', 'w'))
+          EOF
+          # Before anything is logged: the parts each frozen file reads, the regime v1 labels and the registry code exist.
+          for row in $(jq -r '.[] | "\(.ct):\(.parts_run)"' frozen/rows.json); do
+            ct=${row%%:*}; pr=${row#*:}
+            [ "$pr" = "$FROM" ] || rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$pr/parts" 2>&1 | grep -v '^$' | tail -5 || true
+            p=$(rclone lsf "$R/models/oracle-setups/runs/$pr/parts" --dirs-only | grep -E "^$ct-[A-Z]+(-m[0-9]+)?/$" | paste -sd' ' -) || true
+            [ -n "$p" ] || { echo "::error::$ct: no parts in run $pr"; exit 1; }
+            echo "$ct parts (run $pr): $p"
+          done
+          [ -n "$(rclone lsf "${REGIME_LABELS%/*}" --files-only --include labels.csv.gz)" ] || { echo "::error::regime v1 labels not on Drive"; exit 1; }
+          if ! { git fetch -q --depth 1 origin claude/project-thread-79ntof && git cat-file -e FETCH_HEAD:research/registry.py; }; then
+            echo "::error::research/registry.py not readable on claude/project-thread-79ntof"; exit 1
+          fi
+          echo "matrix=$(jq -c '[.[] | {ct, sha256, parts_run, mode: (.mode // "frozen"), confirm_sha256: (.confirm_sha256 // "")}]' frozen/rows.json)" >> "$GITHUB_OUTPUT"
+      - name: The frozen file's parts are the mined ones (checked before anything is logged)
+        if: env.CUT != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p pmeta
+          for row in $(jq -c '.[]' frozen/rows.json); do
+            ct=$(jq -r .ct <<< "$row"); pr=$(jq -r .parts_run <<< "$row"); [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::bad parts run"; exit 1; }
+            mkdir -p "pmeta/$ct"
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$pr/parts" "pmeta/$ct" --include "/$ct-[A-Z]*/meta.json"
+            python3 -I - "$ct" <<'EOF'
+          import json, os, sys
+          ct = sys.argv[1]
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          fz = json.load(open(f'frozen/{ct}/frozen.json'))
+          for e in fz.get('parts', []):
+              mp = os.path.join('pmeta', ct, e['dir'], 'meta.json')
+              if not os.path.exists(mp):
+                  die(f'{ct}: part {e["dir"]} listed by the frozen file is not on Drive: refused, nothing logged')
+              m = json.load(open(mp))
+              if int(m['n']) != int(e['rows_total']) or (e.get('code_sha') and m.get('code_sha') != e['code_sha']):
+                  die(f'{ct}: part {e["dir"]} differs from the mined one (rows {m["n"]} vs {e["rows_total"]}): refused, nothing logged')
+          if ct == 'perp-rev':
+              # OR-H2: only the full prereg ladder on all four coins may use the type's single opening.
+              want = {f'perp-rev-{a}-m{t}' for a in ('BTC', 'ETH', 'SOL', 'XRP') for t in (30, 60, 100, 170)}
+              got = {e['dir'] for e in fz.get('parts', [])}
+              if got != want:
+                  die(f'perp-rev: the frozen file was mined on {len(got)} part(s), not the OR-H2 ladder of 16 (partial run): refused, nothing logged')
+          print(f'{ct}: {len(fz.get("parts", []))} part(s) match the frozen file')
+          EOF
+          done
+      - name: Log the openings (models/oracle-setups/ho1/openings.jsonl), before any HO-1 number
+        id: log
+        if: env.CUT != 'true' && steps.check.outputs.matrix != '[]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          D="$R/models/oracle-setups/ho1"
+          rclone mkdir "$D"
+          rclone mkdir "$R/registry/shards/oracle-setups"
+          for ct in $(jq -r '.[].ct' frozen/rows.json); do
+            rclone mkdir "$R/models/oracle-setups/runs/$RUN/ho1/$ct"
+            [ "$ALLCONF" != true ] || rclone mkdir "$R/models/oracle-setups/runs/$FROM/losers/$ct-ho1"
+          done
+          # A ledger that exists but cannot be read is never replaced: listing first, and a failed listing refuses.
+          L=$(rclone lsf "$D" --files-only) || { echo "::error::ledger listing failed: refused"; exit 1; }
+          if grep -qxF openings.jsonl <<< "$L"; then rclone copyto "$D/openings.jsonl" ledger.jsonl; else : > ledger.jsonl; fi
+          jq -c . ledger.jsonl > /dev/null || { echo "::error::the ledger does not parse: refused"; exit 1; }
+          echo "ledger: $(wc -l < ledger.jsonl) opening(s) so far"
+          # Once per CONTRACT TYPE, not per file hash: a re-mine of the same parts (other code, seed, top or beam) makes a new
+          # hash, so a hash-only guard would let HO-1 feed back into selection (review finding, critical).
+          # OR-AMEND-1: all-confirmed openings (mode 'all-confirmed', key '<ct>:all-confirmed') neither consume nor are
+          # blocked by a pre-registered frozen opening; once a type's confirmed setups have all seen HO-1, a pre-registered
+          # frozen opening of that type is no longer clean: refused. So when the run froze setups, its frozen file must be
+          # opened first (enforced here, not only in prose). One all-confirmed opening per contract type (it fixes the
+          # lockbox candidates); a retry is allowed only when every earlier all-confirmed opening of the type is of the same
+          # confirm.jsonl, its run has completed, and it wrote no lockbox_candidates.json (it failed before the selection).
+          : > retries.json
+          for ct in $(jq -r '.[].ct' frozen/rows.json); do
+            if [ "$ALLCONF" = true ]; then
+              nfz=$(jq -r --arg ct "$ct" '.[] | select(.ct == $ct) | .setups' frozen/rows.json)
+              fz=$(jq -r --arg ct "$ct" 'select(.ct == $ct and (.mode // "frozen") == "frozen") | .run' ledger.jsonl | head -1)
+              if [ -z "$fz" ] && [ "$nfz" != 0 ]; then
+                echo "::error::$ct: run $FROM froze $nfz setup(s) (-1 = unreadable count) and no pre-registered frozen opening of $ct is in the ledger; open its frozen file first ([protocol:ho1] [ho1-from:$FROM] [oracle-ct:$ct]), then [ho1-all-confirmed]: refused, nothing logged"
+                exit 1
+              fi
+              csha=$(jq -r --arg ct "$ct" '.[] | select(.ct == $ct) | .confirm_sha256' frozen/rows.json)
+              prev=()
+              for by in $(jq -r --arg ct "$ct" --arg run "$RUN" 'select(.ct == $ct and .mode == "all-confirmed" and (.run | tostring) != $run) | "\(.run)|\(.from)|\(.confirm_sha256)"' ledger.jsonl); do
+                br=${by%%|*}; rest=${by#*|}; bf=${rest%%|*}; bc=${rest#*|}
+                [[ "$br" =~ ^[0-9]+$ ]] || { echo "::error::bad ledger run $br: refused"; exit 1; }
+                [ "$bf" = "$FROM" ] && [ "$bc" = "$csha" ] || { echo "::error::all-confirmed HO-1 for $ct was already opened by run $br (from run $bf, another confirm.jsonl): its lockbox candidates are fixed: refused, nothing logged"; exit 1; }
+                bst=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$br" --jq .status) || { echo "::error::run $br not found: refused"; exit 1; }
+                [ "$bst" = completed ] || { echo "::error::the all-confirmed opening of $ct by run $br is still $bst: refused, nothing logged"; exit 1; }
+                lb=$(rclone lsf "$R/models/oracle-setups/runs/$br/ho1/$ct" --files-only --include lockbox_candidates.json) || { echo "::error::listing run $br's HO-1 outputs failed: refused"; exit 1; }
+                [ -z "$lb" ] || { echo "::error::all-confirmed HO-1 for $ct was already opened by run $br and wrote its lockbox candidates (fixed): refused, nothing logged"; exit 1; }
+                echo "::warning::$ct: the all-confirmed opening by run $br (same confirm.jsonl) wrote no lockbox_candidates.json: this run retries it (logged as retry_of)"
+                prev+=("$br")
+              done
+              jq -n --arg ct "$ct" '$ARGS.positional' --args "${prev[@]}" | jq -c --arg ct "$ct" '{ct: $ct, retry_of: .}' >> retries.json
+              [ -z "$fz" ] && echo "$ct: run $FROM froze nothing; every confirmed setup now sees HO-1 (OR-AMEND-1, descriptive), and a later pre-registered frozen opening of $ct is refused" \
+                           || echo "$ct: the pre-registered frozen opening (run $fz) came first; it stands"
+            else
+              ac=$(jq -r --arg ct "$ct" 'select(.ct == $ct and .mode == "all-confirmed") | "run \(.run) (from run \(.from), \(.confirmed) confirmed setups, \(.opened_utc))"' ledger.jsonl | head -1)
+              [ -z "$ac" ] || { echo "::error::$ct: every confirmed setup already saw HO-1 in the all-confirmed trial ($ac; OR-AMEND-1): a pre-registered frozen opening of $ct is no longer clean: REFUSED, nothing logged"; exit 1; }
+              by=$(jq -r --arg ct "$ct" --arg run "$RUN" 'select(.ct == $ct and (.mode // "frozen") == "frozen" and (.run | tostring) != $run) | .run' ledger.jsonl | head -1)
+              [ -z "$by" ] || { echo "::error::HO-1 for $ct was already opened by run $by: it is opened once per contract type (refused, nothing logged)"; exit 1; }
+            fi
+          done
+          utc=$(date -u +%FT%TZ)
+          jq -c --arg run "$RUN" --arg att "$GITHUB_RUN_ATTEMPT" --arg from "$FROM" --arg sha "$GITHUB_SHA" --arg utc "$utc" \
+            --slurpfile rt retries.json \
+            '.[] | . as $r | {run: $run, run_attempt: $att, from: $from, ct, sha256, setups, parts_run, code_sha: $sha, opened_utc: $utc}
+                 + (if .mode == "all-confirmed" then {mode, key, confirmed, confirm_sha256,
+                      retry_of: ([$rt[] | select(.ct == $r.ct) | .retry_of[]])} else {mode: "frozen", key: .ct} end)' frozen/rows.json > new.jsonl
+          cat new.jsonl >> ledger.jsonl
+          rclone copyto ledger.jsonl "$D/openings.jsonl"
+          rclone copyto "$D/openings.jsonl" landed.jsonl
+          cmp -s landed.jsonl ledger.jsonl || { echo "::error::the openings did not land on Drive: refused"; exit 1; }
+          echo "opened=$(jq -sc . new.jsonl)" >> "$GITHUB_OUTPUT"
+          jq -r '"opened \(.ct) [\(.mode)]: \(.sha256) (\(.setups) frozen setup(s)\(if .mode == "all-confirmed" then ", ALL \(.confirmed) confirmed setups scored" else "" end), parts of run \(.parts_run)) at \(.opened_utc)"' new.jsonl
+      # OR-H3 ([protocol:ho1] [ho1-from:<search run>] [oracle-cut]): the search run's frozen-cut.json (SHA-256 checked against
+      # its frozen-cut.sha256), the parts and cut labels it searched (dir, rows, builder code, labels sha256), the regime
+      # labels and the registry code; all before anything is logged. Nothing frozen = refused (OR-H3 falsified at discovery).
+      - name: OR-H3 - the frozen cut arms and everything their HO-1 reads
+        id: ccheck
+        if: env.CUT == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad run id $FROM"; exit 1; }
+          st=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$FROM" --jq '"\(.name)|\(.status)"') || { echo "::error::run $FROM not found"; exit 1; }
+          [ "$st" = "Oracle setups|completed" ] || { echo "::error::run $FROM is '$st', not a completed Oracle setups run: refused"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$FROM/cut" 2>&1 | grep -v '^$' | tail -5 || true
+          mkdir -p cutin
+          for f in frozen-cut.json frozen-cut.sha256 workflow_source.json; do
+            rclone copyto "$R/models/oracle-setups/runs/$FROM/cut/$f" "cutin/$f" || { echo "::error::run $FROM has no cut/$f on Drive (not an OR-H3 search run, or its upload did not finish): refused"; exit 1; }
+          done
+          python3 -I - <<'EOF'
+          import hashlib, json, os, re, sys
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          frm, cts = os.environ['FROM'], os.environ['CTS'].split(',')
+          body = open('cutin/frozen-cut.json', 'rb').read()
+          sha = hashlib.sha256(body).hexdigest()
+          m = re.search(r'[0-9a-f]{64}', open('cutin/frozen-cut.sha256').read())
+          if not m or m.group(0) != sha:
+              die(f'frozen-cut.json (sha256 {sha[:16]}) does not match its frozen-cut.sha256: refused, nothing logged')
+          doc = json.loads(body)
+          if doc.get('schema') != 'oracle-cut-frozen-1':
+              die('frozen-cut.json is not an OR-H3 frozen file: refused')
+          ws = json.load(open('cutin/workflow_source.json'))
+          pr = str(ws.get('parts_run') or '')
+          if not re.fullmatch(r'[0-9]+', pr) or str(ws.get('frozen_sha256')) != sha:
+              die(f'workflow_source.json: parts run {pr!r}, frozen sha {str(ws.get("frozen_sha256"))[:16]} (not this file): refused')
+          rows = []
+          for ct in cts:
+              T = (doc.get('types') or {}).get(ct)
+              if T is None:
+                  print(f'{ct}: not searched in run {frm}')
+                  continue
+              fz = T.get('frozen')
+              if not fz:
+                  print(f'{ct}: nothing frozen (OR-H3 falsified at discovery for {ct}): nothing opens')
+                  continue
+              if 'DOGE' in json.dumps(T.get('parts')).upper():
+                  die('a DOGE part: refused')
+              rows.append({'ct': ct, 'sha256': sha, 'arm': fz['id'], 'setups': 1, 'parts_run': pr, 'parts': T['parts']})
+              print(f'{ct}: frozen arm {fz["id"]} (B ${fz["B"]["usd_day"]:+.3f}/day, p BHY {fz["B"]["p_bhy"]:.2g}), frozen-cut.json sha256 {sha}, parts of run {pr}')
+          if not rows:
+              die(f'nothing frozen in run {frm}\'s frozen-cut.json for {",".join(cts)}: OR-H3 falsified at discovery, nothing opens: refused')
+          json.dump(rows, open('cutin/rows.json', 'w'))
+          EOF
+          mkdir -p cmeta
+          for row in $(jq -c '.[] | {ct, parts_run}' cutin/rows.json); do
+            ct=$(jq -r .ct <<< "$row"); pr=$(jq -r .parts_run <<< "$row")
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$pr/parts" "cmeta/parts" --include "/$ct-[A-Z]*/meta.json"
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$FROM/cut/labels" "cmeta/labels" --include "/$ct-[A-Z]*/meta.json"
+          done
+          python3 -I - <<'EOF'
+          import json, os, sys
+          die = lambda m: (print(f'::error::{m}', flush=True), sys.exit(1))
+          for r in json.load(open('cutin/rows.json')):
+              for e in r['parts']:
+                  pm, lm = os.path.join('cmeta/parts', e['dir'], 'meta.json'), os.path.join('cmeta/labels', e['dir'], 'meta.json')
+                  if not os.path.exists(pm) or not os.path.exists(lm):
+                      die(f'{r["ct"]}: part or cut labels {e["dir"]} not on Drive: refused, nothing logged')
+                  p, l = json.load(open(pm)), json.load(open(lm))
+                  if int(p['n']) != int(e['rows_total']) or p.get('code_sha') != e.get('code_sha'):
+                      die(f'{e["dir"]}: not the part the search read: refused, nothing logged')
+                  if l.get('labels_sha256') != e.get('labels_sha256') or int(l['n']) != int(p['n']):
+                      die(f'{e["dir"]}: not the cut labels the search read: refused, nothing logged')
+              print(f'{r["ct"]}: {len(r["parts"])} part(s) and cut labels match the frozen file')
+          EOF
+          [ -n "$(rclone lsf "${REGIME_LABELS%/*}" --files-only --include labels.csv.gz)" ] || { echo "::error::regime v1 labels not on Drive"; exit 1; }
+          if ! { git fetch -q --depth 1 origin claude/project-thread-79ntof && git cat-file -e FETCH_HEAD:research/registry.py; }; then
+            echo "::error::research/registry.py not readable on claude/project-thread-79ntof"; exit 1
+          fi
+          echo "matrix=$(jq -c '[.[] | {ct, sha256, parts_run, arm}]' cutin/rows.json)" >> "$GITHUB_OUTPUT"
+      # One OR-H3 opening per Price Prediction type: ledger key '<ct>:cut' (mode 'cut'). A re-run of the same run may
+      # score again; any other run that opened the type's cut arm refuses this one. OR-H1 / OR-AMEND-1 rows do not block it.
+      - name: OR-H3 - log the openings (models/oracle-setups/ho1/openings.jsonl), before any HO-1 number
+        id: clog
+        if: env.CUT == 'true' && steps.ccheck.outputs.matrix != '[]'
+        run: |
+          set -euo pipefail
+          D="$R/models/oracle-setups/ho1"
+          rclone mkdir "$D"
+          rclone mkdir "$R/registry/shards/oracle-setups"
+          for ct in $(jq -r '.[].ct' cutin/rows.json); do rclone mkdir "$R/models/oracle-setups/runs/$RUN/cut/ho1/$ct"; done
+          L=$(rclone lsf "$D" --files-only) || { echo "::error::ledger listing failed: refused"; exit 1; }
+          if grep -qxF openings.jsonl <<< "$L"; then rclone copyto "$D/openings.jsonl" ledger.jsonl; else : > ledger.jsonl; fi
+          jq -c . ledger.jsonl > /dev/null || { echo "::error::the ledger does not parse: refused"; exit 1; }
+          echo "ledger: $(wc -l < ledger.jsonl) opening(s) so far"
+          for ct in $(jq -r '.[].ct' cutin/rows.json); do
+            by=$(jq -r --arg k "$ct:cut" --arg run "$RUN" 'select(.key == $k and (.run | tostring) != $run) | "run \(.run) (from run \(.from), arm \(.arm), \(.opened_utc))"' ledger.jsonl | head -1)
+            [ -z "$by" ] || { echo "::error::OR-H3 HO-1 for $ct was already opened by $by: once per type: refused, nothing logged"; exit 1; }
+          done
+          utc=$(date -u +%FT%TZ)
+          jq -c --arg run "$RUN" --arg att "$GITHUB_RUN_ATTEMPT" --arg from "$FROM" --arg sha "$GITHUB_SHA" --arg utc "$utc" \
+            '.[] | {run: $run, run_attempt: $att, from: $from, ct, sha256, arm, setups, parts_run, code_sha: $sha, opened_utc: $utc,
+                    mode: "cut", key: "\(.ct):cut", prereg: "python/oracle/prereg/OR-H3.md"}' cutin/rows.json > new.jsonl
+          cat new.jsonl >> ledger.jsonl
+          rclone copyto ledger.jsonl "$D/openings.jsonl"
+          rclone copyto "$D/openings.jsonl" landed.jsonl
+          cmp -s landed.jsonl ledger.jsonl || { echo "::error::the openings did not land on Drive: refused"; exit 1; }
+          echo "opened=$(jq -sc . new.jsonl)" >> "$GITHUB_OUTPUT"
+          jq -r '"opened \(.ct) [cut]: arm \(.arm), frozen-cut.json \(.sha256), parts of run \(.parts_run) at \(.opened_utc)"' new.jsonl
+
+  # Per opened contract type: python/oracle/ho1.py (SPEC 4) scores the frozen setups once on Aug 1 - Nov 4 against the
+  # flat control and the matched random-entry placebo, writes registry rows (validated with research/registry.py from
+  # the registry thread's branch) and ho1.md. Nothing is re-selected.
+  ho1:
+    needs: [plan, ho1_open]
+    if: needs.ho1_open.outputs.matrix != '[]' && needs.ho1_open.outputs.matrix != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.ho1_open.outputs.matrix) }}
+    name: ho1 (${{ matrix.ct }})
+    env:
+      CT: ${{ matrix.ct }}
+      SHA: ${{ matrix.sha256 }}
+      PARTS_RUN: ${{ matrix.parts_run }}
+      MODE: ${{ matrix.mode }}
+      CSHA: ${{ matrix.confirm_sha256 }}
+      FROM: ${{ needs.plan.outputs.from }}
+      RUN: ${{ github.run_id }}
+    steps:
+      - name: The contract type
+        run: |
+          [[ "$CT" =~ ^(perp|pp15|pp60|tennis|perp-rev)$ ]] && [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] && [[ "$PARTS_RUN$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad matrix entry"; exit 1; }
+          [[ "$MODE" = frozen || ( "$MODE" = all-confirmed && "$CSHA" =~ ^[0-9a-f]{64}$ ) ]] || { echo "::error::bad mode $MODE"; exit 1; }
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The opened frozen file, its parts, the regime v1 labels, research/registry.py
+        run: |
+          set -euo pipefail
+          mkdir -p in/parts
+          rclone copyto "$R/models/oracle-setups/runs/$FROM/mine/$CT/frozen.json" in/frozen.json
+          [ "$(sha256sum in/frozen.json | cut -c1-64)" = "$SHA" ] || { echo "::error::frozen.json of $CT is not the file opened ($SHA)"; exit 1; }
+          if [ "$MODE" = all-confirmed ]; then
+            rclone copyto "$R/models/oracle-setups/runs/$FROM/mine/$CT/confirm.jsonl" in/confirm.jsonl
+            [ "$(sha256sum in/confirm.jsonl | cut -c1-64)" = "$CSHA" ] || { echo "::error::confirm.jsonl of $CT is not the file logged ($CSHA)"; exit 1; }
+          fi
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$PARTS_RUN/parts" in/parts --include "/$CT-[A-Z]*/**"
+          for d in in/parts/*/; do [ -d "$d" ] && [ ! -f "$d/meta.json" ] && rm -rf "$d"; done; true
+          have=$(find in/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+          if grep -qi doge <<< "$have"; then echo "::error::a DOGE part: refused"; exit 1; fi
+          [ -n "$have" ] || { echo "::error::no $CT parts in run $PARTS_RUN"; exit 1; }
+          echo "parts of run $PARTS_RUN: $have"
+          rclone copyto "$REGIME_LABELS" in/labels.csv.gz
+          git fetch -q --depth 1 origin claude/project-thread-79ntof
+          git show FETCH_HEAD:research/registry.py > "$RUNNER_TEMP/registry.py"
+          echo "research/registry.py from claude/project-thread-79ntof $(git rev-parse --short FETCH_HEAD), sha256 $(sha256sum "$RUNNER_TEMP/registry.py" | cut -c1-16)"
+      - name: HO-1 score (python/oracle/ho1.py)
+        working-directory: python
+        run: |
+          # --sha256: the hash ho1_open logged (only frozen.json is copied here, so there is no frozen.sha256 beside it).
+          # all-confirmed (OR-AMEND-1): every setup of confirm.jsonl, descriptive; ho1-all.md + lockbox_candidates.json.
+          set -o pipefail
+          extra=(); [ "$MODE" != all-confirmed ] || extra=(--all-confirmed --confirm ../in/confirm.jsonl)
+          python3 -m oracle.ho1 --frozen ../in/frozen.json --sha256 "$SHA" --parts ../in/parts --labels ../in/labels.csv.gz --out "../out/ho1/$CT" \
+            --run "$RUN" --code-sha "$GITHUB_SHA" --registry "$RUNNER_TEMP/registry.py" "${extra[@]}" 2>&1 | tail -80
+      - name: Keep the HO-1 outputs on Drive
+        if: always()
+        run: '[ ! -d "out/ho1/$CT" ] || bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/ho1/$CT" "out/ho1/$CT"'
+      - name: The registry shard (validated, registry/shards/oracle-setups/<run>-<ct>.jsonl)
+        run: |
+          set -euo pipefail
+          O="out/ho1/$CT"
+          if [ -f "$O/registry.jsonl" ]; then shard="$O/registry.jsonl"
+          else
+            mapfile -t js < <(find "$O" -maxdepth 1 -name '*.jsonl' | sort)
+            [ "${#js[@]}" = 1 ] || { echo "::error::ho1.py wrote ${#js[@]} .jsonl files in $O and no registry.jsonl: which is the shard?"; exit 1; }
+            shard=${js[0]}
+          fi
+          python3 -I "$RUNNER_TEMP/registry.py" validate "$shard" | tail -20
+          name="$RUN-$CT"; [ "$MODE" != all-confirmed ] || name="$RUN-$CT-allconf"
+          rclone copyto "$shard" "$R/registry/shards/oracle-setups/$name.jsonl"
+          echo "registry shard: registry/shards/oracle-setups/$name.jsonl ($(wc -l < "$shard") rows)"
+      # OR-AMEND-1: once every confirmed setup of the type has seen HO-1, the loser study also reads the HO-1 rows
+      # (reported separately from discovery B). Never fails the job.
+      - name: Loser study on discovery B and HO-1 (python/oracle/losers.py --ho1)
+        if: matrix.mode == 'all-confirmed'
+        continue-on-error: true
+        working-directory: python
+        run: |
+          set -eo pipefail
+          # Only the frozen file's mined parts (same dir, rows and builder code sha), as ho1.py resolve_parts and the
+          # losers job use: other same-type parts under in/parts are never read here.
+          python3 -I - "$CT" <<'EOF'
+          import json, os, sys
+          ct = sys.argv[1]
+          fz = json.load(open('../in/frozen.json'))
+          want = {e['dir']: e for e in fz.get('parts', [])}
+          if not want:
+              print('::error::the frozen file lists no parts: refused'); sys.exit(1)
+          os.makedirs('../in/lparts')
+          for d, e in sorted(want.items()):
+              mp = os.path.join('../in/parts', d, 'meta.json')
+              if not os.path.exists(mp):
+                  print(f'::error::mined part {d} missing: refused'); sys.exit(1)
+              m = json.load(open(mp))
+              if int(m['n']) != int(e['rows_total']) or (e.get('code_sha') and m.get('code_sha') != e['code_sha']):
+                  print(f'::error::{d} differs from the mined part: refused'); sys.exit(1)
+              os.symlink(os.path.abspath(os.path.join('../in/parts', d)), os.path.join('../in/lparts', d))
+          extra = sorted(set(os.listdir('../in/parts')) - set(want))
+          print(f'{ct}: {len(want)} mined part(s)' + (f'; not used: {", ".join(extra)}' if extra else ''))
+          EOF
+          python3 -m oracle.losers --ct "$CT" --parts ../in/lparts --confirm ../in/confirm.jsonl --out "../out/losers/$CT-ho1" --ho1 2>&1 | tail -40
+          bash ../deploy/drive_lab.sh put "models/oracle-setups/runs/$FROM/losers/$CT-ho1" "../out/losers/$CT-ho1"
+
+  # [oracle-losers:<run>] (OR-AMEND-1): the loser study of run <run>'s confirmed setups, per contract type, on discovery B
+  # (python/oracle/losers.py reads nothing at or after DEV_END), plus HO-1 rows only when the openings ledger holds an
+  # all-confirmed opening of that type from that run (every confirmed setup has then seen HO-1). Outputs to
+  # models/oracle-setups/runs/<run>/losers/<ct>/ (B only) or <ct>-ho1/ (B and HO-1).
+  losers:
+    needs: plan
+    if: needs.plan.outputs.mode == 'losers' && needs.plan.outputs.losers != '[]' && needs.plan.outputs.losers != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.losers) }}
+    name: losers (${{ matrix.ct }})
+    env:
+      CT: ${{ matrix.ct }}
+      PARTS_RUN: ${{ matrix.parts_run }}
+      SRC: ${{ needs.plan.outputs.src }}
+    steps:
+      - name: The contract type
+        run: '[[ "$CT" =~ ^(perp|pp15|pp60|tennis|perp-rev)$ ]] && [[ "$PARTS_RUN$SRC" =~ ^[0-9]+$ ]] || { echo "::error::bad matrix entry"; exit 1; }'
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The confirmed setups, the mined parts, and whether HO-1 is open for all of them
+        id: inp
+        run: |
+          set -euo pipefail
+          mkdir -p in/parts
+          rclone copyto "$R/models/oracle-setups/runs/$SRC/mine/$CT/confirm.jsonl" in/confirm.jsonl
+          rclone copyto "$R/models/oracle-setups/runs/$SRC/mine/$CT/frozen.json" in/frozen.json
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$PARTS_RUN/parts" in/parts --include "/$CT-[A-Z]*/**"
+          for d in in/parts/*/; do [ -d "$d" ] && [ ! -f "$d/meta.json" ] && rm -rf "$d"; done; true
+          have=$(find in/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+          if grep -qi doge <<< "$have"; then echo "::error::a DOGE part: refused"; exit 1; fi
+          [ -n "$have" ] || { echo "::error::no $CT parts in run $PARTS_RUN"; exit 1; }
+          # The parts are the mined ones (the frozen file lists them: dir, rows, builder code sha); others are removed.
+          python3 -I - "$CT" <<'EOF'
+          import json, os, shutil, sys
+          ct = sys.argv[1]
+          fz = json.load(open('in/frozen.json'))
+          want = {e['dir']: e for e in fz.get('parts', [])}
+          for d in sorted(os.listdir('in/parts')):
+              if d not in want:
+                  print(f'{d}: not a mined part of this run, removed'); shutil.rmtree(os.path.join('in/parts', d)); continue
+              m = json.load(open(os.path.join('in/parts', d, 'meta.json')))
+              e = want[d]
+              if int(m['n']) != int(e['rows_total']) or (e.get('code_sha') and m.get('code_sha') != e['code_sha']):
+                  print(f'::error::{d} differs from the mined part'); sys.exit(1)
+          miss = sorted(set(want) - set(os.listdir('in/parts')))
+          if miss:
+              print(f'::error::mined parts missing: {miss}'); sys.exit(1)
+          print(f'{ct}: {len(want)} mined part(s) present')
+          EOF
+          ho1=false
+          L=$(rclone lsf "$R/models/oracle-setups/ho1" --files-only 2>/dev/null || true)
+          if grep -qxF openings.jsonl <<< "$L"; then
+            rclone copyto "$R/models/oracle-setups/ho1/openings.jsonl" ledger.jsonl
+            n=$(jq -r --arg ct "$CT" --arg src "$SRC" 'select(.ct == $ct and .mode == "all-confirmed" and (.from | tostring) == $src) | .run' ledger.jsonl | head -1)
+            [ -z "$n" ] || ho1=true
+          fi
+          if [ "$ho1" = true ]; then echo "HO-1 rows: yes (all-confirmed opening of $CT from run $SRC, by run $n)"; else echo "HO-1 rows: no (no all-confirmed opening of $CT from run $SRC): discovery B only"; fi
+          echo "ho1=$ho1" >> "$GITHUB_OUTPUT"
+      - name: Loser study (python/oracle/losers.py)
+        working-directory: python
+        env:
+          HO1: ${{ steps.inp.outputs.ho1 }}
+        run: |
+          set -o pipefail
+          dir="$CT"; extra=(); [ "$HO1" != true ] || { dir="$CT-ho1"; extra=(--ho1); }
+          python3 -m oracle.losers --ct "$CT" --parts ../in/parts --confirm ../in/confirm.jsonl --out "../out/losers/$dir" "${extra[@]}" 2>&1 | tail -60
+          bash ../deploy/drive_lab.sh put "models/oracle-setups/runs/$SRC/losers/$dir" "../out/losers/$dir"
+
+  # [oracle-cut] (OR-H3, python/oracle/cut.py labels): per pp part of the parts run, the loser-cut sidecar labels from the
+  # Kalshi history the pp jobs read (the same downloads; the row identity check refuses a history that is not the one the
+  # part was built from). Outputs to models/oracle-setups/runs/<run>/cut/labels/<part>/ (with windows/ for HO-1 only).
+  cut_labels:
+    needs: plan
+    if: needs.plan.outputs.mode == 'cut' && needs.plan.outputs.cutparts != '[]' && needs.plan.outputs.cutparts != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.cutparts) }}
+    name: cut labels (${{ matrix.ct }}-${{ matrix.asset }})
+    env:
+      CT: ${{ matrix.ct }}
+      A: ${{ matrix.asset }}
+      SRC: ${{ needs.plan.outputs.src }}
+      RUN: ${{ github.run_id }}
+    steps:
+      - name: The part (pp15 BTC/ETH/SOL/XRP, pp60 BTC/ETH/SOL; never DOGE)
+        run: |
+          [[ "$SRC" =~ ^[0-9]+$ ]] || { echo "::error::bad parts run $SRC"; exit 1; }
+          [[ ( "$CT" = pp15 && "$A" =~ ^(BTC|ETH|SOL|XRP)$ ) || ( "$CT" = pp60 && "$A" =~ ^(BTC|ETH|SOL)$ ) ]] || { echo "::error::bad or excluded part $CT-$A"; exit 1; }
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - uses: actions/setup-node@v5
+        if: env.CT == 'pp15'
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules for scripts/mdc.ts; the key train.yml, history-build and perp-ta share)
+        id: deps
+        if: env.CT == 'pp15'
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: env.CT == 'pp15' && steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The pp part
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/parts/$CT-$A" "in/parts/$CT-$A" || { echo "::error::$CT-$A of run $SRC not readable"; exit 1; }
+          [ -f "in/parts/$CT-$A/meta.json" ] || { echo "::error::$CT-$A of run $SRC has no meta.json"; exit 1; }
+          echo "$CT-$A: $(jq -r '.n' "in/parts/$CT-$A/meta.json") rows, built by $(jq -r '.code_sha' "in/parts/$CT-$A/meta.json" | cut -c1-7), $(du -sh "in/parts/$CT-$A" | cut -f1)"
+      # The coin job's download: only this coin's series, only .jsonl day files (a day kept only in compact form is
+      # decoded), close days 2026-04-13 .. 2026-11-04 (no file dated 2026-11-05 or later is downloaded).
+      - name: Kalshi 15-minute candles (raw/kalshi-history/kalshi/KX<A>15M)
+        if: env.CT == 'pp15'
+        run: |
+          set -euo pipefail
+          S="KX${A}15M"; D="data/k15/kalshi/$S"; mkdir -p "$D"
+          x='{jsonl,jsonl.mdc}'
+          bash deploy/drive_lab.sh get "raw/kalshi-history/kalshi/$S" "$D" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+            --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-10-[0-3][0-9].$x" --include "/2026-11-0[1-4].$x" \
+            || { echo "::error::raw/kalshi-history/kalshi/$S not readable on Drive"; exit 1; }
+          shopt -s nullglob
+          for f in "$D"/*.jsonl.mdc; do [ ! -f "${f%.mdc}" ] || rm "$f"; done
+          mdc=("$D"/*.jsonl.mdc)
+          if [ "${#mdc[@]}" -gt 0 ]; then
+            echo "${#mdc[@]} day(s) only in compact form: decoded"
+            npx tsx scripts/mdc.ts expand "$D" > /dev/null
+            rm -f "${mdc[@]}"
+          fi
+          days=("$D"/*.jsonl); n=${#days[@]}
+          [ "$n" -gt 0 ] || { echo "::error::no $S day files on Drive"; exit 1; }
+          first=$(basename "${days[0]}"); last=$(basename "${days[$((n - 1))]}")
+          markets=$(cat "${days[@]}" | wc -l)
+          echo "$S: $n day files, ${first%.jsonl} .. ${last%.jsonl}, $markets markets"
+          [ "$n" -ge 206 ] || { echo "::error::$S has $n day files, 206 are required (2026-04-13..2026-11-04): a twin or partial copy was read"; exit 1; }
+          if rclone copyto "$R/models/oracle-setups/runs/$SRC/status/pp15-$A.json" "$RUNNER_TEMP/built.json" 2>/dev/null; then
+            echo "when the part was built: $(jq -c '{day_files, markets}' "$RUNNER_TEMP/built.json")"
+            [ "$(jq -r .markets "$RUNNER_TEMP/built.json")" = "$markets" ] || echo "::notice::$S has $markets markets now, $(jq -r .markets "$RUNNER_TEMP/built.json") when the part was built: rows are matched by open time and labels (cut.py map_rows)"
+          fi
+      # The pp60 job's download (the complete backfill the part was built from; resumed runs only add markets).
+      - name: The hourly ladders (raw/oracle-history/kalshi/KX<A>D)
+        if: env.CT == 'pp60'
+        run: |
+          set -euo pipefail
+          S="KX${A}D"; x='jsonl'
+          bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$S" "data/oh/kalshi/$S" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+            --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-10-[0-3][0-9].$x" --include "/2026-11-0[1-4].$x" \
+            || { echo "::error::raw/oracle-history/kalshi/$S not readable on Drive"; exit 1; }
+          echo "$S: $(find "data/oh/kalshi/$S" -maxdepth 1 -name '*.jsonl' | wc -l) day files, $(cat "data/oh/kalshi/$S"/*.jsonl | wc -l) market lines"
+      - name: Cut labels (python/oracle/cut.py labels)
+        working-directory: python
+        run: |
+          set -o pipefail
+          if [ "$CT" = pp15 ]; then kind=15; hist=../data/k15; else kind=60; hist=../data/oh; fi
+          python3 -m oracle.cut labels --kind "$kind" --history "$hist" --part "../in/parts/$CT-$A" --out ../out/labels --code-sha "$GITHUB_SHA" 2>&1 | tail -40
+          [ -f "../out/labels/$CT-$A/meta.json" ] && [ -f "../out/labels/$CT-$A/windows/meta.json" ] || { echo "::error::no cut labels written for $CT-$A"; exit 1; }
+          jq -c '{match, labels_sha256}' "../out/labels/$CT-$A/meta.json"
+      # Per-row labels and window paths: Drive only, never an artifact.
+      - name: Keep the cut labels on Drive
+        run: bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/cut/labels/$CT-$A" "out/labels/$CT-$A"
+
+  # [oracle-cut] (OR-H3, python/oracle/cut.py search): the 80 arms per type on discovery A (choose) and B (confirm); BHY
+  # over the 10 kept arms; frozen-cut.json. Discovery rows only (t + h <= DEV_END); the labels' windows/ (HO-1 paths) are
+  # not even downloaded. workflow_source.json goes last: the HO-1 opening reads the search only when it is there.
+  cut_search:
+    needs: [plan, cut_labels]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode == 'cut' && needs.cut_labels.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    name: cut search
+    env:
+      SRC: ${{ needs.plan.outputs.src }}
+      CUTPARTS: ${{ needs.plan.outputs.cutparts }}
+      RUN: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The pp parts and their cut labels (without windows/)
+        id: inp
+        run: |
+          set -euo pipefail
+          [[ "$SRC" =~ ^[0-9]+$ ]] || { echo "::error::bad parts run"; exit 1; }
+          rclone dedupe --dedupe-mode skip "$R/models/oracle-setups/runs/$RUN/cut" 2>&1 | grep -v '^$' | tail -5 || true
+          for p in $(jq -r '.[] | "\(.ct)-\(.asset)"' <<< "$CUTPARTS"); do
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/parts/$p" "in/parts/$p"
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/cut/labels/$p" "in/cut/$p" --exclude "/windows/**"
+            [ -f "in/parts/$p/meta.json" ] && [ -f "in/cut/$p/meta.json" ] || { echo "::error::$p: part or cut labels missing"; exit 1; }
+            [ ! -e "in/cut/$p/windows" ] || { echo "::error::windows/ was downloaded for the search"; exit 1; }
+          done
+          if find in -maxdepth 2 -iname '*doge*' | grep -q .; then echo "::error::a DOGE part: refused"; exit 1; fi
+          echo "types=$(jq -r '[.[].ct] | unique | join(",")' <<< "$CUTPARTS")" >> "$GITHUB_OUTPUT"
+          echo "parts: $(ls in/parts | paste -sd' ' -) ($(du -sh in | cut -f1))"
+      - name: The arm search (python/oracle/cut.py search)
+        working-directory: python
+        env:
+          TYPES: ${{ steps.inp.outputs.types }}
+        run: |
+          set -o pipefail
+          python3 -m oracle.cut search --parts ../in/parts --cut-labels ../in/cut --out ../out/cut --types "$TYPES" --code-sha "$GITHUB_SHA" 2>&1 | tail -40
+          [ -f ../out/cut/frozen-cut.json ] && [ -f ../out/cut/frozen-cut.sha256 ] || { echo "::error::no frozen-cut.json written"; exit 1; }
+      - name: Keep the search on Drive
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/cut" out/cut
+          sha=$(sha256sum out/cut/frozen-cut.json | cut -c1-64)
+          jq -n --arg run "$RUN" --arg src "$SRC" --arg sha "$GITHUB_SHA" --arg fz "$sha" --argjson parts "$CUTPARTS" --arg utc "$(date -u +%FT%TZ)" \
+            '{run: $run, parts_run: $src, labels: "models/oracle-setups/runs/\($run)/cut/labels", code_sha: $sha, frozen_sha256: $fz,
+              parts: [$parts[] | "\(.ct)-\(.asset)"], prereg: "python/oracle/prereg/OR-H3.md", at_utc: $utc}' > "$RUNNER_TEMP/workflow_source.json"
+          rclone copyto "$RUNNER_TEMP/workflow_source.json" "$R/models/oracle-setups/runs/$RUN/cut/workflow_source.json"
+          echo "frozen-cut.json sha256 $sha"
+
+  # [protocol:ho1] [ho1-from:<search run>] [oracle-cut] (OR-H3 "HO-1"): per opened type, cut.py ho1 scores the frozen arm
+  # once on Aug 1 - Nov 4 against the control (same entries, no cut, no filter) and the matched placebo; registry rows
+  # (family oracle-<ct>-cut-v1) validated with research/registry.py. Outputs: models/oracle-setups/runs/<run>/cut/ho1/<ct>/.
+  cut_ho1:
+    needs: [plan, ho1_open]
+    if: needs.ho1_open.outputs.cutmatrix != '[]' && needs.ho1_open.outputs.cutmatrix != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: ${{ fromJSON(needs.ho1_open.outputs.cutmatrix) }}
+    name: cut ho1 (${{ matrix.ct }})
+    env:
+      CT: ${{ matrix.ct }}
+      SHA: ${{ matrix.sha256 }}
+      PARTS_RUN: ${{ matrix.parts_run }}
+      FROM: ${{ needs.plan.outputs.from }}
+      RUN: ${{ github.run_id }}
+      LOCKBOX_RUN: '42176343914'
+    steps:
+      - name: The contract type
+        run: '[[ "$CT" =~ ^(pp15|pp60)$ ]] && [[ "$SHA" =~ ^[0-9a-f]{64}$ ]] && [[ "$PARTS_RUN$FROM" =~ ^[0-9]+$ ]] || { echo "::error::bad matrix entry"; exit 1; }'
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            python/oracle/requirements.txt
+            python/allpairs/requirements.txt
+      - name: Python dependencies
+        run: pip install -q -r python/oracle/requirements.txt -r python/allpairs/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The opened frozen-cut.json, its parts and cut labels, the regime v1 labels, research/registry.py, the lockbox candidates
+        id: inp
+        run: |
+          set -euo pipefail
+          mkdir -p in/parts in/cut
+          rclone copyto "$R/models/oracle-setups/runs/$FROM/cut/frozen-cut.json" in/frozen-cut.json
+          [ "$(sha256sum in/frozen-cut.json | cut -c1-64)" = "$SHA" ] || { echo "::error::frozen-cut.json is not the file opened ($SHA)"; exit 1; }
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$PARTS_RUN/parts" in/parts --include "/$CT-[A-Z]*/**"
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$FROM/cut/labels" in/cut --include "/$CT-[A-Z]*/**"
+          for d in in/parts/*/ in/cut/*/; do [ -d "$d" ] && [ ! -f "$d/meta.json" ] && rm -rf "$d"; done; true
+          have=$(find in/parts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)
+          if grep -qi doge <<< "$have"; then echo "::error::a DOGE part: refused"; exit 1; fi
+          [ -n "$have" ] || { echo "::error::no $CT parts in run $PARTS_RUN"; exit 1; }
+          echo "parts of run $PARTS_RUN: $have; cut labels of run $FROM: $(find in/cut -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd' ' -)"
+          rclone copyto "$REGIME_LABELS" in/labels.csv.gz
+          git fetch -q --depth 1 origin claude/project-thread-79ntof
+          git show FETCH_HEAD:research/registry.py > "$RUNNER_TEMP/registry.py"
+          echo "research/registry.py from claude/project-thread-79ntof $(git rev-parse --short FETCH_HEAD), sha256 $(sha256sum "$RUNNER_TEMP/registry.py" | cut -c1-16)"
+          # Descriptive only: the OR-AMEND-1 lockbox candidates of run $LOCKBOX_RUN (runs/$LOCKBOX_RUN/ho1/<ct>/, else where
+          # the ledger's all-confirmed opening of that run wrote them). Their HO-1 trades only; nothing from the lockbox.
+          lb=""
+          for dir in "runs/$LOCKBOX_RUN/ho1/$CT" $(rclone cat "$R/models/oracle-setups/ho1/openings.jsonl" 2>/dev/null \
+                | jq -r --arg ct "$CT" --arg f "$LOCKBOX_RUN" 'select(.ct == $ct and .mode == "all-confirmed" and (.from | tostring) == $f) | "runs/\(.run)/ho1/\($ct)"' | sort -u); do
+            [[ "$dir" =~ ^runs/[0-9]+/ho1/(pp15|pp60)$ ]] || continue
+            if [ -n "$(rclone lsf "$R/models/oracle-setups/$dir" --files-only --include lockbox_candidates.json 2>/dev/null)" ]; then
+              rclone copyto "$R/models/oracle-setups/$dir/lockbox_candidates.json" in/lockbox_candidates.json
+              lb="$dir"; break
+            fi
+          done
+          if [ -n "$lb" ]; then echo "lockbox candidates: models/oracle-setups/$lb/lockbox_candidates.json ($(jq '.setups | length' in/lockbox_candidates.json) setups)"; else echo "no lockbox_candidates.json for $CT: not scored"; fi
+      - name: HO-1 score (python/oracle/cut.py ho1)
+        working-directory: python
+        run: |
+          set -o pipefail
+          extra=(); [ ! -f ../in/lockbox_candidates.json ] || extra=(--lockbox ../in/lockbox_candidates.json)
+          python3 -m oracle.cut ho1 --frozen ../in/frozen-cut.json --sha256 "$SHA" --ct "$CT" --parts ../in/parts --cut-labels ../in/cut \
+            --regime ../in/labels.csv.gz --registry "$RUNNER_TEMP/registry.py" --out "../out/cut-ho1/$CT" --run "$RUN" --code-sha "$GITHUB_SHA" "${extra[@]}" 2>&1 | tail -40
+          [ -f "../out/cut-ho1/$CT/rows.jsonl" ] || { echo "::error::no rows.jsonl written"; exit 1; }
+      - name: Keep the HO-1 outputs on Drive
+        if: always()
+        run: '[ ! -d "out/cut-ho1/$CT" ] || bash deploy/drive_lab.sh put "models/oracle-setups/runs/$RUN/cut/ho1/$CT" "out/cut-ho1/$CT"'
+      - name: The registry shard (validated, registry/shards/oracle-setups/<run>-<ct>-cut.jsonl)
+        run: |
+          set -euo pipefail
+          shard="out/cut-ho1/$CT/rows.jsonl"
+          python3 -I "$RUNNER_TEMP/registry.py" validate "$shard" | tail -20
+          rclone copyto "$shard" "$R/registry/shards/oracle-setups/$RUN-$CT-cut.jsonl"
+          echo "registry shard: registry/shards/oracle-setups/$RUN-$CT-cut.jsonl ($(wc -l < "$shard") rows)"
+
+  # One commit comment per run, aggregates only (public repository): per part rows, base hit rates on discovery rows only,
+  # mining counts, confirmations, frozen setups with their discovery-B statistics; or, for HO-1, the openings and each
+  # contract type's ho1.md.
+  card:
+    needs: [plan, coin, hourly, pp60, tennis, mine, ho1_open, ho1, losers, cut_labels, cut_search, cut_ho1]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.mode != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      MODE: ${{ needs.plan.outputs.mode }}
+      SRC: ${{ needs.plan.outputs.src }}
+      FROM: ${{ needs.plan.outputs.from }}
+      CTS: ${{ needs.plan.outputs.cts }}
+      ALLCONF: ${{ needs.plan.outputs.allconf }}
+      CUT: ${{ needs.plan.outputs.cut }}
+      RUN: ${{ github.run_id }}
+      NEEDS: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Python dependencies
+        run: pip install -q 'numpy>=1.26'
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The run's aggregates from Drive
+        run: |
+          set -euo pipefail
+          D=data; mkdir -p $D/parts $D/mine $D/status $D/ho1 $D/losers $D/cut
+          # OR-H3: the search report and the labels' meta (match counts) of discovery rows; or the HO-1 reports.
+          if [ "$MODE" = cut ]; then
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/cut" $D/cut --include "/report-cut.md" --include "/labels/*/meta.json" || echo "no OR-H3 outputs on Drive"
+            exit 0
+          fi
+          if [ "$MODE" = ho1 ] && [ "$CUT" = true ]; then
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/cut/ho1" $D/cut --include "/*/ho1-cut.md" || echo "no OR-H3 HO-1 outputs on Drive"
+            for d in "$D"/cut/*/; do
+              [ -d "$d" ] || continue
+              ct=$(basename "$d"); f="$R/registry/shards/oracle-setups/$RUN-$ct-cut.jsonl"
+              if [ -n "$(rclone lsf "${f%/*}" --files-only --include "${f##*/}")" ]; then rclone cat "$f" | wc -l > "$d/shard.count"; fi
+            done
+            exit 0
+          fi
+          # The loser study's reports (losers.md, aggregates only) of this run's mode.
+          case "$MODE" in
+            losers) bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/losers" $D/losers --include "/*/losers.md" || echo "no loser study on Drive" ;;
+            ho1) [ "$ALLCONF" != true ] || bash deploy/drive_lab.sh get "models/oracle-setups/runs/$FROM/losers" $D/losers --include "/*-ho1/losers.md" || echo "no HO-1 loser study on Drive" ;;
+            *) bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/losers" $D/losers --include "/*/losers.md" || echo "no loser study on Drive" ;;
+          esac
+          [ "$MODE" != losers ] || exit 0
+          if [ "$MODE" = ho1 ]; then
+            bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/ho1" $D/ho1 --include "/*/ho1.md" --include "/*/ho1-all.md" || echo "no HO-1 outputs on Drive"
+            for d in "$D"/ho1/*/; do
+              [ -d "$d" ] || continue
+              ct=$(basename "$d"); sfx=""; [ "$ALLCONF" != true ] || sfx="-allconf"; f="$R/registry/shards/oracle-setups/$RUN-$ct$sfx.jsonl"
+              if [ -n "$(rclone lsf "${f%/*}" --files-only --include "${f##*/}")" ]; then rclone cat "$f" | wc -l > "$d/shard.count"; fi
+            done
+            exit 0
+          fi
+          p='{perp,pp15,pp60,tennis}-*'
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$SRC/parts" $D/parts --include "/$p/meta.json" --include "/$p/t.npy" \
+            --include "/$p/ok_*.npy" --include "/$p/hit_*.npy" || echo "no parts readable"
+          bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/mine" $D/mine --include "/*/report.md" --include "/*/frozen.json" \
+            --include "/*/frozen.sha256" --include "/*/confirm.jsonl" --include "/*/base_rates.json" --include "/*/workflow_source.json" || echo "no mining outputs on Drive"
+          [ "$MODE" != build ] || bash deploy/drive_lab.sh get "models/oracle-setups/runs/$RUN/status" $D/status || echo "no data status files"
+      - name: The card
+        working-directory: python
+        run: |
+          python3 - ../data > "$RUNNER_TEMP/card.md" <<'EOF'
+          import glob, json, os, re, sys
+          import numpy as np
+          from oracle.common import CTS, Part, dev_rows, split_of
+
+          data, mode, run, src, frm = sys.argv[1], os.environ['MODE'], os.environ['RUN'], os.environ['SRC'], os.environ['FROM']
+          needs = json.loads(os.environ['NEEDS'])
+          jobs = ', '.join(f'{k} {v.get("result")}' for k, v in needs.items() if v.get('result') != 'skipped')
+          cts = [c for c in os.environ['CTS'].split(',') if c]
+          w = print
+
+
+          def esc(s):
+              return str(s).replace('|', '\\|').replace('\n', ' ')
+
+
+          def num(x):
+              if isinstance(x, bool) or not isinstance(x, (int, float)) or x != x:
+                  return '-' if x is None else esc(x)
+              return f'{x:,}' if isinstance(x, int) else f'{x:.4g}'
+
+
+          def capped(path, limit):
+              text = open(path, errors='replace').read()
+              return text if len(text) <= limit else text[:limit] + f'\n\n... ({len(text) - limit} more characters on Drive)'
+
+
+          sha = os.environ.get('GITHUB_SHA', '')[:7]
+          allconf = os.environ.get('ALLCONF') == 'true'
+
+
+          def loser_mds(limit, details):
+              mds = sorted(glob.glob(os.path.join(data, 'losers', '*', 'losers.md')))
+              if not mds:
+                  return
+              w('')
+              w('### Loser study (python/oracle/losers.py, OR-AMEND-1; descriptive, aggregates only)')
+              for md in mds:
+                  name = os.path.basename(os.path.dirname(md))
+                  w('')
+                  if details:
+                      w(f'<details><summary>{esc(name)}: losers.md</summary>')
+                      w('')
+                  else:
+                      w(f'#### {esc(name)}')
+                  w(capped(md, limit))
+                  if details:
+                      w('')
+                      w('</details>')
+
+
+          cutmode = os.environ.get('CUT') == 'true'
+          if mode == 'cut':
+              w(f'## Oracle setups OR-H3 loser cut, run {run}: cut labels and the arm search on the pp parts of run {src}')
+              w('')
+              w(f'Jobs: {jobs}. Code {sha}. Prereg python/oracle/prereg/OR-H3.md. Aggregates of discovery rows only (decision and '
+                'horizon before 2026-08-01); nothing from HO-1 or the lockbox is computed here. Never compared to paper. NEVER DOGE.')
+              lm = sorted(glob.glob(os.path.join(data, 'cut', 'labels', '*', 'meta.json')))
+              if lm:
+                  w('')
+                  w('### Cut labels (row identity: level none recomputed equal to the part\'s OR-H1 exit on every mapped row)')
+                  w('| part | rows | at their window | groups re-matched | rows without a window | labels sha256 |')
+                  w('|---|---|---|---|---|---|')
+                  for f in lm:
+                      j = json.load(open(f))
+                      mt = j.get('match') or {}
+                      w(f'| {esc(os.path.basename(os.path.dirname(f)))} | {num(mt.get("rows"))} | {num(mt.get("direct"))} | '
+                        f'{num(mt.get("groups_rematched"))} | {num(mt.get("rows_unmatched"))} | `{esc(str(j.get("labels_sha256"))[:16])}` |')
+              rep = os.path.join(data, 'cut', 'report-cut.md')
+              w('')
+              w(capped(rep, 50000) if os.path.exists(rep) else 'No report-cut.md on Drive (see the cut search job).')
+              sys.exit(0)
+          if mode == 'ho1' and cutmode:
+              w(f'## Oracle setups OR-H3 loser cut HO-1, run {run}: the frozen arms of search run {frm}')
+              w('')
+              w(f'Jobs: {jobs}. Code {sha}. Each Price Prediction type\'s frozen arm is opened once (ledger key <ct>:cut, logged before '
+                'any HO-1 number); scored once on 2026-08-01..2026-11-04. Never compared to paper. NEVER DOGE.')
+              opened = json.loads(needs.get('ho1_open', {}).get('outputs', {}).get('opened') or '[]')
+              if opened:
+                  w('')
+                  w('| type | arm | frozen-cut.json sha256 | parts of run | opened (UTC) |')
+                  w('|---|---|---|---|---|')
+                  for r in opened:
+                      w(f'| {esc(r["ct"])} | {esc(r.get("arm"))} | `{esc(r["sha256"])}` | {esc(r.get("parts_run"))} | {esc(r.get("opened_utc"))} |')
+              else:
+                  w('')
+                  w('Nothing was opened (nothing frozen, already opened, or a SHA mismatch: see the ho1_open job).')
+              for d in sorted(glob.glob(os.path.join(data, 'cut', '*', ''))):
+                  ct = os.path.basename(os.path.dirname(d))
+                  w('')
+                  w(f'### {ct}: OR-H3 HO-1')
+                  cnt = os.path.join(d, 'shard.count')
+                  if os.path.exists(cnt):
+                      w(f'Registry shard registry/shards/oracle-setups/{run}-{ct}-cut.jsonl: {open(cnt).read().strip()} rows.')
+                  md = os.path.join(d, 'ho1-cut.md')
+                  w(capped(md, 20000) if os.path.exists(md) else 'no ho1-cut.md on Drive')
+              sys.exit(0)
+          if mode == 'losers':
+              w(f'## Oracle setups loser study, run {run}: the confirmed setups of run {src}')
+              w('')
+              w(f'Jobs: {jobs}. Code {sha}. Discovery B rows (whole horizon before 2026-08-01); HO-1 rows only for a contract type '
+                'whose confirmed setups were all opened on HO-1 (all-confirmed, OR-AMEND-1). Descriptive: nothing is selected.')
+              loser_mds(11000, False)
+              sys.exit(0)
+          if mode == 'ho1':
+              if allconf:
+                  w(f'## Oracle setups HO-1, run {run}: EVERY confirmed setup of run {frm} (OR-AMEND-1, descriptive trial)')
+                  w('')
+                  w(f'Jobs: {jobs}. Code {sha}. Steven, 2026-11-06 14:03 UTC: "let all of them trial on real unseen data". Not a '
+                    'pre-registered pass: only lockbox L1 (2026-11-06T05:00Z to 2026-11-13T05:00Z, whole horizon inside; read once, no earlier than 2026-11-14T05:00Z) '
+                    'decides rulebook entry. A later pre-registered frozen opening of these contract types is refused.')
+              else:
+                  w(f'## Oracle setups HO-1, run {run}: the frozen files of run {frm}')
+                  w('')
+                  w(f'Jobs: {jobs}. Code {sha}. Each frozen file is opened once (models/oracle-setups/ho1/openings.jsonl, logged before any HO-1 number); nothing is re-selected.')
+              opened = json.loads(needs.get('ho1_open', {}).get('outputs', {}).get('opened') or '[]')
+              if opened:
+                  w('')
+                  w('| type | mode | frozen.json sha256 | frozen setups | confirmed setups scored | parts of run | opened (UTC) |')
+                  w('|---|---|---|---|---|---|---|')
+                  for r in opened:
+                      w(f'| {esc(r["ct"])} | {esc(r.get("mode", "frozen"))} | `{esc(r["sha256"])}` | {num(r.get("setups"))} | {num(r.get("confirmed"))} | '
+                        f'{esc(r.get("parts_run"))} | {esc(r.get("opened_utc"))} |')
+              else:
+                  w('')
+                  w('Nothing was opened (no frozen / confirmed setup, or the opening was refused: see the ho1_open job).')
+              for d in sorted(glob.glob(os.path.join(data, 'ho1', '*', ''))):
+                  ct = os.path.basename(os.path.dirname(d))
+                  w('')
+                  w(f'### {ct}: HO-1' + (' (all confirmed setups)' if allconf else ''))
+                  cnt = os.path.join(d, 'shard.count')
+                  if os.path.exists(cnt):
+                      w(f'Registry shard registry/shards/oracle-setups/{run}-{ct}{"-allconf" if allconf else ""}.jsonl: {open(cnt).read().strip()} rows.')
+                  md = os.path.join(d, 'ho1-all.md' if allconf else 'ho1.md')
+                  w(capped(md, 9000 if allconf else 20000) if os.path.exists(md) else f'no {os.path.basename(md)} on Drive')
+              loser_mds(6000, True)
+              sys.exit(0)
+
+          w(f'## Oracle setups (OR-H1), run {run}: ' + ('parts built and mined' if mode == 'build' else f'the parts of run {src} mined again'))
+          w('')
+          w(f'Jobs: {jobs}. Code {sha}. Statistics below use discovery rows only: split A or B, the whole horizon before 2026-08-01 '
+            '(oracle.common split_of, dev_rows). Nothing from HO-1 is computed here.')
+          w('')
+          w('### Parts and base hit rates (every tradable discovery decision, not matched)')
+          w('| part | rows | side, horizon | A tradable | A hit | B tradable | B hit |')
+          w('|---|---|---|---|---|---|---|')
+          for m in sorted(glob.glob(os.path.join(data, 'parts', '*', 'meta.json'))):
+              p = os.path.dirname(m)
+              name = os.path.basename(p)
+              if 'DOGE' in name.upper():
+                  sys.exit('DOGE part refused')
+              part = Part(p)
+              if part.ct not in CTS:
+                  continue
+              t = np.asarray(part['t'])
+              for s in part.meta['sides']:
+                  for h in part.meta['horizons']:
+                      if not (part.has(f'ok_{s}{h}') and part.has(f'hit_{s}{h}')):
+                          continue
+                      sp, dv = split_of(t, h, part.ct), dev_rows(t, h)
+                      ok, hit = np.asarray(part[f'ok_{s}{h}']).astype(bool) & dv, np.asarray(part[f'hit_{s}{h}']).astype(bool)
+                      cells = []
+                      for k in ('A', 'B'):
+                          sel = ok & (sp == k)
+                          n, x = int(sel.sum()), int((hit & sel).sum())
+                          cells += [f'{n:,}', f'{100 * x / n:.2f}%' if n else '-']
+                      w(f'| {esc(name)} | {part.n:,} | {s}{h} | ' + ' | '.join(cells) + ' |')
+          st = sorted(glob.glob(os.path.join(data, 'status', '*.json')))
+          if st:
+              w('')
+              w('### Data')
+              for f in st:
+                  j = json.load(open(f))
+                  w(f'- {esc(os.path.basename(f)[:-5])}: ' + ', '.join(f'{k} {esc(v)}' for k, v in j.items() if k != 'kind'))
+          for ct in cts:
+              d = os.path.join(data, 'mine', ct)
+              w('')
+              w(f'### {ct}: mining (discovery A), confirmation (discovery B), freeze')
+              f = os.path.join(d, 'frozen.json')
+              if not os.path.exists(f):
+                  w(f'No mining outputs on Drive (mine: {needs.get("mine", {}).get("result")}).')
+                  continue
+              fz = json.load(open(f))
+              setups = fz if isinstance(fz, list) else fz.get('setups', []) if isinstance(fz, dict) else []
+              sf = os.path.join(d, 'frozen.sha256')
+              m = re.search(r'[0-9a-f]{64}', open(sf).read()) if os.path.exists(sf) else None
+              # Counts: base_rates.json's run block (mine.py), else counted from confirm.jsonl (bhy_pass / survivor flags).
+              br = os.path.join(d, 'base_rates.json')
+              rb = (json.load(open(br)).get('run') or {}) if os.path.exists(br) else {}
+              cf = os.path.join(d, 'confirm.jsonl')
+              conf = [json.loads(l) for l in open(cf) if l.strip()] if os.path.exists(cf) else []
+              cnt = {'N_raw (conjunctions evaluated)': rb.get('N_raw', fz.get('N_raw') if isinstance(fz, dict) else None),
+                     'stage-1 kept': rb.get('stage1_setups'), 'confirmed on B (BHY m)': rb.get('confirmed', len(conf)),
+                     'BHY passes': rb.get('bhy_pass', sum(1 for c in conf if c.get('bhy_pass') is True)),
+                     'survivors': rb.get('survivors', sum(1 for c in conf if c.get('survivor') is True)), 'frozen': len(setups)}
+              ws = os.path.join(d, 'workflow_source.json')
+              w('; '.join(f'{k}: {num(v)}' for k, v in cnt.items()) + (f'; frozen.json sha256 `{m.group(0)[:16]}`' if m else '')
+                + (f'; parts of run {json.load(open(ws)).get("parts_run")}' if os.path.exists(ws) else '') + '.')
+              if setups:
+                  w('')
+                  w('| rank | scope | side | h | setup | A n | A hit | A base | A uplift | A t | B trades | B days | B $/day | B hit | B base | B p | p BHY |')
+                  w('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+                  for s in sorted(setups, key=lambda s: (str(s.get('scope')), s.get('rank') if isinstance(s.get('rank'), (int, float)) else 1e9)):
+                      A, B = (s.get('dev') or {}).get('A') or {}, (s.get('dev') or {}).get('B') or {}
+                      items = ' & '.join(f'{esc(i.get("f"))}={esc(i.get("v"))}' for i in s.get('items', []) if isinstance(i, dict))
+                      w(f'| {num(s.get("rank"))} | {esc(s.get("scope"))} | {esc(s.get("side"))} | {num(s.get("h"))} | {items} | '
+                        + ' | '.join(num(A.get(k)) for k in ('n', 'hit', 'base_hit', 'uplift', 't')) + ' | '
+                        + ' | '.join(num(B.get(k)) for k in ('trades', 'days', 'usd_day', 'hit', 'base_hit', 'p')) + f' | {num(s.get("p_bhy"))} |')
+              rep = os.path.join(d, 'report.md')
+              if os.path.exists(rep):
+                  w('')
+                  w('<details><summary>miner report (report.md, aggregates)</summary>')
+                  w('')
+                  w(capped(rep, 12000))
+                  w('')
+                  w('</details>')
+          loser_mds(5000, True)
+          EOF
+          wc -c "$RUNNER_TEMP/card.md"
+          cat "$RUNNER_TEMP/card.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Post the card on the commit
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -s "$RUNNER_TEMP/card.md" ] || printf '## Oracle setups run %s\n\nNo card (the card step failed: see the run).\n' "$RUN" > "$RUNNER_TEMP/card.md"
+          head -c 60000 "$RUNNER_TEMP/card.md" > "$RUNNER_TEMP/comment.md"
+          jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input - --jq .html_url || echo "::warning::could not post the comment"

@@ -8,11 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       atlas_archive_export:
-        description: 'Copy the fixed five minute archives and seven context CSVs from Drive to a runner artifact, with full OHLCV audit; no server access, fitting or deployment'
+        description: 'Copy the fixed five minute archives and seven context CSVs from Drive to this runner (never an artifact: the repository is public), with full OHLCV audit; no server access, fitting or deployment'
         required: false
         default: 'false'
       atlas_archive_source:
-        description: 'With atlas_archive_export: recent, laptop, or recording-probe; fixed public market-data allowlist only'
+        description: 'With atlas_archive_export: recent or laptop; fixed public market-data allowlist only (recording-probe is off)'
         required: false
         default: 'recent'
       atlas_offline_history_study:
@@ -106,6 +106,10 @@ jobs:
           ATLAS_DO_STUDY: ${{ inputs.atlas_offline_history_study }}
         run: |
           set -euo pipefail
+          if [ "$ATLAS_ARCHIVE_SOURCE" = 'recording-probe' ]; then
+            echo "::error::Off since Nov 11, 2026: recording-probe published a prefix of the bot's recordings. This repository is public, so server copies never become Actions artifacts."
+            exit 1
+          fi
           test -n "$RCLONE_CONF"
           bash .github/scripts/install-rclone.sh
           cfg="$RUNNER_TEMP/atlas-archive-config"
@@ -116,12 +120,6 @@ jobs:
           printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
           chmod 600 "$RCLONE_CONFIG"
           trap 'rm -f "$RCLONE_CONFIG"' EXIT
-          if [ "$ATLAS_ARCHIVE_SOURCE" = 'recording-probe' ]; then
-            rclone cat gdrive:kalshi-bot-archive/recordings/md-2026-10-21.jsonl.gz --head 16777216 > "$cfg/recording-prefix.gz"
-            python3 -B research/opportunity/recordingPrefix.py "$cfg/recording-prefix.gz" \
-              --out "$dest/recordings/md-2026-10-21.jsonl" --report "$dest/recording-probe.json"
-            exit 0
-          fi
           case "$ATLAS_ARCHIVE_SOURCE" in
             laptop) atlas_history_remote='gdrive:kalshi-bot-archive/raw/laptop-history'; atlas_transfer_limit='1536Mi' ;;
             recent|'') atlas_history_remote='gdrive:kalshi-bot-archive/raw/history'; atlas_transfer_limit='180Mi' ;;
@@ -173,20 +171,16 @@ jobs:
           npm ci
           node --import tsx research/opportunity/runHistoryStudy.ts --archive "$RUNNER_TEMP/atlas-study-filtered" \
             --out research/out/atlas-history-study --study-policy "$ATLAS_STUDY_POLICY" --every-minutes 1441
+      # Nov 11, 2026 (8:05 AM EST / 13:05 UTC, Steven): this repository is public, so the copied archive (and the dataset/
+      # rows built from it) stay on this runner; only the study's results are saved. The atlas-history-archive upload is gone.
       - name: Save opted-in research results
         if: always() && inputs.atlas_offline_history_study == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: atlas-history-study
-          path: research/out/atlas-history-study/
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Save research archive and audit (credentials excluded)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: atlas-history-archive
-          path: ${{ runner.temp }}/atlas-history-archive/
+          path: |
+            research/out/atlas-history-study/*.json
+            research/out/atlas-history-study/trees/
           if-no-files-found: warn
           retention-days: 7
 
@@ -335,6 +329,42 @@ jobs:
             echo "== audit log (newest files; a day splits into parts at AUDIT_MAX_FILE_MB)"; du -sh ~/bot/data/audit 2>/dev/null; ls -la ~/bot/data/audit 2>/dev/null | tail -4
             echo "== service"; systemctl status kalshi-bot --no-pager -l | head -15
             echo "== restarts"; systemctl show kalshi-bot -p NRestarts -p ActiveEnterTimestamp -p MemoryCurrent
+            # The curve reader beside the bot (docs/HEAT_READER.md). Of bot.env only HEAT_LANE and HEAT_CALLS_FILE are
+            # printed (neither is a secret); of the status file beside the calls file only its age and short values.
+            echo "== heat reader (curve reader beside the bot; runs only with HEAT_LANE=true in bot.env)"
+            HL=$(grep -E '^(HEAT_LANE|HEAT_CALLS_FILE)=' ~/bot/bot.env 2>/dev/null | cut -c1-200); echo "${HL:-HEAT_LANE not set in bot.env (off)}"
+            if [ "$(systemctl show heat-reader -p LoadState --value 2>/dev/null)" = "loaded" ]; then
+              echo "unit: installed, $(systemctl is-enabled heat-reader 2>/dev/null), $(systemctl is-active heat-reader 2>/dev/null)"
+              systemctl show heat-reader -p NRestarts -p ActiveEnterTimestamp -p MemoryCurrent -p MemoryPeak 2>/dev/null \
+                | awk -F= '$1 ~ /^Memory/ && $2 ~ /^[0-9]+$/ {printf "%s=%.0f MB\n", $1, $2 / 1048576; next} {print}'
+              echo "-- last 5 reader log lines"; journalctl -u heat-reader -n 5 --no-pager -o cat 2>/dev/null | cut -c1-220
+            else
+              echo "unit: not installed"
+            fi
+            HC=$(sed -n 's/^HEAT_CALLS_FILE=//p' ~/bot/bot.env 2>/dev/null | tail -1 | tr -d "\r\"'")
+            HC=${HC:-$HOME/bot/data/heat_calls.json}
+            python3 - "${HC%.json}.status.json" <<'PYHEAT' 2>/dev/null || echo "status file: could not be read"
+            import json, os, sys, time
+            p = sys.argv[1]
+            if not os.path.isfile(p):
+                print("status file: none at", p[:160]); raise SystemExit(0)
+            age = time.time() - os.path.getmtime(p)
+            try:
+                s = json.load(open(p))
+            except Exception as e:
+                print("status file:", p[:160], "| age", int(age), "s | not JSON:", type(e).__name__); raise SystemExit(0)
+            s = s if isinstance(s, dict) else {}
+            short = lambda v, n=80: json.dumps(v, default=str)[:n]
+            w = s.get("writtenAt")
+            wrote = " | written %d s ago" % (time.time() - w / 1000) if isinstance(w, (int, float)) and not isinstance(w, bool) else ""
+            print("status file:", p[:160], "| age", int(age), "s" + wrote, "| keys", ",".join(sorted(map(str, s))[:20])[:200])
+            for k in ("v", "run", "packSha", "maxRank", "clockPack", "problem"):
+                if k in s: print("  %s: %s" % (k, short(s[k])))
+            coins = s.get("coins") if isinstance(s.get("coins"), dict) else {}
+            for c, v in list(coins.items())[:8]:
+                v = v if isinstance(v, dict) else {}
+                print("  coin %s: ok %s | fired %s | why %s" % (str(c)[:10], short(v.get("ok"), 8), short(v.get("fired"), 60), short(v.get("why"), 80)))
+            PYHEAT
             echo "== top processes"; ps -eo pid,ppid,etime,pcpu,pmem,rss,args --sort=-pcpu | head -12 | cut -c1-200
             echo "== dashboard API timing"
             echo "(dashboard password: $([ -n "$PW" ] && echo "set, sent from bot.env" || echo "not set"))"

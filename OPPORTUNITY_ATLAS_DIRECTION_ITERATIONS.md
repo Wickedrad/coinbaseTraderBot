@@ -58,6 +58,8 @@ A separate public GET-only GitHub capture records current REST books independent
 
 ## Reproduction
 
+**Off since Nov 11, 2026 (8:05 AM EST / 13:05 UTC):** the `atlas-recordings.yml` direction modes below are gone (their snapshot, native and paper artifacts carried rows from the bot's recordings, and this repository is public); `atlas-research.yml` is now `atlas-research-results.yml`.
+
 Run the GitHub `atlas-research.yml` workflow with the original `results_run`, audited `prepared_run`, and `importance_iteration=true` for the full-history weighting comparison. Use `atlas-recordings.yml` with cached `study_run`, `source_run`, and `direction_iterations=true` for native training and cash paper accounts. A completed `direction_snapshot_run` can be reused without processing the public archives again. `direction_snapshot_only=true` prepares the snapshot/trade evidence once; `paper_native_run` replays new paper policies against already saved native weights without retraining.
 
 Source, model and evidence identifiers are recorded in the validation JSON accompanying this document. The workflows upload research artifacts. No deployment or trainer promotion is performed; the running bot’s entry/exit behavior remains unchanged.

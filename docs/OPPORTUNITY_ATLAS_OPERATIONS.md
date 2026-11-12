@@ -371,8 +371,10 @@ fills and upstream websocket gap fidelity remain unverified.
 
 All heavy data processing and fitting run on GitHub, without contacting Lightsail:
 
+**Off since Nov 11, 2026 (8:05 AM EST / 13:05 UTC):** this repository is public, so the `atlas-recordings.yml` prefix, study and refit commands below are gone (they published copies of the bot's recordings), that file is now `atlas-oracle-edge.yml` with only `oracle_edge=true`, `atlas-research.yml` is now `atlas-research-results.yml`, and a fresh `diagnose.yml` export no longer becomes an archive artifact (after the existing ones expire, run the history study on its runner with `atlas_offline_history_study=true`); the `gh run download` of the existing `atlas-recording-study` further down still works, as this change leaves existing artifacts alone.
+
 ```sh
-gh workflow run atlas-research.yml --ref main \
+gh workflow run atlas-research-results.yml --ref main \
   -f dataset_run=42538058087 -f study_policy=prospective-2026-11-09-v1
 gh workflow run atlas-recordings.yml --ref main -f expand_training=true
 # Reuse all six public-prefix artifacts when investigating a later processing step:
