@@ -1,0 +1,6 @@
+# OR-XD fetch round (outside_fetch.py / outside_reduce.py): runs on GitHub runners, python 3.12.
+# Versions are released more than two weeks ago. No polars: pyarrow streams the CSV blocks, numpy reduces them.
+numpy==2.1.3
+pandas==2.2.3
+pyarrow==21.0.0
+requests==2.32.4

@@ -1,0 +1,228 @@
+name: Outside data fetch (OR-XD)
+
+# Builds our own Binance history on GitHub runners (this container's proxy refuses data.binance.vision). Design:
+# /mnt/project-files/outside-data/OR-XD-design.md sections 2.1-2.3, 4.1-4.4; code: python/oracle/outside_fetch.py (CLI) and
+# python/oracle/outside_reduce.py (pure reductions). Data contract: Drive raw/outside/binance/<COIN>/ (BTC, ETH, SOL, XRP) and
+# raw/outside/binance/BTCDOM/ (idx1h only). Owner decision Nov 12 2026 13:43 UTC (8:43 AM EST): build our own historical data.
+# Pushes drive it (a new workflow cannot be dispatched until it is on main). Tags in the HEAD commit message:
+#   none                    the unit tests only (python/oracle/tests/test_outside_fetch*.py; synthetic data, no network)
+#   [xd-preflight]          S3 listings only (no data files): first/last date, file count, bytes per dataset and coin, aggTrades
+#                           bytes per coin x market x year. One job. Commits research/oracle_xd/fetch/preflight.json
+#                           (aggregates only) to this branch.
+#   [xd-fetch-small]        matrix BTC, ETH, SOL, XRP, BTCDOM: metrics (with the create_time convention), premium / mark /
+#                           index / um 1m klines, funding, bookDepth, premium stamp test, manifest. Puts to Drive. Fails if
+#                           more than 1% of A (2020-2024) or B (2025) metrics days are ambiguous or the premium stamp test
+#                           does not resolve. Prints counts and first/last stamps only.
+#   [xd-fetch-agg:spot]     matrix asset x year: aggTrades reduced to per-minute parquet, one file per month, uploaded as
+#   [xd-fetch-agg:perp]     soon as it is done; a rerun resumes from an rclone listing of the Drive folder. Both tags may be
+#                           given in one commit. Never BTCDOM.
+#   [xd-assets:BTC,ETH]     narrow the coins (BTC, ETH, SOL, XRP; BTCDOM only for the small fetch). NEVER DOGE.
+#   [xd-years:2024,2025]    narrow the aggTrades years.
+# Nothing here ever writes raw market rows to the repo (it is PUBLIC) and nothing touches raw/perp-ta-history/.
+
+on:
+  push:
+    branches: [claude/project-thread-8dnpsq]
+    paths: ['.github/workflows/outside-fetch.yml', 'python/oracle/outside_fetch.py', 'python/oracle/outside_reduce.py',
+            'python/oracle/tests/test_outside_fetch*.py', 'python/oracle/requirements-fetch.txt']
+
+permissions:
+  contents: read
+
+concurrency:
+  # one fetch study at a time per kind; agg runs are never cancelled (a rerun resumes from Drive anyway)
+  group: ${{ contains(github.event.head_commit.message, '[xd-fetch-agg:') && 'outside-fetch-agg' || contains(github.event.head_commit.message, '[xd-fetch-small]') && 'outside-fetch-small' || contains(github.event.head_commit.message, '[xd-preflight]') && 'outside-fetch-preflight' || format('outside-fetch-test-{0}', github.ref) }}
+  cancel-in-progress: ${{ !contains(github.event.head_commit.message, '[xd-fetch-agg:') }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  R: gdrive:kalshi-bot-archive
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      preflight: ${{ steps.plan.outputs.preflight }}
+      small: ${{ steps.plan.outputs.small }}
+      small_assets: ${{ steps.plan.outputs.small_assets }}
+      agg: ${{ steps.plan.outputs.agg }}
+      agg_matrix: ${{ steps.plan.outputs.agg_matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements-fetch.txt
+      - run: pip install -q -r python/oracle/requirements-fetch.txt pytest
+      - name: Fetch/reduce unit tests (synthetic data only)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python -m pytest -q oracle/tests/test_outside_fetch.py --durations=3 2>&1 | tail -20
+      - name: Plan
+        id: plan
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          has() { grep -qF "$1" <<< "$MSG" && echo true || echo false; }
+          echo "preflight=$(has '[xd-preflight]')" >> "$GITHUB_OUTPUT"
+          echo "small=$(has '[xd-fetch-small]')" >> "$GITHUB_OUTPUT"
+          a=$(grep -oE '\[xd-assets:[A-Z,]+\]' <<< "$MSG" | head -1 | sed -E 's/.*:([A-Z,]+)\]/\1/' || true)
+          # small fetch: the four coins and BTCDOM; agg: the four coins only (never DOGE, never BTCDOM)
+          sa=$(tr ',' '\n' <<< "${a:-BTC,ETH,SOL,XRP,BTCDOM}" | { grep -E '^(BTC|ETH|SOL|XRP|BTCDOM)$' || true; } | jq -Rnc '[inputs]')
+          aa=$(tr ',' '\n' <<< "${a:-BTC,ETH,SOL,XRP}" | { grep -E '^(BTC|ETH|SOL|XRP)$' || true; } | jq -Rnc '[inputs]')
+          # Years with aggTrades files: the lead adjusts this list from the preflight (research/oracle_xd/fetch/preflight.json).
+          # A month with no file is skipped and logged, so a too-wide list only costs an empty job.
+          y=$(grep -oE '\[xd-years:[0-9,]+\]' <<< "$MSG" | head -1 | sed -E 's/.*:([0-9,]+)\]/\1/' || true)
+          yy=$(tr ',' '\n' <<< "${y:-2017,2018,2019,2020,2021,2022,2023,2024,2025,2026}" | { grep -E '^20(1[7-9]|2[0-6])$' || true; } | jq -Rnc '[inputs | tonumber]')
+          mk=$({ grep -oE '\[xd-fetch-agg:(spot|perp)\]' <<< "$MSG" || true; } | sed -E 's/.*:(spot|perp)\]/\1/' | sort -u | jq -Rnc '[inputs]')
+          echo "small_assets=$sa" >> "$GITHUB_OUTPUT"
+          if [ "$mk" != '[]' ]; then
+            [ "$aa" != '[]' ] && [ "$yy" != '[]' ] || { echo "::error::no allowed coin or year in the tags (BTC, ETH, SOL, XRP; 2017-2026; never DOGE)"; exit 1; }
+            # SOL has no files before 2020 (spot starts 2020-08, perp 2020-09): left out of the pre-2020 jobs
+            m=$(jq -nc --argjson m "$mk" --argjson a "$aa" --argjson y "$yy" \
+              '[ $m[] as $mk | $a[] as $as | $y[] as $yr | select(($as=="SOL" and $yr<2020)|not) | {market:$mk, asset:$as, year:$yr} ]')
+            echo "agg=true" >> "$GITHUB_OUTPUT"
+            echo "agg_matrix=$m" >> "$GITHUB_OUTPUT"
+            echo "agg jobs: $(jq length <<< "$m")"
+          else
+            echo "agg=false" >> "$GITHUB_OUTPUT"; echo "agg_matrix=[]" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$(has '[xd-fetch-small]')" = true ]; then
+            [ "$sa" != '[]' ] || { echo "::error::no allowed asset in the [xd-assets] tag"; exit 1; }
+          fi
+          echo "plan: preflight=$(has '[xd-preflight]') small=$(has '[xd-fetch-small]') small_assets=$sa"
+
+  preflight:
+    needs: test
+    if: ${{ needs.test.outputs.preflight == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write                      # only this job pushes (the aggregates-only preflight.json)
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements-fetch.txt
+      - run: pip install -q -r python/oracle/requirements-fetch.txt
+      - name: S3 listings only (no data files)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          python -m oracle.outside_fetch preflight --out ../research/oracle_xd/fetch/preflight.json | tail -20
+          ls -la ../research/oracle_xd/fetch/
+      - name: Commit preflight.json to this branch (aggregates only; a bot push starts no workflow)
+        env:
+          BR: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "$GITHUB_RUN_ID $GITHUB_SHA" > research/oracle_xd/fetch/RUN
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add research/oracle_xd/fetch/preflight.json research/oracle_xd/fetch/RUN
+          git commit -q -m "OR-XD fetch: preflight listing aggregates of run $GITHUB_RUN_ID (written by the outside-fetch workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::warning::could not push preflight.json"
+
+  small:
+    needs: test
+    if: ${{ needs.test.outputs.small == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 2   # job cap: small 2 + agg 6 = 8 at most, leaving room under the 10-job limit
+      matrix:
+        asset: ${{ fromJSON(needs.test.outputs.small_assets) }}      # BTC, ETH, SOL, XRP, BTCDOM (never DOGE)
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements-fetch.txt
+      - run: pip install -q -r python/oracle/requirements-fetch.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Fetch, label, reduce (counts and first/last stamps only are printed)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/small/$A"
+          python -m oracle.outside_fetch small --asset "$A" --out "$RUNNER_TEMP/small/$A" 2>&1 | tail -60
+          ls -la "$RUNNER_TEMP/small/$A"
+      - name: Put to Drive raw/outside/binance/<asset>/
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh put "raw/outside/binance/$A" "$RUNNER_TEMP/small/$A"
+      - name: Put diagnostics (per-day labels, premium stamp test; aggregates only) even when the check failed
+        if: always()
+        run: |
+          set -uo pipefail
+          mkdir -p "$RUNNER_TEMP/diag"
+          for f in metrics_convention.json premium_stamp.json; do
+            [ -f "$RUNNER_TEMP/small/$A/$f" ] && cp "$RUNNER_TEMP/small/$A/$f" "$RUNNER_TEMP/diag/" || true
+          done
+          if [ -n "$(ls -A "$RUNNER_TEMP/diag")" ]; then
+            bash deploy/drive_lab.sh put "raw/outside/binance/$A/diag" "$RUNNER_TEMP/diag" || echo "::warning::diag put failed"
+          fi
+
+  agg:
+    needs: test
+    if: ${{ needs.test.outputs.agg == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 6   # job cap: small 2 + agg 6 = 8 at most
+      matrix:
+        include: ${{ fromJSON(needs.test.outputs.agg_matrix) }}       # {market, asset, year}
+    env:
+      A: ${{ matrix.asset }}
+      M: ${{ matrix.market }}
+      Y: ${{ matrix.year }}
+      TMPDIR: ${{ runner.temp }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements-fetch.txt
+      - run: pip install -q -r python/oracle/requirements-fetch.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: What Drive already holds (resume list)
+        run: |
+          set -uo pipefail
+          rclone lsf "$R/raw/outside/binance/$A" -R --files-only --include 'agg_*/*.parquet' > "$RUNNER_TEMP/skip.txt" 2>/dev/null || : > "$RUNNER_TEMP/skip.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/skip.txt") month file(s) already on Drive for $A"
+      - name: Reduce aggTrades month by month (each month uploaded as soon as it is done, then deleted)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          export DRIVE_SH="$GITHUB_WORKSPACE/deploy/drive_lab.sh"
+          python -m oracle.outside_fetch agg --asset "$A" --market "$M" --year "$Y" --out "$RUNNER_TEMP/agg" \
+            --skip-existing "$RUNNER_TEMP/skip.txt" \
+            --put-cmd 'bash "$DRIVE_SH" put "raw/outside/binance/$A/agg_$M" "$OUTSIDE_DIR" --include "/$(basename "$OUTSIDE_FILE")"' 2>&1 | tail -80
