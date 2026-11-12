@@ -30,13 +30,16 @@ export function heapReading(now = Date.now()): HeapReading {
   return { at: now, rssMb: mb(m.rss), heapUsedMb: mb(m.heapUsed), heapTotalMb: mb(m.heapTotal), externalMb: mb(m.external), arrayBuffersMb: mb(m.arrayBuffers), spaces };
 }
 
-/** One collection found by the walk. `n` counts entries (map, set, array, record keys), characters (string) or
- *  bytes (bytes). The path names the field from a root: `engine.status`, `[*]` for an entry of a collection (the
- *  largest of the entries looked at). */
+/** One collection found by the walk. Sizes count entries (map, set, array, record keys), characters (string) or
+ *  bytes (bytes). The path names the field from a root: `engine.status`, `[*]` for an entry of a collection. */
 export interface CollectionSize {
   path: string;
   kind: 'map' | 'set' | 'array' | 'record' | 'string' | 'bytes';
+  /** The largest one seen at this path. */
   n: number;
+  /** All of them at this path together, estimated: a collection's entries are sampled (first, middle, last), so what
+   *  is under a sampled entry counts for the entries it stands for (`md.features.micro[*].ofi` across every market). */
+  total: number;
 }
 
 export interface WalkOptions {
@@ -91,48 +94,56 @@ export function walkCollections(roots: Record<string, unknown>, o: WalkOptions =
   const t0 = performance.now();
   const maxDepth = o.maxDepth ?? 6, maxObjects = o.maxObjects ?? 20_000, minSize = o.minSize ?? 50, recordKeys = o.recordKeys ?? 50;
   const found = new Map<string, CollectionSize>();
-  const note = (path: string, kind: CollectionSize['kind'], n: number) => {
+  // Every size is added to its path's total (weighted by how many objects the one opened stands for); small ones too,
+  // since many small collections can hold more than one large one. The list keeps a path whose largest or total
+  // reaches the minimum.
+  const note = (path: string, kind: CollectionSize['kind'], n: number, scale: number) => {
     const had = found.get(path);
-    if (!had || n > had.n) found.set(path, { path, kind, n });
+    if (!had) found.set(path, { path, kind, n, total: n * scale });
+    else { had.n = Math.max(had.n, n); had.total += n * scale; }
   };
   const seen = new WeakSet<object>();
-  let queue: Array<{ v: unknown; path: string; depth: number }> = Object.entries(roots).map(([k, v]) => ({ v, path: k, depth: 0 }));
+  let queue: Array<{ v: unknown; path: string; depth: number; scale: number }> = Object.entries(roots).map(([k, v]) => ({ v, path: k, depth: 0, scale: 1 }));
   let objects = 0, capped = false;
   while (queue.length) {
     const next: typeof queue = [];
-    for (const { v, path, depth } of queue) {
-      if (typeof v === 'string') { if (v.length >= BIG_STRING) note(path, 'string', v.length); continue; }
+    for (const { v, path, depth, scale } of queue) {
+      if (typeof v === 'string') { if (v.length >= BIG_STRING) note(path, 'string', v.length, scale); continue; }
       if (v === null || typeof v !== 'object') continue; // functions, numbers, ...: nothing to open
       if (seen.has(v)) continue;
       if (objects >= maxObjects) { capped = true; break; }
       seen.add(v);
       objects++;
       if (types.isProxy(v)) continue;
-      const open = (child: unknown, p: string) => { if (depth < maxDepth) next.push({ v: child, path: p, depth: depth + 1 }); };
+      const open = (child: unknown, p: string, sc = scale) => { if (depth < maxDepth) next.push({ v: child, path: p, depth: depth + 1, scale: sc }); };
+      // The entries opened of a collection of n: each stands for n / (entries opened) of them.
+      const openAll = (xs: unknown[], n: number) => { for (const x of xs) open(x, `${path}[*]`, (scale * n) / xs.length); };
       if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer || types.isSharedArrayBuffer(v)) {
         const bytes = (v as ArrayBuffer | ArrayBufferView).byteLength;
-        if (bytes >= BIG_BYTES) note(path, 'bytes', bytes);
+        if (bytes >= BIG_BYTES) note(path, 'bytes', bytes, scale);
         continue;
       }
       if (types.isMap(v)) {
         const n = mapSize.call(v) as number;
-        if (n >= minSize) note(path, 'map', n);
-        for (const x of samplesOf(mapValues.call(v) as Iterable<unknown>, n)) open(x, `${path}[*]`);
+        note(path, 'map', n, scale);
+        openAll(samplesOf(mapValues.call(v) as Iterable<unknown>, n), n);
         continue;
       }
       if (types.isSet(v)) {
         const n = setSize.call(v) as number;
-        if (n >= minSize) note(path, 'set', n);
-        for (const x of samplesOf(setValues.call(v) as Iterable<unknown>, n)) open(x, `${path}[*]`);
+        note(path, 'set', n, scale);
+        openAll(samplesOf(setValues.call(v) as Iterable<unknown>, n), n);
         continue;
       }
       if (Array.isArray(v)) {
-        if (v.length >= minSize) note(path, 'array', v.length);
         const n = v.length;
+        note(path, 'array', n, scale);
+        const xs: unknown[] = [];
         for (const i of n ? [...new Set([0, Math.floor(n / 2), n - 1])] : []) {
           const d = Object.getOwnPropertyDescriptor(v, i);
-          if (d && 'value' in d) open(d.value, `${path}[*]`);
+          if (d && 'value' in d) xs.push(d.value);
         }
+        openAll(xs, n);
         continue;
       }
       if (v instanceof WeakMap || v instanceof WeakSet || v instanceof Promise || v instanceof WeakRef) continue;
@@ -141,18 +152,23 @@ export function walkCollections(roots: Record<string, unknown>, o: WalkOptions =
       // by field.
       const proto = Object.getPrototypeOf(v);
       const asRecord = keys.length >= recordKeys && (proto === Object.prototype || proto === null);
-      if (asRecord) note(path, 'record', keys.length);
-      for (const k of asRecord ? samplesOf(keys, keys.length) : keys) {
+      if (asRecord) note(path, 'record', keys.length, scale);
+      const picked = asRecord ? samplesOf(keys, keys.length) : keys;
+      for (const k of picked) {
         // Data properties only: a getter could do work or change something.
         const d = Object.getOwnPropertyDescriptor(v, k);
         if (!d || !('value' in d)) continue;
-        open(d.value, asRecord ? `${path}[*]` : `${path}.${k}`);
+        if (asRecord) open(d.value, `${path}[*]`, (scale * keys.length) / picked.length);
+        else open(d.value, `${path}.${k}`);
       }
     }
     if (capped) break;
     queue = next;
   }
-  const sizes = [...found.values()].filter((s) => (s.kind === 'string' ? s.n >= BIG_STRING : s.kind === 'bytes' ? s.n >= BIG_BYTES : s.n >= minSize)).sort((a, b) => b.n - a.n);
+  const sizes = [...found.values()]
+    .filter((s) => (s.kind === 'string' || s.kind === 'bytes' ? true : s.n >= minSize || s.total >= minSize))
+    .map((s) => ({ ...s, total: Math.round(s.total) }))
+    .sort((a, b) => b.total - a.total || b.n - a.n);
   return { sizes, objects, capped, ms: +(performance.now() - t0).toFixed(1) };
 }
 
@@ -208,19 +224,20 @@ export class MemoryWatch {
     // The kept reading closest to an hour before this one (none when the oldest is under 30 minutes old).
     const hourAgo = this.hourly.filter((h) => cur.at - h.at >= 1_800_000).sort((a, b) => Math.abs(cur.at - a.at - 3_600_000) - Math.abs(cur.at - b.at - 3_600_000))[0];
     const top = this.o.top ?? 25;
-    const row = (s: CollectionSize) => ({ path: s.path, kind: s.kind, n: s.n, atFirst: first?.sizes.get(s.path)?.n ?? null, hourAgo: hourAgo?.sizes.get(s.path)?.n ?? null });
+    // n: all of them at the path together (estimated, see CollectionSize.total); largest: the biggest one.
+    const row = (s: CollectionSize) => ({ path: s.path, kind: s.kind, n: s.total, largest: s.n, atFirst: first?.sizes.get(s.path)?.total ?? null, hourAgo: hourAgo?.sizes.get(s.path)?.total ?? null });
     // Entries (maps, sets, arrays, records) and sizes in characters or bytes (strings, buffers) are listed apart.
     const isBlob = (s: CollectionSize) => s.kind === 'string' || s.kind === 'bytes';
     const all = [...cur.sizes.values()].filter((s) => !isBlob(s));
-    const blobs = [...cur.sizes.values()].filter(isBlob).sort((a, b) => b.n - a.n).slice(0, 10).map(row);
-    const grown = first ? all.map((s) => ({ s, d: s.n - (first.sizes.get(s.path)?.n ?? 0) })).filter((x) => x.d > 0).sort((a, b) => b.d - a.d).slice(0, Math.min(10, top)).map((x) => row(x.s)) : [];
+    const blobs = [...cur.sizes.values()].filter(isBlob).sort((a, b) => b.total - a.total).slice(0, 10).map(row);
+    const grown = first ? all.map((s) => ({ s, d: s.total - (first.sizes.get(s.path)?.total ?? 0) })).filter((x) => x.d > 0).sort((a, b) => b.d - a.d).slice(0, Math.min(10, top)).map((x) => row(x.s)) : [];
     const heapRow = (h: HeapReading) => ({ at: h.at, rssMb: h.rssMb, heapUsedMb: h.heapUsedMb, externalMb: h.externalMb, arrayBuffersMb: h.arrayBuffersMb, oldMb: h.spaces.old ?? null, largeObjectMb: h.spaces.large_object ?? null });
     return {
       now: cur.heap,
       first: first ? { at: first.at, heap: first.heap } : null,
       hourAgo: hourAgo ? { at: hourAgo.at, heap: hourAgo.heap } : null,
       walk: { at: cur.at, objects: cur.objects, capped: cur.capped, ms: cur.ms },
-      largest: all.sort((a, b) => b.n - a.n).slice(0, top).map(row),
+      largest: all.sort((a, b) => b.total - a.total).slice(0, top).map(row),
       grown,
       blobs,
       history: this.hourly.map((h) => heapRow(h.heap)),
