@@ -521,3 +521,40 @@ test('share window: the last share of the window is measured on at most the last
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.shareWindowMaxSec, 3600);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_SHARE_WINDOW_MAX_SEC: '1800' }).strategy.shareWindowMaxSec, 1800);
 });
+
+test('quote side gate: a price on the mid quotes neither side; above the mid it bids only; a held position can still unwind', () => {
+  const g = { ...cfg, quoteSideGate: 0.02 };
+  assert.equal(decide(view({ pYes: 0.55 }), g).place.filter((p) => p.purpose === 'quote').length, 0);
+  const up = decide(view({ pYes: 0.58 }), g).place.filter((p) => p.purpose === 'quote');
+  assert.deepEqual(up.map((p) => p.side), ['bid']);
+  const held = decide(view({ pYes: 0.58, position: 3 }), g).place.filter((p) => p.purpose === 'quote');
+  assert.ok(held.some((p) => p.side === 'ask'));
+  // Off: both sides, as before.
+  assert.equal(decide(view({ pYes: 0.55 }), cfg).place.filter((p) => p.purpose === 'quote').length, 2);
+});
+
+test('NO longshot edge: off by default; on, only new NO risk under the price pays it; the mirror charges YES', async () => {
+  const { longshotExtra } = await import('../bot/strategy/fairValueStrategy');
+  const base = { DASHBOARD_TOKEN: 'x'.repeat(32) };
+  assert.equal(loadConfig(base).strategy.noLongshotEdge, 0);
+  const s = loadConfig({ ...base, NO_LONGSHOT_EDGE: '0.04' }).strategy;
+  assert.equal(longshotExtra(s, 'no', 0, 0.2), 0.04);
+  assert.equal(longshotExtra(s, 'no', 0, 0.4), 0);
+  assert.equal(longshotExtra(s, 'no', 5, 0.2), 0); // unwinding a YES position
+  assert.equal(longshotExtra(s, 'yes', 0, 0.2), 0);
+  assert.equal(longshotExtra(loadConfig(base).strategy, 'no', 0, 0.2), 0);
+  const m = loadConfig({ ...base, NO_LONGSHOT_EDGE: '0.04', NO_LONGSHOT_MIRROR: 'true' }).strategy;
+  assert.equal(longshotExtra(m, 'yes', 0, 0.2), 0.04);
+  assert.equal(longshotExtra(m, 'no', 0, 0.2), 0);
+  assert.equal(longshotExtra(m, 'yes', -3, 0.2), 0); // unwinding a NO position
+});
+
+test('NO longshot edge, wild off: no extra edge in the wild regime when NO_LONGSHOT_WILD_OFF is on', async () => {
+  const { longshotExtra } = await import('../bot/strategy/fairValueStrategy');
+  const base = { DASHBOARD_TOKEN: 'x'.repeat(32) };
+  const s = loadConfig({ ...base, NO_LONGSHOT_EDGE: '0.04' }).strategy;
+  assert.equal(longshotExtra(s, 'no', 0, 0.2, true), 0.04);
+  const w = loadConfig({ ...base, NO_LONGSHOT_EDGE: '0.04', NO_LONGSHOT_WILD_OFF: 'true', MARKET_ANCHOR: 'true', MARKET_ANCHOR_WILD_RATIO: '2' }).strategy;
+  assert.equal(longshotExtra(w, 'no', 0, 0.2, true), 0);
+  assert.equal(longshotExtra(w, 'no', 0, 0.2, false), 0.04);
+});

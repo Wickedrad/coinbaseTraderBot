@@ -542,6 +542,24 @@ test('replay check: the luck test holds paper within 2 standard deviations of th
   assert.equal(nearbyVerdict(runs, paper, { stretch, prices, history: earlier, test: 'pct' }).close, true);
 });
 
+test('replay check: entry bands split first fills by side and YES-scale price', async () => {
+  const { entryBand } = await import('../research/replayCheck');
+  assert.equal(entryBand('ask', 0.75), 'ask>0.70');
+  assert.equal(entryBand('bid', 0.2), 'bid<0.30');
+  assert.equal(entryBand('bid', 0.5), 'bid 0.30-0.70');
+  assert.equal(entryBand(undefined, 0.5), 'unknown');
+});
+
+test('replay check: paper totals drop the REPLAY_EXCLUDE markets', async () => {
+  const { excludedTicker } = await import('../research/replayCheck');
+  const ex = excludedTicker(/DOGE/);
+  assert.equal(ex('KXDOGE-26NOV05-B0.17'), true);
+  assert.equal(ex('KXDOGE15M-26NOV05-15'), true);
+  assert.equal(ex('KXBTCD-26NOV05-T70000'), false);
+  assert.equal(ex(undefined), false);
+  assert.equal(excludedTicker(undefined)('KXDOGE-1'), false);
+});
+
 test('replay check: with the accuracy gate off (the default since Nov 11) it does not claim to start from paper\'s gate', async () => {
   const root = tmp();
   const rec = path.join(root, 'rec');

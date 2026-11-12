@@ -96,10 +96,15 @@ export function resolveSet(spec: string, tiers: FeatureTier[] = ['T1', 'T2'], ex
 /** Default model search: MLP only, with hidden layers (8 or 16 units, picked by the 1-SE rule). */
 export const DEFAULT_FAMILIES: Array<'mlp' | 'gbdt'> = ['mlp'];
 export const DEFAULT_HIDDEN = [8, 16];
+export const DEFAULT_ANCHORS: Anchor[] = ['fv'];
 
-export type ModelSpec = { family: 'mlp'; hidden: number; l2: number } | { family: 'gbdt'; depth: number; learningRate: number };
+/** anchor: the log-odds the model corrects (its residual). 'fv' = the math fair value; 'mid' = the market mid, so an
+ *  L2-shrunk model falls back on the market (the better forecaster on Oct 30-Nov 2) instead of on the fair value. */
+export type Anchor = 'fv' | 'mid';
+export type ModelSpec = ({ family: 'mlp'; hidden: number; l2: number } | { family: 'gbdt'; depth: number; learningRate: number }) & { anchor?: Anchor };
+const anchorFeature = (m: { anchor?: Anchor }) => (m.anchor === 'mid' ? 'logit_mid' : 'logit_fv');
 
-const specName = (m: ModelSpec) => (m.family === 'mlp' ? `mlp-h${m.hidden}-l2${m.l2}` : `gbdt-d${m.depth}`);
+const specName = (m: ModelSpec) => (m.family === 'mlp' ? `mlp-h${m.hidden}-l2${m.l2}` : `gbdt-d${m.depth}`) + (m.anchor === 'mid' ? '-amid' : '');
 /** Capacity rank for the 1-SE rule (lower = simpler). */
 const specRank = (m: ModelSpec) => (m.family === 'mlp' ? (m.hidden === 0 ? 0 : m.hidden / 4) : 2 * m.depth - 3);
 
@@ -131,6 +136,8 @@ export interface TrainOpts {
   takeModel?: boolean;
   takeMinEdge?: number;
   hidden?: number[];
+  /** Residual anchors tried in the CV (default fv only, as before the market anchor work; --anchors fv,mid lets the CV also try the mid). */
+  anchors?: Anchor[];
   l2?: number[];
   depths?: number[];
   ensemble?: number;
@@ -289,8 +296,10 @@ export async function trainMetaModel(rowsIn: DatasetRow[], opts: TrainOpts & { t
 
   const families = opts.families ?? DEFAULT_FAMILIES;
   const models: ModelSpec[] = [];
-  if (families.includes('mlp')) for (const hidden of opts.hidden ?? DEFAULT_HIDDEN) for (const l2 of opts.l2 ?? (hidden === 0 ? [1e-3] : [1e-2])) models.push({ family: 'mlp', hidden, l2 });
-  if (families.includes('gbdt')) for (const depth of opts.depths ?? [2, 3]) models.push({ family: 'gbdt', depth, learningRate: 0.03 });
+  for (const anchor of opts.anchors ?? DEFAULT_ANCHORS) {
+    if (families.includes('mlp')) for (const hidden of opts.hidden ?? DEFAULT_HIDDEN) for (const l2 of opts.l2 ?? (hidden === 0 ? [1e-3] : [1e-2])) models.push({ family: 'mlp', hidden, l2, anchor });
+    if (families.includes('gbdt')) for (const depth of opts.depths ?? [2, 3]) models.push({ family: 'gbdt', depth, learningRate: 0.03, anchor });
+  }
   const grid: Array<{ set: typeof sets[number]; model: ModelSpec }> = [];
   for (const set of sets) for (const model of models) grid.push({ set, model });
   const seed = opts.seed ?? 7;
@@ -308,7 +317,7 @@ export async function trainMetaModel(rowsIn: DatasetRow[], opts: TrainOpts & { t
 
   /** Fit one member; returns a logit predictor and the serializable member. */
   const fit = (model: ModelSpec, names: string[], tr: DatasetRow[], va: DatasetRow[], wTr: number[], s: number) => {
-    const residual = names.indexOf('logit_fv');
+    const residual = names.indexOf(anchorFeature(model));
     const Xtr = X(tr, names), Xva = X(va, names);
     if (model.family === 'gbdt') {
       const init = (xs: number[][]) => xs.map((x) => (residual >= 0 && Number.isFinite(x[residual]) ? x[residual] : 0));
@@ -337,13 +346,13 @@ export async function trainMetaModel(rowsIn: DatasetRow[], opts: TrainOpts & { t
         const res = await torch!.fit(tj.map(([j]) => {
           const m = j.model as Extract<ModelSpec, { family: 'mlp' }>;
           return {
-            train: j.tr.map((r) => rowIdx.get(r)!), val: j.va.map((r) => rowIdx.get(r)!), cols: j.names.map((n) => colOf.get(n)!), residual: j.names.indexOf('logit_fv'),
+            train: j.tr.map((r) => rowIdx.get(r)!), val: j.va.map((r) => rowIdx.get(r)!), cols: j.names.map((n) => colOf.get(n)!), residual: j.names.indexOf(anchorFeature(j.model)),
             hidden: m.hidden, l2: m.l2, lr: mlpBase.lr, maxEpochs: mlpBase.maxEpochs, patience: mlpBase.patience, wTrain: j.wTr,
             init: m.hidden > 0 ? Float64Array.from(initLayers(j.names.length, m.hidden, j.s)[0].weights.flat()) : undefined,
           };
         }));
         tj.forEach(([j, i], k) => {
-          const m = res[k], residual = j.names.indexOf('logit_fv');
+          const m = res[k], residual = j.names.indexOf(anchorFeature(j.model));
           out[i] = { member: { normalization: m.norm, layers: m.layers } as EnsembleMember, logits: (xs: number[][]) => predictLogits(m.layers, m.norm, xs, residual), residual, size: m.epochs };
         });
       } catch (e) { opts.log?.(`PyTorch MLP fits failed (${(e as Error).message}): TypeScript from here`); torch = undefined; }
@@ -559,6 +568,7 @@ export async function trainMetaModelMain(argOf: (k: string, d: string) => string
     sets: argOf('sets', DEFAULT_SETS.join(',')).split(','),
     families: argOf('families', DEFAULT_FAMILIES.join(',')).split(',') as Array<'mlp' | 'gbdt'>,
     hidden: argOf('hidden', DEFAULT_HIDDEN.join(',')).split(',').map(Number),
+    anchors: argOf('anchors', DEFAULT_ANCHORS.join(',')).split(',').filter((a): a is Anchor => a === 'fv' || a === 'mid'),
     depths: argOf('depths', '2,3').split(',').map(Number),
     ensemble: Number(argOf('ensemble', '5')),
     cpcvGroups: Number(argOf('cpcv', '10')),

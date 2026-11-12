@@ -312,6 +312,11 @@ jobs:
             ls data/audit/audit-$d* >/dev/null 2>&1 || rclone copy gdrive:kalshi-bot-archive/audit data/audit/ --include "audit-$d*" --transfers 4
             echo "$d: from Drive"
           done
+      - name: Regime v1 labels for the market anchor's wild regime (lab, MARKET_ANCHOR_WILD_LABELS among the overrides)
+        if: ${{ contains(inputs.overrides, 'MARKET_ANCHOR_WILD_LABELS') && inputs.from_drive != 'false' }}
+        run: |
+          rclone copy "gdrive:kalshi-bot-archive/registry/regime-v1/fc05ea81fafd275b43a708692986627439f1687a/labels.csv.gz" data/regime/
+          ls -la data/regime/
       - name: Put that run's paper state back (reuse_run)
         if: ${{ inputs.reuse_run }}
         env:
