@@ -334,9 +334,10 @@ export function marketClockFeatures(ts: number): Record<string, number> {
 
 // ---- Session edges (training windows) ------------------------------------------------------------
 // The first and last N minutes of each market session: Asia (Tokyo open .. Hong Kong close), London and
-// New York, weekdays, local exchange hours (DST-correct). The bot opens no new positions in them, and the
-// training pipeline runs only in them (paused the rest of the time), so training never competes with
-// trading for the CPU.
+// New York, weekdays, local exchange hours (DST-correct). With AUTO_TRAIN=windows the training pipeline
+// runs only in them (paused the rest of the time); with SESSION_EDGE_NO_ENTRY on (unset: on with
+// AUTO_TRAIN=windows only, paper and live alike) the bot also opens no new positions in them. Training runs
+// remotely by default now.
 
 export const SESSION_EDGES: Array<{ name: string; open: Venue; close: Venue }> = [
   { name: 'Asia', open: VENUES.tokyo, close: VENUES.hongkong },

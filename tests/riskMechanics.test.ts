@@ -1,5 +1,6 @@
 // Risk mechanics (task 5.3): liquidation beyond the stop (bot/risk/liquidation.ts), the 4h ATR ratchet exit
 // (bot/setups/detectors.ts RATCHET, bot/setups/exits.ts) and the live guards in the setup and perp traders.
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { liquidationInsideStop, liquidationLeverageCap, maintenanceRate, maxSafeNotional, reservedFor, safeShare } from '../bot/risk/liquidation';

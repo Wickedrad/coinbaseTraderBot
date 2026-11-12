@@ -1,6 +1,7 @@
 // Connecting the setup trader to the rest of the bot: TA network inputs (masking), the volatility trail,
 // the walk-forward forecast lookup, the setup journal and the self-activating SNN gate, and the
 // gzipped recordings every reader must handle.
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs';

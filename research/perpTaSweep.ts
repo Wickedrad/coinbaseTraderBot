@@ -37,6 +37,10 @@
 //                over the model (--half-spread, --funding-offset; the workflow passes the fidelity medians), and a funding
 //                stress in the report (paid x1.5, received x0.5). The bot's directional conviction (conv:*, perpTaModules.ts)
 //                joins as trigger and filter.
+//   round 3      (ROUND, POLICIES_R3) exits sized in 1-hour (H) and 4-hour (D) ATRs, holds of 4 hours to 7 days, no
+//                trailing stop: 12 exits x MP15 / ML15 / ML60 (ML60: 0.25 x the 1-hour ATR off, resting 60 minutes) = 36
+//                policies. Everything else as round 2. The round 2 report: the moves a 15-minute ATR exit tries to catch
+//                (20-40 bps) are barely bigger than the round trip (10-17 bps), and random entries lose about that.
 //   conditions   every trade also counts in its market condition at entry: trend / range (1h ADX 25), volatility
 //                low / mid / high (24 h realised vs its 30-day mean), session (Asia 0-7, Europe 7-13, US 13-20, late
 //                20-24 UTC), funding positive / zero / negative, weekday / weekend
@@ -54,6 +58,7 @@ import path from 'path';
 import zlib from 'zlib';
 import readline from 'readline';
 import { modulePrims, MODULE_CONDS, NONE, type ModuleOut } from './perpTaModules';
+import { regRow, controlArm, runRef } from './perpTaRegistry';
 import { adx, atr, bollinger, cmf, donchian, ema, ichimoku, keltner, macd, mfi, obv, rsi, sma, stochastic, type Candle } from '../bot/ta/indicators';
 
 const MIN = 60_000;
@@ -408,8 +413,9 @@ export function triggers(p: Prim, valid: Float32Array, nMax: number): { idx: Int
  *  A resting order fills when the perp trades ttBps THROUGH its price (a bare touch does not fill an order at the back of
  *  the queue), at its price, paying the maker fee. An order that does not fill is cancelled after w minutes: no trade,
  *  and the rule takes no other entry while it rests. */
-export interface Entry { kind: 'peg' | 'limit'; w: number; off?: number }
-export interface Policy { id: string; sl: number; tp: number; max: number; trail?: number; entry?: Entry }
+export interface Entry { kind: 'peg' | 'limit'; w: number; off?: number; /** the ATR timeframe (minutes) of off; 15 if absent */ tf?: number }
+/** sl / tp / trail in ATRs of the policy's timeframe tf (minutes: 15 if absent; round 3 uses 60 and 240). */
+export interface Policy { id: string; sl: number; tp: number; max: number; trail?: number; entry?: Entry; tf?: number }
 /** The 12 exits (round 1's policies: taker entries). */
 export const EXITS: Policy[] = [
   { id: 'T5', sl: 3, tp: 0, max: 5 },
@@ -433,9 +439,34 @@ export const ENTRIES: Array<{ tag: string; entry: Entry }> = [
 export const POLICIES_R1: Policy[] = EXITS;
 /** Round 2: every maker entry with every exit (36 policies, id "<entry>:<exit>"). */
 export const POLICIES_R2: Policy[] = ENTRIES.flatMap(({ tag, entry }) => EXITS.map((x) => ({ ...x, id: `${tag}:${x.id}`, entry })));
-export const ROUND = 2;
+/** Round 3: exits sized in 1-hour (H) and 4-hour (D) ATRs, holds of 4 hours to 7 days (no trailing stop). */
+export const EXITS_R3: Policy[] = [
+  { id: 'HT240', tf: 60, sl: 3, tp: 0, max: 240 },
+  { id: 'HT1440', tf: 60, sl: 3, tp: 0, max: 1440 },
+  { id: 'HS1T1', tf: 60, sl: 1, tp: 1, max: 1440 },
+  { id: 'HS1T2', tf: 60, sl: 1, tp: 2, max: 2880 },
+  { id: 'HS2T2', tf: 60, sl: 2, tp: 2, max: 2880 },
+  { id: 'HS3T1', tf: 60, sl: 3, tp: 1, max: 2880 },
+  { id: 'HS1.5T3', tf: 60, sl: 1.5, tp: 3, max: 4320 },
+  { id: 'HS2T4', tf: 60, sl: 2, tp: 4, max: 5760 },
+  { id: 'DT1440', tf: 240, sl: 3, tp: 0, max: 1440 },
+  { id: 'DS1T1', tf: 240, sl: 1, tp: 1, max: 2880 },
+  { id: 'DS1T2', tf: 240, sl: 1, tp: 2, max: 5760 },
+  { id: 'DS2T4', tf: 240, sl: 2, tp: 4, max: 10080 },
+];
+export const ENTRIES_R3: Array<{ tag: string; entry: Entry }> = [
+  { tag: 'MP15', entry: { kind: 'peg', w: 15 } },
+  { tag: 'ML15', entry: { kind: 'limit', w: 15, off: 0.25 } },
+  { tag: 'ML60', entry: { kind: 'limit', w: 60, off: 0.25, tf: 60 } },
+];
+export const POLICIES_R3: Policy[] = ENTRIES_R3.flatMap(({ tag, entry }) => EXITS_R3.map((x) => ({ ...x, id: `${tag}:${x.id}`, entry })));
+export const ROUND = 3;
 /** The policies this round's sweep walks. The study and the blind test read a run's own from its header. */
-export const POLICIES: Policy[] = POLICIES_R2;
+export const POLICIES: Policy[] = POLICIES_R3;
+/** Every round's policies, for looking a policy up by id (the ids differ between rounds). */
+export const POLICIES_ALL: Policy[] = [...POLICIES_R3, ...POLICIES_R2, ...POLICIES_R1];
+/** The entry tags of every round (fill-share reporting). */
+export const ENTRY_TAGS: string[] = [...new Set([...ENTRIES_R3, ...ENTRIES].map((e) => e.tag))];
 
 /** ttBps: how far price must trade THROUGH a resting order (a target, or a maker entry) before it counts as filled (a bare
  *  touch of the Binance high or low does not fill a maker order at the back of the queue).
@@ -445,10 +476,10 @@ export const POLICIES: Policy[] = POLICIES_R2;
 export interface Costs { takerBps: number; makerBps: number; halfSpreadBps: number; ttBps?: number; fundOffsetBps?: number; fundMult?: number }
 export const KALSHI_COSTS: Costs = { takerBps: 12, makerBps: 5, halfSpreadBps: 2, ttBps: 1 };
 
-/** The 15-minute ATR(14) as a fraction of price, known at the end of each minute (last closed 15m bar). */
-export function atrUnit(g: Grid, nMax: number): Float32Array {
-  const cs = aggregate(g, 15, nMax), a = atr(cs, 14), out = new Float32Array(nMax);
-  for (let i = 0; i < nMax; i++) { const k = Math.floor((i + 1) / 15) - 1; const v = k >= 0 ? a[k] / cs[k].c : NaN; out[i] = fin(v) ? Math.max(0.001, Math.min(0.05, v)) : NaN; }
+/** The ATR(14) of tf-minute bars (15 by default) as a fraction of price, known at the end of each minute (last closed bar). */
+export function atrUnit(g: Grid, nMax: number, tf = 15): Float32Array {
+  const cs = aggregate(g, tf, nMax), a = atr(cs, 14), out = new Float32Array(nMax);
+  for (let i = 0; i < nMax; i++) { const k = Math.floor((i + 1) / tf) - 1; const v = k >= 0 ? a[k] / cs[k].c : NaN; out[i] = fin(v) ? Math.max(0.001, Math.min(0.05, v)) : NaN; }
   return out;
 }
 
@@ -480,23 +511,38 @@ export interface Outcomes {
  *  minute i and the minute it is flat again. A taker entry fills at the open of minute i + 1; a maker entry (Entry) at
  *  its price in the first minute that trades through it. In a maker entry's fill minute only the stop is judged (the
  *  minute's range came partly before the fill: a bar reaching the stop counts as stopped, its target is never credited).
- *  NaN = not tradable, not filled, or not finished before nMax. */
-export function outcomes(g: Grid, nMax: number, unit: Float32Array, costs: Costs, pols: Policy[] = POLICIES): Outcomes {
+ *  NaN = not tradable, not filled, or not finished before nMax. unit = the 15-minute ATR (atrUnit); a policy or entry with
+ *  another tf gets atrUnit(g, nMax, tf). The exit scan skips whole 64- and 4096-minute blocks that neither a fixed stop nor
+ *  the target can touch (exact; opts.noSkip scans minute by minute, for the tests). */
+export function outcomes(g: Grid, nMax: number, unit: Float32Array, costs: Costs, pols: Policy[] = POLICIES, opts: { noSkip?: boolean } = {}): Outcomes {
   const { po, ph, pl, pc, valid } = g.c;
   const cum = fundingCum(g, nMax, costs);
+  const units = new Map<number, Float32Array>([[15, unit]]);
+  const unitOf = (tf = 15): Float32Array => { let u = units.get(tf); if (!u) { u = atrUnit(g, nMax, tf); units.set(tf, u); } return u; };
+  // Block lows / highs over the perp bars and whether every minute of the block is valid: B1 = 64, B2 = 4096 minutes.
+  const S1 = 6, S2 = 12, n1 = nMax >> S1, n2 = nMax >> S2;
+  const lo1 = new Float32Array(n1), hi1 = new Float32Array(n1), ok1 = new Uint8Array(n1), lo2 = new Float32Array(n2), hi2 = new Float32Array(n2), ok2 = new Uint8Array(n2);
+  if (!opts.noSkip) {
+    for (let b = 0; b < n1; b++) { let l = Infinity, h = -Infinity, ok = 1; for (let j = b << S1, e = j + (1 << S1); j < e; j++) { if (!valid[j]) ok = 0; if (pl[j] < l) l = pl[j]; if (ph[j] > h) h = ph[j]; } lo1[b] = l; hi1[b] = h; ok1[b] = ok; }
+    const r = 1 << (S2 - S1);
+    for (let b = 0; b < n2; b++) { let l = Infinity, h = -Infinity, ok = 1; for (let c = b * r, e = c + r; c < e; c++) { if (!ok1[c]) ok = 0; if (lo1[c] < l) l = lo1[c]; if (hi1[c] > h) h = hi1[c]; } lo2[b] = l; hi2[b] = h; ok2[b] = ok; }
+  }
+  const M1 = (1 << S1) - 1, M2 = (1 << S2) - 1;
   const net: Float32Array[] = [], exit: Int32Array[] = [], hold: Uint16Array[] = [], fills: Outcomes['fills'] = [];
   const takerSide = costs.takerBps + costs.halfSpreadBps, makerSide = costs.makerBps, tt = (costs.ttBps ?? 1) / 1e4, h = costs.halfSpreadBps / 1e4;
   for (const p of pols) for (const d of [1, -1]) {
     const nt = new Float32Array(nMax).fill(NaN), ex = new Int32Array(nMax).fill(-1), hd = new Uint16Array(nMax);
-    const en = p.entry;
+    // The exit's ATR (the policy's tf) and the entry offset's own (its tf, 15 if absent: ML15 stays 0.25 x the 15-minute ATR).
+    const en = p.entry, U = unitOf(p.tf), UE = en ? unitOf(en.tf ?? 15) : U;
+    const skip = !opts.noSkip && !p.trail;
     let tried = 0, filled = 0;
     for (let i = 0; i + 1 < nMax; i++) {
-      const A = unit[i];
-      if (!valid[i] || !valid[i + 1] || !(A > 0)) continue;
+      const A = U[i], AE = UE[i];
+      if (!valid[i] || !valid[i + 1] || !(A > 0) || !(AE > 0)) continue;
       let e = i + 1, P0 = po[e], entryCost = takerSide, fillMinute = false;
       if (en) {
         if (i + en.w >= nMax) continue;
-        const lim = en.kind === 'limit' ? pc[i] * (1 - d * (en.off ?? 0) * A) : NaN;
+        const lim = en.kind === 'limit' ? pc[i] * (1 - d * (en.off ?? 0) * AE) : NaN;
         let f = -1, bad = false;
         for (let j = i + 1; j <= i + en.w; j++) {
           if (!valid[j]) { bad = true; break; } // the book is unknown across missing minutes: no trade
@@ -524,7 +570,14 @@ export function outcomes(g: Grid, nMax: number, unit: Float32Array, costs: Costs
           j = e + 1;
         }
       }
+      // The levels a minute must reach to end the trade (a fixed stop and target: no trailing stop when skipping).
+      const tpHit = p.tp > 0 ? (d > 0 ? tpPx * (1 + tt) : tpPx * (1 - tt)) : NaN;
       if (fill !== fill) for (; j <= last; j++) {
+        if (skip && (j & M1) === 0) {
+          // A whole block (inside the hold) that is valid and neither reaches the stop nor the target is passed over.
+          if ((j & M2) === 0 && j + M2 <= last) { const b = j >> S2; if (ok2[b] && (d > 0 ? lo2[b] > stop && !(hi2[b] >= tpHit) : hi2[b] < stop && !(lo2[b] <= tpHit))) { j += M2; continue; } }
+          if (j + M1 <= last) { const b = j >> S1; if (ok1[b] && (d > 0 ? lo1[b] > stop && !(hi1[b] >= tpHit) : hi1[b] < stop && !(lo1[b] <= tpHit))) { j += M1; continue; } }
+        }
         // A trade open across missing minutes (forward-filled flat bars) cannot be judged: dropped.
         if (!valid[j]) { gap = true; break; }
         if (d > 0) {
@@ -692,7 +745,7 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
   const unit = atrUnit(g, nMax);
   const out = outcomes(g, nMax, unit, o.costs);
   const fillShare = Object.fromEntries(POLICIES.map((p, k) => { const a = out.fills[2 * k], b = out.fills[2 * k + 1], n = a.tried + b.tried; return [p.id, n ? +((a.filled + b.filled) / n).toFixed(4) : null]; }));
-  log(`outcome tables: ${NPOL} policies x 2 sides in ${((Date.now() - t) / 1000).toFixed(1)} s${POLICIES.some((p) => p.entry) ? `; maker fill share ${ENTRIES.map(({ tag }) => { const ks = POLICIES.map((p, k) => (p.id.startsWith(`${tag}:`) ? k : -1)).filter((k) => k >= 0); let n = 0, f = 0; for (const k of ks) for (const z of [0, 1]) { n += out.fills[2 * k + z].tried; f += out.fills[2 * k + z].filled; } return `${tag} ${n ? ((100 * f) / n).toFixed(1) : '-'}%`; }).join(', ')}` : ''}`);
+  log(`outcome tables: ${NPOL} policies x 2 sides in ${((Date.now() - t) / 1000).toFixed(1)} s${POLICIES.some((p) => p.entry) ? `; maker fill share ${ENTRY_TAGS.filter((tag) => POLICIES.some((p) => p.id.startsWith(`${tag}:`))).map((tag) => { const ks = POLICIES.map((p, k) => (p.id.startsWith(`${tag}:`) ? k : -1)).filter((k) => k >= 0); let n = 0, f = 0; for (const k of ks) for (const z of [0, 1]) { n += out.fills[2 * k + z].tried; f += out.fills[2 * k + z].filled; } return `${tag} ${n ? ((100 * f) / n).toFixed(1) : '-'}%`; }).join(', ')}` : ''}`);
   const cond = conditions(g, nMax, mod);
   const fo = folds(g, nMax, o.validFrom);
   const NF = fo.starts.length;
@@ -831,7 +884,7 @@ export function sweepAsset(g: Grid, o: { seal: number; validFrom: number; costs:
   }
   log(`placebo: ${top.length} cells x ${shifts.length} whole-day shifts in ${((Date.now() - t) / 60000).toFixed(1)} min`);
   const header = {
-    schema: 'perpta-sweep3', round: ROUND, asset: g.asset, at: new Date().toISOString(), t0: new Date(g.t0).toISOString(), seal: new Date(o.seal).toISOString(), validFrom: new Date(o.validFrom).toISOString(),
+    schema: 'perpta-sweep3', round: ROUND, sha: process.env.GITHUB_SHA ?? 'local', asset: g.asset, at: new Date().toISOString(), t0: new Date(g.t0).toISOString(), seal: new Date(o.seal).toISOString(), validFrom: new Date(o.validFrom).toISOString(),
     nMinutes: nMax, prims: prims.map((p) => p.id), filters: filt.map((b) => prims[b].id), rules: todo.length, bySource: bySrc, modules: mod?.notes ?? 'off', tested, stored: recs.length, storeT, minN, tHist, folds: fo.labels, discoveryFolds: fo.discovery,
     foldDays: fo.starts.map((s, k) => +(((k + 1 < fo.starts.length ? fo.starts[k + 1] : nMax) - s) / 1440).toFixed(2)),
     policies: POLICIES, fillShare, conds: CONDS, costs: o.costs, minBhN: o.minBhN ?? 100,
@@ -1051,8 +1104,8 @@ export function report(files: string[], o: { q?: number; minBps?: number; log?: 
   const top40 = cands.filter((c) => !c.diagnostic).sort((a, b) => b.disc.tExc - a.disc.tExc).slice(0, 40);
   const vPool = (() => { if (!top40.length) return undefined; const acc: number[][] = []; for (const c of top40) { const D = hdr.get(c.a)!.discoveryFolds as number; for (const row of c.f.slice(D)) { const z = new Array(10).fill(0); row.forEach((v, k) => { z[k] = v; }); acc.push(z); } } return pool(acc, 0, acc.length); })();
   const round = (headers[0]?.round as number | undefined) ?? 1;
-  const costLine = headers.filter((h, k) => headers.findIndex((x) => x.asset === h.asset) === k).map((h) => { const c = h.costs as Costs; return `${h.asset} taker ${c.takerBps} + half-spread ${c.halfSpreadBps}, maker ${c.makerBps}${c.fundOffsetBps ? `, funding ${c.fundOffsetBps > 0 ? '+' : ''}${c.fundOffsetBps} bps / 8 h over the model` : ''}${c.fundMult && c.fundMult !== 1 ? ` x${c.fundMult}` : ''}${h.fillShare ? `; maker fills ${ENTRIES.map(({ tag }) => { const v = Object.entries(h.fillShare as Record<string, number | null>).filter(([k, x]) => k.startsWith(`${tag}:`) && x !== null).map(([, x]) => x as number); return `${tag} ${v.length ? (100 * v.reduce((a, b) => a + b, 0) / v.length).toFixed(0) : '-'}%`; }).join(' ')}` : ''}`; }).join('; ');
-  const summary = { at: new Date().toISOString(), round, assets: headers.map((h) => h.asset), tested: m, q, minBps, funnel, pbo: PBO, top40Validation: vPool ? { n: vPool.n, mean: +vPool.mean.toFixed(2), exc: +vPool.exc.toFixed(2), fund: +vPool.fund.toFixed(2) } : null, tShareAbove2: +share(2).toFixed(4), tShareAbove3: +share(3).toFixed(5), normalAbove2: 0.0228, normalAbove3: 0.00135, perAsset: headers.map((h) => ({ asset: h.asset, tested: h.tested, stored: h.stored, minutes: h.nMinutes, folds: h.folds, discovery: h.discoveryFolds, prims: (h.prims as string[]).length, modules: h.modules, costs: h.costs, fillShare: h.fillShare })) } as Record<string, unknown>;
+  const costLine = headers.filter((h, k) => headers.findIndex((x) => x.asset === h.asset) === k).map((h) => { const c = h.costs as Costs; return `${h.asset} taker ${c.takerBps} + half-spread ${c.halfSpreadBps}, maker ${c.makerBps}${c.fundOffsetBps ? `, funding ${c.fundOffsetBps > 0 ? '+' : ''}${c.fundOffsetBps} bps / 8 h over the model` : ''}${c.fundMult && c.fundMult !== 1 ? ` x${c.fundMult}` : ''}${h.fillShare ? `; maker fills ${ENTRY_TAGS.filter((tag) => Object.keys(h.fillShare as object).some((k) => k.startsWith(`${tag}:`))).map((tag) => { const v = Object.entries(h.fillShare as Record<string, number | null>).filter(([k, x]) => k.startsWith(`${tag}:`) && x !== null).map(([, x]) => x as number); return `${tag} ${v.length ? (100 * v.reduce((a, b) => a + b, 0) / v.length).toFixed(0) : '-'}%`; }).join(' ')}` : ''}`; }).join('; ');
+  const summary = { at: new Date().toISOString(), sha: (headers[0]?.sha as string | undefined) ?? 'local', round, assets: headers.map((h) => h.asset), tested: m, q, minBps, funnel, pbo: PBO, top40Validation: vPool ? { n: vPool.n, mean: +vPool.mean.toFixed(2), exc: +vPool.exc.toFixed(2), fund: +vPool.fund.toFixed(2) } : null, tShareAbove2: +share(2).toFixed(4), tShareAbove3: +share(3).toFixed(5), normalAbove2: 0.0228, normalAbove3: 0.00135, perAsset: headers.map((h) => ({ asset: h.asset, tested: h.tested, stored: h.stored, minutes: h.nMinutes, folds: h.folds, discovery: h.discoveryFolds, prims: (h.prims as string[]).length, modules: h.modules, costs: h.costs, fillShare: h.fillShare })) } as Record<string, unknown>;
   const f1 = (x: number) => (fin(x) ? x.toFixed(1) : '-');
   const fmt = (c: Candidate) => `| ${c.a} | ${c.rule} | ${c.mode} | ${c.pol} | ${c.side} | ${c.cond} | ${c.disc.n} | ${c.disc.mean} | ${c.disc.exc} | ${c.disc.tExc} | ${c.placebo ? c.placebo.pct : '-'} | ${c.val.n} | ${f1(c.val.mean)} | ${f1(c.val.exc)} | ${f1(c.val.tExc)} | ${c.tradesPerDay} | ${c.valUsdPerHourPer1k} | ${c.why.join('; ') || 'PASS'} |`;
   const head = '| coin | rule | mode | exit | side | condition | disc n | disc bps | disc excess | excess t | placebo | val n | val bps | val excess | val excess t | trades/day | val $/h per $1k | verdict |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|';
@@ -1070,7 +1123,7 @@ export function report(files: string[], o: { q?: number; minBps?: number; log?: 
   const bestBySrc = Object.keys(src).flatMap((k) => { const sn = new Set<string>(); return cands.filter((c) => srcOf(c)[0] === k && !has(c, 'not a discovery')).sort(rank).filter((c) => { const key = `${c.a}|${c.rule.split('+')[0]}`; if (sn.has(key)) return false; sn.add(key); return true; }).slice(0, 3); });
   const diag = cands.filter((c) => c.diagnostic && !has(c, 'not a discovery')).sort(rank).slice(0, 10);
   const md = [
-    `### Perp TA sweep, round ${round} (with the bot's TA modules${round >= 2 ? '; post-only maker entries' : ''})`,
+    `### Perp TA sweep, round ${round} (with the bot's TA modules${round >= 2 ? '; post-only maker entries' : ''}${round >= 3 ? '; exits in 1-hour and 4-hour ATRs, holds of 4 hours to 7 days' : ''})`,
     `Tested ${m.toLocaleString()} cells (${headers.map((h) => `${h.asset} ${h.tested.toLocaleString()}`).join(', ')}); Benjamini-Hochberg q=${q} on Student-t p of the discovery excess (cells with >= ${minBhN(recs[0]?.a ?? '')} trades): ${bhSet.size} cells pass, in ${funnel['+bh']} of ${reps.size} groups (coin, rule, mode, side).`,
     `Share of cells whose discovery excess over random entries has t >= 2: ${(share(2) * 100).toFixed(2)}% (pure noise would give 2.28%); t >= 3: ${(share(3) * 100).toFixed(3)}% (noise 0.135%).`,
     `Funnel (groups after "groups"): ${Object.entries(funnel).map(([k, v]) => `${k} ${v}`).join(' -> ')}. CSCV PBO over the top ${topM.length} groups: ${fin(PBO) ? PBO.toFixed(2) : 'n/a'}.`,
@@ -1142,14 +1195,19 @@ async function main(): Promise<void> {
     fs.writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(r.summary, null, 1));
     fs.writeFileSync(path.join(outDir, 'candidates.json.gz'), zlib.gzipSync(JSON.stringify(r.candidates)));
     fs.writeFileSync(path.join(outDir, 'summary.md'), r.md + '\n');
-    // Rows for the project trial registry (meta plan thread; gdrive:kalshi-bot-archive/registry/): the run and every
-    // group that passed the discovery checks, with N_raw = cells tested.
+    // Rows for the project trial registry (registry v1, research/perpTaRegistry.ts): the random-entry control, the run
+    // (N_raw = cells tested) and every group that passed the discovery checks, paired with the control. No daily P&L
+    // before the sealed block is read (counted in N_raw, not scored).
     const now = new Date(), est = now.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false });
-    const run = process.env.GITHUB_RUN_ID ?? 'local', sha = process.env.GITHUB_SHA ?? '';
-    const base = { thread: 'perp-ta-rulebook', round: r.summary.round, run, sha, at_utc: now.toISOString(), at_eastern: est, evidence: 'binance-history (spot TA, USD-M fills)', doge_excluded: true, prereg: '/mnt/project-files/perp-ta/preregistration.md' };
+    // code_sha = the sweep's commit (its cells' header), which the blind test's freeze reads back from summary.json.
+    const run = process.env.GITHUB_RUN_ID ?? 'local', sha = (r.summary.sha as string) || process.env.GITHUB_SHA || 'local', round = r.summary.round as number;
+    const base = { thread: 'perp-ta-rulebook', round, run, sha, at_utc: now.toISOString(), at_eastern: est, evidence: 'binance-history (spot TA, USD-M fills)', doge_excluded: true, prereg: '/mnt/project-files/perp-ta/preregistration.md' };
+    const codeEpoch = `perp-ta round ${round}`, ref = runRef(run);
+    const ctl = regRow({ arm: controlArm(run), role: 'control', codeSha: sha, codeEpoch, ref, at: now, verdict: 'random entries through the same exits (the excess baseline)' });
     const rows = [
-      { ...base, kind: 'run', n_raw: r.summary.tested, funnel: r.funnel, pbo: r.summary.pbo, assets: r.summary.assets, blocks: { discovery: '< 2024-01-01', validation: '2024-01-01 .. 2025-06-30', sealed: '>= 2025-07-01 (not opened)' } },
-      ...r.candidates.filter((c) => !c.why.some((w) => w.startsWith('not a discovery'))).map((c) => ({ ...base, kind: 'group', group: c.group, pol: c.pol, cond: c.cond, disc: c.disc, val: { n: c.val.n, mean: +c.val.mean.toFixed(2), exc: +c.val.exc.toFixed(2), tExc: +c.val.tExc.toFixed(3) }, gate: c.why.length ? 'discovery' : 'validation', verdict: c.why.length ? c.why.join('; ') : 'PASS (awaiting the sealed blind test)', diagnostic: c.diagnostic })),
+      ctl,
+      regRow({ arm: `r${round}:sweep:run-${run}`, role: 'candidate', control: ctl.trial_id, codeSha: sha, codeEpoch, ref, at: now, verdict: `${r.summary.tested} cells tested; ${(r.funnel as Record<string, number>)['+validation'] ?? 0} pass validation`, raw: { ...base, kind: 'run', n_raw: r.summary.tested, funnel: r.funnel, pbo: r.summary.pbo, assets: r.summary.assets, blocks: { discovery: '< 2024-01-01', validation: '2024-01-01 .. 2025-06-30', sealed: '>= 2025-07-01 (not opened)' } } }),
+      ...r.candidates.filter((c) => !c.why.some((w) => w.startsWith('not a discovery'))).map((c) => regRow({ arm: `r${round}:run-${run}:${c.group}|${c.pol}|${c.cond}`, role: 'candidate', control: ctl.trial_id, codeSha: sha, codeEpoch, ref, at: now, verdict: c.why.length ? c.why.join('; ') : 'PASS (awaiting the sealed blind test)', raw: { ...base, kind: 'group', group: c.group, pol: c.pol, cond: c.cond, disc: c.disc, val: { n: c.val.n, mean: +c.val.mean.toFixed(2), exc: +c.val.exc.toFixed(2), tExc: +c.val.tExc.toFixed(3) }, gate: c.why.length ? 'discovery' : 'validation', diagnostic: c.diagnostic } })),
     ];
     fs.writeFileSync(path.join(outDir, 'registry.jsonl'), rows.map((x) => JSON.stringify(x)).join('\n') + '\n');
     return;

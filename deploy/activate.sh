@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Point ~/bot/current at a release and restart the service. The previous
 # target is kept in ~/bot/previous; `deploy/rollback.sh` swaps back.
+# Once the bot is up, HTTPS and the heat curve reader follow; neither can fail the deploy.
 set -euo pipefail
 REL="${1:?usage: activate.sh <release-dir>}"
 mkdir -p ~/bot
@@ -37,3 +38,7 @@ done
 echo "activated $REL (dashboard HTTP $code)"
 # HTTPS in front of the dashboard (never fails the deploy).
 bash "$DIR/https.sh" || true
+# The heat curve reader beside the bot: runs $DIR/heat_reader_install.sh when this release ships it (it does nothing
+# but stop the reader unless HEAT_LANE=true in bot.env). Never fails the deploy and never rolls the bot back: on a
+# failure it prints one line saying the reader is not running and why, and the deploy goes on.
+bash "$DIR/heat_reader_follow.sh" "$DIR" || echo "heat reader: NOT running: heat_reader_follow.sh exited $? (the bot is not affected)"

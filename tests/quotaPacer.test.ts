@@ -1,9 +1,10 @@
+import './tmpScope'; // one temp folder per run, removed at exit
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { HourlyQuotaPacer, QuotaFloors, SnipeGroup, anchorAfter, anchorBefore, quotaCall, wallClock, wallToUtc, type PacerConfig } from '../bot/risk/quotaPacer';
+import { HourlyQuotaPacer, planPacerLine, QuotaFloors, SnipeGroup, anchorAfter, anchorBefore, quotaCall, wallClock, wallToUtc, type PacerConfig } from '../bot/risk/quotaPacer';
 import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { loadConfig } from '../bot/config';
 
@@ -215,6 +216,13 @@ test('defaults: the pacer is on in slices mode; the group rule is off (Oct 30: i
   const p = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.pacer;
   assert.deepEqual([p.enabled, p.mode, p.group], [true, 'slices', false]);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_GROUP: 'true' }).strategy.pacer.group, true);
+  // On heat-lane (plan) positions: hybrid by default (Steven's card, Nov 12 1:13 AM EST / 06:13 UTC); need and off on request.
+  assert.equal(p.plan, 'hybrid');
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_PLAN: 'off' }).strategy.pacer.plan, 'off');
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_PLAN: 'on' }), /PACER_PLAN=on must be one of off, hybrid, need/);
+  // The perp loser cut (Steven, Nov 12 1:01 AM EST / 06:01 UTC): 15c a contract by default, 0 off.
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).perps.loserCut, 0.15);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PERP_LOSER_CUT_C: '0' }).perps.loserCut, 0);
 });
 
 test('quota floors (PACER_FLOOR, Steven Oct 31): armed at the need while a rule aims higher, kept per contract, raised never lowered, gone with the position', () => {
@@ -241,6 +249,17 @@ test('quota floors (PACER_FLOOR, Steven Oct 31): armed at the need while a rule 
   // PACER_FLOOR_TICKS: the cushion (dollars for the position) lets the profit dip that far under the floor before it sells.
   assert.deepEqual(quotaCall(4.3, 4.5, 4.5, "the model's sell price 0.80", 0.5), {}, 'cushion: a $0.20 dip under the floor holds');
   assert.deepEqual(quotaCall(3.9, 4.5, 4.5, "the model's sell price 0.80", 0.5), { sell: 'floor' }, 'cushion: past it, sold');
+  // `keep` (1 tick a contract, dollars for the position; E22): the cushion never takes the line below that much profit after
+  // fees, nor below the floor when the floor is smaller. 8 ticks on 30 contracts is a $2.40 cushion under a $0.75 floor
+  // (alone, a line at -$1.65); keep $0.30 makes it +$0.30.
+  assert.deepEqual(quotaCall(0.35, 3, 0.75, "the model's sell price 0.80", 2.4, 0.3), {}, 'keep: +$0.35 holds');
+  assert.deepEqual(quotaCall(0.3, 3, 0.75, "the model's sell price 0.80", 2.4, 0.3), {}, 'keep: at the line, held');
+  assert.deepEqual(quotaCall(0.25, 3, 0.75, "the model's sell price 0.80", 2.4, 0.3), { sell: 'floor' }, 'keep: +$0.25 sells (the cushion alone held it)');
+  assert.deepEqual(quotaCall(-1.6, 3, 0.75, undefined, 2.4, 0.3), { sell: 'floor' }, 'keep: a loss the cushion alone held to is sold');
+  assert.deepEqual(quotaCall(4.3, 4.5, 4.5, "the model's sell price 0.80", 0.5, 0.3), {}, 'keep: the cushion still decides when it leaves more than keep');
+  assert.deepEqual(quotaCall(3.9, 4.5, 4.5, "the model's sell price 0.80", 0.5, 0.3), { sell: 'floor' }, 'keep: and past the cushion, sold');
+  assert.deepEqual(quotaCall(0.2, 3, 0.2, undefined, 2.4, 0.3), {}, 'keep above the floor: the line is the floor itself, at it held');
+  assert.deepEqual(quotaCall(0.19, 3, 0.2, undefined, 2.4, 0.3), { sell: 'floor' }, 'keep above the floor: under the floor, sold');
   assert.deepEqual(quotaCall(4.6, 6, 4.5, undefined), {}, 'nothing aims higher now but the need is above the profit: the floor holds it');
   assert.deepEqual(quotaCall(-0.5, 3, 4.5, undefined), { sell: 'floor' }, 'gapped through it into a loss: still the stop');
   assert.deepEqual(quotaCall(undefined, 4.5, 4.5, undefined), {});
@@ -251,4 +270,20 @@ test('quota floors (PACER_FLOOR, Steven Oct 31): armed at the need while a rule 
   assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_FLOOR: 'maybe' }));
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.pacer.floorTicks, 8);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_FLOOR_TICKS: '0' }).strategy.pacer.floorTicks, 0);
+});
+
+test('planPacerLine (PACER_PLAN): hybrid snipes a heat position at the hour\'s need only once the whole trade, partial sales banked in, is at the ratchet\'s arming net', () => {
+  // Nothing banked: the line is the larger of the need and the $1.50 arm.
+  assert.equal(planPacerLine('hybrid', 0.75, 1.5), 1.5);
+  assert.equal(planPacerLine('hybrid', 3, 1.5), 3);
+  // A loser cut's partial fill banked -$0.53: the rest must net $2.03 for the trade to reach $1.50 (+$1.60 on the rest is not enough).
+  assert.ok(Math.abs(planPacerLine('hybrid', 0.75, 1.5, -0.53)! - 2.03) < 1e-9);
+  // A partial sale banked +$1.00: the trade reaches $1.50 with $0.50 on the rest, so the need decides.
+  assert.equal(planPacerLine('hybrid', 0.75, 1.5, 1), 0.75);
+  assert.equal(planPacerLine('hybrid', 0.75, 1.5, NaN), 1.5);
+  // 'need': the need alone; 'off', unset or no need (the pacer off): no line (decision 13, pace only).
+  assert.equal(planPacerLine('need', 0.75, 1.5, -0.53), 0.75);
+  assert.equal(planPacerLine('off', 0.75, 1.5), undefined);
+  assert.equal(planPacerLine(undefined, 0.75, 1.5), undefined);
+  assert.equal(planPacerLine('hybrid', undefined, 1.5), undefined);
 });

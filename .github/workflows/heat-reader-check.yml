@@ -1,0 +1,182 @@
+name: Heat reader check
+# Thread "Test weighted heat maps on live Kalshi". Runs the curve reader (python/heat_reader) the way the server runs
+# it, on real public Binance minutes, against the oracle's code and packs at a pinned commit, and posts what it
+# measured as ONE commit comment: per coin the minutes loaded, the pack rows wanted and skipped, what fired, the
+# seconds per pass, the memory, and the share of published keys that agree with the full engine (Dec 29 to 31, 2025).
+# The perp packs (h240 and h1440) are optional: the comment says whether they were found and how many h240 and h1440
+# rows the loop published, and their absence never fails the run. The parity replay checks h15 and h60 only.
+# Public market data only: no secret, no Drive, no server. docs/HEAT_READER.md says how to read the comment.
+# Started by a commit that changes python/heat_reader/CHECK_RUN (lines: oracle=<commit sha>, note=<free text>).
+on:
+  push:
+    branches: [claude/project-thread-rvpht4]
+    paths: ['python/heat_reader/CHECK_RUN']
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: heat-reader-check
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COINS: BTC,ETH,SOL,XRP
+    steps:
+      - uses: actions/checkout@v5
+      # The server's Ubuntu 24.04 ships Python 3.12, so the check measures the same interpreter.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Read the request
+        id: req
+        run: |
+          set -euo pipefail
+          f=python/heat_reader/CHECK_RUN
+          oracle=$(sed -nE 's/^oracle=([0-9a-fA-F]{7,40})[[:space:]]*$/\1/p' "$f" | tail -1)
+          [ -n "$oracle" ] || { echo "::error::CHECK_RUN has no line oracle=<commit sha>"; exit 1; }
+          # The note is free text: it goes to a file and is read back by the report, never into a script line.
+          sed -nE 's/^note=(.*)$/\1/p' "$f" | tail -1 | tr -cd '[:print:]' | cut -c1-200 > "$RUNNER_TEMP/note.txt"
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$oracle" --jq .sha)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the oracle commit $oracle is not in this repository"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "oracle commit $sha, note: $(cat "$RUNNER_TEMP/note.txt")"
+      # Only the oracle package and the oracle run's outputs come from the pinned commit; the reader is this commit's.
+      - name: Fetch the oracle code and packs
+        run: |
+          set -euo pipefail
+          sha=${{ steps.req.outputs.sha }}
+          git fetch --no-tags --depth=1 origin "$sha"
+          mkdir -p "$RUNNER_TEMP/oracle"
+          git archive "$sha" python/oracle research/oracle_heat | tar -x -C "$RUNNER_TEMP/oracle"
+          ls "$RUNNER_TEMP/oracle/research/oracle_heat/latest"
+          for f in traded_pack.json pair_pack.json live_meta.json; do
+            [ -s "$RUNNER_TEMP/oracle/research/oracle_heat/latest/$f" ] || { echo "::error::the oracle commit has no research/oracle_heat/latest/$f"; exit 1; }
+          done
+          # The perp packs are reported, never required: without them the reader publishes h15 and h60 only.
+          for f in perp_pack.json perp_pair_pack.json; do
+            if [ -s "$RUNNER_TEMP/oracle/research/oracle_heat/latest/$f" ]; then
+              echo "perp pack found: $f"
+            else
+              echo "::notice::the oracle commit has no research/oracle_heat/latest/$f: the reader publishes no h240 or h1440 rows (the check goes on)"
+            fi
+          done
+          [ -f "$RUNNER_TEMP/oracle/python/oracle/heat_live.py" ] || { echo "::error::the oracle commit has no python/oracle/heat_live.py"; exit 1; }
+      # The same install the server does (deploy/heat_reader_install.sh): binary wheels only, every file's hash pinned.
+      - name: Build the reader's venv from the pinned wheels
+        id: venv
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --quiet --disable-pip-version-check --no-cache-dir \
+            --require-hashes --only-binary=:all: -r python/heat_reader/requirements.txt
+          "$RUNNER_TEMP/venv/bin/python" -c 'import numpy, pandas, talib'
+          echo "python=$("$RUNNER_TEMP/venv/bin/python" -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
+          echo "mb=$(du -sm "$RUNNER_TEMP/venv" | cut -f1)" >> "$GITHUB_OUTPUT"
+          command -v /usr/bin/time >/dev/null || sudo timeout 120 apt-get install -y -qq time >/dev/null 2>&1 || echo "::warning::no /usr/bin/time: the first pass is timed by the reader alone"
+      # One pass on a fresh folder: downloads every coin's window from Binance, then reads it. HEAT_READER_DIR holds
+      # the minute cache, which the loop below reuses the way the server's restarts do.
+      - name: One pass (--once), timed
+        id: once
+        continue-on-error: true
+        working-directory: python
+        env:
+          HEAT_ASSETS: ${{ env.COINS }}
+          HEAT_PACK_DIR: ${{ runner.temp }}/oracle/research/oracle_heat/latest
+          HEAT_ORACLE_PATH: ${{ runner.temp }}/oracle/python
+          HEAT_READER_DIR: ${{ runner.temp }}/reader
+          HEAT_CALLS_FILE: ${{ runner.temp }}/out/calls/once/heat_calls.json
+        run: |
+          set -uo pipefail
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT/calls/once"
+          if [ -x /usr/bin/time ]; then
+            /usr/bin/time -v -o "$OUT/once-time.txt" "$RUNNER_TEMP/venv/bin/python" -m heat_reader --once > "$OUT/once.log" 2>&1; rc=$?
+          else
+            "$RUNNER_TEMP/venv/bin/python" -m heat_reader --once > "$OUT/once.log" 2>&1; rc=$?
+          fi
+          cp "$HEAT_READER_DIR/status.json" "$OUT/once-status.json" 2>/dev/null || true
+          tail -n 20 "$OUT/once.log"
+          exit $rc
+      # Four minutes of the loop, as systemd runs it, with its memory sampled every 5 s from outside the process.
+      - name: The loop for 4 minutes, memory sampled
+        id: loop
+        continue-on-error: true
+        working-directory: python
+        env:
+          HEAT_ASSETS: ${{ env.COINS }}
+          HEAT_PACK_DIR: ${{ runner.temp }}/oracle/research/oracle_heat/latest
+          HEAT_ORACLE_PATH: ${{ runner.temp }}/oracle/python
+          HEAT_READER_DIR: ${{ runner.temp }}/reader
+          HEAT_CALLS_FILE: ${{ runner.temp }}/out/calls/loop/heat_calls.json
+        run: |
+          set -uo pipefail
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT/calls/loop"; : > "$OUT/rss.txt"
+          "$RUNNER_TEMP/venv/bin/python" -m heat_reader > "$OUT/loop.log" 2>&1 &
+          pid=$!; t0=$(date +%s)
+          while kill -0 "$pid" 2>/dev/null && [ $(( $(date +%s) - t0 )) -lt 240 ]; do
+            echo "$(( $(date +%s) - t0 )) $(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')" >> "$OUT/rss.txt"
+            sleep 5
+          done
+          kill -TERM "$pid" 2>/dev/null || true
+          for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          kill -KILL "$pid" 2>/dev/null || true
+          wait "$pid"; rc=$?
+          cp "$HEAT_READER_DIR/status.json" "$OUT/loop-status.json" 2>/dev/null || true
+          tail -n 20 "$OUT/loop.log"
+          echo "loop exit $rc (0 = stopped on request)"
+          exit $rc
+      # The reader's own code path (fetch, cache, window cut, engine, 60-minute state cache, join) on the minutes the
+      # oracle's parity job answered with the full-history engine. Skipped with a line in the comment when the oracle
+      # commit holds no parity fixtures.
+      - name: Parity replay, Dec 29 to 31, 2025
+        id: parity
+        continue-on-error: true
+        timeout-minutes: 60
+        working-directory: python
+        env:
+          HEAT_ASSETS: ${{ env.COINS }}
+          HEAT_PACK_DIR: ${{ runner.temp }}/oracle/research/oracle_heat/latest
+          HEAT_ORACLE_PATH: ${{ runner.temp }}/oracle/python
+          HEAT_READER_DIR: ${{ runner.temp }}/reader
+          HEAT_CALLS_FILE: ${{ runner.temp }}/replay/heat_calls.json
+        run: |
+          set -euo pipefail
+          fx="$RUNNER_TEMP/oracle/research/oracle_heat/parity"
+          [ -d "$fx" ] || { echo "the oracle commit has no research/oracle_heat/parity"; exit 0; }
+          "$RUNNER_TEMP/venv/bin/python" -m heat_reader.replay --fixtures "$fx" --out "$RUNNER_TEMP/out/parity.json"
+      - name: Write the report
+        if: always() && steps.req.outcome == 'success'
+        working-directory: python
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/out"; mkdir -p "$OUT"
+          python3 -m heat_reader.check_report --dir "$OUT" --oracle "${{ steps.req.outputs.sha }}" --note "$(cat "$RUNNER_TEMP/note.txt")" \
+            --python "${{ steps.venv.outputs.python }}" --venv-mb "${{ steps.venv.outputs.mb }}" --run-id "$GITHUB_RUN_ID" > "$OUT/report.md"
+          cat "$OUT/report.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.req.outcome == 'success'
+        with:
+          name: heat-reader-check-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/out/calls
+            ${{ runner.temp }}/out/*.json
+            ${{ runner.temp }}/out/*.txt
+            ${{ runner.temp }}/out/*.log
+            ${{ runner.temp }}/out/report.md
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Post the report as a commit comment
+        if: always() && steps.req.outcome == 'success'
+        run: |
+          set -euo pipefail
+          [ -s "$RUNNER_TEMP/out/report.md" ] || printf 'Heat reader check (run %s)\n\nThe report could not be written: see the run log.\n' "$GITHUB_RUN_ID" > "$RUNNER_TEMP/out/report.md"
+          python3 -c 'import json,sys; print(json.dumps({"body": open(sys.argv[1]).read()}))' "$RUNNER_TEMP/out/report.md" > "$RUNNER_TEMP/c.json"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input "$RUNNER_TEMP/c.json" --jq .html_url
+      # The measuring steps go on after a failure so the comment always comes; the run still shows red when one failed.
+      - name: Fail the run when a measuring step failed
+        if: steps.once.outcome == 'failure' || steps.loop.outcome == 'failure' || steps.parity.outcome == 'failure'
+        run: |
+          echo "::error::once ${{ steps.once.outcome }}, loop ${{ steps.loop.outcome }}, parity ${{ steps.parity.outcome }} (the comment says what was measured)"
+          exit 1

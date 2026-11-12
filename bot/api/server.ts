@@ -3,9 +3,10 @@
 //  - With DASHBOARD_PASSWORD set, every /api route requires it as the bearer (constant-time compare),
 //    with a lockout after repeated failures. Without one the dashboard is open (no login).
 //  - Write actions: the kill switch (engage / reset with a confirmation phrase), PLAY / STOP (pause new
-//    entries), and the PAPER / LIVE switch, which rewrites TRADING_MODE (and the perps / tennis modes) in
-//    the server's bot.env and restarts the bot; a switch whose settings would not start (e.g. live without
-//    Kalshi keys) is refused before anything is written. No route writes credentials.
+//    entries), and the PAPER / LIVE switch, which rewrites the mode in the server's bot.env and restarts the
+//    bot (LIVE writes only TRADING_MODE, KALSHI_ENV and the acknowledgement; PAPER also sets live perps back to
+//    paper and TENNIS_LIVE to false); a switch whose settings, with bot.env as it is now, would not start (e.g.
+//    live without Kalshi keys) is refused before anything is written. No route writes credentials.
 
 import crypto from 'crypto';
 import express, { NextFunction, Request, Response } from 'express';
@@ -38,12 +39,13 @@ import { macro } from '../macro/macroService';
 import { activeGpSignals } from '../gp/gpSignals';
 import { buildNeuralMap } from './neuralMap';
 import type { TrainingSupervisor } from '../training/supervisor';
+import type { PaperPoolResult } from '../paper/paperExchange';
 import type { SettlementSweeper } from '../paper/settlementSweeper';
 import type { RunControl } from '../control';
 import { ConfigError, loadConfig } from '../config';
 import { latencySnapshot } from '../util/latency';
 import { cpuProfile } from '../util/profile';
-import { updateEnvFile } from '../util/envFile';
+import { readEnvFile, updateEnvFile } from '../util/envFile';
 import { studyFor, studyMeta } from '../ta/study';
 import { probation, PROBATION_BOOKS, type ProbationBook } from '../risk/probation';
 
@@ -67,10 +69,14 @@ export interface ApiDeps {
   training?: TrainingSupervisor;
   /** Paper settlement sweeper (held contracts awaiting Kalshi's result). */
   settlement?: SettlementSweeper;
+  /** The paper account's worth against all the money put into it (paper only; absent in live). */
+  paperPool?: () => PaperPoolResult;
   /** Restart the bot (systemd starts it again). */
   restart?: () => void;
   /** This account's real perps fee rates against the fees the bot charges (bot/perps/feeTier.ts). */
   perpFeeTier?: { status(): unknown };
+  /** Memory reading (bot/util/memoryWatch.ts): heap, heap spaces and the largest collections, at start, hourly and now. */
+  memory?: { status(): unknown };
 }
 
 export function tokenMatches(expected: string, provided: string | undefined): boolean {
@@ -185,6 +191,8 @@ export function createApi(d: ApiDeps): express.Express {
       recon: d.recon.lastResult ?? null,
       balance: d.engine.balance ?? null,
       bankroll: bankroll ?? null,
+      // Paper: refills add cash, so the balance is not the result; this is (null in live).
+      paperPool: (() => { try { return d.paperPool?.() ?? null; } catch { return null; } })(), // a reporting helper never breaks /status
       recording: { series: d.cfg.strategy.recordSeries, markets: d.md.recordedMarkets().filter((m) => m.recordOnly).length },
       dailyPnl: d.engine.dailyPnl(),
       dailyLossLimit: d.engine.dailyLossLimit(),
@@ -257,6 +265,9 @@ export function createApi(d: ApiDeps): express.Express {
   api.get('/kalshi-check', (_req, res) => res.json(d.kalshiCheck?.report() ?? null));
   // CPU, disk writes and memory: the last minute, and 10-minute buckets over 24 h (bot/engine.ts CpuMeter).
   api.get('/cpu', (_req, res) => res.json({ now: d.engine.cpu.status(), history: d.engine.cpu.history() }));
+  // Where the memory goes: the V8 heap and its spaces, memory outside it, and the largest collections the bot holds,
+  // at the first reading after start, an hour ago and now (read-only; a fresh walk at most once a minute).
+  api.get('/memory', (_req, res) => res.json(d.memory?.status() ?? null));
   // Module ledger: one row per adaptive part (on / shadow / off / benched, validated, its score, what blocks it).
   api.get('/market-state', (_req, res) => res.json({ at: Date.now(), coins: d.engine.marketStates() }));
   api.get('/modules', (_req, res) => res.json({ at: Date.now(), mode: d.cfg.mode, rows: d.engine.moduleLedger() }));
@@ -446,24 +457,54 @@ export function createApi(d: ApiDeps): express.Express {
 
   // PAPER / LIVE: rewrite the modes in bot.env and restart. Live needs { confirm: 'LIVE' } (the dashboard's
   // double-tap + double-tap dialog) and settings that pass the same checks as a start would.
+  // LIVE writes only TRADING_MODE, KALSHI_ENV and the acknowledgement: perps (PERP_TRADING, PERP_HEDGE) and tennis
+  // (TENNIS_LIVE) stay as bot.env has them and go live only through their own settings. PAPER demotes them: a live
+  // perps setting (in bot.env now, or in the running config) goes back to paper and TENNIS_LIVE to false. A paper or
+  // off perps setting is left as written: live mode reads paper perps as off (config.ts), so rewriting it from d.cfg
+  // would turn paper perps off. The checks run on what the restart will load: bot.env as it is now (it may have been
+  // edited since the start) over the server's environment, plus the changes.
+  let modeSwitched: 'paper' | 'live' | undefined;
   api.post('/mode', (req, res) => {
     const mode = req.body?.mode;
     if (mode !== 'paper' && mode !== 'live') return res.status(400).json({ error: 'mode must be paper or live' });
     if (mode === 'live' && req.body?.confirm !== 'LIVE') return res.status(400).json({ error: 'live mode needs the double-tap confirmation' });
     if (mode === d.cfg.mode) return res.json({ ok: true, mode, restarting: false });
-    const perps = (v: string) => (v === 'off' ? 'off' : mode);
-    const changes: Record<string, string> = {
-      TRADING_MODE: mode,
-      PERP_TRADING: perps(d.cfg.perps.trading),
-      PERP_HEDGE: perps(d.cfg.perps.hedge),
-      TENNIS_LIVE: mode === 'live' && d.cfg.tennis.enabled ? 'true' : 'false',
-      ...(mode === 'live' ? { KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' } : {}),
-    };
-    try { loadConfig({ ...process.env, ...changes }); } catch (e) {
+    // One switch per process: once bot.env has been rewritten the bot is restarting, and a second request (a double
+    // click, a retry) would rewrite it again from the old running config.
+    if (modeSwitched) return res.status(409).json({ error: `a switch to ${modeSwitched} is already written; wait for the restart` });
+    let env: NodeJS.ProcessEnv;
+    try {
+      const file = readEnvFile(d.cfg.botEnvFile);
+      if (!file) return res.status(400).json({ error: `bot.env not found at ${d.cfg.botEnvFile}` });
+      env = { ...process.env, ...file };
+    } catch (e) { return res.status(500).json({ error: `could not read bot.env: ${String(e)}` }); }
+    const changes: Record<string, string> = mode === 'live'
+      ? { TRADING_MODE: 'live', KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' }
+      : {
+        TRADING_MODE: 'paper',
+        ...(env.PERP_TRADING === 'live' || d.cfg.perps.trading === 'live' ? { PERP_TRADING: 'paper' } : {}),
+        ...(env.PERP_HEDGE === 'live' || d.cfg.perps.hedge === 'live' ? { PERP_HEDGE: 'paper' } : {}),
+        TENNIS_LIVE: 'false',
+      };
+    let next: Readonly<Config>;
+    try { next = loadConfig({ ...env, ...changes }); } catch (e) {
       return res.status(400).json({ error: e instanceof ConfigError ? e.message : String(e) });
     }
-    if (!fs.existsSync(d.cfg.botEnvFile)) return res.status(400).json({ error: `bot.env not found at ${d.cfg.botEnvFile}` });
+    if (mode === 'live') {
+      // main.ts refuses to start live (exit code 3, which systemd does not restart: the bot and this dashboard stay
+      // down) when the binary model is not validated, LIVE_ALLOW_UNVALIDATED_MODEL=false, the kalshi gate is closed and
+      // no other book trades live. Refuse here instead. The model and the kalshi probation verdict are the running
+      // ones (the restart reads both from the same DATA_DIR files); the gate settings are the restart's.
+      const model = d.engine?.model ?? d.model;
+      const kalshiOpen = next.probation.mode === 'monitor' && (!next.probation.bench || !probation()?.status().kalshi.wouldBench);
+      const blockers = !model || next.liveAllowUnvalidated || kalshiOpen ? [] : model.liveBlockers();
+      const otherLive = next.perps.trading === 'live' || next.perps.hedge === 'live' || (next.tennis.enabled && next.tennis.live);
+      if (blockers.length && !otherLive) {
+        return res.status(400).json({ error: `live would not start (exit code 3): model ${model.id} is not validated (${blockers.join('; ')}), LIVE_ALLOW_UNVALIDATED_MODEL=false, the kalshi gate is closed (VALIDATION_GATES=enforce or a benched kalshi probation) and no other book trades live. Set LIVE_ALLOW_UNVALIDATED_MODEL=true in bot.env or open the kalshi gate before switching` });
+      }
+    }
     try { updateEnvFile(d.cfg.botEnvFile, changes); } catch (e) { return res.status(500).json({ error: `could not write bot.env: ${String(e)}` }); }
+    modeSwitched = mode;
     d.audit.write('config', { event: 'mode_switch', from: d.cfg.mode, to: mode, changes: Object.keys(changes) });
     res.json({ ok: true, mode, restarting: Boolean(d.restart) });
     if (d.restart) setTimeout(d.restart, 500);

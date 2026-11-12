@@ -131,3 +131,73 @@ test('a level our own taker order emptied is not bought again until it refills o
   assert.equal((await ioc(5)).fillCount, 5);
   assert.equal(ex.takerStats.bySeries.T.filled, 13);
 });
+
+test('resting buys hold their cost, as Kalshi does: the balance drops, entries past the cash are refused, cancels release it', async () => {
+  const { ex } = setup();
+  const a = await ex.createOrder(req({ count: 100, price: 0.45 }));          // $45 held
+  assert.ok(Math.abs((await ex.getBalance()) - 55) < 1e-9);
+  assert.ok(Math.abs(ex.cash() - 100) < 1e-9);
+  await ex.createOrder(req({ count: 100, price: 0.4 }));                     // $40 held, $15 left
+  await assert.rejects(ex.createOrder(req({ count: 50, price: 0.4 })), /insufficient_balance/);
+  await ex.createOrder(req({ side: 'ask', count: 20, price: 0.6 }));          // NO at 40c: $8 held
+  assert.ok(Math.abs((await ex.getBalance()) - 7) < 1e-9);
+  await ex.cancelOrder(a.orderId);
+  assert.ok(Math.abs((await ex.getBalance()) - 52) < 1e-9);
+});
+
+test('a resting sell of a held position holds nothing; only the part past the position does', async () => {
+  const { ex } = setup();
+  await ex.createOrder(req({ price: 0.48, postOnly: false, timeInForce: 'immediate_or_cancel', count: 4 }));  // long 4
+  const cash = await ex.getBalance();
+  await ex.createOrder(req({ side: 'ask', count: 4, price: 0.6 }));
+  assert.ok(Math.abs((await ex.getBalance()) - cash) < 1e-9);
+  await ex.createOrder(req({ side: 'ask', count: 3, price: 0.6 }));           // opens 3 NO at 40c
+  assert.ok(Math.abs((await ex.getBalance()) - (cash - 1.2)) < 1e-9);
+});
+
+test('poolResult: worth less all the money put in; a refill or a top-up raises cash but not the result', async () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'p.json');
+  const book = new OrderBook('T');
+  book.applySnapshot({ bids: [{ price: 0.45, size: 10 }], asks: [{ price: 0.48, size: 4 }, { price: 0.5, size: 10 }] }, Date.now());
+  const open = (start: number) => new PaperExchange(file, start, () => book, () => DEFAULT_FEES);
+  const ex = open(100);
+  assert.deepEqual(ex.poolResult(), { funded: 100, refilled: 0, putIn: 100, cash: 100, openCost: 0, worth: 100, result: 0 });
+
+  // A resting buy holds cash but the cash is still the account's: the result does not move.
+  await ex.createOrder(req({ count: 5, price: 0.45 }));
+  assert.equal(ex.poolResult().result, 0);
+  assert.equal(ex.poolResult().cash, 100);
+
+  // 4 contracts at 48c + the 7c fee: cash 98.01, 1.92 held at cost, so the account is 7c down.
+  await ex.createOrder(req({ price: 0.48, postOnly: false, timeInForce: 'immediate_or_cancel', count: 6 }));
+  assert.deepEqual(ex.poolResult(), { funded: 100, refilled: 0, putIn: 100, cash: 98.01, openCost: 1.92, worth: 99.93, result: -0.07 });
+
+  // A training refill puts cash in and counts it as money put in: the balance climbs, the result does not.
+  ex.refill(200);
+  assert.deepEqual(ex.poolResult(), { funded: 100, refilled: 200, putIn: 300, cash: 298.01, openCost: 1.92, worth: 299.93, result: -0.07 });
+
+  // So does raising the starting balance (a top-up), read back from the saved state in a new instance.
+  ex.flush();
+  const raised = open(150);
+  assert.deepEqual(raised.poolResult(), { funded: 150, refilled: 200, putIn: 350, cash: 348.01, openCost: 1.92, worth: 349.93, result: -0.07 });
+
+  // Settled: the cost leaves the books and the payout (or nothing) comes in.
+  raised.settle('T', 'no');
+  assert.deepEqual(raised.poolResult(), { funded: 150, refilled: 200, putIn: 350, cash: 348.01, openCost: 0, worth: 348.01, result: -1.99 });
+});
+
+test('poolResult: a settled winner shows as profit; a position closed before settlement leaves no cost held', async () => {
+  const { ex } = setup();
+  await ex.createOrder(req({ price: 0.48, postOnly: false, timeInForce: 'immediate_or_cancel', count: 4 }));
+  ex.settle('T', 'yes');                                                      // 4 x $1 back for 1.92 + 7c
+  assert.deepEqual(ex.poolResult(), { funded: 100, refilled: 0, putIn: 100, cash: 102.01, openCost: 0, worth: 102.01, result: 2.01 });
+
+  const round = setup().ex;
+  await round.createOrder(req({ price: 0.48, postOnly: false, timeInForce: 'immediate_or_cancel', count: 4 }));   // long 4
+  await round.createOrder(req({ side: 'ask', price: 0.45, postOnly: false, timeInForce: 'immediate_or_cancel', count: 4, reduceOnly: true }));
+  const r = round.poolResult();
+  assert.equal(r.openCost, 0, 'nothing is held after the sale');
+  assert.equal(r.worth, r.cash);
+  assert.ok(r.result < 0 && r.result > -1, `bought at 48c, sold at 45c, two fees: ${r.result}`);
+});

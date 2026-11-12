@@ -83,7 +83,9 @@ import type { Candle } from '../../bot/ta/indicators';
 // version change. 6 was reserved for PR #286, which merged second and took 8.
 // 8 (Nov 5, PR #286): tennis history skips minute-0 and carried candle quotes; only the strikes the live catalog would
 // follow (4 nearest the money per event, 90 min horizon) are tradable, the rest record-only.
-export const REPLAY_VERSION = 8;
+// 9 (Nov 5, strike cap PR): the catalog picks strikes as live does with CATALOG_PICK_MAX_SPREAD (a listing's mid trusted
+// only within 10c, two tiers, the index for the rest).
+export const REPLAY_VERSION = 9;
 /** Kalshi perp contract sizes (units of the coin a contract), for a replay without the bot's own recordings to read them
  *  from: the perp TA thread's fidelity runs over the Oct 21 - Nov 3 recordings (each market's mid against Coinbase spot:
  *  BTC 0.0001, ETH 0.001, SOL 0.1, XRP 1). A coin with no known size is quoted per coin (1), as before Nov 5. */
@@ -118,6 +120,8 @@ export interface ReplayOpts {
    *  bot would never follow are written record-only. 0 strikes = every strike tradable (the replay before version 8). */
   catalogStrikesPerEvent?: number;
   catalogHorizonMin?: number;
+  /** CATALOG_PICK_MAX_SPREAD (0.10; 0 = the legacy pick by any listing mid, else the last price). */
+  catalogPickMaxSpread?: number;
   perpSpecs?: Record<string, PerpSpec>;
   /** Synthetic 15-minute and hourly contracts where Kalshi's history has none (default on). */
   synthetic?: boolean;
@@ -257,18 +261,35 @@ class CsvStream {
       return { ts: f[0], o: f[1], h: f[2], l: f[3], c: f[4], v: f[5] || 0, ...(Number.isFinite(f[6]) ? { tb: f[6] } : {}) };
     }
   }
+  /** Bars read ahead by peek, handed out first. */
+  private ahead: Candle[] = [];
+  private async pull(): Promise<Candle | null> { return this.ahead.length ? this.ahead.shift()! : this.next(); }
   /** Bars with ts < bound (consumed). */
   async until(bound: number): Promise<Candle[]> {
     const out: Candle[] = [];
-    if (this.head === undefined) this.head = await this.next();
-    while (this.head && this.head.ts < bound) { out.push(this.head); this.head = await this.next(); }
+    if (this.head === undefined) this.head = await this.pull();
+    while (this.head && this.head.ts < bound) { out.push(this.head); this.head = await this.pull(); }
     return out;
+  }
+  /** The bars from the next unread one up to ts < bound, without consuming them (the catalog's index after midnight). */
+  async peek(bound: number): Promise<Candle[]> {
+    if (this.head === undefined) this.head = await this.pull();
+    if (!this.head) return [];
+    const out = [this.head];
+    for (const c of this.ahead) { if (c.ts >= bound) return out.filter((x) => x.ts < bound); out.push(c); }
+    for (;;) {
+      if (out[out.length - 1].ts >= bound) break;
+      const c = await this.next();
+      if (!c) break;
+      this.ahead.push(c); out.push(c);
+    }
+    return out.filter((x) => x.ts < bound);
   }
   /** Drop the bars before `bound` (before reading has started: seek close to it first). */
   async skip(bound: number): Promise<void> {
     if (this.head === undefined && !this.it) this.startAt = csvOffsetAt(this.file, bound);
-    if (this.head === undefined) this.head = await this.next();
-    while (this.head && this.head.ts < bound) this.head = await this.next();
+    if (this.head === undefined) this.head = await this.pull();
+    while (this.head && this.head.ts < bound) this.head = await this.pull();
   }
 }
 
@@ -327,7 +348,7 @@ function readFunding(file: string): Array<[number, number]> {
  *  once tracked a contract stays tracked. Up/Down contracts are always tracked from their open. Contracts never picked are
  *  the ones the bot never follows: the replay marks them record-only (Kalshi's history lists every strike of a ladder,
  *  about 12 times what the bot follows, and the far ones often show 1c/99c books). Refreshes are read once a minute. */
-export function catalogTracking(kms: KMarket[], o: { n: number; horizonMs: number; refreshMs?: number; priceAt?: (t: number) => number | undefined }): Map<string, number> {
+export function catalogTracking(kms: KMarket[], o: { n: number; horizonMs: number; refreshMs?: number; priceAt?: (t: number) => number | undefined; maxSpread?: number }): Map<string, number> {
   const out = new Map<string, number>();
   if (!o.n) { for (const m of kms) out.set(m.ticker, m.openTime); return out; }
   const step = o.refreshMs ?? MIN;
@@ -346,9 +367,9 @@ export function catalogTracking(kms: KMarket[], o: { n: number; horizonMs: numbe
         const c = i >= 0 ? m.candles[i] : undefined;
         const b = c?.bidC ?? undefined, k = c?.askC ?? undefined, l = c?.last ?? undefined;
         const yesMid = b !== undefined && k !== undefined && b > 0 && k > b && k < 1 ? (b + k) / 2 : l !== undefined && l > 0 && l < 1 ? l : undefined;
-        return { ticker: m.ticker, eventTicker: m.event, strikeType: m.strikeType, floorStrike: m.strike ?? undefined, capStrike: m.cap ?? undefined, yesMid, series: m.series };
+        return { ticker: m.ticker, eventTicker: m.event, strikeType: m.strikeType, floorStrike: m.strike ?? undefined, capStrike: m.cap ?? undefined, yesMid, yesBid: b, yesAsk: k, series: m.series };
       });
-      const picked = nearestStrikes(listed, (series, st) => contractKind(series, st), listed[0].series, o.priceAt?.(t), o.n, new Set(out.keys()));
+      const picked = nearestStrikes(listed, (series, st) => contractKind(series, st), listed[0].series, o.priceAt?.(t), o.n, new Set(out.keys()), { maxSpread: o.maxSpread ?? 0 });
       for (const x of picked) if (!out.has(x.ticker)) out.set(x.ticker, t);
     }
   }
@@ -541,7 +562,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
   // next day's file, so every file stays in time order.
   let carry: Ev[] = [];
   const tennisSeries = o.tennisSeries ?? [];
-  const base = `${REPLAY_VERSION}:${assets.join(',')}:${synthetic ? 'synth' : 'real'}:${tennisSeries.join(',')}${o.requote ? ':requote' : ''}${o.requote && o.requoteLag ? `:lag${o.requoteLag.gInf}/${o.requoteLag.tauSec}` : ''}:cat${o.catalogStrikesPerEvent ?? 4}/${o.catalogHorizonMin ?? 90}`;
+  const base = `${REPLAY_VERSION}:${assets.join(',')}:${synthetic ? 'synth' : 'real'}:${tennisSeries.join(',')}${o.requote ? ':requote' : ''}${o.requote && o.requoteLag ? `:lag${o.requoteLag.gInf}/${o.requoteLag.tauSec}` : ''}:cat${o.catalogStrikesPerEvent ?? 4}/${o.catalogHorizonMin ?? 90}/${o.catalogPickMaxSpread ?? 0.1}`;
   const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
   // A day's inputs: the Kalshi history it reads (a later download reached it), how far the 1-minute
   // history and funding rates reach into it, and the dominance anchors near it.
@@ -617,8 +638,10 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
       if (perpBars.length) perpAssets++;
       const px = spotBars.length ? new Float64Array(SLOTS).fill(NaN) : undefined;
       if (px) slotPx.set(a, px);
-      const ixs = px && o.requote ? new Float64Array(SLOTS).fill(NaN) : undefined, sgs = ixs ? new Float64Array(SLOTS).fill(NaN) : undefined;
-      if (ixs && sgs) { slotIx.set(a, ixs); slotSig.set(a, sgs); }
+      // The index is kept with or without requote: the catalog's picks read it (live: a fresh index).
+      const ixs = px ? new Float64Array(SLOTS).fill(NaN) : undefined, sgs = ixs && o.requote ? new Float64Array(SLOTS).fill(NaN) : undefined;
+      if (ixs) slotIx.set(a, ixs);
+      if (sgs) slotSig.set(a, sgs);
       if (spotBars.length) {
         // Backfill: the last 300 closed bars of every timeframe before the day starts.
         const r5 = aggregate(s.recent.slice(-5 * BACKFILL), 5 * MIN);
@@ -661,7 +684,8 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
           ev.push({ t, k: 'index', asset: a, value: iv, ts: t, src: 'kalshi', hist: 1 });
           ev.push({ t, k: 'spot', asset: a, value: v, ts: t, hist: 1 });
           if (px) px[slot0 + k] = v;
-          if (ixs && sgs) { ixs[slot0 + k] = iv; sgs[slot0 + k] = s.vMkt && s.vMkt > 0 ? Math.sqrt(s.vMkt) : NaN; }
+          if (ixs) ixs[slot0 + k] = iv;
+          if (sgs) sgs[slot0 + k] = s.vMkt && s.vMkt > 0 ? Math.sqrt(s.vMkt) : NaN;
           if (pprints) {
             // Quoted per contract, as Kalshi quotes its perps live (the coin price x the contract size).
             const pv = pprints[k][1] * cs, tick = tickFor(pv);
@@ -711,9 +735,22 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     domCount += domToday;
     const alive = new Map<number, string[]>();
     // The strikes the live catalog would follow; the rest are record-only (the bot never trades or prices them).
-    const ixAt = (asset: string) => (t: number) => { const a = slotIx.get(asset); const i = Math.floor((t - d0) / 15_000); const v = a && i >= 0 && i < a.length ? a[i] : NaN; return v > 0 ? v : undefined; };
+    // Today: the index print at each 15 s slot. After midnight (a contract listed today and picked tomorrow): the next
+    // days' spot bars read ahead (each minute's open, at today's basis), so the picks keep an index as live does.
     const tracked = new Map<string, number>();
-    for (const a of new Set(kms.map((m) => m.asset))) for (const [t, at] of catalogTracking(kms.filter((m) => m.asset === a), { n: o.catalogStrikesPerEvent ?? 4, horizonMs: (o.catalogHorizonMin ?? 90) * MIN, priceAt: ixAt(a) })) tracked.set(t, at);
+    for (const a of new Set(kms.map((m) => m.asset))) {
+      const mine = kms.filter((m) => m.asset === a), sa = st.get(a);
+      const end = Math.min(d1 + 2 * DAY, Math.max(...mine.map((m) => m.closeTime)));
+      const later = sa && end > d1 ? await sa.spot.peek(end) : [];
+      const ixs = slotIx.get(a), basis = sa?.basis ?? 1;
+      const priceAt = (t: number) => {
+        if (t < d1) { const i = Math.floor((t - d0) / 15_000); const v = ixs && i >= 0 && i < ixs.length ? ixs[i] : NaN; return v > 0 ? v : undefined; }
+        let lo = 0, hi = later.length - 1, j = -1;
+        while (lo <= hi) { const mid = (lo + hi) >> 1; if (later[mid].ts <= t) { j = mid; lo = mid + 1; } else hi = mid - 1; }
+        return j >= 0 && t - later[j].ts < 2 * MIN ? +(later[j].o * basis).toPrecision(10) : undefined;
+      };
+      for (const [t, at] of catalogTracking(mine, { n: o.catalogStrikesPerEvent ?? 4, horizonMs: (o.catalogHorizonMin ?? 90) * MIN, priceAt, maxSpread: o.catalogPickMaxSpread ?? 0.1 })) tracked.set(t, at);
+    }
     for (const m of kms) {
       const kind = contractKind(m.series, m.strikeType, m.ticker);
       const at = kind === 'updown' ? m.openTime - MIN : tracked.get(m.ticker);
@@ -736,7 +773,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
           let nx = i + 1; while (nx < cs.length && !(cs[nx].bidC !== null && cs[nx].askC !== null && cs[nx].askC! > cs[nx].bidC!)) nx++;
           const mid = (c.bidC + c.askC) / 2, until = Math.min(cs[nx]?.ts ?? m.closeTime, m.closeTime);
           if (mid >= 0.03 && mid <= 0.97) for (let at = c.ts + 15_000; at < until; at += 15_000) { const l = alive.get(at); if (l) l.push(m.ticker); else alive.set(at, [m.ticker]); }
-          if (ixs && sgs) requoteBetween(ev, { ...m, kind }, c.bidC, c.askC, c.ts, until, d0, ixs, sgs, o.requoteLag);
+          if (o.requote && ixs && sgs) requoteBetween(ev, { ...m, kind }, c.bidC, c.askC, c.ts, until, d0, ixs, sgs, o.requoteLag);
         }
         if (c.volume && c.volume > 0 && c.last !== null) ev.push({ t: c.ts, k: 'trade', ticker: m.ticker, price: c.last, count: c.volume, ts: c.ts - 1 });
       }

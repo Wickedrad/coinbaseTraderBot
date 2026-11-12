@@ -1,0 +1,2650 @@
+{
+  "schema": "atlas-direction-iterations-validation-v1",
+  "pr": "https://github.com/Wickedrad/coinbaseTraderBot/pull/310",
+  "source": "2fdb91bcf3fa3833e6fabaa3771d365dfe6492a5",
+  "confidenceMeaning": "Original 0.60 diagnostic is max of terminal up/sideways/down mixture probabilities, not a statistical confidence bound, calibrated sustained-move probability or fee-net profit probability.",
+  "spectrumAudit": {
+    "run": 42661579456,
+    "source": "2105f88c239359dab4cec9358d22aa96ef184e40",
+    "curves": 4060,
+    "allPopulatedAndContinuous": true,
+    "learnedImportanceInOriginalModel": false,
+    "assets": [
+      {
+        "asset": "BTC",
+        "modelId": "b774a98e786b33f18a55caa95b9f6e0b6740f9fc018bf5bbdc40787eb07740ea",
+        "curves": 812,
+        "populatedCurves": 812,
+        "supportedDirectionalHighCells": 2,
+        "continuous": true,
+        "importanceWeightsLearned": false
+      },
+      {
+        "asset": "ETH",
+        "modelId": "4971f90aa1df283a42070ea73e815618bfe5ae10c7b87df1d770a40592414d3d",
+        "curves": 812,
+        "populatedCurves": 812,
+        "supportedDirectionalHighCells": 0,
+        "continuous": true,
+        "importanceWeightsLearned": false
+      },
+      {
+        "asset": "SOL",
+        "modelId": "528abc4e62dd40288935d6a5857223c7cfafb85380652b3b732e2946ea22acaa",
+        "curves": 812,
+        "populatedCurves": 812,
+        "supportedDirectionalHighCells": 0,
+        "continuous": true,
+        "importanceWeightsLearned": false
+      },
+      {
+        "asset": "XRP",
+        "modelId": "7aa246b38f283cbc7a965fe39aab36383289c2dc812fa8042384991fa52e3217",
+        "curves": 812,
+        "populatedCurves": 812,
+        "supportedDirectionalHighCells": 1,
+        "continuous": true,
+        "importanceWeightsLearned": false
+      },
+      {
+        "asset": "DOGE",
+        "modelId": "1ef2778e5c3da833bcd68e2a2e9c86fbe6fa0afee18253690f9457d897297484",
+        "curves": 812,
+        "populatedCurves": 812,
+        "supportedDirectionalHighCells": 1,
+        "continuous": true,
+        "importanceWeightsLearned": false
+      }
+    ]
+  },
+  "importanceIteration": {
+    "run": 42667008829,
+    "source": "92979168a5962c918116c8d888c25f1a66275865",
+    "pooled": [
+      {
+        "horizonMinutes": 15,
+        "predictions": 18066248,
+        "uniformAccuracy": 0.36296097562703666,
+        "weightedAccuracy": 0.36838423783399854,
+        "meanLogLossGainOverUniform": 0.0006952774133790928,
+        "directionalForecastsAtOrAbove60": 0
+      },
+      {
+        "horizonMinutes": 60,
+        "predictions": 18056438,
+        "uniformAccuracy": 0.37095389467180623,
+        "weightedAccuracy": 0.37255315804811556,
+        "meanLogLossGainOverUniform": 0.0005598108480082156,
+        "directionalForecastsAtOrAbove60": 0
+      }
+    ],
+    "assets": [
+      {
+        "asset": "BTC",
+        "pooled": [
+          {
+            "horizon": 15,
+            "uniform": {
+              "rows": 4214168,
+              "correct": 1536798,
+              "loss": 4608834.861724995,
+              "priorLoss": 4622436.660840667,
+              "brier": 2795425.1322237607,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.3646741183550347,
+              "logLoss": 1.0936523797164694,
+              "priorLogLoss": 1.096880015424318,
+              "gain": 0.003227635707848329,
+              "meanBrier": 0.6633397463565194,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 4214168,
+              "correct": 1564011,
+              "loss": 4604589.803022616,
+              "priorLoss": 4622436.660840667,
+              "brier": 2792542.557873362,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.37113162076120365,
+              "logLoss": 1.092645049514546,
+              "priorLogLoss": 1.096880015424318,
+              "gain": 0.0042349659097718085,
+              "meanBrier": 0.6626557265570243,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.0010073302019234793
+          },
+          {
+            "horizon": 60,
+            "uniform": {
+              "rows": 4211648,
+              "correct": 1598929,
+              "loss": 4593335.725386475,
+              "priorLoss": 4607722.93247375,
+              "brier": 2785213.444817947,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.37964450020514534,
+              "logLoss": 1.0906266918285847,
+              "priorLogLoss": 1.0940427434756537,
+              "gain": 0.003416051647068948,
+              "meanBrier": 0.6613120196222351,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 4211648,
+              "correct": 1599536,
+              "loss": 4590094.564831347,
+              "priorLoss": 4607722.93247375,
+              "brier": 2783022.736786511,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.3797886243104837,
+              "logLoss": 1.0898571212103545,
+              "priorLogLoss": 1.0940427434756537,
+              "gain": 0.004185622265299153,
+              "meanBrier": 0.6607918650339513,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.0007695706182302054
+          }
+        ],
+        "finalWeights": [
+          {
+            "horizon": 15,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "m5:rsi x clock:ny_hour",
+                "logWeight": 1.1803274185294623,
+                "fullVocabularyImportance": 0.005764327791623192
+              },
+              {
+                "name": "m15:bb_position x clock:ny_hour",
+                "logWeight": 1.0682548693180296,
+                "fullVocabularyImportance": 0.005153190286996798
+              },
+              {
+                "name": "m5:rsi x clock:ny_weekday",
+                "logWeight": 0.9778317175282374,
+                "fullVocabularyImportance": 0.004707668826902299
+              },
+              {
+                "name": "m5:bb_position x clock:ny_hour",
+                "logWeight": 0.9591361638086258,
+                "fullVocabularyImportance": 0.004620473969235453
+              },
+              {
+                "name": "m15:rsi x clock:ny_hour",
+                "logWeight": 0.9410334244398438,
+                "fullVocabularyImportance": 0.004537583271219094
+              },
+              {
+                "name": "clock:ny_hour x clock:ny_weekday",
+                "logWeight": 0.9393524367523727,
+                "fullVocabularyImportance": 0.004529962056987561
+              },
+              {
+                "name": "m5:rsi x m15:atr_bps",
+                "logWeight": 0.8522862399254436,
+                "fullVocabularyImportance": 0.004152237587676983
+              },
+              {
+                "name": "m5:rsi x m240:bb_position",
+                "logWeight": 0.8373370251781826,
+                "fullVocabularyImportance": 0.004090626561917958
+              },
+              {
+                "name": "m1:rsi x clock:ny_hour",
+                "logWeight": 0.8338684915770829,
+                "fullVocabularyImportance": 0.004076462664415761
+              },
+              {
+                "name": "m15:bb_position x clock:ny_weekday",
+                "logWeight": 0.8223716748884387,
+                "fullVocabularyImportance": 0.004029864697827854
+              },
+              {
+                "name": "m5:bb_position x m15:rsi",
+                "logWeight": 0.8155619521569044,
+                "fullVocabularyImportance": 0.00400251566195214
+              },
+              {
+                "name": "m5:rsi x m60:bb_position",
+                "logWeight": 0.8123131854497766,
+                "fullVocabularyImportance": 0.00398953352171564
+              }
+            ]
+          },
+          {
+            "horizon": 60,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "clock:ny_hour x clock:ny_weekday",
+                "logWeight": 1.3928326818467498,
+                "fullVocabularyImportance": 0.0067559193445197755
+              },
+              {
+                "name": "m5:rsi x clock:ny_hour",
+                "logWeight": 1.2277860801591212,
+                "fullVocabularyImportance": 0.005728034535248006
+              },
+              {
+                "name": "m5:rsi x clock:ny_weekday",
+                "logWeight": 1.111858687700321,
+                "fullVocabularyImportance": 0.005101043192588717
+              },
+              {
+                "name": "m15:bb_position x clock:ny_hour",
+                "logWeight": 1.073885052413344,
+                "fullVocabularyImportance": 0.004910969768151932
+              },
+              {
+                "name": "m5:bb_position x clock:ny_hour",
+                "logWeight": 1.0676585580554931,
+                "fullVocabularyImportance": 0.004880486642587509
+              },
+              {
+                "name": "m5:bb_position x clock:ny_weekday",
+                "logWeight": 1.0106935555762857,
+                "fullVocabularyImportance": 0.004610240082360498
+              },
+              {
+                "name": "m5:atr_bps x clock:ny_hour",
+                "logWeight": 0.9752573380094269,
+                "fullVocabularyImportance": 0.004449731319383878
+              },
+              {
+                "name": "m15:atr_bps x clock:ny_hour",
+                "logWeight": 0.9698940987446836,
+                "fullVocabularyImportance": 0.004425930228179499
+              },
+              {
+                "name": "m15:rsi x clock:ny_hour",
+                "logWeight": 0.9641310819110153,
+                "fullVocabularyImportance": 0.004400496874584089
+              },
+              {
+                "name": "m60:macd_hist_atr x clock:ny_hour",
+                "logWeight": 0.9503747102769464,
+                "fullVocabularyImportance": 0.004340376471590481
+              },
+              {
+                "name": "m1:rsi x clock:ny_hour",
+                "logWeight": 0.9463677085034952,
+                "fullVocabularyImportance": 0.004323019373556556
+              },
+              {
+                "name": "m1:atr_bps x clock:ny_weekday",
+                "logWeight": 0.9452202426841722,
+                "fullVocabularyImportance": 0.004318061701512708
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "asset": "DOGE",
+        "pooled": [
+          {
+            "horizon": 15,
+            "uniform": {
+              "rows": 3168132,
+              "correct": 1173907,
+              "loss": 3467355.459319664,
+              "priorLoss": 3477536.3901580363,
+              "brier": 2103236.9383594273,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.37053601301965955,
+              "logLoss": 1.0944479142029637,
+              "priorLogLoss": 1.0976614579689346,
+              "gain": 0.003213543765970639,
+              "meanBrier": 0.6638728873542603,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 3168132,
+              "correct": 1193460,
+              "loss": 3465208.494227811,
+              "priorLoss": 3477536.3901580363,
+              "brier": 2101761.927212146,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.3767077886906227,
+              "logLoss": 1.0937702388119597,
+              "priorLogLoss": 1.0976614579689346,
+              "gain": 0.003891219156974845,
+              "meanBrier": 0.6634073098002691,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.0006776753910042059
+          },
+          {
+            "horizon": 60,
+            "uniform": {
+              "rows": 3166557,
+              "correct": 1176541,
+              "loss": 3459013.8559078556,
+              "priorLoss": 3469758.168109464,
+              "brier": 2097833.7293040166,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.3715521305948385,
+              "logLoss": 1.0923579951056797,
+              "priorLogLoss": 1.0957510533078874,
+              "gain": 0.0033930582022077727,
+              "meanBrier": 0.6624967525624887,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 3166557,
+              "correct": 1188087,
+              "loss": 3456966.632103778,
+              "priorLoss": 3469758.168109464,
+              "brier": 2096428.009210019,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.37519836213275176,
+              "logLoss": 1.0917114809882715,
+              "priorLogLoss": 1.0957510533078874,
+              "gain": 0.004039572319615923,
+              "meanBrier": 0.6620528255799655,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.00064651411740815
+          }
+        ],
+        "finalWeights": [
+          {
+            "horizon": 15,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "m5:rsi x clock:ny_hour",
+                "logWeight": 0.9153889353281358,
+                "fullVocabularyImportance": 0.0046561729399903625
+              },
+              {
+                "name": "m1:rsi x clock:ny_hour",
+                "logWeight": 0.8963668822611168,
+                "fullVocabularyImportance": 0.004568440046526526
+              },
+              {
+                "name": "m5:bb_position x clock:ny_hour",
+                "logWeight": 0.895035178838548,
+                "fullVocabularyImportance": 0.004562360288396625
+              },
+              {
+                "name": "m5:bb_position x m60:rsi",
+                "logWeight": 0.782236216263652,
+                "fullVocabularyImportance": 0.004075694388017611
+              },
+              {
+                "name": "m15:bb_position x clock:ny_hour",
+                "logWeight": 0.7607483454654759,
+                "fullVocabularyImportance": 0.00398905062241507
+              },
+              {
+                "name": "m5:bb_position x m60:bb_position",
+                "logWeight": 0.75942234933368,
+                "fullVocabularyImportance": 0.003983764662076201
+              },
+              {
+                "name": "m1:rsi x m15:bb_position",
+                "logWeight": 0.726641131021082,
+                "fullVocabularyImportance": 0.0038552892973239806
+              },
+              {
+                "name": "m5:rsi x m240:bb_position",
+                "logWeight": 0.7252285913010759,
+                "fullVocabularyImportance": 0.0038498473924176504
+              },
+              {
+                "name": "m1:rsi x m60:rsi",
+                "logWeight": 0.7192334910265856,
+                "fullVocabularyImportance": 0.003826836217330444
+              },
+              {
+                "name": "m5:rsi x m60:rsi",
+                "logWeight": 0.7025341582454693,
+                "fullVocabularyImportance": 0.0037634612385316775
+              },
+              {
+                "name": "m1:bb_position x clock:ny_hour",
+                "logWeight": 0.6989545359605431,
+                "fullVocabularyImportance": 0.0037500135519925254
+              },
+              {
+                "name": "m5:rsi x m240:rsi",
+                "logWeight": 0.6959038792915029,
+                "fullVocabularyImportance": 0.003738590980172283
+              }
+            ]
+          },
+          {
+            "horizon": 60,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "clock:ny_hour x clock:ny_weekday",
+                "logWeight": 0.7582815398254892,
+                "fullVocabularyImportance": 0.00457298646149076
+              },
+              {
+                "name": "m5:bb_position x clock:ny_hour",
+                "logWeight": 0.7042513549971827,
+                "fullVocabularyImportance": 0.004332463419576206
+              },
+              {
+                "name": "m60:rsi x clock:ny_hour",
+                "logWeight": 0.62426100652591,
+                "fullVocabularyImportance": 0.003999406402932452
+              },
+              {
+                "name": "m60:bb_position x clock:ny_hour",
+                "logWeight": 0.5637054389996204,
+                "fullVocabularyImportance": 0.0037644071422479088
+              },
+              {
+                "name": "m60:macd_hist_atr x clock:ny_hour",
+                "logWeight": 0.5434159074955996,
+                "fullVocabularyImportance": 0.003688798708551618
+              },
+              {
+                "name": "m5:rsi x clock:ny_hour",
+                "logWeight": 0.5348841407970388,
+                "fullVocabularyImportance": 0.0036574606133250843
+              },
+              {
+                "name": "m240:macd_hist_atr x clock:ny_hour",
+                "logWeight": 0.5256769534821986,
+                "fullVocabularyImportance": 0.0036239402393422053
+              },
+              {
+                "name": "m15:rsi x clock:ny_hour",
+                "logWeight": 0.5185173990914475,
+                "fullVocabularyImportance": 0.003598087100999085
+              },
+              {
+                "name": "m1:rsi x clock:ny_hour",
+                "logWeight": 0.5178203157221054,
+                "fullVocabularyImportance": 0.0035955798083170797
+              },
+              {
+                "name": "m15:atr_bps x clock:ny_hour",
+                "logWeight": 0.5039077763319031,
+                "fullVocabularyImportance": 0.0035459025324188283
+              },
+              {
+                "name": "m5:macd_hist_atr x clock:ny_hour",
+                "logWeight": 0.5008871521577277,
+                "fullVocabularyImportance": 0.0035352078539439735
+              },
+              {
+                "name": "m240:rsi x clock:ny_hour",
+                "logWeight": 0.4997369411695522,
+                "fullVocabularyImportance": 0.003531143956642588
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "asset": "ETH",
+        "pooled": [
+          {
+            "horizon": 15,
+            "uniform": {
+              "rows": 4214167,
+              "correct": 1533524,
+              "loss": 4612079.775979799,
+              "priorLoss": 4623237.620766379,
+              "brier": 2797546.982219114,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.3638973016494126,
+              "logLoss": 1.094422640578743,
+              "priorLogLoss": 1.097070339349717,
+              "gain": 0.002647698770974126,
+              "meanBrier": 0.663843407776463,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 4214167,
+              "correct": 1555607,
+              "loss": 4608895.347460307,
+              "priorLoss": 4623237.620766379,
+              "brier": 2795381.908157441,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.36913748316096634,
+              "logLoss": 1.0936669921861917,
+              "priorLogLoss": 1.097070339349717,
+              "gain": 0.0034033471635252607,
+              "meanBrier": 0.6633296469165652,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.0007556483925511347
+          },
+          {
+            "horizon": 60,
+            "uniform": {
+              "rows": 4211647,
+              "correct": 1581515,
+              "loss": 4599710.889340783,
+              "priorLoss": 4610713.844856915,
+              "brier": 2789427.064215824,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.3755098658553293,
+              "logLoss": 1.0921406493328578,
+              "priorLogLoss": 1.0947531559166557,
+              "gain": 0.0026125065837978648,
+              "meanBrier": 0.6623126449618936,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 4211647,
+              "correct": 1584888,
+              "loss": 4597312.709261975,
+              "priorLoss": 4610713.844856915,
+              "brier": 2787796.027184461,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.37631074019261346,
+              "logLoss": 1.0915712331213834,
+              "priorLogLoss": 1.0947531559166557,
+              "gain": 0.003181922795272209,
+              "meanBrier": 0.661925376743222,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.0005694162114743441
+          }
+        ],
+        "finalWeights": [
+          {
+            "horizon": 15,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "m5:rsi x clock:ny_hour",
+                "logWeight": 1.235754926346168,
+                "fullVocabularyImportance": 0.005714375750225884
+              },
+              {
+                "name": "m5:bb_position x clock:ny_hour",
+                "logWeight": 1.205332270079352,
+                "fullVocabularyImportance": 0.005543147082793187
+              },
+              {
+                "name": "m1:rsi x clock:ny_hour",
+                "logWeight": 1.1495888393286482,
+                "fullVocabularyImportance": 0.005242607422088434
+              },
+              {
+                "name": "m15:bb_position x clock:ny_hour",
+                "logWeight": 1.1069396850134354,
+                "fullVocabularyImportance": 0.005023715603054205
+              },
+              {
+                "name": "m1:rsi x m15:bb_position",
+                "logWeight": 1.0864998545690956,
+                "fullVocabularyImportance": 0.004922074015023643
+              },
+              {
+                "name": "m5:bb_position x m60:rsi",
+                "logWeight": 0.9995648483158748,
+                "fullVocabularyImportance": 0.004512245770812237
+              },
+              {
+                "name": "m5:bb_position x m60:bb_position",
+                "logWeight": 0.9909150787674439,
+                "fullVocabularyImportance": 0.004473384198866424
+              },
+              {
+                "name": "m1:bb_position x m15:bb_position",
+                "logWeight": 0.9810492387147743,
+                "fullVocabularyImportance": 0.004429467499649343
+              },
+              {
+                "name": "m1:rsi x m15:rsi",
+                "logWeight": 0.9767420180243043,
+                "fullVocabularyImportance": 0.0044104298347316636
+              },
+              {
+                "name": "m5:bb_position x m15:rsi",
+                "logWeight": 0.9702594023973099,
+                "fullVocabularyImportance": 0.004381931186058811
+              },
+              {
+                "name": "m5:bb_position x m15:bb_position",
+                "logWeight": 0.9625226932591194,
+                "fullVocabularyImportance": 0.004348160265355179
+              },
+              {
+                "name": "m5:bb_position x clock:ny_weekday",
+                "logWeight": 0.9606893347237169,
+                "fullVocabularyImportance": 0.00434019583168146
+              }
+            ]
+          },
+          {
+            "horizon": 60,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "m5:rsi x clock:ny_hour",
+                "logWeight": 1.0836246686395317,
+                "fullVocabularyImportance": 0.005211422027766233
+              },
+              {
+                "name": "m5:bb_position x clock:ny_hour",
+                "logWeight": 1.0567783272360034,
+                "fullVocabularyImportance": 0.005073375722956202
+              },
+              {
+                "name": "m5:bb_position x clock:ny_weekday",
+                "logWeight": 0.976725017761368,
+                "fullVocabularyImportance": 0.00468306640275785
+              },
+              {
+                "name": "m15:bb_position x clock:ny_hour",
+                "logWeight": 0.9407035234902055,
+                "fullVocabularyImportance": 0.004517377450377894
+              },
+              {
+                "name": "m5:bb_position x m60:rsi",
+                "logWeight": 0.916426982857732,
+                "fullVocabularyImportance": 0.004409031605392533
+              },
+              {
+                "name": "m5:bb_position x m60:bb_position",
+                "logWeight": 0.9094761882822502,
+                "fullVocabularyImportance": 0.004378491594057125
+              },
+              {
+                "name": "m5:rsi x clock:ny_weekday",
+                "logWeight": 0.9066673876760152,
+                "fullVocabularyImportance": 0.004366210539803796
+              },
+              {
+                "name": "m1:rsi x clock:ny_hour",
+                "logWeight": 0.8938763838737818,
+                "fullVocabularyImportance": 0.004310717983528642
+              },
+              {
+                "name": "clock:ny_hour x clock:ny_weekday",
+                "logWeight": 0.8747523829240983,
+                "fullVocabularyImportance": 0.004229063081533968
+              },
+              {
+                "name": "m5:bb_position x m240:bb_position",
+                "logWeight": 0.8567487059381371,
+                "fullVocabularyImportance": 0.004153605689289891
+              },
+              {
+                "name": "m1:rsi x clock:ny_weekday",
+                "logWeight": 0.8264324012583049,
+                "fullVocabularyImportance": 0.004029573314797909
+              },
+              {
+                "name": "m5:rsi x m240:bb_position",
+                "logWeight": 0.8255256704634695,
+                "fullVocabularyImportance": 0.004025921232561266
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "asset": "SOL",
+        "pooled": [
+          {
+            "horizon": 15,
+            "uniform": {
+              "rows": 2645842,
+              "correct": 942694,
+              "loss": 2901797.97964582,
+              "priorLoss": 2905847.4633256765,
+              "brier": 1760561.3978219633,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.35629262820682417,
+              "logLoss": 1.0967389510204388,
+              "priorLogLoss": 1.0982694595239157,
+              "gain": 0.0015305085034770178,
+              "meanBrier": 0.665406852647272,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 2645842,
+              "correct": 950954,
+              "loss": 2901142.981453475,
+              "priorLoss": 2905847.4633256765,
+              "brier": 1760118.4252309978,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.35941450774460454,
+              "logLoss": 1.0964913934594263,
+              "priorLogLoss": 1.0982694595239157,
+              "gain": 0.0017780660644896526,
+              "meanBrier": 0.6652394304841324,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.000247557561012635
+          },
+          {
+            "horizon": 60,
+            "uniform": {
+              "rows": 2644807,
+              "correct": 952139,
+              "loss": 2899627.920588113,
+              "priorLoss": 2903116.092924176,
+              "brier": 1759179.015705479,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.36000320628310495,
+              "logLoss": 1.0963476429804189,
+              "priorLogLoss": 1.0976665189271564,
+              "gain": 0.0013188759467374679,
+              "meanBrier": 0.6651445703620261,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 2644807,
+              "correct": 955803,
+              "loss": 2899215.1889013126,
+              "priorLoss": 2903116.092924176,
+              "brier": 1758899.496421099,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.36138856256808155,
+              "logLoss": 1.0961915893678869,
+              "priorLogLoss": 1.0976665189271564,
+              "gain": 0.0014749295592695931,
+              "meanBrier": 0.6650388842819529,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.00015605361253212527
+          }
+        ],
+        "finalWeights": [
+          {
+            "horizon": 15,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "m5:rsi x clock:ny_hour",
+                "logWeight": 0.8809769115519003,
+                "fullVocabularyImportance": 0.004684292800180022
+              },
+              {
+                "name": "m5:bb_position x clock:ny_hour",
+                "logWeight": 0.8065008411283663,
+                "fullVocabularyImportance": 0.004348099634745567
+              },
+              {
+                "name": "m1:rsi x clock:ny_hour",
+                "logWeight": 0.7761377367438337,
+                "fullVocabularyImportance": 0.004218061995059683
+              },
+              {
+                "name": "m15:bb_position x clock:ny_hour",
+                "logWeight": 0.7696001599005449,
+                "fullVocabularyImportance": 0.004190576034322994
+              },
+              {
+                "name": "m1:rsi x m15:bb_position",
+                "logWeight": 0.6570268183938978,
+                "fullVocabularyImportance": 0.0037444129961661026
+              },
+              {
+                "name": "m15:rsi x clock:ny_hour",
+                "logWeight": 0.6459723071276298,
+                "fullVocabularyImportance": 0.0037032482875825378
+              },
+              {
+                "name": "m5:bb_position x m15:rsi",
+                "logWeight": 0.6213317808153606,
+                "fullVocabularyImportance": 0.003613113347342667
+              },
+              {
+                "name": "m1:rsi x m15:rsi",
+                "logWeight": 0.6194696010219345,
+                "fullVocabularyImportance": 0.003606391341410196
+              },
+              {
+                "name": "m1:bb_position x clock:ny_hour",
+                "logWeight": 0.6126449427879554,
+                "fullVocabularyImportance": 0.003581862747884469
+              },
+              {
+                "name": "m1:bb_position x m15:bb_position",
+                "logWeight": 0.6115664041053425,
+                "fullVocabularyImportance": 0.003578001652899498
+              },
+              {
+                "name": "m5:bb_position x m60:bb_position",
+                "logWeight": 0.6071896938849848,
+                "fullVocabularyImportance": 0.0035623759959263015
+              },
+              {
+                "name": "m5:rsi x m240:bb_position",
+                "logWeight": 0.591007444099842,
+                "fullVocabularyImportance": 0.003505192663074503
+              }
+            ]
+          },
+          {
+            "horizon": 60,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "clock:ny_hour x clock:ny_weekday",
+                "logWeight": 0.7710391483495269,
+                "fullVocabularyImportance": 0.0044747066451551265
+              },
+              {
+                "name": "m5:rsi x clock:ny_hour",
+                "logWeight": 0.7275365069119627,
+                "fullVocabularyImportance": 0.0042842184955680825
+              },
+              {
+                "name": "m5:bb_position x clock:ny_hour",
+                "logWeight": 0.6848229752803868,
+                "fullVocabularyImportance": 0.004105077500870718
+              },
+              {
+                "name": "m15:bb_position x clock:ny_hour",
+                "logWeight": 0.6169923319322342,
+                "fullVocabularyImportance": 0.0038358612236420696
+              },
+              {
+                "name": "m1:rsi x clock:ny_hour",
+                "logWeight": 0.5918349060409708,
+                "fullVocabularyImportance": 0.0037405645645193692
+              },
+              {
+                "name": "m15:rsi x clock:ny_hour",
+                "logWeight": 0.5657282173442922,
+                "fullVocabularyImportance": 0.003644174497190112
+              },
+              {
+                "name": "m1:atr_bps x clock:ny_hour",
+                "logWeight": 0.532456568680023,
+                "fullVocabularyImportance": 0.003524921673569083
+              },
+              {
+                "name": "m5:bb_position x clock:ny_weekday",
+                "logWeight": 0.5084524286989762,
+                "fullVocabularyImportance": 0.0034413164109072217
+              },
+              {
+                "name": "m1:bb_position x clock:ny_hour",
+                "logWeight": 0.5042339953399392,
+                "fullVocabularyImportance": 0.0034268300233729785
+              },
+              {
+                "name": "m60:macd_hist_atr x clock:ny_hour",
+                "logWeight": 0.5015527300688531,
+                "fullVocabularyImportance": 0.0034176540900942966
+              },
+              {
+                "name": "m5:rsi x clock:ny_weekday",
+                "logWeight": 0.48379635159697687,
+                "fullVocabularyImportance": 0.0033575045301266065
+              },
+              {
+                "name": "m5:macd_hist_atr x clock:ny_hour",
+                "logWeight": 0.45260147502389236,
+                "fullVocabularyImportance": 0.0032543843633779154
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "asset": "XRP",
+        "pooled": [
+          {
+            "horizon": 15,
+            "uniform": {
+              "rows": 3823939,
+              "correct": 1370420,
+              "loss": 4189556.9320769487,
+              "priorLoss": 4199616.3104432225,
+              "brier": 2541612.6137559214,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.35837914778452273,
+              "logLoss": 1.0956129091172606,
+              "priorLogLoss": 1.0982435416577572,
+              "gain": 0.0026306325404965476,
+              "meanBrier": 0.6646582525913518,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 3823939,
+              "correct": 1391289,
+              "loss": 4187227.3284041127,
+              "priorLoss": 4199616.3104432225,
+              "brier": 2540026.0424925643,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.3638366093182972,
+              "logLoss": 1.095003693417733,
+              "priorLogLoss": 1.0982435416577572,
+              "gain": 0.003239848240024175,
+              "meanBrier": 0.6642433476299084,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.0006092156995276274
+          },
+          {
+            "horizon": 60,
+            "uniform": {
+              "rows": 3821779,
+              "correct": 1388982,
+              "loss": 4181602.240449019,
+              "priorLoss": 4193258.7469111453,
+              "brier": 2536566.5041523445,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.363438597574585,
+              "logLoss": 1.0941507189319473,
+              "priorLogLoss": 1.0972007399986095,
+              "gain": 0.003050021066662019,
+              "meanBrier": 0.6637135491487981,
+              "directionalAbove60Accuracy": null
+            },
+            "weighted": {
+              "rows": 3821779,
+              "correct": 1398669,
+              "loss": 4179593.346705044,
+              "priorLoss": 4193258.7469111453,
+              "brier": 2535206.411941267,
+              "directionalAbove60": 0,
+              "directionalAbove60Correct": 0,
+              "accuracy": 0.3659732810295938,
+              "logLoss": 1.0936250753131054,
+              "priorLogLoss": 1.0972007399986095,
+              "gain": 0.0035756646855040876,
+              "meanBrier": 0.6633576698027979,
+              "directionalAbove60Accuracy": null
+            },
+            "weightedGainOverUniform": 0.0005256436188420686
+          }
+        ],
+        "finalWeights": [
+          {
+            "horizon": 15,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "m5:rsi x m240:bb_position",
+                "logWeight": 0.7826957632222312,
+                "fullVocabularyImportance": 0.004136313267868795
+              },
+              {
+                "name": "m5:rsi x m240:rsi",
+                "logWeight": 0.7508531473441539,
+                "fullVocabularyImportance": 0.004006677163219986
+              },
+              {
+                "name": "m5:rsi x clock:ny_hour",
+                "logWeight": 0.7489391198237103,
+                "fullVocabularyImportance": 0.003999015607417389
+              },
+              {
+                "name": "m1:rsi x m15:rsi",
+                "logWeight": 0.7128948285571459,
+                "fullVocabularyImportance": 0.0038574407344632152
+              },
+              {
+                "name": "m5:rsi x m60:rsi",
+                "logWeight": 0.711138444054034,
+                "fullVocabularyImportance": 0.0038506715317370996
+              },
+              {
+                "name": "m5:rsi x m60:bb_position",
+                "logWeight": 0.6977118588310337,
+                "fullVocabularyImportance": 0.003799315700477316
+              },
+              {
+                "name": "m5:rsi x m240:macd_hist_atr",
+                "logWeight": 0.6708321650154864,
+                "fullVocabularyImportance": 0.0036985515790234156
+              },
+              {
+                "name": "m5:bb_position x m15:rsi",
+                "logWeight": 0.6682638446066533,
+                "fullVocabularyImportance": 0.003689064701405422
+              },
+              {
+                "name": "m5:rsi x clock:ny_weekday",
+                "logWeight": 0.6611221786780698,
+                "fullVocabularyImportance": 0.003662812487568843
+              },
+              {
+                "name": "m5:bb_position x m60:rsi",
+                "logWeight": 0.6605191223987277,
+                "fullVocabularyImportance": 0.0036606042714043972
+              },
+              {
+                "name": "m5:bb_position x m60:bb_position",
+                "logWeight": 0.6597050042352092,
+                "fullVocabularyImportance": 0.0036576253197514526
+              },
+              {
+                "name": "m5:macd_hist_atr x m15:rsi",
+                "logWeight": 0.6466144861044858,
+                "fullVocabularyImportance": 0.003610057134561535
+              }
+            ]
+          },
+          {
+            "horizon": 60,
+            "importanceTrainedThrough": 1791849600000,
+            "changedCurves": 406,
+            "top": [
+              {
+                "name": "m5:rsi x m240:rsi",
+                "logWeight": 0.6604585277445895,
+                "fullVocabularyImportance": 0.00392696971151943
+              },
+              {
+                "name": "m5:rsi x clock:ny_weekday",
+                "logWeight": 0.6197480375118076,
+                "fullVocabularyImportance": 0.0037703113054966667
+              },
+              {
+                "name": "m5:bb_position x m240:rsi",
+                "logWeight": 0.5752379120670058,
+                "fullVocabularyImportance": 0.0036061742541614694
+              },
+              {
+                "name": "m5:rsi x m240:macd_hist_atr",
+                "logWeight": 0.5751261842458393,
+                "fullVocabularyImportance": 0.0036057713666765947
+              },
+              {
+                "name": "m5:rsi x m240:bb_position",
+                "logWeight": 0.5719444254718609,
+                "fullVocabularyImportance": 0.0035943169043251093
+              },
+              {
+                "name": "m5:rsi x m1440:macd_hist_atr",
+                "logWeight": 0.5665024410755031,
+                "fullVocabularyImportance": 0.0035748098145973292
+              },
+              {
+                "name": "m5:rsi x m1440:bb_position",
+                "logWeight": 0.5662334540272376,
+                "fullVocabularyImportance": 0.0035738483663715474
+              },
+              {
+                "name": "m5:bb_position x clock:ny_weekday",
+                "logWeight": 0.5613167174099708,
+                "fullVocabularyImportance": 0.003556319822173278
+              },
+              {
+                "name": "m5:rsi x m15:atr_bps",
+                "logWeight": 0.5341268992017787,
+                "fullVocabularyImportance": 0.0034609268680772173
+              },
+              {
+                "name": "m5:rsi x m5:atr_bps",
+                "logWeight": 0.514867737574035,
+                "fullVocabularyImportance": 0.0033949100727495075
+              },
+              {
+                "name": "m5:bb_position x m240:bb_position",
+                "logWeight": 0.49347128980161636,
+                "fullVocabularyImportance": 0.003323042652209871
+              },
+              {
+                "name": "m5:rsi x m1440:rsi",
+                "logWeight": 0.48782006232290587,
+                "fullVocabularyImportance": 0.0033043163454080605
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "relationshipCountPerHorizonAndAsset": 406,
+    "freshHoldoutUsed": false,
+    "overlappingRowsAreIndependent": false,
+    "target": "Original terminal up/sideways/down; separately benchmarked from sustained movement"
+  },
+  "nativeTraining": {
+    "run": 42667008245,
+    "source": "92979168a5962c918116c8d888c25f1a66275865",
+    "modelIdentitiesAndTapeReceiptsRechecked": true,
+    "frozen": [
+      {
+        "variant": "S5",
+        "domain": "crypto",
+        "file": "native-S5-crypto.json",
+        "modelId": "ba63af15dbc2930d5d33b12311974ab790c0017a69c7e68b81cda7c4ce02ed6f",
+        "evidence": {
+          "learningBefore": 1793232000000,
+          "trainedThrough": 1793067261000,
+          "lastObservedAt": 1793067261000,
+          "capturedAt": 1793232001000,
+          "profile": "direction-inputs-only-v1",
+          "initializedColumns": 10,
+          "changedColumnArrays": 0,
+          "changedDirectionHeads": 10,
+          "changedContractHeads": 0,
+          "initialWeightsSha256": "7c29c38755ea8bbda4f715c1bbb4e5f52b741dcd9b6fc6d0a10a5f02d6404d71",
+          "frozenWeightsSha256": "a8bb02c0d180dadc9873827bb3901d9cc67ee302e4aa07024a1be76bfbbc50a3"
+        }
+      },
+      {
+        "variant": "S5",
+        "domain": "perps",
+        "file": "native-S5-perps.json",
+        "modelId": "68c21e6a3c6f625179641a2590b983b08d8fdaae3b3ffb251f1f6646235f6538",
+        "evidence": {
+          "learningBefore": 1793232000000,
+          "trainedThrough": 1793067261000,
+          "lastObservedAt": 1793067261000,
+          "capturedAt": 1793232001000,
+          "profile": "direction-inputs-only-v1",
+          "initializedColumns": 10,
+          "changedColumnArrays": 0,
+          "changedDirectionHeads": 5,
+          "changedContractHeads": 0,
+          "initialWeightsSha256": "94e2e3d5525a2e8db94ffeb75080b4e536fbee21e03a0528f35d0ce1853ac38a",
+          "frozenWeightsSha256": "15d2c9a6634569b481b9e574d7cd0cf5fcac17ad5b0ba89a041903324c4764d1"
+        }
+      },
+      {
+        "variant": "S6",
+        "domain": "crypto",
+        "file": "native-S6-crypto.json",
+        "modelId": "1e6ae79c02e2531304370e312a6ec6d23a85ba1a8f524346b09ca512eaae941c",
+        "evidence": {
+          "learningBefore": 1793232000000,
+          "trainedThrough": 1793067261000,
+          "lastObservedAt": 1793067261000,
+          "capturedAt": 1793232001000,
+          "profile": "direction-inputs-only-v1",
+          "initializedColumns": 10,
+          "changedColumnArrays": 40,
+          "changedDirectionHeads": 10,
+          "changedContractHeads": 0,
+          "initialWeightsSha256": "7c29c38755ea8bbda4f715c1bbb4e5f52b741dcd9b6fc6d0a10a5f02d6404d71",
+          "frozenWeightsSha256": "714f6b4bb046e7cfa297bdaffd6c8d2a85960124e8465c9c6c2b6ede799a9003"
+        }
+      },
+      {
+        "variant": "S6",
+        "domain": "perps",
+        "file": "native-S6-perps.json",
+        "modelId": "8f40236115adbb66debfec7ec1c4a1ee9e4cbe39b56169f1b2f54b75b74a36b5",
+        "evidence": {
+          "learningBefore": 1793232000000,
+          "trainedThrough": 1793067261000,
+          "lastObservedAt": 1793067261000,
+          "capturedAt": 1793232001000,
+          "profile": "direction-inputs-only-v1",
+          "initializedColumns": 10,
+          "changedColumnArrays": 40,
+          "changedDirectionHeads": 5,
+          "changedContractHeads": 0,
+          "initialWeightsSha256": "94e2e3d5525a2e8db94ffeb75080b4e536fbee21e03a0528f35d0ce1853ac38a",
+          "frozenWeightsSha256": "827c01f48c47e113fc993bea09b6dca4893eadc82143ed87b135253790ccf0e2"
+        }
+      }
+    ],
+    "paired": [
+      {
+        "role": "selection",
+        "matchedQuestions": 30,
+        "assetDeadlineGroups": 5,
+        "meanLogLoss": {
+          "geometry-prior": 0.6069793845792426,
+          "continuous-context": 1.0349295123904387,
+          "continuous-context-S5": 0.6802326114108077,
+          "continuous-context-S6": 0.7830023259772467
+        }
+      },
+      {
+        "role": "audit",
+        "matchedQuestions": 72,
+        "assetDeadlineGroups": 12,
+        "meanLogLoss": {
+          "geometry-prior": 0.6863312651888314,
+          "continuous-context": 0.8797979791595699,
+          "continuous-context-S5": 0.6811862999855224,
+          "continuous-context-S6": 0.7884830405577024
+        }
+      }
+    ],
+    "automaticRecommendation": "none",
+    "variants": [
+      {
+        "name": "base",
+        "dataset": {
+          "sourceDecisions": 3240,
+          "inactive": 6,
+          "deduplicated": 1374,
+          "observations": 1860,
+          "complete": 1578,
+          "pending": 24,
+          "missing": 258,
+          "withheld": 0
+        },
+        "fits": [
+          {
+            "name": "geometry-prior",
+            "id": "9778f2b8a0a9299627155012da6952cb56d0e222ed06afc86f7b401e91df5c26",
+            "family": "temporal-linear",
+            "features": 10,
+            "headKind": "smooth",
+            "trainingEvents": 65,
+            "calibrated": false,
+            "selection": {
+              "rows": 30,
+              "events": 5,
+              "mass": 4.000000000000001,
+              "logLoss": 0.6787607453669635,
+              "brier": 0.24274071803939254,
+              "accuracy": 0.5624999999999997,
+              "above60": {
+                "rows": 17,
+                "events": 4,
+                "predicted": 0.7612370514638221,
+                "observed": 0.7727272727272727
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 1,
+                  "predicted": 0.18655044521454395,
+                  "observed": 1
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 1,
+                  "predicted": 0.257145348741695,
+                  "observed": 0
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 3,
+                  "predicted": 0.34374073232476876,
+                  "observed": 0.6666666666666666
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 4,
+                  "predicted": 0.43002385888115363,
+                  "observed": 0.75
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 4,
+                  "predicted": 0.5444521322014074,
+                  "observed": 0.5
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 4,
+                  "predicted": 0.6568535611696894,
+                  "observed": 1
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 5,
+                  "predicted": 0.7420945038987385,
+                  "observed": 0.5714285714285715
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 7,
+                  "predicted": 0.8389113186603652,
+                  "observed": 0.75
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 1,
+                  "predicted": 0.9001416886118616,
+                  "observed": 1
+                }
+              ]
+            },
+            "audit": {
+              "rows": 78,
+              "events": 13,
+              "mass": 11.499999999999988,
+              "logLoss": 0.6989817178041484,
+              "brier": 0.25303038584919624,
+              "accuracy": 0.5289855072463777,
+              "above60": {
+                "rows": 39,
+                "events": 11,
+                "predicted": 0.7239699208352994,
+                "observed": 0.7272727272727265
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 4,
+                  "predicted": 0.2572870441993984,
+                  "observed": 0.75
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 9,
+                  "predicted": 0.3471221272376846,
+                  "observed": 0.7777777777777777
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 12,
+                  "predicted": 0.44526309684751125,
+                  "observed": 0.9545454545454546
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 14,
+                  "predicted": 0.540068420163392,
+                  "observed": 0.7500000000000001
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 16,
+                  "predicted": 0.6430131209888801,
+                  "observed": 0.5925925925925927
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 14,
+                  "predicted": 0.7399092768907034,
+                  "observed": 0.8260869565217391
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 8,
+                  "predicted": 0.8283609108085851,
+                  "observed": 0.7857142857142856
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 1,
+                  "predicted": 0.9028471943118307,
+                  "observed": 1
+                }
+              ]
+            },
+            "trainSensitivity": []
+          },
+          {
+            "name": "continuous-context",
+            "id": "1a28bf3632d93c1edfd1e38620b190eac9c971be52b2acd9fd52100852bc3d68",
+            "family": "smooth",
+            "features": 435,
+            "headKind": "smooth",
+            "trainingEvents": 65,
+            "calibrated": false,
+            "selection": {
+              "rows": 30,
+              "events": 5,
+              "mass": 4.000000000000001,
+              "logLoss": 1.1545520587877613,
+              "brier": 0.398884938499777,
+              "accuracy": 0.43749999999999983,
+              "above60": {
+                "rows": 8,
+                "events": 2,
+                "predicted": 0.7615933870985206,
+                "observed": 0.8749999999999999
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 6,
+                  "predicted": 0.057903524430463656,
+                  "observed": 0.6666666666666667
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 7,
+                  "predicted": 0.14336520198644,
+                  "observed": 0.5714285714285715
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 2,
+                  "predicted": 0.21610144734475184,
+                  "observed": 1
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 4,
+                  "predicted": 0.3329490893375956,
+                  "observed": 0.7142857142857143
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 3,
+                  "predicted": 0.546937175125382,
+                  "observed": 0.5
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 3,
+                  "predicted": 0.637404777082698,
+                  "observed": 0.6666666666666666
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 2,
+                  "predicted": 0.7764704125402878,
+                  "observed": 1
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 2,
+                  "predicted": 0.85661838984217,
+                  "observed": 1
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 1,
+                  "predicted": 0.9143551607751544,
+                  "observed": 1
+                }
+              ]
+            },
+            "audit": {
+              "rows": 72,
+              "events": 12,
+              "mass": 10.499999999999996,
+              "logLoss": 0.8754324338522618,
+              "brier": 0.2859095744110334,
+              "accuracy": 0.5555555555555559,
+              "above60": {
+                "rows": 39,
+                "events": 7,
+                "predicted": 0.8262592728752527,
+                "observed": 0.7222222222222217
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 17,
+                  "predicted": 0.36698433154637644,
+                  "observed": 0.6666666666666669
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 12,
+                  "predicted": 0.42698590736571534,
+                  "observed": 0.9411764705882354
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 4,
+                  "predicted": 0.5754039728607172,
+                  "observed": 1
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 6,
+                  "predicted": 0.6245330187047627,
+                  "observed": 1
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 11,
+                  "predicted": 0.7681869734126793,
+                  "observed": 0.9090909090909091
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 4,
+                  "predicted": 0.8551881768734143,
+                  "observed": 0.75
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 18,
+                  "predicted": 0.9418217530831606,
+                  "observed": 0.46666666666666684
+                }
+              ]
+            },
+            "trainSensitivity": [
+              {
+                "group": "ta",
+                "features": 392,
+                "meanAbsoluteProbabilityChange": 0.016783420578950034
+              },
+              {
+                "group": "dominance",
+                "features": 4,
+                "meanAbsoluteProbabilityChange": 0.0018123893177249442
+              },
+              {
+                "group": "clock",
+                "features": 8,
+                "meanAbsoluteProbabilityChange": 0.0016978181382124318
+              },
+              {
+                "group": "micro",
+                "features": 21,
+                "meanAbsoluteProbabilityChange": 0.012383322702578742
+              },
+              {
+                "group": "daily",
+                "features": 0,
+                "meanAbsoluteProbabilityChange": 0
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "S5",
+        "dataset": {
+          "sourceDecisions": 3168,
+          "inactive": 6,
+          "deduplicated": 1338,
+          "observations": 1824,
+          "complete": 1554,
+          "pending": 24,
+          "missing": 246,
+          "withheld": 0
+        },
+        "fits": [
+          {
+            "name": "continuous-context-S5",
+            "id": "75036ace2649bac98d4cc181034694539df01ff30d03e02e3708351fdf8c98b4",
+            "family": "smooth",
+            "features": 1577,
+            "headKind": "smooth",
+            "trainingEvents": 63,
+            "calibrated": false,
+            "selection": {
+              "rows": 30,
+              "events": 5,
+              "mass": 4.000000000000001,
+              "logLoss": 0.6894969976986336,
+              "brier": 0.2481792227051856,
+              "accuracy": 0.4374999999999999,
+              "above60": {
+                "rows": 0,
+                "events": 0,
+                "predicted": null,
+                "observed": null
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 24,
+                  "predicted": 0.4648706921145494,
+                  "observed": 0.6428571428571427
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 6,
+                  "predicted": 0.5628895308634848,
+                  "observed": 1
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                }
+              ]
+            },
+            "audit": {
+              "rows": 72,
+              "events": 12,
+              "mass": 10.499999999999996,
+              "logLoss": 0.6783790660477794,
+              "brier": 0.24278094207071396,
+              "accuracy": 0.45238095238095255,
+              "above60": {
+                "rows": 12,
+                "events": 2,
+                "predicted": 0.6265087036909371,
+                "observed": 0.75
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 36,
+                  "predicted": 0.4798031685797465,
+                  "observed": 0.8166666666666663
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 24,
+                  "predicted": 0.5451900375163339,
+                  "observed": 0.6666666666666669
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 12,
+                  "predicted": 0.6265087036909371,
+                  "observed": 0.75
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                }
+              ]
+            },
+            "trainSensitivity": [
+              {
+                "group": "ta",
+                "features": 392,
+                "meanAbsoluteProbabilityChange": 0.005135417044937327
+              },
+              {
+                "group": "dominance",
+                "features": 4,
+                "meanAbsoluteProbabilityChange": 6.693507287049535e-05
+              },
+              {
+                "group": "clock",
+                "features": 8,
+                "meanAbsoluteProbabilityChange": 1.6179869622592726e-05
+              },
+              {
+                "group": "micro",
+                "features": 17,
+                "meanAbsoluteProbabilityChange": 0.0012271581613696933
+              },
+              {
+                "group": "daily",
+                "features": 0,
+                "meanAbsoluteProbabilityChange": 0
+              },
+              {
+                "group": "snn",
+                "features": 1146,
+                "meanAbsoluteProbabilityChange": 0.00831209656989933
+              }
+            ]
+          },
+          {
+            "name": "linear-context-S5",
+            "id": "6ee8aaaea2cb6d44b2ef2a74d788de9414d50993f176a516600af803a4732e69",
+            "family": "temporal-linear",
+            "features": 1577,
+            "headKind": "smooth",
+            "trainingEvents": 63,
+            "calibrated": true,
+            "selection": {
+              "rows": 30,
+              "events": 5,
+              "mass": 4.000000000000001,
+              "logLoss": 8.634701011842354,
+              "brier": 0.312499999999375,
+              "accuracy": 0.6874999999999997,
+              "above60": {
+                "rows": 30,
+                "events": 5,
+                "predicted": 0.9999999999989997,
+                "observed": 0.6874999999999997
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 30,
+                  "predicted": 0.9999999999989997,
+                  "observed": 0.6874999999999997
+                }
+              ]
+            },
+            "audit": {
+              "rows": 72,
+              "events": 12,
+              "mass": 10.499999999999996,
+              "logLoss": 6.798113812498336,
+              "brier": 0.24603174603125413,
+              "accuracy": 0.7539682539682547,
+              "above60": {
+                "rows": 72,
+                "events": 12,
+                "predicted": 0.9999999999990015,
+                "observed": 0.7539682539682547
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 72,
+                  "predicted": 0.9999999999990015,
+                  "observed": 0.7539682539682547
+                }
+              ]
+            },
+            "trainSensitivity": [
+              {
+                "group": "ta",
+                "features": 392,
+                "meanAbsoluteProbabilityChange": 0.00992063492063492
+              },
+              {
+                "group": "dominance",
+                "features": 4,
+                "meanAbsoluteProbabilityChange": 0
+              },
+              {
+                "group": "clock",
+                "features": 8,
+                "meanAbsoluteProbabilityChange": 0
+              },
+              {
+                "group": "micro",
+                "features": 17,
+                "meanAbsoluteProbabilityChange": 0.001984126984126984
+              },
+              {
+                "group": "daily",
+                "features": 0,
+                "meanAbsoluteProbabilityChange": 0
+              },
+              {
+                "group": "snn",
+                "features": 1146,
+                "meanAbsoluteProbabilityChange": 0.021825396825396824
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "S6",
+        "dataset": {
+          "sourceDecisions": 3168,
+          "inactive": 6,
+          "deduplicated": 1338,
+          "observations": 1824,
+          "complete": 1554,
+          "pending": 24,
+          "missing": 246,
+          "withheld": 0
+        },
+        "fits": [
+          {
+            "name": "continuous-context-S6",
+            "id": "1d27b592810ca40053559ba536b555e883c22a0f4713ccdec36bafdc0f5c2946",
+            "family": "smooth",
+            "features": 1579,
+            "headKind": "smooth",
+            "trainingEvents": 63,
+            "calibrated": false,
+            "selection": {
+              "rows": 30,
+              "events": 5,
+              "mass": 4.000000000000001,
+              "logLoss": 0.7679824785015953,
+              "brier": 0.2870567699980444,
+              "accuracy": 0.31249999999999994,
+              "above60": {
+                "rows": 0,
+                "events": 0,
+                "predicted": null,
+                "observed": null
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 30,
+                  "predicted": 0.4187701243549531,
+                  "observed": 0.6874999999999997
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                }
+              ]
+            },
+            "audit": {
+              "rows": 72,
+              "events": 12,
+              "mass": 10.499999999999996,
+              "logLoss": 0.7897839998318802,
+              "brier": 0.2978608424986583,
+              "accuracy": 0.24603174603174618,
+              "above60": {
+                "rows": 0,
+                "events": 0,
+                "predicted": null,
+                "observed": null
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 72,
+                  "predicted": 0.4187657559527435,
+                  "observed": 0.7539682539682547
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                }
+              ]
+            },
+            "trainSensitivity": [
+              {
+                "group": "ta",
+                "features": 392,
+                "meanAbsoluteProbabilityChange": 0.002888828913485523
+              },
+              {
+                "group": "dominance",
+                "features": 4,
+                "meanAbsoluteProbabilityChange": 1.8647197924875728e-05
+              },
+              {
+                "group": "clock",
+                "features": 8,
+                "meanAbsoluteProbabilityChange": 6.959886137285298e-06
+              },
+              {
+                "group": "micro",
+                "features": 17,
+                "meanAbsoluteProbabilityChange": 0.0003728778561136192
+              },
+              {
+                "group": "daily",
+                "features": 0,
+                "meanAbsoluteProbabilityChange": 0
+              },
+              {
+                "group": "snn",
+                "features": 1148,
+                "meanAbsoluteProbabilityChange": 0.006539560186031716
+              }
+            ]
+          },
+          {
+            "name": "linear-context-S6",
+            "id": "ad077554c6f0cf585c56d290cae4c8c16581fd78bd16d84def1048fda10aedaa",
+            "family": "temporal-linear",
+            "features": 1579,
+            "headKind": "smooth",
+            "trainingEvents": 63,
+            "calibrated": true,
+            "selection": {
+              "rows": 30,
+              "events": 5,
+              "mass": 4.000000000000001,
+              "logLoss": 8.634701011842354,
+              "brier": 0.312499999999375,
+              "accuracy": 0.6874999999999997,
+              "above60": {
+                "rows": 30,
+                "events": 5,
+                "predicted": 0.9999999999989997,
+                "observed": 0.6874999999999997
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 30,
+                  "predicted": 0.9999999999989997,
+                  "observed": 0.6874999999999997
+                }
+              ]
+            },
+            "audit": {
+              "rows": 72,
+              "events": 12,
+              "mass": 10.499999999999996,
+              "logLoss": 6.798113812498336,
+              "brier": 0.24603174603125413,
+              "accuracy": 0.7539682539682547,
+              "above60": {
+                "rows": 72,
+                "events": 12,
+                "predicted": 0.9999999999990015,
+                "observed": 0.7539682539682547
+              },
+              "calibration": [
+                {
+                  "from": 0,
+                  "through": 0.1,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.1,
+                  "through": 0.2,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.2,
+                  "through": 0.3,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.3,
+                  "through": 0.4,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.4,
+                  "through": 0.5,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.5,
+                  "through": 0.6,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.6,
+                  "through": 0.7,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.7,
+                  "through": 0.8,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.8,
+                  "through": 0.9,
+                  "rows": 0,
+                  "predicted": null,
+                  "observed": null
+                },
+                {
+                  "from": 0.9,
+                  "through": 1,
+                  "rows": 72,
+                  "predicted": 0.9999999999990015,
+                  "observed": 0.7539682539682547
+                }
+              ]
+            },
+            "trainSensitivity": [
+              {
+                "group": "ta",
+                "features": 392,
+                "meanAbsoluteProbabilityChange": 0.00992063492063492
+              },
+              {
+                "group": "dominance",
+                "features": 4,
+                "meanAbsoluteProbabilityChange": 0
+              },
+              {
+                "group": "clock",
+                "features": 8,
+                "meanAbsoluteProbabilityChange": 0
+              },
+              {
+                "group": "micro",
+                "features": 17,
+                "meanAbsoluteProbabilityChange": 0.005952380952380952
+              },
+              {
+                "group": "daily",
+                "features": 0,
+                "meanAbsoluteProbabilityChange": 0
+              },
+              {
+                "group": "snn",
+                "features": 1148,
+                "meanAbsoluteProbabilityChange": 0.031746031746031744
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "limitations": [
+      "Perps four-hour direction heads lack mature labels in these short observed prefixes",
+      "Calibration fitted is not a claim of good calibration",
+      "S5 did not beat the geometry prior on the earlier selection cohort",
+      "Legacy book-derived features inherit empty snapshots and unrecorded-gap limitations",
+      "No native minute-to-second synthetic market paths",
+      "Reused historical development periods, not a prospective trading trial"
+    ]
+  },
+  "contractPaper": {
+    "run": 42701472859,
+    "status": "missing-executable-depth",
+    "accounts": 132,
+    "startingCashPerAccount": 200,
+    "endingCashPerAccount": [
+      200
+    ],
+    "depthCoverage": {
+      "snapshots": 2671,
+      "withBids": 0,
+      "withAsks": 0,
+      "bothSides": 0
+    },
+    "observedTrades": 1849924,
+    "totalFillsAcrossAccounts": 0,
+    "probabilityCutoffs": [
+      0,
+      0.5,
+      0.6
+    ],
+    "sourceSnapshotSha256": "93ea131a180d89f3900412ce09d88998e9329e946adf4890076bb23e4ffb9273",
+    "sourceTradesSha256": "e129aafce77c9d5bce10d4190c20f8cf104ad35d69a044255b41a2b2ff00e3ab",
+    "actualVenueProfitVerified": false,
+    "fees": {
+      "basis": "assumed-schedule",
+      "knownAt": 1794259239323,
+      "effectiveFrom": 0,
+      "schedule": {
+        "takerMultiplier": 1,
+        "makerMultiplier": 0,
+        "balancePrecision": 0.01,
+        "takerRate": 0.07,
+        "makerRate": 0.0175
+      },
+      "sourceSha256": "c04e28c021262e0dd46be63f7cb8ebaae01fcbe042918fbfd74a25f436cfdeb1"
+    },
+    "exits": "Positive fee-net small taker takes; actual-trade maker exits with visible initial queue; contract and underlying 5/10/25 percent alternatives; deadline loss sales; unresolved exposure remains funded"
+  },
+  "feedRepair": {
+    "officialWebsocketSchema": "https://docs.kalshi.com/websockets/orderbook-updates",
+    "currentFields": [
+      "yes_dollars_fp",
+      "no_dollars_fp"
+    ],
+    "legacyAliasesPreserved": true,
+    "fractionalDepthPreserved": true,
+    "gapsAndDisconnectsRecorded": true,
+    "deployed": false,
+    "discardedHistoricalDepthRecoverable": false
+  },
+  "holdout": {
+    "from": "2026-11-09T00:00:00Z",
+    "freshPublicCaptureRun": 42701472475,
+    "fittingPerformed": false,
+    "forecastOrProfitEvaluationPerformed": false,
+    "publicQuoteHealth": {
+      "startedAt": 1794259238056,
+      "endedAt": 1794260193369,
+      "counts": {
+        "requests": 1002,
+        "failedRequests": 0,
+        "books": 927,
+        "nonemptyBooks": 927,
+        "bothSides": 871,
+        "crossed": 0
+      },
+      "status": "observed-public-depth",
+      "booksSha256": "282ccf94f4534d7671c630eef8f64dcbd8754b64b59062bf0dfc0aa670d73f1f",
+      "marketsSha256": "5c98b3ee8ee18788bc40f4bd122738c50218cae90b7090a2ca703bda81fa125f",
+      "forecastsPublished": false,
+      "labelsUsedForFitting": false,
+      "actualProfitVerified": false
+    }
+  },
+  "validation": {
+    "ciRun": 42701458509,
+    "ciSource": "2fdb91bcf3fa3833e6fabaa3771d365dfe6492a5",
+    "focusedFeedAndPaperTests": {
+      "pass": 41,
+      "fail": 0,
+      "skip": 0
+    },
+    "workflowLint": "passed",
+    "browser": {
+      "realSavedBtcMatrixAndLearnedImportanceLoaded": true,
+      "relationships": 406,
+      "horizonsMinutes": [
+        15,
+        60
+      ],
+      "consoleExceptions": 0
+    },
+    "fullRepository": {
+      "pass": 1283,
+      "fail": 0,
+      "skip": 0,
+      "typecheck": "passed",
+      "productionBuild": "passed",
+      "cpuPyTorchInstalled": true,
+      "run": 42701458509,
+      "source": "2fdb91bcf3fa3833e6fabaa3771d365dfe6492a5"
+    }
+  },
+  "live": {
+    "deploymentRun": 42498822979,
+    "sha": "5ad1c74a076cd0b60bd78c0a29a99481a173e037",
+    "trainerReleaseId": 438369738,
+    "trainerReleasePublishedAt": "2026-11-08T16:31:07Z",
+    "trainerReleaseTarget": "5ad1c74a076cd0b60bd78c0a29a99481a173e037",
+    "changedByThisWork": false
+  }
+}

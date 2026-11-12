@@ -1,3 +1,4 @@
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
@@ -10,7 +11,7 @@ import type { TrialName } from '../bot/strategy/componentTrials';
 import { activeTaNet, setTaNet } from '../bot/ta/taNet';
 import { setTaNetEnsemble } from '../bot/ta/taNetEnsemble';
 import { engineModels, installProbation, runBacktest, type EvalReading } from '../research/backtest';
-import { benchAt, benchTimeline, corr, gateAt, nearbyVerdict, paperBankrollAt, paperFromAudit, paperSummary, priceMatcher, readAudit, replayDays, settingsDiffer, stretchStart, verdict } from '../research/replayCheck';
+import { benchAt, benchTimeline, corr, gateAt, nearbyVerdict, paperBankrollAt, paperFromAudit, paperSummary, priceMatcher, readAudit, replayCheck, replayDays, settingsDiffer, stretchStart, verdict } from '../research/replayCheck';
 import { writeSyntheticRecordings } from '../research/synthetic';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'replay-check-test-'));
@@ -18,7 +19,8 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'replay-check-test-'));
 test('backtest paper options: orders sized from the bankroll share, gate and bench wired in', async () => {
   const dir = path.join(tmp(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 12, marketNoise: 0.06 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
+  // The accuracy gate is off by default since Nov 11: turned on here so the test still wires it in.
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', ACCURACY_GATE: 'true' });
   const rule = { ...cfg.probation, t: 2, minTrades: 30 };
   const small = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', paper: { orderFrac: 0.02, orderUsd: 0 }, accuracyGate: cfg.strategy.accuracyGate, takeProfitBench: { enforce: true, rule } });
   const big = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', paper: { orderFrac: 0.2, orderUsd: 0 }, accuracyGate: cfg.strategy.accuracyGate, takeProfitBench: { enforce: true, rule } });
@@ -83,6 +85,27 @@ test('replay check: paper side read from the audit log (crypto only, exits by ki
     'KXBTC15M-W': { usd: -3.5, contracts: 9.5, t: Date.parse('2026-10-22T10:30:31.000Z') },
   } });
   assert.deepEqual(p.rejected, { 'quote: window risk # > # cap': 2, 'order: exchange: insufficient balance': 1 }, 'crypto only, numbers folded');
+});
+
+test('replay check: paper\'s exits by kind keep the profit ratchet, the hold exit and a plan position\'s sales apart from the hunt\'s ratchet stop', async () => {
+  const dir = tmp();
+  const L = (kind: string, ts: string, data: object) => JSON.stringify({ ts, kind, data });
+  const sale = (n: number, why: string, count: number) => [
+    L('decision', `2026-10-22T10:0${n}:00.000Z`, { decisionId: `d${n}`, place: [{ purpose: 'exit', side: 'ask', price: 0.6, why }] }),
+    L('order_new', `2026-10-22T10:0${n}:00.100Z`, { clientOrderId: `o${n}`, decisionId: `d${n}`, side: 'ask', price: 0.6, purpose: 'exit' }),
+    L('fill', `2026-10-22T10:0${n}:01.000Z`, { fill: { ticker: 'KXBTC15M-X', count, price: 0.6, side: 'ask' }, fee: 0.01, clientOrderId: `o${n}` }),
+  ];
+  fs.writeFileSync(path.join(dir, 'audit-2026-10-22.jsonl'), [
+    ...sale(1, 'profit ratchet: +$2.17 net on 10 at bid 0.65 is at or under its stop +$2.18 (best +$2.68)', 10),
+    ...sale(2, 'profit ratchet, the rest: +$1.40 net on 6 at bid 0.6; its stop +$2.18 was reached and the sale goes on until flat', 6),
+    ...sale(3, 'hold exit: +$1.56 net on 10 at bid 0.59, 10.0 s in all at +$1.50 or more, the last 10.0 s in a row at +$1.00 or more', 3),
+    ...sale(4, 'plan ratchet: net +$1.35 at bid 0.57 at or under its stop +$1.36 (best +$1.86); limit 0.55 (bid less 2 ticks)', 2),
+    ...sale(5, 'plan end rule: 85 s to the close, net -$0.37 at bid 0.38; limit 0.36 (bid less 2 ticks)', 1),
+    ...sale(6, 'confluence ratchet stop 0.47', 5),
+    L('settlement', '2026-10-22T10:15:30.000Z', { ticker: 'KXBTC15M-X', result: 'no', realized: 1 }),
+  ].join('\n') + '\n');
+  const p = await paperFromAudit(dir, ['2026-10-22']);
+  assert.deepEqual(p.exits, { 'profit ratchet': 16, 'hold exit': 3, plan: 3, ratchet: 5 });
 });
 
 test('replay check verdict: same sign and within 25% of paper', () => {
@@ -395,23 +418,26 @@ test('backtest: a pool that ran dry is refilled as paper\'s training supervisor 
   assert.ok(Math.abs(paperBankrollAt(86.69, a, Date.parse('2026-10-28T00:05:00.000Z')) - 100) < 1e-9, 'after the refill: equity now less what settled since');
 });
 
-test('backtest: no new entries in a session edge, as the engine\'s SESSION_EDGE_NO_ENTRY keeps them out', async () => {
+test('backtest: a session edge keeps new entries out only with SESSION_EDGE_NO_ENTRY=true, as in the engine; off by default', async () => {
   const dir = path.join(tmp(), 'rec');
   // From Thursday, Jan 1 2026, 00:00 UTC: Tokyo opens then, so the Asia open's edge runs to 00:40.
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
-  assert.deepEqual(cfg.sessionEdge, { minutes: 40, noEntry: true }, 'on by default in the bot');
+  assert.deepEqual(cfg.sessionEdge, { minutes: 40, noEntry: false }, 'off by default in the bot');
+  const on = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', SESSION_EDGE_NO_ENTRY: 'true' }).sessionEdge;
   const base = { exitPolicy: 'take_profit' as const, paper: { orderFrac: 0.1, orderUsd: 0 } };
   const edgeEnd = Date.parse('2026-01-01T00:40:00Z');
   const tradedBy = (r: Awaited<ReturnType<typeof runBacktest>>) => [...r.windows].filter(([close, w]) => close <= edgeEnd && (w.fills ?? 0) > 0).length;
   const open = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, base);
   assert.ok(tradedBy(open) > 0, 'unset: it trades the windows inside the edge');
-  const edge = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { ...base, sessionEdge: cfg.sessionEdge });
+  const edge = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { ...base, sessionEdge: on });
   assert.equal(tradedBy(edge), 0, 'no fill in the windows that closed inside the edge');
   assert.ok(edge.fills > 0, 'it trades once the edge is over');
   assert.ok(edge.paper!.sessionEdgeBlocks! > 0);
-  const off = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { ...base, sessionEdge: { minutes: 40, noEntry: false } });
-  assert.equal(off.fills, open.fills, 'SESSION_EDGE_NO_ENTRY=false: no block');
+  // The replays pass the bot's own setting (research/replayCheck.ts, research/randomSweep.ts): the default blocks nothing.
+  const off = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { ...base, sessionEdge: cfg.sessionEdge });
+  assert.equal(off.fills, open.fills, 'default (SESSION_EDGE_NO_ENTRY=false): no block');
+  assert.equal(off.paper!.sessionEdgeBlocks, 0);
 });
 
 test('backtest tickPhaseMs: the markets evaluated on the engine\'s 1 s timer, that far into each second', async () => {
@@ -514,4 +540,34 @@ test('replay check: the luck test holds paper within 2 standard deviations of th
   assert.ok(twoAfter.why.length > 0 && twoAfter.why.every((w) => w.startsWith('median of 2 replays')), twoAfter.why.join('; '));
   // Test 'pct' on request.
   assert.equal(nearbyVerdict(runs, paper, { stretch, prices, history: earlier, test: 'pct' }).close, true);
+});
+
+test('replay check: with the accuracy gate off (the default since Nov 11) it does not claim to start from paper\'s gate', async () => {
+  const root = tmp();
+  const rec = path.join(root, 'rec');
+  writeSyntheticRecordings(rec, { windows: 4, seed: 12, marketNoise: 0.06 });
+  const audit = path.join(root, 'audit');
+  fs.mkdirSync(audit);
+  const gate = path.join(root, 'accuracy_gate.json');
+  const gateText = JSON.stringify({ rows: { 'updown15m:0': [{ ts: 1 }] } });
+  fs.writeFileSync(gate, gateText);
+  const keys = ['DASHBOARD_TOKEN', 'AUTO_TRAIN_DIR', 'ACCURACY_GATE'] as const;
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const run = async (on?: string) => {
+    process.env.DASHBOARD_TOKEN = 'x'.repeat(32);
+    process.env.AUTO_TRAIN_DIR = path.join(root, 'models');
+    if (on === undefined) delete process.env.ACCURACY_GATE; else process.env.ACCURACY_GATE = on;
+    return replayCheck({ recordings: rec, audit, days: ['2026-01-01'], model: path.join(root, 'none.json'), from: Date.parse('2026-01-01T00:00:00Z'), paperAccuracyGate: gate, warmupHours: 0 });
+  };
+  try {
+    const off = await run();
+    assert.ok(off.seeded.includes('accuracy gate off (ACCURACY_GATE=false): not replayed, nothing blocked'), off.seeded.join('; '));
+    assert.ok(!off.seeded.some((s) => s.startsWith('accuracy gate (')), 'the backtester builds no gate when it is off: no scored snapshots to claim');
+    const on = await run('true');
+    assert.ok(on.seeded.includes('accuracy gate (1 scored snapshots)'), on.seeded.join('; '));
+    assert.equal(fs.readFileSync(gate, 'utf8'), gateText, 'paper\'s scorecard is only read');
+  } finally {
+    for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    setProbation(undefined); setTaNet(undefined); setTaNetEnsemble(undefined);
+  }
 });

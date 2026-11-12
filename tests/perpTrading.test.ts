@@ -81,6 +81,17 @@ test('decision: cost-aware entry, hysteresis, funding, stops, caps, pilot size a
   assert.ok(Math.abs(d.leverage! - Math.min(kellyLev, 3, 5, 0.5 / 0.008)) < 1e-9, `${d.leverage}`);
   assert.ok(d.target * 100 <= 500 + 1e-9, 'per-asset notional cap');
   assert.ok(d.stopPrice! < 100 && Math.abs(d.stopPrice! - 100 * (1 - 0.008)) < 1e-3, 'stop 2 x ATR (0.8%) under the entry');
+  // The perp loser cut (PERP_LOSER_CUT_C, Steven Nov 12: 15c a contract on the perp's price): the nearer stop stands; the size
+  // keeps the ATR stop. On this $100 contract 15c (0.15%) is nearer than the 0.8% stop; $2 is farther.
+  const cut = decidePerp(base(), { ...P, loserCut: 0.15 });
+  assert.ok(Math.abs(cut.stopPrice! - 99.85) < 1e-9, String(cut.stopPrice));
+  assert.equal(cut.target, d.target, 'same size');
+  assert.ok(Math.abs(decidePerp(base(), { ...P, loserCut: 2 }).stopPrice! - 99.2) < 1e-3);
+  // Held long from 100: a 99.84 bid is through the cut's 99.85 (urgent flatten); without the cut it holds.
+  const held = { current: 2, entryPrice: 100, bid: 99.84, ask: 99.86 };
+  const hit = decidePerp(base(held), { ...P, loserCut: 0.15 });
+  assert.deepEqual([hit.target, hit.urgent, hit.reason], [0, true, 'stop hit at 99.85']);
+  assert.notEqual(decidePerp(base(held), P).reason, 'stop hit at 99.85');
   // Edge below costs + threshold: stay flat.
   assert.equal(decidePerp(base({ muBps: 12 }), P).target, 0);
   // Funding: a positive rate makes the long pay (8 h rate 0.1% over a 4 h hold = 5 bps).

@@ -1,0 +1,124 @@
+name: Atlas history archive to Drive (one-off copy, verified)
+
+# Copies the nine-year coin archive, the GitHub artifact atlas-history-archive from run 42522123037, to Google Drive
+# under raw/atlas-history-archive/. The artifact zip is copied byte for byte, next to a manifest of every file in it
+# (bytes, sha256, line count). Copies only: nothing is deleted here, and the public artifact is left alone.
+#
+# Runs on pushes to this branch (a workflow file cannot be dispatched until it is on main) and by hand.
+
+on:
+  push:
+    branches: [claude/project-thread-4eh4mq]
+    paths: [.github/workflows/atlas-archive-drive.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: atlas-archive-drive
+  cancel-in-progress: false
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_ARTIFACT_ID: "13634095981"
+      SOURCE_DIGEST: "b13d844aeb13119534931bec3879157771ce3491a809d5f6e189f6a73ea32041"
+      DRIVE_DIR: "gdrive:kalshi-bot-archive/raw/atlas-history-archive"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up rclone with the Drive archive's token
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+
+      - name: Download the artifact zip and check its sha256 against the recorded digest
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/atlas"; mkdir -p "$W"
+          # Still the same artifact, not expired, same digest as recorded.
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT_ID" \
+            --jq '[.name, .size_in_bytes, .expired, .digest, .workflow_run.id] | @tsv' | tee "$W/source-artifact.tsv"
+          IFS=$'\t' read -r NAME SIZE EXPIRED DIGEST RUN < "$W/source-artifact.tsv"
+          [ "$NAME" = atlas-history-archive ] && [ "$EXPIRED" = false ] \
+            && [ "$DIGEST" = "sha256:$SOURCE_DIGEST" ] && [ "$RUN" = 42522123037 ] \
+            || { echo "::error::artifact is not the recorded one (name, expiry, digest or run)"; exit 1; }
+          gh api -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT_ID/zip" > "$W/atlas-history-archive.zip"
+          GOT=$(sha256sum "$W/atlas-history-archive.zip" | cut -d' ' -f1)
+          [ "$GOT" = "$SOURCE_DIGEST" ] || { echo "::error::downloaded sha256 $GOT != recorded $SOURCE_DIGEST"; exit 1; }
+          echo "downloaded zip sha256 matches the artifact digest ($(stat -c %s "$W/atlas-history-archive.zip") bytes)"
+
+      - name: Record the per-file manifest of the source
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/atlas"
+          cat > "$W/manifest.sh" <<'SH'
+          #!/usr/bin/env bash
+          # usage: manifest.sh <dir>: one line per file: path, bytes, sha256, lines (uncompressed for .gz)
+          set -euo pipefail
+          cd "$1"
+          find . -type f | sort | while read -r f; do
+            case "$f" in
+              *.gz) n=$(zcat "$f" | wc -l) ;;
+              *) n=$(wc -l < "$f") ;;
+            esac
+            printf '%s\t%s\t%s\t%s\n' "$f" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)" "$n"
+          done
+          SH
+          chmod +x "$W/manifest.sh"
+          rm -rf "$W/src" && mkdir -p "$W/src"
+          unzip -q "$W/atlas-history-archive.zip" -d "$W/src"
+          "$W/manifest.sh" "$W/src" > "$W/source-manifest.tsv"
+          echo "files in the archive: $(wc -l < "$W/source-manifest.tsv")"
+          awk -F'\t' '{printf "%s bytes=%s lines=%s\n", $1, $2, $4}' "$W/source-manifest.tsv"
+
+      - name: Copy the zip (byte for byte) and the manifests to Drive
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/atlas"; OUT="$W/upload"; rm -rf "$OUT"; mkdir -p "$OUT"
+          cp "$W/atlas-history-archive.zip" "$OUT/"
+          cp "$W/source-manifest.tsv" "$OUT/MANIFEST.tsv"
+          cp "$W/source-artifact.tsv" "$OUT/SOURCE-ARTIFACT.tsv"
+          printf '%s  atlas-history-archive.zip\n' "$SOURCE_DIGEST" > "$OUT/SHA256SUMS"
+          rclone copy "$OUT" "$DRIVE_DIR" --transfers 4
+          echo "kept on Drive: $DRIVE_DIR ($(rclone size "$DRIVE_DIR" | tail -1 | sed 's/^ *//'))"
+
+      - name: Verify the Drive copy against the source
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/atlas"; V="$W/verify"; rm -rf "$V" && mkdir -p "$V"
+          rclone copy "$DRIVE_DIR" "$V" --transfers 4
+          (cd "$V" && sha256sum -c SHA256SUMS)
+          REMOTE_MD5=$(rclone md5sum "$DRIVE_DIR/atlas-history-archive.zip" | cut -d' ' -f1)
+          LOCAL_MD5=$(md5sum "$W/atlas-history-archive.zip" | cut -d' ' -f1)
+          [ "$REMOTE_MD5" = "$LOCAL_MD5" ] || { echo "::error::Drive md5 $REMOTE_MD5 != local $LOCAL_MD5"; exit 1; }
+          echo "Drive md5 matches the local zip: $REMOTE_MD5"
+          rm -rf "$V/src" && mkdir -p "$V/src"
+          unzip -q "$V/atlas-history-archive.zip" -d "$V/src"
+          "$W/manifest.sh" "$V/src" > "$W/verify-manifest.tsv"
+          if diff "$W/source-manifest.tsv" "$W/verify-manifest.tsv"; then
+            echo "per-file bytes, sha256 and line counts on Drive match the source manifest"
+          else
+            echo "::error::manifest differs between the source and the Drive copy"; exit 1
+          fi
+          diff -q "$W/source-manifest.tsv" "$V/MANIFEST.tsv" >/dev/null && echo "MANIFEST.tsv on Drive is the source manifest" \
+            || { echo "::error::MANIFEST.tsv on Drive differs from the source manifest"; exit 1; }
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Atlas history archive copied to Drive"
+            echo ""
+            echo "Destination: \`$DRIVE_DIR\`. Source: artifact $SOURCE_ARTIFACT_ID from run 42522123037, sha256 $SOURCE_DIGEST."
+            echo ""
+            echo '```'
+            cat "${RUNNER_TEMP}/atlas/source-manifest.tsv" 2>/dev/null | awk -F'\t' '{printf "%-60s %15s bytes  %12s lines\n", $1, $2, $4}' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -20,7 +20,8 @@ import { KillSwitch } from '../bot/risk/killSwitch';
 import { RiskGateway } from '../bot/risk/riskGateway';
 import { Reconciler } from '../bot/recon/reconciler';
 import { QuotaFloors, type PacerFloorMode } from '../bot/risk/quotaPacer';
-import { decideMatch, MatchTracker, tennisSize, type MatchMarket } from '../bot/tennis/tennisStrategy';
+import { decideMatch, MatchTracker, SCORE_FRESH_MS, tennisLoserCutAt, tennisSize, tennisStartTime, WIN_CHANCE_MAX_SPREAD, type MatchMarket } from '../bot/tennis/tennisStrategy';
+import { impliedModel } from '../bot/tennis/tennisModel';
 import { openExchange, tmpAudit, tmpDir } from './helpers';
 
 const T = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).tennis;
@@ -38,6 +39,8 @@ test('defaults: 25% total tennis cap (and it cannot be raised above 25%)', () =>
   assert.equal(T.maxTotalFrac, 0.25);
   assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_MAX_TOTAL_FRAC: '0.3' }));
   assert.equal(contractKind('KXATPMATCH'), 'match');
+  assert.equal(contractKind('KXWTAMATCH'), 'match');
+  assert.notEqual(contractKind('KXWTAMATCHX'), 'match');
 });
 
 test('sizing respects per-order, per-match and the 25% total cap', () => {
@@ -300,6 +303,15 @@ test('quota floor on tennis (PACER_FLOOR, Steven Oct 31): a leg aiming higher ke
   assert.equal(at(0.83, 4.4, { pacerUsd: 3, floorMode: 'riding', floorTicks: 2 }).plans.length, 0);
   assert.equal(at(0.82, 3.95, { pacerUsd: 3, floorMode: 'riding', floorTicks: 2 }).plans.length, 0);
   assert.equal(at(0.81, 3.8, { pacerUsd: 3, floorMode: 'riding', floorTicks: 2 }).plans[0]?.why, '+$3.80 net on 30 at bid 0.81 fell below its $4.50 floor');
+  // E22: the default 8 ticks on 30 contracts is a $2.40 cushion, more than a $0.75 floor (alone, a line at -$1.65); the line is
+  // never below the smaller of the floor and 1 tick a contract of profit after fees ($0.30 on 30): +$0.35 holds, +$0.05 sells.
+  floors.forget('Q-FAV');
+  assert.equal(at(0.84, 0.9, { pacerUsd: 0.75, floorMode: 'riding', floorTicks: 8 }).plans.length, 0);
+  assert.equal(floors.floor('Q-FAV', 30), 0.75);
+  assert.equal(at(0.83, 0.35, { pacerUsd: 3, floorMode: 'riding', floorTicks: 8 }).plans.length, 0);
+  const kept = at(0.82, 0.05, { pacerUsd: 3, floorMode: 'riding', floorTicks: 8 }).plans[0];
+  assert.deepEqual([kept?.leg, kept?.price, kept?.count, kept?.why], ['quota_snipe', 0.82, 30, '+$0.05 net on 30 at bid 0.82 fell below its $0.75 floor']);
+  assert.equal(at(0.78, -1.5, { pacerUsd: 3, floorMode: 'riding', floorTicks: 8 }).plans[0]?.leg, 'quota_snipe', 'a gap into a loss the cushion alone held to is sold');
   // targets counts the hunt start too; off sells at the quota as before.
   floors.forget('Q-FAV');
   assert.equal(at(0.84, 5, { pacerUsd: 4.5, floorMode: 'targets' }).plans.length, 0);
@@ -333,7 +345,7 @@ test('engine trades tennis inside its own 25% budget and keeps it out of the cry
   const dir = tmpDir();
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false' });
   const now = Date.now();
-  const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + 5 * 60_000 });
+  const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + 5 * 60_000, expirationTime: now + 5 * 60_000 + 14 * 86_400_000 });
   const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
   const rest = {
     getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
@@ -373,12 +385,56 @@ test('engine trades tennis inside its own 25% budget and keeps it out of the cry
   assert.ok(blk.activity > 0.1);
 });
 
+test('engine: with TENNIS_SERIES=KXATPMATCH,KXWTAMATCH (the paper days, deploy/paper-settings.env) WTA matches are tennis matches too', async () => {
+  const dir = tmpDir();
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false',
+    TENNIS_SERIES: 'KXATPMATCH,KXWTAMATCH', TENNIS_CONF_MOMENTUM_CENTS: '0.02', TENNIS_CONF_WINDOW_SEC: '120' });
+  assert.deepEqual(cfg.tennis.series, ['KXATPMATCH', 'KXWTAMATCH']);
+  const now = Date.now();
+  // Closing in 6 h (past the crypto catalog horizon), starting in 5 min: only a match market is kept for that.
+  const m = (series: string, ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: series, eventTicker: `${series}-E1`, status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + 5 * 60_000, expirationTime: now + 5 * 60_000 + 14 * 86_400_000 });
+  const bySeries: Record<string, MarketInfo[]> = {
+    KXATPMATCH: [m('KXATPMATCH', 'KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH', 'KXATPMATCH-E1-DOG', 'Will Dog win?')],
+    KXWTAMATCH: [m('KXWTAMATCH', 'KXWTAMATCH-E1-FAV', 'Will Fav win?'), m('KXWTAMATCH', 'KXWTAMATCH-E1-DOG', 'Will Dog win?')],
+  };
+  const rest = {
+    getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
+    getOpenMarkets: async (s: string) => bySeries[s] ?? [],
+    getMarket: async () => undefined,
+  } as unknown as KalshiRest;
+  const audit = tmpAudit();
+  const md = new MarketData(cfg, rest, undefined, new Recorder(path.join(dir, 'rec')));
+  await md.refreshCatalog(now);
+  for (const s of ['KXATPMATCH', 'KXWTAMATCH']) {
+    assert.equal(md.markets.get(`${s}-E1-DOG`)?.kind, 'match', s);
+    md.book(`${s}-E1-FAV`).applySnapshot({ bids: [{ price: 0.84, size: 100 }], asks: [{ price: 0.86, size: 100 }] }, Date.now());
+    md.book(`${s}-E1-DOG`).applySnapshot({ bids: [{ price: 0.14, size: 300 }], asks: [{ price: 0.17, size: 100 }] }, Date.now());
+  }
+  const paper = new PaperExchange(undefined, 200, (t) => md.books.get(t), () => ({ takerMultiplier: 1, makerMultiplier: 1 }));
+  const kill = new KillSwitch(path.join(dir, 'kill.json'), audit);
+  const oms = new Oms({ gateway: paper, audit, statePath: path.join(dir, 'oms.json'), feesFor: (t) => md.feesFor(t), sleep: async () => undefined });
+  paper.on('fill', (f) => oms.onFill(f));
+  paper.on('order', (o) => oms.onExchangeOrder(o));
+  const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: () => undefined });
+  const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: MetaModel.identity(), exchangeStatus: openExchange() });
+  const r = await recon.run('startup');
+  engine.balance = r!.balance;
+  await engine.tick();
+  assert.deepEqual([...engine.tennisStatus.keys()].sort(), ['KXATPMATCH-E1', 'KXWTAMATCH-E1']);
+  assert.equal(engine.isTennis('KXWTAMATCH-E1-DOG'), true);
+  assert.equal(engine.status.has('KXWTAMATCH-E1-DOG'), false, 'WTA never goes through the crypto pricer');
+  const open = (await paper.getOpenOrders()).map((o) => [o.ticker, o.side, o.price]).sort();
+  assert.deepEqual(open, [['KXATPMATCH-E1-DOG', 'bid', 0.15], ['KXWTAMATCH-E1-DOG', 'bid', 0.15]]);
+  const b = engine.tennisBudget();
+  assert.ok(b.used > 0 && b.used <= b.cap, JSON.stringify(b));
+});
+
 test('engine: the quota snipe sells a tennis position whose profit after fees (entry fee in) covers the hour; the clock audits it', async () => {
   const run = async (entry: number) => {
     const dir = tmpDir();
     const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false' });
     const now = Date.now();
-    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 30 * 60_000 });
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 30 * 60_000, expirationTime: now - 30 * 60_000 + 14 * 86_400_000 });
     const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
     const rest = {
       getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
@@ -417,7 +473,7 @@ test('engine: with the kill switch engaged a tennis position not in profit after
     const dir = tmpDir();
     const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false' });
     const now = Date.now();
-    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 30 * 60_000 });
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 30 * 60_000, expirationTime: now - 30 * 60_000 + 14 * 86_400_000 });
     const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
     const rest = {
       getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
@@ -605,7 +661,7 @@ test('engine: the tennis profit exits get the break-even after fees from the pos
     // Started 2 hours ago, no score feed: a fresh tracker's information clock reads 0 on its first tick, so the progress is half
     // the time clock, about 0.44: past underdogLateProgress (0.35), short of underdogCutProgress (0.6) and of the last 30%
     // (settleFrac: the ride and the end cut), so of the underdog's exits only underdog_late (or the trail from 0.21) can sell.
-    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3 * 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 120 * 60_000 });
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3 * 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 120 * 60_000, expirationTime: now - 120 * 60_000 + 14 * 86_400_000 });
     const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
     const rest = {
       getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
@@ -679,7 +735,7 @@ test('live tennis scores: a match that has not started spends no calls of the da
     const dir = tmpDir();
     const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_SCORE_FEED: 'livetennis' });
     const now = Date.now();
-    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + startInMin * 60_000 });
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + startInMin * 60_000, expirationTime: now + startInMin * 60_000 + 14 * 86_400_000 });
     const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
     const rest = { getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }), getOpenMarkets: async (s: string) => (s === 'KXATPMATCH' ? markets : []), getMarket: async () => undefined } as unknown as KalshiRest;
     const audit = tmpAudit();
@@ -701,4 +757,422 @@ test('live tennis scores: a match that has not started spends no calls of the da
   assert.equal(later.calls, 0, 'starts in 2 hours: no call');
   assert.match(String(later.raw), /no score before the start/);
   assert.equal((await run(5)).calls, 1, 'about to start: the slate is read');
+});
+
+test('live tennis scores: a slate match only one title names gives no score; the one both titles name gives a named score', async () => {
+  const { TennisScoreClient } = await import('../bot/tennis/liveTennisApi');
+  const live = (id: number, p1: string, p2: string, sets: [number, number], games: [number[], number[]]) =>
+    ({ id, status: 'live', tour: 'WTA', sets, games, points: ['15', '0'], server: 1, is_tiebreak: false, player1: { name: p1 }, player2: { name: p2 } });
+  // Erika Andreeva's match, a set all and 5-5: its progress would read about 90% of Mirra Andreeva's match.
+  const sister = live(1, 'Erika Andreeva', 'Anna Blinkova', [1, 1], [[6, 3, 5], [3, 6, 5]]);
+  const real = live(2, 'Coco Gauff', 'Mirra Andreeva', [0, 0], [[1], [0]]);
+  const run = async (slate: object[]) => {
+    const dir = tmpDir();
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_SCORE_FEED: 'livetennis' });
+    const now = Date.now();
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 10 * 60_000, expirationTime: now - 10 * 60_000 + 14 * 86_400_000 });
+    // Titles with surnames only, so the sister's match is found by one of them (with first names it would not be found).
+    const markets = [m('KXATPMATCH-E1-AND', 'Will Andreeva win the Andreeva vs Gauff : Wuhan match?'), m('KXATPMATCH-E1-GAU', 'Will Gauff win the Andreeva vs Gauff : Wuhan match?')];
+    const rest = { getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }), getOpenMarkets: async (s: string) => (s === 'KXATPMATCH' ? markets : []), getMarket: async () => undefined } as unknown as KalshiRest;
+    const audit = tmpAudit();
+    const md = new MarketData(cfg, rest, undefined, new Recorder(path.join(dir, 'rec')));
+    await md.refreshCatalog(now);
+    md.book('KXATPMATCH-E1-AND').applySnapshot({ bids: [{ price: 0.6, size: 100 }], asks: [{ price: 0.62, size: 100 }] }, Date.now());
+    md.book('KXATPMATCH-E1-GAU').applySnapshot({ bids: [{ price: 0.38, size: 100 }], asks: [{ price: 0.4, size: 100 }] }, Date.now());
+    const paper = new PaperExchange(undefined, 200, (t) => md.books.get(t), () => ({ takerMultiplier: 1, makerMultiplier: 1 }));
+    const oms = new Oms({ gateway: paper, audit, statePath: path.join(dir, 'oms.json'), feesFor: (t) => md.feesFor(t), sleep: async () => undefined });
+    const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: () => undefined });
+    const tennisScores = new TennisScoreClient({ apiKey: 'k', fetchFn: (async () => new Response(JSON.stringify({ data: slate, meta: { offset: 0, limit: 200, has_more: false } }), { status: 200 })) as unknown as typeof fetch });
+    const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill: new KillSwitch(path.join(dir, 'kill.json'), audit), recon, model: MetaModel.identity(), exchangeStatus: openExchange(), tennisScores });
+    engine.balance = (await recon.run('startup'))!.balance;
+    await engine.tick();
+    const tr = (engine as unknown as { matches: Map<string, MatchTracker> }).matches.get('KXATPMATCH-E1')!;
+    return { tr, raw: engine.tennisStatus.get('KXATPMATCH-E1')?.scoreRaw };
+  };
+  // Only the sister's match live: found by one surname, not named. No score reaches the tracker, so no progress from it.
+  const one = await run([sister]);
+  assert.ok(one.tr, 'the match is tracked');
+  assert.equal(one.tr.score, undefined, JSON.stringify(one.tr.score));
+  assert.equal(one.tr.scoreOriented, false);
+  assert.match(String(one.raw), /only one of the two players matched a live match/);
+  // Both live, the sister's first: the match both titles name is taken, its score oriented to Mirra Andreeva (the event's
+  // first market, API player two): 0-1 in games.
+  const both = await run([sister, real]);
+  assert.deepEqual(both.tr.score && [both.tr.score.setsA, both.tr.score.setsB, both.tr.score.gamesA, both.tr.score.gamesB], [0, 0, 0, 1]);
+  assert.equal(both.tr.scoreOriented, true);
+});
+
+test('tennis loser cut by the match\'s progress (Steven, Nov 12): 20c at the start, 10c at 60%, 3c from 85%, and the end cut in the last 10%', () => {
+  assert.deepEqual([T.loserCutOpen, T.loserCut, T.loserCutLate, T.endCutFrac, T.probTurn], [0.2, 0.1, 0.03, 0.1, 0.05]);
+  const cfg = (e: Record<string, string>) => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), ...e }).tennis;
+  // Ends left unset follow the middle without crossing it; ends set by hand must stay on their side.
+  assert.deepEqual([cfg({ TENNIS_LOSER_CUT_C: '15' }).loserCutOpen, cfg({ TENNIS_LOSER_CUT_C: '15' }).loserCutLate], [0.2, 0.03]);
+  assert.deepEqual([cfg({ TENNIS_LOSER_CUT_C: '25' }).loserCutOpen, cfg({ TENNIS_LOSER_CUT_C: '2' }).loserCutLate], [0.25, 0.02]);
+  assert.equal(cfg({ TENNIS_LOSER_CUT_C: '0' }).loserCut, 0);
+  // A fraction of a cent: unset ends follow it unrounded; an end set by hand goes down to 0.01c.
+  const frac = cfg({ TENNIS_LOSER_CUT_C: '0.5' });
+  assert.deepEqual([frac.loserCutOpen, frac.loserCut, frac.loserCutLate], [0.2, 0.005, 0.005]);
+  assert.equal(cfg({ TENNIS_LOSER_CUT_C: '2.5' }).loserCutLate, 0.025);
+  assert.equal(cfg({ TENNIS_LOSER_CUT_C: '0.5', TENNIS_LOSER_CUT_LATE_C: '0.25' }).loserCutLate, 0.0025);
+  assert.throws(() => cfg({ TENNIS_LOSER_CUT_LATE_C: '0' }), /TENNIS_LOSER_CUT_LATE_C=0 must be a number in \[0.01, 99\]/);
+  assert.throws(() => cfg({ TENNIS_LOSER_CUT_OPEN_C: '5' }), /TENNIS_LOSER_CUT_OPEN_C=5 must be at least TENNIS_LOSER_CUT_C=10/);
+  assert.throws(() => cfg({ TENNIS_LOSER_CUT_LATE_C: '12' }), /TENNIS_LOSER_CUT_LATE_C=12 must be at most TENNIS_LOSER_CUT_C=10/);
+  // The line, dollars a contract under the entry, by the share of the match done.
+  const line = { loserCut: T.loserCut, loserCutOpen: T.loserCutOpen, loserCutLate: T.loserCutLate };
+  for (const [done, want] of [[0, 0.2], [0.3, 0.15], [0.6, 0.1], [0.725, 0.065], [0.85, 0.03], [0.95, 0.03], [-1, 0.2], [NaN, 0.2]]) {
+    assert.ok(Math.abs(tennisLoserCutAt(line, done) - want) < 1e-9, `${done}: ${tennisLoserCutAt(line, done)} vs ${want}`);
+  }
+  assert.equal(tennisLoserCutAt({ loserCut: 0 }, 0.5), 0, 'off');
+  assert.equal(tennisLoserCutAt({ loserCut: 0.1 }, 0.1), 0.1, 'ends unset: flat');
+
+  const rules = { pacerUsd: 4.5, settleFrac: T.settleFrac, endLoserCut: true, endEntryMargin: T.endEntryMargin, endCutFrac: T.endCutFrac, ...line };
+  // A favorite held from 0.80, 30 contracts (no loss exit of its own: TENNIS_FAV_STOP_CENTS is 0), the progress held 3 minutes.
+  const fav = (prog: number, bid: number, net: number, r: object = rules) => {
+    const tr = new MatchTracker('P', T);
+    tr.progress = () => prog;
+    const at = (now: number) => decideMatch(tr, { event: 'P', now, startTime: t0, closeTime: t0 + 86_400_000, markets: [mk('P-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('P-DOG', 1 - bid - 0.02, 1 - bid)] }, T, budget, 0.01, r);
+    for (let k = 6; k > 0; k--) at(t0 + 3_600_000 - k * 30_000);
+    return at(t0 + 3_600_000);
+  };
+  // 30% done: the line is 15c. 14c under the entry is held; 15c is sold at the bid.
+  assert.equal(fav(0.3, 0.66, -4.5).plans.length, 0);
+  const cut = fav(0.3, 0.65, -4.8).plans;
+  assert.equal(cut.length, 1, JSON.stringify(cut));
+  assert.deepEqual([cut[0].leg, cut[0].side, cut[0].price, cut[0].count, cut[0].reduceOnly, cut[0].postOnly, cut[0].timeInForce], ['loser_cut', 'ask', 0.65, 30, true, false, 'immediate_or_cancel']);
+  assert.equal(cut[0].why, 'loser cut: bid 0.65 is 15.0c under the 0.8 entry, the cut is 15.0c at match 30% done (-$4.80 after fees)');
+  // 75% done (inside the 30% where winners ride, not in profit): the line is 5.8c. The end cut no longer sells it at 70%.
+  assert.equal(fav(0.75, 0.79, -0.8).plans.length, 0, 'a 1c loss at 75% is held');
+  assert.equal(fav(0.75, 0.75, -1.8).plans.length, 0, 'a 5c loss at 75% is held');
+  const late = fav(0.75, 0.74, -2.1).plans;
+  assert.equal(late[0]?.leg, 'loser_cut', JSON.stringify(late));
+  assert.equal(late[0]?.why, 'loser cut: bid 0.74 is 6.0c under the 0.8 entry, the cut is 5.8c at match 75% done (-$2.10 after fees)');
+  // From 85%: 3c.
+  assert.equal(fav(0.87, 0.78, -0.9).plans.length, 0);
+  assert.equal(fav(0.87, 0.76, -1.5).plans[0]?.leg, 'loser_cut');
+  // The last 10%: anything not in profit after fees is sold at the bid, break-even included.
+  const end = fav(0.9, 0.79, -0.8).plans;
+  assert.equal(end[0]?.leg, 'end_cut', JSON.stringify(end));
+  assert.equal(end[0]?.why, 'match 90% done (its last 10%), -$0.80 after fees at bid 0.79: not in profit, not held to settlement');
+  assert.equal(fav(0.9, 0.81, 0).plans[0]?.leg, 'end_cut');
+  // In profit it rides; with the cut off the loss is the legs' (none here).
+  assert.equal(fav(0.75, 0.84, 1).plans.length, 0);
+  assert.equal(fav(0.3, 0.5, -9, { ...rules, loserCut: 0 }).plans.length, 0);
+  // Without endCutFrac (the research backtest before Nov 12, an old caller) the end cut keeps settleFrac's 30%.
+  assert.equal(fav(0.75, 0.79, -0.8, { ...rules, endCutFrac: undefined }).plans[0]?.leg, 'end_cut');
+
+  // No new entry from 85% (the last 10% less TENNIS_END_ENTRY_MARGIN): a favorite is still bought at 80%.
+  const entry = (prog: number, high = 0) => {
+    const tr = new MatchTracker('Q', T);
+    tr.liveSince = t0;
+    tr.progress = () => prog;
+    tr.progressHigh = high;
+    let now = t0 + 60 * 60_000;
+    const snap = () => ({ event: 'Q', now, closeTime: t0 + 86_400_000, markets: [mkb('Q-A', 0.84, 0.86, 300, 100, now, { flow: 0.5 }), mk('Q-B', 0.14, 0.16)] });
+    for (let i = 0; i < 12; i++) { decideMatch(tr, snap(), T, budget, 0.01, rules); now += 30_000; }
+    return decideMatch(tr, snap(), T, budget, 0.01, rules);
+  };
+  assert.equal(entry(0.8).plans[0]?.leg, 'fav_entry');
+  const none = entry(0.86);
+  assert.equal(none.plans.length, 0, JSON.stringify(none.plans));
+  assert.ok(none.notes.some((n) => n.includes('its last 10% from 90%') && n.includes('no new entry (fav_entry)')), JSON.stringify(none.notes));
+});
+
+test('tennis: a position riding to settlement in profit is sold, still in profit, once the win chance turns (TENNIS_PROB_TURN, Steven Nov 12)', () => {
+  const rules = { pacerUsd: 4.5, settleFrac: T.settleFrac, endLoserCut: true, endEntryMargin: T.endEntryMargin, endCutFrac: T.endCutFrac,
+    loserCut: T.loserCut, loserCutOpen: T.loserCutOpen, loserCutLate: T.loserCutLate, probTurn: T.probTurn };
+  type Score = { setsA: number; setsB: number; gamesA: number; gamesB: number; pointsA: number; pointsB: number };
+  const ride = (prog: number | (() => number), r: object = rules) => {
+    const tr = new MatchTracker('R', T);
+    tr.progress = typeof prog === 'function' ? prog : () => prog;
+    const clock = { now: t0 + 3_600_000 };
+    const at = (bid: number, net: number, score?: Score, extra: { scoreAt?: number; scoreOriented?: boolean } = {}) => {
+      const o = decideMatch(tr, { event: 'R', now: clock.now, startTime: t0, closeTime: t0 + 86_400_000, score, ...extra, markets: [mk('R-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('R-DOG', 1 - bid - 0.02, 1 - bid)] }, T, budget, 0.01, r);
+      clock.now += 30_000;
+      return o;
+    };
+    return { tr, at, clock };
+  };
+  // Without a score the win chance is the market's: the two books' mid, the bid + 1c here.
+  const a = ride(0.8);
+  for (const b of [0.88, 0.9, 0.92]) assert.equal(a.at(b, 2).plans.length, 0, 'rides');
+  assert.ok(Math.abs(a.tr.rides.get('R-FAV')!.market! - 0.93) < 1e-9);
+  const held = a.at(0.89, 1.6);
+  assert.equal(held.plans.length, 0, 'down 3 points: still riding');
+  assert.ok(held.notes.some((n) => n.includes('riding to settlement, win chance 90% by the market (best 93%)')), JSON.stringify(held.notes));
+  const turn = a.at(0.87, 1).plans;
+  assert.equal(turn.length, 1, JSON.stringify(turn));
+  assert.deepEqual([turn[0].leg, turn[0].side, turn[0].price, turn[0].count, turn[0].reduceOnly, turn[0].timeInForce], ['prob_turn', 'ask', 0.87, 30, true, 'immediate_or_cancel']);
+  assert.equal(turn[0].why, 'riding in profit (match 80% done), win chance 88% by the market, down 5.0 points from 93%: selling +$1.00 after fees at bid 0.87');
+  // Out of profit by the time it turns: the cuts take it (4.4c at 80%: a 1c loss is held), and the ride ends.
+  const b = ride(0.8);
+  for (const x of [0.9, 0.92]) b.at(x, 2);
+  assert.equal(b.at(0.79, -0.8).plans.length, 0);
+  assert.equal(b.tr.rides.has('R-FAV'), false);
+  // Off: rides through the drop. Before the last 30% there is no ride: the legs decide.
+  const c = ride(0.8, { ...rules, probTurn: 0 });
+  for (const x of [0.92, 0.87]) assert.equal(c.at(x, 1).plans.length, 0);
+  const d = ride(0.5);
+  for (const x of [0.92, 0.87]) assert.ok(d.at(x, 1).plans.every((p) => p.leg !== 'prob_turn'));
+  assert.equal(d.tr.rides.has('R-FAV'), false);
+  // Without a score the progress is half the information clock, which falls back as the leader's price falls: the turn this
+  // exit is for pulls the progress under 70%. A ride once begun goes on while in profit, so the turn is still caught.
+  let p = 0.75;
+  const f = ride(() => p);
+  assert.equal(f.at(0.92, 2).plans.length, 0);
+  p = 0.66;
+  assert.equal(f.at(0.9, 1.6).plans.length, 0, 'still riding at 66%');
+  const back = f.at(0.87, 1).plans;
+  assert.equal(back[0]?.leg, 'prob_turn', JSON.stringify(back));
+  assert.equal(back[0]?.why, 'riding in profit (match 66% done), win chance 88% by the market, down 5.0 points from 93%: selling +$1.00 after fees at bid 0.87');
+
+  // With a live score that names its players (the Live Tennis feed) the scoring model's chance counts too, on serve odds
+  // calibrated to the starting price (70% here): a set and a break up at 4-2 is 97%; 4-3 is 4.8 points down (rides); broken
+  // back at 4-4 it is 11.7 points down (sold) while the market has not moved.
+  const sc = (gamesA: number, gamesB: number): Score => ({ setsA: 1, setsB: 0, gamesA, gamesB, pointsA: 0, pointsB: 0 });
+  const named = { scoreOriented: true };
+  const e = ride(0.8);
+  e.tr.liveSince = t0;
+  e.tr.pStart = 0.7;
+  assert.equal(e.at(0.9, 2, sc(4, 2), named).plans.length, 0);
+  const e43 = e.at(0.9, 2, sc(4, 3), named);
+  assert.equal(e43.plans.length, 0);
+  assert.ok(e43.notes.some((n) => n.includes('win chance 92% by the score (best 97%), 91% by the market (best 91%)')), JSON.stringify(e43.notes));
+  const s44 = e.at(0.9, 1.5, sc(4, 4), named).plans;
+  assert.equal(s44[0]?.leg, 'prob_turn', JSON.stringify(s44));
+  assert.equal(s44[0]?.why, 'riding in profit (match 80% done), win chance 85% by the score, down 11.7 points from 97%: selling +$1.50 after fees at bid 0.9');
+  // Kalshi's live data does not say which player is home: its score gives no win chance, only the market does.
+  const k = ride(0.8);
+  k.tr.liveSince = t0;
+  k.tr.pStart = 0.7;
+  for (const g of [sc(4, 2), sc(4, 3), sc(4, 4)]) assert.equal(k.at(0.9, 2, g).plans.length, 0);
+  assert.equal(k.tr.rides.get('R-FAV')?.score, undefined);
+  // A stale score (the feed out of calls: the engine passes the last good one on) gives none either; a market turn is caught.
+  const g = ride(0.8);
+  g.tr.liveSince = t0;
+  g.tr.pStart = 0.7;
+  const readAt = g.clock.now;
+  assert.equal(g.at(0.9, 2, sc(4, 2), { ...named, scoreAt: readAt }).plans.length, 0);
+  g.clock.now = readAt + SCORE_FRESH_MS + 60_000;
+  assert.equal(g.at(0.9, 2, sc(4, 2), { ...named, scoreAt: readAt }).plans.length, 0);
+  const stale = g.at(0.85, 1, sc(4, 2), { ...named, scoreAt: readAt }).plans;
+  assert.equal(stale[0]?.leg, 'prob_turn', JSON.stringify(stale));
+  assert.ok(stale[0]?.why.includes('win chance 86% by the market, down 5.0 points from 91%'), stale[0]?.why);
+  // A ride begun on the market at 95% is not sold when the first score arrives with a lower estimate: each reading keeps its own best.
+  const h = ride(0.8);
+  h.tr.liveSince = t0;
+  h.tr.pStart = 0.7;
+  assert.equal(h.at(0.94, 3).plans.length, 0);
+  assert.equal(h.at(0.94, 3, sc(4, 4), named).plans.length, 0);
+  assert.ok(Math.abs(h.tr.rides.get('R-FAV')!.score! - 0.8529) < 1e-3);
+});
+
+test('MatchTracker.winChance: the market\'s price, and the scoring model\'s from a fresh live score that names its players; the other player\'s is its complement', () => {
+  const ms = [mk('S-A', 0.69, 0.71), mk('S-B', 0.29, 0.31)];
+  const tr = new MatchTracker('S', T);
+  const m = tr.winChance(ms, 'S-A', t0);
+  assert.equal(m?.score, undefined);
+  assert.ok(Math.abs(m!.market! - 0.7) < 1e-9);
+  assert.ok(Math.abs(tr.winChance(ms, 'S-B', t0)!.market! - 0.3) < 1e-9);
+  assert.equal(tr.winChance(ms, 'S-X', t0), undefined);
+  // One tick's thin or one-sided book is no market reading: a book wider than WIN_CHANCE_MAX_SPREAD (6c), or one with no bid.
+  assert.equal(WIN_CHANCE_MAX_SPREAD, 0.06);
+  assert.ok(Math.abs(tr.winChance([mk('S-A', 0.68, 0.74), ms[1]], 'S-A', t0)!.market! - 0.705) < 1e-9, '6c counts');
+  assert.equal(tr.winChance([mk('S-A', 0.69, 0.71), mk('S-B', 0.29, 0.40)], 'S-A', t0)?.market, undefined, '11c');
+  assert.equal(tr.winChance([ms[0], { ...ms[1], quote: { ask: 0.31 } } as MatchMarket], 'S-A', t0)?.market, undefined, 'no bid');
+  tr.liveSince = t0;
+  tr.pStart = 0.7;
+  tr.score = { setsA: 1, setsB: 0, gamesA: 3, gamesB: 1, pointsA: 0, pointsB: 0 };
+  tr.scoreAt = t0;
+  assert.equal(tr.winChance(ms, 'S-A', t0)?.score, undefined, 'not named (Kalshi live data): no score reading');
+  tr.scoreOriented = true;
+  const want = impliedModel(0.7, tr.format(ms), T.serveBase).remaining(tr.score).pA;
+  assert.ok(want > 0.95, `${want}`);
+  assert.equal(tr.winChance(ms, 'S-A', t0 + 60_000)?.score, want);
+  assert.equal(tr.winChance(ms, 'S-B', t0 + 60_000)?.score, 1 - want);
+  assert.equal(tr.winChance(ms, 'S-A', t0 + SCORE_FRESH_MS)?.score, want, 'fresh to the limit');
+  const old = tr.winChance(ms, 'S-A', t0 + SCORE_FRESH_MS + 1);
+  assert.equal(old?.score, undefined, 'stale');
+  assert.ok(old?.market !== undefined);
+  // observe() takes the snapshot's flags: the time the score was read (else now) and whether it names its players.
+  const o = new MatchTracker('O', T);
+  const snap = (extra: object) => ({ event: 'O', now: t0 + 600_000, startTime: t0, closeTime: t0 + 86_400_000, markets: ms, score: tr.score, ...extra });
+  o.observe(snap({ scoreAt: t0 + 500_000, scoreOriented: true }));
+  assert.deepEqual([o.scoreAt, o.scoreOriented], [t0 + 500_000, true]);
+  o.observe(snap({}));
+  assert.deepEqual([o.scoreAt, o.scoreOriented], [t0 + 600_000, false]);
+});
+
+test('tennis: a ride survives a tick with no usable bid, and one tick\'s thin or one-sided book is no win-chance reading (review, Nov 12)', () => {
+  const rules = { pacerUsd: 4.5, settleFrac: T.settleFrac, endLoserCut: true, endEntryMargin: T.endEntryMargin, endCutFrac: T.endCutFrac,
+    loserCut: T.loserCut, loserCutOpen: T.loserCutOpen, loserCutLate: T.loserCutLate, probTurn: T.probTurn };
+  type Q = [number | undefined, number | undefined];
+  const book = (fav: Q, dog: Q, net: number | undefined): MatchMarket[] => [
+    { ticker: 'R-FAV', quote: { bid: fav[0], ask: fav[1] }, position: 30, avgEntry: 0.8, netAtBid: net } as MatchMarket,
+    { ticker: 'R-DOG', quote: { bid: dog[0], ask: dog[1] }, position: 0 } as MatchMarket];
+  // The two books 2c wide and mirrored: the market's win chance is the bid + 1c.
+  const two = (bid: number, net: number) => book([bid, bid + 0.02], [1 - bid - 0.02, 1 - bid], net);
+  const run = (prog: () => number) => {
+    const tr = new MatchTracker('R', T);
+    tr.progress = prog;
+    let now = t0 + 3_600_000;
+    const at = (markets: MatchMarket[]) => {
+      const o = decideMatch(tr, { event: 'R', now, startTime: t0, closeTime: t0 + 86_400_000, markets }, T, budget, 0.01, rules);
+      now += 30_000;
+      return o;
+    };
+    return { tr, at };
+  };
+  const turned = (o: { plans: { leg: string }[] }) => o.plans.some((p) => p.leg === 'prob_turn');
+
+  // No usable bid for a tick (a reconnect, a stale or crossed book, a feed-lag halt): the profit is unknown, so the ride and its
+  // best stand and nothing sells. The turn from the best (93%) is still caught at 0.87 the tick after.
+  const a = run(() => 0.8);
+  a.at(two(0.92, 2));
+  assert.equal(turned(a.at(two(0.9, 1.6))), false);
+  const gap = a.at(book([undefined, 0.93], [0.07, 0.09], undefined));
+  assert.equal(gap.plans.length, 0, JSON.stringify(gap.plans));
+  assert.ok(gap.notes.some((n) => n.includes('R-FAV: riding to settlement, no usable bid this tick')), JSON.stringify(gap.notes));
+  assert.ok(Math.abs(a.tr.rides.get('R-FAV')!.market! - 0.93) < 1e-9);
+  const sold = a.at(two(0.87, 1)).plans;
+  assert.equal(sold[0]?.leg, 'prob_turn', JSON.stringify(sold));
+  assert.ok(sold[0].why.includes('down 5.0 points from 93%'), sold[0].why);
+  // Through a comeback (progress back to 66%, never latched past 70%) a gap tick does not end the ride either: +$8 rides on,
+  // where without the ride the quota snipe would sell it.
+  let p = 0.75;
+  const b = run(() => p);
+  b.at(two(0.92, 8));
+  p = 0.66;
+  b.at(book([undefined, 0.94], [0.06, 0.08], undefined));
+  assert.ok(b.tr.rides.has('R-FAV'));
+  const on = b.at(two(0.92, 8));
+  assert.equal(on.plans.length, 0, JSON.stringify(on.plans));
+  assert.ok(on.notes.some((n) => n.includes('riding to settlement, win chance 93% by the market (best 93%)')), JSON.stringify(on.notes));
+
+  // One tick's thin or one-sided book moves the mid with no trade: no reading, so no sale and no new best.
+  const c = run(() => 0.8);
+  c.at(two(0.86, 2.9));
+  for (const thin of [book([0.86, 0.88], [0.12, 0.34], 2.9), book([0.86, 0.99], [0.01, 0.14], 2.9), book([0.86, 0.99], [undefined, undefined], 2.9)]) {
+    assert.equal(turned(c.at(thin)), false, JSON.stringify(thin));
+    assert.ok(Math.abs(c.tr.rides.get('R-FAV')!.market! - 0.87) < 1e-9);
+  }
+  assert.equal(turned(c.at(two(0.86, 2.9))), false);
+  const real = c.at(two(0.81, 1)).plans;
+  assert.equal(real[0]?.leg, 'prob_turn', JSON.stringify(real));
+  assert.ok(real[0].why.includes('win chance 82% by the market, down 5.0 points from 87%'), real[0].why);
+});
+
+test('tennis: after a ride is sold on a turn, the favorite leg does not buy the same player back that match (review, Nov 12)', () => {
+  // The underdog cut off (TENNIS_UNDERDOG_CUT_PROGRESS=0), so the underdog leg still holds R-A at 75% and rides it.
+  const T0 = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_UNDERDOG_CUT_PROGRESS: '0' }).tennis;
+  const rules = { pacerUsd: 4.5, settleFrac: T0.settleFrac, endLoserCut: T0.endLoserCut, endEntryMargin: T0.endEntryMargin, endCutFrac: T0.endCutFrac,
+    loserCut: T0.loserCut, loserCutOpen: T0.loserCutOpen, loserCutLate: T0.loserCutLate, probTurn: T0.probTurn };
+  const tr = new MatchTracker('R', T0);
+  tr.progress = () => 0.75;
+  tr.underdogTicker = 'R-A';
+  tr.underdogEntered = true;
+  tr.liveSince = t0;
+  tr.pStart = 0.3;
+  let now = t0 + 90 * 60_000;
+  const tick = (bid: number, pos: number) => {
+    const markets = [mkb('R-A', bid, bid + 0.02, 300, 100, now, { position: pos, avgEntry: pos ? 0.3 : undefined, netAtBid: pos ? 15 : undefined, flow: 0.5 }), mkb('R-B', 0.98 - bid - 0.02, 0.98 - bid, 100, 300, now)];
+    const o = decideMatch(tr, { event: 'R', now, startTime: t0, closeTime: t0 + 86_400_000, markets }, T0, budget, 0.01, rules);
+    now += 30_000;
+    return o;
+  };
+  // Rides from a 0.92 bid; a slide of 0.2c a tick turns it 5 points down at 0.87.
+  let b = 0.92;
+  for (let i = 0; i < 6; i++) tick(b, 30);
+  let sale;
+  for (let i = 0; i < 40 && !sale; i++) {
+    b = Math.round((b - 0.002) * 1000) / 1000;
+    sale = tick(b, 30).plans.find((p) => p.leg === 'prob_turn');
+  }
+  assert.ok(sale && sale.price === 0.87 && sale.count === 30, JSON.stringify(sale));
+  assert.deepEqual([...tr.turnSold], ['R-A']);
+  // Flat the tick after: the favorite leg would buy R-A back (the leader at 0.88, inside 0.75-0.92); the turn sale blocks it.
+  const after = tick(b, 0);
+  assert.equal(after.plans.filter((p) => p.ticker === 'R-A' && p.side === 'bid').length, 0, JSON.stringify(after.plans));
+  assert.ok(after.notes.some((n) => n.includes('no new entry on R-A (fav_entry): a ride was sold there this match when the win chance turned')), JSON.stringify(after.notes));
+  tr.turnSold.clear();
+  assert.ok(tick(b, 0).plans.some((p) => p.ticker === 'R-A' && p.leg === 'fav_entry'), 'without the block the leg buys it back');
+});
+
+test('match clock: the real start is expiration_time minus 14 days; without it, the published time moved 3 hours earlier', () => {
+  const real = t0;
+  const published = real + 3 * 3_600_000; // Kalshi's start field on tennis: the expected finish
+  const expiration = real + 14 * 86_400_000;
+  assert.equal(T.startFromExpiry, true);
+  assert.equal(T.startShiftMin, 180);
+  assert.equal(tennisStartTime(published, expiration, T), real);
+  assert.equal(tennisStartTime(published, undefined, T), published - 180 * 60_000);
+  // An expiration that does not fit the rule (after the published time, or more than 6 h before it) is not used.
+  assert.equal(tennisStartTime(published, published + 60_000 + 14 * 86_400_000, T), published - 180 * 60_000);
+  assert.equal(tennisStartTime(published, published - 7 * 3_600_000 + 14 * 86_400_000, T), published - 180 * 60_000);
+  assert.equal(tennisStartTime(published, expiration, { startFromExpiry: false, startShiftMin: 180 }), published - 180 * 60_000);
+  assert.equal(tennisStartTime(undefined, expiration, T), undefined, 'no published time: the tracker reads play from the price');
+  const old = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_START_FROM_EXPIRY: 'false', TENNIS_START_SHIFT_MIN: '0', TENNIS_LIVE_BY_MOVE: 'false' }).tennis;
+  assert.equal(tennisStartTime(published, expiration, old), published, 'both off: the old clock');
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_START_SHIFT_MIN: '601' }));
+});
+
+test('match clock: a 3c move in the hour before the start marks the match live; earlier, without a move, or with TENNIS_LIVE_BY_MOVE=false it does not', () => {
+  assert.equal(T.liveByMove, true);
+  assert.equal(T.liveByMoveLeadMin, 60);
+  const off = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_LIVE_BY_MOVE: 'false' }).tennis;
+  const run = (cfg: typeof T, startInMin: number, dogTo: number) => {
+    const tr = new MatchTracker('M', cfg);
+    const snap = (now: number, dog: number) => ({ event: 'M', now, startTime: t0 + startInMin * 60_000, closeTime: t0 + 86_400_000, markets: [mk('M-FAV', 1 - dog - 0.02, 1 - dog), mk('M-DOG', dog - 0.01, dog + 0.01)] });
+    tr.observe(snap(t0 - 60_000, 0.2));
+    const phase = tr.observe(snap(t0, dogTo));
+    return { live: tr.liveSince, phase };
+  };
+  const moved = run(T, 45, 0.25);
+  assert.equal(moved.live, t0, 'in play 45 minutes before the listed start');
+  assert.equal(moved.phase, 'underdog_window');
+  assert.equal(run(T, 45, 0.2).live, undefined, 'no move: still pre-match');
+  assert.equal(run(T, 90, 0.25).live, undefined, 'more than an hour before the start: a move is news, not play');
+  assert.equal(run(off, 45, 0.25).live, undefined, 'TENNIS_LIVE_BY_MOVE=false: only the clock starts the match');
+});
+
+test('match clock: a Kalshi-style listing (start field = expected finish) goes live at the real start and reads Live Tennis from it', async () => {
+  const { TennisScoreClient } = await import('../bot/tennis/liveTennisApi');
+  const run = async (startedMinAgo: number, withExpiry = true) => {
+    const dir = tmpDir();
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_SCORE_FEED: 'livetennis' });
+    const now = Date.now();
+    const real = now - startedMinAgo * 60_000;
+    // As listed on Nov 12: occurrence_datetime 3 h after the first serve, expiration_time the first serve plus 14 days.
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: real + 3 * 3_600_000, tickSize: 0.01, title, startTime: real + 3 * 3_600_000, ...(withExpiry ? { expirationTime: real + 14 * 86_400_000 } : {}) });
+    const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
+    const rest = { getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }), getOpenMarkets: async (s: string) => (s === 'KXATPMATCH' ? markets : []), getMarket: async () => undefined } as unknown as KalshiRest;
+    const audit = tmpAudit();
+    const md = new MarketData(cfg, rest, undefined, new Recorder(path.join(dir, 'rec')));
+    await md.refreshCatalog(now);
+    md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: 0.84, size: 100 }], asks: [{ price: 0.86, size: 100 }] }, Date.now());
+    md.book('KXATPMATCH-E1-DOG').applySnapshot({ bids: [{ price: 0.14, size: 300 }], asks: [{ price: 0.17, size: 100 }] }, Date.now());
+    const paper = new PaperExchange(undefined, 200, (t) => md.books.get(t), () => ({ takerMultiplier: 1, makerMultiplier: 1 }));
+    const oms = new Oms({ gateway: paper, audit, statePath: path.join(dir, 'oms.json'), feesFor: (t) => md.feesFor(t), sleep: async () => undefined });
+    const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: () => undefined });
+    let calls = 0;
+    const tennisScores = new TennisScoreClient({ apiKey: 'k', fetchFn: (async () => { calls++; return new Response(JSON.stringify({ data: [], meta: { offset: 0, limit: 200, has_more: false } }), { status: 200 }); }) as unknown as typeof fetch });
+    const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill: new KillSwitch(path.join(dir, 'kill.json'), audit), recon, model: MetaModel.identity(), exchangeStatus: openExchange(), tennisScores });
+    engine.balance = (await recon.run('startup'))!.balance;
+    await engine.tick();
+    const tr = (engine as unknown as { matches: Map<string, MatchTracker> }).matches.get('KXATPMATCH-E1');
+    return { calls, real, tr, status: engine.tennisStatus.get('KXATPMATCH-E1') };
+  };
+  // Ten minutes into the match: before the fix the bot read it as starting in 2 h 50 min, pre-match, and never asked for a score.
+  const inPlay = await run(10);
+  assert.equal(inPlay.status?.publishedStart, inPlay.real + 3 * 3_600_000);
+  assert.equal(inPlay.status?.startTime, inPlay.real);
+  assert.equal(inPlay.tr?.liveSince, inPlay.real, 'live from the real first serve');
+  assert.equal(inPlay.calls, 1, 'Live Tennis is read for a match in play');
+  // Two hours before the first serve: pre-match, no call.
+  const early = await run(-120);
+  assert.equal(early.tr?.liveSince, undefined);
+  assert.equal(early.calls, 0);
+  // No expiration_time on the listing: the published time moved 3 h earlier gives the same start.
+  const noExpiry = await run(10, false);
+  assert.equal(noExpiry.status?.startTime, noExpiry.real);
+  assert.equal(noExpiry.tr?.liveSince, noExpiry.real);
 });

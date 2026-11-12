@@ -41,7 +41,8 @@ jobs:
           RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
         run: |
           if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF secret is not set"; exit 1; fi
-          sudo apt-get install -y -qq rclone zstd xz-utils pigz >/dev/null
+          bash .github/scripts/install-rclone.sh
+          sudo apt-get install -y -qq zstd xz-utils pigz >/dev/null
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
           npm ci --ignore-scripts --silent >/dev/null 2>&1 && npm i -g tsx@4 --silent >/dev/null 2>&1

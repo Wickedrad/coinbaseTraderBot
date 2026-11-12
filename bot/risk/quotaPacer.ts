@@ -36,6 +36,15 @@ export type PacerMode = 'slices' | 'cumulative' | 'rolling_hour';
  *  off: the quota snipe sells at the quota whatever the other rules aim for. */
 export type PacerFloorMode = 'off' | 'targets' | 'riding';
 
+/** PACER_PLAN's snipe line on a plan (heat-lane) position, dollars of net at the bid for the rest of it (Steven, Nov 12 1:13 AM
+ *  EST / 06:13 UTC: "Hybrid with the $1.50 guard"). 'hybrid': the hour's need, and the whole trade at least the ratchet's
+ *  arming net, so what partial sales banked counts as the ratchet counts it (a rest at +$1.60 after a -$0.53 cut fill is a
+ *  +$1.07 trade, under the guard). 'need': the need alone. 'off' or no need: none (pipeline decision 13, pace only). */
+export function planPacerLine(mode: 'off' | 'hybrid' | 'need' | undefined, needUsd: number | undefined, armUsd: number, bankedUsd = 0): number | undefined {
+  if (needUsd === undefined || mode === undefined || mode === 'off') return undefined;
+  return mode === 'hybrid' ? Math.max(needUsd, armUsd - (Number.isFinite(bankedUsd) ? bankedUsd : 0)) : needUsd;
+}
+
 export interface PacerConfig {
   /** PACER: the quota snipe is on. */
   enabled: boolean;
@@ -59,8 +68,15 @@ export interface PacerConfig {
   /** PACER_FLOOR: the quota as a stop under a higher target (riding by default). */
   floor: PacerFloorMode;
   /** PACER_FLOOR_TICKS (8): the floor sells once the position's profit is this many price ticks a contract under it, not
-   *  at the first dip below it (Kalshi contracts: crypto and tennis; perps have no contract tick and keep the floor as is). */
+   *  at the first dip below it, or sooner, once the profit after fees falls below the smaller of the floor and 1 tick a
+   *  contract (quotaCall's `keep`) (Kalshi contracts: crypto and tennis; perps have no contract tick and keep the floor as is). */
   floorTicks: number;
+  /** PACER_PLAN: the snipe on heat-lane (plan) positions (Steven, Nov 12 1:10 AM EST / 06:10 UTC, "should the pacer work as a
+   *  hybrid"; pipeline decision 13 had it report pace only). 'hybrid': one more exit beside the plan's (whichever fires
+   *  first), selling once the position's profit after fees covers what the hour needs and the ratchet's arming net, so it
+   *  never takes a smaller win than the ratchet would; 'need': at the hour's need alone; 'off': pace only (decision 13). No
+   *  floor and no group on a plan position in any mode. */
+  plan?: 'off' | 'hybrid' | 'need';
 }
 
 export const CYCLE_HOURS = 24;
@@ -248,10 +264,15 @@ export interface QuotaCall {
 /** The quota's call on one position: `net` its profit after fees at the touch now, `need` what the hour needs (undefined: the
  *  pacer is off or the position is not judged), `floor` its armed floor (QuotaFloors), `higher` why another exit rule aims
  *  higher (undefined: none, or PACER_FLOOR off). */
-export function quotaCall(net: number | undefined, need: number | undefined, floor: number | undefined, higher: string | undefined, cushion = 0): QuotaCall {
+export function quotaCall(net: number | undefined, need: number | undefined, floor: number | undefined, higher: string | undefined, cushion = 0, keep = 0): QuotaCall {
   if (net === undefined) return {};
   // `cushion` (PACER_FLOOR_TICKS, in dollars for the position): how far under the floor the profit may dip before it sells.
-  if (floor !== undefined && net < floor - cushion - 1e-9) return { sell: 'floor' };
+  // `keep` (1 tick a contract, in dollars for the position; `net` is already after fees): the cushion never takes the sale
+  // line below this much profit, nor below the floor itself when the floor is smaller (E22). The cushion grows with the
+  // contract count: 8 ticks on 30 contracts ($2.40) under a $0.75 floor had put the line at -$1.65; it is now +$0.30.
+  // This bounds the line, not the price the sale gets: the bid that crosses it can land a tick a contract lower (more where
+  // the fee steps up), so a sale can land just under zero after fees; and a floor under 1 tick a contract keeps no cushion.
+  if (floor !== undefined && net < Math.max(floor - cushion, Math.min(floor, keep)) - 1e-9) return { sell: 'floor' };
   if (need === undefined || net < need - 1e-9) return {};
   return higher !== undefined ? { arm: need } : { sell: 'snipe' };
 }

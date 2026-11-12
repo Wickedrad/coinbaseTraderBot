@@ -1,3 +1,4 @@
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
@@ -67,4 +68,30 @@ test('training runs load a live server\'s settings in paper mode: live perps bec
   assert.equal(cfg.perps.trading, 'paper');
   assert.equal(cfg.strategy.exitPolicy, 'confluence_ratchet', 'every other setting is kept');
   assert.deepEqual(paperEnv({ PERP_HEDGE: 'off' }).PERP_HEDGE, 'off');
+});
+
+test('hunt mode is not blocked by the session by default (Steven, Nov 11 2026); HUNT_SESSION_GUARD=true brings the guard back', () => {
+  assert.equal(loadConfig({}).strategy.huntSessionGuard, false);
+  assert.equal(loadConfig({ HUNT_SESSION_GUARD: 'true' }).strategy.huntSessionGuard, true);
+  assert.equal(loadConfig({ HUNT_SESSION_GUARD: 'false' }).strategy.huntSessionGuard, false);
+});
+
+test('DOGE series: out by default; the paper setting (empty pattern) trades them again; live and shadow keep them out unless LIVE_ALLOW_DOGE=true (Steven, Nov 12 2026)', () => {
+  const ex = (env: Record<string, string>) => loadConfig(env).strategy.excludeSeries;
+  const doge = ['KXDOGE15M', 'KXDOGE', 'KXDOGED'], others = ['KXBTC15M', 'KXBTCD', 'KXETH', 'KXETHD', 'KXSOL15M', 'KXXRPD'];
+  // Default: DOGE excluded in paper, the other coins untouched.
+  for (const s of doge) assert.ok(ex({})?.test(s), `${s} excluded by default`);
+  for (const s of others) assert.ok(!ex({})?.test(s), `${s} still traded`);
+  // The paper bot's setting (deploy/paper-settings.env writes STRATEGY_EXCLUDE_SERIES= into bot.env): nothing excluded.
+  assert.equal(ex({ STRATEGY_EXCLUDE_SERIES: '' }), undefined);
+  // A copy of that bot.env under live or shadow keeps DOGE out; other patterns stay in force; the switch lets live trade it.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'key-'));
+  const key = path.join(dir, 'k.pem');
+  fs.writeFileSync(key, 'x', { mode: 0o600 });
+  const live = { DASHBOARD_TOKEN: token, DATA_DIR: dir, TRADING_MODE: 'live', KALSHI_KEY_ID: 'id', KALSHI_PRIVATE_KEY_PATH: key, KALSHI_ENV: 'prod', LIVE_TRADING_ACKNOWLEDGED: 'I_ACCEPT_REAL_MONEY_RISK' };
+  for (const s of doge) assert.ok(ex({ ...live, STRATEGY_EXCLUDE_SERIES: '' })?.test(s), `${s} excluded in live with the paper setting`);
+  assert.ok(ex({ ...live, TRADING_MODE: 'shadow', STRATEGY_EXCLUDE_SERIES: '' })?.test('KXDOGE15M'), 'shadow previews live: DOGE out');
+  assert.ok(ex({ ...live, STRATEGY_EXCLUDE_SERIES: 'KXSOL' })?.test('KXSOL15M'), 'an explicit pattern still applies in live');
+  assert.equal(ex({ ...live, STRATEGY_EXCLUDE_SERIES: '', LIVE_ALLOW_DOGE: 'true' }), undefined, 'LIVE_ALLOW_DOGE=true lets live trade DOGE');
+  assert.ok(ex({ ...live, LIVE_ALLOW_DOGE: 'true' })?.test('KXDOGE15M'), 'the default pattern still excludes it until the pattern is emptied');
 });

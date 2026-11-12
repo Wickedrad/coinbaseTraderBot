@@ -51,6 +51,9 @@ export interface PerpTraderParams {
   maxTotalNotionalUsd: number;
   stopAtrMult: number;
   minStopBps: number;
+  /** PERP_LOSER_CUT_C as dollars a contract (Steven, Nov 12: 15c): the stop is the nearer of the ATR stop and this far against
+   *  the entry on the perp's price. Sizing keeps the ATR stop. 0 / unset: off. */
+  loserCut?: number;
   maxHoldMin: number;
   dailyLossFrac: number;
   cooldownMin: number;
@@ -120,7 +123,11 @@ export function decidePerp(i: PerpDecisionInput, p: PerpTraderParams): PerpDecis
   if (i.bid === undefined || i.ask === undefined || !(i.ask >= i.bid)) return { target: cur, urgent: false, reason: 'no two-sided perp quote: hold' };
   const mid = (i.bid + i.ask) / 2;
   const stopFrac = Math.max((p.stopAtrMult * (i.atrFrac ?? 0)), p.minStopBps / 1e4);
-  const stopFor = (dir: number, entry: number) => +(entry * (1 - dir * stopFrac)).toFixed(4);
+  // The ATR stop, or the loser cut (PERP_LOSER_CUT_C, dollars a contract on the perp's price) when it is nearer the entry.
+  const stopFor = (dir: number, entry: number) => {
+    const atr = entry * (1 - dir * stopFrac), cut = p.loserCut && p.loserCut > 0 ? entry - dir * p.loserCut : undefined;
+    return +(cut !== undefined && cut > 0 && dir * (cut - atr) > 0 ? cut : atr).toFixed(4);
+  };
   // Our own stop check (the exchange trigger is the primary one).
   if (curDir !== 0 && i.entryPrice) {
     const stop = stopFor(curDir, i.entryPrice);

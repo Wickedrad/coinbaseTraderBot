@@ -1,13 +1,13 @@
 {
  "module": "study8_forecast",
- "dataThroughUtc": "2026-11-02 00:00 UTC",
- "dataThroughEt": "2026-11-01 19:00 EST",
- "asOf": "2026-11-01",
+ "dataThroughUtc": "2026-11-09 00:00 UTC",
+ "dataThroughEt": "2026-11-08 19:00 EST",
+ "asOf": "2026-11-08",
  "provisionalBars": [
-  "2026-11-08"
+  "2026-11-15"
  ],
  "fast": false,
- "runtimeSec": 1.9,
+ "runtimeSec": 0.7,
  "inputs": {
   "root": "research/btcd_fractal/refresh/out8",
   "found": {
@@ -201,21 +201,21 @@
  "alignment": {
   "grid": [
    "2019-01-06",
-   "2026-11-01"
+   "2026-11-08"
   ],
-  "rows": 409,
-  "fullCompositionRows": 396,
+  "rows": 410,
+  "fullCompositionRows": 397,
   "exactShare": {
-   "strat": 0.503,
-   "hazard": 0.503,
-   "regime": 0.5,
-   "fixed5": 0.503
+   "strat": 0.501,
+   "hazard": 0.501,
+   "regime": 0.499,
+   "fixed5": 0.501
   },
   "carriedShare": {
-   "strat": 0.497,
-   "hazard": 0.497,
-   "regime": 0.5,
-   "fixed5": 0.497
+   "strat": 0.499,
+   "hazard": 0.499,
+   "regime": 0.501,
+   "fixed5": 0.499
   }
  },
  "oos": {
@@ -224,30 +224,30 @@
     "byEra": {
      "2019-2020": {
       "n": 91,
-      "auc": 0.825,
+      "auc": 0.83,
       "base": 0.538,
-      "brier": 0.1741,
+      "brier": 0.1718,
       "brierBase": 0.2485,
       "brierTrainBase": 0.2695,
-      "skillVsTrainBase": 0.354,
+      "skillVsTrainBase": 0.363,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.299,
+      "skillVsOwnEra": 0.309,
       "beatsOwnEra": true,
       "freshAuc": 0.951,
       "freshN": 42,
-      "onsetAuc": 0.728,
+      "onsetAuc": 0.733,
       "episodes": 5
      },
      "2021-2022": {
       "n": 104,
       "auc": 0.78,
       "base": 0.337,
-      "brier": 0.2005,
+      "brier": 0.2007,
       "brierBase": 0.2233,
       "brierTrainBase": 0.27,
       "skillVsTrainBase": 0.257,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.102,
+      "skillVsOwnEra": 0.101,
       "beatsOwnEra": true,
       "freshAuc": 0.746,
       "freshN": 37,
@@ -255,40 +255,40 @@
       "episodes": 6
      },
      "2023-2026": {
-      "n": 176,
-      "auc": 0.532,
-      "base": 0.091,
-      "brier": 0.1191,
-      "brierBase": 0.0826,
-      "brierTrainBase": 0.201,
-      "skillVsTrainBase": 0.407,
+      "n": 177,
+      "auc": 0.488,
+      "base": 0.096,
+      "brier": 0.1223,
+      "brierBase": 0.0868,
+      "brierTrainBase": 0.2022,
+      "skillVsTrainBase": 0.395,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.442,
+      "skillVsOwnEra": -0.409,
       "beatsOwnEra": false,
-      "freshAuc": 0.49,
-      "freshN": 149,
-      "onsetAuc": 0.532,
-      "episodes": 2
+      "freshAuc": 0.444,
+      "freshN": 150,
+      "onsetAuc": 0.488,
+      "episodes": 3
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.811,
-      "base": 0.27,
-      "brier": 0.1554,
-      "brierBase": 0.1969,
-      "brierTrainBase": 0.2372,
-      "skillVsTrainBase": 0.345,
+      "n": 372,
+      "auc": 0.804,
+      "base": 0.272,
+      "brier": 0.1563,
+      "brierBase": 0.1978,
+      "brierTrainBase": 0.2376,
+      "skillVsTrainBase": 0.342,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.211,
+      "skillVsOwnEra": 0.21,
       "beatsOwnEra": true,
-      "freshAuc": 0.745,
-      "freshN": 228,
-      "onsetAuc": 0.669,
-      "episodes": 12
+      "freshAuc": 0.732,
+      "freshN": 229,
+      "onsetAuc": 0.658,
+      "episodes": 13
      }
     },
-    "meanOfEraAuc": 0.712,
-    "eraStratAuc": 0.703,
+    "meanOfEraAuc": 0.699,
+    "eraStratAuc": 0.684,
     "label": "stack"
    },
    "strat": {
@@ -297,12 +297,12 @@
       "n": 91,
       "auc": 0.547,
       "base": 0.538,
-      "brier": 0.2975,
+      "brier": 0.2944,
       "brierBase": 0.2485,
       "brierTrainBase": 0.2695,
-      "skillVsTrainBase": -0.104,
+      "skillVsTrainBase": -0.092,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -0.197,
+      "skillVsOwnEra": -0.185,
       "beatsOwnEra": false,
       "freshAuc": 0.719,
       "freshN": 42,
@@ -311,54 +311,54 @@
      },
      "2021-2022": {
       "n": 104,
-      "auc": 0.767,
+      "auc": 0.762,
       "base": 0.337,
-      "brier": 0.3053,
+      "brier": 0.304,
       "brierBase": 0.2233,
       "brierTrainBase": 0.27,
-      "skillVsTrainBase": -0.131,
+      "skillVsTrainBase": -0.126,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -0.367,
+      "skillVsOwnEra": -0.361,
       "beatsOwnEra": false,
-      "freshAuc": 0.768,
+      "freshAuc": 0.732,
       "freshN": 37,
-      "onsetAuc": 0.68,
+      "onsetAuc": 0.665,
       "episodes": 6
      },
      "2023-2026": {
-      "n": 176,
-      "auc": 0.159,
-      "base": 0.091,
-      "brier": 0.1484,
-      "brierBase": 0.0826,
-      "brierTrainBase": 0.201,
-      "skillVsTrainBase": 0.262,
+      "n": 177,
+      "auc": 0.181,
+      "base": 0.096,
+      "brier": 0.1491,
+      "brierBase": 0.0868,
+      "brierTrainBase": 0.2022,
+      "skillVsTrainBase": 0.263,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.797,
+      "skillVsOwnEra": -0.718,
       "beatsOwnEra": false,
-      "freshAuc": 0.082,
-      "freshN": 149,
-      "onsetAuc": 0.159,
-      "episodes": 2
+      "freshAuc": 0.105,
+      "freshN": 150,
+      "onsetAuc": 0.181,
+      "episodes": 3
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.635,
-      "base": 0.27,
-      "brier": 0.229,
-      "brierBase": 0.1969,
-      "brierTrainBase": 0.2372,
-      "skillVsTrainBase": 0.035,
+      "n": 372,
+      "auc": 0.63,
+      "base": 0.272,
+      "brier": 0.2279,
+      "brierBase": 0.1978,
+      "brierTrainBase": 0.2376,
+      "skillVsTrainBase": 0.041,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.163,
+      "skillVsOwnEra": -0.152,
       "beatsOwnEra": false,
-      "freshAuc": 0.567,
-      "freshN": 228,
-      "onsetAuc": 0.506,
-      "episodes": 12
+      "freshAuc": 0.556,
+      "freshN": 229,
+      "onsetAuc": 0.495,
+      "episodes": 13
      }
     },
-    "meanOfEraAuc": 0.491,
+    "meanOfEraAuc": 0.497,
     "eraStratAuc": 0.481,
     "label": "strat"
    },
@@ -397,40 +397,40 @@
       "episodes": 6
      },
      "2023-2026": {
-      "n": 176,
+      "n": 177,
       "auc": 0.289,
-      "base": 0.091,
-      "brier": 0.2025,
-      "brierBase": 0.0826,
-      "brierTrainBase": 0.201,
-      "skillVsTrainBase": -0.007,
+      "base": 0.096,
+      "brier": 0.2063,
+      "brierBase": 0.0868,
+      "brierTrainBase": 0.2022,
+      "skillVsTrainBase": -0.02,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -1.452,
+      "skillVsOwnEra": -1.377,
       "beatsOwnEra": false,
       "freshAuc": 0.233,
-      "freshN": 149,
+      "freshN": 150,
       "onsetAuc": 0.289,
-      "episodes": 2
+      "episodes": 3
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.59,
-      "base": 0.27,
-      "brier": 0.2319,
-      "brierBase": 0.1969,
-      "brierTrainBase": 0.2372,
-      "skillVsTrainBase": 0.022,
+      "n": 372,
+      "auc": 0.588,
+      "base": 0.272,
+      "brier": 0.2336,
+      "brierBase": 0.1978,
+      "brierTrainBase": 0.2376,
+      "skillVsTrainBase": 0.017,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.178,
+      "skillVsOwnEra": -0.181,
       "beatsOwnEra": false,
-      "freshAuc": 0.555,
-      "freshN": 228,
-      "onsetAuc": 0.548,
-      "episodes": 12
+      "freshAuc": 0.55,
+      "freshN": 229,
+      "onsetAuc": 0.544,
+      "episodes": 13
      }
     },
     "meanOfEraAuc": 0.567,
-    "eraStratAuc": 0.549,
+    "eraStratAuc": 0.543,
     "label": "hazard"
    },
    "regime": {
@@ -468,141 +468,141 @@
       "episodes": 6
      },
      "2023-2026": {
-      "n": 176,
-      "auc": 0.115,
-      "base": 0.091,
-      "brier": 0.3427,
-      "brierBase": 0.0826,
-      "brierTrainBase": 0.201,
-      "skillVsTrainBase": -0.705,
+      "n": 177,
+      "auc": 0.137,
+      "base": 0.096,
+      "brier": 0.3417,
+      "brierBase": 0.0868,
+      "brierTrainBase": 0.2022,
+      "skillVsTrainBase": -0.69,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -3.149,
+      "skillVsOwnEra": -2.937,
       "beatsOwnEra": false,
-      "freshAuc": 0.129,
-      "freshN": 149,
-      "onsetAuc": 0.115,
-      "episodes": 2
+      "freshAuc": 0.151,
+      "freshN": 150,
+      "onsetAuc": 0.137,
+      "episodes": 3
      },
      "pooled": {
-      "n": 371,
+      "n": 372,
       "auc": 0.507,
-      "base": 0.27,
-      "brier": 0.2962,
-      "brierBase": 0.1969,
-      "brierTrainBase": 0.2372,
-      "skillVsTrainBase": -0.249,
+      "base": 0.272,
+      "brier": 0.2958,
+      "brierBase": 0.1978,
+      "brierTrainBase": 0.2376,
+      "skillVsTrainBase": -0.245,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -0.504,
+      "skillVsOwnEra": -0.495,
       "beatsOwnEra": false,
-      "freshAuc": 0.452,
-      "freshN": 228,
-      "onsetAuc": 0.442,
-      "episodes": 12
+      "freshAuc": 0.454,
+      "freshN": 229,
+      "onsetAuc": 0.444,
+      "episodes": 13
      }
     },
-    "meanOfEraAuc": 0.451,
-    "eraStratAuc": 0.436,
+    "meanOfEraAuc": 0.458,
+    "eraStratAuc": 0.437,
     "label": "regime"
    },
    "fixed5": {
     "byEra": {
      "2019-2020": {
       "n": 91,
-      "auc": 0.901,
+      "auc": 0.906,
       "base": 0.538,
-      "brier": 0.1471,
+      "brier": 0.1441,
       "brierBase": 0.2485,
       "brierTrainBase": 0.2695,
-      "skillVsTrainBase": 0.454,
+      "skillVsTrainBase": 0.465,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.408,
+      "skillVsOwnEra": 0.42,
       "beatsOwnEra": true,
-      "freshAuc": 0.954,
+      "freshAuc": 0.952,
       "freshN": 42,
-      "onsetAuc": 0.75,
+      "onsetAuc": 0.757,
       "episodes": 5
      },
      "2021-2022": {
       "n": 104,
-      "auc": 0.794,
+      "auc": 0.795,
       "base": 0.337,
-      "brier": 0.2401,
+      "brier": 0.2408,
       "brierBase": 0.2233,
       "brierTrainBase": 0.27,
-      "skillVsTrainBase": 0.111,
+      "skillVsTrainBase": 0.108,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.075,
+      "skillVsOwnEra": -0.078,
       "beatsOwnEra": false,
       "freshAuc": 0.748,
       "freshN": 37,
-      "onsetAuc": 0.587,
+      "onsetAuc": 0.589,
       "episodes": 6
      },
      "2023-2026": {
-      "n": 176,
-      "auc": 0.994,
-      "base": 0.091,
-      "brier": 0.0544,
-      "brierBase": 0.0826,
-      "brierTrainBase": 0.201,
-      "skillVsTrainBase": 0.729,
+      "n": 177,
+      "auc": 0.965,
+      "base": 0.096,
+      "brier": 0.0594,
+      "brierBase": 0.0868,
+      "brierTrainBase": 0.2022,
+      "skillVsTrainBase": 0.706,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.341,
+      "skillVsOwnEra": 0.316,
       "beatsOwnEra": true,
-      "freshAuc": 0.992,
-      "freshN": 149,
-      "onsetAuc": 0.994,
-      "episodes": 2
+      "freshAuc": 0.963,
+      "freshN": 150,
+      "onsetAuc": 0.965,
+      "episodes": 3
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.922,
-      "base": 0.27,
-      "brier": 0.1292,
-      "brierBase": 0.1969,
-      "brierTrainBase": 0.2372,
-      "skillVsTrainBase": 0.455,
+      "n": 372,
+      "auc": 0.916,
+      "base": 0.272,
+      "brier": 0.1308,
+      "brierBase": 0.1978,
+      "brierTrainBase": 0.2376,
+      "skillVsTrainBase": 0.449,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.344,
+      "skillVsOwnEra": 0.339,
       "beatsOwnEra": true,
-      "freshAuc": 0.938,
-      "freshN": 228,
-      "onsetAuc": 0.818,
-      "episodes": 12
+      "freshAuc": 0.928,
+      "freshN": 229,
+      "onsetAuc": 0.802,
+      "episodes": 13
      }
     },
-    "meanOfEraAuc": 0.896,
-    "eraStratAuc": 0.898,
+    "meanOfEraAuc": 0.889,
+    "eraStratAuc": 0.891,
     "label": "fixed5"
    },
    "stack_nocarry_varyingComposition": {
     "byEra": {
      "2019-2020": {
       "n": 104,
-      "auc": 0.794,
+      "auc": 0.796,
       "base": 0.471,
-      "brier": 0.1846,
+      "brier": 0.1833,
       "brierBase": 0.2492,
       "brierTrainBase": 0.295,
-      "skillVsTrainBase": 0.374,
+      "skillVsTrainBase": 0.379,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.259,
+      "skillVsOwnEra": 0.264,
       "beatsOwnEra": true,
       "freshAuc": 0.825,
       "freshN": 42,
-      "onsetAuc": 0.734,
+      "onsetAuc": 0.736,
       "episodes": 5
      },
      "2021-2022": {
       "n": 104,
-      "auc": 0.747,
+      "auc": 0.746,
       "base": 0.337,
-      "brier": 0.2198,
+      "brier": 0.22,
       "brierBase": 0.2233,
       "brierTrainBase": 0.27,
-      "skillVsTrainBase": 0.186,
+      "skillVsTrainBase": 0.185,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.016,
+      "skillVsOwnEra": 0.015,
       "beatsOwnEra": true,
       "freshAuc": 0.726,
       "freshN": 37,
@@ -610,71 +610,71 @@
       "episodes": 6
      },
      "2023-2026": {
-      "n": 176,
-      "auc": 0.463,
-      "base": 0.091,
+      "n": 177,
+      "auc": 0.467,
+      "base": 0.096,
       "brier": 0.2156,
-      "brierBase": 0.0826,
-      "brierTrainBase": 0.201,
-      "skillVsTrainBase": -0.073,
+      "brierBase": 0.0868,
+      "brierTrainBase": 0.2022,
+      "skillVsTrainBase": -0.066,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -1.61,
+      "skillVsOwnEra": -1.484,
       "beatsOwnEra": false,
-      "freshAuc": 0.458,
-      "freshN": 149,
-      "onsetAuc": 0.463,
-      "episodes": 2
+      "freshAuc": 0.463,
+      "freshN": 150,
+      "onsetAuc": 0.467,
+      "episodes": 3
      },
      "pooled": {
-      "n": 384,
-      "auc": 0.722,
-      "base": 0.26,
-      "brier": 0.2083,
-      "brierBase": 0.1926,
-      "brierTrainBase": 0.2452,
-      "skillVsTrainBase": 0.15,
+      "n": 385,
+      "auc": 0.721,
+      "base": 0.262,
+      "brier": 0.2081,
+      "brierBase": 0.1935,
+      "brierTrainBase": 0.2456,
+      "skillVsTrainBase": 0.153,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.082,
+      "skillVsOwnEra": -0.075,
       "beatsOwnEra": false,
-      "freshAuc": 0.671,
-      "freshN": 228,
+      "freshAuc": 0.67,
+      "freshN": 229,
       "onsetAuc": 0.621,
-      "episodes": 12
+      "episodes": 13
      }
     },
-    "meanOfEraAuc": 0.668,
-    "eraStratAuc": 0.669,
+    "meanOfEraAuc": 0.67,
+    "eraStratAuc": 0.666,
     "label": "no-carry stack (composition varies by week)",
-    "meanComponents": 1.98
+    "meanComponents": 1.97
    },
    "POSTHOC_stack_without_regime": {
     "byEra": {
      "2019-2020": {
       "n": 91,
-      "auc": 0.834,
+      "auc": 0.838,
       "base": 0.538,
-      "brier": 0.1777,
+      "brier": 0.175,
       "brierBase": 0.2485,
       "brierTrainBase": 0.2695,
-      "skillVsTrainBase": 0.341,
+      "skillVsTrainBase": 0.351,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.285,
+      "skillVsOwnEra": 0.296,
       "beatsOwnEra": true,
       "freshAuc": 0.949,
       "freshN": 42,
-      "onsetAuc": 0.733,
+      "onsetAuc": 0.736,
       "episodes": 5
      },
      "2021-2022": {
       "n": 104,
-      "auc": 0.79,
+      "auc": 0.787,
       "base": 0.337,
-      "brier": 0.1908,
+      "brier": 0.1911,
       "brierBase": 0.2233,
       "brierTrainBase": 0.27,
-      "skillVsTrainBase": 0.293,
+      "skillVsTrainBase": 0.292,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.146,
+      "skillVsOwnEra": 0.144,
       "beatsOwnEra": true,
       "freshAuc": 0.748,
       "freshN": 37,
@@ -682,68 +682,68 @@
       "episodes": 6
      },
      "2023-2026": {
-      "n": 176,
-      "auc": 0.641,
-      "base": 0.091,
-      "brier": 0.0963,
-      "brierBase": 0.0826,
-      "brierTrainBase": 0.201,
-      "skillVsTrainBase": 0.521,
+      "n": 177,
+      "auc": 0.573,
+      "base": 0.096,
+      "brier": 0.1007,
+      "brierBase": 0.0868,
+      "brierTrainBase": 0.2022,
+      "skillVsTrainBase": 0.502,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.166,
+      "skillVsOwnEra": -0.16,
       "beatsOwnEra": false,
-      "freshAuc": 0.601,
-      "freshN": 149,
-      "onsetAuc": 0.641,
-      "episodes": 2
+      "freshAuc": 0.53,
+      "freshN": 150,
+      "onsetAuc": 0.573,
+      "episodes": 3
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.828,
-      "base": 0.27,
-      "brier": 0.1428,
-      "brierBase": 0.1969,
-      "brierTrainBase": 0.2372,
-      "skillVsTrainBase": 0.398,
+      "n": 372,
+      "auc": 0.818,
+      "base": 0.272,
+      "brier": 0.1442,
+      "brierBase": 0.1978,
+      "brierTrainBase": 0.2376,
+      "skillVsTrainBase": 0.393,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.275,
+      "skillVsOwnEra": 0.271,
       "beatsOwnEra": true,
-      "freshAuc": 0.781,
-      "freshN": 228,
-      "onsetAuc": 0.692,
-      "episodes": 12
+      "freshAuc": 0.762,
+      "freshN": 229,
+      "onsetAuc": 0.677,
+      "episodes": 13
      }
     },
-    "meanOfEraAuc": 0.755,
-    "eraStratAuc": 0.749,
+    "meanOfEraAuc": 0.733,
+    "eraStratAuc": 0.721,
     "label": "POST-HOC diagnostic, not pre-registered"
    },
    "stack_regimeHazard26_altReading": {
     "byEra": {
      "2019-2020": {
       "n": 91,
-      "auc": 0.823,
+      "auc": 0.827,
       "base": 0.538,
-      "brier": 0.1728,
+      "brier": 0.1704,
       "brierBase": 0.2485,
       "brierTrainBase": 0.2695,
-      "skillVsTrainBase": 0.359,
+      "skillVsTrainBase": 0.368,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.305,
+      "skillVsOwnEra": 0.314,
       "beatsOwnEra": true,
       "freshAuc": 0.951,
       "freshN": 42,
-      "onsetAuc": 0.723,
+      "onsetAuc": 0.727,
       "episodes": 5
      },
      "2021-2022": {
       "n": 104,
-      "auc": 0.789,
+      "auc": 0.786,
       "base": 0.337,
-      "brier": 0.2212,
+      "brier": 0.2214,
       "brierBase": 0.2233,
       "brierTrainBase": 0.27,
-      "skillVsTrainBase": 0.181,
+      "skillVsTrainBase": 0.18,
       "beatsTrainBase": true,
       "skillVsOwnEra": 0.009,
       "beatsOwnEra": true,
@@ -753,40 +753,40 @@
       "episodes": 6
      },
      "2023-2026": {
-      "n": 176,
-      "auc": 0.545,
-      "base": 0.091,
-      "brier": 0.1592,
-      "brierBase": 0.0826,
-      "brierTrainBase": 0.201,
-      "skillVsTrainBase": 0.208,
+      "n": 177,
+      "auc": 0.507,
+      "base": 0.096,
+      "brier": 0.1609,
+      "brierBase": 0.0868,
+      "brierTrainBase": 0.2022,
+      "skillVsTrainBase": 0.204,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.927,
+      "skillVsOwnEra": -0.854,
       "beatsOwnEra": false,
-      "freshAuc": 0.501,
-      "freshN": 149,
-      "onsetAuc": 0.545,
-      "episodes": 2
+      "freshAuc": 0.464,
+      "freshN": 150,
+      "onsetAuc": 0.507,
+      "episodes": 3
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.8,
-      "base": 0.27,
-      "brier": 0.1799,
-      "brierBase": 0.1969,
-      "brierTrainBase": 0.2372,
+      "n": 372,
+      "auc": 0.794,
+      "base": 0.272,
+      "brier": 0.1801,
+      "brierBase": 0.1978,
+      "brierTrainBase": 0.2376,
       "skillVsTrainBase": 0.242,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.086,
+      "skillVsOwnEra": 0.089,
       "beatsOwnEra": true,
-      "freshAuc": 0.729,
-      "freshN": 228,
-      "onsetAuc": 0.657,
-      "episodes": 12
+      "freshAuc": 0.718,
+      "freshN": 229,
+      "onsetAuc": 0.647,
+      "episodes": 13
      }
     },
-    "meanOfEraAuc": 0.719,
-    "eraStratAuc": 0.71,
+    "meanOfEraAuc": 0.707,
+    "eraStratAuc": 0.692,
     "label": "the plan's Layer-5 wording of the regime component (V2_hazard26 in place of V2_pFall5_26w); scored side by side, not headline"
    },
    "regime_altReading_component": {
@@ -824,40 +824,40 @@
       "episodes": 6
      },
      "2023-2026": {
-      "n": 176,
-      "auc": 0.173,
-      "base": 0.091,
-      "brier": 0.6719,
-      "brierBase": 0.0826,
-      "brierTrainBase": 0.201,
-      "skillVsTrainBase": -2.343,
+      "n": 177,
+      "auc": 0.22,
+      "base": 0.096,
+      "brier": 0.6681,
+      "brierBase": 0.0868,
+      "brierTrainBase": 0.2022,
+      "skillVsTrainBase": -2.304,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -7.134,
+      "skillVsOwnEra": -6.697,
       "beatsOwnEra": false,
-      "freshAuc": 0.188,
-      "freshN": 149,
-      "onsetAuc": 0.173,
-      "episodes": 2
+      "freshAuc": 0.235,
+      "freshN": 150,
+      "onsetAuc": 0.22,
+      "episodes": 3
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.455,
-      "base": 0.27,
-      "brier": 0.4698,
-      "brierBase": 0.1969,
-      "brierTrainBase": 0.2372,
-      "skillVsTrainBase": -0.981,
+      "n": 372,
+      "auc": 0.46,
+      "base": 0.272,
+      "brier": 0.4685,
+      "brierBase": 0.1978,
+      "brierTrainBase": 0.2376,
+      "skillVsTrainBase": -0.972,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -1.386,
+      "skillVsOwnEra": -1.369,
       "beatsOwnEra": false,
-      "freshAuc": 0.435,
-      "freshN": 228,
-      "onsetAuc": 0.457,
-      "episodes": 12
+      "freshAuc": 0.446,
+      "freshN": 229,
+      "onsetAuc": 0.466,
+      "episodes": 13
      }
     },
-    "meanOfEraAuc": 0.499,
-    "eraStratAuc": 0.484,
+    "meanOfEraAuc": 0.514,
+    "eraStratAuc": 0.495,
     "label": "V2_hazard26 alone on the aligned rows"
    }
   },
@@ -866,71 +866,71 @@
     "byEra": {
      "2019-2020": {
       "n": 91,
-      "auc": 0.503,
+      "auc": 0.493,
       "base": 0.11,
-      "brier": 0.116,
+      "brier": 0.1153,
       "brierBase": 0.0978,
       "brierTrainBase": 0.2153,
-      "skillVsTrainBase": 0.461,
+      "skillVsTrainBase": 0.464,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.186,
+      "skillVsOwnEra": -0.179,
       "beatsOwnEra": false,
-      "freshAuc": 0.675,
+      "freshAuc": 0.668,
       "freshN": 42,
-      "onsetAuc": 0.491,
+      "onsetAuc": 0.48,
       "episodes": 1
      },
      "2021-2022": {
       "n": 104,
-      "auc": 0.697,
+      "auc": 0.696,
       "base": 0.163,
-      "brier": 0.1667,
+      "brier": 0.1674,
       "brierBase": 0.1367,
       "brierTrainBase": 0.1673,
-      "skillVsTrainBase": 0.004,
-      "beatsTrainBase": true,
-      "skillVsOwnEra": -0.219,
+      "skillVsTrainBase": -0.001,
+      "beatsTrainBase": false,
+      "skillVsOwnEra": -0.225,
       "beatsOwnEra": false,
       "freshAuc": 0.929,
       "freshN": 37,
-      "onsetAuc": 0.738,
+      "onsetAuc": 0.728,
       "episodes": 1
      },
      "2023-2026": {
-      "n": 176,
-      "auc": null,
-      "base": 0.0,
-      "brier": 0.0066,
-      "brierBase": 0.0,
-      "brierTrainBase": 0.056,
-      "skillVsTrainBase": 0.882,
+      "n": 177,
+      "auc": 0.19,
+      "base": 0.006,
+      "brier": 0.0123,
+      "brierBase": 0.0056,
+      "brierTrainBase": 0.0594,
+      "skillVsTrainBase": 0.793,
       "beatsTrainBase": true,
-      "skillVsOwnEra": null,
+      "skillVsOwnEra": -1.196,
       "beatsOwnEra": false,
-      "freshAuc": null,
-      "freshN": 149,
-      "onsetAuc": null,
-      "episodes": 0
+      "freshAuc": 0.225,
+      "freshN": 150,
+      "onsetAuc": 0.19,
+      "episodes": 1
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.75,
-      "base": 0.073,
-      "brier": 0.0783,
-      "brierBase": 0.0675,
-      "brierTrainBase": 0.1263,
-      "skillVsTrainBase": 0.38,
+      "n": 372,
+      "auc": 0.724,
+      "base": 0.075,
+      "brier": 0.0809,
+      "brierBase": 0.0696,
+      "brierTrainBase": 0.1277,
+      "skillVsTrainBase": 0.366,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.16,
+      "skillVsOwnEra": -0.162,
       "beatsOwnEra": false,
-      "freshAuc": 0.779,
-      "freshN": 228,
-      "onsetAuc": 0.686,
-      "episodes": 1
+      "freshAuc": 0.731,
+      "freshN": 229,
+      "onsetAuc": 0.64,
+      "episodes": 2
      }
     },
-    "meanOfEraAuc": 0.6,
-    "eraStratAuc": 0.628,
+    "meanOfEraAuc": 0.46,
+    "eraStratAuc": 0.591,
     "label": "stack"
    },
    "strat": {
@@ -955,12 +955,12 @@
       "n": 104,
       "auc": 0.101,
       "base": 0.163,
-      "brier": 0.258,
+      "brier": 0.2567,
       "brierBase": 0.1367,
       "brierTrainBase": 0.1673,
-      "skillVsTrainBase": -0.542,
+      "skillVsTrainBase": -0.534,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -0.887,
+      "skillVsOwnEra": -0.878,
       "beatsOwnEra": false,
       "freshAuc": 0.0,
       "freshN": 37,
@@ -968,40 +968,40 @@
       "episodes": 1
      },
      "2023-2026": {
-      "n": 176,
-      "auc": null,
-      "base": 0.0,
-      "brier": 0.0277,
-      "brierBase": 0.0,
-      "brierTrainBase": 0.056,
-      "skillVsTrainBase": 0.505,
+      "n": 177,
+      "auc": 0.02,
+      "base": 0.006,
+      "brier": 0.0318,
+      "brierBase": 0.0056,
+      "brierTrainBase": 0.0594,
+      "skillVsTrainBase": 0.465,
       "beatsTrainBase": true,
-      "skillVsOwnEra": null,
+      "skillVsOwnEra": -4.679,
       "beatsOwnEra": false,
-      "freshAuc": null,
-      "freshN": 149,
-      "onsetAuc": null,
-      "episodes": 0
+      "freshAuc": 0.023,
+      "freshN": 150,
+      "onsetAuc": 0.02,
+      "episodes": 1
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.406,
-      "base": 0.073,
-      "brier": 0.1222,
-      "brierBase": 0.0675,
-      "brierTrainBase": 0.1263,
-      "skillVsTrainBase": 0.032,
+      "n": 372,
+      "auc": 0.392,
+      "base": 0.075,
+      "brier": 0.1235,
+      "brierBase": 0.0696,
+      "brierTrainBase": 0.1277,
+      "skillVsTrainBase": 0.033,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.81,
+      "skillVsOwnEra": -0.774,
       "beatsOwnEra": false,
-      "freshAuc": 0.557,
-      "freshN": 228,
-      "onsetAuc": 0.48,
-      "episodes": 1
+      "freshAuc": 0.512,
+      "freshN": 229,
+      "onsetAuc": 0.441,
+      "episodes": 2
      }
     },
-    "meanOfEraAuc": 0.06,
-    "eraStratAuc": 0.072,
+    "meanOfEraAuc": 0.047,
+    "eraStratAuc": 0.068,
     "label": "strat"
    },
    "hazard": {
@@ -1039,40 +1039,40 @@
       "episodes": 1
      },
      "2023-2026": {
-      "n": 176,
-      "auc": null,
-      "base": 0.0,
-      "brier": 0.1196,
-      "brierBase": 0.0,
-      "brierTrainBase": 0.056,
-      "skillVsTrainBase": -1.136,
+      "n": 177,
+      "auc": 0.162,
+      "base": 0.006,
+      "brier": 0.1246,
+      "brierBase": 0.0056,
+      "brierTrainBase": 0.0594,
+      "skillVsTrainBase": -1.098,
       "beatsTrainBase": false,
-      "skillVsOwnEra": null,
+      "skillVsOwnEra": -21.25,
       "beatsOwnEra": false,
-      "freshAuc": null,
-      "freshN": 149,
-      "onsetAuc": null,
-      "episodes": 0
+      "freshAuc": 0.185,
+      "freshN": 150,
+      "onsetAuc": 0.162,
+      "episodes": 1
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.43,
-      "base": 0.073,
-      "brier": 0.138,
-      "brierBase": 0.0675,
-      "brierTrainBase": 0.1263,
-      "skillVsTrainBase": -0.093,
+      "n": 372,
+      "auc": 0.419,
+      "base": 0.075,
+      "brier": 0.1403,
+      "brierBase": 0.0696,
+      "brierTrainBase": 0.1277,
+      "skillVsTrainBase": -0.099,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -1.044,
+      "skillVsOwnEra": -1.016,
       "beatsOwnEra": false,
-      "freshAuc": 0.26,
-      "freshN": 228,
-      "onsetAuc": 0.248,
-      "episodes": 1
+      "freshAuc": 0.252,
+      "freshN": 229,
+      "onsetAuc": 0.238,
+      "episodes": 2
      }
     },
-    "meanOfEraAuc": 0.397,
-    "eraStratAuc": 0.434,
+    "meanOfEraAuc": 0.319,
+    "eraStratAuc": 0.413,
     "label": "hazard"
    },
    "fixed5": {
@@ -1081,12 +1081,12 @@
       "n": 91,
       "auc": 0.839,
       "base": 0.11,
-      "brier": 0.2302,
+      "brier": 0.2265,
       "brierBase": 0.0978,
       "brierTrainBase": 0.2153,
-      "skillVsTrainBase": -0.069,
+      "skillVsTrainBase": -0.052,
       "beatsTrainBase": false,
-      "skillVsOwnEra": -1.354,
+      "skillVsOwnEra": -1.316,
       "beatsOwnEra": false,
       "freshAuc": 0.867,
       "freshN": 42,
@@ -1095,14 +1095,14 @@
      },
      "2021-2022": {
       "n": 104,
-      "auc": 0.881,
+      "auc": 0.878,
       "base": 0.163,
-      "brier": 0.1059,
+      "brier": 0.1087,
       "brierBase": 0.1367,
       "brierTrainBase": 0.1673,
-      "skillVsTrainBase": 0.367,
+      "skillVsTrainBase": 0.35,
       "beatsTrainBase": true,
-      "skillVsOwnEra": 0.225,
+      "skillVsOwnEra": 0.205,
       "beatsOwnEra": true,
       "freshAuc": 0.986,
       "freshN": 37,
@@ -1110,128 +1110,129 @@
       "episodes": 1
      },
      "2023-2026": {
-      "n": 176,
-      "auc": null,
-      "base": 0.0,
-      "brier": 0.0095,
-      "brierBase": 0.0,
-      "brierTrainBase": 0.056,
-      "skillVsTrainBase": 0.83,
+      "n": 177,
+      "auc": 0.491,
+      "base": 0.006,
+      "brier": 0.0129,
+      "brierBase": 0.0056,
+      "brierTrainBase": 0.0594,
+      "skillVsTrainBase": 0.783,
       "beatsTrainBase": true,
-      "skillVsOwnEra": null,
+      "skillVsOwnEra": -1.304,
       "beatsOwnEra": false,
-      "freshAuc": null,
-      "freshN": 149,
-      "onsetAuc": null,
-      "episodes": 0
+      "freshAuc": 0.54,
+      "freshN": 150,
+      "onsetAuc": 0.491,
+      "episodes": 1
      },
      "pooled": {
-      "n": 371,
-      "auc": 0.889,
-      "base": 0.073,
-      "brier": 0.0906,
-      "brierBase": 0.0675,
-      "brierTrainBase": 0.1263,
-      "skillVsTrainBase": 0.283,
+      "n": 372,
+      "auc": 0.869,
+      "base": 0.075,
+      "brier": 0.0919,
+      "brierBase": 0.0696,
+      "brierTrainBase": 0.1277,
+      "skillVsTrainBase": 0.28,
       "beatsTrainBase": true,
-      "skillVsOwnEra": -0.342,
+      "skillVsOwnEra": -0.32,
       "beatsOwnEra": false,
-      "freshAuc": 0.977,
-      "freshN": 228,
-      "onsetAuc": 0.953,
-      "episodes": 1
+      "freshAuc": 0.932,
+      "freshN": 229,
+      "onsetAuc": 0.901,
+      "episodes": 2
      }
     },
-    "meanOfEraAuc": 0.86,
-    "eraStratAuc": 0.866,
+    "meanOfEraAuc": 0.736,
+    "eraStratAuc": 0.836,
     "label": "fixed5"
    }
   }
  },
  "evidence_ceiling": {
   "episodeLOO_stack": {
-   "all": 0.811,
-   "nEpisodes": 12,
-   "min": 0.742,
+   "all": 0.804,
+   "nEpisodes": 13,
+   "min": 0.734,
    "minEpisode": "2020-10-18..2021-05-09",
    "perEpisode": {
-    "2019-08-11..2019-09-29": 0.844,
-    "2019-10-27..2019-11-03": 0.815,
-    "2019-12-22..2020-02-02": 0.804,
-    "2020-02-16..2020-07-05": 0.781,
-    "2020-10-18..2021-05-09": 0.742,
-    "2021-05-23..2021-05-23": 0.81,
-    "2021-06-13..2021-06-13": 0.81,
-    "2021-06-27..2021-08-08": 0.802,
-    "2021-10-10..2021-10-24": 0.805,
-    "2022-05-22..2022-06-12": 0.815,
-    "2024-11-03..2024-11-03": 0.813,
-    "2025-04-06..2025-07-13": 0.868
+    "2019-08-11..2019-09-29": 0.837,
+    "2019-10-27..2019-11-03": 0.808,
+    "2019-12-22..2020-02-02": 0.797,
+    "2020-02-16..2020-07-05": 0.773,
+    "2020-10-18..2021-05-09": 0.734,
+    "2021-05-23..2021-05-23": 0.804,
+    "2021-06-13..2021-06-13": 0.803,
+    "2021-06-27..2021-08-08": 0.796,
+    "2021-10-10..2021-10-24": 0.799,
+    "2022-05-22..2022-06-12": 0.808,
+    "2024-11-03..2024-11-03": 0.807,
+    "2025-04-06..2025-07-13": 0.864,
+    "2026-05-17..2026-05-17": 0.809
    }
   },
   "blockBoot_stack": {
    "n": 1000,
-   "q05": 0.65,
-   "q50": 0.811,
-   "q95": 0.921
+   "q05": 0.637,
+   "q50": 0.804,
+   "q95": 0.917
   },
   "episodeBoot_stack_sharedFn": {
    "n": 1000,
-   "nBlocks": 24,
-   "q05": 0.633,
-   "q50": 0.81,
-   "q95": 0.934
+   "nBlocks": 25,
+   "q05": 0.648,
+   "q50": 0.807,
+   "q95": 0.917
   },
   "episodeBoot_stack_honestEpisodes": {
    "n": 1000,
-   "q05": 0.638,
-   "q50": 0.811,
-   "q95": 0.925,
+   "q05": 0.633,
+   "q50": 0.803,
+   "q95": 0.92,
    "nBlocks": 25
   },
   "blockBoot_fixed5_sameRows": {
    "n": 1000,
-   "q05": 0.839,
-   "q50": 0.924,
-   "q95": 0.974
+   "q05": 0.83,
+   "q50": 0.917,
+   "q95": 0.97
   },
   "paired_stack_minus_fixed5": {
    "n": 1000,
-   "rows": 371,
-   "real": -0.1115,
-   "q05": -0.2274,
-   "q50": -0.1028,
-   "q95": -0.0365,
+   "rows": 372,
+   "real": -0.1112,
+   "q05": -0.2228,
+   "q50": -0.1018,
+   "q95": -0.0361,
    "pDiffLE0": 1.0,
    "tie": false
   },
   "paired_strat_minus_fixed5": {
    "n": 200,
-   "rows": 371,
-   "real": -0.2866,
-   "q05": -0.4954,
-   "q50": -0.2776,
-   "q95": -0.1238,
+   "rows": 372,
+   "real": -0.2857,
+   "q05": -0.4851,
+   "q50": -0.2771,
+   "q95": -0.1311,
    "pDiffLE0": 1.0,
    "tie": false
   },
   "paired_hazard_minus_fixed5": {
    "n": 200,
-   "rows": 371,
-   "real": -0.3322,
-   "q05": -0.5197,
-   "q50": -0.3092,
-   "q95": -0.1696,
+   "rows": 372,
+   "real": -0.3279,
+   "q05": -0.5178,
+   "q50": -0.2987,
+   "q95": -0.1659,
    "pDiffLE0": 1.0,
    "tie": false
   },
   "paired_regime_minus_fixed5": {
    "n": 200,
-   "rows": 371,
-   "real": -0.4151,
-   "q05": -0.549,
-   "q50": -0.4093,
-   "q95": -0.2816,
+   "rows": 372,
+   "real": -0.4082,
+   "q05": -0.5441,
+   "q50": -0.4021,
+   "q95": -0.2759,
    "pDiffLE0": 1.0,
    "tie": false
   },
@@ -1239,91 +1240,91 @@
   "calibrationDeciles_stack": [
    {
     "decile": 1,
-    "lo": 0.0647,
-    "hi": 0.1298,
-    "n": 37,
-    "meanPred": 0.0974,
+    "lo": 0.0622,
+    "hi": 0.1263,
+    "n": 38,
+    "meanPred": 0.0969,
     "realised": 0.0,
     "episodesTouched": 0
    },
    {
     "decile": 2,
-    "lo": 0.1298,
-    "hi": 0.1673,
+    "lo": 0.1263,
+    "hi": 0.1675,
     "n": 37,
-    "meanPred": 0.1491,
+    "meanPred": 0.1484,
     "realised": 0.0,
     "episodesTouched": 0
    },
    {
     "decile": 3,
-    "lo": 0.1673,
-    "hi": 0.2537,
+    "lo": 0.1675,
+    "hi": 0.2476,
     "n": 37,
-    "meanPred": 0.2097,
-    "realised": 0.0541,
-    "episodesTouched": 1
+    "meanPred": 0.2111,
+    "realised": 0.1081,
+    "episodesTouched": 2
    },
    {
     "decile": 4,
-    "lo": 0.2537,
-    "hi": 0.2785,
+    "lo": 0.2476,
+    "hi": 0.2753,
     "n": 37,
-    "meanPred": 0.2627,
+    "meanPred": 0.261,
     "realised": 0.4054,
     "episodesTouched": 2
    },
    {
     "decile": 5,
-    "lo": 0.2785,
-    "hi": 0.3204,
+    "lo": 0.2753,
+    "hi": 0.318,
     "n": 37,
-    "meanPred": 0.2956,
-    "realised": 0.2432,
+    "meanPred": 0.2945,
+    "realised": 0.1892,
     "episodesTouched": 3
    },
    {
     "decile": 6,
-    "lo": 0.3204,
-    "hi": 0.3822,
-    "n": 38,
-    "meanPred": 0.3455,
-    "realised": 0.1053,
-    "episodesTouched": 2
+    "lo": 0.318,
+    "hi": 0.3773,
+    "n": 37,
+    "meanPred": 0.3459,
+    "realised": 0.1081,
+    "episodesTouched": 3
    },
    {
     "decile": 7,
-    "lo": 0.3822,
-    "hi": 0.5081,
-    "n": 36,
-    "meanPred": 0.4414,
-    "realised": 0.1389,
+    "lo": 0.3773,
+    "hi": 0.5045,
+    "n": 37,
+    "meanPred": 0.4331,
+    "realised": 0.1622,
     "episodesTouched": 3
    },
    {
     "decile": 8,
-    "lo": 0.5081,
-    "hi": 0.6069,
+    "lo": 0.5045,
+    "hi": 0.6036,
     "n": 37,
-    "meanPred": 0.5522,
+    "meanPred": 0.5494,
     "realised": 0.4054,
     "episodesTouched": 6
    },
    {
     "decile": 9,
-    "lo": 0.6069,
-    "hi": 0.8161,
+    "lo": 0.6036,
+    "hi": 0.8102,
     "n": 37,
-    "meanPred": 0.6884,
+    "meanPred": 0.6862,
     "realised": 0.3514,
     "episodesTouched": 4
    },
    {
     "decile": 10,
-    "lo": 0.8161,
-    "hi": 0.9698,
+    "lo": 0.8102,
+    "hi": 0.9684,
     "n": 38,
-    "meanPred": 0.8937,
+    "meanPred": 0.8916,
     "realised": 0.9737,
     "episodesTouched": 3
    }
@@ -1332,159 +1333,160 @@
   "calibrationDeciles_fixed5": [
    {
     "decile": 1,
-    "lo": 0.01,
-    "hi": 0.0232,
-    "n": 36,
+    "lo": 0.0099,
+    "hi": 0.0229,
+    "n": 38,
     "meanPred": 0.0173,
     "realised": 0.0,
     "episodesTouched": 0
    },
    {
     "decile": 2,
-    "lo": 0.0232,
-    "hi": 0.0508,
-    "n": 38,
-    "meanPred": 0.0318,
+    "lo": 0.0229,
+    "hi": 0.0503,
+    "n": 36,
+    "meanPred": 0.0319,
     "realised": 0.0,
     "episodesTouched": 0
    },
    {
     "decile": 3,
-    "lo": 0.0508,
-    "hi": 0.089,
+    "lo": 0.0503,
+    "hi": 0.0874,
     "n": 38,
-    "meanPred": 0.0709,
+    "meanPred": 0.0686,
     "realised": 0.0,
     "episodesTouched": 0
    },
    {
     "decile": 4,
-    "lo": 0.089,
-    "hi": 0.174,
-    "n": 35,
-    "meanPred": 0.1369,
-    "realised": 0.0,
+    "lo": 0.0874,
+    "hi": 0.1814,
+    "n": 36,
+    "meanPred": 0.1385,
+    "realised": 0.0278,
     "episodesTouched": 0
    },
    {
     "decile": 5,
-    "lo": 0.174,
-    "hi": 0.3153,
+    "lo": 0.1814,
+    "hi": 0.3232,
     "n": 38,
-    "meanPred": 0.2443,
+    "meanPred": 0.2452,
     "realised": 0.0526,
     "episodesTouched": 1
    },
    {
     "decile": 6,
-    "lo": 0.3153,
-    "hi": 0.4642,
-    "n": 38,
-    "meanPred": 0.3897,
-    "realised": 0.3158,
-    "episodesTouched": 4
+    "lo": 0.3232,
+    "hi": 0.4698,
+    "n": 36,
+    "meanPred": 0.3913,
+    "realised": 0.3056,
+    "episodesTouched": 3
    },
    {
     "decile": 7,
-    "lo": 0.4642,
-    "hi": 0.6868,
-    "n": 36,
-    "meanPred": 0.6076,
-    "realised": 0.3333,
+    "lo": 0.4698,
+    "hi": 0.6789,
+    "n": 38,
+    "meanPred": 0.5916,
+    "realised": 0.3947,
     "episodesTouched": 4
    },
    {
     "decile": 8,
-    "lo": 0.6868,
-    "hi": 0.7924,
+    "lo": 0.6789,
+    "hi": 0.776,
     "n": 36,
-    "meanPred": 0.7349,
-    "realised": 0.3889,
+    "meanPred": 0.7298,
+    "realised": 0.3611,
     "episodesTouched": 4
    },
    {
     "decile": 9,
-    "lo": 0.7924,
-    "hi": 0.9815,
+    "lo": 0.776,
+    "hi": 0.9796,
     "n": 38,
-    "meanPred": 0.877,
-    "realised": 0.5789,
+    "meanPred": 0.8741,
+    "realised": 0.5526,
     "episodesTouched": 6
    },
    {
     "decile": 10,
-    "lo": 0.9815,
+    "lo": 0.9796,
     "hi": 0.9998,
     "n": 38,
-    "meanPred": 0.9935,
+    "meanPred": 0.993,
     "realised": 1.0,
     "episodesTouched": 3
    }
   ],
   "paired_stackAltReading_minus_fixed5": {
    "n": 1000,
-   "rows": 371,
-   "real": -0.1217,
-   "q05": -0.238,
-   "q50": -0.1143,
-   "q95": -0.0473,
+   "rows": 372,
+   "real": -0.1211,
+   "q05": -0.2391,
+   "q50": -0.1125,
+   "q95": -0.044,
    "pDiffLE0": 1.0,
    "tie": false
   },
   "episodeLOO_stackAltReading": {
-   "all": 0.8,
-   "nEpisodes": 12,
-   "min": 0.729,
+   "all": 0.794,
+   "nEpisodes": 13,
+   "min": 0.721,
    "minEpisode": "2020-10-18..2021-05-09",
    "perEpisode": {
-    "2019-08-11..2019-09-29": 0.835,
-    "2019-10-27..2019-11-03": 0.806,
-    "2019-12-22..2020-02-02": 0.793,
-    "2020-02-16..2020-07-05": 0.771,
-    "2020-10-18..2021-05-09": 0.729,
-    "2021-05-23..2021-05-23": 0.798,
-    "2021-06-13..2021-06-13": 0.799,
-    "2021-06-27..2021-08-08": 0.793,
-    "2021-10-10..2021-10-24": 0.795,
-    "2022-05-22..2022-06-12": 0.811,
-    "2024-11-03..2024-11-03": 0.802,
-    "2025-04-06..2025-07-13": 0.854
+    "2019-08-11..2019-09-29": 0.827,
+    "2019-10-27..2019-11-03": 0.8,
+    "2019-12-22..2020-02-02": 0.786,
+    "2020-02-16..2020-07-05": 0.764,
+    "2020-10-18..2021-05-09": 0.721,
+    "2021-05-23..2021-05-23": 0.792,
+    "2021-06-13..2021-06-13": 0.794,
+    "2021-06-27..2021-08-08": 0.787,
+    "2021-10-10..2021-10-24": 0.789,
+    "2022-05-22..2022-06-12": 0.805,
+    "2024-11-03..2024-11-03": 0.796,
+    "2025-04-06..2025-07-13": 0.85,
+    "2026-05-17..2026-05-17": 0.798
    }
   },
   "fixed5Disclosure": {
    "honestNote": "fixed5 (study8_baselines.SIGNALS) is round 7's most-picked set over refits through 2026 with btcd_fromhi52w swapped for btcusd_ret13w in the baselines module: a post-hoc comparator, not a pre-registered one; the brief's literal set is reported as fixed5brief.",
-   "fixed5briefPairedVsFixed5_honest": "fixed5brief vs fixed5 pooled AUC: paired 26-week block-bootstrap difference -0.041 [-0.094, 0.001], P(diff<=0) 0.945; a tie (band contains 0).",
-   "fixed5briefToday": 0.0392,
+   "fixed5briefPairedVsFixed5_honest": "fixed5brief vs fixed5 pooled AUC: paired 26-week block-bootstrap difference -0.039 [-0.096, 0.004], P(diff<=0) 0.924; a tie (band contains 0).",
+   "fixed5briefToday": 0.0395,
    "stackWithFixed5brief": "not computable here: no module exports a fixed5brief weekly series (honest reports the paired tie above)"
   }
  },
  "null": {
   "stack_fall5_26w_scoringOnlyShift": {
    "n": 50,
-   "real": 0.811,
-   "nullMedian": 0.4274,
-   "nullP95": 0.7817,
-   "nullP05": 0.1958,
+   "real": 0.804,
+   "nullMedian": 0.4291,
+   "nullP95": 0.7834,
+   "nullP05": 0.1951,
    "p": 0.02,
    "note": "scoring-only circular shift of the labels by >= 26 weeks: valid for the stack because it has no fit; the components' own p-values are inherited below"
   },
   "inherited": {
    "honest.strat.fall5_26w.shifted": {
     "n": 52,
-    "real": 0.638,
-    "nullMedian": 0.4765,
-    "nullP95": 0.6759,
-    "nullP05": 0.2731,
+    "real": 0.635,
+    "nullMedian": 0.4855,
+    "nullP95": 0.6679,
+    "nullP05": 0.2802,
     "p": 0.135,
     "quotable": true,
     "exact": false
    },
    "honest.fixed5.fall5_26w.shifted": {
     "n": 52,
-    "real": 0.922,
-    "nullMedian": 0.488,
-    "nullP95": 0.6563,
-    "nullP05": 0.387,
+    "real": 0.919,
+    "nullMedian": 0.4865,
+    "nullP95": 0.6593,
+    "nullP05": 0.3779,
     "p": 0.0,
     "quotable": true,
     "exact": false
@@ -1492,19 +1494,19 @@
    "honest.fixed5.withinEra": {
     "2019-2020": {
      "n": 300,
-     "real": 0.902,
-     "nullMedian": 0.357,
-     "nullP95": 0.8172,
-     "nullP05": 0.077,
+     "real": 0.905,
+     "nullMedian": 0.359,
+     "nullP95": 0.8081,
+     "nullP05": 0.081,
      "p": 0.007,
      "quotable": true,
      "exact": false
     },
     "2021-2022": {
      "n": 300,
-     "real": 0.817,
-     "nullMedian": 0.5075,
-     "nullP95": 0.762,
+     "real": 0.816,
+     "nullMedian": 0.508,
+     "nullP95": 0.7591,
      "nullP05": 0.1249,
      "p": 0.013,
      "quotable": true,
@@ -1512,9 +1514,9 @@
     },
     "2023-2026": {
      "n": 120,
-     "real": 0.99,
-     "nullMedian": 0.3025,
-     "nullP95": 0.95,
+     "real": 0.988,
+     "nullMedian": 0.2825,
+     "nullP95": 0.932,
      "nullP05": 0.039,
      "p": 0.042,
      "quotable": true,
@@ -1522,10 +1524,10 @@
     },
     "pooled": {
      "n": 300,
-     "real": 0.922,
-     "nullMedian": 0.484,
-     "nullP95": 0.7303,
-     "nullP05": 0.2259,
+     "real": 0.919,
+     "nullMedian": 0.4835,
+     "nullP95": 0.731,
+     "nullP05": 0.2224,
      "p": 0.0,
      "quotable": true,
      "exact": false
@@ -1534,41 +1536,41 @@
    "honest.strat.withinEra": {
     "2019-2020": {
      "n": 300,
-     "real": 0.553,
-     "nullMedian": 0.452,
-     "nullP95": 0.8611,
-     "nullP05": 0.0405,
-     "p": 0.363,
+     "real": 0.536,
+     "nullMedian": 0.4505,
+     "nullP95": 0.8539,
+     "nullP05": 0.0396,
+     "p": 0.387,
      "quotable": true,
      "exact": false
     },
     "2021-2022": {
      "n": 300,
      "real": 0.784,
-     "nullMedian": 0.4555,
+     "nullMedian": 0.4595,
      "nullP95": 0.7211,
-     "nullP05": 0.1409,
-     "p": 0.017,
+     "nullP05": 0.1379,
+     "p": 0.013,
      "quotable": true,
      "exact": false
     },
     "2023-2026": {
      "n": 120,
-     "real": 0.152,
-     "nullMedian": 0.639,
-     "nullP95": 0.8276,
-     "nullP05": 0.138,
-     "p": 0.892,
+     "real": 0.153,
+     "nullMedian": 0.6405,
+     "nullP95": 0.928,
+     "nullP05": 0.1,
+     "p": 0.825,
      "quotable": true,
      "exact": true
     },
     "pooled": {
      "n": 300,
-     "real": 0.638,
-     "nullMedian": 0.36,
-     "nullP95": 0.6741,
-     "nullP05": 0.1777,
-     "p": 0.077,
+     "real": 0.635,
+     "nullMedian": 0.363,
+     "nullP95": 0.6762,
+     "nullP05": 0.1848,
+     "p": 0.087,
      "quotable": true,
      "exact": false
     }
@@ -1777,22 +1779,22 @@
    "stackBrierLeOwnEraBaseEveryEra": false,
    "stackBrierLeTrainBaseEveryEra": true,
    "stackPooledAucInsideFixed5Band": false,
-   "pairedVsFixed5": -0.1217,
+   "pairedVsFixed5": -0.1211,
    "byEraBrier": {
-    "2019-2020": 0.1728,
-    "2021-2022": 0.2212,
-    "2023-2026": 0.1592
+    "2019-2020": 0.1704,
+    "2021-2022": 0.2214,
+    "2023-2026": 0.1609
    }
   }
  },
  "today": {
-  "asOf": "2026-11-01",
+  "asOf": "2026-11-08",
   "dataThrough": {
-   "utc": "2026-11-02 00:00 UTC",
-   "et": "2026-11-01 19:00 EST"
+   "utc": "2026-11-09 00:00 UTC",
+   "et": "2026-11-08 19:00 EST"
   },
   "provisionalBars": [
-   "2026-11-08"
+   "2026-11-15"
   ],
   "state": {
    "regime_pActive": 0.0002,
@@ -1809,14 +1811,14 @@
     "nEp": 5,
     "level": "cell",
     "rate": 0.481,
-    "rate10": 0.303,
+    "rate10": 0.301,
     "extrapolation": true
    },
    "stratumSupport": {
     "m2_yoy": {
-     "min": 0.0559,
-     "max": 0.2155,
-     "today": 0.0543,
+     "min": 0.0551,
+     "max": 0.2147,
+     "today": 0.0545,
      "inSupport": false
     },
     "btc_dd_ath": {
@@ -1857,10 +1859,10 @@
    "multiscale_lastFallVisitWasJun2025": true,
    "fresh": true,
    "readinessOn": false,
-   "btcd": 60.5,
+   "btcd": 60.51,
    "btcd_exstable": 65.0,
    "inputs": {
-    "m2_yoy": 0.0543,
+    "m2_yoy": 0.0545,
     "btc_dd_ath": -0.4567,
     "ethbtc_fromhi52w": -0.1889,
     "btcd_vol13w": 0.1374,
@@ -1873,57 +1875,57 @@
     "strat": 0.481,
     "hazard": 0.0792,
     "regime": 0.5915,
-    "fixed5": 0.0399
+    "fixed5": 0.0404
    },
    "componentTags": {
     "strat": {
-     "brierSkillVsOwnEra_2023_26": -0.797,
+     "brierSkillVsOwnEra_2023_26": -0.718,
      "brierBeatsOwnEra_2023_26": false,
-     "auc_2023_26": 0.159,
+     "auc_2023_26": 0.181,
      "extrapolation": true,
      "moduleFlag": "out of its cell's M2 support (honest), enters only through its interval"
     },
     "hazard": {
-     "brierSkillVsOwnEra_2023_26": -1.452,
+     "brierSkillVsOwnEra_2023_26": -1.377,
      "brierBeatsOwnEra_2023_26": false,
      "auc_2023_26": 0.289,
      "extrapolation": false,
      "moduleFlag": null
     },
     "regime": {
-     "brierSkillVsOwnEra_2023_26": -3.149,
+     "brierSkillVsOwnEra_2023_26": -2.937,
      "brierBeatsOwnEra_2023_26": false,
-     "auc_2023_26": 0.115,
+     "auc_2023_26": 0.137,
      "extrapolation": false,
      "moduleFlag": "intercept-dominated h26 (regime notes); MC reads > 0.5 in most OOS weeks; ranks 2023-26 below chance"
     },
     "fixed5": {
-     "brierSkillVsOwnEra_2023_26": 0.341,
+     "brierSkillVsOwnEra_2023_26": 0.316,
      "brierBeatsOwnEra_2023_26": true,
-     "auc_2023_26": 0.994,
+     "auc_2023_26": 0.965,
      "extrapolation": false,
      "moduleFlag": null
     }
    },
-   "stack_fall5_26w": 0.2083,
-   "stack_fall5_26w_withoutExtrapolatedStratum": 0.1475,
-   "stack_fall5_26w_regimeAltReading": 0.3558,
+   "stack_fall5_26w": 0.2089,
+   "stack_fall5_26w_withoutExtrapolatedStratum": 0.148,
+   "stack_fall5_26w_regimeAltReading": 0.3565,
    "regime_altReading_today_h26incl": 0.9656,
    "spread_fall5_26w_components": [
-    0.0399,
+    0.0404,
     0.5915
    ],
    "spread_fall5_26w_componentsInSupport": [
-    0.0399,
+    0.0404,
     0.5915
    ],
    "spread_fall5_26w_componentsCalibratedIn2023_26": [
-    0.0399,
-    0.0399
+    0.0404,
+    0.0404
    ],
    "spread_fall5_26w_honestInSupport": [
-    0.0392,
-    0.4273
+    0.0395,
+    0.4234
    ],
    "spread_fall5_26w_allSpecifications": [
     0.029,
@@ -1934,13 +1936,13 @@
     0.5915
    ],
    "allSpecifications": {
-    "component:fixed5": 0.0399,
+    "component:fixed5": 0.0404,
     "component:hazard": 0.0792,
     "component:regime": 0.5915,
-    "honest:m2only": 0.3197,
-    "honest:m2eth": 0.1185,
+    "honest:m2only": 0.3224,
+    "honest:m2eth": 0.1223,
     "honest:clock": 0.2544,
-    "honest:offset": 0.0803,
+    "honest:offset": 0.0813,
     "hazard:cov_renewal": 0.0815,
     "hazard:five(hazard)": 0.029,
     "hazard:full_recalibrated": 0.2195,
@@ -1955,11 +1957,11 @@
      "reason": "extrapolation: outside its cell's M2 support (honest), enters only through its interval [0.247, 0.818]"
     },
     "honest:stack(learned)": {
-     "value": 0.0714,
+     "value": 0.073,
      "reason": "learned 2-coefficient stack, 19 parameters against 12 episodes, fixed5 input in-sample at fit time"
     },
     "honest:km26": {
-     "value": 0.4948,
+     "value": 0.4947,
      "reason": "the same stratified conditional rate in survival form (honest notes), not an independent estimate"
     },
     "multiscale:p_sigma2_91": {
@@ -1967,26 +1969,26 @@
      "reason": "a sigma-unit target, not the 5-point target"
     },
     "honest:strat_vol": {
-     "value": 0.573,
+     "value": 0.5699,
      "reason": "a variant of the stratified cell, out of M2 support like it"
     }
    },
    "interval90_fall5_26w_stack": {
-    "n": 981,
-    "q05": 0.0,
-    "q50": 0.049,
-    "q95": 0.267,
+    "n": 983,
+    "q05": 0.015,
+    "q50": 0.109,
+    "q95": 0.391,
     "decile": {
      "decile": 3,
-     "lo": 0.1673,
-     "hi": 0.2537,
+     "lo": 0.1675,
+     "hi": 0.2476,
      "n": 37,
-     "meanPred": 0.2097,
-     "realised": 0.0541,
-     "episodesTouched": 1
+     "meanPred": 0.2111,
+     "realised": 0.1081,
+     "episodesTouched": 2
     },
-    "rowsInDecile": 36,
-    "realisedRateInDecile": 0.0541,
+    "rowsInDecile": 37,
+    "realisedRateInDecile": 0.1081,
     "note": "DIAGNOSTIC, not the plan's criterion: the realised rate of the OOS weeks in the stack's own decile, bootstrapped over honest's episode blocks; the plan's 'episode bootstrap of the stack' is undefined for a no-fit point and honest wrote no calibration deciles; the interval rests on the episodes touching the decile",
     "stackPointInsideInterval": true
    },
@@ -1995,15 +1997,15 @@
     0.818
    ],
    "components_fall10_26w": {
-    "strat": 0.303,
+    "strat": 0.301,
     "hazard": 0.0058,
     "fixed5": 0.0006
    },
    "regime_pFall10_26w_notInStack": 0.3925,
-   "stack_fall10_26w": 0.0114,
+   "stack_fall10_26w": 0.0113,
    "spread_fall10_26w_components": [
     0.0006,
-    0.303
+    0.301
    ],
    "P13": {
     "hazard_k5": 0.0443,
@@ -2216,10 +2218,10 @@
     ],
     "source": "tda_sig today.readings M0 (= fixed5 through the same harness)",
     "dropOneReading": {
-     "usdtd_vsma30w": 0.1116,
-     "ethbtc_fromhi52w": 0.15,
-     "btc_dd_ath": 0.0668,
-     "btcusd_ret13w": 0.0393,
+     "usdtd_vsma30w": 0.1124,
+     "ethbtc_fromhi52w": 0.1518,
+     "btc_dd_ath": 0.0707,
+     "btcusd_ret13w": 0.0395,
      "m2_yoy": 0.1232
     }
    },
@@ -2274,12 +2276,12 @@
     ],
     "m2pm1pt": {
      "-0.01": {
-      "strat": 0.17,
-      "fixed5": 0.0322
+      "strat": 0.167,
+      "fixed5": 0.0326
      },
      "+0.01": {
       "strat": 0.481,
-      "fixed5": 0.0493
+      "fixed5": 0.0499
      }
     }
    }
@@ -2294,10 +2296,10 @@
    "ii_engineImminentSinceFeb2023": "not-yet",
    "iii_nextFallWhileEngineFit<0.8": "not-yet"
   },
-  "spread_note": "The components disagree by 0.55 (fixed5 0.040 to regime 0.592; the upper end regime is flagged by its module: intercept-dominated h26 (regime notes); MC reads > 0.5 in most OOS weeks; ranks 2023-26 below chance); the stack's own-decile diagnostic interval [0.000, 0.267] (realised rate of the 36 OOS weeks in the stack's own decile, 25 honest-episode blocks, 1 episode(s) touching the decile) excludes ['strat', 'regime']: the disagreement is NOT inside the band. The stratified point is an extrapolation (honest) and enters only through its interval [0.247, 0.818]; without it the component spread is [0.04, 0.592]; honest's own in-support spread is [0.0392, 0.4273].",
+  "spread_note": "The components disagree by 0.55 (fixed5 0.040 to regime 0.592; the upper end regime is flagged by its module: intercept-dominated h26 (regime notes); MC reads > 0.5 in most OOS weeks; ranks 2023-26 below chance); the stack's own-decile diagnostic interval [0.015, 0.391] (realised rate of the 37 OOS weeks in the stack's own decile, 25 honest-episode blocks, 2 episode(s) touching the decile) excludes ['strat', 'regime']: the disagreement is NOT inside the band. The stratified point is an extrapolation (honest) and enters only through its interval [0.247, 0.818]; without it the component spread is [0.04, 0.592]; honest's own in-support spread is [0.0395, 0.4234].",
   "honestClaim_fromHonestModule": "base rate plus readiness, with intervals (the strong test fails: beatsDecoysBy0.10EveryEra, pass)",
   "provisionalReadings": {
-   "fixed5": 0.0376,
+   "fixed5": 0.0078,
    "hazard_P26": 0.0796,
    "regime_pFall5_26w": 0.5925,
    "flag": "partial current week, not a forecast"
@@ -2521,95 +2523,95 @@
   "stack_fall5_26w": [
    {
     "t": "2019-04-07",
-    "v": 0.0647
+    "v": 0.0622
    },
    {
     "t": "2019-04-21",
-    "v": 0.0944
+    "v": 0.0905
    },
    {
     "t": "2019-05-05",
-    "v": 0.1486
+    "v": 0.1428
    },
    {
     "t": "2019-05-19",
-    "v": 0.1146
+    "v": 0.1117
    },
    {
     "t": "2019-06-02",
-    "v": 0.125
+    "v": 0.1221
    },
    {
     "t": "2019-06-16",
-    "v": 0.1329
+    "v": 0.1314
    },
    {
     "t": "2019-06-30",
-    "v": 0.1862
+    "v": 0.1844
    },
    {
     "t": "2019-07-14",
-    "v": 0.2294
+    "v": 0.2353
    },
    {
     "t": "2019-07-28",
-    "v": 0.2164
+    "v": 0.2221
    },
    {
     "t": "2019-08-11",
-    "v": 0.2628
+    "v": 0.2641
    },
    {
     "t": "2019-08-25",
-    "v": 0.2541
+    "v": 0.2555
    },
    {
     "t": "2019-09-08",
-    "v": 0.2602
+    "v": 0.2616
    },
    {
     "t": "2019-09-22",
-    "v": 0.2537
+    "v": 0.2589
    },
    {
     "t": "2019-10-06",
-    "v": 0.2037
+    "v": 0.2081
    },
    {
     "t": "2019-10-20",
-    "v": 0.2874
+    "v": 0.2991
    },
    {
     "t": "2019-11-03",
-    "v": 0.3181
+    "v": 0.3304
    },
    {
     "t": "2019-11-17",
-    "v": 0.3403
+    "v": 0.3444
    },
    {
     "t": "2019-12-01",
-    "v": 0.3698
+    "v": 0.3738
    },
    {
     "t": "2019-12-15",
-    "v": 0.5171
+    "v": 0.5223
    },
    {
     "t": "2019-12-29",
-    "v": 0.5646
+    "v": 0.5694
    },
    {
     "t": "2020-01-12",
-    "v": 0.6261
+    "v": 0.6171
    },
    {
     "t": "2020-01-26",
-    "v": 0.6133
+    "v": 0.6048
    },
    {
     "t": "2020-02-09",
-    "v": 0.5317
+    "v": 0.5236
    },
    {
     "t": "2020-02-23",
@@ -2617,11 +2619,11 @@
    },
    {
     "t": "2020-03-08",
-    "v": 0.4214
+    "v": 0.4207
    },
    {
     "t": "2020-03-22",
-    "v": 0.5644
+    "v": 0.5627
    },
    {
     "t": "2020-04-05",
@@ -2629,199 +2631,199 @@
    },
    {
     "t": "2020-04-19",
-    "v": 0.795
+    "v": 0.8012
    },
    {
     "t": "2020-05-03",
-    "v": 0.8302
+    "v": 0.8353
    },
    {
     "t": "2020-05-17",
-    "v": 0.9471
+    "v": 0.9453
    },
    {
     "t": "2020-05-31",
-    "v": 0.9238
+    "v": 0.9216
    },
    {
     "t": "2020-06-14",
-    "v": 0.8875
+    "v": 0.8851
    },
    {
     "t": "2020-06-28",
-    "v": 0.8752
+    "v": 0.8726
    },
    {
     "t": "2020-07-12",
-    "v": 0.4681
+    "v": 0.4541
    },
    {
     "t": "2020-07-26",
-    "v": 0.4708
+    "v": 0.4567
    },
    {
     "t": "2020-08-09",
-    "v": 0.5296
+    "v": 0.5148
    },
    {
     "t": "2020-08-23",
-    "v": 0.5657
+    "v": 0.5506
    },
    {
     "t": "2020-09-06",
-    "v": 0.637
+    "v": 0.6244
    },
    {
     "t": "2020-09-20",
-    "v": 0.6225
+    "v": 0.6098
    },
    {
     "t": "2020-10-04",
-    "v": 0.8379
+    "v": 0.8328
    },
    {
     "t": "2020-10-18",
-    "v": 0.8161
+    "v": 0.8102
    },
    {
     "t": "2020-11-01",
-    "v": 0.9496
+    "v": 0.9474
    },
    {
     "t": "2020-11-15",
-    "v": 0.9655
+    "v": 0.9639
    },
    {
     "t": "2020-11-29",
-    "v": 0.9623
+    "v": 0.9607
    },
    {
     "t": "2020-12-13",
-    "v": 0.9605
+    "v": 0.9589
    },
    {
     "t": "2020-12-27",
-    "v": 0.9355
+    "v": 0.9327
    },
    {
     "t": "2021-01-10",
-    "v": 0.9075
+    "v": 0.9058
    },
    {
     "t": "2021-01-24",
-    "v": 0.8666
+    "v": 0.8603
    },
    {
     "t": "2021-02-07",
-    "v": 0.8765
+    "v": 0.8743
    },
    {
     "t": "2021-02-21",
-    "v": 0.884
+    "v": 0.882
    },
    {
     "t": "2021-03-07",
-    "v": 0.8537
+    "v": 0.8512
    },
    {
     "t": "2021-03-21",
-    "v": 0.883
+    "v": 0.8809
    },
    {
     "t": "2021-04-04",
-    "v": 0.534
+    "v": 0.5304
    },
    {
     "t": "2021-04-18",
-    "v": 0.5434
+    "v": 0.54
    },
    {
     "t": "2021-05-02",
-    "v": 0.4958
+    "v": 0.4925
    },
    {
     "t": "2021-05-16",
-    "v": 0.5536
+    "v": 0.5501
    },
    {
     "t": "2021-05-30",
-    "v": 0.5359
+    "v": 0.532
    },
    {
     "t": "2021-06-13",
-    "v": 0.5967
+    "v": 0.5934
    },
    {
     "t": "2021-06-27",
-    "v": 0.523
+    "v": 0.5194
    },
    {
     "t": "2021-07-11",
-    "v": 0.6789
+    "v": 0.679
    },
    {
     "t": "2021-07-25",
-    "v": 0.6457
+    "v": 0.6456
    },
    {
     "t": "2021-08-08",
-    "v": 0.6727
+    "v": 0.6729
    },
    {
     "t": "2021-08-22",
-    "v": 0.7014
+    "v": 0.7017
    },
    {
     "t": "2021-09-05",
-    "v": 0.702
+    "v": 0.7006
    },
    {
     "t": "2021-09-19",
-    "v": 0.6684
+    "v": 0.6666
    },
    {
     "t": "2021-10-03",
-    "v": 0.6589
+    "v": 0.6593
    },
    {
     "t": "2021-10-17",
-    "v": 0.8113
+    "v": 0.8102
    },
    {
     "t": "2021-10-31",
-    "v": 0.8048
+    "v": 0.8038
    },
    {
     "t": "2021-11-14",
-    "v": 0.8047
+    "v": 0.8042
    },
    {
     "t": "2021-11-28",
-    "v": 0.7107
+    "v": 0.712
    },
    {
     "t": "2021-12-12",
-    "v": 0.6349
+    "v": 0.6354
    },
    {
     "t": "2021-12-26",
-    "v": 0.6143
+    "v": 0.6148
    },
    {
     "t": "2022-01-09",
-    "v": 0.5911
+    "v": 0.5914
    },
    {
     "t": "2022-01-23",
-    "v": 0.5459
+    "v": 0.546
    },
    {
     "t": "2022-02-06",
-    "v": 0.604
+    "v": 0.6042
    },
    {
     "t": "2022-02-20",
-    "v": 0.5771
+    "v": 0.5772
    },
    {
     "t": "2022-03-06",
@@ -2829,43 +2831,43 @@
    },
    {
     "t": "2022-03-20",
-    "v": 0.5625
+    "v": 0.5629
    },
    {
     "t": "2022-04-03",
-    "v": 0.5295
+    "v": 0.53
    },
    {
     "t": "2022-04-17",
-    "v": 0.5008
+    "v": 0.5012
    },
    {
     "t": "2022-05-01",
-    "v": 0.4823
+    "v": 0.4826
    },
    {
     "t": "2022-05-15",
-    "v": 0.4234
+    "v": 0.4232
    },
    {
     "t": "2022-05-29",
-    "v": 0.4011
+    "v": 0.4007
    },
    {
     "t": "2022-06-12",
-    "v": 0.3273
+    "v": 0.3222
    },
    {
     "t": "2022-06-26",
-    "v": 0.238
+    "v": 0.2339
    },
    {
     "t": "2022-07-10",
-    "v": 0.2052
+    "v": 0.2012
    },
    {
     "t": "2022-07-24",
-    "v": 0.2162
+    "v": 0.2161
    },
    {
     "t": "2022-08-07",
@@ -2873,39 +2875,39 @@
    },
    {
     "t": "2022-08-21",
-    "v": 0.1994
+    "v": 0.1995
    },
    {
     "t": "2022-09-04",
-    "v": 0.148
+    "v": 0.1474
    },
    {
     "t": "2022-09-18",
-    "v": 0.1044
+    "v": 0.1047
    },
    {
     "t": "2022-10-02",
-    "v": 0.104
+    "v": 0.1041
    },
    {
     "t": "2022-10-16",
-    "v": 0.1009
+    "v": 0.1006
    },
    {
     "t": "2022-10-30",
-    "v": 0.0895
+    "v": 0.0893
    },
    {
     "t": "2022-11-13",
-    "v": 0.0757
+    "v": 0.075
    },
    {
     "t": "2022-11-27",
-    "v": 0.0732
+    "v": 0.0725
    },
    {
     "t": "2022-12-11",
-    "v": 0.0717
+    "v": 0.0718
    },
    {
     "t": "2022-12-25",
@@ -2917,35 +2919,35 @@
    },
    {
     "t": "2023-01-22",
-    "v": 0.1116
+    "v": 0.1119
    },
    {
     "t": "2023-02-05",
-    "v": 0.1145
+    "v": 0.1146
    },
    {
     "t": "2023-02-19",
-    "v": 0.1608
+    "v": 0.1606
    },
    {
     "t": "2023-03-05",
-    "v": 0.1594
+    "v": 0.1592
    },
    {
     "t": "2023-03-19",
-    "v": 0.2027
+    "v": 0.2025
    },
    {
     "t": "2023-04-02",
-    "v": 0.2196
+    "v": 0.2194
    },
    {
     "t": "2023-04-16",
-    "v": 0.2404
+    "v": 0.2411
    },
    {
     "t": "2023-04-30",
-    "v": 0.2648
+    "v": 0.2653
    },
    {
     "t": "2023-05-14",
@@ -2957,163 +2959,163 @@
    },
    {
     "t": "2023-06-11",
-    "v": 0.2643
+    "v": 0.2638
    },
    {
     "t": "2023-06-25",
-    "v": 0.2982
+    "v": 0.2978
    },
    {
     "t": "2023-07-09",
-    "v": 0.2806
+    "v": 0.2802
    },
    {
     "t": "2023-07-23",
-    "v": 0.2811
+    "v": 0.2807
    },
    {
     "t": "2023-08-06",
-    "v": 0.2823
+    "v": 0.2819
    },
    {
     "t": "2023-08-20",
-    "v": 0.2691
+    "v": 0.2689
    },
    {
     "t": "2023-09-03",
-    "v": 0.2696
+    "v": 0.2693
    },
    {
     "t": "2023-09-17",
-    "v": 0.2715
+    "v": 0.2717
    },
    {
     "t": "2023-10-01",
-    "v": 0.2433
+    "v": 0.2436
    },
    {
     "t": "2023-10-15",
-    "v": 0.2571
+    "v": 0.2576
    },
    {
     "t": "2023-10-29",
-    "v": 0.3185
+    "v": 0.319
    },
    {
     "t": "2023-11-12",
-    "v": 0.3304
+    "v": 0.3324
    },
    {
     "t": "2023-11-26",
-    "v": 0.352
+    "v": 0.354
    },
    {
     "t": "2023-12-10",
-    "v": 0.4027
+    "v": 0.4048
    },
    {
     "t": "2023-12-24",
-    "v": 0.4115
+    "v": 0.4139
    },
    {
     "t": "2024-01-07",
-    "v": 0.3711
+    "v": 0.3736
    },
    {
     "t": "2024-01-21",
-    "v": 0.3669
+    "v": 0.3691
    },
    {
     "t": "2024-02-04",
-    "v": 0.3618
+    "v": 0.3639
    },
    {
     "t": "2024-02-18",
-    "v": 0.408
+    "v": 0.4103
    },
    {
     "t": "2024-03-03",
-    "v": 0.4547
+    "v": 0.4571
    },
    {
     "t": "2024-03-17",
-    "v": 0.4895
+    "v": 0.4912
    },
    {
     "t": "2024-03-31",
-    "v": 0.4091
+    "v": 0.4107
    },
    {
     "t": "2024-04-14",
-    "v": 0.4334
+    "v": 0.4365
    },
    {
     "t": "2024-04-28",
-    "v": 0.4064
+    "v": 0.4095
    },
    {
     "t": "2024-05-12",
-    "v": 0.4524
+    "v": 0.3905
    },
    {
     "t": "2024-05-26",
-    "v": 0.4293
+    "v": 0.3687
    },
    {
     "t": "2024-06-09",
-    "v": 0.3714
+    "v": 0.3771
    },
    {
     "t": "2024-06-23",
-    "v": 0.3607
+    "v": 0.3648
    },
    {
     "t": "2024-07-07",
-    "v": 0.2804
+    "v": 0.2839
    },
    {
     "t": "2024-07-21",
-    "v": 0.3011
+    "v": 0.3046
    },
    {
     "t": "2024-08-04",
-    "v": 0.3259
+    "v": 0.3295
    },
    {
     "t": "2024-08-18",
-    "v": 0.3329
+    "v": 0.3366
    },
    {
     "t": "2024-09-01",
-    "v": 0.338
+    "v": 0.3417
    },
    {
     "t": "2024-09-15",
-    "v": 0.3498
+    "v": 0.3525
    },
    {
     "t": "2024-09-29",
-    "v": 0.2929
+    "v": 0.2953
    },
    {
     "t": "2024-10-13",
-    "v": 0.285
+    "v": 0.287
    },
    {
     "t": "2024-10-27",
-    "v": 0.2984
+    "v": 0.3005
    },
    {
     "t": "2024-11-10",
-    "v": 0.2636
+    "v": 0.2646
    },
    {
     "t": "2024-11-24",
-    "v": 0.2955
+    "v": 0.2965
    },
    {
     "t": "2024-12-08",
-    "v": 0.2562
+    "v": 0.2571
    },
    {
     "t": "2024-12-22",
@@ -3121,187 +3123,187 @@
    },
    {
     "t": "2025-01-05",
-    "v": 0.2625
+    "v": 0.2601
    },
    {
     "t": "2025-01-19",
-    "v": 0.3045
+    "v": 0.3012
    },
    {
     "t": "2025-02-02",
-    "v": 0.3253
+    "v": 0.3219
    },
    {
     "t": "2025-02-16",
-    "v": 0.3225
+    "v": 0.317
    },
    {
     "t": "2025-03-02",
-    "v": 0.2991
+    "v": 0.2939
    },
    {
     "t": "2025-03-16",
-    "v": 0.3204
+    "v": 0.3143
    },
    {
     "t": "2025-03-30",
-    "v": 0.2895
+    "v": 0.2831
    },
    {
     "t": "2025-04-13",
-    "v": 0.3127
+    "v": 0.2997
    },
    {
     "t": "2025-04-27",
-    "v": 0.3094
+    "v": 0.2964
    },
    {
     "t": "2025-05-11",
-    "v": 0.2561
+    "v": 0.2467
    },
    {
     "t": "2025-05-25",
-    "v": 0.2595
+    "v": 0.2515
    },
    {
     "t": "2025-06-08",
-    "v": 0.2638
+    "v": 0.2558
    },
    {
     "t": "2025-06-22",
-    "v": 0.283
+    "v": 0.2735
    },
    {
     "t": "2025-07-06",
-    "v": 0.26
+    "v": 0.2507
    },
    {
     "t": "2025-07-20",
-    "v": 0.1608
+    "v": 0.1567
    },
    {
     "t": "2025-08-03",
-    "v": 0.162
+    "v": 0.1578
    },
    {
     "t": "2025-08-17",
-    "v": 0.1298
+    "v": 0.126
    },
    {
     "t": "2025-08-31",
-    "v": 0.1131
+    "v": 0.1097
    },
    {
     "t": "2025-09-14",
-    "v": 0.1093
+    "v": 0.106
    },
    {
     "t": "2025-09-28",
-    "v": 0.133
+    "v": 0.1292
    },
    {
     "t": "2025-10-12",
-    "v": 0.1328
+    "v": 0.1306
    },
    {
     "t": "2025-10-26",
-    "v": 0.1276
+    "v": 0.1255
    },
    {
     "t": "2025-11-09",
-    "v": 0.1441
+    "v": 0.1418
    },
    {
     "t": "2025-11-23",
-    "v": 0.1517
+    "v": 0.1486
    },
    {
     "t": "2025-12-07",
-    "v": 0.1446
+    "v": 0.1416
    },
    {
     "t": "2025-12-21",
-    "v": 0.1384
+    "v": 0.1359
    },
    {
     "t": "2026-01-04",
-    "v": 0.1437
+    "v": 0.142
    },
    {
     "t": "2026-01-18",
-    "v": 0.1488
+    "v": 0.1475
    },
    {
     "t": "2026-02-01",
-    "v": 0.1801
+    "v": 0.18
    },
    {
     "t": "2026-02-15",
-    "v": 0.188
+    "v": 0.1912
    },
    {
     "t": "2026-03-01",
-    "v": 0.171
+    "v": 0.1726
    },
    {
     "t": "2026-03-15",
-    "v": 0.1668
+    "v": 0.1665
    },
    {
     "t": "2026-03-29",
-    "v": 0.1547
+    "v": 0.1545
    },
    {
     "t": "2026-04-12",
-    "v": 0.1503
+    "v": 0.1515
    },
    {
     "t": "2026-04-26",
-    "v": 0.1606
+    "v": 0.162
    },
    {
     "t": "2026-05-10",
-    "v": 0.2005
+    "v": 0.2019
    },
    {
     "t": "2026-05-24",
-    "v": 0.2088
+    "v": 0.2094
    },
    {
     "t": "2026-06-07",
-    "v": 0.2058
+    "v": 0.2061
    },
    {
     "t": "2026-06-21",
-    "v": 0.192
+    "v": 0.1948
    },
    {
     "t": "2026-07-05",
-    "v": 0.1711
+    "v": 0.1737
    },
    {
     "t": "2026-07-19",
-    "v": 0.2381
+    "v": 0.236
    },
    {
     "t": "2026-08-02",
-    "v": 0.2033
+    "v": 0.2042
    },
    {
     "t": "2026-08-16",
-    "v": 0.1956
+    "v": 0.1974
    },
    {
     "t": "2026-08-30",
-    "v": 0.1856
+    "v": 0.1874
    },
    {
     "t": "2026-09-13",
-    "v": 0.13
+    "v": 0.1794
    },
    {
     "t": "2026-09-27",
-    "v": 0.1266
+    "v": 0.2077
    },
    {
     "t": "2026-10-11",
@@ -3309,317 +3311,321 @@
    },
    {
     "t": "2026-10-25",
-    "v": 0.209
+    "v": 0.2096
+   },
+   {
+    "t": "2026-11-08",
+    "v": 0.2114
    }
   ],
   "stack_fall10_26w": [
    {
     "t": "2019-04-07",
-    "v": 0.0041
+    "v": 0.0038
    },
    {
     "t": "2019-04-21",
-    "v": 0.005
+    "v": 0.0046
    },
    {
     "t": "2019-05-05",
-    "v": 0.0063
+    "v": 0.0059
    },
    {
     "t": "2019-05-19",
-    "v": 0.0094
+    "v": 0.0089
    },
    {
     "t": "2019-06-02",
-    "v": 0.0117
+    "v": 0.0112
    },
    {
     "t": "2019-06-16",
-    "v": 0.0144
+    "v": 0.014
    },
    {
     "t": "2019-06-30",
-    "v": 0.0246
+    "v": 0.0241
    },
    {
     "t": "2019-07-14",
-    "v": 0.0372
+    "v": 0.0383
    },
    {
     "t": "2019-07-28",
-    "v": 0.0321
+    "v": 0.033
    },
    {
     "t": "2019-08-11",
-    "v": 0.0603
+    "v": 0.0604
    },
    {
     "t": "2019-08-25",
-    "v": 0.0442
+    "v": 0.0443
    },
    {
     "t": "2019-09-08",
-    "v": 0.052
+    "v": 0.0522
    },
    {
     "t": "2019-09-22",
-    "v": 0.0478
+    "v": 0.0493
    },
    {
     "t": "2019-10-06",
-    "v": 0.0289
+    "v": 0.0297
    },
    {
     "t": "2019-10-20",
-    "v": 0.0409
+    "v": 0.0435
    },
    {
     "t": "2019-11-03",
-    "v": 0.0555
+    "v": 0.059
    },
    {
     "t": "2019-11-17",
-    "v": 0.0619
+    "v": 0.0631
    },
    {
     "t": "2019-12-01",
-    "v": 0.0529
+    "v": 0.054
    },
    {
     "t": "2019-12-15",
-    "v": 0.0892
+    "v": 0.0917
    },
    {
     "t": "2019-12-29",
-    "v": 0.1118
+    "v": 0.1148
    },
    {
     "t": "2020-01-12",
-    "v": 0.1928
+    "v": 0.1871
    },
    {
     "t": "2020-01-26",
-    "v": 0.191
+    "v": 0.1851
    },
    {
     "t": "2020-02-09",
-    "v": 0.2364
+    "v": 0.2297
    },
    {
     "t": "2020-02-23",
-    "v": 0.1732
+    "v": 0.173
    },
    {
     "t": "2020-03-08",
-    "v": 0.131
+    "v": 0.1307
    },
    {
     "t": "2020-03-22",
-    "v": 0.0844
+    "v": 0.0838
    },
    {
     "t": "2020-04-05",
-    "v": 0.108
+    "v": 0.1064
    },
    {
     "t": "2020-04-19",
-    "v": 0.1049
+    "v": 0.1071
    },
    {
     "t": "2020-05-03",
-    "v": 0.174
+    "v": 0.1774
    },
    {
     "t": "2020-05-17",
-    "v": 0.364
+    "v": 0.3568
    },
    {
     "t": "2020-05-31",
-    "v": 0.3282
+    "v": 0.3216
    },
    {
     "t": "2020-06-14",
-    "v": 0.345
+    "v": 0.3393
    },
    {
     "t": "2020-06-28",
-    "v": 0.329
+    "v": 0.323
    },
    {
     "t": "2020-07-12",
-    "v": 0.1802
+    "v": 0.175
    },
    {
     "t": "2020-07-26",
-    "v": 0.2069
+    "v": 0.2014
    },
    {
     "t": "2020-08-09",
-    "v": 0.2832
+    "v": 0.2762
    },
    {
     "t": "2020-08-23",
-    "v": 0.2954
+    "v": 0.2877
    },
    {
     "t": "2020-09-06",
-    "v": 0.311
+    "v": 0.3048
    },
    {
     "t": "2020-09-20",
-    "v": 0.3693
+    "v": 0.3629
    },
    {
     "t": "2020-10-04",
-    "v": 0.0232
+    "v": 0.0227
    },
    {
     "t": "2020-10-18",
-    "v": 0.0254
+    "v": 0.0249
    },
    {
     "t": "2020-11-01",
-    "v": 0.0434
+    "v": 0.0426
    },
    {
     "t": "2020-11-15",
-    "v": 0.107
+    "v": 0.1054
    },
    {
     "t": "2020-11-29",
-    "v": 0.1267
+    "v": 0.1252
    },
    {
     "t": "2020-12-13",
-    "v": 0.1448
+    "v": 0.1431
    },
    {
     "t": "2020-12-27",
-    "v": 0.1421
+    "v": 0.14
    },
    {
     "t": "2021-01-10",
-    "v": 0.2246
+    "v": 0.221
    },
    {
     "t": "2021-01-24",
-    "v": 0.1009
+    "v": 0.0991
    },
    {
     "t": "2021-02-07",
-    "v": 0.1743
+    "v": 0.1714
    },
    {
     "t": "2021-02-21",
-    "v": 0.1541
+    "v": 0.1511
    },
    {
     "t": "2021-03-07",
-    "v": 0.1152
+    "v": 0.1128
    },
    {
     "t": "2021-03-21",
-    "v": 0.1435
+    "v": 0.1406
    },
    {
     "t": "2021-04-04",
-    "v": 0.1082
+    "v": 0.1068
    },
    {
     "t": "2021-04-18",
-    "v": 0.0845
+    "v": 0.0834
    },
    {
     "t": "2021-05-02",
-    "v": 0.0878
+    "v": 0.0867
    },
    {
     "t": "2021-05-16",
-    "v": 0.0404
+    "v": 0.0399
    },
    {
     "t": "2021-05-30",
-    "v": 0.0267
+    "v": 0.0263
    },
    {
     "t": "2021-06-13",
-    "v": 0.0447
+    "v": 0.0443
    },
    {
     "t": "2021-06-27",
-    "v": 0.0511
+    "v": 0.0506
    },
    {
     "t": "2021-07-11",
-    "v": 0.1415
+    "v": 0.14
    },
    {
     "t": "2021-07-25",
-    "v": 0.1693
+    "v": 0.1668
    },
    {
     "t": "2021-08-08",
-    "v": 0.3437
+    "v": 0.3415
    },
    {
     "t": "2021-08-22",
-    "v": 0.5131
+    "v": 0.5117
    },
    {
     "t": "2021-09-05",
-    "v": 0.4021
+    "v": 0.3997
    },
    {
     "t": "2021-09-19",
-    "v": 0.3325
+    "v": 0.3306
    },
    {
     "t": "2021-10-03",
-    "v": 0.4221
+    "v": 0.4215
    },
    {
     "t": "2021-10-17",
-    "v": 0.652
+    "v": 0.6519
    },
    {
     "t": "2021-10-31",
-    "v": 0.5703
+    "v": 0.5705
    },
    {
     "t": "2021-11-14",
-    "v": 0.5284
+    "v": 0.533
    },
    {
     "t": "2021-11-28",
-    "v": 0.4109
+    "v": 0.4166
    },
    {
     "t": "2021-12-12",
-    "v": 0.2944
+    "v": 0.2948
    },
    {
     "t": "2021-12-26",
-    "v": 0.3144
+    "v": 0.3147
    },
    {
     "t": "2022-01-09",
-    "v": 0.0953
+    "v": 0.095
    },
    {
     "t": "2022-01-23",
-    "v": 0.0571
+    "v": 0.0566
    },
    {
     "t": "2022-02-06",
-    "v": 0.0923
+    "v": 0.0915
    },
    {
     "t": "2022-02-20",
-    "v": 0.0752
+    "v": 0.0745
    },
    {
     "t": "2022-03-06",
-    "v": 0.0889
+    "v": 0.0881
    },
    {
     "t": "2022-03-20",
@@ -3627,7 +3633,7 @@
    },
    {
     "t": "2022-04-03",
-    "v": 0.104
+    "v": 0.1047
    },
    {
     "t": "2022-04-17",
@@ -3639,11 +3645,11 @@
    },
    {
     "t": "2022-05-15",
-    "v": 0.0267
+    "v": 0.0263
    },
    {
     "t": "2022-05-29",
-    "v": 0.0245
+    "v": 0.0244
    },
    {
     "t": "2022-06-12",
@@ -3655,11 +3661,11 @@
    },
    {
     "t": "2022-07-10",
-    "v": 0.0043
+    "v": 0.0042
    },
    {
     "t": "2022-07-24",
-    "v": 0.0046
+    "v": 0.0045
    },
    {
     "t": "2022-08-07",
@@ -3811,7 +3817,7 @@
    },
    {
     "t": "2024-01-07",
-    "v": 0.072
+    "v": 0.0742
    },
    {
     "t": "2024-01-21",
@@ -3823,207 +3829,207 @@
    },
    {
     "t": "2024-02-18",
-    "v": 0.1176
+    "v": 0.1209
    },
    {
     "t": "2024-03-03",
-    "v": 0.3071
+    "v": 0.3095
    },
    {
     "t": "2024-03-17",
-    "v": 0.3825
+    "v": 0.3858
    },
    {
     "t": "2024-03-31",
-    "v": 0.2198
+    "v": 0.2213
    },
    {
     "t": "2024-04-14",
-    "v": 0.1901
+    "v": 0.1939
    },
    {
     "t": "2024-04-28",
-    "v": 0.1456
+    "v": 0.1489
    },
    {
     "t": "2024-05-12",
-    "v": 0.1579
+    "v": 0.1618
    },
    {
     "t": "2024-05-26",
-    "v": 0.1739
+    "v": 0.1786
    },
    {
     "t": "2024-06-09",
-    "v": 0.1475
+    "v": 0.1536
    },
    {
     "t": "2024-06-23",
-    "v": 0.107
+    "v": 0.1096
    },
    {
     "t": "2024-07-07",
-    "v": 0.045
+    "v": 0.0465
    },
    {
     "t": "2024-07-21",
-    "v": 0.0844
+    "v": 0.0868
    },
    {
     "t": "2024-08-04",
-    "v": 0.0688
+    "v": 0.0705
    },
    {
     "t": "2024-08-18",
-    "v": 0.0714
+    "v": 0.0731
    },
    {
     "t": "2024-09-01",
-    "v": 0.0664
+    "v": 0.068
    },
    {
     "t": "2024-09-15",
-    "v": 0.0789
+    "v": 0.0802
    },
    {
     "t": "2024-09-29",
-    "v": 0.0678
+    "v": 0.0689
    },
    {
     "t": "2024-10-13",
-    "v": 0.0636
+    "v": 0.0645
    },
    {
     "t": "2024-10-27",
-    "v": 0.0695
+    "v": 0.0705
    },
    {
     "t": "2024-11-10",
-    "v": 0.0766
+    "v": 0.0769
    },
    {
     "t": "2024-11-24",
-    "v": 0.0839
+    "v": 0.0842
    },
    {
     "t": "2024-12-08",
-    "v": 0.0798
+    "v": 0.0803
    },
    {
     "t": "2024-12-22",
-    "v": 0.0792
+    "v": 0.0787
    },
    {
     "t": "2025-01-05",
-    "v": 0.0538
+    "v": 0.0534
    },
    {
     "t": "2025-01-19",
-    "v": 0.0721
+    "v": 0.0711
    },
    {
     "t": "2025-02-02",
-    "v": 0.0791
+    "v": 0.078
    },
    {
     "t": "2025-02-16",
-    "v": 0.0602
+    "v": 0.0582
    },
    {
     "t": "2025-03-02",
-    "v": 0.0445
+    "v": 0.043
    },
    {
     "t": "2025-03-16",
-    "v": 0.0354
+    "v": 0.034
    },
    {
     "t": "2025-03-30",
-    "v": 0.0341
+    "v": 0.0327
    },
    {
     "t": "2025-04-13",
-    "v": 0.0455
+    "v": 0.0414
    },
    {
     "t": "2025-04-27",
-    "v": 0.0529
+    "v": 0.0483
    },
    {
     "t": "2025-05-11",
-    "v": 0.0495
+    "v": 0.046
    },
    {
     "t": "2025-05-25",
-    "v": 0.0517
+    "v": 0.0488
    },
    {
     "t": "2025-06-08",
-    "v": 0.0596
+    "v": 0.0563
    },
    {
     "t": "2025-06-22",
-    "v": 0.0576
+    "v": 0.0538
    },
    {
     "t": "2025-07-06",
-    "v": 0.0552
+    "v": 0.0514
    },
    {
     "t": "2025-07-20",
-    "v": 0.0224
+    "v": 0.0214
    },
    {
     "t": "2025-08-03",
-    "v": 0.019
+    "v": 0.0182
    },
    {
     "t": "2025-08-17",
-    "v": 0.0106
+    "v": 0.0101
    },
    {
     "t": "2025-08-31",
-    "v": 0.0076
+    "v": 0.0072
    },
    {
     "t": "2025-09-14",
-    "v": 0.009
-   },
-   {
-    "t": "2025-09-28",
     "v": 0.0085
    },
    {
+    "t": "2025-09-28",
+    "v": 0.0081
+   },
+   {
     "t": "2025-10-12",
-    "v": 0.0076
+    "v": 0.0074
    },
    {
     "t": "2025-10-26",
-    "v": 0.0068
+    "v": 0.0066
    },
    {
     "t": "2025-11-09",
-    "v": 0.006
+    "v": 0.0059
    },
    {
     "t": "2025-11-23",
-    "v": 0.0044
+    "v": 0.0042
    },
    {
     "t": "2025-12-07",
-    "v": 0.0045
+    "v": 0.0043
    },
    {
     "t": "2025-12-21",
-    "v": 0.004
+    "v": 0.0039
    },
    {
     "t": "2026-01-04",
-    "v": 0.003
+    "v": 0.0029
    },
    {
     "t": "2026-01-18",
-    "v": 0.0036
+    "v": 0.0035
    },
    {
     "t": "2026-02-01",
@@ -4031,11 +4037,11 @@
    },
    {
     "t": "2026-02-15",
-    "v": 0.0028
+    "v": 0.0029
    },
    {
     "t": "2026-03-01",
-    "v": 0.0023
+    "v": 0.0025
    },
    {
     "t": "2026-03-15",
@@ -4055,7 +4061,7 @@
    },
    {
     "t": "2026-05-10",
-    "v": 0.0056
+    "v": 0.0057
    },
    {
     "t": "2026-05-24",
@@ -4067,19 +4073,19 @@
    },
    {
     "t": "2026-06-21",
-    "v": 0.0031
+    "v": 0.0033
    },
    {
     "t": "2026-07-05",
-    "v": 0.0026
+    "v": 0.0029
    },
    {
     "t": "2026-07-19",
-    "v": 0.0043
+    "v": 0.0042
    },
    {
     "t": "2026-08-02",
-    "v": 0.0033
+    "v": 0.0032
    },
    {
     "t": "2026-08-16",
@@ -4087,15 +4093,15 @@
    },
    {
     "t": "2026-08-30",
-    "v": 0.0053
+    "v": 0.006
    },
    {
     "t": "2026-09-13",
-    "v": 0.0042
+    "v": 0.0061
    },
    {
     "t": "2026-09-27",
-    "v": 0.0063
+    "v": 0.0122
    },
    {
     "t": "2026-10-11",
@@ -4103,113 +4109,117 @@
    },
    {
     "t": "2026-10-25",
-    "v": 0.0112
+    "v": 0.0118
+   },
+   {
+    "t": "2026-11-08",
+    "v": 0.0102
    }
   ],
   "stack_fall5_26w_regimeAltReading": [
    {
     "t": "2019-04-07",
-    "v": 0.0527
+    "v": 0.0506
    },
    {
     "t": "2019-04-21",
-    "v": 0.0969
+    "v": 0.0929
    },
    {
     "t": "2019-05-05",
-    "v": 0.1525
+    "v": 0.1467
    },
    {
     "t": "2019-05-19",
-    "v": 0.1239
+    "v": 0.1207
    },
    {
     "t": "2019-06-02",
-    "v": 0.1409
+    "v": 0.1377
    },
    {
     "t": "2019-06-16",
-    "v": 0.1457
+    "v": 0.1441
    },
    {
     "t": "2019-06-30",
-    "v": 0.2176
+    "v": 0.2155
    },
    {
     "t": "2019-07-14",
-    "v": 0.2756
+    "v": 0.2822
    },
    {
     "t": "2019-07-28",
-    "v": 0.262
+    "v": 0.2685
    },
    {
     "t": "2019-08-11",
-    "v": 0.3171
+    "v": 0.3186
    },
    {
     "t": "2019-08-25",
-    "v": 0.309
+    "v": 0.3106
    },
    {
     "t": "2019-09-08",
-    "v": 0.3127
+    "v": 0.3144
    },
    {
     "t": "2019-09-22",
-    "v": 0.3121
+    "v": 0.318
    },
    {
     "t": "2019-10-06",
-    "v": 0.2432
+    "v": 0.2481
    },
    {
     "t": "2019-10-20",
-    "v": 0.3341
+    "v": 0.3468
    },
    {
     "t": "2019-11-03",
-    "v": 0.3772
+    "v": 0.3905
    },
    {
     "t": "2019-11-17",
-    "v": 0.3919
+    "v": 0.3963
    },
    {
     "t": "2019-12-01",
-    "v": 0.4185
+    "v": 0.4226
    },
    {
     "t": "2019-12-15",
-    "v": 0.572
+    "v": 0.5771
    },
    {
     "t": "2019-12-29",
-    "v": 0.6341
+    "v": 0.6386
    },
    {
     "t": "2020-01-12",
-    "v": 0.6822
+    "v": 0.6738
    },
    {
     "t": "2020-01-26",
-    "v": 0.6911
+    "v": 0.6834
    },
    {
     "t": "2020-02-09",
-    "v": 0.6196
+    "v": 0.6119
    },
    {
     "t": "2020-02-23",
-    "v": 0.4514
+    "v": 0.4513
    },
    {
     "t": "2020-03-08",
-    "v": 0.4955
+    "v": 0.4948
    },
    {
     "t": "2020-03-22",
-    "v": 0.6089
+    "v": 0.6072
    },
    {
     "t": "2020-04-05",
@@ -4217,131 +4227,131 @@
    },
    {
     "t": "2020-04-19",
-    "v": 0.8169
+    "v": 0.8226
    },
    {
     "t": "2020-05-03",
-    "v": 0.8539
+    "v": 0.8584
    },
    {
     "t": "2020-05-17",
-    "v": 0.9564
+    "v": 0.9549
    },
    {
     "t": "2020-05-31",
-    "v": 0.9456
+    "v": 0.944
    },
    {
     "t": "2020-06-14",
-    "v": 0.9247
+    "v": 0.9231
    },
    {
     "t": "2020-06-28",
-    "v": 0.9128
-   },
-   {
-    "t": "2020-07-12",
-    "v": 0.5157
-   },
-   {
-    "t": "2020-07-26",
-    "v": 0.5208
-   },
-   {
-    "t": "2020-08-09",
-    "v": 0.6055
-   },
-   {
-    "t": "2020-08-23",
-    "v": 0.6479
-   },
-   {
-    "t": "2020-09-06",
-    "v": 0.7106
-   },
-   {
-    "t": "2020-09-20",
-    "v": 0.6812
-   },
-   {
-    "t": "2020-10-04",
-    "v": 0.8728
-   },
-   {
-    "t": "2020-10-18",
-    "v": 0.8244
-   },
-   {
-    "t": "2020-11-01",
-    "v": 0.9552
-   },
-   {
-    "t": "2020-11-15",
-    "v": 0.9719
-   },
-   {
-    "t": "2020-11-29",
-    "v": 0.9732
-   },
-   {
-    "t": "2020-12-13",
-    "v": 0.9723
-   },
-   {
-    "t": "2020-12-27",
-    "v": 0.9554
-   },
-   {
-    "t": "2021-01-10",
-    "v": 0.9387
-   },
-   {
-    "t": "2021-01-24",
-    "v": 0.8948
-   },
-   {
-    "t": "2021-02-07",
-    "v": 0.8925
-   },
-   {
-    "t": "2021-02-21",
     "v": 0.9109
    },
    {
+    "t": "2020-07-12",
+    "v": 0.5015
+   },
+   {
+    "t": "2020-07-26",
+    "v": 0.5067
+   },
+   {
+    "t": "2020-08-09",
+    "v": 0.5912
+   },
+   {
+    "t": "2020-08-23",
+    "v": 0.6338
+   },
+   {
+    "t": "2020-09-06",
+    "v": 0.6994
+   },
+   {
+    "t": "2020-09-20",
+    "v": 0.6695
+   },
+   {
+    "t": "2020-10-04",
+    "v": 0.8687
+   },
+   {
+    "t": "2020-10-18",
+    "v": 0.8188
+   },
+   {
+    "t": "2020-11-01",
+    "v": 0.9532
+   },
+   {
+    "t": "2020-11-15",
+    "v": 0.9706
+   },
+   {
+    "t": "2020-11-29",
+    "v": 0.972
+   },
+   {
+    "t": "2020-12-13",
+    "v": 0.9712
+   },
+   {
+    "t": "2020-12-27",
+    "v": 0.9534
+   },
+   {
+    "t": "2021-01-10",
+    "v": 0.9375
+   },
+   {
+    "t": "2021-01-24",
+    "v": 0.8896
+   },
+   {
+    "t": "2021-02-07",
+    "v": 0.8905
+   },
+   {
+    "t": "2021-02-21",
+    "v": 0.9093
+   },
+   {
     "t": "2021-03-07",
-    "v": 0.8666
+    "v": 0.8643
    },
    {
     "t": "2021-03-21",
-    "v": 0.9023
+    "v": 0.9005
    },
    {
     "t": "2021-04-04",
-    "v": 0.5759
+    "v": 0.5723
    },
    {
     "t": "2021-04-18",
-    "v": 0.6084
+    "v": 0.6051
    },
    {
     "t": "2021-05-02",
-    "v": 0.5417
+    "v": 0.5383
    },
    {
     "t": "2021-05-16",
-    "v": 0.8197
+    "v": 0.8176
    },
    {
     "t": "2021-05-30",
-    "v": 0.8986
+    "v": 0.8971
    },
    {
     "t": "2021-06-13",
-    "v": 0.6317
+    "v": 0.6285
    },
    {
     "t": "2021-06-27",
-    "v": 0.5436
+    "v": 0.5399
    },
    {
     "t": "2021-07-11",
@@ -4349,67 +4359,67 @@
    },
    {
     "t": "2021-07-25",
-    "v": 0.6625
+    "v": 0.6624
    },
    {
     "t": "2021-08-08",
-    "v": 0.7138
+    "v": 0.714
    },
    {
     "t": "2021-08-22",
-    "v": 0.7703
+    "v": 0.7705
    },
    {
     "t": "2021-09-05",
-    "v": 0.7792
+    "v": 0.778
    },
    {
     "t": "2021-09-19",
-    "v": 0.7392
+    "v": 0.7377
    },
    {
     "t": "2021-10-03",
-    "v": 0.7188
+    "v": 0.7191
    },
    {
     "t": "2021-10-17",
-    "v": 0.8773
+    "v": 0.8765
    },
    {
     "t": "2021-10-31",
-    "v": 0.8825
+    "v": 0.8818
    },
    {
     "t": "2021-11-14",
-    "v": 0.8845
+    "v": 0.8842
    },
    {
     "t": "2021-11-28",
-    "v": 0.7938
+    "v": 0.7948
    },
    {
     "t": "2021-12-12",
-    "v": 0.6903
+    "v": 0.6908
    },
    {
     "t": "2021-12-26",
-    "v": 0.6614
+    "v": 0.6619
    },
    {
     "t": "2022-01-09",
-    "v": 0.6343
+    "v": 0.6346
    },
    {
     "t": "2022-01-23",
-    "v": 0.5792
+    "v": 0.5793
    },
    {
     "t": "2022-02-06",
-    "v": 0.6176
+    "v": 0.6178
    },
    {
     "t": "2022-02-20",
-    "v": 0.6046
+    "v": 0.6047
    },
    {
     "t": "2022-03-06",
@@ -4417,43 +4427,43 @@
    },
    {
     "t": "2022-03-20",
-    "v": 0.577
+    "v": 0.5774
    },
    {
     "t": "2022-04-03",
-    "v": 0.5743
+    "v": 0.5749
    },
    {
     "t": "2022-04-17",
-    "v": 0.5318
+    "v": 0.5322
    },
    {
     "t": "2022-05-01",
-    "v": 0.5052
+    "v": 0.5055
    },
    {
     "t": "2022-05-15",
-    "v": 0.429
+    "v": 0.4287
    },
    {
     "t": "2022-05-29",
-    "v": 0.3942
+    "v": 0.3938
    },
    {
     "t": "2022-06-12",
-    "v": 0.3192
+    "v": 0.3142
    },
    {
     "t": "2022-06-26",
-    "v": 0.2096
+    "v": 0.2059
    },
    {
     "t": "2022-07-10",
-    "v": 0.1672
+    "v": 0.1639
    },
    {
     "t": "2022-07-24",
-    "v": 0.1844
+    "v": 0.1843
    },
    {
     "t": "2022-08-07",
@@ -4465,35 +4475,35 @@
    },
    {
     "t": "2022-09-04",
-    "v": 0.1223
+    "v": 0.1218
    },
    {
     "t": "2022-09-18",
-    "v": 0.0905
+    "v": 0.0908
    },
    {
     "t": "2022-10-02",
-    "v": 0.0841
+    "v": 0.0842
    },
    {
     "t": "2022-10-16",
-    "v": 0.0831
+    "v": 0.0829
    },
    {
     "t": "2022-10-30",
-    "v": 0.0745
+    "v": 0.0744
    },
    {
     "t": "2022-11-13",
-    "v": 0.0654
+    "v": 0.0647
    },
    {
     "t": "2022-11-27",
-    "v": 0.0561
+    "v": 0.0556
    },
    {
     "t": "2022-12-11",
-    "v": 0.0564
+    "v": 0.0565
    },
    {
     "t": "2022-12-25",
@@ -4505,35 +4515,35 @@
    },
    {
     "t": "2023-01-22",
-    "v": 0.1022
+    "v": 0.1025
    },
    {
     "t": "2023-02-05",
-    "v": 0.1104
+    "v": 0.1106
    },
    {
     "t": "2023-02-19",
-    "v": 0.1516
+    "v": 0.1514
    },
    {
     "t": "2023-03-05",
-    "v": 0.1548
+    "v": 0.1546
    },
    {
     "t": "2023-03-19",
-    "v": 0.1931
+    "v": 0.1928
    },
    {
     "t": "2023-04-02",
-    "v": 0.2234
+    "v": 0.2231
    },
    {
     "t": "2023-04-16",
-    "v": 0.3056
+    "v": 0.3064
    },
    {
     "t": "2023-04-30",
-    "v": 0.3333
+    "v": 0.3339
    },
    {
     "t": "2023-05-14",
@@ -4545,163 +4555,163 @@
    },
    {
     "t": "2023-06-11",
-    "v": 0.338
-   },
-   {
-    "t": "2023-06-25",
-    "v": 0.376
-   },
-   {
-    "t": "2023-07-09",
-    "v": 0.3385
-   },
-   {
-    "t": "2023-07-23",
-    "v": 0.3382
-   },
-   {
-    "t": "2023-08-06",
     "v": 0.3374
    },
    {
+    "t": "2023-06-25",
+    "v": 0.3755
+   },
+   {
+    "t": "2023-07-09",
+    "v": 0.338
+   },
+   {
+    "t": "2023-07-23",
+    "v": 0.3377
+   },
+   {
+    "t": "2023-08-06",
+    "v": 0.3369
+   },
+   {
     "t": "2023-08-20",
-    "v": 0.3223
+    "v": 0.3221
    },
    {
     "t": "2023-09-03",
-    "v": 0.3135
+    "v": 0.3133
    },
    {
     "t": "2023-09-17",
-    "v": 0.3149
+    "v": 0.3151
    },
    {
     "t": "2023-10-01",
-    "v": 0.2854
+    "v": 0.2857
    },
    {
     "t": "2023-10-15",
-    "v": 0.3177
+    "v": 0.3181
    },
    {
     "t": "2023-10-29",
-    "v": 0.3904
+    "v": 0.3908
    },
    {
     "t": "2023-11-12",
-    "v": 0.4144
+    "v": 0.4166
    },
    {
     "t": "2023-11-26",
-    "v": 0.4448
+    "v": 0.447
    },
    {
     "t": "2023-12-10",
-    "v": 0.5042
+    "v": 0.5063
    },
    {
     "t": "2023-12-24",
-    "v": 0.5156
+    "v": 0.5181
    },
    {
     "t": "2024-01-07",
-    "v": 0.4527
+    "v": 0.4553
    },
    {
     "t": "2024-01-21",
-    "v": 0.6084
+    "v": 0.6106
    },
    {
     "t": "2024-02-04",
-    "v": 0.4429
+    "v": 0.4451
    },
    {
     "t": "2024-02-18",
-    "v": 0.5033
+    "v": 0.5057
    },
    {
     "t": "2024-03-03",
-    "v": 0.5558
+    "v": 0.5582
    },
    {
     "t": "2024-03-17",
-    "v": 0.6093
+    "v": 0.6109
    },
    {
     "t": "2024-03-31",
-    "v": 0.5268
+    "v": 0.5285
    },
    {
     "t": "2024-04-14",
-    "v": 0.5487
+    "v": 0.5518
    },
    {
     "t": "2024-04-28",
-    "v": 0.5174
+    "v": 0.5207
    },
    {
     "t": "2024-05-12",
-    "v": 0.5634
+    "v": 0.5002
    },
    {
     "t": "2024-05-26",
-    "v": 0.5465
+    "v": 0.4833
    },
    {
     "t": "2024-06-09",
-    "v": 0.489
+    "v": 0.495
    },
    {
     "t": "2024-06-23",
-    "v": 0.4782
+    "v": 0.4826
    },
    {
     "t": "2024-07-07",
-    "v": 0.3813
+    "v": 0.3855
    },
    {
     "t": "2024-07-21",
-    "v": 0.4033
+    "v": 0.4073
    },
    {
     "t": "2024-08-04",
-    "v": 0.4379
+    "v": 0.4418
    },
    {
     "t": "2024-08-18",
-    "v": 0.4389
+    "v": 0.4429
    },
    {
     "t": "2024-09-01",
-    "v": 0.4495
+    "v": 0.4536
    },
    {
     "t": "2024-09-15",
-    "v": 0.4541
+    "v": 0.4569
    },
    {
     "t": "2024-09-29",
-    "v": 0.3991
+    "v": 0.4019
    },
    {
     "t": "2024-10-13",
-    "v": 0.3795
+    "v": 0.3819
    },
    {
     "t": "2024-10-27",
-    "v": 0.3993
+    "v": 0.4017
    },
    {
     "t": "2024-11-10",
-    "v": 0.3589
+    "v": 0.3601
    },
    {
     "t": "2024-11-24",
-    "v": 0.4526
+    "v": 0.4538
    },
    {
     "t": "2024-12-08",
-    "v": 0.3739
+    "v": 0.375
    },
    {
     "t": "2024-12-22",
@@ -4709,195 +4719,199 @@
    },
    {
     "t": "2025-01-05",
-    "v": 0.325
+    "v": 0.3223
    },
    {
     "t": "2025-01-19",
-    "v": 0.3735
+    "v": 0.3698
    },
    {
     "t": "2025-02-02",
-    "v": 0.3972
+    "v": 0.3934
    },
    {
     "t": "2025-02-16",
-    "v": 0.3945
+    "v": 0.3886
    },
    {
     "t": "2025-03-02",
-    "v": 0.3696
+    "v": 0.3638
    },
    {
     "t": "2025-03-16",
-    "v": 0.3927
+    "v": 0.386
    },
    {
     "t": "2025-03-30",
-    "v": 0.3585
+    "v": 0.3512
    },
    {
     "t": "2025-04-13",
-    "v": 0.3818
+    "v": 0.3675
    },
    {
     "t": "2025-04-27",
-    "v": 0.3798
+    "v": 0.3654
    },
    {
     "t": "2025-05-11",
-    "v": 0.3205
+    "v": 0.3096
    },
    {
     "t": "2025-05-25",
-    "v": 0.3268
+    "v": 0.3176
    },
    {
     "t": "2025-06-08",
-    "v": 0.3287
+    "v": 0.3196
    },
    {
     "t": "2025-06-22",
-    "v": 0.352
+    "v": 0.3412
    },
    {
     "t": "2025-07-06",
-    "v": 0.3562
+    "v": 0.3451
    },
    {
     "t": "2025-07-20",
-    "v": 0.2301
+    "v": 0.2246
    },
    {
     "t": "2025-08-03",
-    "v": 0.2326
+    "v": 0.2271
    },
    {
     "t": "2025-08-17",
-    "v": 0.2275
+    "v": 0.2216
    },
    {
     "t": "2025-08-31",
-    "v": 0.1717
+    "v": 0.1669
    },
    {
     "t": "2025-09-14",
-    "v": 0.1595
+    "v": 0.1549
    },
    {
     "t": "2025-09-28",
-    "v": 0.193
+    "v": 0.1879
    },
    {
     "t": "2025-10-12",
-    "v": 0.2081
+    "v": 0.205
    },
    {
     "t": "2025-10-26",
-    "v": 0.1966
+    "v": 0.1936
    },
    {
     "t": "2025-11-09",
-    "v": 0.2202
+    "v": 0.217
    },
    {
     "t": "2025-11-23",
-    "v": 0.2287
+    "v": 0.2245
    },
    {
     "t": "2025-12-07",
-    "v": 0.2179
+    "v": 0.2138
    },
    {
     "t": "2025-12-21",
-    "v": 0.2089
+    "v": 0.2055
    },
    {
     "t": "2026-01-04",
-    "v": 0.2371
+    "v": 0.2345
    },
    {
     "t": "2026-01-18",
-    "v": 0.2414
+    "v": 0.2395
    },
    {
     "t": "2026-02-01",
-    "v": 0.2857
+    "v": 0.2856
    },
    {
     "t": "2026-02-15",
-    "v": 0.295
+    "v": 0.2994
    },
    {
     "t": "2026-03-01",
-    "v": 0.2694
+    "v": 0.2715
    },
    {
     "t": "2026-03-15",
-    "v": 0.2633
+    "v": 0.2629
    },
    {
     "t": "2026-03-29",
-    "v": 0.248
+    "v": 0.2477
    },
    {
     "t": "2026-04-12",
-    "v": 0.2492
+    "v": 0.251
    },
    {
     "t": "2026-04-26",
-    "v": 0.2667
+    "v": 0.2687
    },
    {
     "t": "2026-05-10",
-    "v": 0.3227
+    "v": 0.3246
    },
    {
     "t": "2026-05-24",
-    "v": 0.3346
+    "v": 0.3354
    },
    {
     "t": "2026-06-07",
-    "v": 0.3305
+    "v": 0.3309
    },
    {
     "t": "2026-06-21",
-    "v": 0.3101
+    "v": 0.3139
    },
    {
     "t": "2026-07-05",
-    "v": 0.2899
+    "v": 0.2937
    },
    {
     "t": "2026-07-19",
-    "v": 0.3922
+    "v": 0.3895
    },
    {
     "t": "2026-08-02",
-    "v": 0.3446
+    "v": 0.3459
    },
    {
     "t": "2026-08-16",
-    "v": 0.3341
+    "v": 0.3367
    },
    {
     "t": "2026-08-30",
-    "v": 0.3252
+    "v": 0.3279
    },
    {
     "t": "2026-09-13",
-    "v": 0.2324
+    "v": 0.3069
    },
    {
     "t": "2026-09-27",
-    "v": 0.2248
+    "v": 0.3441
    },
    {
     "t": "2026-10-11",
-    "v": 0.2452
+    "v": 0.2451
    },
    {
     "t": "2026-10-25",
-    "v": 0.3558
+    "v": 0.3567
+   },
+   {
+    "t": "2026-11-08",
+    "v": 0.36
    }
   ],
   "stack_fall5_26w_nocarry": [
@@ -5719,7 +5733,7 @@
    },
    {
     "t": "2026-11-01",
-    "v": 0.2083
+    "v": 0.5915
    }
   ],
   "nComponents_fall5": [
@@ -8751,11 +8765,11 @@
    },
    {
     "t": "2024-05-19",
-    "v": 3.0
+    "v": 12.0
    },
    {
     "t": "2024-06-02",
-    "v": 7.0
+    "v": 16.0
    },
    {
     "t": "2024-06-16",
@@ -8995,11 +9009,11 @@
    },
    {
     "t": "2026-09-20",
-    "v": 10.0
+    "v": 19.0
    },
    {
     "t": "2026-10-04",
-    "v": 13.0
+    "v": 22.0
    },
    {
     "t": "2026-10-18",
@@ -9012,22 +9026,27 @@
   ]
  },
  "notes": [
-  "input honest: research/btcd_fractal/refresh/out8/honest/results.json (module run 2026-11-02 15:09 UTC; fast=False; nulls 52; smoke-sized: False [])",
+  "input honest: research/btcd_fractal/refresh/out8/honest/results.json (module run 2026-11-09 08:08 UTC; fast=False; nulls 52; smoke-sized: False [])",
   "input multiscale: research/btcd_fractal/refresh/out8/multiscale/results.json (module run 2026-11-02 12:58:25; fast=None; nulls 100; smoke-sized: False [])",
   "input regime: research/btcd_fractal/refresh/out8/regime/results.json (module run 2026-11-02 12:58 UTC; fast=False; nulls 200; smoke-sized: False [])",
   "input hazard: research/btcd_fractal/refresh/out8/hazard/results.json (module run 2026-11-02 12:51 UTC; fast=False; nulls 200; smoke-sized: False [])",
   "input tda_sig: research/btcd_fractal/refresh/out8/tda_sig/results.json (module run 2026-11-02 13:01:30; fast=False; nulls None; smoke-sized: False [])",
   "input baselines: research/btcd_fractal/refresh/out8/baselines/results.json (module run None; fast=None; nulls 50; smoke-sized: False [])",
+  "honest today block is dated 2026-11-01, this run's last complete Sunday is 2026-11-08: the object mixes dates",
+  "regime today block is dated 2026-11-01, this run's last complete Sunday is 2026-11-08: the object mixes dates",
+  "hazard today block is dated 2026-11-01, this run's last complete Sunday is 2026-11-08: the object mixes dates",
+  "multiscale today block is dated 2026-11-01, this run's last complete Sunday is 2026-11-08: the object mixes dates",
+  "tda_sig today block is dated 2026-11-01, this run's last complete Sunday is 2026-11-08: the object mixes dates",
   "Regime component: the plan names it twice ([6] 'TVTP V2 P(fall5_26w) incl. occupancy' = series V2_pFall5_26w; Layer 5 'TVTP hazard incl. occupancy' = series V2_hazard26). The headline follows section [6]; the Layer-5 reading is scored side by side as stack_regimeHazard26_altReading. The reader should know the [6] reading is the better-scoring of the two.",
   "regime wrote no P(fall10_26w) series: the 10-point stack uses {strat, hazard, fixed5} over the OOS rows; the regime module's own 10-point reading today is shown in the spread only",
-  "Alignment: component values at Sunday d are the module's own value at d, else its value at d-7 (never later); exact shares {'strat': 0.503, 'hazard': 0.503, 'regime': 0.5, 'fixed5': 0.503}; the stack's headline rows are the 396 Sundays with every component present; the modules' full weekly series exist only inside the modules.",
+  "Alignment: component values at Sunday d are the module's own value at d, else its value at d-7 (never later); exact shares {'strat': 0.501, 'hazard': 0.501, 'regime': 0.499, 'fixed5': 0.501}; the stack's headline rows are the 397 Sundays with every component present; the modules' full weekly series exist only inside the modules.",
   "training-base rate recomputed from 2016-06-01 with a 26-week label lag at 13-week refits; max abs diff vs honest's basetrain series on its own dates 0.0000",
-  "episode bootstrap uses the honest module's 12 fall5 episodes (frozen after its predictions); the labels on the aligned rows give 12 episodes",
+  "episode bootstrap uses the honest module's 12 fall5 episodes (frozen after its predictions); the labels on the aligned rows give 13 episodes",
   "No fitting here: every number is read from the modules' results.json or computed from their frozen OOS series; the labels and the fresh-start mask are rebuilt from the data only on the scoring rows.",
   "The stack's components and equal logit weights were fixed in the plan before any OOS number was read here; the stack's shifted-target null is scoring-only, which is valid because the stack has no fit. Two qualifications: fixed5 itself is the honest module's post-hoc comparator (round 7's most-picked set over refits through 2026; fixed5brief, the brief's literal set, is a paired tie with it in honest and no module exports its series), and the regime component's wording is ambiguous in the plan (see the regime-component note): the pre-registration covers composition and weights, not fixed5's selection or that wording.",
   "The 'all specifications' spread is a DECLARED list of distinct, non-learned point-target readings (ALL_SPECS_DECLARED); readings excluded with reasons are in today.onset.allSpecificationsExcluded (the learned honest stack, km26 = the stratified rate in survival form, the sigma-unit multiscale target, strat_vol; the stratified point itself when out of support). The raw component min-max is always printed as the plan requires.",
   "The plan's success criterion 'the object's interval contains the realised rate in the honest module's calibration deciles' is not identifiable as written (honest wrote no calibration deciles); the stack's own-decile realised-rate interval is kept as a diagnostic and the tautological 'contains realised rate' flag was dropped.",
-  "Today's object reads the last complete Sunday close 2026-11-01; the provisional bar(s) ['2026-11-08'] are flagged and never scored; timestamps come from the data's last daily bar, not the wall clock.",
+  "Today's object reads the last complete Sunday close 2026-11-08; the provisional bar(s) ['2026-11-15'] are flagged and never scored; timestamps come from the data's last daily bar, not the wall clock.",
   "fall10_26w: one positive episode (Oct 2020 - May 2021, 27 weeks) and none since 2023; every 10-point AUC ranks one event and every 10-point probability is unidentified.",
   "The equal-weight stack is dragged by its weakest components (the regime MC reads > 0.5 in most OOS weeks; the stratified rate and the Weibull hazard are wrong-signed in 2023-26): a failed trial is a result; no weights were learned to rescue it."
  ],

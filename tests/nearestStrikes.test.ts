@@ -21,3 +21,84 @@ test('nearestStrikes: N nearest per event, 15-minute contracts untouched, tracke
   assert.equal(nearestStrikes(updown, kindOf, 'KXBTC15M', 70000, 1, new Set()).length, 1);
   assert.equal(nearestStrikes(ms, kindOf, 'KXBTCD', 70000, 0, new Set()).length, 160, '0 = track all');
 });
+
+// Decision 1 (Nov 5): the spread cap on the listing mid, two tiers, no last-price fallback.
+const q = (ticker: string, strike: number, bid?: number, ask?: number, extra: Record<string, unknown> = {}) =>
+  ({ ticker, eventTicker: 'E', strikeType: 'greater', floorStrike: strike, yesBid: bid, yesAsk: ask, yesMid: bid !== undefined && ask !== undefined && bid > 0 && ask > bid && ask < 1 ? (bid + ask) / 2 : undefined, ...extra });
+const pick = (ms: any[], n: number, cap: number, price?: number, tracked: string[] = []) =>
+  nearestStrikes(ms, kindOf, 'KXBTCD', price, n, new Set(tracked), { maxSpread: cap }).map((m) => m.ticker).sort();
+
+test('strike cap: tight tails never push out a near-money strike that is briefly wide (ladder)', () => {
+  // T3 is the money (44c/56c, 12c wide); the rest are tight tails.
+  const ms = [q('T0', 100, 0.96, 0.97), q('T1', 101, 0.93, 0.95), q('T2', 102, 0.89, 0.9), q('T3', 103, 0.44, 0.56), q('T4', 104, 0.09, 0.11), q('T5', 105, 0.04, 0.05), q('T6', 106, 0.02, 0.03), q('T7', 107, 0.01, 0.02)];
+  // Legacy picks by mid alone: T3 (50c) is kept there too, but with the cap and only tails tight, the index finds it.
+  assert.ok(pick(ms, 2, 0.1, 103).includes('T3'), 'reached through the index');
+  assert.ok(!pick(ms, 2, 0.1, 103).includes('T0'));
+});
+
+test('strike cap: a 24c/36c bucket on a range still makes it past tight 1c buckets', () => {
+  const r = (t: string, i: number, bid: number, ask: number) => ({ ...q(t, i, bid, ask), strikeType: 'between', capStrike: i + 1 });
+  const ms = [r('B0', 0, 0.01, 0.02), r('B1', 1, 0.02, 0.03), r('B2', 2, 0.24, 0.36), r('B3', 3, 0.15, 0.17), r('B4', 4, 0.01, 0.02), r('B5', 5, 0.01, 0.02)];
+  const out = pick(ms, 2, 0.1, 2.5);
+  assert.ok(out.includes('B2') && out.includes('B3'), out.join(','));
+});
+
+test('strike cap: 1c/99c and one-sided listings lose to a 48c/52c strike; fewer than two tight quotes fall back to the index', () => {
+  const ms = [q('D0', 100, 0.01, 0.99), q('D1', 101, undefined, 0.5, { yesMid: 0.5 }), q('D2', 102, 0.48, 0.52), q('D3', 103, 0.2, 0.22), q('D4', 104, 0.05, 0.06)];
+  assert.deepEqual(pick(ms, 1, 0.1, 110), ['D2']);
+  assert.ok(pick(ms, 1, 0, 110).length === 1, 'legacy still picks one');
+  // Only one tight quote: the index decides.
+  const few = [q('F0', 100, 0.01, 0.99), q('F1', 101, 0.01, 0.99), q('F2', 102, 0.48, 0.52), q('F3', 103, 0.01, 0.99)];
+  const paths = { mid: 0, index: 0, median: 0 };
+  assert.deepEqual(nearestStrikes(few, kindOf, 'KXBTCD', 100.2, 1, new Set(), { maxSpread: 0.1, paths }).map((m) => m.ticker), ['F0']);
+  assert.deepEqual(paths, { mid: 0, index: 1, median: 0 });
+});
+
+test('strike cap: a tracked wide market is kept; maxSpread 0 reproduces the legacy picks', () => {
+  const ms = [q('K0', 90, 0.01, 0.99), q('K1', 101, 0.48, 0.52), q('K2', 102, 0.3, 0.32), q('K3', 103, 0.1, 0.12)];
+  assert.ok(pick(ms, 1, 0.1, undefined, ['K0']).includes('K0'));
+  const legacy = nearestStrikes(ms, kindOf, 'KXBTCD', undefined, 2, new Set()).map((m) => m.ticker).sort();
+  assert.deepEqual(pick(ms, 2, 0), legacy);
+  assert.deepEqual(legacy, ['K0', 'K1'], 'legacy takes the dead 1c/99c listing as 50c');
+  assert.deepEqual(pick(ms, 2, 0.1), ['K1', 'K2']);
+});
+
+test('strike cap: two tight quotes in a mostly dead ladder still place the money', () => {
+  const ms = [...Array.from({ length: 10 }, (_, i) => q(`X${i}`, 90 + i, 0.01, 0.99)), q('Y0', 100, 0.6, 0.62), q('Y1', 101, 0.39, 0.41), q('Y2', 102, 0.01, 0.99), q('Y3', 103, undefined, 0.02)];
+  const paths = { mid: 0, index: 0, median: 0 };
+  const out = nearestStrikes(ms, kindOf, 'KXBTCD', undefined, 2, new Set(), { maxSpread: 0.1, paths }).map((m) => m.ticker).sort();
+  assert.deepEqual(out, ['Y0', 'Y1']);
+  assert.equal(paths.mid, 1);
+});
+
+test('strike cap: tight tails outside 10-90c never place the money over a fresh index', () => {
+  // Ladder 100..120, index at 104; only the two ends are tight (97c/99c and 1c/3c), the rest wide.
+  const ms = Array.from({ length: 21 }, (_, i) => (i === 0 ? q('K100', 100, 0.97, 0.99) : i === 20 ? q('K120', 120, 0.01, 0.03) : q(`K${100 + i}`, 100 + i, 0.2, 0.8)));
+  const out = nearestStrikes(ms, kindOf, 'KXBTCD', 104, 4, new Set(), { maxSpread: 0.1 }).map((m) => Number(m.ticker.slice(1))).sort((a, b) => a - b);
+  assert.ok(out.every((k) => Math.abs(k - 104) <= 2), out.join(','));
+  // One in-band quote with no crossing: the index still decides.
+  const one = [...ms.slice(0, 15), q('K115', 115, 0.29, 0.31), ...ms.slice(16)];
+  const out1 = nearestStrikes(one, kindOf, 'KXBTCD', 104, 2, new Set(), { maxSpread: 0.1 }).map((m) => Number(m.ticker.slice(1)));
+  assert.ok(out1.every((k) => Math.abs(k - 104) <= 1), out1.join(','));
+});
+
+test('strike cap: one stale wrong-side quote below the money cannot move it; the crossing nearest the index wins', () => {
+  // The money is at 110-111 (60c / 40c). A stale 40c at 102 above a 60c at 101 makes a second crossing far below.
+  const ms = [q('S101', 101, 0.59, 0.61), q('S102', 102, 0.39, 0.41), ...Array.from({ length: 7 }, (_, i) => q(`W${103 + i}`, 103 + i, 0.01, 0.99)), q('S110', 110, 0.59, 0.61), q('S111', 111, 0.39, 0.41), q('W112', 112, 0.01, 0.99)];
+  const got = pick(ms, 2, 0.1, 110.5);
+  assert.deepEqual(got, ['S110', 'S111']);
+  // Without an index the ladder's middle decides between the crossings: with it at 109.5, 110-111 is the nearer one.
+  const up = [...ms, ...Array.from({ length: 6 }, (_, i) => q(`X${113 + i}`, 113 + i, 0.01, 0.99))];
+  assert.deepEqual(pick(up, 2, 0.1), ['S110', 'S111']);
+});
+
+test('strike cap: no index: one in-band tight quote places the money; tight tails outside 10-90c alone do not', () => {
+  const dead = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => q(`W${from + i}`, from + i, 0.01, 0.99));
+  // A 97c tail and a 46c strike at 108: the 46c quote alone places the money (no index to defer to).
+  const lone = [q('A100', 100, 0.96, 0.98), ...dead(101, 107), q('A108', 108, 0.45, 0.47), ...dead(109, 112)];
+  assert.ok(pick(lone, 2, 0.1).includes('A108'), `lone in-band quote: ${pick(lone, 2, 0.1)}`);
+  // A 95c tail at 100 and a 2c tail at 112: neither places the money (both filters), so the ladder's middle (106) does.
+  const tails = [q('B100', 100, 0.94, 0.96), ...dead(101, 111), q('B112', 112, 0.01, 0.03)];
+  const got = pick(tails, 2, 0.1);
+  assert.ok(!got.includes('B100') && !got.includes('W101') && !got.includes('B112') && !got.includes('W111'), `tails only: ${got}`);
+});

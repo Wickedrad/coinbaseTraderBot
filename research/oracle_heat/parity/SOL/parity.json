@@ -1,0 +1,57 @@
+{
+ "coin": "SOL",
+ "window_bars": 3000,
+ "days": 3,
+ "minutes_checked": 1358,
+ "readings": 1344,
+ "edges": {
+  "same_as_meta": 624,
+  "different": 0,
+  "different_names": [],
+  "max_abs_diff": 0.0
+ },
+ "per_timeframe": {
+  "context": {
+   "bar_closes": 288,
+   "identical_key_sets": 288,
+   "keys_both": 1728,
+   "engine_only": 0,
+   "live_only": 0
+  },
+  "1m": {
+   "bar_closes": 1358,
+   "identical_key_sets": 1358,
+   "keys_both": 45801,
+   "engine_only": 0,
+   "live_only": 0
+  },
+  "5m": {
+   "bar_closes": 864,
+   "identical_key_sets": 864,
+   "keys_both": 28948,
+   "engine_only": 0,
+   "live_only": 0
+  },
+  "15m": {
+   "bar_closes": 288,
+   "identical_key_sets": 288,
+   "keys_both": 9580,
+   "engine_only": 0,
+   "live_only": 0
+  },
+  "60m": {
+   "bar_closes": 72,
+   "identical_key_sets": 72,
+   "keys_both": 2304,
+   "engine_only": 0,
+   "live_only": 0
+  }
+ },
+ "keys_both": 88361,
+ "engine_only": 0,
+ "live_only": 0,
+ "agreement": 1.0,
+ "readings_that_differ": [],
+ "table_sha256": "a377481930b89890b819b9b8248d222e64978599d02d0e4176437f24de332aad",
+ "seconds": 73
+}

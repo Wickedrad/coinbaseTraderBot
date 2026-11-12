@@ -13,7 +13,7 @@
 // exits, and perp funding while the position is open.
 
 import type { Candle } from '../ta/indicators';
-import { TF_MS, type ExitPlan, type Lane, type SetupKind } from './detectors';
+import { TF_MS, type ExitPlan, type HeatBasis, type Lane, type SetupKind } from './detectors';
 import type { Timeframe } from '../ta/knowledge';
 
 export interface CostModel {
@@ -29,7 +29,7 @@ export interface CostModel {
 
 export const DEFAULT_COSTS: CostModel = { entry: 0.0014, makerExit: 0.0005, takerExit: 0.0014, fundingPer8h: 0.0001 };
 
-export type ExitReason = 'stop' | 'breakeven' | 'trail' | 'target' | 'time' | 'manual' | 'leadlag' | 'quota';
+export type ExitReason = 'stop' | 'cut' | 'breakeven' | 'trail' | 'target' | 'time' | 'manual' | 'leadlag' | 'quota';
 
 export interface OpenTrade {
   asset: string;
@@ -42,6 +42,10 @@ export interface OpenTrade {
   /** Stop at entry (defines 1R). */
   initialStop: number;
   stop: number;
+  /** The perp loser cut's line (PERP_LOSER_CUT_C, Steven Nov 12: 15c a contract on the perp's price, as a spot price), set
+   *  when it was nearer than the trade's own stop and became the stop at entry: a stop hit there is a 'cut'. 1R stays the
+   *  trade's own stop. */
+  cutStop?: number;
   plan: ExitPlan;
   /** Remaining share of the position (1, then 0.5 after the first target, or less after each scale-out step). */
   frac: number;
@@ -61,11 +65,14 @@ export interface OpenTrade {
   /** Model score at entry and the size (fraction of equity at risk / notional), for the record. */
   score?: number;
   notional?: number;
+  /** Only on a heat trade: the curve call it stands on now (the entry's, then each one that extended it) and how many
+   *  hourly closes it was carried through instead of being closed and opened again. */
+  heat?: HeatBasis & { extended: number };
 }
 
 /** Open a trade at `px` (next bar's open in research, the market live). Undefined when the price has
  *  already run through the stop or the first target (the setup is gone). */
-export function openTrade(s: { asset: string; lane: Lane; kind: SetupKind; tf: Timeframe; dir: 1 | -1; stop: number; plan: ExitPlan; atr: number }, px: number, ts: number, costs: CostModel = DEFAULT_COSTS): OpenTrade | undefined {
+export function openTrade(s: { asset: string; lane: Lane; kind: SetupKind; tf: Timeframe; dir: 1 | -1; stop: number; plan: ExitPlan; atr: number; heat?: HeatBasis }, px: number, ts: number, costs: CostModel = DEFAULT_COSTS): OpenTrade | undefined {
   const d = s.dir;
   if (!(px > 0) || !(d * (px - s.stop) > 0.1 * s.atr)) return undefined;
   if (s.plan.target1 !== undefined && !(d * (s.plan.target1 - px) > 0)) return undefined;
@@ -73,10 +80,26 @@ export function openTrade(s: { asset: string; lane: Lane; kind: SetupKind; tf: T
   return {
     asset: s.asset, lane: s.lane, kind: s.kind, tf: s.tf, dir: d, entry: px, entryTs: ts, initialStop: s.stop, stop: s.stop, plan: { ...s.plan },
     frac: 1, partialDone: false, best: px, bars: 0, realized: 0, costs: costs.entry,
+    ...(s.heat ? { heat: { ...s.heat, extended: 0 } } : {}),
   };
 }
 
 const ret = (t: OpenTrade, px: number) => (t.dir * (px - t.entry)) / t.entry;
+
+/** The perp loser cut (Steven, Nov 12 1:01 AM EST / 06:01 UTC: "perpetual contracts: should have 15c loser cut with the same
+ *  rules it already has"): `cutUsd` a contract against the entry on the perp's own price, beside the trade's stop. Kalshi quotes
+ *  a perp per contract (BTC 0.0001 BTC, ETH 0.001, SOL 0.1, XRP 1), so the cut in spot terms is cutUsd over the perp-to-spot
+ *  ratio (`perpPerSpot`: the perp's price at entry over the spot price). When that line is nearer the entry than the trade's
+ *  stop it becomes the stop (and so the exchange-side stop); 1R, the size and the liquidation check keep the trade's own stop.
+ *  Returns whether the cut set the stop. */
+export function applyPerpCut(t: OpenTrade, cutUsd: number, perpPerSpot: number | undefined): boolean {
+  if (!(cutUsd > 0) || !(perpPerSpot! > 0) || t.closed) return false;
+  const line = t.entry - t.dir * (cutUsd / perpPerSpot!);
+  if (!(line > 0) || !(t.dir * (line - t.stop) > 0) || !(t.dir * (t.entry - line) > 0)) return false;
+  t.stop = line;
+  t.cutStop = line;
+  return true;
+}
 
 function close(t: OpenTrade, px: number, ts: number, reason: ExitReason, cost: number): void {
   t.realized += t.frac * ret(t, px);
@@ -108,7 +131,7 @@ export function stepTrade(t: OpenTrade, bar: Candle, barMs: number, costs: CostM
     const px = d > 0 ? Math.min(t.stop, bar.o) : Math.max(t.stop, bar.o);
     const R = t.plan.ratchet;
     const atBe = R ? Math.abs(t.stop - t.entry * (1 + d * R.fee)) < 1e-9 * t.entry : t.partialDone && Math.abs(t.stop - t.entry) < 1e-12;
-    const reason: ExitReason = t.stop === t.initialStop ? 'stop' : atBe ? 'breakeven' : 'trail';
+    const reason: ExitReason = t.cutStop !== undefined && t.stop === t.cutStop ? 'cut' : t.stop === t.initialStop ? 'stop' : atBe ? 'breakeven' : 'trail';
     close(t, px, bar.ts + barMs, reason, costs.takerExit);
     return true;
   }

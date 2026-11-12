@@ -5,6 +5,9 @@
 import type { DynamicEdgeParams } from './strategy/dynamicEdge';
 import type { RegimeScaleParams } from './strategy/regimeScale';
 import { type PacerConfig, validZone } from './risk/quotaPacer';
+import type { HoldExitConfig } from './strategy/holdExit';
+import type { PlanConfig } from './plan/planRatchet';
+import type { RatchetConfig } from './strategy/profitRatchet';
 import fs from 'fs';
 import { parseSessionRisk, type SessionRiskProfile } from './model/sessionRisk';
 import { DEFAULT_PROBATION, type ProbationParams } from './risk/probation';
@@ -18,6 +21,7 @@ import type { VaultConfig } from './vault/vault';
 import { DEFAULT_LIVE_LINE } from './strategy/liveLine';
 import { DEFAULT_TRIALS, TRIAL_NAMES, type TrialName, type TrialParams } from './strategy/componentTrials';
 import { DEFAULT_SCOREBOARD, type ScoreboardParams } from './health/scoreboard';
+import type { HeatConfig } from './heat/types';
 import os from 'os';
 import path from 'path';
 
@@ -66,7 +70,10 @@ export interface StrategyConfig {
   /** Series that are recorded (books, trades, lifecycle, results) for research but never priced or traded (RECORD_SERIES). */
   recordSeries: string[];
   /** Series that are recorded but never priced or traded, by pattern (STRATEGY_EXCLUDE_SERIES; Steven, Nov 5: no DOGE
-   *  until the rest of the bot performs, then DOGE is trained again: STRATEGY_EXCLUDE_SERIES= trades it again). */
+   *  until the rest of the bot performs, then DOGE is trained again: STRATEGY_EXCLUDE_SERIES= trades it again). Nov 12:
+   *  the paper bot trades DOGE again (deploy/paper-settings.env empties the pattern); live keeps DOGE out whatever the
+   *  pattern says, until LIVE_ALLOW_DOGE=true (the dashboard's LIVE switch writes only the mode lines, so a paper-only
+   *  empty pattern left in bot.env would otherwise carry DOGE into live). */
   excludeSeries?: RegExp;
   /** Cap on simultaneously tracked record-only markets. */
   recordMaxMarkets: number;
@@ -146,6 +153,27 @@ export interface StrategyConfig {
    *  window a position in profit rides to settlement instead, and a hunted position is never held for settlement
    *  (HUNT_LOCK_SALE_ELSE=exit). */
   pacer: PacerConfig;
+  /** HOLD_EXIT (Steven's rule, Nov 11; bot/strategy/holdExit.ts): a position whose profit after both fees, sold at the bid, has been at
+   *  least HOLD_EXIT_USD (1.50) for HOLD_EXIT_SEC (10) seconds in all and is at least HOLD_EXIT_RUN_USD (1.00) for the last
+   *  HOLD_EXIT_RUN_SEC (3) seconds in a row is sold at the bid, where the quota snipe could sell it. Plan positions too (Steven,
+   *  Nov 11 8:52 AM EST / 13:52 UTC). With the profit ratchet armed it stands aside while the profit set a new best in the last
+   *  HOLD_EXIT_RUN_SEC. After a hold exit or a quota snipe the same contract is entered again only while more than
+   *  HOLD_EXIT_REENTRY_SHARE (0.5) of its window is left. Its profit is the trade's: what partial sales banked plus the rest at
+   *  the bid. After HOLD_EXIT_LINE_AFTER_FAILS (5; 0 = never) failed tries on a position (up to $1.00, back under it for 3 s,
+   *  never $1.50) the line exit may sell it as a last resort with SINUOUS_CROSS off (Steven, Nov 11 9:21 AM EST / 14:21 UTC);
+   *  the tries are this rule's count, so HOLD_EXIT=false (the behaviour before it) turns the last resort off too. */
+  holdExit: HoldExitConfig;
+  /** RATCHET (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC; bot/strategy/profitRatchet.ts): one ratchet for every position,
+   *  in dollars for the whole position after both fees. It arms at RATCHET_ARM_USD (1.50); its stop starts at
+   *  RATCHET_STOP_MIN_USD (1.00) and trails RATCHET_TRAIL_USD (0.50) under the best profit since, never lowered; at or under the
+   *  stop the position is sold. A plan position's sale is the plan's own (bot/plan/planRatchet.ts, PLAN_RULES); any other
+   *  position's is the quota snipe's order. Off, the plan ratchet still runs for plan positions; no other position has one. */
+  profitRatchet: RatchetConfig;
+  /** PLAN_RULES (off by default, the same in paper and live; Steven's decisions 3 and 13, Nov 11 8:03 AM EST / 13:03 UTC): a
+   *  position opened by a plan rule (bot/plan/planPositions.ts) is managed by the plan's ratchet (the profit ratchet's numbers)
+   *  and its end rule (bot/plan/planRatchet.ts), and by the hold exit; the pacer only reports pace for it. Off, every position is
+   *  managed as before. Also on Config as cfg.plan (the same object). */
+  plan: PlanConfig;
   /** PROFIT_MANDATE (off by default; Steven's first wording, Oct 29 23:22 UTC): outside that final share of the window a position
    *  whose side bid net of the exit fee clears its entry cost (entry fee in) by PROFIT_MANDATE_MIN is sold at the bid whatever the
    *  exit policy or the model says, a hunt trailing its stop excepted. On, a penny of profit sells before the pacer's threshold is
@@ -173,9 +201,10 @@ export interface StrategyConfig {
    *  order size (paperOrderUsd / paperOrderFrac) wins over it. */
   orderUsdMin: number;
   orderUsdMax: number;
-  /** Paper only: no new crypto entries in a time-to-close bucket where the market mid has scored a better log loss
-   *  than the bot's (temperature-calibrated) probability over the last settled markets (bot/strategy/accuracyGate.ts;
-   *  the owner's choice on Oct 23). Live never blocks on it. */
+  /** ACCURACY_GATE (paper and live alike): no new crypto entries in a time-to-close bucket where the market mid has
+   *  scored a better log loss than the bot's (temperature-calibrated) probability over the last settled markets
+   *  (bot/strategy/accuracyGate.ts; the owner's choice on Oct 23). Off by default since Nov 11 for the edge plan (it
+   *  scored the old pYes and closed 7 of 8 buckets); the scorecard is still kept and reported with it off. */
   accuracyGate: AccuracyGateConfig;
   /** kelly = fractional Kelly on the model probability; target_ev = spec sizing (shrink to market, $ target, min EV). */
   sizing: 'kelly' | 'target_ev';
@@ -194,7 +223,9 @@ export interface StrategyConfig {
   /** Scale Kelly by max(0, 1 - drawdown / ddScaleAt); pause entries 24 h after a 7-day loss beyond weeklyLossPause. */
   ddScaleAt: number;
   weeklyLossPause: number;
-  /** Halt new risk when the rolling log-loss advantage vs the calibrated market is significantly negative. */
+  /** Halt new risk when the rolling log-loss advantage vs the calibrated market is significantly negative. Off by
+   *  default, paper and live alike (MODEL_HEALTH_HALT=true turns it on): it scores the old model against the market and
+   *  would stop every entry, heat-map entries included. The score is still computed and reported (Telemetry). */
   modelHealthHalt: boolean;
   /** Paper exploration: occasionally enter a borderline opportunity (edge within exploreBand below the
    *  threshold, still fee-net positive) at minimum size, logged with its probability, so the fill model
@@ -275,7 +306,9 @@ export interface StrategyConfig {
   /** Apply the pipeline's session_risk.json under SESSION_RISK (bot/model/sessionRisk.ts). */
   sessionRiskAuto: boolean;
   sessionRiskPath: string;
-  /** Block hunt mode in twilight/weekend liquidity and near session changes. */
+  /** HUNT_SESSION_GUARD: block hunt mode in twilight/weekend liquidity and within HUNT_TRANSITION_BUFFER_MIN of a session
+   *  change (a blocked hunt falls back to the fair-value exit). Off by default since Steven, Nov 11 2026 (6:42 PM EST /
+   *  23:42 UTC): "Don't block hunt mode anymore." true turns the old guard back on. */
   huntSessionGuard: boolean;
   huntTransitionBufferMin: number;
   /** Apply a fitted, validated intraday volatility profile to fair value. */
@@ -362,6 +395,8 @@ export interface Config {
   /** Strike ladders and range brackets: track only the N strikes nearest the price in each event (0 = all).
    *  Far strikes sit at 1c / 99c and are never traded; tracking them only costs CPU. */
   catalogStrikesPerEvent: number;
+  /** Strike selection: largest listing spread whose mid is trusted (0 = legacy: any mid, else the last price). */
+  catalogPickMaxSpread: number;
   /** Allow using the Coinbase public ticker as an index proxy (basis risk; paper/shadow only). */
   allowProxyIndex: boolean;
   /** Stream Coinbase spot for lead-lag features and the dashboard (never a pricing input). */
@@ -372,9 +407,17 @@ export interface Config {
   taCandles: boolean;
   /** Clock-skew guard: halt new risk when the local clock is confidently off Kalshi's by more than this (ms); 0 disables. */
   clockSkewMaxMs: number;
-  /** Session edges (first/last N minutes of the Asia, London and New York sessions): no new entries there
-   *  (noEntry) and, with AUTO_TRAIN=windows, the only time the training pipeline runs. */
+  /** Session edges (first/last N minutes of the Asia, London and New York sessions): with AUTO_TRAIN=windows the only
+   *  time the training pipeline runs, and, when noEntry is set (SESSION_EDGE_NO_ENTRY), no new entries there. Unset,
+   *  noEntry follows AUTO_TRAIN, paper and live alike: on with windows (training never shares the CPU with trading),
+   *  off with every other mode, the default included (AUTO_TRAIN=remote: training runs remotely, and session timing
+   *  should become an input to the heat curve, not a halt on entries). */
   sessionEdge: { minutes: number; noEntry: boolean };
+  /** The heat entry lane (bot/heat, docs/HEAT_LANE.md): the oracle's direction curves, read from the reader's file
+   *  (HEAT_CALLS_FILE), open immediate-or-cancel entries on the 15-minute and hourly contracts, and with HEAT_PERPS the
+   *  hour's and the 4 hours' calls open perps entries, the day's call as direction context. HEAT_LANE is off by default
+   *  (new behaviour is off until it is approved); the same settings in paper and live. */
+  heat: HeatConfig;
   /** The server's env file, rewritten by the dashboard's PAPER / LIVE switch (BOT_ENV_FILE, default ~/bot/bot.env). */
   botEnvFile: string;
   clockSkewWarnMs: number;
@@ -428,6 +471,8 @@ export interface Config {
   optimalF: OptimalFConfig;
   /** Fractal Alignment Engine and waterfall mode (bot/macro). */
   macro: MacroConfig;
+  /** PLAN_RULES and the plan ratchet's default settings: the same object as strategy.plan. */
+  plan: PlanConfig;
 }
 
 export interface MacroConfig {
@@ -717,6 +762,17 @@ export interface TennisConfig {
   scorePollSec: number;
   /** In-play detection from price action when no start time is published: a mid move of this size within 3 minutes. */
   liveMoveCents: number;
+  /** The match clock (Nov 12 2026). Kalshi's tennis start field (occurrence_datetime) is the expected finish, about 3 h
+   *  after the first serve, and expiration_time is the scheduled first serve plus 14 days (12 of 12 live markets; both
+   *  matches played that day started on the tape at that time). startFromExpiry: take the start from expiration_time minus
+   *  14 days when it lands within 6 h before the published time; otherwise (or when off) the published time moved
+   *  startShiftMin earlier (0 = the published time as is). */
+  startFromExpiry: boolean;
+  startShiftMin: number;
+  /** Also mark the match in play from that price move in the liveByMoveLeadMin minutes before the start (a match that
+   *  starts before its slot); with no start time the move is always used. */
+  liveByMove: boolean;
+  liveByMoveLeadMin: number;
   /** Order-book ratcheting trailing stop from the target price (both legs) instead of a fixed take-profit. */
   trail: boolean;
   /** Favorite leg: the trail arms at min(favTrailCap, entry + favTrailCents). */
@@ -755,12 +811,27 @@ export interface TennisConfig {
   /** TENNIS_END_LOSER_CUT (on): the other half of that rule, nothing is held to settlement unless it is in profit. In the last
    *  share of the match a position not in profit after fees is sold at the bid, and no new entry is placed there (it
    *  would start under water). The favorite leg has no loss exit of its own (TENNIS_FAV_STOP_CENTS is 0 by default). The
-   *  share is settleFrac's, so settleFrac 0 turns the cut off too. Both go by the furthest progress the match has held
+   *  share is endCutFrac's (settleFrac's before Nov 12). Both go by the furthest progress the match has held
    *  for 2 minutes (a comeback pulls the progress back; one tick's thin book does not count). */
   endLoserCut: boolean;
   /** TENNIS_END_ENTRY_MARGIN (0.05): with the cut on, no new entry from this much progress before the last share, so a
-   *  position bought just before it has time to cover the spread and fees before it is judged (0.65 with the defaults). */
+   *  position bought just before it has time to cover the spread and fees before it is judged (0.85 with the defaults). */
   endEntryMargin: number;
+  /** TENNIS_END_CUT_FRAC (0.10; Steven, Nov 12: at 90% of the match, not traded, and exited unless in profit): the last share
+   *  in which endLoserCut sells a position not in profit and no entry is placed. Before Nov 12 it was settleFrac's 30%. */
+  endCutFrac: number;
+  /** The loser cut by the match's progress (Steven, Nov 12, "scale like the price predictions", by the score's rounds against
+   *  the format's): a position not in profit after fees is sold at the bid once the bid is this far under its entry, dollars
+   *  a contract. TENNIS_LOSER_CUT_OPEN_C (20) at the start, TENNIS_LOSER_CUT_C (10) at 60% of the match, TENNIS_LOSER_CUT_LATE_C
+   *  (3) from 85%; TENNIS_LOSER_CUT_C=0 turns it off. bot/tennis/tennisStrategy.ts tennisLoserCutAt. */
+  loserCut: number;
+  loserCutOpen: number;
+  loserCutLate: number;
+  /** TENNIS_PROB_TURN (0.05): a position riding to settlement in profit is sold at the bid, still in profit, once our player's
+   *  chance to win is this far under its best since the ride began, by either reading: the market's price, or the scoring
+   *  model's from a fresh live score that names its players (Steven, Nov 12: "unless the probability begins to shift").
+   *  0 = off. */
+  probTurn: number;
   /** Tennis MLP (fair P(win) from the 4 signals, score, book and SNN): when validated, entries need
    *  fair - price >= this. */
   fairMinEdge: number;
@@ -844,6 +915,11 @@ export interface PerpsConfig {
    *  implied by the exchange's leverage estimate). */
   liqBuffer: number;
   maintMargin: number;
+  /** PERP_LOSER_CUT_C (15; Steven, Nov 12 1:01 AM EST / 06:01 UTC: "perpetual contracts: should have 15c loser cut with the same
+   *  rules it already has"), as dollars a contract on the perp's own price: a trade's stop is the nearer of its ATR stop and
+   *  this far against the entry, on the exchange too. Sizing and the liquidation check keep the ATR stop. No window, so it
+   *  does not scale. 0 = off. */
+  loserCut: number;
   /** The 4h ATR ratchet exit for setup trades (bot/setups/detectors.ts RATCHET; recorded in the setup model, so the
    *  live trader manages trades exactly as they were trained): SETUP_RATCHET (off | slow (default) | fast | both), the initial
    *  stop, break-even plus fees, and the trail, all in 4h ATRs. */
@@ -929,7 +1005,56 @@ function pacerConfig(env: Env): PacerConfig {
     // today's other rules a cushion of 8 ticks a contract made $262 and $238 a day more than none (two batches, 5 bankrolls
     // of 5 each); with the loser exits of PR #230, 16 ticks made $88 a day more than none.
     floorTicks: num(env, 'PACER_FLOOR_TICKS', 8, 0, 50),
+    // Steven, Nov 12 1:10 AM EST / 06:10 UTC: the pacer on heat-lane positions (bot/risk/quotaPacer.ts PacerConfig.plan).
+    plan: oneOf(env, 'PACER_PLAN', 'hybrid', ['off', 'hybrid', 'need'] as const),
   };
+}
+
+/** RATCHET: the profit ratchet for every position (bot/strategy/profitRatchet.ts), the same in paper and live. Steven, Nov 11
+ *  8:53 AM EST / 13:53 UTC ("the ratchet should allow for the profit after fees price to go higher if it runs past the $1.50
+ *  profit and ratchet stop loss after that"), trail $0.50 at 8:58 AM EST / 13:58 UTC. */
+function profitRatchetConfig(env: Env): RatchetConfig {
+  const armUsd = num(env, 'RATCHET_ARM_USD', 1.5, 0, 10_000);
+  const stopMinUsd = num(env, 'RATCHET_STOP_MIN_USD', 1, 0, 10_000);
+  // A stop at or above the arming level would sell the moment it arms.
+  if (stopMinUsd >= armUsd) throw new ConfigError(`RATCHET_STOP_MIN_USD=${stopMinUsd} must be under RATCHET_ARM_USD=${armUsd}`);
+  return { enabled: bool(env, 'RATCHET', true), armUsd, stopMinUsd, trailUsd: num(env, 'RATCHET_TRAIL_USD', 0.5, 0, 10_000) };
+}
+
+/** PLAN_RULES (bot/plan/planRatchet.ts), the same in paper and live. The plan ratchet takes the profit ratchet's dollars a
+ *  position (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD) since Nov 11 (Steven, 8:53-8:58 AM EST / 13:53-13:58 UTC):
+ *  one ratchet. Its old cents-a-contract settings cannot be carried over (a cent a contract is a different amount on every
+ *  position), so setting one stops the start rather than being read as something else. */
+function planConfig(env: Env): PlanConfig {
+  for (const k of ['PLAN_RATCHET_ARM_C', 'PLAN_RATCHET_TRAIL_C']) {
+    if (env[k] !== undefined && env[k] !== '') throw new ConfigError(`${k} is retired: the ratchet is in dollars for the whole position (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD)`);
+  }
+  // The loser cut (E05; Steven, Nov 11 6:56 PM EST / 23:56 UTC: "10c a contract"): cents a contract under the entry price, and
+  // dollars of trade net (off by default). 0 turns either off. On price prediction contracts the price cut scales with the
+  // window (Steven, Nov 12 1:01 AM EST / 06:01 UTC; bot/plan/planRatchet.ts planLoserCutAt): PLAN_LOSER_CUT_OPEN_C at the
+  // open, PLAN_LOSER_CUT_C at 60% of the window, PLAN_LOSER_CUT_LATE_C from 85%. The same number for all three is the flat cut.
+  // Unset, an end never crosses the cut at 60% (a PLAN_LOSER_CUT_C of 25 opens at 25c; one of 2 ends at 2c); set, it must not.
+  const { mid, open, late } = cutEnds(env, 'PLAN_LOSER_CUT', 'the window');
+  return {
+    enabled: bool(env, 'PLAN_RULES', false),
+    loserCut: mid / 100, loserCutOpen: open / 100, loserCutLate: late / 100,
+    loserCutUsd: num(env, 'PLAN_LOSER_CUT_USD', 0, 0, 1000),
+  };
+}
+
+/** A loser cut that narrows with time (Steven, Nov 12): <prefix>_C at 60%, <prefix>_OPEN_C at the start, <prefix>_LATE_C from
+ *  85%, cents a contract. An end left unset follows the middle without crossing it (20c and 3c with a 10c middle, fractions
+ *  kept), so a lone <prefix>_C change, whole or not, never stops the start; an end set by hand must stay on its side of the
+ *  middle and above 0. A middle of 0 turns the cut off whatever the ends say. */
+function cutEnds(env: Env, prefix: string, span: string): { mid: number; open: number; late: number } {
+  const mid = num(env, `${prefix}_C`, 10, 0, 99);
+  const set = (k: string) => env[k] !== undefined && env[k] !== '';
+  const kOpen = `${prefix}_OPEN_C`, kLate = `${prefix}_LATE_C`;
+  const open = set(kOpen) ? num(env, kOpen, 20, 0.01, 99) : Math.max(20, mid);
+  const late = set(kLate) ? num(env, kLate, 3, 0.01, 99) : Math.min(3, mid);
+  if (mid > 0 && open < mid - 1e-9) throw new ConfigError(`${kOpen}=${open} must be at least ${prefix}_C=${mid}: the cut allows a larger loss early in ${span}`);
+  if (mid > 0 && late > mid + 1e-9) throw new ConfigError(`${kLate}=${late} must be at most ${prefix}_C=${mid}: the cut is smaller late in ${span}`);
+  return { mid, open, late };
 }
 
 function bool(env: Env, key: string, def: boolean): boolean {
@@ -956,6 +1081,12 @@ function parseSizingTiers(raw: string | undefined, base: { risk: RiskLimits; str
   } catch (e) {
     throw new ConfigError(`SIZING_TIERS: ${(e as Error).message}`);
   }
+}
+
+/** The tennis loser cut's three lines in dollars a contract (cutEnds; Steven, Nov 12). */
+function tennisLoserCut(env: Env): { loserCut: number; loserCutOpen: number; loserCutLate: number } {
+  const { mid, open, late } = cutEnds(env, 'TENNIS_LOSER_CUT', 'the match');
+  return { loserCut: mid / 100, loserCutOpen: open / 100, loserCutLate: late / 100 };
 }
 
 /** "earliest,latest" seconds before close. */
@@ -1027,6 +1158,78 @@ export function paperEnv(env: Env): Env {
   const out: Env = { ...env, TRADING_MODE: 'paper', DASHBOARD_TOKEN: env.DASHBOARD_TOKEN ?? 'x'.repeat(32) };
   for (const k of ['PERP_HEDGE', 'PERP_TRADING']) if (out[k] === 'live') out[k] = 'paper';
   return out;
+}
+
+/** The heat entry lane's settings (HEAT_*, docs/HEAT_LANE.md), one set for paper and live. */
+function heatConfig(env: Env, dataDir: string): HeatConfig {
+  const list = (key: string, def: string) => (env[key] || def).split(',').map((x) => x.trim()).filter(Boolean);
+  const whole = (key: string, def: number, lo: number, hi: number) => {
+    const v = num(env, key, def, lo, hi);
+    if (!Number.isInteger(v)) throw new ConfigError(`${key}=${env[key]} must be a whole number`);
+    return v;
+  };
+  // No DOGE in this project, whatever the list says; the reader drops it the same way.
+  const assets = [...new Set(list('HEAT_ASSETS', 'BTC,ETH,SOL,XRP').map((a) => a.toUpperCase()))].filter((a) => !a.startsWith('DOGE'));
+  const horizons = [...new Set(list('HEAT_HORIZONS', '15,60').map(Number))];
+  if (!horizons.length || horizons.some((h) => !Number.isInteger(h) || h <= 0 || h > 1440)) throw new ConfigError(`HEAT_HORIZONS=${env.HEAT_HORIZONS} must list horizons in whole minutes (15 = the 15-minute contract, 60 = the hourly)`);
+  // The perp packs' horizons never open a Kalshi contract (none runs 4 hours or a day): refused here rather than skipped.
+  if (horizons.some((h) => h === 240 || h === 1440)) {
+    throw new ConfigError(`HEAT_HORIZONS=${env.HEAT_HORIZONS}: 240 and 1440 are perps horizons, never a Kalshi contract (the 4-hour call trades perps through HEAT_PERP_HORIZONS, the daily call is perps context through HEAT_PERPS_DAILY)`);
+  }
+  // A yes/no switch is not a count: the old setting is not read as one (ensure-env drops it from the server's bot.env).
+  if (env.HEAT_REENTER_AFTER_LOSS !== undefined && env.HEAT_REENTER_AFTER_LOSS !== '') {
+    throw new ConfigError('HEAT_REENTER_AFTER_LOSS is retired: re-entries after a loss are counted (HEAT_REENTRIES_15M, HEAT_REENTRIES_HOURLY; 0 = never) and stop at HEAT_REENTRY_LOSS_STOP of one order');
+  }
+  const perpHorizons = [...new Set(list('HEAT_PERP_HORIZONS', '60,240').map(Number))].sort((a, b) => a - b);
+  if (perpHorizons.some((h) => h !== 60 && h !== 240)) {
+    throw new ConfigError(`HEAT_PERP_HORIZONS=${env.HEAT_PERP_HORIZONS} may list 60 (the 1h heat setup) and 240 (the 4h heat setup) only; the daily call is direction context (HEAT_PERPS_DAILY), never an entry`);
+  }
+  return {
+    enabled: bool(env, 'HEAT_LANE', false),
+    callsFile: path.resolve(env.HEAT_CALLS_FILE || path.join(dataDir, 'heat_calls.json')),
+    assets,
+    horizons,
+    topN: whole('HEAT_TOP_N', 10, 0, 1000),
+    maxAgeSec: num(env, 'HEAT_MAX_AGE_SEC', 90, 5, 3600),
+    entryLagSec: num(env, 'HEAT_ENTRY_LAG_SEC', 45, 0, 600),
+    sizing: bool(env, 'HEAT_SIZING', true),
+    context: oneOf(env, 'HEAT_CONTEXT', 'size', ['size', 'block', 'off'] as const),
+    contextBoost: num(env, 'HEAT_CONTEXT_BOOST', 0.25, 0, 1),
+    maxOpen: whole('HEAT_MAX_OPEN', 2, 0, 20),
+    maxPerCoin: whole('HEAT_MAX_PER_COIN', 1, 1, 10),
+    cooldownSec: num(env, 'HEAT_COOLDOWN_SEC', 60, 0, 86_400),
+    // Re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC; his card at 7:05 PM EST / 00:05 UTC added the half-order
+    // loss stop; 8:08 PM EST / 01:08 UTC: "Maybe the re-entry should be more. Like 3 and 6 instead").
+    reentries15m: whole('HEAT_REENTRIES_15M', 3, 0, 20),
+    reentriesHourly: whole('HEAT_REENTRIES_HOURLY', 6, 0, 20),
+    reentryLossStop: num(env, 'HEAT_REENTRY_LOSS_STOP', 0.5, 0, 10),
+    flatTrips: whole('HEAT_FLAT_TRIPS', 30, 0, 100_000),
+    pilotLossUsd: num(env, 'HEAT_PILOT_LOSS_USD', 15, 0, 1e6),
+    feeNetCheck: bool(env, 'HEAT_FEE_NET_CHECK', false),
+    perps: oneOf(env, 'HEAT_PERPS', 'entry', ['off', 'log', 'gate', 'entry'] as const),
+    perpHorizons,
+    // No 'entry': the daily curves are not above chance on their own (no daily row above the no-signal twin's best).
+    perpsDaily: oneOf(env, 'HEAT_PERPS_DAILY', 'context', ['context', 'off'] as const),
+    pairConflict: oneOf(env, 'HEAT_PAIR_CONFLICT', 'skip', ['skip', 'pair'] as const),
+    // The evidence dial (Nov 12 2026): off until Steven says; 'log' records the stake it would set beside the real one.
+    dial: oneOf(env, 'HEAT_DIAL', 'off', ['off', 'log', 'on'] as const),
+    dialPriorTrips: num(env, 'HEAT_DIAL_PRIOR_TRIPS', 20, 1, 10_000),
+    dialPriorReturn: num(env, 'HEAT_DIAL_PRIOR_RETURN', -0.05, -1, 1),
+    dialScale: num(env, 'HEAT_DIAL_SCALE', 0.1, 0.001, 10),
+    dialFloor: num(env, 'HEAT_DIAL_FLOOR', 0.2, 0.01, 1),
+    dialMax: num(env, 'HEAT_DIAL_MAX', 2, 1, 10),
+  };
+}
+
+/** HEAT_LANE=true refuses to start where the lane could not work as written: without the plan exits (PLAN_RULES) a heat
+ *  position would be sold by the old model's exit on its next tick, and without the order band (ORDER_USD_MIN above 0)
+ *  every heat stake would be one contract. Throws a plain configuration error; nothing to check with the lane off. */
+export function heatStartCheck(cfg: Pick<Config, 'heat' | 'strategy'>, planRulesOn: boolean): void {
+  if (!cfg.heat.enabled) return;
+  const why: string[] = [];
+  if (!planRulesOn) why.push('the plan exits must own its positions (PLAN_RULES=true): without them the old model\'s exit would sell a heat position on its next tick');
+  if (!(cfg.strategy.orderUsdMin > 0)) why.push('ORDER_USD_MIN must be above 0: heat stakes are sized inside the ORDER_USD_MIN..ORDER_USD_MAX band');
+  if (why.length) throw new ConfigError(`HEAT_LANE=true: ${why.join('; ')}`);
 }
 
 export function loadConfig(env: Env = process.env): Readonly<Config> {
@@ -1115,7 +1318,10 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     series,
     seriesAuto,
     recordSeries: (env.RECORD_SERIES ?? '').split(',').map((x) => x.trim()).filter(Boolean),
-    excludeSeries: (() => { const v = (env.STRATEGY_EXCLUDE_SERIES ?? 'DOGE').trim(); return v ? new RegExp(v) : undefined; })(),
+    excludeSeries: (() => {
+      const parts = [(env.STRATEGY_EXCLUDE_SERIES ?? 'DOGE').trim(), mode !== 'paper' && !bool(env, 'LIVE_ALLOW_DOGE', false) ? 'DOGE' : ''].filter(Boolean);
+      return parts.length ? new RegExp(parts.join('|')) : undefined;
+    })(),
     recordMaxMarkets: num(env, 'RECORD_MAX_MARKETS', 150, 1, 2000),
     kellyFraction: num(env, 'STRATEGY_KELLY_FRACTION', 0.25, 0.01, 0.5),
     portfolioKelly: bool(env, 'PORTFOLIO_KELLY', true),
@@ -1175,6 +1381,19 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     noExitBeforeCloseFrac: num(env, 'STRATEGY_NO_EXIT_BEFORE_CLOSE_FRAC', 0.10, 0, 0.9),
     shareWindowMaxSec: num(env, 'STRATEGY_SHARE_WINDOW_MAX_SEC', 3600, 0, 7 * 86_400),
     pacer: pacerConfig(env),
+    // Steven asked for it directly (Nov 11 2026, 13:42-13:45 UTC): on by default.
+    holdExit: {
+      enabled: bool(env, 'HOLD_EXIT', true),
+      usd: num(env, 'HOLD_EXIT_USD', 1.5, 0, 10_000),
+      sec: num(env, 'HOLD_EXIT_SEC', 10, 0, 3600),
+      runUsd: num(env, 'HOLD_EXIT_RUN_USD', 1, 0, 10_000),
+      runSec: num(env, 'HOLD_EXIT_RUN_SEC', 3, 0, 600),
+      reentryShare: num(env, 'HOLD_EXIT_REENTRY_SHARE', 0.5, 0, 1),
+      // Steven's card (Nov 11 9:21 AM EST / 14:21 UTC): the line exit after 5 failed tries. A count: 2.5 means 3.
+      lineAfterFails: Math.ceil(num(env, 'HOLD_EXIT_LINE_AFTER_FAILS', 5, 0, 1000)),
+    },
+    profitRatchet: profitRatchetConfig(env),
+    plan: planConfig(env),
     profitMandate: bool(env, 'PROFIT_MANDATE', false),
     profitMandateMin: num(env, 'PROFIT_MANDATE_MIN', 0.01, 0, 0.5),
     // Maker discount for the measured adverse move a minute after a fill: at least 1.5c, up to 3c.
@@ -1185,7 +1404,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0, 0, 1),
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
     orderUsdMax: num(env, 'ORDER_USD_MAX', 20, 0, 1000),
-    accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', true), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
+    accuracyGate: { enabled: bool(env, 'ACCURACY_GATE', false), window: num(env, 'ACCURACY_GATE_WINDOW', 150, 20, 2000), minMarkets: num(env, 'ACCURACY_GATE_MIN_MARKETS', 40, 5, 1000) },
     sizing: oneOf(env, 'STRATEGY_SIZING', relaxed ? 'target_ev' : 'kelly', ['kelly', 'target_ev'] as const),
     kappa: num(env, 'STRATEGY_KAPPA', 0.5, 0, 1),
     targetEvUsd: num(env, 'STRATEGY_TARGET_EV_USD', 10, 0, 10000),
@@ -1196,7 +1415,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     ensembleVetoSigmas: num(env, 'STRATEGY_ENSEMBLE_VETO_SIGMAS', 2, 0, 10),
     ddScaleAt: num(env, 'RISK_DD_SCALE_AT', 0.15, 0.01, 1),
     weeklyLossPause: num(env, 'RISK_WEEKLY_LOSS_PAUSE', 0.08, 0.01, 1),
-    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', true),
+    modelHealthHalt: bool(env, 'MODEL_HEALTH_HALT', false),
     paperExplore: bool(env, 'PAPER_EXPLORE', false),
     exploreRate: num(env, 'PAPER_EXPLORE_RATE', 0.1, 0, 1),
     exploreBand: num(env, 'PAPER_EXPLORE_BAND', 0.02, 0, 0.1),
@@ -1235,7 +1454,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     ratchetMinWallAgeSec: num(env, 'RATCHET_MIN_WALL_AGE_SEC', 3, 0, 120),
     ratchetSlippageTicks: num(env, 'RATCHET_SLIPPAGE_TICKS', 1, 0, 10),
     sessionRisk: (() => { try { return parseSessionRisk(env.SESSION_RISK); } catch (e) { throw new ConfigError((e as Error).message); } })(),
-    huntSessionGuard: bool(env, 'HUNT_SESSION_GUARD', true),
+    huntSessionGuard: bool(env, 'HUNT_SESSION_GUARD', false),
     huntTransitionBufferMin: num(env, 'HUNT_TRANSITION_BUFFER_MIN', 10, 0, 120),
     sessionRiskAuto: bool(env, 'SESSION_RISK_AUTO', true),
     sessionRiskPath: path.resolve(env.SESSION_RISK_PATH ?? './params/session_risk.json'),
@@ -1343,12 +1562,17 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     seriesAssetMap,
     catalogHorizonMin: num(env, 'CATALOG_HORIZON_MIN', 90, 16, 7 * 24 * 60),
     catalogStrikesPerEvent: num(env, 'CATALOG_STRIKES_PER_EVENT', 4, 0, 1000),
+    // Strike selection trusts a listing's mid only when its spread is at most this (0 = the legacy rule: any mid, else the
+    // last price). Institutional research decision 1, Nov 5 (a dead 1c/99c listing read 50c and took a strike slot).
+    catalogPickMaxSpread: num(env, 'CATALOG_PICK_MAX_SPREAD', 0.1, 0, 1),
     allowProxyIndex,
     spotFeed: bool(env, 'SPOT_FEED', true),
     dominanceFeed: bool(env, 'DOMINANCE_FEED', true),
     taCandles: bool(env, 'TA_CANDLES', true),
     clockSkewMaxMs: num(env, 'CLOCK_SKEW_MAX_MS', 2000, 0, 60_000),
-    sessionEdge: { minutes: num(env, 'SESSION_EDGE_MIN', 40, 5, 120), noEntry: bool(env, 'SESSION_EDGE_NO_ENTRY', true) },
+    // Off unless AUTO_TRAIN=windows, whose pipeline runs only in these windows and must not share the CPU with trading.
+    sessionEdge: { minutes: num(env, 'SESSION_EDGE_MIN', 40, 5, 120), noEntry: bool(env, 'SESSION_EDGE_NO_ENTRY', env.AUTO_TRAIN === 'windows') },
+    heat: heatConfig(env, dataDir),
     botEnvFile: path.resolve(env.BOT_ENV_FILE ?? path.join(os.homedir(), 'bot', 'bot.env')),
     clockSkewWarnMs: num(env, 'CLOCK_SKEW_WARN_MS', 1000, 0, 60_000),
     settlementAvg: oneOf(env, 'SETTLEMENT_AVG', 'official', ['official', 'continuous'] as const),
@@ -1371,6 +1595,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     alertWebhookUrl: env.ALERT_WEBHOOK_URL || undefined,
     risk,
     strategy,
+    plan: strategy.plan,
     vault: {
       enabled: bool(env, 'VAULT_ENABLED', true),
       quotaUsd: num(env, 'VAULT_QUOTA_USD', 100, 0, 1e7),
@@ -1458,6 +1683,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         setupSlowRiskUsd: num(env, 'SETUP_SLOW_RISK_USD', 0, 0, 1e7),
         setupMinTargetUsd: num(env, 'SETUP_MIN_TARGET_USD', 0, 0, 1e7),
         liqBuffer: num(env, 'PERP_LIQ_BUFFER', 0.2, 0, 0.9),
+        loserCut: num(env, 'PERP_LOSER_CUT_C', 15, 0, 10_000) / 100,
         maintMargin: num(env, 'PERP_MAINT_MARGIN', 0, 0, 0.5),
         setupRatchet: oneOf(env, 'SETUP_RATCHET', 'slow', ['off', 'slow', 'fast', 'both'] as const),
         setupRatchetStopAtr: num(env, 'SETUP_RATCHET_STOP_ATR', 3.5, 0.5, 20),
@@ -1609,6 +1835,10 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       scoreIdleMin: num(env, 'TENNIS_SCORE_IDLE_MIN', 30, 1, 24 * 60),
       scorePollSec: num(env, 'TENNIS_SCORE_POLL_SEC', 15, 5, 300),
       liveMoveCents: num(env, 'TENNIS_LIVE_MOVE_CENTS', 0.03, 0.005, 0.5),
+      startFromExpiry: bool(env, 'TENNIS_START_FROM_EXPIRY', true),
+      startShiftMin: num(env, 'TENNIS_START_SHIFT_MIN', 180, 0, 600),
+      liveByMove: bool(env, 'TENNIS_LIVE_BY_MOVE', true),
+      liveByMoveLeadMin: num(env, 'TENNIS_LIVE_BY_MOVE_LEAD_MIN', 60, 0, 600),
       trail: bool(env, 'TENNIS_TRAIL', true),
       favTrailCents: num(env, 'TENNIS_FAV_TRAIL_CENTS', 0.06, 0.01, 0.5),
       favTrailCap: num(env, 'TENNIS_FAV_TRAIL_CAP', 0.97, 0.5, 0.99),
@@ -1632,6 +1862,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       settleFrac: num(env, 'TENNIS_NO_EXIT_BEFORE_END_FRAC', 0.30, 0, 0.9),
       endLoserCut: bool(env, 'TENNIS_END_LOSER_CUT', true),
       endEntryMargin: num(env, 'TENNIS_END_ENTRY_MARGIN', 0.05, 0, 0.5),
+      endCutFrac: num(env, 'TENNIS_END_CUT_FRAC', 0.10, 0, 0.9),
+      ...tennisLoserCut(env),
+      probTurn: num(env, 'TENNIS_PROB_TURN', 0.05, 0, 0.5),
       fairMinEdge: num(env, 'TENNIS_FAIR_MIN_EDGE', 0.01, -0.5, 0.5),
       modelPath: path.resolve(env.TENNIS_MODEL_PATH ?? './params/tennis_model.json'),
     },

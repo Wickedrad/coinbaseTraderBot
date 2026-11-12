@@ -1,9 +1,10 @@
 // Setup detectors, trade management and the lane book (bot/setups).
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Candle } from '../bot/ta/indicators';
 import { detectAt, detectLast, setupSeries, type SetupSignal } from '../bot/setups/detectors';
-import { openTrade, stepTrade, tradeResult, type CostModel } from '../bot/setups/exits';
+import { applyPerpCut, openTrade, stepTrade, tradeResult, type CostModel } from '../bot/setups/exits';
 import { setupHigher } from '../bot/setups/setupTrader';
 import { QuotaFloors } from '../bot/risk/quotaPacer';
 
@@ -11,6 +12,35 @@ const bar = (ts: number, o: number, h: number, l: number, c: number): Candle => 
 const FREE: CostModel = { entry: 0, makerExit: 0, takerExit: 0, fundingPer8h: 0 };
 const M15 = 900_000;
 const fade = (dir: 1 | -1, stop: number, t1: number, t2: number): SetupSignal => ({ asset: 'BTC', lane: 'fast', kind: 'fade', tf: '15m', dir, ts: 0, ref: 100, stop, atr: 1, plan: { target1: t1, target2: t2, trailAtr: 1.5, maxBars: 4 }, info: { rsi: 75, pctB: 1, flow: 0.4, bandwidth: 0.05, volRatio: 1 } });
+
+test('perp loser cut (Steven, Nov 12 1:01 AM EST / 06:01 UTC: 15c a contract): the nearer of the trade\'s stop and 15c on the perp\'s price; a stop hit there is a cut; 1R stays the trade\'s own', () => {
+  // A long at 100 with its stop at 96 (4%). Quoted per coin (ratio 1): 15c is 0.15 under, nearer: the stop moves to 99.85.
+  const t = openTrade(fade(1, 96, 104, 106), 100, 0, FREE)!;
+  assert.equal(applyPerpCut(t, 0.15, 1), true);
+  assert.deepEqual([t.stop, t.cutStop, t.initialStop], [99.85, 99.85, 96]);
+  // Quoted per contract of 0.1 coin (a $10 contract, SOL-like): 15c is 1.5 in coin terms, 98.5.
+  const sol = openTrade(fade(1, 96, 104, 106), 100, 0, FREE)!;
+  assert.equal(applyPerpCut(sol, 0.15, 0.1), true);
+  assert.ok(Math.abs(sol.stop - 98.5) < 1e-9, String(sol.stop));
+  // 0.001 coin a contract (an ETH-like $0.10 contract here): 15c is 150 in coin terms, farther than the stop: the stop stands.
+  const eth = openTrade(fade(1, 96, 104, 106), 100, 0, FREE)!;
+  assert.equal(applyPerpCut(eth, 0.15, 0.001), false);
+  assert.deepEqual([eth.stop, eth.cutStop], [96, undefined]);
+  // A short mirrors it: 15c over the entry.
+  const sh = openTrade(fade(-1, 104, 96, 94), 100, 0, FREE)!;
+  assert.equal(applyPerpCut(sh, 0.15, 1), true);
+  assert.equal(sh.stop, 100.15);
+  // Off (0), no ratio, or set once already (the stop is now the cut's): nothing changes.
+  const off = openTrade(fade(1, 96, 104, 106), 100, 0, FREE)!;
+  assert.equal(applyPerpCut(off, 0, 1), false);
+  assert.equal(applyPerpCut(off, 0.15, undefined), false);
+  assert.equal(off.stop, 96);
+  assert.equal(applyPerpCut(t, 0.15, 1), false, 'already at the cut');
+  // The stop hit at the cut closes the trade as a cut, at 99.85: about -0.04R against the trade's own 4-point stop.
+  assert.equal(stepTrade(sol, bar(0, 100, 100.2, 98.4, 98.6), M15, FREE), true);
+  assert.deepEqual([sol.closed?.reason, sol.closed?.px], ['cut', 98.5]);
+  assert.ok(Math.abs(tradeResult(sol).r - -1.5 / 4) < 1e-9, String(tradeResult(sol).r));
+});
 
 test('trade management: half off at the first target, stop to break-even, rest at the final target', () => {
   const t = openTrade(fade(-1, 102, 98, 96), 100, 0, FREE)!;
@@ -170,6 +200,18 @@ test('live setup trader: detects on a closed candle, queues, re-checks, enters w
   assert.notEqual(tgt.target, 0, `entered: ${tgt.reason}`);
   assert.equal(Math.sign(tgt.target), sig.dir);
   assert.ok(tgt.stopPrice && Math.abs(tgt.stopPrice / (sig.stop * 1.001) - 1) < 1e-3, 'exchange stop = spot stop x perp/spot ratio');
+  // With the perp loser cut on (PERP_LOSER_CUT_C) and nearer than the setup's stop, the exchange stop is the cut's line: 15c a
+  // contract against the entry on the perp's price (here quoted per coin, so 0.15 / 1.001 in spot terms).
+  {
+    const cdir = tmpDir();
+    const cut = new SetupTrader({ params: defaultSetupParams({ pilotMaxNotionalUsd: 1e9, loserCut: 0.15 }), hub, gateway, modelPath: modelFile, statePath: path.join(cdir, 'state.json'), candles: (a) => (a === 'BTC' ? set : undefined), spot: () => px.v });
+    const c = (await cut.targets({ positions: new Map(), hedge: [], now }, {})).find((x) => x.asset === 'BTC')!;
+    const ct = [...cut.book.positions.values()][0];
+    assert.ok(Math.abs(sig.ref - sig.stop) * 1.001 > 0.15, 'the setup\'s stop is farther than 15c here');
+    assert.deepEqual([ct.cutStop !== undefined, ct.stop === ct.cutStop], [true, true]);
+    assert.ok(Math.abs(ct.initialStop - sig.stop) < 1e-6, '1R stays the setup\'s stop');
+    assert.ok(c.stopPrice && Math.abs(c.stopPrice - (ct.entry - sig.dir * 0.15 / 1.001) * 1.001) < 1e-3, `exchange stop at the cut: ${c.stopPrice} vs entry ${ct.entry * 1.001}`);
+  }
   assert.ok(fs.existsSync(path.join(dir, 'state.json')), 'book saved');
   // A restarted trader resumes the open trade.
   const again = new SetupTrader({ params: defaultSetupParams({ pilotMaxNotionalUsd: 1e9 }), hub, gateway, modelPath: modelFile, statePath: path.join(dir, 'state.json'), candles: () => set, spot: () => px.v });

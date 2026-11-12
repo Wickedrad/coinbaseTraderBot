@@ -10,6 +10,8 @@ print('ENTRIES   ', json.dumps(s.get('entryDiagnosis')))
 print('CATALOG    age %ss, took %sms, tracked %s, open %s, failed %s' % (round((now - c.get('ts', 0)) / 1000), c.get('durationMs'), c.get('tracked'), c.get('open'), c.get('failed')))
 print('CLOCK     ', json.dumps((s.get('guards') or {}).get('clock')))
 print('BANKROLL  ', s.get('balance'), s.get('bankroll'), 'daily pnl', s.get('dailyPnl'), 'run', s.get('run'))
+pp = s.get('paperPool')
+if pp: print('PAPER POOL  RESULT %s = worth %s (cash incl. resting holds %s + held at cost %s) - put in %s (funded %s + refilled %s)' % tuple(pp.get(k) for k in ('result', 'worth', 'cash', 'openCost', 'putIn', 'funded', 'refilled')))
 t = s.get('tennis') or {}
 print('TENNIS     enabled', t.get('enabled'), 'trading', t.get('trading'), 'matches', len(t.get('matches') or []), [ (m.get('event'), m.get('phase')) for m in (t.get('matches') or [])[:6] ])
 p = s.get('perps') or {}

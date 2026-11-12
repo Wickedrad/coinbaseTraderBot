@@ -1,5 +1,6 @@
 // Dashboard controls: PLAY / STOP (persisted, blocks new entries, cancels resting orders) and the
 // PAPER / LIVE switch (validated, rewrites bot.env, restarts); the env-file editor; the latency registry.
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs';
@@ -65,9 +66,115 @@ test('PAPER / LIVE: live needs the confirmation and settings that would start; t
     assert.equal(ok.status, 200);
     const text = fs.readFileSync(envFile, 'utf8');
     assert.match(text, /TRADING_MODE=live/); assert.match(text, /KALSHI_ENV=prod/); assert.match(text, /LIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK/);
+    const again = await s.post('/mode', { mode: 'live', confirm: 'LIVE' });
+    assert.equal(again.status, 409, 'a second switch before the restart is refused');
+    assert.equal(fs.readFileSync(envFile, 'utf8'), text, 'and writes nothing');
     await new Promise((r) => setTimeout(r, 700));
     assert.equal(restarts, 1);
   } finally { process.env = saved; s.close(); }
+});
+
+// A scratch bot.env and a server started from it the way production starts: systemd loads the file into the server's
+// environment (EnvironmentFile) and d.cfg comes from that. The file can then be edited before a switch, as an
+// operator may do between restarts.
+function modeHarness(prefix: string) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const envFile = path.join(dir, 'bot.env');
+  const key = path.join(dir, 'key.pem');
+  fs.writeFileSync(key, 'x', { mode: 0o600 });
+  const keys = { KALSHI_KEY_ID: 'k', KALSHI_PRIVATE_KEY_PATH: key };
+  const read = () => fs.readFileSync(envFile, 'utf8');
+  const write = (text: string) => fs.writeFileSync(envFile, text, { mode: 0o600 });
+  // bot.env as the restart would load it (plus the keys, which the server's environment carries).
+  const fileEnv = () => ({ ...keys, BOT_ENV_FILE: envFile, ...Object.fromEntries(read().split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)])) });
+  const audits: { changes: string[] }[] = [];
+  const audit = { write: (_kind: string, e: { changes: string[] }) => { audits.push(e); } };
+  const saved = { ...process.env };
+  const start = async (extra: Partial<ApiDeps> = {}) => { process.env = { ...saved, ...fileEnv() }; return serve(fileEnv(), { audit, ...extra } as never); };
+  const switchTo = async (body: Record<string, string>, extra: Partial<ApiDeps> = {}) => {
+    const s = await start(extra);
+    try { return await s.post('/mode', body); } finally { s.close(); }
+  };
+  return { read, write, fileEnv, audits, start, switchTo, restore: () => { process.env = saved; } };
+}
+
+test('PAPER / LIVE: live writes only the mode, KALSHI_ENV and the acknowledgement (perps and tennis stay as configured); paper demotes live perps and tennis', async () => {
+  const h = modeHarness('mode-scope-');
+  try {
+    // LIVE from the template's mode block: perps on paper, tennis tracking-only in live.
+    h.write('TRADING_MODE=paper\nKALSHI_ENV=prod\nPERP_TRADING=paper\nPERP_HEDGE=paper\nTENNIS_LIVE=false\n');
+    assert.equal((await h.switchTo({ mode: 'live', confirm: 'LIVE' })).status, 200);
+    assert.equal(h.read(), 'TRADING_MODE=live\nKALSHI_ENV=prod\nPERP_TRADING=paper\nPERP_HEDGE=paper\nTENNIS_LIVE=false\nLIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK\n');
+    assert.deepEqual([...h.audits.at(-1)!.changes].sort(), ['KALSHI_ENV', 'LIVE_TRADING_ACKNOWLEDGED', 'TRADING_MODE']);
+    // The restart trades only the binaries live: paper perps read as off in live, tennis stays tracking-only.
+    const live = loadConfig(h.fileEnv());
+    assert.equal(live.mode, 'live');
+    assert.deepEqual([live.perps.trading, live.perps.hedge, live.tennis.live], ['off', 'off', false]);
+
+    // PAPER back from that live start: nothing was live to demote, and paper perps stay paper (not off).
+    assert.equal((await h.switchTo({ mode: 'paper' })).status, 200);
+    assert.equal(h.read(), 'TRADING_MODE=paper\nKALSHI_ENV=prod\nPERP_TRADING=paper\nPERP_HEDGE=paper\nTENNIS_LIVE=false\nLIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK\n');
+    const paper = loadConfig(h.fileEnv());
+    assert.deepEqual([paper.mode, paper.perps.trading, paper.perps.hedge], ['paper', 'paper', 'paper']);
+
+    // PAPER from the documented live setup (perps trading and hedging live, tennis live), all set by hand: both perps
+    // settings go back to paper and TENNIS_LIVE to false.
+    h.write('TRADING_MODE=live\nKALSHI_ENV=prod\nLIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK\nPERP_TRADING=live\nPERP_HEDGE=live\nTENNIS_LIVE=true\n');
+    assert.equal((await h.switchTo({ mode: 'paper' })).status, 200);
+    assert.equal(h.read(), 'TRADING_MODE=paper\nKALSHI_ENV=prod\nLIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK\nPERP_TRADING=paper\nPERP_HEDGE=paper\nTENNIS_LIVE=false\n');
+    const both = loadConfig(h.fileEnv());
+    assert.deepEqual([both.mode, both.perps.trading, both.perps.hedge, both.tennis.live], ['paper', 'paper', 'paper', false]);
+
+    // PAPER from a live start with only perps trading live: it goes back to paper, an off perps setting stays off.
+    h.write('TRADING_MODE=live\nKALSHI_ENV=prod\nLIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK\nPERP_TRADING=live\nPERP_HEDGE=off\nTENNIS_LIVE=true\n');
+    assert.equal((await h.switchTo({ mode: 'paper' })).status, 200);
+    assert.equal(h.read(), 'TRADING_MODE=paper\nKALSHI_ENV=prod\nLIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK\nPERP_TRADING=paper\nPERP_HEDGE=off\nTENNIS_LIVE=false\n');
+    const demoted = loadConfig(h.fileEnv());
+    assert.deepEqual([demoted.mode, demoted.perps.trading, demoted.perps.hedge, demoted.tennis.live], ['paper', 'paper', 'off', false]);
+
+    // PAPER after bot.env was edited since the start: the bot started live with paper perps (read as off), then the
+    // operator set perps live in bot.env and has not restarted. The perps settings in the file go back to paper, so
+    // the restart loads (a paper bot.env with PERP_*=live would exit with code 2 and stay down).
+    h.write('TRADING_MODE=live\nKALSHI_ENV=prod\nLIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK\nPERP_TRADING=paper\nPERP_HEDGE=paper\nTENNIS_LIVE=false\n');
+    const s = await h.start();
+    try {
+      h.write('TRADING_MODE=live\nKALSHI_ENV=prod\nLIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK\nPERP_TRADING=live\nPERP_HEDGE=live\nTENNIS_LIVE=false\n');
+      assert.equal((await s.post('/mode', { mode: 'paper' })).status, 200);
+    } finally { s.close(); }
+    assert.equal(h.read(), 'TRADING_MODE=paper\nKALSHI_ENV=prod\nLIVE_TRADING_ACKNOWLEDGED=I_ACCEPT_REAL_MONEY_RISK\nPERP_TRADING=paper\nPERP_HEDGE=paper\nTENNIS_LIVE=false\n');
+    const edited = loadConfig(h.fileEnv());
+    assert.deepEqual([edited.mode, edited.perps.trading, edited.perps.hedge], ['paper', 'paper', 'paper']);
+  } finally { h.restore(); }
+});
+
+test('PAPER / LIVE: live is refused when the restart would refuse to start (unvalidated model, closed kalshi gate, no other live book)', async () => {
+  const h = modeHarness('mode-exit3-');
+  const model = { id: 'm1', liveBlockers: () => ['validation.passed is false'] };
+  const blocked = 'TRADING_MODE=paper\nLIVE_ALLOW_UNVALIDATED_MODEL=false\nVALIDATION_GATES=enforce\nTENNIS_LIVE=false\n';
+  try {
+    // main.ts would exit with code 3 (systemd does not restart it): refused, nothing written.
+    h.write(blocked);
+    const r = await h.switchTo({ mode: 'live', confirm: 'LIVE' }, { model } as never);
+    assert.equal(r.status, 400);
+    assert.match(r.json.error, /exit code 3/);
+    assert.match(r.json.error, /LIVE_ALLOW_UNVALIDATED_MODEL/);
+    assert.equal(h.read(), blocked, 'nothing written when the restart would not start');
+
+    // Another book live (here tennis, set in bot.env after the start): main.ts starts, so the switch goes through.
+    const s = await h.start({ model } as never);
+    try {
+      h.write(blocked.replace('TENNIS_LIVE=false', 'TENNIS_LIVE=true'));
+      assert.equal((await s.post('/mode', { mode: 'live', confirm: 'LIVE' })).status, 200);
+    } finally { s.close(); }
+    assert.match(h.read(), /^TRADING_MODE=live$/m);
+
+    // An open kalshi gate (VALIDATION_GATES=monitor, the default) or LIVE_ALLOW_UNVALIDATED_MODEL=true (the default):
+    // the binary model does not block the start.
+    h.write('TRADING_MODE=paper\nLIVE_ALLOW_UNVALIDATED_MODEL=false\nTENNIS_LIVE=false\n');
+    assert.equal((await h.switchTo({ mode: 'live', confirm: 'LIVE' }, { model } as never)).status, 200);
+    h.write('TRADING_MODE=paper\nVALIDATION_GATES=enforce\nTENNIS_LIVE=false\n');
+    assert.equal((await h.switchTo({ mode: 'live', confirm: 'LIVE' }, { model } as never)).status, 200);
+  } finally { h.restore(); }
 });
 
 test('latency registry: smoothed per channel, null when stale', () => {

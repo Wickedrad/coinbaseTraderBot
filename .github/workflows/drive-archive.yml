@@ -5,7 +5,11 @@ name: Drive archive
 # (deploy/drive_pull.sh) instead of re-reading the server, and Drive keeps the days after Actions caches evict them.
 #
 # Light on the server: one run a day in the quiet hours, file-only reads at most 8 MB/s under nice 19 (never rsync -z),
-# no work on the server beyond listing files. Days already on Drive are skipped, so a day leaves the server once.
+# no work on the server beyond listing files and checksums. Days already on Drive are skipped.
+#
+# The prune step then removes server recordings and audit files of days older than 14 days, but only after the Drive copy
+# is checked: the gzip's size and md5 must equal Drive's (an uncompressed day must decompress on Drive to the same
+# sha256). Every removal is logged on the run and kept on Drive as audit/prune-<time>.tsv. Set prune_dry_run to list only.
 #
 # The repo is public: nothing is uploaded as an artifact and the log prints only file names, counts and sizes.
 #
@@ -33,6 +37,10 @@ on:
         default: 'false'
       history:
         description: 'Also mirror the server''s raw market history (bot/data/history -> raw/server-history) and model work (models/archive, models/work -> models/server) to Drive, only files Drive lacks (true/false; the schedule does it on Sundays)'
+        required: false
+        default: 'false'
+      prune_dry_run:
+        description: 'Prune step: list the server days it would remove (verified against Drive) and remove nothing (true/false)'
         required: false
         default: 'false'
 
@@ -74,7 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF secret is not set (see the header of this workflow)"; exit 1; fi
-          sudo apt-get install -y -qq rclone >/dev/null
+          bash .github/scripts/install-rclone.sh
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
           rclone mkdir "$DRIVE_ROOT/recordings" && rclone mkdir "$DRIVE_ROOT/audit" && rclone mkdir "$DRIVE_ROOT/paper"
@@ -149,6 +157,82 @@ jobs:
             rclone copy "$W/rec" "$DRIVE_ROOT/recordings" --transfers 1
             echo "$d: recording $(du -sh "$W/rec" | cut -f1), audit $(wc -l < "$W/audit.txt") file(s) $(du -sh "$W/audit" | cut -f1)"
           done
+      - name: Remove server days older than 14 days, only after their Drive copy is verified
+        if: ${{ github.event_name == 'schedule' || !inputs.days }}
+        env:
+          DRY_RUN: ${{ inputs.prune_dry_run || 'false' }}
+          KEEP_DAYS: '14'
+          MAX_PRUNE: '8'
+        run: |
+          set -euo pipefail
+          [ "$DRY_RUN" = true ] || [ "$DRY_RUN" = false ] || { echo "prune_dry_run must be true or false"; exit 1; }
+          CUT=$(date -u -d "-$KEEP_DAYS days" +%F)
+          echo "keep the last $KEEP_DAYS days: prune server days before $CUT (dry run: $DRY_RUN)"
+          # Drive's own size and md5 for every recording and audit file, read after this run's copies.
+          rclone lsjson "$DRIVE_ROOT/recordings" --files-only --hash | jq -r '.[] | [.Name, .Size, (.Hashes.md5 // "")] | @tsv' > "$RUNNER_TEMP/prune-drive-rec.tsv"
+          rclone lsjson "$DRIVE_ROOT/audit" --files-only --hash | jq -r '.[] | [.Name, .Size, (.Hashes.md5 // "")] | @tsv' > "$RUNNER_TEMP/prune-drive-audit.tsv"
+          # Every recorded day on the server, oldest first.
+          ssh -n bot "cd ~/bot/data/recordings && ls -1" | sed -nE 's/^md-([0-9]{4}-[0-9]{2}-[0-9]{2})\.jsonl(\.gz)?$/\1/p' | sort -u > "$RUNNER_TEMP/prune-days.txt"
+          # Read on the server: path, bytes, md5 (and sha256 for an uncompressed recording) of one day's files.
+          cat > "$RUNNER_TEMP/facts.sh" <<'REMOTE'
+          cd ~/bot/data || exit 1
+          d=$1
+          for f in recordings/md-$d.jsonl.gz recordings/md-$d.jsonl audit/audit-$d*; do
+            [ -f "$f" ] || continue
+            x=-; [ "$f" = "recordings/md-$d.jsonl" ] && x=$(sha256sum < "$f" | cut -d' ' -f1)
+            printf '%s\t%s\t%s\t%s\n' "$f" "$(stat -c %s "$f")" "$(md5sum < "$f" | cut -d' ' -f1)" "$x"
+          done
+          REMOTE
+          LOGF="$RUNNER_TEMP/prune.tsv"; printf 'day\tserver_file\tbytes\tmd5\tremoved_utc\n' > "$LOGF"
+          df_now() { ssh -n bot "df -P ~ | tail -1"; }
+          echo "server disk before: $(df_now)"
+          N=0
+          for d in $(cat "$RUNNER_TEMP/prune-days.txt"); do
+            [[ "$d" < "$CUT" ]] || continue
+            if [ "$N" -ge "$MAX_PRUNE" ]; then echo "cap of $MAX_PRUNE days reached; the rest wait for the next run"; break; fi
+            N=$((N + 1))
+            F="$RUNNER_TEMP/facts-$d.tsv"
+            ssh bot bash -s "$d" < "$RUNNER_TEMP/facts.sh" > "$F" || { echo "$d: could not read the server, kept"; continue; }
+            G=$(awk -F'\t' -v p="recordings/md-$d.jsonl.gz" '$1==p' "$F")
+            P=$(awk -F'\t' -v p="recordings/md-$d.jsonl" '$1==p' "$F")
+            if [ -n "$G" ] && [ -n "$P" ]; then echo "$d: a gzip and an uncompressed file are both on the server, kept"; continue; fi
+            if [ -z "$G" ] && [ -z "$P" ]; then echo "$d: no recording on the server, kept"; continue; fi
+            DG=$(awk -F'\t' -v n="md-$d.jsonl.gz" '$1==n{print $2"\t"$3}' "$RUNNER_TEMP/prune-drive-rec.tsv")
+            if [ -z "$DG" ]; then echo "$d: no compressed copy on Drive, kept"; continue; fi
+            if [ -n "$G" ]; then
+              [ "$(cut -f2 <<<"$G")"$'\t'"$(cut -f3 <<<"$G")" = "$DG" ] || { echo "$d: Drive copy differs from the server gzip (size or md5), kept"; continue; }
+              VIA="Drive md5 = server md5"
+            else
+              DS=$(rclone cat "$DRIVE_ROOT/recordings/md-$d.jsonl.gz" | gzip -dc | sha256sum | cut -d' ' -f1) || DS=""
+              [ -n "$DS" ] && [ "$DS" = "$(cut -f4 <<<"$P")" ] || { echo "$d: Drive copy does not decompress to the server file, kept"; continue; }
+              VIA="sha256 of the decompressed Drive copy = server file"
+            fi
+            BAD=0
+            while IFS=$'\t' read -r p s m x; do
+              case "$p" in audit/*) ;; *) continue ;; esac
+              DA=$(awk -F'\t' -v n="${p#audit/}" '$1==n{print $2"\t"$3}' "$RUNNER_TEMP/prune-drive-audit.tsv")
+              [ "$DA" = "$s"$'\t'"$m" ] || BAD=1
+            done < "$F"
+            [ "$BAD" = 0 ] || { echo "$d: an audit file differs from its Drive copy or is not on Drive, kept"; continue; }
+            if [ "$DRY_RUN" = true ]; then
+              echo "$d: would remove $(cut -f1 "$F" | paste -sd' ' -) (verified: $VIA)"
+              continue
+            fi
+            if ssh -n bot "cd ~/bot/data && rm -f recordings/md-$d.jsonl.gz recordings/md-$d.jsonl audit/audit-$d*"; then
+              while IFS=$'\t' read -r p s m x; do
+                printf '%s\t%s\t%s\t%s\t%s\n' "$d" "$p" "$s" "$m" "$(date -u +%FT%TZ)" >> "$LOGF"
+              done < "$F"
+              echo "$d: removed $(cut -f1 "$F" | paste -sd' ' -) from the server (verified: $VIA)"
+            else
+              echo "::warning::$d: removal on the server failed"
+            fi
+          done
+          echo "server disk after: $(df_now)"
+          if [ "$DRY_RUN" != true ] && [ "$(wc -l < "$LOGF")" -gt 1 ]; then
+            mkdir -p "$RUNNER_TEMP/prune-log" && cp "$LOGF" "$RUNNER_TEMP/prune-log/prune-$(date -u +%Y%m%dT%H%M%SZ).tsv"
+            rclone copy "$RUNNER_TEMP/prune-log" "$DRIVE_ROOT/audit" --transfers 1
+            echo "removal log on Drive: $DRIVE_ROOT/audit/prune-*.tsv ($(( $(wc -l < "$LOGF") - 1 )) row(s))"
+          fi
       - name: Snapshot the paper bot's small state files
         if: ${{ github.event_name == 'schedule' || !inputs.days }}
         run: |

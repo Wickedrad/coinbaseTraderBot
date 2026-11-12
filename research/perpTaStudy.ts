@@ -33,6 +33,7 @@ import {
 } from './perpTaSweep';
 import { modulePrims } from './perpTaModules';
 import { resolveRule } from './perpTaBlind';
+import { regRow, runRef } from './perpTaRegistry';
 
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -463,7 +464,10 @@ async function main(): Promise<void> {
     fs.writeFileSync(path.join(outDir, 'summary.md'), r.md + '\n');
     fs.writeFileSync(path.join(outDir, 'study.json'), JSON.stringify(r.out, null, 1));
     const now = new Date();
-    const row = { thread: 'perp-ta-rulebook', kind: 'study', run: process.env.GITHUB_RUN_ID ?? 'local', sha: process.env.GITHUB_SHA ?? '', of_sweep_run: r.out.run, at_utc: now.toISOString(), at_eastern: now.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false }), n_raw: r.out.nRaw, n_eff: r.out.nEff, spa_discovery_p_in_sample_screened: (r.out.spaDiscoveryInSample as { pC: number }).pC, spa_validation_p: (r.out.spaValidation as { pC: number }).pC, dsr: r.out.dsr, coins: r.out.coins, doge_excluded: true, blocks: { discovery: '< 2024-01-01', validation: '2024-01-01 .. 2025-06-30', sealed: '>= 2025-07-01 (not read)' } };
+    const raw = { thread: 'perp-ta-rulebook', kind: 'study', run: process.env.GITHUB_RUN_ID ?? 'local', sha: process.env.GITHUB_SHA ?? '', of_sweep_run: r.out.run, at_utc: now.toISOString(), at_eastern: now.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false }), n_raw: r.out.nRaw, n_eff: r.out.nEff, spa_discovery_p_in_sample_screened: (r.out.spaDiscoveryInSample as { pC: number }).pC, spa_validation_p: (r.out.spaValidation as { pC: number }).pC, dsr: r.out.dsr, coins: r.out.coins, doge_excluded: true, blocks: { discovery: '< 2024-01-01', validation: '2024-01-01 .. 2025-06-30', sealed: '>= 2025-07-01 (not read)' } };
+    // Registry v1 (research/perpTaRegistry.ts): one row for the whole-universe test of the sweep run (no daily P&L: the
+    // validation block's per-series days stay in study.json); the gate reads its record back from raw.
+    const row = regRow({ arm: `study:of-run-${r.out.run}`, role: 'candidate', codeSha: process.env.GITHUB_SHA ?? 'local', codeEpoch: 'perp-ta study', ref: runRef(process.env.GITHUB_RUN_ID ?? 'local'), at: now, verdict: `validation SPA p ${(r.out.spaValidation as { pC: number }).pC}; N_raw ${r.out.nRaw}, N_eff ${r.out.nEff}`, raw });
     fs.writeFileSync(path.join(outDir, 'registry.jsonl'), JSON.stringify(row) + '\n');
     console.log(r.md);
     return;

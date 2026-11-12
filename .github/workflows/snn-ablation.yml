@@ -5,8 +5,12 @@
 # the server's CPU (Steven, Oct 31: never burden it): no compression, lowest CPU and IO priority, 8 MB/s, and one copy at
 # a time (a server-side flock: the second runner's copy waits for the first). The verdict
 # file is a run artifact. This repository is public: the job prints the verdict lines and counts, never the settings.
+# A replayed side holds rows built from the recordings (market, time, mid, model and SNN probability, outcome), so it
+# reaches the judge through Drive (lab-copies/snn-ablation/<run id>), never as an artifact (Nov 11, 2026, 8:05 AM EST /
+# 13:05 UTC, Steven: server copies never become Actions artifacts).
 #
-# Required secrets (the same as Deploy): LIGHTSAIL_HOST, LIGHTSAIL_USERNAME, LIGHTSAIL_SSH_KEY (optional LIGHTSAIL_PORT).
+# Required secrets (the same as Deploy): LIGHTSAIL_HOST, LIGHTSAIL_USERNAME, LIGHTSAIL_SSH_KEY (optional LIGHTSAIL_PORT);
+# RCLONE_CONF for Drive.
 name: SNN ablation
 
 on:
@@ -25,7 +29,7 @@ on:
         required: false
         default: '8'
       from_run:
-        description: 'Judge only: re-judge the saved sides of this earlier run id (no replay, no server read; artifacts last 7 days)'
+        description: 'Judge only: re-judge the saved sides of this earlier run id (no replay, no server read; kept on Drive under lab-copies/snn-ablation/<run id>)'
         required: false
         default: ''
 
@@ -170,11 +174,12 @@ jobs:
           DATA="$GITHUB_WORKSPACE/data"; mkdir -p research/out
           MODEL=""; [ "$DOMAIN" = crypto ] && [ -f "$DATA/models/model.json" ] && MODEL="--model $DATA/models/model.json"
           npm run --silent research:snn-ablation -- --recordings "$DATA/recordings" --domain "$DOMAIN" --from "${FROM}T00:00:00Z" --only "$ONLY" --side ${{ matrix.side }} --save research/out/side-${{ matrix.side }}.json $MODEL
-      - uses: actions/upload-artifact@v4
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
         with:
-          name: snn-ablation-side-${{ matrix.side }}
-          path: research/out/side-${{ matrix.side }}.json
-          retention-days: 7
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Keep this side on Drive for the judge (rows from the recordings; never an artifact)
+        run: bash deploy/drive_lab.sh put "lab-copies/snn-ablation/$GITHUB_RUN_ID" research/out --include "side-${{ matrix.side }}.json"
 
   judge:
     needs: side
@@ -201,14 +206,18 @@ jobs:
       - name: Install dependencies
         if: steps.deps.outputs.cache-hit != 'true'
         run: npm ci --no-audit --no-fund --silent
-      - uses: actions/download-artifact@v4
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
         with:
-          pattern: snn-ablation-side-*
-          path: research/out
-          merge-multiple: true
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The two saved sides from Drive
+        env:
           # Judge-only: the sides saved by an earlier run.
-          run-id: ${{ inputs.from_run || github.run_id }}
-          github-token: ${{ inputs.from_run != '' && github.token || '' }}
+          SIDES_RUN: ${{ inputs.from_run || github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$SIDES_RUN" =~ ^[0-9]+$ ]] || { echo "from_run must be a run id"; exit 1; }
+          bash deploy/drive_lab.sh get "lab-copies/snn-ablation/$SIDES_RUN" research/out --include 'side-*.json' || { echo "::error::no saved sides on Drive for run $SIDES_RUN"; exit 1; }
       - name: Judge
         run: |
           set -euo pipefail

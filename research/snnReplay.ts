@@ -52,6 +52,8 @@ export interface SnnReplayResult {
 }
 
 export interface SnnReplayOpts {
+  /** Optional observed-price policy for research tapes; legacy replays retain their existing behavior. */
+  maximumInputPriceAgeMs?: number;
   params: SnnParams;
   model?: MetaModel;
   snnModel?: SnnModelFile;
@@ -105,6 +107,7 @@ export interface SnnReplayOpts {
 export const columnOf = (m: { asset: string; openTime: number; closeTime: number }) => cryptoColumnKey(m.asset, (m.closeTime - m.openTime) / 60_000 <= 20 ? 15 : 60);
 
 export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnReplayResult> {
+  if (o.maximumInputPriceAgeMs !== undefined && (!Number.isSafeInteger(o.maximumInputPriceAgeMs) || o.maximumInputPriceAgeMs < 1 || o.maximumInputPriceAgeMs > 60000)) throw new Error('invalid SNN input price freshness policy');
   const st = new ReplayState();
   const domain = o.domain ?? 'crypto';
   const tennisDomain = domain === 'tennis';
@@ -300,7 +303,7 @@ export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnRepla
     const inputs: ColumnInput[] = [];
     for (const x of tennisIn.values()) if (st.now - x.ts < 15_000) inputs.push(x.input);
     if (horizons.length) for (const [asset, idx] of [...st.index].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
-      const px = idx.fresh(st.now, 30_000)?.value;
+      const px = idx.fresh(st.now, o.maximumInputPriceAgeMs ?? 30_000)?.value;
       if (!px) continue;
       let ac = assetCache.get(asset);
       if (!ac || st.now - ac.ts >= assetEvery) {

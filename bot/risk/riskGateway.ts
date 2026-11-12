@@ -13,8 +13,9 @@ export interface RiskContext {
   now: number;
   mode: TradingMode;
   killEngaged: boolean;
-  /** The kill switch is engaged, but this order is the engine's exit under it: a tennis position not in profit after fees
-   *  (Steven's rule, Nov 5: never held to settlement unless in profit). Only a reduce-only immediate-or-cancel order passes. */
+  /** The kill switch is engaged, but this order is the engine's exit under it (Steven's rule, Nov 5: never held to settlement
+   *  unless in profit): a tennis or crypto position not in profit after fees, or a crypto winner's own take-profit, quota
+   *  floor or hunt stop (Engine.cryptoKillExits). Only a reduce-only immediate-or-cancel order passes. */
   killExit?: boolean;
   /** Paper training override: the daily loss limit neither rejects orders nor trips the kill switch. */
   dailyLossAdvisory?: boolean;

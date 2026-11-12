@@ -2,10 +2,43 @@
 # Changes nothing on the server: prints the service state, load, memory, disk, the busiest processes,
 # how fast the dashboard API answers, and the bot's recent log.
 name: Server diagnostics
+run-name: ${{ (inputs.atlas_archive_export == 'true' || inputs.atlas_drive_inventory == 'true') && 'Atlas archive/research (GitHub runner only)' || 'Server diagnostics' }}
 
 on:
   workflow_dispatch:
     inputs:
+      atlas_archive_export:
+        description: 'Copy the fixed five minute archives and seven context CSVs from Drive to this runner (never an artifact: the repository is public), with full OHLCV audit; no server access, fitting or deployment'
+        required: false
+        default: 'false'
+      atlas_archive_source:
+        description: 'With atlas_archive_export: recent or laptop; fixed public market-data allowlist only (recording-probe is off)'
+        required: false
+        default: 'recent'
+      atlas_offline_history_study:
+        description: 'With atlas_archive_export: quarantine, label and train on the GitHub runner only; no server access or promotion'
+        required: false
+        default: 'false'
+      atlas_study_policy:
+        description: 'With atlas_offline_history_study: registered study ID'
+        required: false
+        default: 'legacy-pre2025-frozen2026-v1'
+      atlas_drive_inventory:
+        description: 'Inspect archived market-history metadata and bounded CSV timestamps using RCLONE_CONF; no server access, uploads, training or deployment'
+        required: false
+        default: 'false'
+      atlas_catalog_only:
+        description: 'With atlas_drive_inventory: bounded market archive metadata search including recorded index days and compressed history; no CSV probes'
+        required: false
+        default: 'false'
+      atlas_catalog_scope:
+        description: 'With atlas_catalog_only: optional located market-history namespace (raw/laptop-history, raw/oracle-history, raw/perp-ta-history); bounded CSV timestamp probes'
+        required: false
+        default: ''
+      atlas_inventory:
+        description: 'Only inventory historical CSV timestamps/sizes for the Opportunity Atlas; no bot configuration, data writes, training, repair, or deployment'
+        required: false
+        default: 'false'
       paths:
         description: 'Optional: extra read-only dashboard API paths to print, space separated (e.g. /api/snn /api/autotrain)'
         required: false
@@ -59,13 +92,201 @@ permissions:
   contents: read
 
 jobs:
+  atlas-archive-export:
+    if: inputs.atlas_archive_export == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: ${{ inputs.atlas_offline_history_study == 'true' && 180 || 15 }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Export only the located historical files (Drive read-only)
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          ATLAS_ARCHIVE_SOURCE: ${{ inputs.atlas_archive_source }}
+          ATLAS_DO_STUDY: ${{ inputs.atlas_offline_history_study }}
+        run: |
+          set -euo pipefail
+          if [ "$ATLAS_ARCHIVE_SOURCE" = 'recording-probe' ]; then
+            echo "::error::Off since Nov 11, 2026: recording-probe published a prefix of the bot's recordings. This repository is public, so server copies never become Actions artifacts."
+            exit 1
+          fi
+          test -n "$RCLONE_CONF"
+          bash .github/scripts/install-rclone.sh
+          cfg="$RUNNER_TEMP/atlas-archive-config"
+          dest="$RUNNER_TEMP/atlas-history-archive"
+          mkdir -p "$cfg" "$dest/history"
+          chmod 700 "$cfg"
+          export RCLONE_CONFIG="$cfg/rclone.conf"
+          printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
+          chmod 600 "$RCLONE_CONFIG"
+          trap 'rm -f "$RCLONE_CONFIG"' EXIT
+          case "$ATLAS_ARCHIVE_SOURCE" in
+            laptop) atlas_history_remote='gdrive:kalshi-bot-archive/raw/laptop-history'; atlas_transfer_limit='1536Mi' ;;
+            recent|'') atlas_history_remote='gdrive:kalshi-bot-archive/raw/history'; atlas_transfer_limit='180Mi' ;;
+            *) echo '::error::Unknown archive source'; exit 1 ;;
+          esac
+          for asset in BTC ETH SOL XRP DOGE; do
+            printf 'binance-1m/%s/1m.csv\n' "$asset" >> "$cfg/minutes.txt"
+            printf 'yahoo/%s/1d.csv\n' "$asset" >> "$cfg/context.txt"
+          done
+          printf 'tradingview/BTC.D/1d.csv\ntradingview/USDT.D/1d.csv\n' > "$cfg/dominance.txt"
+          rclone copy "$atlas_history_remote" "$dest/history" \
+            --files-from "$cfg/minutes.txt" --transfers 2 --checkers 4 --max-transfer "$atlas_transfer_limit"
+          rclone copy gdrive:kalshi-bot-archive/raw/server-history "$dest/history" \
+            --files-from "$cfg/context.txt" --transfers 2 --checkers 4 --max-transfer 40Mi
+          if [ "$ATLAS_ARCHIVE_SOURCE" = 'laptop' ]; then
+            rclone copy "$atlas_history_remote" "$dest/history" \
+              --files-from "$cfg/dominance.txt" --transfers 2 --checkers 4 --max-transfer 8Mi
+            for asset in BTC ETH SOL DOGE; do printf 'binance-funding/%s/funding.csv\n' "$asset" >> "$cfg/funding.txt"; done
+            rclone copy "$atlas_history_remote" "$dest/history" \
+              --files-from "$cfg/funding.txt" --transfers 2 --checkers 4 --max-transfer 8Mi
+          else
+            rclone copy gdrive:kalshi-bot-archive/raw/server-history "$dest/history" \
+              --files-from "$cfg/dominance.txt" --transfers 2 --checkers 4 --max-transfer 8Mi
+          fi
+          python3 - "$dest" "$atlas_history_remote" <<'PYPROVENANCE'
+          import json,sys
+          from pathlib import Path
+          Path(sys.argv[1],'export-provenance.json').write_text(json.dumps({'schema':'atlas-drive-export-v1','read_only':True,'minute_and_optional_funding_namespace':sys.argv[2],'yahoo_namespace':'gdrive:kalshi-bot-archive/raw/server-history','provider_authentication':'archive declaration; content hashes in archive-validation.json'},indent=2)+'\n')
+          PYPROVENANCE
+          if ! python3 -B research/opportunity/archiveAudit.py "$dest/history" --out "$dest/archive-validation.json"; then
+            if [ "$ATLAS_DO_STUDY" != 'true' ]; then exit 1; fi
+          fi
+      - name: Set up Node for opted-in GitHub research
+        if: inputs.atlas_offline_history_study == 'true'
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Quarantine and train on the GitHub runner (explicit opt-in only)
+        if: inputs.atlas_offline_history_study == 'true'
+        env:
+          ATLAS_STUDY_POLICY: ${{ inputs.atlas_study_policy }}
+          OMP_NUM_THREADS: '2'
+          MKL_NUM_THREADS: '2'
+        run: |
+          set -euo pipefail
+          python3 -B research/opportunity/quarantineArchive.py "$RUNNER_TEMP/atlas-history-archive" \
+            --out "$RUNNER_TEMP/atlas-study-filtered" > "$RUNNER_TEMP/atlas-derivation.json"
+          npm ci
+          node --import tsx research/opportunity/runHistoryStudy.ts --archive "$RUNNER_TEMP/atlas-study-filtered" \
+            --out research/out/atlas-history-study --study-policy "$ATLAS_STUDY_POLICY" --every-minutes 1441
+      # Nov 11, 2026 (8:05 AM EST / 13:05 UTC, Steven): this repository is public, so the copied archive (and the dataset/
+      # rows built from it) stay on this runner; only the study's results are saved. The atlas-history-archive upload is gone.
+      - name: Save opted-in research results
+        if: always() && inputs.atlas_offline_history_study == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-history-study
+          path: |
+            research/out/atlas-history-study/*.json
+            research/out/atlas-history-study/trees/
+          if-no-files-found: warn
+          retention-days: 7
+
+  atlas-drive-inventory:
+    if: inputs.atlas_archive_export != 'true' && inputs.atlas_drive_inventory == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Inspect existing Drive history (read-only)
+        env:
+          RCLONE_CONF: ${{ secrets.RCLONE_CONF }}
+          ATLAS_CATALOG_ONLY: ${{ inputs.atlas_catalog_only }}
+          ATLAS_CATALOG_SCOPE: ${{ inputs.atlas_catalog_scope }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF is unavailable in this Actions context"; exit 1; fi
+          bash .github/scripts/install-rclone.sh
+          mkdir -p "$RUNNER_TEMP/atlas-drive"
+          chmod 700 "$RUNNER_TEMP/atlas-drive"
+          export RCLONE_CONFIG="$RUNNER_TEMP/atlas-drive/rclone.conf"
+          printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
+          chmod 600 "$RCLONE_CONFIG"
+          trap 'rm -f "$RCLONE_CONFIG"' EXIT
+          if [ "$ATLAS_CATALOG_ONLY" = 'true' ]; then
+            atlas_catalog_probe_args=()
+            if [ -n "$ATLAS_CATALOG_SCOPE" ]; then atlas_catalog_probe_args+=(--probe-csv); fi
+            python3 -B research/opportunity/driveInventory.py --catalog-only --scope "$ATLAS_CATALOG_SCOPE" "${atlas_catalog_probe_args[@]}" --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+              > "$RUNNER_TEMP/atlas-market-catalog.json"
+            ATLAS_REPORT="$RUNNER_TEMP/atlas-market-catalog.json"
+          else
+            python3 -B research/opportunity/driveInventory.py --probe-csv --folder-id 14aszEScwaC7yGPqGXZ17SoZ8sBTPPs-J \
+              > "$RUNNER_TEMP/atlas-drive-inventory.json"
+            ATLAS_REPORT="$RUNNER_TEMP/atlas-drive-inventory.json"
+          fi
+          python3 - "$ATLAS_REPORT" <<'PYREPORT'
+          import json,sys
+          r=json.load(open(sys.argv[1]))
+          for root in r['roots']:
+              print(root['label'], 'accessible:', root['accessible'], 'files:', len(root['files']),
+                    'minute samples:', len(root.get('minute_samples_confirmed', [])), 'errors:', len(root['errors']))
+          PYREPORT
+      - name: Save Drive inventory metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-drive-inventory
+          path: |
+            ${{ runner.temp }}/atlas-drive-inventory.json
+            ${{ runner.temp }}/atlas-market-catalog.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  atlas-inventory:
+    if: inputs.atlas_archive_export != 'true' && inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Inventory market history over SSH (read-only)
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER_NAME: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          PORT: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_KEY" && test -n "$HOST"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          mkdir -p "$RUNNER_TEMP/atlas-ssh"
+          chmod 700 "$RUNNER_TEMP/atlas-ssh"
+          key="$RUNNER_TEMP/atlas-ssh/key"
+          printf '%s\n' "$SSH_KEY" > "$key"
+          chmod 600 "$key"
+          trap 'rm -f "$key"' EXIT
+          # The script is sent on stdin; no script or data is written on Lightsail.
+          # It never reads bot.env, private keys, logs, account state or models.
+          ssh -i "$key" -p "$PORT" -o BatchMode=yes -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$RUNNER_TEMP/atlas-ssh/known_hosts" \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "$USER_NAME@$HOST" 'nice -n 19 python3 -B - --root "$HOME/bot/data/history" --incoming "$HOME/bot/data/incoming/tradingview"' \
+            < research/opportunity/archiveInventory.py > "$RUNNER_TEMP/atlas-archive-inventory.json"
+          python3 - "$RUNNER_TEMP/atlas-archive-inventory.json" <<'PYREPORT'
+          import json,sys
+          r=json.load(open(sys.argv[1]))
+          print('CSV files inventoried:',len(r['files']))
+          print('Minute CSVs confirmed in bounded samples:',len(r.get('minute_samples_confirmed', [])))
+          print('Provenance still requires validation; no prices or secrets printed.')
+          PYREPORT
+      - name: Save inventory metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlas-archive-inventory
+          path: ${{ runner.temp }}/atlas-archive-inventory.json
+          if-no-files-found: warn
+          retention-days: 7
+
   diagnose:
-    if: inputs.ta_study != 'true' && inputs.kalshi_repair != 'true'
+    if: inputs.atlas_archive_export != 'true' && inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory != 'true' && inputs.ta_study != 'true' && inputs.kalshi_repair != 'true'
     runs-on: ubuntu-latest
     environment: production
     steps:
       - uses: actions/checkout@v5
-        if: inputs.timings == 'true'
       - name: Upload the report scripts
         if: inputs.timings == 'true'
         uses: appleboy/scp-action@v0.1.7
@@ -76,6 +297,17 @@ jobs:
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
           source: deploy/step_timings.py
           target: /tmp/diag
+      # The heat lane report (round trips, plan sales, re-entries after a loss) reads the audit log and the bot's log on
+      # the server; it goes to a folder of this run's own, removed after the report.
+      - name: Upload the heat trip report
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+          source: .github/scripts/heat_trips.py
+          target: /tmp/diag-heat-${{ github.run_id }}
       - name: Report
         uses: appleboy/ssh-action@v1.0.3
         env:
@@ -83,13 +315,14 @@ jobs:
           PNL: ${{ inputs.pnl }}
           TIMINGS: ${{ inputs.timings }}
           STUDY_HOURS: ${{ inputs.study_hours }}
+          DIAG_RUN: ${{ github.run_id }}
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
           command_timeout: 55m
-          envs: EXTRA_PATHS,PNL,TIMINGS,STUDY_HOURS
+          envs: EXTRA_PATHS,PNL,TIMINGS,STUDY_HOURS,DIAG_RUN
           script: |
             # The dashboard API needs the dashboard password when one is set. It is read here, on the server, from
             # bot.env and handed to curl on stdin (never on a command line, never printed): it doesn't leave the box.
@@ -107,15 +340,64 @@ jobs:
             echo "== audit log (newest files; a day splits into parts at AUDIT_MAX_FILE_MB)"; du -sh ~/bot/data/audit 2>/dev/null; ls -la ~/bot/data/audit 2>/dev/null | tail -4
             echo "== service"; systemctl status kalshi-bot --no-pager -l | head -15
             echo "== restarts"; systemctl show kalshi-bot -p NRestarts -p ActiveEnterTimestamp -p MemoryCurrent
+            # The curve reader beside the bot (docs/HEAT_READER.md). Of bot.env only HEAT_LANE and HEAT_CALLS_FILE are
+            # printed (neither is a secret); of the status file beside the calls file only its age and short values.
+            echo "== heat reader (curve reader beside the bot; runs only with HEAT_LANE=true in bot.env)"
+            HL=$(grep -E '^(HEAT_LANE|HEAT_CALLS_FILE)=' ~/bot/bot.env 2>/dev/null | cut -c1-200); echo "${HL:-HEAT_LANE not set in bot.env (off)}"
+            if [ "$(systemctl show heat-reader -p LoadState --value 2>/dev/null)" = "loaded" ]; then
+              echo "unit: installed, $(systemctl is-enabled heat-reader 2>/dev/null), $(systemctl is-active heat-reader 2>/dev/null)"
+              systemctl show heat-reader -p NRestarts -p ActiveEnterTimestamp -p MemoryCurrent -p MemoryPeak 2>/dev/null \
+                | awk -F= '$1 ~ /^Memory/ && $2 ~ /^[0-9]+$/ {printf "%s=%.0f MB\n", $1, $2 / 1048576; next} {print}'
+              echo "-- last 5 reader log lines"; journalctl -u heat-reader -n 5 --no-pager -o cat 2>/dev/null | cut -c1-220
+            else
+              echo "unit: not installed"
+            fi
+            HC=$(sed -n 's/^HEAT_CALLS_FILE=//p' ~/bot/bot.env 2>/dev/null | tail -1 | tr -d "\r\"'")
+            HC=${HC:-$HOME/bot/data/heat_calls.json}
+            python3 - "${HC%.json}.status.json" <<'PYHEAT' 2>/dev/null || echo "status file: could not be read"
+            import json, os, sys, time
+            p = sys.argv[1]
+            if not os.path.isfile(p):
+                print("status file: none at", p[:160]); raise SystemExit(0)
+            age = time.time() - os.path.getmtime(p)
+            try:
+                s = json.load(open(p))
+            except Exception as e:
+                print("status file:", p[:160], "| age", int(age), "s | not JSON:", type(e).__name__); raise SystemExit(0)
+            s = s if isinstance(s, dict) else {}
+            short = lambda v, n=80: json.dumps(v, default=str)[:n]
+            w = s.get("writtenAt")
+            wrote = " | written %d s ago" % (time.time() - w / 1000) if isinstance(w, (int, float)) and not isinstance(w, bool) else ""
+            print("status file:", p[:160], "| age", int(age), "s" + wrote, "| keys", ",".join(sorted(map(str, s))[:20])[:200])
+            for k in ("v", "run", "packSha", "maxRank", "clockPack", "problem"):
+                if k in s: print("  %s: %s" % (k, short(s[k])))
+            coins = s.get("coins") if isinstance(s.get("coins"), dict) else {}
+            for c, v in list(coins.items())[:8]:
+                v = v if isinstance(v, dict) else {}
+                print("  coin %s: ok %s | fired %s | why %s" % (str(c)[:10], short(v.get("ok"), 8), short(v.get("fired"), 60), short(v.get("why"), 80)))
+            PYHEAT
             echo "== top processes"; ps -eo pid,ppid,etime,pcpu,pmem,rss,args --sort=-pcpu | head -12 | cut -c1-200
             echo "== dashboard API timing"
             echo "(dashboard password: $([ -n "$PW" ] && echo "set, sent from bot.env" || echo "not set"))"
             for p in auth status markets; do api "/api/$p" -o /dev/null -w "/api/$p  %{http_code}  %{time_total}s\n" || echo "/api/$p  no reply in 20s"; done
             echo "== trading"
-            api /api/status | python3 -c 'import json,sys; s=json.load(sys.stdin); print("entries", json.dumps(s.get("entryDiagnosis"))); print("halts", s.get("haltReasons")); [print("feed", a, "index", f.get("index"), "coinbase", f.get("spot"), "binance", f.get("binance")) for a, f in (s.get("feeds") or {}).items()]; print("bankroll", s.get("bankroll"), "daily pnl", s.get("dailyPnl"), "| balance", s.get("balance")); v=s.get("vault") or {}; print("vault", "(bookkeeping only in paper)" if v.get("paperIgnored") else "(excluded from the bankroll)", json.dumps({x: v.get(x) for x in ("enabled","vault","pocket","reserved","quotaUsd","quotaFilled","phase","winShare","pocketShare","ramp","dailyVaulted","realized")})); ag=(s.get("guards") or {}).get("accuracyGate") or {}; [print("accuracy gate", grp, "enforced" if ag.get("enforced") else "not enforced", "k", x.get("k"), " ".join(str(b.get("lo")) + "-" + str(b.get("hi")) + "s n=" + str(b.get("n")) + " " + str(b.get("llBot")) + " vs " + str(b.get("llMid")) + (" open" if b.get("open") else " BLOCKED") for b in x.get("buckets") or [])) for grp, x in (ag.get("groups") or {}).items()]; gt=(s.get("guards") or {}).get("tier") or {}; print("sizing tier", json.dumps({x: gt.get(x) for x in ("name","reference","orderFrac","orderRiskUsd","kellyFraction","ddScaleAt","dailyLossLimitUsd")}), "| sizing", (s.get("guards") or {}).get("sizing"), "| target EV $", (s.get("guards") or {}).get("targetEvUsd"), "| paper order $", (s.get("guards") or {}).get("paperOrderUsd")); print("cpu", json.dumps((s.get("guards") or {}).get("cpu"))); print("latency", json.dumps(s.get("latency"))); k=s.get("kalshiIndexFeed") or {}; print("kalshi index feed", json.dumps({x: k.get(x) for x in ("connected","lastMessageAgoMs","received","parsed","dropped","ids","lagMs","transitMs","vendorMs","unknownTypes")})); print("kalshi index control", k.get("control")); print("kalshi index lastRaw", (k.get("lastRaw") or "")[:400]); print("kalshi index lastDropped", (k.get("lastDropped") or "")[:400]); print("market", json.dumps(s.get("market"))); print("rule book", json.dumps(s.get("ruleBook"))); print("kalshi check", json.dumps(s.get("kalshiCheck"))); print("fee schedule", json.dumps(s.get("feeSchedule"))); g=s.get("guards") or {}; print("entries: maker buffer", g.get("makerBuffer"), "| 60 s maker markout", json.dumps(g.get("makerMarkout60")), "| min quote", g.get("minQuoteContracts"), "| vol fallback x", g.get("volFallbackMult"), "| windows", g.get("entryWindowUpdown"), g.get("entryWindowHourly"), "| take-profit", json.dumps(g.get("takeProfit")), "| orders", json.dumps(g.get("orders")))' || true
+            api /api/status | python3 -c 'import json,sys; s=json.load(sys.stdin); print("entries", json.dumps(s.get("entryDiagnosis"))); print("halts", s.get("haltReasons")); [print("feed", a, "index", f.get("index"), "coinbase", f.get("spot"), "binance", f.get("binance")) for a, f in (s.get("feeds") or {}).items()]; print("bankroll", s.get("bankroll"), "daily pnl", s.get("dailyPnl"), "| balance", s.get("balance")); pp=s.get("paperPool"); pp and print("paper pool RESULT", pp.get("result"), "= worth", pp.get("worth"), "(held at cost) - put in", pp.get("putIn"), "(funded", pp.get("funded"), "+ refilled", pp.get("refilled"), ")"); v=s.get("vault") or {}; print("vault", "(bookkeeping only in paper)" if v.get("paperIgnored") else "(excluded from the bankroll)", json.dumps({x: v.get(x) for x in ("enabled","vault","pocket","reserved","quotaUsd","quotaFilled","phase","winShare","pocketShare","ramp","dailyVaulted","realized")})); ag=(s.get("guards") or {}).get("accuracyGate") or {}; [print("accuracy gate", grp, "enforced" if ag.get("enforced") else "not enforced", "k", x.get("k"), " ".join(str(b.get("lo")) + "-" + str(b.get("hi")) + "s n=" + str(b.get("n")) + " " + str(b.get("llBot")) + " vs " + str(b.get("llMid")) + (" open" if b.get("open") else " BLOCKED" if ag.get("enforced") else " market better (gate off, not blocked)") for b in x.get("buckets") or [])) for grp, x in (ag.get("groups") or {}).items()]; gt=(s.get("guards") or {}).get("tier") or {}; print("sizing tier", json.dumps({x: gt.get(x) for x in ("name","reference","orderFrac","orderRiskUsd","kellyFraction","ddScaleAt","dailyLossLimitUsd")}), "| sizing", (s.get("guards") or {}).get("sizing"), "| target EV $", (s.get("guards") or {}).get("targetEvUsd"), "| paper order $", (s.get("guards") or {}).get("paperOrderUsd")); print("cpu", json.dumps((s.get("guards") or {}).get("cpu"))); print("latency", json.dumps(s.get("latency"))); k=s.get("kalshiIndexFeed") or {}; print("kalshi index feed", json.dumps({x: k.get(x) for x in ("connected","lastMessageAgoMs","received","parsed","dropped","ids","lagMs","transitMs","vendorMs","unknownTypes")})); print("kalshi index control", k.get("control")); print("kalshi index lastRaw", (k.get("lastRaw") or "")[:400]); print("kalshi index lastDropped", (k.get("lastDropped") or "")[:400]); print("market", json.dumps(s.get("market"))); print("rule book", json.dumps(s.get("ruleBook"))); print("kalshi check", json.dumps(s.get("kalshiCheck"))); print("fee schedule", json.dumps(s.get("feeSchedule"))); g=s.get("guards") or {}; print("entries: maker buffer", g.get("makerBuffer"), "| 60 s maker markout", json.dumps(g.get("makerMarkout60")), "| min quote", g.get("minQuoteContracts"), "| vol fallback x", g.get("volFallbackMult"), "| windows", g.get("entryWindowUpdown"), g.get("entryWindowHourly"), "| take-profit", json.dumps(g.get("takeProfit")), "| orders", json.dumps(g.get("orders")))' || true
             api "/api/orders?limit=300" | python3 -c 'import json,sys,collections; o=json.load(sys.stdin); o=o if isinstance(o, list) else []; print("recent orders", len(o), dict(collections.Counter((x.get("purpose"), x.get("state")) for x in o))); [print("  ", x.get("ticker"), x.get("side"), x.get("count"), x.get("price"), x.get("state"), (x.get("why") or "")[:40]) for x in o[:10]]' || true
             echo "== cpu (last minute; cores: 1 = one full core; the plan sustains about 0.4) and 10-minute history"
-            api /api/cpu | python3 -c 'import json,sys,time; d=json.load(sys.stdin); n=d.get("now") or {}; print("now", json.dumps({k: n.get(k) for k in ("processCores","threads","mainBusy","stealPct","iowaitPct","writeMBps","rssMb","sections")})); print("state file writes since start", json.dumps(n.get("stateWrites"))); [print("  ", time.strftime("%H:%M", time.gmtime(h["ts"]/1000)), "cores", h["cores"], "main", h["mainBusy"], "steal%", h["stealPct"], "iowait%", h["iowaitPct"], "writeMB/s", h["writeMBps"], "rssMB", h["rssMb"]) for h in (d.get("history") or [])[-18:]]' || true
+            api /api/cpu | python3 -c 'import json,sys,time; d=json.load(sys.stdin); n=d.get("now") or {}; print("now", json.dumps({k: n.get(k) for k in ("processCores","threads","mainBusy","stealPct","iowaitPct","writeMBps","rssMb","heapUsedMb","externalMb","sections")})); print("state file writes since start", json.dumps(n.get("stateWrites"))); [print("  ", time.strftime("%H:%M", time.gmtime(h["ts"]/1000)), "cores", h["cores"], "main", h["mainBusy"], "steal%", h["stealPct"], "iowait%", h["iowaitPct"], "writeMB/s", h["writeMBps"], "rssMB", h["rssMb"], "heapMB", h.get("heapMb"), "extMB", h.get("extMb")) for h in (d.get("history") or [])[-18:]]' || true
+            echo "== memory reading (heap = JS objects, ext = buffers outside the heap; largest collections the bot holds: at the first reading 5 min after start, an hour ago, now)"
+            api /api/memory | python3 -c 'import json,sys,time; m=json.load(sys.stdin) or {}; T=lambda t: time.strftime("%H:%M", time.gmtime(t/1000)) if t else "-"; n=m.get("now") or {}; print("now", json.dumps({k: n.get(k) for k in ("rssMb","heapUsedMb","heapTotalMb","externalMb","arrayBuffersMb","spaces")})); f=m.get("first") or {}; print("first reading", T(f.get("at")), json.dumps({k: (f.get("heap") or {}).get(k) for k in ("rssMb","heapUsedMb","externalMb","arrayBuffersMb")})); print("walk", json.dumps(m.get("walk"))); [print("  %-60s %-6s first %-8s hour ago %-8s now %s" % (r["path"][:60], r["kind"], r["atFirst"], r["hourAgo"], r["n"])) for r in (m.get("largest") or [])[:20]]; print("grown since the first reading"); [print("  %-60s %-6s first %-8s now %s" % (r["path"][:60], r["kind"], r["atFirst"], r["n"])) for r in m.get("grown") or []]; print("long strings and buffers (characters / bytes)"); [print("  %-60s %-6s first %-8s hour ago %-8s now %s" % (r["path"][:60], r["kind"], r["atFirst"], r["hourAgo"], r["n"])) for r in m.get("blobs") or []]; print("hourly"); [print("  ", T(h["at"]), "rss", h["rssMb"], "heap", h["heapUsedMb"], "ext", h["externalMb"], "old", h["oldMb"], "large objects", h["largeObjectMb"]) for h in m.get("history") or []]' || echo "(no memory reading: it ships with the next release)"
+            echo "== heat lane, last 24 h: round trips, plan sales and call-offs (loser cut, ratchet, end rule), re-entries after a loss, calls not entered"
+            HT="/tmp/diag-heat-$DIAG_RUN/.github/scripts/heat_trips.py"
+            if [ -n "$DIAG_RUN" ] && [ -f "$HT" ]; then
+              # Each round trip's own result is in the bot's log line ("[heat] round trip closed"); the audit's closed record
+              # carries the lane book's running total.
+              journalctl -u kalshi-bot --since "24 hours ago" --no-pager -o cat 2>/dev/null | grep -F '[heat] round trip closed' > "/tmp/diag-heat-$DIAG_RUN/trips.log" || true
+              nice -n 19 python3 -I "$HT" ~/bot/data 24 --journal "/tmp/diag-heat-$DIAG_RUN/trips.log" || true
+            else
+              echo "(the heat trip report was not uploaded)"
+            fi
+            [ -n "$DIAG_RUN" ] && rm -rf "/tmp/diag-heat-$DIAG_RUN"
             echo "== perps, tennis and SNNs (neural map blocks: lit = pixels with a value; an all-dark block has none)"
             api /api/neural-map | python3 -c 'import json,sys; m=json.load(sys.stdin); [print("  %-6s %-24s lit %3d/%-3d score %-5s activity %.2f  %s" % (L["id"], b["label"][:24], sum(1 for c in b["cells"] if abs(c) > 0.01), len(b["cells"]), b["score"], b["activity"], str(b["note"])[:120])) for L in m.get("layers", []) if L["id"] in ("feeds", "snn", "models", "bots") for b in L["blocks"]]' || true
             api /api/status | python3 -c 'import json,sys; s=json.load(sys.stdin); p=s.get("perps") or {}; t=p.get("trading") or {}; print("perps feed", json.dumps(p.get("feed")), "| markets", [(m.get("asset"), m.get("ticker"), m.get("premiumBps") is not None, m.get("fundingRate") is not None) for m in p.get("markets") or []]); print("perps trading", json.dumps({k: t.get(k) for k in ("mode", "strategy", "signal", "modelError", "lastError", "dayHalt", "equity")}), "| keys", sorted(t.keys())[:24]); print("perps trading model", json.dumps(t.get("model"))[:400]); print("perps hedge", json.dumps(p.get("hedge"))[:300]); tn=s.get("tennis") or {}; ms=tn.get("matches") or []; print("tennis enabled", tn.get("enabled"), "| trading", tn.get("trading"), "| budget", json.dumps(tn.get("budget"))[:200], "| matches", len(ms)); [print("  ", x.get("event"), x.get("phase"), x.get("pA"), "score" if x.get("score") else "no score", str(x.get("scoreRaw"))[:80], (x.get("notes") or [])[:2]) for x in ms[:8]]' || true
@@ -172,7 +454,7 @@ jobs:
                 print("  model file", k, "|", (str(round((time.time() * 1000 - v["mtime"]) / 3.6e6, 1)) + " h old") if v.get("mtime") else "missing", "|", v.get("id") or "")
             print("  hot swaps", json.dumps(a.get("swaps"), default=str)[:400])' || true
             echo "== exit curve, vault and mode settings in bot.env (none of these keys holds a secret)"
-            grep -E '^(TRADING_MODE|SINUOUS_[A-Z_]+|VAULT_[A-Z_]+|LIVE_ALLOW_UNVALIDATED_MODEL)=' ~/bot/bot.env 2>/dev/null || echo "(none set: the defaults)"
+            grep -E '^(TRADING_MODE|SINUOUS_[A-Z_]+|VAULT_[A-Z_]+|LIVE_ALLOW_UNVALIDATED_MODEL|SESSION_EDGE_NO_ENTRY|MODEL_HEALTH_HALT|AUTO_TRAIN|ACCURACY_GATE)=' ~/bot/bot.env 2>/dev/null || echo "(none set: the defaults)"
             echo "== live books at rest (read from DATA_DIR/live while paper runs)"
             python3 - <<'PYEOF' || true
             import json, os
@@ -208,7 +490,7 @@ jobs:
   # endpoint were saved with quotes 100x too small until PR #217. Writes only data/history/kalshi day files, through a
   # temp file and a rename; the bot's own state is not touched. Prints counts, posted as a comment on the commit.
   adversary:
-    if: inputs.adversary == 'true'
+    if: inputs.atlas_archive_export != 'true' && inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory != 'true' && inputs.adversary == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 60
@@ -250,7 +532,7 @@ jobs:
         run: python3 deploy/adversary_report.py data 24 data/lags.txt
 
   kalshi-repair:
-    if: inputs.kalshi_repair == 'true'
+    if: inputs.atlas_archive_export != 'true' && inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory != 'true' && inputs.kalshi_repair == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 30
@@ -301,7 +583,7 @@ jobs:
   # touched. The history and the replay days are cached between runs (keyed by coins and days), so a wider range only
   # builds what is new. Prints aggregates only (counts, log losses, the chosen set): this repository is public.
   ta-study:
-    if: inputs.ta_study == 'true'
+    if: inputs.atlas_archive_export != 'true' && inputs.atlas_drive_inventory != 'true' && inputs.atlas_inventory != 'true' && inputs.ta_study == 'true'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 340

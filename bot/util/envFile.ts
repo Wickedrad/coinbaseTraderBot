@@ -2,6 +2,13 @@
 // keys appended, comments and order kept, permissions kept (600), written atomically.
 
 import fs from 'fs';
+import { parse as parseEnv } from 'dotenv';
+
+/** The env file's keys as the next start will load them (dotenv rules), or undefined when the file is missing. */
+export function readEnvFile(file: string): Record<string, string> | undefined {
+  if (!fs.existsSync(file)) return undefined;
+  return parseEnv(fs.readFileSync(file));
+}
 
 export function updateEnvFile(file: string, changes: Record<string, string>): void {
   const lines = fs.readFileSync(file, 'utf8').split('\n');

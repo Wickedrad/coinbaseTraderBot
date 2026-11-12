@@ -345,8 +345,11 @@ These can't be automated, or deliberately aren't.
 
 The pipeline runs only at the session edges: the first and last 40 minutes (`SESSION_EDGE_MIN`) of the Asian
 (Tokyo open to Hong Kong close), London and New York sessions, on local exchange hours (DST-correct),
-Monday to Friday. That is six windows a day, four hours in all. The bot opens no new positions in them
-(`SESSION_EDGE_NO_ENTRY=true`; open positions are still managed and exited), and the pipeline gets the machine:
+Monday to Friday. That is six windows a day, four hours in all. In this mode the bot opens no new positions in
+them (`SESSION_EDGE_NO_ENTRY`, which defaults to on with `AUTO_TRAIN=windows`; open positions are still managed and
+exited). With any other `AUTO_TRAIN` mode it defaults to off, paper and live alike: with `AUTO_TRAIN=remote`
+training runs on GitHub Actions, and session timing should become a heat-curve input, not a halt. The pipeline
+gets the machine:
 
 - once a day is due (20 hours after the last run), it starts at the next window;
 - when a window ends it is frozen in place (SIGSTOP to its whole process group) and resumed (SIGCONT) at the

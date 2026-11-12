@@ -1,4 +1,5 @@
 // 429 handling: one shared back-off for every caller, no overlapping catalog refreshes, server-side close filter.
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { TokenBucket } from '../bot/kalshi/rateLimiter';
