@@ -410,6 +410,91 @@ test('end rule: a try that failed is called off once the position is back in pro
   // A ratchet sale is not called off by a bounce (its retries go on: see the retries test above).
 });
 
+test('loser cut (E05; Steven, Nov 11 6:56 PM EST / 23:56 UTC: "10c a contract"): the bid 10c or more under the entry price is sold the way the ratchet sells', () => {
+  const CUT: PlanRatchetSettings = { ...RATCHET, loserCut: 0.1 };
+  // 10 YES at 0.40: the cut line is the bid at 0.30. At 0.31 (9c under): held, and the note says where it sells.
+  const w = new Walk({ settings: CUT });
+  assert.equal(w.at(0.31).sale, undefined);
+  assert.match(w.last.notes.join(' | '), /plan loser cut: sells at bid at or under 0\.30/);
+  // At 0.30 (10c under, -$1.15 after the exit fee): sold at the bid less 2 ticks, as an IOC sell of the held side.
+  const r = w.at(0.3, { now: T0 + 1000 });
+  assert.deepEqual([r.sale?.kind, r.sale?.side, r.sale?.price, r.sale?.sideLimit, r.sale?.count], ['cut', 'ask', 0.28, 0.28, 10]);
+  assert.match(r.sale!.why, /^plan loser cut: bid 0\.30 is 10c under the entry 0\.40 \(cut at 10c\)/);
+  const e = w.events('plan_loser_cut_sell');
+  assert.deepEqual([e.length, e[0].bid, e[0].entry, e[0].loserCut, e[0].limit, e[0].since, e[0].at], [1, 0.3, 0.4, 0.1, 0.28, T0 + 1000, T0 + 1000]);
+  assert.equal(w.state.selling?.kind, 'cut');
+  // A gap through the cut line still sells at the bid it finds: 0.40 straight to 0.22.
+  const g = new Walk({ settings: CUT });
+  g.at(0.4);
+  assert.deepEqual([g.at(0.22).sale?.kind, g.last.sale?.sideLimit], ['cut', 0.2]);
+  // Its retries follow the ratchet's: still held after the try went out, it goes again (failed try 1) at the new bid less 2.
+  w.sent(T0 + 1000);
+  const again = w.at(0.29, { now: T0 + 2000 });
+  assert.deepEqual([again.sale?.kind, again.sale?.sideLimit, w.state.failedTries], ['cut', 0.27, 1]);
+  assert.deepEqual(w.events('plan_ratchet_retry').map((x) => [x.failedTries, x.limit]), [[1, 0.27]]);
+  // Three failed tries: the alert names the loser cut.
+  for (const k of [3, 4]) { w.sent(T0 + k * 1000); w.at(0.29, { now: T0 + k * 1000 + 500 }); }
+  assert.equal(w.state.failedTries, 3);
+  assert.match(w.last.alert ?? '', /^Plan loser cut sale of 10 YES in KXBTC15M-T: 3 failed tries; now selling at the bid less 3 ticks$/);
+  // Off (0 or unset): never cut, whatever the bid (the end rule still sells it in the last tenth).
+  for (const off of [RATCHET, { ...RATCHET, loserCut: 0 }]) {
+    const o = new Walk({ settings: off });
+    assert.equal(o.at(0.05).sale, undefined);
+    assert.ok(!o.last.notes.some((n) => n.startsWith('plan loser cut')));
+    assert.equal(o.at(0.05, { tauSec: 90 }).sale?.kind, 'end');
+  }
+});
+
+test('loser cut: the NO side measures its own bid against its own entry; dollars of trade net cut on their own; the minute clock waits for the close', () => {
+  // 10 NO bought at 0.40 (YES sold at 0.60). The NO bid 0.31 (YES ask 0.69): held; 0.30 (YES ask 0.70): sold, buying YES at 0.72.
+  const n = new Walk({ position: -10, settings: { ...RATCHET, loserCut: 0.1 } });
+  assert.equal(n.at(0.31).sale, undefined);
+  const r = n.at(0.3);
+  assert.deepEqual([r.sale?.kind, r.sale?.side, r.sale?.price, r.sale?.sideLimit], ['cut', 'bid', 0.72, 0.28]);
+  assert.match(r.sale!.why, /limit NO 0\.28 \(bid less 2 ticks\)/);
+  // PLAN_LOSER_CUT_USD alone: 10 YES at 0.40 is -$0.96 at 0.32 and -$1.05 at 0.31 after the exit fee; a $1 cut sells at 0.31.
+  const d = new Walk({ settings: { ...RATCHET, loserCutUsd: 1 } });
+  assert.equal(d.at(0.32).sale, undefined);
+  assert.match(d.last.notes.join(' | '), /plan loser cut: sells at net at or under -\$1\.00/);
+  const u = d.at(0.31);
+  assert.equal(u.sale?.kind, 'cut');
+  assert.match(u.sale!.why, /^plan loser cut: net -\$1\.05 at bid 0\.31 at or under -\$1\.00/);
+  assert.equal(d.events('plan_loser_cut_sell')[0].loserCutUsd, 1);
+  // Both set: whichever comes first (the price line at 0.35 before the $3 line).
+  const both = new Walk({ settings: { ...RATCHET, loserCut: 0.05, loserCutUsd: 3 } });
+  assert.match(both.at(0.35).sale?.why ?? '', /5c under the entry 0\.40 \(cut at 5c\)/);
+  // The minute clock: a bid under the line mid-minute waits for the first evaluation after the minute close.
+  const minute = (k: number, s: number) => Date.parse('2026-11-11T15:00:00Z') + k * 60_000 + s * 1000;
+  const m = new Walk({ settings: { ...RATCHET, clock: 'minute', loserCut: 0.1 } });
+  assert.equal(m.at(0.25, { now: minute(0, 30) }).sale, undefined);
+  assert.equal(m.at(0.25, { now: minute(0, 50) }).sale, undefined);
+  assert.equal(m.at(0.25, { now: minute(1, 0.5) }).sale?.kind, 'cut');
+  // Back over the line by the minute close: no cut.
+  const back = new Walk({ settings: { ...RATCHET, clock: 'minute', loserCut: 0.1 } });
+  back.at(0.25, { now: minute(0, 30) });
+  assert.equal(back.at(0.35, { now: minute(1, 0.5) }).sale, undefined);
+});
+
+test('loser cut: a try that failed is called off once the position is back in profit after fees, as the end rule\'s is; under water it goes on', () => {
+  const w = new Walk({ settings: { ...RATCHET, loserCut: 0.1 } });
+  assert.equal(w.at(0.3, { now: T0 }).sale?.kind, 'cut');
+  w.sent(T0);
+  // Back to 0.35 (still under water): the try failed and goes again, at the new bid less 2 ticks.
+  assert.deepEqual([w.at(0.35, { now: T0 + 1000 }).sale?.sideLimit, w.state.failedTries], [0.33, 1]);
+  w.sent(T0 + 1000);
+  // Back to 0.42 (+$0.02 after both fees, the fee floor price): called off; the position is judged afresh and rides.
+  const r = w.at(0.42, { now: T0 + 2000 });
+  assert.equal(r.sale, undefined);
+  assert.equal(w.state.selling, undefined);
+  assert.equal(w.state.failedTries, 2, 'the tries that failed still count');
+  assert.deepEqual(w.events('plan_loser_cut_cancel').map((e) => [e.bid, e.net, e.failedTries, e.since, e.at]), [[0.42, 0.02, 2, T0, T0 + 2000]]);
+  assert.match(r.notes[0], /^plan loser cut: back in profit after fees \(net \+\$0\.02 at bid 0\.42\): its sale is called off$/);
+  assert.deepEqual(w.events('plan_end_rule_cancel'), []);
+  // Under the line again: a new cut.
+  assert.equal(w.at(0.29, { now: T0 + 3000 }).sale?.kind, 'cut');
+  assert.equal(w.events('plan_loser_cut_sell').length, 2);
+});
+
 test('NO side: the held side\'s bid is 1 - the YES ask; the sale buys YES at 1 - (NO bid less 2 ticks)', () => {
   // 10 NO bought at 0.40 (YES sold at 0.60). The NO bid 0.57 (YES ask 0.43): +$1.52, armed.
   const w = new Walk({ position: -10 });
@@ -461,8 +546,8 @@ test('plan positions: tag with the default settings, read, clear when flat, reve
   const file = path.join(dir, 'plan_positions.json');
   const reg = new PlanPositions(DEFAULTS, file);
   const p = reg.tag({ ticker: 'A', side: 'yes', ruleId: 'heat-btc-15m' }, T0);
-  assert.deepEqual([p.side, p.ruleId, p.openedAt, p.settings], ['yes', 'heat-btc-15m', T0, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick' }]);
-  assert.deepEqual(reg.tag({ ticker: 'B', side: 'no', ruleId: 'r2', settings: { armUsd: 2, clock: 'minute' } }, T0).settings, { armUsd: 2, stopMinUsd: 1, trailUsd: 0.5, clock: 'minute' });
+  assert.deepEqual([p.side, p.ruleId, p.openedAt, p.settings], ['yes', 'heat-btc-15m', T0, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick', loserCut: 0, loserCutUsd: 0 }]);
+  assert.deepEqual(reg.tag({ ticker: 'B', side: 'no', ruleId: 'r2', settings: { armUsd: 2, clock: 'minute' } }, T0).settings, { armUsd: 2, stopMinUsd: 1, trailUsd: 0.5, clock: 'minute', loserCut: 0, loserCutUsd: 0 });
   // A tag made before its entry fills waits for it (flat but never seen open), up to 5 minutes.
   assert.equal(reg.sync('A', 0, T0 + 1000), undefined);
   assert.ok(reg.get('A'), 'not cleared before its entry filled');
@@ -511,7 +596,7 @@ test('plan positions: a file saved before the dollar ratchet keeps its tags with
   const file = path.join(tmpDir(), 'plan_positions.json');
   fs.writeFileSync(file, JSON.stringify({ v: 1, positions: [{ ticker: 'A', side: 'yes', ruleId: 'r1', openedAt: T0, seenOpen: true, settings: { armC: 6, trailC: 8, clock: 'minute' }, state: { armed: true, armedAt: T0, peakBid: 0.55, floor: 0.47, failedTries: 0, gaps: [] } }] }));
   const p = new PlanPositions(DEFAULTS, file).get('A');
-  assert.deepEqual([p?.ruleId, p?.seenOpen, p?.settings, p?.state], ['r1', true, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'minute' }, freshPlanState()]);
+  assert.deepEqual([p?.ruleId, p?.seenOpen, p?.settings, p?.state], ['r1', true, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'minute', loserCut: 0, loserCutUsd: 0 }, freshPlanState()]);
 });
 
 test('plan positions: a second tag on a plan position open on the same side keeps it, its armed stop and settings; the other side or a tag never filled is replaced', () => {
@@ -524,7 +609,7 @@ test('plan positions: a second tag on a plan position open on the same side keep
   // The entry lane adds to it under another rule: the position keeps its tag, rule and settings (planStep starts the ratchet
   // afresh once it sees the larger position: the test above).
   const again = reg.tag({ ticker: 'A', side: 'yes', ruleId: 'r2' }, T0 + 3000);
-  assert.deepEqual([again.ruleId, again.openedAt, again.settings, again.state], ['r1', T0, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.3, clock: 'tick' }, armed]);
+  assert.deepEqual([again.ruleId, again.openedAt, again.settings, again.state], ['r1', T0, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.3, clock: 'tick', loserCut: 0, loserCutUsd: 0 }, armed]);
   assert.deepEqual(new PlanPositions(DEFAULTS, file).get('A')?.state, armed);
   // A tag whose entry was never seen open is replaced.
   reg.tag({ ticker: 'B', side: 'yes', ruleId: 'r1' }, T0);
@@ -532,6 +617,18 @@ test('plan positions: a second tag on a plan position open on the same side keep
   // A tag on the other side replaces it.
   const other = reg.tag({ ticker: 'A', side: 'no', ruleId: 'r3' }, T0 + 4000);
   assert.deepEqual([other.side, other.ruleId, reg.get('A')?.state.armed], ['no', 'r3', false]);
+});
+
+test('plan positions: the plan\'s loser cut is every tag\'s default, a rule may pass its own, and a file saved before the cut takes today\'s', () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'plan_positions.json');
+  const reg = new PlanPositions({ ...DEFAULTS, loserCut: 0.1, loserCutUsd: 0 }, file);
+  assert.deepEqual(reg.tag({ ticker: 'A', side: 'yes', ruleId: 'heat-btc-15m' }, T0).settings, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick', loserCut: 0.1, loserCutUsd: 0 });
+  assert.deepEqual(reg.tag({ ticker: 'B', side: 'no', ruleId: 'r2', settings: { loserCut: 0.05, loserCutUsd: 2 } }, T0).settings, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick', loserCut: 0.05, loserCutUsd: 2 });
+  // A v2 file written before the cut (its settings have no loserCut): read with the plan's.
+  const old = path.join(dir, 'old.json');
+  fs.writeFileSync(old, JSON.stringify({ v: 2, positions: [{ ticker: 'C', side: 'yes', ruleId: 'r1', openedAt: T0, seenOpen: true, settings: { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick' }, state: freshPlanState() }] }));
+  assert.deepEqual(new PlanPositions({ ...DEFAULTS, loserCut: 0.1 }, old).get('C')?.settings, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick', loserCut: 0.1, loserCutUsd: 0 });
 });
 
 test('PLAN_RULES: off by default in paper and live, read the same in both; cfg.plan is the strategy\'s; the plan ratchet takes the profit ratchet\'s dollars, and the retired cents settings stop the start', () => {
@@ -544,12 +641,16 @@ test('PLAN_RULES: off by default in paper and live, read the same in both; cfg.p
   for (const [mode, env] of Object.entries(envs)) {
     const off = loadConfig(env);
     assert.equal(off.mode, mode);
-    assert.deepEqual(off.plan, { enabled: false }, mode);
+    assert.deepEqual(off.plan, { enabled: false, loserCut: 0.1, loserCutUsd: 0 }, mode);
     assert.equal(off.plan, off.strategy.plan);
     assert.deepEqual(off.strategy.profitRatchet, { enabled: true, armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5 }, mode);
     const on = loadConfig({ ...env, PLAN_RULES: 'true', RATCHET_ARM_USD: '2', RATCHET_TRAIL_USD: '0.75' });
-    assert.deepEqual(on.strategy.plan, { enabled: true }, mode);
+    assert.deepEqual(on.strategy.plan, { enabled: true, loserCut: 0.1, loserCutUsd: 0 }, mode);
     assert.deepEqual(on.strategy.profitRatchet, { enabled: true, armUsd: 2, stopMinUsd: 1, trailUsd: 0.75 }, mode);
+    // The loser cut: PLAN_LOSER_CUT_C in cents a contract (10 by default), PLAN_LOSER_CUT_USD in dollars (0 = off).
+    const cut = loadConfig({ ...env, PLAN_LOSER_CUT_C: '15', PLAN_LOSER_CUT_USD: '2.5' });
+    assert.deepEqual([cut.plan.loserCut, cut.plan.loserCutUsd], [0.15, 2.5], mode);
+    assert.equal(loadConfig({ ...env, PLAN_LOSER_CUT_C: '0' }).plan.loserCut, 0, mode);
     // A cent a contract is a different amount on every position: the old settings are not read as something else.
     assert.throws(() => loadConfig({ ...env, PLAN_RATCHET_ARM_C: '5' }), /PLAN_RATCHET_ARM_C is retired: the ratchet is in dollars for the whole position/);
     assert.throws(() => loadConfig({ ...env, PLAN_RATCHET_TRAIL_C: '10' }), /PLAN_RATCHET_TRAIL_C is retired/);

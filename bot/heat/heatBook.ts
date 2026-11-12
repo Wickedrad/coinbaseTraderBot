@@ -14,12 +14,32 @@ export const HEAT_UNFILLED_DROP_MS = 30_000;
 /** A call the lane acted on is forgotten after this long: its bar is long over, the key cannot come back. */
 export const HEAT_ACTED_KEEP_MS = 2 * 3_600_000;
 
-/** The saved file: the contract's book state plus one memory of the lane's own. */
+/** What the lane lost in one contract window (a 15-minute contract, or an hourly window with all of its strikes): the
+ *  re-entry rule after a loss counts and measures it. */
+export interface HeatWindowLoss {
+  /** Losing round trips in the window. */
+  n: number;
+  /** Their losses together, dollars (positive). */
+  usd: number;
+  /** The largest stake the lane lost there: "one order" for HEAT_REENTRY_LOSS_STOP. */
+  stake: number;
+  /** When the last of them was seen closed: a re-entry needs a call whose bar closed after it. */
+  at: number;
+  closeTs: number;
+}
+
+/** The window a contract belongs to: the coin, the contract kind and its close (an hourly window's strikes share it). */
+export const heatWindowKey = (asset: string, kind: string, closeTs: number): string => `${asset}:${kind}:${closeTs}`;
+
+/** The saved file: the contract's book state plus the lane's own memories. */
 export interface HeatLaneState extends HeatBookState {
   /** Contracts the lane traded and left, win or loss (ticker to close time). The re-entry rule needs it (a contract
    *  already traded is entered again only while more than half of its window is left) and lossTickers only keeps
    *  the losses. Pruned once the contract is over. */
   traded?: Record<string, number>;
+  /** Losses per contract window (heatWindowKey), pruned once the window is over. A file written before the count has
+   *  none: a contract it lists in lossTickers keeps the old rule (not entered again). */
+  losses?: Record<string, HeatWindowLoss>;
 }
 
 /** What the lane needs from a market's row in the position book (bot/oms/positions.ts MarketPosition has this shape). */
@@ -57,7 +77,7 @@ export interface HeatSyncResult {
 }
 
 export function emptyHeatState(): HeatLaneState {
-  return { v: 1, trips: 0, wins: 0, pnl: 0, open: [], lastExit: {}, lossTickers: {}, context: {}, four: {}, day: {}, acted: {}, traded: {} };
+  return { v: 1, trips: 0, wins: 0, pnl: 0, open: [], lastExit: {}, lossTickers: {}, context: {}, four: {}, day: {}, acted: {}, traded: {}, losses: {} };
 }
 
 /** Load the saved state, or start empty when there is no file. A file that parses but is not a heat state stops the
@@ -81,6 +101,7 @@ export function loadHeatState(file: string | undefined): HeatLaneState {
     day: rec(saved.day) ? saved.day : {},
     acted: rec(saved.acted) ? saved.acted : e.acted,
     traded: rec(saved.traded) ? saved.traded : {},
+    losses: rec(saved.losses) ? saved.losses : {},
   };
 }
 
@@ -94,6 +115,7 @@ export function pruneHeatState(st: HeatLaneState, now: number): boolean {
   drop(st.acted, (barClose) => now - barClose > HEAT_ACTED_KEEP_MS);
   drop(st.lossTickers, (closeTs) => closeTs <= now);
   drop(st.traded, (closeTs) => closeTs <= now);
+  drop(st.losses, (l) => l.closeTs <= now);
   drop(st.context, (c) => c.until <= now);
   drop(st.four, (c) => c.until <= now);
   drop(st.day, (c) => c.until <= now);
@@ -136,7 +158,15 @@ export function syncHeatBook(st: HeatLaneState, now: number, lookup: HeatPositio
     st.pnl = +(st.pnl + pnl).toFixed(6);
     if (pnl > 0) st.wins++;
     st.lastExit[o.asset] = now;
-    if (pnl < 0) st.lossTickers[o.ticker] = o.closeTs;
+    if (pnl < 0) {
+      st.lossTickers[o.ticker] = o.closeTs;
+      const key = heatWindowKey(o.asset, o.kind, o.closeTs);
+      const l = ((st.losses ??= {})[key] ??= { n: 0, usd: 0, stake: 0, at: now, closeTs: o.closeTs });
+      l.n++;
+      l.usd = +(l.usd - pnl).toFixed(6);
+      l.stake = Math.max(l.stake, o.stakeUsd);
+      l.at = now;
+    }
     (st.traded ??= {})[o.ticker] = o.closeTs;
     res.closed.push({ ticker: o.ticker, asset: o.asset, kind: o.kind, side: o.side, ruleId: o.ruleId, h: o.h, pnl, settled: !!pos.settled });
   }

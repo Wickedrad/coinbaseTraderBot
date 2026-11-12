@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
-  HeatLane, decideCall, decideHeat, emptyHeatState, heatCallKey, heatStake, heatWeight,
+  HeatLane, decideCall, decideHeat, emptyHeatState, heatCallKey, heatStake, heatWeight, heatWindowKey,
   type HeatDecideInput, type HeatLaneState, type HeatPositionView, type HeatWindows,
 } from '../bot/heat/heatLane';
 import type { HeatCallRow, HeatCoinCalls, HeatConfig, HeatContext, HeatMarketView, HeatOpen, HeatSnapshot } from '../bot/heat/types';
@@ -20,7 +20,7 @@ const NOW = T0 + 5 * S;
 /** The lane's settings at their defaults (HEAT_* in the spec). */
 const DEFAULTS = {
   enabled: true, callsFile: '', assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45,
-  sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reenterAfterLoss: false,
+  sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 2, reentriesHourly: 3, reentryLossStop: 0.5,
   flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip',
 };
 const settings = (o: Partial<HeatConfig> = {}): HeatConfig => ({ ...DEFAULTS, ...o }) as HeatConfig;
@@ -373,6 +373,15 @@ test('qualify: a position of any lane blocks, on either side', () => {
   assert.match(reasons(btc15({ markets: [m15('BTC', { position: -3 })] }))[0], /already holds a position/);
 });
 
+test('qualify: with the plan\'s loser cut on, a spread at or above it is not entered (the cut would sell at the first look)', () => {
+  const wide = (bid: number, ask: number, cutSpread?: number) => btc15({ markets: [m15('BTC', { yesBid: bid, yesAsk: ask })], ...(cutSpread !== undefined ? { cutSpread } : {}) });
+  assert.match(reasons(wide(0.45, 0.55, 0.1))[0], /the spread \(10c\) is at or above the loser cut \(10c, PLAN_LOSER_CUT_C\): the cut would sell the position at once/);
+  assert.match(reasons(btc15({ markets: [m15('BTC', { yesBid: 0.45, yesAsk: 0.55 })], cutSpread: 0.1 }, { dir: -1 }))[0], /spread \(10c\)/, 'either side');
+  assert.equal(wide(0.46, 0.55, 0.1).plans.length, 1, '9c goes');
+  assert.equal(wide(0.4, 0.55).plans.length, 1, 'no cut, no check');
+  assert.equal(wide(0.4, 0.55, 0).plans.length, 1, 'a cut of 0 is off');
+});
+
 test('qualify: resting orders of ours do not block (the engine cancels them first)', () => {
   assert.equal(btc15({ markets: [m15('BTC', { working: 2 })] }).plans.length, 1);
 });
@@ -382,10 +391,49 @@ test('qualify: the engine\'s block reason is passed on as the skip reason', () =
   assert.deepEqual(r.skips, [{ asset: 'BTC', h: 15, ticker: 'KXBTC15M-1015', key: '1m:RSI14=very low', reason: 'fee schedule unverified' }]);
 });
 
-test('loss ticker: a contract the lane left at a loss is not entered again', () => {
-  const lost = { lossTickers: { 'KXBTC15M-1015': NOW + 600 * S } };
-  assert.match(reasons(btc15({ state: seasoned(lost) }))[0], /left this contract at a loss/);
-  assert.equal(btc15({ state: seasoned(lost), cfg: settings({ reenterAfterLoss: true }) }).plans.length, 1, 'unless HEAT_REENTER_AFTER_LOSS');
+/** The lane's losses in BTC's 15-minute window (the m15 contract): `n` losing trips, `usd` lost, the last seen at `at`. */
+const lost15 = (n: number, usd: number, at = NOW - 2 * MIN, o: Partial<HeatLaneState> = {}) => seasoned({
+  lossTickers: { 'KXBTC15M-1015': NOW + 600 * S }, traded: { 'KXBTC15M-1015': NOW + 600 * S },
+  losses: { [heatWindowKey('BTC', '15m', NOW + 600 * S)]: { n, usd, stake: 10, at, closeTs: NOW + 600 * S } }, ...o,
+});
+
+test('re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC): a fresh call enters the window again, on its own side', () => {
+  // One loser cut ($2.70 of a $10 order), the call's bar closed after it: entered again.
+  assert.equal(btc15({ state: lost15(1, 2.7) }).plans.length, 1);
+  // The TA called the other way this time: the other side.
+  assert.equal(btc15({ state: lost15(1, 2.7) }, { dir: -1 }).plans[0]?.side, 'no');
+  // A call whose bar closed before the loss (the TA that lost) is not a reason to go back in.
+  assert.match(reasons(btc15({ state: lost15(1, 2.7, T0) }))[0], /bar closed before the lane's last loss in this window/);
+  assert.match(reasons(btc15({ state: lost15(1, 2.7, T0 + S) }))[0], /bar closed before/);
+  // A file from before the count (a loss in lossTickers, none counted): the old rule, not entered again.
+  assert.match(reasons(btc15({ state: seasoned({ lossTickers: { 'KXBTC15M-1015': NOW + 600 * S } }) }))[0], /left this contract at a loss \(recorded before re-entries were counted\)/);
+});
+
+test('re-entry after a loss: twice on a 15-minute contract, three times in an hourly window, never once the losses reach half of one order', () => {
+  // HEAT_REENTRIES_15M (2): after the second loss once more, after the third no more.
+  assert.equal(btc15({ state: lost15(2, 3) }).plans.length, 1);
+  assert.match(reasons(btc15({ state: lost15(3, 3) }))[0], /left this 15-minute contract at a loss 3 times: 2 re-entries after a loss at most \(HEAT_REENTRIES_15M\)/);
+  assert.match(reasons(btc15({ state: lost15(1, 1), cfg: settings({ reentries15m: 0 }) }))[0], /0 re-entries after a loss at most/);
+  // HEAT_REENTRY_LOSS_STOP (0.5 of one order): $4.99 of a $10 stake still goes, $5.00 does not; 0 turns it off.
+  assert.equal(btc15({ state: lost15(2, 4.99) }).plans.length, 1);
+  assert.match(reasons(btc15({ state: lost15(2, 5) }))[0], /losses in this 15-minute contract \(\$5\.00\) reached 50% of one order \(\$5\.00 of \$10\.00, HEAT_REENTRY_LOSS_STOP\)/);
+  assert.equal(btc15({ state: lost15(1, 9), cfg: settings({ reentryLossStop: 0 }) }).plans.length, 1);
+  // More than half of the window left, as for any contract already traded: 451 s goes, 450 s does not.
+  const late = (secToClose: number) => btc15({
+    state: seasoned({ losses: { [heatWindowKey('BTC', '15m', NOW + secToClose * S)]: { n: 1, usd: 2.7, stake: 10, at: NOW - 2 * MIN, closeTs: NOW + secToClose * S } } }),
+    markets: [m15('BTC', { closeTs: NOW + secToClose * S, openTs: NOW + (secToClose - 900) * S })],
+  });
+  assert.equal(late(451).plans.length, 1);
+  assert.match(reasons(late(450))[0], /a re-entry after a loss needs more than half of the window left \(450 s of 900 s\)/);
+  // The hourly window counts all of its strikes together (HEAT_REENTRIES_HOURLY 3): three losses on other strikes still let
+  // the strike nearest 50c go; a fourth does not.
+  const hourClose = NOW + 2400 * S;
+  const hour = (n: number) => decide({
+    snapshot: snap({ BTC: [hourRow()] }), markets: [hourly('60000', 0.5, { closeTs: hourClose })],
+    state: seasoned({ lossTickers: { 'KXBTCH-59000': hourClose }, losses: { [heatWindowKey('BTC', 'hourly', hourClose)]: { n, usd: 3, stake: 10, at: NOW - 2 * MIN, closeTs: hourClose } } }),
+  });
+  assert.equal(hour(3).plans.length, 1);
+  assert.match(reasons(hour(4))[0], /left this hourly window at a loss 4 times: 3 re-entries after a loss at most \(HEAT_REENTRIES_HOURLY\)/);
 });
 
 test('re-entry: a contract already traded is entered again only while more than half of its window is left', () => {
@@ -817,15 +865,24 @@ test('book: the result is measured from the market\'s cash and fees when the ent
   assert.equal(res.closed[0].pnl, 0.61);
 });
 
-test('book: a loss counts no win and marks the contract until its close', () => {
+test('book: a loss counts no win and is counted against its window; a call made after it enters again while half the window is left', () => {
   const lane = holding();
-  // Sold 19 at 45c.
+  // Sold 19 at 45c (the loser cut, say).
   const res = lane.sync(NOW + 3 * MIN, positions({ [TICKER]: { yes: 0, netCash: -1.14, fees: 0.34 } }));
   assert.equal(res.closed[0].pnl, -1.48);
   const st = lane.status(NOW + 3 * MIN);
   assert.deepEqual([st.trips, st.wins, st.pnl], [1, 0, -1.48]);
-  const again = lane.decide(NOW + 4 * MIN, snapAt(T0 + 4 * MIN, { BTC: [row()] }), [m15()], OPTS);
-  assert.match(again.skips[0].reason, /left this contract at a loss/);
+  // The contract (10 minutes to its close at the entry) has 6 of its 15 minutes left at the next bar: no re-entry.
+  const late = lane.decide(NOW + 4 * MIN, snapAt(T0 + 4 * MIN, { BTC: [row()] }), [m15()], OPTS);
+  assert.match(late.skips[0].reason, /a re-entry after a loss needs more than half of the window left \(360 s of 900 s\)/);
+  // One entered with 14 minutes to its close, cut 3 minutes later: the next bar's call (after the 60 s cooldown) enters again.
+  const m = m15('BTC', { closeTs: NOW + 840 * S, openTs: NOW - 60 * S });
+  const early = new HeatLane(settings());
+  early.sent(early.decide(NOW, snap({ BTC: [row()] }), [m], OPTS).plans[0], NOW, 0, 0);
+  early.sync(NOW + S, positions({ [TICKER]: FILLED }));
+  early.sync(NOW + 3 * MIN, positions({ [TICKER]: { yes: 0, netCash: -1.14, fees: 0.34 } }));
+  const again = early.decide(NOW + 4 * MIN, snapAt(T0 + 4 * MIN, { BTC: [row({ dir: -1 })] }), [m], OPTS);
+  assert.deepEqual(again.plans.map((p) => [p.ticker, p.side]), [[TICKER, 'no']], JSON.stringify(again.skips));
 });
 
 test('book: an exit starts the coin\'s cooldown', () => {
@@ -894,8 +951,9 @@ test('book: old claims, finished contracts and hours that are over are pruned', 
   lane.sync(NOW + 3 * MIN, positions({ [TICKER]: { yes: 0, netCash: -1.14, fees: 0.34 } }));
   const saved = () => JSON.parse(fs.readFileSync(file, 'utf8')) as HeatLaneState;
   assert.deepEqual([Object.keys(saved().acted).length, Object.keys(saved().lossTickers), Object.keys(saved().context)], [2, [TICKER], ['BTC']]);
+  assert.deepEqual(saved().losses, { [heatWindowKey('BTC', '15m', NOW + 600 * S)]: { n: 1, usd: 1.48, stake: 10, at: NOW + 3 * MIN, closeTs: NOW + 600 * S } });
   lane.sync(T0 + 2 * 60 * MIN + S, positions());
-  assert.deepEqual([saved().acted, saved().lossTickers, saved().traded, saved().context], [{}, {}, {}, {}]);
+  assert.deepEqual([saved().acted, saved().lossTickers, saved().traded, saved().context, saved().losses], [{}, {}, {}, {}, {}]);
   assert.equal(saved().trips, 1, 'the results stay');
 });
 

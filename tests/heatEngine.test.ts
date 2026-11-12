@@ -101,7 +101,8 @@ test('a fired call buys the called side with an immediate-or-cancel at the touch
 });
 
 test('with the plan exits on (PLAN_RULES), a heat fill is a plan position and no other order goes on its market', async () => {
-  const g = await setup({ env: { PLAN_RULES: 'true' }, plan: true });
+  // The loser cut off: the fixture's 15c spread would keep the lane out (see the loser-cut test below).
+  const g = await setup({ env: { PLAN_RULES: 'true', PLAN_LOSER_CUT_C: '0' }, plan: true });
   heatStartCheck(g.cfg, g.cfg.plan.enabled);
   g.source.set(fired());
   await g.engine.tick();
@@ -121,6 +122,44 @@ test('with the plan exits on (PLAN_RULES), a heat fill is a plan position and no
   await g.engine.tick();
   assert.equal(g.engine.planPositions.get(g.market.ticker)?.state.armed, true);
   assert.deepEqual(newOthers().filter((o) => o.purpose !== 'exit').map((o) => [o.side, o.purpose, o.price, o.count]), [], 'only the plan\'s exits may go on it');
+});
+
+test('the loser cut (PLAN_LOSER_CUT_C 10c, Steven Nov 11 6:56 PM EST / 23:56 UTC) sells a heat position 10c under its entry; a fresh call enters the contract again', async () => {
+  const g = await setup({ env: { PLAN_RULES: 'true', HEAT_COOLDOWN_SEC: '0' }, plan: true });
+  // The fixture's 15c spread: bought at the ask, the bid is already 15c under, so the lane stays out.
+  g.source.set(fired());
+  await g.engine.tick();
+  assert.equal(heatOrders(g.oms).length, 0);
+  assert.match(rows(g.audit, 'heat').find((r) => r.key)!.skip, /the spread \(15c\) is at or above the loser cut \(10c, PLAN_LOSER_CUT_C\): the cut would sell the position at once/);
+  // A 1c spread: 16 YES at 60c.
+  g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.59, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
+  g.source.set(fired());
+  await g.engine.tick();
+  assert.equal(g.oms.positions.position(g.market.ticker), 16, JSON.stringify(rows(g.audit, 'heat').filter((r) => r.key)));
+  await g.engine.tick();
+  // The bid 9c under: held. 11c under: sold at the bid less 2 ticks.
+  g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.51, size: 50 }], asks: [{ price: 0.52, size: 50 }] }, Date.now());
+  await g.engine.tick();
+  assert.equal(g.oms.positions.position(g.market.ticker), 16);
+  g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.49, size: 50 }], asks: [{ price: 0.5, size: 50 }] }, Date.now());
+  await g.engine.tick();
+  const cut = g.audit.tail(500, 'plan').map((r) => r.data as Row).filter((e) => e.event === 'plan_loser_cut_sell');
+  assert.deepEqual(cut.map((e) => [e.bid, e.entry, e.loserCut, e.limit, e.sent]), [[0.49, 0.6, 0.1, 0.47, true]]);
+  assert.equal(g.oms.positions.position(g.market.ticker), 0, 'sold');
+  await g.engine.tick();
+  assert.deepEqual([g.lane.status(Date.now()).trips, g.lane.status(Date.now()).wins], [1, 0]);
+  assert.ok(g.lane.status(Date.now()).pnl < 0);
+  // A call whose bar closed before the cut is the TA that lost: not a reason to go back in.
+  g.source.set(fired());
+  await g.engine.tick();
+  assert.match(rows(g.audit, 'heat').filter((r) => r.key).at(-1)!.skip, /bar closed before the lane's last loss in this window/);
+  // A call made after it (here DOWN): the other side, through the same checks.
+  await new Promise((r) => setTimeout(r, 5));
+  g.source.set(fired({ barClose: Date.now(), dir: -1 }));
+  await g.engine.tick();
+  // Bought NO: YES sold at the 49c bid, 19 contracts for the $10 stake.
+  assert.deepEqual(heatOrders(g.oms).map((o) => [o.side, o.price, o.count, o.purpose]).sort(), [['ask', 0.49, 19, 'entry'], ['bid', 0.6, 16, 'entry']]);
+  assert.equal(g.oms.positions.position(g.market.ticker), -19, 'holds 19 NO');
 });
 
 test('no tag hook wired: no entry, and the call is recorded with the reason', async () => {
@@ -348,15 +387,20 @@ test('settings: every HEAT_* name with its default, DOGE dropped, values checked
   const c = loadConfig({ DASHBOARD_TOKEN: TOKEN, DATA_DIR: '/tmp/heat-cfg' }).heat;
   assert.deepEqual(c, {
     enabled: false, callsFile: path.resolve('/tmp/heat-cfg/heat_calls.json'), assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90,
-    entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reenterAfterLoss: false, flatTrips: 30,
+    entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 2, reentriesHourly: 3, reentryLossStop: 0.5, flatTrips: 30,
     pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip',
   });
   const set = loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_LANE: 'true', HEAT_ASSETS: 'btc, DOGE ,eth', HEAT_PERPS: 'gate', HEAT_PAIR_CONFLICT: 'pair', HEAT_CONTEXT: 'block', HEAT_CALLS_FILE: '/srv/calls.json', HEAT_PERP_HORIZONS: '240', HEAT_PERPS_DAILY: 'off' }).heat;
   assert.deepEqual([set.enabled, set.assets, set.perps, set.pairConflict, set.context, set.callsFile, set.perpHorizons, set.perpsDaily], [true, ['BTC', 'ETH'], 'gate', 'pair', 'block', '/srv/calls.json', [240], 'off']);
   assert.deepEqual(loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_PERP_HORIZONS: '240, 60,60' }).heat.perpHorizons, [60, 240], 'sorted, each once');
+  // Re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC): counts per window and the loss stop; the old switch is retired.
+  const re = loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_REENTRIES_15M: '0', HEAT_REENTRIES_HOURLY: '1', HEAT_REENTRY_LOSS_STOP: '0' }).heat;
+  assert.deepEqual([re.reentries15m, re.reentriesHourly, re.reentryLossStop], [0, 1, 0]);
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_REENTER_AFTER_LOSS: 'false' }), /HEAT_REENTER_AFTER_LOSS is retired: re-entries after a loss are counted \(HEAT_REENTRIES_15M, HEAT_REENTRIES_HOURLY; 0 = never\)/);
   for (const [k, v] of [['HEAT_PERPS', 'true'], ['HEAT_PAIR_CONFLICT', 'average'], ['HEAT_TOP_N', '2.5'], ['HEAT_HORIZONS', '15,x'], ['HEAT_CONTEXT_BOOST', '2'], ['HEAT_LANE', 'yes'],
     // The daily curve is never an entry (no daily row above the no-signal twin's best), and the perps enter on 60 and 240 only.
-    ['HEAT_PERPS_DAILY', 'entry'], ['HEAT_PERP_HORIZONS', '60,1440'], ['HEAT_PERP_HORIZONS', '15'], ['HEAT_PERP_HORIZONS', '60,x']]) {
+    ['HEAT_PERPS_DAILY', 'entry'], ['HEAT_PERP_HORIZONS', '60,1440'], ['HEAT_PERP_HORIZONS', '15'], ['HEAT_PERP_HORIZONS', '60,x'],
+    ['HEAT_REENTRIES_15M', '1.5'], ['HEAT_REENTRIES_HOURLY', '-1'], ['HEAT_REENTRY_LOSS_STOP', '-0.1'], ['HEAT_REENTER_AFTER_LOSS', 'true']]) {
     assert.throws(() => loadConfig({ DASHBOARD_TOKEN: TOKEN, [k]: v }), ConfigError, `${k}=${v}`);
   }
   // The perps horizons never open a Kalshi contract: listing them under HEAT_HORIZONS stops the start with the reason.

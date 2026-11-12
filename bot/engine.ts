@@ -40,7 +40,7 @@ import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
 import { HoldExits, type HoldReading } from './strategy/holdExit';
 import { ProfitRatchets, type RatchetReading } from './strategy/profitRatchet';
 import { PlanPositions, type PlanPosition } from './plan/planPositions';
-import { planBreakEvenUsd, planMarkTried, planStep, type PlanEvent, type PlanSale } from './plan/planRatchet';
+import { planBreakEvenUsd, planMarkTried, planStep, type PlanEvent, type PlanSale, type PlanSaleKind } from './plan/planRatchet';
 import type { SinuousEntryGate } from './strategy/sinuousEntry';
 import { tennisHighLeverage, type CurveReading, type SinuousExitGate } from './strategy/sinuousExit';
 import type { TakeProfitBench } from './strategy/takeProfitBench';
@@ -281,7 +281,7 @@ export interface MarketStatus {
   /** The held position's reading of its coin's live line (bot/strategy/liveLine.ts): the break and the heads-up. */
   line?: LiveLineReading;
   /** PLAN_RULES on and the position opened by a plan rule: its ratchet (bot/plan/planRatchet.ts), for the dashboard. */
-  plan?: { ruleId: string; side: 'yes' | 'no'; armed: boolean; stop?: number; best?: number; selling?: 'ratchet' | 'end'; failedTries: number; gaps: number };
+  plan?: { ruleId: string; side: 'yes' | 'no'; armed: boolean; stop?: number; best?: number; selling?: PlanSaleKind; failedTries: number; gaps: number };
   /** The profit ratchet on a held position that is not a plan position (RATCHET, bot/strategy/profitRatchet.ts): armed, its best
    *  and its stop in dollars for the whole position, and whether it sells. */
   ratchet?: RatchetReading;
@@ -462,7 +462,7 @@ export class Engine {
     if (d.fillLogDir) this.fillLog = new FillLog(d.fillLogDir, (t) => d.md.books.get(t)?.mid(), this.now);
     this.pacer = new HourlyQuotaPacer(d.cfg.strategy.pacer, this.now(), d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'quota_pacer_state.json') : undefined);
     // One ratchet (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC): a plan position's defaults are the profit ratchet's dollars.
-    this.planPositions = new PlanPositions(d.cfg.strategy.profitRatchet, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'plan_positions.json') : undefined);
+    this.planPositions = new PlanPositions({ ...d.cfg.strategy.profitRatchet, loserCut: d.cfg.strategy.plan.loserCut, loserCutUsd: d.cfg.strategy.plan.loserCutUsd }, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'plan_positions.json') : undefined);
     // Saved beside them as the plan's ratchets are: a restart or deploy must not lower an armed stop.
     this.profitRatchets = new ProfitRatchets(d.cfg.strategy.profitRatchet, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'profit_ratchet_state.json') : undefined, this.now());
     if (d.snn) this.attachBlender(d.snn.blender);
@@ -2935,7 +2935,7 @@ export class Engine {
 
   /** After the plan's sale was placed or held back: a try that went out is marked (the next evaluation judges whether it emptied
    *  the position; a gap it carries is listed), and the evaluation's events are audited (kind 'plan': plan_ratchet_arm / _raise
-   *  / _sell / _gap / _retry, plan_end_rule_sell / _cancel). An event of a sale's try says whether that try went out (`sent`;
+   *  / _sell / _gap / _retry, plan_loser_cut_sell / _cancel, plan_end_rule_sell / _cancel). An event of a sale's try says whether that try went out (`sent`;
    *  the kill switch's 30 s throttle or a risk-gateway refusal holds one back); a resend of a try held back before is written
    *  only once it goes out, so the event that says `sent: true` is when the sale actually left. */
   private planRecord(ticker: string, run: PlanRun, sent: boolean, now: number): void {
@@ -3347,6 +3347,8 @@ export class Engine {
     const res = h.lane.decide(now, snap, markets, {
       orderMin: cfg.strategy.orderUsdMin, orderMax: cfg.strategy.orderUsdMax, minSide: cfg.risk.minSidePrice, live: cfg.mode === 'live',
       windows: cfg.strategy, ...(blocked ? { entriesBlocked: blocked } : {}),
+      // Heat positions are plan positions: never buy where the plan's loser cut would sell at the first look.
+      ...(cfg.strategy.plan.enabled && cfg.strategy.plan.loserCut > 0 ? { cutSpread: cfg.strategy.plan.loserCut } : {}),
     });
     for (const a of res.alerts) this.d.alerter.notify('warn', 'heat-pilot', a);
     const sent = new Map<string, string>();

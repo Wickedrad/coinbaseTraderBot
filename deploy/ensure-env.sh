@@ -64,6 +64,9 @@ done
 # The paper pool is $200 (the owner, Oct 30): a bot.env pinned to the old $100 drops it, so the new default applies (the
 # bot tops the paper account up to it once); any other value is left alone.
 if grep -qxF 'PAPER_BANKROLL_USD=100' "$ENV"; then edit_env '^PAPER_BANKROLL_USD=100$'; echo "PAPER_BANKROLL_USD=100 removed from $ENV (the paper pool is \$200)"; fi
+# HEAT_REENTER_AFTER_LOSS is retired (re-entries after a loss are counted: HEAT_REENTRIES_15M, HEAT_REENTRIES_HOURLY,
+# HEAT_REENTRY_LOSS_STOP; Steven, Nov 11 6:59 PM EST / 23:59 UTC). The bot refuses to start with it set, so the line goes.
+if grep -q '^HEAT_REENTER_AFTER_LOSS=' "$ENV"; then edit_env '^HEAT_REENTER_AFTER_LOSS='; echo "HEAT_REENTER_AFTER_LOSS removed from $ENV (retired: re-entries after a loss are counted)"; fi
 # Edge-plan cleanup (#321, Steven's go-ahead Nov 11, 8:05 AM EST / 13:05 UTC): the session-edge entry blackout and the
 # model-health halt are off by default (SESSION_EDGE_NO_ENTRY follows AUTO_TRAIN; MODEL_HEALTH_HALT false). A bot.env that
 # still pins either on drops the line, so the defaults apply; any other value is left alone.

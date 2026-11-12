@@ -24,15 +24,15 @@ import { logger } from '../util/log';
 import { EPS, clamp, round } from '../util/num';
 import { writeJsonAtomic } from '../util/persist';
 import {
-  loadHeatState, pruneHeatState, syncHeatBook,
+  heatWindowKey, loadHeatState, pruneHeatState, syncHeatBook,
   type HeatLaneState, type HeatPositionLookup, type HeatSyncResult,
 } from './heatBook';
 import type {
   HeatCallRow, HeatConfig, HeatContext, HeatDecided, HeatDirection, HeatMarketView, HeatOpen, HeatPlan, HeatSkip, HeatSnapshot,
 } from './types';
 
-export { emptyHeatState, syncHeatBook, pruneHeatState, HEAT_UNFILLED_DROP_MS, HEAT_ACTED_KEEP_MS } from './heatBook';
-export type { HeatLaneState, HeatPositionView, HeatPositionLookup, HeatSyncResult, HeatClosed } from './heatBook';
+export { emptyHeatState, syncHeatBook, pruneHeatState, heatWindowKey, HEAT_UNFILLED_DROP_MS, HEAT_ACTED_KEEP_MS } from './heatBook';
+export type { HeatLaneState, HeatPositionView, HeatPositionLookup, HeatSyncResult, HeatClosed, HeatWindowLoss } from './heatBook';
 
 const log = logger('heat');
 
@@ -76,6 +76,10 @@ export interface HeatDecideOpts {
   /** A reason no heat entry may go out now (a halt, the soft pause, no exit owner). Every call still gets its
    *  record, as a skip with this reason. */
   entriesBlocked?: string;
+  /** The plan's loser cut by price (PLAN_LOSER_CUT_C, dollars a contract) that heat positions get: a market whose spread is
+   *  already that wide is not entered, because the cut would sell the position at the first look (bought at the ask, the
+   *  bid already that far under). Unset or 0: no such check. */
+  cutSpread?: number;
 }
 
 export interface HeatDecideInput extends HeatDecideOpts {
@@ -295,15 +299,43 @@ function pickMarket(asset: string, h: number, markets: HeatMarketView[], now: nu
 /** What one contract of the called side costs at the touch: the YES ask, or one minus the YES bid for NO. */
 const sideCostOf = (m: TwoSided, side: 'yes' | 'no'): number => round(side === 'yes' ? m.yesAsk : 1 - m.yesBid, 4);
 
+/** Re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC; his card 7:05 PM EST / 00:05 UTC): a window the lane left
+ *  at a loss is entered again only on a call whose bar closed after that loss (the TA judged again; the call's side may be
+ *  the other one), while more than half of the window is left, at most HEAT_REENTRIES_15M / HEAT_REENTRIES_HOURLY times,
+ *  and not once its losses reach HEAT_REENTRY_LOSS_STOP of one order. Undefined when it may go. */
+function reentryBlock(m: TwoSided, i: HeatDecideInput, barClose: number): string | undefined {
+  const l = i.state.losses?.[heatWindowKey(m.asset, m.kind, m.closeTs)];
+  if (!l) {
+    // A loss recorded before the count (a file from an older build): the old rule, not entered again.
+    return i.state.lossTickers[m.ticker] !== undefined ? 'the lane left this contract at a loss (recorded before re-entries were counted)' : undefined;
+  }
+  const what = m.kind === '15m' ? 'this 15-minute contract' : 'this hourly window';
+  const cap = m.kind === '15m' ? i.cfg.reentries15m : i.cfg.reentriesHourly;
+  const env = m.kind === '15m' ? 'HEAT_REENTRIES_15M' : 'HEAT_REENTRIES_HOURLY';
+  if (l.n > cap) return `the lane left ${what} at a loss ${l.n} times: ${cap} re-entries after a loss at most (${env})`;
+  const stop = i.cfg.reentryLossStop * l.stake;
+  if (i.cfg.reentryLossStop > 0 && l.usd >= stop - EPS) {
+    return `the lane's losses in ${what} ($${l.usd.toFixed(2)}) reached ${Math.round(i.cfg.reentryLossStop * 100)}% of one order ($${stop.toFixed(2)} of $${l.stake.toFixed(2)}, HEAT_REENTRY_LOSS_STOP)`;
+  }
+  if (tauSec(m, i.now) <= windowSec(m) / 2) return `a re-entry after a loss needs more than half of the window left (${Math.round(tauSec(m, i.now))} s of ${windowSec(m)} s)`;
+  if (barClose <= l.at) return 'the call\'s bar closed before the lane\'s last loss in this window: a re-entry needs a call made after it';
+  return undefined;
+}
+
 /** Why this market cannot take the entry, or undefined when it qualifies. */
-function marketBlock(m: TwoSided, side: 'yes' | 'no', i: HeatDecideInput): string | undefined {
+function marketBlock(m: TwoSided, side: 'yes' | 'no', i: HeatDecideInput, barClose: number): string | undefined {
   const cost = sideCostOf(m, side);
   if (cost < i.minSide - EPS || cost > 1 - i.minSide + EPS) return `the ${side} side costs ${cost.toFixed(2)}, outside ${i.minSide.toFixed(2)}..${(1 - i.minSide).toFixed(2)}`;
+  const spread = round(m.yesAsk - m.yesBid, 4);
+  if (i.cutSpread !== undefined && i.cutSpread > 0 && spread >= i.cutSpread - EPS) {
+    return `the spread (${Math.round(spread * 100)}c) is at or above the loser cut (${Math.round(i.cutSpread * 100)}c, PLAN_LOSER_CUT_C): the cut would sell the position at once`;
+  }
   // A position of any lane blocks: the lane never adds to one and never flips one.
   if (Math.abs(m.position) > EPS) return `the market already holds a position (${m.position})`;
   if (i.state.open.some((o) => o.ticker === m.ticker)) return 'a heat entry on this contract is already out';
   if (m.blocked) return m.blocked;
-  if (!i.cfg.reenterAfterLoss && i.state.lossTickers[m.ticker] !== undefined) return 'the lane left this contract at a loss';
+  const again = reentryBlock(m, i, barClose);
+  if (again) return again;
   if (i.state.traded?.[m.ticker] !== undefined && tauSec(m, i.now) <= windowSec(m) / 2) return 'already traded this contract and no more than half of its window is left';
   return undefined;
 }
@@ -388,7 +420,7 @@ export function decideHeat(i: HeatDecideInput): HeatDecideResult {
       : hour.dir === c.row.dir ? 'agree' : 'against';
     if (ctx === 'against' && cfg.context === 'block') { skip(c, `the hour's direction is against it (${hour!.key}, HEAT_CONTEXT block)`, market.ticker); continue; }
     if (!twoSided(market)) { skip(c, 'no two-sided book', market.ticker); continue; }
-    const blocked = marketBlock(market, side, i);
+    const blocked = marketBlock(market, side, i, c.row.barClose);
     if (blocked) { skip(c, blocked, market.ticker); continue; }
     const base = heatWeight(c.row.rank, c.row.of, cfg.topN);
     const weight = ctx === 'agree' ? Math.min(1, base + cfg.contextBoost) : ctx === 'against' ? 0 : base;

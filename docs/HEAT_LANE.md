@@ -28,7 +28,11 @@ The order: immediate-or-cancel, not post-only, not reduce-only, `purpose: 'entry
 | 240-minute (perp pack) | the coin's perp, 4h, never a Kalshi contract | `entry` opens a setup of kind `heat` on 4h when a 240-minute call fires (below) |
 | 1440-minute (perp pack) | none: direction context for the perps only | a heat perp entry against the coin's live daily call is not made (`HEAT_PERPS_DAILY=context`, below) |
 
-A market qualifies only with a two-sided book, the called side costing between `RISK_MIN_SIDE_PRICE` and one minus it, no position of any lane (no adds, no flips), its fee schedule verified, not just left at a loss by the lane (unless `HEAT_REENTER_AFTER_LOSS`), and, for a contract the lane already traded, more than half of its window left.
+A market qualifies only with a two-sided book, the called side costing between `RISK_MIN_SIDE_PRICE` and one minus it, a spread under the plan's loser cut (`PLAN_LOSER_CUT_C`, 10c: bought at the ask with the bid already that far under, the cut would sell at the first look), no position of any lane (no adds, no flips), its fee schedule verified, the re-entry rule after a loss (below), and, for a contract the lane already traded, more than half of its window left.
+
+**Re-entry after a loss** (Steven, Nov 11 6:59 PM EST / 23:59 UTC: the loser cut's 10c "doesn't invalidate a signal"; his card at 7:05 PM EST / 00:05 UTC chose the limits). A contract window the lane left at a loss (the loser cut, mostly) is entered again only on a call whose bar closed after that loss: the TA is judged again, and the call's side is the side bought, so a call that turned buys the other side and no call means no entry. Every other check applies as for a first entry (the cooldown, the price band, the spread). More than half of the window must be left; at most `HEAT_REENTRIES_15M` (2) re-entries on a 15-minute contract and `HEAT_REENTRIES_HOURLY` (3) in an hourly window, whose strikes count together; and none once the window's losses reach `HEAT_REENTRY_LOSS_STOP` (0.5) of one order (the largest stake the lane lost there: about $5 on a $10 order, where one 10c cut on a 50c contract costs about $2.70 with fees). The book keeps the count per window (`losses` in `heat_state.json`), pruned once the window is over; a loss recorded by an older build (in `lossTickers` only) keeps the old rule, no re-entry.
+
+**The loser cut** is the plan exits' (`bot/plan/planRatchet.ts`, E05; Steven, Nov 11 6:56 PM EST / 23:56 UTC: "10c a contract"): a heat position whose held-side bid is `PLAN_LOSER_CUT_C` (10c) or more under its entry price is sold the way the ratchet sells (an immediate-or-cancel at the bid less 2 ticks, retried, 3 ticks after 3 failed tries). `PLAN_LOSER_CUT_USD` cuts on dollars of the trade's net instead or as well (off by default). A try that failed is called off once the position is back at or above break-even after fees. The end rule stays as it was.
 
 ## The perps: entries on the hour and on 4 hours, the day as context
 
@@ -103,7 +107,9 @@ The pilot budget (decision 6, `HEAT_PILOT_LOSS_USD=15`): in live, no new heat en
 | `HEAT_MAX_OPEN` | `2` | Open heat positions across all coins (decision 8). |
 | `HEAT_MAX_PER_COIN` | `1` | Open heat positions per coin, 15-minute and hourly together. |
 | `HEAT_COOLDOWN_SEC` | `60` | Wait after a heat exit before the next heat entry on the coin. |
-| `HEAT_REENTER_AFTER_LOSS` | `false` | May the lane re-enter a contract it left at a loss. |
+| `HEAT_REENTRIES_15M` | `2` | Re-entries after a loss on one 15-minute contract (above); 0 = never. |
+| `HEAT_REENTRIES_HOURLY` | `3` | Re-entries after a loss in one hourly window, its strikes together; 0 = never. |
+| `HEAT_REENTRY_LOSS_STOP` | `0.5` | No re-entry once the window's losses reach this share of one order; 0 = off. `HEAT_REENTER_AFTER_LOSS` is retired (the bot refuses to start with it; ensure-env drops the line). |
 | `HEAT_FLAT_TRIPS` | `30` | Decision 11's flat phase, in round trips per book. |
 | `HEAT_PILOT_LOSS_USD` | `15` | Live only: the heat loss budget; 0 = off. |
 | `HEAT_FEE_NET_CHECK` | `false` | Also apply the gateway's fee-net edge collar to the heat value. Off: the proof standard is the one test, not a cost bar. |
