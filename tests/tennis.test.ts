@@ -39,6 +39,8 @@ test('defaults: 25% total tennis cap (and it cannot be raised above 25%)', () =>
   assert.equal(T.maxTotalFrac, 0.25);
   assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_MAX_TOTAL_FRAC: '0.3' }));
   assert.equal(contractKind('KXATPMATCH'), 'match');
+  assert.equal(contractKind('KXWTAMATCH'), 'match');
+  assert.notEqual(contractKind('KXWTAMATCHX'), 'match');
 });
 
 test('sizing respects per-order, per-match and the 25% total cap', () => {
@@ -381,6 +383,50 @@ test('engine trades tennis inside its own 25% budget and keeps it out of the cry
   assert.ok(blk.cells.some((x) => x !== 0), 'the tracked match lights the block');
   assert.match(blk.note, /1 matches · 0 held · 1 resting/);
   assert.ok(blk.activity > 0.1);
+});
+
+test('engine: with TENNIS_SERIES=KXATPMATCH,KXWTAMATCH (the paper days, deploy/paper-settings.env) WTA matches are tennis matches too', async () => {
+  const dir = tmpDir();
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false',
+    TENNIS_SERIES: 'KXATPMATCH,KXWTAMATCH', TENNIS_CONF_MOMENTUM_CENTS: '0.02', TENNIS_CONF_WINDOW_SEC: '120' });
+  assert.deepEqual(cfg.tennis.series, ['KXATPMATCH', 'KXWTAMATCH']);
+  const now = Date.now();
+  // Closing in 6 h (past the crypto catalog horizon), starting in 5 min: only a match market is kept for that.
+  const m = (series: string, ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: series, eventTicker: `${series}-E1`, status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + 5 * 60_000 });
+  const bySeries: Record<string, MarketInfo[]> = {
+    KXATPMATCH: [m('KXATPMATCH', 'KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH', 'KXATPMATCH-E1-DOG', 'Will Dog win?')],
+    KXWTAMATCH: [m('KXWTAMATCH', 'KXWTAMATCH-E1-FAV', 'Will Fav win?'), m('KXWTAMATCH', 'KXWTAMATCH-E1-DOG', 'Will Dog win?')],
+  };
+  const rest = {
+    getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
+    getOpenMarkets: async (s: string) => bySeries[s] ?? [],
+    getMarket: async () => undefined,
+  } as unknown as KalshiRest;
+  const audit = tmpAudit();
+  const md = new MarketData(cfg, rest, undefined, new Recorder(path.join(dir, 'rec')));
+  await md.refreshCatalog(now);
+  for (const s of ['KXATPMATCH', 'KXWTAMATCH']) {
+    assert.equal(md.markets.get(`${s}-E1-DOG`)?.kind, 'match', s);
+    md.book(`${s}-E1-FAV`).applySnapshot({ bids: [{ price: 0.84, size: 100 }], asks: [{ price: 0.86, size: 100 }] }, Date.now());
+    md.book(`${s}-E1-DOG`).applySnapshot({ bids: [{ price: 0.14, size: 300 }], asks: [{ price: 0.17, size: 100 }] }, Date.now());
+  }
+  const paper = new PaperExchange(undefined, 200, (t) => md.books.get(t), () => ({ takerMultiplier: 1, makerMultiplier: 1 }));
+  const kill = new KillSwitch(path.join(dir, 'kill.json'), audit);
+  const oms = new Oms({ gateway: paper, audit, statePath: path.join(dir, 'oms.json'), feesFor: (t) => md.feesFor(t), sleep: async () => undefined });
+  paper.on('fill', (f) => oms.onFill(f));
+  paper.on('order', (o) => oms.onExchangeOrder(o));
+  const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: () => undefined });
+  const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill, recon, model: MetaModel.identity(), exchangeStatus: openExchange() });
+  const r = await recon.run('startup');
+  engine.balance = r!.balance;
+  await engine.tick();
+  assert.deepEqual([...engine.tennisStatus.keys()].sort(), ['KXATPMATCH-E1', 'KXWTAMATCH-E1']);
+  assert.equal(engine.isTennis('KXWTAMATCH-E1-DOG'), true);
+  assert.equal(engine.status.has('KXWTAMATCH-E1-DOG'), false, 'WTA never goes through the crypto pricer');
+  const open = (await paper.getOpenOrders()).map((o) => [o.ticker, o.side, o.price]).sort();
+  assert.deepEqual(open, [['KXATPMATCH-E1-DOG', 'bid', 0.15], ['KXWTAMATCH-E1-DOG', 'bid', 0.15]]);
+  const b = engine.tennisBudget();
+  assert.ok(b.used > 0 && b.used <= b.cap, JSON.stringify(b));
 });
 
 test('engine: the quota snipe sells a tennis position whose profit after fees (entry fee in) covers the hour; the clock audits it', async () => {

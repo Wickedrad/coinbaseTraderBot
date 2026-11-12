@@ -98,6 +98,31 @@ if [ -f "$HERE/heat_reader_install.sh" ]; then
     if [ "$rules" != true ] && [ "$rules" != 1 ]; then echo "warning: HEAT_LANE=true but PLAN_RULES=$rules in $ENV: the bot refuses to start that way; set one of them"; fi
   fi
 fi
+# The paper bot's own settings (deploy/paper-settings.env; first the tennis two paper days, Nov 12): while bot.env's
+# TRADING_MODE is paper, or not set (the bot's default), each KEY=VALUE line there replaces any line of that name here
+# (with spaces or an `export ` in front too). Under shadow or live none is applied and nothing is removed. Lines that are
+# not a plain KEY=VALUE are skipped with a warning. The mode is read as systemd reads bot.env (EnvironmentFile=): from
+# plain TRADING_MODE lines, the last one winning. systemd drops a line with `export ` in front, so with any such
+# TRADING_MODE line the mode is not certain and nothing is applied.
+if [ -f "$HERE/paper-settings.env" ]; then
+  mode="$(grep -e '^[[:space:]]*TRADING_MODE[[:space:]]*=' "$ENV" | tail -1 | cut -d= -f2- | tr -d '"'"'"'[:space:]' | tr '[:upper:]' '[:lower:]' || true)"
+  if grep -q -e '^[[:space:]]*export[[:space:]][[:space:]]*TRADING_MODE[[:space:]]*=' "$ENV"; then
+    echo "warning: paper-settings.env not applied: $ENV has an \`export TRADING_MODE\` line (systemd ignores it), so the mode is not certain; remove the export"
+  elif [ -z "$mode" ] || [ "$mode" = paper ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in ''|'#'*) continue ;; esac
+      if ! printf '%s\n' "$line" | grep -qE '^[A-Z][A-Z0-9_]*=[^[:space:]"'"'"']*$'; then echo "warning: skipped a line of paper-settings.env that is not a plain KEY=VALUE: $line"; continue; fi
+      key="${line%%=*}"
+      key_re="^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}$key[[:space:]]*="
+      if [ "$(grep -c -e "$key_re" "$ENV" || true)" = 1 ] && grep -qxF "$line" "$ENV"; then continue; fi
+      was="$(grep -e "$key_re" "$ENV" | tail -1 | cut -d= -f2- || true)"
+      edit_env "$key_re" "$line"
+      echo "$key: ${was:-(not set)} -> ${line#*=} in $ENV (paper settings)"
+    done < "$HERE/paper-settings.env"
+  else
+    echo "paper-settings.env not applied: TRADING_MODE=$mode in $ENV"
+  fi
+fi
 if [ -n "${DASHBOARD_PASSWORD:-}" ] && ! grep -qxF "DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD" "$ENV"; then
   edit_env '^DASHBOARD_PASSWORD=' "DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD"
   echo "dashboard password set from the deploy"
