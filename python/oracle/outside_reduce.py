@@ -367,12 +367,31 @@ def test_b_price(day: pd.DataFrame, mark_grid: MinuteGrid) -> dict:
     return {'b': verdict, 'gap_t': go, 'gap_t5': gn}
 
 
+R_MARGIN_SINGLE = 0.7     # test (a) alone (test (b) has no data that day): stricter margin
+GAP_RATIO_SINGLE = 3.0    # test (b) alone (test (a) has no data that day): stricter ratio
+
+
 def label_day(day: pd.DataFrame, um_grid: MinuteGrid, mark_grid: MinuteGrid) -> dict:
-    """Both tests must agree on old or new, else 'amb' (treated as new for S)."""
+    """Both tests ran: they must agree on old or new, else 'amb'. Only one test COULD run (the other has no data that
+    day, e.g. the archive's taker ratio column is empty on every BTC/ETH/SOL/XRP file from 2021-12-31 to 2022-05-08, or
+    the mark bars are missing): that test alone decides, with a stricter margin. 'amb' is treated as new for S, the
+    later instant, so an ambiguous day can only make a reading late, never early."""
     a = test_a_taker(day, um_grid)
     b = test_b_price(day, mark_grid)
-    conv = a['a'] if a['a'] == b['b'] and a['a'] in ('old', 'new') else 'amb'
-    return {'conv': conv, **a, **b}
+    a_ran = math.isfinite(a['r_left']) and math.isfinite(a['r_right'])
+    b_ran = math.isfinite(b['gap_t']) and math.isfinite(b['gap_t5'])
+    conv, single = 'amb', None
+    if a_ran and b_ran:
+        conv = a['a'] if a['a'] == b['b'] and a['a'] in ('old', 'new') else 'amb'
+    elif a_ran:
+        d = a['r_left'] - a['r_right']
+        conv = 'old' if d >= R_MARGIN_SINGLE else 'new' if -d >= R_MARGIN_SINGLE else 'amb'
+        single = 'a'
+    elif b_ran:
+        go, gn = b['gap_t'], b['gap_t5']
+        conv = 'old' if gn >= GAP_RATIO_SINGLE * max(go, 1e-12) else 'new' if go >= GAP_RATIO_SINGLE * max(gn, 1e-12) else 'amb'
+        single = 'b'
+    return {'conv': conv, 'single_test': single, **a, **b}
 
 
 def snapshot_instant(stamp: np.ndarray, conv: str) -> np.ndarray:
@@ -423,7 +442,7 @@ def amb_report(labels: dict[str, dict]) -> dict:
 
 
 # --- premiumIndexKlines stamp test -------------------------------------------------------------------------------------
-STAMP_MIN_CORR = 0.2
+STAMP_MIN_CORR = 0.1      # n is ~3.6 million minutes per coin (SE of r ~0.0005); BTC gave 0.196 vs -0.114 on Nov 12
 STAMP_MIN_DIFF = 0.05
 
 
@@ -431,7 +450,9 @@ def premium_stamp_test(premium: pd.DataFrame, perp: pd.DataFrame, index: pd.Data
     """Does the premium bar opening at t describe (perp close - index close)/index close of the same minute (fit 'same'
     -> known at t + 60 s) or of the NEXT minute ('next' -> readers add one more minute of delay)?  Correlation of 1-minute
     CHANGES (levels autocorrelate too much to tell adjacent minutes apart). Resolved only if the better fit has r >=
-    0.2 and beats the other by >= 0.05; the caller fails the job otherwise."""
+    0.1 and beats the other by >= 0.05; the caller fails the job otherwise. (Premium is built from impact bid/ask, not
+    the last trade, so r is modest: Nov 12 2026 run 43233496056 gave BTC 0.196 vs -0.114, ETH 0.280 vs -0.134, SOL
+    0.377 vs -0.095; the 1-minute-change correlation peaks at the same minute for both perp close and mark close.)"""
     p = premium.set_index('ts')['c']
     x = ((perp.set_index('ts')['c'] - index.set_index('ts')['c']) / index.set_index('ts')['c']).dropna()
     ts = p.index.intersection(x.index)

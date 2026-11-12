@@ -358,7 +358,9 @@ def small(asset: str, out: str, workers: int = 8) -> dict:
         report['metrics'] = rep
         log(asset, 'metrics rows', len(table), 'days', len(ments), 'conv report', json.dumps(rep))
         with open(os.path.join(out, 'metrics_convention.json'), 'w') as f:
-            json.dump({'report': rep, 'days': {k: {'conv': v['conv']} for k, v in sorted(labels.items())}}, f)
+            keep = ('conv', 'single_test', 'a', 'b', 'r_left', 'r_right', 'gap_t', 'gap_t5')
+            fin = lambda x: None if isinstance(x, float) and not np.isfinite(x) else x
+            json.dump({'report': rep, 'days': {k: {c: fin(v.get(c)) for c in keep} for k, v in sorted(labels.items())}}, f)
 
         # bookDepth (daily, 2023+)
         bents = [e for e in sorted(list_prefix(f'{UM}/daily/bookDepth/{sym}/'), key=lambda e: e['key'])
@@ -458,6 +460,49 @@ def run_put(cmd: str | None, path: str, market: str) -> None:
         raise RuntimeError(f'put-cmd failed with exit {r.returncode} for {os.path.basename(path)}')
 
 
+GAP_DAY_MIN = 1430      # minutes; a calendar day of a monthly file with fewer is re-read from its daily file
+DAY_MS = 86_400_000
+
+
+def fill_gap_days(df: pd.DataFrame, ym: str, daily_by_day: dict, work: str, src: list) -> tuple[pd.DataFrame, list]:
+    """Some monthly aggTrades zips miss whole days (seen: BTCUSDT perp 2022-08, 2022-09, 2022-11) although the daily
+    zips for those days exist. Every day of the month with fewer than GAP_DAY_MIN minutes is reduced again from its
+    daily zip; the daily result replaces the day only when it has MORE minutes. Days before a listing have no daily zip
+    and stay as they are. Returns the patched frame and one record per day looked at (aggregates only)."""
+    y, m = (int(x) for x in ym.split('-'))
+    start = pd.Timestamp(year=y, month=m, day=1, tz='UTC')
+    days = pd.date_range(start, start + pd.offsets.MonthBegin(1), freq='D', inclusive='left')
+    fills: list[dict] = []
+    counts = pd.Series(df['ts'].to_numpy() // DAY_MS).value_counts() if len(df) else pd.Series(dtype=np.int64)
+    for d in days:
+        di = int(d.value // 10**6 // DAY_MS)
+        have = int(counts.get(di, 0))
+        if have >= GAP_DAY_MIN:
+            continue
+        e = daily_by_day.get(d.strftime('%Y-%m-%d'))
+        if e is None:
+            if have:
+                fills.append({'day': d.strftime('%Y-%m-%d'), 'monthly_minutes': have, 'daily_minutes': None, 'used': False})
+            continue
+        p = os.path.join(work, 'gap.zip')
+        sha = fetch_zip(e['key'], e['size'], p)
+        r = read_agg_zip(p)
+        os.remove(p)
+        ddf = r.finish()
+        ddf = ddf[(ddf['ts'].to_numpy() // DAY_MS) == di]
+        used = len(ddf) > have
+        fills.append({'day': d.strftime('%Y-%m-%d'), 'monthly_minutes': have, 'daily_minutes': int(len(ddf)), 'used': used})
+        src.append({'key': e['key'], 'bytes': e['size'], 'etag': e['etag'], 'last_modified': e['last_modified'], 'sha256': sha,
+                    'downloaded_at': now_utc(), 'rows': r.rows, 'gap_fill_day': d.strftime('%Y-%m-%d'), 'used': used,
+                    'unit': r.unit})
+        if used:
+            keep = (df['ts'].to_numpy() // DAY_MS) != di
+            df = pd.concat([df[keep], ddf], ignore_index=True)
+    if any(f['used'] for f in fills):
+        df = df.sort_values('ts', kind='stable').reset_index(drop=True)[red.AGG_COLUMNS].astype(red.agg_dtypes())
+    return df, fills
+
+
 def agg(asset: str, market: str, year: int, out: str, months: list[str] | None = None, put_cmd: str | None = None,
         skip_file: str | None = None) -> list[str]:
     if asset == 'BTCDOM':
@@ -470,6 +515,7 @@ def agg(asset: str, market: str, year: int, out: str, months: list[str] | None =
     monthly = list_prefix(f'{base}/monthly/aggTrades/{sym}/')
     daily = list_prefix(f'{base}/daily/aggTrades/{sym}/')
     plan = [e for e in plan_months(monthly, daily) if date_of(e['key']).startswith(f'{year}-')]
+    daily_by_day = {date_of(e['key']): e for e in daily if date_of(e['key']).startswith(f'{year}-')}
     by_month: dict[str, list[dict]] = {}
     for e in plan:
         by_month.setdefault(date_of(e['key'])[:7], []).append(e)
@@ -492,6 +538,7 @@ def agg(asset: str, market: str, year: int, out: str, months: list[str] | None =
         t0 = time.time()
         reducer = red.AggReducer()
         src = []
+        fills: list[dict] = []
         with tempfile.TemporaryDirectory() as work:
             for e in sorted(ents, key=lambda x: x['key']):
                 p = os.path.join(work, 'f.zip')
@@ -501,10 +548,18 @@ def agg(asset: str, market: str, year: int, out: str, months: list[str] | None =
                 os.remove(p)
                 src.append({'key': e['key'], 'bytes': e['size'], 'etag': e['etag'], 'last_modified': e['last_modified'],
                             'sha256': sha, 'downloaded_at': now_utc(), 'rows': reducer.rows - before})
-        df = reducer.finish()
+            df = reducer.finish()
+            if has_monthly:
+                df, fills = fill_gap_days(df, ym, daily_by_day, work, src)
         path = os.path.join(mdir, f'{ym}.parquet')
-        write_agg_parquet(df, path, {'asset': asset, 'market': market, 'unit': reducer.unit, 'trades': reducer.rows, 'files': src})
-        log(asset, market, ym, 'trades', reducer.rows, 'minutes', len(df), 'unit', reducer.unit,
+        trades = int(sum(f['rows'] for f in src if not f.get('gap_fill_day'))) + int(
+            sum(f['rows'] for f in src if f.get('gap_fill_day') and f.get('used')))
+        write_agg_parquet(df, path, {'asset': asset, 'market': market, 'unit': reducer.unit, 'trades': trades, 'files': src,
+                                     'gap_fill': fills, 'gap_fill_rule': f'day with < {GAP_DAY_MIN} minutes in the monthly '
+                                     'file: its daily file is reduced and replaces the day when it has more minutes'})
+        n_fill = sum(1 for f in fills if f['used'])
+        log(asset, market, ym, 'trades', trades, 'minutes', len(df), 'unit', reducer.unit,
+            'gap days', len(fills), 'filled from daily', n_fill,
             'first/last', int(df.ts.iloc[0]) if len(df) else '-', int(df.ts.iloc[-1]) if len(df) else '-', f'{time.time() - t0:.0f}s')
         run_put(put_cmd, path, market)
         os.remove(path)

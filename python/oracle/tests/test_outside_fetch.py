@@ -237,6 +237,30 @@ def test_metrics_convention_old_new_amb_and_offgrid():
     assert (red.snapshot_instant(new['stamp'].to_numpy(), 'amb') == new['stamp'].to_numpy() + 5 * MIN).all()
 
 
+def test_single_test_decides_when_the_other_has_no_data():
+    """Real archive: the taker ratio column is empty on every file 2021-12-31..2022-05-08 (test a cannot run) and some
+    days lack mark bars (test b cannot run). The test that ran decides alone, with a stricter margin."""
+    um, mark = synth_market()
+    rng = np.random.default_rng(3)
+    ug, mg = red.make_um_grid(um), red.make_mark_grid(mark)
+    old = red.read_metrics_csv(metrics_day(um, mark, T0, 'old', rng).encode())
+    new = red.read_metrics_csv(metrics_day(um, mark, T0 + 1440 * MIN, 'new', rng).encode())
+    for day, conv in ((old, 'old'), (new, 'new')):
+        no_taker = day.assign(sum_taker_long_short_vol_ratio=np.nan)
+        lab = red.label_day(no_taker, ug, mg)
+        assert lab['conv'] == conv and lab['single_test'] == 'b' and lab['a'] == 'amb'
+        no_mark = red.make_mark_grid(mark[(mark['ts'] < day['stamp'].min() - 10 * MIN) | (mark['ts'] > day['stamp'].max() + 10 * MIN)])
+        lab = red.label_day(day, ug, no_mark)
+        assert lab['conv'] == conv and lab['single_test'] == 'a' and lab['b'] == 'amb'
+        both = red.label_day(no_taker, ug, no_mark)
+        assert both['conv'] == 'amb' and both['single_test'] is None
+    # a single test that is not decisive enough stays ambiguous
+    amb = red.read_metrics_csv(metrics_day(um, mark, T0 + 2 * 1440 * MIN, 'amb', rng).encode())
+    assert red.label_day(amb.assign(sum_taker_long_short_vol_ratio=np.nan), ug, mg)['conv'] == 'amb'
+    # both ran and agree: no single test recorded
+    assert red.label_day(old, ug, mg)['single_test'] is None
+
+
 def test_off_grid_stamp_is_ceiled():
     base = pd.Timestamp('2024-03-02 02:35:02', tz='UTC')
     ms = int(base.value // 10**6)
@@ -514,6 +538,33 @@ def test_agg_months_daily_fallback_put_and_resume(tmp_path, patched):
     assert done == ['2024-04'] and all('2024-04' in k for k in a.fetched)       # perp's file does not skip spot
     a.fetched.clear()
     assert fx.agg('BTC', 'spot', 2024, str(out), ['03'], None, str(skip)) == [] and a.fetched == []
+
+
+def test_agg_monthly_file_missing_a_day_is_filled_from_its_daily_file(tmp_path, patched):
+    """Seen on the real archive: BTCUSDT perp monthly 2022-08/09/11 zips miss whole days that the daily zips hold."""
+    a = FakeArchive()
+    S = 'BTCUSDT'
+    t1 = make_trades(seed=21, n=600, start=T0)                               # 2024-03-02, in the monthly zip
+    t4 = make_trades(seed=24, n=500, start=T0 + 3 * 86_400_000)              # 2024-03-05, only in its daily zip
+    a.add(f'data/futures/um/monthly/aggTrades/{S}/{S}-aggTrades-2024-03.zip', zbytes('a.csv', csv_um(*t1)))
+    a.add(f'data/futures/um/daily/aggTrades/{S}/{S}-aggTrades-2024-03-02.zip', zbytes('a.csv', csv_um(*t1)))
+    a.add(f'data/futures/um/daily/aggTrades/{S}/{S}-aggTrades-2024-03-05.zip', zbytes('a.csv', csv_um(*t4, header=False)))
+    patched(a)
+    drive = tmp_path / 'drive'
+    drive.mkdir()
+    done = fx.agg('BTC', 'perp', 2024, str(tmp_path / 'out'), ['03'], f'cp "$OUTSIDE_FILE" {drive}/', None)
+    assert done == ['2024-03']
+    m = pd.read_parquet(drive / '2024-03.parquet')
+    ref = brute(*t1)
+    ref.update(brute(*t4))
+    check_frame(m, ref)                                                       # both days, exactly
+    import pyarrow.parquet as pq
+    meta = json.loads(pq.read_schema(drive / '2024-03.parquet').metadata[b'outside_source'])
+    fills = {f['day']: f for f in meta['gap_fill']}
+    assert fills['2024-03-05']['used'] and fills['2024-03-05']['monthly_minutes'] == 0
+    assert not fills['2024-03-02']['used'] and fills['2024-03-02']['daily_minutes'] == fills['2024-03-02']['monthly_minutes']
+    assert meta['trades'] == len(t1[0]) + len(t4[0])                         # the unused daily copy is not counted twice
+    assert sum(1 for f in meta['files'] if f.get('gap_fill_day')) == 2
 
 
 def test_agg_daily_only_month_is_rebuilt_despite_drive_copy(tmp_path, patched):

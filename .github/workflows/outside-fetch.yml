@@ -18,6 +18,8 @@ name: Outside data fetch (OR-XD)
 #                           given in one commit. Never BTCDOM.
 #   [xd-assets:BTC,ETH]     narrow the coins (BTC, ETH, SOL, XRP; BTCDOM only for the small fetch). NEVER DOGE.
 #   [xd-years:2024,2025]    narrow the aggTrades years.
+#   [xd-agg-redo]           ignore the Drive resume list and rebuild every month of the agg matrix (used once on Nov 12 2026
+#                           after the gap-day fill was added: monthly zips can miss whole days that daily zips hold).
 # Nothing here ever writes raw market rows to the repo (it is PUBLIC) and nothing touches raw/perp-ta-history/.
 
 on:
@@ -217,11 +219,17 @@ jobs:
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
-      - name: What Drive already holds (resume list)
+      - name: What Drive already holds (resume list; [xd-agg-redo] rebuilds every month)
+        env:
+          MSG: ${{ github.event.head_commit.message }}
         run: |
           set -uo pipefail
-          rclone lsf "$R/raw/outside/binance/$A" -R --files-only --include 'agg_*/*.parquet' > "$RUNNER_TEMP/skip.txt" 2>/dev/null || : > "$RUNNER_TEMP/skip.txt"
-          echo "$(wc -l < "$RUNNER_TEMP/skip.txt") month file(s) already on Drive for $A"
+          if grep -qF '[xd-agg-redo]' <<< "$MSG"; then
+            : > "$RUNNER_TEMP/skip.txt"; echo "[xd-agg-redo]: every month of $A $M $Y is rebuilt and overwritten"
+          else
+            rclone lsf "$R/raw/outside/binance/$A" -R --files-only --include 'agg_*/*.parquet' > "$RUNNER_TEMP/skip.txt" 2>/dev/null || : > "$RUNNER_TEMP/skip.txt"
+            echo "$(wc -l < "$RUNNER_TEMP/skip.txt") month file(s) already on Drive for $A"
+          fi
       - name: Reduce aggTrades month by month (each month uploaded as soon as it is done, then deleted)
         working-directory: python
         run: |
