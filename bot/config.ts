@@ -797,12 +797,27 @@ export interface TennisConfig {
   /** TENNIS_END_LOSER_CUT (on): the other half of that rule, nothing is held to settlement unless it is in profit. In the last
    *  share of the match a position not in profit after fees is sold at the bid, and no new entry is placed there (it
    *  would start under water). The favorite leg has no loss exit of its own (TENNIS_FAV_STOP_CENTS is 0 by default). The
-   *  share is settleFrac's, so settleFrac 0 turns the cut off too. Both go by the furthest progress the match has held
+   *  share is endCutFrac's (settleFrac's before Nov 12). Both go by the furthest progress the match has held
    *  for 2 minutes (a comeback pulls the progress back; one tick's thin book does not count). */
   endLoserCut: boolean;
   /** TENNIS_END_ENTRY_MARGIN (0.05): with the cut on, no new entry from this much progress before the last share, so a
-   *  position bought just before it has time to cover the spread and fees before it is judged (0.65 with the defaults). */
+   *  position bought just before it has time to cover the spread and fees before it is judged (0.85 with the defaults). */
   endEntryMargin: number;
+  /** TENNIS_END_CUT_FRAC (0.10; Steven, Nov 12: at 90% of the match, not traded, and exited unless in profit): the last share
+   *  in which endLoserCut sells a position not in profit and no entry is placed. Before Nov 12 it was settleFrac's 30%. */
+  endCutFrac: number;
+  /** The loser cut by the match's progress (Steven, Nov 12, "scale like the price predictions", by the score's rounds against
+   *  the format's): a position not in profit after fees is sold at the bid once the bid is this far under its entry, dollars
+   *  a contract. TENNIS_LOSER_CUT_OPEN_C (20) at the start, TENNIS_LOSER_CUT_C (10) at 60% of the match, TENNIS_LOSER_CUT_LATE_C
+   *  (3) from 85%; TENNIS_LOSER_CUT_C=0 turns it off. bot/tennis/tennisStrategy.ts tennisLoserCutAt. */
+  loserCut: number;
+  loserCutOpen: number;
+  loserCutLate: number;
+  /** TENNIS_PROB_TURN (0.05): a position riding to settlement in profit is sold at the bid, still in profit, once our player's
+   *  chance to win is this far under its best since the ride began, by either reading: the market's price, or the scoring
+   *  model's from a fresh live score that names its players (Steven, Nov 12: "unless the probability begins to shift").
+   *  0 = off. */
+  probTurn: number;
   /** Tennis MLP (fair P(win) from the 4 signals, score, book and SNN): when validated, entries need
    *  fair - price >= this. */
   fairMinEdge: number;
@@ -1052,6 +1067,12 @@ function parseSizingTiers(raw: string | undefined, base: { risk: RiskLimits; str
   } catch (e) {
     throw new ConfigError(`SIZING_TIERS: ${(e as Error).message}`);
   }
+}
+
+/** The tennis loser cut's three lines in dollars a contract (cutEnds; Steven, Nov 12). */
+function tennisLoserCut(env: Env): { loserCut: number; loserCutOpen: number; loserCutLate: number } {
+  const { mid, open, late } = cutEnds(env, 'TENNIS_LOSER_CUT', 'the match');
+  return { loserCut: mid / 100, loserCutOpen: open / 100, loserCutLate: late / 100 };
 }
 
 /** "earliest,latest" seconds before close. */
@@ -1813,6 +1834,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       settleFrac: num(env, 'TENNIS_NO_EXIT_BEFORE_END_FRAC', 0.30, 0, 0.9),
       endLoserCut: bool(env, 'TENNIS_END_LOSER_CUT', true),
       endEntryMargin: num(env, 'TENNIS_END_ENTRY_MARGIN', 0.05, 0, 0.5),
+      endCutFrac: num(env, 'TENNIS_END_CUT_FRAC', 0.10, 0, 0.9),
+      ...tennisLoserCut(env),
+      probTurn: num(env, 'TENNIS_PROB_TURN', 0.05, 0, 0.5),
       fairMinEdge: num(env, 'TENNIS_FAIR_MIN_EDGE', 0.01, -0.5, 0.5),
       modelPath: path.resolve(env.TENNIS_MODEL_PATH ?? './params/tennis_model.json'),
     },
