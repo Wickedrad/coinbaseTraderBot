@@ -29,7 +29,7 @@ import {
   type HeatLaneState, type HeatPositionLookup, type HeatSyncResult,
 } from './heatBook';
 import type {
-  HeatCallRow, HeatConfig, HeatContext, HeatDecided, HeatDirection, HeatMarketView, HeatOpen, HeatPlan, HeatSkip, HeatSnapshot,
+  HeatCallRow, HeatConfig, HeatContext, HeatDecided, HeatDirection, HeatMarketView, HeatOpen, HeatPlan, HeatSegment, HeatSkip, HeatSnapshot,
 } from './types';
 
 export { emptyHeatState, syncHeatBook, pruneHeatState, heatWindowKey, HEAT_UNFILLED_DROP_MS, HEAT_ACTED_KEEP_MS } from './heatBook';
@@ -135,6 +135,18 @@ export function heatWeight(rank: number, of: number, topN: number): number {
 /** The stake in dollars: heat size only for the hottest slot once the flat phase is over, else ORDER_USD_MIN. */
 export function heatStake(weight: number, slot: 1 | 2, trips: number, cfg: Pick<HeatConfig, 'sizing' | 'flatTrips'>, orderMin: number, orderMax: number): number {
   return cfg.sizing && slot === 1 && trips >= cfg.flatTrips ? orderMin + weight * (Math.max(orderMax, orderMin) - orderMin) : orderMin;
+}
+
+/** The evidence dial (HEAT_DIAL): the stake multiplier for a coin and side from what the lane has earned there. The mean
+ *  return per dollar staked is the prior (weight dialPriorTrips trips) blended with the record, and the multiplier is
+ *  1 + mean / dialScale, kept between dialFloor and dialMax. A size, never a gate: the floor is above zero. With the
+ *  default prior (minus 5% of the stake against a scale of 10%) an unseen coin and side starts at half stake and moves
+ *  with its own record: it grows once the record beats the prior and shrinks toward the floor as losses pile up. */
+export function heatDial(seg: HeatSegment | undefined, cfg: Pick<HeatConfig, 'dialPriorTrips' | 'dialPriorReturn' | 'dialScale' | 'dialFloor' | 'dialMax'>): { mult: number; mean: number; n: number } {
+  const n = seg?.n ?? 0;
+  const k = Math.max(cfg.dialPriorTrips, EPS);
+  const mean = (k * cfg.dialPriorReturn + (seg?.r ?? 0)) / (k + n);
+  return { mult: clamp(1 + mean / Math.max(cfg.dialScale, EPS), cfg.dialFloor, Math.max(cfg.dialMax, cfg.dialFloor)), mean, n };
 }
 
 /** DOGE is not traded anywhere in this project, whatever the settings list. */
@@ -463,7 +475,11 @@ export function decideHeat(i: HeatDecideInput): HeatDecideResult {
     }
     // Slot 1 is the hottest plan of an empty book; anything opened beside another heat position is slot 2.
     const slot: 1 | 2 = openCount === 0 && j === 0 ? 1 : 2;
-    const stake = heatStake(cand.weight, slot, state.trips, cfg, i.orderMin, i.orderMax);
+    const base = heatStake(cand.weight, slot, state.trips, cfg, i.orderMin, i.orderMax);
+    // The dial sizes after the flat phase (its evidence is the lane's own record); 'log' only records what it would set.
+    const dial = cfg.dial === 'off' ? undefined : heatDial(state.seg?.[`${c.asset}:${side}`], cfg);
+    const dialStake = dial === undefined ? undefined : clamp(base * dial.mult, cfg.dialFloor * i.orderMin, Math.max(i.orderMax, i.orderMin));
+    const stake = cfg.dial === 'on' && dialStake !== undefined && state.trips >= cfg.flatTrips ? dialStake : base;
     const sideCost = sideCostOf(m, side);
     const fair = clamp(yesMid(m) + (c.row.dir * c.row.odds) / 100, 0.01, 0.99);
     res.plans.push({
@@ -474,6 +490,7 @@ export function decideHeat(i: HeatDecideInput): HeatDecideResult {
       count: Math.max(1, Math.floor(stake / sideCost + EPS)),
       stakeUsd: round(stake, 2),
       weight: round(cand.weight, 4),
+      ...(dial === undefined || dialStake === undefined ? {} : { dialMult: round(dial.mult, 4), dialStakeUsd: round(dialStake, 2) }),
       slot,
       context: cand.context,
       fair: round(fair, 4),

@@ -1197,6 +1197,13 @@ function heatConfig(env: Env, dataDir: string): HeatConfig {
     // No 'entry': the daily curves are not above chance on their own (no daily row above the no-signal twin's best).
     perpsDaily: oneOf(env, 'HEAT_PERPS_DAILY', 'context', ['context', 'off'] as const),
     pairConflict: oneOf(env, 'HEAT_PAIR_CONFLICT', 'skip', ['skip', 'pair'] as const),
+    // The evidence dial (Nov 12 2026): off until Steven says; 'log' records the stake it would set beside the real one.
+    dial: oneOf(env, 'HEAT_DIAL', 'off', ['off', 'log', 'on'] as const),
+    dialPriorTrips: num(env, 'HEAT_DIAL_PRIOR_TRIPS', 20, 1, 10_000),
+    dialPriorReturn: num(env, 'HEAT_DIAL_PRIOR_RETURN', -0.05, -1, 1),
+    dialScale: num(env, 'HEAT_DIAL_SCALE', 0.1, 0.001, 10),
+    dialFloor: num(env, 'HEAT_DIAL_FLOOR', 0.2, 0.01, 1),
+    dialMax: num(env, 'HEAT_DIAL_MAX', 2, 1, 10),
   };
 }
 

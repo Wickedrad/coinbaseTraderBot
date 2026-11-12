@@ -3469,7 +3469,7 @@ export class Engine {
         decisionId, ticker: plan.ticker, lane: 'heat', model: modelId, kind: m.kind, tauSec: (m.closeTime - now) / 1000, bid: book.bestBid()?.price, ask: book.bestAsk()?.price, position: 0,
         heat: {
           asset: plan.asset, h: plan.h, dir: r.dir, key: r.key, kind: r.kind, rank: r.rank, of: r.of, heat: r.heat, share: r.share, odds: r.odds, barClose: r.barClose,
-          context: plan.context, weight: plan.weight, slot: plan.slot, stake: plan.stakeUsd, count: plan.count, fair: plan.fair, ruleId: plan.ruleId, run: snap?.run ?? null, packSha: snap?.packSha ?? null,
+          context: plan.context, weight: plan.weight, slot: plan.slot, stake: plan.stakeUsd, dialMult: plan.dialMult, dialStake: plan.dialStakeUsd, count: plan.count, fair: plan.fair, ruleId: plan.ruleId, run: snap?.run ?? null, packSha: snap?.packSha ?? null,
         },
         place: [{ side: order.side, price: order.price, count: order.count, purpose: order.purpose, edge: order.edge, why: order.why }],
         cancel: ours.map((o) => ({ clientOrderId: o.clientOrderId, reason: 'heat entry' })),

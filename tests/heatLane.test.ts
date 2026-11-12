@@ -6,10 +6,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
-  HeatLane, decideCall, decideHeat, emptyHeatState, heatCallKey, heatStake, heatWeight, heatWindowKey,
+  HeatLane, decideCall, decideHeat, emptyHeatState, heatCallKey, heatDial, heatStake, heatWeight, heatWindowKey,
   type HeatDecideInput, type HeatLaneState, type HeatPositionView, type HeatWindows,
 } from '../bot/heat/heatLane';
 import type { HeatCallRow, HeatCoinCalls, HeatConfig, HeatContext, HeatMarketView, HeatOpen, HeatSnapshot } from '../bot/heat/types';
+import { loadConfig } from '../bot/config';
+import { loadHeatState } from '../bot/heat/heatBook';
 import { tmpDir } from './helpers';
 
 const S = 1000, MIN = 60 * S;
@@ -21,7 +23,7 @@ const NOW = T0 + 5 * S;
 const DEFAULTS = {
   enabled: true, callsFile: '', assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45,
   sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5,
-  flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip',
+  flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip', dial: 'off', dialPriorTrips: 20, dialPriorReturn: -0.05, dialScale: 0.1, dialFloor: 0.2, dialMax: 2,
 };
 const settings = (o: Partial<HeatConfig> = {}): HeatConfig => ({ ...DEFAULTS, ...o }) as HeatConfig;
 /** The engine's default windows: 15-minute contracts 840..300 s before close, hourly 3300..600 s and 10c..90c. */
@@ -1056,4 +1058,64 @@ test('status: the book, the flat phase, the pilot budget left, the hour contexts
     ['BTC', 60, 'skip', 'BTC already has an open heat position'],
   ]);
   assert.deepEqual(st.notes, ['ETH: reader not ok: short window', 'SOL: not in the calls file', 'XRP: not in the calls file']);
+});
+
+// ---- The evidence dial (HEAT_DIAL, Nov 12 2026) ----
+
+const dialCfg = (o: Partial<HeatConfig> = {}) => settings({ dial: 'on', ...o });
+
+test('evidence dial: an unseen coin and side starts at half stake; wins grow it, losses shrink it to the floor, never to zero', () => {
+  const c = dialCfg();
+  assert.equal(heatDial(undefined, c).mult, 0.5, 'prior -5% against a 10% scale');
+  assert.ok(heatDial({ n: 30, r: 30 * 0.1 }, c).mult > 1, 'a record of +10% a trip grows past the base stake');
+  assert.equal(heatDial({ n: 30, r: 30 * 0.1 }, c).mult, 1 + ((20 * -0.05 + 3) / 50) / 0.1);
+  assert.equal(heatDial({ n: 200, r: 200 * -0.3 }, c).mult, c.dialFloor, 'a bad record bottoms at the floor');
+  assert.equal(heatDial({ n: 500, r: 500 * 2 }, c).mult, c.dialMax, 'and a great one stops at the cap');
+});
+
+test('evidence dial: off trades the old stake; log records the dial beside it; on sets the stake. Every call still trades', () => {
+  const state = seasoned({ seg: { 'BTC:yes': { n: 40, r: 40 * -0.3 } } });
+  const plan = (cfg: HeatConfig) => btc15({ cfg, state }).plans[0];
+  const off = plan(settings());
+  assert.deepEqual([off.stakeUsd, off.dialMult, off.dialStakeUsd], [20, undefined, undefined]);
+  const log = plan(settings({ dial: 'log' }));
+  assert.equal(log.stakeUsd, 20, 'log trades the old stake');
+  assert.equal(log.dialMult, 0.2);
+  assert.equal(log.dialStakeUsd, 4, '20 x 0.2 = $4, the floor share of ORDER_USD_MIN is $2');
+  const on = plan(dialCfg());
+  assert.equal(on.stakeUsd, 4);
+  assert.ok(on.count >= 1, 'the call still trades');
+  // A coin and side with no record starts at half; the other side of the same coin is its own segment.
+  assert.equal(btc15({ cfg: dialCfg(), state: seasoned() }).plans[0].stakeUsd, 10);
+});
+
+test('evidence dial: the stake never goes under the floor share of ORDER_USD_MIN or over ORDER_USD_MAX, and the flat phase is not dialed', () => {
+  const low = btc15({ cfg: dialCfg({ dialFloor: 0.3 }), state: seasoned({ seg: { 'BTC:yes': { n: 99, r: -99 } } }), orderMin: 10 }).plans[0];
+  assert.equal(low.stakeUsd, 6, 'weight 1 gives a base of 20; 20 x 0.3 = 6, never under 0.3 x 10 = 3');
+  const high = btc15({ cfg: dialCfg(), state: seasoned({ seg: { 'BTC:yes': { n: 99, r: 99 } } }) }).plans[0];
+  assert.equal(high.stakeUsd, 20, 'a mult of 2 on a base of 20 stops at ORDER_USD_MAX');
+  const flat = btc15({ cfg: dialCfg(), state: book({ trips: 5 }) }).plans[0];
+  assert.deepEqual([flat.stakeUsd, flat.dialMult], [10, 0.5], 'the first trips trade flat; the dial only logs');
+});
+
+test('evidence dial: a finished round trip is recorded as its return on the stake, per coin and side, and survives a restart', () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'heat.json');
+  const lane = new HeatLane(settings({ dial: 'on' }), file);
+  const m = m15('BTC', { closeTs: NOW + 840 * S, openTs: NOW - 60 * S });
+  const r = lane.decide(NOW, snapAt(T0, { BTC: [row()] }), [m], OPTS);
+  lane.sent(r.plans[0], NOW, 0, 0);
+  lane.sync(NOW + S, positions({ [TICKER]: FILLED }));
+  lane.sync(NOW + 10 * S, positions({ [TICKER]: { yes: 0, netCash: -1.2, fees: 0 } }));
+  const stake = r.plans[0].stakeUsd;
+  const seg = (JSON.parse(fs.readFileSync(file, 'utf8')) as HeatLaneState).seg?.['BTC:yes'];
+  assert.equal(seg?.n, 1);
+  assert.ok(Math.abs((seg?.r ?? 0) - -1.2 / stake) < 1e-5, JSON.stringify(seg));
+  assert.equal(loadHeatState(file).seg?.['BTC:yes']?.n, 1, 'and it loads back');
+});
+
+test('evidence dial: HEAT_DIAL reads off, log or on', () => {
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).heat.dial, 'off');
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), HEAT_DIAL: 'log', HEAT_DIAL_FLOOR: '0.3' }).heat.dialFloor, 0.3);
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), HEAT_DIAL: 'maybe' }));
 });

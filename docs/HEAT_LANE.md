@@ -121,6 +121,10 @@ The pilot budget (decision 6, `HEAT_PILOT_LOSS_USD=15`): in live, no new heat en
 | `HEAT_PERP_HORIZONS` | `60,240` | The horizons whose calls open a perps heat setup (with `HEAT_PERPS=entry`): 60 on 1h, 240 on 4h. Only these two values. |
 | `HEAT_PERPS_DAILY` | `context` | The daily call on the perps: `context` keeps a heat perp entry against the coin's live daily call out; `off` reads no daily rows. There is no `entry` value. |
 | `HEAT_PAIR_CONFLICT` | `skip` | A refining pair against its single: `skip` or `pair`. |
+| `HEAT_DIAL` | `off` | The evidence dial on the stake: `off`, `log` (records `dialMult` and `dialStakeUsd` on the plan and the entry row, trades the old stake) or `on` (sets the stake). A size, never a gate. |
+| `HEAT_DIAL_PRIOR_TRIPS` / `_PRIOR_RETURN` | `20` / `-0.05` | The prior for a coin and side with no record: 20 trips' worth, at a return of minus 5% of the stake. |
+| `HEAT_DIAL_SCALE` | `0.1` | The multiplier is 1 + mean return / scale. |
+| `HEAT_DIAL_FLOOR` / `_MAX` | `0.2` / `2` | The multiplier's bounds. The stake is never under the floor share of `ORDER_USD_MIN`, never over `ORDER_USD_MAX`. |
 
 Settings it reuses: `ORDER_USD_MIN` and `ORDER_USD_MAX` (the stake band; `HEAT_LANE=true` refuses to start with `ORDER_USD_MIN=0`), `RISK_MIN_SIDE_PRICE`, `ENTRY_WINDOW_15M`, `ENTRY_WINDOW_HOURLY`, `HOURLY_MID_BAND`, and for the perps `PERP_STOP_ATR_MULT` and `PERP_MIN_STOP_BPS`. The reader has its own (`HEAT_READER_MAX_RANK`, `HEAT_CLOCK_PACK` and the ones in `docs/HEAT_READER.md`).
 
@@ -139,3 +143,12 @@ All of these must be true before `HEAT_LANE=true` goes into the server's `bot.en
 4. `ORDER_USD_MIN` is above 0.
 
 Live additionally needs the usual live conditions (`docs/DEPLOY.md`): cash on the crypto shard for the stakes (two positions at most), the waterfall not armed at a small bankroll, and the kill override or the soft pause in place.
+
+## The evidence dial (HEAT_DIAL, Nov 12 2026)
+
+The loss study found the lane's loss is fees: before fees it made about -0.3c a contract, and no gate or exit beat trading less. So size, not entry, carries the control. Every call still trades.
+
+- The lane keeps, per coin and side (`seg` in the state file), its finished round trips and the sum of each one's P&L over its stake.
+- The mean return is the prior (`HEAT_DIAL_PRIOR_TRIPS` trips at `HEAT_DIAL_PRIOR_RETURN`) blended with that record. The stake is the usual heat stake times `1 + mean / HEAT_DIAL_SCALE`, kept between `HEAT_DIAL_FLOOR` and `HEAT_DIAL_MAX`. An unseen coin and side starts at half stake, shrinks toward the floor as its losses pile up, and grows once its record beats the prior, up to `ORDER_USD_MAX`.
+- The first `HEAT_FLAT_TRIPS` trips stay flat; the dial only logs there.
+- **Pre-set test (fixed before any paper day under it).** Run `HEAT_DIAL=log` on fresh paper days. For every closed trip, the dial's P&L is the trip's P&L times `dialStake / stake traded`. Compare it with a uniform shrink to the same total dollars staked. The dial passes if it beats the uniform shrink in dollars lost per dollar staked on at least 3 of 4 fresh days and in total, and its stake-weighted mean multiplier stays above 0.3 (it is not just a smaller bot). Otherwise it stays off.
