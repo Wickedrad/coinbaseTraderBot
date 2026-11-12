@@ -1,77 +1,71 @@
 [
   {
-    "id": "A|s2|hs1prod|F1",
+    "id": "A|s2|hs1prod-s180|F1",
     "overrides": {
       "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_START_SHIFT_MIN": 180
     },
     "fill": "F1"
   },
   {
-    "id": "A|s2|hs1prod-lbm|F1",
+    "id": "A|s2|hs1prod-s180lbm|F1",
     "overrides": {
       "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
       "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_START_SHIFT_MIN": 180,
       "TENNIS_LIVE_BY_MOVE": true
     },
     "fill": "F1"
   },
   {
-    "id": "A|s2|fp0|F1",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "TENNIS_UNDERDOG_LATE_PROGRESS": 0
-    },
-    "fill": "F1"
-  },
-  {
-    "id": "A|s2|fp0-lbm|F1",
+    "id": "A|s2|fp0-s180|F1",
     "overrides": {
       "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
       "TENNIS_CONF_WINDOW_SEC": 120,
       "TENNIS_UNDERDOG_LATE_PROGRESS": 0,
+      "TENNIS_START_SHIFT_MIN": 180
+    },
+    "fill": "F1"
+  },
+  {
+    "id": "A|s2|fp0-s180lbm|F1",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 0,
+      "TENNIS_START_SHIFT_MIN": 180,
       "TENNIS_LIVE_BY_MOVE": true
     },
     "fill": "F1"
   },
   {
-    "id": "A|s2|mkprod|F1",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "TENNIS_TRAIL": false,
-      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
-      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7
-    },
-    "fill": "F1"
-  },
-  {
-    "id": "A|s2|mkprod-lbm|F1",
+    "id": "A|s2|mkprod-s180|F1",
     "overrides": {
       "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
       "TENNIS_CONF_WINDOW_SEC": 120,
       "TENNIS_TRAIL": false,
       "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
       "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
+      "TENNIS_START_SHIFT_MIN": 180
+    },
+    "fill": "F1"
+  },
+  {
+    "id": "A|s2|mkprod-s180lbm|F1",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_TRAIL": false,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
+      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
+      "TENNIS_START_SHIFT_MIN": 180,
       "TENNIS_LIVE_BY_MOVE": true
     },
     "fill": "F1"
   },
   {
-    "id": "A|s2|hold70|F1",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "TENNIS_TP_PCT": 5,
-      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
-      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
-      "PACER_MIN_TAKE_USD": 10000
-    },
-    "fill": "F1"
-  },
-  {
-    "id": "A|s2|hold70-lbm|F1",
+    "id": "A|s2|hold70-s180|F1",
     "overrides": {
       "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
       "TENNIS_CONF_WINDOW_SEC": 120,
@@ -79,6 +73,20 @@
       "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
       "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
       "PACER_MIN_TAKE_USD": 10000,
+      "TENNIS_START_SHIFT_MIN": 180
+    },
+    "fill": "F1"
+  },
+  {
+    "id": "A|s2|hold70-s180lbm|F1",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_TP_PCT": 5,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
+      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
+      "PACER_MIN_TAKE_USD": 10000,
+      "TENNIS_START_SHIFT_MIN": 180,
       "TENNIS_LIVE_BY_MOVE": true
     },
     "fill": "F1"

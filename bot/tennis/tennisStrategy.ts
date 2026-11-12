@@ -248,9 +248,10 @@ export class MatchTracker {
       this.mids.set(m.ticker, h);
     }
     if (s.score) this.score = s.score;
+    const start = s.startTime === undefined ? undefined : s.startTime - this.cfg.startShiftMin * 60_000;
     if (this.liveSince === undefined) {
-      if (s.startTime !== undefined && s.now >= s.startTime) this.liveSince = s.startTime;
-      else if ((s.startTime === undefined || this.cfg.liveByMove) && p !== undefined) {
+      if (start !== undefined && s.now >= start) this.liveSince = start;
+      else if ((start === undefined || this.cfg.liveByMove) && p !== undefined) {
         const recent = this.history.filter((h) => h.ts >= s.now - 3 * 60_000);
         const moved = recent.length > 1 && Math.max(...recent.map((h) => h.p)) - Math.min(...recent.map((h) => h.p)) >= this.cfg.liveMoveCents - 1e-9;
         if (moved) { this.liveSince = s.now; this.pPre = recent[0].p; }
@@ -267,7 +268,7 @@ export class MatchTracker {
     }
     if (s.now >= s.closeTime) return 'done';
     if (this.liveSince === undefined) {
-      const soon = s.startTime !== undefined && s.startTime - s.now <= this.cfg.preStartMin * 60_000;
+      const soon = start !== undefined && start - s.now <= this.cfg.preStartMin * 60_000;
       return soon ? 'underdog_window' : 'pre';
     }
     if (s.now - this.liveSince <= this.cfg.entryWindowMin * 60_000) return 'underdog_window';

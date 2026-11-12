@@ -2,5 +2,5 @@
   "stage": "2",
   "pool": "disc",
   "shards": 8,
-  "note": "Match-clock fix candidate (calendar line 10z): four exit settings (hs1prod, fp0, mkprod, hold70) with and without TENNIS_LIVE_BY_MOVE (in-play detected from a 3c price move even before Kalshi's published start), fill F1. Information only, H-DEV."
+  "note": "Match-clock fix, second candidate (calendar line 10ac): published start moved 3 h earlier (TENNIS_START_SHIFT_MIN=180), alone and with TENNIS_LIVE_BY_MOVE, on four exit settings, fill F1. Information only, H-DEV."
 }

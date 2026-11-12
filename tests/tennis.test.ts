@@ -139,6 +139,18 @@ test('in-play detection with a published start that has not passed: only with TE
   assert.equal(loadConfig({} as NodeJS.ProcessEnv).tennis.liveByMove, false, 'production default: off');
 });
 
+test('TENNIS_START_SHIFT_MIN moves the published start earlier (live from the shifted start; default 0)', () => {
+  const start = t0 + 200 * 60_000;
+  const cfg = { ...T, startShiftMin: 180 };
+  const tr = new MatchTracker('E', cfg);
+  const snap = (now: number) => ({ event: 'E', now, startTime: start, closeTime: t0 + 86_400_000, markets: [mk('E-A', 0.59, 0.61), mk('E-B', 0.39, 0.41)] });
+  assert.equal(decideMatch(tr, snap(t0 - 20 * 60_000), cfg, budget).phase, 'pre');
+  assert.equal(decideMatch(tr, snap(t0 + 15 * 60_000), cfg, budget).phase, 'underdog_window', 'within 30 min of the shifted start');
+  decideMatch(tr, snap(t0 + 20 * 60_000), cfg, budget);
+  assert.equal(tr.liveSince, t0 + 20 * 60_000);
+  assert.equal(loadConfig({} as NodeJS.ProcessEnv).tennis.startShiftMin, 0);
+});
+
 test('in-play detection without a start time, then favorite re-entry once half the match is done', () => {
   const tr = new MatchTracker('E', T);
   let now = t0;

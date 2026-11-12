@@ -728,6 +728,9 @@ export interface TennisConfig {
   /** Also detect in-play from that price move while a published start time has not yet passed (Kalshi's published start
    *  can come after the first serve, even after the match ended). Off by default: production keeps the published start. */
   liveByMove: boolean;
+  /** Minutes the published start is moved earlier (Kalshi's tennis start field reads like the expected finish, about 3 h
+   *  after the first serve). 0 = the published start as is (production). */
+  startShiftMin: number;
   /** Order-book ratcheting trailing stop from the target price (both legs) instead of a fixed take-profit. */
   trail: boolean;
   /** Favorite leg: the trail arms at min(favTrailCap, entry + favTrailCents). */
@@ -1628,6 +1631,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       scorePollSec: num(env, 'TENNIS_SCORE_POLL_SEC', 15, 5, 300),
       liveMoveCents: num(env, 'TENNIS_LIVE_MOVE_CENTS', 0.03, 0.005, 0.5),
       liveByMove: bool(env, 'TENNIS_LIVE_BY_MOVE', false),
+      startShiftMin: num(env, 'TENNIS_START_SHIFT_MIN', 0, 0, 600),
       trail: bool(env, 'TENNIS_TRAIL', true),
       favTrailCents: num(env, 'TENNIS_FAV_TRAIL_CENTS', 0.06, 0.01, 0.5),
       favTrailCap: num(env, 'TENNIS_FAV_TRAIL_CAP', 0.97, 0.5, 0.99),
