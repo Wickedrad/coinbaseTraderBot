@@ -160,3 +160,6 @@ its output kept apart (its own run id and Drive folder) and labelled "cluster 1.
 variant, no other constant changes, one value only (no search over shares), and its results are information beside the
 frozen variant (two variants are two looks: say so when reading them). The 1.0% value is round, between the median and the
 p99 of the largest-bucket share.
+
+## Run log
+- 08:57 UTC: push with tags [xd-lite] (all four coins unless an assets tag is given)
