@@ -242,6 +242,26 @@ jobs:
           (cd python && python3 -m oracle.heat league --inputs ../data/coins --out ../out/league) | tail -120
           ls -la out/league
           bash deploy/drive_lab.sh put "models/oracle-xd/runs/$GITHUB_RUN_ID/league" out/league
+      - name: Collect the study's own meta numbers (aggregates only)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, glob, os
+          keys = ('near_duplicates', 'direction_coupling', 'reading_share', 'model', 'constants', 'xd_input', 'skipped_readings',
+                  'skipped_inherited_from_real_coin', 'study', 'readings', 'event_levels', 'tested')
+          out = {}
+          for f in sorted(glob.glob('data/coins/*/meta.json')):
+              name = os.path.basename(os.path.dirname(f))
+              try:
+                  m = json.load(open(f))
+              except Exception as e:
+                  out[name] = {'error': str(e)}
+                  continue
+              out[name] = {k: m[k] for k in keys if k in m}
+          os.makedirs('out/league', exist_ok=True)
+          json.dump(out, open('out/league/xd_meta.json', 'w'), indent=1, sort_keys=True)
+          print('xd_meta.json', len(out), 'series', os.path.getsize('out/league/xd_meta.json'), 'bytes')
+          PY
       - name: Commit the small league files to this branch (aggregates only; a bot push starts no workflow)
         env:
           BR: ${{ github.ref_name }}
@@ -249,7 +269,7 @@ jobs:
           set -euo pipefail
           dst=research/oracle_xd/latest
           rm -rf "$dst"; mkdir -p "$dst"
-          cp out/league/league.md out/league/summary.json "$dst/"
+          cp out/league/league.md out/league/summary.json "$dst/"; cp out/league/xd_meta.json "$dst/" 2>/dev/null || true
           echo "$GITHUB_RUN_ID $GITHUB_SHA" > "$dst/RUN"
           du -sh "$dst"
           git config user.name "github-actions[bot]"
