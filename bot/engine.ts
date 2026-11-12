@@ -54,7 +54,7 @@ import type { MacroEvent } from './model/featureEngine';
 import { ladderQuotes } from './model/ladder';
 import type { BinaryExposure, DirectionalContext, PerpHedger, PerpPacer } from './perps/hedger';
 import type { DirectionalTrader } from './perps/hedger';
-import { decideMatch, MatchTracker, type MatchMarket } from './tennis/tennisStrategy';
+import { decideMatch, MatchTracker, tennisStartTime, type MatchMarket } from './tennis/tennisStrategy';
 import { parseTennisScore } from './tennis/liveScore';
 import { diffScore, findMatch, toTennisScore, type LiveTennisMatch, type TennisScoreClient } from './tennis/liveTennisApi';
 import { tennisFairInputs, type TennisFairModel } from './tennis/tennisFair';
@@ -1410,7 +1410,7 @@ export class Engine {
   private readonly killExitTs = new Map<string, number>();
   /** Live tennis scores (TENNIS_SCORE_FEED=kalshi): milestone per event, last poll, raw payload. */
   private readonly scores = new Map<string, { milestone?: { id: string; type: string } | null; polledTs: number; score?: TennisScore; scoreAt?: number; named?: boolean; raw?: unknown; error?: string; pAtPoll?: number; prev?: LiveTennisMatch; breaks?: [number, number]; breaksTotal?: [number, number] }>();
-  readonly tennisStatus = new Map<string, { event: string; phase: string; fairA?: number; pA?: number; progress: number; progressDetail?: Record<string, unknown>; score?: TennisScore; scoreRaw?: unknown; liveSince?: number; notes: string[]; tickers: string[]; updatedTs: number; trailingStops?: Record<string, number>; confluence?: Record<string, unknown> }>();
+  readonly tennisStatus = new Map<string, { event: string; phase: string; fairA?: number; pA?: number; progress: number; progressDetail?: Record<string, unknown>; score?: TennisScore; scoreRaw?: unknown; liveSince?: number; startTime?: number; publishedStart?: number; notes: string[]; tickers: string[]; updatedTs: number; trailingStops?: Record<string, number>; confluence?: Record<string, unknown> }>();
 
   /** Tennis budget use: worst-case loss of all tennis positions + resting orders vs the 25% cap. */
   tennisBudget(): { used: number; cap: number; bankroll: number } {
@@ -1527,8 +1527,12 @@ export class Engine {
         };
       });
       const totals = this.riskTotals(0, event);
+      // The match clock: Kalshi's tennis start field is the expected finish, about 3 h after the first serve; the real start
+      // comes from expiration_time (tennisStartTime). The tracker and the Live Tennis polling both run on it (Nov 12).
+      const publishedStart = ms.find((m) => m.startTime)?.startTime;
+      const start = tennisStartTime(publishedStart, ms.find((m) => m.expirationTime)?.expirationTime, T);
       const sc = T.scoreFeed === 'kalshi' ? await this.pollScore(event, now)
-        : T.scoreFeed === 'livetennis' ? await this.pollLiveTennis(event, now, ms, MatchTracker.probability(markets), markets.some((x) => x.position !== 0), tracker.liveSince !== undefined || (ms.find((m) => m.startTime)?.startTime ?? Infinity) - now <= 10 * 60_000)
+        : T.scoreFeed === 'livetennis' ? await this.pollLiveTennis(event, now, ms, MatchTracker.probability(markets), markets.some((x) => x.position !== 0), tracker.liveSince !== undefined || (start ?? Infinity) - now <= 10 * 60_000)
         : undefined;
       // Tennis SNN column inputs and the tennis MLP's fair value (it decides whether an entry is worth taking).
       const tv = this.snnTennisObserve(event, ms, markets, tracker, sc, now);
@@ -1537,7 +1541,7 @@ export class Engine {
       // (TENNIS_NO_EXIT_BEFORE_END_FRAC, 30%, by its progress: the live score against the format's sets, else the time and
       // information clocks) riding in profit until the win chance turns (TENNIS_PROB_TURN). Out of profit: the loser cut by
       // progress (20c at the start, 10c at 60%, 3c from 85%), and in the last 10% (TENNIS_END_CUT_FRAC) the end cut (Nov 12).
-      const out = decideMatch(tracker, { event, now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score,
+      const out = decideMatch(tracker, { event, now, startTime: start, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score,
         // Only the Live Tennis feed names the score's players, and only when both market titles matched its two players (a
         // surname two players share can pick the wrong match); Kalshi's live data does not say which player is home.
         scoreAt: sc?.scoreAt, scoreOriented: T.scoreFeed === 'livetennis' && sc?.named === true, fairA }, T,
@@ -1576,7 +1580,7 @@ export class Engine {
         });
       }
       const notes = [...out.notes, ...(tradeable ? [] : ['tracking only: set TENNIS_LIVE=true to trade tennis with real money'])];
-      this.tennisStatus.set(event, { event, phase: out.phase, fairA, pA: MatchTracker.probability(markets), progress: tracker.progress(now, markets), progressDetail: tracker.progressDetail(now, markets), score: tracker.score, scoreRaw: sc?.raw ?? sc?.error, liveSince: tracker.liveSince, notes, tickers: ms.map((m) => m.ticker), updatedTs: now, trailingStops: Object.fromEntries(tracker.stops), confluence: Object.fromEntries(tracker.signals) });
+      this.tennisStatus.set(event, { event, phase: out.phase, fairA, pA: MatchTracker.probability(markets), progress: tracker.progress(now, markets), progressDetail: tracker.progressDetail(now, markets), score: tracker.score, scoreRaw: sc?.raw ?? sc?.error, liveSince: tracker.liveSince, startTime: start, publishedStart, notes, tickers: ms.map((m) => m.ticker), updatedTs: now, trailingStops: Object.fromEntries(tracker.stops), confluence: Object.fromEntries(tracker.signals) });
 
       // Reconcile resting tennis orders with the plan (never touch another market's orders).
       // Entries shrink with the pool's break-even scale (net losses), never below 1 contract.

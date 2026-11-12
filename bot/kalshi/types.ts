@@ -95,8 +95,12 @@ export interface MarketInfo {
   result?: 'yes' | 'no' | '';
   /** Market title (sports: player / match / tournament). */
   title?: string;
-  /** Scheduled event start, when published (sports). */
+  /** Scheduled event start, when published (sports). On tennis it is the expected finish, not the first serve: see
+   *  tennisStartTime (bot/tennis/tennisStrategy.ts). */
   startTime?: number;
+  /** The market's scheduled expiration (expiration_time). Kalshi keeps it when a market closes early, unlike close_time;
+   *  on tennis it is the scheduled first serve plus 14 days. */
+  expirationTime?: number;
   /** The exchange shard (matching engine) the market trades on: its orders are collateralized from that shard's cash. */
   exchangeIndex?: number;
 }

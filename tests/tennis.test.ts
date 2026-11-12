@@ -20,7 +20,7 @@ import { KillSwitch } from '../bot/risk/killSwitch';
 import { RiskGateway } from '../bot/risk/riskGateway';
 import { Reconciler } from '../bot/recon/reconciler';
 import { QuotaFloors, type PacerFloorMode } from '../bot/risk/quotaPacer';
-import { decideMatch, MatchTracker, SCORE_FRESH_MS, tennisLoserCutAt, tennisSize, WIN_CHANCE_MAX_SPREAD, type MatchMarket } from '../bot/tennis/tennisStrategy';
+import { decideMatch, MatchTracker, SCORE_FRESH_MS, tennisLoserCutAt, tennisSize, tennisStartTime, WIN_CHANCE_MAX_SPREAD, type MatchMarket } from '../bot/tennis/tennisStrategy';
 import { impliedModel } from '../bot/tennis/tennisModel';
 import { openExchange, tmpAudit, tmpDir } from './helpers';
 
@@ -345,7 +345,7 @@ test('engine trades tennis inside its own 25% budget and keeps it out of the cry
   const dir = tmpDir();
   const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false' });
   const now = Date.now();
-  const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + 5 * 60_000 });
+  const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + 5 * 60_000, expirationTime: now + 5 * 60_000 + 14 * 86_400_000 });
   const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
   const rest = {
     getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
@@ -392,7 +392,7 @@ test('engine: with TENNIS_SERIES=KXATPMATCH,KXWTAMATCH (the paper days, deploy/p
   assert.deepEqual(cfg.tennis.series, ['KXATPMATCH', 'KXWTAMATCH']);
   const now = Date.now();
   // Closing in 6 h (past the crypto catalog horizon), starting in 5 min: only a match market is kept for that.
-  const m = (series: string, ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: series, eventTicker: `${series}-E1`, status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + 5 * 60_000 });
+  const m = (series: string, ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: series, eventTicker: `${series}-E1`, status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + 5 * 60_000, expirationTime: now + 5 * 60_000 + 14 * 86_400_000 });
   const bySeries: Record<string, MarketInfo[]> = {
     KXATPMATCH: [m('KXATPMATCH', 'KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH', 'KXATPMATCH-E1-DOG', 'Will Dog win?')],
     KXWTAMATCH: [m('KXWTAMATCH', 'KXWTAMATCH-E1-FAV', 'Will Fav win?'), m('KXWTAMATCH', 'KXWTAMATCH-E1-DOG', 'Will Dog win?')],
@@ -434,7 +434,7 @@ test('engine: the quota snipe sells a tennis position whose profit after fees (e
     const dir = tmpDir();
     const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false' });
     const now = Date.now();
-    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 30 * 60_000 });
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 30 * 60_000, expirationTime: now - 30 * 60_000 + 14 * 86_400_000 });
     const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
     const rest = {
       getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
@@ -473,7 +473,7 @@ test('engine: with the kill switch engaged a tennis position not in profit after
     const dir = tmpDir();
     const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false' });
     const now = Date.now();
-    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 30 * 60_000 });
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 30 * 60_000, expirationTime: now - 30 * 60_000 + 14 * 86_400_000 });
     const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
     const rest = {
       getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
@@ -661,7 +661,7 @@ test('engine: the tennis profit exits get the break-even after fees from the pos
     // Started 2 hours ago, no score feed: a fresh tracker's information clock reads 0 on its first tick, so the progress is half
     // the time clock, about 0.44: past underdogLateProgress (0.35), short of underdogCutProgress (0.6) and of the last 30%
     // (settleFrac: the ride and the end cut), so of the underdog's exits only underdog_late (or the trail from 0.21) can sell.
-    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3 * 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 120 * 60_000 });
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3 * 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 120 * 60_000, expirationTime: now - 120 * 60_000 + 14 * 86_400_000 });
     const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
     const rest = {
       getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }),
@@ -735,7 +735,7 @@ test('live tennis scores: a match that has not started spends no calls of the da
     const dir = tmpDir();
     const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_SCORE_FEED: 'livetennis' });
     const now = Date.now();
-    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + startInMin * 60_000 });
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now + startInMin * 60_000, expirationTime: now + startInMin * 60_000 + 14 * 86_400_000 });
     const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
     const rest = { getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }), getOpenMarkets: async (s: string) => (s === 'KXATPMATCH' ? markets : []), getMarket: async () => undefined } as unknown as KalshiRest;
     const audit = tmpAudit();
@@ -770,7 +770,7 @@ test('live tennis scores: a slate match only one title names gives no score; the
     const dir = tmpDir();
     const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_SCORE_FEED: 'livetennis' });
     const now = Date.now();
-    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 10 * 60_000 });
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 10 * 60_000, expirationTime: now - 10 * 60_000 + 14 * 86_400_000 });
     // Titles with surnames only, so the sister's match is found by one of them (with first names it would not be found).
     const markets = [m('KXATPMATCH-E1-AND', 'Will Andreeva win the Andreeva vs Gauff : Wuhan match?'), m('KXATPMATCH-E1-GAU', 'Will Gauff win the Andreeva vs Gauff : Wuhan match?')];
     const rest = { getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }), getOpenMarkets: async (s: string) => (s === 'KXATPMATCH' ? markets : []), getMarket: async () => undefined } as unknown as KalshiRest;
@@ -1095,4 +1095,84 @@ test('tennis: after a ride is sold on a turn, the favorite leg does not buy the 
   assert.ok(after.notes.some((n) => n.includes('no new entry on R-A (fav_entry): a ride was sold there this match when the win chance turned')), JSON.stringify(after.notes));
   tr.turnSold.clear();
   assert.ok(tick(b, 0).plans.some((p) => p.ticker === 'R-A' && p.leg === 'fav_entry'), 'without the block the leg buys it back');
+});
+
+test('match clock: the real start is expiration_time minus 14 days; without it, the published time moved 3 hours earlier', () => {
+  const real = t0;
+  const published = real + 3 * 3_600_000; // Kalshi's start field on tennis: the expected finish
+  const expiration = real + 14 * 86_400_000;
+  assert.equal(T.startFromExpiry, true);
+  assert.equal(T.startShiftMin, 180);
+  assert.equal(tennisStartTime(published, expiration, T), real);
+  assert.equal(tennisStartTime(published, undefined, T), published - 180 * 60_000);
+  // An expiration that does not fit the rule (after the published time, or more than 6 h before it) is not used.
+  assert.equal(tennisStartTime(published, published + 60_000 + 14 * 86_400_000, T), published - 180 * 60_000);
+  assert.equal(tennisStartTime(published, published - 7 * 3_600_000 + 14 * 86_400_000, T), published - 180 * 60_000);
+  assert.equal(tennisStartTime(published, expiration, { startFromExpiry: false, startShiftMin: 180 }), published - 180 * 60_000);
+  assert.equal(tennisStartTime(undefined, expiration, T), undefined, 'no published time: the tracker reads play from the price');
+  const old = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_START_FROM_EXPIRY: 'false', TENNIS_START_SHIFT_MIN: '0', TENNIS_LIVE_BY_MOVE: 'false' }).tennis;
+  assert.equal(tennisStartTime(published, expiration, old), published, 'both off: the old clock');
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_START_SHIFT_MIN: '601' }));
+});
+
+test('match clock: a 3c move in the hour before the start marks the match live; earlier, without a move, or with TENNIS_LIVE_BY_MOVE=false it does not', () => {
+  assert.equal(T.liveByMove, true);
+  assert.equal(T.liveByMoveLeadMin, 60);
+  const off = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_LIVE_BY_MOVE: 'false' }).tennis;
+  const run = (cfg: typeof T, startInMin: number, dogTo: number) => {
+    const tr = new MatchTracker('M', cfg);
+    const snap = (now: number, dog: number) => ({ event: 'M', now, startTime: t0 + startInMin * 60_000, closeTime: t0 + 86_400_000, markets: [mk('M-FAV', 1 - dog - 0.02, 1 - dog), mk('M-DOG', dog - 0.01, dog + 0.01)] });
+    tr.observe(snap(t0 - 60_000, 0.2));
+    const phase = tr.observe(snap(t0, dogTo));
+    return { live: tr.liveSince, phase };
+  };
+  const moved = run(T, 45, 0.25);
+  assert.equal(moved.live, t0, 'in play 45 minutes before the listed start');
+  assert.equal(moved.phase, 'underdog_window');
+  assert.equal(run(T, 45, 0.2).live, undefined, 'no move: still pre-match');
+  assert.equal(run(T, 90, 0.25).live, undefined, 'more than an hour before the start: a move is news, not play');
+  assert.equal(run(off, 45, 0.25).live, undefined, 'TENNIS_LIVE_BY_MOVE=false: only the clock starts the match');
+});
+
+test('match clock: a Kalshi-style listing (start field = expected finish) goes live at the real start and reads Live Tennis from it', async () => {
+  const { TennisScoreClient } = await import('../bot/tennis/liveTennisApi');
+  const run = async (startedMinAgo: number, withExpiry = true) => {
+    const dir = tmpDir();
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_SCORE_FEED: 'livetennis' });
+    const now = Date.now();
+    const real = now - startedMinAgo * 60_000;
+    // As listed on Nov 12: occurrence_datetime 3 h after the first serve, expiration_time the first serve plus 14 days.
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: real + 3 * 3_600_000, tickSize: 0.01, title, startTime: real + 3 * 3_600_000, ...(withExpiry ? { expirationTime: real + 14 * 86_400_000 } : {}) });
+    const markets = [m('KXATPMATCH-E1-FAV', 'Will Fav win?'), m('KXATPMATCH-E1-DOG', 'Will Dog win?')];
+    const rest = { getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }), getOpenMarkets: async (s: string) => (s === 'KXATPMATCH' ? markets : []), getMarket: async () => undefined } as unknown as KalshiRest;
+    const audit = tmpAudit();
+    const md = new MarketData(cfg, rest, undefined, new Recorder(path.join(dir, 'rec')));
+    await md.refreshCatalog(now);
+    md.book('KXATPMATCH-E1-FAV').applySnapshot({ bids: [{ price: 0.84, size: 100 }], asks: [{ price: 0.86, size: 100 }] }, Date.now());
+    md.book('KXATPMATCH-E1-DOG').applySnapshot({ bids: [{ price: 0.14, size: 300 }], asks: [{ price: 0.17, size: 100 }] }, Date.now());
+    const paper = new PaperExchange(undefined, 200, (t) => md.books.get(t), () => ({ takerMultiplier: 1, makerMultiplier: 1 }));
+    const oms = new Oms({ gateway: paper, audit, statePath: path.join(dir, 'oms.json'), feesFor: (t) => md.feesFor(t), sleep: async () => undefined });
+    const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: () => undefined });
+    let calls = 0;
+    const tennisScores = new TennisScoreClient({ apiKey: 'k', fetchFn: (async () => { calls++; return new Response(JSON.stringify({ data: [], meta: { offset: 0, limit: 200, has_more: false } }), { status: 200 }); }) as unknown as typeof fetch });
+    const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill: new KillSwitch(path.join(dir, 'kill.json'), audit), recon, model: MetaModel.identity(), exchangeStatus: openExchange(), tennisScores });
+    engine.balance = (await recon.run('startup'))!.balance;
+    await engine.tick();
+    const tr = (engine as unknown as { matches: Map<string, MatchTracker> }).matches.get('KXATPMATCH-E1');
+    return { calls, real, tr, status: engine.tennisStatus.get('KXATPMATCH-E1') };
+  };
+  // Ten minutes into the match: before the fix the bot read it as starting in 2 h 50 min, pre-match, and never asked for a score.
+  const inPlay = await run(10);
+  assert.equal(inPlay.status?.publishedStart, inPlay.real + 3 * 3_600_000);
+  assert.equal(inPlay.status?.startTime, inPlay.real);
+  assert.equal(inPlay.tr?.liveSince, inPlay.real, 'live from the real first serve');
+  assert.equal(inPlay.calls, 1, 'Live Tennis is read for a match in play');
+  // Two hours before the first serve: pre-match, no call.
+  const early = await run(-120);
+  assert.equal(early.tr?.liveSince, undefined);
+  assert.equal(early.calls, 0);
+  // No expiration_time on the listing: the published time moved 3 h earlier gives the same start.
+  const noExpiry = await run(10, false);
+  assert.equal(noExpiry.status?.startTime, noExpiry.real);
+  assert.equal(noExpiry.tr?.liveSince, noExpiry.real);
 });
