@@ -32,11 +32,38 @@ test('live tennis: findMatch takes the match both titles name first, and says wh
   assert.deepEqual([hit.match.id, hit.flip, hit.named], [2, false, true]);
   const flipped = findMatch([sister, match({ id: 3, player1: { name: 'Coco Gauff' }, player2: { name: 'Mirra Andreeva' } })], tA, tB)!;
   assert.deepEqual([flipped.match.id, flipped.flip, flipped.named], [3, true, true]);
-  // Only the sister's match live: one surname hits and the other title names no one in it. Still found (it feeds the progress
-  // as before), but not named; nor is a match found from one title alone.
-  const one = findMatch([sister], tA, tB)!;
+  // Only the sister's match live: the titles' first names disagree with the feed's (Mirra, Erika), so it is not hers at all.
+  assert.equal(playerIndexForTitle(sister, tA), undefined);
+  assert.equal(findMatch([sister], tA, tB), undefined);
+  // Titles with surnames only: one surname hits and the other title names no one in that match. Found, but not named; nor is
+  // a match found from one title alone.
+  const sA = 'Will Andreeva win the Andreeva vs Gauff : Wuhan match?', sB = 'Will Gauff win the Andreeva vs Gauff : Wuhan match?';
+  const one = findMatch([sister], sA, sB)!;
   assert.deepEqual([one.match.id, one.named], [1, false]);
-  assert.equal(findMatch([sister], tA)?.named, false);
+  assert.equal(findMatch([sister], sA)?.named, false);
+  assert.equal(findMatch([sister], tA)?.named, undefined);
+});
+
+test('live tennis: both surnames shared (Wang, Zhang): first names tell the matches apart; without them two matches are ambiguous', () => {
+  const other = match({ id: 1, player1: { name: 'Yafan Wang' }, player2: { name: 'Lin Zhang' } });
+  const real = match({ id: 2, player1: { name: 'Shuai Zhang' }, player2: { name: 'Xinyu Wang' } });
+  const tA = 'Will Xinyu Wang win the Wang vs Zhang : Guangzhou match?', tB = 'Will Shuai Zhang win the Wang vs Zhang : Guangzhou match?';
+  assert.equal(findMatch([other], tA, tB), undefined, 'the other match only: not ours');
+  const hit = findMatch([other, real], tA, tB)!;
+  assert.deepEqual([hit.match.id, hit.flip, hit.named], [2, true, true]);
+  // The feed giving names surname first (Wang Xinyu): matched on the title's first word, no first-name check.
+  const reversed = match({ id: 3, player1: { name: 'Zhang Shuai' }, player2: { name: 'Wang Xinyu' } });
+  assert.deepEqual([playerIndexForTitle(reversed, tA), playerIndexForTitle(reversed, tB)], [1, 0]);
+  // An initial in the feed is a first name too; a hyphenated surname in the title is checked against its own first word.
+  assert.equal(playerIndexForTitle(match({ player1: { name: 'X. Wang' }, player2: { name: 'S. Zhang' } }), tA), 0);
+  assert.equal(playerIndexForTitle(match({ player1: { name: 'Roberto Bautista-Agut' }, player2: { name: 'Jannik Sinner' } }), 'Will Roberto Bautista Agut win the Bautista Agut vs Sinner match?'), 0);
+  assert.equal(playerIndexForTitle(match({ player1: { name: 'Felix Auger-Aliassime' }, player2: { name: 'Jannik Sinner' } }), 'Will Félix Auger-Aliassime win the Auger-Aliassime vs Sinner match?'), 0);
+  // Titles with surnames only cannot tell them apart: two live matches both titles name are ambiguous (not named).
+  const sA = 'Will Wang win the Wang vs Zhang : Guangzhou match?', sB = 'Will Zhang win the Wang vs Zhang : Guangzhou match?';
+  const amb = findMatch([other, real], sA, sB)!;
+  assert.deepEqual([amb.match.id, amb.named], [1, false]);
+  assert.equal(findMatch([real], sA, sB)?.named, true, 'one such match live: named');
+  assert.equal(findMatch([real, { ...real }], sA, sB)?.named, true, 'the same match listed twice is not two');
 });
 
 test('live tennis: name matching to Kalshi titles, orientation, current-set games, tiebreak points, breaks', () => {

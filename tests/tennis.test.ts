@@ -725,7 +725,8 @@ test('live tennis scores: a slate match only one title names gives no score; the
     const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_SCORE_FEED: 'livetennis' });
     const now = Date.now();
     const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 10 * 60_000 });
-    const markets = [m('KXATPMATCH-E1-AND', 'Will Mirra Andreeva win the Andreeva vs Gauff : Wuhan match?'), m('KXATPMATCH-E1-GAU', 'Will Coco Gauff win the Andreeva vs Gauff : Wuhan match?')];
+    // Titles with surnames only, so the sister's match is found by one of them (with first names it would not be found).
+    const markets = [m('KXATPMATCH-E1-AND', 'Will Andreeva win the Andreeva vs Gauff : Wuhan match?'), m('KXATPMATCH-E1-GAU', 'Will Gauff win the Andreeva vs Gauff : Wuhan match?')];
     const rest = { getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }), getOpenMarkets: async (s: string) => (s === 'KXATPMATCH' ? markets : []), getMarket: async () => undefined } as unknown as KalshiRest;
     const audit = tmpAudit();
     const md = new MarketData(cfg, rest, undefined, new Recorder(path.join(dir, 'rec')));

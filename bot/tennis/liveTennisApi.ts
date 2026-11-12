@@ -260,26 +260,45 @@ export function playerIndexForTitle(m: LiveTennisMatch, title: string): 0 | 1 | 
   if (!names) return undefined;
   // Kalshi titles read "Will <player> win the <A> vs <B> ...": the player named before "win".
   const t = norm(title);
-  const subject = /will\s+(.+?)\s+win/.exec(t)?.[1] ?? t;
-  const hit = (i: 0 | 1) => surnames(names[i]).some((sn) => new RegExp(`\\b${sn}\\b`).test(subject));
+  const will = /will\s+(.+?)\s+win/.exec(t)?.[1];
+  const subject = will ?? t;
+  const words = (x: string) => x.split(/\s+/).filter(Boolean);
+  const hit = (i: 0 | 1) => {
+    const sn = surnames(names[i]).find((s) => new RegExp(`\\b${s}\\b`).test(subject));
+    if (!sn) return false;
+    // A surname two players share (Xinyu Wang and Yafan Wang): when the title names the player with a first name ahead of
+    // the surname, and the feed gives one too, their first letters must agree. A surname-first name (Wang Xinyu, matched on
+    // its last word) is the title's first word, so it is not checked.
+    const sw = words(will ?? ''), aw = words(norm(names[i]));
+    const first = sw[0] ?? '';
+    if (sw.length >= 2 && aw.length >= 2 && first !== sn && !first.split('-').includes(sn) && first[0] !== aw[0][0]) return false;
+    return true;
+  };
   const a = hit(0), b = hit(1);
   return a && !b ? 0 : b && !a ? 1 : undefined;
 }
 
 /** Find the live match for a Kalshi event from its two market titles; `flip` = API player 2 is our A. A match where both
  *  titles name its two players comes first (`named`); else the first where one title names a player and the other names
- *  no one in it (not `named`: a surname two players share can pick the wrong match, so the engine does not use its score). */
+ *  no one in it (not `named`: a surname two players share can pick the wrong match, so the engine does not use its score).
+ *  Two different live matches that both titles name (both surnames shared, titles without first names) are ambiguous: the
+ *  first is returned, not `named`. */
 export function findMatch(slate: LiveTennisMatch[], titleA: string, titleB?: string): { match: LiveTennisMatch; flip: boolean; named: boolean } | undefined {
   let one: { match: LiveTennisMatch; flip: boolean; named: boolean } | undefined;
+  let both: { match: LiveTennisMatch; flip: boolean; named: boolean } | undefined;
   for (const m of slate) {
     const ia = playerIndexForTitle(m, titleA);
     const ib = titleB ? playerIndexForTitle(m, titleB) : undefined;
-    if (ia !== undefined && ib !== undefined && ib !== ia) return { match: m, flip: ia === 1, named: true };
-    if (one) continue;
+    if (ia !== undefined && ib !== undefined && ib !== ia) {
+      if (both && both.match.id !== m.id) return { ...both, named: false };
+      both ??= { match: m, flip: ia === 1, named: true };
+      continue;
+    }
+    if (both || one) continue;
     if (ia !== undefined && (ib === undefined || ib !== ia)) one = { match: m, flip: ia === 1, named: false };
     else if (ia === undefined && ib !== undefined) one = { match: m, flip: ib === 0, named: false };
   }
-  return one;
+  return both ?? one;
 }
 
 /** Convert to the bot's TennisScore (current-set games, numeric points), oriented to our player A. */
