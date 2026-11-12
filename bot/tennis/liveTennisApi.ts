@@ -268,7 +268,7 @@ export function playerIndexForTitle(m: LiveTennisMatch, title: string): 0 | 1 | 
 
 /** Find the live match for a Kalshi event from its two market titles; `flip` = API player 2 is our A. A match where both
  *  titles name its two players comes first (`named`); else the first where one title names a player and the other names
- *  no one in it (not `named`: a surname two players share can pick the wrong match, so its score must not decide a sale). */
+ *  no one in it (not `named`: a surname two players share can pick the wrong match, so the engine does not use its score). */
 export function findMatch(slate: LiveTennisMatch[], titleA: string, titleB?: string): { match: LiveTennisMatch; flip: boolean; named: boolean } | undefined {
   let one: { match: LiveTennisMatch; flip: boolean; named: boolean } | undefined;
   for (const m of slate) {

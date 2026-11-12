@@ -713,6 +713,48 @@ test('live tennis scores: a match that has not started spends no calls of the da
   assert.equal((await run(5)).calls, 1, 'about to start: the slate is read');
 });
 
+test('live tennis scores: a slate match only one title names gives no score; the one both titles name gives a named score', async () => {
+  const { TennisScoreClient } = await import('../bot/tennis/liveTennisApi');
+  const live = (id: number, p1: string, p2: string, sets: [number, number], games: [number[], number[]]) =>
+    ({ id, status: 'live', tour: 'WTA', sets, games, points: ['15', '0'], server: 1, is_tiebreak: false, player1: { name: p1 }, player2: { name: p2 } });
+  // Erika Andreeva's match, a set all and 5-5: its progress would read about 90% of Mirra Andreeva's match.
+  const sister = live(1, 'Erika Andreeva', 'Anna Blinkova', [1, 1], [[6, 3, 5], [3, 6, 5]]);
+  const real = live(2, 'Coco Gauff', 'Mirra Andreeva', [0, 0], [[1], [0]]);
+  const run = async (slate: object[]) => {
+    const dir = tmpDir();
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(40), DATA_DIR: dir, DOMINANCE_FEED: 'false', SPOT_FEED: 'false', PERPS_FEED: 'false', STRATEGY_SERIES: 'KXBTC15M', SESSION_EDGE_NO_ENTRY: 'false', TENNIS_SCORE_FEED: 'livetennis' });
+    const now = Date.now();
+    const m = (ticker: string, title: string): MarketInfo => ({ ticker, seriesTicker: 'KXATPMATCH', eventTicker: 'KXATPMATCH-E1', status: 'open', openTime: now - 3_600_000, closeTime: now + 6 * 3_600_000, tickSize: 0.01, title, startTime: now - 10 * 60_000 });
+    const markets = [m('KXATPMATCH-E1-AND', 'Will Mirra Andreeva win the Andreeva vs Gauff : Wuhan match?'), m('KXATPMATCH-E1-GAU', 'Will Coco Gauff win the Andreeva vs Gauff : Wuhan match?')];
+    const rest = { getSeriesFees: async () => ({ feeType: 'quadratic_with_maker_fees', multiplier: 1 }), getOpenMarkets: async (s: string) => (s === 'KXATPMATCH' ? markets : []), getMarket: async () => undefined } as unknown as KalshiRest;
+    const audit = tmpAudit();
+    const md = new MarketData(cfg, rest, undefined, new Recorder(path.join(dir, 'rec')));
+    await md.refreshCatalog(now);
+    md.book('KXATPMATCH-E1-AND').applySnapshot({ bids: [{ price: 0.6, size: 100 }], asks: [{ price: 0.62, size: 100 }] }, Date.now());
+    md.book('KXATPMATCH-E1-GAU').applySnapshot({ bids: [{ price: 0.38, size: 100 }], asks: [{ price: 0.4, size: 100 }] }, Date.now());
+    const paper = new PaperExchange(undefined, 200, (t) => md.books.get(t), () => ({ takerMultiplier: 1, makerMultiplier: 1 }));
+    const oms = new Oms({ gateway: paper, audit, statePath: path.join(dir, 'oms.json'), feesFor: (t) => md.feesFor(t), sleep: async () => undefined });
+    const recon = new Reconciler({ gateway: paper, oms, audit, getMarket: rest.getMarket, onPersistentBreak: () => undefined });
+    const tennisScores = new TennisScoreClient({ apiKey: 'k', fetchFn: (async () => new Response(JSON.stringify({ data: slate, meta: { offset: 0, limit: 200, has_more: false } }), { status: 200 })) as unknown as typeof fetch });
+    const engine = new Engine({ cfg, audit, alerter: new Alerter([], audit), md, gateway: paper, oms, risk: new RiskGateway(cfg.risk), kill: new KillSwitch(path.join(dir, 'kill.json'), audit), recon, model: MetaModel.identity(), exchangeStatus: openExchange(), tennisScores });
+    engine.balance = (await recon.run('startup'))!.balance;
+    await engine.tick();
+    const tr = (engine as unknown as { matches: Map<string, MatchTracker> }).matches.get('KXATPMATCH-E1')!;
+    return { tr, raw: engine.tennisStatus.get('KXATPMATCH-E1')?.scoreRaw };
+  };
+  // Only the sister's match live: found by one surname, not named. No score reaches the tracker, so no progress from it.
+  const one = await run([sister]);
+  assert.ok(one.tr, 'the match is tracked');
+  assert.equal(one.tr.score, undefined, JSON.stringify(one.tr.score));
+  assert.equal(one.tr.scoreOriented, false);
+  assert.match(String(one.raw), /only one of the two players matched a live match/);
+  // Both live, the sister's first: the match both titles name is taken, its score oriented to Mirra Andreeva (the event's
+  // first market, API player two): 0-1 in games.
+  const both = await run([sister, real]);
+  assert.deepEqual(both.tr.score && [both.tr.score.setsA, both.tr.score.setsB, both.tr.score.gamesA, both.tr.score.gamesB], [0, 0, 0, 1]);
+  assert.equal(both.tr.scoreOriented, true);
+});
+
 test('tennis loser cut by the match\'s progress (Steven, Nov 12): 20c at the start, 10c at 60%, 3c from 85%, and the end cut in the last 10%', () => {
   assert.deepEqual([T.loserCutOpen, T.loserCut, T.loserCutLate, T.endCutFrac, T.probTurn], [0.2, 0.1, 0.03, 0.1, 0.05]);
   const cfg = (e: Record<string, string>) => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), ...e }).tennis;

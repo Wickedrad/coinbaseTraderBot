@@ -1465,6 +1465,13 @@ export class Engine {
     if (!slate) { st.error = `live tennis: no slate (${client.lastError ?? 'budget exhausted or no live matches'}; ${client.usage().callsToday}/${client.usage().dailyLimit} calls today)`; return st; }
     const hit = findMatch(slate, ms[0]?.title ?? '', ms[1]?.title);
     if (!hit) { st.error = 'live tennis: match not found in the live slate (names did not match the Kalshi titles)'; return st; }
+    if (!hit.named) {
+      // Only one title named a player of this live match: a surname two players share can pick another match, so its score
+      // is not used at all (not for the progress, the cuts, the fair value or the win chance). The status says why.
+      st.raw = undefined; st.named = false; st.score = undefined; st.scoreAt = undefined; st.prev = undefined;
+      st.error = 'live tennis: only one of the two players matched a live match (a shared surname?): its score is not used';
+      return st;
+    }
     const score = toTennisScore(hit.match, hit.flip);
     if (st.prev && st.prev.id === hit.match.id) {
       const d = diffScore(st.prev, hit.match);
