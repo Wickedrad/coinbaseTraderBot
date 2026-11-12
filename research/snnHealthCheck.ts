@@ -27,7 +27,7 @@ import path from 'path';
 import zlib from 'zlib';
 import { loadCalendar } from '../bot/model/calendar';
 import { N_BASE, N_POOL, type Column } from '../bot/snn/column';
-import { logit } from '../bot/snn/formulas';
+import { logit, sigmoid } from '../bot/snn/formulas';
 import { columnHorizonSec, popSpec, type LeadInputs } from '../bot/snn/inputs';
 import type { SnnCheckpoint, SnnNetwork } from '../bot/snn/network';
 import type { SnnParams, Stage } from '../bot/snn/params';
@@ -46,6 +46,28 @@ export const DECIDE_FROM = '2026-06-01';
 export const DECIDE_TO = '2026-07-31';
 /** Research-only override of the nofade shadow: k = 1/tauC + eps ~ eps, so eps/k ~ 1 of each update is kept. */
 export const NOFADE_TAU_C = 1e12;
+/** Readout-fix arms (ADDENDUM 2026-11-12 to HC-preregistration.md), each trained on BOTH the direction label y and the
+ *  control label y':
+ *    nlms      head features, causal per-feature standardization, the ridge learner (RIDGE), no fade, no freeze;
+ *    nofreeze  production Readout settings (two-speed fade, governor scale) but never paused by a health freeze;
+ *    raw       bias + the L0 channel rates (c.rate0), standardized, the ridge learner;
+ *    plain     bias + the column's named numeric inputs (net.inputOf(c).values), standardized, the ridge learner.
+ *  plain is a non-spiking comparator only and is never selected. */
+export const ARM_KEYS = ['nlms', 'nofreeze', 'raw', 'plain'] as const;
+export type ArmKey = (typeof ARM_KEYS)[number];
+/** The learner of nlms, raw and plain (ADDENDUM amendment 2026-11-12, before any run; the name nlms is kept from the
+ *  brief): no tuned step. Once per UTC day (at the first sampled minute of the day, before that minute's calls) an
+ *  L2-logistic regression is refitted by Newton's method on the matured labels whose tags lie in the trailing
+ *  `windowDays` (one tag in `stride` minutes kept; inputs standardized at their tag), once per ridge strength in
+ *  `lambdas` (penalty lambda/2 |w|^2 on the non-bias weights, in units of rows). The call uses the strength with the
+ *  lowest exponentially weighted log-loss (half-life `scoreHalfLife` labels) over labels that matured AFTER the fit
+ *  that scored them (prequential: out of sample); ties go to the larger lambda. Standardization: EW half-life
+ *  `halfLifeMin` sampled minutes (1 day), |z| clipped at `zClip`. */
+export const RIDGE = { refitMs: 86_400_000, windowDays: 14, stride: 10, lambdas: [3, 10, 30, 100, 300, 1000, 3000, 10000, 30000], minRows: 288, scoreHalfLife: 10_080, maxIter: 25, tol: 1e-4, halfLifeMin: 1440, zClip: 6 } as const;
+export type RidgeOpts = { refitMs: number; windowDays: number; stride: number; lambdas: readonly number[]; minRows: number; scoreHalfLife: number; maxIter: number; tol: number };
+/** Readouts that may be selected for the call judge, in order of preference (fewest changes from production first);
+ *  raw only when no spiking readout passes; plain never. */
+export const SELECT_ORDER = ['prod', 'nofreeze', 'nlms', 'raw'] as const;
 
 const argOf = (argv: string[], k: string, d = '') => { const i = argv.indexOf(`--${k}`); return i > 0 && argv[i + 1] !== undefined ? argv[i + 1] : d; };
 const arg = (k: string, d = '') => argOf(process.argv, k, d);
@@ -309,7 +331,242 @@ export function overall(head: { pass: boolean }, control: { pass: boolean }, cov
   return head.pass ? 'HEAD LEARNS DIRECTION' : 'CAN LEARN, DIRECTION NOT PREDICTABLE';
 }
 
+export interface Selection {
+  outcome: 'INCONCLUSIVE' | 'FIT READOUT' | 'SPIKING LAYERS LOSE THE INFORMATION' | 'SPIKING READOUTS MISCALIBRATED' | 'NO READOUT LEARNS THE CONTROL';
+  /** Readouts passing the control rule (plain included: it is reported, never selected). */
+  fit: string[];
+  selected?: string;
+  line: string;
+}
+/** The spiking readouts (prod and the arms on the head features). */
+export const SPIKING = ['prod', 'nofreeze', 'nlms'] as const;
+/** ADDENDUM rule (with the amendment of 2026-11-12, before any run): a readout is FIT FOR THE CALL JUDGE iff it passes
+ *  the control rule. The selected readout is the first fit one in SELECT_ORDER (spiking readouts before raw; plain is
+ *  a comparator and never selected). INCONCLUSIVE when any selectable readout's control rows cover < 28 window days in
+ *  any column, or the arms are missing (no control verdict for an arm, or `missing` joined calls without them). With
+ *  no spiking readout fit but raw or plain fit: "the spiking layers lose the information" only when no spiking
+ *  readout ranks the control (every spiking control AUC CI lower <= 0.5); a spiking readout that ranks it but fails
+ *  the spread, slope or skill parts is MISCALIBRATED, not missing the information. */
+export function selectReadout(control: Record<string, { pass: boolean; aucLo?: number } | undefined>, coverage: { column: string; days: number }[], missing = 0): Selection {
+  const fit = [...SELECT_ORDER, 'plain'].filter((k) => control[k]?.pass);
+  const absent = [...SELECT_ORDER, 'plain'].filter((k) => !control[k]);
+  if (missing > 0 || absent.length) return { outcome: 'INCONCLUSIVE', fit, line: `INCONCLUSIVE (readout arms missing: ${[...absent, ...(missing ? [`${missing} joined calls without them`] : [])].join(', ')})` };
+  if (!coverage.length || coverage.some((c) => !(c.days >= RULE.minDays))) return { outcome: 'INCONCLUSIVE', fit, line: 'INCONCLUSIVE (coverage)' };
+  const spiking = SELECT_ORDER.filter((k) => k !== 'raw' && control[k]?.pass);
+  if (spiking.length) return { outcome: 'FIT READOUT', fit, selected: spiking[0], line: `FIT READOUT: ${spiking[0]} (control passes: ${fit.join(', ')})` };
+  if (control.raw?.pass || control.plain?.pass) {
+    const sel = control.raw?.pass ? { selected: 'raw' } : {}, tail = `control passes: ${fit.join(', ')}${control.raw?.pass ? '; selected raw' : '; nothing selected'}`;
+    const ranks = SPIKING.filter((k) => control[k]!.aucLo! > RULE.aucLo);
+    if (ranks.length) return { outcome: 'SPIKING READOUTS MISCALIBRATED', fit, ...sel, line: `SPIKING READOUTS MISCALIBRATED (spiking readouts rank the control, AUC CI lower > 0.5: ${ranks.join(', ')}, but fail its spread, slope or skill parts; ${tail})` };
+    const where = control.raw?.pass ? 'raw L0 rates carry it, the hidden layers lose it' : 'only the plain inputs carry it, the L0 encoding loses it';
+    return { outcome: 'SPIKING LAYERS LOSE THE INFORMATION', fit, ...sel, line: `SPIKING LAYERS LOSE THE INFORMATION (${where}; ${tail})` };
+  }
+  return { outcome: 'NO READOUT LEARNS THE CONTROL', fit, line: 'NO READOUT LEARNS THE CONTROL (nothing selected)' };
+}
+
 const fmt = (x: number, d: number) => (Number.isFinite(x) ? x.toFixed(d) : 'NaN');
+
+// ---- readout-fix learners (ADDENDUM) ---------------------------------------------------------------------------------
+
+/** Causal per-feature standardization with exponentially weighted mean and variance (half-life in pushes; the first
+ *  pushes average equally until 1/n falls below the EW weight). push() standardizes x against the statistics of the
+ *  values BEFORE it and only then adds x, so z(T) reads x(<= T) only. A non-finite value gives z = 0 and leaves its
+ *  statistics alone; a feature without variance yet gives 0; |z| is clipped. */
+export class EwStandardizer {
+  readonly cnt: Float64Array; readonly mean: Float64Array; readonly v: Float64Array;
+  private readonly a: number;
+  constructor(readonly d: number, halfLife: number = RIDGE.halfLifeMin, readonly clip: number = RIDGE.zClip) {
+    this.cnt = new Float64Array(d); this.mean = new Float64Array(d); this.v = new Float64Array(d);
+    this.a = 1 - 2 ** (-1 / halfLife);
+  }
+  push(x: ArrayLike<number>, out: Float64Array, off = 0): Float64Array {
+    const { cnt, mean, v, clip } = this;
+    for (let i = 0; i < this.d; i++) {
+      const xi = x[i];
+      if (!Number.isFinite(xi)) { out[off + i] = 0; continue; }
+      const k = cnt[i], m = mean[i], s2 = v[i];
+      let z = k > 1 && s2 > 1e-24 + 1e-12 * m * m ? (xi - m) / Math.sqrt(s2) : 0;
+      z = z > clip ? clip : z < -clip ? -clip : z;
+      out[off + i] = z;
+      const a = Math.max(this.a, 1 / (k + 1)), dd = xi - m;
+      mean[i] = m + a * dd; v[i] = (1 - a) * (s2 + a * dd * dd); cnt[i] = k + 1;
+    }
+    return out;
+  }
+}
+
+const softplus = (s: number) => (s > 0 ? s + Math.log1p(Math.exp(-s)) : Math.log1p(Math.exp(s)));
+
+/** L2-logistic regression refitted once per UTC day on a trailing window of matured labels (see RIDGE), one fit per
+ *  ridge strength, the call from the strength with the best prequential log-loss. Weights stay fixed between refits.
+ *  learn() only stores the label (and scores every strength's current model on it); refit() reads stored labels only,
+ *  so a call at T uses labels matured by T. No fade, no freeze, no governor. */
+export class RidgeLogistic {
+  readonly o: RidgeOpts;
+  /** One weight vector per ridge strength. */
+  readonly W: Float64Array[];
+  /** EW log-loss per strength over labels that matured after the fit that scored them. */
+  readonly score: Float64Array;
+  sel: number;
+  updates = 0; refits = 0; iters = 0;
+  private zs: Float64Array[] = []; private ys: number[] = []; private ts: number[] = [];
+  private day = NaN;
+  private readonly decay: number;
+  constructor(readonly n: number, o: Partial<RidgeOpts> = {}) {
+    this.o = { ...RIDGE, ...o };
+    this.W = this.o.lambdas.map(() => new Float64Array(n));
+    this.score = new Float64Array(this.o.lambdas.length);
+    this.sel = this.o.lambdas.length - 1;
+    this.decay = 2 ** (-1 / this.o.scoreHalfLife);
+  }
+  get w(): Float64Array { return this.W[this.sel]; }
+  get lambda(): number { return this.o.lambdas[this.sel]; }
+  get rows(): number { return this.zs.length; }
+  logit(z: ArrayLike<number>): number { const w = this.w; let s = 0; for (let i = 0; i < this.n; i++) s += w[i] * z[i]; return s; }
+  predict(z: ArrayLike<number>): number { return sigmoid(this.logit(z)); }
+  /** A matured label for the tag at tagTs with standardized inputs z (z is kept by reference: never mutate it). */
+  learn(z: Float64Array, y: number, tagTs: number): void {
+    for (let k = 0; k < this.W.length; k++) {
+      const w = this.W[k];
+      let s = 0;
+      for (let i = 0; i < this.n; i++) s += w[i] * z[i];
+      this.score[k] = this.decay * this.score[k] + softplus(s) - y * s;
+    }
+    let b = this.score.length - 1;
+    for (let k = b - 1; k >= 0; k--) if (this.score[k] < this.score[b]) b = k;
+    this.sel = b;
+    if (Math.floor(tagTs / 60_000) % this.o.stride === 0) { this.zs.push(z); this.ys.push(y); this.ts.push(tagTs); }
+    this.updates++;
+  }
+  /** Refit at the first call of each UTC day (each `refitMs` period; T in ms); a no-op otherwise. Returns whether it
+   *  refitted. */
+  refit(T: number): boolean {
+    const d = Math.floor(T / this.o.refitMs);
+    if (d === this.day) return false;
+    this.day = d;
+    const from = T - this.o.windowDays * 86_400_000;
+    let cut = 0;
+    while (cut < this.ts.length && this.ts[cut] < from) cut++;
+    if (cut) { this.zs.splice(0, cut); this.ys.splice(0, cut); this.ts.splice(0, cut); }
+    if (this.zs.length < this.o.minRows) return false;
+    // Active inputs: the bias and every input nonzero in some row (dead or by-design-zero inputs keep weight 0).
+    const act: number[] = [0];
+    for (let j = 1; j < this.n; j++) for (const z of this.zs) if (z[j] !== 0) { act.push(j); break; }
+    const a = act.length, m = this.zs.length, X = new Float64Array(m * a), Y = Float64Array.from(this.ys);
+    for (let i = 0; i < m; i++) { const z = this.zs[i]; for (let j = 0; j < a; j++) X[i * a + j] = z[act[j]]; }
+    for (let k = 0; k < this.W.length; k++) {
+      const w0 = this.W[k], w = new Float64Array(a);
+      for (let j = 0; j < a; j++) w[j] = w0[act[j]];
+      this.iters += newtonRidge(X, Y, m, a, w, this.o.lambdas[k], this.o.maxIter, this.o.tol);
+      w0.fill(0);
+      for (let j = 0; j < a; j++) w0[act[j]] = w[j];
+    }
+    this.refits++;
+    return true;
+  }
+}
+
+/** Minimizes sum_i softplus(s_i) - y_i s_i + lambda/2 sum_{j>=1} w_j^2 (s = X w, column 0 the bias) in place by
+ *  Newton's method with step halving (X: m rows of a, row-major). */
+export function newtonRidge(X: Float64Array, Y: Float64Array, m: number, a: number, w: Float64Array, lambda: number, maxIter = 25, tol = 1e-6): number {
+  const s = new Float64Array(m), g = new Float64Array(a), H = new Float64Array(a * a), dw = new Float64Array(a), w1 = new Float64Array(a);
+  const obj = (v: Float64Array) => {
+    let f = 0;
+    for (let i = 0; i < m; i++) { let t = 0; const o = i * a; for (let j = 0; j < a; j++) t += X[o + j] * v[j]; s[i] = t; f += softplus(t) - Y[i] * t; }
+    for (let j = 1; j < a; j++) f += 0.5 * lambda * v[j] * v[j];
+    return f;
+  };
+  let f = obj(w), it = 0;
+  for (; it < maxIter; it++) {
+    g.fill(0); H.fill(0);
+    for (let j = 1; j < a; j++) { g[j] = lambda * w[j]; H[j * a + j] = lambda; }
+    H[0] = 1e-8;
+    for (let i = 0; i < m; i++) {
+      const o = i * a, p = sigmoid(s[i]), r = p - Y[i], v = p * (1 - p);
+      for (let j = 0; j < a; j++) {
+        const xj = X[o + j];
+        if (xj === 0) continue;
+        g[j] += r * xj;
+        const vx = v * xj, hj = j * a;
+        for (let k = 0; k <= j; k++) H[hj + k] += vx * X[o + k];
+      }
+    }
+    // Cholesky (lower triangle) and solve H dw = g.
+    for (let j = 0; j < a; j++) {
+      let d = H[j * a + j];
+      for (let k = 0; k < j; k++) d -= H[j * a + k] * H[j * a + k];
+      d = Math.sqrt(Math.max(d, 1e-12)); H[j * a + j] = d;
+      for (let i = j + 1; i < a; i++) {
+        let t = H[i * a + j];
+        for (let k = 0; k < j; k++) t -= H[i * a + k] * H[j * a + k];
+        H[i * a + j] = t / d;
+      }
+    }
+    for (let i = 0; i < a; i++) { let t = g[i]; for (let k = 0; k < i; k++) t -= H[i * a + k] * dw[k]; dw[i] = t / H[i * a + i]; }
+    for (let i = a - 1; i >= 0; i--) { let t = dw[i]; for (let k = i + 1; k < a; k++) t -= H[k * a + i] * dw[k]; dw[i] = t / H[i * a + i]; }
+    let step = 1, f1 = f, ok = false;
+    for (let h = 0; h < 30; h++) {
+      for (let j = 0; j < a; j++) w1[j] = w[j] - step * dw[j];
+      f1 = obj(w1);
+      if (f1 <= f + 1e-12 * Math.abs(f)) { ok = true; break; }
+      step /= 2;
+    }
+    if (!ok) { obj(w); break; }
+    let mx = 0;
+    for (let j = 0; j < a; j++) { mx = Math.max(mx, Math.abs(w1[j] - w[j])); w[j] = w1[j]; }
+    f = f1;
+    if (mx < tol) { it++; break; }
+  }
+  return it;
+}
+
+/** One column's standardized feature vectors at a minute (bias first in each). */
+export interface ArmFeat { zA: Float64Array; zC: Float64Array; zD: Float64Array }
+/** Per arm: [p on the direction label, its bias at the call, p on the control label, its bias at the call]. */
+export type ArmPreds = Record<ArmKey, [number, number, number, number]>;
+
+/** The readout-fix arms of one column, each with a direction and a control readout. */
+export class ArmBank {
+  readonly stdA: EwStandardizer; readonly stdC: EwStandardizer; readonly stdD: EwStandardizer;
+  readonly nlms: { dir: RidgeLogistic; ctl: RidgeLogistic };
+  readonly raw: { dir: RidgeLogistic; ctl: RidgeLogistic };
+  readonly plain: { dir: RidgeLogistic; ctl: RidgeLogistic };
+  readonly nofreeze: { dir: Readout; ctl: Readout };
+  private readonly dv: Float64Array;
+  constructor(readonly nFeat: number, readonly nL0: number, readonly names: readonly string[], ro: ConstructorParameters<typeof Readout>[1], o: { ridge?: Partial<RidgeOpts>; halfLife?: number } = {}) {
+    const hl = o.halfLife ?? RIDGE.halfLifeMin, L = (n: number) => ({ dir: new RidgeLogistic(n, o.ridge), ctl: new RidgeLogistic(n, o.ridge) });
+    this.stdA = new EwStandardizer(nFeat, hl); this.stdC = new EwStandardizer(nL0, hl); this.stdD = new EwStandardizer(names.length, hl);
+    this.nlms = L(nFeat); this.raw = L(1 + nL0); this.plain = L(1 + names.length);
+    this.nofreeze = { dir: new Readout(nFeat, ro), ctl: new Readout(nFeat, ro) };
+    this.dv = new Float64Array(names.length);
+  }
+  /** Standardize this minute's inputs (call once per sampled minute, in time order). */
+  features(phi: ArrayLike<number>, rate0: ArrayLike<number>, values: Record<string, number | undefined> | undefined): ArmFeat {
+    const zA = this.stdA.push(phi, new Float64Array(this.nFeat)); zA[0] = 1;
+    const zC = this.stdC.push(rate0, new Float64Array(1 + this.nL0), 1); zC[0] = 1;
+    for (let i = 0; i < this.names.length; i++) { const v = values?.[this.names[i]]; this.dv[i] = typeof v === 'number' ? v : NaN; }
+    const zD = this.stdD.push(this.dv, new Float64Array(1 + this.names.length), 1); zD[0] = 1;
+    return { zA, zC, zD };
+  }
+  predict(f: ArmFeat, phi: ArrayLike<number>): ArmPreds {
+    const two = (r: { dir: RidgeLogistic; ctl: RidgeLogistic }, z: Float64Array): [number, number, number, number] => [r.dir.predict(z), r.dir.w[0], r.ctl.predict(z), r.ctl.w[0]];
+    return {
+      nlms: two(this.nlms, f.zA), raw: two(this.raw, f.zC), plain: two(this.plain, f.zD),
+      nofreeze: [this.nofreeze.dir.predict(phi), this.nofreeze.dir.wf[0], this.nofreeze.ctl.predict(phi), this.nofreeze.ctl.wf[0]],
+    };
+  }
+  /** A matured label (y: 'dir' the direction label, 'ctl' the control label) for the tag whose features were f / phi
+   *  and whose nofreeze call was pNf. nofreeze keeps the production governor scale but always learns. */
+  learn(which: 'dir' | 'ctl', f: ArmFeat, phi: ArrayLike<number>, pNf: number, tagTs: number, y: 0 | 1, T: number, scale: number): void {
+    this.nlms[which].learn(f.zA, y, tagTs); this.raw[which].learn(f.zC, y, tagTs); this.plain[which].learn(f.zD, y, tagTs);
+    const r = this.nofreeze[which];
+    r.tag('dir', 'greater', 'strike', phi, pNf, tagTs); r.settle('dir', y ? 'yes' : 'no', T, scale, true);
+  }
+  /** The ridge learners' daily refit (a no-op except at the first call of a UTC day): call after the labels matured by
+   *  T were learned and before the calls at T. */
+  refit(T: number): void { for (const r of [this.nlms, this.raw, this.plain]) { r.dir.refit(T); r.ctl.refit(T); } }
+  relax(dt: number): void { this.nofreeze.dir.relax(dt); this.nofreeze.ctl.relax(dt); }
+}
 
 // ---- the per-minute sampler (shadow readouts) -------------------------------------------------------------------
 
@@ -325,11 +582,13 @@ export interface SampleRow {
   G: number; fr: 0 | 1; rc: 0 | 1; fb?: string[]; eta: number;
   /** G's drivers: fSat, rhoHat (rateE / ref - 1), errZ, dBrier; mean E and L1 head features. */
   fs: number; rho: number; ez: number; db: number; rE: number; rL1: number;
+  /** Readout-fix arms at the tag (ADDENDUM): [p direction, its bias, p control, its bias] per arm. */
+  xa?: Partial<Record<ArmKey, number[]>>;
 }
 export interface DirRow { k: string; t: number; p: number; y: 0 | 1 }
 
-interface Pend { phi: Float32Array; s: number; n: number; c: number; yc?: 0 | 1 }
-interface Shadows { ps: Readout; nf: Readout; ctl: Readout; pend: Map<number, Pend> }
+interface Pend { phi: Float32Array; s: number; n: number; c: number; yc?: 0 | 1; f?: ArmFeat; xp?: ArmPreds }
+interface Shadows { ps: Readout; nf: Readout; ctl: Readout; bank?: ArmBank; pend: Map<number, Pend> }
 export interface CumCol {
   minutes: number; chanActive: number[]; chanMean: number[]; chanM2: number[];
   inputs: Record<string, InputStat>; phiN: number; phiMean: number[]; phiM2: number[]; phiMax: number[];
@@ -352,7 +611,8 @@ export class HealthSampler {
   skipped = 0;
   readonly cum = new Map<string, CumCol>();
 
-  constructor(readonly p: SnnParams, readonly o: { nofadeTauC?: number; cum?: boolean } = {}) {}
+  /** `arms: false` leaves out the readout-fix arms (timing comparison only). */
+  constructor(readonly p: SnnParams, readonly o: { nofadeTauC?: number; cum?: boolean; arms?: boolean; ridge?: Partial<RidgeOpts> } = {}) {}
 
   private opts(tauC: number) {
     return { eta: this.p.dirEta, cap: this.p.dirCap, tauC, eps: this.p.eps, tagsPerContract: 1, maxTagged: 1, traceTauSec: this.p.traceTauSec, useTags: true };
@@ -362,13 +622,14 @@ export class HealthSampler {
     let s = this.shadows.get(c.key);
     if (!s) {
       s = { ps: new Readout(c.nFeat, this.opts(this.p.tauC)), nf: new Readout(c.nFeat, this.opts(this.o.nofadeTauC ?? NOFADE_TAU_C)), ctl: new Readout(c.nFeat, this.opts(this.p.tauC)), pend: new Map() };
+      if (this.o.arms !== false) s.bank = new ArmBank(c.nFeat, c.rate0.length, popSpec('crypto', this.p.leadInputs).map((x) => x.name), this.opts(this.p.tauC), this.o.ridge ? { ridge: this.o.ridge } : {});
       this.shadows.set(c.key, s);
     }
     return s;
   }
 
   private relax(times: number): void {
-    for (let i = 0; i < times; i++) for (const s of this.shadows.values()) for (const r of [s.ps, s.nf, s.ctl]) r.relax(this.p.slowEverySec);
+    for (let i = 0; i < times; i++) for (const s of this.shadows.values()) { for (const r of [s.ps, s.nf, s.ctl]) r.relax(this.p.slowEverySec); s.bank?.relax(this.p.slowEverySec); }
   }
 
   /** Did the head learn from the labels it took since the last call? (Readout.updates counts learned labels only.) */
@@ -396,6 +657,7 @@ export class HealthSampler {
       const scale = 1 - this.p.govDelta * c.G, res = e.y ? 'yes' : 'no', L = learn.get(e.key) ?? false;
       sh.ps.tag('dir', 'greater', 'strike', pd.phi, pd.s, e.ts); sh.ps.settle('dir', res, T, scale, L);
       sh.nf.tag('dir', 'greater', 'strike', pd.phi, pd.n, e.ts); sh.nf.settle('dir', res, T, scale, L);
+      if (sh.bank && pd.f && pd.xp) sh.bank.learn('dir', pd.f, pd.phi, pd.xp.nofreeze[0], e.ts, e.y, T, scale);
     }
     for (const [k, ro] of net.dirReadouts) this.upd.set(k, ro.updates);
     return learn;
@@ -424,11 +686,18 @@ export class HealthSampler {
       // Control labels mature as the head's do (tag + H), with y' fixed at the tag.
       for (const [ts, pd] of sh.pend) {
         if (ts + H > T) break;
-        if (pd.yc !== undefined) { sh.ctl.tag('dir', 'greater', 'strike', pd.phi, pd.c, ts); sh.ctl.settle('dir', pd.yc ? 'yes' : 'no', T, scale, L); }
+        if (pd.yc !== undefined) {
+          sh.ctl.tag('dir', 'greater', 'strike', pd.phi, pd.c, ts); sh.ctl.settle('dir', pd.yc ? 'yes' : 'no', T, scale, L);
+          if (sh.bank && pd.f && pd.xp) sh.bank.learn('ctl', pd.f, pd.phi, pd.xp.nofreeze[2], ts, pd.yc, T, scale);
+        }
         sh.pend.delete(ts);
       }
+      // Every label matured by T is in: the ridge learners refit here at the first sampled minute of a UTC day.
+      sh.bank?.refit(T);
       const head = net.dirReadouts.get(c.key)!, tags = net.dirTags.get(c.key) ?? [], tg = tags[tags.length - 1];
       const phi = c.features(0, 0, net.extras(c));
+      // The arms' standardizers see every sampled minute (inputs at T only), tagged or not.
+      const f = sh.bank?.features(phi, c.rate0, net.inputOf(c).values);
       let eSum = 0, lSum = 0;
       for (let i = E[0]; i < E[1]; i++) eSum += phi[i];
       for (let i = L1[0]; i < L1[1]; i++) lSum += phi[i];
@@ -447,7 +716,9 @@ export class HealthSampler {
         this.diff.max = Math.max(this.diff.max, d); this.diff.sum += d; this.diff.n++;
         const p0 = pm.get(T - H);
         const yc: 0 | 1 | undefined = price > 0 && p0! > 0 && price !== p0 ? (price > p0! ? 1 : 0) : undefined;
-        sh.pend.set(T, { phi: Float32Array.from(phi), s, n, c: cc, ...(yc !== undefined ? { yc } : {}) });
+        const xp = f && sh.bank ? sh.bank.predict(f, phi) : undefined;
+        sh.pend.set(T, { phi: Float32Array.from(phi), s, n, c: cc, ...(yc !== undefined ? { yc } : {}), ...(xp ? { f, xp } : {}) });
+        if (xp) row.xa = Object.fromEntries(ARM_KEYS.map((k) => [k, xp[k].map(r7)]));
         Object.assign(row, { p: r7(tg.p), s: r7(s), n: r7(n), c: r7(cc), ...(yc !== undefined ? { yc } : {}), hb: r7(hb), b: r7(sh.ps.wf[0]), nb: r7(sh.nf.wf[0]), cb: r7(sh.ctl.wf[0]), ...(typeof rz === 'number' && Number.isFinite(rz) ? { rz: r4(rz) } : {}) });
       }
       this.rows.push(row);
@@ -535,7 +806,7 @@ async function runCmd() {
   fs.mkdirSync(out, { recursive: true });
   const sampler = new HealthSampler(params, { nofadeTauC: NOFADE_TAU_C });
   const meta: Record<string, unknown> & { chunks: { a: string; b: string; labels: number; minutes: number }[] } = {
-    asset: A, from, to, stage, leadInputs: params.leadInputs ?? null, nE: params.nE, nL1: params.nL1, seed: params.seed, arms: { prodShadow: { tauC: params.tauC }, nofade: { tauC: NOFADE_TAU_C }, control: { tauC: params.tauC, label: "y' = [px(T) > px(T-H)]" } },
+    asset: A, from, to, stage, leadInputs: params.leadInputs ?? null, nE: params.nE, nL1: params.nL1, seed: params.seed, arms: { prodShadow: { tauC: params.tauC }, nofade: { tauC: NOFADE_TAU_C }, control: { tauC: params.tauC, label: "y' = [px(T) > px(T-H)]" }, readoutFix: { labels: ['y', "y'"], learner: { kind: 'ridge-logistic daily refit', ...RIDGE }, nlms: { features: 'head phi, standardized' }, nofreeze: { tauC: params.tauC, freeze: 'ignored', governor: 'kept' }, raw: { features: 'bias + rate0, standardized' }, plain: { features: 'bias + named inputs, standardized' } } },
     note: 'per-coin network (lateral inhibition and freezing over this coin\'s two columns only), not live', chunks: [],
   };
   let checkpoint: SnnCheckpoint | undefined, timeUp = false, labels = 0;
@@ -554,7 +825,9 @@ async function runCmd() {
     fs.writeFileSync(path.join(out, 'weights.json'), JSON.stringify(Object.fromEntries([...res.net.dirReadouts].map(([k, r]) => {
       const sh = sampler.shadows.get(k);
       const w = (q: Readout) => ({ wf: norm(q.wf), ws: norm(q.ws), div: norm(q.wf, q.ws), wf0: q.wf[0], updates: q.updates, history: q.history.length });
-      return [k, { head: w(r), ...(sh ? { prodShadow: w(sh.ps), nofade: w(sh.nf), control: w(sh.ctl) } : {}) }];
+      const b = sh?.bank, wl = (q: RidgeLogistic) => ({ w: norm(q.w), w0: q.w[0], lambda: q.lambda, updates: q.updates, refits: q.refits, rows: q.rows });
+      const arms = b ? { nofreezeDir: w(b.nofreeze.dir), nofreezeCtl: w(b.nofreeze.ctl), nlmsDir: wl(b.nlms.dir), nlmsCtl: wl(b.nlms.ctl), rawDir: wl(b.raw.dir), rawCtl: wl(b.raw.ctl), plainDir: wl(b.plain.dir), plainCtl: wl(b.plain.ctl) } : {};
+      return [k, { head: w(r), ...(sh ? { prodShadow: w(sh.ps), nofade: w(sh.nf), control: w(sh.ctl) } : {}), ...arms }];
     }))));
     labels += dir.length;
     const frozen = rows.length ? (100 * rows.filter((r) => r.fr).length) / rows.length : 0;
@@ -634,16 +907,22 @@ export function reportCmd(argv: string[] = process.argv): void {
   // Minute-mark prices per coin (the momentum baselines and the control's label read the same prints).
   const px: PxMap = new Map();
   for (const r of samples) if (r.x! > 0) { const a = assetOf(r.k); let m = px.get(a); if (!m) px.set(a, (m = new Map())); m.set(r.t, r.x!); }
+  // One day string per UTC day, shared by every row (memory: ~1.2M rows per arm and label on a full run).
+  const dayStr = new Map<number, string>();
+  const dayC = (t: number) => { const n = Math.floor(t / 86_400_000); let x = dayStr.get(n); if (x === undefined) dayStr.set(n, (x = dayOf(t))); return x; };
   // Join the head's labels to the sampled minutes on (column, t); drop the unmatched (a tag inside a catch-up).
   const byKey = new Map<string, SampleRow>();
   for (const r of samples) if (r.p !== undefined) byKey.set(`${r.k}|${r.t}`, r);
   let unmatched = 0, pMismatch = 0, noHb = 0, shadowOff = 0, hbMaxDiff = 0;
   const prod: Omit<Joined, 'base' | 'm5' | 'm15'>[] = [], nofade: typeof prod = [], shadow: typeof prod = [];
+  // Readout-fix arms (ADDENDUM) on the same joined head calls; a call without the arms' predictions is counted.
+  const jS: SampleRow[] = [], jD: DirRow[] = [];
+  let noArms = 0;
   for (const d of dirs) {
     const s = byKey.get(`${d.k}|${d.t}`);
     if (!s) { unmatched++; continue; }
     if (Math.abs(s.p! - d.p) > 1e-6) pMismatch++;
-    const day = dayOf(d.t), b = s.b ?? 0;
+    const day = dayC(d.t), b = s.b ?? 0;
     // Rule 1 on the deciding arm uses the head's own bias at the call (hb); the prodShadow's only for rows without it.
     if (s.hb === undefined) noHb++;
     else if (s.b !== undefined) hbMaxDiff = Math.max(hbMaxDiff, Math.abs(s.hb - s.b));
@@ -651,34 +930,93 @@ export function reportCmd(argv: string[] = process.argv): void {
     prod.push({ k: d.k, t: d.t, day, y: d.y, p: d.p, sp: logit(d.p) - (s.hb ?? b) });
     nofade.push({ k: d.k, t: d.t, day, y: d.y, p: s.n!, sp: logit(s.n!) - (s.nb ?? 0) });
     shadow.push({ k: d.k, t: d.t, day, y: d.y, p: s.s!, sp: logit(s.s!) - b });
+    if (!s.xa) noArms++;
+    jS.push(s); jD.push(d);
   }
-  const control: typeof prod = samples.filter((r) => r.c !== undefined && r.yc !== undefined).map((r) => ({ k: r.k, t: r.t, day: dayOf(r.t), y: r.yc!, p: r.c!, sp: logit(r.c!) - (r.cb ?? 0) }));
+  byKey.clear();
+  const ctlRows = samples.filter((r) => r.c !== undefined && r.yc !== undefined);
+  const control: typeof prod = ctlRows.map((r) => ({ k: r.k, t: r.t, day: dayC(r.t), y: r.yc!, p: r.c!, sp: logit(r.c!) - (r.cb ?? 0) }));
+  const nJoined = prod.length, nControl = control.length;
   const arms = { prod: withBaselines(prod, px), nofade: withBaselines(nofade, px), prodShadow: withBaselines(shadow, px), control: withBaselines(control, px) };
+  prod.length = 0; nofade.length = 0; shadow.length = 0; control.length = 0;
   const inWin = (r: { day: string }) => r.day >= dFrom && r.day <= dTo;
   const win = Object.fromEntries(Object.entries(arms).map(([k, v]) => [k, v.filter(inWin)])) as typeof arms;
-  const coverage = expected.map((column) => ({ column, days: new Set(win.prod.filter((r) => r.k === column).map((r) => r.day)).size }));
+  /** Decision-window days per expected column. */
+  const covOf = (rs: Joined[]) => {
+    const m = new Map<string, Set<string>>();
+    for (const r of rs) { let x = m.get(r.k); if (!x) m.set(r.k, (x = new Set())); x.add(r.day); }
+    return expected.map((column) => ({ column, days: m.get(column)?.size ?? 0 }));
+  };
+  const coverage = covOf(win.prod);
   const head = armReport(win.prod, px), ctl = armReport(win.control, px);
   const vh = verdict(head), vc = verdict(ctl), line = overall(vh, vc, coverage);
-  const vn = verdict(armReport(win.nofade, px));
+  const nfStats = armReport(win.nofade, px), vn = verdict(nfStats);
+
+  const ci = (c: Ci, d = 3) => `${fmt(c.est, d)} [${fmt(c.lo, d)}, ${fmt(c.hi, d)}]`;
+  const hdr = '| slice | n | days | up-rate | mean abs(p-.5) pp | p90 abs(p-.5) pp | state sd (col x day) | slope FE [CI] | b0.5 | b_base | AUC strat. [CI] | skill vs base [CI] | vs mom5 | vs mom15 | acc head | acc sign-mom5 | acc sign-mom15 |';
+  const sep = '|' + '---|'.repeat(17);
+  const rowOf = (name: string, s: ArmReport) => `| ${name} | ${s.n} | ${s.days} | ${fmt(s.upRate, 3)} | ${fmt(s.spread.meanAbsPp, 2)} | ${fmt(s.spread.a90, 2)} | ${fmt(s.sdState, 3)} | ${ci(s.slope, 2)} | ${fmt(s.b05.est, 2)} | ${fmt(s.bBase.est, 2)} | ${ci(s.auc, 4)} | ${ci(s.skill, 5)} | ${fmt(s.skillM5.est, 5)} | ${fmt(s.skillM15.est, 5)} | ${fmt(s.acc.acc, 4)} | ${fmt(s.accM5.acc, 4)} | ${fmt(s.accM15.acc, 4)} |`;
+  /** Per-coin table rows of one arm's window rows. */
+  const coinLines = (name: string, rs: Joined[]) => {
+    const g = new Map<string, Joined[]>();
+    for (const r of rs) { const a = assetOf(r.k); let x = g.get(a); if (!x) g.set(a, (x = [])); x.push(r); }
+    return [...g].sort((u, v) => u[0].localeCompare(v[0])).map(([a, x]) => rowOf(`${name} coin ${a}`, armReport(x, px, 300)));
+  };
+  // Readout-fix arms: one arm and label at a time (rows -> baselines -> window statistics, the per-coin rows and the
+  // full-range row as strings, the window coverage), so only one arm's rows are alive at once.
+  interface ArmBlock { stats: ArmReport; coin: string[]; full: string; cover: { column: string; days: number }[] }
+  const block = (arm: string, label: string, rows: Omit<Joined, 'base' | 'm5' | 'm15'>[]): ArmBlock => {
+    const all = withBaselines(rows, px);
+    rows.length = 0;
+    const w = all.filter(inWin);
+    return { stats: armReport(w, px), coin: coinLines(arm, w), full: rowOf(`${arm} ${label}`, armReport(all, px, 300)), cover: covOf(w) };
+  };
+  const xDir = {} as Record<ArmKey, ArmBlock>, xCtl = {} as Record<ArmKey, ArmBlock>;
+  for (const a of ARM_KEYS) {
+    const rd: typeof prod = [];
+    for (let i = 0; i < jS.length; i++) { const v = jS[i].xa?.[a]; if (v) { const d = jD[i]; rd.push({ k: d.k, t: d.t, day: dayC(d.t), y: d.y, p: v[0], sp: logit(v[0]) - v[1] }); } }
+    xDir[a] = block(a, 'direction', rd);
+    const rc: typeof prod = [];
+    for (const r of ctlRows) { const v = r.xa?.[a]; if (v) rc.push({ k: r.k, t: r.t, day: dayC(r.t), y: r.yc!, p: v[2], sp: logit(v[2]) - v[3] }); }
+    xCtl[a] = block(a, 'control', rc);
+  }
+  jS.length = 0; jD.length = 0;
+  // Direction: prod is the head; control: prod is the production-settings control arm.
+  const dirStats: Record<string, ArmReport> = { prod: head, prodShadow: armReport(win.prodShadow, px), nofade: nfStats, ...Object.fromEntries(ARM_KEYS.map((a) => [a, xDir[a].stats])) };
+  const ctlStats: Record<string, ArmReport> = { prod: ctl, ...Object.fromEntries(ARM_KEYS.map((a) => [a, xCtl[a].stats])) };
+  // An arm without window rows (an output dir from before the arms, or the arms off) has no verdict: n/a, never FAIL.
+  const armV: Record<string, { direction?: ReturnType<typeof verdict>; control?: ReturnType<typeof verdict> }> = { prod: { direction: vh, control: vc }, nofade: { direction: vn } };
+  for (const a of ARM_KEYS) armV[a] = { ...(xDir[a].stats.n > 0 ? { direction: verdict(xDir[a].stats) } : {}), ...(xCtl[a].stats.n > 0 ? { control: verdict(xCtl[a].stats) } : {}) };
+  // Selection coverage: every selectable readout's own control rows (and the head's), per column.
+  const selCoverage = [
+    ...coverage.map((c) => ({ ...c, column: `head ${c.column}` })),
+    ...covOf(win.control).map((c) => ({ ...c, column: `prod control ${c.column}` })),
+    ...ARM_KEYS.flatMap((a) => xCtl[a].cover.map((c) => ({ ...c, column: `${a} control ${c.column}` }))),
+  ];
+  const selIn: Record<string, { pass: boolean; aucLo: number } | undefined> = { prod: { pass: vc.pass, aucLo: ctl.auc.lo } };
+  for (const a of ARM_KEYS) { const v = armV[a].control; selIn[a] = v ? { pass: v.pass, aucLo: xCtl[a].stats.auc.lo } : undefined; }
+  const sel = selectReadout(selIn, selCoverage, noArms);
+  const pf = (v?: { pass: boolean }) => (v ? (v.pass ? 'PASS' : 'FAIL') : 'n/a');
   const covered = coverage.filter((c) => c.days >= RULE.minDays).length, minDays = Math.min(...coverage.map((c) => c.days));
+  const minSelDays = Math.min(...selCoverage.map((c) => c.days));
   const diffMax = Math.max(0, ...Object.values(metas).map((m) => m.diff?.max ?? 0));
   const skippedLabels = Object.values(metas).reduce((a, m) => a + (m.skippedLabels ?? 0), 0);
   // How far the control's label is from its input: sign(ret_h_z) at the tag against y' (window rows, rz != 0).
-  let agreeN = 0, agree = 0;
+  // The governor scale the nofreeze arm keeps (1 - govDelta G, every sampled minute in the window).
+  const govDelta = trainParams(Object.values(metas)[0]?.stage ?? 'S5').govDelta;
+  let agreeN = 0, agree = 0, gN = 0, gSum = 0, gLow = 0;
   for (const r of samples) {
-    if (r.yc === undefined || !r.rz || r.c === undefined) continue;
-    const day = dayOf(r.t);
+    const day = dayC(r.t);
     if (day < dFrom || day > dTo) continue;
+    const g = 1 - govDelta * r.G;
+    gN++; gSum += g; if (g < 0.5) gLow++;
+    if (r.yc === undefined || !r.rz || r.c === undefined) continue;
     agreeN++; if ((r.rz > 0 ? 1 : 0) === r.yc) agree++;
   }
   const ctlAgree = agreeN ? agree / agreeN : NaN;
 
   // ---- the full report (Drive only)
   const L: string[] = [];
-  const ci = (c: Ci, d = 3) => `${fmt(c.est, d)} [${fmt(c.lo, d)}, ${fmt(c.hi, d)}]`;
-  const hdr = '| slice | n | days | up-rate | mean abs(p-.5) pp | p90 abs(p-.5) pp | state sd (col x day) | slope FE [CI] | b0.5 | b_base | AUC strat. [CI] | skill vs base [CI] | vs mom5 | vs mom15 | acc head | acc sign-mom5 | acc sign-mom15 |';
-  const sep = '|' + '---|'.repeat(17);
-  const rowOf = (name: string, s: ArmReport) => `| ${name} | ${s.n} | ${s.days} | ${fmt(s.upRate, 3)} | ${fmt(s.spread.meanAbsPp, 2)} | ${fmt(s.spread.a90, 2)} | ${fmt(s.sdState, 3)} | ${ci(s.slope, 2)} | ${fmt(s.b05.est, 2)} | ${fmt(s.bBase.est, 2)} | ${ci(s.auc, 4)} | ${ci(s.skill, 5)} | ${fmt(s.skillM5.est, 5)} | ${fmt(s.skillM15.est, 5)} | ${fmt(s.acc.acc, 4)} | ${fmt(s.accM5.acc, 4)} | ${fmt(s.accM15.acc, 4)} |`;
   const table = (title: string, rows: Joined[], slicers: [string, (r: Joined) => string][]) => {
     L.push(`### ${title}`, '', hdr, sep);
     for (const [label, f] of slicers) {
@@ -693,8 +1031,15 @@ export function reportCmd(argv: string[] = process.argv): void {
   L.push(`- head (prod): ${vh.pass ? 'PASS' : 'FAIL'}${vh.fails.length ? ` (${vh.fails.join('; ')})` : ''}`);
   L.push(`- positive control (y' = [px(T) > px(T-H)], production settings): ${vc.pass ? 'PASS' : 'FAIL'}${vc.fails.length ? ` (${vc.fails.join('; ')})` : ''}`);
   L.push(`- nofade shadow (tauC ${NOFADE_TAU_C}), same rule, diagnostic only: ${vn.pass ? 'PASS' : 'FAIL'}${vn.fails.length ? ` (${vn.fails.join('; ')})` : ''}`);
-  L.push(`- coverage: ${covered}/${expected.length} columns with >= ${RULE.minDays} decision-window days (min ${minDays}); ${coverage.map((c) => `${c.column} ${c.days}`).join(', ')}`);
-  L.push(`- joined head labels: ${prod.length} (unmatched dropped: ${unmatched}; dirLog p differing from the sampled tag p: ${pMismatch}); control labels: ${control.length}`);
+  L.push('', `**Readout fix (ADDENDUM 2026-11-12, pre-registered): ${sel.line}**`, '');
+  for (const [k, v] of Object.entries(armV)) {
+    const why = (x?: { fails: string[] }) => (x?.fails.length ? ` (${x.fails.join('; ')})` : '');
+    const note = k === 'plain' ? ' [comparator, never selected]' : k === 'nofade' ? ' [no control arm; diagnostic]' : k === 'nofreeze' ? ` [removes the hard health freeze only: it keeps the governor scale 1 - govDelta G, mean ${fmt(gN ? gSum / gN : NaN, 3)} over the window's sampled minutes, < 0.5 on ${fmt(gN ? (100 * gLow) / gN : NaN, 1)}% of them]` : '';
+    L.push(`- ${k}: CONTROL ${pf(v.control)}${why(v.control)}; DIRECTION ${pf(v.direction)}${why(v.direction)}${note}`);
+  }
+  L.push(`- arms: nlms = head features standardized (EW half-life ${RIDGE.halfLifeMin} sampled min, causal, |z| <= ${RIDGE.zClip}) with the ridge learner (L2-logistic refitted once per UTC day by Newton on the matured labels tagged in the trailing ${RIDGE.windowDays} days, one tag in ${RIDGE.stride} min; ridge strength from {${RIDGE.lambdas.join(', ')}} by prequential log-loss, half-life ${RIDGE.scoreHalfLife} labels; no tuned step, no fade, no freeze); nofreeze = production Readout settings, never frozen; raw = bias + L0 rates, the ridge learner; plain = bias + named inputs, the ridge learner. Joined head calls without the arms' predictions: ${noArms}.`, '');
+  L.push(`- coverage: ${covered}/${expected.length} columns with >= ${RULE.minDays} decision-window days (min ${minDays}); ${coverage.map((c) => `${c.column} ${c.days}`).join(', ')}; selection (every selectable readout's control rows per column): min ${minSelDays} days`);
+  L.push(`- joined head labels: ${nJoined} (unmatched dropped: ${unmatched}; dirLog p differing from the sampled tag p: ${pMismatch}); control labels: ${nControl}`);
   L.push(`- prodShadow reproduces the head's p to max abs diff ${diffMax.toExponential(2)} (${Object.entries(metas).map(([k, m]) => `${k} ${m.diff ? m.diff.max.toExponential(1) : 'NaN'}`).join(', ')}); joined calls with the prodShadow's p off by > 1e-6: ${shadowOff}; head labels the shadows skipped (no pending tag): ${skippedLabels}`);
   L.push(`- the head's state part (rule 1) uses the head's own bias at the call; max abs(head bias - prodShadow bias) ${hbMaxDiff.toExponential(2)}${noHb ? `; ${noHb} rows without it used the prodShadow's` : ''}`);
   L.push(`- control label vs its input: sign(ret_h_z) at the tag agrees with y' on ${fmt(100 * ctlAgree, 2)}% of ${agreeN} window rows (ret_h_z uses a bar close and a 5 s feature cache, y' the minute-mark prints)`);
@@ -702,8 +1047,14 @@ export function reportCmd(argv: string[] = process.argv): void {
   L.push(`- frozen %, G and freezing come from per-coin networks (2 columns each), not the live 8-column network.`, '');
   L.push('Rule: an arm LEARNS iff state sd (logit(p) - bias, within column x day) >= 0.05 AND the slope of y on p with column x day fixed effects is in [0.7, 1.3] with its 95% CI lower bound > 0 AND the column x day stratified AUC CI lower bound > 0.5 AND the Brier skill vs the matured prequential base rate has CI lower bound > 0. CIs: day-block bootstrap, 1000 resamples (tables below: 300).', '');
   L.push('## Decision window', '');
-  L.push('### Arms, pooled over columns', '', hdr, sep);
-  for (const [k, rs] of Object.entries(win)) L.push(rowOf(k, armReport(rs, px)));
+  L.push("### Direction label y = [index(T+H) > index(T)]: all arms, pooled over columns, then by coin", '', hdr, sep);
+  for (const [k, s] of Object.entries(dirStats)) L.push(rowOf(k, s));
+  L.push(...coinLines('prod', win.prod), ...coinLines('prodShadow', win.prodShadow), ...coinLines('nofade', win.nofade));
+  for (const a of ARM_KEYS) L.push(...xDir[a].coin);
+  L.push('', "### Control label y' = [px(T) > px(T-H)]: all arms (prod = the production-settings control), pooled, then by coin", '', hdr, sep);
+  for (const [k, s] of Object.entries(ctlStats)) L.push(rowOf(k, s));
+  L.push(...coinLines('prod control', win.control));
+  for (const a of ARM_KEYS) L.push(...xCtl[a].coin);
   L.push('');
   const slicers: [string, (r: Joined) => string][] = [['coin ', (r) => assetOf(r.k)], ['column ', (r) => r.k], ['month ', (r) => r.day.slice(0, 7)]];
   table('prod by coin, column and month', win.prod, slicers);
@@ -713,9 +1064,12 @@ export function reportCmd(argv: string[] = process.argv): void {
   table('prod by coin, column and month', arms.prod, slicers);
   table('nofade by column and month', arms.nofade, slicers.slice(1));
   table('control by column and month', arms.control, slicers.slice(1));
+  L.push('### Readout-fix arms, full range, pooled', '', hdr, sep);
+  for (const a of ARM_KEYS) L.push(xDir[a].full, xCtl[a].full);
+  L.push('');
   // Learning summary from the sampled minutes.
   L.push('## Learning (sampled minutes)', '', '| range | minutes | frozen % | recovering % | mean G | G>=0.9 % | mean eta/dirEta | eta<0.5 % | mean fSat | mean rhoHat | mean errZ | mean dBrier | mean E feature | mean L1 feature | abs(p-.5)>0.45 % |', '|' + '---|'.repeat(15));
-  for (const [label, rs] of [['decision window', samples.filter((r) => { const d = dayOf(r.t); return d >= dFrom && d <= dTo; })], ['full range', samples]] as const) {
+  for (const [label, rs] of [['decision window', samples.filter((r) => { const d = dayC(r.t); return d >= dFrom && d <= dTo; })], ['full range', samples]] as const) {
     const n = Math.max(1, rs.length), m = (f: (r: SampleRow) => number) => rs.reduce((a, r) => a + f(r), 0) / n;
     const withP = rs.filter((r) => r.p !== undefined);
     L.push(`| ${label} | ${rs.length} | ${fmt(100 * m((r) => r.fr), 1)} | ${fmt(100 * m((r) => r.rc), 1)} | ${fmt(m((r) => r.G), 3)} | ${fmt(100 * m((r) => (r.G >= 0.9 ? 1 : 0)), 1)} | ${fmt(m((r) => r.eta), 3)} | ${fmt(100 * m((r) => (r.eta < 0.5 ? 1 : 0)), 1)} | ${fmt(m((r) => r.fs), 4)} | ${fmt(m((r) => r.rho), 3)} | ${fmt(m((r) => r.ez), 3)} | ${fmt(m((r) => r.db), 4)} | ${fmt(m((r) => r.rE), 5)} | ${fmt(m((r) => r.rL1), 5)} | ${fmt((100 * withP.filter((r) => Math.abs(r.p! - 0.5) > 0.45).length) / Math.max(1, withP.length), 2)} |`);
@@ -739,11 +1093,15 @@ export function reportCmd(argv: string[] = process.argv): void {
   L.push('', 'Known differences from live: one coin per network (lateral inhibition and freezing over that coin\'s two columns only); no contracts (contract channels dead by construction); proxies off in S5 (extras 0).');
   fs.mkdirSync(path.dirname(outMd), { recursive: true });
   fs.writeFileSync(outMd, L.join('\n') + '\n');
-  fs.writeFileSync(outJson, JSON.stringify({ verdict: line, head: { ...vh, stats: head }, control: { ...vc, stats: ctl }, nofade: vn, coverage, unmatched, pMismatch, diffMax, shadowOff, skippedLabels, hbMaxDiff, noHb, controlInputAgreement: { rate: ctlAgree, n: agreeN }, window: [dFrom, dTo], metas }, null, 1));
-  // ---- public: the verdict line and headline counts only
+  const armsJson = Object.fromEntries(Object.entries(armV).map(([k, v]) => [k, { ...(v.direction ? { direction: { ...v.direction, stats: dirStats[k] } } : {}), ...(v.control ? { control: { ...v.control, stats: ctlStats[k] } } : {}) }]));
+  fs.writeFileSync(outJson, JSON.stringify({ verdict: line, selection: sel, selectionCoverage: selCoverage, nofreezeGovernor: { mean: gN ? gSum / gN : NaN, below05: gN ? gLow / gN : NaN, n: gN }, arms: armsJson, noArms, head: { ...vh, stats: head }, control: { ...vc, stats: ctl }, nofade: vn, coverage, unmatched, pMismatch, diffMax, shadowOff, skippedLabels, hbMaxDiff, noHb, controlInputAgreement: { rate: ctlAgree, n: agreeN }, window: [dFrom, dTo], metas }, null, 1));
+  // ---- public: the verdict lines and headline counts only (the readout outcome and its selected arm, then counts of
+  // readouts passing; no per-arm results, no numbers from the tables)
+  const sel5 = ['prod', ...ARM_KEYS], nv = (f: 'control' | 'direction') => sel5.filter((k) => armV[k][f]).length, np = (f: 'control' | 'direction') => sel5.filter((k) => armV[k][f]?.pass).length;
   const pub = [
     `[health] VERDICT: ${line}`,
     `[health] head ${vh.pass ? 'PASS' : 'FAIL'}, control ${vc.pass ? 'PASS' : 'FAIL'}; ${covered}/${expected.length} columns with >= ${RULE.minDays} decision days; ${win.prod.length} head and ${win.control.length} control labels in the window; ${unmatched} unmatched dropped`,
+    `[health] READOUT: ${sel.outcome}${sel.selected ? ` (${sel.selected})` : ''}; readouts passing the control ${np('control')}/${nv('control')}, the direction ${np('direction')}/${nv('direction')}`,
   ];
   fs.writeFileSync(outPublic, pub.join('\n\n') + '\n');
   for (const l of pub) console.log(l.slice(0, 260));
