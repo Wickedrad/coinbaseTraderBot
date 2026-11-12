@@ -814,8 +814,9 @@ export interface TennisConfig {
   loserCutOpen: number;
   loserCutLate: number;
   /** TENNIS_PROB_TURN (0.05): a position riding to settlement in profit is sold at the bid, still in profit, once our player's
-   *  chance to win (the scoring model's from the live score, else the market's price) is this far under its best since the
-   *  ride began (Steven, Nov 12: "unless the probability begins to shift"). 0 = off. */
+   *  chance to win is this far under its best since the ride began, by either reading: the market's price, or the scoring
+   *  model's from a fresh live score that names its players (Steven, Nov 12: "unless the probability begins to shift").
+   *  0 = off. */
   probTurn: number;
   /** Tennis MLP (fair P(win) from the 4 signals, score, book and SNN): when validated, entries need
    *  fair - price >= this. */
@@ -1016,16 +1017,24 @@ function planConfig(env: Env): PlanConfig {
   };
 }
 
-/** The tennis loser cut's three lines (Steven, Nov 12): cents a contract at the start, at 60% and from 85% of the match. An end
- *  left unset follows the middle (20c and 3c with the 10c default, never past it), so a lone TENNIS_LOSER_CUT_C change cannot
- *  stop the start; an end set by hand must stay on its side of the middle. */
-function tennisLoserCut(env: Env): { loserCut: number; loserCutOpen: number; loserCutLate: number } {
-  const mid = num(env, 'TENNIS_LOSER_CUT_C', 10, 0, 99);
+/** A loser cut that narrows with time (Steven, Nov 12): <prefix>_C at 60%, <prefix>_OPEN_C at the start, <prefix>_LATE_C from
+ *  85%, cents a contract. An end left unset follows the middle without crossing it (20c and 3c with a 10c middle, fractions
+ *  kept), so a lone <prefix>_C change, whole or not, never stops the start; an end set by hand must stay on its side of the
+ *  middle and above 0. A middle of 0 turns the cut off whatever the ends say. */
+function cutEnds(env: Env, prefix: string, span: string): { mid: number; open: number; late: number } {
+  const mid = num(env, `${prefix}_C`, 10, 0, 99);
   const set = (k: string) => env[k] !== undefined && env[k] !== '';
-  const open = num(env, 'TENNIS_LOSER_CUT_OPEN_C', Math.max(20, mid), 1, 99);
-  const late = num(env, 'TENNIS_LOSER_CUT_LATE_C', Math.max(1, Math.min(3, mid)), 1, 99);
-  if (mid > 0 && set('TENNIS_LOSER_CUT_OPEN_C') && open < mid) throw new ConfigError(`TENNIS_LOSER_CUT_OPEN_C=${open} must be at least TENNIS_LOSER_CUT_C=${mid}`);
-  if (mid > 0 && set('TENNIS_LOSER_CUT_LATE_C') && late > mid) throw new ConfigError(`TENNIS_LOSER_CUT_LATE_C=${late} must be at most TENNIS_LOSER_CUT_C=${mid}`);
+  const kOpen = `${prefix}_OPEN_C`, kLate = `${prefix}_LATE_C`;
+  const open = set(kOpen) ? num(env, kOpen, 20, 0.01, 99) : Math.max(20, mid);
+  const late = set(kLate) ? num(env, kLate, 3, 0.01, 99) : Math.min(3, mid);
+  if (mid > 0 && open < mid - 1e-9) throw new ConfigError(`${kOpen}=${open} must be at least ${prefix}_C=${mid}: the cut allows a larger loss early in ${span}`);
+  if (mid > 0 && late > mid + 1e-9) throw new ConfigError(`${kLate}=${late} must be at most ${prefix}_C=${mid}: the cut is smaller late in ${span}`);
+  return { mid, open, late };
+}
+
+/** The tennis loser cut's three lines in dollars a contract (cutEnds; Steven, Nov 12). */
+function tennisLoserCut(env: Env): { loserCut: number; loserCutOpen: number; loserCutLate: number } {
+  const { mid, open, late } = cutEnds(env, 'TENNIS_LOSER_CUT', 'the match');
   return { loserCut: mid / 100, loserCutOpen: open / 100, loserCutLate: late / 100 };
 }
 

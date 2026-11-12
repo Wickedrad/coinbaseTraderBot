@@ -1404,7 +1404,7 @@ export class Engine {
   /** The last kill-switch exit attempt per market (tennisKillExits, cryptoKillExits). */
   private readonly killExitTs = new Map<string, number>();
   /** Live tennis scores (TENNIS_SCORE_FEED=kalshi): milestone per event, last poll, raw payload. */
-  private readonly scores = new Map<string, { milestone?: { id: string; type: string } | null; polledTs: number; score?: TennisScore; raw?: unknown; error?: string; pAtPoll?: number; prev?: LiveTennisMatch; breaks?: [number, number]; breaksTotal?: [number, number] }>();
+  private readonly scores = new Map<string, { milestone?: { id: string; type: string } | null; polledTs: number; score?: TennisScore; scoreAt?: number; raw?: unknown; error?: string; pAtPoll?: number; prev?: LiveTennisMatch; breaks?: [number, number]; breaksTotal?: [number, number] }>();
   readonly tennisStatus = new Map<string, { event: string; phase: string; fairA?: number; pA?: number; progress: number; progressDetail?: Record<string, unknown>; score?: TennisScore; scoreRaw?: unknown; liveSince?: number; notes: string[]; tickers: string[]; updatedTs: number; trailingStops?: Record<string, number>; confluence?: Record<string, unknown> }>();
 
   /** Tennis budget use: worst-case loss of all tennis positions + resting orders vs the 25% cap. */
@@ -1430,6 +1430,7 @@ export class Engine {
       const ld = await rest.getLiveData(st.milestone.type, st.milestone.id);
       st.raw = ld?.details;
       st.score = parseTennisScore(ld?.details);
+      if (st.score) st.scoreAt = now;
       st.error = st.score ? undefined : 'live data not recognised as a tennis score (see scoreRaw)';
     } catch (e) {
       st.error = `score feed: ${(e as Error).message}`;
@@ -1467,6 +1468,7 @@ export class Engine {
       st.breaksTotal = [(st.breaksTotal?.[0] ?? 0) + b[0], (st.breaksTotal?.[1] ?? 0) + b[1]];
     }
     st.prev = hit.match; st.raw = hit.match; st.score = score; st.error = score ? undefined : 'live tennis: score not recognised';
+    if (score) st.scoreAt = now;
     if (score) this.d.md.record('tennis_score', { event, ...score, tiebreak: hit.match.is_tiebreak, breaks: st.breaks ?? null, breaksTotal: st.breaksTotal ?? null, matchId: hit.match.id });
     return st;
   }
@@ -1523,7 +1525,9 @@ export class Engine {
       // (TENNIS_NO_EXIT_BEFORE_END_FRAC, 30%, by its progress: the live score against the format's sets, else the time and
       // information clocks) riding in profit until the win chance turns (TENNIS_PROB_TURN). Out of profit: the loser cut by
       // progress (20c at the start, 10c at 60%, 3c from 85%), and in the last 10% (TENNIS_END_CUT_FRAC) the end cut (Nov 12).
-      const out = decideMatch(tracker, { event, now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score, fairA }, T,
+      const out = decideMatch(tracker, { event, now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score,
+        // Only the Live Tennis feed names the score's players (matched to the market titles); Kalshi's live data does not.
+        scoreAt: sc?.scoreAt, scoreOriented: T.scoreFeed === 'livetennis', fairA }, T,
         { bankroll, tennisRisk: totals.total, matchRisk: totals.window }, ms[0].tickSize, { pacerUsd: this.pacer.neededUsd(now), settleFrac: T.settleFrac, endLoserCut: T.endLoserCut, endEntryMargin: T.endEntryMargin, endCutFrac: T.endCutFrac,
           loserCut: T.loserCut, loserCutOpen: T.loserCutOpen, loserCutLate: T.loserCutLate, probTurn: T.probTurn, floorMode: this.d.cfg.strategy.pacer.floor, floors: this.quotaFloors,
           floorTicks: this.d.cfg.strategy.pacer.floorTicks });

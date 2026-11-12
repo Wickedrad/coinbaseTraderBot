@@ -20,7 +20,7 @@ import { KillSwitch } from '../bot/risk/killSwitch';
 import { RiskGateway } from '../bot/risk/riskGateway';
 import { Reconciler } from '../bot/recon/reconciler';
 import { QuotaFloors, type PacerFloorMode } from '../bot/risk/quotaPacer';
-import { decideMatch, MatchTracker, tennisLoserCutAt, tennisSize, type MatchMarket } from '../bot/tennis/tennisStrategy';
+import { decideMatch, MatchTracker, SCORE_FRESH_MS, tennisLoserCutAt, tennisSize, type MatchMarket } from '../bot/tennis/tennisStrategy';
 import { impliedModel } from '../bot/tennis/tennisModel';
 import { openExchange, tmpAudit, tmpDir } from './helpers';
 
@@ -720,6 +720,12 @@ test('tennis loser cut by the match\'s progress (Steven, Nov 12): 20c at the sta
   assert.deepEqual([cfg({ TENNIS_LOSER_CUT_C: '15' }).loserCutOpen, cfg({ TENNIS_LOSER_CUT_C: '15' }).loserCutLate], [0.2, 0.03]);
   assert.deepEqual([cfg({ TENNIS_LOSER_CUT_C: '25' }).loserCutOpen, cfg({ TENNIS_LOSER_CUT_C: '2' }).loserCutLate], [0.25, 0.02]);
   assert.equal(cfg({ TENNIS_LOSER_CUT_C: '0' }).loserCut, 0);
+  // A fraction of a cent: unset ends follow it unrounded; an end set by hand goes down to 0.01c.
+  const frac = cfg({ TENNIS_LOSER_CUT_C: '0.5' });
+  assert.deepEqual([frac.loserCutOpen, frac.loserCut, frac.loserCutLate], [0.2, 0.005, 0.005]);
+  assert.equal(cfg({ TENNIS_LOSER_CUT_C: '2.5' }).loserCutLate, 0.025);
+  assert.equal(cfg({ TENNIS_LOSER_CUT_C: '0.5', TENNIS_LOSER_CUT_LATE_C: '0.25' }).loserCutLate, 0.0025);
+  assert.throws(() => cfg({ TENNIS_LOSER_CUT_LATE_C: '0' }), /TENNIS_LOSER_CUT_LATE_C=0 must be a number in \[0.01, 99\]/);
   assert.throws(() => cfg({ TENNIS_LOSER_CUT_OPEN_C: '5' }), /TENNIS_LOSER_CUT_OPEN_C=5 must be at least TENNIS_LOSER_CUT_C=10/);
   assert.throws(() => cfg({ TENNIS_LOSER_CUT_LATE_C: '12' }), /TENNIS_LOSER_CUT_LATE_C=12 must be at most TENNIS_LOSER_CUT_C=10/);
   // The line, dollars a contract under the entry, by the share of the match done.
@@ -785,64 +791,119 @@ test('tennis loser cut by the match\'s progress (Steven, Nov 12): 20c at the sta
 test('tennis: a position riding to settlement in profit is sold, still in profit, once the win chance turns (TENNIS_PROB_TURN, Steven Nov 12)', () => {
   const rules = { pacerUsd: 4.5, settleFrac: T.settleFrac, endLoserCut: true, endEntryMargin: T.endEntryMargin, endCutFrac: T.endCutFrac,
     loserCut: T.loserCut, loserCutOpen: T.loserCutOpen, loserCutLate: T.loserCutLate, probTurn: T.probTurn };
-  const ride = (prog: number, r: object = rules) => {
+  type Score = { setsA: number; setsB: number; gamesA: number; gamesB: number; pointsA: number; pointsB: number };
+  const ride = (prog: number | (() => number), r: object = rules) => {
     const tr = new MatchTracker('R', T);
-    tr.progress = () => prog;
-    let now = t0 + 3_600_000;
-    const at = (bid: number, net: number, score?: { setsA: number; setsB: number; gamesA: number; gamesB: number; pointsA: number; pointsB: number }) => {
-      const o = decideMatch(tr, { event: 'R', now, startTime: t0, closeTime: t0 + 86_400_000, score, markets: [mk('R-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('R-DOG', 1 - bid - 0.02, 1 - bid)] }, T, budget, 0.01, r);
-      now += 30_000;
+    tr.progress = typeof prog === 'function' ? prog : () => prog;
+    const clock = { now: t0 + 3_600_000 };
+    const at = (bid: number, net: number, score?: Score, extra: { scoreAt?: number; scoreOriented?: boolean } = {}) => {
+      const o = decideMatch(tr, { event: 'R', now: clock.now, startTime: t0, closeTime: t0 + 86_400_000, score, ...extra, markets: [mk('R-FAV', bid, bid + 0.02, { position: 30, avgEntry: 0.8, netAtBid: net }), mk('R-DOG', 1 - bid - 0.02, 1 - bid)] }, T, budget, 0.01, r);
+      clock.now += 30_000;
       return o;
     };
-    return { tr, at };
+    return { tr, at, clock };
   };
   // Without a score the win chance is the market's: the two books' mid, the bid + 1c here.
   const a = ride(0.8);
   for (const b of [0.88, 0.9, 0.92]) assert.equal(a.at(b, 2).plans.length, 0, 'rides');
-  assert.ok(Math.abs(a.tr.rideBest.get('R-FAV')! - 0.93) < 1e-9);
+  assert.ok(Math.abs(a.tr.rides.get('R-FAV')!.market! - 0.93) < 1e-9);
   const held = a.at(0.89, 1.6);
   assert.equal(held.plans.length, 0, 'down 3 points: still riding');
-  assert.ok(held.notes.some((n) => n.includes('riding to settlement, win chance 90% (best 93%)')), JSON.stringify(held.notes));
+  assert.ok(held.notes.some((n) => n.includes('riding to settlement, win chance 90% by the market (best 93%)')), JSON.stringify(held.notes));
   const turn = a.at(0.87, 1).plans;
   assert.equal(turn.length, 1, JSON.stringify(turn));
   assert.deepEqual([turn[0].leg, turn[0].side, turn[0].price, turn[0].count, turn[0].reduceOnly, turn[0].timeInForce], ['prob_turn', 'ask', 0.87, 30, true, 'immediate_or_cancel']);
   assert.equal(turn[0].why, 'riding in profit (match 80% done), win chance 88% by the market, down 5.0 points from 93%: selling +$1.00 after fees at bid 0.87');
-  // Out of profit by the time it turns: the cuts take it (4.4c at 80%: a 1c loss is held), and the ride starts afresh.
+  // Out of profit by the time it turns: the cuts take it (4.4c at 80%: a 1c loss is held), and the ride ends.
   const b = ride(0.8);
   for (const x of [0.9, 0.92]) b.at(x, 2);
   assert.equal(b.at(0.79, -0.8).plans.length, 0);
-  assert.equal(b.tr.rideBest.has('R-FAV'), false);
+  assert.equal(b.tr.rides.has('R-FAV'), false);
   // Off: rides through the drop. Before the last 30% there is no ride: the legs decide.
   const c = ride(0.8, { ...rules, probTurn: 0 });
   for (const x of [0.92, 0.87]) assert.equal(c.at(x, 1).plans.length, 0);
   const d = ride(0.5);
   for (const x of [0.92, 0.87]) assert.ok(d.at(x, 1).plans.every((p) => p.leg !== 'prob_turn'));
-  // With a live score the win chance is the scoring model's, on serve odds calibrated to the starting price (70% here):
-  // a set and a break up at 4-2 is 97%; 4-3 is 4.8 points down (rides); broken back at 4-4 it is 11.7 points down (sold).
+  assert.equal(d.tr.rides.has('R-FAV'), false);
+  // Without a score the progress is half the information clock, which falls back as the leader's price falls: the turn this
+  // exit is for pulls the progress under 70%. A ride once begun goes on while in profit, so the turn is still caught.
+  let p = 0.75;
+  const f = ride(() => p);
+  assert.equal(f.at(0.92, 2).plans.length, 0);
+  p = 0.66;
+  assert.equal(f.at(0.9, 1.6).plans.length, 0, 'still riding at 66%');
+  const back = f.at(0.87, 1).plans;
+  assert.equal(back[0]?.leg, 'prob_turn', JSON.stringify(back));
+  assert.equal(back[0]?.why, 'riding in profit (match 66% done), win chance 88% by the market, down 5.0 points from 93%: selling +$1.00 after fees at bid 0.87');
+
+  // With a live score that names its players (the Live Tennis feed) the scoring model's chance counts too, on serve odds
+  // calibrated to the starting price (70% here): a set and a break up at 4-2 is 97%; 4-3 is 4.8 points down (rides); broken
+  // back at 4-4 it is 11.7 points down (sold) while the market has not moved.
+  const sc = (gamesA: number, gamesB: number): Score => ({ setsA: 1, setsB: 0, gamesA, gamesB, pointsA: 0, pointsB: 0 });
+  const named = { scoreOriented: true };
   const e = ride(0.8);
   e.tr.liveSince = t0;
   e.tr.pStart = 0.7;
-  const sc = (gamesA: number, gamesB: number) => ({ setsA: 1, setsB: 0, gamesA, gamesB, pointsA: 0, pointsB: 0 });
-  assert.equal(e.at(0.9, 2, sc(4, 2)).plans.length, 0);
-  assert.equal(e.at(0.9, 2, sc(4, 3)).plans.length, 0);
-  const s44 = e.at(0.88, 1.5, sc(4, 4)).plans;
+  assert.equal(e.at(0.9, 2, sc(4, 2), named).plans.length, 0);
+  const e43 = e.at(0.9, 2, sc(4, 3), named);
+  assert.equal(e43.plans.length, 0);
+  assert.ok(e43.notes.some((n) => n.includes('win chance 92% by the score (best 97%), 91% by the market (best 91%)')), JSON.stringify(e43.notes));
+  const s44 = e.at(0.9, 1.5, sc(4, 4), named).plans;
   assert.equal(s44[0]?.leg, 'prob_turn', JSON.stringify(s44));
-  assert.equal(s44[0]?.why, 'riding in profit (match 80% done), win chance 85% by the score, down 11.7 points from 97%: selling +$1.50 after fees at bid 0.88');
+  assert.equal(s44[0]?.why, 'riding in profit (match 80% done), win chance 85% by the score, down 11.7 points from 97%: selling +$1.50 after fees at bid 0.9');
+  // Kalshi's live data does not say which player is home: its score gives no win chance, only the market does.
+  const k = ride(0.8);
+  k.tr.liveSince = t0;
+  k.tr.pStart = 0.7;
+  for (const g of [sc(4, 2), sc(4, 3), sc(4, 4)]) assert.equal(k.at(0.9, 2, g).plans.length, 0);
+  assert.equal(k.tr.rides.get('R-FAV')?.score, undefined);
+  // A stale score (the feed out of calls: the engine passes the last good one on) gives none either; a market turn is caught.
+  const g = ride(0.8);
+  g.tr.liveSince = t0;
+  g.tr.pStart = 0.7;
+  const readAt = g.clock.now;
+  assert.equal(g.at(0.9, 2, sc(4, 2), { ...named, scoreAt: readAt }).plans.length, 0);
+  g.clock.now = readAt + SCORE_FRESH_MS + 60_000;
+  assert.equal(g.at(0.9, 2, sc(4, 2), { ...named, scoreAt: readAt }).plans.length, 0);
+  const stale = g.at(0.85, 1, sc(4, 2), { ...named, scoreAt: readAt }).plans;
+  assert.equal(stale[0]?.leg, 'prob_turn', JSON.stringify(stale));
+  assert.ok(stale[0]?.why.includes('win chance 86% by the market, down 5.0 points from 91%'), stale[0]?.why);
+  // A ride begun on the market at 95% is not sold when the first score arrives with a lower estimate: each reading keeps its own best.
+  const h = ride(0.8);
+  h.tr.liveSince = t0;
+  h.tr.pStart = 0.7;
+  assert.equal(h.at(0.94, 3).plans.length, 0);
+  assert.equal(h.at(0.94, 3, sc(4, 4), named).plans.length, 0);
+  assert.ok(Math.abs(h.tr.rides.get('R-FAV')!.score! - 0.8529) < 1e-3);
 });
 
-test('MatchTracker.winChance: the scoring model\'s from a live score, else the market\'s; the other player\'s is its complement', () => {
+test('MatchTracker.winChance: the market\'s price, and the scoring model\'s from a fresh live score that names its players; the other player\'s is its complement', () => {
   const ms = [mk('S-A', 0.69, 0.71), mk('S-B', 0.29, 0.31)];
   const tr = new MatchTracker('S', T);
-  const m = tr.winChance(ms, 'S-A');
-  assert.equal(m?.from, 'market');
-  assert.ok(Math.abs(m!.p - 0.7) < 1e-9);
-  assert.ok(Math.abs(tr.winChance(ms, 'S-B')!.p - 0.3) < 1e-9);
-  assert.equal(tr.winChance(ms, 'S-X'), undefined);
+  const m = tr.winChance(ms, 'S-A', t0);
+  assert.equal(m?.score, undefined);
+  assert.ok(Math.abs(m!.market! - 0.7) < 1e-9);
+  assert.ok(Math.abs(tr.winChance(ms, 'S-B', t0)!.market! - 0.3) < 1e-9);
+  assert.equal(tr.winChance(ms, 'S-X', t0), undefined);
   tr.liveSince = t0;
   tr.pStart = 0.7;
   tr.score = { setsA: 1, setsB: 0, gamesA: 3, gamesB: 1, pointsA: 0, pointsB: 0 };
+  tr.scoreAt = t0;
+  assert.equal(tr.winChance(ms, 'S-A', t0)?.score, undefined, 'not named (Kalshi live data): no score reading');
+  tr.scoreOriented = true;
   const want = impliedModel(0.7, tr.format(ms), T.serveBase).remaining(tr.score).pA;
   assert.ok(want > 0.95, `${want}`);
-  assert.deepEqual(tr.winChance(ms, 'S-A'), { p: want, from: 'score' });
-  assert.deepEqual(tr.winChance(ms, 'S-B'), { p: 1 - want, from: 'score' });
+  assert.equal(tr.winChance(ms, 'S-A', t0 + 60_000)?.score, want);
+  assert.equal(tr.winChance(ms, 'S-B', t0 + 60_000)?.score, 1 - want);
+  assert.equal(tr.winChance(ms, 'S-A', t0 + SCORE_FRESH_MS)?.score, want, 'fresh to the limit');
+  const old = tr.winChance(ms, 'S-A', t0 + SCORE_FRESH_MS + 1);
+  assert.equal(old?.score, undefined, 'stale');
+  assert.ok(old?.market !== undefined);
+  // observe() takes the snapshot's flags: the time the score was read (else now) and whether it names its players.
+  const o = new MatchTracker('O', T);
+  const snap = (extra: object) => ({ event: 'O', now: t0 + 600_000, startTime: t0, closeTime: t0 + 86_400_000, markets: ms, score: tr.score, ...extra });
+  o.observe(snap({ scoreAt: t0 + 500_000, scoreOriented: true }));
+  assert.deepEqual([o.scoreAt, o.scoreOriented], [t0 + 500_000, true]);
+  o.observe(snap({}));
+  assert.deepEqual([o.scoreAt, o.scoreOriented], [t0 + 600_000, false]);
 });

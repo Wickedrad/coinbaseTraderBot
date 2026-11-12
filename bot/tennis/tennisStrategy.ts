@@ -80,6 +80,11 @@ export interface MatchSnapshot {
   closeTime: number;
   /** Live score, when a score feed is configured (TENNIS_SCORE_FEED). */
   score?: TennisScore;
+  /** When that score was read (the engine passes the last good one on after a failed poll); unset: now. */
+  scoreAt?: number;
+  /** The score's player A is the first market's player (TENNIS_SCORE_FEED=livetennis matches the names to the market titles;
+   *  Kalshi's live data does not say which player is home). Only such a score gives a win chance (MatchTracker.winChance). */
+  scoreOriented?: boolean;
   /** Tennis MLP fair P(player A wins), present only when that model is validated. */
   fairA?: number;
 }
@@ -111,6 +116,8 @@ const mid = (q: Quote) => (q.bid !== undefined && q.ask !== undefined && q.ask >
 /** Per-match state machine. */
 /** How long a progress reading must hold before the loser cut and the entry block take it as reached (MatchTracker.progressHigh). */
 export const PROGRESS_LATCH_MS = 120_000;
+/** How old a live score may be and still give a win chance: the Live Tennis feed is read every 5 minutes while a position is held. */
+export const SCORE_FRESH_MS = 6 * 60_000;
 
 export class MatchTracker {
   liveSince?: number;
@@ -132,8 +139,9 @@ export class MatchTracker {
    *  reading of the tick (TENNIS_END_LOSER_CUT); one tick's thin or one-sided book cannot set it. */
   progressHigh = 0;
   private readonly progressSeen: Array<{ ts: number; p: number }> = [];
-  /** Per held market riding to settlement in profit: our player's best win chance since the ride began (TENNIS_PROB_TURN). */
-  readonly rideBest = new Map<string, number>();
+  /** Per held market riding to settlement in profit: our player's best win chance since the ride began, by each reading
+   *  (TENNIS_PROB_TURN). A ride once begun lasts while the position is in profit, whatever the progress does. */
+  readonly rides = new Map<string, { score?: number; market?: number }>();
 
   /** Takes this tick's progress reading and returns progressHigh. */
   latchProgress(now: number, p: number): number {
@@ -155,6 +163,9 @@ export class MatchTracker {
   private qv = 0;
   private qvLast?: { ts: number; p: number };
   score?: TennisScore;
+  /** When the score was read, and whether its player A is the first market's (MatchSnapshot.scoreAt, scoreOriented). */
+  scoreAt?: number;
+  scoreOriented = false;
   private readonly mids = new Map<string, Array<{ ts: number; p: number }>>();
 
   /** Mid change of one market over the last `ms` (undefined without enough history). */
@@ -231,21 +242,19 @@ export class MatchTracker {
     return { progress: w * (info ?? 0) + (1 - w) * time, time, info, expectedMin, bestOf: format.bestOf };
   }
 
-  /** Our player's chance to win the match. With a live score it is the scoring model's (the points, games and sets still to
-   *  play from the exact score, on serve-point odds calibrated to the match's starting price: tennisModel.ts); without one it
-   *  is the market's price (MatchTracker.probability). Undefined when the ticker is not one of the match's markets or there
-   *  is no price. */
-  winChance(ms: MatchMarket[], ticker: string): { p: number; from: 'score' | 'market' } | undefined {
+  /** Our player's chance to win the match, by each reading there is: the market's price (MatchTracker.probability), and the
+   *  scoring model's (the points, games and sets still to play from the exact score, on serve-point odds calibrated to the
+   *  match's starting price: tennisModel.ts) from a live score that names its players (scoreOriented) and was read within
+   *  SCORE_FRESH_MS of `now`. Undefined when the ticker is not one of the match's markets. */
+  winChance(ms: MatchMarket[], ticker: string, now?: number): { score?: number; market?: number } | undefined {
     const a = ms[0]?.ticker === ticker;
     if (!a && ms[1]?.ticker !== ticker) return undefined;
-    let pA: number | undefined;
-    let from: 'score' | 'market' = 'market';
-    if (this.score && this.liveSince !== undefined) {
-      pA = impliedModel(this.pStart ?? 0.5, this.format(ms), this.cfg.serveBase).remaining(this.score).pA;
-      from = 'score';
-    } else pA = MatchTracker.probability(ms);
-    if (pA === undefined || !Number.isFinite(pA)) return undefined;
-    return { p: a ? pA : 1 - pA, from };
+    const side = (pA: number | undefined) => (pA === undefined || !Number.isFinite(pA) ? undefined : a ? pA : 1 - pA);
+    const fresh = now === undefined || this.scoreAt === undefined || now - this.scoreAt <= SCORE_FRESH_MS;
+    const score = this.score && this.liveSince !== undefined && this.scoreOriented && fresh
+      ? side(impliedModel(this.pStart ?? 0.5, this.format(ms), this.cfg.serveBase).remaining(this.score).pA) : undefined;
+    const market = side(MatchTracker.probability(ms));
+    return { ...(score !== undefined ? { score } : {}), ...(market !== undefined ? { market } : {}) };
   }
 
   /** Update from a snapshot; returns the phase. */
@@ -263,7 +272,7 @@ export class MatchTracker {
       while (h.length && h[0].ts < s.now - 5 * 60_000) h.shift();
       this.mids.set(m.ticker, h);
     }
-    if (s.score) this.score = s.score;
+    if (s.score) { this.score = s.score; this.scoreAt = s.scoreAt ?? s.now; this.scoreOriented = s.scoreOriented === true; }
     if (this.liveSince === undefined) {
       if (s.startTime !== undefined && s.now >= s.startTime) this.liveSince = s.startTime;
       else if (s.startTime === undefined && p !== undefined) {
@@ -488,7 +497,9 @@ export function tennisLoserCutAt(r: Pick<TennisProfitRules, 'loserCut' | 'loserC
  * Steven, Nov 12: the end cut and the entry block take their own share (endCutFrac, the last 10%); before it a position not
  * in profit is sold once its bid is the loser cut's line under the entry, a line that narrows as the match goes on
  * (tennisLoserCutAt by progressHigh); and a position riding in profit is sold at once, still in profit, when our player's win
- * chance turns (probTurn under its best since the ride began). Out of profit, the cuts take it from there.
+ * chance turns (probTurn under its best since the ride began, by the market's price or a fresh, named live score). A ride
+ * once begun lasts while the position is in profit, even when a comeback pulls the progress back under the last share: the
+ * turn the exit is for pulls the progress back too. Out of profit, the cuts take it from there.
  */
 function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: MatchPhase; plans: TennisPlan[]; notes: string[] }, r: TennisProfitRules, tick: number): { phase: MatchPhase; plans: TennisPlan[]; notes: string[] } {
   const frac = r.settleFrac ?? 0;
@@ -509,23 +520,32 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
   }
   for (const m of s.markets) {
     const floor = mode === 'off' ? undefined : r.floors?.floor(m.ticker, Math.max(0, m.position));
-    if (!(m.position > 0)) { t.rideBest.delete(m.ticker); continue; }
+    if (!(m.position > 0)) { t.rides.delete(m.ticker); continue; }
     const net = m.netAtBid;
     const others = (p: TennisPlan) => p.ticker !== m.ticker || p.side !== 'ask';
-    const riding = lastShare && net !== undefined && net > 1e-9;
-    if (!riding) t.rideBest.delete(m.ticker);
+    const ride = t.rides.get(m.ticker);
+    const riding = frac > 0 && net !== undefined && net > 1e-9 && (lastShare || high >= 1 - frac - 1e-9 || ride !== undefined);
+    if (!riding) t.rides.delete(m.ticker);
     const cutLine = tennisLoserCutAt(r, high);
     if (riding) {
       // In profit in the last share: rides to settlement, unless our player's win chance turns while it is still in profit.
-      const w = (r.probTurn ?? 0) > 0 ? t.winChance(s.markets, m.ticker) : undefined;
-      const best = w === undefined ? undefined : Math.max(t.rideBest.get(m.ticker) ?? w.p, w.p);
-      if (best !== undefined) t.rideBest.set(m.ticker, best);
+      // Each reading keeps its own best, so a score arriving mid-ride (a different estimate) is not taken for a turn.
+      const w = (r.probTurn ?? 0) > 0 ? t.winChance(s.markets, m.ticker, s.now) : undefined;
+      const best = { ...ride };
+      if (w?.score !== undefined) best.score = Math.max(best.score ?? w.score, w.score);
+      if (w?.market !== undefined) best.market = Math.max(best.market ?? w.market, w.market);
+      t.rides.set(m.ticker, best);
+      const turns = (['score', 'market'] as const)
+        .map((k) => ({ k, p: w?.[k], b: best[k] }))
+        .filter((x): x is { k: 'score' | 'market'; p: number; b: number } => x.p !== undefined && x.b !== undefined && x.b - x.p >= r.probTurn! - 1e-9)
+        .sort((x, y) => (y.b - y.p) - (x.b - x.p));
+      const read = (['score', 'market'] as const).filter((k) => w?.[k] !== undefined).map((k) => `${pct(w![k]!)} by the ${k} (best ${pct(best[k]!)})`).join(', ');
       out.plans = out.plans.filter(others);
-      if (w !== undefined && best !== undefined && best - w.p >= r.probTurn! - 1e-9 && m.quote.bid !== undefined) {
-        const bid = m.quote.bid;
+      if (turns.length && m.quote.bid !== undefined) {
+        const bid = m.quote.bid, x = turns[0];
         out.plans.push({ ticker: m.ticker, side: 'ask', price: bid, count: m.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'prob_turn',
-          why: `riding in profit (match ${pct(prog)} done), win chance ${pct(w.p)} by the ${w.from}, down ${((best - w.p) * 100).toFixed(1)} points from ${pct(best)}: selling +$${net!.toFixed(2)} after fees at bid ${bid}` });
-      } else out.notes.push(`${m.ticker}: match ${pct(prog)} done (its last ${pct(frac)}), +$${net!.toFixed(2)} after fees: riding to settlement${w && best !== undefined ? `, win chance ${pct(w.p)} (best ${pct(best)})` : ''}`);
+          why: `riding in profit (match ${at}), win chance ${pct(x.p)} by the ${x.k}, down ${((x.b - x.p) * 100).toFixed(1)} points from ${pct(x.b)}: selling +$${net!.toFixed(2)} after fees at bid ${bid}` });
+      } else out.notes.push(`${m.ticker}: match ${at} (its last ${pct(frac)}), +$${net!.toFixed(2)} after fees: riding to settlement${read ? `, win chance ${read}` : ''}`);
     } else if (cutShare && r.endLoserCut && net !== undefined && !(net > 1e-9) && m.quote.bid !== undefined) {
       // Not in profit after fees: never held to settlement. A thin bid takes what it can and the rest is judged next tick.
       const bid = m.quote.bid;
