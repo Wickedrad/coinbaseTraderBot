@@ -42,6 +42,24 @@ interface PaperOrder extends ExchangeOrder {
 /** Kalshi stamps trades in whole seconds: a trade stamped up to this long before an order may still follow it. */
 const TRADE_TS_SLACK_MS = 1000;
 
+/** The paper account's result against all the money put into it (PaperExchange.poolResult), in dollars. */
+export interface PaperPoolResult {
+  /** Starting balance plus top-ups. */
+  funded: number;
+  /** Cash added by training refills. */
+  refilled: number;
+  /** funded + refilled. */
+  putIn: number;
+  /** Cash, resting-order holds included. */
+  cash: number;
+  /** Cost of the contracts held. */
+  openCost: number;
+  /** cash + openCost. */
+  worth: number;
+  /** worth - putIn: negative when the account holds less than was put into it. */
+  result: number;
+}
+
 interface PaperState {
   balance: number;
   /** Cash put into the paper account so far (raising PAPER_BANKROLL_USD tops it up by the difference). */
@@ -114,6 +132,22 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
 
   /** Cash put into the paper account (the configured starting balance, after any top-ups). */
   get funded(): number { return this.st.funded ?? 0; }
+
+  /** What the account has made, which its cash does not show: a training refill adds cash, so the balance can climb while
+   *  the bot loses. Worth = cash (what resting orders hold included) + the cost of what it holds; result = worth less all
+   *  the money put in (the starting balance and its top-ups, and every refill). Counted from the account's current book,
+   *  whose `funded` and `refilled` counters start when its state file was created (a file older than the counters is
+   *  assumed to have started with $20), and the held contracts are valued at cost, not at the market. */
+  poolResult(): PaperPoolResult {
+    const cents = (x: number): number => Math.round(x * 100) / 100 + 0; // + 0: no -0
+    let openCost = 0;
+    for (const [ticker, b] of Object.entries(this.st.basis ?? {})) {
+      if (Math.abs(this.st.positions[ticker] ?? 0) > 1e-9) openCost += b.yesCost + b.noCost;
+    }
+    const funded = this.st.funded ?? 0, refilled = this.st.refilled ?? 0;
+    const cash = this.st.balance, worth = cash + openCost, putIn = funded + refilled;
+    return { funded: cents(funded), refilled: cents(refilled), putIn: cents(putIn), cash: cents(cash), openCost: cents(openCost), worth: cents(worth), result: cents(worth - putIn) };
+  }
 
   /** Training refill after capital exhaustion (bot/training/supervisor.ts): add cash, tracked separately. */
   refill(amount: number): void {

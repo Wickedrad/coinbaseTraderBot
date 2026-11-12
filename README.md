@@ -36,7 +36,7 @@ bot/
   oms/                   order state machine, idempotent client_order_id, positions change only on fills
   recon/                 exchange-is-truth reconciliation, fill replay, orphan cancel, break -> halt -> kill
   strategy/              relaxed cadence gate, maker quoting (post_only), selective taking, model exit, Mode B take-profit
-  paper/                 paper exchange: same gateway interface, queue-aware fills, no bankroll refills
+  paper/                 paper exchange: same gateway interface, queue-aware fills; only the training supervisor adds cash
   tca/                   per-fill edge-at-decision and 5/30/60 s markouts
   api/                   authenticated, read-only operator API; kill switch only
   engine.ts, main.ts
@@ -170,6 +170,7 @@ Every placement and re-price is an order. The risk gateway allows `RISK_MAX_ORDE
 
   - The tier comes from the **high-water mark** of tradable bankroll, not the current balance. Once the account has grown into a tier it stays there, and losses never re-escalate risk. Withdrawals from trading cash lower the mark.
   - The **hard floor is $10** (`MIN_TRADABLE_BANKROLL_USD`): a $20 account keeps trading after a $2 loss and stops only below $10. `PAPER_BANKROLL_USD` defaults to $200 (since Oct 30; it was $100). Raising it later tops the paper account up to the new pool once: at startup the paper exchange adds the difference, then the training supervisor brings the tradable bankroll (vaulted and pocketed profit is not the pool's) up to the pool and starts a new epoch at full size (`pool_raised` in the audit log; not a training failure, nothing in `epochs.jsonl`).
+  - **The paper result is not the cash balance.** Every refill (and a raised pool) adds cash, so the balance can climb while the bot loses. `/api/status` carries `paperPool` (paper only, `null` in live): `worth` (cash plus the cost of the contracts held) less `funded` and `refilled` is the `result`. The dashboard shows it as *Paper result* under the cash balance, and `deploy/diagnose.sh` and the Actions diagnostics print it. The Kalshi book only; the perps paper account is not covered yet.
   - The paper pool exists only in paper mode. In live mode the bot shows and trades only the Kalshi cash pool:
     - its orders, positions, vault, break-even, balance history, perps trades and Kalshi check live in `DATA_DIR/live`, apart from the paper books;
     - a perps setting of `paper` is off in live.
@@ -750,7 +751,7 @@ The backtest reports per-window results. Correlated BTC, ETH and SOL markets tha
 | Online NN, meta-learning, plasticity, hand-set win probability, confluence | Replaced by the fair value plus the frozen, offline-validated meta-model. |
 | % TP/SL and trailing stops on binaries | Fixed-% stops removed. Exits are fair-value or model-based. The order-book ratchet / hunt mode runs live only after the backtest shows it beating the fair-value exit. |
 | USDT-dominance, Ichimoku, VPIN gates; trade-ID-tuned gates | Removed as gates. USDT.D/BTC.D, Ichimoku and VPIN return only as learned model features, weighted by walk-forward validation. |
-| Paper "blowout reset" | Removed. The paper exchange never refills. |
+| Paper "blowout reset" | Removed. The paper exchange never resets itself; its only refills come from the training supervisor (capital exhaustion, `bot/training/supervisor.ts`) and are counted in `refilled`. |
 | Paper fills from late market data | A resting paper order is filled only by trades Kalshi printed after it was placed (by the trade's own time stamp, 1 s slack for whole-second stamps). On Oct 5-6 the Kalshi socket delivered trades and book updates minutes late (compressed frames queued on a busy box); quotes priced on live Coinbase prices were filled by those old trades, and paper booked that hindsight as profit. Separately, `RISK_MAX_FEED_LAG_MS` (default 3000, 0 = off) stops all orders and pulls resting quotes, paper and live, while Kalshi data reaches the bot later than that (measured from Kalshi's send stamp on index frames, else trade times). |
 | Cosmetic modules (Avellaneda-Stoikov, jump-diffusion, Kalman, Bayesian Kelly, HRP, Almgren-Chriss, "SR 11-7"), the Python bot, patch scripts, committed state, second lockfile | Deleted. |
 | Legacy `/portfolio/orders` | Orders go to `POST /portfolio/events/orders` (V2) with `post_only`, `self_trade_prevention_type`, `expiration_time` and `cancel_order_on_pause`. |
