@@ -51,20 +51,22 @@ jobs:
         if: steps.go.outputs.run == 'true'
         continue-on-error: true
         run: python -m pip install --quiet 'tvdatafeed @ https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip'
-      - uses: actions/download-artifact@v4
+      # The frozen Atlas tables and weights, with retries: on Nov 11 20:35-20:59 UTC GitHub's artifact service refused
+      # downloads ("Failed to generate URL to download artifact") and six segments failed at this step.
+      - name: Download the frozen Atlas tables and weights (retried)
         if: steps.go.outputs.run == 'true'
-        with:
-          pattern: atlas-oracle-result-*
-          path: ${{ runner.temp }}/oracle-models
-          github-token: ${{ github.token }}
-          run-id: '42643723640'
-      - uses: actions/download-artifact@v4
-        if: steps.go.outputs.run == 'true'
-        with:
-          pattern: atlas-oracle-importance-*
-          path: ${{ runner.temp }}/oracle-weights
-          github-token: ${{ github.token }}
-          run-id: '42667008829'
+        run: |
+          set -u
+          get() {
+            for i in 1 2 3 4 5 6; do
+              rm -rf "$3"; mkdir -p "$3"
+              if gh run download "$1" --repo "$GITHUB_REPOSITORY" --pattern "$2" --dir "$3" && [ -n "$(ls -A "$3")" ]; then ls "$3"; return 0; fi
+              echo "::warning::download of $2 from run $1 failed (try $i of 6), next try in $((i * 30)) s"; sleep $((i * 30))
+            done
+            echo "::error::could not download $2 from run $1"; return 1
+          }
+          get 42643723640 'atlas-oracle-result-*' "$RUNNER_TEMP/oracle-models"
+          get 42667008829 'atlas-oracle-importance-*' "$RUNNER_TEMP/oracle-weights"
       - name: Capture the heat maps' calls and the public Kalshi books
         if: steps.go.outputs.run == 'true'
         run: |
@@ -78,10 +80,43 @@ jobs:
           for f in forecasts books markets events; do [ -f "$f.jsonl" ] && gzip -9 "$f.jsonl"; done
           ls -la
           python3 "$GITHUB_WORKSPACE/research/heatmap_live/segment_note.py" . "${{ matrix.segment }}" > "$RUNNER_TEMP/note.json" || true
+      # The segment's data, uploaded with two more tries under new names if the first fails (on Nov 11 at 20:25 UTC an
+      # upload failed and segment 2's three hours were lost). The scorer reads every heat-shadow-* artifact of the run
+      # and keeps one forecast per coin, horizon and minute.
       - uses: actions/upload-artifact@v4
+        id: up1
         if: ${{ always() && steps.go.outputs.run == 'true' }}
+        continue-on-error: true
         with:
           name: heat-shadow-${{ github.run_id }}-${{ matrix.segment }}
+          path: |
+            ${{ runner.temp }}/heat-shadow/*.jsonl.gz
+            ${{ runner.temp }}/heat-shadow/meta.json
+            ${{ runner.temp }}/heat-shadow/summary.json
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Wait before the second upload try
+        if: ${{ always() && steps.go.outputs.run == 'true' && steps.up1.outcome == 'failure' }}
+        run: sleep 90
+      - uses: actions/upload-artifact@v4
+        id: up2
+        if: ${{ always() && steps.go.outputs.run == 'true' && steps.up1.outcome == 'failure' }}
+        continue-on-error: true
+        with:
+          name: heat-shadow-${{ github.run_id }}-${{ matrix.segment }}-try2
+          path: |
+            ${{ runner.temp }}/heat-shadow/*.jsonl.gz
+            ${{ runner.temp }}/heat-shadow/meta.json
+            ${{ runner.temp }}/heat-shadow/summary.json
+          retention-days: 30
+          if-no-files-found: warn
+      - name: Wait before the third upload try
+        if: ${{ always() && steps.go.outputs.run == 'true' && steps.up1.outcome == 'failure' && steps.up2.outcome == 'failure' }}
+        run: sleep 300
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.go.outputs.run == 'true' && steps.up1.outcome == 'failure' && steps.up2.outcome == 'failure' }}
+        with:
+          name: heat-shadow-${{ github.run_id }}-${{ matrix.segment }}-try3
           path: |
             ${{ runner.temp }}/heat-shadow/*.jsonl.gz
             ${{ runner.temp }}/heat-shadow/meta.json
