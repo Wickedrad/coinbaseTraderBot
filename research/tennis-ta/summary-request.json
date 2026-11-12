@@ -2,5 +2,5 @@
   "run": "43237241052",
   "anchor": "A|s2|hs1prod|F1",
   "detail": "all",
-  "note": "Fill-model check (calendar 10p/10s): the six exit settings of the exit study, fill F1 vs F0 (paper-style). Information only."
+  "note": "Fill-model check (calendar 10p/10s), second pass: adds each arm's average win and loss and the underdog net by exit. Information only."
 }

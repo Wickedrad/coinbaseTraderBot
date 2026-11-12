@@ -126,6 +126,18 @@ def main(argv=None):
             cells += [cell([e for e in ud if e.get('tour') == t]) for t in ('ATP', 'WTA')]
             cells += [cell([e for e in ud if e.get('ph') == ph]) for ph in phases]
             lines.append(f"| {rid.replace('|', chr(92) + '|')} | " + ' | '.join(cells) + ' |')
+    if detail:
+        lines += ['', '### Underdog leg: where the money goes, by exit (information)', '',
+                  'Each cell: exits / net ($) / net per exit ($). settle = held into settlement (paid $1 or $0 a contract).', '']
+        legs = sorted({str(e.get('x') or '') for rid in detail for e in arms[rid]['eps'] if leg_group(e.get('leg')) == 'underdog'})
+        lines += ['| arm | ' + ' | '.join(legs) + ' |', '|---|' + '---|' * len(legs)]
+        for rid in detail:
+            ud = [e for e in arms[rid]['eps'] if leg_group(e.get('leg')) == 'underdog']
+            cells = []
+            for x in legs:
+                xs = [float(e.get('pnl') or 0) for e in ud if str(e.get('x') or '') == x]
+                cells.append(f"{len(xs)} / {sum(xs):+,.2f} / {sum(xs) / len(xs):+.2f}" if xs else '-')
+            lines.append(f"| {rid.replace('|', chr(92) + '|')} | " + ' | '.join(cells) + ' |')
     text = '\n'.join(lines) + '\n'
     if a.out:
         with open(a.out, 'w') as fh:
