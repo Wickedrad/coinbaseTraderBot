@@ -49,7 +49,7 @@ WEIGHTS = (0.4, 0.3, 0.2, 0.1)
 MAINT = 0.005                   # one maintenance margin for every coin (Binance's real brackets are not used)
 BUCKET = 1.001                  # price buckets of 0.1%
 LNB = math.log(BUCKET)
-CLUSTER_SHARE = 0.02            # a cluster: a bucket with >= 2% of the latest OI value in USD
+CLUSTER_SHARE = float(os.environ.get('XD_CLUSTER_SHARE', '0.02'))   # a cluster: a bucket with >= this share of the latest OI value (frozen 0.02; Amendment 1 adds a 0.01 variant)
 SKEW_BAND = 0.02
 SKEW_EPS = 0.001                # of the OI value
 RENORM = 1e-6

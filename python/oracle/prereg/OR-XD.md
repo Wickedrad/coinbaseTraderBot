@@ -143,8 +143,20 @@ The Binance Vision dataset terms (v1.0, Aug 26 2026) forbid live-trading use of 
 readings and for any new download. Until it is settled this pass is research on files already held, as OR-HM1 is.
 
 ## Unchanged
-A MAP, not a validated rule. Nothing at or after 2026-01-01 is read (the OR-HM1 heat tables stop there); HO-1 and the lockbox
-stay closed; never compared to paper; no pass bars are added; no sealed weeks; NEVER DOGE. Hot cells that replicate go on to
+A MAP, not a validated rule. Nothing at or after 2026-01-01 is read (the OR-HM1 heat tables stop there); HO-1 stays closed; never compared to paper; no pass bars are added; no sealed weeks; NEVER DOGE. Hot cells that replicate go on to
 Kalshi prices and fees under the edge-iteration pipeline. Known limits: the model is a MODEL (one fixed margin, fixed leverage
 mix, OI changes split by the taker-buy share, positions never closed except by OI decreases, traded-through buckets and
 expiry); a cluster at 2% of OI in one 0.1% bucket may be rare; day clustering treats days as independent (OR-HM1).
+
+## Amendment 1 (Nov 12 2026, about 09:00 UTC / 04:00 AM EST; written before any league output of this study was read)
+The first BTC-only run (GitHub run 43185586638, tag [xd-assets:BTC]) wrote its model statistics to meta.json before any
+direction table was opened: the largest single bucket held a median 0.70% of OI, p99 1.39%, max 6.6% (the model's own state
+over all rows, sampled every 50th snapshot; no return or direction was looked at), and only 1,934 of 559,904 five-minute
+blocks held a short-liquidation cluster at the frozen 2% share (1,577 a long one). LIQMAP:DistAbove and LIQMAP:DistBelow were
+therefore skipped for BTC and for its twins, exactly as the no-rescue rule says; **that result stands and is reported**.
+Because the question "do liquidation clusters tell direction" cannot be asked at 2%, a second, **additional** variant is
+added: the same model with the cluster share set to **1.0% of OI** (env XD_CLUSTER_SHARE=0.01, workflow tag [xd-cluster:0.01]),
+its output kept apart (its own run id and Drive folder) and labelled "cluster 1.0%" everywhere. It does not replace the 2%
+variant, no other constant changes, one value only (no search over shares), and its results are information beside the
+frozen variant (two variants are two looks: say so when reading them). The 1.0% value is round, between the median and the
+p99 of the largest-bucket share.

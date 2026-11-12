@@ -88,6 +88,7 @@ jobs:
       study: ${{ steps.plan.outputs.study }}
       assets: ${{ steps.plan.outputs.assets }}
       lag: ${{ steps.plan.outputs.lag }}
+      cluster: ${{ steps.plan.outputs.cluster }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -117,6 +118,9 @@ jobs:
           lag=$(grep -oE '\[xd-lag:[0-9]+\]' <<< "$MSG" | head -1 | grep -oE '[0-9]+' || true)
           [ -n "$lag" ] || lag=0
           echo "lag=$lag" >> "$GITHUB_OUTPUT"; echo "perp lag: $lag min"
+          cs=$(grep -oE '\[xd-cluster:0\.[0-9]+\]' <<< "$MSG" | head -1 | grep -oE '0\.[0-9]+' || true)
+          [ -n "$cs" ] || cs=0.02
+          echo "cluster=$cs" >> "$GITHUB_OUTPUT"; echo "LIQMAP cluster share of OI: $cs"
 
   check:
     # fail once and early (before 8 matrix jobs download) when a file or a header is not what the loaders read
@@ -163,6 +167,7 @@ jobs:
       A: ${{ matrix.asset }}
       TWINS: ${{ matrix.twins }}
       LAG: ${{ needs.test.outputs.lag }}
+      XD_CLUSTER_SHARE: ${{ needs.test.outputs.cluster }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
