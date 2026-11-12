@@ -292,6 +292,11 @@ jobs:
       - name: Heat loser study price paths (public Kalshi and Coinbase APIs, runner only)
         if: github.ref_name == 'claude/project-thread-jovhyd-heat-losers' && inputs.paths != 'skip-paths'
         run: python3 -I research/heat-losers/paths.py research/heat-losers/trips.json || true
+      # Tennis match clock check (Nov 12 2026, this branch only): Kalshi's published start times and 1-minute paths for
+      # every tennis match market since 10:00 UTC, from the public API on this runner. Nothing on the server.
+      - name: Tennis match clock (public Kalshi API, runner only)
+        if: github.ref_name == 'claude/project-thread-jovhyd-heat-losers' && inputs.paths == 'skip-paths'
+        run: python3 -I research/heat-losers/tennis_clock.py 2026-11-12T10:00:00 || true
       - name: Upload the report scripts
         if: inputs.timings == 'true'
         uses: appleboy/scp-action@v0.1.7
@@ -399,6 +404,10 @@ jobs:
               # carries the lane book's running total.
               journalctl -u kalshi-bot --since "24 hours ago" --no-pager -o cat 2>/dev/null | grep -F '[heat] round trip closed' > "/tmp/diag-heat-$DIAG_RUN/trips.log" || true
               nice -n 19 python3 -I "$HT" ~/bot/data 24 --journal "/tmp/diag-heat-$DIAG_RUN/trips.log" --detail --held || true
+              echo "== tennis match clock (read-only): audit, recorded start times, Live Tennis scores, tracker state, log lines since 10:00 UTC"
+              TENNIS_SINCE=2026-11-12T10:00:00 nice -n 19 python3 -I "$HT" ~/bot/data 0 --tennis 2>&1 | sed -n '/== TENNIS/,$p' || true
+              api /api/status | python3 -c 'import json,sys; s=json.load(sys.stdin); [print("TN status", json.dumps(x, separators=(",", ":"))[:1500]) for x in (s.get("tennis") or {}).get("matches") or []]' || true
+              journalctl -u kalshi-bot --since "2026-11-12 10:00:00 UTC" --no-pager -o short-iso-precise 2>/dev/null | grep -iE "tennis|live score|livetennis" | grep -v "snn-health" | cut -c1-320 | tail -400 | sed 's/^/TN log /' || true
             else
               echo "(the heat trip report was not uploaded)"
             fi

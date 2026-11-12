@@ -22,6 +22,8 @@ import glob
 import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 import time
 
@@ -126,7 +128,8 @@ def main():
     journal = None
     detail = '--detail' in args
     held = '--held' in args
-    args = [a for a in args if a not in ('--detail', '--held')]
+    tennis = '--tennis' in args
+    args = [a for a in args if a not in ('--detail', '--held', '--tennis')]
     if '--journal' in args:
         i = args.index('--journal')
         journal = args[i + 1] if i + 1 < len(args) else None
@@ -221,7 +224,64 @@ def main():
             print('DETAIL trip %s' % json.dumps(dict(d, _ts=t), separators=(',', ':')))
     if held:
         held_losers(data_dir, 32.0, now)
+    if tennis:
+        tennis_clock(data_dir, iso_s(os.environ.get('TENNIS_SINCE') or '2026-11-12T10:00:00'), now)
     return 0
+
+
+TENNIS_TK = re.compile(r'KX(ATP|WTA)[A-Z]*MATCH-')
+
+
+def tennis_clock(data_dir, since, now):
+    """Tennis match-clock check (Nov 12, read-only): every tennis decision, order, fill and settlement in the audit since
+    SINCE, the start time the bot recorded for each tennis market (recordings 'market'), and the Live Tennis scores it
+    matched (recordings 'tennis_score'), as JSON lines."""
+    print('\n== TENNIS (audit and recordings since %s UTC; JSON lines, _ts = seconds since the epoch)' % time.strftime('%Y-%m-%d %H:%M', time.gmtime(since)))
+    kinds = collections.Counter()
+    for f in sorted(glob.glob(os.path.join(data_dir, 'audit', 'audit-*.jsonl'))):
+        if os.path.getmtime(f) < since:
+            continue
+        with open(f, 'r', encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                if 'MATCH-' not in line or not TENNIS_TK.search(line):
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                t = iso_s(r.get('ts') or '1970-01-01T00:00:00')
+                if t < since:
+                    continue
+                k = r.get('kind')
+                kinds[k] += 1
+                if k in ('decision', 'fill', 'order_new', 'order_cancel', 'order_reject', 'settlement', 'order_ack', 'position', 'exit'):
+                    print('TN %s %s' % (k, json.dumps(dict(r.get('data') or {}, _ts=t), separators=(',', ':'))[:900]))
+    print('TN kinds %s' % json.dumps(dict(kinds)))
+    day0 = time.strftime('%Y-%m-%d', time.gmtime(since))
+    files = sorted(glob.glob(os.path.join(data_dir, 'recordings', 'md-%s.jsonl*' % day0)))
+    files += [x for x in sorted(glob.glob(os.path.join(data_dir, 'recordings', 'md-*.jsonl*'))) if x not in files and x.split('md-')[-1][:10] > day0]
+    scores = collections.defaultdict(list)
+    for f in files:
+        cmd = "gzip -dcf -- %s 2>/dev/null | LC_ALL=C grep -aF -e '\"k\":\"market\"' -e '\"k\":\"tennis_score\"'" % shlex.quote(f)
+        p = subprocess.Popen(['nice', '-n', '19', 'sh', '-c', cmd], stdout=subprocess.PIPE)
+        for raw in p.stdout:
+            line = raw.decode('utf-8', 'replace')
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get('k') == 'market':
+                if TENNIS_TK.search(str(r.get('ticker') or '')):
+                    print('TN market %s' % json.dumps(r, separators=(',', ':'))[:600])
+            elif (r.get('t') or 0) / 1000 >= since:
+                scores[r.get('event')].append(r)
+        p.wait()
+        print('TN recordings %s done' % os.path.basename(f))
+    for ev, rs in sorted(scores.items()):
+        rs.sort(key=lambda x: x.get('t') or 0)
+        play = [x for x in rs if (x.get('setsA') or 0) + (x.get('setsB') or 0) + (x.get('gamesA') or 0) + (x.get('gamesB') or 0) > 0]
+        print('TN scores %s' % json.dumps({'event': ev, 'n': len(rs), 'first': rs[0], 'first_in_play': play[0] if play else None, 'last': rs[-1],
+                                           'matchIds': sorted({str(x.get('matchId')) for x in rs})}, separators=(',', ':')))
 
 
 def held_losers(data_dir, hours, now):
