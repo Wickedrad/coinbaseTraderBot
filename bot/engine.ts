@@ -3467,6 +3467,8 @@ export class Engine {
       const book = md.book(plan.ticker);
       audit.write('decision', {
         decisionId, ticker: plan.ticker, lane: 'heat', model: modelId, kind: m.kind, tauSec: (m.closeTime - now) / 1000, bid: book.bestBid()?.price, ask: book.bestAsk()?.price, position: 0,
+        // The touch's depth at the order, for the maker-entry replay (queue position needs the sizes, not only the prices).
+        bidSize: book.bestBid()?.size, askSize: book.bestAsk()?.size,
         heat: {
           asset: plan.asset, h: plan.h, dir: r.dir, key: r.key, kind: r.kind, rank: r.rank, of: r.of, heat: r.heat, share: r.share, odds: r.odds, barClose: r.barClose,
           context: plan.context, weight: plan.weight, slot: plan.slot, stake: plan.stakeUsd, dialMult: plan.dialMult, dialStake: plan.dialStakeUsd, count: plan.count, fair: plan.fair, ruleId: plan.ruleId, run: snap?.run ?? null, packSha: snap?.packSha ?? null,
