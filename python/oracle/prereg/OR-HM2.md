@@ -725,3 +725,9 @@ changes here, with one exception named as such (the fits' stopping rule) for the
 - 3,000 random pairs: 4.308 ms per pair on four processes (15.667 ms of worker time); base 173.2 s; one learner fit 185.4 s;
   projected pair scan 65.3 min and the series 122.7 min; peak memory 8.8 GB; projected shard size 4.09 GB per real coin.
   So S = 1 (no parts): one job per series, well inside the 360-minute limit.
+
+**Part 4 bench on BTC (Nov 12 2026, 10:58 UTC; run 43200378076, written after the bench, before the study).**
+- Part 4 (chart patterns) ran on real BTC minutes without error: detection about 33 s in all across the 5m/15m/1h/4h frames
+  and swing sizes (5m:z2 17.6 s the largest), peak memory 7.0 GB (below the 8.8 GB of the HM2 bench; the stage runs after
+  HM2's meta.json, so they do not add). Pattern instances were found at every frame (for example head and shoulders and its
+  inverse at 240m: 12 and 8 at the 4-ATR swing size). The study therefore carries [heat-hm2-with-patterns].
