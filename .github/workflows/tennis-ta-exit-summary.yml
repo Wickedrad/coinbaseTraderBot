@@ -2,8 +2,11 @@ name: Tennis TA exit summary
 
 # Information only: per F-arm episode table of a finished tennis TA sweep run, split by ENTRY leg (underdog vs
 # favourite), from the run's shards on Drive (research/tennis_ta_exit_summary.py). Asked for by a commit to
-# research/tennis-ta/summary-request.json: {"run": "<the sweep's run id>", "anchor": "<arm id, optional>", "detail": "<arm ids, comma separated, or all (default)>", "note": "why"}.
-# Writes runs/<run>/report/exit-summary.md on Drive and posts the table as a comment on this commit. Reads only; it
+# research/tennis-ta/summary-request.json: {"run": "<the sweep's run id>", "anchor": "<arm id, optional>", "detail": "<arm ids, comma separated, or all (default)>",
+# "tape": "<arm ids, comma separated, optional>", "note": "why"}.
+# Writes runs/<run>/report/exit-summary.md on Drive and posts the table as a comment on this commit. With "tape", it also
+# audits those arms' underdog trades against Kalshi's raw trade tape (research/tennis_ta_loser_tape.py on the tennis
+# history the sweep replays), writes runs/<run>/report/tape-audit.md and posts it as a second comment. Reads only; it
 # never scores, registers or changes a run.
 on:
   push:
@@ -27,9 +30,9 @@ jobs:
         run: |
           set -euo pipefail
           F=research/tennis-ta/summary-request.json
-          RUN=$(jq -r '.run // empty | tostring' "$F"); ANCHOR=$(jq -r '.anchor // "A|s2|hs1prod|F1"' "$F"); DETAIL=$(jq -r '.detail // "all"' "$F")
+          RUN=$(jq -r '.run // empty | tostring' "$F"); ANCHOR=$(jq -r '.anchor // "A|s2|hs1prod|F1"' "$F"); DETAIL=$(jq -r '.detail // "all"' "$F"); TAPE=$(jq -r '.tape // ""' "$F")
           [[ "$RUN" =~ ^[0-9]+$ ]] || { echo "::error::summary-request.json needs a numeric run id"; exit 1; }
-          echo "run=$RUN" >> "$GITHUB_OUTPUT"; echo "anchor=$ANCHOR" >> "$GITHUB_OUTPUT"; echo "detail=$DETAIL" >> "$GITHUB_OUTPUT"
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"; echo "anchor=$ANCHOR" >> "$GITHUB_OUTPUT"; echo "detail=$DETAIL" >> "$GITHUB_OUTPUT"; echo "tape=$TAPE" >> "$GITHUB_OUTPUT"
       - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
@@ -57,5 +60,34 @@ jobs:
         run: |
           set -euo pipefail
           { head -c 60000 exit-summary.md; echo; echo "Outputs: gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/report/exit-summary.md"; } > body.md
+          jq -Rs '{body: .}' body.md > req.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input req.json > /dev/null
+      - name: Tennis history trade tapes from Drive
+        if: steps.req.outputs.tape != ''
+        run: |
+          set -euo pipefail
+          mkdir -p data/tennis/kalshi
+          for S in KXATPMATCH KXWTAMATCH; do
+            rclone copy "gdrive:kalshi-bot-archive/raw/tennis-history/kalshi/$S.tar.gz" .
+            tar -xzf "$S.tar.gz" -C data/tennis/kalshi && rm "$S.tar.gz"
+            echo "$S: $(ls data/tennis/kalshi/$S/trades | wc -l) trade-tape day file(s)"
+          done
+      - name: Raw-tape audit
+        if: steps.req.outputs.tape != ''
+        env:
+          RUN: ${{ steps.req.outputs.run }}
+          TAPE: ${{ steps.req.outputs.tape }}
+        run: |
+          set -euo pipefail
+          python3 -I research/tennis_ta_loser_tape.py shards/*.json.gz --hist data/tennis/kalshi --arms "$TAPE" --run "$RUN" --out tape-audit.md
+          rclone copyto tape-audit.md "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/report/tape-audit.md"
+      - name: Tape audit as a commit comment
+        if: steps.req.outputs.tape != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ steps.req.outputs.run }}
+        run: |
+          set -euo pipefail
+          { head -c 60000 tape-audit.md; echo; echo "Outputs: gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/report/tape-audit.md"; } > body.md
           jq -Rs '{body: .}' body.md > req.json
           gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input req.json > /dev/null

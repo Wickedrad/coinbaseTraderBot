@@ -1,6 +1,7 @@
 {
-  "run": "43240338632",
-  "anchor": "A|s2|hs1prod-tk|F1",
+  "run": "43237241052",
+  "anchor": "A|s2|hs1prod|F1",
   "detail": "all",
-  "note": "Taker-entry check (calendar 10r/10u): the six exit settings with each entry a taker buy at the ask, fill F1 and F0. Information only."
+  "tape": "A|s2|hs1prod|F1,A|s2|fp0|F1,A|s2|mkprod|F1",
+  "note": "Raw-tape audit (calendar 10v): the maker-entry trades of three exit settings against Kalshi's trade tape. Information only."
 }
