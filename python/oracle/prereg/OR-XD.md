@@ -195,6 +195,91 @@ they are stated here so that nobody reads an OR-HM2 number as an OR-XD one:
    an `--outside` run counts for anything live**, and the Binance Vision terms (open gate above) still forbid any live use of the data.
 Times in this file: UTC and EST (UTC-5).
 
+## Amendment 3 (Nov 12 2026, 13:43 UTC / 08:43 AM EST: Steven's decision; written the same morning after it, BEFORE any number of the readings below exists)
+Steven's word (Nov 12 2026 13:43 UTC / 8:43 AM EST): "Let's build our own historical data from Binance and run the Oracle that way, add the
+results to the weighted heat curve matrix if there is an edge, even a slight one. Make sure we run all readings against all other
+readings." So the study grows from the five lite readings to the readings below, built from our own copy of the Binance Vision
+archive (Drive `raw/outside/binance/<COIN>/`, fetched on GitHub runners; nothing is downloaded from this container). The five lite
+readings, their constants, their zones and the OI clock above are **unchanged** (the tests hold their values to a stored digest). No
+sealed week, no new pass bar: the engine's own bars (hot on A, replication on B, twins) judge the new readings as they judge the
+old; an "edge, even a slight one" means a cell that passes those bars, nothing looser. "All against all": every reading of this
+study (the five lite + the new ones) is a pair condition for every other (`cond`), so the pair scan covers new x new and new x lite;
+with `heat_hm2 --outside` they also pair with every OR-HM2 reading (Amendment 2's chance-scale note applies). Code: `full_values`,
+`full_readings` in `python/oracle/heat_outside.py`; workflow tag `[xd-full]`.
+
+**Data (one contract, written by the fetch jobs, read by the readings).** All times UTC ms (13 digits). Rows at or after 2026-01-01
+are refused by every loader (`prep_*`, `AggStore`, `read_checked`: SystemExit) and cut by `heat_outside cut` before the engine runs;
+2026 stays unread until the one-test window. A = 2020-01-01..2024-12-31 (zone edges, F, every skip rule), B = 2025.
+`metrics.csv.gz` (S = the true snapshot instant after the create_time convention test, per the design 2.2; a reading's known time is
+**S + 5 min**), `premium_1m.csv.gz` + `premium_stamp.json` (the stamp test: 'next' adds one minute of delay), `funding.csv.gz`,
+`mark_1m.csv.gz` (information only), `um_1m.csv.gz` (convention test only), `agg_spot/` and `agg_perp/` (`<YYYY-MM>.parquet`, one row
+per minute with trades), `bookdepth_1pct.csv.gz` (ts already shifted later by one spacing), `BTCDOM/idx1h.csv.gz` (a pass-through input
+for OR-HM2, no reading here). A reading whose file is missing is skipped with a recorded reason; nothing is guessed.
+
+**Common rules.** Decision at the close of minute row i (entry = the next minute's open); a value is used at row i only when its known
+time is at or before that close (a value known exactly at the close counts, one millisecond later does not). Rolling windows are by
+time with >= 80% of their minutes (or snapshots, or days, or settlements) present, else NA. Zones: edges at the 2 / 10 / 90 / 98% quantiles
+of A's finite values (`zone`); a reading with fewer than 1,000 finite A values on fewer than 30 distinct days of A, or with collapsed inner
+zones, is skipped and the reason recorded. Stale rule: the engine's (`stale_rows`) on the spot gap mask over the reading's window (W = 1 for
+LS, PREM, BOOKP; 15, 60, 5 for Net15, Count60, Sweep), and for the perp readings (WHALEP) on the spot mask OR the perp mask. The
+`--perp-lag` rerun does **not** apply to these readings (recorded: `perp_lag_applied: false`); the +5 minute lag rerun of any hot spot is
+a separate, later step as for the lite readings.
+
+**LS family (metrics; real level on twins, values stay real).** x = ln(ratio) of `count_long_short_ratio` (LS:Global z), `sum_toptrader_long_short_ratio`
+(LS:TopPos z and LS:TopPosChg60), `count_toptrader_long_short_ratio` (LS:TopAcc z); a ratio <= 0 is NA. S is ceiled to the 5-minute grid.
+`z = (x_S - mean) / sd` with mean and sd (ddof 1) over the 288 snapshots **before** S, i.e. [S - 24 h, S) (the row itself is not in its
+window), >= 231 present. `LS:TopPosChg60 = (x_S - x_{S-60 min}) / sd` of the same 60-minute change over the 288 snapshots before S, >= 231
+present; the snapshot exactly 60 minutes earlier must exist. Known at S + 5 min; a snapshot is used at the latest row whose close is at
+or after that and for at most 10 more minutes (an earlier snapshot fills a missing latest one inside the same 10 minutes).
+
+**PREM family (premium + funding; real level on twins).** Settlement k at calc_time_k, Ts_k = calc_time_k floored to its minute; the
+settlement is known at calc_time + 1 min. Row j (bar opening at o_j) uses the last settlement with calc_time <= o_j and the premium
+closes of the bars p = 1..n that opened at Ts_k + (p - 1) min up to and including bar j (n = (o_j - Ts_k) / 1 min + 1), weight p;
+`P = sum(p * premium_p) / sum(p)` over present bars (>= 80% of n present, and bar j itself present; a bar is known at its close, plus
+one minute if `premium_stamp.json` says 'next'). `I = 0.01% x N / 8` where N is the interval in hours between the last two settlements
+(only 1, 2, 4 or 8 h gaps within 2 minutes count). **PREM:PredFund = F = clamp(I, P - 0.05%, P + 0.05%)** (the old formula; written so that F is exactly I whenever P is within 0.05% of it, with no rounding noise around I). The
+2025-09-18 "(8/N)" regime cannot be verified from here and is **not applied**; instead the reconstruction error of both versions
+(F against the next settled rate, at the last bar of each interval) is written per year to meta (`xd_full.input.prem.reconstruction_error_by_year`)
+as information, and nothing is chosen on B. **PREM:PredMinusLast = (F - last settled rate) / sd** of the settlement-to-settlement rate changes
+over the 90 settlements ending at the last known one (>= 72 changes present, ddof 1). NA when the last settlement is more than 1.5 intervals old. The bar that opens at Ts_k is bar p = 1 of interval k even when calc_time_k is a few ms past the minute. `premium_stamp.json` is read from the fetch job's keys `fits` ('same' | 'next' | 'unresolved') and `extra_delay_minutes`; unresolved skips the PREM readings.
+
+**Gap rule (design 2.1, applied to the new readings).** After a hole longer than 1 hour the reading is NA until a whole window has passed:
+LS (all four) for 288 snapshots after a gap of more than 1 hour between snapshots; PREM:PredMinusLast's 90-change window must cover >= 80% of
+its time span with valid 1/2/4/8 h intervals (a missing month blanks it until 90 settlements have passed); WHALE F (and so every WHALE
+reading of that day) for 30 days after a day without trades, and Count60 for 7 days after a hole. A day with no trade at all is a
+hole (BTC, ETH, SOL, XRP never have one), not a quiet day: the reducer file's month being present does not make it present. This can
+blank many rows after a missing daily archive file; it is the design's rule, not a tuning.
+
+**WHALE / WHALEP families (aggTrade reducers; spot = WHALE, perp = WHALEP).** Edges E_k = 1000 x 20000^(k/23), k = 0..23 (USD 1,000 ..
+20,000,000). **F** for decision day D = the smallest E_k whose share of trades with notional >= E_k, over the 30 days fully before D
+(>= 24 of them with trades), is <= 0.1%; none -> NA. F is therefore known at the start of D and uses no row of D. A realised-share check
+(median / 5% / 95% over days, 0.05%-0.2% expected) goes to meta as information. The windows below use the F of the **decision row's day**
+for all their minutes. **Net15** = (sum of buy notional - sell notional of trades >= F over the 15 rows ending at i) / total notional
+traded over the same 15 rows (>= 12 rows present). **Count60** = the count of trades >= F over the 60 rows ending at i, minus the median of
+the same count at the same minute of day over the 7 days before (rows i - 1,440 j, j = 1..7, counted with the same F; >= 6 present),
+divided by max(sd of those 7 counts, 1) (ddof 1; the floor of 1 trade avoids a zero divisor). **Sweep**: from the reducer's per-second
+counts, state = +1 if a buy sweep (>= 1 second in a minute whose same-side notional sum >= $1M) occurred in the last 5 rows (the row and 4 before),
+-1 for a sell sweep, 0 for none; both sides in the window: the later minute wins, the same minute gives 0 (counted in meta). The $500k version
+(`REF:Sweep500`, `REFP:Sweep500`) is computed and reported (near-duplicate with the $1M state) and is **never chosen and never in the
+league**. Sweep needs >= 100 buy and >= 100 sell rows on A (data sufficiency, not a pass bar), else it is skipped with that reason. Three
+levels: sell sweep / none / buy sweep; the events are the entries into a sweep state.
+Twins: **Net15 and Sweep are direction readings**: on the twin's flipped minutes (the signs of the twin's price flip, `twin_signs`) buy
+and sell are swapped before the windows are formed; **Count60, LS, PREM, BOOKP are real level** (nothing flips). A twin follows its
+real coin's skips.
+
+**BOOKP family (bookDepth, perp; real level).** `BOOKP:Imb1 = (bid_1pct - ask_1pct) / (bid_1pct + ask_1pct)` from the latest stamp known at the
+close (the file's ts is already one spacing later than the raw stamp), carried at most 10 minutes. From 2023-01-01 only (A has two years);
+skipped with a reason when A holds too few values. The spacing is recorded in meta. `BTCDOM/idx1h` is only passed through to OR-HM2 (the
+'idx1h' kind, known at ts + 1 h); no OR-XD reading is made of it.
+
+**Measures (A rows only, information).** Spearman correlation (every 7th A row) of every pair that holds a new reading, a direction-coupling
+Pearson with the past 5 / 15 / 60 minute return, the share of rows with a value, the input checks (conv counts, metrics implied price against the mark
+price per year, F's realised share, PREM reconstruction error, sweep ties) all in meta `xd_full`. None of them is a gate.
+
+**What does not change.** The 1,000-value / 30-day skip rule, the A-quantile zones, the twin count and seeds, the engine's bars, the research-only
+marking of OR-HM2 readings (Amendment 2; the lead decides on packing after the results), and the Binance Vision terms gate for live use. NEVER DOGE.
+Times in this file: UTC and EST (UTC-5).
+
 ## Run log
 - 08:57 UTC: push with tags [xd-lite] (all four coins unless an assets tag is given)
 - 09:12 UTC: push with tags [xd-lite] [xd-cluster:0.01] (all four coins unless an assets tag is given)
@@ -202,3 +287,4 @@ Times in this file: UTC and EST (UTC-5).
 - 09:43 UTC: push with tags [xd-lite] [xd-lag:5] (all four coins unless an assets tag is given)
 - 10:00 UTC: push with tags [xd-lite] [xd-cluster:0.01] again (same constants as run 43189441913; this repeat also writes xd_meta.json with the reading shares; no constant changed)
 - 10:18 UTC: probe from a GitHub runner only (public endpoints, status codes, no secrets): tag [xd-probe]; the server variant is not run (waits for Steven's word)
+- Nov 12, after 13:43 UTC / 08:43 AM EST: Amendment 3 written (nothing run yet); push with tags [xd-lite] [xd-full] once the contract files are on Drive (raw/outside/binance/<COIN>/)

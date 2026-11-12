@@ -3,3 +3,4 @@ scipy>=1.11
 pandas>=2.1
 numba>=0.60
 TA-Lib>=0.8.3
+pyarrow>=15

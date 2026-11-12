@@ -15,6 +15,12 @@ name: Outside data (OR-XD)
 #                   modelled liquidation clusters exist at all before the full study; the league then says 'partial'.
 #   [xd-lag:1]      with [xd-lite]: every perp input seen 1 minute late (--perp-lag; 0 is the default; 1 and 5 are the
 #                   lag-robustness reruns of the prereg).
+#   [xd-full]       with [xd-lite]: ALSO downloads raw/outside/binance/<A>/ from Drive (the fetch jobs' contract files: metrics, premium +
+#                   stamp, funding, mark, agg_spot, agg_perp, bookdepth; read only), cuts them at HEAT_END (`heat_outside cut`) and
+#                   passes them to the coin command (--xd-dir): the Amendment 3 readings (LS, PREM, WHALE, WHALEP, BOOKP) join the five
+#                   lite readings and every reading is paired with every other. Without the tag nothing below changes ([xd-lite] alone
+#                   is exactly the lite study). Outputs: the same run folder (the run id is its own); the league's small files are
+#                   committed under research/oracle_xd/full/latest/ (not over the lite latest/). Nothing is downloaded from any exchange.
 #   [xd-lite]       the lite study: per coin (BTC, ETH, SOL, XRP) two jobs (the coin + twin 1; twins 2 + 3) on the
 #                   spot, USD-M perpetual and open-interest files that are ALREADY on Drive (raw/perp-ta-history/<A>/),
 #                   each cut at HEAT_END (2026-01-01) before the engine sees it, then the league (heat.league, unchanged).
@@ -129,6 +135,7 @@ jobs:
       assets: ${{ steps.plan.outputs.assets }}
       lag: ${{ steps.plan.outputs.lag }}
       cluster: ${{ steps.plan.outputs.cluster }}
+      full: ${{ steps.plan.outputs.full }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -141,7 +148,7 @@ jobs:
         working-directory: python
         run: |
           set -o pipefail
-          python3 -m pytest -q oracle/tests/test_heat_outside.py oracle/tests/test_heat_outside_lookahead.py oracle/tests/test_heat.py --durations=5 2>&1 | tail -40
+          python3 -m pytest -q oracle/tests/test_heat_outside.py oracle/tests/test_heat_outside_lookahead.py oracle/tests/test_heat_outside_full.py oracle/tests/test_heat.py --durations=5 2>&1 | tail -40
       - name: Plan
         id: plan
         env:
@@ -161,6 +168,8 @@ jobs:
           cs=$(grep -oE '\[xd-cluster:0\.[0-9]+\]' <<< "$MSG" | head -1 | grep -oE '0\.[0-9]+' || true)
           [ -n "$cs" ] || cs=0.02
           echo "cluster=$cs" >> "$GITHUB_OUTPUT"; echo "LIQMAP cluster share of OI: $cs"
+          if grep -qF '[xd-full]' <<< "$MSG"; then echo "full=true" >> "$GITHUB_OUTPUT"; else echo "full=false" >> "$GITHUB_OUTPUT"; fi
+          echo "full (Amendment 3 readings): $(grep -qF '[xd-full]' <<< "$MSG" && echo yes || echo no)"
 
   check:
     # fail once and early (before 8 matrix jobs download) when a file or a header is not what the loaders read
@@ -177,6 +186,7 @@ jobs:
       - name: The three files of each coin exist with the expected headers
         env:
           ASSETS: ${{ needs.test.outputs.assets }}
+          FULL: ${{ needs.test.outputs.full }}
         run: |
           set -uo pipefail
           bad=0
@@ -190,6 +200,21 @@ jobs:
               if [ "$got" != "$want" ]; then echo "::error::$dir/$A/$file header is '$got', expected '$want'"; bad=1; else echo "ok $dir/$A/$file"; fi
             done
           done
+          if [ "$FULL" = true ]; then
+            # [xd-full]: the contract files of raw/outside/binance/<A>/ (a missing agg_spot / agg_perp / bookdepth only skips its readings, but the
+            # metrics, premium, stamp and funding files and the manifest are required: the fetch jobs must have run)
+            for A in $(jq -r '.[]' <<< "$ASSETS"); do
+              d="$R/raw/outside/binance/$A"
+              for f in metrics.csv.gz premium_1m.csv.gz premium_stamp.json funding.csv.gz manifest.json; do
+                if rclone lsf "$d" --files-only 2>/dev/null | grep -qx "$f"; then echo "ok outside/$A/$f"; else echo "::error::no raw/outside/binance/$A/$f on Drive (run the fetch jobs first)"; bad=1; fi
+              done
+              for sub in agg_spot agg_perp; do
+                n=$(rclone lsf "$d/$sub" --files-only 2>/dev/null | grep -c -E '^[0-9]{4}-[0-9]{2}\.parquet$' || true)
+                echo "outside/$A/$sub: $n month files"; [ "$n" -gt 0 ] || echo "::warning::no $sub month files for $A: the WHALE readings of that market will be skipped"
+              done
+              rclone lsf "$d" --files-only 2>/dev/null | grep -qx bookdepth_1pct.csv.gz || echo "::warning::no bookdepth_1pct.csv.gz for $A: BOOKP:Imb1 will be skipped"
+            done
+          fi
           exit $bad
 
   coin:
@@ -207,6 +232,7 @@ jobs:
       A: ${{ matrix.asset }}
       TWINS: ${{ matrix.twins }}
       LAG: ${{ needs.test.outputs.lag }}
+      FULL: ${{ needs.test.outputs.full }}
       XD_CLUSTER_SHARE: ${{ needs.test.outputs.cluster }}
     steps:
       - uses: actions/checkout@v5
@@ -237,16 +263,30 @@ jobs:
             [ "$last" -lt "$end" ] || { echo "::error::$rel: a row at or after the cut is still in the file"; exit 1; }
             echo "$rel: $(du -h "$f" | cut -f1), header $(head -1 "$f"), first $(sed -n 2p "$f" | cut -d, -f1), last $last (cut at $end)"
           done
+      - name: "[xd-full] The contract files from Drive (raw/outside/binance/<A>, read only), cut at HEAT_END"
+        if: ${{ needs.test.outputs.full == 'true' }}
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          # (the 2026 month files are excluded first - rclone takes the first matching rule - and `heat_outside cut` then drops every later row)
+          bash deploy/drive_lab.sh get "raw/outside/binance/$A" data/xd --exclude '/agg_spot/2026-*' --exclude '/agg_perp/2026-*' --include '/metrics.csv.gz' --include '/premium_1m.csv.gz' --include '/premium_stamp.json' \
+            --include '/mark_1m.csv.gz' --include '/funding.csv.gz' --include '/bookdepth_1pct.csv.gz' --include '/manifest.json' \
+            --include '/agg_spot/*.parquet' --include '/agg_perp/*.parquet'
+          (cd python && python3 -m oracle.heat_outside cut --dir "../data/xd")
+          du -sh data/xd; ls -la data/xd | head -20
+          for f in data/xd/agg_spot data/xd/agg_perp; do [ -d "$f" ] && echo "$f: $(ls "$f" | wc -l) month files, last $(ls "$f" | tail -1)"; done || true
       - name: Readings, curves, events, pairs, triples
         working-directory: python
         run: |
           set -euo pipefail
+          xdargs=()
+          [ "$FULL" != true ] || xdargs=(--xd-dir ../data/xd)
           for tw in $TWINS; do
             d="$A"; [ "$tw" = 0 ] || d="$A-twin$tw"
             echo "::group::$d"
             /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_outside coin --asset "$A" --twin "$tw" --perp-lag "$LAG" \
               --spot "../data/hist/binance-1m/$A/1m.csv" --perp "../data/hist/binance-um/$A/1m.csv" --oi "../data/hist/binance-oi/$A/oi.csv" \
-              --out "../out/$d" | tail -120
+              "${xdargs[@]}" --out "../out/$d" | tail -120
             grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
             ls -la "../out/$d"
             echo "::endgroup::"
@@ -288,7 +328,7 @@ jobs:
           python3 - <<'PY'
           import json, glob, os
           keys = ('near_duplicates', 'direction_coupling', 'reading_share', 'model', 'constants', 'xd_input', 'skipped_readings',
-                  'skipped_inherited_from_real_coin', 'study', 'readings', 'event_levels', 'tested')
+                  'skipped_inherited_from_real_coin', 'xd_full', 'study', 'readings', 'event_levels', 'tested')
           out = {}
           for f in sorted(glob.glob('data/coins/*/meta.json')):
               name = os.path.basename(os.path.dirname(f))
@@ -308,6 +348,7 @@ jobs:
         run: |
           set -euo pipefail
           dst=research/oracle_xd/latest
+          [ "${{ needs.test.outputs.full }}" != true ] || dst=research/oracle_xd/full/latest
           rm -rf "$dst"; mkdir -p "$dst"
           cp out/league/league.md out/league/summary.json "$dst/"; cp out/league/xd_meta.json "$dst/" 2>/dev/null || true
           echo "$GITHUB_RUN_ID $GITHUB_SHA" > "$dst/RUN"
@@ -315,7 +356,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$dst"
-          git commit -q -m "OR-XD lite: league aggregates of run $GITHUB_RUN_ID (written by the outside-xd workflow)"
+          git commit -q -m "OR-XD ($dst): league aggregates of run $GITHUB_RUN_ID (written by the outside-xd workflow)"
           for i in 1 2 3 4; do
             if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
             sleep $((2 ** i))

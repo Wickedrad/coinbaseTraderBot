@@ -20,6 +20,19 @@ wrapped to remember the twin seed. Output tables and meta.json keep the OR-HM1 s
 unchanged); meta.json gains: near_duplicates, direction_coupling, constants, model, reading_share, xd_input.
 Never loads a minute or OI row at or after HEAT_END (a file that holds one is refused). NEVER DOGE.
 
+OR-XD FULL (Amendment 3 in prereg/OR-XD.md; all optional, off unless a contract file or directory is given):
+  python3 -m oracle.heat_outside coin ... [--xd-dir D | --metrics F --premium F --premium-stamp F --mark F --funding F --agg-spot-dir D --agg-perp-dir D --book F]
+  python3 -m oracle.heat_outside cut --dir D        (drop every row at/after HEAT_END from a raw/outside/binance/<COIN> folder)
+Thirteen NEW league readings from the DATA CONTRACT files (raw/outside/binance/<COIN>/), computed by full_values / full_readings:
+  LS:Global z  LS:TopPos z  LS:TopPosChg60  LS:TopAcc z        metrics (known at S + 5 min, carried 10 min), real level
+  PREM:PredFund  PREM:PredMinusLast                            premium_1m + premium_stamp.json + funding, real level
+  WHALE:Net15  WHALE:Count60  WHALE:Sweep   (spot)             agg_spot/<YYYY-MM>.parquet; Net15 and Sweep are DIRECTION readings
+  WHALEP:Net15 WHALEP:Count60 WHALEP:Sweep  (perp)             agg_perp/...; on a twin buy and sell swap on the flipped minutes
+  BOOKP:Imb1                                                    bookdepth_1pct, real level
+plus the information-only references REF:Sweep500 / REFP:Sweep500 ($500k sweep state; never in the league). Every new reading is a pair
+condition, so the engine's pair scan runs every reading against every other (new x new, new x lite). A reading whose input is missing is
+skipped with a recorded reason (meta xd_full.skipped_reasons); a row at or after HEAT_END is refused. The five lite readings above are untouched.
+
 OPTIONAL HOOK FOR OR-HM2 (hm2_outside_readings, off unless heat_hm2 is run with --outside): the same five readings, computed with the
 same frozen constants and functions (xd_values, xd_readings), as extra single readings for the OR-HM2 pair scan and learner. Research
 only: nothing here is live-ready (the bot has no perp taker-flow or OI-history feed), the hook never imports heat_xdata (it is handed
@@ -34,12 +47,13 @@ import json
 import math
 import os
 import time
+import warnings
 
 import numpy as np
 import pandas as pd
 
 from oracle import heat
-from oracle.common import DAY, MIN
+from oracle.common import DAY, MIN, ms
 
 HEAT_END = heat.HEAT_END
 
@@ -80,25 +94,30 @@ def _no_doge(*xs):
             raise SystemExit('NEVER DOGE')
 
 
-def read_checked(path: str, cols: tuple, kind: str) -> pd.DataFrame:
-    """A CSV with 'ts' in ms of 13 digits (a seconds or microseconds stamp is refused) and no row at or after
-    HEAT_END (strict, as heat.load_minutes: the workflow cuts the file first)."""
-    _no_doge(path)
-    df = pd.read_csv(path)
+def _check_frame(df: pd.DataFrame, cols: tuple, kind: str, label: str, tcol: str = 'ts') -> pd.DataFrame:
+    """The checks of read_checked on a frame: columns present, a numeric tcol in ms of 13 digits, no row at or after HEAT_END."""
     miss = [c for c in cols if c not in df.columns]
     if miss:
-        raise SystemExit(f'{path}: {kind} file lacks column(s) {miss}')
-    ts = pd.to_numeric(df['ts'], errors='coerce')
+        raise SystemExit(f'{label}: {kind} file lacks column(s) {miss}')
+    ts = pd.to_numeric(df[tcol], errors='coerce')
     if ts.isna().any():
-        raise SystemExit(f'{path}: {int(ts.isna().sum()):,} rows with no numeric ts')
+        raise SystemExit(f'{label}: {int(ts.isna().sum()):,} rows with no numeric {tcol}')
     ts = ts.to_numpy(np.int64)
     if len(ts) and not ((ts >= 10 ** 12) & (ts < 10 ** 13)).all():
-        raise SystemExit(f'{path}: ts must be milliseconds of 13 digits (this one holds {len(str(int(ts[0])))} digits at row 1)')
+        raise SystemExit(f'{label}: {tcol} must be milliseconds of 13 digits (this one holds {len(str(int(ts[0])))} digits at row 1)')
     late = int((ts >= HEAT_END).sum())
     if late:
-        raise SystemExit(f'{path}: {late:,} rows at or after {pd.Timestamp(HEAT_END, unit="ms")}: the heat tables stop there; cut the file first')
-    df['ts'] = ts
+        raise SystemExit(f'{label}: {late:,} rows at or after {pd.Timestamp(HEAT_END, unit="ms")}: the heat tables stop there; cut the file first')
+    df = df.copy()
+    df[tcol] = ts
     return df
+
+
+def read_checked(path: str, cols: tuple, kind: str, tcol: str = 'ts') -> pd.DataFrame:
+    """A CSV with tcol ('ts') in ms of 13 digits (a seconds or microseconds stamp is refused) and no row at or after
+    HEAT_END (strict, as heat.load_minutes: the workflow cuts the file first)."""
+    _no_doge(path)
+    return _check_frame(pd.read_csv(path), cols, kind, path, tcol)
 
 
 def clean_oi(df: pd.DataFrame, pp: dict = None):
@@ -687,12 +706,12 @@ def near_duplicates(vals: dict, a_hi: int) -> dict:
     return out
 
 
-def direction_coupling(vals: dict, close: np.ndarray, gap: np.ndarray, a_hi: int) -> dict:
+def direction_coupling(vals: dict, close: np.ndarray, gap: np.ndarray, a_hi: int, names=None) -> dict:
     """Pearson correlation, on A rows, of each league reading's value with the PAST 5 / 15 / 60 minute return (bps) of
     the coin: how much of the reading is the move that just happened."""
     c = np.where(gap, np.nan, np.asarray(close, float))
     out = {}
-    for name in LEAGUE:
+    for name in (LEAGUE if names is None else names):
         if name not in vals:
             continue
         out[name] = {}
@@ -709,6 +728,734 @@ def direction_coupling(vals: dict, close: np.ndarray, gap: np.ndarray, a_hi: int
 def reading_share(vals: dict, a_hi: int) -> dict:
     return {name: {'all': float(np.isfinite(v).mean()), 'A': float(np.isfinite(v[:a_hi]).mean()) if a_hi else None,
                    'B': float(np.isfinite(v[a_hi:]).mean()) if a_hi < len(v) else None} for name, v in vals.items()}
+
+
+# ======================================================================================================================
+# OR-XD full (Amendment 3): readings from the DATA CONTRACT files only (raw/outside/binance/<COIN>/): Binance metrics (LS),
+# premium index + funding (PREM), spot / perp aggTrade reducers (WHALE, WHALEP), perp bookDepth (BOOKP). The five lite
+# readings above are unchanged. Every value is used at row i only when its known time is at or before the close of row i
+# (the decision time; the entry is the next minute's open); a rolling window is by time with >= 80% presence.
+# ======================================================================================================================
+HOUR = 60 * MIN
+FULL_LEAGUE = ['LS:Global z', 'LS:TopPos z', 'LS:TopPosChg60', 'LS:TopAcc z', 'PREM:PredFund', 'PREM:PredMinusLast',
+               'WHALE:Net15', 'WHALE:Count60', 'WHALE:Sweep', 'WHALEP:Net15', 'WHALEP:Count60', 'WHALEP:Sweep', 'BOOKP:Imb1']
+FULL_REFS = ['REF:Sweep500', 'REFP:Sweep500']          # the $500k sweep state: information only, never chosen, never in the league
+FULL_FAMILY = {'LS:Global z': 'LS', 'LS:TopPos z': 'LS', 'LS:TopPosChg60': 'LS', 'LS:TopAcc z': 'LS', 'PREM:PredFund': 'PREM',
+               'PREM:PredMinusLast': 'PREM', 'WHALE:Net15': 'WHALE', 'WHALE:Count60': 'WHALE', 'WHALE:Sweep': 'WHALE',
+               'WHALEP:Net15': 'WHALEP', 'WHALEP:Count60': 'WHALEP', 'WHALEP:Sweep': 'WHALEP', 'BOOKP:Imb1': 'BOOKP'}
+FULL_DIRECTION = ('WHALE:Net15', 'WHALE:Sweep', 'WHALEP:Net15', 'WHALEP:Sweep', 'REF:Sweep500', 'REFP:Sweep500')   # swapped on a twin's flipped minutes
+FULL_STATE = ('WHALE:Sweep', 'WHALEP:Sweep')            # three-state readings (sell sweep / none / buy sweep), not zones
+SWEEP_LEVELS = ['sell sweep', 'none', 'buy sweep']
+LS_KNOWN = 5 * MIN              # a metrics row's snapshot instant S (true time, after the create_time convention) is known at S + 5 min
+LS_WIN = 288                    # 24 h of 5-minute snapshots: the window [S - 24 h, S)
+LS_GAP_SLOTS = 12               # a gap of more than 1 hour between snapshots (more than 12 slots) blanks the next LS_WIN slots
+LS_CHG = 12                     # 60 minutes of snapshots
+PREM_CAP = 5e-4                 # the +-0.05% clamp of Binance's funding formula
+PREM_INTEREST_8H = 1e-4         # I = 0.01% per 8 hours, scaled to the symbol's interval
+PREM_SD_N = 90                  # settlements in the sd of settlement-to-settlement changes
+WHALE_EDGES = [1000.0 * 20000.0 ** (k / 23) for k in range(24)]      # USD 1,000 ... 20,000,000 (the reducer's edges E_k)
+WHALE_Q = 0.001                 # F = the smallest edge whose trailing share of trades at or above it is <= 0.1%
+WHALE_DAYS = 30
+WHALE_BASE_DAYS = 7
+SWEEP_BARS = 5                  # the sweep state looks at the last 5 minutes (the row itself and 4 before)
+SWEEP_MIN_A = 100               # a sweep state needs this many buy and this many sell rows on A, else it is skipped (data sufficiency, not a pass bar)
+BOOK_CARRY = CARRY
+FULL_CONSTANTS = {'ls_known_ms': LS_KNOWN, 'ls_carry_ms': CARRY, 'ls_window_snapshots': LS_WIN, 'ls_change_snapshots': LS_CHG,
+                  'prem_cap': PREM_CAP, 'prem_interest_per_8h': PREM_INTEREST_8H, 'prem_sd_settlements': PREM_SD_N,
+                  'whale_edges_usd': [round(e, 2) for e in WHALE_EDGES], 'whale_share_q': WHALE_Q, 'whale_days': WHALE_DAYS,
+                  'whale_baseline_days': WHALE_BASE_DAYS, 'sweep_minutes': SWEEP_BARS, 'sweep_main_usd': 1_000_000, 'sweep_ref_usd': 500_000,
+                  'sweep_min_a_rows_per_side': SWEEP_MIN_A, 'book_carry_ms': BOOK_CARRY, 'presence': PRESENCE,
+                  'min_a_values': MIN_A, 'min_a_days': MIN_A_DAYS, 'zone_q': heat.ZONE_Q}
+
+
+def prep_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """metrics.csv.gz (S = the TRUE snapshot instant in ms after the create_time convention, one row per S). S is ceiled to the
+    5-minute grid (never earlier), a repeated S keeps its last row, sorted by S; a row at or after HEAT_END is refused."""
+    d = _check_frame(df, ('S', 'count_long_short_ratio', 'sum_toptrader_long_short_ratio', 'count_toptrader_long_short_ratio'), 'metrics', 'metrics', 'S')
+    d['S'] = _ceil_div(d['S'].to_numpy(np.int64), SNAP) * SNAP
+    return d.sort_values('S', kind='stable').drop_duplicates('S', keep='last').reset_index(drop=True)
+
+
+def prep_premium(df: pd.DataFrame, who: str = 'premium') -> pd.DataFrame:
+    d = _check_frame(df, ('ts', 'c'), who, who)
+    return d.sort_values('ts', kind='stable').drop_duplicates('ts', keep='last').reset_index(drop=True)
+
+
+def prep_funding(df: pd.DataFrame) -> pd.DataFrame:
+    """funding.csv.gz: Ts = calc_time floored to its minute (the settlement instant), rate = last_funding_rate; one row per Ts."""
+    d = _check_frame(df, ('calc_time', 'last_funding_rate'), 'funding', 'funding', 'calc_time')
+    d['Ts'] = d['calc_time'].to_numpy(np.int64) // MIN * MIN
+    d['rate'] = pd.to_numeric(d['last_funding_rate'], errors='coerce')
+    d = d.sort_values('Ts', kind='stable').drop_duplicates('Ts', keep='last')
+    return d[np.isfinite(d['rate'])].reset_index(drop=True)
+
+
+def prep_book(df: pd.DataFrame) -> pd.DataFrame:
+    d = _check_frame(df, ('ts', 'bid_1pct', 'ask_1pct'), 'bookdepth', 'bookdepth')
+    return d.sort_values('ts', kind='stable').drop_duplicates('ts', keep='last').reset_index(drop=True)
+
+
+def premium_delay(stamp) -> int:
+    """Extra minutes of delay from premium_stamp.json (a path or the dict): 1 when the stamp test says the NEXT minute fits
+    better, 0 when the same minute does. Accepts the keys fits (the fetch job's) / fit / best / winner / result / verdict ('same' | 'next') or
+    extra_delay_minutes / delay_minutes. _Skip when the file does not say (nothing is guessed)."""
+    if isinstance(stamp, (str, os.PathLike)):
+        _no_doge(stamp)
+        with open(stamp) as f:
+            stamp = json.load(f)
+    if not isinstance(stamp, dict):
+        raise _Skip('premium_stamp.json is not an object')
+    if stamp.get('resolved') is False:
+        raise _Skip('the premium stamp test did not resolve')
+    for dk in ('extra_delay_minutes', 'delay_minutes'):          # extra_delay_minutes: outside_reduce.premium_stamp_test's key
+        if isinstance(stamp.get(dk), (int, float)) and not isinstance(stamp.get(dk), bool):
+            return 1 if stamp[dk] >= 1 else 0
+    for k in ('fits', 'fit', 'best', 'winner', 'result', 'verdict'):     # fits: outside_reduce.premium_stamp_test's key
+        v = stamp.get(k)
+        if isinstance(v, str):
+            v = v.strip().lower()
+            if v.startswith('next'):
+                return 1
+            if v.startswith('same'):
+                return 0
+    raise _Skip('premium_stamp.json holds no fit (same | next)')
+
+
+def _on_grid(ts, vals, t0: int, n: int):
+    """vals placed at the minute rows of the grid; NaN where there is none; (array, off-grid count)."""
+    ts = np.asarray(ts, np.int64)
+    off = ts - t0
+    on = (off >= 0) & (off % MIN == 0) & (off < n * MIN)
+    out = np.full(n, np.nan)
+    out[off[on] // MIN] = np.asarray(vals, float)[on]
+    return out, int(((off % MIN != 0) & (off >= 0) & (off < n * MIN)).sum())
+
+
+# ---------------------------------------------------------------------------------------------------------------- LS
+def ls_slots(met: pd.DataFrame):
+    """The three LS value series on the 5-minute snapshot slots s0 + j * 5 min (NaN where there is none), before the known-time
+    mapping. x = ln(ratio); z over the 288 snapshots BEFORE the row ([S - 24 h, S): the row itself is not in its own window), >= 80%
+    present; the 60-minute change needs the snapshot exactly 60 minutes earlier and is divided by the sd of the 60-minute changes
+    of the previous 24 h."""
+    S = met['S'].to_numpy(np.int64)
+    s0 = int(S[0])
+    K = int((S[-1] - s0) // SNAP) + 1
+    idx = (S - s0) // SNAP
+    mc = _min_count(LS_WIN)
+
+    def x_of(col):
+        v = pd.to_numeric(met[col], errors='coerce').to_numpy(float)
+        x = np.full(K, np.nan)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            x[idx] = np.where(v > 0, np.log(v), np.nan)
+        return x
+
+    def zs(x):
+        s, k = roll_sum(x, LS_WIN, mc)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            mu = lag(s / k, 1)
+        sd = lag(roll_sd(x, LS_WIN, mc), 1)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            return np.where(sd > 0, (x - mu) / sd, np.nan)
+
+    xg, xp, xa = x_of('count_long_short_ratio'), x_of('sum_toptrader_long_short_ratio'), x_of('count_toptrader_long_short_ratio')
+    d = xp - lag(xp, LS_CHG)
+    sd = lag(roll_sd(d, LS_WIN, mc), 1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        chg = np.where(sd > 0, d / sd, np.nan)
+    # design 2.1 gap rule: after a gap of more than 1 hour between snapshots the readings are NA until a whole window (288 snapshots)
+    # has passed since the first snapshot after the gap
+    blk = np.zeros(K, bool)
+    present = np.unique(idx)
+    for g in np.flatnonzero(np.diff(present) > LS_GAP_SLOTS) + 1:
+        blk[present[g]:present[g] + LS_WIN] = True
+    out = {'LS:Global z': zs(xg), 'LS:TopPos z': zs(xp), 'LS:TopPosChg60': chg, 'LS:TopAcc z': zs(xa)}
+    return s0, {k: np.where(blk, np.nan, v) for k, v in out.items()}
+
+
+def carry_rows(series, s0: int, delay: int, carry: int, t0: int, n: int, step: int = SNAP) -> np.ndarray:
+    """A slot series (slot j = the instant s0 + j * step, known at that instant + delay) on the minute rows: row i takes the
+    latest slot whose known time is at or before the row's CLOSE (t0 + (i + 1) min), and an earlier slot while the age (close minus
+    known time) is at most `carry`; NaN beyond. A slot known exactly at the close counts; one millisecond later does not."""
+    series = np.asarray(series, float)
+    K = len(series)
+    close = int(t0) + (np.arange(n, dtype=np.int64) + 1) * MIN
+    j = (close - delay - s0) // step
+    out = np.full(n, np.nan)
+    for q in range(int(carry // step) + 2):
+        jq = j - q
+        age = close - (s0 + jq * step + delay)
+        ok = (jq >= 0) & (jq < K) & (age <= carry) & np.isnan(out)
+        val = series[np.clip(jq, 0, K - 1)]
+        take = ok & np.isfinite(val)
+        out[take] = val[take]
+    return out
+
+
+# -------------------------------------------------------------------------------------------------------------- PREM
+def prem_series(prem: pd.DataFrame, fund: pd.DataFrame, t0: int, n: int, delay: int = 0):
+    """PREM:PredFund and PREM:PredMinusLast on the minute rows, and the reconstruction error against the next settled rate.
+
+    Row j (bar j opens at o_j, closes o_j + 1 min) sees the last settlement k with calc_time_k <= o_j (a settlement is known at its
+    calc time + 1 minute, so the bar that opens at it is the first to know it) and the premium closes of the n = (o_j - Ts_k) / 1 min + 1
+    bars since Ts_k (calc_time floored to its minute),
+    bar p (p = 1..n) weighted p; P = sum(p * premium_p) / sum(p) over the bars present (>= 80% of n, and bar j itself present);
+    I = 0.01% x N / 8 with N the interval in hours between the last two settlements; F = clamp(I, P - 0.05%, P + 0.05%) (= P + clamp(I - P, ...) but exact: in-band F is I itself).
+    PredMinusLast = (F - rate_k) / sd of the settlement-to-settlement rate changes over the 90 settlements ending at k (>= 72
+    changes). NaN when the settlement is more than 1.5 intervals old. delay (0 or 1 minute, premium_stamp.json) moves every
+    row later by that many minutes. Old formula only: the 2025-09-18 '8/N' regime is not applied; the error of both is in info."""
+    Ts = fund['Ts'].to_numpy(np.int64)
+    calc = fund['calc_time'].to_numpy(np.int64)
+    rate = fund['rate'].to_numpy(float)
+    info = {'settlements': int(len(Ts)), 'delay_min': int(delay)}
+    nan = np.full(n, np.nan)
+    if len(Ts) < 3:
+        return nan, nan, dict(info, note='fewer than 3 settlements')
+    gaps = np.diff(Ts)
+    Nh = np.r_[np.nan, np.round(gaps / HOUR)]
+    okN = np.r_[False, (np.abs(gaps - np.round(gaps / HOUR) * HOUR) <= 2 * MIN) & np.isin(np.round(gaps / HOUR), (1, 2, 4, 8))]
+    Nh = np.where(okN, Nh, np.nan)
+    Ik = PREM_INTEREST_8H * Nh / 8.0
+    ch = np.r_[np.nan, np.diff(rate)]
+    ch[~okN] = np.nan
+    sd_set = roll_sd(ch, PREM_SD_N, _min_count(PREM_SD_N))
+    # the window is by TIME too: the 90 changes must cover >= 80% of the span from settlement k-90 to k (a missing month, a gap > 1.5 h
+    # inside it, makes the sd NA until a whole window has passed)
+    good_dur = np.r_[0.0, np.cumsum(np.where(okN[1:], gaps, 0.0))]
+    span = np.full(len(Ts), np.nan)
+    if len(Ts) > PREM_SD_N:
+        span[PREM_SD_N:] = (Ts[PREM_SD_N:] - Ts[:-PREM_SD_N]).astype(float)
+        cover = np.full(len(Ts), np.nan)
+        cover[PREM_SD_N:] = (good_dur[PREM_SD_N:len(Ts)] - good_dur[:len(Ts) - PREM_SD_N])
+        sd_set = np.where(cover >= PRESENCE * span - 1e-9, sd_set, np.nan)
+    else:
+        sd_set = np.full(len(Ts), np.nan)
+    o = int(t0) + np.arange(n, dtype=np.int64) * MIN
+    seg = np.searchsorted(calc, o, side='right') - 1          # calc_time + 1 min <= the close of this bar  <=>  calc_time <= its open
+    segc = np.clip(seg, 0, len(Ts) - 1)
+    pv, off_grid = _on_grid(prem['ts'].to_numpy(np.int64), prem['c'].to_numpy(float), t0, n)
+    info['premium_off_grid_rows'] = off_grid
+    fin = np.isfinite(pv)
+    valid = (seg >= 0) & np.isfinite(Nh[segc]) & ((o - Ts[segc]) <= 1.5 * np.where(np.isfinite(Nh[segc]), Nh[segc], 0) * HOUR)
+    pos = (o - Ts[segc]) // MIN + 1
+    use = fin & valid
+    pvz = np.where(fin, pv, 0.0)
+    CA = np.r_[0.0, np.cumsum(np.where(use, pos * pvz, 0.0))]
+    CW = np.r_[0.0, np.cumsum(np.where(use, pos, 0.0))]
+    CF = np.r_[0.0, np.cumsum(use.astype(float))]
+    j = np.arange(n)
+    sr_raw = (Ts[segc] - int(t0)) // MIN
+    sr = np.maximum(sr_raw, 0)
+    num, den, cnt = CA[j + 1] - CA[sr], CW[j + 1] - CW[sr], CF[j + 1] - CF[sr]
+    # The bar that opens at Ts_k belongs to the PREVIOUS segment when calc_time_k is not on the minute (calc > its open): the sums above
+    # gave it that segment's weight. Inside segment k it is bar 1 (weight 1): swap its contribution.
+    fix = (sr_raw >= 0) & (sr_raw < n) & (seg >= 0)
+    c0 = np.clip(sr, 0, n - 1)
+    num = np.where(fix, num - (CA[c0 + 1] - CA[c0]) + np.where(fin[c0], pvz[c0], 0.0), num)
+    den = np.where(fix, den - (CW[c0 + 1] - CW[c0]) + fin[c0], den)
+    cnt = np.where(fix, cnt - (CF[c0 + 1] - CF[c0]) + fin[c0], cnt)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        P = np.where(use & (cnt >= np.ceil(PRESENCE * pos - 1e-9)) & (den > 0), num / den, np.nan)
+        # in-band values equal I exactly (clip I into P +- cap; P + clip(I - P) would carry rounding noise in I +- ulp)
+        F = np.where(np.isfinite(P), np.clip(Ik[segc], P - PREM_CAP, P + PREM_CAP), np.nan)
+        sdv = sd_set[segc]
+        PML = np.where(sdv > 0, (F - rate[segc]) / sdv, np.nan)
+    # reconstruction error: the prediction on the last bar of an interval against the rate settled at its end
+    rec = {}
+    kk = np.arange(1, len(Ts))
+    jb = (Ts[kk] - MIN - int(t0)) // MIN
+    ok = (jb >= 0) & (jb < n)
+    kk, jb = kk[ok], jb[ok]
+    f = F[jb]
+    good = np.isfinite(f)
+    kk, jb, f = kk[good], jb[good], f[good]
+    err_old = f - rate[kk]
+    err_new = f * Nh[kk] / 8.0 - rate[kk]
+    year = pd.to_datetime(Ts[kk], unit='ms').year.to_numpy()
+    for y in np.unique(year):
+        s = year == y
+        a, b = np.abs(err_old[s]), np.abs(err_new[s])
+        b = b[np.isfinite(b)]
+        rec[str(int(y))] = {'n': int(s.sum()), 'median_abs_old': float(np.median(a)), 'p99_abs_old': float(np.quantile(a, 0.99)),
+                            'median_abs_new_8_over_N': float(np.median(b)) if len(b) else None,
+                            'p99_abs_new_8_over_N': float(np.quantile(b, 0.99)) if len(b) else None}
+    info['reconstruction_error_by_year'] = rec
+    info['interval_hours_seen'] = {str(int(h)): int((Nh == h).sum()) for h in np.unique(Nh[np.isfinite(Nh)])}
+    if 'funding_interval_hours' in fund.columns:
+        fh = pd.to_numeric(fund['funding_interval_hours'], errors='coerce').to_numpy(float)
+        info['interval_column_mismatch'] = int((np.isfinite(Nh) & np.isfinite(fh) & (Nh != fh)).sum())
+    return lag(F, delay), lag(PML, delay), info
+
+
+# ------------------------------------------------------------------------------------------------------------- WHALE
+class AggStore:
+    """The per-minute aggTrade reducer files <dir>/<YYYY-MM>.parquet (agg_spot / agg_perp) on a minute grid (t0, n). A month with a
+    file is PRESENT (a minute without a row there is a minute without trades: zeros); a month without one is NaN. A DAY with no
+    trade at all (BTC, ETH, SOL and XRP never have one) is a hole in the data, not a quiet day: it is absent too (NaN, not 0).
+    A file for a month at or after HEAT_END, or a row at or after it, is refused. ts is the minute OPEN in ms (a microsecond stamp,
+    above 1e14, is converted). Every file is read once per call (a group of columns together), not once per column."""
+
+    def __init__(self, directory: str, t0: int, n: int, who: str = 'agg'):
+        import re
+        _no_doge(directory)
+        self.t0, self.n, self.who, self.cache, self._us = int(t0), int(n), who, {}, set()
+        self.files = []
+        if not os.path.isdir(directory):
+            raise _Skip(f'{who}: no directory {directory}')
+        for f in sorted(os.listdir(directory)):
+            mt = re.fullmatch(r'(\d{4})-(\d{2})\.parquet', f)
+            if not mt:
+                continue
+            y, mo = int(mt.group(1)), int(mt.group(2))
+            a = ms(f'{y}-{mo:02d}-01')
+            b = ms(f'{y + (mo == 12)}-{mo % 12 + 1:02d}-01')
+            if a >= HEAT_END:
+                raise SystemExit(f'{os.path.join(directory, f)}: month at or after {pd.Timestamp(HEAT_END, unit="ms")}: the heat tables stop there; cut the files first')
+            self.files.append((os.path.join(directory, f), a, b))
+        self.month_present = np.zeros(self.n, bool)
+        for _, a, b in self.files:
+            self.month_present[max(0, (a - self.t0) // MIN):max(0, min(self.n, (b - self.t0) // MIN))] = True
+        if not self.files:
+            raise _Skip(f'{who}: no <YYYY-MM>.parquet file in {directory}')
+        self.day_aligned = (self.t0 % DAY == 0) and (self.n % 1440 == 0)
+        self._day_tot = None
+        self._present = None
+
+    @property
+    def us_files(self) -> int:
+        return len(self._us)
+
+    def _tables(self, names):
+        """(path, ts in ms of the minutes, pyarrow table of ts + names) per month file, each file read once and checked."""
+        import pyarrow.parquet as pq
+        for path, a, b in self.files:
+            tab = pq.read_table(path, columns=['ts'] + [x for x in names if x != 'ts'])
+            ts = tab.column('ts').to_numpy().astype(np.int64)
+            if len(ts) and ts.max() > 10 ** 14:
+                ts = ts // 1000
+                self._us.add(path)
+            if len(ts) and not ((ts >= 10 ** 12) & (ts < 10 ** 13)).all():
+                raise SystemExit(f'{path}: ts must be milliseconds of 13 digits')
+            if len(ts) and int(ts.max()) >= HEAT_END:
+                raise SystemExit(f'{path}: {int((ts >= HEAT_END).sum()):,} rows at or after {pd.Timestamp(HEAT_END, unit="ms")}: the heat tables stop there; cut the file first')
+            if len(ts) and (ts % MIN != 0).any():
+                raise SystemExit(f'{path}: ts is not on whole minutes')
+            yield path, ts, tab
+
+    def _load(self, names) -> dict:
+        """Raw columns on the grid (float64; NaN in absent months, 0 in a present minute without a row), one pass over the files."""
+        out = {nm: np.where(self.month_present, 0.0, np.nan) for nm in names}
+        for path, ts, tab in self._tables(names):
+            off = ts - self.t0
+            on = (off >= 0) & (off < self.n * MIN)
+            for nm in names:
+                out[nm][off[on] // MIN] = tab.column(nm).to_numpy(zero_copy_only=False).astype(float)[on]
+        return out
+
+    def day_sums(self, names) -> np.ndarray:
+        """(days, len(names)) per-day sums of the columns in ONE pass over the files (a day or month without a row sums to 0)."""
+        if not self.day_aligned:
+            raise SystemExit('the grid is not whole days')
+        nd = self.n // 1440
+        out = np.zeros((nd, len(names)))
+        for path, ts, tab in self._tables(names):
+            d = (ts - self.t0) // DAY
+            on = (ts >= self.t0) & (d < nd)
+            for q, nm in enumerate(names):
+                v = np.nan_to_num(tab.column(nm).to_numpy(zero_copy_only=False).astype(float))
+                out[:, q] += np.bincount(d[on], weights=v[on], minlength=nd)[:nd]
+        return out
+
+    @property
+    def day_tot(self):
+        """Trades per day (None when the grid is not whole days)."""
+        if self._day_tot is None and self.day_aligned:
+            self._day_tot = self.day_sums(['n_buy', 'n_sell']).sum(1)
+        return self._day_tot
+
+    @property
+    def present(self) -> np.ndarray:
+        """Minutes with data: the month has a file AND the day has at least one trade."""
+        if self._present is None:
+            dt = self.day_tot
+            self._present = self.month_present.copy() if dt is None else self.month_present & np.repeat(dt > 0, 1440)
+        return self._present
+
+    def cols(self, names) -> dict:
+        """Several columns on the grid (see col), the uncached ones read together in one pass."""
+        out = {nm: self.cache[nm] for nm in names if nm in self.cache}
+        need = [nm for nm in dict.fromkeys(names) if nm not in out]
+        if need:
+            pres = self.present
+            for nm, v in self._load(need).items():
+                out[nm] = np.where(pres, v, np.nan)
+                if nm in ('n_buy', 'n_sell', 'usd_buy', 'usd_sell', 'sw_b_1m', 'sw_s_1m', 'sw_b_500k', 'sw_s_500k'):
+                    self.cache[nm] = out[nm]
+        return out
+
+    def col(self, name: str) -> np.ndarray:
+        """One column on the grid (float64; NaN in absent months and days, 0 in a present minute without a row)."""
+        return self.cols([name])[name]
+
+    def after_hole(self, days: int) -> np.ndarray:
+        """True on the rows within `days` days after the end of a hole (a run of absent minutes longer than 1 hour that follows data):
+        the design's gap rule, 'NA until a whole window has passed'. A stretch of absence before the first data is no hole."""
+        pres = self.present
+        n = len(pres)
+        out = np.zeros(n, bool)
+        if not pres.any():
+            return out
+        first = int(np.argmax(pres))
+        ab = ~pres
+        ab[:first] = False
+        d = np.diff(np.r_[0, ab.astype(np.int8), 0])
+        st, en = np.flatnonzero(d == 1), np.flatnonzero(d == -1)           # runs [st, en)
+        for a, e in zip(st, en):
+            if e - a > 60 and e < n:
+                out[e:e + days * 1440] = True
+        return out
+
+
+def whale_edges_by_day(store: AggStore):
+    """F per decision day: the index k of the smallest edge E_k whose share of trades at or above it, over the 30 days FULLY BEFORE
+    the day, is <= 0.1% (>= 24 of the 30 days present); -1 when there is none. Also the realised share of each day at its own k."""
+    nd = store.n // 1440
+    if store.n % 1440:
+        raise SystemExit('the grid is not whole days')
+    tot = store.day_tot
+    pres = tot > 0
+    names = [f'{c}_ge_{k}' for k in range(len(WHALE_EDGES)) for c in ('nb', 'ns')]
+    sums = store.day_sums(names)                                  # one pass over the files for all 48 columns
+    cnt = sums[:, 0::2] + sums[:, 1::2]
+    cnt = np.where(pres[:, None], cnt, 0.0)
+    totz = np.where(pres, tot, 0.0)
+    cs_t = np.r_[0.0, np.cumsum(totz)]
+    cs_c = np.vstack([np.zeros((1, cnt.shape[1])), np.cumsum(cnt, 0)])
+    cs_p = np.r_[0, np.cumsum(pres)]
+    kstar = np.full(nd, -1, np.int64)
+    need = int(math.ceil(PRESENCE * WHALE_DAYS - 1e-9))
+    seen = np.cumsum(pres) > 0
+    cs_h = np.r_[0, np.cumsum(~pres & seen)]                      # days without trades after the first data day: holes
+    for D in range(WHALE_DAYS, nd):
+        if cs_p[D] - cs_p[D - WHALE_DAYS] < need:
+            continue
+        if cs_h[D] - cs_h[D - WHALE_DAYS] > 0:                    # gap rule: no F until 30 whole days have passed since a hole
+            continue
+        t = cs_t[D] - cs_t[D - WHALE_DAYS]
+        if t <= 0:
+            continue
+        share = (cs_c[D] - cs_c[D - WHALE_DAYS]) / t
+        hit = np.flatnonzero(share <= WHALE_Q)
+        if len(hit):
+            kstar[D] = hit[0]
+    real = np.full(nd, np.nan)
+    sel = kstar >= 0
+    real[sel] = cnt[np.flatnonzero(sel), kstar[sel]] / np.where(totz[sel] > 0, totz[sel], np.nan)
+    return kstar, real, pres
+
+
+def sweep_state(b, s, present, signs=None):
+    """+1 buy sweep / -1 sell sweep / 0 none in the last 5 minutes (the row and 4 before; NaN until a whole, >= 80% present, window).
+    b, s: per-minute count of seconds whose same-side sum reached the threshold. Both sides in the window: the later minute wins; the
+    same minute: 0. signs (a twin): buy and sell swapped on the minutes where the sign is -1. Returns (state, same-minute count)."""
+    b, s = np.nan_to_num(np.asarray(b, float)) > 0, np.nan_to_num(np.asarray(s, float)) > 0
+    if signs is not None:
+        b, s = np.where(signs > 0, b, s), np.where(signs > 0, s, b)
+    n = len(b)
+    idx = np.arange(n)
+    lb = np.maximum.accumulate(np.where(b, idx, -10 ** 9))
+    ls = np.maximum.accumulate(np.where(s, idx, -10 ** 9))
+    inb, ins = idx - lb <= SWEEP_BARS - 1, idx - ls <= SWEEP_BARS - 1
+    st = np.zeros(n)
+    st[inb & ~ins] = 1.0
+    st[ins & ~inb] = -1.0
+    both = inb & ins
+    st[both & (lb > ls)] = 1.0
+    st[both & (ls > lb)] = -1.0
+    tie = both & (lb == ls)
+    pres, _ = roll_sum(np.where(present, 1.0, np.nan), SWEEP_BARS, _min_count(SWEEP_BARS))
+    st[~np.isfinite(pres)] = np.nan
+    return st, int(tie.sum())
+
+
+def whale_values(store: AggStore, signs=None, prefix: str = 'WHALE'):
+    """The three WHALE readings of one market ('WHALE' spot, 'WHALEP' perp) plus the $500k sweep reference, and their info."""
+    kstar, real, pres_day = whale_edges_by_day(store)
+    kmin = np.repeat(kstar, 1440)
+    n = store.n
+    mc15, mc60 = _min_count(15), _min_count(60)
+    after7 = store.after_hole(WHALE_BASE_DAYS)                     # gap rule: Count60 is NA for 7 days after a data hole
+    tot_usd = store.col('usd_buy') + store.col('usd_sell')
+    tot15, _ = roll_sum(tot_usd, 15, mc15)
+    net15, cnt60 = np.full(n, np.nan), np.full(n, np.nan)
+    for k in np.unique(kmin[kmin >= 0]):
+        rows = np.flatnonzero(kmin == k)
+        g = store.cols([f'ub_ge_{k}', f'us_ge_{k}', f'nb_ge_{k}', f'ns_ge_{k}'])
+        net = g[f'ub_ge_{k}'] - g[f'us_ge_{k}']
+        if signs is not None:
+            net = net * signs                       # a flipped minute swaps buy and sell: the net notional changes sign
+        s15, _ = roll_sum(net, 15, mc15)
+        net15[rows] = _ratio(s15, tot15)[rows]
+        c60, _ = roll_sum(g[f'nb_ge_{k}'] + g[f'ns_ge_{k}'], 60, mc60)      # a count: the sides are not told apart, no flip
+        base = np.full((WHALE_BASE_DAYS, len(rows)), np.nan)
+        for j in range(1, WHALE_BASE_DAYS + 1):
+            r = rows - 1440 * j
+            ok = r >= 0
+            base[j - 1, ok] = c60[r[ok]]
+        good = np.isfinite(base).sum(0)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            med, sd = np.nanmedian(base, 0), np.nanstd(base, 0, ddof=1)
+        z = (c60[rows] - med) / np.maximum(sd, 1.0)
+        z[good < int(math.ceil(PRESENCE * WHALE_BASE_DAYS - 1e-9))] = np.nan
+        z[after7[rows]] = np.nan
+        cnt60[rows] = z
+    out = {f'{prefix}:Net15': net15, f'{prefix}:Count60': cnt60}
+    ties = {}
+    for tag, nm in (('1m', f'{prefix}:Sweep'), ('500k', ('REF:Sweep500' if prefix == 'WHALE' else 'REFP:Sweep500'))):
+        out[nm], ties[nm] = sweep_state(store.col(f'sw_b_{tag}'), store.col(f'sw_s_{tag}'), store.present, signs)
+    ok = np.isfinite(real)
+    info = {'f_days_with_value': int(ok.sum()), 'f_edge_index_counts': {str(int(k)): int((kstar == k).sum()) for k in np.unique(kstar)},
+            'realised_share_of_trades_at_f': {'median': float(np.median(real[ok])) if ok.any() else None,
+                                              'p05': float(np.quantile(real[ok], 0.05)) if ok.any() else None,
+                                              'p95': float(np.quantile(real[ok], 0.95)) if ok.any() else None},
+            'sweep_same_minute_both_sides': ties, 'us_files': store.us_files}
+    return out, info, real
+
+
+# ------------------------------------------------------------------------------------------------------------- the rest
+def book_imbalance(book: pd.DataFrame, t0: int, n: int) -> np.ndarray:
+    """(bid_1pct - ask_1pct) / (bid_1pct + ask_1pct) from the latest bookDepth stamp known at the row's close (ts is already shifted
+    one spacing later by the fetch job); carried at most 10 minutes."""
+    ts = book['ts'].to_numpy(np.int64)
+    b, a = (pd.to_numeric(book[c], errors='coerce').to_numpy(float) for c in ('bid_1pct', 'ask_1pct'))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        imb = np.where((b + a > 0) & np.isfinite(b) & np.isfinite(a) & (b >= 0) & (a >= 0), (b - a) / (b + a), np.nan)
+    if not len(ts):
+        return np.full(n, np.nan)
+    close = int(t0) + (np.arange(n, dtype=np.int64) + 1) * MIN
+    j = np.searchsorted(ts, close, side='right') - 1
+    jc = np.clip(j, 0, max(len(ts) - 1, 0))
+    ok = (j >= 0) & (close - ts[jc] <= BOOK_CARRY)
+    return np.where(ok, imb[jc], np.nan)
+
+
+def metrics_clock_info(met: pd.DataFrame, mark: pd.DataFrame, t0: int, n: int) -> dict:
+    """Information only (the fetch job's labelling is the check): per year, the median |ln(implied price) - ln(mark open)| at S and at S + 5 min."""
+    if not {'sum_open_interest', 'sum_open_interest_value'} <= set(met.columns) or 'o' not in mark.columns:
+        return {'note': 'metrics lacks sum_open_interest / sum_open_interest_value, or mark lacks o'}
+    mo, _ = _on_grid(mark['ts'].to_numpy(np.int64), mark['o'].to_numpy(float), t0, n)
+    S = met['S'].to_numpy(np.int64)
+    oi, oiv = (pd.to_numeric(met[c], errors='coerce').to_numpy(float) for c in ('sum_open_interest', 'sum_open_interest_value'))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        imp = np.log(oiv / oi)
+    out = {}
+    year = pd.to_datetime(S, unit='ms').year.to_numpy()
+    for off in (0, SNAP):
+        r = (S + off - int(t0)) // MIN
+        ok = (r >= 0) & (r < n)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            e = np.abs(imp - np.log(np.where(ok, mo[np.clip(r, 0, n - 1)], np.nan)))
+        for y in np.unique(year):
+            v = e[(year == y) & np.isfinite(e)]
+            out.setdefault(str(int(y)), {})[f'median_abs_log_gap_at_S+{off // MIN}min'] = float(np.median(v)) if len(v) else None
+    return out
+
+
+def _agg(x, m, who):
+    return x if isinstance(x, AggStore) else AggStore(x, m['t0'], m['n'], who)
+
+
+def full_values(sp: dict, pp: dict = None, *, metrics=None, premium=None, premium_stamp=None, funding=None, mark=None,
+                agg_spot=None, agg_perp=None, book=None, signs=None) -> dict:
+    """Every NEW value series per minute row on the spot grid (NaN where there is no reading yet), before the stale rule and the
+    zones. sp: the spot bars (t0, n, gap, c); pp: the perp bars on the same grid (only its gap is read, for WHALEP); the inputs are
+    the DATA CONTRACT frames (prepared here: metrics / premium / funding / book frames from the csv.gz files, mark = mark_1m frame,
+    premium_stamp = the dict or path of premium_stamp.json, agg_spot / agg_perp = an AggStore or a directory of <YYYY-MM>.parquet).
+    A family whose input is missing or unusable is skipped with a reason (never guessed); a row at or after HEAT_END is refused
+    (SystemExit). signs: a twin's per-minute coin flips (twin_signs): the direction readings (Net15, Sweep) swap buy and sell on the
+    flipped minutes; the level readings (LS, PREM, Count60, BOOKP) do not change.
+    Returns {'values': {name: series}, 'skipped': {name: reason}, 'info': {...}, 'gap': spot gap, 'gap_perp': perp gap or None}."""
+    t0, n = int(sp['t0']), int(sp['n'])
+    vals, skipped, info = {}, {}, {}
+    signs = None if signs is None else np.asarray(signs, float)
+    gap = np.asarray(sp['gap'], bool)
+    gap_perp = None if pp is None else np.asarray(pp['gap'], bool)
+
+    def skip(names, why):
+        for nm in names:
+            skipped[nm] = why
+
+    LS = [x for x in FULL_LEAGUE if x.startswith('LS:')]
+    PR = ['PREM:PredFund', 'PREM:PredMinusLast']
+    try:                                                              # ---- LS
+        if metrics is None:
+            raise _Skip('no metrics file')
+        met = prep_metrics(metrics)
+        if not len(met):
+            raise _Skip('metrics holds no rows')
+        s0, ser = ls_slots(met)
+        for nm in LS:
+            vals[nm] = carry_rows(ser[nm], s0, LS_KNOWN, CARRY, t0, n)
+        info['metrics'] = {'rows': int(len(met)), 'first': str(pd.Timestamp(int(met['S'].iloc[0]), unit='ms')),
+                           'last': str(pd.Timestamp(int(met['S'].iloc[-1]), unit='ms')), 'known_rule': 'S + 5 min, carried at most 10 min'}
+        if 'conv' in met.columns:
+            info['metrics']['conv_counts'] = {str(k): int(v) for k, v in met['conv'].value_counts().items()}
+        if mark is not None:
+            info['metrics']['clock_vs_mark_by_year'] = metrics_clock_info(met, prep_premium(mark, 'mark'), t0, n)
+    except _Skip as e:
+        skip(LS, str(e))
+    try:                                                              # ---- PREM
+        why = [w for w, v in (('premium', premium), ('premium_stamp', premium_stamp), ('funding', funding)) if v is None]
+        if why:
+            raise _Skip('no ' + ' / '.join(why))
+        delay = premium_delay(premium_stamp)
+        vals['PREM:PredFund'], vals['PREM:PredMinusLast'], pinfo = prem_series(prep_premium(premium), prep_funding(funding), t0, n, delay)
+        info['prem'] = pinfo
+    except _Skip as e:
+        skip(PR, str(e))
+    for tag, ag, g, prefix in (('spot', agg_spot, gap, 'WHALE'), ('perp', agg_perp, gap if gap_perp is None else gap | gap_perp, 'WHALEP')):
+        names = [f'{prefix}:Net15', f'{prefix}:Count60', f'{prefix}:Sweep']
+        try:                                                          # ---- WHALE / WHALEP
+            if ag is None:
+                raise _Skip(f'no agg_{tag} directory')
+            store = _agg(ag, sp, f'agg_{tag}')
+            v, winfo, _ = whale_values(store, signs, prefix)
+            vals.update(v)
+            info[f'whale_{tag}'] = winfo
+        except _Skip as e:
+            skip(names, str(e))
+        except KeyError as e:
+            skip(names, f'agg_{tag}: a column is missing ({e})')
+        except Exception as e:                                         # a reducer file that pyarrow cannot give the column of
+            if type(e).__name__ in ('ArrowInvalid', 'ArrowKeyError'):
+                skip(names, f'agg_{tag}: {type(e).__name__}: {e}')
+            else:
+                raise
+    try:                                                              # ---- BOOKP
+        if book is None:
+            raise _Skip('no bookdepth file')
+        bk = prep_book(book)
+        vals['BOOKP:Imb1'] = book_imbalance(bk, t0, n)
+        sp_ms = float(np.median(np.diff(bk['ts'].to_numpy(np.int64)))) if len(bk) > 2 else None
+        info['book'] = {'rows': int(len(bk)), 'median_spacing_ms': sp_ms, 'first': str(pd.Timestamp(int(bk['ts'].iloc[0]), unit='ms')) if len(bk) else None}
+    except _Skip as e:
+        skip(['BOOKP:Imb1'], str(e))
+    return {'values': vals, 'skipped': skipped, 'info': info, 'gap': gap, 'gap_perp': gap_perp}
+
+
+def stale_full(name: str, gap: np.ndarray, gap_perp=None) -> np.ndarray:
+    """The engine's stale rule on the reading's window (W rows) of the spot grid, and of the perp bars for the perp readings."""
+    W = {'Net15': 15, 'Count60': 60, 'Sweep': SWEEP_BARS, 'Sweep500': SWEEP_BARS}.get(name.split(':')[1], 1)
+    g = gap if (gap_perp is None or not name.startswith(('WHALEP', 'REFP'))) else gap | gap_perp
+    return stale_rows(g, W)
+
+
+def zone_why(x, a_hi: int, t0: int = None) -> str:
+    xa = np.asarray(x, float)[:a_hi]
+    fin = np.isfinite(xa)
+    if fin.sum() < MIN_A:
+        return f'fewer than {MIN_A:,} finite values on A ({int(fin.sum()):,})'
+    nd = len(np.unique((int(t0) + np.flatnonzero(fin) * MIN) // DAY)) if t0 is not None else None
+    if nd is not None and nd < MIN_A_DAYS:
+        return f'values on {nd} distinct days of A, fewer than {MIN_A_DAYS}'
+    return 'the inner zones are empty (edges collapse)'
+
+
+def state_reading(name: str, x, a_hi: int, family: str, t0: int = None, fixed: bool = False):
+    """A three-state reading (-1 sell sweep / 0 none / +1 buy sweep) as an engine reading, or (None, reason): needs MIN_A finite
+    values on MIN_A_DAYS days of A and SWEEP_MIN_A rows of each side on A (data sufficiency; no zone edges)."""
+    x = np.asarray(x, float)
+    xa = x[:a_hi]
+    fin = np.isfinite(xa)
+    if not fixed:                                           # (stored edges / parity: no A rows are looked at, as for the zones)
+        if fin.sum() < MIN_A:
+            return None, f'fewer than {MIN_A:,} finite values on A ({int(fin.sum()):,})'
+        if t0 is not None:
+            nd = len(np.unique((int(t0) + np.flatnonzero(fin) * MIN) // DAY))
+            if nd < MIN_A_DAYS:
+                return None, f'values on {nd} distinct days of A, fewer than {MIN_A_DAYS}'
+        nb, ns = int((xa == 1).sum()), int((xa == -1).sum())
+        if nb < SWEEP_MIN_A or ns < SWEEP_MIN_A:
+            return None, f'sweep rows on A: {nb:,} buy / {ns:,} sell, fewer than {SWEEP_MIN_A} on a side'
+    codes = np.where(np.isfinite(x), x + 1, -1).astype(np.int8)
+    return {'name': name, 'k': 1, 'codes': codes, 'levels': SWEEP_LEVELS, 'base': name, 'type': 'xd', 'family': family, 'cond': True}, None
+
+
+def full_readings(sp: dict, pp: dict, a_hi: int, edges: dict = None, keep: bool = False, skip=(), signs=None, **inputs) -> dict:
+    """The new league readings (full_values' inputs as keywords), as xd_readings makes the lite ones: the stale rule, then five zones
+    from A's rows (WHALE:Sweep / WHALEP:Sweep: three states). edges: fixed zone edges by name (a name without one is skipped); skip:
+    names left out whatever their values (a twin follows its real coin's skips). Returns {'readings', 'edges', 'skipped' (names),
+    'reasons' {name: why}, 'values' (keep: the stale-masked series, references included), 'gap', 'info'}."""
+    X = full_values(sp, pp, signs=signs, **inputs)
+    gapc, gp = X['gap'], X['gap_perp']
+    out = {'readings': [], 'edges': {}, 'skipped': [], 'reasons': dict(X['skipped']), 'values': {}, 'gap': gapc, 'info': X['info']}
+    for name in FULL_LEAGUE + FULL_REFS:
+        if name not in X['values']:
+            if name in FULL_LEAGUE:
+                out['skipped'].append(name)
+            continue
+        x = np.array(X['values'][name], float)
+        x[stale_full(name, gapc, gp)] = np.nan
+        if keep:
+            out['values'][name] = x
+        if name not in FULL_LEAGUE:
+            continue
+        if name in skip:
+            out['skipped'].append(name)
+            out['reasons'][name] = 'skipped for the real coin, so for its twins (OR-XD twin rule)'
+            continue
+        if name in FULL_STATE:
+            if edges is not None and name not in edges:
+                out['skipped'].append(name)
+                out['reasons'][name] = 'no stored edge'
+                continue
+            R, why = state_reading(name, x, a_hi, FULL_FAMILY[name], sp.get('t0'), fixed=edges is not None)
+            e = []
+        else:
+            e = None
+            if edges is not None:
+                e = edges.get(name)
+                if e is None:
+                    out['skipped'].append(name)
+                    out['reasons'][name] = 'no stored edge'
+                    continue
+            R, e = zone(name, x, a_hi, FULL_FAMILY[name], e, sp.get('t0'))
+            why = None if R is not None else zone_why(x, a_hi, sp.get('t0'))
+        if R is None:
+            out['skipped'].append(name)
+            out['reasons'][name] = why
+            continue
+        out['readings'].append(R)
+        out['edges'][name] = e
+    for nm in out['skipped']:
+        out['reasons'].setdefault(nm, 'skipped')
+    return out
+
+
+def full_near_duplicates(vals: dict, a_hi: int, lite_vals: dict = None, stride: int = 7) -> dict:
+    """Spearman rank correlation on A rows (every `stride`-th row, with both values) of every pair that holds at least one NEW
+    reading or the $500k reference: the new readings among themselves and against the lite readings and references."""
+    from scipy.stats import spearmanr
+    allv = dict(lite_vals or {})
+    allv.update(vals)
+    new = [x for x in FULL_LEAGUE + FULL_REFS if x in vals]
+    names = [x for x in allv]
+    out = {}
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if a not in new and b not in new:
+                continue
+            x, y = allv[a][:a_hi:stride], allv[b][:a_hi:stride]
+            ok = np.isfinite(x) & np.isfinite(y)
+            out[f'{a} ~ {b}'] = {'spearman': _fin(spearmanr(x[ok], y[ok])[0]) if ok.sum() > 30 and x[ok].std() > 0 and y[ok].std() > 0 else None, 'n': int(ok.sum())}
+    return out
+
+
+def full_direction_coupling(vals: dict, close: np.ndarray, gap: np.ndarray, a_hi: int) -> dict:
+    """direction_coupling for the new readings (A rows): Pearson with the past 5 / 15 / 60 minute return."""
+    return direction_coupling({k: v for k, v in vals.items() if k in FULL_LEAGUE or k in FULL_REFS}, close, gap, a_hi,
+                              names=[k for k in FULL_LEAGUE + FULL_REFS if k in vals])
 
 
 # ------------------------------------------------------------------------------------------- the OR-HM2 hook (research only)
@@ -772,7 +1519,7 @@ def _mark_tb_gaps(pp: dict, rows: np.ndarray) -> dict:
     return out
 
 
-def hm2_outside_readings(m, perp, oi, a_hi, z, log=print, info=None, real=None, perp_frame=None, twin=None, seed=None) -> list:
+def _hm2_lite_readings(m, perp, oi, a_hi, z, log=print, info=None, real=None, perp_frame=None, twin=None, seed=None) -> list:
     """The five league readings of OR-XD (CVDP:Div15, CVDP:PxDiv60, LIQMAP:DistAbove, LIQMAP:DistBelow, LIQMAP:Skew) as extra
     single readings for OR-HM2, registered through z.zone (families 'cvdp' and 'liqmap'). Returns the readings registered.
 
@@ -946,6 +1693,123 @@ def hm2_outside_readings(m, perp, oi, a_hi, z, log=print, info=None, real=None, 
     return done()
 
 
+HM2_FULL_INPUTS = ('metrics', 'premium', 'premium_stamp', 'funding', 'mark', 'agg_spot', 'agg_perp', 'book')
+
+
+def hm2_outside_readings(m, perp, oi, a_hi, z, log=print, info=None, real=None, perp_frame=None, twin=None, seed=None, *,
+                         metrics=None, premium=None, premium_stamp=None, funding=None, mark=None, agg_spot=None, agg_perp=None, book=None) -> list:
+    """The OR-XD readings as extra single readings for OR-HM2, ONE call for all families. Without the keyword inputs this is exactly the
+    five-reading hook (_hm2_lite_readings: its docstring above describes m, perp, oi, a_hi, z, real, perp_frame, twin, seed and info).
+
+    The keyword inputs (all optional, the DATA CONTRACT files of raw/outside/binance/<COIN>/) add the Amendment 3 readings through
+    full_values / the same Zoner calls: metrics (frame of metrics.csv.gz) -> LS:Global z, LS:TopPos z, LS:TopPosChg60, LS:TopAcc z;
+    premium (premium_1m frame) + premium_stamp (premium_stamp.json: dict or path) + funding (funding frame) -> PREM:PredFund,
+    PREM:PredMinusLast; agg_spot / agg_perp (an AggStore, or the directory of <YYYY-MM>.parquet) -> WHALE:* / WHALEP:*;
+    book (bookdepth_1pct frame) -> BOOKP:Imb1; mark (mark_1m frame) -> information only. A reading whose input is missing or fails
+    is skipped with a recorded reason (info['skipped'][name]; z.skipped); a row at or after HEAT_END is refused (info['refused']['full']).
+    The twin rule: Net15 and Sweep swap buy and sell on the minutes the twin's coin flip (twin_signs(n, seed)) flips; LS, PREM, Count60
+    and BOOKP are real-level. A twin follows its real coin's skips. WHALE:Sweep / WHALEP:Sweep are three-state: they need
+    z.state(name, x, levels, stale=, family=) (x = -1 / 0 / +1 / NaN, levels = SWEEP_LEVELS), skipped with a reason when the Zoner has
+    none. Every reading carries research_only. info gains 'full' (near_duplicates, direction_coupling, reading_share, input info,
+    constants)."""
+    inputs = {'metrics': metrics, 'premium': premium, 'premium_stamp': premium_stamp, 'funding': funding, 'mark': mark,
+              'agg_spot': agg_spot, 'agg_perp': agg_perp, 'book': book}
+    out = _hm2_lite_readings(m, perp, oi, a_hi, z, log, info, real, perp_frame, twin, seed)
+    if all(v is None for v in inputs.values()):
+        return out
+    want = info is not None
+    finfo = info if want else {}
+    if twin is None:
+        twin = seed is not None
+    if twin and seed is None:
+        raise ValueError('a twin needs its seed')
+    fixed = getattr(z, 'fixed', None)
+    real = real or {}
+    reasons = finfo.setdefault('skipped', {})
+    refused = finfo.setdefault('refused', {})
+    signs = twin_signs(int(m['n']), int(seed)) if twin else None
+    gp = lambda p: {'gap': np.asarray(p['gap'], bool)} if p is not None and p.get('gap') is not None else None
+
+    def skip(name, why):
+        reasons[name] = why
+        sk = getattr(z, 'skipped', None)
+        if sk is not None and name not in sk:
+            sk.append(name)
+
+    def done():
+        finfo['readings'] = [R['name'] for R in out]
+        return out
+
+    try:
+        X = full_values(m, gp(real.get('perp') if twin else perp) or gp(perp), signs=signs, **inputs)
+    except SystemExit as e:
+        refused['full'] = str(e)
+        for name in FULL_LEAGUE:
+            skip(name, 'refused: ' + str(e))
+        log(f'  XD hook (full): refused ({e})')
+        return done()
+    gapc = X['gap']
+    inherited = set()
+    if twin and fixed is None:
+        rm = real.get('m') or m
+        inherited = set(full_readings(rm, gp(real.get('perp')), a_hi, **inputs)['skipped'])
+    t0 = m.get('t0')
+    vals, new = {}, []
+    for name in FULL_LEAGUE + FULL_REFS:
+        if name in X['values']:
+            x = np.array(X['values'][name], float)
+            st = stale_full(name, gapc, X['gap_perp'])
+            x[st] = np.nan
+            vals[name] = x
+    for name in FULL_LEAGUE:
+        if name in X['skipped']:
+            skip(name, X['skipped'][name])
+            continue
+        if name in inherited:
+            skip(name, 'skipped for the real coin, so for its twins (OR-XD twin rule)')
+            continue
+        x, st = vals[name], stale_full(name, gapc, X['gap_perp'])
+        fam = FULL_FAMILY[name].lower()
+        if name in FULL_STATE:
+            why = None
+            if fixed is None:
+                _, why = state_reading(name, x, a_hi, fam, t0)
+            if why:
+                skip(name, why)
+                continue
+            if getattr(z, 'state', None) is None:
+                skip(name, 'the Zoner has no state method for a three-state reading')
+                continue
+            R = z.state(name, X['values'][name], SWEEP_LEVELS, stale=st, family=fam)
+        else:
+            if fixed is None:
+                fin = np.isfinite(x[:a_hi])
+                if int(fin.sum()) < MIN_A:
+                    skip(name, f'fewer than {MIN_A:,} finite values on A ({int(fin.sum()):,})')
+                    continue
+                nd = len(np.unique((int(t0) + np.flatnonzero(fin) * MIN) // DAY))
+                if nd < MIN_A_DAYS:
+                    skip(name, f'values on {nd} distinct days of A, fewer than {MIN_A_DAYS}')
+                    continue
+            R = z.zone(name, X['values'][name], stale=st, family=fam)
+        if R is None:
+            reasons[name] = 'no stored edge' if fixed is not None else 'the inner zones are empty (edges collapse)'
+            continue
+        R['research_only'] = True
+        out.append(R)
+        new.append(name)
+    log(f'  XD hook (full): {len(new)} readings {new}, skipped { {k: v for k, v in reasons.items() if k in FULL_LEAGUE} }; research only')
+    if want:
+        try:
+            nd_ = full_near_duplicates(vals, a_hi)
+        except ImportError:
+            nd_ = None
+        finfo['full'] = {'near_duplicates': nd_, 'direction_coupling': full_direction_coupling(vals, m['c'], gapc, a_hi),
+                         'reading_share': reading_share(vals, a_hi), 'input': X['info'], 'constants': FULL_CONSTANTS, 'twin': bool(twin),
+                         'edges': {R['name']: list(R['edges']) for R in out if R['name'] in new and R.get('edges') is not None}}
+    return done()
+
+
 # -------------------------------------------------------------------------------------------------------------- runner
 class _Ctx:
     seed = None
@@ -959,11 +1823,46 @@ def missing_tb(df: pd.DataFrame) -> int:
     return int(((v > 0) & tb.isna()).sum())
 
 
+def load_full_inputs(metrics=None, premium=None, premium_stamp=None, mark=None, funding=None, agg_spot_dir=None, agg_perp_dir=None, book=None) -> dict:
+    """The optional DATA CONTRACT files for full_values: {'inputs': keyword arguments for full_values, 'files': {name: path or the reason it is
+    missing}}. A path that is not given or does not exist is a missing input (its readings are skipped with a reason); a file that holds a
+    row at or after HEAT_END, lacks a column or has a bad stamp is refused (SystemExit)."""
+    _no_doge(metrics, premium, premium_stamp, mark, funding, agg_spot_dir, agg_perp_dir, book)
+    inputs, files = {}, {}
+
+    def have(name, p, isdir=False):
+        ok = p and (os.path.isdir(p) if isdir else os.path.isfile(p))
+        files[name] = p if ok else ('not given' if not p else f'not found: {p}')
+        return bool(ok)
+
+    if have('metrics', metrics):
+        inputs['metrics'] = read_checked(metrics, ('S', 'count_long_short_ratio', 'sum_toptrader_long_short_ratio', 'count_toptrader_long_short_ratio'), 'metrics', 'S')
+    if have('premium', premium):
+        inputs['premium'] = read_checked(premium, ('ts', 'c'), 'premium', 'ts')
+    if have('premium_stamp', premium_stamp):
+        with open(premium_stamp) as f:
+            inputs['premium_stamp'] = json.load(f)
+    if have('mark', mark):
+        inputs['mark'] = read_checked(mark, ('ts', 'o', 'c'), 'mark', 'ts')
+    if have('funding', funding):
+        inputs['funding'] = read_checked(funding, ('calc_time', 'last_funding_rate'), 'funding', 'calc_time')
+    if have('book', book):
+        inputs['book'] = read_checked(book, ('ts', 'bid_1pct', 'ask_1pct'), 'bookdepth', 'ts')
+    if have('agg_spot', agg_spot_dir, True):
+        inputs['agg_spot'] = agg_spot_dir
+    if have('agg_perp', agg_perp_dir, True):
+        inputs['agg_perp'] = agg_perp_dir
+    return {'inputs': inputs, 'files': files}
+
+
 def run_coin_outside(asset: str, spot_csv: str, perp_csv: str, oi_csv: str, out: str, twin: int = 0, procs: int = 0, log=print,
-                     end: int = heat.HEAT_END, perp_lag: int = 0) -> dict:
+                     end: int = heat.HEAT_END, perp_lag: int = 0, metrics: str = None, premium: str = None, premium_stamp: str = None,
+                     mark: str = None, funding: str = None, agg_spot_dir: str = None, agg_perp_dir: str = None, book: str = None) -> dict:
     """heat.run_coin with the OR-XD readings in place of OR-HM1's vocabulary (see the module doc). perp_lag: minutes by which
     every perp input is seen late (0 in this archive-only pass; 1 and 5 for the robustness reruns). Returns meta.json's dict."""
     _no_doge(asset, spot_csv, perp_csv, oi_csv, out)
+    fx = load_full_inputs(metrics, premium, premium_stamp, mark, funding, agg_spot_dir, agg_perp_dir, book)
+    use_full = bool(fx['inputs'])                 # the full readings run when at least one contract file or directory is given
     if perp_lag < 0:
         raise SystemExit('perp_lag must be >= 0')
     spot_df = read_checked(spot_csv, ('ts', 'o', 'h', 'l', 'c', 'v', 'tb'), 'spot')          # refusals first (heat.load_minutes reads it itself)
@@ -1000,6 +1899,18 @@ def run_coin_outside(asset: str, spot_csv: str, perp_csv: str, oi_csv: str, out:
             pp = lag_perp(twin_perp(pg, real, m, twin_signs(m['n'], ctx.seed)), perp_lag)
         res = xd_readings(m, pp, oi_df, a_hi, keep=True, skip=skip)
         vals = res['values']
+        fres, fskip, xfull = None, set(), None
+        if use_full:
+            fsigns = None if ctx.seed is None else twin_signs(m['n'], ctx.seed)
+            if ctx.seed is not None:
+                fskip = set(full_readings(real, pg, a_hi, **fx['inputs'])['skipped'])
+            fres = full_readings(m, pp, a_hi, keep=True, skip=fskip, signs=fsigns, **fx['inputs'])
+            fv = fres['values']
+            xfull = {'near_duplicates': full_near_duplicates(fv, a_hi, vals), 'direction_coupling': full_direction_coupling(fv, m['c'], fres['gap'], a_hi),
+                     'reading_share': reading_share(fv, a_hi), 'constants': FULL_CONSTANTS, 'input': fres['info'], 'files': fx['files'],
+                     'skipped': fres['skipped'], 'skipped_reasons': fres['reasons'], 'skipped_inherited_from_real_coin': sorted(fskip),
+                     'readings': [r['name'] for r in fres['readings']], 'twin_seed': ctx.seed,
+                     'perp_lag_applied': False, 'edges_from': f'quantiles {list(heat.ZONE_Q)} of the {a_hi:,} rows of split A'}
         ctx.extras = {
             'near_duplicates': near_duplicates(vals, a_hi),
             'direction_coupling': direction_coupling(vals, m['c'], res['gap'], a_hi),
@@ -1015,6 +1926,8 @@ def run_coin_outside(asset: str, spot_csv: str, perp_csv: str, oi_csv: str, out:
             'skipped_readings': res['skipped'],
             'skipped_inherited_from_real_coin': sorted(skip),
         }
+        if xfull is not None:
+            ctx.extras['xd_full'] = xfull
         sk = res['model']
         log(f'  XD: {len(res["readings"])} readings {[r["name"] for r in res["readings"]]}, skipped {res["skipped"]}; '
             f'{sk["snapshots"]:,} OI snapshots ({sk["steps_add"]:,} adds, {sk["steps_scale"]:,} scales, {sk["steps_skipped_gap"]:,} gap steps, '
@@ -1025,6 +1938,9 @@ def run_coin_outside(asset: str, spot_csv: str, perp_csv: str, oi_csv: str, out:
             f'OI duplicates dropped {oi_info["oi_duplicates_dropped"]}, off-grid {oi_info["oi_off_grid_rows"]}; perp lag {perp_lag} min')
         for nm, sh in ctx.extras['reading_share'].items():
             log(f'  XD: {nm}: a value on {100 * sh["all"]:.1f}% of rows')
+        if fres is not None:
+            log(f'  XD full: {len(fres["readings"])} readings {[r["name"] for r in fres["readings"]]}, skipped {fres["reasons"] if fres["skipped"] else {}}; files {fx["files"]}')
+            return res['readings'] + fres['readings'], heat.Rows(), {**res['edges'], **fres['edges']}, [], None
         return res['readings'], heat.Rows(), res['edges'], [], None
 
     heat.build_readings, heat.make_twin = build, make_twin
@@ -1033,10 +1949,50 @@ def run_coin_outside(asset: str, spot_csv: str, perp_csv: str, oi_csv: str, out:
     finally:
         heat.build_readings, heat.make_twin = orig_build, orig_twin
     meta.update(ctx.extras)
-    meta['study'] = 'OR-XD lite'
+    meta['study'] = 'OR-XD lite + full' if use_full else 'OR-XD lite'
     with open(os.path.join(out, 'meta.json'), 'w') as f:
         json.dump(meta, f, indent=1)
     return meta
+
+
+def cut_dir(directory: str, end: int = HEAT_END, log=print) -> dict:
+    """Cut a raw/outside/binance/<COIN>/ folder at `end` (HEAT_END) before any reader sees it: rows at or after it are dropped from every
+    csv.gz of the contract (metrics by S, funding by calc_time, the others by ts) and every agg_spot / agg_perp month file at or
+    after the month of `end` is deleted (an earlier month file is rewritten only when it holds a later row). Returns {file: rows dropped}."""
+    _no_doge(directory)
+    cols = {'metrics.csv.gz': 'S', 'premium_1m.csv.gz': 'ts', 'mark_1m.csv.gz': 'ts', 'index_1m.csv.gz': 'ts', 'um_1m.csv.gz': 'ts',
+            'funding.csv.gz': 'calc_time', 'bookdepth_1pct.csv.gz': 'ts', 'BTCDOM/idx1h.csv.gz': 'ts', 'idx1h.csv.gz': 'ts'}
+    dropped = {}
+    for rel, tc in cols.items():
+        p = os.path.join(directory, rel)
+        if not os.path.isfile(p):
+            continue
+        df = pd.read_csv(p)
+        keep = pd.to_numeric(df[tc], errors='coerce') < end
+        if not keep.all():
+            df[keep].to_csv(p, index=False, compression='gzip')
+        dropped[rel] = int((~keep).sum())
+    for sub in ('agg_spot', 'agg_perp'):
+        d = os.path.join(directory, sub)
+        if not os.path.isdir(d):
+            continue
+        import pyarrow.parquet as pq
+        for f in sorted(os.listdir(d)):
+            if not f.endswith('.parquet'):
+                continue
+            p = os.path.join(d, f)
+            if f[:7] >= pd.Timestamp(end, unit='ms').strftime('%Y-%m'):
+                os.remove(p)
+                dropped[f'{sub}/{f}'] = -1
+                continue
+            t = pq.read_table(p)
+            ts = t.column('ts').to_numpy().astype(np.int64)
+            ts = np.where(ts > 10 ** 14, ts // 1000, ts)
+            if (ts >= end).any():
+                pq.write_table(t.filter(ts < end), p)
+                dropped[f'{sub}/{f}'] = int((ts >= end).sum())
+    log(f'cut at {pd.Timestamp(end, unit="ms")}: ' + (str(dropped) if dropped else 'nothing to drop'))
+    return dropped
 
 
 def main(argv=None):
@@ -1051,8 +2007,28 @@ def main(argv=None):
     a.add_argument('--twin', type=int, default=0)
     a.add_argument('--procs', type=int, default=0)
     a.add_argument('--perp-lag', type=int, default=0, help='minutes by which every perp input is seen late (robustness reruns: 1, 5)')
+    a.add_argument('--xd-dir', help='a raw/outside/binance/<COIN> folder: fills every contract input below that is not given explicitly')
+    a.add_argument('--metrics', help='metrics.csv.gz (S, stamp, conv, ...): LS readings')
+    a.add_argument('--premium', help='premium_1m.csv.gz: PREM readings (needs --premium-stamp and --funding)')
+    a.add_argument('--premium-stamp', help='premium_stamp.json: the stamp test (same | next)')
+    a.add_argument('--mark', help='mark_1m.csv.gz: information only (metrics clock check)')
+    a.add_argument('--funding', help='funding.csv.gz: PREM readings')
+    a.add_argument('--agg-spot-dir', help='agg_spot/ (<YYYY-MM>.parquet): WHALE readings')
+    a.add_argument('--agg-perp-dir', help='agg_perp/ (<YYYY-MM>.parquet): WHALEP readings')
+    a.add_argument('--book', help='bookdepth_1pct.csv.gz: BOOKP:Imb1')
+    c = sp.add_parser('cut', help='cut a raw/outside/binance/<COIN> folder at HEAT_END (2026-01-01 UTC)')
+    c.add_argument('--dir', required=True)
     x = ap.parse_args(argv)
-    mt = run_coin_outside(x.asset, x.spot, x.perp, x.oi, x.out, twin=x.twin, procs=x.procs, perp_lag=x.perp_lag)
+    if x.cmd == 'cut':
+        cut_dir(x.dir)
+        return
+    d = x.xd_dir
+    pick = lambda v, rel: v or (os.path.join(d, rel) if d else None)
+    mt = run_coin_outside(x.asset, x.spot, x.perp, x.oi, x.out, twin=x.twin, procs=x.procs, perp_lag=x.perp_lag,
+                          metrics=pick(x.metrics, 'metrics.csv.gz'), premium=pick(x.premium, 'premium_1m.csv.gz'),
+                          premium_stamp=pick(x.premium_stamp, 'premium_stamp.json'), mark=pick(x.mark, 'mark_1m.csv.gz'),
+                          funding=pick(x.funding, 'funding.csv.gz'), agg_spot_dir=pick(x.agg_spot_dir, 'agg_spot'),
+                          agg_perp_dir=pick(x.agg_perp_dir, 'agg_perp'), book=pick(x.book, 'bookdepth_1pct.csv.gz'))
     print(json.dumps({k: v for k, v in mt.items() if k not in ('base', 'edges', 'reading_share')}, indent=1, default=str))
 
 
