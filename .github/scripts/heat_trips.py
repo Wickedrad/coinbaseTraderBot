@@ -125,7 +125,8 @@ def main():
     args = sys.argv[1:]
     journal = None
     detail = '--detail' in args
-    args = [a for a in args if a != '--detail']
+    held = '--held' in args
+    args = [a for a in args if a not in ('--detail', '--held')]
     if '--journal' in args:
         i = args.index('--journal')
         journal = args[i + 1] if i + 1 < len(args) else None
@@ -218,7 +219,54 @@ def main():
                 print('DETAIL plan %s' % json.dumps(dict(d, _ts=t), separators=(',', ':')))
         for t, d in closed:
             print('DETAIL trip %s' % json.dumps(dict(d, _ts=t), separators=(',', ':')))
+    if held:
+        held_losers(data_dir, 32.0, now)
     return 0
+
+
+def held_losers(data_dir, hours, now):
+    """Every market settled at a loss in the last HOURS with no exit fill (the health check's 'rode to settlement'), with
+    how it was entered (order purposes, maker/taker), whether the heat lane planned it, and the plan's events on it."""
+    since = now - hours * 3600
+    want = ('"kind":"fill"', '"kind":"settlement"', '"kind":"order_new"', '"kind":"heat"', '"kind":"plan"')
+    fills, settles, purpose, plan_ev, heat_plan = collections.defaultdict(list), [], {}, collections.defaultdict(list), collections.defaultdict(list)
+    for f in sorted(glob.glob(os.path.join(data_dir, 'audit', 'audit-*.jsonl'))):
+        if os.path.getmtime(f) < since - 6 * 3600:
+            continue
+        with open(f, 'r', encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                if not any(w in line[:200] for w in want):
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                k, d = r.get('kind'), r.get('data') or {}
+                t = iso_s(r.get('ts') or '1970-01-01T00:00:00')
+                if k == 'fill':
+                    fl = d.get('fill') or {}
+                    fills[fl.get('ticker', '')].append({'t': t, 'coid': d.get('clientOrderId'), 'count': fl.get('count'), 'price': fl.get('price'),
+                                                        'taker': bool(fl.get('isTaker')), 'side': fl.get('side'), 'action': fl.get('action')})
+                elif k == 'settlement' and t >= since:
+                    settles.append((t, d))
+                elif k == 'order_new':
+                    purpose[d.get('clientOrderId')] = d.get('purpose') or '?'
+                elif k == 'plan' and d.get('ticker'):
+                    plan_ev[d['ticker']].append(d.get('event'))
+                elif k == 'heat' and isinstance(d.get('plan'), dict):
+                    heat_plan[d['plan'].get('ticker')].append(str(d.get('entry', ''))[:40])
+    print('\n== HELD (markets settled at a loss in the last %g h with no exit fill; JSON lines)' % hours)
+    for t, d in sorted(settles, key=lambda x: x[0]):
+        tk = d.get('ticker', '')
+        if (d.get('realized') or 0) >= 0:
+            continue
+        fs = fills.get(tk, [])
+        if not fs or any(purpose.get(x['coid']) == 'exit' for x in fs):
+            continue
+        pc = collections.Counter('%s/%s' % (purpose.get(x['coid'], '?'), 'taker' if x['taker'] else 'maker') for x in fs)
+        print('HELD %s' % json.dumps({'settled': hhmm(t), 'ticker': tk, 'realized': d.get('realized'), 'fills': dict(pc),
+                                      'first_fill': hhmm(min(x['t'] for x in fs)), 'first': {k2: fs[0].get(k2) for k2 in ('count', 'price', 'side', 'action', 'taker')},
+                                      'heat_planned': heat_plan.get(tk, []), 'plan_events': dict(collections.Counter(plan_ev.get(tk, [])))}, separators=(',', ':')))
 
 
 if __name__ == '__main__':
