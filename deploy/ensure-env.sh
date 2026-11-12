@@ -70,6 +70,12 @@ if grep -qxF 'PAPER_BANKROLL_USD=100' "$ENV"; then edit_env '^PAPER_BANKROLL_USD
 for old in 'SESSION_EDGE_NO_ENTRY=true' 'SESSION_EDGE_NO_ENTRY=1' 'MODEL_HEALTH_HALT=true' 'MODEL_HEALTH_HALT=1'; do
   if grep -qxF "$old" "$ENV"; then edit_env "^${old}\$"; echo "${old} removed from $ENV (off by default since #321)"; fi
 done
+# Hunt mode is no longer blocked by the session (Steven, Nov 11: "Don't block hunt mode anymore", 6:42 PM EST / 23:42 UTC):
+# HUNT_SESSION_GUARD is off by default. A bot.env that still pins the old default (true) drops the line, so the new default
+# applies; any other value is left alone.
+for old in 'HUNT_SESSION_GUARD=true' 'HUNT_SESSION_GUARD=1'; do
+  if grep -qxF "$old" "$ENV"; then edit_env "^${old}\$"; echo "${old} removed from $ENV (hunt mode runs in every session)"; fi
+done
 # The heat lane on in this server's bot.env (Steven, Nov 11: "I want todays curves in todays live and paper trading",
 # 10:49 AM EST / 15:49 UTC; "Merge once it is ready", 2:11 PM EST / 19:11 UTC). Only from a release that ships the curve
 # reader's installer (the lane's own deploy onward). A bot.env with no HEAT_LANE line gets HEAT_LANE=true; then, while

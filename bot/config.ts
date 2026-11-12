@@ -303,7 +303,9 @@ export interface StrategyConfig {
   /** Apply the pipeline's session_risk.json under SESSION_RISK (bot/model/sessionRisk.ts). */
   sessionRiskAuto: boolean;
   sessionRiskPath: string;
-  /** Block hunt mode in twilight/weekend liquidity and near session changes. */
+  /** HUNT_SESSION_GUARD: block hunt mode in twilight/weekend liquidity and within HUNT_TRANSITION_BUFFER_MIN of a session
+   *  change (a blocked hunt falls back to the fair-value exit). Off by default since Steven, Nov 11 2026 (6:42 PM EST /
+   *  23:42 UTC): "Don't block hunt mode anymore." true turns the old guard back on. */
   huntSessionGuard: boolean;
   huntTransitionBufferMin: number;
   /** Apply a fitted, validated intraday volatility profile to fair value. */
@@ -1367,7 +1369,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     ratchetMinWallAgeSec: num(env, 'RATCHET_MIN_WALL_AGE_SEC', 3, 0, 120),
     ratchetSlippageTicks: num(env, 'RATCHET_SLIPPAGE_TICKS', 1, 0, 10),
     sessionRisk: (() => { try { return parseSessionRisk(env.SESSION_RISK); } catch (e) { throw new ConfigError((e as Error).message); } })(),
-    huntSessionGuard: bool(env, 'HUNT_SESSION_GUARD', true),
+    huntSessionGuard: bool(env, 'HUNT_SESSION_GUARD', false),
     huntTransitionBufferMin: num(env, 'HUNT_TRANSITION_BUFFER_MIN', 10, 0, 120),
     sessionRiskAuto: bool(env, 'SESSION_RISK_AUTO', true),
     sessionRiskPath: path.resolve(env.SESSION_RISK_PATH ?? './params/session_risk.json'),
