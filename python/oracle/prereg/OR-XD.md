@@ -167,3 +167,4 @@ p99 of the largest-bucket share.
 - 09:28 UTC: push with tags [xd-lite] [xd-lag:1] (all four coins unless an assets tag is given)
 - 09:43 UTC: push with tags [xd-lite] [xd-lag:5] (all four coins unless an assets tag is given)
 - 10:00 UTC: push with tags [xd-lite] [xd-cluster:0.01] again (same constants as run 43189441913; this repeat also writes xd_meta.json with the reading shares; no constant changed)
+- 10:18 UTC: probe from a GitHub runner only (public endpoints, status codes, no secrets): tag [xd-probe]; the server variant is not run (waits for Steven's word)
