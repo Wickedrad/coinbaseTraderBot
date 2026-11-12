@@ -78,10 +78,13 @@ jobs:
           # small fetch: the four coins and BTCDOM; agg: the four coins only (never DOGE, never BTCDOM)
           sa=$(tr ',' '\n' <<< "${a:-BTC,ETH,SOL,XRP,BTCDOM}" | { grep -E '^(BTC|ETH|SOL|XRP|BTCDOM)$' || true; } | jq -Rnc '[inputs]')
           aa=$(tr ',' '\n' <<< "${a:-BTC,ETH,SOL,XRP}" | { grep -E '^(BTC|ETH|SOL|XRP)$' || true; } | jq -Rnc '[inputs]')
-          # Years with aggTrades files: the lead adjusts this list from the preflight (research/oracle_xd/fetch/preflight.json).
-          # A month with no file is skipped and logged, so a too-wide list only costs an empty job.
+          # Years with aggTrades files, set from the preflight (research/oracle_xd/fetch/preflight.json, Nov 12 14:05 UTC):
+          # 2020-2024 = build years A, 2025 = check year B, 2026 = later forward checks (the heat engine never reads it).
+          # 2017-2019 hold spot files only and no build-year minute, so they are left out by default ([xd-years:...] still
+          # reaches them). A month with no file is skipped and logged. Stray non-dated archive keys (one BTC perp
+          # part-00000-*.zip) never match a year and are never read.
           y=$(grep -oE '\[xd-years:[0-9,]+\]' <<< "$MSG" | head -1 | sed -E 's/.*:([0-9,]+)\]/\1/' || true)
-          yy=$(tr ',' '\n' <<< "${y:-2017,2018,2019,2020,2021,2022,2023,2024,2025,2026}" | { grep -E '^20(1[7-9]|2[0-6])$' || true; } | jq -Rnc '[inputs | tonumber]')
+          yy=$(tr ',' '\n' <<< "${y:-2020,2021,2022,2023,2024,2025,2026}" | { grep -E '^20(1[7-9]|2[0-6])$' || true; } | jq -Rnc '[inputs | tonumber]')
           mk=$({ grep -oE '\[xd-fetch-agg:(spot|perp)\]' <<< "$MSG" || true; } | sed -E 's/.*:(spot|perp)\]/\1/' | sort -u | jq -Rnc '[inputs]')
           echo "small_assets=$sa" >> "$GITHUB_OUTPUT"
           if [ "$mk" != '[]' ]; then
