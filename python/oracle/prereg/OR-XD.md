@@ -288,3 +288,4 @@ Times in this file: UTC and EST (UTC-5).
 - 10:00 UTC: push with tags [xd-lite] [xd-cluster:0.01] again (same constants as run 43189441913; this repeat also writes xd_meta.json with the reading shares; no constant changed)
 - 10:18 UTC: probe from a GitHub runner only (public endpoints, status codes, no secrets): tag [xd-probe]; the server variant is not run (waits for Steven's word)
 - Nov 12, after 13:43 UTC / 08:43 AM EST: Amendment 3 written (nothing run yet); push with tags [xd-lite] [xd-full] once the contract files are on Drive (raw/outside/binance/<COIN>/)
+- Nov 12 2026, 16:05 UTC / 11:05 AM EST: contract files complete on Drive (small run 43237144820; aggTrades runs 43237144820 + 43250762046, 2020-2026, gap days refilled from daily zips); first [xd-lite] [xd-full] run pushed, no number of these readings seen before it
