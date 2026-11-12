@@ -102,7 +102,7 @@ function flbMid(rows: LRow[]): Map<LRow, number> {
   for (const f of folds) {
     const fit = seen.length > 500 ? logistic(seen.map((r) => [1, logit(r.m)]), seen.map((r) => r.y)).b : undefined;
     for (const r of byFold.get(f)!) out.set(r, fit ? sig(fit[0] + fit[1] * logit(r.m)) : r.m);
-    seen.push(...byFold.get(f)!);
+    for (const r of byFold.get(f)!) seen.push(r);
   }
   return out;
 }
