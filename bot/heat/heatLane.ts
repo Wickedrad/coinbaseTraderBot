@@ -23,6 +23,7 @@
 import { logger } from '../util/log';
 import { EPS, clamp, round } from '../util/num';
 import { writeJsonAtomic } from '../util/persist';
+import { PLAN_END_FRAC, planLoserCutAt } from '../plan/planRatchet';
 import {
   heatWindowKey, loadHeatState, pruneHeatState, syncHeatBook,
   type HeatLaneState, type HeatPositionLookup, type HeatSyncResult,
@@ -77,9 +78,12 @@ export interface HeatDecideOpts {
    *  record, as a skip with this reason. */
   entriesBlocked?: string;
   /** The plan's loser cut by price (PLAN_LOSER_CUT_C, dollars a contract) that heat positions get: a market whose spread is
-   *  already that wide is not entered, because the cut would sell the position at the first look (bought at the ask, the
-   *  bid already that far under). Unset or 0: no such check. */
+   *  already as wide as the cut in force is not entered, because the cut would sell the position at the first look (bought
+   *  at the ask, the bid already that far under). Unset or 0: no such check. With cutOpen / cutLate the cut scales with the
+   *  window as the plan's does (PLAN_LOSER_CUT_OPEN_C, PLAN_LOSER_CUT_LATE_C; bot/plan/planRatchet.ts planLoserCutAt). */
   cutSpread?: number;
+  cutOpen?: number;
+  cutLate?: number;
 }
 
 export interface HeatDecideInput extends HeatDecideOpts {
@@ -329,9 +333,16 @@ function reentryBlock(m: TwoSided, i: HeatDecideInput, barClose: number): string
 function marketBlock(m: TwoSided, side: 'yes' | 'no', i: HeatDecideInput, barClose: number): string | undefined {
   const cost = sideCostOf(m, side);
   if (cost < i.minSide - EPS || cost > 1 - i.minSide + EPS) return `the ${side} side costs ${cost.toFixed(2)}, outside ${i.minSide.toFixed(2)}..${(1 - i.minSide).toFixed(2)}`;
+  // Steven, Nov 12 1:01 AM EST / 06:01 UTC: from 90% of a price prediction window nothing is traded (the plan's end rule sells
+  // anything not in profit there). The entry windows end earlier by default (ENTRY_WINDOW_15M / _HOURLY): this holds whatever
+  // they are set to.
+  const tau = tauSec(m, i.now), win = windowSec(m);
+  if (tau <= PLAN_END_FRAC * win + EPS) return `${Math.round(tau)} s of the ${win} s window left: no entry in its last tenth`;
   const spread = round(m.yesAsk - m.yesBid, 4);
-  if (i.cutSpread !== undefined && i.cutSpread > 0 && spread >= i.cutSpread - EPS) {
-    return `the spread (${Math.round(spread * 100)}c) is at or above the loser cut (${Math.round(i.cutSpread * 100)}c, PLAN_LOSER_CUT_C): the cut would sell the position at once`;
+  const cut = i.cutSpread !== undefined && i.cutSpread > 0 ? planLoserCutAt({ loserCut: i.cutSpread, loserCutOpen: i.cutOpen, loserCutLate: i.cutLate }, tau, win).cut : 0;
+  if (cut > 0 && spread >= cut - EPS) {
+    const scaled = (i.cutOpen ?? i.cutSpread) !== i.cutSpread || (i.cutLate ?? i.cutSpread) !== i.cutSpread;
+    return `the spread (${Math.round(spread * 100)}c) is at or above the loser cut (${Math.round(cut * 1000) / 10}c${scaled ? ` now, ${Math.round((1 - tau / win) * 100)}% of the window gone` : ', PLAN_LOSER_CUT_C'}): the cut would sell the position at once`;
   }
   // A position of any lane blocks: the lane never adds to one and never flips one.
   if (Math.abs(m.position) > EPS) return `the market already holds a position (${m.position})`;

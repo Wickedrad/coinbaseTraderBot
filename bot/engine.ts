@@ -36,11 +36,11 @@ import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid,
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { exitOnlyPlan, exitOnlyView, heldSideBid } from './strategy/exitOnlyLane';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
-import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
+import { HourlyQuotaPacer, planPacerLine, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
 import { HoldExits, type HoldReading } from './strategy/holdExit';
 import { ProfitRatchets, type RatchetReading } from './strategy/profitRatchet';
 import { PlanPositions, type PlanPosition } from './plan/planPositions';
-import { planBreakEvenUsd, planMarkTried, planStep, type PlanEvent, type PlanSale, type PlanSaleKind } from './plan/planRatchet';
+import { planBreakEvenUsd, planLoserCutAt, planMarkTried, planStep, type PlanEvent, type PlanSale, type PlanSaleKind } from './plan/planRatchet';
 import type { SinuousEntryGate } from './strategy/sinuousEntry';
 import { tennisHighLeverage, type CurveReading, type SinuousExitGate } from './strategy/sinuousExit';
 import type { TakeProfitBench } from './strategy/takeProfitBench';
@@ -130,8 +130,8 @@ export class CpuMeter {
   private sys0 = readProcStat();
   private io0 = readProcWriteBytes();
   private thr0 = readThreads();
-  private last: { sections: Record<string, number>; processCores: number; threads: Record<string, number> | null; mainBusy: number; stealPct: number | null; iowaitPct: number | null; writeMBps: number | null; rssMb: number; evaluatedShare: number | null; windowSec: number } | null = null;
-  private readonly hist: Array<{ ts: number; n: number; cores: number; mainBusy: number; steal: number; iowait: number; writeMBps: number; rssMb: number }> = [];
+  private last: { sections: Record<string, number>; processCores: number; threads: Record<string, number> | null; mainBusy: number; stealPct: number | null; iowaitPct: number | null; writeMBps: number | null; rssMb: number; heapUsedMb: number; externalMb: number; evaluatedShare: number | null; windowSec: number } | null = null;
+  private readonly hist: Array<{ ts: number; n: number; cores: number; mainBusy: number; steal: number; iowait: number; writeMBps: number; rssMb: number; heapMb: number; extMb: number }> = [];
   note(section: string, start: bigint, evaluated?: number, total?: number): void {
     this.win[section] = (this.win[section] ?? 0) + Number(process.hrtime.bigint() - start) / 1e6;
     if (evaluated !== undefined && total) this.evalShare.push(evaluated / total);
@@ -161,22 +161,24 @@ export class CpuMeter {
       mainBusy: +elu.utilization.toFixed(3),
       stealPct: pct(d?.steal), iowaitPct: pct(d?.iowait),
       writeMBps: io !== undefined && this.io0 !== undefined ? +((io - this.io0) / 1e6 / sec).toFixed(3) : null,
-      rssMb: Math.round(process.memoryUsage.rss() / 1e6),
+      // The V8 heap (JS objects) and memory outside it that JS objects hold (Buffers, array buffers): with the resident
+      // set, a climb shows whether objects are kept (heap), buffers are (external), or neither (the allocator).
+      ...((m) => ({ rssMb: Math.round(m.rss / 1e6), heapUsedMb: Math.round(m.heapUsed / 1e6), externalMb: Math.round(m.external / 1e6) }))(process.memoryUsage()),
       evaluatedShare: this.evalShare.length ? +(this.evalShare.reduce((a, b) => a + b, 0) / this.evalShare.length).toFixed(3) : null,
       windowSec: +sec.toFixed(0),
     };
     // 10-minute buckets, 24 h.
     const L = this.last, b = Math.floor(now / 600_000) * 600_000;
     let h = this.hist[this.hist.length - 1];
-    if (!h || h.ts !== b) { h = { ts: b, n: 0, cores: 0, mainBusy: 0, steal: 0, iowait: 0, writeMBps: 0, rssMb: 0 }; this.hist.push(h); if (this.hist.length > 144) this.hist.shift(); }
-    const add = (k: 'cores' | 'mainBusy' | 'steal' | 'iowait' | 'writeMBps' | 'rssMb', v: number | null) => { h![k] = (h![k] * h!.n + (v ?? 0)) / (h!.n + 1); };
-    add('cores', L.processCores); add('mainBusy', L.mainBusy); add('steal', L.stealPct); add('iowait', L.iowaitPct); add('writeMBps', L.writeMBps); add('rssMb', L.rssMb);
+    if (!h || h.ts !== b) { h = { ts: b, n: 0, cores: 0, mainBusy: 0, steal: 0, iowait: 0, writeMBps: 0, rssMb: 0, heapMb: 0, extMb: 0 }; this.hist.push(h); if (this.hist.length > 144) this.hist.shift(); }
+    const add = (k: 'cores' | 'mainBusy' | 'steal' | 'iowait' | 'writeMBps' | 'rssMb' | 'heapMb' | 'extMb', v: number | null) => { h![k] = (h![k] * h!.n + (v ?? 0)) / (h!.n + 1); };
+    add('cores', L.processCores); add('mainBusy', L.mainBusy); add('steal', L.stealPct); add('iowait', L.iowaitPct); add('writeMBps', L.writeMBps); add('rssMb', L.rssMb); add('heapMb', L.heapUsedMb); add('extMb', L.externalMb);
     h.n++;
     this.win = {}; this.evalShare = []; this.since = now; this.cpu0 = process.cpuUsage(); this.elu0 = performance.eventLoopUtilization(); this.sys0 = sys; this.io0 = io; this.thr0 = thr;
   }
   status() { return this.last ? { ...this.last, stateWrites: stateWriteStats().slice(0, 6) } : null; }
   /** 10-minute buckets over the last 24 h (oldest first). */
-  history() { return this.hist.map((h) => ({ ts: h.ts, cores: +h.cores.toFixed(3), mainBusy: +h.mainBusy.toFixed(3), stealPct: +h.steal.toFixed(1), iowaitPct: +h.iowait.toFixed(1), writeMBps: +h.writeMBps.toFixed(3), rssMb: Math.round(h.rssMb) })); }
+  history() { return this.hist.map((h) => ({ ts: h.ts, cores: +h.cores.toFixed(3), mainBusy: +h.mainBusy.toFixed(3), stealPct: +h.steal.toFixed(1), iowaitPct: +h.iowait.toFixed(1), writeMBps: +h.writeMBps.toFixed(3), rssMb: Math.round(h.rssMb), heapMb: Math.round(h.heapMb), extMb: Math.round(h.extMb) })); }
 }
 
 /** Host-wide CPU time counters (Linux /proc/stat, in clock ticks); undefined elsewhere. */
@@ -281,7 +283,12 @@ export interface MarketStatus {
   /** The held position's reading of its coin's live line (bot/strategy/liveLine.ts): the break and the heads-up. */
   line?: LiveLineReading;
   /** PLAN_RULES on and the position opened by a plan rule: its ratchet (bot/plan/planRatchet.ts), for the dashboard. */
-  plan?: { ruleId: string; side: 'yes' | 'no'; armed: boolean; stop?: number; best?: number; selling?: PlanSaleKind; failedTries: number; gaps: number };
+  plan?: {
+    ruleId: string; side: 'yes' | 'no'; armed: boolean; stop?: number; best?: number; selling?: PlanSaleKind; failedTries: number; gaps: number;
+    /** The ratchet's arming net (dollars for the whole position), and the held side's bid the price cut sells at now (it moves
+     *  with the window: planLoserCutAt). */
+    armUsd?: number; cutAt?: number;
+  };
   /** The profit ratchet on a held position that is not a plan position (RATCHET, bot/strategy/profitRatchet.ts): armed, its best
    *  and its stop in dollars for the whole position, and whether it sells. */
   ratchet?: RatchetReading;
@@ -462,7 +469,7 @@ export class Engine {
     if (d.fillLogDir) this.fillLog = new FillLog(d.fillLogDir, (t) => d.md.books.get(t)?.mid(), this.now);
     this.pacer = new HourlyQuotaPacer(d.cfg.strategy.pacer, this.now(), d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'quota_pacer_state.json') : undefined);
     // One ratchet (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC): a plan position's defaults are the profit ratchet's dollars.
-    this.planPositions = new PlanPositions({ ...d.cfg.strategy.profitRatchet, loserCut: d.cfg.strategy.plan.loserCut, loserCutUsd: d.cfg.strategy.plan.loserCutUsd }, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'plan_positions.json') : undefined);
+    this.planPositions = new PlanPositions({ ...d.cfg.strategy.profitRatchet, loserCut: d.cfg.strategy.plan.loserCut, loserCutOpen: d.cfg.strategy.plan.loserCutOpen, loserCutLate: d.cfg.strategy.plan.loserCutLate, loserCutUsd: d.cfg.strategy.plan.loserCutUsd }, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'plan_positions.json') : undefined);
     // Saved beside them as the plan's ratchets are: a restart or deploy must not lower an armed stop.
     this.profitRatchets = new ProfitRatchets(d.cfg.strategy.profitRatchet, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'profit_ratchet_state.json') : undefined, this.now());
     if (d.snn) this.attachBlender(d.snn.blender);
@@ -1402,7 +1409,7 @@ export class Engine {
   /** The last kill-switch exit attempt per market (tennisKillExits, cryptoKillExits). */
   private readonly killExitTs = new Map<string, number>();
   /** Live tennis scores (TENNIS_SCORE_FEED=kalshi): milestone per event, last poll, raw payload. */
-  private readonly scores = new Map<string, { milestone?: { id: string; type: string } | null; polledTs: number; score?: TennisScore; raw?: unknown; error?: string; pAtPoll?: number; prev?: LiveTennisMatch; breaks?: [number, number]; breaksTotal?: [number, number] }>();
+  private readonly scores = new Map<string, { milestone?: { id: string; type: string } | null; polledTs: number; score?: TennisScore; scoreAt?: number; named?: boolean; raw?: unknown; error?: string; pAtPoll?: number; prev?: LiveTennisMatch; breaks?: [number, number]; breaksTotal?: [number, number] }>();
   readonly tennisStatus = new Map<string, { event: string; phase: string; fairA?: number; pA?: number; progress: number; progressDetail?: Record<string, unknown>; score?: TennisScore; scoreRaw?: unknown; liveSince?: number; notes: string[]; tickers: string[]; updatedTs: number; trailingStops?: Record<string, number>; confluence?: Record<string, unknown> }>();
 
   /** Tennis budget use: worst-case loss of all tennis positions + resting orders vs the 25% cap. */
@@ -1428,6 +1435,7 @@ export class Engine {
       const ld = await rest.getLiveData(st.milestone.type, st.milestone.id);
       st.raw = ld?.details;
       st.score = parseTennisScore(ld?.details);
+      if (st.score) st.scoreAt = now;
       st.error = st.score ? undefined : 'live data not recognised as a tennis score (see scoreRaw)';
     } catch (e) {
       st.error = `score feed: ${(e as Error).message}`;
@@ -1457,6 +1465,13 @@ export class Engine {
     if (!slate) { st.error = `live tennis: no slate (${client.lastError ?? 'budget exhausted or no live matches'}; ${client.usage().callsToday}/${client.usage().dailyLimit} calls today)`; return st; }
     const hit = findMatch(slate, ms[0]?.title ?? '', ms[1]?.title);
     if (!hit) { st.error = 'live tennis: match not found in the live slate (names did not match the Kalshi titles)'; return st; }
+    if (!hit.named) {
+      // Only one title named a player of this live match: a surname two players share can pick another match, so its score
+      // is not used at all (not for the progress, the cuts, the fair value or the win chance). The status says why.
+      st.raw = undefined; st.named = false; st.score = undefined; st.scoreAt = undefined; st.prev = undefined;
+      st.error = 'live tennis: only one of the two players matched a live match (a shared surname?): its score is not used';
+      return st;
+    }
     const score = toTennisScore(hit.match, hit.flip);
     if (st.prev && st.prev.id === hit.match.id) {
       const d = diffScore(st.prev, hit.match);
@@ -1464,7 +1479,8 @@ export class Engine {
       st.breaks = b;
       st.breaksTotal = [(st.breaksTotal?.[0] ?? 0) + b[0], (st.breaksTotal?.[1] ?? 0) + b[1]];
     }
-    st.prev = hit.match; st.raw = hit.match; st.score = score; st.error = score ? undefined : 'live tennis: score not recognised';
+    st.prev = hit.match; st.raw = hit.match; st.score = score; st.named = hit.named; st.error = score ? undefined : 'live tennis: score not recognised';
+    if (score) st.scoreAt = now;
     if (score) this.d.md.record('tennis_score', { event, ...score, tiebreak: hit.match.is_tiebreak, breaks: st.breaks ?? null, breaksTotal: st.breaksTotal ?? null, matchId: hit.match.id });
     return st;
   }
@@ -1519,9 +1535,14 @@ export class Engine {
       const fairA = this.tennisFairFor(event, tv, ms[0].ticker);
       // Steven's profit rules on tennis as on every contract type: the quota snipe, and the last share of the match
       // (TENNIS_NO_EXIT_BEFORE_END_FRAC, 30%, by its progress: the live score against the format's sets, else the time and
-      // information clocks) riding in profit.
-      const out = decideMatch(tracker, { event, now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score, fairA }, T,
-        { bankroll, tennisRisk: totals.total, matchRisk: totals.window }, ms[0].tickSize, { pacerUsd: this.pacer.neededUsd(now), settleFrac: T.settleFrac, endLoserCut: T.endLoserCut, endEntryMargin: T.endEntryMargin, floorMode: this.d.cfg.strategy.pacer.floor, floors: this.quotaFloors,
+      // information clocks) riding in profit until the win chance turns (TENNIS_PROB_TURN). Out of profit: the loser cut by
+      // progress (20c at the start, 10c at 60%, 3c from 85%), and in the last 10% (TENNIS_END_CUT_FRAC) the end cut (Nov 12).
+      const out = decideMatch(tracker, { event, now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score,
+        // Only the Live Tennis feed names the score's players, and only when both market titles matched its two players (a
+        // surname two players share can pick the wrong match); Kalshi's live data does not say which player is home.
+        scoreAt: sc?.scoreAt, scoreOriented: T.scoreFeed === 'livetennis' && sc?.named === true, fairA }, T,
+        { bankroll, tennisRisk: totals.total, matchRisk: totals.window }, ms[0].tickSize, { pacerUsd: this.pacer.neededUsd(now), settleFrac: T.settleFrac, endLoserCut: T.endLoserCut, endEntryMargin: T.endEntryMargin, endCutFrac: T.endCutFrac,
+          loserCut: T.loserCut, loserCutOpen: T.loserCutOpen, loserCutLate: T.loserCutLate, probTurn: T.probTurn, floorMode: this.d.cfg.strategy.pacer.floor, floors: this.quotaFloors,
           floorTicks: this.d.cfg.strategy.pacer.floorTicks });
       if (tradeable) for (const p of out.plans) if (p.leg === 'quota_snipe') this.d.audit.write('pacer', { event: 'snipe', ticker: p.ticker, book: 'tennis', why: p.why, count: p.count, price: p.price, ...this.pacer.status(now) });
       // Exit-in-profit curve (strategy/sinuousExit.ts) on each held player market: a take-profit (the target, the
@@ -1548,7 +1569,7 @@ export class Engine {
           const g = curve.check(p.ticker, {
             sidePrice: p.price, count: p.count, exitFeePer: orderFee(p.count, p.price, true, md.feesFor(p.ticker)) / p.count,
             entrySidePrice: mk.avgEntry, entryFeePer: entryFeePer(p.ticker, mk.position),
-            protective: trailBroken || p.leg === 'underdog_cut' || p.leg === 'underdog_stop' || p.leg === 'fav_stop' || p.leg === 'end_cut',
+            protective: trailBroken || p.leg === 'underdog_cut' || p.leg === 'underdog_stop' || p.leg === 'fav_stop' || p.leg === 'end_cut' || p.leg === 'loser_cut' || p.leg === 'prob_turn',
           }, now);
           if (g.note) out.notes.push(g.note);
           return g.allow;
@@ -2492,8 +2513,11 @@ export class Engine {
     // mandate (PROFIT_MANDATE, off by default) sells any position in profit outside the last share of the window, a hunt trailing
     // its stop excepted; a hunt that holds (HUNT_LOCK_SALE_ELSE=hold) is not excepted, so its reductions are not blocked.
     const pacerUsd = this.pacer.neededUsd(now);
-    // A plan position: the pacer reports pace only (Steven's decision 13): no target on it, no snipe, no floor, no group.
-    if (view.position !== 0) st.snipe = planPos ? { atUsd: undefined, nowUsd: netProfitAtBid(view), rides: false, closed: false } : { atUsd: pacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false };
+    // A plan position: the pacer reports pace only (Steven's decision 13) unless PACER_PLAN gives it a snipe line (Steven, Nov 12
+    // 1:10 AM EST / 06:10 UTC): 'hybrid' at the hour's need but never while the whole trade (what partial sales banked in) is
+    // under the ratchet's arming net, 'need' at the need alone (planPacerLine). No floor and no group on it either way.
+    const planPacerUsd = planPos ? planPacerLine(S.pacer.plan, pacerUsd, planPos.settings.armUsd, view.bankedUsd ?? 0) : undefined;
+    if (view.position !== 0) st.snipe = planPos ? { atUsd: planPacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false } : { atUsd: pacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false };
     // Steven's group rule (PACER_GROUP): this position, in profit after fees, is sold when the positions in profit together cover the target.
     const group = pacerUsd !== undefined && S.pacer.group ? this.snipeGroup.judge(m.ticker, !planPos && view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsd, now) : undefined;
     // PACER_FLOOR (Steven, Oct 31): under a higher target the quota is the position's stop. The hunt trailing its stop rides a
@@ -2516,7 +2540,7 @@ export class Engine {
     st.hold = view.position !== 0 ? hold : undefined;
     const holdOpt = hold && !(planPos && (planSale !== undefined || planPos.state.selling !== undefined)) ? { holdExit: hold } : {};
     const plan = decide(view, strat, planPos
-      ? { exits: false, entries: Boolean(reason) && !this.d.heat?.lane.holds(m.ticker), planHeld: true, planSelling: planSale !== undefined, ...holdOpt }
+      ? { exits: false, entries: Boolean(reason) && !this.d.heat?.lane.holds(m.ticker), planHeld: true, planSelling: planSale !== undefined, ...(planPacerUsd !== undefined ? { planPacerUsd } : {}), ...holdOpt }
       : { exits: !huntMode && S.exitPolicy !== 'hold', blockReductions: huntMode && !huntHold, entries: Boolean(reason) && !this.d.heat?.lane.holds(m.ticker), profitMandate: S.profitMandate && (!huntMode || huntHold) ? S.profitMandateMin : undefined, pacerUsd, ...(group?.sell ? { pacerGroup: group } : {}), ...floorOpts, ...holdOpt, ...(ratchet ? { ratchet } : {}) });
     if (plan.pacerArm && this.quotaFloors.arm(m.ticker, view.position, plan.pacerArm.usd)) this.d.audit.write('pacer', { event: 'floor', ticker: m.ticker, usd: plan.pacerArm.usd, why: plan.pacerArm.why, ...this.pacer.status(now) });
     // A quota snipe liquidates the position: the hunt's stop order would only double it (with HOLD_EXIT on, dropped in
@@ -2928,7 +2952,11 @@ export class Engine {
     });
     if (r.alert) this.d.alerter.notify('warn', `plan-sale-${m.ticker}`, r.alert);
     this.planPositions.setState(m.ticker, r.state);
-    st.plan = { ruleId: pp.ruleId, side: pp.side, armed: r.state.armed, stop: r.state.stop, best: r.state.best, selling: r.state.selling?.kind, failedTries: r.state.failedTries, gaps: r.state.gaps.length };
+    const cut = planLoserCutAt(pp.settings, (m.closeTime - now) / 1000, shareWindowSec(m.openTime, m.closeTime, cfg.strategy.shareWindowMaxSec)).cut;
+    st.plan = {
+      ruleId: pp.ruleId, side: pp.side, armed: r.state.armed, stop: r.state.stop, best: r.state.best, selling: r.state.selling?.kind, failedTries: r.state.failedTries, gaps: r.state.gaps.length,
+      armUsd: pp.settings.armUsd, ...(cut > 0 && entry !== undefined && entry > 0 && entry < 1 ? { cutAt: Math.round((entry - cut) * 1e4) / 1e4 } : {}),
+    };
     if (!r.sale) return { notes: r.notes, events: r.events };
     return { notes: r.notes, events: r.events, planSale: r.sale, sale: { side: r.sale.side, price: r.sale.price, count: r.sale.count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge: 0, why: r.sale.why, protective: true } };
   }
@@ -3325,7 +3353,9 @@ export class Engine {
     for (const t of sync.opened) audit.write('heat', { event: 'opened', ticker: t });
     if (sync.closed.length) {
       const b = h.lane.status(now);
-      for (const c of sync.closed) audit.write('heat', { event: 'closed', ...c, trips: b.trips, wins: b.wins, pnl: b.pnl });
+      // pnl is the round trip's own result; bookPnl the lane book's running total after it (it was written over pnl until
+      // Nov 12, so an older record's pnl is the total).
+      for (const c of sync.closed) audit.write('heat', { event: 'closed', ...c, trips: b.trips, wins: b.wins, bookPnl: b.pnl });
     }
     const snap = h.source.read(now);
     this.heatFileCheck(h, snap, now);
@@ -3348,7 +3378,7 @@ export class Engine {
       orderMin: cfg.strategy.orderUsdMin, orderMax: cfg.strategy.orderUsdMax, minSide: cfg.risk.minSidePrice, live: cfg.mode === 'live',
       windows: cfg.strategy, ...(blocked ? { entriesBlocked: blocked } : {}),
       // Heat positions are plan positions: never buy where the plan's loser cut would sell at the first look.
-      ...(cfg.strategy.plan.enabled && cfg.strategy.plan.loserCut > 0 ? { cutSpread: cfg.strategy.plan.loserCut } : {}),
+      ...(cfg.strategy.plan.enabled && cfg.strategy.plan.loserCut > 0 ? { cutSpread: cfg.strategy.plan.loserCut, cutOpen: cfg.strategy.plan.loserCutOpen, cutLate: cfg.strategy.plan.loserCutLate } : {}),
     });
     for (const a of res.alerts) this.d.alerter.notify('warn', 'heat-pilot', a);
     const sent = new Map<string, string>();

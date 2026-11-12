@@ -82,6 +82,7 @@ import { DEFAULT_STREAK, StreakScaler } from './risk/streakScaler';
 import { FileHeatSource } from './heat/heatSource';
 import { HeatLane } from './heat/heatLane';
 import type { HeatTag } from './heat/types';
+import { MemoryWatch } from './util/memoryWatch';
 
 const log = logger('main');
 
@@ -454,7 +455,7 @@ async function main(): Promise<void> {
           },
           costs: { entry: (P.takerFeeBps + 2) / 1e4, makerExit: P.makerFeeBps / 1e4, takerExit: (P.takerFeeBps + 2) / 1e4, fundingPer8h: 0.0001 },
           dailyLossFrac: P.dailyLossFrac, minEquityUsd: P.minEquityUsd, pilotMaxNotionalUsd: P.pilotMaxNotionalUsd, requireValidation: P.requireValidation, dailyGoalUsd: P.setupDailyGoalUsd,
-          liqBuffer: P.liqBuffer, maintMargin: P.maintMargin,
+          liqBuffer: P.liqBuffer, maintMargin: P.maintMargin, loserCut: P.loserCut,
         },
         hub, gateway: perpGateway, audit, modelPath: () => resolveModelPaths(cfg).setups, statePath: path.join(cfg.bookDir, 'setups_state.json'),
         candles: (asset) => md.features.candles.get(asset),
@@ -508,6 +509,7 @@ async function main(): Promise<void> {
           maxNotionalUsd: P.maxTradeNotionalUsd, maxTotalNotionalUsd: P.maxTotalNotionalUsd, stopAtrMult: P.stopAtrMult, minStopBps: P.minStopBps, maxHoldMin: P.maxHoldMin,
           dailyLossFrac: P.dailyLossFrac, cooldownMin: P.cooldownMin, pilotMaxNotionalUsd: P.pilotMaxNotionalUsd, pilotMaxLeverage: P.pilotMaxLeverage, priorIc: P.priorIc,
           makerBps: P.makerFeeBps, takerBps: P.takerFeeBps, requireValidation: P.requireValidation, minEquityUsd: P.minEquityUsd, liqBuffer: P.liqBuffer, maintMargin: P.maintMargin,
+          loserCut: P.loserCut,
         },
         hub, gateway: perpGateway, model: perpModel, audit, trainingOverride,
         sources: (asset) => ({ index: md.index.get(asset), spot: md.spot.get(asset), bars: md.features.bars.get(asset), candles: md.features.candles.get(asset), usdtd: md.usdtd, btcd: md.btcd, perp: hub.get(asset), snn: engineRef?.snnContext(asset, undefined, 'perps') }),
@@ -690,7 +692,11 @@ async function main(): Promise<void> {
   // The dashboard comes up first (it shows the engine warming up); loading every market takes a minute or
   // more on a small server.
   training.start();
-  const app = createApi({ perpFeeTier, kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
+  // Memory reading for the operator API (/api/memory): what the bot's main objects hold, 5 minutes after start, then
+  // hourly. Read-only; the walk opens at most 20,000 objects.
+  const memory = new MemoryWatch(() => ({ engine, md, oms, paper, audit, alerter, kalshiCheck, recon, vault, tca, model, autoTrain, training, settlement, accuracyGate, marketCtx, snn, perpTrader, ws, rest }));
+  memory.start();
+  const app = createApi({ perpFeeTier, kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, memory, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
   const server = app.listen(cfg.port, cfg.host, () => log.info(`operator API on http://${cfg.host}:${cfg.port} (${cfg.dashboardPassword ? 'password required' : 'no login'})`));
 
   md.start();
@@ -709,6 +715,7 @@ async function main(): Promise<void> {
     paper?.flush();
     accuracyGate.flush();
     autoTrain.stop();
+    memory.stop();
     try { engine.saveSnnBlender(); await Promise.all(Object.values(engine.snn?.units ?? {}).map((u) => u!.host.stop())); } catch (e) { log.error('SNN checkpoint on shutdown failed', { error: String(e) }); }
     audit.write('shutdown', { sig });
     saveVol();

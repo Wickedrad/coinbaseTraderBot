@@ -1,5 +1,6 @@
 // Kalshi API conformance: price grids (Fixed-Point Representation), fee rounding, exchange status and
 // schedule, scheduled fee changes, and the historical market downloader.
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs';

@@ -382,6 +382,22 @@ test('qualify: with the plan\'s loser cut on, a spread at or above it is not ent
   assert.equal(wide(0.4, 0.55, 0).plans.length, 1, 'a cut of 0 is off');
 });
 
+test('qualify: the cut by time (Steven, Nov 12): the spread guard reads the cut in force at the market\'s point in its window', () => {
+  // m15: a third of its window gone, so with 20c / 10c / 3c the cut is 14.4c.
+  const scaled = (bid: number, ask: number, o: Partial<HeatMarketView> = {}) => btc15({ markets: [m15('BTC', { yesBid: bid, yesAsk: ask, ...o })], cutSpread: 0.1, cutOpen: 0.2, cutLate: 0.03 });
+  assert.equal(scaled(0.42, 0.55).plans.length, 1, '13c goes a third of the way in (the flat 10c would refuse it)');
+  assert.match(reasons(scaled(0.4, 0.55))[0], /the spread \(15c\) is at or above the loser cut \(14\.4c now, 33% of the window gone\)/);
+  // Later in the window the cut is smaller: 6 minutes 20 s left of 15 minutes (58% gone) is 10.4c, so 11c is refused.
+  assert.match(reasons(scaled(0.44, 0.55, { closeTs: NOW + 380 * S, openTs: NOW - 520 * S }))[0], /the spread \(11c\) is at or above the loser cut \(10\.4c now, 58% of the window gone\)/);
+});
+
+test('qualify: no entry in the last tenth of the window (Steven, Nov 12 1:01 AM EST / 06:01 UTC), whatever the entry windows say', () => {
+  const late = (tau: number) => decide({ snapshot: snap({ BTC: [row()] }), markets: [m15('BTC', { closeTs: NOW + tau * S, openTs: NOW - (900 - tau) * S })], windows: { ...WINDOWS, entryWindowUpdown: [900, 15] } });
+  assert.match(reasons(late(90))[0], /90 s of the 900 s window left: no entry in its last tenth/);
+  assert.match(reasons(late(30))[0], /no entry in its last tenth/);
+  assert.equal(late(91).plans.length, 1);
+});
+
 test('qualify: resting orders of ours do not block (the engine cancels them first)', () => {
   assert.equal(btc15({ markets: [m15('BTC', { working: 2 })] }).plans.length, 1);
 });

@@ -27,7 +27,9 @@ import { SinuousExitGate } from '../bot/strategy/sinuousExit';
 import type { PlanEvent } from '../bot/plan/planRatchet';
 import { openExchange, tmpAudit, tmpDir } from './helpers';
 
-const PLAN_ON = { PLAN_RULES: 'true' };
+// The plan's own exits, the pacer reporting pace only on plan positions (pipeline decision 13, PACER_PLAN=off); PACER_PLAN's
+// hybrid (the default since Steven's Nov 12 card) and need modes have their own test.
+const PLAN_ON = { PLAN_RULES: 'true', PACER_PLAN: 'off' };
 
 /** One 15-minute BTC market on the paper exchange, its index warmed up (`historySec` of history: 60 = just after a restart,
  *  the volatility still warming up), `closeIn` ms to the close, the window `windowMs` long. `clock`: the engine's clock and
@@ -206,6 +208,42 @@ test('PLAN_RULES on: the pacer does not sell a plan position at the hour\'s need
     const floors = g.audit.tail(200, 'pacer').filter((r) => (r.data as { event: string }).event === 'floor');
     assert.equal(floors.length, plan ? 0 : 1, `plan ${plan}: ${g.notes()}`);
   }
+});
+
+test('PACER_PLAN (Steven, Nov 12 1:13 AM EST / 06:13 UTC): hybrid sells a plan position once its net covers the hour\'s need and the ratchet\'s $1.50, need at the need alone, off never; no floor in any mode', async () => {
+  // The hour needs $0.50. 10 YES at 0.40: +$0.55 at a 0.49 bid, +$1.56 at 0.59 (where the ratchet arms, which sells nothing).
+  const env = { PACER_HOURLY_USD: '0.5', PACER_MIN_TAKE_USD: '0.1', EXIT_POLICY: 'hold', PLAN_RULES: 'true' };
+  const sold: Record<string, Array<[number, number]>> = {};
+  const lines: Record<string, Array<number | undefined>> = {};
+  for (const mode of ['hybrid', 'need', 'off'] as const) {
+    const g = await setup({ env: { ...env, ...(mode === 'hybrid' ? {} : { PACER_PLAN: mode }) } });
+    assert.equal(g.cfg.strategy.pacer.plan, mode, 'hybrid is the default');
+    await g.hold('bid', 0.4, 10);
+    g.tag('yes');
+    lines[mode] = [];
+    for (const b of [0.49, 0.59]) {
+      if (g.oms.positions.position(g.t) === 0) break;
+      await g.yesAt(b);
+      lines[mode].push(g.engine.status.get(g.t)!.snipe?.atUsd);
+    }
+    sold[mode] = g.exits().map((o) => [o.price, o.count]);
+    const pacer = g.audit.tail(200, 'pacer').map((r) => r.data as { event: string; ticker?: string; why?: string });
+    assert.equal(pacer.filter((p) => p.event === 'floor').length, 0, `${mode}: no floor on a plan position`);
+    if (mode !== 'off') assert.match(pacer.find((p) => p.event === 'snipe' && p.ticker === g.t)?.why ?? '', /^quota snipe: \+\$/, mode);
+  }
+  assert.deepEqual(sold, { hybrid: [[0.59, 10]], need: [[0.49, 10]], off: [] });
+  // The badge's line: the need and the ratchet's arming net, whichever is higher; the need alone; none.
+  assert.deepEqual(lines, { hybrid: [1.5, 1.5], need: [0.5], off: [undefined, undefined] });
+  // The plan's own sale under way: no snipe beside it (decide's planSelling).
+  const v: MarketView = {
+    ticker: 'T', pYes: 0.7, bestBid: { price: 0.6, size: 50 }, bestAsk: { price: 0.62, size: 50 }, position: 10, entrySidePrice: 0.4, entryFeePerContract: 0.0175,
+    bankroll: 200, maxOrderRiskUsd: 4, maxContracts: 10, minSidePrice: 0.1, tauSec: 400, noEntryBeforeCloseSec: 15, fastMove: false, tickSize: 0.01, fees: DEFAULT_FEES, nowSec: 1000, closeSec: 1400,
+  };
+  const scfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy;
+  const exitsOf = (o: Parameters<typeof decide>[2]) => decide(v, scfg, o).place.filter((p) => p.purpose === 'exit').map((p) => p.why.slice(0, 13));
+  assert.deepEqual(exitsOf({ exits: false, planHeld: true, planPacerUsd: 1.5 }), ['quota snipe: ']);
+  assert.deepEqual(exitsOf({ exits: false, planHeld: true, planPacerUsd: 1.5, planSelling: true }), []);
+  assert.deepEqual(exitsOf({ exits: false, planHeld: true, pacerUsd: 0.5 }), [], 'the plain pacer line never reaches a plan position');
 });
 
 test('decide() for a plan position (planHeld): no model exit, take-profit, profit mandate, quota snipe or floor, Mode B take-profit or curve rest sell', () => {

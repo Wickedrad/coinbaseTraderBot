@@ -797,12 +797,27 @@ export interface TennisConfig {
   /** TENNIS_END_LOSER_CUT (on): the other half of that rule, nothing is held to settlement unless it is in profit. In the last
    *  share of the match a position not in profit after fees is sold at the bid, and no new entry is placed there (it
    *  would start under water). The favorite leg has no loss exit of its own (TENNIS_FAV_STOP_CENTS is 0 by default). The
-   *  share is settleFrac's, so settleFrac 0 turns the cut off too. Both go by the furthest progress the match has held
+   *  share is endCutFrac's (settleFrac's before Nov 12). Both go by the furthest progress the match has held
    *  for 2 minutes (a comeback pulls the progress back; one tick's thin book does not count). */
   endLoserCut: boolean;
   /** TENNIS_END_ENTRY_MARGIN (0.05): with the cut on, no new entry from this much progress before the last share, so a
-   *  position bought just before it has time to cover the spread and fees before it is judged (0.65 with the defaults). */
+   *  position bought just before it has time to cover the spread and fees before it is judged (0.85 with the defaults). */
   endEntryMargin: number;
+  /** TENNIS_END_CUT_FRAC (0.10; Steven, Nov 12: at 90% of the match, not traded, and exited unless in profit): the last share
+   *  in which endLoserCut sells a position not in profit and no entry is placed. Before Nov 12 it was settleFrac's 30%. */
+  endCutFrac: number;
+  /** The loser cut by the match's progress (Steven, Nov 12, "scale like the price predictions", by the score's rounds against
+   *  the format's): a position not in profit after fees is sold at the bid once the bid is this far under its entry, dollars
+   *  a contract. TENNIS_LOSER_CUT_OPEN_C (20) at the start, TENNIS_LOSER_CUT_C (10) at 60% of the match, TENNIS_LOSER_CUT_LATE_C
+   *  (3) from 85%; TENNIS_LOSER_CUT_C=0 turns it off. bot/tennis/tennisStrategy.ts tennisLoserCutAt. */
+  loserCut: number;
+  loserCutOpen: number;
+  loserCutLate: number;
+  /** TENNIS_PROB_TURN (0.05): a position riding to settlement in profit is sold at the bid, still in profit, once our player's
+   *  chance to win is this far under its best since the ride began, by either reading: the market's price, or the scoring
+   *  model's from a fresh live score that names its players (Steven, Nov 12: "unless the probability begins to shift").
+   *  0 = off. */
+  probTurn: number;
   /** Tennis MLP (fair P(win) from the 4 signals, score, book and SNN): when validated, entries need
    *  fair - price >= this. */
   fairMinEdge: number;
@@ -886,6 +901,11 @@ export interface PerpsConfig {
    *  implied by the exchange's leverage estimate). */
   liqBuffer: number;
   maintMargin: number;
+  /** PERP_LOSER_CUT_C (15; Steven, Nov 12 1:01 AM EST / 06:01 UTC: "perpetual contracts: should have 15c loser cut with the same
+   *  rules it already has"), as dollars a contract on the perp's own price: a trade's stop is the nearer of its ATR stop and
+   *  this far against the entry, on the exchange too. Sizing and the liquidation check keep the ATR stop. No window, so it
+   *  does not scale. 0 = off. */
+  loserCut: number;
   /** The 4h ATR ratchet exit for setup trades (bot/setups/detectors.ts RATCHET; recorded in the setup model, so the
    *  live trader manages trades exactly as they were trained): SETUP_RATCHET (off | slow (default) | fast | both), the initial
    *  stop, break-even plus fees, and the trail, all in 4h ATRs. */
@@ -971,6 +991,8 @@ function pacerConfig(env: Env): PacerConfig {
     // today's other rules a cushion of 8 ticks a contract made $262 and $238 a day more than none (two batches, 5 bankrolls
     // of 5 each); with the loser exits of PR #230, 16 ticks made $88 a day more than none.
     floorTicks: num(env, 'PACER_FLOOR_TICKS', 8, 0, 50),
+    // Steven, Nov 12 1:10 AM EST / 06:10 UTC: the pacer on heat-lane positions (bot/risk/quotaPacer.ts PacerConfig.plan).
+    plan: oneOf(env, 'PACER_PLAN', 'hybrid', ['off', 'hybrid', 'need'] as const),
   };
 }
 
@@ -994,12 +1016,31 @@ function planConfig(env: Env): PlanConfig {
     if (env[k] !== undefined && env[k] !== '') throw new ConfigError(`${k} is retired: the ratchet is in dollars for the whole position (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD)`);
   }
   // The loser cut (E05; Steven, Nov 11 6:56 PM EST / 23:56 UTC: "10c a contract"): cents a contract under the entry price, and
-  // dollars of trade net (off by default). 0 turns either off.
+  // dollars of trade net (off by default). 0 turns either off. On price prediction contracts the price cut scales with the
+  // window (Steven, Nov 12 1:01 AM EST / 06:01 UTC; bot/plan/planRatchet.ts planLoserCutAt): PLAN_LOSER_CUT_OPEN_C at the
+  // open, PLAN_LOSER_CUT_C at 60% of the window, PLAN_LOSER_CUT_LATE_C from 85%. The same number for all three is the flat cut.
+  // Unset, an end never crosses the cut at 60% (a PLAN_LOSER_CUT_C of 25 opens at 25c; one of 2 ends at 2c); set, it must not.
+  const { mid, open, late } = cutEnds(env, 'PLAN_LOSER_CUT', 'the window');
   return {
     enabled: bool(env, 'PLAN_RULES', false),
-    loserCut: num(env, 'PLAN_LOSER_CUT_C', 10, 0, 99) / 100,
+    loserCut: mid / 100, loserCutOpen: open / 100, loserCutLate: late / 100,
     loserCutUsd: num(env, 'PLAN_LOSER_CUT_USD', 0, 0, 1000),
   };
+}
+
+/** A loser cut that narrows with time (Steven, Nov 12): <prefix>_C at 60%, <prefix>_OPEN_C at the start, <prefix>_LATE_C from
+ *  85%, cents a contract. An end left unset follows the middle without crossing it (20c and 3c with a 10c middle, fractions
+ *  kept), so a lone <prefix>_C change, whole or not, never stops the start; an end set by hand must stay on its side of the
+ *  middle and above 0. A middle of 0 turns the cut off whatever the ends say. */
+function cutEnds(env: Env, prefix: string, span: string): { mid: number; open: number; late: number } {
+  const mid = num(env, `${prefix}_C`, 10, 0, 99);
+  const set = (k: string) => env[k] !== undefined && env[k] !== '';
+  const kOpen = `${prefix}_OPEN_C`, kLate = `${prefix}_LATE_C`;
+  const open = set(kOpen) ? num(env, kOpen, 20, 0.01, 99) : Math.max(20, mid);
+  const late = set(kLate) ? num(env, kLate, 3, 0.01, 99) : Math.min(3, mid);
+  if (mid > 0 && open < mid - 1e-9) throw new ConfigError(`${kOpen}=${open} must be at least ${prefix}_C=${mid}: the cut allows a larger loss early in ${span}`);
+  if (mid > 0 && late > mid + 1e-9) throw new ConfigError(`${kLate}=${late} must be at most ${prefix}_C=${mid}: the cut is smaller late in ${span}`);
+  return { mid, open, late };
 }
 
 function bool(env: Env, key: string, def: boolean): boolean {
@@ -1026,6 +1067,12 @@ function parseSizingTiers(raw: string | undefined, base: { risk: RiskLimits; str
   } catch (e) {
     throw new ConfigError(`SIZING_TIERS: ${(e as Error).message}`);
   }
+}
+
+/** The tennis loser cut's three lines in dollars a contract (cutEnds; Steven, Nov 12). */
+function tennisLoserCut(env: Env): { loserCut: number; loserCutOpen: number; loserCutLate: number } {
+  const { mid, open, late } = cutEnds(env, 'TENNIS_LOSER_CUT', 'the match');
+  return { loserCut: mid / 100, loserCutOpen: open / 100, loserCutLate: late / 100 };
 }
 
 /** "earliest,latest" seconds before close. */
@@ -1612,6 +1659,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         setupSlowRiskUsd: num(env, 'SETUP_SLOW_RISK_USD', 0, 0, 1e7),
         setupMinTargetUsd: num(env, 'SETUP_MIN_TARGET_USD', 0, 0, 1e7),
         liqBuffer: num(env, 'PERP_LIQ_BUFFER', 0.2, 0, 0.9),
+        loserCut: num(env, 'PERP_LOSER_CUT_C', 15, 0, 10_000) / 100,
         maintMargin: num(env, 'PERP_MAINT_MARGIN', 0, 0, 0.5),
         setupRatchet: oneOf(env, 'SETUP_RATCHET', 'slow', ['off', 'slow', 'fast', 'both'] as const),
         setupRatchetStopAtr: num(env, 'SETUP_RATCHET_STOP_ATR', 3.5, 0.5, 20),
@@ -1786,6 +1834,9 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       settleFrac: num(env, 'TENNIS_NO_EXIT_BEFORE_END_FRAC', 0.30, 0, 0.9),
       endLoserCut: bool(env, 'TENNIS_END_LOSER_CUT', true),
       endEntryMargin: num(env, 'TENNIS_END_ENTRY_MARGIN', 0.05, 0, 0.5),
+      endCutFrac: num(env, 'TENNIS_END_CUT_FRAC', 0.10, 0, 0.9),
+      ...tennisLoserCut(env),
+      probTurn: num(env, 'TENNIS_PROB_TURN', 0.05, 0, 0.5),
       fairMinEdge: num(env, 'TENNIS_FAIR_MIN_EDGE', 0.01, -0.5, 0.5),
       modelPath: path.resolve(env.TENNIS_MODEL_PATH ?? './params/tennis_model.json'),
     },

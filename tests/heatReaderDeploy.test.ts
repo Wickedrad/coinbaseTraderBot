@@ -1,6 +1,7 @@
 // The heat curve reader on the server: deploy/activate.sh and deploy/rollback.sh make it follow the release they put
 // in place (deploy/heat_reader_follow.sh), and the Server diagnostics report prints its state. Run against a scratch
 // HOME with stand-ins for sudo, systemctl, journalctl, curl and sleep; the reader's installer is a stand-in too.
+import './tmpScope'; // one temp folder per run, removed at exit
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';

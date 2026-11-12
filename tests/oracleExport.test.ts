@@ -3,6 +3,7 @@
 // time exits / funding / latency / cost stress, nothing after a decision changes its feature row (modulePrims runs on a
 // 12-day synthetic grid: analyzer, TA-Lib, character, ta_net), t / label alignment, the Nov 5 cap, and DOGE is refused.
 
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';

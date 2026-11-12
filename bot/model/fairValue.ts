@@ -137,11 +137,11 @@ export function impliedVariance(S: number, K: number, pMkt: number): number | un
   return (x / z) ** 2;
 }
 
-/** 'match': a sports match-winner market (ATP tennis), traded by bot/tennis, never priced here. */
+/** 'match': a sports match-winner market (ATP and WTA tennis), traded by bot/tennis, never priced here. */
 export type MarketKind = ContractKind | 'less' | 'match';
 
 /** Series traded as sports match-winner markets. */
-export const MATCH_SERIES = /^KXATPMATCH$/i;
+export const MATCH_SERIES = /^KX(ATP|WTA)MATCH$/i;
 
 /** A range bucket's ticker: its last segment is B followed by the bucket's centre. */
 export const isRangeTicker = (ticker: string): boolean => /-B\d+(?:\.\d+)?$/.test(ticker);

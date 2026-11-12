@@ -49,7 +49,7 @@ import type { DirTarget, DirectionalContext, DirectionalGuards, PerpPacer } from
 import type { PerpHub } from '../perps/perpData';
 import type { PerpGateway } from '../perps/perpRest';
 import { adaptToVol, applyRatchet, applyScaleOut, atr4hAt, detectLast, heatSignal, FAST_TFS, SLOW_TFS, SETUP_MIN_BARS, TF_MS, type Lane, type SetupSignal } from './detectors';
-import { DEFAULT_COSTS, exitTrade, openTrade, stepTrade, tradeResult, type CostModel, type OpenTrade } from './exits';
+import { applyPerpCut, DEFAULT_COSTS, exitTrade, openTrade, stepTrade, tradeResult, type CostModel, type OpenTrade } from './exits';
 import { quotaCall, type PacerFloorMode } from '../risk/quotaPacer';
 import { activeCrossLead, crossLeadSetupReading, crossLeadSum, type CrossLeadReading } from '../ta/crossLead';
 import type { LibrarianReading } from '../ta/librarian';
@@ -82,6 +82,9 @@ export interface SetupTraderParams {
    *  half the initial margin implied by the exchange's leverage estimate). */
   liqBuffer?: number;
   maintMargin?: number;
+  /** PERP_LOSER_CUT_C as dollars a contract (Steven, Nov 12: 15c): a trade's stop is the nearer of its own and this far against
+   *  the entry on the perp's price (bot/setups/exits.ts applyPerpCut). 0 / unset: off. */
+  loserCut?: number;
 }
 
 /** How far the direction curves act on the perps (HEAT_PERPS; 'off' whenever HEAT_LANE is off). */
@@ -587,6 +590,15 @@ export class SetupTrader {
       }
       // A heat trade that would end at this close is carried through it while its horizon's direction still points its way.
       if (tfClose && lastBar && t.kind === 'heat' && t.bars + 1 >= t.plan.maxBars) this.heatExtend(t, lastBar.ts + TF_MS[t.tf]!, now);
+      // The perp loser cut on a trade opened before it (a restart into a new release): set once, when nearer than its stop.
+      if (t.cutStop === undefined && (this.d.params.loserCut ?? 0) > 0) {
+        const q = this.d.hub.get(asset)?.latest;
+        const perpMid = q?.bid !== undefined && q.ask !== undefined ? (q.bid + q.ask) / 2 : undefined;
+        if (applyPerpCut(t, this.d.params.loserCut!, perpMid !== undefined ? perpMid / px : undefined)) {
+          changed = true;
+          this.d.audit?.write('setup_trade', { event: 'cut_set', asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entry: t.entry, stop: t.stop, ownStop: t.initialStop, cut: this.d.params.loserCut });
+        }
+      }
       const bar: Candle = { ts: now, o: prev, h: Math.max(prev, px), l: Math.min(prev, px), c: px, v: 0 };
       const was = t.partialDone, wasFrac = t.frac;
       if (stepTrade(t, bar, 0, this.d.params.costs, tfClose)) { this.record(t, now); this.book.remove(asset); changed = true; if (t.closed?.reason !== 'target') exitNow.add(asset); continue; }
@@ -719,10 +731,14 @@ export class SetupTrader {
           continue;
         }
         t.score = e.score;
+        // The perp loser cut beside the trade's stop (the size and the liquidation check above keep the trade's own stop).
+        const q = this.d.hub.get(t.asset)?.latest;
+        const perpMid = q?.bid !== undefined && q.ask !== undefined ? (q.bid + q.ask) / 2 : undefined;
+        const cutSet = applyPerpCut(t, this.d.params.loserCut ?? 0, perpMid !== undefined && e.px > 0 ? perpMid / e.px : undefined);
         this.book.add(t);
         this.lastPx.set(t.asset, e.px);
         changed = true;
-        this.d.audit?.write('setup_trade', { event: 'opened', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entry: t.entry, stop: t.stop, target1: t.plan.target1, target2: t.plan.target2, notional: t.notional, score: e.score, pilot, conviction: e.mult, convictionWhy: e.why ?? null, capped: e.capped ?? null, ...(t.heat ? { heat: t.heat } : {}) });
+        this.d.audit?.write('setup_trade', { event: 'opened', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entry: t.entry, stop: t.stop, ...(cutSet ? { ownStop: t.initialStop, cut: this.d.params.loserCut } : {}), target1: t.plan.target1, target2: t.plan.target2, notional: t.notional, score: e.score, pilot, conviction: e.mult, convictionWhy: e.why ?? null, capped: e.capped ?? null, ...(t.heat ? { heat: t.heat } : {}) });
         const tnE = this.reading(t.asset, now);
         this.d.journal?.trade({ ts: now, event: 'opened', asset: t.asset, lane: t.lane, kind: t.kind, tf: t.tf, dir: t.dir, entryTs: t.entryTs, entry: t.entry, stop: t.stop, notional: t.notional, score: e.score, pilot, tn_up1: tnE?.up1 ?? null, tn_up4: tnE?.up4 ?? null, tn_vol: tnE?.vol ?? null, ...this.snnOf(t.asset), ...this.heatOf(t.asset, now, t.dir) });
       }

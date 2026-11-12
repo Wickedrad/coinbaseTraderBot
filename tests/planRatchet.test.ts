@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import { loadConfig } from '../bot/config';
 import { PlanPositions, PLAN_TAG_UNFILLED_MS } from '../bot/plan/planPositions';
 import {
-  assertPlanStopNotLowered, freshPlanState, planBreakEvenUsd, planEndWindow, planFeeFloorPrice, planMarkTried, planNetAt, planStep,
+  assertPlanStopNotLowered, freshPlanState, planBreakEvenUsd, planEndWindow, planFeeFloorPrice, planLoserCutAt, planMarkTried, planNetAt, planStep,
   type PlanRatchetSettings, type PlanRatchetState, type PlanStepInput, type PlanStepResult,
 } from '../bot/plan/planRatchet';
 import { orderFee } from '../bot/fees';
@@ -646,6 +646,71 @@ test('plan positions: the plan\'s loser cut is every tag\'s default, a rule may 
   assert.deepEqual(new PlanPositions({ ...DEFAULTS, loserCut: 0.1 }, old).get('C')?.settings, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick', loserCut: 0.1, loserCutUsd: 0 });
 });
 
+test('the cut by time (Steven, Nov 12 1:01 AM EST / 06:01 UTC): 20c at the open, a straight line to 10c at 60% of the window, to 3c at 85%, flat after', () => {
+  const S = { loserCut: 0.1, loserCutOpen: 0.2, loserCutLate: 0.03 };
+  const at = (tauSec: number, w: number | undefined = 900, s: Parameters<typeof planLoserCutAt>[0] = S) => planLoserCutAt(s, tauSec, w);
+  assert.deepEqual(at(900), { cut: 0.2, elapsed: 0 });
+  assert.deepEqual(at(630), { cut: 0.15, elapsed: 0.3 });
+  assert.deepEqual(at(360), { cut: 0.1, elapsed: 0.6 });
+  assert.deepEqual(at(247.5), { cut: 0.065, elapsed: 0.725 });
+  assert.deepEqual(at(135), { cut: 0.03, elapsed: 0.85 });
+  assert.deepEqual(at(45), { cut: 0.03, elapsed: 0.95 });
+  // An hourly window the same way: 24 minutes gone (40%) is 13.3c.
+  assert.deepEqual(at(2160, 3600), { cut: 0.1333, elapsed: 0.4 });
+  // Listed before its window (an hourly strike): just opened. No window known: the flat cut. Off: 0 everywhere. No ends: flat.
+  assert.equal(at(5000, 3600).cut, 0.2);
+  assert.deepEqual(planLoserCutAt(S, 300, undefined), { cut: 0.1 });
+  assert.deepEqual(at(900, 900, { ...S, loserCut: 0 }), { cut: 0 });
+  assert.equal(at(900, 900, { loserCut: 0.1 }).cut, 0.1);
+  assert.equal(at(100, 900, { loserCut: 0.1 }).cut, 0.1);
+  // Never rising as the window closes.
+  let prev = Infinity;
+  for (let tau = 900; tau >= 0; tau -= 7) { const c = at(tau).cut; assert.ok(c <= prev + 1e-12, `tau ${tau}`); prev = c; }
+});
+
+test('the cut by time in planStep: a third of the window gone, 14c under the entry holds and 15c sells; from 85%, 3c sells; the sale says where in the window', () => {
+  const CUT: PlanRatchetSettings = { ...RATCHET, loserCut: 0.1, loserCutOpen: 0.2, loserCutLate: 0.03 };
+  // 10 YES at 0.40, 30% of a 15-minute window gone (tau 630 s): the cut is 15c, the line the 0.25 bid.
+  const w = new Walk({ settings: CUT, tauSec: 630 });
+  assert.equal(w.at(0.26).sale, undefined, 'the flat 10c would have sold here');
+  assert.match(w.last.notes.join(' | '), /plan loser cut: sells at bid at or under 0\.25 \(15c, 30% of the window gone\)/);
+  const r = w.at(0.25, { now: T0 + 1000 });
+  assert.equal(r.sale?.kind, 'cut');
+  assert.match(r.sale!.why, /^plan loser cut: bid 0\.25 is 15c under the entry 0\.40 \(cut at 15c, 30% of the window gone\)/);
+  const e = w.events('plan_loser_cut_sell')[0];
+  assert.deepEqual([e.loserCut, e.loserCutOpen, e.loserCutLate, e.cutAt, e.elapsed, e.entry], [0.1, 0.2, 0.03, 0.15, 0.3, 0.4]);
+  // 85% gone (tau 135 s): 3c under sells; 2c under holds (and the end rule waits for the last tenth, from tau 90 s).
+  const late = new Walk({ settings: CUT, tauSec: 135 });
+  assert.equal(late.at(0.38).sale, undefined);
+  assert.equal(late.at(0.37).sale?.kind, 'cut');
+  assert.equal(late.events('plan_loser_cut_sell')[0].cutAt, 0.03);
+  // The window's open (tau 900 s): 19c under holds, 20c sells.
+  const open = new Walk({ settings: CUT, tauSec: 900 });
+  assert.equal(open.at(0.21).sale, undefined);
+  assert.equal(open.at(0.2).sale?.kind, 'cut');
+  // A flat cut's events carry no ends and the note no share of the window.
+  const flat = new Walk({ settings: { ...RATCHET, loserCut: 0.1 }, tauSec: 630 });
+  flat.at(0.31);
+  assert.match(flat.last.notes.join(' | '), /sells at bid at or under 0\.30 \(10c\)/);
+  flat.at(0.3);
+  const fe = flat.events('plan_loser_cut_sell')[0];
+  assert.deepEqual([fe.loserCutOpen, fe.loserCutLate, fe.cutAt], [undefined, undefined, 0.1]);
+});
+
+test('plan positions: the cut by time\'s ends are every tag\'s default; a file saved before them takes the plan\'s', () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'plan_positions.json');
+  const D = { ...DEFAULTS, loserCut: 0.1, loserCutOpen: 0.2, loserCutLate: 0.03, loserCutUsd: 0 };
+  const reg = new PlanPositions(D, file);
+  assert.deepEqual(reg.tag({ ticker: 'A', side: 'yes', ruleId: 'heat' }, T0).settings, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick', loserCut: 0.1, loserCutUsd: 0, loserCutOpen: 0.2, loserCutLate: 0.03 });
+  // A rule's own flat cut: the same number for all three.
+  assert.deepEqual(reg.tag({ ticker: 'B', side: 'no', ruleId: 'r2', settings: { loserCut: 0.05, loserCutOpen: 0.05, loserCutLate: 0.05 } }, T0).settings, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick', loserCut: 0.05, loserCutUsd: 0, loserCutOpen: 0.05, loserCutLate: 0.05 });
+  // Saved by the build before (a flat 10c, no ends): read with the plan's ends, so a position open at the deploy gets them.
+  const old = path.join(dir, 'old.json');
+  fs.writeFileSync(old, JSON.stringify({ v: 2, positions: [{ ticker: 'C', side: 'yes', ruleId: 'r1', openedAt: T0, seenOpen: true, settings: { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick', loserCut: 0.1, loserCutUsd: 0 }, state: freshPlanState() }] }));
+  assert.deepEqual(new PlanPositions(D, old).get('C')?.settings, { armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5, clock: 'tick', loserCut: 0.1, loserCutUsd: 0, loserCutOpen: 0.2, loserCutLate: 0.03 });
+});
+
 test('PLAN_RULES: off by default in paper and live, read the same in both; cfg.plan is the strategy\'s; the plan ratchet takes the profit ratchet\'s dollars, and the retired cents settings stop the start', () => {
   const key = path.join(tmpDir(), 'k.pem');
   fs.writeFileSync(key, 'x', { mode: 0o600 });
@@ -656,16 +721,30 @@ test('PLAN_RULES: off by default in paper and live, read the same in both; cfg.p
   for (const [mode, env] of Object.entries(envs)) {
     const off = loadConfig(env);
     assert.equal(off.mode, mode);
-    assert.deepEqual(off.plan, { enabled: false, loserCut: 0.1, loserCutUsd: 0 }, mode);
+    assert.deepEqual(off.plan, { enabled: false, loserCut: 0.1, loserCutOpen: 0.2, loserCutLate: 0.03, loserCutUsd: 0 }, mode);
     assert.equal(off.plan, off.strategy.plan);
     assert.deepEqual(off.strategy.profitRatchet, { enabled: true, armUsd: 1.5, stopMinUsd: 1, trailUsd: 0.5 }, mode);
     const on = loadConfig({ ...env, PLAN_RULES: 'true', RATCHET_ARM_USD: '2', RATCHET_TRAIL_USD: '0.75' });
-    assert.deepEqual(on.strategy.plan, { enabled: true, loserCut: 0.1, loserCutUsd: 0 }, mode);
+    assert.deepEqual(on.strategy.plan, { enabled: true, loserCut: 0.1, loserCutOpen: 0.2, loserCutLate: 0.03, loserCutUsd: 0 }, mode);
     assert.deepEqual(on.strategy.profitRatchet, { enabled: true, armUsd: 2, stopMinUsd: 1, trailUsd: 0.75 }, mode);
     // The loser cut: PLAN_LOSER_CUT_C in cents a contract (10 by default), PLAN_LOSER_CUT_USD in dollars (0 = off).
     const cut = loadConfig({ ...env, PLAN_LOSER_CUT_C: '15', PLAN_LOSER_CUT_USD: '2.5' });
     assert.deepEqual([cut.plan.loserCut, cut.plan.loserCutUsd], [0.15, 2.5], mode);
     assert.equal(loadConfig({ ...env, PLAN_LOSER_CUT_C: '0' }).plan.loserCut, 0, mode);
+    // The cut by time (Steven, Nov 12): the ends in cents too. Unset, an end never crosses the cut at 60%; set, it must not.
+    const ends = (e: Record<string, string>) => { const c = loadConfig({ ...env, ...e }).plan; return [c.loserCutOpen, c.loserCut, c.loserCutLate]; };
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_OPEN_C: '25', PLAN_LOSER_CUT_LATE_C: '5' }), [0.25, 0.1, 0.05], mode);
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '25' }), [0.25, 0.25, 0.03], mode);
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '2' }), [0.2, 0.02, 0.02], mode);
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_OPEN_C: '10', PLAN_LOSER_CUT_LATE_C: '10' }), [0.1, 0.1, 0.1], 'the flat cut');
+    // A fraction of a cent loads as it did before the ends existed: unset ends follow it unrounded.
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '2.5' }), [0.2, 0.025, 0.025], mode);
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '0.5' }), [0.2, 0.005, 0.005], mode);
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '20.4' }), [0.204, 0.204, 0.03], mode);
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '0.5', PLAN_LOSER_CUT_LATE_C: '0.25' }), [0.2, 0.005, 0.0025], mode);
+    assert.throws(() => loadConfig({ ...env, PLAN_LOSER_CUT_LATE_C: '0' }), /PLAN_LOSER_CUT_LATE_C=0 must be a number in \[0.01, 99\]/);
+    assert.throws(() => loadConfig({ ...env, PLAN_LOSER_CUT_OPEN_C: '8' }), /PLAN_LOSER_CUT_OPEN_C=8 must be at least PLAN_LOSER_CUT_C=10/);
+    assert.throws(() => loadConfig({ ...env, PLAN_LOSER_CUT_LATE_C: '12' }), /PLAN_LOSER_CUT_LATE_C=12 must be at most PLAN_LOSER_CUT_C=10/);
     // A cent a contract is a different amount on every position: the old settings are not read as something else.
     assert.throws(() => loadConfig({ ...env, PLAN_RATCHET_ARM_C: '5' }), /PLAN_RATCHET_ARM_C is retired: the ratchet is in dollars for the whole position/);
     assert.throws(() => loadConfig({ ...env, PLAN_RATCHET_TRAIL_C: '10' }), /PLAN_RATCHET_TRAIL_C is retired/);
