@@ -84,3 +84,19 @@ test('heat trips: without the bot log a trip\'s result is the change in the book
   assert.match(out, /KXBTC15M-26NOV120245-45\s+no\s+\+\$1\.50 sold/);
   assert.match(out, /KXETHD-26NOV1203-T2044\.99\s+yes\s+-\$4\.00 settled/);
 });
+
+test('heat trips: a closed record with the book total apart (bookPnl) gives the trip\'s own pnl, two in one pass too', { skip: !python && 'no python' }, () => {
+  const dir = tmpDir();
+  let t = Date.now() - 3600_000;
+  const audit = new AuditLog(path.join(dir, 'audit'), 500, () => t);
+  // An old-shape record (the total under pnl), then two new-shape records closed in one pass.
+  audit.write('heat', { event: 'closed', ticker: 'KXA', asset: 'BTC', kind: '15m', side: 'yes', ruleId: 'r', h: 15, pnl: -3, settled: false, trips: 1, wins: 0 });
+  t += 60_000;
+  audit.write('heat', { event: 'closed', ticker: 'KXB', asset: 'BTC', kind: '15m', side: 'yes', ruleId: 'r', h: 15, pnl: 2.25, settled: false, trips: 3, wins: 1, bookPnl: -1.5 });
+  audit.write('heat', { event: 'closed', ticker: 'KXC', asset: 'ETH', kind: '15m', side: 'no', ruleId: 'r', h: 15, pnl: -0.75, settled: true, trips: 3, wins: 1, bookPnl: -1.5 });
+  const out = run([dir, '24']);
+  assert.match(out, /round trips closed: 3, 1 won, net \+\$1\.50/, 'the unknown trip counts as nothing');
+  assert.match(out, /KXA\s+yes\s+\?\s+sold/, 'the first old-shape trip has no total before it');
+  assert.match(out, /KXB\s+yes\s+\+\$2\.25 sold/);
+  assert.match(out, /KXC\s+no\s+-\$0\.75 settled/);
+});

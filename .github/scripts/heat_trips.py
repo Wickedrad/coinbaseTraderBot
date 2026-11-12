@@ -7,8 +7,9 @@ Read-only. Server diagnostics uploads this file and runs it on the server:
 
 It reads DATA_DIR/audit/audit-*.jsonl (one JSON record a line: seq, ts, kind, data) for the last HOURS (default 24), and
 FILE when given: the bot's "[heat] round trip closed" log lines (journalctl), which carry each round trip's own result.
-The audit's "closed" record carries the lane book's running total under pnl, not the trip's, so without the log lines a
-trip's result is the change in that total (unknown when two trips close in one pass). It prints:
+Without them the audit's "closed" record gives it: its pnl since the record carries the book's total as bookPnl (Nov 12);
+before that the total was written over pnl, and a trip's result is the change in that total (unknown when two trips close
+in one pass). It prints:
   - every heat round trip closed (sold or settled) with its result, and the totals;
   - every plan sale and call-off (loser cut, ratchet, end rule) with the entry price, the bid and the net;
   - re-entries after a loss: by contract window (a 15-minute contract, or an hourly window with all of its strikes), the
@@ -78,6 +79,11 @@ def trips_from_audit(closed, prev=None):
     for t, d in closed:
         passes.setdefault((t, d.get('trips')), []).append(d)
     for (t, _), ds in passes.items():
+        if 'bookPnl' in ds[0]:
+            # A record with the book's total apart: pnl is the trip's own.
+            out.extend((t, d) for d in ds)
+            prev = float(ds[0].get('bookPnl') or 0)
+            continue
         book = float(ds[0].get('pnl') or 0)
         delta = None if prev is None else round(book - prev, 6)
         for d in ds:
@@ -108,7 +114,8 @@ def read(data_dir, hours, now):
                 elif r.get('kind') == 'heat' and d.get('event') == 'closed' and (before is None or t >= before[0]):
                     before = (t, d)
     out.sort(key=lambda x: x[0])
-    return out, files, since, (float(before[1].get('pnl') or 0) if before else None)
+    prev = None if before is None else float(before[1].get('bookPnl', before[1].get('pnl')) or 0)
+    return out, files, since, prev
 
 
 def main():
@@ -148,7 +155,8 @@ def main():
         len(closed), wins, money(pnl),
         len(closed) - len(settled), money(sum(pnl_of(d) for _, d in closed if not d.get('settled'))),
         len(settled), money(sum(pnl_of(d) for _, d in settled)),
-        len(settled_loss), money(sum(pnl_of(d) for _, d in settled_loss))))
+        len(settled_loss), money(sum(pnl_of(d) for _, d in settled_loss))) +
+          ('' if all(d.get('pnl') is not None for _, d in closed) else ' | %d result(s) unknown, counted as $0' % sum(1 for _, d in closed if d.get('pnl') is None)))
     for t, d in closed:
         print('  %s %-28s %-3s %8s %-8s %s' % (hhmm(t), d.get('ticker'), d.get('side'), '?' if d.get('pnl') is None else money(pnl_of(d)),
                                              'settled' if d.get('settled') else 'sold', str(d.get('ruleId') or '')[:60]))
