@@ -48,8 +48,14 @@
 //                   before fees), or whose trade net is at or under minus PLAN_LOSER_CUT_USD (off by default), is sold the same
 //                   way as the ratchet's sale. Either set to 0 turns that measure off. A cut whose try failed is called off once
 //                   the position is back at or above break-even after fees (plan_loser_cut_cancel), as the end rule's is. Until a
-//                   hot spot's own dip line is tested, every plan position gets the flat cut; a rule may pass its own
-//                   (PlanTag.settings.loserCut / loserCutUsd).
+//                   hot spot's own dip line is tested, every plan position gets the same cut; a rule may pass its own
+//                   (PlanTag.settings.loserCut / loserCutOpen / loserCutLate / loserCutUsd).
+//   cut by time     Steven, Nov 12 1:01 AM EST / 06:01 UTC: on price prediction contracts the price cut scales with the
+//                   window. At the open it allows a larger loss (PLAN_LOSER_CUT_OPEN_C, 20c), sliding in a straight line to
+//                   PLAN_LOSER_CUT_C (10c) once 60% of the window is gone, then to PLAN_LOSER_CUT_LATE_C (3c) at 85%, and
+//                   stays there; from 90% the end rule sells anything not in profit, and the heat lane enters nothing
+//                   (bot/heat/heatLane.ts). The window is the end rule's (windowSec); without one the cut is the flat
+//                   PLAN_LOSER_CUT_C. planLoserCutAt is the line.
 // The ratchet sale, the loser cut and the end rule are the plan's own rules: they are not held by STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC. The hold
 // exit (bot/strategy/holdExit.ts) sells plan positions too (Steven, Nov 11 8:52 AM EST / 13:52 UTC): whichever fires first.
 
@@ -65,6 +71,12 @@ export interface PlanRatchetSettings extends RatchetSettings {
   /** The loser cut by price (PLAN_LOSER_CUT_C, dollars a contract): sold once the held side's bid is this far or more under
    *  the entry price. 0 or unset: off. */
   loserCut?: number;
+  /** The price cut at the window's open (PLAN_LOSER_CUT_OPEN_C, dollars a contract): the cut slides from this to `loserCut`
+   *  at 60% of the window (planLoserCutAt). Unset: `loserCut` (no scaling before 60%). */
+  loserCutOpen?: number;
+  /** The price cut from 85% of the window (PLAN_LOSER_CUT_LATE_C): the cut slides from `loserCut` at 60% to this. Unset:
+   *  `loserCut`. */
+  loserCutLate?: number;
   /** The loser cut by dollars (PLAN_LOSER_CUT_USD): sold once the trade's net after both fees is at or under minus this. 0 or
    *  unset: off. */
   loserCutUsd?: number;
@@ -75,8 +87,12 @@ export interface PlanConfig {
   /** PLAN_RULES (default false, the same in paper and live): positions opened by plan rules get this ratchet, loser cut and end
    *  rule, and the pacer only reports pace for them. Off, every position is managed as before, tagged or not. */
   enabled: boolean;
-  /** PLAN_LOSER_CUT_C as dollars a contract (default 0.10): the loser cut by price; 0 = off. */
+  /** PLAN_LOSER_CUT_C as dollars a contract (default 0.10): the loser cut by price at 60% of the window; 0 = off. */
   loserCut: number;
+  /** PLAN_LOSER_CUT_OPEN_C (default 0.20): the price cut at the window's open. */
+  loserCutOpen: number;
+  /** PLAN_LOSER_CUT_LATE_C (default 0.03): the price cut from 85% of the window. */
+  loserCutLate: number;
   /** PLAN_LOSER_CUT_USD (default 0 = off): the loser cut by the trade's net after fees, dollars for the whole position. */
   loserCutUsd: number;
 }
@@ -175,6 +191,26 @@ export function planBreakEvenUsd(count: number, entryPrice: number | undefined, 
   return 0;
 }
 
+/** The cut by time's points (Steven, Nov 12 06:01 UTC): `loserCut` once 60% of the window is gone, `loserCutLate` from 85%. */
+export const PLAN_CUT_MID_FRAC = 0.6;
+export const PLAN_CUT_LATE_FRAC = 0.85;
+
+/** The price cut in force now, dollars a contract (0 = off), and the share of the window gone (unset without a window):
+ *  `loserCutOpen` at the open, a straight line to `loserCut` at 60%, another to `loserCutLate` at 85%, flat after. A cut of
+ *  0 (PLAN_LOSER_CUT_C=0) turns the price cut off at every point. A window the market was listed before (an hourly strike
+ *  listed early, tau over the window) counts as just opened. */
+export function planLoserCutAt(s: Pick<PlanRatchetSettings, 'loserCut' | 'loserCutOpen' | 'loserCutLate'>, tauSec: number, windowSec: number | undefined): { cut: number; elapsed?: number } {
+  const mid = s.loserCut ?? 0;
+  if (!(mid > 0)) return { cut: 0 };
+  if (windowSec === undefined || !(windowSec > 0) || !Number.isFinite(tauSec)) return { cut: mid };
+  const open = s.loserCutOpen ?? mid, late = s.loserCutLate ?? mid;
+  const f = Math.min(1, Math.max(0, 1 - tauSec / windowSec));
+  const cut = f <= PLAN_CUT_MID_FRAC ? open + (mid - open) * (f / PLAN_CUT_MID_FRAC)
+    : f <= PLAN_CUT_LATE_FRAC ? mid + (late - mid) * ((f - PLAN_CUT_MID_FRAC) / (PLAN_CUT_LATE_FRAC - PLAN_CUT_MID_FRAC))
+    : late;
+  return { cut: r4(cut), elapsed: Math.round(f * 1000) / 1000 };
+}
+
 /** In the last tenth of the window (`windowSec`: shareWindowSec, bot/strategy/fairValueStrategy.ts). */
 export function planEndWindow(tauSec: number, windowSec: number | undefined): boolean {
   return windowSec !== undefined && windowSec > 0 && tauSec <= PLAN_END_FRAC * windowSec + EPS;
@@ -209,11 +245,17 @@ export interface PlanEvent {
   stopMinUsd: number;
   trailUsd: number;
   clock: PlanClock;
-  /** The loser cut's settings (set when on): dollars a contract under the entry price, and dollars of trade net. */
+  /** The loser cut's settings (set when on): dollars a contract under the entry price (at 60% of the window; at the open and
+   *  from 85% when the cut scales), and dollars of trade net. */
   loserCut?: number;
+  loserCutOpen?: number;
+  loserCutLate?: number;
   loserCutUsd?: number;
   /** The entry price the price cut measures from (side terms), on a loser cut's sale. */
   entry?: number;
+  /** On a loser cut's sale: the price cut in force (dollars a contract) and the share of the window gone (planLoserCutAt). */
+  cutAt?: number;
+  elapsed?: number;
   /** This evaluation (ms). */
   at: number;
   armedAt?: number;
@@ -293,6 +335,9 @@ export function planStep(i: PlanStepInput): PlanStepResult {
   const { armUsd, stopMinUsd, trailUsd, clock } = i.settings;
   const loserCut = i.settings.loserCut ?? 0;
   const loserCutUsd = i.settings.loserCutUsd ?? 0;
+  const scaled = loserCut > 0 && ((i.settings.loserCutOpen ?? loserCut) !== loserCut || (i.settings.loserCutLate ?? loserCut) !== loserCut);
+  // The price cut in force now (Steven, Nov 12: wider at the open, the flat 10c at 60% of the window, 3c from 85%).
+  const cutNow = planLoserCutAt(i.settings, i.tauSec, i.windowSec);
   const tick = i.tick;
   const bid = planSideBid(i.position, i.bid, i.ask);
   const cost = i.entryPrice;
@@ -307,7 +352,8 @@ export function planStep(i: PlanStepInput): PlanStepResult {
   const ev = (event: PlanEventName, x: Partial<PlanEvent> = {}): PlanEvent => {
     const e: PlanEvent = {
       event, ticker: i.ticker, side: i.side, ruleId: i.ruleId, count, bid: bid ?? null, net: net ?? null, ...(banked !== 0 ? { banked } : {}), stop: s.stop ?? null, best: s.best ?? null, limit: null,
-      feeFloor: feeFloor ?? null, armUsd, stopMinUsd, trailUsd, clock, ...(loserCut > 0 ? { loserCut } : {}), ...(loserCutUsd > 0 ? { loserCutUsd } : {}),
+      feeFloor: feeFloor ?? null, armUsd, stopMinUsd, trailUsd, clock, ...(loserCut > 0 ? { loserCut } : {}),
+      ...(scaled ? { loserCutOpen: i.settings.loserCutOpen ?? loserCut, loserCutLate: i.settings.loserCutLate ?? loserCut } : {}), ...(loserCutUsd > 0 ? { loserCutUsd } : {}),
       at: i.now, tauSec: Math.round(i.tauSec * 10) / 10,
       ...(s.armedAt !== undefined ? { armedAt: s.armedAt } : {}), ...x,
     };
@@ -390,25 +436,28 @@ export function planStep(i: PlanStepInput): PlanStepResult {
   if (s.armed) out.notes.push(`plan ratchet armed: bid ${bid.toFixed(2)}, net ${usd(trade)}${bankedNote}, stop ${usd(s.stop!)}, best ${usd(s.best!)}`);
   else out.notes.push(`plan ratchet: net ${usd(trade)}${bankedNote}, arms at ${usd(armUsd)} (${clock} clock)`);
 
-  // 3. The loser cut, on the same clock: the bid PLAN_LOSER_CUT_C or more under the entry price, or the trade's net at or under
+  // 3. The loser cut, on the same clock: the bid the cut in force (planLoserCutAt: PLAN_LOSER_CUT_OPEN_C at the open, PLAN_LOSER_CUT_C
+  //    at 60% of the window, PLAN_LOSER_CUT_LATE_C from 85%) or more under the entry price, or the trade's net at or under
   //    minus PLAN_LOSER_CUT_USD. Sold the way the ratchet's sale is.
-  const cutLine = loserCut > 0 ? r4(cost - loserCut) : undefined;
+  const cutLine = cutNow.cut > 0 ? r4(cost - cutNow.cut) : undefined;
+  const cutC = (x: number) => `${Math.round(x * 1000) / 10}c`;
+  const when = cutNow.elapsed !== undefined && scaled ? `, ${Math.round(cutNow.elapsed * 100)}% of the window gone` : '';
   if (decide) {
     const byPrice = cutLine !== undefined && bid <= cutLine + EPS;
     const byUsd = loserCutUsd > 0 && trade <= -loserCutUsd + EPS;
     if (byPrice || byUsd) {
       s.selling = { kind: 'cut', since: i.now, tries: 0 };
       const what = byPrice
-        ? `bid ${bid.toFixed(2)} is ${Math.round((cost - bid) * 100)}c under the entry ${cost.toFixed(2)} (cut at ${Math.round(loserCut * 100)}c)`
+        ? `bid ${bid.toFixed(2)} is ${Math.round((cost - bid) * 100)}c under the entry ${cost.toFixed(2)} (cut at ${cutC(cutNow.cut)}${when})`
         : `net ${usd(trade)}${bankedNote} at bid ${bid.toFixed(2)} at or under -$${loserCutUsd.toFixed(2)}`;
       const sale = sell('cut', `plan loser cut: ${what}`);
       gap(sale);
-      ev('plan_loser_cut_sell', { limit: sale.sideLimit, since: i.now, entry: cost });
+      ev('plan_loser_cut_sell', { limit: sale.sideLimit, since: i.now, entry: cost, ...(cutNow.cut > 0 ? { cutAt: cutNow.cut } : {}), ...(cutNow.elapsed !== undefined ? { elapsed: cutNow.elapsed } : {}) });
       return out;
     }
   }
   if (cutLine !== undefined || loserCutUsd > 0) {
-    const lines = [cutLine !== undefined ? `bid at or under ${cutLine.toFixed(2)}` : '', loserCutUsd > 0 ? `net at or under -$${loserCutUsd.toFixed(2)}` : ''];
+    const lines = [cutLine !== undefined ? `bid at or under ${cutLine.toFixed(2)} (${cutC(cutNow.cut)}${when})` : '', loserCutUsd > 0 ? `net at or under -$${loserCutUsd.toFixed(2)}` : ''];
     out.notes.push(`plan loser cut: sells at ${lines.filter(Boolean).join(' or ')}`);
   }
 

@@ -36,11 +36,11 @@ import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid,
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { exitOnlyPlan, exitOnlyView, heldSideBid } from './strategy/exitOnlyLane';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
-import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
+import { HourlyQuotaPacer, planPacerLine, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
 import { HoldExits, type HoldReading } from './strategy/holdExit';
 import { ProfitRatchets, type RatchetReading } from './strategy/profitRatchet';
 import { PlanPositions, type PlanPosition } from './plan/planPositions';
-import { planBreakEvenUsd, planMarkTried, planStep, type PlanEvent, type PlanSale, type PlanSaleKind } from './plan/planRatchet';
+import { planBreakEvenUsd, planLoserCutAt, planMarkTried, planStep, type PlanEvent, type PlanSale, type PlanSaleKind } from './plan/planRatchet';
 import type { SinuousEntryGate } from './strategy/sinuousEntry';
 import { tennisHighLeverage, type CurveReading, type SinuousExitGate } from './strategy/sinuousExit';
 import type { TakeProfitBench } from './strategy/takeProfitBench';
@@ -283,7 +283,12 @@ export interface MarketStatus {
   /** The held position's reading of its coin's live line (bot/strategy/liveLine.ts): the break and the heads-up. */
   line?: LiveLineReading;
   /** PLAN_RULES on and the position opened by a plan rule: its ratchet (bot/plan/planRatchet.ts), for the dashboard. */
-  plan?: { ruleId: string; side: 'yes' | 'no'; armed: boolean; stop?: number; best?: number; selling?: PlanSaleKind; failedTries: number; gaps: number };
+  plan?: {
+    ruleId: string; side: 'yes' | 'no'; armed: boolean; stop?: number; best?: number; selling?: PlanSaleKind; failedTries: number; gaps: number;
+    /** The ratchet's arming net (dollars for the whole position), and the held side's bid the price cut sells at now (it moves
+     *  with the window: planLoserCutAt). */
+    armUsd?: number; cutAt?: number;
+  };
   /** The profit ratchet on a held position that is not a plan position (RATCHET, bot/strategy/profitRatchet.ts): armed, its best
    *  and its stop in dollars for the whole position, and whether it sells. */
   ratchet?: RatchetReading;
@@ -464,7 +469,7 @@ export class Engine {
     if (d.fillLogDir) this.fillLog = new FillLog(d.fillLogDir, (t) => d.md.books.get(t)?.mid(), this.now);
     this.pacer = new HourlyQuotaPacer(d.cfg.strategy.pacer, this.now(), d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'quota_pacer_state.json') : undefined);
     // One ratchet (Steven, Nov 11 8:53-8:58 AM EST / 13:53-13:58 UTC): a plan position's defaults are the profit ratchet's dollars.
-    this.planPositions = new PlanPositions({ ...d.cfg.strategy.profitRatchet, loserCut: d.cfg.strategy.plan.loserCut, loserCutUsd: d.cfg.strategy.plan.loserCutUsd }, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'plan_positions.json') : undefined);
+    this.planPositions = new PlanPositions({ ...d.cfg.strategy.profitRatchet, loserCut: d.cfg.strategy.plan.loserCut, loserCutOpen: d.cfg.strategy.plan.loserCutOpen, loserCutLate: d.cfg.strategy.plan.loserCutLate, loserCutUsd: d.cfg.strategy.plan.loserCutUsd }, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'plan_positions.json') : undefined);
     // Saved beside them as the plan's ratchets are: a restart or deploy must not lower an armed stop.
     this.profitRatchets = new ProfitRatchets(d.cfg.strategy.profitRatchet, d.cfg.dataDir && d.streakFiles !== false ? path.join(d.cfg.bookDir ?? d.cfg.dataDir, 'profit_ratchet_state.json') : undefined, this.now());
     if (d.snn) this.attachBlender(d.snn.blender);
@@ -2494,8 +2499,11 @@ export class Engine {
     // mandate (PROFIT_MANDATE, off by default) sells any position in profit outside the last share of the window, a hunt trailing
     // its stop excepted; a hunt that holds (HUNT_LOCK_SALE_ELSE=hold) is not excepted, so its reductions are not blocked.
     const pacerUsd = this.pacer.neededUsd(now);
-    // A plan position: the pacer reports pace only (Steven's decision 13): no target on it, no snipe, no floor, no group.
-    if (view.position !== 0) st.snipe = planPos ? { atUsd: undefined, nowUsd: netProfitAtBid(view), rides: false, closed: false } : { atUsd: pacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false };
+    // A plan position: the pacer reports pace only (Steven's decision 13) unless PACER_PLAN gives it a snipe line (Steven, Nov 12
+    // 1:10 AM EST / 06:10 UTC): 'hybrid' at the hour's need but never while the whole trade (what partial sales banked in) is
+    // under the ratchet's arming net, 'need' at the need alone (planPacerLine). No floor and no group on it either way.
+    const planPacerUsd = planPos ? planPacerLine(S.pacer.plan, pacerUsd, planPos.settings.armUsd, view.bankedUsd ?? 0) : undefined;
+    if (view.position !== 0) st.snipe = planPos ? { atUsd: planPacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false } : { atUsd: pacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false };
     // Steven's group rule (PACER_GROUP): this position, in profit after fees, is sold when the positions in profit together cover the target.
     const group = pacerUsd !== undefined && S.pacer.group ? this.snipeGroup.judge(m.ticker, !planPos && view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsd, now) : undefined;
     // PACER_FLOOR (Steven, Oct 31): under a higher target the quota is the position's stop. The hunt trailing its stop rides a
@@ -2518,7 +2526,7 @@ export class Engine {
     st.hold = view.position !== 0 ? hold : undefined;
     const holdOpt = hold && !(planPos && (planSale !== undefined || planPos.state.selling !== undefined)) ? { holdExit: hold } : {};
     const plan = decide(view, strat, planPos
-      ? { exits: false, entries: Boolean(reason) && !this.d.heat?.lane.holds(m.ticker), planHeld: true, planSelling: planSale !== undefined, ...holdOpt }
+      ? { exits: false, entries: Boolean(reason) && !this.d.heat?.lane.holds(m.ticker), planHeld: true, planSelling: planSale !== undefined, ...(planPacerUsd !== undefined ? { planPacerUsd } : {}), ...holdOpt }
       : { exits: !huntMode && S.exitPolicy !== 'hold', blockReductions: huntMode && !huntHold, entries: Boolean(reason) && !this.d.heat?.lane.holds(m.ticker), profitMandate: S.profitMandate && (!huntMode || huntHold) ? S.profitMandateMin : undefined, pacerUsd, ...(group?.sell ? { pacerGroup: group } : {}), ...floorOpts, ...holdOpt, ...(ratchet ? { ratchet } : {}) });
     if (plan.pacerArm && this.quotaFloors.arm(m.ticker, view.position, plan.pacerArm.usd)) this.d.audit.write('pacer', { event: 'floor', ticker: m.ticker, usd: plan.pacerArm.usd, why: plan.pacerArm.why, ...this.pacer.status(now) });
     // A quota snipe liquidates the position: the hunt's stop order would only double it (with HOLD_EXIT on, dropped in
@@ -2930,7 +2938,11 @@ export class Engine {
     });
     if (r.alert) this.d.alerter.notify('warn', `plan-sale-${m.ticker}`, r.alert);
     this.planPositions.setState(m.ticker, r.state);
-    st.plan = { ruleId: pp.ruleId, side: pp.side, armed: r.state.armed, stop: r.state.stop, best: r.state.best, selling: r.state.selling?.kind, failedTries: r.state.failedTries, gaps: r.state.gaps.length };
+    const cut = planLoserCutAt(pp.settings, (m.closeTime - now) / 1000, shareWindowSec(m.openTime, m.closeTime, cfg.strategy.shareWindowMaxSec)).cut;
+    st.plan = {
+      ruleId: pp.ruleId, side: pp.side, armed: r.state.armed, stop: r.state.stop, best: r.state.best, selling: r.state.selling?.kind, failedTries: r.state.failedTries, gaps: r.state.gaps.length,
+      armUsd: pp.settings.armUsd, ...(cut > 0 && entry !== undefined && entry > 0 && entry < 1 ? { cutAt: Math.round((entry - cut) * 1e4) / 1e4 } : {}),
+    };
     if (!r.sale) return { notes: r.notes, events: r.events };
     return { notes: r.notes, events: r.events, planSale: r.sale, sale: { side: r.sale.side, price: r.sale.price, count: r.sale.count, timeInForce: 'immediate_or_cancel', postOnly: false, reduceOnly: true, purpose: 'exit', edge: 0, why: r.sale.why, protective: true } };
   }
@@ -3352,7 +3364,7 @@ export class Engine {
       orderMin: cfg.strategy.orderUsdMin, orderMax: cfg.strategy.orderUsdMax, minSide: cfg.risk.minSidePrice, live: cfg.mode === 'live',
       windows: cfg.strategy, ...(blocked ? { entriesBlocked: blocked } : {}),
       // Heat positions are plan positions: never buy where the plan's loser cut would sell at the first look.
-      ...(cfg.strategy.plan.enabled && cfg.strategy.plan.loserCut > 0 ? { cutSpread: cfg.strategy.plan.loserCut } : {}),
+      ...(cfg.strategy.plan.enabled && cfg.strategy.plan.loserCut > 0 ? { cutSpread: cfg.strategy.plan.loserCut, cutOpen: cfg.strategy.plan.loserCutOpen, cutLate: cfg.strategy.plan.loserCutLate } : {}),
     });
     for (const a of res.alerts) this.d.alerter.notify('warn', 'heat-pilot', a);
     const sent = new Map<string, string>();

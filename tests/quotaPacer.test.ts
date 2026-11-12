@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { HourlyQuotaPacer, QuotaFloors, SnipeGroup, anchorAfter, anchorBefore, quotaCall, wallClock, wallToUtc, type PacerConfig } from '../bot/risk/quotaPacer';
+import { HourlyQuotaPacer, planPacerLine, QuotaFloors, SnipeGroup, anchorAfter, anchorBefore, quotaCall, wallClock, wallToUtc, type PacerConfig } from '../bot/risk/quotaPacer';
 import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions';
 import { loadConfig } from '../bot/config';
 
@@ -215,6 +215,13 @@ test('defaults: the pacer is on in slices mode; the group rule is off (Oct 30: i
   const p = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.pacer;
   assert.deepEqual([p.enabled, p.mode, p.group], [true, 'slices', false]);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_GROUP: 'true' }).strategy.pacer.group, true);
+  // On heat-lane (plan) positions: hybrid by default (Steven's card, Nov 12 1:13 AM EST / 06:13 UTC); need and off on request.
+  assert.equal(p.plan, 'hybrid');
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_PLAN: 'off' }).strategy.pacer.plan, 'off');
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_PLAN: 'on' }), /PACER_PLAN=on must be one of off, hybrid, need/);
+  // The perp loser cut (Steven, Nov 12 1:01 AM EST / 06:01 UTC): 15c a contract by default, 0 off.
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).perps.loserCut, 0.15);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PERP_LOSER_CUT_C: '0' }).perps.loserCut, 0);
 });
 
 test('quota floors (PACER_FLOOR, Steven Oct 31): armed at the need while a rule aims higher, kept per contract, raised never lowered, gone with the position', () => {
@@ -262,4 +269,20 @@ test('quota floors (PACER_FLOOR, Steven Oct 31): armed at the need while a rule 
   assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_FLOOR: 'maybe' }));
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.pacer.floorTicks, 8);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_FLOOR_TICKS: '0' }).strategy.pacer.floorTicks, 0);
+});
+
+test('planPacerLine (PACER_PLAN): hybrid snipes a heat position at the hour\'s need only once the whole trade, partial sales banked in, is at the ratchet\'s arming net', () => {
+  // Nothing banked: the line is the larger of the need and the $1.50 arm.
+  assert.equal(planPacerLine('hybrid', 0.75, 1.5), 1.5);
+  assert.equal(planPacerLine('hybrid', 3, 1.5), 3);
+  // A loser cut's partial fill banked -$0.53: the rest must net $2.03 for the trade to reach $1.50 (+$1.60 on the rest is not enough).
+  assert.ok(Math.abs(planPacerLine('hybrid', 0.75, 1.5, -0.53)! - 2.03) < 1e-9);
+  // A partial sale banked +$1.00: the trade reaches $1.50 with $0.50 on the rest, so the need decides.
+  assert.equal(planPacerLine('hybrid', 0.75, 1.5, 1), 0.75);
+  assert.equal(planPacerLine('hybrid', 0.75, 1.5, NaN), 1.5);
+  // 'need': the need alone; 'off', unset or no need (the pacer off): no line (decision 13, pace only).
+  assert.equal(planPacerLine('need', 0.75, 1.5, -0.53), 0.75);
+  assert.equal(planPacerLine('off', 0.75, 1.5), undefined);
+  assert.equal(planPacerLine(undefined, 0.75, 1.5), undefined);
+  assert.equal(planPacerLine('hybrid', undefined, 1.5), undefined);
 });
