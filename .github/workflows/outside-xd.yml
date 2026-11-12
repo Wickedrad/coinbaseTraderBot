@@ -1,0 +1,69 @@
+name: Outside data (OR-XD)
+
+# OR-XD: outside derivatives data for the heat curves (design: /mnt/project-files/outside-data/OR-XD-design.md).
+# Pushes drive it (a new workflow cannot be dispatched until it is on main). Tags in the HEAD commit message:
+#   none            nothing runs
+#   [xd-inventory]  read-only look at what Drive already holds under raw/ (names, sizes, upload dates, header and
+#                   first/last stamps of each CSV). Downloads NOTHING from Binance. Prints no market rows.
+# NEVER DOGE.
+
+on:
+  push:
+    branches: [claude/project-thread-8dnpsq]
+    paths: ['.github/workflows/outside-xd.yml', 'python/oracle/heat_outside.py', 'python/oracle/tests/test_heat_outside.py',
+            'python/oracle/prereg/OR-XD*.md']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: outside-xd-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  R: gdrive:kalshi-bot-archive
+
+jobs:
+  inventory:
+    if: ${{ contains(github.event.head_commit.message, '[xd-inventory]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: raw/ top level
+        run: |
+          set -uo pipefail
+          for d in raw derived models simulated; do
+            echo "::group::$d/"; rclone lsd "$R/$d" 2>&1 | awk '{print $NF}' | head -80; echo "::endgroup::"
+          done
+      - name: raw/perp-ta-history per coin (names, sizes, upload dates)
+        run: |
+          set -uo pipefail
+          for A in BTC ETH SOL XRP; do
+            echo "::group::raw/perp-ta-history/$A"
+            rclone lsl "$R/raw/perp-ta-history/$A" 2>&1 | awk '{ n=$4; for(i=5;i<=NF;i++) n=n" "$i; printf "%12d %s %s %s\n", $1, $2, substr($3,1,8), n }' | grep -v -E '/manifest|\.json$' | head -150
+            echo "::endgroup::"
+          done
+      - name: first/last rows of each CSV (stamps only; no price rows printed beyond the first and last)
+        run: |
+          set -uo pipefail
+          for A in BTC ETH SOL XRP; do
+            echo "::group::$A stamps"
+            rclone lsf "$R/raw/perp-ta-history/$A" -R --files-only --include '*.csv' 2>/dev/null | sort | while read -r f; do
+              p="$R/raw/perp-ta-history/$A/$f"
+              hdr=$(rclone cat "$p" --head 400 2>/dev/null | head -1)
+              first=$(rclone cat "$p" --head 400 2>/dev/null | sed -n 2p | cut -d, -f1)
+              last=$(rclone cat "$p" --tail 400 2>/dev/null | tail -1 | cut -d, -f1)
+              size=$(rclone size "$p" 2>/dev/null | awk '/Total size/ {print $3 $4}')
+              echo "$f | header: $hdr | first: $first | last: $last | $size"
+            done
+            echo "::endgroup::"
+          done
