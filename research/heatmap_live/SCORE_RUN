@@ -1,5 +1,5 @@
-from=2026-11-10T00:00:00Z
-to=2026-11-11T15:44:00Z
-runs=43049997658
+from=2026-11-11T15:47:00Z
+to=2026-11-12T14:25:00Z
+runs=43051376882,43138942198
 bot=true
-attempt=4 (Nov 10 audit day now on Drive: checks the bot fill reader on a real day)
+first look Thu Nov 12 9:30 AM EST (14:30 UTC): runs 43051376882 (segs 1, 9, 10 usable) and 43138942198 (segs 1-4); data hole Nov 11 17:25-21:01 UTC from the GitHub artifact outage; bot fills since Nov 11 22:32 UTC include heat-lane entries
