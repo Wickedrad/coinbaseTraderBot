@@ -1032,12 +1032,6 @@ function cutEnds(env: Env, prefix: string, span: string): { mid: number; open: n
   return { mid, open, late };
 }
 
-/** The tennis loser cut's three lines in dollars a contract (cutEnds; Steven, Nov 12). */
-function tennisLoserCut(env: Env): { loserCut: number; loserCutOpen: number; loserCutLate: number } {
-  const { mid, open, late } = cutEnds(env, 'TENNIS_LOSER_CUT', 'the match');
-  return { loserCut: mid / 100, loserCutOpen: open / 100, loserCutLate: late / 100 };
-}
-
 function bool(env: Env, key: string, def: boolean): boolean {
   const raw = env[key];
   if (raw === undefined || raw === '') return def;
@@ -1062,6 +1056,12 @@ function parseSizingTiers(raw: string | undefined, base: { risk: RiskLimits; str
   } catch (e) {
     throw new ConfigError(`SIZING_TIERS: ${(e as Error).message}`);
   }
+}
+
+/** The tennis loser cut's three lines in dollars a contract (cutEnds; Steven, Nov 12). */
+function tennisLoserCut(env: Env): { loserCut: number; loserCutOpen: number; loserCutLate: number } {
+  const { mid, open, late } = cutEnds(env, 'TENNIS_LOSER_CUT', 'the match');
+  return { loserCut: mid / 100, loserCutOpen: open / 100, loserCutLate: late / 100 };
 }
 
 /** "earliest,latest" seconds before close. */
