@@ -495,6 +495,21 @@ test('loser cut: a try that failed is called off once the position is back in pr
   assert.equal(w.events('plan_loser_cut_sell').length, 2);
 });
 
+test('loser cut by dollars: a sale whose trade is still at or under its line is not called off when the rest is back in profit, and its tries reach the alert', () => {
+  // 2 YES left at 0.50 after a part-filled cut banked -$1.30. At 0.56 the rest is +$0.08 after fees, the trade -$1.22.
+  const w = new Walk({ position: 2, entryPrice: 0.5, bankedUsd: -1.3, settings: { ...RATCHET, loserCutUsd: 1 } });
+  assert.equal(w.at(0.56).sale?.kind, 'cut');
+  for (let k = 1; k <= 3; k++) { w.sent(T0 + k * 1000); w.at(0.56, { now: T0 + k * 1000 + 500 }); }
+  assert.deepEqual(w.events('plan_loser_cut_cancel'), []);
+  assert.deepEqual([w.events('plan_loser_cut_sell').length, w.state.failedTries], [1, 3]);
+  assert.match(w.last.alert ?? '', /^Plan loser cut sale of 2 YES in KXBTC15M-T: 3 failed tries; now selling at the bid less 3 ticks$/);
+  // The price cut alone is called off as before: back at or above break-even after fees it is no loser.
+  const p = new Walk({ settings: { ...RATCHET, loserCut: 0.1 } });
+  p.at(0.3); p.sent();
+  assert.equal(p.at(0.45, { now: T0 + 1000 }).sale, undefined);
+  assert.equal(p.events('plan_loser_cut_cancel').length, 1);
+});
+
 test('NO side: the held side\'s bid is 1 - the YES ask; the sale buys YES at 1 - (NO bid less 2 ticks)', () => {
   // 10 NO bought at 0.40 (YES sold at 0.60). The NO bid 0.57 (YES ask 0.43): +$1.52, armed.
   const w = new Walk({ position: -10 });

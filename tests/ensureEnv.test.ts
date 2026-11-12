@@ -33,6 +33,9 @@ test('ensure-env: the retired HEAT_REENTER_AFTER_LOSS line is dropped, whatever 
     assert.deepEqual(env, ['TRADING_MODE=paper', '# HEAT_REENTER_AFTER_LOSS=false', 'PORT=3000'], v);
     assert.match(out, /HEAT_REENTER_AFTER_LOSS removed/);
   }
+  // Spaces and an `export ` in front still set it for the bot: dropped too. A longer name is not it.
+  const { env } = run(['  HEAT_REENTER_AFTER_LOSS=false', 'HEAT_REENTER_AFTER_LOSS =true', 'export HEAT_REENTER_AFTER_LOSS=1', 'HEAT_REENTER_AFTER_LOSS_X=1', 'PORT=3000']);
+  assert.deepEqual(env, ['HEAT_REENTER_AFTER_LOSS_X=1', 'PORT=3000']);
 });
 
 test('ensure-env: an unpinned bot.env is unchanged and the run is idempotent', () => {

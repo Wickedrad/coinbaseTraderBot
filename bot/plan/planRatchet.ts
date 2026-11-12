@@ -336,7 +336,10 @@ export function planStep(i: PlanStepInput): PlanStepResult {
     if (i.orderInFlight) { out.notes.push(`plan ${sel.kind} sale: an order is still working`); return out; }
     const failed = sel.lastTryAt !== undefined;
     if (failed) { s.failedTries++; sel.lastTryAt = undefined; }
-    if ((sel.kind === 'end' || sel.kind === 'cut') && net !== undefined && net >= -EPS) {
+    // A dollar cut whose trade (what partial sales banked plus the rest) is still at or under its line stays: calling it off
+    // would only decide it again below, at every look, and its failed tries would never reach the alert.
+    const cutStands = sel.kind === 'cut' && loserCutUsd > 0 && trade !== undefined && trade <= -loserCutUsd + EPS;
+    if ((sel.kind === 'end' || sel.kind === 'cut') && net !== undefined && net >= -EPS && !cutStands) {
       // The end rule and the loser cut never sell a winner: back at or above break-even after both fees, the sale is called off
       // and the position is judged afresh below (the ratchet on its clock, the loser cut, then the end rule).
       delete s.selling;

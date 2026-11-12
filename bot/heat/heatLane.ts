@@ -304,15 +304,18 @@ const sideCostOf = (m: TwoSided, side: 'yes' | 'no'): number => round(side === '
  *  the other one), while more than half of the window is left, at most HEAT_REENTRIES_15M / HEAT_REENTRIES_HOURLY times,
  *  and not once its losses reach HEAT_REENTRY_LOSS_STOP of one order. Undefined when it may go. */
 function reentryBlock(m: TwoSided, i: HeatDecideInput, barClose: number): string | undefined {
-  const l = i.state.losses?.[heatWindowKey(m.asset, m.kind, m.closeTs)];
-  if (!l) {
-    // A loss recorded before the count (a file from an older build): the old rule, not entered again.
-    return i.state.lossTickers[m.ticker] !== undefined ? 'the lane left this contract at a loss (recorded before re-entries were counted)' : undefined;
-  }
+  // A loss recorded by the build before the count (read from its file): the old rule, not entered again.
+  if (i.state.noReentry?.[m.ticker] !== undefined) return 'the lane left this contract at a loss before re-entries were counted: not entered again';
+  const key = heatWindowKey(m.asset, m.kind, m.closeTs);
+  const l = i.state.losses?.[key];
+  if (!l) return undefined;
   const what = m.kind === '15m' ? 'this 15-minute contract' : 'this hourly window';
   const cap = m.kind === '15m' ? i.cfg.reentries15m : i.cfg.reentriesHourly;
   const env = m.kind === '15m' ? 'HEAT_REENTRIES_15M' : 'HEAT_REENTRIES_HOURLY';
-  if (l.n > cap) return `the lane left ${what} at a loss ${l.n} times: ${cap} re-entries after a loss at most (${env})`;
+  // Re-entries made: those finished (any result) and those still open, each sent after the window's first loss.
+  const open = i.state.open.filter((o) => heatWindowKey(o.asset, o.kind, o.closeTs) === key && o.sentAt > l.firstAt).length;
+  const made = l.re + open;
+  if (made >= cap) return `${made} re-entr${made === 1 ? 'y' : 'ies'} into ${what} since its first loss: ${cap} at most (${env})`;
   const stop = i.cfg.reentryLossStop * l.stake;
   if (i.cfg.reentryLossStop > 0 && l.usd >= stop - EPS) {
     return `the lane's losses in ${what} ($${l.usd.toFixed(2)}) reached ${Math.round(i.cfg.reentryLossStop * 100)}% of one order ($${stop.toFixed(2)} of $${l.stake.toFixed(2)}, HEAT_REENTRY_LOSS_STOP)`;
