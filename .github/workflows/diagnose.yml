@@ -287,7 +287,6 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v5
-        if: inputs.timings == 'true'
       - name: Upload the report scripts
         if: inputs.timings == 'true'
         uses: appleboy/scp-action@v0.1.7
@@ -298,6 +297,17 @@ jobs:
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
           source: deploy/step_timings.py
           target: /tmp/diag
+      # The heat lane report (round trips, plan sales, re-entries after a loss) reads the audit log and the bot's log on
+      # the server; it goes to a folder of this run's own, removed after the report.
+      - name: Upload the heat trip report
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+          source: .github/scripts/heat_trips.py
+          target: /tmp/diag-heat-${{ github.run_id }}
       - name: Report
         uses: appleboy/ssh-action@v1.0.3
         env:
@@ -305,13 +315,14 @@ jobs:
           PNL: ${{ inputs.pnl }}
           TIMINGS: ${{ inputs.timings }}
           STUDY_HOURS: ${{ inputs.study_hours }}
+          DIAG_RUN: ${{ github.run_id }}
         with:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
           command_timeout: 55m
-          envs: EXTRA_PATHS,PNL,TIMINGS,STUDY_HOURS
+          envs: EXTRA_PATHS,PNL,TIMINGS,STUDY_HOURS,DIAG_RUN
           script: |
             # The dashboard API needs the dashboard password when one is set. It is read here, on the server, from
             # bot.env and handed to curl on stdin (never on a command line, never printed): it doesn't leave the box.
@@ -376,6 +387,17 @@ jobs:
             api /api/cpu | python3 -c 'import json,sys,time; d=json.load(sys.stdin); n=d.get("now") or {}; print("now", json.dumps({k: n.get(k) for k in ("processCores","threads","mainBusy","stealPct","iowaitPct","writeMBps","rssMb","heapUsedMb","externalMb","sections")})); print("state file writes since start", json.dumps(n.get("stateWrites"))); [print("  ", time.strftime("%H:%M", time.gmtime(h["ts"]/1000)), "cores", h["cores"], "main", h["mainBusy"], "steal%", h["stealPct"], "iowait%", h["iowaitPct"], "writeMB/s", h["writeMBps"], "rssMB", h["rssMb"], "heapMB", h.get("heapMb"), "extMB", h.get("extMb")) for h in (d.get("history") or [])[-18:]]' || true
             echo "== memory reading (heap = JS objects, ext = buffers outside the heap; largest collections the bot holds: at the first reading 5 min after start, an hour ago, now)"
             api /api/memory | python3 -c 'import json,sys,time; m=json.load(sys.stdin) or {}; T=lambda t: time.strftime("%H:%M", time.gmtime(t/1000)) if t else "-"; n=m.get("now") or {}; print("now", json.dumps({k: n.get(k) for k in ("rssMb","heapUsedMb","heapTotalMb","externalMb","arrayBuffersMb","spaces")})); f=m.get("first") or {}; print("first reading", T(f.get("at")), json.dumps({k: (f.get("heap") or {}).get(k) for k in ("rssMb","heapUsedMb","externalMb","arrayBuffersMb")})); print("walk", json.dumps(m.get("walk"))); [print("  %-60s %-6s first %-8s hour ago %-8s now %s" % (r["path"][:60], r["kind"], r["atFirst"], r["hourAgo"], r["n"])) for r in (m.get("largest") or [])[:20]]; print("grown since the first reading"); [print("  %-60s %-6s first %-8s now %s" % (r["path"][:60], r["kind"], r["atFirst"], r["n"])) for r in m.get("grown") or []]; print("long strings and buffers (characters / bytes)"); [print("  %-60s %-6s first %-8s hour ago %-8s now %s" % (r["path"][:60], r["kind"], r["atFirst"], r["hourAgo"], r["n"])) for r in m.get("blobs") or []]; print("hourly"); [print("  ", T(h["at"]), "rss", h["rssMb"], "heap", h["heapUsedMb"], "ext", h["externalMb"], "old", h["oldMb"], "large objects", h["largeObjectMb"]) for h in m.get("history") or []]' || echo "(no memory reading: it ships with the next release)"
+            echo "== heat lane, last 24 h: round trips, plan sales and call-offs (loser cut, ratchet, end rule), re-entries after a loss, calls not entered"
+            HT="/tmp/diag-heat-$DIAG_RUN/.github/scripts/heat_trips.py"
+            if [ -n "$DIAG_RUN" ] && [ -f "$HT" ]; then
+              # Each round trip's own result is in the bot's log line ("[heat] round trip closed"); the audit's closed record
+              # carries the lane book's running total.
+              journalctl -u kalshi-bot --since "24 hours ago" --no-pager -o cat 2>/dev/null | grep -F '[heat] round trip closed' > "/tmp/diag-heat-$DIAG_RUN/trips.log" || true
+              nice -n 19 python3 -I "$HT" ~/bot/data 24 --journal "/tmp/diag-heat-$DIAG_RUN/trips.log" || true
+            else
+              echo "(the heat trip report was not uploaded)"
+            fi
+            [ -n "$DIAG_RUN" ] && rm -rf "/tmp/diag-heat-$DIAG_RUN"
             echo "== perps, tennis and SNNs (neural map blocks: lit = pixels with a value; an all-dark block has none)"
             api /api/neural-map | python3 -c 'import json,sys; m=json.load(sys.stdin); [print("  %-6s %-24s lit %3d/%-3d score %-5s activity %.2f  %s" % (L["id"], b["label"][:24], sum(1 for c in b["cells"] if abs(c) > 0.01), len(b["cells"]), b["score"], b["activity"], str(b["note"])[:120])) for L in m.get("layers", []) if L["id"] in ("feeds", "snn", "models", "bots") for b in L["blocks"]]' || true
             api /api/status | python3 -c 'import json,sys; s=json.load(sys.stdin); p=s.get("perps") or {}; t=p.get("trading") or {}; print("perps feed", json.dumps(p.get("feed")), "| markets", [(m.get("asset"), m.get("ticker"), m.get("premiumBps") is not None, m.get("fundingRate") is not None) for m in p.get("markets") or []]); print("perps trading", json.dumps({k: t.get(k) for k in ("mode", "strategy", "signal", "modelError", "lastError", "dayHalt", "equity")}), "| keys", sorted(t.keys())[:24]); print("perps trading model", json.dumps(t.get("model"))[:400]); print("perps hedge", json.dumps(p.get("hedge"))[:300]); tn=s.get("tennis") or {}; ms=tn.get("matches") or []; print("tennis enabled", tn.get("enabled"), "| trading", tn.get("trading"), "| budget", json.dumps(tn.get("budget"))[:200], "| matches", len(ms)); [print("  ", x.get("event"), x.get("phase"), x.get("pA"), "score" if x.get("score") else "no score", str(x.get("scoreRaw"))[:80], (x.get("notes") or [])[:2]) for x in ms[:8]]' || true
