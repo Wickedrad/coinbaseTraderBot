@@ -2,7 +2,8 @@
 # the Lightsail box, whose burstable CPU cannot sustain the bot plus training (AUTO_TRAIN=remote on the
 # server, the default). Once a day, and manually from the Actions tab:
 #
-#   1. copies the server's data off it (read-only): the last DAYS days of recordings, the candle history,
+#   1. copies the server's data off it (read-only): the last DAYS days of recordings from FROM_DAY on (full-book days
+#      only, Nov 11 on: meta plan v2), the candle history,
 #      the models directory (pipeline state, tournaments in progress, journals) and the rest of ~/bot/data
 #   2. runs the pipeline here on the runner's own CPUs (no throttling; up to ~5 h, it checkpoints after
 #      every step, so a run cut short continues next time): first the models trained on the bot's own
@@ -19,8 +20,10 @@
 name: Remote training
 
 on:
-  schedule:
-    - cron: '17 7 * * *'
+  # Daily schedule HELD (meta plan v2, decision D1, Steven Nov 12 17:00 UTC / 12:00 PM EST): no model reaches the bot
+  # unchecked until the heat-safety check (T2) is in. Manual runs stay available. Put the two lines back with T2:
+  # schedule:
+  #   - cron: '17 7 * * *'
   workflow_dispatch:
     inputs:
       only:
@@ -31,6 +34,14 @@ on:
         description: 'Recorded days to copy from the server (most recent)'
         required: false
         default: '45'
+      from_day:
+        description: 'First recorded day (UTC, YYYY-MM-DD) training may read; older recordings are not copied. "none" = no limit'
+        required: false
+        default: '2026-11-11'
+      min_days:
+        description: 'Recorded days the SNN, MLP, perps and vol model need before they train (AUTO_TRAIN_MIN_DAYS) while from_day is set'
+        required: false
+        default: '7'
 
 permissions:
   contents: read
@@ -47,6 +58,10 @@ jobs:
     env:
       DAYS: ${{ inputs.days || '45' }}
       ONLY: ${{ inputs.only || '' }}
+      # Full-book recordings only (Steven, Nov 11: no recordings from before the empty-snapshot fix of Nov 10 03:44 UTC;
+      # meta plan v2 decision D2). The first whole full-book day is Nov 11. A scheduled run uses the default.
+      FROM_DAY: ${{ inputs.from_day || '2026-11-11' }}
+      FULL_MIN_DAYS: ${{ inputs.min_days || '7' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -113,7 +128,22 @@ jobs:
           rsync -a --bwlimit=8000 --rsync-path="nice -n 19 rsync" --exclude 'recordings/' --exclude 'logs/' --exclude 'audit*' --exclude '*.log' --exclude '.venv*' --exclude '*.tmp' --exclude 'models/work/history-walk/*/pbt/' --exclude 'models/work/history-walk/*/replay-state/' bot:bot/data/ "$DATA/" || vanished_ok
           # Recordings: the last DAYS days of market data plus every other file. Today's and yesterday's are
           # still plain JSON lines: compressed in transit (level 1, cheap on the server's CPU).
-          ssh bot "cd ~/bot/data/recordings && find . -type f \( ! -name 'md-*' -o -mtime -$DAYS \) -printf '%P\n'" > "$RUNNER_TEMP/recordings.txt"
+          ssh bot "cd ~/bot/data/recordings && find . -type f \( ! -name 'md-*' -o -mtime -$DAYS \) -printf '%P\n'" > "$RUNNER_TEMP/recordings-all.txt"
+          # From FROM_DAY on: a market-data day file (md-YYYY-MM-DD...) older than it is left on the server; every other file
+          # is copied as before. The thin-book days were also most of the copy (53 of its 74 minutes on Nov 11).
+          python3 - "$RUNNER_TEMP/recordings-all.txt" "$FROM_DAY" > "$RUNNER_TEMP/recordings.txt" <<'PY'
+          import re, sys
+          src, frm = sys.argv[1], sys.argv[2].strip()
+          keep = drop = 0
+          for line in open(src):
+              m = re.search(r'(?:^|/)md-(\d{4}-\d{2}-\d{2})', line)
+              if m and frm not in ('', 'none') and m.group(1) < frm:
+                  drop += 1
+                  continue
+              keep += 1
+              sys.stdout.write(line)
+          print(f'recordings: {keep} file(s) copied, {drop} day file(s) before {frm} left on the server', file=sys.stderr)
+          PY
           rsync -a --bwlimit=8000 --rsync-path="nice -n 19 rsync" --files-from="$RUNNER_TEMP/recordings.txt" bot:bot/data/recordings/ "$DATA/recordings/" || vanished_ok
           echo "copied $(wc -l < "$RUNNER_TEMP/recordings.txt") recording file(s); data $(du -sh "$DATA" | cut -f1)"
           # The server's settings without any credential, and without server paths (this runner has its own).
@@ -142,6 +172,9 @@ jobs:
           # every day it reads (8 to 11 minutes a day here), and the quick phase must fit its time as the recordings
           # grow. A value in bot.env wins.
           export AUTO_TRAIN_DECISION_DAYS="${AUTO_TRAIN_DECISION_DAYS:-4}"
+          # With the full-book limit on, the SNN, the MLP, the perps model and the vol model wait for FULL_MIN_DAYS recorded
+          # days (meta plan v2, T1): the models in use stay until then, rather than retraining on two or three days.
+          if [ -n "$FROM_DAY" ] && [ "$FROM_DAY" != none ]; then export AUTO_TRAIN_MIN_DAYS="$FULL_MIN_DAYS"; echo "recordings from $FROM_DAY; AUTO_TRAIN_MIN_DAYS=$AUTO_TRAIN_MIN_DAYS"; fi
           mkdir -p "$DATA/models/logs"
           LOG="$DATA/models/logs/pipeline-remote-$(date -u +%Y-%m-%dT%H-%M-%SZ).log"
           T0=$(date +%s)
@@ -191,18 +224,29 @@ jobs:
             # the four after it never ran. The short four go first (at most 75 minutes; tennis read 8 recorded days in 102
             # minutes on Oct 28 before it skipped the crypto books); the MLP's three get what is left of 260 minutes.
             # Limits are counted back from the deadline: the MLP's three end 40 minutes before it, so phase 2 always runs.
-            m=$(left_min 40); [ "$m" -gt 75 ] && m=75
-            run_pipeline "$m" --only perps,tennis,fill,sizing; first=$?
-            echo "quick phase, perps / tennis / fill / sizing: exit $first"; sync_models
-            run_pipeline "$(left_min 40)" --only vol_model,dataset,mlp; quick=$?
-            echo "quick phase, vol model / dataset / MLP: exit $quick"; sync_models
+            # Meta plan v2 (T1): with the full-book limit on and fewer than FULL_MIN_DAYS full-book days copied, no step
+            # that decides on recorded days runs (the pipeline's own DECISION_STEPS, plus the sweep and the SNN): the
+            # models in use stay, rather than retraining on one or two days. Phase 2 still runs everything else.
+            REC_STEPS=vol_model,dataset,mlp,tally_history,vol,perps,tennis,fill,session_risk,sizing,playbook,readiness,sweep,snn
+            full=$(grep -cE '(^|/)md-[0-9]{4}-[0-9]{2}-[0-9]{2}' "$RUNNER_TEMP/recordings.txt" || true)
+            SKIP=oracle_cull; first=0; quick=0
+            if [ -n "$FROM_DAY" ] && [ "$FROM_DAY" != none ] && [ "$full" -lt "$FULL_MIN_DAYS" ]; then
+              echo "only $full full-book day file(s) from $FROM_DAY (< $FULL_MIN_DAYS): steps on recorded days wait; the models in use stay"
+              SKIP="oracle_cull,$REC_STEPS"
+            else
+              m=$(left_min 40); [ "$m" -gt 75 ] && m=75
+              run_pipeline "$m" --only perps,tennis,fill,sizing; first=$?
+              echo "quick phase, perps / tennis / fill / sizing: exit $first"; sync_models
+              run_pipeline "$(left_min 40)" --only vol_model,dataset,mlp; quick=$?
+              echo "quick phase, vol model / dataset / MLP: exit $quick"; sync_models
+            fi
             case $quick in 0|124|137|143) quick=$first;; esac
             code=$quick
             # 2. Everything else until the deadline (at least 40 minutes). The oracle cull is left to the laptop
             # trainer: it builds TA rows for every coin over all of history (over 14 GB here) and runs weekly there; the TA
             # network and the Librarian read the oracle_cull.json the laptop sends.
             left=$(left_min)
-            if [ "$left" -gt 20 ]; then run_pipeline "$left" --skip oracle_cull; code=$?; fi
+            if [ "$left" -gt 20 ]; then run_pipeline "$left" --skip "$SKIP"; code=$?; fi
             # A failed step in the quick phase is not hidden by a second phase that finished.
             case $code in 0|124|137|143) case $quick in 0|124|137|143) ;; *) code=$quick;; esac;; esac
           fi
@@ -215,19 +259,27 @@ jobs:
         run: |
           python3 - "$GITHUB_WORKSPACE/data/models/reports" <<'PY'
           import glob, json, os, sys
-          reps = sorted(glob.glob(os.path.join(sys.argv[1], 'pipeline-*.json')))
+          # Every report this run wrote (one per phase), not only the last: a promotion in the quick phase showed nowhere
+          # before (meta plan v2, T0). A run that promotes nothing says so as a warning on the run's page.
+          t0 = float(os.environ.get('JOB_T0') or 0)
+          reps = sorted(f for f in glob.glob(os.path.join(sys.argv[1], 'pipeline-*.json')) if os.path.getmtime(f) >= t0)
           if not reps: print('no pipeline report'); sys.exit(0)
-          r = json.load(open(reps[-1]))
-          print(os.path.basename(reps[-1]), '| complete:', r.get('complete'), '| recorded days:', r.get('days'))
-          for st in r.get('steps') or []:
-              d = st.get('detail') if isinstance(st.get('detail'), dict) else {}
-              state = 'skipped' if st.get('skipped') else 'error' if not st.get('ok') else 'promoted' if d.get('promoted') else 'done'
-              print(f"  {st.get('step')}: {state} ({round((st.get('ms') or 0) / 60000, 1)} min)")
-              g = d.get('goLive')
-              if isinstance(g, dict): print(f"    go-live tally: {g.get('windows')} judged windows, {g.get('windowsTraded')} traded (each needs 1,000), over {g.get('days')} day(s)")
-              for src in ('recorded', 'history'):
-                  p = (g or {}).get(src) if isinstance(g, dict) else None
-                  if isinstance(p, dict): print(f"      {src}: {p.get('nWindows')} windows, {p.get('windowsTraded')} traded, P&L ${p.get('pnl')}, over {p.get('days')} day(s)")
+          promoted = []
+          for rp in reps:
+              r = json.load(open(rp))
+              print(os.path.basename(rp), '| complete:', r.get('complete'), '| recorded days:', r.get('days'))
+              for st in r.get('steps') or []:
+                  d = st.get('detail') if isinstance(st.get('detail'), dict) else {}
+                  state = 'skipped' if st.get('skipped') else 'error' if not st.get('ok') else 'promoted' if d.get('promoted') else 'done'
+                  if state == 'promoted': promoted.append(str(st.get('step')))
+                  print(f"  {st.get('step')}: {state} ({round((st.get('ms') or 0) / 60000, 1)} min)")
+                  g = d.get('goLive')
+                  if isinstance(g, dict): print(f"    go-live tally: {g.get('windows')} judged windows, {g.get('windowsTraded')} traded (each needs 1,000), over {g.get('days')} day(s)")
+                  for src in ('recorded', 'history'):
+                      p = (g or {}).get(src) if isinstance(g, dict) else None
+                      if isinstance(p, dict): print(f"      {src}: {p.get('nWindows')} windows, {p.get('windowsTraded')} traded, P&L ${p.get('pnl')}, over {p.get('days')} day(s)")
+          print('promoted this run:', ', '.join(promoted) if promoted else 'nothing')
+          if not promoted: print('::warning title=Remote training::no model was promoted this run')
           PY
 
       - name: Copy models and history back to the server
