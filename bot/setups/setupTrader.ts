@@ -725,9 +725,9 @@ export class SetupTrader {
         const t = openTrade(e.cand.sig, e.px, now, this.d.params.costs);
         if (!t) continue;
         // On probation (VALIDATION_GATES=monitor) an unvalidated lane trades at full size.
-        // A heat trade is always sized under the pilot cap, whatever the setup model's validation says, so a retrain that flips
-        // the model's verdict cannot resize it. Its heat weight, the lane's caps and the liquidation rule below still bind.
-        const pilot = t.kind === 'heat' || !gatePasses('setups', Boolean(this.model?.validated(t.lane)));
+        // A heat trade is never pilot-capped: its size comes from the heat weight and the lane's caps, so a retrain that flips the setup
+        // model's validation verdict cannot resize it. Chart setups keep the model-dependent pilot cap.
+        const pilot = t.kind === 'heat' ? false : !gatePasses('setups', Boolean(this.model?.validated(t.lane)));
         // Liquidation beyond the stop (bot/risk/liquidation.ts): the equity left after the open trades' losses at
         // their stops and their maintenance margin must carry this one to its stop with the buffer to spare. Also at
         // most half the exchange's leverage for the market.
