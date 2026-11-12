@@ -760,7 +760,7 @@ changes here, with one exception named as such (the fits' stopping rule) for the
   The relaunched run was cancelled at 35 minutes of progress and the whole study restarted from one commit, so that all 16
   series carry one code version.
 
-## Result of the study (written Nov 12 2026, 18:45 UTC / 1:45 PM EST, AFTER the league; nothing above was changed for it)
+## Result of the study (written Nov 12 2026, 18:22 UTC / 1:22 PM EST, AFTER the league; nothing above was changed for it)
 
 Run 43221480254 at 3cafcd1: all 16 series complete from one commit, league commit a7ab435, 3,668 pack rows, 0 live_ready (parity not run yet), warnings [] (summary.json, pack, league.md). Outputs: research/oracle_heat/hm2/, latest/hm2_pack.json, Drive models/oracle-heat/runs/43030435253/hm2/. B = 2025, the one check year (HM1 had already used it). Checked against model.csv.gz, summary.json and lists.csv.gz by reading the files, and attacked by a second reader (no look-ahead found: a perturbation test over 234 reading series, training labels end 240 minutes before 2025, the dead band uses past prices only).
 
