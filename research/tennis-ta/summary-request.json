@@ -1,5 +1,6 @@
 {
-  "run": "43173887974",
+  "run": "43237241052",
   "anchor": "A|s2|hs1prod|F1",
-  "note": "Exit study (calendar 10l/10n), second pass: adds the underdog leg by entry price band, tour and phase for six arms. Information only."
+  "detail": "all",
+  "note": "Fill-model check (calendar 10p/10s): the six exit settings of the exit study, fill F1 vs F0 (paper-style). Information only."
 }
