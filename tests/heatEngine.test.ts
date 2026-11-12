@@ -387,7 +387,7 @@ test('settings: every HEAT_* name with its default, DOGE dropped, values checked
   const c = loadConfig({ DASHBOARD_TOKEN: TOKEN, DATA_DIR: '/tmp/heat-cfg' }).heat;
   assert.deepEqual(c, {
     enabled: false, callsFile: path.resolve('/tmp/heat-cfg/heat_calls.json'), assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90,
-    entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 2, reentriesHourly: 3, reentryLossStop: 0.5, flatTrips: 30,
+    entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5, flatTrips: 30,
     pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip',
   });
   const set = loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_LANE: 'true', HEAT_ASSETS: 'btc, DOGE ,eth', HEAT_PERPS: 'gate', HEAT_PAIR_CONFLICT: 'pair', HEAT_CONTEXT: 'block', HEAT_CALLS_FILE: '/srv/calls.json', HEAT_PERP_HORIZONS: '240', HEAT_PERPS_DAILY: 'off' }).heat;

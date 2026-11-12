@@ -20,7 +20,7 @@ const NOW = T0 + 5 * S;
 /** The lane's settings at their defaults (HEAT_* in the spec). */
 const DEFAULTS = {
   enabled: true, callsFile: '', assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45,
-  sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 2, reentriesHourly: 3, reentryLossStop: 0.5,
+  sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5,
   flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip',
 };
 const settings = (o: Partial<HeatConfig> = {}): HeatConfig => ({ ...DEFAULTS, ...o }) as HeatConfig;
@@ -410,10 +410,10 @@ test('re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC): a fresh ca
   assert.match(reasons(btc15({ state: seasoned({ noReentry: { 'KXBTC15M-1015': NOW + 600 * S } }) }))[0], /left this contract at a loss before re-entries were counted: not entered again/);
 });
 
-test('re-entry after a loss: twice on a 15-minute contract, three times in an hourly window, never once the losses reach half of one order', () => {
-  // HEAT_REENTRIES_15M (2): re-entries made since the first loss, won or lost, are what count.
-  assert.equal(btc15({ state: lost15(1, 3) }).plans.length, 1);
-  assert.match(reasons(btc15({ state: lost15(2, 3) }))[0], /2 re-entries into this 15-minute contract since its first loss: 2 at most \(HEAT_REENTRIES_15M\)/);
+test('re-entry after a loss: three times on a 15-minute contract, six times in an hourly window, never once the losses reach half of one order', () => {
+  // HEAT_REENTRIES_15M (3; Steven, 8:08 PM EST / 01:08 UTC): re-entries made since the first loss, won or lost, are what count.
+  assert.equal(btc15({ state: lost15(2, 3) }).plans.length, 1);
+  assert.match(reasons(btc15({ state: lost15(3, 3) }))[0], /3 re-entries into this 15-minute contract since its first loss: 3 at most \(HEAT_REENTRIES_15M\)/);
   assert.match(reasons(btc15({ state: lost15(0, 1), cfg: settings({ reentries15m: 0 }) }))[0], /0 re-entries into this 15-minute contract since its first loss: 0 at most/);
   // HEAT_REENTRY_LOSS_STOP (0.5 of one order): $4.99 of a $10 stake still goes, $5.00 does not; 0 turns it off.
   assert.equal(btc15({ state: lost15(1, 4.99) }).plans.length, 1);
@@ -426,23 +426,24 @@ test('re-entry after a loss: twice on a 15-minute contract, three times in an ho
   });
   assert.equal(late(451).plans.length, 1);
   assert.match(reasons(late(450))[0], /a re-entry after a loss needs more than half of the window left \(450 s of 900 s\)/);
-  // The hourly window counts all of its strikes together (HEAT_REENTRIES_HOURLY 3): two re-entries on other strikes still
-  // let the strike nearest 50c go; three do not, and an open re-entry on another strike counts.
+  // The hourly window counts all of its strikes together (HEAT_REENTRIES_HOURLY 6): five re-entries on other strikes still
+  // let the strike nearest 50c go; six do not, and an open re-entry on another strike counts.
   const hourClose = NOW + 2400 * S;
   const key = heatWindowKey('BTC', 'hourly', hourClose);
   const hour = (re: number, o: Partial<HeatLaneState> = {}, cfg = settings()) => decide({
     cfg, snapshot: snap({ BTC: [hourRow()] }), markets: [hourly('60000', 0.5, { closeTs: hourClose })],
     state: seasoned({ lossTickers: { 'KXBTCH-59000': hourClose }, losses: { [key]: { firstAt: NOW - 20 * MIN, re, n: 1, usd: 3, stake: 10, at: NOW - 2 * MIN, closeTs: hourClose } }, ...o }),
   });
-  assert.equal(hour(2).plans.length, 1);
-  assert.match(reasons(hour(3))[0], /3 re-entries into this hourly window since its first loss: 3 at most \(HEAT_REENTRIES_HOURLY\)/);
+  assert.equal(hour(5).plans.length, 1);
+  assert.match(reasons(hour(6))[0], /6 re-entries into this hourly window since its first loss: 6 at most \(HEAT_REENTRIES_HOURLY\)/);
   const other = openPos('BTC', { ticker: 'KXBTCH-61000', kind: 'hourly', h: 60, closeTs: hourClose, sentAt: NOW - 5 * MIN });
-  assert.match(reasons(hour(2, { open: [other] }, settings({ maxPerCoin: 2 })))[0], /3 re-entries into this hourly window/);
-  assert.equal(hour(2, { open: [{ ...other, sentAt: NOW - 30 * MIN }] }, settings({ maxPerCoin: 2 })).plans.length, 1, 'an entry from before the first loss is not a re-entry');
+  assert.match(reasons(hour(5, { open: [other] }, settings({ maxPerCoin: 2 })))[0], /6 re-entries into this hourly window/);
+  assert.equal(hour(5, { open: [{ ...other, sentAt: NOW - 30 * MIN }] }, settings({ maxPerCoin: 2 })).plans.length, 1, 'an entry from before the first loss is not a re-entry');
 });
 
-test('re-entry after a loss, through the book: a re-entry that wins still counts, so a 15-minute contract takes two re-entries at most', () => {
-  // The contract has 14 minutes to its close at the first entry; each round trip closes 2 minutes after its entry.
+test('re-entry after a loss, through the book: a re-entry that wins still counts, so a 15-minute contract takes three re-entries at most', () => {
+  // The contract has 14 minutes to its close at the first entry; each round trip closes 10 s after its entry, and the next
+  // call two minutes on is the first past the 60 s cooldown.
   const m = m15('BTC', { closeTs: NOW + 840 * S, openTs: NOW - 60 * S });
   const lane = new HeatLane(settings());
   const trip = (k: number, pnl: number) => {
@@ -451,13 +452,14 @@ test('re-entry after a loss, through the book: a re-entry that wins still counts
     if (!r.plans.length) return r.skips.at(-1)?.reason ?? 'no plan';
     lane.sent(r.plans[0], t + 5 * S, 0, 0);
     lane.sync(t + 6 * S, positions({ [TICKER]: FILLED }));
-    lane.sync(t + 2 * MIN, positions({ [TICKER]: { yes: 0, netCash: pnl, fees: 0 } }));
+    lane.sync(t + 15 * S, positions({ [TICKER]: { yes: 0, netCash: pnl, fees: 0 } }));
     return 'entered';
   };
-  assert.equal(trip(0, -2.7), 'entered', 'the first entry, cut');
-  assert.equal(trip(3, 0.8), 'entered', 're-entry 1 wins');
-  assert.equal(trip(6, -1.2), 'entered', 're-entry 2 loses');
-  assert.match(trip(9, 0), /2 re-entries into this 15-minute contract since its first loss: 2 at most/);
+  assert.equal(trip(0, -1.2), 'entered', 'the first entry, cut');
+  assert.equal(trip(2, 0.8), 'entered', 're-entry 1 wins');
+  assert.equal(trip(4, -1.2), 'entered', 're-entry 2 loses');
+  assert.equal(trip(6, 0.5), 'entered', 're-entry 3 wins');
+  assert.match(trip(8, 0), /3 re-entries into this 15-minute contract since its first loss: 3 at most/);
 });
 
 test('re-entry: a contract already traded is entered again only while more than half of its window is left', () => {

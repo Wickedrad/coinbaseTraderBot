@@ -1137,10 +1137,10 @@ function heatConfig(env: Env, dataDir: string): HeatConfig {
     maxOpen: whole('HEAT_MAX_OPEN', 2, 0, 20),
     maxPerCoin: whole('HEAT_MAX_PER_COIN', 1, 1, 10),
     cooldownSec: num(env, 'HEAT_COOLDOWN_SEC', 60, 0, 86_400),
-    // Re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC: "limited to twice ... per specific 15 minute contract.
-    // And limited to 3 times on 1 hour contracts"; his card at 7:05 PM EST / 00:05 UTC added the half-order loss stop).
-    reentries15m: whole('HEAT_REENTRIES_15M', 2, 0, 20),
-    reentriesHourly: whole('HEAT_REENTRIES_HOURLY', 3, 0, 20),
+    // Re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC; his card at 7:05 PM EST / 00:05 UTC added the half-order
+    // loss stop; 8:08 PM EST / 01:08 UTC: "Maybe the re-entry should be more. Like 3 and 6 instead").
+    reentries15m: whole('HEAT_REENTRIES_15M', 3, 0, 20),
+    reentriesHourly: whole('HEAT_REENTRIES_HOURLY', 6, 0, 20),
     reentryLossStop: num(env, 'HEAT_REENTRY_LOSS_STOP', 0.5, 0, 10),
     flatTrips: whole('HEAT_FLAT_TRIPS', 30, 0, 100_000),
     pilotLossUsd: num(env, 'HEAT_PILOT_LOSS_USD', 15, 0, 1e6),
