@@ -10,7 +10,7 @@ now = time.time()
 since_day = time.strftime('%Y-%m-%d', time.gmtime(now - (days - 1) * 86400))
 
 def kind_of(t):
-    if t.startswith('KXATP'): return 'tennis'
+    if t.startswith(('KXATP', 'KXWTA')): return 'tennis'
     if '15M-' in t: return 'updown15m'
     seg = t.rsplit('-', 1)[-1]
     if seg.startswith('T'): return 'greater'
@@ -103,7 +103,7 @@ if live_block:
     print(f"\n== live-equivalent realized P&L (paper trades live would also have made; tags since {first[5:16]} UTC)")
     byh = collections.defaultdict(lambda: [0.0, 0.0, 0])
     for x in settles:
-        if x['ts'] < first or x['ticker'].startswith('KXATP'): continue
+        if x['ts'] < first or x['ticker'].startswith(('KXATP', 'KXWTA')): continue
         tot, blk = entry_ct.get(x['ticker'], [0.0, 0.0])
         share = 1 - blk / tot if tot > 0 else 1.0
         b = byh[hour(x['ts'])]; b[0] += x['realized']; b[1] += x['realized'] * share; b[2] += 1
