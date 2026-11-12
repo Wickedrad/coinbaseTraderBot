@@ -1,4 +1,4 @@
-"""OFFLINE helper (run by hand in the cloud session, never in CI): build data/exits.csv from the trips table and the
+"""OFFLINE helper (run by hand in the cloud session, never in CI): build exits.csv from the trips table and the
 plan sale events printed in the public diagnose log. Stdlib only.
 
   python3 -I build_exits.py --trips trips-joined.csv --log diag.log --out exits.csv

@@ -398,3 +398,17 @@ class BuildExits(unittest.TestCase):
     def test_unmatched_trip_is_counted(self):
         rows, stats = build_exits.build(self.trips(), [])
         self.assertEqual((stats['no_event'], len(rows)), (1, 1))
+
+
+class CommittedList(unittest.TestCase):
+    PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "exits.csv")
+
+    @unittest.skipUnless(os.path.exists(PATH), 'no exit list committed yet')
+    def test_list_is_valid_and_minimal(self):
+        with open(self.PATH, newline='') as fh:
+            self.assertEqual(next(csv.reader(fh)), COLUMNS)        # exactly the minimal columns: no price paid, profit or strike
+        exits = load_exits(self.PATH)                              # floor, DOGE, side and event checks run in the loader
+        self.assertEqual(len({e.n for e in exits}), len(exits))
+        self.assertTrue(all(e.t0_src == ('plan_at' if e.etype == 'ratchet' else 'closed_utc') for e in exits))
+        self.assertTrue(all(e.ref_bid_u is not None for e in exits if e.etype == 'ratchet'))
+        self.assertTrue(all(e.ref_bid_u is None for e in exits if e.etype == 'other_sale'))

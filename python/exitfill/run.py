@@ -1,4 +1,4 @@
-"""Entry point: python -m exitfill.run --capture DIR --out FILE [--run python/exitfill/RUN] [--exits python/exitfill/data/exits.csv]
+"""Entry point: python -m exitfill.run --capture DIR --out FILE [--run python/exitfill/RUN] [--exits python/exitfill/exits.csv]
 
 Reads the request, runs the guard, loads ONLY books/markets files of the named artifacts inside the window, replays the
 exit list against them and writes the card (aggregates only)."""
@@ -64,7 +64,7 @@ def main(argv=None) -> int:
     ap.add_argument('--capture', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--run', default=os.path.join(HERE, 'RUN'))
-    ap.add_argument('--exits', default=os.path.join(HERE, 'data', 'exits.csv'))
+    ap.add_argument('--exits', default=os.path.join(HERE, "exits.csv"))
     a = ap.parse_args(argv)
     req_raw = read_run(a.run)
     req = check_request(req_raw)

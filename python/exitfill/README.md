@@ -14,7 +14,7 @@ fallback IOC have cost?
 
 * Heat shadow capture books (public Kalshi YES books, top 3 levels, about every 10 s), six 3-hour segments, rows kept
   for 2026-11-11T22:55Z to 2026-11-12T13:00Z. Only `books.jsonl.gz` and `markets.jsonl.gz` are opened.
-* `data/exits.csv`: the 105 non-urgent paper exits (74 `plan_ratchet_sell`, 31 `other_sale`). Columns: ticker, held
+* `exits.csv`: the 105 non-urgent paper exits (74 `plan_ratchet_sell`, 31 `other_sale`). Columns: ticker, held
   side, exit event, decision time, contracts, the bid the bot logged and its IOC limit (ratchet only). **No entry price,
   profit or strike**, so no per-trip profit can be rebuilt from it. Built offline by `build_exits.py`.
 * Floor 2026-11-10T03:44Z (`guard.py` aborts before any download). DOGE is never read.
