@@ -21,10 +21,11 @@ export type AuditKind =
   | 'recon_ok' | 'recon_break' | 'recon_repair' | 'recon_pending' | 'recon_adopt'
   | 'kill_engaged' | 'kill_reset' | 'kill_suppressed' | 'training'
   | 'data_stale' | 'data_gap'
-  | 'vault' | 'pacer'
+  | 'vault' | 'pacer' | 'plan'
   | 'snn'
   | 'modules'
   | 'waterfall'
+  | 'heat'
   | 'alert' | 'error';
 
 export interface AuditRecord {

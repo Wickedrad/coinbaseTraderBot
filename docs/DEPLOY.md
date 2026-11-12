@@ -2,11 +2,16 @@
 
 ## How it works now (open on the static IP, auto-deploy)
 
-- **Every push to `main` deploys.** Opening a PR only runs CI (typecheck, tests, build). When the PR is merged, the **Deploy** workflow tests and builds again, uploads the release to the server and restarts the bot. No manual step.
+- **Every push to `main` that changes bot code deploys.** Opening a PR only runs CI (typecheck, tests, build). When the PR is merged, the **Deploy** workflow tests and builds again, uploads the release to the server and restarts the bot. No manual step.
+- **Research-only pushes skip the deploy** (since Nov 11): when nothing changed since the last deploy reaches the server (docs, python apart from the heat reader's files, tests, other workflows, research files the release does not bundle; the list is in `deploy/deploy-scope.ts`), the run's summary says `research-only: <files>; bot not restarted`. `[skip deploy]` in the message no longer skips a push that changes bot code: it deploys with a warning. Do not put `[skip ci]` on merges to `main`: it stops GitHub from starting any workflow, so a bot change merged with it gets no deploy of its own and ships with the next deploy, whose summary warns that it was batched. When the last deploy cannot be looked up (GitHub API error), the push deploys.
 - The dashboard is at **http://54.145.7.203:3000/** (the Lightsail static IP). It opens without a login, unless you set a dashboard password (below).
 - A bad release rolls itself back: if the service doesn't start, or the dashboard doesn't answer on port 3000 after the restart, the previous release is put back.
 - Each release lives in `~/releases/<name>` on the server (the 5 newest are kept). `~/bot/current` points at the live one.
 - Models, recordings and state are in `~/bot/data` and survive every deploy.
+
+### Heat curve reader (beside the bot, runs while `HEAT_LANE=true`)
+
+The heat lane's curve reader (`docs/HEAT_READER.md`) is a small Python service, `heat-reader`, that runs beside the bot from the release itself. Every release whose commit has them ships `python/heat_reader` and `python/oracle` (without their tests, fixtures, preregistration notes and markdown) and the oracle run's packs, `research/oracle_heat/latest/*.json` and `RUN` (not the league tables); the list is `HEAT_SHIP` in `deploy/deploy-scope.ts`, and a push that changes only those files deploys (the rest of `research/oracle_heat` never does). A commit without them ships nothing extra (`python/oracle` and the packs are on `main` since #328, the reader and its installer since #327). Their upload is part of the release's: if it fails, the run fails before activation and the bot keeps its release. After the bot is up and its dashboard answers, `deploy/activate.sh` runs the release's `deploy/heat_reader_install.sh` when it has one: with `HEAT_LANE=true` in `~/bot/bot.env` it builds the reader's venv (pip: minutes the first time, cut off after 15) and starts the reader, otherwise it stops it. It runs with the kernel's highest OOM score, so a pip build that runs the server out of memory is killed instead of the bot. It never fails a deploy and never rolls the bot back: when the reader cannot start, the deploy log says `heat reader: NOT running` with the reason, the reader is stopped and disabled (no reader from an earlier release keeps running beside the new bot), and the bot runs as before. `rollback.sh` makes the reader follow the release it rolls back to (stopped when that release has no reader). On this server the lane is switched on by the deploy itself: from a release that ships the installer, `deploy/ensure-env.sh` adds `HEAT_LANE=true` to a `bot.env` that has no `HEAT_LANE` line, and then `PLAN_RULES=true` when that line is missing too (the lane's positions are plan positions, and the bot refuses `HEAT_LANE=true` without it). A line already there is never changed, so `HEAT_LANE=false` keeps the lane and its reader off across deploys; live trading stays behind its own switch. After changing `HEAT_LANE`, run `bash ~/bot/current/deploy/heat_reader_install.sh`. The Server diagnostics workflow reports it under `== heat reader`.
 
 ### One-time setup (only if the old bot's repo secrets are not already in this repo)
 
@@ -31,10 +36,10 @@ If the old bot is running under the same `kalshi-bot` service name, the first de
 |---|---|
 | Logs | `journalctl -u kalshi-bot -f` |
 | Status | `systemctl status kalshi-bot` |
-| Roll back to the previous release | `bash ~/bot/current/deploy/rollback.sh` |
+| Roll back to the previous release | `bash ~/bot/current/deploy/rollback.sh` (research-only pushes leave it in place; the next push that changes bot code deploys `main`) |
 | Change settings | edit `~/bot/bot.env`, then `sudo systemctl restart kalshi-bot` |
 | Redeploy without a code change | Actions tab → Deploy → Run workflow |
-| Deploy a tagged release | same, entering the tag (e.g. `v2.1.0`) |
+| Deploy a tagged release | same, entering the tag (e.g. `v2.1.0`); it stays until a push changes bot code |
 | Import history CSVs | `ssh ubuntu@54.145.7.203 mkdir -p ~/incoming`, `scp *.csv ubuntu@54.145.7.203:~/incoming/`, then `bash ~/bot/current/deploy/history.sh import ~/incoming` |
 | Download / refresh history now | `bash ~/bot/current/deploy/history.sh binance` and `... coinbase` (the daily pipeline does this too) |
 | One-off BTC.D / USDT.D history from TradingView | `bash ~/bot/current/deploy/history.sh tradingview` (needs `sudo apt install python3-venv git` once; docs/TA_NETWORK.md) |

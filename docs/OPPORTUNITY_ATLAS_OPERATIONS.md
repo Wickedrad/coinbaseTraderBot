@@ -430,8 +430,9 @@ prefixes on GitHub. Source/model/dataset hashes, actual fitted head types and
 current-code validation are recorded in `OPPORTUNITY_ATLAS_PRODUCT_VALIDATION.json`.
 
 The owner authorized the separate prospective study and main merges. Use a merge
-commit subject containing `[skip deploy]`; deployment and automatic trainer
-publishing skip that push. Windows package smoke checks use a local synthetic ZIP
+commit subject containing `[skip deploy]`; automatic trainer publishing skips that push.
+Since Nov 11 the deploy skips by changed files instead: a research-only merge skips without the tag, and one touching bot code deploys despite it (`deploy/deploy-scope.ts`); `[skip ci]` is not needed for that and would deny a bot change its own deploy.
+Windows package smoke checks use a local synthetic ZIP
 and exclude history downloads; fresh Atlas acquisition stays tvdatafeed-only.
 Deployment/live enablement still require approval. Models stay paper-only, and
 unsupported queries abstain. New holdout observations must follow real artifact

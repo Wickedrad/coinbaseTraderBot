@@ -1,0 +1,66 @@
+{
+ "coin": "XRP",
+ "window_bars": 3000,
+ "days": 3,
+ "minutes_checked": 1358,
+ "readings": 1344,
+ "edges": {
+  "same_as_meta": 624,
+  "different": 0,
+  "different_names": [],
+  "max_abs_diff": 0.0
+ },
+ "per_timeframe": {
+  "context": {
+   "bar_closes": 288,
+   "identical_key_sets": 288,
+   "keys_both": 1728,
+   "engine_only": 0,
+   "live_only": 0
+  },
+  "1m": {
+   "bar_closes": 1358,
+   "identical_key_sets": 1065,
+   "keys_both": 47485,
+   "engine_only": 0,
+   "live_only": 322
+  },
+  "5m": {
+   "bar_closes": 864,
+   "identical_key_sets": 864,
+   "keys_both": 30459,
+   "engine_only": 0,
+   "live_only": 0
+  },
+  "15m": {
+   "bar_closes": 288,
+   "identical_key_sets": 288,
+   "keys_both": 10280,
+   "engine_only": 0,
+   "live_only": 0
+  },
+  "60m": {
+   "bar_closes": 72,
+   "identical_key_sets": 72,
+   "keys_both": 2562,
+   "engine_only": 0,
+   "live_only": 0
+  }
+ },
+ "keys_both": 92514,
+ "engine_only": 0,
+ "live_only": 322,
+ "agreement": 0.99653,
+ "readings_that_differ": [
+  [
+   "1m:PVI",
+   197
+  ],
+  [
+   "1m:PVI sign",
+   125
+  ]
+ ],
+ "table_sha256": "3699259117c03e54eed509802208a55d643748ee8b40fe2655a348fe7567fc75",
+ "seconds": 98
+}

@@ -1,0 +1,22 @@
+name: Heat map live test probe
+# Research only. Public endpoints; prints statuses and field names; no secrets.
+on:
+  push:
+    branches: [claude/project-thread-rvpht4]
+    paths: ['research/heatmap_live/probe.py', '.github/workflows/heatmap-live-probe.yml']
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: python3 research/heatmap_live/probe.py
+      - name: Post the probe summary as a commit comment
+        if: always()
+        run: |
+          python3 -c 'import json; print(json.dumps({"body": "Heat map live test: runner probe (public endpoints)\n\n" + open("probe_summary.md").read()}))' > "$RUNNER_TEMP/c.json"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input "$RUNNER_TEMP/c.json" --jq .html_url

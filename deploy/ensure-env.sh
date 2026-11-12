@@ -64,6 +64,35 @@ done
 # The paper pool is $200 (the owner, Oct 30): a bot.env pinned to the old $100 drops it, so the new default applies (the
 # bot tops the paper account up to it once); any other value is left alone.
 if grep -qxF 'PAPER_BANKROLL_USD=100' "$ENV"; then edit_env '^PAPER_BANKROLL_USD=100$'; echo "PAPER_BANKROLL_USD=100 removed from $ENV (the paper pool is \$200)"; fi
+# Edge-plan cleanup (#321, Steven's go-ahead Nov 11, 8:05 AM EST / 13:05 UTC): the session-edge entry blackout and the
+# model-health halt are off by default (SESSION_EDGE_NO_ENTRY follows AUTO_TRAIN; MODEL_HEALTH_HALT false). A bot.env that
+# still pins either on drops the line, so the defaults apply; any other value is left alone.
+for old in 'SESSION_EDGE_NO_ENTRY=true' 'SESSION_EDGE_NO_ENTRY=1' 'MODEL_HEALTH_HALT=true' 'MODEL_HEALTH_HALT=1'; do
+  if grep -qxF "$old" "$ENV"; then edit_env "^${old}\$"; echo "${old} removed from $ENV (off by default since #321)"; fi
+done
+# Hunt mode is no longer blocked by the session (Steven, Nov 11: "Don't block hunt mode anymore", 6:42 PM EST / 23:42 UTC):
+# HUNT_SESSION_GUARD is off by default. A bot.env that still pins the old default (true) drops the line, so the new default
+# applies; any other value is left alone.
+for old in 'HUNT_SESSION_GUARD=true' 'HUNT_SESSION_GUARD=1'; do
+  if grep -qxF "$old" "$ENV"; then edit_env "^${old}\$"; echo "${old} removed from $ENV (hunt mode runs in every session)"; fi
+done
+# The heat lane on in this server's bot.env (Steven, Nov 11: "I want todays curves in todays live and paper trading",
+# 10:49 AM EST / 15:49 UTC; "Merge once it is ready", 2:11 PM EST / 19:11 UTC). Only from a release that ships the curve
+# reader's installer (the lane's own deploy onward). A bot.env with no HEAT_LANE line gets HEAT_LANE=true; then, while
+# HEAT_LANE is true, one with no PLAN_RULES line gets PLAN_RULES=true (the lane's positions are plan positions: the
+# bot refuses HEAT_LANE=true without it). A value already there is never changed, so HEAT_LANE=false turns the lane and
+# its reader off for good (deleting the line turns it back on at the next deploy). Live trading stays behind its own
+# switch; this sets only the lane's two.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$HERE/heat_reader_install.sh" ]; then
+  if ! grep -q '^HEAT_LANE=' "$ENV"; then edit_env '^HEAT_LANE=' 'HEAT_LANE=true'; echo "HEAT_LANE=true added to $ENV (heat lane on; HEAT_LANE=false turns it off)"; fi
+  lane="$(grep '^HEAT_LANE=' "$ENV" | tail -1 | cut -d= -f2- | tr -d '"'"'" | tr '[:upper:]' '[:lower:]')"
+  if [ "$lane" = true ] || [ "$lane" = 1 ]; then
+    if ! grep -q '^PLAN_RULES=' "$ENV"; then edit_env '^PLAN_RULES=' 'PLAN_RULES=true'; echo "PLAN_RULES=true added to $ENV (the heat lane's positions are plan positions)"; fi
+    rules="$(grep '^PLAN_RULES=' "$ENV" | tail -1 | cut -d= -f2- | tr -d '"'"'" | tr '[:upper:]' '[:lower:]')"
+    if [ "$rules" != true ] && [ "$rules" != 1 ]; then echo "warning: HEAT_LANE=true but PLAN_RULES=$rules in $ENV: the bot refuses to start that way; set one of them"; fi
+  fi
+fi
 if [ -n "${DASHBOARD_PASSWORD:-}" ] && ! grep -qxF "DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD" "$ENV"; then
   edit_env '^DASHBOARD_PASSWORD=' "DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD"
   echo "dashboard password set from the deploy"
