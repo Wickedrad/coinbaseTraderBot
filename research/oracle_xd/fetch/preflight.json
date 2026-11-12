@@ -1,0 +1,655 @@
+{
+ "assets": {
+  "BTC": {
+   "aggTrades": {
+    "perp": {
+     "per_year": {
+      "": {
+       "bytes": 417496454,
+       "files": 1,
+       "largest_bytes": 417496454
+      },
+      "2019": {
+       "bytes": 1518388,
+       "files": 1,
+       "largest_bytes": 1518388
+      },
+      "2020": {
+       "bytes": 2607694090,
+       "files": 12,
+       "largest_bytes": 455123064
+      },
+      "2021": {
+       "bytes": 10347337386,
+       "files": 12,
+       "largest_bytes": 1389535988
+      },
+      "2022": {
+       "bytes": 7373845941,
+       "files": 12,
+       "largest_bytes": 977571627
+      },
+      "2023": {
+       "bytes": 5364948834,
+       "files": 12,
+       "largest_bytes": 767678501
+      },
+      "2024": {
+       "bytes": 6819630811,
+       "files": 12,
+       "largest_bytes": 847406944
+      },
+      "2025": {
+       "bytes": 6703259698,
+       "files": 12,
+       "largest_bytes": 776936266
+      },
+      "2026": {
+       "bytes": 5825154280,
+       "files": 21,
+       "largest_bytes": 1006713302
+      }
+     },
+     "summary": {
+      "bytes": 45460885882,
+      "files": 95,
+      "first": "",
+      "largest_bytes": 1389535988,
+      "last": "2026-11-11"
+     }
+    },
+    "spot": {
+     "per_year": {
+      "2017": {
+       "bytes": 62709969,
+       "files": 5,
+       "largest_bytes": 45730898
+      },
+      "2018": {
+       "bytes": 1189048371,
+       "files": 12,
+       "largest_bytes": 143626266
+      },
+      "2019": {
+       "bytes": 1857648762,
+       "files": 12,
+       "largest_bytes": 230133784
+      },
+      "2020": {
+       "bytes": 4104672545,
+       "files": 12,
+       "largest_bytes": 585162605
+      },
+      "2021": {
+       "bytes": 9047822688,
+       "files": 12,
+       "largest_bytes": 1119069626
+      },
+      "2022": {
+       "bytes": 14575329438,
+       "files": 12,
+       "largest_bytes": 2460042801
+      },
+      "2023": {
+       "bytes": 10588350726,
+       "files": 12,
+       "largest_bytes": 2658089884
+      },
+      "2024": {
+       "bytes": 7128755911,
+       "files": 12,
+       "largest_bytes": 942421554
+      },
+      "2025": {
+       "bytes": 6520846901,
+       "files": 12,
+       "largest_bytes": 814623840
+      },
+      "2026": {
+       "bytes": 4595716868,
+       "files": 21,
+       "largest_bytes": 764966979
+      }
+     },
+     "summary": {
+      "bytes": 59670902179,
+      "files": 122,
+      "first": "2017-08",
+      "largest_bytes": 2658089884,
+      "last": "2026-11-11"
+     }
+    }
+   },
+   "bookDepth_daily": {
+    "bytes": 663849497,
+    "files": 1407,
+    "first": "2023-01-01",
+    "largest_bytes": 574636,
+    "last": "2026-11-11"
+   },
+   "fundingRate_monthly": {
+    "bytes": 72936,
+    "files": 82,
+    "first": "2020-01",
+    "largest_bytes": 1008,
+    "last": "2026-10"
+   },
+   "indexPriceKlines_1m": {
+    "bytes": 97462063,
+    "files": 95,
+    "first": "2019-12-23",
+    "largest_bytes": 1473709,
+    "last": "2026-11-11"
+   },
+   "klines_1m": {
+    "bytes": 154385267,
+    "files": 94,
+    "first": "2019-12-31",
+    "largest_bytes": 2087690,
+    "last": "2026-11-11"
+   },
+   "markPriceKlines_1m": {
+    "bytes": 90999521,
+    "files": 96,
+    "first": "2019-12-23",
+    "largest_bytes": 1405627,
+    "last": "2026-11-11"
+   },
+   "metrics_daily": {
+    "bytes": 26181930,
+    "files": 2263,
+    "first": "2020-09-01",
+    "largest_bytes": 14928,
+    "last": "2026-11-11"
+   },
+   "premiumIndexKlines_1m": {
+    "bytes": 67018854,
+    "files": 95,
+    "first": "2019-12-24",
+    "largest_bytes": 924975,
+    "last": "2026-11-11"
+   }
+  },
+  "BTCDOM": {
+   "idx1h": {
+    "bytes": 1913745,
+    "files": 76,
+    "first": "2021-06",
+    "largest_bytes": 31783,
+    "last": "2026-11-11"
+   }
+  },
+  "ETH": {
+   "aggTrades": {
+    "perp": {
+     "per_year": {
+      "2019": {
+       "bytes": 518596,
+       "files": 1,
+       "largest_bytes": 518596
+      },
+      "2020": {
+       "bytes": 1429442696,
+       "files": 12,
+       "largest_bytes": 253160706
+      },
+      "2021": {
+       "bytes": 8064291691,
+       "files": 12,
+       "largest_bytes": 1299924666
+      },
+      "2022": {
+       "bytes": 6754355796,
+       "files": 12,
+       "largest_bytes": 855155109
+      },
+      "2023": {
+       "bytes": 3907179229,
+       "files": 12,
+       "largest_bytes": 478087429
+      },
+      "2024": {
+       "bytes": 6648865242,
+       "files": 12,
+       "largest_bytes": 867796573
+      },
+      "2025": {
+       "bytes": 9938801997,
+       "files": 12,
+       "largest_bytes": 1110070854
+      },
+      "2026": {
+       "bytes": 6099945439,
+       "files": 21,
+       "largest_bytes": 1098758951
+      }
+     },
+     "summary": {
+      "bytes": 42843400686,
+      "files": 94,
+      "first": "2019-12-31",
+      "largest_bytes": 1299924666,
+      "last": "2026-11-11"
+     }
+    },
+    "spot": {
+     "per_year": {
+      "2017": {
+       "bytes": 36880222,
+       "files": 5,
+       "largest_bytes": 24514783
+      },
+      "2018": {
+       "bytes": 1022146290,
+       "files": 12,
+       "largest_bytes": 358147962
+      },
+      "2019": {
+       "bytes": 792146497,
+       "files": 12,
+       "largest_bytes": 91652668
+      },
+      "2020": {
+       "bytes": 1598283284,
+       "files": 12,
+       "largest_bytes": 223269591
+      },
+      "2021": {
+       "bytes": 6298983534,
+       "files": 12,
+       "largest_bytes": 1040440861
+      },
+      "2022": {
+       "bytes": 3609323446,
+       "files": 12,
+       "largest_bytes": 394886923
+      },
+      "2023": {
+       "bytes": 2318013683,
+       "files": 12,
+       "largest_bytes": 318802928
+      },
+      "2024": {
+       "bytes": 5016665561,
+       "files": 12,
+       "largest_bytes": 851510988
+      },
+      "2025": {
+       "bytes": 7098606295,
+       "files": 12,
+       "largest_bytes": 746791138
+      },
+      "2026": {
+       "bytes": 4066342495,
+       "files": 21,
+       "largest_bytes": 701343783
+      }
+     },
+     "summary": {
+      "bytes": 31857391307,
+      "files": 122,
+      "first": "2017-08",
+      "largest_bytes": 1040440861,
+      "last": "2026-11-11"
+     }
+    }
+   },
+   "bookDepth_daily": {
+    "bytes": 693945039,
+    "files": 1408,
+    "first": "2023-01-01",
+    "largest_bytes": 612052,
+    "last": "2026-11-11"
+   },
+   "fundingRate_monthly": {
+    "bytes": 73045,
+    "files": 82,
+    "first": "2020-01",
+    "largest_bytes": 1017,
+    "last": "2026-10"
+   },
+   "indexPriceKlines_1m": {
+    "bytes": 87714211,
+    "files": 95,
+    "first": "2019-12-23",
+    "largest_bytes": 1363484,
+    "last": "2026-11-11"
+   },
+   "klines_1m": {
+    "bytes": 154326902,
+    "files": 94,
+    "first": "2019-12-31",
+    "largest_bytes": 2036282,
+    "last": "2026-11-11"
+   },
+   "markPriceKlines_1m": {
+    "bytes": 84604834,
+    "files": 96,
+    "first": "2019-12-23",
+    "largest_bytes": 1213200,
+    "last": "2026-11-11"
+   },
+   "metrics_daily": {
+    "bytes": 21312584,
+    "files": 1807,
+    "first": "2021-12-01",
+    "largest_bytes": 15064,
+    "last": "2026-11-11"
+   },
+   "premiumIndexKlines_1m": {
+    "bytes": 67719363,
+    "files": 95,
+    "first": "2019-12-24",
+    "largest_bytes": 929205,
+    "last": "2026-11-11"
+   }
+  },
+  "SOL": {
+   "aggTrades": {
+    "perp": {
+     "per_year": {
+      "": {
+       "bytes": 76383247,
+       "files": 1,
+       "largest_bytes": 76383247
+      },
+      "2020": {
+       "bytes": 94267596,
+       "files": 4,
+       "largest_bytes": 31168086
+      },
+      "2021": {
+       "bytes": 2548363936,
+       "files": 12,
+       "largest_bytes": 640260188
+      },
+      "2022": {
+       "bytes": 1296485002,
+       "files": 12,
+       "largest_bytes": 278324305
+      },
+      "2023": {
+       "bytes": 2522580163,
+       "files": 12,
+       "largest_bytes": 558456557
+      },
+      "2024": {
+       "bytes": 4028947494,
+       "files": 12,
+       "largest_bytes": 657880665
+      },
+      "2025": {
+       "bytes": 2669184521,
+       "files": 12,
+       "largest_bytes": 293604943
+      },
+      "2026": {
+       "bytes": 1380883385,
+       "files": 21,
+       "largest_bytes": 186131295
+      }
+     },
+     "summary": {
+      "bytes": 14617095344,
+      "files": 86,
+      "first": "",
+      "largest_bytes": 657880665,
+      "last": "2026-11-11"
+     }
+    },
+    "spot": {
+     "per_year": {
+      "2020": {
+       "bytes": 43279504,
+       "files": 5,
+       "largest_bytes": 12514783
+      },
+      "2021": {
+       "bytes": 2427520981,
+       "files": 12,
+       "largest_bytes": 507373827
+      },
+      "2022": {
+       "bytes": 1013503805,
+       "files": 12,
+       "largest_bytes": 138773255
+      },
+      "2023": {
+       "bytes": 723377228,
+       "files": 12,
+       "largest_bytes": 187544206
+      },
+      "2024": {
+       "bytes": 2551979421,
+       "files": 12,
+       "largest_bytes": 352418528
+      },
+      "2025": {
+       "bytes": 2736467052,
+       "files": 12,
+       "largest_bytes": 424118344
+      },
+      "2026": {
+       "bytes": 1016733942,
+       "files": 21,
+       "largest_bytes": 150305614
+      }
+     },
+     "summary": {
+      "bytes": 10512861933,
+      "files": 86,
+      "first": "2020-08",
+      "largest_bytes": 507373827,
+      "last": "2026-11-11"
+     }
+    }
+   },
+   "bookDepth_daily": {
+    "bytes": 610262530,
+    "files": 1405,
+    "first": "2023-01-01",
+    "largest_bytes": 571038,
+    "last": "2026-11-11"
+   },
+   "fundingRate_monthly": {
+    "bytes": 66967,
+    "files": 74,
+    "first": "2020-09",
+    "largest_bytes": 1620,
+    "last": "2026-10"
+   },
+   "indexPriceKlines_1m": {
+    "bytes": 82336289,
+    "files": 85,
+    "first": "2020-09",
+    "largest_bytes": 1240709,
+    "last": "2026-11-11"
+   },
+   "klines_1m": {
+    "bytes": 117855372,
+    "files": 85,
+    "first": "2020-09",
+    "largest_bytes": 1852486,
+    "last": "2026-11-11"
+   },
+   "markPriceKlines_1m": {
+    "bytes": 69092007,
+    "files": 85,
+    "first": "2020-09",
+    "largest_bytes": 1095940,
+    "last": "2026-11-11"
+   },
+   "metrics_daily": {
+    "bytes": 20294623,
+    "files": 1807,
+    "first": "2021-12-01",
+    "largest_bytes": 14380,
+    "last": "2026-11-11"
+   },
+   "premiumIndexKlines_1m": {
+    "bytes": 62109240,
+    "files": 85,
+    "first": "2020-09",
+    "largest_bytes": 910612,
+    "last": "2026-11-11"
+   }
+  },
+  "XRP": {
+   "aggTrades": {
+    "perp": {
+     "per_year": {
+      "2020": {
+       "bytes": 692450490,
+       "files": 12,
+       "largest_bytes": 228427220
+      },
+      "2021": {
+       "bytes": 2951551057,
+       "files": 12,
+       "largest_bytes": 595131083
+      },
+      "2022": {
+       "bytes": 1063662097,
+       "files": 12,
+       "largest_bytes": 142676443
+      },
+      "2023": {
+       "bytes": 1139739286,
+       "files": 12,
+       "largest_bytes": 195818753
+      },
+      "2024": {
+       "bytes": 1835406638,
+       "files": 12,
+       "largest_bytes": 598852987
+      },
+      "2025": {
+       "bytes": 2969858141,
+       "files": 12,
+       "largest_bytes": 399226705
+      },
+      "2026": {
+       "bytes": 1252589329,
+       "files": 21,
+       "largest_bytes": 192294681
+      }
+     },
+     "summary": {
+      "bytes": 11905257038,
+      "files": 93,
+      "first": "2020-01",
+      "largest_bytes": 598852987,
+      "last": "2026-11-11"
+     }
+    },
+    "spot": {
+     "per_year": {
+      "2018": {
+       "bytes": 171688748,
+       "files": 8,
+       "largest_bytes": 35149695
+      },
+      "2019": {
+       "bytes": 429232329,
+       "files": 12,
+       "largest_bytes": 61620587
+      },
+      "2020": {
+       "bytes": 917071275,
+       "files": 12,
+       "largest_bytes": 301365652
+      },
+      "2021": {
+       "bytes": 3394949926,
+       "files": 12,
+       "largest_bytes": 705607243
+      },
+      "2022": {
+       "bytes": 740298749,
+       "files": 12,
+       "largest_bytes": 109766154
+      },
+      "2023": {
+       "bytes": 645231934,
+       "files": 12,
+       "largest_bytes": 97677333
+      },
+      "2024": {
+       "bytes": 1513206043,
+       "files": 12,
+       "largest_bytes": 542847207
+      },
+      "2025": {
+       "bytes": 2618226701,
+       "files": 12,
+       "largest_bytes": 386228909
+      },
+      "2026": {
+       "bytes": 981400943,
+       "files": 21,
+       "largest_bytes": 160623854
+      }
+     },
+     "summary": {
+      "bytes": 11411306648,
+      "files": 113,
+      "first": "2018-05",
+      "largest_bytes": 705607243,
+      "last": "2026-11-11"
+     }
+    }
+   },
+   "bookDepth_daily": {
+    "bytes": 675511230,
+    "files": 1406,
+    "first": "2023-01-01",
+    "largest_bytes": 582861,
+    "last": "2026-11-11"
+   },
+   "fundingRate_monthly": {
+    "bytes": 72113,
+    "files": 82,
+    "first": "2020-01",
+    "largest_bytes": 1023,
+    "last": "2026-10"
+   },
+   "indexPriceKlines_1m": {
+    "bytes": 75167928,
+    "files": 93,
+    "first": "2020-01",
+    "largest_bytes": 1005858,
+    "last": "2026-11-11"
+   },
+   "klines_1m": {
+    "bytes": 137403019,
+    "files": 93,
+    "first": "2020-01",
+    "largest_bytes": 1898405,
+    "last": "2026-11-11"
+   },
+   "markPriceKlines_1m": {
+    "bytes": 65444355,
+    "files": 93,
+    "first": "2020-01",
+    "largest_bytes": 903185,
+    "last": "2026-11-11"
+   },
+   "metrics_daily": {
+    "bytes": 21137329,
+    "files": 1807,
+    "first": "2021-12-01",
+    "largest_bytes": 15023,
+    "last": "2026-11-11"
+   },
+   "premiumIndexKlines_1m": {
+    "bytes": 66235233,
+    "files": 93,
+    "first": "2020-01",
+    "largest_bytes": 909928,
+    "last": "2026-11-11"
+   }
+  }
+ },
+ "generated_at": "2026-11-12T14:05:49Z",
+ "source": "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
+}
