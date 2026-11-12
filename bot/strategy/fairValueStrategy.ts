@@ -467,10 +467,13 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   if (quoting && quoteAllowed) {
     const skewed = q - cfg.inventorySkewPerContract * v.position;
 
+    // E16: with STRATEGY_QUOTE_SIDES=signal only the model's side rests an entry, and nothing while a position is held.
+    const wantYes = cfg.quoteSides !== 'signal' || (v.position === 0 && q >= 0.5);
+    const wantNo = cfg.quoteSides !== 'signal' || (v.position === 0 && q < 0.5);
     // YES bid.
     let bp = floorToTick(skewed - offset, tick);
     bp = Math.min(bp, round(ask.price - tick, 4));
-    if (bp >= v.minSidePrice && bp <= 1 - v.minSidePrice) {
+    if (wantYes && bp >= v.minSidePrice && bp <= 1 - v.minSidePrice) {
       const fee = orderFee(1, bp, false, v.fees);
       const k = size('yes', bp, fee, v.maxContracts);
       const unwind = Math.max(0, -v.position);
@@ -481,7 +484,7 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
     let ap = ceilToTick(skewed + offset, tick);
     ap = Math.max(ap, round(bid.price + tick, 4));
     const noCost = round(1 - ap, 4);
-    if (noCost >= v.minSidePrice && noCost <= 1 - v.minSidePrice) {
+    if (wantNo && noCost >= v.minSidePrice && noCost <= 1 - v.minSidePrice) {
       const fee = orderFee(1, noCost, false, v.fees);
       const k = size('no', noCost, fee, v.maxContracts);
       const unwind = Math.max(0, v.position);

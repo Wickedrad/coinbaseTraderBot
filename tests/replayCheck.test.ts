@@ -20,7 +20,7 @@ test('backtest paper options: orders sized from the bankroll share, gate and ben
   const dir = path.join(tmp(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 12, marketNoise: 0.06 });
   // The accuracy gate is off by default since Nov 11: turned on here so the test still wires it in.
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', ACCURACY_GATE: 'true' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both', ACCURACY_GATE: 'true' });
   const rule = { ...cfg.probation, t: 2, minTrades: 30 };
   const small = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', paper: { orderFrac: 0.02, orderUsd: 0 }, accuracyGate: cfg.strategy.accuracyGate, takeProfitBench: { enforce: true, rule } });
   const big = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', paper: { orderFrac: 0.2, orderUsd: 0 }, accuracyGate: cfg.strategy.accuracyGate, takeProfitBench: { enforce: true, rule } });
@@ -121,7 +121,7 @@ test('replay check verdict: same sign and within 25% of paper', () => {
 test('backtest startMs: nothing before it is replayed; fills are counted per window', async () => {
   const dir = path.join(tmp(), 'rec');
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both' });
   const all = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit' });
   const none = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', startMs: Number.MAX_SAFE_INTEGER });
   assert.ok(all.entryEvaluations > 0);
@@ -243,7 +243,7 @@ test('replay check: prices set beside the paper bot\'s decision records', async 
 test('backtest paper options: the maker buffer adapts from the maker markouts as the engine\'s does', async () => {
   const dir = path.join(tmp(), 'rec');
   writeSyntheticRecordings(dir, { windows: 4, seed: 12, marketNoise: 0.06 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_MAKER_BUFFER: '0.02', STRATEGY_MAKER_BUFFER_RANGE: '0.015,0.03' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both', STRATEGY_MAKER_BUFFER: '0.02', STRATEGY_MAKER_BUFFER_RANGE: '0.015,0.03' });
   const paper = { orderFrac: 0.1, orderUsd: 0 };
   // Picked off by 5c a fill on average: the widest buffer the range allows.
   const pickedOff = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', paper, makerMarkouts: Array(2000).fill(-0.05) });
@@ -297,7 +297,7 @@ test('backtest paper options: the paper bot\'s training trades and exploration e
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
   const paper = { orderFrac: 0.1, orderUsd: 0 };
   const run = (env: Record<string, string>, opts: object = { paper }) => {
-    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', ...env });
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both', ...env });
     return runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', ...opts });
   };
   const on = await run({ PAPER_TRAINING_TRADES_PER_HOUR: '120', PAPER_EXPLORE: 'false' });
@@ -332,7 +332,7 @@ test('replay check: the take-profit bench and the accuracy gate wound back to th
   const dir = path.join(tmp(), 'rec');
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
   // The quota snipe (on by default) and the profit mandate would sell the winners before the take-profit arms: off, so the bench is what sells.
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PROFIT_MANDATE: 'false', PACER: 'false' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both', PROFIT_MANDATE: 'false', PACER: 'false' });
   const rule = { minTrades: 1000, t: 99, maxLossUsd: 1e9, window: 50 };
   const stateFile = path.join(tmp(), 'take-profit-bench.json');
   fs.writeFileSync(stateFile, JSON.stringify({ results: [-1], since: 0, benched: { at: 0, reason: 'seeded' }, sales: [] }));
@@ -370,7 +370,7 @@ test('backtest: the weekly loss pause stops entries only with the override off; 
   const root = tmp();
   const dir = path.join(root, 'rec');
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both' });
   const base = { exitPolicy: 'take_profit' as const, paper: { orderFrac: 0.1, orderUsd: 0 } };
   const plain = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, base);
   assert.ok(plain.fills > 0);
@@ -391,7 +391,7 @@ test('backtest: a pool that ran dry is refilled as paper\'s training supervisor 
   const root = tmp();
   const dir = path.join(root, 'rec');
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both' });
   const base = { exitPolicy: 'take_profit' as const, paper: { orderFrac: 0.1, orderUsd: 0 } };
   // $5 is below MIN_TRADABLE_BANKROLL_USD ($10): the supervisor's first pass tops the pool back up to $100.
   const dry = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 5, base);
@@ -422,9 +422,9 @@ test('backtest: a session edge keeps new entries out only with SESSION_EDGE_NO_E
   const dir = path.join(tmp(), 'rec');
   // From Thursday, Jan 1 2026, 00:00 UTC: Tokyo opens then, so the Asia open's edge runs to 00:40.
   writeSyntheticRecordings(dir, { windows: 6, seed: 12, marketNoise: 0.06 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both' });
   assert.deepEqual(cfg.sessionEdge, { minutes: 40, noEntry: false }, 'off by default in the bot');
-  const on = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', SESSION_EDGE_NO_ENTRY: 'true' }).sessionEdge;
+  const on = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both', SESSION_EDGE_NO_ENTRY: 'true' }).sessionEdge;
   const base = { exitPolicy: 'take_profit' as const, paper: { orderFrac: 0.1, orderUsd: 0 } };
   const edgeEnd = Date.parse('2026-01-01T00:40:00Z');
   const tradedBy = (r: Awaited<ReturnType<typeof runBacktest>>) => [...r.windows].filter(([close, w]) => close <= edgeEnd && (w.fills ?? 0) > 0).length;
@@ -443,7 +443,7 @@ test('backtest: a session edge keeps new entries out only with SESSION_EDGE_NO_E
 test('backtest tickPhaseMs: the markets evaluated on the engine\'s 1 s timer, that far into each second', async () => {
   const dir = path.join(tmp(), 'rec');
   writeSyntheticRecordings(dir, { windows: 2, seed: 7, marketNoise: 0.05 });
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both' });
   const ticks = async (tickPhaseMs?: number) => {
     const ts = new Set<number>();
     await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { paper: { orderFrac: 0.1, orderUsd: 0 }, ...(tickPhaseMs !== undefined ? { tickPhaseMs } : {}), onEval: (e) => { ts.add(e.now); } });

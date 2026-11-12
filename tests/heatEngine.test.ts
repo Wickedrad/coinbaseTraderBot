@@ -255,7 +255,7 @@ test('our own resting orders on the market are cancelled before the entry goes o
 
 test('a heat-held market gets no old-lane quotes', async () => {
   // Every tick a full evaluation, so the old lane has its chance to quote each time.
-  const g = await setup({ env: { STRATEGY_CADENCE: 'continuous' } });
+  const g = await setup({ env: { STRATEGY_CADENCE: 'continuous', STRATEGY_QUOTE_SIDES: 'both' } });
   g.source.set(fired());
   await g.engine.tick();
   assert.equal(g.oms.positions.position(g.market.ticker), 16);
