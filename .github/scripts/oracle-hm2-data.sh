@@ -118,7 +118,8 @@ series() {
 stamps() {
   local n=$1 first last
   no_doge "$n"
-  first=$(rclone cat --head 8192 "$ROOT/$n" | awk -F, 'NR == 2 { print $1; exit }'); first=${first%$'\r'}
+  # awk reads its whole input (8 KiB): an early exit would close the pipe on rclone (SIGPIPE, status 141 under pipefail)
+  first=$(rclone cat --head 8192 "$ROOT/$n" | awk -F, 'NR == 2 { x = $1 } END { print x }'); first=${first%$'\r'}
   last=$(rclone cat --tail 8192 "$ROOT/$n" | awk -F, 'NF > 1 { x = $1 } END { print x }'); last=${last%$'\r'}
   { ms13 "$first" && ms13 "$last"; } || die "$n: first '$first', last '$last': not 13-digit milliseconds"
   [ "${last%.*}" -ge "$LO" ] || die "$n: last stamp $last is before 2019-01-01: the cut would leave no row"
