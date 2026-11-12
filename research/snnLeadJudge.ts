@@ -31,13 +31,15 @@ const brier = (p: number, y: number) => (p - y) * (p - y);
 const mean = (a: number[]) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : NaN);
 const sd = (a: number[]) => { const m = mean(a); return a.length > 1 ? Math.sqrt(a.reduce((s, x) => s + (x - m) ** 2, 0) / (a.length - 1)) : NaN; };
 const f5 = (x: number) => (Number.isFinite(x) ? (x >= 0 ? '+' : '') + x.toFixed(5) : 'n/a');
+/** Append to a map of arrays in place (spreading the old array each time is quadratic). */
+function addTo<K, V>(m: Map<K, V[]>, k: K, v: V): void { const a = m.get(k); if (a) a.push(v); else m.set(k, [v]); }
 const f2 = (x: number) => (Number.isFinite(x) ? x.toFixed(2) : 'n/a');
 
 /** Every rows-*.jsonl.gz under a folder (chained runs in subfolders). A row seen twice (a resumed day) keeps the last. */
-export function loadRows(dir: string): Map<string, LRow> {
+export function loadRows(dir: string, recordedOnly = false): Map<string, LRow> {
   const out = new Map<string, LRow>();
   const files: string[] = [];
-  const walk = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walk(p); else if (/^rows-[hr]-.*\.jsonl\.gz$/.test(f.name)) files.push(p); } };
+  const walk = (d: string) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); if (f.isDirectory()) walk(p); else if ((recordedOnly ? /^rows-r-.*\.jsonl\.gz$/ : /^rows-[hr]-.*\.jsonl\.gz$/).test(f.name)) files.push(p); } };
   if (fs.existsSync(dir)) walk(dir);
   for (const f of files.sort()) {
     const rec = path.basename(f).startsWith('rows-r-');
@@ -92,15 +94,19 @@ function evCi(rows: { e: string; t: number; x: number }[]) {
   return obs.length ? dayBlockBootstrap(obs, 1000) : { mean: NaN, lo: NaN, hi: NaN, events: 0, days: 0 };
 }
 
+/** Every k-th row so at most n remain (for model fits only). */
+const thin = <T>(a: T[], n: number): T[] => (a.length > n ? a.filter((_, i) => i % Math.ceil(a.length / n) === 0) : a);
+
 /** FLB-corrected mid, prequential: y ~ a + b logit(mid) fitted on every earlier fold (fold 0 uses the raw mid). */
 function flbMid(rows: LRow[]): Map<LRow, number> {
   const out = new Map<LRow, number>();
   const byFold = new Map<number, LRow[]>();
-  for (const r of rows) { const f = foldOf(r.t); byFold.set(f, [...(byFold.get(f) ?? []), r]); }
+  for (const r of rows) { const f = foldOf(r.t); addTo(byFold, f, r); }
   const folds = [...byFold.keys()].sort((a, b) => a - b);
   const seen: LRow[] = [];
   for (const f of folds) {
-    const fit = seen.length > 500 ? logistic(seen.map((r) => [1, logit(r.m)]), seen.map((r) => r.y)).b : undefined;
+    const fs2 = thin(seen, 200_000);
+    const fit = seen.length > 500 ? logistic(fs2.map((r) => [1, logit(r.m)]), fs2.map((r) => r.y)).b : undefined;
     for (const r of byFold.get(f)!) out.set(r, fit ? sig(fit[0] + fit[1] * logit(r.m)) : r.m);
     for (const r of byFold.get(f)!) seen.push(r);
   }
@@ -127,6 +133,7 @@ export function judge(argv: string[]): string {
     const keep = new Map<string, LRow>();
     for (const [k, r] of all) if (r.kd !== 'direction' && (r.s ?? 1) <= maxSpread + 1e-9 && r.t >= from && r.t <= to) keep.set(k, r);
     data.set(s.name, keep);
+    console.error(`[judge] loaded ${s.name}: ${keep.size}/${all.size} rows at ${new Date().toISOString()}`);
     L.push(`- ${s.name}: ${keep.size} liquid rows (${all.size} in all) from ${s.dir}`);
   }
   L.push('');
@@ -141,6 +148,7 @@ export function judge(argv: string[]): string {
     const vsFlb = evCi(rows.map((r) => ({ e: r.e, t: r.t, x: brier(r.p, r.y) - brier(flb.get(r)!, r.y) })));
     const rep = { name: s.name, arm: s.arm, seed: s.seed, n: rows.length, vsMid, vsFlb, b: slope(rows) };
     reports.push(rep);
+    console.error(`[judge] section 1 ${s.name} done at ${new Date().toISOString()}`);
     L.push(`| ${s.name} | ${rows.length} | ${f5(vsMid.mean)} [${f5(vsMid.lo)}, ${f5(vsMid.hi)}] | ${f5(vsFlb.mean)} [${f5(vsFlb.lo)}, ${f5(vsFlb.hi)}] | ${f2(rep.b)} |`);
   }
   L.push('');
@@ -161,7 +169,7 @@ export function judge(argv: string[]): string {
     for (const [k, r] of data.get(s.name)!) { if (r.rec) continue; const o = base.get(k); if (o) pr.push({ e: r.e, t: r.t, x: brier(r.p, r.y) - brier(o.p, o.y), v: o.v ?? 1, g: Math.abs(o.g ?? 0) }); }
     const ci = evCi(pr);
     pairedByArm.set(s.arm, [...(pairedByArm.get(s.arm) ?? []), ci.mean]);
-    const folds = new Map<number, number[]>(); for (const r of pr) folds.set(foldOf(r.t), [...(folds.get(foldOf(r.t)) ?? []), r.x]);
+    const folds = new Map<number, number[]>(); for (const r of pr) addTo(folds, foldOf(r.t), r.x);
     const fw = [...folds.values()].filter((a) => mean(a) < 0).length;
     const rv = [0, 1, 2].map((i) => mean(pr.filter((r) => (r.v <= rvCut[0] ? 0 : r.v <= rvCut[1] ? 1 : 2) === i).map((r) => r.x)));
     const qOf = (g: number) => { const i = gapCut.findIndex((c2) => g <= c2); return i < 0 ? 4 : i; };
@@ -203,9 +211,9 @@ export function judge(argv: string[]): string {
   for (const s of specs.filter((x) => x.arm !== control)) {
     const c = specs.find((x) => x.arm === control && x.seed === s.seed);
     if (!c) continue;
-    const allS = loadRows(s.dir), allC = loadRows(c.dir);
+    const allS = loadRows(s.dir, true), allC = loadRows(c.dir, true);
     const byDay = new Map<string, number[]>();
-    for (const [k, r] of allS) { if (!r.rec || (r.s ?? 1) > maxSpread + 1e-9) continue; const o = allC.get(k); if (o) byDay.set(day(r.t), [...(byDay.get(day(r.t)) ?? []), brier(r.p, r.y) - brier(o.p, o.y)]); }
+    for (const [k, r] of allS) { if (!r.rec || (r.s ?? 1) > maxSpread + 1e-9) continue; const o = allC.get(k); if (o) addTo(byDay, day(r.t), brier(r.p, r.y) - brier(o.p, o.y)); }
     const days = [...byDay.keys()].sort();
     if (!days.length) { L.push(`- ${s.name}: no recorded days`); continue; }
     const dm = days.map((d) => mean(byDay.get(d)!));
@@ -230,7 +238,7 @@ export function hb(rows: LRow[], label: string): string[] {
   for (const r of rows) if (r.g !== undefined) colGap.set(`${r.c}|${Math.floor(r.t / 60_000)}`, r.g);
   const mono = (kd: string) => kd === 'updown' || kd === 'greater';
   const cluster = (xs: { k: string; x: number }[]) => {
-    const m = new Map<string, number[]>(); for (const o of xs) m.set(o.k, [...(m.get(o.k) ?? []), o.x]);
+    const m = new Map<string, number[]>(); for (const o of xs) addTo(m, o.k, o.x);
     const per = [...m.values()].map(mean);
     return { n: xs.length, markets: per.length, mean: mean(xs.map((o) => o.x)), t: per.length > 1 ? (mean(per) / sd(per)) * Math.sqrt(per.length) : NaN };
   };

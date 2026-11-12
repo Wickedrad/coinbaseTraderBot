@@ -679,7 +679,7 @@ jobs:
     if: inputs.h1_judge_arms != ''
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 120
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/drive-setup
