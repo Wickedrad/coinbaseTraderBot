@@ -6,6 +6,11 @@ name: Outside data (OR-XD)
 #   none            the heat tests only (test_heat_outside.py and test_heat.py)
 #   [xd-inventory]  read-only look at what Drive already holds under raw/ (names, sizes, upload dates, header and
 #                   first/last stamps of each CSV). Downloads NOTHING from Binance. Prints no market rows.
+#   [xd-probe]      Step P of the design, runner only: reachability by status code (python/oracle/xd_probe.sh): Binance spot
+#                   and futures APIs, the data-api.binance.vision API host (NOT the data.binance.vision archive), Coinalyze
+#                   without a key, Bybit, OKX, Coinbase, and WebSocket handshakes. No secrets, no server, no data kept.
+#   [xd-probe-server] the same script run read-only on the Lightsail server over SSH (sent on stdin, nothing written there,
+#                   nice 19, status codes only). Needs Steven's word: it is a production read.
 #   [xd-assets:BTC] with [xd-lite]: narrow the coins (BTC, ETH, SOL, XRP; never DOGE). One coin answers whether the
 #                   modelled liquidation clusters exist at all before the full study; the league then says 'partial'.
 #   [xd-lag:1]      with [xd-lite]: every perp input seen 1 minute late (--perp-lag; 0 is the default; 1 and 5 are the
@@ -41,6 +46,41 @@ env:
   PYTHONUNBUFFERED: '1'
 
 jobs:
+  probe:
+    if: ${{ contains(github.event.head_commit.message, '[xd-probe]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: From this runner (public endpoints only; no secrets, no server)
+        run: bash python/oracle/xd_probe.sh
+
+  probe-server:
+    if: ${{ contains(github.event.head_commit.message, '[xd-probe-server]') }}
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: From the Lightsail server (read-only; script on stdin, nothing written there)
+        env:
+          SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          HOST: ${{ secrets.LIGHTSAIL_HOST }}
+          USER_NAME: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          PORT: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_KEY" && test -n "$HOST"
+          [[ "$PORT" =~ ^[0-9]+$ ]]
+          mkdir -p "$RUNNER_TEMP/xd-ssh"; chmod 700 "$RUNNER_TEMP/xd-ssh"
+          key="$RUNNER_TEMP/xd-ssh/key"
+          printf '%s\n' "$SSH_KEY" > "$key"; chmod 600 "$key"
+          trap 'rm -f "$key"' EXIT
+          ssh -i "$key" -p "$PORT" -o BatchMode=yes -o ConnectTimeout=20 \
+            -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$RUNNER_TEMP/xd-ssh/known_hosts" \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            "$USER_NAME@$HOST" 'nice -n 19 bash -s' < python/oracle/xd_probe.sh
+
   inventory:
     if: ${{ contains(github.event.head_commit.message, '[xd-inventory]') }}
     runs-on: ubuntu-latest
