@@ -717,3 +717,11 @@ changes here, with one exception named as such (the fits' stopping rule) for the
 - The test job's timeout is 60 minutes (every suite after the TA-Lib and LightGBM installs).
 - A league rerun rebuilds hm2_pack.json with live_ready False on every row (Part 3's gate rows return as the drill
   league wrote them, also False): the parity push and then the drill-parity push go again after it.
+
+**BTC bench (Nov 12 2026, 10:08 UTC; run 43194102215 on the HM1 run 43030435253's metas; written after the bench, before the study).**
+- 1,349 readings after alias merging (71 merged into 46; 70 extra readings from clock 3, cross 23, dmkt 13, flow 7, macro 3,
+  oi 3, perp 6, position 3, vol 9); 375,370 A and 525,540 B entries on 2,192 entry days; 908,831 pairs.
+- Not on Drive, so not read (no download was made): IDX:BTCDOM1h, IDX:BTCDOM4h, CB:Lead1, CB:Lead5, CB:PremChg15, BOOK:Imb.
+- 3,000 random pairs: 4.308 ms per pair on four processes (15.667 ms of worker time); base 173.2 s; one learner fit 185.4 s;
+  projected pair scan 65.3 min and the series 122.7 min; peak memory 8.8 GB; projected shard size 4.09 GB per real coin.
+  So S = 1 (no parts): one job per series, well inside the 360-minute limit.
