@@ -216,6 +216,15 @@ print(f"recon breaks {cnt.get('recon_break', 0)}, repairs {cnt.get('recon_repair
 
 # ---------------------------------------------------------------- 5. replay
 hdr('5. ledger replay: every fill and settlement in the audit log against the cash reads')
+import bisect
+_st = sorted((t, d.get('mode')) for t, d in starts_ev)
+_stt = [t for t, _ in _st]
+def mode_at(ts):
+    i = bisect.bisect_right(_stt, ts) - 1
+    return _st[i][1] if i >= 0 else None
+skipped = collections.Counter()
+vault_lv = []                   # (ts, vault level after a win event)
+vevents = collections.defaultdict(lambda: [0, 0.0])
 pos = {}
 cum = 0.0                       # cumulative trading cash flow (fills net of fees + settlement payouts)
 fees_cum = 0.0
@@ -226,10 +235,23 @@ ri = 0
 refills.sort()
 daily = collections.defaultdict(lambda: dict(fills=0, taker=0, fees=0.0, flow=0.0, settles=0, realized=0.0, wins=0))
 orphan = 0
+refill_marks = []
 for ts, k, d in ev:
     while ri < len(refills) and refills[ri][0] <= ts:
         rc += refills[ri][1]; ri += 1
     day = datetime.fromtimestamp(ts, timezone.utc).strftime('%Y-%m-%d')
+    if k in ('fill', 'settlement', 'recon_ok') and mode_at(ts) not in ('paper', None):
+        skipped[(k, mode_at(ts))] += 1
+        continue
+    if k == 'vault':
+        vevents[d.get('event')][0] += 1
+        try: vevents[d.get('event')][1] += float(d.get('amount') or 0)
+        except Exception: pass
+        stt = d.get('status') or {}
+        if isinstance(stt, dict) and stt.get('vault') is not None: vault_lv.append((ts, float(stt['vault'])))
+        continue
+    if k == 'training' and d.get('event') == 'capital_exhaustion' and d.get('book') == 'kalshi':
+        refill_marks.append((ts, cum, d))
     if k == 'fill':
         fl = d.get('fill') or {}
         t = fl.get('ticker'); n = float(fl.get('count') or 0); price = float(fl.get('price') or 0); side = fl.get('side')
@@ -254,7 +276,7 @@ for ts, k, d in ev:
     elif k == 'recon_ok' and d.get('balance') is not None:
         obs.append((ts, float(d['balance']) - cum - rc, float(d['balance']), d.get('trigger')))
 print(f"fills replayed {sum(v['fills'] for v in daily.values()):,} (orphan {orphan}), settlements {sum(v['settles'] for v in daily.values()):,}, fees {usd(fees_cum)}; trading cash flow over the window {usd(cum)}; refills + top-ups {usd(rc)}")
-print(f"balance reads (recon_ok): {len(obs):,}")
+print(f"balance reads (recon_ok): {len(obs):,}; events skipped because the bot ran in another mode (live): {dict(skipped)}")
 # resid = balance read - replayed flows - refills. A constant resid (+ holds, which only lower it) = nothing unexplained.
 if obs:
     env = collections.OrderedDict()
@@ -312,3 +334,25 @@ for day in sorted(daily):
     tot[0] += v['fills']; tot[1] += v['taker']; tot[2] += v['fees']; tot[3] += v['settles']; tot[4] += v['realized']; tot[5] += v['flow']
 print(f"{'total':10} {tot[0]:6d} {tot[1]:6d} {tot[2]:8.2f} {tot[3]:7d} {'':5} {tot[4]:13.2f} {tot[5]:10.2f}")
 print('\nrealized(net) is the sum of the settlement events (fee-inclusive); cash flow also counts positions opened and still held at the edges.')
+
+# ---------------------------------------------------------------- 7. refills against the vault
+hdr('7. each Kalshi refill: cash the account still held, the vault, and the bankroll the refill saw')
+print('bank before = pool - refill (the supervisor adds pool - tradable bankroll); tradable bankroll = cash + committed - vault, floored at 0')
+print(f"{'refill time':46} {'refill':>8} {'bank before':>11} {'equity (cash)':>13} {'vault then':>10} {'equity-vault':>12} {'trading flow since last refill':>30}")
+prev_cum = None
+rows = []
+for ts, c, d in refill_marks:
+    vl = [v for t, v in vault_lv if t <= ts]
+    vlevel = vl[-1] if vl else None
+    pool = 200 if ts >= 1793340000 else 100
+    rf = float(d.get('refill') or 0)
+    flow = (c - prev_cum) if prev_cum is not None else None
+    prev_cum = c
+    eqv = d.get('endEquity')
+    rows.append((ts, rf, eqv, vlevel))
+    print(f"{T(ts):46} {rf:8.2f} {pool - rf:11.2f} {eqv if eqv is not None else float('nan'):13.2f} {vlevel if vlevel is not None else float('nan'):10.2f} {(eqv - vlevel) if (eqv is not None and vlevel is not None) else float('nan'):12.2f} {('%.2f' % flow) if flow is not None else '-':>30}")
+big = [r for r in rows if r[2] is not None and r[2] >= 100]
+print(f"refills made while the account still held >= $100 in cash: {len(big)} of {len(rows)}, adding {usd(sum(r[1] for r in big))} of {usd(sum(r[1] for r in rows))}")
+print('\nvault audit events:', {k: (v[0], round(v[1], 2)) for k, v in sorted(vevents.items(), key=lambda x: str(x[0]))})
+pe_ep = [e for e in ep if e.get('book') == 'perps']
+print(f"perps paper refills in epochs.jsonl: {len(pe_ep)} totalling {usd(sum(e.get('refill', 0) for e in pe_ep))}")
