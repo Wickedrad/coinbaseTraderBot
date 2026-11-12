@@ -245,12 +245,23 @@ class Manifest:
             json.dump({'asset': asset, 'generated_at': now_utc(), 'datasets': self.datasets, 'entries': self.entries}, f, indent=1)
 
 
+def pick_member(z: zipfile.ZipFile, label: str) -> str:
+    """The one data member of an archive zip. Some zips (spot aggTrades 2021-12) also carry a byte-identical copy under an
+    internal path (fsx-data/collector_data/...); same basename and same size = the same file, the shortest path is read.
+    Anything else with more than one member is refused."""
+    infos = [i for i in z.infolist() if not i.filename.endswith('/')]
+    if len(infos) == 1:
+        return infos[0].filename
+    base = {os.path.basename(i.filename) for i in infos}
+    sizes = {i.file_size for i in infos}
+    if len(base) == 1 and len(sizes) == 1 and infos:
+        return min(infos, key=lambda i: (i.filename.count('/'), len(i.filename))).filename
+    raise RuntimeError(f'{label}: expected one member, got {len(infos)}')
+
+
 def _read_member(path: str) -> bytes:
     with zipfile.ZipFile(path) as z:
-        names = [n for n in z.namelist() if not n.endswith('/')]
-        if len(names) != 1:
-            raise RuntimeError(f'{os.path.basename(path)}: expected one member, got {len(names)}')
-        return z.read(names[0])
+        return z.read(pick_member(z, os.path.basename(path)))
 
 
 def _fetch_parse(e: dict, work: str, parse):
@@ -404,9 +415,7 @@ def read_agg_zip(path: str, reducer: red.AggReducer | None = None, block_size: i
     import pyarrow.csv as pcsv
     reducer = reducer or red.AggReducer()
     with zipfile.ZipFile(path) as z:
-        names = [n for n in z.namelist() if not n.endswith('/')]
-        if len(names) != 1:
-            raise RuntimeError(f'{os.path.basename(path)}: expected one member')
+        names = [pick_member(z, os.path.basename(path))]
         with z.open(names[0]) as f:
             first = f.readline()
         header = red.has_header(first)

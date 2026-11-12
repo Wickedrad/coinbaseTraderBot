@@ -625,3 +625,20 @@ def test_preflight_aggregates_only(tmp_path, patched):
     assert set(j['assets']) == {'BTC', 'ETH', 'SOL', 'XRP', 'BTCDOM'}
     txt = out.read_text()
     assert 'DOGE' not in txt and '"o"' not in txt
+
+
+def test_zip_with_a_duplicate_member_under_an_internal_path(tmp_path):
+    """Real archive: spot aggTrades 2021-12 zips hold the CSV twice (root and fsx-data/collector_data/...)."""
+    ts, price, qty, maker = make_trades(seed=31, n=300)
+    text = csv_spot(ts, price, qty, maker)
+    p = tmp_path / 'f.zip'
+    with zipfile.ZipFile(p, 'w') as z:
+        z.writestr('XRPUSDT-aggTrades-2021-12.csv', text)
+        z.writestr('fsx-data/collector_data/data/spot/monthly/aggTrades/XRPUSDT/XRPUSDT-aggTrades-2021-12.csv', text)
+    check_frame(fx.read_agg_zip(str(p)).finish(), brute(ts, price, qty, maker))
+    q = tmp_path / 'g.zip'
+    with zipfile.ZipFile(q, 'w') as z:
+        z.writestr('a.csv', text)
+        z.writestr('b.csv', text + '1,1,1,1,1,1,True,True\n')
+    with pytest.raises(RuntimeError):
+        fx.read_agg_zip(str(q))
