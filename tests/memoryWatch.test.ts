@@ -26,15 +26,29 @@ test('walk: maps, sets, arrays and records by path, entries sampled, small ones 
   }
   const w = walkCollections({ engine: new Engine() });
   const by = Object.fromEntries(w.sizes.map((s) => [s.path, s]));
-  assert.deepEqual(by['engine.status'], { path: 'engine.status', kind: 'map', n: 120 });
-  // Entries looked at: the first, the middle and the last; the largest of them is listed.
-  assert.deepEqual(by['engine.status[*].history'], { path: 'engine.status[*].history', kind: 'array', n: 120 });
+  assert.deepEqual(by['engine.status'], { path: 'engine.status', kind: 'map', n: 120, total: 120 });
+  // Entries looked at: the first, the middle and the last (histories of 1, 61 and 120); n is the largest, total the
+  // estimate for all 120 entries: (1 + 61 + 120) x 120 / 3 = 7280 (7260 in fact).
+  assert.deepEqual(by['engine.status[*].history'], { path: 'engine.status[*].history', kind: 'array', n: 120, total: 7280 });
   assert.equal(by['engine.seen'].kind, 'set');
   assert.equal(by['engine.books.BTC.levels'].n, 80);
-  assert.deepEqual(by['engine.byTicker'], { path: 'engine.byTicker', kind: 'record', n: 70 });
+  assert.deepEqual(by['engine.byTicker'], { path: 'engine.byTicker', kind: 'record', n: 70, total: 70 });
   assert.equal(by['engine.small'], undefined, 'under minSize');
-  assert.ok(w.sizes[0].n >= w.sizes[w.sizes.length - 1].n, 'largest first');
+  assert.equal(w.sizes[0].path, 'engine.status[*].history', 'the largest total first');
   assert.equal(w.capped, false);
+});
+
+test('walk: many small collections add up: each is under the minimum, their total is listed', () => {
+  const trackers = new Map(Array.from({ length: 200 }, (_, i) => [`T${i}`, { ofi: Array.from({ length: 30 }, () => 0) }]));
+  const w = walkCollections({ md: { trackers } });
+  const ofi = w.sizes.find((s) => s.path === 'md.trackers[*].ofi')!;
+  assert.deepEqual([ofi.n, ofi.total], [30, 6000], '30 each across 200 trackers');
+});
+
+test('walk: a class instance with many fields is opened field by field, not sampled as a record', () => {
+  class Big { [k: string]: unknown; constructor() { for (let i = 0; i < 80; i++) this[`f${i}`] = i === 41 ? new Map(Array.from({ length: 90 }, (_, j) => [j, j])) : i; } }
+  const w = walkCollections({ engine: new Big() });
+  assert.deepEqual(w.sizes.map((s) => [s.path, s.kind, s.n]), [['engine.f41', 'map', 90]]);
 });
 
 test('walk: long strings and large buffers are listed; cycles end; the shortest path names a shared object', () => {
@@ -44,8 +58,8 @@ test('walk: long strings and large buffers are listed; cycles end; the shortest 
   a.self = a; b.a = a;
   const w = walkCollections({ a, b });
   const by = Object.fromEntries(w.sizes.map((s) => [s.path, s]));
-  assert.deepEqual(by['a.text'], { path: 'a.text', kind: 'string', n: 150_000 });
-  assert.deepEqual(by['a.buf'], { path: 'a.buf', kind: 'bytes', n: 200_000 });
+  assert.deepEqual(by['a.text'], { path: 'a.text', kind: 'string', n: 150_000, total: 150_000 });
+  assert.deepEqual(by['a.buf'], { path: 'a.buf', kind: 'bytes', n: 200_000, total: 200_000 });
   assert.equal(by['a.shared.rows'].n, 55);
   assert.equal(by['b.deep.deeper.shared.rows'], undefined, 'one visit per object');
 });
@@ -54,7 +68,7 @@ test('walk: a Map or Set subclass is sized by the built-in, never by its own get
   class Loud extends Map<number, number> { override get size(): number { throw new Error('own size getter called'); } }
   const m = new Loud(); for (let i = 0; i < 70; i++) Map.prototype.set.call(m, i, i);
   const w = walkCollections({ m });
-  assert.deepEqual(w.sizes[0], { path: 'm', kind: 'map', n: 70 });
+  assert.deepEqual(w.sizes[0], { path: 'm', kind: 'map', n: 70, total: 70 });
 });
 
 test('memory watch: strings and buffers are listed apart from entry counts', () => {
@@ -91,7 +105,7 @@ test('memory watch: the first reading stays the baseline; status shows the first
   fill(400);
   const s = w.status(t0 + 7_200_000);
   const orders = s.largest.find((r) => r.path === 'engine.orders')!;
-  assert.deepEqual(orders, { path: 'engine.orders', kind: 'map', n: 400, atFirst: 100, hourAgo: 250 });
+  assert.deepEqual(orders, { path: 'engine.orders', kind: 'map', n: 400, largest: 400, atFirst: 100, hourAgo: 250 });
   assert.equal(s.grown[0].path, 'engine.orders');
   assert.equal(s.grown.find((r) => r.path === 'engine.fixed'), undefined, 'unchanged is not grown');
   assert.equal(s.first?.at, t0);
