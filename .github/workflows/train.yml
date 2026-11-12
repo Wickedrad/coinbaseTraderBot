@@ -20,8 +20,10 @@
 name: Remote training
 
 on:
-  schedule:
-    - cron: '17 7 * * *'
+  # Daily schedule HELD (meta plan v2, decision D1, Steven Nov 12 17:00 UTC / 12:00 PM EST): no model reaches the bot
+  # unchecked until the heat-safety check (T2) is in. Manual runs stay available. Put the two lines back with T2:
+  # schedule:
+  #   - cron: '17 7 * * *'
   workflow_dispatch:
     inputs:
       only:
