@@ -811,9 +811,6 @@ export const sameOrder = (p: Pick<TennisPlan, 'ticker' | 'side' | 'price' | 'cou
 export const syncKeeps = (plans: readonly TennisPlan[], x: Pick<SimOrder, 'ticker' | 'side' | 'price' | 'remaining' | 'postOnly'>): boolean =>
   !x.postOnly || plans.some((p) => p.postOnly && sameOrder(p, x));
 
-/** Is a plan left unplaced on this decision? As production: when an order that was resting before the sync, or still in
- *  flight, matches it, whatever its type. So the immediate-or-cancel exit above waits one decision: the ask is cancelled
- *  now and the exit goes out on the next decision if the bid still allows it. */
 /** HARNESS_TAKER_ENTRY: an entry plan (underdog_entry, fav_entry: a bid that is not reduce-only) becomes an
  *  immediate-or-cancel taker buy at the book's best ask, with the plan's dollars (count x the bid price / the ask, floored
  *  to 0.01 contract): the one test measured its instance this way (a taker buy at the ask), production rests a maker bid.
@@ -825,6 +822,9 @@ export function takerEntryPlan(p: TennisPlan, book: Pick<OrderBook, 'bestAsk'> |
   const count = Math.floor((p.count * p.price) / ask * 100 + 1e-6) / 100;
   return { ...p, price: ask, count, postOnly: false, timeInForce: 'immediate_or_cancel' };
 }
+/** Is a plan left unplaced on this decision? As production: when an order that was resting before the sync, or still in
+ *  flight, matches it, whatever its type. So the immediate-or-cancel exit above waits one decision: the ask is cancelled
+ *  now and the exit goes out on the next decision if the bid still allows it. */
 export const syncSkips = (p: TennisPlan, restingBefore: ReadonlyArray<Pick<SimOrder, 'ticker' | 'side' | 'price' | 'remaining'>>, pending: ReadonlyArray<Pick<SimOrder, 'ticker' | 'side' | 'price' | 'remaining'>>): boolean =>
   restingBefore.some((x) => sameOrder(p, x)) || pending.some((x) => sameOrder(p, x));
 

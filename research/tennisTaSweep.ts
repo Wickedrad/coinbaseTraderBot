@@ -636,7 +636,7 @@ export function validateStage2Specs(raw: unknown, stratum: 'H' | 'R' = 'H'): Swe
         const h = (k: string, d: OverrideValue) => String(o[k] ?? d);
         // The window flag is part of what runs: a config's |F1 and |window arms are two arms, not twins.
         const key = JSON.stringify([r.sim, h('HARNESS_PACER', 'tennis'), Number(h('HARNESS_LOSER_STOP', 0)), Number(h('HARNESS_BANKROLL', 200)),
-          Number(h('HARNESS_FEE_MULT', 1)), Number(h('HARNESS_LATENCY_MS', 0)), h('HARNESS_TAKER_ENTRY', false) === 'true', s.fill, s.window === true]);
+          Number(h('HARNESS_FEE_MULT', 1)), Number(h('HARNESS_LATENCY_MS', 0)), s.window !== true && h('HARNESS_TAKER_ENTRY', false) === 'true', s.fill, s.window === true]);
         const off = (s.offsetMs as number | undefined) ?? 0, stick = s.stick === true;
         const prior = arms.get(key) ?? [];
         const twin = prior.find((a) => a.off === off);

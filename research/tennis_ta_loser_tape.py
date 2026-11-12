@@ -94,7 +94,10 @@ def read_tapes(hist, need):
             with open(os.path.join(tdir, f)) as fh:
                 for line in fh:
                     if not want:
-                        break
+                        return tapes
+                    i = line.find('"ticker":"')
+                    if i >= 0 and line[i + 10:line.find('"', i + 10)] not in want:
+                        continue
                     try:
                         rec = json.loads(line)
                     except ValueError:
@@ -167,19 +170,20 @@ def main(argv=None):
              '"+2c on tape" = some print after the entry reached the entry price + 2c (before the exit, or before the match\'s close). '
              'A taker round trip on an 8-25c contract costs about 1-2c a contract in fees.', '']
     lines += ['### Entries against the tape', '',
-              '| arm | entries | with tape | median gap to last print (c) | gap > +2c | gap < -2c | median prints after entry |',
-              '|---|---|---|---|---|---|---|']
+              '| arm | entries | with tape | without tape (net $) | median gap to last print (c) | gap > +2c | gap < -2c | median prints after entry |',
+              '|---|---|---|---|---|---|---|---|']
     for rid, rows in sorted(by_arm.items()):
         ok = [r for _, r in rows if r]
         gaps = [r['gap'] for r in ok if r['gap'] is not None]
-        lines.append(f"| {rid.replace('|', chr(92) + '|')} | {len(rows)} | {len(ok)} | {med(gaps)} | {sum(1 for g in gaps if g > 2)} | "
+        miss = [e for e, r in rows if not r]
+        lines.append(f"| {rid.replace('|', chr(92) + '|')} | {len(rows)} | {len(ok)} | {len(miss)} ({sum(float(e.get('pnl') or 0) for e in miss):+,.2f}) | {med(gaps)} | {sum(1 for g in gaps if g > 2)} | "
                      f"{sum(1 for g in gaps if g < -2)} | {med([r['n_after'] for r in ok])} |")
     lines += ['', '### What the tape offered after each entry, by exit leg', '',
-              'Each row: trades with a tape; share whose tape reached the entry + 1c / + 2c / + 3c BEFORE THE EXIT (any print); share '
+              'Thresholds are from the first fill price. Each row: trades with a tape; share whose tape reached the entry + 1c / + 2c / + 3c BEFORE THE EXIT (any print, bid or ask side, any size); share '
               'with a bid hit at the entry + 2c or more before the exit (a NO-taker print: a taker sell could have filled there); share '
-              'reaching + 2c before the match closed; median minutes to the first + 2c print; median lowest print after entry minus '
-              'the entry (c); net; for settle, how many the held player lost.', '',
-              '| arm | exit | trades | net ($) | +1c before exit | +2c before exit | +3c before exit | bid hit +2c before exit | +2c before close | min to +2c | median low vs entry (c) | settle lost |',
+              'reaching + 2c before the match closed; median minutes to the first + 2c print; median lowest print between entry and exit '
+              'minus the entry (c); net; for settle, how many the held player lost (for settle the exit is the result, so its window is the whole match).', '',
+              '| arm | exit | trades | net ($) | +1c before exit | +2c before exit | +3c before exit | bid hit +2c before exit | +2c before close | min to +2c | median low before exit vs entry (c) | settle lost |',
               '|---|---|---|---|---|---|---|---|---|---|---|---|']
     for rid, rows in sorted(by_arm.items()):
         legs = defaultdict(list)
@@ -193,7 +197,7 @@ def main(argv=None):
             c2 = sum(1 for _, r in rr if r['up2_close'] is not None)
             cb = sum(1 for _, r in rr if r['bid2_exit'] is not None)
             mins = [r['up2_exit'] for _, r in rr if r['up2_exit'] is not None]
-            lows = [(r['lo_close'] - float(e['px'])) * 100 for e, r in rr if r['lo_close'] is not None]
+            lows = [(r['lo_exit'] - float(e['px'])) * 100 for e, r in rr if r['lo_exit'] is not None]
             lost = sum(1 for e, _ in rr if e.get('won') is False) if x == 'settle' else None
             lines.append(f"| {rid.replace('|', chr(92) + '|')} | {x} | {n} | {net:+,.2f} | {pct(c[1], n)} | {pct(c[2], n)} | {pct(c[3], n)} | {pct(cb, n)} | {pct(c2, n)} | "
                          f"{med(mins)} | {med(lows)} | {'-' if lost is None else f'{lost} of {n}'} |")
