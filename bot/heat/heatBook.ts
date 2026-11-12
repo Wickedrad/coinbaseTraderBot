@@ -7,7 +7,7 @@
 
 import { EPS } from '../util/num';
 import { readJson } from '../util/persist';
-import type { HeatBookState, HeatOpen } from './types';
+import type { HeatBookState, HeatOpen, HeatSegment } from './types';
 
 /** An immediate-or-cancel entry the position book has not shown this long after it was sent filled nothing. */
 export const HEAT_UNFILLED_DROP_MS = 30_000;
@@ -73,6 +73,8 @@ export interface HeatClosed {
   pnl: number;
   /** true = it ended at settlement, false = the position was sold. */
   settled: boolean;
+  /** The order's stake in dollars (the dial's record is the return on it). */
+  stakeUsd: number;
 }
 
 export interface HeatSyncResult {
@@ -84,7 +86,7 @@ export interface HeatSyncResult {
 }
 
 export function emptyHeatState(): HeatLaneState {
-  return { v: 1, trips: 0, wins: 0, pnl: 0, open: [], lastExit: {}, lossTickers: {}, context: {}, four: {}, day: {}, acted: {}, traded: {}, losses: {}, noReentry: {} };
+  return { v: 1, trips: 0, wins: 0, pnl: 0, open: [], lastExit: {}, lossTickers: {}, context: {}, four: {}, day: {}, acted: {}, traded: {}, losses: {}, noReentry: {}, seg: {} };
 }
 
 /** Load the saved state, or start empty when there is no file. A file that parses but is not a heat state stops the
@@ -113,6 +115,7 @@ export function loadHeatState(file: string | undefined): HeatLaneState {
     traded: rec(saved.traded) ? saved.traded : {},
     losses: counted ? (saved.losses as Record<string, HeatWindowLoss>) : {},
     noReentry: counted ? (rec(saved.noReentry) ? (saved.noReentry as Record<string, number>) : {}) : { ...lossTickers },
+    seg: rec(saved.seg) ? (saved.seg as Record<string, HeatSegment>) : {},
   };
 }
 
@@ -183,7 +186,12 @@ export function syncHeatBook(st: HeatLaneState, now: number, lookup: HeatPositio
       l.at = now;
     }
     (st.traded ??= {})[o.ticker] = o.closeTs;
-    res.closed.push({ ticker: o.ticker, asset: o.asset, kind: o.kind, side: o.side, ruleId: o.ruleId, h: o.h, pnl, settled: !!pos.settled });
+    if (o.stakeUsd > EPS) {
+      const seg = ((st.seg ??= {})[`${o.asset}:${o.side}`] ??= { n: 0, r: 0 });
+      seg.n++;
+      seg.r = +(seg.r + pnl / o.stakeUsd).toFixed(6);
+    }
+    res.closed.push({ ticker: o.ticker, asset: o.asset, kind: o.kind, side: o.side, ruleId: o.ruleId, h: o.h, pnl, settled: !!pos.settled, stakeUsd: o.stakeUsd });
   }
   st.open = keep;
   return res;
