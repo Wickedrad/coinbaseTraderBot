@@ -598,10 +598,11 @@ def test_league_files_and_gate_merge(noise, tmp_path):
     with open(os.path.join(hd, 'league.md'), 'w') as f:
         f.write('# HM2 league\n')
     out = os.path.join(tmp, 'league')
-    S = dr.league(noise['dir'], noise['units'], out, stamp='test', hm2_pack=pk, hm2_live_meta=lm, hm2_league=hd, log=NOOP)
+    S = dr.league(noise['dir'], noise['units'], out, stamp='test', hm2_pack=pk, hm2_live_meta=lm, hm2_league=hd, log=NOOP, twins=1)
     for f in ('league.md', 'cards.md', 'summary.json', 'cards.json.gz', 'gate_rows.json', 'gates_all.csv.gz', 'profiles_pack.json.gz'):
         assert os.path.getsize(os.path.join(out, f)) > 0, f
-    assert S['schema'] == dr.SCHEMA_LEAGUE and set(S['series']) == {'X', 'X~twin1'} and not any(v['missing'] for v in S['coverage'].values())
+    assert S['schema'] == dr.SCHEMA_LEAGUE and set(S['series']) == {'X', 'X~twin1'} and S['coverage']['complete']
+    assert not any(v['missing'] for v in S['coverage']['series'].values()) and not S['coverage']['missing']
     ch = S['chance']['15|right|take|main']['pooled']
     assert ch['real']['units'] == len(NOISE_UNITS) and ch['twins']['kept']['sets'] == 1
     assert '15|right|take' in S['persistence'] and S['cards'] > 0 and S['columns'] > 0
@@ -642,17 +643,17 @@ def test_league_files_and_gate_merge(noise, tmp_path):
     assert json.load(open(lm))['part3'] == G['live'] and P2['live_meta_sha256'] == hashlib.sha256(open(lm, 'rb').read()).hexdigest()
     # a parity run (live_ready only) leaves tier 2 alone: the league runs
     dr._dump({'schema': 'test', 'rows': [dict(r, live_ready=True, live_ready_why=[]) for r in keep]}, pk)
-    dr.league(noise['dir'], noise['units'], os.path.join(tmp, 'league-lr'), hm2_pack=pk, log=NOOP)
+    dr.league(noise['dir'], noise['units'], os.path.join(tmp, 'league-lr'), hm2_pack=pk, log=NOOP, twins=1)
     # a changed non-gate row: tier 2 would be stale
     dr._dump({'schema': 'test', 'rows': [dict(keep[0], odds=9.9)]}, pk)
     with pytest.raises(SystemExit, match='changed since drill-units'):
-        dr.league(noise['dir'], noise['units'], out, hm2_pack=pk, log=NOOP)
+        dr.league(noise['dir'], noise['units'], out, hm2_pack=pk, log=NOOP, twins=1)
     # no drill series at all (every drill job failed): the league stops and the pack's gate rows stay
     dr._dump(P, pk)
     empty = os.path.join(tmp, 'no-series')
     os.makedirs(empty)
     with pytest.raises(SystemExit, match='no drill series outputs'):
-        dr.league(empty, noise['units'], os.path.join(tmp, 'league-empty'), hm2_pack=pk, log=NOOP)
+        dr.league(empty, noise['units'], os.path.join(tmp, 'league-empty'), hm2_pack=pk, log=NOOP, twins=1)
     assert json.load(open(pk)) == P
 
 
@@ -1136,3 +1137,370 @@ def test_check_pack_toy(noise, tmp_path):
     assert pc['by_h']['240'] == {'checked': 1, 'n_A_differ': 0, 'n_B_differ': 0, 'onset_dir_differ': 0, 'pack_dir_differ': 1}
     assert [(z['id'], z['h']) for z in pc['examples']] == [(u['id'], 60)] and pc['onset_dir_checked'] == 3
     assert dr.check_pack([u], lambda w: x, ctx) == pc
+
+
+# ---------------------------------------------------------------------- the pre-run audit, league side (Nov 12 2026)
+REAL_LATEST = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'research', 'oracle_heat', 'latest')
+
+
+def _series_copy(noise, dst, top1=True):
+    """A copy of the noise league inputs (X and X~twin1); top1=False drops the slim top tables (the full-file path)."""
+    import shutil
+    shutil.copytree(noise['dir'], dst)
+    if not top1:
+        for root, _, files in os.walk(dst):
+            for f in files:
+                if f.endswith(dr.TOP1_SUFFIX):
+                    os.remove(os.path.join(root, f))
+    return dst
+
+
+def _close(a, b, rtol=2e-6, atol=1e-6, path=''):
+    """JSON-like equality: floats within float32 tolerance, everything else exact."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        assert set(a) == set(b), (path, set(a) ^ set(b))
+        for k in a:
+            _close(a[k], b[k], rtol, atol, f'{path}.{k}')
+    elif isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        assert len(a) == len(b), path
+        for i, (x, y) in enumerate(zip(a, b)):
+            _close(x, y, rtol, atol, f'{path}[{i}]')
+    elif isinstance(a, float) or isinstance(b, float):
+        assert a is not None and b is not None and abs(float(a) - float(b)) <= atol + rtol * abs(float(b)), (path, a, b)
+    else:
+        assert a == b, (path, a, b)
+
+
+def _league_out(d):
+    G = json.load(open(os.path.join(d, 'gate_rows.json')))
+    S = json.load(open(os.path.join(d, 'summary.json')))
+    with gzip.open(os.path.join(d, 'gates_all.csv.gz'), 'rt') as f:
+        ga = f.read()
+    with gzip.open(os.path.join(d, 'cards.json.gz'), 'rt') as f:
+        cards = json.load(f)
+    return {'rows': G['rows'], 'summary': S, 'gates_all': ga, 'md': open(os.path.join(d, 'league.md')).read(), 'cards': cards}
+
+
+def test_league_coverage_refused_partial_and_facts(noise, tmp_path):
+    """(W1/F1/C1) The league refuses an incomplete set of series (a missing twin, a missing part, a meta with missing
+    blocks) before writing or merging anything; --allow-partial runs and labels it (summary coverage, league.md's
+    first lines, the pack's part3 block); the per-series facts of the metas reach summary.json and the Coverage
+    section either way."""
+    tmp = str(tmp_path)
+    ins = _series_copy(noise, os.path.join(tmp, 'in'))
+    pk = os.path.join(tmp, 'hm2_pack.json')
+    dr._dump(PACK, pk)
+    P0 = json.load(open(pk))
+    out = os.path.join(tmp, 'refused')
+    with pytest.raises(SystemExit, match=r'X~twin2: series missing.*heat-hm2-drill-partial'):
+        dr.league(ins, noise['units'], out, hm2_pack=pk, log=NOOP, twins=2)
+    assert json.load(open(pk)) == P0 and not os.path.exists(os.path.join(out, 'gate_rows.json'))
+    with pytest.raises(SystemExit, match=r'X: part 1 of 2 missing'):                 # the workflow's S: parts 0..S-1 each once
+        dr.main(['league', '--inputs', ins, '--units', noise['units'], '--out', out, '--hm2-pack', pk, '--parts', '2', '--twins', '1'])
+    assert json.load(open(pk)) == P0
+    mp = os.path.join(ins, 'X~twin1', 'meta.json')
+    m = json.load(open(mp))
+    m['blocks_missing'], m['blocks_failed'] = [7], [{'block': 7, 'error': 'boom'}]
+    dr._dump(m, mp)
+    with pytest.raises(SystemExit, match=r'X~twin1: blocks missing'):
+        dr.league(ins, noise['units'], out, hm2_pack=pk, log=NOOP, twins=1)
+    assert json.load(open(pk)) == P0
+    # --allow-partial: runs on what is there and says so everywhere
+    logs = []
+    S = dr.league(ins, noise['units'], out, hm2_pack=pk, log=lambda *a: logs.append(' '.join(map(str, a))), twins=2, allow_partial=True)
+    cov = S['coverage']
+    assert cov['partial'] and not cov['complete'] and cov['S'] == 1 and cov['expected'] == ['X', 'X~twin1', 'X~twin2']
+    assert {(x['label'], x['what']) for x in cov['missing']} == {('X~twin2', 'series missing (no meta.json)'), ('X~twin1', 'blocks missing')}
+    assert any(s.startswith('coverage: 2 of 3 expected series found, S = 1, 2 gaps') for s in logs)
+    md = open(os.path.join(out, 'league.md')).read().split('\n')
+    assert md[2].startswith('**PARTIAL:') and 'X~twin2: series missing' in md[2] and '## Coverage' in md
+    P = json.load(open(pk))
+    assert P['part3']['partial'] is True and {x['label'] for x in P['part3']['missing']} == {'X~twin2', 'X~twin1'}
+    assert json.load(open(os.path.join(out, 'summary.json')))['coverage']['missing'] == json.loads(json.dumps(cov['missing']))
+    fx = S['series']['X']
+    assert fx['parts'] == [[0, 1]] and fx['units_run'] == len(NOISE_UNITS) and fx['unknown_n'] == 0 and fx['blocks_failed'] == []
+    assert set(fx['league_check']) >= {'checked', 'n_differ', 'd_differ'} and set(fx['pack_check']) >= {'checked', 'n_A_differ', 'n_B_differ', 'pack_dir_differ'}
+    assert fx['pct'] and fx['pct'][0]['checked'] > 0 and isinstance(fx['clipped'], int) and fx['peak_rss_mb'] > 0
+    assert fx['rss_before_blocks_mb'] > 0 and len(fx['by_part']) == 1
+    assert S['series']['X~twin1']['blocks_failed'] == [{'block': 7, 'error': 'boom', 'part': [0, 1]}] and S['series']['X~twin1']['league_check'] is None
+    row = [ln for ln in md if ln.startswith('| X~twin1 |')][0]
+    assert '0:7' in row and [ln for ln in md if ln.startswith('| X~twin2 |')][0].startswith('| X~twin2 | none of 1 |')
+    assert 'PARTIAL' in hl.part3_section(P)
+
+
+def test_league_slim_full_and_compact_equal(noise, tmp_path, monkeypatch):
+    """(W2) The league reads the slim b*_top1.csv.gz; a directory with only the full b*_top.csv.gz is read in chunks
+    with the same row filter: identical outputs. float32 / category frames against the float64 / object frames:
+    gate rows, league.md, gates_all.csv.gz identical, every other number within float32 tolerance."""
+    tmp = str(tmp_path)
+    slim = _series_copy(noise, os.path.join(tmp, 'slim'))
+    full = _series_copy(noise, os.path.join(tmp, 'full'), top1=False)
+    assert not any(f.endswith(dr.TOP1_SUFFIX) for _, _, fs in os.walk(full) for f in fs)
+    L = dr.load_league_inputs(slim)
+    T = L['top']
+    assert isinstance(T['param'].dtype, pd.CategoricalDtype) and isinstance(T['unit'].dtype, pd.CategoricalDtype)
+    assert T['lift_A_mode'].dtype == np.float32 and T['rank'].dtype == np.int32 and T['kept'].dtype == bool
+    assert all(T[c].dtype == np.float64 for c in dr.LEAGUE_F64)          # (review) the columns statistics are taken on
+    assert (((T['list'] == 'main') & (T['rank'] <= dr.TOP_FULL)) | (T['rank'] == 1)).all()
+    monkeypatch.setattr(dr, 'LEAGUE_CHUNK', 97)                                      # many chunks per block
+    Lf = dr.load_league_inputs(full)
+    pd.testing.assert_frame_equal(T, Lf['top'])
+    # the frame against a plain float64 read of the full tables with the filter
+    Tr = pd.concat([pd.read_csv(os.path.join(d, f)) for d in (noise[0]['out'], noise[1]['out']) for f in sorted(os.listdir(d)) if f.endswith('_top.csv.gz')],
+                   ignore_index=True)
+    Tr = Tr[((Tr['list'] == 'main') & (Tr['rank'] <= dr.TOP_FULL)) | (Tr['rank'] == 1)].reset_index(drop=True)
+    assert len(Tr) == len(T)
+    for c in Tr.columns:
+        a, b = T[c], Tr[c]
+        if b.dtype == np.float64:
+            np.testing.assert_allclose(a.to_numpy(np.float64), b.to_numpy(), rtol=1e-6, equal_nan=True)
+            assert (a.map(dr._r6).to_numpy(float)[b.notna()] == b.to_numpy()[b.notna()]).all(), c           # the written number back
+        else:
+            assert (a.astype(object).where(a.notna(), '<NA>') == b.astype(object).where(b.notna(), '<NA>')).all(), c
+    outs = {}
+    for name, ins, compact in (('slim', slim, True), ('full', full, True), ('plain', slim, False)):
+        monkeypatch.setattr(dr, 'LEAGUE_COMPACT', compact)
+        d = os.path.join(tmp, 'out-' + name)
+        dr.league(ins, noise['units'], d, stamp='t', log=NOOP, twins=1)
+        outs[name] = _league_out(d)
+    for k in ('rows', 'md', 'gates_all', 'cards'):
+        assert outs['slim'][k] == outs['full'][k] == outs['plain'][k], k
+    # (review) the chance numbers (gate heat max / p99, z median / p90, sd of t_B) are the float64 ones, not float32's
+    assert outs['slim']['summary']['chance'] == outs['plain']['summary']['chance']
+    for name in ('full', 'plain'):
+        for k in ('summary', 'cards'):
+            a, b = outs['slim'][k], outs[name][k]
+            if k == 'summary':
+                a, b = ({kk: vv for kk, vv in x.items() if kk != 'coverage'} for x in (a, b))
+            _close(a, b, path=f'{name}.{k}')
+
+
+def test_league_reads_only_listed_blocks(noise, tmp_path):
+    """(W8) Block files a meta.json does not list as done (an earlier run's leftovers) are named in a warning and
+    never read: the outputs equal those of the clean directory."""
+    tmp = str(tmp_path)
+    clean = _series_copy(noise, os.path.join(tmp, 'clean'))
+    dirty = _series_copy(noise, os.path.join(tmp, 'dirty'))
+    d = os.path.join(dirty, 'X')
+    for f in sorted(os.listdir(d)):
+        if f.startswith('b00000_'):
+            import shutil
+            shutil.copy(os.path.join(d, f), os.path.join(d, 'b00042_' + f[len('b00000_'):]))
+    logs = []
+    dr.league(clean, noise['units'], os.path.join(tmp, 'o1'), log=NOOP, twins=1)
+    S = dr.league(dirty, noise['units'], os.path.join(tmp, 'o2'), log=lambda *a: logs.append(' '.join(map(str, a))), twins=1)
+    assert any('not listed in its meta.json' in s and 'b00042_top1.csv.gz' in s for s in logs)
+    assert any(f == 'b00042_drill.json.gz' for u in S['coverage']['series']['X']['unlisted_files'] for f in u['files'])
+    a, b = _league_out(os.path.join(tmp, 'o1')), _league_out(os.path.join(tmp, 'o2'))
+    assert a['rows'] == b['rows'] and a['gates_all'] == b['gates_all'] and a['cards'] == b['cards']
+    assert a['summary']['chance'] == b['summary']['chance'] and a['summary']['persistence'] == b['summary']['persistence']
+
+
+def test_league_block_files_and_rows_checked(noise, tmp_path):
+    """(Review) A block that its meta.json lists as done but whose files are gone (a put or a get cut short), or whose
+    top table reads other rows than its top1_rows, is a gap: refused before anything is written or merged, labelled
+    partial under --allow-partial. A twin's drill json is not needed (the league never reads it)."""
+    tmp = str(tmp_path)
+    pk = os.path.join(tmp, 'hm2_pack.json')
+    dr._dump(PACK, pk)
+    P0 = json.load(open(pk))
+    ins = _series_copy(noise, os.path.join(tmp, 'in'))
+    for f in os.listdir(os.path.join(ins, 'X~twin1')):
+        if f.endswith('_drill.json.gz'):
+            os.remove(os.path.join(ins, 'X~twin1', f))
+    assert dr.coverage_check(dr.find_series(ins), ['X'], twins=1)['complete']
+    os.remove(os.path.join(ins, 'X', 'b00000_top1.csv.gz'))                  # the full table still there: read in chunks
+    assert dr.coverage_check(dr.find_series(ins), ['X'], twins=1)['complete']
+    os.remove(os.path.join(ins, 'X', 'b00000_top.csv.gz'))
+    os.remove(os.path.join(ins, 'X~twin1', 'b00000_units.csv.gz'))
+    cov = dr.coverage_check(dr.find_series(ins), ['X'], twins=1)
+    assert not cov['complete'] and {(x['label'], x['what'], tuple(x['blocks'])) for x in cov['missing']} == \
+        {('X', 'block files missing', (0,)), ('X~twin1', 'block files missing', (0,))}
+    import shutil
+    for f in ('b00000_top1.csv.gz', 'b00000_top.csv.gz'):
+        shutil.copy(os.path.join(noise['dir'], 'X', f), os.path.join(ins, 'X', f))
+    os.remove(os.path.join(ins, 'X', 'b00000_drill.json.gz'))                   # a real coin's drill json is needed
+    out = os.path.join(tmp, 'o')
+    with pytest.raises(SystemExit, match=r"X: block files missing \(blocks \[0\]: \['b00000_drill.json.gz'\]\).*X~twin1: block files missing"):
+        dr.league(ins, noise['units'], out, hm2_pack=pk, log=NOOP, twins=1)
+    assert json.load(open(pk)) == P0 and not os.path.exists(os.path.join(out, 'gate_rows.json'))
+    S = dr.league(ins, noise['units'], out, hm2_pack=pk, log=NOOP, twins=1, allow_partial=True)
+    assert S['coverage']['partial'] and json.load(open(pk))['part3']['partial'] is True
+    # a top table with other rows than its meta.json's top1_rows
+    ins2 = _series_copy(noise, os.path.join(tmp, 'in2'))
+    p = os.path.join(ins2, 'X', 'b00000_top1.csv.gz')
+    x = pd.read_csv(p)
+    x.iloc[:-1].to_csv(p, index=False, compression='gzip', float_format='%.6g')
+    assert dr.coverage_check(dr.find_series(ins2), ['X'], twins=1)['complete']
+    with pytest.raises(SystemExit, match=r'X: block top rows differ \(block 0: top1_rows %d, read %d\)' % (len(x), len(x) - 1)):
+        dr.league(ins2, noise['units'], os.path.join(tmp, 'o2'), hm2_pack=pk, log=NOOP, twins=1)
+    assert not os.path.exists(os.path.join(tmp, 'o2', 'gate_rows.json'))
+    S2 = dr.league(ins2, noise['units'], os.path.join(tmp, 'o2'), log=NOOP, twins=1, allow_partial=True)
+    assert [m['what'] for m in S2['coverage']['missing']] == ['block top rows differ']
+
+
+def test_league_drill_digest_and_concat(noise, tmp_path):
+    """(Review: memory) The drill json is streamed from the real coins only: the curve digest pools the same numbers
+    as the whole-dict path, profiles_pack.json.gz holds the same JSON, part3's live block the same; outputs without
+    the twins' drill json equal those with it. _concat(consume=True) equals pd.concat and releases its inputs."""
+    tmp = str(tmp_path)
+    a = _series_copy(noise, os.path.join(tmp, 'a'))
+    b = _series_copy(noise, os.path.join(tmp, 'b'))
+    for f in os.listdir(os.path.join(b, 'X~twin1')):
+        if f.endswith('_drill.json.gz'):
+            os.remove(os.path.join(b, 'X~twin1', f))
+    for d, ins in (('oa', a), ('ob', b)):
+        dr.league(ins, noise['units'], os.path.join(tmp, d), stamp='t', log=NOOP, twins=1)
+    oa, ob = _league_out(os.path.join(tmp, 'oa')), _league_out(os.path.join(tmp, 'ob'))
+    assert oa['rows'] == ob['rows'] and oa['cards'] == ob['cards'] and oa['md'] == ob['md']
+    # the whole-dict path of before
+    S = dr.find_series(a)
+    drill = {}
+    for label in sorted(S):
+        for d, m in S[label]:
+            for p in dr._block_paths(d, m, '_drill.json.gz'):
+                drill.setdefault(label, {}).update(dr._read_json(p) or {})
+    real = {}
+    for label, dj in drill.items():
+        if '~' not in label:
+            real.update(dj)
+    prof = os.path.join(tmp, 'oa', 'profiles_pack.json.gz')
+    with gzip.open(prof, 'rt') as f:
+        txt = f.read()
+    assert txt == json.dumps(dr._clean({u: d for u, d in real.items() if int(d.get('tier') or 3) <= 2}), allow_nan=False) and len(json.loads(txt))
+    dg = dr.drill_digest(S, {k: {'twin': int(v[0][1]['twin'])} for k, v in S.items()})
+    assert dg['live'] == {u: {'k': d.get('k'), 'dir': d.get('dir'), 'own_edges': d.get('own_edges')} for u, d in real.items()}
+    old = dr._curve_shapes(drill)
+    L = dr.load_league_inputs(a)
+    j = lambda v: json.dumps(dr._clean(v))                                                             # noqa: E731 (NaN odds)
+    assert j(dr.column_cards(L['top'], old)) == j(dr.column_cards(L['top'], dg['curves'])) and j(dr.ta_cards(L['top'], old)) == j(dr.ta_cards(L['top'], dg['curves']))
+    by_param = {}
+    for k, c in old.items():
+        if '~' not in k[0]:
+            by_param.setdefault(k[2], []).append(c)
+    for prm, cs in list(by_param.items())[:20]:
+        for sd in ('A', 'B'):
+            nb_ = max(len(c[sd]['n']) for c in cs)
+            n, od = np.zeros(nb_), np.zeros(nb_)
+            for c in cs:
+                nn = np.asarray(c[sd]['n'], float)
+                n[:len(nn)] += nn
+                od[:len(nn)] += nn * np.nan_to_num(np.asarray(c[sd]['odds'], float))
+            got = dg['curves'].pooled_curve(prm)[sd]
+            with np.errstate(all='ignore'):
+                assert got['n'] == n.tolist() and np.array_equal(np.asarray(got['odds']), od / n, equal_nan=True)
+    # _concat(consume=True) against pd.concat: a column one frame lacks (int -> float, bool -> object, text -> category)
+    f1 = pd.DataFrame({'a': [1, 2], 'b': [True, False], 't': ['x', 'y'], 'f': [0.5, 1.5]})
+    f2 = pd.DataFrame({'a': [3], 'f': [2.5], 't': ['a'], 'n': [7]})
+    want = dr._concat([dr._compact(f1.copy()), dr._compact(f2.copy())])
+    fr = [dr._compact(f1.copy()), dr._compact(f2.copy())]
+    got = dr._concat(fr, consume=True)
+    pd.testing.assert_frame_equal(got, want)
+    assert fr == [None, None] and list(got['t'].cat.categories) == ['a', 'x', 'y'] and got['n'].isna().tolist() == [True, True, False]
+
+
+def test_split_aliases_keys_with_bars():
+    """(C5) An alias holding ' | ' (an HM1 cell key) survives the '|'-joined field of the series files; JSON lists and
+    the new separator read too."""
+    key = '1m:RSI14=high (rising in) | 1m:SWAK_2PHP20 sign=above 0'
+    assert dr.split_aliases(f'{key}|15m:R3=low|P=a | b | c') == [key, '15m:R3=low', 'P=a | b | c']
+    assert dr.split_aliases('15m:R3=low|1m:R5 sign=above 0') == ['15m:R3=low', '1m:R5 sign=above 0']
+    assert dr.split_aliases(json.dumps([key, 'x=y'])) == [key, 'x=y'] == dr.split_aliases(dr.ALIAS_SEP.join([key, 'x=y']))
+    assert dr.split_aliases(float('nan')) == [] == dr.split_aliases('') == dr.split_aliases(None) and dr.split_aliases([key]) == [key]
+
+
+def test_gate_rows_loaded_horizons_pack_dir_and_aliases(noise, tmp_path):
+    """(C2) A tier 1-2 gate row stands only where the bot loads its call at that h (hm2_pack.json's non-gate rows and
+    the HM1 packs, perp pairs at 240 only); the twins' rows behind above_twin_max follow the same rule; tier 3 rows
+    are unchanged. (C3 c) pack_dir / dir_matches_pack / call_note from the units' pack block, nothing flipped or
+    re-ranked. (C5) a near-copy alias with ' | ' stays whole."""
+    pdir = str(tmp_path / 'packs')
+    os.makedirs(pdir)
+    dr._dump({'rows': [{'coin': 'X', 'h': 15, 'key': '1m:R3=very high'}, {'coin': 'X', 'h': 240, 'key': '1m:R3=very high'},
+                       {'coin': 'X~twin1', 'h': 60, 'key': '1m:R3=very high'}]}, os.path.join(pdir, 'traded_pack.json'))
+    dr._dump({'rows': [{'coin': 'X', 'h': 1440, 'key': '1m:R3=very low|15m:R10', 'when': '1m:R3=very low'},
+                       {'coin': 'X', 'h': 60, 'key': '1m:R3=very low|15m:R10', 'when': '1m:R3=very low'}]}, os.path.join(pdir, 'perp_pair_pack.json'))
+    pack = {'rows': [{'coin': 'X', 'kind': 'pair', 'key': '15m:R3=low&1m:R5 sign', 'h': 60, 'dir': 1},
+                     {'coin': 'X', 'kind': 'model', 'key': 'GBM.TA15=high', 'h': 15}, {'coin': 'X', 'kind': 'gate', 'key': '15m:R3=low&1m:R5 sign', 'h': 15}]}
+    U = {'packs': ['traded_pack.json', 'perp_pair_pack.json'], 'hm2_pack': True}
+    pairs, kinds = dr.loaded_calls(U, pack, pdir)
+    assert pairs == {('X|level|1m:R3=very high', 15), ('X|level|1m:R3=very high', 240), ('X|hm2|15m:R3=low&1m:R5 sign', 60),
+                     ('X|model|GBM.TA15=high', 15)} and set(kinds) == {'level', 'cell', 'hm2', 'model'}
+    assert dr.loaded_calls({'packs': [], 'hm2_pack': False}, pack, pdir) is None
+    with pytest.raises(SystemExit, match='pair_pack.json'):
+        dr.loaded_calls({'packs': ['pair_pack.json']}, None, pdir)
+    L = dr.load_league_inputs(noise['dir'])
+    T, Ud, D2 = L['top'], L['units'], L['depth2']
+    base = dr.gate_rows(T, Ud, D2)
+    st = {}
+    rows = dr.gate_rows(T, Ud, D2, loaded=(pairs, kinds), stats=st)
+    g = lambda rs: [r for r in rs if r['kind'] == 'gate']                                                  # noqa: E731
+    t12 = [r for r in g(rows) if r['list'] != 'other_units']
+    assert t12 and all((r['when']['unit'], r['h']) in pairs for r in t12) and st['applied']
+    assert {r['when']['unit'] for r in t12} <= {'X|level|1m:R3=very high', 'X|hm2|15m:R3=low&1m:R5 sign'}
+    assert any(r['when']['unit'] == 'X|level|1m:R3=very high' and r['h'] == 15 for r in t12) and not any(r['h'] == 60 and r['tier'] == 1 for r in t12)
+    assert [r for r in g(rows) if r['list'] == 'other_units'] == [r for r in g(base) if r['list'] == 'other_units']
+    assert [r for r in rows if r['kind'] == 'gate2'] == [r for r in base if r['kind'] == 'gate2']
+    assert st['real_tier12_rank1_rows_loaded'] < st['real_tier12_rank1_rows'] and st['twin_tier12_rank1_rows_loaded'] < st['twin_tier12_rank1_rows']
+    # the twins' max is over the twins' rows of loaded calls only
+    tw = T[(T['twin'] != 0) & (T['list'] == 'main') & (T['rank'] == 1) & (T['tier'] <= 2)]
+    for r in t12:
+        y = tw[(tw['h'] == r['h']) & (tw['track'] == r['track']) & (tw['mode'] == r['mode'])]
+        y = y[[(str(u), int(h)) in pairs for u, h in zip(y['unit'], y['h'])]]
+        if len(y):
+            assert r['twin_mark'] == 'max' and r['above_twin_max'] == bool(r['gheat_B'] > float(y['gheat_B'].max()))
+        else:
+            assert r['twin_mark'] == '' and r['above_twin_max'] is None
+    # (C3 c) the pack's direction beside the drill's: opposite at 60 for the hm2 unit, agreeing at 15 for the level
+    hu = 'X|hm2|15m:R3=low&1m:R5 sign'
+    d60 = int(T[(T['unit'] == hu) & (T['h'] == 60) & (T['twin'] == 0)]['dir'].iloc[0])
+    up = {hu: {'60': {'dir': -d60}}, 'X|level|1m:R3=very high': {'15': {'dir': int(T[(T['unit'] == 'X|level|1m:R3=very high') & (T['h'] == 15)
+                                                                                          & (T['twin'] == 0)]['dir'].iloc[0])}}}
+    rows2 = dr.gate_rows(T, Ud, D2, unit_pack=up)
+    assert len(rows2) == len(base)
+    for a, b in zip(rows2, base):
+        assert {k: v for k, v in a.items() if k not in ('pack_dir', 'dir_matches_pack', 'call_note')} == \
+            {k: v for k, v in b.items() if k not in ('pack_dir', 'dir_matches_pack', 'call_note')}
+        u, h = a['when']['unit'], a['h']
+        if a['kind'] == 'gate' and u == hu and h == 60:
+            assert a['pack_dir'] == -d60 == -a['dir'] and a['dir_matches_pack'] is False and a['call_note'] == 'onset A direction opposes the pack call'
+        elif a['kind'] == 'gate' and u == 'X|level|1m:R3=very high' and h == 15:
+            assert a['dir_matches_pack'] is True and a['call_note'] is None
+        elif a['kind'] == 'gate':
+            assert a['pack_dir'] is None and a['dir_matches_pack'] is None and a['call_note'] is None
+    assert any(a['kind'] == 'gate' and a['when']['unit'] == hu and a['h'] == 60 for a in rows2)
+    # (C5) an alias holding ' | '
+    key = '1m:RSI14=high (rising in) | 1m:SWAK_2PHP20 sign=above 0'
+    T2 = T.copy()
+    T2['aliases'] = T2['aliases'].astype(object)
+    T2.loc[(T2['twin'] == 0) & (T2['rank'] == 1), 'aliases'] = f'{key}|15m:R3=low'
+    al = [r['aliases'] for r in dr.gate_rows(T2, Ud, D2) if r['kind'] == 'gate']
+    assert al and all(a == [key, '15m:R3=low'] for a in al)
+
+
+def test_loaded_calls_on_the_real_packs():
+    """(C2, C8) The units of the real hm2_pack.json and the five HM1 packs (research/oracle_heat/latest): tier 1 1,823
+    (975 cells, 848 levels), tier 2 3,516 (3,420 hm2, 96 model); every tier 2 unit is loaded at one or more of the pack
+    horizons (3,366 at exactly one) with the unit ids build_units gives, and its pack block names the same horizons;
+    217 tier 1 units are loaded at 1440 only (no gate row of theirs stands in the take / skip lists)."""
+    hp = os.path.join(REAL_LATEST, 'hm2_pack.json')
+    if not all(os.path.isfile(os.path.join(REAL_LATEST, f)) for f in ('hm2_pack.json',) + dr.HM1_PACKS):
+        pytest.skip('the real packs are not in this checkout')
+    import collections
+    import tempfile
+    pack = json.load(open(hp))
+    with tempfile.TemporaryDirectory() as td:
+        dp = os.path.join(td, 'd.csv')
+        pd.DataFrame([{'coin': 'BTC', 'kind': 'single', 'key': 'ZZ=none', 'h': 15, 'dir': 1, 'n_A': 1, 'n_B': 1, 'odds_A': 0.0}]).to_csv(dp, index=False)
+        U = dr.build_units(dp, '', REAL_LATEST, pack, chart=False)
+    us = [u for c in U['coins'].values() for u in c]
+    n = collections.Counter((u['tier'], u['kind']) for u in us)
+    assert (n[(1, 'cell')], n[(1, 'level')], n[(2, 'hm2')], n[(2, 'model')]) == (975, 848, 3420, 96)
+    pairs, kinds = dr.loaded_calls(U, pack, REAL_LATEST)
+    hs = collections.defaultdict(set)
+    for i, h in pairs:
+        hs[i].add(h)
+    t2 = [u for u in us if u['tier'] == 2]
+    assert all(hs[u['id']] & set(dr.PACK_H) for u in t2) and sum(len(hs[u['id']]) == 1 for u in t2) == 3366
+    assert all({int(h) for h in u['pack']} == hs[u['id']] for u in t2)
+    assert sum(1 for u in us if u['tier'] == 1 and not hs[u['id']] & set(dr.PACK_H)) == 217

@@ -1681,6 +1681,12 @@ def part3_section(pack: dict) -> str:
                      'section (upsert_section(..., "part3", ...)).')
     else:
         df = pd.DataFrame([{k: r.get(k) for k in ('coin', 'h', 'kind', 'mode', 'track', 'live_ready')} for r in rows])
+        p3 = pack.get('part3') or {}
+        if p3.get('partial'):                       # (Part 3 pre-run audit W1) a league run with --allow-partial says so
+            ms = p3.get('missing') or []
+            lines += [f'**PARTIAL: the drill league ran on an incomplete set of series ({len(ms)} gaps: '
+                      + '; '.join(f"{m.get('label') or 'all series'}: {m.get('what')}" for m in ms[:10]) + (' ...' if len(ms) > 10 else '')
+                      + '); see part3.missing in hm2_pack.json.**', '']
         lines += [f'{len(rows):,} gate rows are merged into hm2_pack.json (see research/oracle_heat/hm2/part3/league.md).', '',
                   '| coin | minutes | kind | rows | live ready |', '|---|---|---|---|---|']
         for (c, h, k), y in df.groupby(['coin', 'h', 'kind'], dropna=False):

@@ -623,3 +623,96 @@ path as the coins except where named below. No number a coin or twin computes ch
    240 onsets on the same h240() grid) and writes the counts of differences, per h, and up to 10 examples into
    meta.json's `pack_check`. Informational only; it never stops the job, and twins skip it. Gate rows are not yet
    marked with the pack's direction (C3 c, league batch).
+7. **The design's unit counts were stale (C8).** Built from the five HM1 packs and the real hm2_pack.json (run
+   43030435253): tier 1 is 1,823 units (975 cells, 848 levels), tier 2 is 3,516 (3,420 hm2 cells, 96 model zones),
+   not "about 970" and "about 1,000-1,300". With tier 3 at about 18,200 HM1 levels the total is about 23,500 units,
+   about 5,900 per coin, not 21,000 / 5,300. The S decision is read from the bench's `units_total`, not from the
+   design text.
+8. **The HM1-league check (Units point 4, "expected 0") cannot reach zero (C4).** Its remaining mismatches are
+   artefacts, not fire-rule errors: (a) direction_all.csv.gz is written with `%.5g`, so every n_B of 100,000 or more
+   is rounded to 5 significant digits while the drill compares it exactly (about 90% of those rows flag `n_differ`);
+   (b) at 240 minutes HM1's table comes from the long-horizon grid (HMAX 1440: A and B rows end 1440 minutes early and
+   need no gap in the next day), the drill's from the 240 grid, so n_A, n_B and, for marginal levels, d differ by
+   construction for units with events in the last ~1,200 minutes of A or B. `league_check` pools all horizons, so read
+   its counts as an upper bound; a real fire-rule difference shows at h <= 60 in its examples. Its logic is unchanged.
+
+
+## League-side fixes found by the pre-run audit
+
+Written Thu Nov 12 2026, 2:56 PM EST (19:56 UTC), before the full drill ran; the league batch named above
+(heat_hm2_drill.py league side: find_series, load_league_inputs, gate_rows, league, league_md; heat_hm2_league.py
+part3_section). No pass bar was added and no unit, parameter, level or cell is cut from the series files; the twins
+go through the same code as the coins; no number a series job computes changes, and every league read stays
+compatible with what commit 029d0f0's series jobs write. The only rows the pack loses are the tier 1-2 gate rows on a
+horizon where the bot does not load the call (item 3).
+
+1. **The league refuses an incomplete set of series (W1, F1, C1).** Before anything is read in full, written or
+   merged, the league checks that every coin of the units file x twin 0..3 (labels as meta['label']: `BTC`,
+   `BTC~twin1`, ...) is there with parts 0..S-1 each exactly once (S = `--parts`, the workflow's
+   `[heat-hm2-drill-parts:S]`; else the metas' part [i, S], which must agree) and that no meta lists failed or missing
+   blocks. Otherwise it stops (SystemExit naming every missing label, part and block and how to go on), and
+   hm2_pack.json and its earlier gate rows stay as they are. `--allow-partial` (the bare tag `[heat-hm2-drill-partial]`
+   with `[heat-hm2-drill-league:<run>]`) runs on what is there and labels it: `summary.json` coverage (`partial`,
+   `missing`), a PARTIAL notice in league.md's first lines, `part3.partial = true` and `part3.missing` in the pack, and
+   a PARTIAL line in the HM2 league's Part 3 section. The log prints a one-line coverage summary. `--twins` (default 3)
+   sets the twins expected per coin (tests run one twin). summary.json's `coverage` is now {complete, partial, S,
+   expected, missing, unexpected, found, series: {label: parts, missing blocks, unlisted files}}.
+2. **The league reads the slim top tables in compact frames (W2, W8).** It reads `b*_top1.csv.gz` (the workflow no
+   longer downloads `b*_top.csv.gz`); a directory with only the full table (older outputs, tests) is read in chunks
+   of 200,000 rows with the same row filter ((list main and rank <= TOP_FULL) or rank 1), the rows every reader uses.
+   Text columns become category (one sorted category set per column, so codes order as the text does; every groupby
+   passes observed=True) and the top table's float64 columns become float32 (except the four of item 9). Every float in a series file was written
+   with `%.6g`, and float32 holds 6 significant digits exactly, so order, comparisons, maxima marks and `%.6g` text are
+   unchanged; the gate rows and the league views copy the written number back (`_r6`). Tested on the toy series:
+   gate rows, league.md and gates_all.csv.gz are identical between the slim, the full and the plain float64 / object
+   paths; chance table, persistence and cards agree within float32 tolerance. Only the blocks a meta.json lists in
+   `blocks_done` are read (top, units, losers, depth 2, drill json, summary counts); other block files in the directory
+   (an earlier run's leftovers on Drive) are named in a warning and in coverage, never read.
+3. **Gate rows only on the calls the bot loads (C2).** From hm2_pack.json's non-gate rows (kind 'model' for model
+   rows, 'hm2' otherwise) and the HM1 packs the units file was built from (`--packs-dir`, default the directory of
+   `--hm2-pack`; 'cell' for a row with `when`, 'level' otherwise; perp_pair_pack at 240 only, as build_units) the league
+   builds the set of loaded (unit id, h), with the unit ids build_units gives (the pack key as it is: no other spelling
+   exists; tested on the real packs: all 3,516 tier 2 units are found, 3,366 of them at exactly one horizon, and 217
+   tier 1 units are loaded at 1440 only). A tier 1-2 gate row stands in take_right / take_profit / skip_right /
+   skip_profit only where its (unit, h) is loaded; the twins' rows behind above_twin_max are held to the same rule, so
+   the twin maximum is over the same population. Tier 3 rows (other_units), the depth-2 rows (gate2) and
+   gates_all.csv.gz are unchanged. A units file built without packs applies no rule (said in the log and in
+   `part3.horizon_rule` / summary `gate_horizon_rule`, which count the rank-1 rows before and after).
+4. **The pack's direction beside each gate row (C3 c).** Each gate row carries `pack_dir` (the pack row's dir for its
+   unit at that h, from the units file's `pack` block; None for HM1 units and older units files) and
+   `dir_matches_pack` (None without a pack dir). Where the drill's onset A direction opposes the pack's call,
+   `call_note` reads 'onset A direction opposes the pack call'. The row, its dir and its rank are unchanged.
+5. **Aliases with ' | ' (C5).** The series files join aliases with '|' (029d0f0), and an alias can hold ' | ' (an HM1
+   cell key). The gate rows' `aliases` is a JSON list read by `split_aliases`: a '|' with a space on both sides stays
+   inside its alias; a JSON list and the separator U+241F are read too.
+6. **Coverage in the report (W1, G).** summary.json `series[label]` now carries the facts the metas held and the
+   summary dropped: parts found, units run and unknown, league_check and pack_check counts (summed over parts, errors
+   listed), the pct check, clipped instances, peak RSS and RSS before the blocks, failed and missing blocks, per part
+   too. league.md opens with a Coverage section (series x parts found, units run and unknown per series, twins
+   included, failed and missing blocks, the two checks, memory, unlisted block files, the horizon rule's counts).
+7. **Every listed block's files are checked (review, Nov 12 2026, 3:22 PM EST).** The completeness check of item 1
+   also looks at the files: for each block a meta.json lists in `blocks_done` the directory must hold a top table
+   (`b*_top1.csv.gz` or `b*_top.csv.gz`), `_units`, `_losers`, `_depth2`, `_summary.json`, and on a real coin (twin 0)
+   `_drill.json.gz`. A block whose files are gone (a put to Drive or the league's get cut short) is a gap ('block
+   files missing', with the file names); where the entry carries `top1_rows` (029d0f0 on), a top table that reads
+   another number of rows is a gap too ('block top rows differ', found as the tables are read, still before anything
+   is written). Both stop the league, or are labelled partial under `--allow-partial`, as item 1. Before, such a block
+   was dropped without a word and the result called complete.
+8. **The league's memory at full scale (review).** (a) The drill json is read from the real coins only (nothing of the
+   league reads a twin's: the curve shapes and pooled curves, part3's live block and the profiles are real-coin only),
+   one block at a time: each block keeps per curve (unit, param, shape) and per parameter the pooled n and n x odds
+   sums (added in the order the whole-dict path added them, so the pooled curves are the same numbers), per unit {k,
+   dir, own_edges}, and tier 1-2 profiles are written to profiles_pack.json.gz as they come (the same JSON text).
+   Before, every block's drill json of all 16 series was held at once (about 1.5 MB per unit-series, about 140 GB at
+   full scale). The workflow's drill-league get no longer downloads the twins' `b*_drill.json.gz`; the twins' top,
+   units, losers, depth-2 and summary files, which the chance scale needs, are kept. (b) The top frame's int64
+   columns become int32 where every value fits (exact), and the frames of all series are copied one at a time into
+   columns allocated once, each released after its copy (pd.concat's dtypes, column order and values), so the load
+   peaks at the frame plus one series' frame, not twice the frame. (c) ta_cards and column_cards select the rows and
+   only the columns they read in one step.
+9. **The chance numbers are the float64 ones (review).** The top table keeps `gheat_B`, `z`, `t_day_B` and
+   `lift_B_mode` in float64: the chance table's maxima, quantiles, medians and the sd of t_B (summary.json chance,
+   the pack's `part3.chance`), the twin marks' max and p99, and the TA cards' median B lift are the numbers a float64
+   read of the series files gives (float32 gave e.g. a twin max of 2.299999952316284 for a written 2.3). Tested: the
+   chance table, cards, gate rows, league.md and gates_all.csv.gz are identical between the compact and the plain
+   paths.

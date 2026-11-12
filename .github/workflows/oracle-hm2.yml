@@ -924,8 +924,9 @@ jobs:
       - name: Every drill series' small files (all parts of S = the drill parts tag; no shard) and the units
         run: |
           set -euo pipefail
-          # the league reads the slim top tables (b*_top1.csv.gz: rank 1 of both lists and the first ranks of the main list), never the full b*_top.csv.gz
-          bash deploy/drive_lab.sh get "$D/drill" data/drill --exclude "*.npz" --exclude "*_top.csv.gz" --include "/units.json" --include "/*/part*of${DPS}/**"
+          # the league reads the slim top tables (b*_top1.csv.gz: rank 1 of both lists and the first ranks of the main list), never the full b*_top.csv.gz,
+          # and the drill json of the real coins only (twin 0): a twin's b*_drill.json.gz is never read (heat_hm2_drill.drill_digest)
+          bash deploy/drive_lab.sh get "$D/drill" data/drill --exclude "*.npz" --exclude "*_top.csv.gz" --exclude "/*-twin*/**_drill.json.gz" --include "/units.json" --include "/*/part*of${DPS}/**"
           [ -s data/drill/units.json ] || { echo "::error::no units.json under $D/drill"; exit 1; }
           find data/drill -maxdepth 2 -type d | sort
       - name: Drill league (chance table, league views, cards, profiles, gate rows into hm2_pack.json)

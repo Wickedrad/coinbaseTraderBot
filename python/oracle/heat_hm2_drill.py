@@ -3040,48 +3040,401 @@ def find_series(inputs: str) -> dict:
     return out
 
 
-def _cat(dirs: list, suffix: str) -> pd.DataFrame:
-    fr = []
-    for d, _ in dirs:
-        for f in sorted(os.listdir(d)):
-            if f.endswith(suffix):
-                try:
-                    x = pd.read_csv(os.path.join(d, f), low_memory=False)
-                except pd.errors.EmptyDataError:
+DRILL_TWINS = 3                     # the workflow's drill matrix: every coin and its twins 1-3 (oracle-hm2.yml m16)
+TOP1_SUFFIX = '_top1.csv.gz'        # (pre-run audit W2) the slim top table the league reads
+TOP_SUFFIX = '_top.csv.gz'          # the full top table (older outputs and tests: read in chunks, the same row filter)
+LEAGUE_COMPACT = True               # (W2) float32 / category frames in the league (tests switch it off to compare)
+LEAGUE_CHUNK = 200_000              # rows per chunk when a full top table is read
+LEAGUE_F64 = ('gheat_B', 'z', 't_day_B', 'lift_B_mode')   # (review) top columns kept float64: the league's statistics are taken on them
+_I32 = np.iinfo(np.int32)
+ALIAS_SEP = '␟'                # (C5) a separator no key, level or alias holds (SYMBOL FOR UNIT SEPARATOR)
+_BLOCK_FILE = re.compile(r'^b(\d+)_')
+
+
+def _series_label(coin: str, twin: int) -> str:
+    """The label run_series writes (meta['label'], heat_hm2.base: ctx.label)."""
+    return str(coin) if not int(twin) else f'{coin}~twin{int(twin)}'
+
+
+def _blocks_named(m: dict):
+    """The block ids a series meta.json lists as done, or None for a meta without the list (then every block file of
+    its directory is read, as before)."""
+    if not isinstance(m, dict) or 'blocks_done' not in m:
+        return None
+    return {int(r['block']) for r in (m.get('blocks_done') or []) if isinstance(r, dict) and 'block' in r}
+
+
+def _unlisted_block_files(d: str, m: dict) -> list:
+    """(Pre-run audit W8) Block files in a series directory whose block meta.json does not list as done (an earlier run's
+    leftovers on Drive, or a failed block's remains): the league never reads them."""
+    named = _blocks_named(m)
+    if named is None or not os.path.isdir(d):
+        return []
+    return [f for f in sorted(os.listdir(d)) if _BLOCK_FILE.match(f) and int(_BLOCK_FILE.match(f).group(1)) not in named]
+
+
+def _block_paths(d: str, m: dict, suffix: str) -> list:
+    """The files of one series directory ending with suffix, of the blocks its meta.json lists as done (W8)."""
+    named = _blocks_named(m)
+    out = []
+    for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+        if not f.endswith(suffix):
+            continue
+        mb = _BLOCK_FILE.match(f)
+        if named is not None and (mb is None or int(mb.group(1)) not in named):
+            continue
+        out.append(os.path.join(d, f))
+    return out
+
+
+def _is_text(s: pd.Series) -> bool:
+    """A column of text only (object of str, or pandas' string dtype), not category, bool or numbers."""
+    if isinstance(s.dtype, pd.CategoricalDtype):
+        return False
+    if isinstance(s.dtype, pd.StringDtype):
+        return True
+    return s.dtype == object and pd.api.types.infer_dtype(s, skipna=True) in ('string', 'empty')
+
+
+def _compact(df: pd.DataFrame, floats: bool = False) -> pd.DataFrame:
+    """(Pre-run audit W2) The league's memory: text columns (param, family, unit, level_label, list, mode, track, ...)
+    become category. floats=True (the top frame only): float64 columns become float32 except LEAGUE_F64, and int64
+    columns become int32 where every value fits (exact). Every float the series files hold was written with '%.6g'
+    (heat_hm2._write_csv), and float32 keeps 6 significant digits exactly (FLT_DIG): the order of any two values, every
+    comparison and every '%.6g' text are unchanged; _r6 gives back the exact written number where one is copied out
+    (gate rows, league views). The columns the league computes statistics from (LEAGUE_F64: quantiles, maxima, medians
+    of chance_metrics, twin_marks and ta_cards) stay float64, so those numbers are the ones a float64 read gives. Bool
+    columns stay as they are."""
+    if not LEAGUE_COMPACT or not len(df.columns):
+        return df
+    for c in df.columns:
+        s = df[c]
+        if _is_text(s):
+            df[c] = s.astype('category')
+        elif floats and s.dtype == np.float64 and c not in LEAGUE_F64:
+            df[c] = s.astype(np.float32)
+        elif floats and s.dtype == np.int64 and len(s) and int(s.min()) >= _I32.min and int(s.max()) <= _I32.max:
+            df[c] = s.astype(np.int32)
+    return df
+
+
+def _sorted_cats(vals: list) -> list:
+    try:
+        return sorted(vals)
+    except TypeError:
+        return vals
+
+
+def _concat(frames: list, floats: bool = False, consume: bool = False) -> pd.DataFrame:
+    """pd.concat that keeps the category columns category (one sorted union of the categories, so the codes order as
+    the text does) and casts again what a frame without the column made object. consume=True (review: the league's
+    load peak): the frames are copied one at a time into columns allocated once (pd.concat's dtypes and column order,
+    from a concat of each frame's first row) and each input frame is released from the list as soon as it is copied,
+    so the peak is the output plus one input frame, not twice the output; the values are the same as pd.concat's."""
+    frames[:] = [f for f in frames if f is not None and len(f)]
+    if not frames:
+        return pd.DataFrame()
+    if len(frames) == 1:
+        out = frames[0]
+        if consume:
+            frames[0] = None
+        return out
+    if LEAGUE_COMPACT:
+        cols = {c for f in frames for c in f.columns if isinstance(f[c].dtype, pd.CategoricalDtype)}
+        for c in sorted(cols):
+            vals, seen = [], set()
+            for f in frames:
+                if c not in f.columns:
                     continue
+                s = f[c]
+                cats = s.cat.categories if isinstance(s.dtype, pd.CategoricalDtype) else pd.Index(s.dropna().unique())
+                for v in cats:
+                    if v not in seen:
+                        seen.add(v)
+                        vals.append(v)
+            dt = pd.CategoricalDtype(_sorted_cats(vals))
+            for f in frames:
+                if c in f.columns and (_is_text(f[c]) or isinstance(f[c].dtype, pd.CategoricalDtype) or f[c].isna().all()):
+                    f[c] = f[c].astype(dt)
+    if not consume:
+        return _compact(pd.concat(frames, ignore_index=True), floats)
+    return _compact(_concat_consume(frames), floats)
+
+
+def _concat_consume(frames: list) -> pd.DataFrame:
+    """pd.concat(frames, ignore_index=True) into columns allocated once, each frame released (None) after its copy."""
+    proto = pd.concat([f.iloc[:1].copy(deep=True) for f in frames], ignore_index=True)       # copies: a view would keep every input alive
+    n = int(sum(len(f) for f in frames))
+    cols = {}
+    for c in proto.columns:
+        dt = proto[c].dtype
+        if isinstance(dt, pd.CategoricalDtype):
+            k = len(dt.categories)
+            cols[c] = ('cat', dt, np.empty(n, np.int8 if k < 127 else np.int16 if k < 32767 else np.int32))
+        elif isinstance(dt, np.dtype):
+            cols[c] = ('np', dt, np.empty(n, dt))
+        else:
+            cols[c] = ('ext', dt, [])
+    del proto
+    o = 0
+    for i in range(len(frames)):
+        f = frames[i]
+        m = len(f)
+        for c, (kind, dt, a) in cols.items():
+            has = c in f.columns
+            if kind == 'cat':
+                a[o:o + m] = f[c].cat.codes.to_numpy() if has else -1
+            elif kind == 'np':
+                if has:
+                    a[o:o + m] = f[c].to_numpy(dtype=dt) if dt != object else f[c].astype(object).to_numpy()
+                else:
+                    a[o:o + m] = np.nan if dt.kind in 'fcO' else 0
+            else:
+                a.append(f[c] if has else pd.Series([np.nan] * m))
+        frames[i] = None
+        del f
+        o += m
+    data = {}
+    for c, (kind, dt, a) in cols.items():
+        if kind == 'cat':
+            data[c] = pd.Categorical.from_codes(a, dtype=dt)
+        elif kind == 'np':
+            data[c] = a
+        else:
+            data[c] = pd.concat(a, ignore_index=True).astype(dt)
+    return pd.DataFrame(data, copy=False)
+
+
+def _r6(v):
+    """The number a series file holds ('%.6g' text) from its float32 or float64 copy: exact on both paths."""
+    if v is None:
+        return None
+    v = float(v)
+    return float(f'{v:.6g}') if math.isfinite(v) else v
+
+
+def _read_top(path: str, full: bool = False) -> pd.DataFrame:
+    """One block's top table. The slim b*_top1.csv.gz is read whole; a full b*_top.csv.gz (outputs before the slim
+    file, tests) is read in chunks with the slim file's row filter, so the frame never holds the other ranks."""
+    try:
+        if not full:
+            return _compact(pd.read_csv(path, low_memory=False), floats=True)
+        fr = []
+        with pd.read_csv(path, low_memory=False, chunksize=LEAGUE_CHUNK) as rd:
+            for x in rd:
+                x = x[((x['list'] == 'main') & (x['rank'] <= TOP_FULL)) | (x['rank'] == 1)]
+                if len(x):
+                    fr.append(_compact(x.copy(), floats=True))
+        return _concat(fr, floats=True)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+
+
+def _blocks_done_rows(m: dict) -> dict:
+    """{block id: its blocks_done entry} of a series meta.json."""
+    return {int(r['block']): r for r in ((m or {}).get('blocks_done') or []) if isinstance(r, dict) and 'block' in r}
+
+
+def _cat(dirs: list, suffix: str, floats: bool = False, bad: list = None) -> pd.DataFrame:
+    """Every listed block's file of one series (all its parts), concatenated once. suffix TOP1_SUFFIX: the slim top
+    table per block, or the full one filtered in chunks where a block has no slim file. bad (review): where a block's
+    blocks_done entry carries top1_rows (029d0f0 on), a top table that reads another number of rows is listed there."""
+    fr = []
+    for d, m in dirs:
+        if suffix == TOP1_SUFFIX:
+            done = _blocks_done_rows(m)
+            slim = {os.path.basename(p)[:-len(TOP1_SUFFIX)]: p for p in _block_paths(d, m, TOP1_SUFFIX)}
+            full = {os.path.basename(p)[:-len(TOP_SUFFIX)]: p for p in _block_paths(d, m, TOP_SUFFIX)}
+            for b in sorted(set(slim) | set(full)):
+                x = _read_top(slim[b]) if b in slim else _read_top(full[b], full=True)
+                mb = _BLOCK_FILE.match(b + '_')
+                want = (done.get(int(mb.group(1))) or {}).get('top1_rows') if mb else None
+                if bad is not None and want is not None and int(want) != len(x):
+                    bad.append({'dir': d, 'part': m.get('part'), 'block': int(mb.group(1)), 'top1_rows': int(want), 'read': int(len(x))})
                 if len(x):
                     fr.append(x)
-    return pd.concat(fr, ignore_index=True) if fr else pd.DataFrame()
+            continue
+        for p in _block_paths(d, m, suffix):
+            try:
+                x = pd.read_csv(p, low_memory=False)
+            except pd.errors.EmptyDataError:
+                continue
+            if len(x):
+                fr.append(_compact(x, floats))
+    return _concat(fr, floats, consume=True)
 
 
-def load_league_inputs(inputs: str, log=_log_none) -> dict:
-    S = find_series(inputs)
-    out = {'series': {}, 'top': [], 'units': [], 'losers': [], 'depth2': [], 'summ': {}, 'coverage': {}}
+def _check_sum(blocks: list, keys: tuple) -> dict:
+    """Sums of a check's counts over a series' parts (league_check, pack_check); errors listed; None when no part ran it."""
+    got = [b for b in blocks if isinstance(b, dict)]
+    if not got:
+        return None
+    out = {k: int(sum(int(b.get(k) or 0) for b in got if 'error' not in b)) for k in keys}
+    err = [b['error'] for b in got if 'error' in b]
+    if err:
+        out['errors'] = err
+    by_h = {}
+    for b in got:
+        for h, v in (b.get('by_h') or {}).items():
+            o = by_h.setdefault(str(h), {})
+            for k, n in (v or {}).items():
+                if isinstance(n, (int, float)):
+                    o[k] = int(o.get(k, 0) + n)
+    if by_h:
+        out['by_h'] = by_h
+    return out
+
+
+def series_facts(metas: list) -> dict:
+    """(Pre-run audit W1) The per-series facts the metas hold and summary.json used to drop: the parts found, units run
+    and unknown, the league check and pack check counts, the pct check, clipped instances, memory and failed blocks."""
+    ms = sorted(metas, key=lambda m: tuple(m.get('part') or (0, 1)))
+    by_part = []
+    for m in ms:
+        u = m.get('units') or {}
+        by_part.append({'part': m.get('part'), 'units_run': u.get('run'), 'units_listed': u.get('listed'),
+                        'unknown_n': u.get('unknown_n', len(u.get('unknown') or [])), 'unknown_eg': (u.get('unknown_eg') or [])[:5],
+                        'blocks_total': m.get('blocks_total'), 'blocks_done': len(m.get('blocks_done') or []),
+                        'blocks_missing': list(m.get('blocks_missing') or []),
+                        'blocks_failed': [{'block': f.get('block'), 'error': f.get('error')} for f in (m.get('blocks_failed') or [])],
+                        'pool_error': m.get('pool_error'), 'clipped': m.get('clipped'), 'pct': m.get('pct'),
+                        'peak_rss_mb': m.get('peak_rss_mb'), 'rss_before_blocks_mb': m.get('rss_before_blocks_mb'), 'seconds_total': m.get('seconds_total')})
+    num = lambda k: [p[k] for p in by_part if isinstance(p[k], (int, float))]           # noqa: E731
+    return {'parts': [p['part'] for p in by_part], 'units_run': int(sum(num('units_run'))), 'unknown_n': int(sum(num('unknown_n'))),
+            'league_check': _check_sum([m.get('league_check') for m in ms], ('checked', 'n_differ', 'd_differ')),
+            'pack_check': _check_sum([m.get('pack_check') for m in ms], ('checked', 'n_A_differ', 'n_B_differ', 'onset_dir_checked',
+                                                                            'onset_dir_differ', 'pack_dir_differ')),
+            'pct': [p['pct'] for p in by_part], 'clipped': int(sum(num('clipped'))),
+            'peak_rss_mb': max(num('peak_rss_mb'), default=None), 'rss_before_blocks_mb': max(num('rss_before_blocks_mb'), default=None),
+            'blocks_failed': [dict(f, part=p['part']) for p in by_part for f in p['blocks_failed']],
+            'blocks_missing': [{'part': p['part'], 'blocks': p['blocks_missing']} for p in by_part if p['blocks_missing']],
+            'by_part': by_part}
+
+
+BLOCK_FILES = ('_units.csv.gz', '_losers.csv.gz', '_depth2.csv.gz', '_summary.json')     # every block writes them (_block_job)
+
+
+def _block_files_missing(d: str, m: dict) -> dict:
+    """(Review) {block id: [file names]} of the blocks a meta.json lists as done whose files are not in its directory
+    (a put to Drive or a get cut short): a top table (b*_top1.csv.gz or b*_top.csv.gz), units, losers, depth-2 rows,
+    summary counts, and on a real coin (twin 0) the drill json (the league never reads a twin's)."""
+    named = _blocks_named(m)
+    if not named:
+        return {}
+    have = set(os.listdir(d)) if os.path.isdir(d) else set()
+    sufs = BLOCK_FILES + (('_drill.json.gz',) if not int(m.get('twin') or 0) else ())
+    out = {}
+    for b in sorted(named):
+        pre = f'b{b:05d}'
+        g = [] if (pre + TOP1_SUFFIX in have or pre + TOP_SUFFIX in have) else [pre + TOP1_SUFFIX]
+        g += [pre + s for s in sufs if pre + s not in have]
+        if g:
+            out[b] = g
+    return out
+
+
+def coverage_check(S: dict, coins: list, twins: int = DRILL_TWINS, parts: int = 0) -> dict:
+    """(Pre-run audit W1, F1, C1) Is every expected series there? Expected: every coin of the units file x twin 0..twins
+    (labels as meta['label']), each with parts 0..S-1 once (S = parts when > 0, else the S of the metas' part [i, S],
+    which must all agree), no meta with failed or missing blocks and every listed block's files on disk
+    (_block_files_missing; the top tables' rows against top1_rows are checked as they are read). Returns {'complete', 'S', 'expected', 'missing':
+    [{'label', 'part', 'what', ...}]}; nothing is filtered by it."""
+    Ss = sorted({int((m.get('part') or [0, 1])[1]) for dirs in S.values() for _, m in dirs})
+    miss = []
+    if parts and int(parts) > 0:
+        Sx = int(parts)
+    else:
+        Sx = max(Ss) if Ss else 1
+        if len(Ss) > 1:
+            miss.append({'label': None, 'part': None, 'what': f'the metas disagree on the number of parts: {Ss}'})
+    expected = [_series_label(c, t) for c in coins for t in range(int(twins) + 1)]
+    for lab in expected:
+        dirs = S.get(lab, [])
+        if not dirs:
+            miss.append({'label': lab, 'part': None, 'what': 'series missing (no meta.json)', 'parts': list(range(Sx))})
+            continue
+        seen = {}
+        for d, m in dirs:
+            i, s = (list(m.get('part') or [0, 1]) + [1])[:2]
+            if int(s) != Sx:
+                miss.append({'label': lab, 'part': int(i), 'what': f'part {i} of {s}, not of {Sx}', 'dir': d})
+                continue
+            seen[int(i)] = seen.get(int(i), 0) + 1
+            if m.get('blocks_failed') or m.get('blocks_missing'):
+                miss.append({'label': lab, 'part': int(i), 'what': 'blocks missing', 'blocks': list(m.get('blocks_missing') or []),
+                             'failed': [f.get('block') for f in (m.get('blocks_failed') or [])], 'dir': d})
+            gone = _block_files_missing(d, m)
+            if gone:
+                miss.append({'label': lab, 'part': int(i), 'what': 'block files missing', 'blocks': sorted(gone),
+                             'files': [f for b in sorted(gone) for f in gone[b]][:20], 'dir': d})
+        for i in range(Sx):
+            if i not in seen:
+                miss.append({'label': lab, 'part': i, 'what': f'part {i} of {Sx} missing'})
+            elif seen[i] > 1:
+                miss.append({'label': lab, 'part': i, 'what': f'part {i} of {Sx} found {seen[i]} times'})
+    extra = sorted(set(S) - set(expected))
+    return {'complete': not miss, 'S': Sx, 'expected': expected, 'missing': miss, 'unexpected': extra,
+            'found': {lab: sorted([m.get('part') for _, m in S[lab]], key=lambda p: tuple(p or (0, 1))) for lab in sorted(S)}}
+
+
+def _miss_text(x: dict) -> str:
+    lab = x.get('label') or 'all series'
+    t = f"{lab}: {x['what']}"
+    if x.get('files'):
+        t += f" (blocks {x.get('blocks')}: {x['files'][:6]}{' ...' if len(x['files']) > 6 else ''})"
+    elif x.get('what') == 'block top rows differ':
+        t += f" (block {x.get('block')}: top1_rows {x.get('top1_rows')}, read {x.get('read')})"
+    elif x.get('blocks') or x.get('failed'):
+        t += f" (blocks {x.get('blocks')}, failed {x.get('failed')})"
+    return t
+
+
+def load_league_inputs(inputs: str, log=_log_none, series: dict = None) -> dict:
+    """Every series' small files: the slim top tables (W2: rank 1 of either list and the main list's first TOP_FULL
+    ranks, float32 / category), the unit rows, losers and depth-2 rows, the summary counts; only the blocks each part's
+    meta.json lists as done (W8: other block files are named in a warning and never read)."""
+    S = find_series(inputs) if series is None else series
+    out = {'series': {}, 'top': [], 'units': [], 'losers': [], 'depth2': [], 'summ': {}, 'coverage': {}, 'rows_differ': []}
     for label, dirs in sorted(S.items()):
         mt = dirs[0][1]
-        miss = []
+        miss, unl = [], []
         for d, m in dirs:
             if m.get('blocks_missing'):
                 miss.append({'dir': d, 'missing': m['blocks_missing']})
-        out['coverage'][label] = {'parts': [m.get('part') for _, m in dirs], 'missing': miss}
+            u = _unlisted_block_files(d, m)
+            if u:
+                unl.append({'dir': d, 'files': u})
+                log(f'  WARNING {label}: {len(u)} block files in {d} are not listed in its meta.json (blocks_done) and are not read: {u[:10]}')
+        out['coverage'][label] = {'parts': [m.get('part') for _, m in dirs], 'missing': miss, 'unlisted_files': unl}
         if miss:
             log(f'  WARNING {label}: missing blocks {miss}')
         out['series'][label] = {'asset': mt['asset'], 'twin': int(mt['twin']), 'twin_units': mt.get('twin_units', 'all'), 'metas': [m for _, m in dirs]}
-        for k, suf in (('top', '_top.csv.gz'), ('units', '_units.csv.gz'), ('losers', '_losers.csv.gz'), ('depth2', '_depth2.csv.gz')):
-            x = _cat(dirs, suf)
+        bad = []
+        for k, suf, fl in (('top', TOP1_SUFFIX, True), ('units', '_units.csv.gz', False), ('losers', '_losers.csv.gz', False),
+                           ('depth2', '_depth2.csv.gz', False)):
+            x = _cat(dirs, suf, fl, bad=bad if k == 'top' else None)
             if len(x):
                 x['series'] = label
                 x['asset'] = mt['asset']
                 x['twin'] = int(mt['twin'])
+                if LEAGUE_COMPACT:
+                    x['series'] = x['series'].astype('category')
+                    x['asset'] = x['asset'].astype('category')
                 out[k].append(x)
         sm = SummaryCounts()
-        for d, _ in dirs:
-            for f in sorted(os.listdir(d)):
-                if f.endswith('_summary.json'):
-                    sm.merge(SummaryCounts.from_json(_read_json(os.path.join(d, f))))
+        for d, m in dirs:
+            for p in _block_paths(d, m, '_summary.json'):
+                sm.merge(SummaryCounts.from_json(_read_json(p)))
         out['summ'][label] = sm
+        if bad:
+            out['coverage'][label]['top_rows_differ'] = bad
+            out['rows_differ'] += [{'label': label, 'part': (b['part'] or [0, 1])[0], 'what': 'block top rows differ', **{k: v for k, v in b.items() if k != 'part'}}
+                                   for b in bad]
+            log(f'  WARNING {label}: top tables whose rows differ from their meta.json (top1_rows): {bad[:10]}')
     for k in ('top', 'units', 'losers', 'depth2'):
-        out[k] = pd.concat(out[k], ignore_index=True) if out[k] else pd.DataFrame()
+        fr, out[k] = out[k], None
+        out[k] = _concat(fr, floats=(k == 'top'), consume=True)            # (review) each series' frame released as it is copied
+        del fr
     return out
 
 
@@ -3122,43 +3475,43 @@ def chance_table(L: dict, same_units: bool = False) -> dict:
         t1 = t1[t1['subset'].astype(bool)]
     ser = L['series']
     assets = sorted({v['asset'] for v in ser.values()})
-    for (h, tr, mode, lst), g in t1.groupby(['h', 'track', 'mode', 'list']):
+    for (h, tr, mode, lst), g in t1.groupby(['h', 'track', 'mode', 'list'], observed=True):
         key = f'{int(h)}|{tr}|{mode}|{lst}'
         o = {'coins': {}, 'pooled': {}}
         real = g[g['twin'] == 0]
         tw = g[g['twin'] != 0]
         o['pooled']['real'] = chance_metrics(real)
-        per_seed = [chance_metrics(y) for _, y in tw.groupby('twin')]
+        per_seed = [chance_metrics(y) for _, y in tw.groupby('twin', observed=True)]
         o['pooled']['twins'] = {k: _med_range([m[k] for m in per_seed]) for k in (per_seed[0] if per_seed else {})}
         tmax = max([m['gheat_max'] for m in per_seed if m['gheat_max'] is not None], default=None)
         o['pooled']['above_twin_max'] = int((real['gheat_B'] > tmax).sum()) if tmax is not None else None
         for a in assets:
             r = real[real['asset'] == a]
-            ts = [chance_metrics(y) for _, y in tw[tw['asset'] == a].groupby('twin')]
+            ts = [chance_metrics(y) for _, y in tw[tw['asset'] == a].groupby('twin', observed=True)]
             o['coins'][a] = {'real': chance_metrics(r), 'twins': {k: _med_range([m[k] for m in ts]) for k in (ts[0] if ts else {})}}
         o['by_tier'] = {str(t_): {'real': chance_metrics(real[real['tier'] == t_]),
-                                  'twins': _med_range([chance_metrics(y)['kept'] for _, y in tw[tw['tier'] == t_].groupby('twin')])}
+                                  'twins': _med_range([chance_metrics(y)['kept'] for _, y in tw[tw['tier'] == t_].groupby('twin', observed=True)])}
                         for t_ in sorted(g['tier'].dropna().unique())}
         o['by_clustering'] = {('week' if w else 'day'): {'real': chance_metrics(real[real['week_weaker_A'] == w]),
                                                          'twins_kept': _med_range([chance_metrics(y)['kept'] for _, y in
-                                                                                   tw[tw['week_weaker_A'] == w].groupby('twin')])}
+                                                                                   tw[tw['week_weaker_A'] == w].groupby('twin', observed=True)])}
                               for w in (0, 1)}
         out[key] = o
     # depth-2 paths and the loser profile's top level
     D2 = L['depth2']
     if len(D2) and 'path' in D2:
         p = D2[D2['path'].astype(bool)]
-        for (h, tr), g in p.groupby(['origin_h', 'origin_track']):
+        for (h, tr), g in p.groupby(['origin_h', 'origin_track'], observed=True):
             real = g[g['twin'] == 0]
-            seeds = [float(y['path_kept'].mean()) for _, y in g[g['twin'] != 0].groupby('twin')]
+            seeds = [float(y['path_kept'].mean()) for _, y in g[g['twin'] != 0].groupby('twin', observed=True)]
             out[f'{int(h)}|{tr}|depth2'] = {'real_kept': float(real['path_kept'].mean()) if len(real) else None, 'twins_kept': _med_range(seeds),
                                             'units': int(len(real))}
     Lo = L['losers']
     if len(Lo):
         top = Lo[(Lo['rank'] == 1) & (Lo['list'] == 'wrong')]
-        for h, g in top.groupby('h'):
+        for h, g in top.groupby('h', observed=True):
             real = g[g['twin'] == 0]
-            seeds = [float(y['kept'].astype(bool).mean()) for _, y in g[g['twin'] != 0].groupby('twin')]
+            seeds = [float(y['kept'].astype(bool).mean()) for _, y in g[g['twin'] != 0].groupby('twin', observed=True)]
             out[f'{int(h)}|loser_top'] = {'real_kept': float(real['kept'].astype(bool).mean()) if len(real) else None, 'twins_kept': _med_range(seeds)}
     return out
 
@@ -3237,7 +3590,7 @@ def league_views(L: dict, per_call: int = PER_CALL, per_param: int = PER_PARAM, 
         return pd.DataFrame()
     t1 = T[(T['rank'] == 1) & (T['list'] == 'main') & (T.get('alias_of', -1) == -1)].copy()
     rows = []
-    for (h, tr, mode), g in t1.groupby(['h', 'track', 'mode']):
+    for (h, tr, mode), g in t1.groupby(['h', 'track', 'mode'], observed=True):
         real = g[g['twin'] == 0].sort_values('gheat_B', ascending=False)
         am, ap, mk = twin_marks(real, g[g['twin'] != 0], same_units)
         pc, pp, k = {}, {}, 0
@@ -3249,7 +3602,7 @@ def league_views(L: dict, per_call: int = PER_CALL, per_param: int = PER_PARAM, 
             pc[(r.asset, r.unit)] = pc.get((r.asset, r.unit), 0) + 1
             pp[r.param] = pp.get(r.param, 0) + 1
             k += 1
-            d = r._asdict()
+            d = {kk: (_r6(vv) if isinstance(vv, float) else vv) for kk, vv in r._asdict().items()}     # the numbers as written (W2)
             d['above_twin_max'], d['above_twin_p99'], d['twin_mark'] = am[i], ap[i], mk[i]
             d['list_rank'] = k
             rows.append(d)
@@ -3264,11 +3617,11 @@ def family_table(L: dict) -> pd.DataFrame:
         return pd.DataFrame()
     t1 = T[(T['rank'] == 1) & (T['list'] == 'main') & (T['mode'] == 'take') & (T['track'] == 'right')]
     rows = []
-    for (h, fam), g in t1.groupby(['h', 'family']):
+    for (h, fam), g in t1.groupby(['h', 'family'], observed=True):
         tot = t1[t1['h'] == h]
         r = g[g['twin'] == 0]
         nr = int((tot['twin'] == 0).sum())
-        seeds = [len(y) / max(int((tot['twin'] == t_).sum()), 1) for t_, y in g[g['twin'] != 0].groupby('twin')]
+        seeds = [len(y) / max(int((tot['twin'] == t_).sum()), 1) for t_, y in g[g['twin'] != 0].groupby('twin', observed=True)]
         rows.append({'h': int(h), 'family': fam, 'real_share': len(r) / nr if nr else None, 'real_kept': float(r['kept'].mean()) if len(r) else None,
                      'twins_share': _med_range(seeds)['median'], 'twins_kept': float(g[g['twin'] != 0]['kept'].mean()) if (g['twin'] != 0).any() else None})
     return pd.DataFrame(rows)
@@ -3283,10 +3636,114 @@ def _curve_shapes(inputs_drill: dict) -> dict:
     return out
 
 
-def _real_curves(curves: dict) -> pd.DataFrame:
+class CurveDigest:
+    """(Review: the league's memory) What ta_cards and column_cards read of the real series' curves, kept while the
+    drill json is streamed one block at a time: one (unit, param, shape) row per curve, and per parameter the
+    instance-weighted sums column_cards pools (n and n x odds, A and B, by decile rank), added in the order the curves
+    come (series label, block, unit, curve: the order the whole-json dict gave, so the sums are the same numbers)."""
+
+    def __init__(self):
+        self.units, self.params, self.shapes = [], [], []
+        self.pooled = {}
+        self._s = {}
+
+    def _i(self, v):
+        return self._s.setdefault(v, v) if isinstance(v, str) else v
+
+    def add_unit(self, uid, d: dict):
+        for c in (d or {}).get('curves', []) or []:
+            self.add(uid, c)
+
+    def add(self, uid, c: dict):
+        prm = self._i(c['param'])
+        self.units.append(self._i(uid))
+        self.params.append(prm)
+        self.shapes.append(self._i(c.get('shape')))
+        acc = self.pooled.setdefault(prm, {'A': [np.zeros(0), np.zeros(0)], 'B': [np.zeros(0), np.zeros(0)]})
+        for s in ('A', 'B'):
+            nn = np.asarray(c[s]['n'], float)
+            oo = np.nan_to_num(np.asarray(c[s]['odds'], float))
+            n, od = acc[s]
+            if len(nn) > len(n):
+                n, od = np.concatenate([n, np.zeros(len(nn) - len(n))]), np.concatenate([od, np.zeros(len(nn) - len(od))])
+            n[:len(nn)] += nn
+            od[:len(nn)] += nn * oo
+            acc[s] = [n, od]
+
+    @classmethod
+    def of(cls, curves):
+        """A digest of a {(label, unit, param, h): curve} dict (_curve_shapes; tests): the real series' curves only."""
+        if isinstance(curves, cls):
+            return curves
+        cd = cls()
+        for k, c in (curves or {}).items():
+            if not (k[0] and '~' not in str(k[0])):
+                continue
+            if 'A' in c and 'B' in c:
+                cd.add(k[1], dict(c, param=k[2]))
+            else:                                           # a shape alone (tests)
+                cd.units.append(k[1])
+                cd.params.append(k[2])
+                cd.shapes.append(c.get('shape'))
+        return cd
+
+    def frame(self) -> pd.DataFrame:
+        return pd.DataFrame({'unit': self.units, 'param': self.params, 'shape': self.shapes}, columns=['unit', 'param', 'shape'])
+
+    def pooled_curve(self, prm) -> dict:
+        out = {}
+        acc = self.pooled.get(prm)
+        for s in ('A', 'B'):
+            n, od = acc[s] if acc else (np.zeros(0), np.zeros(0))
+            with np.errstate(all='ignore'):
+                out[s] = {'n': n.tolist(), 'odds': (od / n).tolist()}
+        return out
+
+
+def drill_digest(S_dirs: dict, series: dict, prof_path: str = '', log=_log_none) -> dict:
+    """(Review: the league's memory) The real coins' (twin 0) drill json, one block at a time: the curve digest, each
+    unit's {k, dir, own_edges} (part3_live_meta) and tier 1-2 profiles written to prof_path as they come (the same
+    JSON text _dump wrote of the whole dict). The twins' drill json is never read (nothing of the league uses it)."""
+    cd, live, n_prof, seen = CurveDigest(), {}, 0, set()
+    tmp = prof_path + '.tmp' if prof_path else ''
+    f = gzip.open(tmp, 'wt') if tmp else None
+    try:
+        if f:
+            f.write('{')
+        for label in sorted(series):
+            if int(series[label]['twin']):
+                continue
+            for d, m in S_dirs[label]:
+                for p in _block_paths(d, m, '_drill.json.gz'):
+                    dj = _read_json(p) or {}
+                    for uid, u in dj.items():
+                        cd.add_unit(uid, u)
+                        live[uid] = {'k': u.get('k'), 'dir': u.get('dir'), 'own_edges': u.get('own_edges')}
+                        if f and int(u.get('tier') or 3) <= 2:
+                            if uid in seen:
+                                log(f'  WARNING drill json: unit {uid} twice; its first profile is kept')
+                                continue
+                            seen.add(uid)
+                            f.write((', ' if n_prof else '') + json.dumps(str(uid)) + ': ' + json.dumps(_clean(u), allow_nan=False))
+                            n_prof += 1
+                    del dj
+        if f:
+            f.write('}')
+    finally:
+        if f:
+            f.close()
+    if tmp:
+        os.replace(tmp, prof_path)
+    return {'curves': cd, 'live': live, 'profiles': n_prof}
+
+
+def _real_curves(curves) -> pd.DataFrame:
     """The real series' curves (labels without '~twin') as rows (unit, param, shape), one per curve."""
-    rows = [(k[1], k[2], c.get('shape')) for k, c in (curves or {}).items() if k[0] and '~' not in str(k[0])]
-    return pd.DataFrame(rows, columns=['unit', 'param', 'shape'])
+    return CurveDigest.of(curves).frame()
+
+
+TA_COLS = ('unit_fn', 'track', 'mode', 'param', 'asset', 'unit', 'twin', 'kept', 'tb2', 'lift_B_mode', 'level_label')    # (review) what ta_cards reads
+CC_COLS = ('param', 'family', 'twin', 'asset', 'unit', 'h', 'track', 'mode', 'kept', 'tb2', 'level_label', 'unit_family')  # and column_cards
 
 
 def ta_cards(T: pd.DataFrame, curves: dict = None, top: int = 10) -> list:
@@ -3299,36 +3756,36 @@ def ta_cards(T: pd.DataFrame, curves: dict = None, top: int = 10) -> list:
     (one pass per statistic, not one per line: the league holds millions of top rows)."""
     if not len(T):
         return []
-    x = T[(T['list'] == 'main') & (T['rank'] <= TOP_FULL)]
-    x = x[x['unit_fn'].notna()].reset_index(drop=True)
+    x = T.loc[(T['list'] == 'main') & (T['rank'] <= TOP_FULL) & T['unit_fn'].notna(), [c for c in TA_COLS if c in T.columns]].reset_index(drop=True)
     if not len(x):
         return []
     K = ['unit_fn', 'track', 'mode', 'param']
-    units_real = x[x['twin'] == 0].groupby('unit_fn')['unit'].nunique()
+    units_real = x[x['twin'] == 0].groupby('unit_fn', observed=True)['unit'].nunique()
     y = x[x['track'].isin(('right', 'profit', 'move')) & x['mode'].isin(MODES) & x['param'].notna()]
     rl = y[y['twin'] == 0]
     R = rl.drop_duplicates(K + ['asset', 'unit'])                                  # each unit once per line (its first row)
     G = rl[rl['kept'] & rl['tb2']].drop_duplicates(K + ['asset', 'unit'])
     W = y[y['twin'] != 0].drop_duplicates(K + ['twin', 'asset', 'unit'])
-    n_real = R.groupby(K).size()
-    n_good = G.groupby(K).size()
-    med = R.groupby(K)['lift_B_mode'].median()
+    n_real = R.groupby(K, observed=True).size()
+    n_good = G.groupby(K, observed=True).size()
+    med = R.groupby(K, observed=True)['lift_B_mode'].median()
     seeds = {}
     if len(W):
-        ws = (W['kept'] & W['tb2']).astype(float).groupby([W[k] for k in K] + [W['twin']]).mean()
+        ws = (W['kept'] & W['tb2']).astype(float).groupby([W[k] for k in K] + [W['twin']], observed=True).mean()
         for key, v in ws.items():
             seeds.setdefault(key[:-1], []).append(float(v))
     lv = R[K].assign(lv=R['level_label'].astype(str)).drop_duplicates().sort_values(K + ['lv'], kind='stable')
-    lv = lv.groupby(K).head(5).groupby(K)['lv'].agg(list)
+    lv = lv.groupby(K, observed=True).head(5).groupby(K, observed=True)['lv'].agg(list)
     ui = R[K + ['unit']].drop_duplicates().sort_values(K + ['unit'], kind='stable')
-    ui = ui.groupby(K).head(20).groupby(K)['unit'].agg(list)
+    ui['unit'] = ui['unit'].astype(object)                          # lists of ids (a category column cannot hold them)
+    ui = ui.groupby(K, observed=True).head(20).groupby(K, observed=True)['unit'].agg(list)
     C = _real_curves(curves)
     shape = {}
     if len(C) and len(R):
         C['shape'] = C['shape'].map(lambda v: '\x00none' if v is None else str(v))
         J = R[K + ['unit']].drop_duplicates().merge(C, on=['unit', 'param'], how='inner')
         if len(J):
-            cnt = J.groupby(K + ['shape']).size().rename('n').reset_index().sort_values(K + ['n', 'shape'], ascending=[True] * 4 + [False, True],
+            cnt = J.groupby(K + ['shape'], observed=True).size().rename('n').reset_index().sort_values(K + ['n', 'shape'], ascending=[True] * 4 + [False, True],
                                                                                           kind='stable')
             for r in cnt.drop_duplicates(K).itertuples(index=False):
                 shape[(r.unit_fn, r.track, r.mode, r.param)] = None if r.shape == '\x00none' else r.shape
@@ -3358,42 +3815,26 @@ def column_cards(T: pd.DataFrame, curves: dict = None) -> list:
     on B with t_B >= 2, real against the twins' median and range, by family of the unit and by horizon; the level that
     helps (most frequent take level) and the one that hurts (most frequent skip level); its curve pooled over those units
     (instance-weighted, A and B, by decile rank). Columns clear of the highest twin set first; none left out."""
-    curves = curves or {}
     if not len(T):
         return []
-    x = T[(T['list'] == 'main') & (T['rank'] <= TOP_FULL)]
-    by_param = {}
-    for k, c in curves.items():                             # the real series' curves, by parameter (one pass)
-        if k[0] and not str(k[0]).count('~'):
-            by_param.setdefault(k[2], []).append(c)
+    x = T.loc[(T['list'] == 'main') & (T['rank'] <= TOP_FULL), [c for c in CC_COLS if c in T.columns]]
+    cd = CurveDigest.of(curves)                             # the real series' curves, by parameter
     out = []
-    for prm, g in x.groupby('param'):
+    for prm, g in x.groupby('param', observed=True):
         real = g[g['twin'] == 0]
         ru = real.drop_duplicates(['asset', 'unit', 'h', 'track', 'mode'])
         share = _share(int((ru['kept'] & ru['tb2']).sum()), len(ru))
         seeds = []
-        for t_, w in g[g['twin'] != 0].groupby('twin'):
+        for t_, w in g[g['twin'] != 0].groupby('twin', observed=True):
             wu = w.drop_duplicates(['asset', 'unit', 'h', 'track', 'mode'])
             seeds.append(_share(int((wu['kept'] & wu['tb2']).sum()), len(wu)))
         tw = _med_range(seeds)
         helps = real[real['mode'] == 'take']['level_label'].astype(str).value_counts()
         hurts = real[real['mode'] == 'skip']['level_label'].astype(str).value_counts()
         by = {}
-        for (fam, h), z in ru.groupby(['unit_family', 'h']):
+        for (fam, h), z in ru.groupby(['unit_family', 'h'], observed=True):
             by[f'{fam}|{int(h)}'] = {'units': int(len(z)), 'kept_tb2_share': _share(int((z['kept'] & z['tb2']).sum()), len(z))}
-        pooled = {}
-        cs = by_param.get(prm, [])
-        for s in ('A', 'B'):
-            nb_ = max((len(c[s]['n']) for c in cs), default=0)
-            n = np.zeros(nb_)
-            od = np.zeros(nb_)
-            for c in cs:
-                nn = np.asarray(c[s]['n'], float)
-                oo = np.nan_to_num(np.asarray(c[s]['odds'], float))
-                n[:len(nn)] += nn
-                od[:len(nn)] += nn * oo
-            with np.errstate(all='ignore'):
-                pooled[s] = {'n': n.tolist(), 'odds': (od / n).tolist()}
+        pooled = cd.pooled_curve(prm)
         out.append({'param': prm, 'family': str(g['family'].iloc[0]), 'units_top5': int(ru['unit'].nunique()), 'kept_tb2_share': share, 'twins': tw,
                     'clear_of_twins': bool(share is not None and tw['max'] is not None and share > tw['max']),
                     'helps': helps.index[0] if len(helps) else None, 'hurts': hurts.index[0] if len(hurts) else None, 'by_family_h': by,
@@ -3402,7 +3843,92 @@ def column_cards(T: pd.DataFrame, curves: dict = None) -> list:
     return out
 
 
-def gate_rows(T: pd.DataFrame, Ud: pd.DataFrame, D2: pd.DataFrame = None, lists: dict = PACK_LISTS, same_units: bool = False) -> list:
+def split_aliases(v) -> list:
+    """(Pre-run audit C5) An alias field back to its list. Reads a list, a JSON list, ALIAS_SEP-joined text and the
+    series files' '|'-joined text (029d0f0 and before), where an alias may itself hold ' | ' (an HM1 cell key such as
+    '1m:RSI14=high (rising in) | 1m:SWAK_2PHP20 sign=above 0'): a '|' with a space on both sides stays inside its
+    alias, the joining '|' never has one."""
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [str(a) for a in v if a is not None and str(a) not in ('', 'nan')]
+    if isinstance(v, float) and v != v:
+        return []
+    s = str(v)
+    if s in ('', 'nan'):
+        return []
+    if s.startswith('['):
+        try:
+            x = json.loads(s)
+            if isinstance(x, list):
+                return [str(a) for a in x if a is not None and str(a) != '']
+        except ValueError:
+            pass
+    if ALIAS_SEP in s:
+        return [a for a in s.split(ALIAS_SEP) if a]
+    out = []
+    for p in s.split('|'):
+        if out and out[-1].endswith(' ') and p.startswith(' '):
+            out[-1] += '|' + p
+        else:
+            out.append(p)
+    return [a for a in out if a and a != 'nan']
+
+
+HM2_UNIT_KINDS = ('hm2', 'model')
+HM1_UNIT_KINDS = ('level', 'cell')
+
+
+def loaded_calls(U: dict, pack: dict = None, packs_dir: str = '', log=_log_none):
+    """(Pre-run audit C2) The calls the bot loads, as {(unit id, h)} (unit id f'{coin}|{kind}|{key}', the id build_units
+    gives: the pack's key as it is, no other spelling): hm2_pack.json's non-gate rows (kind 'model' for model rows,
+    'hm2' for the rest) and the HM1 packs the units file was built from (U['packs'], read from packs_dir: 'cell' for a
+    row with `when`, 'level' otherwise; perp_pair_pack at 240 only, as build_units). Returns (set, unit kinds it covers)
+    or None when it covers none (a units file built without packs): then no gate row is held to it."""
+    out, kinds = set(), set()
+    names = [n for n in (U.get('packs') or []) if n in HM1_PACKS]
+    if names and not packs_dir:
+        log(f'::warning::gate rows: no --packs-dir (and no --hm2-pack): the tier 1 calls ({names}) are not held to the calls the bot loads')
+        names = []
+    if names:
+        miss = [n for n in names if not os.path.isfile(os.path.join(packs_dir, n))]
+        if miss:
+            raise SystemExit(f'the units were built from {miss}, which are not in --packs-dir {packs_dir!r}: the gate rows cannot be held to the '
+                             'calls the bot loads (pass --packs-dir with the five HM1 packs); hm2_pack.json is left as it is')
+        for nm in names:
+            for r in (_read_json(os.path.join(packs_dir, nm)) or {}).get('rows', []):
+                if r.get('h') is None or not _hm1_coin(r.get('coin')) or r.get('key') is None:
+                    continue
+                if nm == 'perp_pair_pack.json' and int(r['h']) != 240:
+                    continue
+                out.add((f"{r['coin']}|{'cell' if 'when' in r else 'level'}|{r['key']}", int(r['h'])))
+        kinds |= set(HM1_UNIT_KINDS)
+    if pack is not None and U.get('hm2_pack'):
+        for r in pack.get('rows', []):
+            if r.get('kind') in GATE_KINDS or r.get('h') is None or r.get('key') is None:
+                continue
+            out.add((f"{r['coin']}|{'model' if r.get('kind') == 'model' else 'hm2'}|{r['key']}", int(r['h'])))
+        kinds |= set(HM2_UNIT_KINDS)
+    if not kinds:
+        return None
+    log(f'gate rows: {len(out):,} (call, h) pairs the bot loads, unit kinds {sorted(kinds)}')
+    return out, kinds
+
+
+def _loaded_mask(df: pd.DataFrame, loaded) -> np.ndarray:
+    """True where a row may stand in the tier 1-2 gate lists: tier 3, a unit kind the loaded set does not cover, or
+    (unit, h) loaded."""
+    if loaded is None or not len(df):
+        return np.ones(len(df), bool)
+    pairs, kinds = loaded
+    kind = df['unit_kind'].astype(str).to_numpy() if 'unit_kind' in df else np.array([str(u).split('|')[1] for u in df['unit']])
+    tier = df['tier'].to_numpy(float)
+    keep = [(t > 2) or (k not in kinds) or ((str(u), int(h)) in pairs) for u, h, t, k in zip(df['unit'], df['h'], tier, kind)]
+    return np.asarray(keep, bool)
+
+
+def gate_rows(T: pd.DataFrame, Ud: pd.DataFrame, D2: pd.DataFrame = None, lists: dict = PACK_LISTS, same_units: bool = False,
+              loaded=None, unit_pack: dict = None, stats: dict = None) -> list:
     """Pack rows of kind 'gate' (one condition) and 'gate2' (the depth-2 path) per real coin and PACK_H by PACK_LISTS:
     on the calls the bot loads (tier 1 and 2): the top 40 take gates by right-track gate heat, the top 20 by
     profit-track gate heat, the top 20 skip gates (right) and the top 10 (profit); gated calls of other units: the top
@@ -3412,35 +3938,57 @@ def gate_rows(T: pd.DataFrame, Ud: pd.DataFrame, D2: pd.DataFrame = None, lists:
     last closed bar of its own timeframe (own parameters from the call's own fire history); a take row enters at the
     next minute's open, a skip row blocks the call at that close. above_twin_max: against the max of the coin's twins
     over the same list (the same tier filter, track and mode) on the same units (twin_marks: under the twin fallback,
-    real units outside the seeded quarter carry above_twin_p99 instead)."""
+    real units outside the seeded quarter carry above_twin_p99 instead).
+    (Pre-run audit C2) loaded ({(unit id, h)}, unit kinds; loaded_calls): a tier 1-2 row stands in the take / skip lists
+    only where the bot loads its call at that h; the twins' rows behind above_twin_max are held to the same rule, so
+    the max is over the same population. Tier 3 rows (other_units) are as before. Every row stays in gates_all.csv.gz.
+    (C3 c) unit_pack ({unit id: the units file's 'pack' block}): each row carries pack_dir (the pack row's dir at that
+    h, or None) and dir_matches_pack (None without one); where the drill's onset A direction opposes it, call_note says
+    so. Nothing is flipped, dropped or re-ranked by it. (C5) aliases: a list (split_aliases)."""
     rows = []
     if not len(T):
         return rows
+    unit_pack = unit_pack or {}
     t1 = T[(T['twin'] == 0) & (T['list'] == 'main') & (T['rank'] == 1) & T['h'].isin(PACK_H)].copy()
     twin1 = T[(T['twin'] != 0) & (T['list'] == 'main') & (T['rank'] == 1) & T['h'].isin(PACK_H)]
+    ok1, okt = _loaded_mask(t1, loaded), _loaded_mask(twin1, loaded)
+    if stats is not None:
+        n12 = lambda df: int((df['tier'].to_numpy(float) <= 2).sum()) if len(df) else 0         # noqa: E731
+        stats.update({'rule': 'a tier 1-2 gate row stands only where (call, h) is a call the bot loads (hm2_pack.json non-gate rows and '
+                              'the HM1 packs); the twins\' rows behind above_twin_max are held to the same rule; tier 3 as before',
+                      'applied': loaded is not None, 'kinds': sorted(loaded[1]) if loaded is not None else [],
+                      'real_tier12_rank1_rows': n12(t1), 'real_tier12_rank1_rows_loaded': n12(t1[ok1]),
+                      'twin_tier12_rank1_rows': n12(twin1), 'twin_tier12_rank1_rows_loaded': n12(twin1[okt])})
+    t1 = t1[ok1]
+    twin1 = twin1[okt]
     calls = {}
     if len(Ud):
         for r in Ud[Ud['twin'] == 0].itertuples(index=False):
             calls[(r.unit, int(r.h))] = r
+    f6 = _r6
 
     def mk(r, kind, lst, conds, extra=None):
         c = calls.get((r.unit, int(r.h)))
         sgn = 1 if r.mode == 'take' else -1
+        pb = (unit_pack.get(str(r.unit)) or {}).get(str(int(r.h))) or {}
+        pdir = None if pb.get('dir') is None else int(pb['dir'])
+        same = None if pdir is None else bool(int(r.dir) == pdir)
         row = {'coin': r.asset, 'h': int(r.h), 'kind': kind, 'list': lst, 'key': f"{r.unit.split('|', 2)[2]} | " + ' & '.join(f'{n}={"|".join(lv)}' for n, lv in conds),
                'when': {'key': r.unit.split('|', 2)[2], 'kind': r.unit_kind, 'unit': r.unit}, 'conds': conds, 'mode': r.mode, 'track': r.track,
                'dir': int(r.dir), 'call': 'up' if r.dir > 0 else 'down', 'fire': 'when call fires and every condition holds; take: enter next open; skip: block',
                'n': None if c is None else int(c.n_B), 'odds': None if c is None else float(c.odds_B), 'wd': None if c is None else float(c.wd_B),
-               'lift_A': float(r.lift_A_mode), 'lift_B': float(r.lift_B_mode), 't_lift_A': float(r.t_day_A) * sgn,
-               't_lift_B': float(r.t_day_B) * sgn if r.t_day_B == r.t_day_B else None, 't_week_A': float(r.t_week_A) * sgn,
-               't_week_B': float(r.t_week_B) * sgn if r.t_week_B == r.t_week_B else None, 'z_adj_A': float(r.z), 'rank_A': int(r.rank),
-               'specific_B': None if r.specific_B != r.specific_B else float(r.specific_B), 'gheat_B': float(r.gheat_B),
-               'call_B': {'odds': float(r.call_odds_B), 'prof': float(r.call_prof_B), 'wd': float(r.call_wd_B)},
-               'gated_B': {'odds': float(r.gated_odds_B), 'prof': float(r.gated_prof_B), 'wd': float(r.gated_wd_B)},
-               'pi_B': float(r.pi_B), 'pi_c_B': None if r.pi_c_B != r.pi_c_B else float(r.pi_c_B), 'take_B': float(r.take_share_B),
-               'cut_B': float(r.cut_share_B), 'hold': float(r.hold_B), 'dip': float(r.dip_B), 'move': None, 'family': r.family,
-               'aliases': [a for a in str(r.aliases or '').split('|') if a and a != 'nan'], 'tier': int(r.tier),
+               'lift_A': f6(r.lift_A_mode), 'lift_B': f6(r.lift_B_mode), 't_lift_A': f6(r.t_day_A) * sgn,
+               't_lift_B': f6(r.t_day_B) * sgn if r.t_day_B == r.t_day_B else None, 't_week_A': f6(r.t_week_A) * sgn,
+               't_week_B': f6(r.t_week_B) * sgn if r.t_week_B == r.t_week_B else None, 'z_adj_A': f6(r.z), 'rank_A': int(r.rank),
+               'specific_B': None if r.specific_B != r.specific_B else f6(r.specific_B), 'gheat_B': f6(r.gheat_B),
+               'call_B': {'odds': f6(r.call_odds_B), 'prof': f6(r.call_prof_B), 'wd': f6(r.call_wd_B)},
+               'gated_B': {'odds': f6(r.gated_odds_B), 'prof': f6(r.gated_prof_B), 'wd': f6(r.gated_wd_B)},
+               'pi_B': f6(r.pi_B), 'pi_c_B': None if r.pi_c_B != r.pi_c_B else f6(r.pi_c_B), 'take_B': f6(r.take_share_B),
+               'cut_B': f6(r.cut_share_B), 'hold': f6(r.hold_B), 'dip': f6(r.dip_B), 'move': None, 'family': r.family,
+               'aliases': split_aliases(r.aliases), 'tier': int(r.tier),
                'above_twin_max': None, 'above_twin_p99': None, 'twin_mark': '', 'live_ready': False, 'live_ready_why': ['parity not run'],
-               'profit_unit': PROFIT_UNIT[int(r.h)]}
+               'profit_unit': PROFIT_UNIT[int(r.h)], 'pack_dir': pdir, 'dir_matches_pack': same,
+               'call_note': 'onset A direction opposes the pack call' if same is False else None}
         if extra:
             row.update(extra)
         return row
@@ -3484,7 +4032,8 @@ def gate_rows(T: pd.DataFrame, Ud: pd.DataFrame, D2: pd.DataFrame = None, lists:
                                      'path_over_call_B': None if r.path_over_call_B != r.path_over_call_B else float(r.path_over_call_B),
                                      'path_B_n': int(r.path_B_n), 'gheat_B': None if r.gh != r.gh else float(r.gh), 'family': r.family,
                                      'live_ready': False, 'live_ready_why': ['parity not run'],
-                                     'profit_unit': PROFIT_UNIT[int(h)]})
+                                     'profit_unit': PROFIT_UNIT[int(h)],
+                                     'pack_dir': ((unit_pack.get(str(r.unit)) or {}).get(str(int(h))) or {}).get('dir')})
     return _clean(rows)
 
 
@@ -3596,14 +4145,34 @@ def part3_live_meta(rows: list, drill: dict) -> dict:
     return _clean(out)
 
 
+def _coverage_gate(cov: dict, S_dirs: dict, allow_partial: bool, log=print) -> None:
+    """Logs the coverage line; SystemExit naming every gap unless allow_partial (then a warning)."""
+    gaps = [_miss_text(x) for x in cov['missing']]
+    log(f"coverage: {sum(1 for lab in cov['expected'] if lab in S_dirs)} of {len(cov['expected'])} expected series found, S = {cov['S']}, "
+        f"{'complete' if cov['complete'] else str(len(gaps)) + ' gaps: ' + '; '.join(gaps[:12]) + (' ...' if len(gaps) > 12 else '')}"
+        + (f"; not expected: {cov['unexpected']}" if cov['unexpected'] else ''))
+    if not cov['complete'] and not allow_partial:
+        raise SystemExit(f"the drill league needs every series x part: {len(gaps)} gaps: {'; '.join(gaps)}. hm2_pack.json and its gate rows are "
+                         "left as they are. Rerun the failed drill jobs (the same [heat-hm2-drill:<run>] with its [heat-hm2-drill-parts:S]) and then "
+                         "[heat-hm2-drill-league:<run>]; or, to run the league on what is there and label it partial, push "
+                         "[heat-hm2-drill-league:<run>] with the bare tag [heat-hm2-drill-partial] (CLI: --allow-partial)")
+    if not cov['complete']:
+        log(f'::warning::PARTIAL drill league (--allow-partial): {len(gaps)} gaps are labelled in summary.json, league.md and the pack\'s part3 block')
+
+
 def league(inputs: str, units: str, out: str, stamp: str = '', hm2_pack: str = '', hm2_live_meta: str = '', hm2_league: str = '',
-           merge_only: str = '', log=print) -> dict:
+           merge_only: str = '', log=print, parts: int = 0, allow_partial: bool = False, packs_dir: str = None, twins: int = DRILL_TWINS) -> dict:
     """Reads every series' small files (all parts and blocks), checks coverage, stops if hm2_pack.json's non-gate rows
     changed since the units were built, and writes league.md, summary.json, cards.md, profiles_pack.json.gz,
     gates_all.csv.gz, gate_rows.json; merges the gate rows into hm2_pack.json, the part3 block into hm2_live_meta.json
     and the Part 3 section into the HM2 league.md (the pack's live_meta_sha256 then names the new live meta). merge_only:
     re-applies gate_rows.json to a rewritten hm2_pack.json (and its `live` block to hm2_live_meta.json when given) and
-    does nothing else."""
+    does nothing else.
+    (Pre-run audit W1/F1/C1) Before anything is read in full, written or merged: every coin of the units file x twin
+    0..twins with parts 0..S-1 (S = parts, or the metas' S) and no failed or missing block, else SystemExit naming the
+    gaps; allow_partial (the bare tag [heat-hm2-drill-partial], --allow-partial) runs on what is there and labels it
+    (summary coverage, league.md's first lines, the pack's part3 block). (C2) packs_dir: the HM1 packs (default: the
+    directory of hm2_pack); the tier 1-2 gate rows are held to the calls the bot loads (loaded_calls)."""
     from oracle import heat_hm2_league as hl
     os.makedirs(out, exist_ok=True)
     if merge_only:
@@ -3625,35 +4194,42 @@ def league(inputs: str, units: str, out: str, stamp: str = '', hm2_pack: str = '
         raise SystemExit("hm2_pack.json's non-gate rows changed since drill-units: tier 2 would be stale")
     if pack is not None and not U.get('hm2_tier2_sha256') and U.get('hm2_nongate_sha256') and hl.non_gate_sha(pack) != U['hm2_nongate_sha256']:
         raise SystemExit("hm2_pack.json's non-gate rows changed since drill-units: tier 2 would be stale")
-    L = load_league_inputs(inputs, log)
-    if not L['series']:          # as HM2's league: no drill series, no league (the earlier gate rows stay in hm2_pack.json)
-        raise SystemExit(f'{inputs}: no drill series outputs (meta.json of schema {SCHEMA_SERIES}); hm2_pack.json and its gate rows are left as they are')
-    same = any(v['twin_units'] == 'quarter' for v in L['series'].values() if v['twin'])
-    drill = {}
     S_dirs = find_series(inputs)
-    for label, v in L['series'].items():
-        for d, _ in S_dirs[label]:
-            for f in sorted(os.listdir(d)):
-                if f.endswith('_drill.json.gz'):
-                    drill.setdefault(label, {}).update(_read_json(os.path.join(d, f)) or {})
-    curves = _curve_shapes(drill)
+    if not S_dirs:               # as HM2's league: no drill series, no league (the earlier gate rows stay in hm2_pack.json)
+        raise SystemExit(f'{inputs}: no drill series outputs (meta.json of schema {SCHEMA_SERIES}); hm2_pack.json and its gate rows are left as they are')
+    cov = coverage_check(S_dirs, list((U.get('coins') or {}).keys()), twins, parts)
+    _coverage_gate(cov, S_dirs, allow_partial, log)
+    L = load_league_inputs(inputs, log, series=S_dirs)
+    if L['rows_differ']:                     # (review) a listed block's top table holds other rows than its meta.json says
+        cov['missing'] += L['rows_differ']
+        cov['complete'] = False
+        _coverage_gate(cov, S_dirs, allow_partial, log)
+    same = any(v['twin_units'] == 'quarter' for v in L['series'].values() if v['twin'])
+    if packs_dir is None:
+        packs_dir = os.path.dirname(os.path.abspath(hm2_pack)) if hm2_pack else ''
+    loaded = loaded_calls(U, pack, packs_dir, log)
+    unit_pack = {u['id']: u['pack'] for us in (U.get('coins') or {}).values() for u in us if isinstance(u, dict) and isinstance(u.get('pack'), dict)}
+    dg = drill_digest(S_dirs, L['series'], os.path.join(out, 'profiles_pack.json.gz'), log)     # (review) twin 0 only, a block at a time
+    curves = dg['curves']
     chance = chance_table(L, same)
     pers = persistence(L)
     views = league_views(L, same_units=same)
     fam = family_table(L)
     tc = ta_cards(L['top'], curves)
     cc = column_cards(L['top'], curves)
-    rows = gate_rows(L['top'], L['units'], L['depth2'], same_units=same)
-    real_drill = {}
-    for label, dj in drill.items():
-        if not L['series'][label]['twin']:
-            real_drill.update(dj)
+    hstats = {}
+    rows = gate_rows(L['top'], L['units'], L['depth2'], same_units=same, loaded=loaded, unit_pack=unit_pack, stats=hstats)
+    log(f"gate rows: horizon rule {'applied' if hstats.get('applied') else 'not applied (no pack in the units file)'}: real tier 1-2 rank-1 rows "
+        f"{hstats.get('real_tier12_rank1_rows_loaded')} of {hstats.get('real_tier12_rank1_rows')} on loaded calls, twins "
+        f"{hstats.get('twin_tier12_rank1_rows_loaded')} of {hstats.get('twin_tier12_rank1_rows')}")
     part3 = {'schema': SCHEMA_GATES, 'stamp': stamp, 'units_sha256': U.get('sha256'), 'hm2_tier2_sha256': U.get('hm2_tier2_sha256'),
              'hm2_nongate_sha256': U.get('hm2_nongate_sha256'), 'list_rule': PACK_LISTS, 'per_call': PER_CALL,
              'fire': 'a gate row fires when its `when` call fires at a minute close and every condition holds its level at the last closed bar of its '
                      'own timeframe (own parameters from the call\'s own fire history); take: enter at the next minute\'s open; skip: block the call',
-             'chance': {k: v.get('pooled') for k, v in chance.items() if isinstance(v, dict) and 'pooled' in v}}
-    live3 = part3_live_meta(rows, real_drill)
+             'chance': {k: v.get('pooled') for k, v in chance.items() if isinstance(v, dict) and 'pooled' in v},
+             'partial': not cov['complete'], 'missing': cov['missing'], 'coverage': {'S': cov['S'], 'expected': cov['expected'], 'found': cov['found']},
+             'horizon_rule': hstats}
+    live3 = part3_live_meta(rows, dg['live'])
     # gate_rows.json carries the rows, the pack's part3 block and the live meta's part3 block: a later HM2 league
     # (--gates) or --merge-only puts all three back
     _dump({'rows': rows, 'part3': part3, 'live': live3}, os.path.join(out, 'gate_rows.json'), indent=1)
@@ -3661,10 +4237,11 @@ def league(inputs: str, units: str, out: str, stamp: str = '', hm2_pack: str = '
     if len(T):
         ga = T[(T['twin'] == 0) & (T['rank'] == 1)]
         _write_csv(ga, os.path.join(out, 'gates_all.csv.gz'))
-    prof = {uid: d for uid, d in real_drill.items() if int(d.get('tier') or 3) <= 2}
-    _dump(prof, os.path.join(out, 'profiles_pack.json.gz'), gz=True)
-    summary = {'schema': SCHEMA_LEAGUE, 'stamp': stamp, 'series': {k: {kk: vv for kk, vv in v.items() if kk != 'metas'} for k, v in L['series'].items()},
-               'coverage': L['coverage'], 'same_units': same, 'chance': chance, 'persistence': pers,
+    summary = {'schema': SCHEMA_LEAGUE, 'stamp': stamp,
+               'series': {k: {**{kk: vv for kk, vv in v.items() if kk != 'metas'}, **series_facts(v['metas'])} for k, v in L['series'].items()},
+               'coverage': {'complete': cov['complete'], 'partial': not cov['complete'], 'S': cov['S'], 'expected': cov['expected'],
+                            'missing': cov['missing'], 'unexpected': cov['unexpected'], 'found': cov['found'], 'series': L['coverage']},
+               'gate_horizon_rule': hstats, 'same_units': same, 'chance': chance, 'persistence': pers,
                'family': fam.to_dict('records') if len(fam) else [], 'gate_rows': len(rows), 'cards': len(tc), 'columns': len(cc)}
     _dump(summary, os.path.join(out, 'summary.json'), indent=1)
     _dump({'ta_cards': tc, 'column_cards': cc}, os.path.join(out, 'cards.json.gz'), gz=True)
@@ -3689,8 +4266,15 @@ def league(inputs: str, units: str, out: str, stamp: str = '', hm2_pack: str = '
 def league_md(summary: dict, views: pd.DataFrame, tc: list, cc: list) -> str:
     f = lambda v, p=2: '' if v is None or (isinstance(v, float) and not math.isfinite(v)) else f'{v:.{p}f}'
     md = ['# OR-HM2 Part 3: what separates the winners', '', f"Stamp: {summary.get('stamp')}. Every count stands beside the no-signal twins "
-          "(median and range); a count is evidence only when it stands clear of the highest twin set. No pass bar filters a row.", '',
-          '## Chance table (A top-1 gates, main list)', '', '| H | track | mode | units | kept real | kept twins (median, range) | t_B>=2 real | twins | '
+          "(median and range); a count is evidence only when it stands clear of the highest twin set. No pass bar filters a row.", '']
+    cov = summary.get('coverage') or {}
+    if cov.get('partial'):
+        ms = cov.get('missing') or []
+        md[2:2] = [f"**PARTIAL: this league ran on an incomplete set of series (--allow-partial, [heat-hm2-drill-partial]); {len(ms)} gaps, "
+                   f"missing: {'; '.join(_miss_text(x) for x in ms[:20])}{' ...' if len(ms) > 20 else ''}. The chance scale and the gate rows "
+                   "stand on what is there.**", '']
+    md += coverage_md(summary)
+    md += ['## Chance table (A top-1 gates, main list)', '', '| H | track | mode | units | kept real | kept twins (median, range) | t_B>=2 real | twins | '
           'gate heat max real | twins max |', '|---|---|---|---|---|---|---|---|---|---|']
     for k, v in sorted(summary['chance'].items()):
         if not isinstance(v, dict) or 'pooled' not in v or not k.endswith('|main'):
@@ -3715,6 +4299,45 @@ def league_md(summary: dict, views: pd.DataFrame, tc: list, cc: list) -> str:
         md.append(f"| {r['h']} | {r['family']} | {f(r['real_share'])} | {f(r['real_kept'])} | {f(r['twins_share'])} | {f(r['twins_kept'])} |")
     md += ['', f'TA, pattern and column cards: cards.md ({len(tc)} cards, {len(cc)} columns).', '']
     return '\n'.join(md)
+
+
+def coverage_md(summary: dict) -> list:
+    """(Pre-run audit W1, G) league.md's Coverage section: series x parts found, units run and unknown per series
+    (twins included), failed and missing blocks, the league and pack checks and memory per series."""
+    cov = summary.get('coverage') or {}
+    ser = summary.get('series') or {}
+    S = cov.get('S')
+    md = ['## Coverage', '', f"Expected {len(cov.get('expected') or [])} series x {S} parts; "
+          f"{'complete' if cov.get('complete') else str(len(cov.get('missing') or [])) + ' gaps (PARTIAL)'}"
+          + (f"; series not expected: {', '.join(cov.get('unexpected'))}" if cov.get('unexpected') else '') + '.', '',
+          '| series | parts found | units run | units unknown | blocks failed | blocks missing | league check (checked, n differ, d differ) | '
+          'pack check (checked, n_A, n_B, onset dir, pack dir differ) | clipped | peak RSS MB | RSS before blocks MB |',
+          '|---|---|---|---|---|---|---|---|---|---|---|']
+    for lab in sorted(set(cov.get('expected') or []) | set(ser)):
+        v = ser.get(lab)
+        if v is None:
+            md.append(f'| {lab} | none of {S} | | | | | | | | | |')
+            continue
+        lc, pc = v.get('league_check') or {}, v.get('pack_check') or {}
+        lct = '' if not lc else (f"{lc.get('checked')}, {lc.get('n_differ')}, {lc.get('d_differ')}" + (' (error)' if lc.get('errors') else ''))
+        pct = '' if not pc else (f"{pc.get('checked')}, {pc.get('n_A_differ')}, {pc.get('n_B_differ')}, {pc.get('onset_dir_differ')}, "
+                                 f"{pc.get('pack_dir_differ')}" + (' (error)' if pc.get('errors') else ''))
+        parts = ', '.join(str((p or [0, 1])[0]) for p in v.get('parts') or [])
+        bf = ', '.join(f"{(f.get('part') or [0])[0]}:{f.get('block')}" for f in v.get('blocks_failed') or [])
+        bm = ', '.join(f"{(x.get('part') or [0])[0]}:{x.get('blocks')}" for x in v.get('blocks_missing') or [])
+        md.append(f"| {lab} | {parts} of {S} | {v.get('units_run')} | {v.get('unknown_n')} | {bf} | {bm} | {lct} | {pct} | {v.get('clipped')} | "
+                  f"{v.get('peak_rss_mb')} | {v.get('rss_before_blocks_mb')} |")
+    if cov.get('missing'):
+        md += ['', 'Gaps: ' + '; '.join(_miss_text(x) for x in cov['missing']) + '.']
+    unl = [(lab, u) for lab, c in (cov.get('series') or {}).items() for u in (c.get('unlisted_files') or [])]
+    if unl:
+        md += ['', 'Block files not listed in their meta.json (not read): ' + '; '.join(f"{lab}: {len(u['files'])} files" for lab, u in unl) + '.']
+    hr = summary.get('gate_horizon_rule') or {}
+    if hr:
+        md += ['', f"Gate rows on the calls the bot loads (C2): {'applied' if hr.get('applied') else 'not applied'}; real tier 1-2 rank-1 rows "
+               f"{hr.get('real_tier12_rank1_rows_loaded')} of {hr.get('real_tier12_rank1_rows')} at a loaded (call, h), twins "
+               f"{hr.get('twin_tier12_rank1_rows_loaded')} of {hr.get('twin_tier12_rank1_rows')}."]
+    return md + ['']
 
 
 def cards_md(tc: list, cc: list) -> str:
@@ -3891,6 +4514,8 @@ def main(argv=None):
     lg.add_argument('--stamp', default='')
     lg.add_argument('--merge-only', default='')
     lg.add_argument('--parts', type=int, default=0)                # S of the drill parts tag (0: whatever the metas say)
+    lg.add_argument('--packs-dir', default=None)                  # the five HM1 packs (default: the directory of --hm2-pack)
+    lg.add_argument('--twins', type=int, default=DRILL_TWINS)      # twins per coin the league expects (1..N)
     lg.add_argument('--allow-partial', action='store_true')       # [heat-hm2-drill-partial]: an incomplete set is labelled, not refused (the completeness check is the league batch)
     pr = sub.add_parser('parity')
     hm._inputs(pr)
@@ -3923,7 +4548,8 @@ def main(argv=None):
         kw = hm._kw(a)
         bench(a.asset, a.csv, a.out, a.units, a.n_units, a.procs, a.hm2_series, chart=not a.no_chart, **kw)
     elif a.cmd == 'league':
-        league(a.inputs, a.units, a.out, a.stamp, a.hm2_pack, a.hm2_live_meta, a.hm2_league, a.merge_only)
+        league(a.inputs, a.units, a.out, a.stamp, a.hm2_pack, a.hm2_live_meta, a.hm2_league, a.merge_only, parts=a.parts,
+               allow_partial=a.allow_partial, packs_dir=a.packs_dir, twins=a.twins)
     elif a.cmd == 'live-ready':
         pack = _read_json(a.pack)
         if pack is None:
