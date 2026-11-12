@@ -36,6 +36,15 @@ export type PacerMode = 'slices' | 'cumulative' | 'rolling_hour';
  *  off: the quota snipe sells at the quota whatever the other rules aim for. */
 export type PacerFloorMode = 'off' | 'targets' | 'riding';
 
+/** PACER_PLAN's snipe line on a plan (heat-lane) position, dollars of net at the bid for the rest of it (Steven, Nov 12 1:13 AM
+ *  EST / 06:13 UTC: "Hybrid with the $1.50 guard"). 'hybrid': the hour's need, and the whole trade at least the ratchet's
+ *  arming net, so what partial sales banked counts as the ratchet counts it (a rest at +$1.60 after a -$0.53 cut fill is a
+ *  +$1.07 trade, under the guard). 'need': the need alone. 'off' or no need: none (pipeline decision 13, pace only). */
+export function planPacerLine(mode: 'off' | 'hybrid' | 'need' | undefined, needUsd: number | undefined, armUsd: number, bankedUsd = 0): number | undefined {
+  if (needUsd === undefined || mode === undefined || mode === 'off') return undefined;
+  return mode === 'hybrid' ? Math.max(needUsd, armUsd - (Number.isFinite(bankedUsd) ? bankedUsd : 0)) : needUsd;
+}
+
 export interface PacerConfig {
   /** PACER: the quota snipe is on. */
   enabled: boolean;

@@ -36,7 +36,7 @@ import { breakEvenExit, decide, decisionProbability, MarketView, netProfitAtBid,
 import { ProfitPeaks } from './strategy/profitPeaks';
 import { exitOnlyPlan, exitOnlyView, heldSideBid } from './strategy/exitOnlyLane';
 import { ConfluenceRatchetExit, HuntEvent } from './strategy/exitPolicies';
-import { HourlyQuotaPacer, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
+import { HourlyQuotaPacer, planPacerLine, QuotaFloors, SnipeGroup } from './risk/quotaPacer';
 import { HoldExits, type HoldReading } from './strategy/holdExit';
 import { ProfitRatchets, type RatchetReading } from './strategy/profitRatchet';
 import { PlanPositions, type PlanPosition } from './plan/planPositions';
@@ -2500,10 +2500,9 @@ export class Engine {
     // its stop excepted; a hunt that holds (HUNT_LOCK_SALE_ELSE=hold) is not excepted, so its reductions are not blocked.
     const pacerUsd = this.pacer.neededUsd(now);
     // A plan position: the pacer reports pace only (Steven's decision 13) unless PACER_PLAN gives it a snipe line (Steven, Nov 12
-    // 1:10 AM EST / 06:10 UTC): 'hybrid' at the hour's need but never under the ratchet's arming net, 'need' at the need alone.
-    // No floor and no group on it either way.
-    const planPacerUsd = planPos && pacerUsd !== undefined && S.pacer.plan !== undefined && S.pacer.plan !== 'off'
-      ? (S.pacer.plan === 'hybrid' ? Math.max(pacerUsd, planPos.settings.armUsd) : pacerUsd) : undefined;
+    // 1:10 AM EST / 06:10 UTC): 'hybrid' at the hour's need but never while the whole trade (what partial sales banked in) is
+    // under the ratchet's arming net, 'need' at the need alone (planPacerLine). No floor and no group on it either way.
+    const planPacerUsd = planPos ? planPacerLine(S.pacer.plan, pacerUsd, planPos.settings.armUsd, view.bankedUsd ?? 0) : undefined;
     if (view.position !== 0) st.snipe = planPos ? { atUsd: planPacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false } : { atUsd: pacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false };
     // Steven's group rule (PACER_GROUP): this position, in profit after fees, is sold when the positions in profit together cover the target.
     const group = pacerUsd !== undefined && S.pacer.group ? this.snipeGroup.judge(m.ticker, !planPos && view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsd, now) : undefined;

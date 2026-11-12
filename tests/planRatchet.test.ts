@@ -737,6 +737,12 @@ test('PLAN_RULES: off by default in paper and live, read the same in both; cfg.p
     assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '25' }), [0.25, 0.25, 0.03], mode);
     assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '2' }), [0.2, 0.02, 0.02], mode);
     assert.deepEqual(ends({ PLAN_LOSER_CUT_OPEN_C: '10', PLAN_LOSER_CUT_LATE_C: '10' }), [0.1, 0.1, 0.1], 'the flat cut');
+    // A fraction of a cent loads as it did before the ends existed: unset ends follow it unrounded.
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '2.5' }), [0.2, 0.025, 0.025], mode);
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '0.5' }), [0.2, 0.005, 0.005], mode);
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '20.4' }), [0.204, 0.204, 0.03], mode);
+    assert.deepEqual(ends({ PLAN_LOSER_CUT_C: '0.5', PLAN_LOSER_CUT_LATE_C: '0.25' }), [0.2, 0.005, 0.0025], mode);
+    assert.throws(() => loadConfig({ ...env, PLAN_LOSER_CUT_LATE_C: '0' }), /PLAN_LOSER_CUT_LATE_C=0 must be a number in \[0.01, 99\]/);
     assert.throws(() => loadConfig({ ...env, PLAN_LOSER_CUT_OPEN_C: '8' }), /PLAN_LOSER_CUT_OPEN_C=8 must be at least PLAN_LOSER_CUT_C=10/);
     assert.throws(() => loadConfig({ ...env, PLAN_LOSER_CUT_LATE_C: '12' }), /PLAN_LOSER_CUT_LATE_C=12 must be at most PLAN_LOSER_CUT_C=10/);
     // A cent a contract is a different amount on every position: the old settings are not read as something else.

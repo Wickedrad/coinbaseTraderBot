@@ -1005,17 +1005,27 @@ function planConfig(env: Env): PlanConfig {
   // window (Steven, Nov 12 1:01 AM EST / 06:01 UTC; bot/plan/planRatchet.ts planLoserCutAt): PLAN_LOSER_CUT_OPEN_C at the
   // open, PLAN_LOSER_CUT_C at 60% of the window, PLAN_LOSER_CUT_LATE_C from 85%. The same number for all three is the flat cut.
   // Unset, an end never crosses the cut at 60% (a PLAN_LOSER_CUT_C of 25 opens at 25c; one of 2 ends at 2c); set, it must not.
-  const loserCut = num(env, 'PLAN_LOSER_CUT_C', 10, 0, 99) / 100;
-  const cutC = Math.round(loserCut * 100);
-  const loserCutOpen = num(env, 'PLAN_LOSER_CUT_OPEN_C', Math.max(20, cutC), 1, 99) / 100;
-  const loserCutLate = num(env, 'PLAN_LOSER_CUT_LATE_C', Math.max(1, Math.min(3, cutC)), 1, 99) / 100;
-  if (loserCut > 0 && loserCutOpen < loserCut - 1e-9) throw new ConfigError(`PLAN_LOSER_CUT_OPEN_C=${Math.round(loserCutOpen * 100)} must be at least PLAN_LOSER_CUT_C=${Math.round(loserCut * 100)}: the cut allows a larger loss early in the window`);
-  if (loserCut > 0 && loserCutLate > loserCut + 1e-9) throw new ConfigError(`PLAN_LOSER_CUT_LATE_C=${Math.round(loserCutLate * 100)} must be at most PLAN_LOSER_CUT_C=${Math.round(loserCut * 100)}: the cut is smaller late in the window`);
+  const { mid, open, late } = cutEnds(env, 'PLAN_LOSER_CUT', 'the window');
   return {
     enabled: bool(env, 'PLAN_RULES', false),
-    loserCut, loserCutOpen, loserCutLate,
+    loserCut: mid / 100, loserCutOpen: open / 100, loserCutLate: late / 100,
     loserCutUsd: num(env, 'PLAN_LOSER_CUT_USD', 0, 0, 1000),
   };
+}
+
+/** A loser cut that narrows with time (Steven, Nov 12): <prefix>_C at 60%, <prefix>_OPEN_C at the start, <prefix>_LATE_C from
+ *  85%, cents a contract. An end left unset follows the middle without crossing it (20c and 3c with a 10c middle, fractions
+ *  kept), so a lone <prefix>_C change, whole or not, never stops the start; an end set by hand must stay on its side of the
+ *  middle and above 0. A middle of 0 turns the cut off whatever the ends say. */
+function cutEnds(env: Env, prefix: string, span: string): { mid: number; open: number; late: number } {
+  const mid = num(env, `${prefix}_C`, 10, 0, 99);
+  const set = (k: string) => env[k] !== undefined && env[k] !== '';
+  const kOpen = `${prefix}_OPEN_C`, kLate = `${prefix}_LATE_C`;
+  const open = set(kOpen) ? num(env, kOpen, 20, 0.01, 99) : Math.max(20, mid);
+  const late = set(kLate) ? num(env, kLate, 3, 0.01, 99) : Math.min(3, mid);
+  if (mid > 0 && open < mid - 1e-9) throw new ConfigError(`${kOpen}=${open} must be at least ${prefix}_C=${mid}: the cut allows a larger loss early in ${span}`);
+  if (mid > 0 && late > mid + 1e-9) throw new ConfigError(`${kLate}=${late} must be at most ${prefix}_C=${mid}: the cut is smaller late in ${span}`);
+  return { mid, open, late };
 }
 
 function bool(env: Env, key: string, def: boolean): boolean {
