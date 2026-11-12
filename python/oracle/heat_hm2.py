@@ -2231,6 +2231,44 @@ def _extra_readings(m: dict, m_real: dict, g, asset: str, twin: int, other_csvs:
                              asset=asset)
 
 
+TWIN_EDGE_RTOL = 1e-6
+
+
+def edges_differ(a: dict, b: dict, twin: bool = False) -> tuple:
+    """(the sorted names whose zone edges differ, the largest relative difference). The coin's edges must equal the main
+    run's exactly. A twin's price path is built with exp, log and a cumulative sum rounded to 12 significant digits,
+    and those library calls can land a last digit apart on another runner's CPU (a twin run on a different processor
+    than the main run's twin then moved ADX and CRSI edges by about 1e-12 and stopped the job); a twin's edges agree
+    when every edge is within a relative 1e-6. A real change of data or cut moves an edge by far more."""
+    diff, worst = [], 0.0
+    for k in sorted(set(a) | set(b)):
+        x, y = a.get(k), b.get(k)
+        if x == y:
+            continue
+        if twin and x is not None and y is not None:
+            try:
+                u, v = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+                if u.shape == v.shape and np.allclose(u, v, rtol=TWIN_EDGE_RTOL, atol=0.0, equal_nan=True):
+                    with np.errstate(all='ignore'):
+                        rel = np.abs(u - v) / np.maximum(np.abs(v), 1e-300)
+                    worst = max(worst, float(np.nanmax(rel)) if rel.size else 0.0)
+                    continue
+            except (TypeError, ValueError):
+                pass
+        diff.append(k)
+        try:
+            u, v = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+            if u.shape == v.shape:
+                with np.errstate(all='ignore'):
+                    worst = max(worst, float(np.nanmax(np.abs(u - v) / np.maximum(np.abs(v), 1e-300))))
+            else:
+                worst = float('inf')
+        except (TypeError, ValueError):
+            worst = float('inf')
+    return diff, worst
+
+
+
 def base(asset: str, csv: str, other_csvs: dict = None, perp_csv: str = '', fund_csv: str = '', oi_csv: str = '', cal_csv: str = '', dom: str = '',
          found: dict = None, main_meta: dict = None, twin: int = 0, other_metas=None, xdata: bool = True, log=print) -> Ctx:
     """1. Refuses DOGE. 2. heat.load_minutes (strict), then make_twin(m, seed) for a twin (the real minutes are kept for
@@ -2255,10 +2293,10 @@ def base(asset: str, csv: str, other_csvs: dict = None, perp_csv: str = '', fund
         raise SystemExit(f'{label}: TA-Lib functions missing from this install: {missing}')
     if main_meta is not None:
         a, b = edges, main_meta.get('edges', {})
-        diff = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+        diff, worst = edges_differ(a, b, twin=bool(twin))
         if diff or main_meta.get('price_step') != step:
             raise SystemExit(f'{label}: zone edges differ from the main run meta on {len(diff)} readings {diff[:5]} '
-                             f'(price step {step} against {main_meta.get("price_step")})')
+                             f'(largest relative difference {worst:.3g}; price step {step} against {main_meta.get("price_step")})')
     readings += [dict(R, family='clock') for R in heat_clock.clock_readings(m)]
     xe = {'edges': {}, 'norms': {}, 'missing': []}
     if xdata:

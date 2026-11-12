@@ -731,3 +731,13 @@ changes here, with one exception named as such (the fits' stopping rule) for the
   and swing sizes (5m:z2 17.6 s the largest), peak memory 7.0 GB (below the 8.8 GB of the HM2 bench; the stage runs after
   HM2's meta.json, so they do not add). Pattern instances were found at every frame (for example head and shoulders and its
   inverse at 240m: 12 and 8 at the 4-ATR swing size). The study therefore carries [heat-hm2-with-patterns].
+
+**Twin zone edges (Nov 12 2026, 12:00 UTC; found in the first study run 43206263089 at 11:26 UTC, written before the relaunch).**
+- Two of the first nine twin jobs (SOL-twin1, BTC-twin2) stopped about two minutes in: their zone edges differed from the
+  HM1 twin's meta on 15 readings (ADX, ADXR, CRSI) while the other seven twins and all four coins matched exactly. A twin's
+  path is built with exp, log and a cumulative sum, rounded to 12 significant digits; those library calls can land a last
+  digit apart on another runner's processor, which moves a few minute prices by about 1e-12 and so those edges. Departure:
+  a twin's edges now agree with the main run's when every edge is within a relative 1e-6 (heat_hm2.edges_differ); the
+  coin's edges still must equal exactly, and a real change of data or cut (1e-3, another length, a missing reading) still
+  stops the job. The error line now also gives the largest relative difference. The first run was cancelled and the study
+  relaunched with this change (all 16 series again).

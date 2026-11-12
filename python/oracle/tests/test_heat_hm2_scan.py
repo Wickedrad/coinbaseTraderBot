@@ -654,3 +654,21 @@ def test_never_doge(tmp_path):
         hm.run_series('DOGE', 'x.csv', str(tmp_path))
     with pytest.raises(SystemExit):
         hm.base('BTC', '/data/DOGE/1m.csv')
+
+
+def test_edges_differ_twin_tolerance():
+    """The coin's zone edges must equal the main run's exactly; a twin's may sit a last digit apart (exp and log on another
+    runner's CPU moved ADX and CRSI edges by ~1e-12 and stopped two twin jobs of the first study): within a relative
+    1e-6 they agree, a real change (1e-3, another length, a missing reading) still stops the job."""
+    a = {'1m:ADX14': [10.0, 20.0, 30.0], '1m:CRSI': [1.0, 2.0], 'none': None}
+    near = {'1m:ADX14': [10.0 * (1 + 1e-12), 20.0, 30.0], '1m:CRSI': [1.0, 2.0 * (1 - 1e-12)], 'none': None}
+    far = {'1m:ADX14': [10.0 * (1 + 1e-3), 20.0, 30.0], '1m:CRSI': [1.0, 2.0], 'none': None}
+    assert hm.edges_differ(a, a, twin=False) == ([], 0.0)
+    d, w = hm.edges_differ(a, near, twin=False)
+    assert d == ['1m:ADX14', '1m:CRSI'] and 0 < w < 1e-9                       # the coin: exact
+    d, w = hm.edges_differ(a, near, twin=True)
+    assert d == [] and 0 < w < 1e-9                                           # a twin: tolerance
+    d, w = hm.edges_differ(a, far, twin=True)
+    assert d == ['1m:ADX14'] and w > 5e-4
+    assert hm.edges_differ({'q': [1, 2]}, {'q': [1, 2, 3]}, twin=True) == (['q'], float('inf'))
+    assert hm.edges_differ({'q': [1, 2]}, {}, twin=True) == (['q'], float('inf'))
