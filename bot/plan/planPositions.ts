@@ -42,11 +42,20 @@ export interface PlanTag {
 export const PLAN_TAG_UNFILLED_MS = 5 * 60_000;
 
 /** v2 since Nov 11 (one ratchet in dollars for the whole position); a v1 file's cents-a-contract ratchets are not read. A v2
- *  position saved before the loser cut (no loserCut / loserCutUsd in its settings) takes the plan's when it is read. */
+ *  position saved before the loser cut (no loserCut / loserCutUsd in its settings), or before the cut scaled with the window
+ *  (no loserCutOpen / loserCutLate), takes the plan's when it is read. */
 interface Saved { v: 2; positions: PlanPosition[] }
 
 /** The defaults a tag's settings fall back on: the profit ratchet's dollars and the plan's loser cut. */
-export type PlanDefaults = RatchetSettings & { loserCut?: number; loserCutUsd?: number };
+export type PlanDefaults = RatchetSettings & { loserCut?: number; loserCutOpen?: number; loserCutLate?: number; loserCutUsd?: number };
+
+/** The cut by time's ends for a tag (Steven, Nov 12): a rule's own, else the plan's. A position saved before the cut scaled
+ *  (no ends in its settings) takes the plan's when it is read, so the positions open at a deploy get the new cut at once. A
+ *  rule that wants a flat cut passes the same number for all three. */
+function withCutEnds(o: Partial<PlanRatchetSettings> | undefined, d: PlanDefaults): Pick<PlanRatchetSettings, 'loserCutOpen' | 'loserCutLate'> {
+  const open = o?.loserCutOpen ?? d.loserCutOpen, late = o?.loserCutLate ?? d.loserCutLate;
+  return { ...(open !== undefined ? { loserCutOpen: open } : {}), ...(late !== undefined ? { loserCutLate: late } : {}) };
+}
 
 export class PlanPositions {
   private readonly m = new Map<string, PlanPosition>();
@@ -80,6 +89,7 @@ export class PlanPositions {
     return {
       armUsd: o?.armUsd ?? d.armUsd, stopMinUsd: o?.stopMinUsd ?? d.stopMinUsd, trailUsd: o?.trailUsd ?? d.trailUsd, clock: o?.clock ?? 'tick',
       loserCut: o?.loserCut ?? d.loserCut ?? 0, loserCutUsd: o?.loserCutUsd ?? d.loserCutUsd ?? 0,
+      ...withCutEnds(o, d),
     };
   }
 

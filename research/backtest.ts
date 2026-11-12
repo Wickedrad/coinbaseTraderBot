@@ -473,7 +473,7 @@ async function runBacktestOnce(dir: string, model: MetaModel, strategy: Strategy
   const exitKindOf = (why: string): 'tp' | 'snipe' | 'hold' | 'ratchet' | 'fv' => why.startsWith('take-profit') ? 'tp' : why.startsWith('quota snipe') ? 'snipe' : why.startsWith('hold exit') ? 'hold' : why.startsWith('profit ratchet') ? 'ratchet' : 'fv';
   let exitSeq = 0;
   // Positions opened by plan rules (opts.planTag), in memory, with their ratchets (bot/plan/planPositions.ts).
-  const planPositions = new PlanPositions({ ...strategy.profitRatchet, loserCut: strategy.plan.loserCut, loserCutUsd: strategy.plan.loserCutUsd });
+  const planPositions = new PlanPositions({ ...strategy.profitRatchet, loserCut: strategy.plan.loserCut, loserCutOpen: strategy.plan.loserCutOpen, loserCutLate: strategy.plan.loserCutLate, loserCutUsd: strategy.plan.loserCutUsd });
   const planStats: NonNullable<BacktestResult['plan']> = { tagged: 0, arms: 0, raises: 0, sales: 0, cutSales: 0, cutCancels: 0, endRuleSales: 0, endRuleCancels: 0, gaps: 0, retries: 0, alerts: 0, ...(opts.fillLog ? { events: [] } : {}) };
   res.plan = planStats;
   /** PLAN_RULES on: the market's plan position while it is held on its side (the engine's Engine.planHeld). */
