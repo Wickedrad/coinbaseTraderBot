@@ -267,11 +267,15 @@ export function playerIndexForTitle(m: LiveTennisMatch, title: string): 0 | 1 | 
     const sn = surnames(names[i]).find((s) => new RegExp(`\\b${s}\\b`).test(subject));
     if (!sn) return false;
     // A surname two players share (Xinyu Wang and Yafan Wang): when the title names the player with a first name ahead of
-    // the surname, and the feed gives one too, their first letters must agree. A surname-first name (Wang Xinyu, matched on
-    // its last word) is the title's first word, so it is not checked.
-    const sw = words(will ?? ''), aw = words(norm(names[i]));
-    const first = sw[0] ?? '';
-    if (sw.length >= 2 && aw.length >= 2 && first !== sn && !first.split('-').includes(sn) && first[0] !== aw[0][0]) return false;
+    // the surname, the feed name's other words (its given names or initials, in whatever order: 'Yafan Wang', 'Wang X.',
+    // 'Cerundolo, Juan Manuel') must include one with the title's first letter. A feed name with no word beyond the title's
+    // surname words ('De Minaur', "O'Connell") is not checked.
+    const sw = words(will ?? '');
+    if (sw.length >= 2) {
+      const rest = new Set(sw.slice(1).flatMap((w) => [w, ...w.split('-')]));
+      const given = words(norm(names[i])).filter((w) => !w.split('-').every((p) => rest.has(p)));
+      if (given.length && !given.some((g) => g[0] === sw[0][0])) return false;
+    }
     return true;
   };
   const a = hit(0), b = hit(1);

@@ -51,9 +51,23 @@ test('live tennis: both surnames shared (Wang, Zhang): first names tell the matc
   assert.equal(findMatch([other], tA, tB), undefined, 'the other match only: not ours');
   const hit = findMatch([other, real], tA, tB)!;
   assert.deepEqual([hit.match.id, hit.flip, hit.named], [2, true, true]);
-  // The feed giving names surname first (Wang Xinyu): matched on the title's first word, no first-name check.
+  // The feed giving names surname first (Wang Xinyu), or with initials (Wang X.): the given name or initial still agrees.
   const reversed = match({ id: 3, player1: { name: 'Zhang Shuai' }, player2: { name: 'Wang Xinyu' } });
   assert.deepEqual([playerIndexForTitle(reversed, tA), playerIndexForTitle(reversed, tB)], [1, 0]);
+  const initials = match({ id: 4, player1: { name: 'Zhang S.' }, player2: { name: 'Wang X.' } });
+  assert.deepEqual([playerIndexForTitle(initials, tA), playerIndexForTitle(initials, tB)], [1, 0]);
+  assert.equal(playerIndexForTitle(match({ player1: { name: 'Wang Y.' }, player2: { name: 'Lin Zhang' } }), tA), undefined, 'Wang Y. is not Xinyu');
+  // Other feed shapes of the right player: 'Surname I.', 'Surname, I.', 'Surname, Given Given', and surnames alone.
+  const ja = 'Will Jannik Sinner win the Sinner vs Alcaraz match?', ca = 'Will Carlos Alcaraz win the Sinner vs Alcaraz match?';
+  for (const [p1, p2] of [['Sinner J.', 'Alcaraz C.'], ['Sinner, J.', 'Alcaraz, C.'], ['SINNER Jannik', 'ALCARAZ Carlos']]) {
+    const s = match({ id: 5, player1: { name: p1 }, player2: { name: p2 } });
+    assert.deepEqual(findMatch([s], ja, ca) && [findMatch([s], ja, ca)!.flip, findMatch([s], ja, ca)!.named], [false, true], p1);
+  }
+  const jm = match({ id: 6, player1: { name: 'Cerundolo, Juan Manuel' }, player2: { name: 'Sebastian Baez' } });
+  assert.equal(findMatch([jm], 'Will Juan Manuel Cerundolo win the Cerundolo vs Baez match?', 'Will Sebastian Baez win the Cerundolo vs Baez match?')?.named, true);
+  assert.equal(findMatch([jm], 'Will Francisco Cerundolo win the Cerundolo vs Baez match?', 'Will Sebastian Baez win the Cerundolo vs Baez match?')?.named, false, 'his brother: one title only');
+  const bare = match({ id: 8, player1: { name: 'De Minaur' }, player2: { name: "O'Connell" } });
+  assert.equal(findMatch([bare], 'Will Alex de Minaur win the de Minaur vs O\'Connell match?', 'Will Christopher O\'Connell win the de Minaur vs O\'Connell match?')?.named, true);
   // An initial in the feed is a first name too; a hyphenated surname in the title is checked against its own first word.
   assert.equal(playerIndexForTitle(match({ player1: { name: 'X. Wang' }, player2: { name: 'S. Zhang' } }), tA), 0);
   assert.equal(playerIndexForTitle(match({ player1: { name: 'Roberto Bautista-Agut' }, player2: { name: 'Jannik Sinner' } }), 'Will Roberto Bautista Agut win the Bautista Agut vs Sinner match?'), 0);
