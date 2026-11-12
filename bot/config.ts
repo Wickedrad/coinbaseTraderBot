@@ -725,6 +725,9 @@ export interface TennisConfig {
   scorePollSec: number;
   /** In-play detection from price action when no start time is published: a mid move of this size within 3 minutes. */
   liveMoveCents: number;
+  /** Also detect in-play from that price move while a published start time has not yet passed (Kalshi's published start
+   *  can come after the first serve, even after the match ended). Off by default: production keeps the published start. */
+  liveByMove: boolean;
   /** Order-book ratcheting trailing stop from the target price (both legs) instead of a fixed take-profit. */
   trail: boolean;
   /** Favorite leg: the trail arms at min(favTrailCap, entry + favTrailCents). */
@@ -1624,6 +1627,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       scoreIdleMin: num(env, 'TENNIS_SCORE_IDLE_MIN', 30, 1, 24 * 60),
       scorePollSec: num(env, 'TENNIS_SCORE_POLL_SEC', 15, 5, 300),
       liveMoveCents: num(env, 'TENNIS_LIVE_MOVE_CENTS', 0.03, 0.005, 0.5),
+      liveByMove: bool(env, 'TENNIS_LIVE_BY_MOVE', false),
       trail: bool(env, 'TENNIS_TRAIL', true),
       favTrailCents: num(env, 'TENNIS_FAV_TRAIL_CENTS', 0.06, 0.01, 0.5),
       favTrailCap: num(env, 'TENNIS_FAV_TRAIL_CAP', 0.97, 0.5, 0.99),

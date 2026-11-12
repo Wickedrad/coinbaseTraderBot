@@ -2,5 +2,5 @@
   "stage": "2",
   "pool": "disc",
   "shards": 8,
-  "note": "Random baseline (calendar line 10t): four exit settings (hs1prod, fp0, mkprod, hold70), maker and taker entry, each fill F1 with its coin placebo (confluence readings replaced by past readings of other matches: entries at random moments, same exits). Information only, H-DEV."
+  "note": "Match-clock fix candidate (calendar line 10z): four exit settings (hs1prod, fp0, mkprod, hold70) with and without TENNIS_LIVE_BY_MOVE (in-play detected from a 3c price move even before Kalshi's published start), fill F1. Information only, H-DEV."
 }

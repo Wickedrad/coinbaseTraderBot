@@ -121,6 +121,24 @@ test('conservative price hunt: no confluence -> take the profit at the target; c
   assert.match(late.plans[0]?.why ?? '', /time limit/);
 });
 
+test('in-play detection with a published start that has not passed: only with TENNIS_LIVE_BY_MOVE', () => {
+  const start = t0 + 40 * 60_000;
+  for (const liveByMove of [false, true]) {
+    const cfg = { ...T, liveByMove };
+    const tr = new MatchTracker('E', cfg);
+    let now = t0;
+    const snap = (pFav: number) => ({ event: 'E', now, startTime: start, closeTime: t0 + 86_400_000, markets: [mk('E-A', pFav - 0.01, pFav + 0.01), mk('E-B', 1 - pFav - 0.01, 1 - pFav + 0.01)] });
+    for (let i = 0; i < 10; i++) { decideMatch(tr, snap(0.6), cfg, budget); now += 30_000; }
+    assert.equal(tr.liveSince, undefined, 'quiet: not live either way');
+    decideMatch(tr, snap(0.64), cfg, budget);
+    assert.equal(tr.liveSince, liveByMove ? now : undefined, `a 4c move in 3 min before the published start (liveByMove ${liveByMove})`);
+    now = start;
+    decideMatch(tr, snap(0.64), cfg, budget);
+    assert.equal(tr.liveSince, liveByMove ? start - 40 * 60_000 + 10 * 30_000 : start, 'the published start sets it only if nothing did before');
+  }
+  assert.equal(loadConfig({} as NodeJS.ProcessEnv).tennis.liveByMove, false, 'production default: off');
+});
+
 test('in-play detection without a start time, then favorite re-entry once half the match is done', () => {
   const tr = new MatchTracker('E', T);
   let now = t0;

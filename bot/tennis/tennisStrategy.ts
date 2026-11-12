@@ -250,7 +250,7 @@ export class MatchTracker {
     if (s.score) this.score = s.score;
     if (this.liveSince === undefined) {
       if (s.startTime !== undefined && s.now >= s.startTime) this.liveSince = s.startTime;
-      else if (s.startTime === undefined && p !== undefined) {
+      else if ((s.startTime === undefined || this.cfg.liveByMove) && p !== undefined) {
         const recent = this.history.filter((h) => h.ts >= s.now - 3 * 60_000);
         const moved = recent.length > 1 && Math.max(...recent.map((h) => h.p)) - Math.min(...recent.map((h) => h.p)) >= this.cfg.liveMoveCents - 1e-9;
         if (moved) { this.liveSince = s.now; this.pPre = recent[0].p; }
