@@ -208,6 +208,8 @@ The downloaded files matched all twelve runner hashes. Their original Binance,
 Yahoo and TradingView path declarations are preserved; provider identity is not
 independently authenticated. New provider acquisition remains tvdatafeed-only.
 
+**Off since Nov 11, 2026 (8:05 AM EST / 13:05 UTC):** that export no longer becomes an `atlas-history-archive` artifact (this repository is public); the copy stays on the runner.
+
 The new `features.ts` / `featuresCli.ts` implement the first portion of task 3:
 closed-candle TA on six timeframes using existing TA functions, minute microstructure,
 independent causal daily joins, BTC identity, DST-aware clock/session, explicit

@@ -8,11 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       atlas_archive_export:
-        description: 'Copy the fixed five minute archives and seven context CSVs from Drive to a runner artifact, with full OHLCV audit; no server access, fitting or deployment'
+        description: 'Copy the fixed five minute archives and seven context CSVs from Drive to this runner (never an artifact: the repository is public), with full OHLCV audit; no server access, fitting or deployment'
         required: false
         default: 'false'
       atlas_archive_source:
-        description: 'With atlas_archive_export: recent, laptop, or recording-probe; fixed public market-data allowlist only'
+        description: 'With atlas_archive_export: recent or laptop; fixed public market-data allowlist only (recording-probe is off)'
         required: false
         default: 'recent'
       atlas_offline_history_study:
@@ -106,6 +106,10 @@ jobs:
           ATLAS_DO_STUDY: ${{ inputs.atlas_offline_history_study }}
         run: |
           set -euo pipefail
+          if [ "$ATLAS_ARCHIVE_SOURCE" = 'recording-probe' ]; then
+            echo "::error::Off since Nov 11, 2026: recording-probe published a prefix of the bot's recordings. This repository is public, so server copies never become Actions artifacts."
+            exit 1
+          fi
           test -n "$RCLONE_CONF"
           bash .github/scripts/install-rclone.sh
           cfg="$RUNNER_TEMP/atlas-archive-config"
@@ -116,12 +120,6 @@ jobs:
           printf '%s\n' "$RCLONE_CONF" > "$RCLONE_CONFIG"
           chmod 600 "$RCLONE_CONFIG"
           trap 'rm -f "$RCLONE_CONFIG"' EXIT
-          if [ "$ATLAS_ARCHIVE_SOURCE" = 'recording-probe' ]; then
-            rclone cat gdrive:kalshi-bot-archive/recordings/md-2026-10-21.jsonl.gz --head 16777216 > "$cfg/recording-prefix.gz"
-            python3 -B research/opportunity/recordingPrefix.py "$cfg/recording-prefix.gz" \
-              --out "$dest/recordings/md-2026-10-21.jsonl" --report "$dest/recording-probe.json"
-            exit 0
-          fi
           case "$ATLAS_ARCHIVE_SOURCE" in
             laptop) atlas_history_remote='gdrive:kalshi-bot-archive/raw/laptop-history'; atlas_transfer_limit='1536Mi' ;;
             recent|'') atlas_history_remote='gdrive:kalshi-bot-archive/raw/history'; atlas_transfer_limit='180Mi' ;;
@@ -173,20 +171,16 @@ jobs:
           npm ci
           node --import tsx research/opportunity/runHistoryStudy.ts --archive "$RUNNER_TEMP/atlas-study-filtered" \
             --out research/out/atlas-history-study --study-policy "$ATLAS_STUDY_POLICY" --every-minutes 1441
+      # Nov 11, 2026 (8:05 AM EST / 13:05 UTC, Steven): this repository is public, so the copied archive (and the dataset/
+      # rows built from it) stay on this runner; only the study's results are saved. The atlas-history-archive upload is gone.
       - name: Save opted-in research results
         if: always() && inputs.atlas_offline_history_study == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: atlas-history-study
-          path: research/out/atlas-history-study/
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Save research archive and audit (credentials excluded)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: atlas-history-archive
-          path: ${{ runner.temp }}/atlas-history-archive/
+          path: |
+            research/out/atlas-history-study/*.json
+            research/out/atlas-history-study/trees/
           if-no-files-found: warn
           retention-days: 7
 
