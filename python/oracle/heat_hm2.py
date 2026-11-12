@@ -95,7 +95,8 @@ PROV = ['none', 'stored', 'pack']
 EVENT_SUFFIX = re.compile(r' \((falling in|recovering|rising in|cooling)\)$')
 FAMILY_PREFIX = [('POS:', 'position'), ('X:', 'cross-coin'), ('X.', 'cross-coin'), ('VOL:', 'volatility'), ('FLOW:', 'flow'), ('PERP:', 'perp'),
                  ('OI:', 'open interest'), ('DMKT:', 'daily markets'), ('IDX:', 'btcdom'), ('CB:', 'coinbase'), ('BOOK:', 'book'), ('MACRO:', 'macro'),
-                 ('GBM.', 'model'), ('ZS:', 'zone side'), ('BASE:', 'baseline')]
+                 ('GBM.', 'model'), ('ZS:', 'zone side'), ('BASE:', 'baseline'), ('CVDP:', 'cvdp'), ('LIQMAP:', 'liqmap'),
+                 ('LS:', 'ls'), ('PREM:', 'prem'), ('WHALE:', 'whale'), ('WHALEP:', 'whalep'), ('BOOKP:', 'bookp')]
 CLOCK = {'UTC1h', 'NY30m', 'Weekday'}
 
 # per cell, split and horizon (the order of the last axis of the stats arrays); SHARD_STATS go to the shards as float16
@@ -2216,19 +2217,105 @@ def _other_metas(d, others: dict, twin: int, m_real: dict) -> dict:
 
 
 def _extra_readings(m: dict, m_real: dict, g, asset: str, twin: int, other_csvs: dict, other_metas, perp_csv: str, fund_csv: str, oi_csv: str,
-                    cal_csv: str, dom: str, found: dict, log) -> tuple:
+                    cal_csv: str, dom: str, found: dict, log, outside: dict = None) -> tuple:
     """The new readings of OR-HM2 (heat_xdata, plan section 1): heat_xdata.load_inputs loads the other coins' minutes,
     the perp and Coinbase minutes on this grid (through the one joint coin flip on a twin; the real perp is kept for the
     basis), funding, open interest, the calendar and the inventory-found frames; heat_xdata.extra_readings builds the
     readings. other_metas: the directory of the main run's metas, or {O: meta or None} already chosen. found: the
-    inventory-found source paths {'btcdom', 'cb', 'book'} (each optional). Returns (readings, edges, norms, missing)."""
+    inventory-found source paths {'btcdom', 'cb', 'book'} (each optional). Returns (readings, edges, norms, missing).
+    outside: None (the default: nothing else happens), else a dict that is filled with the OR-XD readings of
+    heat_outside.hm2_outside_readings ('readings', 'info'); they are research only and are NOT part of the returned
+    readings or edges (the live meta and the parity never see them)."""
     from oracle import heat_xdata as xd
+    found = dict(found or {})
+    from_outside = set()
+    if outside is not None:                      # --outside-dir / --outside-btcdom: BTCDOM and the book join OR-HM2's own IDX and BOOK families
+        found = _outside_found(found, outside.get('spec') or {}, log, from_outside)
     inp = xd.load_inputs(asset, m_real, twin, other_csvs or {}, perp_csv or None, fund_csv or None, oi_csv or None, cal_csv or None,
-                         dict(found or {}), log=log)
+                         found, log=log)
     kw = inp['kwargs']
     metas = other_metas if isinstance(other_metas, dict) else _other_metas(other_metas, kw['others'], twin, m_real)
-    return xd.extra_readings(m, g, kw['others'], metas, kw['perp'], kw['fund'], kw['oi'], kw['cal'], dom or None, kw['found'], kw['real'], log,
-                             asset=asset)
+    res = xd.extra_readings(m, g, kw['others'], metas, kw['perp'], kw['fund'], kw['oi'], kw['cal'], dom or None, kw['found'], kw['real'], log,
+                            asset=asset)
+    if from_outside:                             # built from Binance Vision files (not from raw/perp-ta-history): research only, like the OR-XD readings
+        pre = tuple({'btcdom': 'IDX:BTCDOM', 'book': 'BOOK:'}[k] for k in from_outside)
+        for R in res[0]:
+            if R['name'].removeprefix('ZS:').startswith(pre):
+                R['research_only'] = True
+    if outside is not None:
+        from oracle import heat_outside as xo
+        a_hi = g.sp['A'].hi if hasattr(g, 'sp') else int(g or 0)
+        info = {}
+        pf = xd.load_extra(perp_csv, 'perp1m') if perp_csv else None          # the empty-tb count the on-grid bars no longer show
+        # the RAW open-interest rows: load_extra keeps only the first row of each stamp, while heat_outside.clean_oi (the one dedupe the
+        # OR-XD readings define) picks, among the rows of a stamp, the one whose implied price oi_usd / oi is closest to the perp open
+        oi_raw = xo.read_checked(oi_csv, ('ts', 'oi'), 'OI') if oi_csv else kw['oi']
+        # a twin: the hook builds the pre-registered OR-XD twin path itself from the REAL perp (kw['real']) and the twin's seed; the
+        # joint-flipped perp in kw['perp'] (the basis of which random-walks) is not used for these five readings
+        fx = xo.load_full_inputs(**xo.contract_paths(outside['spec']['dir'])) if (outside.get('spec') or {}).get('dir') else {'inputs': {}, 'files': {}}
+        outside['files'] = fx['files']
+        outside['readings'] = xo.hm2_outside_readings(m, kw['perp'], oi_raw, a_hi, xd.Zoner(a_hi), log, info, real=kw['real'], perp_frame=pf,
+                                                      seed=int(twin) or None, **fx['inputs'])
+        outside['info'] = info
+    return res
+
+
+def _outside_spec(outside) -> dict:
+    """The --outside argument as a dict: False / None -> None (off); True -> {} (the five lite readings only); a dict {'dir': the coin's
+    raw/outside/binance/<COIN> folder, 'btcdom': BTCDOM's idx1h.csv.gz} -> the same, empty values dropped."""
+    if not outside:
+        return None
+    if outside is True:
+        return {}
+    return {k: v for k, v in dict(outside).items() if v}
+
+
+def _outside_found(found: dict, spec: dict, log=print, from_outside: set = None) -> dict:
+    """OR-HM2's inventory-found frames for an --outside study: the BTCDOM hourly bars (spec['btcdom'], else <dir>/BTCDOM/idx1h.csv.gz) and
+    the perp book depth (<dir>/bookdepth_1pct.csv.gz; its stamps are already shifted later by one spacing in the contract, so heat_xdata's
+    'known at ts' rule for kind 'book' cannot see a snapshot early) feed OR-HM2's own IDX:BTCDOM1h / IDX:BTCDOM4h and BOOK:Imb. A source the
+    preflight already found on raw/perp-ta-history/ is kept (setdefault); a file that is not there leaves the family out, as without --outside.
+    Both files must hold no row at or after 2026-01-01 (heat_outside cut; heat_xdata.load_extra refuses them otherwise).
+    from_outside: a set that receives the keys taken from the contract folder; _extra_readings marks the readings built from them research only
+    (the Binance Vision terms forbid live use of that data)."""
+    found = dict(found or {})
+    d = spec.get('dir')
+    cand = {'btcdom': spec.get('btcdom') or (os.path.join(d, 'BTCDOM', 'idx1h.csv.gz') if d else None),
+            'book': os.path.join(d, 'bookdepth_1pct.csv.gz') if d else None}
+    for k, pth in cand.items():
+        if pth and not found.get(k):
+            if os.path.isfile(pth):
+                found[k] = pth
+                if from_outside is not None:
+                    from_outside.add(k)
+                log(f'--outside: {k} from {pth}')
+            else:
+                log(f'--outside: no {k} file at {pth}: OR-HM2 leaves that family out')
+    return found
+
+
+def _outside_meta(ob: dict) -> dict:
+    """meta.json's 'outside' block of a --outside series: the readings and their zone edges (kept apart from edges_new, which
+    the live meta and the parity read), the reasons for what was skipped, the model statistics, the measures, the input
+    guards, and the research-only note."""
+    info = ob.get('info') or {}
+    return {'study': 'OR-XD lite readings as OR-HM2 extra readings (heat_outside.hm2_outside_readings)', 'research_only': True,
+            'live': 'research only: these readings need a perpetual taker-flow feed and an open-interest feed the bot does not have, and the '
+                    'Binance Vision terms forbid live use of the data (OR-XD, open gate); they are left out of hm2_pack.json and hm2_live_meta.json',
+            'families': sorted({R.get('family') for R in ob.get('readings') or [] if R.get('family')}),
+            'spec': ob.get('spec') or {}, 'contract_files': ob.get('files') or {}, 'all_vs_all': True,
+            **{k: v for k, v in info.items() if k != 'readings'},
+            'readings': [R['name'] for R in ob.get('readings') or []]}
+
+
+def research_only_names(meta: dict) -> set:
+    """The names a series' meta.json marks 'research_only' (heat_outside's readings under --outside; none otherwise), with the
+    names merged into them as aliases: what a pack or live meta for the bot must not hold."""
+    out = set()
+    for r in (meta or {}).get('readings', []):
+        if r.get('research_only'):
+            out |= {r['name']} | set(r.get('aliases', []))
+    return out
 
 
 TWIN_EDGE_SPAN_TOL = 0.02
@@ -2279,13 +2366,20 @@ def twin_identity(m: dict, main_meta: dict) -> list:
 
 
 def base(asset: str, csv: str, other_csvs: dict = None, perp_csv: str = '', fund_csv: str = '', oi_csv: str = '', cal_csv: str = '', dom: str = '',
-         found: dict = None, main_meta: dict = None, twin: int = 0, other_metas=None, xdata: bool = True, log=print) -> Ctx:
+         found: dict = None, main_meta: dict = None, twin: int = 0, other_metas=None, xdata: bool = True, log=print, outside=False) -> Ctx:
     """1. Refuses DOGE. 2. heat.load_minutes (strict), then make_twin(m, seed) for a twin (the real minutes are kept for
     the basis). 3. labels and Grid (HMAX 60). 4. Under h240: the 240 labels and Grid. 5. heat.build_readings (its curve
     cells off). 6. The zone edges and price step must equal main_meta (<COIN>/meta.json for the coin, <COIN>-twinN/
     meta.json for twin N): a difference stops the job. 7. The clock readings (heat_clock) and the new readings
-    (heat_xdata). 8. The copy merge, entries, code matrix and counts (make_ctx)."""
+    (heat_xdata). 8. The copy merge, entries, code matrix and counts (make_ctx). outside (--outside, off by default): after the
+    new readings, the OR-XD readings of heat_outside (research only: reading dict and meta flag 'research_only') are added as
+    extra readings, so they enter the same pair scan, learner and league as every OR-HM2 reading (all against all). True: the
+    five lite readings (families cvdp and liqmap) from the same perp and open-interest inputs. A dict {'dir': the coin's
+    raw/outside/binance/<COIN> folder, 'btcdom': BTCDOM idx1h.csv.gz}: also LS, PREM, WHALE, WHALEP and BOOKP from the contract
+    files in dir, and BTCDOM / book to OR-HM2's own IDX and BOOK families when dir holds them. With it off nothing changes."""
     _refuse_doge(asset, csv, perp_csv, fund_csv, oi_csv)
+    if outside and not xdata:
+        raise SystemExit('--outside needs the extra data (perp and open interest): do not combine it with --no-xdata')
     from oracle import heat_clock
     t0 = time.time()
     m_real = heat.load_minutes(csv)
@@ -2314,16 +2408,30 @@ def base(asset: str, csv: str, other_csvs: dict = None, perp_csv: str = '', fund
             log(f'{label}: zone edges within {worst:.2g} of the zone span of the main run twin (runner CPU noise; limit {TWIN_EDGE_SPAN_TOL})')
     readings += [dict(R, family='clock') for R in heat_clock.clock_readings(m)]
     xe = {'edges': {}, 'norms': {}, 'missing': []}
+    spec = _outside_spec(outside)
+    ob = {'spec': spec} if spec is not None else None
     if xdata:
         xr, xedges, norms, xmiss = _extra_readings(m, m_real, g, asset, twin, other_csvs, other_metas, perp_csv, fund_csv, oi_csv, cal_csv, dom,
-                                                   found, log)
+                                                   found, log, ob)
         if xmiss:
             raise SystemExit(f'{label}: extra inputs missing: {xmiss}')
         have = {R['name'] for R in readings}
         readings += [R for R in xr if R['name'] not in have]
+        if ob is not None:
+            refused = (ob.get('info') or {}).get('refused') or {}
+            if refused:                             # --outside asks for the five readings: an input the hook refuses stops the job (as the standalone run does)
+                raise SystemExit(f'{label}: --outside refused an input, so OR-XD readings would be missing: {refused}. Fix the input, or run without --outside')
+            # unique names: a clash stops the job (the line above would drop it silently)
+            have = {R['name'] for R in readings}
+            clash = sorted(R['name'] for R in ob['readings'] if R['name'] in have)
+            if clash:
+                raise SystemExit(f'{label}: the --outside readings {clash} collide with existing reading names')
+            readings += ob['readings']
         xe = {'edges': xedges, 'norms': norms, 'missing': xmiss}
     ctx = make_ctx(m, readings, asset, twin, lab=lab, g=g, lab240=lab240, g240=g240, log=log)
     ctx.m_real, ctx.edges, ctx.price_step, ctx.xdata = m_real, edges, step, xe
+    if ob is not None:
+        ctx.outside = _outside_meta(ob)
     return ctx
 
 
@@ -2379,7 +2487,7 @@ def _write_csv(df: pd.DataFrame, path: str) -> str:
 def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, other_csvs: dict = None, perp_csv: str = '', fund_csv: str = '',
                oi_csv: str = '', cal_csv: str = '', dom: str = '', found: dict = None, main_meta: dict = None, other_metas=None,
                hm1_packs=(), hm1_pairs: str = '', part=(0, 1), shards: str = '', learn: bool = True, xdata: bool = True, max_pairs: int = None,
-               seed: int = 0, ctx: Ctx = None, parts_dirs=(), patterns: bool = False, log=print) -> dict:
+               seed: int = 0, ctx: Ctx = None, parts_dirs=(), patterns: bool = False, log=print, outside=False) -> dict:
     """One series (a coin or a twin): base -> part effects -> learner -> scan_pairs -> triple choice and leaf paths ->
     scan_triples -> remeasure. Writes into out: summary_counts.json, candidates.csv.gz, triple_pool.csv.gz, heat.csv.gz
     (re-measured rows, with table_sha256 of the unzipped text), near_copies.csv.gz, usage.json, trees/<model>_h<H>.json,
@@ -2389,7 +2497,9 @@ def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, ot
     and the triple-choice pool of the part); `parts_dirs` (the finish job) merges the parts' files, then runs the
     triples and the re-measure. ctx: a ready context (tests). patterns (Part 4, route A): after meta.json is written,
     heat_patterns.stage on this context into <out>/patterns, only where the re-measure ran (S = 1 or the finish job,
-    never a --part job); HM2's own files do not depend on it."""
+    never a --part job); HM2's own files do not depend on it. outside (--outside, the same in every job of a series: parts, finish,
+    twins): base() adds the five research-only OR-XD readings; meta.json then carries them in 'readings' (flag 'research_only')
+    and an 'outside' block, and nothing else in any file changes."""
     _refuse_doge(asset, csv)
     os.makedirs(out, exist_ok=True)
     procs = procs or min(4, os.cpu_count() or 1)
@@ -2397,7 +2507,7 @@ def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, ot
     tick = lambda k, t: sec.__setitem__(k, round(time.time() - t, 1))
     t = time.time()
     if ctx is None:
-        ctx = base(asset, csv, other_csvs, perp_csv, fund_csv, oi_csv, cal_csv, dom, found, main_meta, twin, other_metas, xdata, log)
+        ctx = base(asset, csv, other_csvs, perp_csv, fund_csv, oi_csv, cal_csv, dom, found, main_meta, twin, other_metas, xdata, log, outside=outside)
     tick('base', t)
     pi, S = part
     finishing = bool(parts_dirs)
@@ -2466,8 +2576,8 @@ def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, ot
             'base': {s: {'msign': _clean(list(ctx.base[i]['bms'])), 'p_up': _clean(list(ctx.base[i]['bpu'])), 'p_dn': _clean(list(ctx.base[i]['bpd'])),
                          'hold_up': _clean(ctx.base[i]['hold_up']), 'hold_dn': _clean(ctx.base[i]['hold_dn']), 'ndays': _clean(list(ctx.base[i]['ndays']))}
                      for i, s in enumerate(('A', 'B'))},
-            'readings': [{'name': R['name'], 'family': f, 'k': int(R['k']), 'levels': list(R['levels']), 'aliases': R.get('aliases', [])}
-                         for R, f in zip(ctx.readings, ctx.fam)],
+            'readings': [{'name': R['name'], 'family': f, 'k': int(R['k']), 'levels': list(R['levels']), 'aliases': R.get('aliases', []),
+                          **({'research_only': True} if R.get('research_only') else {})} for R, f in zip(ctx.readings, ctx.fam)],
             'families': ctx.families, 'aliases': ctx.aliases, 'edges_new': _clean(getattr(ctx, 'xdata', {}).get('edges', {})),
             'norms': _clean(getattr(ctx, 'xdata', {}).get('norms', {})), 'missing': getattr(ctx, 'xdata', {}).get('missing', []),
             'price_step': getattr(ctx, 'price_step', None), 'pairs': _clean(st_pairs), 'triples': _clean(st_tri),
@@ -2475,6 +2585,8 @@ def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, ot
             'learner': {'version': lr['version'], 'trees': lr['trees'], 'paths': len(lr['paths'])},
             'shards': {'dir': writer.dir if writer.enabled else None, 'bytes': int(st_pairs.get('shard_bytes', 0))},
             'table_sha256': sha, 'seconds': sec, 'seconds_total': round(time.time() - t_start, 1), 'peak_rss_mb': _rss_mb()}
+    if getattr(ctx, 'outside', None):
+        meta['outside'] = ctx.outside
     with open(os.path.join(out, 'meta.json'), 'w') as f:
         json.dump(_clean(meta), f, indent=1, allow_nan=False)
     log(f'{ctx.label}: done in {meta["seconds_total"]}s, peak {meta["peak_rss_mb"]} MB')
@@ -2533,7 +2645,7 @@ def bench(asset: str, csv: str, out: str, n_pairs: int = 3000, procs: int = 0, l
     procs = procs or min(4, os.cpu_count() or 1)
     t = time.time()
     ctx = base(asset, csv, log=log, **{k: v for k, v in kw.items() if k in ('other_csvs', 'perp_csv', 'fund_csv', 'oi_csv', 'cal_csv', 'dom', 'found',
-                                                                              'main_meta', 'twin', 'other_metas', 'xdata')})
+                                                                              'main_meta', 'twin', 'other_metas', 'xdata', 'outside')})
     t_base = time.time() - t
     total = len(pair_list(ctx))
     writer = ShardWriter(os.path.join(out, 'shards'), True)
@@ -2588,8 +2700,22 @@ def _kw(a) -> dict:
     found = {}
     if a.found:
         found = _load_json(a.found) if os.path.isfile(a.found) else json.loads(a.found)
-    return {'other_csvs': others, 'perp_csv': a.perp, 'fund_csv': a.fund, 'oi_csv': a.oi, 'cal_csv': a.cal, 'dom': a.dom, 'found': found,
-            'main_meta': _load_json(a.main_meta), 'twin': a.twin, 'other_metas': a.other_metas, 'xdata': not a.no_xdata}
+    kw = {'other_csvs': others, 'perp_csv': a.perp, 'fund_csv': a.fund, 'oi_csv': a.oi, 'cal_csv': a.cal, 'dom': a.dom, 'found': found,
+          'main_meta': _load_json(a.main_meta), 'twin': a.twin, 'other_metas': a.other_metas, 'xdata': not a.no_xdata}
+    if getattr(a, 'outside', False):                   # absent from the dict when off: the other commands that share _inputs never see it
+        d, bd = getattr(a, 'outside_dir', ''), getattr(a, 'outside_btcdom', '')
+        kw['outside'] = {'dir': d, 'btcdom': bd} if (d or bd) else True
+    elif getattr(a, 'outside_dir', '') or getattr(a, 'outside_btcdom', ''):
+        raise SystemExit('--outside-dir / --outside-btcdom need --outside')
+    return kw
+
+
+def _outside_arg(p):
+    p.add_argument('--outside', action='store_true',
+                   help='add the OR-XD readings (CVDP:Div15, CVDP:PxDiv60, LIQMAP:DistAbove, LIQMAP:DistBelow, LIQMAP:Skew; with --outside-dir also '
+                        'LS, PREM, WHALE, WHALEP and BOOKP) as research-only extra readings, in the one pair scan with every OR-HM2 reading')
+    p.add_argument('--outside-dir', default='', help='the coin\'s raw/outside/binance/<COIN> folder (the data contract), cut at 2026-01-01 UTC first (python -m oracle.heat_outside cut)')
+    p.add_argument('--outside-btcdom', default='', help='BTCDOM idx1h.csv.gz (cut): feeds OR-HM2\'s own IDX:BTCDOM1h / 4h (default: <outside-dir>/BTCDOM/idx1h.csv.gz)')
 
 
 def main(argv=None):
@@ -2608,6 +2734,7 @@ def main(argv=None):
     c.add_argument('--hm1-packs', default='')
     c.add_argument('--hm1-pairs', default='')
     c.add_argument('--patterns', action='store_true')            # Part 4 route A: heat_patterns.stage after meta.json (not in a --part job)
+    _outside_arg(c)                                              # the same flag in every job of a series: parts, finish, twins
     fn = sub.add_parser('finish')
     _inputs(fn)
     fn.add_argument('--out', required=True)
@@ -2616,10 +2743,12 @@ def main(argv=None):
     fn.add_argument('--hm1-packs', default='')
     fn.add_argument('--hm1-pairs', default='')
     fn.add_argument('--patterns', action='store_true')
+    _outside_arg(fn)
     b = sub.add_parser('bench')
     _inputs(b)
     b.add_argument('--out', required=True)
     b.add_argument('--pairs', type=int, default=3000)
+    _outside_arg(b)
     sub.add_parser('league', help='oracle.heat_hm2_league league (every flag passed through)')
     sub.add_parser('parity', help='oracle.heat_hm2_league parity (every flag passed through)')
     a = ap.parse_args(argv)

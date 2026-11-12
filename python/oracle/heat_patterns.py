@@ -3006,12 +3006,14 @@ def chart_view(ctx, comp: list) -> ChartView:
 def chart_pairs(view: ChartView, part=(0, 1), max_pairs: int = None, seed: int = 0) -> np.ndarray:
     """(pair index, ia, ib), ia < ib: each compact reading with every HM2 reading, then with the compact readings of
     the other frames (never its own frame: same base, nor a frame a copy of it stands for). --part i/S keeps index % S
-    == i; max_pairs: a seeded subset."""
+    == i; max_pairs: a seeded subset. A research-only HM2 reading (the OR-XD readings of a --outside series, flag
+    'research_only') is never paired with a chart: Part 4 does not use them, so a chart row never names one."""
     from oracle import heat_hm2 as h2
     n0, nr = view.n0, len(view.readings)
     P = []
+    hm_ids = np.array([i for i in range(n0) if not view.readings[i].get('research_only')], dtype=np.int64)       # all of them unless --outside
     for c in range(n0, nr):
-        P.append(np.stack([np.arange(n0, dtype=np.int64), np.full(n0, c, np.int64)], 1))
+        P.append(np.stack([hm_ids, np.full(len(hm_ids), c, np.int64)], 1))
     ov = h2.series_overlap(view.readings[n0:])                   # one base, or a copy's base (merge_aliases' alias_bases)
     cc = [(n0 + a, n0 + b) for a in range(nr - n0) for b in range(a + 1, nr - n0) if not ov[a, b]]
     if cc:

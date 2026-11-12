@@ -108,7 +108,9 @@ SAME = hm.LIST_SAME                 # exact copies: identical numbers on both pe
 EXTREME = ('very low', 'very high')
 # the feed each family needs live (OR-HM2, Pack for the bot); 'spot' = the coin's own 1-minute bars
 FAMILY_FEED = {'cross-coin': 'other coins', 'perp': 'binance perp', 'open interest': 'binance perp', 'daily markets': 'daily markets',
-               'macro': 'calendar 2026', 'coinbase': 'coinbase minutes', 'btcdom': 'btcdom', 'book': 'order book'}
+               'macro': 'calendar 2026', 'coinbase': 'coinbase minutes', 'btcdom': 'btcdom', 'book': 'order book',
+               'cvdp': 'perp taker flow', 'liqmap': 'open interest history', 'ls': 'long-short ratio history', 'prem': 'premium index history',
+               'whale': 'spot trade tape', 'whalep': 'perp trade tape', 'bookp': 'order book'}      # OR-XD readings (--outside): research only, the bot has neither feed
 DEFAULT_FEEDS = ('spot', 'other coins', 'dominance')
 CONTEXT_FEED = {'BTC.D': 'dominance', 'USDT.D': 'dominance', 'Dom': 'dominance'}
 SECTION = '<!-- hm2:section:{} -->'
@@ -1355,8 +1357,19 @@ def build_pack(lists: pd.DataFrame, summary: dict, metas: dict, model: pd.DataFr
     scan's numbers (held state at the entries) rank the row and stay in `scan`; the headline numbers (HEAD_ONSET) are
     the onset block's, what that fire gave (A and B, signed in dir); the held block is every minute the state held.
     onset_dir_A is the onset's own A direction and onset_agrees_A whether it is dir (a column, not a filter: a row
-    whose onset opposes its held-state call keeps its row and says so). live_ready False until the parity step."""
+    whose onset opposes its held-state call keeps its row and says so). live_ready False until the parity step.
+    Research-only readings (meta.json readings flagged 'research_only': the OR-XD readings of a --outside series) are never in the
+    pack: a pair or triple row with one of them in its conds, and a GBM zone row of a model whose trees use one, are left out
+    (counted in the pack's `research_only` block, which exists only when a series carries such readings); a near-copy alias
+    string of a kept row that names one is dropped from the row's `aliases` (live_meta reads those names)."""
     rows = []
+    ro = {k: v for k, v in ((k, hm.research_only_names(mt)) for k, mt in metas.items()) if v}
+    left = {'rows': 0, 'models': []}
+
+    def _uses_ro(label, mdl, h):
+        used = ((((metas.get(label) or {}).get('learner') or {}).get('trees') or {}).get(f'{mdl}_h{h}') or {}).get('used') or []
+        return any(u.removeprefix('ZS:') in ro.get(label, ()) for u in used)
+
     x = lists[(lists['twin'] == 0) & lists['h'].isin(hm.PACK_H)] if len(lists) else lists
     sha = {k: v.get('table_sha256') for k, v in metas.items() if not int(v.get('twin', 0))}
     twin_max = {}                                   # the coin's twins' max of each measure over all cells (slice all)
@@ -1367,10 +1380,16 @@ def build_pack(lists: pd.DataFrame, summary: dict, metas: dict, model: pd.DataFr
         y = y.sort_values(['measure', 'slice'])
         r = y.iloc[0].to_dict()
         conds = _conds(r['conds'])
+        if ro.get(coin) and any(n in ro[coin] for n, _ in conds):
+            left['rows'] += 1
+            continue
         held = {k: _f(r.get('held_' + k)) for k in RM_PACK}
         onset = {k: _f(r.get('onset_' + k)) for k in RM_PACK}
         sg = _sign_row(r)
-        row = {'coin': coin, 'h': int(h), 'kind': kind, 'key': key, 'aliases': sorted({a for al in y['aliases'] for a in al}), 'conds': conds,
+        aliases = sorted({a for al in y['aliases'] for a in al})
+        if ro.get(coin):                            # a near-copy cond string that names a research-only reading would carry it into the live meta
+            aliases = [a for a in aliases if not any(n.rsplit('=', 1)[0].removeprefix('ZS:') in ro[coin] for n in a.split(' & '))]
+        row = {'coin': coin, 'h': int(h), 'kind': kind, 'key': key, 'aliases': aliases, 'conds': conds,
                'readings': list(dict.fromkeys(n for n, _ in conds)), 'fire': 'onset', 'dir': int(r['dir']), 'call': 'up' if r['dir'] > 0 else 'down',
                'lists': sorted(set(y['list'])), 'ranks': {l_: int(k_) for l_, k_ in zip(y['list'], y['rank'])},
                'source': r.get('source'), 'n_A': _i(r.get('n_A')), 'n_B': _i(r.get('n_B')), 'days_B': _i(r.get('days_B')),
@@ -1406,6 +1425,9 @@ def build_pack(lists: pd.DataFrame, summary: dict, metas: dict, model: pd.DataFr
                 k = (z['asset'], z['model'], int(z['h']))
                 zt[k] = max(zt.get(k, -np.inf), float(v))
         for _, z in mm.iterrows():
+            if ro and _uses_ro(z['coin'], z['model'], int(z['h'])):
+                left['models'].append(f'{z["coin"]}:{z["model"]}:{int(z["h"])}')
+                continue
             onset = {k: _f(z.get('onset_' + k)) for k in RM_PACK}
             held = {k: _f(z.get('held_' + k)) for k in RM_PACK}
             tmx = zt.get((z['asset'], z['model'], int(z['h'])))
@@ -1427,6 +1449,8 @@ def build_pack(lists: pd.DataFrame, summary: dict, metas: dict, model: pd.DataFr
             continue
         for nm, tr in ((mt.get('learner') or {}).get('trees') or {}).items():
             mdl, hh = nm.split('_h')
+            if ro and _uses_ro(k, mdl, hh):
+                continue
             models.setdefault(k, {}).setdefault(mdl, {})[hh] = {'file': tr.get('file'), 'sha256': tr.get('sha256'), 'used': tr.get('used')}
     chance = {}
     for kind, byh in (summary.get('chance') or {}).items():
@@ -1438,7 +1462,7 @@ def build_pack(lists: pd.DataFrame, summary: dict, metas: dict, model: pd.DataFr
                     'p99_lheat', 'max_lheat', 'max_oheat_unseen', 'max_iheat_unseen', 'max_lheat_unseen')
             chance.setdefault(str(h), {})[kind] = {'real': {k: c['real'].get(k) for k in keep}, 'twin': {k: c['twin'].get(k) for k in keep},
                                                    'twin_sets': c.get('twin_sets'), 'above_twin_max': c['real'].get('above_twin_max')}
-    return hm._clean({
+    pack = hm._clean({
         'schema': SCHEMA_PACK, 'stamp': summary.get('stamp'), 'horizons': list(hm.PACK_H), 'kinds': list(PACK_KINDS),
         'data': 'Binance spot 1-minute bars of BTC, ETH, SOL and XRP and the extra data of OR-HM2, 2020-01-01 to 2025-12-31 UTC. A = 2020-2024 '
                 '(the direction and every choice come from A), B = 2025 (every *_B number).',
@@ -1466,13 +1490,19 @@ def build_pack(lists: pd.DataFrame, summary: dict, metas: dict, model: pd.DataFr
                                            'markets need their daily closes; Coinbase readings need a Coinbase minute feed',
         'chance': chance, 'baselines': (summary.get('model') or {}).get('baselines'), 'models': models, 'table_sha256': sha,
         'warnings': summary.get('warnings', []), 'live_reader_parity': None, 'rows': rows})
+    if ro:
+        pack['research_only'] = hm._clean({'readings': sorted(set().union(*ro.values())), 'rows_left_out': left['rows'], 'models_left_out': left['models'],
+                                           'why': 'research-only readings (OR-XD, --outside) have no live computation: the bot has neither a perpetual '
+                                                  'taker-flow feed nor an open-interest feed, and the Binance Vision terms forbid live use of the data'})
+    return pack
 
 
 def pack_summary(pack: dict) -> dict:
     df = pd.DataFrame([{k: r.get(k) for k in ('coin', 'h', 'kind', 'live_ready', 'seen_in_league')} for r in pack.get('rows', [])])
     if not len(df):
         return {'rows': 0}
-    return {'rows': int(len(df)), 'by_coin_h_kind': {f'{c}|{h}|{k}': int(n) for (c, h, k), n in df.groupby(['coin', 'h', 'kind']).size().items()},
+    return {**({'research_only_rows_left_out': pack['research_only']['rows_left_out']} if pack.get('research_only') else {}),
+            'rows': int(len(df)), 'by_coin_h_kind': {f'{c}|{h}|{k}': int(n) for (c, h, k), n in df.groupby(['coin', 'h', 'kind']).size().items()},
             'unseen': int((df['seen_in_league'] == 'none').sum()), 'live_ready': int(df['live_ready'].fillna(False).astype(bool).sum()),
             'gate_rows': int(df['kind'].isin(GATE_KINDS).sum())}
 
@@ -1511,7 +1541,7 @@ def live_meta(pack: dict, metas: dict, main_metas: dict = None, gbm: dict = None
                 gz[n] = {'edges': g.get('edges'), 'tree': g.get('file'), 'sha256': g.get('sha256'), 'used': list(g.get('used') or []),
                          'levels': list(heat.ZONES), 'score': 'raw (heat_hm2_learn.tree_eval with_init=False)'}
                 names |= set(g.get('used') or [])
-        names = {x.removeprefix('ZS:') for x in names}
+        names = {x.removeprefix('ZS:') for x in names} - hm.research_only_names(mt)       # (a research-only reading has no live computation, whatever carried it in)
         en, ee = mt.get('edges_new') or {}, mm.get('edges') or {}
         edges, engine, none = {}, {}, []
         for n in sorted(names):

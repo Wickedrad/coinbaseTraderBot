@@ -23,6 +23,23 @@ name: Oracle heat map HM2
 #   [heat-hm2-with-patterns]       with the study: Part 4's chart-pattern stage (route A: heat_hm2 --patterns, after HM2's
 #                                  meta.json, only where HM2's re-measure runs: S = 1 series jobs or the finish jobs; a
 #                                  stage failure leaves HM2's files and the job's exit code alone), then its league section
+#   [hm2-outside]                  with the study or the bench: adds --outside to the bench, series and finish commands (every part, finish
+#                                  and twin job of the series), with --outside-dir (the job coin's raw/outside/binance/<COIN>/ contract
+#                                  files, cut at 2026-01-01 UTC) and --outside-btcdom (raw/outside/binance/BTCDOM/idx1h.csv.gz): ALL
+#                                  readings against ALL readings. Every OR-HM2 reading plus every OR-XD family (CVDP, LIQMAP, LS, PREM,
+#                                  WHALE, WHALEP, BOOKP: 18 readings) goes into the one pair scan, learner and league, as RESEARCH-ONLY
+#                                  readings (flag in meta.json): no row with one of them goes into hm2_pack.json or hm2_live_meta.json.
+#                                  The BTCDOM bars and the bookdepth file also feed OR-HM2's own IDX and BOOK families in that study
+#                                  (they were not found on raw/perp-ta-history/). Off by default; nothing changes without the tag. An
+#                                  outside study is KEPT APART from a plain one: its Drive folder is <run>/hm2-outside/ (not <run>/hm2/),
+#                                  so put the same tag on a league-only push of it; the league job commits it under
+#                                  research/oracle_heat/hm2/outside/ (also when the tag is forgotten: it reads the series' meta.json) and
+#                                  never over research/oracle_heat/latest/. The chance scale of the pack's marks (q, bhy, above_twin_max)
+#                                  includes the new readings' cells, which is one more reason it is not the plain pack. Not combined
+#                                  with the parity or the Part 3 drill tags (error). Size: about +21 readings and +29,000 pairs per
+#                                  coin (3 percent); one series job stays one job (S = 1, about 2.2 hours of the 6 allowed): run the
+#                                  bench with the tag first, it prints the pair count and the projected minutes; if it projects over
+#                                  300 minutes, push with [heat-hm2-parts:2] (the existing --part i/S split).
 #   [heat-hm2-league:<run>]        the league only, from the series files already on Drive
 #   [heat-hm2-parity:<run>]        Dec 29-31, 2025 live parity per coin, then live_ready in hm2_pack.json (alone in its push)
 #   [heat-hm2-drill-bench:<run>]   Part 3: units, then BTC's drill bench
@@ -46,9 +63,9 @@ on:
   push:
     branches: [claude/project-thread-kw7bc3]
     paths: ['.github/workflows/oracle-hm2.yml', '.github/scripts/oracle-hm2-data.sh', '.github/actions/drive-setup/action.yml',
-            'python/oracle/heat_xdata.py', 'python/oracle/heat_hm2.py', 'python/oracle/heat_hm2_learn.py',
+            'python/oracle/heat_xdata.py', 'python/oracle/heat_hm2.py', 'python/oracle/heat_hm2_learn.py', 'python/oracle/heat_outside.py',
             'python/oracle/heat_hm2_league.py', 'python/oracle/heat_hm2_drill.py', 'python/oracle/heat_patterns.py',
-            'python/oracle/tests/test_heat_hm2*.py', 'python/oracle/tests/test_heat_patterns.py',
+            'python/oracle/tests/test_heat_hm2*.py', 'python/oracle/tests/test_heat_patterns.py', 'python/oracle/tests/test_heat_outside_hm2*.py',
             'python/oracle/prereg/OR-HM2*.md', 'python/oracle/calendars/macro_calendar_2020_2025.csv']
 
 permissions:
@@ -90,6 +107,7 @@ jobs:
       drill_parts: ${{ steps.plan.outputs.drill_parts }}
       drill_twins: ${{ steps.plan.outputs.drill_twins }}
       patterns: ${{ steps.plan.outputs.patterns }}
+      outside: ${{ steps.plan.outputs.outside }}
       series: ${{ steps.plan.outputs.series }}
       finish: ${{ steps.plan.outputs.finish }}
       drill_matrix: ${{ steps.plan.outputs.drill_matrix }}
@@ -122,6 +140,15 @@ jobs:
             [ -f python/oracle/heat_patterns.py ] || { echo "::error::[heat-hm2-with-patterns] but python/oracle/heat_patterns.py is not in this commit"; exit 1; }
             [ "$study" = true ] || [ "$bench" = true ] || [ "$league" = true ] || echo "::warning::[heat-hm2-with-patterns] acts only with the study, bench or league tags"
           fi
+          outside=false
+          if grep -qF '[hm2-outside]' <<< "$MSG"; then
+            outside=true
+            [ -f python/oracle/heat_outside.py ] || { echo "::error::[hm2-outside] but python/oracle/heat_outside.py is not in this commit"; exit 1; }
+            [ "$study" = true ] || [ "$bench" = true ] || [ "$league" = true ] || echo "::warning::[hm2-outside] acts only with the study, bench or league tags"
+            if [ "$parity" = true ] || [ "$drill" = true ] || [ "$drill_bench" = true ] || [ "$drill_league" = true ] || [ "$drill_parity" = true ]; then
+              echo "::error::[hm2-outside] is not combined with the parity or the Part 3 drill tags: they read and rewrite the plain hm2_pack.json, which never holds the research-only readings"; exit 1
+            fi
+          fi
           # never more than 10 jobs up: a parity tag goes alone; a bench never shares a push with the run it sizes
           nrun=$( { grep -oE "$RUNTAG" <<< "$MSG" || true; } | sort -u | wc -l)
           if { [ "$parity" = true ] || [ "$drill_parity" = true ]; } && [ "$nrun" -gt 1 ]; then
@@ -149,6 +176,8 @@ jobs:
             done <<< "$active"
             [ -z "$busy" ] || { echo "::error::another tagged oracle-hm2 run is queued or in progress:$busy. One study at a time (at most 10 jobs); push again when it ends."; exit 1; }
           fi
+          drive=${HM2_DRIVE//\{run\}/${run:-0}}
+          if [ "$outside" = true ]; then drive="${drive}-outside"; fi          # an outside study never shares a Drive folder with a plain run of the same id
           minutes=false
           for t in "$study" "$bench" "$parity" "$drill" "$drill_bench" "$drill_parity"; do if [ "$t" = true ]; then minutes=true; fi; done
           m16() {   # include list: real coins first, then twins 1-3; part 0 of every series before part 1 ...
@@ -158,16 +187,17 @@ jobs:
               | {asset: $a, twin: $t, part: $p, parts: $S, label: $l} + $d]}'
           }
           {
-            echo "run=$run"; echo "drive=${HM2_DRIVE//\{run\}/${run:-0}}"; echo "minutes=$minutes"
+            echo "run=$run"; echo "drive=$drive"; echo "minutes=$minutes"
             echo "study=$study"; echo "bench=$bench"; echo "league=$league"; echo "parity=$parity"
             echo "drill=$drill"; echo "drill_bench=$drill_bench"; echo "drill_league=$drill_league"; echo "drill_parity=$drill_parity"
             echo "parts=$parts"; echo "drill_parts=$drill_parts"; echo "drill_twins=$drill_twins"
             echo "patterns=$patterns"
+            echo "outside=$outside"
             echo "series=$(m16 "$parts" false)"
             echo "finish=$(m16 1 false | jq -c --argjson S "$parts" '.include |= map(. + {parts: $S})')"
             echo "drill_matrix=$(m16 "$drill_parts" true)"
           } >> "$GITHUB_OUTPUT"
-          echo "run ${run:-none}; study $study (parts $parts, patterns $patterns); bench $bench; league $league; parity $parity"
+          echo "run ${run:-none}; study $study (parts $parts, patterns $patterns, outside $outside); bench $bench; league $league; parity $parity"
           echo "drill $drill (parts $drill_parts, twins $drill_twins); drill bench $drill_bench; drill league $drill_league; drill parity $drill_parity"
       - uses: actions/setup-python@v5
         with:
@@ -175,7 +205,7 @@ jobs:
           cache: pip
           cache-dependency-path: python/oracle/requirements.txt
       - name: Python requirements (python/oracle/requirements.txt with TA-Lib, plus LightGBM 4.5.0 from its wheel)
-        run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0 pytest
+        run: pip install -q -r python/oracle/requirements.txt pyarrow==21.0.0 lightgbm==4.5.0 pytest pyyaml          # (pyyaml: test_heat_outside_hm2 reads this file's plan step)
       - name: Versions
         run: python3 -c "import lightgbm, talib, numpy, pandas, numba, sys; print('python', sys.version.split()[0], '| lightgbm', lightgbm.__version__, '| TA-Lib', talib.__version__, '| numpy', numpy.__version__, '| pandas', pandas.__version__, '| numba', numba.__version__)"
       - name: HM2 tests (Parts 3 and 4 when present), and the engine's to show it unchanged
@@ -183,7 +213,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          t=(oracle/tests/test_heat_hm2*.py oracle/tests/test_heat_patterns*.py)
+          t=(oracle/tests/test_heat_hm2*.py oracle/tests/test_heat_patterns*.py oracle/tests/test_heat_outside_hm2*.py)
           echo "test files: ${t[*]} oracle/tests/test_heat.py"
           python3 -m pytest -q -rfE --tb=short "${t[@]}" oracle/tests/test_heat.py
 
@@ -278,6 +308,7 @@ jobs:
       D: ${{ needs.test.outputs.drive }}
       FOUND: ${{ needs.preflight.outputs.found }}
       PATTERNS: ${{ needs.test.outputs.patterns }}
+      OUTSIDE: ${{ needs.test.outputs.outside }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -286,6 +317,9 @@ jobs:
           cache: pip
           cache-dependency-path: python/oracle/requirements.txt
       - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Parquet reader for the OR-XD aggTrades month files ([hm2-outside] only)
+        if: env.OUTSIDE == 'true'
+        run: pip install -q pyarrow==21.0.0          # the pin of python/oracle/requirements-fetch.txt, without its numpy and pandas pins (they would move the HM2 stack)
       - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
@@ -298,12 +332,13 @@ jobs:
           set -euo pipefail
           W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs"
           mapfile -t F < "$W/data/flags.txt"
+          X=(); if [ "$OUTSIDE" = true ]; then X+=(--outside); mapfile -t OF < "$W/data/outside_flags.txt"; X+=("${OF[@]}"); fi   # every OR-XD reading (research only), so the bench sizes them
           /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2 bench "${F[@]}" --main-meta "$W/data/metas/BTC/meta.json" \
-            --twin 0 --procs 4 --out "$W/out/bench" 2>&1 | tee "$W/out/logs/bench.log"
+            --twin 0 --procs 4 --out "$W/out/bench" "${X[@]}" 2>&1 | tee "$W/out/logs/bench.log"
           grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
           echo "free disk: $(df -h --output=avail "$W" | tail -1 | tr -d ' ')"
           cat "$W/out/bench/bench.json"
-      - name: Part 4 bench (chart patterns on BTC)
+      - name: Part 4 bench (chart patterns on BTC; no --outside here, chart pairs never pair a research-only reading, so its size is the same)
         if: env.PATTERNS == 'true'
         working-directory: python
         run: |
@@ -352,6 +387,7 @@ jobs:
       D: ${{ needs.test.outputs.drive }}
       FOUND: ${{ needs.preflight.outputs.found }}
       PATTERNS: ${{ needs.test.outputs.patterns }}
+      OUTSIDE: ${{ needs.test.outputs.outside }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -360,6 +396,9 @@ jobs:
           cache: pip
           cache-dependency-path: python/oracle/requirements.txt
       - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Parquet reader for the OR-XD aggTrades month files ([hm2-outside] only)
+        if: env.OUTSIDE == 'true'
+        run: pip install -q pyarrow==21.0.0          # the pin of python/oracle/requirements-fetch.txt, without its numpy and pandas pins (they would move the HM2 stack)
       - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
@@ -378,6 +417,7 @@ jobs:
           X=()
           if [ "$PS" != 1 ]; then X+=(--part "$PI/$PS"); fi
           if [ "$PS" = 1 ] && [ "$PATTERNS" = true ]; then X+=(--patterns); fi       # Part 4 route A (never in a --part job)
+          if [ "$OUTSIDE" = true ]; then X+=(--outside); mapfile -t OF < "$W/data/outside_flags.txt"; X+=("${OF[@]}"); fi   # all OR-XD readings (research only): every part, finish and twin job alike
           sh="$W/shards/$SUB"; ds="$D/$LABEL/shards"; [ "$PS" = 1 ] || ds="$ds/part${PI}of${PS}"
           mover() {                       # real coins: each finished shard file (2 minutes unchanged) moves to Drive; free disk logged
             while sleep 120; do
@@ -431,6 +471,7 @@ jobs:
       D: ${{ needs.test.outputs.drive }}
       FOUND: ${{ needs.preflight.outputs.found }}
       PATTERNS: ${{ needs.test.outputs.patterns }}
+      OUTSIDE: ${{ needs.test.outputs.outside }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -439,6 +480,9 @@ jobs:
           cache: pip
           cache-dependency-path: python/oracle/requirements.txt
       - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Parquet reader for the OR-XD aggTrades month files ([hm2-outside] only)
+        if: env.OUTSIDE == 'true'
+        run: pip install -q pyarrow==21.0.0          # the pin of python/oracle/requirements-fetch.txt, without its numpy and pandas pins (they would move the HM2 stack)
       - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
@@ -463,6 +507,7 @@ jobs:
           PACKS="$P/traded_pack.json,$P/pair_pack.json,$P/clock_pack.json,$P/perp_pack.json,$P/perp_pair_pack.json"
           PARTS=$(for i in $(seq 0 $((PS - 1))); do echo "$W/data/parts/part${i}of${PS}"; done | paste -sd,)
           X=(); if [ "$PATTERNS" = true ]; then X+=(--patterns); fi                   # Part 4 route A, after the re-measure
+          if [ "$OUTSIDE" = true ]; then X+=(--outside); mapfile -t OF < "$W/data/outside_flags.txt"; X+=("${OF[@]}"); fi   # the same readings as the part jobs
           sh="$W/shards/$LABEL/finish"; ds="$D/$LABEL/shards/finish"
           /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2 finish "${F[@]}" --main-meta "$W/data/metas/$LABEL/meta.json" \
             --twin "$TW" --procs 4 --out "$W/out/$LABEL" --parts "$PARTS" --shards "$sh" --hm1-packs "$PACKS" \
@@ -496,6 +541,7 @@ jobs:
       RUN: ${{ needs.test.outputs.run }}
       D: ${{ needs.test.outputs.drive }}
       PATTERNS: ${{ needs.test.outputs.patterns }}
+      OUTSIDE: ${{ needs.test.outputs.outside }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -506,6 +552,9 @@ jobs:
           cache: pip
           cache-dependency-path: python/oracle/requirements.txt
       - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Parquet reader for the OR-XD aggTrades month files ([hm2-outside] only)
+        if: env.OUTSIDE == 'true'
+        run: pip install -q pyarrow==21.0.0          # the pin of python/oracle/requirements-fetch.txt, without its numpy and pandas pins (they would move the HM2 stack)
       - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
@@ -526,7 +575,8 @@ jobs:
         run: |
           set -euo pipefail
           W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs"
-          G=(); g="$W/research/oracle_heat/hm2/part3/gate_rows.json"; [ ! -s "$g" ] || G=(--gates "$g")    # Part 3's gate rows return to the pack
+          G=(); g="$W/research/oracle_heat/hm2/part3/gate_rows.json"
+          if [ "$OUTSIDE" != true ] && [ -s "$g" ]; then G=(--gates "$g"); fi              # Part 3's gate rows return to the pack (not to an outside study's)
           python3 -m oracle.heat_hm2_league league --inputs "$W/data/hm2" --hm1 "$W/data/hm1" --packs "$W/research/oracle_heat/latest" \
             --main-metas "$W/data/hm1/metas" --out "$W/out/league" "${G[@]}" \
             --stamp "series of run $RUN; HM2 league job $GITHUB_RUN_ID at commit $GITHUB_SHA" 2>&1 | tee "$W/out/logs/league.log"
@@ -555,6 +605,18 @@ jobs:
         run: |
           set -euo pipefail
           dst=research/oracle_heat/hm2; lat=research/oracle_heat/latest
+          # An --outside study (a series meta.json with an 'outside' block, or a pack with a research_only block: found from the DATA, so a league-only
+          # push without the tag is caught too) is kept apart: everything goes under hm2/outside/ and latest/ is not touched, so the plain handoff
+          # (hm2_pack.json, hm2_live_meta.json) is never overwritten by a pack whose chance scale included the research-only cells.
+          outside=false
+          for f in data/hm2/*/meta.json data/hm2/*/*/meta.json; do
+            if [ -f "$f" ] && [ "$(jq 'has("outside")' "$f" 2>/dev/null || true)" = true ]; then outside=true; break; fi
+          done
+          if [ "$(jq 'has("research_only")' out/league/hm2_pack.json 2>/dev/null || true)" = true ]; then outside=true; fi
+          if [ "$outside" = true ] || [ "$OUTSIDE" = true ]; then
+            dst=research/oracle_heat/hm2/outside; lat=$dst
+            echo "::warning::an --outside study: its league files go to $dst/ and research/oracle_heat/latest/ is left alone (research only; nothing for the bot)"
+          fi
           mkdir -p "$dst" "$lat"
           find out/league -maxdepth 1 -type f -size -25M ! -name hm2_pack.json ! -name hm2_live_meta.json ! -name '*.log' -exec cp {} "$dst/" \;
           big=$(find out/league -maxdepth 1 -type f -size +24M | paste -sd' ')
@@ -575,7 +637,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${add[@]}"
           if git diff --cached --quiet; then echo "nothing new to commit"; exit 0; fi
-          git commit -q -m "Oracle HM2: league, lessons and hm2_pack.json of run $RUN (written by the oracle-hm2 workflow)"
+          what="league, lessons and hm2_pack.json"; if [ "$dst" != research/oracle_heat/hm2 ]; then what="--outside study (research only, not latest/): league, lessons and pack"; fi
+          git commit -q -m "Oracle HM2: $what of run $RUN (written by the oracle-hm2 workflow)"
           for i in 1 2 3 4; do
             if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
             sleep $((2 ** i))

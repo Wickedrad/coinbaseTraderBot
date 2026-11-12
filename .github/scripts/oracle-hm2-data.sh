@@ -21,6 +21,18 @@
 #       (models/oracle-heat/runs/<RUN>/<COIN>[-twinN]/meta.json) and HM1's stored pairs of the job coin
 #       (models/oracle-heat/runs/<RUN>/league/pairs/pairs_<COIN>.csv.gz). Writes <DIR>/flags.txt (heat_hm2's data flags
 #       without --twin and --main-meta, one per line), <DIR>/found.json and <DIR>/hm1_pairs.txt (the pairs file's path).
+#       With OUTSIDE=true in the environment (an [hm2-outside] study; read only, nothing is written under raw/): also the OR-XD
+#       data contract of the job coin, raw/outside/binance/<ASSET>/ (metrics, premium and mark minutes, the premium stamp test,
+#       funding, the spot and perp aggTrades month files agg_spot/ and agg_perp/ WITHOUT the 2026 months, the bookdepth file,
+#       the manifest) and raw/outside/binance/BTCDOM/idx1h.csv.gz, then 'python -m oracle.heat_outside cut' on both (every row
+#       at or after 2026-01-01 00:00 UTC is dropped before anything reads it), into <DIR>/outside/<ASSET>/ and <DIR>/outside/BTCDOM/.
+#       Writes <DIR>/outside_flags.txt (--outside-dir D [--outside-btcdom F], one per line; empty without OUTSIDE=true). The job stops
+#       when metrics, premium, the stamp test, funding or either aggTrades folder is missing (a half-fed all-against-all study
+#       would cost hours and answer less); a missing bookdepth or BTCDOM file only warns (the families then are left out, as
+#       the contract says bookdepth starts in 2023).
+#   oracle-hm2-data.sh outside <ASSET> <DIR>
+#       Only the OUTSIDE=true part of 'series': the OR-XD contract of <ASSET> and BTCDOM's bars into <DIR>/outside/, cut, and
+#       <DIR>/outside_flags.txt (also the way to test it).
 #   oracle-hm2-data.sh cut <FILE> [LABEL]
 #       The 13-digit check, the cut and the last-stamp assertion on one local file.
 #   oracle-hm2-data.sh stamps <DRIVE NAME>
@@ -71,6 +83,29 @@ cut_file() {
   echo "$l: $(du -h "$f" | cut -f1), $rows rows, header '$(head -1 "$f" | cut -c1-80)', first $first, last $last (kept $LO to $END)"
 }
 
+outside_data() {          # OUTSIDE=true: the OR-XD contract of coin $1 and BTCDOM's hourly bars, cut at 2026-01-01 00:00 UTC (7:00 PM EST on Dec 31)
+  local A=$1 O="$2/outside" f
+  no_doge "$A" "$O"
+  mkdir -p "$O/$A" "$O/BTCDOM"
+  bash "$LAB" get "raw/outside/binance/$A" "$O/$A" --exclude '/agg_spot/2026-*' --exclude '/agg_perp/2026-*' \
+    --include '/metrics.csv.gz' --include '/premium_1m.csv.gz' --include '/premium_stamp.json' --include '/mark_1m.csv.gz' \
+    --include '/funding.csv.gz' --include '/bookdepth_1pct.csv.gz' --include '/manifest.json' \
+    --include '/agg_spot/*.parquet' --include '/agg_perp/*.parquet' || die "no raw/outside/binance/$A on Drive: run the outside-fetch jobs first"
+  for f in metrics.csv.gz premium_1m.csv.gz premium_stamp.json funding.csv.gz; do
+    [ -s "$O/$A/$f" ] || die "raw/outside/binance/$A/$f is not on Drive (required for [hm2-outside])"
+  done
+  for f in agg_spot agg_perp; do
+    [ -n "$(ls "$O/$A/$f" 2>/dev/null | head -1)" ] || die "raw/outside/binance/$A/$f/ has no month file (required for [hm2-outside])"
+  done
+  [ -s "$O/$A/bookdepth_1pct.csv.gz" ] || echo "::warning::no bookdepth_1pct.csv.gz for $A: BOOKP:Imb1 and BOOK:Imb are left out"
+  if bash "$LAB" get "raw/outside/binance/BTCDOM" "$O/BTCDOM" --include '/idx1h.csv.gz' && [ -s "$O/BTCDOM/idx1h.csv.gz" ]; then :; else
+    echo "::warning::no raw/outside/binance/BTCDOM/idx1h.csv.gz: IDX:BTCDOM1h and 4h are left out"; fi
+  (cd python && python3 -m oracle.heat_outside cut --dir "$O/$A" && python3 -m oracle.heat_outside cut --dir "$O/BTCDOM")
+  du -sh "$O" | cut -f1 | sed "s/^/outside data: /"
+  for f in agg_spot agg_perp; do echo "$A/$f: $(ls "$O/$A/$f" | wc -l) month files, first $(ls "$O/$A/$f" | head -1), last $(ls "$O/$A/$f" | tail -1)"; done
+  { echo --outside-dir; echo "$O/$A"; if [ -s "$O/BTCDOM/idx1h.csv.gz" ]; then echo --outside-btcdom; echo "$O/BTCDOM/idx1h.csv.gz"; fi; } > "$2/outside_flags.txt"
+}
+
 series() {
   local A=$1 RUN=$2 DIR=$3 FOUND=${4:-} H C p key d others=() inc=() found='{}'
   coin_ok "$A"
@@ -111,6 +146,8 @@ series() {
   printf '%s\n' --asset "$A" --csv "$H/binance-1m/$A/1m.csv" --others "${others[*]}" --perp "$H/binance-um/$A/1m.csv" \
     --fund "$H/binance-funding/$A/funding.csv" --oi "$H/binance-oi/$A/oi.csv" --cal "$PWD/python/oracle/calendars/macro_calendar_2020_2025.csv" \
     --dom "$PWD/research/btcd_fractal/data" --found "$DIR/found.json" --other-metas "$DIR/metas" > "$DIR/flags.txt"
+  : > "$DIR/outside_flags.txt"
+  if [ "${OUTSIDE:-}" = true ]; then outside_data "$A" "$DIR"; fi
   echo "data flags ($DIR/flags.txt):"; paste -sd' ' "$DIR/flags.txt"
   df -h "$DIR" | tail -1 | awk '{ print "free disk after the fetch: " $4 }'
 }
@@ -131,6 +168,7 @@ stamps() {
 
 case "${1:-}" in
   series) [ $# -ge 4 ] || die "usage: $0 series <ASSET> <RUN> <DIR> [FOUND]"; ms_lo; series "$2" "$3" "$4" "${5:-}" ;;
+  outside) [ $# -ge 3 ] || die "usage: $0 outside <ASSET> <DIR>"; coin_ok "$2"; mkdir -p "$3"; outside_data "$2" "$(cd "$3" && pwd)" ;;
   cut) [ $# -ge 2 ] || die "usage: $0 cut <FILE> [LABEL]"; END=$(heat_end); ms_lo; cut_file "$2" "${3:-$2}" ;;
   stamps) [ $# -ge 2 ] || die "usage: $0 stamps <DRIVE NAME>"; stamps "$2" ;;
   *) sed -n '2,30p' "$0"; exit 1 ;;
