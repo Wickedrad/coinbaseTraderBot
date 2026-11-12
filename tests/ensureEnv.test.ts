@@ -57,7 +57,7 @@ test('ensure-env: a bot.env pinning the old hunt session guard drops the line; H
 
 // The heat lane's switches (Steven, Nov 11): set only from a release that ships the curve reader's installer, only where
 // bot.env has no line of its own. Run a copy of the script from a scratch deploy/ folder, with and without the installer.
-function runFrom(lines: string[], withInstaller: boolean): { env: string[]; out: string } {
+function runFrom(lines: string[], withInstaller: boolean, paperSettings?: string): { env: string[]; out: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ensure-env-heat-'));
   try {
     const home = path.join(root, 'home'), dep = path.join(root, 'release', 'deploy');
@@ -65,6 +65,7 @@ function runFrom(lines: string[], withInstaller: boolean): { env: string[]; out:
     fs.mkdirSync(dep, { recursive: true });
     fs.copyFileSync(script, path.join(dep, 'ensure-env.sh'));
     if (withInstaller) fs.writeFileSync(path.join(dep, 'heat_reader_install.sh'), '#!/usr/bin/env bash\nexit 0\n');
+    if (paperSettings !== undefined) fs.writeFileSync(path.join(dep, 'paper-settings.env'), paperSettings);
     fs.writeFileSync(path.join(home, 'bot', 'bot.env'), lines.join('\n') + '\n', { mode: 0o600 });
     const out = execFileSync('bash', [path.join(dep, 'ensure-env.sh')], { env: { PATH: process.env.PATH ?? '', HOME: home }, encoding: 'utf8' });
     const file = path.join(home, 'bot', 'bot.env');
@@ -104,4 +105,48 @@ test('ensure-env: HEAT_LANE=true keeps an explicit PLAN_RULES value and warns wh
   const off = runFrom(['HEAT_LANE="true"', 'PLAN_RULES=false'], true);
   assert.deepEqual(off.env, ['HEAT_LANE="true"', 'PLAN_RULES=false']);
   assert.match(off.out, /warning: HEAT_LANE=true but PLAN_RULES=false/);
+});
+
+// The paper bot's own settings (deploy/paper-settings.env, first the tennis two paper days, Nov 12): applied only while
+// bot.env's TRADING_MODE is paper or not set, replacing any line of the same name; never under shadow or live.
+const shipped = fs.readFileSync(path.resolve('deploy/paper-settings.env'), 'utf8');
+const shippedLines = shipped.split('\n').filter((l) => /^[A-Z][A-Z0-9_]*=/.test(l));
+
+test('ensure-env: the shipped paper settings are the tennis two paper days, and TENNIS_LIVE is not among them', () => {
+  assert.deepEqual(shippedLines, ['TENNIS_CONF_MOMENTUM_CENTS=0.02', 'TENNIS_CONF_WINDOW_SEC=120', 'TENNIS_SERIES=KXATPMATCH,KXWTAMATCH']);
+  assert.ok(!/^\s*(export\s+)?(TENNIS_LIVE|TRADING_MODE|LIVE_)/m.test(shipped), 'no live switch in the paper settings');
+});
+
+test('ensure-env: in paper the paper settings are written into bot.env, replacing a line of the same name; idempotent', () => {
+  const { env, out } = runFrom(['TRADING_MODE=paper', 'TENNIS_SERIES=KXATPMATCH', 'PORT=3000'], false, shipped);
+  assert.deepEqual(env, ['TRADING_MODE=paper', 'PORT=3000', ...shippedLines]);
+  assert.match(out, /TENNIS_CONF_MOMENTUM_CENTS: \(not set\) -> 0\.02 in .* \(paper settings\)/);
+  assert.match(out, /TENNIS_SERIES: KXATPMATCH -> KXATPMATCH,KXWTAMATCH/);
+  const again = runFrom(env, false, shipped);
+  assert.deepEqual(again.env, env, 'idempotent');
+  assert.doesNotMatch(again.out, /paper settings/);
+});
+
+test('ensure-env: with no TRADING_MODE line (the bot defaults to paper) or a quoted PAPER, the paper settings apply', () => {
+  assert.deepEqual(runFrom(['PORT=3000'], false, 'A_KEY=1\n').env, ['PORT=3000', 'A_KEY=1']);
+  assert.deepEqual(runFrom(['TRADING_MODE="PAPER"'], false, 'A_KEY=1\n').env, ['TRADING_MODE="PAPER"', 'A_KEY=1']);
+  // Spaces, an `export ` in front and duplicates of the name are all replaced by the one line; a longer name is not it.
+  const { env } = runFrom(['export A_KEY=0', '  A_KEY = 2', 'A_KEY_X=5', 'PORT=3000'], false, 'A_KEY=1');
+  assert.deepEqual(env, ['A_KEY_X=5', 'PORT=3000', 'A_KEY=1']);
+});
+
+test('ensure-env: under live or shadow the paper settings are not applied and nothing is removed', () => {
+  for (const mode of ['live', 'shadow', 'export TRADING_MODE=live']) {
+    const line = mode.includes('=') ? mode : `TRADING_MODE=${mode}`;
+    const lines = [line, 'TENNIS_SERIES=KXATPMATCH', 'TENNIS_CONF_WINDOW_SEC=60'];
+    const { env, out } = runFrom(lines, false, shipped);
+    assert.deepEqual(env, lines, mode);
+    assert.match(out, /paper-settings\.env not applied: TRADING_MODE=(live|shadow)/);
+  }
+});
+
+test('ensure-env: a paper settings line that is not a plain KEY=VALUE is skipped with a warning', () => {
+  const { env, out } = runFrom(['TRADING_MODE=paper'], false, '# note\n\nexport B=1\nC = 2\nD="x"\nlower=1\nE=ok\n');
+  assert.deepEqual(env, ['TRADING_MODE=paper', 'E=ok']);
+  assert.equal((out.match(/warning: skipped a line/g) ?? []).length, 4, out);
 });
