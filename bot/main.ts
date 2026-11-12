@@ -696,7 +696,7 @@ async function main(): Promise<void> {
   // hourly. Read-only; the walk opens at most 20,000 objects.
   const memory = new MemoryWatch(() => ({ engine, md, oms, paper, audit, alerter, kalshiCheck, recon, vault, tca, model, autoTrain, training, settlement, accuracyGate, marketCtx, snn, perpTrader, ws, rest }));
   memory.start();
-  const app = createApi({ perpFeeTier, kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, memory, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
+  const app = createApi({ perpFeeTier, kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, paperPool: paper ? () => paper.poolResult() : undefined, memory, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
   const server = app.listen(cfg.port, cfg.host, () => log.info(`operator API on http://${cfg.host}:${cfg.port} (${cfg.dashboardPassword ? 'password required' : 'no login'})`));
 
   md.start();

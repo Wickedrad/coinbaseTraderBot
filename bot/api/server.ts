@@ -39,6 +39,7 @@ import { macro } from '../macro/macroService';
 import { activeGpSignals } from '../gp/gpSignals';
 import { buildNeuralMap } from './neuralMap';
 import type { TrainingSupervisor } from '../training/supervisor';
+import type { PaperPoolResult } from '../paper/paperExchange';
 import type { SettlementSweeper } from '../paper/settlementSweeper';
 import type { RunControl } from '../control';
 import { ConfigError, loadConfig } from '../config';
@@ -68,6 +69,8 @@ export interface ApiDeps {
   training?: TrainingSupervisor;
   /** Paper settlement sweeper (held contracts awaiting Kalshi's result). */
   settlement?: SettlementSweeper;
+  /** The paper account's worth against all the money put into it (paper only; absent in live). */
+  paperPool?: () => PaperPoolResult;
   /** Restart the bot (systemd starts it again). */
   restart?: () => void;
   /** This account's real perps fee rates against the fees the bot charges (bot/perps/feeTier.ts). */
@@ -188,6 +191,8 @@ export function createApi(d: ApiDeps): express.Express {
       recon: d.recon.lastResult ?? null,
       balance: d.engine.balance ?? null,
       bankroll: bankroll ?? null,
+      // Paper: refills add cash, so the balance is not the result; this is (null in live).
+      paperPool: (() => { try { return d.paperPool?.() ?? null; } catch { return null; } })(), // a reporting helper never breaks /status
       recording: { series: d.cfg.strategy.recordSeries, markets: d.md.recordedMarkets().filter((m) => m.recordOnly).length },
       dailyPnl: d.engine.dailyPnl(),
       dailyLossLimit: d.engine.dailyLossLimit(),
