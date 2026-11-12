@@ -333,6 +333,29 @@ produced the trades; `raw.report_sha` = the scoring commit), Drive, the registry
 commit. The plan comes from the run's prep artifact (30 days), else from `runs/<run>/prep/plan.json`, which prep keeps
 on Drive. Both workflows share the `tennis-ta-sweep` concurrency group, so a rescore waits for a running sweep.
 
+### Finish (a shard leg that ran out of time)
+
+A runner job stops at 6 hours. Roland Garros with its qualifying week is one unit, so its shard is one sub-slice, and
+409 configs on one runner's 4 cores did not finish in that time (run 43113809481, shard 4, stopped at 350 min with all
+4 configs parts still running and memory to spare). A re-run of that leg would do the same work on the same 4 cores.
+`.github/workflows/tennis-ta-finish.yml` spreads the leg's configs over several runners instead. It is asked for by a
+commit to `research/tennis-ta/finish-request.json`:
+`{"run": "<sweep run id>", "k": <shard>, "jobs": 8, "perJob": 3, "note": "why"}` (1 to 10 runners, 1 to 4 processes on
+each; every runner runs parts `i*perJob .. i*perJob+perJob-1` of `jobs*perJob`, `--spec-part`). Every part checks out
+the sweep's own commit, so `meta.sha`, the request, the units table and the spec files are the ones the other shards
+were swept with, and the merged file is the one the leg would have written (a merged split is byte-identical to one
+process). A part refuses history whose data version differs from the other shards'. The merge job writes a finish
+record (`runs/<run>/finish/<finish run>/merged-<k>.json`: the files and their sha256), then the leg's planned file(s) to
+`runs/<run>/shards`; it never replaces a file it did not place itself. Then the run's report runs
+(`tennis-ta-report.yml` with `code_ref` = the sweep's commit, so the report and rows are the ones the sweep would have
+written: no `report_sha`, not labelled a rescore). The parts, their telemetry and their logs stay at
+`runs/<run>/finish/<finish run>/`. If that report fails on its own code, the same request committed again finds shard k's
+files on Drive with a matching finish record and runs only the report, with the new commit's scoring code (a rescore;
+`tennis-ta-rescore.yml` refuses a run whose shard leg did not succeed). It refuses a run that is not a completed sweep of
+this branch, one already scored, one whose other shard legs did not all succeed, shard k files on Drive without a
+matching record, and more than 4 processes on a runner (sub-slices x `perJob`). It shares the `tennis-ta-sweep`
+concurrency group.
+
 ### Probe (read-only look at the stored history)
 
 `.github/workflows/tennis-ta-probe.yml` runs `research/tennisTaProbe.ts` over the stored history on a commit to

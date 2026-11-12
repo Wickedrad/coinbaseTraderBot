@@ -26,6 +26,13 @@ on:
       stage:
         type: string
         required: true
+      code_ref:
+        description: The commit whose scoring code runs (default the caller's commit). The finish of a timed-out shard leg
+          (.github/workflows/tennis-ta-finish.yml) passes the sweep's commit, so its report is the one the sweep would have
+          written (no report_sha, not labelled a rescore).
+        type: string
+        required: false
+        default: ''
 
 jobs:
   report:
@@ -39,8 +46,11 @@ jobs:
       SWEEP_SHA: ${{ inputs.sweep_sha }}
       POOL: ${{ inputs.pool }}
       STAGE: ${{ inputs.stage }}
+      CODE_SHA: ${{ inputs.code_ref || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.code_ref || github.sha }}
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
@@ -81,7 +91,7 @@ jobs:
           fi
           jq -e --arg p "$POOL" --arg s "$STAGE" '.pool == $p and (.stage | tostring) == $s' prep/plan.json > /dev/null \
             || { echo "::error::prep/plan.json of run $RUN is pool $(jq -r .pool prep/plan.json) stage $(jq -r .stage prep/plan.json), not pool $POOL stage $STAGE"; exit 1; }
-          echo "plan of run $RUN: stage $STAGE, pool $POOL, $(jq '.plan | length' prep/plan.json) shard(s); swept at $SWEEP_SHA, scored at $GITHUB_SHA"
+          echo "plan of run $RUN: stage $STAGE, pool $POOL, $(jq '.plan | length' prep/plan.json) shard(s); swept at $SWEEP_SHA, scored at $CODE_SHA"
       - name: Registry module (research/registry.py from main, else from the registry thread's branch)
         run: |
           set -euo pipefail
@@ -153,7 +163,7 @@ jobs:
         run: |
           set -euo pipefail
           python research/tennis_ta_report.py --shards shards --pool "$POOL" --run "$RUN" --out report --plan prep/plan.json \
-            --registry-py /tmp/registry.py --sha "$SWEEP_SHA" --report-sha "$GITHUB_SHA" | tail -60
+            --registry-py /tmp/registry.py --sha "$SWEEP_SHA" --report-sha "$CODE_SHA" | tail -60
           cp prep/plan.json report/plan.json
           # The one test's league (Amendment 4 item 7) runs on H-DEV only: a disc run's report writes league.md, league.csv
           # and league.json beside the report, and they go to Drive with it (the next steps copy the report directory).
