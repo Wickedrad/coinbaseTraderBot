@@ -161,6 +161,40 @@ variant, no other constant changes, one value only (no search over shares), and 
 frozen variant (two variants are two looks: say so when reading them). The 1.0% value is round, between the median and the
 p99 of the largest-bucket share.
 
+## Amendment 2 (Nov 12 2026, about 10:30 UTC / 05:30 AM EST; written before any run of the hook below on real data, and before any OR-HM2 number from it)
+An optional hook lets the OR-HM2 pair scan and learner use the five league readings as extra single readings (families `cvdp` and
+`liqmap`): `heat_outside.hm2_outside_readings`, switched on by `python -m oracle.heat_hm2 coin|finish|bench --outside` (workflow tag
+`[hm2-outside]`, which also moves the outside study to its own Drive folder `<run>/hm2-outside/` and its league commit to
+`research/oracle_heat/hm2/outside/`). **Off by default; with the flag off nothing in OR-HM2 changes.** This amendment adds no constant,
+no pass bar, no sealed week and no zone change: the five readings, their frozen constants, the A-quantile zone edges, the 1,000-value /
+30-day skip rule, the stale rule, the two input guards and the contracts-driven model are the ones above, computed by the same functions
+(`xd_values`, `xd_readings`); the unit tests hold the hook equal to the standalone study on synthetic data (codes, edges, values),
+including perp rows with an empty tb cell, duplicate OI stamps and a twin. The hook differs from the standalone run in these ways, and
+they are stated here so that nobody reads an OR-HM2 number as an OR-XD one:
+1. **OI.** The hook uses the OR-XD clock (each stamp ceiled to the 5-minute grid, known at ts + 10 minutes) and reads the RAW OI rows
+   so that `clean_oi` picks among the rows of one stamp as defined above. OR-HM2's own OI readings use `load_extra` (first row of a stamp,
+   known at ts + 5 minutes); that is unchanged and is not used for these five readings.
+2. **Twins.** The twin of a HM2 job is the twin rule above, exactly: twin SPOT o / h / l / c times the REAL perp / spot close ratio, perp
+   taker volume flipped with the spot's signs (the same signs as heat.make_twin and OR-HM2's joint flip on the job coin's grid, so the five
+   readings share every coin flip with the other readings of that twin), OI real contracts, and a twin follows its real coin's skips. OR-HM2's
+   joint-flipped perp (the perp's own path flipped, whose basis random-walks away from the real one) is NOT used for these five readings; on
+   a constant basis the two agree, otherwise they do not. The chance scale of the five readings is therefore the one frozen above.
+3. **No perp-lag variant.** The hook computes lag 0 only. The rule that every hot spot is rerun with `--perp-lag 1` and `--perp-lag 5`
+   before it counts for anything live stands, and is done with the standalone workflow (`[xd-lite]`), not through the hook.
+4. **Refusals stop the job.** An input the hook refuses (no taker-buy column, more than 0.1% of the perp rows with volume and an empty
+   tb, the alignment guard, the OI clock guard, `oi_usd` missing) stops `heat_hm2 --outside` with the reason, as the standalone run stops;
+   a reading skipped by the frozen rules (fewer than 1,000 values or 30 days on A) is skipped and listed in meta.json `outside.skipped`,
+   as above. Perp rows with an empty tb are broken bars, made as `perp_on_grid` makes them (gap, last close carried forward).
+5. **Chance scale of the pair scan.** An OR-HM2 study run with `--outside` has five more readings in its pair list (each paired with every
+   other reading); its p-value histograms, BHY marks and twin maxima include those cells, so its pack marks are not the plain study's.
+   It is therefore kept apart (point 6).
+6. **Research only.** The five readings carry `research_only` in the reading dict and in meta.json. They never enter `hm2_pack.json` or
+   `hm2_live_meta.json` (no pack row, GBM zone row, model entry or near-copy alias names one), the parity never checks them, their feeds
+   (perpetual taker flow, open-interest history) are ones the bot does not have, Part 4's chart pairs never pair them, and the league
+   commit of an `--outside` study goes under `research/oracle_heat/hm2/outside/`, never over `research/oracle_heat/latest/`. **Nothing from
+   an `--outside` run counts for anything live**, and the Binance Vision terms (open gate above) still forbid any live use of the data.
+Times in this file: UTC and EST (UTC-5).
+
 ## Run log
 - 08:57 UTC: push with tags [xd-lite] (all four coins unless an assets tag is given)
 - 09:12 UTC: push with tags [xd-lite] [xd-cluster:0.01] (all four coins unless an assets tag is given)

@@ -19,6 +19,15 @@ a builder that returns these readings (as pair conditions too, so new x new pair
 wrapped to remember the twin seed. Output tables and meta.json keep the OR-HM1 schema (heat.league reads them
 unchanged); meta.json gains: near_duplicates, direction_coupling, constants, model, reading_share, xd_input.
 Never loads a minute or OI row at or after HEAT_END (a file that holds one is refused). NEVER DOGE.
+
+OPTIONAL HOOK FOR OR-HM2 (hm2_outside_readings, off unless heat_hm2 is run with --outside): the same five readings, computed with the
+same frozen constants and functions (xd_values, xd_readings), as extra single readings for the OR-HM2 pair scan and learner. Research
+only: nothing here is live-ready (the bot has no perp taker-flow or OI-history feed), the hook never imports heat_xdata (it is handed
+the Zoner and uses only z.zone / z.skipped), it refuses with a reason instead of guessing (no taker-buy column, no oi_usd, the
+alignment or OI-clock guard, fewer than MIN_A / MIN_A_DAYS), it has its own OI known-time rule (stamp + 10 minutes, not OR-HM2's
+load_extra + 5 minutes), it reads the raw OI rows (clean_oi picks among the rows of one stamp), builds a twin by the pre-registered
+OR-XD twin rule (twin spot x the real perp / spot ratio; NOT HM2's joint-flipped perp) and has no perp-lag variant. See the
+amendment in prereg/OR-XD.md.
 """
 import argparse
 import json
@@ -700,6 +709,241 @@ def direction_coupling(vals: dict, close: np.ndarray, gap: np.ndarray, a_hi: int
 def reading_share(vals: dict, a_hi: int) -> dict:
     return {name: {'all': float(np.isfinite(v).mean()), 'A': float(np.isfinite(v[:a_hi]).mean()) if a_hi else None,
                    'B': float(np.isfinite(v[a_hi:]).mean()) if a_hi < len(v) else None} for name, v in vals.items()}
+
+
+# ------------------------------------------------------------------------------------------- the OR-HM2 hook (research only)
+# An optional adapter that lets the OR-HM2 pair scan and learner use the five league readings as extra single readings
+# (families 'cvdp' and 'liqmap'). Nothing here runs unless heat_hm2 is started with --outside. It imports nothing from
+# heat_xdata (the Zoner it is given is duck-typed on z.zone(...) and z.skipped), so this module works without OR-HM2.
+# The readings are RESEARCH ONLY (reading dict and meta flag 'research_only'): they need a perpetual taker-flow feed and an
+# open-interest feed that the bot does not have, and the Binance Vision terms (OR-XD, open gate) forbid live use of the data.
+class _Skip(Exception):
+    """An input the hook refuses (recorded as a reason; the readings that need it are skipped, the run goes on)."""
+
+
+def _hm2_perp(perp: dict, who: str) -> dict:
+    """HM2's on-grid perp minutes (heat_xdata.on_grid: o, h, l, c, v, tb, gap, first; NaN v / tb before the first row; on a
+    twin already joint-flipped) in the convention of perp_on_grid (zero v / tb before the first row; the gap mask, the
+    forward-filled prices and the zero volume on gap minutes are the same in both). _Skip when a column is missing: no
+    taker-buy column means no CVDP and no long / short split, and nothing is guessed."""
+    if perp is None:
+        raise _Skip(f'{who}: no perp minutes')
+    n = int(perp['n'])
+    for x in ('o', 'h', 'l', 'c', 'v', 'tb', 'gap'):
+        if perp.get(x) is None:
+            raise _Skip(f'{who}: the perp has no {"taker-buy volume (tb)" if x == "tb" else x}')
+        if len(perp[x]) != n:
+            raise _Skip(f'{who}: the perp column {x} is not on the grid')
+    out = {'t0': int(perp['t0']), 'n': n, 'gap': np.array(perp['gap'], bool), 'first': int(perp.get('first', 0)), 'bad_rows': 0,
+           'off_grid': int(perp.get('off_grid', 0))}
+    for x in ('o', 'h', 'l', 'c'):
+        out[x] = np.array(perp[x], float)
+    for x in ('v', 'tb'):
+        a = np.array(perp[x], float)
+        out[x] = np.where(np.isfinite(a), a, 0.0)
+    live = ~out['gap'] & (out['v'] > 0)
+    if live.any() and not (out['tb'][live] != 0).any():
+        raise _Skip(f'{who}: the perp taker-buy volume is zero on every bar with volume (an empty tb column)')
+    return out
+
+
+def _mark_tb_gaps(pp: dict, rows: np.ndarray) -> dict:
+    """Minutes whose perp bar has volume but an EMPTY tb cell are broken bars (heat_outside.perp_on_grid's rule), made exactly as the
+    standalone run makes them: the gap mask is set, v / tb are zeroed, and the bar's own prices are replaced by the last close of
+    a GOOD bar before it (o = h = l = c, chained across consecutive marked rows and over the minutes missing from the file; NaN
+    before the first good bar, where `first` moves up to). LiqModel reads h / l / c on every row, gap rows included, so leaving
+    the marked bar's own prices in place would move its traversal and its buckets."""
+    rows = np.unique(np.asarray(rows, np.int64))
+    if not len(rows):
+        return pp
+    out = dict(pp)
+    good = ~np.asarray(pp['gap'], bool)
+    good[rows] = False
+    c = pd.Series(np.where(good, np.asarray(pp['c'], float), np.nan)).ffill().to_numpy()
+    for x in ('o', 'h', 'l', 'c'):
+        a = c.copy()
+        a[good] = np.asarray(pp[x], float)[good]
+        out[x] = a
+    out['gap'] = ~good
+    out['first'] = int(np.argmax(good)) if good.any() else int(pp['n'])
+    out['v'], out['tb'] = np.array(pp['v'], float), np.array(pp['tb'], float)
+    out['v'][rows] = 0.0
+    out['tb'][rows] = 0.0
+    return out
+
+
+def hm2_outside_readings(m, perp, oi, a_hi, z, log=print, info=None, real=None, perp_frame=None, twin=None, seed=None) -> list:
+    """The five league readings of OR-XD (CVDP:Div15, CVDP:PxDiv60, LIQMAP:DistAbove, LIQMAP:DistBelow, LIQMAP:Skew) as extra
+    single readings for OR-HM2, registered through z.zone (families 'cvdp' and 'liqmap'). Returns the readings registered.
+
+    m: the job coin's minutes (heat.load_minutes; heat.make_twin on a twin). perp: the REAL perp on m's grid as HM2 holds it
+    (heat_xdata.on_grid). On a twin the pre-registered OR-XD twin rule is used, NOT HM2's joint-flipped perp: the perp path is the
+    twin SPOT o / h / l / c times the REAL perp / spot close ratio of the same minute (the real basis is kept; twin_perp) and its
+    taker-buy volume is flipped with the same coin flips as the spot (twin_signs(n, seed), which are heat.make_twin's and HM2's
+    joint-flip signs), so the chance scale of these five readings is the one OR-XD froze. The joint-flipped perp (its basis
+    random-walks) is ignored. oi: the open-interest rows (ts, oi, oi_usd), ALL of them: HM2 passes the raw file rows, because
+    clean_oi must see the duplicates of one stamp to pick the row whose implied price is closest to the perp (a frame that
+    heat_xdata.load_extra has already reduced to the first row of each stamp works but picks differently). A 'known' column is
+    ignored: the OR-XD clock is used (each stamp ceiled to the 5-minute grid, snapshot instant S = ts + 5 minutes, known at
+    ts + 10 minutes; LiqModel). OI stays REAL on a twin and the model is driven by its CONTRACTS. a_hi: split A's end row. z:
+    duck-typed on z.zone(name, x, stale=, family=) and z.skipped (a list; a name skipped here is appended); z.fixed (the stored
+    edges of a live / parity call) when it has one: then no A rows are looked at.
+
+    real: {'m': real minutes, 'perp': real perp on the grid} (HM2's extra_readings argument; required on a twin, where it replaces
+    m and perp as the inputs of the guards and of the OI row pick). The input guards (the perp on the spot's clock, the OI clock)
+    and the OI row pick read the REAL spot and perp, as the standalone run does. seed: the twin's seed (a twin is a call with a
+    seed; ValueError when a twin has none). perp_frame: the load_extra frame of the real perp file (optional): the rows with
+    volume but an empty tb are broken bars (gaps with the last close carried forward, as perp_on_grid makes them) and a file with
+    more than MISSING_TB_MAX of them is refused (on_grid has already turned an empty cell into 0). twin: True / False, else
+    a twin when a seed is given.
+
+    Nothing is guessed and nothing stops the run: an input that is missing or fails a guard skips the readings that need it with a
+    recorded reason (the perp: all five; the OI: the three LIQMAP readings). A name is skipped as heat_outside.zone does (fewer than
+    MIN_A values or values on fewer than MIN_A_DAYS days of A, empty inner zones), a twin follows its real coin's skips, and the
+    constants are the frozen ones. info (out): readings, skipped {name: reason}, refused {input: reason}, edges, model,
+    near_duplicates, direction_coupling, reading_share, constants, xd_input."""
+    want = info is not None                     # the measures below cost a few Spearman correlations: only for a caller that reads them
+    info = info if want else {}
+    za = getattr(z, 'a_hi', None)
+    if za is not None and int(za) != int(a_hi):
+        raise ValueError(f'a_hi {a_hi} differs from the Zoner\'s {za}')
+    fixed = getattr(z, 'fixed', None)
+    real = real or {}
+    real_m = real.get('m') or m
+    if twin is None:
+        twin = seed is not None
+    if twin and (seed is None or real.get('m') is None or real.get('perp') is None):
+        raise ValueError('a twin needs its seed and the real minutes and real perp (the OR-XD twin rule builds the perp path from the twin spot and the real perp)')
+    real_perp = real['perp'] if twin else perp                  # the REAL perp; on a twin the perp argument (HM2's joint-flipped one) is not used
+    refused, reasons, out = {}, {}, []
+    info.update(readings=[], skipped=reasons, refused=refused, twin=bool(twin), constants=CONSTANTS)
+
+    def skip(name, why):
+        reasons[name] = why
+        sk = getattr(z, 'skipped', None)
+        if sk is not None and name not in sk:
+            sk.append(name)
+
+    def done():
+        info['readings'] = [R['name'] for R in out]
+        return out
+
+    # ---- the perp: all five readings need its bars and its taker-buy volume
+    try:
+        pg = _hm2_perp(real_perp, 'real perp' if twin else 'perp')          # the REAL perp: the guards and the OI row pick read it, and a twin is built from it
+        if (pg['t0'], pg['n']) != (int(m['t0']), int(m['n'])):
+            raise _Skip('the perp is not on the job coin\'s grid')
+        tbm = None
+        if perp_frame is not None:
+            if not {'v', 'tb'} <= set(perp_frame.columns):
+                raise _Skip('the perp file has no taker-buy volume column (tb)')
+            nbad = missing_tb(perp_frame)
+            tbm = {'perp_rows': int(len(perp_frame)), 'perp_missing_tb': nbad}
+            if nbad > MISSING_TB_MAX * max(1, len(perp_frame)):
+                raise _Skip(f'perp file: {nbad:,} of {len(perp_frame):,} rows have volume but an empty tb (refused above {100 * MISSING_TB_MAX:.1f}%)')
+            bad = ((pd.to_numeric(perp_frame['v'], errors='coerce') > 0) & pd.to_numeric(perp_frame['tb'], errors='coerce').isna()).to_numpy()
+            off = perp_frame['ts'].to_numpy(np.int64)[bad] - int(m['t0'])
+            off = off[off % MIN == 0]                                      # (an off-grid stamp is no row of the grid)
+            rows = off // MIN
+            rows = rows[(rows >= 0) & (rows < int(m['n']))].astype(np.int64)
+            pg = _mark_tb_gaps(pg, rows)
+        align = check_alignment(real_m, pg)
+        if twin:                                                           # OR-XD twin rule: twin spot x the real perp / spot ratio, tb flipped with the spot's signs
+            pp = twin_perp(pg, real_m, m, twin_signs(int(m['n']), int(seed)))
+        else:
+            pp = pg
+    except _Skip as e:
+        refused['perp'] = str(e)
+    except SystemExit as e:
+        refused['perp'] = f'perp/spot clock guard: {e}'
+    if 'perp' in refused:
+        for name in LEAGUE:
+            skip(name, 'refused: ' + refused['perp'])
+        log(f'  XD hook: refused, no readings ({refused["perp"]})')
+        return done()
+    # ---- the OI: the three LIQMAP readings need it (CVDP does not)
+    oi_df, oi_info, oi_clock, liq_why = None, {}, None, None
+    if oi is None:
+        liq_why = 'no open-interest frame'
+    elif not {'ts', 'oi'} <= set(oi.columns):
+        liq_why = 'the open-interest frame lacks ts / oi'
+    elif 'oi_usd' not in oi.columns:
+        liq_why = 'oi_usd is missing (the clean step, the duplicate pick and the OI clock guard need it)'
+    elif len(oi) and int(np.max(oi['ts'].to_numpy(np.int64))) >= HEAT_END:
+        liq_why = f'an OI row at or after {pd.Timestamp(HEAT_END, unit="ms")}'
+    else:
+        oi_df, oi_info = clean_oi(oi[['ts', 'oi', 'oi_usd']], pg)
+        if not len(oi_df):
+            liq_why = 'no usable OI row (a finite positive oi and oi_usd)'
+        else:
+            try:
+                oi_clock = check_oi_clock(oi_df, pg)
+            except SystemExit as e:
+                liq_why = f'OI clock guard: {e}'
+    if liq_why:
+        refused['oi'] = liq_why
+    model_oi = oi_df if not liq_why else pd.DataFrame({'ts': np.zeros(0, np.int64), 'oi': np.zeros(0), 'oi_usd': np.zeros(0)})
+    # ---- the values, the stale rule, the zones
+    X = xd_values(m, pp, model_oi)
+    gapc = X['gap']
+    vals, stale = {}, {}
+    for name in LEAGUE + REFS:
+        stale[name] = stale_for(name, gapc)
+        x = np.array(X['values'][name], float)
+        x[stale[name]] = np.nan
+        vals[name] = x
+    inherited = set()
+    if twin and fixed is None:                  # a twin follows its real coin: a reading skipped for the real coin is skipped for its twins
+        inherited = set(xd_readings(real_m, pg, model_oi, a_hi)['skipped'])
+    t0 = m.get('t0')
+    for name in LEAGUE:
+        if liq_why and FAMILY[name] == 'LIQMAP':
+            skip(name, 'refused: ' + liq_why)
+            continue
+        if name in inherited:
+            skip(name, 'skipped for the real coin, so for its twins (OR-XD twin rule)')
+            continue
+        if fixed is None:                       # heat_outside.zone's rule: MIN_A values on at least MIN_A_DAYS days of A (z.zone enforces the first)
+            fin = np.isfinite(vals[name][:a_hi])
+            if int(fin.sum()) < MIN_A:
+                skip(name, f'fewer than {MIN_A:,} finite values on A ({int(fin.sum()):,})')
+                continue
+            nd = len(np.unique((int(t0) + np.flatnonzero(fin) * MIN) // DAY))
+            if nd < MIN_A_DAYS:
+                skip(name, f'values on {nd} distinct days of A, fewer than {MIN_A_DAYS}')
+                continue
+        R = z.zone(name, X['values'][name], stale=stale[name], family=FAMILY[name].lower())
+        if R is None:
+            reasons[name] = 'no stored edge' if fixed is not None else 'the inner zones are empty (edges collapse)'
+            continue
+        R['research_only'] = True
+        out.append(R)
+    sk = X['model']
+    log(f'  XD hook: {len(out)} readings {[R["name"] for R in out]}, skipped {reasons}; {sk["snapshots"]:,} OI snapshots ({sk["steps_add"]:,} adds, '
+        f'{sk["steps_scale"]:,} scales); research only')
+    # ---- what was measured (information only)
+    if not want:
+        return done()
+    mdl = dict(X['model'])
+    if oi_df is not None and len(oi_df):
+        mdl.update(oi_rows=int(len(oi_df)), oi_first=str(pd.Timestamp(int(oi_df['ts'].iloc[0]), unit='ms')),
+                   oi_last=str(pd.Timestamp(int(oi_df['ts'].iloc[-1]), unit='ms')))
+    info['model'] = mdl
+    try:
+        info['near_duplicates'] = near_duplicates(vals, a_hi)
+    except ImportError:
+        info['near_duplicates'] = None
+    info['direction_coupling'] = direction_coupling(vals, m['c'], gapc, a_hi)
+    info['reading_share'] = reading_share(vals, a_hi)
+    info['edges'] = {R['name']: list(R['edges']) for R in out}
+    info['xd_input'] = {'perp_first_row': int(pg['first']), 'perp_gaps': int(pg['gap'].sum()), 'spot_gaps': int(np.asarray(m['gap']).sum()),
+                        'either_gap': int(gapc.sum()), 'twin': bool(twin), 'twin_seed': None if seed is None else int(seed),
+                        'twin_rule': 'OR-XD: twin spot x the real perp / spot close ratio, tb flipped with the spot\'s signs' if twin else None,
+                        'perp_lag_min': 0, 'perp_spot_alignment': align, 'oi_clock': oi_clock,
+                        'oi_frame_rows': None if oi is None else int(len(oi)), 'oi_known_rule': 'ts ceiled to 5 minutes + 10 minutes (the frame\'s own known column is not used)',
+                        'edges_from': 'the stored edges of the Zoner' if fixed is not None else f'quantiles {list(heat.ZONE_Q)} of the {a_hi:,} rows of split A',
+                        **({} if tbm is None else tbm), **oi_info}
+    return done()
 
 
 # -------------------------------------------------------------------------------------------------------------- runner
