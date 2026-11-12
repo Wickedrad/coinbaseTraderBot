@@ -232,9 +232,13 @@ test('CPU meter: per-minute summary with thread breakdown and a 10-minute histor
     assert.ok(s.processCores >= 0);
     assert.ok(s.mainBusy >= 0 && s.mainBusy <= 1);
     assert.ok(s.rssMb > 0);
+    // The heap and the memory outside it, with the resident set: which one climbs.
+    assert.ok(s.heapUsedMb > 0 && s.externalMb >= 0);
     assert.equal(s.evaluatedShare, 0.5);
     if (process.platform === 'linux') assert.ok(s.threads && 'main' in s.threads, 'thread breakdown on Linux');
     assert.equal(m.history().length, 1);
+    assert.equal(m.history()[0].heapMb, s.heapUsedMb);
+    assert.equal(m.history()[0].extMb, s.externalMb);
   } finally {
     Date.now = realNow;
   }

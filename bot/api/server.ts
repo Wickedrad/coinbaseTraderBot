@@ -72,6 +72,8 @@ export interface ApiDeps {
   restart?: () => void;
   /** This account's real perps fee rates against the fees the bot charges (bot/perps/feeTier.ts). */
   perpFeeTier?: { status(): unknown };
+  /** Memory reading (bot/util/memoryWatch.ts): heap, heap spaces and the largest collections, at start, hourly and now. */
+  memory?: { status(): unknown };
 }
 
 export function tokenMatches(expected: string, provided: string | undefined): boolean {
@@ -258,6 +260,9 @@ export function createApi(d: ApiDeps): express.Express {
   api.get('/kalshi-check', (_req, res) => res.json(d.kalshiCheck?.report() ?? null));
   // CPU, disk writes and memory: the last minute, and 10-minute buckets over 24 h (bot/engine.ts CpuMeter).
   api.get('/cpu', (_req, res) => res.json({ now: d.engine.cpu.status(), history: d.engine.cpu.history() }));
+  // Where the memory goes: the V8 heap and its spaces, memory outside it, and the largest collections the bot holds,
+  // at the first reading after start, an hour ago and now (read-only; a fresh walk at most once a minute).
+  api.get('/memory', (_req, res) => res.json(d.memory?.status() ?? null));
   // Module ledger: one row per adaptive part (on / shadow / off / benched, validated, its score, what blocks it).
   api.get('/market-state', (_req, res) => res.json({ at: Date.now(), coins: d.engine.marketStates() }));
   api.get('/modules', (_req, res) => res.json({ at: Date.now(), mode: d.cfg.mode, rows: d.engine.moduleLedger() }));

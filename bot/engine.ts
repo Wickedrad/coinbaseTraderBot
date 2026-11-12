@@ -130,8 +130,8 @@ export class CpuMeter {
   private sys0 = readProcStat();
   private io0 = readProcWriteBytes();
   private thr0 = readThreads();
-  private last: { sections: Record<string, number>; processCores: number; threads: Record<string, number> | null; mainBusy: number; stealPct: number | null; iowaitPct: number | null; writeMBps: number | null; rssMb: number; evaluatedShare: number | null; windowSec: number } | null = null;
-  private readonly hist: Array<{ ts: number; n: number; cores: number; mainBusy: number; steal: number; iowait: number; writeMBps: number; rssMb: number }> = [];
+  private last: { sections: Record<string, number>; processCores: number; threads: Record<string, number> | null; mainBusy: number; stealPct: number | null; iowaitPct: number | null; writeMBps: number | null; rssMb: number; heapUsedMb: number; externalMb: number; evaluatedShare: number | null; windowSec: number } | null = null;
+  private readonly hist: Array<{ ts: number; n: number; cores: number; mainBusy: number; steal: number; iowait: number; writeMBps: number; rssMb: number; heapMb: number; extMb: number }> = [];
   note(section: string, start: bigint, evaluated?: number, total?: number): void {
     this.win[section] = (this.win[section] ?? 0) + Number(process.hrtime.bigint() - start) / 1e6;
     if (evaluated !== undefined && total) this.evalShare.push(evaluated / total);
@@ -161,22 +161,24 @@ export class CpuMeter {
       mainBusy: +elu.utilization.toFixed(3),
       stealPct: pct(d?.steal), iowaitPct: pct(d?.iowait),
       writeMBps: io !== undefined && this.io0 !== undefined ? +((io - this.io0) / 1e6 / sec).toFixed(3) : null,
-      rssMb: Math.round(process.memoryUsage.rss() / 1e6),
+      // The V8 heap (JS objects) and memory outside it that JS objects hold (Buffers, array buffers): with the resident
+      // set, a climb shows whether objects are kept (heap), buffers are (external), or neither (the allocator).
+      ...((m) => ({ rssMb: Math.round(m.rss / 1e6), heapUsedMb: Math.round(m.heapUsed / 1e6), externalMb: Math.round(m.external / 1e6) }))(process.memoryUsage()),
       evaluatedShare: this.evalShare.length ? +(this.evalShare.reduce((a, b) => a + b, 0) / this.evalShare.length).toFixed(3) : null,
       windowSec: +sec.toFixed(0),
     };
     // 10-minute buckets, 24 h.
     const L = this.last, b = Math.floor(now / 600_000) * 600_000;
     let h = this.hist[this.hist.length - 1];
-    if (!h || h.ts !== b) { h = { ts: b, n: 0, cores: 0, mainBusy: 0, steal: 0, iowait: 0, writeMBps: 0, rssMb: 0 }; this.hist.push(h); if (this.hist.length > 144) this.hist.shift(); }
-    const add = (k: 'cores' | 'mainBusy' | 'steal' | 'iowait' | 'writeMBps' | 'rssMb', v: number | null) => { h![k] = (h![k] * h!.n + (v ?? 0)) / (h!.n + 1); };
-    add('cores', L.processCores); add('mainBusy', L.mainBusy); add('steal', L.stealPct); add('iowait', L.iowaitPct); add('writeMBps', L.writeMBps); add('rssMb', L.rssMb);
+    if (!h || h.ts !== b) { h = { ts: b, n: 0, cores: 0, mainBusy: 0, steal: 0, iowait: 0, writeMBps: 0, rssMb: 0, heapMb: 0, extMb: 0 }; this.hist.push(h); if (this.hist.length > 144) this.hist.shift(); }
+    const add = (k: 'cores' | 'mainBusy' | 'steal' | 'iowait' | 'writeMBps' | 'rssMb' | 'heapMb' | 'extMb', v: number | null) => { h![k] = (h![k] * h!.n + (v ?? 0)) / (h!.n + 1); };
+    add('cores', L.processCores); add('mainBusy', L.mainBusy); add('steal', L.stealPct); add('iowait', L.iowaitPct); add('writeMBps', L.writeMBps); add('rssMb', L.rssMb); add('heapMb', L.heapUsedMb); add('extMb', L.externalMb);
     h.n++;
     this.win = {}; this.evalShare = []; this.since = now; this.cpu0 = process.cpuUsage(); this.elu0 = performance.eventLoopUtilization(); this.sys0 = sys; this.io0 = io; this.thr0 = thr;
   }
   status() { return this.last ? { ...this.last, stateWrites: stateWriteStats().slice(0, 6) } : null; }
   /** 10-minute buckets over the last 24 h (oldest first). */
-  history() { return this.hist.map((h) => ({ ts: h.ts, cores: +h.cores.toFixed(3), mainBusy: +h.mainBusy.toFixed(3), stealPct: +h.steal.toFixed(1), iowaitPct: +h.iowait.toFixed(1), writeMBps: +h.writeMBps.toFixed(3), rssMb: Math.round(h.rssMb) })); }
+  history() { return this.hist.map((h) => ({ ts: h.ts, cores: +h.cores.toFixed(3), mainBusy: +h.mainBusy.toFixed(3), stealPct: +h.steal.toFixed(1), iowaitPct: +h.iowait.toFixed(1), writeMBps: +h.writeMBps.toFixed(3), rssMb: Math.round(h.rssMb), heapMb: Math.round(h.heapMb), extMb: Math.round(h.extMb) })); }
 }
 
 /** Host-wide CPU time counters (Linux /proc/stat, in clock ticks); undefined elsewhere. */
