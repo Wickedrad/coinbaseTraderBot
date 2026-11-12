@@ -74,7 +74,9 @@ export interface SnnReplayOpts {
    *  log. A training pass over weeks of history (research/trainSnn.ts) would otherwise hold every scored contract. */
   lean?: boolean;
   calendar?: MacroEvent[];
-  onProgress?: (ts: number) => void;
+  /** Called once a scoring minute (T % scoreEverySec), after the network stepped to T: the time and the network
+   *  (research/snnHealthCheck.ts reads the direction heads' state; existing callers ignore the second argument). */
+  onProgress?: (ts: number, net: SnnNetwork) => void;
   /** Write the SNN's per-minute outputs (direction calls, p_snn per contract) as recording-format
    *  'snn' events to <dir>/snnfill-YYYY-MM-DD.jsonl, for minutes without live 'snn' logs. These are
    *  prequential (each output precedes every label that could have trained on it). */
@@ -398,7 +400,7 @@ export async function replaySnn(dir: string, o: SnnReplayOpts): Promise<SnnRepla
         for (const [t, v] of mids) rankRefs.set(t, [...(rankRefs.get(t) ?? []), v]);
       }
     }
-    o.onProgress?.(T);
+    o.onProgress?.(T, net);
   }
   // Remaining markets that closed inside the recording.
   for (const m of [...st.markets.values()]) if (!m.recordOnly && m.kind !== 'match' && st.now >= m.closeTime + 60_000) settleMarket(m);

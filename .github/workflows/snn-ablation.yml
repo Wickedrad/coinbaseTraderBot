@@ -90,8 +90,10 @@ permissions:
   actions: write # history training continues itself in a new run when a range outlasts the job time limit
 
 # Server-reading runs queue one at a time; all-Drive history training (hist_from=all) runs in parallel (Nov 5 limits).
+# A health check (--health in hist_args) never reads the server: its own group, so a pending one and a pending history
+# run never cancel each other.
 concurrency:
-  group: snn-ablation-${{ inputs.hist_from == 'all' && format('drive-{0}', github.run_id) || (inputs.dev_range != '' && format('dev-{0}', github.run_id)) || (inputs.hist_from != '' && 'history' || 'ablate') }}
+  group: snn-ablation-${{ inputs.hist_from == 'all' && format('drive-{0}', github.run_id) || (contains(inputs.hist_args, '--health') && format('health-{0}', github.run_id)) || (inputs.dev_range != '' && format('dev-{0}', github.run_id)) || (inputs.hist_from != '' && 'history' || 'ablate') }}
   cancel-in-progress: false
 
 # Steven, Nov 5: no DOGE for now (training, replays and scoring).
@@ -536,7 +538,7 @@ jobs:
         run: |
           [[ "$HFROM" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "$HTO" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "hist_from / hist_to must be YYYY-MM-DD (or hist_from=all)"; exit 1; }
       - name: SSH to the server
-        if: "!contains(inputs.hist_args, 'synthetic') && inputs.hist_from != 'all'"
+        if: "!contains(inputs.hist_args, 'synthetic') && inputs.hist_from != 'all' && !contains(inputs.hist_args, '--health')"
         env:
           SSH_KEY: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           HOST: ${{ secrets.LIGHTSAIL_HOST }}
@@ -548,7 +550,7 @@ jobs:
           printf 'Host bot\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_bot\n  StrictHostKeyChecking accept-new\n  ServerAliveInterval 30\n' "$HOST" "$USER_NAME" "$PORT" > ~/.ssh/config
           ssh bot true && echo "connected"
       - name: Kalshi's day files for the range (Drive raw/kalshi-history first, the server only for the rest, then kept on Drive)
-        if: "!contains(inputs.hist_args, 'synthetic')"
+        if: "!contains(inputs.hist_args, 'synthetic') && !contains(inputs.hist_args, '--health')"
         run: |
           set -euo pipefail
           K="$RUNNER_TEMP/hist/history/kalshi"; mkdir -p "$K"
@@ -578,6 +580,7 @@ jobs:
           github-token: ${{ github.token }}
       - name: Train
         id: train
+        if: "!contains(inputs.hist_args, '--health')"
         timeout-minutes: 330
         run: |
           set -euo pipefail
@@ -588,6 +591,49 @@ jobs:
           REC=""; [ -n "${RFROM:-}" ] && REC="--rec-from $RFROM --rec-to $RTO --rec-dir $RUNNER_TEMP/rec --rec-fetch deploy/drive_lab.sh"
           node --import tsx research/snnHistoryTrain.ts --from "$HFROM" --to "$HTO" --history "$RUNNER_TEMP/hist/history" --work "$RUNNER_TEMP/hist" --minutes 260 --checkpoint-out research/out/snn-history-checkpoint.json $PREV $REC $EXTRA 2>&1 | grep --line-buffered -E '^\[hist-train\]|failed|FATAL|heap' | stdbuf -oL cut -c1-260 | tee research/out/hist-train.log
           if grep -q 'time is up' research/out/hist-train.log; then echo "more=true" >> "$GITHUB_OUTPUT"; else echo "more=false" >> "$GITHUB_OUTPUT"; fi
+      # SNN health check (hist_args --health true; research/snnHealthCheck.ts): can the direction head learn coin direction
+      # without the mid anchor? Binance spot only: no Kalshi files, no server, no checkpoint artifact. One shared 4-coin
+      # replay (built serially), then one process per coin side by side. Public output: the verdict line and counts only;
+      # the full report, the per-coin logs and rows go to Drive derived/snn-health/<run> (never a public artifact).
+      - name: SNN health check (direction heads on Binance spot; no Kalshi, no server)
+        if: contains(inputs.hist_args, '--health')
+        timeout-minutes: 300
+        run: |
+          # The default shell runs with -e: off until the report, so a crashed coin process still gets a verdict.
+          set -uo pipefail; set +e
+          T0=$SECONDS
+          # Health mode takes exactly "--health true" (the gates above match any "--health"), and an explicit range
+          # (hist_from=all would replay every Kalshi day, not the pre-registered 2026-04-18..2026-07-31).
+          [[ "$HARGS" =~ ^[[:space:]]*--health[[:space:]]+true[[:space:]]*$ ]] || { echo "health mode takes hist_args \"--health true\" and nothing else"; exit 1; }
+          [ "${HMODE:-}" != all ] || { echo "the health check needs an explicit hist_from / hist_to"; exit 1; }
+          [ "$HFROM" = 2026-04-18 ] && [ "$HTO" = 2026-07-31 ] || echo "note: $HFROM..$HTO is not the pre-registered 2026-04-18..2026-07-31"
+          export TRADING_MODE=paper AUTO_TRAIN=off
+          H="$RUNNER_TEMP/hist/history"; R="$RUNNER_TEMP/hc-replay"; O=research/out/health; mkdir -p "$O"
+          NODE_OPTIONS="--max-old-space-size=4096" node --import tsx research/snnHealthCheck.ts fetch --from "$HFROM" --to "$HTO" --history "$H" --replay "$R" --assets BTC,ETH,SOL,XRP > "$O/fetch.log" 2>&1 || { echo "health fetch failed"; tail -c 2000 "$O/fetch.log" | grep -E 'Error|failed' | cut -c1-200; exit 1; }
+          grep -h '^\[health\] fetch:' "$O/fetch.log" | cut -c1-260
+          # The coin budget counts from the step's start (fetch included), leaving room under the 300-minute step limit
+          # for the chunk that runs past the deadline (it is checked before a chunk) and the report.
+          BUDGET=$(( 235 - (SECONDS - T0) / 60 )); [ "$BUDGET" -ge 10 ] || BUDGET=10
+          echo "coin budget: $BUDGET min"
+          pids=()
+          for A in BTC ETH SOL XRP; do
+            NODE_OPTIONS="--max-old-space-size=2560" node --import tsx research/snnHealthCheck.ts run --assets "$A" --from "$HFROM" --to "$HTO" --replay "$R" --out "$O/$A" --minutes "$BUDGET" > "$O/$A.log" 2>&1 & pids+=($!)
+          done
+          fails=0
+          for p in "${pids[@]}"; do wait "$p" || fails=$((fails + 1)); done
+          # Counts only (the per-chunk statistics stay in the Drive logs).
+          { grep -h '^\[health\] [A-Z]* done:' "$O"/*.log || true; } | cut -c1-200
+          echo "health processes failed: $fails"
+          set -e
+          NODE_OPTIONS="--max-old-space-size=6144" node --import tsx research/snnHealthCheck.ts report --in "$O" --out research/out/snn-health.md --json "$O/snn-health.json" --public "$O/public-summary.md" --decide-from 2026-06-01 --decide-to 2026-07-31 2> "$O/report.err" | grep '^\[health\]' | cut -c1-260
+          cat "$O/public-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          # A coin process that crashed leaves its columns uncovered (the verdict reads INCONCLUSIVE); the step goes red too.
+          [ "$fails" -eq 0 ]
+      - name: Health report to Drive (never a public artifact)
+        if: always() && contains(inputs.hist_args, '--health')
+        run: |
+          [ -d research/out/health ] || exit 0
+          bash deploy/drive_lab.sh put "derived/snn-health/${{ github.run_id }}" research/out --include 'snn-health*' --include 'health/**'
       - name: Keep the raw spot history and the simulated contracts on Drive
         if: always()
         run: |
@@ -603,7 +649,7 @@ jobs:
           fi
           true
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && !contains(inputs.hist_args, '--health')
         with:
           name: snn-history-checkpoint
           path: research/out/snn-history-checkpoint.json
