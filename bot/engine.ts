@@ -3327,7 +3327,9 @@ export class Engine {
     for (const t of sync.opened) audit.write('heat', { event: 'opened', ticker: t });
     if (sync.closed.length) {
       const b = h.lane.status(now);
-      for (const c of sync.closed) audit.write('heat', { event: 'closed', ...c, trips: b.trips, wins: b.wins, pnl: b.pnl });
+      // pnl is the round trip's own result; bookPnl the lane book's running total after it (it was written over pnl until
+      // Nov 12, so an older record's pnl is the total).
+      for (const c of sync.closed) audit.write('heat', { event: 'closed', ...c, trips: b.trips, wins: b.wins, bookPnl: b.pnl });
     }
     const snap = h.source.read(now);
     this.heatFileCheck(h, snap, now);

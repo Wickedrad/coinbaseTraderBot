@@ -47,8 +47,8 @@ export interface WalkOptions {
   /** Collections smaller than this are not listed (default 50). Strings are listed from 100,000 characters and
    *  buffers from 100 KB. */
   minSize?: number;
-  /** A plain object with at least this many keys is a record used as a map (default 50): it is counted and only a
-   *  few of its values are opened, like a Map's. */
+  /** A plain object (not a class instance) with at least this many keys is a record used as a map (default 50): it is
+   *  counted and only a few of its values are opened, like a Map's. */
   recordKeys?: number;
 }
 
@@ -137,7 +137,10 @@ export function walkCollections(roots: Record<string, unknown>, o: WalkOptions =
       }
       if (v instanceof WeakMap || v instanceof WeakSet || v instanceof Promise || v instanceof WeakRef) continue;
       const keys = Object.keys(v);
-      const asRecord = keys.length >= recordKeys;
+      // Only a plain object is a record used as a map; a class instance with many fields (the engine) is opened field
+      // by field.
+      const proto = Object.getPrototypeOf(v);
+      const asRecord = keys.length >= recordKeys && (proto === Object.prototype || proto === null);
       if (asRecord) note(path, 'record', keys.length);
       for (const k of asRecord ? samplesOf(keys, keys.length) : keys) {
         // Data properties only: a getter could do work or change something.

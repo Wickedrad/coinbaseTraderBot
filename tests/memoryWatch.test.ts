@@ -37,6 +37,12 @@ test('walk: maps, sets, arrays and records by path, entries sampled, small ones 
   assert.equal(w.capped, false);
 });
 
+test('walk: a class instance with many fields is opened field by field, not sampled as a record', () => {
+  class Big { [k: string]: unknown; constructor() { for (let i = 0; i < 80; i++) this[`f${i}`] = i === 41 ? new Map(Array.from({ length: 90 }, (_, j) => [j, j])) : i; } }
+  const w = walkCollections({ engine: new Big() });
+  assert.deepEqual(w.sizes.map((s) => [s.path, s.kind, s.n]), [['engine.f41', 'map', 90]]);
+});
+
 test('walk: long strings and large buffers are listed; cycles end; the shortest path names a shared object', () => {
   const shared = { rows: Array.from({ length: 55 }, () => 1) };
   const a: Record<string, unknown> = { text: 'x'.repeat(150_000), buf: Buffer.alloc(200_000), shared };

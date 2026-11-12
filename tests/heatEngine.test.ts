@@ -282,6 +282,9 @@ test('the round trip closes and counts: settled in profit, a trip and a win on t
   assert.ok(st.pnl > 0);
   const closed = rows(g.audit, 'heat').find((r) => r.event === 'closed')!;
   assert.deepEqual([closed.ticker, closed.settled, closed.trips, closed.wins], [g.market.ticker, true, 1, 1]);
+  // The trip's own result under pnl, the book's running total under bookPnl (not written over the trip's).
+  assert.ok(Math.abs(closed.pnl - settled.realized!) < 1e-6, `trip pnl ${closed.pnl}`);
+  assert.ok(Math.abs(closed.bookPnl - st.pnl) < 1e-6, `book pnl ${closed.bookPnl}`);
   assert.ok(rows(g.audit, 'heat').some((r) => r.event === 'opened' && r.ticker === g.market.ticker));
   assert.equal(g.lane.holds(g.market.ticker), false);
 });
