@@ -1,4 +1,5 @@
 // Setup detectors, trade management and the lane book (bot/setups).
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Candle } from '../bot/ta/indicators';

@@ -1,3 +1,4 @@
+import './tmpScope'; // one temp folder per run, removed at exit
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { judge, runConditioning, runTrial, STAGES, TIERS, WINDOW_DAYS, DEFAULT_RULES, type Stage } from '../research/conditioning';

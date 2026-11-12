@@ -6,6 +6,7 @@
 // resumes it. A listing cut short selects only events newer than where it stopped. python/allpairs/data.py load_kalshi
 // reads the files (when python3 + numpy are installed). DOGE and XRP are refused, and so is anything at or after
 // 2026-11-05.
+import './tmpScope'; // one temp folder per run, removed at exit
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';

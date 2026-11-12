@@ -2,6 +2,7 @@
 // column 10, donor enrichment, aggregation), the live Coinbase trade feed (buckets only reported when
 // the feed covered the whole bar), the candle store, the imbalance features; perps funding delta and
 // open-interest acceleration.
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
