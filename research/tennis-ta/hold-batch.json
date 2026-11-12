@@ -1,0 +1,45 @@
+{
+  "league_run": "43113809481",
+  "batch": [
+    {
+      "id": "A|s1|m0.02|f0.2|o0.01|w120",
+      "leg": "underdog"
+    },
+    {
+      "id": "A|s1|m0.02|f0.2|o0.02|w120",
+      "leg": "underdog"
+    },
+    {
+      "id": "A|s1|m0.02|f0.4|o0.005|w120",
+      "leg": "underdog"
+    },
+    {
+      "id": "A|s1|m0.01|f0.05|o0.005|w60",
+      "leg": "underdog"
+    },
+    {
+      "id": "A|s1|m0.01|f0.2|o0.02|w120",
+      "leg": "underdog"
+    },
+    {
+      "id": "A|s1|m0.005|f0.2|o0.005|w60",
+      "leg": "underdog"
+    },
+    {
+      "id": "A|s1|m0.01|f0.4|o0.02|w300",
+      "leg": "underdog"
+    },
+    {
+      "id": "A|s1|m0.01|f0.05|o0.01|w60",
+      "leg": "underdog"
+    },
+    {
+      "id": "A|s1|m0.01|f0.4|o0.01|w120",
+      "leg": "underdog"
+    },
+    {
+      "id": "A|s1|m0.005|f0.4|o0.02|w60",
+      "leg": "underdog"
+    }
+  ]
+}
