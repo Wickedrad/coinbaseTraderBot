@@ -1,6 +1,7 @@
 {
-  "run": "43240602157",
+  "run": "43245923481",
   "anchor": "A|s2|hs1prod|F1",
   "detail": "all",
-  "note": "Random baseline (calendar 10t/10aa): four exit settings, maker and taker entry, F1 and coin placebo. Information only."
+  "tape": "A|s2|hs1prod|F1,A|s2|hs1prod-lbm|F1,A|s2|fp0-lbm|F1,A|s2|mkprod-lbm|F1",
+  "note": "Match-clock fix candidate (calendar 10z/10ab): with and without TENNIS_LIVE_BY_MOVE. Information only."
 }
