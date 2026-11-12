@@ -186,6 +186,11 @@ export interface StrategyConfig {
   /** Smallest maker quote, in contracts, when sizing wants a smaller one (within the per-order caps and the risk room
    *  left): Kalshi rounds each order's fee up to the cent, so a small position pays more a contract to sell. 0 = off. */
   minQuoteContracts: number;
+  /** STRATEGY_QUOTE_SIDES (E16, Nov 12 2026): which sides the old model's maker block rests an entry on. 'signal' (default): flat,
+   *  only the side the model favors (q at or above 0.5 = YES, below = NO); holding, no entry quote on either side (the
+   *  opposite quote added the whole position, so a fill flipped it, and a same-side one kept adding). Resting exits are
+   *  separate and stay. 'both' = the old two-sided quoting. */
+  quoteSides: 'both' | 'signal';
   /** Paper only, with paperOrderFrac 0: each crypto entry and maker quote buys about this many dollars of contracts
    *  once sizing wants the trade, in place of the tier, break-even, optimal-f and portfolio-Kelly sizing (the owner's
    *  choice on Oct 23: profit sales of $1 to $3 instead of cents). Both 0 = paper sizes like live. Live never uses it. */
@@ -1400,6 +1405,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     makerBuffer: num(env, 'STRATEGY_MAKER_BUFFER', relaxed ? 0.02 : 0, 0, 0.1),
     makerBufferRange: band(env, 'STRATEGY_MAKER_BUFFER_RANGE', relaxed ? [0.015, 0.03] : [0, 0]),
     minQuoteContracts: num(env, 'STRATEGY_MIN_QUOTE_CONTRACTS', 3, 0, 100),
+    quoteSides: oneOf(env, 'STRATEGY_QUOTE_SIDES', 'signal', ['both', 'signal'] as const),
     paperOrderUsd: num(env, 'PAPER_ORDER_USD', 0, 0, 1000),
     paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0, 0, 1),
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),

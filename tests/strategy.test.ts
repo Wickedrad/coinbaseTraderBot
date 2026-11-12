@@ -9,7 +9,7 @@ import { ProfitPeaks } from '../bot/strategy/profitPeaks';
 const base = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_CADENCE: 'continuous' }).strategy;
 const cfg: StrategyConfig = {
   ...base,
-  style: 'maker', series: ['KXBTC15M'], kellyFraction: 0.25, minEdge: 0.02, takerBuffer: 0.01,
+  style: 'maker', quoteSides: 'both', series: ['KXBTC15M'], kellyFraction: 0.25, minEdge: 0.02, takerBuffer: 0.01,
   inventorySkewPerContract: 0.002, requoteThreshold: 0.01, fastMoveSigmas: 3, fastMoveWindowSec: 5, orderTtlSec: 60,
   exitPolicy: 'fair_value', huntTargetMargin: 0.02, huntMinConfluence: 2, ratchetMinFillRatio: 1, ratchetMinWallAgeSec: 3, ratchetSlippageTicks: 1,
   sessionRisk: {}, huntSessionGuard: true, huntTransitionBufferMin: 10, volSeasonality: false, volProfilePath: 'params/vol_profile.json',
@@ -520,4 +520,17 @@ test('share window: the last share of the window is measured on at most the last
   // The default cap is one hour, and the env key moves it.
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.shareWindowMaxSec, 3600);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_SHARE_WINDOW_MAX_SEC: '1800' }).strategy.shareWindowMaxSec, 1800);
+});
+
+test('E16 quote sides: signal rests an entry on the model\'s side only, and none while a position is held; both keeps the old two-sided quoting', () => {
+  const sig: StrategyConfig = { ...cfg, quoteSides: 'signal' };
+  const sides = (v: MarketView, c: StrategyConfig) => decide(v, c).place.filter((p) => p.purpose === 'quote').map((p) => p.side).sort();
+  assert.equal(base.quoteSides, 'signal', 'the default');
+  assert.deepEqual(sides(view({ pYes: 0.7 }), cfg), ['ask', 'bid'], 'both: two-sided');
+  assert.deepEqual(sides(view({ pYes: 0.7 }), sig), ['bid'], 'a YES view quotes the YES bid only');
+  assert.deepEqual(sides(view({ pYes: 0.3 }), sig), ['ask'], 'a NO view quotes the NO bid (the YES ask) only');
+  assert.deepEqual(sides(view({ pYes: 0.7, position: 10 }), sig), [], 'holding: no entry quote on either side');
+  assert.deepEqual(sides(view({ pYes: 0.7, position: -10 }), sig), []);
+  assert.deepEqual(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_QUOTE_SIDES: 'both' }).strategy.quoteSides, 'both');
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_QUOTE_SIDES: 'one' }));
 });
