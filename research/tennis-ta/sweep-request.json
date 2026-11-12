@@ -2,5 +2,5 @@
   "stage": "2",
   "pool": "disc",
   "shards": 8,
-  "note": "Fill-model check (calendar line 10p): six exit settings of run 43173887974 with F1 and F0 fills on H-DEV; information only."
+  "note": "Taker-entry check (calendar line 10r): the six exit settings of run 43173887974 with HARNESS_TAKER_ENTRY (each entry a taker buy at the ask, as the one test took its instance), fill F1 and F0. Information only, H-DEV."
 }

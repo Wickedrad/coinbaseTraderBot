@@ -12,7 +12,7 @@ import { breakEvenExit, positionNetAtBid } from '../bot/strategy/fairValueStrate
 import { MatchTracker, PROGRESS_LATCH_MS, type MatchMarket, type TennisPlan } from '../bot/tennis/tennisStrategy';
 import { buildHistoryReplay } from '../research/history/historyReplay';
 import type { KalshiCandle } from '../research/history/kalshiHistory';
-import { ConfigSim, FEES, feedTimeline, hash32, PLACEBO_RESERVOIR, PLACEBO_SEED, PlaceboReservoir, phaseLabel, RESYNC_WINDOW_MS, rng, runSweep, sameOrder, sigBits, SOCKET_BEAT_KIND, syncKeeps, syncSkips, type GridWithHigh, type SimSpec } from '../research/tennisTaSim';
+import { ConfigSim, FEES, feedTimeline, hash32, PLACEBO_RESERVOIR, PLACEBO_SEED, PlaceboReservoir, phaseLabel, RESYNC_WINDOW_MS, rng, runSweep, sameOrder, sigBits, SOCKET_BEAT_KIND, syncKeeps, syncSkips, takerEntryPlan, type GridWithHigh, type SimSpec } from '../research/tennisTaSim';
 import type { MatchGrid } from '../research/tennisTaTypes';
 import { contractsFor, drawTwins, levelFor, minuteCandles, SETTLE_FRAC, WINDOW_FEES, windowOutcome, type MinuteCandles } from '../research/tennisTaWindow';
 import { comeback, writeRecordingLines, writeScriptedHistory, writeTaHistory, writeTaRecording, type RecordedFeed } from './tennisTaFixture';
@@ -1100,4 +1100,38 @@ test('order sync matches production: an IOC exit at a resting ask\'s price cance
   assert.ok(syncKeeps([], { ...ask, postOnly: false }));
   // An unplanned post-only order is cancelled.
   assert.ok(!syncKeeps([], ask));
+});
+
+test('HARNESS_TAKER_ENTRY: an entry plan becomes an IOC taker buy at the ask with the plan\'s dollars; exits and other plans are untouched', () => {
+  const book = bookOf(0.19, 0.22);
+  const entry = plan({ price: 0.2, count: 11 });
+  const t = takerEntryPlan(entry, book);
+  assert.equal(t.price, 0.22);
+  assert.equal(t.count, 10, '11 x 0.20 = $2.20 at 0.22 is 10 contracts');
+  assert.equal(t.postOnly, false);
+  assert.equal(t.timeInForce, 'immediate_or_cancel');
+  assert.equal(t.leg, 'underdog_entry');
+  assert.equal(takerEntryPlan(plan({ leg: 'fav_entry', price: 0.2, count: 11 }), book).price, 0.22, 'the favourite entry too');
+  // Not an entry, or no ask: unchanged.
+  const tp = plan({ side: 'ask', price: 0.3, leg: 'underdog_tp' });
+  assert.equal(takerEntryPlan(tp, book), tp);
+  const ro = plan({ reduceOnly: true });
+  assert.equal(takerEntryPlan(ro, book), ro);
+  assert.equal(takerEntryPlan(entry, undefined), entry);
+  const oneSided = new OrderBook(TK); oneSided.applySnapshot({ bids: [{ price: 0.19, size: 100 }], asks: [] }, 0);
+  assert.equal(takerEntryPlan(entry, oneSided), entry);
+  // The sim reads the flag; placed, the taker entry fills at the ask at once (F0) or after the latency (F1), and never rests.
+  assert.equal(simOf('F1').takerEntry, false, 'default: production\'s maker bid');
+  for (const v of [true, 'true', 1] as const) assert.equal(simOf('F1', { HARNESS_TAKER_ENTRY: v }).takerEntry, true);
+  for (const fill of ['F0', 'F1'] as const) {
+    const s = simOf(fill, { HARNESS_TAKER_ENTRY: true });
+    placeActive(s, t, book, 1000);
+    assert.equal(yes(s), 10, `${fill}: filled at the ask`);
+    assert.equal(s.resting.get(TK), undefined, `${fill}: nothing rests`);
+  }
+  // F1: the ask moved up during the latency: the IOC misses and nothing rests.
+  const s = simOf('F1', { HARNESS_TAKER_ENTRY: true });
+  placeActive(s, t, book, 1000, bookOf(0.2, 0.23));
+  assert.equal(yes(s), 0);
+  assert.equal(s.resting.get(TK), undefined);
 });

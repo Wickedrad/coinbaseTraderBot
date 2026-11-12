@@ -164,7 +164,8 @@ export interface SimSpec {
   /** Env-style overrides of production (TENNIS_*, PACER_*), plus harness rules: HARNESS_LOSER_STOP (research loser stop,
    *  a fraction of the open contracts' cost openSidePrice + openEntryFee, 0 = off), HARNESS_BANKROLL (default 200),
    *  HARNESS_PACER ('tennis' default, 'off'), HARNESS_LATENCY_MS (added to the fill model's latency), HARNESS_FEE_MULT (fees
-   *  x this, stress). With no override the config is production's defaults exactly (TENNIS_END_LOSER_CUT on; the
+   *  x this, stress), HARNESS_TAKER_ENTRY (true: each entry plan becomes a taker buy at the best ask, as the one test's
+   *  instance is taken; takerEntryPlan; default false, production's resting maker bid). With no override the config is production's defaults exactly (TENNIS_END_LOSER_CUT on; the
    *  settle-hold stick sets it false). */
   overrides: Record<string, string | number | boolean>;
   fill: FillModel;
@@ -320,6 +321,8 @@ export class ConfigSim {
   readonly offset: number;
   /** Research loser stop (HARNESS_LOSER_STOP), undefined when off. */
   readonly loserStopFrac?: number;
+  /** HARNESS_TAKER_ENTRY: entry plans are taken at the ask (takerEntryPlan) instead of resting at production's maker bid. */
+  readonly takerEntry: boolean;
   readonly trackers = new Map<string, MatchTracker>();
   /** Positions as production keeps them (bot/oms/positions.ts: applyFill on every fill, settle on the result). A settled
    *  market leaves the book at once (nothing reads it after), so get() is a live position or a flat unsettled market. */
@@ -375,6 +378,8 @@ export class ConfigSim {
     const loserStop = Number(spec.overrides.HARNESS_LOSER_STOP ?? 0);
     this.loserStopFrac = loserStop > 0 ? loserStop : undefined;
     this.bankroll = Number(spec.overrides.HARNESS_BANKROLL ?? 200);
+    const te = spec.overrides.HARNESS_TAKER_ENTRY;
+    this.takerEntry = te === true || te === 'true' || te === 1 || te === '1';
     this.latency = (spec.fill === 'F0' ? 0 : 1000) + Math.max(0, Number(spec.overrides.HARNESS_LATENCY_MS ?? 0));
     this.slipTicks = spec.fill === 'F2' ? 1 : 0;
     this.offset = Math.max(0, Math.min(DEC_MS - 1, spec.offsetMs ?? 0));
@@ -809,6 +814,17 @@ export const syncKeeps = (plans: readonly TennisPlan[], x: Pick<SimOrder, 'ticke
 /** Is a plan left unplaced on this decision? As production: when an order that was resting before the sync, or still in
  *  flight, matches it, whatever its type. So the immediate-or-cancel exit above waits one decision: the ask is cancelled
  *  now and the exit goes out on the next decision if the bid still allows it. */
+/** HARNESS_TAKER_ENTRY: an entry plan (underdog_entry, fav_entry: a bid that is not reduce-only) becomes an
+ *  immediate-or-cancel taker buy at the book's best ask, with the plan's dollars (count x the bid price / the ask, floored
+ *  to 0.01 contract): the one test measured its instance this way (a taker buy at the ask), production rests a maker bid.
+ *  Every other plan, or an entry with no ask in the book, is returned unchanged. */
+export function takerEntryPlan(p: TennisPlan, book: Pick<OrderBook, 'bestAsk'> | undefined): TennisPlan {
+  if (p.side !== 'bid' || p.reduceOnly || (p.leg !== 'underdog_entry' && p.leg !== 'fav_entry')) return p;
+  const ask = book?.bestAsk()?.price;
+  if (ask === undefined || !(ask > 0) || !(ask < 1)) return p;
+  const count = Math.floor((p.count * p.price) / ask * 100 + 1e-6) / 100;
+  return { ...p, price: ask, count, postOnly: false, timeInForce: 'immediate_or_cancel' };
+}
 export const syncSkips = (p: TennisPlan, restingBefore: ReadonlyArray<Pick<SimOrder, 'ticker' | 'side' | 'price' | 'remaining'>>, pending: ReadonlyArray<Pick<SimOrder, 'ticker' | 'side' | 'price' | 'remaining'>>): boolean =>
   restingBefore.some((x) => sameOrder(p, x)) || pending.some((x) => sameOrder(p, x));
 
@@ -1184,7 +1200,8 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
         // Order sync (bot/engine.ts): cancel resting orders no longer planned, place the new ones (syncKeeps, syncSkips).
         const before = ev.tickers.flatMap((t) => sim.resting.get(t) ?? []);
         for (const t of ev.tickers) sim.cancel(t, (x) => syncKeeps(out.plans, x));
-        for (const p of out.plans) {
+        const plans = sim.takerEntry ? out.plans.map((p) => takerEntryPlan(p, usableBook(p.ticker, now))) : out.plans;
+        for (const p of plans) {
           if (syncSkips(p, before, sim.pending)) continue;
           if (ev.results.has(p.ticker)) continue;
           sim.place(p, usableBook(p.ticker, now), now, closeOf(p.ticker, ev), ev.event, tick);

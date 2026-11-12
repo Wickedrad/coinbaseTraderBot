@@ -70,7 +70,7 @@ def main(argv=None):
     ap.add_argument('--anchor', default='A|s2|hs1prod|F1')
     ap.add_argument('--out', default='')
     ap.add_argument('--detail', default='A|s2|hs1prod|F1,A|s2|hold70|F1,A|s2|mk25pct|F1,A|s2|mkprod|F1,A|s2|fp0|F1,A|s2|lstop60|F1',
-                    help='arms broken down by entry price band, tour and phase (underdog leg)')
+                    help="arms broken down by entry price band, tour and phase (underdog leg), comma separated; 'all' = every F-arm")
     a = ap.parse_args(argv)
     arms, metas = {}, []
     for p in sorted(a.shards):
@@ -105,7 +105,7 @@ def main(argv=None):
         xs = ', '.join(f'{x} {c}' for x, c in u['xs'])
         lines.append(f"| {rid.replace('|', chr(92) + '|')} | {fill} | {u['n']} | {100 * u['win']:.1f} | ${u['net']:,.2f} | {u['per']:+.3f} | {vs} | ${u['dep']:,.0f} | "
                      f"{u['per100']:+.2f} | {u['med_min']:.1f} | {u['br']} | {xs} | {f['n']} | ${f['net']:,.2f} | ${t['net']:,.2f} |")
-    detail = [x for x in a.detail.split(',') if x in arms]
+    detail = [r[0] for r in rows] if a.detail.strip() == 'all' else [x for x in a.detail.split(',') if x in arms]
     if detail:
         lines += ['', '### Underdog leg by entry price band, tour and phase (information; in-sample slices of the choosing days)', '',
                   'Each cell: entries / net per entry ($) / win %.', '']

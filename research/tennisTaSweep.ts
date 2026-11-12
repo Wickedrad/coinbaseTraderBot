@@ -468,6 +468,7 @@ export const HARNESS_RULES: Readonly<Record<string, (v: OverrideValue) => string
   HARNESS_BANKROLL: numIn(0, 1e6, true),
   HARNESS_FEE_MULT: numIn(0, 10),
   HARNESS_LATENCY_MS: numIn(0, 60_000),
+  HARNESS_TAKER_ENTRY: (v) => (v === true || v === false ? undefined : 'must be the boolean true or false'),
 };
 /** The stress adversaries and measuring settings (section 7) at production's values: never a hypothesis, so only a
  *  measuring stick moves one off its default (the report's STICK_KEYS in research/tennis_ta_report.py, whose check_runs
@@ -523,7 +524,7 @@ const S2_ID = new RegExp(`^A\\|s2\\|(.+)\\|(${ARMS.join('|')})$`);
 const S2_STICK = /^A\|s2\|prod\|.+\|[^|]+$/;
 /** The harness rules' defaults (the sim's, SimSpec in research/tennisTaSim.ts): an arm with every HARNESS_* key unset or at
  *  these values runs production's harness. */
-const HARNESS_DEFAULTS: Readonly<Record<string, OverrideValue>> = { HARNESS_PACER: 'tennis', HARNESS_LOSER_STOP: 0, HARNESS_BANKROLL: 200, HARNESS_FEE_MULT: 1, HARNESS_LATENCY_MS: 0 };
+const HARNESS_DEFAULTS: Readonly<Record<string, OverrideValue>> = { HARNESS_PACER: 'tennis', HARNESS_LOSER_STOP: 0, HARNESS_BANKROLL: 200, HARNESS_FEE_MULT: 1, HARNESS_LATENCY_MS: 0, HARNESS_TAKER_ENTRY: false };
 
 /** Validate stage 2's spec list (research/tennis-ta/stage2-specs.json): an array of {id, overrides, fill, placebo?,
  *  window?} with unique ids 'A|s2|<config>|<arm>', the arm suffix agreeing with the spec (|coin for the coin placebo,
@@ -635,7 +636,7 @@ export function validateStage2Specs(raw: unknown, stratum: 'H' | 'R' = 'H'): Swe
         const h = (k: string, d: OverrideValue) => String(o[k] ?? d);
         // The window flag is part of what runs: a config's |F1 and |window arms are two arms, not twins.
         const key = JSON.stringify([r.sim, h('HARNESS_PACER', 'tennis'), Number(h('HARNESS_LOSER_STOP', 0)), Number(h('HARNESS_BANKROLL', 200)),
-          Number(h('HARNESS_FEE_MULT', 1)), Number(h('HARNESS_LATENCY_MS', 0)), s.fill, s.window === true]);
+          Number(h('HARNESS_FEE_MULT', 1)), Number(h('HARNESS_LATENCY_MS', 0)), h('HARNESS_TAKER_ENTRY', false) === 'true', s.fill, s.window === true]);
         const off = (s.offsetMs as number | undefined) ?? 0, stick = s.stick === true;
         const prior = arms.get(key) ?? [];
         const twin = prior.find((a) => a.off === off);

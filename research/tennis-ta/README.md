@@ -134,7 +134,9 @@ starts or ends inside a Slam is refused. The table's `sealed` flags are the reti
   - `HARNESS_*` keys are the sim's own rules, exactly the list `SimSpec` documents in `research/tennisTaSim.ts` (the
     tests hold the two together): `HARNESS_PACER` (`"tennis"` or `"off"`), `HARNESS_LOSER_STOP` (0 to 1, a fraction of
     the open lot's cost, 0 = off), `HARNESS_BANKROLL` (above 0, default 200), `HARNESS_FEE_MULT` (0 to 10) and
-    `HARNESS_LATENCY_MS` (0 to 60000). Any other `HARNESS_*` key is refused. `HARNESS_LOSER_CUT` no longer exists. The
+    `HARNESS_LATENCY_MS` (0 to 60000) and `HARNESS_TAKER_ENTRY` (the boolean `true` or `false`, default `false`: each
+    entry plan becomes an immediate-or-cancel taker buy at the best ask with the plan's dollars, `takerEntryPlan`, the
+    way the one test takes its instance; production rests a maker bid). Any other `HARNESS_*` key is refused. `HARNESS_LOSER_CUT` no longer exists. The
     settle-hold arm is `TENNIS_END_LOSER_CUT: false`.
   - An empty value is refused, because `loadConfig` reads it as unset.
 - Two arms that would run identically are refused: same simulated config, harness rules, fill, window flag and
