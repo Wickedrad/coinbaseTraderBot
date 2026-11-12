@@ -118,6 +118,10 @@ const mid = (q: Quote) => (q.bid !== undefined && q.ask !== undefined && q.ask >
 export const PROGRESS_LATCH_MS = 120_000;
 /** How old a live score may be and still give a win chance: the Live Tennis feed is read every 5 minutes while a position is held. */
 export const SCORE_FRESH_MS = 6 * 60_000;
+/** The widest spread a book may have for the market's win chance (MatchTracker.winChance) to count: one tick's thin or
+ *  one-sided book (asks pulled, a stale or gapped book) moves the mid without any trade, and a ride's sale (prob_turn) must
+ *  not follow it. Every market of the match must be two-sided within this, else the market gives no reading that tick. */
+export const WIN_CHANCE_MAX_SPREAD = 0.06;
 
 export class MatchTracker {
   liveSince?: number;
@@ -142,6 +146,9 @@ export class MatchTracker {
   /** Per held market riding to settlement in profit: our player's best win chance since the ride began, by each reading
    *  (TENNIS_PROB_TURN). A ride once begun lasts while the position is in profit, whatever the progress does. */
   readonly rides = new Map<string, { score?: number; market?: number }>();
+  /** Markets a ride's sale (prob_turn) has sold this match: no new entry on them for the rest of it. The win chance turned
+   *  against that player, so the favorite leg must not buy the same player back a tick later. */
+  readonly turnSold = new Set<string>();
 
   /** Takes this tick's progress reading and returns progressHigh. */
   latchProgress(now: number, p: number): number {
@@ -245,7 +252,8 @@ export class MatchTracker {
   /** Our player's chance to win the match, by each reading there is: the market's price (MatchTracker.probability), and the
    *  scoring model's (the points, games and sets still to play from the exact score, on serve-point odds calibrated to the
    *  match's starting price: tennisModel.ts) from a live score that names its players (scoreOriented) and was read within
-   *  SCORE_FRESH_MS of `now`. Undefined when the ticker is not one of the match's markets. */
+   *  SCORE_FRESH_MS of `now`. The market's reading needs every book of the match two-sided within WIN_CHANCE_MAX_SPREAD.
+   *  Undefined when the ticker is not one of the match's markets. */
   winChance(ms: MatchMarket[], ticker: string, now?: number): { score?: number; market?: number } | undefined {
     const a = ms[0]?.ticker === ticker;
     if (!a && ms[1]?.ticker !== ticker) return undefined;
@@ -253,7 +261,8 @@ export class MatchTracker {
     const fresh = now === undefined || this.scoreAt === undefined || now - this.scoreAt <= SCORE_FRESH_MS;
     const score = this.score && this.liveSince !== undefined && this.scoreOriented && fresh
       ? side(impliedModel(this.pStart ?? 0.5, this.format(ms), this.cfg.serveBase).remaining(this.score).pA) : undefined;
-    const market = side(MatchTracker.probability(ms));
+    const tight = (q: Quote) => q.bid !== undefined && q.ask !== undefined && q.ask >= q.bid && q.ask - q.bid <= WIN_CHANCE_MAX_SPREAD + 1e-9;
+    const market = ms.every((m) => tight(m.quote)) ? side(MatchTracker.probability(ms)) : undefined;
     return { ...(score !== undefined ? { score } : {}), ...(market !== undefined ? { market } : {}) };
   }
 
@@ -511,6 +520,11 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
   const mode = r.floorMode ?? 'off';
   const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
   const at = prog < high - 1e-9 ? `${pct(prog)} done, ${pct(high)} at its furthest` : `${pct(prog)} done`;
+  const rebuy = out.plans.filter((p) => p.side === 'bid' && !p.reduceOnly && t.turnSold.has(p.ticker));
+  if (rebuy.length) {
+    out.plans = out.plans.filter((p) => !rebuy.includes(p));
+    out.notes.push(`no new entry on ${[...new Set(rebuy.map((p) => p.ticker))].join(', ')} (${rebuy.map((p) => p.leg).join(', ')}): a ride was sold there this match when the win chance turned`);
+  }
   if (r.endLoserCut && endFrac > 0 && high >= 1 - endFrac - (r.endEntryMargin ?? 0) - 1e-9) {
     const entries = out.plans.filter((p) => p.side === 'bid' && !p.reduceOnly);
     if (entries.length) {
@@ -525,6 +539,13 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
     const others = (p: TennisPlan) => p.ticker !== m.ticker || p.side !== 'ask';
     const ride = t.rides.get(m.ticker);
     const riding = frac > 0 && net !== undefined && net > 1e-9 && (lastShare || high >= 1 - frac - 1e-9 || ride !== undefined);
+    if (!riding && net === undefined && ride !== undefined) {
+      // No usable bid this tick (a reconnect, a stale or crossed book, a feed-lag halt): the profit is unknown, so the ride
+      // and its best stand, and nothing is sold (every sale needs a bid).
+      out.plans = out.plans.filter(others);
+      out.notes.push(`${m.ticker}: riding to settlement, no usable bid this tick: held, its best win chance kept`);
+      continue;
+    }
     if (!riding) t.rides.delete(m.ticker);
     const cutLine = tennisLoserCutAt(r, high);
     if (riding) {
@@ -543,6 +564,7 @@ function applyProfitRules(t: MatchTracker, s: MatchSnapshot, out: { phase: Match
       out.plans = out.plans.filter(others);
       if (turns.length && m.quote.bid !== undefined) {
         const bid = m.quote.bid, x = turns[0];
+        t.turnSold.add(m.ticker);
         out.plans.push({ ticker: m.ticker, side: 'ask', price: bid, count: m.position, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', leg: 'prob_turn',
           why: `riding in profit (match ${at}), win chance ${pct(x.p)} by the ${x.k}, down ${((x.b - x.p) * 100).toFixed(1)} points from ${pct(x.b)}: selling +$${net!.toFixed(2)} after fees at bid ${bid}` });
       } else out.notes.push(`${m.ticker}: match ${at} (its last ${pct(frac)}), +$${net!.toFixed(2)} after fees: riding to settlement${read ? `, win chance ${read}` : ''}`);

@@ -266,15 +266,20 @@ export function playerIndexForTitle(m: LiveTennisMatch, title: string): 0 | 1 | 
   return a && !b ? 0 : b && !a ? 1 : undefined;
 }
 
-/** Find the live match for a Kalshi event from its two market titles; `flip` = API player 2 is our A. */
-export function findMatch(slate: LiveTennisMatch[], titleA: string, titleB?: string): { match: LiveTennisMatch; flip: boolean } | undefined {
+/** Find the live match for a Kalshi event from its two market titles; `flip` = API player 2 is our A. A match where both
+ *  titles name its two players comes first (`named`); else the first where one title names a player and the other names
+ *  no one in it (not `named`: a surname two players share can pick the wrong match, so its score must not decide a sale). */
+export function findMatch(slate: LiveTennisMatch[], titleA: string, titleB?: string): { match: LiveTennisMatch; flip: boolean; named: boolean } | undefined {
+  let one: { match: LiveTennisMatch; flip: boolean; named: boolean } | undefined;
   for (const m of slate) {
     const ia = playerIndexForTitle(m, titleA);
     const ib = titleB ? playerIndexForTitle(m, titleB) : undefined;
-    if (ia !== undefined && (ib === undefined || ib !== ia)) return { match: m, flip: ia === 1 };
-    if (ia === undefined && ib !== undefined) return { match: m, flip: ib === 0 };
+    if (ia !== undefined && ib !== undefined && ib !== ia) return { match: m, flip: ia === 1, named: true };
+    if (one) continue;
+    if (ia !== undefined && (ib === undefined || ib !== ia)) one = { match: m, flip: ia === 1, named: false };
+    else if (ia === undefined && ib !== undefined) one = { match: m, flip: ib === 0, named: false };
   }
-  return undefined;
+  return one;
 }
 
 /** Convert to the bot's TennisScore (current-set games, numeric points), oriented to our player A. */

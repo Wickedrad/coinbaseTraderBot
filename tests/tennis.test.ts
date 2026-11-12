@@ -20,7 +20,7 @@ import { KillSwitch } from '../bot/risk/killSwitch';
 import { RiskGateway } from '../bot/risk/riskGateway';
 import { Reconciler } from '../bot/recon/reconciler';
 import { QuotaFloors, type PacerFloorMode } from '../bot/risk/quotaPacer';
-import { decideMatch, MatchTracker, SCORE_FRESH_MS, tennisLoserCutAt, tennisSize, type MatchMarket } from '../bot/tennis/tennisStrategy';
+import { decideMatch, MatchTracker, SCORE_FRESH_MS, tennisLoserCutAt, tennisSize, WIN_CHANCE_MAX_SPREAD, type MatchMarket } from '../bot/tennis/tennisStrategy';
 import { impliedModel } from '../bot/tennis/tennisModel';
 import { openExchange, tmpAudit, tmpDir } from './helpers';
 
@@ -885,6 +885,11 @@ test('MatchTracker.winChance: the market\'s price, and the scoring model\'s from
   assert.ok(Math.abs(m!.market! - 0.7) < 1e-9);
   assert.ok(Math.abs(tr.winChance(ms, 'S-B', t0)!.market! - 0.3) < 1e-9);
   assert.equal(tr.winChance(ms, 'S-X', t0), undefined);
+  // One tick's thin or one-sided book is no market reading: a book wider than WIN_CHANCE_MAX_SPREAD (6c), or one with no bid.
+  assert.equal(WIN_CHANCE_MAX_SPREAD, 0.06);
+  assert.ok(Math.abs(tr.winChance([mk('S-A', 0.68, 0.74), ms[1]], 'S-A', t0)!.market! - 0.705) < 1e-9, '6c counts');
+  assert.equal(tr.winChance([mk('S-A', 0.69, 0.71), mk('S-B', 0.29, 0.40)], 'S-A', t0)?.market, undefined, '11c');
+  assert.equal(tr.winChance([ms[0], { ...ms[1], quote: { ask: 0.31 } } as MatchMarket], 'S-A', t0)?.market, undefined, 'no bid');
   tr.liveSince = t0;
   tr.pStart = 0.7;
   tr.score = { setsA: 1, setsB: 0, gamesA: 3, gamesB: 1, pointsA: 0, pointsB: 0 };
@@ -906,4 +911,99 @@ test('MatchTracker.winChance: the market\'s price, and the scoring model\'s from
   assert.deepEqual([o.scoreAt, o.scoreOriented], [t0 + 500_000, true]);
   o.observe(snap({}));
   assert.deepEqual([o.scoreAt, o.scoreOriented], [t0 + 600_000, false]);
+});
+
+test('tennis: a ride survives a tick with no usable bid, and one tick\'s thin or one-sided book is no win-chance reading (review, Nov 12)', () => {
+  const rules = { pacerUsd: 4.5, settleFrac: T.settleFrac, endLoserCut: true, endEntryMargin: T.endEntryMargin, endCutFrac: T.endCutFrac,
+    loserCut: T.loserCut, loserCutOpen: T.loserCutOpen, loserCutLate: T.loserCutLate, probTurn: T.probTurn };
+  type Q = [number | undefined, number | undefined];
+  const book = (fav: Q, dog: Q, net: number | undefined): MatchMarket[] => [
+    { ticker: 'R-FAV', quote: { bid: fav[0], ask: fav[1] }, position: 30, avgEntry: 0.8, netAtBid: net } as MatchMarket,
+    { ticker: 'R-DOG', quote: { bid: dog[0], ask: dog[1] }, position: 0 } as MatchMarket];
+  // The two books 2c wide and mirrored: the market's win chance is the bid + 1c.
+  const two = (bid: number, net: number) => book([bid, bid + 0.02], [1 - bid - 0.02, 1 - bid], net);
+  const run = (prog: () => number) => {
+    const tr = new MatchTracker('R', T);
+    tr.progress = prog;
+    let now = t0 + 3_600_000;
+    const at = (markets: MatchMarket[]) => {
+      const o = decideMatch(tr, { event: 'R', now, startTime: t0, closeTime: t0 + 86_400_000, markets }, T, budget, 0.01, rules);
+      now += 30_000;
+      return o;
+    };
+    return { tr, at };
+  };
+  const turned = (o: { plans: { leg: string }[] }) => o.plans.some((p) => p.leg === 'prob_turn');
+
+  // No usable bid for a tick (a reconnect, a stale or crossed book, a feed-lag halt): the profit is unknown, so the ride and its
+  // best stand and nothing sells. The turn from the best (93%) is still caught at 0.87 the tick after.
+  const a = run(() => 0.8);
+  a.at(two(0.92, 2));
+  assert.equal(turned(a.at(two(0.9, 1.6))), false);
+  const gap = a.at(book([undefined, 0.93], [0.07, 0.09], undefined));
+  assert.equal(gap.plans.length, 0, JSON.stringify(gap.plans));
+  assert.ok(gap.notes.some((n) => n.includes('R-FAV: riding to settlement, no usable bid this tick')), JSON.stringify(gap.notes));
+  assert.ok(Math.abs(a.tr.rides.get('R-FAV')!.market! - 0.93) < 1e-9);
+  const sold = a.at(two(0.87, 1)).plans;
+  assert.equal(sold[0]?.leg, 'prob_turn', JSON.stringify(sold));
+  assert.ok(sold[0].why.includes('down 5.0 points from 93%'), sold[0].why);
+  // Through a comeback (progress back to 66%, never latched past 70%) a gap tick does not end the ride either: +$8 rides on,
+  // where without the ride the quota snipe would sell it.
+  let p = 0.75;
+  const b = run(() => p);
+  b.at(two(0.92, 8));
+  p = 0.66;
+  b.at(book([undefined, 0.94], [0.06, 0.08], undefined));
+  assert.ok(b.tr.rides.has('R-FAV'));
+  const on = b.at(two(0.92, 8));
+  assert.equal(on.plans.length, 0, JSON.stringify(on.plans));
+  assert.ok(on.notes.some((n) => n.includes('riding to settlement, win chance 93% by the market (best 93%)')), JSON.stringify(on.notes));
+
+  // One tick's thin or one-sided book moves the mid with no trade: no reading, so no sale and no new best.
+  const c = run(() => 0.8);
+  c.at(two(0.86, 2.9));
+  for (const thin of [book([0.86, 0.88], [0.12, 0.34], 2.9), book([0.86, 0.99], [0.01, 0.14], 2.9), book([0.86, 0.99], [undefined, undefined], 2.9)]) {
+    assert.equal(turned(c.at(thin)), false, JSON.stringify(thin));
+    assert.ok(Math.abs(c.tr.rides.get('R-FAV')!.market! - 0.87) < 1e-9);
+  }
+  assert.equal(turned(c.at(two(0.86, 2.9))), false);
+  const real = c.at(two(0.81, 1)).plans;
+  assert.equal(real[0]?.leg, 'prob_turn', JSON.stringify(real));
+  assert.ok(real[0].why.includes('win chance 82% by the market, down 5.0 points from 87%'), real[0].why);
+});
+
+test('tennis: after a ride is sold on a turn, the favorite leg does not buy the same player back that match (review, Nov 12)', () => {
+  // The underdog cut off (TENNIS_UNDERDOG_CUT_PROGRESS=0), so the underdog leg still holds R-A at 75% and rides it.
+  const T0 = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), TENNIS_UNDERDOG_CUT_PROGRESS: '0' }).tennis;
+  const rules = { pacerUsd: 4.5, settleFrac: T0.settleFrac, endLoserCut: T0.endLoserCut, endEntryMargin: T0.endEntryMargin, endCutFrac: T0.endCutFrac,
+    loserCut: T0.loserCut, loserCutOpen: T0.loserCutOpen, loserCutLate: T0.loserCutLate, probTurn: T0.probTurn };
+  const tr = new MatchTracker('R', T0);
+  tr.progress = () => 0.75;
+  tr.underdogTicker = 'R-A';
+  tr.underdogEntered = true;
+  tr.liveSince = t0;
+  tr.pStart = 0.3;
+  let now = t0 + 90 * 60_000;
+  const tick = (bid: number, pos: number) => {
+    const markets = [mkb('R-A', bid, bid + 0.02, 300, 100, now, { position: pos, avgEntry: pos ? 0.3 : undefined, netAtBid: pos ? 15 : undefined, flow: 0.5 }), mkb('R-B', 0.98 - bid - 0.02, 0.98 - bid, 100, 300, now)];
+    const o = decideMatch(tr, { event: 'R', now, startTime: t0, closeTime: t0 + 86_400_000, markets }, T0, budget, 0.01, rules);
+    now += 30_000;
+    return o;
+  };
+  // Rides from a 0.92 bid; a slide of 0.2c a tick turns it 5 points down at 0.87.
+  let b = 0.92;
+  for (let i = 0; i < 6; i++) tick(b, 30);
+  let sale;
+  for (let i = 0; i < 40 && !sale; i++) {
+    b = Math.round((b - 0.002) * 1000) / 1000;
+    sale = tick(b, 30).plans.find((p) => p.leg === 'prob_turn');
+  }
+  assert.ok(sale && sale.price === 0.87 && sale.count === 30, JSON.stringify(sale));
+  assert.deepEqual([...tr.turnSold], ['R-A']);
+  // Flat the tick after: the favorite leg would buy R-A back (the leader at 0.88, inside 0.75-0.92); the turn sale blocks it.
+  const after = tick(b, 0);
+  assert.equal(after.plans.filter((p) => p.ticker === 'R-A' && p.side === 'bid').length, 0, JSON.stringify(after.plans));
+  assert.ok(after.notes.some((n) => n.includes('no new entry on R-A (fav_entry): a ride was sold there this match when the win chance turned')), JSON.stringify(after.notes));
+  tr.turnSold.clear();
+  assert.ok(tick(b, 0).plans.some((p) => p.ticker === 'R-A' && p.leg === 'fav_entry'), 'without the block the leg buys it back');
 });

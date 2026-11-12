@@ -24,6 +24,21 @@ const match = (o: Partial<LiveTennisMatch> = {}): LiveTennisMatch => ({
   player1: { name: 'Carlos Alcaraz' }, player2: { name: 'Jannik Sinner' }, ...o,
 });
 
+test('live tennis: findMatch takes the match both titles name first, and says when only one title named a player in it', () => {
+  // Two Andreevas live: the sister's match listed first. Both titles name Mirra Andreeva's match (named: its score may decide a sale).
+  const sister = match({ id: 1, player1: { name: 'Erika Andreeva' }, player2: { name: 'Anna Blinkova' } });
+  const tA = 'Will Mirra Andreeva win the Andreeva vs Gauff : Wuhan match?', tB = 'Will Coco Gauff win the Andreeva vs Gauff : Wuhan match?';
+  const hit = findMatch([sister, match({ id: 2, player1: { name: 'Mirra Andreeva' }, player2: { name: 'Coco Gauff' } })], tA, tB)!;
+  assert.deepEqual([hit.match.id, hit.flip, hit.named], [2, false, true]);
+  const flipped = findMatch([sister, match({ id: 3, player1: { name: 'Coco Gauff' }, player2: { name: 'Mirra Andreeva' } })], tA, tB)!;
+  assert.deepEqual([flipped.match.id, flipped.flip, flipped.named], [3, true, true]);
+  // Only the sister's match live: one surname hits and the other title names no one in it. Still found (it feeds the progress
+  // as before), but not named; nor is a match found from one title alone.
+  const one = findMatch([sister], tA, tB)!;
+  assert.deepEqual([one.match.id, one.named], [1, false]);
+  assert.equal(findMatch([sister], tA)?.named, false);
+});
+
 test('live tennis: name matching to Kalshi titles, orientation, current-set games, tiebreak points, breaks', () => {
   const m = match();
   assert.equal(playerIndexForTitle(m, 'Will Jannik Sinner win the Alcaraz vs Sinner match?'), 1);
