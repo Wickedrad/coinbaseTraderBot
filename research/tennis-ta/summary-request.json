@@ -1,7 +1,7 @@
 {
-  "run": "43245923481",
-  "anchor": "A|s2|hs1prod|F1",
+  "run": "43252593131",
+  "anchor": "A|s2|hs1prod-s180|F1",
   "detail": "all",
-  "tape": "A|s2|hs1prod|F1,A|s2|hs1prod-lbm|F1,A|s2|fp0-lbm|F1,A|s2|mkprod-lbm|F1",
-  "note": "Match-clock fix candidate (calendar 10z/10ab): with and without TENNIS_LIVE_BY_MOVE. Information only."
+  "tape": "A|s2|hs1prod-s180|F1,A|s2|hs1prod-s180lbm|F1,A|s2|mkprod-s180|F1,A|s2|mkprod-s180lbm|F1",
+  "note": "Match-clock fix, second candidate (calendar 10ac/10ad). Information only."
 }
