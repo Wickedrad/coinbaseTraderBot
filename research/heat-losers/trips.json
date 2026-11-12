@@ -1,0 +1,1409 @@
+[
+{
+"closed": "2026-11-11T23:00:01Z",
+"ticker": "KXBTC15M-26NOV111800-00",
+"side": "yes",
+"pnl": -10.44,
+"how": "settled"
+},
+{
+"closed": "2026-11-11T23:02:35Z",
+"ticker": "KXSOL15M-26NOV111815-15",
+"side": "yes",
+"pnl": 2.09,
+"how": "sold"
+},
+{
+"closed": "2026-11-11T23:06:15Z",
+"ticker": "KXETH15M-26NOV111815-15",
+"side": "no",
+"pnl": -0.35,
+"how": "sold"
+},
+{
+"closed": "2026-11-11T23:33:57Z",
+"ticker": "KXBTCD-26NOV1119-T73799.99",
+"side": "yes",
+"pnl": 1.51,
+"how": "sold"
+},
+{
+"closed": "2026-11-11T23:38:12Z",
+"ticker": "KXETH15M-26NOV111845-45",
+"side": "no",
+"pnl": -0.09,
+"how": "sold"
+},
+{
+"closed": "2026-11-11T23:44:22Z",
+"ticker": "KXSOLD-26NOV1119-T82.7499",
+"side": "yes",
+"pnl": 1.13,
+"how": "sold"
+},
+{
+"closed": "2026-11-11T23:48:59Z",
+"ticker": "KXETH15M-26NOV111900-00",
+"side": "yes",
+"pnl": 2.0,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T00:00:01Z",
+"ticker": "KXBTC15M-26NOV111900-00",
+"side": "no",
+"pnl": -10.25,
+"how": "settled"
+},
+{
+"closed": "2026-11-12T00:09:00Z",
+"ticker": "KXSOL15M-26NOV111915-15",
+"side": "no",
+"pnl": 2.5,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T00:17:04Z",
+"ticker": "KXBTCD-26NOV1120-T73799.99",
+"side": "yes",
+"pnl": 2.11,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T00:24:49Z",
+"ticker": "KXETH15M-26NOV111930-30",
+"side": "yes",
+"pnl": 1.56,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T00:33:51Z",
+"ticker": "KXBTCD-26NOV1120-T73999.99",
+"side": "no",
+"pnl": 2.33,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T00:36:41Z",
+"ticker": "KXXRP15M-26NOV111945-45",
+"side": "yes",
+"pnl": 2.3,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T01:01:40Z",
+"ticker": "KXXRPD-26NOV1120-T1.0599",
+"side": "no",
+"pnl": 1.44,
+"how": "settled"
+},
+{
+"closed": "2026-11-12T01:15:01Z",
+"ticker": "KXBTC15M-26NOV112015-15",
+"side": "yes",
+"pnl": -10.54,
+"how": "settled"
+},
+{
+"closed": "2026-11-12T01:30:01Z",
+"ticker": "KXBTC15M-26NOV112030-30",
+"side": "yes",
+"pnl": -10.16,
+"how": "settled"
+},
+{
+"closed": "2026-11-12T01:33:41Z",
+"ticker": "KXBTC15M-26NOV112045-45",
+"side": "no",
+"pnl": -0.29,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T01:40:45Z",
+"ticker": "KXXRP15M-26NOV112045-45",
+"side": "yes",
+"pnl": -2.21,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T01:41:51Z",
+"ticker": "KXSOLD-26NOV1121-T83.2499",
+"side": "yes",
+"pnl": 2.7,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T01:47:23Z",
+"ticker": "KXSOL15M-26NOV112100-00",
+"side": "yes",
+"pnl": 0.47,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T01:51:02Z",
+"ticker": "KXXRP15M-26NOV112100-00",
+"side": "yes",
+"pnl": 3.55,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T01:52:08Z",
+"ticker": "KXETH15M-26NOV112100-00",
+"side": "yes",
+"pnl": -1.21,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:01:35Z",
+"ticker": "KXBTC15M-26NOV112115-15",
+"side": "yes",
+"pnl": 2.38,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:02:42Z",
+"ticker": "KXXRP15M-26NOV112115-15",
+"side": "yes",
+"pnl": 1.87,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:03:38Z",
+"ticker": "KXBTC15M-26NOV112115-15",
+"side": "yes",
+"pnl": 0.66,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:04:36Z",
+"ticker": "KXETH15M-26NOV112115-15",
+"side": "yes",
+"pnl": 1.03,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:05:14Z",
+"ticker": "KXSOL15M-26NOV112115-15",
+"side": "no",
+"pnl": -3.36,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:06:50Z",
+"ticker": "KXBTC15M-26NOV112115-15",
+"side": "no",
+"pnl": -2.93,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:08:22Z",
+"ticker": "KXSOL15M-26NOV112115-15",
+"side": "no",
+"pnl": 3.54,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:15:19Z",
+"ticker": "KXBTCD-26NOV1122-T73799.99",
+"side": "no",
+"pnl": 1.05,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:18:02Z",
+"ticker": "KXETHD-26NOV1122-T2054.99",
+"side": "no",
+"pnl": -5.45,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:19:34Z",
+"ticker": "KXBTC15M-26NOV112130-30",
+"side": "no",
+"pnl": -11.27,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:19:34Z",
+"ticker": "KXXRP15M-26NOV112130-30",
+"side": "no",
+"pnl": -4.8,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:26:59Z",
+"ticker": "KXSOLD-26NOV1122-T83.4999",
+"side": "yes",
+"pnl": -1.34,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:28:30Z",
+"ticker": "KXBTCD-26NOV1122-T73799.99",
+"side": "yes",
+"pnl": 2.58,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:32:25Z",
+"ticker": "KXXRP15M-26NOV112145-45",
+"side": "no",
+"pnl": -0.14,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:33:24Z",
+"ticker": "KXBTCD-26NOV1122-T73899.99",
+"side": "no",
+"pnl": 1.51,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:34:25Z",
+"ticker": "KXSOL15M-26NOV112145-45",
+"side": "yes",
+"pnl": -2.29,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:34:36Z",
+"ticker": "KXETH15M-26NOV112145-45",
+"side": "no",
+"pnl": 1.82,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:36:25Z",
+"ticker": "KXXRP15M-26NOV112145-45",
+"side": "yes",
+"pnl": -4.16,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:37:32Z",
+"ticker": "KXSOL15M-26NOV112145-45",
+"side": "yes",
+"pnl": -5.56,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:46:29Z",
+"ticker": "KXXRP15M-26NOV112200-00",
+"side": "yes",
+"pnl": 0.25,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:47:35Z",
+"ticker": "KXETH15M-26NOV112200-00",
+"side": "yes",
+"pnl": 1.38,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:51:47Z",
+"ticker": "KXXRP15M-26NOV112200-00",
+"side": "no",
+"pnl": -0.32,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T02:52:34Z",
+"ticker": "KXSOL15M-26NOV112200-00",
+"side": "yes",
+"pnl": -2.0,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:00:01Z",
+"ticker": "KXETH15M-26NOV112200-00",
+"side": "no",
+"pnl": 0.65,
+"how": "settled"
+},
+{
+"closed": "2026-11-12T03:02:16Z",
+"ticker": "KXBTC15M-26NOV112215-15",
+"side": "yes",
+"pnl": 2.59,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:03:42Z",
+"ticker": "KXSOL15M-26NOV112215-15",
+"side": "yes",
+"pnl": -2.19,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:05:13Z",
+"ticker": "KXETH15M-26NOV112215-15",
+"side": "yes",
+"pnl": -2.02,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:05:15Z",
+"ticker": "KXXRP15M-26NOV112215-15",
+"side": "yes",
+"pnl": -6.88,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:06:27Z",
+"ticker": "KXSOL15M-26NOV112215-15",
+"side": "yes",
+"pnl": 3.17,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:07:20Z",
+"ticker": "KXXRP15M-26NOV112215-15",
+"side": "yes",
+"pnl": -1.16,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:10:39Z",
+"ticker": "KXSOLD-26NOV1123-T83.2499",
+"side": "yes",
+"pnl": -5.36,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:11:43Z",
+"ticker": "KXETHD-26NOV1123-T2054.99",
+"side": "yes",
+"pnl": -1.32,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:18:03Z",
+"ticker": "KXBTCD-26NOV1123-T73599.99",
+"side": "yes",
+"pnl": 2.09,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:20:44Z",
+"ticker": "KXBTC15M-26NOV112230-30",
+"side": "no",
+"pnl": 1.19,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:23:55Z",
+"ticker": "KXSOLD-26NOV1123-T83.2499",
+"side": "yes",
+"pnl": -3.62,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:25:22Z",
+"ticker": "KXXRPD-26NOV1123-T1.0399",
+"side": "yes",
+"pnl": -3.32,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:25:43Z",
+"ticker": "KXSOLD-26NOV1123-T82.9999",
+"side": "yes",
+"pnl": -2.03,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:31:42Z",
+"ticker": "KXSOL15M-26NOV112245-45",
+"side": "yes",
+"pnl": 2.01,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:31:55Z",
+"ticker": "KXBTCD-26NOV1123-T73699.99",
+"side": "no",
+"pnl": -6.43,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:32:51Z",
+"ticker": "KXETH15M-26NOV112245-45",
+"side": "no",
+"pnl": 3.67,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:33:19Z",
+"ticker": "KXBTC15M-26NOV112245-45",
+"side": "no",
+"pnl": 1.07,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:34:01Z",
+"ticker": "KXSOL15M-26NOV112245-45",
+"side": "no",
+"pnl": 3.01,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:34:37Z",
+"ticker": "KXXRP15M-26NOV112245-45",
+"side": "yes",
+"pnl": 1.41,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:36:27Z",
+"ticker": "KXBTC15M-26NOV112245-45",
+"side": "yes",
+"pnl": 2.25,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:37:03Z",
+"ticker": "KXXRP15M-26NOV112245-45",
+"side": "yes",
+"pnl": -10.25,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:48:06Z",
+"ticker": "KXXRP15M-26NOV112300-00",
+"side": "yes",
+"pnl": 1.15,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:49:06Z",
+"ticker": "KXETH15M-26NOV112300-00",
+"side": "yes",
+"pnl": -2.01,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:50:16Z",
+"ticker": "KXSOL15M-26NOV112300-00",
+"side": "yes",
+"pnl": 1.62,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:53:11Z",
+"ticker": "KXBTC15M-26NOV112300-00",
+"side": "no",
+"pnl": 0.94,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T03:53:47Z",
+"ticker": "KXXRP15M-26NOV112300-00",
+"side": "yes",
+"pnl": 0.86,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:02:06Z",
+"ticker": "KXBTC15M-26NOV112315-15",
+"side": "no",
+"pnl": 1.13,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:03:29Z",
+"ticker": "KXETH15M-26NOV112315-15",
+"side": "no",
+"pnl": 1.71,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:04:49Z",
+"ticker": "KXBTC15M-26NOV112315-15",
+"side": "no",
+"pnl": -5.35,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:05:24Z",
+"ticker": "KXETH15M-26NOV112315-15",
+"side": "no",
+"pnl": 0.24,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:09:29Z",
+"ticker": "KXBTCD-26NOV1200-T73699.99",
+"side": "no",
+"pnl": 2.45,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:10:20Z",
+"ticker": "KXSOLD-26NOV1200-T83.2499",
+"side": "yes",
+"pnl": -2.93,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:12:28Z",
+"ticker": "KXBTCD-26NOV1200-T73699.99",
+"side": "yes",
+"pnl": 1.62,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:14:52Z",
+"ticker": "KXSOLD-26NOV1200-T83.2499",
+"side": "yes",
+"pnl": -7.56,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:17:08Z",
+"ticker": "KXBTC15M-26NOV112330-30",
+"side": "yes",
+"pnl": 1.86,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:29:07Z",
+"ticker": "KXXRPD-26NOV1200-T1.0399",
+"side": "yes",
+"pnl": 1.52,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:29:48Z",
+"ticker": "KXBTCD-26NOV1200-T73699.99",
+"side": "yes",
+"pnl": -2.81,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:32:25Z",
+"ticker": "KXETH15M-26NOV112345-45",
+"side": "yes",
+"pnl": -6.07,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:34:39Z",
+"ticker": "KXXRP15M-26NOV112345-45",
+"side": "yes",
+"pnl": -13.53,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:47:11Z",
+"ticker": "KXETH15M-26NOV120000-00",
+"side": "no",
+"pnl": 4.8,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:47:28Z",
+"ticker": "KXBTC15M-26NOV120000-00",
+"side": "no",
+"pnl": 0.95,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:51:15Z",
+"ticker": "KXBTC15M-26NOV120000-00",
+"side": "no",
+"pnl": -11.27,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T04:51:15Z",
+"ticker": "KXETH15M-26NOV120000-00",
+"side": "no",
+"pnl": -4.89,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:01:19Z",
+"ticker": "KXXRP15M-26NOV120015-15",
+"side": "yes",
+"pnl": -7.14,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:02:34Z",
+"ticker": "KXETH15M-26NOV120015-15",
+"side": "yes",
+"pnl": -1.15,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:02:41Z",
+"ticker": "KXSOL15M-26NOV120015-15",
+"side": "yes",
+"pnl": -4.59,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:03:45Z",
+"ticker": "KXXRP15M-26NOV120015-15",
+"side": "yes",
+"pnl": -1.15,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:05:23Z",
+"ticker": "KXSOL15M-26NOV120015-15",
+"side": "yes",
+"pnl": 0.82,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:06:09Z",
+"ticker": "KXBTC15M-26NOV120015-15",
+"side": "yes",
+"pnl": 1.36,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:07:44Z",
+"ticker": "KXXRP15M-26NOV120015-15",
+"side": "yes",
+"pnl": -1.18,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:08:22Z",
+"ticker": "KXETH15M-26NOV120015-15",
+"side": "yes",
+"pnl": -6.77,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:11:56Z",
+"ticker": "KXSOLD-26NOV1201-T82.9999",
+"side": "yes",
+"pnl": -1.41,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:12:27Z",
+"ticker": "KXBTCD-26NOV1201-T73599.99",
+"side": "yes",
+"pnl": -5.29,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:12:52Z",
+"ticker": "KXXRPD-26NOV1201-T1.0399",
+"side": "yes",
+"pnl": -1.46,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:13:27Z",
+"ticker": "KXSOLD-26NOV1201-T82.7499",
+"side": "yes",
+"pnl": -5.26,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:13:52Z",
+"ticker": "KXETHD-26NOV1201-T2044.99",
+"side": "yes",
+"pnl": -0.14,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:15:51Z",
+"ticker": "KXBTCD-26NOV1201-T73499.99",
+"side": "yes",
+"pnl": 0.93,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:19:08Z",
+"ticker": "KXBTCD-26NOV1201-T73499.99",
+"side": "yes",
+"pnl": 0.85,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:20:54Z",
+"ticker": "KXSOLD-26NOV1201-T82.7499",
+"side": "yes",
+"pnl": -2.83,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:21:32Z",
+"ticker": "KXETH15M-26NOV120030-30",
+"side": "yes",
+"pnl": 1.18,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:23:24Z",
+"ticker": "KXBTC15M-26NOV120030-30",
+"side": "yes",
+"pnl": 2.6,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:28:29Z",
+"ticker": "KXBTCD-26NOV1201-T73499.99",
+"side": "no",
+"pnl": -3.29,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:28:46Z",
+"ticker": "KXXRPD-26NOV1201-T1.0399",
+"side": "yes",
+"pnl": 1.06,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:31:13Z",
+"ticker": "KXSOL15M-26NOV120045-45",
+"side": "no",
+"pnl": -3.17,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:32:49Z",
+"ticker": "KXBTC15M-26NOV120045-45",
+"side": "no",
+"pnl": 2.04,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:33:48Z",
+"ticker": "KXETH15M-26NOV120045-45",
+"side": "no",
+"pnl": 2.81,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:33:56Z",
+"ticker": "KXSOL15M-26NOV120045-45",
+"side": "no",
+"pnl": 1.82,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:35:31Z",
+"ticker": "KXBTC15M-26NOV120045-45",
+"side": "yes",
+"pnl": 3.21,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:37:52Z",
+"ticker": "KXXRP15M-26NOV120045-45",
+"side": "no",
+"pnl": -0.27,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:51:29Z",
+"ticker": "KXSOL15M-26NOV120100-00",
+"side": "yes",
+"pnl": -3.11,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T05:55:50Z",
+"ticker": "KXETH15M-26NOV120100-00",
+"side": "yes",
+"pnl": 1.8,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:00:01Z",
+"ticker": "KXXRP15M-26NOV120100-00",
+"side": "no",
+"pnl": 0.63,
+"how": "settled"
+},
+{
+"closed": "2026-11-12T06:02:49Z",
+"ticker": "KXBTC15M-26NOV120115-15",
+"side": "no",
+"pnl": 10.84,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:02:49Z",
+"ticker": "KXETH15M-26NOV120115-15",
+"side": "no",
+"pnl": 4.19,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:05:02Z",
+"ticker": "KXXRP15M-26NOV120115-15",
+"side": "no",
+"pnl": -2.64,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:06:05Z",
+"ticker": "KXSOL15M-26NOV120115-15",
+"side": "no",
+"pnl": 1.32,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:06:49Z",
+"ticker": "KXETH15M-26NOV120115-15",
+"side": "no",
+"pnl": 1.35,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:07:50Z",
+"ticker": "KXBTC15M-26NOV120115-15",
+"side": "yes",
+"pnl": -6.69,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:17:48Z",
+"ticker": "KXXRP15M-26NOV120130-30",
+"side": "yes",
+"pnl": -0.15,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:18:44Z",
+"ticker": "KXBTC15M-26NOV120130-30",
+"side": "no",
+"pnl": 0.9,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:20:55Z",
+"ticker": "KXETH15M-26NOV120130-30",
+"side": "no",
+"pnl": 1.03,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:23:33Z",
+"ticker": "KXBTC15M-26NOV120130-30",
+"side": "no",
+"pnl": -2.68,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:29:02Z",
+"ticker": "KXXRP15M-26NOV120130-30",
+"side": "yes",
+"pnl": -0.15,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:33:07Z",
+"ticker": "KXBTC15M-26NOV120145-45",
+"side": "yes",
+"pnl": -9.59,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:33:08Z",
+"ticker": "KXXRP15M-26NOV120145-45",
+"side": "yes",
+"pnl": -4.72,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:37:30Z",
+"ticker": "KXSOL15M-26NOV120145-45",
+"side": "yes",
+"pnl": -13.9,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:50:13Z",
+"ticker": "KXXRP15M-26NOV120200-00",
+"side": "yes",
+"pnl": -6.74,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:51:57Z",
+"ticker": "KXBTC15M-26NOV120200-00",
+"side": "yes",
+"pnl": 2.15,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:51:57Z",
+"ticker": "KXETH15M-26NOV120200-00",
+"side": "yes",
+"pnl": 2.07,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T06:55:28Z",
+"ticker": "KXSOL15M-26NOV120200-00",
+"side": "yes",
+"pnl": -13.24,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:02:28Z",
+"ticker": "KXSOL15M-26NOV120215-15",
+"side": "no",
+"pnl": -5.45,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:16:15Z",
+"ticker": "KXBTC15M-26NOV120230-30",
+"side": "yes",
+"pnl": 1.89,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:18:21Z",
+"ticker": "KXETH15M-26NOV120230-30",
+"side": "yes",
+"pnl": -2.75,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:20:38Z",
+"ticker": "KXETH15M-26NOV120230-30",
+"side": "no",
+"pnl": 0.63,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:21:17Z",
+"ticker": "KXXRP15M-26NOV120230-30",
+"side": "yes",
+"pnl": 1.53,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:22:13Z",
+"ticker": "KXETH15M-26NOV120230-30",
+"side": "no",
+"pnl": 1.0,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:23:13Z",
+"ticker": "KXSOL15M-26NOV120230-30",
+"side": "no",
+"pnl": 0.45,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:32:12Z",
+"ticker": "KXXRP15M-26NOV120245-45",
+"side": "no",
+"pnl": -0.95,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:32:18Z",
+"ticker": "KXSOL15M-26NOV120245-45",
+"side": "yes",
+"pnl": 1.55,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:34:44Z",
+"ticker": "KXSOL15M-26NOV120245-45",
+"side": "no",
+"pnl": -2.64,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:34:58Z",
+"ticker": "KXETH15M-26NOV120245-45",
+"side": "no",
+"pnl": -1.4,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:37:30Z",
+"ticker": "KXBTC15M-26NOV120245-45",
+"side": "no",
+"pnl": 3.21,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:37:40Z",
+"ticker": "KXETH15M-26NOV120245-45",
+"side": "no",
+"pnl": 1.55,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T07:51:18Z",
+"ticker": "KXBTC15M-26NOV120300-00",
+"side": "no",
+"pnl": 2.73,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:01:55Z",
+"ticker": "KXBTC15M-26NOV120515-15",
+"side": "no",
+"pnl": 1.48,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:03:17Z",
+"ticker": "KXSOL15M-26NOV120515-15",
+"side": "no",
+"pnl": -4.84,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:04:49Z",
+"ticker": "KXETH15M-26NOV120515-15",
+"side": "no",
+"pnl": 0.52,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:05:57Z",
+"ticker": "KXXRP15M-26NOV120300-00",
+"side": "yes",
+"pnl": 0.36,
+"how": "settled"
+},
+{
+"closed": "2026-11-12T10:07:02Z",
+"ticker": "KXSOL15M-26NOV120515-15",
+"side": "no",
+"pnl": 4.72,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:09:42Z",
+"ticker": "KXXRP15M-26NOV120515-15",
+"side": "no",
+"pnl": 8.34,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:12:43Z",
+"ticker": "KXSOLD-26NOV1206-T82.9999",
+"side": "yes",
+"pnl": -2.65,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:16:40Z",
+"ticker": "KXETHD-26NOV1206-T2039.99",
+"side": "yes",
+"pnl": 1.56,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:17:22Z",
+"ticker": "KXBTCD-26NOV1206-T73299.99",
+"side": "yes",
+"pnl": 1.75,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:20:22Z",
+"ticker": "KXXRP15M-26NOV120530-30",
+"side": "no",
+"pnl": 1.73,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:21:22Z",
+"ticker": "KXETHD-26NOV1206-T2044.99",
+"side": "no",
+"pnl": -3.31,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:24:39Z",
+"ticker": "KXBTCD-26NOV1206-T73399.99",
+"side": "no",
+"pnl": -4.48,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:24:42Z",
+"ticker": "KXSOLD-26NOV1206-T83.2499",
+"side": "yes",
+"pnl": 1.18,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:35:27Z",
+"ticker": "KXSOL15M-26NOV120545-45",
+"side": "yes",
+"pnl": 2.25,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:38:17Z",
+"ticker": "KXBTC15M-26NOV120545-45",
+"side": "no",
+"pnl": 1.65,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:47:49Z",
+"ticker": "KXETH15M-26NOV120600-00",
+"side": "yes",
+"pnl": -5.5,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:52:28Z",
+"ticker": "KXSOL15M-26NOV120600-00",
+"side": "yes",
+"pnl": -7.57,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T10:54:06Z",
+"ticker": "KXBTC15M-26NOV120600-00",
+"side": "yes",
+"pnl": -5.88,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:01:45Z",
+"ticker": "KXXRPD-26NOV1206-T1.0599",
+"side": "no",
+"pnl": 1.59,
+"how": "settled"
+},
+{
+"closed": "2026-11-12T11:05:29Z",
+"ticker": "KXETH15M-26NOV120615-15",
+"side": "yes",
+"pnl": -4.01,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:05:35Z",
+"ticker": "KXBTC15M-26NOV120615-15",
+"side": "no",
+"pnl": 2.6,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:07:32Z",
+"ticker": "KXBTC15M-26NOV120615-15",
+"side": "yes",
+"pnl": -4.24,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:07:33Z",
+"ticker": "KXXRP15M-26NOV120615-15",
+"side": "yes",
+"pnl": -6.99,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:16:21Z",
+"ticker": "KXBTCD-26NOV1207-T73299.99",
+"side": "yes",
+"pnl": -3.27,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:16:42Z",
+"ticker": "KXETHD-26NOV1207-T2039.99",
+"side": "yes",
+"pnl": -4.46,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:22:54Z",
+"ticker": "KXSOLD-26NOV1207-T82.7499",
+"side": "yes",
+"pnl": 1.71,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:22:56Z",
+"ticker": "KXXRP15M-26NOV120630-30",
+"side": "yes",
+"pnl": -8.24,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:25:30Z",
+"ticker": "KXSOLD-26NOV1207-T82.7499",
+"side": "yes",
+"pnl": -3.29,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:27:43Z",
+"ticker": "KXBTCD-26NOV1207-T73299.99",
+"side": "yes",
+"pnl": -4.31,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:29:00Z",
+"ticker": "KXETHD-26NOV1207-T2039.99",
+"side": "yes",
+"pnl": -1.51,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:29:08Z",
+"ticker": "KXSOLD-26NOV1207-T82.7499",
+"side": "yes",
+"pnl": -3.28,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:30:14Z",
+"ticker": "KXXRPD-26NOV1207-T1.0399",
+"side": "yes",
+"pnl": -2.57,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:33:37Z",
+"ticker": "KXBTC15M-26NOV120645-45",
+"side": "yes",
+"pnl": 1.65,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:33:42Z",
+"ticker": "KXXRP15M-26NOV120645-45",
+"side": "yes",
+"pnl": 0.95,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:48:54Z",
+"ticker": "KXBTC15M-26NOV120700-00",
+"side": "yes",
+"pnl": 1.94,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:49:40Z",
+"ticker": "KXETH15M-26NOV120700-00",
+"side": "yes",
+"pnl": -4.49,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:49:47Z",
+"ticker": "KXSOL15M-26NOV120700-00",
+"side": "yes",
+"pnl": -3.11,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:51:22Z",
+"ticker": "KXBTC15M-26NOV120700-00",
+"side": "yes",
+"pnl": 2.97,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T11:52:12Z",
+"ticker": "KXXRP15M-26NOV120700-00",
+"side": "no",
+"pnl": 2.23,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:04:05Z",
+"ticker": "KXXRP15M-26NOV120715-15",
+"side": "yes",
+"pnl": -5.42,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:04:42Z",
+"ticker": "KXETH15M-26NOV120715-15",
+"side": "yes",
+"pnl": -5.26,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:06:18Z",
+"ticker": "KXXRP15M-26NOV120715-15",
+"side": "yes",
+"pnl": -2.99,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:06:42Z",
+"ticker": "KXETH15M-26NOV120715-15",
+"side": "yes",
+"pnl": -4.39,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:11:19Z",
+"ticker": "KXBTCD-26NOV1208-T72799.99",
+"side": "yes",
+"pnl": 2.47,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:11:53Z",
+"ticker": "KXXRPD-26NOV1208-T1.0399",
+"side": "yes",
+"pnl": 3.03,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:16:18Z",
+"ticker": "KXBTCD-26NOV1208-T72999.99",
+"side": "no",
+"pnl": 0.9,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:17:37Z",
+"ticker": "KXETHD-26NOV1208-T2024.99",
+"side": "no",
+"pnl": 1.79,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:21:22Z",
+"ticker": "KXBTC15M-26NOV120730-30",
+"side": "no",
+"pnl": 1.9,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:25:10Z",
+"ticker": "KXSOLD-26NOV1208-T82.4999",
+"side": "yes",
+"pnl": -4.42,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:25:16Z",
+"ticker": "KXETH15M-26NOV120730-30",
+"side": "no",
+"pnl": 1.56,
+"how": "sold"
+},
+{
+"closed": "2026-11-12T12:27:38Z",
+"ticker": "KXSOLD-26NOV1208-T82.2499",
+"side": "yes",
+"pnl": -7.15,
+"how": "sold"
+}
+]

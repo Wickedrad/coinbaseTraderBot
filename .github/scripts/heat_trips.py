@@ -124,6 +124,8 @@ def main():
         return 2
     args = sys.argv[1:]
     journal = None
+    detail = '--detail' in args
+    args = [a for a in args if a != '--detail']
     if '--journal' in args:
         i = args.index('--journal')
         journal = args[i + 1] if i + 1 < len(args) else None
@@ -205,6 +207,17 @@ def main():
     print('\ncalls not entered: %d' % len(skips))
     for k, v in sorted(reasons.items(), key=lambda kv: (not kv[0].startswith('re-entry: '), -kv[1]))[:14]:
         print('  %5d  %s' % (v, k))
+
+    if detail:
+        # Loser study (Nov 12): every entry ruled with a plan, every plan record and every trip close, one JSON line each.
+        print('\n== DETAIL (heat entries, plan records, trip closes; JSON lines, _ts = seconds since the epoch)')
+        for t, k, d in recs:
+            if k == 'heat' and ('plan' in d or d.get('event') in ('closed', 'opened')):
+                print('DETAIL heat %s' % json.dumps(dict(d, _ts=t), separators=(',', ':')))
+            elif k == 'plan':
+                print('DETAIL plan %s' % json.dumps(dict(d, _ts=t), separators=(',', ':')))
+        for t, d in closed:
+            print('DETAIL trip %s' % json.dumps(dict(d, _ts=t), separators=(',', ':')))
     return 0
 
 

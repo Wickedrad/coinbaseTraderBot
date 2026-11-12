@@ -287,6 +287,11 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v5
+      # Heat loser study (Nov 12 2026, this branch only): the traded markets' 1-minute candles and the coins' spot candles
+      # from public APIs, on this runner. Nothing on the server.
+      - name: Heat loser study price paths (public Kalshi and Coinbase APIs, runner only)
+        if: github.ref_name == 'claude/project-thread-jovhyd-heat-losers'
+        run: python3 -I research/heat-losers/paths.py research/heat-losers/trips.json || true
       - name: Upload the report scripts
         if: inputs.timings == 'true'
         uses: appleboy/scp-action@v0.1.7
@@ -393,7 +398,7 @@ jobs:
               # Each round trip's own result is in the bot's log line ("[heat] round trip closed"); the audit's closed record
               # carries the lane book's running total.
               journalctl -u kalshi-bot --since "24 hours ago" --no-pager -o cat 2>/dev/null | grep -F '[heat] round trip closed' > "/tmp/diag-heat-$DIAG_RUN/trips.log" || true
-              nice -n 19 python3 -I "$HT" ~/bot/data 24 --journal "/tmp/diag-heat-$DIAG_RUN/trips.log" || true
+              nice -n 19 python3 -I "$HT" ~/bot/data 24 --journal "/tmp/diag-heat-$DIAG_RUN/trips.log" --detail || true
             else
               echo "(the heat trip report was not uploaded)"
             fi
