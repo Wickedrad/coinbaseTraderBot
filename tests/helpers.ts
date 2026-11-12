@@ -1,3 +1,4 @@
+import './tmpScope'; // first: one temp folder per run, removed at exit
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -5,6 +6,7 @@ import { AuditLog } from '../bot/audit/auditLog';
 import type { ExchangeStatusMonitor } from '../bot/kalshi/exchangeStatus';
 import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles';
 
+/** A fresh folder inside this run's temp folder (tests/tmpScope.ts), removed with it when the run ends. */
 export function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'bot-test-'));
 }

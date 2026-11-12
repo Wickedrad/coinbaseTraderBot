@@ -5,6 +5,7 @@
 // hold, its carry, one heat entry per coin per clock hour across both horizons (the hotter weight, a tie to 4h), and
 // the day's direction (1440-minute calls, HEAT_PERPS_DAILY): no offer and no entry against it, never a gate on charts. The harness is the one tests/setups.test.ts uses: synthetic candles, a candle set, a perp
 // hub with one quote, a fake gateway that only knows the balance, and a rule-only setup model.
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs';

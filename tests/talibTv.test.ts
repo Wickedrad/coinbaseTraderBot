@@ -1,6 +1,7 @@
 // TA-Lib as the main indicator engine (bot/ta/talib.ts), and TradingView history (research/history/
 // tradingview.ts): hole finding, index needs, fetch + import, and the slow context series (TOTAL3,
 // OTHERS.D, RTY) in the TA network's daily inputs.
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs';

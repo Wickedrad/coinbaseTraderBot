@@ -1,4 +1,5 @@
 // deploy/ensure-env.sh moves a server bot.env off pinned old defaults on every deploy. Run it against a scratch HOME.
+import './tmpScope'; // one temp folder per run, removed at exit
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
