@@ -2,7 +2,7 @@
 """Exit study summary of a tennis TA sweep run (information only; nothing here judges or cuts an arm).
 
 Reads a run's shard files (out/a-s<stage>-<k>-<j>.json.gz, as research/tennisTaSweep.ts writes them) and prints, per
-F-arm (config x fill model), the episodes by ENTRY leg: the underdog leg (the direction-found hot spot) and the favourite
+F-arm (config x fill model) and coin-placebo arm, the episodes by ENTRY leg: the underdog leg (the direction-found hot spot) and the favourite
 leg separately, because an exit setting moves the favourite leg's entries through the caps and the end-entry block, so
 an arm's total is not an exit effect. For the underdog leg: entries, wins (realized net > 0), net after fees, net per
 entry, money deployed (first fill price x most contracts held), net per $100 deployed, median minutes held, settlement
@@ -54,13 +54,16 @@ def stats(eps):
     n = len(eps)
     net = sum(float(e.get('pnl') or 0) for e in eps)
     dep = sum(float(e.get('px') or 0) * float(e.get('n') or 0) for e in eps)
-    wins = sum(1 for e in eps if float(e.get('pnl') or 0) > 0)
+    pn = [float(e.get('pnl') or 0) for e in eps]
+    wins = sum(1 for x in pn if x > 0)
+    won, lost = [x for x in pn if x > 0], [x for x in pn if x <= 0]
     holds = sorted(float(e.get('hold') or 0) for e in eps)
     med = holds[len(holds) // 2] / 60 if holds else 0.0
     br = sum(1 for e in eps if e.get('br'))
     xs = Counter(str(e.get('x') or '') for e in eps).most_common(3)
     return {'n': n, 'net': net, 'per': net / n if n else 0.0, 'dep': dep, 'per100': 100 * net / dep if dep else 0.0,
-            'win': wins / n if n else 0.0, 'med_min': med, 'br': br, 'xs': xs}
+            'win': wins / n if n else 0.0, 'med_min': med, 'br': br, 'xs': xs,
+            'avg_win': sum(won) / len(won) if won else 0.0, 'avg_loss': sum(lost) / len(lost) if lost else 0.0}
 
 
 def main(argv=None):
@@ -77,7 +80,7 @@ def main(argv=None):
         meta, runs = episodes(p)
         metas.append(meta)
         for rid, r in runs.items():
-            if r['window'] or r['placebo']:
+            if r['window']:
                 continue
             arm = arms.setdefault(rid, {'fill': r['fill'], 'eps': []})
             arm['eps'] += r['eps']
@@ -96,14 +99,15 @@ def main(argv=None):
     lines = [f"## Exit study summary{(' of run ' + a.run) if a.run else ''} (information only)", '',
              f"{len(a.shards)} shard file(s), {len(arms)} F-arm(s), shard days {days[0] if days else '?'} to {days[-1] if days else '?'}. "
              'Episodes by ENTRY leg; net is realized after fees (settlement included); deployed = first fill price x most contracts held. '
-             'Sorted by underdog net per entry.' + (f" Anchor {a.anchor}: underdog {anchor[2]['n']} entries, ${anchor[2]['net']:,.2f}, ${anchor[2]['per']:+.3f} an entry." if anchor else ''),
+             'Sorted by underdog net per entry. Arms ending |coin are the coin placebo (fill F1; the confluence readings replaced by '
+             'past readings of other matches): entries at random moments with the same exits, the random baseline.' + (f" Anchor {a.anchor}: underdog {anchor[2]['n']} entries, ${anchor[2]['net']:,.2f}, ${anchor[2]['per']:+.3f} an entry." if anchor else ''),
              '',
-             '| arm | fill | ud entries | ud win % | ud net | ud $/entry | vs anchor | ud deployed | ud net per $100 | ud med min held | ud breaches | ud top exits | fav entries | fav net | all net |',
-             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+             '| arm | fill | ud entries | ud win % | ud avg win | ud avg loss | ud net | ud $/entry | vs anchor | ud deployed | ud net per $100 | ud med min held | ud breaches | ud top exits | fav entries | fav net | all net |',
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for rid, fill, u, f, t in rows:
         vs = f"{u['per'] - anchor[2]['per']:+.3f}" if anchor else '-'
         xs = ', '.join(f'{x} {c}' for x, c in u['xs'])
-        lines.append(f"| {rid.replace('|', chr(92) + '|')} | {fill} | {u['n']} | {100 * u['win']:.1f} | ${u['net']:,.2f} | {u['per']:+.3f} | {vs} | ${u['dep']:,.0f} | "
+        lines.append(f"| {rid.replace('|', chr(92) + '|')} | {fill} | {u['n']} | {100 * u['win']:.1f} | {u['avg_win']:+.2f} | {u['avg_loss']:+.2f} | ${u['net']:,.2f} | {u['per']:+.3f} | {vs} | ${u['dep']:,.0f} | "
                      f"{u['per100']:+.2f} | {u['med_min']:.1f} | {u['br']} | {xs} | {f['n']} | ${f['net']:,.2f} | ${t['net']:,.2f} |")
     detail = [r[0] for r in rows] if a.detail.strip() == 'all' else [x for x in a.detail.split(',') if x in arms]
     if detail:

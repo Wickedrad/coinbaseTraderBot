@@ -1,5 +1,22 @@
 [
   {
+    "id": "A|s2|hs1prod|F1",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120
+    },
+    "fill": "F1"
+  },
+  {
+    "id": "A|s2|hs1prod|coin",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120
+    },
+    "fill": "F1",
+    "placebo": "coin"
+  },
+  {
     "id": "A|s2|hs1prod-tk|F1",
     "overrides": {
       "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
@@ -9,13 +26,127 @@
     "fill": "F1"
   },
   {
-    "id": "A|s2|hs1prod-tk|F0",
+    "id": "A|s2|hs1prod-tk|coin",
     "overrides": {
       "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
       "TENNIS_CONF_WINDOW_SEC": 120,
       "HARNESS_TAKER_ENTRY": true
     },
-    "fill": "F0"
+    "fill": "F1",
+    "placebo": "coin"
+  },
+  {
+    "id": "A|s2|fp0|F1",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 0
+    },
+    "fill": "F1"
+  },
+  {
+    "id": "A|s2|fp0|coin",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 0
+    },
+    "fill": "F1",
+    "placebo": "coin"
+  },
+  {
+    "id": "A|s2|fp0-tk|F1",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 0,
+      "HARNESS_TAKER_ENTRY": true
+    },
+    "fill": "F1"
+  },
+  {
+    "id": "A|s2|fp0-tk|coin",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 0,
+      "HARNESS_TAKER_ENTRY": true
+    },
+    "fill": "F1",
+    "placebo": "coin"
+  },
+  {
+    "id": "A|s2|mkprod|F1",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_TRAIL": false,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
+      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7
+    },
+    "fill": "F1"
+  },
+  {
+    "id": "A|s2|mkprod|coin",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_TRAIL": false,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
+      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7
+    },
+    "fill": "F1",
+    "placebo": "coin"
+  },
+  {
+    "id": "A|s2|mkprod-tk|F1",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_TRAIL": false,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
+      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
+      "HARNESS_TAKER_ENTRY": true
+    },
+    "fill": "F1"
+  },
+  {
+    "id": "A|s2|mkprod-tk|coin",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_TRAIL": false,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
+      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
+      "HARNESS_TAKER_ENTRY": true
+    },
+    "fill": "F1",
+    "placebo": "coin"
+  },
+  {
+    "id": "A|s2|hold70|F1",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_TP_PCT": 5,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
+      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
+      "PACER_MIN_TAKE_USD": 10000
+    },
+    "fill": "F1"
+  },
+  {
+    "id": "A|s2|hold70|coin",
+    "overrides": {
+      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
+      "TENNIS_CONF_WINDOW_SEC": 120,
+      "TENNIS_TP_PCT": 5,
+      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
+      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
+      "PACER_MIN_TAKE_USD": 10000
+    },
+    "fill": "F1",
+    "placebo": "coin"
   },
   {
     "id": "A|s2|hold70-tk|F1",
@@ -31,7 +162,7 @@
     "fill": "F1"
   },
   {
-    "id": "A|s2|hold70-tk|F0",
+    "id": "A|s2|hold70-tk|coin",
     "overrides": {
       "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
       "TENNIS_CONF_WINDOW_SEC": 120,
@@ -41,98 +172,7 @@
       "PACER_MIN_TAKE_USD": 10000,
       "HARNESS_TAKER_ENTRY": true
     },
-    "fill": "F0"
-  },
-  {
-    "id": "A|s2|mk25pct-tk|F1",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "TENNIS_TRAIL": false,
-      "TENNIS_TP_CENTS": 0.02,
-      "TENNIS_TP_PCT": 0.25,
-      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
-      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
-      "HARNESS_TAKER_ENTRY": true
-    },
-    "fill": "F1"
-  },
-  {
-    "id": "A|s2|mk25pct-tk|F0",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "TENNIS_TRAIL": false,
-      "TENNIS_TP_CENTS": 0.02,
-      "TENNIS_TP_PCT": 0.25,
-      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
-      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
-      "HARNESS_TAKER_ENTRY": true
-    },
-    "fill": "F0"
-  },
-  {
-    "id": "A|s2|mkprod-tk|F1",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "TENNIS_TRAIL": false,
-      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
-      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
-      "HARNESS_TAKER_ENTRY": true
-    },
-    "fill": "F1"
-  },
-  {
-    "id": "A|s2|mkprod-tk|F0",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "TENNIS_TRAIL": false,
-      "TENNIS_UNDERDOG_LATE_PROGRESS": 1,
-      "TENNIS_UNDERDOG_CUT_PROGRESS": 0.7,
-      "HARNESS_TAKER_ENTRY": true
-    },
-    "fill": "F0"
-  },
-  {
-    "id": "A|s2|fp0-tk|F1",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "TENNIS_UNDERDOG_LATE_PROGRESS": 0,
-      "HARNESS_TAKER_ENTRY": true
-    },
-    "fill": "F1"
-  },
-  {
-    "id": "A|s2|fp0-tk|F0",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "TENNIS_UNDERDOG_LATE_PROGRESS": 0,
-      "HARNESS_TAKER_ENTRY": true
-    },
-    "fill": "F0"
-  },
-  {
-    "id": "A|s2|lstop60-tk|F1",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "HARNESS_LOSER_STOP": 0.6,
-      "HARNESS_TAKER_ENTRY": true
-    },
-    "fill": "F1"
-  },
-  {
-    "id": "A|s2|lstop60-tk|F0",
-    "overrides": {
-      "TENNIS_CONF_MOMENTUM_CENTS": 0.02,
-      "TENNIS_CONF_WINDOW_SEC": 120,
-      "HARNESS_LOSER_STOP": 0.6,
-      "HARNESS_TAKER_ENTRY": true
-    },
-    "fill": "F0"
+    "fill": "F1",
+    "placebo": "coin"
   }
 ]

@@ -2,5 +2,5 @@
   "stage": "2",
   "pool": "disc",
   "shards": 8,
-  "note": "Taker-entry check (calendar line 10r): the six exit settings of run 43173887974 with HARNESS_TAKER_ENTRY (each entry a taker buy at the ask, as the one test took its instance), fill F1 and F0. Information only, H-DEV."
+  "note": "Random baseline (calendar line 10t): four exit settings (hs1prod, fp0, mkprod, hold70), maker and taker entry, each fill F1 with its coin placebo (confluence readings replaced by past readings of other matches: entries at random moments, same exits). Information only, H-DEV."
 }
