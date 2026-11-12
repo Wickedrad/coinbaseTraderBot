@@ -1409,7 +1409,7 @@ export class Engine {
   /** The last kill-switch exit attempt per market (tennisKillExits, cryptoKillExits). */
   private readonly killExitTs = new Map<string, number>();
   /** Live tennis scores (TENNIS_SCORE_FEED=kalshi): milestone per event, last poll, raw payload. */
-  private readonly scores = new Map<string, { milestone?: { id: string; type: string } | null; polledTs: number; score?: TennisScore; raw?: unknown; error?: string; pAtPoll?: number; prev?: LiveTennisMatch; breaks?: [number, number]; breaksTotal?: [number, number] }>();
+  private readonly scores = new Map<string, { milestone?: { id: string; type: string } | null; polledTs: number; score?: TennisScore; scoreAt?: number; named?: boolean; raw?: unknown; error?: string; pAtPoll?: number; prev?: LiveTennisMatch; breaks?: [number, number]; breaksTotal?: [number, number] }>();
   readonly tennisStatus = new Map<string, { event: string; phase: string; fairA?: number; pA?: number; progress: number; progressDetail?: Record<string, unknown>; score?: TennisScore; scoreRaw?: unknown; liveSince?: number; notes: string[]; tickers: string[]; updatedTs: number; trailingStops?: Record<string, number>; confluence?: Record<string, unknown> }>();
 
   /** Tennis budget use: worst-case loss of all tennis positions + resting orders vs the 25% cap. */
@@ -1435,6 +1435,7 @@ export class Engine {
       const ld = await rest.getLiveData(st.milestone.type, st.milestone.id);
       st.raw = ld?.details;
       st.score = parseTennisScore(ld?.details);
+      if (st.score) st.scoreAt = now;
       st.error = st.score ? undefined : 'live data not recognised as a tennis score (see scoreRaw)';
     } catch (e) {
       st.error = `score feed: ${(e as Error).message}`;
@@ -1464,6 +1465,13 @@ export class Engine {
     if (!slate) { st.error = `live tennis: no slate (${client.lastError ?? 'budget exhausted or no live matches'}; ${client.usage().callsToday}/${client.usage().dailyLimit} calls today)`; return st; }
     const hit = findMatch(slate, ms[0]?.title ?? '', ms[1]?.title);
     if (!hit) { st.error = 'live tennis: match not found in the live slate (names did not match the Kalshi titles)'; return st; }
+    if (!hit.named) {
+      // Only one title named a player of this live match: a surname two players share can pick another match, so its score
+      // is not used at all (not for the progress, the cuts, the fair value or the win chance). The status says why.
+      st.raw = undefined; st.named = false; st.score = undefined; st.scoreAt = undefined; st.prev = undefined;
+      st.error = 'live tennis: only one of the two players matched a live match (a shared surname?): its score is not used';
+      return st;
+    }
     const score = toTennisScore(hit.match, hit.flip);
     if (st.prev && st.prev.id === hit.match.id) {
       const d = diffScore(st.prev, hit.match);
@@ -1471,7 +1479,8 @@ export class Engine {
       st.breaks = b;
       st.breaksTotal = [(st.breaksTotal?.[0] ?? 0) + b[0], (st.breaksTotal?.[1] ?? 0) + b[1]];
     }
-    st.prev = hit.match; st.raw = hit.match; st.score = score; st.error = score ? undefined : 'live tennis: score not recognised';
+    st.prev = hit.match; st.raw = hit.match; st.score = score; st.named = hit.named; st.error = score ? undefined : 'live tennis: score not recognised';
+    if (score) st.scoreAt = now;
     if (score) this.d.md.record('tennis_score', { event, ...score, tiebreak: hit.match.is_tiebreak, breaks: st.breaks ?? null, breaksTotal: st.breaksTotal ?? null, matchId: hit.match.id });
     return st;
   }
@@ -1526,9 +1535,14 @@ export class Engine {
       const fairA = this.tennisFairFor(event, tv, ms[0].ticker);
       // Steven's profit rules on tennis as on every contract type: the quota snipe, and the last share of the match
       // (TENNIS_NO_EXIT_BEFORE_END_FRAC, 30%, by its progress: the live score against the format's sets, else the time and
-      // information clocks) riding in profit.
-      const out = decideMatch(tracker, { event, now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score, fairA }, T,
-        { bankroll, tennisRisk: totals.total, matchRisk: totals.window }, ms[0].tickSize, { pacerUsd: this.pacer.neededUsd(now), settleFrac: T.settleFrac, endLoserCut: T.endLoserCut, endEntryMargin: T.endEntryMargin, floorMode: this.d.cfg.strategy.pacer.floor, floors: this.quotaFloors,
+      // information clocks) riding in profit until the win chance turns (TENNIS_PROB_TURN). Out of profit: the loser cut by
+      // progress (20c at the start, 10c at 60%, 3c from 85%), and in the last 10% (TENNIS_END_CUT_FRAC) the end cut (Nov 12).
+      const out = decideMatch(tracker, { event, now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score,
+        // Only the Live Tennis feed names the score's players, and only when both market titles matched its two players (a
+        // surname two players share can pick the wrong match); Kalshi's live data does not say which player is home.
+        scoreAt: sc?.scoreAt, scoreOriented: T.scoreFeed === 'livetennis' && sc?.named === true, fairA }, T,
+        { bankroll, tennisRisk: totals.total, matchRisk: totals.window }, ms[0].tickSize, { pacerUsd: this.pacer.neededUsd(now), settleFrac: T.settleFrac, endLoserCut: T.endLoserCut, endEntryMargin: T.endEntryMargin, endCutFrac: T.endCutFrac,
+          loserCut: T.loserCut, loserCutOpen: T.loserCutOpen, loserCutLate: T.loserCutLate, probTurn: T.probTurn, floorMode: this.d.cfg.strategy.pacer.floor, floors: this.quotaFloors,
           floorTicks: this.d.cfg.strategy.pacer.floorTicks });
       if (tradeable) for (const p of out.plans) if (p.leg === 'quota_snipe') this.d.audit.write('pacer', { event: 'snipe', ticker: p.ticker, book: 'tennis', why: p.why, count: p.count, price: p.price, ...this.pacer.status(now) });
       // Exit-in-profit curve (strategy/sinuousExit.ts) on each held player market: a take-profit (the target, the
@@ -1555,7 +1569,7 @@ export class Engine {
           const g = curve.check(p.ticker, {
             sidePrice: p.price, count: p.count, exitFeePer: orderFee(p.count, p.price, true, md.feesFor(p.ticker)) / p.count,
             entrySidePrice: mk.avgEntry, entryFeePer: entryFeePer(p.ticker, mk.position),
-            protective: trailBroken || p.leg === 'underdog_cut' || p.leg === 'underdog_stop' || p.leg === 'fav_stop' || p.leg === 'end_cut',
+            protective: trailBroken || p.leg === 'underdog_cut' || p.leg === 'underdog_stop' || p.leg === 'fav_stop' || p.leg === 'end_cut' || p.leg === 'loser_cut' || p.leg === 'prob_turn',
           }, now);
           if (g.note) out.notes.push(g.note);
           return g.allow;
