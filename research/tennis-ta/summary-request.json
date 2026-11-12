@@ -3,5 +3,5 @@
   "anchor": "A|s2|hs1prod|F1",
   "detail": "all",
   "tape": "A|s2|hs1prod|F1,A|s2|fp0|F1,A|s2|mkprod|F1",
-  "note": "Raw-tape audit, second pass (calendar 10x): adds the entry's phase, minutes from the published start and minutes to the market's end. Information only."
+  "note": "Raw-tape audit, third pass (calendar 10y): adds the share of entries whose market stopped trading before the published start. Information only."
 }

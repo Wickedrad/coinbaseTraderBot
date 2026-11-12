@@ -200,9 +200,10 @@ def main(argv=None):
     lines += ['', '### When the entries came: phase the sim saw, published start, and the match\'s end on the tape', '',
               'Phase = the sim\'s label at entry (pre = it saw no live match yet). Minutes from start = entry minus the market\'s '
               'published start (negative = before it). Minutes to end = entry to the market\'s last print (about when the match '
-              'ended). A pre-match underdog entry normally has a whole match (1.5 to 3 h) ahead of it.', '',
-              '| arm | exit | trades | pre share | median min from published start | median min to end of tape | ends within 45 min | ends within 90 min |',
-              '|---|---|---|---|---|---|---|---|']
+              'ended). A pre-match underdog entry normally has a whole match (1.5 to 3 h) ahead of it. The last column: the '
+              'market stopped trading before the start the history publishes, so that start cannot be the match\'s start.', '',
+              '| arm | exit | trades | pre share | median min from published start | median min to end of tape | ends within 45 min | ends within 90 min | tape ends before the published start |',
+              '|---|---|---|---|---|---|---|---|---|']
     for rid, rows in sorted(by_arm.items()):
         legs = defaultdict(list)
         for e, r in rows:
@@ -213,7 +214,16 @@ def main(argv=None):
             fs = [r['from_start'] for e, r in rr if r['from_start'] is not None and e.get('start_pub')]
             te = [r['to_end'] for _, r in rr]
             lines.append(f"| {rid.replace('|', chr(92) + '|')} | {x} | {n} | {pct(sum(1 for e, _ in rr if e.get('ph') == 'pre'), n)} | {med(fs)} | {med(te)} | "
-                         f"{pct(sum(1 for t in te if t <= 45), n)} | {pct(sum(1 for t in te if t <= 90), n)} |")
+                         f"{pct(sum(1 for t in te if t <= 45), n)} | {pct(sum(1 for t in te if t <= 90), n)} | "
+                         f"{pct(sum(1 for e, r in rr if r['from_start'] is not None and e.get('start_pub') and r['to_end'] < -r['from_start']), n)} |")
+        all_rr = [(e, r) for e, r in rows if r]
+        n = len(all_rr)
+        if n:
+            fs = [r['from_start'] for e, r in all_rr if r['from_start'] is not None and e.get('start_pub')]
+            te = [r['to_end'] for _, r in all_rr]
+            lines.append(f"| {rid.replace('|', chr(92) + '|')} | **all** | {n} | {pct(sum(1 for e, _ in all_rr if e.get('ph') == 'pre'), n)} | {med(fs)} | {med(te)} | "
+                         f"{pct(sum(1 for t in te if t <= 45), n)} | {pct(sum(1 for t in te if t <= 90), n)} | "
+                         f"{pct(sum(1 for e, r in all_rr if r['from_start'] is not None and e.get('start_pub') and r['to_end'] < -r['from_start']), n)} |")
     lines += ['', '### Losers: wrong from the start, or an exit the rules left on the tape', '',
               'Losing trades (net < 0) split by whether any print after the entry reached the entry + 2c before the exit.', '',
               '| arm | losers | net ($) | never +2c before exit | their net ($) | +2c on tape before exit | their net ($) | of which a bid hit +2c | their net ($) |', '|---|---|---|---|---|---|---|---|---|']
