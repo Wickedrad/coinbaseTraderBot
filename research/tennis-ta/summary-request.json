@@ -1,6 +1,6 @@
 {
-  "run": "43237241052",
-  "anchor": "A|s2|hs1prod|F1",
+  "run": "43240338632",
+  "anchor": "A|s2|hs1prod-tk|F1",
   "detail": "all",
-  "note": "Fill-model check (calendar 10p/10s), second pass: adds each arm's average win and loss and the underdog net by exit. Information only."
+  "note": "Taker-entry check (calendar 10r/10u): the six exit settings with each entry a taker buy at the ask, fill F1 and F0. Information only."
 }
