@@ -1,23 +1,35 @@
 name: Outside data (OR-XD)
 
-# OR-XD: outside derivatives data for the heat curves (design: /mnt/project-files/outside-data/OR-XD-design.md).
-# Pushes drive it (a new workflow cannot be dispatched until it is on main). Tags in the HEAD commit message:
-#   none            nothing runs
+# OR-XD: outside derivatives data for the heat curves (design: /mnt/project-files/outside-data/OR-XD-design.md;
+# python/oracle/prereg/OR-XD.md). Pushes drive it (a new workflow cannot be dispatched until it is on main).
+# Tags in the HEAD commit message:
+#   none            the heat tests only (test_heat_outside.py and test_heat.py)
 #   [xd-inventory]  read-only look at what Drive already holds under raw/ (names, sizes, upload dates, header and
 #                   first/last stamps of each CSV). Downloads NOTHING from Binance. Prints no market rows.
+#   [xd-assets:BTC] with [xd-lite]: narrow the coins (BTC, ETH, SOL, XRP; never DOGE). One coin answers whether the
+#                   modelled liquidation clusters exist at all before the full study; the league then says 'partial'.
+#   [xd-lag:1]      with [xd-lite]: every perp input seen 1 minute late (--perp-lag; 0 is the default; 1 and 5 are the
+#                   lag-robustness reruns of the prereg).
+#   [xd-lite]       the lite study: per coin (BTC, ETH, SOL, XRP) two jobs (the coin + twin 1; twins 2 + 3) on the
+#                   spot, USD-M perpetual and open-interest files that are ALREADY on Drive (raw/perp-ta-history/<A>/),
+#                   each cut at HEAT_END (2026-01-01) before the engine sees it, then the league (heat.league, unchanged).
+#                   Nothing is downloaded from any exchange (the Binance Vision terms v1.0 are an open gate for new
+#                   downloads and for live use). Outputs (aggregates only): Drive models/oracle-xd/runs/<run>/<coin>[-twinN]/
+#                   and league/; the league's small files also as a run artifact and committed to this branch under
+#                   research/oracle_xd/latest/. No per-minute row leaves the runner.
 # NEVER DOGE.
 
 on:
   push:
     branches: [claude/project-thread-8dnpsq]
-    paths: ['.github/workflows/outside-xd.yml', 'python/oracle/heat_outside.py', 'python/oracle/tests/test_heat_outside.py',
-            'python/oracle/prereg/OR-XD*.md']
+    paths: ['.github/workflows/outside-xd.yml', 'python/oracle/heat_outside.py', 'python/oracle/tests/test_heat_outside*.py',
+            'python/oracle/prereg/OR-XD*.md', 'python/oracle/heat.py']
 
 permissions:
   contents: read
 
 concurrency:
-  group: outside-xd-${{ github.ref }}
+  group: ${{ contains(github.event.head_commit.message, '[xd-lite]') && format('outside-xd-study-{0}', github.run_id) || format('outside-xd-{0}', github.ref) }}
   cancel-in-progress: true
 
 defaults:
@@ -26,6 +38,7 @@ defaults:
 
 env:
   R: gdrive:kalshi-bot-archive
+  PYTHONUNBUFFERED: '1'
 
 jobs:
   inventory:
@@ -67,3 +80,189 @@ jobs:
             done
             echo "::endgroup::"
           done
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      study: ${{ steps.plan.outputs.study }}
+      assets: ${{ steps.plan.outputs.assets }}
+      lag: ${{ steps.plan.outputs.lag }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt pytest
+      - name: OR-XD tests and the heat engine's tests
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -m pytest -q oracle/tests/test_heat_outside.py oracle/tests/test_heat_outside_lookahead.py oracle/tests/test_heat.py --durations=5 2>&1 | tail -40
+      - name: Plan
+        id: plan
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          if grep -qF '[xd-lite]' <<< "$MSG"; then echo "study=true" >> "$GITHUB_OUTPUT"; else echo "study=false" >> "$GITHUB_OUTPUT"; fi
+          echo "study: $(grep -qF '[xd-lite]' <<< "$MSG" && echo yes || echo no)"
+          a=$(grep -oE '\[xd-assets:[A-Z,]+\]' <<< "$MSG" | head -1 | sed -E 's/.*:([A-Z,]+)\]/\1/' || true)
+          [ -n "$a" ] || a=BTC,ETH,SOL,XRP
+          j=$(tr ',' '\n' <<< "$a" | { grep -E '^(BTC|ETH|SOL|XRP)$' || true; } | jq -Rnc '[inputs]')
+          [ "$j" != '[]' ] || { echo "::error::no allowed coin in $a (BTC, ETH, SOL, XRP; never DOGE)"; exit 1; }
+          echo "assets=$j" >> "$GITHUB_OUTPUT"; echo "coins: $j"
+          lag=$(grep -oE '\[xd-lag:[0-9]+\]' <<< "$MSG" | head -1 | grep -oE '[0-9]+' || true)
+          [ -n "$lag" ] || lag=0
+          echo "lag=$lag" >> "$GITHUB_OUTPUT"; echo "perp lag: $lag min"
+
+  check:
+    # fail once and early (before 8 matrix jobs download) when a file or a header is not what the loaders read
+    needs: test
+    if: needs.test.outputs.study == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The three files of each coin exist with the expected headers
+        env:
+          ASSETS: ${{ needs.test.outputs.assets }}
+        run: |
+          set -uo pipefail
+          bad=0
+          for A in $(jq -r '.[]' <<< "$ASSETS"); do
+            [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+            for spec in "binance-1m|1m.csv|ts,o,h,l,c,v,tb" "binance-um|1m.csv|ts,o,h,l,c,v,tb" "binance-oi|oi.csv|ts,oi,oi_usd"; do
+              IFS='|' read -r dir file want <<< "$spec"
+              d="$R/raw/perp-ta-history/$A/$dir/$A"
+              if ! rclone lsf "$d" --files-only 2>/dev/null | grep -qx "$file"; then echo "::error::no $dir/$A/$file on Drive"; bad=1; continue; fi
+              got=$(rclone cat "$d/$file" --head 400 2>/dev/null | head -1 | tr -d '\r')
+              if [ "$got" != "$want" ]; then echo "::error::$dir/$A/$file header is '$got', expected '$want'"; bad=1; else echo "ok $dir/$A/$file"; fi
+            done
+          done
+          exit $bad
+
+  coin:
+    needs: [test, check]
+    if: needs.test.outputs.study == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        asset: ${{ fromJSON(needs.test.outputs.assets) }}          # BTC, ETH, SOL, XRP (never DOGE)
+        twins: ['0 1', '2 3']                # 0 = the coin itself; n = its n-th no-signal twin
+    env:
+      A: ${{ matrix.asset }}
+      TWINS: ${{ matrix.twins }}
+      LAG: ${{ needs.test.outputs.lag }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Spot, perpetual and open-interest files from Drive (raw/perp-ta-history/<A>, read only), cut at HEAT_END
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" data/hist --include "/binance-1m/$A/1m.csv" --include "/binance-um/$A/1m.csv" --include "/binance-oi/$A/oi.csv"
+          end=$(cd python && python3 -c "from oracle.heat import HEAT_END; print(HEAT_END)")
+          [ "$end" = 1767225600000 ] || { echo "::error::HEAT_END is $end, not 2026-01-01"; exit 1; }
+          for rel in "binance-1m/$A/1m.csv" "binance-um/$A/1m.csv" "binance-oi/$A/oi.csv"; do
+            f="data/hist/$rel"
+            [ -s "$f" ] || { echo "::error::no $rel on Drive"; exit 1; }
+            # the cut: rows at or after HEAT_END (2026-01-01 UTC) are dropped here, before anything computes on them
+            awk -F, -v e="$end" 'NR == 1 || ($1 + 0) < e' "$f" > "$f.cut"
+            mv "$f.cut" "$f"
+            last=$(awk -F, 'NR > 1 && NF > 1 { x = $1 + 0 } END { printf "%.0f", x }' "$f")
+            [ "$last" -lt "$end" ] || { echo "::error::$rel: a row at or after the cut is still in the file"; exit 1; }
+            echo "$rel: $(du -h "$f" | cut -f1), header $(head -1 "$f"), first $(sed -n 2p "$f" | cut -d, -f1), last $last (cut at $end)"
+          done
+      - name: Readings, curves, events, pairs, triples
+        working-directory: python
+        run: |
+          set -euo pipefail
+          for tw in $TWINS; do
+            d="$A"; [ "$tw" = 0 ] || d="$A-twin$tw"
+            echo "::group::$d"
+            /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_outside coin --asset "$A" --twin "$tw" --perp-lag "$LAG" \
+              --spot "../data/hist/binance-1m/$A/1m.csv" --perp "../data/hist/binance-um/$A/1m.csv" --oi "../data/hist/binance-oi/$A/oi.csv" \
+              --out "../out/$d" | tail -120
+            grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+            ls -la "../out/$d"
+            echo "::endgroup::"
+            (cd .. && bash deploy/drive_lab.sh put "models/oracle-xd/runs/$GITHUB_RUN_ID/$d" "out/$d")
+          done
+
+  league:
+    needs: [test, coin]
+    if: ${{ !cancelled() && needs.test.result == 'success' && needs.test.outputs.study == 'true' && needs.coin.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: League
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/oracle-xd/runs/$GITHUB_RUN_ID" data/coins --include "/*/heat.csv.gz" --include "/*/meta.json"
+          ls data/coins
+          (cd python && python3 -m oracle.heat league --inputs ../data/coins --out ../out/league) | tail -120
+          ls -la out/league
+          bash deploy/drive_lab.sh put "models/oracle-xd/runs/$GITHUB_RUN_ID/league" out/league
+      - name: Commit the small league files to this branch (aggregates only; a bot push starts no workflow)
+        env:
+          BR: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dst=research/oracle_xd/latest
+          rm -rf "$dst"; mkdir -p "$dst"
+          cp out/league/league.md out/league/summary.json "$dst/"
+          echo "$GITHUB_RUN_ID $GITHUB_SHA" > "$dst/RUN"
+          du -sh "$dst"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$dst"
+          git commit -q -m "OR-XD lite: league aggregates of run $GITHUB_RUN_ID (written by the outside-xd workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::warning::could not push the league files"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oracle-xd-league
+          path: |
+            out/league/league.md
+            out/league/summary.json
+            out/league/league_*.csv.gz
+            out/league/viewer.json.gz
+          if-no-files-found: warn
+          retention-days: 30
