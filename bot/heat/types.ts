@@ -125,8 +125,15 @@ export interface HeatConfig {
   maxPerCoin: number;
   /** HEAT_COOLDOWN_SEC: wait after a heat exit before a new heat entry on the same coin. */
   cooldownSec: number;
-  /** HEAT_REENTER_AFTER_LOSS: may the lane re-enter a contract it left at a loss. */
-  reenterAfterLoss: boolean;
+  /** Re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC, and his card at 7:05 PM EST / 00:05 UTC): "That amount
+   *  doesn't invalidate a signal", so a contract window the lane left at a loss (the loser cut, mostly) may be entered again
+   *  on a fresh call, at most this many times. HEAT_REENTRIES_15M (default 3; Steven, 8:08 PM EST / 01:08 UTC): a 15-minute contract. 0 = never again. */
+  reentries15m: number;
+  /** HEAT_REENTRIES_HOURLY (default 6): an hourly window, all of its strikes together. 0 = never again. */
+  reentriesHourly: number;
+  /** HEAT_REENTRY_LOSS_STOP (default 0.5): no more re-entries once the window's losses reach this share of one order (the
+   *  largest stake the lane lost there). 0 = off. */
+  reentryLossStop: number;
   /** HEAT_FLAT_TRIPS: the book's first N heat round trips trade ORDER_USD_MIN with one position at a time (decision 11). */
   flatTrips: number;
   /** HEAT_PILOT_LOSS_USD: live only: heat entries stop once the live book's realized heat P&L reaches minus this

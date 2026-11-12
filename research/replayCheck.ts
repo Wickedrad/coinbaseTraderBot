@@ -162,7 +162,7 @@ const hourOf = (ms: number) => new Date(ms).toISOString().slice(0, 13);
 const isTennis = (t: string) => t.startsWith('KXATP') || t.startsWith('KXWTA');
 // The model exit names its prices ("bid 0.55 - fee > q 0.520 + 0.02", "NO bid 0.45 - fee > q + 0.02"). A plan position's sale
 // (PLAN_RULES: its ratchet, a retry, its end rule) is its own kind, not the hunt's ratchet.
-const exitKind = (why: string) => /^quota snipe/.test(why) ? 'quota snipe' : /^hold exit/.test(why) ? 'hold exit' : /^profit ratchet/.test(why) ? 'profit ratchet' : /^plan (ratchet|end rule)/.test(why) ? 'plan' : /^profit mandate/.test(why) ? 'profit mandate' : /^take-profit/.test(why) ? 'take-profit' : /ratchet|stop/i.test(why) ? 'ratchet' : /cross|curve/i.test(why) ? 'cross' : /exit|fair|model|- fee > q/i.test(why) ? 'model exit' : 'other';
+const exitKind = (why: string) => /^quota snipe/.test(why) ? 'quota snipe' : /^hold exit/.test(why) ? 'hold exit' : /^profit ratchet/.test(why) ? 'profit ratchet' : /^plan (ratchet|end rule|loser cut)/.test(why) ? 'plan' : /^profit mandate/.test(why) ? 'profit mandate' : /^take-profit/.test(why) ? 'take-profit' : /ratchet|stop/i.test(why) ? 'ratchet' : /cross|curve/i.test(why) ? 'cross' : /exit|fair|model|- fee > q/i.test(why) ? 'model exit' : 'other';
 /** A rejection reason with its numbers folded, so the same kind counts together (as research/backtest.ts folds them). */
 export const foldReason = (r: string) => r.replace(/[-+]?\$?\d[\d.,]*%?/g, '#');
 const empty = (): SideSummary => ({ fills: 0, contracts: 0, fees: 0, pnl: 0, markets: 0, exits: {}, byHour: {}, byPurpose: {}, contractsByHour: {}, bySeries: {} });

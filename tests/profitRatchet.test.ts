@@ -50,10 +50,10 @@ test('settings: RATCHET on by default, arming at $1.50 with the stop at least $1
   assert.throws(() => loadConfig({ ...env, RATCHET_TRAIL_USD: '-0.5' }), /RATCHET_TRAIL_USD/);
   assert.throws(() => loadConfig({ ...env, RATCHET: 'maybe' }), /RATCHET=maybe must be true or false/);
   for (const k of ['PLAN_RATCHET_ARM_C', 'PLAN_RATCHET_TRAIL_C']) assert.throws(() => loadConfig({ ...env, [k]: '6' }), new RegExp(`${k} is retired`));
-  // A plan position is tagged with these settings (and its rule may give its own).
-  const plans = new PlanPositions(paper.strategy.profitRatchet);
+  // A plan position is tagged with these settings and the plan's loser cut, as the engine builds them (its rule may give its own).
+  const plans = new PlanPositions({ ...paper.strategy.profitRatchet, loserCut: paper.strategy.plan.loserCut, loserCutUsd: paper.strategy.plan.loserCutUsd });
   plans.tag({ ticker: 'T', side: 'yes', ruleId: 'r' }, T0);
-  assert.deepEqual(plans.get('T')?.settings, { ...S, clock: 'tick' });
+  assert.deepEqual(plans.get('T')?.settings, { ...S, clock: 'tick', loserCut: 0.1, loserCutUsd: 0 });
 });
 
 test('core: arms at +$1.50 and not a cent under; the stop starts at the $1.00 minimum, then trails $0.50 under the best', () => {

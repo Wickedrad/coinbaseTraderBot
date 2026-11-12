@@ -43,7 +43,14 @@
 //                   rides: the end rule never sells a winner (the ratchet still runs). An end-rule sale whose try failed is
 //                   called off once the position is back at or above break-even after fees (plan_end_rule_cancel), so its
 //                   retries never sell a winner either.
-// The ratchet sale and the end rule are the plan's own rules: they are not held by STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC. The hold
+//   loser cut       Stage 0, "cut losers early" (E05; Steven, Nov 11 6:56 PM EST / 23:56 UTC: "10c a contract"): on the rule's
+//                   clock, a position whose held-side bid is PLAN_LOSER_CUT_C (10c) or more under its entry price (openSidePrice,
+//                   before fees), or whose trade net is at or under minus PLAN_LOSER_CUT_USD (off by default), is sold the same
+//                   way as the ratchet's sale. Either set to 0 turns that measure off. A cut whose try failed is called off once
+//                   the position is back at or above break-even after fees (plan_loser_cut_cancel), as the end rule's is. Until a
+//                   hot spot's own dip line is tested, every plan position gets the flat cut; a rule may pass its own
+//                   (PlanTag.settings.loserCut / loserCutUsd).
+// The ratchet sale, the loser cut and the end rule are the plan's own rules: they are not held by STRATEGY_NO_EXIT_BEFORE_CLOSE_SEC. The hold
 // exit (bot/strategy/holdExit.ts) sells plan positions too (Steven, Nov 11 8:52 AM EST / 13:52 UTC): whichever fires first.
 
 import { orderFee, type FeeSchedule } from '../fees';
@@ -55,13 +62,23 @@ export type PlanClock = 'tick' | 'minute';
  *  its own tested values; what it leaves out is the profit ratchet's (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD). */
 export interface PlanRatchetSettings extends RatchetSettings {
   clock: PlanClock;
+  /** The loser cut by price (PLAN_LOSER_CUT_C, dollars a contract): sold once the held side's bid is this far or more under
+   *  the entry price. 0 or unset: off. */
+  loserCut?: number;
+  /** The loser cut by dollars (PLAN_LOSER_CUT_USD): sold once the trade's net after both fees is at or under minus this. 0 or
+   *  unset: off. */
+  loserCutUsd?: number;
 }
 
 /** PLAN_RULES (bot/config.ts). */
 export interface PlanConfig {
-  /** PLAN_RULES (default false, the same in paper and live): positions opened by plan rules get this ratchet and end rule, and
-   *  the pacer only reports pace for them. Off, every position is managed as before, tagged or not. */
+  /** PLAN_RULES (default false, the same in paper and live): positions opened by plan rules get this ratchet, loser cut and end
+   *  rule, and the pacer only reports pace for them. Off, every position is managed as before, tagged or not. */
   enabled: boolean;
+  /** PLAN_LOSER_CUT_C as dollars a contract (default 0.10): the loser cut by price; 0 = off. */
+  loserCut: number;
+  /** PLAN_LOSER_CUT_USD (default 0 = off): the loser cut by the trade's net after fees, dollars for the whole position. */
+  loserCutUsd: number;
 }
 
 /** A price gap: the bid that triggered an armed sale was already under the fee floor price. */
@@ -77,8 +94,13 @@ export interface PlanGap {
 }
 
 /** A sale decided (the ratchet's or the end rule's), retried until the position is flat. */
+export type PlanSaleKind = 'ratchet' | 'cut' | 'end';
+
+/** The sale's name in notes and alerts. */
+export const planSaleLabel = (k: PlanSaleKind): string => (k === 'end' ? 'end rule' : k === 'cut' ? 'loser cut' : 'ratchet');
+
 export interface PlanSelling {
-  kind: 'ratchet' | 'end';
+  kind: PlanSaleKind;
   since: number;
   /** Tries sent so far. */
   tries: number;
@@ -161,7 +183,7 @@ export function planEndWindow(tauSec: number, windowSec: number | undefined): bo
 /** The stop is never lowered: throws if a computation would (the profit ratchet's assertion). */
 export const assertPlanStopNotLowered = assertStopNotLowered;
 
-export type PlanEventName = 'plan_ratchet_arm' | 'plan_ratchet_raise' | 'plan_ratchet_sell' | 'plan_ratchet_gap' | 'plan_ratchet_retry' | 'plan_end_rule_sell' | 'plan_end_rule_cancel';
+export type PlanEventName = 'plan_ratchet_arm' | 'plan_ratchet_raise' | 'plan_ratchet_sell' | 'plan_ratchet_gap' | 'plan_ratchet_retry' | 'plan_loser_cut_sell' | 'plan_loser_cut_cancel' | 'plan_end_rule_sell' | 'plan_end_rule_cancel';
 
 /** One audit event (bot/engine.ts writes them under the audit kind 'plan'; the replay counts them). Prices in dollars, side terms. */
 export interface PlanEvent {
@@ -187,6 +209,11 @@ export interface PlanEvent {
   stopMinUsd: number;
   trailUsd: number;
   clock: PlanClock;
+  /** The loser cut's settings (set when on): dollars a contract under the entry price, and dollars of trade net. */
+  loserCut?: number;
+  loserCutUsd?: number;
+  /** The entry price the price cut measures from (side terms), on a loser cut's sale. */
+  entry?: number;
   /** This evaluation (ms). */
   at: number;
   armedAt?: number;
@@ -212,7 +239,7 @@ export interface PlanSale {
   /** The limit in side terms: the bid less 2 ticks (3 after 3 failed tries), at least 1 tick. */
   sideLimit: number;
   count: number;
-  kind: 'ratchet' | 'end';
+  kind: PlanSaleKind;
   ticks: number;
   why: string;
 }
@@ -252,8 +279,8 @@ export interface PlanStepResult {
   alert?: string;
 }
 
-/** One evaluation of a plan position: the retry of a sale under way, the ratchet on its clock, then the end rule. The input
- *  state is not changed; the returned one replaces it. */
+/** One evaluation of a plan position: the retry of a sale under way, the ratchet on its clock, the loser cut on the same clock,
+ *  then the end rule. The input state is not changed; the returned one replaces it. */
 export function planStep(i: PlanStepInput): PlanStepResult {
   let s: PlanRatchetState = { ...i.state, gaps: [...i.state.gaps], ...(i.state.selling ? { selling: { ...i.state.selling } } : {}) };
   const count = Math.abs(i.position);
@@ -264,6 +291,8 @@ export function planStep(i: PlanStepInput): PlanStepResult {
   const out: PlanStepResult = { state: s, events: [], notes: grew ? ['plan ratchet: the position grew; its ratchet starts afresh'] : [] };
   if (!(count > 1e-9)) return out;
   const { armUsd, stopMinUsd, trailUsd, clock } = i.settings;
+  const loserCut = i.settings.loserCut ?? 0;
+  const loserCutUsd = i.settings.loserCutUsd ?? 0;
   const tick = i.tick;
   const bid = planSideBid(i.position, i.bid, i.ask);
   const cost = i.entryPrice;
@@ -278,13 +307,14 @@ export function planStep(i: PlanStepInput): PlanStepResult {
   const ev = (event: PlanEventName, x: Partial<PlanEvent> = {}): PlanEvent => {
     const e: PlanEvent = {
       event, ticker: i.ticker, side: i.side, ruleId: i.ruleId, count, bid: bid ?? null, net: net ?? null, ...(banked !== 0 ? { banked } : {}), stop: s.stop ?? null, best: s.best ?? null, limit: null,
-      feeFloor: feeFloor ?? null, armUsd, stopMinUsd, trailUsd, clock, at: i.now, tauSec: Math.round(i.tauSec * 10) / 10,
+      feeFloor: feeFloor ?? null, armUsd, stopMinUsd, trailUsd, clock, ...(loserCut > 0 ? { loserCut } : {}), ...(loserCutUsd > 0 ? { loserCutUsd } : {}),
+      at: i.now, tauSec: Math.round(i.tauSec * 10) / 10,
       ...(s.armedAt !== undefined ? { armedAt: s.armedAt } : {}), ...x,
     };
     out.events.push(e);
     return e;
   };
-  const sell = (kind: 'ratchet' | 'end', why: string): PlanSale => {
+  const sell = (kind: PlanSaleKind, why: string): PlanSale => {
     const ticks = s.failedTries >= PLAN_ALERT_AFTER_FAILED_TRIES ? PLAN_ESCALATED_SALE_TICKS : PLAN_SALE_TICKS;
     const sideLimit = Math.max(tick, r4(bid! - ticks * tick));
     const yes = i.position > 0;
@@ -306,19 +336,22 @@ export function planStep(i: PlanStepInput): PlanStepResult {
     if (i.orderInFlight) { out.notes.push(`plan ${sel.kind} sale: an order is still working`); return out; }
     const failed = sel.lastTryAt !== undefined;
     if (failed) { s.failedTries++; sel.lastTryAt = undefined; }
-    if (sel.kind === 'end' && net !== undefined && net >= -EPS) {
-      // The end rule never sells a winner: back at or above break-even after both fees, its sale is called off and the position
-      // is judged afresh below (the ratchet on its clock, then the end rule).
+    // A dollar cut whose trade (what partial sales banked plus the rest) is still at or under its line stays: calling it off
+    // would only decide it again below, at every look, and its failed tries would never reach the alert.
+    const cutStands = sel.kind === 'cut' && loserCutUsd > 0 && trade !== undefined && trade <= -loserCutUsd + EPS;
+    if ((sel.kind === 'end' || sel.kind === 'cut') && net !== undefined && net >= -EPS && !cutStands) {
+      // The end rule and the loser cut never sell a winner: back at or above break-even after both fees, the sale is called off
+      // and the position is judged afresh below (the ratchet on its clock, the loser cut, then the end rule).
       delete s.selling;
-      ev('plan_end_rule_cancel', { failedTries: s.failedTries, since: sel.since });
-      out.notes.push(`plan end rule: back in profit after fees (net ${usd(net)} at bid ${bid!.toFixed(2)}): its sale is called off`);
+      ev(sel.kind === 'end' ? 'plan_end_rule_cancel' : 'plan_loser_cut_cancel', { failedTries: s.failedTries, since: sel.since });
+      out.notes.push(`plan ${planSaleLabel(sel.kind)}: back in profit after fees (net ${usd(net)} at bid ${bid!.toFixed(2)}): its sale is called off`);
     } else {
-      if (bid === undefined) { out.notes.push(`plan ${sel.kind} sale: no bid for the held side, waiting`); return out; }
+      if (bid === undefined) { out.notes.push(`plan ${planSaleLabel(sel.kind)} sale: no bid for the held side, waiting`); return out; }
       if (s.failedTries >= PLAN_ALERT_AFTER_FAILED_TRIES && !sel.alerted) {
         sel.alerted = true;
-        out.alert = `Plan ${sel.kind === 'end' ? 'end rule' : 'ratchet'} sale of ${count} ${i.side.toUpperCase()} in ${i.ticker}: ${s.failedTries} failed tries; now selling at the bid less ${PLAN_ESCALATED_SALE_TICKS} ticks`;
+        out.alert = `Plan ${planSaleLabel(sel.kind)} sale of ${count} ${i.side.toUpperCase()} in ${i.ticker}: ${s.failedTries} failed tries; now selling at the bid less ${PLAN_ESCALATED_SALE_TICKS} ticks`;
       }
-      const sale = sell(sel.kind, `plan ${sel.kind === 'end' ? 'end rule' : 'ratchet'} sale, try ${sel.tries + 1} (${s.failedTries} failed)`);
+      const sale = sell(sel.kind, `plan ${planSaleLabel(sel.kind)} sale, try ${sel.tries + 1} (${s.failedTries} failed)`);
       gap(sale, !failed);
       ev('plan_ratchet_retry', { limit: sale.sideLimit, failedTries: s.failedTries, since: sel.since, ...(failed ? {} : { resend: true }) });
       return out;
@@ -357,7 +390,29 @@ export function planStep(i: PlanStepInput): PlanStepResult {
   if (s.armed) out.notes.push(`plan ratchet armed: bid ${bid.toFixed(2)}, net ${usd(trade)}${bankedNote}, stop ${usd(s.stop!)}, best ${usd(s.best!)}`);
   else out.notes.push(`plan ratchet: net ${usd(trade)}${bankedNote}, arms at ${usd(armUsd)} (${clock} clock)`);
 
-  // 3. The end rule: out of profit in the last tenth of the window is sold; a winner rides.
+  // 3. The loser cut, on the same clock: the bid PLAN_LOSER_CUT_C or more under the entry price, or the trade's net at or under
+  //    minus PLAN_LOSER_CUT_USD. Sold the way the ratchet's sale is.
+  const cutLine = loserCut > 0 ? r4(cost - loserCut) : undefined;
+  if (decide) {
+    const byPrice = cutLine !== undefined && bid <= cutLine + EPS;
+    const byUsd = loserCutUsd > 0 && trade <= -loserCutUsd + EPS;
+    if (byPrice || byUsd) {
+      s.selling = { kind: 'cut', since: i.now, tries: 0 };
+      const what = byPrice
+        ? `bid ${bid.toFixed(2)} is ${Math.round((cost - bid) * 100)}c under the entry ${cost.toFixed(2)} (cut at ${Math.round(loserCut * 100)}c)`
+        : `net ${usd(trade)}${bankedNote} at bid ${bid.toFixed(2)} at or under -$${loserCutUsd.toFixed(2)}`;
+      const sale = sell('cut', `plan loser cut: ${what}`);
+      gap(sale);
+      ev('plan_loser_cut_sell', { limit: sale.sideLimit, since: i.now, entry: cost });
+      return out;
+    }
+  }
+  if (cutLine !== undefined || loserCutUsd > 0) {
+    const lines = [cutLine !== undefined ? `bid at or under ${cutLine.toFixed(2)}` : '', loserCutUsd > 0 ? `net at or under -$${loserCutUsd.toFixed(2)}` : ''];
+    out.notes.push(`plan loser cut: sells at ${lines.filter(Boolean).join(' or ')}`);
+  }
+
+  // 4. The end rule: out of profit in the last tenth of the window is sold; a winner rides.
   if (planEndWindow(i.tauSec, i.windowSec)) {
     if (net < -EPS) {
       s.selling = { kind: 'end', since: i.now, tries: 0 };
