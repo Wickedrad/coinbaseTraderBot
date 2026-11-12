@@ -1521,9 +1521,11 @@ export class Engine {
       const fairA = this.tennisFairFor(event, tv, ms[0].ticker);
       // Steven's profit rules on tennis as on every contract type: the quota snipe, and the last share of the match
       // (TENNIS_NO_EXIT_BEFORE_END_FRAC, 30%, by its progress: the live score against the format's sets, else the time and
-      // information clocks) riding in profit.
+      // information clocks) riding in profit until the win chance turns (TENNIS_PROB_TURN). Out of profit: the loser cut by
+      // progress (20c at the start, 10c at 60%, 3c from 85%), and in the last 10% (TENNIS_END_CUT_FRAC) the end cut (Nov 12).
       const out = decideMatch(tracker, { event, now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)), score: sc?.score, fairA }, T,
-        { bankroll, tennisRisk: totals.total, matchRisk: totals.window }, ms[0].tickSize, { pacerUsd: this.pacer.neededUsd(now), settleFrac: T.settleFrac, endLoserCut: T.endLoserCut, endEntryMargin: T.endEntryMargin, floorMode: this.d.cfg.strategy.pacer.floor, floors: this.quotaFloors,
+        { bankroll, tennisRisk: totals.total, matchRisk: totals.window }, ms[0].tickSize, { pacerUsd: this.pacer.neededUsd(now), settleFrac: T.settleFrac, endLoserCut: T.endLoserCut, endEntryMargin: T.endEntryMargin, endCutFrac: T.endCutFrac,
+          loserCut: T.loserCut, loserCutOpen: T.loserCutOpen, loserCutLate: T.loserCutLate, probTurn: T.probTurn, floorMode: this.d.cfg.strategy.pacer.floor, floors: this.quotaFloors,
           floorTicks: this.d.cfg.strategy.pacer.floorTicks });
       if (tradeable) for (const p of out.plans) if (p.leg === 'quota_snipe') this.d.audit.write('pacer', { event: 'snipe', ticker: p.ticker, book: 'tennis', why: p.why, count: p.count, price: p.price, ...this.pacer.status(now) });
       // Exit-in-profit curve (strategy/sinuousExit.ts) on each held player market: a take-profit (the target, the
@@ -1550,7 +1552,7 @@ export class Engine {
           const g = curve.check(p.ticker, {
             sidePrice: p.price, count: p.count, exitFeePer: orderFee(p.count, p.price, true, md.feesFor(p.ticker)) / p.count,
             entrySidePrice: mk.avgEntry, entryFeePer: entryFeePer(p.ticker, mk.position),
-            protective: trailBroken || p.leg === 'underdog_cut' || p.leg === 'underdog_stop' || p.leg === 'fav_stop' || p.leg === 'end_cut',
+            protective: trailBroken || p.leg === 'underdog_cut' || p.leg === 'underdog_stop' || p.leg === 'fav_stop' || p.leg === 'end_cut' || p.leg === 'loser_cut' || p.leg === 'prob_turn',
           }, now);
           if (g.note) out.notes.push(g.note);
           return g.allow;
