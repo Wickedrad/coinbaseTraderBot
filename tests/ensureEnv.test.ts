@@ -136,12 +136,22 @@ test('ensure-env: with no TRADING_MODE line (the bot defaults to paper) or a quo
 });
 
 test('ensure-env: under live or shadow the paper settings are not applied and nothing is removed', () => {
-  for (const mode of ['live', 'shadow', 'export TRADING_MODE=live']) {
-    const line = mode.includes('=') ? mode : `TRADING_MODE=${mode}`;
-    const lines = [line, 'TENNIS_SERIES=KXATPMATCH', 'TENNIS_CONF_WINDOW_SEC=60'];
+  for (const mode of ['live', 'shadow', ' LIVE ', '"live"']) {
+    const lines = [`TRADING_MODE=${mode}`, 'TENNIS_SERIES=KXATPMATCH', 'TENNIS_CONF_WINDOW_SEC=60'];
     const { env, out } = runFrom(lines, false, shipped);
     assert.deepEqual(env, lines, mode);
     assert.match(out, /paper-settings\.env not applied: TRADING_MODE=(live|shadow)/);
+  }
+  // The last plain line wins, as systemd reads it.
+  const flipped = ['TRADING_MODE=paper', 'TRADING_MODE=live'];
+  assert.deepEqual(runFrom(flipped, false, shipped).env, flipped);
+});
+
+test('ensure-env: with an `export TRADING_MODE` line (systemd ignores it) the mode is not certain: nothing applied, a warning', () => {
+  for (const lines of [['export TRADING_MODE=paper'], ['TRADING_MODE=live', 'export TRADING_MODE=paper'], ['TRADING_MODE=paper', '  export  TRADING_MODE=live']]) {
+    const { env, out } = runFrom(lines, false, shipped);
+    assert.deepEqual(env, lines, lines.join(' | '));
+    assert.match(out, /warning: paper-settings\.env not applied: .* has an `export TRADING_MODE` line/);
   }
 });
 

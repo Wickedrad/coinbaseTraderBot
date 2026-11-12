@@ -1,4 +1,4 @@
-// ATP tennis match-winner markets (KXATPMATCH): a rules-based, order-book
+// Tennis match-winner markets (KXATPMATCH, KXWTAMATCH): a rules-based, order-book
 // driven strategy with hard budget caps.
 //
 // Phases per match (an event with one "Will <player> win?" market per player):
