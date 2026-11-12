@@ -200,8 +200,9 @@ jobs:
       A: ${{ matrix.asset }}
       M: ${{ matrix.market }}
       Y: ${{ matrix.year }}
-      TMPDIR: ${{ runner.temp }}
     steps:
+      - name: Temp dir on the runner's work disk
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
