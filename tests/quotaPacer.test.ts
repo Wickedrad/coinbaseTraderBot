@@ -215,6 +215,13 @@ test('defaults: the pacer is on in slices mode; the group rule is off (Oct 30: i
   const p = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).strategy.pacer;
   assert.deepEqual([p.enabled, p.mode, p.group], [true, 'slices', false]);
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_GROUP: 'true' }).strategy.pacer.group, true);
+  // On heat-lane (plan) positions: hybrid by default (Steven's card, Nov 12 1:13 AM EST / 06:13 UTC); need and off on request.
+  assert.equal(p.plan, 'hybrid');
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_PLAN: 'off' }).strategy.pacer.plan, 'off');
+  assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PACER_PLAN: 'on' }), /PACER_PLAN=on must be one of off, hybrid, need/);
+  // The perp loser cut (Steven, Nov 12 1:01 AM EST / 06:01 UTC): 15c a contract by default, 0 off.
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).perps.loserCut, 0.15);
+  assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), PERP_LOSER_CUT_C: '0' }).perps.loserCut, 0);
 });
 
 test('quota floors (PACER_FLOOR, Steven Oct 31): armed at the need while a rule aims higher, kept per contract, raised never lowered, gone with the position', () => {

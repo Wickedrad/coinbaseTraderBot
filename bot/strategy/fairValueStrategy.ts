@@ -237,6 +237,9 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
    *  selective taking, as while any immediate exit crosses the book, so the sale is not bought back in the same tick, and no
    *  hold exit beside it (whichever fires first sells). */
   planSelling?: boolean;
+  /** PACER_PLAN on a plan position (bot/engine.ts): the profit after fees at which the quota snipe sells it (the hour's need,
+   *  and in 'hybrid' at least the ratchet's arming net). Unset: the pacer reports pace only (decision 13). No floor, no group. */
+  planPacerUsd?: number;
 } = {}): StrategyOutput {
   const out: StrategyOutput = { place: [], cancel: [], notes: [] };
   const tick = v.tickSize;
@@ -338,9 +341,10 @@ export function decide(v: MarketView, cfg: StrategyConfig, opts: {
   const mandateMin = opts.profitMandate;
   const cost = v.entrySidePrice !== undefined ? v.entrySidePrice + (v.entryFeePerContract ?? 0) : undefined;
   const mandate = mandateMin !== undefined && cost !== undefined && exitWindow && !opts.planHeld;
-  const pacerUsd = opts.pacerUsd;
-  // A plan position: the pacer only reports pace (Steven's decision 13): no snipe at the hour's need, no floor.
-  const sniping = pacerUsd !== undefined && cost !== undefined && exitWindow && !opts.planHeld;
+  // A plan position: the pacer reports pace only (Steven's decision 13), unless PACER_PLAN gives it a snipe line (planPacerUsd:
+  // Steven, Nov 12), one more exit beside the plan's, never beside the plan's own sale; no floor and no group on it either way.
+  const pacerUsd = opts.planHeld ? opts.planPacerUsd : opts.pacerUsd;
+  const sniping = pacerUsd !== undefined && cost !== undefined && exitWindow && (!opts.planHeld || !opts.planSelling);
   // Steven's hold exit (Nov 11, bot/strategy/holdExit.ts): the position's profit after fees has been at least $1.50 for 10 s in
   // all and at least $1.00 for the last 3 s in a row. It sells as the quota snipe does, where the snipe could (not in the final
   // minute, not in profit in the last share of the window, not in the exit-only lane), whatever the exit policy, the hunt or

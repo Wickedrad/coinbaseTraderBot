@@ -62,6 +62,12 @@ export interface PacerConfig {
    *  at the first dip below it, or sooner, once the profit after fees falls below the smaller of the floor and 1 tick a
    *  contract (quotaCall's `keep`) (Kalshi contracts: crypto and tennis; perps have no contract tick and keep the floor as is). */
   floorTicks: number;
+  /** PACER_PLAN: the snipe on heat-lane (plan) positions (Steven, Nov 12 1:10 AM EST / 06:10 UTC, "should the pacer work as a
+   *  hybrid"; pipeline decision 13 had it report pace only). 'hybrid': one more exit beside the plan's (whichever fires
+   *  first), selling once the position's profit after fees covers what the hour needs and the ratchet's arming net, so it
+   *  never takes a smaller win than the ratchet would; 'need': at the hour's need alone; 'off': pace only (decision 13). No
+   *  floor and no group on a plan position in any mode. */
+  plan?: 'off' | 'hybrid' | 'need';
 }
 
 export const CYCLE_HOURS = 24;

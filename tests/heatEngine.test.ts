@@ -125,7 +125,8 @@ test('with the plan exits on (PLAN_RULES), a heat fill is a plan position and no
 });
 
 test('the loser cut (PLAN_LOSER_CUT_C 10c, Steven Nov 11 6:56 PM EST / 23:56 UTC) sells a heat position 10c under its entry; a fresh call enters the contract again', async () => {
-  const g = await setup({ env: { PLAN_RULES: 'true', HEAT_COOLDOWN_SEC: '0' }, plan: true });
+  // The flat cut (the same 10c at every point of the window); the cut by time is the next test.
+  const g = await setup({ env: { PLAN_RULES: 'true', HEAT_COOLDOWN_SEC: '0', PLAN_LOSER_CUT_OPEN_C: '10', PLAN_LOSER_CUT_LATE_C: '10' }, plan: true });
   // The fixture's 15c spread: bought at the ask, the bid is already 15c under, so the lane stays out.
   g.source.set(fired());
   await g.engine.tick();
@@ -160,6 +161,34 @@ test('the loser cut (PLAN_LOSER_CUT_C 10c, Steven Nov 11 6:56 PM EST / 23:56 UTC
   // Bought NO: YES sold at the 49c bid, 19 contracts for the $10 stake.
   assert.deepEqual(heatOrders(g.oms).map((o) => [o.side, o.price, o.count, o.purpose]).sort(), [['ask', 0.49, 19, 'entry'], ['bid', 0.6, 16, 'entry']]);
   assert.equal(g.oms.positions.position(g.market.ticker), -19, 'holds 19 NO');
+});
+
+test('the cut by time (Steven, Nov 12 1:01 AM EST / 06:01 UTC): a third of the window gone, the cut is 14.4c; the spread guard and the dashboard read the same line', async () => {
+  // The fixture's window: opened 5 minutes ago, 10 minutes to the close (a third gone): 20c - 10c x (1/3) / 0.6 = 14.4c.
+  const g = await setup({ env: { PLAN_RULES: 'true' }, plan: true });
+  g.source.set(fired());
+  await g.engine.tick();
+  assert.match(rows(g.audit, 'heat').find((r) => r.key)!.skip, /the spread \(15c\) is at or above the loser cut \(14\.4c now, 33% of the window gone\)/);
+  g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.59, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
+  g.source.set(fired());
+  await g.engine.tick();
+  assert.equal(g.oms.positions.position(g.market.ticker), 16);
+  await g.engine.tick();
+  const plan = (g.engine.status.get(g.market.ticker) as unknown as { plan?: { cutAt?: number; armUsd?: number } }).plan;
+  assert.equal(plan?.armUsd, 1.5);
+  assert.ok(Math.abs(plan!.cutAt! - 0.4556) < 0.0005, `the dashboard: the bid the cut sells at now (${plan?.cutAt})`);
+  // 11c under the entry: held (the flat 10c cut would have sold it). 15c under: sold.
+  g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.49, size: 50 }], asks: [{ price: 0.5, size: 50 }] }, Date.now());
+  await g.engine.tick();
+  assert.equal(g.oms.positions.position(g.market.ticker), 16, 'held at 11c under');
+  g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.45, size: 50 }], asks: [{ price: 0.46, size: 50 }] }, Date.now());
+  await g.engine.tick();
+  const cut = g.audit.tail(500, 'plan').map((r) => r.data as Row).filter((e) => e.event === 'plan_loser_cut_sell');
+  assert.equal(cut.length, 1);
+  assert.deepEqual([cut[0].bid, cut[0].entry, cut[0].loserCut, cut[0].loserCutOpen, cut[0].loserCutLate, cut[0].sent], [0.45, 0.6, 0.1, 0.2, 0.03, true]);
+  assert.ok(Math.abs((cut[0].cutAt as number) - 0.1444) < 0.0005, String(cut[0].cutAt));
+  assert.ok(Math.abs((cut[0].elapsed as number) - 1 / 3) < 0.01, String(cut[0].elapsed));
+  assert.equal(g.oms.positions.position(g.market.ticker), 0, 'sold');
 });
 
 test('no tag hook wired: no entry, and the call is recorded with the reason', async () => {

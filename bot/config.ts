@@ -886,6 +886,11 @@ export interface PerpsConfig {
    *  implied by the exchange's leverage estimate). */
   liqBuffer: number;
   maintMargin: number;
+  /** PERP_LOSER_CUT_C (15; Steven, Nov 12 1:01 AM EST / 06:01 UTC: "perpetual contracts: should have 15c loser cut with the same
+   *  rules it already has"), as dollars a contract on the perp's own price: a trade's stop is the nearer of its ATR stop and
+   *  this far against the entry, on the exchange too. Sizing and the liquidation check keep the ATR stop. No window, so it
+   *  does not scale. 0 = off. */
+  loserCut: number;
   /** The 4h ATR ratchet exit for setup trades (bot/setups/detectors.ts RATCHET; recorded in the setup model, so the
    *  live trader manages trades exactly as they were trained): SETUP_RATCHET (off | slow (default) | fast | both), the initial
    *  stop, break-even plus fees, and the trail, all in 4h ATRs. */
@@ -971,6 +976,8 @@ function pacerConfig(env: Env): PacerConfig {
     // today's other rules a cushion of 8 ticks a contract made $262 and $238 a day more than none (two batches, 5 bankrolls
     // of 5 each); with the loser exits of PR #230, 16 ticks made $88 a day more than none.
     floorTicks: num(env, 'PACER_FLOOR_TICKS', 8, 0, 50),
+    // Steven, Nov 12 1:10 AM EST / 06:10 UTC: the pacer on heat-lane positions (bot/risk/quotaPacer.ts PacerConfig.plan).
+    plan: oneOf(env, 'PACER_PLAN', 'hybrid', ['off', 'hybrid', 'need'] as const),
   };
 }
 
@@ -994,10 +1001,19 @@ function planConfig(env: Env): PlanConfig {
     if (env[k] !== undefined && env[k] !== '') throw new ConfigError(`${k} is retired: the ratchet is in dollars for the whole position (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD)`);
   }
   // The loser cut (E05; Steven, Nov 11 6:56 PM EST / 23:56 UTC: "10c a contract"): cents a contract under the entry price, and
-  // dollars of trade net (off by default). 0 turns either off.
+  // dollars of trade net (off by default). 0 turns either off. On price prediction contracts the price cut scales with the
+  // window (Steven, Nov 12 1:01 AM EST / 06:01 UTC; bot/plan/planRatchet.ts planLoserCutAt): PLAN_LOSER_CUT_OPEN_C at the
+  // open, PLAN_LOSER_CUT_C at 60% of the window, PLAN_LOSER_CUT_LATE_C from 85%. The same number for all three is the flat cut.
+  // Unset, an end never crosses the cut at 60% (a PLAN_LOSER_CUT_C of 25 opens at 25c; one of 2 ends at 2c); set, it must not.
+  const loserCut = num(env, 'PLAN_LOSER_CUT_C', 10, 0, 99) / 100;
+  const cutC = Math.round(loserCut * 100);
+  const loserCutOpen = num(env, 'PLAN_LOSER_CUT_OPEN_C', Math.max(20, cutC), 1, 99) / 100;
+  const loserCutLate = num(env, 'PLAN_LOSER_CUT_LATE_C', Math.max(1, Math.min(3, cutC)), 1, 99) / 100;
+  if (loserCut > 0 && loserCutOpen < loserCut - 1e-9) throw new ConfigError(`PLAN_LOSER_CUT_OPEN_C=${Math.round(loserCutOpen * 100)} must be at least PLAN_LOSER_CUT_C=${Math.round(loserCut * 100)}: the cut allows a larger loss early in the window`);
+  if (loserCut > 0 && loserCutLate > loserCut + 1e-9) throw new ConfigError(`PLAN_LOSER_CUT_LATE_C=${Math.round(loserCutLate * 100)} must be at most PLAN_LOSER_CUT_C=${Math.round(loserCut * 100)}: the cut is smaller late in the window`);
   return {
     enabled: bool(env, 'PLAN_RULES', false),
-    loserCut: num(env, 'PLAN_LOSER_CUT_C', 10, 0, 99) / 100,
+    loserCut, loserCutOpen, loserCutLate,
     loserCutUsd: num(env, 'PLAN_LOSER_CUT_USD', 0, 0, 1000),
   };
 }
@@ -1612,6 +1628,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
         setupSlowRiskUsd: num(env, 'SETUP_SLOW_RISK_USD', 0, 0, 1e7),
         setupMinTargetUsd: num(env, 'SETUP_MIN_TARGET_USD', 0, 0, 1e7),
         liqBuffer: num(env, 'PERP_LIQ_BUFFER', 0.2, 0, 0.9),
+        loserCut: num(env, 'PERP_LOSER_CUT_C', 15, 0, 10_000) / 100,
         maintMargin: num(env, 'PERP_MAINT_MARGIN', 0, 0, 0.5),
         setupRatchet: oneOf(env, 'SETUP_RATCHET', 'slow', ['off', 'slow', 'fast', 'both'] as const),
         setupRatchetStopAtr: num(env, 'SETUP_RATCHET_STOP_ATR', 3.5, 0.5, 20),
