@@ -741,3 +741,21 @@ changes here, with one exception named as such (the fits' stopping rule) for the
   coin's edges still must equal exactly, and a real change of data or cut (1e-3, another length, a missing reading) still
   stops the job. The error line now also gives the largest relative difference. The first run was cancelled and the study
   relaunched with this change (all 16 series again).
+
+**Twin zone edges, second change (Nov 12 2026, 12:50 UTC; found in the relaunched run 43214128347, written before the second relaunch).**
+- The relaunch (twin tolerance 1e-6 relative) stopped four more twin jobs (ETH-twin1, ETH-twin2, SOL-twin1, BTC-twin2) two
+  minutes in; the error line showed ten readings (ADX14/28/7, ADXR14, CRSI and others on the 1-minute frame) off by up to
+  8.2e-5 relative, not 1e-12 as the note above guessed. SOL-twin1 and BTC-twin2 stopped in both runs, so it is not a
+  random runner effect alone. Reproduced on a toy coin of 2.8 million minutes (price grid 0.01, tick ties as on the coins):
+  one twin built twice, the second time with a 1 ULP wobble on 30% of the exp and log values (what another CPU's vector
+  routines do), gives about 2,000 prices (0.07% of the minutes) that differ by up to 1e-11 after the 12-digit rounding,
+  and that moves 28 of the zone edges (OBV, A/D, ADOSC, WAD, ADX, ADXR, CRSI, C-MAMA, RVIR ...) by up to 2.4e-4 relative:
+  a price tie lost or made in one run feeds a cumulative or recursive indicator.
+- Departure (instead of the 1e-6 relative rule): a twin's edges now agree with the main run's when every edge is within 2%
+  of that reading's zone span (outer edge minus outer edge), about 100 times the noise seen; the coin's edges still must
+  equal exactly; a missing reading, another number of edges or a price step that differs still stops the job. The twin
+  jobs log the largest share of the span they moved, and the minutes, gaps and start of the grid are compared with the main
+  run's meta (a difference is logged as a warning; the coin's exact edges already show the same data). The twins are the
+  chance scale: they zone their own readings with their own edges, so a noise-sized edge shift changes no claim about a coin.
+  The relaunched run was cancelled at 35 minutes of progress and the whole study restarted from one commit, so that all 16
+  series carry one code version.

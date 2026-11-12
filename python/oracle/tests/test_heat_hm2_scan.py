@@ -657,18 +657,33 @@ def test_never_doge(tmp_path):
 
 
 def test_edges_differ_twin_tolerance():
-    """The coin's zone edges must equal the main run's exactly; a twin's may sit a last digit apart (exp and log on another
-    runner's CPU moved ADX and CRSI edges by ~1e-12 and stopped two twin jobs of the first study): within a relative
-    1e-6 they agree, a real change (1e-3, another length, a missing reading) still stops the job."""
-    a = {'1m:ADX14': [10.0, 20.0, 30.0], '1m:CRSI': [1.0, 2.0], 'none': None}
-    near = {'1m:ADX14': [10.0 * (1 + 1e-12), 20.0, 30.0], '1m:CRSI': [1.0, 2.0 * (1 - 1e-12)], 'none': None}
-    far = {'1m:ADX14': [10.0 * (1 + 1e-3), 20.0, 30.0], '1m:CRSI': [1.0, 2.0], 'none': None}
+    """The coin's zone edges must equal the main run's exactly. A twin's may sit a last digit apart in prices (exp and log
+    on another runner's CPU), which moved edges by up to 8e-5 in the first study (a tie flip feeding OBV, ADX, CRSI ...):
+    within 2% of a reading's zone span a twin agrees; a bigger change, another length or a missing reading still stops it."""
+    a = {'1m:ADX14': [10.0, 20.0, 30.0], '1m:CRSI': [1.0, 2.0], 'z': [-0.01, 0.0, 0.01], 'none': None}
+    near = {'1m:ADX14': [10.0 * (1 + 1e-12), 20.0, 30.0], '1m:CRSI': [1.0, 2.0 * (1 - 1e-12)], 'z': [-0.01, 0.0, 0.01], 'none': None}
+    noisy = {'1m:ADX14': [10.0, 20.0 * (1 + 2.4e-4), 30.0 * (1 - 2e-4)], '1m:CRSI': [1.0, 2.0], 'z': [-0.0101, 1e-5, 0.01], 'none': None}
+    far = {'1m:ADX14': [10.0 * (1 + 0.2), 20.0, 30.0], '1m:CRSI': [1.0, 2.0], 'z': [-0.01, 0.0, 0.01], 'none': None}
     assert hm.edges_differ(a, a, twin=False) == ([], 0.0)
     d, w = hm.edges_differ(a, near, twin=False)
     assert d == ['1m:ADX14', '1m:CRSI'] and 0 < w < 1e-9                       # the coin: exact
     d, w = hm.edges_differ(a, near, twin=True)
     assert d == [] and 0 < w < 1e-9                                           # a twin: tolerance
+    d, w = hm.edges_differ(a, noisy, twin=True)
+    assert d == [] and 1e-5 < w < 0.02                                        # the noise seen: inside (an edge near 0 judged by its span)
+    d, w = hm.edges_differ(a, noisy, twin=False)
+    assert 'z' in d and '1m:ADX14' in d                                       # the coin would stop on it
     d, w = hm.edges_differ(a, far, twin=True)
-    assert d == ['1m:ADX14'] and w > 5e-4
+    assert d == ['1m:ADX14'] and w > 0.1
     assert hm.edges_differ({'q': [1, 2]}, {'q': [1, 2, 3]}, twin=True) == (['q'], float('inf'))
     assert hm.edges_differ({'q': [1, 2]}, {}, twin=True) == (['q'], float('inf'))
+    assert hm.edges_differ({'q': [1, 2]}, {'q': [1, float('nan')]}, twin=True)[0] == ['q']
+
+
+def test_twin_identity():
+    import pandas as pd
+    m = {'n': 2880, 'gap': np.r_[np.ones(3, bool), np.zeros(2877, bool)], 't0': 1597190400000}
+    meta = {'minutes': 2880, 'gaps': 3, 'from': str(pd.Timestamp(1597190400000, unit='ms'))}
+    assert hm.twin_identity(m, meta) == []
+    assert len(hm.twin_identity(m, dict(meta, minutes=2881, gaps=4))) == 2
+    assert hm.twin_identity(m, {}) == []

@@ -2231,42 +2231,51 @@ def _extra_readings(m: dict, m_real: dict, g, asset: str, twin: int, other_csvs:
                              asset=asset)
 
 
-TWIN_EDGE_RTOL = 1e-6
+TWIN_EDGE_SPAN_TOL = 0.02
 
 
 def edges_differ(a: dict, b: dict, twin: bool = False) -> tuple:
-    """(the sorted names whose zone edges differ, the largest relative difference). The coin's edges must equal the main
-    run's exactly. A twin's price path is built with exp, log and a cumulative sum rounded to 12 significant digits,
-    and those library calls can land a last digit apart on another runner's CPU (a twin run on a different processor
-    than the main run's twin then moved ADX and CRSI edges by about 1e-12 and stopped the job); a twin's edges agree
-    when every edge is within a relative 1e-6. A real change of data or cut moves an edge by far more."""
+    """(the sorted names whose zone edges differ, the largest difference). The coin's edges must equal the main run's
+    exactly (the difference shown is relative). A twin's price path is built with exp, log and a cumulative sum rounded to
+    12 significant digits, and those library calls land a last digit apart on another runner's CPU; a handful of bars
+    then differ by 1e-11 and a tie or a recursion that depends on it (OBV, A/D, ADX, CRSI ...) moves an edge by up to
+    ~2e-4 of the zone span (measured on a toy coin with a 1 ULP wobble on 30% of the exp and log values: 28 readings,
+    worst 2.4e-4; the first study's twins showed 8e-5). A twin's edges therefore agree when each is within
+    TWIN_EDGE_SPAN_TOL (2%) of that reading's zone span (outer edge minus outer edge), 100 times the noise seen; the
+    difference shown for a twin is that share of the span. A missing reading or another length still stops the job."""
     diff, worst = [], 0.0
     for k in sorted(set(a) | set(b)):
         x, y = a.get(k), b.get(k)
         if x == y:
             continue
-        if twin and x is not None and y is not None:
-            try:
-                u, v = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
-                if u.shape == v.shape and np.allclose(u, v, rtol=TWIN_EDGE_RTOL, atol=0.0, equal_nan=True):
-                    with np.errstate(all='ignore'):
-                        rel = np.abs(u - v) / np.maximum(np.abs(v), 1e-300)
-                    worst = max(worst, float(np.nanmax(rel)) if rel.size else 0.0)
-                    continue
-            except (TypeError, ValueError):
-                pass
-        diff.append(k)
         try:
             u, v = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
-            if u.shape == v.shape:
-                with np.errstate(all='ignore'):
-                    worst = max(worst, float(np.nanmax(np.abs(u - v) / np.maximum(np.abs(v), 1e-300))))
-            else:
-                worst = float('inf')
+            ok = u.shape == v.shape and u.ndim == 1 and u.size > 0
         except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            diff.append(k)
             worst = float('inf')
+            continue
+        with np.errstate(all='ignore'):
+            if twin:
+                span = float(np.nanmax(v) - np.nanmin(v)) if np.isfinite(v).any() else 0.0
+                scale = span if span > 0 else max(float(np.nanmax(np.abs(v))), 1e-300)
+            else:
+                scale = np.maximum(np.abs(v), 1e-300)
+            rel = np.abs(u - v) / scale
+        w = float(np.nanmax(rel)) if rel.size and np.isfinite(rel).any() else float('inf')
+        worst = max(worst, w)
+        if not (twin and bool((np.isnan(u) == np.isnan(v)).all()) and w <= TWIN_EDGE_SPAN_TOL):
+            diff.append(k)
     return diff, worst
 
+
+def twin_identity(m: dict, main_meta: dict) -> list:
+    """The counts and the start of a grid, which do not depend on any library's last digit: what differs from the main
+    run's meta (minutes, gaps, from), as text. Empty when the same."""
+    got = {'minutes': int(m['n']), 'gaps': int(m['gap'].sum()), 'from': str(pd.Timestamp(m['t0'], unit='ms'))}
+    return [f'{k} {v} against {main_meta[k]}' for k, v in got.items() if k in main_meta and main_meta[k] != v]
 
 
 def base(asset: str, csv: str, other_csvs: dict = None, perp_csv: str = '', fund_csv: str = '', oi_csv: str = '', cal_csv: str = '', dom: str = '',
@@ -2296,7 +2305,13 @@ def base(asset: str, csv: str, other_csvs: dict = None, perp_csv: str = '', fund
         diff, worst = edges_differ(a, b, twin=bool(twin))
         if diff or main_meta.get('price_step') != step:
             raise SystemExit(f'{label}: zone edges differ from the main run meta on {len(diff)} readings {diff[:5]} '
-                             f'(largest relative difference {worst:.3g}; price step {step} against {main_meta.get("price_step")})')
+                             f'(largest difference {worst:.3g}{" of the zone span" if twin else " relative"}; '
+                             f'price step {step} against {main_meta.get("price_step")})')
+        ident = twin_identity(m, main_meta)
+        if ident:
+            log(f'::warning::{label}: the grid differs from the main run meta: {"; ".join(ident)}')
+        if twin and worst > 0:
+            log(f'{label}: zone edges within {worst:.2g} of the zone span of the main run twin (runner CPU noise; limit {TWIN_EDGE_SPAN_TOL})')
     readings += [dict(R, family='clock') for R in heat_clock.clock_readings(m)]
     xe = {'edges': {}, 'norms': {}, 'missing': []}
     if xdata:
