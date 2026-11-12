@@ -916,3 +916,58 @@ test('end to end with the lane: the reader\'s 240-minute row opens a 4h heat tra
     }
   }
 });
+
+// ---- meta plan v2, D3: a heat setup skips the setup model's gates and its trained size weights ----
+
+/** A heat entry on a fresh book; returns the trade's size, or the reason none opened. */
+async function heatTrade(o: Omit<Parameters<typeof rig>[0], 'bars' | 'now' | 'px0'> = {}, before?: (r: ReturnType<typeof hourly>) => void) {
+  const r = hourly({ heat: { topN: 10 }, ...o });
+  before?.(r);
+  r.heat.fire('BTC', 1, r.H + 5 * MIN, 1, 40);
+  const t = await r.btc(r.H + 5 * MIN + 5_000);
+  return { t, notional: t.target > 0 ? r.trader.book.positions.get('BTC')!.notional! : undefined, r };
+}
+const noModelFile = path.join(os.tmpdir(), 'heat-perps-no-such-model.json');
+
+test('D3: a heat trade opens when the setup model file is missing', async () => {
+  const x = await heatTrade({ deps: { modelPath: noModelFile } });
+  assert.ok(x.t.target > 0, x.t.reason);
+  assert.equal(x.r.trader.book.positions.get('BTC')!.kind, 'heat');
+});
+
+test('D3: a heat trade opens when validation is enforced and the setup model failed it', async () => {
+  const params = defaultSetupParams({ book: lanes(), pilotMaxNotionalUsd: 1e9, requireValidation: true });
+  setProbation(new Probation({ ...DEFAULT_PROBATION, mode: 'enforce' } as never));
+  try {
+    const failed = (r: ReturnType<typeof hourly>) => {
+      const f = path.join(r.dir, 'setup_model.json');
+      const m = JSON.parse(fs.readFileSync(f, 'utf8'));
+      m.validation.fast.passed = false; m.validation.fast.reasons = ['test: failed']; m.trainedAt = 'x';
+      fs.writeFileSync(f, JSON.stringify(m));
+    };
+    const x = await heatTrade({ deps: { params } }, failed);
+    assert.ok(x.t.target > 0, x.t.reason);
+  } finally { setProbation(undefined as never); }
+});
+
+test('D3: a heat trade opens when the setup SNN gate is on and leans against it', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heat-perps-gate-'));
+  const gateFile = path.join(dir, 'gate.json');
+  fs.writeFileSync(gateFile, JSON.stringify({ enabled: true, minAgree: { fast: 0.4, slow: 0.4 } }));
+  const x = await heatTrade({ deps: { snnGatePath: () => gateFile, snn: () => ({ up: { 60: 0.05, 240: 0.05 }, conf: {} }) as never } });
+  assert.ok(x.t.target > 0, x.t.reason);
+});
+
+test('D3: a trained conviction multiplier and priority leave a heat trade\'s size alone', async () => {
+  const plain = await heatTrade();
+  const boosted = await heatTrade({ deps: { conviction: () => ({ mult: 3, priority: 9, why: 'test' }) } });
+  assert.ok(plain.notional! > 0 && boosted.notional! > 0);
+  assert.ok(Math.abs(boosted.notional! - plain.notional!) < 1e-6, `${boosted.notional} vs ${plain.notional}`);
+});
+
+test('D3: chart setups still need the setup model: without its file they do not enter', async () => {
+  const r = chart('1h', 11, { deps: { modelPath: path.join(os.tmpdir(), 'heat-perps-no-such-model.json') } });
+  const ts = await r.tick(r.now);
+  assert.ok(ts.every((t) => t.target === 0), 'no chart trade without a setup model');
+  assert.equal(r.trader.book.positions.size, 0);
+});
