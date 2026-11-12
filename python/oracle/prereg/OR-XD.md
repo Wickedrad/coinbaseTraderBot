@@ -165,3 +165,4 @@ p99 of the largest-bucket share.
 - 08:57 UTC: push with tags [xd-lite] (all four coins unless an assets tag is given)
 - 09:12 UTC: push with tags [xd-lite] [xd-cluster:0.01] (all four coins unless an assets tag is given)
 - 09:28 UTC: push with tags [xd-lite] [xd-lag:1] (all four coins unless an assets tag is given)
+- 09:43 UTC: push with tags [xd-lite] [xd-lag:5] (all four coins unless an assets tag is given)
