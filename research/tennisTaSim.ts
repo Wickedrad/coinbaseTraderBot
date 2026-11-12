@@ -178,7 +178,7 @@ export interface SimSpec {
   window?: true;
 }
 
-interface SimOrder {
+export interface SimOrder {
   id: number; ticker: string; side: 'bid' | 'ask'; price: number; remaining: number; initial: number;
   postOnly: boolean; reduceOnly: boolean; ioc: boolean; placedTs: number; activeTs: number; queueAhead: number; expiry: number; leg: TennisPlan['leg']; entryCounted: boolean;
 }
@@ -795,6 +795,23 @@ function matchSeriesTest(): (ticker: string) => boolean {
 /** The lines a tennis sweep reads: match markets, their books, deltas, trades, results and lifecycle lines, alive marks and
  *  scores. A book, delta or trade line at or after `lostFrom` of a tennis match ticker whose market line was never read
  *  goes into `lost` (earlier lines belong to matches that began before the owned span: a lookback read meets those). */
+/** One plan and one order are the same order to production's tennis sync (bot/engine.ts, the reconcile loop): same
+ *  ticker, side and price, and the plan's count equals what is left of the order. */
+export const sameOrder = (p: Pick<TennisPlan, 'ticker' | 'side' | 'price' | 'count'>, x: Pick<SimOrder, 'ticker' | 'side' | 'price' | 'remaining'>): boolean =>
+  p.ticker === x.ticker && p.side === x.side && Math.abs(p.price - x.price) < 1e-9 && Math.abs(p.count - x.remaining) < 0.01 + 1e-9;
+
+/** Does a resting order survive the sync? As production: only post-only orders are cancelled, and one stays only while a
+ *  POST-ONLY plan names it. An immediate-or-cancel plan at a resting ask's price (TENNIS_TRAIL=false's underdog_tp once
+ *  the bid reaches the target) does not keep the ask (tennis-ta-sim/5; until /4 any plan kept it). */
+export const syncKeeps = (plans: readonly TennisPlan[], x: Pick<SimOrder, 'ticker' | 'side' | 'price' | 'remaining' | 'postOnly'>): boolean =>
+  !x.postOnly || plans.some((p) => p.postOnly && sameOrder(p, x));
+
+/** Is a plan left unplaced on this decision? As production: when an order that was resting before the sync, or still in
+ *  flight, matches it, whatever its type. So the immediate-or-cancel exit above waits one decision: the ask is cancelled
+ *  now and the exit goes out on the next decision if the bid still allows it. */
+export const syncSkips = (p: TennisPlan, restingBefore: ReadonlyArray<Pick<SimOrder, 'ticker' | 'side' | 'price' | 'remaining'>>, pending: ReadonlyArray<Pick<SimOrder, 'ticker' | 'side' | 'price' | 'remaining'>>): boolean =>
+  restingBefore.some((x) => sameOrder(p, x)) || pending.some((x) => sameOrder(p, x));
+
 export function tennisOnly(lost?: Set<string>, lostFrom = -Infinity): LineFilter {
   const matches = new Set<string>();
   const isMatchSeries = matchSeriesTest();
@@ -1164,11 +1181,11 @@ export async function runSweep(o: SweepOpts): Promise<SweepResult> {
         // The settlement audit: may each held position ride, by production's ride rule as of now?
         sim.audit(tr, markets, now);
         if (!out.plans.length && !held.some((t) => ev.tickers.includes(t))) continue;
-        // Order sync (bot/engine.ts): cancel resting orders no longer planned, place the new ones.
-        const same = (p: TennisPlan, x: SimOrder) => p.ticker === x.ticker && p.side === x.side && Math.abs(p.price - x.price) < 1e-9 && Math.abs(p.count - x.remaining) < 0.01 + 1e-9;
-        for (const t of ev.tickers) sim.cancel(t, (x) => out.plans.some((p) => same(p, x)));
+        // Order sync (bot/engine.ts): cancel resting orders no longer planned, place the new ones (syncKeeps, syncSkips).
+        const before = ev.tickers.flatMap((t) => sim.resting.get(t) ?? []);
+        for (const t of ev.tickers) sim.cancel(t, (x) => syncKeeps(out.plans, x));
         for (const p of out.plans) {
-          if ((sim.resting.get(p.ticker) ?? []).some((x) => same(p, x)) || sim.pending.some((x) => same(p, x))) continue;
+          if (syncSkips(p, before, sim.pending)) continue;
           if (ev.results.has(p.ticker)) continue;
           sim.place(p, usableBook(p.ticker, now), now, closeOf(p.ticker, ev), ev.event, tick);
         }

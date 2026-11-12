@@ -147,6 +147,13 @@ starts or ends inside a Slam is refused. The table's `sealed` flags are the reti
 - On H every spec runs with `TENNIS_TRAIL_RATCHET: false` (section 4: H has a one-level synthetic book with no walls).
   The sweep writes it as the boolean `false` when it is unset or spelt `"false"` or `"0"`, so a config's arms carry
   it the same way. It refuses a spec that turns the ratchet on.
+- The sim syncs orders as production's tennis loop does (`syncKeeps`, `syncSkips`, from `tennis-ta-sim/5`): a
+  resting post-only order stays only while a post-only plan names it, and a plan matching an order that was resting or
+  in flight before the sync waits for the next decision. With `TENNIS_TRAIL: false` the underdog take-profit rests as a
+  maker ask; once the bid reaches the target the ask is cancelled and an immediate-or-cancel exit at the bid follows on
+  the next decision. Until `/4` the ask was kept and filled only on prints through it. No arm with the trail on (every
+  stage 1 and hold config) is changed: the sweep's tennis plans rest only post-only orders, and only the trail-off
+  take-profit rests an ask.
 
 If the file is missing or invalid, prep fails and lists every problem. Every list that prep accepts also passes the
 report's `check_runs` gate (the tests pipe accepted lists through it). A list the report would refuse therefore fails
@@ -371,7 +378,7 @@ why the count should stay fixed across rounds.
 ## Shard file (gzip JSON)
 
 ```
-{ meta: { simVersion: 'tennis-ta-sim/4', stage, pool, run, k, j, shards, subShards, from, to, units, dataVersion,
+{ meta: { simVersion: 'tennis-ta-sim/5', stage, pool, run, k, j, shards, subShards, from, to, units, dataVersion,
           coverage, requestSha, families: ['A'] | ['A','B'], replayVersion (REPLAY_VERSION of
           research/history/historyReplay.ts), specsHash (the spec list's canonical sha256), windowVersion
           ('tennis-ta-window/1', the window block's version), ...bookkeeping (sha, unitsSha, stratum, stratumLabel

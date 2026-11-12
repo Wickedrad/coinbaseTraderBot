@@ -12,7 +12,7 @@ import { breakEvenExit, positionNetAtBid } from '../bot/strategy/fairValueStrate
 import { MatchTracker, PROGRESS_LATCH_MS, type MatchMarket, type TennisPlan } from '../bot/tennis/tennisStrategy';
 import { buildHistoryReplay } from '../research/history/historyReplay';
 import type { KalshiCandle } from '../research/history/kalshiHistory';
-import { ConfigSim, FEES, feedTimeline, hash32, PLACEBO_RESERVOIR, PLACEBO_SEED, PlaceboReservoir, phaseLabel, RESYNC_WINDOW_MS, rng, runSweep, sigBits, SOCKET_BEAT_KIND, type GridWithHigh, type SimSpec } from '../research/tennisTaSim';
+import { ConfigSim, FEES, feedTimeline, hash32, PLACEBO_RESERVOIR, PLACEBO_SEED, PlaceboReservoir, phaseLabel, RESYNC_WINDOW_MS, rng, runSweep, sameOrder, sigBits, SOCKET_BEAT_KIND, syncKeeps, syncSkips, type GridWithHigh, type SimSpec } from '../research/tennisTaSim';
 import type { MatchGrid } from '../research/tennisTaTypes';
 import { contractsFor, drawTwins, levelFor, minuteCandles, SETTLE_FRAC, WINDOW_FEES, windowOutcome, type MinuteCandles } from '../research/tennisTaWindow';
 import { comeback, writeRecordingLines, writeScriptedHistory, writeTaHistory, writeTaRecording, type RecordedFeed } from './tennisTaFixture';
@@ -1078,4 +1078,26 @@ test('tennis TA sweep, window arm under the settle-hold stick: an entry plan at 
   assert.equal(u.twins.length, 3);
   assert.deepEqual(u.twins, drawTwins(mcA, mcB, u.t, endRule, `${EV}|${specs[2].id}|underdog|${minuteKey(u.t)}`, 3, 10, u.side));
   assert.deepEqual(cut.instances!.map((x) => [x.leg, x.t, x.ask, x.C, x.level, x.outcome]), hold.instances!.map((x) => [x.leg, x.t, x.ask, x.C, x.level, x.outcome]));
+});
+
+test('order sync matches production: an IOC exit at a resting ask\'s price cancels the ask and waits one decision (sim/5)', () => {
+  const ask = { ticker: 'T', side: 'ask' as const, price: 0.17, remaining: 50, postOnly: true };
+  const tpRest: TennisPlan = { ticker: 'T', side: 'ask', price: 0.17, count: 50, postOnly: true, reduceOnly: false, timeInForce: 'good_till_canceled', leg: 'underdog_tp', why: 'rest' };
+  const tpTake: TennisPlan = { ...tpRest, postOnly: false, reduceOnly: true, timeInForce: 'immediate_or_cancel', why: 'take' };
+  assert.ok(sameOrder(tpTake, ask), 'same ticker, side, price and count');
+  assert.ok(!sameOrder({ ...tpTake, count: 49 }, ask) && !sameOrder({ ...tpTake, price: 0.18 }, ask) && !sameOrder({ ...tpTake, side: 'bid' }, ask));
+  // Below the target: the post-only plan keeps its resting ask and is not placed again.
+  assert.ok(syncKeeps([tpRest], ask));
+  assert.ok(syncSkips(tpRest, [ask], []));
+  // At the target: the IOC does not keep the ask (bot/engine.ts keeps only for a post-only plan) ...
+  assert.ok(!syncKeeps([tpTake], ask));
+  // ... and is skipped on this decision, as production's resting list is read before its cancels.
+  assert.ok(syncSkips(tpTake, [ask], []));
+  // Next decision: the ask is gone, so the IOC goes out.
+  assert.ok(!syncSkips(tpTake, [], []));
+  // An order in flight that matches holds the plan back too; a non-post-only resting order is never cancelled.
+  assert.ok(syncSkips(tpTake, [], [ask]));
+  assert.ok(syncKeeps([], { ...ask, postOnly: false }));
+  // An unplanned post-only order is cancelled.
+  assert.ok(!syncKeeps([], ask));
 });

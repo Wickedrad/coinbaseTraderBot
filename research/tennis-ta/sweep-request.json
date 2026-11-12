@@ -1,1 +1,6 @@
-{"stage":"hold","shards":8,"note":"The one read (Amendment 4 item 7): the 10 hottest family A hot spots of league run 43113809481 on H-HOLD (Aug 1 to Nov 4, 2026); listed in the registry and calendar line 10i before this push."}
+{
+  "stage": "2",
+  "pool": "disc",
+  "shards": 8,
+  "note": "Exit study (information only, in-sample): direction-found hot spot A|s1|m0.02|f0.2|o0.01|w120 entries x 47 exit settings on H-DEV (Apr 20 to Jul 30, 2026); H-HOLD untouched; calendar line 10l."
+}

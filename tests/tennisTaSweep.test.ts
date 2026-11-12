@@ -988,7 +988,7 @@ test('replay: a tennis match closing days after it begins is replayed; what cann
 test('run: one sub-slice end to end on the fixture writes a C4 shard file the report gate accepts; nostart labelled and counted', async () => {
   const { prep, out, file, replay, specs } = await sliceRun(false);
   const m = out.meta;
-  assert.equal(m.simVersion, 'tennis-ta-sim/4');
+  assert.equal(m.simVersion, 'tennis-ta-sim/5');
   assert.equal(m.replayVersion, REPLAY_VERSION);
   assert.equal(m.specsHash, prep.specsHash);
   assert.deepEqual(m.era, prep.era);
@@ -1315,7 +1315,11 @@ test('workflow: YAML parses, every run block parses in bash, the report job vali
   const rr = ymlCheck(rf);
   assert.equal(rr.status, 0, `${rr.err}\n${(rr.out?.problems ?? []).join('\n')}`);
   assert.ok(runBlocks + rr.out!.runBlocks >= 15);
-  assert.deepEqual(Object.keys((rr.out!.on as { workflow_call: { inputs: object } }).workflow_call.inputs), ['run_id', 'sweep_sha', 'pool', 'stage']);
+  assert.deepEqual(Object.keys((rr.out!.on as { workflow_call: { inputs: object } }).workflow_call.inputs), ['run_id', 'sweep_sha', 'pool', 'stage', 'code_ref']);
+  // A finish run scores at the sweep's commit (code_ref); a plain call scores at its own commit.
+  const rtext = fs.readFileSync(rf, 'utf8');
+  assert.match(rtext, /CODE_SHA: \$\{\{ inputs\.code_ref \|\| github\.sha \}\}/);
+  assert.match(rtext, /ref: \$\{\{ inputs\.code_ref \|\| github\.sha \}\}/);
   const report = rr.out!.jobs.report;
   const idx = (re: RegExp) => report.findIndex((s) => re.test(s.name));
   const body = (re: RegExp) => report[idx(re)]?.run ?? '';
@@ -1323,7 +1327,7 @@ test('workflow: YAML parses, every run block parses in bash, the report job vali
   assert.match(body(/^Registry module/), /refs\/heads\/main:refs\/remotes\/origin\/main/);
   assert.match(body(/^Registry module/), /claude\/project-thread-79ntof/);
   assert.match(body(/^Registry module/), /git show "\$SRC:research\/registry\.py" > \/tmp\/registry\.py/);
-  assert.match(body(/^Report$/), /--registry-py \/tmp\/registry\.py --sha "\$SWEEP_SHA" --report-sha "\$GITHUB_SHA"/);
+  assert.match(body(/^Report$/), /--registry-py \/tmp\/registry\.py --sha "\$SWEEP_SHA" --report-sha "\$CODE_SHA"/);
   assert.match(body(/^Registry rows valid/), /python3 -I \/tmp\/registry\.py validate "\$ROWS"/);
   assert.match(body(/^Registry rows valid/), /contract_type == "tennis"/);
   const up = body(/^Registry upload/);

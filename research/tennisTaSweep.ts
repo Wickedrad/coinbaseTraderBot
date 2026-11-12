@@ -69,7 +69,7 @@ import {
   type WindowInstance, type WindowRow,
 } from './tennisTaWindow';
 
-export const SIM_VERSION = 'tennis-ta-sim/4';
+export const SIM_VERSION = 'tennis-ta-sim/5';
 const DAY = 86_400_000;
 const WEEK = 7 * DAY;
 /** History and inventory stop here (Nov 4 9:00 PM EST). */
