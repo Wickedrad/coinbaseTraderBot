@@ -1,0 +1,1390 @@
+{
+  "schema": "atlas-oracle-forward-edge-validation-v1",
+  "checkedAt": "2026-11-10T03:51:42.291966+00:00",
+  "pullRequest": "https://github.com/Wickedrad/coinbaseTraderBot/pull/311",
+  "objective": "Verify the frozen Oracle relationships on published future direction forecasts and separate funded $200 paper controls",
+  "sourceCommit": "99bfcae4dbd4787de6ba2209a136f0b5c7de9af7",
+  "forwardSourceCommit": "f22894dcfb9d2200ada8f39e55c09a9775987f08",
+  "criteriaTiming": {
+    "engineCommittedAt": "2026-11-10T02:08:28Z",
+    "assessmentCriteriaCommit": "9b8330bbf2d08164042b44167ba7b357b309ed6c",
+    "assessmentCriteriaCommittedAt": "2026-11-10T02:20:51Z",
+    "interpretation": "Assessment criteria committed during capture, before first 15m target maturity and before any result review; not a claim of complete prelaunch assessment registration"
+  },
+  "ci": {
+    "runId": 42749913829,
+    "conclusion": "success",
+    "metrics": {
+      "tests": 1321,
+      "pass": 1321,
+      "fail": 0,
+      "skipped": 0
+    },
+    "typecheck": "passed",
+    "build": "passed",
+    "testedMergeCommit": "d3b08e02d3c1117717be5e6bc1907f18bfea1f7b",
+    "testedBaseCommit": "c630fa8682e807d3c8116d2a3608c46121780206",
+    "mergedExecutableTreeMatchesTestedMerge": true,
+    "interpretation": "CI checked the PR merge with concurrent main changes, not the isolated head alone. Its 1,321 passing tests include those main changes; merged executable files match that tested tree."
+  },
+  "focusedTests": {
+    "pass": 21,
+    "fail": 0,
+    "skipped": 0
+  },
+  "actionlint": "passed",
+  "codeQL": {
+    "id": 42749906508,
+    "head_sha": "99bfcae4dbd4787de6ba2209a136f0b5c7de9af7",
+    "conclusion": "success"
+  },
+  "engineeringProbe": {
+    "runId": 42739853502,
+    "sourceCommit": "bb591be2580e63ccbf7fb5e92532e2fdc2785089",
+    "conclusion": "success",
+    "counts": {
+      "requests": 112,
+      "requestFailures": 0,
+      "acquisitions": 2,
+      "acquisitionFailures": 0,
+      "forecasts": 20,
+      "books": 92,
+      "depthBooks": 92,
+      "revisedAssets": 0,
+      "timingRejected": 92,
+      "missingFeatures": 0
+    },
+    "excludedFromEdgeQualification": true,
+    "artifacts": [
+      {
+        "id": 13729260752,
+        "node_id": "MDg6QXJ0aWZhY3QxMzcyOTI2MDc1Mg==",
+        "name": "atlas-oracle-edge",
+        "size_in_bytes": 1427520,
+        "url": "https://api.github.com/repos/Wickedrad/coinbaseTraderBot/actions/artifacts/13729260752",
+        "archive_download_url": "https://api.github.com/repos/Wickedrad/coinbaseTraderBot/actions/artifacts/13729260752/zip",
+        "expired": false,
+        "digest": "sha256:9fb033c8df71153e90ecb6615cc89da6c2959af82373e18b61032b174af19d68",
+        "created_at": "2026-11-10T02:04:24Z",
+        "updated_at": "2026-11-10T02:04:24Z",
+        "expires_at": "2027-02-08T02:01:37Z",
+        "workflow_run": {
+          "id": 42739853502,
+          "repository_id": 1376136392,
+          "head_repository_id": 1376136392,
+          "head_branch": "feature/atlas-oracle-edge",
+          "head_sha": "bb591be2580e63ccbf7fb5e92532e2fdc2785089"
+        }
+      }
+    ]
+  },
+  "forwardTrial": {
+    "runId": 42740737188,
+    "sourceCommit": "f22894dcfb9d2200ada8f39e55c09a9775987f08",
+    "conclusion": "success",
+    "startedAt": 1794276621474,
+    "endedAt": 1794280956123,
+    "counts": {
+      "requests": 4148,
+      "requestFailures": 0,
+      "acquisitions": 72,
+      "acquisitionFailures": 0,
+      "forecasts": 720,
+      "books": 2996,
+      "depthBooks": 2995,
+      "revisedAssets": 0,
+      "timingRejected": 1528,
+      "missingFeatures": 0
+    },
+    "outcomeCounts": {
+      "complete": 345,
+      "missing-price": 10,
+      "pending": 365
+    },
+    "featureCoverage": [
+      {
+        "asset": "BTC",
+        "forecasts": 144,
+        "activeCurvesMinimum": 276,
+        "activeCurvesMaximum": 276,
+        "axesInFirstForecast": [
+          "m1:rsi",
+          "m1:macd_hist_atr",
+          "m1:bb_position",
+          "m1:atr_bps",
+          "m5:rsi",
+          "m5:macd_hist_atr",
+          "m5:bb_position",
+          "m5:atr_bps",
+          "m15:rsi",
+          "m15:macd_hist_atr",
+          "m15:bb_position",
+          "m15:atr_bps",
+          "m60:rsi",
+          "m60:macd_hist_atr",
+          "m60:bb_position",
+          "m60:atr_bps",
+          "m240:rsi",
+          "m240:bb_position",
+          "m240:atr_bps",
+          "btcd:daily_log_change",
+          "usdtd:daily_log_change",
+          "clock:ny_hour",
+          "clock:ny_weekday"
+        ],
+        "maximumPublicationLagMs": 39254
+      },
+      {
+        "asset": "ETH",
+        "forecasts": 144,
+        "activeCurvesMinimum": 276,
+        "activeCurvesMaximum": 276,
+        "axesInFirstForecast": [
+          "m1:rsi",
+          "m1:macd_hist_atr",
+          "m1:bb_position",
+          "m1:atr_bps",
+          "m5:rsi",
+          "m5:macd_hist_atr",
+          "m5:bb_position",
+          "m5:atr_bps",
+          "m15:rsi",
+          "m15:macd_hist_atr",
+          "m15:bb_position",
+          "m15:atr_bps",
+          "m60:rsi",
+          "m60:macd_hist_atr",
+          "m60:bb_position",
+          "m60:atr_bps",
+          "m240:rsi",
+          "m240:bb_position",
+          "m240:atr_bps",
+          "btcd:daily_log_change",
+          "usdtd:daily_log_change",
+          "clock:ny_hour",
+          "clock:ny_weekday"
+        ],
+        "maximumPublicationLagMs": 39269
+      },
+      {
+        "asset": "SOL",
+        "forecasts": 144,
+        "activeCurvesMinimum": 276,
+        "activeCurvesMaximum": 276,
+        "axesInFirstForecast": [
+          "m1:rsi",
+          "m1:macd_hist_atr",
+          "m1:bb_position",
+          "m1:atr_bps",
+          "m5:rsi",
+          "m5:macd_hist_atr",
+          "m5:bb_position",
+          "m5:atr_bps",
+          "m15:rsi",
+          "m15:macd_hist_atr",
+          "m15:bb_position",
+          "m15:atr_bps",
+          "m60:rsi",
+          "m60:macd_hist_atr",
+          "m60:bb_position",
+          "m60:atr_bps",
+          "m240:rsi",
+          "m240:bb_position",
+          "m240:atr_bps",
+          "btcd:daily_log_change",
+          "usdtd:daily_log_change",
+          "clock:ny_hour",
+          "clock:ny_weekday"
+        ],
+        "maximumPublicationLagMs": 39286
+      },
+      {
+        "asset": "XRP",
+        "forecasts": 144,
+        "activeCurvesMinimum": 276,
+        "activeCurvesMaximum": 276,
+        "axesInFirstForecast": [
+          "m1:rsi",
+          "m1:macd_hist_atr",
+          "m1:bb_position",
+          "m1:atr_bps",
+          "m5:rsi",
+          "m5:macd_hist_atr",
+          "m5:bb_position",
+          "m5:atr_bps",
+          "m15:rsi",
+          "m15:macd_hist_atr",
+          "m15:bb_position",
+          "m15:atr_bps",
+          "m60:rsi",
+          "m60:macd_hist_atr",
+          "m60:bb_position",
+          "m60:atr_bps",
+          "m240:rsi",
+          "m240:bb_position",
+          "m240:atr_bps",
+          "btcd:daily_log_change",
+          "usdtd:daily_log_change",
+          "clock:ny_hour",
+          "clock:ny_weekday"
+        ],
+        "maximumPublicationLagMs": 39298
+      },
+      {
+        "asset": "DOGE",
+        "forecasts": 144,
+        "activeCurvesMinimum": 210,
+        "activeCurvesMaximum": 210,
+        "axesInFirstForecast": [
+          "m1:rsi",
+          "m1:macd_hist_atr",
+          "m1:bb_position",
+          "m1:atr_bps",
+          "m5:rsi",
+          "m5:macd_hist_atr",
+          "m5:bb_position",
+          "m5:atr_bps",
+          "m15:rsi",
+          "m15:macd_hist_atr",
+          "m15:bb_position",
+          "m15:atr_bps",
+          "m60:rsi",
+          "m60:macd_hist_atr",
+          "m60:bb_position",
+          "m60:atr_bps",
+          "btcd:daily_log_change",
+          "usdtd:daily_log_change",
+          "clock:ny_hour",
+          "clock:ny_weekday"
+        ],
+        "maximumPublicationLagMs": 39310
+      }
+    ],
+    "models": [
+      {
+        "asset": "BTC",
+        "id": "37d55dc524452fed9df8f1ff7d33abe3289f52282e698dfb58cd7281ffb55a74",
+        "model": "b774a98e786b33f18a55caa95b9f6e0b6740f9fc018bf5bbdc40787eb07740ea",
+        "importance": "7be033139d125d81eb029c935577022dfa2d0d341e851c0e70024b1a7ccca25e",
+        "learnedThrough": 1791849600000
+      },
+      {
+        "asset": "ETH",
+        "id": "bbd8d073c1924595521a37142b452dc999220ea07ef3ea49b97b7ee15fa7c10d",
+        "model": "4971f90aa1df283a42070ea73e815618bfe5ae10c7b87df1d770a40592414d3d",
+        "importance": "b67e99eaaee518b48047af51db1d3495dd7dc181b4536839c33a99b353370fcb",
+        "learnedThrough": 1791849600000
+      },
+      {
+        "asset": "SOL",
+        "id": "21882df398ffab0af01e298003b9b1643c8b0f83bfdfc32b2b84cfc8d4b8f088",
+        "model": "528abc4e62dd40288935d6a5857223c7cfafb85380652b3b732e2946ea22acaa",
+        "importance": "3570d2a69f296f03493284b8925643c13c304b2117df40fbe828fc840fadbfd2",
+        "learnedThrough": 1791849600000
+      },
+      {
+        "asset": "XRP",
+        "id": "93e701ec4609de8a3ac0dcb5481a1c5e0944fe52a4541954f4ec6674b4a5f64e",
+        "model": "7aa246b38f283cbc7a965fe39aab36383289c2dc812fa8042384991fa52e3217",
+        "importance": "1b470b2f89c3d57f6e501d2d42a314f12f1300a5ae6c728415bb7d59cc64542b",
+        "learnedThrough": 1791849600000
+      },
+      {
+        "asset": "DOGE",
+        "id": "d6bbdef426c151e5cd17b7371473752fd325dfa4410cec9983f2666c0d013d9a",
+        "model": "1ef2778e5c3da833bcd68e2a2e9c86fbe6fa0afee18253690f9457d897297484",
+        "importance": "f126c892b398f5cd124701b865a927d9f890b8d8548109ac2f6a5477f5662c3c",
+        "learnedThrough": 1791849600000
+      }
+    ],
+    "rejectedAssets": [],
+    "failure": null,
+    "artifacts": [
+      {
+        "id": 13732786881,
+        "node_id": "MDg6QXJ0aWZhY3QxMzczMjc4Njg4MQ==",
+        "name": "atlas-oracle-edge",
+        "size_in_bytes": 1933310,
+        "url": "https://api.github.com/repos/Wickedrad/coinbaseTraderBot/actions/artifacts/13732786881",
+        "archive_download_url": "https://api.github.com/repos/Wickedrad/coinbaseTraderBot/actions/artifacts/13732786881/zip",
+        "expired": false,
+        "digest": "sha256:07fffeb16c6e827beb4cd0958f87fa6a8749c6a9e3c29edc7f98ab01971df45f",
+        "created_at": "2026-11-10T03:22:38Z",
+        "updated_at": "2026-11-10T03:22:38Z",
+        "expires_at": "2027-02-08T02:09:09Z",
+        "workflow_run": {
+          "id": 42740737188,
+          "repository_id": 1376136392,
+          "head_repository_id": 1376136392,
+          "head_branch": "feature/atlas-oracle-edge",
+          "head_sha": "f22894dcfb9d2200ada8f39e55c09a9775987f08"
+        }
+      }
+    ],
+    "evidenceHashes": {
+      "forecastsSha256": "80ca245c2956e3057d1e7d3140052d271f99d6b6099dec2cfb4fe981702eecfb",
+      "booksSha256": "88437d958f51cc14dd93280cc8819a00af8126bc47776c75cd700461d301e845",
+      "outcomesSha256": "28fcdd9754f5c56059a9c0a59ba3568023e1cf836cb5ff650250c9a96cfd9c51"
+    },
+    "paper": [
+      {
+        "arm": "weighted",
+        "startingCash": 200,
+        "endingCash": 188.35000000000002,
+        "simulatedNetRealizedUsd": 0.0699999999999994,
+        "paidFees": 0.9,
+        "remainingCostBasisUsd": 11.72,
+        "unresolvedPositions": [
+          {
+            "ticker": "KXBTCD-26NOV0922-T82899.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXETHD-26NOV0922-T2649.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXSOLD-26NOV0922-T93.9999",
+            "quantity": 25,
+            "side": "yes",
+            "basis": 4.76
+          },
+          {
+            "ticker": "KXXRPD-26NOV0922-T1.0999",
+            "quantity": 15,
+            "side": "yes",
+            "basis": 6.1000000000000005
+          }
+        ],
+        "hourly": [
+          {
+            "from": 1794276000000,
+            "netUsd": 0.0699999999999994,
+            "sales": 1,
+            "goalMet": false
+          }
+        ],
+        "pacer": {
+          "anchorStart": 1794236400000,
+          "nextReset": 1794322800000,
+          "elapsedSec": 44556,
+          "hourIndex": 13,
+          "minutesIntoHour": 22.602,
+          "minutesRemaining": 37.398,
+          "minutesSinceProfit": 68.2828,
+          "realized24hUsd": 0.07,
+          "realizedHourUsd": 0,
+          "linearBenchmarkUsd": 55.6952,
+          "nextHourGoalUsd": 4.5,
+          "rawDeficitUsd": 4.5,
+          "neededUsd": 4.5,
+          "requiredUsdPerMin": 0.1203,
+          "ahead": false,
+          "mode": "slices",
+          "hoursRemaining": 12,
+          "remainingGoalUsd": 107.93,
+          "requiredPerHourUsd": 8.9942,
+          "catchUp": true,
+          "sliceGoalUsd": 4.5,
+          "sliceRealizedUsd": 0,
+          "slicesThisHour": 0
+        },
+        "fills": 6,
+        "sales": 1,
+        "decisions": {
+          "entry-attempt": 5,
+          "no-exit-depth": 1681,
+          "manage": 384,
+          "exit-attempt": 1,
+          "unavailable-book": 2,
+          "unavailable-direction-signal": 922,
+          "empty-observed-book": 1
+        },
+        "noRefills": true,
+        "liquidityReplenishedByTimer": false,
+        "makerSales": 0,
+        "makerFillBasis": "Observed public trades, visible initial queue and strict later exchange-second bucket",
+        "feeAsOfVerified": false,
+        "liveEntryAllowed": false,
+        "researchOnly": true,
+        "actualVenueProfitVerified": false,
+        "interpretation": "Full-snapshot entries, snapshot-taker or observed-trade maker exits; paper fills, not venue fills; unresolved exposure is not settled or counted as profit",
+        "capitalLowerBoundNetUsd": -11.649999999999977
+      },
+      {
+        "arm": "uniform",
+        "startingCash": 200,
+        "endingCash": 188.35000000000002,
+        "simulatedNetRealizedUsd": 0.0699999999999994,
+        "paidFees": 0.9,
+        "remainingCostBasisUsd": 11.72,
+        "unresolvedPositions": [
+          {
+            "ticker": "KXBTCD-26NOV0922-T82899.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXETHD-26NOV0922-T2649.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXSOLD-26NOV0922-T93.9999",
+            "quantity": 25,
+            "side": "yes",
+            "basis": 4.76
+          },
+          {
+            "ticker": "KXXRPD-26NOV0922-T1.0999",
+            "quantity": 15,
+            "side": "yes",
+            "basis": 6.1000000000000005
+          }
+        ],
+        "hourly": [
+          {
+            "from": 1794276000000,
+            "netUsd": 0.0699999999999994,
+            "sales": 1,
+            "goalMet": false
+          }
+        ],
+        "pacer": {
+          "anchorStart": 1794236400000,
+          "nextReset": 1794322800000,
+          "elapsedSec": 44556,
+          "hourIndex": 13,
+          "minutesIntoHour": 22.602,
+          "minutesRemaining": 37.398,
+          "minutesSinceProfit": 68.2828,
+          "realized24hUsd": 0.07,
+          "realizedHourUsd": 0,
+          "linearBenchmarkUsd": 55.6952,
+          "nextHourGoalUsd": 4.5,
+          "rawDeficitUsd": 4.5,
+          "neededUsd": 4.5,
+          "requiredUsdPerMin": 0.1203,
+          "ahead": false,
+          "mode": "slices",
+          "hoursRemaining": 12,
+          "remainingGoalUsd": 107.93,
+          "requiredPerHourUsd": 8.9942,
+          "catchUp": true,
+          "sliceGoalUsd": 4.5,
+          "sliceRealizedUsd": 0,
+          "slicesThisHour": 0
+        },
+        "fills": 6,
+        "sales": 1,
+        "decisions": {
+          "entry-attempt": 5,
+          "no-exit-depth": 1681,
+          "manage": 384,
+          "exit-attempt": 1,
+          "unavailable-book": 2,
+          "unavailable-direction-signal": 922,
+          "empty-observed-book": 1
+        },
+        "noRefills": true,
+        "liquidityReplenishedByTimer": false,
+        "makerSales": 0,
+        "makerFillBasis": "Observed public trades, visible initial queue and strict later exchange-second bucket",
+        "feeAsOfVerified": false,
+        "liveEntryAllowed": false,
+        "researchOnly": true,
+        "actualVenueProfitVerified": false,
+        "interpretation": "Full-snapshot entries, snapshot-taker or observed-trade maker exits; paper fills, not venue fills; unresolved exposure is not settled or counted as profit",
+        "capitalLowerBoundNetUsd": -11.649999999999977
+      },
+      {
+        "arm": "prior",
+        "startingCash": 200,
+        "endingCash": 188.35000000000002,
+        "simulatedNetRealizedUsd": 0.0699999999999994,
+        "paidFees": 0.9,
+        "remainingCostBasisUsd": 11.72,
+        "unresolvedPositions": [
+          {
+            "ticker": "KXBTCD-26NOV0922-T82899.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXETHD-26NOV0922-T2649.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXSOLD-26NOV0922-T93.9999",
+            "quantity": 25,
+            "side": "yes",
+            "basis": 4.76
+          },
+          {
+            "ticker": "KXXRPD-26NOV0922-T1.0999",
+            "quantity": 15,
+            "side": "yes",
+            "basis": 6.1000000000000005
+          }
+        ],
+        "hourly": [
+          {
+            "from": 1794276000000,
+            "netUsd": 0.0699999999999994,
+            "sales": 1,
+            "goalMet": false
+          }
+        ],
+        "pacer": {
+          "anchorStart": 1794236400000,
+          "nextReset": 1794322800000,
+          "elapsedSec": 44556,
+          "hourIndex": 13,
+          "minutesIntoHour": 22.602,
+          "minutesRemaining": 37.398,
+          "minutesSinceProfit": 68.2828,
+          "realized24hUsd": 0.07,
+          "realizedHourUsd": 0,
+          "linearBenchmarkUsd": 55.6952,
+          "nextHourGoalUsd": 4.5,
+          "rawDeficitUsd": 4.5,
+          "neededUsd": 4.5,
+          "requiredUsdPerMin": 0.1203,
+          "ahead": false,
+          "mode": "slices",
+          "hoursRemaining": 12,
+          "remainingGoalUsd": 107.93,
+          "requiredPerHourUsd": 8.9942,
+          "catchUp": true,
+          "sliceGoalUsd": 4.5,
+          "sliceRealizedUsd": 0,
+          "slicesThisHour": 0
+        },
+        "fills": 6,
+        "sales": 1,
+        "decisions": {
+          "entry-attempt": 5,
+          "no-exit-depth": 1681,
+          "manage": 384,
+          "exit-attempt": 1,
+          "unavailable-book": 2,
+          "unavailable-direction-signal": 922,
+          "empty-observed-book": 1
+        },
+        "noRefills": true,
+        "liquidityReplenishedByTimer": false,
+        "makerSales": 0,
+        "makerFillBasis": "Observed public trades, visible initial queue and strict later exchange-second bucket",
+        "feeAsOfVerified": false,
+        "liveEntryAllowed": false,
+        "researchOnly": true,
+        "actualVenueProfitVerified": false,
+        "interpretation": "Full-snapshot entries, snapshot-taker or observed-trade maker exits; paper fills, not venue fills; unresolved exposure is not settled or counted as profit",
+        "capitalLowerBoundNetUsd": -11.649999999999977
+      },
+      {
+        "arm": "reversed",
+        "startingCash": 200,
+        "endingCash": 201.2800000000001,
+        "simulatedNetRealizedUsd": 1.2800000000000034,
+        "paidFees": 2.4999999999999996,
+        "remainingCostBasisUsd": 0,
+        "unresolvedPositions": [],
+        "hourly": [
+          {
+            "from": 1794276000000,
+            "netUsd": 1.2800000000000034,
+            "sales": 11,
+            "goalMet": false
+          }
+        ],
+        "pacer": {
+          "anchorStart": 1794236400000,
+          "nextReset": 1794322800000,
+          "elapsedSec": 44556,
+          "hourIndex": 13,
+          "minutesIntoHour": 22.602,
+          "minutesRemaining": 37.398,
+          "minutesSinceProfit": 45.0608,
+          "realized24hUsd": 1.28,
+          "realizedHourUsd": 0,
+          "linearBenchmarkUsd": 55.6952,
+          "nextHourGoalUsd": 4.5,
+          "rawDeficitUsd": 4.5,
+          "neededUsd": 4.5,
+          "requiredUsdPerMin": 0.1203,
+          "ahead": false,
+          "mode": "slices",
+          "hoursRemaining": 12,
+          "remainingGoalUsd": 106.72,
+          "requiredPerHourUsd": 8.8933,
+          "catchUp": true,
+          "sliceGoalUsd": 4.5,
+          "sliceRealizedUsd": 0,
+          "slicesThisHour": 0
+        },
+        "fills": 18,
+        "sales": 11,
+        "decisions": {
+          "no-entry-depth": 1104,
+          "entry-attempt": 7,
+          "manage": 421,
+          "exit-attempt": 11,
+          "no-exit-depth": 72,
+          "unavailable-direction-signal": 1359,
+          "unavailable-book": 2,
+          "inactive-entry": 19,
+          "empty-observed-book": 1
+        },
+        "noRefills": true,
+        "liquidityReplenishedByTimer": false,
+        "makerSales": 0,
+        "makerFillBasis": "Observed public trades, visible initial queue and strict later exchange-second bucket",
+        "feeAsOfVerified": false,
+        "liveEntryAllowed": false,
+        "researchOnly": true,
+        "actualVenueProfitVerified": false,
+        "interpretation": "Full-snapshot entries, snapshot-taker or observed-trade maker exits; paper fills, not venue fills; unresolved exposure is not settled or counted as profit",
+        "capitalLowerBoundNetUsd": 1.2800000000000864
+      },
+      {
+        "arm": "always-up",
+        "startingCash": 200,
+        "endingCash": 188.35000000000002,
+        "simulatedNetRealizedUsd": 0.0699999999999994,
+        "paidFees": 0.9,
+        "remainingCostBasisUsd": 11.72,
+        "unresolvedPositions": [
+          {
+            "ticker": "KXBTCD-26NOV0922-T82899.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXETHD-26NOV0922-T2649.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXSOLD-26NOV0922-T93.9999",
+            "quantity": 25,
+            "side": "yes",
+            "basis": 4.76
+          },
+          {
+            "ticker": "KXXRPD-26NOV0922-T1.0999",
+            "quantity": 15,
+            "side": "yes",
+            "basis": 6.1000000000000005
+          }
+        ],
+        "hourly": [
+          {
+            "from": 1794276000000,
+            "netUsd": 0.0699999999999994,
+            "sales": 1,
+            "goalMet": false
+          }
+        ],
+        "pacer": {
+          "anchorStart": 1794236400000,
+          "nextReset": 1794322800000,
+          "elapsedSec": 44556,
+          "hourIndex": 13,
+          "minutesIntoHour": 22.602,
+          "minutesRemaining": 37.398,
+          "minutesSinceProfit": 68.2828,
+          "realized24hUsd": 0.07,
+          "realizedHourUsd": 0,
+          "linearBenchmarkUsd": 55.6952,
+          "nextHourGoalUsd": 4.5,
+          "rawDeficitUsd": 4.5,
+          "neededUsd": 4.5,
+          "requiredUsdPerMin": 0.1203,
+          "ahead": false,
+          "mode": "slices",
+          "hoursRemaining": 12,
+          "remainingGoalUsd": 107.93,
+          "requiredPerHourUsd": 8.9942,
+          "catchUp": true,
+          "sliceGoalUsd": 4.5,
+          "sliceRealizedUsd": 0,
+          "slicesThisHour": 0
+        },
+        "fills": 6,
+        "sales": 1,
+        "decisions": {
+          "entry-attempt": 5,
+          "no-exit-depth": 1681,
+          "manage": 384,
+          "exit-attempt": 1,
+          "unavailable-book": 2,
+          "unavailable-direction-signal": 922,
+          "empty-observed-book": 1
+        },
+        "noRefills": true,
+        "liquidityReplenishedByTimer": false,
+        "makerSales": 0,
+        "makerFillBasis": "Observed public trades, visible initial queue and strict later exchange-second bucket",
+        "feeAsOfVerified": false,
+        "liveEntryAllowed": false,
+        "researchOnly": true,
+        "actualVenueProfitVerified": false,
+        "interpretation": "Full-snapshot entries, snapshot-taker or observed-trade maker exits; paper fills, not venue fills; unresolved exposure is not settled or counted as profit",
+        "capitalLowerBoundNetUsd": -11.649999999999977
+      },
+      {
+        "arm": "always-down",
+        "startingCash": 200,
+        "endingCash": 201.2800000000001,
+        "simulatedNetRealizedUsd": 1.2800000000000034,
+        "paidFees": 2.4999999999999996,
+        "remainingCostBasisUsd": 0,
+        "unresolvedPositions": [],
+        "hourly": [
+          {
+            "from": 1794276000000,
+            "netUsd": 1.2800000000000034,
+            "sales": 11,
+            "goalMet": false
+          }
+        ],
+        "pacer": {
+          "anchorStart": 1794236400000,
+          "nextReset": 1794322800000,
+          "elapsedSec": 44556,
+          "hourIndex": 13,
+          "minutesIntoHour": 22.602,
+          "minutesRemaining": 37.398,
+          "minutesSinceProfit": 45.0608,
+          "realized24hUsd": 1.28,
+          "realizedHourUsd": 0,
+          "linearBenchmarkUsd": 55.6952,
+          "nextHourGoalUsd": 4.5,
+          "rawDeficitUsd": 4.5,
+          "neededUsd": 4.5,
+          "requiredUsdPerMin": 0.1203,
+          "ahead": false,
+          "mode": "slices",
+          "hoursRemaining": 12,
+          "remainingGoalUsd": 106.72,
+          "requiredPerHourUsd": 8.8933,
+          "catchUp": true,
+          "sliceGoalUsd": 4.5,
+          "sliceRealizedUsd": 0,
+          "slicesThisHour": 0
+        },
+        "fills": 18,
+        "sales": 11,
+        "decisions": {
+          "no-entry-depth": 1104,
+          "entry-attempt": 7,
+          "manage": 421,
+          "exit-attempt": 11,
+          "no-exit-depth": 72,
+          "unavailable-direction-signal": 1359,
+          "unavailable-book": 2,
+          "inactive-entry": 19,
+          "empty-observed-book": 1
+        },
+        "noRefills": true,
+        "liquidityReplenishedByTimer": false,
+        "makerSales": 0,
+        "makerFillBasis": "Observed public trades, visible initial queue and strict later exchange-second bucket",
+        "feeAsOfVerified": false,
+        "liveEntryAllowed": false,
+        "researchOnly": true,
+        "actualVenueProfitVerified": false,
+        "interpretation": "Full-snapshot entries, snapshot-taker or observed-trade maker exits; paper fills, not venue fills; unresolved exposure is not settled or counted as profit",
+        "capitalLowerBoundNetUsd": 1.2800000000000864
+      },
+      {
+        "arm": "random",
+        "startingCash": 200,
+        "endingCash": 189.22,
+        "simulatedNetRealizedUsd": 0.5300000000000069,
+        "paidFees": 3.95,
+        "remainingCostBasisUsd": 11.31,
+        "unresolvedPositions": [
+          {
+            "ticker": "KXBTCD-26NOV0922-T82899.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXETHD-26NOV0922-T2649.99",
+            "quantity": 40,
+            "side": "yes",
+            "basis": 0.43000000000000005
+          },
+          {
+            "ticker": "KXSOLD-26NOV0922-T93.9999",
+            "quantity": 25,
+            "side": "yes",
+            "basis": 4.76
+          },
+          {
+            "ticker": "KXXRPD-26NOV0922-T1.0999",
+            "quantity": 13,
+            "side": "yes",
+            "basis": 5.69
+          }
+        ],
+        "hourly": [
+          {
+            "from": 1794276000000,
+            "netUsd": 0.5300000000000069,
+            "sales": 6,
+            "goalMet": false
+          }
+        ],
+        "pacer": {
+          "anchorStart": 1794236400000,
+          "nextReset": 1794322800000,
+          "elapsedSec": 44556,
+          "hourIndex": 13,
+          "minutesIntoHour": 22.602,
+          "minutesRemaining": 37.398,
+          "minutesSinceProfit": 67.7557,
+          "realized24hUsd": 0.53,
+          "realizedHourUsd": 0,
+          "linearBenchmarkUsd": 55.6952,
+          "nextHourGoalUsd": 4.5,
+          "rawDeficitUsd": 4.5,
+          "neededUsd": 4.5,
+          "requiredUsdPerMin": 0.1203,
+          "ahead": false,
+          "mode": "slices",
+          "hoursRemaining": 12,
+          "remainingGoalUsd": 107.47,
+          "requiredPerHourUsd": 8.9558,
+          "catchUp": true,
+          "sliceGoalUsd": 4.5,
+          "sliceRealizedUsd": 0,
+          "slicesThisHour": 0
+        },
+        "fills": 14,
+        "sales": 6,
+        "decisions": {
+          "entry-attempt": 8,
+          "no-exit-depth": 1681,
+          "manage": 376,
+          "exit-attempt": 6,
+          "unavailable-book": 2,
+          "unavailable-direction-signal": 922,
+          "empty-observed-book": 1
+        },
+        "noRefills": true,
+        "liquidityReplenishedByTimer": false,
+        "makerSales": 0,
+        "makerFillBasis": "Observed public trades, visible initial queue and strict later exchange-second bucket",
+        "feeAsOfVerified": false,
+        "liveEntryAllowed": false,
+        "researchOnly": true,
+        "actualVenueProfitVerified": false,
+        "interpretation": "Full-snapshot entries, snapshot-taker or observed-trade maker exits; paper fills, not venue fills; unresolved exposure is not settled or counted as profit",
+        "capitalLowerBoundNetUsd": -10.780000000000001
+      }
+    ]
+  },
+  "assessment": {
+    "runId": 42750390525,
+    "sourceCommit": "99bfcae4dbd4787de6ba2209a136f0b5c7de9af7",
+    "conclusion": "success",
+    "supersededAssessment": {
+      "runId": 42749052593,
+      "conclusion": "failure",
+      "reason": "Strict JavaScript equality distinguished -0 from JSON 0 on one flat return; fixed and replayed the same unchanged evidence"
+    },
+    "artifacts": [
+      {
+        "id": 13732309430,
+        "node_id": "MDg6QXJ0aWZhY3QxMzczMjMwOTQzMA==",
+        "name": "atlas-oracle-edge-assessment",
+        "size_in_bytes": 2305,
+        "url": "https://api.github.com/repos/Wickedrad/coinbaseTraderBot/actions/artifacts/13732309430",
+        "archive_download_url": "https://api.github.com/repos/Wickedrad/coinbaseTraderBot/actions/artifacts/13732309430/zip",
+        "expired": false,
+        "digest": "sha256:44c39683e645e368f2cf2e132b9be1b1ce2594cf41d9d170028f05f2cc2a074a",
+        "created_at": "2026-11-10T03:35:41Z",
+        "updated_at": "2026-11-10T03:35:41Z",
+        "expires_at": "2027-02-08T03:35:06Z",
+        "workflow_run": {
+          "id": 42750390525,
+          "repository_id": 1376136392,
+          "head_repository_id": 1376136392,
+          "head_branch": "feature/atlas-oracle-edge",
+          "head_sha": "99bfcae4dbd4787de6ba2209a136f0b5c7de9af7"
+        }
+      }
+    ],
+    "reportSha256": "d2676fd32efc2eb44a6d63670cb1b717cfcf41b1ab5a27fba42be7cf11c85b88",
+    "acceptance": {
+      "minimumTrials": 20,
+      "adversePricePerFill": 0.01,
+      "confidence": 0.95,
+      "minimumOutcomeGroups": 20,
+      "controls": [
+        "uniform",
+        "prior",
+        "reversed",
+        "always-up",
+        "always-down",
+        "random"
+      ],
+      "requirements": [
+        "Positive first-sustained-direction ranking gain over the frozen historical prior on non-overlapping time groups; terminal-close accuracy is a separate diagnostic",
+        "Positive paper return after fees and one-cent adverse-price stress at each fill",
+        "Positive paired stressed return against every predeclared control",
+        "All observations retained, no overlapping trials, no cash refills, no unresolved positions, current verified fee terms"
+      ],
+      "automaticPromotion": false,
+      "actualVenueProfitVerified": false
+    },
+    "direction": [
+      {
+        "horizon": 15,
+        "rows": 285,
+        "observedUtcHourGroups": 2,
+        "nonOverlappingUtcHourGroups": 2,
+        "meanGainOverPrior": 0,
+        "groupedInterval": null,
+        "status": "insufficient-evidence",
+        "pathCounts": {
+          "up": 118,
+          "down": 151,
+          "noMove": 16,
+          "unavailable": 0
+        },
+        "descriptiveHitRate": {
+          "weighted": 0.4807017543859649,
+          "prior": 0.41403508771929826,
+          "uniform": 0.47719298245614034,
+          "interpretation": "All available minute forecasts; overlapping rows are descriptive, not independent evidence"
+        },
+        "target": "First confirmed two-minute sustained direction after actual forecast publication; missing paths unavailable, no-move cases count as misses for every ranking",
+        "loss": "0/1 directional-ranking miss"
+      },
+      {
+        "horizon": 60,
+        "rows": 60,
+        "observedUtcHourGroups": 1,
+        "nonOverlappingUtcHourGroups": 1,
+        "meanGainOverPrior": -0.6,
+        "groupedInterval": null,
+        "status": "insufficient-evidence",
+        "pathCounts": {
+          "up": 11,
+          "down": 49,
+          "noMove": 0,
+          "unavailable": 0
+        },
+        "descriptiveHitRate": {
+          "weighted": 0.21666666666666667,
+          "prior": 0.4166666666666667,
+          "uniform": 0.21666666666666667,
+          "interpretation": "All available minute forecasts; overlapping rows are descriptive, not independent evidence"
+        },
+        "target": "First confirmed two-minute sustained direction after actual forecast publication; missing paths unavailable, no-move cases count as misses for every ranking",
+        "loss": "0/1 directional-ranking miss"
+      }
+    ],
+    "terminal": [
+      {
+        "horizon": 15,
+        "rows": 285,
+        "observedUtcHourGroups": 2,
+        "nonOverlappingUtcHourGroups": 2,
+        "meanGainOverPrior": -0.014803680926150276,
+        "groupedInterval": null,
+        "status": "insufficient-evidence",
+        "calibration": [
+          {
+            "from": 0,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.1,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.2,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.3,
+            "rows": 285,
+            "predicted": 0.3572589751943353,
+            "observed": 0.28771929824561404
+          },
+          {
+            "from": 0.4,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.5,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.6,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.7,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.8,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.9,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          }
+        ]
+      },
+      {
+        "horizon": 60,
+        "rows": 60,
+        "observedUtcHourGroups": 1,
+        "nonOverlappingUtcHourGroups": 1,
+        "meanGainOverPrior": 0.0020904842185585303,
+        "groupedInterval": null,
+        "status": "insufficient-evidence",
+        "calibration": [
+          {
+            "from": 0,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.1,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.2,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.3,
+            "rows": 60,
+            "predicted": 0.36897155046368396,
+            "observed": 0.5166666666666667
+          },
+          {
+            "from": 0.4,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.5,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.6,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.7,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.8,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          },
+          {
+            "from": 0.9,
+            "rows": 0,
+            "predicted": null,
+            "observed": null
+          }
+        ]
+      }
+    ],
+    "trials": [
+      {
+        "startedAt": 1794276621474,
+        "endedAt": 1794280956123,
+        "failure": null,
+        "arms": [
+          {
+            "arm": "weighted",
+            "net": -11.649999999999977,
+            "stressedNet": -13.119999999999978,
+            "fills": 6,
+            "unresolved": 4,
+            "verifiedFees": false
+          },
+          {
+            "arm": "uniform",
+            "net": -11.649999999999977,
+            "stressedNet": -13.119999999999978,
+            "fills": 6,
+            "unresolved": 4,
+            "verifiedFees": false
+          },
+          {
+            "arm": "prior",
+            "net": -11.649999999999977,
+            "stressedNet": -13.119999999999978,
+            "fills": 6,
+            "unresolved": 4,
+            "verifiedFees": false
+          },
+          {
+            "arm": "reversed",
+            "net": 1.2800000000000864,
+            "stressedNet": -1.6999999999999158,
+            "fills": 18,
+            "unresolved": 0,
+            "verifiedFees": false
+          },
+          {
+            "arm": "always-up",
+            "net": -11.649999999999977,
+            "stressedNet": -13.119999999999978,
+            "fills": 6,
+            "unresolved": 4,
+            "verifiedFees": false
+          },
+          {
+            "arm": "always-down",
+            "net": 1.2800000000000864,
+            "stressedNet": -1.6999999999999158,
+            "fills": 18,
+            "unresolved": 0,
+            "verifiedFees": false
+          },
+          {
+            "arm": "random",
+            "net": -10.780000000000001,
+            "stressedNet": -14.370000000000005,
+            "fills": 14,
+            "unresolved": 4,
+            "verifiedFees": false
+          }
+        ]
+      }
+    ],
+    "verdict": {
+      "trials": 1,
+      "status": "edge-not-established",
+      "edgeVerified": false,
+      "blockers": [
+        "Too few complete non-overlapping $200 trials",
+        "Direction gain lacks positive grouped evidence",
+        "Unresolved positions prevent a full-account comparison",
+        "Current fee terms were not independently verified for every traded arm",
+        "Stressed absolute return lacks a positive lower bound",
+        "Incremental stressed profit over all controls is not established"
+      ],
+      "absolute": null,
+      "comparisons": [
+        {
+          "control": "uniform",
+          "meanGain": 0,
+          "interval": null
+        },
+        {
+          "control": "prior",
+          "meanGain": 0,
+          "interval": null
+        },
+        {
+          "control": "reversed",
+          "meanGain": -11.420000000000062,
+          "interval": null
+        },
+        {
+          "control": "always-up",
+          "meanGain": 0,
+          "interval": null
+        },
+        {
+          "control": "always-down",
+          "meanGain": -11.420000000000062,
+          "interval": null
+        },
+        {
+          "control": "random",
+          "meanGain": 1.2500000000000266,
+          "interval": null
+        }
+      ],
+      "automaticPromotion": false,
+      "actualVenueProfitVerified": false,
+      "interpretation": "Each trial is a separate fixed $200 experiment; trials are not added together as a single continuously funded account. Bootstrap evidence is approximate and market-specific."
+    }
+  },
+  "boundaries": {
+    "fittingPerformed": false,
+    "lightsailAccessed": false,
+    "ordersSubmitted": false,
+    "deploymentPerformed": false,
+    "trainerPublished": false,
+    "automaticPromotion": false,
+    "freshHistorySource": "tvdatafeed BINANCE USDT only",
+    "transferFrom": "archive-binance-1m-quarantined-v1",
+    "freshFinalFrom": "2026-11-09T00:00:00Z",
+    "newHoldoutUse": "causal feature warmup and forward evaluation; no weight fitting or statistical model/threshold selection. Execution-listing defect corrected as a separately identified protocol, followed by fresh future capture.",
+    "active15mContracts": "unsupported fixed 15m forecast does not fit the shorter remaining sale window",
+    "execution": "public polled-book paper fills with fixed-fill adverse price sensitivity; private venue profit remains unverified"
+  },
+  "correctedListingProbe": {
+    "runId": 42749966754,
+    "sourceCommit": "99bfcae4dbd4787de6ba2209a136f0b5c7de9af7",
+    "conclusion": "success",
+    "counts": {
+      "requests": 141,
+      "requestFailures": 0,
+      "acquisitions": 2,
+      "acquisitionFailures": 0,
+      "forecasts": 20,
+      "books": 99,
+      "depthBooks": 99,
+      "revisedAssets": 0,
+      "timingRejected": 99,
+      "missingFeatures": 0,
+      "marketListingFailures": 0
+    },
+    "excludedFromEdgeQualification": true,
+    "firstSelections": [
+      {
+        "asset": "BTC",
+        "ticker": "KXBTCD-26NOV0923-T74599.99",
+        "strike": 74599.99,
+        "featureAnchor": 74649.37,
+        "bidLevels": 38,
+        "askLevels": 50
+      },
+      {
+        "asset": "ETH",
+        "ticker": "KXETHD-26NOV0923-T2119.99",
+        "strike": 2119.99,
+        "featureAnchor": 2117.88,
+        "bidLevels": 15,
+        "askLevels": 42
+      },
+      {
+        "asset": "SOL",
+        "ticker": "KXSOLD-26NOV0923-T85.7499",
+        "strike": 85.7499,
+        "featureAnchor": 85.74,
+        "bidLevels": 23,
+        "askLevels": 38
+      },
+      {
+        "asset": "XRP",
+        "ticker": "KXXRPD-26NOV0923-T1.0999",
+        "strike": 1.0999,
+        "featureAnchor": 1.0936,
+        "bidLevels": 2,
+        "askLevels": 42
+      }
+    ],
+    "twoSidedBooks": 99,
+    "marketReceiptsSha256": "aac48d45e7f331ce0a35ad724bff193cd1c89a042dadfe54707e6728f0499692",
+    "artifacts": [
+      {
+        "id": 13732639207,
+        "node_id": "MDg6QXJ0aWZhY3QxMzczMjYzOTIwNw==",
+        "name": "atlas-oracle-edge",
+        "size_in_bytes": 1497386,
+        "url": "https://api.github.com/repos/Wickedrad/coinbaseTraderBot/actions/artifacts/13732639207",
+        "archive_download_url": "https://api.github.com/repos/Wickedrad/coinbaseTraderBot/actions/artifacts/13732639207/zip",
+        "expired": false,
+        "digest": "sha256:ece816cc487a4a224e52026116586ae8d75ba17acb0e4bb3631a1b77f4b90d56",
+        "created_at": "2026-11-10T03:34:14Z",
+        "updated_at": "2026-11-10T03:34:14Z",
+        "expires_at": "2027-02-08T03:31:14Z",
+        "workflow_run": {
+          "id": 42749966754,
+          "repository_id": 1376136392,
+          "head_repository_id": 1376136392,
+          "head_branch": "feature/atlas-oracle-edge",
+          "head_sha": "99bfcae4dbd4787de6ba2209a136f0b5c7de9af7"
+        }
+      }
+    ],
+    "interpretation": "Engineering verification after a first-page truncation defect; different engine hashes require a separate locked study. No model weights changed."
+  },
+  "firstTrialAssessmentReproducedByFinalSource": true,
+  "frozenRelationshipsIdenticalAcrossListingCorrection": true,
+  "productionObservations": {
+    "startOfWork": {
+      "deployRun": 42498822979,
+      "deployCommit": "5ad1c74a076cd0b60bd78c0a29a99481a173e037",
+      "trainerRelease": 438369738,
+      "trainerPublishedAt": "2026-11-08T16:31:07Z"
+    },
+    "atCompletion": {
+      "deployRun": 42749577345,
+      "deployCommit": "c630fa8682e807d3c8116d2a3608c46121780206",
+      "deployStartedAt": "2026-11-10T03:27:38Z",
+      "deployCompletedAt": "2026-11-10T03:44:49Z",
+      "trainerRelease": 439913306,
+      "trainerPublishedAt": "2026-11-10T03:30:42Z",
+      "relatedPullRequest": 298
+    },
+    "oraclePullRequest": 311,
+    "oracleMergedAt": "2026-11-10T03:49:17Z",
+    "oracleMergeCommit": "9703627dbc80900b046b44a6ba58e42a5bed45f6",
+    "oracleMergeSkipDeploy": true,
+    "oracleMergeSkipCi": true,
+    "interpretation": "Concurrent PR #298 deployed and published a trainer before the Oracle PR merged. This Oracle work did not deploy, publish a trainer, access Lightsail or enable a model. Global production state did change during the session through that separate work."
+  },
+  "correctedForwardTrial": {
+    "runId": 42751926270,
+    "sourceCommit": "9703627dbc80900b046b44a6ba58e42a5bed45f6",
+    "url": "https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42751926270",
+    "cycles": 90,
+    "statusAtRecordTime": "in_progress",
+    "conclusionAtRecordTime": null,
+    "createdAt": "2026-11-10T03:49:38Z",
+    "interpretation": "Fresh separate protocol with corrected complete listings and 90-minute capture, locked before observing its outcomes. Running at this evidence update; no results claimed or pooled with the first trial."
+  }
+}

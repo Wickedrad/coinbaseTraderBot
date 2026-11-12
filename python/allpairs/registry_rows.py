@@ -11,6 +11,8 @@ Roles: the run's base configuration (config named base or base_ctrl) is the cont
 is a candidate paired with a control on the same out-of-sample days (CONTROLS below, else the in-run control); the
 stress and tight arms are neighbours (the same configuration under worse costs / without wide books) paired with
 the config's own base arm. Synthetic arms are not trials and get no row.
+HO-1 runs (--protocol ho1, rows with a heldout block): every config's base arm is a candidate and every arm is paired
+with a no-trade control row ($0 on each held-out day), the benchmark the HO-1 block is judged against.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ import os
 
 THREAD = 'all-pairs'
 FAMILY = 'all-pairs-policy'     # every configuration asks one question: does a learned entry/exit policy beat $0?
-GATED = ('base', 'stress', 'tight')
+GATED = ('base', 'stress', 'tight', 'strict', 'tight_strict')
 # Runs without their own base configuration: (control run, control config). Same out-of-sample days as the run.
 CONTROLS = {
     '42060065859': ('42054088258', 'base'),          # taker_only, early_entries, exit_allow vs base (4a628f9)
@@ -81,16 +83,17 @@ def load_run(run_dir: str) -> dict:
             continue
         if not isinstance(r, dict) or 'arm' not in r or 'oos' not in r:
             continue
-        g = groups.setdefault(os.path.dirname(f), {'arms': {}, 'gate': None})
+        g = groups.setdefault(os.path.dirname(f), {'arms': {}, 'gate': None, 'heldout': None})
         g['arms'][r['arm']] = r
     out = {}
     for d, g in groups.items():
-        gp = os.path.join(d, 'gate.json')
-        if os.path.exists(gp):
-            try:
-                g['gate'] = json.load(open(gp))
-            except Exception:
-                pass
+        for key, fn in (('gate', 'gate.json'), ('heldout', 'heldout.json')):
+            gp = os.path.join(d, fn)
+            if os.path.exists(gp):
+                try:
+                    g[key] = json.load(open(gp))
+                except Exception:
+                    pass
         base = g['arms'].get('base') or next(iter(g['arms'].values()))
         out[base.get('name') or os.path.basename(d) or 'base'] = g
     return out
@@ -128,10 +131,16 @@ def rows_for_run(run_dir: str, run_id: str, code_sha: str, run_url: str = '', pr
             tid = make_id(THREAD, FAMILY, name, code_sha, days)
             ids[(cfg, arm)] = tid
             pk, pa = _pyes(r)
-            row = {'v': 1, 'trial_id': tid, 'ts': now, 'thread': THREAD, 'family': FAMILY, 'arm': name,
-                   'role': 'neighbour' if arm != 'base' else ('control' if cfg in ('base', 'base_ctrl') else 'candidate'),
+            ho1 = bool((g.get('heldout') or {}).get(arm))
+            # Under HO-1 every config is a candidate against not trading ($0 every day: the family's question); in a
+            # walk-forward run the base configuration is the control.
+            role = 'neighbour' if arm != 'base' else ('control' if cfg in ('base', 'base_ctrl') and not ho1 else 'candidate')
+            row = {'v': 1, 'trial_id': tid, 'ts': now, 'thread': THREAD, 'family': FAMILY, 'arm': name, 'role': role,
                    'code_sha': code_sha, 'env': {}, 'seed': None,
-                   'data': {'source': 'history', 'days': days, 'doge': False, 'benches': 'own', 'books': 'recorded'},
+                   'code_epoch': 'all-pairs engine: Kalshi 15m candles read directly (no TS replay; REPLAY_VERSION n/a)',
+                   # A learned entry + exit policy for the 15-minute crypto series: it replaces the entry decision and the exits.
+                   'contract_type': 'price_prediction', 'modules': ['entry-gate', 'exits'], 'held_out': True,
+                   'data': {'source': 'history', 'days': days, 'doge': False, 'benches': 'own', 'books': 'recorded', 'engine': 'allpairs'},
                    'by_day': bd, 'hours': r['oos'].get('hours'), 'fills': r['oos'].get('trades'),
                    'pyes_kept': pk, 'pyes_all': pa, 'flags': list(flags or []),
                    'verdict': _verdict(g['gate']) if arm == 'base' else f'{arm} arm: {r["oos"]["per_hour"]:+.2f} $/h',
@@ -141,6 +150,9 @@ def rows_for_run(run_dir: str, run_id: str, code_sha: str, run_url: str = '', pr
                            'notes': (r.get('config') or {}).get('notes', '')[:300]}}
             if r.get('wide_spread_share') is not None:
                 row['wide_spread_share'] = r['wide_spread_share']
+            if (g.get('heldout') or {}).get(arm):
+                row['heldout'] = g['heldout'][arm]     # HO-1 evidence (allpairs.ho1), on rows scored with --protocol ho1
+                row['raw']['protocol'] = 'ho1'
             rows.append(row)
     # Pairing. Neighbours pair with their config's base arm; base-arm candidates with the run's own control, else
     # the registered control run's row (from earlier shards).
@@ -151,8 +163,27 @@ def rows_for_run(run_dir: str, run_id: str, code_sha: str, run_url: str = '', pr
         raw = p.get('raw') or {}
         if raw.get('run') == ctl_run and raw.get('config') == ctl_cfg and raw.get('arm') == 'base':
             ext = p
+    # HO-1 runs: one no-trade control per held-out day set ($0 every day), the benchmark the HO-1 block is computed against
+    # (folds won, worst fold, terciles: the arm's own $/h), so the registry's paired gain is the same quantity.
+    zero = {}
+    for row in [r for r in rows if r.get('heldout')]:
+        days = row['data']['days']
+        key = tuple(days)
+        if key not in zero:
+            zid = make_id(THREAD, FAMILY, 'no_trade', code_sha, days)
+            zero[key] = zid
+            rows.append({'v': 1, 'trial_id': zid, 'ts': now, 'thread': THREAD, 'family': FAMILY, 'arm': 'no_trade', 'role': 'control',
+                         'code_sha': code_sha, 'env': {}, 'seed': None, 'code_epoch': row['code_epoch'],
+                         'contract_type': 'price_prediction', 'modules': ['entry-gate', 'exits'], 'held_out': True,
+                         'data': dict(row['data']), 'by_day': {d: 0.0 for d in days}, 'hours': 24 * len(days), 'fills': 0,
+                         'flags': list(flags or []), 'verdict': 'benchmark: no trading ($0 every day)', 'ref': run_url,
+                         'raw': {'run': str(run_id), 'config': 'no_trade', 'arm': 'base', 'protocol': 'ho1',
+                                 'notes': 'HO-1 control of the all-pairs family: not trading'}})
+        row['control'] = zero[key]
     for row in rows:
         raw = row['raw']
+        if row.get('heldout') or raw.get('config') == 'no_trade':
+            continue
         if raw['arm'] != 'base':
             row['control'] = ids.get((raw['config'], 'base'))
         elif row['role'] == 'candidate':

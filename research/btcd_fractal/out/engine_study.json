@@ -1,40 +1,40 @@
 {
   "now": {
-    "asOf": "2026-11-02",
+    "asOf": "2026-11-09",
     "parent": "2016-12-16",
     "progress": 0.476,
     "phase": "base before the waterfall (parent swing 1 of 8)",
-    "dilation": 9.22,
+    "dilation": 9.24,
     "localDilation": 16,
     "map": {
-      "a": -188.5,
+      "a": -188.48,
       "b": 2.5
     },
     "fit": {
-      "r": 0.539,
-      "recentR": -0.122,
-      "maePts": 6.31,
+      "r": 0.538,
+      "recentR": -0.126,
+      "maePts": 6.32,
       "recentMaePts": 5.29
     },
-    "btcd": 60.5,
+    "btcd": 60.76,
     "proj": {
-      "d30": 59.44,
-      "d90": 57.48,
-      "d180": 57.31
+      "d30": 59.7,
+      "d90": 57.74,
+      "d180": 57.57
     },
     "nextWaterfall": {
-      "start": "2029-08-18",
-      "end": "2029-11-16",
-      "from": 55.8,
-      "to": 35.6,
-      "weeksAway": 145.7,
+      "start": "2029-08-26",
+      "end": "2029-11-24",
+      "from": 56,
+      "to": 35.8,
+      "weeksAway": 145.9,
       "inside": false
     },
     "low": {
-      "at": "2035-06-28",
-      "btcd": 30.3
+      "at": "2035-07-08",
+      "btcd": 30.6
     },
-    "gateCross": "2029-08-20"
+    "gateCross": "2029-08-28"
   },
   "weekly": [
     {
@@ -3725,15 +3725,24 @@
       "phase": "base before the waterfall (parent swing 1 of 8)",
       "fit": 0.539,
       "recentFit": -0.122,
-      "btcd": 60.5
+      "btcd": 60.51
+    },
+    {
+      "asOf": "2026-11-09",
+      "parent": "2016-12-16",
+      "progress": 0.476,
+      "phase": "base before the waterfall (parent swing 1 of 8)",
+      "fit": 0.538,
+      "recentFit": -0.126,
+      "btcd": 60.76
     }
   ],
   "skill": {
     "d30": {
-      "n": 405,
+      "n": 406,
       "maeEngine": 3.52,
-      "maeFlat": 1.97,
-      "directionHit": 0.447,
+      "maeFlat": 1.96,
+      "directionHit": 0.446,
       "byFit": {
         "high": {
           "n": 0,
@@ -3744,10 +3753,10 @@
       }
     },
     "d90": {
-      "n": 365,
+      "n": 366,
       "maeEngine": 6.11,
-      "maeFlat": 3.28,
-      "directionHit": 0.455,
+      "maeFlat": 3.27,
+      "directionHit": 0.454,
       "byFit": {
         "high": {
           "n": 0,

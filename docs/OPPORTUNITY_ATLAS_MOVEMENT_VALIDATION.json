@@ -1,0 +1,767 @@
+{
+  "schema": "atlas-advance-movement-validation-v1",
+  "checkedAt": "2026-11-09T08:18:02.342113+00:00",
+  "objective": "advance-price-movement",
+  "sourceCommit": "a84af4197fe27447245b277fa2f813d4fb2a9aed",
+  "pullRequest": "https://github.com/Wickedrad/coinbaseTraderBot/pull/308",
+  "scope": "Offline/paper software and archived development evidence. No live callers, deployed bot, trainer release or Lightsail workload changed.",
+  "localValidation": {
+    "typecheck": "passed",
+    "focusedTests": {
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0
+    },
+    "cases": [
+      "movement fitting without settlement results",
+      "purged roles and final withholding",
+      "same-period movement-only S5/S6 comparison",
+      "cash urgency leaves prediction unchanged",
+      "quantity-dependent rounded entry/exit fee accounting",
+      "available depth and hard risk reductions",
+      "native hourly P/L slices, floors and group verdicts",
+      "profitable final share and unprofitable sale deadline",
+      "published model/request clocks and post-publication lead"
+    ]
+  },
+  "githubValidation": {
+    "ci": {
+      "runId": 42583417179,
+      "url": "https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42583417179",
+      "conclusion": "success",
+      "metrics": {
+        "tests": 1257,
+        "pass": 1257,
+        "fail": 0,
+        "skipped": 0,
+        "duration_ms": 612776.884954
+      },
+      "typecheck": "passed",
+      "build": "passed",
+      "python": "3.12; PyTorch CPU installed"
+    },
+    "windows": {
+      "runId": 42583417221,
+      "conclusion": "success"
+    },
+    "codeQL": {
+      "runId": 42583413227,
+      "conclusion": "success",
+      "languages": [
+        "actions",
+        "c-cpp",
+        "javascript-typescript",
+        "python"
+      ]
+    }
+  },
+  "observedReplay": {
+    "runId": 42583415334,
+    "url": "https://github.com/Wickedrad/coinbaseTraderBot/actions/runs/42583415334",
+    "conclusion": "success",
+    "execution": "GitHub Actions only",
+    "sourceRunId": 42568366333,
+    "sourceCoverageHours": 19.992503,
+    "sourceDays": [
+      "2026-10-22",
+      "2026-10-24",
+      "2026-10-27",
+      "2026-10-29",
+      "2026-11-01",
+      "2026-11-04",
+      "2026-11-06",
+      "2026-11-07"
+    ],
+    "artifact": {
+      "id": 13658417075,
+      "name": "atlas-movement-study",
+      "sizeBytes": 65506842,
+      "sha256": "85754214abe4573c65ca3073049cae9e99eb1fd9f3576ce2c76c174c3ece7d88",
+      "expiresAt": "2027-02-07T08:05:08Z"
+    },
+    "newHistoricalAcquisition": false,
+    "settlementResultsConsumed": false,
+    "oldPayoutModelsConsumed": false,
+    "snnReplayedAgain": false,
+    "variants": [
+      {
+        "name": "base",
+        "productId": "e449b921f0de29f8512e76ee0b1600f3b55b4fb6af98939ce987ea087900fcc1",
+        "modelId": "4f2d341886cda96cd6b6044b1d541e389cc379f86160bab7353a3a3dc41bbf32",
+        "status": "research-fit",
+        "dataset": {
+          "sourceDecisions": 6480,
+          "inactive": 12,
+          "deduplicated": 4608,
+          "observations": 1860,
+          "complete": 1550,
+          "pending": 24,
+          "missing": 286,
+          "withheld": 0
+        },
+        "candidateFamilies": [
+          {
+            "family": "smooth",
+            "headKind": "smooth",
+            "selectionLoss": 0.5343640712475923,
+            "rows": 30
+          },
+          {
+            "family": "trees",
+            "headKind": "trees",
+            "selectionLoss": 0.5209537196700457,
+            "rows": 30
+          },
+          {
+            "family": "temporal-linear",
+            "headKind": "smooth",
+            "selectionLoss": 0.5644714232227602,
+            "rows": 30
+          }
+        ],
+        "selected": {
+          "family": "trees",
+          "headKind": "trees",
+          "trainingEvents": 65,
+          "calibrated": true,
+          "included": [],
+          "featureNames": [
+            "asset:BTC",
+            "asset:DOGE",
+            "asset:ETH",
+            "asset:SOL",
+            "asset:XRP",
+            "movement:atr_bps",
+            "movement:direction_up",
+            "movement:event_continuation",
+            "movement:event_move",
+            "movement:event_reversal",
+            "movement:horizon_sec",
+            "movement:index_age_sec",
+            "movement:missing_prior_return_bps",
+            "movement:prior_drift_bps",
+            "movement:prior_return_bps",
+            "movement:prior_sec",
+            "movement:threshold_bps"
+          ],
+          "snnPriceAgeLimitMs": null
+        },
+        "retention": [
+          {
+            "group": "ta",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "dominance",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "clock",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "micro",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "daily",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          }
+        ],
+        "roles": {
+          "train": {
+            "rows": 528,
+            "distinctEvents": 65,
+            "advanceMoves": 172,
+            "horizonSec": [
+              13.822,
+              2884.759
+            ]
+          },
+          "stopping": {
+            "rows": 180,
+            "distinctEvents": 23,
+            "advanceMoves": 59,
+            "horizonSec": [
+              105.775,
+              2956.367
+            ]
+          },
+          "calibration": {
+            "rows": 330,
+            "distinctEvents": 43,
+            "advanceMoves": 108,
+            "horizonSec": [
+              68.375,
+              2957.775
+            ]
+          },
+          "selection": {
+            "rows": 120,
+            "distinctEvents": 16,
+            "advanceMoves": 34,
+            "horizonSec": [
+              76.765,
+              2966.824
+            ]
+          },
+          "audit": {
+            "rows": 108,
+            "distinctEvents": 18,
+            "advanceMoves": 56,
+            "horizonSec": [
+              352.378,
+              3418.438
+            ]
+          }
+        },
+        "audit": {
+          "rows": 74,
+          "weeks": 1,
+          "gain": null,
+          "p": null
+        },
+        "blockers": [
+          "Locked movement forecast lacks independent weekly predictive gain",
+          "Movement calibration groups lack independent coverage"
+        ],
+        "calibrationCoverage": {
+          "groups": 40,
+          "maximumWeeks": 1,
+          "maximumEventsPerGroup": 3,
+          "minimumWeeksRequired": 8,
+          "minimumEventsRequired": 50
+        },
+        "shadow": {
+          "queries": 306,
+          "statuses": {
+            "unsupported": 186,
+            "unqualified": 120
+          },
+          "mode": "historical-audit",
+          "forwardTimingEligible": false
+        },
+        "publishedAt": 1794211593117,
+        "publicationReceipt": {
+          "id": "69c4f89c5efd72d89626bb5dc92231ad4d3b5f641088ee8c88bde97d21d6ae44",
+          "mode": "historical-audit",
+          "publishedAt": 1794211596101,
+          "minimumLeadMs": 5000,
+          "forwardTimingEligible": false,
+          "outputSha256": "fc80a68685b296575d2b3ed6310bb471f1d1d171cf04ab84474345a5406141b9"
+        },
+        "checks": {
+          "codeFilesChecked": 141,
+          "sourceInputsMatch": true,
+          "profitPolicyInvariant": true,
+          "finalBoundaryPreserved": true
+        },
+        "consumedInputFiles": [
+          "spec.json",
+          "profit-policy.json",
+          "decisions.jsonl",
+          "index-BTC.jsonl",
+          "index-ETH.jsonl",
+          "index-SOL.jsonl",
+          "index-XRP.jsonl",
+          "index-DOGE.jsonl"
+        ]
+      },
+      {
+        "name": "S5",
+        "productId": "28b8cb5b5ce157960b44e9120566b1964785dce8d62de9c2e13ec0a9a0865814",
+        "modelId": "0624ed3283cad170f219e9cb4550609cb40bf39c278fc3140f1b92609999d580",
+        "status": "research-fit",
+        "dataset": {
+          "sourceDecisions": 6336,
+          "inactive": 12,
+          "deduplicated": 4500,
+          "observations": 1824,
+          "complete": 1526,
+          "pending": 24,
+          "missing": 274,
+          "withheld": 0
+        },
+        "candidateFamilies": [
+          {
+            "family": "smooth",
+            "headKind": "smooth",
+            "selectionLoss": 0.5631232507445076,
+            "rows": 30
+          },
+          {
+            "family": "trees",
+            "headKind": "trees",
+            "selectionLoss": 0.5239342706441564,
+            "rows": 30
+          },
+          {
+            "family": "temporal-linear",
+            "headKind": "smooth",
+            "selectionLoss": 6.907780280233137,
+            "rows": 30
+          }
+        ],
+        "selected": {
+          "family": "trees",
+          "headKind": "trees",
+          "trainingEvents": 63,
+          "calibrated": true,
+          "included": [],
+          "featureNames": [
+            "asset:BTC",
+            "asset:DOGE",
+            "asset:ETH",
+            "asset:SOL",
+            "asset:XRP",
+            "movement:atr_bps",
+            "movement:direction_up",
+            "movement:event_continuation",
+            "movement:event_move",
+            "movement:event_reversal",
+            "movement:horizon_sec",
+            "movement:index_age_sec",
+            "movement:missing_prior_return_bps",
+            "movement:prior_drift_bps",
+            "movement:prior_return_bps",
+            "movement:prior_sec",
+            "movement:threshold_bps"
+          ],
+          "snnPriceAgeLimitMs": null
+        },
+        "retention": [
+          {
+            "group": "ta",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "snn",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "dominance",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "clock",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "micro",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "daily",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          }
+        ],
+        "roles": {
+          "train": {
+            "rows": 504,
+            "distinctEvents": 63,
+            "advanceMoves": 169,
+            "horizonSec": [
+              27.767,
+              2884.759
+            ]
+          },
+          "stopping": {
+            "rows": 180,
+            "distinctEvents": 23,
+            "advanceMoves": 59,
+            "horizonSec": [
+              105.775,
+              2956.367
+            ]
+          },
+          "calibration": {
+            "rows": 330,
+            "distinctEvents": 43,
+            "advanceMoves": 108,
+            "horizonSec": [
+              68.375,
+              2957.775
+            ]
+          },
+          "selection": {
+            "rows": 120,
+            "distinctEvents": 16,
+            "advanceMoves": 34,
+            "horizonSec": [
+              76.765,
+              2966.824
+            ]
+          },
+          "audit": {
+            "rows": 108,
+            "distinctEvents": 18,
+            "advanceMoves": 56,
+            "horizonSec": [
+              352.378,
+              3418.438
+            ]
+          }
+        },
+        "audit": {
+          "rows": 74,
+          "weeks": 1,
+          "gain": null,
+          "p": null
+        },
+        "blockers": [
+          "Locked movement forecast lacks independent weekly predictive gain",
+          "Movement calibration groups lack independent coverage"
+        ],
+        "calibrationCoverage": {
+          "groups": 32,
+          "maximumWeeks": 1,
+          "maximumEventsPerGroup": 4,
+          "minimumWeeksRequired": 8,
+          "minimumEventsRequired": 50
+        },
+        "shadow": {
+          "queries": 306,
+          "statuses": {
+            "unsupported": 186,
+            "unqualified": 120
+          },
+          "mode": "historical-audit",
+          "forwardTimingEligible": false
+        },
+        "publishedAt": 1794211657273,
+        "publicationReceipt": {
+          "id": "bd39cca24bc7d31dc7ba9349eb648019d40e01b9e94b5259d5f44dd7b4f57109",
+          "mode": "historical-audit",
+          "publishedAt": 1794211668805,
+          "minimumLeadMs": 5000,
+          "forwardTimingEligible": false,
+          "outputSha256": "90dde3ec29ffe1093a6d15b1bb49142ffc788a8817c7788121e3d3463246e24d"
+        },
+        "checks": {
+          "codeFilesChecked": 141,
+          "sourceInputsMatch": true,
+          "profitPolicyInvariant": true,
+          "finalBoundaryPreserved": true
+        },
+        "consumedInputFiles": [
+          "spec.json",
+          "profit-policy.json",
+          "decisions.jsonl",
+          "index-BTC.jsonl",
+          "index-ETH.jsonl",
+          "index-SOL.jsonl",
+          "index-XRP.jsonl",
+          "index-DOGE.jsonl"
+        ]
+      },
+      {
+        "name": "S6",
+        "productId": "3abdc1ccf976d8b8143a68693a9aec8ecf7ef84b65b1d4456a57eeef1e374027",
+        "modelId": "0624ed3283cad170f219e9cb4550609cb40bf39c278fc3140f1b92609999d580",
+        "status": "research-fit",
+        "dataset": {
+          "sourceDecisions": 6336,
+          "inactive": 12,
+          "deduplicated": 4500,
+          "observations": 1824,
+          "complete": 1526,
+          "pending": 24,
+          "missing": 274,
+          "withheld": 0
+        },
+        "candidateFamilies": [
+          {
+            "family": "smooth",
+            "headKind": "smooth",
+            "selectionLoss": 0.5631233759101768,
+            "rows": 30
+          },
+          {
+            "family": "trees",
+            "headKind": "trees",
+            "selectionLoss": 0.515214805456823,
+            "rows": 30
+          },
+          {
+            "family": "temporal-linear",
+            "headKind": "smooth",
+            "selectionLoss": 6.907780280233137,
+            "rows": 30
+          }
+        ],
+        "selected": {
+          "family": "trees",
+          "headKind": "trees",
+          "trainingEvents": 63,
+          "calibrated": true,
+          "included": [],
+          "featureNames": [
+            "asset:BTC",
+            "asset:DOGE",
+            "asset:ETH",
+            "asset:SOL",
+            "asset:XRP",
+            "movement:atr_bps",
+            "movement:direction_up",
+            "movement:event_continuation",
+            "movement:event_move",
+            "movement:event_reversal",
+            "movement:horizon_sec",
+            "movement:index_age_sec",
+            "movement:missing_prior_return_bps",
+            "movement:prior_drift_bps",
+            "movement:prior_return_bps",
+            "movement:prior_sec",
+            "movement:threshold_bps"
+          ],
+          "snnPriceAgeLimitMs": null
+        },
+        "retention": [
+          {
+            "group": "ta",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "snn",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "dominance",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "clock",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "micro",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          },
+          {
+            "group": "daily",
+            "decision": "insufficient-evidence",
+            "weeks": 1
+          }
+        ],
+        "roles": {
+          "train": {
+            "rows": 504,
+            "distinctEvents": 63,
+            "advanceMoves": 169,
+            "horizonSec": [
+              27.767,
+              2884.759
+            ]
+          },
+          "stopping": {
+            "rows": 180,
+            "distinctEvents": 23,
+            "advanceMoves": 59,
+            "horizonSec": [
+              105.775,
+              2956.367
+            ]
+          },
+          "calibration": {
+            "rows": 330,
+            "distinctEvents": 43,
+            "advanceMoves": 108,
+            "horizonSec": [
+              68.375,
+              2957.775
+            ]
+          },
+          "selection": {
+            "rows": 120,
+            "distinctEvents": 16,
+            "advanceMoves": 34,
+            "horizonSec": [
+              76.765,
+              2966.824
+            ]
+          },
+          "audit": {
+            "rows": 108,
+            "distinctEvents": 18,
+            "advanceMoves": 56,
+            "horizonSec": [
+              352.378,
+              3418.438
+            ]
+          }
+        },
+        "audit": {
+          "rows": 74,
+          "weeks": 1,
+          "gain": null,
+          "p": null
+        },
+        "blockers": [
+          "Locked movement forecast lacks independent weekly predictive gain",
+          "Movement calibration groups lack independent coverage"
+        ],
+        "calibrationCoverage": {
+          "groups": 32,
+          "maximumWeeks": 1,
+          "maximumEventsPerGroup": 4,
+          "minimumWeeksRequired": 8,
+          "minimumEventsRequired": 50
+        },
+        "shadow": {
+          "queries": 306,
+          "statuses": {
+            "unsupported": 186,
+            "unqualified": 120
+          },
+          "mode": "historical-audit",
+          "forwardTimingEligible": false
+        },
+        "publishedAt": 1794211730492,
+        "publicationReceipt": {
+          "id": "4b19ed0ab88cadad3b6ca15ef03d26ff492c1e9b58362e771c6f4236ab705b62",
+          "mode": "historical-audit",
+          "publishedAt": 1794211741866,
+          "minimumLeadMs": 5000,
+          "forwardTimingEligible": false,
+          "outputSha256": "f8bad67bd757cb8da1892ac30ad0a2220c4ed2b7a55ed01ddff410b7977c0c5c"
+        },
+        "checks": {
+          "codeFilesChecked": 141,
+          "sourceInputsMatch": true,
+          "profitPolicyInvariant": true,
+          "finalBoundaryPreserved": true
+        },
+        "consumedInputFiles": [
+          "spec.json",
+          "profit-policy.json",
+          "decisions.jsonl",
+          "index-BTC.jsonl",
+          "index-ETH.jsonl",
+          "index-SOL.jsonl",
+          "index-XRP.jsonl",
+          "index-DOGE.jsonl"
+        ]
+      }
+    ],
+    "snnComparison": {
+      "schema": "opportunity-movement-snn-comparison-v1",
+      "recommended": "none",
+      "studyIds": {
+        "S5": "22d3b80514ba5c990d0d042465331b901217e51fb922a872db63d5245698aeb4",
+        "S6": "476f4a30c24f4a0ed8d199eeeec0f05431ab72fd3d0290ac20eab8b7ef434e75"
+      },
+      "modelIds": {
+        "S5": "0624ed3283cad170f219e9cb4550609cb40bf39c278fc3140f1b92609999d580",
+        "S6": "0624ed3283cad170f219e9cb4550609cb40bf39c278fc3140f1b92609999d580"
+      },
+      "inputIds": {
+        "S5": "bbcaaca2d8f7fc6c80165ce974ff704803e4d4ed96b88c795b20fbdb1e9a6532",
+        "S6": "ac6e9f447f69e4ef6952c541e94983c23c4d4d9b35a32ba5acaaa871058464cb"
+      },
+      "targetPolicySha256": "d6019d6f0202b80854259a20b0ae54350eaf594d8e82837cdf7cbef2d0ff931d",
+      "knownAt": 1794009600000,
+      "rows": 74,
+      "tests": [
+        {
+          "contrast": "S5-vs-simple",
+          "predictive": {
+            "rows": 74,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "accepted": false
+        },
+        {
+          "contrast": "S6-vs-simple",
+          "predictive": {
+            "rows": 74,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "accepted": false
+        },
+        {
+          "contrast": "S6-vs-S5",
+          "predictive": {
+            "rows": 74,
+            "weeks": 1,
+            "gain": null,
+            "p": null
+          },
+          "accepted": false
+        }
+      ],
+      "researchOnly": true,
+      "liveEntryAllowed": false,
+      "id": "dfb81e897b1b88f88fc1f39024aecfba086ede7be70e4e6dab0f04a09792a5f8"
+    },
+    "historicalQueries": 918,
+    "forwardQueries": 0,
+    "unsupportedQueries": 558,
+    "unqualifiedQueries": 360
+  },
+  "profitObjective": {
+    "hourlyUsd": 4.5,
+    "cycleGoalUsd": 108,
+    "defaultAnchor": "10:00 America/New_York",
+    "authority": "Existing HourlyQuotaPacer, quotaCall, positionNetAtBid and maintained fee schedule; actual live configuration not inspected",
+    "defaultFinalProfitFraction": 0.1,
+    "defaultNormalSaleBufferMs": 30000,
+    "defaultMinimumLeadMs": 5000,
+    "verifiedExample": {
+      "quantity": 40,
+      "entrySidePrice": 0.5,
+      "paidEntryFeeUsd": 0.7,
+      "averageEntryCost": 0.5175,
+      "saleSidePrice": 0.65,
+      "exitFeeUsd": 0.64,
+      "netProfitUsd": 4.66,
+      "netProfitAtTenContractDepthUsd": 1.165
+    },
+    "recommendationsAreFills": false,
+    "cashTargetCanIncreasePredictionConfidence": false,
+    "cashTargetCanIncreaseRiskApprovedSize": false,
+    "legacyFinalNoExitWindow": "Configurable unconditional runtime option remains unchanged; future caller integration must review it against the owner's profitable-only settlement exception"
+  },
+  "qualification": {
+    "reliableAdvanceMovementEstablished": false,
+    "independentSnnEdgeEstablished": false,
+    "executedProfitEstablished": false,
+    "liveEntryAllowed": false,
+    "autoPromote": false,
+    "interpretation": "All candidate families fit real data. One independent audit week cannot establish predictive gain, calibration-group coverage or a retained conditional/SNN relationship. Quotes and settlement wins are not movement qualification gates.",
+    "nextEvidence": [
+      "Adequate approved development coverage and independent advance-movement/calibration weeks",
+      "Genuine forward paper forecasts published before their measured movement",
+      "Separately measured venue fills, fee-net realized exits and approved production integration"
+    ]
+  },
+  "productionSnapshot": {
+    "deploymentRunId": 42498822979,
+    "deploymentHead": "5ad1c74a076cd0b60bd78c0a29a99481a173e037",
+    "deploymentCreatedAt": "2026-11-08T16:13:53Z",
+    "trainerReleaseId": 438369738,
+    "trainerPublishedAt": "2026-11-08T16:31:07Z",
+    "trainerTarget": "5ad1c74a076cd0b60bd78c0a29a99481a173e037"
+  },
+  "liveTradingChanged": false,
+  "lightsailAccessed": false
+}

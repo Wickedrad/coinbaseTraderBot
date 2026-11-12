@@ -90,8 +90,11 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
     private readonly books: (ticker: string) => OrderBook | undefined,
     private readonly feesFor: (ticker: string) => FeeSchedule,
     private readonly now: () => number = Date.now,
+    /** Explicit research override; existing callers retain the current replenish policy. */
+    private readonly takenReplenishMs: number = TAKEN_REPLENISH_MS,
   ) {
     super();
+    if (!Number.isSafeInteger(takenReplenishMs) || takenReplenishMs < 0) throw new Error('invalid paper liquidity replenish interval');
     this.st = (file && readJson<PaperState>(file, { quarantine: true })) || { balance: startingBalance, funded: startingBalance, positions: {}, fills: [], orders: [] };
     // Accounts created before `funded` was recorded started with the old $20 default.
     const funded = this.st.funded ?? 20;
@@ -196,8 +199,10 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
       if (!reduces) throw new OrderRejectedError('reduce only would increase position', 400, 'reduce_only');
       o.remainingCount = Math.min(o.remainingCount, Math.abs(pos));
     }
-    const cost = (req.side === 'bid' ? req.price : 1 - req.price) * req.count;
-    if (!req.reduceOnly && cost > this.st.balance + 1e-9) throw new OrderRejectedError('insufficient_balance', 400, 'insufficient_balance');
+    // Like Kalshi: an order's opening part is checked against the cash not already held by resting orders (closing
+    // what is held needs no cash).
+    const cost = (req.side === 'bid' ? req.price : 1 - req.price) * this.opening(req.ticker, req.side, req.count);
+    if (!req.reduceOnly && cost > this.available() + 1e-9) throw new OrderRejectedError('insufficient_balance', 400, 'insufficient_balance');
 
     this.st.orders.push(o);
     this.index(o);
@@ -213,7 +218,7 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
         if (!through) break;
         const key = `${req.ticker}|${bookSide}|${lvl.price}`;
         let e = this.taken.get(key);
-        if (e && (TAKEN_REPLENISH_MS <= 0 || this.now() - e.ts >= TAKEN_REPLENISH_MS)) { this.taken.delete(key); e = undefined; }
+        if (e && (this.takenReplenishMs <= 0 || this.now() - e.ts >= this.takenReplenishMs)) { this.taken.delete(key); e = undefined; }
         // What we took is still missing from the level (size added since then is real); conservative while the
         // recorded level shrinks, since the public book never knew our take.
         const avail = e ? Math.max(0, lvl.size - e.taken) : lvl.size;
@@ -229,9 +234,9 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
         if (this.lastTake.size > 20000) for (const [k, v] of this.lastTake) if (this.now() - v.ts >= 600_000) this.lastTake.delete(k);
         this.fill(o, n, lvl.price, true);
         this.takerStats.filled += n; ser.filled += n;
-        if (TAKEN_REPLENISH_MS > 0) this.taken.set(key, { size: lvl.size, taken: (e?.taken ?? 0) + n, ts: this.now() });
+        if (this.takenReplenishMs > 0) this.taken.set(key, { size: lvl.size, taken: (e?.taken ?? 0) + n, ts: this.now() });
       }
-      if (this.taken.size > 5000) for (const [k, v] of this.taken) if (this.now() - v.ts >= TAKEN_REPLENISH_MS) this.taken.delete(k);
+      if (this.taken.size > 5000) for (const [k, v] of this.taken) if (this.now() - v.ts >= this.takenReplenishMs) this.taken.delete(k);
     }
     if (o.remainingCount > 1e-9) {
       if (req.timeInForce === 'good_till_canceled') {
@@ -282,8 +287,51 @@ export class PaperExchange extends EventEmitter implements ExchangeGateway {
     return Object.entries(this.st.positions).filter(([, v]) => Math.abs(v) > 1e-9).map(([ticker, position]) => ({ ticker, position }));
   }
 
+  /** Cash Kalshi would report: the account's cash less what resting orders hold (a resting buy's cost is held until it
+   *  fills or is canceled, as GET /portfolio/balance shows it; Engine.freeCash relies on that). */
   async getBalance(): Promise<number> {
+    return this.available();
+  }
+
+  /** The account's cash including what resting orders hold (for equity: a hold is still the account's money). */
+  cash(): number {
     return this.st.balance;
+  }
+
+  /** Read-only preview for research takers: own earlier takes remain absent until
+   * displayed depth increases or the configured replenishment interval expires. */
+  availableTakerQuantity(ticker: string, bookSide: 'bid' | 'ask', price: number, displayed: number): number {
+    const taken = this.taken.get(`${ticker}|${bookSide}|${price}`);
+    return !taken || this.takenReplenishMs <= 0 || this.now() - taken.ts >= this.takenReplenishMs
+      ? displayed : Math.max(0, displayed - taken.taken);
+  }
+
+  /** What resting orders hold: the cost of each one's opening part. Orders that only close a held position hold nothing. */
+  held(): number {
+    const cover = new Map<string, number>();
+    let h = 0;
+    for (const o of this.resting.values()) {
+      if (o.reduceOnly || o.remainingCount <= 1e-9) continue;
+      const k = `${o.ticker}|${o.side}`;
+      const pos = this.st.positions[o.ticker] ?? 0;
+      const left = cover.get(k) ?? Math.max(0, o.side === 'ask' ? pos : -pos);
+      const closing = Math.min(left, o.remainingCount);
+      cover.set(k, left - closing);
+      h += (o.side === 'bid' ? o.price : 1 - o.price) * (o.remainingCount - closing);
+    }
+    return h;
+  }
+
+  private available(): number {
+    return this.st.balance - this.held();
+  }
+
+  /** The part of a new order that opens exposure, after what resting orders on the same side already close. */
+  private opening(ticker: string, side: 'bid' | 'ask', count: number): number {
+    const pos = this.st.positions[ticker] ?? 0;
+    let cover = Math.max(0, side === 'ask' ? pos : -pos);
+    for (const o of this.resting.values()) if (o.ticker === ticker && o.side === side && !o.reduceOnly) cover -= o.remainingCount;
+    return Math.max(0, count - Math.max(0, cover));
   }
 
   /** Public trade print from market data; `tradeTs` is the exchange's time stamp of the trade. */

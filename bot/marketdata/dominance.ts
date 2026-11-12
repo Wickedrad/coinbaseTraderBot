@@ -295,6 +295,10 @@ export class DominanceService extends EventEmitter {
   /** Switch to (or update) the targeted stream: the snapshot's coins that Binance prices, plus the extras. */
   private retarget(coins: CoinSnapshot[]): void {
     if (this.targetedFailures >= 3) return; // the targeted stream keeps failing: stay on the all-market one
+    // Nothing learned from the all-market stream yet (CoinGecko answered before Binance's first push): targeting now
+    // would lock onto BTC plus the extras, and `listed` would then only ever learn those, so every later retarget kept
+    // the same short list until a restart (BTCDOM gone, the top coins priced at their anchors). Wait for the next refresh.
+    if (!this.listed.size) return;
     const want = new Set<string>(['BTC', ...(this.o.extraSymbols ?? []).map((x) => x.toUpperCase())]);
     for (const c of coins) {
       const sym = c.symbol.toUpperCase();

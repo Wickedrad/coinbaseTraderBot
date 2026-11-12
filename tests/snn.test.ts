@@ -386,6 +386,26 @@ test('host: in-process and worker-thread runtimes agree; checkpoints are version
   await worker.stop(); await local.stop(T0 + 10);
 });
 
+test('host: a worker that dies hands the network to the in-process runtime from the newest checkpoint', async () => {
+  const dir = tmpDir();
+  const params = small();
+  const tp = tape(5);
+  const host = new SnnHost({ params, worker: { path: path.resolve('bot/snn/worker.dev.mjs') }, timeoutMs: 2_000, latencySkipP99Ms: 150, checkpointDir: dir, checkpointEveryMin: 1e9, keepCheckpoints: 2 });
+  await host.start(T0);
+  assert.equal(host.mode, 'worker');
+  for (let s = 0; s < 3; s++) await host.stepAndScore(T0 + s * 1000, tp[s], [query('Q', 60050)]);
+  assert.ok(await host.checkpoint(T0 + 3000));
+  // The worker dies on its own (not through stop()).
+  const w = (host as any).worker as import('node:worker_threads').Worker;
+  await new Promise<void>((res) => { w.once('exit', () => res()); void w.terminate(); });
+  assert.equal(host.mode, 'in-process');
+  assert.match(String(host.lastError), /worker exited .*restarted in-process from checkpoint @/);
+  const r = await host.stepAndScore(T0 + 4000, tp[4], [query('Q', 60050)]);
+  assert.ok(r && r.scores.length === 1, 'the network still scores after the worker died');
+  await host.settle('Q', 'yes', T0 + 5000);
+  await host.stop(T0 + 6000);
+});
+
 test('host: a slow readout times out at the deadline (alpha = 0) and feeds latency p99', async () => {
   const host = new SnnHost({ params: small(), timeoutMs: 20, latencySkipP99Ms: 15, checkpointEveryMin: 1e9, keepCheckpoints: 1 });
   await host.start(T0);
@@ -463,6 +483,26 @@ test('engine shadow mode: SNN scores every contract and is logged, but p_model i
   assert.equal(pctx.pContract, undefined, 'contract scores come from the crypto network only');
   const brief = engine.snnBrief() as { mode: string; alpha: number };
   assert.equal(brief.mode, 'shadow'); assert.equal(brief.alpha, 0);
+});
+
+test('engine: SNN calls older than 3 minutes stop feeding the models and are dropped at the next step', async () => {
+  const { engine, market } = await engineSetup('shadow');
+  await engine.tick(); await engine.tick();
+  assert.ok(engine.snnContext('BTC', market.ticker)?.pContract !== undefined);
+  // The network stalls: every call it made is now 181 s old.
+  const scores = (engine as any).snnScores as Map<string, { ts: number }>;
+  for (const s of scores.values()) s.ts -= 181_000;
+  for (const x of engine.snnDirs.values()) x.ts -= 181_000;
+  const ctx = engine.snnContext('BTC', market.ticker);
+  assert.equal(ctx?.pContract, undefined, 'a stale contract score is not p_snn');
+  assert.equal(ctx?.up?.[15], undefined, 'a stale direction call is not a feature');
+  // The next step prunes what it did not refresh (both maps carry the time of each call).
+  const before = scores.size;
+  (engine as any).snnScores.set('OLD-TICKER', { ticker: 'OLD-TICKER', p: 0.5, domain: 'crypto', ts: Date.now() - 181_000 });
+  await engine.tick();
+  assert.ok(!scores.has('OLD-TICKER'), 'old scores are dropped');
+  assert.ok(scores.size <= before);
+  assert.ok(engine.snnContext('BTC', market.ticker)?.pContract !== undefined, 'fresh calls feed again');
 });
 
 test('engine blend mode: alpha = 0 until earned, then p_final = (1 - alpha c) p_model + alpha c p_snn', async () => {

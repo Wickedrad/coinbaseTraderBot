@@ -73,12 +73,18 @@ jobs:
           $ErrorActionPreference = 'Stop'
           Push-Location KalshiTrainer/app
           ../node/node.exe -e "const t=require('talib'); if(!t.functions.length) throw new Error('no TA-Lib functions'); console.log('TA-Lib', t.version, t.functions.length, 'functions')"
-          # One small real download (BTC daily candles from Binance Vision) exercises unzip and paths on Windows.
-          $env:HISTORY_ASSETS = 'BTC'; $env:HISTORY_BINANCE_INTERVALS = '1d'; $env:HISTORY_COINBASE_TFS = 'none'; $env:KALSHI_HISTORY_BUDGET_MIN = '0'
-          ../node/node.exe dist/laptopTrain.cjs --hours 0.2 --data "$env:RUNNER_TEMP/td" --no-pull --no-push --only history,fill,sizing
+          # A local synthetic archive exercises zip/paths without acquiring market history.
+          # Fresh Atlas history is tvdatafeed-only; packaging must not fetch other providers.
+          $fixture = "$env:RUNNER_TEMP/history-fixture"
+          New-Item -ItemType Directory -Force "$fixture/history/synthetic-fixture/BTC" | Out-Null
+          "ts,o,h,l,c,v`n0,100,101,99,100,1`n86400000,100,102,99,101,1" | Set-Content "$fixture/history/synthetic-fixture/BTC/1d.csv"
+          Compress-Archive -Path "$fixture/history" -DestinationPath "$env:RUNNER_TEMP/history-fixture.zip" -Force
+          Expand-Archive "$env:RUNNER_TEMP/history-fixture.zip" -DestinationPath "$env:RUNNER_TEMP/td" -Force
+          if (-not (Test-Path "$env:RUNNER_TEMP/td/history/synthetic-fixture/BTC/1d.csv")) { throw 'fixture archive did not unpack' }
+          ../node/node.exe dist/laptopTrain.cjs --hours 0.2 --data "$env:RUNNER_TEMP/td" --no-pull --no-push --only fill,sizing
           if ($LASTEXITCODE -ne 0) { throw "trainer exited $LASTEXITCODE" }
           # The trainer window starts and answers on this computer only (no browser on the runner).
-          $p = Start-Process -FilePath ../node/node.exe -ArgumentList 'dist/laptopTrain.cjs','--ui','--no-open','--port-ui','47123','--data',"$env:RUNNER_TEMP/td" -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP/ui.txt"
+          $p = Start-Process -FilePath ../node/node.exe -ArgumentList 'dist/laptopTrain.cjs','--ui','--no-open','--port-ui','47123','--no-pull','--no-push','--only','fill,sizing','--data',"$env:RUNNER_TEMP/td" -PassThru -NoNewWindow -RedirectStandardOutput "$env:RUNNER_TEMP/ui.txt"
           Start-Sleep -Seconds 5
           $url = (Select-String -Path "$env:RUNNER_TEMP/ui.txt" -Pattern 'http://127\.0\.0\.1:47123/\?t=\w+').Matches[0].Value
           if (-not $url) { throw 'the trainer window did not start' }
@@ -108,7 +114,7 @@ jobs:
           path: KalshiTrainer-windows.zip
           retention-days: 30
       - name: Publish the "trainer-latest" release
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !contains(github.event.head_commit.message, '[skip deploy]')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

@@ -45,7 +45,7 @@ def period(t):
 
 
 def kind_of(t):
-    if t.startswith('KXATP'): return 'tennis'
+    if t.startswith(('KXATP', 'KXWTA')): return 'tennis'
     if '15M-' in t: return 'updown15m'
     seg = t.rsplit('-', 1)[-1]
     return 'greater' if seg.startswith('T') else 'between' if seg.startswith('B') else 'other'

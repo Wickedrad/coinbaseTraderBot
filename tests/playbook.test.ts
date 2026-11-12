@@ -1,5 +1,6 @@
 // Strategy playbook: per coin regime (character x Hilbert trend/cycle), the weight of each strategy family,
 // learned from replay coin-days and switched on only after walk-forward validation.
+import './tmpScope'; // one temp folder per run, removed at exit
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';

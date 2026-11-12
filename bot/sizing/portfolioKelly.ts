@@ -43,7 +43,8 @@ export interface KellyOpts {
   maxTotal?: number;
   /** Perp volatility inflation per unit of capital locked in binaries (sigma x (1 + k x locked)). */
   lockedVolMult?: number;
-  /** Fraction of capital locked in binaries / bets already (for the perp inflation). */
+  /** Share of the event-contract pool held in open binaries (for the perp inflation). Perp margin is a separate account in both
+   *  modes, so this is not a margin limit. No caller passes it today; SetupTrader ignores it on purpose (I116). */
   lockedFrac?: number;
   scenarios?: number;
   seed?: number;

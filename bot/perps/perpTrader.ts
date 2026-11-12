@@ -51,6 +51,9 @@ export interface PerpTraderParams {
   maxTotalNotionalUsd: number;
   stopAtrMult: number;
   minStopBps: number;
+  /** PERP_LOSER_CUT_C as dollars a contract (Steven, Nov 12: 15c): the stop is the nearer of the ATR stop and this far against
+   *  the entry on the perp's price. Sizing keeps the ATR stop. 0 / unset: off. */
+  loserCut?: number;
   maxHoldMin: number;
   dailyLossFrac: number;
   cooldownMin: number;
@@ -89,7 +92,8 @@ export interface PerpDecisionInput {
   halt?: string;
   /** New entries not allowed (existing positions are still managed). */
   noEntry?: string;
-  /** Share of total capital locked in binary bets until settlement (inflates the perp's sigma). */
+  /** Share of the event-contract pool held in open binaries until settlement (inflates the perp's sigma). Not perp margin,
+   *  which is a separate account in both modes. */
   lockedFrac?: number;
   /** The net dollars a position must be up for its sale now (the quota pacer, bot/risk/quotaPacer.ts); undefined = off. */
   pacerUsd?: number;
@@ -119,7 +123,11 @@ export function decidePerp(i: PerpDecisionInput, p: PerpTraderParams): PerpDecis
   if (i.bid === undefined || i.ask === undefined || !(i.ask >= i.bid)) return { target: cur, urgent: false, reason: 'no two-sided perp quote: hold' };
   const mid = (i.bid + i.ask) / 2;
   const stopFrac = Math.max((p.stopAtrMult * (i.atrFrac ?? 0)), p.minStopBps / 1e4);
-  const stopFor = (dir: number, entry: number) => +(entry * (1 - dir * stopFrac)).toFixed(4);
+  // The ATR stop, or the loser cut (PERP_LOSER_CUT_C, dollars a contract on the perp's price) when it is nearer the entry.
+  const stopFor = (dir: number, entry: number) => {
+    const atr = entry * (1 - dir * stopFrac), cut = p.loserCut && p.loserCut > 0 ? entry - dir * p.loserCut : undefined;
+    return +(cut !== undefined && cut > 0 && dir * (cut - atr) > 0 ? cut : atr).toFixed(4);
+  };
   // Our own stop check (the exchange trigger is the primary one).
   if (curDir !== 0 && i.entryPrice) {
     const stop = stopFor(curDir, i.entryPrice);
@@ -163,8 +171,9 @@ export function decidePerp(i: PerpDecisionInput, p: PerpTraderParams): PerpDecis
     return { target: 0, urgent: false, reason: `edge ${entryNet(best).toFixed(1)} bps below entry threshold ${p.entryEdgeBps} (mu ${i.muBps.toFixed(1)} bps, costs ${(2 * p.makerBps + fundingBps(best)).toFixed(1)} bps)`, netEdgeBps: entryNet(best) };
   }
 
-  // Size: fractional Kelly on the net edge, with every cap. Capital locked in binaries cannot buffer
-  // margin, so the perp's assumed volatility is inflated by that share (smaller perp size).
+  // Size: fractional Kelly on the net edge, with every cap. The perp's assumed volatility is inflated by the share of the
+  // event-contract pool held in open binaries (smaller perp size). This is a conservative, direction-blind inflation, not a
+  // margin constraint: perp margin is a separate account in both modes. PERP_LOCKED_VOL_MULT=0 turns it off.
   const sigma = (i.sigmaHBps / 1e4) * (1 + (p.lockedVolMult ?? 1) * Math.max(0, Math.min(1, i.lockedFrac ?? 0)));
   const kellyLev = (p.kellyFraction * Math.max(0, net) / 1e4) / (sigma * sigma);
   // Liquidation beyond the stop: the equity left after the other positions (their stop losses and maintenance,

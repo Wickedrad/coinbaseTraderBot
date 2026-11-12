@@ -65,6 +65,18 @@ test('live follows the trials and the accuracy gate as paper does', () => {
   assert.equal(row(rows, 'meta model').state, 'on');
 });
 
+test('accuracy gate off (the default): its scorecard is still shown, and the row does not call those buckets blocked', () => {
+  for (const mode of ['paper', 'live']) {
+    const r = row(buildLedger(base({ mode, accuracyGate: { enabled: false, blocked: 7, buckets: 8 } })), 'accuracy gate');
+    assert.equal(r.state, 'off');
+    assert.equal(r.score?.value, 7);
+    assert.equal(r.score?.n, 8);
+    assert.match(r.score?.label ?? '', /gate off: none blocked/);
+    assert.doesNotMatch(ledgerLine(r), /buckets blocked/);
+  }
+  assert.equal(row(buildLedger(base()), 'accuracy gate').score?.label, 'time-to-close buckets blocked');
+});
+
 test('exits, gates and feeds', () => {
   const rows = buildLedger(base({ model: { id: 'm', liveBlockers: ['Brier not better than market'] } }));
   assert.equal(row(rows, 'meta model').validated, false);

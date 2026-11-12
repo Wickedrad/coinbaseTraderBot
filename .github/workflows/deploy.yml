@@ -1,12 +1,24 @@
 # Deploys to the Lightsail box (static IP, systemd service `kalshi-bot`).
 #
-#  - Every push to main (i.e. when a PR is merged) tests, builds and deploys automatically (Steven, Nov 5: no batching).
+#  - Every push to main (i.e. when a PR is merged) that changes bot code tests, builds and deploys automatically
+#    (Steven, Nov 5: no batching). A push that changes only research files (docs, python, tests, unbundled research,
+#    other workflows) skips the deploy and restart (Steven, Nov 11, 8:18 AM EST / 13:18 UTC). The scope job decides
+#    from the files changed since the last deploy (deploy/deploy-scope.ts), never from the message: "[skip deploy]"
+#    no longer skips a push that changes bot code (it deploys, with a warning). "[skip ci]" still stops GitHub from
+#    starting this workflow at all, so a bot change pushed with it gets no deploy of its own: the next deploy ships it
+#    and its summary names it as batched. Research-only merges need neither tag to skip it.
 #  - Every deploy is logged, so a problem can be matched to the merge and restart that caused it: one JSON line per
 #    deploy in ~/bot/deploys.log on the server (time, release, commit, the PRs it brought since the last deploy),
 #    and the same list in the run's summary.
 #  - Run manually from the Actions tab to redeploy main, or to deploy an existing release tag
 #    (v1.2.3) by entering it.
 #  - Rollback is one command on the server: `bash ~/bot/current/deploy/rollback.sh`.
+#  - The heat curve reader (docs/HEAT_READER.md) ships with the release when the commit has it: python/heat_reader,
+#    python/oracle and the packs in research/oracle_heat/latest (the HEAT_SHIP list in deploy/deploy-scope.ts; unlike
+#    the rest of python/ and research/, a change to them deploys). activate.sh runs its installer after the bot is up;
+#    it runs while HEAT_LANE=true in ~/bot/bot.env (ensure-env.sh adds that line, and PLAN_RULES=true, when bot.env has
+#    none) and never fails a deploy. A commit without them ships nothing extra (python/oracle and the packs are on main
+#    since #328, the reader and its installer since #327). Their upload is part of the release's: when it fails, the run fails before activation.
 #
 # Switching to reviewed, tag-only deploys later (more secure): set the repository variable
 # AUTO_DEPLOY=false (Settings > Secrets and variables > Actions > Variables) and add required
@@ -23,6 +35,10 @@ on:
     branches: [main, master]
   workflow_dispatch:
     inputs:
+      paper_only:
+        description: 'Require paper mode before activation and verify the running process afterwards'
+        type: boolean
+        default: false
       tag:
         description: 'Optional: release tag to deploy instead of the current branch (e.g. v2.0.0)'
         required: false
@@ -35,12 +51,84 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  # Does this push change anything that reaches the server? Compares the files changed since the last deploy
+  # (deploy/deploy-scope.ts lists what counts as research-only). Also finds the last deployed commit for the deploy log.
+  scope:
+    if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY != 'false'
     permissions:
       contents: read
       actions: read
-    # Pushes deploy unless AUTO_DEPLOY is set to 'false'; manual runs always deploy.
-    if: github.event_name == 'workflow_dispatch' || vars.AUTO_DEPLOY != 'false'
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.scope.outputs.deploy }}
+      prev: ${{ steps.prev.outputs.prev }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Last deployed commit
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Last earlier run of this workflow whose deploy job succeeded (its head commit). A run whose deploy was skipped
+          # (research-only) or failed does not count. A tag deployed by a manual run or a rollback on the server is not
+          # seen: research-only pushes leave it in place. A failed API call is not "no deploy found": lookup=failed makes
+          # the push deploy, since the comparison could miss an earlier bot change whose own deploy failed.
+          prev="" lookup=ok
+          if runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=100" --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); then
+            for run in $runs; do
+              [ "${run%%:*}" = "$GITHUB_RUN_ID" ] && continue
+              if ! ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${run%%:*}/jobs" --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length'); then
+                lookup=failed; break
+              fi
+              if [ "$ok" -gt 0 ]; then prev=${run#*:}; break; fi
+            done
+          else
+            lookup=failed
+          fi
+          echo "previous deploy: ${prev:-unknown} (lookup $lookup)"
+          { echo "prev=$prev"; echo "lookup=$lookup"; } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      # The lockfile's esbuild alone (no npm ci), for the bundle check: deploy-scope.ts repeats the build's esbuild runs
+      # with --metafile to list the research/ files the release bundles. Without it every research/ source file counts
+      # as bot code.
+      - name: Bundler for the bundle check
+        id: esbuild
+        if: github.event_name == 'push'
+        continue-on-error: true
+        run: |
+          v=$(node -p "require('./package-lock.json').packages['node_modules/esbuild'].version")
+          mkdir -p "$RUNNER_TEMP/esbuild" && cd "$RUNNER_TEMP/esbuild" && echo '{"private":true}' > package.json
+          npm install --no-audit --no-fund --loglevel=error "esbuild@$v"
+          echo "bin=$RUNNER_TEMP/esbuild/node_modules/.bin/esbuild" >> "$GITHUB_OUTPUT"
+
+      - name: Does this push change bot code
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PREV_DEPLOY: ${{ steps.prev.outputs.prev }}
+          PREV_LOOKUP: ${{ steps.prev.outputs.lookup }}
+          BEFORE: ${{ github.event.before }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          ESBUILD: ${{ steps.esbuild.outputs.bin }}
+        run: |
+          # Writes deploy=true|false and the run summary; whatever it cannot tell (lookup failed, no base) deploys.
+          node --experimental-strip-types --disable-warning=ExperimentalWarning deploy/deploy-scope.ts || echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: scope
+    permissions:
+      contents: read
+    # Manual runs always deploy. A push deploys unless AUTO_DEPLOY is 'false' or the scope job found nothing that reaches
+    # the server changed since the last deploy; "[skip deploy]" in the message no longer decides. Only an explicit
+    # 'false' from the scope job skips: a failed scope job deploys.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || (vars.AUTO_DEPLOY != 'false' && needs.scope.outputs.deploy != 'false')) }}
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -57,15 +145,10 @@ jobs:
       - name: Merges this deploy brings
         id: merges
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Last earlier run of this workflow whose deploy job succeeded (the scope job's "Last deployed commit").
+          PREV: ${{ needs.scope.outputs.prev }}
         run: |
-          # Last earlier run of this workflow whose deploy job succeeded.
-          prev=""
-          for run in $(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?status=success&per_page=30" --jq '.workflow_runs[] | "\(.id):\(.head_sha)"'); do
-            [ "${run%%:*}" = "$GITHUB_RUN_ID" ] && continue
-            ok=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${run%%:*}/jobs" --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length')
-            if [ "$ok" -gt 0 ]; then prev=${run#*:}; break; fi
-          done
+          prev="$PREV"
           prs=""
           if [ -n "$prev" ] && git cat-file -e "$prev^{commit}" 2>/dev/null; then
             prs=$(git log --first-parent --reverse --format=%s "$prev..HEAD" | grep -oE '#[0-9]+' | sort -u -t'#' -k2 -n | paste -sd, - || true)
@@ -96,6 +179,50 @@ jobs:
           # of the lockfile and the TA-Lib sources so the server can tell when nothing changed.
           git clean -fdxq vendor/talib
           { sha256sum package-lock.json; git ls-files -s vendor/talib; } | sha256sum | cut -d' ' -f1 > deploy/deps.fingerprint
+
+      # The heat curve reader's files (HEAT_SHIP in deploy/deploy-scope.ts, the same list the scope job counts as bot
+      # code): the tracked files of python/heat_reader and python/oracle without their tests, fixtures and
+      # preregistration notes, and research/oracle_heat/latest/*.json and RUN. Copied at their own paths into
+      # heat-release/ for "Upload the heat reader files". A commit without them (main before the reader lands, or a
+      # tag from before this list) stages nothing and that upload is skipped. A failure here or in that upload fails
+      # the run before "Activate", as a failed bot upload does: nothing on the server switches, the run does not count
+      # as a deploy (the scope job keeps comparing with the last good one) and a re-run ships the set. Never a green
+      # deploy whose release lacks the reader's files or has them half extracted.
+      - name: Stage the heat reader files
+        id: heat
+        run: |
+          if grep -qs 'HEAT_SHIP' deploy/deploy-scope.ts; then
+            node --experimental-strip-types --disable-warning=ExperimentalWarning deploy/deploy-scope.ts --stage-heat heat-release
+          else
+            echo "deploy/deploy-scope.ts on this commit lists no heat reader files: nothing extra to upload"
+            echo "files=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify paper mode before deploying this release
+        if: inputs.paper_only
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+          # No script_stop here: it inserts an exit-code line after every script line, inside the Python heredoc too,
+          # which made this check a SyntaxError on every run. set -euo pipefail stops on the first failure instead.
+          script: |
+            set -euo pipefail
+            python3 - <<'PYMODE'
+            import pathlib
+            p = pathlib.Path.home() / 'bot/bot.env'
+            mode = 'paper'
+            if p.exists():
+                for line in p.read_text().splitlines():
+                    key, sep, value = line.strip().partition('=')
+                    if sep and key.strip() == 'TRADING_MODE':
+                        mode = value.strip().strip('"\'')
+            if mode != 'paper':
+                raise SystemExit('Deployment blocked: TRADING_MODE must be paper for this release')
+            print('Verified configured TRADING_MODE=paper; no environment values changed')
+            PYMODE
 
       # A full disk stops the upload and the bot alike. Recordings (one file per day in ~/bot/data/recordings)
       # are almost all of the disk: below 5 GB free, the oldest days go (never the newest two) until 10 GB is
@@ -148,6 +275,23 @@ jobs:
           source: "dist,web/dist,params,package.json,package-lock.json,deploy,vendor"
           target: "~/releases/${{ steps.rel.outputs.name }}"
 
+      # Into the same release folder, heat-release/ stripped off: python/heat_reader, python/oracle and
+      # research/oracle_heat/latest land at their repository paths, where the reader's unit runs them from
+      # (~/bot/current/python, packs in ~/bot/current/research/oracle_heat/latest). Never with rm: that would empty
+      # the release the step above uploaded. A failure here fails the run before "Activate" (see "Stage the heat
+      # reader files"): the bot keeps running the release it ran.
+      - name: Upload the heat reader files
+        if: steps.heat.outputs.files > 0
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+          source: "heat-release"
+          strip_components: 1
+          target: "~/releases/${{ steps.rel.outputs.name }}"
+
       - name: Activate release (keeps previous for rollback)
         uses: appleboy/ssh-action@v1.0.3
         env:
@@ -160,8 +304,11 @@ jobs:
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
           script_stop: true
-          # A fresh TA-Lib compile on a busy small instance can take several minutes.
-          command_timeout: 30m
+          # A fresh TA-Lib compile on the small instance takes 15-25 minutes (deploy/install.sh), the bot's start up to
+          # 3 more, and the heat reader's first install (activate.sh: a pip venv build) is cut off at 15 minutes
+          # (deploy/heat_reader_follow.sh). 60 minutes covers all of them at once, so a first reader install can neither
+          # cut off the deploy log line below nor turn the deploy red. The job itself keeps GitHub's 360-minute limit.
+          command_timeout: 60m
           script: |
             set -euo pipefail
             cd ~/releases/${{ steps.rel.outputs.name }}
@@ -190,3 +337,24 @@ jobs:
             # Keep the 5 newest releases (plus whatever current/previous point to).
             keep="$(readlink ~/bot/current):$(readlink ~/bot/previous 2>/dev/null || true)"
             ls -dt ~/releases/*/ | tail -n +6 | while read -r d; do d="${d%/}"; case ":$keep:" in *":$d:"*) ;; *) rm -rf "$d";; esac; done
+
+      - name: Verify running paper process
+        if: inputs.paper_only
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USERNAME || 'ubuntu' }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          port: ${{ secrets.LIGHTSAIL_PORT || 22 }}
+          # No script_stop (see "Verify paper mode before deploying this release"): set -euo pipefail instead.
+          script: |
+            set -euo pipefail
+            systemctl is-active --quiet kalshi-bot
+            python3 - <<'PYMODE'
+            import pathlib, subprocess
+            pid = subprocess.check_output(['systemctl','show','--property=MainPID','--value','kalshi-bot'], text=True).strip()
+            values = dict(x.split(b'=',1) for x in pathlib.Path('/proc',pid,'environ').read_bytes().split(b'\0') if b'=' in x)
+            if values.get(b'TRADING_MODE', b'paper') != b'paper':
+                raise SystemExit('Running process is not in paper mode')
+            print('Verified active kalshi-bot process in paper mode')
+            PYMODE

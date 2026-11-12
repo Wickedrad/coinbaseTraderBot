@@ -1,0 +1,24 @@
+{
+  "studyPolicyId": "prospective-2026-11-09-v1",
+  "train": {
+    "from": 1792540800000,
+    "through": 1793232000000
+  },
+  "stopping": {
+    "from": 1793232060000,
+    "through": 1793404800000
+  },
+  "calibration": {
+    "from": 1793404860000,
+    "through": 1793664000000
+  },
+  "selection": {
+    "from": 1793664060000,
+    "through": 1793923200000
+  },
+  "audit": {
+    "from": 1793923260000,
+    "through": 1794096000000
+  },
+  "embargoMs": 60000
+}

@@ -126,6 +126,9 @@ export interface DirectionalContext { positions: Map<string, PerpPosition>; hedg
  *  the floors (bot/risk/quotaPacer.ts). */
 export interface PerpPacer { neededUsd?: number; credit(usd: number, ticker: string): void; snipe(ticker: string, why: string): void; floorMode?: PacerFloorMode; floors?: QuotaFloors }
 
+/** lockedFrac is the share of the event-contract pool held in open binaries (Engine.lockedFraction). Perp margin is a separate
+ *  account in both modes, so it is not a margin limit. PerpTrader reads it as a volatility inflation; SetupTrader ignores it on
+ *  purpose (I116). */
 export interface DirectionalGuards { halt?: string; noEntry?: string; lockedFrac?: number; pacer?: PerpPacer }
 
 /** A directional strategy the executor drives (PerpTrader, SetupTrader). */

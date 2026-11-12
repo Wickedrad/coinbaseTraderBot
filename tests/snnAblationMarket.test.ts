@@ -1,4 +1,5 @@
 // The ablation's "vs market" line: the SNN alone against the contract's mid, per settlement window, day-block CI.
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'fs';

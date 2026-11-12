@@ -15,7 +15,7 @@ import { openEntryFee, openSidePrice, PositionBook } from '../bot/oms/positions'
 import { PaperExchange } from '../bot/paper/paperExchange';
 import { marketWorstLoss } from '../bot/risk/exposure';
 import { HourlyQuotaPacer, QuotaFloors, type PacerConfig, type PacerFloorMode } from '../bot/risk/quotaPacer';
-import { positionNetAtBid } from '../bot/strategy/fairValueStrategy';
+import { breakEvenExit, positionNetAtBid } from '../bot/strategy/fairValueStrategy';
 import { decideMatch, MatchTracker, type MatchMarket, type TennisPlan } from '../bot/tennis/tennisStrategy';
 import { readRecordings, ReplayState } from './replay';
 import { bootstrapMeanCi } from './stats';
@@ -32,6 +32,13 @@ export interface TennisBacktestRules {
    *  and no entry is placed from the margin before it. */
   endLoserCut?: boolean;
   endEntryMargin?: number;
+  /** TENNIS_END_CUT_FRAC (that share's own size since Nov 12; unset: settleFrac's), the loser cut by progress
+   *  (TENNIS_LOSER_CUT_OPEN_C, _C, _LATE_C) and TENNIS_PROB_TURN: bot/tennis/tennisStrategy.ts TennisProfitRules. */
+  endCutFrac?: number;
+  loserCut?: number;
+  loserCutOpen?: number;
+  loserCutLate?: number;
+  probTurn?: number;
   /** PACER_FLOOR and PACER_FLOOR_TICKS. */
   floorMode?: PacerFloorMode;
   floorTicks?: number;
@@ -39,7 +46,9 @@ export interface TennisBacktestRules {
 
 /** The rules as the engine reads them from the config. */
 export function engineTennisRules(cfg: { tennis: TennisConfig; strategy: { pacer: PacerConfig } }, pacer = true): TennisBacktestRules {
-  return { pacer: pacer ? cfg.strategy.pacer : undefined, settleFrac: cfg.tennis.settleFrac, endLoserCut: cfg.tennis.endLoserCut, endEntryMargin: cfg.tennis.endEntryMargin, floorMode: cfg.strategy.pacer.floor, floorTicks: cfg.strategy.pacer.floorTicks };
+  return { pacer: pacer ? cfg.strategy.pacer : undefined, settleFrac: cfg.tennis.settleFrac, endLoserCut: cfg.tennis.endLoserCut, endEntryMargin: cfg.tennis.endEntryMargin,
+    endCutFrac: cfg.tennis.endCutFrac, loserCut: cfg.tennis.loserCut, loserCutOpen: cfg.tennis.loserCutOpen, loserCutLate: cfg.tennis.loserCutLate, probTurn: cfg.tennis.probTurn,
+    floorMode: cfg.strategy.pacer.floor, floorTicks: cfg.strategy.pacer.floorTicks };
 }
 
 export interface TennisBacktest {
@@ -90,7 +99,7 @@ export async function runTennisBacktest(dir: string, cfg: TennisConfig, bankroll
     const open = await ex.getOpenOrders();
     const tennisRisk = () => [...new Set([...pos.unsettled().map((p) => p.ticker), ...open.map((o) => o.ticker)])]
       .reduce((s, t) => s + marketWorstLoss(pos.get(t), open.filter((o) => o.ticker === t).map((o) => ({ ticker: t, side: o.side, price: o.price, remaining: o.remainingCount, isTaker: false })), FEES), 0);
-    const bankroll = Math.max(0, (await ex.getBalance()) + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0));
+    const bankroll = Math.max(0, ex.cash() + pos.open().reduce((s, p) => s + PositionBook.maxLoss(p), 0));
     for (const [event, tickers] of byEvent) {
       tickers.sort();
       const ms = tickers.map((t) => st.markets.get(t)!);
@@ -118,7 +127,7 @@ export async function runTennisBacktest(dir: string, cfg: TennisConfig, bankroll
         const b = st.books.get(m.ticker);
         const p = pos.get(m.ticker);
         const usable = b?.isUsable(st.now, 10_000);
-        return { ticker: m.ticker, title: m.title, position: p?.yes ?? 0, avgEntry: p && p.yes > 0 ? openSidePrice(p) : undefined, quote: { bid: usable ? b!.bestBid()?.price : undefined, ask: usable ? b!.bestAsk()?.price : undefined }, book: usable ? b : undefined, flow: flowOf(st, m.ticker, cfg.confWindowSec) };
+        return { ticker: m.ticker, title: m.title, position: p?.yes ?? 0, avgEntry: p && p.yes > 0 ? openSidePrice(p) : undefined, breakEven: p && p.yes > 0 ? breakEvenExit(p.yes, openSidePrice(p)! + openEntryFee(p)!, FEES) : undefined, quote: { bid: usable ? b!.bestBid()?.price : undefined, ask: usable ? b!.bestAsk()?.price : undefined }, book: usable ? b : undefined, flow: flowOf(st, m.ticker, cfg.confWindowSec) };
       });
       // The quota snipe's measure, as the engine gives it: the whole position's profit after fees at the bid, the cost basis
       // with the entry fee in.
@@ -131,7 +140,9 @@ export async function runTennisBacktest(dir: string, cfg: TennisConfig, bankroll
       res.maxTennisRisk = Math.max(res.maxTennisRisk, risk);
       const matchRisk = tickers.reduce((s, t) => s + marketWorstLoss(pos.get(t), [], FEES), 0);
       const out = decideMatch(tr, { event, now: st.now, startTime: ms.find((m) => m.startTime)?.startTime, markets, closeTime: Math.min(...ms.map((m) => m.closeTime)) }, cfg, { bankroll, tennisRisk: risk, matchRisk }, ms[0].tickSize,
-        { pacerUsd: pacerAt(st.now)?.neededUsd(st.now), settleFrac: rules.settleFrac, endLoserCut: rules.endLoserCut, endEntryMargin: rules.endEntryMargin, floorMode: rules.floorMode, floors, floorTicks: rules.floorTicks });
+        { pacerUsd: pacerAt(st.now)?.neededUsd(st.now), settleFrac: rules.settleFrac, endLoserCut: rules.endLoserCut, endEntryMargin: rules.endEntryMargin,
+          endCutFrac: rules.endCutFrac, loserCut: rules.loserCut, loserCutOpen: rules.loserCutOpen, loserCutLate: rules.loserCutLate, probTurn: rules.probTurn,
+          floorMode: rules.floorMode, floors, floorTicks: rules.floorTicks });
       const mine = open.filter((o) => tickers.includes(o.ticker));
       const same = (p: TennisPlan, o: typeof mine[number]) => p.ticker === o.ticker && p.side === o.side && Math.abs(p.price - o.price) < 1e-9 && Math.abs(p.count - o.remainingCount) < 0.02;
       for (const o of mine) if (!out.plans.some((p) => same(p, o))) await ex.cancelOrder(o.orderId);

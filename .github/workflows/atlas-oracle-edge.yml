@@ -1,0 +1,130 @@
+name: Opportunity Atlas Oracle edge (GitHub only)
+
+# Nov 11, 2026 (8:05 AM EST / 13:05 UTC, Steven): this repository is public, so copies of server data (recordings,
+# audit logs, Drive history archives, or rows built from them) never become Actions artifacts. The observed-recording
+# modes uploaded exactly that: prefixes of the bot's recordings (atlas-public-<day>) and studies bundling recording rows
+# (atlas-recording-study and the refit, movement, snapshot, native-direction and direction-paper artifacts built from
+# it). They are off: a dispatch without oracle_edge fails at server-copies-off. Only the Oracle edge trial runs here; it
+# collects public quotes on this runner and reads no server or Drive files.
+# This file was atlas-recordings.yml. GitHub runs a dispatched workflow from the requested ref's copy of the file, as
+# long as a file at that path is on main, and older branches still hold the old modes (several need no secret: they
+# re-upload the existing artifacts). With no atlas-recordings.yml on main, none of those copies can be dispatched.
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: 'With oracle_edge: comma-separated completed Oracle-edge runs to assess without recollection'
+        default: ''
+        required: false
+      oracle_edge:
+        description: 'Publish frozen Oracle forecasts and verify future prices and separate $200 paper controls; public GET only, tvdatafeed history only'
+        type: boolean
+        default: false
+        required: false
+      edge_cycles:
+        description: 'Minute cycles: 2 for a data probe, 72 for both 15m and 1h outcomes; 2..90'
+        default: '72'
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  server-copies-off:
+    if: ${{ !inputs.oracle_edge }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The observed-recording modes are off
+        run: |
+          echo "::error::Off since Nov 11, 2026: the observed-recording modes uploaded copies of the bot's recordings (atlas-public-<day>, atlas-recording-study and artifacts built from them). This repository is public, so server copies never become Actions artifacts. Only oracle_edge=true runs in this workflow."
+          exit 1
+  frozen-oracle-edge:
+    if: inputs.oracle_edge && inputs.source_run == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    env:
+      EDGE_CYCLES: ${{ inputs.edge_cycles }}
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - name: Install the existing tvdatafeed bridge on this GitHub runner
+        run: python -m pip install --quiet 'tvdatafeed @ https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atlas-oracle-result-*
+          path: ${{ runner.temp }}/oracle-models
+          github-token: ${{ github.token }}
+          run-id: '42643723640'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: atlas-oracle-importance-*
+          path: ${{ runner.temp }}/oracle-weights
+          github-token: ${{ github.token }}
+          run-id: '42667008829'
+      - name: Register and publish frozen forecasts before observing their outcomes
+        run: |
+          node --import tsx research/opportunity/oracleEdgeCli.ts --models "$RUNNER_TEMP/oracle-models" \
+            --weights "$RUNNER_TEMP/oracle-weights" --cycles "$EDGE_CYCLES" --out research/out/atlas-oracle-edge
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-oracle-edge
+          path: research/out/atlas-oracle-edge/
+          retention-days: 90
+          if-no-files-found: warn
+  assess-oracle-edge:
+    needs: frozen-oracle-edge
+    if: ${{ !cancelled() && inputs.oracle_edge && ((needs.frozen-oracle-edge.result == 'success' && fromJSON(inputs.edge_cycles) >= 65) || inputs.source_run != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      EDGE_RUNS: ${{ inputs.source_run != '' && inputs.source_run || github.run_id }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Audit registered forward forecasts, observed fills, fee accounting and stressed incremental profit
+        run: |
+          node --import tsx --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execFileSync } from 'node:child_process';
+          import { aggregateOracleEdge } from './research/opportunity/oracleEdgeAggregate.ts';
+          const ids = process.env.EDGE_RUNS.split(',').map(s => s.trim());
+          if (!ids.length || ids.length > 30 || new Set(ids).size !== ids.length || ids.some(id => !/^\d+$/.test(id))) throw Error('Supply 1..30 unique completed run IDs');
+          const dirs = [], provenance = [];
+          for (const id of ids) {
+            const dir = path.join(process.env.RUNNER_TEMP, 'oracle-edge-trials', id);
+            // Automatic assessment shares the collector's run: its artifact is already uploaded.
+            // Waiting for that same run would wait for this assessment itself.
+            if (id !== process.env.GITHUB_RUN_ID) execFileSync('gh', ['run','watch',id,'--repo',process.env.GITHUB_REPOSITORY,'--interval','30'], {stdio:'inherit'});
+            execFileSync('gh', ['run','download',id,'--repo',process.env.GITHUB_REPOSITORY,'--name','atlas-oracle-edge','--dir',dir], {stdio:'inherit'});
+            const meta = JSON.parse(execFileSync('gh',['api',`repos/${process.env.GITHUB_REPOSITORY}/actions/runs/${id}`],{encoding:'utf8'}));
+            provenance.push({id,headSha:meta.head_sha,startedAt:meta.run_started_at,conclusion:meta.conclusion}); dirs.push(dir);
+          }
+          const assessment = await aggregateOracleEdge(dirs);
+          fs.mkdirSync('research/out/atlas-oracle-edge-assessment',{recursive:true});
+          fs.writeFileSync('research/out/atlas-oracle-edge-assessment/report.json',JSON.stringify({...assessment,provenance},null,2)+'\n');
+          console.log(JSON.stringify(assessment.assessment));
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: atlas-oracle-edge-assessment
+          path: research/out/atlas-oracle-edge-assessment/
+          retention-days: 90
+          if-no-files-found: warn

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { loadConfig, type StrategyConfig } from '../bot/config';
 import { DEFAULT_FEES } from '../bot/fees';
-import { decide, MarketView, shareWindowSec, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
+import { decide, MarketView, netProfitAtBid, shareWindowSec, type StrategyOutput } from '../bot/strategy/fairValueStrategy';
 import { ProfitPeaks } from '../bot/strategy/profitPeaks';
 
 // Continuous cadence + Kelly sizing (the pre-relaxed behaviour these tests pin down).
@@ -395,11 +395,19 @@ test('quota floor (PACER_FLOOR, Steven Oct 31): while another exit rule aims hig
   assert.match(fell.why, /^quota snipe \(floor\): \+\$0\.6\d net on 10 at bid 0\.5 fell below its \$0\.75 floor/);
   assert.equal(sale(decide(long(), at('riding'), { exits: true, pacerUsd: 0.75, pacerFloor: 0.75 })), undefined, 'above its floor: held');
   // PACER_FLOOR_TICKS (8 by default; 16 here): the floor sells once the profit is 16 ticks a contract under it ($1.60 on 10), not at
-  // the first dip: +0.65 at 0.50 holds, -0.75 at 0.36 holds, -1.04 at 0.33 sells.
-  const cushioned = (bid: number) => sale(decide(long({ bestBid: { price: bid, size: 50 } }), at('riding', 16), { exits: true, pacerUsd: 0.75, pacerFloor: 0.75 }));
+  // the first dip, but the cushion never takes the line below 1 tick a contract of profit after fees ($0.10 on 10; E22). Under a
+  // $0.75 floor the cushion alone reached -$0.85 (it held -0.75 at 0.36 and sold at -1.04 at 0.33): the line is now +$0.10, so
+  // +0.65 at 0.50 and +0.15 at 0.45 hold, +0.05 at 0.44 sells, and the loss at 0.36 is never reached.
+  const cushioned = (bid: number, pacerFloor = 0.75) => sale(decide(long({ bestBid: { price: bid, size: 50 } }), at('riding', 16), { exits: true, pacerUsd: 0.75, pacerFloor }));
   assert.equal(cushioned(0.5), undefined);
-  assert.equal(cushioned(0.36), undefined);
-  assert.match(cushioned(0.33)?.why ?? '', /^quota snipe \(floor\): -\$1\.0\d net on 10 at bid 0\.33 fell below its \$0\.75 floor/);
+  assert.equal(cushioned(0.45), undefined);
+  assert.match(cushioned(0.44)?.why ?? '', /^quota snipe \(floor\): \+\$0\.0\d net on 10 at bid 0\.44 fell below its \$0\.75 floor/);
+  assert.ok(cushioned(0.36), 'a loss under the floor is sold, not held by the cushion');
+  // A floor high enough that the cushion leaves more than 1 tick a contract keeps the cushion: $2.00 less $1.60 is +$0.40, so
+  // +0.85 at 0.52 and +0.45 at 0.48 hold, +0.35 at 0.47 sells.
+  assert.equal(cushioned(0.52, 2), undefined);
+  assert.equal(cushioned(0.48, 2), undefined);
+  assert.match(cushioned(0.47, 2)?.why ?? '', /^quota snipe \(floor\): \+\$0\.3\d net on 10 at bid 0\.47 fell below its \$2\.00 floor/);
   assert.equal(base.pacer.floorTicks, 8);
   // A sell price the market cannot pay (the model at 0.99) is settlement, which the quota still takes (Oct 29); in riding mode
   // the take-profit trailing its best still rides the winner.
@@ -424,6 +432,63 @@ test('quota floor (PACER_FLOOR, Steven Oct 31): while another exit rule aims hig
   const nf = sale(decide(short({ bestAsk: { price: 0.5, size: 50 } }), at('riding'), { exits: true, pacerUsd: 0.75, pacerFloor: 0.75 }))!;
   assert.deepEqual([nf.side, nf.price, nf.count], ['bid', 0.5, 10]);
   assert.match(nf.why, /^quota snipe \(floor\): \+\$0\.6\d net on 10 NO at bid 0\.50 fell below its \$0\.75 floor/);
+});
+
+test('quota floor (E22): the default 8-tick cushion never takes the line below min(floor, 1 tick x contracts) of profit after fees', () => {
+  // The default cushion is 8 ticks a contract; the line is never below 1 tick a contract of profit after fees (the floor itself
+  // when smaller). The line bounds where it sells, not the price the sale gets: the first bid under it lands up to a tick a
+  // contract lower, plus any fee step, so a sale is not guaranteed in profit (last two cases). The bid walks down one tick at a
+  // time from where the floor armed; `first` is the first bid that sells.
+  const riding: StrategyConfig = { ...cfg, pacer: { ...cfg.pacer, floor: 'riding', floorTicks: base.pacer.floorTicks } };
+  assert.equal(riding.pacer.floorTicks, 8);
+  const sale = (out: StrategyOutput) => out.place.find((p) => p.purpose === 'exit' && p.timeInForce === 'immediate_or_cancel');
+  const first = (mk: (bid: number) => MarketView, from: number, floor: number) => {
+    for (let c = Math.round(from * 100); c > 0; c--) {
+      const v = mk(c / 100), s = sale(decide(v, riding, { exits: true, pacerUsd: floor, pacerFloor: floor }));
+      if (s) return { bid: c / 100, net: netProfitAtBid(v)!, why: s.why };
+    }
+    return undefined;
+  };
+  const arms = (v: MarketView, need: number) => decide(v, riding, { exits: true, pacerUsd: need }).pacerArm?.usd;
+  // 30 YES at 0.50 (maker entry, no entry fee), the model at 0.70: +$0.98 net at the 0.55 bid covers $0.75 and arms the floor
+  // there. The 8-tick cushion is $2.40, more than the floor: alone it held to -$1.65 and sold at -$1.73 (bid 0.46). The line is
+  // now +$0.30 (1 tick on 30): +$0.67 at 0.54 and +$0.37 at 0.53 hold, +$0.07 at 0.52 sells (in profit after fees here).
+  const yes30 = (bid: number) => view({ position: 30, pYes: 0.7, entrySidePrice: 0.5, entryFeePerContract: 0, bestBid: { price: bid, size: 50 }, bestAsk: { price: 0.6, size: 50 } });
+  assert.equal(arms(yes30(0.55), 0.75), 0.75, 'the floor arms at $0.75');
+  const y = first(yes30, 0.55, 0.75)!;
+  assert.equal(y.bid, 0.52);
+  assert.ok(y.net > 0 && y.net < 0.3, `sold in profit just under the +$0.30 line, not at -$1.73: ${y.net}`);
+  assert.ok(netProfitAtBid(yes30(0.53))! >= 0.3, 'the last bid held is at or above the line');
+  assert.equal(y.why, 'quota snipe (floor): +$0.07 net on 30 at bid 0.52 fell below its $0.75 floor');
+  // 100 YES at 0.20 (maker entry) with a $4.50 floor, armed at +$4.65 at the 0.26 bid. The cushion is $8.00: alone it held to
+  // -$3.50 and sold at -$3.99 (bid 0.17). The line is now +$1.00 (1 tick on 100): +$1.76 at 0.23 holds, +$0.79 at 0.22 sells.
+  const yes100 = (bid: number) => view({ position: 100, pYes: 0.5, entrySidePrice: 0.2, entryFeePerContract: 0, bestBid: { price: bid, size: 200 }, bestAsk: { price: 0.3, size: 200 } });
+  assert.equal(arms(yes100(0.26), 4.5), 4.5, 'the floor arms at $4.50');
+  const h = first(yes100, 0.26, 4.5)!;
+  assert.equal(h.bid, 0.22);
+  assert.ok(h.net > 0 && h.net < 1, `sold in profit just under the +$1.00 line, not at -$3.99: ${h.net}`);
+  assert.equal(h.why, 'quota snipe (floor): +$0.79 net on 100 at bid 0.22 fell below its $4.50 floor');
+  // Long 30 NO at 0.50 (maker entry), the model values NO at 0.70: the same line on the NO side (the NO bid is 1 - the YES ask).
+  const no30 = (noBid: number) => view({ position: -30, pYes: 0.3, entrySidePrice: 0.5, entryFeePerContract: 0, bestBid: { price: 0.4, size: 50 }, bestAsk: { price: Math.round((1 - noBid) * 100) / 100, size: 50 } });
+  assert.equal(arms(no30(0.55), 0.75), 0.75, 'the floor arms at $0.75');
+  const n = first(no30, 0.55, 0.75)!;
+  assert.equal(n.bid, 0.52);
+  assert.equal(n.why, 'quota snipe (floor): +$0.07 net on 30 NO at bid 0.52 fell below its $0.75 floor');
+  // Keep above the floor (more than floor / 1 tick contracts): 100 YES at 0.20 with a $0.75 floor, armed at +$0.79 at the 0.22
+  // bid. Keep is $1.00, so the line is the floor itself and the cushion is gone: the first one-tick dip sells, and one tick on
+  // 100 is more than the floor, so at -$0.17 (bid 0.21). The cushion alone held to -$7.25 and sold at -$7.80 (bid 0.13).
+  assert.equal(arms(yes100(0.22), 0.75), 0.75, 'the floor arms at $0.75');
+  const k = first(yes100, 0.22, 0.75)!;
+  assert.equal(k.bid, 0.21);
+  assert.equal(k.why, 'quota snipe (floor): -$0.17 net on 100 at bid 0.21 fell below its $0.75 floor');
+  // A fee step: 30 YES at 0.81 (maker entry), the model at 0.90, armed at +$0.93 at the 0.85 bid. The line is +$0.30: +$0.30 at
+  // 0.83 holds (at the line), and at 0.82 the exit fee rises a cent, so the sale lands at -$0.01. The cushion alone held to
+  // -$1.65 and sold at -$1.89 (bid 0.76).
+  const yes81 = (bid: number) => view({ position: 30, pYes: 0.9, entrySidePrice: 0.81, entryFeePerContract: 0, bestBid: { price: bid, size: 50 }, bestAsk: { price: 0.9, size: 50 } });
+  assert.equal(arms(yes81(0.85), 0.75), 0.75, 'the floor arms at $0.75');
+  const f = first(yes81, 0.85, 0.75)!;
+  assert.equal(f.bid, 0.82);
+  assert.equal(f.why, 'quota snipe (floor): -$0.01 net on 30 at bid 0.82 fell below its $0.75 floor');
 });
 
 test('exit curve rest mode: a NO position rests a YES bid at 1 - target, and the resting sell follows the position size exactly', () => {

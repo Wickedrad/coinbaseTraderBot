@@ -227,6 +227,10 @@ export class ReplayState {
         this.features.onBook(e.ticker, b, e.t);
         break;
       }
+      case 'gap':
+        if (e.ticker) this.books.get(e.ticker)?.invalidate();
+        else for (const book of this.books.values()) book.invalidate();
+        break;
       case 'trade':
         this.features.onTrade(e.ticker, e.count, e.takerSide, e.ts ?? e.t);
         break;

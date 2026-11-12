@@ -1,0 +1,130 @@
+name: Atlas artifacts to Drive (copy, verified; nothing deleted)
+
+# Copies public Atlas artifacts that expire Nov 15-16 to Google Drive under raw/atlas-artifacts/run-<run>/<name>/:
+# the zip byte for byte, a manifest of every file in it (bytes, sha256, line count) and SHA256SUMS. Each copy is read
+# back from Drive and checked against the recorded digest, md5 and manifest. Nothing is deleted here.
+#
+# Runs on pushes to this branch (a workflow file cannot be dispatched until it is on main) and by hand.
+
+on:
+  push:
+    branches: [claude/project-thread-4eh4mq]
+    paths: [.github/workflows/atlas-artifacts-drive.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: atlas-artifacts-drive
+  cancel-in-progress: false
+
+jobs:
+  copy:
+    name: copy ${{ matrix.name }} (run ${{ matrix.run }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - {id: "13640491696", name: atlas-history-archive, run: "42538058087", digest: "c91456e8a8e31e3573d765daa2c6d85a919484b0873907335885fe5b73cd7f80"}
+          - {id: "13685253482", name: atlas-oracle-input, run: "42641935610", digest: "c346f30fe1e53ea46df059db94b95ef77a291dbb1c4b348328b69f69a65a4df4"}
+          - {id: "13639758919", name: atlas-history-study, run: "42538058087", digest: "a28e283087cc52aebaaa16e9fdaa15ba4e6b561e0f7b39b22e12e9c46dfcb0f9"}
+          - {id: "13642880336", name: atlas-history-comparison, run: "42543173621", digest: "84edd376e998b5ec96ecf740b63964189c3aa5d33384c5b714b9a11c75645bc3"}
+          - {id: "13640660936", name: atlas-history-archive, run: "42538240675", digest: "0fd44f55ed0cd78784213a99522ad9a5a75870ba684efcabc1b4f8e236771afc"}
+          - {id: "13640974335", name: atlas-history-archive, run: "42541177252", digest: "d8010e89775d4456a390d63fcb1669522945ed505f7f4ed6bc51034ac027ab64"}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_ARTIFACT_ID: ${{ matrix.id }}
+      SOURCE_NAME: ${{ matrix.name }}
+      SOURCE_RUN: ${{ matrix.run }}
+      SOURCE_DIGEST: ${{ matrix.digest }}
+      DRIVE_DIR: gdrive:kalshi-bot-archive/raw/atlas-artifacts/run-${{ matrix.run }}/${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up rclone with the Drive archive's token
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+
+      - name: Download the zip and check the artifact's name, run, expiry and digest
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/art"; mkdir -p "$W"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT_ID" \
+            --jq '[.name, .size_in_bytes, .expired, .digest, .workflow_run.id] | @tsv' > "$W/source-artifact.tsv"
+          cat "$W/source-artifact.tsv"
+          IFS=$'\t' read -r NAME SIZE EXPIRED DIGEST RUN < "$W/source-artifact.tsv"
+          [ "$NAME" = "$SOURCE_NAME" ] && [ "$EXPIRED" = false ] \
+            && [ "$DIGEST" = "sha256:$SOURCE_DIGEST" ] && [ "$RUN" = "$SOURCE_RUN" ] \
+            || { echo "::error::artifact $SOURCE_ARTIFACT_ID is not the recorded one"; exit 1; }
+          gh api -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts/$SOURCE_ARTIFACT_ID/zip" > "$W/source.zip"
+          GOT=$(sha256sum "$W/source.zip" | cut -d' ' -f1)
+          [ "$GOT" = "$SOURCE_DIGEST" ] || { echo "::error::downloaded sha256 $GOT != recorded $SOURCE_DIGEST"; exit 1; }
+          echo "zip sha256 matches the recorded digest ($(stat -c %s "$W/source.zip") bytes)"
+
+      - name: Record the per-file manifest of the source
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/art"
+          cat > "$W/manifest.sh" <<'SH'
+          #!/usr/bin/env bash
+          # usage: manifest.sh <dir>: one line per file: path, bytes, sha256, lines (uncompressed for .gz)
+          set -euo pipefail
+          cd "$1"
+          find . -type f | sort | while read -r f; do
+            case "$f" in
+              *.gz) n=$(zcat "$f" | wc -l) ;;
+              *) n=$(wc -l < "$f") ;;
+            esac
+            printf '%s\t%s\t%s\t%s\n' "$f" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)" "$n"
+          done
+          SH
+          chmod +x "$W/manifest.sh"
+          rm -rf "$W/src" && mkdir -p "$W/src"
+          unzip -q "$W/source.zip" -d "$W/src"
+          "$W/manifest.sh" "$W/src" > "$W/source-manifest.tsv"
+          echo "files in the artifact: $(wc -l < "$W/source-manifest.tsv")"
+          awk -F'\t' '{printf "%s bytes=%s lines=%s\n", $1, $2, $4}' "$W/source-manifest.tsv"
+
+      - name: Copy the zip (byte for byte) and the manifests to Drive
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/art"; OUT="$W/upload"; rm -rf "$OUT"; mkdir -p "$OUT"
+          cp "$W/source.zip" "$OUT/$SOURCE_NAME.zip"
+          cp "$W/source-manifest.tsv" "$OUT/MANIFEST.tsv"
+          cp "$W/source-artifact.tsv" "$OUT/SOURCE-ARTIFACT.tsv"
+          printf '%s  %s.zip\n' "$SOURCE_DIGEST" "$SOURCE_NAME" > "$OUT/SHA256SUMS"
+          rclone copy "$OUT" "$DRIVE_DIR" --transfers 4
+          echo "kept on Drive: $DRIVE_DIR ($(rclone size "$DRIVE_DIR" | tail -1 | sed 's/^ *//'))"
+
+      - name: Verify the Drive copy against the source
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/art"; V="$W/verify"; rm -rf "$V" && mkdir -p "$V"
+          rclone copy "$DRIVE_DIR" "$V" --transfers 4
+          (cd "$V" && sha256sum -c SHA256SUMS)
+          REMOTE_MD5=$(rclone md5sum "$DRIVE_DIR/$SOURCE_NAME.zip" | cut -d' ' -f1)
+          LOCAL_MD5=$(md5sum "$W/source.zip" | cut -d' ' -f1)
+          [ "$REMOTE_MD5" = "$LOCAL_MD5" ] || { echo "::error::Drive md5 $REMOTE_MD5 != local $LOCAL_MD5"; exit 1; }
+          echo "Drive md5 matches the local zip: $REMOTE_MD5"
+          rm -rf "$V/src" && mkdir -p "$V/src"
+          unzip -q "$V/$SOURCE_NAME.zip" -d "$V/src"
+          "$W/manifest.sh" "$V/src" > "$W/verify-manifest.tsv"
+          diff "$W/source-manifest.tsv" "$W/verify-manifest.tsv" || { echo "::error::manifest differs between the source and the Drive copy"; exit 1; }
+          diff -q "$W/source-manifest.tsv" "$V/MANIFEST.tsv" || { echo "::error::MANIFEST.tsv on Drive differs from the source manifest"; exit 1; }
+          echo "per-file bytes, sha256 and line counts on Drive match the source"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Copied to Drive (nothing deleted)"
+            echo ""
+            echo "Artifact $SOURCE_ARTIFACT_ID ($SOURCE_NAME) from run $SOURCE_RUN, sha256 $SOURCE_DIGEST, to \`$DRIVE_DIR\`."
+          } >> "$GITHUB_STEP_SUMMARY"

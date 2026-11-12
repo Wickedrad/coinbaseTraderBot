@@ -131,3 +131,26 @@ test('a level our own taker order emptied is not bought again until it refills o
   assert.equal((await ioc(5)).fillCount, 5);
   assert.equal(ex.takerStats.bySeries.T.filled, 13);
 });
+
+test('resting buys hold their cost, as Kalshi does: the balance drops, entries past the cash are refused, cancels release it', async () => {
+  const { ex } = setup();
+  const a = await ex.createOrder(req({ count: 100, price: 0.45 }));          // $45 held
+  assert.ok(Math.abs((await ex.getBalance()) - 55) < 1e-9);
+  assert.ok(Math.abs(ex.cash() - 100) < 1e-9);
+  await ex.createOrder(req({ count: 100, price: 0.4 }));                     // $40 held, $15 left
+  await assert.rejects(ex.createOrder(req({ count: 50, price: 0.4 })), /insufficient_balance/);
+  await ex.createOrder(req({ side: 'ask', count: 20, price: 0.6 }));          // NO at 40c: $8 held
+  assert.ok(Math.abs((await ex.getBalance()) - 7) < 1e-9);
+  await ex.cancelOrder(a.orderId);
+  assert.ok(Math.abs((await ex.getBalance()) - 52) < 1e-9);
+});
+
+test('a resting sell of a held position holds nothing; only the part past the position does', async () => {
+  const { ex } = setup();
+  await ex.createOrder(req({ price: 0.48, postOnly: false, timeInForce: 'immediate_or_cancel', count: 4 }));  // long 4
+  const cash = await ex.getBalance();
+  await ex.createOrder(req({ side: 'ask', count: 4, price: 0.6 }));
+  assert.ok(Math.abs((await ex.getBalance()) - cash) < 1e-9);
+  await ex.createOrder(req({ side: 'ask', count: 3, price: 0.6 }));           // opens 3 NO at 40c
+  assert.ok(Math.abs((await ex.getBalance()) - (cash - 1.2)) < 1e-9);
+});

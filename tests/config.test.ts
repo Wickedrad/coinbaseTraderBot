@@ -1,3 +1,4 @@
+import './tmpScope'; // one temp folder per run, removed at exit
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import os from 'os';
@@ -67,4 +68,10 @@ test('training runs load a live server\'s settings in paper mode: live perps bec
   assert.equal(cfg.perps.trading, 'paper');
   assert.equal(cfg.strategy.exitPolicy, 'confluence_ratchet', 'every other setting is kept');
   assert.deepEqual(paperEnv({ PERP_HEDGE: 'off' }).PERP_HEDGE, 'off');
+});
+
+test('hunt mode is not blocked by the session by default (Steven, Nov 11 2026); HUNT_SESSION_GUARD=true brings the guard back', () => {
+  assert.equal(loadConfig({}).strategy.huntSessionGuard, false);
+  assert.equal(loadConfig({ HUNT_SESSION_GUARD: 'true' }).strategy.huntSessionGuard, true);
+  assert.equal(loadConfig({ HUNT_SESSION_GUARD: 'false' }).strategy.huntSessionGuard, false);
 });

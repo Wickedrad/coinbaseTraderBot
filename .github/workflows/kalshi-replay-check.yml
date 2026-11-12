@@ -144,7 +144,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$RCLONE_CONF" ]; then echo "::error::RCLONE_CONF secret is not set (see drive-archive.yml)"; exit 1; fi
-          sudo apt-get install -y -qq rclone >/dev/null
+          bash .github/scripts/install-rclone.sh
           mkdir -p ~/.config/rclone
           printf '%s\n' "$RCLONE_CONF" > ~/.config/rclone/rclone.conf && chmod 600 ~/.config/rclone/rclone.conf
           # A day is archived once its recording is on Drive, as gzip or compact .mdc (the archive uploads the recording last).
@@ -342,6 +342,13 @@ jobs:
           set -a; . data/sweep-env/train.env; set +a
           # Replay-only overrides (an exit policy to compare, say) on top of the server's settings; paper's side is what it did.
           for kv in $OVERRIDES; do export "$kv"; echo "replay-only override: $kv"; done
+          # REPLAY_DUMP lists paper's audit-log fills market by market into the log and the replay-check artifact, and
+          # REPLAY_PEEK (with or without REPLAY_PEEK_ONLY) prints paper's raw audit records (decisions, orders, fills) into the
+          # log, whose head the commit comment posts: rows of the audit log, which this public repository never publishes
+          # (Nov 11, 2026, 8:05 AM EST / 13:05 UTC). Locally only.
+          for v in REPLAY_DUMP REPLAY_PEEK REPLAY_PEEK_ONLY; do
+            if [ -n "${!v:-}" ]; then echo "::error::$v is off on GitHub: it publishes audit-log rows (this repository is public). Run it locally."; exit 1; fi
+          done
           export DATA_DIR="$GITHUB_WORKSPACE/data" TRADING_MODE=paper
           BAL=$(cat "$RUNNER_TEMP/paper-balance" 2>/dev/null || true)
           GUARD="$RUNNER_TEMP/paper-guard.json"; [ -s "$GUARD" ] || GUARD=""
@@ -351,14 +358,17 @@ jobs:
           ARGS=(--recordings data/recordings --audit data/audit --days "${CHECK_DAYS_IN:-$(cat data/sweeps/check-days.txt)}" --from "$CHECK_FROM" --to "$TO_ARG"
             --min-hours "$MIN_HOURS" ${BAL:+--paper-balance-now "$BAL"} ${GUARD:+--paper-guard "$GUARD"} --kill-override "$OVERRIDE"
             --maker-markouts "$RUNNER_TEMP/maker-markouts.json" --paper-trials "$RUNNER_TEMP/paper-trials.json"
-            --paper-accuracy-gate "$RUNNER_TEMP/paper-accuracy-gate.json" --paper-trades "$RUNNER_TEMP/paper-trades.jsonl" --model data/models/model.json)
+            --paper-trades "$RUNNER_TEMP/paper-trades.jsonl" --model data/models/model.json)
           # Paper's benches (Steven, 2026-11-05 13:52 UTC: paper's P&L has no say in training until the bot makes money).
-          # A fidelity check (no overrides) still follows paper's take-profit bench and Kalshi probation, to compare like
-          # with like; a comparison run (overrides set) keeps its own, starting fresh, unless RS_PAPER_BENCHES=follow.
+          # A fidelity check (no overrides) still follows paper's take-profit bench, Kalshi probation and accuracy gate, to
+          # compare like with like; a comparison run (overrides set) keeps its own, starting fresh, unless
+          # RS_PAPER_BENCHES=follow. The accuracy gate counts as a bench: seeded from paper, paper's scored snapshots would
+          # block or open entries in every arm alike, so a comparison would partly read paper's state.
           if [ -z "$OVERRIDES" ] || [ "${RS_PAPER_BENCHES-own}" = follow ]; then
-            ARGS+=(--paper-probation "$RUNNER_TEMP/paper-probation.json" --paper-tp-bench "$RUNNER_TEMP/paper-tp-bench.json")
+            ARGS+=(--paper-probation "$RUNNER_TEMP/paper-probation.json" --paper-tp-bench "$RUNNER_TEMP/paper-tp-bench.json"
+              --paper-accuracy-gate "$RUNNER_TEMP/paper-accuracy-gate.json")
           else
-            ARGS+=(--own-bench); echo "paper's benches not followed (own take-profit bench and probation, fresh); RS_PAPER_BENCHES=follow to follow them"
+            ARGS+=(--own-bench); echo "paper's benches not followed (own take-profit bench, probation and accuracy gate, fresh); RS_PAPER_BENCHES=follow to follow them"
           fi
           T0=$(date +%s); mkdir -p data/sweeps/nearby; [ "$NEARBY" = none ] && NEARBY=''
           # The spot candles the bot held when the replay starts (its startup fetch from Coinbase, made for that time): a
