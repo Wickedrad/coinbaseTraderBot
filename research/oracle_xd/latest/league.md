@@ -9,13 +9,13 @@ Hot: on A the level differs from the base rate (two-sided p <= 0.0027, the t = 3
 
 | set | kind | tested on A | hot (move) | replicate | share | BHY | hot (odds) | replicate | share | BHY |
 |---|---|---|---|---|---|---|---|---|---|---|
-| real | single | 360 | 4 | 0 | 0.0 | 0 | 84 | 28 | 0.3333 | 12 |
+| real | single | 495 | 4 | 0 | 0.0 | 0 | 84 | 28 | 0.3333 | 12 |
 | real | curve | 0 | 0 | 0 |  |  | 0 | 0 |  |  |
-| real | pair | 1,890 | 4 | 0 | 0.0 | 0 | 28 | 3 | 0.1071 | 0 |
-| real | triple | 120 | 0 | 0 |  | 0 | 2 | 1 | 0.5 | 1 |
-| twin (median of 3) | single | 360 | 1 (0 to 3) | 0 |  | 0 | 0 (0 to 1) | 0 (0 to 1) |  | 0 (0 to 1) |
+| real | pair | 2,400 | 4 | 0 | 0.0 | 0 | 31 | 3 | 0.0968 | 0 |
+| real | triple | 145 | 0 | 0 |  | 0 | 2 | 1 | 0.5 | 1 |
+| twin (median of 3) | single | 430 | 1 (0 to 3) | 0 |  | 0 | 0 (0 to 1) | 0 (0 to 1) |  | 0 (0 to 1) |
 | twin (median of 3) | curve | 0 | 0 | 0 |  |  | 0 | 0 |  |  |
-| twin (median of 3) | pair | 1,965 | 1 | 0 | 0.0 | 0 | 7 (5 to 9) | 0 | 0.0 | 0 |
+| twin (median of 3) | pair | 2,140 | 1 | 0 | 0.0 | 0 | 9 (5 to 9) | 0 | 0.0 | 0 |
 | twin (median of 3) | triple | 30 | 0 | 0 |  | 0 | 0 | 0 |  | 0 |
 
 Best replicating twin row over all twin sets (what the top of each list looks like by chance; the yardstick for the lists below): move_heat None, move_edge None, odds_edge 4.816, odds_heat 9.66.
@@ -265,7 +265,7 @@ Top 11 readings by events heat on B:
 | BTC | single | CVDP:PxDiv60=low (recovering) | 15 | down | no | 3.48 | +0.8 | +3.3 | 53.4 | +3.3 | 7.9 | -6.7 | +2.3 | 11.4 | +0.9 | +0.2 |  |  | 0.207 |
 | BTC | single | LIQMAP:Skew=very low | 1/15/30/60 | up | no | 2.21 | +0.6 | +5.1 | 55.2 | +5.1 | 8.8 | -18.3 | +2.8 | 11.2 | +0.6 | -0.0 |  |  | 0.119 |
 | BTC | single | LIQMAP:Skew=high (cooling) | 60 | down | no | 1.12 | +1.5 | +6.4 | 55.8 | +6.4 | 8.6 | -17.1 | +2.3 | 7.1 | +1.6 | +1.4 |  |  | 0.276 |
-| ETH | pair | CVDP:Div15=low (falling in) / LIQMAP:Skew=very low | 15/30/60 | up | no | 0.16 | +30.7 | +20.0 | 71.2 | +20.0 | 15.2 | -27.9 | +3.3 | 3.2 | +29.2 |  | +20.8 | +19.2 | 0.260 |
+| ETH | pair | CVDP:Div15=low (falling in) / LIQMAP:Skew=very low | 15/30/60 | up | no | 0.16 | +30.7 | +20.0 | 71.2 | +20.0 | 15.2 | -27.9 | +3.3 | 3.2 | +29.2 |  | +20.8 | +19.2 | 0.296 |
 
 ## Tables
 
@@ -273,19 +273,19 @@ One table per series; the hash is the sha256 of the table text (heat.csv.gz, unz
 
 | series | from | cut-off (exclusive) | minutes | gap minutes | price unit | table sha256 |
 |---|---|---|---|---|---|---|
-| BTC | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 77a0d06cb1608891e5c5d9763a1ed8f96888e013ab98d012602bde5a5cb59f95 |
-| BTC~twin1 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 781749d1ceddeef73c6aacedc86ef34357a128874a8ecb299cc402b437ce54cb |
-| BTC~twin2 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | ea345a400af4c27f1c5729f6c008a0aaaee12f4cf198dbc0b15ffd81b1a43d88 |
-| BTC~twin3 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | bfec835800710608d950e98dea495c08c2f55af04a88da7ac6f5d6cbe94803df |
-| ETH | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,326 | not on a grid | 2079c82d713ae5e6d639bc1641cf9806668c56bae318630a578f83b9acced0d5 |
-| ETH~twin1 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,326 | not on a grid | b37c38d8bfa757d6f0a64be27e6fe06295f64eb512467edc51a093fa5ffa2082 |
-| ETH~twin2 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,326 | not on a grid | 2df7ea5e76e7320bf9f85f8a4a9b66434b52045a1f4a9affb3ccb3f9555f856d |
-| ETH~twin3 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,326 | not on a grid | 7d52c8fc09db0d5b7d0f6ce03a87c9a129a105f70757364ddb5c7627d32f1ab8 |
-| SOL | 2020-08-12 | 2026-01-01 | 2,833,920 | 1,425 | not on a grid | e92f4a23481a57d2d890da4023e2f9b03aa97fcfc84e26983de899262240b487 |
-| SOL~twin1 | 2020-08-12 | 2026-01-01 | 2,833,920 | 1,425 | not on a grid | ae87803687246160da6f22b972b1f5cd0f72623eeb3a0ed2b745592cddb12ab2 |
-| SOL~twin2 | 2020-08-12 | 2026-01-01 | 2,833,920 | 1,425 | not on a grid | 45ca32141b784f8e44868a3420fc59cc96623418f531024cb9e9fb8d42e73902 |
-| SOL~twin3 | 2020-08-12 | 2026-01-01 | 2,833,920 | 1,425 | not on a grid | b2b46308114330108d037e54e74dd3132bc23b0a3c1d07263c7b40bc8d5fd9ab |
-| XRP | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 451ffd91a2fc55e6804990ae9bd6c56d3fb3987945f9ab42a20857fc3f1f6a2d |
-| XRP~twin1 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 15fe952f952353da3aebc7063e703b3a04bd36c4af32e5e108d420eee9794467 |
-| XRP~twin2 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | d5e9553a4e9a8866096bda9fcdf536eb3a8a5d5f3d69b958d96ea3485a961c50 |
-| XRP~twin3 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 27bb54cbebc8f5d586a883d8287cc89e47aa82abf940edcc57026b6aba837b66 |
+| BTC | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 323601349e5b8383382ba69b7deed1522b7c164498575bb65a6110518ba86fc8 |
+| BTC~twin1 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 34c5f9023800a843d07f800b4f63be8e027b42f3c6a9753b0e106d25cd446b76 |
+| BTC~twin2 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 73dd9c6be63b2a11f89234ff35bc8fa5a018f5f060f8194d8904734e7aa198df |
+| BTC~twin3 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 80255d815a0a66767f37732754fb295ed8a16420d4a5bfaa3a9af5a34e115f99 |
+| ETH | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,326 | not on a grid | a9ab4eb94f546840cae69a58adae625ddbf2b20b892004d41261515386617f6c |
+| ETH~twin1 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,326 | not on a grid | f78b4253cfb7d2ce4b64f92f2f6e0deb2e053ab15e8fa9ae49bb3fd3cb08f864 |
+| ETH~twin2 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,326 | not on a grid | dff0f06964fe565cf3e18708bcb10a220f959dcdaa8d1db90c3b77b19119e174 |
+| ETH~twin3 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,326 | not on a grid | 06ea7c56d5b2d8422b762528d9860dab5b2d5d63dd72627248f97aa9402a1308 |
+| SOL | 2020-08-12 | 2026-01-01 | 2,833,920 | 1,425 | not on a grid | d210d525ad6113e5da95857dd01001e6396cf7812942611d4bc33f80fdb57678 |
+| SOL~twin1 | 2020-08-12 | 2026-01-01 | 2,833,920 | 1,425 | not on a grid | d5d1619adc7eac0dbe0caf162aacf412c74ef011cf8d3995cc7c228b97460336 |
+| SOL~twin2 | 2020-08-12 | 2026-01-01 | 2,833,920 | 1,425 | not on a grid | 33acbac4294ebb7c40f4aa555fffd08ff95a8dc01220aea0225b5674cdc49195 |
+| SOL~twin3 | 2020-08-12 | 2026-01-01 | 2,833,920 | 1,425 | not on a grid | 0058cc1bf9ea8e4bcb01f8c60c497fd2a326fc5caba3682ce37f0edf3b1f0a45 |
+| XRP | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | f308169242bf993bb9117d24f2d7bb9c418742b0df22885d6ff64f84abde3825 |
+| XRP~twin1 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | 93316061c2884c7be1bbf0aab40b694e5a5dfdab9e983986e9de90e8b0c316ce |
+| XRP~twin2 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | d522f2e6e0ff1f3cf71ea3689ff7c141eb3322a670fd93e8a77acedb8e4d5461 |
+| XRP~twin3 | 2020-01-01 | 2026-01-01 | 3,156,480 | 2,325 | not on a grid | c820f35909550af1f801114ddcf73f2c37b01635b8db5e9e540a7f2b27a8226b |
