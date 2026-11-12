@@ -74,7 +74,7 @@ import { contractKind, priceContract, SETTLEMENT_AVG_SEC, type MarketKind } from
 import { dayGunzip } from '../../bot/marketdata/recordingFiles';
 import { nearestStrikes } from '../../bot/marketdata/marketData';
 import { loadSeries } from './candles';
-import { loadKalshiTrades, type KalshiHistMarket, type KalshiTrade } from './kalshiHistory';
+import { type KalshiHistMarket, type KalshiTrade } from './kalshiHistory';
 import { anchorsIn, dominanceAnchors, DominanceReplay, type DomState } from './dominanceReplay';
 import type { Candle } from '../../bot/ta/indicators';
 
@@ -86,6 +86,29 @@ import type { Candle } from '../../bot/ta/indicators';
 // 9 (Nov 5, strike cap PR): the catalog picks strikes as live does with CATALOG_PICK_MAX_SPREAD (a listing's mid trusted
 // only within 10c, two tiers, the index for the rest).
 export const REPLAY_VERSION = 9;
+/** Close days a tennis match market may close after the day it begins (tennisEvents): a match postponed by rain or a
+ *  start moved later closes days after its published start, and Kalshi files it under its close day. The stored start
+ *  era (closes Apr 19 to Nov 6 2026, tennis-ta-probe.yml run 43105674917) never closes more than 3 days after its begin
+ *  (11% of markets close 2 or 3 days after); one day more is read as a margin. A market closing later still is counted
+ *  (TennisSkips.lateClose), never replayed. Part of a tennis replay's signature (`:tscan<N>`). */
+export const TENNIS_CLOSE_SCAN_DAYS = 4;
+/** Stored tennis market lines a replay day could not replay, by reason, and the replayed lines published with a start
+ *  at or after their close (ReplayManifest.tennisSkips). noCandles, noResult and lateClose count the lines that close on
+ *  that day; dup and startAfterClose the lines of markets that begin on it. Untraded markets (stored with noVolume or
+ *  an API error) are not counted. */
+export interface TennisSkips {
+  /** Traded, but stored with no candles (no quote to replay). */
+  noCandles: number;
+  /** A result other than yes or no (voided, or not settled when stored). */
+  noResult: number;
+  /** A second stored line of a ticker already replayed (the line with the most candles is kept). */
+  dup: number;
+  /** Replayable, but begun more than TENNIS_CLOSE_SCAN_DAYS days before its close day (never replayed). */
+  lateClose: number;
+  /** Replayed with a published start at or after its close (kept on the market line: production's view). */
+  startAfterClose: number;
+}
+export const noTennisSkips = (): TennisSkips => ({ noCandles: 0, noResult: 0, dup: 0, lateClose: 0, startAfterClose: 0 });
 /** Kalshi perp contract sizes (units of the coin a contract), for a replay without the bot's own recordings to read them
  *  from: the perp TA thread's fidelity runs over the Oct 21 - Nov 3 recordings (each market's mid against Coinbase spot:
  *  BTC 0.0001, ETH 0.001, SOL 0.1, XRP 1). A coin with no known size is quoted per coin (1), as before Nov 5. */
@@ -468,6 +491,8 @@ interface ReplayManifest {
   kalshi?: Record<string, number>;
   /** Tennis match markets each day. */
   tennis?: Record<string, number>;
+  /** Stored tennis market lines each day could not replay, by reason (TennisSkips). */
+  tennisSkips?: Record<string, TennisSkips>;
   /** Assets with perpetual quotes each day (Binance's USD-M perps start in September 2019). */
   perps?: Record<string, number>;
 }
@@ -530,6 +555,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
   manifest.n ??= {};
   manifest.kalshi ??= {};
   manifest.tennis ??= {};
+  manifest.tennisSkips ??= {};
   manifest.perps ??= {};
   const saveManifest = () => { fs.writeFileSync(`${manifestFile}.tmp`, JSON.stringify(manifest)); fs.renameSync(`${manifestFile}.tmp`, manifestFile); };
   const notes: string[] = [];
@@ -562,6 +588,8 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
   // next day's file, so every file stays in time order.
   let carry: Ev[] = [];
   const tennisSeries = o.tennisSeries ?? [];
+  // New tennis data on a close day rebuilds the TENNIS_CLOSE_SCAN_DAYS days before it: keep states that far back too.
+  const keepStates = tennisSeries.length ? Math.max(KEEP_STATES, TENNIS_CLOSE_SCAN_DAYS + 2) : KEEP_STATES;
   const base = `${REPLAY_VERSION}:${assets.join(',')}:${synthetic ? 'synth' : 'real'}:${tennisSeries.join(',')}${o.requote ? ':requote' : ''}${o.requote && o.requoteLag ? `:lag${o.requoteLag.gInf}/${o.requoteLag.tauSec}` : ''}:cat${o.catalogStrikesPerEvent ?? 4}/${o.catalogHorizonMin ?? 90}/${o.catalogPickMaxSpread ?? 0.1}`;
   const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
   // A day's inputs: the Kalshi history it reads (a later download reached it), how far the 1-minute
@@ -571,8 +599,16 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     const d0 = Date.parse(day), d1 = d0 + DAY, next = iso(d1);
     let bytes = 0;
     for (const sd of seriesDirs) for (const f of [`${day}.jsonl`, `${next}.jsonl`, `trades/${day}.jsonl`, `trades/${next}.jsonl`]) { try { bytes += fs.statSync(path.join(kalshiDir, sd, f)).size; } catch { /* none */ } }
+    // Tennis reads the close days [day, day + TENNIS_CLOSE_SCAN_DAYS]: a day with any of them is signed with the scan and
+    // their bytes (a day without tennis files keeps the signature it had before the scan widened, so crypto-only days
+    // and the states before the tennis history are not rebuilt).
+    let tbytes = 0;
+    for (const sd of tennisSeries) for (let k = 0; k <= TENNIS_CLOSE_SCAN_DAYS; k++) {
+      const d = iso(d0 + k * DAY);
+      for (const f of [`${d}.jsonl`, `trades/${d}.jsonl`]) { try { tbytes += fs.statSync(path.join(kalshiDir, sd, f)).size; } catch { /* none */ } }
+    }
     const cov = assets.map((a) => cover.get(a)!.map(([r, len]) => (!r ? 'n' : r.first >= d1 || r.last + len >= d1 ? '' : String(r.last))).join('/')).join(',');
-    return `${base}:${bytes}:${cov}:${anchorsIn(anchors, d0 - DAY, d1)}`;
+    return `${base}:${bytes}:${cov}:${anchorsIn(anchors, d0 - DAY, d1)}${tbytes > 0 ? `:tscan${TENNIS_CLOSE_SCAN_DAYS}/${tbytes}` : ''}`;
   };
   const fileOf = (day: string) => path.join(o.outDir, `md-${day}.jsonl.gz`);
   const needs = (day: string) => Boolean(o.force) || manifest.days[day] !== sigOf(day) || (manifest.n![day] !== 0 && !fs.existsSync(fileOf(day)));
@@ -779,13 +815,14 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
       }
       ev.push({ t: m.closeTime + 1000, k: 'result', ticker: m.ticker, result: m.result });
     }
-    const tennisToday = tennisSeries.length ? tennisEvents(kalshiDir, tennisSeries, day, d0, d1, ev, alive) : 0;
+    const skipsToday = noTennisSkips();
+    const tennisToday = tennisSeries.length ? tennisEvents(kalshiDir, tennisSeries, day, d0, d1, ev, alive, skipsToday) : 0;
     tennisCount += tennisToday;
     for (const [t, tickers] of alive) ev.push({ t, k: 'alive', tickers });
     ev.sort((x, y) => x.t - y.t);
     const cut = ev.findIndex((e) => e.t >= d1);
     if (cut >= 0) carry = ev.splice(cut);
-    if (o.keepAllStates || to - d0 < KEEP_STATES * DAY || iso(d1).endsWith('-01')) {
+    if (o.keepAllStates || to - d0 < keepStates * DAY || iso(d1).endsWith('-01')) {
       const state: DayState = { carry, assets: Object.fromEntries([...st].map(([a, x]) => [a, { recent: x.recent, basis: x.basis, vPath: x.vPath, vMkt: x.vMkt, prints: x.prints, open: x.open }])), dom: dom.state };
       const sf: StateFile = { version: REPLAY_VERSION, sig: base, day, state };
       fs.writeFileSync(`${stateFileOf(day)}.tmp`, zlib.gzipSync(JSON.stringify(sf), { level: 6 }));
@@ -794,6 +831,7 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     if (!build) { skipped++; continue; }
     manifest.kalshi![day] = kms.length;
     manifest.tennis![day] = tennisToday;
+    if (tennisSeries.length) manifest.tennisSkips![day] = skipsToday;
     manifest.perps![day] = perpAssets;
     manifest.n![day] = ev.length;
     if (ev.length) {
@@ -806,8 +844,8 @@ export async function buildHistoryReplay(o: ReplayOpts): Promise<{ days: number;
     manifest.days[day] = sigOf(day);
     saveManifest();
   }
-  // Kept states: the last KEEP_STATES days and every month's last day.
-  const keepFrom = iso(to - (KEEP_STATES - 1) * DAY);
+  // Kept states: the last keepStates days and every month's last day.
+  const keepFrom = iso(to - (keepStates - 1) * DAY);
   for (const f of fs.readdirSync(stateDir)) {
     const d = /^(\d{4}-\d{2}-\d{2})\.json\.gz$/.exec(f)?.[1];
     if (d && !o.keepAllStates && d < keepFrom && !iso(Date.parse(d) + DAY).endsWith('-01')) fs.rmSync(path.join(stateDir, f), { force: true });
@@ -921,68 +959,157 @@ export function requoteBetween(ev: Ev[], m: { ticker: string; kind: MarketKind; 
 
 /** Kalshi's settled tennis match markets whose match starts on this day, as the live feed would show them:
  *  the market half an hour before, the real tape trade by trade with the book following it, the minute
- *  quotes, alive marks every 5 s (the quotes stand between trades), the result after the close. */
-function tennisEvents(kalshiDir: string, series: string[], day: string, d0: number, d1: number, ev: Ev[], alive: Map<number, string[]>): number {
-  const next = new Date(d0 + DAY).toISOString().slice(0, 10);
+ *  quotes, alive marks every 5 s (the quotes stand between trades), the result after the close.
+ *  A market is filed under its UTC close day, so the close days [day, day + TENNIS_CLOSE_SCAN_DAYS] are read: a match
+ *  postponed or moved later closes days after its begin. A ticker stored on two lines is replayed once, from the line
+ *  with the most candles. What cannot be replayed is counted in `skips` (TennisSkips). A published start at or after the
+ *  close (the order-of-play slot of a match played earlier) stays on the market line, as production's listing carries
+ *  it; the market begins 30 min before its first candle then. */
+function tennisEvents(kalshiDir: string, series: string[], day: string, d0: number, d1: number, ev: Ev[], alive: Map<number, string[]>, skips: TennisSkips = noTennisSkips()): number {
+  const closeDays = Array.from({ length: Math.max(1, TENNIS_CLOSE_SCAN_DAYS) + 1 }, (_, k) => new Date(d0 + k * DAY).toISOString().slice(0, 10));
   let n = 0;
   for (const s of series) {
-    const tapes = loadKalshiTrades(kalshiDir, s, [day, next]);
-    for (const d of [day, next]) {
+    // Every line of the scanned close days whose market begins today, by ticker (the longest line kept).
+    const picked = new Map<string, string>();
+    for (const d of closeDays) {
       const f = path.join(kalshiDir, s, `${d}.jsonl`);
       if (!fs.existsSync(f)) continue;
       const text = fs.readFileSync(f, 'utf8');
-      let start = 0;
-      while (start < text.length) {
+      for (let start = 0; start < text.length;) {
         let end = text.indexOf('\n', start);
         if (end === -1) end = text.length;
-        if (end > start) {
-          const l = text.slice(start, end);
-          let m: KalshiHistMarket;
-          try { if (!l) { start = end + 1; continue; } m = JSON.parse(l); } catch { start = end + 1; continue; }
-          if ((m.result !== 'yes' && m.result !== 'no') || !m.candles?.length) { start = end + 1; continue; }
-          const first = m.candles[0].ts;
-          const begin = Math.max(m.openTime, (m.startTime && m.startTime < m.closeTime ? m.startTime : first) - 30 * MIN);
-          if (begin < d0 || begin >= d1) { start = end + 1; continue; }
-          n++;
-        ev.push({ t: Math.max(d0, begin - 1000), k: 'market', ticker: m.ticker, series: s, asset: 'TENNIS', openTime: m.openTime, closeTime: m.closeTime, strike: null, cap: null, kind: 'match', event: m.event, title: m.title, startTime: m.startTime, tickSize: 0.01, hist: 1 });
-        // The candles' quotes and the tape, merged in time; the book follows each trade.
-        type Step = { t: number; c?: KalshiHistMarket['candles'][number]; tr?: KalshiTrade };
-        const steps: Step[] = [
-          ...m.candles.filter((c) => c.ts >= begin && c.ts <= m.closeTime).map((c): Step => ({ t: c.ts, c })),
-          ...(tapes.get(m.ticker) ?? []).filter((x) => x[0] >= begin && x[0] <= m.closeTime).map((x): Step => ({ t: x[0], tr: x })),
-        ].sort((a, b) => a.t - b.t || (a.c ? 0 : 1) - (b.c ? 0 : 1));
-        let spread = 0.02, booked = 0, lastQuote = '';
-        const book = (t: number, bid: number, ask: number) => {
-          const b = Math.round(bid * 100) / 100, a = Math.round(ask * 100) / 100;
-          if (!(b >= 0.01 && a <= 0.99 && a > b)) return;
-          ev.push({ t, k: 'book', ticker: m.ticker, bids: [{ price: b, size: 100 }], asks: [{ price: a, size: 100 }] });
-          booked = booked || t;
-        };
-        for (const st of steps) {
-          if (st.c) {
-            const { bidC, askC } = st.c;
-            // Minute 0 (the market's first candle) is skipped: its quote is the listing's, before anyone traded. A candle
-            // that repeats the last candle's quote is skipped too: Kalshi carries a quiet minute's quote forward, and after
-            // a trade that carried quote would overwrite the book the trade set.
-            if (st.c === m.candles[0]) continue;
-            const q = `${bidC}/${askC}`;
-            if (q === lastQuote) continue;
-            if (bidC !== null && askC !== null && askC > bidC) { lastQuote = q; spread = Math.max(0.01, askC - bidC); book(st.t, bidC, askC); }
-            continue;
-          }
-          const [t, price, count, side] = st.tr!;
-          ev.push({ t, k: 'trade', ticker: m.ticker, price, count, takerSide: side ? 'yes' : 'no', ts: t });
-          // A YES taker lifted the ask at this price, a NO taker hit the bid.
-          if (side) book(t, Math.max(0.01, price - spread), price); else book(t, price, Math.min(0.99, price + spread));
-        }
-        if (booked) for (let at = Math.ceil(booked / 5000) * 5000; at < m.closeTime; at += 5000) { const x = alive.get(at); if (x) x.push(m.ticker); else alive.set(at, [m.ticker]); }
-        ev.push({ t: m.closeTime + 1000, k: 'result', ticker: m.ticker, result: m.result });
-        }
+        const l = text.slice(start, end);
         start = end + 1;
+        const h = l ? tennisLineHead(l) : undefined;
+        if (!h || h.untraded) continue;
+        const replayable = h.firstCandle !== undefined && (h.result === 'yes' || h.result === 'no');
+        const begin = tennisBegin(h);
+        // A line that cannot be replayed is counted once, on its close day (today's file), whatever its begin.
+        if (d === day) {
+          if (h.firstCandle === undefined) skips.noCandles++;
+          else if (!replayable) skips.noResult++;
+          else if (begin < d0 - TENNIS_CLOSE_SCAN_DAYS * DAY) skips.lateClose++;
+        }
+        if (!replayable || begin < d0 || begin >= d1) continue;
+        // A ticker on two lines: the one with the most candles (the first on a tie), as candleIndex keeps it.
+        const had = picked.get(h.ticker);
+        if (had !== undefined) { skips.dup++; if (candleCount(l) <= candleCount(had)) continue; }
+        picked.set(h.ticker, l);
       }
+    }
+    if (!picked.size) continue;
+    const tapes = tennisTapes(kalshiDir, s, closeDays, picked);
+    for (const l of picked.values()) {
+      let m: KalshiHistMarket;
+      try { m = JSON.parse(l); } catch { continue; }
+      if (!m.candles?.length) continue;
+      // A zero-time start is none. A start at or after the close stays on the market line (production's view: the
+      // listing carries it, so the strategy's tracker never sees the match live); the market begins before its first
+      // candle instead.
+      if (m.startTime !== undefined && !(m.startTime > 0)) delete m.startTime;
+      if (m.startTime !== undefined && m.startTime >= m.closeTime) skips.startAfterClose++;
+      const begin = tennisBegin({ openTime: m.openTime, closeTime: m.closeTime, startTime: m.startTime, firstCandle: m.candles[0].ts });
+      n++;
+      ev.push({ t: Math.max(d0, begin - 1000), k: 'market', ticker: m.ticker, series: s, asset: 'TENNIS', openTime: m.openTime, closeTime: m.closeTime, strike: null, cap: null, kind: 'match', event: m.event, title: m.title, startTime: m.startTime, tickSize: 0.01, hist: 1 });
+      // The candles' quotes and the tape, merged in time; the book follows each trade.
+      type Step = { t: number; c?: KalshiHistMarket['candles'][number]; tr?: KalshiTrade };
+      const steps: Step[] = [
+        ...m.candles.filter((c) => c.ts >= begin && c.ts <= m.closeTime).map((c): Step => ({ t: c.ts, c })),
+        ...(tapes.get(m.ticker) ?? []).filter((x) => x[0] >= begin && x[0] <= m.closeTime).map((x): Step => ({ t: x[0], tr: x })),
+      ].sort((a, b) => a.t - b.t || (a.c ? 0 : 1) - (b.c ? 0 : 1));
+      let spread = 0.02, booked = 0, lastQuote = '';
+      const book = (t: number, bid: number, ask: number) => {
+        const b = Math.round(bid * 100) / 100, a = Math.round(ask * 100) / 100;
+        if (!(b >= 0.01 && a <= 0.99 && a > b)) return;
+        ev.push({ t, k: 'book', ticker: m.ticker, bids: [{ price: b, size: 100 }], asks: [{ price: a, size: 100 }] });
+        booked = booked || t;
+      };
+      for (const st of steps) {
+        if (st.c) {
+          const { bidC, askC } = st.c;
+          // Minute 0 (the market's first candle) is skipped: its quote is the listing's, before anyone traded. A candle
+          // that repeats the last candle's quote is skipped too: Kalshi carries a quiet minute's quote forward, and after
+          // a trade that carried quote would overwrite the book the trade set.
+          if (st.c === m.candles[0]) continue;
+          const q = `${bidC}/${askC}`;
+          if (q === lastQuote) continue;
+          if (bidC !== null && askC !== null && askC > bidC) { lastQuote = q; spread = Math.max(0.01, askC - bidC); book(st.t, bidC, askC); }
+          continue;
+        }
+        const [t, price, count, side] = st.tr!;
+        ev.push({ t, k: 'trade', ticker: m.ticker, price, count, takerSide: side ? 'yes' : 'no', ts: t });
+        // A YES taker lifted the ask at this price, a NO taker hit the bid.
+        if (side) book(t, Math.max(0.01, price - spread), price); else book(t, price, Math.min(0.99, price + spread));
+      }
+      if (booked) for (let at = Math.ceil(booked / 5000) * 5000; at < m.closeTime; at += 5000) { const x = alive.get(at); if (x) x.push(m.ticker); else alive.set(at, [m.ticker]); }
+      ev.push({ t: m.closeTime + 1000, k: 'result', ticker: m.ticker, result: m.result });
     }
   }
   return n;
+}
+
+/** A stored tennis market line's head (research/history/kalshiHistory.ts storedOf) and its first candle's time, without
+ *  parsing its candles: candles are objects of numbers, so the first ']' after "candles" closes the array and the
+ *  flags follow it. */
+interface TennisLineHead { ticker: string; openTime: number; closeTime: number; startTime?: number; result?: string; firstCandle?: number; untraded: boolean }
+export function tennisLineHead(line: string): TennisLineHead | undefined {
+  try {
+    const at = line.indexOf(',"candles":[');
+    let head: Record<string, unknown>, flags: Record<string, unknown> = {}, firstCandle: number | undefined;
+    if (at < 0) head = JSON.parse(line);
+    else {
+      head = JSON.parse(`${line.slice(0, at)}}`);
+      const close = line.indexOf(']', at);
+      const tail = line.slice(close + 1);
+      flags = tail.startsWith(',') ? JSON.parse(`{${tail.slice(1)}`) : {};
+      const c0 = /^\{"ts":(-?\d+(?:\.\d+)?)/.exec(line.slice(at + 12, at + 40));
+      if (c0) firstCandle = Number(c0[1]);
+      else if (close > at + 12) firstCandle = (JSON.parse(line.slice(at + 11, close + 1)) as Array<{ ts: number }>)[0]?.ts;
+    }
+    if (typeof head.ticker !== 'string' || !head.ticker || typeof head.openTime !== 'number' || typeof head.closeTime !== 'number') return undefined;
+    if (at < 0 && Array.isArray(head.candles)) firstCandle = (head.candles as Array<{ ts: number }>)[0]?.ts;
+    const start = typeof head.startTime === 'number' ? head.startTime : undefined;
+    return {
+      ticker: head.ticker, openTime: head.openTime, closeTime: head.closeTime, ...(start ? { startTime: start } : {}),
+      ...(typeof head.result === 'string' ? { result: head.result } : {}), ...(Number.isFinite(firstCandle) ? { firstCandle } : {}),
+      untraded: Boolean(head.noVolume || head.error || flags.noVolume || flags.error),
+    };
+  } catch { return undefined; }
+}
+
+/** A stored market line's candle count (parsed: only for a ticker stored on two lines). */
+function candleCount(line: string): number {
+  try { const c = (JSON.parse(line) as { candles?: unknown[] }).candles; return Array.isArray(c) ? c.length : 0; } catch { return -1; }
+}
+
+/** The trade tapes of the picked tickers from the trades files of the close days (a tape is filed under its market's close
+ *  day; only the picked tickers' lines are parsed; a ticker on two days keeps the longer tape). */
+function tennisTapes(kalshiDir: string, series: string, days: string[], picked: Map<string, string>): Map<string, KalshiTrade[]> {
+  const res = new Map<string, KalshiTrade[]>();
+  for (const d of days) {
+    const f = path.join(kalshiDir, series, 'trades', `${d}.jsonl`);
+    if (!fs.existsSync(f)) continue;
+    const text = fs.readFileSync(f, 'utf8');
+    for (let start = 0; start < text.length;) {
+      let end = text.indexOf('\n', start);
+      if (end === -1) end = text.length;
+      const line = text.slice(start, end);
+      start = end + 1;
+      if (!line.startsWith('{"ticker":"')) continue;
+      const e = line.indexOf('"', 11);
+      if (e <= 11 || !picked.has(line.slice(11, e))) continue;
+      try { const r = JSON.parse(line) as { ticker: string; trades: KalshiTrade[] }; if (Array.isArray(r.trades) && r.trades.length >= (res.get(r.ticker)?.length ?? 0)) res.set(r.ticker, r.trades); } catch { /* torn */ }
+    }
+  }
+  return res;
+}
+
+/** When the replay shows a tennis market: half an hour before its published start (a start at or after the close is
+ *  none), else before its first candle, never before it opened. A market with no candle begins at its opening. */
+export function tennisBegin(m: { openTime: number; closeTime: number; startTime?: number; firstCandle?: number }): number {
+  const startOk = m.startTime !== undefined && m.startTime > 0 && m.startTime < m.closeTime;
+  const at = startOk ? m.startTime! : m.firstCandle;
+  return at === undefined ? m.openTime : Math.max(m.openTime, at - 30 * MIN);
 }
 
 function lowerBound(arr: Array<{ ts: number }>, ts: number): number {

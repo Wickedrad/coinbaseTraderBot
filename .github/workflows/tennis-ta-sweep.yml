@@ -1,0 +1,313 @@
+name: Tennis TA sweep
+
+# The tennis TA rulebook trial's sweeps (research/tennisTaSweep.ts, research/tennisTaSim.ts, research/tennisTaSignals.ts,
+# research/tennis_ta_report.py; pre-registration and amendments in the thread "Build a profitable tennis TA rulebook",
+# Nov 5 2026; request format in research/tennis-ta/README.md). Each run is asked for by a commit to
+# research/tennis-ta/sweep-request.json (stage, pool, date range, shards, familyB), so every counting run is a deliberate,
+# logged commit. prep validates the request (HO-1, C9 / C10: pool 'disc' = H-DEV at stages 1 and 2, 'old' = H0 at stage 2,
+# 'hold' = H-HOLD at stage hold only: the one read of Amendment 4, whose batch research/tennis-ta/hold-batch.json (the 10
+# hottest hot spots of the league, listed in the registry and the project calendar before the push) is refused when the
+# file's sha256 is already in the openings ledger models/tennis-ta/state/openings.jsonl on Drive) and cuts the pool's units into shards
+# and each shard into 4 sub-slices, at unit edges only (a unit is never split, so cross-match state restarts only at
+# unit edges). Shards replay the Kalshi tennis history kept on Drive
+# (raw/tennis-history/kalshi, its sha256 recorded as the data version) through the production tennis strategy over the
+# stage's configs; a shard first checks that the history is complete over its span (the download's complete-listing
+# record and every traded market's tape) and fails before sweeping if not. The report job runs only when every shard
+# leg succeeded, every planned shard file is on Drive exactly once with one data version, every slice's history is
+# complete and every file's window block is whole (C12); a hold run's opening is then appended to the openings ledger
+# (once per run id) before anything is scored, so a broken block never spends a batch's one read; it
+# scores every cell over the pool's universe, runs the one test's league on a disc run (league.md, league.csv,
+# league.json beside the report), writes the run's trial rows (registry v1, validated with the project's
+# research/registry.py) and uploads them once to the registry (registry/shards/tennis-ta/<run>.jsonl).
+# The report job is .github/workflows/tennis-ta-report.yml (reusable: .github/workflows/tennis-ta-rescore.yml runs it on
+# its own for a finished sweep whose report failed, with newer scoring code; README "Rescore").
+# Outputs stay on Drive (models/tennis-ta/runs/<run>/); the report is posted once as a comment on the commit. A run id
+# that has been scored (its registry rows are in runs/<run>/report) is never overwritten: "Re-run all jobs" on it fails
+# in prep, a shard job re-run on its own fails before sweeping, and a re-run report job keeps the Drive copy (refusing if
+# its rows differ). A new measurement is a new commit of the request.
+on:
+  push:
+    branches: [claude/project-thread-7817be]
+    paths: [research/tennis-ta/sweep-request.json]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: tennis-ta-sweep
+  cancel-in-progress: false
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      plan: ${{ steps.req.outputs.plan }}
+      shards: ${{ steps.req.outputs.shards }}
+      stage: ${{ steps.req.outputs.stage }}
+      pool: ${{ steps.req.outputs.pool }}
+      family_b: ${{ steps.req.outputs.family_b }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Openings ledger (the batches already read on H-HOLD)
+        run: |
+          set -euo pipefail
+          # C10 / Amendment 4: prep refuses a stage hold request whose batch (sha256 of research/tennis-ta/hold-batch.json)
+          # is in the ledger.
+          # Each level is listed only when its parent lists it, so a listing error fails the step; a ledger that does not
+          # exist yet reads as empty, and any other read error fails.
+          mkdir -p prep
+          LEDGER=gdrive:kalshi-bot-archive/models/tennis-ta/state/openings.jsonl
+          HAVE=yes; P=gdrive:kalshi-bot-archive
+          for c in models/ tennis-ta/ state/; do
+            L=$(rclone lsf "$P" --dirs-only)
+            if ! grep -qxF "$c" <<< "$L"; then HAVE=no; break; fi
+            P="$P/${c%/}"
+          done
+          if [ "$HAVE" = yes ]; then L=$(rclone lsf "$P" --files-only); grep -qxF openings.jsonl <<< "$L" || HAVE=no; fi
+          if [ "$HAVE" = yes ]; then rclone cat "$LEDGER" > prep/openings.jsonl; else : > prep/openings.jsonl; fi
+          echo "openings ledger: $(grep -c . prep/openings.jsonl || true) row(s)$([ "$HAVE" = yes ] || echo ' (none on Drive yet)')"
+      - name: Request and plan
+        id: req
+        run: |
+          set -euo pipefail
+          mkdir -p prep
+          cat research/tennis-ta/sweep-request.json
+          # Validates the request (stage 1, 2 or hold; pool 'disc', 'old' at stage 2 or 'hold' at stage hold; [from, to]
+          # covering the start of every pool unit it touches, the whole hold block for hold; the stage's spec file, or at
+          # stage hold the batch research/tennis-ta/hold-batch.json, whose file hash is not yet in the openings ledger) and
+          # the unit table (calendar, Slams), then plans shards and sub-slices at unit edges.
+          node --import tsx research/tennisTaSweep.ts prep --request research/tennis-ta/sweep-request.json \
+            --units models/tennis-ta/state/units.json --openings prep/openings.jsonl --out prep/plan.json
+          echo "plan=$(jq -c '.plan' prep/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "shards=$(jq -r '.plan | length' prep/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "stage=$(jq -r '.stage' prep/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "pool=$(jq -r '.pool' prep/plan.json)" >> "$GITHUB_OUTPUT"
+          echo "family_b=$(jq -r '.familyB' prep/plan.json)" >> "$GITHUB_OUTPUT"
+          jq -r '.plan[] | "shard \(.k): \(.from) to \(.to), \(.units | length) unit(s): \(.units | join(" "))"' prep/plan.json
+          jq -r 'if .stage == "hold" then "stage hold: batch \(.batchHash) off league run \(.leagueRun) (\(.batch | length) hot spot(s): " + ([.batch[] | "\(.id)/\(.leg)"] | join(", ")) + "; \(.specIds | length) arms), not in the openings ledger (\(.openingsRead) row(s) read); folds " + ([.holdFolds[] | "\(.fold) \(.from)..\(.to)"] | join(", ")) else "specs \(.specsHash[0:16]) (\(.configs))" end' prep/plan.json
+      - name: Run id not already scored
+        run: |
+          set -euo pipefail
+          # Scored = runs/<run>/report holds this run's registry rows (registry-v1-<run>.jsonl; the older
+          # registry-tennis-ta-<run>.jsonl.gz counts too). Each level is listed only when its parent lists it, so a listing
+          # error fails the step instead of reading as "not scored". "Re-run all jobs" keeps the run id but fetches fees
+          # and history again, so on a scored run it would overwrite the shards and the report the registry rows and the
+          # commit comment came from.
+          SCORED=yes; P=gdrive:kalshi-bot-archive
+          for c in models/ tennis-ta/ runs/ "$GITHUB_RUN_ID/" report/; do
+            L=$(rclone lsf "$P" --dirs-only)
+            if ! grep -qxF "$c" <<< "$L"; then SCORED=no; break; fi
+            P="$P/${c%/}"
+          done
+          if [ "$SCORED" = yes ]; then L=$(rclone lsf "$P" --files-only); grep -qxE "registry-v1-$GITHUB_RUN_ID\.jsonl|registry-tennis-ta-$GITHUB_RUN_ID\.jsonl\.gz" <<< "$L" || SCORED=no; fi
+          if [ "$SCORED" = yes ]; then
+            echo "::error::run $GITHUB_RUN_ID is already scored (attempt $GITHUB_RUN_ATTEMPT is a re-run): its report and registry rows stand. Commit a new request for a new run"; exit 1
+          fi
+          echo "run $GITHUB_RUN_ID (attempt $GITHUB_RUN_ATTEMPT) has no scored report yet"
+      - name: Fee changes (Kalshi)
+        run: |
+          set -euo pipefail
+          node --import tsx research/tennisTaSweep.ts fees --series KXATPMATCH,KXWTAMATCH --out prep/fees.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prep
+          path: |
+            prep/fees.json
+            prep/plan.json
+          retention-days: 30
+      - name: Keep the plan on Drive (a rescore after the artifact expires reads it there)
+        run: |
+          set -euo pipefail
+          rclone copy prep "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$GITHUB_RUN_ID/prep" --include plan.json --include fees.json
+
+  shard:
+    name: shard ${{ matrix.k }} (${{ matrix.from }} to ${{ matrix.to }})
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        include: ${{ fromJSON(needs.prep.outputs.plan) }}
+    env:
+      K: ${{ matrix.k }}
+      FROM: ${{ matrix.from }}
+      TO: ${{ matrix.to }}
+      UNITS: ${{ join(matrix.units, ',') }}
+      SHARDS: ${{ needs.prep.outputs.shards }}
+      STAGE: ${{ needs.prep.outputs.stage }}
+      POOL: ${{ needs.prep.outputs.pool }}
+      FAMILY_B: ${{ needs.prep.outputs.family_b }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      # Family B reads TA-Lib through the vendored native binding (vendor/talib, compiled by its install script), so the
+      # shard installs WITH scripts and caches the compiled build beside node_modules (the prep job needs no TA-Lib).
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: tennis-ta-shard-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: TA-Lib engine (family B refuses to run without it)
+        if: env.FAMILY_B == 'true'
+        run: |
+          node --import tsx -e "import('./bot/ta/talib.ts').then((m) => { if (m.taEngine() !== 'talib') { console.error('TA-Lib engine not loaded: ' + m.taEngineError()); process.exit(1); } console.log('TA-Lib engine: talib'); })"
+      - uses: actions/download-artifact@v4
+        with:
+          name: prep
+          path: prep
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Run id not already scored
+        run: |
+          set -euo pipefail
+          # A shard job re-run on its own after the report (prep's check does not run again then) would overwrite the
+          # shards the registry rows came from. Same test as prep's: runs/<run>/report holds this run's registry rows.
+          SCORED=yes; P=gdrive:kalshi-bot-archive
+          for c in models/ tennis-ta/ runs/ "$GITHUB_RUN_ID/" report/; do
+            L=$(rclone lsf "$P" --dirs-only)
+            if ! grep -qxF "$c" <<< "$L"; then SCORED=no; break; fi
+            P="$P/${c%/}"
+          done
+          if [ "$SCORED" = yes ]; then L=$(rclone lsf "$P" --files-only); grep -qxE "registry-v1-$GITHUB_RUN_ID\.jsonl|registry-tennis-ta-$GITHUB_RUN_ID\.jsonl\.gz" <<< "$L" || SCORED=no; fi
+          if [ "$SCORED" = yes ]; then echo "::error::run $GITHUB_RUN_ID is already scored: its shards on Drive stand and are not swept again"; exit 1; fi
+      - name: Tennis history from Drive (sha256 of each tarball = the data version)
+        run: |
+          set -euo pipefail
+          mkdir -p data/tennis/kalshi
+          DV=""
+          for S in KXATPMATCH KXWTAMATCH; do
+            if [ -z "$(rclone lsf gdrive:kalshi-bot-archive/raw/tennis-history/kalshi --files-only --include "$S.tar.gz")" ]; then
+              echo "::error::no $S history on Drive"; exit 1
+            fi
+            rclone copy "gdrive:kalshi-bot-archive/raw/tennis-history/kalshi/$S.tar.gz" .
+            H=$(sha256sum "$S.tar.gz" | cut -d' ' -f1)
+            DV="${DV:+$DV,}$S:sha256:$H"
+            tar -xzf "$S.tar.gz" -C data/tennis/kalshi && rm "$S.tar.gz"
+            echo "$S: sha256 $H, $(ls data/tennis/kalshi/$S | grep -c jsonl) day file(s)"
+          done
+          echo "DATA_VERSION=$DV" >> "$GITHUB_ENV"
+      - name: History complete over the shard (download listing and trade tapes)
+        run: |
+          set -euo pipefail
+          # Fails when the history's complete-listing record (<S>/.index.json "listed", written only by a download run
+          # that listed and stored every settled market) does not cover the closes the shard reads, or a traded market
+          # closing then has no tape: an unfinished download is never swept or scored (the report job checks it again).
+          node --import tsx research/tennisTaSweep.ts coverage --hist data/tennis/kalshi --from "$FROM" --to "$TO" --series KXATPMATCH,KXWTAMATCH
+      - name: Replay days for the slice
+        run: |
+          set -euo pipefail
+          # This job sweeps history (H). The sim reads market lines from 1 day before a slice on H (lookbackOf('H'):
+          # history lists a match 30 min before its start; LOOKBACK_DAYS = 7 is the recorded stratum's) and reads on
+          # CLOSE_TAIL_DAYS - 1 = 4 days past the slice's end (SweepOpts.tailDays), so a match that closes up to
+          # TENNIS_CLOSE_SCAN_DAYS = 4 days after it begins (rain, a moved start) finishes inside the read: replay days
+          # cover [FROM - 1, TO + CLOSE_TAIL_DAYS = 5].
+          A=$(date -u -d "$FROM -1 day" +%F); B=$(date -u -d "$TO +5 day" +%F)
+          node --max-old-space-size=6144 --import tsx research/tennisTaSweep.ts days --hist data/tennis/kalshi --out data/replay --from "$A" --to "$B" --series KXATPMATCH,KXWTAMATCH 2>&1 | tail -5
+          # What the replay could not replay over the slice's days, by reason (also in each shard file's coverage).
+          jq -c --arg a "$A" --arg b "$TO" '[.tennisSkips // {} | to_entries[] | select(.key >= $a and .key < $b) | .value]
+            | reduce .[] as $x ({}; reduce ($x | to_entries[]) as $e (.; .[$e.key] += $e.value))' data/replay/replay-manifest.json
+      - name: Sweep (4 processes on the runner's 4 cores, sub-slices cut at unit edges, configs split when fewer)
+        run: |
+          set -euo pipefail
+          mkdir -p out/parts
+          # Telemetry: memory, swap, disk and each node process's RSS every 2 min, copied to Drive every 10 min, so a
+          # runner that dies mid-sweep (run 43077154976's shard 6 lost its runner after 3 h 18 min with no log) leaves a
+          # trace at runs/<run>/telemetry/shard-<k>.txt.
+          TEL="gdrive:kalshi-bot-archive/models/tennis-ta/runs/$GITHUB_RUN_ID/telemetry/shard-$K.txt"
+          (
+            set +euo pipefail
+            n=0
+            while true; do
+              { date -u +%FT%TZ; free -m | awk 'NR>1 {print "  " $1, "total", $2, "used", $3, "avail", $NF}'; df -m / | awk 'NR==2 {print "  disk / used", $3, "MB avail", $4, "MB"}'
+                ps -o pid=,rss=,etimes=,args= -C node | awk '{printf "  node pid %s rss %d MB up %d min %s\n", $1, $2/1024, $3/60, $NF}'; } >> out/telemetry.txt
+              n=$((n + 1)); if [ $((n % 5)) = 1 ]; then rclone copyto out/telemetry.txt "$TEL" >/dev/null 2>&1 || true; fi
+              sleep 120
+            done
+          ) &
+          TEL_PID=$!
+          # The same cut prep made (prep/plan.json subPlans); the report job checks every file against it.
+          SUB=$(node --import tsx research/tennisTaSweep.ts subplan --units models/tennis-ta/state/units.json --units-list "$UNITS" --parts 4)
+          echo "$SUB" | jq -r '.[] | "sub-slice \(.k): \(.from) to \(.to): \(.units | join(" "))"'
+          NSUB=$(echo "$SUB" | jq length)
+          # A shard with fewer sub-slices than cores (a Slam fortnight or a Masters week is one unit, so one sub-slice)
+          # splits each sub-slice's configs over P processes (--spec-part i/P, every P-th config); the merge command joins
+          # the parts into the sub-slice's one file. Each config's results are the same either way.
+          P=$(( 4 / NSUB )); [ "$P" -ge 1 ] || P=1
+          # Never more parts than configs (a hold batch of one config runs 2 arms): an empty part would refuse to start.
+          NCFG=$(jq -r '.configs // 1' prep/plan.json); [ "$P" -le "$NCFG" ] || P=$NCFG
+          # Node heaps stay within ~13 GB of the runner's 16 GB together (the OS, the runner and buffers keep the rest).
+          HEAP=$(( 13312 / (NSUB * P) )); [ "$HEAP" -le 3584 ] || HEAP=3584
+          echo "$NSUB sub-slice(s) x $P configs part(s), heap $HEAP MB each"
+          pids=()
+          for j in $(echo "$SUB" | jq -r '.[].k'); do
+            F=$(echo "$SUB" | jq -r ".[$j].from"); T=$(echo "$SUB" | jq -r ".[$j].to"); U=$(echo "$SUB" | jq -r ".[$j].units | join(\",\")")
+            for i in $(seq 0 $((P - 1))); do
+              if [ "$P" -gt 1 ]; then PART=(--spec-part "$i/$P"); OUT="out/parts/a-s$STAGE-$K-$j.p$i.json.gz"; else PART=(); OUT="out/a-s$STAGE-$K-$j.json.gz"; fi
+              node --max-old-space-size="$HEAP" --import tsx research/tennisTaSweep.ts run --replay data/replay --hist data/tennis/kalshi \
+                --from "$F" --to "$T" --units-list "$U" --stage "$STAGE" --pool "$POOL" --family-b "$FAMILY_B" \
+                --units models/tennis-ta/state/units.json --fees prep/fees.json --request research/tennis-ta/sweep-request.json \
+                --data-version "$DATA_VERSION" --run "$GITHUB_RUN_ID" --k "$K" --j "$j" --shards "$SHARDS" --sub-shards "$NSUB" \
+                "${PART[@]}" --out "$OUT" > "out/log-$j-$i.txt" 2>&1 &
+              pids+=($!)
+            done
+          done
+          rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done
+          kill "$TEL_PID" 2>/dev/null || true
+          echo "==> telemetry (last 12 lines) <=="; tail -n 12 out/telemetry.txt || true
+          rclone copyto out/telemetry.txt "$TEL" >/dev/null 2>&1 || true
+          # A failed process shows its error (the message sits above the stack, so 3 lines would show only the stack).
+          for f in out/log-*.txt; do echo "==> $f <=="; if [ "$rc" != 0 ]; then grep -v '^\[tennis-ta\]' "$f" | head -n 40 || true; fi; tail -n 3 "$f"; done
+          [ "$rc" = 0 ] || exit 1
+          if [ "$P" -gt 1 ]; then
+            for j in $(echo "$SUB" | jq -r '.[].k'); do
+              PARTS=$(ls out/parts/a-s"$STAGE"-"$K"-"$j".p*.json.gz | paste -sd, -)
+              node --max-old-space-size=6144 --import tsx research/tennisTaSweep.ts merge --parts "$PARTS" --out "out/a-s$STAGE-$K-$j.json.gz"
+            done
+          fi
+      - name: Keep on Drive
+        run: |
+          set -euo pipefail
+          for f in out/a-s*.json.gz; do rclone copyto "$f" "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$GITHUB_RUN_ID/shards/$(basename "$f")"; done
+          du -ch out/a-s*.json.gz | tail -1
+
+  report:
+    needs: [prep, shard]
+    # Only a complete run is scored: every shard leg succeeded (a re-run of failed legs re-runs this job too).
+    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.shard.result == 'success' }}
+    uses: ./.github/workflows/tennis-ta-report.yml
+    with:
+      run_id: ${{ github.run_id }}
+      sweep_sha: ${{ github.sha }}
+      pool: ${{ needs.prep.outputs.pool }}
+      stage: ${{ needs.prep.outputs.stage }}
+    secrets: inherit

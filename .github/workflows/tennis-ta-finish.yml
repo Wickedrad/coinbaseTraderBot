@@ -1,0 +1,387 @@
+name: Tennis TA finish a shard
+
+# Finishes one shard leg of a tennis TA sweep run (.github/workflows/tennis-ta-sweep.yml) that ran out of time: a runner
+# job stops at 6 hours, and a heavy unit (Roland Garros with its qualifying week is one unit, so one sub-slice) can need
+# more than one runner's 4 cores for that long (run 43113809481's shard 4 was stopped at 350 min with its 4 configs parts
+# still running). Re-running the leg would run the same work on the same 4 cores. This workflow spreads the leg's configs
+# over several runners instead (--spec-part, every N-th config, N = jobs x perJob), checks out the SWEEP'S OWN COMMIT for
+# every part (so meta.sha and the results are the code that swept the other shards; a merged split is byte-identical to
+# one process, tests/tennisTaSweep.test.ts "merge"), merges the parts into the leg's planned shard file(s), puts them in
+# runs/<run>/shards beside the others, and runs the run's report (.github/workflows/tennis-ta-report.yml, the job the
+# sweep would have run, at the sweep's commit: no report_sha, not a rescore). Asked for by a commit to
+# research/tennis-ta/finish-request.json:
+#   {"run": "<sweep run id>", "k": <shard>, "jobs": 8, "perJob": 3, "note": "why"}
+# Refused unless: the run is a completed sweep run of this branch, not scored; shard k's leg did not succeed and every
+# other shard leg did; every other planned file is on Drive; jobs x perJob configs parts, at most 4 processes a runner.
+# Two modes: "sweep" when none of shard k's planned files is on Drive (the parts refuse a history whose data version
+# differs from the other shards'), and "report" when all of them are and a finish record (runs/<run>/finish/<finish
+# run>/merged-<k>.json, written by the merge before its upload) lists exactly their sha256: then only the report runs,
+# with this commit's scoring code (a rescore; .github/workflows/tennis-ta-rescore.yml refuses a run with a leg that did
+# not succeed). Any other state of shard k's files is refused.
+on:
+  push:
+    branches: [claude/project-thread-7817be]
+    paths: [research/tennis-ta/finish-request.json]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: tennis-ta-sweep
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      run_id: ${{ steps.req.outputs.run_id }}
+      sweep_sha: ${{ steps.req.outputs.sweep_sha }}
+      k: ${{ steps.req.outputs.k }}
+      jobs: ${{ steps.req.outputs.jobs }}
+      per_job: ${{ steps.req.outputs.per_job }}
+      matrix: ${{ steps.req.outputs.matrix }}
+      stage: ${{ steps.plan.outputs.stage }}
+      pool: ${{ steps.plan.outputs.pool }}
+      family_b: ${{ steps.plan.outputs.family_b }}
+      shards: ${{ steps.plan.outputs.shards }}
+      from: ${{ steps.plan.outputs.from }}
+      to: ${{ steps.plan.outputs.to }}
+      units: ${{ steps.plan.outputs.units }}
+      data_version: ${{ steps.drive.outputs.data_version }}
+      mode: ${{ steps.drive.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Request and the run it names
+        id: req
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          F=research/tennis-ta/finish-request.json
+          cat "$F"
+          RUN=$(jq -r '.run | tostring' "$F"); K=$(jq -r '.k | tostring' "$F")
+          JOBS=$(jq -r '(.jobs // 8) | tostring' "$F"); PER=$(jq -r '(.perJob // 3) | tostring' "$F")
+          [[ "$RUN" =~ ^[0-9]+$ ]] || { echo "::error::$F: run must be a sweep run id (digits), got $RUN"; exit 1; }
+          [[ "$K" =~ ^[0-9]+$ ]] || { echo "::error::$F: k must be a shard number, got $K"; exit 1; }
+          # At most 10 runners at once per thread (the project's capacity rule); 1 to 4 processes on a runner's 4 cores.
+          [[ "$JOBS" =~ ^[0-9]+$ ]] && [ "$JOBS" -ge 1 ] && [ "$JOBS" -le 10 ] || { echo "::error::$F: jobs must be 1 to 10, got $JOBS"; exit 1; }
+          [[ "$PER" =~ ^[0-9]+$ ]] && [ "$PER" -ge 1 ] && [ "$PER" -le 4 ] || { echo "::error::$F: perJob must be 1 to 4, got $PER"; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" > run.json
+          P=$(jq -r .path run.json); B=$(jq -r .head_branch run.json); S=$(jq -r .status run.json); SHA=$(jq -r .head_sha run.json)
+          [ "$P" = .github/workflows/tennis-ta-sweep.yml ] || { echo "::error::run $RUN is $P, not a tennis TA sweep"; exit 1; }
+          [ "$B" = "$GITHUB_REF_NAME" ] || { echo "::error::run $RUN swept branch $B, not $GITHUB_REF_NAME"; exit 1; }
+          [ "$S" = completed ] || { echo "::error::run $RUN is $S: only a finished sweep has a leg to finish"; exit 1; }
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::run $RUN has no head sha"; exit 1; }
+          # Shard k's leg did not succeed (stopped, failed or cancelled) and every other shard leg did.
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/jobs?per_page=100" --paginate --jq '.jobs[] | [.name, .conclusion] | @tsv' > jobs.tsv
+          MINE=$(awk -F'\t' -v k="shard $K " 'index($1, k) == 1' jobs.tsv)
+          [ "$(grep -c . <<< "$MINE" || true)" = 1 ] || { echo "::error::run $RUN has no single shard $K leg"; cat jobs.tsv; exit 1; }
+          [ "$(cut -f2 <<< "$MINE")" != success ] || { echo "::error::run $RUN's shard $K leg succeeded: nothing to finish"; exit 1; }
+          BAD=$(awk -F'\t' -v k="shard $K " '$1 ~ /^shard / && index($1, k) != 1 && $2 != "success"' jobs.tsv | cut -f1 | paste -sd, -)
+          [ -z "$BAD" ] || { echo "::error::run $RUN: other shard legs did not succeed ($BAD): re-run those first"; exit 1; }
+          M=$(jq -c -n --argjson n "$JOBS" '[range(0; $n) | {i: .}]')
+          { echo "run_id=$RUN"; echo "sweep_sha=$SHA"; echo "k=$K"; echo "jobs=$JOBS"; echo "per_job=$PER"; echo "matrix=$M"; } >> "$GITHUB_OUTPUT"
+          echo "finish run $RUN (swept at ${SHA:0:10}) shard $K: $(cut -f2 <<< "$MINE"); configs over $JOBS runner(s) x $PER process(es): $(jq -r '.note // ""' "$F")"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Not scored yet, the run's plan, its other shards on Drive
+        id: drive
+        env:
+          RUN: ${{ steps.req.outputs.run_id }}
+          K: ${{ steps.req.outputs.k }}
+        run: |
+          set -euo pipefail
+          # The sweep's own test (each level listed only when its parent lists it, so a listing error fails the step).
+          SCORED=yes; P=gdrive:kalshi-bot-archive
+          for c in models/ tennis-ta/ runs/ "$RUN/" report/; do
+            L=$(rclone lsf "$P" --dirs-only)
+            if ! grep -qxF "$c" <<< "$L"; then SCORED=no; break; fi
+            P="$P/${c%/}"
+          done
+          if [ "$SCORED" = yes ]; then L=$(rclone lsf "$P" --files-only); grep -qxE "registry-v1-$RUN\.jsonl|registry-tennis-ta-$RUN\.jsonl\.gz" <<< "$L" || SCORED=no; fi
+          if [ "$SCORED" = yes ]; then echo "::error::run $RUN is already scored: its shards stand"; exit 1; fi
+          R="gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN"
+          mkdir -p prep
+          rclone copyto "$R/prep/plan.json" prep/plan.json
+          rclone copyto "$R/prep/fees.json" prep/fees.json
+          rclone lsf "$R/shards" --files-only > listed.txt
+          # Every planned file but shard k's is on Drive; none of shard k's is.
+          jq -r '.expected[]' prep/plan.json > expected.txt
+          MISSING=$(grep -vE "^a-s[^-]+-$K-[0-9]+\.json\.gz$" expected.txt | grep -vxFf listed.txt | paste -sd, - || true)
+          [ -z "$MISSING" ] || { echo "::error::run $RUN: planned files of other shards missing on Drive ($MISSING)"; exit 1; }
+          grep -E "^a-s[^-]+-$K-[0-9]+\.json\.gz$" expected.txt > mine.txt || { echo "::error::run $RUN plans no file for shard $K"; exit 1; }
+          grep -E "^a-s[^-]+-$K-[0-9]+\.json\.gz$" listed.txt > there.txt || true
+          if [ ! -s there.txt ]; then
+            MODE=sweep
+          elif cmp -s <(sort mine.txt) <(sort there.txt); then
+            # Every planned file of shard k is on Drive: only a finish record that lists exactly their sha256 makes this a
+            # report-only request (a finish whose report failed); anything else is refused.
+            mkdir -p placed
+            while read -r f; do rclone copyto "$R/shards/$f" "placed/$f"; done < mine.txt
+            (cd placed && sha256sum ./* | awk '{sub("^\\./", "", $2); print $2, $1}' | sort) > placed.txt
+            MODE=""
+            for d in $(rclone lsf "$R/finish" --dirs-only 2>/dev/null || true); do
+              if rclone copyto "$R/finish/${d%/}/merged-$K.json" rec.json 2>/dev/null \
+                && cmp -s <(jq -r '.files[] | "\(.name) \(.sha256)"' rec.json | sort) placed.txt; then
+                MODE=report; echo "shard $K placed by finish run ${d%/} (record matches the files on Drive)"; break
+              fi
+            done
+            [ -n "$MODE" ] || { echo "::error::run $RUN: shard $K file(s) on Drive with no finish record that matches them ($(paste -sd, there.txt))"; exit 1; }
+          else
+            echo "::error::run $RUN: some of shard $K's planned files are on Drive ($(paste -sd, there.txt)), not all ($(paste -sd, mine.txt))"; exit 1
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          # The data version every other shard was swept on (the parts refuse a history that differs).
+          ONE=$(grep -vE "^a-s[^-]+-$K-[0-9]+\.json\.gz$" expected.txt | head -n 1)
+          rclone copyto "$R/shards/$ONE" one.json.gz
+          DV=$(gunzip -c one.json.gz | jq -r '.meta.dataVersion')
+          [ -n "$DV" ] && [ "$DV" != null ] || { echo "::error::$ONE has no meta.dataVersion"; exit 1; }
+          echo "data_version=$DV" >> "$GITHUB_OUTPUT"
+          echo "run $RUN: $(grep -c . listed.txt) shard file(s) on Drive; shard $K: $MODE; data version $DV"
+      - name: Shard k in the plan
+        id: plan
+        env:
+          K: ${{ steps.req.outputs.k }}
+          PER: ${{ steps.req.outputs.per_job }}
+        run: |
+          set -euo pipefail
+          jq -e --argjson k "$K" '.plan[] | select(.k == $k)' prep/plan.json > shard.json || { echo "::error::no shard $K in the plan"; exit 1; }
+          # A runner runs perJob processes for each sub-slice: at most 4 on its 4 cores.
+          NSUB=$(jq --argjson k "$K" '.subPlans[$k] | length' prep/plan.json)
+          [ $(( NSUB * PER )) -le 4 ] || { echo "::error::shard $K has $NSUB sub-slice(s): $NSUB x perJob $PER processes would oversubscribe a runner's 4 cores"; exit 1; }
+          {
+            echo "stage=$(jq -r '.stage' prep/plan.json)"; echo "pool=$(jq -r '.pool' prep/plan.json)"; echo "family_b=$(jq -r '.familyB' prep/plan.json)"
+            echo "shards=$(jq -r '.plan | length' prep/plan.json)"; echo "from=$(jq -r '.from' shard.json)"; echo "to=$(jq -r '.to' shard.json)"
+            echo "units=$(jq -r '.units | join(",")' shard.json)"
+          } >> "$GITHUB_OUTPUT"
+          echo "shard $K: $(jq -c . shard.json); sub-slices $(jq -c --argjson k "$K" '.subPlans[$k]' prep/plan.json)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finish-prep
+          path: |
+            prep/fees.json
+            prep/plan.json
+          retention-days: 30
+
+  part:
+    name: part ${{ matrix.i }} of shard ${{ needs.resolve.outputs.k }}
+    needs: resolve
+    if: needs.resolve.outputs.mode == 'sweep'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    env:
+      RUN: ${{ needs.resolve.outputs.run_id }}
+      SWEEP_SHA: ${{ needs.resolve.outputs.sweep_sha }}
+      K: ${{ needs.resolve.outputs.k }}
+      I: ${{ matrix.i }}
+      JOBS: ${{ needs.resolve.outputs.jobs }}
+      PER_JOB: ${{ needs.resolve.outputs.per_job }}
+      FROM: ${{ needs.resolve.outputs.from }}
+      TO: ${{ needs.resolve.outputs.to }}
+      UNITS: ${{ needs.resolve.outputs.units }}
+      SHARDS: ${{ needs.resolve.outputs.shards }}
+      STAGE: ${{ needs.resolve.outputs.stage }}
+      POOL: ${{ needs.resolve.outputs.pool }}
+      FAMILY_B: ${{ needs.resolve.outputs.family_b }}
+      SWEPT_DV: ${{ needs.resolve.outputs.data_version }}
+    steps:
+      # The sweep's own commit: the code, the request, the units table and the spec files the other shards were swept with.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.sweep_sha }}
+      - name: The sweep's commit
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$SWEEP_SHA" ] || { echo "::error::checked out $(git rev-parse HEAD), not $SWEEP_SHA"; exit 1; }
+          echo "sweeping at $SWEEP_SHA (this workflow's commit $GITHUB_SHA)"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib)
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: tennis-ta-shard-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: TA-Lib engine (family B refuses to run without it)
+        if: env.FAMILY_B == 'true'
+        run: |
+          node --import tsx -e "import('./bot/ta/talib.ts').then((m) => { if (m.taEngine() !== 'talib') { console.error('TA-Lib engine not loaded: ' + m.taEngineError()); process.exit(1); } console.log('TA-Lib engine: talib'); })"
+      - uses: actions/download-artifact@v4
+        with:
+          name: finish-prep
+          path: prep
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Tennis history from Drive (the data version the other shards were swept on)
+        run: |
+          set -euo pipefail
+          mkdir -p data/tennis/kalshi
+          DV=""
+          for S in KXATPMATCH KXWTAMATCH; do
+            rclone copy "gdrive:kalshi-bot-archive/raw/tennis-history/kalshi/$S.tar.gz" .
+            H=$(sha256sum "$S.tar.gz" | cut -d' ' -f1)
+            DV="${DV:+$DV,}$S:sha256:$H"
+            tar -xzf "$S.tar.gz" -C data/tennis/kalshi && rm "$S.tar.gz"
+          done
+          [ "$DV" = "$SWEPT_DV" ] || { echo "::error::the history on Drive is $DV, the run's other shards were swept on $SWEPT_DV: a finished leg would mix data versions"; exit 1; }
+          echo "DATA_VERSION=$DV" >> "$GITHUB_ENV"
+          echo "data version $DV"
+      - name: History complete over the shard
+        run: node --import tsx research/tennisTaSweep.ts coverage --hist data/tennis/kalshi --from "$FROM" --to "$TO" --series KXATPMATCH,KXWTAMATCH
+      - name: Replay days for the slice
+        run: |
+          set -euo pipefail
+          # As the sweep's shard job: [FROM - 1, TO + CLOSE_TAIL_DAYS = 5].
+          A=$(date -u -d "$FROM -1 day" +%F); B=$(date -u -d "$TO +5 day" +%F)
+          node --max-old-space-size=6144 --import tsx research/tennisTaSweep.ts days --hist data/tennis/kalshi --out data/replay --from "$A" --to "$B" --series KXATPMATCH,KXWTAMATCH 2>&1 | tail -5
+      - name: Sweep this runner's configs parts
+        run: |
+          set -euo pipefail
+          mkdir -p out/parts
+          D="gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/finish/$GITHUB_RUN_ID"
+          TEL="$D/telemetry/part-$I.txt"
+          # Telemetry as the sweep's shard job keeps it, with this runner's process logs beside it.
+          (
+            set +euo pipefail
+            n=0
+            while true; do
+              { date -u +%FT%TZ; free -m | awk 'NR>1 {print "  " $1, "total", $2, "used", $3, "avail", $NF}'
+                ps -o pid=,rss=,etimes=,args= -C node | awk '{printf "  node pid %s rss %d MB up %d min %s\n", $1, $2/1024, $3/60, $NF}'; } >> out/telemetry.txt
+              n=$((n + 1)); if [ $((n % 5)) = 1 ]; then rclone copyto out/telemetry.txt "$TEL" >/dev/null 2>&1 || true; fi
+              sleep 120
+            done
+          ) &
+          TEL_PID=$!
+          # The sweep's own cut of the shard (the plan's subPlans[k]).
+          SUB=$(node --import tsx research/tennisTaSweep.ts subplan --units models/tennis-ta/state/units.json --units-list "$UNITS" --parts 4)
+          jq -e --argjson k "$K" --argjson s "$SUB" '.subPlans[$k] == $s' prep/plan.json > /dev/null || { echo "::error::sub-slices $SUB differ from the plan's"; exit 1; }
+          NSUB=$(echo "$SUB" | jq length)
+          # N parts per sub-slice over all runners; this runner runs parts I*PER_JOB .. I*PER_JOB + PER_JOB - 1 of each.
+          N=$(( JOBS * PER_JOB ))
+          NCFG=$(jq -r '.configs // 1' prep/plan.json); [ "$N" -le "$NCFG" ] || { echo "::error::$N parts for $NCFG configs: an empty part would refuse to start"; exit 1; }
+          HEAP=$(( 13312 / (NSUB * PER_JOB) )); [ "$HEAP" -le 6144 ] || HEAP=6144
+          echo "$NSUB sub-slice(s); parts $((I * PER_JOB)) to $((I * PER_JOB + PER_JOB - 1)) of $N each; heap $HEAP MB"
+          pids=()
+          for j in $(echo "$SUB" | jq -r '.[].k'); do
+            F=$(echo "$SUB" | jq -r ".[$j].from"); T=$(echo "$SUB" | jq -r ".[$j].to"); U=$(echo "$SUB" | jq -r ".[$j].units | join(\",\")")
+            for p in $(seq 0 $((PER_JOB - 1))); do
+              g=$(( I * PER_JOB + p ))
+              node --max-old-space-size="$HEAP" --import tsx research/tennisTaSweep.ts run --replay data/replay --hist data/tennis/kalshi \
+                --from "$F" --to "$T" --units-list "$U" --stage "$STAGE" --pool "$POOL" --family-b "$FAMILY_B" \
+                --units models/tennis-ta/state/units.json --fees prep/fees.json --request research/tennis-ta/sweep-request.json \
+                --data-version "$DATA_VERSION" --run "$RUN" --k "$K" --j "$j" --shards "$SHARDS" --sub-shards "$NSUB" \
+                --spec-part "$g/$N" --out "out/parts/a-s$STAGE-$K-$j.p$g.json.gz" > "out/log-$j-$g.txt" 2>&1 &
+              pids+=($!)
+            done
+          done
+          rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done
+          kill "$TEL_PID" 2>/dev/null || true
+          rclone copyto out/telemetry.txt "$TEL" >/dev/null 2>&1 || true
+          for f in out/log-*.txt; do echo "==> $f <=="; if [ "$rc" != 0 ]; then grep -v '^\[tennis-ta\]' "$f" | head -n 40 || true; fi; tail -n 3 "$f"; rclone copyto "$f" "$D/logs/part-$I-$(basename "$f")" >/dev/null 2>&1 || true; done
+          [ "$rc" = 0 ] || exit 1
+          for f in out/parts/*.json.gz; do rclone copyto "$f" "$D/parts/$(basename "$f")"; done
+          ls -la out/parts
+
+  merge:
+    name: merge shard ${{ needs.resolve.outputs.k }}
+    needs: [resolve, part]
+    if: needs.resolve.outputs.mode == 'sweep'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUN: ${{ needs.resolve.outputs.run_id }}
+      SWEEP_SHA: ${{ needs.resolve.outputs.sweep_sha }}
+      K: ${{ needs.resolve.outputs.k }}
+      JOBS: ${{ needs.resolve.outputs.jobs }}
+      PER_JOB: ${{ needs.resolve.outputs.per_job }}
+      STAGE: ${{ needs.resolve.outputs.stage }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.sweep_sha }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: finish-prep
+          path: prep
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Merge the parts into the shard's planned file(s), beside the run's other shards
+        run: |
+          set -euo pipefail
+          R="gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN"
+          mkdir -p parts out
+          rclone copy "$R/finish/$GITHUB_RUN_ID/parts" parts
+          N=$(( JOBS * PER_JOB ))
+          for j in $(jq -r --argjson k "$K" '.subPlans[$k][].k' prep/plan.json); do
+            F="a-s$STAGE-$K-$j.json.gz"
+            jq -e --arg f "$F" '.expected | index($f)' prep/plan.json > /dev/null || { echo "::error::$F is not a planned file"; exit 1; }
+            PARTS=$(ls parts/a-s"$STAGE"-"$K"-"$j".p*.json.gz | paste -sd, -)
+            [ "$(tr ',' '\n' <<< "$PARTS" | grep -c .)" = "$N" ] || { echo "::error::$F: $(tr ',' '\n' <<< "$PARTS" | grep -c .) part(s) of $N"; exit 1; }
+            node --max-old-space-size=6144 --import tsx research/tennisTaSweep.ts merge --parts "$PARTS" --out "out/$F"
+          done
+          # Never over a file already there, except one this finish run placed itself (a re-run of this job after its
+          # upload): that file is kept as it is (its record lists its sha256), and the new merge is dropped.
+          REC="$R/finish/$GITHUB_RUN_ID/merged-$K.json"
+          rclone lsf "$R/shards" --files-only > listed.txt
+          rclone copyto "$REC" prior.json 2>/dev/null || echo '{"files": []}' > prior.json
+          for f in out/a-s*.json.gz; do
+            b=$(basename "$f")
+            if grep -qxF "$b" listed.txt; then
+              rclone copyto "$R/shards/$b" "drive-$b"
+              H=$(sha256sum "drive-$b" | cut -d' ' -f1)
+              jq -e --arg b "$b" --arg h "$H" 'any(.files[]; .name == $b and .sha256 == $h)' prior.json > /dev/null \
+                || { echo "::error::$b is already on Drive and this finish run did not place it: not replaced"; exit 1; }
+              echo "$b: already placed by this finish run, kept"; mv "drive-$b" "$f"
+            fi
+          done
+          # The finish record first (a report-only finish request checks the files on Drive against it), then the files.
+          for f in out/a-s*.json.gz; do jq -n --arg n "$(basename "$f")" --arg h "$(sha256sum "$f" | cut -d' ' -f1)" '{name: $n, sha256: $h}'; done \
+            | jq -s --arg run "$RUN" --argjson k "$K" --arg finish "$GITHUB_RUN_ID" --arg sha "$SWEEP_SHA" \
+                '{run: $run, k: $k, finishRun: $finish, sweptAt: $sha, files: .}' > merged.json
+          rclone copyto merged.json "$REC"
+          for f in out/a-s*.json.gz; do b=$(basename "$f"); grep -qxF "$b" listed.txt || rclone copyto "$f" "$R/shards/$b"; done
+          cat merged.json; du -ch out/a-s*.json.gz | tail -1
+
+  report:
+    needs: [resolve, merge]
+    # After this run's merge (scored with the sweep's own code), or on its own in report mode (this commit's code).
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.merge.result == 'success' || (needs.resolve.outputs.mode == 'report' && needs.merge.result == 'skipped')) }}
+    uses: ./.github/workflows/tennis-ta-report.yml
+    with:
+      run_id: ${{ needs.resolve.outputs.run_id }}
+      sweep_sha: ${{ needs.resolve.outputs.sweep_sha }}
+      pool: ${{ needs.resolve.outputs.pool }}
+      stage: ${{ needs.resolve.outputs.stage }}
+      code_ref: ${{ needs.resolve.outputs.mode == 'sweep' && needs.resolve.outputs.sweep_sha || '' }}
+    secrets: inherit
