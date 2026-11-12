@@ -14,7 +14,7 @@ What one series (a coin or a no-signal twin, the identical pipeline) learns, per
             unknown = NaN (minus the neutral level's index for an ordinal reading). Zone, sign, breadth and z-zone (dominance, daily markets) codes are ordinal; clock,
             position, pattern, ZS and every other state is categorical. ZS:<name>: the side-aware event that fired on
             the zone reading's last closed bar (heat_xdata.zs_codes: none / very low / low falling in / low recovering /
-            high rising in / high cooling / very high).
+            high rising in / high cooling / very high). All causal: the code at row i reads bars closed by row i.
   fit       LightGBM 4.5.0, L2 regression on the direction sign (-1, 0, +1) with init_score = A's base mean sign, so a
             leaf is a shift in mean sign (x 50 = odds points). heat_hm2.LGB_PARAMS, 300 rounds, seed 20261111 + H.
             The Dataset is built from 100,000-row float32 chunks of the int8 codes (dataset(): LightGBM's own matrix
@@ -23,18 +23,24 @@ What one series (a coin or a no-signal twin, the identical pipeline) learns, per
             the call with tree_eval (pure numpy, no LightGBM); tested equal to booster.predict.
   call      GBM.<model><H> (k = 1): the score at every minute of both splits in five zones at A's quantiles of the
             score (ZONE_Q); NA on a forward-filled minute. Its own A odds per zone give each zone's direction; its B
-            numbers (call_stats) score the call on 2025. heat_hm2.remeasure then measures it in the league's units.
+            numbers (call_stats) score the call on 2025. heat_hm2.remeasure then measures it in the league's units. The
+            zone edges go into the tree JSON (hm2.zone) and the series meta; the codes into gbm_codes.npz.
   paths     every root-to-leaf path of the A-trained trees as a rule: predicates on one feature merged into a level
             set, missing-value routing as the level 'NA'. The scan form maps a ZS condition onto its zone reading's
             levels (an event fixes the zone it lands in), so the scan can measure it: rules naming three readings
-            become triples (heat_hm2.scan_triples (b)), two readings mark learner_path on the pair.
+            become triples (heat_hm2.scan_triples (b)), two readings mark learner_path on the pair. A path whose ZS event
+            contradicts its own zone reading's condition reaches no minute and is no rule. The rules of the ten fits are
+            merged (merge_paths), so the scan measures each scan form once.
   usage     LightGBM's pred_contrib on 20,000 seeded 2025 minutes only (the A entries are the training rows): mean
             contribution by reading level and mean |contribution| by reading, TA function (all timeframes and settings
             together), family and partner group, in odds points. The model's view, not evidence: the twins' stand
             beside it in the league.
-  cards     the raw inputs of the per-TA-function usage cards: the settings x timeframe grid (each zone's own state
-            odds on A and on B in its A direction per horizon, fade or follow of the extreme zones, the strongest
-            horizon) and the best partner per data family from the candidate pool (by iheat_B, with iota_with_call).
+  cards     the raw inputs of the per-TA-function usage cards (cards.json.gz, written by heat_hm2.run_series after the
+            scan): the settings x timeframe grid (each zone's own state odds on A and on B in its A direction per
+            horizon, fade or follow of the extreme zones, the strongest horizon), the best partner per data family from
+            the candidate pool (by iheat_B, with iota_with_call) and the kept-interaction share per TA function from the
+            pair scan's per-reading tally (heat_hm2.SummaryCounts.rk). The model's contributions by level are usage.json.
+  twins     a twin runs the identical function on its own minutes: same models, rows, settings, seeds and readouts.
 Coin minutes 2020-01-01 to 2025-12-31 only. A MAP on coin price, not a Kalshi-price result. NEVER DOGE.
 """
 import argparse
@@ -60,7 +66,10 @@ MODELS = ('TA', 'ALL')
 X_CHUNK = 100_000               # rows per float32 chunk handed to lightgbm.Dataset
 SCORE_CHUNK = 200_000           # rows per chunk of the per-minute score
 N_CONTRIB = 20_000              # seeded B minutes of the contributions
-CONTRIB_SEED = [20261111, 2]    # the seed heat_hm2._learner draws them with (same minutes either way)
+CONTRIB_CHUNK = 5_000           # rows per pred_contrib call (only the split features' columns are kept)
+CARDS_FILE = 'cards.json.gz'    # the usage cards' raw inputs of one series (write_cards)
+GBM_CODES_FILE = 'gbm_codes.npz'  # the GBM readings' codes on every minute (write_gbm_codes; Part 3's drill reads them)
+CONTRIB_SEED = [20261111, 2]    # the seed of the seeded 2025 minutes (contrib_rows)
 ODDS = 50.0                     # mean sign -> odds points
 ZERO_T = 1e-35                  # LightGBM's kZeroThreshold (a value within it is "zero" for missing_type Zero)
 TREE_SCHEMA = 'oracle-heat-hm2-tree-1'
@@ -660,8 +669,8 @@ def leaf_paths(tree_json: dict) -> list:
             if not sets:
                 return
             scan, tree, exact = _rule_form(sets, feats)
-            if not scan:
-                return
+            if not scan or any(not lv for _, lv in scan):
+                return                                  # no condition, or a ZS event against its own zone's condition (unreachable)
             key = json.dumps(scan)
             r = rules.get(key)
             v = float(d['leaf_value'])
@@ -717,20 +726,32 @@ def contributions(booster, X: np.ndarray, meta: dict = None) -> dict:
     reading the mean contribution of each of its levels ('NA' = unknown) and its mean |contribution|; per TA function
     (heat_pack.indicator with the settings stripped; a merged reading counts for the function of each of its names, a
     ZS state for its zone reading's), per family and per partner group the mean |sum of its readings' contributions|
-    (contributions add up, so a group's is the sum of its members'). Also the call (gbm_reading's call_stats) when the
-    booster has one. The model's view, not evidence."""
+    (contributions add up, so a group's is the sum of its members'), and beside it sum_mean_abs, the sum of its readings'
+    own mean |contribution|. Also the call (gbm_reading's call_stats) when the booster has one. The model's view, not
+    evidence. pred_contrib runs in CONTRIB_CHUNK-row chunks and keeps only the columns of features the trees split on (a
+    feature without a split contributes exactly 0), so the full rows x features matrix never exists."""
     meta = meta or booster.hm2
     X = np.asarray(X)
     if np.issubdtype(X.dtype, np.floating):
         raise SystemExit('contributions: X must be the level codes of features() (int8, -1 = unknown)')
-    C = booster.predict(as_float(X, meta['offset']), pred_contrib=True)
+    tj = meta.get('tree_json') or booster.dump_model()
+    split = used_features(tj)
     n = len(X)
+    C = np.zeros((n, len(split)))
+    bias = None
+    for s in range(0, n, CONTRIB_CHUNK):
+        ch = booster.predict(as_float(X[s:s + CONTRIB_CHUNK], meta['offset']), pred_contrib=True)
+        C[s:s + CONTRIB_CHUNK] = ch[:, split]
+        bias = ch[0, -1] if bias is None else bias
     names = meta['names']
-    used = np.flatnonzero(np.abs(C[:, :-1]).sum(0) > 0)
+    keep = np.abs(C).sum(0) > 0
+    C = C[:, keep]
+    used = np.asarray(split, np.int64)[keep]                            # feature indices; C's column c is feature used[c]
+    col = {int(j): c for c, j in enumerate(used)}
     codes = X.astype(np.int64)
     by_reading, by_level = {}, {}
     for j in used:
-        c = C[:, j] * ODDS
+        c = C[:, col[int(j)]] * ODDS
         by_reading[names[j]] = {'mean_abs': float(np.abs(c).mean()), 'mean': float(c.mean()), 'family': meta['family'][j], 'group': meta['group'][j],
                                 'funcs': meta['funcs'][j]}
         lv = {}
@@ -746,11 +767,13 @@ def contributions(booster, X: np.ndarray, meta: dict = None) -> dict:
                 acc.setdefault(k, []).append(j)
         out = {}
         for k, js in sorted(acc.items()):
-            s = C[:, js].sum(1) * ODDS
-            out[k] = {'mean_abs': float(np.abs(s).mean()), 'mean': float(s.mean()), 'readings': len(js)}
+            cs = [col[int(j)] for j in js]
+            s = C[:, cs].sum(1) * ODDS
+            out[k] = {'mean_abs': float(np.abs(s).mean()), 'mean': float(s.mean()), 'readings': len(js),
+                      'sum_mean_abs': float(np.abs(C[:, cs]).mean(0).sum() * ODDS)}
         return out
     res = {'rows': int(n), 'split': 'B', 'units': 'odds points (50 x mean sign)', 'model': meta.get('model'), 'h': meta.get('h'),
-           'expected': float(C[0, -1] * ODDS) if n else None, 'used': int(len(used)),
+           'expected': float(bias * ODDS) if n else None, 'used': int(len(used)),
            'by_reading': by_reading, 'by_level': by_level,
            'by_function': grouped(lambda j: meta['funcs'][j]), 'by_family': grouped(lambda j: [meta['family'][j]]),
            'by_group': grouped(lambda j: [meta['group'][j]])}
@@ -834,10 +857,75 @@ def card_partners(ctx, cands: pd.DataFrame) -> list:
     return hm._clean([best[k] for k in sorted(best)])
 
 
-def card_inputs(ctx, cands: pd.DataFrame = None) -> dict:
-    """Both raw inputs of the usage cards for one series (the league puts each beside the twins' median and range)."""
-    return {'schema': 'oracle-heat-hm2-cards-1', 'label': ctx.label, 'twin': int(ctx.twin), 'grid': card_grid(ctx),
-            'partners': card_partners(ctx, cands)}
+def _reading_counts(summ):
+    """(columns, int64 [horizons, readings, columns]) of the pair scan's per-reading tally (heat_hm2.SummaryCounts.rk),
+    from the object or its to_json() dict."""
+    if summ is None:
+        return list(hm.SummaryCounts.RK), np.zeros((len(hm.H_SCAN), 0, len(hm.SummaryCounts.RK)), np.int64)
+    if isinstance(summ, dict):
+        cols = list(summ.get('reading_counts', hm.SummaryCounts.RK))
+        a = np.asarray(summ.get('rk', []), np.int64)
+        rk = a.reshape(len(hm.H_SCAN), -1, len(cols)) if a.size else np.zeros((len(hm.H_SCAN), 0, len(cols)), np.int64)
+        return cols, rk
+    return list(summ.RK), np.asarray(summ.rk, np.int64)
+
+
+def card_kept(ctx, summ) -> dict:
+    """Raw input of each TA function's kept-interaction share (OR-HM2, Lessons: 'the share of its pairs that kept their
+    interaction, against the twins'), from the pair scan's per-reading tally over every pair cell with a sample
+    (heat_hm2.SummaryCounts.rk: cells, iota_n / iota_kept, robust_n / robust_kept, robust_with_call per horizon). Per
+    TA function the sums over its readings (a merged reading counts for the function of each of its names, as in the
+    contributions; a pair of two readings of one function counts once for each), and the shares kept / n; per reading
+    the same, by name. No floor and no pass bar: the league puts each beside the twins' median and range."""
+    cols, rk = _reading_counts(summ)
+    ci = {c: i for i, c in enumerate(cols)}
+
+    def entry(tot: np.ndarray) -> dict:
+        with np.errstate(invalid='ignore', divide='ignore'):
+            sh = lambda a, b: np.where(tot[:, ci[b]] > 0, tot[:, ci[a]] / np.maximum(tot[:, ci[b]], 1), np.nan)
+            return {'counts': tot, 'share_iota_kept': sh('iota_kept', 'iota_n'), 'share_robust_kept': sh('robust_kept', 'robust_n'),
+                    'share_robust_with_call': sh('robust_with_call', 'robust_n')}
+    by_fn, by_rd = {}, {}
+    for j, R in enumerate(ctx.readings):
+        if j >= rk.shape[1]:
+            break
+        tot = rk[:, j, :]
+        if not tot.any():
+            continue
+        names = [R['name']] + list(R.get('aliases', []))
+        fns = sorted({f for f in map(ta_function, names) if f})
+        if not fns:
+            continue
+        by_rd[R['name']] = dict(entry(tot), funcs=fns)
+        for fn in fns:
+            acc = by_fn.setdefault(fn, {'tot': np.zeros_like(tot), 'readings': []})
+            acc['tot'] = acc['tot'] + tot
+            acc['readings'].append(R['name'])
+    what = 'pair cells with a sample; kept = the B sign equals the A sign (a B value of exactly 0 is not kept)'
+    return hm._clean({'h': list(hm.H_SCAN), 'columns': cols, 'measure': what,
+                      'by_function': {fn: dict(entry(v['tot']), readings=v['readings']) for fn, v in sorted(by_fn.items())},
+                      'by_reading': by_rd})
+
+
+def card_inputs(ctx, cands: pd.DataFrame = None, summ=None) -> dict:
+    """The raw inputs of the usage cards for one series (the league puts each beside the twins' median and range): the
+    settings x timeframe grid (card_grid), the best partner per data family (card_partners) and, with the pair scan's
+    summary counts, the kept-interaction share per TA function (card_kept). The model's contributions by level are in
+    usage.json (contributions) and the function's own call by level is HM1's direction league (the league reads it)."""
+    out = {'schema': 'oracle-heat-hm2-cards-1', 'label': ctx.label, 'twin': int(ctx.twin), 'grid': card_grid(ctx),
+           'partners': card_partners(ctx, cands)}
+    if summ is not None:
+        out['kept'] = card_kept(ctx, summ)
+    return out
+
+
+def write_cards(ctx, cands: pd.DataFrame, summ, out: str) -> str:
+    """card_inputs of one series to <out>/cards.json.gz (allow_nan False). Returns the path."""
+    p = os.path.join(out, CARDS_FILE)
+    ci = card_inputs(ctx, cands, summ)
+    with gzip.open(p, 'wt') as f:
+        json.dump(ci, f, allow_nan=False)
+    return p
 
 
 # ---------------------------------------------------------------------------------------------------- the whole part
@@ -846,7 +934,9 @@ def run_learner(ctx, out: str = '', log=print, models=MODELS, horizons=None, n_c
     on the A entries, the GBM reading, the leaf paths and the contributions on seeded 2025 minutes. Returns
     heat_hm2._learner's dict ({'gbm', 'paths', 'usage', 'trees', 'version'}) with the paths of all fits merged
     (merge_paths: one rule per scan form, with its sources) and 'calls' ({model+H: call_stats}). With out: the trees
-    (<out>/trees/<model>_h<H>.json, allow_nan False) and learner_paths.json.gz."""
+    (<out>/trees/<model>_h<H>.json, allow_nan False; their hm2 block carries 'zone', the call's zone edges on the raw
+    score, so the live reader needs nothing else), learner_paths.json.gz and gbm_codes.npz. A twin runs this same
+    function on its own minutes: the same models, rows, settings, seeds and readouts."""
     import lightgbm
     log = log or _log_none
     horizons = list(hm.LEARN_H if horizons is None else horizons)
@@ -860,16 +950,20 @@ def run_learner(ctx, out: str = '', log=print, models=MODELS, horizons=None, n_c
         for H in horizons:
             t = time.time()
             booster, used, tj = learn(ctx, model, H)
-            R, _ = gbm_reading(ctx, booster, model, H)
+            R, edges = gbm_reading(ctx, booster, model, H)
             res['gbm'].append(R)
             res['calls'][f'{model}{H}'] = R['call']
+            # the call's zones for the live reader: edges on the raw score (tree_eval without init), from A minutes only
+            tj['hm2']['zone'] = {'name': R['name'], 'levels': list(heat.ZONES), 'zone_q': list(heat.ZONE_Q), 'edges': edges,
+                                 'degenerate': bool(R.get('degenerate', False)), 'score': 'raw (tree_eval with_init=False)'}
+            _check_json(tj)
             if out:
                 p = os.path.join(out, 'trees', f'{model}_h{H}.json')
                 with open(p, 'w') as f:
                     json.dump(tj, f, allow_nan=False)
                 with open(p, 'rb') as f:
                     sha = hashlib.sha256(f.read()).hexdigest()
-                res['trees'][f'{model}_h{H}'] = {'file': os.path.relpath(p, out), 'sha256': sha, 'used': list(used)}
+                res['trees'][f'{model}_h{H}'] = {'file': os.path.relpath(p, out), 'sha256': sha, 'used': list(used), 'edges': edges}
             raw += [dict(rule, model=model, h=H) for rule in leaf_paths(tj)]
             res['usage'][f'{model}{H}'] = contributions(booster, XB)
             c = R['call']
@@ -882,10 +976,19 @@ def run_learner(ctx, out: str = '', log=print, models=MODELS, horizons=None, n_c
     if out:
         with gzip.open(os.path.join(out, 'learner_paths.json.gz'), 'wt') as f:
             json.dump(hm._clean(res['paths']), f, allow_nan=False)
+        write_gbm_codes(ctx, res['gbm'], out)
     log(f'  learner {ctx.label}: {len(raw):,} leaf rules, {len(res["paths"]):,} distinct, '
         f'{sum(p["n_readings"] == 3 for p in res["paths"]):,} of three readings')
     drop_cache(ctx)
     return res
+
+
+def write_gbm_codes(ctx, gbm: list, out: str) -> str:
+    """<out>/gbm_codes.npz: each GBM reading's bar codes (int8 on every minute of the grid, -1 = NA) under its name,
+    with t0 and n of the grid (OR-HM2 Part 3 build, request 2: the drill reads them instead of rescoring the trees)."""
+    p = os.path.join(out, GBM_CODES_FILE)
+    np.savez_compressed(p, t0=np.int64(ctx.m['t0']), n=np.int64(ctx.m['n']), **{R['name']: np.asarray(R['codes'], np.int8) for R in gbm})
+    return p
 
 
 # --------------------------------------------------------------------------------------------------------------- CLI

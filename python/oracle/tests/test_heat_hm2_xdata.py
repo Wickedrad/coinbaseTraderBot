@@ -388,6 +388,29 @@ def test_stamp_rules(world, tmp_path):
     assert sp['ms13'] and sp['first'] == fund['ts'].iloc[0] and sp['last'] == fund['ts'].iloc[-1]
 
 
+def test_fetch_cut_keeps_2019_to_2026(tmp_path):
+    """(review fix) The fetch script's cut drops rows before 2019-01-01 (heat_xdata.MS_LO) as well as rows at or after the
+    2026 cut, so a found file whose backfill starts in 2015 (Coinbase's default) loads strictly instead of stopping every
+    job of its coin; a file with no row in that range stops at the cut."""
+    import shutil
+    import subprocess
+    if shutil.which('bash') is None or shutil.which('awk') is None:
+        pytest.skip('bash and awk are needed')
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    script = os.path.join(root, '.github', 'scripts', 'oracle-hm2-data.sh')
+    f = tmp_path / 'cb.csv'
+    rows = [ms('2015-01-01'), ms('2020-01-01'), ms('2020-01-01') + MIN, heat.HEAT_END]
+    pd.DataFrame({'ts': rows, 'o': 1.0, 'h': 1.0, 'l': 1.0, 'c': 1.0, 'v': 1.0}).to_csv(f, index=False)
+    r = subprocess.run(['bash', script, 'cut', str(f), 'found cb'], cwd=root, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    df = X.load_extra(str(f), 'cb1m')
+    assert len(df) == 2 and pd.read_csv(f)['ts'].tolist() == rows[1:3]
+    old = tmp_path / 'old.csv'
+    pd.DataFrame({'ts': [ms('2015-01-01')], 'o': 1.0}).to_csv(old, index=False)
+    r = subprocess.run(['bash', script, 'cut', str(old), 'old'], cwd=root, capture_output=True, text=True)
+    assert r.returncode != 0 and 'no row from 2019-01-01' in r.stderr
+
+
 def test_funding_stamp_check(world):
     """The real file's stamps are the settlement (the rate follows the 8 hours before); the same rates stamped at the
     start of their period fail the check."""

@@ -648,3 +648,72 @@ on research/oracle_heat/latest.
     over 300 minutes splits its pairs across jobs, because the timeout cannot pass 360 minutes. The other coins'
     RSI14 and TakerBuy are computed directly, and only one tagged study runs at a time (10-job limit). BHY comes from
     a p histogram, and move_steps_B is a column.
+
+## Build notes (written during the build, 2026-11-12 ~07:00 UTC, 2:00 AM EST; before any HM2 result on real minutes)
+Compute and format choices the build made where this design or its build plans left a detail open. No design number
+changes here, with one exception named as such (the fits' stopping rule) for the lead to approve before the study.
+
+**Data and readings (heat_xdata.py).**
+- Rows are kept from 2019-01-01 (heat_xdata.MS_LO) to the 2026 cut: the fetch script's awk drops earlier rows as well as
+  later ones, because the strict loaders refuse a row before 2019 (a Coinbase backfill starts in 2015 by default).
+- Daily rows known at or after HEAT_END are dropped, not refused (the repository's daily files run into 2026).
+- Not used: caps_report.json and cmc_raw_sample.json in research/btcd_fractal/data (a report and a raw sample, not
+  series).
+- Stale limits the plan left open: a window with a gap reads NA; FundZ NA after 9 hours without a settlement (z over
+  the previous 90); daily markets NA after 5 days; open-interest changes need 90% of the day before; VolZ15 uses the 96
+  prior 15-minute windows; a book snapshot over 5 minutes old reads NA.
+- Norms (RVclock by hour of week, Busy by minute of day) and every edge come from A rows only.
+
+**The scan (heat_hm2.py).**
+- Departure from a design number (review fix, needs the lead's approval): the IPF fit of iota and the backfitting of
+  iota_add run until no margin (or effect) of at least 30 entries is off by more than 1e-10 of its target, at most
+  3,000 rounds, instead of stopping at 30. At 30 rounds two strongly associated readings left a same-sign error in both
+  scales (iota_robust 0.7 odds points at rho 0.95, 10 at rho 0.99, on an exactly additive table), which design test 4
+  (|iota| < 1e-6) forbids. 3,000 rounds settle rho 0.99 to 1e-8 points and leave at most about 0.02 at rho 0.999 or on
+  a sparse table whose fit lies on the boundary (where IPF converges slowly; margins under 30 entries, which no ranked
+  cell has, do not hold the stop back). The model and every other number are unchanged; a weakly associated table
+  stops before 30 rounds.
+- Copies: agreement counts only entries where at least one reading is off its neutral level; a 4,000-entry sample
+  screens pairs (a pair passes at 0.98, at m < 30, or when a copy at exactly 99.5% could show its sampled
+  disagreements with chance >= 1e-6), and the full A entries decide. The kept reading lists its copies' bases
+  (alias_bases), and no pair or triple joins a reading with a series one of its copies stands for. Part 4 applies the
+  same merge to its 54 compact readings.
+- Candidate pools: 1,000 per (kind, horizon, measure) by B heat, and the 1,000 best unseen cells apart, so the unseen
+  lists rank over every unseen cell. Values are ranked at 6 significant digits (the CSV precision), so a --part merge
+  equals the one-job result.
+- Re-measure: per (kind, horizon, measure) and slice, the first 200 rows by the lists' own rule (exact copies
+  collapsed, at most 3 per reading), then any row a list shows after the near-copy collapse, round after round until
+  none is unmeasured (a near copy found by measuring frees a place and a per-reading slot; the rows that can take
+  them are measured with it, so a chain of copies settles in a few rounds); every listed row has its onset and held
+  numbers. On the synthetic end-to-end world this measured about 5,700 distinct cells per series (the design counts
+  3,600; the unseen slice and the near-copy rule add the rest), and can reach about twice 3,600; the bench's
+  projection still adds the plan's 12 minutes for it.
+- A lift against fewer than 30 other entries is NaN (lift_min takes the other part's), and a B value of exactly 0
+  counts as not kept. t_iota's sd runs below 0.85 on 2-level or associated readings (the fit takes up part of a
+  cell's noise, on twins alike); the pure-noise test checks 0.85-1.2 on near-independent multi-level cells and at most
+  1.2 on all cells.
+- Provenance: a pack level counts for its own coin's rows only.
+- Workers are forks sharing the candidate thresholds; counting, statistics, both fits and the window counts run in
+  numba, each tested against numpy.
+
+**The league and the pack (heat_hm2_league.py).**
+- A pack row's headline numbers (n, share, odds, t, wd, oheat, hold; A and B) are its onset block (fire = onset); the
+  scan's held-state numbers that ranked it are in `scan`, the held block in `held`; onset_agrees_A says whether the
+  onset's own A direction is dir (a column, not a filter).
+- Part 3's gate rows carry the tier-2 sha256 (non-gate rows without live_ready) of the pack they were built on; a league
+  whose pack has another drops them with a warning (pack `part3.stale`). Parity alone leaves that sha unchanged.
+
+**Part 3 (heat_hm2_drill.py).**
+- "Above the twins' maximum" is taken per list (the same tier filter, track and mode); under the twin fallback over the
+  seeded quarter only, and the real units outside it carry above_twin_p99 instead.
+- Depth-2 paths are ranked by their own gate heat on B (the smaller of the path's and the gate's other windows per
+  day, times the lift).
+- A gate row is live ready when its own conditions reach 99.5% drill parity, its other conditions pass HM2's parity,
+  its call is live ready in hm2_pack.json, and the bot has the feeds. TA-card ties go to the first name in sort order.
+
+**Workflow (.github/workflows/oracle-hm2.yml).**
+- Part 4 runs only inside heat_hm2 --patterns (route A); a stage failure leaves HM2's files and exit code alone.
+- A standalone drill league never shares a push with the study or the HM2 league (both commit hm2_pack.json).
+- The test job's timeout is 60 minutes (every suite after the TA-Lib and LightGBM installs).
+- A league rerun rebuilds hm2_pack.json with live_ready False on every row (Part 3's gate rows return as the drill
+  league wrote them, also False): the parity push and then the drill-parity push go again after it.

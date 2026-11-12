@@ -232,7 +232,7 @@ def test_fits_on_planted_tables():
     F = hm.ipf(N[None])[0]
     ms = (N[..., 0] - N[..., 2]) / N.sum(-1)
     assert np.abs(50 * (ms - hm._fitted_ms(F))).max() < 1e-6
-    assert np.allclose(hm._nb_ipf2(N[None], hm.IPF_ITERS)[0], F, rtol=1e-12)
+    assert np.allclose(hm._nb_ipf2(N[None], hm.IPF_MAX, hm.IPF_TOL)[0], F, rtol=1e-9)
     # additive mean sign: ms = mu + a + b, with flat share 0.2
     a, b = rng.uniform(-0.2, 0.2, La), rng.uniform(-0.2, 0.2, Lb)
     msa = 0.05 + a[:, None] + b[None, :]
@@ -240,7 +240,7 @@ def test_fits_on_planted_tables():
     up, dn = n * (0.8 + msa) / 2, n * (0.8 - msa) / 2
     fit = hm.additive_fit((up - dn)[None], n[None])[0]
     assert np.abs(50 * (msa - fit)).max() < 1e-6
-    assert np.allclose(hm._nb_additive((up - dn)[None], n[None], hm.IPF_ITERS)[0], fit, atol=1e-12)
+    assert np.allclose(hm._nb_additive((up - dn)[None], n[None], hm.IPF_MAX, hm.IPF_TOL)[0], fit, atol=1e-10)
     # XOR with flat margins: (high, high) and (low, low) go up, mixed go down, every margin is flat
     p = np.array([[0.7, 0.5, 0.3], [0.5, 0.5, 0.5], [0.3, 0.5, 0.7]])
     cnt = np.array([[1000, 2000, 1000], [2000, 4000, 2000], [1000, 2000, 1000]], float)
@@ -253,6 +253,65 @@ def test_fits_on_planted_tables():
     assert np.allclose((ms * cnt).sum(0), 0) and np.allclose((ms * cnt).sum(1), 0)
     x = hm.robust_iota(np.array([2.0, -3.0, 1.0, 0.0]), np.array([1.0, -1.0, -1.0, 4.0]))
     assert list(x) == [1.0, -1.0, 0.0, 0.0]
+
+
+def test_fits_settle_on_associated_readings():
+    """(review fix) Two strongly associated readings (rho 0.95 and 0.99 of the joint table on its diagonal), each with a
+    real call that adds on the mean-sign scale, and no joint term: the fits run until they settle, so iota_add is 0 and
+    iota_robust is 0 to 1e-6 in every cell (30 rounds left up to 10 odds points of the same sign in both scales), and the
+    numba fits equal the numpy ones. A multiplicative plant gives |iota| < 1e-6 the same way."""
+    pr = np.array([0.02, 0.08, 0.8, 0.08, 0.02])
+    eff = np.array([-0.2, -0.1, 0.0, 0.1, 0.2])
+    for rho in (0.95, 0.99):
+        J = rho * np.diag(pr) + (1 - rho) * np.outer(pr, pr)
+        n = 1e6 * J
+        ms = eff[:, None] + eff[None, :]
+        up, dn = n * (0.8 + ms) / 2, n * (0.8 - ms) / 2
+        N = np.stack([up, n * 0.2, dn], -1)
+        ia = 50 * (ms - hm._nb_additive((up - dn)[None], n[None], hm.IPF_MAX, hm.IPF_TOL)[0])
+        i1 = 50 * (ms - hm._fitted_ms(hm._nb_ipf2(N[None], hm.IPF_MAX, hm.IPF_TOL)[0]))
+        assert np.abs(ia).max() < 1e-6 and np.abs(hm.robust_iota(i1, ia)).max() < 1e-6, rho
+        assert np.abs(50 * (ms - hm.additive_fit((up - dn)[None], n[None])[0])).max() < 1e-6
+        assert np.allclose(hm._fitted_ms(hm.ipf(N[None])[0]), hm._fitted_ms(hm._nb_ipf2(N[None], hm.IPF_MAX, hm.IPF_TOL)[0]), atol=1e-9)
+        v = np.stack([2 * eff, np.zeros(5), -2 * eff], -1)                  # log N = u_ab + v_ay + v_by: no joint term
+        E = np.exp(v[:, None, :] + v[None, :, :])
+        M = n[..., None] * E / E.sum(-1, keepdims=True)
+        msm = (M[..., 0] - M[..., 2]) / n
+        assert np.abs(50 * (msm - hm._fitted_ms(hm._nb_ipf2(M[None], hm.IPF_MAX, hm.IPF_TOL)[0]))).max() < 1e-6, rho
+        assert np.abs(50 * (msm - hm._fitted_ms(hm.ipf(M[None])[0]))).max() < 1e-6, rho
+
+
+def test_copies_merge_and_alias_bases():
+    """(review fixes) A true copy whose non-neutral entries are rare (99.7% agreement off 'none' on 1.2% of entries) is
+    merged: the sample screen no longer drops it. The kept reading carries its copy's base as an alias base, and
+    pair_list (and the triples' third readings) never pair it with a reading of that series."""
+    N = 376_000
+    rng = np.random.default_rng(25)
+    a = np.where(rng.random(N) < 0.012, rng.integers(1, 3, N), 0).astype(np.int8)
+    b = a.copy()
+    on = np.flatnonzero(a > 0)
+    b[rng.choice(on, int(round(0.003 * len(on))), replace=False)] = 0
+    lv = ['none', 'bull', 'bear']
+    R = [{'name': 'P1', 'k': 1, 'codes': a, 'levels': lv, 'base': 'P1'}, {'name': 'P2', 'k': 1, 'codes': b, 'levels': lv, 'base': 'P2'}]
+    keep, al = hm.merge_aliases(R, np.arange(N), codes=np.stack([a + 1, b + 1], 1).astype(np.uint8), log=lambda *x: None)
+    assert [r['name'] for r in keep] == ['P1'] and al == {'P1': ['P2']} and keep[0]['alias_bases'] == ['P2']
+    # X zone absorbs Y zone; Y's sign reading (base Y) stays, and is never paired with X
+    z = rng.integers(0, 5, N).astype(np.int8)
+    sg = rng.integers(0, 2, N).astype(np.int8)
+    R = [{'name': 'X', 'k': 1, 'codes': z, 'levels': list(heat.ZONES), 'base': 'X'},
+         {'name': 'Y', 'k': 1, 'codes': z.copy(), 'levels': list(heat.ZONES), 'base': 'Y'},
+         {'name': 'Y:sign', 'k': 1, 'codes': sg, 'levels': ['down', 'up'], 'base': 'Y'},
+         {'name': 'Z', 'k': 1, 'codes': rng.integers(0, 5, N).astype(np.int8), 'levels': list(heat.ZONES), 'base': 'Z'}]
+    C = np.stack([R[i]['codes'] + 1 for i in range(4)], 1).astype(np.uint8)
+    keep, al = hm.merge_aliases([dict(r) for r in R], np.arange(N), codes=C, log=lambda *x: None)
+    assert [r['name'] for r in keep] == ['X', 'Y:sign', 'Z'] and keep[0]['alias_bases'] == ['Y']
+
+    class _C:
+        pass
+    c = _C()
+    c.readings = keep
+    pairs = {(keep[i]['name'], keep[j]['name']) for _, i, j in hm.pair_list(c)}
+    assert pairs == {('X', 'Z'), ('Y:sign', 'Z')}
 
 
 def _planted_labels(m, base_lab, base_240, codes_a, codes_b, p_up, seed):
@@ -268,12 +327,13 @@ def _planted_labels(m, base_lab, base_240, codes_a, codes_b, p_up, seed):
 
 
 def test_planted_main_effects_no_joint_term(tmp_path, splits):
-    """(review) Two associated readings, each with a real call and no joint term: once additive on the probability scale,
-    once multiplicative in the odds. One plain measure then shows a scale artifact that keeps its sign on B (iota under
-    the additive plant, iota_add under the multiplicative one: kept share at least 0.12 over the twin's), but iota_robust
-    does not: its kept-interaction share on B is no higher than the coin-flip twin's (same readings, coin-flip outcomes)
-    plus 0.05, and at most 5% of its iheat rows stand above the twin's max. Kept counts a B value of 0 as not kept, so
-    chance sits a little under one half on both coins."""
+    """(review; design test 4) Two associated readings, each with a real call and no joint term: once additive on the
+    probability scale, once multiplicative in the odds, at a moderate association and at a strong one (the case where a
+    fit stopped early leaves a same-sign error in both scales). One plain measure then shows a scale artifact that keeps
+    its sign on B (iota under the additive plant, iota_add under the multiplicative one: kept share at least 0.12 over the
+    twins'), but iota_robust does not: its kept-interaction share on B is within 0.45-0.55 (a B value of exactly 0
+    counts as not kept: build notes, the lower edge is 0.35), and no iheat row stands above the max of the three
+    coin-flip twins (same readings, coin-flip outcomes) at its horizon."""
     f = tmp_path / 'x.csv'
     _csv(f, splits, seed=3)
     m = heat.load_minutes(str(f))
@@ -284,53 +344,52 @@ def test_planted_main_effects_no_joint_term(tmp_path, splits):
     pr = np.array([0.15, 0.15, 0.4, 0.15, 0.15])
     eff = np.array([-0.22, -0.11, 0.0, 0.11, 0.22])
     shares = {}
-    for model in ('add', 'mult'):
-        if model == 'add':
-            p_up = np.clip(0.5 + eff[:, None] + eff[None, :], 0.05, 0.95)
-        else:
-            z = 4.5 * eff
-            p_up = 1 / (1 + np.exp(-(z[:, None] + z[None, :])))
-        kept = {tw: {'robust': [0, 0], 'iota': [0, 0], 'iota_add': [0, 0]} for tw in (0, 1)}
-        above, cells = 0, 0
-        for seed in range(3):
-            rng = np.random.default_rng([seed, 7])
-            ca = rng.choice(5, m['n'], p=pr).astype(np.int8)
-            cb = np.where(rng.random(m['n']) < 0.4, ca, rng.choice(5, m['n'], p=pr)).astype(np.int8)        # associated
-            R = [{'name': 'SA', 'k': 1, 'codes': ca, 'levels': lv, 'base': 'SA', 'state': True},
-                 {'name': 'SB', 'k': 1, 'codes': cb, 'levels': lv, 'base': 'SB', 'state': True}]
-            res = {}
-            for tw, pp in ((0, p_up), (1, np.full((5, 5), 0.5))):
-                la, lb = _planted_labels(m, lab, lab240, ca, cb, pp, 100 * seed + tw)      # k = 1: the state at a row is codes[row]
-                ctx = _ctx(f, lambda m_, g_: R, labs=(la, lb), real=(tw == 0))
-                r = hm.measure_cross(ctx, hm._col(ctx, 0), hm._col(ctx, 1))
-                Dv = hm.derive(r)
-                res[tw] = (r, Dv)
-                for k, col in (('robust', 'iota_robust'), ('iota', 'iota'), ('iota_add', 'iota_add')):
-                    sa, sb = np.sign(r['st'][:, 0, :, hm.SI[col]]), np.sign(r['st'][:, 1, :, hm.SI[col]])
-                    use = Dv['ok'] & (sa != 0)
-                    kept[tw][k][0] += int((use & (sa == sb)).sum())
-                    kept[tw][k][1] += int(use.sum())
-            r, Dv = res[0]
-            ok = Dv['ok']
-            twmax = np.max(np.where(res[1][1]['ok'], res[1][1]['iheat'], -np.inf), 0)          # per horizon
-            above += int((ok & (Dv['iheat'] > twmax[None, :])).sum())
-            cells += int(ok.sum())
-        share = {tw: {k: v[0] / v[1] for k, v in kk.items()} for tw, kk in kept.items()}
-        shares[model] = share
-        assert 0.35 <= share[0]['robust'] <= share[1]['robust'] + 0.05, (model, share)
-        assert above <= 0.05 * cells, (model, above, cells)
+    for same in (0.4, 0.97):
+        for model in ('add', 'mult'):
+            if model == 'add':
+                p_up = np.clip(0.5 + eff[:, None] + eff[None, :], 0.05, 0.95)
+            else:
+                z = 4.5 * eff
+                p_up = 1 / (1 + np.exp(-(z[:, None] + z[None, :])))
+            kept = {tw: {'robust': [0, 0], 'iota': [0, 0], 'iota_add': [0, 0]} for tw in (0, 1)}
+            real, twins = [], []
+            for seed in range(3):
+                rng = np.random.default_rng([seed, 7])
+                ca = rng.choice(5, m['n'], p=pr).astype(np.int8)
+                cb = np.where(rng.random(m['n']) < same, ca, rng.choice(5, m['n'], p=pr)).astype(np.int8)     # associated
+                R = [{'name': 'SA', 'k': 1, 'codes': ca, 'levels': lv, 'base': 'SA', 'state': True},
+                     {'name': 'SB', 'k': 1, 'codes': cb, 'levels': lv, 'base': 'SB', 'state': True}]
+                for tw in (0, 1, 2, 3):
+                    la, lb = _planted_labels(m, lab, lab240, ca, cb, p_up if tw == 0 else np.full((5, 5), 0.5), 100 * seed + tw)
+                    ctx = _ctx(f, lambda m_, g_: R, labs=(la, lb), real=(tw == 0))
+                    r = hm.measure_cross(ctx, hm._col(ctx, 0), hm._col(ctx, 1))
+                    Dv = hm.derive(r)
+                    (real if tw == 0 else twins).append(Dv)
+                    for k, col in (('robust', 'iota_robust'), ('iota', 'iota'), ('iota_add', 'iota_add')):
+                        sa, sb = np.sign(r['st'][:, 0, :, hm.SI[col]]), np.sign(r['st'][:, 1, :, hm.SI[col]])
+                        use = Dv['ok'] & (sa != 0)
+                        kept[min(tw, 1)][k][0] += int((use & (sa == sb)).sum())
+                        kept[min(tw, 1)][k][1] += int(use.sum())
+            twmax = np.max([np.max(np.where(D['ok'], D['iheat'], -np.inf), 0) for D in twins], 0)          # per horizon
+            above = sum(int((D['ok'] & (D['iheat'] > twmax[None, :])).sum()) for D in real)
+            share = {tw: {k: v[0] / v[1] for k, v in kk.items()} for tw, kk in kept.items()}
+            shares[(same, model)] = share
+            assert 0.35 <= share[0]['robust'] <= 0.55, (same, model, share)
+            assert above == 0, (same, model, above)
     # the artifact the guard removes: the wrong-scale plain measure keeps its sign on B well above chance
-    assert shares['add'][0]['iota'] >= shares['add'][1]['iota'] + 0.12, shares
-    assert shares['mult'][0]['iota_add'] >= shares['mult'][1]['iota_add'] + 0.12, shares
+    for same in (0.4,):
+        assert shares[(same, 'add')][0]['iota'] >= shares[(same, 'add')][1]['iota'] + 0.12, shares
+        assert shares[(same, 'mult')][0]['iota_add'] >= shares[(same, 'mult')][1]['iota_add'] + 0.12, shares
 
 
 # --------------------------------------------------------------------------------------------------------- chance
 def test_pure_noise_no_excess_over_twin(tmp_path, splits):
     """Pure noise (a random walk and readings of its own path) against its coin-flip twin (same pipeline): the kept
-    direction and kept interaction (iota, iota_add, iota_robust) on B stay near one half, the sd of t_iota on A is
-    within 0.85-1.2 on the cells of near-independent multi-level readings (assoc < 0.1; see the build notes: the fit
-    absorbs part of a cell's own noise, so cells of a 2-level or strongly associated reading run lower, on the coin
-    and its twin alike), and at most 5% of the noise coin's iheat rows stand above the twin's max."""
+    direction and kept interaction (iota, iota_add, iota_robust) on B are within 0.45-0.55, the sd of t_iota on A is at
+    most 1.2 on all cells and within 0.85-1.2 on the cells of near-independent multi-level readings (assoc < 0.1; see
+    the build notes: the fit absorbs part of a cell's own noise, so cells of a 2-level or strongly associated reading
+    run lower, on the coin and its twin alike), and at most 5% of the noise coin's iheat rows stand above the twin's
+    max."""
     f = tmp_path / 'x.csv'
     _csv(f, splits, seed=11)
     real = _ctx(f, _path_readings)
@@ -344,20 +403,23 @@ def test_pure_noise_no_excess_over_twin(tmp_path, splits):
         assert g['cells'] > 500
         for a, b in (('dir_kept', 'dir_n'), ('iota_kept', 'iota_n'), ('iota_add_kept', 'iota_add_n')):
             assert 0.45 <= g[a] / g[b] <= 0.55, (a, g[a] / g[b])
-        assert 0.4 <= g['robust_kept'] / g['robust_n'] <= 0.55                         # a B value of exactly 0 counts as not kept
+        assert 0.45 <= g['robust_kept'] / g['robust_n'] <= 0.55                        # a B value of exactly 0 counts as not kept
     sh = _shards(tmp_path / 'shards0')                                   # the shards hold every cell with a sample
     ok = (sh['n'][:, 0] >= 30) & (sh['days'][:, 0] >= 30) & (sh['n'][:, 1] >= 30) & (sh['days'][:, 1] >= 20)
     assert ok.sum() == sum(int(sr['pair'].c[k, 0, 0]) for k in range(len(hm.H_SCAN)))
     for c in (real, twin):
-        ti = []
+        ti, ti01 = [], []
         for ia in range(len(c.readings)):
             for ib in range(ia + 1, len(c.readings)):
-                if 'sign' in c.names[ia] + c.names[ib]:
-                    continue
                 r = hm.measure_cross(c, hm._col(c, ia), hm._col(c, ib))
-                if r['assoc'] < 0.1:
-                    ti += r['st'][:, 0, :, hm.SI['t_iota']][hm._sample(r['n'], r['days'])].tolist()
-        assert len(ti) > 150 and 0.85 <= np.std(ti) <= 1.2, (c.twin, np.std(ti), len(ti))
+                x = r['st'][:, 0, :, hm.SI['t_iota']][hm._sample(r['n'], r['days'])].tolist()
+                ti += x
+                if r['assoc'] < 0.1 and 'sign' not in c.names[ia] + c.names[ib]:
+                    ti01 += x
+        # all cells: at most 1.2 (no excess); the fit takes up part of a cell's own noise (leverage), most for a 2-level
+        # reading or an associated pair, so the design's lower edge 0.85 holds on the near-independent multi-level cells
+        assert len(ti) > 500 and 0.6 <= np.std(ti) <= 1.2, (c.twin, np.std(ti), len(ti))
+        assert len(ti01) > 150 and 0.85 <= np.std(ti01) <= 1.2, (c.twin, np.std(ti01), len(ti01))
     above = cells = 0
     for k, H in enumerate(hm.H_SCAN):
         tmax = stw['pair'].top[(k, 'iheat', 'all')][0]
@@ -482,6 +544,73 @@ def test_merge_aliases_and_provenance(tmp_path, splits):
     a, b, c = ctx.byname['1m:R10'], ctx.byname['15m:R3'], ctx.byname['1m:VR']
     assert list(hm._prov_cells(ctx, a, b, np.array([1, 3]), np.array([0, 0]))) == [2, 0]
     assert list(hm._prov_cells(ctx, b, c, np.array([0]), np.array([4]))) == [1]
+
+
+def test_candidates_keep_an_unseen_heap():
+    """(review fix) Candidates keep the top k per (kind, horizon, measure) and, apart, the top k of the unseen cells
+    (seen_in_league 'none'): an unseen cell ranked below the overall k-th stays in the pool; batches merge exactly in
+    any order; the worker thresholds are the k-th value of each heap."""
+    rng = np.random.default_rng(0)
+    n = 60
+    df = pd.DataFrame({'kind': 'pair', 'h': 15, 'measure': 'oheat', 'value': hm._sig6(rng.normal(size=n)), 'key': [f'k{i:02d}' for i in range(n)],
+                       'seen_in_league': np.where(np.arange(n) % 3 == 0, 'none', 'pack')})
+    c = hm.Candidates(k=10)
+    c.add(df)
+    f = c.frame()
+    top_all = df.sort_values(['value', 'key'], ascending=[False, True]).head(10).key
+    top_none = df[df.seen_in_league == 'none'].sort_values(['value', 'key'], ascending=[False, True]).head(10).key
+    assert set(f.key) == set(top_all) | set(top_none) and len(set(top_none) - set(top_all)) > 0
+    c2 = hm.Candidates(k=10)
+    for part in (df.iloc[40:], df.iloc[:20], df.iloc[20:40]):
+        c2.add(part)
+    assert c2.frame().key.tolist() == f.key.tolist()
+    th = c.kth()
+    assert th[('all', 'pair', 15, 'oheat')] == df.value.sort_values(ascending=False).iloc[9]
+    assert th[('none', 'pair', 15, 'oheat')] == df[df.seen_in_league == 'none'].value.sort_values(ascending=False).iloc[9]
+
+
+def test_relist_measures_every_listed_row():
+    """(review fix) The re-measure draws each list as the league does and measures any row it shows, until none is
+    unmeasured. A chain of near copies under one reading (every A row is a near copy of the best one, which only its
+    measurement shows) frees one per-reading slot per row it collapses, so drawing one round per reveal would take ~30
+    rounds; the look-ahead (the rows below the list and the reading's held-back rows) settles it in a few, and the
+    league's list on the final near-copy table shows only measured rows."""
+    na, nf = 60, 80
+    keys = [f'A=x & B{i:02d}=y' for i in range(na)] + [f'C{i:02d}=x & D{i:02d}=y' for i in range(nf)]
+    conds = [json.dumps([['A', ['x']], [f'B{i:02d}', ['y']]]) for i in range(na)] + \
+        [json.dumps([[f'C{i:02d}', ['x']], [f'D{i:02d}', ['y']]]) for i in range(nf)]
+    pool = pd.DataFrame({'kind': 'pair', 'h': 15, 'key': keys, 'conds': conds, 'n_A': np.arange(na + nf) + 100,
+                         'oheat_B': np.r_[np.linspace(100, 90, na), np.linspace(80, 10, nf)]})
+    pools = {('pair', 15, 'all'): pool}
+    first = hm.list_rows(pool, 'oheat', hm.TOP['oheat'])['key'].tolist()      # measured first (the n_top rows by the rule)
+    groups = {('pair', 15, 'oheat', 'all'): list(first)}
+    measured, calls = set(first), []
+
+    def regroup(ks):
+        calls.append(len(ks))
+        measured.update(ks)
+
+    def jac_of(kind, h):                         # what measuring shows: every measured A row is a near copy of A's best
+        rows = [{'kind': kind, 'h': h, 'measure': 'oheat', 'key1': keys[0], 'key2': k, 'jaccard': 0.9}
+                for k in keys[1:na] if k in measured and keys[0] in measured]
+        return pd.DataFrame(rows, columns=['kind', 'h', 'measure', 'key1', 'key2', 'jaccard'])
+    rounds, settled = hm.close_lists(pools, groups, measured, regroup, jac_of)
+    assert settled and rounds <= 8
+    L = hm.list_rows(pool, 'oheat', hm.TOP['oheat'], jac_of('pair', 15))
+    assert len(L) == hm.TOP['oheat'] and set(L.key) <= measured
+    assert L.key.iloc[0] == keys[0] and set(L.near.iloc[0]) == set(keys[1:na])      # the chain collapsed into one row
+    assert len(measured) <= na + hm.TOP['oheat']                 # the look-ahead measured little beyond what the list shows
+
+
+def test_provenance_per_coin(tmp_path):
+    """(review fix) Pack levels count for their own coin only (the bot loads rows per coin); a row without a coin counts
+    for every coin."""
+    pk = tmp_path / 'traded_pack.json'
+    json.dump({'rows': [{'coin': 'BTC', 'key': '15m:RSI14=low (falling in)'}, {'coin': 'ETH', 'key': '1m:R5=high'}, {'key': 'UTC1h=3'}]},
+              open(pk, 'w'))
+    b, e, a = hm.load_hm1([str(pk)], coin='BTC'), hm.load_hm1([str(pk)], coin='ETH'), hm.load_hm1([str(pk)])
+    assert b['levels'] == {'15m:RSI14': {'low'}, 'UTC1h': {'3'}} and e['levels'] == {'1m:R5': {'high'}, 'UTC1h': {'3'}}
+    assert set(a['levels']) == {'15m:RSI14', '1m:R5', 'UTC1h'}
 
 
 def test_part_split_merges_exactly_and_series_files(tmp_path, splits):

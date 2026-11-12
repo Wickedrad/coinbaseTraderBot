@@ -46,11 +46,13 @@ import math
 import os
 import re
 import resource
+import sys
 import time
 
 import numba as nb
 import numpy as np
 import pandas as pd
+import scipy.stats
 
 from oracle import heat, heat_long
 
@@ -67,7 +69,14 @@ TOP = {'oheat': 40, 'iheat': 40, 'lheat': 20}
 N_CANDIDATES = 200              # re-measured per (kind, horizon, measure)
 CAND_POOL = 1000                # kept in candidates.csv.gz per (kind, horizon, measure) (the league may need rows past 200)
 TRIPLE_POOL = 2000              # A-ranked pair cells kept for the triple choice (plus each reading's best 3)
-IPF_ITERS = 30
+IPF_MAX = 3000                  # the fits run until they settle (IPF_TOL), at most this many rounds (build note: 30 rounds left a
+                                # same-sign error in both scales on associated readings, which iota_robust then kept; 3,000 rounds
+                                # settle rho 0.99 to 1e-8 odds points and leave at most about 0.02 at rho 0.999 or on a sparse
+                                # table whose fit lies on the boundary, at about 0.4 ms a table in the worst mix measured)
+IPF_TOL = 1e-10                 # stop when no margin is off by more than this share of its target (or no effect moves by more)
+IPF_WMIN = 30.0                 # ... counting only margins (effects) of at least this many entries: a cell under the sample floor
+                                # (heat.MIN_EVENTS) is never ranked, and a sparse table whose fit lies on the boundary would
+                                # otherwise run all IPF_MAX rounds
 LEARN_H = [1, 5, 15, 60, 240]
 LGB_PARAMS = {'objective': 'regression', 'num_leaves': 8, 'max_depth': 3, 'learning_rate': 0.05, 'min_data_in_leaf': 3000, 'lambda_l2': 10.0,
               'feature_fraction': 0.5, 'bagging_fraction': 0.5, 'bagging_freq': 1, 'max_bin': 15, 'max_cat_threshold': 8, 'cat_smooth': 50,
@@ -246,8 +255,13 @@ def code_matrix(readings: list, rows: np.ndarray) -> np.ndarray:
 def merge_aliases(readings: list, entriesA: np.ndarray, codes: np.ndarray = None, log=print) -> tuple:
     """Readings whose codes agree on at least MERGE_AGREE of the A entries where both are known (and at least one is
     off its neutral level: two rare patterns are not copies because both are 'none' on most minutes) become one
-    reading, the first by name order keeping the row and the others listed as its aliases. Only readings with the same
-    level list can agree. A twin applies the rule to its own codes."""
+    reading, the first by name order keeping the row and the others listed as its aliases (and their bases, other
+    than its own, as its 'alias_bases': pair_list never pairs a reading with a series one of its copies stands for).
+    Only readings with the same level list can agree. A twin applies the rule to its own codes.
+    A 4,000-entry sample screens the pairs; the full A entries decide. (review fix) The screen lets a pair through
+    when its sample agreement is at least 0.98, or m < 30, or a copy at exactly MERGE_AGREE would show as many sampled
+    disagreements with a chance of at least 1e-6 (binomial tail over its m sampled entries): a true copy whose
+    non-neutral entries are rare is no longer lost to the noise of a small sample."""
     names = [R['name'] for R in readings]
     X = codes if codes is not None else code_matrix(readings, entriesA)
     order = sorted(range(len(readings)), key=lambda i: names[i])
@@ -256,7 +270,7 @@ def merge_aliases(readings: list, entriesA: np.ndarray, codes: np.ndarray = None
         groups.setdefault(tuple(readings[i]['levels']), []).append(i)
     rng = np.random.default_rng(20261111)
     samp = np.sort(rng.choice(len(X), min(len(X), 4000), replace=False)) if len(X) else np.zeros(0, np.int64)
-    dropped, aliases = set(), {}
+    dropped, aliases, alias_of = set(), {}, {}
     for lv, idx in groups.items():
         if len(idx) < 2:
             continue
@@ -268,9 +282,12 @@ def merge_aliases(readings: list, entriesA: np.ndarray, codes: np.ndarray = None
             a, b = sub[:, p:p + 1], sub[:, p + 1:]
             use = (a > 0) & (b > 0) & ~(neu[a] & neu[b])
             m = use.sum(0)
+            hit = ((a == b) & use).sum(0)
             with np.errstate(invalid='ignore', divide='ignore'):
-                agree = ((a == b) & use).sum(0) / m
-            for q in np.flatnonzero((agree >= 0.98) | (m < 30)):           # a sample prefilter; the full A entries decide
+                agree = hit / m
+            # a copy at exactly MERGE_AGREE shows this many disagreements or more in m sampled entries with chance >= 1e-6
+            plaus = scipy.stats.binom.sf(m - hit - 1, m, 1.0 - MERGE_AGREE) >= 1e-6
+            for q in np.flatnonzero((agree >= 0.98) | plaus | (m < 30)):  # a sample screen; the full A entries decide
                 j = idx[p + 1 + q]
                 if j in dropped:
                     continue
@@ -279,11 +296,17 @@ def merge_aliases(readings: list, entriesA: np.ndarray, codes: np.ndarray = None
                 k = int(u.sum())
                 if k >= 30 and float(((ca == cb) & u).sum()) / k >= MERGE_AGREE:
                     dropped.add(j)
+                    alias_of[j] = i
                     aliases.setdefault(names[i], []).append(names[j])
     keep = [R for i, R in enumerate(readings) if i not in dropped]
-    for R in keep:
+    for i, R in enumerate(readings):
+        if i in dropped:
+            continue
         if R['name'] in aliases:
             R['aliases'] = sorted(aliases[R['name']])
+            ab = sorted({str(readings[j]['base']) for j, k in alias_of.items() if k == i} - {str(R['base'])})
+            if ab:
+                R['alias_bases'] = ab
     if aliases:
         log(f'  merged {len(dropped)} readings into {len(aliases)} (codes agree on >= {MERGE_AGREE:.1%} of A entries)')
     return keep, aliases
@@ -715,12 +738,14 @@ def _nb_stats(P, oa, ob, lo, hi, bms, beta, lift, out):
 
 
 @nb.njit(cache=True)
-def _nb_ipf2(N, iters):
-    """ipf's default model [ab][ay][by] on tables N (T, La, Lb, Y)."""
+def _nb_ipf2(N, iters, tol, wmin=IPF_WMIN):
+    """ipf's default model [ab][ay][by] on tables N (T, La, Lb, Y), each table fitted until no margin of at least wmin
+    entries is off by more than tol of its target (at most iters rounds)."""
     T, La, Lb, Y = N.shape
     F = np.ones(N.shape)
     for t in range(T):
         for _ in range(iters):
+            dev = 0.0
             for a in range(La):
                 for b in range(Lb):
                     tg, cur = 0.0, 0.0
@@ -728,6 +753,8 @@ def _nb_ipf2(N, iters):
                         tg += N[t, a, b, y]
                         cur += F[t, a, b, y]
                     r = tg / cur if cur > 0 else 0.0
+                    if tg >= wmin and abs(tg - cur) > dev * tg:
+                        dev = abs(tg - cur) / tg
                     for y in range(Y):
                         F[t, a, b, y] *= r
             for a in range(La):
@@ -737,6 +764,8 @@ def _nb_ipf2(N, iters):
                         tg += N[t, a, b, y]
                         cur += F[t, a, b, y]
                     r = tg / cur if cur > 0 else 0.0
+                    if tg >= wmin and abs(tg - cur) > dev * tg:
+                        dev = abs(tg - cur) / tg
                     for b in range(Lb):
                         F[t, a, b, y] *= r
             for b in range(Lb):
@@ -746,14 +775,19 @@ def _nb_ipf2(N, iters):
                         tg += N[t, a, b, y]
                         cur += F[t, a, b, y]
                     r = tg / cur if cur > 0 else 0.0
+                    if tg >= wmin and abs(tg - cur) > dev * tg:
+                        dev = abs(tg - cur) / tg
                     for a in range(La):
                         F[t, a, b, y] *= r
+            if dev <= tol:
+                break
     return F
 
 
 @nb.njit(cache=True)
-def _nb_additive(S, n, iters):
-    """additive_fit on tables (T, La, Lb): backfitting of mean sign = mu + alpha_a + beta_b, weights n."""
+def _nb_additive(S, n, iters, tol, wmin=IPF_WMIN):
+    """additive_fit on tables (T, La, Lb): backfitting of mean sign = mu + alpha_a + beta_b, weights n, until no effect
+    of a level with at least wmin entries moves by more than tol in a round (at most iters rounds)."""
     T, La, Lb = S.shape
     out = np.zeros(S.shape)
     for t in range(T):
@@ -765,6 +799,7 @@ def _nb_additive(S, n, iters):
         mu = Sy / W if W > 0 else 0.0
         al, be = np.zeros(La), np.zeros(Lb)
         for _ in range(iters):
+            dev = 0.0
             for a in range(La):
                 num, den = 0.0, 0.0
                 for b in range(Lb):
@@ -772,7 +807,10 @@ def _nb_additive(S, n, iters):
                     if w > 0:
                         num += S[t, a, b] - w * (mu + be[b])
                         den += w
-                al[a] = num / den if den > 0 else 0.0
+                v = num / den if den > 0 else 0.0
+                if den >= wmin and abs(v - al[a]) > dev:
+                    dev = abs(v - al[a])
+                al[a] = v
             for b in range(Lb):
                 num, den = 0.0, 0.0
                 for a in range(La):
@@ -780,7 +818,12 @@ def _nb_additive(S, n, iters):
                     if w > 0:
                         num += S[t, a, b] - w * (mu + al[a])
                         den += w
-                be[b] = num / den if den > 0 else 0.0
+                v = num / den if den > 0 else 0.0
+                if den >= wmin and abs(v - be[b]) > dev:
+                    dev = abs(v - be[b])
+                be[b] = v
+            if dev <= tol:
+                break
         for a in range(La):
             for b in range(Lb):
                 out[t, a, b] = mu + al[a] + be[b]
@@ -829,11 +872,12 @@ def _ratio(a, b):
     return np.divide(a, b, out=np.zeros(np.broadcast_shapes(a.shape, b.shape)), where=b > 0)
 
 
-def ipf(N: np.ndarray, iters: int = IPF_ITERS, margins=None) -> np.ndarray:
-    """The log-linear model fitted by iterative proportional fitting on tables N (..., table axes). margins: the
-    margins the model keeps, each a tuple of table axes counted from the end. Default, for (..., La, Lb, 3):
-    [ab][ay][by] = each reading shifts the outcome on its own and the two readings may go together, with no joint
-    term. Starts from ones; a zero margin stays zero."""
+def ipf(N: np.ndarray, iters: int = IPF_MAX, margins=None, tol: float = IPF_TOL, wmin: float = IPF_WMIN) -> np.ndarray:
+    """The log-linear model fitted by iterative proportional fitting on tables N (..., table axes), until no margin of
+    at least wmin entries in any table is off by more than tol of its target (at most iters rounds). margins: the margins the model keeps, each
+    a tuple of table axes counted from the end. Default, for (..., La, Lb, 3): [ab][ay][by] = each reading shifts the
+    outcome on its own and the two readings may go together, with no joint term. Starts from ones; a zero margin stays
+    zero."""
     if margins is None:
         margins = [(-3, -2), (-3, -1), (-2, -1)]
     nd = N.ndim
@@ -845,15 +889,20 @@ def ipf(N: np.ndarray, iters: int = IPF_ITERS, margins=None) -> np.ndarray:
         targets.append((drop, N.sum(drop, keepdims=True)))
     F = np.ones(N.shape)
     for _ in range(iters):
+        dev = 0.0
         for drop, tg in targets:
-            F *= _ratio(tg, F.sum(drop, keepdims=True))
+            cur = F.sum(drop, keepdims=True)
+            dev = max(dev, float(np.max(np.where(tg >= wmin, np.abs(tg - cur) / np.maximum(tg, 1.0), 0.0), initial=0.0)))
+            F *= _ratio(tg, cur)
+        if dev <= tol:
+            break
     return F
 
 
-def additive_fit(S: np.ndarray, n: np.ndarray, iters: int = IPF_ITERS) -> np.ndarray:
+def additive_fit(S: np.ndarray, n: np.ndarray, iters: int = IPF_MAX, tol: float = IPF_TOL, wmin: float = IPF_WMIN) -> np.ndarray:
     """(review) The mean sign as a main effect of a's level plus one of b's level, weighted least squares (weights n,
-    the entries of each cell) by backfitting: tables (..., La, Lb) of sign sums S and counts n. Returns the fitted mean
-    sign of every cell."""
+    the entries of each cell) by backfitting until no effect moves by more than tol (at most iters rounds): tables
+    (..., La, Lb) of sign sums S and counts n. Returns the fitted mean sign of every cell."""
     w = np.asarray(n, np.float64)
     y = _ratio(S, w)
     W = w.sum((-2, -1), keepdims=True)
@@ -862,8 +911,13 @@ def additive_fit(S: np.ndarray, n: np.ndarray, iters: int = IPF_ITERS) -> np.nda
     b = np.zeros(w.shape[:-2] + (1, w.shape[-1]))
     wa, wb = w.sum(-1, keepdims=True), w.sum(-2, keepdims=True)
     for _ in range(iters):
-        a = _ratio((w * (y - mu - b)).sum(-1, keepdims=True), wa)
-        b = _ratio((w * (y - mu - a)).sum(-2, keepdims=True), wb)
+        a2 = _ratio((w * (y - mu - b)).sum(-1, keepdims=True), wa)
+        b2 = _ratio((w * (y - mu - a2)).sum(-2, keepdims=True), wb)
+        dev = max(float(np.max(np.where(wa >= wmin, np.abs(a2 - a), 0.0), initial=0.0)),
+                  float(np.max(np.where(wb >= wmin, np.abs(b2 - b), 0.0), initial=0.0)))
+        a, b = a2, b2
+        if dev <= tol:
+            break
     return mu + a + b
 
 
@@ -898,8 +952,8 @@ def cell_stats(P: np.ndarray, ctx, A: dict, B: dict) -> dict:
     N = np.stack([U, n - U - D, D], -1)                                   # (2, 6, La, Lb, 3): up, flat, down
     ms = st['ms']
     with np.errstate(invalid='ignore', divide='ignore'):
-        fit = _fitted_ms(_nb_ipf2(N.reshape(12, La, Lb, 3), IPF_ITERS).reshape(N.shape))
-        add = _nb_additive((U - D).reshape(12, La, Lb), n.reshape(12, La, Lb), IPF_ITERS).reshape(n.shape)
+        fit = _fitted_ms(_nb_ipf2(N.reshape(12, La, Lb, 3), IPF_MAX, IPF_TOL).reshape(N.shape))
+        add = _nb_additive((U - D).reshape(12, La, Lb), n.reshape(12, La, Lb), IPF_MAX, IPF_TOL).reshape(n.shape)
         bms = np.stack([ctx.base[s]['bms'] for s in (0, 1)])[:, :, None, None]
         out['iota'] = 50.0 * (ms - fit)
         out['iota_add'] = 50.0 * (ms - add)
@@ -993,9 +1047,13 @@ class SummaryCounts:
     iota_robust: the B sign equals the A sign, a B value of exactly 0 counts as not kept), t_B >= 2 in the A direction
     of iota and iota_robust, iota_robust with the call, and the persistence curve (kept interaction by A |t| bin).
     For the first 7 strata also: heat histograms (signed log bins) with the exact top 1,000 values of 'all' and
-    'prov:none', and log-binned histograms of the one-sided B p (odds, iota_robust, lift) for BHY."""
+    'prov:none', and log-binned histograms of the one-sided B p (odds, iota_robust, lift) for BHY. Per reading (pair
+    cells only): rk, the RK counts the usage cards' kept-interaction share per TA function adds up."""
     COUNTS = ['cells', 'under_floor', 'dir_n', 'dir_kept', 'lift_n', 'lift_kept', 'iota_n', 'iota_kept', 'iota_add_n', 'iota_add_kept',
               'robust_n', 'robust_kept', 't_iota_B2', 't_robust_B2', 'robust_with_call']
+    # per reading (rk: horizons x readings x RK), over the pair cells with a sample it is a part of (both parts count):
+    # the usage cards' kept-interaction share per TA function (heat_hm2_learn.card_kept). Same kept rule as COUNTS.
+    RK = ['cells', 'iota_n', 'iota_kept', 'robust_n', 'robust_kept', 'robust_with_call']
     PKINDS = ['iota', 'iota_add', 'robust']
     HEAT_EDGES = np.r_[-np.logspace(5, -4, 181), np.logspace(-4, 5, 181)]      # |heat| 1e-4 .. 1e5, 20 bins a decade, each side
     P_EDGES = np.linspace(-12.0, 0.0, 241)                                       # log10 p, 0.05 a bin (bin 0: below 1e-12)
@@ -1011,6 +1069,7 @@ class SummaryCounts:
         self.heat = np.zeros((nH, 7, len(MEASURES), len(self.HEAT_EDGES) + 1), np.int64)
         self.p = np.zeros((nH, 7, 3, len(self.P_EDGES) + 1), np.int64)
         self.top = {(h, m, s): np.zeros(0) for h in range(nH) for m in MEASURES for s in ('all', 'prov:none')}
+        self.rk = np.zeros((nH, 0, len(self.RK)), np.int64)              # grows to the largest reading id seen
 
     def fam_id(self, fa: str, fb: str) -> int:
         a, b = sorted((fa, fb))
@@ -1074,6 +1133,29 @@ class SummaryCounts:
                 lp = np.log10(np.maximum(p, 1e-300))
                 b = np.searchsorted(self.P_EDGES, lp, side='left')
                 np.add.at(self.p[hi_, :, pi], (s7, np.repeat(b, 3)), 1)
+        if 'kind' in B and 'ia' in B:
+            self._add_readings(B, Dv)
+
+    def _grow(self, nR: int) -> None:
+        if nR > self.rk.shape[1]:
+            self.rk = np.concatenate([self.rk, np.zeros((self.rk.shape[0], nR - self.rk.shape[1], len(self.RK)), np.int64)], 1)
+
+    def _add_readings(self, B: dict, Dv: dict) -> None:
+        """The per-reading tally (RK) of the pair cells of a block (kind 0; a triple block holds flags and paths)."""
+        pm = B['kind'] == 0
+        if not pm.any():
+            return
+        ia, ib = B['ia'][pm].astype(np.int64), B['ib'][pm].astype(np.int64)
+        self._grow(int(max(ia.max(), ib.max())) + 1)
+        nR = self.rk.shape[1]
+        S = B['st'][pm]
+        for hi_ in range(len(H_SCAN)):
+            ok = Dv['ok'][pm, hi_]
+            sg = lambda k, s: np.sign(np.nan_to_num(S[:, s, hi_, SI[k]]))
+            si, sr = sg('iota', 0), sg('iota_robust', 0)
+            mi, mr = ok & (si != 0), ok & (sr != 0)
+            for c, msk in enumerate((ok, mi, mi & (sg('iota', 1) == si), mr, mr & (sg('iota_robust', 1) == sr), mr & Dv['with_call'][pm, hi_])):
+                self.rk[hi_, :, c] += np.bincount(ia[msk], minlength=nR) + np.bincount(ib[msk], minlength=nR)
 
     def merge(self, o: 'SummaryCounts') -> 'SummaryCounts':
         if o.strata != self.strata:
@@ -1082,6 +1164,8 @@ class SummaryCounts:
         self.persist += o.persist
         self.heat += o.heat
         self.p += o.p
+        self._grow(o.rk.shape[1])
+        self.rk[:, :o.rk.shape[1]] += o.rk
         for k in self.top:
             x = np.r_[self.top[k], o.top[k]]
             self.top[k] = -np.sort(-x)[:self.TOPN]
@@ -1092,7 +1176,8 @@ class SummaryCounts:
         return {'horizons': H_SCAN, 'strata': self.strata, 'counts': self.COUNTS, 'persist_kinds': self.PKINDS, 't_bins': T_BINS,
                 'heat_edges': r6(self.HEAT_EDGES), 'p_edges_log10': r6(self.P_EDGES), 'p_kinds': ['odds', 'iota_robust', 'lift'],
                 'c': self.c.tolist(), 'persist': self.persist.tolist(), 'heat': self.heat.tolist(), 'p': self.p.tolist(),
-                'top': {f'{H_SCAN[h]}|{m}|{s}': r6(v) for (h, m, s), v in self.top.items()}}
+                'top': {f'{H_SCAN[h]}|{m}|{s}': r6(v) for (h, m, s), v in self.top.items()},
+                'reading_counts': self.RK, 'rk': self.rk.tolist()}
 
     @classmethod
     def from_json(cls, j: dict) -> 'SummaryCounts':
@@ -1105,6 +1190,9 @@ class SummaryCounts:
         for k, v in j['top'].items():
             h, me, s = k.split('|')
             o.top[(H_SCAN.index(int(h)), me, s)] = np.array(v, float)
+        rk = np.array(j.get('rk', []), np.int64)
+        if rk.size:
+            o.rk = rk.reshape(len(H_SCAN), -1, len(cls.RK))
         return o
 
     def quantile(self, h: int, measure: str, q: float, stratum: str = 'all') -> float:
@@ -1143,7 +1231,10 @@ def _sig6(x) -> np.ndarray:
 
 
 class Candidates:
-    """The top CAND_POOL rows per (kind, horizon, measure) by the B heat (ties by key), merged batch by batch."""
+    """The top CAND_POOL rows per (kind, horizon, measure) by the B heat (ties by key), and (review fix) the top CAND_POOL
+    of the cells with seen_in_league 'none' per (kind, horizon, measure) apart, so the unseen lists are ranked over every
+    unseen cell and not only over those inside the overall pool; merged batch by batch (exact: a row is kept when it is
+    in either heap)."""
 
     def __init__(self, k: int = CAND_POOL):
         self.k, self.df = k, None
@@ -1151,9 +1242,26 @@ class Candidates:
     def add(self, df: pd.DataFrame) -> None:
         if df is None or not len(df):
             return
-        self.df = df if self.df is None else pd.concat([self.df, df], ignore_index=True)
-        self.df = (self.df.sort_values(['kind', 'h', 'measure', 'value', 'key'], ascending=[True, True, True, False, True])
-                   .groupby(['kind', 'h', 'measure'], sort=False).head(self.k).reset_index(drop=True))
+        x = df if self.df is None else pd.concat([self.df, df], ignore_index=True)
+        x = x.sort_values(['kind', 'h', 'measure', 'value', 'key'], ascending=[True, True, True, False, True]).reset_index(drop=True)
+        g = ['kind', 'h', 'measure']
+        keep = x.groupby(g, sort=False).cumcount() < self.k
+        if 'seen_in_league' in x:
+            none = x['seen_in_league'].to_numpy() == 'none'
+            rk = x[none].groupby(g, sort=False).cumcount()
+            keep[rk.index[rk.to_numpy() < self.k]] = True
+        self.df = x[keep.to_numpy()].reset_index(drop=True)
+
+    def kth(self) -> dict:
+        """{(pool, kind, h, measure): the k-th best value} (pool 'all' or 'none'): the worker thresholds."""
+        out = {}
+        if self.df is None or not len(self.df):
+            return out
+        x = self.df
+        for pool, y in (('all', x), ('none', x[x['seen_in_league'] == 'none'] if 'seen_in_league' in x else x.iloc[:0])):
+            for (kd, h, me), v in y.groupby(['kind', 'h', 'measure'], sort=False)['value']:
+                out[(pool, kd, int(h), me)] = float(v.iloc[self.k - 1]) if len(v) >= self.k else -np.inf
+        return out
 
     def frame(self) -> pd.DataFrame:
         return pd.DataFrame() if self.df is None else self.df
@@ -1186,11 +1294,13 @@ class ShardWriter:
 
 
 # ----------------------------------------------------------------------------------------------------- provenance
-def load_hm1(packs=(), pairs: str = '') -> dict:
+def load_hm1(packs=(), pairs: str = '', coin: str = None) -> dict:
     """(review) What the bot already has, by reading names: {'levels': {reading: {state levels}}} of every part in a pack
     the bot loads (traded, pair, clock, perp, perp pair; their aliases included), and {'stored': {frozenset of two
     readings}} stored together as an HM1 relationship (the pairs file of run 43030435253). An event label maps to its
-    state level ('low (falling in)' -> 'low'). direction_all is not used: it lists every level."""
+    state level ('low (falling in)' -> 'low'). direction_all is not used: it lists every level. coin (review fix): only
+    the pack rows of that coin (a row without a coin counts for every coin): the bot loads rows per coin, so a level
+    in BTC's pack does not make ETH's cell 'pack'."""
     lv, stored = {}, set()
 
     def put(key):
@@ -1204,6 +1314,8 @@ def load_hm1(packs=(), pairs: str = '') -> dict:
         with open(p) as f:
             pk = json.load(f)
         for row in pk.get('rows', []):
+            if coin is not None and row.get('coin') not in (None, '', coin):
+                continue
             keys = [row.get('key', '')] + list(row.get('aliases', []))
             if 'when' in row:
                 keys.append(row['when'])
@@ -1263,13 +1375,33 @@ def _prov_cells(ctx, ia: int, ib: int, ka: np.ndarray, kb: np.ndarray, extra=())
 
 
 # ---------------------------------------------------------------------------------------------------------- the scan
+def series_overlap(readings: list) -> np.ndarray:
+    """(R, R) bool: the two readings stand for a common series: one base, or a base one of them carries as an alias
+    base (merge_aliases: the copy it absorbed was of that series)."""
+    sets = [{str(r['base'])} | {str(b) for b in r.get('alias_bases', ())} for r in readings]
+    ids = {b: k for k, b in enumerate(sorted(set().union(*sets)))} if sets else {}
+    M = np.zeros((len(readings), len(ids)), np.float32)
+    for i, st in enumerate(sets):
+        M[i, [ids[b] for b in st]] = 1.0
+    return (M @ M.T) > 0
+
+
+def _overlap(ctx) -> np.ndarray:
+    """ctx's series_overlap, built once per context."""
+    ov = ctx.__dict__.get('_overlap')
+    if ov is None or len(ov) != len(ctx.readings):
+        ov = series_overlap(ctx.readings)
+        ctx.__dict__['_overlap'] = ov
+    return ov
+
+
 def pair_list(ctx, part=(0, 1), max_pairs: int = None, seed: int = 0) -> np.ndarray:
-    """Every pair of readings with a different base, in a fixed order ((i, j), i < j, by reading index), as int64
-    (pair index, i, j). --part i/S keeps pair index % S == i. max_pairs (the bench): a seeded random subset."""
+    """Every pair of readings that stand for different series (a different base, and neither base among the other's
+    alias bases: series_overlap), in a fixed order ((i, j), i < j, by reading index), as int64 (pair index, i, j).
+    --part i/S keeps pair index % S == i. max_pairs (the bench): a seeded random subset."""
     R = len(ctx.readings)
-    bases = np.array([str(r['base']) for r in ctx.readings], object)
     ii, jj = np.triu_indices(R, 1)
-    keep = bases[ii] != bases[jj]
+    keep = ~_overlap(ctx)[ii, jj]
     ii, jj = ii[keep], jj[keep]
     pid = np.arange(len(ii), dtype=np.int64)
     i, S = part
@@ -1332,7 +1464,7 @@ def _thr():
     the parent holds so far, and the TRIPLE_POOL-th best A score. A worker returns only cells above them, which keeps the
     merge exact (the thresholds only rise) and the traffic small."""
     import multiprocessing as mp
-    a = mp.RawArray('d', 2 * len(H_SCAN) * len(MEASURES) + 1)
+    a = mp.RawArray('d', 2 * 2 * len(H_SCAN) * len(MEASURES) + 1)       # (pool all / none, kind, horizon, measure) + the triple pool
     v = np.frombuffer(a, np.float64)
     v[:] = -np.inf
     return a
@@ -1340,6 +1472,10 @@ def _thr():
 
 def _thr_view() -> np.ndarray:
     return np.frombuffer(heat._W['hm2_thr'], np.float64)
+
+
+def _thr_index(pool: int, ki: int, hi: int, mi: int) -> int:
+    return ((pool * 2 + ki) * len(H_SCAN) + hi) * len(MEASURES) + mi
 
 
 def _pair_batch(job):
@@ -1405,18 +1541,25 @@ def _candidate_rows(ctx, kind: str, Bk: dict, Dv: dict) -> pd.DataFrame:
     current threshold), as rows with both splits' numbers. Built column-wise; strings only for the selected cells."""
     ki = 0 if kind == 'pair' else 1
     thr = _thr_view() if 'hm2_thr' in heat._W else None
+    none = Bk['prov'] == 0                                                # seen_in_league 'none' (PROV[0])
     C, Hh, Mm = [], [], []
     for hi_ in range(len(H_SCAN)):
         ok = Dv['ok'][:, hi_]
         for mi, me in enumerate(MEASURES):
-            v = np.where(ok, _sig6(Dv[me][:, hi_]), -np.inf)                # ranked as written (_sig6)
-            if thr is not None:
-                v = np.where(v >= thr[(ki * len(H_SCAN) + hi_) * len(MEASURES) + mi], v, -np.inf)
-            k = min(CAND_POOL, int(np.isfinite(v).sum()))
-            if k == 0:
+            v0 = np.where(ok, _sig6(Dv[me][:, hi_]), -np.inf)               # ranked as written (_sig6)
+            sel = []
+            for pool, m in ((0, None), (1, none)):                      # the overall heap and the unseen heap (review fix)
+                v = v0 if m is None else np.where(m, v0, -np.inf)
+                if thr is not None:
+                    v = np.where(v >= thr[_thr_index(pool, ki, hi_, mi)], v, -np.inf)
+                k = min(CAND_POOL, int(np.isfinite(v).sum()))
+                if k == 0:
+                    continue
+                top = np.argpartition(-v, k - 1)[:k] if k < len(v) else np.arange(len(v))
+                sel.append(top[np.isfinite(v[top])])
+            if not sel:
                 continue
-            top = np.argpartition(-v, k - 1)[:k] if k < len(v) else np.arange(len(v))
-            top = top[np.isfinite(v[top])]
+            top = np.unique(np.concatenate(sel))
             C.append(top)
             Hh.append(np.full(len(top), hi_))
             Mm.append(np.full(len(top), mi))
@@ -1510,7 +1653,6 @@ def _merge(results, summ: dict, cands: Candidates, pools: list, log, what: str, 
     """Merge workers' batch results as they arrive; raise the shared thresholds after each merge."""
     t0, n, jobs, cells, by, sec = time.time(), 0, 0, 0, 0, 0.0
     thr = _thr_view() if 'hm2_thr' in heat._W else None
-    nH, nM = len(H_SCAN), len(MEASURES)
     for r in results:
         summ[r['kind']].merge(r['summ'])
         cands.add(r['cands'])
@@ -1519,11 +1661,8 @@ def _merge(results, summ: dict, cands: Candidates, pools: list, log, what: str, 
             if len(pools) > 20:
                 pools[:] = [_trim_pool(pd.concat(pools, ignore_index=True))]
         if thr is not None:
-            cf = cands.frame()
-            if len(cf):
-                kth = cf.groupby(['kind', 'h', 'measure']).value.agg(lambda s: s.iloc[cands.k - 1] if len(s) >= cands.k else -np.inf)
-                for (kd, h, me), v in kth.items():
-                    thr[((0 if kd == 'pair' else 1) * nH + H_SCAN.index(int(h))) * nM + MEASURES.index(me)] = v
+            for (pool, kd, h, me), v in cands.kth().items():
+                thr[_thr_index(0 if pool == 'all' else 1, 0 if kd == 'pair' else 1, H_SCAN.index(int(h)), MEASURES.index(me))] = v
             if pools and sum(len(p) for p in pools) >= TRIPLE_POOL:
                 pools[:] = [_trim_pool(pd.concat(pools, ignore_index=True))]
                 if len(pools[0]) >= TRIPLE_POOL:
@@ -1576,16 +1715,17 @@ def flag_column(ctx, ia: int, la: int, ib: int, lb: int) -> dict:
 
 
 def _flag_job(fi):
-    """One pair-cell flag against every third reading (with a base other than the pair's two)."""
+    """One pair-cell flag against every third reading (that stands for neither of the pair's two series, alias bases
+    included: series_overlap)."""
     ctx = heat._W['hm2']
     t0 = time.time()
     ia, la, ib, lb = ctx.flags[fi]['cell']
     Fc = flag_column(ctx, ia, la, ib, lb)
-    bases = {ctx.readings[ia]['base'], ctx.readings[ib]['base']}
+    ov = _overlap(ctx)
     Bk = _empty_block()
     n = 0
     for c in range(len(ctx.readings)):
-        if ctx.readings[c]['base'] in bases:
+        if ov[ia, c] or ov[ib, c]:
             continue
         n += 1
         r = measure_cross(ctx, Fc, _col(ctx, c))
@@ -1668,18 +1808,24 @@ def measure_path(ctx, conds: list) -> dict:
             'n': np.nan_to_num(st['n'][..., 1, 1, 1]).astype(np.int64)[None], 'days': np.nan_to_num(st['days'][..., 1, 1, 1]).astype(np.int64)[None]}
 
 
-def _additive3(S: np.ndarray, n: np.ndarray, iters: int = IPF_ITERS) -> np.ndarray:
-    """additive_fit over three condition axes (..., 2, 2, 2)."""
+def _additive3(S: np.ndarray, n: np.ndarray, iters: int = IPF_MAX, tol: float = IPF_TOL, wmin: float = IPF_WMIN) -> np.ndarray:
+    """additive_fit over three condition axes (..., 2, 2, 2), until no effect moves by more than tol."""
     w = np.asarray(n, np.float64)
     y = _ratio(S, w)
     ax = (-3, -2, -1)
     mu = _ratio((w * y).sum(ax, keepdims=True), w.sum(ax, keepdims=True))
     eff = [np.zeros(1), np.zeros(1), np.zeros(1)]
     for _ in range(iters):
+        dev = 0.0
         for k in range(3):
             rest = mu + sum(eff[j] for j in range(3) if j != k)
             other = tuple(a for a in ax if a != ax[k])
-            eff[k] = _ratio((w * (y - rest)).sum(other, keepdims=True), w.sum(other, keepdims=True))
+            wk = w.sum(other, keepdims=True)
+            new = _ratio((w * (y - rest)).sum(other, keepdims=True), wk)
+            dev = max(dev, float(np.max(np.where(wk >= wmin, np.abs(new - eff[k]), 0.0), initial=0.0)))
+            eff[k] = new
+        if dev <= tol:
+            break
     return mu + eff[0] + eff[1] + eff[2]
 
 
@@ -1821,32 +1967,197 @@ def last_candle(ctx) -> dict:
             'family': 'baseline'}
 
 
-def remeasure(ctx, cands: pd.DataFrame, gbm_readings: list = (), procs: int = 1, n_top: int = N_CANDIDATES, log=print) -> tuple:
-    """The best n_top candidates per (kind, horizon, measure) measured again with g.full (g240.full at 240) on every
-    minute in two forms: xstate (every minute the joint state holds) and xonset (the minute it starts to hold, a
-    moment like the league's events); triples as kind xtriple with form state / onset. The GBM readings go through
-    heat.event_levels / level_events ('single') and their held levels ('xstate'); the last-candle baseline as kind
-    'baseline'. Adds move_steps (the move / the price step). Returns (heat.Rows, near-copy table): per (kind, horizon,
-    measure) list, the B-entry Jaccard of every candidate pair at or above JACC_WRITE (the league collapses >= 0.8)."""
-    rows = heat.Rows()
+LIST_SAME = ['n_A', 'n_B', 'days_A', 'days_B', 'odds_A', 'odds_B', 't_A', 't_B', 'iota_robust_A', 'iota_robust_B', 'wd_B']   # exact copies
+
+
+def _cond_readings(c) -> list:
+    """The readings of a candidate's conds (JSON text or a list of [reading, levels]), in order, once each."""
+    return list(dict.fromkeys(r for r, _ in (json.loads(c) if isinstance(c, str) else list(c or []))))
+
+
+def list_rows(pool: pd.DataFrame, measure: str, n: int, jac: pd.DataFrame = None, per_reading: int = PER_READING) -> pd.DataFrame:
+    """One list (the league's make_list, here so the series job selects its re-measure by the same rule): pool rows
+    ranked by <measure>_B (ties by key), exact copies (identical numbers on both periods, LIST_SAME: the same event
+    under two names) and near copies (B entry Jaccard >= NEAR_COPY with a better row, near_copy_clusters) collapsed into
+    the kept row's `aliases`, then at most per_reading rows per reading, the first n. A display rule only: no count
+    changes. jac None: no near-copy collapse."""
+    v = f'{measure}_B'
+    cols = list(pool.columns) + ['rank', 'aliases', 'copies', 'near'] if pool is not None else ['rank', 'aliases', 'copies', 'near']
+    if pool is None or not len(pool):
+        return pd.DataFrame(columns=cols)
+    x = pool[np.isfinite(pool[v].to_numpy(float))].sort_values([v, 'key'], ascending=[False, True]).drop_duplicates('key')
+    if not len(x):
+        return pd.DataFrame(columns=cols)
+    same = [c for c in LIST_SAME if c in x.columns]
+    grp = x.groupby([x[c].round(6) for c in same], sort=False, dropna=False)
+    host = grp['key'].transform('first')
+    copies = x.groupby(host.to_numpy(), sort=False)['key'].agg(list).to_dict()
+    x = x[x['key'].to_numpy() == host.to_numpy()]
+    order = x['key'].tolist()
+    near = near_copy_clusters(jac, order, NEAR_COPY) if jac is not None and len(jac) else {k: [] for k in order}
+    x = x[x['key'].isin(list(near))]
+    keep, cnt = [], {}
+    for i, c in enumerate(x['conds'].tolist()):
+        rd = _cond_readings(c)
+        if any(cnt.get(r, 0) >= per_reading for r in rd):
+            continue
+        for r in rd:
+            cnt[r] = cnt.get(r, 0) + 1
+        keep.append(i)
+        if len(keep) >= n:
+            break
+    x = x.iloc[keep].copy()
+    x['rank'] = np.arange(1, len(x) + 1)
+    x['copies'] = [[a for a in copies.get(k, [k]) if a != k] for k in x['key']]
+    x['near'] = [list(near.get(k, [])) for k in x['key']]
+    x['aliases'] = [a + b for a, b in zip(x['copies'], x['near'])]
+    return x.reset_index(drop=True)
+
+
+def list_pools(cands: pd.DataFrame) -> dict:
+    """{(kind, h, slice): pool}: the candidates a list of that kind, horizon and slice ranks (all measures' heaps, one
+    row per key; slice 'unseen' = seen_in_league 'none'), as the league's _pool."""
+    out = {}
     if cands is None or not len(cands):
-        sel = pd.DataFrame(columns=['kind', 'h', 'measure', 'key', 'conds', 'source'])
-    else:
-        sel = (cands.sort_values(['kind', 'h', 'measure', 'value', 'key'], ascending=[True, True, True, False, True])
-               .groupby(['kind', 'h', 'measure'], sort=False).head(n_top))
-    uniq = sel.drop_duplicates('key')[['key', 'kind', 'conds', 'source']].to_dict('records')
-    heat._W.update(hm2=ctx, hm2_rm=uniq)
-    bits, got = {}, {}
-    try:
-        for ci, out, b in _imap(_remeasure_job, list(range(len(uniq))), procs):
-            got[ci] = out                                   # added in candidate order below: the table's hash does not depend on procs
-            bits[uniq[ci]['key']] = b
+        return out
+    cands = cands.copy()
+    for c in cands.columns:                 # as written and read back ('%.6g'): a merged --part pool ranks as the one-job pool
+        if cands[c].dtype.kind == 'f':
+            cands[c] = _sig6(cands[c].to_numpy())
+    for (kind, h), x in cands.groupby(['kind', 'h'], sort=True):
+        x = x.drop_duplicates('key')
+        out[(kind, int(h), 'all')] = x
+        out[(kind, int(h), 'unseen')] = x[x['seen_in_league'] == 'none'] if 'seen_in_league' in x else x.iloc[:0]
+    return out
+
+
+RM_ROUNDS = 64                  # close_lists: a safety cap; the look-ahead below settles a list in a handful of rounds
+
+
+def close_lists(pools: dict, groups: dict, measured, regroup, jac_of, rounds: int = RM_ROUNDS) -> tuple:
+    """Draw every list as the league draws it (list_rows: TOP rows, near copies collapsed) and measure any row of it not
+    yet measured, until no list shows an unmeasured row. groups {(kind, h, measure, slice): its measured keys} grows in
+    place; `measured` is the set (or dict) of measured keys; regroup(keys) measures them and refreshes the near-copy
+    table that jac_of(kind, h) returns. Measuring a row can show it is a near copy of a better row; the row that takes
+    its place is the next one below the list, or a row of one of its readings that the per-reading cap had held back.
+    So while a list still shows unmeasured rows, as many rows below it and the first `look` held-back rows of their
+    readings are measured with them (look 4, doubling each such round), and a chain of near copies takes a few rounds,
+    not one per copy. The first TOP rows of a longer draw are the TOP list (list_rows walks best first); a list is
+    settled when its TOP rows are measured. Returns (rounds, settled)."""
+    look = dict.fromkeys(groups, 0)
+    for rnd in range(1, rounds + 1):
+        miss, jk = [], {}
+        for g, keys in groups.items():
+            kind, h, me, sl = g
+            if (kind, h) not in jk:
+                jk[(kind, h)] = jac_of(kind, h)
+            have = set(keys)
+            pool, jac, top = pools[(kind, h, sl)], jk[(kind, h)], TOP[me]
+            L = list_rows(pool, me, 2 * top, jac)
+            lk = L['key'].tolist()
+            head = [k for k in lk[:top] if k not in measured or k not in have]
+            if not head:
+                continue
+            hu = [k for k in head if k not in measured]
+            new = head + lk[top:top + len(hu)]                  # the rows just below the list (one per row that may go)
+            rd = {r for k, c in zip(lk[:top], L['conds'].tolist()[:top]) if k not in measured for r in _cond_readings(c)}
+            if look[g] and rd:                                  # and the held-back rows of its unmeasured rows' readings
+                U = list_rows(pool, me, len(pool), jac, per_reading=len(pool))
+                inl = set(lk[:top])
+                new += [k for k, c in zip(U['key'].tolist(), U['conds'].tolist())
+                        if k not in inl and not rd.isdisjoint(_cond_readings(c))][:look[g]]
+            new = [k for k in dict.fromkeys(new) if k not in measured or k not in have]
+            groups[g] = keys + [k for k in new if k not in have]
+            miss += new
+            if rd:
+                look[g] = max(4, 2 * look[g])
+        if not miss:
+            return rnd, True
+        regroup(list(dict.fromkeys(miss)))
+    return rounds, False
+
+
+def remeasure(ctx, cands: pd.DataFrame, gbm_readings: list = (), procs: int = 1, n_top: int = N_CANDIDATES, log=print) -> tuple:
+    """The candidates measured again with g.full (g240.full at 240) on every minute in two forms: xstate (every minute
+    the joint state holds) and xonset (the minute it starts to hold, a moment like the league's events); triples as
+    kind xtriple with form state / onset. (review fix) Which candidates: per (kind, horizon, measure) and slice (all,
+    unseen) the first n_top rows by the lists' own rule (list_rows: exact copies collapsed, at most PER_READING per
+    reading), so every row a list can show is measured, not only the top n_top by heat; then each list is drawn as the
+    league draws it (TOP rows, near copies collapsed) and any row of it not yet measured is measured too, until none is
+    missing (close_lists; a warning if RM_ROUNDS pass first). The GBM readings go through heat.event_levels / level_events ('single') and their held levels ('xstate');
+    the last-candle baseline as kind 'baseline'. Adds move_steps (the move / the price step). Returns (heat.Rows,
+    near-copy table): per list, the B-entry Jaccard of every pair of its measured rows at or above JACC_WRITE (the
+    league collapses >= 0.8)."""
+    rows = heat.Rows()
+    pools = list_pools(cands)
+    groups = {}
+    for (kind, h, sl), x in sorted(pools.items()):
+        for me in MEASURES:
+            keys = list_rows(x, me, n_top)['key'].tolist()
+            if keys:
+                groups[(kind, h, me, sl)] = keys
+    info = {}
+    if cands is not None and len(cands):
+        for r in cands.drop_duplicates('key')[['key', 'kind', 'conds', 'source']].to_dict('records'):
+            info[r['key']] = r
+    bits, order = {}, []
+    pc = np.bitwise_count if hasattr(np, 'bitwise_count') else (lambda a: np.unpackbits(a.view(np.uint8)).reshape(a.shape + (-1,)).sum(-1))
+
+    def measure(keys: list) -> None:
+        nonlocal rows
+        uniq = [info[k] for k in dict.fromkeys(keys) if k not in bits]
+        if not uniq:
+            return
+        heat._W.update(hm2=ctx, hm2_rm=uniq)
+        got = {}
+        try:
+            for ci, out, b in _imap(_remeasure_job, list(range(len(uniq))), procs):
+                got[ci] = out                               # added in candidate order below: the table's hash does not depend on procs
+                bits[uniq[ci]['key']] = b
+        finally:
+            heat._W.pop('hm2_rm', None)
+            heat._W.pop('hm2', None)
         for ci in range(len(uniq)):
             rows += got.pop(ci)
-    finally:
-        heat._W.pop('hm2_rm', None)
-        heat._W.pop('hm2', None)
-    log(f'  re-measured {len(uniq):,} distinct candidates in two forms (peak {_rss_mb()} MB)')
+            order.append(uniq[ci]['key'])
+
+    def jaccard(kind, h, me, sl, keys) -> list:
+        keys = [k for k in keys if k in bits]
+        out = []
+        if len(keys) < 2:
+            return out
+        M = np.stack([bits[k] for k in keys])
+        pad = (-M.shape[1]) % 8
+        M = np.pad(M, ((0, 0), (0, pad))).view(np.uint64)
+        sz = pc(M).sum(1).astype(np.int64)
+        for i in range(len(keys) - 1):
+            inter = pc(M[i] & M[i + 1:]).sum(1).astype(np.int64)
+            uni = sz[i] + sz[i + 1:] - inter
+            with np.errstate(invalid='ignore', divide='ignore'):
+                J = np.where(uni > 0, inter / uni, 0.0)
+            for q in np.flatnonzero(J >= JACC_WRITE):
+                out.append({'kind': kind, 'h': int(h), 'measure': me, 'key1': keys[i], 'key2': keys[i + 1 + q], 'jaccard': round(float(J[q]), 4)})
+        return out
+
+    measure([k for g in groups.values() for k in g])
+    jg = {g: jaccard(*g, keys) for g, keys in groups.items()}
+    JC = ['kind', 'h', 'measure', 'key1', 'key2', 'jaccard']
+
+    def jac_kh(kind, h) -> pd.DataFrame:      # what the league's _jac reads: every measured pair of that kind and horizon
+        return pd.DataFrame([r for g, v in jg.items() if g[0] == kind and g[1] == h for r in v], columns=JC).drop_duplicates(['key1', 'key2'])
+    def regroup(miss):
+        measure(miss)
+        ms = set(miss)
+        for g, keys in groups.items():
+            if not ms.isdisjoint(keys):
+                jg[g] = jaccard(*g, keys)
+    n0 = len(order)
+    rounds, done = close_lists(pools, groups, bits, regroup, jac_kh)
+    extra = len(order) - n0
+    log(f'  re-measured {len(order):,} distinct candidates in two forms ({extra} added by the lists\' near-copy rule, '
+        f'{rounds} rounds; peak {_rss_mb()} MB)')
+    if not done:
+        log(f'::warning::{ctx.label}: re-measure stopped after {rounds} rounds with list rows still unmeasured')
     ctx.extra_readings = {}
     for R in list(gbm_readings or []) + [last_candle(ctx)]:
         ctx.extra_readings[R['name']] = R
@@ -1859,25 +2170,8 @@ def remeasure(ctx, cands: pd.DataFrame, gbm_readings: list = (), procs: int = 1,
                 continue
             idx = np.flatnonzero(joint_mask(ctx, [[R['name'], [lname]]]))
             rows += _rows_of(kind or 'xstate', f'{R["name"]}={lname}', 'state', *_full_both(ctx, idx), {'source': kind or 'model'})
-    # near copies: per list, the B-entry Jaccard of every pair of its candidates
-    jac = []
-    pc = np.bitwise_count if hasattr(np, 'bitwise_count') else (lambda a: np.unpackbits(a.view(np.uint8)).reshape(a.shape + (-1,)).sum(-1))
-    for (kind, h, me), grp in sel.groupby(['kind', 'h', 'measure'], sort=True):
-        keys = [k for k in grp.key if k in bits]
-        if len(keys) < 2:
-            continue
-        M = np.stack([bits[k] for k in keys])
-        pad = (-M.shape[1]) % 8
-        M = np.pad(M, ((0, 0), (0, pad))).view(np.uint64)
-        sz = pc(M).sum(1).astype(np.int64)
-        for i in range(len(keys) - 1):
-            inter = pc(M[i] & M[i + 1:]).sum(1).astype(np.int64)
-            uni = sz[i] + sz[i + 1:] - inter
-            with np.errstate(invalid='ignore', divide='ignore'):
-                J = np.where(uni > 0, inter / uni, 0.0)
-            for q in np.flatnonzero(J >= JACC_WRITE):
-                jac.append({'kind': kind, 'h': int(h), 'measure': me, 'key1': keys[i], 'key2': keys[i + 1 + q], 'jaccard': round(float(J[q]), 4)})
-    return rows, pd.DataFrame(jac, columns=['kind', 'h', 'measure', 'key1', 'key2', 'jaccard'])
+    jac = pd.DataFrame([r for g in sorted(jg) for r in jg[g]], columns=JC)
+    return rows, jac.drop_duplicates(['kind', 'h', 'key1', 'key2']).reset_index(drop=True)
 
 
 def near_copy_clusters(jac: pd.DataFrame, order: list, thr: float = NEAR_COPY) -> dict:
@@ -1887,11 +2181,12 @@ def near_copy_clusters(jac: pd.DataFrame, order: list, thr: float = NEAR_COPY) -
     for r in jac[jac.jaccard >= thr].itertuples():
         near.setdefault(r.key1, set()).add(r.key2)
         near.setdefault(r.key2, set()).add(r.key1)
-    kept, out = [], {}
+    kept, out = {}, {}                      # kept key -> its place: the host is the first kept row near k
     for k in order:
-        host = next((x for x in kept if k in near.get(x, ())), None)
+        nb = [x for x in near.get(k, ()) if x in kept]
+        host = min(nb, key=kept.get) if nb else None
         if host is None:
-            kept.append(k)
+            kept[k] = len(kept)
             out[k] = []
         else:
             out[host].append(k)
@@ -1982,32 +2277,11 @@ def base(asset: str, csv: str, other_csvs: dict = None, perp_csv: str = '', fund
 def _learner(ctx, out: str, log) -> dict:
     """Part 2 through oracle.heat_hm2_learn (plan section 3): for each model (TA, ALL) and horizon (LEARN_H) the fit on
     the A entries, the GBM call as a reading, the leaf paths and the contributions on 20,000 seeded B minutes. The
-    trees go to <out>/trees/<model>_h<H>.json. Runs before the pair scan so learner_path is a column of every cell."""
+    trees go to <out>/trees/<model>_h<H>.json (with the call's zone edges), the merged leaf rules to
+    learner_paths.json.gz. Runs before the pair scan so learner_path is a column of every cell. The rules of all ten fits
+    come merged (one rule per scan form, with its sources), so the triple scan measures each once."""
     from oracle import heat_hm2_learn as hl
-    os.makedirs(os.path.join(out, 'trees'), exist_ok=True)
-    res = {'gbm': [], 'paths': [], 'usage': {}, 'trees': {}, 'version': None}
-    try:
-        import lightgbm
-        res['version'] = lightgbm.__version__
-    except Exception:
-        pass
-    rB = ctx.g.sp['B'].rows
-    sampB = np.sort(np.random.default_rng([20261111, 2]).choice(rB, min(20_000, len(rB)), replace=False))
-    for model in ('TA', 'ALL'):
-        XB = hl.features(ctx, model, sampB)
-        for H in LEARN_H:
-            booster, used, tree_json = hl.learn(ctx, model, H)
-            R, _ = hl.gbm_reading(ctx, booster, model, H)
-            res['gbm'].append(R)
-            p = os.path.join(out, 'trees', f'{model}_h{H}.json')
-            with open(p, 'w') as f:
-                json.dump(tree_json, f, allow_nan=False)
-            res['trees'][f'{model}_h{H}'] = {'file': os.path.relpath(p, out), 'sha256': hashlib.sha256(open(p, 'rb').read()).hexdigest(),
-                                             'used': list(used)}
-            res['paths'] += [dict(rule, model=model, h=H) for rule in hl.leaf_paths(tree_json)]
-            res['usage'][f'{model}{H}'] = hl.contributions(booster, XB)
-            log(f'  learner {model} h{H}: {len(used)} readings used ({_rss_mb()} MB)')
-    return res
+    return hl.run_learner(ctx, out, log)
 
 
 def _set_learner_paths(ctx, paths: list) -> None:
@@ -2024,6 +2298,21 @@ def _set_learner_paths(ctx, paths: list) -> None:
     ctx.lp = lp
 
 
+def _relabel_learner_path(ctx, df: pd.DataFrame) -> pd.DataFrame:
+    """learner_path of the pair candidates from ctx.lp. The --part jobs scan their pairs before any learner rule exists
+    (the learner runs once, in the finish job), so the finish job marks the merged pair candidates here; the summary
+    counts and the shards carry no learner_path."""
+    if df is None or not len(df) or 'learner_path' not in df:
+        return df
+    lp = df['learner_path'].to_numpy(bool).copy()
+    for i, r in enumerate(df[['kind', 'ia', 'la', 'ib', 'lb']].itertuples(index=False)):
+        if r.kind == 'pair':
+            lp[i] = bool(_lp_cells(ctx, int(r.ia), int(r.ib), np.array([int(r.la)]), np.array([int(r.lb)]))[0])
+    df = df.copy()
+    df['learner_path'] = lp
+    return df
+
+
 def _write_csv(df: pd.DataFrame, path: str) -> str:
     """CSV.gz and the sha256 of its unzipped text (as the engine's table_sha256)."""
     df.to_csv(path, index=False, compression='gzip', float_format='%.6g')
@@ -2037,14 +2326,17 @@ def _write_csv(df: pd.DataFrame, path: str) -> str:
 def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, other_csvs: dict = None, perp_csv: str = '', fund_csv: str = '',
                oi_csv: str = '', cal_csv: str = '', dom: str = '', found: dict = None, main_meta: dict = None, other_metas=None,
                hm1_packs=(), hm1_pairs: str = '', part=(0, 1), shards: str = '', learn: bool = True, xdata: bool = True, max_pairs: int = None,
-               seed: int = 0, ctx: Ctx = None, parts_dirs=(), log=print) -> dict:
+               seed: int = 0, ctx: Ctx = None, parts_dirs=(), patterns: bool = False, log=print) -> dict:
     """One series (a coin or a twin): base -> part effects -> learner -> scan_pairs -> triple choice and leaf paths ->
     scan_triples -> remeasure. Writes into out: summary_counts.json, candidates.csv.gz, triple_pool.csv.gz, heat.csv.gz
     (re-measured rows, with table_sha256 of the unzipped text), near_copies.csv.gz, usage.json, trees/<model>_h<H>.json,
-    meta.json (schema oracle-heat-hm2-1); on a real coin the cell shards (cells_*.npz, triples_*.npz) stream to
-    `shards` (default <out>/shards). With --part i/S (S > 1) only the pair scan of that part runs (summary, candidates
+    learner_paths.json.gz, gbm_codes.npz, cards.json.gz (the usage cards' raw inputs), meta.json (schema
+    oracle-heat-hm2-1); on a real coin the cell shards (cells_*.npz, triples_*.npz) stream to `shards` (default
+    <out>/shards). With --part i/S (S > 1) only the pair scan of that part runs (summary, candidates
     and the triple-choice pool of the part); `parts_dirs` (the finish job) merges the parts' files, then runs the
-    triples and the re-measure. ctx: a ready context (tests)."""
+    triples and the re-measure. ctx: a ready context (tests). patterns (Part 4, route A): after meta.json is written,
+    heat_patterns.stage on this context into <out>/patterns, only where the re-measure ran (S = 1 or the finish job,
+    never a --part job); HM2's own files do not depend on it."""
     _refuse_doge(asset, csv)
     os.makedirs(out, exist_ok=True)
     procs = procs or min(4, os.cpu_count() or 1)
@@ -2056,7 +2348,7 @@ def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, ot
     tick('base', t)
     pi, S = part
     finishing = bool(parts_dirs)
-    ctx.prov = provenance(ctx, load_hm1(hm1_packs, hm1_pairs))
+    ctx.prov = provenance(ctx, load_hm1(hm1_packs, hm1_pairs, coin=asset))
     writer = ShardWriter(shards or os.path.join(out, 'shards'), ctx.real)
     lr = {'gbm': [], 'paths': [], 'usage': {}, 'trees': {}, 'version': None}
     if learn and (S == 1 or finishing):
@@ -2076,6 +2368,7 @@ def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, ot
             if os.path.exists(os.path.join(d, 'triple_pool.csv.gz')):
                 pools.append(pd.read_csv(os.path.join(d, 'triple_pool.csv.gz')))
         st_pairs = {'merged_parts': list(parts_dirs)}
+        cands.df = _relabel_learner_path(ctx, cands.df)
     else:
         t = time.time()
         st_pairs = scan_pairs(ctx, procs, writer, summ, cands, max_pairs, seed, part, pools, log)
@@ -2108,6 +2401,8 @@ def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, ot
             df.insert(0, 'coin', ctx.label)
         sha = _write_csv(df, os.path.join(out, 'heat.csv.gz'))
         _write_csv(jac, os.path.join(out, 'near_copies.csv.gz'))
+        from oracle import heat_hm2_learn as hl
+        hl.write_cards(ctx, cf, summ['pair'], out)                  # the usage cards' raw inputs (cards.json.gz)
     with open(os.path.join(out, 'usage.json'), 'w') as f:
         json.dump(_clean(lr['usage']) if lr['usage'] else {'learner': 'not run in this job'}, f, allow_nan=False)
     meta = {'schema': 'oracle-heat-hm2-1', 'asset': asset, 'label': ctx.label, 'twin': ctx.twin, 'real': ctx.real, 'part': [pi, S],
@@ -2130,7 +2425,35 @@ def run_series(asset: str, csv: str, out: str, twin: int = 0, procs: int = 0, ot
     with open(os.path.join(out, 'meta.json'), 'w') as f:
         json.dump(_clean(meta), f, indent=1, allow_nan=False)
     log(f'{ctx.label}: done in {meta["seconds_total"]}s, peak {meta["peak_rss_mb"]} MB')
+    if patterns and (S == 1 or finishing):          # Part 4, route A: never in a --part job, only where the re-measure ran
+        patterns_stage(ctx, out, procs, shards, log)
     return meta
+
+
+def patterns_stage(ctx, out: str, procs: int, shards: str = '', log=print):
+    """Part 4's route A (OR-HM2-part4.md; its build plan section 2): heat_patterns.stage on the series' context after
+    HM2's meta.json is written, into <out>/patterns; the chart cell shards of a real coin go to <shards>/patterns when a
+    shard directory is given (the series job streams that directory to Drive), else <out>/patterns/shards. The stage
+    reads ctx and restores what it touches, so HM2's files are the same with and without it. A failure of the stage is
+    logged (a ::warning:: line and <out>/patterns/error.txt) and leaves HM2's outputs and the job's exit code as they
+    are, so a Part 4 bug never costs the HM2 series; the chart league then lists the series as missing. Returns the
+    stage's meta, or None on a failure."""
+    import traceback
+    from oracle import heat_patterns
+    pout = os.path.join(out, 'patterns')
+    t = time.time()
+    try:
+        pm = heat_patterns.stage(ctx, pout, procs, log, shards=os.path.join(shards, 'patterns') if shards else '')
+    except Exception:                               # noqa: BLE001 (route A must not fail the HM2 series)
+        os.makedirs(pout, exist_ok=True)
+        tb = traceback.format_exc()
+        with open(os.path.join(pout, 'error.txt'), 'w') as f:
+            f.write(tb)
+        log(f'::warning::{ctx.label}: the chart-pattern stage (Part 4) failed after {time.time() - t:.0f}s; HM2\'s files are complete. '
+            f'{tb.strip().splitlines()[-1]}')
+        return None
+    log(f'{ctx.label}: chart-pattern stage (Part 4) in {time.time() - t:.0f}s -> {pout}')
+    return pm
 
 
 def _clean(x):
@@ -2217,7 +2540,12 @@ def _kw(a) -> dict:
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog='oracle.heat_hm2')
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in ('league', 'parity'):         # heat_hm2_league's own command line, every flag passed through
+        from oracle import heat_hm2_league
+        return heat_hm2_league.main(argv)
+    ap = argparse.ArgumentParser(prog='oracle.heat_hm2', epilog='league, parity: oracle.heat_hm2_league\'s subcommands of the same name '
+                                 '(python3 -m oracle.heat_hm2_league league|parity --help)')
     sub = ap.add_subparsers(dest='cmd', required=True)
     c = sub.add_parser('coin')
     _inputs(c)
@@ -2226,6 +2554,7 @@ def main(argv=None):
     c.add_argument('--shards', default='')
     c.add_argument('--hm1-packs', default='')
     c.add_argument('--hm1-pairs', default='')
+    c.add_argument('--patterns', action='store_true')            # Part 4 route A: heat_patterns.stage after meta.json (not in a --part job)
     fn = sub.add_parser('finish')
     _inputs(fn)
     fn.add_argument('--out', required=True)
@@ -2233,17 +2562,13 @@ def main(argv=None):
     fn.add_argument('--shards', default='')
     fn.add_argument('--hm1-packs', default='')
     fn.add_argument('--hm1-pairs', default='')
+    fn.add_argument('--patterns', action='store_true')
     b = sub.add_parser('bench')
     _inputs(b)
     b.add_argument('--out', required=True)
     b.add_argument('--pairs', type=int, default=3000)
-    lg = sub.add_parser('league')
-    lg.add_argument('--inputs', required=True)
-    lg.add_argument('--hm1', default='')
-    lg.add_argument('--out', required=True)
-    lg.add_argument('--stamp', default='')
-    pr = sub.add_parser('parity')
-    pr.add_argument('rest', nargs=argparse.REMAINDER)
+    sub.add_parser('league', help='oracle.heat_hm2_league league (every flag passed through)')
+    sub.add_parser('parity', help='oracle.heat_hm2_league parity (every flag passed through)')
     a = ap.parse_args(argv)
     if a.cmd in ('coin', 'finish'):
         kw = _kw(a)
@@ -2252,17 +2577,13 @@ def main(argv=None):
             raise SystemExit(f'--part {a.part}: want i/S with 0 <= i < S')
         mt = run_series(a.asset, a.csv, a.out, procs=a.procs, part=(pi, S), shards=a.shards, learn=not a.no_learn,
                         hm1_packs=[x for x in a.hm1_packs.split(',') if x], hm1_pairs=a.hm1_pairs,
-                        parts_dirs=[x for x in a.parts.split(',') if x] if a.cmd == 'finish' else (), **kw)
-        print(json.dumps({k: v for k, v in mt.items() if k not in ('readings', 'base', 'aliases', 'edges_new', 'norms')}, indent=1))
-    elif a.cmd == 'bench':
+                        parts_dirs=[x for x in a.parts.split(',') if x] if a.cmd == 'finish' else (), patterns=a.patterns, **kw)
+        print(json.dumps({**{k: mt.get(k) for k in ('label', 'twin', 'part', 'entries', 'pairs', 'triples', 'missing', 'table_sha256', 'shards',
+                                                    'seconds', 'seconds_total', 'peak_rss_mb')},
+                          'readings': len(mt['readings']), 'learner': {k: v for k, v in mt['learner'].items() if k != 'trees'}}, indent=1))
+    else:
         kw = _kw(a)
         bench(a.asset, a.csv, a.out, a.pairs, a.procs, learn=not a.no_learn, **kw)
-    elif a.cmd == 'league':
-        from oracle import heat_hm2_league
-        heat_hm2_league.league(a.inputs, a.hm1, a.out, a.stamp)
-    else:
-        from oracle import heat_hm2_league
-        heat_hm2_league.main(['parity'] + list(a.rest))
 
 
 if __name__ == '__main__':

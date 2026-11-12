@@ -1378,7 +1378,9 @@ def merge_aliases(readings: list, rows, agree: float = MERGE_AGREE, min_n: int =
     so the scan never pairs a reading with its own copy's series). Entries where both are neutral do not count: two
     rare patterns are 'none' together on almost every minute without being copies. A seeded sample of the entries
     screens the candidates; every merge is decided on all entries. Greedy against the kept readings, in name order.
-    Returns (kept readings, {kept name: [alias names]})."""
+    Returns (kept readings, {kept name: [alias names]}). The series job (heat_hm2.make_ctx, which Parts 3 and 4 reuse)
+    merges with heat_hm2.merge_aliases, the same rule on its entry code matrix; this one serves callers that hold only
+    reading dicts."""
     rows = np.asarray(rows, np.int64)
     rng = np.random.default_rng(seed)
     samp = np.sort(rng.choice(rows, screen, replace=False)) if len(rows) > screen else rows

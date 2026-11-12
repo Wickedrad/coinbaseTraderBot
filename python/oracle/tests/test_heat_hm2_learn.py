@@ -3,7 +3,9 @@ reads a 2025 price) is ever in a fit, the model's 2025 call on pure noise is a c
 three-reading rule comes back as a leaf path naming the planted readings (and the scan measures it with iota3 > 0),
 the fits are deterministic, the tree JSON reproduces LightGBM's scores, the chunked Dataset equals LightGBM's own
 loader, the contributions come from 2025 minutes only, the leaf paths follow LightGBM's decision rules (ZS states mapped
-onto their zone reading), and the usage cards' raw inputs. Synthetic minutes, SPLITS patched, procs 1."""
+onto their zone reading), the features and the call are causal, the usage cards' raw inputs (the kept share from the
+pair scan's per-reading tally), and heat_hm2.run_series runs the learner (coin and twin) and hands its merged rules to
+the triple scan. Synthetic minutes, SPLITS patched, procs 1."""
 import gzip
 import json
 import types
@@ -87,7 +89,7 @@ def _noise_ctx(tmp_path, monkeypatch, a_days=90, b_days=30, seed=11, twin=0):
     if twin:
         m = heat.make_twin(m, twin)
     lab = heat.labels(m)
-    return _ctx(m, _readings(m, heat.Grid(m, lab)), lab=lab)
+    return _ctx(m, _readings(m, heat.Grid(m, lab)), lab=lab, twin=twin)
 
 
 # ------------------------------------------------------------------------------------------- no 2025 row in a fit
@@ -207,6 +209,22 @@ def test_planted_rule_is_a_leaf_path(tmp_path, monkeypatch):
     hm._set_learner_paths(ctx, [dict(best, model='ALL', h=15)])
     i1, i2 = ctx.byname['S1'], ctx.byname['S2']
     assert (min(i1, i2), max(i1, i2)) in ctx.lp
+    # end to end: run_series hands the merged three-reading rules to the triple scan (b), which measures the planted
+    # rule once (both models found it) with iota3 > 0 on A and on B, and marks the planted pairs learner_path (the
+    # scan's re-measure, tested in test_heat_hm2_scan, is stubbed: it is most of the time on 330 days)
+    monkeypatch.setattr(hm, 'LEARN_H', [15])
+    monkeypatch.setattr(hm, 'remeasure', lambda *a, **k: (heat.Rows(), pd.DataFrame(columns=['kind', 'h', 'measure', 'key1', 'key2', 'jaccard'])))
+    mt = hm.run_series('X', 'x.csv', str(tmp_path / 'series'), ctx=ctx, procs=1, log=lambda *a: None)
+    assert mt['triples']['paths'] >= 1
+    with gzip.open(tmp_path / 'series' / 'learner_paths.json.gz', 'rt') as f:
+        src = {json.dumps(p['conds']): p['sources'] for p in json.load(f)}
+    assert {s[0] for s in src[json.dumps(best['conds'])]} == {'TA', 'ALL'}
+    c = pd.read_csv(tmp_path / 'series' / 'candidates.csv.gz', low_memory=False)
+    planted = ' & '.join(f'{r}={"|".join(lv)}' for r, lv in best['conds'])
+    p = c[(c.source == 'path') & (c.key == planted) & (c.h == 15)]
+    assert len(p) and (p.iota_A > 0).all() and (p.iota_B > 0).all() and p.drop_duplicates(['key', 'h', 'measure']).shape[0] == len(p)
+    lp = c[(c.kind == 'pair') & c.key.str.startswith('S1=on & S2=on')]
+    assert len(lp) and lp.learner_path.all()
 
 
 # ----------------------------------------------------------------------------------------- the fit and its JSON
@@ -328,7 +346,7 @@ def test_leaf_paths_follow_lightgbm_rules():
     with the paths' level sets."""
     feats = [{'name': 'A', 'levels': heat.ZONES, 'offset': 2, 'zs_of': None}, {'name': 'P', 'levels': ['m0', 'm1', 'm2', 'm3'], 'offset': 0, 'zs_of': None},
              {'name': 'ZS:A', 'levels': xd.ZS_LEVELS, 'offset': 0, 'zs_of': 'A'}, {'name': 'B', 'levels': ['x', 'y', 'z'], 'offset': 1, 'zs_of': None}]
-    t0 = _node(0, 0.5, dl=True, left=_node(0, -1.5, mt='NaN', dl=False, left=_leaf(0.1), right=_leaf(0.2)),            # A <= mid, NA left
+    t0 = _node(0, 0.5, dl=True, left=_node(0, -1.5, mt='NaN', dl=True, left=_leaf(0.1), right=_leaf(0.2)),             # A <= mid, NA left
                right=_node(1, '1||3', dt='==', left=_leaf(0.3), right=_leaf(0.4)))
     t1 = _node(3, 1e-35, mt='None', left=_leaf(-0.1), right=_node(3, 1e-35, mt='Zero', dl=False, left=_leaf(0.5), right=_leaf(0.6)))
     t2 = _node(2, '1||2', dt='==', left=_node(0, 0.5, mt='NaN', dl=True, left=_leaf(0.7), right=_leaf(0.8)), right=_leaf(0.9))
@@ -346,16 +364,31 @@ def test_leaf_paths_follow_lightgbm_rules():
     assert r['odds_sum'] == pytest.approx(50.0 * 0.6) and r['leaves'] == 1
     r = get([['A', ['very low', 'low', 'mid', 'NA']], ['ZS:A', ['very low', 'low (falling in)']]])
     assert r['conds'] == [['A', ['very low', 'low']]] and not r['exact']                   # ZS mapped onto A's zones and intersected
-    r = get([['ZS:A', ['none', 'low (recovering)', 'high (rising in)', 'high (cooling)', 'very high', 'NA']]])
-    assert r['conds'] == [] or json.dumps(r['conds_tree']) not in P or True
     assert all(json.dumps(x['conds_tree']) != json.dumps([['ZS:A', ['none', 'low (recovering)', 'high (rising in)', 'high (cooling)', 'very high', 'NA']]])
                for x in hl.leaf_paths(tj))                                                 # holds 'none': no scan condition, no rule
+    # a ZS event that contradicts its own zone's condition (A high or very high, yet A's last bar fell into very low or
+    # low): no minute reaches that leaf, so it is no rule (an empty level set would scan an empty cell)
+    assert all(lv for x in hl.leaf_paths(tj) for _, lv in x['conds'])
+    assert json.dumps([['A', ['high', 'very high']], ['ZS:A', ['very low', 'low (falling in)']]]) not in P
     r = get([['P', ['m0']], ['ZS:A', ['very high']]])
     assert r['conds'] == [['A', ['very high']], ['P', ['m0']]] and r['n_readings'] == 2
-    # tree_eval agrees with the level sets: a row in each path's set lands on that leaf
+    # tree_eval agrees with the level sets: a row in each path's set lands on that leaf. t1's leaf 0.5 is out of reach
+    # (only 'z' gets past its None-type root, and 'z' is not zero at the Zero node); 'y' (value 0) and unknown go left
     codes = np.array([[0, 1, 0, 0], [-1, 1, 0, 2], [3, 3, 6, 1], [4, -1, 0, -1]], np.int8)
-    want = np.array([0.1 + -0.1 + 0.9 + 0.03, 0.1 + 0.6 + 0.9 + 0.03, 0.3 + 0.5 + 0.9 + 0.01, 0.4 + -0.1 + 0.9 + 0.03])
+    want = np.array([0.1 + -0.1 + 0.9 + 0.03, 0.1 + 0.6 + 0.9 + 0.03, 0.3 + -0.1 + 0.9 + 0.02, 0.4 + -0.1 + 0.9 + 0.03])
     assert np.allclose(hl.tree_eval(tj, codes), want)
+    # tree by tree: the leaf a row lands on (tree_eval) is the one rule whose tree-form level sets hold the row
+    hits = 0
+    for t in tj['tree_info']:
+        one = dict(tj, tree_info=[t])
+        v = hl.tree_eval(one, codes)
+        rules = hl.leaf_paths(one)
+        for i, row in enumerate(codes):
+            lv = {F['name']: ('NA' if row[j] < 0 else F['levels'][row[j]]) for j, F in enumerate(feats)}
+            got = [x for x in rules if all(lv[nm] in s for nm, s in x['conds_tree'])]
+            assert len(got) <= 1 and all(x['odds'] == pytest.approx(50.0 * v[i]) for x in got), (t['tree_index'], i, got, v[i])
+            hits += len(got)
+    assert hits == 9                                                                     # t0 4, t1 4, t3 1 (t2 and the rest of t3 hold ZS none)
     m = hl.merge_paths([dict(x, model='TA', h=15) for x in hl.leaf_paths(tj)] + [dict(x, model='ALL', h=60) for x in hl.leaf_paths(tj)])
     assert len(m) == len(hl.leaf_paths(tj)) and all(len(x['sources']) == 2 for x in m)
 
@@ -400,3 +433,147 @@ def test_card_inputs():
     assert p[('RSI', 'position and clock', 15)]['reading'] == '1m:RSI7'
     ci = hl.card_inputs(ctx, cands)
     assert ci['schema'] == 'oracle-heat-hm2-cards-1' and json.dumps(ci, allow_nan=False)
+
+
+# ------------------------------------------------------------------------------------------------ cut the future
+def test_learner_features_and_call_are_causal(tmp_path, monkeypatch):
+    """Cut the future (OR-HM2 Tests 1, the learner's part): with the trees fixed, the features of both models (the ZS
+    states included) and the per-minute score at rows <= t are unchanged when every reading's bars that close after t
+    are replaced by noise, at 5 cut points (two in A, three in 2025); for a cut in 2025 the GBM call's zone edges (A
+    minutes only) and its codes at rows <= t are unchanged too. The noise does reach the rows after t."""
+    ctx = _noise_ctx(tmp_path, monkeypatch)
+    b, used, tj = hl.learn(ctx, 'ALL', 15)
+    R0, e0 = hl.gbm_reading(ctx, b, 'ALL', 15)
+    assert e0 is not None and used
+    n, a_hi = ctx.m['n'], ctx.g.sp['A'].hi
+    rng = np.random.default_rng(4)
+    for t in (n // 7, a_hi // 2, a_hi + 1000, (a_hi + n) // 2, n - 500):
+        R2 = []
+        for R in ctx.readings:
+            R = dict(R)
+            close = np.arange(len(R['codes'])) * R['k'] + R['k'] - 1
+            R['codes'] = np.where(close > t, rng.integers(-1, len(R['levels']), len(R['codes'])), R['codes']).astype(np.int8)
+            R2.append(R)
+        c2 = types.SimpleNamespace(**{k: v for k, v in ctx.__dict__.items() if not k.startswith('_hl')})
+        c2.readings = R2
+        rows, after = np.arange(max(0, t - 3000), t + 1), np.arange(t + 1, min(n, t + 3001))
+        for model in hl.MODELS:
+            assert np.array_equal(hl.features(ctx, model, rows), hl.features(c2, model, rows)), (t, model)
+            assert not np.array_equal(hl.features(ctx, model, after), hl.features(c2, model, after)), (t, model)
+        assert np.array_equal(hl.score_rows(ctx, 'ALL', tj, rows), hl.score_rows(c2, 'ALL', tj, rows), equal_nan=True), t
+        if t >= a_hi:
+            R2g, e2 = hl.gbm_reading(c2, b, 'ALL', 15)
+            assert e2 == e0 and np.array_equal(R2g['codes'][:t + 1], R0['codes'][:t + 1]), t
+
+
+# ----------------------------------------------------------------------------------- the kept share and the series
+def test_card_kept_share_from_the_scan(tmp_path, monkeypatch):
+    """The pair scan's per-reading tally (heat_hm2.SummaryCounts.rk): each pair cell with a sample counts once for each
+    of its two readings, so the readings' sums are twice the 'all' stratum's counts (cells, iota and iota_robust kept,
+    with the call); two halves of the pairs merge (through to_json / from_json) into exactly the one-job tally; and
+    card_kept's numbers per TA function are the sums over the function's readings, its shares kept / n."""
+    ctx = _noise_ctx(tmp_path, monkeypatch)
+
+    def scan(part):
+        summ = {'pair': hm.SummaryCounts(ctx.families), 'triple': hm.SummaryCounts(ctx.families)}
+        hm.scan_pairs(ctx, 1, hm.ShardWriter('', False), summ, hm.Candidates(), part=part, log=None)
+        return summ['pair']
+    one = scan((0, 1))
+    assert one.rk.shape[1] == len(ctx.readings) and one.rk.sum() > 0
+    C = dict(zip(hm.SummaryCounts.COUNTS, np.moveaxis(one.c[:, 0], -1, 0)))
+    R = dict(zip(hm.SummaryCounts.RK, np.moveaxis(one.rk.sum(1), -1, 0)))
+    for k in hm.SummaryCounts.RK:
+        assert np.array_equal(R[k], 2 * C[k]), k
+    halves = hm.SummaryCounts.from_json(json.loads(json.dumps(scan((0, 2)).to_json(), allow_nan=False)))
+    halves.merge(hm.SummaryCounts.from_json(json.loads(json.dumps(scan((1, 2)).to_json(), allow_nan=False))))
+    assert np.array_equal(halves.rk, one.rk) and halves.to_json() == one.to_json()
+    k = hl.card_kept(ctx, one.to_json())
+    assert k == hl.card_kept(ctx, one)
+    ci = {c: i for i, c in enumerate(hm.SummaryCounts.RK)}
+    fns = {}
+    for j, Rd in enumerate(ctx.readings):
+        for fn in {f for f in map(hl.ta_function, [Rd['name']] + list(Rd.get('aliases', []))) if f}:
+            fns.setdefault(fn, []).append(j)
+    assert set(k['by_function']) == set(fns) and 'FLOW:Stretch30' not in k['by_reading'] and 'POS:QPos' not in k['by_reading']
+    for fn, js in fns.items():
+        tot = one.rk[:, js].sum(1)
+        e = k['by_function'][fn]
+        assert np.array_equal(np.array(e['counts']), tot) and e['readings'] == [ctx.names[j] for j in js]
+        want = np.where(tot[:, ci['robust_n']] > 0, tot[:, ci['robust_kept']] / np.maximum(tot[:, ci['robust_n']], 1), np.nan)
+        got = np.array([np.nan if x is None else x for x in e['share_robust_kept']], float)
+        assert np.allclose(got, want, equal_nan=True)
+
+
+def test_series_runs_the_learner(tmp_path, monkeypatch):
+    """heat_hm2.run_series with the learner on (LEARN_H patched to [15]): both models' trees with the call's zone edges
+    (tree_eval on the reading's features, bucketed at those edges, gives the GBM reading's codes), the merged leaf rules
+    (each scan form once, so the triple scan measures every three-reading rule once), the GBM calls re-measured as
+    singles and held states, usage.json with the 2025 contributions and the call, and cards.json.gz with the grid, the
+    partners from the candidates and the kept share from the summary counts. A twin writes the same files."""
+    monkeypatch.setattr(hm, 'LEARN_H', [15])
+    for tw in (0, 1):
+        ctx = _noise_ctx(tmp_path, monkeypatch, twin=tw)
+        out = tmp_path / f's{tw}'
+        mt = hm.run_series('X', 'x.csv', str(out), ctx=ctx, procs=1, log=lambda *a: None)
+        assert set(mt['learner']['trees']) == {'TA_h15', 'ALL_h15'} and mt['twin'] == tw
+        rows = np.arange(ctx.m['n'])
+        for key, tr in mt['learner']['trees'].items():
+            tj = json.load(open(out / tr['file']))
+            z = tj['hm2']['zone']
+            assert z['name'] == f'GBM.{tj["hm2"]["model"]}15' and z['edges'] == tr['edges'] and tj['hm2']['twin'] == tw
+            assert tj['hm2']['params'] == hm._clean(dict(hm.LGB_PARAMS, seed=hm.LGB_SEED + 15)) and tj['hm2']['rounds'] <= hm.LGB_ROUNDS
+            if z['edges'] is not None:
+                sc = hl.score_rows(ctx, tj['hm2']['model'], tj, rows)
+                ev = np.r_[np.arange(0, ctx.m['n'], 97), hl.contrib_rows(ctx, 2000)]
+                X = hl.features(ctx, tj['hm2']['model'], ev)
+                assert np.abs(hl.tree_eval(tj, X) - sc[ev])[np.isfinite(sc[ev])].max() < 1e-9
+                Rz, ez = xd.zone(z['name'], sc, ctx.g.sp['A'].hi)              # the stored edges: A quantiles of the JSON's score
+                assert ez == z['edges'] and ez == [float(q) for q in np.quantile(sc[:ctx.g.sp['A'].hi][np.isfinite(sc[:ctx.g.sp['A'].hi])],
+                                                                                heat.ZONE_Q)]
+        z = np.load(out / hl.GBM_CODES_FILE)
+        assert set(z.files) == {'t0', 'n', 'GBM.TA15', 'GBM.ALL15'} and int(z['n']) == ctx.m['n'] and z['GBM.ALL15'].dtype == np.int8
+        for key, tr in mt['learner']['trees'].items():
+            tj = json.load(open(out / tr['file']))
+            if tr['edges'] is not None:
+                sc = hl.score_rows(ctx, tj['hm2']['model'], tj, rows)
+                assert np.array_equal(z[tj['hm2']['zone']['name']], np.where(np.isfinite(sc), heat.bucket(sc, tr['edges']), -1))
+        with gzip.open(out / 'learner_paths.json.gz', 'rt') as f:
+            paths = json.load(f)
+        assert mt['learner']['paths'] == len(paths) and len({json.dumps(p['conds']) for p in paths}) == len(paths)
+        three = [p for p in paths if len({r for r, _ in p['conds']}) == 3]
+        assert mt['triples']['paths'] == len(three)
+        u = json.load(open(out / 'usage.json'))
+        assert set(u) == {'TA15', 'ALL15'} and all(v['split'] == 'B' and v['call']['h'] == 15 for v in u.values())
+        h = pd.read_csv(out / 'heat.csv.gz', low_memory=False)
+        g = h[h.source == 'model']
+        assert set(g.kind) == {'single', 'xstate'} and g.key.str.startswith('GBM.').all() and {'A', 'B'} <= set(g.split)
+        assert {k.split('=')[0] for k in g.key} == {'GBM.TA15', 'GBM.ALL15'}
+        with gzip.open(out / hl.CARDS_FILE, 'rt') as f:
+            cards = json.load(f)
+        assert cards['schema'] == 'oracle-heat-hm2-cards-1' and cards['twin'] == tw and {'grid', 'partners', 'kept'} <= set(cards)
+        assert set(cards['grid']) == {'R'} and {(r['tf'], r['setting'], r['kind']) for r in cards['grid']['R']} == {
+            (tf, st, kd) for tf in ('1m', '15m') for st, kd in (('3', 'zone'), ('10', 'zone'), ('5', 'sign'))}
+        assert set(cards['kept']['by_function']) == {'R'}
+        sj = json.load(open(out / 'summary_counts.json'))
+        assert cards['kept'] == hl.card_kept(ctx, sj['pair'])
+
+
+def test_part_split_learner_path(tmp_path, monkeypatch):
+    """With --part i/S the learner runs once, in the finish job, after the parts scanned their pairs: the merged pair
+    candidates get the same learner_path as the one-job run (the re-measure is stubbed: the scan's own test covers it)."""
+    monkeypatch.setattr(hm, 'LEARN_H', [15])
+    monkeypatch.setattr(hm, 'remeasure', lambda *a, **k: (heat.Rows(), pd.DataFrame(columns=['kind', 'h', 'measure', 'key1', 'key2', 'jaccard'])))
+    ctx = _noise_ctx(tmp_path, monkeypatch)
+    q = lambda *a: None
+    hm.run_series('X', 'x.csv', str(tmp_path / 'one'), ctx=ctx, procs=1, log=q)
+    for i in (0, 1):
+        hm.run_series('X', 'x.csv', str(tmp_path / f'p{i}'), ctx=ctx, procs=1, part=(i, 2), log=q)
+    hm.run_series('X', 'x.csv', str(tmp_path / 'fin'), ctx=ctx, procs=1, parts_dirs=[str(tmp_path / 'p0'), str(tmp_path / 'p1')], log=q)
+    c1 = pd.read_csv(tmp_path / 'one' / 'candidates.csv.gz', low_memory=False)
+    c0 = pd.read_csv(tmp_path / 'p0' / 'candidates.csv.gz', low_memory=False)
+    c2 = pd.read_csv(tmp_path / 'fin' / 'candidates.csv.gz', low_memory=False)
+    pr = lambda c: c[c.kind == 'pair'].sort_values(['h', 'measure', 'key']).reset_index(drop=True)
+    assert pr(c1).learner_path.any() and not pr(c0).learner_path.any()
+    assert pr(c1)[['h', 'measure', 'key', 'learner_path']].equals(pr(c2)[['h', 'measure', 'key', 'learner_path']])
+    with gzip.open(tmp_path / 'one' / hl.CARDS_FILE, 'rt') as f1, gzip.open(tmp_path / 'fin' / hl.CARDS_FILE, 'rt') as f2:
+        assert json.load(f1)['kept'] == json.load(f2)['kept']

@@ -1,0 +1,1101 @@
+name: Oracle heat map HM2
+
+# OR-HM2 (python/oracle/prereg/OR-HM2.md; build plan section 7) with Part 3 (OR-HM2-part3.md, "what separates the
+# winners": the drill jobs) and Part 4 (OR-HM2-part4.md, chart patterns: the stage inside the series jobs, route A).
+# Each design's "What the review changed" list applies.
+# Per series (a coin, or one of its three no-signal twins through the identical pipeline with the joint coin flip):
+# every pair of readings (engine, clock, position, cross-coin, volatility, flow, perp, funding, open interest, daily
+# markets, macro, inventory-found sources), the fixed triples, the learner (LightGBM 4.5.0), the re-measure; then the
+# league, the lessons and hm2_pack.json. Choose on A = 2020-2024, score on B = 2025. Coin minutes 2020-01-01 to
+# 2025-12-31 only: NO ROW AT OR AFTER 2026-01-01 IS READ (every minute-like file is checked for 13-digit millisecond
+# stamps, then cut before anything computes on it, and the loaders refuse a later row). No pass bar filters a row or a
+# cell: marks are columns. NEVER DOGE.
+#
+# Pushes drive it. Tags in the HEAD commit message (<run> = the HM1 run whose metas, league and packs are used, and under
+# whose Drive folder the outputs go, e.g. 43030435253; one <run> per push):
+#   none                           the tests only
+#   [heat-hm2-bench:<run>]         BTC only: base, 3,000 random pairs, one learner fit (bench.json: ms per pair, peak RSS,
+#                                  projected minutes and shard size); with [heat-hm2-with-patterns] also Part 4's bench
+#   [heat-hm2:<run>]               the study: 16 series jobs (BTC, ETH, SOL, XRP; then their twins 1-3), max 9 at once,
+#                                  then the league (commits research/oracle_heat/hm2/ and latest/hm2_pack.json)
+#   [heat-hm2-parts:S]             with [heat-hm2:<run>]: each series' pairs in S jobs (--part i/S, S <= 16), then one
+#                                  finish job per series (learner, triples, re-measure); the bench decides S
+#   [heat-hm2-with-patterns]       with the study: Part 4's chart-pattern stage (route A: heat_hm2 --patterns, after HM2's
+#                                  meta.json, only where HM2's re-measure runs: S = 1 series jobs or the finish jobs; a
+#                                  stage failure leaves HM2's files and the job's exit code alone), then its league section
+#   [heat-hm2-league:<run>]        the league only, from the series files already on Drive
+#   [heat-hm2-parity:<run>]        Dec 29-31, 2025 live parity per coin, then live_ready in hm2_pack.json (alone in its push)
+#   [heat-hm2-drill-bench:<run>]   Part 3: units, then BTC's drill bench
+#   [heat-hm2-drill:<run>]         Part 3: units, 16 x S drill jobs (max 9 at once; after the league when pushed with the
+#                                  study, never beside the series jobs), the drill league (gate rows into hm2_pack.json)
+#   [heat-hm2-drill-parts:S]       with [heat-hm2-drill:<run>] (and with [heat-hm2-drill-league:<run>]: which parts to read)
+#   [heat-hm2-drill-twins:quarter] with [heat-hm2-drill:<run>]: the twins run tiers 1-2 and a seeded quarter of tier 3
+#   [heat-hm2-drill-league:<run>]  Part 3's league only, from the drill files already on Drive
+#   [heat-hm2-drill-parity:<run>]  Part 3's parity of the gate rows, then live_ready (alone in its push)
+# One tagged study at a time: the plan step stops when another tagged oracle-hm2 run is queued or in progress, so the
+# thread never has more than 10 jobs up (9 series or drill jobs plus one). A bench never shares a push with the study
+# it sizes, a parity tag goes alone, and a standalone drill league never shares a push with the study or the league.
+# Outputs: Drive models/oracle-heat/runs/<run>/hm2/<COIN>[-twinN]/ (the cell shards on the real coins only, streamed to
+# Drive while the job runs), .../hm2/league/, .../hm2/drill/ and .../hm2/parity/; the small files also as run artifacts.
+# The league's small files are committed to this branch under research/oracle_heat/hm2/ and research/oracle_heat/latest/
+# (hm2_pack.json, hm2_live_meta.json). No per-minute rows leave the runner. Nothing here runs rm -rf.
+# Data per job: .github/scripts/oracle-hm2-data.sh (oracle-heat.yml's minute fetch and awk cut, plus the 13-digit check).
+# The push must change one of the paths below: an empty commit that only carries a tag starts nothing.
+
+on:
+  push:
+    branches: [claude/project-thread-kw7bc3]
+    paths: ['.github/workflows/oracle-hm2.yml', '.github/scripts/oracle-hm2-data.sh', '.github/actions/drive-setup/action.yml',
+            'python/oracle/heat_xdata.py', 'python/oracle/heat_hm2.py', 'python/oracle/heat_hm2_learn.py',
+            'python/oracle/heat_hm2_league.py', 'python/oracle/heat_hm2_drill.py', 'python/oracle/heat_patterns.py',
+            'python/oracle/tests/test_heat_hm2*.py', 'python/oracle/tests/test_heat_patterns.py',
+            'python/oracle/prereg/OR-HM2*.md', 'python/oracle/calendars/macro_calendar_2020_2025.csv']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ contains(github.event.head_commit.message, '[heat-hm2') && format('oracle-hm2-{0}', github.run_id) || format('oracle-hm2-{0}', github.ref) }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  R: gdrive:kalshi-bot-archive
+  PYTHONUNBUFFERED: '1'
+  HM2_DRIVE: models/oracle-heat/runs/{run}/hm2     # OR-HM2 "Where outputs go"; {run} = the tags' <run>
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60                   # (review fix) every HM2, Part 3 and Part 4 suite plus test_heat.py after the TA-Lib and LightGBM installs
+    permissions:
+      contents: read
+      actions: read                       # the one-study guard reads the workflow's runs
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      drive: ${{ steps.plan.outputs.drive }}
+      minutes: ${{ steps.plan.outputs.minutes }}
+      study: ${{ steps.plan.outputs.study }}
+      bench: ${{ steps.plan.outputs.bench }}
+      league: ${{ steps.plan.outputs.league }}
+      parity: ${{ steps.plan.outputs.parity }}
+      drill: ${{ steps.plan.outputs.drill }}
+      drill_bench: ${{ steps.plan.outputs.drill_bench }}
+      drill_league: ${{ steps.plan.outputs.drill_league }}
+      drill_parity: ${{ steps.plan.outputs.drill_parity }}
+      parts: ${{ steps.plan.outputs.parts }}
+      drill_parts: ${{ steps.plan.outputs.drill_parts }}
+      drill_twins: ${{ steps.plan.outputs.drill_twins }}
+      patterns: ${{ steps.plan.outputs.patterns }}
+      series: ${{ steps.plan.outputs.series }}
+      finish: ${{ steps.plan.outputs.finish }}
+      drill_matrix: ${{ steps.plan.outputs.drill_matrix }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Plan (tags of the head commit; one tagged study at a time)
+        id: plan
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RUNTAG='\[heat-hm2(-bench|-league|-parity|-drill|-drill-bench|-drill-league|-drill-parity)?:[0-9]+\]'
+          has() { grep -qE "\[heat-hm2$1:[0-9]+\]" <<< "$MSG"; }
+          tf() { if has "$1"; then echo true; else echo false; fi; }
+          study=$(tf ''); bench=$(tf -bench); league=$(tf -league); parity=$(tf -parity)
+          drill=$(tf -drill); drill_bench=$(tf -drill-bench); drill_league=$(tf -drill-league); drill_parity=$(tf -drill-parity)
+          ids=$(grep -oE "$RUNTAG" <<< "$MSG" | grep -oE ':[0-9]+' | tr -d : | sort -u || true)
+          [ "$(wc -w <<< "$ids")" -le 1 ] || { echo "::error::one <run> per push, not: $ids"; exit 1; }
+          run=$ids; any=false; [ -z "$run" ] || any=true
+          num() { local v; v=$(grep -oE "\[heat-hm2$1:[0-9]+\]" <<< "$MSG" | head -1 | grep -oE ':[0-9]+' | tr -d : || true); echo "${v:-1}"; }
+          parts=$((10#$(num -parts))); drill_parts=$((10#$(num -drill-parts)))
+          for s in "$parts" "$drill_parts"; do
+            [ "$s" -ge 1 ] && [ "$s" -le 16 ] || { echo "::error::parts must be 1 to 16, not $s"; exit 1; }
+          done
+          drill_twins=all; if grep -qF '[heat-hm2-drill-twins:quarter]' <<< "$MSG"; then drill_twins=quarter; fi
+          patterns=false
+          if grep -qF '[heat-hm2-with-patterns]' <<< "$MSG"; then
+            patterns=true
+            [ -f python/oracle/heat_patterns.py ] || { echo "::error::[heat-hm2-with-patterns] but python/oracle/heat_patterns.py is not in this commit"; exit 1; }
+            [ "$study" = true ] || [ "$bench" = true ] || [ "$league" = true ] || echo "::warning::[heat-hm2-with-patterns] acts only with the study, bench or league tags"
+          fi
+          # never more than 10 jobs up: a parity tag goes alone; a bench never shares a push with the run it sizes
+          nrun=$( { grep -oE "$RUNTAG" <<< "$MSG" || true; } | sort -u | wc -l)
+          if { [ "$parity" = true ] || [ "$drill_parity" = true ]; } && [ "$nrun" -gt 1 ]; then
+            echo "::error::a parity tag goes alone in its push (its 4 jobs beside 9 series or drill jobs would put 13 up; both parities rewrite hm2_pack.json)"; exit 1
+          fi
+          if [ "$bench" = true ] && [ "$study" = true ]; then echo "::error::[heat-hm2-bench] and [heat-hm2] in one push: read the bench first (it decides S)"; exit 1; fi
+          if [ "$drill_bench" = true ] && [ "$drill" = true ]; then echo "::error::[heat-hm2-drill-bench] and [heat-hm2-drill] in one push: read the bench first (it decides S)"; exit 1; fi
+          # (review fix) a standalone drill league beside the study or the HM2 league would start as soon as this job ends, on the
+          # old pack, and both commit latest/hm2_pack.json: it goes in its own push (with [heat-hm2-drill] it waits for the league)
+          if [ "$drill_league" = true ] && [ "$drill" != true ] && { [ "$study" = true ] || [ "$league" = true ]; }; then
+            echo "::error::[heat-hm2-drill-league] with [heat-hm2] or [heat-hm2-league] in one push: the drill league would run beside them on the old pack (both commit hm2_pack.json); push it after the league"; exit 1
+          fi
+          if [ "$any" = true ]; then
+            # one tagged study at a time (OR-HM2 review 10; Part 3 review 8): stop when any other tagged run is queued or in progress
+            busy=''
+            active=$(gh run list -R "$GITHUB_REPOSITORY" --workflow oracle-hm2.yml --limit 100 --json databaseId,headSha,status \
+                       --jq ".[] | select(.status != \"completed\" and .databaseId != $GITHUB_RUN_ID) | \"\(.databaseId) \(.headSha)\"")
+            while read -r rid sha; do
+              [ -n "$rid" ] || continue
+              if m=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq .commit.message 2>/dev/null); then
+                if grep -qE "$RUNTAG" <<< "$m"; then busy="$busy $rid"; fi
+              else
+                busy="$busy $rid(commit message unreadable)"
+              fi
+            done <<< "$active"
+            [ -z "$busy" ] || { echo "::error::another tagged oracle-hm2 run is queued or in progress:$busy. One study at a time (at most 10 jobs); push again when it ends."; exit 1; }
+          fi
+          minutes=false
+          for t in "$study" "$bench" "$parity" "$drill" "$drill_bench" "$drill_parity"; do if [ "$t" = true ]; then minutes=true; fi; done
+          m16() {   # include list: real coins first, then twins 1-3; part 0 of every series before part 1 ...
+            jq -nc --argjson S "$1" --argjson always "$2" '{include: [range(0; $S) as $p | range(0; 4) as $t | ("BTC", "ETH", "SOL", "XRP") as $a
+              | (if $t == 0 then $a else "\($a)-twin\($t)" end) as $l
+              | (if ($S == 1 and ($always | not)) then {sub: $l, tag: $l} else {sub: "\($l)/part\($p)of\($S)", tag: "\($l)-part\($p)of\($S)"} end) as $d
+              | {asset: $a, twin: $t, part: $p, parts: $S, label: $l} + $d]}'
+          }
+          {
+            echo "run=$run"; echo "drive=${HM2_DRIVE//\{run\}/${run:-0}}"; echo "minutes=$minutes"
+            echo "study=$study"; echo "bench=$bench"; echo "league=$league"; echo "parity=$parity"
+            echo "drill=$drill"; echo "drill_bench=$drill_bench"; echo "drill_league=$drill_league"; echo "drill_parity=$drill_parity"
+            echo "parts=$parts"; echo "drill_parts=$drill_parts"; echo "drill_twins=$drill_twins"
+            echo "patterns=$patterns"
+            echo "series=$(m16 "$parts" false)"
+            echo "finish=$(m16 1 false | jq -c --argjson S "$parts" '.include |= map(. + {parts: $S})')"
+            echo "drill_matrix=$(m16 "$drill_parts" true)"
+          } >> "$GITHUB_OUTPUT"
+          echo "run ${run:-none}; study $study (parts $parts, patterns $patterns); bench $bench; league $league; parity $parity"
+          echo "drill $drill (parts $drill_parts, twins $drill_twins); drill bench $drill_bench; drill league $drill_league; drill parity $drill_parity"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - name: Python requirements (python/oracle/requirements.txt with TA-Lib, plus LightGBM 4.5.0 from its wheel)
+        run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0 pytest
+      - name: Versions
+        run: python3 -c "import lightgbm, talib, numpy, pandas, numba, sys; print('python', sys.version.split()[0], '| lightgbm', lightgbm.__version__, '| TA-Lib', talib.__version__, '| numpy', numpy.__version__, '| pandas', pandas.__version__, '| numba', numba.__version__)"
+      - name: HM2 tests (Parts 3 and 4 when present), and the engine's to show it unchanged
+        working-directory: python
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          t=(oracle/tests/test_heat_hm2*.py oracle/tests/test_heat_patterns*.py)
+          echo "test files: ${t[*]} oracle/tests/test_heat.py"
+          python3 -m pytest -q -rfE --tb=short "${t[@]}" oracle/tests/test_heat.py
+
+  preflight:
+    needs: test
+    if: needs.test.outputs.minutes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      found: ${{ steps.inv.outputs.found }}
+    env:
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      SHARDS: ${{ needs.test.outputs.study == 'true' || needs.test.outputs.bench == 'true' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Source inventory (every source folder of raw/perp-ta-history/<COIN>/ and every file of research/btcd_fractal/data mapped to a family or a written "Not used" reason)
+        id: inv
+        run: |
+          set -euo pipefail
+          mkdir -p data/listing out/preflight
+          for C in BTC ETH SOL XRP; do
+            rclone lsjson -R "$R/raw/perp-ta-history/$C" > "data/listing/$C.json"
+            echo "$C: $(jq length "data/listing/$C.json") entries"
+          done
+          # exits non-zero when a planned file (coin, perp, funding, open interest, the 13 daily markets) is missing or a source is unmapped
+          (cd python && python3 -m oracle.heat_xdata inventory --listing ../data/listing --dom ../research/btcd_fractal/data --out ../out/preflight/inventory.json)
+          echo "found=$(jq -c .found out/preflight/inventory.json)" >> "$GITHUB_OUTPUT"
+      - name: Planned files (13-digit millisecond stamps on both ends), the 16 main-run metas and HM1's stored pairs
+        run: |
+          set -euo pipefail
+          for C in BTC ETH SOL XRP; do
+            for f in "binance-1m/$C/1m.csv" "binance-um/$C/1m.csv" "binance-funding/$C/funding.csv" "binance-oi/$C/oi.csv"; do
+              bash .github/scripts/oracle-hm2-data.sh stamps "raw/perp-ta-history/$C/$f"
+            done
+          done
+          jq -r '.found | ((.btcdom // [])[]), ((.cb // {})[]), ((.book // {})[])' out/preflight/inventory.json | while read -r p; do
+            [ -z "$p" ] || bash .github/scripts/oracle-hm2-data.sh stamps "raw/perp-ta-history/$p"
+          done
+          rclone lsf -R --files-only --max-depth 2 --include "/*/meta.json" "$R/models/oracle-heat/runs/$RUN" > out/preflight/metas.txt
+          rclone lsf --files-only "$R/models/oracle-heat/runs/$RUN/league/pairs" > out/preflight/pairs.txt
+          miss=''
+          for tw in 0 1 2 3; do for C in BTC ETH SOL XRP; do
+            d=$C; [ "$tw" = 0 ] || d="$C-twin$tw"
+            grep -qx "$d/meta.json" out/preflight/metas.txt || miss="$miss models/oracle-heat/runs/$RUN/$d/meta.json"
+          done; done
+          for C in BTC ETH SOL XRP; do grep -qx "pairs_$C.csv.gz" out/preflight/pairs.txt || miss="$miss models/oracle-heat/runs/$RUN/league/pairs/pairs_$C.csv.gz"; done
+          [ -z "$miss" ] || { echo "::error::missing on Drive:$miss"; exit 1; }
+          echo "16 main-run metas and 4 HM1 pairs files of run $RUN: present"
+      - name: Funding stamp convention (BTC, A rows; the rate stamped T must follow the basis of the 8 hours before T)
+        run: |
+          set -euo pipefail
+          H=data/hist
+          bash deploy/drive_lab.sh get raw/perp-ta-history/BTC "$H" --include "/binance-1m/BTC/1m.csv" --include "/binance-um/BTC/1m.csv" --include "/binance-funding/BTC/funding.csv"
+          for f in binance-1m/BTC/1m.csv binance-um/BTC/1m.csv binance-funding/BTC/funding.csv; do bash .github/scripts/oracle-hm2-data.sh cut "$H/$f" "BTC $f"; done
+          (cd python && python3 -m oracle.heat_xdata funding-check --spot "../$H/binance-1m/BTC/1m.csv" --perp "../$H/binance-um/BTC/1m.csv" \
+            --funding "../$H/binance-funding/BTC/funding.csv" --out ../out/preflight/funding_check.json)
+      - name: Drive free space (3 x the bench's projected shard total of the four real coins; 40 GB before a bench exists)
+        if: env.SHARDS == 'true'
+        run: |
+          set -euo pipefail
+          gb=$( (rclone cat "$R/$D/bench/bench.json" 2>/dev/null || true) | jq -r '.projected_shard_gb // empty' 2>/dev/null || true)
+          if [ -n "$gb" ]; then need=$(jq -n --argjson g "$gb" '3 * 4 * $g | ceil'); why="3 x 4 x $gb GB (bench)"; else need=40; why="no bench yet"; fi
+          free=$( (rclone about "${R%%:*}:" --json 2>/dev/null || echo '{}') | jq -r '.free // empty')
+          if [ -z "$free" ]; then echo "::warning::Drive did not report its free space; need about $need GB ($why)"; exit 0; fi
+          fgb=$((free / 1000000000)); echo "Drive free: $fgb GB; need $need GB ($why)"
+          [ "$fgb" -ge "$need" ] || { echo "::error::Drive has $fgb GB free; the shards need $need GB ($why)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-preflight
+          path: out/preflight
+          retention-days: 30
+
+  bench:
+    needs: [test, preflight]
+    if: needs.test.outputs.bench == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ needs.test.outputs.patterns == 'true' && 150 || 60 }}
+    env:
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      FOUND: ${{ needs.preflight.outputs.found }}
+      PATTERNS: ${{ needs.test.outputs.patterns }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Data (BTC's own files and the four coins' minutes; 13-digit check and the cut at 2026-01-01)
+        run: bash .github/scripts/oracle-hm2-data.sh series BTC "$RUN" data "$FOUND"
+      - name: Bench (base, 3,000 random pairs, one learner fit)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs"
+          mapfile -t F < "$W/data/flags.txt"
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2 bench "${F[@]}" --main-meta "$W/data/metas/BTC/meta.json" \
+            --twin 0 --procs 4 --out "$W/out/bench" 2>&1 | tee "$W/out/logs/bench.log"
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+          echo "free disk: $(df -h --output=avail "$W" | tail -1 | tr -d ' ')"
+          cat "$W/out/bench/bench.json"
+      - name: Part 4 bench (chart patterns on BTC)
+        if: env.PATTERNS == 'true'
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE
+          mapfile -t F < "$W/data/flags.txt"
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_patterns bench "${F[@]}" --main-meta "$W/data/metas/BTC/meta.json" \
+            --twin 0 --procs 4 --out "$W/out/bench/patterns" 2>&1 | tee "$W/out/logs/bench-patterns.log"
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+          cat "$W/out/bench/patterns/bench.json" || true
+      - name: Put the bench to Drive (its shards stay on the runner)
+        run: |
+          set -euo pipefail
+          cp out/logs/*.log out/bench/
+          bash deploy/drive_lab.sh put "$D/bench" out/bench --exclude "shards/**"           # HM2's and Part 4's (patterns/shards)
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-bench
+          path: |
+            out/bench
+            !out/bench/shards
+            !out/bench/patterns/shards
+            out/logs
+          retention-days: 30
+
+  series:
+    needs: [test, preflight]
+    if: needs.test.outputs.study == 'true'
+    name: series ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330                  # a hosted job stops at 360; over 300 projected, the bench splits with [heat-hm2-parts:S]
+    strategy:
+      fail-fast: false
+      max-parallel: 9                     # with the one-study guard, at most 10 jobs up
+      matrix: ${{ fromJSON(needs.test.outputs.series) }}
+    env:
+      A: ${{ matrix.asset }}
+      TW: ${{ matrix.twin }}
+      PI: ${{ matrix.part }}
+      PS: ${{ matrix.parts }}
+      LABEL: ${{ matrix.label }}
+      SUB: ${{ matrix.sub }}
+      TAG: ${{ matrix.tag }}
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      FOUND: ${{ needs.preflight.outputs.found }}
+      PATTERNS: ${{ needs.test.outputs.patterns }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Data (the four coins' minutes, the job coin's perp, funding, open interest and inventory-found files; 13-digit check and the cut at 2026-01-01; the 16 main metas)
+        run: bash .github/scripts/oracle-hm2-data.sh series "$A" "$RUN" data "$FOUND"
+      - name: Pairs, learner, triples, re-measure (the cell shards stream to Drive on the real coins)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs" "$W/out/$SUB"
+          mapfile -t F < "$W/data/flags.txt"
+          P="$W/research/oracle_heat/latest"
+          for p in traded pair clock perp perp_pair; do [ -s "$P/${p}_pack.json" ] || { echo "::error::no $P/${p}_pack.json (HM1 pack, for provenance)"; exit 1; }; done
+          PACKS="$P/traded_pack.json,$P/pair_pack.json,$P/clock_pack.json,$P/perp_pack.json,$P/perp_pair_pack.json"
+          X=()
+          if [ "$PS" != 1 ]; then X+=(--part "$PI/$PS"); fi
+          if [ "$PS" = 1 ] && [ "$PATTERNS" = true ]; then X+=(--patterns); fi       # Part 4 route A (never in a --part job)
+          sh="$W/shards/$SUB"; ds="$D/$LABEL/shards"; [ "$PS" = 1 ] || ds="$ds/part${PI}of${PS}"
+          mover() {                       # real coins: each finished shard file (2 minutes unchanged) moves to Drive; free disk logged
+            while sleep 120; do
+              if [ -d "$sh" ]; then rclone move "$sh" "$R/$ds" --include '*.npz' --min-age 2m --transfers 4 -q || echo "::warning::shard move failed (retried)"; fi
+              echo "[$(date -u +%H:%M)] free disk $(df -h --output=avail "$W" | tail -1 | tr -d ' '), local shards $(du -sh "$sh" 2>/dev/null | cut -f1)"
+            done
+          }
+          mover & MV=$!
+          trap 'kill $MV 2>/dev/null || true' EXIT
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2 coin "${F[@]}" --main-meta "$W/data/metas/$LABEL/meta.json" \
+            --twin "$TW" --procs 4 --out "$W/out/$SUB" --shards "$sh" --hm1-packs "$PACKS" --hm1-pairs "$(cat "$W/data/hm1_pairs.txt")" "${X[@]}" \
+            2>&1 | tee "$W/out/logs/$TAG.log"
+          kill $MV 2>/dev/null || true
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+          if [ -d "$sh" ]; then
+            rclone move "$sh" "$R/$ds" --include '*.npz' --transfers 8
+            echo "shards on Drive: $ds ($(rclone size "$R/$ds" | tail -1 | sed 's/^ *//'))"
+          fi
+          echo "free disk: $(df -h --output=avail "$W" | tail -1 | tr -d ' ')"; ls -la "$W/out/$SUB"
+      - name: Put the series' small files to Drive
+        run: |
+          set -euo pipefail
+          cp out/logs/"$TAG"*.log "out/$SUB/"
+          bash deploy/drive_lab.sh put "$D/$SUB" "out/$SUB"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-series-${{ matrix.tag }}
+          path: |
+            out/${{ matrix.sub }}
+            !out/${{ matrix.sub }}/patterns/instances.csv.gz
+            out/logs
+          retention-days: 30
+
+  finish:
+    needs: [test, preflight, series]
+    if: ${{ !cancelled() && needs.test.outputs.study == 'true' && needs.test.outputs.parts != '1' && needs.preflight.result == 'success' }}
+    name: finish ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 9
+      matrix: ${{ fromJSON(needs.test.outputs.finish) }}
+    env:
+      A: ${{ matrix.asset }}
+      TW: ${{ matrix.twin }}
+      PS: ${{ matrix.parts }}
+      LABEL: ${{ matrix.label }}
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      FOUND: ${{ needs.preflight.outputs.found }}
+      PATTERNS: ${{ needs.test.outputs.patterns }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Data (as the series jobs; 13-digit check and the cut at 2026-01-01)
+        run: bash .github/scripts/oracle-hm2-data.sh series "$A" "$RUN" data "$FOUND"
+      - name: The parts' small files (summary counts, candidates, triple pools)
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "$D/$LABEL" data/parts --include "/part*of${PS}/**"
+          for i in $(seq 0 $((PS - 1))); do
+            [ -s "data/parts/part${i}of${PS}/summary_counts.json" ] || { echo "::error::part $i/$PS of $LABEL is not on Drive (its series job failed?)"; exit 1; }
+          done
+          ls data/parts
+      - name: Finish (merge the parts; learner, triples, re-measure)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs" "$W/out/$LABEL"
+          mapfile -t F < "$W/data/flags.txt"
+          P="$W/research/oracle_heat/latest"
+          PACKS="$P/traded_pack.json,$P/pair_pack.json,$P/clock_pack.json,$P/perp_pack.json,$P/perp_pair_pack.json"
+          PARTS=$(for i in $(seq 0 $((PS - 1))); do echo "$W/data/parts/part${i}of${PS}"; done | paste -sd,)
+          X=(); if [ "$PATTERNS" = true ]; then X+=(--patterns); fi                   # Part 4 route A, after the re-measure
+          sh="$W/shards/$LABEL/finish"; ds="$D/$LABEL/shards/finish"
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2 finish "${F[@]}" --main-meta "$W/data/metas/$LABEL/meta.json" \
+            --twin "$TW" --procs 4 --out "$W/out/$LABEL" --parts "$PARTS" --shards "$sh" --hm1-packs "$PACKS" \
+            --hm1-pairs "$(cat "$W/data/hm1_pairs.txt")" "${X[@]}" 2>&1 | tee "$W/out/logs/$LABEL-finish.log"
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+          if [ -d "$sh" ]; then rclone move "$sh" "$R/$ds" --include '*.npz' --transfers 8; echo "triple shards on Drive: $ds"; fi
+          echo "free disk: $(df -h --output=avail "$W" | tail -1 | tr -d ' ')"; ls -la "$W/out/$LABEL"
+      - name: Put the series' small files to Drive
+        run: |
+          set -euo pipefail
+          cp out/logs/"$LABEL"-*.log "out/$LABEL/"
+          bash deploy/drive_lab.sh put "$D/$LABEL" "out/$LABEL"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-finish-${{ matrix.label }}
+          path: |
+            out/${{ matrix.label }}
+            !out/${{ matrix.label }}/patterns/instances.csv.gz
+            out/logs
+          retention-days: 30
+
+  league:
+    needs: [test, series, finish]
+    if: ${{ !cancelled() && needs.test.result == 'success' && (needs.test.outputs.study == 'true' || needs.test.outputs.league == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      PATTERNS: ${{ needs.test.outputs.patterns }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Series small files (every series and part; no shard) and HM1's inputs (direction_all, stored pairs, summary, main metas)
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "$D" data/hm2 --exclude "/bench/**" --exclude "/league/**" --exclude "/drill/**" --exclude "/parity/**" \
+            --exclude "/*/shards/**" --exclude "gbm_codes.npz" --exclude "/*/patterns/instances.csv.gz"
+          ls data/hm2
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/$RUN/league" data/hm1 --include "/direction_all.csv.gz" --include "/summary.json" \
+            --include "/pairs/pairs_BTC.csv.gz" --include "/pairs/pairs_ETH.csv.gz" --include "/pairs/pairs_SOL.csv.gz" --include "/pairs/pairs_XRP.csv.gz"
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/$RUN" data/hm1/metas --include "/BTC/meta.json" --include "/ETH/meta.json" \
+            --include "/SOL/meta.json" --include "/XRP/meta.json"
+          find data/hm1 -type f | sort
+      - name: League, lessons, pack
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs"
+          G=(); g="$W/research/oracle_heat/hm2/part3/gate_rows.json"; [ ! -s "$g" ] || G=(--gates "$g")    # Part 3's gate rows return to the pack
+          python3 -m oracle.heat_hm2_league league --inputs "$W/data/hm2" --hm1 "$W/data/hm1" --packs "$W/research/oracle_heat/latest" \
+            --main-metas "$W/data/hm1/metas" --out "$W/out/league" "${G[@]}" \
+            --stamp "series of run $RUN; HM2 league job $GITHUB_RUN_ID at commit $GITHUB_SHA" 2>&1 | tee "$W/out/logs/league.log"
+          ls -la "$W/out/league"
+      - name: Chart-pattern league (Part 4) and its section of league.md
+        if: env.PATTERNS == 'true'
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE
+          if python3 -m oracle.heat_patterns league --inputs "$W/data/hm2" --hm2 "$W/out/league" --out "$W/out/league/patterns" \
+               --stamp "series of run $RUN; HM2 league job $GITHUB_RUN_ID at commit $GITHUB_SHA" 2>&1 | tee "$W/out/logs/league-patterns.log"; then
+            python3 -c "from oracle import heat_hm2_league as L; L.upsert_section('$W/out/league/league.md', 'part4', L.chart_section('$W/out/league/patterns'))"
+            ls -la "$W/out/league/patterns"
+          else
+            echo "::warning::the chart-pattern league failed; the HM2 league is committed without its section"
+          fi
+      - name: Put the league to Drive
+        run: |
+          set -euo pipefail
+          cp out/logs/league*.log out/league/
+          bash deploy/drive_lab.sh put "$D/league" out/league
+      - name: Commit the small league files to this branch (aggregates only; a bot push starts no workflow)
+        env:
+          BR: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dst=research/oracle_heat/hm2; lat=research/oracle_heat/latest
+          mkdir -p "$dst" "$lat"
+          find out/league -maxdepth 1 -type f -size -25M ! -name hm2_pack.json ! -name hm2_live_meta.json ! -name '*.log' -exec cp {} "$dst/" \;
+          big=$(find out/league -maxdepth 1 -type f -size +24M | paste -sd' ')
+          [ -z "$big" ] || echo "::warning::kept on Drive only (over 24 MB): $big"
+          cp out/league/hm2_pack.json out/league/hm2_live_meta.json "$lat/"
+          for C in BTC ETH SOL XRP; do                       # the GBM trees behind the pack's model rows (tree_eval)
+            if [ -d "data/hm2/$C/trees" ]; then mkdir -p "$dst/trees/$C"; find "data/hm2/$C/trees" -maxdepth 1 -name '*.json' -exec cp {} "$dst/trees/$C/" \;; fi
+          done
+          add=("$dst" "$lat/hm2_pack.json" "$lat/hm2_live_meta.json")
+          if [ "$PATTERNS" = true ] && [ -d out/league/patterns ]; then
+            mkdir -p "$dst/patterns"
+            for f in chart_league.md chart_summary.json chart_viewer.json; do [ ! -f "out/league/patterns/$f" ] || cp "out/league/patterns/$f" "$dst/patterns/"; done
+            for f in chart_pack.json chart_live_meta.json; do [ ! -f "out/league/patterns/$f" ] || { cp "out/league/patterns/$f" "$lat/"; add+=("$lat/$f"); }; done
+          fi
+          echo "$RUN $GITHUB_SHA league_run=$GITHUB_RUN_ID" > "$dst/RUN"
+          du -sh "$dst" "$lat/hm2_pack.json" "$lat/hm2_live_meta.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${add[@]}"
+          if git diff --cached --quiet; then echo "nothing new to commit"; exit 0; fi
+          git commit -q -m "Oracle HM2: league, lessons and hm2_pack.json of run $RUN (written by the oracle-hm2 workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::error::could not push the HM2 league files"; exit 1
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-league
+          path: out/league
+          retention-days: 30
+      - name: Card (commit comment, aggregates only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "**Oracle heat map HM2 (OR-HM2)**, series of run $RUN. Coin price only: chosen on 2020-2024, scored on 2025; no minute of 2026 is read. Drive: $D/"; echo; head -c 60000 out/league/league.md; } > "$RUNNER_TEMP/comment.md"
+          jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input - --jq .html_url || echo "::warning::could not post the comment"
+
+  drill-units:
+    needs: [test, preflight, league]
+    if: >-
+      ${{ !cancelled() && needs.test.result == 'success' && needs.preflight.result == 'success'
+      && (needs.test.outputs.drill == 'true' || needs.test.outputs.drill_bench == 'true')
+      && (needs.league.result == 'success' || (needs.league.result == 'skipped' && needs.test.outputs.study != 'true' && needs.test.outputs.league != 'true')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      DRILL: ${{ needs.test.outputs.drill }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}            # hm2_pack.json as the league (this run's, or an earlier one) committed it
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Part 3 preflight (the 16 HM2 series outputs, HM1's direction tables, the five HM1 packs and hm2_pack.json, Drive free space)
+        run: |
+          set -euo pipefail
+          mkdir -p out/drill
+          rclone lsf -R --files-only --max-depth 3 --include "/*/meta.json" --include "/*/trees/*.json" --include "/*/gbm_codes.npz" "$R/$D" > out/drill/hm2_files.txt
+          miss=''
+          for tw in 0 1 2 3; do for C in BTC ETH SOL XRP; do
+            d=$C; [ "$tw" = 0 ] || d="$C-twin$tw"
+            grep -qx "$d/meta.json" out/drill/hm2_files.txt || miss="$miss $D/$d/meta.json"
+            nt=$(grep -c "^$d/trees/" out/drill/hm2_files.txt || true)
+            [ "$nt" -gt 0 ] || miss="$miss $D/$d/trees/"
+            g=no; if grep -qx "$d/gbm_codes.npz" out/drill/hm2_files.txt; then g=yes; fi
+            echo "$d: meta, $nt trees, gbm_codes.npz $g (without it the drill recomputes the GBM codes from the trees)"
+          done; done
+          for p in league long/league; do
+            l=$(rclone lsf --files-only "$R/models/oracle-heat/runs/$RUN/$p" 2>/dev/null || true)
+            grep -qx direction_all.csv.gz <<< "$l" || miss="$miss models/oracle-heat/runs/$RUN/$p/direction_all.csv.gz"
+          done
+          for p in traded pair clock perp perp_pair hm2; do [ -s "research/oracle_heat/latest/${p}_pack.json" ] || miss="$miss research/oracle_heat/latest/${p}_pack.json"; done
+          [ -z "$miss" ] || { echo "::error::Part 3 inputs missing:$miss"; exit 1; }
+          gb=$( (rclone cat "$R/$D/drill/bench/bench.json" 2>/dev/null || true) | jq -r '.projected_shard_gb // empty' 2>/dev/null || true)
+          if [ -n "$gb" ]; then need=$(jq -n --argjson g "$gb" '3 * 4 * $g | ceil'); why="3 x 4 x $gb GB (drill bench)"; else need=20; why="no drill bench yet"; fi
+          free=$( (rclone about "${R%%:*}:" --json 2>/dev/null || echo '{}') | jq -r '.free // empty')
+          if [ -z "$free" ]; then echo "::warning::Drive did not report its free space; need about $need GB ($why)"
+          else
+            fgb=$((free / 1000000000)); echo "Drive free: $fgb GB; need $need GB ($why)"
+            [ "$fgb" -ge "$need" ] || { echo "::error::Drive has $fgb GB free; the drill shards need $need GB ($why)"; exit 1; }
+          fi
+      - name: Units (every coin's unit list, all tiers; the sha256 of hm2_pack.json's non-gate rows, with and without live_ready)
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/$RUN/league" data/hm1 --include "/direction_all.csv.gz"
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/$RUN/long/league" data/hm1long --include "/direction_all.csv.gz"
+          W=$GITHUB_WORKSPACE
+          (cd python && python3 -m oracle.heat_hm2_drill units --direction "$W/data/hm1/direction_all.csv.gz" \
+            --direction-long "$W/data/hm1long/direction_all.csv.gz" --packs "$W/research/oracle_heat/latest" \
+            --hm2-pack "$W/research/oracle_heat/latest/hm2_pack.json" --out "$W/out/drill/units.json")
+          ls -la out/drill
+          bash deploy/drive_lab.sh put "$D/drill" out/drill --include "/units.json" --include "/hm2_files.txt"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-drill-units
+          path: out/drill
+          retention-days: 30
+
+  drill-bench:
+    needs: [test, preflight, drill-units]
+    if: ${{ !cancelled() && needs.test.outputs.drill_bench == 'true' && needs.drill-units.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      FOUND: ${{ needs.preflight.outputs.found }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Data (as HM2's series jobs; 13-digit check and the cut at 2026-01-01), the units and BTC's HM2 series files
+        run: |
+          set -euo pipefail
+          bash .github/scripts/oracle-hm2-data.sh series BTC "$RUN" data "$FOUND"
+          bash deploy/drive_lab.sh get "$D/drill" data/drill --include "/units.json"
+          bash deploy/drive_lab.sh get "$D/BTC" data/hm2series --include "/meta.json" --include "/usage.json" --include "/trees/**" --include "/gbm_codes.npz"
+          ls -la data/drill data/hm2series
+      - name: Drill bench (200 units stratified by timeframe and kind, every parameter, one depth-2 drill)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs"
+          mapfile -t F < "$W/data/flags.txt"
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2_drill bench "${F[@]}" --main-meta "$W/data/metas/BTC/meta.json" \
+            --twin 0 --units "$W/data/drill/units.json" --hm2-series "$W/data/hm2series" --n-units 200 --out "$W/out/drill-bench" \
+            2>&1 | tee "$W/out/logs/drill-bench.log"
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+          echo "free disk: $(df -h --output=avail "$W" | tail -1 | tr -d ' ')"
+          cat "$W/out/drill-bench/bench.json"
+      - name: Put the drill bench to Drive (its shards stay on the runner)
+        run: |
+          set -euo pipefail
+          cp out/logs/drill-bench.log out/drill-bench/
+          bash deploy/drive_lab.sh put "$D/drill/bench" out/drill-bench --exclude "*.npz"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-drill-bench
+          path: |
+            out/drill-bench
+            !out/drill-bench/**/*.npz
+            out/logs
+          retention-days: 30
+
+  drill:
+    needs: [test, preflight, drill-units]
+    if: ${{ !cancelled() && needs.test.outputs.drill == 'true' && needs.drill-units.result == 'success' }}
+    name: drill ${{ matrix.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 9                     # after the league, never beside the series jobs: at most 10 jobs up
+      matrix: ${{ fromJSON(needs.test.outputs.drill_matrix) }}
+    env:
+      A: ${{ matrix.asset }}
+      TW: ${{ matrix.twin }}
+      PI: ${{ matrix.part }}
+      PS: ${{ matrix.parts }}
+      LABEL: ${{ matrix.label }}
+      SUB: ${{ matrix.sub }}
+      TAG: ${{ matrix.tag }}
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      FOUND: ${{ needs.preflight.outputs.found }}
+      TWU: ${{ needs.test.outputs.drill_twins }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Data (as HM2's series jobs; 13-digit check and the cut at 2026-01-01), the units and the series' HM2 files
+        run: |
+          set -euo pipefail
+          bash .github/scripts/oracle-hm2-data.sh series "$A" "$RUN" data "$FOUND"
+          bash deploy/drive_lab.sh get "$D/drill" data/drill --include "/units.json"
+          bash deploy/drive_lab.sh get "$D/$LABEL" data/hm2series --include "/meta.json" --include "/usage.json" --include "/trees/**" --include "/gbm_codes.npz"
+          [ -s data/drill/units.json ] && [ -s data/hm2series/meta.json ] || { echo "::error::no units.json or no HM2 series files of $LABEL on Drive"; exit 1; }
+          ls -la data/hm2series
+      - name: Drill (instances, parameters, scan, lists, curves, depth 2, losers; shards stream to Drive on the real coins)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs" "$W/out/drill/$SUB"
+          mapfile -t F < "$W/data/flags.txt"
+          X=(); if [ "$TWU" = quarter ]; then X+=(--twin-units quarter); fi
+          o="$W/out/drill/$SUB"; sh="$W/shards/drill/$SUB"; ds="$D/drill/$SUB/shards"
+          mover() {                       # real coins: each finished drill shard (2 minutes unchanged) moves to Drive; free disk logged
+            while sleep 120; do
+              if [ -d "$sh" ]; then rclone move "$sh" "$R/$ds" --include '*.npz' --min-age 2m --transfers 4 -q || echo "::warning::shard move failed (retried)"; fi
+              echo "[$(date -u +%H:%M)] free disk $(df -h --output=avail "$W" | tail -1 | tr -d ' '), local shards $(du -sh "$sh" 2>/dev/null | cut -f1)"
+            done
+          }
+          mover & MV=$!
+          trap 'kill $MV 2>/dev/null || true' EXIT
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2_drill coin "${F[@]}" --main-meta "$W/data/metas/$LABEL/meta.json" \
+            --twin "$TW" --units "$W/data/drill/units.json" --hm2-series "$W/data/hm2series" --out "$o" --shards "$sh" --part "$PI/$PS" --procs 4 "${X[@]}" \
+            2>&1 | tee "$W/out/logs/drill-$TAG.log"
+          kill $MV 2>/dev/null || true
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+          if [ -d "$sh" ]; then rclone move "$sh" "$R/$ds" --include '*.npz' --transfers 8; echo "drill shards on Drive: $ds"; fi
+          echo "free disk: $(df -h --output=avail "$W" | tail -1 | tr -d ' ')"; ls -la "$o"
+      - name: Put the drill's small files to Drive
+        run: |
+          set -euo pipefail
+          cp "out/logs/drill-$TAG.log" "out/drill/$SUB/"
+          bash deploy/drive_lab.sh put "$D/drill/$SUB" "out/drill/$SUB"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-drill-${{ matrix.tag }}
+          path: |
+            out/drill/${{ matrix.sub }}
+            out/logs
+          retention-days: 30
+
+  drill-league:
+    needs: [test, drill-units, drill]
+    if: >-
+      ${{ !cancelled() && needs.test.result == 'success'
+      && (needs.test.outputs.drill == 'true' || needs.test.outputs.drill_league == 'true')
+      && (needs.drill-units.result == 'success' || (needs.drill-units.result == 'skipped' && needs.test.outputs.drill != 'true')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      DPS: ${{ needs.test.outputs.drill_parts }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Every drill series' small files (all parts of S = the drill parts tag; no shard) and the units
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "$D/drill" data/drill --exclude "*.npz" --include "/units.json" --include "/*/part*of${DPS}/**"
+          [ -s data/drill/units.json ] || { echo "::error::no units.json under $D/drill"; exit 1; }
+          find data/drill -maxdepth 2 -type d | sort
+      - name: Drill league (chance table, league views, cards, profiles, gate rows into hm2_pack.json)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE; mkdir -p "$W/out/logs"
+          # stops if hm2_pack.json's non-gate rows changed since the units were built (live_ready aside: heat_hm2_league.tier2_sha)
+          python3 -m oracle.heat_hm2_drill league --inputs "$W/data/drill" --units "$W/data/drill/units.json" \
+            --hm2-pack "$W/research/oracle_heat/latest/hm2_pack.json" --hm2-live-meta "$W/research/oracle_heat/latest/hm2_live_meta.json" \
+            --hm2-league "$W/research/oracle_heat/hm2" --out "$W/out/drill-league" \
+            --stamp "drill of run $RUN; drill league job $GITHUB_RUN_ID at commit $GITHUB_SHA" 2>&1 | tee "$W/out/logs/drill-league.log"
+          ls -la "$W/out/drill-league"
+      - name: Put the drill league to Drive
+        run: |
+          set -euo pipefail
+          cp out/logs/drill-league.log out/drill-league/
+          bash deploy/drive_lab.sh put "$D/drill/league" out/drill-league
+      - name: Commit Part 3's small files, the gate rows and the pack to this branch (aggregates only; a bot push starts no workflow)
+        env:
+          BR: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dst=research/oracle_heat/hm2/part3; lat=research/oracle_heat/latest
+          mkdir -p "$dst"
+          find out/drill-league -maxdepth 1 -type f -size -25M ! -name hm2_pack.json ! -name hm2_live_meta.json ! -name '*.log' -exec cp {} "$dst/" \;
+          big=$(find out/drill-league -maxdepth 1 -type f -size +24M | paste -sd' ')
+          [ -z "$big" ] || echo "::warning::kept on Drive only (over 24 MB): $big"
+          for f in hm2_pack.json hm2_live_meta.json; do [ ! -f "out/drill-league/$f" ] || cp "out/drill-league/$f" "$lat/"; done
+          echo "$RUN $GITHUB_SHA drill_league_run=$GITHUB_RUN_ID" > "$dst/RUN"
+          du -sh "$dst"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$dst" "$lat/hm2_pack.json" "$lat/hm2_live_meta.json"
+          [ ! -f research/oracle_heat/hm2/league.md ] || git add research/oracle_heat/hm2/league.md
+          if git diff --cached --quiet; then echo "nothing new to commit"; exit 0; fi
+          git commit -q -m "Oracle HM2 Part 3: drill league and gate rows of run $RUN (written by the oracle-hm2 workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::error::could not push the Part 3 files"; exit 1
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-drill-league
+          path: out/drill-league
+          retention-days: 30
+      - name: Card (commit comment, aggregates only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          md=out/drill-league/league.md; [ -f "$md" ] || md=research/oracle_heat/hm2/part3/league.md
+          { echo "**Oracle HM2 Part 3 (what separates the winners)**, drill of run $RUN. Chosen on 2020-2024, scored on 2025; no minute of 2026 is read. Drive: $D/drill/"; echo; head -c 60000 "$md"; } > "$RUNNER_TEMP/comment.md"
+          jq -n --rawfile body "$RUNNER_TEMP/comment.md" '{body: $body}' | gh api -X POST "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" --input - --jq .html_url || echo "::warning::could not post the comment"
+
+  parity:
+    needs: [test, preflight]
+    if: needs.test.outputs.parity == 'true'
+    name: parity ${{ matrix.asset }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]      # never DOGE
+    env:
+      A: ${{ matrix.asset }}
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      FOUND: ${{ needs.preflight.outputs.found }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Data (as the series jobs; 13-digit check and the cut at 2026-01-01) and the coin's HM2 series files
+        run: |
+          set -euo pipefail
+          bash .github/scripts/oracle-hm2-data.sh series "$A" "$RUN" data "$FOUND"
+          bash deploy/drive_lab.sh get "$D/$A" data/hm2series --include "/meta.json" --include "/usage.json" --include "/trees/**" --include "/gbm_codes.npz"
+          [ -s data/hm2series/meta.json ] || { echo "::error::no HM2 series files of $A on Drive"; exit 1; }
+          for f in hm2_pack.json hm2_live_meta.json; do [ -s "research/oracle_heat/latest/$f" ] || { echo "::error::no research/oracle_heat/latest/$f (the league comes first)"; exit 1; }; done
+      - name: 'Parity (Dec 29-31, 2025: the live readers on a window against the history codes)'
+        working-directory: python
+        run: |
+          set -euo pipefail
+          # heat_hm2_league's parity ("python3 -m oracle.heat_hm2 parity" passes the same flags through)
+          W=$GITHUB_WORKSPACE; mkdir -p "$W/out/parity/$A"
+          mapfile -t F < "$W/data/flags.txt"
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2_league parity "${F[@]}" --main-meta "$W/data/metas/$A/meta.json" \
+            --series "$W/data/hm2series" --live-meta "$W/research/oracle_heat/latest/hm2_live_meta.json" \
+            --pack "$W/research/oracle_heat/latest/hm2_pack.json" --out "$W/out/parity/$A" --days 3 --procs 4 2>&1 | tee "$W/out/parity/$A.log"
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+          ls -la "$W/out/parity/$A"
+          (cd .. && bash deploy/drive_lab.sh put "$D/parity/$A" "out/parity/$A")
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-parity-${{ matrix.asset }}
+          path: out/parity
+          retention-days: 30
+
+  parity-commit:
+    needs: [test, parity]
+    if: ${{ !cancelled() && needs.test.result == 'success' && needs.test.outputs.parity == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RUN: ${{ needs.test.outputs.run }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hm2-parity-*
+          path: data/parity
+          merge-multiple: true
+      - name: live_ready in hm2_pack.json (99.5% of the checked minutes and a feed the bot has)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE
+          ls -la "$W/data/parity"
+          python3 -m oracle.heat_hm2_league live-ready --pack "$W/research/oracle_heat/latest/hm2_pack.json" --parity "$W/data/parity"
+      - name: Commit the pack and the parity summaries (aggregates only; a bot push starts no workflow)
+        env:
+          BR: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dst=research/oracle_heat/hm2/parity; mkdir -p "$dst"
+          for C in BTC ETH SOL XRP; do [ ! -f "data/parity/$C/parity.json" ] || cp "data/parity/$C/parity.json" "$dst/$C.json"; done
+          echo "$RUN $GITHUB_SHA parity_run=$GITHUB_RUN_ID" > "$dst/RUN"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$dst" research/oracle_heat/latest/hm2_pack.json
+          if git diff --cached --quiet; then echo "nothing new to commit"; exit 0; fi
+          git commit -q -m "Oracle HM2: live parity and live_ready of run $RUN (written by the oracle-hm2 workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::error::could not push the parity files"; exit 1
+
+  drill-parity:
+    needs: [test, preflight]
+    if: needs.test.outputs.drill_parity == 'true'
+    name: drill parity ${{ matrix.asset }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]      # never DOGE
+    env:
+      A: ${{ matrix.asset }}
+      RUN: ${{ needs.test.outputs.run }}
+      D: ${{ needs.test.outputs.drive }}
+      FOUND: ${{ needs.preflight.outputs.found }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Data (as the series jobs; 13-digit check and the cut at 2026-01-01), the units and the gate rows
+        run: |
+          set -euo pipefail
+          bash .github/scripts/oracle-hm2-data.sh series "$A" "$RUN" data "$FOUND"
+          bash deploy/drive_lab.sh get "$D/drill" data/drill --include "/units.json"
+          [ -s data/drill/units.json ] || { echo "::error::no units.json under $D/drill"; exit 1; }
+          [ -s research/oracle_heat/hm2/part3/gate_rows.json ] || { echo "::error::no research/oracle_heat/hm2/part3/gate_rows.json (the drill league comes first)"; exit 1; }
+      - name: 'Part 3 parity (Dec 29-31, 2025: own parameters and pct codes of every gate row''s conditions on a window against the history)'
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE; mkdir -p "$W/out/drill-parity/$A"
+          mapfile -t F < "$W/data/flags.txt"
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" python3 -m oracle.heat_hm2_drill parity "${F[@]}" --main-meta "$W/data/metas/$A/meta.json" \
+            --days 3 --units "$W/data/drill/units.json" --gates "$W/research/oracle_heat/hm2/part3/gate_rows.json" \
+            --out "$W/out/drill-parity/$A" 2>&1 | tee "$W/out/drill-parity/$A.log"
+          grep -E 'Maximum resident|Elapsed' "$RUNNER_TEMP/time.txt"
+          (cd .. && bash deploy/drive_lab.sh put "$D/drill/parity/$A" "out/drill-parity/$A")
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: hm2-drill-parity-${{ matrix.asset }}
+          path: out/drill-parity
+          retention-days: 30
+
+  drill-parity-commit:
+    needs: [test, drill-parity]
+    if: ${{ !cancelled() && needs.test.result == 'success' && needs.test.outputs.drill_parity == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RUN: ${{ needs.test.outputs.run }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt lightgbm==4.5.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hm2-drill-parity-*
+          path: data/drill-parity
+          merge-multiple: true
+      - name: live_ready on the gate rows (99.5% of the checked minutes and a feed the bot has)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          W=$GITHUB_WORKSPACE
+          ls -la "$W/data/drill-parity"
+          # own conditions from this run's drill parity; the other conditions' readings from HM2's parity (committed by parity-commit)
+          python3 -m oracle.heat_hm2_drill live-ready --pack "$W/research/oracle_heat/latest/hm2_pack.json" --parity "$W/data/drill-parity" \
+            --hm2-parity "$W/research/oracle_heat/hm2/parity"
+      - name: Commit the pack and the parity summaries (aggregates only; a bot push starts no workflow)
+        env:
+          BR: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dst=research/oracle_heat/hm2/part3/parity; mkdir -p "$dst"
+          for C in BTC ETH SOL XRP; do [ ! -f "data/drill-parity/$C/parity.json" ] || cp "data/drill-parity/$C/parity.json" "$dst/$C.json"; done
+          echo "$RUN $GITHUB_SHA drill_parity_run=$GITHUB_RUN_ID" > "$dst/RUN"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$dst" research/oracle_heat/latest/hm2_pack.json
+          if git diff --cached --quiet; then echo "nothing new to commit"; exit 0; fi
+          git commit -q -m "Oracle HM2 Part 3: live parity and live_ready of the gate rows of run $RUN (written by the oracle-hm2 workflow)"
+          for i in 1 2 3 4; do
+            if git pull -q --rebase origin "$BR" && git push -q origin "HEAD:$BR"; then echo pushed; exit 0; fi
+            sleep $((2 ** i))
+          done
+          echo "::error::could not push the Part 3 parity files"; exit 1
