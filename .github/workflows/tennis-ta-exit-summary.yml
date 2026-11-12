@@ -1,0 +1,60 @@
+name: Tennis TA exit summary
+
+# Information only: per F-arm episode table of a finished tennis TA sweep run, split by ENTRY leg (underdog vs
+# favourite), from the run's shards on Drive (research/tennis_ta_exit_summary.py). Asked for by a commit to
+# research/tennis-ta/summary-request.json: {"run": "<the sweep's run id>", "anchor": "<arm id, optional>", "note": "why"}.
+# Writes runs/<run>/report/exit-summary.md on Drive and posts the table as a comment on this commit. Reads only; it
+# never scores, registers or changes a run.
+on:
+  push:
+    branches: [claude/project-thread-7817be]
+    paths: [research/tennis-ta/summary-request.json]
+
+permissions:
+  contents: write
+
+jobs:
+  summary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Request
+        id: req
+        run: |
+          set -euo pipefail
+          F=research/tennis-ta/summary-request.json
+          RUN=$(jq -r '.run // empty | tostring' "$F"); ANCHOR=$(jq -r '.anchor // "A|s2|hs1prod|F1"' "$F")
+          [[ "$RUN" =~ ^[0-9]+$ ]] || { echo "::error::summary-request.json needs a numeric run id"; exit 1; }
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"; echo "anchor=$ANCHOR" >> "$GITHUB_OUTPUT"
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Shards
+        env:
+          RUN: ${{ steps.req.outputs.run }}
+        run: |
+          set -euo pipefail
+          rclone copy "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/shards" shards --include 'a-s*.json.gz'
+          ls shards | head -40; [ "$(ls shards | wc -l)" -ge 1 ] || { echo "::error::no shard files for run $RUN"; exit 1; }
+      - name: Summary
+        env:
+          RUN: ${{ steps.req.outputs.run }}
+          ANCHOR: ${{ steps.req.outputs.anchor }}
+        run: |
+          set -euo pipefail
+          python3 -I research/tennis_ta_exit_summary.py shards/*.json.gz --run "$RUN" --anchor "$ANCHOR" --out exit-summary.md
+          rclone copyto exit-summary.md "gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/report/exit-summary.md"
+      - name: Summary as a commit comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ steps.req.outputs.run }}
+        run: |
+          set -euo pipefail
+          { head -c 60000 exit-summary.md; echo; echo "Outputs: gdrive:kalshi-bot-archive/models/tennis-ta/runs/$RUN/report/exit-summary.md"; } > body.md
+          jq -Rs '{body: .}' body.md > req.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" --input req.json > /dev/null
