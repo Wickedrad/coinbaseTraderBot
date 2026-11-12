@@ -74,6 +74,7 @@ def read_shards(paths, arms):
                 e['ticker'] = tickers[k]
                 e['series'] = m.get('series') or tickers[k].split('-')[0]
                 e['close'] = m.get('close')
+                e['start'], e['start_pub'] = m.get('start'), m.get('startPublished') is True
                 e['won'] = None if ra is None else (ra == 1) == (k == 0)
                 out.append((r['id'], e))
     return out
@@ -118,7 +119,10 @@ def audit(e, tape):
     upto_exit = tape[i0:bisect.bisect_right(ts, t_exit)]
     upto_close = tape[i0:bisect.bisect_right(ts, close)]
     res = {'gap': None if before is None else round((px - before[1]) * 100, 2), 'last_before': before,
-           'n_after': len(upto_close), 'exit_ts': t_exit}
+           'n_after': len(upto_close), 'exit_ts': t_exit,
+           # Minutes from the entry to the market's last print (about when the match ended) and from the published start.
+           'to_end': (tape[-1][0] - t0) / 60000,
+           'from_start': None if not e.get('start') else (t0 - int(e['start'])) / 60000}
     for tag, seg in (('exit', upto_exit), ('close', upto_close)):
         res[f'hi_{tag}'] = max((x[1] for x in seg), default=None)
         res[f'lo_{tag}'] = min((x[1] for x in seg), default=None)
@@ -193,6 +197,23 @@ def main(argv=None):
             lost = sum(1 for e, _ in rr if e.get('won') is False) if x == 'settle' else None
             lines.append(f"| {rid.replace('|', chr(92) + '|')} | {x} | {n} | {net:+,.2f} | {pct(c[1], n)} | {pct(c[2], n)} | {pct(c[3], n)} | {pct(cb, n)} | {pct(c2, n)} | "
                          f"{med(mins)} | {med(lows)} | {'-' if lost is None else f'{lost} of {n}'} |")
+    lines += ['', '### When the entries came: phase the sim saw, published start, and the match\'s end on the tape', '',
+              'Phase = the sim\'s label at entry (pre = it saw no live match yet). Minutes from start = entry minus the market\'s '
+              'published start (negative = before it). Minutes to end = entry to the market\'s last print (about when the match '
+              'ended). A pre-match underdog entry normally has a whole match (1.5 to 3 h) ahead of it.', '',
+              '| arm | exit | trades | pre share | median min from published start | median min to end of tape | ends within 45 min | ends within 90 min |',
+              '|---|---|---|---|---|---|---|---|']
+    for rid, rows in sorted(by_arm.items()):
+        legs = defaultdict(list)
+        for e, r in rows:
+            if r:
+                legs[str(e.get('x') or '')].append((e, r))
+        for x, rr in sorted(legs.items(), key=lambda kv: sum(float(e.get('pnl') or 0) for e, _ in kv[1])):
+            n = len(rr)
+            fs = [r['from_start'] for e, r in rr if r['from_start'] is not None and e.get('start_pub')]
+            te = [r['to_end'] for _, r in rr]
+            lines.append(f"| {rid.replace('|', chr(92) + '|')} | {x} | {n} | {pct(sum(1 for e, _ in rr if e.get('ph') == 'pre'), n)} | {med(fs)} | {med(te)} | "
+                         f"{pct(sum(1 for t in te if t <= 45), n)} | {pct(sum(1 for t in te if t <= 90), n)} |")
     lines += ['', '### Losers: wrong from the start, or an exit the rules left on the tape', '',
               'Losing trades (net < 0) split by whether any print after the entry reached the entry + 2c before the exit.', '',
               '| arm | losers | net ($) | never +2c before exit | their net ($) | +2c on tape before exit | their net ($) | of which a bid hit +2c | their net ($) |', '|---|---|---|---|---|---|---|---|---|']
@@ -208,13 +229,14 @@ def main(argv=None):
         if not worst:
             continue
         lines += ['', f"### Worst {len(worst)} trades of {rid.replace('|', chr(92) + '|')}, with the tape", '',
-                  '| market | entry | entry px | last print before (px, side) | contracts | exit | held min | net ($) | high before exit | low before exit | high before close | player won |',
-                  '|---|---|---|---|---|---|---|---|---|---|---|---|']
+                  '| market | entry | phase | min from published start | min to end of tape | entry px | last print before (px, side) | contracts | exit | held min | net ($) | high before exit | low before exit | high before close | player won |',
+                  '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
         for e, r in worst:
             lb = r['last_before']
             lbs = '-' if lb is None else f"{lb[1]:.2f} {'YES' if lb[3] == 1 else 'NO'} taker"
             f2 = lambda v: '-' if v is None else f'{v:.2f}'
-            lines.append(f"| {e['ticker']} | {when(int(e['t']))} | {float(e['px']):.2f} | {lbs} | {float(e.get('n') or 0):.0f} | {e.get('x')} | "
+            fs = '-' if r['from_start'] is None or not e.get('start_pub') else f"{r['from_start']:.0f}"
+            lines.append(f"| {e['ticker']} | {when(int(e['t']))} | {e.get('ph')} | {fs} | {r['to_end']:.0f} | {float(e['px']):.2f} | {lbs} | {float(e.get('n') or 0):.0f} | {e.get('x')} | "
                          f"{float(e.get('hold') or 0) / 60:.0f} | {float(e.get('pnl') or 0):+.2f} | {f2(r['hi_exit'])} | {f2(r['lo_exit'])} | {f2(r['hi_close'])} | "
                          f"{'-' if e.get('won') is None else ('yes' if e['won'] else 'no')} |")
     text = '\n'.join(lines) + '\n'
