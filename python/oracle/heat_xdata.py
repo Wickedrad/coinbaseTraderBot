@@ -267,6 +267,12 @@ DOM_OTHER_FILES = {'caps_report.json': 'a report on the dominance sources, not a
 BOOKKEEPING = ('manifest.json', 'checked.json')
 
 
+def _is_bookkeeping(name: str) -> bool:
+    """Download bookkeeping at the top of a coin folder: manifest.json, checked.json and the per-source download
+    manifests (binance-manifest-<source>.json). They list what was downloaded, they hold no series."""
+    return name in BOOKKEEPING or (name.endswith('.json') and 'manifest' in name.lower())
+
+
 def _entries(x) -> list:
     """rclone lsjson entries (dicts with Path / IsDir) or plain paths -> relative file paths."""
     out = []
@@ -305,8 +311,9 @@ def inventory(drive_listing: dict, dom_dir) -> dict:
             key = folder.lower()
             if folder == '.':
                 row.update(family=None, reason='files at the top of the coin folder: ' + ', '.join(os.path.basename(f) for f in fs[:5]))
-                if not all(os.path.basename(f) in BOOKKEEPING for f in fs):
-                    out['unmapped'].append(f'{coin}/{fs[0]}')
+                stray = [f for f in fs if not _is_bookkeeping(os.path.basename(f))]
+                if stray:
+                    out['unmapped'] += [f'{coin}/{f}' for f in stray]
                     row['reason'] = None
             elif 'DOGE' in folder.upper():
                 row.update(family=None, reason='never DOGE: not read')

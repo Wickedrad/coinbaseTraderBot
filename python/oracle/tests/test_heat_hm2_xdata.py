@@ -637,7 +637,8 @@ def test_inventory():
     lst = {}
     for c in X.COINS:
         lst[c] = [{'Path': p, 'IsDir': False} for p in (f'binance-1m/{c}/1m.csv', f'binance-um/{c}/1m.csv', f'binance-um/{c}/1h.csv', 'binance-um/manifest.json',
-                                                         f'binance-funding/{c}/funding.csv', f'binance-oi/{c}/oi.csv', 'binance-1h/ETH/1h.csv')]
+                                                         f'binance-funding/{c}/funding.csv', f'binance-oi/{c}/oi.csv', 'binance-1h/ETH/1h.csv',
+                                                         'binance-manifest-binance-1h.json', 'manifest.json')]
     lst['BTC'] += ['binance-index/BTCDOM/1h.csv', 'coinbase/BTC/15m.csv', 'binance-1m/DOGE/1m.csv']
     lst['ETH'] += ['coinbase-1m/ETH/1m.csv']
     inv = X.inventory(lst, dom)
@@ -656,6 +657,11 @@ def test_inventory():
     assert not inv2['ok'] and inv2['missing'] == ['raw/perp-ta-history/SOL/binance-oi/SOL/oi.csv'] and inv2['unmapped'] == ['XRP/kraken-1m']
     inv3 = X.inventory(lst, list(os.listdir(dom)) + ['NEW_1d.csv'])
     assert not inv3['ok'] and inv3['unmapped'] == ['research/btcd_fractal/data/NEW_1d.csv']
+    # download manifests at the top of a coin folder are bookkeeping; any other top-level file is not
+    lst5 = {c: list(v) for c, v in lst.items()}
+    lst5['ETH'].append('notes.json')
+    inv5 = X.inventory(lst5, dom)
+    assert not inv5['ok'] and inv5['unmapped'] == ['ETH/notes.json']
     inv4 = X.inventory(lst, [f for f in os.listdir(dom) if f != 'SPX_1d.csv'])
     assert inv4['missing'] == ['research/btcd_fractal/data/SPX_1d.csv']
 
