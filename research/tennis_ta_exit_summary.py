@@ -29,9 +29,14 @@ def episodes(path):
     if not isinstance(runs, list):
         raise ValueError(f'{os.path.basename(path)}: not a shard file (runs expected)')
     cols = meta.get('episodeCols') or DEFAULT_EP_COLS
+    ml = d.get('matchList') or []
+    tours = ['ATP' if 'KXATPMATCH' in str(m.get('event') or '') else 'WTA' if 'KXWTAMATCH' in str(m.get('event') or '') else '?' for m in ml]
     out = {}
     for r in runs:
         eps = [dict(zip(cols, row)) for row in (r.get('episodes') or [])]
+        for e in eps:
+            mi = e.get('m')
+            e['tour'] = tours[mi] if isinstance(mi, int) and 0 <= mi < len(tours) else '?'
         out[r['id']] = {'fill': r.get('fill'), 'window': r.get('window') is True, 'placebo': r.get('placebo'), 'eps': eps}
     return meta, out
 
@@ -64,6 +69,8 @@ def main(argv=None):
     ap.add_argument('--run', default='')
     ap.add_argument('--anchor', default='A|s2|hs1prod|F1')
     ap.add_argument('--out', default='')
+    ap.add_argument('--detail', default='A|s2|hs1prod|F1,A|s2|hold70|F1,A|s2|mk25pct|F1,A|s2|mkprod|F1,A|s2|fp0|F1,A|s2|lstop60|F1',
+                    help='arms broken down by entry price band, tour and phase (underdog leg)')
     a = ap.parse_args(argv)
     arms, metas = {}, []
     for p in sorted(a.shards):
@@ -98,6 +105,23 @@ def main(argv=None):
         xs = ', '.join(f'{x} {c}' for x, c in u['xs'])
         lines.append(f"| {rid.replace('|', chr(92) + '|')} | {fill} | {u['n']} | {100 * u['win']:.1f} | ${u['net']:,.2f} | {u['per']:+.3f} | {vs} | ${u['dep']:,.0f} | "
                      f"{u['per100']:+.2f} | {u['med_min']:.1f} | {u['br']} | {xs} | {f['n']} | ${f['net']:,.2f} | ${t['net']:,.2f} |")
+    detail = [x for x in a.detail.split(',') if x in arms]
+    if detail:
+        lines += ['', '### Underdog leg by entry price band, tour and phase (information; in-sample slices of the choosing days)', '',
+                  'Each cell: entries / net per entry ($) / win %.', '']
+        def cell(eps):
+            st = stats(eps)
+            return f"{st['n']} / {st['per']:+.2f} / {100 * st['win']:.0f}" if st['n'] else '-'
+        bands = [('<0.12', 0, 0.12), ('0.12-0.18', 0.12, 0.18), ('0.18-0.26', 0.18, 0.26), ('>=0.26', 0.26, 2)]
+        phases = ['pre', 'e20', 'p1', 'p2', 'p3']
+        lines += ['| arm | ' + ' | '.join(b[0] for b in bands) + ' | ATP | WTA | ' + ' | '.join(phases) + ' |',
+                  '|---|' + '---|' * (len(bands) + 2 + len(phases))]
+        for rid in detail:
+            ud = [e for e in arms[rid]['eps'] if leg_group(e.get('leg')) == 'underdog']
+            cells = [cell([e for e in ud if lo <= float(e.get('px') or 0) < hi]) for _, lo, hi in bands]
+            cells += [cell([e for e in ud if e.get('tour') == t]) for t in ('ATP', 'WTA')]
+            cells += [cell([e for e in ud if e.get('ph') == ph]) for ph in phases]
+            lines.append(f"| {rid.replace('|', chr(92) + '|')} | " + ' | '.join(cells) + ' |')
     text = '\n'.join(lines) + '\n'
     if a.out:
         with open(a.out, 'w') as fh:
