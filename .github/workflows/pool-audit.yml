@@ -7,7 +7,7 @@ name: Paper pool audit
 on:
   push:
     branches: [claude/project-thread-mrqen7]
-    paths: ['.github/workflows/pool-audit.yml', 'deploy/pool_audit.py']
+    paths: ['.github/workflows/pool-audit.yml', 'deploy/pool_audit.py', 'deploy/pool_zoom.py', 'deploy/pool_audit.cfg']
   workflow_dispatch:
 
 permissions:
@@ -72,12 +72,20 @@ jobs:
           echo "audit files on the server: $(wc -l < "$RUNNER_TEMP/server-audit.txt")"
           # a file is needed when data/audit lacks it, or the server copy is a still-growing current day (always re-copied)
           today=$(date -u +%F); yday=$(date -u -d yesterday +%F)
+          source deploy/pool_audit.cfg
           : > "$RUNNER_TEMP/need.txt"
           while read -r f; do
+            [[ "$f" < "audit-$FROM" ]] && continue
             if [ ! -e "data/audit/$f" ] || [[ "$f" == audit-$today* ]] || [[ "$f" == audit-$yday* ]]; then echo "$f" >> "$RUNNER_TEMP/need.txt"; fi
           done < "$RUNNER_TEMP/server-audit.txt"
           echo "to copy from the server: $(wc -l < "$RUNNER_TEMP/need.txt")"; cat "$RUNNER_TEMP/need.txt"
           [ -s "$RUNNER_TEMP/need.txt" ] && rsync -a --whole-file --bwlimit=8000 --rsync-path="nice -n 19 rsync" --files-from="$RUNNER_TEMP/need.txt" bot:bot/data/audit/ data/audit/ || true
           du -sh data/audit; ls data/audit | wc -l
       - name: Pool audit report
-        run: python3 deploy/pool_audit.py data 2>&1 | tee data/pool-audit.txt | cut -c1-400
+        run: |
+          source deploy/pool_audit.cfg
+          if [ "$MODE" = zoom ]; then
+            python3 deploy/pool_zoom.py data "$W1_FROM" "$W1_TO" "$W2_FROM" "$W2_TO" 2>&1 | cut -c1-500
+          else
+            python3 deploy/pool_audit.py data 2>&1 | tee data/pool-audit.txt | cut -c1-400
+          fi
