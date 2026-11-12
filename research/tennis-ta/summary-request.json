@@ -1,7 +1,6 @@
 {
-  "run": "43237241052",
+  "run": "43240602157",
   "anchor": "A|s2|hs1prod|F1",
   "detail": "all",
-  "tape": "A|s2|hs1prod|F1,A|s2|fp0|F1,A|s2|mkprod|F1",
-  "note": "Raw-tape audit, third pass (calendar 10y): adds the share of entries whose market stopped trading before the published start. Information only."
+  "note": "Random baseline (calendar 10t/10aa): four exit settings, maker and taker entry, F1 and coin placebo. Information only."
 }
