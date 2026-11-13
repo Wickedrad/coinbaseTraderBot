@@ -444,6 +444,35 @@ class DailyLoopTests(unittest.TestCase):
         self.assertNotIn(classes[0], out['classes'])                    # the class that cost least is the one left out
         self.assertIn(classes[-1], out['classes'])
 
+    def test_the_days_hypothesis_cap_is_spent_on_the_costliest_class_first(self):
+        # the dry run on Nov 12 lost the costliest class (WRONG_SIDE, last in the class list) to the day's cap of 6
+        w = tempfile.mkdtemp()
+        os.makedirs(os.path.join(w, 'days'))
+        order = {'FEE_ONLY': 1.0, 'CUT_THEN_WON': 3.0, 'RIGHT_THEN_REVERSED': 2.0, 'WRONG_SIDE': 9.0}      # dollars lost per trade
+        rows = []
+        for ci, (cls, loss) in enumerate(order.items()):
+            for i in range(daily.HYP_MIN_LOSERS):
+                rows.append({'ticker': 'KXBTC15M-%s-%d' % (cls, i), 'entry_t': D0 + ci * 10000 + i, 'closed_t': D0 + ci * 10000 + i + 300, 'entry_px': 0.5,
+                             'pnl': -loss, 'class': cls, 'fidelity_flag': False, 'coin': 'BTC', 'count': 20})
+        g = day_name(0)
+        with open(os.path.join(w, 'days', 'trips-%s.jsonl' % g), 'w') as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + '\n')
+        wd = daily.workdir(w, g)
+        self.assertEqual(daily.prepare_hyp(w, g)['classes'], ['WRONG_SIDE', 'CUT_THEN_WON', 'RIGHT_THEN_REVERSED', 'FEE_ONLY'])
+        self.assertEqual(daily.hyp_order(wd)[:4], ['WRONG_SIDE', 'CUT_THEN_WON', 'RIGHT_THEN_REVERSED', 'FEE_ONLY'])
+        for cls in order:
+            respond(os.path.join(wd, 'hyp-%s.response.json' % cls), [dict(HYP, id='idea-%s' % cls.lower().replace('_', '-'), loss_class=cls)])
+        daily.HYP_PER_DAY, keep = 2, daily.HYP_PER_DAY
+        try:
+            out = daily.apply_hyp(w, g)
+        finally:
+            daily.HYP_PER_DAY = keep
+        self.assertEqual(out['adv_ids'], ['idea-wrong-side', 'idea-cut-then-won'])     # the two costliest classes, not the first two in the class list
+        # a day prepared before the order was kept still gets every class in the class list order
+        os.remove(os.path.join(wd, 'hyp-order.json'))
+        self.assertEqual(daily.hyp_order(wd), list(daily.REVIEW_CLASSES))
+
 
 if __name__ == '__main__':
     unittest.main()

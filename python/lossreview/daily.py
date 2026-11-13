@@ -186,7 +186,16 @@ def prepare_hyp(w, day):
         with open(os.path.join(wd, 'hyp-%s.prompt.txt' % cls), 'w', encoding='utf-8') as fh:
             fh.write(prompts.build_hypothesis_prompt(cls, cr[:HYP_ROWS], agg, known))
         written.append(cls)
+    _dump(os.path.join(wd, 'hyp-order.json'), written)      # the day's cap on hypotheses is spent in this order (costliest class first)
     return {'classes': written}
+
+
+def hyp_order(wd):
+    """The classes prepare-hyp asked about, costliest first, then any other class (a day prepared before the order was kept)."""
+    p = os.path.join(wd, 'hyp-order.json')
+    order = _read_json(p) if os.path.exists(p) else None
+    order = [c for c in order if c in REVIEW_CLASSES] if isinstance(order, list) else []
+    return order + [c for c in REVIEW_CLASSES if c not in order]
 
 
 def _spec_key(h):
@@ -204,7 +213,7 @@ def apply_hyp(w, day):
     seen_ids = set(reg.state)
     seen_specs = {_spec_key(s['rule']) for s in reg.state.values() if s['kind'] == 'hypothesis'}
     ok_h, bad, curve = [], 0, 0
-    for cls in REVIEW_CLASSES:
+    for cls in hyp_order(wd):       # costliest class first: when the day's cap bites it is the cheapest class that loses its hypotheses
         p = os.path.join(wd, 'hyp-%s.response.json' % cls)
         resp = _read_json(p) if os.path.exists(p) else None
         items = resp if isinstance(resp, list) else (resp or {}).get('hypotheses') if isinstance(resp, dict) else None

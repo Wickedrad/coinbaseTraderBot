@@ -74,7 +74,7 @@ the ids it wrote adversary prompts for (`adv_ids`), `prepare-hyp` the classes it
    screen each reply.
 4. `apply-hyp`: dispatch `day=D stages=apply-hyp,budget responses={hyp-CLASS: screened...} usage=hypothesize:IN:OUT:ITEMS`
    (`apply-hyp` validates every hypothesis: ex-ante columns only, closed lever set, at most 12 thresholds and 2 neighbors, at most 3 a
-   class and 6 a day, unique ids, and no repeat of an idea already registered, refuted ones included; it writes the adversary
+   class and 6 a day (spent costliest class first, in the order `prepare-hyp` kept in `hyp-order.json`), unique ids, and no repeat of an idea already registered, refuted ones included; it writes the adversary
    prompts with the blind winner control). For each id in `adv_ids`, a Sonnet subagent reads `adv-ID.prompt.txt` (it sees the
    hypothesis and aggregates only, never a ticker); screen each reply.
 5. `apply-adv`: dispatch `day=D stages=apply-adv,sweep,shadow,status,done responses={adv-ID: screened...} usage=adversary:IN:OUT:ITEMS`:
