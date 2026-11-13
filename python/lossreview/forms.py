@@ -99,7 +99,7 @@ ADVERSARY_KEYS = ('hypothesis_id', 'verdict', 'reasons', 'note')
 
 # Per-trade identifiers and raw clock times: ex-ante in the registry, but a rule keyed on one is a per-trade rule, and
 # citing one carries the trade into the hypothesis record. (The time left in the window is left_at_entry_s.)
-IDENTIFIER_COLUMNS = frozenset({'ticker', 'entry_utc', 'entry_t', 'window_close_t'})
+IDENTIFIER_COLUMNS = frozenset({'ticker', 'entry_utc', 'entry_t', 'window_close_t', 'order_t'})
 # Columns that hold a label, not a number: lt, gt and between make no sense on them.
 CATEGORICAL_COLUMNS = frozenset({'kind', 'coin', 'side', 'call_kind', 'call_key', 'dir', 'context', 'era', 'lane'})
 

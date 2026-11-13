@@ -47,5 +47,4 @@ jobs:
           DAY="$INPUT_DAY"
           if [ "$GITHUB_EVENT_NAME" = push ]; then DAY=$(head -1 .github/loss-review-trigger.txt | tr -d '[:space:]'); fi
           if [ -z "$DAY" ]; then DAY=$(date -u -d 'yesterday' +%F); fi
-          python3 -m unittest discover -s python/lossreview/tests -t python -q
           bash .github/scripts/loss_review_run.sh "$DAY"

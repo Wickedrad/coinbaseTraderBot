@@ -2,6 +2,7 @@
 // pass, and it must read an audit log as the bot's own AuditLog writes it. Skipped without a python3.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { test } from 'node:test';
 import { AuditLog } from '../bot/audit/auditLog';
@@ -55,7 +56,10 @@ test('loss review: a trip is rebuilt from the audit log the bot writes (call, fi
   assert.equal(s.trips, 1);
   assert.equal(s.defect_sales, 0);
   assert.equal(s.fidelity_flagged, 0);
-  assert.ok(Math.abs(s.net - 2.05) < 1e-9, `net ${s.net}`);
-  assert.ok(Math.abs(s.fees - 0.35) < 1e-9, `fees ${s.fees}`);   // the fills' own fees, not an estimate
+  // one trip is a cell under five: the job log prints no dollar figure for it; the private aggregate file has them
+  assert.equal(s.net, undefined, 'a cell of one trip prints no dollars');
+  const agg = JSON.parse(fs.readFileSync(path.join(dir, 'out', 'agg-2026-11-12.json'), 'utf8'));
+  assert.ok(Math.abs(agg.net - 2.05) < 1e-9, `net ${agg.net}`);
+  assert.ok(Math.abs(agg.fees - 0.35) < 1e-9, `fees ${agg.fees}`);   // the fills' own fees, not an estimate
   assert.ok(!/KXBTC/.test(r.stdout), 'the job log prints no ticker');
 });

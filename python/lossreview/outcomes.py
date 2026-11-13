@@ -51,11 +51,13 @@ def bid_at(candles, side, t, which='close'):
 
 
 def held_range(candles, side, t0, t1):
-    """(best, worst) side bid over candles overlapping (t0, t1]; (None, None) when none does."""
+    """(best, worst) side bid over the candles that lie wholly inside [t0, t1]; (None, None) when none does (a hold under a
+    minute, or no candle). A candle that straddles the entry or the exit would count a price from before the entry or after the
+    exit as one the trip could have sold at."""
     hi = lo = None
     for c in candles:
         e = _end(c)
-        if e <= t0 or e - 60 >= t1:
+        if e - 60 < t0 or e > t1:
             continue
         h, l = side_bid(c, side, 'high'), side_bid(c, side, 'low')
         if h is not None and (hi is None or h > hi):
@@ -85,7 +87,7 @@ def spot_after(spot, t):
 def join(trip, market, candles, spot):
     """The trip dict with the market and path columns added (a copy). Columns that cannot be built stay None."""
     out = dict(trip)
-    side, e0, e1 = trip['side'], trip['entry_t'], trip['closed_t']
+    side, e0, e1 = trip['side'], trip.get('order_t', trip['entry_t']), trip['closed_t']   # e0: the order cannot be later than its first fill
     candles = sorted(candles, key=_end)
     strike = _f((market or {}).get('floor_strike'))
     if strike is None:

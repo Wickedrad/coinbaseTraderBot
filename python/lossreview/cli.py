@@ -21,7 +21,7 @@ def pct(x):
     return '-' if x is None else '%.1f%%' % (100 * x)
 
 
-def render(t, stake_bad, no_bad):
+def render(t, stake_bad, no_bad, fill_bad=()):
     L = []
     L.append('# Loss review: code triage and fee ledger')
     L.append('')
@@ -53,6 +53,10 @@ def render(t, stake_bad, no_bad):
     L.append('## Input checks')
     L.append('')
     L.append('- count x price paid does not explain the stake on %d trips; a NO buy not priced at 1 minus the YES-terms price on %d.' % (len(stake_bad), len(no_bad)))
+    if t.get('no_pnl'):
+        L.append('- %d trips had no P&L or fills and are left out of every figure above.' % t['no_pnl'])
+    if fill_bad:
+        L.append('- the entry fill price is more than 6c from the plan price on %d trips.' % len(fill_bad))
     L.append('')
     return '\n'.join(L)
 

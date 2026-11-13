@@ -44,7 +44,8 @@ def summarize(rows, classified):
     t = {'trips': len(pairs), 'net': sum(pnl), 'fees': sum(c['fees'] for _, c in pairs),
          'entry_fees': sum(c['entry_fee'] for _, c in pairs), 'exit_fees': sum(c['exit_fee'] for _, c in pairs),
          'gross': sum(c['gross'] for _, c in pairs), 'hours': hours,
-         'max_residual': max((c['residual'] for _, c in pairs), default=0.0)}
+         'max_residual': max((c['residual'] for _, c in pairs), default=0.0),
+         'no_pnl': len(rows) - len(pairs)}   # trips without a P&L or fills: left out of every figure, counted here
     if hours:
         t.update({k + '_per_h': t[k] / hours for k in ('net', 'fees', 'gross', 'trips')})
     losers = [(r, c) for r, c in pairs if c['primary'] != 'WIN']
@@ -102,3 +103,16 @@ def check_no_price(rows):
         except (KeyError, ValueError):
             continue
     return bad
+
+
+def check_fill_vs_plan(rows, tol=0.06):
+    """Tickers of builder rows whose actual entry fill price is more than `tol` from the plan's side price: a YES price used for
+    a NO buy (or the reverse) shows up here, which check_no_price cannot see on builder rows (their entry_px is derived from the plan)."""
+    out = []
+    for r in rows:
+        try:
+            if abs(float(r['entry_fill_px']) - float(r['entry_px'])) > tol:
+                out.append(r.get('ticker'))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out

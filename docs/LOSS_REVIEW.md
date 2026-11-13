@@ -36,7 +36,9 @@ shadow until the owner says so (`Registry.owner_ok`).
 `drive-archive.yml` copies each finished UTC day's audit log to Drive at 07:20 UTC. `loss-review.yml` (11:30 UTC = 6:30 AM EST
 daily, or on demand) pulls the day before, the day and the day after, runs `nightly.py`, and puts `trips-DAY.jsonl`
 (per-trade: private), `agg-DAY.json` and `report-DAY.md` (aggregates) under `derived/loss-review/days` on Drive. The log prints
-aggregates only. The day-after file only supplies settlements that land just after midnight; the result is also read from
+aggregates only, and a dollar figure is printed only for a cell of 5 trips or more (a cell of one is a trade); the full table is
+in the private report on Drive. A day with audit records but no heat trip writes empty files (a notice, not a failure); a day
+with no audit on Drive, or no record at all, fails the run. The day-after file only supplies settlements that land just after midnight; the result is also read from
 Kalshi's public market endpoint.
 
 ```
@@ -48,26 +50,38 @@ LOSSREVIEW_TRIPS=TRIPS.csv ... unittest ...                         # adds the N
 
 ## What the trip file holds
 
-- **Ex-ante block** (known at the call or the order): coin, kind, side, curve columns, plan price and count, window position,
-  call age. **Fill block** (known once the entry filled): actual entry price, fee, taker or maker. **Outcome block**: P&L,
+- **Ex-ante block** (known at the call or the order): coin, kind, side, curve columns, the PLAN's price, count and stake
+  (`entry_px`, `count`, `stake`; the `*_plan` duplicates), window position, call age. **Fill block** (known once the entry
+  filled, a minute later): the actual entry price, count and stake (`entry_fill_px`, `count_filled`, `stake_filled`), fee, taker
+  or maker. A hypothesis can lean on the plan and never on the fill; `order_t` (the order cannot be later than its first fill)
+  is the cutoff for anything "known at the order" and is not itself a feature. **Outcome block**: P&L,
   exit rule and each sale leg, the bid path, the result. `schema.COLUMNS` tags every column with when it is known;
   `outcomes.py` keeps the spot of the last closed minute before the entry (`spot_pre_*`, clean) apart from the entry
   minute's close (`spot_entry`, a leak).
 - **Break-even floor per sale.** Each sale leg carries `below_breakeven` (net of entry price, its share of the entry fee and its
   own fee) and its plan rule. Sales under the line from a rule other than the loser cut or the end rule are defects for the
   exit owner (`defect_sale`, `defect_dollars`): they are reported, never swept.
-- **Fidelity.** A trip whose fills do not explain its logged P&L (within $0.10), a fill logged twice, or an orphan fill is
-  flagged and kept out of every sweep (class FIDELITY).
+- **Fidelity.** A trip whose fills do not explain its logged P&L (within $0.10), a fill logged twice (same trade id, or the
+  same day present as a plain and a gzipped file), an orphan fill, or a remainder held to the end whose result is not known yet
+  (`unresolved`, finished from Kalshi's public market record by `builder.resolve_payout`) is flagged and kept out of every sweep
+  (class FIDELITY). A sale leg is matched to its plan event from 5 s after to 180 s before the fill (the engine writes the event
+  right after it sends the sale); a trip that sold part and held the rest ends as `settled`.
 
 ## The sweep's rules of evidence
 
 - One class at a time; dollars go to one class only; day-0 classes are post hoc and are never evidence.
-- Scored only on days after the last day that generated the hypothesis. Each candidate (a threshold, or a quartile of a
-  neighbor feature) is a trial; the verdict uses a Bonferroni correction over the candidates the hypothesis tried and BH over
-  the registry (the 56 variants of the earlier levers study count as the first trials).
+- Scored only on days strictly after the last day that generated the hypothesis (a hypothesis with no generating days is
+  refused). Each candidate (a threshold, or a tail or quartile of a neighbor feature) is a trial.
+- Fixed looks: a hypothesis is read once at 4, once at 8 and once at 12 scoring days, always the first N days after the
+  generating ones, and never nightly (so there is no optional stopping). The p-value of a look carries a Bonferroni correction
+  over the candidates that can pass the floor times the three looks; Benjamini-Hochberg (q = 0.1) then runs across the
+  registry, whose family size is the 56 trials of the earlier levers study plus every registered item.
 - One control per lever: a skip is compared with a random skip of the same count, a dial with the same multiplier on trips of
-  the same price bucket (exact expectation, not a draw). The test is the day-pooled gap with its own standard error: days are the
-  independent windows. At least 4 days and 100 flagged trips; a skip rule must leave 85% of the trips.
+  the same price bucket (exact expectation, not a draw). The test is the day-pooled gap with its own standard error (days are
+  the independent windows, a one-sided Student t with days - 1 degrees of freedom) **and** a positive absolute gain: beating
+  the placebo while losing money is not a pass. At least 4 days and 100 flagged trips. A skip rule must leave 85% of the trips:
+  a candidate that cannot (judged from the features alone, before any scoring) is dropped, and a dial multiplier under 0.25 is
+  a skip in disguise and is refused.
 - Maker, strike and exit levers cannot be priced from the trip file: the sweep writes a replay request for the owner of that
   replay (`replay_request`), one control per lever, same rule about days.
 - First-order dollars only (a skip removes the trip, a dial scales it). Integer contract counts, fee rounding and the effect of

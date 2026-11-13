@@ -37,8 +37,11 @@ COLUMNS = {
     'entry_px_plan': (ORDER, 'side price the plan asked'), 'count_plan': (ORDER, ''), 'stake_plan': (ORDER, ''),
     'window_close_t': (CALL, 'epoch seconds'), 'entry_t': (ORDER, 'epoch seconds'), 'lane': (CALL, ''),
     # what the fills showed: known once the entry filled (plus 60 s) or when the trip closed
+    'entry_fill_px': (P60, 'actual side price of the entry fills'), 'count_filled': (P60, ''), 'stake_filled': (P60, ''),
     'entry_taker': (P60, 'every entry fill was a taker'), 'entry_maker_any': (P60, 'some entry fill rested'),
     'entry_fee': (P60, 'actual fee of the entry fills'), 'exit_fee': (CLOSE, ''), 'exit_px': (CLOSE, ''), 'fees': (CLOSE, ''),
+    'order_t': (ORDER, 'epoch seconds of the first entry fill or the plan, whichever came first'),
+    'sale_revenue': (CLOSE, 'cash from the sale legs'), 'unresolved': (CLOSE, 'a remainder is held and its result is not known yet'),
     'closed_t': (CLOSE, ''), 'pnl_fills': (CLOSE, ''), 'pnl_gap': (CLOSE, ''), 'pnl_source': (CLOSE, ''),
     'held_to_end': (CLOSE, ''), 'n_sale_legs': (CLOSE, ''), 'legs': (CLOSE, ''), 'defect_sale': (CLOSE, ''),
     'defect_dollars': (CLOSE, ''), 'fee_estimated': (CLOSE, ''), 'orphan_fill': (CLOSE, ''), 'dup_fills': (CLOSE, ''), 'fidelity_flag': (CLOSE, ''),

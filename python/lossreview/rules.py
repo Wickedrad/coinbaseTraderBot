@@ -9,6 +9,7 @@ layer's winner control all call it. A row that lacks a feature is never flagged.
 """
 import hashlib
 import json
+import math
 
 from . import schema
 
@@ -16,6 +17,7 @@ OPS = ('lt', 'gt', 'between', 'eq')
 LEVERS = ('dial', 'maker', 'strike', 'exit', 'skip')
 SCORED_LEVERS = ('skip', 'dial')          # the sweep prices these from the trip file; the others need a replay
 MAX_ALSO = 2
+MIN_MULTIPLIER = 0.25   # a dial that shrinks below this is a skip in disguise and would dodge the trips/h floor
 RULE_KEYS = ('id', 'lever', 'feature', 'op', 'threshold', 'also', 'multiplier', 'loss_class')
 
 
@@ -28,15 +30,36 @@ def _num(v):
         return None
 
 
+def _is_number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _eq_key(v):
+    """Comparable form for an eq test: numbers compare as numbers (1 equals 1.0 equals '1.0'), booleans as true/false, other
+    values as lower-cased text."""
+    if isinstance(v, bool):
+        return 'true' if v else 'false'
+    if _is_number(v):
+        return float(v)
+    s = str(v).strip().lower()
+    if s in ('true', 'false'):
+        return s
+    try:
+        return float(s)
+    except ValueError:
+        return s
+
+
 def test_one(feature, op, threshold, row):
     """True / False, or None when the row has no usable value for the feature."""
     v = row.get(feature)
     if v is None or v == '':
         return None
     if op == 'eq':
-        return str(v).strip().lower() in (str(t).strip().lower() for t in (threshold if isinstance(threshold, (list, tuple)) else [threshold]))
+        want = {_eq_key(t) for t in (threshold if isinstance(threshold, (list, tuple)) else [threshold])}
+        return _eq_key(v) in want
     x = _num(v)
-    if x is None:
+    if x is None or not math.isfinite(x):
         return None
     if op == 'lt':
         return x < float(threshold)
@@ -59,6 +82,11 @@ def hit(rule, row):
     return True
 
 
+def _finite(v):
+    x = _num(v)
+    return x is not None and math.isfinite(x)
+
+
 def validate_rule(rule):
     """(ok, errors): ex-ante features only, closed lever set, well-formed thresholds, at most MAX_ALSO extra tests."""
     errs = []
@@ -78,14 +106,19 @@ def validate_rule(rule):
             errs.append('op must be one of %s' % (OPS,))
         elif t['op'] == 'between':
             th = t.get('threshold')
-            if not (isinstance(th, (list, tuple)) and len(th) == 2 and _num(th[0]) is not None and _num(th[1]) is not None and float(th[0]) < float(th[1])):
-                errs.append('between needs [lo, hi] with lo < hi')
-        elif t['op'] != 'eq' and _num(t.get('threshold')) is None:
-            errs.append('threshold must be a number')
+            if not (isinstance(th, (list, tuple)) and len(th) == 2 and all(_finite(x) for x in th) and float(th[0]) < float(th[1])):
+                errs.append('between needs finite [lo, hi] with lo < hi')
+        elif t['op'] == 'eq':
+            th = t.get('threshold')
+            vals = th if isinstance(th, (list, tuple)) else [th]
+            if not vals or any(v is None or (isinstance(v, str) and not v.strip()) or (_is_number(v) and not math.isfinite(v)) for v in vals):
+                errs.append('eq needs at least one non-empty value')
+        elif not _finite(t.get('threshold')):
+            errs.append('threshold must be a finite number')
     if rule.get('lever') == 'dial':
         m = _num(rule.get('multiplier'))
-        if m is None or not (0.0 < m < 1.0):
-            errs.append('a dial rule needs a multiplier between 0 and 1 (it only shrinks)')
+        if m is None or not (MIN_MULTIPLIER <= m < 1.0):
+            errs.append('a dial rule needs a multiplier from %.2f up to (not including) 1: it only shrinks, and below that it is a skip' % MIN_MULTIPLIER)
     return (not errs), errs
 
 

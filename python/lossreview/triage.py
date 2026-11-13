@@ -17,7 +17,7 @@ from .fees import taker_fee, net_if_sold, implied_exit
 
 LOSER_CLASSES = ('FIDELITY', 'OTHER_LANE', 'FEE_ONLY', 'CUT_THEN_WON', 'SOLD_THEN_WON', 'RIGHT_THEN_REVERSED',
                  'WRONG_SIDE', 'UNEXPLAINED', 'UNKNOWN_DATA')
-CUT_EVENTS = ('plan_loser_cut_sell',)
+CUT_EVENTS = ('plan_loser_cut_sell', 'loser_cut')   # the audit's event name (study files) and the builder's exit rule name
 MIN_EDGE = 0.01  # a profitable exit must clear both fees by at least 1c a contract (the one test's margin)
 
 
@@ -38,7 +38,10 @@ def flag(row, key):
 
 def economics(row):
     """Gross, fees and fee share of one trip from its own P&L: the exit price is the one that explains the P&L."""
-    count, e, pnl = num(row, 'count'), num(row, 'entry_px'), num(row, 'pnl')
+    # Builder rows: what filled (count_filled, entry_fill_px) when there is one, else the plan's count and price.
+    count = num(row, 'count_filled') if num(row, 'count_filled') is not None else num(row, 'count')
+    e = num(row, 'entry_fill_px') if num(row, 'entry_fill_px') is not None else num(row, 'entry_px')
+    pnl = num(row, 'pnl')
     if count is None or e is None or pnl is None:
         return None
     count = int(count)
@@ -67,7 +70,10 @@ def reachable(row, eco):
     if eco is None:
         return None, False
     held = num(row, 'best_bid_held')
-    bids = [b for b in [held] + [num(row, k) for k in ('bid_entry_min', 'bid_1m', 'bid_2m', 'bid_5m')] if b is not None]
+    hold = num(row, 'hold_s')
+    # a sampled bid counts only when its moment fell inside the hold (bid_Nm is the bid N minutes after the order)
+    sampled = [num(row, 'bid_entry_min')] + [num(row, k) for k, secs in (('bid_1m', 60), ('bid_2m', 120), ('bid_5m', 300)) if hold is None or hold >= secs]
+    bids = [b for b in [held] + sampled if b is not None]
     if not bids:
         return None, False
     ok = net_if_sold(eco['count'], eco['entry_px'], eco['entry_fee'], min(max(bids), 0.99)) >= MIN_EDGE * eco['count']

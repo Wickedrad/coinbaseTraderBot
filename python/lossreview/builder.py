@@ -25,7 +25,9 @@ EXIT_RULES = {'plan_ratchet_sell': 'ratchet', 'plan_loser_cut_sell': 'loser_cut'
 # Sales that may land under the round-trip cost: the loser cut (by design) and the end-of-window exit.
 ALLOWED_BELOW = ('loser_cut', 'end_rule')
 SALE_MATCH_S = 180.0      # a plan sale event precedes the fill of its order by seconds; the event within this is its rule
-ENTRY_SLACK_S = 5.0       # fills of the market counted from this long before the entry record
+SALE_AFTER_S = 5.0        # ... or follows it by a few milliseconds (the event is written after the send returns)
+ENTRY_SLACK_S = 30.0      # fills of the market counted from this long before the entry record (clock skew), never before the last close
+EXIT_SLACK_S = 10.0       # ... and until this long after the close record
 RECON_TOL = 0.10          # a trip whose fills explain its logged P&L within this is reconciled
 WINDOW_S = {'15m': 900, 'hourly': 3600}
 MONTHS = {m: i + 1 for i, m in enumerate('JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC'.split())}
@@ -102,7 +104,11 @@ def exante(entry_t, d, ticker, closed=None, order_close_ms=None):
         'heat': d.get('heat'), 'fired': d.get('fired'), 'against': d.get('against'), 'context': d.get('context'),
         'weight': plan.get('weight'), 'slot': plan.get('slot'),
         'plan_price': plan_price, 'entry_px_plan': side_price(side, plan_price) if plan_price is not None and side else None,
+        'entry_px': side_price(side, plan_price) if plan_price is not None and side else None,
         'count_plan': plan.get('count'), 'stake_plan': plan.get('stakeUsd'),
+        # entry_px, count and stake are the PLAN's values (known when the order went out); what filled is in entry_fill_px,
+        # count_filled and stake_filled (known later) so a hypothesis can never lean on the fill.
+        'count': plan.get('count'), 'stake': plan.get('stakeUsd'),
         'entry_utc': utc(entry_t),
         'call_age_s': round(entry_t - d['barClose'] / 1000.0, 1) if isinstance(d.get('barClose'), (int, float)) else None,
     }
@@ -148,13 +154,15 @@ def _fill_rows(fills_t, side, t0, t1, orders):
 
 
 def _rule_for(t, events):
-    """The plan sale event (latest) within SALE_MATCH_S before time t that actually went out."""
+    """The plan sale event nearest to the fill time t that actually went out. The engine writes the event right after it sends
+    the sale, and a paper fill lands inside that call: so the event may come a few milliseconds AFTER the fill (SALE_AFTER_S)
+    or up to SALE_MATCH_S before it."""
     best = None
     for et, e in events:
-        if et > t:
-            break
-        if t - et <= SALE_MATCH_S and e.get('event') in EXIT_RULES and e.get('sent') is not False:
-            best = (et, e)
+        lag = t - et
+        if -SALE_AFTER_S <= lag <= SALE_MATCH_S and e.get('event') in EXIT_RULES and e.get('sent') is not False:
+            if best is None or abs(lag) < abs(t - best[0]):
+                best = (et, e)
     return (EXIT_RULES[best[1]['event']], best[0], best[1]) if best else ('other', None, None)
 
 
@@ -175,7 +183,7 @@ def build_trip(closed_t, closed, ix):
             close_ms = o[1]['windowCloseTs']
             break
     row = exante(entry_t, ed, tk, closed, close_ms)
-    fills = _fill_rows(ix['fills'].get(tk, []), side, entry_t - ENTRY_SLACK_S, closed_t + 2.0, ix['orders'])
+    fills = _fill_rows(ix['fills'].get(tk, []), side, max(entry_t - ENTRY_SLACK_S, prev_close + 0.001), closed_t + EXIT_SLACK_S, ix['orders'])
     dups = sum(1 for f in fills if f.get('dir') == 'dup')    # the same trade id twice in the log (a restart): counted once, flagged
     fills = [f for f in fills if f.get('dir') != 'dup']
     ins = [f for f in fills if f['dir'] == 'in']
@@ -183,6 +191,7 @@ def build_trip(closed_t, closed, ix):
     n_in = sum(f['count'] for f in ins)
     if n_in <= 0:
         return None
+    order_t = min(entry_t, min(f['t'] for f in ins))   # the order cannot be later than its first fill: the cutoff for anything 'known at the order'
     cost = sum(f['px'] * f['count'] for f in ins)
     entry_fee = sum(f['fee'] for f in ins)
     entry_px = cost / n_in
@@ -224,12 +233,12 @@ def build_trip(closed_t, closed, ix):
     exit_px = None if exit_total_n <= 0 or payout is None else (revenue + payout) / exit_total_n
     first_sale = legs[0] if legs else None
     last_leg = legs[-1] if legs else None
-    exit_event = ('settled' if held > 1e-9 and (not legs) else (last_leg['rule'] if last_leg else 'settled' if settled_trip else None))
+    exit_event = 'settled' if held > 1e-9 else (last_leg['rule'] if last_leg else 'settled' if settled_trip else None)   # what ended the trip
     defect = [l for l in legs if l['below_breakeven'] and l['rule'] not in ALLOWED_BELOW]
     row.update({
-        'closed_utc': utc(closed_t), 'closed_t': closed_t, 'entry_t': entry_t,
+        'closed_utc': utc(closed_t), 'closed_t': closed_t, 'entry_t': entry_t, 'order_t': order_t,
         'hold_s': round(closed_t - entry_t, 1),
-        'count': n_in, 'entry_px': round(entry_px, 6), 'stake': round(cost, 4),
+        'count_filled': n_in, 'entry_fill_px': round(entry_px, 6), 'stake_filled': round(cost, 4),
         'entry_fee': round(entry_fee, 4), 'exit_fee': round(exit_fee, 4), 'exit_px': None if exit_px is None else round(exit_px, 6),
         'fees': round(entry_fee + exit_fee, 4),
         'entry_taker': all(f['taker'] for f in ins), 'entry_maker_any': any(not f['taker'] for f in ins),
@@ -239,8 +248,10 @@ def build_trip(closed_t, closed, ix):
         'n_sale_legs': len(legs), 'legs': legs,
         'defect_sale': bool(defect), 'defect_dollars': round(sum(l['net_vs_cost'] for l in defect), 4),
         'fee_estimated': any(f['fee_est'] for f in fills), 'orphan_fill': any(f['orphan'] for f in fills), 'dup_fills': dups,
+        'sale_revenue': round(revenue, 6), 'unresolved': payout is None,
     })
-    row['fidelity_flag'] = bool(row['orphan_fill'] or dups or (gap is not None and abs(gap) > RECON_TOL) or pnl is None)
+    # A remainder held with no result yet leaves the P&L unproven: flagged until the result arrives (resolve_payout).
+    row['fidelity_flag'] = bool(row['orphan_fill'] or dups or payout is None or (gap is not None and abs(gap) > RECON_TOL) or pnl is None)
     row['lane'] = 'heat'
     return row
 
@@ -256,3 +267,25 @@ def build(records):
         else:
             trips.append(r)
     return trips, skipped
+
+
+def resolve_payout(row):
+    """Finish a trip whose remainder was held to settlement but whose result was not in the audit log (the market settled after
+    the files read): once side_settles_win is known from the market's public record, compute the payout, the P&L from the fills
+    and the reconciliation, and clear the unresolved flag. Returns a new row."""
+    if not row.get('unresolved') or row.get('side_settles_win') is None:
+        return row
+    held = float(row.get('held_to_end') or 0.0)
+    payout = held * (1.0 if row['side_settles_win'] else 0.0)
+    cost = float(row['count_filled']) * float(row['entry_fill_px'])
+    pnl_fills = round(float(row['sale_revenue']) + payout - cost - float(row['entry_fee']) - float(row['exit_fee']), 6)
+    out = dict(row, unresolved=False, pnl_fills=pnl_fills)
+    logged = row.get('pnl') if row.get('pnl_source') == 'logged' else None
+    gap = None if logged is None else round(pnl_fills - logged, 4)
+    out['pnl_gap'] = gap
+    n_total = float(row['count_filled'])
+    out['exit_px'] = round((float(row['sale_revenue']) + payout) / n_total, 6) if n_total > 0 else None
+    if row.get('pnl_source') != 'logged':
+        out['pnl'] = pnl_fills
+    out['fidelity_flag'] = bool(row.get('orphan_fill') or row.get('dup_fills') or (gap is not None and abs(gap) > RECON_TOL))
+    return out

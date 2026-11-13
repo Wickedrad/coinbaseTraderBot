@@ -6,6 +6,7 @@ The audit files are per-trade data: this module reads them on a runner or the se
 import calendar
 import glob
 import gzip
+import hashlib
 import json
 import os
 import time
@@ -29,12 +30,16 @@ def read_files(paths, since=None, until=None):
 
     since/until are epoch seconds (None = no bound). Unreadable lines are skipped and counted in the second value.
     """
-    out, bad = [], 0
+    out, bad, seen = [], 0, set()
     for p in paths:
         with (gzip.open(p, 'rt', encoding='utf-8', errors='replace') if p.endswith('.gz') else open(p, 'r', encoding='utf-8', errors='replace')) as fh:
             for line in fh:
                 if not any(w in line[:240] for w in _WANT):
                     continue
+                key = hashlib.md5(line.encode('utf-8', 'replace')).digest()
+                if key in seen:       # the same day present twice (plain and gzipped, or a copy of a part): counted once
+                    continue
+                seen.add(key)
                 try:
                     r = json.loads(line)
                 except ValueError:

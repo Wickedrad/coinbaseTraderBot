@@ -195,63 +195,85 @@ def _hyp_of(state):
 
 
 def run_sweep(w, day):
+    """One fixed look for every open hypothesis that has enough scoring days for its next look (sweep.SWEEP_LOOKS), on exactly
+    that look's first days. A hypothesis is not re-scored between looks. A candidate that survives BH over the registry is
+    frozen; the last look without one retires it. Levers the trip file cannot price get a replay request instead."""
     days = load_days(w)
     rows = all_rows(days)
     reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
-    best_p = {}
-    results = {}
+    best_p, results, windows = {}, {}, {}
+    looked = replayed = retired = 0
     for rid in reg.by_status('proposed') + reg.by_status('swept'):
         s = reg.state[rid]
-        if s['kind'] != 'hypothesis':
+        if s['kind'] != 'hypothesis' or s.get('frozen'):
             continue
-        res = sweep.sweep(s['rule'], rows, s['generating_days'])
+        h = s['rule']
+        if h['lever'] not in rules.SCORED_LEVERS:
+            if not s['scores']:
+                reg.score(rid, {'day': day, 'replay': sweep.replay_request(h, s['generating_days']), 'best': None})
+                reg.move(rid, 'swept', 'a replay prices this lever')
+                replayed += 1
+            continue
+        done = sum(1 for v in s['scores'] if v.get('look') is not None)
+        if done >= len(sweep.SWEEP_LOOKS):
+            continue
+        need = sweep.SWEEP_LOOKS[done]
+        scoring_days = sorted({sweep.day_of(r) for r in sweep.scoring_rows(rows, s['generating_days'])})
+        if len(scoring_days) < need:
+            continue
+        res = sweep.sweep(h, rows, s['generating_days'], max_days=need)
         results[rid] = res
+        windows[rid] = scoring_days[need - 1]
         b = res['best']
-        v = {'day': day, 'k': res['k'], 'replay': res['replay'], 'best': None if not b else {
+        reg.score(rid, {'day': day, 'look': done, 'look_days': need, 'k': res['k'], 'dropped': res['dropped'], 'best': None if not b else {
             'rule': b['rule'], 'verdict': b['verdict'], 'p_adj': b['p_adj'], 'flagged': b['flagged'], 'days': b['pooled']['days'],
-            'gap_sum': round(b['pooled']['sum'], 2), 'retention': round(b['retention'], 3)}}
-        reg.score(rid, v)
-        if b and b['p_adj'] is not None:
-            best_p[rid] = b['p_adj']
+            'gap_sum': round(b['pooled']['sum'], 2), 'gain_sum': round(b['gain_sum'], 2), 'retention': round(b['retention'], 3)}})
+        looked += 1
         if s['status'] == 'proposed':
-            reg.move(rid, 'swept', 'first sweep')
-    survivors = set(sweep.registry_fdr({k: v for k, v in best_p.items() if results[k]['best']['verdict'] == 'candidate'}, reg.trials))
+            reg.move(rid, 'swept', 'first look')
+        if b and b['verdict'] == 'candidate' and b['p_adj'] is not None:
+            best_p[rid] = b['p_adj']
+    survivors = set(sweep.registry_fdr(best_p, reg.family_size()))
     moved = []
-    for rid in survivors:
-        s = reg.state[rid]
-        if s['status'] != 'swept' or s.get('frozen'):
-            continue
-        reg.freeze(rid, results[rid]['best']['rule'], day)
-        if not reg.state[rid]['curve_edit'] or reg.state[rid]['owner_ok']:
-            reg.move(rid, 'shadow', 'candidate that survives BH over the registry')
-            moved.append(rid)
-    return {'swept': len(results), 'candidates': sum(1 for r in results.values() if r['best'] and r['best']['verdict'] == 'candidate'),
-            'survived_fdr': len(survivors), 'to_shadow': len(moved), 'trials': reg.trials}
+    for rid, res in results.items():
+        st = reg.state[rid]
+        if rid in survivors:
+            reg.freeze(rid, res['best']['rule'], windows[rid])
+            if not reg.state[rid]['curve_edit'] or (reg.state[rid]['owner_ok'] and reg.state[rid]['owner_ok_hash'] == reg.state[rid]['frozen_hash']):
+                reg.move(rid, 'shadow', 'candidate that survives BH over the registry')
+                moved.append(rid)
+        elif sum(1 for v in st['scores'] if v.get('look') is not None) >= len(sweep.SWEEP_LOOKS):
+            reg.move(rid, 'retired', 'no candidate at the last look')
+            retired += 1
+    return {'looked': looked, 'replay_requests': replayed, 'candidates': len(best_p), 'survived_fdr': len(survivors),
+            'to_shadow': len(moved), 'retired': retired, 'trials': reg.trials}
 
 
 def run_shadow(w, day):
+    """Flag every available day after a shadow rule's sweep window, up to `day`, that it has not seen yet (a night missed is
+    caught up; a day re-run replaces itself). Reads the verdict at the fixed looks; 'ready' moves the rule to `proposal`
+    (a promotion PR for the owner, never merged by the routine) and 'faded' retires it."""
     days = load_days(w)
-    rows = days.get(day, [])
     reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
     ready, faded = [], []
     for rid in reg.by_status('shadow'):
         s = reg.state[rid]
-        if s.get('frozen_day') and day <= s['frozen_day']:
-            continue        # the sweep scored this day: shadow counts only days after the freeze
-        res = shadow.shadow_day(s['frozen'], s['frozen_hash'], rows)
-        res['day'] = day
-        reg.shadow(rid, res)
-        v = shadow.shadow_verdict(reg.state[rid]['shadow'])
+        have = {r['day'] for r in s['shadow']}
+        for d in sorted(days):
+            if (s.get('frozen_day') and d <= s['frozen_day']) or d > day or d in have:
+                continue
+            reg.shadow(rid, shadow.shadow_day(s['frozen'], s['frozen_hash'], d, days[d]))
+        v = shadow.shadow_verdict(reg.state[rid]['shadow'], s['frozen_hash'], s.get('frozen_day'), s['frozen']['lever'])
         if v['status'] == 'ready':
-            reg.move(rid, 'proposal', 'shadow: %d days, gap %.2f' % (v['days'], v['gap_sum']))
+            reg.move(rid, 'proposal', 'shadow look %s: %d days, gap %.2f' % (v['look'], v['days'], v['gap_sum']))
             ready.append(rid)
         elif v['status'] == 'faded':
-            reg.move(rid, 'retired', 'shadow: the gain faded')
+            reg.move(rid, 'retired', 'shadow: not ready at the last look')
             faded.append(rid)
     held = []
     skip_rules = [reg.state[r]['frozen'] for r in reg.by_status('shadow') if reg.state[r]['frozen']['lever'] == 'skip']
-    if skip_rules and rows:
-        _kept, held, _ret = shadow.ruleset_floor(skip_rules, rows)
+    if skip_rules and days.get(day):
+        _kept, held, _ret = shadow.ruleset_floor(skip_rules, days[day])
     return {'shadow_rules': len(reg.by_status('shadow')), 'ready_for_pr': ready, 'faded': faded, 'held_by_floor': held}
 
 

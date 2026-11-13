@@ -20,7 +20,7 @@ def day_rows(k, plant, seed=0, n=350, cut=0.12):
     rnd = random.Random(seed * 1000 + k)
     rows = []
     for i in range(n):
-        x = rnd.random()
+        x = ((i * 37) % 350) / 350.0 + rnd.random() / 10000.0     # an even grid: the same share of trips falls under any cut every day
         pnl = rnd.gauss(-0.2, 3.0) + (plant if x < cut else 0.0)
         t = D0 + 86400 * k + 600 + i * 60
         rows.append({'ticker': 'KXBTC15M-T%d-%d' % (k, i), 'entry_t': t - 400, 'closed_t': t, 'entry_px': rnd.choice([0.2, 0.4, 0.6, 0.8]),
@@ -69,7 +69,7 @@ class DailyLoopTests(unittest.TestCase):
         return w, wd
 
     def test_a_real_effect_goes_through_sweep_then_shadow_to_ready(self):
-        w, _ = self.run_loop(plant=-4.0)
+        w, _ = self.run_loop(plant=-8.0)
         reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
         self.assertEqual(reg.trials, registry.PRIOR_TRIALS + 3)
         r = daily.run_sweep(w, day_name(5))                        # days 1..5 are scoring days (day 0 generated it)
@@ -77,15 +77,18 @@ class DailyLoopTests(unittest.TestCase):
         reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
         st = reg.state['early-entry-skip']
         self.assertEqual(st['status'], 'shadow')
-        self.assertEqual(st['frozen_day'], day_name(5))
-        # shadow never counts the freeze day or earlier
+        self.assertEqual(st['frozen_day'], day_name(4))             # the first look scored exactly the first 4 scoring days (1..4)
+        # shadow counts only days after the window: night 5 is the first, and it catches up on nothing earlier
         self.assertEqual(daily.run_shadow(w, day_name(5))['ready_for_pr'], [])
-        self.assertEqual(len(registry.Registry(os.path.join(w, 'registry.jsonl')).state['early-entry-skip']['shadow']), 0)
+        seen = registry.Registry(os.path.join(w, 'registry.jsonl')).state['early-entry-skip']['shadow']
+        self.assertEqual([r['day'] for r in seen], [day_name(5)])
         ready = []
         for k in range(6, 13):
             ready += daily.run_shadow(w, day_name(k))['ready_for_pr']
         self.assertEqual(ready, ['early-entry-skip'])
         self.assertEqual(registry.Registry(os.path.join(w, 'registry.jsonl')).state['early-entry-skip']['status'], 'proposal')
+        # a rerun of a finished night changes nothing
+        self.assertEqual(daily.run_shadow(w, day_name(12))['ready_for_pr'], [])
 
     def test_noise_never_reaches_shadow(self):
         w, _ = self.run_loop(plant=0.0)
@@ -126,7 +129,7 @@ class DailyLoopTests(unittest.TestCase):
 
     def test_a_curve_hypothesis_is_swept_but_waits_for_the_owner(self):
         w = tempfile.mkdtemp()
-        write_days(w, range(0, 9), -4.0)
+        write_days(w, range(0, 9), -8.0)
         for k in range(9):          # put the planted effect on the curve column instead
             p = os.path.join(w, 'days', 'trips-%s.jsonl' % day_name(k))
             rows = [json.loads(l) for l in open(p)]

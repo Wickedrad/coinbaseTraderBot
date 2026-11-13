@@ -35,9 +35,10 @@ holds per-trade rows, so it is never committed, posted or printed). Run from a c
    adversary prompts with the blind winner control).
 4. For each `adv-ID.prompt.txt`, a Sonnet call (it sees the hypothesis and aggregates only, never a ticker); save the reply as
    `adv-ID.response.json`. Then `apply-adv D` (registers survivors; every threshold and neighbor candidate counts as a trial).
-5. `sweep D` (scores every open hypothesis on the days after its generating losses; freezes a candidate that survives BH over
-   the registry), then `shadow D` (flags D's trips with every frozen rule; reports a rule that is ready for a promotion PR),
-   then `status`.
+5. `sweep D` (reads every open hypothesis at its next fixed look, 4, 8 or 12 scoring days after its generating losses, never
+   nightly; freezes a candidate that survives BH over the registry, with the window's last day as `frozen_day`), then
+   `shadow D` (counts only days after `frozen_day`, flags D's trips with every frozen rule, looks at 5 and 10 shadow days;
+   a rule that is ready moves to `proposal`, one that is not ready by day 10 fades to `retired`), then `status`.
 6. Put `registry.jsonl`, `usage.jsonl` and `work/D/` back on Drive. Post at most one short message: counts only (reviewed
    losers, hypotheses admitted and refuted, candidates, shadow rules, rules ready for a PR, tokens used). No tickers, no
    per-trade values.
