@@ -92,6 +92,33 @@ def run(day, audit_dir, out_dir, net=True):
     return rows, summ
 
 
+def public_lines(s, keys=('day', 'files', 'records', 'bad_lines', 'closes_skipped', 'trips', 'losers', 'fidelity_flagged', 'unresolved', 'defect_sales', 'candles_joined', 'fetch_errors')):
+    """The LOSSREVIEW lines for a job log: aggregates only. No ticker, no per-trade row, and no dollar figure that is one trade or
+    can be subtracted down to a few: a figure is printed only for a cell of MIN_CELL trips or more, and a figure whose complement
+    is a small cell is not printed at all (loser_dollars next to net is the winners' dollars, class dollars next to net is the
+    folded small classes). The full table is in the private report file on Drive."""
+    out = {k: s.get(k) for k in keys}
+    trips = s.get('trips') or 0
+    if trips >= MIN_CELL:
+        out.update({k: round(s[k], 2) for k in ('net', 'fees', 'gross') if isinstance(s.get(k), (int, float))})
+    if (s.get('defect_sales') or 0) >= MIN_CELL and trips >= MIN_CELL:
+        out['defect_dollars'] = round(s.get('defect_dollars') or 0.0, 2)
+    lines = ['LOSSREVIEW %s' % json.dumps(out, default=str)]
+    classes = s.get('classes', [])
+    small = [c for c in classes if c['trips'] < MIN_CELL]
+    rest = trips - sum(c['trips'] for c in classes)      # the trips that are in no loser class (the winners)
+    # A class dollar figure next to the printed net gives the dollars of everything else by subtraction: so class dollars are
+    # printed only when no loser class is a small cell AND the rest (winners) is not one either.
+    show_dollars = not small and (rest == 0 or rest >= MIN_CELL)
+    for c in classes:
+        if c['trips'] < MIN_CELL:
+            continue
+        lines.append('LOSSREVIEW class %s trips %d' % (c['class'], c['trips']) + (' dollars %.2f' % c['dollars'] if show_dollars else ''))
+    if small:
+        lines.append('LOSSREVIEW %d trips in %d classes under %d trips; class dollars are kept in the private report' % (sum(c['trips'] for c in small), len(small), MIN_CELL))
+    return lines
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--day', required=True)
@@ -100,29 +127,9 @@ def main(argv=None):
     ap.add_argument('--no-net', action='store_true', help='skip the public candle fetch (outcome columns stay empty)')
     a = ap.parse_args(argv)
     rows, s = run(a.day, a.audit_dir, a.out, net=not a.no_net)
-    # Aggregates only: no ticker, no per-trade row, and no dollar figure that is one trade or can be subtracted down to a few: a
-    # figure is printed only for a cell of MIN_CELL trips or more, and a figure whose complement is a small cell is not printed
-    # at all (loser_dollars next to net is the winners' dollars, class dollars next to net is the folded small classes). The full
-    # table is in the private report file on Drive.
-    keys = ('day', 'files', 'records', 'bad_lines', 'closes_skipped', 'trips', 'losers', 'fidelity_flagged', 'unresolved', 'defect_sales', 'candles_joined', 'fetch_errors')
-    out = {k: s.get(k) for k in keys}
-    if (s.get('trips') or 0) >= MIN_CELL:
-        out.update({k: round(s[k], 2) for k in ('net', 'fees', 'gross') if isinstance(s.get(k), (int, float))})
-    if (s.get('defect_sales') or 0) >= MIN_CELL and (s.get('trips') or 0) >= MIN_CELL:
-        out['defect_dollars'] = round(s.get('defect_dollars') or 0.0, 2)
-    print('LOSSREVIEW %s' % json.dumps(out, default=str))
-    classes = s.get('classes', [])
-    small = [c for c in classes if c['trips'] < MIN_CELL]
-    rest = (s.get('trips') or 0) - sum(c['trips'] for c in classes)      # the trips that are in no loser class (the day's winners)
-    # A class dollar figure next to the printed net gives the dollars of everything else by subtraction: so class dollars are
-    # printed only when no loser class is a small cell AND the rest (winners) is not one either.
-    show_dollars = not small and (rest == 0 or rest >= MIN_CELL)
-    for c in classes:
-        if c['trips'] < MIN_CELL:
-            continue
-        print('LOSSREVIEW class %s trips %d' % (c['class'], c['trips']) + (' dollars %.2f' % c['dollars'] if show_dollars else ''))
-    if small:
-        print('LOSSREVIEW %d trips in %d classes under %d trips; class dollars are kept in the private report' % (sum(c['trips'] for c in small), len(small), MIN_CELL))
+    lines = public_lines(s)
+    for l in lines:
+        print(l)
     trips = s.get('trips') or 0
     if not a.no_net and trips and (s.get('fetch_errors') or 0) > MAX_FETCH_ERROR_SHARE * trips:
         print('LOSSREVIEW error: %d public requests failed for %d trips; the day is not kept (candles and results are missing)' % (s['fetch_errors'], trips), file=sys.stderr)

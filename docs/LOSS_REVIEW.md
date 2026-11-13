@@ -44,6 +44,10 @@ than a quarter of its trips (exit 3: a degraded file never replaces a good one o
 three earlier days that have an audit on Drive and no trip file (a night the archive missed, a run that failed). The day-after file only supplies settlements that land just after midnight; the result is also read from
 Kalshi's public market endpoint.
 
+The mechanical stages of the daily loop (`daily.py`) run on a runner too: `loss-review-stages.yml` is dispatched by the routine between its model
+steps, pulls the work folder from Drive, runs the stages and puts back the registry, the usage log and the day's work folder
+(`docs/LOSS_REVIEW_ROUTINE.md`: how the routine reaches the data, and why the model replies travel in the dispatch input).
+
 ```
 PYTHONPATH=python python3 -m lossreview.nightly --day 2026-11-12 --audit-dir DIR --out DIR [--no-net]
 PYTHONPATH=python python3 -m unittest discover -s python/lossreview/tests -t python

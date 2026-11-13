@@ -286,6 +286,60 @@ class DailyLoopTests(unittest.TestCase):
             daily.mark_done(w, '2030-01-01')
         self.assertEqual(daily.main(['pending', '--w', w]), 0)
 
+    def test_window_keeps_dollars_out_of_the_log_and_cuts_by_closing_time(self):
+        w = tempfile.mkdtemp()
+        write_days(w, [1], -1.0)
+        day = day_name(1)
+        everything = daily.window(w, day)
+        self.assertEqual(everything['trips'], 350)
+        self.assertNotIn('net', json.dumps(everything))                       # the log line has a count, never a dollar figure
+        part = daily.window(w, day, '00:10:00', '01:10:00')                   # trips close at +600 s and then once a minute
+        self.assertEqual(part['trips'], 60)
+        saved = json.load(open(os.path.join(w, 'work', day, part['file'])))
+        self.assertEqual((saved['trips'], saved['since'], saved['until']), (60, '00:10:00', '01:10:00'))
+        self.assertIn('net', saved)                                           # the dollars are in the private file
+        self.assertEqual(daily.window(w, day, '23:59', '24:00')['trips'], 0)
+        for bad in ('1:2:3:4', 'ab:cd', '25:00:01'):
+            with self.assertRaises(SystemExit):
+                daily.window(w, day, '00:00', bad)
+        with self.assertRaises(SystemExit):
+            daily.window(w, '2030-01-01')
+        self.assertEqual(daily.main(['window', day, '--w', w, '--until', '02:00']), 0)
+
+    def test_public_lines_hold_back_a_figure_that_is_one_trade(self):
+        from lossreview import nightly
+        small = nightly.public_lines({'day': 'd', 'trips': 4, 'losers': 1, 'net': -3.0, 'fees': 1.0, 'gross': -2.0,
+                                      'classes': [{'class': 'WRONG_SIDE', 'trips': 1, 'dollars': -3.0}]})
+        self.assertNotIn('net', small[0])
+        self.assertTrue(any('under 5 trips' in l for l in small))
+        big = nightly.public_lines({'day': 'd', 'trips': 40, 'losers': 20, 'net': -30.0, 'fees': 10.0, 'gross': -20.0,
+                                    'classes': [{'class': 'WRONG_SIDE', 'trips': 20, 'dollars': -50.0}]})
+        self.assertIn('"net": -30.0', big[0])
+        self.assertIn('dollars -50.00', big[1])
+
+    def test_responses_are_saved_only_for_prompts_that_exist(self):
+        w = tempfile.mkdtemp()
+        write_days(w, [1], -1.0)
+        day = day_name(1)
+        daily.prepare_tags(w, day)
+        wd = daily.workdir(w, day)
+        names = sorted(f[:-len('.prompt.txt')] for f in os.listdir(wd) if f.endswith('.prompt.txt'))
+        self.assertTrue(names)
+        out = daily.save_responses(w, day, json.dumps({names[0]: [{'i': 0, 'tags': ['late_entry']}]}))
+        self.assertEqual(out['saved'], [names[0]])
+        self.assertEqual(json.load(open(os.path.join(wd, names[0] + '.response.json'))), [{'i': 0, 'tags': ['late_entry']}])
+        daily.save_responses(w, day, {names[0]: '```json\n[]\n```'})                      # the model's text is kept as it came
+        self.assertEqual(open(os.path.join(wd, names[0] + '.response.json')).read(), '```json\n[]\n```')
+        for bad in ('', 'not json', '[1]', json.dumps({'../evil': 1}), json.dumps({'tag-99': []}), json.dumps({'hyp-WRONG_SIDE': {}}),
+                    json.dumps({'adv-x': 1}), 'x' * 70_000):
+            with self.assertRaises(SystemExit, msg=bad[:30]):
+                daily.save_responses(w, day, bad)
+        os.environ['LR_RESPONSES'] = json.dumps({names[0]: []})
+        try:
+            self.assertEqual(daily.main(['responses', day, '--w', w]), 0)
+        finally:
+            del os.environ['LR_RESPONSES']
+
 
 if __name__ == '__main__':
     unittest.main()

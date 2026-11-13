@@ -18,6 +18,9 @@ Stages (the model steps sit between them; docs/LOSS_REVIEW_ROUTINE.md has the ro
     usage DAY --step S --tokens-in N --tokens-out N --items K   -> logs one model step, prints what is left of the allowance
     budget DAY [--daily N] [--weekly N]                         -> the allowance check the routine makes before each model step
     pending               -> the days that have a trip file and have not been marked done, oldest first (the routine takes them in order)
+    window DAY [--since HH:MM[:SS]] [--until HH:MM[:SS]]  -> aggregates of the trips closed in that UTC window to work/DAY/window-*.json (log: count only)
+    responses DAY         -> writes the model steps' replies (a JSON object {name: reply} in $LR_RESPONSES) to work/DAY/NAME.response.json
+    canary                -> the validators' known-good and known-bad inputs; exit 1 if a guard rail broke (the script runs it before every stage)
     done DAY              -> marks DAY finished (work/DAY/done.json) once the stages above have run
 Printed output is aggregates only; every per-trade file stays in W.
 """
@@ -26,9 +29,10 @@ import glob
 import hashlib
 import json
 import os
+import re
 import sys
 
-from . import forms, prompts, registry, rules, shadow, stats, sweep
+from . import forms, ledger, nightly, prompts, registry, rules, shadow, stats, sweep, triage
 
 REVIEW_CAP = 75          # losers a day get a model review (worst dollars first)
 TAG_BATCH = 25
@@ -382,20 +386,92 @@ def mark_done(w, day):
     return {'day': day, 'done': True}
 
 
+def _clock(txt):
+    """'HH:MM[:SS]' -> seconds into the UTC day (24:00:00 allowed as the end)."""
+    parts = txt.split(':')
+    if len(parts) not in (2, 3) or not all(p.isdigit() for p in parts):
+        raise SystemExit('bad time %r: use HH:MM or HH:MM:SS (UTC)' % txt)
+    sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + (int(parts[2]) if len(parts) == 3 else 0)
+    if sec > 86400:
+        raise SystemExit('bad time %r: past the end of the day' % txt)
+    return sec
+
+
+def window(w, day, since='00:00:00', until='24:00:00'):
+    """The aggregates of the day's trips that closed in [since, until) UTC, to answer "does this day agree with that study window".
+    The full summary goes to work/DAY/window-<since>-<until>.json (private Drive); the job log gets only the trip count, because two
+    windows printed with dollars could be subtracted down to a single trade."""
+    p = os.path.join(w, 'days', 'trips-%s.jsonl' % day)
+    if not os.path.exists(p):
+        raise SystemExit('no trip file for %s' % day)
+    t0 = nightly.day_bounds(day)[0]
+    a, b = _clock(since), _clock(until)
+    with open(p, encoding='utf-8') as fh:
+        rows = [json.loads(l) for l in fh if l.strip()]
+    rows = [r for r in rows if r.get('closed_t') is not None and t0 + a <= r['closed_t'] < t0 + b]
+    summ = ledger.summarize(rows, [triage.classify(r) for r in rows]) if rows else {'trips': 0}
+    summ.update({'day': day, 'since': since, 'until': until, 'rows_in_window': len(rows),
+                 'fidelity_flagged': sum(1 for r in rows if r.get('fidelity_flag')),
+                 'defect_sales': sum(1 for r in rows if r.get('defect_sale')),
+                 'defect_dollars': round(sum(r.get('defect_dollars') or 0 for r in rows), 2)})
+    name = 'window-%s-%s.json' % (since.replace(':', ''), until.replace(':', ''))
+    _dump(os.path.join(workdir(w, day), name), summ)
+    return {'day': day, 'since': since, 'until': until, 'trips': len(rows), 'file': name}
+
+
+RESPONSE_NAME = re.compile(r'^(tag-[0-9]{2}|hyp-[A-Z][A-Z_]{2,30}|adv-[a-z0-9][a-z0-9_-]{1,38}[a-z0-9])$')
+MAX_RESPONSES_BYTES = 60_000     # a workflow_dispatch payload is capped at 65,535 characters in all
+
+
+def save_responses(w, day, payload):
+    """Writes the model steps' replies into work/DAY/NAME.response.json. payload is a JSON object {name: reply}: the reply is the
+    model's text or its parsed JSON. The routine cannot put files where the runner's Drive token sees them (that token reaches only
+    the files it made itself), so the replies travel in the workflow input: they hold tags by index, hypothesis specs and adversary
+    verdicts, never a ticker or a time (the prompts that made them show a trade by index only). A name that is not one of the
+    step's own prompts is refused, so a reply cannot create a file nobody asked for."""
+    if isinstance(payload, str):
+        if len(payload.encode('utf-8')) > MAX_RESPONSES_BYTES:
+            raise SystemExit('responses are %d bytes: over the %d a dispatch can carry; send them in two runs' % (len(payload.encode('utf-8')), MAX_RESPONSES_BYTES))
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            raise SystemExit('responses: not JSON (an empty value too); the stage needs {name: reply}')
+    if not isinstance(payload, dict):
+        raise SystemExit('responses must be a JSON object {name: reply}')
+    wd = workdir(w, day)
+    saved = []
+    for name, reply in sorted(payload.items()):
+        if not RESPONSE_NAME.match(name):
+            raise SystemExit('bad response name %r' % name)
+        if not os.path.exists(os.path.join(wd, name + '.prompt.txt')):
+            raise SystemExit('no prompt %s.prompt.txt for %s: not saving a reply to a prompt that was never made' % (name, day))
+        with open(os.path.join(wd, name + '.response.json'), 'w', encoding='utf-8') as fh:
+            fh.write(reply if isinstance(reply, str) else json.dumps(reply))
+        saved.append(name)
+    return {'day': day, 'saved': saved}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('stage', choices=['prepare-tags', 'apply-tags', 'prepare-hyp', 'apply-hyp', 'apply-adv', 'sweep', 'shadow', 'status', 'pending', 'done', 'usage', 'budget'])
+    ap.add_argument('stage', choices=['prepare-tags', 'apply-tags', 'prepare-hyp', 'apply-hyp', 'apply-adv', 'sweep', 'shadow', 'status', 'pending', 'done', 'usage', 'budget', 'window', 'responses', 'canary'])
     ap.add_argument('day', nargs='?')
     ap.add_argument('--w', required=True)
     ap.add_argument('--step', choices=sorted(prompts.MODEL_FOR))
     ap.add_argument('--tokens-in', type=int, default=0)
     ap.add_argument('--tokens-out', type=int, default=0)
     ap.add_argument('--items', type=int, default=0)
+    ap.add_argument('--since', default='00:00:00')
+    ap.add_argument('--until', default='24:00:00')
+    ap.add_argument('--from-env', default='LR_RESPONSES', help='responses: the environment variable that holds the JSON object')
     ap.add_argument('--daily', type=int, default=DAILY_TOKENS)
     ap.add_argument('--weekly', type=int, default=None)
     a = ap.parse_args(argv)
     fn = {'prepare-tags': prepare_tags, 'apply-tags': apply_tags, 'prepare-hyp': prepare_hyp, 'apply-hyp': apply_hyp,
           'apply-adv': apply_adv, 'sweep': run_sweep, 'shadow': run_shadow, 'done': mark_done}.get(a.stage)
+    if a.stage == 'canary':
+        ok, fails = prompts.run_canary()
+        print('LOSSLOOP canary %s' % json.dumps({'ok': ok, 'failures': fails}))
+        return 0 if ok else 1
     if a.stage in ('status', 'pending'):
         out = (status if a.stage == 'status' else pending)(a.w)
     else:
@@ -405,6 +481,10 @@ def main(argv=None):
             if not a.step:
                 ap.error('usage needs --step')
             out = usage(a.w, a.day, a.step, a.tokens_in, a.tokens_out, a.items)
+        elif a.stage == 'responses':
+            out = save_responses(a.w, a.day, os.environ.get(a.from_env, ''))
+        elif a.stage == 'window':
+            out = window(a.w, a.day, a.since, a.until)
         elif a.stage == 'budget':
             out = budget(a.w, a.day, a.daily, a.weekly)
         else:

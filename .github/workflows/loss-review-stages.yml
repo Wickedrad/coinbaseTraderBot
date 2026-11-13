@@ -1,0 +1,71 @@
+name: Loss review stages
+
+# The mechanical stages of the daily loss-review loop (python/lossreview/daily.py), run on a GitHub runner over the private work
+# folder on Drive (derived/loss-review). The model steps (Haiku tags, Sonnet hypotheses and adversary) run in the Claude routine
+# between dispatches of this workflow; see docs/LOSS_REVIEW_ROUTINE.md. No model tokens are spent here and the server is not
+# contacted. Research only: nothing here reaches the bot.
+#
+# The repository is public: no artifact is uploaded and the log prints the stages' aggregate lines only. Needs RCLONE_CONF.
+# Inputs reach the script as environment variables, never inside the command text.
+
+on:
+  push:   # TEMPORARY (removed before merge): a workflow that is not on main cannot be dispatched, so the first test reads its inputs from a file
+    branches: [claude/project-thread-kjji9x]
+    paths: ['.github/loss-review-stages-trigger.txt']
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'UTC day the stages are for, YYYY-MM-DD'
+        required: true
+      stages:
+        description: 'stages in order, space or comma separated (pending prepare-tags apply-tags prepare-hyp apply-hyp apply-adv sweep shadow status budget window done)'
+        required: false
+        default: 'status'
+      usage:
+        description: 'model steps to log first: step:tokens_in:tokens_out:items;... (steps tag hypothesize adversary audit)'
+        required: false
+        default: ''
+      responses:
+        description: 'JSON object {name: reply}: the model steps replies (tag-NN, hyp-CLASS, adv-ID), saved before the stages (60 KB at most)'
+        required: false
+        default: ''
+      since:
+        description: 'window stage: UTC start HH:MM[:SS]'
+        required: false
+        default: ''
+      until:
+        description: 'window stage: UTC end HH:MM[:SS]'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loss-review-stages
+  cancel-in-progress: false
+
+jobs:
+  stages:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Run the stages
+        env:
+          LR_DAY: ${{ inputs.day }}
+          LR_STAGES: ${{ inputs.stages }}
+          LR_USAGE: ${{ inputs.usage }}
+          LR_RESPONSES: ${{ inputs.responses }}
+          LR_SINCE: ${{ inputs.since }}
+          LR_UNTIL: ${{ inputs.until }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then   # TEMPORARY
+            IFS='|' read -r LR_DAY LR_STAGES LR_USAGE LR_SINCE LR_UNTIL < .github/loss-review-stages-trigger.txt
+            export LR_DAY LR_STAGES LR_USAGE LR_SINCE LR_UNTIL
+          fi
+          bash .github/scripts/loss_review_stages.sh
