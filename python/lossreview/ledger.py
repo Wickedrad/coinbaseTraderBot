@@ -18,6 +18,9 @@ def _ts(s):
 
 
 def span_hours(rows):
+    ts = [(r.get('entry_t'), r.get('closed_t')) for r in rows]
+    if rows and all(isinstance(a, (int, float)) and isinstance(b, (int, float)) for a, b in ts):
+        return max((max(b for _, b in ts) - min(a for a, _ in ts)) / 3600.0, 1e-9)   # builder rows: epoch seconds, no year to guess
     try:
         a = min(_ts(r['entry_utc']) for r in rows if r.get('entry_utc'))
         b = max(_ts(r['closed_utc']) for r in rows if r.get('closed_utc'))

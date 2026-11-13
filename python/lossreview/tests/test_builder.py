@@ -93,6 +93,20 @@ class BuilderTests(unittest.TestCase):
         self.assertTrue(r['fidelity_flag'])
         self.assertEqual(triage.classify(dict(r, pnl=r['pnl']))['primary'], 'FIDELITY')
 
+    def test_a_fill_logged_twice_is_counted_once_and_flagged(self):
+        ef = fees.taker_fee(20, 0.50)
+        xf = fees.taker_fee(20, 0.62)
+        pnl = round(20 * 0.12 - ef - xf, 6)
+        buy = fill(1, 'bid', 0.50, 20)
+        buy[2]['fill']['tradeId'] = 't1'
+        again = fill(2, 'bid', 0.50, 20)
+        again[2]['fill']['tradeId'] = 't1'
+        r = self.one([heat_entry(0), buy, again, plan_event(300, 'plan_ratchet_sell', 0.62), fill(302, 'ask', 0.62, 20, coid='c2'), closed(310, 'yes', pnl)])
+        self.assertEqual(r['count'], 20)
+        self.assertEqual(r['dup_fills'], 1)
+        self.assertTrue(r['fidelity_flag'])
+        self.assertAlmostEqual(r['pnl_fills'], pnl, places=4)
+
     def test_a_close_without_an_entry_record_is_skipped_not_invented(self):
         trips, skipped = builder.build([fill(1, 'bid', 0.50, 20), closed(110, 'yes', -1.0)])
         self.assertEqual((trips, skipped), ([], 1))

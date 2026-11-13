@@ -115,9 +115,15 @@ def exante(entry_t, d, ticker, closed=None, order_close_ms=None):
 
 def _fill_rows(fills_t, side, t0, t1, orders):
     """Fills of one market in [t0, t1] as dicts in side terms: dir 'in' (entry) or 'out' (sale)."""
-    out = []
+    out, seen = [], set()
     for t, d in fills_t:
         fl = d.get('fill') or {}
+        tid = fl.get('tradeId')
+        if tid is not None:
+            if tid in seen:
+                out.append({'dup': True, 't': t, 'dir': 'dup', 'px': 0.0, 'count': 0.0, 'fee': 0.0, 'fee_est': False, 'taker': False, 'coid': None, 'orphan': False})
+                continue
+            seen.add(tid)
         ft = fl.get('ts')
         ft = ft / 1000.0 if isinstance(ft, (int, float)) and ft > 1e11 else t
         if ft < t0 or ft > t1:
@@ -170,6 +176,8 @@ def build_trip(closed_t, closed, ix):
             break
     row = exante(entry_t, ed, tk, closed, close_ms)
     fills = _fill_rows(ix['fills'].get(tk, []), side, entry_t - ENTRY_SLACK_S, closed_t + 2.0, ix['orders'])
+    dups = sum(1 for f in fills if f.get('dir') == 'dup')    # the same trade id twice in the log (a restart): counted once, flagged
+    fills = [f for f in fills if f.get('dir') != 'dup']
     ins = [f for f in fills if f['dir'] == 'in']
     outs = [f for f in fills if f['dir'] == 'out']
     n_in = sum(f['count'] for f in ins)
@@ -230,9 +238,9 @@ def build_trip(closed_t, closed, ix):
         'exit_event': exit_event, 'exit_bid': None if not first_sale else first_sale.get('bid_at_event'),
         'n_sale_legs': len(legs), 'legs': legs,
         'defect_sale': bool(defect), 'defect_dollars': round(sum(l['net_vs_cost'] for l in defect), 4),
-        'fee_estimated': any(f['fee_est'] for f in fills), 'orphan_fill': any(f['orphan'] for f in fills),
+        'fee_estimated': any(f['fee_est'] for f in fills), 'orphan_fill': any(f['orphan'] for f in fills), 'dup_fills': dups,
     })
-    row['fidelity_flag'] = bool(row['orphan_fill'] or (gap is not None and abs(gap) > RECON_TOL) or pnl is None)
+    row['fidelity_flag'] = bool(row['orphan_fill'] or dups or (gap is not None and abs(gap) > RECON_TOL) or pnl is None)
     row['lane'] = 'heat'
     return row
 
