@@ -280,11 +280,169 @@ class DailyLoopTests(unittest.TestCase):
         write_days(w, range(0, 3), -1.0)
         days = [day_name(k) for k in range(3)]
         self.assertEqual(daily.pending(w)['days'], days)           # oldest first
+        self.assertEqual(daily.pending(w)['next'], {d: 'prepare-tags' for d in days})
         daily.mark_done(w, days[0])
         self.assertEqual(daily.pending(w)['days'], days[1:])
         with self.assertRaises(SystemExit):                          # no file for that day: nothing to mark
             daily.mark_done(w, '2030-01-01')
         self.assertEqual(daily.main(['pending', '--w', w]), 0)
+
+    def test_window_keeps_dollars_and_counts_out_of_the_log_and_cuts_by_closing_time(self):
+        w = tempfile.mkdtemp()
+        write_days(w, [1], -1.0)
+        day = day_name(1)
+        everything = daily.window(w, day)
+        self.assertEqual(set(everything), {'day', 'since', 'until', 'file'})          # the log line has no count and no dollar figure
+        self.assertEqual(json.load(open(os.path.join(w, 'work', day, everything['file'])))['rows_in_window'], 350)
+        part = daily.window(w, day, '00:10:00', '01:10:00')                         # trips close at +600 s and then once a minute
+        saved = json.load(open(os.path.join(w, 'work', day, part['file'])))
+        self.assertEqual((saved['rows_in_window'], saved['trips'], saved['since'], saved['until']), (60, 60, '00:10:00', '01:10:00'))
+        self.assertIn('net', saved)                                                 # the dollars are in the private file
+        self.assertEqual(json.load(open(os.path.join(w, 'work', day, daily.window(w, day, '23:59', '24:00')['file'])))['rows_in_window'], 0)
+        self.assertEqual(daily.window(w, day, '00:00', '24:00:00')['until'], '24:00:00')
+        self.assertEqual(daily.main(['window', day, '--w', w, '--until', '02:00']), 0)
+
+    def test_window_bounds_are_clock_times_and_in_order(self):
+        w = tempfile.mkdtemp()
+        write_days(w, [1], -1.0)
+        day = day_name(1)
+        for bad in ('1:2:3:4', 'ab:cd', '25:00:01', '24:00:01', '24:01', '12:75', '00:99', '12:00:60', '12:60', '00:00:00\n', '', None):
+            with self.assertRaises(SystemExit, msg=repr(bad)):
+                daily.window(w, day, '00:00', bad)
+        for since, until in (('12:00', '12:00'), ('13:00', '12:00'), ('24:00', '24:00')):
+            with self.assertRaises(SystemExit, msg=(since, until)):
+                daily.window(w, day, since, until)
+        with self.assertRaises(SystemExit):
+            daily.window(w, '2030-01-01')
+
+    def test_public_lines_hold_back_a_figure_that_is_one_trade(self):
+        from lossreview import nightly
+        small = nightly.public_lines({'day': 'd', 'trips': 4, 'losers': 1, 'net': -3.0, 'fees': 1.0, 'gross': -2.0,
+                                      'classes': [{'class': 'WRONG_SIDE', 'trips': 1, 'dollars': -3.0}]})
+        self.assertNotIn('net', small[0])
+        self.assertTrue(any('under 5 trips' in l for l in small))
+        big = nightly.public_lines({'day': 'd', 'trips': 40, 'losers': 20, 'net': -30.0, 'fees': 10.0, 'gross': -20.0,
+                                    'classes': [{'class': 'WRONG_SIDE', 'trips': 20, 'dollars': -50.0}]})
+        self.assertIn('"net": -30.0', big[0])
+        self.assertIn('dollars -50.00', big[1])
+
+    def _prompts(self, w, day):
+        daily.prepare_tags(w, day)
+        wd = daily.workdir(w, day)
+        return wd, sorted(f[:-len('.prompt.txt')] for f in os.listdir(wd) if f.endswith('.prompt.txt'))
+
+    def test_responses_are_saved_only_for_prompts_that_exist_and_only_in_screened_form(self):
+        w = tempfile.mkdtemp()
+        write_days(w, [1], -1.0)
+        day = day_name(1)
+        wd, names = self._prompts(w, day)
+        self.assertTrue(names)
+        reply = [{'i': 0, 'tags': ['late_entry']}]
+        out = daily.save_responses(w, day, json.dumps({names[0]: reply}))
+        self.assertEqual(out['saved'], [names[0]])
+        self.assertEqual(json.load(open(os.path.join(wd, names[0] + '.response.json'))), reply)
+        daily.save_responses(w, day, {names[0]: reply})                                  # the same reply again: fine
+        for bad in ('', 'not json', '[1]', '{}', json.dumps({'../evil': reply}), json.dumps({'tag-99': reply}), json.dumps({'hyp-WRONG_SIDE': {}}),
+                    json.dumps({'adv-x': reply}), json.dumps({names[0]: '```json\n[]\n```'}), json.dumps({names[0]: []}),
+                    json.dumps({names[0]: reply + [{'i': 99, 'tags': ['late_entry']}]}),         # not a fixed point of screening: it would change
+                    json.dumps({names[0]: {'trips': reply}}), 'x' * 70_000):
+            with self.assertRaises(SystemExit, msg=bad[:30]):
+                daily.save_responses(w, day, bad)
+        self.assertEqual(json.load(open(os.path.join(wd, names[0] + '.response.json'))), reply)
+        os.environ['LR_RESPONSES'] = json.dumps({names[0]: reply})
+        try:
+            self.assertEqual(daily.main(['responses', day, '--w', w]), 0)
+        finally:
+            del os.environ['LR_RESPONSES']
+
+    def test_a_refused_reply_saves_none_and_a_used_reply_is_not_replaced(self):
+        w = tempfile.mkdtemp()
+        write_days(w, [1], -1.0)
+        day = day_name(1)
+        wd, names = self._prompts(w, day)
+        reply = [{'i': 0, 'tags': ['late_entry']}]
+        with self.assertRaises(SystemExit):                                                # one good reply and one bad: all or none
+            daily.save_responses(w, day, {names[0]: reply, 'tag-98': reply})
+        self.assertFalse(os.path.exists(os.path.join(wd, names[0] + '.response.json')))
+        daily.save_responses(w, day, {names[0]: reply})
+        daily.apply_tags(w, day)                                                           # tags.json now exists: the reply was used
+        with self.assertRaises(SystemExit):
+            daily.save_responses(w, day, {names[0]: [{'i': 1, 'tags': ['late_entry']}]})
+        daily.save_responses(w, day, {names[0]: reply})                                    # the identical reply is still fine
+
+    def test_every_id_the_validator_accepts_can_get_an_adversary_reply(self):
+        from lossreview import forms
+        for hid in ('abc', 'a-b', 'edge_', '-edge', 'late-entry-', '_x_', 'a' * 40, '000'):
+            self.assertTrue(forms.ID_RE.fullmatch(hid), hid)
+            self.assertTrue(daily.RESPONSE_NAME.fullmatch('adv-' + hid), hid)
+        for bad in ('adv-ab', 'adv-' + 'a' * 41, 'adv-Abc', 'adv-abc\n', 'tag-1', 'tag-001', 'hyp-WRONG_SIDE\n', 'hyp-wrong', 'hyp-AB'):
+            self.assertFalse(daily.RESPONSE_NAME.fullmatch(bad), bad)
+
+    def test_apply_adv_waits_for_every_adversary_and_done_waits_for_the_registry(self):
+        w = tempfile.mkdtemp()
+        write_days(w, [1], -1.0)
+        day = day_name(1)
+        wd = daily.workdir(w, day)
+        h = dict(HYP, id='edge_')
+        with open(os.path.join(wd, 'hypotheses.json'), 'w') as fh:
+            json.dump([h], fh)
+        with self.assertRaises(SystemExit):                                                # no reply yet: nothing registers, the day is not done
+            daily.apply_adv(w, day)
+        with self.assertRaises(SystemExit):
+            daily.mark_done(w, day)
+        self.assertFalse(os.path.exists(os.path.join(w, 'registry.jsonl')))
+        respond(os.path.join(wd, 'adv-edge_.response.json'), {'hypothesis_id': 'edge_', 'verdict': 'survives', 'reasons': [], 'note': 'ok'})
+        self.assertEqual(daily.apply_adv(w, day)['registered_open'], 1)
+        self.assertTrue(daily.mark_done(w, day)['done'])
+        with open(os.path.join(wd, 'hypotheses.json'), 'w') as fh:                        # a reply that is there but unusable: registered as unclear
+            json.dump([dict(HYP, id='second-one', feature='entry_px')], fh)
+        respond(os.path.join(wd, 'adv-second-one.response.json'), {'verdict': 'nonsense'})
+        self.assertEqual(daily.apply_adv(w, day)['registered_open'], 1)
+
+    def test_a_usage_entry_with_a_run_key_is_logged_once(self):
+        w = tempfile.mkdtemp()
+        a = daily.usage(w, '2026-11-13', 'tag', 40_000, 10_000, 25, run='99.1')
+        self.assertEqual(a['used_today'], 50_000)
+        again = daily.usage(w, '2026-11-13', 'tag', 40_000, 10_000, 25, run='99.1')       # "re-run failed jobs": the same run, the same entry
+        self.assertEqual((again['used_today'], again['already_logged']), (50_000, '99.1'))
+        daily.usage(w, '2026-11-13', 'tag', 40_000, 10_000, 25, run='99.2')               # the second batch of that run has the same numbers
+        self.assertEqual(daily.budget(w, '2026-11-13')['used_today'], 100_000)
+        self.assertEqual(daily.main(['usage', '2026-11-13', '--w', w, '--step', 'tag', '--tokens-in', '1', '--tokens-out', '1', '--items', '1', '--run', '99.3']), 0)
+        self.assertEqual(len(daily.read_usage(w)), 3)
+
+    def test_next_step_follows_the_files_a_day_has_left(self):
+        w = tempfile.mkdtemp()
+        write_days(w, [1], -1.0)
+        day = day_name(1)
+        self.assertEqual(daily.next_step(w, day), 'prepare-tags')
+        daily.prepare_tags(w, day)
+        self.assertEqual(daily.next_step(w, day), 'apply-tags')
+        wd = daily.workdir(w, day)
+        open(os.path.join(wd, 'tags.json'), 'w').write('{}')
+        self.assertEqual(daily.next_step(w, day), 'prepare-hyp')
+        open(os.path.join(wd, 'hyp-WRONG_SIDE.prompt.txt'), 'w').write('x')
+        self.assertEqual(daily.next_step(w, day), 'apply-hyp')
+        open(os.path.join(wd, 'hypotheses.json'), 'w').write('[]')
+        self.assertEqual(daily.next_step(w, day), 'apply-adv')
+        self.assertEqual(daily.pending(w)['next'], {day: 'apply-adv'})
+
+    def test_hypothesis_calls_a_day_are_capped_at_the_costliest_four_classes(self):
+        w = tempfile.mkdtemp()
+        os.makedirs(os.path.join(w, 'days'))
+        classes = list(daily.REVIEW_CLASSES)
+        self.assertGreaterEqual(len(classes), 5)
+        rows = []
+        for ci, cls in enumerate(classes):
+            for i in range(daily.HYP_MIN_LOSERS):
+                rows.append({'ticker': 'KXBTC15M-%s-%d' % (cls, i), 'entry_t': D0 + ci * 10000 + i, 'closed_t': D0 + ci * 10000 + i + 300, 'entry_px': 0.5,
+                             'pnl': -1.0 * (ci + 1), 'class': cls, 'fidelity_flag': False, 'coin': 'BTC', 'count': 20})
+        with open(os.path.join(w, 'days', 'trips-%s.jsonl' % day_name(0)), 'w') as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + '\n')
+        out = daily.prepare_hyp(w, day_name(0))
+        self.assertEqual(len(out['classes']), daily.MAX_HYP_CLASSES)
+        self.assertNotIn(classes[0], out['classes'])                    # the class that cost least is the one left out
+        self.assertIn(classes[-1], out['classes'])
 
 
 if __name__ == '__main__':

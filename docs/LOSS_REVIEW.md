@@ -23,7 +23,7 @@ live stays off; per-trade data stays private (this repository is public: rows go
 | 7 | Educated sweep: score each threshold on days **after** the losses that generated it, against one placebo per lever | code | `sweep.py`, `stats.py` |
 | 8 | Offline shadow: the frozen rule flags every night's trips, unseen days pile up | code | `shadow.py` |
 | 9 | Promotion PR (off / log / on) for the owner when shadow shows a gain over its placebo | Claude, owner decides | by hand |
-| 10 | Weekly audit of verdicts and the whole registry | Opus 5.5 | routine |
+| 10 | Weekly audit of verdicts and the whole registry | Opus 5.5 | routine (prompt written, stages not built yet) |
 
 The model steps only propose; `forms.validate_hypothesis` and `rules.validate_rule` decide what is admitted. A hypothesis may
 cite only columns known at order time or earlier (`schema.ex_ante`); outcome columns (P&L, the bid path after the entry,
@@ -43,6 +43,10 @@ with no audit on Drive, or no record at all, fails the run, and so does a day wh
 than a quarter of its trips (exit 3: a degraded file never replaces a good one on Drive). Each run also builds, oldest first, up to
 three earlier days that have an audit on Drive and no trip file (a night the archive missed, a run that failed). The day-after file only supplies settlements that land just after midnight; the result is also read from
 Kalshi's public market endpoint.
+
+The mechanical stages of the daily loop (`daily.py`) run on a runner too: `loss-review-stages.yml` is dispatched by the routine between its model
+steps, pulls the work folder from Drive, runs the stages and puts back the registry, the usage log and the day's work folder
+(`docs/LOSS_REVIEW_ROUTINE.md`: how the routine reaches the data, and why the model replies travel in the dispatch input).
 
 ```
 PYTHONPATH=python python3 -m lossreview.nightly --day 2026-11-12 --audit-dir DIR --out DIR [--no-net]
