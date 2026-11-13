@@ -1,0 +1,31 @@
+name: ZZ study compare (temporary, never merged)
+on:
+  push:
+    branches: [claude/project-thread-kjji9x]
+    paths: ['.github/zz-study-compare-trigger.txt']
+permissions:
+  contents: read
+concurrency:
+  group: loss-review-stages
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          ref: claude/project-thread-jovhyd-heat-losers
+          path: study
+          sparse-checkout: research/heat-losers
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Compare
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/cmp"; mkdir -p "$W"
+          bash deploy/drive_lab.sh get derived/loss-review "$W" --include 'days/trips-2026-11-11.jsonl' --include 'days/trips-2026-11-12.jsonl'
+          python3 -B .github/scripts/zz_study_compare.py "$W" study/research/heat-losers/trips.json
