@@ -9,9 +9,6 @@ name: Loss review stages
 # Inputs reach the script as environment variables, never inside the command text.
 
 on:
-  push:   # TEMPORARY (removed before merge): a workflow that is not on main cannot be dispatched, so the first test reads its inputs from a file
-    branches: [claude/project-thread-kjji9x]
-    paths: ['.github/loss-review-stages-trigger.txt']
   workflow_dispatch:
     inputs:
       day:
@@ -63,9 +60,4 @@ jobs:
           LR_RESPONSES: ${{ inputs.responses }}
           LR_SINCE: ${{ inputs.since }}
           LR_UNTIL: ${{ inputs.until }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = push ]; then   # TEMPORARY
-            IFS='|' read -r LR_DAY LR_STAGES LR_USAGE LR_SINCE LR_UNTIL < .github/loss-review-stages-trigger.txt
-            export LR_DAY LR_STAGES LR_USAGE LR_SINCE LR_UNTIL
-          fi
-          bash .github/scripts/loss_review_stages.sh
+        run: bash .github/scripts/loss_review_stages.sh
