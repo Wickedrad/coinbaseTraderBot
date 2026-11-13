@@ -26,9 +26,6 @@ on:
         description: 'UTC day to build, YYYY-MM-DD (empty = yesterday)'
         required: false
         default: ''
-  push:
-    branches: ['claude/project-thread-kjji9x']
-    paths: ['.github/loss-review-trigger.txt']
 
 permissions:
   contents: read
@@ -55,7 +52,6 @@ jobs:
         run: |
           set -euo pipefail
           DAY="$INPUT_DAY"
-          if [ "$GITHUB_EVENT_NAME" = push ]; then DAY=$(head -1 .github/loss-review-trigger.txt | tr -d '[:space:]'); fi
           CATCHUP=
           if [ -z "$DAY" ]; then DAY=$(date -u -d 'yesterday' +%F); if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then CATCHUP=catchup; fi; fi
           bash .github/scripts/loss_review_run.sh "$DAY" $CATCHUP
