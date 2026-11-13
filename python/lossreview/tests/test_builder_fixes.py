@@ -12,6 +12,11 @@ from lossreview.tests import test_builder as tb
 from lossreview.tests.test_builder import T0, TK, closed, fill, heat_entry, plan_event, rec
 
 
+def dict_no_book(r):
+    del r[2]['bookPnl']
+    return r
+
+
 def one(recs):
     trips, skipped = builder.build(sorted(recs, key=lambda r: r[0]))
     assert (len(trips), skipped) == (1, 0), (len(trips), skipped)
@@ -105,6 +110,32 @@ class BuilderFixTests(unittest.TestCase):
         r = one([heat_entry(2), fill(0, 'bid', 0.50, 20), fill(100, 'ask', 0.55, 20, coid='c2'), closed(110, 'yes', 0.5)])
         self.assertLessEqual(r['order_t'], r['entry_t'])
         self.assertAlmostEqual(r['order_t'], T0, delta=0.01)
+
+    def test_fills_that_are_not_the_trips_own_flag_a_trip_that_has_no_logged_pnl(self):
+        def nobook(pnl):
+            r = closed(310, 'yes', pnl)
+            del r[2]['bookPnl']          # an old closed record: the P&L it carries is not the trip's own
+            return r
+        # clean: bought the plan's 20, sold 20, no logged P&L: the fills explain it, nothing to flag
+        ef, xf = fees.taker_fee(20, 0.50), fees.taker_fee(20, 0.62)
+        clean = one([heat_entry(0), fill(1, 'bid', 0.50, 20), fill(300, 'ask', 0.62, 20, coid='c2'), nobook(0.0)])
+        self.assertEqual((clean['pnl_source'], clean['fidelity_flag']), ('fills', False))
+        # a resting quote of another order filled in the same market: 30 bought against a plan of 20
+        over = one([heat_entry(0), fill(1, 'bid', 0.50, 20), fill(2, 'bid', 0.40, 10, taker=False, coid='c9'), fill(300, 'ask', 0.62, 20, coid='c2'), nobook(0.0)])
+        self.assertEqual((over['count_filled'], over['count_plan']), (30, 20))
+        self.assertTrue(over['fidelity_flag'])
+        # more sold than this trip bought: a sale of another position
+        more = one([heat_entry(0), fill(1, 'bid', 0.50, 20), fill(299, 'ask', 0.40, 9, coid='c8'), fill(300, 'ask', 0.62, 20, coid='c2'), nobook(0.0)])
+        self.assertTrue(more['fidelity_flag'])
+        # with the bot's own logged P&L the reconciliation gap decides, as before: the same fills with a matching logged P&L stay clean
+        logged = one([heat_entry(0), fill(1, 'bid', 0.50, 20), fill(300, 'ask', 0.62, 20, coid='c2'), closed(310, 'yes', round(20 * 0.12 - ef - xf, 6))])
+        self.assertEqual((logged['pnl_source'], logged['fidelity_flag']), ('logged', False))
+
+    def test_a_foreign_fill_flag_survives_resolving_the_payout(self):
+        r = one([heat_entry(0), fill(1, 'bid', 0.50, 20), fill(2, 'bid', 0.40, 10, taker=False, coid='c9'), fill(300, 'ask', 0.62, 20, coid='c2'),
+                 dict_no_book(closed(310, 'yes', 0.0))])
+        r = dict(r, unresolved=True, side_settles_win=True, held_to_end=10.0, pnl_source='fills')
+        self.assertTrue(builder.resolve_payout(r)['fidelity_flag'])
 
     def test_an_earlier_trip_of_the_same_market_does_not_lend_its_fills(self):
         # two trips in one market: the second one's window starts after the first one's close

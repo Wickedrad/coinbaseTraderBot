@@ -28,6 +28,7 @@ SALE_MATCH_S = 180.0      # a plan sale event precedes the fill of its order by 
 SALE_AFTER_S = 5.0        # ... or follows it by a few milliseconds (the event is written after the send returns)
 ENTRY_SLACK_S = 30.0      # fills of the market counted from this long before the entry record (clock skew), never before the last close
 EXIT_SLACK_S = 10.0       # ... and until this long after the close record
+COUNT_TOL = 0.5           # contracts: fills beyond the heat plan's count, or sales beyond what the trip bought, are another order's
 RECON_TOL = 0.10          # a trip whose fills explain its logged P&L within this is reconciled
 WINDOW_S = {'15m': 900, 'hourly': 3600}
 MONTHS = {m: i + 1 for i, m in enumerate('JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC'.split())}
@@ -274,10 +275,22 @@ def build_trip(closed_t, closed, ix):
         'fee_estimated': any(f['fee_est'] for f in fills), 'orphan_fill': any(f['orphan'] for f in fills), 'dup_fills': dups,
         'sale_revenue': round(revenue, 6), 'unresolved': payout is None,
     })
+    # Fills that are not the trip's own: more contracts bought than the heat plan asked for (a resting quote of another order filled
+    # in the same market) or more sold than this trip bought (a sale of another position). With the bot's own logged P&L the
+    # reconciliation gap catches a mismatch; with no logged P&L (pnl_source 'fills') nothing would, and the P&L would carry the
+    # other order's dollars (Nov 12: three trips, +$20 of the $27 gap to the hand study). Such a trip is flagged, so it stays out of
+    # the evidence instead of being scored with a result that is not its own.
+    foreign = _foreign(row.get('count_plan'), n_in, n_out, logged_ok)
     # A remainder held with no result yet leaves the P&L unproven: flagged until the result arrives (resolve_payout).
-    row['fidelity_flag'] = bool(row['orphan_fill'] or dups or payout is None or (gap is not None and abs(gap) > RECON_TOL) or pnl is None)
+    row['fidelity_flag'] = bool(row['orphan_fill'] or dups or payout is None or (gap is not None and abs(gap) > RECON_TOL) or pnl is None or foreign)
     row['lane'] = 'heat'
     return row
+
+
+def _foreign(plan_n, n_in, n_out, logged_ok):
+    """True when the trip's fills are not all its own and no logged P&L stands in for them (see build_trip)."""
+    extra_in = (n_in - plan_n) if isinstance(plan_n, (int, float)) and not isinstance(plan_n, bool) else 0.0
+    return bool((extra_in > COUNT_TOL or n_out - n_in > COUNT_TOL) and not logged_ok)
 
 
 def build(records):
@@ -311,5 +324,7 @@ def resolve_payout(row):
     out['exit_px'] = round((float(row['sale_revenue']) + payout) / n_total, 6) if n_total > 0 else None
     if row.get('pnl_source') != 'logged':
         out['pnl'] = pnl_fills
-    out['fidelity_flag'] = bool(row.get('orphan_fill') or row.get('dup_fills') or (gap is not None and abs(gap) > RECON_TOL))
+    foreign = _foreign(row.get('count_plan'), float(row['count_filled']), sum(float(l.get('count') or 0) for l in row.get('legs') or []),
+                       row.get('pnl_source') == 'logged')
+    out['fidelity_flag'] = bool(row.get('orphan_fill') or row.get('dup_fills') or (gap is not None and abs(gap) > RECON_TOL) or foreign)
     return out

@@ -69,7 +69,9 @@ LOSSREVIEW_TRIPS=TRIPS.csv ... unittest ...                         # adds the N
   own fee) and its plan rule. Sales under the line from a rule other than the loser cut or the end rule are defects for the
   exit owner (`defect_sale`, `defect_dollars`): they are reported, never swept.
 - **Fidelity.** A trip whose fills do not explain its logged P&L (within $0.10), a fill logged twice (same trade id, or the
-  same day present as a plain and a gzipped file), an orphan fill, or a remainder held to the end whose result is not known yet
+  same day present as a plain and a gzipped file), an orphan fill, fills that are not the trip's own while the bot logged no P&L for it
+  (more contracts bought than the heat plan asked for, i.e. a resting quote of another order filled in the same market, or more sold
+  than the trip bought; `COUNT_TOL` 0.5 contracts; found on Nov 12 in three trips by the comparison with the hand study), or a remainder held to the end whose result is not known yet
   (`unresolved`, finished from Kalshi's public market record by `builder.resolve_payout`) is flagged and kept out of every sweep
   (class FIDELITY). A sale leg is matched to its plan event from 5 s after to 180 s before the fill (the engine writes the event
   right after it sends the sale); a trip that sold part and held the rest ends as `settled`.
