@@ -15,8 +15,19 @@ MARKET_KEYS = ('ticker', 'open_time', 'close_time', 'status', 'result', 'floor_s
                'expiration_value', 'settlement_value_dollars')
 
 
+FETCH_ERRORS = 0     # requests that ended in an error (nightly.py reads the count: a day built on a failed join is not kept)
+
+
 def get(url, tries=4):
     """JSON from a public endpoint; {'error': ...} after the retries (429 and 5xx back off)."""
+    r = _get(url, tries)
+    if isinstance(r, dict) and 'error' in r and len(r) == 1:
+        global FETCH_ERRORS
+        FETCH_ERRORS += 1
+    return r
+
+
+def _get(url, tries):
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'loss-review/1.0', 'Accept': 'application/json'})

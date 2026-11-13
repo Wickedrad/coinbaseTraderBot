@@ -153,17 +153,41 @@ def _fill_rows(fills_t, side, t0, t1, orders):
     return out
 
 
+def _origin_rule(retry, events):
+    """The rule a retry belongs to. The engine writes a loser cut or an end sale's later tries as plan_ratchet_retry whatever the
+    kind; the retry carries `since`, the decision's time, which the original plan_*_sell event carries too. Without a match
+    (the event is in another file) the last sell event before the retry within 15 minutes is the sale under way."""
+    since = retry.get('since')
+    prior = None
+    for et, e in events:
+        if e.get('event') not in EXIT_RULES:
+            continue
+        if since is not None and (e.get('since') == since or e.get('at') == since):
+            return EXIT_RULES[e['event']]
+        if et <= retry['_t'] and retry['_t'] - et <= 900.0:
+            prior = e
+    return EXIT_RULES[prior['event']] if prior else None
+
+
 def _rule_for(t, events):
     """The plan sale event nearest to the fill time t that actually went out. The engine writes the event right after it sends
     the sale, and a paper fill lands inside that call: so the event may come a few milliseconds AFTER the fill (SALE_AFTER_S)
-    or up to SALE_MATCH_S before it."""
+    or up to SALE_MATCH_S before it. A retry of a sale that went unfilled (plan_ratchet_retry) is the same sale: it counts as
+    the rule of the decision it repeats, so a loser cut that fills minutes after it was decided is still a loser cut."""
     best = None
     for et, e in events:
         lag = t - et
-        if -SALE_AFTER_S <= lag <= SALE_MATCH_S and e.get('event') in EXIT_RULES and e.get('sent') is not False:
+        name = e.get('event')
+        if -SALE_AFTER_S <= lag <= SALE_MATCH_S and (name in EXIT_RULES or name == 'plan_ratchet_retry') and e.get('sent') is not False:
             if best is None or abs(lag) < abs(t - best[0]):
                 best = (et, e)
-    return (EXIT_RULES[best[1]['event']], best[0], best[1]) if best else ('other', None, None)
+    if best is None:
+        return 'other', None, None
+    name = best[1]['event']
+    if name in EXIT_RULES:
+        return EXIT_RULES[name], best[0], best[1]
+    rule = _origin_rule(dict(best[1], _t=best[0]), events)
+    return (rule, best[0], best[1]) if rule else ('other', None, None)
 
 
 def build_trip(closed_t, closed, ix):

@@ -35,15 +35,15 @@ def _is_number(v):
 
 
 def _eq_key(v):
-    """Comparable form for an eq test: numbers compare as numbers (1 equals 1.0 equals '1.0'), booleans as true/false, other
-    values as lower-cased text."""
+    """Comparable form for an eq test: numbers compare as numbers (1 equals 1.0 equals '1.0'), booleans as 1 and 0 (so a count
+    column and a boolean threshold agree: eq false is eq 0), other values as lower-cased text."""
     if isinstance(v, bool):
-        return 'true' if v else 'false'
+        return 1.0 if v else 0.0
     if _is_number(v):
         return float(v)
     s = str(v).strip().lower()
     if s in ('true', 'false'):
-        return s
+        return 1.0 if s == 'true' else 0.0
     try:
         return float(s)
     except ValueError:

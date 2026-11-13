@@ -154,6 +154,127 @@ class DailyLoopTests(unittest.TestCase):
         reg.owner_ok('rank-skip')
         reg.move('rank-skip', 'shadow')
 
+    def test_a_reply_cannot_flood_collide_or_repeat_what_is_registered(self):
+        w = tempfile.mkdtemp()
+        write_days(w, range(0, 3), -1.0)
+        g = day_name(0)
+        wd = daily.workdir(w, g)
+        daily.prepare_tags(w, g)
+        daily.prepare_hyp(w, g)
+
+        def h(i, feature, op, thresholds=(0.3,)):
+            return dict(HYP, id=i, feature=feature, op=op, thresholds=list(thresholds))
+        reply = [h('idea-a1', 'frac_elapsed_at_entry', 'lt'), h('idea-a1', 'entry_px', 'lt'),          # a second use of an id
+                 h('idea-a2', 'frac_elapsed_at_entry', 'lt', (0.5,)),                              # the same idea under a new id
+                 h('idea-a3', 'frac_elapsed_at_entry', 'gt'), h('idea-a4', 'entry_px', 'gt'), h('idea-a5', 'count', 'gt', (10,)), h('idea-a6', 'stake', 'gt', (5,))]
+        respond(os.path.join(wd, 'hyp-WRONG_SIDE.response.json'), reply)
+        out = daily.apply_hyp(w, g)
+        self.assertEqual(out['valid'], daily.HYP_PER_CLASS)            # three a class, never more
+        self.assertEqual(out['rejected'], len(reply) - daily.HYP_PER_CLASS)
+        ids = [x['id'] for x in json.load(open(os.path.join(wd, 'hypotheses.json')))]
+        self.assertEqual(ids, ['idea-a1', 'idea-a3', 'idea-a4'])                      # in reply order: the id twice and the repeated idea are out
+        for i in ids:
+            respond(os.path.join(wd, 'adv-%s.response.json' % i), {'hypothesis_id': i, 'verdict': 'refuted', 'reasons': ['other'], 'note': 'x'})
+        self.assertEqual(daily.apply_adv(w, g)['registered_refuted'], 3)
+        # a later day: the same ids and the same ideas (refuted ones included) are not run again
+        g2 = day_name(1)
+        wd2 = daily.workdir(w, g2)
+        daily.prepare_tags(w, g2)
+        daily.prepare_hyp(w, g2)
+        respond(os.path.join(wd2, 'hyp-WRONG_SIDE.response.json'), [h('idea-a1', 'count', 'lt', (5,)), h('idea-b1', 'entry_px', 'gt', (0.9,)), h('idea-b2', 'count', 'gt', (10,))])
+        out2 = daily.apply_hyp(w, g2)
+        self.assertEqual((out2['valid'], out2['rejected']), (1, 2))    # only b2 is new
+
+    def test_the_whole_day_is_capped(self):
+        w = tempfile.mkdtemp()
+        write_days(w, range(0, 3), -1.0)
+        g = day_name(0)
+        wd = daily.workdir(w, g)
+        daily.prepare_tags(w, g)
+        daily.prepare_hyp(w, g)
+        respond(os.path.join(wd, 'hyp-WRONG_SIDE.response.json'), [dict(HYP, id='wide-%d' % i, feature=f, op=o, thresholds=[t]) for i, (f, o, t) in enumerate(
+            [('frac_elapsed_at_entry', 'lt', 0.3), ('frac_elapsed_at_entry', 'gt', 0.3), ('entry_px', 'lt', 0.5)])])
+        daily.HYP_PER_DAY, keep = 2, daily.HYP_PER_DAY
+        try:
+            self.assertEqual(daily.apply_hyp(w, g)['valid'], 2)
+        finally:
+            daily.HYP_PER_DAY = keep
+
+    def test_trips_the_builder_could_not_vouch_for_never_reach_the_sweep(self):
+        w, _ = self.run_loop(plant=-8.0)
+        for k in range(1, 13):          # the whole planted effect sits in trips flagged as FIDELITY
+            p = os.path.join(w, 'days', 'trips-%s.jsonl' % day_name(k))
+            with open(p) as fh:
+                rows = [json.loads(l) for l in fh]
+            for r in rows:
+                if r['frac_elapsed_at_entry'] < 0.12:
+                    r['fidelity_flag'] = True
+            with open(p, 'w') as fh:
+                fh.write(''.join(json.dumps(r) + '\n' for r in rows))
+        r = daily.run_sweep(w, day_name(5))
+        self.assertEqual((r['looked'], r['to_shadow']), (1, 0))
+        # and a row with no P&L at all is not scored either
+        p = os.path.join(w, 'days', 'trips-%s.jsonl' % day_name(2))
+        with open(p) as fh:
+            rows = [json.loads(l) for l in fh]
+        rows[0]['pnl'] = None
+        with open(p, 'w') as fh:
+            fh.write(''.join(json.dumps(r) + '\n' for r in rows))
+        self.assertEqual(len(daily.load_days(w, scoring=True)[day_name(2)]), len(rows) - 1 - sum(1 for r in rows[1:] if r['fidelity_flag']))
+        self.assertEqual(len(daily.load_days(w)[day_name(2)]), len(rows))
+
+    def test_two_skip_rules_that_each_fit_the_floor_are_not_both_promoted_when_together_they_do_not(self):
+        w = tempfile.mkdtemp()
+        os.makedirs(os.path.join(w, 'days'))
+        for k in range(0, 13):
+            rnd = random.Random(k)
+            with open(os.path.join(w, 'days', 'trips-%s.jsonl' % day_name(k)), 'w') as fh:
+                for i in range(350):
+                    xa = ((i * 37) % 350) / 350.0
+                    xb = (((i * 53) % 350) / 350.0) * 900.0                # a second, independent grid: seconds left in the window
+                    pnl = rnd.gauss(-0.2, 3.0) + (-8.0 if xa < 0.10 else 0.0) + (-8.0 if xb < 108.0 else 0.0)
+                    t = D0 + 86400 * k + 600 + i * 60
+                    fh.write(json.dumps({'ticker': 'KXBTC15M-T%d-%d' % (k, i), 'entry_t': t - 400, 'closed_t': t, 'entry_px': 0.5,
+                                         'frac_elapsed_at_entry': xa, 'left_at_entry_s': xb, 'pnl': pnl, 'class': 'WRONG_SIDE' if pnl < 0 else 'WIN',
+                                         'fidelity_flag': False, 'coin': 'BTC', 'kind': '15m', 'side': 'yes', 'count': 20, 'stake': 10.0}) + '\n')
+        g = day_name(0)
+        wd = daily.workdir(w, g)
+        daily.prepare_tags(w, g)
+        daily.prepare_hyp(w, g)
+        ha = dict(HYP, id='rule-ha', feature='frac_elapsed_at_entry', thresholds=[0.05, 0.075, 0.10])
+        hb = dict(HYP, id='rule-hb', feature='left_at_entry_s', thresholds=[54, 81, 108])
+        respond(os.path.join(wd, 'hyp-WRONG_SIDE.response.json'), [ha, hb])
+        self.assertEqual(daily.apply_hyp(w, g)['valid'], 2)
+        for i in ('rule-ha', 'rule-hb'):
+            respond(os.path.join(wd, 'adv-%s.response.json' % i), {'hypothesis_id': i, 'verdict': 'survives', 'reasons': [], 'note': 'x'})
+        daily.apply_adv(w, g)
+        self.assertEqual(daily.run_sweep(w, day_name(5))['to_shadow'], 2)
+        ready, held = [], []
+        for k in range(5, 13):
+            out = daily.run_shadow(w, day_name(k))
+            ready += out['ready_for_pr']
+            held = out['held_by_floor']
+        reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
+        self.assertEqual(len(ready), 1)                                  # one of the two goes to a promotion PR ...
+        self.assertEqual(len(held), 1)                                   # ... the other waits in shadow: together they flag over 15%
+        self.assertEqual(sorted(s['status'] for r, s in reg.state.items() if r in ('rule-ha', 'rule-hb')), ['proposal', 'shadow'])
+        self.assertNotEqual(ready[0], held[0])
+
+    def test_usage_is_logged_and_checked_against_the_allowance(self):
+        w = tempfile.mkdtemp()
+        out = daily.usage(w, '2026-11-13', 'tag', 40_000, 10_000, 25)
+        self.assertEqual(out['used_today'], 50_000)
+        self.assertTrue(out['ok'])
+        out = daily.usage(w, '2026-11-13', 'hypothesize', 300_000, 260_000, 3)
+        self.assertEqual((out['used_today'], out['ok']), (610_000, False))     # over the 600k a day: the routine skips the model steps
+        with open(os.path.join(w, 'usage.jsonl'), 'a') as fh:
+            fh.write('\n{"torn"\n[1]\n')                                       # a blank, a torn and a non-object line
+        self.assertEqual(daily.status(w)['tokens_logged'], 610_000)           # status still reads it
+        self.assertEqual(daily.budget(w, '2026-11-13')['used_today'], 610_000)
+        with self.assertRaises(ValueError):
+            daily.usage(w, '2026-11-13', 'no-such-step', 1, 1, 1)
+        self.assertEqual(daily.main(['usage', '2026-11-14', '--w', w, '--step', 'audit', '--tokens-in', '5', '--tokens-out', '5', '--items', '1']), 0)
+
     def test_pending_lists_days_with_a_trip_file_until_they_are_marked_done(self):
         w = tempfile.mkdtemp()
         write_days(w, range(0, 3), -1.0)

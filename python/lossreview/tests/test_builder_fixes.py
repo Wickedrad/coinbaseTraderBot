@@ -28,6 +28,27 @@ class BuilderFixTests(unittest.TestCase):
         self.assertEqual(r['legs'][0]['rule'], 'ratchet')
         self.assertEqual(r['exit_event'], 'ratchet')
 
+    def test_a_loser_cut_that_fills_minutes_after_it_was_decided_is_still_a_loser_cut(self):
+        # decided at t=100, no bid, retried every 10 s as plan_ratchet_retry, filled at t=300 under the round-trip cost
+        ef, xf = fees.taker_fee(20, 0.50), fees.taker_fee(20, 0.30)
+        pnl = round(20 * (0.30 - 0.50) - ef - xf, 6)
+        since = int((T0 + 100) * 1000)
+        recs = [heat_entry(0), fill(1, 'bid', 0.50, 20),
+                rec(100, 'plan', {'event': 'plan_loser_cut_sell', 'ticker': TK, 'side': 'yes', 'count': 20, 'bid': 0.3, 'net': -4.0, 'sent': True, 'since': since, 'at': since})]
+        recs += [rec(100 + 10 * k, 'plan', {'event': 'plan_ratchet_retry', 'ticker': TK, 'side': 'yes', 'count': 20, 'bid': 0.3, 'net': -4.0, 'since': since}) for k in range(1, 20)]
+        recs += [fill(299, 'ask', 0.30, 20, coid='c2'), closed(310, 'yes', pnl)]
+        r = one(recs)
+        self.assertEqual(r['legs'][0]['rule'], 'loser_cut')
+        self.assertTrue(r['legs'][0]['below_breakeven'])
+        self.assertFalse(r['defect_sale'])           # a permitted cut, not a defect for the exit owner
+        self.assertEqual(r['exit_event'], 'loser_cut')
+
+    def test_a_retry_whose_origin_is_unknown_falls_back_to_the_sale_under_way_or_other(self):
+        recs = [heat_entry(0), fill(1, 'bid', 0.50, 20),
+                rec(250, 'plan', {'event': 'plan_ratchet_retry', 'ticker': TK, 'side': 'yes', 'count': 20, 'bid': 0.3, 'net': -4.0, 'since': 123}),
+                fill(251, 'ask', 0.30, 20, coid='c2'), closed(260, 'yes', -4.0)]
+        self.assertEqual(one(recs)['legs'][0]['rule'], 'other')       # nothing to say which rule: the defect flag stays on
+
     def test_a_plan_event_long_after_the_fill_is_not_borrowed(self):
         r = one([heat_entry(0), fill(1, 'bid', 0.50, 20), fill(300, 'ask', 0.62, 20, coid='c2'),
                  plan_event(330, 'plan_ratchet_sell', 0.62), closed(340, 'yes', 0.5)])
@@ -130,12 +151,14 @@ class OutcomeFixTests(unittest.TestCase):
     def test_a_sample_after_the_hold_is_not_a_reachable_bid(self):
         # a 90 s hold: bid_2m and bid_5m are moments after the trip ended and cannot show a reachable bid
         base = {'entry_px': 0.50, 'count': 20, 'stake': 10.0, 'entry_fill_px': 0.50, 'count_filled': 20, 'entry_fee': 0.18,
-                'exit_fee': 0.2, 'exit_px': 0.40, 'pnl': -2.4, 'hold_s': 90.0, 'bid_1m': 0.48, 'bid_2m': 0.97, 'bid_5m': 0.97,
+                'exit_fee': 0.2, 'exit_px': 0.40, 'pnl': -2.4, 'hold_s': 90.0, 'bid_entry_min': 0.48, 'bid_1m': 0.48, 'bid_2m': 0.97, 'bid_5m': 0.97,
                 'best_bid_held': None, 'side': 'yes', 'actual': True}
         eco = triage.economics(dict(base))
         ok, proven = triage.reachable(dict(base), eco)
         self.assertFalse(ok)
         self.assertFalse(proven)
+        short = dict(base, hold_s=20.0, bid_entry_min=0.97, bid_1m=0.97)     # a 20 s hold: the entry minute closed after the trip did
+        self.assertFalse(triage.reachable(short, triage.economics(dict(short)))[0])
         long_hold = dict(base, hold_s=400.0)
         ok2, _ = triage.reachable(long_hold, triage.economics(dict(long_hold)))
         self.assertTrue(ok2)
@@ -164,6 +187,74 @@ class NightlyOutputTests(unittest.TestCase):
         self.assertNotIn('KXBTC', out)
         self.assertNotRegex(out, r'"(net|fees|gross|loser_dollars)"')   # one trip: a dollar figure is that trade
         self.assertNotRegex(out, r'class \w+ trips \d+ dollars')
+
+    def run_day(self, recs):
+        d, ad = self.day(recs)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            nightly.main(['--day', '2026-11-12', '--audit-dir', ad, '--out', os.path.join(d, 'out'), '--no-net'])
+        return buf.getvalue()
+
+    def six_trips(self, n_winners, losers):
+        """n_winners ratchet winners and `losers`: list of (price, count) cut trips; each trip in its own 20-minute slot."""
+        recs = []
+        n = 0
+        for _ in range(n_winners):
+            off = 1000 * n
+            n += 1
+            ef, xf = fees.taker_fee(20, 0.50), fees.taker_fee(20, 0.62)
+            recs += [heat_entry(off), fill(off + 1, 'bid', 0.50, 20, coid='w%d' % n), plan_event(off + 300, 'plan_ratchet_sell', 0.62),
+                     fill(off + 302, 'ask', 0.62, 20, coid='x%d' % n), closed(off + 310, 'yes', round(20 * 0.12 - ef - xf, 6))]
+        return recs, n
+
+    def test_no_printed_dollar_figure_is_one_trade_or_differences_down_to_one(self):
+        # 5 winners and ONE trade sold under break-even by the ratchet (a defect): the day has 6 trips, a cell of 1 loser
+        recs, n = self.six_trips(5, [])
+        off = 1000 * n
+        ef, xf = fees.taker_fee(20, 0.50), fees.taker_fee(20, 0.51)
+        recs += [heat_entry(off), fill(off + 1, 'bid', 0.50, 20, coid='lz'), plan_event(off + 100, 'plan_ratchet_sell', 0.51),
+                 fill(off + 101, 'ask', 0.51, 20, coid='lx'), closed(off + 110, 'yes', round(20 * 0.01 - ef - xf, 6))]
+        out = self.run_day(recs)
+        self.assertNotRegex(out, r'"(loser_dollars|defect_dollars)"')          # 1 loser, 1 defect sale: neither is printed
+        lone = round(20 * 0.01 - ef - xf, 2)
+        self.assertNotIn(str(lone), out)
+        self.assertIn('"net"', out)                                            # the six-trip total is a cell of six
+        self.assertNotRegex(out, r'class \w+ trips \d+ dollars')               # a small class is in the day: counts only, so net cannot be differenced
+
+    def fee_only(self, k):
+        off = 1000 * (20 + k)
+        ef, xf = fees.taker_fee(20, 0.50), fees.taker_fee(20, 0.51)
+        return [heat_entry(off), fill(off + 1, 'bid', 0.50, 20, coid='fz%d' % k), plan_event(off + 100, 'plan_ratchet_sell', 0.51),
+                fill(off + 101, 'ask', 0.51, 20, coid='fx%d' % k), closed(off + 110, 'yes', round(20 * 0.01 - ef - xf, 6))]
+
+    def test_class_dollars_are_printed_only_when_no_cell_is_small_and_the_winners_are_not_one(self):
+        recs, _ = self.six_trips(5, [])
+        for k in range(5):
+            recs += self.fee_only(k)
+        out = self.run_day(recs)                                  # 5 FEE_ONLY losers and 5 winners: every cell is five
+        self.assertRegex(out, r'class FEE_ONLY trips 5 dollars')
+        recs, _ = self.six_trips(1, [])                           # 5 losers and ONE winner: net minus the class dollars would be that trade
+        for k in range(5):
+            recs += self.fee_only(k)
+        out = self.run_day(recs)
+        self.assertRegex(out, r'class FEE_ONLY trips 5')
+        self.assertNotRegex(out, r'class FEE_ONLY trips 5 dollars')
+
+    def test_a_failed_public_join_for_most_trips_exits_three_and_is_counted(self):
+        from lossreview import paths
+        ef, xf = fees.taker_fee(20, 0.50), fees.taker_fee(20, 0.62)
+        d, ad = self.day([heat_entry(0), fill(1, 'bid', 0.50, 20), plan_event(300, 'plan_ratchet_sell', 0.62), fill(302, 'ask', 0.62, 20, coid='c2'),
+                          closed(310, 'yes', round(20 * 0.12 - ef - xf, 6))])
+        keep = paths._get
+        paths._get = lambda url, tries: {'error': 'HTTP 403'}        # the public endpoints refuse the runner
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = nightly.main(['--day', '2026-11-12', '--audit-dir', ad, '--out', os.path.join(d, 'out')])
+        finally:
+            paths._get = keep
+        self.assertEqual(rc, 3)
+        self.assertIn('"fetch_errors"', buf.getvalue())
 
     def test_a_quiet_day_still_writes_its_files(self):
         # records exist (a plan event of another market) but no heat trip closed

@@ -72,7 +72,7 @@ def reachable(row, eco):
     held = num(row, 'best_bid_held')
     hold = num(row, 'hold_s')
     # a sampled bid counts only when its moment fell inside the hold (bid_Nm is the bid N minutes after the order)
-    sampled = [num(row, 'bid_entry_min')] + [num(row, k) for k, secs in (('bid_1m', 60), ('bid_2m', 120), ('bid_5m', 300)) if hold is None or hold >= secs]
+    sampled = [num(row, k) for k, secs in (('bid_entry_min', 60), ('bid_1m', 60), ('bid_2m', 120), ('bid_5m', 300)) if hold is None or hold >= secs]   # bid_entry_min is the close of the entry minute: up to 60 s after the order
     bids = [b for b in [held] + sampled if b is not None]
     if not bids:
         return None, False

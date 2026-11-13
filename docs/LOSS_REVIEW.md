@@ -39,7 +39,9 @@ shadow until the owner says so (`Registry.owner_ok`).
 (per-trade: private), `agg-DAY.json` and `report-DAY.md` (aggregates) under `derived/loss-review/days` on Drive. The log prints
 aggregates only, and a dollar figure is printed only for a cell of 5 trips or more (a cell of one is a trade); the full table is
 in the private report on Drive. A day with audit records but no heat trip writes empty files (a notice, not a failure); a day
-with no audit on Drive, or no record at all, fails the run. The day-after file only supplies settlements that land just after midnight; the result is also read from
+with no audit on Drive, or no record at all, fails the run, and so does a day whose public candle and result join failed for more
+than a quarter of its trips (exit 3: a degraded file never replaces a good one on Drive). Each run also builds, oldest first, up to
+three earlier days that have an audit on Drive and no trip file (a night the archive missed, a run that failed). The day-after file only supplies settlements that land just after midnight; the result is also read from
 Kalshi's public market endpoint.
 
 ```
@@ -82,7 +84,12 @@ LOSSREVIEW_TRIPS=TRIPS.csv ... unittest ...                         # adds the N
   the independent windows, a one-sided Student t with days - 1 degrees of freedom) **and** a positive absolute gain: beating
   the placebo while losing money is not a pass. At least 4 days and 100 flagged trips. A skip rule must leave 85% of the trips:
   a candidate that cannot (judged from the features alone, before any scoring) is dropped, and a dial multiplier under 0.25 is
-  a skip in disguise and is refused.
+  a skip in disguise and is refused. The floor is also a gate on the SET of skip rules: a rule that is ready in shadow but would
+  push the union of flagged trips past 15% (counting the rules already in proposal or live first, best gain first) waits in
+  shadow as `held_by_floor`.
+- Trips flagged FIDELITY (or with no P&L) are kept out of the sweep, the shadow and the controls; what the model may ask for is
+  capped in code (3 hypotheses a class, 6 a day, unique ids, no repeat of a registered idea), because each one is a trial that
+  raises the BH family for every honest candidate.
 - Maker, strike and exit levers cannot be priced from the trip file: the sweep writes a replay request for the owner of that
   replay (`replay_request`), one control per lever, same rule about days.
 - First-order dollars only (a skip removes the trip, a dial scales it). Integer contract counts, fee rounding and the effect of

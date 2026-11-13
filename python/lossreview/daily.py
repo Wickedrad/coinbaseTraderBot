@@ -15,6 +15,8 @@ Stages (the model steps sit between them; docs/LOSS_REVIEW_ROUTINE.md has the ro
     sweep DAY             -> scores every open hypothesis on the days after its generating losses; freezes a candidate that survives BH
     shadow DAY            -> flags DAY's trips with every frozen rule; pools the shadow days; drafts nothing, only reports 'ready'
     status                -> counts by state, trials, token use (aggregates only)
+    usage DAY --step S --tokens-in N --tokens-out N --items K   -> logs one model step, prints what is left of the allowance
+    budget DAY [--daily N] [--weekly N]                         -> the allowance check the routine makes before each model step
     pending               -> the days that have a trip file and have not been marked done, oldest first (the routine takes them in order)
     done DAY              -> marks DAY finished (work/DAY/done.json) once the stages above have run
 Printed output is aggregates only; every per-trade file stays in W.
@@ -32,6 +34,8 @@ REVIEW_CAP = 75          # losers a day get a model review (worst dollars first)
 TAG_BATCH = 25
 HYP_MIN_LOSERS = 3       # a class needs this many reviewed losers before a hypothesis is asked for
 HYP_ROWS = 12
+HYP_PER_CLASS = 3        # the prompt asks for at most 3 a class; the code enforces it
+HYP_PER_DAY = 6          # adversary calls a day (docs/LOSS_REVIEW_ROUTINE.md)
 REVIEW_CLASSES = forms.HYPOTHESIS_CLASSES
 
 
@@ -39,12 +43,16 @@ def trip_id(r):
     return hashlib.sha256(('%s|%s' % (r.get('ticker'), r.get('entry_t'))).encode()).hexdigest()[:10]
 
 
-def load_days(w):
+def load_days(w, scoring=False):
+    """{day: rows}. scoring=True keeps out of the evidence every trip the builder could not vouch for (fidelity_flag: orphan or
+    duplicate fills, a P&L the fills do not explain, a remainder whose result is unknown) and any trip with no P&L, as
+    docs/LOSS_REVIEW.md promises; a day with nothing left still appears (as a day without trips)."""
     out = {}
     for p in sorted(glob.glob(os.path.join(w, 'days', 'trips-*.jsonl'))):
         day = os.path.basename(p)[len('trips-'):-len('.jsonl')]
         with open(p, encoding='utf-8') as fh:
-            out[day] = [json.loads(l) for l in fh if l.strip()]
+            rows = [json.loads(l) for l in fh if l.strip()]
+        out[day] = [r for r in rows if not r.get('fidelity_flag') and r.get('pnl') is not None] if scoring else rows
     return out
 
 
@@ -73,9 +81,41 @@ def _read_json(path):
         return forms.parse_json(fh.read())
 
 
+DAILY_TOKENS = 600_000     # the routine's allowance (docs/LOSS_REVIEW_ROUTINE.md: about 0.4 to 0.6 million tokens a day)
+
+
 def log_usage(w, rec):
     with open(os.path.join(w, 'usage.jsonl'), 'a', encoding='utf-8') as fh:
         fh.write(json.dumps(rec) + '\n')
+
+
+def read_usage(w):
+    """The usage log as dicts; a blank, torn or non-object line is skipped (budget_check skips unreadable records the same way)."""
+    p = os.path.join(w, 'usage.jsonl')
+    out = []
+    if os.path.exists(p):
+        with open(p, encoding='utf-8') as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict):
+                    out.append(r)
+    return out
+
+
+def usage(w, day, step, tokens_in, tokens_out, items):
+    """Log one model step (the model and the prompt hash come from the step) and return what is left of the allowance."""
+    if step not in prompts.MODEL_FOR:
+        raise ValueError('unknown step %r; steps are %s' % (step, sorted(prompts.MODEL_FOR)))
+    rec = prompts.usage_record(step, prompts.MODEL_FOR[step], prompts.prompt_hash(step), tokens_in, tokens_out, items, day)
+    log_usage(w, rec)
+    return budget(w, day)
+
+
+def budget(w, day, daily=DAILY_TOKENS, weekly=None):
+    return prompts.budget_check(read_usage(w), day, daily, weekly)
 
 
 def prepare_tags(w, day):
@@ -136,17 +176,26 @@ def prepare_hyp(w, day):
     return {'classes': written}
 
 
+def _spec_key(h):
+    """The idea, not its name: a hypothesis that repeats a registered one under a new id is the same trial."""
+    return (h.get('loss_class'), h.get('lever'), h.get('feature'), h.get('op'))
+
+
 def apply_hyp(w, day):
-    days = load_days(w)
+    days = load_days(w, scoring=True)
     rows = all_rows({d: v for d, v in days.items() if d <= day})
-    losers = [r for r in rows if r.get('pnl') is not None and r['pnl'] < 0]
-    winners = [r for r in rows if r.get('pnl') is not None and r['pnl'] >= 0]
+    losers = [r for r in rows if r['pnl'] < 0]
+    winners = [r for r in rows if r['pnl'] >= 0]
     wd = workdir(w, day)
+    reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
+    seen_ids = set(reg.state)
+    seen_specs = {_spec_key(s['rule']) for s in reg.state.values() if s['kind'] == 'hypothesis'}
     ok_h, bad, curve = [], 0, 0
     for cls in REVIEW_CLASSES:
         p = os.path.join(wd, 'hyp-%s.response.json' % cls)
         resp = _read_json(p) if os.path.exists(p) else None
         items = resp if isinstance(resp, list) else (resp or {}).get('hypotheses') if isinstance(resp, dict) else None
+        n_cls = 0
         for h in items or []:
             ok, errs, flags = forms.validate_hypothesis(h) if isinstance(h, dict) else (False, ['not an object'], [])
             if not ok:
@@ -155,6 +204,15 @@ def apply_hyp(w, day):
             if h.get('loss_class') != cls:
                 bad += 1
                 continue
+            # What the model may ask for is capped here, not trusted: a few hypotheses a class and a day (each one is a trial
+            # that raises the registry's family for every honest candidate), unique ids (the adversary prompt and its verdict are
+            # keyed by id) and no re-run of an idea already registered, refuted ones included.
+            if n_cls >= HYP_PER_CLASS or len(ok_h) >= HYP_PER_DAY or h['id'] in seen_ids or _spec_key(h) in seen_specs:
+                bad += 1
+                continue
+            n_cls += 1
+            seen_ids.add(h['id'])
+            seen_specs.add(_spec_key(h))
             h = dict(h, neighbor_features=h.get('neighbor_features') or [], cites=h.get('cites') or [])
             curve += 1 if 'curve_edit' in flags else 0
             cls_losers = [r for r in losers if r.get('class') == cls]
@@ -200,7 +258,7 @@ def run_sweep(w, day):
     """One fixed look for every open hypothesis that has enough scoring days for its next look (sweep.SWEEP_LOOKS), on exactly
     that look's first days. A hypothesis is not re-scored between looks. A candidate that survives BH over the registry is
     frozen; the last look without one retires it. Levers the trip file cannot price get a replay request instead."""
-    days = load_days(w)
+    days = load_days(w, scoring=True)
     rows = all_rows(days)
     reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
     best_p, results, windows = {}, {}, {}
@@ -254,10 +312,15 @@ def run_sweep(w, day):
 def run_shadow(w, day):
     """Flag every available day after a shadow rule's sweep window, up to `day`, that it has not seen yet (a night missed is
     caught up; a day re-run replaces itself). Reads the verdict at the fixed looks; 'ready' moves the rule to `proposal`
-    (a promotion PR for the owner, never merged by the routine) and 'faded' retires it."""
-    days = load_days(w)
+    (a promotion PR for the owner, never merged by the routine) and 'faded' retires it.
+
+    The floor is a gate on the SET of skip rules, not on one rule at a time: rules already in proposal or live count first, then
+    the rules that are ready now, best gain first, and a ready rule that would push the union of flagged trips past 15% of the
+    trips on the pooled shadow days stays in shadow ('held_by_floor') until the set fits."""
+    days = load_days(w, scoring=True)
     reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
     ready, faded = [], []
+    verdicts = {}
     for rid in reg.by_status('shadow'):
         s = reg.state[rid]
         have = {r['day'] for r in s['shadow']}
@@ -267,15 +330,26 @@ def run_shadow(w, day):
             reg.shadow(rid, shadow.shadow_day(s['frozen'], s['frozen_hash'], d, days[d]))
         v = shadow.shadow_verdict(reg.state[rid]['shadow'], s['frozen_hash'], s.get('frozen_day'), s['frozen']['lever'])
         if v['status'] == 'ready':
-            reg.move(rid, 'proposal', 'shadow look %s: %d days, gap %.2f' % (v['look'], v['days'], v['gap_sum']))
-            ready.append(rid)
+            verdicts[rid] = v
         elif v['status'] == 'faded':
             reg.move(rid, 'retired', 'shadow: not ready at the last look')
             faded.append(rid)
     held = []
-    skip_rules = [reg.state[r]['frozen'] for r in reg.by_status('shadow') if reg.state[r]['frozen']['lever'] == 'skip']
-    if skip_rules and days.get(day):
-        _kept, held, _ret = shadow.ruleset_floor(skip_rules, days[day])
+    if verdicts:
+        committed = [reg.state[r]['frozen'] for st in ('proposal', 'live') for r in reg.by_status(st)
+                     if reg.state[r].get('frozen') and reg.state[r]['frozen']['lever'] == 'skip']
+        cands = sorted(verdicts, key=lambda r: -verdicts[r]['gain_sum'])
+        starts = [reg.state[r]['frozen_day'] for r in cands if reg.state[r].get('frozen_day')]
+        pool = all_rows({d: v for d, v in days.items() if d <= day and (not starts or d > min(starts))})
+        skip_cands = [reg.state[r]['frozen'] for r in cands if reg.state[r]['frozen']['lever'] == 'skip']
+        _kept, held_ids, _ret = shadow.ruleset_floor(committed + skip_cands, pool) if skip_cands else ([], [], 1.0)
+        held = [r for r in cands if reg.state[r]['frozen']['id'] in held_ids and reg.state[r]['frozen']['lever'] == 'skip']
+        for rid in cands:
+            if rid in held:
+                continue
+            v = verdicts[rid]
+            reg.move(rid, 'proposal', 'shadow look %s: %d days, gap %.2f' % (v['look'], v['days'], v['gap_sum']))
+            ready.append(rid)
     return {'shadow_rules': len(reg.by_status('shadow')), 'ready_for_pr': ready, 'faded': faded, 'held_by_floor': held}
 
 
@@ -285,9 +359,11 @@ def status(w):
     for rid, s in reg.state.items():
         by.setdefault(s['status'], []).append(rid)
     used = 0
-    p = os.path.join(w, 'usage.jsonl')
-    if os.path.exists(p):
-        used = sum(r.get('tokens_in', 0) + r.get('tokens_out', 0) for r in map(json.loads, open(p)) if r)
+    for r in read_usage(w):
+        try:
+            used += int(r.get('tokens_in', 0)) + int(r.get('tokens_out', 0))
+        except (TypeError, ValueError):
+            continue
     return {'trials': reg.trials, 'by_status': {k: len(v) for k, v in by.items()}, 'ids': by, 'tokens_logged': used,
             'curve_edits_waiting': [r for r, s in reg.state.items() if s['curve_edit'] and not s['owner_ok'] and s['status'] in ('swept', 'proposed')]}
 
@@ -308,9 +384,15 @@ def mark_done(w, day):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('stage', choices=['prepare-tags', 'apply-tags', 'prepare-hyp', 'apply-hyp', 'apply-adv', 'sweep', 'shadow', 'status', 'pending', 'done'])
+    ap.add_argument('stage', choices=['prepare-tags', 'apply-tags', 'prepare-hyp', 'apply-hyp', 'apply-adv', 'sweep', 'shadow', 'status', 'pending', 'done', 'usage', 'budget'])
     ap.add_argument('day', nargs='?')
     ap.add_argument('--w', required=True)
+    ap.add_argument('--step', choices=sorted(prompts.MODEL_FOR))
+    ap.add_argument('--tokens-in', type=int, default=0)
+    ap.add_argument('--tokens-out', type=int, default=0)
+    ap.add_argument('--items', type=int, default=0)
+    ap.add_argument('--daily', type=int, default=DAILY_TOKENS)
+    ap.add_argument('--weekly', type=int, default=None)
     a = ap.parse_args(argv)
     fn = {'prepare-tags': prepare_tags, 'apply-tags': apply_tags, 'prepare-hyp': prepare_hyp, 'apply-hyp': apply_hyp,
           'apply-adv': apply_adv, 'sweep': run_sweep, 'shadow': run_shadow, 'done': mark_done}.get(a.stage)
@@ -319,7 +401,14 @@ def main(argv=None):
     else:
         if not a.day:
             ap.error('%s needs a DAY' % a.stage)
-        out = fn(a.w, a.day)
+        if a.stage == 'usage':
+            if not a.step:
+                ap.error('usage needs --step')
+            out = usage(a.w, a.day, a.step, a.tokens_in, a.tokens_out, a.items)
+        elif a.stage == 'budget':
+            out = budget(a.w, a.day, a.daily, a.weekly)
+        else:
+            out = fn(a.w, a.day)
     print('LOSSLOOP %s %s' % (a.stage, json.dumps(out, default=str)))
     return 0
 

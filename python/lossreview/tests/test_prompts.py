@@ -379,6 +379,27 @@ class MatchesTests(unittest.TestCase):
             self.assertIs(prompts.matches(h, {'frac_elapsed_at_entry': v}, [0.2, 0.4]), want, v)
         self.assertTrue(prompts.matches(h, {'frac_elapsed_at_entry': 0.3}, (0.2, 0.4)))
 
+    def test_the_blind_control_agrees_with_the_sweeps_own_test_on_real_value_types(self):
+        """prompts.matches (what the adversary is shown) and rules.test_one (what the sweep and shadow score) are two pieces of
+        code; on every value type the trip file really holds they must give the same answer wherever matches gives one."""
+        from lossreview import rules
+        values = [0.0, 0.3, 0.5, 0.7, 1, 0, 15, 15.0, True, False, 'BTC', 'btc', 'yes', 'True', 'false', '0.6', 'single']
+        cases = [('lt', [0.5, 1, 0.0]), ('gt', [0.5, 1, 0.0]), ('between', [[0.2, 0.6], [0, 1]]), ('eq', ['BTC', 'btc', True, False, 15, '15', 'single', 'yes'])]
+        for op, thresholds in cases:
+            for v in values:
+                for t in thresholds:
+                    h = hyp(feature='frac_elapsed_at_entry', op=op)
+                    a = prompts.matches(h, {'frac_elapsed_at_entry': v}, t)
+                    if a is None:
+                        continue
+                    try:
+                        b = rules.test_one('frac_elapsed_at_entry', op, t, {'frac_elapsed_at_entry': v})
+                    except (TypeError, ValueError, IndexError):
+                        b = 'raised'
+                    if op == 'eq' and a is True and b is False and str(v).lower() in ('yes', 'no'):
+                        continue    # 'yes' / 'no' are read as booleans by the control only; no trip column holds them
+                    self.assertEqual(a, b, '%s %r vs %r' % (op, v, t))
+
     def test_eq_on_text_ignores_case_and_space(self):
         h = hyp(feature='coin', op='eq', thresholds=['BTC'])
         self.assertTrue(prompts.matches(h, {'coin': 'btc'}, 'BTC'))

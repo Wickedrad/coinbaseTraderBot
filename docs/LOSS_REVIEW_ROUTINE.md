@@ -19,9 +19,11 @@ marker, oldest first, and the routine runs steps 2 to 6 for each in order (the s
 | adversary (one per validated hypothesis) | Sonnet 5.5 | up to 6 |
 | weekly audit (Mondays): verdicts, registry, the week's defects | Opus 5.5, once | 1 |
 
-Check `prompts.budget_check` against `usage.jsonl` before each model step: about 0.4 to 0.6 million tokens a day, and skip the
-model steps (the mechanical stages still run) when the weekly limit is near. Log every model step with `prompts.usage_record`
-(model, prompt hash, tokens, items). Never use a model above Opus 5.5.
+Before each model step run `python3 -m lossreview.daily budget D --w W [--weekly N]` (the daily allowance is 600,000 tokens;
+pass the weekly one when the plan's limit is near) and skip the model steps, not the mechanical ones, when it says `"ok": false`.
+After each model step log it: `python3 -m lossreview.daily usage D --w W --step tag|hypothesize|adversary|audit --tokens-in N
+--tokens-out N --items K` (the model and the prompt hash come from the step; the reply is what is left of the allowance).
+Never use a model above Opus 5.5.
 
 ## Steps
 
@@ -34,8 +36,9 @@ holds per-trade rows, so it is never committed, posted or printed). Run from a c
 2. `python3 -m lossreview.daily prepare-tags D --w W`. For each `work/D/tag-NN.prompt.txt`, give the text to a Haiku subagent and
    save its reply, unchanged, as `tag-NN.response.json`. Then `apply-tags D`.
 3. `prepare-hyp D`. For each `hyp-CLASS.prompt.txt`, a Sonnet call; save the reply as `hyp-CLASS.response.json`. Then `apply-hyp D`
-   (validates every hypothesis: ex-ante columns only, closed lever set, at most 12 thresholds and 2 neighbors; writes the
-   adversary prompts with the blind winner control).
+   (validates every hypothesis: ex-ante columns only, closed lever set, at most 12 thresholds and 2 neighbors, at most 3 a class and 6 a
+   day, unique ids, and no repeat of an idea already registered, refuted ones included; writes the adversary prompts with the blind
+   winner control).
 4. For each `adv-ID.prompt.txt`, a Sonnet call (it sees the hypothesis and aggregates only, never a ticker); save the reply as
    `adv-ID.response.json`. Then `apply-adv D` (registers survivors; every threshold and neighbor candidate counts as a trial).
 5. `sweep D` (reads every open hypothesis at its next fixed look, 4, 8 or 12 scoring days after its generating losses, never
