@@ -14,9 +14,16 @@ marker, oldest first, and the routine runs steps 2 to 5 for each in order (the s
 
 | Step | Model | Per day |
 | ---- | ----- | ------- |
-| tags (`prepare-tags` batches of 25) | Haiku 5.5, one subagent per batch | up to 3 batches |
-| hypotheses (one per loss class with 3 or more reviewed losers) | Sonnet 5.5 | the 4 costliest classes |
-| adversary (one per validated hypothesis) | Sonnet 5.5 | up to 6 |
+| tags (`prepare-tags` batches of 25) | Haiku 5.5, one subagent for all the batches (it reads each prompt and answers each in turn) | up to 3 batches, 1 agent |
+| hypotheses (one per loss class with 3 or more reviewed losers) | Sonnet 5.5, two classes per subagent | the 4 costliest classes, 2 agents |
+| adversary (one per validated hypothesis) | Sonnet 5.5, three hypotheses per subagent, each judged on its own prompt only | up to 6, 2 agents |
+
+**Why prompts are batched per agent.** The dry run on the Nov 12 file measured about 70 to 77k tokens per subagent, and only 4k to 10k of that
+is the agent's own output: the rest is the fixed context every agent carries, so cost follows the number of agents, not the size of
+the prompts. One agent per prompt is about 13 agents and 1.0M tokens a day, above the 600,000 allowance; batched, 5 agents are about
+380,000. Measured: tags 3 agents 230,582 tokens, hypotheses 3 agents 225,367, adversaries 2 agents of 3 prompts each 138,041. Log the
+measured tokens of a step (the workflow tool reports them per run), not an estimate. A connector read can come back empty: the agent
+reads the prompt again once before it answers.
 
 The weekly Opus 5.5 audit (the prompt and the usage step exist: `prompts.build_audit_prompt`, step `audit`) is **not wired into the
 stages yet**: there is no stage that writes its prompt or takes its reply, so the routine does not run it and Opus is not used
@@ -68,15 +75,15 @@ the ids it wrote adversary prompts for (`adv_ids`), `prepare-hyp` the classes it
    starts at 2; one the allowance interrupted resumes where its files say), then the next day.
 2. `prepare-tags`: dispatch `day=D stages=prepare-tags,budget`. If `budget` says `"ok": false`, stop (the day waits at `apply-tags`).
    `batches` 0 means nothing to review: go to the second dispatch of step 3 with no tag replies. Else, for each `work/D/tag-NN.prompt.txt`,
-   a Haiku subagent reads it and returns the JSON; screen each reply.
+   one Haiku subagent reads them all and returns one JSON reply per prompt; screen each reply.
 3. `apply-tags`: dispatch `day=D stages=apply-tags,prepare-hyp,budget responses={tag-NN: screened...} usage=tag:IN:OUT:ITEMS`.
-   `classes` empty: dispatch `apply-hyp` with no responses and go to step 5. Else, for each `work/D/hyp-CLASS.prompt.txt`, a Sonnet subagent;
-   screen each reply.
+   `classes` empty: dispatch `apply-hyp` with no responses and go to step 5. Else the `work/D/hyp-CLASS.prompt.txt` files go to Sonnet subagents,
+   two classes each; screen each reply.
 4. `apply-hyp`: dispatch `day=D stages=apply-hyp,budget responses={hyp-CLASS: screened...} usage=hypothesize:IN:OUT:ITEMS`
    (`apply-hyp` validates every hypothesis: ex-ante columns only, closed lever set, at most 12 thresholds and 2 neighbors, at most 3 a
    class and 6 a day (spent costliest class first, in the order `prepare-hyp` kept in `hyp-order.json`), unique ids, and no repeat of an idea already registered, refuted ones included; it writes the adversary
-   prompts with the blind winner control). For each id in `adv_ids`, a Sonnet subagent reads `adv-ID.prompt.txt` (it sees the
-   hypothesis and aggregates only, never a ticker); screen each reply.
+   prompts with the blind winner control). The ids in `adv_ids` go to Sonnet subagents, three each, which read `adv-ID.prompt.txt` (each sees the
+   hypothesis and aggregates only, never a ticker) and judge every hypothesis on its own prompt only; screen each reply.
 5. `apply-adv`: dispatch `day=D stages=apply-adv,sweep,shadow,status,done responses={adv-ID: screened...} usage=adversary:IN:OUT:ITEMS`:
    `apply-adv` refuses to run while any admitted hypothesis has no adversary reply (a missing reply waits, it does not register the
    idea unreviewed), then registers survivors (every threshold and neighbor candidate counts as a trial); `sweep` reads every open
