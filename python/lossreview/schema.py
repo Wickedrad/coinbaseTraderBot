@@ -33,6 +33,15 @@ COLUMNS = {
     'exit_bid': (CLOSE, ''), 'exit_net': (CLOSE, ''), 'win_len_s': (CLOSE, ''), 'result': (CLOSE, ''),
     'side_settles_win': (CLOSE, ''), 'best_bid_held': (CLOSE, ''), 'worst_bid_held': (CLOSE, ''),
     'best_bid_after_exit': (CLOSE, ''), 'worst_bid_after_exit': (CLOSE, ''),
+    # builder columns (builder.py): the call and order block known when the entry went out
+    'entry_px_plan': (ORDER, 'side price the plan asked'), 'count_plan': (ORDER, ''), 'stake_plan': (ORDER, ''),
+    'window_close_t': (CALL, 'epoch seconds'), 'entry_t': (ORDER, 'epoch seconds'), 'lane': (CALL, ''),
+    # what the fills showed: known once the entry filled (plus 60 s) or when the trip closed
+    'entry_taker': (P60, 'every entry fill was a taker'), 'entry_maker_any': (P60, 'some entry fill rested'),
+    'entry_fee': (P60, 'actual fee of the entry fills'), 'exit_fee': (CLOSE, ''), 'exit_px': (CLOSE, ''), 'fees': (CLOSE, ''),
+    'closed_t': (CLOSE, ''), 'pnl_fills': (CLOSE, ''), 'pnl_gap': (CLOSE, ''), 'pnl_source': (CLOSE, ''),
+    'held_to_end': (CLOSE, ''), 'n_sale_legs': (CLOSE, ''), 'legs': (CLOSE, ''), 'defect_sale': (CLOSE, ''),
+    'defect_dollars': (CLOSE, ''), 'fee_estimated': (CLOSE, ''), 'orphan_fill': (CLOSE, ''), 'fidelity_flag': (CLOSE, ''),
 }
 
 # Columns that carry the lane's curve values. A rule keyed on one of these is a "curve edit": it needs Steven's

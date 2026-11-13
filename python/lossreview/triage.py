@@ -42,6 +42,13 @@ def economics(row):
     if count is None or e is None or pnl is None:
         return None
     count = int(count)
+    # Rows from the builder carry the actual fills' fees and exit price: no inference needed.
+    afee, xfee, xpx = num(row, 'entry_fee'), num(row, 'exit_fee'), num(row, 'exit_px')
+    if afee is not None and xfee is not None and xpx is not None:
+        fees = afee + xfee
+        cost = count * e
+        return {'count': count, 'entry_px': e, 'exit_px': xpx, 'entry_fee': afee, 'exit_fee': xfee, 'fees': fees,
+                'gross': pnl + fees, 'cost': cost, 'fee_share': fees / cost if cost > 0 else None, 'residual': 0.0, 'actual': True}
     ef = taker_fee(count, e)
     settled = flag(row, 'settled') is True
     sw = flag(row, 'side_settles_win')
@@ -95,9 +102,9 @@ def classify(row):
         return out
     out.update(eco)
     xb = num(row, 'exit_bid')
-    if xb is not None and flag(row, 'settled') is not True and abs(eco['exit_px'] - xb) > 0.03:
+    if xb is not None and not eco.get('actual') and flag(row, 'settled') is not True and abs(eco['exit_px'] - xb) > 0.03:
         out['tags'].append('exit_mismatch')  # the P&L implies another exit than the decision bid: a partial sale or re-entry in the same market; gross and fees are approximate
-    if eco['residual'] > 1.0:
+    if eco['residual'] > 1.0 and not eco.get('actual'):
         out['tags'].append('unreconciled')  # one exit price does not explain the P&L (partial sales?): fees are approximate
     if eco['entry_px'] <= 0:
         return out
