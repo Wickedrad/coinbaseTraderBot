@@ -23,7 +23,7 @@ live stays off; per-trade data stays private (this repository is public: rows go
 | 7 | Educated sweep: score each threshold on days **after** the losses that generated it, against one placebo per lever | code | `sweep.py`, `stats.py` |
 | 8 | Offline shadow: the frozen rule flags every night's trips, unseen days pile up | code | `shadow.py` |
 | 9 | Promotion PR (off / log / on) for the owner when shadow shows a gain over its placebo | Claude, owner decides | by hand |
-| 10 | Weekly audit of verdicts and the whole registry | Opus 5.5 | routine |
+| 10 | Weekly audit of verdicts and the whole registry | Opus 5.5 | routine (prompt written, stages not built yet) |
 
 The model steps only propose; `forms.validate_hypothesis` and `rules.validate_rule` decide what is admitted. A hypothesis may
 cite only columns known at order time or earlier (`schema.ex_ante`); outcome columns (P&L, the bid path after the entry,

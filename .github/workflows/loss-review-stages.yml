@@ -23,7 +23,11 @@ on:
         required: false
         default: ''
       responses:
-        description: 'JSON object {name: reply}: the model steps replies (tag-NN, hyp-CLASS, adv-ID), saved before the stages (60 KB at most)'
+        description: 'JSON object {name: reply} (tag-NN, hyp-CLASS, adv-ID): each the output of python3 -m lossreview.screen NAME; saved before the stages, 60 KB at most'
+        required: false
+        default: ''
+      weekly:
+        description: 'weekly token allowance for the budget stage (digits), when the plan limit is near'
         required: false
         default: ''
       since:
@@ -58,6 +62,7 @@ jobs:
           LR_STAGES: ${{ inputs.stages }}
           LR_USAGE: ${{ inputs.usage }}
           LR_RESPONSES: ${{ inputs.responses }}
+          LR_WEEKLY: ${{ inputs.weekly }}
           LR_SINCE: ${{ inputs.since }}
           LR_UNTIL: ${{ inputs.until }}
         run: bash .github/scripts/loss_review_stages.sh

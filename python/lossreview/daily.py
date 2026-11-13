@@ -32,7 +32,7 @@ import os
 import re
 import sys
 
-from . import forms, ledger, nightly, prompts, registry, rules, shadow, stats, sweep, triage
+from . import forms, ledger, nightly, prompts, registry, rules, screen, shadow, stats, sweep, triage
 
 REVIEW_CAP = 75          # losers a day get a model review (worst dollars first)
 TAG_BATCH = 25
@@ -40,6 +40,7 @@ HYP_MIN_LOSERS = 3       # a class needs this many reviewed losers before a hypo
 HYP_ROWS = 12
 HYP_PER_CLASS = 3        # the prompt asks for at most 3 a class; the code enforces it
 HYP_PER_DAY = 6          # adversary calls a day (docs/LOSS_REVIEW_ROUTINE.md)
+MAX_HYP_CLASSES = 4      # Sonnet hypothesis calls a day: the costliest classes first
 REVIEW_CLASSES = forms.HYPOTHESIS_CLASSES
 
 
@@ -109,11 +110,17 @@ def read_usage(w):
     return out
 
 
-def usage(w, day, step, tokens_in, tokens_out, items):
-    """Log one model step (the model and the prompt hash come from the step) and return what is left of the allowance."""
+def usage(w, day, step, tokens_in, tokens_out, items, run=None):
+    """Log one model step (the model and the prompt hash come from the step) and return what is left of the allowance. `day` is the
+    day the tokens are spent (the allowance is per calendar day), not the day of the trips. `run` names the dispatch and the
+    entry in it (RUN_ID.N): a record with that key is logged once, so a re-run of the same workflow run does not count it twice."""
     if step not in prompts.MODEL_FOR:
         raise ValueError('unknown step %r; steps are %s' % (step, sorted(prompts.MODEL_FOR)))
     rec = prompts.usage_record(step, prompts.MODEL_FOR[step], prompts.prompt_hash(step), tokens_in, tokens_out, items, day)
+    if run:
+        if any(r.get('run') == run for r in read_usage(w)):
+            return dict(budget(w, day), already_logged=run)
+        rec['run'] = run
     log_usage(w, rec)
     return budget(w, day)
 
@@ -165,10 +172,12 @@ def prepare_hyp(w, day):
     known = ['%s: %s %s %s (%s)' % (i, s['rule'].get('feature'), s['rule'].get('op'), s['rule'].get('thresholds'), s['status'])
              for i, s in reg.state.items()][-40:]
     written = []
+    eligible = []
     for cls in REVIEW_CLASSES:
         cr = [r for r in rows if r.get('class') == cls]
-        if len(cr) < HYP_MIN_LOSERS:
-            continue
+        if len(cr) >= HYP_MIN_LOSERS:
+            eligible.append((sum(r['pnl'] for r in cr), cls, cr))
+    for _, cls, cr in sorted(eligible, key=lambda e: (e[0], e[1]))[:MAX_HYP_CLASSES]:      # the costliest classes: at most 4 calls a day
         counts = {}
         for r in cr:
             for t in (tags or {}).get(trip_id(r), []):
@@ -225,7 +234,7 @@ def apply_hyp(w, day):
                 fh.write(prompts.build_adversary_prompt(h, stats_))
             ok_h.append(h)
     _dump(os.path.join(wd, 'hypotheses.json'), ok_h)
-    return {'valid': len(ok_h), 'rejected': bad, 'curve_edits': curve}
+    return {'valid': len(ok_h), 'rejected': bad, 'curve_edits': curve, 'adv_ids': [h['id'] for h in ok_h]}
 
 
 def n_candidates(h):
@@ -238,6 +247,11 @@ def apply_adv(w, day):
     hs = _read_json(os.path.join(wd, 'hypotheses.json')) or []
     reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
     kept = refuted = 0
+    # A hypothesis registers only after its adversary has answered (a reply that is there but unusable is 'unclear'; a reply that
+    # is not there is a step that did not run, and the day waits for it instead of registering the idea unreviewed).
+    missing = [h['id'] for h in hs if h['id'] not in reg.state and not os.path.exists(os.path.join(wd, 'adv-%s.response.json' % h['id']))]
+    if missing:
+        raise SystemExit('no adversary reply for %d hypotheses: %s' % (len(missing), ', '.join(missing)))
     for h in hs:
         if h['id'] in reg.state:
             continue
@@ -372,40 +386,68 @@ def status(w):
             'curve_edits_waiting': [r for r, s in reg.state.items() if s['curve_edit'] and not s['owner_ok'] and s['status'] in ('swept', 'proposed')]}
 
 
+def next_step(w, day):
+    """Where a day stands, from the files its stages left: the dispatch the routine sends next (or the model replies it owes first).
+    A day the routine could not finish (the allowance ran out, a dispatch failed) is picked up here, not restarted: a reply that
+    its stage already used is never replaced, and the model's next answer would differ."""
+    wd = os.path.join(w, 'work', day)
+    has = lambda n: os.path.exists(os.path.join(wd, n))
+    if has('hypotheses.json'):
+        return 'apply-adv'          # the adversary replies are due (or already saved): then apply-adv, sweep, shadow, status, done
+    if glob.glob(os.path.join(wd, 'hyp-*.prompt.txt')):
+        return 'apply-hyp'          # the hypothesis replies are due
+    if has('tags.json'):
+        return 'prepare-hyp'
+    if has('tag-index.json'):
+        return 'apply-tags'         # the tag replies are due
+    return 'prepare-tags'
+
+
 def pending(w):
-    """Days with a trip file and no done marker, oldest first. The archive reaches Drive at a time GitHub's scheduler picks (hours
-    after its 07:20 UTC cron), so the routine takes whatever is pending instead of assuming one day."""
+    """Days with a trip file and no done marker, oldest first, and the step each stands at. The archive reaches Drive at a time
+    GitHub's scheduler picks (hours after its 07:20 UTC cron), so the routine takes whatever is pending instead of assuming one day."""
     days = sorted(os.path.basename(p)[len('trips-'):-len('.jsonl')] for p in glob.glob(os.path.join(w, 'days', 'trips-*.jsonl')))
-    return {'days': [d for d in days if not os.path.exists(os.path.join(w, 'work', d, 'done.json'))]}
+    todo = [d for d in days if not os.path.exists(os.path.join(w, 'work', d, 'done.json'))]
+    return {'days': todo, 'next': {d: next_step(w, d) for d in todo}}
 
 
 def mark_done(w, day):
     if not os.path.exists(os.path.join(w, 'days', 'trips-%s.jsonl' % day)):
         raise SystemExit('no trip file for %s: refusing to mark it done' % day)
+    hp = os.path.join(workdir(w, day), 'hypotheses.json')
+    if os.path.exists(hp):
+        reg = registry.Registry(os.path.join(w, 'registry.jsonl'))
+        open_ids = [h['id'] for h in (_read_json(hp) or []) if h['id'] not in reg.state]
+        if open_ids:
+            raise SystemExit('not marking %s done: %d hypotheses are not registered yet (%s)' % (day, len(open_ids), ', '.join(open_ids)))
     _dump(os.path.join(workdir(w, day), 'done.json'), {'day': day})
     return {'day': day, 'done': True}
 
 
+_CLOCK = re.compile(r'^([01][0-9]|2[0-3]):([0-5][0-9])(?::([0-5][0-9]))?\Z|^24:00(?::00)?\Z')
+
+
 def _clock(txt):
-    """'HH:MM[:SS]' -> seconds into the UTC day (24:00:00 allowed as the end)."""
+    """'HH:MM[:SS]' -> seconds into the UTC day; 24:00 or 24:00:00 is the end of the day and nothing later is a time."""
+    if not isinstance(txt, str) or not _CLOCK.match(txt):
+        raise SystemExit('bad time %r: use HH:MM or HH:MM:SS (UTC), 00:00 to 23:59:59, or 24:00 for the end of the day' % (txt,))
+    if txt.startswith('24'):
+        return 86400
     parts = txt.split(':')
-    if len(parts) not in (2, 3) or not all(p.isdigit() for p in parts):
-        raise SystemExit('bad time %r: use HH:MM or HH:MM:SS (UTC)' % txt)
-    sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + (int(parts[2]) if len(parts) == 3 else 0)
-    if sec > 86400:
-        raise SystemExit('bad time %r: past the end of the day' % txt)
-    return sec
+    return int(parts[0]) * 3600 + int(parts[1]) * 60 + (int(parts[2]) if len(parts) == 3 else 0)
 
 
 def window(w, day, since='00:00:00', until='24:00:00'):
     """The aggregates of the day's trips that closed in [since, until) UTC, to answer "does this day agree with that study window".
-    The full summary goes to work/DAY/window-<since>-<until>.json (private Drive); the job log gets only the trip count, because two
-    windows printed with dollars could be subtracted down to a single trade."""
+    The full summary goes to work/DAY/window-<since>-<until>.json (private Drive). The job log gets no count and no dollar figure:
+    the bounds are public inputs to the second, so two windows a few seconds apart would subtract down to a single trade."""
     p = os.path.join(w, 'days', 'trips-%s.jsonl' % day)
     if not os.path.exists(p):
         raise SystemExit('no trip file for %s' % day)
     t0 = nightly.day_bounds(day)[0]
     a, b = _clock(since), _clock(until)
+    if a >= b:
+        raise SystemExit('the window is empty: since %s is not before until %s' % (since, until))
     with open(p, encoding='utf-8') as fh:
         rows = [json.loads(l) for l in fh if l.strip()]
     rows = [r for r in rows if r.get('closed_t') is not None and t0 + a <= r['closed_t'] < t0 + b]
@@ -416,19 +458,29 @@ def window(w, day, since='00:00:00', until='24:00:00'):
                  'defect_dollars': round(sum(r.get('defect_dollars') or 0 for r in rows), 2)})
     name = 'window-%s-%s.json' % (since.replace(':', ''), until.replace(':', ''))
     _dump(os.path.join(workdir(w, day), name), summ)
-    return {'day': day, 'since': since, 'until': until, 'trips': len(rows), 'file': name}
+    return {'day': day, 'since': since, 'until': until, 'file': name}
 
 
-RESPONSE_NAME = re.compile(r'^(tag-[0-9]{2}|hyp-[A-Z][A-Z_]{2,30}|adv-[a-z0-9][a-z0-9_-]{1,38}[a-z0-9])$')
+RESPONSE_NAME = re.compile(r'(tag-[0-9]{2}|hyp-[A-Z][A-Z_]{2,30}|adv-[a-z0-9_-]{3,40})')     # adv- is exactly forms.ID_RE
 MAX_RESPONSES_BYTES = 60_000     # a workflow_dispatch payload is capped at 65,535 characters in all
 
 
+def _applied(w, wd, name):
+    """Has the stage that reads this reply already run? A reply that was used is not replaced."""
+    if name.startswith('tag-'):
+        return os.path.exists(os.path.join(wd, 'tags.json'))
+    if name.startswith('hyp-'):
+        return os.path.exists(os.path.join(wd, 'hypotheses.json'))
+    return name[len('adv-'):] in registry.Registry(os.path.join(w, 'registry.jsonl')).state
+
+
 def save_responses(w, day, payload):
-    """Writes the model steps' replies into work/DAY/NAME.response.json. payload is a JSON object {name: reply}: the reply is the
-    model's text or its parsed JSON. The routine cannot put files where the runner's Drive token sees them (that token reaches only
-    the files it made itself), so the replies travel in the workflow input: they hold tags by index, hypothesis specs and adversary
-    verdicts, never a ticker or a time (the prompts that made them show a trade by index only). A name that is not one of the
-    step's own prompts is refused, so a reply cannot create a file nobody asked for."""
+    """Writes the model steps' replies into work/DAY/NAME.response.json. payload is a JSON object {name: reply}, each reply the
+    parsed JSON that `python3 -m lossreview.screen NAME` printed. The routine cannot put files where the runner's Drive token sees
+    them (that token reaches only the files it made itself), so the replies travel in the workflow input, which is public: a reply
+    is accepted only if screening leaves it unchanged (closed fields, no prose, no digits in free text, coarse thresholds), so the
+    routine cannot send raw model text by mistake. A name that is not one of the step's own prompts is refused, and a reply that
+    its stage already used is never replaced by a different one."""
     if isinstance(payload, str):
         if len(payload.encode('utf-8')) > MAX_RESPONSES_BYTES:
             raise SystemExit('responses are %d bytes: over the %d a dispatch can carry; send them in two runs' % (len(payload.encode('utf-8')), MAX_RESPONSES_BYTES))
@@ -436,26 +488,40 @@ def save_responses(w, day, payload):
             payload = json.loads(payload)
         except ValueError:
             raise SystemExit('responses: not JSON (an empty value too); the stage needs {name: reply}')
-    if not isinstance(payload, dict):
-        raise SystemExit('responses must be a JSON object {name: reply}')
+    if not isinstance(payload, dict) or not payload:
+        raise SystemExit('responses must be a JSON object {name: reply} with at least one reply')
     wd = workdir(w, day)
-    saved = []
+    todo = []
     for name, reply in sorted(payload.items()):
-        if not RESPONSE_NAME.match(name):
-            raise SystemExit('bad response name %r' % name)
+        if not isinstance(name, str) or not RESPONSE_NAME.fullmatch(name):
+            raise SystemExit('bad response name %r' % (name,))
         if not os.path.exists(os.path.join(wd, name + '.prompt.txt')):
             raise SystemExit('no prompt %s.prompt.txt for %s: not saving a reply to a prompt that was never made' % (name, day))
-        with open(os.path.join(wd, name + '.response.json'), 'w', encoding='utf-8') as fh:
-            fh.write(reply if isinstance(reply, str) else json.dumps(reply))
-        saved.append(name)
-    return {'day': day, 'saved': saved}
+        try:
+            canon = screen.screen_reply(name, reply)
+        except ValueError as e:
+            raise SystemExit('%s: %s' % (name, e))
+        if canon != reply:
+            raise SystemExit('%s was not screened: run python3 -m lossreview.screen %s on the reply and send its output' % (name, name))
+        text = json.dumps(canon)
+        path = os.path.join(wd, name + '.response.json')
+        if os.path.exists(path) and _applied(w, wd, name):
+            with open(path, encoding='utf-8') as fh:
+                if fh.read() != text:
+                    raise SystemExit('%s: its stage already used the reply on Drive; a different one is not saved' % name)
+        todo.append((path, text, name))
+    for path, text, _ in todo:       # all or none: nothing is written when any reply was refused
+        with open(path, 'w', encoding='utf-8') as fh:
+            fh.write(text)
+    return {'day': day, 'saved': [n for _, _, n in todo]}
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('stage', choices=['prepare-tags', 'apply-tags', 'prepare-hyp', 'apply-hyp', 'apply-adv', 'sweep', 'shadow', 'status', 'pending', 'done', 'usage', 'budget', 'window', 'responses', 'canary'])
     ap.add_argument('day', nargs='?')
-    ap.add_argument('--w', required=True)
+    ap.add_argument('--w', help='the work folder (every stage but canary)')
+    ap.add_argument('--run', default=None, help='usage: the key of the entry (RUN_ID.N); an entry with a key already logged is not logged again')
     ap.add_argument('--step', choices=sorted(prompts.MODEL_FOR))
     ap.add_argument('--tokens-in', type=int, default=0)
     ap.add_argument('--tokens-out', type=int, default=0)
@@ -468,6 +534,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     fn = {'prepare-tags': prepare_tags, 'apply-tags': apply_tags, 'prepare-hyp': prepare_hyp, 'apply-hyp': apply_hyp,
           'apply-adv': apply_adv, 'sweep': run_sweep, 'shadow': run_shadow, 'done': mark_done}.get(a.stage)
+    if a.stage != 'canary' and not a.w:
+        ap.error('%s needs --w' % a.stage)
     if a.stage == 'canary':
         ok, fails = prompts.run_canary()
         print('LOSSLOOP canary %s' % json.dumps({'ok': ok, 'failures': fails}))
@@ -480,7 +548,7 @@ def main(argv=None):
         if a.stage == 'usage':
             if not a.step:
                 ap.error('usage needs --step')
-            out = usage(a.w, a.day, a.step, a.tokens_in, a.tokens_out, a.items)
+            out = usage(a.w, a.day, a.step, a.tokens_in, a.tokens_out, a.items, a.run)
         elif a.stage == 'responses':
             out = save_responses(a.w, a.day, os.environ.get(a.from_env, ''))
         elif a.stage == 'window':

@@ -85,7 +85,9 @@ class StagesScriptTests(unittest.TestCase):
     def test_rejects_what_it_does_not_know_before_touching_drive(self):
         for kw in ({'LR_DAY': '2023-11-14; rm -rf /'}, {'LR_DAY': self.day, 'LR_STAGES': 'sweep;ls'}, {'LR_DAY': self.day, 'LR_STAGES': '*'},
                    {'LR_DAY': self.day, 'LR_STAGES': ' , '}, {'LR_DAY': self.day, 'LR_USAGE': 'tag:1:2'}, {'LR_DAY': self.day, 'LR_USAGE': 'oops:1:2:3'},
-                   {'LR_DAY': self.day, 'LR_STAGES': 'window', 'LR_UNTIL': '12:99:99:1'}, {}):
+                   {'LR_DAY': self.day, 'LR_STAGES': 'window', 'LR_UNTIL': '12:99:99:1'}, {'LR_DAY': self.day, 'LR_STAGES': 'window', 'LR_UNTIL': '12:75'},
+                   {'LR_DAY': self.day, 'LR_STAGES': 'window', 'LR_UNTIL': '24:00:01'}, {'LR_DAY': self.day, 'LR_STAGES': 'window', 'LR_SINCE': '23:60'},
+                   {'LR_DAY': self.day, 'LR_STAGES': 'budget', 'LR_WEEKLY': '12x'}, {'LR_DAY': self.day, 'LR_STAGES': 'budget', 'LR_WEEKLY': '-5'}, {}):
             r = self.run_script(**kw)
             self.assertNotEqual(r.returncode, 0, kw)
             self.assertIn('::error::', r.stderr, kw)
@@ -103,6 +105,7 @@ class StagesScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn('SECRET', r.stdout + r.stderr)
         self.assertNotIn('"net"', r.stdout)
+        self.assertNotIn('"trips"', r.stdout)             # no count either: two windows a second apart would subtract down to one trade
         saved = [f for f in os.listdir(os.path.join(self.base, 'work', self.day))]
         self.assertTrue(any(f.startswith('window-') for f in saved), saved)
         lines = open(os.path.join(self.base, 'usage.jsonl')).read().strip().splitlines()
@@ -127,6 +130,39 @@ class StagesScriptTests(unittest.TestCase):
         r = self.run_script(LR_DAY='2023-11-20', LR_STAGES='done')                  # no trip file for that day: done refuses
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse(os.path.exists(os.path.join(self.base, 'work', '2023-11-20', 'done.json')))
+
+    def test_usage_and_budget_are_keyed_to_today_and_a_rerun_does_not_count_twice(self):
+        today = subprocess.run(['date', '-u', '+%F'], capture_output=True, text=True).stdout.strip()
+        r = self.run_script(LR_DAY=self.day, LR_STAGES='budget', LR_USAGE='tag:100:20:5', GITHUB_RUN_ID='555')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('"used_today": 120', r.stdout)
+        rec = json.loads(open(os.path.join(self.base, 'usage.jsonl')).readline())
+        self.assertEqual((rec['day'], rec['run']), (today, '555.1'))        # the day tokens were spent, not the day of the trips
+        r = self.run_script(LR_DAY=self.day, LR_STAGES='budget', LR_USAGE='tag:100:20:5', GITHUB_RUN_ID='555')      # the same run again
+        self.assertIn('already_logged', r.stdout)
+        self.assertEqual(len(open(os.path.join(self.base, 'usage.jsonl')).read().splitlines()), 1)
+        r = self.run_script(LR_DAY=self.day, LR_STAGES='budget', LR_USAGE='tag:100:20:5;tag:100:20:5', GITHUB_RUN_ID='556', LR_WEEKLY='200')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('"used_today": 360', r.stdout)                         # two entries of one run both count
+        self.assertIn('"ok": false', r.stdout)                               # 360 of a 200 weekly allowance
+        self.assertIn('weekly allowance', r.stdout)
+
+    def test_an_unscreened_reply_is_refused_before_anything_is_put(self):
+        self.assertEqual(self.run_script(LR_DAY=self.day, LR_STAGES='prepare-tags').returncode, 0)
+        r = self.run_script(LR_DAY=self.day, LR_STAGES='apply-tags', LR_USAGE='tag:1:1:1',
+                            LR_RESPONSES=json.dumps({'tag-00': [{'i': 0, 'tags': ['late_entry'], 'why': 'lost $6.80'}]}))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.base, 'usage.jsonl')))      # the failed run put nothing back, usage included
+        self.assertFalse(os.path.exists(os.path.join(self.base, 'work', self.day, 'tag-00.response.json')))
+
+    def test_done_waits_for_the_registry(self):
+        self.assertEqual(self.run_script(LR_DAY=self.day, LR_STAGES='prepare-tags').returncode, 0)
+        wd = os.path.join(self.base, 'work', self.day)
+        with open(os.path.join(wd, 'hypotheses.json'), 'w') as fh:
+            json.dump([{'id': 'abc-def'}], fh)
+        r = self.run_script(LR_DAY=self.day, LR_STAGES='done')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(wd, 'done.json')))
 
     def test_an_empty_drive_folder_is_an_error(self):
         shutil.rmtree(os.path.join(self.base, 'days'))
