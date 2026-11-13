@@ -33,8 +33,9 @@ shadow until the owner says so (`Registry.owner_ok`).
 
 ## Data path (no server contact)
 
-`drive-archive.yml` copies each finished UTC day's audit log to Drive at 07:20 UTC. `loss-review.yml` (11:30 UTC = 6:30 AM EST
-daily, or on demand) pulls the day before, the day and the day after, runs `nightly.py`, and puts `trips-DAY.jsonl`
+`drive-archive.yml` copies each finished UTC day's audit log to Drive (its cron says 07:20 UTC, but GitHub started the run between
+14:10 and 17:39 UTC on Nov 3 to 12). `loss-review.yml` therefore runs when that archive run completes on main (and on a 20:30 UTC
+= 3:30 PM EST safety-net cron, or on demand): it builds yesterday UTC, pulls the day before, the day and the day after, runs `nightly.py`, and puts `trips-DAY.jsonl`
 (per-trade: private), `agg-DAY.json` and `report-DAY.md` (aggregates) under `derived/loss-review/days` on Drive. The log prints
 aggregates only, and a dollar figure is printed only for a cell of 5 trips or more (a cell of one is a trade); the full table is
 in the private report on Drive. A day with audit records but no heat trip writes empty files (a notice, not a failure); a day

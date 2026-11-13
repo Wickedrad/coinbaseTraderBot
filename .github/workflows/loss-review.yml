@@ -6,12 +6,20 @@ name: Loss review daily file
 # never contacts the server. Research only: nothing here reaches the bot.
 #
 # The repository is public: nothing is uploaded as an artifact and the log prints aggregates only. Needs RCLONE_CONF
-# (as drive-archive.yml). The audit of a UTC day reaches Drive at 07:20 UTC the next day; this runs after it.
+# (as drive-archive.yml). The audit of a UTC day reaches Drive when the day's archive run finishes (its cron says 07:20 UTC;
+# GitHub starts it hours later); this runs when that run completes.
 
 on:
+  # The archive's own cron is 07:20 UTC, but GitHub starts that run hours late (it began 14:10 to 17:39 UTC on Nov 3 to 12), so
+  # the day is built when the archive run finishes. The cron is the safety net for a day the trigger missed: it rebuilds
+  # yesterday (the put is idempotent) and fails loudly only when Drive still has no audit for it.
+  workflow_run:
+    workflows: ['Drive archive']
+    types: [completed]
+    branches: [main]
   schedule:
-    # 11:30 UTC = 6:30 AM EST: the previous UTC day is on Drive (archive 07:20 UTC), the review routine reads at 15:00 UTC.
-    - cron: '30 11 * * *'
+    # 20:30 UTC = 3:30 PM EST
+    - cron: '30 20 * * *'
   workflow_dispatch:
     inputs:
       day:
@@ -31,6 +39,8 @@ concurrency:
 
 jobs:
   build:
+    # an archive run that failed has nothing new on Drive to build from
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 45

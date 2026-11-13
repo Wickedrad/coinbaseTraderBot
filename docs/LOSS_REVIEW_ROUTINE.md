@@ -4,8 +4,11 @@ Research only. This is the instruction a scheduled Claude routine follows each d
 (`python/lossreview/daily.py`, no model tokens) and the model steps sit between them. Overview and rules of evidence:
 `docs/LOSS_REVIEW.md`.
 
-**When.** Daily at 15:00 UTC (10:00 AM EST), after the health check (14:15 UTC) and after `loss-review.yml` (11:30 UTC) has put
-the previous UTC day's trip file on Drive. A routine that finds no file for that day stops and says so in one line.
+**When.** Daily at 21:00 UTC (4:00 PM EST), after `loss-review.yml` (it runs when the day's archive run completes, 20:30 UTC at
+the latest) has put the previous UTC day's trip file on Drive. The archive's start time is GitHub's to choose (14:10 to 17:39 UTC
+lately), so the routine does not assume which day is waiting: `daily pending` lists every day with a trip file and no `done`
+marker, oldest first, and the routine runs steps 2 to 6 for each in order (the sweep's looks depend on day order) and then
+`daily done DAY`. No pending day: it stops and says so in one line.
 
 **Models and allowance** (the plan allowance, no overage credits; the weekly limit is the Opus audit's too):
 
@@ -24,9 +27,9 @@ model steps (the mechanical stages still run) when the weekly limit is near. Log
 
 Work folder `W` = a local copy of Drive `derived/loss-review` (files read and written through the Drive connector; the folder
 holds per-trade rows, so it is never committed, posted or printed). Run from a checkout of the repository with
-`PYTHONPATH=python`. Day `D` = yesterday UTC.
+`PYTHONPATH=python`. Day `D` = each pending day, oldest first (`python3 -m lossreview.daily pending --w W`).
 
-1. Fetch `days/trips-D.jsonl` (and the other `days/trips-*.jsonl`, `registry.jsonl`, `usage.jsonl`) into `W`. Run the canary:
+1. Fetch every `days/trips-*.jsonl` (with `registry.jsonl`, `usage.jsonl` and the existing `work/*/done.json`) into `W`; `pending` names the days still to do. Run the canary:
    `python3 -c "from lossreview import prompts; print(prompts.run_canary())"`; if it fails, stop: a validator is broken.
 2. `python3 -m lossreview.daily prepare-tags D --w W`. For each `work/D/tag-NN.prompt.txt`, give the text to a Haiku subagent and
    save its reply, unchanged, as `tag-NN.response.json`. Then `apply-tags D`.
@@ -39,7 +42,7 @@ holds per-trade rows, so it is never committed, posted or printed). Run from a c
    nightly; freezes a candidate that survives BH over the registry, with the window's last day as `frozen_day`), then
    `shadow D` (counts only days after `frozen_day`, flags D's trips with every frozen rule, looks at 5 and 10 shadow days;
    a rule that is ready moves to `proposal`, one that is not ready by day 10 fades to `retired`), then `status`.
-6. Put `registry.jsonl`, `usage.jsonl` and `work/D/` back on Drive. Post at most one short message: counts only (reviewed
+6. `done D`, then put `registry.jsonl`, `usage.jsonl` and `work/D/` back on Drive. Post at most one short message: counts only (reviewed
    losers, hypotheses admitted and refuted, candidates, shadow rules, rules ready for a PR, tokens used). No tickers, no
    per-trade values.
 7. A rule that is `ready` is written up as a promotion PR in the style of the size dial (#346: off / log / on, a differential

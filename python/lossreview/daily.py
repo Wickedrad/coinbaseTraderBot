@@ -15,6 +15,8 @@ Stages (the model steps sit between them; docs/LOSS_REVIEW_ROUTINE.md has the ro
     sweep DAY             -> scores every open hypothesis on the days after its generating losses; freezes a candidate that survives BH
     shadow DAY            -> flags DAY's trips with every frozen rule; pools the shadow days; drafts nothing, only reports 'ready'
     status                -> counts by state, trials, token use (aggregates only)
+    pending               -> the days that have a trip file and have not been marked done, oldest first (the routine takes them in order)
+    done DAY              -> marks DAY finished (work/DAY/done.json) once the stages above have run
 Printed output is aggregates only; every per-trade file stays in W.
 """
 import argparse
@@ -290,15 +292,34 @@ def status(w):
             'curve_edits_waiting': [r for r, s in reg.state.items() if s['curve_edit'] and not s['owner_ok'] and s['status'] in ('swept', 'proposed')]}
 
 
+def pending(w):
+    """Days with a trip file and no done marker, oldest first. The archive reaches Drive at a time GitHub's scheduler picks (hours
+    after its 07:20 UTC cron), so the routine takes whatever is pending instead of assuming one day."""
+    days = sorted(os.path.basename(p)[len('trips-'):-len('.jsonl')] for p in glob.glob(os.path.join(w, 'days', 'trips-*.jsonl')))
+    return {'days': [d for d in days if not os.path.exists(os.path.join(w, 'work', d, 'done.json'))]}
+
+
+def mark_done(w, day):
+    if not os.path.exists(os.path.join(w, 'days', 'trips-%s.jsonl' % day)):
+        raise SystemExit('no trip file for %s: refusing to mark it done' % day)
+    _dump(os.path.join(workdir(w, day), 'done.json'), {'day': day})
+    return {'day': day, 'done': True}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('stage', choices=['prepare-tags', 'apply-tags', 'prepare-hyp', 'apply-hyp', 'apply-adv', 'sweep', 'shadow', 'status'])
+    ap.add_argument('stage', choices=['prepare-tags', 'apply-tags', 'prepare-hyp', 'apply-hyp', 'apply-adv', 'sweep', 'shadow', 'status', 'pending', 'done'])
     ap.add_argument('day', nargs='?')
     ap.add_argument('--w', required=True)
     a = ap.parse_args(argv)
     fn = {'prepare-tags': prepare_tags, 'apply-tags': apply_tags, 'prepare-hyp': prepare_hyp, 'apply-hyp': apply_hyp,
-          'apply-adv': apply_adv, 'sweep': run_sweep, 'shadow': run_shadow}.get(a.stage)
-    out = status(a.w) if a.stage == 'status' else fn(a.w, a.day)
+          'apply-adv': apply_adv, 'sweep': run_sweep, 'shadow': run_shadow, 'done': mark_done}.get(a.stage)
+    if a.stage in ('status', 'pending'):
+        out = (status if a.stage == 'status' else pending)(a.w)
+    else:
+        if not a.day:
+            ap.error('%s needs a DAY' % a.stage)
+        out = fn(a.w, a.day)
     print('LOSSLOOP %s %s' % (a.stage, json.dumps(out, default=str)))
     return 0
 

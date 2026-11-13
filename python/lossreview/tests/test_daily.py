@@ -154,6 +154,17 @@ class DailyLoopTests(unittest.TestCase):
         reg.owner_ok('rank-skip')
         reg.move('rank-skip', 'shadow')
 
+    def test_pending_lists_days_with_a_trip_file_until_they_are_marked_done(self):
+        w = tempfile.mkdtemp()
+        write_days(w, range(0, 3), -1.0)
+        days = [day_name(k) for k in range(3)]
+        self.assertEqual(daily.pending(w)['days'], days)           # oldest first
+        daily.mark_done(w, days[0])
+        self.assertEqual(daily.pending(w)['days'], days[1:])
+        with self.assertRaises(SystemExit):                          # no file for that day: nothing to mark
+            daily.mark_done(w, '2030-01-01')
+        self.assertEqual(daily.main(['pending', '--w', w]), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
