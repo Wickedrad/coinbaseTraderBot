@@ -28,4 +28,6 @@ jobs:
           set -euo pipefail
           W="$RUNNER_TEMP/cmp"; mkdir -p "$W"
           bash deploy/drive_lab.sh get derived/loss-review "$W" --include 'days/trips-2026-11-11.jsonl' --include 'days/trips-2026-11-12.jsonl'
-          python3 -B .github/scripts/zz_study_compare.py "$W" study/research/heat-losers/trips.json
+          mkdir -p "$W/out"
+          python3 -B .github/scripts/zz_study_compare.py "$W" study/research/heat-losers/trips.json "$W/out"
+          bash deploy/drive_lab.sh put derived/loss-review/work/2026-11-12 "$W/out" --include study-diff.json

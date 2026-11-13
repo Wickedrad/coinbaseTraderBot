@@ -59,3 +59,10 @@ mag = sorted(abs(o['pnl'] - s['pnl']) for s, o in diff)
 if len(mag) >= 5:
     print('size of the differences (abs): median %.2f, 90th pct %.2f, max %.2f' % (mag[len(mag) // 2], mag[int(len(mag) * 0.9)], mag[-1]))
 print('unmatched in study by how: %s' % dict(collections.Counter(s['how'] for s in only_study)) if len(only_study) >= 5 else 'unmatched in study: %d (small cell)' % len(only_study))
+
+# The detail goes to the private Drive work folder only (never the log): the differing trips and the study rows with no match.
+if len(sys.argv) > 3:
+    out = {'differing': [{'study': s, 'ours': o} for s, o in diff], 'only_in_study': only_study}
+    os.makedirs(sys.argv[3], exist_ok=True)
+    json.dump(out, open(os.path.join(sys.argv[3], 'study-diff.json'), 'w'), indent=1, default=str)
+    print('detail written for the private folder: %d differing, %d unmatched' % (len(diff), len(only_study)))
