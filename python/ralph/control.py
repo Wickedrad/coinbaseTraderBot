@@ -68,13 +68,21 @@ def is_maker_path(path: str) -> bool:
 
 
 def classify_paths(paths: list[str], initial: int = 0) -> int:
-    """Changed paths can only raise risk, never lower a registered class."""
+    """Changed paths can only raise risk, never lower a registered class.
+
+    R1 includes queue infrastructure and executable dataset/analysis harnesses.
+    An R0 analysis-only job stays R0 only if none of these shared files changes.
+    """
     risk = initial
     if risk not in CRITIC_MINIMUM:
         raise GuardError("invalid initial risk")
+    infra = ("python/ralph/control.py", "python/ralph/window_core.py",
+             "python/ralph/j06_window.py", "python/ralph/j06_rollup.py")
     for p in paths:
         if not is_maker_path(p):
             raise GuardError("maker may edit only python/ralph/** and docs/ralph/**")
+        if p in infra or p.startswith("python/ralph/tests/"):
+            risk = max(risk, 1)
     return risk
 
 
@@ -86,7 +94,11 @@ def require_critics(risk: int, verdicts: list[dict], owner_ok: bool = False,
         raise GuardError("R3 requires explicit owner authorization")
     if risk >= 2 and not stronger_review:
         raise GuardError("R2/R3 require stronger-model gate review")
-    if len({v.get("angle") for v in verdicts}) < CRITIC_MINIMUM[risk]:
+    allowed = {"correctness", "fees", "statistics", "safety", "mechanism"}
+    angles = [v.get("angle") for v in verdicts]
+    if len(angles) != len(set(angles)) or any(x not in allowed for x in angles):
+        raise GuardError("critic angles must be distinct and approved")
+    if len(angles) < CRITIC_MINIMUM[risk]:
         raise GuardError("not enough independent critic angles")
     for v in verdicts:
         if v.get("severity") in ("blocker", "major"):
@@ -197,6 +209,10 @@ def transition(d: dict, id_: str, new: str, *, reason: str,
     if not reason or len(reason.strip()) < 8:
         raise GuardError("transition requires meaningful reason")
     if new == "maker_running":
+        other_active = [k for k, v in d["jobs"].items()
+                        if k != id_ and v["state"] in EXECUTABLE_STATES]
+        if other_active:
+            raise GuardError("single-worker rule: another maker is running")
         if j["rounds"] >= 3:
             raise GuardError("maker maximum three rounds reached")
         j["rounds"] += 1
