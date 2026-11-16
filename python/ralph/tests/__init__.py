@@ -1,0 +1,1 @@
+"""Focused synthetic unit tests; no trading or private data."""
