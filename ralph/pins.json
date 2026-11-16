@@ -1,0 +1,32 @@
+{
+  "schema": "ralph-eval-pins-draft-1",
+  "status": "DRAFT_UNPINNED",
+  "evaluator_sha256": "2be44074cd5f7b3eecca30938f6eead6442c6297f2b25d4f0f2377e36ca3d5f9",
+  "rules": {
+    "direction_min_positive_days": 9,
+    "direction_days": 12,
+    "direction_min_gap_se": 2,
+    "execution_look_day": 12,
+    "harm_look_days": [
+      4,
+      8
+    ],
+    "execution_alpha_one_sided": 0.1,
+    "bh_q": 0.1,
+    "embargo_days": 1,
+    "trade_decision_floor": 0.85,
+    "stage1_pool_usd": 200,
+    "stage1_days": 12,
+    "max_maker_rounds": 3,
+    "null_streak_stop": 3
+  },
+  "unresolved": [
+    "coin_side_clearly_negative_pinned_definition",
+    "authenticated_owner_approval",
+    "independent_critics",
+    "github_required_path_guard",
+    "full_book_source_attestation"
+  ],
+  "can_grade_binding": false,
+  "can_deploy": false
+}
