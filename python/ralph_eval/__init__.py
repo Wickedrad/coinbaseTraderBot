@@ -1,0 +1,1 @@
+"""Protected Ralph evaluator. No LLM/plugin import or network access."""
