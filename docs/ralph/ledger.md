@@ -2,7 +2,7 @@
 
 **Status:** implementation initialized, no trading or evidence-scoring jobs dispatched; all jobs `queued`. The machine-readable state in `ralph-state:ralph/ledger.json` is authoritative for transitions. This document is the human-readable queue. **Direction first → execution after costs → $4.50/hour**.
 
-**Access/evidence:** ChatGPT read current public `Wickedrad/coinbaseTraderBot` code through the GitHub connector and can draft files locally; no private per-trade evidence, server shell, market-data book archive, or confirmed GitHub write permission. GitHub feature branch creation succeeded on 2026-11-15; neither production nor `main` was modified. The source repo currently has `python/oracle/heat.py`, `python/heat_reader`, `bot/heat`, `python/lossreview`, and a historical one-test implementation in `research/heatmap_live/score.ts`. `python/ralph` and `python/ralph_eval` were not found in code search on Nov 15; treat the proposed loop as **new**, not already installed.
+**Access/evidence:** ChatGPT read current public `Wickedrad/coinbaseTraderBot` code through the GitHub connector and can draft files locally; no private per-trade evidence, server shell, or verified full-book archive. GitHub write permissions are confirmed on the feature and state branches; branch creation succeeded on 2026-11-15; neither production nor `main` was modified. The source repo currently has `python/oracle/heat.py`, `python/heat_reader`, `bot/heat`, `python/lossreview`, and a historical one-test implementation in `research/heatmap_live/score.ts`. `python/ralph` and `python/ralph_eval` were not found in code search on Nov 15; treat the proposed loop as **new**, not already installed.
 
 ## Queue (earliest maturity is a planning target, not a promise)
 
