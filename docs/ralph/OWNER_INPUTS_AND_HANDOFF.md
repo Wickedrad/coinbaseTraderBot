@@ -37,13 +37,13 @@
 ## Usage/storage proposal, not an executed decision
 
 - **Recommended:** a single `ralph-state` private branch or private Drive folder with append-only machine-readable ledger/events, plus PRs limited to `python/ralph/**` and `docs/ralph/**`. Ensure no row-level private data is committed even on the state branch of a public repo. All human-readable `ledger.md` releases contain aggregates only. A separate owner-controlled protected source stores `ralph/pins.json` and the evaluator.
-- Current ChatGPT can produce local downloadable files in this conversation; it cannot assert that this folder is persistent across all chats. A GitHub branch write previously returned **HTTP 403**; it was not retried today. Drive destination/permissions have not been established, and no private Drive records were read during this plan.
+- GitHub writes are now available: the maker work is on feature/ralph-profit-loop-20261115, and the durable machine state is on the separate ralph-state branch. No repository changes have been merged or deployed.
 - **Codex handoff:** attach this package to Codex with repo access and instruct it to open a PR (never a push to `main`), review existing code and adapt only under `python/ralph/**`, `docs/ralph/**`. The protected evaluator is **owner-only**. These scripts are drafts, and the runner must first add synthetic parity fixtures and source attestation.
 
 ## Three open decisions requested from owner
 
-1. What is the Claude-side **weekly token budget**, and exactly **when Tuesday does it reset**? Please give the time in **EST and UTC** (EST = UTC−05:00 in November); do not use overage. This does not restrict ChatGPT's work now.
-2. Is Binance-derived data authorized for **live trading use** after any necessary provider license/terms review, or is it still **research and paper only**? Until affirmative verification, only research/paper use is allowed.
-3. Where do you want the durable Ralph **ledger, queue and verdicts** stored and synchronized between chats—private Drive folder or a protected repository state branch—and which connection should be authorized to write to it? GitHub branch creation was blocked by the current integration.
+1. RESOLVED FOR CHATGPT: Claude's weekly budget is not a constraint on work here. Future autonomously dispatched external agents still require a configured cost ceiling before dispatch.
+2. OWNER CONFIRMED: Binance data is approved for live use. This does not enable live trading or independently prove the provider license terms.
+3. IMPLEMENTED: the durable machine ledger is on the ralph-state Git branch at ralph/ledger.json with STOP active. A future private archive can keep per-trade outcomes; state branch is aggregates and job metadata only.
 
 Optional urgent data clarification: Does your private Drive contain **actual timestamped, two-sided Kalshi order-book snapshots** for 2026-08-01 through 2026-11-04, or only candle/settlement/replay aggregates? This determines whether J06 can be evaluated as currently written. Do not upload per-trade book rows into public GitHub.
