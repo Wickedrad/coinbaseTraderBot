@@ -575,10 +575,51 @@ def fill_readouts(tr: dict, pnl: np.ndarray, hours: int) -> dict:
             row[f'n_{k}'] = int(fin.sum())
         mk[mn] = row
     out['markout'] = mk
+    # Mid to mid (institutional review, Nov 6): from the mid at the fill (a maker: t(i+1), the end of its fill minute; a
+    # taker: t(i)) to the mid 60 s and 300 s later, so the half-spread a bid fill earns against the mid is not in it;
+    # edge_at_fill is that part (the mid at the fill minus the price paid).
+    mid_fill = np.where(mode == 1, np.asarray(tr['mk1'], dtype=np.float64) + paid, np.asarray(tr['mid'], dtype=np.float64))
+    mm = {}
+    for m_, mn in ((0, 'taker'), (1, 'maker')):
+        sel = mode == m_
+        if not sel.any():
+            continue
+        row = dict(n=int(sel.sum()))
+        for k, v in (('edge_at_fill', mid_fill - paid), ('mm60', np.asarray(tr['mk60'], dtype=np.float64) + paid - mid_fill),
+                     ('mm300', np.asarray(tr['mk300'], dtype=np.float64) + paid - mid_fill)):
+            v = v[sel]
+            fin = np.isfinite(v)
+            row[k] = round(float(v[fin].mean()), 5) if fin.any() else None
+            row[f'n_{k}'] = int(fin.sum())
+        mm[mn] = row
+    out['markout_mid'] = mm
     st = np.asarray(tr['strict'])
     if (mode == 1).any():
         out['strict_fill_share'] = round(float(np.mean(st[mode == 1] == 1)), 4)
     return out
+
+
+def concentration(pnl: np.ndarray, day: np.ndarray, hours: int) -> dict:
+    """How much of an arm's P&L a few trades or days carry (institutional review, Nov 6: a longshot payoff is variance
+    until it survives this): $/h without the top 5 and top 10 trades and without the top 3 trade days, the per-trade
+    skew, and how many of the biggest winners it takes to reach the total. Report only."""
+    pnl = np.asarray(pnl, dtype=np.float64)
+    if not len(pnl) or not hours:
+        return {}
+    tot = float(pnl.sum())
+    srt = np.sort(pnl)[::-1]
+    ud, inv = np.unique(np.asarray(day), return_inverse=True)
+    by_day = np.sort(np.bincount(inv, weights=pnl))[::-1]
+    sd = float(pnl.std())
+    carry = None
+    if tot > 0:
+        cs = np.cumsum(srt)
+        carry = int(np.argmax(cs >= tot) + 1) if np.any(cs >= tot) else None
+    return dict(per_hour=round(tot / hours, 3),
+                drop_top5=round(float(tot - srt[:5].sum()) / hours, 3), drop_top10=round(float(tot - srt[:10].sum()) / hours, 3),
+                drop_top3_days=round(float(tot - by_day[:3].sum()) / hours, 3),
+                skew=round(float(np.mean(((pnl - pnl.mean()) / sd) ** 3)), 3) if sd > 0 else None,
+                winners=int((pnl > 0).sum()), trades=int(len(pnl)), winners_to_total=carry)
 
 
 def aggregate(parts: list[dict]) -> dict:
@@ -618,6 +659,8 @@ def aggregate(parts: list[dict]) -> dict:
         tot = float(np.abs(pnl).sum())
         wide = round(float(np.abs(pnl[np.nan_to_num(sp, nan=1.0) > 0.10 + 1e-9]).sum()) / tot, 4) if tot > 0 else 0.0
     fills = fill_readouts(tr, pnl, total_hours)
+    if len(pnl) and 'day' in tr:
+        fills['concentration'] = concentration(pnl, tr['day'], total_hours)
     pk = [f['diag']['p_yes'][0] for f in folds if (f.get('diag') or {}).get('p_yes')]
     pa = [f['diag']['p_yes_train_all'] for f in folds if (f.get('diag') or {}).get('p_yes_train_all') is not None]
     pyes = [round(float(np.mean(pk)), 4), round(float(np.mean(pa)), 4)] if pk and len(pa) == len(pk) else None
