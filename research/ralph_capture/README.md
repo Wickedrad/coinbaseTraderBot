@@ -9,7 +9,7 @@ pin or ledger change, and nothing in `bot/` starts this code.
 | File | Purpose |
 |---|---|
 | `bot/kalshi/ws.ts` (small seam) | `RawFrameSink` interface and `setRawSink()`. Nothing in the bot calls `setRawSink`, so by default the sink is undefined and every hook is a no-op. A sink that throws is detached and the bot carries on. |
-| `rawTap.ts` | The sink: a create-only (mode 0600), SHA-256 hash-chained journal of transport events (connecting, open, error, close), commands sent, and every frame as received, with wall and monotonic receipt times and a connection epoch. Frozen capture config and its hash in line 1. Chain-head checkpoints go to a separate anchor file. |
+| `rawTap.ts` | The sink: a create-only (mode 0600), SHA-256 hash-chained journal of transport events (connecting, open, error, close), commands sent, and every frame handed to it (public frames as text, the rest as length and hash only, see Privacy), with wall and monotonic receipt times and a connection epoch. Frozen capture config and its hash in line 1. Chain-head checkpoints go to a separate anchor file. |
 | `verify_journal.py` | Offline checker (stdlib, no network). Re-derives type, sid and seq from the stored text and checks the chain, footer, config hash, epoch and clock rules, and order-book continuity **per ticker**. |
 | `captureCli.ts` | Read-only capture runner for the owner to use with a key. Refuses to start without `--authorized-by-owner`. Not run by the bot or CI. |
 | `test_verify_journal.py`, `tests/ralphRawTap.test.ts` | 52 + 18 tests. The Python tests build journals independently of the TS writer. |

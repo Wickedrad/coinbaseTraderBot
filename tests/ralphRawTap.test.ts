@@ -316,11 +316,12 @@ test('an own-order identifier the scrub cannot reach (nested, or inside an array
   tap.connecting(); tap.opened(); tap.sent('{"id":1,"cmd":"subscribe","params":{}}');
   tap.frame(Buffer.from('{"type":"orderbook_delta","sid":1,"seq":1,"msg":{"market_ticker":"T","extra":{"client_order_id":"SENTINEL-NESTED-1"}}}'), false);
   tap.frame(Buffer.from('{"type":"orderbook_delta","sid":1,"seq":2,"msg":[{"order_id":"SENTINEL-NESTED-2"}]}'), false);
+  tap.frame(Buffer.from('{"type":"orderbook_delta","sid":1,"seq":3,"msg":{"market_ticker":"T","x":{"client\\u005forder\\u005fid":"SENTINEL-NESTED-3"}}}'), false);   // key spelled with \\u escapes
   tap.closed(1000);
   await tap.close();
   const text = fs.readFileSync(file, 'utf8');
-  assert.ok(!text.includes('SENTINEL-NESTED-1') && !text.includes('SENTINEL-NESTED-2'));
+  assert.ok(!text.includes('SENTINEL-NESTED-1') && !text.includes('SENTINEL-NESTED-2') && !text.includes('SENTINEL-NESTED-3'));
   const { report } = verify(file);
-  assert.equal(report.notes.redacted, 2);
+  assert.equal(report.notes.redacted, 3);
   assert.ok(report.reasons.includes('redacted_public_frame'), 'the verifier refuses a journal whose book frames were withheld');
 });

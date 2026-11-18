@@ -151,7 +151,8 @@ export class RawFrameTap implements RawFrameSink {
         const stored = found.length
           ? JSON.stringify({ ...env, msg: Object.fromEntries(Object.entries(msg as Record<string, unknown>).filter(([k]) => !found.includes(k))) })
           : asText;
-        if (!PRIVATE_NAME_RE.test(stored)) {
+        // also test the re-serialized object: a key written with \u escapes decodes to a plain name there
+        if (!PRIVATE_NAME_RE.test(stored) && !PRIVATE_NAME_RE.test(JSON.stringify(JSON.parse(stored)))) {
           this.append(found.length ? { ...base, raw: stored, stored_sha256: sha256(stored), scrubbed: found } : { ...base, raw: stored });
           return;
         }
