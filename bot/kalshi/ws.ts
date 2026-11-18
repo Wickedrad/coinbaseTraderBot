@@ -131,8 +131,9 @@ export class KalshiWs extends EventEmitter {
     });
     ws.on('pong', () => { this.lastMessageTs = Date.now(); if (this.pingSentAt) recordLatency('kalshiWs', Date.now() - this.pingSentAt); });
     ws.on('message', (buf, isBinary) => {
+      const text = buf.toString();
       this.tap((s) => s.frame(Buffer.isBuffer(buf) ? buf : Array.isArray(buf) ? Buffer.concat(buf) : Buffer.from(buf), isBinary));
-      this.onMessage(buf.toString());
+      this.onMessage(text);
     });
     ws.on('close', (code) => {
       this.tap((s) => s.closed(code));

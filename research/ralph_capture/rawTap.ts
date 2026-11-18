@@ -1,12 +1,12 @@
 /** Raw Kalshi WebSocket frame journal. RESEARCH ONLY (Ralph Phase A, iteration 0047).
  *
  *  What it is: an observer a KalshiWs can be given with setRawSink(). It writes one hash-chained line per transport
- *  event, per command the bot sent, and per frame exactly as received (bytes hashed, text kept), with the receipt time
+ *  event, per command the bot sent, and per frame as received (SHA-256 of the bytes it was handed, text kept when public), with the receipt time
  *  on two clocks, a connection epoch, and a frozen capture configuration in the first line. The frame's sid and seq stay
  *  inside the raw text; verify_journal.py re-derives them and checks continuity, so this file never has to be trusted.
  *
- *  What it is not: exchange authentication. The chain proves the file was not edited after the fact; it does not prove
- *  Kalshi sent the bytes. The anchor file exists so the chain head can be kept somewhere this process cannot reach; until
+ *  What it is not: exchange authentication. The chain lets a reader CHECK that no line was edited without re-hashing the rest
+ *  (a forger who re-hashes everything is caught only by an anchor kept elsewhere); it does not prove Kalshi sent the bytes. The anchor file exists so the chain head can be kept somewhere this process cannot reach; until
  *  an operator does that, the journal is only locally consistent. The verifier reports exchange_authenticated=false always.
  *
  *  Safety: it imports nothing from the engine, execution, ledger or config. It never sees headers or keys (the sink
@@ -26,6 +26,8 @@ export const PUBLIC_TYPES: ReadonlySet<string> = new Set([
   'event_lifecycle', 'subscribed', 'ok', 'unsubscribed', 'error',
   'cfbenchmarks_value', 'cfbenchmarks_value_5hz', 'cfbenchmarks_value_indexlist', 'cfbenchmarks_value_5hz_indexlist',
 ]);
+/** Fields that name the account's own orders; removed from the stored text of otherwise public frames. */
+const PRIVATE_MSG_FIELDS = ['client_order_id', 'order_id', 'subaccount', 'subaccount_number', 'user_id'];
 const SECRET_KEY = /key|secret|token|signature|password|passphrase|authorization|credential|pem/i;
 const SECRET_VALUE = /-----BEGIN [A-Z ]*PRIVATE KEY-----|KALSHI-ACCESS|:\/\/[^/\s:@]+:[^/\s@]+@/i;
 
@@ -90,10 +92,10 @@ export class RawFrameTap implements RawFrameSink {
     this.anchorEvery = Math.max(1, opts.anchorEvery ?? 1000);
     this.maxPending = Math.max(1, opts.maxPendingBytes ?? 32 * 1024 * 1024);
     const configJson = JSON.stringify(opts.config);
-    this.out = fs.createWriteStream(opts.file, { flags: 'wx' });
+    this.out = fs.createWriteStream(opts.file, { flags: 'wx', mode: 0o600 });
     this.out.on('error', (e) => { this.failed = `write: ${String(e).slice(0, 160)}`; });
     if (opts.anchorFile) {
-      this.anchorOut = fs.createWriteStream(opts.anchorFile, { flags: 'wx' });
+      this.anchorOut = fs.createWriteStream(opts.anchorFile, { flags: 'wx', mode: 0o600 });
       this.anchorOut.on('error', (e) => { this.failed = `anchor: ${String(e).slice(0, 160)}`; });
     }
     this.append({
@@ -122,31 +124,39 @@ export class RawFrameTap implements RawFrameSink {
   }
 
   frame(data: Buffer, isBinary: boolean): void {
-    const stamp = this.stamp(); // taken first: the receipt time must not include our own work
     this.guard(() => {
+      const stamp = this.stamp(); // first thing: the receipt time must not include our own work
       if (this.backpressure(stamp)) return;
-      let text: string | null = null;
-      if (!isBinary) { const t = data.toString('utf8'); if (Buffer.from(t, 'utf8').equals(data)) text = t; }
-      // One parse to read the top-level type, sid and seq (the real subscribed/ok/error frames put "id" before "type", so
-      // no pattern on the text is safe). Duplicate keys are not detected here; verify_journal.py rejects them from the text.
-      let type: string | null = null, sid: number | null = null, seq: number | null = null;
-      if (text !== null) {
-        try {
-          const env = JSON.parse(text) as Record<string, unknown> | null;
-          if (env && typeof env === 'object' && !Array.isArray(env)) {
-            if (typeof env.type === 'string' && /^[a-z0-9_]{1,64}$/.test(env.type)) type = env.type;
-            if (Number.isSafeInteger(env.sid)) sid = env.sid as number;
-            if (Number.isSafeInteger(env.seq)) seq = env.seq as number;
-          }
-        } catch { /* not JSON: type stays null and the content is withheld below */ }
-      }
-      const keep = text !== null && type !== null && PUBLIC_TYPES.has(type);
+      // What the bot parses is data.toString() (ws.ts), lossy or not; type, sid and seq are read from that same view so a
+      // frame the bot would apply is never invisible here. The text is kept only when it is lossless UTF-8.
+      const asText = data.toString('utf8');
+      const lossless = !isBinary && Buffer.from(asText, 'utf8').equals(data);
+      // One parse for the top-level type, sid and seq (real subscribed/ok/error frames put "id" before "type", so no pattern
+      // on the text is safe). Duplicate keys are not seen here; verify_journal.py rejects them from the stored text.
+      let env: Record<string, unknown> | null = null;
+      try { const e = JSON.parse(asText) as unknown; if (e && typeof e === 'object' && !Array.isArray(e)) env = e as Record<string, unknown>; } catch { /* not JSON */ }
+      const type = env && typeof env.type === 'string' && /^[a-z0-9_]{1,64}$/.test(env.type) ? env.type : null;
+      const sid = env && Number.isSafeInteger(env.sid) ? (env.sid as number) : null;
+      const seq = env && Number.isSafeInteger(env.seq) ? (env.seq as number) : null;
+      const isPublic = type !== null && PUBLIC_TYPES.has(type);
       const base = { kind: 'frame', epoch: this.epoch, ...stamp, bytes: data.length, binary: isBinary, sha256: sha256(data), type };
       this.frames++;
-      if (keep) { this.append({ ...base, raw: text }); return; }
+      if (isPublic && lossless && env) {
+        // Own-order identifiers can ride on a public book delta; they are dropped from the stored text (sha256 and bytes still
+        // describe the original), so the delta stays replayable but names no order.
+        const msg = env.msg;
+        const found = msg && typeof msg === 'object' && !Array.isArray(msg) ? PRIVATE_MSG_FIELDS.filter((k) => k in (msg as object)) : [];
+        if (found.length) {
+          const kept = Object.fromEntries(Object.entries(msg as Record<string, unknown>).filter(([k]) => !found.includes(k)));
+          this.append({ ...base, raw: JSON.stringify({ ...env, msg: kept }), scrubbed: found });
+        } else {
+          this.append({ ...base, raw: asText });
+        }
+        return;
+      }
       // Withheld content keeps its sid and seq so the continuity of that subscription stays checkable without its payload.
       this.redacted++;
-      this.append({ ...base, redacted: true, sid, seq });
+      this.append({ ...base, redacted: true, redacted_reason: isPublic ? 'not_lossless_text' : 'non_public_type', sid, seq });
     });
   }
 
@@ -181,21 +191,21 @@ export class RawFrameTap implements RawFrameSink {
    *  count, so the verifier sees exactly where frames are missing. */
   private backpressure(stamp?: { wall_ms: number; mono_ns: string }): boolean {
     if (this.ended || this.failed) return true;
-    if (this.out.writableLength > this.maxPending) { this.droppedPending++; this.droppedTotal++; return true; }
-    this.flushDropMarker(false, stamp);
+    const pending = this.out.writableLength;
+    if (pending > this.maxPending || (this.droppedPending > 0 && pending > this.maxPending / 2)) { this.droppedPending++; this.droppedTotal++; return true; }
+    this.flushDropMarker(true, stamp);
     return false;
   }
 
   /** The marker takes the stamp of the record that triggers it (not a newer one), so the journal's clocks never step back. */
-  private flushDropMarker(force: boolean, stamp?: { wall_ms: number; mono_ns: string }): void {
+  private flushDropMarker(_force: boolean, stamp?: { wall_ms: number; mono_ns: string }): void {
     if (this.droppedPending === 0) return;
-    if (!force && this.out.writableLength > this.maxPending / 2) return;
     this.append({ kind: 'dropped', epoch: this.epoch, ...(stamp ?? this.stamp()), count: this.droppedPending, cause: 'backpressure' });
     this.droppedPending = 0;
   }
 
   private append(rec: Record<string, unknown>): void {
-    if (this.failed) return;
+    if (this.failed || (this.ended && rec.kind !== 'end')) return;
     const body = JSON.stringify({ n: this.n, ...rec });
     const hash = sha256(this.head + '\n' + body);
     this.out.write(`${hash}\t${body}\n`);

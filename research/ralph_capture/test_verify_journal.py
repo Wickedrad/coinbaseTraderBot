@@ -85,6 +85,7 @@ class Verify(unittest.TestCase):
     def test_valid(self):
         r = run(good())
         self.assertTrue(r['locally_consistent'], r['reasons'])
+        self.assertTrue(r['continuity_intact'])
         self.assertEqual(r['notes']['frames'], 2)
         self.assertFalse(r['exchange_authenticated'])
         self.assertFalse(r['phase_b_eligible'])
@@ -190,6 +191,8 @@ class Verify(unittest.TestCase):
         j.tr('close'); j.end()
         r = run(j)
         self.assertEqual(r['notes']['unparsable_public_frames'], 1)
+        self.assertIn('unparsable_public_frame', r['reasons'])
+        self.assertFalse(r['locally_consistent'])
 
     def test_nan_in_raw_frame_flagged(self):
         j = J(); j.tr('connecting'); j.tr('open')
@@ -205,7 +208,8 @@ class Verify(unittest.TestCase):
         self.assertEqual(r['notes']['gaps'][0]['expected'], 3)
         self.assertEqual(r['notes']['gaps'][0]['got'], 4)
         self.assertTrue(r['locally_consistent'])  # the journal is intact; the market data is what is broken
-        self.assertEqual(len([i for i in r['notes']['invalidations'] if i['why'] == 'sequence_gap']), 1)
+        self.assertEqual(len([i for i in r['notes']['anomalies'] if i['why'] == 'sequence_gap']), 1)
+        self.assertFalse(r['continuity_intact'])
 
     def test_snapshot_after_gap_restores(self):
         j = J(); j.tr('connecting'); j.tr('open')
@@ -218,7 +222,7 @@ class Verify(unittest.TestCase):
         j = J(); j.tr('connecting'); j.tr('open')
         j.delta(seq=5)
         j.tr('close'); j.end()
-        self.assertEqual(run(j)['notes']['invalidations'][0]['why'], 'delta_before_snapshot')
+        self.assertEqual(run(j)['notes']['anomalies'][0]['why'], 'delta_before_snapshot')
 
     def test_reconnect_resets_baseline_per_epoch(self):
         j = J()
@@ -231,16 +235,20 @@ class Verify(unittest.TestCase):
 
     def test_disconnect_invalidates_open_subscriptions(self):
         j = J(); j.tr('connecting'); j.tr('open'); j.snap(); j.tr('close'); j.end()
-        self.assertTrue(any(i['why'] == 'transport_closed' for i in run(j)['notes']['invalidations']))
+        r = run(j)
+        self.assertEqual(r['notes']['windows_ended_by_disconnect'], 1)   # a normal end of a window, not an anomaly
+        self.assertEqual(r['notes']['anomalies'], [])
 
     def test_dropped_marker_invalidates_epoch(self):
         j = J(); j.tr('connecting'); j.tr('open'); j.snap()
         j.put({'kind': 'dropped', 'epoch': j.epoch, **j.stamp(), 'count': 3, 'cause': 'backpressure'})
-        j.delta(seq=2); j.tr('close'); j.end()
+        j.delta(seq=2); j.tr('close'); j.end(dropped_total=3)
         r = run(j)
         self.assertIn('frames_dropped', r['reasons'])
         self.assertEqual(r['notes']['dropped_frames'], 3)
-        self.assertTrue(any(i['why'] == 'frames_dropped' for i in r['notes']['invalidations']))
+        self.assertTrue(any(i['why'] == 'frames_dropped' for i in r['notes']['anomalies']))
+        self.assertFalse(r['continuity_intact'])
+        self.assertTrue(r['locally_consistent'])
 
     def test_frame_before_open(self):
         j = J(); j.tr('connecting'); j.snap(); j.tr('open'); j.tr('close'); j.end()
@@ -282,6 +290,7 @@ class Verify(unittest.TestCase):
         r = run(j)
         self.assertEqual(r['notes']['redacted'], 2)
         self.assertEqual(len(r['notes']['gaps']), 1)
+        self.assertTrue(r['locally_consistent'], r['reasons'])
 
     def test_footer_count_mismatch(self):
         j = J(); j.tr('connecting'); j.tr('open'); j.snap(); j.tr('close'); j.end(frames=99)
@@ -294,6 +303,118 @@ class Verify(unittest.TestCase):
     def test_unknown_record_kind(self):
         j = J(); j.tr('connecting'); j.tr('open'); j.put({'kind': 'mystery'})
         self.assertIn('malformed_record', run(j)['reasons'])
+
+    # ---- critic round 1 additions ----
+    def test_anchor_must_cover_the_whole_journal(self):
+        j = good()
+        r = run(j, anchor_lines=j.anchor(count=3))
+        self.assertEqual(r['anchor'], 'partial')
+        self.assertEqual(r['anchored_records'], 3)
+        self.assertIn('anchor_partial', r['reasons'])
+
+    def test_rewritten_tail_passes_locally_and_a_prefix_anchor_but_not_a_covering_anchor(self):
+        def build(tail_seq):
+            j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap(); j.delta(seq=2)
+            j.delta(seq=tail_seq); j.tr('close'); j.end()
+            return j
+        honest, forged = build(3), build(4)           # same first records, different tail, both re-hashed
+        self.assertTrue(run(forged)['locally_consistent'])
+        early = honest.anchor(count=5)                 # a checkpoint taken mid-capture
+        r = run(forged, anchor_lines=early)
+        self.assertEqual(r['anchor'], 'partial')       # prefix matches, tail unprotected
+        full = run(forged, anchor_lines=honest.anchor())
+        self.assertEqual(full['anchor'], 'mismatch')   # a covering anchor catches the rewrite
+        self.assertFalse(full['locally_consistent'])
+
+    def test_multi_ticker_sid_gap_is_per_ticker(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out()
+        j.snap(sid=1, seq=1, ticker='T1'); j.snap(sid=1, seq=2, ticker='T2')
+        j.delta(sid=1, seq=3, ticker='T1'); j.delta(sid=1, seq=5, ticker='T2')       # gap on the shared sid
+        j.snap(sid=1, seq=6, ticker='T2')                                            # restores T2 only
+        j.delta(sid=1, seq=7, ticker='T1')                                           # T1 still has no new snapshot
+        j.tr('close'); j.end()
+        r = run(j)
+        books = r['notes']['books']
+        self.assertEqual(books['0:T1']['valid_at_end'], False)
+        self.assertEqual(books['0:T1']['last_invalid_why'], 'sequence_gap')
+        self.assertEqual(r['notes']['snapshots_restoring_a_ticker'], 1)
+
+    def test_delta_from_a_different_sid_invalidates_the_ticker(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out()
+        j.snap(sid=1, seq=1, ticker='T1'); j.delta(sid=2, seq=1, ticker='T1')
+        j.tr('close'); j.end()
+        self.assertTrue(any(i['why'] == 'delta_from_unexpected_sid' for i in run(j)['notes']['anomalies']))
+
+    def test_book_frame_without_seq_fails_closed(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()
+        j.fr(json.dumps({'type': 'orderbook_delta', 'sid': 1, 'msg': {'market_ticker': 'T1'}}))
+        j.tr('close'); j.end()
+        r = run(j)
+        self.assertTrue(any(i['why'] == 'unsequenced_book_frame' for i in r['notes']['anomalies']))
+        self.assertFalse(r['continuity_intact'])
+
+    def test_book_frame_without_ticker_fails_closed(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()
+        j.fr(json.dumps({'type': 'orderbook_delta', 'sid': 1, 'seq': 2, 'msg': {}}))
+        j.tr('close'); j.end()
+        self.assertTrue(any(i['why'] == 'unsequenced_book_frame' for i in run(j)['notes']['anomalies']))
+
+    def test_redacted_book_frame_cannot_restore_or_hide(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap(); j.delta(seq=3)      # gap
+        j.put({'kind': 'frame', 'epoch': j.epoch, **j.stamp(), 'bytes': 9, 'binary': False, 'sha256': sha('x'), 'type': 'orderbook_snapshot',
+               'redacted': True, 'redacted_reason': 'not_lossless_text', 'sid': 1, 'seq': 4})
+        j.frames += 1
+        j.tr('close'); j.end()
+        r = run(j)
+        self.assertIn('redacted_public_frame', r['reasons'])
+        self.assertFalse(r['locally_consistent'])
+        self.assertFalse(r['notes']['books']['0:T1']['valid_at_end'])
+
+    def test_duplicate_key_book_frame_invalidates_the_epoch(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()
+        j.fr('{"type":"orderbook_delta","sid":1,"seq":2,"seq":3,"msg":{"market_ticker":"T1"}}')
+        j.tr('close'); j.end()
+        r = run(j)
+        self.assertTrue(any(i['why'] == 'unparsable_frame' for i in r['notes']['anomalies']))
+        self.assertFalse(r['locally_consistent'])
+
+    def test_footer_dropped_total_must_match_markers(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap(); j.tr('close'); j.end(dropped_total=500)
+        self.assertIn('dropped_total_mismatch', run(j)['reasons'])
+
+    def test_journal_that_ends_connected_is_reported(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap(); j.end()
+        r = run(j)
+        self.assertIn('ended_while_connected', r['reasons'])
+        self.assertTrue(r['locally_consistent'])
+
+    def test_frames_without_a_subscribe_command_are_reported(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.snap(); j.tr('close'); j.end()
+        self.assertIn('epoch_without_subscribe_command', run(j)['reasons'])
+
+    def test_scrubbed_frame_is_accepted_but_reported(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()
+        j.fr(json.dumps({'type': 'orderbook_delta', 'sid': 1, 'seq': 2, 'msg': {'market_ticker': 'T1'}}), scrubbed=['client_order_id'], sha256='0' * 64, bytes=77)
+        j.tr('close'); j.end()
+        r = run(j)
+        self.assertTrue(r['locally_consistent'], r['reasons'])
+        self.assertEqual(r['notes']['scrubbed'], 1)
+        self.assertIn('frames_scrubbed', r['reasons'])
+        self.assertTrue(r['continuity_intact'])
+
+    def test_private_field_left_in_a_stored_frame_is_rejected(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()
+        j.fr(json.dumps({'type': 'orderbook_delta', 'sid': 1, 'seq': 2, 'msg': {'market_ticker': 'T1', 'client_order_id': 'abc'}}))
+        j.tr('close'); j.end()
+        self.assertIn('private_field_in_stored_frame', run(j)['reasons'])
+
+    def test_seqless_frames_are_not_checked_and_the_report_says_so(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()
+        j.fr('{"type":"trade","msg":{"market_ticker":"T1"}}'); j.fr('{"type":"trade","msg":{"market_ticker":"T1"}}')
+        j.tr('close'); j.end()
+        r = run(j)
+        self.assertTrue(r['continuity_intact'])
+        self.assertIn('cannot be detected', r['unchecked'])
 
 
 if __name__ == '__main__':

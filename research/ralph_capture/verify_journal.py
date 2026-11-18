@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Offline verifier for raw-tap journals (schema 1, written by rawTap.ts). RESEARCH ONLY.
 
-Reads files only: no network, no credentials, no bot code. It checks that a journal is internally consistent and
-reports where the market-data continuity breaks. It can NEVER say a journal is exchange-authenticated or eligible for
-Phase B: those two report fields are constants (False) with no code path that sets them. A chain that matches only shows
-the file was not edited after it was written; an anchor file that matches shows it only if the anchor was kept somewhere
-the capturing process could not touch, which this script cannot check.
+Reads files only: no network, no credentials, no bot code. It CHECKS that a journal is internally consistent and reports
+where order-book continuity breaks, per ticker. It can NEVER say a journal is exchange-authenticated or eligible for
+Phase B: those two report fields are constants (False) with no code path that sets them.
 
-Usage: verify_journal.py JOURNAL [--anchor ANCHOR_FILE] [--max-gap-ms N]   (exit 0 = locally consistent, 1 = not)
+What a passing result means: no line was edited without re-hashing every later line, the header/config hash, footer
+counts, epochs and clocks are consistent. A forger who re-hashes the whole file passes; only an anchor file kept somewhere
+the capturing process could not touch, and covering the whole journal (anchor == 'matched'), narrows that. This script
+cannot check where the anchor was kept.
+
+What it cannot see: loss or duplication of frames that carry no seq (trades, lifecycle, index values); a frame the tap was
+never handed. Book frames (orderbook_snapshot / orderbook_delta) are sequenced and checked.
+
+Usage: verify_journal.py JOURNAL [--anchor ANCHOR_FILE] [--max-gap-ms N]   (exit 0 = consistent, 1 = not)
 """
 import argparse
 import hashlib
@@ -19,6 +25,20 @@ PUBLIC_TYPES = {
     'orderbook_snapshot', 'orderbook_delta', 'trade', 'ticker', 'ticker_v2', 'market_lifecycle', 'market_lifecycle_v2',
     'event_lifecycle', 'subscribed', 'ok', 'unsubscribed', 'error',
     'cfbenchmarks_value', 'cfbenchmarks_value_5hz', 'cfbenchmarks_value_indexlist', 'cfbenchmarks_value_5hz_indexlist',
+}
+BOOK_TYPES = {'orderbook_snapshot', 'orderbook_delta'}
+PRIVATE_MSG_FIELDS = {'client_order_id', 'order_id', 'subaccount', 'subaccount_number', 'user_id'}
+
+# Reasons that make the journal itself untrustworthy. Everything else describes the market data inside it.
+STRUCTURAL = {
+    'hash_chain_invalid', 'record_number_gap', 'missing_or_bad_header', 'config_hash_mismatch', 'config_not_json',
+    'header_claims_authentication', 'second_header', 'bad_footer', 'trailing_data', 'malformed_record',
+    'missing_valid_footer', 'no_frames', 'anchor_mismatch', 'anchor_empty', 'epoch_mismatch',
+    'connecting_without_close', 'open_without_connecting', 'close_without_connecting',
+    'frame_outside_open_epoch', 'outbound_outside_open_epoch', 'monotonic_clock_regressed',
+    'wall_clock_went_backwards', 'wall_clock_stepped', 'frame_sha256_mismatch', 'declared_type_mismatch',
+    'capture_reported_failure', 'frame_text_missing', 'frame_field_mismatch', 'unparsable_public_frame',
+    'redacted_public_frame', 'dropped_total_mismatch', 'private_field_in_stored_frame',
 }
 
 
@@ -46,11 +66,90 @@ def is_int(v):
     return type(v) is int
 
 
+class Books:
+    """Order-book continuity, per (epoch, ticker). Mirrors bot/kalshi/ws.ts onMessage for sequencing (a snapshot sets a
+    subscription's baseline; any later frame on it must be exactly previous+1) and is stricter where the bot is lenient: a
+    gap invalidates EVERY ticker served by that sid, and only that ticker's own next snapshot restores it."""
+
+    def __init__(self):
+        self.seq_of = {}       # (epoch, sid) -> last seq
+        self.tickers = {}      # (epoch, ticker) -> {'valid', 'sid', 'windows', 'why'}
+        self.sid_tickers = {}  # (epoch, sid) -> set(ticker)
+        self.gaps = []
+        self.anomalies = []    # things that break or taint continuity
+        self.restored = 0
+        self.ended_by_disconnect = 0
+
+    def _kill(self, key, why, n, sid=None, count_as_anomaly=True):
+        st = self.tickers[key]
+        if st['valid']:
+            st['valid'], st['why'] = False, why
+            if count_as_anomaly:
+                self.anomalies.append({'n': n, 'epoch': key[0], 'ticker': key[1], 'sid': sid, 'why': why})
+            else:
+                self.ended_by_disconnect += 1
+
+    def kill_sid(self, epoch, sid, why, n):
+        ts = self.sid_tickers.get((epoch, sid), set())
+        if not ts:
+            self.anomalies.append({'n': n, 'epoch': epoch, 'ticker': None, 'sid': sid, 'why': why})
+        for t in ts:
+            self._kill((epoch, t), why, n, sid)
+
+    def kill_epoch(self, epoch, why, n, anomaly=True):
+        any_valid = False
+        for key in list(self.tickers):
+            if key[0] == epoch and self.tickers[key]['valid']:
+                any_valid = True
+                self._kill(key, why, n, self.tickers[key]['sid'], anomaly)
+        if anomaly and not any_valid:
+            self.anomalies.append({'n': n, 'epoch': epoch, 'ticker': None, 'sid': None, 'why': why})
+
+    def sequence(self, epoch, sid, seq, n):
+        """Returns True when the frame continues its subscription (or starts it)."""
+        prev = self.seq_of.get((epoch, sid))
+        self.seq_of[(epoch, sid)] = seq
+        if prev is not None and seq != prev + 1:
+            self.gaps.append({'n': n, 'epoch': epoch, 'sid': sid, 'expected': prev + 1, 'got': seq})
+            self.kill_sid(epoch, sid, 'sequence_gap', n)
+            return False
+        return True
+
+    def snapshot(self, epoch, sid, seq, ticker, n):
+        self.seq_of[(epoch, sid)] = seq
+        key = (epoch, ticker)
+        st = self.tickers.setdefault(key, {'valid': False, 'sid': sid, 'windows': 0, 'why': None})
+        if not st['valid']:
+            st['windows'] += 1
+            if st['why'] is not None:
+                self.restored += 1
+        st['valid'], st['sid'], st['why'] = True, sid, None
+        self.sid_tickers.setdefault((epoch, sid), set()).add(ticker)
+
+    def delta(self, epoch, sid, seq, ticker, n):
+        if not self.sequence(epoch, sid, seq, n):
+            return
+        key = (epoch, ticker)
+        st = self.tickers.get(key)
+        if st is None:
+            self.tickers[key] = {'valid': False, 'sid': sid, 'windows': 0, 'why': 'delta_before_snapshot'}
+            self.sid_tickers.setdefault((epoch, sid), set()).add(ticker)
+            self.anomalies.append({'n': n, 'epoch': epoch, 'ticker': ticker, 'sid': sid, 'why': 'delta_before_snapshot'})
+        elif st['valid'] and st['sid'] != sid:
+            self._kill(key, 'delta_from_unexpected_sid', n, sid)
+
+    def summary(self, limit=50):
+        out = {}
+        for (epoch, ticker), st in sorted(self.tickers.items(), key=lambda kv: (kv[0][0], str(kv[0][1])))[:limit]:
+            out[f'{epoch}:{ticker}'] = {'valid_windows': st['windows'], 'valid_at_end': st['valid'], 'last_invalid_why': st['why']}
+        return out
+
+
 def verify(lines, anchor_lines=None, max_gap_ms=60_000):
     reasons = set()
-    notes = {'frames': 0, 'redacted': 0, 'outbound': 0, 'transport': 0, 'dropped_frames': 0, 'epochs': 0,
-             'unparsable_public_frames': 0, 'non_public_frames': 0, 'gaps': [], 'invalidations': [],
-             'clock_regressions': 0, 'long_silences': 0}
+    notes = {'frames': 0, 'redacted': 0, 'scrubbed': 0, 'outbound': 0, 'transport': 0, 'dropped_frames': 0, 'epochs': 0,
+             'unparsable_public_frames': 0, 'clock_regressions': 0, 'long_silences': 0}
+    books = Books()
     prev = GENESIS
     hashes = []
     ended = False
@@ -59,17 +158,9 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
     last_wall = last_mono = None
     epoch = -1
     state = 'idle'            # idle | connecting | open | closed
-    seq_of = {}               # (epoch, sid) -> last seq seen
-    valid = {}                # (epoch, sid) -> bool: a snapshot was seen and no gap/drop since
-    ticker_of = {}            # (epoch, sid) -> ticker (from snapshots)
-    invalid_why = {}          # (epoch, sid) -> why it is not valid
-
-    def invalidate_epoch(why, n):
-        for key in list(valid):
-            if key[0] == epoch and valid[key]:
-                valid[key] = False
-                invalid_why[key] = why
-                notes['invalidations'].append({'n': n, 'epoch': epoch, 'sid': key[1], 'why': why})
+    epoch_frames, epoch_outbound = {}, {}
+    marker_total = 0
+    footer = None
 
     for raw_line in lines:
         line = raw_line.rstrip('\n')
@@ -86,7 +177,7 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                 raise ValueError('record not an object')
             prev = h
             hashes.append(h)
-            if rec.get('n') != n_expected or not is_int(rec.get('n')):
+            if not is_int(rec.get('n')) or rec['n'] != n_expected:
                 reasons.add('record_number_gap')
                 break
             n = n_expected
@@ -115,7 +206,7 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                 if rec.get('records') != n or rec.get('frames') != notes['frames']:
                     reasons.add('bad_footer')
                 ended = True
-                notes['footer'] = {'dropped_total': rec.get('dropped_total'), 'failed': rec.get('failed')}
+                footer = {'dropped_total': rec.get('dropped_total'), 'failed': rec.get('failed')}
                 if rec.get('failed'):
                     reasons.add('capture_reported_failure')
                 continue
@@ -136,8 +227,6 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                 if state == 'open' and wall - last_wall > max_gap_ms:
                     notes['long_silences'] += 1
             last_wall, last_mono = wall, mono
-            if rec.get('epoch') != epoch and kind != 'transport':
-                reasons.add('epoch_mismatch')
             if kind == 'transport':
                 notes['transport'] += 1
                 ev = rec.get('event')
@@ -147,8 +236,6 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                     epoch += 1
                     notes['epochs'] = epoch + 1
                     state = 'connecting'
-                    if rec.get('epoch') != epoch:
-                        reasons.add('epoch_mismatch')
                 elif ev == 'open':
                     if state != 'connecting':
                         reasons.add('open_without_connecting')
@@ -159,13 +246,17 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                     if state == 'idle':
                         reasons.add('close_without_connecting')
                     state = 'closed'
-                    invalidate_epoch('transport_closed', n)
+                    books.kill_epoch(epoch, 'transport_closed', n, anomaly=False)
                 else:
                     raise ValueError('unknown transport event')
-                if ev != 'connecting' and rec.get('epoch') != epoch:
+                if rec.get('epoch') != epoch:
                     reasons.add('epoch_mismatch')
-            elif kind == 'outbound':
+                continue
+            if rec.get('epoch') != epoch:
+                reasons.add('epoch_mismatch')
+            if kind == 'outbound':
                 notes['outbound'] += 1
+                epoch_outbound[epoch] = epoch_outbound.get(epoch, 0) + 1
                 if state != 'open':
                     reasons.add('outbound_outside_open_epoch')
                 if not isinstance(rec.get('text'), str):
@@ -175,13 +266,15 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                 if not is_int(cnt) or cnt < 1:
                     raise ValueError('drop count')
                 notes['dropped_frames'] += cnt
+                marker_total += cnt
                 reasons.add('frames_dropped')
-                invalidate_epoch('frames_dropped', n)
+                books.kill_epoch(epoch, 'frames_dropped', n)
             elif kind == 'frame':
                 notes['frames'] += 1
+                epoch_frames[epoch] = epoch_frames.get(epoch, 0) + 1
                 if state != 'open':
                     reasons.add('frame_outside_open_epoch')
-                _frame(rec, n, epoch, seq_of, valid, ticker_of, invalid_why, notes, reasons)
+                _frame(rec, n, epoch, books, notes, reasons)
             else:
                 raise ValueError('unknown record kind')
         except (ValueError, TypeError, KeyError, IndexError):
@@ -189,11 +282,21 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
             break
     if not ended:
         reasons.add('missing_valid_footer')
+    else:
+        if state in ('connecting', 'open'):
+            reasons.add('ended_while_connected')
+        if footer and footer['dropped_total'] != marker_total:
+            reasons.add('dropped_total_mismatch')
+    for e, c in epoch_frames.items():
+        if c and not epoch_outbound.get(e):
+            reasons.add('epoch_without_subscribe_command')
     if header is None:
         reasons.add('missing_or_bad_header')
     if not notes['frames']:
         reasons.add('no_frames')
-    anchor_status = 'none'
+    if notes['scrubbed']:
+        reasons.add('frames_scrubbed')
+    anchor_status, anchored = 'none', 0
     if anchor_lines is not None:
         anchor_status = 'matched'
         count = 0
@@ -205,54 +308,71 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                     anchor_status = 'mismatch'
                     break
                 count += 1
+                anchored = max(anchored, c)
             except Exception:
                 anchor_status = 'mismatch'
                 break
-        if count == 0 and anchor_status == 'matched':
-            anchor_status = 'empty'
-        if anchor_status in ('mismatch', 'empty'):
+        if anchor_status == 'matched':
+            if count == 0:
+                anchor_status = 'empty'
+            elif anchored < len(hashes):
+                anchor_status = 'partial'   # protects the prefix only; later records could be rewritten and re-hashed
+        if anchor_status != 'matched':
             reasons.add('anchor_' + anchor_status)
-    # Only these reasons break the chain's meaning; the others describe market-data quality.
-    structural = {'hash_chain_invalid', 'record_number_gap', 'missing_or_bad_header', 'config_hash_mismatch', 'config_not_json',
-                  'header_claims_authentication', 'second_header', 'bad_footer', 'trailing_data', 'malformed_record',
-                  'missing_valid_footer', 'no_frames', 'anchor_mismatch', 'anchor_empty', 'epoch_mismatch',
-                  'connecting_without_close', 'open_without_connecting', 'close_without_connecting',
-                  'frame_outside_open_epoch', 'outbound_outside_open_epoch', 'monotonic_clock_regressed',
-                  'wall_clock_went_backwards', 'wall_clock_stepped', 'frame_sha256_mismatch', 'declared_type_mismatch',
-                  'capture_reported_failure', 'frame_text_missing', 'frame_field_mismatch'}
+    consistent = not (reasons & STRUCTURAL)
+    notes['gaps'] = books.gaps
+    notes['anomalies'] = books.anomalies
+    notes['windows_ended_by_disconnect'] = books.ended_by_disconnect
+    notes['snapshots_restoring_a_ticker'] = books.restored
+    notes['books'] = books.summary()
     return {
-        'locally_consistent': not (reasons & structural),
+        'locally_consistent': consistent,
+        # No gap, drop, unsequenced or unreadable book frame, and nothing withheld that the bot would have applied.
+        'continuity_intact': consistent and not books.gaps and not books.anomalies and not notes['dropped_frames'],
         'reasons': sorted(reasons),
         'records': n_expected,
         'head': hashes[-1] if hashes else None,
         'anchor': anchor_status,
-        'notes': {k: v for k, v in notes.items()},
+        'anchored_records': anchored,
+        'notes': notes,
+        'unchecked': 'loss or duplication of frames without a seq (trade, lifecycle, index) cannot be detected',
         # Constants. Nothing in this file assigns anything else to these two.
         'exchange_authenticated': False,
         'phase_b_eligible': False,
     }
 
 
-def _frame(rec, n, epoch, seq_of, valid, ticker_of, invalid_why, notes, reasons):
-    sha_declared = rec.get('sha256')
-    bytes_len = rec.get('bytes')
+def _frame(rec, n, epoch, books, notes, reasons):
+    sha_declared, bytes_len, declared_type = rec.get('sha256'), rec.get('bytes'), rec.get('type')
     if not is_int(bytes_len) or not isinstance(sha_declared, str):
         raise ValueError('frame fields')
-    declared_type = rec.get('type')
     if rec.get('redacted'):
         notes['redacted'] += 1
-        if declared_type in PUBLIC_TYPES and rec.get('binary') is False:
-            reasons.add('redacted_public_frame')   # a public frame must be kept as text
         sid, seq = rec.get('sid'), rec.get('seq')
-        _track(epoch, sid, seq, declared_type, n, seq_of, valid, ticker_of, invalid_why, notes, None)
+        if (sid is not None and not is_int(sid)) or (seq is not None and not is_int(seq)):
+            reasons.add('frame_field_mismatch')
+            return
+        if declared_type in PUBLIC_TYPES:
+            # a frame the bot would apply, withheld: its effect cannot be reconstructed
+            reasons.add('redacted_public_frame')
+            if declared_type in BOOK_TYPES:
+                books.kill_epoch(epoch, 'redacted_book_frame', n)
+        if sid is not None and seq is not None:
+            books.sequence(epoch, sid, seq, n)
         return
     raw = rec.get('raw')
     if not isinstance(raw, str):
         reasons.add('frame_text_missing')
         return
-    data = raw.encode('utf-8')
-    if sha(data) != sha_declared or len(data) != bytes_len:
-        reasons.add('frame_sha256_mismatch')
+    scrubbed = rec.get('scrubbed')
+    if scrubbed is not None:
+        notes['scrubbed'] += 1   # stored text had own-order identifiers removed; sha256/bytes describe the original
+        if not isinstance(scrubbed, list):
+            reasons.add('frame_field_mismatch')
+    else:
+        data = raw.encode('utf-8')
+        if sha(data) != sha_declared or len(data) != bytes_len:
+            reasons.add('frame_sha256_mismatch')
     try:
         env = strict_json(raw)
         if type(env) is not dict or type(env.get('type')) is not str:
@@ -260,42 +380,30 @@ def _frame(rec, n, epoch, seq_of, valid, ticker_of, invalid_why, notes, reasons)
     except ValueError:
         notes['unparsable_public_frames'] += 1
         reasons.add('unparsable_public_frame')
+        books.kill_epoch(epoch, 'unparsable_frame', n)   # the bot may have applied what we cannot read
         return
     if env['type'] != declared_type:
         reasons.add('declared_type_mismatch')
     sid, seq = env.get('sid'), env.get('seq')
+    msg = env.get('msg') if isinstance(env.get('msg'), dict) else {}
+    if PRIVATE_MSG_FIELDS & set(msg):
+        reasons.add('private_field_in_stored_frame')
+    if env['type'] in BOOK_TYPES:
+        ticker = msg.get('market_ticker')
+        if not is_int(sid) or not is_int(seq) or not isinstance(ticker, str) or not ticker:
+            # cannot be sequenced or assigned to a book, yet the bot applies it: fail closed for the whole connection
+            books.kill_epoch(epoch, 'unsequenced_book_frame', n)
+            return
+        if env['type'] == 'orderbook_snapshot':
+            books.snapshot(epoch, sid, seq, ticker, n)
+        else:
+            books.delta(epoch, sid, seq, ticker, n)
+        return
     if (sid is not None and not is_int(sid)) or (seq is not None and not is_int(seq)):
         reasons.add('frame_field_mismatch')
         return
-    msg = env.get('msg') if isinstance(env.get('msg'), dict) else {}
-    _track(epoch, sid, seq, env['type'], n, seq_of, valid, ticker_of, invalid_why, notes, msg.get('market_ticker'))
-
-
-def _track(epoch, sid, seq, typ, n, seq_of, valid, ticker_of, invalid_why, notes, ticker):
-    """Same rule as bot/kalshi/ws.ts onMessage, made stricter: a snapshot sets the baseline; any later frame on the
-    subscription must be exactly previous+1; after a gap the subscription stays invalid until the next snapshot (the bot
-    would go on applying deltas once its baseline is dropped; this verifier does not trust them)."""
-    if sid is None or seq is None:
-        return
-    key = (epoch, sid)
-    if typ == 'orderbook_snapshot':
-        seq_of[key] = seq
-        valid[key] = True
-        invalid_why.pop(key, None)
-        if isinstance(ticker, str):
-            ticker_of[key] = ticker
-        return
-    prev = seq_of.get(key)
-    if prev is not None and seq != prev + 1:
-        notes['gaps'].append({'n': n, 'epoch': epoch, 'sid': sid, 'expected': prev + 1, 'got': seq})
-        valid[key] = False
-        invalid_why[key] = 'sequence_gap'
-        notes['invalidations'].append({'n': n, 'epoch': epoch, 'sid': sid, 'why': 'sequence_gap'})
-    elif prev is None and typ == 'orderbook_delta':
-        valid[key] = False
-        invalid_why[key] = 'delta_before_snapshot'
-        notes['invalidations'].append({'n': n, 'epoch': epoch, 'sid': sid, 'why': 'delta_before_snapshot'})
-    seq_of[key] = seq
+    if sid is not None and seq is not None:
+        books.sequence(epoch, sid, seq, n)
 
 
 def main():
@@ -313,8 +421,8 @@ def main():
         with open(a.anchor, encoding='utf-8') as f:
             anchor = [x for x in f.read().split('\n') if x]
     report = verify(lines, anchor, a.max_gap_ms)
-    # Summaries only: the gap and invalidation lists can be long.
-    for k in ('gaps', 'invalidations'):
+    # Summaries only: the gap and anomaly lists can be long.
+    for k in ('gaps', 'anomalies'):
         report['notes'][k + '_count'] = len(report['notes'][k])
         report['notes'][k] = report['notes'][k][:20]
     json.dump(report, sys.stdout, indent=1, sort_keys=True)
