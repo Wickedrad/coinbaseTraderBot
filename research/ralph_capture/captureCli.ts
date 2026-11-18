@@ -34,6 +34,7 @@ async function main(): Promise<void> {
   const url = arg('ws-url') ?? process.env.KALSHI_WS_URL ?? 'wss://api.elections.kalshi.com/trade-api/ws/v2';
   const seconds = Number(arg('seconds') ?? 600);
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error('--seconds must be positive');
+  const signer = KalshiSigner.fromFile(keyId, keyPath);   // before any file exists: a bad key path leaves nothing behind
   fs.mkdirSync(out, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const file = path.join(out, `kalshi-ws-${stamp}.journal`);
@@ -44,15 +45,21 @@ async function main(): Promise<void> {
     // Frozen before the first frame: what was asked for, where, and by what tool. No credentials, no headers.
     config: { tool: 'ralph_capture/captureCli', schema: 1, ws_host: u.host, ws_path: u.pathname, tickers, seconds, mode: arg('mode') ?? 'paper', channels_requested: ['orderbook_delta', 'trade', 'market_lifecycle_v2'], private_channels_redacted: true },
   });
-  const ws = new KalshiWs(url, KalshiSigner.fromFile(keyId, keyPath), []);
+  const ws = new KalshiWs(url, signer, []);
   ws.setRawSink(tap);
   ws.setMarkets(tickers);
   ws.connect();
-  await new Promise<void>((r) => setTimeout(r, seconds * 1000));
+  // Ctrl-C or the timer ends the capture the same way: close the socket, write the footer, then exit (KalshiWs can be
+  // revived by a pending reconnect timer, so the process is ended explicitly rather than left to drain).
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, seconds * 1000);
+    for (const sig of ['SIGINT', 'SIGTERM'] as const) process.once(sig, () => { clearTimeout(timer); resolve(); });
+  });
   ws.close();
   await new Promise<void>((r) => setTimeout(r, 500));
   await tap.close();
   console.log(JSON.stringify({ file, status: tap.status(), exchange_authenticated: false }));
+  process.exit(0);
 }
 
 main().catch((e) => { console.error(String(e instanceof Error ? e.message : e)); process.exit(1); });
