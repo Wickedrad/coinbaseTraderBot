@@ -50,8 +50,23 @@ export interface WsEvents {
   disconnected: () => void;
 }
 
+/** Research-only observer of the raw socket (research/ralph_capture). It never gets headers or keys, and nothing
+ *  here reads what it does: every call is wrapped so a faulty sink can only detach itself, never change a decision.
+ *  Unset (the default and the only state the bot itself ever creates) means no behaviour differs from before. */
+export interface RawFrameSink {
+  connecting(): void;
+  opened(): void;
+  closed(code: number): void;
+  errored(message: string): void;
+  /** Text of a command this client sent (id, cmd, params). */
+  sent(text: string): void;
+  /** The frame exactly as received, before any decoding or normalization. */
+  frame(data: Buffer, isBinary: boolean): void;
+}
+
 export class KalshiWs extends EventEmitter {
   private ws: WebSocket | null = null;
+  private sink?: RawFrameSink;
   private msgId = 1;
   private readonly lastSeq = new Map<number, number>();
   private readonly sidTicker = new Map<number, string>();
@@ -80,6 +95,18 @@ export class KalshiWs extends EventEmitter {
     return super.on(event, fn);
   }
 
+  /** Attach (or with undefined, remove) a research-only raw observer. Not called anywhere in the bot. */
+  setRawSink(sink: RawFrameSink | undefined): void {
+    this.sink = sink;
+  }
+
+  /** Run one observer call; a throw detaches the observer and nothing else changes. */
+  private tap(fn: (s: RawFrameSink) => void): void {
+    const s = this.sink;
+    if (!s) return;
+    try { fn(s); } catch (e) { this.sink = undefined; log.error('raw sink failed and was detached', { error: String(e) }); }
+  }
+
   connect(): void {
     this.closed = false;
     const path = new URL(this.url).pathname;
@@ -87,10 +114,12 @@ export class KalshiWs extends EventEmitter {
     // No permessage-deflate: the ws library inflates compressed frames one at a time through the zlib
     // thread pool, and every later frame (book deltas, the index, the pong) waits for each round trip, so
     // a burst of compressed messages delayed everything behind it by up to a second on a busy box.
+    this.tap((s) => s.connecting());
     const ws = new WebSocket(this.url, { headers, perMessageDeflate: false });
     this.ws = ws;
 
     ws.on('open', () => {
+      this.tap((s) => s.opened());
       log.info('connected', { url: this.url });
       this.backoffMs = 1000;
       this.lastSeq.clear();
@@ -101,8 +130,12 @@ export class KalshiWs extends EventEmitter {
       this.everConnected = true;
     });
     ws.on('pong', () => { this.lastMessageTs = Date.now(); if (this.pingSentAt) recordLatency('kalshiWs', Date.now() - this.pingSentAt); });
-    ws.on('message', (buf) => this.onMessage(buf.toString()));
+    ws.on('message', (buf, isBinary) => {
+      this.tap((s) => s.frame(Buffer.isBuffer(buf) ? buf : Array.isArray(buf) ? Buffer.concat(buf) : Buffer.from(buf), isBinary));
+      this.onMessage(buf.toString());
+    });
     ws.on('close', (code) => {
+      this.tap((s) => s.closed(code));
       log.warn('closed', { code });
       if (this.pingTimer) clearInterval(this.pingTimer);
       this.emit('disconnected');
@@ -111,7 +144,7 @@ export class KalshiWs extends EventEmitter {
         this.backoffMs = Math.min(30_000, this.backoffMs * 2);
       }
     });
-    ws.on('error', (err) => log.error('socket error', { error: String(err) }));
+    ws.on('error', (err) => { this.tap((s) => s.errored(String(err))); log.error('socket error', { error: String(err) }); });
   }
 
   close(): void {
@@ -149,7 +182,9 @@ export class KalshiWs extends EventEmitter {
 
   private send(cmd: string, params: Record<string, unknown>): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ id: this.msgId++, cmd, params }));
+    const text = JSON.stringify({ id: this.msgId++, cmd, params });
+    this.ws.send(text);
+    this.tap((s) => s.sent(text));
   }
 
   private noteLag(ms: number, precise: boolean): void {
