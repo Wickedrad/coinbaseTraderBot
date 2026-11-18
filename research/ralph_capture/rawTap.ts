@@ -12,7 +12,10 @@
  *  Safety: it imports nothing from the engine, execution, ledger or config. It never sees headers or keys (the sink
  *  interface has none). Every public method catches its own errors and, on any failure, stops writing and says so in
  *  status(); the missing footer then fails verification. A slow disk drops frames (counted, and marked in the journal) and
- *  never blocks or throws into the receive path. Nothing starts it: bot/main.ts does not reference this module. */
+ *  never blocks or throws into the receive path. bot/main.ts reaches it only through attach.ts, loaded when RALPH_RAW_TAP=1.
+ *
+ *  Decision receipts (0049): decision() journals what HeatLane.decide gave decideHeat and what came back, in the same chain, so a
+ *  replay can feed the input back through the bot's own function. See README.md. */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import type { RawFrameSink } from '../../bot/kalshi/ws';
@@ -32,6 +35,68 @@ const PRIVATE_MSG_FIELDS = ['client_order_id', 'order_id', 'subaccount', 'subacc
 const PRIVATE_NAME_RE = /"(client_order_id|order_id|subaccount|subaccount_number|user_id)"\s*:/;
 const SECRET_KEY = /key|secret|token|signature|password|passphrase|authorization|credential|pem/i;
 const SECRET_VALUE = /-----BEGIN [A-Z ]*PRIVATE KEY-----|KALSHI-ACCESS|:\/\/[^/\s:@]+:[^/\s@]+@/i;
+/** A decision receipt larger than this many bytes is kept as hashes only (the journal says so; the verifier counts it as unrecorded). */
+export const MAX_DECISION_BYTES = 8 * 1024 * 1024;
+const DEFAULT_DECISION_BUDGET = 64 * 1024 * 1024;
+
+const WRAPPERS = new Set(['$map', '$set', '$num']);
+
+/** The text a decision's input or result is journaled as: plain JSON, except that a Map is written {"$map":[[k,v],...]}, a Set
+ *  {"$set":[...]} (the heat snapshot is a Map, which JSON.stringify would silently turn into {}), and NaN, +-Infinity and -0
+ *  {"$num":"NaN"|"Infinity"|"-Infinity"|"-0"} (JSON would write null or 0, so a decision made on a corrupt number would read as
+ *  one made on missing data). A plain object whose only key is one of those wrappers would decode as something it is not:
+ *  it throws, and the receipt is kept as hashes only. */
+export function encodeDecisionJson(v: unknown): string {
+  return JSON.stringify(v, (_k, x: unknown) => {
+    if (x instanceof Map) return { $map: [...x.entries()] };
+    if (x instanceof Set) return { $set: [...x.values()] };
+    if (typeof x === 'number' && (!Number.isFinite(x) || Object.is(x, -0))) return { $num: Object.is(x, -0) ? '-0' : String(x) };
+    if (x && typeof x === 'object' && !Array.isArray(x)) {
+      const keys = Object.keys(x);
+      if (keys.length === 1 && WRAPPERS.has(keys[0])) throw new Error('data object collides with a receipt wrapper key');
+    }
+    return x;
+  }) ?? 'null';
+}
+
+/** The inverse of encodeDecisionJson: parses the text and turns every wrapper back into the Map, Set or number it stood for. */
+export function decodeDecisionJson(text: string): unknown {
+  return JSON.parse(text, (_k, x: unknown) => {
+    if (x && typeof x === 'object' && !Array.isArray(x)) {
+      const keys = Object.keys(x);
+      if (keys.length === 1 && keys[0] === '$map' && Array.isArray((x as { $map: unknown }).$map)) return new Map((x as { $map: Array<[unknown, unknown]> }).$map);
+      if (keys.length === 1 && keys[0] === '$set' && Array.isArray((x as { $set: unknown }).$set)) return new Set((x as { $set: unknown[] }).$set);
+      if (keys.length === 1 && keys[0] === '$num') {
+        const t = (x as { $num: unknown }).$num;
+        if (t === 'NaN') return NaN;
+        if (t === 'Infinity') return Infinity;
+        if (t === '-Infinity') return -Infinity;
+        if (t === '-0') return -0;
+      }
+    }
+    return x;
+  });
+}
+
+const WINDOW_KEYS = ['entryWindowUpdown', 'entryWindowHourly', 'hourlyMidBand'];
+
+/** What of a heat decision's input goes into the file: everything decideHeat can read, and not the rest. The engine passes its whole
+ *  strategy settings as `windows` (114 keys, server paths, pacer budget) where decideHeat reads three; the reader's file path is
+ *  never read; a market's working-order count and an entry's starting cash and fees are read by the book, not by the decision. What
+ *  stays (position per market, the lane's own book: open entries, trips, P&L) is account state: the file is private and the
+ *  receipts are only wired in paper mode. A field dropped here that decideHeat later starts to read shows up as a replay mismatch. */
+export function heatReceiptInput(i: unknown): unknown {
+  if (!i || typeof i !== 'object' || Array.isArray(i)) return i;
+  const o = i as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+  const out: Record<string, unknown> = { ...o };
+  if (o.windows && typeof o.windows === 'object') out.windows = Object.fromEntries(WINDOW_KEYS.filter((k) => k in o.windows).map((k) => [k, o.windows[k]]));
+  if (o.cfg && typeof o.cfg === 'object') { const { callsFile: _drop, ...cfg } = o.cfg; out.cfg = cfg; }
+  if (Array.isArray(o.markets)) out.markets = o.markets.map((m: any) => { if (!m || typeof m !== 'object') return m; const { working: _w, ...rest } = m; return rest; }); // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (o.state && typeof o.state === 'object' && Array.isArray(o.state.open)) {
+    out.state = { ...o.state, open: o.state.open.map((e: any) => { if (!e || typeof e !== 'object') return e; const { cash0: _c, fees0: _f, ...rest } = e; return rest; }) }; // eslint-disable-line @typescript-eslint/no-explicit-any
+  }
+  return out;
+}
 
 export interface TapClock { wallMs(): number; monoNs(): bigint }
 export const REAL_CLOCK: TapClock = { wallMs: () => Date.now(), monoNs: () => process.hrtime.bigint() };
@@ -50,11 +115,14 @@ export interface TapOptions {
   anchorEvery?: number;
   /** Frames are dropped (and a marker written) while more than this many bytes wait in the write buffer. */
   maxPendingBytes?: number;
+  /** Receipts stop being stored in full (written as a reason, with hashes) once this many bytes of them are in the journal, so a long
+   *  capture cannot spend the size cap on receipts and end the frames. Default 64 MB. */
+  maxDecisionBytes?: number;
 }
 
 export interface TapStatus {
   records: number; frames: number; redacted: number; dropped: number; bytes: number; head: string;
-  failed: string | null; closed: boolean; epoch: number;
+  failed: string | null; closed: boolean; epoch: number; decisions: number;
 }
 
 export function sha256(data: string | Buffer): string { return createHash('sha256').update(data).digest('hex'); }
@@ -85,6 +153,9 @@ export class RawFrameTap implements RawFrameSink {
   private redacted = 0;
   private droppedTotal = 0;
   private droppedPending = 0;
+  private decisions = 0;
+  private decisionsUnrecorded = 0;
+  private decisionBytes = 0;
   private failed: string | null = null;
   private ended = false;
   private finished: Promise<void> | undefined;
@@ -102,14 +173,14 @@ export class RawFrameTap implements RawFrameSink {
       this.anchorOut.on('error', (e) => { this.failed = `anchor: ${String(e).slice(0, 160)}`; });
     }
     this.append({
-      kind: 'header', schema: TAP_SCHEMA, tool: 'ralph-raw-tap@0047', source: 'kalshi-ws-unattested',
+      kind: 'header', schema: TAP_SCHEMA, tool: 'ralph-raw-tap@0049', source: 'kalshi-ws-unattested',
       exchange_authenticated: false, started_wall_ms: this.clock.wallMs(), started_mono_ns: this.clock.monoNs().toString(),
       config_json: configJson, config_sha256: sha256(configJson),
     });
   }
 
   status(): TapStatus {
-    return { records: this.n, frames: this.frames, redacted: this.redacted, dropped: this.droppedTotal, bytes: this.bytes, head: this.head, failed: this.failed, closed: this.ended, epoch: this.epoch };
+    return { records: this.n, frames: this.frames, redacted: this.redacted, dropped: this.droppedTotal, bytes: this.bytes, head: this.head, failed: this.failed, closed: this.ended, epoch: this.epoch, decisions: this.decisions };
   }
 
   // ---- RawFrameSink ----
@@ -175,7 +246,7 @@ export class RawFrameTap implements RawFrameSink {
       try {
         if (!this.ended && !this.failed) {
           this.flushDropMarker(true);
-          this.append({ kind: 'end', records: this.n, frames: this.frames, dropped_total: this.droppedTotal, failed: this.failed, reason });
+          this.append({ kind: 'end', records: this.n, frames: this.frames, dropped_total: this.droppedTotal, failed: this.failed, reason, decisions: this.decisions, decisions_unrecorded: this.decisionsUnrecorded });
           this.checkpoint();
         }
       } catch (e) { this.failed = `close: ${String(e).slice(0, 160)}`; }
@@ -186,6 +257,35 @@ export class RawFrameTap implements RawFrameSink {
       this.anchorOut?.end(done);
     });
     return this.finished;
+  }
+
+  /** A heat decision's input (projected by heatReceiptInput) and result, journaled in the same chain as the frames: its position in
+   *  the chain says which frames came before it. Read-only (the arguments are serialized here, before the caller changes anything)
+   *  and never throws. A receipt that cannot be kept in full (disk behind, too large, not serializable, naming an own order) is
+   *  written as a reason, with hashes where it was serialized, so the verifier counts it as unrecorded instead of the gap going
+   *  unseen. */
+  decision(input: unknown, result: unknown): void {
+    this.guard(() => {
+      if (this.ended || this.failed) return;
+      const stamp = this.stamp();
+      const seq = this.decisions++;
+      const base = { kind: 'decision', epoch: this.epoch, ...stamp, seq };
+      if (this.out.writableLength > this.maxPending) { this.decisionsUnrecorded++; this.append({ ...base, withheld: 'backpressure' }); return; }
+      let inText: string, outText: string;
+      try { inText = encodeDecisionJson(heatReceiptInput(input)); outText = encodeDecisionJson(result); } catch (e) {
+        this.decisionsUnrecorded++;
+        this.append({ ...base, withheld: 'serialize_error', detail: String(e).slice(0, 120) });
+        return;
+      }
+      const inBytes = Buffer.byteLength(inText), outBytes = Buffer.byteLength(outText);
+      const hashes = { input_sha256: sha256(inText), result_sha256: sha256(outText), input_bytes: inBytes, result_bytes: outBytes };
+      const why = inBytes + outBytes > MAX_DECISION_BYTES ? 'oversized'
+        : PRIVATE_NAME_RE.test(inText) || PRIVATE_NAME_RE.test(outText) || SECRET_VALUE.test(inText) || SECRET_VALUE.test(outText) ? 'private_field'
+        : this.decisionBytes + inBytes + outBytes > (this.opts.maxDecisionBytes ?? DEFAULT_DECISION_BUDGET) ? 'budget' : undefined;
+      if (why) { this.decisionsUnrecorded++; this.append({ ...base, ...hashes, withheld: why }); return; }
+      this.decisionBytes += inBytes + outBytes;
+      this.append({ ...base, ...hashes, input_json: inText, result_json: outText });
+    });
   }
 
   // ---- internals ----
