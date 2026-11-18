@@ -206,16 +206,21 @@ test('a configuration carrying a credential is refused before anything is writte
   assert.doesNotThrow(() => assertNoSecrets({ ws_host: 'api.elections.kalshi.com', tickers: ['A'], mode: 'paper' }));
 });
 
-test('the tap is not wired into the bot and imports nothing that can trade', () => {
+test('the tap is reachable from the bot only through one env-guarded dynamic import and imports nothing that can trade', () => {
   const read = (f: string) => fs.readFileSync(f, 'utf8');
   const imports = (src: string) => [...src.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1]);
   assert.deepEqual(imports(read('research/ralph_capture/rawTap.ts')).sort(), ['../../bot/kalshi/ws', 'node:crypto', 'node:fs']);
+  assert.deepEqual(imports(read('research/ralph_capture/attach.ts')).sort(), ['../../bot/kalshi/ws', '../../bot/util/log', './rawTap', 'node:fs', 'node:path']);
   assert.deepEqual(imports(read('research/ralph_capture/captureCli.ts')).sort(), ['../../bot/kalshi/auth', '../../bot/kalshi/ws', './rawTap', 'node:fs', 'node:path']);
-  assert.ok(!/placeChecked|createOrder|\/orders|fetch\(/.test(read('research/ralph_capture/captureCli.ts')), 'no REST or order call in the capture CLI');
+  for (const f of ['captureCli.ts', 'attach.ts', 'rawTap.ts']) assert.ok(!/placeChecked|createOrder|\/orders|fetch\(/.test(read(`research/ralph_capture/${f}`)), `${f}: no REST or order call`);
   const offenders: string[] = [];
-  const walk = (d: string) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/\.(ts|tsx|js)$/.test(e.name) && /ralph_capture|setRawSink/.test(read(p)) && p !== path.join('bot', 'kalshi', 'ws.ts')) offenders.push(p); } };
+  const walk = (d: string) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/\.(ts|tsx|js)$/.test(e.name) && /ralph_capture|setRawSink/.test(read(p))) offenders.push(p); } };
   walk('bot');
-  assert.deepEqual(offenders, [], 'nothing under bot/ other than ws.ts mentions the tap');
+  assert.deepEqual(offenders.sort(), [path.join('bot', 'kalshi', 'ws.ts'), path.join('bot', 'main.ts')], 'only the seam and its single call site mention the tap');
+  const main = read('bot/main.ts');
+  assert.ok(!/^\s*import[^\n]*ralph_capture/m.test(main), 'no static import of the tap in main.ts');
+  const at = main.indexOf("await import('../research/ralph_capture/attach')");
+  assert.ok(at > 0 && main.lastIndexOf("process.env.RALPH_RAW_TAP === '1'", at) > main.lastIndexOf('const ws =', at), 'the import sits behind the RALPH_RAW_TAP=1 check');
 });
 
 // ---- critic round 1 additions ----

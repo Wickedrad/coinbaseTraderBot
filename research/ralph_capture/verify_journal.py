@@ -212,7 +212,7 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                 if rec.get('records') != n or rec.get('frames') != notes['frames']:
                     reasons.add('bad_footer')
                 ended = True
-                footer = {'dropped_total': rec.get('dropped_total'), 'failed': rec.get('failed')}
+                footer = {'dropped_total': rec.get('dropped_total'), 'failed': rec.get('failed'), 'reason': rec.get('reason')}
                 if rec.get('failed'):
                     reasons.add('capture_reported_failure')
                 continue
@@ -327,6 +327,7 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
         if anchor_status != 'matched':
             reasons.add('anchor_' + anchor_status)
     consistent = not (reasons & STRUCTURAL)
+    notes['footer'] = footer
     notes['gaps'] = books.gaps
     notes['anomalies'] = books.anomalies
     notes['windows_ended_by_disconnect'] = books.ended_by_disconnect

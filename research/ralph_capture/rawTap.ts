@@ -53,7 +53,7 @@ export interface TapOptions {
 }
 
 export interface TapStatus {
-  records: number; frames: number; redacted: number; dropped: number; head: string;
+  records: number; frames: number; redacted: number; dropped: number; bytes: number; head: string;
   failed: string | null; closed: boolean; epoch: number;
 }
 
@@ -79,6 +79,7 @@ export class RawFrameTap implements RawFrameSink {
   private readonly maxPending: number;
   private head = GENESIS;
   private n = 0;
+  private bytes = 0;
   private epoch = -1;
   private frames = 0;
   private redacted = 0;
@@ -108,7 +109,7 @@ export class RawFrameTap implements RawFrameSink {
   }
 
   status(): TapStatus {
-    return { records: this.n, frames: this.frames, redacted: this.redacted, dropped: this.droppedTotal, head: this.head, failed: this.failed, closed: this.ended, epoch: this.epoch };
+    return { records: this.n, frames: this.frames, redacted: this.redacted, dropped: this.droppedTotal, bytes: this.bytes, head: this.head, failed: this.failed, closed: this.ended, epoch: this.epoch };
   }
 
   // ---- RawFrameSink ----
@@ -167,14 +168,14 @@ export class RawFrameTap implements RawFrameSink {
     });
   }
 
-  /** Write the footer and a final checkpoint, flush, and resolve. Safe to call twice. */
-  close(): Promise<void> {
+  /** Write the footer (with the reason the capture ended) and a final checkpoint, flush, and resolve. Safe to call twice. */
+  close(reason = 'closed'): Promise<void> {
     if (this.finished) return this.finished;
     this.finished = new Promise<void>((resolve) => {
       try {
         if (!this.ended && !this.failed) {
           this.flushDropMarker(true);
-          this.append({ kind: 'end', records: this.n, frames: this.frames, dropped_total: this.droppedTotal, failed: this.failed });
+          this.append({ kind: 'end', records: this.n, frames: this.frames, dropped_total: this.droppedTotal, failed: this.failed, reason });
           this.checkpoint();
         }
       } catch (e) { this.failed = `close: ${String(e).slice(0, 160)}`; }
@@ -215,7 +216,9 @@ export class RawFrameTap implements RawFrameSink {
     if (this.failed || (this.ended && rec.kind !== 'end')) return;
     const body = JSON.stringify({ n: this.n, ...rec });
     const hash = sha256(this.head + '\n' + body);
-    this.out.write(`${hash}\t${body}\n`);
+    const line = `${hash}\t${body}\n`;
+    this.out.write(line);
+    this.bytes += Buffer.byteLength(line);
     this.head = hash;
     this.n++;
     if (this.n % this.anchorEvery === 0) this.checkpoint();
