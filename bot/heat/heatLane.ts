@@ -555,6 +555,10 @@ export class HeatLane implements HeatDirection {
   private notes: string[] = [];
   private live = false;
   private pilotAlerted = false;
+  /** Read-only observer for the research journal: given each decide() pass's input and result, after decideHeat has answered
+   *  and before the lane changes its own book. It must finish with what it keeps (the book changes right after), and it can
+   *  never alter a decision: a throw is swallowed. Unset unless the research tap is switched on at start. */
+  receiptSink?: (input: HeatDecideInput, result: HeatDecideResult) => void;
 
   /** The perps side's view of the lane. Never throws: a failure reads as "no direction". */
   readonly direction: HeatDirection = {
@@ -581,7 +585,9 @@ export class HeatLane implements HeatDirection {
    *  the hour contexts are stored whether anything trades or not. */
   decide(now: number, snapshot: HeatSnapshot | undefined, markets: HeatMarketView[], o: HeatDecideOpts): HeatLaneDecision {
     this.live = o.live;
-    const res = decideHeat({ ...o, now, cfg: this.cfg, snapshot, markets, state: this.st });
+    const input: HeatDecideInput = { ...o, now, cfg: this.cfg, snapshot, markets, state: this.st };
+    const res = decideHeat(input);
+    if (this.receiptSink) { try { const p: unknown = this.receiptSink(input, res); if (p instanceof Promise) p.catch(() => {}); } catch { /* an observer: never changes a decision */ } }
     this.notes = res.notes;
     let changed = this.remember(res.calls);
     for (const [key, barClose] of Object.entries(res.acted)) { this.st.acted[key] = barClose; changed = true; }

@@ -236,7 +236,7 @@ async function main(): Promise<void> {
   const ws = signer ? new KalshiWs(cfg.wsUrl, signer, indexIds) : undefined;
   // Research-only raw frame journal (research/ralph_capture). Off unless RALPH_RAW_TAP=1; the module is not even loaded
   // otherwise. It only observes the socket (read-only, no orders), refuses live mode, and any failure just leaves it off.
-  let rawTap: { stop(): Promise<void> } | undefined;
+  let rawTap: { stop(): Promise<void>; tap?: { decision(input: unknown, result: unknown): void } } | undefined;
   if (!ws && process.env.RALPH_RAW_TAP === '1') log.warn('raw frame journal not started: no Kalshi socket (no API key)');
   if (ws && process.env.RALPH_RAW_TAP === '1') {
     try { rawTap = (await import('../research/ralph_capture/attach')).attachRawTapFromEnv(ws, process.env, { mode: cfg.mode, wsUrl: cfg.wsUrl }); }
@@ -405,6 +405,8 @@ async function main(): Promise<void> {
   // folder so paper and live each keep theirs. Built only with HEAT_LANE on (the start check above refuses it without exits).
   const heatLane = cfg.heat.enabled ? new HeatLane(cfg.heat, path.join(cfg.bookDir, 'heat_lane_state.json')) : undefined;
   const heatSource = heatLane ? new FileHeatSource(cfg.heat.callsFile) : undefined;
+  // Research tap only: when the journal is on (never in live) it also receives each heat decision's input and result (read-only; see the heat lane).
+  if (heatLane && rawTap?.tap && cfg.mode !== 'live') { const t = rawTap.tap; heatLane.receiptSink = (i, r) => t.decision(i, r); }
   if (heatLane) log.info('heat lane on', { callsFile: cfg.heat.callsFile, assets: cfg.heat.assets, horizons: cfg.heat.horizons, perps: cfg.heat.perps, perpHorizons: cfg.heat.perpHorizons, perpsDaily: cfg.heat.perpsDaily });
   let engineRef: Engine | undefined;
   let hedger: PerpHedger | undefined;

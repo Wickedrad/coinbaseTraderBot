@@ -18,6 +18,7 @@ Usage: verify_journal.py JOURNAL [--anchor ANCHOR_FILE] [--max-gap-ms N]   (exit
 import argparse
 import hashlib
 import json
+import re
 import sys
 
 GENESIS = '0' * 64
@@ -28,6 +29,10 @@ PUBLIC_TYPES = {
 }
 BOOK_TYPES = {'orderbook_snapshot', 'orderbook_delta'}
 PRIVATE_MSG_FIELDS = {'client_order_id', 'order_id', 'subaccount', 'subaccount_number', 'user_id'}
+PRIVATE_NAME_RE = re.compile(r'"(client_order_id|order_id|subaccount|subaccount_number|user_id)"\s*:')
+WITHHELD_WHY = {'oversized', 'private_field', 'serialize_error', 'backpressure', 'budget'}
+# kept without hashes: nothing was serialized (disk behind, or the value could not be)
+NO_HASH_WHY = {'serialize_error', 'backpressure'}
 
 # Reasons that make the journal itself untrustworthy. Everything else describes the market data inside it.
 STRUCTURAL = {
@@ -39,6 +44,7 @@ STRUCTURAL = {
     'wall_clock_went_backwards', 'wall_clock_stepped', 'frame_sha256_mismatch', 'declared_type_mismatch',
     'capture_reported_failure', 'frame_text_missing', 'frame_field_mismatch', 'unparsable_public_frame',
     'redacted_public_frame', 'dropped_total_mismatch', 'private_field_in_stored_frame',
+    'decision_sha256_mismatch', 'private_field_in_decision', 'decision_size_mismatch',
 }
 
 
@@ -154,14 +160,16 @@ class Books:
 def verify(lines, anchor_lines=None, max_gap_ms=60_000):
     reasons = set()
     notes = {'frames': 0, 'redacted': 0, 'scrubbed': 0, 'outbound': 0, 'transport': 0, 'dropped_frames': 0, 'epochs': 0,
-             'unparsable_public_frames': 0, 'clock_regressions': 0, 'long_silences': 0}
+             'unparsable_public_frames': 0, 'clock_regressions': 0, 'long_silences': 0,
+             'decisions': 0, 'decisions_unrecorded': 0, 'decisions_on_non_finite_number': 0}
     books = Books()
     prev = GENESIS
     hashes = []
     ended = False
     header = None
     n_expected = 0
-    last_wall = last_mono = None
+    last_wall = last_mono = last_feed_wall = None
+    silence_counted = False
     epoch = -1
     state = 'idle'            # idle | connecting | open | closed
     epoch_frames, epoch_outbound = {}, {}
@@ -204,12 +212,17 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                     reasons.add('config_not_json')
                 header = rec
                 last_wall, last_mono = rec.get('started_wall_ms'), int(rec.get('started_mono_ns', '0'))
+                last_feed_wall = last_wall
                 continue
             if kind == 'header':
                 reasons.add('second_header')
                 break
             if kind == 'end':
                 if rec.get('records') != n or rec.get('frames') != notes['frames']:
+                    reasons.add('bad_footer')
+                # decisions are optional in a journal written before receipts existed: then the footer has no count and none may appear
+                fd, fu = rec.get('decisions', 0), rec.get('decisions_unrecorded', 0)
+                if not is_int(fd) or not is_int(fu) or fd != notes['decisions'] or fu != notes['decisions_unrecorded']:
                     reasons.add('bad_footer')
                 ended = True
                 footer = {'dropped_total': rec.get('dropped_total'), 'failed': rec.get('failed'), 'reason': rec.get('reason')}
@@ -230,9 +243,17 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                 # wall time and the monotonic clock must advance together; a jump means the system clock was stepped
                 if abs((wall - last_wall) - (mono - last_mono) / 1e6) > 2000:
                     reasons.add('wall_clock_stepped')
-                if state == 'open' and wall - last_wall > max_gap_ms:
-                    notes['long_silences'] += 1
+            # Silence is measured from the last record the socket produced: a decision receipt is written by the lane, not the feed, so
+            # it must not hide a stretch with no frames (a decision made on a dead book is the case worth seeing).
+            gap = last_feed_wall is not None and state == 'open' and wall - last_feed_wall > max_gap_ms
+            if gap and (kind != 'decision' or not silence_counted):
+                notes['long_silences'] += 1
             last_wall, last_mono = wall, mono
+            if kind == 'decision':
+                silence_counted = silence_counted or gap     # one silence is counted once, however many receipts fall inside it
+            else:
+                last_feed_wall = wall
+                silence_counted = False
             if kind == 'transport':
                 notes['transport'] += 1
                 ev = rec.get('event')
@@ -276,6 +297,8 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                 marker_total += cnt
                 reasons.add('frames_dropped')
                 books.kill_epoch(epoch, 'frames_dropped', n)
+            elif kind == 'decision':
+                _decision(rec, notes, reasons)
             elif kind == 'frame':
                 notes['frames'] += 1
                 epoch_frames[epoch] = epoch_frames.get(epoch, 0) + 1
@@ -345,10 +368,50 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
         'anchored_records': anchored,
         'notes': notes,
         'unchecked': 'loss or duplication of frames without a seq (trade, lifecycle, index) cannot be detected',
+        # Receipts are checked here only for chain, hashes and shape; whether decideHeat gives the stored result on the stored
+        # input is checked by replayDecisions.ts, which this script does not run.
+        'decision_replay_checked_here': False,
         # Constants. Nothing in this file assigns anything else to these two.
         'exchange_authenticated': False,
         'phase_b_eligible': False,
     }
+
+
+def _decision(rec, notes, reasons):
+    """A heat decision receipt (kind 'decision'): the input and the result of one HeatLane.decide pass, as JSON text, with their
+    hashes. Checked here: numbering, hashes, strict JSON, no own-order identifiers. NOT checked here: that decideHeat returns
+    the stored result for the stored input (replayDecisions.ts) or that the stored markets match the frames before it."""
+    if not is_int(rec.get('seq')) or rec['seq'] != notes['decisions']:
+        raise ValueError('decision numbering')
+    notes['decisions'] += 1
+    why = rec.get('withheld')
+    if why is not None:
+        # kept as a reason only (and hashes, except when it could not be serialized at all): it cannot be replayed
+        if why not in WITHHELD_WHY or 'input_json' in rec or 'result_json' in rec:
+            raise ValueError('decision withheld')
+        if why not in NO_HASH_WHY:
+            for k in ('input_sha256', 'result_sha256'):
+                if not isinstance(rec.get(k), str) or len(rec[k]) != 64:
+                    raise ValueError('decision hash field')
+        notes['decisions_unrecorded'] += 1
+        reasons.add('decision_not_recorded')
+        return
+    for k, h in (('input_json', 'input_sha256'), ('result_json', 'result_sha256')):
+        text, digest = rec.get(k), rec.get(h)
+        if not isinstance(text, str) or not isinstance(digest, str):
+            raise ValueError('decision text')
+        if sha(text) != digest:
+            reasons.add('decision_sha256_mismatch')
+        declared = rec.get(k.replace('_json', '_bytes'))
+        if declared is not None and (not is_int(declared) or declared != len(text.encode('utf-8'))):
+            reasons.add('decision_size_mismatch')
+        if '"$num"' in text and k == 'input_json':
+            notes['decisions_on_non_finite_number'] += 1
+            reasons.add('decision_on_non_finite_number')
+        if PRIVATE_NAME_RE.search(text):
+            reasons.add('private_field_in_decision')
+        if type(strict_json(text)) is not dict:
+            raise ValueError('decision is not an object')
 
 
 def _frame(rec, n, epoch, books, notes, reasons):

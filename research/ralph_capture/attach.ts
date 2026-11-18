@@ -28,6 +28,12 @@ const num = (v: string | undefined, dflt: number, lo: number, hi: number): numbe
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;
 };
 
+/** The folder the process runs from (the deploy's release folder behind the `current` link): the only code identity a receipt replay
+ *  can compare with the commit it replays under. Not secret; 'unknown' when it cannot be read. */
+function releaseName(): string {
+  try { return path.basename(fs.realpathSync(process.cwd())); } catch { return 'unknown'; }
+}
+
 export function attachRawTapFromEnv(ws: KalshiWs, env: NodeJS.ProcessEnv, ctx: AttachContext, tuning: AttachTuning = {}): AttachedTap | undefined {
   if (env.RALPH_RAW_TAP !== '1') return undefined;
   if (ctx.mode === 'live' && env.RALPH_RAW_TAP_ALLOW_LIVE !== '1') { log.warn('raw frame journal not started: live mode'); return undefined; }
@@ -48,7 +54,7 @@ export function attachRawTapFromEnv(ws: KalshiWs, env: NodeJS.ProcessEnv, ctx: A
     tap = new RawFrameTap({
       file, anchorFile: path.join(dir, `kalshi-ws-${stamp}.anchor`), anchorEvery: 500, maxPendingBytes: 8 * 1024 * 1024,
       onAnchor: (a) => log.info('journal checkpoint', a),
-      config: { tool: 'ralph_capture/attach', schema: 1, ws_host: u.host, ws_path: u.pathname, mode: ctx.mode, max_bytes: maxBytes, max_ms: maxMs, private_channels_redacted: true },
+      config: { tool: 'ralph_capture/attach', schema: 1, ws_host: u.host, ws_path: u.pathname, mode: ctx.mode, max_bytes: maxBytes, max_ms: maxMs, private_channels_redacted: true, release: releaseName() },
     });
   } catch (e) { log.warn(`raw frame journal not started: ${String(e)}`); return undefined; }
   const started = Date.now();

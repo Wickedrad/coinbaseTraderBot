@@ -23,7 +23,7 @@ def sha(s):
 class J:
     """Builds a journal the way the writer does: line = sha256(prev + LF + body) TAB body."""
     def __init__(self, config=None):
-        self.prev, self.n, self.lines, self.t, self.epoch, self.frames = GEN, 0, [], 1_000_000, -1, 0
+        self.prev, self.n, self.lines, self.t, self.epoch, self.frames, self.decisions, self.unrecorded = GEN, 0, [], 1_000_000, -1, 0, 0, 0
         cj = json.dumps(config or {'url_host': 'x', 'mode': 'paper'})
         self.put({'kind': 'header', 'schema': 1, 'tool': 't', 'source': 'kalshi-ws-unattested', 'exchange_authenticated': False,
                   'started_wall_ms': self.t, 'started_mono_ns': str(self.t * 1_000_000), 'config_json': cj, 'config_sha256': sha(cj)})
@@ -64,8 +64,20 @@ class J:
     def delta(self, sid=1, seq=2, ticker='T1'):
         self.fr(json.dumps({'type': 'orderbook_delta', 'sid': sid, 'seq': seq, 'msg': {'market_ticker': ticker}}))
 
+    def dec(self, inp=None, res=None, dt=10, **over):
+        """A heat decision receipt as the tap writes it (text plus the SHA-256 of that text)."""
+        it = json.dumps(inp if inp is not None else {'now': 1, 'markets': []})
+        rt = json.dumps(res if res is not None else {'decided': [], 'plans': []})
+        rec = {'kind': 'decision', 'epoch': self.epoch, **self.stamp(dt), 'seq': self.decisions,
+               'input_sha256': sha(it), 'result_sha256': sha(rt), 'input_json': it, 'result_json': rt}
+        rec.update(over)
+        self.decisions += 1
+        self.put(rec)
+
     def end(self, **kw):
         rec = {'kind': 'end', 'records': self.n, 'frames': self.frames, 'dropped_total': 0, 'failed': None}
+        if self.decisions:
+            rec.update({'decisions': self.decisions, 'decisions_unrecorded': self.unrecorded})
         rec.update(kw)
         self.put(rec)
 
@@ -149,7 +161,7 @@ class Verify(unittest.TestCase):
 
     def test_config_hash_mismatch(self):
         j2 = J.__new__(J)
-        j2.prev, j2.n, j2.lines, j2.t, j2.epoch, j2.frames = GEN, 0, [], 1_000_000, -1, 0
+        j2.prev, j2.n, j2.lines, j2.t, j2.epoch, j2.frames, j2.decisions, j2.unrecorded = GEN, 0, [], 1_000_000, -1, 0, 0, 0
         j2.put({'kind': 'header', 'schema': 1, 'exchange_authenticated': False, 'started_wall_ms': 1, 'started_mono_ns': '1',
                 'config_json': '{"a":1}', 'config_sha256': sha('{"a":2}')})
         j2.tr('connecting'); j2.tr('open'); j2.snap(); j2.tr('close'); j2.end()
@@ -157,7 +169,7 @@ class Verify(unittest.TestCase):
 
     def test_header_claiming_authentication(self):
         j = J.__new__(J)
-        j.prev, j.n, j.lines, j.t, j.epoch, j.frames = GEN, 0, [], 1_000_000, -1, 0
+        j.prev, j.n, j.lines, j.t, j.epoch, j.frames, j.decisions, j.unrecorded = GEN, 0, [], 1_000_000, -1, 0, 0, 0
         j.put({'kind': 'header', 'schema': 1, 'exchange_authenticated': True, 'started_wall_ms': 1, 'started_mono_ns': '1',
                'config_json': '{}', 'config_sha256': sha('{}')})
         j.tr('connecting'); j.tr('open'); j.snap(); j.tr('close'); j.end()
@@ -449,6 +461,130 @@ class Verify(unittest.TestCase):
         r = run(j)
         self.assertTrue(r['continuity_intact'])
         self.assertIn('cannot be detected', r['unchecked'])
+
+
+class Decisions(unittest.TestCase):
+    """Heat decision receipts (kind 'decision') sit in the same chain as the frames."""
+    def journal(self, make):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()
+        make(j)
+        j.tr('close'); j.end()
+        return j
+
+    def test_receipts_are_counted_and_the_journal_stays_consistent(self):
+        r = run(self.journal(lambda j: (j.dec(), j.dec())))
+        self.assertTrue(r['locally_consistent'], r['reasons'])
+        self.assertEqual(r['notes']['decisions'], 2)
+        self.assertEqual(r['notes']['decisions_unrecorded'], 0)
+        self.assertFalse(r['decision_replay_checked_here'])
+
+    def test_an_edited_receipt_breaks_the_chain(self):
+        j = self.journal(lambda j: j.dec())
+        i = next(k for k, l in enumerate(j.lines) if '"decision"' in l)
+        j.lines[i] = j.lines[i].replace('markets', 'marketz')
+        self.assertIn('hash_chain_invalid', run(j)['reasons'])
+
+    def test_a_rechained_receipt_whose_text_does_not_match_its_hash_is_flagged(self):
+        r = run(self.journal(lambda j: j.dec(input_sha256='0' * 64)))
+        self.assertIn('decision_sha256_mismatch', r['reasons'])
+        self.assertFalse(r['locally_consistent'])
+
+    def test_receipt_numbering_must_run_from_zero_without_gaps(self):
+        r = run(self.journal(lambda j: (j.dec(), j.dec(seq=5))))
+        self.assertIn('malformed_record', r['reasons'])
+
+    def test_footer_must_count_the_receipts(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap(); j.dec(); j.tr('close'); j.end(decisions=0)
+        self.assertIn('bad_footer', run(j)['reasons'])
+        k = J(); k.tr('connecting'); k.tr('open'); k.out(); k.snap(); k.dec(); k.tr('close')
+        k.put({'kind': 'end', 'records': k.n, 'frames': k.frames, 'dropped_total': 0, 'failed': None})   # an old-style footer with receipts present
+        self.assertIn('bad_footer', run(k)['reasons'])
+
+    def test_an_own_order_identifier_in_a_receipt_is_rejected(self):
+        r = run(self.journal(lambda j: j.dec(inp={'now': 1, 'msg': {'client_order_id': 'abc'}})))
+        self.assertIn('private_field_in_decision', r['reasons'])
+        self.assertFalse(r['locally_consistent'])
+
+    def test_a_receipt_kept_as_hashes_only_is_a_coverage_gap_not_a_broken_journal(self):
+        def make(j):
+            j.dec()
+            j.put({'kind': 'decision', 'epoch': j.epoch, **j.stamp(), 'seq': j.decisions, 'input_sha256': '1' * 64, 'result_sha256': '2' * 64, 'withheld': 'oversized'})
+            j.decisions += 1; j.unrecorded += 1
+        j = self.journal(make)
+        r = run(j)
+        self.assertIn('decision_not_recorded', r['reasons'])
+        self.assertTrue(r['locally_consistent'], r['reasons'])
+        self.assertEqual(r['notes']['decisions_unrecorded'], 1)
+
+    def test_a_receipt_that_could_not_be_serialized_carries_no_hashes(self):
+        def make(j):
+            j.put({'kind': 'decision', 'epoch': j.epoch, **j.stamp(), 'seq': j.decisions, 'withheld': 'serialize_error', 'detail': 'x'}); j.decisions += 1; j.unrecorded += 1
+        r = run(self.journal(make))
+        self.assertIn('decision_not_recorded', r['reasons'])
+        self.assertTrue(r['locally_consistent'], r['reasons'])
+
+    def test_a_receipt_with_text_and_a_withheld_reason_is_malformed(self):
+        r = run(self.journal(lambda j: j.dec(withheld='oversized')))
+        self.assertIn('malformed_record', r['reasons'])
+
+    def test_a_receipt_that_is_not_a_json_object_is_malformed(self):
+        r = run(self.journal(lambda j: j.dec(input_json='[1]', input_sha256=sha('[1]'))))
+        self.assertIn('malformed_record', r['reasons'])
+
+    def test_duplicate_keys_in_a_receipt_are_rejected(self):
+        t = '{"now":1,"now":2}'
+        r = run(self.journal(lambda j: j.dec(input_json=t, input_sha256=sha(t))))
+        self.assertIn('malformed_record', r['reasons'])
+
+    def test_receipts_do_not_hide_a_silent_socket(self):
+        # ten minutes with no frame at all, a receipt every 30 s: the silence is measured from the feed, not from the last receipt
+        def make(j):
+            for _ in range(20):
+                j.dec(dt=30_000)
+        r = run(self.journal(make))
+        self.assertGreaterEqual(r['notes']['long_silences'], 1)
+
+    def test_footer_counts_must_be_integers(self):
+        for bad in (True, 1.0, '1'):
+            j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap(); j.dec(); j.tr('close'); j.end(decisions=bad)
+            self.assertIn('bad_footer', run(j)['reasons'], repr(bad))
+
+    def test_a_receipt_dropped_for_backpressure_carries_no_hashes_and_is_a_coverage_gap(self):
+        def make(j):
+            j.put({'kind': 'decision', 'epoch': j.epoch, **j.stamp(), 'seq': j.decisions, 'withheld': 'backpressure'}); j.decisions += 1; j.unrecorded += 1
+        r = run(self.journal(make))
+        self.assertIn('decision_not_recorded', r['reasons'])
+        self.assertTrue(r['locally_consistent'], r['reasons'])
+
+    def test_an_unknown_withheld_reason_is_malformed(self):
+        r = run(self.journal(lambda j: j.put({'kind': 'decision', 'epoch': j.epoch, **j.stamp(), 'seq': j.decisions, 'withheld': 'because'})))
+        self.assertIn('malformed_record', r['reasons'])
+
+    def test_one_silence_is_counted_once_however_many_receipts_fall_inside_it(self):
+        def make(j):
+            for _ in range(20):
+                j.dec(dt=30_000)
+        r = run(self.journal(make))
+        self.assertLessEqual(r['notes']['long_silences'], 2)   # the receipts' stretch once, and the close that ends it
+
+    def test_the_declared_size_of_a_receipt_must_be_its_real_size(self):
+        r = run(self.journal(lambda j: j.dec(input_bytes=3)))
+        self.assertIn('decision_size_mismatch', r['reasons'])
+        self.assertFalse(r['locally_consistent'])
+
+    def test_a_decision_on_a_non_finite_number_is_flagged_but_does_not_break_the_journal(self):
+        r = run(self.journal(lambda j: j.dec(inp={'now': 1, 'markets': [{'position': {'$num': 'NaN'}}]})))
+        self.assertIn('decision_on_non_finite_number', r['reasons'])
+        self.assertEqual(r['notes']['decisions_on_non_finite_number'], 1)
+        self.assertTrue(r['locally_consistent'], r['reasons'])
+
+    def test_a_receipt_over_its_budget_is_a_coverage_gap_with_hashes(self):
+        def make(j):
+            j.put({'kind': 'decision', 'epoch': j.epoch, **j.stamp(), 'seq': j.decisions, 'input_sha256': '1' * 64, 'result_sha256': '2' * 64, 'withheld': 'budget'})
+            j.decisions += 1; j.unrecorded += 1
+        r = run(self.journal(make))
+        self.assertIn('decision_not_recorded', r['reasons'])
+        self.assertTrue(r['locally_consistent'], r['reasons'])
 
 
 class FileStreaming(unittest.TestCase):
