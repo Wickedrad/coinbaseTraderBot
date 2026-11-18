@@ -234,6 +234,14 @@ async function main(): Promise<void> {
   const rest = new KalshiRest({ baseUrl: cfg.restBaseUrl, signer, subaccount: cfg.kalshiSubaccount, onServerDate: (d, s, r) => clock.observe(d, s, r) });
   const indexIds = Object.keys(cfg.indexIdMap);
   const ws = signer ? new KalshiWs(cfg.wsUrl, signer, indexIds) : undefined;
+  // Research-only raw frame journal (research/ralph_capture). Off unless RALPH_RAW_TAP=1; the module is not even loaded
+  // otherwise. It only observes the socket (read-only, no orders), refuses live mode, and any failure just leaves it off.
+  let rawTap: { stop(): Promise<void> } | undefined;
+  if (!ws && process.env.RALPH_RAW_TAP === '1') log.warn('raw frame journal not started: no Kalshi socket (no API key)');
+  if (ws && process.env.RALPH_RAW_TAP === '1') {
+    try { rawTap = (await import('../research/ralph_capture/attach')).attachRawTapFromEnv(ws, process.env, { mode: cfg.mode, wsUrl: cfg.wsUrl }); }
+    catch (e) { log.warn(`raw frame journal not started: ${String(e)}`); }
+  }
   if (!signer) log.warn('no Kalshi API key (KALSHI_KEY_ID + KALSHI_PRIVATE_KEY_PATH): order books are polled over anonymous REST, which Kalshi rate limits hard; add the key even for paper trading');
   const md = new MarketData(cfg, rest, ws, new Recorder(path.join(cfg.dataDir, 'recordings'), { gzip: cfg.autoTrain.recordingsGzipLive }));
   // The settlement index's volatility estimate from the last run (E06, bot/marketdata/volState.ts): saved every 30 s and on
@@ -720,6 +728,8 @@ async function main(): Promise<void> {
     audit.write('shutdown', { sig });
     saveVol();
     md.stop();
+    // bounded: a stalled journal disk must never hold up the exit (the 5 s timer below is armed after this)
+    try { await Promise.race([rawTap?.stop(), new Promise<void>((r) => setTimeout(r, 1500).unref())]); } catch (e) { log.warn(`raw frame journal close failed: ${String(e)}`); }
     server.close(() => process.exit(code));
     setTimeout(() => process.exit(code), 5000).unref();
   };
