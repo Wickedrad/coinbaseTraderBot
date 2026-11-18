@@ -213,7 +213,7 @@ class Verify(unittest.TestCase):
 
     def test_snapshot_after_gap_restores(self):
         j = J(); j.tr('connecting'); j.tr('open')
-        j.snap(seq=1); j.delta(seq=3); j.snap(seq=7); j.delta(seq=8)
+        j.snap(seq=1); j.delta(seq=3); j.snap(seq=4); j.delta(seq=5)
         j.tr('close'); j.end()
         r = run(j)
         self.assertEqual(len(r['notes']['gaps']), 1)  # the second delta is continuous after the new snapshot
@@ -394,13 +394,44 @@ class Verify(unittest.TestCase):
 
     def test_scrubbed_frame_is_accepted_but_reported(self):
         j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()
-        j.fr(json.dumps({'type': 'orderbook_delta', 'sid': 1, 'seq': 2, 'msg': {'market_ticker': 'T1'}}), scrubbed=['client_order_id'], sha256='0' * 64, bytes=77)
+        raw = json.dumps({'type': 'orderbook_delta', 'sid': 1, 'seq': 2, 'msg': {'market_ticker': 'T1'}})
+        j.fr(raw, scrubbed=['client_order_id'], stored_sha256=sha(raw), sha256='0' * 64, bytes=77)
         j.tr('close'); j.end()
         r = run(j)
         self.assertTrue(r['locally_consistent'], r['reasons'])
         self.assertEqual(r['notes']['scrubbed'], 1)
         self.assertIn('frames_scrubbed', r['reasons'])
         self.assertTrue(r['continuity_intact'])
+
+    def _scrubbed(self, **over):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()
+        raw = json.dumps({'type': 'orderbook_delta', 'sid': 1, 'seq': 2, 'msg': {'market_ticker': 'T1'}})
+        rec = {'scrubbed': ['client_order_id'], 'stored_sha256': sha(raw), 'sha256': '0' * 64, 'bytes': 77}
+        rec.update(over)
+        j.fr(raw, **rec)
+        j.tr('close'); j.end()
+        return run(j)
+
+    def test_scrubbed_marker_needs_a_valid_list_and_stored_hash(self):
+        self.assertTrue(self._scrubbed()['locally_consistent'])
+        self.assertFalse(self._scrubbed(scrubbed=[])['locally_consistent'])                 # empty marker would skip every check
+        self.assertFalse(self._scrubbed(scrubbed=['market_ticker'])['locally_consistent'])  # not an own-order field
+        self.assertFalse(self._scrubbed(stored_sha256='0' * 64)['locally_consistent'])      # altered stored text
+        self.assertFalse(self._scrubbed(scrubbed='client_order_id')['locally_consistent'])  # wrong type
+
+    def test_snapshot_after_skipped_seqs_invalidates_the_other_books_on_the_sid(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out()
+        j.snap(sid=1, seq=1, ticker='T1'); j.delta(sid=1, seq=2, ticker='T1')
+        j.snap(sid=1, seq=9, ticker='T2')                      # seq 3-8 never seen: T1 may have lost deltas
+        j.tr('close'); j.end()
+        r = run(j)
+        self.assertEqual(r['notes']['gaps'][0]['on'], 'snapshot')
+        self.assertFalse(r['continuity_intact'])
+        self.assertEqual(r['notes']['books']['0:T1']['last_invalid_why'], 'sequence_gap')
+
+    def test_only_a_subscribe_command_counts_for_the_epoch(self):
+        j = J(); j.tr('connecting'); j.tr('open'); j.out('{"id":2,"cmd":"ping"}'); j.snap(); j.tr('close'); j.end()
+        self.assertIn('epoch_without_subscribe_command', run(j)['reasons'])
 
     def test_private_field_left_in_a_stored_frame_is_rejected(self):
         j = J(); j.tr('connecting'); j.tr('open'); j.out(); j.snap()

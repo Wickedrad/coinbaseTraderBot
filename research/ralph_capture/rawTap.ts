@@ -28,6 +28,8 @@ export const PUBLIC_TYPES: ReadonlySet<string> = new Set([
 ]);
 /** Fields that name the account's own orders; removed from the stored text of otherwise public frames. */
 const PRIVATE_MSG_FIELDS = ['client_order_id', 'order_id', 'subaccount', 'subaccount_number', 'user_id'];
+/** After scrubbing, a stored text that still names one of these (nested deeper, in an array, anywhere) is withheld instead. */
+const PRIVATE_NAME_RE = /"(client_order_id|order_id|subaccount|subaccount_number|user_id)"\s*:/;
 const SECRET_KEY = /key|secret|token|signature|password|passphrase|authorization|credential|pem/i;
 const SECRET_VALUE = /-----BEGIN [A-Z ]*PRIVATE KEY-----|KALSHI-ACCESS|:\/\/[^/\s:@]+:[^/\s@]+@/i;
 
@@ -143,15 +145,19 @@ export class RawFrameTap implements RawFrameSink {
       this.frames++;
       if (isPublic && lossless && env) {
         // Own-order identifiers can ride on a public book delta; they are dropped from the stored text (sha256 and bytes still
-        // describe the original), so the delta stays replayable but names no order.
+        // describe the original, stored_sha256 the stored text), so the delta stays replayable but names no order.
         const msg = env.msg;
         const found = msg && typeof msg === 'object' && !Array.isArray(msg) ? PRIVATE_MSG_FIELDS.filter((k) => k in (msg as object)) : [];
-        if (found.length) {
-          const kept = Object.fromEntries(Object.entries(msg as Record<string, unknown>).filter(([k]) => !found.includes(k)));
-          this.append({ ...base, raw: JSON.stringify({ ...env, msg: kept }), scrubbed: found });
-        } else {
-          this.append({ ...base, raw: asText });
+        const stored = found.length
+          ? JSON.stringify({ ...env, msg: Object.fromEntries(Object.entries(msg as Record<string, unknown>).filter(([k]) => !found.includes(k))) })
+          : asText;
+        if (!PRIVATE_NAME_RE.test(stored)) {
+          this.append(found.length ? { ...base, raw: stored, stored_sha256: sha256(stored), scrubbed: found } : { ...base, raw: stored });
+          return;
         }
+        // an identifier still present somewhere the scrub does not reach: withhold the whole frame
+        this.redacted++;
+        this.append({ ...base, redacted: true, redacted_reason: 'private_field_nested', sid, seq });
         return;
       }
       // Withheld content keeps its sid and seq so the continuity of that subscription stays checkable without its payload.

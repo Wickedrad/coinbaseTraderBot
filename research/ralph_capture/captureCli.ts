@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   await new Promise<void>((r) => setTimeout(r, 500));
   await tap.close();
   console.log(JSON.stringify({ file, status: tap.status(), exchange_authenticated: false }));
-  process.exit(0);
+  process.exit(tap.status().failed ? 2 : 0);
 }
 
 main().catch((e) => { console.error(String(e instanceof Error ? e.message : e)); process.exit(1); });

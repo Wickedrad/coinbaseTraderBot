@@ -264,6 +264,7 @@ test('own-order identifiers on a public book delta are removed from the stored t
   assert.ok(!/client_order_id|subaccount|"order_id"/.test(rec.raw), 'the stored text names no own-order field');
   assert.equal(rec.sha256, sha256(own), 'hash and byte count describe the original frame');
   assert.equal(rec.bytes, Buffer.byteLength(own));
+  assert.equal(rec.stored_sha256, sha256(rec.raw), 'the stored text has its own hash');
   const { report } = verify(file);
   assert.equal(report.locally_consistent, true, JSON.stringify(report.reasons));
   assert.equal(report.notes.scrubbed, 1);
@@ -307,4 +308,19 @@ test('after pressure lifts the drop marker comes before any later frame, and a l
   assert.equal(kinds[kinds.length - 1].kind, 'end');
   assert.equal(verify(file).report.notes.dropped_frames, 2);
   assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'journal is private to the owner');
+});
+
+test('an own-order identifier the scrub cannot reach (nested, or inside an array) withholds the whole frame', async () => {
+  const file = path.join(tmp(), 'j.journal');
+  const tap = new RawFrameTap({ file, clock: stepClock(), config: { mode: 'paper' } });
+  tap.connecting(); tap.opened(); tap.sent('{"id":1,"cmd":"subscribe","params":{}}');
+  tap.frame(Buffer.from('{"type":"orderbook_delta","sid":1,"seq":1,"msg":{"market_ticker":"T","extra":{"client_order_id":"SENTINEL-NESTED-1"}}}'), false);
+  tap.frame(Buffer.from('{"type":"orderbook_delta","sid":1,"seq":2,"msg":[{"order_id":"SENTINEL-NESTED-2"}]}'), false);
+  tap.closed(1000);
+  await tap.close();
+  const text = fs.readFileSync(file, 'utf8');
+  assert.ok(!text.includes('SENTINEL-NESTED-1') && !text.includes('SENTINEL-NESTED-2'));
+  const { report } = verify(file);
+  assert.equal(report.notes.redacted, 2);
+  assert.ok(report.reasons.includes('redacted_public_frame'), 'the verifier refuses a journal whose book frames were withheld');
 });

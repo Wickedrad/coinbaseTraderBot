@@ -116,7 +116,13 @@ class Books:
         return True
 
     def snapshot(self, epoch, sid, seq, ticker, n):
+        prev = self.seq_of.get((epoch, sid))
         self.seq_of[(epoch, sid)] = seq
+        if prev is not None and seq != prev + 1:
+            # frames were skipped on this subscription before this snapshot: every book it serves is suspect except the
+            # one this snapshot rebuilds (seq is per subscription, as ws.ts assumes by keying lastSeq on sid alone)
+            self.gaps.append({'n': n, 'epoch': epoch, 'sid': sid, 'expected': prev + 1, 'got': seq, 'on': 'snapshot'})
+            self.kill_sid(epoch, sid, 'sequence_gap', n)
         key = (epoch, ticker)
         st = self.tickers.setdefault(key, {'valid': False, 'sid': sid, 'windows': 0, 'why': None})
         if not st['valid']:
@@ -256,7 +262,8 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
                 reasons.add('epoch_mismatch')
             if kind == 'outbound':
                 notes['outbound'] += 1
-                epoch_outbound[epoch] = epoch_outbound.get(epoch, 0) + 1
+                if '"cmd":"subscribe"' in rec.get('text', ''):
+                    epoch_outbound[epoch] = epoch_outbound.get(epoch, 0) + 1
                 if state != 'open':
                     reasons.add('outbound_outside_open_epoch')
                 if not isinstance(rec.get('text'), str):
@@ -325,6 +332,7 @@ def verify(lines, anchor_lines=None, max_gap_ms=60_000):
     notes['windows_ended_by_disconnect'] = books.ended_by_disconnect
     notes['snapshots_restoring_a_ticker'] = books.restored
     notes['books'] = books.summary()
+    notes['books_not_listed'] = max(0, len(books.tickers) - len(notes['books']))
     return {
         'locally_consistent': consistent,
         # No gap, drop, unsequenced or unreadable book frame, and nothing withheld that the bot would have applied.
@@ -366,9 +374,10 @@ def _frame(rec, n, epoch, books, notes, reasons):
         return
     scrubbed = rec.get('scrubbed')
     if scrubbed is not None:
-        notes['scrubbed'] += 1   # stored text had own-order identifiers removed; sha256/bytes describe the original
-        if not isinstance(scrubbed, list):
-            reasons.add('frame_field_mismatch')
+        notes['scrubbed'] += 1   # stored text had own-order identifiers removed; sha256/bytes describe the original frame
+        if (not isinstance(scrubbed, list) or not scrubbed or not set(scrubbed) <= PRIVATE_MSG_FIELDS
+                or sha(raw.encode('utf-8')) != rec.get('stored_sha256')):
+            reasons.add('frame_sha256_mismatch' if isinstance(scrubbed, list) and scrubbed else 'frame_field_mismatch')
     else:
         data = raw.encode('utf-8')
         if sha(data) != sha_declared or len(data) != bytes_len:
