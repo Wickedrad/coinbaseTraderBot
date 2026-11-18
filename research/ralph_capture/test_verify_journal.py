@@ -2,9 +2,12 @@
 so a bug in one is not hidden by the other. Run: python3 -I -m unittest research.ralph_capture.test_verify_journal -q
 (or from this directory: python3 -I -m unittest test_verify_journal -q)."""
 import hashlib
+import inspect
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -446,6 +449,53 @@ class Verify(unittest.TestCase):
         r = run(j)
         self.assertTrue(r['continuity_intact'])
         self.assertIn('cannot be detected', r['unchecked'])
+
+
+class FileStreaming(unittest.TestCase):
+    """The CLI reads the journal line by line (a capture can reach hundreds of MB; the old code held it all in RAM)."""
+    def write(self, text):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, 'f%d' % len(os.listdir(tmp.name)))
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
+        return path
+
+    def cli(self, path, *extra):
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'verify_journal.py')
+        p = subprocess.run([sys.executable, '-I', script, path, *extra], capture_output=True, text=True)
+        return p.returncode, json.loads(p.stdout)
+
+    def test_reader_is_lazy(self):
+        self.assertTrue(inspect.isgenerator(vj.iter_journal_lines(self.write('a\nb\n'))))
+
+    def test_same_lines_as_a_whole_file_split(self):
+        for text in ('a\nb\n', 'a\nb', 'a\n\n', '', '\n', 'a\r\nb\rc\n'):
+            whole = text.split('\n')
+            if whole and whole[-1] == '':
+                whole.pop()
+            got = [x.rstrip('\n') for x in vj.iter_journal_lines(self.write(text))]
+            self.assertEqual(got, whole, repr(text))
+
+    def test_cli_report_matches_in_memory_report_with_and_without_final_lf(self):
+        j = good()
+        want = vj.verify(j.lines, j.anchor())
+        for tail in ('\n', ''):
+            path = self.write('\n'.join(j.lines) + tail)
+            apath = self.write('\n'.join(j.anchor()) + '\n')
+            code, rep = self.cli(path, '--anchor', apath)
+            self.assertEqual(code, 0, rep['reasons'])
+            self.assertEqual(rep['locally_consistent'], want['locally_consistent'])
+            self.assertEqual(rep['notes']['frames'], want['notes']['frames'])
+            self.assertEqual(rep['reasons'], want['reasons'])
+
+    def test_cli_exit_code_is_nonzero_for_a_tampered_file(self):
+        j = good()
+        lines = list(j.lines)
+        lines[3] = lines[3] + 'x'
+        code, rep = self.cli(self.write('\n'.join(lines) + '\n'))
+        self.assertEqual(code, 1)
+        self.assertIn('hash_chain_invalid', rep['reasons'])
 
 
 if __name__ == '__main__':

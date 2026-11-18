@@ -13,7 +13,7 @@ pin or ledger change, and nothing in `bot/` starts this code.
 | `verify_journal.py` | Offline checker (stdlib, no network). Re-derives type, sid and seq from the stored text and checks the chain, footer, config hash, epoch and clock rules, and order-book continuity **per ticker**. |
 | `attach.ts` | Starts the tap inside the bot from environment variables (see below). |
 | `captureCli.ts` | Read-only capture runner for the owner to use with a key. Refuses to start without `--authorized-by-owner`. Not run by the bot or CI. |
-| `test_verify_journal.py`, `tests/ralphRawTap.test.ts`, `tests/ralphAttach.test.ts` | 52 + 18 + 4 tests. The Python tests build journals independently of the TS writer. |
+| `test_verify_journal.py`, `tests/ralphRawTap.test.ts`, `tests/ralphAttach.test.ts` | 56 + 18 + 4 tests. The Python tests build journals independently of the TS writer. |
 
 ## What a passing journal does and does not show
 
@@ -53,12 +53,14 @@ Each bot start writes a new file; a capped or failed capture ends with a footer 
 Rollout, all outside this PR and each needing the owner: (1) merge the PR (a bot-code merge, so the Deploy workflow restarts the
 paper bot with the flag still off); (2) set the variables in the server's bot env file and restart; (3) after the capture ends,
 copy the journal and the anchor file somewhere off the server (private Drive, never the public repo) and run
-`verify_journal.py JOURNAL --anchor ANCHOR`. Check free disk first: a capture can reach the size cap.
+`verify_journal.py JOURNAL --anchor ANCHOR`. Check free disk first: a capture can reach the size cap. The verifier reads the
+journal line by line (peak memory about 45 MB on a 204 MB test journal, against about 417 MB when it read the whole file), so it is
+safe to run on the small paper server, preferably under `nice`.
 
 ## Not done yet (honest list)
 
-1. **A real capture.** The wiring exists but nothing has run: it needs the owner's merge, deploy and server settings (above), or
-   a Kalshi key for `captureCli.ts` on a machine he controls.
+1. **A verified real capture.** The tap is merged and was switched on in the paper bot on 2026-11-18 (05:02 UTC); the first
+   journal has not been verified yet, and frames stay unauthenticated either way.
 2. Off-box anchor retention: the operator has to copy the anchor file somewhere this machine cannot edit.
 3. `decideHeat` receipts. `decideHeat` is pure (inputs: now, cfg, snapshot, markets, state), so what is missing is a record of
    those inputs and outputs at each `HeatLane.decide` call, tied to the journal by time and head hash. That is a second

@@ -416,21 +416,26 @@ def _frame(rec, n, epoch, books, notes, reasons):
         books.sequence(epoch, sid, seq, n)
 
 
+def iter_journal_lines(path):
+    """Yield the journal one line at a time, so memory stays flat for a journal of hundreds of MB.
+    Lines end only at LF (newline='\\n', no translation), exactly as the old whole-file split did, and a
+    final line without LF is still yielded; verify() strips the LF."""
+    with open(path, encoding='utf-8', newline='\n') as f:
+        for raw_line in f:
+            yield raw_line
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('journal')
     ap.add_argument('--anchor')
     ap.add_argument('--max-gap-ms', type=int, default=60_000)
     a = ap.parse_args()
-    with open(a.journal, encoding='utf-8', newline='') as f:
-        lines = f.read().split('\n')
-    if lines and lines[-1] == '':
-        lines.pop()
     anchor = None
     if a.anchor:
         with open(a.anchor, encoding='utf-8') as f:
             anchor = [x for x in f.read().split('\n') if x]
-    report = verify(lines, anchor, a.max_gap_ms)
+    report = verify(iter_journal_lines(a.journal), anchor, a.max_gap_ms)
     # Summaries only: the gap and anomaly lists can be long.
     for k in ('gaps', 'anomalies'):
         report['notes'][k + '_count'] = len(report['notes'][k])
