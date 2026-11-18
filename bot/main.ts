@@ -237,6 +237,7 @@ async function main(): Promise<void> {
   // Research-only raw frame journal (research/ralph_capture). Off unless RALPH_RAW_TAP=1; the module is not even loaded
   // otherwise. It only observes the socket (read-only, no orders), refuses live mode, and any failure just leaves it off.
   let rawTap: { stop(): Promise<void> } | undefined;
+  if (!ws && process.env.RALPH_RAW_TAP === '1') log.warn('raw frame journal not started: no Kalshi socket (no API key)');
   if (ws && process.env.RALPH_RAW_TAP === '1') {
     try { rawTap = (await import('../research/ralph_capture/attach')).attachRawTapFromEnv(ws, process.env, { mode: cfg.mode, wsUrl: cfg.wsUrl }); }
     catch (e) { log.warn(`raw frame journal not started: ${String(e)}`); }
@@ -727,7 +728,8 @@ async function main(): Promise<void> {
     audit.write('shutdown', { sig });
     saveVol();
     md.stop();
-    try { await rawTap?.stop(); } catch (e) { log.warn(`raw frame journal close failed: ${String(e)}`); }
+    // bounded: a stalled journal disk must never hold up the exit (the 5 s timer below is armed after this)
+    try { await Promise.race([rawTap?.stop(), new Promise<void>((r) => setTimeout(r, 1500).unref())]); } catch (e) { log.warn(`raw frame journal close failed: ${String(e)}`); }
     server.close(() => process.exit(code));
     setTimeout(() => process.exit(code), 5000).unref();
   };

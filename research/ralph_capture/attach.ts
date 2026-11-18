@@ -71,7 +71,7 @@ export function attachRawTapFromEnv(ws: KalshiWs, env: NodeJS.ProcessEnv, ctx: A
     if (st.failed) void stop('failed');
     else if (st.bytes >= maxBytes) void stop('size_cap');
     else if (Date.now() - started >= maxMs) void stop('time_cap');
-  }, tuning.pollMs ?? 15_000);
+  }, tuning.pollMs ?? 1000);
   timer.unref();
   log.info('raw frame journal started', { file, maxMb, hours, mode: ctx.mode });
   return { tap, file, stop: () => stop('stopped') };

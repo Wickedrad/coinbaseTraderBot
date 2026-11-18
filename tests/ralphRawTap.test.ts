@@ -220,7 +220,8 @@ test('the tap is reachable from the bot only through one env-guarded dynamic imp
   const main = read('bot/main.ts');
   assert.ok(!/^\s*import[^\n]*ralph_capture/m.test(main), 'no static import of the tap in main.ts');
   const at = main.indexOf("await import('../research/ralph_capture/attach')");
-  assert.ok(at > 0 && main.lastIndexOf("process.env.RALPH_RAW_TAP === '1'", at) > main.lastIndexOf('const ws =', at), 'the import sits behind the RALPH_RAW_TAP=1 check');
+  assert.ok(at > 0 && main.lastIndexOf("if (ws && process.env.RALPH_RAW_TAP === '1')", at) > main.lastIndexOf('const ws =', at), 'the import sits behind the RALPH_RAW_TAP=1 check');
+  assert.ok(main.indexOf('rawTap?.stop()') < main.indexOf('setTimeout(() => process.exit(code), 5000)') && /Promise\.race\(\[rawTap\?\.stop\(\)/.test(main), 'the journal close is time-bounded inside shutdown');
 });
 
 // ---- critic round 1 additions ----
