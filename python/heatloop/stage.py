@@ -225,6 +225,14 @@ def cmd_timing(a):
         sub = ((e[ok] - es.lo_row) % 15) == 0
         base[coin] = dict(minutes=int(len(e)), decided=int(dec.sum()), fade15=round(float(hit[dec].mean()), 4),
                           decided_every15=int((dec & sub).sum()), fade15_every15=round(float(hit[dec & sub].mean()), 4))
+        # the same rule month by month, warm-up months (2025-06 to 2025-12, never scored by the loop) and DEV months alike
+        e0 = np.arange(60, es.n - 17, dtype=np.int64)
+        q = np.sign(np.round((es.o[e0] - es.o[e0 - 15]) / step)).astype(int)
+        m0 = (es.o[e0 + 15] - es.o[e0]) / step
+        okq = q != 0
+        dq, hq = rubric.right(-q[okq], m0[okq])
+        mon = (es.t0 + e0[okq] * 60_000).astype('datetime64[ms]').astype('datetime64[M]').astype(str)
+        base[coin]['by_month'] = {k: [int((dq & (mon == k)).sum()), round(float(hq[dq & (mon == k)].mean()), 4)] for k in sorted(set(mon))}
     emit('timing_all_minutes', base)
     for r in rounds:
         if r['round'] not in (1, 2, 4, 5, 6):

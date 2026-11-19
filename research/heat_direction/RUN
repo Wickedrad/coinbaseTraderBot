@@ -1,2 +1,2 @@
 stage=timing
-# DEV only: fade of the last 15 minutes at every minute vs at heat events, and who wins where the heat side and the fade side differ
+# timing v2: the fade of the last 15 minutes month by month, warm-up (2025-06..12) and DEV months; DEV and warm-up only, no VAL
