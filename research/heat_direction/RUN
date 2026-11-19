@@ -1,2 +1,2 @@
-stage=vevents,cut
-# vevents: unseen-day event files (the build step sets the VAL flag; counts and a hash prefix only). cut v4: raw (entry row, side) of every call compared up to the last row of the file, plus cuts placed on the entry minute of real fade calls.
+stage=looks
+# H2 looks (PREREG-2.md section 3 item 3): rounds 1 and 2 qualify on DEV; at most 3 looks, round order, stop at the first look where either bit is 1. Each look reads one candidate on the unseen days; per-check table goes to a private Drive file and is read once when the looks stop.
