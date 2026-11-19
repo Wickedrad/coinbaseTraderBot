@@ -1,0 +1,80 @@
+name: Heat direction loop
+# Research only (research/heat_direction/PREREG.md): the evaluator and optimizer for the heat map direction loop, phase 1.
+# Binance spot 1-minute bars from Drive (raw/perp-ta-history/<coin>/binance-1m); public prices, no Kalshi data, no server,
+# no order, no bot change. Output is aggregates only, one `HEATLOOP <stage> <json>` log line per job.
+#
+# Started by a push that changes research/heat_direction/RUN (a new workflow cannot be dispatched until it is on main).
+# RUN holds one line:  stage=<name>   (coverage = first and last day on file per coin, from the `ts` column only)
+on:
+  push:
+    branches: [claude/project-thread-y4m0kp]
+    paths: ['research/heat_direction/RUN']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heat-direction
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      stage: ${{ steps.req.outputs.stage }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Read the request
+        id: req
+        run: |
+          set -euo pipefail
+          stage=$(sed -nE 's/^stage=([a-z0-9_]+)[[:space:]]*$/\1/p' research/heat_direction/RUN | tail -1)
+          [ -n "$stage" ] || { echo "::error::research/heat_direction/RUN has no line stage=<name>"; exit 1; }
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+      - name: Unit tests
+        working-directory: python
+        run: |
+          set -o pipefail
+          python -W ignore -m unittest discover -s heatloop/tests -t . 2>&1 | tail -20
+
+  coverage:
+    needs: test
+    if: needs.test.outputs.stage == 'coverage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history (read only)
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+      - name: Coverage (the ts column only)
+        working-directory: python
+        run: python3 -m heatloop.coverage --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv"
