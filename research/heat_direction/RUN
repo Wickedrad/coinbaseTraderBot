@@ -1,2 +1,2 @@
-stage=dscausal,dsrun
-# DS sweep (PREREG-3.md sections 4, 5, 7): the cut test on the real BTC and ETH 1-minute files, then S1 (nested walk-forward over 40,320 rules, E1 to E6 and E8) and S2 (hindsight oracle league and pair matrix at 5, 15, 30, 60 minutes) on the real coins (twin 0) and the three no-signal twins. SEARCH days only (2020-01-01 to 2026-10-31).
+stage=dsfloor
+# AMENDMENT-3.md (frozen in f916434e): the frequency frontier. The nested walk-forward of PREREG-3.md section 4 with the eligibility floor at 3, 6, 10, 15, 20, 30, 40, 60 decided calls a day, the lockout replay of every chosen rule (E9), real coins (twin 0) and the three no-signal twins. SEARCH days only (2020-01-01 to 2026-10-31).
