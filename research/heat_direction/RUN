@@ -1,1 +1,1 @@
-stage=smoke
+stage=prepare,round0

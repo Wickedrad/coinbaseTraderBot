@@ -54,3 +54,15 @@ At the freeze the stage writes `FREEZE.json` with the sha256 of: the candidate s
 ## 8. Power table (research/heat_direction/rubric_power.py, 3,000 sims per scenario)
 
 Pass rate per look, VAL window / FINAL window: no edge 0.07% / 0.10%; real edge .53 with TA adding nothing 2.3% / 2.0%; edge .55 with TA adding nothing 5.3% / 5.8% (core 8 pass 36% / 35%); edge .55 with TA adding value 39% / 40%; edge .57 with TA adding value 85% / 81%. Round 0 measures the real call count and this table is re-run with it before any VAL look.
+
+## 9. Implementation notes, written 2026-11-19 15:10 EST / 20:10 UTC, before round 0 (they fix details; no threshold or check changes)
+
+- DEV folds for check 6 are the three pairs of calendar months (Jan-Feb, Mar-Apr, May-Jun), not equal thirds of the days. VAL blocks are the four calendar months.
+- The "non-default fields" tie-break counts the fields that differ from the round 0 spec (all four bars, top 10, hottest, no TA, lag 0).
+- A trial goes to VAL only if it is eligible and strictly better than the round's start: more checks passed, or the same number and a strictly larger check-2 lower bound.
+- Stall (PREREG section 6): two rounds in a row where the round's best has no more checks than the round's start and under 0.3 points more pooled DEV hit rate stop the DEV rounds.
+- The DEV rounds run in one process that loads DEV event files only. The VAL looks are separate runs, taken in round order, stopping at the first pass bit; the twin gate runs inside the look before the ten checks, and a gate failure uses no look. The look prints one bit and a hash prefix; the per-check table goes to a private Drive file.
+- Event files: each coin's grid is loaded from 2025-06-01 up to the scope's end (a DEV file holds no VAL minute), the readings are computed over that whole grid, and the event keys of the whole universe (aliases included) are stored with their entry rows from 120 minutes before the scope's first minute. Calls before the scope's first minute are never scored. A call whose 15-minute outcome would reach the end of the loaded grid is dropped, never clipped.
+- Twin gate: each of the six twins (ids 1, 2, 3 for each coin) is scored alone on the scope's days (one coin's calls); each must score 2/10 or less and sit within 3 day-cluster standard errors of 50%. The random-side draws reuse the candidate's own calls with a random side on every call (and on every dropped or lapsed call).
+- The TA pool is the best-ranked rows (by rank_coin) of the coin at 15 minutes across all four bar sizes, aliases included, 20 or 40 rows.
+- Zone edges and the price step come from each coin's meta.json on Drive. live_meta.json (in the repo, hash-checked above) holds a subset of the readings; the smoke stage checks that the two agree where both have a reading.
