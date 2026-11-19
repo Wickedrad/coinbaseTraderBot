@@ -517,7 +517,7 @@ export class MarketData extends EventEmitter {
             if (recordCount >= this.cfg.strategy.recordMaxMarkets) continue;
             recordCount++;
           }
-          if (!prev) this.recorder.write('market', { ticker: m.ticker, series, asset, openTime: m.openTime, closeTime: m.closeTime, strike: m.floorStrike, cap: m.capStrike, kind, event: m.eventTicker, tickSize: m.tickSize, title: m.title, startTime: m.startTime, recordOnly: recordOnly || undefined });
+          if (!prev) this.recorder.write('market', { ticker: m.ticker, series, asset, openTime: m.openTime, closeTime: m.closeTime, strike: m.floorStrike, cap: m.capStrike, kind, event: m.eventTicker, tickSize: m.tickSize, title: m.title, startTime: m.startTime, expirationTime: m.expirationTime, recordOnly: recordOnly || undefined });
           const am: ActiveMarket = { ...m, seriesTicker: series, asset, kind, cap: m.capStrike, strike: prev?.strike, strikeSource: prev?.strikeSource, recordOnly: recordOnly || undefined };
           if (m.floorStrike) { am.strike = m.floorStrike; am.strikeSource = 'exchange'; }
           this.markets.set(m.ticker, am);

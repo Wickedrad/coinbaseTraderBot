@@ -113,9 +113,20 @@ test('ensure-env: HEAT_LANE=true keeps an explicit PLAN_RULES value and warns wh
 const shipped = fs.readFileSync(path.resolve('deploy/paper-settings.env'), 'utf8');
 const shippedLines = shipped.split('\n').filter((l) => /^[A-Z][A-Z0-9_]*=/.test(l));
 
-test('ensure-env: the shipped paper settings are the tennis two paper days, and TENNIS_LIVE is not among them', () => {
-  assert.deepEqual(shippedLines, ['TENNIS_CONF_MOMENTUM_CENTS=0.02', 'TENNIS_CONF_WINDOW_SEC=120', 'TENNIS_SERIES=KXATPMATCH,KXWTAMATCH']);
+test('ensure-env: the shipped paper settings are the tennis two paper days and DOGE back in paper, and no live switch is among them', () => {
+  assert.deepEqual(shippedLines, ['TENNIS_CONF_MOMENTUM_CENTS=0.02', 'TENNIS_CONF_WINDOW_SEC=120', 'TENNIS_SERIES=KXATPMATCH,KXWTAMATCH', 'STRATEGY_EXCLUDE_SERIES=']);
   assert.ok(!/^\s*(export\s+)?(TENNIS_LIVE|TRADING_MODE|LIVE_)/m.test(shipped), 'no live switch in the paper settings');
+});
+
+test('ensure-env: the empty STRATEGY_EXCLUDE_SERIES line (DOGE back in paper) replaces the default-less bot.env line and an old DOGE pin, in paper only', () => {
+  const none = runFrom(['TRADING_MODE=paper'], false, 'STRATEGY_EXCLUDE_SERIES=\n');
+  assert.deepEqual(none.env, ['TRADING_MODE=paper', 'STRATEGY_EXCLUDE_SERIES=']);
+  assert.match(none.out, /STRATEGY_EXCLUDE_SERIES: \(not set\) -> {2}in .* \(paper settings\)/);
+  const pinned = runFrom(['TRADING_MODE=paper', 'STRATEGY_EXCLUDE_SERIES=DOGE'], false, 'STRATEGY_EXCLUDE_SERIES=\n');
+  assert.deepEqual(pinned.env, ['TRADING_MODE=paper', 'STRATEGY_EXCLUDE_SERIES=']);
+  assert.deepEqual(runFrom(pinned.env, false, 'STRATEGY_EXCLUDE_SERIES=\n').env, pinned.env, 'idempotent');
+  const live = runFrom(['TRADING_MODE=live', 'STRATEGY_EXCLUDE_SERIES=DOGE'], false, 'STRATEGY_EXCLUDE_SERIES=\n');
+  assert.deepEqual(live.env, ['TRADING_MODE=live', 'STRATEGY_EXCLUDE_SERIES=DOGE'], 'live keeps its own pattern');
 });
 
 test('ensure-env: in paper the paper settings are written into bot.env, replacing a line of the same name; idempotent', () => {

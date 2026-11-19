@@ -679,8 +679,11 @@ export class SetupTrader {
     // Paper training override: the daily loss halt is advisory (it still shows in the status), not a stop.
     const dayHalt = this.d.trainingOverride?.() ? undefined : this.dayHalt;
     const block = guards.halt ?? dayHalt ?? guards.noEntry
-      ?? (equity === undefined ? 'margin equity unknown' : equity < this.d.params.minEquityUsd ? `margin equity $${equity.toFixed(2)} below $${this.d.params.minEquityUsd}` : undefined)
-      ?? (!this.model ? this.modelError ?? 'no setup model' : undefined);
+      ?? (equity === undefined ? 'margin equity unknown' : equity < this.d.params.minEquityUsd ? `margin equity $${equity.toFixed(2)} below $${this.d.params.minEquityUsd}` : undefined);
+    // A missing setup model blocks the chart setups only: a heat setup (the oracle curves' call) is scored by the curves' heat
+    // weight and never reads the setup model, so a model file that is missing or fails to load cannot switch heat trades off
+    // (meta plan v2, D3, Steven Nov 12).
+    const noModel = !this.model ? this.modelError ?? 'no setup model' : undefined;
     if (!block && equity) {
       // Break-even scale: the risk budget of new entries shrinks with net losses (never to zero) and is
       // back to full once wins recoup them.
@@ -694,29 +697,37 @@ export class SetupTrader {
         const px = this.d.spot(cand.sig.asset, now);
         const q = this.d.hub.get(cand.sig.asset)?.latest;
         if (!(px && px > 0) || q?.bid === undefined || q.ask === undefined || q.isOpen === false) return undefined;
-        if (this.d.params.requireValidation && !gatePasses('setups', Boolean(this.model?.validated(cand.sig.lane)))) return undefined;
-        if (this.snnBlocks(cand.sig)) return undefined;
+        // The setup model's three gates (the model file, its validation, the setup SNN's lean) rule on chart setups. A heat setup
+        // skips all three: the curves are its only reason to trade, and a retrained model must not switch heat trades on or off
+        // (meta plan v2, D3). The heat re-check below, the caps, the stop and the liquidation rule still apply to it.
+        const isHeat = cand.sig.kind === 'heat';
+        if (!isHeat && noModel) return noModel;
+        if (!isHeat && this.d.params.requireValidation && !gatePasses('setups', Boolean(this.model?.validated(cand.sig.lane)))) return undefined;
+        if (!isHeat && this.snnBlocks(cand.sig)) return undefined;
         // The direction curves: the hourly gate, and for a heat setup the re-read of its horizon's direction and the day's.
         const heat = this.heatRecheck(cand.sig, now);
         if (heat.drop) { this.d.audit?.write('setup_skip', { asset: cand.sig.asset, lane: cand.sig.lane, kind: cand.sig.kind, reason: heat.drop }); return heat.drop; }
-        const cv = this.conviction(cand.sig.asset, cand.sig.dir, now);
+        // Heat trades are sized by the heat weight alone: no trained conviction multiplier, priority or playbook weight (1x).
+        const cv = isHeat ? undefined : this.conviction(cand.sig.asset, cand.sig.dir, now);
         // Strategy weight: the Compensator's ramp for this setup kind on the coin's Librarian reading
         // (bot/strategy/compensator.ts) when it is on, else the playbook's perps weight in this coin's confirmed regime
         // (bot/strategy/playbook.ts); waterfall mode (bot/macro/waterfall.ts) leans into alt longs, drops alt shorts and
         // lightens BTC. Together at most 2x; the lanes' notional caps and the liquidation cap still bind.
-        const pbW = compensator()?.weight(cand.sig.asset, `setup:${cand.sig.kind}`, now)?.w ?? playbook()?.weights(marketContext()?.regimeOf(cand.sig.asset), now).perps;
+        const pbW = isHeat ? 1 : compensator()?.weight(cand.sig.asset, `setup:${cand.sig.kind}`, now)?.w ?? playbook()?.weights(marketContext()?.regimeOf(cand.sig.asset), now).perps;
         const wf = macro()?.policy();
         const wfW = wf ? wf.perpMult(cand.sig.asset, cand.sig.dir) : 1;
         const weight = Math.min(2, (pbW ?? 1) * wfW);
         const weightWhy = wfW === 0 ? `waterfall mode: ${wf!.why}` : undefined;
         // A heat setup is scored by the heat weight of its horizon's direction now, not by the setup model (which never saw the type).
         return { px, score: heat.weight ?? this.score(cand.sig, now), mult: cv?.mult, priority: cv?.priority, why: cv?.why, weight, weightWhy };
-      }, (cand) => this.conviction(cand.sig.asset, cand.sig.dir, now)?.priority ?? 0);
+      }, (cand) => (cand.sig.kind === 'heat' ? 0 : this.conviction(cand.sig.asset, cand.sig.dir, now)?.priority ?? 0));
       for (const e of entries) {
         const t = openTrade(e.cand.sig, e.px, now, this.d.params.costs);
         if (!t) continue;
         // On probation (VALIDATION_GATES=monitor) an unvalidated lane trades at full size.
-        const pilot = !gatePasses('setups', Boolean(this.model?.validated(t.lane)));
+        // A heat trade is never pilot-capped: its size comes from the heat weight and the lane's caps, so a retrain that flips the setup
+        // model's validation verdict cannot resize it. Chart setups keep the model-dependent pilot cap.
+        const pilot = t.kind === 'heat' ? false : !gatePasses('setups', Boolean(this.model?.validated(t.lane)));
         // Liquidation beyond the stop (bot/risk/liquidation.ts): the equity left after the open trades' losses at
         // their stops and their maintenance margin must carry this one to its stop with the buffer to spare. Also at
         // most half the exchange's leverage for the market.

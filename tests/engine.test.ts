@@ -1332,7 +1332,7 @@ test('exit-only lane: no entry goes out through it; a flat market waits for its 
     maxOrderRiskUsd: 20, maxContracts: 100, minSidePrice: cfg.risk.minSidePrice, tauSec: 600, noEntryBeforeCloseSec: cfg.risk.noEntryBeforeCloseSec, fastMove: false,
     tickSize: 0.01, fees: { takerMultiplier: 1, makerMultiplier: 0 }, nowSec: 1000, closeSec: 1600, entrySidePrice: 0.4, entryFeePerContract: 0,
   };
-  const full = decide(view, cfg.strategy, {});
+  const full = decide(view, { ...cfg.strategy, quoteSides: 'both' }, {});
   assert.ok(full.place.some((p) => p.reduceOnly && p.why.startsWith('bid 0.45 - fee > q')), JSON.stringify(full.place));
   assert.ok(full.place.some((p) => !p.reduceOnly), JSON.stringify(full.place));
   assert.deepEqual(decide(view, cfg.strategy, { armedOnly: true }).place, []);

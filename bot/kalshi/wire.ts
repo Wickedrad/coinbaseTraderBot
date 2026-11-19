@@ -223,6 +223,7 @@ export function parseMarket(m: Obj): MarketInfo | undefined {
     title: m.title ?? m.yes_sub_title ?? undefined,
     // Sports: scheduled start when the exchange publishes one (field name unverified; several tried).
     startTime: ts(m.occurrence_datetime ?? m.expected_start_time ?? m.event_start_time ?? m.start_time),
+    expirationTime: ts(m.expiration_time ?? m.latest_expiration_time),
   };
 }
 

@@ -234,6 +234,14 @@ async function main(): Promise<void> {
   const rest = new KalshiRest({ baseUrl: cfg.restBaseUrl, signer, subaccount: cfg.kalshiSubaccount, onServerDate: (d, s, r) => clock.observe(d, s, r) });
   const indexIds = Object.keys(cfg.indexIdMap);
   const ws = signer ? new KalshiWs(cfg.wsUrl, signer, indexIds) : undefined;
+  // Research-only raw frame journal (research/ralph_capture). Off unless RALPH_RAW_TAP=1; the module is not even loaded
+  // otherwise. It only observes the socket (read-only, no orders), refuses live mode, and any failure just leaves it off.
+  let rawTap: { stop(): Promise<void>; tap?: { decision(input: unknown, result: unknown): void } } | undefined;
+  if (!ws && process.env.RALPH_RAW_TAP === '1') log.warn('raw frame journal not started: no Kalshi socket (no API key)');
+  if (ws && process.env.RALPH_RAW_TAP === '1') {
+    try { rawTap = (await import('../research/ralph_capture/attach')).attachRawTapFromEnv(ws, process.env, { mode: cfg.mode, wsUrl: cfg.wsUrl }); }
+    catch (e) { log.warn(`raw frame journal not started: ${String(e)}`); }
+  }
   if (!signer) log.warn('no Kalshi API key (KALSHI_KEY_ID + KALSHI_PRIVATE_KEY_PATH): order books are polled over anonymous REST, which Kalshi rate limits hard; add the key even for paper trading');
   const md = new MarketData(cfg, rest, ws, new Recorder(path.join(cfg.dataDir, 'recordings'), { gzip: cfg.autoTrain.recordingsGzipLive }));
   // The settlement index's volatility estimate from the last run (E06, bot/marketdata/volState.ts): saved every 30 s and on
@@ -397,6 +405,8 @@ async function main(): Promise<void> {
   // folder so paper and live each keep theirs. Built only with HEAT_LANE on (the start check above refuses it without exits).
   const heatLane = cfg.heat.enabled ? new HeatLane(cfg.heat, path.join(cfg.bookDir, 'heat_lane_state.json')) : undefined;
   const heatSource = heatLane ? new FileHeatSource(cfg.heat.callsFile) : undefined;
+  // Research tap only: when the journal is on (never in live) it also receives each heat decision's input and result (read-only; see the heat lane).
+  if (heatLane && rawTap?.tap && cfg.mode !== 'live') { const t = rawTap.tap; heatLane.receiptSink = (i, r) => t.decision(i, r); }
   if (heatLane) log.info('heat lane on', { callsFile: cfg.heat.callsFile, assets: cfg.heat.assets, horizons: cfg.heat.horizons, perps: cfg.heat.perps, perpHorizons: cfg.heat.perpHorizons, perpsDaily: cfg.heat.perpsDaily });
   let engineRef: Engine | undefined;
   let hedger: PerpHedger | undefined;
@@ -696,7 +706,7 @@ async function main(): Promise<void> {
   // hourly. Read-only; the walk opens at most 20,000 objects.
   const memory = new MemoryWatch(() => ({ engine, md, oms, paper, audit, alerter, kalshiCheck, recon, vault, tca, model, autoTrain, training, settlement, accuracyGate, marketCtx, snn, perpTrader, ws, rest }));
   memory.start();
-  const app = createApi({ perpFeeTier, kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, memory, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
+  const app = createApi({ perpFeeTier, kalshiCheck, cfg, audit, engine, oms, kill, recon, model, tca, md, vault, autoTrain, control, training, settlement, paperPool: paper ? () => paper.poolResult() : undefined, memory, restart: () => void shutdown('restart (dashboard)', 75), startedAt: Date.now() });
   const server = app.listen(cfg.port, cfg.host, () => log.info(`operator API on http://${cfg.host}:${cfg.port} (${cfg.dashboardPassword ? 'password required' : 'no login'})`));
 
   md.start();
@@ -720,6 +730,8 @@ async function main(): Promise<void> {
     audit.write('shutdown', { sig });
     saveVol();
     md.stop();
+    // bounded: a stalled journal disk must never hold up the exit (the 5 s timer below is armed after this)
+    try { await Promise.race([rawTap?.stop(), new Promise<void>((r) => setTimeout(r, 1500).unref())]); } catch (e) { log.warn(`raw frame journal close failed: ${String(e)}`); }
     server.close(() => process.exit(code));
     setTimeout(() => process.exit(code), 5000).unref();
   };

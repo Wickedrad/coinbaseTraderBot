@@ -284,7 +284,7 @@ export class MatchTracker {
     if (s.score) { this.score = s.score; this.scoreAt = s.scoreAt ?? s.now; this.scoreOriented = s.scoreOriented === true; }
     if (this.liveSince === undefined) {
       if (s.startTime !== undefined && s.now >= s.startTime) this.liveSince = s.startTime;
-      else if (s.startTime === undefined && p !== undefined) {
+      else if ((s.startTime === undefined || (this.cfg.liveByMove && s.startTime - s.now <= this.cfg.liveByMoveLeadMin * 60_000)) && p !== undefined) {
         const recent = this.history.filter((h) => h.ts >= s.now - 3 * 60_000);
         const moved = recent.length > 1 && Math.max(...recent.map((h) => h.p)) - Math.min(...recent.map((h) => h.p)) >= this.cfg.liveMoveCents - 1e-9;
         if (moved) { this.liveSince = s.now; this.pPre = recent[0].p; }
@@ -466,6 +466,19 @@ export interface TennisProfitRules {
   floors?: QuotaFloors;
   /** PACER_FLOOR_TICKS: the floor's cushion, price ticks a contract. */
   floorTicks?: number;
+}
+
+/** The match's real start for the tracker (Nov 12 2026). Kalshi's tennis start field (occurrence_datetime, the market's
+ *  startTime) is the expected finish, about 3 h after the first serve; the market's expiration_time is the scheduled
+ *  first serve plus 14 days. So: expiration minus 14 days when that lands within 6 h before the published time, else the
+ *  published time moved startShiftMin earlier. No published time: undefined (the tracker then reads play from the price). */
+export function tennisStartTime(published: number | undefined, expiration: number | undefined, cfg: Pick<TennisConfig, 'startFromExpiry' | 'startShiftMin'>): number | undefined {
+  if (published === undefined) return undefined;
+  if (cfg.startFromExpiry && expiration !== undefined) {
+    const fromExpiry = expiration - 14 * 86_400_000;
+    if (fromExpiry <= published && published - fromExpiry <= 6 * 3_600_000) return fromExpiry;
+  }
+  return published - cfg.startShiftMin * 60_000;
 }
 
 /**

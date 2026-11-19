@@ -1,0 +1,57 @@
+name: Loss review daily file
+
+# Builds the day's heat trip file (python/lossreview) from the audit days already on Drive, joins public candles, runs the
+# code triage and keeps the per-trade file on Drive (derived/loss-review/days). The model review (Haiku tags, Sonnet
+# hypotheses, adversary) is a separate Claude routine that reads it from Drive; this job spends no model tokens and
+# never contacts the server. Research only: nothing here reaches the bot.
+#
+# The repository is public: nothing is uploaded as an artifact and the log prints aggregates only. Needs RCLONE_CONF
+# (as drive-archive.yml). The audit of a UTC day reaches Drive when the day's archive run finishes (its cron says 07:20 UTC;
+# GitHub starts it hours later); this runs when that run completes.
+
+on:
+  # The archive's own cron is 07:20 UTC, but GitHub starts that run hours late (it began 14:10 to 17:39 UTC on Nov 3 to 12), so
+  # the day is built when the archive run finishes. The cron is the safety net for a day the trigger missed: it rebuilds
+  # yesterday (the put is idempotent) and fails loudly only when Drive still has no audit for it.
+  workflow_run:
+    workflows: ['Drive archive']
+    types: [completed]
+    branches: [main]
+  schedule:
+    # 20:30 UTC = 3:30 PM EST
+    - cron: '30 20 * * *'
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'UTC day to build, YYYY-MM-DD (empty = yesterday)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loss-review
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # an archive run that failed has nothing new on Drive to build from
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Build the day's trip file
+        env:
+          INPUT_DAY: ${{ inputs.day }}
+        run: |
+          set -euo pipefail
+          DAY="$INPUT_DAY"
+          CATCHUP=
+          if [ -z "$DAY" ]; then DAY=$(date -u -d 'yesterday' +%F); if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then CATCHUP=catchup; fi; fi
+          bash .github/scripts/loss_review_run.sh "$DAY" $CATCHUP

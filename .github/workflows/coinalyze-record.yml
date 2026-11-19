@@ -1,0 +1,71 @@
+name: Coinalyze recorder (OR-XD, research only)
+
+# Saves what Coinalyze still holds for the Binance perps of BTC, ETH, SOL, XRP (1-minute bars with taker-buy volume, open
+# interest, liquidations, funding, predicted funding; 5-minute global long/short) into Drive raw/outside/coinalyze/pulls/.
+# Coinalyze keeps 1-minute data ~1.6 days and liquidations ~10 days, so the schedule pulls the last 36 hours every 6 hours.
+# Code: python/oracle/cz_record.py. Note: /mnt/project-files/outside-data/coinalyze-check.md. NEVER DOGE.
+# The key is the repository secret COINALYZE_API_KEY (Steven's); it is never printed. The schedule only runs from the
+# default branch (main), so on this branch a push with [cz-record] in the commit message runs it once.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'          # 00:17, 06:17, 12:17, 18:17 UTC (7:17 PM, 1:17 AM, 7:17 AM, 1:17 PM EST)
+  workflow_dispatch:
+  push:
+    branches: [claude/project-thread-8dnpsq]
+    paths: ['.github/workflows/coinalyze-record.yml', 'python/oracle/cz_record.py', 'python/oracle/tests/test_cz_record.py']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coinalyze-record
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  R: gdrive:kalshi-bot-archive
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q pytest
+      - name: Unit tests (fake network)
+        working-directory: python
+        run: python -m pytest -q oracle/tests/test_cz_record.py 2>&1 | tail -5
+      - name: Decide
+        id: go
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          EV: ${{ github.event_name }}
+          HAS_KEY: ${{ secrets.COINALYZE_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          run=false
+          if [ "$EV" != push ] || grep -qF '[cz-record]' <<< "$MSG"; then run=true; fi
+          if [ "$run" = true ] && [ "$HAS_KEY" != true ]; then echo "::error::repository secret COINALYZE_API_KEY is missing"; exit 1; fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+      - name: Drive setup
+        if: steps.go.outputs.run == 'true'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Pull the last 36 hours (counts only are printed)
+        if: steps.go.outputs.run == 'true'
+        working-directory: python
+        env:
+          COINALYZE_API_KEY: ${{ secrets.COINALYZE_API_KEY }}
+        run: python -m oracle.cz_record pull --out "$RUNNER_TEMP/cz" --hours 36
+      - name: Put to Drive raw/outside/coinalyze/pulls/
+        if: steps.go.outputs.run == 'true'
+        run: bash deploy/drive_lab.sh put raw/outside/coinalyze/pulls "$RUNNER_TEMP/cz"

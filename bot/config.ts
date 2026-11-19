@@ -70,7 +70,10 @@ export interface StrategyConfig {
   /** Series that are recorded (books, trades, lifecycle, results) for research but never priced or traded (RECORD_SERIES). */
   recordSeries: string[];
   /** Series that are recorded but never priced or traded, by pattern (STRATEGY_EXCLUDE_SERIES; Steven, Nov 5: no DOGE
-   *  until the rest of the bot performs, then DOGE is trained again: STRATEGY_EXCLUDE_SERIES= trades it again). */
+   *  until the rest of the bot performs, then DOGE is trained again: STRATEGY_EXCLUDE_SERIES= trades it again). Nov 12:
+   *  the paper bot trades DOGE again (deploy/paper-settings.env empties the pattern); live keeps DOGE out whatever the
+   *  pattern says, until LIVE_ALLOW_DOGE=true (the dashboard's LIVE switch writes only the mode lines, so a paper-only
+   *  empty pattern left in bot.env would otherwise carry DOGE into live). */
   excludeSeries?: RegExp;
   /** Cap on simultaneously tracked record-only markets. */
   recordMaxMarkets: number;
@@ -183,6 +186,11 @@ export interface StrategyConfig {
   /** Smallest maker quote, in contracts, when sizing wants a smaller one (within the per-order caps and the risk room
    *  left): Kalshi rounds each order's fee up to the cent, so a small position pays more a contract to sell. 0 = off. */
   minQuoteContracts: number;
+  /** STRATEGY_QUOTE_SIDES (E16, Nov 12 2026): which sides the old model's maker block rests an entry on. 'signal' (default): flat,
+   *  only the side the model favors (q at or above 0.5 = YES, below = NO); holding, no entry quote on either side (the
+   *  opposite quote added the whole position, so a fill flipped it, and a same-side one kept adding). Resting exits are
+   *  separate and stay. 'both' = the old two-sided quoting. */
+  quoteSides: 'both' | 'signal';
   /** Paper only, with paperOrderFrac 0: each crypto entry and maker quote buys about this many dollars of contracts
    *  once sizing wants the trade, in place of the tier, break-even, optimal-f and portfolio-Kelly sizing (the owner's
    *  choice on Oct 23: profit sales of $1 to $3 instead of cents). Both 0 = paper sizes like live. Live never uses it. */
@@ -759,6 +767,17 @@ export interface TennisConfig {
   scorePollSec: number;
   /** In-play detection from price action when no start time is published: a mid move of this size within 3 minutes. */
   liveMoveCents: number;
+  /** The match clock (Nov 12 2026). Kalshi's tennis start field (occurrence_datetime) is the expected finish, about 3 h
+   *  after the first serve, and expiration_time is the scheduled first serve plus 14 days (12 of 12 live markets; both
+   *  matches played that day started on the tape at that time). startFromExpiry: take the start from expiration_time minus
+   *  14 days when it lands within 6 h before the published time; otherwise (or when off) the published time moved
+   *  startShiftMin earlier (0 = the published time as is). */
+  startFromExpiry: boolean;
+  startShiftMin: number;
+  /** Also mark the match in play from that price move in the liveByMoveLeadMin minutes before the start (a match that
+   *  starts before its slot); with no start time the move is always used. */
+  liveByMove: boolean;
+  liveByMoveLeadMin: number;
   /** Order-book ratcheting trailing stop from the target price (both legs) instead of a fixed take-profit. */
   trail: boolean;
   /** Favorite leg: the trail arms at min(favTrailCap, entry + favTrailCents). */
@@ -1197,6 +1216,13 @@ function heatConfig(env: Env, dataDir: string): HeatConfig {
     // No 'entry': the daily curves are not above chance on their own (no daily row above the no-signal twin's best).
     perpsDaily: oneOf(env, 'HEAT_PERPS_DAILY', 'context', ['context', 'off'] as const),
     pairConflict: oneOf(env, 'HEAT_PAIR_CONFLICT', 'skip', ['skip', 'pair'] as const),
+    // The evidence dial (Nov 12 2026): off until Steven says; 'log' records the stake it would set beside the real one.
+    dial: oneOf(env, 'HEAT_DIAL', 'off', ['off', 'log', 'on'] as const),
+    dialPriorTrips: num(env, 'HEAT_DIAL_PRIOR_TRIPS', 20, 1, 10_000),
+    dialPriorReturn: num(env, 'HEAT_DIAL_PRIOR_RETURN', -0.05, -1, 1),
+    dialScale: num(env, 'HEAT_DIAL_SCALE', 0.1, 0.001, 10),
+    dialFloor: num(env, 'HEAT_DIAL_FLOOR', 0.2, 0.01, 1),
+    dialMax: num(env, 'HEAT_DIAL_MAX', 2, 1, 10),
   };
 }
 
@@ -1297,7 +1323,10 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     series,
     seriesAuto,
     recordSeries: (env.RECORD_SERIES ?? '').split(',').map((x) => x.trim()).filter(Boolean),
-    excludeSeries: (() => { const v = (env.STRATEGY_EXCLUDE_SERIES ?? 'DOGE').trim(); return v ? new RegExp(v) : undefined; })(),
+    excludeSeries: (() => {
+      const parts = [(env.STRATEGY_EXCLUDE_SERIES ?? 'DOGE').trim(), mode !== 'paper' && !bool(env, 'LIVE_ALLOW_DOGE', false) ? 'DOGE' : ''].filter(Boolean);
+      return parts.length ? new RegExp(parts.join('|')) : undefined;
+    })(),
     recordMaxMarkets: num(env, 'RECORD_MAX_MARKETS', 150, 1, 2000),
     kellyFraction: num(env, 'STRATEGY_KELLY_FRACTION', 0.25, 0.01, 0.5),
     portfolioKelly: bool(env, 'PORTFOLIO_KELLY', true),
@@ -1376,6 +1405,7 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
     makerBuffer: num(env, 'STRATEGY_MAKER_BUFFER', relaxed ? 0.02 : 0, 0, 0.1),
     makerBufferRange: band(env, 'STRATEGY_MAKER_BUFFER_RANGE', relaxed ? [0.015, 0.03] : [0, 0]),
     minQuoteContracts: num(env, 'STRATEGY_MIN_QUOTE_CONTRACTS', 3, 0, 100),
+    quoteSides: oneOf(env, 'STRATEGY_QUOTE_SIDES', 'signal', ['both', 'signal'] as const),
     paperOrderUsd: num(env, 'PAPER_ORDER_USD', 0, 0, 1000),
     paperOrderFrac: num(env, 'PAPER_ORDER_FRAC', 0, 0, 1),
     orderUsdMin: num(env, 'ORDER_USD_MIN', 10, 0, 1000),
@@ -1811,6 +1841,10 @@ export function loadConfig(env: Env = process.env): Readonly<Config> {
       scoreIdleMin: num(env, 'TENNIS_SCORE_IDLE_MIN', 30, 1, 24 * 60),
       scorePollSec: num(env, 'TENNIS_SCORE_POLL_SEC', 15, 5, 300),
       liveMoveCents: num(env, 'TENNIS_LIVE_MOVE_CENTS', 0.03, 0.005, 0.5),
+      startFromExpiry: bool(env, 'TENNIS_START_FROM_EXPIRY', true),
+      startShiftMin: num(env, 'TENNIS_START_SHIFT_MIN', 180, 0, 600),
+      liveByMove: bool(env, 'TENNIS_LIVE_BY_MOVE', true),
+      liveByMoveLeadMin: num(env, 'TENNIS_LIVE_BY_MOVE_LEAD_MIN', 60, 0, 600),
       trail: bool(env, 'TENNIS_TRAIL', true),
       favTrailCents: num(env, 'TENNIS_FAV_TRAIL_CENTS', 0.06, 0.01, 0.5),
       favTrailCap: num(env, 'TENNIS_FAV_TRAIL_CAP', 0.97, 0.5, 0.99),

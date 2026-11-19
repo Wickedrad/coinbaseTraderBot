@@ -157,6 +157,21 @@ export interface HeatConfig {
   /** HEAT_PAIR_CONFLICT: a refining pair or triple that calls the other side from the single it replaces: 'skip' (default)
    *  makes no entry ("pair against single"), 'pair' trades the pair's side. */
   pairConflict: 'skip' | 'pair';
+  /** HEAT_DIAL: the evidence dial on the stake (Nov 12 2026, loss study lever 1). 'off' (default) = the stake as before;
+   *  'log' = the plan records the stake the dial would have set (dialMult, dialStakeUsd) and trades the old stake, so fresh
+   *  paper days can judge the dial against a plain shrink; 'on' = the dial sets the stake. It is a size, never a gate: every
+   *  call still trades, at no less than HEAT_DIAL_FLOOR of ORDER_USD_MIN. */
+  dial: 'off' | 'log' | 'on';
+  /** HEAT_DIAL_PRIOR_TRIPS: the prior's weight in trips for a coin and side with no record. */
+  dialPriorTrips: number;
+  /** HEAT_DIAL_PRIOR_RETURN: the prior's return per dollar staked (a loss is negative). */
+  dialPriorReturn: number;
+  /** HEAT_DIAL_SCALE: the stake multiplier is 1 + mean return / scale, so a mean of minus this much is the floor. */
+  dialScale: number;
+  /** HEAT_DIAL_FLOOR: the smallest multiplier, as a share of the stake; the stake is never below this share of ORDER_USD_MIN. */
+  dialFloor: number;
+  /** HEAT_DIAL_MAX: the largest multiplier (the stake still stops at ORDER_USD_MAX). */
+  dialMax: number;
 }
 
 /** A coin's decided call at one horizon: the hottest firing row (a pair or triple replaces the single it refines). */
@@ -236,6 +251,9 @@ export interface HeatPlan {
   stakeUsd: number;
   /** Heat weight 0..1 after the hour context. */
   weight: number;
+  /** HEAT_DIAL log/on: the dial's multiplier and the stake it sets for this plan (stakeUsd is that stake only when 'on'). */
+  dialMult?: number;
+  dialStakeUsd?: number;
   /** 1 = the hottest slot (heat size), 2 = the second slot (ORDER_USD_MIN). */
   slot: 1 | 2;
   context: 'agree' | 'against' | 'none' | 'n/a';
@@ -275,7 +293,13 @@ export interface HeatBookState {
   day?: Record<string, HeatContext>;
   /** Calls already acted on: `${asset}:${h}:${barClose}` -> barClose, pruned after two hours. */
   acted: Record<string, number>;
+  /** The dial's record per `${asset}:${side}`: finished round trips and the sum of their returns per dollar staked
+   *  (P&L over the order's stake). Absent in a file written before the dial: read as empty. */
+  seg?: Record<string, HeatSegment>;
 }
+
+/** What the lane has earned on one coin and side: n round trips, r the sum of pnl / stakeUsd. */
+export interface HeatSegment { n: number; r: number }
 
 /** What the engine is handed for the lane (EngineDeps.heat). `tag` and `untag` belong to the exits' owner (the plan
  *  positions): with no `tag` the lane does not enter, because an untagged position would be sold by the old model's exit. */

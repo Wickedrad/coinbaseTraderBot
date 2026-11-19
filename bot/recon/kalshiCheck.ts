@@ -65,6 +65,10 @@ interface State {
   lastSettlementCheck?: number;
   transfersBooked: string[];
   lastError?: string;
+  /** The comparison's working memory, kept across restarts (Nov 6 and 12 health checks: with it in memory only, each
+   *  deploy restart left the fills booked but not yet compared, and the settlements of partly closed markets, counted
+   *  on the bot's side alone or flagged as mismatches). */
+  mem?: { fills: Array<[string, BotFill]>; compared: Array<[string, number]>; settled: BotSettlement[]; partly: string[]; seenSettlements: string[] };
 }
 
 const ZERO = (): Side => ({ fills: 0, contracts: 0, fees: 0, settled: 0, payout: 0 });
@@ -102,6 +106,14 @@ export class KalshiCheck {
     this.now = o.now ?? Date.now;
     this.st = (o.file && readJson<State>(o.file, { quarantine: true })) || { mismatches: [], days: [], checked: { fills: 0, settlements: 0, transfers: 0 }, matched: { fills: 0, settlements: 0 }, settlementsSince: this.now() - DAY, transfersBooked: [] };
     this.st.transfersBooked ??= [];
+    const m = this.st.mem;
+    if (m) {
+      for (const [id, f] of m.fills ?? []) this.fills.set(id, f);
+      for (const [id, ts] of m.compared ?? []) this.compared.set(id, ts);
+      for (const b of m.settled ?? []) this.settledByBot.set(b.ticker, b);
+      for (const t of m.partly ?? []) this.partlyClosed.add(t);
+      for (const k of m.seenSettlements ?? []) this.seenSettlements.add(k);
+    }
   }
 
   // ---- The bot's side -------------------------------------------------------------------------
@@ -255,6 +267,7 @@ export class KalshiCheck {
     if (diffs.length) this.flag({ kind: 'settlement', ticker: k.ticker, what: `settlement ${k.ticker}: bot vs Kalshi ${diffs.join(', ')}` });
     else this.st.matched.settlements++;
     this.settledByBot.delete(k.ticker);
+    this.partlyClosed.delete(k.ticker);
   }
 
   /** Poll settlements every `everyMs` (5 minutes). */
@@ -313,11 +326,24 @@ export class KalshiCheck {
     if (this.compared.size > 5000) for (const [id, ts] of this.compared) if (ts < cut) this.compared.delete(id);
   }
 
+  /** The working memory as saved: the last two days of fills and compared ids, the latest 2,000 settlement keys. */
+  private snapshot(): State {
+    const cut = this.now() - 2 * DAY;
+    const seen = [...this.seenSettlements];
+    return { ...this.st, mem: {
+      fills: [...this.fills].filter(([, f]) => f.ts >= cut),
+      compared: [...this.compared].filter(([, ts]) => ts >= cut),
+      settled: [...this.settledByBot.values()],
+      partly: [...this.partlyClosed],
+      seenSettlements: seen.slice(-2000),
+    } };
+  }
+
   private saveTimer: NodeJS.Timeout | null = null;
   private save(): void {
     if (!this.o.file || this.saveTimer) return;
-    this.saveTimer = setTimeout(() => { this.saveTimer = null; writeJsonAtomic(this.o.file!, this.st, { compact: true }); }, 2000);
+    this.saveTimer = setTimeout(() => { this.saveTimer = null; writeJsonAtomic(this.o.file!, this.snapshot(), { compact: true }); }, 2000);
     this.saveTimer.unref();
   }
-  flush(): void { if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; } if (this.o.file) writeJsonAtomic(this.o.file, this.st, { compact: true }); }
+  flush(): void { if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; } if (this.o.file) writeJsonAtomic(this.o.file, this.snapshot(), { compact: true }); }
 }

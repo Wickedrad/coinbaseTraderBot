@@ -139,3 +139,24 @@ test('paper exchange: settlement records in Kalshi\'s shape (cost basis, fees, p
   assert.equal(r.revenue, 3);
   assert.ok(Math.abs(r.fees - fees) < 1e-9);
 });
+
+test('Kalshi check: a restart keeps the comparison: a fill booked just before it and a settlement just after match in both columns', async () => {
+  const file = path.join(tmpDir(), 'check.json');
+  const rec: SettlementRecord = { ticker: 'KXBTC15M-A', result: 'yes', yesCount: 3, noCount: 0, yesCost: 1.2, noCost: 0, revenue: 3, fees: 0.02, ts: T0 + 60_000 };
+  const pos: MarketPosition = { ticker: 'KXBTC15M-A', closeTs: T0, asset: 'BTC', yes: 0, netCash: 1.8, fees: 0.02, settled: true, result: 'yes', realized: 1.78, settledTs: T0 + 30_000 };
+  // Before the restart: the bot books the fill and settles; Kalshi has listed neither yet.
+  const a = mk({ file });
+  a.check.onBotFill(fill(), 0.02, 3);
+  a.check.onBotSettle({ ticker: 'KXBTC15M-A', result: 'yes', realized: 1.78, positionBefore: 3 }, pos);
+  a.check.flush();
+  // After it (the OMS remembers the trade and the settled position).
+  const b = mk({ file, seen: ['f1'], settlements: [rec], positions: { 'KXBTC15M-A': pos } });
+  b.check.onExchangeFills([fill()]);
+  await b.check.checkSettlements();
+  const r = b.check.report();
+  assert.equal(r.mismatches.length, 0, JSON.stringify(r.mismatches));
+  assert.equal(r.matched.fills, 1);
+  assert.equal(r.matched.settlements, 1);
+  assert.deepEqual([r.today?.bot.fills, r.today?.kalshi.fills, r.today?.bot.settled, r.today?.kalshi.settled], [1, 1, 1, 1]);
+  assert.equal(r.today?.bot.fees, r.today?.kalshi.fees);
+});

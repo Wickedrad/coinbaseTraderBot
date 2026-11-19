@@ -17,7 +17,7 @@ test('replay: PLAN_RULES on sells synthetic plan-tagged positions with the plan 
   const dir = path.join(tmpDir(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 7, marketNoise: 0.06 });
   const run = async (on: boolean, env: Record<string, string> = {}) => {
-    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PLAN_RULES: on ? 'true' : 'false', ...env });
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both', PLAN_RULES: on ? 'true' : 'false', ...env });
     assert.equal(cfg.strategy.plan.enabled, on);
     const tagged = new Set<string>();
     const r = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, {
@@ -68,7 +68,7 @@ test('replay: PLAN_RULES on sells synthetic plan-tagged positions with the plan 
   assert.ok(!exitsOff.some((f) => f.coid!.endsWith('-exit-plan')));
   assert.ok(exitsOff.length > 0, 'today\'s exits sold the tagged positions');
   // Off is today's replay: the same run without the tag hook gives the same fills.
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both' });
   const plain = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, { exitPolicy: 'take_profit', paper: { orderFrac: 0.1, orderUsd: 0 }, fillLog: true });
   assert.deepEqual(off.r.fillLog, plain.fillLog);
   assert.equal(off.r.pnl, plain.pnl);
@@ -78,7 +78,7 @@ test('replay: with orders and cancels 2.5 s in flight the ratchet still runs on 
   const dir = path.join(tmpDir(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 7, marketNoise: 0.06 });
   const armUsd = 0.1;
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PLAN_RULES: 'true' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both', PLAN_RULES: 'true' });
   const r = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, {
     exitPolicy: 'take_profit', paper: { orderFrac: 0.1, orderUsd: 0 }, fillLog: true, latency: { orderMs: 2500, cancelMs: 2500, jitterMs: 0 },
     planTag: () => ({ ruleId: 'synthetic', settings: { armUsd, stopMinUsd: 0.05, trailUsd: 0.15, clock: 'tick' } }),
@@ -129,7 +129,7 @@ test('replay: a plan position\'s ratchet judges the trade, what partial sales ba
   const dir = path.join(tmpDir(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 7, marketNoise: 0.06 });
   // The loser cut off (PLAN_LOSER_CUT_C=0): this test is about the ratchet's measure, and the cut would sell first.
-  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PLAN_RULES: 'true', PLAN_LOSER_CUT_C: '0' });
+  const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both', PLAN_RULES: 'true', PLAN_LOSER_CUT_C: '0' });
   const r = await runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, {
     exitPolicy: 'take_profit', paper: { orderFrac: 0.1, orderUsd: 0 }, fillLog: true, planTag: () => ({ ruleId: 'synthetic' }),
   });
@@ -156,7 +156,7 @@ test('replay: the loser cut (PLAN_LOSER_CUT_C, 10c a contract by default; Steven
   const dir = path.join(tmpDir(), 'rec');
   writeSyntheticRecordings(dir, { windows: 8, seed: 7, marketNoise: 0.06 });
   const run = async (env: Record<string, string> = {}) => {
-    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', PLAN_RULES: 'true', HOLD_EXIT: 'false', ...env });
+    const cfg = loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), STRATEGY_STYLE: 'both', STRATEGY_QUOTE_SIDES: 'both', PLAN_RULES: 'true', HOLD_EXIT: 'false', ...env });
     return runBacktest(dir, MetaModel.identity(), cfg.strategy, cfg.risk, 200, {
       exitPolicy: 'take_profit', paper: { orderFrac: 0.1, orderUsd: 0 }, fillLog: true, planTag: () => ({ ruleId: 'synthetic' }),
     });

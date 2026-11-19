@@ -183,7 +183,13 @@ export function DashboardView() {
               <CompensatorRow s={s} />
               <WaterfallRow s={s} onChange={() => void refresh()} />
               <Row label="Daily PnL (net of fees)" value={usd(s.dailyPnl)} sub={`loss limit ${usd(-s.dailyLossLimit)}`} tone={s.dailyPnl < 0 ? 'bad' : 'ok'} />
-              <Row label="Cash balance" value={usd(s.balance)} />
+              <Row label="Cash balance" value={usd(s.balance)} sub={s.paperPool ? 'paper: refills add cash, so this is not the result (next row)' : undefined} />
+              {s.paperPool && (
+                <Row
+                  label="Paper result" value={usd(s.paperPool.result)} tone={typeof s.paperPool.result !== 'number' ? undefined : s.paperPool.result < 0 ? 'bad' : 'ok'}
+                  sub={`worth ${usd(s.paperPool.worth)} (held at cost) − put in ${usd(s.paperPool.putIn)} (refills ${usd(s.paperPool.refilled)})`}
+                />
+              )}
               <Row label="Tradable bankroll" value={usd(s.bankroll)} sub={s.vault?.enabled ? `cash + committed − vault ${usd(s.vault.vault)} − pocket ${usd(s.vault.pocket)}` : 'cash + committed'} />
               <Row
                 label="Reconciliation" value={s.recon ? (s.recon.ok ? 'CLEAN' : 'BREAK') : '—'} tone={s.recon?.ok ? 'ok' : 'bad'}
