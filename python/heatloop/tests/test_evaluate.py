@@ -103,6 +103,12 @@ class Evaluate(unittest.TestCase):
         self.assertEqual(len(ev), len(es.rows))
         self.assertEqual(es.events_for(['nope']), [])
 
+    def test_events_of_one_row_come_back_in_key_name_order_like_event_rows(self):
+        es = ES.EventSet('BTC', 0, 'dev', 0, 10, 0, np.arange(10.0), 0.01, ['b', 'z', 'a'], [5, 5, 5, 3, 7], [0, 1, 2, 1, 0])
+        got = es.events_for(['z', 'b', 'a', 'nope'])
+        self.assertEqual(got, sorted(got))
+        self.assertEqual(got, [(3, 'z'), (5, 'a'), (5, 'b'), (5, 'z'), (7, 'b')])
+
     def test_eligibility_needs_calls_from_both_coins(self):
         res = dict(n_decided=900, n_dec_by_coin={'BTC': 850, 'ETH': 50})
         self.assertFalse(EV.eligible(res))

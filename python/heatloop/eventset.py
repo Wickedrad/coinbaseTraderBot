@@ -39,9 +39,10 @@ class EventSet:
         return self._by
 
     def events_for(self, keys) -> list:
-        """[(entry_row, key)] of the wanted keys, in row order."""
+        """[(entry_row, key)] of the wanted keys, in row order, events of the same row in key-name order (the order events.event_rows
+        returns): a set's iteration order differs from process to process, so the key names are sorted here."""
         by = self._index()
-        parts = [(by[k], k) for k in set(keys) if k in by and len(by[k])]
+        parts = [(by[k], k) for k in sorted(set(keys)) if k in by and len(by[k])]
         if not parts:
             return []
         rows = np.concatenate([p[0] for p in parts])

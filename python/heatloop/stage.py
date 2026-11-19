@@ -8,6 +8,7 @@
   cut     --coin C --csv F --league L --meta ME --spec JSON    truncate-and-rebuild test of the causality rule
 """
 import argparse
+import collections
 import dataclasses
 import datetime
 import glob
@@ -239,6 +240,13 @@ def cmd_cut(a):
         want = [(r, k) for r, k in full.events_for(keys) if r < n_cut]
         got = [(r, k) for r, k in ev if r < n_cut]
         same_ev = want == got
+        diag = None
+        if not same_ev:                           # aggregates and event rows only: how the two lists differ
+            cw, cg = collections.Counter(want), collections.Counter(got)
+            of, ot = cw - cg, cg - cw
+            diag = dict(n_full=len(want), n_cut=len(got), only_full=sum(of.values()), only_cut=sum(ot.values()),
+                        order_only=not of and not ot, first_full=list(of)[:3], first_cut=list(ot)[:3])
+            del cw, cg, of, ot
         names = sorted(set(k for _, k in ev))
         trunc = ES.EventSet(a.coin, 0, 'dev', m['t0'], m['n'], full.lo_row, m['o'], full.step, names,
                             [r for r, _ in ev], [names.index(k) for _, k in ev])
@@ -255,8 +263,11 @@ def cmd_cut(a):
                 same_calls += int(xs == ys)
                 bad += int(xs != ys)
         bad += int(not same_ev)
-        results.append(dict(cut=datetime.datetime.fromtimestamp(p / 1000, datetime.timezone.utc).strftime('%Y-%m-%d %H:%M'), events=len(want), events_equal=same_ev,
-                            calls_compared=n_calls))
+        row = dict(cut=datetime.datetime.fromtimestamp(p / 1000, datetime.timezone.utc).strftime('%Y-%m-%d %H:%M'), events=len(want), events_equal=same_ev,
+                   calls_compared=n_calls)
+        if diag:
+            row['diff'] = diag
+        results.append(row)
     emit('cut', dict(coin=a.coin, cuts=len(results), mismatches=bad, ok=bad == 0, results=results, mem_mb=mem_mb()))
     if bad:
         sys.exit(1)

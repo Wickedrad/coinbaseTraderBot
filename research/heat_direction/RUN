@@ -1,2 +1,3 @@
 stage=cut,dev
 # round 0 passed the twin gate (run 44607359478): cut test and the DEV rounds next
+# cut test v1 failed on tie order only (same-row events came back in set order); events_for now sorts keys: rerun cut,dev
