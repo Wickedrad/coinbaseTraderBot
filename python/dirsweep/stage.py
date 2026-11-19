@@ -10,6 +10,7 @@ one `HEATLOOP ds <json>` line per result.
   python -m dirsweep.stage topup --first YYYY-MM-DD --last YYYY-MM-DD --out <dir>               the FINAL days' minute files from the exchange's daily files
   python -m dirsweep.stage freezefile --data <freeze-data.json> --choose <choose.json> --first-day <Monday> --out <FREEZE-DS.json>   the freeze file, with hashes
   python -m dirsweep.stage verify --freeze <FREEZE-DS.json>                                     every hash of the freeze file against the checked-out files
+  python -m dirsweep.stage stamp --freeze <FREEZE-DS.json> --out <dir>                          the runner's clock stamp of the freeze file (written once)
   python -m dirsweep.stage final --freeze <FREEZE-DS.json> --btc <csv> --eth <csv> --out <dir>  the FINAL (one look); --plumbing runs it on search weeks
 """
 import argparse
@@ -237,26 +238,52 @@ def cmd_topup(a) -> None:
     emit('topup', {'first': a.first, 'last': a.last, **rep})
 
 
+def _sha_file(path: str) -> str:
+    import hashlib
+    with open(path, 'rb') as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def cmd_stamp(a) -> None:
+    """Written once, by a runner, right after the freeze commit: when (the runner's clock) FREEZE-DS.json with this hash existed. The FINAL reads it back."""
+    import datetime as dt
+    st = {'utc': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'), 'freeze_sha256': _sha_file(a.freeze), 'git_head': os.environ.get('GITHUB_SHA', ''),
+          'run_id': os.environ.get('GITHUB_RUN_ID', '')}
+    save(a.out, 'freeze-stamp.json', st)
+    emit('stamp', st)
+
+
 def cmd_final(a) -> None:
     """The FINAL, or with --plumbing the same code path on search weeks (never a minute at or after 2026-11-01)."""
+    import datetime as dt
     with open(a.freeze) as f:
         fz = json.load(f)
     if a.plumbing:
         fz = dict(fz, first_day=a.first_day, last_day=a.last_day, weeks=len(T.days(a.first_day, a.last_day)) // 7)
     win = FIN.window(fz)
     if not a.plumbing:
-        import datetime as dt
+        if win['lo'] < G.ND:
+            sys.exit('a FINAL window may not contain a search day')
         now = dt.datetime.now(dt.timezone.utc)
         ready = dt.datetime.fromisoformat(win['last_day']).replace(tzinfo=dt.timezone.utc) + dt.timedelta(days=2)
         if now < ready:
             sys.exit(f"the FINAL weeks are not over: not before {ready.isoformat()}")
-        if not a.commit_date:
-            sys.exit('the FINAL needs --commit-date, the date of the commit that added the freeze file')
-        if dt.datetime.fromisoformat(a.commit_date) > dt.datetime.fromisoformat(fz['freeze_deadline_utc'].replace('Z', '+00:00')):
-            sys.exit('the freeze was committed after its own deadline; the FINAL start has to be set again')
+        if not a.stamp:
+            sys.exit('the FINAL needs --stamp, the runner stamp written right after the freeze commit')
+        with open(a.stamp) as f:
+            st = json.load(f)
+        if st.get('freeze_sha256') != _sha_file(a.freeze):
+            sys.exit('the freeze file is not the one that was stamped')
+        deadline = dt.datetime.fromisoformat(win['first_day']).replace(tzinfo=dt.timezone.utc) - dt.timedelta(days=2)      # recomputed, not read from the file
+        if dt.datetime.fromisoformat(st['utc'].replace('Z', '+00:00')) > deadline:
+            sys.exit('the freeze was stamped after its deadline (two days before the first Monday); the FINAL start has to be set again')
+    extra = {}
+    if a.plumbing:
+        extra['loader_same_as_original'] = {c: FIN.same_as_original(p, win) for c, p in (('BTC', a.btc), ('ETH', a.eth))}
     grids = {c: FIN.load_final(p, win, plumbing=a.plumbing) for c, p in (('BTC', a.btc), ('ETH', a.eth))}
     res = FIN.score(grids, fz, win)
     res['plumbing'] = bool(a.plumbing)
+    res.update(extra)
     emit('final-plumbing' if a.plumbing else 'final', res)
     save(a.out, 'final-plumbing.json' if a.plumbing else 'final-result.json', res)
 
@@ -335,12 +362,15 @@ def main(argv=None) -> None:
     n.add_argument('--plumbing', action='store_true')
     n.add_argument('--first-day', default='')
     n.add_argument('--last-day', default='')
-    n.add_argument('--commit-date', default='')
+    n.add_argument('--stamp', default='')
+    st = sub.add_parser('stamp')
+    st.add_argument('--freeze', required=True)
+    st.add_argument('--out', required=True)
     a = ap.parse_args(argv)
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')
     {'run': cmd_run, 'causal': cmd_causal, 'floors': cmd_floors, 'choose': cmd_choose, 'freeze': cmd_freeze, 'topcheck': cmd_topcheck,
-     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify}[a.cmd](a)
+     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify, 'stamp': cmd_stamp}[a.cmd](a)
 
 
 if __name__ == '__main__':

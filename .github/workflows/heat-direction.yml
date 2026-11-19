@@ -590,6 +590,8 @@ jobs:
             bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
             [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
           done
+      - name: Versions
+        run: python3 -c "import sys, numpy, pandas; print('VERSIONS', sys.version.split()[0], 'numpy', numpy.__version__, 'pandas', pandas.__version__)"
       - name: The exchange's daily files against the sweep's file (three search days, both coins)
         working-directory: python
         run: |
@@ -618,8 +620,49 @@ jobs:
           if [ -d out/dsplumb ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsplumb" out/dsplumb; else echo "no result"; fi
           if [ -d out/dsplumb-long ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsplumb-long" out/dsplumb-long; fi
 
+  # AMENDMENT-3.md section 6: the stamp. Run once, in the push right after the commit that adds research/heat_direction/FREEZE-DS.json (and only that one commit
+  # may ever have touched the file): a runner writes its own clock, the hash of the file and the commit to Drive, once. The FINAL reads the stamp back and
+  # refuses a freeze stamped later than two days before the first FINAL Monday.
+  dsstamp:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsstamp')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Only once (fails closed)
+        run: |
+          ROOT=${DRIVE_ROOT:-gdrive:kalshi-bot-archive}
+          rc=0; out=$(rclone lsf "$ROOT/models/heat-direction-loop/final-ds-stamp" 2>stamp-err.txt) || rc=$?
+          if [ "$rc" = 0 ] && [ -n "$out" ]; then echo "::error::a stamp exists already"; exit 1; fi
+          if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then cat stamp-err.txt; echo "::error::could not read Drive (rclone exit $rc)"; exit 1; fi
+      - name: The freeze file has exactly one commit
+        run: |
+          [ -s research/heat_direction/FREEZE-DS.json ] || { echo "::error::no freeze file"; exit 1; }
+          n=$(git log --format=%H -- research/heat_direction/FREEZE-DS.json | wc -l)
+          [ "$n" = 1 ] || { echo "::error::FREEZE-DS.json has $n commits, expected 1"; exit 1; }
+      - name: Hashes of the freeze file against the checked-out files
+        working-directory: python
+        run: python3 -W ignore -m dirsweep.stage verify --freeze ../research/heat_direction/FREEZE-DS.json
+      - name: Stamp
+        working-directory: python
+        run: python3 -W ignore -m dirsweep.stage stamp --freeze ../research/heat_direction/FREEZE-DS.json --out ../out/stamp
+      - name: Keep the stamp on Drive
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/final-ds-stamp" out/stamp
+
   # AMENDMENT-3.md section 6: THE FINAL. One look. Run only after the last FINAL Sunday and the day after it have been published by the exchange.
-  # It checks the hashes of FREEZE-DS.json, that no earlier result is on Drive, that the freeze was committed before its deadline, fetches the exchange's
+  # It fails closed: a re-run attempt, a Drive that cannot be read, an earlier start or result on Drive, a freeze file with more than one commit, hashes
+  # that do not match, a stamp that does not belong to the file or is late. It marks the look as started before the scorer runs, fetches the exchange's
   # daily files from two days before the first Monday to the day after the last Sunday, scores the frozen rule with the lockout and keeps the result.
   dsfinal:
     needs: test
@@ -633,16 +676,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -q numpy pandas
+      - run: pip install -q numpy==NUMPY_VERSION pandas==PANDAS_VERSION
       - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
-      - name: One look only
+      - name: One look only (fails closed)
         run: |
-          rc=0
-          bash deploy/drive_lab.sh get "models/heat-direction-loop/final-ds" data/prior || rc=$?
-          if [ -s data/prior/final-result.json ]; then echo "::error::the FINAL has been read already (final-result.json is on Drive)"; exit 1; fi
+          [ "${GITHUB_RUN_ATTEMPT:-1}" = 1 ] || { echo "::error::a re-run attempt is not allowed for the FINAL"; exit 1; }
+          ROOT=${DRIVE_ROOT:-gdrive:kalshi-bot-archive}
+          rc=0; out=$(rclone lsf "$ROOT/models/heat-direction-loop/final-ds" 2>final-err.txt) || rc=$?
+          if [ "$rc" = 0 ] && [ -n "$out" ]; then echo "::error::the FINAL has been started or read already"; exit 1; fi
+          if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then cat final-err.txt; echo "::error::could not read Drive (rclone exit $rc)"; exit 1; fi
+      - name: The freeze file has exactly one commit
+        run: |
+          n=$(git log --format=%H -- research/heat_direction/FREEZE-DS.json | wc -l)
+          [ "$n" = 1 ] || { echo "::error::FREEZE-DS.json has $n commits, expected 1"; exit 1; }
+      - name: The stamp written right after the freeze
+        run: |
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/final-ds-stamp" data/stamp
+          [ -s data/stamp/freeze-stamp.json ] || { echo "::error::no stamp on Drive"; exit 1; }
       - name: Hashes of the freeze file against the checked-out files
         working-directory: python
         run: python3 -W ignore -m dirsweep.stage verify --freeze ../research/heat_direction/FREEZE-DS.json
@@ -651,12 +704,16 @@ jobs:
         run: |
           set -o pipefail
           python3 -W ignore -m dirsweep.stage topup --freeze ../research/heat_direction/FREEZE-DS.json --out ../data/final 2>&1 | tail -5
+      - name: Mark the look as started (before the scorer runs)
+        run: |
+          mkdir -p out/started
+          printf '{"run_id": "%s", "utc": "%s", "sha": "%s"}\n' "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SHA" > out/started/final-started.json
+          bash deploy/drive_lab.sh put "models/heat-direction-loop/final-ds" out/started
       - name: The FINAL
         working-directory: python
         run: |
           set -o pipefail
-          CD=$(git log -1 --format=%cI -- ../research/heat_direction/FREEZE-DS.json)
-          python3 -W ignore -m dirsweep.stage final --freeze ../research/heat_direction/FREEZE-DS.json --btc ../data/final/BTC.csv --eth ../data/final/ETH.csv --commit-date "$CD" --out ../out/final 2>&1 | tail -10
+          python3 -W ignore -m dirsweep.stage final --freeze ../research/heat_direction/FREEZE-DS.json --btc ../data/final/BTC.csv --eth ../data/final/ETH.csv --stamp ../data/stamp/freeze-stamp.json --out ../out/final 2>&1 | tail -10
       - name: Keep the result on Drive
         if: success()
         run: bash deploy/drive_lab.sh put "models/heat-direction-loop/final-ds" out/final

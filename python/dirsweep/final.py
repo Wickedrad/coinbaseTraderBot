@@ -10,6 +10,7 @@ import datetime as dt
 import numpy as np
 
 from dirsweep import floors as FL
+from dirsweep import frames as FR
 from dirsweep import grid as G
 from dirsweep import infer as I
 from dirsweep import nested as N
@@ -38,16 +39,14 @@ def window(fz: dict) -> dict:
 def load_final(csv: str, win: dict, plumbing: bool = False) -> dict:
     """The coin's grid from `grid_first` to the end of `grid_last`. In a real FINAL nothing is read from before the warm-up days or after the day that follows
     the last FINAL day; a plumbing run on search days may not reach 2026-11-01."""
-    from heatloop import events
-    from oracle import heat_live
     lo_ms = T.day_start_ms(win['grid_first'])
     end_ms = T.day_start_ms(win['grid_last']) + G.DAY
     if plumbing and end_ms > G.SEARCH_END:
         raise AssertionError('a plumbing run may not read a minute at or after the end of the search days')
-    df = events.read_bars(csv, lo_ms, end_ms)
+    df = FR.read_bars(csv, lo_ms, end_ms)
     if int(df['ts'].max()) < end_ms - G.MIN:
         raise AssertionError(f"the minute file ends early: last minute {int(df['ts'].max())}, needed {end_ms - G.MIN}")
-    m = heat_live.grid(df, end_ms=end_ms)
+    m = FR.grid(df, end_ms=end_ms)
     if m['t0'] != lo_ms or m['n'] != (end_ms - lo_ms) // G.MIN:
         raise AssertionError('the grid does not cover the warm-up days, the FINAL days and the day after')
     return m
@@ -120,7 +119,10 @@ def freeze_data(floor: int, ndec, cf, blocks: list, nact: np.ndarray, bench_cell
     return out
 
 
-STRICT_FILES = ('research/heat_direction/PREREG-3.md', 'research/heat_direction/AMENDMENT-3.md', 'research/heat_direction/dsfloor/choose.json')
+STRICT_FILES = ('research/heat_direction/PREREG.md', 'research/heat_direction/AMENDMENT-1.md', 'research/heat_direction/PREREG-3.md',
+                'research/heat_direction/AMENDMENT-3.md', 'research/heat_direction/dsfloor/choose.json')
+WORKFLOW = '.github/workflows/heat-direction.yml'
+WORKFLOW_JOBS = ('dsfinal', 'dsstamp')                                                   # the jobs that carry the guards of the FINAL
 STRICT_GLOBS = ('python/dirsweep/*.py', 'python/dirsweep/tests/*.py')
 ADVISORY_FILES = ('python/heatloop/events.py', 'python/oracle/heat_live.py')          # the data path the sweep also uses; a change is reported, not fatal
 
@@ -143,8 +145,22 @@ def hashes(root: str) -> tuple:
         for p in sorted(glob.glob(os.path.join(root, g))):
             if '__pycache__' not in p:
                 strict[os.path.relpath(p, root)] = _sha(p)
+    for job in WORKFLOW_JOBS:
+        strict[f'{WORKFLOW}#{job}'] = job_block_sha(os.path.join(root, WORKFLOW), job)
     adv = {p: _sha(os.path.join(root, p)) for p in ADVISORY_FILES}
     return strict, adv
+
+
+def job_block_sha(path: str, job: str) -> str:
+    """sha256 of the text of one job of the workflow file: from its `  <job>:` line to the next job (or the end of the file)."""
+    import hashlib
+    import re
+    lines = open(path).read().split('\n')
+    start = next((i for i, ln in enumerate(lines) if ln == f'  {job}:'), None)
+    if start is None:
+        return 'missing'
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r'^  [A-Za-z0-9_-]+:\s*$', lines[i])), len(lines))
+    return hashlib.sha256('\n'.join(lines[start:end]).rstrip('\n').encode()).hexdigest()
 
 
 def assemble(data: dict, choose: dict, first_day: str, root: str, written_utc: str) -> dict:
@@ -174,7 +190,34 @@ def assemble(data: dict, choose: dict, first_day: str, root: str, written_utc: s
 
 def verify(fz: dict, root: str) -> dict:
     """Every strict hash must match the checked-out files (and no strict file may be missing or new); advisory differences are listed."""
+    import json
+    import os
     strict, adv = hashes(root)
     want = fz['hashes']
     bad = sorted(p for p in set(want) | set(strict) if want.get(p) != strict.get(p))
+    with open(os.path.join(root, 'research/heat_direction/dsfloor/choose.json')) as f:
+        cand = json.load(f)['candidate']
+    for field, a, b in (('floor', fz.get('floor'), cand and cand['floor']), ('rule.rid', fz['rule']['rid'], cand and cand['rid']), ('weeks', fz.get('weeks'), cand and cand['weeks'])):
+        if a != b:
+            bad.append(f'field {field}: freeze file {a}, choose.json {b}')
+    try:
+        window(fz)
+    except ValueError as e:
+        bad.append(f'window: {e}')
     return {'ok': not bad, 'mismatch': bad, 'advisory_changed': sorted(p for p in adv if adv[p] != fz['advisory_hashes'].get(p))}
+
+
+def same_as_original(csv: str, win: dict) -> dict:
+    """Plumbing only (search days): the vendored loader against `heatloop.events.read_bars` + `oracle.heat_live.grid`, which the sweep itself read."""
+    from heatloop import events
+    from oracle import heat_live
+    lo_ms = T.day_start_ms(win['grid_first'])
+    end_ms = T.day_start_ms(win['grid_last']) + G.DAY
+    if end_ms > G.SEARCH_END:
+        raise AssertionError('a plumbing run may not read a minute at or after the end of the search days')
+    a = heat_live.grid(events.read_bars(csv, lo_ms, end_ms), end_ms=end_ms)
+    b = FR.grid(FR.read_bars(csv, lo_ms, end_ms), end_ms=end_ms)
+    same = {k: bool(np.array_equal(np.asarray(a[k]), np.asarray(b[k]))) for k in ('o', 'h', 'l', 'c', 'v', 'tb', 'gap')}
+    same['t0_n'] = (a['t0'], a['n']) == (b['t0'], b['n'])
+    same['all'] = all(same.values())
+    return same

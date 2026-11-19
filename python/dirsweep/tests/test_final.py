@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -127,14 +128,19 @@ class FreezeFileTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = self.tmp.name
-        for p in list(FIN.STRICT_FILES) + list(FIN.ADVISORY_FILES) + ['python/dirsweep/a.py', 'python/dirsweep/tests/t.py']:
+        for p in list(FIN.STRICT_FILES) + list(FIN.ADVISORY_FILES) + ['python/dirsweep/a.py', 'python/dirsweep/tests/t.py', FIN.WORKFLOW]:
             full = os.path.join(self.root, p)
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, 'w') as f:
-                f.write(p)
+                if p.endswith('choose.json'):
+                    json.dump({'candidate': {'floor': 60, 'rid': 42, 'weeks': 4}}, f)
+                elif p == FIN.WORKFLOW:
+                    f.write('jobs:\n  test:\n    a: 1\n  dsfinal:\n    steps: one\n  dsstamp:\n    steps: two\n  other:\n    x: 1\n')
+                else:
+                    f.write(p)
         self.data = {'floor': 60, 'rule': {'rid': 42, 'describe': {'k': 30}}, 'control': {'rid': 7, 'describe': {'k': 60}, 'in_sample': {}}, 'weeks': 4,
                      'expected_decided': 1300.0, 'in_sample': {'hit': 0.55}, 'lockout': {'weeks': 4}}
-        self.choose = {'candidate': {'floor': 60, 'rid': 42, 'excess_per_day': 2.4}, 'floors': [{'floor': 30, 'qualifies': True}, {'floor': 60, 'qualifies': True},
+        self.choose = {'candidate': {'floor': 60, 'rid': 42, 'weeks': 4, 'excess_per_day': 2.4}, 'floors': [{'floor': 30, 'qualifies': True}, {'floor': 60, 'qualifies': True},
                                                                                               {'floor': 20, 'qualifies': False}]}
 
     def tearDown(self):
@@ -174,3 +180,97 @@ class FreezeFileTest(unittest.TestCase):
         with open(os.path.join(self.root, 'python/dirsweep/new.py'), 'w') as f:
             f.write('x')
         self.assertIn('python/dirsweep/new.py', FIN.verify(fz, self.root)['mismatch'])          # a file added after the freeze is a change too
+
+    def test_a_guard_job_edited_after_the_freeze_is_caught_other_jobs_are_not(self):
+        fz = FIN.assemble(self.data, self.choose, '2026-11-23', self.root, 'x')
+        wf = os.path.join(self.root, FIN.WORKFLOW)
+        text = open(wf).read()
+        with open(wf, 'w') as f:
+            f.write(text.replace('x: 1', 'x: 2'))                    # the job after dsstamp
+        self.assertTrue(FIN.verify(fz, self.root)['ok'])
+        with open(wf, 'w') as f:
+            f.write(text.replace('steps: one', 'steps: edited'))
+        self.assertEqual(FIN.verify(fz, self.root)['mismatch'], [f'{FIN.WORKFLOW}#dsfinal'])
+
+    def test_the_files_own_rule_floor_and_weeks_must_be_the_hashed_choice(self):
+        fz = FIN.assemble(self.data, self.choose, '2026-11-23', self.root, 'x')
+        for edit in ({'rule': {'rid': 43, 'describe': {}}}, {'floor': 40}, {'weeks': 3, 'last_day': '2026-12-13'}):
+            res = FIN.verify(dict(fz, **edit), self.root)
+            self.assertFalse(res['ok'], edit)
+
+
+class FinalCliTest(unittest.TestCase):
+    """The guards of `stage final` (not plumbing) on a one-week window that is already over."""
+
+    @classmethod
+    def setUpClass(cls):
+        from dirsweep import stage
+        cls.stage = stage
+        cls.tmp = tempfile.TemporaryDirectory()
+        t0 = T.day_start_ms('2026-10-31')
+        cls.csv = {}
+        for c, seed in (('BTC', 31), ('ETH', 32)):
+            cls.csv[c] = os.path.join(cls.tmp.name, f'{c}.csv')
+            write_csv(make_grid(10, seed=seed, reversal=0.6, t0=t0), cls.csv[c])
+        cls.freeze = os.path.join(cls.tmp.name, 'fz.json')
+        cls.fz = {'rule': {'rid': 2 * G.cell(5, 1, 0, 0, 0)}, 'control': {'rid': 2 * G.cell(5, 0, 0, 0, 0)}, 'first_day': '2026-11-02', 'last_day': '2026-11-08',
+                  'weeks': 1, 'expected_decided': 100.0}
+        with open(cls.freeze, 'w') as f:
+            json.dump(cls.fz, f)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def stamp(self, utc, sha=None):
+        p = os.path.join(self.tmp.name, 'stamp.json')
+        with open(p, 'w') as f:
+            json.dump({'utc': utc, 'freeze_sha256': sha or self.stage._sha_file(self.freeze)}, f)
+        return p
+
+    def run_final(self, freeze=None, stamp=None, out=None):
+        argv = ['final', '--freeze', freeze or self.freeze, '--btc', self.csv['BTC'], '--eth', self.csv['ETH'], '--out', out or self.tmp.name]
+        if stamp:
+            argv += ['--stamp', stamp]
+        self.stage.main(argv)
+
+    def test_needs_a_stamp_a_matching_one_and_an_early_one(self):
+        with self.assertRaises(SystemExit):
+            self.run_final()                                                                    # no stamp
+        with self.assertRaises(SystemExit):
+            self.run_final(stamp=self.stamp('2026-10-30T00:00:00Z', sha='0' * 64))              # stamp of another file
+        with self.assertRaises(SystemExit):
+            self.run_final(stamp=self.stamp('2026-10-31T00:00:01Z'))                            # one second after "two days before the first Monday"
+
+    def test_the_deadline_is_recomputed_not_read_from_the_file(self):
+        p = os.path.join(self.tmp.name, 'fz2.json')
+        with open(p, 'w') as f:
+            json.dump(dict(self.fz, freeze_deadline_utc='2099-01-01T00:00:00Z'), f)
+        with self.assertRaises(SystemExit):
+            self.run_final(freeze=p, stamp=self.stamp('2026-11-01T00:00:00Z', sha=self.stage._sha_file(p)))
+
+    def test_a_window_on_search_days_is_refused(self):
+        p = os.path.join(self.tmp.name, 'fz3.json')
+        with open(p, 'w') as f:
+            json.dump(dict(self.fz, first_day='2026-10-26', last_day='2026-11-01'), f)
+        with self.assertRaises(SystemExit):
+            self.run_final(freeze=p, stamp=self.stamp('2026-10-01T00:00:00Z', sha=self.stage._sha_file(p)))
+
+    def test_a_window_that_is_not_over_yet_is_refused(self):
+        import datetime as dt
+        today = dt.datetime.now(dt.timezone.utc).date()
+        monday = today + dt.timedelta(days=(7 - today.weekday()) % 7 or 7)
+        p = os.path.join(self.tmp.name, 'fz4.json')
+        with open(p, 'w') as f:
+            json.dump(dict(self.fz, first_day=monday.isoformat(), last_day=(monday + dt.timedelta(days=6)).isoformat()), f)
+        with self.assertRaises(SystemExit):
+            self.run_final(freeze=p, stamp=self.stamp('2026-01-01T00:00:00Z', sha=self.stage._sha_file(p)))
+
+    def test_on_time_and_stamped_it_runs_and_writes_one_result(self):
+        out = os.path.join(self.tmp.name, 'out')
+        self.run_final(stamp=self.stamp('2026-10-31T00:00:00Z'), out=out)                       # exactly at the deadline is on time
+        with open(os.path.join(out, 'final-result.json')) as f:
+            res = json.load(f)
+        self.assertFalse(res['plumbing'])
+        self.assertEqual((res['first_day'], res['last_day'], res['weeks']), ('2026-11-02', '2026-11-08', 1))
+        self.assertGreater(res['rule']['decided'], 0)
