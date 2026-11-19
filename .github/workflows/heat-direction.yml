@@ -366,6 +366,8 @@ jobs:
           [ -s "data/hist/binance-1m/$A/1m.csv" ] && [ -s "data/metas/$A/meta.json" ]
       - name: VAL event files (real coin and twins 1 to 3)
         working-directory: python
+        env:
+          HEATLOOP_VAL: '1'       # the guard covers loading VAL bars at all; this step only writes event files and prints counts and a hash prefix
         run: |
           set -euo pipefail
           for tw in 0 1 2 3; do
@@ -381,7 +383,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      HEATLOOP_VAL: '1'           # the only place the flag is set: one process, the looks of PREREG-2.md section 3 item 3
+      HEATLOOP_VAL: '1'           # set here and in the vevents build step only; this process takes the looks of PREREG-2.md section 3 item 3
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5

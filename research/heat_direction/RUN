@@ -1,2 +1,2 @@
 stage=vevents
-# H2: unseen-day (VAL) event files, real coin + three twins per coin, built once and kept privately on Drive. No outcome is scored here; the looks are a separate stage.
+# H2 unseen-day event files, retry: the VAL guard also covers loading the bars, so the build step sets HEATLOOP_VAL (counts and a hash prefix only are printed).
