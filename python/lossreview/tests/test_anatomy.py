@@ -1,4 +1,5 @@
 """The anatomy stage: aggregates only, small cells withheld, the hold counterfactual and the day counts."""
+import collections
 import contextlib
 import io
 import json
@@ -201,6 +202,48 @@ class Anatomy(unittest.TestCase):
         c = anatomy.report(self.w)['all']
         self.assertNotIn('edge_days', c)
         self.assertNotIn('hold_days', c)
+
+    def test_kind_by_side_cut_cells_and_edges(self):
+        # hourly yes: 20 trips at 0.40 winning 6 (edge -10c); hourly no: 20 at 0.40 winning 10 (edge +10c); 15m yes: 12 trips
+        rows = [trip(i, kind='hourly', side='yes', win=(i < 6)) for i in range(20)]
+        rows += [trip(100 + i, kind='hourly', side='no', win=(i < 10)) for i in range(20)]
+        rows += [trip(200 + i, kind='15m', side='yes', win=(i < 5)) for i in range(12)]
+        write(self.w, '2026-11-14', rows)
+        cells = anatomy.report(self.w)['cuts']['kind_side']
+        self.assertEqual(sorted(cells), ['15m:yes', 'hourly:no', 'hourly:yes'])
+        self.assertEqual(cells['hourly:yes']['n'], 20)
+        self.assertEqual(cells['hourly:yes']['edge_c'], -10.0)
+        self.assertEqual(cells['hourly:no']['edge_c'], 10.0)
+        self.assertEqual(cells['15m:yes']['n'], 12)
+
+    def test_kind_by_side_is_withheld_per_side_so_no_parent_cell_minus_children_is_a_handful(self):
+        # yes: hourly 30 + 15m 6 (withheld); no: hourly 20 + 15m 25. The side cell yes (36) minus a printed hourly:yes (30) would name
+        # the 6 withheld trips, so the yes cells go together; the global rule alone (6 hidden trips, one cell popped) would let it print.
+        rows = [trip(i, kind='hourly', side='yes') for i in range(30)] + [trip(100 + i, kind='15m', side='yes') for i in range(6)]
+        rows += [trip(200 + i, kind='hourly', side='no') for i in range(20)] + [trip(300 + i, kind='15m', side='no') for i in range(25)]
+        write(self.w, '2026-11-14', rows)
+        rep = anatomy.report(self.w)
+        cells = rep['cuts']['kind_side']
+        self.assertEqual(sorted(cells), ['15m:no', 'hourly:no'])
+        self.assertEqual(rep['suppressed_trips']['kind_side'], 36)
+        self.assertEqual(rep['cuts']['side']['yes']['n'], 36)       # the side cell itself is printed: it must not be recoverable
+
+    def test_nested_cut_leaves_every_printed_side_cell_a_clean_remainder(self):
+        import random
+        rnd = random.Random(11)
+        for k in range(40):
+            rows = []
+            for i in range(rnd.randint(15, 160)):
+                rows.append(trip(k * 1000 + i, side=rnd.choice(['yes', 'no', 'yes', None]), kind=rnd.choice(['hourly', '15m', '15m', 'tennis', None]),
+                                 pnl=rnd.gauss(-0.3, 2), win=rnd.choice([True, False, None])))
+            write(self.w, '2026-11-%02d' % (k % 28 + 1), rows)
+            rep = anatomy.report(self.w)
+            kids = collections.Counter()
+            for lab, c in rep['cuts']['kind_side'].items():
+                kids[lab.rsplit(':', 1)[-1]] += c['n']
+            for side, c in rep['cuts']['side'].items():
+                rest = c['n'] - kids[side]
+                self.assertTrue(rest == 0 or rest >= anatomy.MIN_CELL, (k, side, rest))
 
     def test_empty_folder_gives_an_empty_report(self):
         write(self.w, '2026-11-09', [])
