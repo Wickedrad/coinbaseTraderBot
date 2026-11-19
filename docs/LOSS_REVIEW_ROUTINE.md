@@ -55,7 +55,7 @@ text" and dropped if it still fails. The prompts and the trip files do hold per-
 temporary folder, and the job log prints only what `daily.py` prints (never a ticker, a time or a count of a window).
 
 Stage inputs: `day` (UTC day), `stages` (in order, comma or space separated: `pending prepare-tags apply-tags prepare-hyp apply-hyp
-apply-adv sweep shadow status anatomy marketbase budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
+apply-adv sweep shadow status anatomy marketbase spotgap budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
 `weekly`, `since`/`until` (the window stage, 00:00 to 23:59:59 or 24:00). Every run pulls the trip files, `registry.jsonl`,
 `usage.jsonl`, the done marks and the day's work folder, runs the canary (a broken validator stops it before it writes anything),
 logs the usage, saves the responses, runs the stages, and puts back `registry.jsonl` and `usage.jsonl`, then `work/DAY/` (so a put
@@ -121,6 +121,19 @@ band, offset and coin, and on how many days each was positive. It is public data
 a market are not independent. It prints the markets read per series and day, and stops with an error, not a table of holes, when the markets list fails, more than 2% of
 the candle requests do, a series has no market at all, or a full day has under half of its 96 markets (a truncated list, or a day older
 than the live API holds). The fee is per contract, so a one-contract order pays up to a cent more. Hourly strike ladders are not covered.
+
+`stages=spotgap` (same `day`, 7 days, read-only, no tokens) reads the same markets and adds the coin's Coinbase 1-minute spot. At each of
+the three quotes it builds two probabilities that the market ends YES if the coin were a driftless random walk: `model` from the strike
+(`Phi(ln(spot / strike) / (sigma * sqrt(minutes left)))`, sigma from the hour of 1-minute returns before) and `model_open` from Coinbase's own
+move since the window opened (no strike, so a constant basis between Coinbase and the index cancels). It prints (a) the Brier score of each
+and of the quote's own mid, by offset, and on how many days each model is the better forecaster, (b) a calibration table of each forecast
+against the share that ended YES, (c) the settlement edge and net after the entry fee of buying each side by gap, the LESS favourable of the
+two model probabilities of the side minus its price, with `gap>=+0.05` for YES and for NO the two cells fixed in advance as the test, and (d)
+the median and spread of Coinbase at the window's open against the strike in basis points. Day counts need 20 rows a day in the cell (the
+rows of each day are printed). It stops with an error when the Coinbase minutes cannot be fetched, a coin has under 90% of the minutes of a
+full UTC day, or a coin loses more than 5% of its quote rows to anything but a crossed quote; it prints per-coin counts of what could not be
+built. Public data, so the log prints the full tables; rows are not independent (three per market, four coins that move together) and no
+standard error is printed. The week it is first run on is the first look, not the test: the test is the same two cells on days after it.
 
 To check that a day agrees with an earlier hand study, dispatch `stages=window since=00:00 until=HH:MM:SS`: the window's full
 summary goes to `work/D/window-*.json` on Drive (read it with the connector). The log shows neither a count nor a dollar figure:

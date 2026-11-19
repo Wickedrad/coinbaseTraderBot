@@ -17,6 +17,7 @@ Stages (the model steps sit between them; docs/LOSS_REVIEW_ROUTINE.md has the ro
     status                -> counts by state, trials, token use (aggregates only)
     anatomy               -> the scored trips of every day cut by price, side, exit rule, hold time, entry kind, call age, coin (aggregates only; no tokens)
     marketbase DAY        -> the settlement edge of buying YES or NO at the quote, over EVERY settled 15-minute crypto market of the 7 days ending DAY (public data; no tokens)
+    spotgap DAY           -> the same markets with the coin's Coinbase spot: is a random-walk probability from the spot a better forecast than the quote, and does buying where it differs from the price win (public data; no tokens)
     usage DAY --step S --tokens-in N --tokens-out N --items K   -> logs one model step, prints what is left of the allowance
     budget DAY [--daily N] [--weekly N]                         -> the allowance check the routine makes before each model step
     pending               -> the days that have a trip file and have not been marked done, oldest first (the routine takes them in order)
@@ -34,7 +35,7 @@ import os
 import re
 import sys
 
-from . import anatomy, forms, ledger, marketbase, nightly, prompts, registry, rules, screen, shadow, stats, sweep, triage
+from . import anatomy, forms, ledger, marketbase, nightly, prompts, registry, rules, screen, shadow, spotgap, stats, sweep, triage
 
 REVIEW_CAP = 75          # losers a day get a model review (worst dollars first)
 TAG_BATCH = 25
@@ -529,7 +530,7 @@ def save_responses(w, day, payload):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('stage', choices=['prepare-tags', 'apply-tags', 'prepare-hyp', 'apply-hyp', 'apply-adv', 'sweep', 'shadow', 'status', 'pending', 'anatomy', 'marketbase', 'done', 'usage', 'budget', 'window', 'responses', 'canary'])
+    ap.add_argument('stage', choices=['prepare-tags', 'apply-tags', 'prepare-hyp', 'apply-hyp', 'apply-adv', 'sweep', 'shadow', 'status', 'pending', 'anatomy', 'marketbase', 'spotgap', 'done', 'usage', 'budget', 'window', 'responses', 'canary'])
     ap.add_argument('day', nargs='?')
     ap.add_argument('--w', help='the work folder (every stage but canary)')
     ap.add_argument('--run', default=None, help='usage: the key of the entry (RUN_ID.N); an entry with a key already logged is not logged again')
@@ -569,6 +570,8 @@ def main(argv=None):
             out = budget(a.w, a.day, a.daily, a.weekly)
         elif a.stage == 'marketbase':
             out = marketbase.report(a.w, a.day, a.days)
+        elif a.stage == 'spotgap':
+            out = spotgap.report(a.w, a.day, a.days)
         else:
             out = fn(a.w, a.day)
     print('LOSSLOOP %s %s' % (a.stage, json.dumps(out, default=str)))
