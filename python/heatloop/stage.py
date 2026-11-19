@@ -187,6 +187,24 @@ def cmd_dev(a):
     emit('dev', dict(trials=n[0], budget=optimize.BUDGET, rounds=len(rounds), seconds=round(time.time() - t), mem_mb=mem_mb()))
 
 
+# --------------------------------------------------------------------------------------------------------------- inspect
+def cmd_inspect(a):
+    """DEV only: the ten checks, one row each, for the best spec of every DEV round (what the one-line round log leaves out)."""
+    rows = load_universe(a.league)
+    real, _ = read_sets(a.dev, 'dev')
+    lo, hi = scope_ms('dev')
+    with open(a.rounds) as f:
+        rounds = json.load(f)
+    for r in rounds:
+        spec = spec_from(r['best']['spec'])
+        res = EV.evaluate(spec, real, rows, lo, hi, 'bimonth')
+        emit('inspect', dict(round=r['round'], group=r['group'], hash=res['hash'][:12], total=res['total'], core8=res['core8'],
+                             hit=round(res['hit_rate'], 4), n_decided=res['n_decided'], n_dec_by_coin=res['n_dec_by_coin'],
+                             flat=round(res['flat_share'], 5), naive={k: round(v, 4) for k, v in res['naive'].items()},
+                             checks=[dict(id=x['id'], name=x['name'], passed=x['passed'], floor_ok=x['floor_ok'], value=x['value'],
+                                          **({'best_rule': x['best_rule']} if 'best_rule' in x else {})) for x in res['checks']]))
+
+
 # ------------------------------------------------------------------------------------------------------------------- val
 def cmd_val(a):
     """One look at VAL for one candidate: the twin gate first (a gate failure uses no look), then the ten checks. Stdout gets one bit."""
@@ -284,6 +302,7 @@ def main(argv=None):
     e.add_argument('--meta', required=True); e.add_argument('--out', required=True)
     r = sub.add_parser('round0'); r.add_argument('--dev', required=True); r.add_argument('--league', required=True)
     d = sub.add_parser('dev'); d.add_argument('--dev', required=True); d.add_argument('--league', required=True); d.add_argument('--out', required=True)
+    i = sub.add_parser('inspect'); i.add_argument('--dev', required=True); i.add_argument('--league', required=True); i.add_argument('--rounds', required=True)
     v = sub.add_parser('val'); v.add_argument('--spec', required=True); v.add_argument('--val', required=True); v.add_argument('--league', required=True)
     v.add_argument('--private', required=True); v.add_argument('--round', type=int, required=True)
     v.add_argument('--val-end', dest='val_end', type=int, default=None)
@@ -292,7 +311,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')
-    {'smoke': cmd_smoke, 'events': cmd_events, 'round0': cmd_round0, 'dev': cmd_dev, 'val': cmd_val, 'cut': cmd_cut}[a.cmd](a)
+    {'smoke': cmd_smoke, 'events': cmd_events, 'round0': cmd_round0, 'dev': cmd_dev, 'inspect': cmd_inspect, 'val': cmd_val, 'cut': cmd_cut}[a.cmd](a)
 
 
 if __name__ == '__main__':

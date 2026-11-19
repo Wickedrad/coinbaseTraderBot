@@ -1,3 +1,2 @@
-stage=cut,dev
-# round 0 passed the twin gate (run 44607359478): cut test and the DEV rounds next
-# cut test v1 failed on tie order only (same-row events came back in set order); events_for now sorts keys: rerun cut,dev
+stage=inspect
+# cut test v2 passed on both coins (0 mismatches); DEV rounds done (round 6 best: 8 of 10, check 3 and 10 fail): inspect prints the ten checks of each round best
