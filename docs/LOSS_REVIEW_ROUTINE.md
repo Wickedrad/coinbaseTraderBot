@@ -102,13 +102,13 @@ keep the estimate on the high side, since an under-count only makes the allowanc
 
 To see where the money goes without spending a token, dispatch `stages=anatomy` (any `day`; it is read-only and takes no day-dependent
 input). It cuts every scored trip of every day in the work folder by price, side, exit rule, hold time, entry taker or maker, call
-age, and kind and coin, and prints one aggregate line: net, fees, pre-fee result, the fee share of the stake, the settlement edge
+age, kind and coin, and kind by side (hourly or 15-minute, YES or NO), and prints one aggregate line: net, fees, pre-fee result, the fee share of the stake, the settlement edge
 of the entries (win share minus mean entry price, in cents), the same trips held to settlement, and on how many days each cell was
 negative (`neg_days`), had a positive settlement edge (`edge_days`) and a positive held-to-settlement result (`hold_days`), each out of
 the days with at least 3 trips in the cell (3 resolved trips for `edge_days`, 3 hold-counted for `hold_days`), so an edge that one drifting day produced shows up as that. It decides nothing. What keeps one trade out of the public log: a cell under 10 trips is withheld (and the next smallest
 too when the unprinted rest would be a handful); the resolved groups print only with 10 resolved trips behind them, and the dollar
 group only when the unresolved rest of the cell is empty or 10 strong; a day with under 10 scored trips is left out of every number,
-so two runs differ by whole days; no cut is nested in another; and every dollar sum is on a $5 grid, so subtracting two cells (or
+so two runs differ by whole days; no cut is nested in another except kind by side, which is withheld per side by the same rule (a printed side cell minus its printed kind cells is never a handful of trips); and every dollar sum is on a $5 grid, so subtracting two cells (or
 two runs) that differ by one trade names its result only to within about the size of the trade. The counts are exact, so such a
 trade's presence can be inferred, not its dollars.
 

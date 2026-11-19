@@ -1,4 +1,4 @@
-"""Loss anatomy: where the paper heat lane's money goes, cut seven cheap ways over every scored trip in the work folder. RESEARCH ONLY.
+"""Loss anatomy: where the paper heat lane's money goes, cut eight cheap ways over every scored trip in the work folder. RESEARCH ONLY.
 
 No model tokens and no candle fetch: it reads only the nightly trip files (W/days/trips-DAY.jsonl) and prints aggregates, so the
 public log learns nothing a per-trade file would. What keeps one trade's result out of the log:
@@ -10,10 +10,11 @@ public log learns nothing a per-trade file would. What keeps one trade's result 
   - every dollar sum is printed on a $5 grid, so the difference of two printed numbers (two cells of two cuts that differ by one
     trade, or two runs) names a trade's result only to within the grid, about the size of the trades themselves. The counts are exact,
     so the presence of such a trade can be inferred; its dollars cannot, beyond that bound;
-  - no cut is nested in another (price and side are separate cuts, not a price-by-side table), and the stage has no input that
-    moves a cell's edges.
+  - no cut is nested in another (price and side are separate cuts, not a price-by-side table) except kind by side (`kind_side`:
+    hourly or 15-minute by YES or NO, the one table the loss question needs), which is withheld per side by the same rule, so a printed
+    side cell minus its printed kind cells is never a handful of trips; and the stage has no input that moves a cell's edges.
 It decides nothing and registers nothing: it shows which cheap lever (price, side, exit rule, hold
-time, entry taker or maker, call age, coin and kind) carries the loss, and on how many days each cell was negative, so a lever that
+time, entry taker or maker, call age, coin and kind, kind by side) carries the loss, and on how many days each cell was negative, so a lever that
 only one day produced is visible as that.
 
 What each number means (all in dollars, per cell):
@@ -66,6 +67,22 @@ def _publish(cells):
     return shown, hidden
 
 
+def _publish_nested(cells, parent):
+    """_publish for a cut nested in another: the rule is applied inside each parent cell (parent(label) names it), so that a printed
+    parent cell minus its printed children is never a handful of trips, then once more over the whole cut."""
+    groups = collections.defaultdict(dict)
+    for k, c in cells.items():
+        groups[parent(k)][k] = c
+    shown, hidden = {}, 0
+    for g in groups.values():
+        s, h = _publish(g)
+        shown.update(s)
+        hidden += h
+    if 0 < hidden < MIN_CELL and shown:
+        hidden += shown.pop(min(shown, key=lambda k: shown[k].n)).n
+    return shown, hidden
+
+
 def _d(x):
     """A dollar sum on the GRID (round half up), as a number."""
     return int(math.floor(x / GRID + 0.5)) * GRID
@@ -101,13 +118,15 @@ def labels(v):
         'side': v['side'],
         'px': px_b,
         'kind_coin': '%s:%s' % (v['kind'], v['coin']),
+        'kind_side': '%s:%s' % (v['kind'], v['side']),
         'hold_s': _bucket(v['hold_s'], HOLD_EDGES, 's'),
         'entry': 'unknown' if v['taker'] is None else ('taker' if v['taker'] else 'maker'),
         'call_age_s': _bucket(v['age'], AGE_EDGES, 's'),
     }
 
 
-CUTS = ('exit', 'side', 'px', 'kind_coin', 'hold_s', 'entry', 'call_age_s')
+CUTS = ('exit', 'side', 'px', 'kind_coin', 'kind_side', 'hold_s', 'entry', 'call_age_s')
+NESTED = {'kind_side': lambda lab: lab.rsplit(':', 1)[-1]}      # a nested cut -> the parent cell (here the side) a label sits in
 
 
 class Cell:
@@ -194,7 +213,7 @@ def report(w):
         per_day.append({'day': day, 'n': dc.n, 'net': _d(dc.net), 'fees': _d(dc.fees), 'pre': _d(dc.net + dc.fees)})
     out_cuts, suppressed = {}, {}
     for name in CUTS:
-        shown, hidden = _publish(cuts[name])
+        shown, hidden = _publish_nested(cuts[name], NESTED[name]) if name in NESTED else _publish(cuts[name])
         out_cuts[name] = {lab: c.out() for lab, c in sorted(shown.items())}
         suppressed[name] = hidden
     nets = [d['net'] for d in per_day]
