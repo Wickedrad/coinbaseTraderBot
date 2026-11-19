@@ -128,6 +128,7 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
+      max-parallel: 1             # two jobs creating the same Drive folder at once make two folders with one name (run 44606638878)
       matrix:
         asset: [BTC, ETH]
     env:
@@ -160,7 +161,7 @@ jobs:
               --league ../research/oracle_heat/latest/league_direction.csv.gz --meta "../data/metas/$A/meta.json" --out ../out/dev 2>&1 | tail -3
           done
       - name: Keep on Drive
-        run: bash deploy/drive_lab.sh put "models/heat-direction/v1/dev" out/dev
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/dev" out/dev
 
   round0:
     needs: [test, events]
@@ -178,12 +179,12 @@ jobs:
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
       - name: DEV event files
-        run: bash deploy/drive_lab.sh get "models/heat-direction/v1/dev" data/dev
+        run: bash deploy/drive_lab.sh get "models/heat-direction-loop/dev" data/dev
       - name: Hashes of what round 0 ran on
         run: sha256sum research/heat_direction/PREREG.md research/heat_direction/AMENDMENT-1.md research/oracle_heat/latest/league_direction.csv.gz | sed 's/  / /'; git rev-parse HEAD
       - name: Round 0 (the lane's current settings on DEV, naive rules, twin gate)
         working-directory: python
-        run: python3 -W ignore -m heatloop.stage round0 --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz 2>&1 | tail -5
+        run: python3 -W ignore -m heatloop.stage round0 --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz 2>&1 | tail -40
 
   cut:
     needs: test
@@ -219,7 +220,7 @@ jobs:
         run: |
           set -o pipefail
           python3 -W ignore -m heatloop.stage cut --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv" \
-            --league ../research/oracle_heat/latest/league_direction.csv.gz --meta "../data/metas/$A/meta.json" --extra 10 2>&1 | tail -5
+            --league ../research/oracle_heat/latest/league_direction.csv.gz --meta "../data/metas/$A/meta.json" --extra 10 2>&1 | tail -30
 
   dev:
     needs: [test, events, round0]
@@ -237,11 +238,11 @@ jobs:
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
       - name: DEV event files (no VAL minute is in them)
-        run: bash deploy/drive_lab.sh get "models/heat-direction/v1/dev" data/dev
+        run: bash deploy/drive_lab.sh get "models/heat-direction-loop/dev" data/dev
       - name: DEV rounds (coordinate descent over the frozen grid)
         working-directory: python
         run: |
           set -o pipefail
-          python3 -W ignore -m heatloop.stage dev --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz --out ../out/rounds 2>&1 | tail -20
+          python3 -W ignore -m heatloop.stage dev --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz --out ../out/rounds 2>&1 | tail -40
       - name: Keep the trial log on Drive
-        run: bash deploy/drive_lab.sh put "models/heat-direction/v1/rounds-dev" out/rounds
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/rounds-dev" out/rounds
