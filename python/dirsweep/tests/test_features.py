@@ -76,6 +76,21 @@ class FeatureTest(unittest.TestCase):
         for x in ('ok', 'sgn', 'zc', 'ac', 'rc', 'mq'):
             self.assertTrue((a[x][:cut] == b[x][:cut]).all(), x)
 
+    def test_the_entry_bar_itself_is_not_used_except_its_open(self):
+        """A call at row e is made at the open of minute e: the high, low, close, volume and taker volume of minute e do not exist yet.
+        (The cut test cannot see this, because the truncated file still holds bar e.)"""
+        rng = np.random.default_rng(9)
+        rows = rng.integers(G.MIN_ROW, self.m['n'] - 100, 40)
+        for k in (1, 3, 15, 60):
+            base = F.codes(self.m, k)
+            for e in rows:
+                m2 = {x: (np.array(self.m[x]) if hasattr(self.m[x], '__len__') else self.m[x]) for x in self.m}
+                for x in ('h', 'l', 'c', 'v', 'tb'):
+                    m2[x][e] = m2[x][e] * 3.0 + 7.0
+                alt = F.codes(m2, k)
+                for x in ('ok', 'sgn', 'zc', 'ac', 'rc', 'mq'):
+                    self.assertEqual(int(base[x][e]), int(alt[x][e]), (k, int(e), x))
+
 
 if __name__ == '__main__':
     unittest.main()
