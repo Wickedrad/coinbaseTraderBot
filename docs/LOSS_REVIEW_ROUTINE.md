@@ -55,7 +55,7 @@ text" and dropped if it still fails. The prompts and the trip files do hold per-
 temporary folder, and the job log prints only what `daily.py` prints (never a ticker, a time or a count of a window).
 
 Stage inputs: `day` (UTC day), `stages` (in order, comma or space separated: `pending prepare-tags apply-tags prepare-hyp apply-hyp
-apply-adv sweep shadow status budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
+apply-adv sweep shadow status anatomy budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
 `weekly`, `since`/`until` (the window stage, 00:00 to 23:59:59 or 24:00). Every run pulls the trip files, `registry.jsonl`,
 `usage.jsonl`, the done marks and the day's work folder, runs the canary (a broken validator stops it before it writes anything),
 logs the usage, saves the responses, runs the stages, and puts back `registry.jsonl` and `usage.jsonl`, then `work/DAY/` (so a put
@@ -99,6 +99,17 @@ the ids it wrote adversary prompts for (`adv_ids`), `prepare-hyp` the classes it
 
 A subagent token count that the tool does not report is estimated (prompt length / 4 in, reply length / 4 out) and logged as such;
 keep the estimate on the high side, since an under-count only makes the allowance look larger than it is.
+
+To see where the money goes without spending a token, dispatch `stages=anatomy` (any `day`; it is read-only and takes no day-dependent
+input). It cuts every scored trip of every day in the work folder by price, side, exit rule, hold time, entry taker or maker, call
+age, and kind and coin, and prints one aggregate line: net, fees, pre-fee result, the fee share of the stake, the settlement edge
+of the entries (win share minus mean entry price, in cents), the same trips held to settlement, and on how many days each cell was
+negative. It decides nothing. What keeps one trade out of the public log: a cell under 10 trips is withheld (and the next smallest
+too when the unprinted rest would be a handful); the resolved groups print only with 10 resolved trips behind them, and the dollar
+group only when the unresolved rest of the cell is empty or 10 strong; a day with under 10 scored trips is left out of every number,
+so two runs differ by whole days; no cut is nested in another; and every dollar sum is on a $5 grid, so subtracting two cells (or
+two runs) that differ by one trade names its result only to within about the size of the trade. The counts are exact, so such a
+trade's presence can be inferred, not its dollars.
 
 To check that a day agrees with an earlier hand study, dispatch `stages=window since=00:00 until=HH:MM:SS`: the window's full
 summary goes to `work/D/window-*.json` on Drive (read it with the connector). The log shows neither a count nor a dollar figure:

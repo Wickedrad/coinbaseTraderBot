@@ -98,6 +98,12 @@ class StagesScriptTests(unittest.TestCase):
         self.assertIn('LOSSLOOP pending', r.stdout)
         self.assertIn('LOSSLOOP canary {"ok": true', r.stdout)
         self.assertIn('nothing put back', r.stdout)
+
+    def test_anatomy_is_a_read_only_stage(self):
+        r = self.run_script(LR_DAY=self.day, LR_STAGES='anatomy')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('LOSSLOOP anatomy', r.stdout)
+        self.assertIn('nothing put back', r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.base, 'registry.jsonl')))
 
     def test_window_usage_and_window_put_only_the_allowed_files_and_the_log_has_no_ticker_or_dollar(self):
