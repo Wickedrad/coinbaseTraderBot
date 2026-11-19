@@ -1,1 +1,2 @@
 stage=prepare,round0
+# retry: event files go to Drive one coin at a time
