@@ -1,2 +1,2 @@
-stage=dsfreeze
-# AMENDMENT-3.md section 6: the chosen rule (floor 60) and its always-on control, recomputed from the search days; the run fails if the rule is not the one `choose` named. SEARCH days only.
+stage=dsplumb
+# AMENDMENT-3.md section 6, plumbing only: the exchange daily files against the sweep minute file on 3 search days, and the FINAL scorer on the search weeks 2026-09-28 to 2026-10-25 (no minute at or after 2026-11-01).
