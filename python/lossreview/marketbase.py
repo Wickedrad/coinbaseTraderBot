@@ -108,6 +108,8 @@ def rows_of(market, candles):
 
 
 class Cell:
+    day_min = DAY_MIN                  # rows a day must have in the cell to count toward edge_days / net_days (a subclass may raise it)
+
     def __init__(self):
         self.n = self.wins = 0
         self.cost = self.fee = 0.0
@@ -129,7 +131,7 @@ class Cell:
 
     def out(self):
         win, cost, fee = self.wins / self.n, self.cost / self.n, self.fee / self.n
-        days = [d for d in self.by_day.values() if d[0] >= DAY_MIN]
+        days = [d for d in self.by_day.values() if d[0] >= self.day_min]
         return {'n': self.n, 'markets': len(self.markets), 'win_pct': round(100 * win, 1), 'cost_c': round(100 * cost, 1),
                 'edge_c': round(100 * (win - cost), 1), 'fee_c': round(100 * fee, 2), 'net_c': round(100 * (win - cost - fee), 1),
                 'edge_days': '%d/%d' % (sum(1 for d in days if d[1] - d[2] > 1e-9), len(days)),
@@ -163,17 +165,15 @@ def tabulate(rows_by_series):
     return {'markets': markets, 'cells': table}
 
 
-def report(w, day, days=7, now=None, check_coverage=True):
-    """The calibration of every settled 15-minute market that closed in the DAYS UTC days ending with DAY. W is unused (kept for the
-    stage interface): nothing is read from or written to the work folder.
-
-    The table stops with an error rather than print holes: a markets list that fails, more than MAX_ERROR_SHARE of the candle
-    requests failing, or (CHECK_COVERAGE) a series that has no market at all, or a full UTC day with under MIN_DAY_SHARE of the
-    EXPECTED_PER_DAY markets (a truncated list, or a day older than what the live API still holds). A day that has not ended yet is
-    listed under partial_days and is not checked."""
+def read(day, days=7, now=None, check_coverage=True):
+    """Every settled 15-minute market that closed in the DAYS UTC days ending with DAY, with its candles: ({series: [(day label,
+    market, candles), ...]}, meta). Stops with an error rather than return holes: a markets list that fails, more than
+    MAX_ERROR_SHARE of the candle requests failing, or (CHECK_COVERAGE) a series that has no market at all, or a full UTC day with
+    under MIN_DAY_SHARE of the EXPECTED_PER_DAY markets (a truncated list, or a day older than what the live API still holds). A day
+    that has not ended yet is listed under partial_days and is not checked."""
     now = time.time() if now is None else now
     t0, t1, labels_ = day_bounds(day, days)
-    rows_by_series, per_day, calls, failed, odd = {}, {}, 0, 0, 0
+    got, per_day, calls, failed, odd = {}, {}, 0, 0, 0
     for series in SERIES:
         items, counts = [], collections.Counter()
         for m in list_settled(series, t0, t1):
@@ -194,8 +194,8 @@ def report(w, day, days=7, now=None, check_coverage=True):
                 if failed > max(5, MAX_ERROR_SHARE * max(calls, 1)):
                     raise RuntimeError('marketbase: %d of %d candle requests failed; stopping' % (failed, calls))
                 continue
-            items.append((d, m['ticker'], rows_of(m, c)))
-        rows_by_series[series] = items
+            items.append((d, m, c))
+        got[series] = items
         per_day[series] = {lab: counts.get(lab, 0) for lab in labels_}
     day_end = {lab: t0 + 86400 * (k + 1) for k, lab in enumerate(labels_)}
     partial = [lab for lab in labels_ if day_end[lab] > now]
@@ -207,9 +207,18 @@ def report(w, day, days=7, now=None, check_coverage=True):
                 if lab not in partial and per_day[series][lab] < MIN_DAY_SHARE * EXPECTED_PER_DAY:
                     raise RuntimeError('marketbase: only %d settled %s markets on %s (expected about %d): the list is truncated' % (
                         per_day[series][lab], series, lab, EXPECTED_PER_DAY))
-    out = tabulate(rows_by_series)
-    out.update({'days': labels_, 'partial_days': partial, 'markets_per_day': per_day, 'odd_windows': odd, 'offsets_s': list(OFFSETS),
-                'candle_requests': calls, 'candle_failures': failed,
+    return got, {'t0': t0, 't1': t1, 'days': labels_, 'partial_days': partial, 'markets_per_day': per_day, 'odd_windows': odd,
+                 'candle_requests': calls, 'candle_failures': failed}
+
+
+def report(w, day, days=7, now=None, check_coverage=True):
+    """The calibration of every settled 15-minute market that closed in the DAYS UTC days ending with DAY (see read for what stops
+    the run). W is unused (kept for the stage interface): nothing is read from or written to the work folder."""
+    got, meta = read(day, days, now, check_coverage)
+    out = tabulate({series: [(d, m['ticker'], rows_of(m, c)) for d, m, c in items] for series, items in got.items()})
+    out.update({'days': meta['days'], 'partial_days': meta['partial_days'], 'markets_per_day': meta['markets_per_day'],
+                'odd_windows': meta['odd_windows'], 'offsets_s': list(OFFSETS), 'candle_requests': meta['candle_requests'],
+                'candle_failures': meta['candle_failures'],
                 'note': 'public market data; rows are up to three quotes per market, so not independent; edge = win share - price paid, held '
                         'to settlement, taker spread included; the fee is per contract (a one-contract order pays up to a cent more)'})
     return out
