@@ -1,2 +1,2 @@
-stage=looks
-# H2 looks (PREREG-2.md section 3 item 3): rounds 1 and 2 qualify on DEV; at most 3 looks, round order, stop at the first look where either bit is 1. Each look reads one candidate on the unseen days; per-check table goes to a private Drive file and is read once when the looks stop.
+stage=dscausal,dsrun
+# DS sweep (PREREG-3.md sections 4, 5, 7): the cut test on the real BTC and ETH 1-minute files, then S1 (nested walk-forward over 40,320 rules, E1 to E6 and E8) and S2 (hindsight oracle league and pair matrix at 5, 15, 30, 60 minutes) on the real coins (twin 0) and the three no-signal twins. SEARCH days only (2020-01-01 to 2026-10-31).
