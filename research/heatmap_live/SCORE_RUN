@@ -2,4 +2,4 @@ from=2026-11-12T14:30:00Z
 to=2026-11-19T14:25:00Z
 runs=43138942198
 bot=true
-the call Thu Nov 19 9:30 AM EST (14:30 UTC): run 43138942198 segs 1-60, the seven full days after the first look; the first run is outside this window except its tail; bot fills include heat-lane entries since Nov 11 22:32 UTC
+attempt=2: the first read at 14:30 UTC Nov 19 got only 11 of 60 segments (GitHub 503 "Egress is over the account limit"); the scorer now retries each segment and refuses a partial set. Window is the seven full days after the first look; bot fills include heat-lane entries since Nov 11 22:32 UTC

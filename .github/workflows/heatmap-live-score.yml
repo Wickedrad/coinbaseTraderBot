@@ -34,12 +34,30 @@ jobs:
           set -euo pipefail
           get() { sed -nE "s/^$1=([A-Za-z0-9:.,TZ-]+)\$/\1/p" research/heatmap_live/SCORE_RUN | tail -1; }
           for k in from to runs bot; do v=$(get "$k"); [ -n "$v" ] || { echo "::error::SCORE_RUN lacks $k"; exit 1; }; echo "$k=$v" >> "$GITHUB_OUTPUT"; done
-      - name: Fetch the capture segments (public data)
+      # One artifact at a time with spaced retries, and a hard stop if any segment is missing. On Nov 19 at 14:30 UTC
+      # GitHub answered "503 Egress is over the account limit" after 11 of 60 segments; the old bulk download only warned
+      # and the scorer posted totals for 11 segments as if they were the week. A partial read must never be posted.
+      - name: Fetch the capture segments (public data, retried, all or nothing)
         run: |
-          set -euo pipefail
+          set -uo pipefail
           IFS=, read -ra RUNS <<< "${{ steps.req.outputs.runs }}"
-          for r in "${RUNS[@]}"; do gh run download "$r" --repo "$GITHUB_REPOSITORY" --pattern 'heat-shadow-*' --dir "$RUNNER_TEMP/capture/$r" || echo "::warning::no segments from run $r"; done
-          echo "segments: $(find "$RUNNER_TEMP/capture" -name meta.json | wc -l)"
+          need=0; got=0; start=$SECONDS; budget=2700
+          for r in "${RUNS[@]}"; do
+            names=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$r/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.expired==false) | select(.name|test("^heat-shadow-[0-9]+-[0-9]+(-try[23])?$")) | .name') || names=""
+            for n in $names; do
+              need=$((need + 1)); d="$RUNNER_TEMP/capture/$r/$n"
+              for i in 1 2 3 4 5 6 7 8; do
+                rm -rf "$d"; mkdir -p "$d"
+                if gh run download "$r" --repo "$GITHUB_REPOSITORY" -n "$n" --dir "$d" 2>"$RUNNER_TEMP/dl.err" && [ -f "$d/meta.json" ]; then got=$((got + 1)); break; fi
+                echo "::warning::$n try $i failed: $(head -c 160 "$RUNNER_TEMP/dl.err" | tr '\n' ' ')"
+                [ $((SECONDS - start)) -gt "$budget" ] && break
+                sleep $((i * 20))
+              done
+            done
+          done
+          echo "segments: need $need, got $got (on disk: $(find "$RUNNER_TEMP/capture" -name meta.json | wc -l))"
+          if [ "$need" -eq 0 ] || [ "$got" -ne "$need" ]; then echo "::error::only $got of $need capture segments downloaded; not scoring a partial set"; exit 1; fi
       # Same fallback as the oracle thread's Drive setup fix (c0ddecb): apt once, then the same rclone version from
       # rclone's release page, checked against a pinned SHA-256. The runner could not reach the Ubuntu mirrors on Nov 11.
       - name: rclone (apt once, else the pinned release file)
