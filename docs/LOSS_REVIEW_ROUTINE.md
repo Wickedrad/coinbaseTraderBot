@@ -150,19 +150,6 @@ AFTER the first run: `adj>=+0.05` for YES and for NO (and the same for `lvl`): n
 under half of its 24 events, more than 4,000 markets would be kept, more than 2% of the candle requests fail, or a coin loses more than 5% of its
 quote rows to missing spot (a missing or crossed quote is only counted). Public data, so the log prints the full tables.
 
-`stages=spotgap` (same `day`, 7 days, read-only, no tokens) reads the same markets and adds the coin's Coinbase 1-minute spot. At each of
-the three quotes it builds two probabilities that the market ends YES if the coin were a driftless random walk: `model` from the strike
-(`Phi(ln(spot / strike) / (sigma * sqrt(minutes left)))`, sigma from the hour of 1-minute returns before) and `model_open` from Coinbase's own
-move since the window opened (no strike, so a constant basis between Coinbase and the index cancels). It prints (a) the Brier score of each
-and of the quote's own mid, by offset, and on how many days each model is the better forecaster, (b) a calibration table of each forecast
-against the share that ended YES, (c) the settlement edge and net after the entry fee of buying each side by gap, the LESS favourable of the
-two model probabilities of the side minus its price, with `gap>=+0.05` for YES and for NO the two cells fixed in advance as the test, and (d)
-the median and spread of Coinbase at the window's open against the strike in basis points. Day counts need 20 rows a day in the cell (the
-rows of each day are printed). It stops with an error when the Coinbase minutes cannot be fetched, a coin has under 90% of the minutes of a
-full UTC day, or a coin loses more than 5% of its quote rows to anything but a crossed quote; it prints per-coin counts of what could not be
-built. Public data, so the log prints the full tables; rows are not independent (three per market, four coins that move together) and no
-standard error is printed. The week it is first run on is the first look, not the test: the test is the same two cells on days after it.
-
 To check that a day agrees with an earlier hand study, dispatch `stages=window since=00:00 until=HH:MM:SS`: the window's full
 summary goes to `work/D/window-*.json` on Drive (read it with the connector). The log shows neither a count nor a dollar figure:
 the bounds are public inputs to the second, so two windows a few seconds apart would subtract down to a single trade.
