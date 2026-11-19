@@ -1,0 +1,128 @@
+{
+ "advisory_hashes": {
+  "python/heatloop/events.py": "5120e98a6f00ff5b0658b90e5b227e26d258536302f8cc15a1ba88521ca0c3b2",
+  "python/oracle/heat_live.py": "f2c387f9ac3757edb03dfd9c4acd69d2fcb446578051c99d67d637c3bcb58f29"
+ },
+ "control": {
+  "describe": {
+   "a": null,
+   "k": 30,
+   "phase": "all",
+   "r": 0.0,
+   "side": "fade",
+   "z": 0.0
+  },
+  "rid": 30240
+ },
+ "expected_decided": 1305.6842105263156,
+ "first_day": "2026-11-23",
+ "floor": 60,
+ "freeze_deadline_utc": "2026-11-21T00:00:00Z",
+ "frontier": {
+  "commit": "a3304197df7062ced44ae6426fc615cf1121f8f4",
+  "excess_per_day": 2.401133144475919,
+  "qualifying_floors": [
+   30,
+   40,
+   60
+  ],
+  "run_id": 44637991215
+ },
+ "hashes": {
+  ".github/workflows/heat-direction.yml#dsfinal": "787e1df505e300dbfa7cb12be72ed584f267a5098ebd0ee430825669ce854110",
+  ".github/workflows/heat-direction.yml#dsstamp": "9dace000820403b2ee55a1219b37d482eeb425592ea852907bc8d650f8b42357",
+  "python/dirsweep/__init__.py": "616555ab2f041963740d126c6cdbbd4b72444a3ca30ba6811431780d355623bd",
+  "python/dirsweep/data.py": "695ba512a06ba1dd0e0d2df81b9e5058e561d2facf4cdd5bc0f9e6aff0e1a94a",
+  "python/dirsweep/features.py": "6ac9240957993369387863388b30012c0350a01aa5f33baf32ff57ce69470c50",
+  "python/dirsweep/final.py": "090e120315f5d4157405223b63424de2b916d1e1a29250a9cc7bcf116a168f12",
+  "python/dirsweep/floors.py": "62a2f9b280326981458f107375253792c405e7de9e216ffe6a5e5fc5acb1ee9d",
+  "python/dirsweep/frames.py": "d8f134470059b699474989408080ab52c56aa9671c56af767c2efeb8177a8357",
+  "python/dirsweep/grid.py": "ca953f19b68343be16978c07b3f259beff14d65ff49ae7a373305f2e5a0540ee",
+  "python/dirsweep/hist.py": "e2299106c6d48646c80a193d45a2e81f8a16ecf9a7498c10ac50a88abf9a8dda",
+  "python/dirsweep/infer.py": "3d7904ab45614a5b02b319ed5d3f2c491603216a630869f6d4b136ac1e06c0ff",
+  "python/dirsweep/nested.py": "9e67bacc69c87beb21fa27b73e3d7cfbde571ef506972a19f14ce220a015d566",
+  "python/dirsweep/oracle.py": "019592b0d1d155a57296c3b7cd8d48e5fb56bc5657645e6c6d3fd19736abdb41",
+  "python/dirsweep/replay.py": "6bf3be656dd94ac4e857de667ef7c2c627e805105d352600d84c8167d5abb907",
+  "python/dirsweep/stage.py": "4e38fb768df2d0d39ef5fca1d3c8e69d392fa04ed6b231678d2ec09608e829db",
+  "python/dirsweep/tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "python/dirsweep/tests/test_data.py": "7b472c7512ad9a5719ab6db5496fe958abf9e7dbd2f811e6220fb09ad9d7a8ac",
+  "python/dirsweep/tests/test_features.py": "2d9711846ee07bed8eb57efa32c818bf1384250c24d27c7170a686029e13f393",
+  "python/dirsweep/tests/test_final.py": "ce275a8c249ac5d7d17a43c7068ef9ec8234ddc3a386ceb7d06b0df10495913b",
+  "python/dirsweep/tests/test_floors.py": "77bbceacbbe9917f0dc41d1fbbed1f1d4a6d777c8921f3ec15fd63b5cb58a11e",
+  "python/dirsweep/tests/test_frames.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "python/dirsweep/tests/test_grid.py": "2d0ebcd12a75af0fc4cf063b576980fe580c02a8ba6e81c8419f0bd8abb9a8c0",
+  "python/dirsweep/tests/test_hist.py": "e62cea0ebd2f7586101c7401c559e9a80a0b4d33db8cbca4854709c857ff40b8",
+  "python/dirsweep/tests/test_nested.py": "6ce9462973dc7cad24ad803e6ac9c92ddc4b40c06643f83cccebbe9fdba8890d",
+  "python/dirsweep/tests/test_replay.py": "3e329abd3d8439344515215c8ae544e352d1db88b939f368278c6a97902577e3",
+  "python/dirsweep/tests/test_topup.py": "22571f0bde1f551799f1e50722926b601fe6e60b8691d5ad45e16f89d3bd5f93",
+  "python/dirsweep/tests/util.py": "f32f6aeeb30e7b84b7bb751ca9a985188c1713ee0110836fa65fb3e3074df52e",
+  "python/dirsweep/topup.py": "2ca0920a373fc492a3d068ba5885c68059e6a458c08a8900a7f73e45cd56d1eb",
+  "research/heat_direction/AMENDMENT-1.md": "76cbd87d5b817348f84a1a5687d7b53680b7a5703852fc5bcea86d9ce1467f1f",
+  "research/heat_direction/AMENDMENT-3.md": "856df6f0cb25cdb4aef8a0726821a340b31c882e665ac4623699126f42b65298",
+  "research/heat_direction/PREREG-3.md": "c3b9b51e4200440b532de817483b80f9379d57ee2a1f4fa9ae38dd1325bbe9cf",
+  "research/heat_direction/PREREG.md": "628c2b7d42b4c0fa414c762e977773613897c18e5711a8ad2bbee7c3796406d3",
+  "research/heat_direction/dsfloor/choose.json": "4a902281a73bda88ee91de258fddfb569408a41554509c9aab580afd7c0d8e47"
+ },
+ "in_sample": {
+  "N": 157364,
+  "hit": 0.5578467756284792,
+  "lb975": 0.5544349372215565,
+  "right": 87785,
+  "se": 0.0017407658680643656
+ },
+ "last_day": "2026-12-20",
+ "lockout": {
+  "by_block": [
+   0.5772344013490726,
+   0.5837581297240289,
+   0.5367938294767564,
+   0.5620816599732262,
+   0.5524617996604414,
+   0.565063440542933,
+   0.5766704416761042,
+   0.5716083564057387,
+   0.5533944033128373,
+   0.5546558704453441,
+   0.5494876571960876,
+   0.5535773895627016,
+   0.5514161476084146,
+   0.5420857596611964
+  ],
+  "calls_per_day": 37.11658653846154,
+  "decided_per_day": 37.01802884615385,
+  "decided_per_day_C": 46.63157894736842,
+  "hit": 0.5584380445252551,
+  "weeks": 4
+ },
+ "pass": {
+  "coin_hit_min": 0.51,
+  "decided_min": 800,
+  "hit_min": 0.53,
+  "lb975_above": 0.5
+ },
+ "rule": {
+  "describe": {
+   "a": 0.1,
+   "k": 30,
+   "phase": "q01",
+   "r": 0.0,
+   "side": "fade",
+   "z": 0.75
+  },
+  "rid": 31574
+ },
+ "scoring": {
+  "flat_steps": 1.5,
+  "horizon_min": 15,
+  "lockout_min": 15,
+  "one_look": true,
+  "step": {
+   "BTC": 0.01,
+   "ETH": 0.01
+  },
+  "warm_days": 2
+ },
+ "version": 1,
+ "weeks": 4,
+ "written_utc": "2026-11-19T23:59:17Z"
+}
