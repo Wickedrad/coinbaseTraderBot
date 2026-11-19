@@ -55,7 +55,7 @@ text" and dropped if it still fails. The prompts and the trip files do hold per-
 temporary folder, and the job log prints only what `daily.py` prints (never a ticker, a time or a count of a window).
 
 Stage inputs: `day` (UTC day), `stages` (in order, comma or space separated: `pending prepare-tags apply-tags prepare-hyp apply-hyp
-apply-adv sweep shadow status anatomy budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
+apply-adv sweep shadow status anatomy marketbase budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
 `weekly`, `since`/`until` (the window stage, 00:00 to 23:59:59 or 24:00). Every run pulls the trip files, `registry.jsonl`,
 `usage.jsonl`, the done marks and the day's work folder, runs the canary (a broken validator stops it before it writes anything),
 logs the usage, saves the responses, runs the stages, and puts back `registry.jsonl` and `usage.jsonl`, then `work/DAY/` (so a put
@@ -111,6 +111,16 @@ group only when the unresolved rest of the cell is empty or 10 strong; a day wit
 so two runs differ by whole days; no cut is nested in another; and every dollar sum is on a $5 grid, so subtracting two cells (or
 two runs) that differ by one trade names its result only to within about the size of the trade. The counts are exact, so such a
 trade's presence can be inferred, not its dollars.
+
+To ask the same question of every market, not only the lane's trips, dispatch `stages=marketbase` with `day` the last UTC day (it covers
+the 7 days ending that day; read-only, no tokens, nothing read from the work folder). It lists every settled 15-minute BTC, ETH, SOL and
+XRP market that closed in those days from Kalshi's public API, reads each one's 1-minute candlesticks, takes the quote 3, 7 and 11
+minutes into the window, and prints for YES (bought at the ask) and NO (bought at one minus the YES bid) how often that side settled a
+winner against what a taker paid: the settlement edge before the fee and after the entry fee (held to settlement), in all, by price
+band, offset and coin, and on how many days each was positive. It is public data, so the log prints the full tables; the three rows of
+a market are not independent. It prints the markets read per series and day, and stops with an error, not a table of holes, when the markets list fails, more than 2% of
+the candle requests do, a series has no market at all, or a full day has under half of its 96 markets (a truncated list, or a day older
+than the live API holds). The fee is per contract, so a one-contract order pays up to a cent more. Hourly strike ladders are not covered.
 
 To check that a day agrees with an earlier hand study, dispatch `stages=window since=00:00 until=HH:MM:SS`: the window's full
 summary goes to `work/D/window-*.json` on Drive (read it with the connector). The log shows neither a count nor a dollar figure:
