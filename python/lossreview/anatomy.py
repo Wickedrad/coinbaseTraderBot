@@ -27,6 +27,10 @@ What each number means (all in dollars, per cell):
   hold     the P&L the same trips would have had held to settlement (count * (payout - entry price) - entry fee), on resolved trips
   net_h    the actual net of those same trips, so hold - net_h is what the exits gave away (negative: the exits did better than holding)
   neg_days "days with a negative cell net / days the cell had at least DAY_MIN trips"
+  edge_days "days with a positive settlement edge (winners above the mean entry price) / days with at least DAY_MIN resolved trips";
+            printed with the resolved group. Whether an edge is every day or one week's drift.
+  hold_days "days where the held-to-settlement result was positive / days with at least DAY_MIN hold-counted trips"; printed with the
+            hold group.
 """
 import collections
 import math
@@ -115,6 +119,8 @@ class Cell:
         self.n_hold = 0
         self.hold = self.net_h = 0.0
         self.by_day = collections.defaultdict(lambda: [0, 0.0])
+        self.res_day = collections.defaultdict(lambda: [0, 0, 0.0])      # per day: resolved trips, winners, summed entry price
+        self.hold_day = collections.defaultdict(lambda: [0, 0.0])        # per day: hold-counted trips, summed hold result
 
     def add(self, day, v):
         self.n += 1
@@ -128,10 +134,17 @@ class Cell:
             self.res += 1
             self.wins += 1 if v['win'] else 0
             self.px_res += v['px']
+            r = self.res_day[day]
+            r[0] += 1
+            r[1] += 1 if v['win'] else 0
+            r[2] += v['px']
         if v['hold'] is not None:
             self.n_hold += 1
             self.hold += v['hold']
             self.net_h += v['net']
+            h = self.hold_day[day]
+            h[0] += 1
+            h[1] += v['hold']
 
     def out(self):
         c = {'n': self.n, 'net': _d(self.net), 'fees': _d(self.fees), 'pre': _d(self.net + self.fees)}
@@ -142,9 +155,14 @@ class Cell:
         if self.res >= MIN_CELL:
             win, px = self.wins / self.res, self.px_res / self.res
             c.update({'n_res': self.res, 'win_pct': round(100 * win, 1), 'px_c': round(100 * px, 1), 'edge_c': round(100 * (win - px), 1)})
+            # days with a positive settlement edge / days with DAY_MIN or more resolved trips: is the edge every day or one week's drift
+            ed = [d for d in self.res_day.values() if d[0] >= DAY_MIN]
+            c['edge_days'] = '%d/%d' % (sum(1 for d in ed if d[1] - d[2] > 1e-9), len(ed))
         rest = self.n - self.n_hold
         if self.n_hold >= MIN_CELL and (rest == 0 or rest >= MIN_CELL):
             c.update({'n_hold': self.n_hold, 'hold': _d(self.hold), 'net_h': _d(self.net_h)})
+            hd = [d for d in self.hold_day.values() if d[0] >= DAY_MIN]
+            c['hold_days'] = '%d/%d' % (sum(1 for d in hd if d[1] > 1e-9), len(hd))
         days = [d for d in self.by_day.values() if d[0] >= DAY_MIN]
         c['neg_days'] = '%d/%d' % (sum(1 for d in days if d[1] < 0), len(days))
         return c
