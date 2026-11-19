@@ -21,8 +21,13 @@ Round 6 checks: 1 level 55.45 pass; 2 lower bound 54.42 pass; **3 beats best nai
 ## What it says
 1. The heat map's side is the fade of the last 15-minute move. On the same calls the best naive rule ties the candidate in every round
    (gap -0.02 to +0.45 pt against the +2.0 pt the pre-registration requires), so no setting of the frozen grid can pass check 3.
-2. What tuning did find is timing: the admitted heat events (top 5, share >= 54) are minutes after which fading the last move hits 55%, against 52.5% for the
-   round 0 events. Whether event timing beats fading at an arbitrary minute is not yet measured (the 50.x% unconditional rate is the expected figure).
+2. Timing is what tuning found, and the baseline is higher than expected: fading the last 15-minute move at ANY minute of DEV already hits
+   52.2% on BTC and 52.8% on ETH (about 260,000 decided minutes each; run 44613920175). The round 0 events (52.45%) are no better than random minutes.
+   The tuned admission (top 5, share >= 54) lifts the fade to 55.2 to 55.5%, about +3 pts of timing, at about 57 calls a day.
+   Month by month the every-minute fade runs 50.6 to 52.4% (BTC) and 50.8 to 53.2% (ETH) in the warm-up months 2025-06 to 2025-12, and 51.7 to 52.7% (BTC)
+   and 52.3 to 53.5% (ETH) in the DEV months 2026-01 to 2026-06: positive in all 26 coin-months, drifting up over time, never near a coin flip.
+   Where the heat side differs from the fade side (about 5% of admitted calls) heat is right 52.8% in round 6 (528 calls), 55.1% in round 5 (423), 57.1% in round 2 (161):
+   small samples, not significant after 604 trials of selection.
 3. TA that precedes the call confirms it by 6 to 8 pts (passes); TA invalidation carries no information (0 pt).
 4. The loop selected on DEV with 604 trials, so these hit rates are optimistic; no VAL minute was read.
 
