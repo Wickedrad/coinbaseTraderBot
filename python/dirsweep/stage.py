@@ -5,6 +5,12 @@ one `HEATLOOP ds <json>` line per result.
   python -m dirsweep.stage causal --coin BTC --csv <1m.csv>                                   the cut test of section 7 on the real file
   python -m dirsweep.stage floors --btc <1m.csv> --eth <1m.csv> --twin 0|1|2|3 --out <dir>   AMENDMENT-3.md: the frequency frontier (floors 3 to 60)
   python -m dirsweep.stage choose --dir <dir>                                                  AMENDMENT-3.md section 4: the one FINAL candidate
+  python -m dirsweep.stage freeze --btc <1m.csv> --eth <1m.csv> --floor F --expect-rid R --out <dir>   the chosen rule and its control, recomputed
+  python -m dirsweep.stage topcheck --coin BTC --csv <1m.csv> --day YYYY-MM-DD                  the exchange's daily file against the sweep's file, one search day
+  python -m dirsweep.stage topup --first YYYY-MM-DD --last YYYY-MM-DD --out <dir>               the FINAL days' minute files from the exchange's daily files
+  python -m dirsweep.stage freezefile --data <freeze-data.json> --choose <choose.json> --first-day <Monday> --out <FREEZE-DS.json>   the freeze file, with hashes
+  python -m dirsweep.stage verify --freeze <FREEZE-DS.json>                                     every hash of the freeze file against the checked-out files
+  python -m dirsweep.stage final --freeze <FREEZE-DS.json> --btc <csv> --eth <csv> --out <dir>  the FINAL (one look); --plumbing runs it on search weeks
 """
 import argparse
 import json
@@ -17,6 +23,7 @@ import numpy as np
 
 from dirsweep import data
 from dirsweep import features as F
+from dirsweep import final as FIN
 from dirsweep import floors as FL
 from dirsweep import grid as G
 from dirsweep import hist as H
@@ -24,6 +31,7 @@ from dirsweep import infer as I
 from dirsweep import nested as N
 from dirsweep import oracle as O
 from dirsweep import replay as R
+from dirsweep import topup as T
 
 
 def mem_mb() -> int:
@@ -175,6 +183,108 @@ def cmd_choose(a) -> None:
     save(a.out or a.dir, 'choose.json', ch)
 
 
+def _freeze_arrays(a):
+    paths = {'BTC': a.btc, 'ETH': a.eth}
+    grids = {c: data.load(p, 0) for c, p in paths.items()}
+    pre = {c: F.prepare(m) for c, m in grids.items()}
+    arrs = {c: H.cell_arrays(grids[c], G.STEP[c], 15, pre=pre[c]) for c in grids}
+    pooled = H.add(arrs['BTC'], arrs['ETH'])
+    coins = {c: (arrs[c]['ndec'], arrs[c]['cf']) for c in arrs}
+    replayers = {c: R.Replayer(grids[c], G.STEP[c], pre[c]) for c in grids}
+    return pooled['ndec'], pooled['cf'], coins, replayers
+
+
+def cmd_freeze(a) -> None:
+    """The chosen floor's rule and its always-on control, recomputed from the search days; fails if the rule is not the one `choose` named."""
+    ndec, cf, coins, replayers = _freeze_arrays(a)
+    nact = G.n_active(np.arange(G.N_CELLS))
+    bench_cells = [ik * G.PER_K for ik in range(len(G.K))]
+    out = FIN.freeze_data(a.floor, ndec, cf, G.block_days(), nact, bench_cells, coins, replayers, G.period_days())
+    emit('freeze', out)
+    save(a.out, 'freeze-data.json', out)
+    if a.expect_rid is not None and out['rule']['rid'] != a.expect_rid:
+        sys.exit(f"the rule is {out['rule']['rid']}, `choose` named {a.expect_rid}")
+
+
+def cmd_topcheck(a) -> None:
+    """One search day of one coin: the exchange's daily file against the minute file the sweep read."""
+    from heatloop import events
+    lo = T.day_start_ms(a.day)
+    ex = T.fetch_day(a.coin, a.day)
+    mine = events.read_bars(a.csv, lo, lo + G.DAY)
+    cmp = T.compare(ex, mine)
+    ok = cmp['only_a'] == 0 and cmp['only_b'] == 0 and all((cmp[f'max_rel_{c}'] or 0.0) <= 1e-9 for c in T.COLS[1:])
+    emit('topcheck', {'coin': a.coin, 'day': a.day, 'ok': ok, **cmp})
+    if not ok:
+        sys.exit(1)
+
+
+def cmd_topup(a) -> None:
+    """The FINAL days' minute files (two warm-up days before the first Monday, the day after the last Sunday), written in the sweep's own layout."""
+    os.makedirs(a.out, exist_ok=True)
+    if a.freeze:
+        with open(a.freeze) as f:
+            win = FIN.window(json.load(f))
+        a.first, a.last = win['grid_first'], win['grid_last']
+    if not (a.first and a.last):
+        sys.exit('give --freeze, or --first and --last')
+    rep = {}
+    for coin in ('BTC', 'ETH'):
+        df = T.fetch_range(coin, a.first, a.last)
+        T.write_csv(df, os.path.join(a.out, f'{coin}.csv'))
+        rows = df.attrs['rows_per_day']
+        rep[coin] = {'rows': int(len(df)), 'days': len(rows), 'days_not_1440': {d: n for d, n in rows.items() if n != 1440}}
+    emit('topup', {'first': a.first, 'last': a.last, **rep})
+
+
+def cmd_final(a) -> None:
+    """The FINAL, or with --plumbing the same code path on search weeks (never a minute at or after 2026-11-01)."""
+    with open(a.freeze) as f:
+        fz = json.load(f)
+    if a.plumbing:
+        fz = dict(fz, first_day=a.first_day, last_day=a.last_day, weeks=len(T.days(a.first_day, a.last_day)) // 7)
+    win = FIN.window(fz)
+    if not a.plumbing:
+        import datetime as dt
+        now = dt.datetime.now(dt.timezone.utc)
+        ready = dt.datetime.fromisoformat(win['last_day']).replace(tzinfo=dt.timezone.utc) + dt.timedelta(days=2)
+        if now < ready:
+            sys.exit(f"the FINAL weeks are not over: not before {ready.isoformat()}")
+        if not a.commit_date:
+            sys.exit('the FINAL needs --commit-date, the date of the commit that added the freeze file')
+        if dt.datetime.fromisoformat(a.commit_date) > dt.datetime.fromisoformat(fz['freeze_deadline_utc'].replace('Z', '+00:00')):
+            sys.exit('the freeze was committed after its own deadline; the FINAL start has to be set again')
+    grids = {c: FIN.load_final(p, win, plumbing=a.plumbing) for c, p in (('BTC', a.btc), ('ETH', a.eth))}
+    res = FIN.score(grids, fz, win)
+    res['plumbing'] = bool(a.plumbing)
+    emit('final-plumbing' if a.plumbing else 'final', res)
+    save(a.out, 'final-plumbing.json' if a.plumbing else 'final-result.json', res)
+
+
+def cmd_freezefile(a) -> None:
+    import datetime as dt
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    with open(a.data) as f:
+        data = json.load(f)
+    with open(a.choose) as f:
+        choose = json.load(f)
+    fz = FIN.assemble(data, choose, a.first_day, root, dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+    with open(a.out, 'w') as f:
+        json.dump(clean(fz), f, sort_keys=True, indent=1)
+        f.write('\n')
+    emit('freezefile', {k: fz[k] for k in ('floor', 'weeks', 'first_day', 'last_day', 'freeze_deadline_utc', 'expected_decided')})
+
+
+def cmd_verify(a) -> None:
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    with open(a.freeze) as f:
+        fz = json.load(f)
+    res = FIN.verify(fz, root)
+    emit('verify', res)
+    if not res['ok']:
+        sys.exit(1)
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(prog='dirsweep.stage')
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -195,10 +305,42 @@ def main(argv=None) -> None:
     h = sub.add_parser('choose')
     h.add_argument('--dir', required=True)
     h.add_argument('--out', default='')
+    z = sub.add_parser('freeze')
+    z.add_argument('--btc', required=True)
+    z.add_argument('--eth', required=True)
+    z.add_argument('--floor', type=int, required=True)
+    z.add_argument('--expect-rid', type=int, default=None)
+    z.add_argument('--out', default='')
+    k = sub.add_parser('topcheck')
+    k.add_argument('--coin', required=True, choices=['BTC', 'ETH'])
+    k.add_argument('--csv', required=True)
+    k.add_argument('--day', required=True)
+    u = sub.add_parser('topup')
+    u.add_argument('--first', default='')
+    u.add_argument('--last', default='')
+    u.add_argument('--freeze', default='')
+    u.add_argument('--out', required=True)
+    ff = sub.add_parser('freezefile')
+    ff.add_argument('--data', required=True)
+    ff.add_argument('--choose', required=True)
+    ff.add_argument('--first-day', required=True)
+    ff.add_argument('--out', required=True)
+    vv = sub.add_parser('verify')
+    vv.add_argument('--freeze', required=True)
+    n = sub.add_parser('final')
+    n.add_argument('--freeze', required=True)
+    n.add_argument('--btc', required=True)
+    n.add_argument('--eth', required=True)
+    n.add_argument('--out', default='')
+    n.add_argument('--plumbing', action='store_true')
+    n.add_argument('--first-day', default='')
+    n.add_argument('--last-day', default='')
+    n.add_argument('--commit-date', default='')
     a = ap.parse_args(argv)
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')
-    {'run': cmd_run, 'causal': cmd_causal, 'floors': cmd_floors, 'choose': cmd_choose}[a.cmd](a)
+    {'run': cmd_run, 'causal': cmd_causal, 'floors': cmd_floors, 'choose': cmd_choose, 'freeze': cmd_freeze, 'topcheck': cmd_topcheck,
+     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify}[a.cmd](a)
 
 
 if __name__ == '__main__':

@@ -527,3 +527,129 @@ jobs:
         if: always()
         run: |
           if [ -d out/dsfloor ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsfloor-twin$TW" out/dsfloor; else echo "no results"; fi
+
+  # AMENDMENT-3.md section 6: the rule the chooser picked, recomputed from the search days with its always-on control and its lockout rate. Fails if the rule
+  # is not the one `choose` named (research/heat_direction/dsfloor/choose.json). Search days only.
+  dsfreeze:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsfreeze')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history of both coins (read only)
+        run: |
+          set -euo pipefail
+          for A in BTC ETH; do
+            bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+            [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          done
+      - name: Hashes
+        run: sha256sum research/heat_direction/PREREG-3.md research/heat_direction/AMENDMENT-3.md research/heat_direction/dsfloor/choose.json python/dirsweep/*.py | sed 's/  / /'; git rev-parse HEAD
+      - name: The chosen rule and its control
+        working-directory: python
+        run: |
+          set -o pipefail
+          FLOOR=$(python3 -c "import json;print(json.load(open('../research/heat_direction/dsfloor/choose.json'))['candidate']['floor'])")
+          RID=$(python3 -c "import json;print(json.load(open('../research/heat_direction/dsfloor/choose.json'))['candidate']['rid'])")
+          python3 -W ignore -m dirsweep.stage freeze --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --floor "$FLOOR" --expect-rid "$RID" --out ../out/dsfreeze 2>&1 | tail -20
+      - name: Keep the result on Drive
+        if: always()
+        run: |
+          if [ -d out/dsfreeze ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsfreeze" out/dsfreeze; else echo "no result"; fi
+
+  # AMENDMENT-3.md section 6, plumbing only (search days, never a minute at or after 2026-11-01): the exchange's daily files against the sweep's minute
+  # file on three days (milliseconds and microseconds eras), and the FINAL scorer on four search weeks with the frozen rule.
+  dsplumb:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsplumb')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history of both coins (read only)
+        run: |
+          set -euo pipefail
+          for A in BTC ETH; do
+            bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+            [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          done
+      - name: The exchange's daily files against the sweep's file (three search days, both coins)
+        working-directory: python
+        run: |
+          rc=0
+          for A in BTC ETH; do
+            for D in 2024-06-10 2025-03-10 2026-10-14; do
+              python3 -W ignore -m dirsweep.stage topcheck --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv" --day "$D" 2>&1 | tail -3 || rc=1
+            done
+          done
+          exit $rc
+      - name: The FINAL scorer on four search weeks (2026-09-28 to 2026-10-25), plumbing only
+        if: always()
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage final --plumbing --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-09-28 --last-day 2026-10-25 --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --out ../out/dsplumb 2>&1 | tail -20
+      - name: Keep the result on Drive
+        if: always()
+        run: |
+          if [ -d out/dsplumb ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsplumb" out/dsplumb; else echo "no result"; fi
+
+  # AMENDMENT-3.md section 6: THE FINAL. One look. Run only after the last FINAL Sunday and the day after it have been published by the exchange.
+  # It checks the hashes of FREEZE-DS.json, that no earlier result is on Drive, that the freeze was committed before its deadline, fetches the exchange's
+  # daily files from two days before the first Monday to the day after the last Sunday, scores the frozen rule with the lockout and keeps the result.
+  dsfinal:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsfinal')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: One look only
+        run: |
+          rc=0
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/final-ds" data/prior || rc=$?
+          if [ -s data/prior/final-result.json ]; then echo "::error::the FINAL has been read already (final-result.json is on Drive)"; exit 1; fi
+      - name: Hashes of the freeze file against the checked-out files
+        working-directory: python
+        run: python3 -W ignore -m dirsweep.stage verify --freeze ../research/heat_direction/FREEZE-DS.json
+      - name: The exchange's daily files (warm-up days, FINAL days, the day after)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage topup --freeze ../research/heat_direction/FREEZE-DS.json --out ../data/final 2>&1 | tail -5
+      - name: The FINAL
+        working-directory: python
+        run: |
+          set -o pipefail
+          CD=$(git log -1 --format=%cI -- ../research/heat_direction/FREEZE-DS.json)
+          python3 -W ignore -m dirsweep.stage final --freeze ../research/heat_direction/FREEZE-DS.json --btc ../data/final/BTC.csv --eth ../data/final/ETH.csv --commit-date "$CD" --out ../out/final 2>&1 | tail -10
+      - name: Keep the result on Drive
+        if: success()
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/final-ds" out/final

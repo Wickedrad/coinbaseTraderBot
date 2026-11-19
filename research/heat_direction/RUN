@@ -1,2 +1,2 @@
-stage=dsfloor
-# AMENDMENT-3.md (frozen in f916434e): the frequency frontier. The nested walk-forward of PREREG-3.md section 4 with the eligibility floor at 3, 6, 10, 15, 20, 30, 40, 60 decided calls a day, the lockout replay of every chosen rule (E9), real coins (twin 0) and the three no-signal twins. SEARCH days only (2020-01-01 to 2026-10-31).
+stage=dsfreeze
+# AMENDMENT-3.md section 6: the chosen rule (floor 60) and its always-on control, recomputed from the search days; the run fails if the rule is not the one `choose` named. SEARCH days only.
