@@ -1,2 +1,2 @@
-stage=h2rounds,cut
-# H2 (PREREG-2.md, sha256 6662a8e0...): DEV rounds from the fade start, plus the cut test with fade specs. No VAL minute is read.
+stage=vevents
+# H2: unseen-day (VAL) event files, real coin + three twins per coin, built once and kept privately on Drive. No outcome is scored here; the looks are a separate stage.
