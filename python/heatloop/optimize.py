@@ -14,6 +14,9 @@ from heatloop import evaluate as EV
 
 ALL_TFS = ('1m', '5m', '15m', '60m')
 ROUND0 = C.Spec(tfs=ALL_TFS, top_n=10, combiner='hottest', lockout=15, lag=0)
+# H2 (PREREG-2.md section 4): the start is the H1 round-6 best spec with the fade side. Calibration only, never sent to VAL.
+ROUND0_H2 = C.Spec(tfs=ALL_TFS, top_n=5, min_share_A=54.0, min_share_B=54.0, min_n_B=0, combiner='hottest', lockout=15, lag=2,
+                   ta_confirm='precedes', ta_conf_k=5, ta_inv_k=5, ta_pool=20, side='fade', fade_k=15)
 STALL_HIT = 0.003
 
 
@@ -47,21 +50,37 @@ def g5(b):
     return [dataclasses.replace(b, lag=x) for x in (0, 1, 2)]
 
 
+def g6(b):
+    """H2 side rule: the heat row's own side, or against the last 1, 5, 15 or 60 minute move."""
+    return [dataclasses.replace(b, side='heat', fade_k=ROUND0.fade_k)] + [dataclasses.replace(b, side='fade', fade_k=k) for k in (1, 5, 15, 60)]
+
+
 PLAN = [('G1 reading bars', [g1]), ('G2 admission', [g2]), ('G3 combiner', [g3]), ('G4 TA layer', [g4]), ('G5 entry delay', [g5]),
         ('G2+G4 once more', [g2, g4])]
 BUDGET = 4 + 240 + 7 + 55 + 3 + 240 + 55
+PLAN_H2 = [('H2 G2 admission', [g2]), ('H2 G6 side rule', [g6]), ('H2 G4 TA layer', [g4]), ('H2 G5 entry delay', [g5]),
+           ('H2 G1 reading bars', [g1]), ('H2 G2+G4 once more', [g2, g4])]
+BUDGET_H2 = 240 + 5 + 55 + 3 + 4 + 240 + 55          # 602 (PREREG-2.md section 3 item 4)
+FAMILIES = ('h1', 'h2')
 
 
-def nondefault(spec: C.Spec) -> int:
-    a, b = spec.as_dict(), ROUND0.as_dict()
+def family(name: str) -> tuple:
+    """(plan, start spec, trial budget) of a test family: h1 = Amendment 1, h2 = PREREG-2.md."""
+    return {'h1': (PLAN, ROUND0, BUDGET), 'h2': (PLAN_H2, ROUND0_H2, BUDGET_H2)}[name]
+
+
+def nondefault(spec: C.Spec, ref: C.Spec = None) -> int:
+    """How many spec fields differ from the reference spec (the family's start). Fields, not dict keys: an H1 spec's side and fade_k
+    are left out of its hash but still compare."""
+    a, b = dataclasses.asdict(spec), dataclasses.asdict(ref or ROUND0)
     return sum(a[k] != b[k] for k in a)
 
 
-def key(res: dict) -> tuple:
+def key(res: dict, ref: C.Spec = None) -> tuple:
     """Sort key, smaller = better. An ineligible trial is worse than every eligible one."""
     lb = res['checks'][1]['value']
     lb = float(lb) if lb is not None and lb == lb else -1.0
-    return (0 if res['eligible'] else 1, -res['total'], -lb, nondefault(res['spec']), res['hash'])
+    return (0 if res['eligible'] else 1, -res['total'], -lb, nondefault(res['spec'], ref), res['hash'])
 
 
 def better(a: dict, b: dict) -> bool:
@@ -74,11 +93,11 @@ def better(a: dict, b: dict) -> bool:
     return (a['total'], la) > (b['total'], lb) and (a['total'] > b['total'] or la > lb + 1e-12)
 
 
-def summary(res: dict) -> dict:
+def summary(res: dict, ref: C.Spec = None) -> dict:
     return dict(hash=res['hash'], spec=res['spec'].as_dict(), total=res['total'], core8=res['core8'], gate=res['gate'],
                 passed=[int(c['passed']) for c in res['checks']], lb=res['checks'][1]['value'], hit=round(res['hit_rate'], 4),
                 n_decided=res['n_decided'], n_by_coin=res['n_dec_by_coin'], flat=round(res['flat_share'], 5), eligible=res['eligible'],
-                nondefault=nondefault(res['spec']))
+                nondefault=nondefault(res['spec'], ref))
 
 
 def trial(spec, sets, rows, lo, hi, blocks='bimonth') -> dict:
@@ -89,11 +108,13 @@ def trial(spec, sets, rows, lo, hi, blocks='bimonth') -> dict:
     return res
 
 
-def descend(sets, rows, lo, hi, blocks='bimonth', log=None, rounds=None, start=None, stall=True) -> list:
-    """Run the rounds (all by default). Returns one dict per round: start, best, improved, trials. `log(record)` gets every trial."""
-    best = trial(start or ROUND0, sets, rows, lo, hi, blocks)
+def descend(sets, rows, lo, hi, blocks='bimonth', log=None, rounds=None, start=None, stall=True, plan=None, ref=None) -> list:
+    """Run the rounds (all by default). Returns one dict per round: start, best, improved, trials. `log(record)` gets every trial.
+    plan: the family's rounds (PLAN of H1 by default); ref: the spec the 'fewer non-default fields' tie-break counts from."""
+    ref = ref or ROUND0
+    best = trial(start or ref, sets, rows, lo, hi, blocks)
     out, quiet = [], 0
-    for r, (name, sweeps) in enumerate(PLAN, 1):
+    for r, (name, sweeps) in enumerate(plan or PLAN, 1):
         if rounds is not None and r not in rounds:
             continue
         start_res, n = best, 0
@@ -103,10 +124,10 @@ def descend(sets, rows, lo, hi, blocks='bimonth', log=None, rounds=None, start=N
             n += len(res)
             for t in res:
                 if log:
-                    log(dict(round=r, group=name, **summary(t)))
-            best = min(res + [cur], key=key)
+                    log(dict(round=r, group=name, **summary(t, ref)))
+            best = min(res + [cur], key=lambda t: key(t, ref))
         improved = better(best, start_res)
-        out.append(dict(round=r, group=name, trials=n, start=summary(start_res), best=summary(best), improved=bool(improved)))
+        out.append(dict(round=r, group=name, trials=n, start=summary(start_res, ref), best=summary(best, ref), improved=bool(improved)))
         gain_total = best['total'] - start_res['total']
         gain_hit = best['hit_rate'] - start_res['hit_rate']
         quiet = quiet + 1 if (gain_total <= 0 and gain_hit < STALL_HIT) else 0

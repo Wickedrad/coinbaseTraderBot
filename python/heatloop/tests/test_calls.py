@@ -57,6 +57,44 @@ class Decide(unittest.TestCase):
         ev = [(100, '1m:ZSCORE20=very low'), (114, '1m:ZSCORE20=very low')]          # 114 + 2 = 116 is inside the lockout that ends at 117
         self.assertEqual([c[0] for c in C.decide(ev, self.adm, C.Spec(lag=2))['calls']], [102])
 
+    def test_a_fade_call_takes_its_side_from_side_fn_and_the_event_only_times_it(self):
+        seen = []
+
+        def up(e):
+            seen.append(e)
+            return 1
+        sp = C.Spec(side='fade', lag=2)
+        out = C.decide([(100, '5m:RSI14=very high')], self.adm, sp, side_fn=up)['calls']       # the heat side of this row is -1
+        self.assertEqual(out, [(102, 1, '5m:RSI14=very high', None)])
+        self.assertEqual(seen, [102])                                                          # side_fn gets the ENTRY row (event row + lag)
+
+    def test_a_zero_fade_side_makes_no_call_and_starts_no_lockout(self):
+        sides = {100: 0, 105: -1}
+        ev = [(100, '1m:ZSCORE20=very low'), (105, '1m:ZSCORE20=very low')]
+        out = C.decide(ev, self.adm, C.Spec(side='fade'), side_fn=lambda e: sides[e])['calls']
+        self.assertEqual([(c[0], c[1]) for c in out], [(105, -1)])
+
+    def test_fade_needs_a_side_fn_and_the_hottest_combiner(self):
+        with self.assertRaises(ValueError):
+            C.decide([(100, '1m:ZSCORE20=very low')], self.adm, C.Spec(side='fade'))
+        with self.assertRaises(ValueError):
+            C.decide([(100, '1m:ZSCORE20=very low')], self.adm, C.Spec(side='fade', combiner='vote'), side_fn=lambda e: 1)
+        with self.assertRaises(ValueError):
+            C.decide([], self.adm, C.Spec(side='sideways'), side_fn=lambda e: 1)
+
+    def test_a_fade_call_at_the_confirmation_minute_keeps_the_base_side(self):
+        adm = C.admit(ROWS, C.Spec(tfs=('5m',), top_n=1), 'BTC')                               # RSI14, heat side -1
+        pool = [ROWS[2]]                                                                       # EMA9, a different family, side +1
+        ev = [(100, '5m:RSI14=very high'), (103, '15m:EMA9=above')]
+        out = C.decide(ev, adm, C.Spec(side='fade', ta_confirm='follows', ta_conf_k=5, ta_pool=4), pool, side_fn=lambda e: 1)['calls']
+        self.assertEqual(out, [(103, 1, '5m:RSI14=very high', True)])
+        out = C.decide(ev, adm, C.Spec(side='fade', ta_confirm='follows', ta_conf_k=5, ta_pool=4), pool, side_fn=lambda e: -1)['calls']
+        self.assertEqual(out, [])                                                              # the fade side -1 is not what EMA9 says
+
+    def test_a_heat_spec_keeps_its_hash_keys(self):
+        self.assertNotIn('side', C.Spec().as_dict())
+        self.assertEqual(C.Spec(side='fade').as_dict()['fade_k'], 15)
+
     def test_vote_needs_the_margin_and_a_side(self):
         ev = [(10, '1m:ZSCORE20=very low'), (10, '5m:ADX=high'), (10, '5m:RSI14=very high')]       # +1 +1 -1
         self.assertEqual(C.decide(ev, self.adm, C.Spec(combiner='vote', vote_k=3, margin=1))['calls'][0][1], 1)

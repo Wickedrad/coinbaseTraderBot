@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import gzip
 import io
 import json
@@ -96,7 +97,7 @@ class Glue(unittest.TestCase):
         self.assertEqual(recs[1]['same_side']['n'] + recs[1]['other_side']['n'] + recs[1]['no_past_move']['n'], recs[1]['decided'])
         self.assertNotIn('Traceback', text)
 
-    def test_val_needs_the_flag_and_prints_one_bit_only(self):
+    def test_val_needs_the_flag_and_prints_the_bits_only(self):
         spec = os.path.join(self.tmp, 'spec.json')
         with open(spec, 'w') as f:
             json.dump(optimize.ROUND0.as_dict(), f)
@@ -116,11 +117,100 @@ class Glue(unittest.TestCase):
                 run(args)
         with mock.patch.dict(os.environ, {'HEATLOOP_VAL': '1'}):
             recs, text = run(args)
-        self.assertEqual(set(recs[0]), {'round', 'hash', 'gate_ok', 'bit'})            # nothing else reaches the log
+        self.assertEqual(set(recs[0]), {'round', 'hash', 'gate_ok', 'bit', 'core_bit'})   # nothing else reaches the log
         self.assertIn(recs[0]['bit'], (0, 1))
+        self.assertIn(recs[0]['core_bit'], (0, 1))
+        self.assertLessEqual(recs[0]['bit'], recs[0]['core_bit'] or 1)
         with open(os.path.join(priv, 'val-look-round1.json')) as f:
             table = json.load(f)
         self.assertEqual(len(table['checks']), 10)
+
+    def test_dev_family_h2_runs_its_own_plan_from_its_own_start(self):
+        out = os.path.join(self.tmp, 'devout-h2')
+        with mock.patch.object(optimize, 'PLAN_H2', optimize.PLAN_H2[1:2]):
+            recs, _ = run(['dev', '--dev', self.dev, '--league', self.league, '--out', out, '--family', 'h2'])
+        start = [r for r in recs if r.get('start') and 'family' in r]
+        self.assertEqual(start[0]['start']['spec']['side'], 'fade')
+        done = recs[-1]
+        self.assertEqual((done['family'], done['trials'], done['budget']), ('h2', 5, 602))
+        with open(os.path.join(out, 'trials.jsonl')) as f:
+            specs = [json.loads(x)['spec'] for x in f]
+        self.assertEqual({sp.get('side', 'heat') for sp in specs}, {'heat', 'fade'})
+
+    def test_qualifying_rounds_are_improved_eligible_core8_distinct_in_order_and_at_most_three(self):
+        def rd(n, h, improved=True, eligible=True, passed=(1,) * 8 + (0, 0)):
+            return dict(round=n, improved=improved, best=dict(hash=h, eligible=eligible, passed=list(passed), spec={}))
+        rounds = [rd(1, 'a'), rd(2, 'b', improved=False), rd(3, 'c', passed=(1,) * 7 + (0, 1, 1)), rd(4, 'd', eligible=False),
+                  rd(5, 'a'), rd(6, 'e', passed=(1,) * 10), rd(7, 'f'), rd(8, 'g')]
+        self.assertEqual([r['round'] for r in stage.qualifying(rounds)], [1, 6, 7])
+        self.assertEqual([r['round'] for r in stage.qualifying(rounds, 2)], [1, 6])
+        self.assertEqual(stage.qualifying([rd(1, 'a', passed=(1,) * 6 + (0, 0, 1, 1))]), [])
+
+    def make_val(self, name):
+        val = os.path.join(self.tmp, name)
+        os.makedirs(val)
+        rng = np.random.default_rng(4)
+        for coin in ('BTC', 'ETH'):
+            for tw in (0, 1, 2, 3):
+                es = TE.make_set(coin, rng, False, per_day=8, days=123, t0=guards.VAL_START)
+                es.twin, es.scope = tw, 'val'
+                ES.save(es, os.path.join(val, f'val-{coin}-t{tw}.npz'))
+        return val
+
+    def rounds_file(self, name, specs):
+        path = os.path.join(self.tmp, name)
+        rounds = [dict(round=n, group='x', improved=True, best=dict(hash=f'h{n}', eligible=True, passed=[1] * 8 + [0, 0], spec=sp.as_dict()))
+                  for n, sp in specs]
+        with open(path, 'w') as f:
+            json.dump(rounds, f)
+        return path
+
+    def test_looks_need_the_flag_and_print_bits_only(self):
+        val = self.make_val('val-looks')
+        fade = dataclasses.replace(optimize.ROUND0_H2, tfs=('1m',), top_n=2, min_share_A=0.0, min_share_B=0.0)
+        rounds = self.rounds_file('rounds-a.json', [(2, fade), (4, dataclasses.replace(fade, fade_k=5))])
+        priv = os.path.join(self.tmp, 'private-looks')
+        args = ['looks', '--rounds', rounds, '--val', val, '--league', self.league, '--private', priv]
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('HEATLOOP_VAL', None)
+            with self.assertRaises(SystemExit):
+                run(args)
+        self.assertFalse(os.path.exists(priv))
+        with mock.patch.dict(os.environ, {'HEATLOOP_VAL': '1'}):
+            recs, text = run(args)
+        self.assertEqual(recs[0]['candidates'], [dict(round=2, hash='h2'), dict(round=4, hash='h4')])
+        looks = [r for r in recs if 'bit' in r]
+        self.assertEqual([set(r) for r in looks], [{'round', 'hash', 'gate_ok', 'bit', 'core_bit'}] * 2)
+        self.assertEqual(recs[-1], dict(taken=2, stopped='looks used up'))
+        self.assertNotIn('checks', text)
+        for n in (2, 4):
+            with open(os.path.join(priv, f'val-look-round{n}.json')) as f:
+                self.assertEqual(len(json.load(f)['checks']), 10)
+
+    def test_looks_stop_at_the_first_bit_and_at_a_gate_failure_without_using_a_look(self):
+        val = self.make_val('val-looks2')
+        fade = dataclasses.replace(optimize.ROUND0_H2, tfs=('1m',), top_n=2, min_share_A=0.0, min_share_B=0.0)
+        rounds = self.rounds_file('rounds-b.json', [(1, fade), (3, dataclasses.replace(fade, fade_k=5)), (5, dataclasses.replace(fade, fade_k=1))])
+        args = ['looks', '--rounds', rounds, '--val', val, '--league', self.league, '--private', os.path.join(self.tmp, 'private-looks2')]
+        seq = [dict(round=1, hash='x', gate_ok=True, bit=0, core_bit=0), dict(round=3, hash='y', gate_ok=True, bit=0, core_bit=1)]
+        with mock.patch.dict(os.environ, {'HEATLOOP_VAL': '1'}), mock.patch.object(stage, 'look', side_effect=seq) as m:
+            recs, _ = run(args)
+        self.assertEqual(m.call_count, 2)                                              # round 5 is never looked at
+        self.assertEqual(recs[-1], dict(taken=2, stopped='a bit is 1'))
+        bad = [dict(round=1, hash='x', gate_ok=False, bit=0, core_bit=0)]
+        with mock.patch.dict(os.environ, {'HEATLOOP_VAL': '1'}), mock.patch.object(stage, 'look', side_effect=bad) as m:
+            recs, _ = run(args)
+        self.assertEqual(m.call_count, 1)
+        self.assertEqual(recs[-1], dict(taken=0, stopped='gate failed (no look used)'))
+
+    def test_no_qualifying_round_means_no_look_and_no_val_file_is_read(self):
+        path = os.path.join(self.tmp, 'rounds-none.json')
+        with open(path, 'w') as f:
+            json.dump([dict(round=1, improved=False, best=dict(hash='a', eligible=True, passed=[1] * 10, spec={}))], f)
+        empty = os.path.join(self.tmp, 'no-val-here')                                    # a missing directory would fail if it were read
+        with mock.patch.dict(os.environ, {'HEATLOOP_VAL': '1'}):
+            recs, _ = run(['looks', '--rounds', path, '--val', empty, '--league', self.league, '--private', os.path.join(self.tmp, 'p3')])
+        self.assertEqual(recs[-1], dict(taken=0, stopped='no round qualifies on DEV'))
 
     def test_a_dev_set_filed_as_val_is_refused(self):
         d = os.path.join(self.tmp, 'mixed')

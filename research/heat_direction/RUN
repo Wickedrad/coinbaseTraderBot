@@ -1,2 +1,2 @@
-stage=timing
-# timing v2: the fade of the last 15 minutes month by month, warm-up (2025-06..12) and DEV months; DEV and warm-up only, no VAL
+stage=h2rounds,cut
+# H2 (PREREG-2.md, sha256 6662a8e0...): DEV rounds from the fade start, plus the cut test with fade specs. No VAL minute is read.

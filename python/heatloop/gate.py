@@ -37,12 +37,12 @@ def twin_gate(spec, twins: dict, rows: list, lo: int, hi: int, blocks='bimonth')
     return dict(rows=out, ok=bool(out) and all(r['ok'] for r in out))
 
 
-def random_side(calls, inv, unc, lo: int, hi: int, blocks='bimonth', draws: int = DRAWS, seed: int = DRAW_SEED) -> dict:
+def random_side(calls, inv, unc, lo: int, hi: int, blocks='bimonth', draws: int = DRAWS, seed: int = DRAW_SEED, base=None) -> dict:
     rng = np.random.default_rng(seed)
     totals = []
     for _ in range(draws):
         c, i, u = EV.randomized(calls, inv, unc, rng)
-        totals.append(EV.score_calls(c, i, u, lo, hi, blocks)['total'])
+        totals.append(EV.score_calls(c, i, u, lo, hi, blocks, base=base)['total'])
     share = float(np.mean([t <= MAX_SCORE for t in totals]))
     return dict(draws=draws, share_le2=round(share, 4), mean_total=round(float(np.mean(totals)), 2), max_total=int(max(totals)),
                 ok=bool(share >= DRAW_SHARE))
@@ -51,5 +51,5 @@ def random_side(calls, inv, unc, lo: int, hi: int, blocks='bimonth', draws: int 
 def gate(spec, calls_res: dict, twins: dict, rows: list, lo: int, hi: int, blocks='bimonth') -> dict:
     t = twin_gate(spec, twins, rows, lo, hi, blocks) if twins else dict(rows=[], ok=False)
     c, i, u = calls_res['_calls']
-    r = random_side(c, i, u, lo, hi, blocks)
+    r = random_side(c, i, u, lo, hi, blocks, base=calls_res.get('_base'))
     return dict(twins=t, random=r, ok=bool(t['ok'] and r['ok']))

@@ -117,9 +117,11 @@ def _naive(c, dec, hit_all_sides):
     return out
 
 
-def score(calls: Calls, inv, lo: int, hi: int, blocks='month', floors=None, seed=SEED, unconf=None) -> dict:
+def score(calls: Calls, inv, lo: int, hi: int, blocks='month', floors=None, seed=SEED, unconf=None, base=None) -> dict:
     """Score `calls` on the window [lo, hi) (ms). blocks: 'month' (calendar months, VAL), 'bimonth' (pairs of calendar months, the three DEV folds) or an int n (n equal parts by day, FINAL).
-    unconf: with a `follows` TA layer the made calls are the confirmed set and `unconf` holds the lapsed base calls, scored as if made."""
+    unconf: with a `follows` TA layer the made calls are the confirmed set and `unconf` holds the lapsed base calls, scored as if made.
+    base: {rule: hit rate} of the ten naive rules at EVERY minute of the window (PREREG-2.md, side = fade): check 3 compares with these
+    instead of with the rules on the candidate's own call times."""
     F = dict(FLOORS if floors is None else floors)
     c = calls
     n_all = len(c)
@@ -141,8 +143,9 @@ def score(calls: Calls, inv, lo: int, hi: int, blocks='month', floors=None, seed
     put('not_luck', lb > T['lower'], lb, n >= F['pooled'])
     # 3 beats the best naive rule
     nv = _naive(c, dec, hit)
-    best = max((v for v in nv.values() if v == v), default=float('nan'))
-    put('beats_naive', (rate - best) >= T['naive_gap'], rate - best if best == best else float('nan'), n >= F['pooled'], best_rule=max(nv, key=lambda k: -1 if nv[k] != nv[k] else nv[k]))
+    cmp_ = nv if base is None else base
+    best = max((v for v in cmp_.values() if v == v), default=float('nan'))
+    put('beats_naive', (rate - best) >= T['naive_gap'], rate - best if best == best else float('nan'), n >= F['pooled'], best_rule=max(cmp_, key=lambda k: -1 if cmp_[k] != cmp_[k] else cmp_[k]))
     # 4 both coins
     cv = {k: _rate(h[cd.coin == k]) for k in SCORED_COINS}
     cn = {k: int((cd.coin == k).sum()) for k in SCORED_COINS}
@@ -215,4 +218,4 @@ def score(calls: Calls, inv, lo: int, hi: int, blocks='month', floors=None, seed
     gate = all(r['passed'] for r in res[:3])
     return dict(checks=res, total=int(total), gate=bool(gate), passed=bool(gate and total >= 9),
                 core8=int(sum(r['passed'] for r in res[:8])), n_decided=int(n), n_calls=int(n_all),
-                flat_share=flat_share, voided=bool(flat_share > T['flat_void']), hit_rate=rate, naive=nv)
+                flat_share=flat_share, voided=bool(flat_share > T['flat_void']), hit_rate=rate, naive=nv, naive_base=base)

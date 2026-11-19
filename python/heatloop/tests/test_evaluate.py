@@ -90,6 +90,68 @@ class Evaluate(unittest.TestCase):
         sc = EV.score_calls(c2, None, None, self.lo, self.hi, blocks=2)
         self.assertLess(abs(sc['hit_rate'] - 0.5), 0.12)
 
+    def test_fade_fn_is_minus_the_sign_of_the_move_from_the_entry_open(self):
+        o = np.array([100.00, 100.02, 100.05, 100.05, 100.04, 100.04])
+        f = EV.fade_fn(o, 0.01, 2)
+        self.assertEqual([f(e) for e in range(8)], [0, 0, -1, -1, 1, 1, 0, 0])       # e<k and e>=n give 0
+        self.assertEqual(EV.fade_fn(o, 0.01, 1)(4), 1)
+        self.assertEqual(EV.fade_fn(o, 0.01, 1)(1), -1)
+        self.assertEqual(EV.fade_fn(o, 0.05, 2)(5), 0)                                # a 0.01 move is under half of a 0.05 step
+
+    def test_baseline_counts_every_decided_minute_and_matches_a_brute_force_loop(self):
+        spec = C.Spec(tfs=('1m',), top_n=2)
+        lo, hi = self.lo + 86_400_000, self.hi - 86_400_000
+        base = EV.baseline(spec, self.rand, lo, hi)
+        self.assertEqual(sorted(base), sorted(['up', 'down'] + [f'{m}{k}' for m in ('follow', 'fade') for k in (1, 5, 15, 60)]))
+        cnt = {}
+        for coin in ('BTC', 'ETH'):
+            es = self.rand[coin]
+            o = es.o
+            for e in range(60, es.n - 16):
+                t = es.t0 + e * MIN
+                if not lo <= t < hi:
+                    continue
+                mv = (o[e + 15] - o[e]) / 0.01
+                if abs(mv) < 1.5:
+                    continue
+                add = lambda k, ok: cnt.setdefault(k, [0, 0]).__setitem__(slice(None), [cnt[k][0] + int(ok), cnt[k][1] + 1])
+                cnt.setdefault('up', [0, 0]); cnt.setdefault('down', [0, 0])
+                add('up', mv > 0); add('down', mv < 0)
+                for k in (1, 5, 15, 60):
+                    p = np.sign(np.round((o[e] - o[e - k]) / 0.01))
+                    if p == 0:
+                        continue
+                    cnt.setdefault(f'follow{k}', [0, 0]); cnt.setdefault(f'fade{k}', [0, 0])
+                    add(f'follow{k}', np.sign(mv) == p); add(f'fade{k}', np.sign(mv) == -p)
+        for k, (h, d) in cnt.items():
+            self.assertAlmostEqual(base[k], h / d, places=12, msg=k)
+        self.assertGreater(cnt['fade15'][1], 3000)
+        self.assertAlmostEqual(base['up'] + base['down'], 1.0, places=12)
+
+    def test_a_fade_spec_calls_against_the_last_move_and_is_scored_against_every_minute(self):
+        for k in (5, 15):
+            spec = C.Spec(tfs=('1m',), top_n=2, side='fade', fade_k=k)
+            res = EV.evaluate(spec, self.rand, self.rows, self.lo, self.hi, blocks=2)
+            c = res['_calls'][0]
+            self.assertGreater(len(c), 300)
+            self.assertTrue((c.side == -c.past[k]).all())                              # every call is against the last k minute move
+            self.assertTrue((c.past[k] != 0).all())
+            self.assertIsNotNone(res['_base'])
+            self.assertEqual(res['naive_base'], res['_base'])
+            self.assertIn(res['checks'][2]['best_rule'], res['_base'])
+            self.assertAlmostEqual(res['checks'][2]['value'], res['hit_rate'] - max(res['_base'].values()), places=9)
+        heat = EV.evaluate(C.Spec(tfs=('1m',), top_n=2), self.rand, self.rows, self.lo, self.hi, blocks=2)
+        self.assertIsNone(heat['_base'])                                               # a heat spec keeps the same-call comparison
+
+    def test_the_random_side_gate_scores_a_fade_spec_against_the_same_base(self):
+        from heatloop import gate
+        spec = C.Spec(tfs=('1m',), top_n=2, side='fade', fade_k=15)
+        res = EV.evaluate(spec, self.rand, self.rows, self.lo, self.hi, blocks=2)
+        c, i, u = res['_calls']
+        out = gate.random_side(c, i, u, self.lo, self.hi, 2, draws=6, base=res['_base'])
+        self.assertEqual(out['draws'], 6)
+        self.assertLessEqual(out['max_total'], 10)
+
     def test_event_set_round_trips_and_lists_events_in_row_order(self):
         es = self.rand['BTC']
         with tempfile.TemporaryDirectory() as d:

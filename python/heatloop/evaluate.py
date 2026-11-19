@@ -4,6 +4,7 @@
   run(spec, sets, rows)            per coin events -> decide -> outcomes; returns the joined rubric.Calls (calls, inv, unconf)
   evaluate(spec, sets, rows, lo_ms, hi_ms, blocks)   the ten checks on the window [lo_ms, hi_ms)
   randomized(parts, rng)           the same calls with random sides (the random-side draws of the twin gate)
+  fade_fn / baseline               side = fade (PREREG-2.md): the side against the last k minute move, and the ten naive rules at every minute
 """
 import dataclasses
 
@@ -23,6 +24,48 @@ def _ta_on(spec) -> bool:
     return spec.ta_confirm != 'none' or spec.ta_inv_k > 0
 
 
+def fade_fn(o, step: float, k: int):
+    """side_fn(entry_row) for side = fade: minus the sign of the last k minute move, measured from the open of the entry minute
+    (known at entry) back to the open k minutes earlier. 0 where the move is under half a step or the rows are not on the grid."""
+    n = len(o)
+
+    def f(e):
+        if e < k or e >= n:
+            return 0
+        return -int(np.sign(np.round((o[e] - o[e - k]) / step)))
+    return f
+
+
+def baseline(spec: C.Spec, sets: dict, lo_ms: int, hi_ms: int) -> dict:
+    """{rule: hit rate} of the ten naive rules at EVERY minute of [lo_ms, hi_ms), the spec's coins pooled. The same rows as the calls may
+    use (a row needs 60 minutes behind it and its late outcome inside the grid) and the same decided rule (a move of at least FLAT_STEPS)."""
+    cnt = {}
+
+    def add(name, hit, dec):
+        c = cnt.setdefault(name, [0, 0])
+        c[0] += int(hit)
+        c[1] += int(dec)
+    for coin in spec.coins:
+        es = sets[coin]
+        step = float(es.step) if es.step else 1.0
+        lo = max(60, -(-(lo_ms - es.t0) // C.MIN))
+        hi = min(es.n - 1 - spec.horizon, -(-(hi_ms - es.t0) // C.MIN))
+        if hi <= lo:
+            continue
+        e = np.arange(lo, hi)
+        mv = (es.o[e + spec.horizon] - es.o[e]) / step
+        dec = np.abs(mv) >= rubric.FLAT_STEPS
+        sg = np.sign(mv)
+        add('up', (sg > 0)[dec].sum(), dec.sum())
+        add('down', (sg < 0)[dec].sum(), dec.sum())
+        for k in rubric.NAIVE_KS:
+            p = np.sign(np.round((es.o[e] - es.o[e - k]) / step))
+            ok = dec & (p != 0)
+            add(f'follow{k}', (sg == p)[ok].sum(), ok.sum())
+            add(f'fade{k}', (sg == -p)[ok].sum(), ok.sum())
+    return {k: (h / d if d else float('nan')) for k, (h, d) in cnt.items()}
+
+
 def run(spec: C.Spec, sets: dict, rows: list) -> dict:
     """{'calls': Calls, 'inv': Calls | None, 'unconf': Calls | None} over every coin of the spec, all calls of the loaded grid."""
     pc, pi, pu = [], [], []
@@ -31,8 +74,9 @@ def run(spec: C.Spec, sets: dict, rows: list) -> dict:
         admitted = C.admit(rows, spec, coin)
         pool = pool_rows(rows, coin, spec.ta_pool, spec.horizon) if _ta_on(spec) else []
         want = [k for r in admitted + pool for k in [r['key']] + list(r.get('aliases') or [])]
-        d = C.decide(es.events_for(want), admitted, spec, pool)
         step = float(es.step) if es.step else 1.0
+        sf = fade_fn(es.o, step, spec.fade_k) if spec.side == 'fade' else None
+        d = C.decide(es.events_for(want), admitted, spec, pool, side_fn=sf)
         mk = lambda items: C.outcomes(coin, items, es.o, step, spec.horizon, es.t0, rows_hi=es.n)
         pc.append(mk(d['calls']))
         pi.append(mk(d['inv']))
@@ -56,7 +100,9 @@ def window(c, lo_ms: int, hi_ms: int):
 def evaluate(spec: C.Spec, sets: dict, rows: list, lo_ms: int, hi_ms: int, blocks='bimonth', seed: int = rubric.SEED) -> dict:
     r = run(spec, sets, rows)
     calls, inv, unc = (window(r[k], lo_ms, hi_ms) for k in ('calls', 'inv', 'unconf'))
-    out = rubric.score(calls, inv, lo_ms, hi_ms, blocks, seed=seed, unconf=unc)
+    base = baseline(spec, sets, lo_ms, hi_ms) if spec.side == 'fade' else None
+    out = rubric.score(calls, inv, lo_ms, hi_ms, blocks, seed=seed, unconf=unc, base=base)
+    out['_base'] = base
     out['n_by_coin'] = {k: int((calls.coin == k).sum()) for k in spec.coins}
     dec, _ = rubric.right(calls.side, calls.move)
     out['n_dec_by_coin'] = {k: int(((calls.coin == k) & dec).sum()) for k in spec.coins}
@@ -80,5 +126,5 @@ def randomized(calls, inv, unc, rng):
     return flip(calls), flip(inv), flip(unc)
 
 
-def score_calls(calls, inv, unc, lo_ms, hi_ms, blocks='bimonth', seed=rubric.SEED) -> dict:
-    return rubric.score(calls, inv, lo_ms, hi_ms, blocks, seed=seed, unconf=unc)
+def score_calls(calls, inv, unc, lo_ms, hi_ms, blocks='bimonth', seed=rubric.SEED, base=None) -> dict:
+    return rubric.score(calls, inv, lo_ms, hi_ms, blocks, seed=seed, unconf=unc, base=base)

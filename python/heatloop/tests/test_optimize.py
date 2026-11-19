@@ -54,6 +54,48 @@ class Grid(unittest.TestCase):
         self.assertEqual(O.nondefault(dataclasses.replace(s, top_n=20, lag=1)), 2)
 
 
+class H2Grid(unittest.TestCase):
+    def test_trial_budget_is_the_frozen_602(self):
+        sizes = [sum(len(s(O.ROUND0_H2)) for s in sw) for _, sw in O.PLAN_H2]
+        self.assertEqual(sizes, [240, 5, 55, 3, 4, 295])
+        self.assertEqual(sum(sizes), 602)
+        self.assertEqual(O.BUDGET_H2, 602)
+        self.assertEqual(O.family('h2'), (O.PLAN_H2, O.ROUND0_H2, 602))
+        self.assertEqual(O.family('h1'), (O.PLAN, O.ROUND0, 604))
+
+    def test_the_h2_start_is_the_h1_round_six_best_with_the_fade_side(self):
+        s = O.ROUND0_H2
+        self.assertEqual((s.tfs, s.top_n, s.min_share_A, s.min_share_B, s.min_n_B, s.combiner, s.lag, s.lockout),
+                         (O.ALL_TFS, 5, 54.0, 54.0, 0, 'hottest', 2, 15))
+        self.assertEqual((s.ta_confirm, s.ta_conf_k, s.ta_inv_k, s.ta_pool, s.side, s.fade_k), ('precedes', 5, 5, 20, 'fade', 15))
+        self.assertEqual(O.nondefault(s, s), 0)
+
+    def test_the_side_round_is_heat_or_a_fade_of_1_5_15_or_60_minutes(self):
+        self.assertEqual([(x.side, x.fade_k) for x in O.g6(O.ROUND0_H2)],
+                         [('heat', 15), ('fade', 1), ('fade', 5), ('fade', 15), ('fade', 60)])
+        self.assertTrue(all(x.top_n == 5 and x.lag == 2 for x in O.g6(O.ROUND0_H2)))
+
+    def test_h2_groups_keep_the_side_they_were_given(self):
+        b = dataclasses.replace(O.ROUND0_H2, fade_k=60)
+        for g in (O.g1, O.g2, O.g4, O.g5):
+            self.assertTrue(all((x.side, x.fade_k) == ('fade', 60) for x in g(b)))
+
+    def test_nondefault_counts_fields_against_the_given_reference(self):
+        f = dataclasses.replace(O.ROUND0_H2, fade_k=5, lag=0)
+        self.assertEqual(O.nondefault(f, O.ROUND0_H2), 2)
+        heat = O.g6(O.ROUND0_H2)[0]
+        self.assertEqual(O.nondefault(heat, O.ROUND0_H2), 1)          # only the side differs: fade_k is kept at the reference value
+        self.assertGreater(O.nondefault(O.ROUND0_H2), 5)              # against the H1 start it differs in many fields
+        self.assertEqual(O.nondefault(O.ROUND0), 0)
+
+    def test_h1_hashes_do_not_move_with_the_new_fields(self):
+        self.assertEqual(C.spec_hash(O.ROUND0), '5413803767761a24523d1712f23ab4874c2f9070305127e72b3760a6620b5740')
+        self.assertEqual(C.spec_hash(C.Spec()), 'f93a95729262c56d3bf8e64e013d7aef84091ec550493f5415c694b09b4f0791')
+        self.assertNotIn('side', O.ROUND0.as_dict())
+        self.assertEqual(O.ROUND0_H2.as_dict()['side'], 'fade')
+        self.assertNotEqual(C.spec_hash(O.ROUND0_H2), C.spec_hash(dataclasses.replace(O.ROUND0_H2, fade_k=5)))
+
+
 class Selection(unittest.TestCase):
     def test_more_checks_then_larger_lower_bound_then_simpler_then_hash(self):
         a, b = fake(6, 0.51), fake(7, 0.49)
@@ -95,6 +137,20 @@ class Descent(unittest.TestCase):
         for r in out:
             self.assertGreaterEqual(r['best']['total'], r['start']['total'])
         self.assertTrue(all('hash' in t and 'spec' in t for t in seen))
+
+    def test_an_h2_round_runs_with_its_own_plan_start_and_reference(self):
+        rng = np.random.default_rng(11)
+        rows = TE.universe('BTC') + TE.universe('ETH')
+        sets = {c: TE.make_set(c, rng, False, per_day=14, days=60) for c in ('BTC', 'ETH')}
+        lo, hi = guards.DEV[0], guards.DEV[0] + 60 * 86_400_000
+        seen = []
+        out = O.descend(sets, rows, lo, hi, blocks=2, log=seen.append, rounds={2}, stall=False, plan=O.PLAN_H2, start=O.ROUND0_H2, ref=O.ROUND0_H2)
+        self.assertEqual(len(seen), 5)
+        self.assertEqual(out[0]['group'], 'H2 G6 side rule')
+        self.assertEqual(out[0]['start']['spec']['side'], 'fade')
+        self.assertEqual(out[0]['start']['nondefault'], 0)
+        self.assertEqual({t['spec'].get('side', 'heat') for t in seen}, {'heat', 'fade'})
+        self.assertGreaterEqual(out[0]['best']['total'], out[0]['start']['total'])
 
     def test_two_quiet_rounds_in_a_row_stop_the_loop(self):
         rng = np.random.default_rng(10)

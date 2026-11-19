@@ -199,6 +199,31 @@ class Scoring(unittest.TestCase):
         self.assertFalse(r['checks'][2]['passed'])
         self.assertEqual(r['checks'][2]['best_rule'], 'follow15')
 
+    def test_a_given_base_replaces_the_same_call_comparison(self):
+        """PREREG-2.md section 3 item 1: with side = fade check 3 compares with the naive rules at every minute, not on the calls."""
+        rng = np.random.default_rng(10)
+        calls, inv = synth(rng, p_unc=0.60, p_conf=0.60)
+        calls.past[15] = np.sign(calls.move).astype(int)               # on the calls follow15 is always right: the old bar is unreachable
+        self.assertFalse(R.score(calls, inv, LO, HI, 'month')['checks'][2]['passed'])
+        base = {'up': 0.51, 'down': 0.49, 'follow15': 0.50, 'fade15': 0.525}
+        r = R.score(calls, inv, LO, HI, 'month', base=base)
+        c3 = r['checks'][2]
+        self.assertEqual(c3['best_rule'], 'fade15')
+        self.assertAlmostEqual(c3['value'], r['hit_rate'] - 0.525, places=9)
+        self.assertTrue(c3['passed'])
+        self.assertEqual(r['naive_base'], base)
+        self.assertIn('follow15', r['naive'])                           # the same-call rates are still reported
+        tight = R.score(calls, inv, LO, HI, 'month', base=dict(base, fade15=r['hit_rate'] - 0.019))
+        self.assertFalse(tight['checks'][2]['passed'])                  # a gap under 2.0 points fails
+        edge = R.score(calls, inv, LO, HI, 'month', base=dict(base, fade15=r['hit_rate'] - 0.0201))
+        self.assertTrue(edge['checks'][2]['passed'])
+
+    def test_a_base_with_no_rate_for_a_rule_ignores_that_rule(self):
+        rng = np.random.default_rng(10)
+        calls, inv = synth(rng, p_unc=0.60, p_conf=0.60)
+        r = R.score(calls, inv, LO, HI, 'month', base={'up': float('nan'), 'fade15': 0.52})
+        self.assertEqual(r['checks'][2]['best_rule'], 'fade15')
+
     def test_flat_calls_are_excluded_and_counted(self):
         rng = np.random.default_rng(11)
         calls, inv = synth(rng, p_unc=0.6, p_conf=0.6)

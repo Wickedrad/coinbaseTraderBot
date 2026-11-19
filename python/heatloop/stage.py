@@ -3,8 +3,9 @@
   smoke   --coin C --csv F --league L --live-meta M --meta ME   a 2-month warm-up slice: engine time, memory, event counts, the meta checks
   events  --coin C --scope dev|val [--twin N] --csv F --league L --meta ME --out DIR
   round0  --dev DIR --league L                                 the live lane's settings on DEV, the ten naive rules, the twin gate
-  dev     --dev DIR --league L --out DIR                       the coordinate descent on DEV (no VAL minute is read)
-  val     --spec JSON --val DIR --league L --private DIR       one look: prints one bit, writes the per-check table to a private file
+  dev     --dev DIR --league L --out DIR [--family h1|h2]      the coordinate descent on DEV (no VAL minute is read); h2 = PREREG-2.md
+  val     --spec JSON --val DIR --league L --private DIR       one look: prints the bits, writes the per-check table to a private file
+  looks   --rounds JSON --val DIR --league L --private DIR     H2: the looks of PREREG-2.md section 3 item 3, in round order, at most 3
   cut     --coin C --csv F --league L --meta ME --spec JSON    truncate-and-rebuild test of the causality rule
 """
 import argparse
@@ -169,6 +170,7 @@ def cmd_dev(a):
     rows = load_universe(a.league)
     real, _ = read_sets(a.dev, 'dev')
     lo, hi = scope_ms('dev')
+    plan, start, budget = optimize.family(a.family)
     os.makedirs(a.out, exist_ok=True)
     fh = open(os.path.join(a.out, 'trials.jsonl'), 'w')
     n = [0]
@@ -177,14 +179,16 @@ def cmd_dev(a):
         n[0] += 1
         fh.write(json.dumps(rec, sort_keys=True, default=_jd) + '\n')
     t = time.time()
-    rounds = optimize.descend(real, rows, lo, hi, 'bimonth', log=log)
+    rounds = optimize.descend(real, rows, lo, hi, 'bimonth', log=log, plan=plan, start=start, ref=start)
     fh.close()
     with open(os.path.join(a.out, 'rounds.json'), 'w') as f:
         json.dump(rounds, f, indent=1, default=_jd)
     for r in rounds:
         emit('round', dict(round=r['round'], group=r['group'], trials=r['trials'], improved=r['improved'], stalled=r.get('stalled', False),
                            start=dict(total=r['start']['total'], hit=r['start']['hit'], hash=r['start']['hash'][:12]), best=r['best']))
-    emit('dev', dict(trials=n[0], budget=optimize.BUDGET, rounds=len(rounds), seconds=round(time.time() - t), mem_mb=mem_mb()))
+    if rounds:
+        emit('dev_start', dict(family=a.family, start=rounds[0]['start']))
+    emit('dev', dict(family=a.family, trials=n[0], budget=budget, rounds=len(rounds), seconds=round(time.time() - t), mem_mb=mem_mb()))
 
 
 # --------------------------------------------------------------------------------------------------------------- inspect
@@ -201,6 +205,7 @@ def cmd_inspect(a):
         emit('inspect', dict(round=r['round'], group=r['group'], hash=res['hash'][:12], total=res['total'], core8=res['core8'],
                              hit=round(res['hit_rate'], 4), n_decided=res['n_decided'], n_dec_by_coin=res['n_dec_by_coin'],
                              flat=round(res['flat_share'], 5), naive={k: round(v, 4) for k, v in res['naive'].items()},
+                             naive_base=None if not res.get('_base') else {k: round(v, 4) for k, v in res['_base'].items()},
                              checks=[dict(id=x['id'], name=x['name'], passed=x['passed'], floor_ok=x['floor_ok'], value=x['value'],
                                           **({'best_rule': x['best_rule']} if 'best_rule' in x else {})) for x in res['checks']]))
 
@@ -250,8 +255,27 @@ def cmd_timing(a):
 
 
 # ------------------------------------------------------------------------------------------------------------------- val
+MAX_LOOKS = 3                       # PREREG-2.md section 3 item 3
+
+
+def look(spec, round_no, rows, real, twins, lo, hi, private, blocks='month') -> dict:
+    """One look at VAL for one candidate: the twin gate first (a gate failure uses no look), then the ten checks. The per-check table
+    goes to a private file; what comes back (and gets printed) is two bits and the gate. primary = 9 of 10 with checks 1 to 3 among
+    them; core = checks 1 to 8 all pass (PREREG-2.md section 3 item 2). Both need the gate and a flat share under the void limit."""
+    res = EV.evaluate(spec, real, rows, lo, hi, blocks)
+    g = gate.gate(spec, res, twins, rows, lo, hi, blocks)
+    table = dict(round=round_no, hash=res['hash'], total=res['total'], core8=res['core8'], gate=res['gate'], passed=res['passed'],
+                 n_decided=res['n_decided'], n_by_coin=res['n_dec_by_coin'], hit=res['hit_rate'], flat=res['flat_share'],
+                 checks=res['checks'], naive=res['naive'], naive_base=res.get('_base'), twin_gate=g)
+    os.makedirs(private, exist_ok=True)
+    with open(os.path.join(private, f'val-look-round{round_no}.json'), 'w') as f:
+        json.dump(table, f, indent=1, default=_jd)
+    ok = bool(g['ok'] and not res['voided'])
+    return dict(round=round_no, hash=res['hash'][:12], gate_ok=bool(g['ok']), bit=int(bool(res['passed'] and ok)),
+                core_bit=int(bool(res['core8'] == 8 and ok)))
+
+
 def cmd_val(a):
-    """One look at VAL for one candidate: the twin gate first (a gate failure uses no look), then the ten checks. Stdout gets one bit."""
     if os.environ.get('HEATLOOP_VAL') != '1':
         sys.exit('VAL is read only by the one-bit look (HEATLOOP_VAL=1)')
     rows = load_universe(a.league)
@@ -259,16 +283,49 @@ def cmd_val(a):
         spec = spec_from(json.load(f))
     real, twins = read_sets(a.val, 'val')
     lo, hi = scope_ms('val', a.val_end)
-    res = EV.evaluate(spec, real, rows, lo, hi, 'month')
-    g = gate.gate(spec, res, twins, rows, lo, hi, 'month')
-    table = dict(round=a.round, hash=res['hash'], total=res['total'], core8=res['core8'], gate=res['gate'], passed=res['passed'],
-                 n_decided=res['n_decided'], n_by_coin=res['n_dec_by_coin'], hit=res['hit_rate'], flat=res['flat_share'],
-                 checks=res['checks'], naive=res['naive'], twin_gate=g)
-    os.makedirs(a.private, exist_ok=True)
-    with open(os.path.join(a.private, f'val-look-round{a.round}.json'), 'w') as f:
-        json.dump(table, f, indent=1, default=_jd)
-    bit = int(bool(res['passed'] and g['ok'] and not res['voided']))
-    emit('val', dict(round=a.round, hash=res['hash'][:12], gate_ok=bool(g['ok']), bit=bit))
+    emit('val', look(spec, a.round, rows, real, twins, lo, hi, a.private))
+
+
+def qualifying(rounds: list, max_looks: int = MAX_LOOKS) -> list:
+    """The rounds whose best goes to VAL (PREREG-2.md section 3 item 3): eligible, strictly better than the round's start, and all of
+    checks 1 to 8 passing on DEV. Round order, one look per candidate, at most `max_looks`."""
+    out, seen = [], set()
+    for r in rounds:
+        b = r['best']
+        if not (r.get('improved') and b['eligible'] and sum(b['passed'][:8]) == 8) or b['hash'] in seen:
+            continue
+        seen.add(b['hash'])
+        out.append(r)
+    return out[:max_looks]
+
+
+def cmd_looks(a):
+    """H2: the looks of PREREG-2.md section 3 item 3. Stops at the first look where either bit is 1, or at a gate failure (that
+    uses no look and means the evaluator, not the candidate, needs a human)."""
+    if os.environ.get('HEATLOOP_VAL') != '1':
+        sys.exit('VAL is read only by the looks (HEATLOOP_VAL=1)')
+    with open(a.rounds) as f:
+        rounds = json.load(f)
+    cand = qualifying(rounds)
+    emit('looks_plan', dict(candidates=[dict(round=r['round'], hash=r['best']['hash'][:12]) for r in cand], max_looks=MAX_LOOKS))
+    if not cand:
+        emit('looks', dict(taken=0, stopped='no round qualifies on DEV'))
+        return
+    rows = load_universe(a.league)
+    real, twins = read_sets(a.val, 'val')
+    lo, hi = scope_ms('val', a.val_end)
+    taken, stopped = 0, 'looks used up'
+    for r in cand:
+        out = look(spec_from(r['best']['spec']), r['round'], rows, real, twins, lo, hi, a.private)
+        emit('val', out)
+        if not out['gate_ok']:
+            stopped = 'gate failed (no look used)'
+            break
+        taken += 1
+        if out['bit'] or out['core_bit']:
+            stopped = 'a bit is 1'
+            break
+    emit('looks', dict(taken=taken, stopped=stopped))
 
 
 # ------------------------------------------------------------------------------------------------------------------- cut
@@ -291,7 +348,10 @@ def cmd_cut(a):
     lo, hi = scope_ms('dev')
     full = ES.build(a.coin, a.csv, meta, keys, 'dev')
     specs = [optimize.ROUND0, dataclasses.replace(optimize.ROUND0, top_n=40, ta_confirm='follows', ta_conf_k=15, ta_inv_k=15, ta_pool=40),
-             dataclasses.replace(optimize.ROUND0, top_n=40, ta_confirm='precedes', ta_conf_k=15, ta_inv_k=5, combiner='vote', vote_k=3, margin=1)]
+             dataclasses.replace(optimize.ROUND0, top_n=40, ta_confirm='precedes', ta_conf_k=15, ta_inv_k=5, combiner='vote', vote_k=3, margin=1),
+             optimize.ROUND0_H2,                   # H2: the side is against the last k minute move, measured from the entry minute's open
+             dataclasses.replace(optimize.ROUND0_H2, top_n=40, fade_k=60, lag=0, ta_confirm='follows', ta_conf_k=15, ta_inv_k=15, ta_pool=40),
+             dataclasses.replace(optimize.ROUND0_H2, top_n=20, fade_k=1, lag=1, ta_confirm='none', ta_inv_k=0)]
     pts = cut_points(lo, hi, extra=a.extra)
     results, bad = [], 0
     for p in pts:
@@ -346,17 +406,20 @@ def main(argv=None):
     e.add_argument('--meta', required=True); e.add_argument('--out', required=True)
     r = sub.add_parser('round0'); r.add_argument('--dev', required=True); r.add_argument('--league', required=True)
     d = sub.add_parser('dev'); d.add_argument('--dev', required=True); d.add_argument('--league', required=True); d.add_argument('--out', required=True)
+    d.add_argument('--family', choices=optimize.FAMILIES, default='h1')
     i = sub.add_parser('inspect'); i.add_argument('--dev', required=True); i.add_argument('--league', required=True); i.add_argument('--rounds', required=True)
     t = sub.add_parser('timing'); t.add_argument('--dev', required=True); t.add_argument('--league', required=True); t.add_argument('--rounds', required=True)
     v = sub.add_parser('val'); v.add_argument('--spec', required=True); v.add_argument('--val', required=True); v.add_argument('--league', required=True)
     v.add_argument('--private', required=True); v.add_argument('--round', type=int, required=True)
     v.add_argument('--val-end', dest='val_end', type=int, default=None)
+    lk = sub.add_parser('looks'); lk.add_argument('--rounds', required=True); lk.add_argument('--val', required=True); lk.add_argument('--league', required=True)
+    lk.add_argument('--private', required=True); lk.add_argument('--val-end', dest='val_end', type=int, default=None)
     c = sub.add_parser('cut'); c.add_argument('--coin', required=True); c.add_argument('--csv', required=True); c.add_argument('--league', required=True)
     c.add_argument('--meta', required=True); c.add_argument('--extra', type=int, default=6)
     a = ap.parse_args(argv)
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')
-    {'smoke': cmd_smoke, 'events': cmd_events, 'round0': cmd_round0, 'dev': cmd_dev, 'inspect': cmd_inspect, 'timing': cmd_timing, 'val': cmd_val, 'cut': cmd_cut}[a.cmd](a)
+    {'smoke': cmd_smoke, 'events': cmd_events, 'round0': cmd_round0, 'dev': cmd_dev, 'inspect': cmd_inspect, 'timing': cmd_timing, 'val': cmd_val, 'looks': cmd_looks, 'cut': cmd_cut}[a.cmd](a)
 
 
 if __name__ == '__main__':

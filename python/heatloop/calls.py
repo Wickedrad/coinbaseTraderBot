@@ -46,10 +46,14 @@ class Spec:
     ta_conf_k: int = 15               # minutes: precedes looks back k, follows waits j
     ta_inv_k: int = 0                 # 0 = no invalidation; else an opposing pool event within the last k minutes drops the call
     ta_pool: int = 20                 # the TA pool: the best-ranked rows of the universe across all bars
+    side: str = 'heat'                # 'heat' = the firing row's own side (H1); 'fade' = against the last fade_k minute move (H2, PREREG-2.md)
+    fade_k: int = 15                  # minutes: the move the fade side goes against
 
     def as_dict(self):
         d = dataclasses.asdict(self)
         d['coins'], d['tfs'] = list(self.coins), list(self.tfs)
+        if self.side == 'heat':           # H1 specs keep their keys and so their hashes
+            del d['side'], d['fade_k']
         return d
 
 
@@ -80,7 +84,7 @@ def key_index(admitted: list) -> dict:
     return idx
 
 
-def decide(events: list, admitted: list, spec: Spec, pool: list = None) -> dict:
+def decide(events: list, admitted: list, spec: Spec, pool: list = None, side_fn=None) -> dict:
     """events: [(entry_row, key)] for one coin (base and pool keys). Returns
     {'calls': [(e, side, key, confirmed)], 'inv': [(e, side, key)], 'unconf': [(e, side, key)]}, each in time order.
     calls: one per coin per `lockout` minutes, decided from the events up to its own entry row. inv: the calls the TA layer
@@ -90,6 +94,10 @@ def decide(events: list, admitted: list, spec: Spec, pool: list = None) -> dict:
         raise ValueError(f'unknown combiner {spec.combiner!r}')
     if spec.ta_confirm not in ('none', 'precedes', 'follows'):
         raise ValueError(f'unknown ta_confirm {spec.ta_confirm!r}')
+    if spec.side not in ('heat', 'fade'):
+        raise ValueError(f'unknown side {spec.side!r}')
+    if spec.side == 'fade' and (side_fn is None or spec.combiner != 'hottest'):
+        raise ValueError("side 'fade' needs the hottest combiner and a side_fn(entry_row) -> -1, 0, +1")
     idx = key_index(admitted)
     pidx = key_index(pool or [])
     by_row, pool_ev = {}, []
@@ -111,7 +119,11 @@ def decide(events: list, admitted: list, spec: Spec, pool: list = None) -> dict:
     for row in sorted(by_row):
         e = row + spec.lag
         firing = sorted(by_row[row].values(), key=lambda r: (int(r['rank_coin']), r['key']))
-        if spec.combiner == 'hottest':
+        if spec.side == 'fade':                      # the event only times the call; the side is against the last fade_k minute move
+            side, key = int(side_fn(e)), firing[0]['key']
+            if side == 0:
+                continue
+        elif spec.combiner == 'hottest':
             side, key = int(firing[0]['dir']), firing[0]['key']
         else:
             top = firing[:spec.vote_k]
