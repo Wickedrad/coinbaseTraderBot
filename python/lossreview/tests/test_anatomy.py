@@ -160,6 +160,48 @@ class Anatomy(unittest.TestCase):
                     self.assertEqual(c[k] % anatomy.GRID, 0, (k, c[k]))
         self.assertGreater(seen, 40)
 
+    def test_edge_days_and_hold_days_count_the_days_with_a_positive_edge_and_hold(self):
+        # 10 contracts at 0.40 (entry fee 0.25): a held winner is +5.75, a held loser -4.25
+        for day, wins in (('2026-11-12', 6), ('2026-11-13', 6), ('2026-11-14', 2), ('2026-11-15', 4)):
+            write(self.w, day, [trip(int(day[-2:]) * 100 + i, win=(i < wins)) for i in range(10)])
+        # a day at px 0.5 with no fee: 5 of 10 ties the price (edge 0) and holds to exactly 0, neither is positive
+        write(self.w, '2026-11-16', [trip(1600 + i, px=0.5, fees=0.0, win=(i < 5)) for i in range(10)])
+        c = anatomy.report(self.w)['all']
+        # 6 and 6 of 10 beat 40c; 2 of 10 does not; 4 of 10 ties the price; the px 0.5 day ties
+        self.assertEqual(c['edge_days'], '2/5')
+        # held: +17.5, +17.5, -22.5, -2.5, 0.0
+        self.assertEqual(c['hold_days'], '2/5')
+
+    def test_the_day_counts_leave_out_the_days_a_cell_has_under_day_min_trips(self):
+        # the 'no' cell: 2 trips (a winning pair, left out), exactly 3 (all win, counts), 5 (all lose)
+        for day, n_no, wins in (('2026-11-12', 2, 2), ('2026-11-13', 3, 3), ('2026-11-14', 5, 0)):
+            rows = [trip(int(day[-2:]) * 100 + i, side='no', win=(i < wins)) for i in range(n_no)]
+            rows += [trip(int(day[-2:]) * 100 + 50 + i, side='yes') for i in range(10 - n_no)]
+            write(self.w, day, rows)
+        no = anatomy.report(self.w)['cuts']['side']['no']
+        self.assertEqual(no['n'], 10)
+        self.assertEqual(no['edge_days'], '1/2')
+        self.assertEqual(no['hold_days'], '1/2')
+
+    def test_edge_days_count_resolved_trips_and_hold_days_wait_for_the_hold_group(self):
+        # the 'no' cell: day A has 4 trips but only 2 resolved (a winning pair), B 5 winners, C 5 losers; 2 trips never resolved
+        for day, rows_no in (('2026-11-12', [None, None, True, True]), ('2026-11-13', [True] * 5), ('2026-11-14', [False] * 5)):
+            rows = [trip(int(day[-2:]) * 100 + i, side='no', win=w) for i, w in enumerate(rows_no)]
+            rows += [trip(int(day[-2:]) * 100 + 50 + i, side='yes') for i in range(10 - len(rows_no))]
+            write(self.w, day, rows)
+        no = anatomy.report(self.w)['cuts']['side']['no']
+        self.assertEqual(no['n'], 14)
+        self.assertEqual(no['n_res'], 12)
+        self.assertEqual(no['edge_days'], '1/2')                  # day A has 2 resolved trips, under DAY_MIN
+        self.assertNotIn('hold', no)                              # the 2 unresolved trips are a handful: the hold group is withheld
+        self.assertNotIn('hold_days', no)
+
+    def test_the_day_counts_follow_the_group_they_belong_to(self):
+        write(self.w, '2026-11-12', [trip(i, win=None) for i in range(10)])
+        c = anatomy.report(self.w)['all']
+        self.assertNotIn('edge_days', c)
+        self.assertNotIn('hold_days', c)
+
     def test_empty_folder_gives_an_empty_report(self):
         write(self.w, '2026-11-09', [])
         rep = anatomy.report(self.w)
