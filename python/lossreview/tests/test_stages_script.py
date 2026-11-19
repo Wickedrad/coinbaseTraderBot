@@ -107,6 +107,17 @@ class StagesScriptTests(unittest.TestCase):
         self.assertIn('nothing put back', r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.base, 'registry.jsonl')))
 
+    def test_anatomy_days_input_reads_only_the_days_ending_with_the_day(self):
+        r = self.run_script(LR_DAY=self.day, LR_STAGES='anatomy', LR_DAYS='3')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('"window": ["2023-11-12", "2023-11-14"]', r.stdout)
+        r = self.run_script(LR_DAY='2023-11-20', LR_STAGES='anatomy', LR_DAYS='2')       # the folder has no trips on those days
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('"window": ["2023-11-19", "2023-11-20"]', r.stdout)
+        self.assertIn('"days_used": 0', r.stdout)
+        r = self.run_script(LR_DAY=self.day, LR_STAGES='anatomy')                          # no days input: every day, no window
+        self.assertIn('"window": null', r.stdout)
+
     def test_window_usage_and_window_put_only_the_allowed_files_and_the_log_has_no_ticker_or_dollar(self):
         r = self.run_script(LR_DAY=self.day, LR_STAGES='window', LR_UNTIL='23:59', LR_USAGE='tag:100:20:5;audit:1:1:1')
         self.assertEqual(r.returncode, 0, r.stderr)

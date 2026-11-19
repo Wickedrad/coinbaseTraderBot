@@ -245,6 +245,46 @@ class Anatomy(unittest.TestCase):
                 rest = c['n'] - kids[side]
                 self.assertTrue(rest == 0 or rest >= anatomy.MIN_CELL, (k, side, rest))
 
+    def test_days_window_reads_whole_days_ending_with_the_day(self):
+        for d, pnl in (('2026-11-12', -1), ('2026-11-13', -2), ('2026-11-14', -3), ('2026-11-15', -4)):
+            write(self.w, d, [trip(i, pnl=pnl) for i in range(10)])
+        every = anatomy.report(self.w)
+        self.assertEqual(every['window'], None)
+        self.assertEqual(every['trips'], 40)
+        rep = anatomy.report(self.w, '2026-11-14', 2)
+        self.assertEqual(rep['window'], ('2026-11-13', '2026-11-14'))
+        self.assertEqual([d['day'] for d in rep['per_day']], ['2026-11-13', '2026-11-14'])
+        self.assertEqual(rep['trips'], 20)
+        self.assertEqual(rep['all']['net'], anatomy._d(-20 - 30))
+        self.assertEqual(anatomy.report(self.w, '2026-11-15', 1)['per_day'][0]['net'], anatomy._d(-40))
+        self.assertEqual(anatomy.report(self.w, '2026-11-30', 3)['all'], {})           # no such days: an empty report, not an error
+
+    def test_days_window_keeps_the_floors(self):
+        write(self.w, '2026-11-13', [trip(i) for i in range(anatomy.MIN_CELL - 1)])     # a short day stays out of every number
+        write(self.w, '2026-11-14', [trip(100 + i) for i in range(12)])
+        rep = anatomy.report(self.w, '2026-11-14', 2)
+        self.assertEqual((rep['days_used'], rep['days_short'], rep['trips']), (1, 1, 12))
+
+    def test_days_window_rejects_a_bad_day_or_count(self):
+        write(self.w, '2026-11-14', [trip(i) for i in range(12)])
+        for day, days in ((None, 3), ('2026-13-40', 3), ('11/14', 2), ('2026-11-14', 0), ('2026-11-14', -2), ('2026-11-14', True)):
+            with self.assertRaises(SystemExit, msg=(day, days)):
+                anatomy.report(self.w, day, days)
+
+    def test_stage_takes_day_and_days(self):
+        write(self.w, '2026-11-13', [trip(i) for i in range(12)])
+        write(self.w, '2026-11-14', [trip(100 + i) for i in range(15)])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = daily.main(['anatomy', '2026-11-14', '--days', '1', '--w', self.w])
+        self.assertEqual(rc, 0)
+        out = json.loads(buf.getvalue()[len('LOSSLOOP anatomy '):])
+        self.assertEqual((out['trips'], out['window']), (15, ['2026-11-14', '2026-11-14']))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            daily.main(['anatomy', '--w', self.w])
+        self.assertEqual(json.loads(buf.getvalue()[len('LOSSLOOP anatomy '):])['trips'], 27)
+
     def test_empty_folder_gives_an_empty_report(self):
         write(self.w, '2026-11-09', [])
         rep = anatomy.report(self.w)

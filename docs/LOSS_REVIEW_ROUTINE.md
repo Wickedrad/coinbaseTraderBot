@@ -56,7 +56,7 @@ temporary folder, and the job log prints only what `daily.py` prints (never a ti
 
 Stage inputs: `day` (UTC day), `stages` (in order, comma or space separated: `pending prepare-tags apply-tags prepare-hyp apply-hyp
 apply-adv sweep shadow status anatomy marketbase spotgap ladder budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
-`weekly`, `since`/`until` (the window stage, 00:00 to 23:59:59 or 24:00), `days` (marketbase, spotgap and ladder: 1 to 7 UTC days ending with `day`, default 7; a short window reads only the days after a first look). Every run pulls the trip files, `registry.jsonl`,
+`weekly`, `since`/`until` (the window stage, 00:00 to 23:59:59 or 24:00), `days` (marketbase, spotgap and ladder: 1 to 7 UTC days ending with `day`, default 7; a short window reads only the days after a first look; anatomy: only those days, default every day in the folder). Every run pulls the trip files, `registry.jsonl`,
 `usage.jsonl`, the done marks and the day's work folder, runs the canary (a broken validator stops it before it writes anything),
 logs the usage, saves the responses, runs the stages, and puts back `registry.jsonl` and `usage.jsonl`, then `work/DAY/` (so a put
 that stops half way never leaves a day done without its registry). A failed stage stops the run before the put.
@@ -100,8 +100,8 @@ the ids it wrote adversary prompts for (`adv_ids`), `prepare-hyp` the classes it
 A subagent token count that the tool does not report is estimated (prompt length / 4 in, reply length / 4 out) and logged as such;
 keep the estimate on the high side, since an under-count only makes the allowance look larger than it is.
 
-To see where the money goes without spending a token, dispatch `stages=anatomy` (any `day`; it is read-only and takes no day-dependent
-input). It cuts every scored trip of every day in the work folder by price, side, exit rule, hold time, entry taker or maker, call
+To see where the money goes without spending a token, dispatch `stages=anatomy` (any `day`; it is read-only; with `days` it reads only the days ending with `day`, a later
+look at the days after a first one, otherwise every day in the folder). It cuts every scored trip of every day in the work folder by price, side, exit rule, hold time, entry taker or maker, call
 age, kind and coin, and kind by side (hourly or 15-minute, YES or NO), and prints one aggregate line: net, fees, pre-fee result, the fee share of the stake, the settlement edge
 of the entries (win share minus mean entry price, in cents), the same trips held to settlement, and on how many days each cell was
 negative (`neg_days`), had a positive settlement edge (`edge_days`) and a positive held-to-settlement result (`hold_days`), each out of

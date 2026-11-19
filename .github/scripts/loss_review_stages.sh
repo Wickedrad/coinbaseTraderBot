@@ -11,7 +11,7 @@
 #   LR_RESPONSES  JSON object {name: reply} of the model steps' replies, each the output of `python3 -m lossreview.screen NAME`
 #                 (a reply screening would change is refused); saved as work/DAY/NAME.response.json before the stages
 #   LR_SINCE, LR_UNTIL   the window stage's UTC clock bounds, HH:MM[:SS] (00:00 to 23:59:59, or 24:00 for the end of the day)
-#   LR_DAYS       marketbase, spotgap and ladder: how many UTC days, 1 to 7, ending with LR_DAY (default 7; a short window reads only the days after a first look)
+#   LR_DAYS       marketbase, spotgap and ladder: how many UTC days, 1 to 7, ending with LR_DAY (default 7; a short window reads only the days after a first look); anatomy: only those days (default: every day in the folder)
 #   LR_WEEKLY     the weekly token allowance the budget stage also checks (digits), when the plan's limit is near
 #
 # The usage and budget stages are keyed to the day the tokens are spent (today, UTC), not to the day of the trips: the allowance is
@@ -77,7 +77,8 @@ done
 if [ -n "${LR_RESPONSES:-}" ]; then D responses "$DAY" --w "$W"; WRITES=1; fi
 for s in "${LIST[@]}"; do
   case "$s" in
-    pending|status|anatomy) D "$s" --w "$W" ;;
+    pending|status) D "$s" --w "$W" ;;
+    anatomy) D "$s" ${DAYS:+"$DAY" --days "$DAYS"} --w "$W" ;;
     budget) D budget "$TODAY" --w "$W" ${WEEKLY:+--weekly "$WEEKLY"} ;;
     window) D window "$DAY" --w "$W" ${SINCE:+--since "$SINCE"} ${UNTIL:+--until "$UNTIL"}; WRITES=1 ;;
     marketbase|spotgap|ladder) D "$s" "$DAY" --w "$W" ${DAYS:+--days "$DAYS"} ;;
