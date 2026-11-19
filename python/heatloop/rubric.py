@@ -117,8 +117,9 @@ def _naive(c, dec, hit_all_sides):
     return out
 
 
-def score(calls: Calls, inv, lo: int, hi: int, blocks='month', floors=None, seed=SEED) -> dict:
-    """Score `calls` on the window [lo, hi) (ms). blocks: 'month' (calendar months, VAL) or an int n (n equal parts by day, FINAL)."""
+def score(calls: Calls, inv, lo: int, hi: int, blocks='month', floors=None, seed=SEED, unconf=None) -> dict:
+    """Score `calls` on the window [lo, hi) (ms). blocks: 'month' (calendar months, VAL) or an int n (n equal parts by day, FINAL).
+    unconf: with a `follows` TA layer the made calls are the confirmed set and `unconf` holds the lapsed base calls, scored as if made."""
     F = dict(FLOORS if floors is None else floors)
     c = calls
     n_all = len(c)
@@ -177,16 +178,20 @@ def score(calls: Calls, inv, lo: int, hi: int, blocks='month', floors=None, seed
         put('one_minute_late', _rate(hl[dl]) >= T['late'], _rate(hl[dl]), int(dl.sum()) >= F['pooled'])
     else:
         put('one_minute_late', False, None, False)
-    # 9 TA confirms
+    # 9 TA confirms: 3 points and a 90% one-sided day-cluster lower bound above zero
     if c.conf is not None:
         cf = np.asarray(cd.conf, bool)
-        a, b = h[cf], h[~cf]
-        if len(a) and len(b):
-            d9 = _rate(a) - _rate(b)
-            se = float(np.hypot(cluster_se(a, day[cf]), cluster_se(b, day[~cf])))
-            put('ta_confirms', d9 >= T['ta_lift'] and d9 - Z90 * se > 0, d9, len(a) >= F['ta'] and len(b) >= F['ta'])
-        else:
-            put('ta_confirms', False, None, False)
+        a_h, a_d, b_h, b_d = h[cf], day[cf], h[~cf], day[~cf]
+    elif unconf is not None and len(unconf):
+        du, hu = right(unconf.side, unconf.move)
+        a_h, a_d, b_h, b_d = h, day, hu[du], unconf.day[du]
+    else:
+        a_h = b_h = np.array([])
+        a_d = b_d = np.array([], np.int64)
+    if len(a_h) and len(b_h):
+        d9 = _rate(a_h) - _rate(b_h)
+        se = float(np.hypot(cluster_se(a_h, a_d), cluster_se(b_h, b_d)))
+        put('ta_confirms', d9 >= T['ta_lift'] and d9 - Z90 * se > 0, d9, len(a_h) >= F['ta'] and len(b_h) >= F['ta'])
     else:
         put('ta_confirms', False, None, False)
     # 10 TA invalidates

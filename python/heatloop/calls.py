@@ -9,15 +9,23 @@ oracle readings, runner only), so this module is pure numpy and is tested withou
 An event row is (entry_row, key): the reading is known at its bar's close and the entry is the open of the next minute
 (entry_row, a grid row), so a call at entry_row uses only bars that closed at or before entry_row - 1.
 """
+import bisect
 import dataclasses
 import hashlib
 import json
+import re
 
 import numpy as np
 
 from heatloop import rubric
 
 MIN = 60_000
+
+
+def family(key: str) -> str:
+    """'5m:RSI14=very high' -> 'RSI': the indicator without its bars, level and trailing parameters (RSI7 and RSI14 are one family)."""
+    ind = key.rsplit('=', 1)[0].split(':', 1)[-1].removesuffix(' sign')
+    return re.sub(r'[\d/.]+$', '', ind) or ind
 
 
 @dataclasses.dataclass(frozen=True)
@@ -34,6 +42,10 @@ class Spec:
     margin: int = 1                   # vote: |sum of sides| needed
     lockout: int = 15                 # minutes after a call before the coin may call again
     lag: int = 0                      # extra entry delay in minutes (the call is made at the event minute + lag)
+    ta_confirm: str = 'none'          # 'none' | 'precedes' (label calls) | 'follows' (the call waits for a confirmer)
+    ta_conf_k: int = 15               # minutes: precedes looks back k, follows waits j
+    ta_inv_k: int = 0                 # 0 = no invalidation; else an opposing pool event within the last k minutes drops the call
+    ta_pool: int = 20                 # the TA pool: the best-ranked rows of the universe across all bars
 
     def as_dict(self):
         d = dataclasses.asdict(self)
@@ -68,51 +80,93 @@ def key_index(admitted: list) -> dict:
     return idx
 
 
-def decide(events: list, admitted: list, spec: Spec) -> list:
-    """events: [(entry_row, key)] for one coin. Returns [(entry_row, side, key)] with side +1 UP / -1 DOWN, in time order."""
+def decide(events: list, admitted: list, spec: Spec, pool: list = None) -> dict:
+    """events: [(entry_row, key)] for one coin (base and pool keys). Returns
+    {'calls': [(e, side, key, confirmed)], 'inv': [(e, side, key)], 'unconf': [(e, side, key)]}, each in time order.
+    calls: one per coin per `lockout` minutes, decided from the events up to its own entry row. inv: the calls the TA layer
+    dropped, scored as if made (their own lockout). unconf: the base calls a `follows` confirmation never confirmed in time
+    plus the ones it did, scored as if made at their own minute (their own lockout); the made calls are the confirmed set."""
     if spec.combiner not in ('hottest', 'vote'):
         raise ValueError(f'unknown combiner {spec.combiner!r}')
+    if spec.ta_confirm not in ('none', 'precedes', 'follows'):
+        raise ValueError(f'unknown ta_confirm {spec.ta_confirm!r}')
     idx = key_index(admitted)
-    by_row = {}
+    pidx = key_index(pool or [])
+    by_row, pool_ev = {}, []
     for row, key in events:
         r = idx.get(key)
         if r is not None:
             by_row.setdefault(int(row), {})[r['key']] = r
-    calls, nxt = [], -1
+        q = pidx.get(key)
+        if q is not None:
+            pool_ev.append((int(row), int(q['dir']), family(q['key'])))
+    pool_ev.sort()
+    rows_p = [x[0] for x in pool_ev]
+    def pool_in(lo, hi):
+        """pool events with entry row in [lo, hi]."""
+        return pool_ev[bisect.bisect_left(rows_p, lo):bisect.bisect_right(rows_p, hi)]
+
+    calls, inv, unconf = [], [], []
+    nxt = nxt_inv = nxt_unc = -1
     for row in sorted(by_row):
         e = row + spec.lag
-        if e < nxt:
-            continue
         firing = sorted(by_row[row].values(), key=lambda r: (int(r['rank_coin']), r['key']))
         if spec.combiner == 'hottest':
             side, key = int(firing[0]['dir']), firing[0]['key']
         else:
             top = firing[:spec.vote_k]
-            s = sum(int(r['dir']) for r in top)
-            if abs(s) < spec.margin or s == 0:
+            sm = sum(int(r['dir']) for r in top)
+            if abs(sm) < spec.margin or sm == 0:
                 continue
-            side, key = (1 if s > 0 else -1), top[0]['key']
-        calls.append((e, side, key))
+            side, key = (1 if sm > 0 else -1), top[0]['key']
+        fam = family(key)
+        if spec.ta_inv_k:
+            if any(sd != side and f != fam for _, sd, f in pool_in(row - spec.ta_inv_k, row)):
+                if e >= nxt_inv:                         # dropped: scored as if made, one per lockout window
+                    inv.append((e, side, key))
+                    nxt_inv = e + spec.lockout
+                continue
+        if spec.ta_confirm == 'follows':
+            if e >= nxt_unc:                             # the base call, scored as if made
+                unconf.append((e, side, key))
+                nxt_unc = e + spec.lockout
+            hit = [r2 for r2, sd, f in pool_in(row + 1, row + spec.ta_conf_k) if sd == side and f != fam]
+            if hit and hit[0] + spec.lag >= nxt:
+                e2 = hit[0] + spec.lag
+                calls.append((e2, side, key, True))
+                nxt = e2 + spec.lockout
+            continue
+        if e < nxt:
+            continue
+        conf = None
+        if spec.ta_confirm == 'precedes':
+            conf = any(sd == side and f != fam for _, sd, f in pool_in(row - spec.ta_conf_k, row))
+        calls.append((e, side, key, conf))
         nxt = e + spec.lockout
-    return calls
+    return {'calls': calls, 'inv': inv, 'unconf': unconf}
 
 
-def outcomes(coin: str, calls: list, o: np.ndarray, step: float, horizon: int = 15, t0: int = 0, rows_hi: int = None) -> dict:
-    """The arrays of rubric.Calls for one coin. o = the grid's open prices (row i = minute t0 + i*MIN); rows_hi = the first row the
-    scope may not use (a call whose late outcome would reach it is dropped, never clipped)."""
-    n = len(o) if rows_hi is None else min(len(o), rows_hi)
-    keep = [(e, s, k) for e, s, k in calls if 60 <= e and e + 1 + horizon < n]
+def _arrays(coin: str, items: list, o: np.ndarray, step: float, horizon: int, t0: int, n: int) -> dict:
+    keep = [c for c in items if 60 <= c[0] and c[0] + 1 + horizon < n]
     e = np.array([c[0] for c in keep], np.int64)
     side = np.array([c[1] for c in keep], int)
     move = (o[e + horizon] - o[e]) / step if len(e) else np.array([])
     late = (o[e + 1 + horizon] - o[e + 1]) / step if len(e) else np.array([])
     past = {k: (np.sign(np.round((o[e] - o[e - k]) / step)).astype(int) if len(e) else np.array([], int)) for k in rubric.NAIVE_KS}
-    return dict(ts=t0 + e * MIN, coin=np.array([coin] * len(e)), side=side, move=move, move_late=late, past=past,
+    conf = None if not keep or keep[0][3:] == () or keep[0][3] is None else np.array([bool(c[3]) for c in keep])
+    return dict(ts=t0 + e * MIN, coin=np.array([coin] * len(e)), side=side, move=move, move_late=late, past=past, conf=conf,
                 key=[c[2] for c in keep])
 
 
+def outcomes(coin: str, calls: list, o: np.ndarray, step: float, horizon: int = 15, t0: int = 0, rows_hi: int = None) -> dict:
+    """The arrays of rubric.Calls for one coin (calls: [(e, side, key[, confirmed])]). o = the grid's open prices (row i = minute
+    t0 + i*MIN); rows_hi = the first row the scope may not use (a call whose late outcome would reach it is dropped, never clipped)."""
+    n = len(o) if rows_hi is None else min(len(o), rows_hi)
+    return _arrays(coin, [c if len(c) == 4 else c + (None,) for c in calls], o, step, horizon, t0, n)
+
+
 def to_calls(parts: list) -> rubric.Calls:
-    """Join the per-coin outcome dicts into one rubric.Calls (time order)."""
+    """Join the per-coin outcome dicts into one rubric.Calls (time order). conf stays None unless every part has it."""
     parts = [p for p in parts if len(p['ts'])]
     if not parts:
         z = np.array([])
@@ -121,4 +175,5 @@ def to_calls(parts: list) -> rubric.Calls:
     ts = cat('ts')
     o = np.argsort(ts, kind='stable')
     past = {k: np.concatenate([p['past'][k] for p in parts])[o] for k in rubric.NAIVE_KS}
-    return rubric.Calls(ts[o], cat('coin')[o], cat('side')[o], cat('move')[o], cat('move_late')[o], past, None)
+    conf = np.concatenate([p['conf'] for p in parts])[o] if all(p['conf'] is not None for p in parts) else None
+    return rubric.Calls(ts[o], cat('coin')[o], cat('side')[o], cat('move')[o], cat('move_late')[o], past, conf)

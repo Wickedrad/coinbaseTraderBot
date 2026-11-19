@@ -207,6 +207,19 @@ class Scoring(unittest.TestCase):
         self.assertGreater(r['flat_share'], 0.15)
         self.assertTrue(r['voided'])
 
+    def test_follows_mode_compares_the_made_calls_with_the_lapsed_ones(self):
+        rng = np.random.default_rng(13)
+        calls, inv = synth(rng, p_unc=0.62, p_conf=0.62)
+        calls.conf = None                                                # follows: no flags, the made calls are the confirmed set
+        un, _ = synth(np.random.default_rng(14), p_unc=0.50, p_conf=0.50, per=3.0)
+        un.conf = None
+        r = R.score(calls, inv, LO, HI, 'month', unconf=un)['checks'][8]
+        self.assertTrue(r['passed'], r)                                  # 62% confirmed vs 50% lapsed
+        un2, _ = synth(np.random.default_rng(15), p_unc=0.62, p_conf=0.62, per=3.0)
+        un2.conf = None
+        self.assertFalse(R.score(calls, inv, LO, HI, 'month', unconf=un2)['checks'][8]['passed'])
+        self.assertFalse(R.score(calls, inv, LO, HI, 'month')['checks'][8]['passed'])     # neither flags nor lapsed calls: 0
+
     def test_final_blocks_are_equal_fourths(self):
         rng = np.random.default_rng(12)
         calls, inv = synth(rng, p_unc=0.6, p_conf=0.6)
