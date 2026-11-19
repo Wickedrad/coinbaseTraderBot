@@ -1,2 +1,2 @@
-stage=dsplumb
-# Plumbing again with the critic fixes: the vendored loader (dirsweep/frames.py) against the shared originals on search weeks, versions printed. Search days only (no minute at or after 2026-11-01).
+stage=dsstamp
+# Stamp the freeze: a runner records its own UTC clock, the sha256 of FREEZE-DS.json and the commit, once (AMENDMENT-3.md section 10).
