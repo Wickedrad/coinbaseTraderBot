@@ -1,2 +1,2 @@
-stage=inspect
-# cut test v2 passed on both coins (0 mismatches); DEV rounds done (round 6 best: 8 of 10, check 3 and 10 fail): inspect prints the ten checks of each round best
+stage=timing
+# DEV only: fade of the last 15 minutes at every minute vs at heat events, and who wins where the heat side and the fade side differ

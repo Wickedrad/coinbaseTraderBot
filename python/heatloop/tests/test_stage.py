@@ -81,6 +81,21 @@ class Glue(unittest.TestCase):
         self.assertEqual(n, 4 + 7)
         self.assertEqual(recs[-1]['trials'], 11)
 
+    def test_inspect_and_timing_read_the_dev_rounds_only(self):
+        out = os.path.join(self.tmp, 'devout2')
+        with mock.patch.object(optimize, 'PLAN', optimize.PLAN[:1] + optimize.PLAN[2:3]):
+            run(['dev', '--dev', self.dev, '--league', self.league, '--out', out])
+        rounds = os.path.join(out, 'rounds.json')
+        recs, text = run(['inspect', '--dev', self.dev, '--league', self.league, '--rounds', rounds])
+        self.assertEqual(len(recs), 2)
+        self.assertEqual(len(recs[0]['checks']), 10)
+        recs, text = run(['timing', '--dev', self.dev, '--league', self.league, '--rounds', rounds])
+        self.assertEqual(sorted(recs[0]), ['BTC', 'ETH'])
+        self.assertLess(abs(recs[0]['BTC']['fade15'] - 0.5), 0.05)
+        self.assertEqual(len(recs), 3)
+        self.assertEqual(recs[1]['same_side']['n'] + recs[1]['other_side']['n'] + recs[1]['no_past_move']['n'], recs[1]['decided'])
+        self.assertNotIn('Traceback', text)
+
     def test_val_needs_the_flag_and_prints_one_bit_only(self):
         spec = os.path.join(self.tmp, 'spec.json')
         with open(spec, 'w') as f:

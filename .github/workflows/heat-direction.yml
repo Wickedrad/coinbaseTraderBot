@@ -270,3 +270,27 @@ jobs:
         run: |
           set -o pipefail
           python3 -W ignore -m heatloop.stage inspect --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz --rounds ../data/rounds/rounds.json 2>&1 | tail -20
+  timing:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'timing')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: DEV event files and the DEV rounds (no VAL minute is in either)
+        run: |
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/dev" data/dev
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/rounds-dev" data/rounds
+      - name: Heat side against the fade of the last 15 minutes, DEV only
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage timing --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz --rounds ../data/rounds/rounds.json 2>&1 | tail -30

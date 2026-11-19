@@ -205,6 +205,42 @@ def cmd_inspect(a):
                                           **({'best_rule': x['best_rule']} if 'best_rule' in x else {})) for x in res['checks']]))
 
 
+# --------------------------------------------------------------------------------------------------------------- timing
+def cmd_timing(a):
+    """DEV only: the heat map's side or the heat map's timing? The fade of the last 15 minutes at every minute against at the heat
+    events of a round's best spec, and who is right where the heat side and the fade side differ."""
+    rows = load_universe(a.league)
+    real, _ = read_sets(a.dev, 'dev')
+    lo, hi = scope_ms('dev')
+    with open(a.rounds) as f:
+        rounds = json.load(f)
+    base = {}
+    for coin, es in sorted(real.items()):
+        step = float(es.step) if es.step else 1.0
+        e = np.arange(max(es.lo_row, 60), es.n - 17, dtype=np.int64)
+        p15 = np.sign(np.round((es.o[e] - es.o[e - 15]) / step)).astype(int)
+        mv = (es.o[e + 15] - es.o[e]) / step
+        ok = p15 != 0
+        dec, hit = rubric.right(-p15[ok], mv[ok])
+        sub = ((e[ok] - es.lo_row) % 15) == 0
+        base[coin] = dict(minutes=int(len(e)), decided=int(dec.sum()), fade15=round(float(hit[dec].mean()), 4),
+                          decided_every15=int((dec & sub).sum()), fade15_every15=round(float(hit[dec & sub].mean()), 4))
+    emit('timing_all_minutes', base)
+    for r in rounds:
+        if r['round'] not in (1, 2, 4, 5, 6):
+            continue
+        res = EV.evaluate(spec_from(r['best']['spec']), real, rows, lo, hi, 'bimonth')
+        c = res['_calls'][0]
+        dec, hit = rubric.right(c.side, c.move)
+        f15 = -np.asarray(c.past[15])
+        agree, differ, nopast = (f15 == c.side) & (f15 != 0), (f15 != c.side) & (f15 != 0), f15 == 0
+        rate = lambda m: round(float(hit[dec & m].mean()), 4) if (dec & m).any() else None
+        emit('timing_events', dict(round=r['round'], group=r['group'], decided=int(dec.sum()), heat_hit=rate(np.ones(len(c), bool)),
+                                   same_side=dict(n=int((dec & agree).sum()), heat_hit=rate(agree)),
+                                   other_side=dict(n=int((dec & differ).sum()), heat_hit=rate(differ)),
+                                   no_past_move=dict(n=int((dec & nopast).sum()), heat_hit=rate(nopast))))
+
+
 # ------------------------------------------------------------------------------------------------------------------- val
 def cmd_val(a):
     """One look at VAL for one candidate: the twin gate first (a gate failure uses no look), then the ten checks. Stdout gets one bit."""
@@ -303,6 +339,7 @@ def main(argv=None):
     r = sub.add_parser('round0'); r.add_argument('--dev', required=True); r.add_argument('--league', required=True)
     d = sub.add_parser('dev'); d.add_argument('--dev', required=True); d.add_argument('--league', required=True); d.add_argument('--out', required=True)
     i = sub.add_parser('inspect'); i.add_argument('--dev', required=True); i.add_argument('--league', required=True); i.add_argument('--rounds', required=True)
+    t = sub.add_parser('timing'); t.add_argument('--dev', required=True); t.add_argument('--league', required=True); t.add_argument('--rounds', required=True)
     v = sub.add_parser('val'); v.add_argument('--spec', required=True); v.add_argument('--val', required=True); v.add_argument('--league', required=True)
     v.add_argument('--private', required=True); v.add_argument('--round', type=int, required=True)
     v.add_argument('--val-end', dest='val_end', type=int, default=None)
@@ -311,7 +348,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')
-    {'smoke': cmd_smoke, 'events': cmd_events, 'round0': cmd_round0, 'dev': cmd_dev, 'inspect': cmd_inspect, 'val': cmd_val, 'cut': cmd_cut}[a.cmd](a)
+    {'smoke': cmd_smoke, 'events': cmd_events, 'round0': cmd_round0, 'dev': cmd_dev, 'inspect': cmd_inspect, 'timing': cmd_timing, 'val': cmd_val, 'cut': cmd_cut}[a.cmd](a)
 
 
 if __name__ == '__main__':
