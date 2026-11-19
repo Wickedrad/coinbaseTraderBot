@@ -51,6 +51,7 @@ jobs:
         run: |
           set -o pipefail
           python -W ignore -m unittest discover -s heatloop/tests -t . 2>&1 | tail -20
+          python -W ignore -m unittest discover -s dirsweep/tests -t . 2>&1 | tail -20
 
   coverage:
     needs: test
@@ -409,3 +410,78 @@ jobs:
         if: always()
         run: |
           if [ -d out/val-private ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/val-private" out/val-private; else echo "no private tables"; fi
+
+  # DS family (PREREG-3.md): the cut test on the real 1-minute files, then S1 (nested walk-forward sweep) and S2 (hindsight oracle) on the real
+  # coins (twin 0) and the three no-signal twins. SEARCH days only (2020-01-01 to 2026-10-31); nothing at or after 2026-11-01 is read.
+  dscausal:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dscausal')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH]
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history (read only)
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+      - name: Cut test (12 random cuts, every lookback)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage causal --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv" 2>&1 | tail -5
+
+  dsrun:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsrun')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        twin: [0, 1, 2, 3]
+    env:
+      TW: ${{ matrix.twin }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history of both coins (read only)
+        run: |
+          set -euo pipefail
+          for A in BTC ETH; do
+            bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+            [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          done
+      - name: Hashes of what the sweep ran on
+        run: sha256sum research/heat_direction/PREREG-3.md research/heat_direction/LITERATURE-DS.md python/dirsweep/*.py | sed 's/  / /'; git rev-parse HEAD
+      - name: Sweep (S1 nested walk-forward and S2 hindsight oracle; twin 0 = the real coins)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage run --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --twin "$TW" --out ../out/ds 2>&1 | tail -500
+      - name: Keep the tables on Drive
+        if: always()
+        run: |
+          if [ -d out/ds ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/ds-twin$TW" out/ds; else echo "no tables"; fi
