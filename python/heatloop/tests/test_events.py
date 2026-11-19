@@ -52,6 +52,28 @@ class Mapping(unittest.TestCase):
             g = E.load_grid(p, 120000, 360000, engine=eng)
             self.assertEqual((g['rows'], g['end']), (4, 360000))                 # minutes 2..5 only: nothing at or after the end, nothing before the start
 
+    def test_the_reader_stops_before_a_chunk_that_starts_at_the_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, '1m.csv')
+            with open(p, 'w') as f:
+                f.write('ts,o,h,l,c,v\n')
+                for t in range(10):
+                    f.write(f'{t * 60000},1,2,0.5,1.5,3\n')
+                f.write('not a number,x,x,x,x,x\n')                             # a later chunk that would break the parse if it were read
+            df = E.read_bars(p, 60000, 240000, chunk=3)
+            self.assertEqual(df['ts'].tolist(), [60000, 120000, 180000])
+            self.assertLess(int(df['ts'].max()), 240000)
+
+    def test_an_unordered_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, '1m.csv')
+            with open(p, 'w') as f:
+                f.write('ts,o,h,l,c,v\n')
+                for t in (0, 1, 2, 5, 3, 4):
+                    f.write(f'{t * 60000},1,2,0.5,1.5,3\n')
+            with self.assertRaises(ValueError):
+                E.read_bars(p, 0, 10 * 60000, chunk=3)
+
 
 if __name__ == '__main__':
     unittest.main()

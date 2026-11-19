@@ -4,7 +4,8 @@ name: Heat direction loop
 # no order, no bot change. Output is aggregates only, one `HEATLOOP <stage> <json>` log line per job.
 #
 # Started by a push that changes research/heat_direction/RUN (a new workflow cannot be dispatched until it is on main).
-# RUN holds one line:  stage=<name>   (coverage = first and last day on file per coin, from the `ts` column only)
+# RUN holds one line:  stage=<name>   (coverage = first and last day on file per coin, from the `ts` column only;
+# smoke = engine time and memory on a 2-month warm-up slice, plus the meta checks)
 on:
   push:
     branches: [claude/project-thread-y4m0kp]
@@ -78,3 +79,42 @@ jobs:
       - name: Coverage (the ts column only)
         working-directory: python
         run: python3 -m heatloop.coverage --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv"
+
+  smoke:
+    needs: test
+    if: needs.test.outputs.stage == 'smoke'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH]
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Inputs (1-minute history and the league tables' zone edges, read only)
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/43030435253/$A" "data/metas/$A" --include "/meta.json"
+          [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          [ -s "data/metas/$A/meta.json" ] || { echo "::error::no $A meta.json on Drive"; exit 1; }
+      - name: Smoke (2025-06-01 to 2025-08-01, table-era days only)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage smoke --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv" \
+            --league ../research/oracle_heat/latest/league_direction.csv.gz --live-meta ../research/oracle_heat/latest/live_meta.json \
+            --meta "../data/metas/$A/meta.json" 2>&1 | tail -30

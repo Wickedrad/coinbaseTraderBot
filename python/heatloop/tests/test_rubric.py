@@ -226,6 +226,24 @@ class Scoring(unittest.TestCase):
         r = R.score(calls, inv, LO, HI, 4)['checks'][5]
         self.assertEqual(len(r['value']), 4)
 
+    def test_dev_folds_are_pairs_of_calendar_months(self):
+        lo = int(dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        hi = int(dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        rng = np.random.default_rng(31)
+        n = 2400
+        ts = lo + np.sort(rng.integers(0, hi - lo, size=n))
+        side = np.where(rng.random(n) < 0.5, 1, -1)
+        move = side * 3.0
+        # the last day of February hits, the first day of March misses: they sit in different folds only if the folds are Jan-Feb | Mar-Apr
+        feb_end = int(dt.datetime(2026, 3, 1, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        move = np.where((ts >= feb_end) & (ts < feb_end + 2 * R.DAY * 30), -move, move)       # Mar-Apr all wrong
+        calls = R.Calls(ts, np.where(np.arange(n) % 2 == 0, 'BTC', 'ETH'), side, move, move, {k: np.ones(n, int) for k in R.NAIVE_KS}, None)
+        r = R.score(calls, None, lo, hi, 'bimonth')['checks'][5]
+        self.assertEqual(len(r['value']), 3)
+        self.assertLess(r['value'][1], 0.05)                       # Mar-Apr is the second fold
+        self.assertGreater(r['value'][0], 0.95)
+        self.assertGreater(r['value'][2], 0.5)
+
 
 if __name__ == '__main__':
     unittest.main()

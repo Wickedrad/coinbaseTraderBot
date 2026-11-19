@@ -118,7 +118,7 @@ def _naive(c, dec, hit_all_sides):
 
 
 def score(calls: Calls, inv, lo: int, hi: int, blocks='month', floors=None, seed=SEED, unconf=None) -> dict:
-    """Score `calls` on the window [lo, hi) (ms). blocks: 'month' (calendar months, VAL) or an int n (n equal parts by day, FINAL).
+    """Score `calls` on the window [lo, hi) (ms). blocks: 'month' (calendar months, VAL), 'bimonth' (pairs of calendar months, the three DEV folds) or an int n (n equal parts by day, FINAL).
     unconf: with a `follows` TA layer the made calls are the confirmed set and `unconf` holds the lapsed base calls, scored as if made."""
     F = dict(FLOORS if floors is None else floors)
     c = calls
@@ -161,13 +161,17 @@ def score(calls: Calls, inv, lo: int, hi: int, blocks='month', floors=None, seed
         mid = month_id(day)
         ids = sorted(set(month_id(np.arange(d_lo, d_hi))))
         blk = mid
+    elif blocks == 'bimonth':                                    # DEV: the three two-month folds (Jan-Feb, Mar-Apr, May-Jun)
+        m0 = int(month_id(np.array([d_lo]))[0])
+        blk = (month_id(day) - m0) // 2
+        ids = sorted(set((month_id(np.arange(d_lo, d_hi)) - m0) // 2))
     else:
         n_b = int(blocks)
         blk = np.minimum((day - d_lo) * n_b // max(d_hi - d_lo, 1), n_b - 1)
         ids = list(range(n_b))
     bv = [(h[blk == b].mean() if (blk == b).sum() else float('nan'), int((blk == b).sum())) for b in ids]
     put('blocks', all(v == v and v > 0.5 for v, _ in bv), [round(v, 4) if v == v else None for v, _ in bv],
-        all(k >= F['block'] for _, k in bv) and len(bv) >= (3 if blocks == 'month' else int(blocks)))
+        all(k >= F['block'] for _, k in bv) and len(bv) >= (3 if blocks in ('month', 'bimonth') else int(blocks)))
     # 7 both sides
     sv = {s: _rate(h[cd.side == s]) for s in (1, -1)}
     sn = {s: int((cd.side == s).sum()) for s in (1, -1)}

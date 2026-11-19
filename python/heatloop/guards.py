@@ -21,7 +21,7 @@ def ms(day: str) -> int:
 HEAT_END = ms('2026-01-01')       # the tables stop here (python/oracle/heat.py)
 DEV = (ms('2026-01-01'), ms('2026-07-01'))      # [lo, hi) the optimizer sees every number
 VAL_START = ms('2026-07-01')
-VAL_END = None                    # exclusive end of the last full calendar month on file; Amendment 1 sets it before round 0
+VAL_END = ms('2026-11-01')        # exclusive end of the last full calendar month on file (Amendment 1 section 1); nothing later is ever read
 WARMUP_START = ms('2025-06-01')   # readings need a warm-up; these minutes are table-era days and score nothing
 
 
@@ -35,8 +35,8 @@ def scope_range(name: str, val_end=None, final=None) -> tuple:
         return DEV
     if name == 'val':
         ve = VAL_END if val_end is None else val_end
-        if ve is None:
-            raise OutOfScope('VAL_END is not set (Amendment 1 sets it before round 0)')
+        if ve is None or ve > VAL_END:
+            raise OutOfScope('VAL ends at VAL_END (Amendment 1); nothing later may be read')
         if os.environ.get('HEATLOOP_VAL') != '1':
             raise OutOfScope('VAL is read only by the one-bit look (HEATLOOP_VAL=1)')
         return (VAL_START, ve)

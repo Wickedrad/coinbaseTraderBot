@@ -16,11 +16,31 @@ TFS = (1, 5, 15, 60)
 BAR_NAMES = {'1m': 1, '5m': 5, '15m': 15, '60m': 60}
 
 
-def load_grid(csv: str, lo_ms: int, hi_ms: int, engine=None) -> dict:
+def read_bars(csv: str, lo_ms: int, hi_ms: int, chunk: int = 250_000) -> pd.DataFrame:
+    """The rows of the 1-minute file with lo_ms <= ts < hi_ms, read in chunks. The file is time-ordered: reading stops at the first
+    chunk that starts at or after hi_ms, and a row at or after hi_ms is dropped the moment its chunk is read, so no later
+    minute stays in memory (guards.history_limit)."""
     cols = pd.read_csv(csv, nrows=0).columns
     use = [c for c in ('ts', 'o', 'h', 'l', 'c', 'v', 'tb') if c in cols]
-    df = pd.read_csv(csv, usecols=use)
-    df = df[(df['ts'] >= lo_ms) & (df['ts'] < hi_ms)]
+    parts, last = [], None
+    with pd.read_csv(csv, usecols=use, chunksize=chunk) as reader:
+        for df in reader:
+            if not df['ts'].is_monotonic_increasing or (last is not None and int(df['ts'].iloc[0]) < last):
+                raise ValueError('the 1-minute file is not time-ordered')
+            last = int(df['ts'].iloc[-1])
+            if int(df['ts'].iloc[0]) >= hi_ms:
+                break
+            parts.append(df[(df['ts'] >= lo_ms) & (df['ts'] < hi_ms)])
+    if not parts:
+        raise ValueError(f'no minute in [{lo_ms}, {hi_ms})')
+    out = pd.concat(parts, ignore_index=True)
+    if len(out) and int(out['ts'].max()) >= hi_ms:
+        raise AssertionError('a minute at or after the scope end was loaded')
+    return out
+
+
+def load_grid(csv: str, lo_ms: int, hi_ms: int, engine=None) -> dict:
+    df = read_bars(csv, lo_ms, hi_ms)
     if engine is None:
         from oracle import heat_live as engine
     return engine.grid(df, end_ms=hi_ms)

@@ -30,11 +30,14 @@ class Scope(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop('HEATLOOP_VAL', None)
             with self.assertRaises(g.OutOfScope):
-                g.scope_range('val')                                   # no end set
+                g.scope_range('val')                                   # no flag
             with self.assertRaises(g.OutOfScope):
                 g.scope_range('val', val_end=g.ms('2026-11-01'))       # no flag
         with mock.patch.dict(os.environ, {'HEATLOOP_VAL': '1'}):
+            self.assertEqual(g.scope_range('val'), (g.ms('2026-07-01'), g.ms('2026-11-01')))
             self.assertEqual(g.scope_range('val', val_end=g.ms('2026-11-01')), (g.ms('2026-07-01'), g.ms('2026-11-01')))
+            with self.assertRaises(g.OutOfScope):
+                g.scope_range('val', val_end=g.ms('2026-11-05'))       # the file has days after Oct 31: they stay unread
             with self.assertRaises(g.OutOfScope):
                 g.window(g.ms('2026-07-01'), g.ms('2026-11-02'), 'val', val_end=g.ms('2026-11-01'))
 
