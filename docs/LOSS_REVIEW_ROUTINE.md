@@ -55,8 +55,8 @@ text" and dropped if it still fails. The prompts and the trip files do hold per-
 temporary folder, and the job log prints only what `daily.py` prints (never a ticker, a time or a count of a window).
 
 Stage inputs: `day` (UTC day), `stages` (in order, comma or space separated: `pending prepare-tags apply-tags prepare-hyp apply-hyp
-apply-adv sweep shadow status anatomy marketbase spotgap budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
-`weekly`, `since`/`until` (the window stage, 00:00 to 23:59:59 or 24:00). Every run pulls the trip files, `registry.jsonl`,
+apply-adv sweep shadow status anatomy marketbase spotgap ladder budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
+`weekly`, `since`/`until` (the window stage, 00:00 to 23:59:59 or 24:00), `days` (marketbase, spotgap and ladder: 1 to 7 UTC days ending with `day`, default 7; a short window reads only the days after a first look). Every run pulls the trip files, `registry.jsonl`,
 `usage.jsonl`, the done marks and the day's work folder, runs the canary (a broken validator stops it before it writes anything),
 logs the usage, saves the responses, runs the stages, and puts back `registry.jsonl` and `usage.jsonl`, then `work/DAY/` (so a put
 that stops half way never leaves a day done without its registry). A failed stage stops the run before the put.
@@ -120,7 +120,7 @@ winner against what a taker paid: the settlement edge before the fee and after t
 band, offset and coin, and on how many days each was positive. It is public data, so the log prints the full tables; the three rows of
 a market are not independent. It prints the markets read per series and day, and stops with an error, not a table of holes, when the markets list fails, more than 2% of
 the candle requests do, a series has no market at all, or a full day has under half of its 96 markets (a truncated list, or a day older
-than the live API holds). The fee is per contract, so a one-contract order pays up to a cent more. Hourly strike ladders are not covered.
+than the live API holds). The fee is per contract, so a one-contract order pays up to a cent more. Hourly strike ladders are covered by `ladder` (below).
 
 `stages=spotgap` (same `day`, 7 days, read-only, no tokens) reads the same markets and adds the coin's Coinbase 1-minute spot. At each of
 the three quotes it builds two probabilities that the market ends YES if the coin were a driftless random walk: `model` from the strike
@@ -134,6 +134,21 @@ rows of each day are printed). It stops with an error when the Coinbase minutes 
 full UTC day, or a coin loses more than 5% of its quote rows to anything but a crossed quote; it prints per-coin counts of what could not be
 built. Public data, so the log prints the full tables; rows are not independent (three per market, four coins that move together) and no
 standard error is printed. The week it is first run on is the first look, not the test: the test is the same two cells on days after it.
+
+`stages=ladder` (same `day`, 7 days, read-only, no tokens) does the same for the hourly strike ladders (KXBTCD, KXETHD, KXSOLD, KXXRPD), where
+the lane's edge was worst. It lists every settled ladder event, keeps the 4 strikes nearest the Coinbase spot at the first quote (10 minutes into
+the hour; chosen from that moment's spot only, so nothing later leaks in), and reads three quotes per kept market (10, 25 and 40 minutes in) with
+a candle request each. Two spot signals: `lvl`, the random-walk probability from spot minus the price paid, and `adj`, the market's own mid
+five minutes earlier plus the model's move since, minus the price paid (does the quote lag a recent spot move; a constant Coinbase basis cancels).
+It prints a `survey` (strikes per event, strike types, minutes open, a market's fields, candles per kept market) because the first run may show
+a ladder shape the stage did not expect, the cells of marketbase and spotgap, and `se_c`, the standard error of edge_c with rows clustered by close
+hour (strikes and coins of one hour share one price path), which is the noise to read edge_c against. Fixed in advance as the test on days
+AFTER the first run: `adj>=+0.05` for YES and for NO (and the same for `lvl`): net above +1 cent after the entry fee, positive on most days with
+20 rows, at least 400 rows in at least 30 close hours, edge_c above two se_c, and the same cell cut to quotes at most 60 seconds old
+(`|quote:fresh`) positive too (a thin strike may have no candle for a minute, so an old quote can already be wrong). Every cell is also cut
+`quote:fresh` / `quote:old`. It stops with an error, carrying the survey, when no series has any market, a full day has
+under half of its 24 events, more than 4,000 markets would be kept, more than 2% of the candle requests fail, or a coin loses more than 5% of its
+quote rows to missing spot (a missing or crossed quote is only counted). Public data, so the log prints the full tables.
 
 To check that a day agrees with an earlier hand study, dispatch `stages=window since=00:00 until=HH:MM:SS`: the window's full
 summary goes to `work/D/window-*.json` on Drive (read it with the connector). The log shows neither a count nor a dollar figure:

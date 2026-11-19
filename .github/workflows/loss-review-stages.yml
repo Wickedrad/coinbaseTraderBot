@@ -15,7 +15,7 @@ on:
         description: 'UTC day the stages are for, YYYY-MM-DD'
         required: true
       stages:
-        description: 'stages in order, space or comma separated (pending prepare-tags apply-tags prepare-hyp apply-hyp apply-adv sweep shadow status anatomy marketbase spotgap budget window done)'
+        description: 'stages in order, space or comma separated (pending prepare-tags apply-tags prepare-hyp apply-hyp apply-adv sweep shadow status anatomy marketbase spotgap ladder budget window done)'
         required: false
         default: 'status'
       usage:
@@ -24,6 +24,10 @@ on:
         default: ''
       responses:
         description: 'JSON object {name: reply} (tag-NN, hyp-CLASS, adv-ID): each the output of python3 -m lossreview.screen NAME; saved before the stages, 60 KB at most'
+        required: false
+        default: ''
+      days:
+        description: 'marketbase, spotgap and ladder: how many UTC days (1 to 7) end with the day above; empty = 7'
         required: false
         default: ''
       weekly:
@@ -63,6 +67,7 @@ jobs:
           LR_USAGE: ${{ inputs.usage }}
           LR_RESPONSES: ${{ inputs.responses }}
           LR_WEEKLY: ${{ inputs.weekly }}
+          LR_DAYS: ${{ inputs.days }}
           LR_SINCE: ${{ inputs.since }}
           LR_UNTIL: ${{ inputs.until }}
         run: bash .github/scripts/loss_review_stages.sh

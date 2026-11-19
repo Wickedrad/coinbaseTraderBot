@@ -64,27 +64,28 @@ def list_settled(series, t0, t1):
         time.sleep(PAUSE)
 
 
-def candles_of(market, series):
-    """The 1-minute candlesticks of the window, or None when the request failed."""
+def candles_of(market, series, window=WINDOW, before=60):
+    """The 1-minute candlesticks of the WINDOW seconds that end at the close (and BEFORE seconds ahead of them), or None when the
+    request failed."""
     close = paths.iso_epoch(market['close_time'])
     url = '%s/series/%s/markets/%s/candlesticks?start_ts=%d&end_ts=%d&period_interval=1' % (
-        paths.KALSHI, series, market['ticker'], close - WINDOW - 60, close + 60)
+        paths.KALSHI, series, market['ticker'], close - window - before, close + 60)
     r = paths.get(url)
     if not isinstance(r, dict) or 'error' in r:
         return None
     return sorted(r.get('candlesticks') or [], key=lambda c: c.get('end_period_ts') or 0)
 
 
-def quote_at(candles, t):
-    """(YES bid, YES ask) in dollars at the close of the last candle that ended at or before t and no more than MAX_QUOTE_AGE seconds
-    before it, or (None, None)."""
+def quote_at(candles, t, max_age=MAX_QUOTE_AGE):
+    """(YES bid, YES ask) in dollars at the close of the last candle that ended at or before t and no more than MAX_AGE seconds
+    (default MAX_QUOTE_AGE) before it, or (None, None)."""
     last = None
     for c in candles:
         if (c.get('end_period_ts') or 0) <= t:
             last = c
         else:
             break
-    if last is None or t - (last.get('end_period_ts') or 0) > MAX_QUOTE_AGE:
+    if last is None or t - (last.get('end_period_ts') or 0) > max_age:
         return None, None
     return outcomes._px(last.get('yes_bid'), 'close'), outcomes._px(last.get('yes_ask'), 'close')
 

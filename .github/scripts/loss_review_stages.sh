@@ -6,11 +6,12 @@
 #
 #   LR_DAY        UTC day the stages are for, YYYY-MM-DD (required)
 #   LR_STAGES     space or comma separated, run in order: pending prepare-tags apply-tags prepare-hyp apply-hyp apply-adv sweep
-#                 shadow status anatomy marketbase spotgap budget window done    (default: status)
+#                 shadow status anatomy marketbase spotgap ladder budget window done    (default: status)
 #   LR_USAGE      model steps to log before the stages, "step:tokens_in:tokens_out:items;..." (steps: tag hypothesize adversary audit)
 #   LR_RESPONSES  JSON object {name: reply} of the model steps' replies, each the output of `python3 -m lossreview.screen NAME`
 #                 (a reply screening would change is refused); saved as work/DAY/NAME.response.json before the stages
 #   LR_SINCE, LR_UNTIL   the window stage's UTC clock bounds, HH:MM[:SS] (00:00 to 23:59:59, or 24:00 for the end of the day)
+#   LR_DAYS       marketbase, spotgap and ladder: how many UTC days, 1 to 7, ending with LR_DAY (default 7; a short window reads only the days after a first look)
 #   LR_WEEKLY     the weekly token allowance the budget stage also checks (digits), when the plan's limit is near
 #
 # The usage and budget stages are keyed to the day the tokens are spent (today, UTC), not to the day of the trips: the allowance is
@@ -26,19 +27,21 @@ USAGE=${LR_USAGE:-}
 SINCE=${LR_SINCE:-}
 UNTIL=${LR_UNTIL:-}
 WEEKLY=${LR_WEEKLY:-}
+DAYS=${LR_DAYS:-}
 TODAY=$(date -u +%F)
 RUN=${GITHUB_RUN_ID:-local}
 [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "::error::bad day: '$DAY'" >&2; exit 1; }
 for c in "$SINCE" "$UNTIL"; do
   [ -z "$c" ] || [[ "$c" =~ ^(([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?|24:00(:00)?)$ ]] || { echo "::error::bad clock time: '$c'" >&2; exit 1; }
 done
+[ -z "$DAYS" ] || [[ "$DAYS" =~ ^[1-7]$ ]] || { echo "::error::bad days: '$DAYS'" >&2; exit 1; }
 [ -z "$WEEKLY" ] || [[ "$WEEKLY" =~ ^[0-9]{1,10}$ ]] || { echo "::error::bad weekly allowance: '$WEEKLY'" >&2; exit 1; }
-READONLY=" pending status anatomy marketbase spotgap budget "
+READONLY=" pending status anatomy marketbase spotgap ladder budget "
 LIST=()
 IFS=', ' read -ra TOK <<< "$STAGES"
 for s in ${TOK[@]+"${TOK[@]}"}; do
   case "$s" in
-    pending|prepare-tags|apply-tags|prepare-hyp|apply-hyp|apply-adv|sweep|shadow|status|anatomy|marketbase|spotgap|budget|window|done) LIST+=("$s") ;;
+    pending|prepare-tags|apply-tags|prepare-hyp|apply-hyp|apply-adv|sweep|shadow|status|anatomy|marketbase|spotgap|ladder|budget|window|done) LIST+=("$s") ;;
     *) echo "::error::unknown stage: '$s'" >&2; exit 1 ;;
   esac
 done
@@ -77,6 +80,7 @@ for s in "${LIST[@]}"; do
     pending|status|anatomy) D "$s" --w "$W" ;;
     budget) D budget "$TODAY" --w "$W" ${WEEKLY:+--weekly "$WEEKLY"} ;;
     window) D window "$DAY" --w "$W" ${SINCE:+--since "$SINCE"} ${UNTIL:+--until "$UNTIL"}; WRITES=1 ;;
+    marketbase|spotgap|ladder) D "$s" "$DAY" --w "$W" ${DAYS:+--days "$DAYS"} ;;
     *) D "$s" "$DAY" --w "$W"; [[ "$READONLY" == *" $s "* ]] || WRITES=1 ;;
   esac
 done

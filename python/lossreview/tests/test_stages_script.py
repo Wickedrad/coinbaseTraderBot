@@ -72,7 +72,7 @@ class StagesScriptTests(unittest.TestCase):
             fh.write(FAKE_RCLONE)
         os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
         self.env = dict(os.environ, PATH=bin_ + os.pathsep + os.environ['PATH'], DRIVE_ROOT=self.drive, RUNNER_TEMP=self.tmp)
-        for k in ('LR_DAY', 'LR_STAGES', 'LR_USAGE', 'LR_RESPONSES', 'LR_SINCE', 'LR_UNTIL'):
+        for k in ('LR_DAY', 'LR_STAGES', 'LR_USAGE', 'LR_RESPONSES', 'LR_SINCE', 'LR_UNTIL', 'LR_DAYS'):
             self.env.pop(k, None)
 
     def tearDown(self):
@@ -87,7 +87,8 @@ class StagesScriptTests(unittest.TestCase):
                    {'LR_DAY': self.day, 'LR_STAGES': ' , '}, {'LR_DAY': self.day, 'LR_USAGE': 'tag:1:2'}, {'LR_DAY': self.day, 'LR_USAGE': 'oops:1:2:3'},
                    {'LR_DAY': self.day, 'LR_STAGES': 'window', 'LR_UNTIL': '12:99:99:1'}, {'LR_DAY': self.day, 'LR_STAGES': 'window', 'LR_UNTIL': '12:75'},
                    {'LR_DAY': self.day, 'LR_STAGES': 'window', 'LR_UNTIL': '24:00:01'}, {'LR_DAY': self.day, 'LR_STAGES': 'window', 'LR_SINCE': '23:60'},
-                   {'LR_DAY': self.day, 'LR_STAGES': 'budget', 'LR_WEEKLY': '12x'}, {'LR_DAY': self.day, 'LR_STAGES': 'budget', 'LR_WEEKLY': '-5'}, {}):
+                   {'LR_DAY': self.day, 'LR_STAGES': 'budget', 'LR_WEEKLY': '12x'}, {'LR_DAY': self.day, 'LR_STAGES': 'budget', 'LR_WEEKLY': '-5'}, {'LR_DAY': self.day, 'LR_DAYS': '0'},
+                   {'LR_DAY': self.day, 'LR_DAYS': '8'}, {'LR_DAY': self.day, 'LR_DAYS': '3; ls'}, {'LR_DAY': self.day, 'LR_DAYS': '12'}, {}):
             r = self.run_script(**kw)
             self.assertNotEqual(r.returncode, 0, kw)
             self.assertIn('::error::', r.stderr, kw)
