@@ -15,7 +15,7 @@ on:
         description: 'UTC day the stages are for, YYYY-MM-DD'
         required: true
       stages:
-        description: 'stages in order, space or comma separated (pending prepare-tags apply-tags prepare-hyp apply-hyp apply-adv sweep shadow status budget window done)'
+        description: 'stages in order, space or comma separated (pending prepare-tags apply-tags prepare-hyp apply-hyp apply-adv sweep shadow status anatomy budget window done)'
         required: false
         default: 'status'
       usage:

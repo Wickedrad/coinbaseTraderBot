@@ -55,7 +55,7 @@ text" and dropped if it still fails. The prompts and the trip files do hold per-
 temporary folder, and the job log prints only what `daily.py` prints (never a ticker, a time or a count of a window).
 
 Stage inputs: `day` (UTC day), `stages` (in order, comma or space separated: `pending prepare-tags apply-tags prepare-hyp apply-hyp
-apply-adv sweep shadow status budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
+apply-adv sweep shadow status anatomy budget window done`), `usage` (`step:tokens_in:tokens_out:items;...`, logged first), `responses`,
 `weekly`, `since`/`until` (the window stage, 00:00 to 23:59:59 or 24:00). Every run pulls the trip files, `registry.jsonl`,
 `usage.jsonl`, the done marks and the day's work folder, runs the canary (a broken validator stops it before it writes anything),
 logs the usage, saves the responses, runs the stages, and puts back `registry.jsonl` and `usage.jsonl`, then `work/DAY/` (so a put
@@ -99,6 +99,13 @@ the ids it wrote adversary prompts for (`adv_ids`), `prepare-hyp` the classes it
 
 A subagent token count that the tool does not report is estimated (prompt length / 4 in, reply length / 4 out) and logged as such;
 keep the estimate on the high side, since an under-count only makes the allowance look larger than it is.
+
+To see where the money goes without spending a token, dispatch `stages=anatomy` (any `day`; it is read-only and takes no day-dependent
+input). It cuts every scored trip of every day in the work folder by price, side, exit rule, hold time, entry taker or maker, call
+age, and kind and coin, and prints one aggregate line: net, fees, pre-fee result, the fee share of the stake, the settlement edge
+of the entries (win share minus mean entry price, in cents), the same trips held to settlement, and on how many days each cell was
+negative. A cell with under 10 trips is withheld and so, when that would leave a handful unprinted, is the next smallest; no cut is
+nested in another and no input moves a cell's edges, so the log cannot be subtracted down to one trade. It decides nothing.
 
 To check that a day agrees with an earlier hand study, dispatch `stages=window since=00:00 until=HH:MM:SS`: the window's full
 summary goes to `work/D/window-*.json` on Drive (read it with the connector). The log shows neither a count nor a dollar figure:

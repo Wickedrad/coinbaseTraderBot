@@ -6,7 +6,7 @@
 #
 #   LR_DAY        UTC day the stages are for, YYYY-MM-DD (required)
 #   LR_STAGES     space or comma separated, run in order: pending prepare-tags apply-tags prepare-hyp apply-hyp apply-adv sweep
-#                 shadow status budget window done            (default: status)
+#                 shadow status anatomy budget window done    (default: status)
 #   LR_USAGE      model steps to log before the stages, "step:tokens_in:tokens_out:items;..." (steps: tag hypothesize adversary audit)
 #   LR_RESPONSES  JSON object {name: reply} of the model steps' replies, each the output of `python3 -m lossreview.screen NAME`
 #                 (a reply screening would change is refused); saved as work/DAY/NAME.response.json before the stages
@@ -33,12 +33,12 @@ for c in "$SINCE" "$UNTIL"; do
   [ -z "$c" ] || [[ "$c" =~ ^(([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?|24:00(:00)?)$ ]] || { echo "::error::bad clock time: '$c'" >&2; exit 1; }
 done
 [ -z "$WEEKLY" ] || [[ "$WEEKLY" =~ ^[0-9]{1,10}$ ]] || { echo "::error::bad weekly allowance: '$WEEKLY'" >&2; exit 1; }
-READONLY=" pending status budget "
+READONLY=" pending status anatomy budget "
 LIST=()
 IFS=', ' read -ra TOK <<< "$STAGES"
 for s in ${TOK[@]+"${TOK[@]}"}; do
   case "$s" in
-    pending|prepare-tags|apply-tags|prepare-hyp|apply-hyp|apply-adv|sweep|shadow|status|budget|window|done) LIST+=("$s") ;;
+    pending|prepare-tags|apply-tags|prepare-hyp|apply-hyp|apply-adv|sweep|shadow|status|anatomy|budget|window|done) LIST+=("$s") ;;
     *) echo "::error::unknown stage: '$s'" >&2; exit 1 ;;
   esac
 done
@@ -74,7 +74,7 @@ done
 if [ -n "${LR_RESPONSES:-}" ]; then D responses "$DAY" --w "$W"; WRITES=1; fi
 for s in "${LIST[@]}"; do
   case "$s" in
-    pending|status) D "$s" --w "$W" ;;
+    pending|status|anatomy) D "$s" --w "$W" ;;
     budget) D budget "$TODAY" --w "$W" ${WEEKLY:+--weekly "$WEEKLY"} ;;
     window) D window "$DAY" --w "$W" ${SINCE:+--since "$SINCE"} ${UNTIL:+--until "$UNTIL"}; WRITES=1 ;;
     *) D "$s" "$DAY" --w "$W"; [[ "$READONLY" == *" $s "* ]] || WRITES=1 ;;
