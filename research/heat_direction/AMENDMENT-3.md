@@ -1,6 +1,6 @@
 # Amendment 3 to the DS pre-registration: the frequency frontier, the lockout test (E9) and a FINAL sized to the rule
 
-Written 2026-11-19 6:35 PM EST / 23:35 UTC, after the first DS run was read (ROUND-DS.md) and before any floor above 3 is scored. Research only: no order, no bot change, no protected heat curve. It changes how the FINAL of PREREG-3.md section 8 is sized and which rule goes into it. It changes no threshold of E1 to E8, no rule of the grid, and no scoring of a rule. PREREG-3.md sha256 `c3b9b51e4200440b532de817483b80f9379d57ee2a1f4fa9ae38dd1325bbe9cf` stands.
+Written 2026-11-19 6:28 PM EST / 23:28 UTC (the first commit f916434e carried the time 6:35 PM EST / 23:35 UTC by mistake; this commit corrects the clock only, no other word changes), after the first DS run was read (ROUND-DS.md) and before any floor above 3 is scored. Research only: no order, no bot change, no protected heat curve. It changes how the FINAL of PREREG-3.md section 8 is sized and which rule goes into it. It changes no threshold of E1 to E8, no rule of the grid, and no scoring of a rule. PREREG-3.md sha256 `c3b9b51e4200440b532de817483b80f9379d57ee2a1f4fa9ae38dd1325bbe9cf` stands.
 
 ## 1. Why, in plain words
 
