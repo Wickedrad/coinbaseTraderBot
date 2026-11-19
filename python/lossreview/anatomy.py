@@ -34,6 +34,7 @@ What each number means (all in dollars, per cell):
             hold group.
 """
 import collections
+import datetime
 import math
 import statistics
 
@@ -187,17 +188,33 @@ class Cell:
         return c
 
 
-def report(w):
+def window(day, days):
+    """(first, last) UTC day of the DAYS days that end with DAY, as YYYY-MM-DD strings."""
+    try:
+        last = datetime.date.fromisoformat(day)
+    except (TypeError, ValueError):
+        raise SystemExit('anatomy: bad day %r' % (day,))
+    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+        raise SystemExit('anatomy: days must be 1 or more, got %r' % (days,))
+    return (last - datetime.timedelta(days=days - 1)).isoformat(), last.isoformat()
+
+
+def report(w, day=None, days=None):
     """The aggregate report over every scored trip of every day in W (the fidelity-flagged and unscored trips stay out). A day with
     fewer than MIN_CELL scored trips is left out of every number, so two lines of two runs differ by whole days of MIN_CELL trips or
-    more (the logs are public and kept)."""
+    more (the logs are public and kept). With DAY and DAYS only the DAYS UTC days that end with DAY are read (whole days, the same
+    floors): a later run over the days after a first look, for the unseen-day tests. Without DAYS every day in W is read."""
     from . import daily
-    days = daily.load_days(w, scoring=True)
+    by_day = daily.load_days(w, scoring=True)
+    win = None
+    if days is not None:
+        win = window(day, days)
+        by_day = {d: r for d, r in by_day.items() if win[0] <= d <= win[1]}
     total = Cell()
     cuts = {name: collections.defaultdict(Cell) for name in CUTS}
     per_day, kept, short = [], 0, 0
-    for day in sorted(days):
-        rows = [v for v in (view(r) for r in days[day]) if v is not None]
+    for d in sorted(by_day):
+        rows = [v for v in (view(r) for r in by_day[d]) if v is not None]
         if not rows:
             continue
         if len(rows) < MIN_CELL:
@@ -206,18 +223,18 @@ def report(w):
         kept += len(rows)
         dc = Cell()
         for v in rows:
-            dc.add(day, v)
-            total.add(day, v)
+            dc.add(d, v)
+            total.add(d, v)
             for name, lab in labels(v).items():
-                cuts[name][lab].add(day, v)
-        per_day.append({'day': day, 'n': dc.n, 'net': _d(dc.net), 'fees': _d(dc.fees), 'pre': _d(dc.net + dc.fees)})
+                cuts[name][lab].add(d, v)
+        per_day.append({'day': d, 'n': dc.n, 'net': _d(dc.net), 'fees': _d(dc.fees), 'pre': _d(dc.net + dc.fees)})
     out_cuts, suppressed = {}, {}
     for name in CUTS:
         shown, hidden = _publish_nested(cuts[name], NESTED[name]) if name in NESTED else _publish(cuts[name])
         out_cuts[name] = {lab: c.out() for lab, c in sorted(shown.items())}
         suppressed[name] = hidden
     nets = [d['net'] for d in per_day]
-    return {'days_used': len(per_day), 'days_short': short, 'trips': kept, 'floor': MIN_CELL, 'grid': GRID,
+    return {'window': win, 'days_used': len(per_day), 'days_short': short, 'trips': kept, 'floor': MIN_CELL, 'grid': GRID,
             'all': total.out() if total.n else {}, 'per_day': per_day,
             'day_net_median': statistics.median(nets) if nets else None,
             'cuts': out_cuts, 'suppressed_trips': suppressed,

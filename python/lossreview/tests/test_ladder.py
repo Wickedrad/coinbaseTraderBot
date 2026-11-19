@@ -674,6 +674,7 @@ class Wiring(unittest.TestCase):
                 except SystemExit:
                     pass
         self.assertIn('LOSSLOOP ladder', buf.getvalue())
+        self.assertIn('"days": 7', buf.getvalue())          # no --days: the seven days every market stage reads by default
 
 
 if __name__ == '__main__':

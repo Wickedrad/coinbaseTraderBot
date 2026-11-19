@@ -15,7 +15,7 @@ Stages (the model steps sit between them; docs/LOSS_REVIEW_ROUTINE.md has the ro
     sweep DAY             -> scores every open hypothesis on the days after its generating losses; freezes a candidate that survives BH
     shadow DAY            -> flags DAY's trips with every frozen rule; pools the shadow days; drafts nothing, only reports 'ready'
     status                -> counts by state, trials, token use (aggregates only)
-    anatomy               -> the scored trips of every day cut by price, side, exit rule, hold time, entry kind, call age, coin (aggregates only; no tokens)
+    anatomy [DAY --days N] -> the scored trips of every day (or of the N days ending DAY) cut by price, side, exit rule, hold time, entry kind and side, call age, coin (aggregates only; no tokens)
     marketbase DAY        -> the settlement edge of buying YES or NO at the quote, over EVERY settled 15-minute crypto market of the 7 days ending DAY (public data; no tokens)
     ladder DAY            -> the hourly strike ladders (KXBTCD...): quote calibration and the spot lag of their nearest strikes (public data; no tokens)
     spotgap DAY           -> the same markets with the coin's Coinbase spot: is a random-walk probability from the spot a better forecast than the quote, and does buying where it differs from the price win (public data; no tokens)
@@ -543,7 +543,7 @@ def main(argv=None):
     ap.add_argument('--until', default='24:00:00')
     ap.add_argument('--from-env', default='LR_RESPONSES', help='responses: the environment variable that holds the JSON object')
     ap.add_argument('--daily', type=int, default=DAILY_TOKENS)
-    ap.add_argument('--days', type=int, default=7, help='marketbase: how many UTC days, ending with DAY')
+    ap.add_argument('--days', type=int, default=None, help='marketbase, spotgap, ladder: how many UTC days, ending with DAY (default 7); anatomy: only those days (default: every day in the work folder)')
     ap.add_argument('--weekly', type=int, default=None)
     a = ap.parse_args(argv)
     fn = {'prepare-tags': prepare_tags, 'apply-tags': apply_tags, 'prepare-hyp': prepare_hyp, 'apply-hyp': apply_hyp,
@@ -554,8 +554,10 @@ def main(argv=None):
         ok, fails = prompts.run_canary()
         print('LOSSLOOP canary %s' % json.dumps({'ok': ok, 'failures': fails}))
         return 0 if ok else 1
-    if a.stage in ('status', 'pending', 'anatomy'):
-        out = {'status': status, 'pending': pending, 'anatomy': anatomy.report}[a.stage](a.w)
+    if a.stage == 'anatomy':
+        out = anatomy.report(a.w, a.day, a.days)
+    elif a.stage in ('status', 'pending'):
+        out = {'status': status, 'pending': pending}[a.stage](a.w)
     else:
         if not a.day:
             ap.error('%s needs a DAY' % a.stage)
@@ -570,11 +572,11 @@ def main(argv=None):
         elif a.stage == 'budget':
             out = budget(a.w, a.day, a.daily, a.weekly)
         elif a.stage == 'marketbase':
-            out = marketbase.report(a.w, a.day, a.days)
+            out = marketbase.report(a.w, a.day, 7 if a.days is None else a.days)
         elif a.stage == 'spotgap':
-            out = spotgap.report(a.w, a.day, a.days)
+            out = spotgap.report(a.w, a.day, 7 if a.days is None else a.days)
         elif a.stage == 'ladder':
-            out = ladder.report(a.w, a.day, a.days)
+            out = ladder.report(a.w, a.day, 7 if a.days is None else a.days)
         else:
             out = fn(a.w, a.day)
     print('LOSSLOOP %s %s' % (a.stage, json.dumps(out, default=str)))

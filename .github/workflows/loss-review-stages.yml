@@ -27,7 +27,7 @@ on:
         required: false
         default: ''
       days:
-        description: 'marketbase, spotgap and ladder: how many UTC days (1 to 7) end with the day above; empty = 7'
+        description: 'marketbase, spotgap and ladder: how many UTC days (1 to 7) end with the day above; empty = 7. anatomy: only those days; empty = every day in the folder'
         required: false
         default: ''
       weekly:
