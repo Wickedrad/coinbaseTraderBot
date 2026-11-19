@@ -135,9 +135,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sims', type=int, default=4000)
     ap.add_argument('--seed', type=int, default=7)
+    ap.add_argument('--rate', type=float, default=None, help='calls per coin per day (round 0 measured 77 to 82)')
     a = ap.parse_args()
     rng = np.random.default_rng(a.seed)
     for wname, w in WINDOWS.items():
+        if a.rate is not None:
+            w = (w[0], w[1], a.rate, w[3])
         print('\n%s: %d days, %.1f calls per coin per day, sims %d' % (wname, w[1], w[2], a.sims))
         print('%-30s %7s %6s %6s %8s %7s  per-check pass %% (1..10)' % ('scenario', 'PASS', '>=9', 'core8', '6 looks', 'mean'))
         for name, (u, c, i) in SCEN.items():
