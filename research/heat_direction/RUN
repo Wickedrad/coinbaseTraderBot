@@ -1,2 +1,2 @@
 stage=dsplumb
-# AMENDMENT-3.md section 6, plumbing only: the exchange daily files against the sweep minute file on 3 search days, and the FINAL scorer on the search weeks 2026-09-28 to 2026-10-25 (no minute at or after 2026-11-01).
+# AMENDMENT-3.md section 6, plumbing only: the exchange daily files against the sweep minute file on 3 search days, the FINAL scorer on four search weeks (2026-09-28 to 2026-10-25) and, as description only, weekly hits of the frozen rule over 2025-01-06 to 2026-10-25 (no minute at or after 2026-11-01). Second run: weekly description added.

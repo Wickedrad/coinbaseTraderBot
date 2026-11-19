@@ -606,10 +606,17 @@ jobs:
         run: |
           set -o pipefail
           python3 -W ignore -m dirsweep.stage final --plumbing --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-09-28 --last-day 2026-10-25 --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --out ../out/dsplumb 2>&1 | tail -20
+      - name: Weekly hit of the frozen rule and its control, 2025-01-06 to 2026-10-25 (search days; description only)
+        if: always()
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage final --plumbing --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2025-01-06 --last-day 2026-10-25 --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --out ../out/dsplumb-long 2>&1 | tail -5 | cut -c1-6000
       - name: Keep the result on Drive
         if: always()
         run: |
           if [ -d out/dsplumb ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsplumb" out/dsplumb; else echo "no result"; fi
+          if [ -d out/dsplumb-long ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsplumb-long" out/dsplumb-long; fi
 
   # AMENDMENT-3.md section 6: THE FINAL. One look. Run only after the last FINAL Sunday and the day after it have been published by the exchange.
   # It checks the hashes of FREEZE-DS.json, that no earlier result is on Drive, that the freeze was committed before its deadline, fetches the exchange's
