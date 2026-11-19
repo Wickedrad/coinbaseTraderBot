@@ -34,17 +34,17 @@ class Anatomy(unittest.TestCase):
 
     def test_hold_counterfactual_and_edge(self):
         # 10 contracts at 0.40, entry fee 0.25: a winner held = 10*0.6 - 0.25 = 5.75, a loser held = -10*0.4 - 0.25 = -4.25
-        rows = [trip(i, win=(i < 4), fees=0.5) for i in range(10)]
+        rows = [trip(i, win=(i < 16), fees=0.5) for i in range(40)]
         write(self.w, '2026-11-14', rows)
         c = anatomy.report(self.w)['all']
-        self.assertEqual(c['n'], 10)
-        self.assertAlmostEqual(c['hold'], 4 * 5.75 - 6 * 4.25, places=2)
-        self.assertAlmostEqual(c['net_h'], -10.0, places=2)
+        self.assertEqual(c['n'], 40)
+        self.assertEqual(c['hold'], anatomy._d(16 * 5.75 - 24 * 4.25))     # -10
+        self.assertEqual(c['net_h'], -40)
         self.assertEqual(c['win_pct'], 40.0)
         self.assertEqual(c['px_c'], 40.0)
         self.assertEqual(c['edge_c'], 0.0)
-        self.assertEqual(c['pre'], -5.0)           # net -10 plus fees 5
-        self.assertEqual(c['fee_pct'], 12.5)       # fees 5 on stake 40
+        self.assertEqual(c['pre'], -20)            # net -40 plus fees 20
+        self.assertEqual(c['fee_pct'], 12.5)       # fees 20 on stake 160
 
     def test_unresolved_trips_stay_out_of_edge_and_hold_but_not_out_of_net(self):
         rows = [trip(i, win=None) for i in range(10)]
@@ -77,8 +77,7 @@ class Anatomy(unittest.TestCase):
                 left = rep['all']['n'] - sum(c['n'] for c in cells.values())
                 self.assertTrue(left == 0 or left >= anatomy.MIN_CELL, (name, left))
                 self.assertEqual(left, rep['suppressed_trips'][name], name)
-            left = rep['trips'] - sum(d['n'] for d in rep['per_day'])
-            self.assertTrue(left == 0 or left >= anatomy.MIN_CELL, left)
+            self.assertEqual(rep['trips'], sum(d['n'] for d in rep['per_day']))
 
     def test_neg_days_counts_only_days_with_enough_trips(self):
         write(self.w, '2026-11-12', [trip(i, pnl=-1) for i in range(10)])
@@ -112,6 +111,54 @@ class Anatomy(unittest.TestCase):
         for leak in ('SECRET', 'KXBTC15M', 'entry_t', 'ticker', '1700000'):
             self.assertNotIn(leak, out)
         self.assertEqual(json.loads(out[len('LOSSLOOP anatomy '):])['all']['n'], 12)
+
+    def test_resolved_groups_need_the_floor_on_their_own_count(self):
+        # 11 unresolved ratchet trips and ONE resolved: the cell has 12 trips but the resolved group must not print
+        rows = [trip(i, win=None, exit_event='ratchet') for i in range(11)] + [trip(50, win=False, exit_event='ratchet', pnl=-2.13, px=0.37)]
+        rows += [trip(100 + i, win=bool(i % 2), exit_event='settled') for i in range(12)]
+        write(self.w, '2026-11-14', rows)
+        cell = anatomy.report(self.w)['cuts']['exit']['ratchet']
+        self.assertEqual(cell['n'], 12)
+        for k in ('n_res', 'win_pct', 'px_c', 'edge_c', 'n_hold', 'hold', 'net_h'):
+            self.assertNotIn(k, cell)
+
+    def test_the_unresolved_rest_must_be_empty_or_at_the_floor(self):
+        rest_one = [trip(i, win=bool(i % 2)) for i in range(12)] + [trip(50, win=None, pnl=3.41)]
+        write(self.w, '2026-11-14', rest_one)
+        cell = anatomy.report(self.w)['all']
+        self.assertEqual(cell['n'], 13)
+        self.assertNotIn('hold', cell)             # net minus net_h would be that one trade
+        self.assertIn('win_pct', cell)             # a price and a win share need no such guard
+        write(self.w, '2026-11-14', [trip(i, win=bool(i % 2)) for i in range(12)] + [trip(50 + i, win=None) for i in range(10)])
+        self.assertIn('hold', anatomy.report(self.w)['all'])
+        write(self.w, '2026-11-14', [trip(i, win=bool(i % 2)) for i in range(12)])
+        self.assertIn('hold', anatomy.report(self.w)['all'])
+
+    def test_a_short_day_is_left_out_of_everything(self):
+        for k in range(5):
+            write(self.w, '2026-11-%02d' % (10 + k), [trip(100 * k + i, pnl=-1 - k) for i in range(12)])
+        before = anatomy.report(self.w)
+        write(self.w, '2026-11-15', [trip(900, pnl=3.41, fees=0.4)])
+        after = anatomy.report(self.w)
+        self.assertEqual(after['days_short'], 1)
+        after['days_short'] = 0
+        self.assertEqual(before, after)            # the one-trip day changes no printed number
+
+    def test_every_dollar_sum_is_on_the_grid(self):
+        import random
+        rnd = random.Random(3)
+        for k in range(4):
+            write(self.w, '2026-11-%02d' % (10 + k), [trip(1000 * k + i, pnl=round(rnd.gauss(-0.4, 2.2), 2), fees=round(rnd.uniform(0.2, 0.9), 2),
+                                                           win=rnd.choice([True, False, None]), px=rnd.choice([0.2, 0.5, 0.7])) for i in range(60)])
+        rep = anatomy.report(self.w)
+        cells = [rep['all']] + list(rep['per_day']) + [c for cut in rep['cuts'].values() for c in cut.values()]
+        seen = 0
+        for c in cells:
+            for k in ('net', 'fees', 'pre', 'hold', 'net_h'):
+                if k in c:
+                    seen += 1
+                    self.assertEqual(c[k] % anatomy.GRID, 0, (k, c[k]))
+        self.assertGreater(seen, 40)
 
     def test_empty_folder_gives_an_empty_report(self):
         write(self.w, '2026-11-09', [])

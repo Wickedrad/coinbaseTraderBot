@@ -1,11 +1,18 @@
 """Loss anatomy: where the paper heat lane's money goes, cut seven cheap ways over every scored trip in the work folder. RESEARCH ONLY.
 
 No model tokens and no candle fetch: it reads only the nightly trip files (W/days/trips-DAY.jsonl) and prints aggregates, so the
-public log learns nothing a per-trade file would. A cell is printed only with MIN_CELL or more trips; smaller cells are counted in
-`suppressed_trips` and nothing else, and when those leave fewer than MIN_CELL trips unprinted the smallest printed cell is withheld
-too, so that the whole set minus the printed cells is never a handful of trades (that subtraction would hand out one trade's
-result). No cut is nested in another for the same reason (price and side are separate cuts, not a price-by-side table), and the
-stage has no input that moves a cell's edges. It decides nothing and registers nothing: it shows which cheap lever (price, side, exit rule, hold
+public log learns nothing a per-trade file would. What keeps one trade's result out of the log:
+  - a cell is printed only with MIN_CELL or more trips; smaller cells are only counted in `suppressed_trips`, and when those leave
+    fewer than MIN_CELL trips unprinted the smallest printed cell is withheld too (all minus the printed cells is never a handful);
+  - the resolved groups (win_pct, px_c, edge_c; hold, net_h) print only with MIN_CELL resolved trips, and the dollar group only
+    when the unresolved rest of the cell is empty or MIN_CELL strong (net minus net_h would be the rest's result);
+  - a day with fewer than MIN_CELL scored trips is left out of every number, so two runs' lines differ by whole days;
+  - every dollar sum is printed on a $5 grid, so the difference of two printed numbers (two cells of two cuts that differ by one
+    trade, or two runs) names a trade's result only to within the grid, about the size of the trades themselves. The counts are exact,
+    so the presence of such a trade can be inferred; its dollars cannot, beyond that bound;
+  - no cut is nested in another (price and side are separate cuts, not a price-by-side table), and the stage has no input that
+    moves a cell's edges.
+It decides nothing and registers nothing: it shows which cheap lever (price, side, exit rule, hold
 time, entry taker or maker, call age, coin and kind) carries the loss, and on how many days each cell was negative, so a lever that
 only one day produced is visible as that.
 
@@ -22,10 +29,12 @@ What each number means (all in dollars, per cell):
   neg_days "days with a negative cell net / days the cell had at least DAY_MIN trips"
 """
 import collections
+import math
 import statistics
 
-MIN_CELL = 10      # a cell with fewer trips is not printed
+MIN_CELL = 10      # a cell with fewer trips is not printed; a day with fewer scored trips is left out of everything
 DAY_MIN = 3        # a day counts toward neg_days with at least this many trips in the cell
+GRID = 5           # every dollar sum is printed rounded to a multiple of this
 
 PX_EDGES = (0.20, 0.35, 0.50, 0.65, 0.80)
 HOLD_EDGES = (30, 120, 300, 900)         # seconds from entry to close
@@ -51,6 +60,11 @@ def _publish(cells):
     if 0 < hidden < MIN_CELL and shown:
         hidden += shown.pop(min(shown, key=lambda k: shown[k].n)).n
     return shown, hidden
+
+
+def _d(x):
+    """A dollar sum on the GRID (round half up), as a number."""
+    return int(math.floor(x / GRID + 0.5)) * GRID
 
 
 def _num(v):
@@ -120,48 +134,54 @@ class Cell:
             self.net_h += v['net']
 
     def out(self):
-        c = {'n': self.n, 'net': round(self.net, 2), 'fees': round(self.fees, 2), 'pre': round(self.net + self.fees, 2)}
+        c = {'n': self.n, 'net': _d(self.net), 'fees': _d(self.fees), 'pre': _d(self.net + self.fees)}
         if self.stake > 0:
             c['fee_pct'] = round(100.0 * self.fees / self.stake, 1)
-        if self.res:
+        # The resolved groups print only with MIN_CELL trips behind them, and (for the dollar group) with the unresolved rest of the
+        # cell either empty or MIN_CELL strong: net minus net_h would otherwise be the rest's result.
+        if self.res >= MIN_CELL:
             win, px = self.wins / self.res, self.px_res / self.res
             c.update({'n_res': self.res, 'win_pct': round(100 * win, 1), 'px_c': round(100 * px, 1), 'edge_c': round(100 * (win - px), 1)})
-        if self.n_hold:
-            c.update({'hold': round(self.hold, 2), 'net_h': round(self.net_h, 2)})
+        rest = self.n - self.n_hold
+        if self.n_hold >= MIN_CELL and (rest == 0 or rest >= MIN_CELL):
+            c.update({'n_hold': self.n_hold, 'hold': _d(self.hold), 'net_h': _d(self.net_h)})
         days = [d for d in self.by_day.values() if d[0] >= DAY_MIN]
         c['neg_days'] = '%d/%d' % (sum(1 for d in days if d[1] < 0), len(days))
         return c
 
 
 def report(w):
-    """The aggregate report over every scored trip of every day in W (the fidelity-flagged and unscored trips stay out)."""
+    """The aggregate report over every scored trip of every day in W (the fidelity-flagged and unscored trips stay out). A day with
+    fewer than MIN_CELL scored trips is left out of every number, so two lines of two runs differ by whole days of MIN_CELL trips or
+    more (the logs are public and kept)."""
     from . import daily
     days = daily.load_days(w, scoring=True)
     total = Cell()
     cuts = {name: collections.defaultdict(Cell) for name in CUTS}
-    day_cells, kept = {}, 0
+    per_day, kept, short = [], 0, 0
     for day in sorted(days):
         rows = [v for v in (view(r) for r in days[day]) if v is not None]
         if not rows:
             continue
+        if len(rows) < MIN_CELL:
+            short += 1
+            continue
         kept += len(rows)
-        dc = day_cells[day] = Cell()
+        dc = Cell()
         for v in rows:
             dc.add(day, v)
             total.add(day, v)
             for name, lab in labels(v).items():
                 cuts[name][lab].add(day, v)
-    shown_days, hidden_days = _publish(day_cells)
-    per_day = [{'day': d, 'n': c.n, 'net': round(c.net, 2), 'fees': round(c.fees, 2), 'pre': round(c.net + c.fees, 2)}
-               for d, c in sorted(shown_days.items())]
+        per_day.append({'day': day, 'n': dc.n, 'net': _d(dc.net), 'fees': _d(dc.fees), 'pre': _d(dc.net + dc.fees)})
     out_cuts, suppressed = {}, {}
     for name in CUTS:
         shown, hidden = _publish(cuts[name])
         out_cuts[name] = {lab: c.out() for lab, c in sorted(shown.items())}
         suppressed[name] = hidden
     nets = [d['net'] for d in per_day]
-    return {'days_used': len(day_cells), 'trips': kept, 'floor': MIN_CELL,
-            'all': total.out() if total.n else {}, 'per_day': per_day, 'days_withheld_trips': hidden_days,
-            'day_net_median': round(statistics.median(nets), 2) if nets else None,
+    return {'days_used': len(per_day), 'days_short': short, 'trips': kept, 'floor': MIN_CELL, 'grid': GRID,
+            'all': total.out() if total.n else {}, 'per_day': per_day,
+            'day_net_median': statistics.median(nets) if nets else None,
             'cuts': out_cuts, 'suppressed_trips': suppressed,
-            'note': 'aggregates only; a cell under the floor is withheld; hold = same trips held to settlement'}
+            'note': 'aggregates only; dollar sums on a $%d grid; a cell under the floor is withheld; hold = same trips held to settlement' % GRID}

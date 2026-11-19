@@ -104,8 +104,12 @@ To see where the money goes without spending a token, dispatch `stages=anatomy` 
 input). It cuts every scored trip of every day in the work folder by price, side, exit rule, hold time, entry taker or maker, call
 age, and kind and coin, and prints one aggregate line: net, fees, pre-fee result, the fee share of the stake, the settlement edge
 of the entries (win share minus mean entry price, in cents), the same trips held to settlement, and on how many days each cell was
-negative. A cell with under 10 trips is withheld and so, when that would leave a handful unprinted, is the next smallest; no cut is
-nested in another and no input moves a cell's edges, so the log cannot be subtracted down to one trade. It decides nothing.
+negative. It decides nothing. What keeps one trade out of the public log: a cell under 10 trips is withheld (and the next smallest
+too when the unprinted rest would be a handful); the resolved groups print only with 10 resolved trips behind them, and the dollar
+group only when the unresolved rest of the cell is empty or 10 strong; a day with under 10 scored trips is left out of every number,
+so two runs differ by whole days; no cut is nested in another; and every dollar sum is on a $5 grid, so subtracting two cells (or
+two runs) that differ by one trade names its result only to within about the size of the trade. The counts are exact, so such a
+trade's presence can be inferred, not its dollars.
 
 To check that a day agrees with an earlier hand study, dispatch `stages=window since=00:00 until=HH:MM:SS`: the window's full
 summary goes to `work/D/window-*.json` on Drive (read it with the connector). The log shows neither a count nor a dollar figure:
