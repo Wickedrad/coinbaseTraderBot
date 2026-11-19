@@ -66,17 +66,23 @@ def baseline(spec: C.Spec, sets: dict, lo_ms: int, hi_ms: int) -> dict:
     return {k: (h / d if d else float('nan')) for k, (h, d) in cnt.items()}
 
 
+def decide_coin(spec: C.Spec, es, rows: list, coin: str) -> dict:
+    """The raw calls of one coin ({'calls', 'inv', 'unconf'}: entry row, side, key ...), before any outcome is joined."""
+    admitted = C.admit(rows, spec, coin)
+    pool = pool_rows(rows, coin, spec.ta_pool, spec.horizon) if _ta_on(spec) else []
+    want = [k for r in admitted + pool for k in [r['key']] + list(r.get('aliases') or [])]
+    step = float(es.step) if es.step else 1.0
+    sf = fade_fn(es.o, step, spec.fade_k) if spec.side == 'fade' else None
+    return C.decide(es.events_for(want), admitted, spec, pool, side_fn=sf)
+
+
 def run(spec: C.Spec, sets: dict, rows: list) -> dict:
     """{'calls': Calls, 'inv': Calls | None, 'unconf': Calls | None} over every coin of the spec, all calls of the loaded grid."""
     pc, pi, pu = [], [], []
     for coin in spec.coins:
         es = sets[coin]
-        admitted = C.admit(rows, spec, coin)
-        pool = pool_rows(rows, coin, spec.ta_pool, spec.horizon) if _ta_on(spec) else []
-        want = [k for r in admitted + pool for k in [r['key']] + list(r.get('aliases') or [])]
+        d = decide_coin(spec, es, rows, coin)
         step = float(es.step) if es.step else 1.0
-        sf = fade_fn(es.o, step, spec.fade_k) if spec.side == 'fade' else None
-        d = C.decide(es.events_for(want), admitted, spec, pool, side_fn=sf)
         mk = lambda items: C.outcomes(coin, items, es.o, step, spec.horizon, es.t0, rows_hi=es.n)
         pc.append(mk(d['calls']))
         pi.append(mk(d['inv']))

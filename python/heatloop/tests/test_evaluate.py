@@ -143,6 +143,16 @@ class Evaluate(unittest.TestCase):
         heat = EV.evaluate(C.Spec(tfs=('1m',), top_n=2), self.rand, self.rows, self.lo, self.hi, blocks=2)
         self.assertIsNone(heat['_base'])                                               # a heat spec keeps the same-call comparison
 
+    def test_the_twin_gate_needs_every_twin_file(self):
+        from heatloop import gate
+        spec = C.Spec(tfs=('1m',), top_n=2)
+        twins = {(c, t): self.rand[c] for c in ('BTC', 'ETH') for t in (1, 2, 3)}
+        full = gate.twin_gate(spec, twins, self.rows, self.lo, self.hi, 2)
+        self.assertTrue(full['complete'])
+        short = gate.twin_gate(spec, {k: v for k, v in twins.items() if k != ('ETH', 3)}, self.rows, self.lo, self.hi, 2)
+        self.assertFalse(short['complete'])
+        self.assertFalse(short['ok'])
+
     def test_the_random_side_gate_scores_a_fade_spec_against_the_same_base(self):
         from heatloop import gate
         spec = C.Spec(tfs=('1m',), top_n=2, side='fade', fade_k=15)
@@ -151,6 +161,28 @@ class Evaluate(unittest.TestCase):
         out = gate.random_side(c, i, u, self.lo, self.hi, 2, draws=6, base=res['_base'])
         self.assertEqual(out['draws'], 6)
         self.assertLessEqual(out['max_total'], 10)
+
+    def test_decide_coin_is_what_run_scores_and_a_peeking_side_shows_at_a_cut_on_the_call_minute(self):
+        spec = C.Spec(tfs=('1m',), top_n=2, side='fade', fade_k=5, lag=1)
+        es = self.rand['BTC']
+        d = EV.decide_coin(spec, es, self.rows, 'BTC')
+        run = EV.run(C.Spec(tfs=('1m',), top_n=2, side='fade', fade_k=5, lag=1, coins=('BTC',)), self.rand, self.rows)['calls']
+        self.assertEqual([c[0] for c in d['calls'] if 60 <= c[0] and c[0] + 16 < es.n], [(int(t) - es.t0) // MIN for t in run.ts])
+        e0 = d['calls'][len(d['calls']) // 2][0]                                      # cut so that the file ends on this call's own minute
+        n_cut = e0 + 1
+        keep = [i for i, r in enumerate(es.rows.tolist()) if r < n_cut]
+        trunc = ES.EventSet('BTC', 0, 'dev', es.t0, n_cut, es.lo_row, es.o[:n_cut], es.step, es.keys, [es.rows.tolist()[i] for i in keep],
+                            [es.kidx.tolist()[i] for i in keep])
+        raw = lambda dd: [(c[0], c[1]) for c in dd['calls'] if c[0] < n_cut]
+        self.assertEqual(raw(EV.decide_coin(spec, trunc, self.rows, 'BTC')), raw(d))        # the registered side is the same on the cut file
+        self.assertIn((e0, d['calls'][len(d['calls']) // 2][1]), raw(d))
+        real = EV.fade_fn
+        try:
+            EV.fade_fn = lambda o, step, k: (lambda e: 0 if e + 1 >= len(o) else -int(np.sign(np.round((o[e + 1] - o[e - k]) / step))))
+            peek_full, peek_cut = EV.decide_coin(spec, es, self.rows, 'BTC'), EV.decide_coin(spec, trunc, self.rows, 'BTC')
+        finally:
+            EV.fade_fn = real
+        self.assertNotEqual(raw(peek_full), raw(peek_cut))                                  # one bar of lookahead is caught by the cut on the call minute
 
     def test_event_set_round_trips_and_lists_events_in_row_order(self):
         es = self.rand['BTC']

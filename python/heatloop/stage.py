@@ -307,6 +307,9 @@ def cmd_looks(a):
     with open(a.rounds) as f:
         rounds = json.load(f)
     cand = qualifying(rounds)
+    for r in cand:                                     # a stale or foreign rounds file must not be looked at under another candidate's name
+        if C.spec_hash(spec_from(r['best']['spec'])) != r['best']['hash']:
+            sys.exit(f"round {r['round']}: the spec in rounds.json does not hash to its recorded hash")
     emit('looks_plan', dict(candidates=[dict(round=r['round'], hash=r['best']['hash'][:12]) for r in cand], max_looks=MAX_LOOKS))
     if not cand:
         emit('looks', dict(taken=0, stopped='no round qualifies on DEV'))
@@ -353,6 +356,13 @@ def cmd_cut(a):
              dataclasses.replace(optimize.ROUND0_H2, top_n=40, fade_k=60, lag=0, ta_confirm='follows', ta_conf_k=15, ta_inv_k=15, ta_pool=40),
              dataclasses.replace(optimize.ROUND0_H2, top_n=20, fade_k=1, lag=1, ta_confirm='none', ta_inv_k=0)]
     pts = cut_points(lo, hi, extra=a.extra)
+    # cuts placed exactly on the entry minute of real fade calls: the file then ends at the call's own minute, so a side that used anything
+    # after open[e] (or an event that used a bar after its own row) changes or drops that call and shows up as a mismatch
+    d0 = EV.decide_coin(dataclasses.replace(optimize.ROUND0_H2, coins=(a.coin,)), full, rows, a.coin)
+    own = [c[0] for c in d0['calls'] if lo <= full.t0 + c[0] * 60_000 < hi]
+    if own and a.at_calls:
+        pick = np.random.default_rng(20261122).choice(own, size=min(a.at_calls, len(own)), replace=False)
+        pts = sorted(set(pts) | {int(full.t0 + int(e) * 60_000) for e in pick})
     results, bad = [], 0
     for p in pts:
         end = p + 60_000                          # keep the cut minute itself: the file holds minutes up to and including p
@@ -372,9 +382,15 @@ def cmd_cut(a):
         names = sorted(set(k for _, k in ev))
         trunc = ES.EventSet(a.coin, 0, 'dev', m['t0'], m['n'], full.lo_row, m['o'], full.step, names,
                             [r for r, _ in ev], [names.index(k) for _, k in ev])
-        n_calls = same_calls = 0
+        n_calls = same_calls = n_raw = 0
         for sp in specs:
             sp1 = dataclasses.replace(sp, coins=(a.coin,))
+            df, dt_ = EV.decide_coin(sp1, full, rows, a.coin), EV.decide_coin(sp1, trunc, rows, a.coin)
+            for k in ('calls', 'inv', 'unconf'):          # the raw calls (entry row, side), every one entered before the file ends
+                xs = [(c[0], c[1]) for c in df[k] if c[0] < n_cut]
+                ys = [(c[0], c[1]) for c in dt_[k] if c[0] < n_cut]
+                n_raw += len(xs)
+                bad += int(xs != ys)
             rf = EV.run(sp1, {a.coin: full}, rows)
             rt = EV.run(sp1, {a.coin: trunc}, rows)
             for k in ('calls', 'inv', 'unconf'):
@@ -386,7 +402,7 @@ def cmd_cut(a):
                 bad += int(xs != ys)
         bad += int(not same_ev)
         row = dict(cut=datetime.datetime.fromtimestamp(p / 1000, datetime.timezone.utc).strftime('%Y-%m-%d %H:%M'), events=len(want), events_equal=same_ev,
-                   calls_compared=n_calls)
+                   calls_compared=n_calls, raw_calls_compared=n_raw)
         if diag:
             row['diff'] = diag
         results.append(row)
@@ -415,7 +431,7 @@ def main(argv=None):
     lk = sub.add_parser('looks'); lk.add_argument('--rounds', required=True); lk.add_argument('--val', required=True); lk.add_argument('--league', required=True)
     lk.add_argument('--private', required=True); lk.add_argument('--val-end', dest='val_end', type=int, default=None)
     c = sub.add_parser('cut'); c.add_argument('--coin', required=True); c.add_argument('--csv', required=True); c.add_argument('--league', required=True)
-    c.add_argument('--meta', required=True); c.add_argument('--extra', type=int, default=6)
+    c.add_argument('--meta', required=True); c.add_argument('--extra', type=int, default=6); c.add_argument('--at-calls', dest='at_calls', type=int, default=4)
     a = ap.parse_args(argv)
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')

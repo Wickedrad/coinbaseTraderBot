@@ -1,2 +1,2 @@
-stage=vevents
-# H2 unseen-day event files, retry: the VAL guard also covers loading the bars, so the build step sets HEATLOOP_VAL (counts and a hash prefix only are printed).
+stage=vevents,cut
+# vevents: unseen-day event files (the build step sets the VAL flag; counts and a hash prefix only). cut v4: raw (entry row, side) of every call compared up to the last row of the file, plus cuts placed on the entry minute of real fade calls.

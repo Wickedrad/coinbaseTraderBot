@@ -379,7 +379,7 @@ jobs:
 
   looks:
     needs: test
-    if: contains(needs.test.outputs.stage, 'looks')
+    if: needs.test.outputs.stage == 'looks'            # on its own: never next to vevents or h2rounds, whose Drive files it reads
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -408,4 +408,4 @@ jobs:
       - name: Keep the private tables on Drive
         if: always()
         run: |
-          [ -d out/val-private ] && bash deploy/drive_lab.sh put "models/heat-direction-loop/val-private" out/val-private || echo "no private tables"
+          if [ -d out/val-private ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/val-private" out/val-private; else echo "no private tables"; fi

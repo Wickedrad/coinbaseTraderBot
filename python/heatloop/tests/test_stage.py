@@ -10,6 +10,7 @@ from unittest import mock
 
 import numpy as np
 
+from heatloop import calls as C
 from heatloop import eventset as ES
 from heatloop import guards, optimize, stage
 from heatloop.tests import test_evaluate as TE
@@ -159,7 +160,7 @@ class Glue(unittest.TestCase):
 
     def rounds_file(self, name, specs):
         path = os.path.join(self.tmp, name)
-        rounds = [dict(round=n, group='x', improved=True, best=dict(hash=f'h{n}', eligible=True, passed=[1] * 8 + [0, 0], spec=sp.as_dict()))
+        rounds = [dict(round=n, group='x', improved=True, best=dict(hash=C.spec_hash(sp), eligible=True, passed=[1] * 8 + [0, 0], spec=sp.as_dict()))
                   for n, sp in specs]
         with open(path, 'w') as f:
             json.dump(rounds, f)
@@ -178,7 +179,7 @@ class Glue(unittest.TestCase):
         self.assertFalse(os.path.exists(priv))
         with mock.patch.dict(os.environ, {'HEATLOOP_VAL': '1'}):
             recs, text = run(args)
-        self.assertEqual(recs[0]['candidates'], [dict(round=2, hash='h2'), dict(round=4, hash='h4')])
+        self.assertEqual(recs[0]['candidates'], [dict(round=2, hash=C.spec_hash(fade)[:12]), dict(round=4, hash=C.spec_hash(dataclasses.replace(fade, fade_k=5))[:12])])
         looks = [r for r in recs if 'bit' in r]
         self.assertEqual([set(r) for r in looks], [{'round', 'hash', 'gate_ok', 'bit', 'core_bit'}] * 2)
         self.assertEqual(recs[-1], dict(taken=2, stopped='looks used up'))
@@ -202,6 +203,20 @@ class Glue(unittest.TestCase):
             recs, _ = run(args)
         self.assertEqual(m.call_count, 1)
         self.assertEqual(recs[-1], dict(taken=0, stopped='gate failed (no look used)'))
+
+    def test_looks_refuse_a_rounds_file_whose_spec_does_not_hash_to_its_recorded_hash(self):
+        fade = dataclasses.replace(optimize.ROUND0_H2, tfs=('1m',), top_n=2, min_share_A=0.0, min_share_B=0.0)
+        path = self.rounds_file('rounds-stale.json', [(2, fade)])
+        with open(path) as f:
+            rounds = json.load(f)
+        rounds[0]['best']['spec']['top_n'] = 3                                                # the spec was edited after its hash was recorded
+        with open(path, 'w') as f:
+            json.dump(rounds, f)
+        with mock.patch.dict(os.environ, {'HEATLOOP_VAL': '1'}), mock.patch.object(stage, 'look') as m:
+            with self.assertRaises(SystemExit):
+                run(['looks', '--rounds', path, '--val', os.path.join(self.tmp, 'nowhere'), '--league', self.league,
+                     '--private', os.path.join(self.tmp, 'p4')])
+        m.assert_not_called()
 
     def test_no_qualifying_round_means_no_look_and_no_val_file_is_read(self):
         path = os.path.join(self.tmp, 'rounds-none.json')

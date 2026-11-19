@@ -17,6 +17,7 @@ DRAW_SEED = 20261120
 MAX_SCORE = 2
 Z = 3.0
 DRAW_SHARE = 0.95
+TWINS_PER_COIN = 3
 
 
 def twin_gate(spec, twins: dict, rows: list, lo: int, hi: int, blocks='bimonth') -> dict:
@@ -34,7 +35,8 @@ def twin_gate(spec, twins: dict, rows: list, lo: int, hi: int, blocks='bimonth')
         ok = n > 0 and res['total'] <= MAX_SCORE and abs(z) <= Z
         out.append(dict(coin=coin, twin=int(tid), n=n, hit=round(rate, 4) if n else None, z=round(z, 2) if z == z else None,
                         total=res['total'], ok=bool(ok)))
-    return dict(rows=out, ok=bool(out) and all(r['ok'] for r in out))
+    complete = len(out) == TWINS_PER_COIN * len(spec.coins)         # a missing twin file must not pass the gate by default
+    return dict(rows=out, complete=complete, ok=bool(out) and complete and all(r['ok'] for r in out))
 
 
 def random_side(calls, inv, unc, lo: int, hi: int, blocks='bimonth', draws: int = DRAWS, seed: int = DRAW_SEED, base=None) -> dict:
