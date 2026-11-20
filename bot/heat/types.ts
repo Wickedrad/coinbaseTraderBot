@@ -118,6 +118,14 @@ export interface HeatConfig {
   context: 'size' | 'block' | 'off';
   /** HEAT_CONTEXT_BOOST: weight added when the hour agrees (0..1). */
   contextBoost: number;
+  /** HEAT_HOURLY_YES (default false; Steven, Nov 20 2026 12:03 PM EST / 17:03 UTC: "2 yes"): false = no YES entry on an hourly contract
+   *  (the loss anatomy of Nov 12-18: hourly YES lost about $1,215 a week and was positive on 0 of 7 days). NO on the hourly
+   *  contract and YES on the 15-minute contract are unchanged. true = the old behaviour. */
+  hourlyYes: boolean;
+  /** HEAT_NO_HOLD_SHARE (default 0.5): the share of NO entries, picked by a fixed hash of the ticker (bot/heat/holdArm.ts), held
+   *  to settlement with no exit of the plan's (Steven, Nov 20 2026 12:03 PM EST / 17:03 UTC, paper test: the other NO entries are
+   *  the control). 0 = off, 1 = every NO entry. */
+  noHoldShare: number;
   /** HEAT_MAX_OPEN: open heat positions across all coins (decision 8: the hottest at heat size, the next at
    *  ORDER_USD_MIN, no third; hourly positions count). */
   maxOpen: number;
@@ -262,6 +270,8 @@ export interface HeatPlan {
   ruleId: string;
   row: HeatCallRow;
   why: string;
+  /** In the NO hold arm (HEAT_NO_HOLD_SHARE): held to settlement, no plan exit sells it. A pure function of the ticker and side. */
+  hold: boolean;
 }
 
 export interface HeatSkip {
@@ -321,6 +331,8 @@ export interface HeatTag {
   ruleId: string;
   openedAt?: number;
   settings?: Record<string, unknown>;
+  /** The NO hold arm (bot/heat/holdArm.ts): the plan's exits leave this position to settle. */
+  hold?: boolean;
 }
 
 /** What the perps side asks the lane (bot/setups/setupTrader.ts). An implementation never throws. */

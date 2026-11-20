@@ -17,13 +17,14 @@
 // decideHeat is pure: no file, no clock, no config lookup. The time, the markets as the engine shows them, the
 // order band, the entry windows and the book state all come in as inputs, so a replay decides exactly as the server
 // does. HeatLane wraps it with the saved state and is what the engine and the perps side talk to. The lane sends
-// nothing itself: the engine places each plan through placeChecked, in paper and live alike. The only thing that
-// differs by mode is the pilot loss budget, which stops entries in live only.
+// nothing itself: the engine places each plan through placeChecked, in paper and live alike. What differs by mode is the
+// pilot loss budget, which stops entries in live only, and the NO hold arm (holdArm.ts), which is a paper test only.
 
 import { logger } from '../util/log';
 import { EPS, clamp, round } from '../util/num';
 import { writeJsonAtomic } from '../util/persist';
 import { PLAN_END_FRAC, planLoserCutAt } from '../plan/planRatchet';
+import { inNoHoldArm } from './holdArm';
 import {
   heatWindowKey, loadHeatState, pruneHeatState, syncHeatBook,
   type HeatLaneState, type HeatPositionLookup, type HeatSyncResult,
@@ -439,6 +440,9 @@ export function decideHeat(i: HeatDecideInput): HeatDecideResult {
     const { market, why } = pickMarket(c.asset, c.h, i.markets, now, i.windows);
     if (!market) { skip(c, why ?? 'no market'); continue; }
     const side: 'yes' | 'no' = c.row.dir > 0 ? 'yes' : 'no';
+    // No hourly YES entry (HEAT_HOURLY_YES off, Steven, Nov 20 2026 12:03 PM EST / 17:03 UTC). Skipped here, before the one-entry-per-coin
+    // pick below, so a skipped hourly YES never displaces a 15-minute candidate of the same coin.
+    if (market.kind === 'hourly' && side === 'yes' && !cfg.hourlyYes) { skip(c, 'hourly YES entries are off (HEAT_HOURLY_YES)', market.ticker); continue; }
     // The hour's direction acts on the 15-minute contract only: the hourly contract IS the hour's call.
     const hour = context[c.asset];
     const ctx: HeatPlan['context'] = c.h !== 15 || cfg.context === 'off' ? 'n/a'
@@ -496,6 +500,8 @@ export function decideHeat(i: HeatDecideInput): HeatDecideResult {
       fair: round(fair, 4),
       ruleId: `heat:${i.snapshot?.run ?? ''}:${c.asset}:h${c.h}:${c.row.key}`,
       row: c.row,
+      // The NO hold arm is a paper test: in live every NO entry keeps the plan's exits.
+      hold: !i.live && inNoHoldArm(m.ticker, side, cfg.noHoldShare),
       why: `heat ${c.asset} ${m.kind} ${c.row.dir > 0 ? 'up' : 'down'} ${c.row.key} rank ${c.row.rank}/${heatBatch(c.row.of, cfg.topN)} ctx ${cand.context}`,
       closeTs: m.closeTs,
     });

@@ -12,6 +12,7 @@ import {
 import type { HeatCallRow, HeatCoinCalls, HeatConfig, HeatContext, HeatMarketView, HeatOpen, HeatSnapshot } from '../bot/heat/types';
 import { loadConfig } from '../bot/config';
 import { loadHeatState } from '../bot/heat/heatBook';
+import { armPosition, fnv1a32, inNoHoldArm } from '../bot/heat/holdArm';
 import { tmpDir } from './helpers';
 
 const S = 1000, MIN = 60 * S;
@@ -19,10 +20,12 @@ const S = 1000, MIN = 60 * S;
 const T0 = Date.UTC(2026, 10, 11, 15, 0, 0);
 const NOW = T0 + 5 * S;
 
-/** The lane's settings at their defaults (HEAT_* in the spec). */
+/** The lane's settings at their defaults (HEAT_* in the spec), except the two paper tests of Nov 20: the older cases below were
+ *  written when hourly YES entries were made and no NO entry was held, so they run with HEAT_HOURLY_YES on and the hold arm off
+ *  (hourlyYes true, noHoldShare 0); the cases for the new defaults (hourlyYes false, noHoldShare 0.5) say so in `settings({...})`. */
 const DEFAULTS = {
   enabled: true, callsFile: '', assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45,
-  sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5,
+  sizing: true, context: 'size', contextBoost: 0.25, hourlyYes: true, noHoldShare: 0, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5,
   flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip', dial: 'off', dialPriorTrips: 20, dialPriorReturn: -0.05, dialScale: 0.1, dialFloor: 0.2, dialMax: 2,
 };
 const settings = (o: Partial<HeatConfig> = {}): HeatConfig => ({ ...DEFAULTS, ...o }) as HeatConfig;
@@ -1118,4 +1121,103 @@ test('evidence dial: HEAT_DIAL reads off, log or on', () => {
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32) }).heat.dial, 'off');
   assert.equal(loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), HEAT_DIAL: 'log', HEAT_DIAL_FLOOR: '0.3' }).heat.dialFloor, 0.3);
   assert.throws(() => loadConfig({ DASHBOARD_TOKEN: 'x'.repeat(32), HEAT_DIAL: 'maybe' }));
+});
+
+// ---- Paper tests of Nov 20 2026 (Steven, 12:03 PM EST / 17:03 UTC): no hourly YES entries, and the NO hold arm --------------------
+// The two settings below are the real defaults of HEAT_HOURLY_YES (false) and HEAT_NO_HOLD_SHARE (0.5).
+const NEW = { hourlyYes: false, noHoldShare: 0.5 } as const;
+
+test('HEAT_HOURLY_YES off: an hourly YES call is ruled on and skipped with the reason; the call is claimed, no plan, no slot used', () => {
+  const r = decide({ cfg: settings(NEW), snapshot: snap({ BTC: [hourRow()] }), markets: [hourly('A', 0.5)] });
+  assert.equal(r.plans.length, 0);
+  assert.deepEqual(r.skips.map((x) => [x.reason, x.ticker]), [['hourly YES entries are off (HEAT_HOURLY_YES)', 'KXBTCH-A']]);
+  assert.equal(r.decided.length, 1, 'the call was ruled on');
+  assert.deepEqual(Object.keys(r.acted), [heatCallKey('BTC', 60, T0)], 'and claimed, so it is not ruled on again next minute');
+  // On (HEAT_HOURLY_YES=true) the same call buys the hourly YES, as before the change.
+  const on = decide({ cfg: settings({ ...NEW, hourlyYes: true }), snapshot: snap({ BTC: [hourRow()] }), markets: [hourly('A', 0.5)] });
+  assert.deepEqual(on.plans.map((p) => [p.kind, p.side, p.ticker]), [['hourly', 'yes', 'KXBTCH-A']]);
+});
+
+test('HEAT_HOURLY_YES off: hourly NO and 15-minute YES and NO are unchanged', () => {
+  const cfg = settings(NEW);
+  const hourNo = decide({ cfg, snapshot: snap({ BTC: [hourRow({ dir: -1 })] }), markets: [hourly('A', 0.5)] });
+  assert.deepEqual(hourNo.plans.map((p) => [p.kind, p.side, p.ticker, p.price]), [['hourly', 'no', 'KXBTCH-A', 0.49]]);
+  assert.deepEqual(hourNo.skips, []);
+  const yes15 = btc15({ cfg });
+  assert.deepEqual(yes15.plans.map((p) => [p.kind, p.side]), [['15m', 'yes']]);
+  const no15 = btc15({ cfg }, { dir: -1 });
+  assert.deepEqual(no15.plans.map((p) => [p.kind, p.side]), [['15m', 'no']]);
+});
+
+test('HEAT_HOURLY_YES off: a skipped hourly YES does not displace the coin\'s 15-minute candidate; on, the hotter hourly call takes the coin', () => {
+  const input = { snapshot: snap({ BTC: [row({ rank: 6 }), hourRow({ rank: 2 })] }), markets: [m15(), hourly('A', 0.5)] };
+  const off = decide({ ...input, cfg: settings({ ...NEW, context: 'off' }) });
+  assert.deepEqual(off.plans.map((p) => [p.kind, p.side]), [['15m', 'yes']]);
+  assert.deepEqual(reasons(off), ['hourly YES entries are off (HEAT_HOURLY_YES)'], 'no "hotter call" skip: the hourly one never was a candidate');
+  const on = decide({ ...input, cfg: settings({ ...NEW, hourlyYes: true, context: 'off' }) });
+  assert.deepEqual(on.plans.map((p) => [p.kind, p.side]), [['hourly', 'yes']]);
+});
+
+test('HEAT_HOURLY_YES off: a skipped hourly YES leaves its slot to the next coin', () => {
+  // Decision 8 (one free slot): BTC's hotter hourly YES is skipped, so ETH's 15-minute call takes the slot.
+  const r = decide({
+    cfg: settings({ ...NEW, maxOpen: 1 }), state: seasoned(),
+    snapshot: snap({ BTC: [hourRow({ rank: 1 })], ETH: [row({ rank: 5 })] }), markets: [hourly('A', 0.5), m15('ETH')],
+  });
+  assert.deepEqual(r.plans.map((p) => [p.asset, p.kind]), [['ETH', '15m']]);
+});
+
+test('the NO hold arm: FNV-1a 32 bit over the ticker\'s UTF-8 bytes (pinned vectors, for the python mirror)', () => {
+  assert.deepEqual(['', 'a', 'foobar', 'hello', 'KXBTC15M-26NOV201015-15'].map(fnv1a32), [0x811c9dc5, 0xe40c292c, 0xbf9cf968, 0x4f9f2cab, 0x9823f98a]);
+  assert.equal(fnv1a32('é'), 0x1e9de8c1, 'the two UTF-8 bytes of é, not one UTF-16 unit');
+  assert.equal(armPosition('KXBTC15M-26NOV201015-15'), 0x9823f98a / 4294967296);
+  // On the line: the same ticker is always in the same arm.
+  assert.equal(inNoHoldArm('KXBTC15M-26NOV201015-15', 'no', 0.6), true);
+  assert.equal(inNoHoldArm('KXBTC15M-26NOV201015-15', 'no', 0.59), false);
+  assert.equal(inNoHoldArm('KXBTC15M-26NOV201015-15', 'no', 0.5), false);
+});
+
+test('the NO hold arm: YES never; share 0 none (the arm is off), share 1 every NO; about the share of a few thousand tickers in between', () => {
+  const tickers: string[] = [];
+  for (const coin of ['BTC', 'ETH', 'SOL', 'XRP']) {
+    for (let day = 1; day <= 28; day++) {
+      for (let m = 15; m < 24 * 60; m += 15) {
+        const hhmm = `${String(Math.floor(m / 60)).padStart(2, '0')}${String(m % 60).padStart(2, '0')}`;
+        tickers.push(`KX${coin}15M-26NOV${String(day).padStart(2, '0')}${hhmm}-${hhmm.slice(2)}`);
+      }
+    }
+  }
+  assert.ok(tickers.length > 10_000);
+  const share = (side: 'yes' | 'no', x: number, ts = tickers) => ts.filter((t) => inNoHoldArm(t, side, x)).length / ts.length;
+  assert.equal(share('yes', 1), 0, 'a YES entry is never held');
+  assert.equal(share('no', 0), 0);
+  assert.equal(share('no', 1), 1);
+  assert.ok(Math.abs(share('no', 0.5) - 0.5) < 0.02, `half: ${share('no', 0.5)}`);
+  assert.ok(Math.abs(share('no', 0.25) - 0.25) < 0.02, `a quarter: ${share('no', 0.25)}`);
+  // No coin and no minute of the quarter hour is left out of one arm.
+  for (const coin of ['BTC', 'ETH', 'SOL', 'XRP']) {
+    const ts = tickers.filter((t) => t.startsWith(`KX${coin}15M`));
+    assert.ok(Math.abs(share('no', 0.5, ts) - 0.5) < 0.04, `${coin}: ${share('no', 0.5, ts)}`);
+  }
+  // Hourly strikes too.
+  const strikes: string[] = [];
+  for (let day = 1; day <= 28; day++) for (let hour = 0; hour < 24; hour++) for (let k = 0; k < 40; k++) strikes.push(`KXBTCD-26NOV${String(day).padStart(2, '0')}${String(hour).padStart(2, '0')}-T${80_000 + k * 250}.99`);
+  assert.ok(Math.abs(share('no', 0.5, strikes) - 0.5) < 0.02, `hourly: ${share('no', 0.5, strikes)}`);
+});
+
+test('the NO hold arm: a NO plan carries hold from the ticker\'s hash and the share; a YES plan never; live never; share 0 = off', () => {
+  // A 15-minute BTC contract in the arm at share 0.5 and one outside it.
+  const inArm = 'KXBTC15M-26NOV201030-30', outArm = 'KXBTC15M-26NOV201045-45';
+  assert.deepEqual([inNoHoldArm(inArm, 'no', 0.5), inNoHoldArm(outArm, 'no', 0.5)], [true, false], 'the two tickers fall either side');
+  const no = (ticker: string, o: Partial<HeatDecideInput> = {}, cfg: Partial<HeatConfig> = NEW) =>
+    decide({ cfg: settings(cfg), snapshot: snap({ BTC: [row({ dir: -1 })] }), markets: [m15('BTC', { ticker })], ...o });
+  assert.deepEqual([no(inArm), no(outArm)].map((r) => r.plans.map((p) => [p.side, p.hold])), [[['no', true]], [['no', false]]]);
+  const yes = decide({ cfg: settings(NEW), snapshot: snap({ BTC: [row()] }), markets: [m15('BTC', { ticker: inArm })] });
+  assert.deepEqual(yes.plans.map((p) => [p.side, p.hold]), [['yes', false]], 'YES is never held, whatever its ticker hashes to');
+  assert.equal(no(inArm, {}, { ...NEW, noHoldShare: 0 }).plans[0].hold, false, 'share 0: the arm is off');
+  assert.equal(no(outArm, {}, { ...NEW, noHoldShare: 1 }).plans[0].hold, true, 'share 1: every NO entry');
+  assert.equal(no(inArm, { live: true }).plans[0].hold, false, 'live: a paper test only, every NO keeps the plan\'s exits');
+  // The hold changes nothing else about the plan.
+  const a = no(inArm).plans[0], b = no(inArm, {}, { ...NEW, noHoldShare: 0 }).plans[0];
+  assert.deepEqual({ ...a, hold: false }, b);
 });

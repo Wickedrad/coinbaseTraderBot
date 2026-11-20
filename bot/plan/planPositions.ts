@@ -25,6 +25,9 @@ export interface PlanPosition {
   state: PlanRatchetState;
   /** The position was seen open (a tag made before its entry fills waits for it). */
   seenOpen?: boolean;
+  /** The heat lane's NO hold arm (bot/heat/holdArm.ts, paper test of Nov 20 2026): no plan sale sells this position, it rides
+   *  to settlement. Absent in a file written before the arm: read as false. */
+  hold?: boolean;
 }
 
 export interface PlanTag {
@@ -32,6 +35,8 @@ export interface PlanTag {
   side: 'yes' | 'no';
   ruleId: string;
   openedAt?: number;
+  /** The heat lane's NO hold arm: the position is held to settlement (see PlanPosition.hold). */
+  hold?: boolean;
   /** The rule's tested ratchet settings (dollars for the whole position) and loser cut; what it leaves out comes from the
    *  profit ratchet's (RATCHET_ARM_USD, RATCHET_STOP_MIN_USD, RATCHET_TRAIL_USD), the tick clock and the plan's loser cut
    *  (PLAN_LOSER_CUT_C, PLAN_LOSER_CUT_USD). */
@@ -77,6 +82,7 @@ export class PlanPositions {
       ticker: t.ticker, side: t.side, ruleId: t.ruleId, openedAt: t.openedAt ?? now,
       settings: this.settingsOf(t.settings),
       state: freshPlanState(),
+      ...(t.hold ? { hold: true } : {}),
     };
     this.m.set(t.ticker, p);
     this.save();
