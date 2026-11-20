@@ -1200,6 +1200,10 @@ function heatConfig(env: Env, dataDir: string): HeatConfig {
     sizing: bool(env, 'HEAT_SIZING', true),
     context: oneOf(env, 'HEAT_CONTEXT', 'size', ['size', 'block', 'off'] as const),
     contextBoost: num(env, 'HEAT_CONTEXT_BOOST', 0.25, 0, 1),
+    // Steven, Nov 20 2026 12:03 PM EST / 17:03 UTC (paper): no hourly YES entries (the worst cell of the Nov 12-18 loss anatomy),
+    // and half of the NO entries held to settlement (by ticker hash) against the other half as the control.
+    hourlyYes: bool(env, 'HEAT_HOURLY_YES', false),
+    noHoldShare: num(env, 'HEAT_NO_HOLD_SHARE', 0.5, 0, 1),
     maxOpen: whole('HEAT_MAX_OPEN', 2, 0, 20),
     maxPerCoin: whole('HEAT_MAX_PER_COIN', 1, 1, 10),
     cooldownSec: num(env, 'HEAT_COOLDOWN_SEC', 60, 0, 86_400),

@@ -34,7 +34,7 @@ function verify(file: string, anchor?: string): any {
 
 const DEFAULTS = {
   enabled: true, callsFile: '', assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45,
-  sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5,
+  sizing: true, context: 'size', contextBoost: 0.25, hourlyYes: true, noHoldShare: 0, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5,
   flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip', dial: 'off', dialPriorTrips: 20, dialPriorReturn: -0.05, dialScale: 0.1, dialFloor: 0.2, dialMax: 2,
 };
 const settings = (): HeatConfig => ({ ...DEFAULTS }) as HeatConfig;
@@ -366,6 +366,6 @@ test('the replay command names the checkout it ran from and the files it depends
   assert.equal(out.chain_checked_here, true);
   assert.equal(out.verifier_checks_included, false);
   assert.equal(path.resolve(out.replayed_with.checkout), path.resolve('.'));
-  assert.deepEqual(Object.keys(out.replayed_with.decide_files_sha256).sort(), ['bot/heat/heatBook.ts', 'bot/heat/heatLane.ts', 'bot/plan/planRatchet.ts', 'bot/util/num.ts']);
+  assert.deepEqual(Object.keys(out.replayed_with.decide_files_sha256).sort(), ['bot/heat/heatBook.ts', 'bot/heat/heatLane.ts', 'bot/heat/holdArm.ts', 'bot/plan/planRatchet.ts', 'bot/util/num.ts']);
   assert.ok(Object.values(out.replayed_with.decide_files_sha256).every((h) => typeof h === 'string' && (h as string).length === 64));
 });

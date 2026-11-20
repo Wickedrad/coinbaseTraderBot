@@ -163,6 +163,25 @@ test('the loser cut (PLAN_LOSER_CUT_C 10c, Steven Nov 11 6:56 PM EST / 23:56 UTC
   assert.equal(g.oms.positions.position(g.market.ticker), -19, 'holds 19 NO');
 });
 
+test('NO hold arm (Nov 20): a NO entry in the arm is tagged hold, with the plan position, the decision and the heat row; YES, a NO outside the arm and share 0 are not', async () => {
+  // The fixture's ticker hashes to 0.0507 (bot/heat/holdArm.ts), inside the arm at the default share 0.5 and outside it at 0.04.
+  const run = async (dir: 1 | -1, env: Record<string, string> = {}) => {
+    const g = await setup({ env: { PLAN_RULES: 'true', ...env }, plan: true });
+    g.md.book(g.market.ticker).applySnapshot({ bids: [{ price: 0.59, size: 50 }], asks: [{ price: 0.6, size: 50 }] }, Date.now());
+    g.source.set(fired({ dir }));
+    await g.engine.tick();
+    assert.equal(g.tagged.length, 1, `entered: ${JSON.stringify(rows(g.audit, 'heat').filter((r) => r.key).map((r) => r.skip ?? r.plan))}`);
+    return {
+      tag: g.tagged[0].hold, planned: g.engine.planPositions.get(g.market.ticker)?.hold, side: g.tagged[0].side,
+      decision: rows(g.audit, 'decision').find((d) => d.lane === 'heat')!.heat.hold, row: rows(g.audit, 'heat').find((r) => r.key)!.plan.hold,
+    };
+  };
+  assert.deepEqual(await run(-1), { tag: true, planned: true, side: 'no', decision: true, row: true });
+  assert.deepEqual(await run(1), { tag: undefined, planned: undefined, side: 'yes', decision: false, row: false }, 'a YES entry is never held');
+  assert.deepEqual(await run(-1, { HEAT_NO_HOLD_SHARE: '0.04' }), { tag: undefined, planned: undefined, side: 'no', decision: false, row: false }, 'a NO outside the arm is the control');
+  assert.deepEqual(await run(-1, { HEAT_NO_HOLD_SHARE: '0' }), { tag: undefined, planned: undefined, side: 'no', decision: false, row: false }, 'share 0: the arm is off');
+});
+
 test('the cut by time (Steven, Nov 12 1:01 AM EST / 06:01 UTC): a third of the window gone, the cut is 14.4c; the spread guard and the dashboard read the same line', async () => {
   // The fixture's window: opened 5 minutes ago, 10 minutes to the close (a third gone): 20c - 10c x (1/3) / 0.6 = 14.4c.
   const g = await setup({ env: { PLAN_RULES: 'true' }, plan: true });
@@ -321,7 +340,7 @@ test('the round trip closes and counts: settled in profit, a trip and a win on t
 test('an entry that never opened is dropped after 30 s and its tag comes off', async () => {
   const g = await setup();
   const now = Date.now();
-  g.lane.sent({ asset: 'BTC', ticker: 'KXBTC15M-GONE', kind: '15m', h: 15, side: 'yes', price: 0.5, sideCost: 0.5, count: 20, stakeUsd: 10, weight: 1, slot: 1, context: 'none', fair: 0.53, ruleId: 'heat:R1:x', row: fired().coins.get('BTC')!.calls[0], why: 'heat test', closeTs: now + 600_000 }, now - 31_000, 0, 0);
+  g.lane.sent({ asset: 'BTC', ticker: 'KXBTC15M-GONE', kind: '15m', h: 15, side: 'yes', price: 0.5, sideCost: 0.5, count: 20, stakeUsd: 10, weight: 1, slot: 1, context: 'none', fair: 0.53, ruleId: 'heat:R1:x', row: fired().coins.get('BTC')!.calls[0], why: 'heat test', hold: false, closeTs: now + 600_000 }, now - 31_000, 0, 0);
   assert.ok(g.lane.holds('KXBTC15M-GONE'));
   await g.engine.tick();
   assert.deepEqual(g.untagged, ['KXBTC15M-GONE']);
@@ -419,12 +438,20 @@ test('settings: every HEAT_* name with its default, DOGE dropped, values checked
   const c = loadConfig({ DASHBOARD_TOKEN: TOKEN, DATA_DIR: '/tmp/heat-cfg' }).heat;
   assert.deepEqual(c, {
     enabled: false, callsFile: path.resolve('/tmp/heat-cfg/heat_calls.json'), assets: ['BTC', 'ETH', 'SOL', 'XRP'], horizons: [15, 60], topN: 10, maxAgeSec: 90,
-    entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5, flatTrips: 30,
+    entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25, hourlyYes: false, noHoldShare: 0.5, maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5, flatTrips: 30,
     pilotLossUsd: 15, feeNetCheck: false, perps: 'entry', perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip', dial: 'off', dialPriorTrips: 20, dialPriorReturn: -0.05, dialScale: 0.1, dialFloor: 0.2, dialMax: 2,
   });
   const set = loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_LANE: 'true', HEAT_ASSETS: 'btc, DOGE ,eth', HEAT_PERPS: 'gate', HEAT_PAIR_CONFLICT: 'pair', HEAT_CONTEXT: 'block', HEAT_CALLS_FILE: '/srv/calls.json', HEAT_PERP_HORIZONS: '240', HEAT_PERPS_DAILY: 'off' }).heat;
   assert.deepEqual([set.enabled, set.assets, set.perps, set.pairConflict, set.context, set.callsFile, set.perpHorizons, set.perpsDaily], [true, ['BTC', 'ETH'], 'gate', 'pair', 'block', '/srv/calls.json', [240], 'off']);
   assert.deepEqual(loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_PERP_HORIZONS: '240, 60,60' }).heat.perpHorizons, [60, 240], 'sorted, each once');
+  // Nov 20 2026 (paper tests): no hourly YES entries unless HEAT_HOURLY_YES=true; half of the NO entries held (HEAT_NO_HOLD_SHARE), 0 = off, 1 = all.
+  const arms = loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_HOURLY_YES: 'true', HEAT_NO_HOLD_SHARE: '0' }).heat;
+  assert.deepEqual([arms.hourlyYes, arms.noHoldShare], [true, 0]);
+  assert.deepEqual([loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_HOURLY_YES: '1', HEAT_NO_HOLD_SHARE: '1' }).heat].map((h) => [h.hourlyYes, h.noHoldShare]), [[true, 1]]);
+  assert.deepEqual([loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_HOURLY_YES: 'false' }).heat].map((h) => [h.hourlyYes, h.noHoldShare]), [[false, 0.5]]);
+  for (const [k, v] of [['HEAT_HOURLY_YES', 'on'], ['HEAT_NO_HOLD_SHARE', '1.5'], ['HEAT_NO_HOLD_SHARE', '-0.1'], ['HEAT_NO_HOLD_SHARE', 'half']]) {
+    assert.throws(() => loadConfig({ DASHBOARD_TOKEN: TOKEN, [k]: v }), ConfigError, `${k}=${v}`);
+  }
   // Re-entry after a loss (Steven, Nov 11 6:59 PM EST / 23:59 UTC): counts per window and the loss stop; the old switch is retired.
   const re = loadConfig({ DASHBOARD_TOKEN: TOKEN, HEAT_REENTRIES_15M: '0', HEAT_REENTRIES_HOURLY: '1', HEAT_REENTRY_LOSS_STOP: '0' }).heat;
   assert.deepEqual([re.reentries15m, re.reentriesHourly, re.reentryLossStop], [0, 1, 0]);

@@ -891,7 +891,7 @@ test('gate mode: the day gates nothing (only journaled); log mode journals the 4
 
 test('end to end with the lane: the reader\'s 240-minute row opens a 4h heat trade; its daily row against keeps it out', async () => {
   const cfg: HeatConfig = {
-    enabled: true, callsFile: '', assets: ['BTC'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25,
+    enabled: true, callsFile: '', assets: ['BTC'], horizons: [15, 60], topN: 10, maxAgeSec: 90, entryLagSec: 45, sizing: true, context: 'size', contextBoost: 0.25, hourlyYes: true, noHoldShare: 0,
     maxOpen: 2, maxPerCoin: 1, cooldownSec: 60, reentries15m: 3, reentriesHourly: 6, reentryLossStop: 0.5, flatTrips: 30, pilotLossUsd: 15, feeNetCheck: false, perps: 'entry',
     perpHorizons: [60, 240], perpsDaily: 'context', pairConflict: 'skip', dial: 'off', dialPriorTrips: 20, dialPriorReturn: -0.05, dialScale: 0.1, dialFloor: 0.2, dialMax: 2,
   };

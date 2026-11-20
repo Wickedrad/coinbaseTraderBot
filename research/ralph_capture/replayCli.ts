@@ -12,7 +12,7 @@ import { replayDecisionFile, replayPassed } from './replayDecisions';
 
 const root = path.resolve(path.dirname(process.argv[1] ?? '.'), '..', '..');
 /** The files decideHeat's result depends on (heatLane.ts imports the rest only for logging and file saving). */
-const DECIDE_FILES = ['bot/heat/heatLane.ts', 'bot/heat/heatBook.ts', 'bot/plan/planRatchet.ts', 'bot/util/num.ts'];
+const DECIDE_FILES = ['bot/heat/heatLane.ts', 'bot/heat/heatBook.ts', 'bot/heat/holdArm.ts', 'bot/plan/planRatchet.ts', 'bot/util/num.ts'];
 
 const git = (args: string[]): string | null => {
   try { return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return null; }

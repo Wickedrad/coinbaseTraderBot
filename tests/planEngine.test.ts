@@ -87,7 +87,7 @@ async function setup(o: { env?: Record<string, string>; historySec?: number; clo
   const planEvents = () => audit.tail(500, 'plan').map((r) => r.data as PlanEvent);
   const whys = () => audit.tail(500, 'decision').flatMap((d) => ((d.data as { place?: Array<{ why: string }> }).place ?? []).map((p) => p.why));
   const notes = () => engine.status.get(t)?.notes.join(' | ') ?? 'not evaluated';
-  const tag = (side: 'yes' | 'no', settings?: { armUsd?: number; stopMinUsd?: number; trailUsd?: number }) => engine.planPositions.tag({ ticker: t, side, ruleId: 'dummy-heat', ...(settings ? { settings } : {}) }, wall());
+  const tag = (side: 'yes' | 'no', settings?: { armUsd?: number; stopMinUsd?: number; trailUsd?: number }, hold?: boolean) => engine.planPositions.tag({ ticker: t, side, ruleId: 'dummy-heat', ...(settings ? { settings } : {}), ...(hold ? { hold: true } : {}) }, wall());
   return { dir, cfg, deps, md, paper, oms, kill, engine, market, audit, t, hold, book, advance, yesAt, noAt, exits, exitRejects, planEvents, whys, notes, tag };
 }
 
@@ -713,4 +713,117 @@ test('PLAN_RULES on, after a partial sale of a plan position: the hold exit and 
     assert.ok(g.whys().includes('hold exit: +$1.55 net (+$0.93 banked by partial sales) on 4 at bid 0.59, 10.0 s in all at +$1.50 or more, the last 10.0 s in a row at +$1.00 or more'), g.whys().join(' | '));
     assert.deepEqual(g.planEvents().map((e) => e.event), ['plan_ratchet_arm', 'plan_ratchet_raise'], 'the plan did not sell');
   }
+});
+
+// ---- The heat lane's NO hold arm (Steven, Nov 20 2026 12:03 PM EST / 17:03 UTC, paper test) -----------------------------------
+// A NO position tagged `hold` rides to settlement: no ratchet, no loser cut, no end rule, no hold exit, no pacer snipe. The control
+// (the same NO position, tagged without `hold`) and every YES position keep the plan's exits, so each walk below is run on both.
+
+test('NO hold arm: a loser the loser cut sells is held, in the open window and inside the last 90 s and the final minute; the control NO sells', async () => {
+  // 10 NO at 0.40 (YES sold at 0.60); the NO bid falls to 0.15, 25c under the entry, past the loser cut at any point of the window.
+  for (const [closeIn, nb] of [[600_000, 0.15], [90_000, 0.38], [45_000, 0.38]] as const) {
+    const what = `${closeIn / 1000} s, NO bid ${nb}`;
+    const c = await setup({ env: PLAN_ON, closeIn });
+    await c.hold('ask', 0.6, 10);
+    c.tag('no');
+    await c.noAt(nb);
+    assert.equal(c.exits().length, 1, `control sells (${what}): ${c.notes()}`);
+    assert.equal(c.oms.positions.position(c.t), 0, what);
+
+    const h = await setup({ env: PLAN_ON, closeIn });
+    await h.hold('ask', 0.6, 10);
+    h.tag('no', undefined, true);
+    await h.noAt(nb);
+    await h.noAt(nb);
+    assert.deepEqual(h.exits(), [], `hold arm holds (${what}): ${h.notes()}`);
+    assert.equal(h.oms.positions.position(h.t), -10, what);
+    assert.match(h.notes(), /NO hold arm: held to settlement/);
+    assert.deepEqual(h.planEvents(), [], 'no plan event: planStep never ran');
+    assert.equal(h.engine.status.get(h.t)?.plan?.hold, true);
+    assert.equal(h.engine.planPositions.get(h.t)?.hold, true, 'the tag stays while the position is open');
+    assert.deepEqual(h.exitRejects(), []);
+  }
+});
+
+test('NO hold arm: the ratchet, the hold exit and the pacer snipe leave a winner alone; the control NO is sold by each', async () => {
+  // The hold exit and the ratchet: +$1.56 at a 0.59 NO bid every second (as the YES test above), 15 s.
+  const sit = async (hold: boolean) => {
+    const clock = { t: Date.now() };
+    const g = await setup({ env: PLAN_ON, clock });
+    await g.hold('ask', 0.6, 10);
+    g.tag('no', undefined, hold);
+    for (let i = 0; i < 15; i++) { g.advance(1000); await g.noAt(0.59); }
+    return g;
+  };
+  const control = await sit(false);
+  assert.equal(control.exits().length, 1, control.notes());
+  assert.ok(control.whys().some((w) => w.startsWith('hold exit: +$1.56 net')), control.whys().join(' | '));
+  const held = await sit(true);
+  assert.deepEqual(held.exits(), [], held.notes());
+  assert.equal(held.oms.positions.position(held.t), -10);
+  assert.equal(held.engine.status.get(held.t)?.hold, undefined, 'no hold-exit clock on it');
+  assert.equal(held.audit.tail(50, 'pacer').filter((d) => (d.data as { event: string }).event === 'hold_exit').length, 0);
+  // The ratchet: a runner to +$2.68, then back to its stop (+$2.17 at a 0.65 bid): the control sells at its stop, the hold arm rides.
+  for (const [hold, sells] of [[false, true], [true, false]] as const) {
+    const clock = { t: Date.now() };
+    const g = await setup({ env: { ...PLAN_ON, HOLD_EXIT: 'false' }, clock });
+    await g.hold('ask', 0.6, 10);
+    g.tag('no', undefined, hold);
+    for (const b of [0.59, 0.62, 0.65, 0.7, 0.66, 0.65]) { g.advance(1000); await g.noAt(b); }
+    assert.equal(g.exits().length, sells ? 1 : 0, `hold ${hold}: ${g.notes()}`);
+    assert.equal(g.oms.positions.position(g.t), sells ? 0 : -10);
+  }
+  // The pacer's snipe line (PACER_PLAN hybrid, the default, and need): the hour needs $0.50 and the NO is +$0.55 at a 0.49 bid.
+  for (const mode of ['hybrid', 'need'] as const) {
+    const env = { PACER_HOURLY_USD: '0.5', PACER_MIN_TAKE_USD: '0.1', EXIT_POLICY: 'hold', PLAN_RULES: 'true', HOLD_EXIT: 'false', PACER_PLAN: mode };
+    const c = await setup({ env });
+    await c.hold('ask', 0.6, 10);
+    c.tag('no');
+    for (const b of [0.49, 0.59]) { if (c.oms.positions.position(c.t) === 0) break; await c.noAt(b); }
+    assert.equal(c.exits().length, 1, `${mode}: the control is sniped: ${c.notes()}`);
+    const h = await setup({ env });
+    await h.hold('ask', 0.6, 10);
+    h.tag('no', undefined, true);
+    for (const b of [0.49, 0.59]) await h.noAt(b);
+    assert.deepEqual(h.exits(), [], `${mode}: ${h.notes()}`);
+    assert.equal(h.engine.status.get(h.t)?.snipe?.atUsd, undefined, `${mode}: no snipe line on a hold position`);
+    assert.equal(h.audit.tail(200, 'pacer').filter((r) => (r.data as { event: string }).event === 'snipe').length, 0);
+  }
+});
+
+test('NO hold arm: a plan position without the flag (YES, or the control) is managed exactly as before; exit-only lane (volatility warm-up) holds the hold arm too', async () => {
+  // YES with the loser cut: untouched by the arm.
+  const y = await setup({ env: PLAN_ON });
+  await y.hold('bid', 0.4, 10);
+  y.tag('yes');
+  await y.yesAt(0.15);
+  assert.equal(y.exits().length, 1, y.notes());
+  // The exit-only lane (60 s of history = just after a restart): the hold arm is held there too, the control sold.
+  for (const [hold, sells] of [[false, true], [true, false]] as const) {
+    const g = await setup({ env: PLAN_ON, historySec: 60 });
+    await g.hold('ask', 0.6, 10);
+    g.tag('no', undefined, hold);
+    await g.noAt(0.15);
+    await g.noAt(0.15);
+    assert.equal(g.exits().length, sells ? 1 : 0, `hold ${hold}: ${g.notes()}`);
+    if (!sells) assert.match(g.notes(), /exit-only lane .*NO hold arm: held to settlement/);
+  }
+});
+
+test('NO hold arm: the kill switch still sells a hold position that is not in profit (safety first); the flag survives a restart', async () => {
+  const g = await setup({ env: PLAN_ON });
+  await g.hold('ask', 0.6, 10);
+  g.tag('no', undefined, true);
+  await g.noAt(0.3);
+  assert.deepEqual(g.exits(), [], g.notes());
+  // A restart: the tag, with its flag, is read back from the plan positions file.
+  const again = new Engine(g.deps);
+  assert.equal(again.planPositions.get(g.t)?.hold, true);
+  // A second tag on the open position (an add) keeps the first tag, its flag included, as for a ratchet's settings.
+  again.planPositions.tag({ ticker: g.t, side: 'no', ruleId: 'second' }, Date.now());
+  assert.deepEqual([again.planPositions.get(g.t)?.hold, again.planPositions.get(g.t)?.ruleId], [true, 'dummy-heat']);
+  await g.kill.engage('5 consecutive order errors (test)', 'oms');
+  await again.tick();
+  assert.equal(g.exits().length, 1, again.status.get(g.t)?.notes.join(' | '));
+  assert.ok(g.audit.tail(200, 'decision').some((d) => (d.data as { leg?: string }).leg === 'kill_exit'));
 });

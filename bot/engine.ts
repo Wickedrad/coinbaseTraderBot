@@ -288,6 +288,8 @@ export interface MarketStatus {
     /** The ratchet's arming net (dollars for the whole position), and the held side's bid the price cut sells at now (it moves
      *  with the window: planLoserCutAt). */
     armUsd?: number; cutAt?: number;
+    /** The heat lane's NO hold arm: held to settlement, no plan sale (bot/heat/holdArm.ts). */
+    hold?: boolean;
   };
   /** The profit ratchet on a held position that is not a plan position (RATCHET, bot/strategy/profitRatchet.ts): armed, its best
    *  and its stop in dollars for the whole position, and whether it sells. */
@@ -2520,7 +2522,8 @@ export class Engine {
     // A plan position: the pacer reports pace only (Steven's decision 13) unless PACER_PLAN gives it a snipe line (Steven, Nov 12
     // 1:10 AM EST / 06:10 UTC): 'hybrid' at the hour's need but never while the whole trade (what partial sales banked in) is
     // under the ratchet's arming net, 'need' at the need alone (planPacerLine). No floor and no group on it either way.
-    const planPacerUsd = planPos ? planPacerLine(S.pacer.plan, pacerUsd, planPos.settings.armUsd, view.bankedUsd ?? 0) : undefined;
+    // The NO hold arm (planPos.hold, bot/heat/holdArm.ts) has no snipe line either: nothing sells it before settlement.
+    const planPacerUsd = planPos && !planPos.hold ? planPacerLine(S.pacer.plan, pacerUsd, planPos.settings.armUsd, view.bankedUsd ?? 0) : undefined;
     if (view.position !== 0) st.snipe = planPos ? { atUsd: planPacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false } : { atUsd: pacerUsd, nowUsd: netProfitAtBid(view), rides: ridesToSettlement(view), closed: view.exitWindowOpen === false };
     // Steven's group rule (PACER_GROUP): this position, in profit after fees, is sold when the positions in profit together cover the target.
     const group = pacerUsd !== undefined && S.pacer.group ? this.snipeGroup.judge(m.ticker, !planPos && view.exitWindowOpen !== false && view.settleShare !== true ? netProfitAtBid(view) : undefined, pacerUsd, now) : undefined;
@@ -2540,7 +2543,7 @@ export class Engine {
     const planSale = planRun?.sale;
     // HOLD_EXIT (Steven, Nov 11): the position's seconds in profit after fees at the bid, on this evaluation's clock. It stands
     // aside while the profit climbs under an armed ratchet (the plan's for a plan position), and beside a plan sale under way.
-    const hold = S.holdExit.enabled ? this.holdExits.sample(m.ticker, view.position, netNow, now, planPos ? planPos.state.armed : ratchet?.armed === true) : undefined;
+    const hold = S.holdExit.enabled && !planPos?.hold ? this.holdExits.sample(m.ticker, view.position, netNow, now, planPos ? planPos.state.armed : ratchet?.armed === true) : undefined;
     st.hold = view.position !== 0 ? hold : undefined;
     const holdOpt = hold && !(planPos && (planSale !== undefined || planPos.state.selling !== undefined)) ? { holdExit: hold } : {};
     const plan = decide(view, strat, planPos
@@ -2943,6 +2946,13 @@ export class Engine {
    *  working on the market (live: not yet acknowledged) is waited for. */
   private planEvaluate(m: ActiveMarket, st: MarketStatus, pp: PlanPosition, bid: { price: number; size: number } | undefined, ask: { price: number; size: number } | undefined, now: number): PlanRun {
     const { oms, md, cfg } = this.d;
+    // The heat lane's NO hold arm (paper test, Steven, Nov 20 2026 12:03 PM EST / 17:03 UTC): held to settlement. No ratchet, no loser
+    // cut, no end rule: planStep never runs, so nothing here can sell it (evaluate() also leaves the hold exit and the pacer snipe
+    // off it). The kill switch's exits are the one way out, as for every position.
+    if (pp.hold) {
+      st.plan = { ruleId: pp.ruleId, side: pp.side, armed: false, failedTries: 0, gaps: 0, hold: true };
+      return { notes: ['NO hold arm: held to settlement'], events: [] };
+    }
     const pos = oms.positions.get(m.ticker);
     const entry = openSidePrice(pos);
     // A sale of ours still working, or an exit sent less than 2 s ago whose fills are not booked yet (the in-flight guard).
@@ -3414,7 +3424,7 @@ export class Engine {
         asset: d.asset, h: d.h, key: d.row.key, kind: d.row.kind, dir: d.row.dir, rank: d.row.rank, of: d.row.of, heat: d.row.heat, barClose: d.row.barClose,
         fired: d.fired, against: d.against, ...(d.single ? { single: d.single.key } : {}), context, run: snap?.run ?? null,
         ...(plan
-          ? { plan: { ticker: plan.ticker, side: plan.side, price: plan.price, count: plan.count, stakeUsd: plan.stakeUsd, weight: plan.weight, slot: plan.slot }, entry: sent.get(`${d.asset}:${d.h}`) }
+          ? { plan: { ticker: plan.ticker, side: plan.side, price: plan.price, count: plan.count, stakeUsd: plan.stakeUsd, weight: plan.weight, slot: plan.slot, hold: plan.hold }, entry: sent.get(`${d.asset}:${d.h}`) }
           : { skip: skip?.reason ?? 'no reason recorded', ...(skip?.ticker ? { ticker: skip.ticker } : {}) }),
       });
     }
@@ -3475,13 +3485,13 @@ export class Engine {
         bidSize: book.bestBid()?.size, askSize: book.bestAsk()?.size,
         heat: {
           asset: plan.asset, h: plan.h, dir: r.dir, key: r.key, kind: r.kind, rank: r.rank, of: r.of, heat: r.heat, share: r.share, odds: r.odds, barClose: r.barClose,
-          context: plan.context, weight: plan.weight, slot: plan.slot, stake: plan.stakeUsd, dialMult: plan.dialMult, dialStake: plan.dialStakeUsd, count: plan.count, fair: plan.fair, ruleId: plan.ruleId, run: snap?.run ?? null, packSha: snap?.packSha ?? null,
+          context: plan.context, weight: plan.weight, slot: plan.slot, stake: plan.stakeUsd, dialMult: plan.dialMult, dialStake: plan.dialStakeUsd, count: plan.count, fair: plan.fair, ruleId: plan.ruleId, hold: plan.hold, run: snap?.run ?? null, packSha: snap?.packSha ?? null,
         },
         place: [{ side: order.side, price: order.price, count: order.count, purpose: order.purpose, edge: order.edge, why: order.why }],
         cancel: ours.map((o) => ({ clientOrderId: o.clientOrderId, reason: 'heat entry' })),
       });
       // Tagged before the order goes out: a paper fill arrives inside submit(), a live one may beat its acknowledgement.
-      h.tag?.({ ticker: plan.ticker, side: plan.side, ruleId: plan.ruleId }, now);
+      h.tag?.({ ticker: plan.ticker, side: plan.side, ruleId: plan.ruleId, ...(plan.hold ? { hold: true } : {}) }, now);
       const pos = oms.positions.get(plan.ticker);
       h.lane.sent(plan, now, pos?.netCash ?? 0, pos?.fees ?? 0);
       await this.placeChecked(m, order, plan.fair, decisionId, undefined, { heat: { modelId, edgeCollar: cfg.heat.feeNetCheck } });
