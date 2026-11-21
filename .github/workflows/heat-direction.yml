@@ -52,6 +52,7 @@ jobs:
           set -o pipefail
           python -W ignore -m unittest discover -s heatloop/tests -t . 2>&1 | tail -20
           python -W ignore -m unittest discover -s dirsweep/tests -t . 2>&1 | tail -20
+          python -W ignore -m unittest discover -s subminute/tests -t . 2>&1 | tail -20
 
   coverage:
     needs: test
@@ -736,6 +737,80 @@ jobs:
           set -o pipefail
           python3 -W ignore -m dirsweep.stage atlas --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-04-13 --last-day 2026-11-03 \
             --split-day 2026-08-01 --clean-day 2026-11-01 --btc ../data/k/BTC.csv --eth ../data/k/ETH.csv --k15 ../data/k15 --out ../out/atlas 2>&1 | tail -8
+
+  # Steven, Nov 21 2026: only recorded days. Round 2: is the book late by seconds? One recorded day (the bot's own md-DAY recording, Drive recordings/) is reduced to
+  # 1-second grids per 15-minute window (best bid and ask, sizes, taker flow) and per coin (the last index value and its lateness), kept on Drive under
+  # models/subminute/grids. RUN may carry a second line  days=2026-11-18[,..]  (or all) to run fewer days. Read only; nothing is ordered; only aggregates are printed.
+  dsmdgrid:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsmdgrid')
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        day: ['2026-11-11', '2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15', '2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20']
+    steps:
+      - uses: actions/checkout@v5
+      - name: Is this day asked for?
+        id: sel
+        run: |
+          set -euo pipefail
+          want=$(sed -nE 's/^days=([0-9a-z,-]+)[[:space:]]*$/\1/p' research/heat_direction/RUN | tail -1)
+          if [ -z "$want" ] || [ "$want" = all ] || [[ ",$want," == *",${{ matrix.day }},"* ]]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "go=false" >> "$GITHUB_OUTPUT"; echo "skipped ${{ matrix.day }}"; fi
+      - uses: actions/setup-python@v5
+        if: steps.sel.outputs.go == 'true'
+        with:
+          python-version: '3.12'
+      - if: steps.sel.outputs.go == 'true'
+        run: pip install -q numpy==2.5.5 orjson
+      - name: Drive setup
+        if: steps.sel.outputs.go == 'true'
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Which form of the day Drive holds
+        if: steps.sel.outputs.go == 'true'
+        id: probe
+        run: |
+          set -euo pipefail
+          R=gdrive:kalshi-bot-archive/recordings
+          if [ -n "$(rclone lsf "$R" --files-only --include "md-${{ matrix.day }}.jsonl.gz")" ]; then echo "form=gz" >> "$GITHUB_OUTPUT"
+          elif [ -n "$(rclone lsf "$R" --files-only --include "md-${{ matrix.day }}.mdc")" ]; then echo "form=mdc" >> "$GITHUB_OUTPUT"
+          else echo "form=none" >> "$GITHUB_OUTPUT"; echo "::warning::no recording of ${{ matrix.day }} on Drive"; fi
+      - uses: actions/setup-node@v5
+        if: steps.sel.outputs.go == 'true' && steps.probe.outputs.form == 'mdc'
+        with:
+          node-version: '22'
+      - name: Restore dependencies (the compact form is decoded by scripts/mdc.ts)
+        if: steps.sel.outputs.go == 'true' && steps.probe.outputs.form == 'mdc'
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies
+        if: steps.sel.outputs.go == 'true' && steps.probe.outputs.form == 'mdc' && steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Pull the recorded day
+        if: steps.sel.outputs.go == 'true' && steps.probe.outputs.form != 'none'
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh recording "${{ matrix.day }}" data/rec
+          ls -l data/rec | tail -2
+      - name: Reduce it to 1-second grids
+        if: steps.sel.outputs.go == 'true' && steps.probe.outputs.form != 'none'
+        working-directory: python
+        run: |
+          set -o pipefail
+          mkdir -p ../out/grid; date -u +%T
+          python3 -W ignore -m subminute.grid "../data/rec/md-${{ matrix.day }}.jsonl.gz" "${{ matrix.day }}" "../out/grid/grid-${{ matrix.day }}.npz" 2>&1 | tail -3 | cut -c1-9000
+          date -u +%T; ls -l ../out/grid
+      - name: Keep the grids on Drive
+        if: steps.sel.outputs.go == 'true' && steps.probe.outputs.form != 'none'
+        run: bash deploy/drive_lab.sh put "models/subminute/grids" out/grid
 
   # AMENDMENT-3.md section 6: the stamp. Run once, in the push right after the commit that adds research/heat_direction/FREEZE-DS.json (and only that one commit
   # may ever have touched the file): a runner writes its own clock, the hash of the file and the commit to Drive, once. The FINAL reads the stamp back and

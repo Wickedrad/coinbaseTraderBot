@@ -1,2 +1,3 @@
-stage=dsatlas
-# The atlas on recorded days: settlement definitions, win rate by price bucket (no model), a boosted residual of the quote from every grid feature. Recorded days only.
+stage=dsmdgrid
+days=2026-11-18
+# Round 2 on recorded days: the bot's own 2026-11-18 recording reduced to 1-second grids (peek: kinds, index sources and rates, book coverage). Recorded days only.

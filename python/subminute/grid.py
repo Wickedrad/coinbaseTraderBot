@@ -1,0 +1,228 @@
+"""One recorded day (md-DAY.jsonl.gz, the bot's own market-data recording) reduced to 1-second grids, aggregates only.
+
+Steven, Nov 21 2026: recorded days only. The 1-minute candles say Kalshi's quote already holds what the spot knows at one-minute resolution; the question
+earlier threads left open is whether the book lags the spot by seconds. This keeps, per 15-minute window and per second, the best YES bid and ask with their
+sizes, the taker volume by side, and, per asset and per second, the last index value the bot received and how late it was. Nothing is kept per trade or per
+level, so a day is a few megabytes and every later question runs in seconds instead of re-reading 1.7 GB.
+
+Recording lines are {"t": receive ms, "k": kind, ...}: book {ticker, bids, asks: [{price, size}] in YES terms}, delta {ticker, side: bid|ask, price, delta},
+trade {ticker, price, count, takerSide}, market {ticker, series, asset, openTime, closeTime, strike}, result {ticker, result}, index {asset, value, ts, src}.
+"""
+import json
+import re
+import subprocess
+import sys
+
+import numpy as np
+
+SEC = 1000
+WIN = 900                                      # seconds in a 15-minute window
+DAY = 86400
+SERIES = re.compile(r'^KX(BTC|ETH|SOL|XRP)15M$')
+KINDS = (b'book', b'delta', b'trade', b'market', b'result', b'index')
+BOOKISH = (b'book', b'delta', b'trade', b'result')
+
+
+def _loads():
+    try:
+        import orjson
+        return orjson.loads
+    except Exception:
+        return json.loads
+
+
+def kind_of(line: bytes):
+    i = line.find(b'"k":"', 0, 80)
+    if i < 0:
+        return None
+    j = line.find(b'"', i + 5, i + 40)
+    return line[i + 5:j] if j > 0 else None
+
+
+class Book:
+    """Best YES bid and ask of one market, kept from a snapshot and deltas."""
+    __slots__ = ('bids', 'asks', 'bb', 'ba')
+
+    def __init__(self):
+        self.bids, self.asks, self.bb, self.ba = {}, {}, None, None
+
+    def _best(self):
+        self.bb = max(self.bids) if self.bids else None
+        self.ba = min(self.asks) if self.asks else None
+
+    def snapshot(self, bids, asks):
+        self.bids = {round(float(l['price']), 4): float(l['size']) for l in bids if float(l['size']) > 0}
+        self.asks = {round(float(l['price']), 4): float(l['size']) for l in asks if float(l['size']) > 0}
+        self._best()
+
+    def delta(self, side, price, d):
+        book = self.bids if side == 'bid' else self.asks
+        p = round(float(price), 4)
+        n = book.get(p, 0.0) + float(d)
+        if n > 1e-9:
+            book[p] = n
+            if side == 'bid' and (self.bb is None or p > self.bb):
+                self.bb = p
+            elif side == 'ask' and (self.ba is None or p < self.ba):
+                self.ba = p
+        else:
+            book.pop(p, None)
+            if side == 'bid' and p == self.bb:
+                self.bb = max(self.bids) if self.bids else None
+            elif side == 'ask' and p == self.ba:
+                self.ba = min(self.asks) if self.asks else None
+
+    def top(self):
+        return (self.bb, self.bids.get(self.bb, 0.0) if self.bb is not None else 0.0,
+                self.ba, self.asks.get(self.ba, 0.0) if self.ba is not None else 0.0)
+
+
+def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
+    """lines: an iterable of bytes lines of one recorded UTC day starting at `day_ms`. Returns the grids (see module doc) and a counts summary."""
+    loads = _loads()
+    meta, books, win = {}, {}, {}
+    idx_val = {a: np.full(DAY, np.nan) for a in assets}
+    idx_n = {a: np.zeros(DAY, np.int32) for a in assets}
+    idx_lag = {a: np.full(DAY, np.nan) for a in assets}
+    counts, all_kinds, src, first = {}, {}, {}, {}
+    for line in lines:
+        k = kind_of(line)
+        if k is None:
+            continue
+        all_kinds[k] = all_kinds.get(k, 0) + 1
+        if k not in KINDS:
+            continue
+        if k in BOOKISH and b'15M-' not in line[:200]:       # other series and other markets: no need to parse
+            continue
+        ks = k.decode()
+        counts[ks] = counts.get(ks, 0) + 1
+        if ks not in first:
+            first[ks] = line[:300].decode('utf8', 'replace')
+        try:
+            e = loads(line)
+        except Exception:
+            counts['bad'] = counts.get('bad', 0) + 1
+            continue
+        t = e['t']
+        if ks == 'index':
+            a = e.get('asset')
+            sk = f'{a}/{e.get("src")}'
+            src[sk] = src.get(sk, 0) + 1
+            if a in idx_val:
+                s = (t - day_ms) // SEC
+                if 0 <= s < DAY:
+                    idx_val[a][s] = float(e['value'])
+                    idx_n[a][s] += 1
+                    if isinstance(e.get('ts'), (int, float)):
+                        idx_lag[a][s] = t - float(e['ts'])
+            continue
+        if ks == 'market':
+            m = SERIES.match(str(e.get('series') or ''))
+            if m and m.group(1) in assets and e.get('closeTime') and e.get('openTime') is not None:
+                meta[e['ticker']] = {'asset': m.group(1), 'open': int(e['closeTime']) - WIN * SEC, 'close': int(e['closeTime']), 'strike': e.get('strike')}
+            continue
+        tk = e.get('ticker')
+        mt = meta.get(tk)
+        if mt is None:
+            continue
+        if ks == 'result':
+            mt['result'] = 1.0 if e.get('result') == 'yes' else 0.0 if e.get('result') == 'no' else None
+            continue
+        w = win.get(tk)
+        if w is None:
+            w = win[tk] = {'bid': np.full(WIN, np.nan), 'ask': np.full(WIN, np.nan), 'bsz': np.zeros(WIN), 'asz': np.zeros(WIN),
+                           'ty': np.zeros(WIN), 'tn': np.zeros(WIN), 'seen': np.zeros(WIN, bool), 'pre': None}
+        s = (t - mt['open']) // SEC
+        if not 0 <= s < WIN:
+            if ks in ('book', 'delta'):                      # keep the book current even outside the window
+                b = books.setdefault(tk, Book())
+                if ks == 'book':
+                    b.snapshot(e['bids'], e['asks'])
+                else:
+                    b.delta(e['side'], e['price'], e['delta'])
+                if s < 0:
+                    w['pre'] = b.top()                      # the book as the window opens
+            continue
+        if ks == 'trade':
+            c = float(e.get('count') or 0)
+            if e.get('takerSide') == 'yes':
+                w['ty'][s] += c
+            elif e.get('takerSide') == 'no':
+                w['tn'][s] += c
+            continue
+        b = books.setdefault(tk, Book())
+        if ks == 'book':
+            b.snapshot(e['bids'], e['asks'])
+        else:
+            b.delta(e['side'], e['price'], e['delta'])
+        bb, bs, ba, as_ = b.top()
+        w['bid'][s] = np.nan if bb is None else bb
+        w['ask'][s] = np.nan if ba is None else ba
+        w['bsz'][s], w['asz'][s] = bs, as_
+        w['seen'][s] = True
+    out = {'counts': counts, 'all_kinds': {k.decode(): v for k, v in sorted(all_kinds.items())}, 'index_src': dict(sorted(src.items())), 'first': first,
+           'assets': list(assets)}
+    for a in assets:
+        tickers = sorted((tk for tk, m in meta.items() if m['asset'] == a and tk in win and win[tk]['seen'].any()), key=lambda x: meta[x]['open'])
+        n = len(tickers)
+        g = {k: np.full((n, WIN), np.nan) for k in ('bid', 'ask')}
+        g.update({k: np.zeros((n, WIN)) for k in ('bsz', 'asz', 'ty', 'tn')})
+        for i, tk in enumerate(tickers):
+            w = win[tk]
+            seen = w['seen']
+            pre = w['pre']
+            for key, pi in (('bid', 0), ('bsz', 1), ('ask', 2), ('asz', 3)):
+                arr = w[key].copy()
+                # an unseen second keeps the book of the second before it; the first seconds keep the book as the window opened
+                last = None if pre is None else (np.nan if pre[pi] is None else pre[pi])
+                for s in range(WIN):
+                    if seen[s]:
+                        last = arr[s]
+                    elif last is not None:
+                        arr[s] = last
+                if key in ('bsz', 'asz'):
+                    arr[~np.isfinite(arr)] = 0.0
+                g[key][i] = arr
+            g['ty'][i], g['tn'][i] = w['ty'], w['tn']
+        out[a] = {'tickers': tickers, 'open_ms': np.array([meta[x]['open'] for x in tickers], np.int64),
+                  'strike': np.array([float(meta[x]['strike']) if meta[x].get('strike') not in (None, '') else np.nan for x in tickers]),
+                  'result': np.array([meta[x].get('result') if meta[x].get('result') is not None else np.nan for x in tickers]),
+                  'bid': g['bid'], 'ask': g['ask'], 'bsz': g['bsz'], 'asz': g['asz'], 'ty': g['ty'], 'tn': g['tn'],
+                  'idx': idx_val[a], 'idx_n': idx_n[a], 'idx_lag_ms': idx_lag[a]}
+    return out
+
+
+def read_gz(path: str):
+    """Lines of a gzipped recording through the system gunzip (much faster than gzip.open)."""
+    p = subprocess.Popen(['gzip', '-dc', path], stdout=subprocess.PIPE, bufsize=1 << 22)
+    yield from p.stdout
+    p.wait()
+
+
+def save(out: dict, path: str) -> None:
+    flat = {}
+    for a in out['assets']:
+        for k, v in out[a].items():
+            flat[f'{a}__{k}'] = np.array(v) if k == 'tickers' else v
+    np.savez_compressed(path, **flat)
+
+
+def summary(out: dict) -> dict:
+    s = {'counts': out['counts']}
+    for a in out['assets']:
+        d = out[a]
+        n = len(d['tickers'])
+        s[a] = {'windows': n, 'with_result': int(np.isfinite(d['result']).sum()),
+                'index_seconds': int((d['idx_n'] > 0).sum()), 'index_updates': int(d['idx_n'].sum()),
+                'index_lag_ms_median': None if not np.isfinite(d['idx_lag_ms']).any() else float(np.nanmedian(d['idx_lag_ms'])),
+                'book_seconds_with_two_sides': int((np.isfinite(d['bid']) & np.isfinite(d['ask'])).sum())}
+    return s
+
+
+if __name__ == '__main__':
+    import datetime as dt
+    path, day, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+    day_ms = int(dt.datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+    out = reduce_day(read_gz(path), day_ms)
+    save(out, dest)
+    print('HEATLOOP md ' + json.dumps({'day': day, 'part': 'grid', **summary(out), 'all_kinds': out['all_kinds'], 'index_src': out['index_src'], 'first': out['first']}, sort_keys=True, default=float), flush=True)
