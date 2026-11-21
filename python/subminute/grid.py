@@ -164,7 +164,7 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
         w = win.get(tk)
         if w is None:
             w = win[tk] = {'bid': np.full(WIN, np.nan), 'ask': np.full(WIN, np.nan), 'bsz': np.zeros(WIN), 'asz': np.zeros(WIN),
-                           'ty': np.zeros(WIN), 'tn': np.zeros(WIN), 'seen': np.zeros(WIN, bool), 'pre': None}
+                           'ty': np.zeros(WIN), 'tn': np.zeros(WIN), 'seen': np.zeros(WIN, bool), 'pre': None, 'tr': []}
         s = (t - mt['open']) // SEC
         if not 0 <= s < WIN:
             if ks in ('book', 'delta'):                      # keep the book current even outside the window
@@ -180,8 +180,10 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
             c = float(e.get('count') or 0)
             if e.get('takerSide') == 'yes':
                 w['ty'][s] += c
+                w['tr'].append((t - mt['open'], float(e['price']), c, 1))
             elif e.get('takerSide') == 'no':
                 w['tn'][s] += c
+                w['tr'].append((t - mt['open'], float(e['price']), c, -1))
             continue
         b = books.setdefault(tk, Book())
         if ks == 'book':
@@ -217,7 +219,10 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
                     arr[~np.isfinite(arr)] = 0.0
                 g[key][i] = arr
             g['ty'][i], g['tn'][i] = w['ty'], w['tn']
-        out[a] = {'tickers': tickers, 'open_ms': np.array([meta[x]['open'] for x in tickers], np.int64),
+        trs = [(i, *r) for i, tk in enumerate(tickers) for r in win[tk]['tr']]
+        tr = np.array(trs, dtype=np.float64).reshape(-1, 5)
+        out[a] = {'tr_w': tr[:, 0].astype(np.int32), 'tr_ms': tr[:, 1].astype(np.int32), 'tr_p': tr[:, 2].astype(np.float32), 'tr_c': tr[:, 3].astype(np.float32),
+                  'tr_side': tr[:, 4].astype(np.int8), 'tickers': tickers, 'open_ms': np.array([meta[x]['open'] for x in tickers], np.int64),
                   'strike': np.array([float(meta[x]['strike']) if meta[x].get('strike') not in (None, '') else np.nan for x in tickers]),
                   'result': np.array([meta[x].get('result') if meta[x].get('result') is not None else np.nan for x in tickers]),
                   'bid': g['bid'], 'ask': g['ask'], 'bsz': g['bsz'], 'asz': g['asz'], 'ty': g['ty'], 'tn': g['tn'],

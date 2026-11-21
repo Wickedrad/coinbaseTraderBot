@@ -843,6 +843,37 @@ jobs:
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/lag" out/lag
 
+  # Round 2, step 3 (recorded days only): maker buys. A resting order at the best bid of a side (no maker fee on the crypto 15-minute series), queue-aware fills
+  # from the recorded trades, held to settlement; build days pick the rule, check days judge it. Needs grids that carry trades (the grid job after this change).
+  dsmdmaker:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsmdmaker')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The grids
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/subminute/grids" data/grids || { echo "::error::no grids on Drive (run dsmdgrid first)"; exit 1; }
+          ls data/grids | head -20
+      - name: Maker simulation (build days up to buildlast= in RUN, default 2026-11-16)
+        working-directory: python
+        run: |
+          set -o pipefail
+          bl=$(sed -nE 's/^buildlast=([0-9-]+)[[:space:]]*$/\1/p' ../research/heat_direction/RUN | tail -1); bl=${bl:-2026-11-16}
+          python3 -W ignore -m subminute.maker --grids ../data/grids --build-last "$bl" --out ../out/maker 2>&1 | tail -4 | cut -c1-15000
+      - name: Keep the tables on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/maker" out/maker
+
   # Round 2 format peek (recorded day, read only): what the lifecycle, market and the other recorded kinds look like, so the reducer reads settlements and the fast
   # spot feed correctly. Prints a few market-data lines and key counts only.
   dsmdpeek:

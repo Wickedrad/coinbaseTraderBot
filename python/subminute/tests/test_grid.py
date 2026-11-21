@@ -51,6 +51,8 @@ class GridTest(unittest.TestCase):
         self.assertAlmostEqual(b['idx_lag_ms'][s], 100.0)
         self.assertEqual(len(o['ETH']['tickers']), 0)
         self.assertEqual(o['counts']['index'], 2)
+        self.assertEqual(b['tr_w'].tolist(), [0]); self.assertEqual(b['tr_ms'].tolist(), [3600]); self.assertEqual(b['tr_side'].tolist(), [1])
+        self.assertAlmostEqual(float(b['tr_p'][0]), 0.52, places=5); self.assertAlmostEqual(float(b['tr_c'][0]), 3.0)
         self.assertAlmostEqual(b['spot'][s], 100020.0)
         self.assertEqual(b['spot_n'][s], 1)
         self.assertAlmostEqual(b['spot_lag_ms'][s], 100.0)
