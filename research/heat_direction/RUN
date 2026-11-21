@@ -1,2 +1,2 @@
-stage=dskalshi
-# Run 2: the rule priced on the recorded Kalshi quotes with the basis check (grid against settlement) and the same calls scored two ways, then the spot-against-quote test. Recorded days only.
+stage=dsatlas
+# The atlas on recorded days: settlement definitions, win rate by price bucket (no model), a boosted residual of the quote from every grid feature. Recorded days only.

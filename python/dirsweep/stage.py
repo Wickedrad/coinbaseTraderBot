@@ -359,6 +359,42 @@ def cmd_fair(a) -> None:
         save(a.out, 'fair-result.json', res)
 
 
+def cmd_atlas(a) -> None:
+    """The recorded-days atlas: (1) which spot definition of the window matches Kalshi's settlement and how the frozen rule scores under each, (2) the win rate by
+    price bucket with the taker fee, no model, (3) a boosted residual of the quote from every grid feature, judged on days it never saw."""
+    from allpairs import data as KD
+    from dirsweep import kinfo as KI
+    from dirsweep import kscore as KS
+    with open(a.freeze) as f:
+        fz = json.load(f)
+    win = FIN.window_days(a.first_day, a.last_day)
+    grids = {c: FIN.load_final(p, win) for c, p in (('BTC', a.btc), ('ETH', a.eth))}
+    lo_ms, hi_ms = T.day_start_ms(a.first_day), T.day_start_ms(a.last_day) + G.DAY
+    w = KD.load_kalshi(a.k15, ['BTC', 'ETH'], from_ms=lo_ms, to_ms=hi_ms, log=lambda *x: print(*x, file=sys.stderr))
+    split, c0 = T.day_start_ms(a.split_day), T.day_start_ms(a.clean_day)
+    periods = {'build': (lo_ms, split), 'check': (split, c0), 'clean': (c0, hi_ms)}
+    idx = KS.index(w)
+    rid = int(fz['rule']['rid'])
+    out = {}
+    for c in grids:
+        cl = KS.calls(grids[c], c, rid, win['lo'], win['hi'])
+        out[c] = KS.settlement_definitions(grids[c], w, idx, c, cl, KS.price(w, idx, c, cl, 0))
+    emit('atlas_definitions', {'rid': rid, 'by_coin': out})
+    at = KI.price_atlas(w, periods)
+    cells = [(k, v) for k, v in at.items() if v.get('build', {}).get('trades', 0) >= 300]
+    cells.sort(key=lambda kv: -(kv[1]['build'].get('net_lo_c') if kv[1]['build'].get('net_lo_c') is not None else -99))
+    emit('atlas_price', {'cells': len(at), 'cells_with_300_build_trades': len(cells),
+                         'build_net_positive': sum(1 for _, v in cells if v['build']['net_c'] > 0), 'build_lower_bound_positive': sum(1 for _, v in cells if (v['build'].get('net_lo_c') or -99) > 0),
+                         'best_by_build_lower_bound': [{'cell': k, **v} for k, v in cells[:6]],
+                         'worst_by_build': [{'cell': k, **v} for k, v in sorted(cells, key=lambda kv: kv[1]['build']['net_c'])[:3]]})
+    R = KI.rows(grids, w, (1, 3, 5, 8, 11, 13))
+    ft = KI.fit(R, w, split)
+    res = KI.judge(R, w, ft['p'], periods)
+    emit('atlas_info', {'rows': int(len(R['j'])), 'rounds': ft['rounds'], 'top_gain': ft['top_gain'], 'periods': res})
+    if a.out:
+        save(a.out, 'atlas-result.json', {'definitions': out, 'price': at, 'info': res})
+
+
 def cmd_freezefile(a) -> None:
     import datetime as dt
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -458,6 +494,16 @@ def main(argv=None) -> None:
     ff2.add_argument('--split-day', required=True)
     ff2.add_argument('--clean-day', default='')
     ff2.add_argument('--out', default='')
+    at = sub.add_parser('atlas')
+    at.add_argument('--freeze', required=True)
+    at.add_argument('--btc', required=True)
+    at.add_argument('--eth', required=True)
+    at.add_argument('--k15', required=True)
+    at.add_argument('--first-day', required=True)
+    at.add_argument('--last-day', required=True)
+    at.add_argument('--split-day', required=True)
+    at.add_argument('--clean-day', required=True)
+    at.add_argument('--out', default='')
     st = sub.add_parser('stamp')
     st.add_argument('--freeze', required=True)
     st.add_argument('--out', required=True)
@@ -465,7 +511,7 @@ def main(argv=None) -> None:
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')
     {'run': cmd_run, 'causal': cmd_causal, 'floors': cmd_floors, 'choose': cmd_choose, 'freeze': cmd_freeze, 'topcheck': cmd_topcheck,
-     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify, 'stamp': cmd_stamp, 'recent': cmd_recent, 'kalshi': cmd_kalshi, 'fair': cmd_fair}[a.cmd](a)
+     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify, 'stamp': cmd_stamp, 'recent': cmd_recent, 'kalshi': cmd_kalshi, 'fair': cmd_fair, 'atlas': cmd_atlas}[a.cmd](a)
 
 
 if __name__ == '__main__':

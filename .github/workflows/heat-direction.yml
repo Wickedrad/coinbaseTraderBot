@@ -648,7 +648,7 @@ jobs:
   # (Drive raw/kalshi-history/kalshi/KX<A>15M, the same files OR-H1 read): net dollars per contract after the taker fee. Read only; nothing is ordered.
   dskalshi:
     needs: test
-    if: contains(needs.test.outputs.stage, 'dskalshi')
+    if: contains(needs.test.outputs.stage, 'dskalshi') || contains(needs.test.outputs.stage, 'dsatlas')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -656,7 +656,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -q numpy==2.5.5 pandas==3.1.1
+      - run: pip install -q numpy==2.5.5 pandas==3.1.1 lightgbm
       - name: Drive setup
         uses: ./.github/actions/drive-setup
         with:
@@ -716,17 +716,26 @@ jobs:
           set -o pipefail
           python3 -W ignore -m dirsweep.stage topup --first 2026-04-11 --last 2026-11-04 --out ../data/k 2>&1 | tail -5
       - name: The frozen rule's calls priced on the recorded Kalshi quotes, 2026-04-13 to 2026-11-03
+        if: contains(needs.test.outputs.stage, 'dskalshi')
         working-directory: python
         run: |
           set -o pipefail
           python3 -W ignore -m dirsweep.stage kalshi --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-04-13 --last-day 2026-11-03 \
             --btc ../data/k/BTC.csv --eth ../data/k/ETH.csv --k15 ../data/k15 --out ../out/kalshi 2>&1 | tail -12
       - name: Does the spot price tell more than the quote? (build 2026-04-13 to 2026-07-31, check 2026-08-01 to 2026-10-31, clean 2026-11-01 to 2026-11-03)
+        if: contains(needs.test.outputs.stage, 'dskalshi')
         working-directory: python
         run: |
           set -o pipefail
           python3 -W ignore -m dirsweep.stage fair --first-day 2026-04-13 --last-day 2026-11-03 --split-day 2026-08-01 --clean-day 2026-11-01 \
             --btc ../data/k/BTC.csv --eth ../data/k/ETH.csv --k15 ../data/k15 --out ../out/fair 2>&1 | tail -12
+      - name: The atlas (which spot definition matches the settlement, win rate by price bucket, a boosted residual of the quote from every grid feature)
+        if: contains(needs.test.outputs.stage, 'dsatlas')
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage atlas --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-04-13 --last-day 2026-11-03 \
+            --split-day 2026-08-01 --clean-day 2026-11-01 --btc ../data/k/BTC.csv --eth ../data/k/ETH.csv --k15 ../data/k15 --out ../out/atlas 2>&1 | tail -8
 
   # AMENDMENT-3.md section 6: the stamp. Run once, in the push right after the commit that adds research/heat_direction/FREEZE-DS.json (and only that one commit
   # may ever have touched the file): a runner writes its own clock, the hash of the file and the commit to Drive, once. The FINAL reads the stamp back and

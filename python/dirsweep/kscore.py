@@ -186,3 +186,34 @@ def spot_and_contract(m: dict, w: KD.Windows, idx: dict, coin: str, cl: dict, pr
            'contract_hit': float(pr['win'][ok].mean()) if ok.any() else None,
            'spot_and_contract_agree': float((right_spot[dec] == (pr['win'][dec] == 1.0)).mean()) if dec.any() else None}
     return out
+
+
+def bar_average(m: dict, b: np.ndarray) -> np.ndarray:
+    """A proxy for the exchange index's 60-second average ending at the boundary b (the open of minute b): the middle of the minute before it."""
+    o, c = np.asarray(m['o'], float), np.asarray(m['c'], float)
+    return 0.5 * (o[b - 1] + c[b - 1])
+
+
+def settlement_definitions(m: dict, w: KD.Windows, idx: dict, coin: str, cl: dict, pr: dict) -> dict:
+    """Which spot definition of 'up over the window' agrees with the recorded settlement, and how the rule's priced calls score under each: the open of the
+    first minute against the open of the last (what the sweep scored), or the 60-second averages the contract settles on, proxied by the minute before each
+    boundary."""
+    o = np.asarray(m['o'], float)
+    js = np.array(sorted(j for (c, _), j in idx.items() if c == coin), dtype=np.int64)
+    e0 = (w.open_ms[js] - m['t0']) // G.MIN
+    ok = (e0 >= 1) & (e0 + 15 < len(o))
+    js, e0 = js[ok], e0[ok]
+    inst = o[e0 + 15] > o[e0]
+    avg = bar_average(m, e0 + 15) > bar_average(m, e0)
+    settle = w.settle[js] == 1.0
+    out = {'windows': int(len(js)), 'agree_instant_open': float((inst == settle).mean()), 'agree_bar_average': float((avg == settle).mean())}
+    e, mq = cl['e'], cl['mq']
+    w0 = e - mq
+    okc = pr['ok'] & (w0 >= 1) & (w0 + 15 < len(o))
+    if okc.any():
+        up_i = o[np.where(okc, w0 + 15, 0)] > o[np.where(okc, w0, 0)]
+        up_a = bar_average(m, np.where(okc, w0 + 15, 2)) > bar_average(m, np.where(okc, w0, 2))
+        side_up = cl['side'] > 0
+        out.update({'calls': int(okc.sum()), 'rule_hit_instant_open': float((up_i == side_up)[okc].mean()),
+                    'rule_hit_bar_average': float((up_a == side_up)[okc].mean()), 'rule_hit_contract': float(pr['win'][okc].mean())})
+    return out

@@ -98,3 +98,18 @@ class DiagnosticsTest(unittest.TestCase):
         two = K.spot_and_contract(m, w, idx, 'BTC', cl, pr)
         self.assertGreater(two['spot_decided'], 10)
         self.assertGreater(two['spot_and_contract_agree'], 0.85)     # calls on the first minutes of a quarter hour have the same 15-minute move as the window; the rest differ
+
+
+class DefinitionTest(unittest.TestCase):
+    def test_a_settlement_that_follows_the_bar_average_scores_one_under_it(self):
+        m = make_grid(ND, seed=5, reversal=0.12)
+        w = windows(m)
+        e0 = (w.open_ms - m['t0']) // G.MIN
+        good = (e0 >= 1) & (e0 + 15 < len(m['o']))
+        w.settle[:] = (K.bar_average(m, np.where(good, e0 + 15, 2)) > K.bar_average(m, np.where(good, e0, 2))).astype(float)
+        idx = K.index(w)
+        cl = K.calls(m, 'BTC', 2 * G.cell(1, 0, 0, 0, 0), 0, ND)
+        d = K.settlement_definitions(m, w, idx, 'BTC', cl, K.price(w, idx, 'BTC', cl))
+        self.assertAlmostEqual(d['agree_bar_average'], 1.0)
+        self.assertLessEqual(d['agree_instant_open'], 1.0)
+        self.assertAlmostEqual(d['rule_hit_bar_average'], d['rule_hit_contract'], places=6)
