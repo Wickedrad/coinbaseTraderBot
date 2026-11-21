@@ -1,4 +1,4 @@
-# Edge atlas, round 1: the direction rule and every spot feature, scored on Kalshi's own recorded quotes (Nov 21 2026, 12:55 PM EST / 17:55 UTC)
+# Edge atlas, round 1: the direction rule and every spot feature, scored on Kalshi's own recorded quotes (Nov 21 2026, 12:46 PM EST / 17:46 UTC)
 
 Recorded days only (Steven, Nov 21 12:06 and 12:09 PM EST): Kalshi 15-minute BTC and ETH windows Apr 13 to Nov 3 2026, 40,056 windows with real bid, ask and settlement, plus Binance 1-minute bars. Build Apr 13 to Jul 31, check Aug 1 to Oct 31, clean Nov 1 to 3. All money is net dollars per contract after the taker fee on a $10 stake. GitHub runs 44928660380, 44929259543, 44929906164, 44930891187 (stages dsrecent, dskalshi, dsatlas); code python/dirsweep/{kscore,kfair,kinfo}.py.
 
