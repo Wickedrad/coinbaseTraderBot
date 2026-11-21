@@ -330,6 +330,27 @@ def cmd_kalshi(a) -> None:
         save(a.out, 'kalshi-result.json', res)
 
 
+def cmd_fair(a) -> None:
+    """Does the spot price tell more than Kalshi's own recorded quote? (python/dirsweep/kfair.py)"""
+    import datetime as dt
+    from allpairs import data as KD
+    from dirsweep import kfair as KF
+    win = FIN.window_days(a.first_day, a.last_day)
+    grids = {c: FIN.load_final(p, win) for c, p in (('BTC', a.btc), ('ETH', a.eth))}
+    lo_ms, hi_ms = T.day_start_ms(a.first_day), T.day_start_ms(a.last_day) + G.DAY
+    w = KD.load_kalshi(a.k15, ['BTC', 'ETH'], from_ms=lo_ms, to_ms=hi_ms, log=lambda *x: print(*x, file=sys.stderr))
+    split = T.day_start_ms(a.split_day)
+    periods = {'build': (lo_ms, split), 'check': (split, hi_ms)}
+    if a.clean_day:
+        c0 = T.day_start_ms(a.clean_day)
+        periods = {'build': (lo_ms, split), 'check': (split, c0), 'clean': (c0, hi_ms)}
+    res = KF.run(grids, w, split, periods)
+    res.update({'first_day': a.first_day, 'last_day': a.last_day, 'split_day': a.split_day, 'clean_day': a.clean_day, 'stake_usd': KF.STAKE})
+    emit('fair', res)
+    if a.out:
+        save(a.out, 'fair-result.json', res)
+
+
 def cmd_freezefile(a) -> None:
     import datetime as dt
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -420,6 +441,15 @@ def main(argv=None) -> None:
     kk.add_argument('--first-day', required=True)
     kk.add_argument('--last-day', required=True)
     kk.add_argument('--out', default='')
+    ff2 = sub.add_parser('fair')
+    ff2.add_argument('--btc', required=True)
+    ff2.add_argument('--eth', required=True)
+    ff2.add_argument('--k15', required=True)
+    ff2.add_argument('--first-day', required=True)
+    ff2.add_argument('--last-day', required=True)
+    ff2.add_argument('--split-day', required=True)
+    ff2.add_argument('--clean-day', default='')
+    ff2.add_argument('--out', default='')
     st = sub.add_parser('stamp')
     st.add_argument('--freeze', required=True)
     st.add_argument('--out', required=True)
@@ -427,7 +457,7 @@ def main(argv=None) -> None:
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')
     {'run': cmd_run, 'causal': cmd_causal, 'floors': cmd_floors, 'choose': cmd_choose, 'freeze': cmd_freeze, 'topcheck': cmd_topcheck,
-     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify, 'stamp': cmd_stamp, 'recent': cmd_recent, 'kalshi': cmd_kalshi}[a.cmd](a)
+     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify, 'stamp': cmd_stamp, 'recent': cmd_recent, 'kalshi': cmd_kalshi, 'fair': cmd_fair}[a.cmd](a)
 
 
 if __name__ == '__main__':
