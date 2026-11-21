@@ -1,3 +1,3 @@
-stage=dsmdgrid
-days=all
-# Round 2 on recorded days: the bot's own 2026-11-11..20 recordings reduced to 1-second grids (book, settlement index, fast spot, perp, determined results). Recorded days only.
+stage=dsmdlag
+buildlast=2026-11-16
+# Round 2 on recorded days: lag tables on the 1-second grids of 2026-11-11..20 (build days to Nov 16 pick, Nov 17-20 judge). Recorded days only.
