@@ -620,6 +620,30 @@ jobs:
           if [ -d out/dsplumb ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsplumb" out/dsplumb; else echo "no result"; fi
           if [ -d out/dsplumb-long ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsplumb-long" out/dsplumb-long; fi
 
+  # Steven, Nov 21 2026: nothing waits for future days. The frozen rule and its control scored on days that are already recorded and were never used to
+  # choose it (the exchange's daily files from 2026-11-01). Zero model tokens; aggregates only.
+  dsrecent:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsrecent')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5 pandas==3.1.1
+      - name: The exchange's daily files (two warm-up days, the days, the day after)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage topup --first 2026-10-30 --last 2026-11-20 --out ../data/recent 2>&1 | tail -5
+      - name: The frozen rule and its control on 2026-11-01 to 2026-11-19
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage recent --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-11-01 --last-day 2026-11-19 --btc ../data/recent/BTC.csv --eth ../data/recent/ETH.csv --out ../out/recent 2>&1 | tail -10
+
   # AMENDMENT-3.md section 6: the stamp. Run once, in the push right after the commit that adds research/heat_direction/FREEZE-DS.json (and only that one commit
   # may ever have touched the file): a runner writes its own clock, the hash of the file and the commit to Drive, once. The FINAL reads the stamp back and
   # refuses a freeze stamped later than two days before the first FINAL Monday.

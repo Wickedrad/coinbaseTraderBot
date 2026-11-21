@@ -36,6 +36,17 @@ def window(fz: dict) -> dict:
             'grid_first': (a - dt.timedelta(days=WARM_DAYS)).isoformat(), 'grid_last': (b + dt.timedelta(days=1)).isoformat()}
 
 
+def window_days(first: str, last: str) -> dict:
+    """Any run of recorded days (no weekday rule; Steven, Nov 21: only recorded days, nothing waits for the future). The same grid as the FINAL's: two warm-up
+    days before, the day after the last day for the look-ahead filter."""
+    a, b = dt.date.fromisoformat(first), dt.date.fromisoformat(last)
+    if b < a:
+        raise ValueError('last day before first day')
+    n = (b - a).days + 1
+    return {'first_day': first, 'last_day': last, 'days': n, 'weeks': round(n / 7, 2), 'lo': day_index(first), 'hi': day_index(last) + 1,
+            'grid_first': (a - dt.timedelta(days=WARM_DAYS)).isoformat(), 'grid_last': (b + dt.timedelta(days=1)).isoformat()}
+
+
 def load_final(csv: str, win: dict, plumbing: bool = False) -> dict:
     """The coin's grid from `grid_first` to the end of `grid_last`. In a real FINAL nothing is read from before the warm-up days or after the day that follows
     the last FINAL day; a plumbing run on search days may not reach 2026-11-01."""

@@ -288,6 +288,19 @@ def cmd_final(a) -> None:
     save(a.out, 'final-plumbing.json' if a.plumbing else 'final-result.json', res)
 
 
+def cmd_recent(a) -> None:
+    """The frozen rule and its control on days that are already recorded (any run of days, none of them used to choose the rule). Nothing waits for new days."""
+    with open(a.freeze) as f:
+        fz = json.load(f)
+    win = FIN.window_days(a.first_day, a.last_day)
+    grids = {c: FIN.load_final(p, win) for c, p in (('BTC', a.btc), ('ETH', a.eth))}
+    res = FIN.score(grids, fz, win)
+    res['recent'] = True
+    emit('recent', res)
+    if a.out:
+        save(a.out, 'recent-result.json', res)
+
+
 def cmd_freezefile(a) -> None:
     import datetime as dt
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -363,6 +376,13 @@ def main(argv=None) -> None:
     n.add_argument('--first-day', default='')
     n.add_argument('--last-day', default='')
     n.add_argument('--stamp', default='')
+    rc = sub.add_parser('recent')
+    rc.add_argument('--freeze', required=True)
+    rc.add_argument('--btc', required=True)
+    rc.add_argument('--eth', required=True)
+    rc.add_argument('--first-day', required=True)
+    rc.add_argument('--last-day', required=True)
+    rc.add_argument('--out', default='')
     st = sub.add_parser('stamp')
     st.add_argument('--freeze', required=True)
     st.add_argument('--out', required=True)
@@ -370,7 +390,7 @@ def main(argv=None) -> None:
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')
     {'run': cmd_run, 'causal': cmd_causal, 'floors': cmd_floors, 'choose': cmd_choose, 'freeze': cmd_freeze, 'topcheck': cmd_topcheck,
-     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify, 'stamp': cmd_stamp}[a.cmd](a)
+     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify, 'stamp': cmd_stamp, 'recent': cmd_recent}[a.cmd](a)
 
 
 if __name__ == '__main__':

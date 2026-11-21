@@ -96,6 +96,27 @@ class ScoreTest(unittest.TestCase):
         self.assertGreater(wide['rule']['decided'], res['rule']['decided'])     # days before `lo` count only when asked for
 
 
+class RecentDaysTest(unittest.TestCase):
+    """window_days: any run of recorded days (a Wednesday to a Friday here), scored with the same code as the FINAL."""
+
+    def test_window_days_has_no_weekday_rule_and_the_same_grid(self):
+        w = FIN.window_days('2026-11-04', '2026-11-19')                 # Wednesday to Thursday, 16 days
+        self.assertEqual((w['days'], w['grid_first'], w['grid_last']), (16, '2026-11-02', '2026-11-20'))
+        self.assertEqual(w['hi'] - w['lo'], 16)
+        with self.assertRaises(ValueError):
+            FIN.window_days('2026-11-05', '2026-11-04')
+
+    def test_scoring_a_partial_week_window_gives_every_chunk(self):
+        t0 = T.day_start_ms('2026-11-02')
+        win = FIN.window_days('2026-11-04', '2026-11-12')                # 9 days: one whole chunk of 7 and a chunk of 2
+        m = {c: make_grid(12, seed=s, reversal=0.6, t0=t0) for c, s in (('BTC', 31), ('ETH', 32))}
+        fz = {'rule': {'rid': 2 * G.cell(5, 1, 0, 0, 0)}, 'control': {'rid': 2 * G.cell(5, 0, 0, 0, 0)}}
+        res = FIN.score(m, fz, win)
+        self.assertEqual(len(res['rule']['by_week']), 2)
+        self.assertGreater(res['rule']['decided'], 0)
+        self.assertEqual(res['first_day'], '2026-11-04')
+
+
 class FreezeDataTest(unittest.TestCase):
     def test_freeze_data_shape_and_sizing(self):
         nd = 20
