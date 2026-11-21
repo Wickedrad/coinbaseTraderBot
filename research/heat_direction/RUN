@@ -1,3 +1,3 @@
-stage=dsmdgrid
-days=all
-# Round 2 on recorded days: the 2026-11-11..20 recordings again, now with every 15-minute taker trade kept (for the maker simulation). Recorded days only.
+stage=dsmdmaker
+buildlast=2026-11-16
+# Round 2 on recorded days: maker simulation on the ten 1-second grids (Nov 11-20, trades kept). Build days Nov 11-16 pick, check days Nov 17-20 judge. Recorded days only.
