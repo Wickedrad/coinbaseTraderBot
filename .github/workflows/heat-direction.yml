@@ -812,6 +812,37 @@ jobs:
         if: steps.sel.outputs.go == 'true' && steps.probe.outputs.form != 'none'
         run: bash deploy/drive_lab.sh put "models/subminute/grids" out/grid
 
+  # Round 2, step 2 (recorded days only): the 1-second grids from Drive (models/subminute/grids) judged for lag: does the index move over the last L seconds
+  # pay against the book's quote a moment later, net of both taker fees, on check days that picked nothing? The build days pick the cell, the check days judge it.
+  dsmdlag:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsmdlag')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The grids
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/subminute/grids" data/grids || { echo "::error::no grids on Drive (run dsmdgrid first)"; exit 1; }
+          ls data/grids | head -20
+      - name: Lag tables (build days up to the day named by  buildlast=  in RUN, default 2026-11-16; later days are the check days)
+        working-directory: python
+        run: |
+          set -o pipefail
+          bl=$(sed -nE 's/^buildlast=([0-9-]+)[[:space:]]*$/\1/p' ../research/heat_direction/RUN | tail -1); bl=${bl:-2026-11-16}
+          python3 -W ignore -m subminute.lag --grids ../data/grids --build-last "$bl" --out ../out/lag 2>&1 | tail -4 | cut -c1-12000
+      - name: Keep the tables on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/lag" out/lag
+
   # AMENDMENT-3.md section 6: the stamp. Run once, in the push right after the commit that adds research/heat_direction/FREEZE-DS.json (and only that one commit
   # may ever have touched the file): a runner writes its own clock, the hash of the file and the commit to Drive, once. The FINAL reads the stamp back and
   # refuses a freeze stamped later than two days before the first FINAL Monday.
