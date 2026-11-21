@@ -644,6 +644,84 @@ jobs:
           set -o pipefail
           python3 -W ignore -m dirsweep.stage recent --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-11-01 --last-day 2026-11-19 --btc ../data/recent/BTC.csv --eth ../data/recent/ETH.csv --out ../out/recent 2>&1 | tail -10
 
+  # Steven, Nov 21 2026: only recorded days. The frozen rule's calls on Apr 13 to Nov 3 2026, priced on Kalshi's own recorded 15-minute quotes and settlements
+  # (Drive raw/kalshi-history/kalshi/KX<A>15M, the same files OR-H1 read): net dollars per contract after the taker fee. Read only; nothing is ordered.
+  dskalshi:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dskalshi')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5 pandas==3.1.1
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Kalshi 15-minute candles (BTC and ETH, close days 2026-04-13 to 2026-11-04, read only)
+        id: k15
+        run: |
+          set -euo pipefail
+          mdc=false
+          for A in BTC ETH; do
+            S="KX${A}15M"; D="data/k15/kalshi/$S"; mkdir -p "$D"
+            x='{jsonl,jsonl.mdc}'
+            bash deploy/drive_lab.sh get "raw/kalshi-history/kalshi/$S" "$D" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+              --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-10-[0-3][0-9].$x" --include "/2026-11-0[1-4].$x" \
+              || { echo "::error::raw/kalshi-history/kalshi/$S not readable on Drive"; exit 1; }
+            shopt -s nullglob
+            for f in "$D"/*.jsonl.mdc; do [ ! -f "${f%.mdc}" ] || rm "$f"; done
+            m=("$D"/*.jsonl.mdc); [ "${#m[@]}" -eq 0 ] || mdc=true
+            shopt -u nullglob
+          done
+          echo "mdc=$mdc" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v5
+        if: steps.k15.outputs.mdc == 'true'
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        if: steps.k15.outputs.mdc == 'true'
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: steps.k15.outputs.mdc == 'true' && steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Days kept only in compact form are decoded; every day must be there
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.k15.outputs.mdc }}" = true ]; then
+            for A in BTC ETH; do
+              D="data/k15/kalshi/KX${A}15M"; shopt -s nullglob
+              m=("$D"/*.jsonl.mdc)
+              if [ "${#m[@]}" -gt 0 ]; then echo "$A: ${#m[@]} day(s) only in compact form: decoded"; npx tsx scripts/mdc.ts expand "$D" > /dev/null; rm -f "${m[@]}"; fi
+              shopt -u nullglob
+            done
+          fi
+          for A in BTC ETH; do
+            D="data/k15/kalshi/KX${A}15M"; days=("$D"/*.jsonl); n=${#days[@]}
+            echo "KX${A}15M: $n day files, $(basename "${days[0]}") .. $(basename "${days[$((n - 1))]}"), $(cat "${days[@]}" | wc -l) markets"
+            [ "$n" -ge 206 ] || { echo "::error::KX${A}15M has $n day files, 206 are required (2026-04-13..2026-11-04)"; exit 1; }
+          done
+      - name: The exchange's daily spot files (two warm-up days, the days, the day after)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage topup --first 2026-04-11 --last 2026-11-04 --out ../data/k 2>&1 | tail -5
+      - name: The frozen rule's calls priced on the recorded Kalshi quotes, 2026-04-13 to 2026-11-03
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage kalshi --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-04-13 --last-day 2026-11-03 \
+            --btc ../data/k/BTC.csv --eth ../data/k/ETH.csv --k15 ../data/k15 --out ../out/kalshi 2>&1 | tail -12
+
   # AMENDMENT-3.md section 6: the stamp. Run once, in the push right after the commit that adds research/heat_direction/FREEZE-DS.json (and only that one commit
   # may ever have touched the file): a runner writes its own clock, the hash of the file and the commit to Drive, once. The FINAL reads the stamp back and
   # refuses a freeze stamped later than two days before the first FINAL Monday.

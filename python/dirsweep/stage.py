@@ -301,6 +301,35 @@ def cmd_recent(a) -> None:
         save(a.out, 'recent-result.json', res)
 
 
+def cmd_kalshi(a) -> None:
+    """The frozen rule's calls (and a few controls) priced on Kalshi's own recorded 15-minute quotes and settlements: net dollars per contract after the taker fee.
+    Recorded days only; the call days are `first_day` to `last_day`, the grid carries the two warm-up days and the day after."""
+    import datetime as dt
+    from allpairs import data as KD
+    from dirsweep import kscore as KS
+    with open(a.freeze) as f:
+        fz = json.load(f)
+    win = FIN.window_days(a.first_day, a.last_day)
+    grids = {c: FIN.load_final(p, win) for c, p in (('BTC', a.btc), ('ETH', a.eth))}
+    lo_ms, hi_ms = T.day_start_ms(a.first_day), T.day_start_ms(a.last_day) + G.DAY
+    w = KD.load_kalshi(a.k15, ['BTC', 'ETH'], from_ms=lo_ms, to_ms=hi_ms, log=lambda *x: print(*x, file=sys.stderr))
+    d0, d1 = dt.date.fromisoformat(a.first_day), dt.date.fromisoformat(a.last_day)
+    months, cur = {}, d0
+    while cur <= d1:
+        nxt = min(dt.date(cur.year + (cur.month == 12), cur.month % 12 + 1, 1), d1 + dt.timedelta(days=1))
+        months[cur.strftime('%Y-%m')] = ((cur - d0).days, (nxt - d0).days)
+        cur = nxt
+    rids = {'rule': fz['rule']['rid'], 'q01_fade_k30_unfiltered': 2 * G.cell(6, 0, 0, 0, 2)}
+    if fz.get('control'):
+        rids['control_all_minutes'] = fz['control']['rid']
+    res = {'first_day': a.first_day, 'last_day': a.last_day, 'windows': int(len(w)), 'stake_usd': KS.STAKE, 'rules': {}}
+    for name, rid in rids.items():
+        res['rules'][name] = KS.run(grids, w, int(rid), win['lo'], win['hi'], delays=(0, 1), months=months)
+    emit('kalshi', res)
+    if a.out:
+        save(a.out, 'kalshi-result.json', res)
+
+
 def cmd_freezefile(a) -> None:
     import datetime as dt
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -383,6 +412,14 @@ def main(argv=None) -> None:
     rc.add_argument('--first-day', required=True)
     rc.add_argument('--last-day', required=True)
     rc.add_argument('--out', default='')
+    kk = sub.add_parser('kalshi')
+    kk.add_argument('--freeze', required=True)
+    kk.add_argument('--btc', required=True)
+    kk.add_argument('--eth', required=True)
+    kk.add_argument('--k15', required=True, help='a folder holding kalshi/KXBTC15M and kalshi/KXETH15M day files')
+    kk.add_argument('--first-day', required=True)
+    kk.add_argument('--last-day', required=True)
+    kk.add_argument('--out', default='')
     st = sub.add_parser('stamp')
     st.add_argument('--freeze', required=True)
     st.add_argument('--out', required=True)
@@ -390,7 +427,7 @@ def main(argv=None) -> None:
     if getattr(a, 'coin', None) == 'DOGE':
         sys.exit('NEVER DOGE')
     {'run': cmd_run, 'causal': cmd_causal, 'floors': cmd_floors, 'choose': cmd_choose, 'freeze': cmd_freeze, 'topcheck': cmd_topcheck,
-     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify, 'stamp': cmd_stamp, 'recent': cmd_recent}[a.cmd](a)
+     'topup': cmd_topup, 'final': cmd_final, 'freezefile': cmd_freezefile, 'verify': cmd_verify, 'stamp': cmd_stamp, 'recent': cmd_recent, 'kalshi': cmd_kalshi}[a.cmd](a)
 
 
 if __name__ == '__main__':

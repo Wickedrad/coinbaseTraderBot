@@ -1,2 +1,2 @@
-stage=dsrecent
-# The frozen direction rule and its control on recorded days 2026-11-01 to 2026-11-19 (never used to choose the rule). Nothing waits for future days.
+stage=dskalshi
+# The frozen direction rule's calls on the recorded days 2026-04-13 to 2026-11-03, priced on Kalshi's own recorded 15-minute quotes and settlements (net dollars per contract after the taker fee). Read only. Recorded days only.
