@@ -843,6 +843,44 @@ jobs:
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/lag" out/lag
 
+  # Round 2 format peek (recorded day, read only): what the lifecycle, market and the other recorded kinds look like, so the reducer reads settlements and the fast
+  # spot feed correctly. Prints a few market-data lines and key counts only.
+  dsmdpeek:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsmdpeek')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Pull the recorded day
+        id: day
+        run: |
+          set -euo pipefail
+          d=$(sed -nE 's/^days=([0-9-]+).*/\1/p' research/heat_direction/RUN | tail -1); d=${d:-2026-11-18}
+          echo "day=$d" >> "$GITHUB_OUTPUT"
+          bash deploy/drive_lab.sh recording "$d" data/rec
+      - name: Lifecycle lines of the 15-minute markets (keys, values, first and last lines)
+        run: |
+          set +o pipefail
+          f="data/rec/md-${{ steps.day.outputs.day }}.jsonl.gz"
+          gzip -dc "$f" | grep -a '"k":"lifecycle"' | grep -a '15M-' > "$RUNNER_TEMP/lc.txt"
+          echo "lifecycle lines of 15M markets: $(wc -l < "$RUNNER_TEMP/lc.txt")"
+          head -3 "$RUNNER_TEMP/lc.txt" | cut -c1-700
+          echo ...; tail -3 "$RUNNER_TEMP/lc.txt" | cut -c1-700
+          echo "keys:"; grep -a -o '"[A-Za-z_]*":' "$RUNNER_TEMP/lc.txt" | sort | uniq -c | sort -rn | head -25
+          for fld in type status event event_type kind result state; do echo "values of $fld:"; grep -a -o "\"$fld\":\"[A-Za-z_]*\"" "$RUNNER_TEMP/lc.txt" | sort | uniq -c | sort -rn | head -8; done
+      - name: A 15-minute market line, and the first line of every other kind
+        run: |
+          set +o pipefail
+          f="data/rec/md-${{ steps.day.outputs.day }}.jsonl.gz"
+          gzip -dc "$f" | grep -a '"k":"market"' | grep -a '"series":"KXBTC15M"' | head -2 | cut -c1-1200
+          for k in spot spot_book perp snn candles dominance gap; do echo "--- $k"; gzip -dc "$f" | grep -a -m 2 "\"k\":\"$k\"" | cut -c1-600; done
+          echo "--- a result field anywhere?"; gzip -dc "$f" | grep -a -m 3 '"result":"' | cut -c1-500
+
   # AMENDMENT-3.md section 6: the stamp. Run once, in the push right after the commit that adds research/heat_direction/FREEZE-DS.json (and only that one commit
   # may ever have touched the file): a runner writes its own clock, the hash of the file and the commit to Drive, once. The FINAL reads the stamp back and
   # refuses a freeze stamped later than two days before the first FINAL Monday.
