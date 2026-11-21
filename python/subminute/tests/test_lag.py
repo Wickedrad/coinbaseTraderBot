@@ -16,13 +16,13 @@ def fake(jump_at=100, lag=2, n_windows=2):
     for i, o in enumerate(opens):
         idx[o + jump_at:] *= 1.0005
         bid[i, jump_at + lag:], ask[i, jump_at + lag:] = 0.59, 0.61
-    return {'BTC__open_ms': DAY0 + 1000 * np.array(opens, np.int64), 'BTC__idx': idx, 'BTC__bid': bid, 'BTC__ask': ask, 'BTC__result': np.ones(n_windows)}
+    return {'BTC__spot': idx.copy(), 'BTC__open_ms': DAY0 + 1000 * np.array(opens, np.int64), 'BTC__idx': idx, 'BTC__bid': bid, 'BTC__ask': ask, 'BTC__result': np.ones(n_windows)}
 
 
 class LagTest(unittest.TestCase):
     def test_late_book_pays_the_follower_and_not_the_flip(self):
         pr = LG.prep(fake(), 'BTC', DAY0)
-        t = LG.trades(pr, 1, 6.0, 30, 300, 10, 1)
+        t = LG.trades(pr, 'idx', 1, 6.0, 60, 300, 10, 1)
         rows, net_sold, net_held, p = t['follow']
         self.assertEqual(len(rows), 2)
         self.assertTrue((net_sold > 0.03).all() and (net_sold < 0.08).all())      # 8c of move, about 3.5c of two taker fees
@@ -32,7 +32,7 @@ class LagTest(unittest.TestCase):
 
     def test_a_book_that_keeps_up_pays_nothing(self):
         pr = LG.prep(fake(lag=0), 'BTC', DAY0)
-        t = LG.trades(pr, 1, 6.0, 30, 300, 10, 1)             # the entry second already shows the new quote
+        t = LG.trades(pr, 'idx', 1, 6.0, 60, 300, 10, 1)             # the entry second already shows the new quote
         self.assertTrue((t['follow'][1] < 0.0).all())
 
     def test_sweep_judge_and_information_run(self):
@@ -43,7 +43,9 @@ class LagTest(unittest.TestCase):
         self.assertIn('sold', j)
         self.assertIn('held', j)
         inf = LG.information([(0, pr), (1, pr)], {0}, {1})
-        self.assertIn('L1_H2', inf)
+        self.assertIn('idx_L1_H2', inf)
+        self.assertIn('spot_L1_H2', inf)
+        self.assertIn('idx_L5', LG.information([(0, pr), (1, pr)], {0}, {1}, back=True))
 
     def test_pooled(self):
         days = {0: [2, 0.10, 2, 0.20, 1.0], 1: [2, -0.02, 2, 0.0, 1.0], 2: [1, 0.05, 1, 0.1, 0.5]}

@@ -26,7 +26,11 @@ class GridTest(unittest.TestCase):
         yield L(OPEN + 2000, 'index', asset='BTC', value=100010.5, ts=OPEN + 1900, src='x')
         yield L(OPEN + 2400, 'index', asset='BTC', value=100011.5, ts=OPEN + 2300, src='x')
         yield b'{"t":1,"k":"spot_book","asset":"BTC"}\n'
-        yield L(CLOSE + 1, 'result', ticker='KXBTC15M-X', result='yes')
+        yield L(OPEN + 2100, 'spot', asset='BTC', value=100020.0, ts=OPEN + 2000)
+        yield L(OPEN + 2300, 'perp', ticker='KXBTCPERP', asset='BTC', ts=OPEN + 2290, bid=10.0001, ask=10.0003, last=10.0002, contractSize=0.0001)
+        yield L(CLOSE + 1, 'lifecycle', ticker='KXBTC15M-X', event='metadata_updated', ts=CLOSE + 1)
+        yield L(CLOSE + 1201, 'lifecycle', ticker='KXBTC15M-X', event='determined', result='yes', ts=CLOSE + 1201)
+        yield L(CLOSE + 2000, 'lifecycle', ticker='KXBTC15M-X', event='settled', ts=CLOSE + 2000)
 
     def test_reduce(self):
         o = G.reduce_day(self.lines(), DAY0, assets=('BTC', 'ETH'))
@@ -47,6 +51,11 @@ class GridTest(unittest.TestCase):
         self.assertAlmostEqual(b['idx_lag_ms'][s], 100.0)
         self.assertEqual(len(o['ETH']['tickers']), 0)
         self.assertEqual(o['counts']['index'], 2)
+        self.assertAlmostEqual(b['spot'][s], 100020.0)
+        self.assertEqual(b['spot_n'][s], 1)
+        self.assertAlmostEqual(b['spot_lag_ms'][s], 100.0)
+        self.assertAlmostEqual(b['perp_mid'][s], 100002.0, places=3)       # 10.0002 per contract of 0.0001 coin
+        self.assertAlmostEqual(b['perp_last'][s], 100002.0, places=3)
 
     def test_book_as_the_window_opens(self):
         def lines():

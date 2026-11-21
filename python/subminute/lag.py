@@ -30,7 +30,8 @@ VOLW = 900
 LS = (1, 2, 3, 5, 10, 20, 30)
 ZS = (1.5, 2.0, 3.0)
 HS = (2, 5, 10, 30)
-RANGES = ((30, 300), (300, 600), (600, 840))
+RANGES = ((60, 300), (300, 600), (600, 840))      # the book of a window is only known from about 40 seconds in
+SOURCES = ('idx', 'spot', 'perp_mid')              # Kalshi's settlement index, the fast spot feed, the perpetual's mid
 DELAYS = (1, 2, 3)
 PMIN, PMAX = 0.05, 0.95
 BUCKETS = (0.10, 0.30, 0.45, 0.55, 0.70, 0.90)
@@ -43,33 +44,37 @@ def ffill(x: np.ndarray) -> np.ndarray:
 
 
 def prep(z, coin: str, day_ms: int):
-    """Per-window arrays of one coin on one day (windows that open at least 30 minutes into the day), or None."""
+    """Per-window arrays of one coin on one day (windows that open at least 30 minutes into the day), or None. z[(source, L)] = the source's move over the
+    last L seconds in units of its own trailing volatility."""
     open_s = (z[f'{coin}__open_ms'] - day_ms) // 1000
     keep = (open_s >= WARM) & (open_s + WIN < DAY)
     if not keep.any():
         return None
-    ix = ffill(np.asarray(z[f'{coin}__idx'], float))
-    with np.errstate(divide='ignore', invalid='ignore'):
-        lx = np.log(ix)
-    r10 = np.zeros(DAY)
-    r10[10:] = lx[10:] - lx[:-10]
-    r10 = np.nan_to_num(r10)
-    cs = np.concatenate([[0.0], np.cumsum(r10 * r10)])
     G = open_s[keep][:, None] + np.arange(WIN)[None, :]
-    sig = np.sqrt((cs[G + 1] - cs[G + 1 - VOLW]) / (VOLW * 10.0))     # per-second volatility from the trailing 15 minutes of 10-second returns
     zs = {}
-    with np.errstate(divide='ignore', invalid='ignore'):
-        for L in LS:
-            v = (lx[G] - lx[G - L]) / (sig * math.sqrt(L))
-            v[~np.isfinite(v)] = np.nan
-            zs[L] = np.clip(v, -8, 8)
+    for src in SOURCES:
+        if f'{coin}__{src}' not in z:
+            continue
+        ix = ffill(np.asarray(z[f'{coin}__{src}'], float))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            lx = np.log(ix)
+        r10 = np.zeros(DAY)
+        r10[10:] = lx[10:] - lx[:-10]
+        r10 = np.nan_to_num(r10)
+        cs = np.concatenate([[0.0], np.cumsum(r10 * r10)])
+        sig = np.sqrt((cs[G + 1] - cs[G + 1 - VOLW]) / (VOLW * 10.0))     # per-second volatility from the trailing 15 minutes of 10-second returns
+        with np.errstate(divide='ignore', invalid='ignore'):
+            for L in LS:
+                v = (lx[G] - lx[G - L]) / (sig * math.sqrt(L))
+                v[~np.isfinite(v)] = np.nan
+                zs[(src, L)] = np.clip(v, -8, 8)
     bid, ask = np.asarray(z[f'{coin}__bid'], float)[keep], np.asarray(z[f'{coin}__ask'], float)[keep]
     return {'z': zs, 'bid': bid, 'ask': ask, 'mid': 0.5 * (bid + ask), 'result': np.asarray(z[f'{coin}__result'], float)[keep]}
 
 
-def trades(pr: dict, L: int, thr: float, lo: int, hi: int, H: int, d: int) -> dict:
+def trades(pr: dict, src: str, L: int, thr: float, lo: int, hi: int, H: int, d: int) -> dict:
     """Per variant ('follow', 'flip'): (rows, net if sold H seconds later, net if held to settlement, entry price) for the first trigger of each window."""
-    z = pr['z'][L][:, lo:hi]
+    z = pr['z'][(src, L)][:, lo:hi]
     with np.errstate(invalid='ignore'):
         hit = np.abs(z) >= thr
     anyhit = hit.any(1)
@@ -102,23 +107,24 @@ def trades(pr: dict, L: int, thr: float, lo: int, hi: int, H: int, d: int) -> di
     return out
 
 
-def cell_key(L, thr, rng, H, d):
-    return (L, thr, rng, H, d)
+def cell_key(src, L, thr, rng, H, d):
+    return (src, L, thr, rng, H, d)
 
 
 def sweep(preps: list) -> dict:
     """preps: [(day index, prep dict)]. Returns {cell: {variant: {day: [n, sum net_sold, n_hold, sum net_hold, sum price]}}}."""
     acc = {}
     for di, pr in preps:
-        for L in LS:
-            for thr in ZS:
-                for rng in RANGES:
-                    for H in HS:
-                        for d in DELAYS:
-                            for name, (rows, nx, nh, p) in trades(pr, L, thr, rng[0], rng[1], H, d).items():
-                                c = acc.setdefault(cell_key(L, thr, rng, H, d), {}).setdefault(name, {}).setdefault(di, [0, 0.0, 0, 0.0, 0.0])
-                                fin = np.isfinite(nh)
-                                c[0] += len(nx); c[1] += float(nx.sum()); c[2] += int(fin.sum()); c[3] += float(nh[fin].sum()); c[4] += float(p.sum())
+        for src in {k[0] for k in pr['z']}:
+            for L in LS:
+                for thr in ZS:
+                    for rng in RANGES:
+                        for H in HS:
+                            for d in DELAYS:
+                                for name, (rows, nx, nh, p) in trades(pr, src, L, thr, rng[0], rng[1], H, d).items():
+                                    c = acc.setdefault(cell_key(src, L, thr, rng, H, d), {}).setdefault(name, {}).setdefault(di, [0, 0.0, 0, 0.0, 0.0])
+                                    fin = np.isfinite(nh)
+                                    c[0] += len(nx); c[1] += float(nx.sum()); c[2] += int(fin.sum()); c[3] += float(nh[fin].sum()); c[4] += float(p.sum())
     return acc
 
 
@@ -164,7 +170,7 @@ def judge(acc: dict, build: set, check: set, top: int = 6) -> dict:
             if m is not None and n >= MIN_BUILD_TRADES:
                 rows.append((m, key))
         rows.sort(key=lambda x: -x[0])
-        chosen = [{'cell': dict(zip(('L', 'thr', 'range', 'H', 'delay'), k)), **describe(acc[k], which, build, check)} for _, k in rows[:top]]
+        chosen = [{'cell': dict(zip(('src', 'L', 'thr', 'range', 'H', 'delay'), k)), **describe(acc[k], which, build, check)} for _, k in rows[:top]]
         # the cost floor: every cell's follow and flip on the check days, no selection at all
         fm, flm, pos_f = [], [], 0
         for key, cell in acc.items():
@@ -178,36 +184,46 @@ def judge(acc: dict, build: set, check: set, top: int = 6) -> dict:
     return res
 
 
-def information(preps: list, build: set, check: set, d: int = 1) -> dict:
-    """Slope of the quote's later mid move on the index move, per mid bucket, fitted on build days; R^2 against zero on check days."""
-    S = np.arange(30, 840 - max(HS) - d, 5)
+def information(preps: list, build: set, check: set, d: int = 1, back: bool = False) -> dict:
+    """Slope of the quote's later mid move (back=True: its move over the same L seconds before, the alignment check) on the source's move, per mid bucket,
+    fitted on build days; R^2 against zero on check days."""
+    S = np.arange(60, 840 - max(HS) - d, 5)
     out = {}
-    for L in LS:
-        for H in HS:
-            sums = {}
-            for di, pr in preps:
-                x = pr['z'][L][:, S]
-                m0 = pr['mid'][:, S + d]
-                y = pr['mid'][:, S + d + H] - m0
-                ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(m0)
-                b = np.digitize(m0, BUCKETS)
+    srcs = sorted({k[0] for _, pr in preps for k in pr['z']})
+    for src in srcs:
+        for L in LS:
+            for H in ((0,) if back else HS):
+                sums = {}
+                for di, pr in preps:
+                    if (src, L) not in pr['z']:
+                        continue
+                    x = pr['z'][(src, L)][:, S]
+                    if back:
+                        m0 = pr['mid'][:, S]
+                        y = m0 - pr['mid'][:, S - L]
+                    else:
+                        m0 = pr['mid'][:, S + d]
+                        y = pr['mid'][:, S + d + H] - m0
+                    ok = np.isfinite(x) & np.isfinite(y) & np.isfinite(m0)
+                    b = np.digitize(m0, BUCKETS)
+                    for k in range(1, len(BUCKETS)):
+                        sel = ok & (b == k)
+                        if sel.any():
+                            xs, ys = x[sel], y[sel]
+                            t = sums.setdefault((di, k), np.zeros(4))
+                            t += [float((xs * ys).sum()), float((xs * xs).sum()), float((ys * ys).sum()), float(sel.sum())]
+                beta, sse0, sse1, n_chk, nb = {}, 0.0, 0.0, 0, 0
                 for k in range(1, len(BUCKETS)):
-                    sel = ok & (b == k)
-                    if sel.any():
-                        xs, ys = x[sel], y[sel]
-                        t = sums.setdefault((di, k), np.zeros(4))
-                        t += [float((xs * ys).sum()), float((xs * xs).sum()), float((ys * ys).sum()), float(sel.sum())]
-            beta, sse0, sse1, n_chk, nb = {}, 0.0, 0.0, 0, 0
-            for k in range(1, len(BUCKETS)):
-                sxy = sum(v[0] for (di, kk), v in sums.items() if kk == k and di in build)
-                sxx = sum(v[1] for (di, kk), v in sums.items() if kk == k and di in build)
-                beta[k] = sxy / sxx if sxx > 0 else 0.0
-                nb += int(sum(v[3] for (di, kk), v in sums.items() if kk == k and di in build))
-            for (di, k), v in sums.items():
-                if di in check:
-                    sse0 += v[2]; sse1 += v[2] - 2 * beta[k] * v[0] + beta[k] ** 2 * v[1]; n_chk += int(v[3])
-            out[f'L{L}_H{H}'] = {'beta_by_bucket_c': [round(100 * beta[k], 4) for k in range(1, len(BUCKETS))], 'n_build': nb, 'n_check': n_chk,
-                                 'r2_check_1e4': None if sse0 <= 0 else round(1e4 * (1 - sse1 / sse0), 3)}
+                    sxy = sum(v[0] for (di, kk), v in sums.items() if kk == k and di in build)
+                    sxx = sum(v[1] for (di, kk), v in sums.items() if kk == k and di in build)
+                    beta[k] = sxy / sxx if sxx > 0 else 0.0
+                    nb += int(sum(v[3] for (di, kk), v in sums.items() if kk == k and di in build))
+                for (di, k), v in sums.items():
+                    if di in check:
+                        sse0 += v[2]; sse1 += v[2] - 2 * beta[k] * v[0] + beta[k] ** 2 * v[1]; n_chk += int(v[3])
+                out[f'{src}_L{L}' + ('' if back else f'_H{H}')] = {
+                    'beta_by_bucket_c': [round(100 * beta[k], 4) for k in range(1, len(BUCKETS))], 'n_build': nb, 'n_check': n_chk,
+                    'r2_check_1e4': None if sse0 <= 0 else round(1e4 * (1 - sse1 / sse0), 3)}
     return out
 
 
@@ -233,6 +249,7 @@ def run(grids_dir: str, build_last: str, out_dir: str) -> dict:
     preps = [(i, pr) for i, (_, _, ps) in enumerate(days) for pr in ps.values() if pr is not None]
     res['windows'] = int(sum(len(pr['bid']) for _, pr in preps))
     res['information_d1'] = information(preps, build, check, 1)
+    res['alignment_back'] = information(preps, build, check, 1, back=True)
     acc = sweep(preps)
     res['trading'] = judge(acc, build, check)
     os.makedirs(out_dir, exist_ok=True)
@@ -248,5 +265,6 @@ if __name__ == '__main__':
     a = ap.parse_args()
     r = run(a.grids, a.build_last, a.out)
     print('HEATLOOP mdlag ' + json.dumps({'days': r['days'], 'windows': r['windows'], 'trading': r['trading']}, sort_keys=True, default=float), flush=True)
-    best = sorted(((v['r2_check_1e4'], k) for k, v in r['information_d1'].items() if v['r2_check_1e4'] is not None), reverse=True)[:6]
-    print('HEATLOOP mdlag-info ' + json.dumps({'top_r2_check_1e4': best, 'all': r['information_d1']}, sort_keys=True, default=float)[:9000], flush=True)
+    best = sorted(((v['r2_check_1e4'], k) for k, v in r['information_d1'].items() if v['r2_check_1e4'] is not None), reverse=True)[:8]
+    back = {k: v['r2_check_1e4'] for k, v in r['alignment_back'].items()}
+    print('HEATLOOP mdlag-info ' + json.dumps({'top_r2_check_1e4': best, 'alignment_back_r2_1e4': back}, sort_keys=True, default=float)[:9000], flush=True)

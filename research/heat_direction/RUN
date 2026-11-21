@@ -1,3 +1,3 @@
-stage=dsmdpeek
-days=2026-11-18
-# Round 2 format peek on the recorded 2026-11-18 day: lifecycle lines (settlements), a 15-minute market line, the first lines of the other kinds. Recorded days only.
+stage=dsmdgrid
+days=all
+# Round 2 on recorded days: the bot's own 2026-11-11..20 recordings reduced to 1-second grids (book, settlement index, fast spot, perp, determined results). Recorded days only.

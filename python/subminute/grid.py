@@ -6,7 +6,10 @@ sizes, the taker volume by side, and, per asset and per second, the last index v
 level, so a day is a few megabytes and every later question runs in seconds instead of re-reading 1.7 GB.
 
 Recording lines are {"t": receive ms, "k": kind, ...}: book {ticker, bids, asks: [{price, size}] in YES terms}, delta {ticker, side: bid|ask, price, delta},
-trade {ticker, price, count, takerSide}, market {ticker, series, asset, openTime, closeTime, strike}, result {ticker, result}, index {asset, value, ts, src}.
+trade {ticker, price, count, takerSide}, market {ticker, series, asset, openTime, closeTime, strike} (arrives about 40 seconds after the window opens),
+lifecycle {ticker, event: created|metadata_updated|determined|settled, result: yes|no|scalar on determined, about a second after the close},
+index {asset, value, ts (whole second), src: kalshi} (the settlement index, about 6 a second), spot {asset, value, ts (ms)} (about 5 a second),
+perp {ticker, asset, ts, bid, ask, last, mark, contractSize} (price per unit = mid / contractSize).
 """
 import json
 import re
@@ -19,8 +22,8 @@ SEC = 1000
 WIN = 900                                      # seconds in a 15-minute window
 DAY = 86400
 SERIES = re.compile(r'^KX(BTC|ETH|SOL|XRP)15M$')
-KINDS = (b'book', b'delta', b'trade', b'market', b'result', b'index')
-BOOKISH = (b'book', b'delta', b'trade', b'result')
+KINDS = (b'book', b'delta', b'trade', b'market', b'result', b'lifecycle', b'index', b'spot', b'perp')
+BOOKISH = (b'book', b'delta', b'trade', b'result', b'lifecycle')
 
 
 def _loads():
@@ -84,6 +87,11 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
     idx_val = {a: np.full(DAY, np.nan) for a in assets}
     idx_n = {a: np.zeros(DAY, np.int32) for a in assets}
     idx_lag = {a: np.full(DAY, np.nan) for a in assets}
+    spot_val = {a: np.full(DAY, np.nan) for a in assets}
+    spot_n = {a: np.zeros(DAY, np.int32) for a in assets}
+    spot_lag = {a: np.full(DAY, np.nan) for a in assets}
+    perp_mid = {a: np.full(DAY, np.nan) for a in assets}
+    perp_last = {a: np.full(DAY, np.nan) for a in assets}
     counts, all_kinds, src, first = {}, {}, {}, {}
     for line in lines:
         k = kind_of(line)
@@ -116,6 +124,27 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
                     if isinstance(e.get('ts'), (int, float)):
                         idx_lag[a][s] = t - float(e['ts'])
             continue
+        if ks == 'spot':
+            a = e.get('asset')
+            if a in spot_val:
+                sec = (t - day_ms) // SEC
+                if 0 <= sec < DAY and e.get('value') is not None:
+                    spot_val[a][sec] = float(e['value'])
+                    spot_n[a][sec] += 1
+                    if isinstance(e.get('ts'), (int, float)):
+                        spot_lag[a][sec] = t - float(e['ts'])
+            continue
+        if ks == 'perp':
+            a = e.get('asset')
+            cs = e.get('contractSize')
+            if a in perp_mid and cs:
+                sec = (t - day_ms) // SEC
+                if 0 <= sec < DAY:
+                    if e.get('bid') is not None and e.get('ask') is not None and e['bid'] > 0 and e['ask'] > 0:
+                        perp_mid[a][sec] = 0.5 * (float(e['bid']) + float(e['ask'])) / float(cs)
+                    if e.get('last') is not None and e['last'] > 0:
+                        perp_last[a][sec] = float(e['last']) / float(cs)
+            continue
         if ks == 'market':
             m = SERIES.match(str(e.get('series') or ''))
             if m and m.group(1) in assets and e.get('closeTime') and e.get('openTime') is not None:
@@ -124,6 +153,10 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
         tk = e.get('ticker')
         mt = meta.get(tk)
         if mt is None:
+            continue
+        if ks == 'lifecycle':
+            if e.get('event') == 'determined':                  # the result, about a second after the close
+                mt['result'] = 1.0 if e.get('result') == 'yes' else 0.0 if e.get('result') == 'no' else None
             continue
         if ks == 'result':
             mt['result'] = 1.0 if e.get('result') == 'yes' else 0.0 if e.get('result') == 'no' else None
@@ -188,7 +221,8 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
                   'strike': np.array([float(meta[x]['strike']) if meta[x].get('strike') not in (None, '') else np.nan for x in tickers]),
                   'result': np.array([meta[x].get('result') if meta[x].get('result') is not None else np.nan for x in tickers]),
                   'bid': g['bid'], 'ask': g['ask'], 'bsz': g['bsz'], 'asz': g['asz'], 'ty': g['ty'], 'tn': g['tn'],
-                  'idx': idx_val[a], 'idx_n': idx_n[a], 'idx_lag_ms': idx_lag[a]}
+                  'idx': idx_val[a], 'idx_n': idx_n[a], 'idx_lag_ms': idx_lag[a], 'spot': spot_val[a], 'spot_n': spot_n[a], 'spot_lag_ms': spot_lag[a],
+                  'perp_mid': perp_mid[a], 'perp_last': perp_last[a]}
     return out
 
 
@@ -215,6 +249,9 @@ def summary(out: dict) -> dict:
         s[a] = {'windows': n, 'with_result': int(np.isfinite(d['result']).sum()),
                 'index_seconds': int((d['idx_n'] > 0).sum()), 'index_updates': int(d['idx_n'].sum()),
                 'index_lag_ms_median': None if not np.isfinite(d['idx_lag_ms']).any() else float(np.nanmedian(d['idx_lag_ms'])),
+                'spot_seconds': int((d['spot_n'] > 0).sum()), 'spot_updates': int(d['spot_n'].sum()),
+                'spot_lag_ms_median': None if not np.isfinite(d['spot_lag_ms']).any() else float(np.nanmedian(d['spot_lag_ms'])),
+                'perp_seconds': int(np.isfinite(d['perp_mid']).sum()),
                 'book_seconds_with_two_sides': int((np.isfinite(d['bid']) & np.isfinite(d['ask'])).sum())}
     return s
 
