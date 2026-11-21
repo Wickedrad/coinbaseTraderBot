@@ -33,7 +33,7 @@ def calls(m: dict, coin: str, rid: int, lo: int, hi: int, minutes: int = 15) -> 
     if int(rid) % 2:
         side = -side                                    # odd rule ids follow it
     t = m['t0'] + rows.astype(np.int64) * G.MIN
-    return {'t': t, 'side': side.astype(np.int8), 'day': d - lo, 'mq': ((t // G.MIN) % 15).astype(np.int64)}
+    return {'t': t, 'side': side.astype(np.int8), 'day': d - lo, 'mq': ((t // G.MIN) % 15).astype(np.int64), 'e': rows.astype(np.int64)}
 
 
 def index(w: KD.Windows) -> dict:
@@ -151,3 +151,38 @@ def _priced(grids, windows, idx, allcl, dl, flip=False, rand=None) -> dict:
         cls = cl if cls is None else {k: np.concatenate([cls[k], cl[k]]) for k in cl}
         prs = pr if prs is None else {k: np.concatenate([prs[k], pr[k]]) for k in pr}
     return summarize(cls, prs)
+
+
+def basis(m: dict, w: KD.Windows, idx: dict, coin: str) -> dict:
+    """How well does the coin's own 1-minute grid agree with Kalshi's recorded settlement? For every window of the coin: the sign of (open of minute 15 - open of
+    minute 0) against YES/NO. A grid that is misaligned by a minute, or a settlement that does not follow the spot, shows up here before any rule is judged."""
+    o = np.asarray(m['o'], float)
+    js = [j for (c, _), j in idx.items() if c == coin]
+    j = np.array(sorted(js), dtype=np.int64)
+    e0 = (w.open_ms[j] - m['t0']) // G.MIN
+    ok = (e0 >= 0) & (e0 + 15 < len(o))
+    j, e0 = j[ok], e0[ok]
+    mv = o[e0 + 15] - o[e0]
+    dec = np.abs(mv) >= G.FLAT * G.STEP[coin]
+    up = mv > 0
+    agree = (up == (w.settle[j] == 1.0))
+    # the strike against the spot at the open: how far apart, in the coin's own price steps
+    gap = (w.strike[j] - o[e0]) / G.STEP[coin]
+    return {'windows': int(len(j)), 'agree_open_to_close': float(agree[dec].mean()), 'decided': int(dec.sum()), 'strike_minus_spot_median_steps': float(np.median(gap)),
+            'strike_minus_spot_abs_p90_steps': float(np.percentile(np.abs(gap), 90))}
+
+
+def spot_and_contract(m: dict, w: KD.Windows, idx: dict, coin: str, cl: dict, pr: dict, horizon: int = 15) -> dict:
+    """The same calls scored two ways: by the coin's move over the next 15 minutes from the call minute (what the sweep scored) and by the contract's recorded
+    settlement (what the bot is paid). Where they disagree the sweep and the exchange are not measuring the same thing."""
+    o = np.asarray(m['o'], float)
+    e = cl['e']
+    ok = pr['ok'] & (e + horizon < len(o))
+    mv = (o[np.where(ok, e + horizon, 0)] - o[np.where(ok, e, 0)]) / G.STEP[coin]
+    dec = ok & (np.abs(mv) >= G.FLAT)
+    right_spot = np.sign(mv) == cl['side']
+    out = {'priced': int(ok.sum()), 'spot_decided': int(dec.sum()),
+           'spot_hit': float(right_spot[dec].mean()) if dec.any() else None,
+           'contract_hit': float(pr['win'][ok].mean()) if ok.any() else None,
+           'spot_and_contract_agree': float((right_spot[dec] == (pr['win'][dec] == 1.0)).mean()) if dec.any() else None}
+    return out

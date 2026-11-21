@@ -1,2 +1,2 @@
 stage=dskalshi
-# The frozen direction rule's calls on the recorded days 2026-04-13 to 2026-11-03, priced on Kalshi's own recorded 15-minute quotes and settlements (net dollars per contract after the taker fee). Read only. Recorded days only.
+# Run 2: the rule priced on the recorded Kalshi quotes with the basis check (grid against settlement) and the same calls scored two ways, then the spot-against-quote test. Recorded days only.

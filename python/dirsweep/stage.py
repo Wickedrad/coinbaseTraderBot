@@ -325,6 +325,14 @@ def cmd_kalshi(a) -> None:
     res = {'first_day': a.first_day, 'last_day': a.last_day, 'windows': int(len(w)), 'stake_usd': KS.STAKE, 'rules': {}}
     for name, rid in rids.items():
         res['rules'][name] = KS.run(grids, w, int(rid), win['lo'], win['hi'], delays=(0, 1), months=months)
+    idx = KS.index(w)
+    res['basis'] = {c: KS.basis(grids[c], w, idx, c) for c in grids}
+    rp = {c: R.Replayer(m, G.STEP[c], nd=win['hi']) for c, m in grids.items()}
+    res['spot_score_same_days'] = FIN.score_rule(rp, int(rids['rule']), win['lo'], win['hi'])
+    res['same_calls_two_ways'] = {}
+    for c in grids:
+        cl = KS.calls(grids[c], c, int(rids['rule']), win['lo'], win['hi'])
+        res['same_calls_two_ways'][c] = KS.spot_and_contract(grids[c], w, idx, c, cl, KS.price(w, idx, c, cl, 0))
     emit('kalshi', res)
     if a.out:
         save(a.out, 'kalshi-result.json', res)

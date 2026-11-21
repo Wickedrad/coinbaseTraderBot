@@ -78,3 +78,23 @@ class KscoreTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DiagnosticsTest(unittest.TestCase):
+    def test_basis_and_two_ways(self):
+        m = make_grid(ND, seed=5, reversal=0.12)
+        o = np.asarray(m['o'], float)
+        w = windows(m)
+        e0 = (w.open_ms - m['t0']) // G.MIN
+        ok = e0 + 15 < len(o)
+        w.settle[:] = (o[np.minimum(e0 + 15, len(o) - 1)] > o[e0]).astype(float)           # settlement that follows the grid exactly
+        w.strike[:] = o[e0]
+        idx = K.index(w)
+        b = K.basis(m, w, idx, 'BTC')
+        self.assertAlmostEqual(b['agree_open_to_close'], 1.0)
+        self.assertAlmostEqual(b['strike_minus_spot_median_steps'], 0.0)
+        cl = K.calls(m, 'BTC', 2 * G.cell(1, 0, 0, 0, 0), 0, ND)
+        pr = K.price(w, idx, 'BTC', cl)
+        two = K.spot_and_contract(m, w, idx, 'BTC', cl, pr)
+        self.assertGreater(two['spot_decided'], 10)
+        self.assertGreater(two['spot_and_contract_agree'], 0.85)     # calls on the first minutes of a quarter hour have the same 15-minute move as the window; the rest differ
