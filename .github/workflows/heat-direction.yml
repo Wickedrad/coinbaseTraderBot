@@ -870,7 +870,7 @@ jobs:
         run: |
           set -o pipefail
           bl=$(sed -nE 's/^buildlast=([0-9-]+)[[:space:]]*$/\1/p' ../research/heat_direction/RUN | tail -1); bl=${bl:-2026-11-16}
-          python3 -W ignore -m subminute.maker --grids ../data/grids --build-last "$bl" --out ../out/maker 2>&1 | tail -4 | cut -c1-15000
+          python3 -W ignore -m subminute.maker --grids ../data/grids --build-last "$bl" --out ../out/maker --cv 2>&1 | tail -4 | cut -c1-15000
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/maker" out/maker
 

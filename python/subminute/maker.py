@@ -14,9 +14,11 @@ and what the same orders would have earned unfilled (a gap between the two is ad
 import argparse
 import datetime as dt
 import glob
+import itertools
 import json
 import math
 import os
+from collections import Counter
 
 import numpy as np
 
@@ -211,7 +213,48 @@ def judge(acc: dict, build: set, check: set, top: int = 8) -> dict:
     return res
 
 
-def run(grids_dir: str, build_last: str, out_dir: str, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
+def crossval(acc: dict, n_days: int, k: int = 4, top: int = 5) -> dict:
+    """Every way of holding out k of the n recorded days: the rule is picked on the other n-k days (best net per fill with at least MIN_BUILD_FILLS fills) and judged
+    on the k held-out days; compared with the mean of all rules on those same days. Recorded days only, and the held-out days never take part in the pick."""
+    res = {}
+    for q in QUEUE:
+        rq = [r for r in acc if r[4] == q]
+        picks, chk, bld, base = [], [], [], []
+        for held in itertools.combinations(range(n_days), k):
+            check = set(held)
+            build = set(range(n_days)) - check
+            best = None
+            for r in rq:
+                m, _, f, _, _ = _ratio(acc[r], 2, 1, build)
+                if m is not None and f >= MIN_BUILD_FILLS and (best is None or m > best[0]):
+                    best = (m, r)
+            if best is None:
+                continue
+            mc, _, fc, _, _ = _ratio(acc[best[1]], 2, 1, check)
+            allc = [x[0] for x in (_ratio(acc[r], 2, 1, check) for r in rq) if x[0] is not None and x[2] >= 100]
+            if mc is None or fc < 50 or not allc:
+                continue
+            picks.append(best[1]); chk.append(mc); bld.append(best[0]); base.append(float(np.mean(allc)))
+        if not chk:
+            res[q] = {'splits': 0}
+            continue
+        chk, bld, base = np.array(chk), np.array(bld), np.array(base)
+        common = Counter(picks).most_common(top)
+        rows = []
+        for r, cnt in common:
+            days = [None if acc[r].get(d) is None or acc[r][d][1] == 0 else _c(acc[r][d][2] / acc[r][d][1]) for d in range(n_days)]
+            fills = [0 if acc[r].get(d) is None else int(acc[r][d][1]) for d in range(n_days)]
+            rows.append({'rule': dict(zip(('side', 'bucket', 'place', 'cancel', 'queue', 'guard'), r)), 'picked_in_splits': cnt, 'net_per_fill_c_by_day': days, 'fills_by_day': fills})
+        res[q] = {'splits': len(chk), 'held_out_days': k,
+                  'pick_on_held_out_c': {'mean': _c(float(chk.mean())), 'median': _c(float(np.median(chk))), 'p10': _c(float(np.quantile(chk, 0.1))),
+                                         'p90': _c(float(np.quantile(chk, 0.9))), 'share_positive': round(float((chk > 0).mean()), 3)},
+                  'pick_on_picking_days_c': _c(float(bld.mean())), 'all_rules_on_held_out_c': _c(float(base.mean())),
+                  'pick_minus_all_rules_c': {'mean': _c(float((chk - base).mean())), 'share_positive': round(float((chk > base).mean()), 3)},
+                  'most_picked': rows}
+    return res
+
+
+def run(grids_dir: str, build_last: str, out_dir: str, assets=('BTC', 'ETH', 'SOL', 'XRP'), cv: bool = False) -> dict:
     rl = rules()
     acc = {r: {} for r in rl}
     names = []
@@ -236,6 +279,8 @@ def run(grids_dir: str, build_last: str, out_dir: str, assets=('BTC', 'ETH', 'SO
     build = {i for i, n in enumerate(names) if n <= build_last}
     check = {i for i, n in enumerate(names) if n > build_last}
     res = {'days': names, 'build_days': len(build), 'check_days': len(check), 'rules': len(rl), 'maker': judge(acc, build, check)}
+    if cv:
+        res['crossval'] = crossval(acc, len(names))
     os.makedirs(out_dir, exist_ok=True)
     json.dump(res, open(os.path.join(out_dir, 'maker.json'), 'w'), indent=1, sort_keys=True, default=float)
     return res
@@ -246,6 +291,10 @@ if __name__ == '__main__':
     ap.add_argument('--grids', required=True)
     ap.add_argument('--build-last', required=True)
     ap.add_argument('--out', required=True)
+    ap.add_argument('--cv', action='store_true', help='also hold out every 4 of the recorded days in turn (pick on the rest, judge on those)')
     a = ap.parse_args()
-    r = run(a.grids, a.build_last, a.out)
+    r = run(a.grids, a.build_last, a.out, cv=a.cv)
+    cvr = r.pop('crossval', None)
     print('HEATLOOP mdmaker ' + json.dumps(r, sort_keys=True, default=float)[:14000], flush=True)
+    if cvr is not None:
+        print('HEATLOOP mdmaker-cv ' + json.dumps(cvr, sort_keys=True, default=float)[:14000], flush=True)

@@ -48,6 +48,20 @@ class MakerTest(unittest.TestCase):
         self.assertIn('pess', j)
         self.assertEqual(len(MK.rules()), 360)
 
+    def test_crossval_holds_the_days_out(self):
+        rl = MK.rules()[:30]
+        good = rl[0]
+        acc = {}
+        for r in rl:
+            acc[r] = {d: (np.array([100, 80, 80 * 0.04, 80 * 0.03, 100 * 0.05, 50.0]) if r == good else np.array([100, 80, -80 * 0.02, -80 * 0.03, 0.0, 50.0])) for d in range(6)}
+        cv = MK.crossval(acc, 6, k=2)
+        q = good[4]
+        self.assertEqual(cv[q]['splits'], 15)                                     # 6 choose 2 ways to hold two days out
+        self.assertAlmostEqual(cv[q]['pick_on_held_out_c']['mean'], 4.0)          # the rule that wins on every day wins on the held-out days too
+        self.assertEqual(cv[q]['pick_on_held_out_c']['share_positive'], 1.0)
+        self.assertEqual(cv[q]['most_picked'][0]['rule']['side'], good[0])
+        self.assertGreater(cv[q]['pick_minus_all_rules_c']['mean'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
