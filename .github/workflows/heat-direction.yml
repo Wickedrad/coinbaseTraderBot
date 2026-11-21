@@ -1,0 +1,827 @@
+name: Heat direction loop
+# Research only (research/heat_direction/PREREG.md): the evaluator and optimizer for the heat map direction loop, phase 1.
+# Binance spot 1-minute bars from Drive (raw/perp-ta-history/<coin>/binance-1m); public prices, no Kalshi data, no server,
+# no order, no bot change. Output is aggregates only, one `HEATLOOP <stage> <json>` log line per job.
+#
+# Started by a push that changes research/heat_direction/RUN (a new workflow cannot be dispatched until it is on main).
+# RUN holds one line:  stage=<name>[,<name>...]  (prepare, round0, cut, dev run in that order within one push)   (coverage = first and last day on file per coin, from the `ts` column only;
+# smoke = engine time and memory on a 2-month warm-up slice, plus the meta checks)
+# H2 (PREREG-2.md): h2rounds = the H2 DEV rounds plus the ten checks of each round's best (no VAL minute is read); vevents = the
+# unseen-day event files (real + 3 twins per coin), built once and kept privately; looks = the at most 3 unseen-day looks, only for
+# rounds that passed the core 8 on DEV, one set of bits on stdout. No stage name may contain another stage name (the gate is `contains`).
+on:
+  push:
+    branches: [claude/project-thread-y4m0kp]
+    paths: ['research/heat_direction/RUN']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heat-direction
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      stage: ${{ steps.req.outputs.stage }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Read the request
+        id: req
+        run: |
+          set -euo pipefail
+          stage=$(sed -nE 's/^stage=([a-z0-9_,]+)[[:space:]]*$/\1/p' research/heat_direction/RUN | tail -1)
+          [ -n "$stage" ] || { echo "::error::research/heat_direction/RUN has no line stage=<name>"; exit 1; }
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+      - name: Unit tests
+        working-directory: python
+        run: |
+          set -o pipefail
+          python -W ignore -m unittest discover -s heatloop/tests -t . 2>&1 | tail -20
+          python -W ignore -m unittest discover -s dirsweep/tests -t . 2>&1 | tail -20
+
+  coverage:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'coverage')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history (read only)
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+      - name: Coverage (the ts column only)
+        working-directory: python
+        run: python3 -m heatloop.coverage --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv"
+
+  smoke:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'smoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH]
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Inputs (1-minute history and the league tables' zone edges, read only)
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/43030435253/$A" "data/metas/$A" --include "/meta.json"
+          [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          [ -s "data/metas/$A/meta.json" ] || { echo "::error::no $A meta.json on Drive"; exit 1; }
+      - name: Smoke (2025-06-01 to 2025-08-01, table-era days only)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage smoke --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv" \
+            --league ../research/oracle_heat/latest/league_direction.csv.gz --live-meta ../research/oracle_heat/latest/live_meta.json \
+            --meta "../data/metas/$A/meta.json" 2>&1 | tail -30
+
+  # Event files: every event of the universe on each coin's grid (real and the three no-signal twins), built once and kept
+  # privately on Drive. A DEV file holds no minute at or after 2026-07-01 (heatloop.events.read_bars).
+  events:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'prepare')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1             # two jobs creating the same Drive folder at once make two folders with one name (run 44606638878)
+      matrix:
+        asset: [BTC, ETH]
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Inputs (1-minute history and the league tables' zone edges, read only)
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/43030435253/$A" "data/metas/$A" --include "/meta.json"
+          [ -s "data/hist/binance-1m/$A/1m.csv" ] && [ -s "data/metas/$A/meta.json" ]
+      - name: DEV event files (real coin and twins 1 to 3)
+        working-directory: python
+        run: |
+          set -euo pipefail
+          for tw in 0 1 2 3; do
+            python3 -W ignore -m heatloop.stage events --coin "$A" --scope dev --twin "$tw" --csv "../data/hist/binance-1m/$A/1m.csv" \
+              --league ../research/oracle_heat/latest/league_direction.csv.gz --meta "../data/metas/$A/meta.json" --out ../out/dev 2>&1 | tail -3
+          done
+      - name: Keep on Drive
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/dev" out/dev
+
+  round0:
+    needs: [test, events]
+    if: ${{ !cancelled() && needs.test.result == 'success' && contains(needs.test.outputs.stage, 'round0') && (needs.events.result == 'success' || needs.events.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: DEV event files
+        run: bash deploy/drive_lab.sh get "models/heat-direction-loop/dev" data/dev
+      - name: Hashes of what round 0 ran on
+        run: sha256sum research/heat_direction/PREREG.md research/heat_direction/AMENDMENT-1.md research/oracle_heat/latest/league_direction.csv.gz | sed 's/  / /'; git rev-parse HEAD
+      - name: Round 0 (the lane's current settings on DEV, naive rules, twin gate)
+        working-directory: python
+        run: python3 -W ignore -m heatloop.stage round0 --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz 2>&1 | tail -40
+
+  cut:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'cut')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH]
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Inputs
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/43030435253/$A" "data/metas/$A" --include "/meta.json"
+      - name: Cut test (truncate the raw file, rebuild every reading, compare)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage cut --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv" \
+            --league ../research/oracle_heat/latest/league_direction.csv.gz --meta "../data/metas/$A/meta.json" --extra 10 2>&1 | tail -30
+
+  dev:
+    needs: [test, events, round0]
+    if: ${{ !cancelled() && needs.test.result == 'success' && contains(needs.test.outputs.stage, 'dev') && (needs.events.result == 'success' || needs.events.result == 'skipped') && (needs.round0.result == 'success' || needs.round0.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: DEV event files (no VAL minute is in them)
+        run: bash deploy/drive_lab.sh get "models/heat-direction-loop/dev" data/dev
+      - name: DEV rounds (coordinate descent over the frozen grid)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage dev --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz --out ../out/rounds 2>&1 | tail -40
+      - name: Keep the trial log on Drive
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/rounds-dev" out/rounds
+  inspect:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'inspect')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: DEV event files and the DEV rounds (no VAL minute is in either)
+        run: |
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/dev" data/dev
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/rounds-dev" data/rounds
+      - name: The ten checks of every DEV round's best spec
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage inspect --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz --rounds ../data/rounds/rounds.json 2>&1 | tail -20
+  timing:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'timing')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: DEV event files and the DEV rounds (no VAL minute is in either)
+        run: |
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/dev" data/dev
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/rounds-dev" data/rounds
+      - name: Heat side against the fade of the last 15 minutes, DEV only
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage timing --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz --rounds ../data/rounds/rounds.json 2>&1 | tail -30
+
+  # ---- H2 (research/heat_direction/PREREG-2.md): timing plus fade ------------------------------------------------------------
+  h2rounds:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'h2rounds')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: DEV event files (no VAL minute is in them)
+        run: bash deploy/drive_lab.sh get "models/heat-direction-loop/dev" data/dev
+      - name: Hashes of what H2 ran on
+        run: sha256sum research/heat_direction/PREREG.md research/heat_direction/AMENDMENT-1.md research/heat_direction/PREREG-2.md research/oracle_heat/latest/league_direction.csv.gz | sed 's/  / /'; git rev-parse HEAD
+      - name: H2 DEV rounds (coordinate descent, side = fade start)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage dev --family h2 --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz --out ../out/rounds-h2 2>&1 | tail -40
+      - name: The ten checks of every H2 round's best spec
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage inspect --dev ../data/dev --league ../research/oracle_heat/latest/league_direction.csv.gz --rounds ../out/rounds-h2/rounds.json 2>&1 | tail -20
+      - name: Keep the trial log on Drive
+        if: always()
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/rounds-h2" out/rounds-h2
+
+  # Unseen-day (VAL) event files. Built only when a round qualified on DEV; they hold bars and event times, no outcome is scored here.
+  vevents:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'vevents')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1             # two jobs creating the same Drive folder at once make two folders with one name
+      matrix:
+        asset: [BTC, ETH]
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: python/oracle/requirements.txt
+      - run: pip install -q -r python/oracle/requirements.txt
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Inputs (1-minute history and the league tables' zone edges, read only)
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          bash deploy/drive_lab.sh get "models/oracle-heat/runs/43030435253/$A" "data/metas/$A" --include "/meta.json"
+          [ -s "data/hist/binance-1m/$A/1m.csv" ] && [ -s "data/metas/$A/meta.json" ]
+      - name: VAL event files (real coin and twins 1 to 3)
+        working-directory: python
+        env:
+          HEATLOOP_VAL: '1'       # the guard covers loading VAL bars at all; this step only writes event files and prints counts and a hash prefix
+        run: |
+          set -euo pipefail
+          for tw in 0 1 2 3; do
+            python3 -W ignore -m heatloop.stage events --coin "$A" --scope val --twin "$tw" --csv "../data/hist/binance-1m/$A/1m.csv" \
+              --league ../research/oracle_heat/latest/league_direction.csv.gz --meta "../data/metas/$A/meta.json" --out ../out/val 2>&1 | tail -3
+          done
+      - name: Keep on Drive (private)
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/val" out/val
+
+  looks:
+    needs: test
+    if: needs.test.outputs.stage == 'looks'            # on its own: never next to vevents or h2rounds, whose Drive files it reads
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      HEATLOOP_VAL: '1'           # set here and in the vevents build step only; this process takes the looks of PREREG-2.md section 3 item 3
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Unseen-day event files and the H2 DEV rounds
+        run: |
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/val" data/val
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/rounds-h2" data/rounds
+      - name: Hashes of what the looks ran on
+        run: sha256sum research/heat_direction/PREREG.md research/heat_direction/AMENDMENT-1.md research/heat_direction/PREREG-2.md research/oracle_heat/latest/league_direction.csv.gz data/rounds/rounds.json | sed 's/  / /'; git rev-parse HEAD
+      - name: The looks (stdout holds candidates, bits and gate only; the per-check tables stay in the private file)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m heatloop.stage looks --rounds ../data/rounds/rounds.json --val ../data/val --league ../research/oracle_heat/latest/league_direction.csv.gz --private ../out/val-private 2>&1 | tail -12
+      - name: Keep the private tables on Drive
+        if: always()
+        run: |
+          if [ -d out/val-private ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/val-private" out/val-private; else echo "no private tables"; fi
+
+  # DS family (PREREG-3.md): the cut test on the real 1-minute files, then S1 (nested walk-forward sweep) and S2 (hindsight oracle) on the real
+  # coins (twin 0) and the three no-signal twins. SEARCH days only (2020-01-01 to 2026-10-31); nothing at or after 2026-11-01 is read.
+  dscausal:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dscausal')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH]
+    env:
+      A: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history (read only)
+        run: |
+          set -euo pipefail
+          [ "$A" != DOGE ] || { echo "NEVER DOGE"; exit 1; }
+          bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+          [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+      - name: Cut test (12 random cuts, every lookback)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage causal --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv" 2>&1 | tail -5
+
+  dsrun:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsrun')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        twin: [0, 1, 2, 3]
+    env:
+      TW: ${{ matrix.twin }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history of both coins (read only)
+        run: |
+          set -euo pipefail
+          for A in BTC ETH; do
+            bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+            [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          done
+      - name: Hashes of what the sweep ran on
+        run: sha256sum research/heat_direction/PREREG-3.md research/heat_direction/LITERATURE-DS.md python/dirsweep/*.py | sed 's/  / /'; git rev-parse HEAD
+      - name: Sweep (S1 nested walk-forward and S2 hindsight oracle; twin 0 = the real coins)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage run --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --twin "$TW" --out ../out/ds 2>&1 | tail -500
+      - name: Keep the tables on Drive
+        if: always()
+        run: |
+          if [ -d out/ds ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/ds-twin$TW" out/ds; else echo "no tables"; fi
+
+  # AMENDMENT-3.md: the frequency frontier. The nested walk-forward of PREREG-3.md section 4 with the eligibility floor raised from 3 to 6, 10, 15, 20, 30,
+  # 40, 60 decided calls a day, the lockout replay of every chosen rule (E9), real coins (twin 0) and the three no-signal twins. SEARCH days only.
+  dsfloor:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsfloor')
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        twin: [0, 1, 2, 3]
+    env:
+      TW: ${{ matrix.twin }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history of both coins (read only)
+        run: |
+          set -euo pipefail
+          for A in BTC ETH; do
+            bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+            [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          done
+      - name: Hashes of what the frontier ran on
+        run: sha256sum research/heat_direction/PREREG-3.md research/heat_direction/AMENDMENT-3.md python/dirsweep/*.py | sed 's/  / /'; git rev-parse HEAD
+      - name: Frontier (floors 3 to 60; nested, frozen rule, lockout replay)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage floors --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --twin "$TW" --out ../out/dsfloor 2>&1 | tail -200
+      - name: Keep the results on Drive
+        if: always()
+        run: |
+          if [ -d out/dsfloor ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsfloor-twin$TW" out/dsfloor; else echo "no results"; fi
+
+  # AMENDMENT-3.md section 6: the rule the chooser picked, recomputed from the search days with its always-on control and its lockout rate. Fails if the rule
+  # is not the one `choose` named (research/heat_direction/dsfloor/choose.json). Search days only.
+  dsfreeze:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsfreeze')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history of both coins (read only)
+        run: |
+          set -euo pipefail
+          for A in BTC ETH; do
+            bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+            [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          done
+      - name: Hashes
+        run: sha256sum research/heat_direction/PREREG-3.md research/heat_direction/AMENDMENT-3.md research/heat_direction/dsfloor/choose.json python/dirsweep/*.py | sed 's/  / /'; git rev-parse HEAD
+      - name: The chosen rule and its control
+        working-directory: python
+        run: |
+          set -o pipefail
+          FLOOR=$(python3 -c "import json;print(json.load(open('../research/heat_direction/dsfloor/choose.json'))['candidate']['floor'])")
+          RID=$(python3 -c "import json;print(json.load(open('../research/heat_direction/dsfloor/choose.json'))['candidate']['rid'])")
+          python3 -W ignore -m dirsweep.stage freeze --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --floor "$FLOOR" --expect-rid "$RID" --out ../out/dsfreeze 2>&1 | tail -20
+      - name: Keep the result on Drive
+        if: always()
+        run: |
+          if [ -d out/dsfreeze ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsfreeze" out/dsfreeze; else echo "no result"; fi
+
+  # AMENDMENT-3.md section 6, plumbing only (search days, never a minute at or after 2026-11-01): the exchange's daily files against the sweep's minute
+  # file on three days (milliseconds and microseconds eras), and the FINAL scorer on four search weeks with the frozen rule.
+  dsplumb:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsplumb')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: 1-minute history of both coins (read only)
+        run: |
+          set -euo pipefail
+          for A in BTC ETH; do
+            bash deploy/drive_lab.sh get "raw/perp-ta-history/$A" "data/hist" --include "/binance-1m/$A/1m.csv"
+            [ -s "data/hist/binance-1m/$A/1m.csv" ] || { echo "::error::no $A 1-minute CSV on Drive"; exit 1; }
+          done
+      - name: Versions
+        run: python3 -c "import sys, numpy, pandas; print('VERSIONS', sys.version.split()[0], 'numpy', numpy.__version__, 'pandas', pandas.__version__)"
+      - name: The exchange's daily files against the sweep's file (three search days, both coins)
+        working-directory: python
+        run: |
+          rc=0
+          for A in BTC ETH; do
+            for D in 2024-06-10 2025-03-10 2026-10-14; do
+              python3 -W ignore -m dirsweep.stage topcheck --coin "$A" --csv "../data/hist/binance-1m/$A/1m.csv" --day "$D" 2>&1 | tail -3 || rc=1
+            done
+          done
+          exit $rc
+      - name: The FINAL scorer on four search weeks (2026-09-28 to 2026-10-25), plumbing only
+        if: always()
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage final --plumbing --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-09-28 --last-day 2026-10-25 --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --out ../out/dsplumb 2>&1 | tail -20
+      - name: Weekly hit of the frozen rule and its control, 2025-01-06 to 2026-10-25 (search days; description only)
+        if: always()
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage final --plumbing --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2025-01-06 --last-day 2026-10-25 --btc ../data/hist/binance-1m/BTC/1m.csv --eth ../data/hist/binance-1m/ETH/1m.csv --out ../out/dsplumb-long 2>&1 | tail -5 | cut -c1-6000
+      - name: Keep the result on Drive
+        if: always()
+        run: |
+          if [ -d out/dsplumb ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsplumb" out/dsplumb; else echo "no result"; fi
+          if [ -d out/dsplumb-long ]; then bash deploy/drive_lab.sh put "models/heat-direction-loop/dsplumb-long" out/dsplumb-long; fi
+
+  # Steven, Nov 21 2026: nothing waits for future days. The frozen rule and its control scored on days that are already recorded and were never used to
+  # choose it (the exchange's daily files from 2026-11-01). Zero model tokens; aggregates only.
+  dsrecent:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsrecent')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5 pandas==3.1.1
+      - name: The exchange's daily files (two warm-up days, the days, the day after)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage topup --first 2026-10-30 --last 2026-11-20 --out ../data/recent 2>&1 | tail -5
+      - name: The frozen rule and its control on 2026-11-01 to 2026-11-19
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage recent --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-11-01 --last-day 2026-11-19 --btc ../data/recent/BTC.csv --eth ../data/recent/ETH.csv --out ../out/recent 2>&1 | tail -10
+
+  # Steven, Nov 21 2026: only recorded days. The frozen rule's calls on Apr 13 to Nov 3 2026, priced on Kalshi's own recorded 15-minute quotes and settlements
+  # (Drive raw/kalshi-history/kalshi/KX<A>15M, the same files OR-H1 read): net dollars per contract after the taker fee. Read only; nothing is ordered.
+  dskalshi:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dskalshi')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5 pandas==3.1.1
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Kalshi 15-minute candles (BTC and ETH, close days 2026-04-13 to 2026-11-04, read only)
+        id: k15
+        run: |
+          set -euo pipefail
+          mdc=false
+          for A in BTC ETH; do
+            S="KX${A}15M"; D="data/k15/kalshi/$S"; mkdir -p "$D"
+            x='{jsonl,jsonl.mdc}'
+            bash deploy/drive_lab.sh get "raw/kalshi-history/kalshi/$S" "$D" --include "/2026-04-1[3-9].$x" --include "/2026-04-[23][0-9].$x" \
+              --include "/2026-0[5-9]-[0-3][0-9].$x" --include "/2026-10-[0-3][0-9].$x" --include "/2026-11-0[1-4].$x" \
+              || { echo "::error::raw/kalshi-history/kalshi/$S not readable on Drive"; exit 1; }
+            shopt -s nullglob
+            for f in "$D"/*.jsonl.mdc; do [ ! -f "${f%.mdc}" ] || rm "$f"; done
+            m=("$D"/*.jsonl.mdc); [ "${#m[@]}" -eq 0 ] || mdc=true
+            shopt -u nullglob
+          done
+          echo "mdc=$mdc" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v5
+        if: steps.k15.outputs.mdc == 'true'
+        with:
+          node-version: '22'
+      - name: Restore dependencies (node_modules + compiled TA-Lib; the key train.yml, history-build and perp-ta share)
+        if: steps.k15.outputs.mdc == 'true'
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            vendor/talib/build
+          key: train-deps-${{ runner.os }}-${{ hashFiles('package-lock.json', 'vendor/talib/**/*.c', 'vendor/talib/**/*.cpp', 'vendor/talib/**/*.h', 'vendor/talib/binding.gyp', 'vendor/talib/package.json') }}
+      - name: Install dependencies (npm ci compiles vendor/talib)
+        if: steps.k15.outputs.mdc == 'true' && steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent
+      - name: Days kept only in compact form are decoded; every day must be there
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.k15.outputs.mdc }}" = true ]; then
+            for A in BTC ETH; do
+              D="data/k15/kalshi/KX${A}15M"; shopt -s nullglob
+              m=("$D"/*.jsonl.mdc)
+              if [ "${#m[@]}" -gt 0 ]; then echo "$A: ${#m[@]} day(s) only in compact form: decoded"; npx tsx scripts/mdc.ts expand "$D" > /dev/null; rm -f "${m[@]}"; fi
+              shopt -u nullglob
+            done
+          fi
+          for A in BTC ETH; do
+            D="data/k15/kalshi/KX${A}15M"; days=("$D"/*.jsonl); n=${#days[@]}
+            echo "KX${A}15M: $n day files, $(basename "${days[0]}") .. $(basename "${days[$((n - 1))]}"), $(cat "${days[@]}" | wc -l) markets"
+            [ "$n" -ge 206 ] || { echo "::error::KX${A}15M has $n day files, 206 are required (2026-04-13..2026-11-04)"; exit 1; }
+          done
+      - name: The exchange's daily spot files (two warm-up days, the days, the day after)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage topup --first 2026-04-11 --last 2026-11-04 --out ../data/k 2>&1 | tail -5
+      - name: The frozen rule's calls priced on the recorded Kalshi quotes, 2026-04-13 to 2026-11-03
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage kalshi --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-04-13 --last-day 2026-11-03 \
+            --btc ../data/k/BTC.csv --eth ../data/k/ETH.csv --k15 ../data/k15 --out ../out/kalshi 2>&1 | tail -12
+      - name: Does the spot price tell more than the quote? (build 2026-04-13 to 2026-07-31, check 2026-08-01 to 2026-10-31, clean 2026-11-01 to 2026-11-03)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage fair --first-day 2026-04-13 --last-day 2026-11-03 --split-day 2026-08-01 --clean-day 2026-11-01 \
+            --btc ../data/k/BTC.csv --eth ../data/k/ETH.csv --k15 ../data/k15 --out ../out/fair 2>&1 | tail -12
+
+  # AMENDMENT-3.md section 6: the stamp. Run once, in the push right after the commit that adds research/heat_direction/FREEZE-DS.json (and only that one commit
+  # may ever have touched the file): a runner writes its own clock, the hash of the file and the commit to Drive, once. The FINAL reads the stamp back and
+  # refuses a freeze stamped later than two days before the first FINAL Monday.
+  dsstamp:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsstamp')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy pandas
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Only once (fails closed)
+        run: |
+          ROOT=${DRIVE_ROOT:-gdrive:kalshi-bot-archive}
+          rc=0; out=$(rclone lsf "$ROOT/models/heat-direction-loop/final-ds-stamp" 2>stamp-err.txt) || rc=$?
+          if [ "$rc" = 0 ] && [ -n "$out" ]; then echo "::error::a stamp exists already"; exit 1; fi
+          if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then cat stamp-err.txt; echo "::error::could not read Drive (rclone exit $rc)"; exit 1; fi
+      - name: The freeze file has exactly one commit
+        run: |
+          [ -s research/heat_direction/FREEZE-DS.json ] || { echo "::error::no freeze file"; exit 1; }
+          n=$(git log --format=%H -- research/heat_direction/FREEZE-DS.json | wc -l)
+          [ "$n" = 1 ] || { echo "::error::FREEZE-DS.json has $n commits, expected 1"; exit 1; }
+      - name: Hashes of the freeze file against the checked-out files
+        working-directory: python
+        run: python3 -W ignore -m dirsweep.stage verify --freeze ../research/heat_direction/FREEZE-DS.json
+      - name: Stamp
+        working-directory: python
+        run: python3 -W ignore -m dirsweep.stage stamp --freeze ../research/heat_direction/FREEZE-DS.json --out ../out/stamp
+      - name: Keep the stamp on Drive
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/final-ds-stamp" out/stamp
+
+  # AMENDMENT-3.md section 6: THE FINAL. One look. Run only after the last FINAL Sunday and the day after it have been published by the exchange.
+  # It fails closed: a re-run attempt, a Drive that cannot be read, an earlier start or result on Drive, a freeze file with more than one commit, hashes
+  # that do not match, a stamp that does not belong to the file or is late. It marks the look as started before the scorer runs, fetches the exchange's
+  # daily files from two days before the first Monday to the day after the last Sunday, scores the frozen rule with the lockout and keeps the result.
+  dsfinal:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dsfinal')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5 pandas==3.1.1
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: One look only (fails closed)
+        run: |
+          [ "${GITHUB_RUN_ATTEMPT:-1}" = 1 ] || { echo "::error::a re-run attempt is not allowed for the FINAL"; exit 1; }
+          ROOT=${DRIVE_ROOT:-gdrive:kalshi-bot-archive}
+          rc=0; out=$(rclone lsf "$ROOT/models/heat-direction-loop/final-ds" 2>final-err.txt) || rc=$?
+          if [ "$rc" = 0 ] && [ -n "$out" ]; then echo "::error::the FINAL has been started or read already"; exit 1; fi
+          if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then cat final-err.txt; echo "::error::could not read Drive (rclone exit $rc)"; exit 1; fi
+      - name: The freeze file has exactly one commit
+        run: |
+          n=$(git log --format=%H -- research/heat_direction/FREEZE-DS.json | wc -l)
+          [ "$n" = 1 ] || { echo "::error::FREEZE-DS.json has $n commits, expected 1"; exit 1; }
+      - name: The stamp written right after the freeze
+        run: |
+          bash deploy/drive_lab.sh get "models/heat-direction-loop/final-ds-stamp" data/stamp
+          [ -s data/stamp/freeze-stamp.json ] || { echo "::error::no stamp on Drive"; exit 1; }
+      - name: Hashes of the freeze file against the checked-out files
+        working-directory: python
+        run: python3 -W ignore -m dirsweep.stage verify --freeze ../research/heat_direction/FREEZE-DS.json
+      - name: The exchange's daily files (warm-up days, FINAL days, the day after)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage topup --freeze ../research/heat_direction/FREEZE-DS.json --out ../data/final 2>&1 | tail -5
+      - name: Mark the look as started (before the scorer runs)
+        run: |
+          mkdir -p out/started
+          printf '{"run_id": "%s", "utc": "%s", "sha": "%s"}\n' "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$GITHUB_SHA" > out/started/final-started.json
+          bash deploy/drive_lab.sh put "models/heat-direction-loop/final-ds" out/started
+      - name: The FINAL
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m dirsweep.stage final --freeze ../research/heat_direction/FREEZE-DS.json --btc ../data/final/BTC.csv --eth ../data/final/ETH.csv --stamp ../data/stamp/freeze-stamp.json --out ../out/final 2>&1 | tail -10
+      - name: Keep the result on Drive
+        if: success()
+        run: bash deploy/drive_lab.sh put "models/heat-direction-loop/final-ds" out/final
