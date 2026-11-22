@@ -1,0 +1,671 @@
+{
+ "dataThrough": "2026-11-21",
+ "anchors": {
+  "parent": [
+   "2016-06-19",
+   "2016-07-24",
+   "2016-11-20",
+   "2016-12-18",
+   "2016-12-25",
+   "2017-01-15",
+   "2017-02-26"
+  ],
+  "child": [
+   "2017-12-10",
+   "2018-01-14",
+   "2019-09-08",
+   "2020-09-13",
+   "2021-01-03",
+   "2021-05-16",
+   "2026-11-21"
+  ]
+ },
+ "stretches": [
+  {
+   "stretch": "waterfall",
+   "parentWeeks": 5.0,
+   "childWeeks": 5.0,
+   "pace": 1.0,
+   "BTC.D": [
+    98.41,
+    95.19,
+    67.39,
+    36.83
+   ],
+   "BTC.D magnification": 18.2,
+   "BTC": [
+    0.869,
+    0.929
+   ],
+   "alts (index steps out)": [
+    2.79,
+    3.186
+   ]
+  },
+  {
+   "stretch": "rise to the first hump",
+   "parentWeeks": 17.0,
+   "childWeeks": 86.0,
+   "pace": 5.1,
+   "BTC.D": [
+    95.19,
+    97.19,
+    36.83,
+    71.7
+   ],
+   "BTC.D magnification": 32.1,
+   "BTC": [
+    1.099,
+    0.762
+   ],
+   "alts (index steps out)": [
+    0.5,
+    0.177
+   ],
+   "ETH/BTC": [
+    0.681,
+    0.175
+   ]
+  },
+  {
+   "stretch": "first hump to the step low",
+   "parentWeeks": 4.0,
+   "childWeeks": 53.0,
+   "pace": 13.2,
+   "BTC.D": [
+    97.19,
+    95.11,
+    71.7,
+    58.18
+   ],
+   "BTC.D magnification": 9.7,
+   "BTC": [
+    1.085,
+    0.994
+   ],
+   "alts (index steps out)": [
+    1.11,
+    1.746
+   ],
+   "ETH/BTC": [
+    0.764,
+    2.03
+   ]
+  },
+  {
+   "stretch": "mid hump, up",
+   "parentWeeks": 1.0,
+   "childWeeks": 16.0,
+   "pace": 16.0,
+   "BTC.D": [
+    95.11,
+    95.96,
+    58.18,
+    70.35
+   ],
+   "BTC.D magnification": 21.4,
+   "BTC": [
+    1.129,
+    3.203
+   ],
+   "alts (index steps out)": [
+    0.93,
+    1.938
+   ],
+   "ETH/BTC": [
+    0.796,
+    0.835
+   ]
+  },
+  {
+   "stretch": "mid hump, down (the 2021 fall)",
+   "parentWeeks": 3.0,
+   "childWeeks": 19.0,
+   "pace": 6.3,
+   "BTC.D": [
+    95.96,
+    94.91,
+    70.35,
+    40.82
+   ],
+   "BTC.D magnification": 49.4,
+   "BTC": [
+    0.923,
+    1.403
+   ],
+   "alts (index steps out)": [
+    1.168,
+    5.08
+   ],
+   "ETH/BTC": [
+    1.488,
+    2.606
+   ]
+  },
+  {
+   "stretch": "rise to the top",
+   "parentWeeks": 6.0,
+   "childWeeks": 287.9,
+   "pace": 48.0,
+   "BTC.D": [
+    94.91,
+    95.96,
+    40.82,
+    59.2
+   ],
+   "BTC.D magnification": 33.6,
+   "BTC": [
+    1.435,
+    1.294
+   ],
+   "alts (index steps out)": [
+    1.114,
+    0.497
+   ],
+   "ETH/BTC": [
+    1.046,
+    0.362
+   ]
+  }
+ ],
+ "lastStretch": [
+  {
+   "chart": "BTC.D",
+   "kind": "fall",
+   "parent": [
+    "2017-02-08",
+    "2017-02-15",
+    -0.3,
+    0.571,
+    0.738
+   ],
+   "child": [
+    "2021-07-30",
+    "2022-09-08",
+    -20.2,
+    0.037,
+    0.238
+   ]
+  },
+  {
+   "chart": "BTC.D",
+   "kind": "rise",
+   "parent": [
+    "2017-01-16",
+    "2017-02-24",
+    1.3,
+    0.024,
+    0.952
+   ],
+   "child": [
+    "2022-09-08",
+    "2025-06-26",
+    69.0,
+    0.238,
+    0.745
+   ]
+  },
+  {
+   "chart": "BTC",
+   "kind": "fall",
+   "parent": [
+    "2017-02-07",
+    "2017-02-09",
+    -6.3,
+    0.548,
+    0.595
+   ],
+   "child": [
+    "2021-11-08",
+    "2022-11-21",
+    -76.7,
+    0.087,
+    0.275
+   ]
+  },
+  {
+   "chart": "BTC",
+   "kind": "rise",
+   "parent": [
+    "2017-01-15",
+    "2017-02-23",
+    44.6,
+    0.0,
+    0.929
+   ],
+   "child": [
+    "2022-11-21",
+    "2025-10-06",
+    691.1,
+    0.275,
+    0.796
+   ]
+  },
+  {
+   "chart": "alts (index steps out)",
+   "kind": "fall",
+   "parent": [
+    "2017-02-01",
+    "2017-02-09",
+    -5.4,
+    0.405,
+    0.595
+   ],
+   "child": [
+    "2021-11-08",
+    "2022-12-19",
+    -78.6,
+    0.087,
+    0.289
+   ]
+  },
+  {
+   "chart": "alts (index steps out)",
+   "kind": "rise",
+   "parent": [
+    "2017-01-15",
+    "2017-02-26",
+    11.4,
+    0.0,
+    1.0
+   ],
+   "child": [
+    "2022-12-19",
+    "2025-10-06",
+    355.1,
+    0.289,
+    0.796
+   ]
+  },
+  {
+   "chart": "ETH/BTC",
+   "kind": "fall",
+   "parent": [
+    "2017-02-14",
+    "2017-02-24",
+    -14.3,
+    0.714,
+    0.952
+   ],
+   "child": [
+    "2021-12-08",
+    "2025-04-21",
+    -79.5,
+    0.102,
+    0.713
+   ]
+  },
+  {
+   "chart": "ETH/BTC",
+   "kind": "rise",
+   "parent": [
+    "2017-02-02",
+    "2017-02-14",
+    20.5,
+    0.429,
+    0.714
+   ],
+   "child": [
+    "2025-04-21",
+    "2025-08-24",
+    133.2,
+    0.713,
+    0.775
+   ]
+  }
+ ],
+ "lastPart": {
+  "shareOfStretch": 0.743,
+  "parentWindow": [
+   "2017-02-15",
+   "2017-02-26"
+  ],
+  "charts": {
+   "BTC.D": {
+    "parent": {
+     "change": 1.006,
+     "low": 1.0,
+     "high": 1.0073,
+     "biggestFall": [
+      "2017-02-24",
+      "2017-02-25",
+      -0.16
+     ],
+     "biggestRise": [
+      "2017-02-15",
+      "2017-02-24",
+      0.73
+     ]
+    },
+    "child": {
+     "change": 0.9008,
+     "low": 0.8753,
+     "high": 1.003,
+     "biggestFall": [
+      "2025-06-26",
+      "2025-09-13",
+      -12.73
+     ],
+     "biggestRise": [
+      "2025-09-13",
+      "2026-05-05",
+      6.29
+     ]
+    }
+   },
+   "BTC": {
+    "parent": {
+     "change": 1.1656,
+     "low": 1.0,
+     "high": 1.1746,
+     "biggestFall": [
+      "2017-02-23",
+      "2017-02-25",
+      -3.02
+     ],
+     "biggestRise": [
+      "2017-02-15",
+      "2017-02-23",
+      17.46
+     ]
+    },
+    "child": {
+     "change": 0.5951,
+     "low": 0.5794,
+     "high": 1.2347,
+     "biggestFall": [
+      "2025-10-06",
+      "2026-06-30",
+      -53.08
+     ],
+     "biggestRise": [
+      "2026-06-30",
+      "2026-09-21",
+      47.94
+     ]
+    }
+   },
+   "alts (index steps out)": {
+    "parent": {
+     "change": 1.0184,
+     "low": 0.9553,
+     "high": 1.0184,
+     "biggestFall": [
+      "2017-02-15",
+      "2017-02-21",
+      -4.47
+     ],
+     "biggestRise": [
+      "2017-02-21",
+      "2017-02-26",
+      6.6
+     ]
+    },
+    "child": {
+     "change": 0.7107,
+     "low": 0.6963,
+     "high": 1.7832,
+     "biggestFall": [
+      "2025-10-06",
+      "2026-11-20",
+      -60.95
+     ],
+     "biggestRise": [
+      "2025-06-22",
+      "2025-10-06",
+      78.32
+     ]
+    }
+   },
+   "ETH/BTC": {
+    "parent": {
+     "change": 0.9697,
+     "low": 0.8638,
+     "high": 1.0,
+     "biggestFall": [
+      "2017-02-15",
+      "2017-02-24",
+      -13.62
+     ],
+     "biggestRise": [
+      "2017-02-24",
+      "2017-02-26",
+      12.25
+     ]
+    },
+    "child": {
+     "change": 1.2652,
+     "low": 1.0,
+     "high": 1.907,
+     "biggestFall": [
+      "2025-08-24",
+      "2026-06-06",
+      -38.8
+     ],
+     "biggestRise": [
+      "2025-06-22",
+      "2025-08-24",
+      90.7
+     ]
+    }
+   }
+  },
+  "parentFebDip": {
+   "from": "2017-02-08",
+   "low": "2017-02-15",
+   "ratio": 0.9971,
+   "thenPushTo": "2017-02-24",
+   "pushRatio": 1.0073,
+   "childDropRatio": 0.8753,
+   "magnification": 46.1
+  }
+ },
+ "follows": {
+  "round 16 (hump Sep 2019, fall low May 2021, top Jun 22 2025)": {
+   "BTC.D": {
+    "detrended": [
+     0.677,
+     0.029
+    ],
+    "weekly changes": [
+     0.538,
+     0.001
+    ]
+   },
+   "BTC": {
+    "detrended": [
+     0.841,
+     0.086
+    ],
+    "weekly changes": [
+     0.358,
+     0.371
+    ]
+   },
+   "alts (index steps out)": {
+    "detrended": [
+     0.008,
+     0.097
+    ],
+    "weekly changes": [
+     0.101,
+     0.091
+    ]
+   },
+   "ETH/BTC": {
+    "detrended": [
+     -0.32,
+     0.259
+    ],
+    "weekly changes": [
+     0.004,
+     0.215
+    ]
+   }
+  },
+  "Steven (mid hump = 2020-21 hump, top = today)": {
+   "BTC.D": {
+    "detrended": [
+     0.665,
+     0.051
+    ],
+    "weekly changes": [
+     0.369,
+     0.014
+    ]
+   },
+   "BTC": {
+    "detrended": [
+     0.826,
+     0.067
+    ],
+    "weekly changes": [
+     0.305,
+     0.113
+    ]
+   },
+   "alts (index steps out)": {
+    "detrended": [
+     0.085,
+     0.101
+    ],
+    "weekly changes": [
+     0.124,
+     0.061
+    ]
+   },
+   "ETH/BTC": {
+    "detrended": [
+     -0.04,
+     0.219
+    ],
+    "weekly changes": [
+     0.164,
+     0.126
+    ]
+   }
+  },
+  "Steven's mid hump, top kept at Jun 22 2025": {
+   "BTC.D": {
+    "detrended": [
+     0.653,
+     0.057
+    ],
+    "weekly changes": [
+     0.388,
+     0.016
+    ]
+   },
+   "BTC": {
+    "detrended": [
+     0.823,
+     0.073
+    ],
+    "weekly changes": [
+     0.418,
+     0.081
+    ]
+   },
+   "alts (index steps out)": {
+    "detrended": [
+     0.082,
+     0.12
+    ],
+    "weekly changes": [
+     0.143,
+     0.048
+    ]
+   },
+   "ETH/BTC": {
+    "detrended": [
+     -0.006,
+     0.277
+    ],
+    "weekly changes": [
+     0.157,
+     0.112
+    ]
+   }
+  }
+ },
+ "falls": [
+  {
+   "fall": "parent waterfall",
+   "from": "2016-06-19",
+   "to": "2016-07-24",
+   "weeks": 5.0,
+   "BTC.D": [
+    98.41,
+    95.19
+   ],
+   "alts x": 2.79,
+   "ETH/BTC x": null,
+   "BTC x": 0.87
+  },
+  {
+   "fall": "parent top to waterfall low",
+   "from": "2017-02-26",
+   "to": "2017-05-21",
+   "weeks": 12.0,
+   "BTC.D": [
+    95.96,
+    65.53
+   ],
+   "alts x": 12.67,
+   "ETH/BTC x": 5.82,
+   "BTC x": 1.71
+  },
+  {
+   "fall": "parent May waterfall alone",
+   "from": "2017-04-30",
+   "to": "2017-05-21",
+   "weeks": 3.0,
+   "BTC.D": [
+    84.52,
+    65.53
+   ],
+   "alts x": 4.02,
+   "ETH/BTC x": 1.25,
+   "BTC x": 1.49
+  },
+  {
+   "fall": "child waterfall",
+   "from": "2017-12-10",
+   "to": "2018-01-14",
+   "weeks": 5.0,
+   "BTC.D": [
+    67.39,
+    36.83
+   ],
+   "alts x": 3.19,
+   "ETH/BTC x": 3.46,
+   "BTC x": 0.93
+  },
+  {
+   "fall": "child 2021 fall",
+   "from": "2021-01-03",
+   "to": "2021-05-16",
+   "weeks": 19.0,
+   "BTC.D": [
+    70.35,
+    40.82
+   ],
+   "alts x": 5.08,
+   "ETH/BTC x": 2.61,
+   "BTC x": 1.4
+  },
+  {
+   "fall": "child 2025 drop",
+   "from": "2025-06-22",
+   "to": "2025-09-14",
+   "weeks": 12.0,
+   "BTC.D": [
+    65.72,
+    57.79
+   ],
+   "alts x": 1.73,
+   "ETH/BTC x": 1.81,
+   "BTC x": 1.14
+  }
+ ]
+}

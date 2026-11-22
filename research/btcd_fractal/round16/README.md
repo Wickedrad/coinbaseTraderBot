@@ -75,4 +75,30 @@ carry weeks of slack; the first-leg reading is not forced).
 ## Files
 
 `structure_map.py`, `structure_map.json`, `charts.py`,
-`structures_through_top.png`, `after_top_day_by_day.png`.
+`structures_through_top.png`, `after_top_day_by_day.png`, `steven_anchors.py`, `steven_anchors.json`,
+`structures_steven_anchors.png`.
+
+## Addendum: the same map on Steven's anchors (Nov 21, 2026, 9:30 PM EST / Nov 22, 02:30 UTC)
+
+Steven's correction: the grey box on the parent is the mid hump (low Dec 18, high Dec 25, 2016, low
+Jan 15, 2017), the match for the child's 2020-21 hump (low Sep 13, 2020, high Jan 3, 2021, low
+May 16, 2021). The dilation is dynamic and the parent's top is today, not Jun 22, 2025.
+`steven_anchors.py` reruns the map on those seven anchors; `charts.py` draws
+`structures_steven_anchors.png`.
+
+- Paces 1.0, 5.1, 13.2, 16.0, 6.3 and 48.0 child weeks per parent week; BTC.D moves 18, 32, 10, 21,
+  49 and 34 times the parent's in log terms.
+- Better than the first anchors: the parent's mid-structure fall is a market move, not the Dec 16
+  index step; ETH/BTC x1.49 and alts x1.17 in it (child's 2021 fall x2.61 and x5.08); BTC's crash
+  sits at the end of the fall in both (parent Jan 4 to 11, 2017, -30.2%, BTC.D low Jan 11; child
+  from Apr 13, 2021, -42% by May 19, BTC.D low May 18, -53% by Jul 20). The small feature before the
+  top is therefore the spring 2021 crash, not 2022.
+- Clock test, 1,000 nearby clocks (first anchors / Steven's): BTC.D levels 0.68 (2.9%) / 0.67 (5.1%),
+  weekly changes 0.54 (0.1%) / 0.37 (1.4%); BTC 0.84 (8.6%) / 0.83 (6.7%) and 0.36 (37%) / 0.31 (11%);
+  alts 0.01 / 0.09; ETH/BTC -0.32 / -0.04. Only BTC.D clears chance on either set.
+- Not fitting: BTC's price in the last stretch (parent +43% with one 6.3% dip; child -76.7% in 2022
+  and -51.8% now). The parent dipped 95.67 to 95.39 (Feb 8 to 15, 2017), pushed to 96.09 (Feb 24)
+  and rolled over; the child's June to September 2025 drop is 46 times that dip and it has not
+  pushed back up (59.2 against 65.72).
+- Past falls took 5, 12, 5, 19 and 12 weeks (about 11 on average), in line with Steven's three months.
+- The dates taken from the plateau's fixed pace after the top do not apply on these anchors.

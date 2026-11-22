@@ -125,6 +125,53 @@ def fig_after_top():
     fig.savefig(OUT / "after_top_day_by_day.png", dpi=200)
 
 
+def fig_steven():
+    """Steven's anchors (Nov 21, 2026): the grey box is the mid hump = the child's 2020-21 hump; the top is today."""
+    PS = pd.DatetimeIndex(["2016-06-19", "2016-07-24", "2016-11-20", "2016-12-18", "2016-12-25", "2017-01-15", "2017-02-26"])
+    CS = pd.DatetimeIndex(["2017-12-10", "2018-01-14", "2019-09-08", "2020-09-13", "2021-01-03", "2021-05-16", str(TODAY.date())])
+    base = pd.Timestamp("2010-01-01")
+    p0, p1 = pd.Timestamp("2016-11-06"), pd.Timestamp("2017-03-12")
+    def child(name):
+        c0 = base + pd.to_timedelta(float(np.interp(m.day([p0])[0], m.day(PS), m.day(CS))), unit="D")
+        s = S[name].loc[c0:TODAY].dropna()
+        t = base + pd.to_timedelta(np.interp(m.day(s.index), m.day(CS), m.day(PS)), unit="D")
+        return pd.Series(s.values, index=t)
+    rows = [("BTC.D", "BTC dominance, %", False), ("BTC", "BTC price, $ (log)", True), ("ETH/BTC", "ETH/BTC (log)", True)]
+    fig, axs = plt.subplots(6, 1, figsize=(10, 12.8), sharex=True, gridspec_kw={"hspace": 0.3})
+    for r, (name, lab, log) in enumerate(rows):
+        for k, (era, col) in enumerate((("parent", PAR), ("child", CHI))):
+            ax = axs[2 * r + k]; style(ax)
+            s = S[name].loc[p0:p1].dropna() if era == "parent" else child(name)
+            ax.plot(s.index, s.values, color=col, lw=1.6, solid_capstyle="round")
+            if log:
+                ax.set_yscale("log"); ax.yaxis.set_major_locator(matplotlib.ticker.LogLocator(base=10, subs=(1, 2, 5)))
+                ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v:,.0f}" if v >= 10 else f"{v:.3g}"))
+                ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
+            who = "Parent, Nov 2016 to Mar 2017" if era == "parent" else "Child, Jul 2019 to today, on the parent's clock"
+            ax.set_title(f"{lab}  |  {who}", loc="left", color=INK, fontsize=9, fontweight="bold", pad=3)
+            ax.axvspan(PS[3], PS[5], color=MUTED, alpha=0.16, lw=0)
+            for a in PS[2:]:
+                ax.axvline(a, color=MUTED, lw=0.7, ls=(0, (2, 3)))
+            if era == "child":
+                ax.plot([s.index[-1]], [s.values[-1]], "o", ms=5, color=col, mec=SURF, mew=1.2)
+    axs[0].set_xlim(p0, p1 + pd.Timedelta(days=1))
+    axs[-1].set_xticks(list(PS[2:])); axs[-1].set_xticklabels([d.strftime("%b %-d\n%Y") for d in PS[2:]], color=INK2, fontsize=8)
+    axs[-1].set_xlabel("Parent's date at each structure (bottom)   |   child's date at the same place (top)", color=INK2)
+    names = ["first hump", "step low", "mid hump high", "fall low", "top = today"]
+    for i, (a, c, n) in enumerate(zip(PS[2:], CS[2:], names)):
+        up = 26 if i in (1, 3) else 2
+        ha = "right" if i == 1 else ("left" if i == 2 else "center")
+        axs[0].annotate(f"{n}\n{c.strftime('%b %-d, %Y')}", (a, 1.0), xycoords=("data", "axes fraction"), xytext=(0, 16 + up), textcoords="offset points",
+                        ha=ha, va="bottom", color=INK2, fontsize=8)
+    axs[0].annotate("mid hump", (PS[3] + (PS[5] - PS[3]) / 2, 0.06), xycoords=("data", "axes fraction"), ha="center", va="bottom", color=INK2, fontsize=8)
+    axs[1].annotate("2020-21 hump", (PS[3] + (PS[5] - PS[3]) / 2, 0.06), xycoords=("data", "axes fraction"), ha="center", va="bottom", color=INK2, fontsize=8)
+    fig.suptitle("Steven's anchors: the mid hump and the top", x=0.065, y=0.987, ha="left", color=INK, fontsize=13, fontweight="bold")
+    fig.text(0.065, 0.966, "The grey box is the mid hump: the parent's small hump after the December 2016 step, matched to the child's 2020-21 hump. Dotted lines are the\n"
+             "matched structures, and the child is stretched between them. The child's line ends today, placed at the parent's top; the parent runs on two weeks.", color=INK2, fontsize=8.5, va="top")
+    fig.subplots_adjust(left=0.065, right=0.985, top=0.865, bottom=0.07)
+    fig.savefig(OUT / "structures_steven_anchors.png", dpi=200)
+
+
 if __name__ == "__main__":
-    fig_through_top(); fig_after_top()
+    fig_through_top(); fig_after_top(); fig_steven()
     print("ok")
