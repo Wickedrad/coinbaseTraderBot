@@ -2,7 +2,38 @@
  "dataThrough": "2026-11-21",
  "falls": [
   {
-   "fall": "parent 2017",
+   "fall": "parent July 2016 waterfall",
+   "btcdHigh": [
+    "2016-06-19",
+    98.41
+   ],
+   "btcdLow": [
+    "2016-07-24",
+    95.19
+   ],
+   "weeks": 5,
+   "btc13wBeforePct": 85,
+   "btcThroughFall": 0.87,
+   "ethbtc52wLow": null,
+   "ethbtcLowWeeksBefore": null,
+   "ethbtcAboveLowAtHigh": null,
+   "ethbtcThroughFall": null,
+   "btcBelow52wHighPct": 0,
+   "ethbtc13wBeforePct": null,
+   "ethbtcAbove26wLowAtHigh": null,
+   "ethbtcBelow52wHighPct": null,
+   "ethbtc3wAfterHigh": null,
+   "usdtd78wHigh": [
+    "2016-06-19",
+    0.05
+   ],
+   "usdtdAtBtcdHigh": 0.05,
+   "usdtdAtBtcdLow": 0.06,
+   "sharpest4wDropEndsWeeksAfterHigh": 5,
+   "sharpest4wDropPct": -3
+  },
+  {
+   "fall": "parent 2017 waterfall (after the top)",
    "btcdHigh": [
     "2017-02-26",
     95.96
@@ -18,6 +49,11 @@
    "ethbtcLowWeeksBefore": 9,
    "ethbtcAboveLowAtHigh": 1.56,
    "ethbtcThroughFall": 5.82,
+   "btcBelow52wHighPct": 0,
+   "ethbtc13wBeforePct": 1,
+   "ethbtcAbove26wLowAtHigh": 1.56,
+   "ethbtcBelow52wHighPct": -44,
+   "ethbtc3wAfterHigh": 3.41,
    "usdtd78wHigh": [
     "2017-02-12",
     0.15
@@ -28,7 +64,7 @@
    "sharpest4wDropPct": -26
   },
   {
-   "fall": "child 2017-18",
+   "fall": "child 2017-18 waterfall",
    "btcdHigh": [
     "2017-12-10",
     67.39
@@ -44,6 +80,11 @@
    "ethbtcLowWeeksBefore": 50,
    "ethbtcAboveLowAtHigh": 3.61,
    "ethbtcThroughFall": 3.46,
+   "btcBelow52wHighPct": 0,
+   "ethbtc13wBeforePct": -59,
+   "ethbtcAbove26wLowAtHigh": 1.0,
+   "ethbtcBelow52wHighPct": -79,
+   "ethbtc3wAfterHigh": 1.86,
    "usdtd78wHigh": [
     "2017-07-16",
     0.5
@@ -52,58 +93,6 @@
    "usdtdAtBtcdLow": 0.24,
    "sharpest4wDropEndsWeeksAfterHigh": 4,
    "sharpest4wDropPct": -42
-  },
-  {
-   "fall": "child 2021",
-   "btcdHigh": [
-    "2021-01-03",
-    70.35
-   ],
-   "btcdLow": [
-    "2021-05-16",
-    40.82
-   ],
-   "weeks": 19,
-   "btc13wBeforePct": 210,
-   "btcThroughFall": 1.4,
-   "ethbtc52wLow": "2020-01-12",
-   "ethbtcLowWeeksBefore": 51,
-   "ethbtcAboveLowAtHigh": 1.65,
-   "ethbtcThroughFall": 2.61,
-   "usdtd78wHigh": [
-    "2020-10-04",
-    4.69
-   ],
-   "usdtdAtBtcdHigh": 2.44,
-   "usdtdAtBtcdLow": 2.74,
-   "sharpest4wDropEndsWeeksAfterHigh": 19,
-   "sharpest4wDropPct": -22
-  },
-  {
-   "fall": "child 2025",
-   "btcdHigh": [
-    "2025-06-22",
-    65.72
-   ],
-   "btcdLow": [
-    "2025-09-14",
-    57.79
-   ],
-   "weeks": 12,
-   "btc13wBeforePct": 17,
-   "btcThroughFall": 1.14,
-   "ethbtc52wLow": "2025-04-20",
-   "ethbtcLowWeeksBefore": 9,
-   "ethbtcAboveLowAtHigh": 1.18,
-   "ethbtcThroughFall": 1.81,
-   "usdtd78wHigh": [
-    "2024-09-08",
-    6.21
-   ],
-   "usdtdAtBtcdHigh": 5.1,
-   "usdtdAtBtcdLow": 4.28,
-   "sharpest4wDropEndsWeeksAfterHigh": 4,
-   "sharpest4wDropPct": -7
   }
  ],
  "now": {
@@ -114,6 +103,9 @@
    "2026-06-30",
    58526
   ],
+  "btcBelow52wHighPct": -38,
+  "ethbtcBelow52wHighPct": -23,
+  "ethbtcAbove26wLow": 1.08,
   "usdtd": 8.54,
   "usdtd4wAgo": 6.81,
   "usdtd13wAgo": 7.08,

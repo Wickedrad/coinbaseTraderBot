@@ -150,11 +150,16 @@ is now (the zone since June 2025), no more push up, the dilation moves.
 - Put back: the BTC crash inside the grey box (Jan 4 to 11 2017, -30.2%) pairs with the 2022 bear
   inside the consolidation (Nov 8 2021 to Nov 21 2022, -76.7%), not with spring 2021.
 
-## Timing of the waterfall: what was in place each time (Nov 21, 2026, 11:20 PM EST / Nov 22, 04:20 UTC)
+## Timing of the waterfall: what was in place each time (Nov 21, 2026, 11:30 PM EST / Nov 22, 04:30 UTC)
 
-`waterfall_starts.py` lists BTC, USDT.D and ETH/BTC around the four alt-led BTC.D falls on record
-(parent 2017, child 2017-18, 2021, 2025) and the same readings today. No clock is used. All four
-began with BTC up over the prior 13 weeks (+62%, +248%, +210%, +17%), USDT.D already off its
-earlier high (4.69 to 2.44 before 2021, 6.21 to 5.10 before 2025) and ETH/BTC already above its
-52-week low (x1.56, x3.61, x1.65, x1.18). Today BTC is -22% over 13 weeks, USDT.D is 8.54 and
-rising, and ETH/BTC is x1.08 above its low and falling. Four episodes: a description, not a rule.
+`waterfall_starts.py` lists BTC, USDT.D and ETH/BTC around the three actual waterfall events
+(parent July 2016, parent 2017 after its top, child 2017-18) and the same readings today. No clock
+is used. On Steven's word the 2021 fall (the mid-structure fall) and the Jun-Sep 2025 drop (inside
+the top) are not waterfalls and are left out.
+
+- BTC was at its 52-week high on weekly closes in all three, after +85%, +62% and +248% over the
+  prior 13 weeks. Today it is 38% below its 52-week high and -22% over 13 weeks.
+- ETH/BTC gave no early warning: +1% over the 13 weeks before the 2017 waterfall, -59% and at its
+  26-week low before 2017-18; then x3.41 and x1.86 within three weeks of the BTC.D high.
+- USDT.D was under half a percent of the market in all three, so it has no record here.
+- The three ran 5, 12 and 5 weeks. Three episodes: a description, not a rule.
