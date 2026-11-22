@@ -649,7 +649,7 @@ jobs:
   # (Drive raw/kalshi-history/kalshi/KX<A>15M, the same files OR-H1 read): net dollars per contract after the taker fee. Read only; nothing is ordered.
   dskalshi:
     needs: test
-    if: contains(needs.test.outputs.stage, 'dskalshi') || contains(needs.test.outputs.stage, 'dsatlas')
+    if: contains(needs.test.outputs.stage, 'dskalshi') || contains(needs.test.outputs.stage, 'dsatlas') || contains(needs.test.outputs.stage, 'dspocket')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -712,6 +712,7 @@ jobs:
             [ "$n" -ge 206 ] || { echo "::error::KX${A}15M has $n day files, 206 are required (2026-04-13..2026-11-04)"; exit 1; }
           done
       - name: The exchange's daily spot files (two warm-up days, the days, the day after)
+        if: contains(needs.test.outputs.stage, 'dskalshi') || contains(needs.test.outputs.stage, 'dsatlas')
         working-directory: python
         run: |
           set -o pipefail
@@ -737,6 +738,23 @@ jobs:
           set -o pipefail
           python3 -W ignore -m dirsweep.stage atlas --freeze ../research/heat_direction/dsfloor/freeze-data.json --first-day 2026-04-13 --last-day 2026-11-03 \
             --split-day 2026-08-01 --clean-day 2026-11-01 --btc ../data/k/BTC.csv --eth ../data/k/ETH.csv --k15 ../data/k15 --out ../out/atlas 2>&1 | tail -8
+      # Steven, Nov 22 2026: "look for more like this" (resting buys that earn a few cents a contract). Recorded days only: rules scored on Kalshi's candles Apr 13 to Jul 31,
+      # judged on Aug 1 to Oct 31, the best replayed on the bot's own full-depth days Nov 11 to 20 (grids from dsmdgrid). Read only; nothing is ordered; aggregates only.
+      - name: The grids of the full-depth recorded days (Drive models/subminute/grids, from dsmdgrid)
+        if: contains(needs.test.outputs.stage, 'dspocket')
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/subminute/grids" data/grids || { echo "::error::no grids on Drive (run dsmdgrid first)"; exit 1; }
+          ls data/grids | wc -l
+      - name: Pockets of resting buys (build 2026-04-13 to 2026-07-31, check 2026-08-01 to 2026-10-31, replay on 2026-11-11 to 2026-11-20)
+        if: contains(needs.test.outputs.stage, 'dspocket')
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.pockets --k15 ../data/k15 --grids ../data/grids --out ../out/pockets 2>&1 | tail -8 | cut -c1-15000
+      - name: Keep the pocket tables on Drive
+        if: contains(needs.test.outputs.stage, 'dspocket')
+        run: bash deploy/drive_lab.sh put "models/subminute/pockets" out/pockets
 
   # Steven, Nov 21 2026: only recorded days. Round 2: is the book late by seconds? One recorded day (the bot's own md-DAY recording, Drive recordings/) is reduced to
   # 1-second grids per 15-minute window (best bid and ask, sizes, taker flow) and per coin (the last index value and its lateness), kept on Drive under

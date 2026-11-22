@@ -1,3 +1,2 @@
-stage=dsmdmaker
-buildlast=2026-11-16
-# Round 2 follow-up on recorded days: the maker rules again, now also holding out every 4 of the 10 recorded days in turn (pick on the other 6, judge on those 4: 210 splits). Recorded days only.
+stage=dspocket
+# Round 3 on recorded days: resting-buy pockets scored on Kalshi candles Apr 13-Jul 31 (BTC, ETH), judged Aug 1-Oct 31, best replayed on the full-depth days Nov 11-20 (all four coins). Recorded days only.

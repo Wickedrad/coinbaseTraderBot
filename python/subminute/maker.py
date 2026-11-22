@@ -45,6 +45,7 @@ def prep(z, coin: str, day_ms: int):
     open_s = (z[f'{coin}__open_ms'] - day_ms) // 1000
     keep = (open_s >= LG.WARM) & (open_s + WIN < DAY)
     rows = np.flatnonzero(keep)
+    base['open_s'] = open_s[keep]
     base['bsz'] = np.asarray(z[f'{coin}__bsz'], float)[keep]
     base['asz'] = np.asarray(z[f'{coin}__asz'], float)[keep]
     tw, tms, tp, tc, ts = (np.asarray(z[f'{coin}__{k}']) for k in ('tr_w', 'tr_ms', 'tr_p', 'tr_c', 'tr_side'))
@@ -123,6 +124,8 @@ def simulate(pr: dict, rule: tuple) -> np.ndarray:
             ok &= ~(sgn * zg <= -guard[1])                       # NaN passes: no information is no reason to stay away
     ok_r = ok[:, a:b]
     has = ok_r.any(1)
+    if pr.get('wmask') is not None:
+        has &= pr['wmask']                                         # only some windows (pockets.py: a six-hour block of the UTC day)
     out = np.zeros(6)
     for w in np.flatnonzero(has):
         s0 = a + int(ok_r[w].argmax())
