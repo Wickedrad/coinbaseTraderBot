@@ -1218,6 +1218,22 @@ jobs:
             kind: m15
             series: KXBRENT15M,KXPLATINUM15M,KX30YRRATE15M,KX5YRRATE15M
             assets: BRENT,PLATINUM,30YRRATE,5YRRATE
+          - group: wxhigh1
+            kind: daily
+            series: KXHIGHLAX,KXHIGHMIA,KXHIGHDEN,KXHIGHTSFO,KXHIGHAUS
+            assets: KXHIGHLAX,KXHIGHMIA,KXHIGHDEN,KXHIGHTSFO,KXHIGHAUS
+          - group: wxhigh2
+            kind: daily
+            series: KXHIGHTATL,KXHIGHTSEA,KXHIGHTMIN,KXHIGHTDAL,KXHIGHTPHX
+            assets: KXHIGHTATL,KXHIGHTSEA,KXHIGHTMIN,KXHIGHTDAL,KXHIGHTPHX
+          - group: wxhigh3
+            kind: daily
+            series: KXHIGHTLV,KXHIGHTDC,KXHIGHTSATX,KXHIGHTNOLA
+            assets: KXHIGHTLV,KXHIGHTDC,KXHIGHTSATX,KXHIGHTNOLA
+          - group: wxlowbrent
+            kind: daily
+            series: KXLOWTNYC,KXLOWTCHI,KXLOWTAUS,KXLOWTATL,KXBRENTD
+            assets: KXLOWTNYC,KXLOWTCHI,KXLOWTAUS,KXLOWTATL,KXBRENTD
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5

@@ -6,9 +6,9 @@ types the DAYS. Each UTC day gets labels known before it opens (from the calenda
 
   wkend    Saturday or Sunday against a weekday
   psurp    the previous day's mean |settle - first-minutes mid| (how wrong the early quotes were): low / mid / high
-  pvolu    the previous day's contracts traded per window
+  pvolu    the previous day's contracts traded per window, against the mean of the 14 days before it (volume drifts over months; fixed cut points left whole levels empty in later blocks)
   ptrend   the previous day's share of windows that settled YES
-  pspread  the previous day's mean YES spread at the first minutes
+  pspread  the previous day's mean YES spread at the first minutes, against the mean of the 14 days before it
 
 A rule (side, price bucket, placement minutes, cancel minute, coin) on one day type is kept ("typed") only if all of this holds, in three time blocks used once each:
 
@@ -58,8 +58,18 @@ def labels(w, day0: int, nd: int, build: np.ndarray) -> tuple:
     out, cuts = {}, {}
     out['wkend'] = (((dn + 3) % 7) >= 5).astype(int)           # 1970-01-01 was a Thursday
     cuts['wkend'] = [5]
-    for f, key in (('psurp', 'surp'), ('pvolu', 'vol'), ('ptrend', 'yes'), ('pspread', 'spr')):
-        prev = np.concatenate([[np.nan], t[key][:-1]])
+    for f, key, rel in (('psurp', 'surp', False), ('pvolu', 'vol', True), ('ptrend', 'yes', False), ('pspread', 'spr', True)):
+        x = t[key]
+        prev = np.concatenate([[np.nan], x[:-1]])
+        if rel:                                                  # volume and spread drift over months: the previous day against the mean of the 14 days before it
+            base = np.full(nd, np.nan)
+            for d in range(nd):
+                seg = x[max(0, d - 15):max(0, d - 1)]
+                seg = seg[np.isfinite(seg)]
+                if len(seg) >= 5:
+                    base[d] = seg.mean()
+            with np.errstate(all='ignore'):
+                prev = np.where(base > 0, prev / base, np.nan)
         ok = build & np.isfinite(prev)
         if ok.sum() < 6:
             continue
