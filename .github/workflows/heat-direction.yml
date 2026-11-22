@@ -649,7 +649,7 @@ jobs:
   # (Drive raw/kalshi-history/kalshi/KX<A>15M, the same files OR-H1 read): net dollars per contract after the taker fee. Read only; nothing is ordered.
   dskalshi:
     needs: test
-    if: contains(needs.test.outputs.stage, 'dskalshi') || contains(needs.test.outputs.stage, 'dsatlas') || contains(needs.test.outputs.stage, 'dspocket')
+    if: contains(needs.test.outputs.stage, 'dskalshi') || contains(needs.test.outputs.stage, 'dsatlas') || contains(needs.test.outputs.stage, 'dspocket') || contains(needs.test.outputs.stage, 'dtk15')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -755,6 +755,16 @@ jobs:
       - name: Keep the pocket tables on Drive
         if: contains(needs.test.outputs.stage, 'dspocket')
         run: bash deploy/drive_lab.sh put "models/subminute/pockets" out/pockets
+      # Steven, Nov 22 2026 (8:04 AM EST): if an edge shows on some days or trades and not others, find the difference and keep it only for that type if it holds on later days.
+      - name: Day types on the BTC and ETH 15-minute candles (build the first half of the days, check the next quarter, clean the last quarter; typed rules against label-shifted placebos)
+        if: contains(needs.test.outputs.stage, 'dtk15')
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.daytypes --hist ../data/k15 --assets BTC,ETH --kind m15 --out ../out/dt-k15 2>&1 | tail -4 | cut -c1-14000
+      - name: Keep the day-type tables on Drive
+        if: contains(needs.test.outputs.stage, 'dtk15')
+        run: bash deploy/drive_lab.sh put "models/subminute/daytypes/k15" out/dt-k15
 
   # Steven, Nov 21 2026: only recorded days. Round 2: is the book late by seconds? One recorded day (the bot's own md-DAY recording, Drive recordings/) is reduced to
   # 1-second grids per 15-minute window (best bid and ask, sizes, taker flow) and per coin (the last index value and its lateness), kept on Drive under
@@ -1105,6 +1115,130 @@ jobs:
         run: |
           set -o pipefail
           python3 -W ignore -m subminute.fampockets --hist ../data/history --assets "${{ matrix.assets }}" --out ../out/fam-${{ matrix.group }} 2>&1 | tail -8 | cut -c1-12000
+
+  # Round 5c (recorded days only, public endpoints, read only): the daily brackets that pay no maker fee, the last twelve hours of each market in Kalshi's own 1-minute candles,
+  # about 200 days, kept on Drive (raw/oracle-history/kalshi/<SERIES>), then the resting-buy map (fampockets.py --kind daily) and the day-type test (daytypes.py) on them.
+  famdaily:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'famdaily')
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: wxhigh1
+            series: KXHIGHLAX,KXHIGHMIA,KXHIGHDEN,KXHIGHTSFO,KXHIGHAUS
+          - group: wxhigh2
+            series: KXHIGHTATL,KXHIGHTSEA,KXHIGHTMIN,KXHIGHTDAL,KXHIGHTPHX
+          - group: wxhigh3
+            series: KXHIGHTLV,KXHIGHTDC,KXHIGHTSATX,KXHIGHTNOLA
+          - group: wxlowbrent
+            series: KXLOWTNYC,KXLOWTCHI,KXLOWTAUS,KXLOWTATL,KXBRENTD
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Candles already kept on Drive (the fetch below only adds what is missing)
+        run: |
+          set -uo pipefail
+          for s in $(echo "${{ matrix.series }}" | tr , ' '); do mkdir -p "data/history/kalshi/$s"; bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$s" "data/history/kalshi/$s" || echo "no $s on Drive yet"; done
+      - name: Candles of the settled markets (public API, 10 requests a second, about 200 days, at most 1,500 markets a series, the last 720 minutes of each)
+        run: |
+          set -uo pipefail
+          timeout 100m node --import tsx research/history/kalshiHistory.ts --series "${{ matrix.series }}" --days 200 --max-markets 1500 --max-candle-min 720 --out data/history/kalshi --budget-min 95 2>&1 | tail -8 | cut -c1-600 || true
+          for s in $(echo "${{ matrix.series }}" | tr , ' '); do echo "$s: $(ls data/history/kalshi/$s 2>/dev/null | grep -c jsonl) day file(s), $(du -sh data/history/kalshi/$s 2>/dev/null | cut -f1), first $(ls data/history/kalshi/$s 2>/dev/null | grep jsonl | head -1) last $(ls data/history/kalshi/$s 2>/dev/null | grep jsonl | tail -1), $(cat data/history/kalshi/$s/*.jsonl 2>/dev/null | wc -l) market lines"; done
+      - name: What one market line holds (cut short)
+        run: |
+          for s in $(echo "${{ matrix.series }}" | tr , ' '); do f=$(ls data/history/kalshi/$s/*.jsonl 2>/dev/null | tail -2 | head -1 || true); if [ -n "$f" ]; then echo "$s $(basename "$f") lines $(wc -l < "$f")"; head -c 330 "$f" | tr -d '\n'; echo; fi; done
+      - name: Keep the candles on Drive
+        run: |
+          set -uo pipefail
+          for s in $(echo "${{ matrix.series }}" | tr , ' '); do [ -d "data/history/kalshi/$s" ] && bash deploy/drive_lab.sh put "raw/oracle-history/kalshi/$s" "data/history/kalshi/$s" || echo "no $s to keep"; done
+      - name: Resting-buy map, the last 12 hours (build the first half of the days, check the next quarter, clean the last quarter; no maker fee)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.fampockets --kind daily --hist ../data/history --assets "${{ matrix.series }}" --out ../out/fam-${{ matrix.group }} 2>&1 | tail -10 | cut -c1-9000
+      - name: Day types (typed rules against label-shifted placebos)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.daytypes --kind daily --hist ../data/history --assets "${{ matrix.series }}" --out ../out/dt-${{ matrix.group }} 2>&1 | tail -4 | cut -c1-9000
+      - name: Keep the tables on Drive
+        run: |
+          bash deploy/drive_lab.sh put "models/subminute/famdaily/${{ matrix.group }}" out/fam-${{ matrix.group }}
+          bash deploy/drive_lab.sh put "models/subminute/daytypes/${{ matrix.group }}" out/dt-${{ matrix.group }}
+
+  # Day types on the candles already kept on Drive (no fetch): the hourly ladders (206 days) and the 15-minute families of round 5b.
+  dtread:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'dtread')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: hourly
+            kind: hourly
+            series: KXBTCD,KXETHD
+            assets: BTC,ETH
+          - group: oilmetalsgas
+            kind: m15
+            series: KXWTI15M,KXSILVER15M,KXNATGAS15M
+            assets: WTI,SILVER,NATGAS
+          - group: fx
+            kind: m15
+            series: KXEURUSD15M,KXUSDJPY15M,KXGBPUSD15M,KXAUDUSD15M
+            assets: EURUSD,USDJPY,GBPUSD,AUDUSD
+          - group: altcoins
+            kind: m15
+            series: KXNEAR15M,KXHYPE15M,KXZEC15M
+            assets: NEAR,HYPE,ZEC
+          - group: brentplatinumrates
+            kind: m15
+            series: KXBRENT15M,KXPLATINUM15M,KX30YRRATE15M,KX5YRRATE15M
+            assets: BRENT,PLATINUM,30YRRATE,5YRRATE
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The candles of the group from Drive (raw/oracle-history/kalshi)
+        run: |
+          set -uo pipefail
+          for s in $(echo "${{ matrix.series }}" | tr , ' '); do mkdir -p "data/history/kalshi/$s"; bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$s" "data/history/kalshi/$s" || echo "no $s on Drive"; echo "$s: $(ls data/history/kalshi/$s | grep -c jsonl) day file(s)"; done
+      - name: Day types (build the first half of the days, check the next quarter, clean the last quarter; typed rules against label-shifted placebos)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.daytypes --kind ${{ matrix.kind }} --hist ../data/history --assets "${{ matrix.assets }}" --out ../out/dt-${{ matrix.group }} 2>&1 | tail -4 | cut -c1-9000
+      - name: Keep the tables on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/daytypes/${{ matrix.group }}" out/dt-${{ matrix.group }}
 
   # Round 5a (recorded days only): static arbitrage inside one hourly ladder (a higher strike's YES bid above a lower strike's YES ask) on the hourly grids, after both taker fees. Aggregates only.
   ladarb:

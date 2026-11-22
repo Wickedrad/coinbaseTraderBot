@@ -16,12 +16,33 @@ is the same table read on the other side at the same price (side flipped), and t
 Nothing is ordered; aggregates only.
 """
 import argparse
+import contextlib
 import json
 import os
 
 import numpy as np
 
 from subminute import pockets as PK
+
+# Window kinds: the last n minutes before a market's close read from Kalshi's own 1-minute candles, with the placement and cancel minutes of that length.
+# m15 = the 15-minute series (round 5b); hourly = the crypto hourly ladders (round 4b); daily = the last twelve hours of the daily weather and commodity brackets (round 5c).
+KINDS = {'m15': {'n': 15, 'fmt': 'KX{asset}15M', 'pk': {}},
+         'hourly': {'n': 60, 'fmt': 'KX{asset}D', 'pk': {'PLACE': ((1, 10), (10, 30), (30, 50)), 'CANCEL': (40, 55, 59)}},
+         'daily': {'n': 720, 'fmt': '{asset}', 'pk': {'PLACE': ((1, 120), (120, 360), (360, 600), (600, 700)), 'CANCEL': (600, 719)}}}
+
+
+@contextlib.contextmanager
+def pk_settings(kind: str):
+    """pockets.py pointed at the placement and cancel minutes of one window kind, put back on exit."""
+    over = KINDS[kind]['pk']
+    old = {k: getattr(PK, k) for k in over}
+    for k, v in over.items():
+        setattr(PK, k, v)
+    try:
+        yield KINDS[kind]
+    finally:
+        for k, v in old.items():
+            setattr(PK, k, v)
 
 
 def _blocks(w, build_frac: float, clean_frac: float):
@@ -65,10 +86,15 @@ def digest(rows, min_fills: int = 150) -> dict:
     return out
 
 
-def run(hist: str, series_fmt: str, assets, out_dir: str, build_frac: float = 0.5, clean_frac: float = 0.25, top: int = 10, log=print) -> dict:
+def run(hist: str, series_fmt: str, assets, out_dir: str, build_frac: float = 0.5, clean_frac: float = 0.25, top: int = 10, log=print, kind: str = 'm15') -> dict:
+    with pk_settings(kind) as kd:
+        return _run(hist, series_fmt, assets, out_dir, build_frac, clean_frac, top, log, kd['n'])
+
+
+def _run(hist, series_fmt, assets, out_dir, build_frac, clean_frac, top, log, n) -> dict:
     from allpairs import data as KD
     assets = [a for a in assets if a]
-    w = KD.load_kalshi(hist, assets, n=15, series_fmt=series_fmt, log=log)
+    w = KD.load_kalshi(hist, assets, n=n, series_fmt=series_fmt, log=log)
     if len(w.day) == 0:
         raise ValueError('no windows')
     split, clean = _blocks(w, build_frac, clean_frac)
@@ -124,17 +150,21 @@ def run(hist: str, series_fmt: str, assets, out_dir: str, build_frac: float = 0.
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--hist', required=True, help='a directory holding kalshi/KX<A>15M/DAY.jsonl')
-    ap.add_argument('--series-fmt', default='KX{asset}15M')
+    ap.add_argument('--kind', default='m15', choices=sorted(KINDS))
+    ap.add_argument('--series-fmt', default=None, help='default by kind: KX{asset}15M, KX{asset}D, {asset} (a full series ticker)')
     ap.add_argument('--assets', required=True, help='comma-separated, e.g. WTI,SILVER,NATGAS')
     ap.add_argument('--out', required=True)
     ap.add_argument('--top', type=int, default=10)
     ap.add_argument('--maps', action='store_true', help='print every scope\'s whole map (long); the digest is always printed')
     a = ap.parse_args()
-    r = run(a.hist, a.series_fmt, [x.strip().upper() for x in a.assets.split(',')], a.out, top=a.top, log=lambda *x: None)
+    r = run(a.hist, a.series_fmt or KINDS[a.kind]['fmt'], [x.strip().upper() for x in a.assets.split(',')], a.out, top=a.top, log=lambda *x: None, kind=a.kind)
     print('HEATLOOP famp-summary ' + json.dumps({k: v for k, v in r.items() if k not in ('maps', 'top_survivors', 'passes')}, sort_keys=True, default=float), flush=True)
     print('HEATLOOP famp-cols [side, bucket lo, place from minute, build net c, build fills, check net c, check lo, check hi, check fills, check gross if all filled c, clean net c, clean lo, clean hi, clean fills]', flush=True)
     for scope, rows in r['maps'].items():
-        print(f'HEATLOOP famp-digest {scope} ' + json.dumps(digest(rows), sort_keys=True, default=float), flush=True)
+        d = digest(rows)
+        if scope != 'ALL':                               # one line a series: the lists are kept for the pooled scope only
+            d = {k: (len(v) if isinstance(v, list) else v) for k, v in d.items()}
+        print(f'HEATLOOP famp-digest {scope} ' + json.dumps(d, sort_keys=True, default=float), flush=True)
         if a.maps:
             print(f'HEATLOOP famp-map {scope} ' + json.dumps(rows, default=float), flush=True)
     print('HEATLOOP famp-top ' + json.dumps(r['top_survivors'][:6], sort_keys=True, default=float)[:12000], flush=True)

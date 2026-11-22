@@ -1,2 +1,2 @@
-stage=famread
-# round 5b read-out: compact digest per asset from the candles kept on Drive (no fetch)
+stage=famdaily,dtk15
+# round 5c: daily weather/Brent brackets (last 12 h, about 200 days) and day types on the BTC/ETH 15-minute candles (Steven, Nov 22 8:04 AM EST: type the days, keep an edge only for the type that holds)
