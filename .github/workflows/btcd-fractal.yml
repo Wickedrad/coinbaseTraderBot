@@ -184,6 +184,11 @@ jobs:
       - name: "Round 17 coin prices (Coin Metrics daily PriceUSD for XRP, XLM, DOGE, LTC, ETH)"
         if: ${{ env.ROUND == '17data' }}
         run: python3 research/btcd_fractal/round17/fetch_coins.py --out research/btcd_fractal/data 2>&1 | tail -12
+      - name: "Round 17 nulls (round17/PLAN.md - is the child explained by the warped parent better than look-alikes)"
+        if: ${{ env.ROUND == '17' }}
+        run: |
+          pip install -q --disable-pip-version-check scipy
+          cd research/btcd_fractal/round17 && python3 m2_null.py 200 2>&1 | tee m2_null.log | tail -20 | cut -c1-600
       - name: Refresh the forecast object on the latest data (weekly)
         if: ${{ env.ROUND == 'refresh' }}
         run: |
@@ -212,6 +217,6 @@ jobs:
           mkdir -p research/btcd_fractal/out4; cp "$RUNNER_TEMP/study4.log" research/btcd_fractal/out4/study4.log 2>/dev/null || true
           mkdir -p research/btcd_fractal/out5; cp "$RUNNER_TEMP/study5.log" research/btcd_fractal/out5/study5.log 2>/dev/null || true
           mkdir -p research/btcd_fractal/out6 research/btcd_fractal/out7; cp "$RUNNER_TEMP/study6.log" research/btcd_fractal/out6/study6.log 2>/dev/null || true; cp "$RUNNER_TEMP/study7.log" research/btcd_fractal/out7/study7.log 2>/dev/null || true
-          for d in data out out2 out3 out4 out5 out6 out7 out8 out9 out10 out11 out12 out13 out14 refresh forecast_log.csv; do [ -e "research/btcd_fractal/$d" ] && git add -f "research/btcd_fractal/$d"; done; true
+          for d in data out out2 out3 out4 out5 out6 out7 out8 out9 out10 out11 out12 out13 out14 refresh forecast_log.csv round17/m2_null.json round17/m2_null.log; do [ -e "research/btcd_fractal/$d" ] && git add -f "research/btcd_fractal/$d"; done; true
           git commit -q -m "BTC.D fractal study results (run ${{ github.run_id }}) [skip ci]" || { echo "nothing to commit"; exit 0; }
           for i in 1 2 3 4; do git pull -q --rebase origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && break; sleep $((2**i)); done
