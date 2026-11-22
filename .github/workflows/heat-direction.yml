@@ -761,7 +761,7 @@ jobs:
         working-directory: python
         run: |
           set -o pipefail
-          python3 -W ignore -m subminute.daytypes --hist ../data/k15 --assets BTC,ETH --kind m15 --out ../out/dt-k15 2>&1 | tail -4 | cut -c1-14000
+          python3 -W ignore -m subminute.daytypes --hist ../data/k15 --assets BTC,ETH --kind m15 --watch yes:0.9:6:ptrend:low --out ../out/dt-k15 2>&1 | tail -7 | cut -c1-6000
       - name: Keep the day-type tables on Drive
         if: contains(needs.test.outputs.stage, 'dtk15')
         run: bash deploy/drive_lab.sh put "models/subminute/daytypes/k15" out/dt-k15
@@ -1258,7 +1258,7 @@ jobs:
         working-directory: python
         run: |
           set -o pipefail
-          python3 -W ignore -m subminute.daytypes --kind ${{ matrix.kind }} --hist ../data/history --assets "${{ matrix.assets }}" --out ../out/dt-${{ matrix.group }} 2>&1 | tail -4 | cut -c1-9000
+          python3 -W ignore -m subminute.daytypes --kind ${{ matrix.kind }} ${{ matrix.kind == 'm15' && '--watch yes:0.9:6:ptrend:low' || '' }} --hist ../data/history --assets "${{ matrix.assets }}" --out ../out/dt-${{ matrix.group }} 2>&1 | tail -9 | cut -c1-3000
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/daytypes/${{ matrix.group }}" out/dt-${{ matrix.group }}
 

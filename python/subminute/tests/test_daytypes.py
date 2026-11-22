@@ -66,6 +66,16 @@ class DayTypesTest(unittest.TestCase):
             self.assertTrue(all(x['check_other_days']['net_c'] < 0 < x['check']['net_c'] for x in tr))            # worse on the other days
             self.assertTrue(os.path.exists(os.path.join(t, 'out', 'typed_rules.json')))
 
+    def test_a_rule_fixed_in_advance_is_read_in_every_scope(self):
+        with tempfile.TemporaryDirectory() as t:
+            write_weekend(t)
+            w = DT.load(t, 'm15', ['AAA'], log=lambda *x: None)
+            r = DT.run(w, os.path.join(t, 'out'), shifts=2, min_build=10, min_check=5, min_clean=5, watch=[('yes', '0.5', '1', 'wkend', 'weekend')], log=lambda *x: None)
+            self.assertEqual({x['scope'] for x in r['watch']}, {'AAA', 'ALL'})
+            x = [x for x in r['watch'] if x['scope'] == 'ALL'][0]
+            self.assertGreater(x['check']['net_c'], 0)
+            self.assertLess(x['check_other']['net_c'], 0)
+
     def test_an_edge_that_does_not_depend_on_the_day_is_not_typed(self):
         with tempfile.TemporaryDirectory() as t:
             write_weekend(t, yes_on_weekend=True)

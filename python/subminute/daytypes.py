@@ -142,7 +142,7 @@ def _c(s):
 
 
 def run(w, out_dir: str, assets=None, build_frac: float = 0.5, clean_frac: float = 0.25, shifts: int = 200, seed: int = 7, min_build: int = None, min_check: int = None,
-        min_clean: int = 100, top: int = 12, log=print) -> dict:
+        min_clean: int = 100, top: int = 12, watch=None, log=print) -> dict:
     min_build = PK.MIN_BUILD_FILLS if min_build is None else min_build
     min_check = PK.MIN_CHECK_FILLS if min_check is None else min_check
     days = np.unique(w.day)
@@ -179,11 +179,26 @@ def run(w, out_dir: str, assets=None, build_frac: float = 0.5, clean_frac: float
         (side, bk, pl, cn), sc, _ = cell
         typed.append({'scope': sc, 'rule': {'side': side, 'bucket': list(bk), 'place_from_bar': pl[0], 'place_to_bar': pl[1], 'cancel_bar': cn}, 'type': {'feature': f, 'level': LEVELS[f][lv], 'cuts_from_build': cuts.get(f)},
                       'build': _c(b), 'check': _c(k), 'clean': _c(c), 'check_other_days': _c(ko), 'clean_other_days': _c(co)})
+    watched = []                                                               # rules fixed in advance, read in every scope whether or not they pass: side:bucket low:first placement bar:feature:level
+    for w_ in (watch or []):
+        sd, bk0, pl0, f, lvn = w_
+        if f not in lab or lvn not in LEVELS[f]:
+            continue
+        lv, on = LEVELS[f].index(lvn), (lab[f] == LEVELS[f].index(lvn))
+        for cell in cells:
+            (side, bk, pl, cn), sc, _ = cell
+            if side != sd or abs(bk[0] - float(bk0)) > 1e-9 or pl[0] != int(pl0):
+                continue
+            A, row = acc[cell], {'scope': sc, 'rule': f'{sd} {bk[0]}-{bk[1]} from bar {pl[0]}', 'type': f'{f}:{lvn}'}
+            for bn in ('build', 'check', 'clean'):
+                row[bn] = _c(_stat(A, blocks[bn] & on, 1))
+                row[bn + '_other'] = _c(_stat(A, blocks[bn] & ~on & (lab[f] >= 0), 1))
+            watched.append(row)
     out = {'blocks': {'build': [date(days.min()), date(split - 1)], 'check': [date(split), date(clean - 1)], 'clean': [date(clean), date(days.max())]},
            'days': {k: int(v.sum()) for k, v in blocks.items()}, 'scopes': scopes, 'rules_per_scope': len(cells) // max(1, len(scopes)), 'feature_cuts_from_build': cuts,
            'typed_tests': len(tests), 'typed_found': len(found), 'placebo_slides': len(counts), 'placebo_found_mean': None if not counts else round(float(np.mean(counts)), 2),
            'placebo_found_max': None if not counts else int(max(counts)), 'placebo_p': None if p is None else round(p, 4),
-           'typed_rules': typed, 'levels_all_rules': level_table(pooled(acc, [k for k in cells if k[1] == 'ALL'], nd), lab, blocks)}
+           'typed_rules': typed, 'watch': watched, 'levels_all_rules': level_table(pooled(acc, [k for k in cells if k[1] == 'ALL'], nd), lab, blocks)}
     os.makedirs(out_dir, exist_ok=True)
     json.dump(out, open(os.path.join(out_dir, 'typed_rules.json'), 'w'), indent=1, sort_keys=True, default=float)
     return out
@@ -202,13 +217,16 @@ if __name__ == '__main__':
     ap.add_argument('--series-fmt', default=None)
     ap.add_argument('--out', required=True)
     ap.add_argument('--shifts', type=int, default=200)
+    ap.add_argument('--watch', default='', help='rules fixed in advance, comma-separated side:bucket low:first placement bar:feature:level, e.g. yes:0.9:6:ptrend:low')
     a = ap.parse_args()
     with FP.pk_settings(a.kind):
         w = load(a.hist, a.kind, [x.strip().upper() for x in a.assets.split(',')], a.series_fmt, log=lambda *x: None)
-        r = run(w, a.out, shifts=a.shifts, log=lambda *x: None)
-    print('HEATLOOP dt-summary ' + json.dumps({k: v for k, v in r.items() if k not in ('typed_rules', 'levels_all_rules')}, sort_keys=True, default=float), flush=True)
+        r = run(w, a.out, shifts=a.shifts, watch=[tuple(x.split(':')) for x in a.watch.split(',') if x], log=lambda *x: None)
+    print('HEATLOOP dt-summary ' + json.dumps({k: v for k, v in r.items() if k not in ('typed_rules', 'levels_all_rules', 'watch')}, sort_keys=True, default=float), flush=True)
     def cell(x):
         return '-' if x is None else f"{x['net_c']:+.1f}c({x['days']}d,{x['fills']})"
     lv = {k: ' | '.join(cell(v[b]) for b in ('build', 'check', 'clean')) for k, v in sorted(r['levels_all_rules'].items())}
     print('HEATLOOP dt-levels (net c per fill of the mean rule, by day type: build | check | clean, days, fills) ' + json.dumps(lv, sort_keys=True), flush=True)
+    for row in r['watch']:
+        print('HEATLOOP dt-watch ' + json.dumps({k: (v if not isinstance(v, dict) else f"{v['net_c']:+.2f}c [{v['lo_c']}] ({v['days']}d,{v['fills']})" if v['lo_c'] is not None else f"{v['net_c']:+.2f}c ({v['days']}d,{v['fills']})") for k, v in row.items()}, sort_keys=True), flush=True)
     print('HEATLOOP dt-typed ' + json.dumps(r['typed_rules'][:6], sort_keys=True, default=float)[:9000], flush=True)

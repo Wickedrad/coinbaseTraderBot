@@ -1,2 +1,2 @@
 stage=dtread,dtk15
-# round 5c wave 2: day types with labels against the trailing 14 days on every kept data set (hourly, 15-minute families, daily weather, BTC/ETH 15-minute)
+# round 5c wave 3: the one typed rule (YES 90-97c, from minute 6, after a down day) read on every 15-minute data set, fixed in advance
