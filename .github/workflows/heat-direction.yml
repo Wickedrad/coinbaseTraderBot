@@ -988,7 +988,7 @@ jobs:
     needs: test
     if: contains(needs.test.outputs.stage, 'famsurvey')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5

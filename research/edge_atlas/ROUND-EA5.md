@@ -1,6 +1,6 @@
 # Round EA-5a: is an hourly ladder ever arbitrageable inside itself? (recorded days only)
 
-Written Sun Nov 22 2026, 4:05 AM EST / 09:05 UTC. Follows round 4 (ROUND-EA4.md). Same rules: recorded days only, nothing waits for a future day, paper only, no order, no bot change, day-cluster intervals. Steven's bar (1:35 AM EST / 06:35 UTC): $2.60 an hour counts as edge.
+Written Sun Nov 22 2026, about 4:03 AM EST / 09:03 UTC. Follows round 4 (ROUND-EA4.md). Same rules: recorded days only, nothing waits for a future day, paper only, no order, no bot change, day-cluster intervals. Steven's bar (1:35 AM EST / 06:35 UTC): $2.60 an hour counts as edge.
 
 ## Result
 
