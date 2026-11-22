@@ -952,23 +952,24 @@ jobs:
         with:
           rclone_conf: ${{ secrets.RCLONE_CONF }}
       - name: Where the hourly candles are on Drive
-        run: rclone lsf "gdrive:kalshi-bot-archive/raw/kalshi-history" --max-depth 2 --dirs-only | head -30
-      - name: Hourly candles (BTC and ETH, close days 2026-04-13 to 2026-11-06, read only)
+        run: |
+          rclone lsf "gdrive:kalshi-bot-archive/raw/kalshi-history" --max-depth 2 --dirs-only | head -30 || true
+          rclone lsf "gdrive:kalshi-bot-archive/raw/oracle-history/kalshi" --dirs-only | head -30 || true
+      - name: Hourly candles (BTC and ETH from raw/oracle-history, 206 day files of about 94 nearest-strike markets, else raw/kalshi-history; read only)
         run: |
           set -uo pipefail
           for A in BTC ETH; do
             S="KX${A}D"; D="data/hist/kalshi/$S"; mkdir -p "$D"
-            for P in "raw/kalshi-history/kalshi/$S" "raw/kalshi-history/$S"; do
-              if bash deploy/drive_lab.sh get "$P" "$D" --include "/2026-04-1[3-9].jsonl" --include "/2026-04-[23][0-9].jsonl" --include "/2026-0[5-9]-[0-3][0-9].jsonl" \
-                   --include "/2026-1[01]-[0-3][0-9].jsonl"; then echo "$S from $P"; break; fi
+            for P in "raw/oracle-history/kalshi/$S" "raw/kalshi-history/kalshi/$S" "raw/kalshi-history/$S"; do
+              if bash deploy/drive_lab.sh get "$P" "$D"; then echo "$S from $P"; break; fi
             done
             echo "$S: $(ls "$D" | wc -l) day files, $(du -sh "$D" | cut -f1)"
           done
       - name: What the files hold (first and last day, one market line cut short)
         run: |
-          for A in BTC ETH; do D="data/hist/kalshi/KX${A}D"; ls "$D" | head -1; ls "$D" | tail -1; done
-          f=$(ls data/hist/kalshi/KXBTCD/2026-07-1*.jsonl 2>/dev/null | head -1)
-          [ -z "$f" ] || { echo "$f lines: $(wc -l < "$f")"; head -c 600 "$f" | tr -d '\n'; echo; }
+          for A in BTC ETH; do D="data/hist/kalshi/KX${A}D"; echo "$A first $(ls "$D" | head -1) last $(ls "$D" | tail -1)"; done
+          f=$(ls data/hist/kalshi/KXBTCD/2026-07-1*.jsonl 2>/dev/null | head -1 || true)
+          if [ -n "$f" ]; then echo "$f lines: $(wc -l < "$f")"; head -c 700 "$f" | tr -d '\n'; echo; fi
       - name: The hourly grids of the full-depth days (Drive models/subminute/hgrids, from hrgrid)
         run: |
           set -euo pipefail
