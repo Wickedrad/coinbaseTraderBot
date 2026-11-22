@@ -1,3 +1,2 @@
-stage=hrgrid
-days=2026-11-11,2026-11-12,2026-11-13,2026-11-14,2026-11-15,2026-11-16,2026-11-17,2026-11-19,2026-11-20
-# Round 4b on recorded days (Nov 22 2026): the other nine recorded days' hourly ladders (KXBTCD, KXETHD, KXSOLD, KXXRPD) reduced to 1-second grids, after the Nov 18 test day was sane. Recorded days only.
+stage=hrcoin
+# Round 4b on recorded days (Nov 22 2026): hourly lag and maker rules coin by coin on the ten recorded hourly grids (Nov 11-20; build Nov 11-16, check Nov 17-20), with the leave-one-coin-out and 210-split day hold-outs. Recorded days only.
