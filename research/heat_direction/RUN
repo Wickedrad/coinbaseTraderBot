@@ -1,2 +1,2 @@
-stage=famcandles
-# round 5b: candles of the other 15-minute families (4 groups in parallel), then the resting-buy map in three time blocks
+stage=famread
+# round 5b read-out: compact digest per asset from the candles kept on Drive (no fetch)
