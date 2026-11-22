@@ -1,0 +1,368 @@
+{
+ "dataLastDailyBar": "2026-11-21",
+ "todayWeek": "2026-11-15",
+ "readoutTV": {
+  "placedWeek": "2017-03-05",
+  "today": "2026-11-15",
+  "todayLevel": 59.88,
+  "nextWaterfall": {
+   "start": "2017-03-12",
+   "low": "2017-05-21",
+   "parentWeeksToStart": 1,
+   "parentWeeksToLow": 11
+  },
+  "clocks": {
+   "local52": {
+    "childWeeksPerParentWeek": 52.0,
+    "startDate": "2027-11-14",
+    "lowDate": "2037-11-01"
+   },
+   "avg2021today": {
+    "childWeeksPerParentWeek": 26.091,
+    "startDate": "2027-05-16",
+    "lowDate": "2032-05-16"
+   },
+   "steady2018to2021": {
+    "childWeeksPerParentWeek": 8.286,
+    "startDate": "2027-01-12",
+    "lowDate": "2028-08-14"
+   }
+  }
+ },
+ "readoutTV_round14": {
+  "placedWeek": "2017-03-05",
+  "today": "2026-11-01",
+  "steadyStart": "2026-12-29"
+ },
+ "segmentClocks": [
+  {
+   "segment": "waterfall: top to bottom",
+   "parent": "2016-06-19 -> 2016-07-24",
+   "parentWeeks": 5.0,
+   "child": "2017-12-10 -> 2018-01-14",
+   "childWeeks": 5.0,
+   "childWeeksPerParentWeek": 1.0
+  },
+  {
+   "segment": "rise from the bottom to the hump",
+   "parent": "2016-07-24 -> 2016-11-20",
+   "parentWeeks": 17.0,
+   "child": "2018-01-14 -> 2019-09-08",
+   "childWeeks": 86.0,
+   "childWeeksPerParentWeek": 5.06
+  },
+  {
+   "segment": "hump to the fall's end (C2 = Sep 2019)",
+   "parent": "2016-11-20 -> 2016-12-18",
+   "parentWeeks": 4.0,
+   "child": "2019-09-08 -> 2021-05-16",
+   "childWeeks": 88.0,
+   "childWeeksPerParentWeek": 22.0
+  },
+  {
+   "segment": "the fall itself (C2' = Jan 3 2021 top)",
+   "parent": "2016-11-20 -> 2016-12-18",
+   "parentWeeks": 4.0,
+   "child": "2021-01-03 -> 2021-05-16",
+   "childWeeks": 19.0,
+   "childWeeksPerParentWeek": 4.75
+  },
+  {
+   "segment": "steady 2018-21 (the 8.3:1 clock)",
+   "parent": "2016-07-24 -> 2016-12-18",
+   "parentWeeks": 21.0,
+   "child": "2018-01-14 -> 2021-05-16",
+   "childWeeks": 174.0,
+   "childWeeksPerParentWeek": 8.29
+  },
+  {
+   "segment": "since 2021 (open part)",
+   "parent": "2016-12-18 -> 2017-03-05",
+   "parentWeeks": 11.0,
+   "child": "2021-05-16 -> 2026-11-15",
+   "childWeeks": 287.0,
+   "childWeeksPerParentWeek": 26.09
+  }
+ ],
+ "parentPathOnChildCalendar": {
+  "anchor": "today 2026-11-15 <-> parent 2017-03-05",
+  "rows": [
+   {
+    "parentDate": "2017-03-12",
+    "event": "the parent's drop starts",
+    "clock": "1:1 (the 2016/2018 waterfall's own clock)",
+    "childDate": "2026-11-22"
+   },
+   {
+    "parentDate": "2017-03-12",
+    "event": "the parent's drop starts",
+    "clock": "4.75:1 (the 2021 fall's clock)",
+    "childDate": "2026-12-18"
+   },
+   {
+    "parentDate": "2017-03-12",
+    "event": "the parent's drop starts",
+    "clock": "8.3:1 (steady 2018-21)",
+    "childDate": "2027-01-12"
+   },
+   {
+    "parentDate": "2017-03-26",
+    "event": "TV 90.3 / CMC 67.4, ETH/BTC 0.052 (x3.4 from Mar 5)",
+    "clock": "1:1 (the 2016/2018 waterfall's own clock)",
+    "childDate": "2026-12-06"
+   },
+   {
+    "parentDate": "2017-03-26",
+    "event": "TV 90.3 / CMC 67.4, ETH/BTC 0.052 (x3.4 from Mar 5)",
+    "clock": "4.75:1 (the 2021 fall's clock)",
+    "childDate": "2027-02-23"
+   },
+   {
+    "parentDate": "2017-03-26",
+    "event": "TV 90.3 / CMC 67.4, ETH/BTC 0.052 (x3.4 from Mar 5)",
+    "clock": "8.3:1 (steady 2018-21)",
+    "childDate": "2027-05-08"
+   },
+   {
+    "parentDate": "2017-05-21",
+    "event": "the rule's low (TV 65.5)",
+    "clock": "1:1 (the 2016/2018 waterfall's own clock)",
+    "childDate": "2027-01-31"
+   },
+   {
+    "parentDate": "2017-05-21",
+    "event": "the rule's low (TV 65.5)",
+    "clock": "4.75:1 (the 2021 fall's clock)",
+    "childDate": "2027-11-16"
+   },
+   {
+    "parentDate": "2017-05-21",
+    "event": "the rule's low (TV 65.5)",
+    "clock": "8.3:1 (steady 2018-21)",
+    "childDate": "2028-08-14"
+   },
+   {
+    "parentDate": "2017-06-18",
+    "event": "TV 2017 trough area",
+    "clock": "1:1 (the 2016/2018 waterfall's own clock)",
+    "childDate": "2027-02-28"
+   },
+   {
+    "parentDate": "2017-06-18",
+    "event": "TV 2017 trough area",
+    "clock": "4.75:1 (the 2021 fall's clock)",
+    "childDate": "2028-03-28"
+   },
+   {
+    "parentDate": "2017-06-18",
+    "event": "TV 2017 trough area",
+    "clock": "8.3:1 (steady 2018-21)",
+    "childDate": "2029-04-03"
+   },
+   {
+    "parentDate": "2017-08-27",
+    "event": "the low before the parent's end",
+    "clock": "1:1 (the 2016/2018 waterfall's own clock)",
+    "childDate": "2027-05-09"
+   },
+   {
+    "parentDate": "2017-08-27",
+    "event": "the low before the parent's end",
+    "clock": "4.75:1 (the 2021 fall's clock)",
+    "childDate": "2029-02-23"
+   },
+   {
+    "parentDate": "2017-08-27",
+    "event": "the low before the parent's end",
+    "clock": "8.3:1 (steady 2018-21)",
+    "childDate": "2030-11-04"
+   }
+  ]
+ },
+ "rollingImpliedStart": {
+  "rule": "each week's primary placement, start = week + 8.3 x parent weeks to 2017-03-12",
+  "weeks": 261,
+  "alreadyPassed": 252,
+  "sample": [
+   {
+    "week": "2021-11-14",
+    "placed": "2017-02-12",
+    "parentWeeksToStart": 4.0,
+    "impliedStart83": "2022-07-04"
+   },
+   {
+    "week": "2022-02-13",
+    "placed": "2017-01-22",
+    "parentWeeksToStart": 7.0,
+    "impliedStart83": "2023-03-26"
+   },
+   {
+    "week": "2022-05-15",
+    "placed": "2017-02-05",
+    "parentWeeksToStart": 5.0,
+    "impliedStart83": "2023-03-01"
+   },
+   {
+    "week": "2022-08-14",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2022-10-11"
+   },
+   {
+    "week": "2022-11-20",
+    "placed": "2017-01-29",
+    "parentWeeksToStart": 6.0,
+    "impliedStart83": "2023-11-03"
+   },
+   {
+    "week": "2023-02-19",
+    "placed": "2017-02-12",
+    "parentWeeksToStart": 4.0,
+    "impliedStart83": "2023-10-09"
+   },
+   {
+    "week": "2023-05-21",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2023-09-14"
+   },
+   {
+    "week": "2023-08-20",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2023-12-14"
+   },
+   {
+    "week": "2023-11-19",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2024-03-14"
+   },
+   {
+    "week": "2024-02-18",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2024-06-13"
+   },
+   {
+    "week": "2024-05-19",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2024-09-12"
+   },
+   {
+    "week": "2024-08-18",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2024-12-12"
+   },
+   {
+    "week": "2024-11-17",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2025-03-13"
+   },
+   {
+    "week": "2025-02-16",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2025-06-12"
+   },
+   {
+    "week": "2025-05-18",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2025-09-11"
+   },
+   {
+    "week": "2025-08-17",
+    "placed": "2017-02-26",
+    "parentWeeksToStart": 2.0,
+    "impliedStart83": "2025-12-11"
+   },
+   {
+    "week": "2025-11-16",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2026-01-13"
+   },
+   {
+    "week": "2026-02-15",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2026-04-14"
+   },
+   {
+    "week": "2026-05-17",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2026-07-14"
+   },
+   {
+    "week": "2026-08-16",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2026-10-13"
+   },
+   {
+    "week": "2026-11-15",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2027-01-12"
+   },
+   {
+    "week": "2026-10-11",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2026-12-08"
+   },
+   {
+    "week": "2026-10-18",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2026-12-15"
+   },
+   {
+    "week": "2026-10-25",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2026-12-22"
+   },
+   {
+    "week": "2026-11-01",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2026-12-29"
+   },
+   {
+    "week": "2026-11-08",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2027-01-05"
+   },
+   {
+    "week": "2026-11-15",
+    "placed": "2017-03-05",
+    "parentWeeksToStart": 1.0,
+    "impliedStart83": "2027-01-12"
+   }
+  ],
+  "hitTest": {
+   "rule": "a passed implied date is a hit when an alt-led BTC.D leg (7+ pts) started within 4 weeks of it",
+   "passed": 252,
+   "hits": 8,
+   "hitShare": 0.032,
+   "randomDateShare": 0.031,
+   "hitWeeks": [
+    "2025-02-02",
+    "2025-02-09",
+    "2025-02-16",
+    "2025-02-23",
+    "2025-03-02",
+    "2025-03-09",
+    "2025-03-16",
+    "2025-03-23"
+   ]
+  }
+ }
+}

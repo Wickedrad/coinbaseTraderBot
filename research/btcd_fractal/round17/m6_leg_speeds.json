@@ -1,0 +1,358 @@
+{
+ "through": "2026-11-21",
+ "legs": [
+  {
+   "kind": "waterfall",
+   "era": "parent",
+   "leg": "July 2016 waterfall",
+   "from": "2016-06-19",
+   "to": "2016-07-24",
+   "weeks": 5.0,
+   "btcd": [
+    98.41,
+    95.19
+   ],
+   "moveLogit": -1.138,
+   "moveLogitStepsOut": -1.138,
+   "speedLogitPerWeek": -0.2277,
+   "speedStepsOut": -0.2277,
+   "fastest4WeeksLogit": -1.011,
+   "biggestWeekLogit": -0.682,
+   "btcVsRestMultiple": 0.32,
+   "marketValueAtStartBn": 12.1
+  },
+  {
+   "kind": "waterfall",
+   "era": "child",
+   "leg": "2017-18 waterfall",
+   "from": "2017-12-10",
+   "to": "2018-01-14",
+   "weeks": 5.0,
+   "btcd": [
+    67.39,
+    36.83
+   ],
+   "moveLogit": -1.266,
+   "moveLogitStepsOut": -1.266,
+   "speedLogitPerWeek": -0.2531,
+   "speedStepsOut": -0.2531,
+   "fastest4WeeksLogit": -1.166,
+   "biggestWeekLogit": -0.457,
+   "btcVsRestMultiple": 0.282,
+   "marketValueAtStartBn": 379.1
+  },
+  {
+   "kind": "after the top",
+   "era": "parent",
+   "leg": "2017 fall after the parent's top (not counted as a waterfall)",
+   "from": "2017-02-26",
+   "to": "2017-05-21",
+   "weeks": 12.0,
+   "btcd": [
+    95.96,
+    65.53
+   ],
+   "moveLogit": -2.526,
+   "moveLogitStepsOut": -2.02,
+   "speedLogitPerWeek": -0.2105,
+   "speedStepsOut": -0.1683,
+   "fastest4WeeksLogit": -1.403,
+   "biggestWeekLogit": -0.599,
+   "btcVsRestMultiple": 0.08,
+   "marketValueAtStartBn": 19.9
+  },
+  {
+   "kind": "other fall",
+   "era": "parent",
+   "leg": "mid-structure fall (index step Dec 16 2016)",
+   "from": "2016-11-20",
+   "to": "2016-12-18",
+   "weeks": 4.0,
+   "btcd": [
+    97.19,
+    95.11
+   ],
+   "moveLogit": -0.575,
+   "moveLogitStepsOut": -0.026,
+   "speedLogitPerWeek": -0.1438,
+   "speedStepsOut": -0.0064,
+   "fastest4WeeksLogit": -0.575,
+   "biggestWeekLogit": -0.538,
+   "btcVsRestMultiple": 0.562,
+   "marketValueAtStartBn": 12.0
+  },
+  {
+   "kind": "other fall",
+   "era": "child",
+   "leg": "2021 fall (mid-structure), whole stretch from the Sep 2019 high",
+   "from": "2019-09-08",
+   "to": "2021-05-16",
+   "weeks": 88.0,
+   "btcd": [
+    71.7,
+    40.82
+   ],
+   "moveLogit": -1.301,
+   "moveLogitStepsOut": -1.301,
+   "speedLogitPerWeek": -0.0148,
+   "speedStepsOut": -0.0148,
+   "fastest4WeeksLogit": -0.469,
+   "biggestWeekLogit": -0.187,
+   "btcVsRestMultiple": 0.272,
+   "marketValueAtStartBn": 260.2
+  },
+  {
+   "kind": "other fall",
+   "era": "child",
+   "leg": "2021 fall, sharp part from the Jan 3 2021 high",
+   "from": "2021-01-03",
+   "to": "2021-05-16",
+   "weeks": 19.0,
+   "btcd": [
+    70.35,
+    40.82
+   ],
+   "moveLogit": -1.236,
+   "moveLogitStepsOut": -1.236,
+   "speedLogitPerWeek": -0.065,
+   "speedStepsOut": -0.065,
+   "fastest4WeeksLogit": -0.469,
+   "biggestWeekLogit": -0.187,
+   "btcVsRestMultiple": 0.291,
+   "marketValueAtStartBn": 874.6
+  },
+  {
+   "kind": "other fall",
+   "era": "child",
+   "leg": "Jun-Sep 2025 drop (inside the top)",
+   "from": "2025-06-22",
+   "to": "2025-09-14",
+   "weeks": 12.0,
+   "btcd": [
+    65.72,
+    57.79
+   ],
+   "moveLogit": -0.337,
+   "moveLogitStepsOut": -0.337,
+   "speedLogitPerWeek": -0.0281,
+   "speedStepsOut": -0.0281,
+   "fastest4WeeksLogit": -0.209,
+   "biggestWeekLogit": -0.161,
+   "btcVsRestMultiple": 0.714,
+   "marketValueAtStartBn": 3055.7
+  },
+  {
+   "kind": "rise",
+   "era": "parent",
+   "leg": "rise after the July 2016 waterfall",
+   "from": "2016-07-24",
+   "to": "2016-11-20",
+   "weeks": 17.0,
+   "btcd": [
+    95.19,
+    97.19
+   ],
+   "moveLogit": 0.557,
+   "moveLogitStepsOut": 0.789,
+   "speedLogitPerWeek": 0.0328,
+   "speedStepsOut": 0.0464,
+   "fastest4WeeksLogit": 0.296,
+   "biggestWeekLogit": 0.17,
+   "btcVsRestMultiple": 1.746,
+   "marketValueAtStartBn": 11.0
+  },
+  {
+   "kind": "rise",
+   "era": "parent",
+   "leg": "rise to the top",
+   "from": "2017-01-15",
+   "to": "2017-02-26",
+   "weeks": 6.0,
+   "btcd": [
+    94.91,
+    95.96
+   ],
+   "moveLogit": 0.243,
+   "moveLogitStepsOut": 0.243,
+   "speedLogitPerWeek": 0.0406,
+   "speedStepsOut": 0.0406,
+   "fastest4WeeksLogit": 0.192,
+   "biggestWeekLogit": 0.097,
+   "btcVsRestMultiple": 1.276,
+   "marketValueAtStartBn": 14.0
+  },
+  {
+   "kind": "rise",
+   "era": "child",
+   "leg": "rise after the 2017-18 waterfall",
+   "from": "2018-01-14",
+   "to": "2019-09-08",
+   "weeks": 86.0,
+   "btcd": [
+    36.83,
+    71.7
+   ],
+   "moveLogit": 1.469,
+   "moveLogitStepsOut": 1.469,
+   "speedLogitPerWeek": 0.0171,
+   "speedStepsOut": 0.0171,
+   "fastest4WeeksLogit": 0.378,
+   "biggestWeekLogit": 0.169,
+   "btcVsRestMultiple": 4.346,
+   "marketValueAtStartBn": 621.6
+  },
+  {
+   "kind": "rise",
+   "era": "child",
+   "leg": "rise to the Jun 22 2025 high",
+   "from": "2022-12-11",
+   "to": "2025-06-22",
+   "weeks": 132.0,
+   "btcd": [
+    40.8,
+    65.72
+   ],
+   "moveLogit": 1.023,
+   "moveLogitStepsOut": 1.023,
+   "speedLogitPerWeek": 0.0077,
+   "speedStepsOut": 0.0077,
+   "fastest4WeeksLogit": 0.16,
+   "biggestWeekLogit": 0.153,
+   "btcVsRestMultiple": 2.781,
+   "marketValueAtStartBn": 805.7
+  }
+ ],
+ "fourWeekFalls": {
+  "threshold": -0.5,
+  "episodes": [
+   {
+    "weeksEnding": [
+     "2014-05-25",
+     "2014-05-25"
+    ],
+    "worst4w": -0.534
+   },
+   {
+    "weeksEnding": [
+     "2014-08-24",
+     "2014-09-14"
+    ],
+    "worst4w": -0.926
+   },
+   {
+    "weeksEnding": [
+     "2016-07-17",
+     "2016-08-07"
+    ],
+    "worst4w": -1.011
+   },
+   {
+    "weeksEnding": [
+     "2016-12-18",
+     "2016-12-18"
+    ],
+    "worst4w": -0.575
+   },
+   {
+    "weeksEnding": [
+     "2017-03-19",
+     "2017-05-28"
+    ],
+    "worst4w": -1.403
+   },
+   {
+    "weeksEnding": [
+     "2017-07-16",
+     "2017-08-06"
+    ],
+    "worst4w": -0.875
+   },
+   {
+    "weeksEnding": [
+     "2017-12-31",
+     "2018-01-14"
+    ],
+    "worst4w": -1.166
+   }
+  ]
+ },
+ "last4w": -0.057,
+ "last13w": -0.018,
+ "beforeEachWaterfall": [
+  {
+   "waterfall": "July 2016 waterfall",
+   "start": "2016-06-19",
+   "volPerDay13w": 0.0478,
+   "volPerDay26w": 0.048,
+   "move13wLogit": 0.088
+  },
+  {
+   "waterfall": "2017-18 waterfall",
+   "start": "2017-12-10",
+   "volPerDay13w": 0.0643,
+   "volPerDay26w": 0.0572,
+   "move13wLogit": 0.582
+  },
+  {
+   "waterfall": "today",
+   "start": "2026-11-21",
+   "volPerDay13w": 0.0084,
+   "volPerDay26w": 0.0084,
+   "move13wLogit": -0.018
+  }
+ ],
+ "otherFallsBeganFrom": [
+  {
+   "fall": "2017 fall after the parent's top",
+   "start": "2017-02-26",
+   "volPerDay13w": 0.028,
+   "move13wLogit": 0.273
+  },
+  {
+   "fall": "2021 fall, from the Sep 2019 high",
+   "start": "2019-09-08",
+   "volPerDay13w": 0.028,
+   "move13wLogit": 0.593
+  },
+  {
+   "fall": "2021 fall, sharp part",
+   "start": "2021-01-03",
+   "volPerDay13w": 0.031,
+   "move13wLogit": 0.485
+  },
+  {
+   "fall": "Jun-Sep 2025 drop",
+   "start": "2025-06-22",
+   "volPerDay13w": 0.0125,
+   "move13wLogit": 0.171
+  }
+ ],
+ "volatileStateBaseRate": {
+  "since": "2014-06-01",
+  "weeks": 652,
+  "weeksAsVolatileAsTheQuietestWaterfallStart": 88,
+  "lastSuchWeek": "2018-03-11",
+  "weeksVolatileAndRising": 15,
+  "lastVolatileAndRisingWeek": "2017-12-17",
+  "todayVolRankShare": 0.031,
+  "lowestVol": [
+   "2026-09-06",
+   0.0073
+  ],
+  "medianVolByYear": {
+   "2014": 0.0813,
+   "2015": 0.0286,
+   "2016": 0.0478,
+   "2017": 0.0498,
+   "2018": 0.0295,
+   "2019": 0.0202,
+   "2020": 0.0191,
+   "2021": 0.0313,
+   "2022": 0.015,
+   "2023": 0.0113,
+   "2024": 0.0144,
+   "2025": 0.0156,
+   "2026": 0.0087
+  }
+ }
+}

@@ -1,0 +1,650 @@
+{
+ "dataLastDailyBar": "2026-11-21",
+ "partialWeek": {
+  "week": "2026-11-22",
+  "barsSoFar": 6
+ },
+ "usdt": {
+  "lastDailyClose": {
+   "date": "2026-11-21",
+   "level": 8.544
+  },
+  "lastDailyHigh": 9.19,
+  "lastCompleteWeek": {
+   "week": "2026-11-15",
+   "close": 7.991
+  },
+  "partialWeekSoFar": 8.544,
+  "athDailyClose": {
+   "date": "2022-11-09",
+   "level": 9.279
+  },
+  "athDailyHigh": {
+   "date": "2022-06-18",
+   "level": 9.488
+  },
+  "athWeeklyClose": {
+   "week": "2026-06-28",
+   "level": 9.138
+  },
+  "high2026DailyClose": {
+   "date": "2026-06-30",
+   "level": 9.165
+  },
+  "high2026WeeklyClose": {
+   "week": "2026-06-28",
+   "level": 9.138
+  },
+  "retestLowSinceJun28": {
+   "week": "2026-10-04",
+   "level": 6.317
+  },
+  "higherWeeklyClosesInARow": 6,
+  "pctToAthDailyClose": 8.6,
+  "round12Levels": {
+   "head": 3.82,
+   "flatNeckline": 5.86,
+   "measuredTarget": 7.9,
+   "note": "round 12 (Nov 2): inverse head 2024-12-08 3.82, flat neckline 5.86, high 9.14 week 2026-06-28, retest low 6.32 week 2026-10-04; fails below 5.86, next leg above 9.14"
+  }
+ },
+ "exStables": {
+  "definition": "BTC.D / (1 - (USDT.D + USDC.D)/100); other stablecoins (DAI, USDe ...) are left in, so this slightly understates the stable share"
+ },
+ "decompositionNote": "the end week is the partial week (data through dataLastDailyBar)",
+ "decomposition": [
+  {
+   "from": "2025-06-22",
+   "to": "2026-11-22",
+   "tvBtcd": [
+    65.72,
+    59.2
+   ],
+   "tvChange": -6.52,
+   "exStables": [
+    70.74,
+    67.19
+   ],
+   "exStablesChange": -3.55,
+   "stableShare": [
+    7.1,
+    11.89
+   ],
+   "tvPointsFromStableShareAlone": -3.39,
+   "tvPointsFromBtcShareOfNonStables": -3.13
+  },
+  {
+   "from": "2026-06-28",
+   "to": "2026-11-22",
+   "tvBtcd": [
+    58.58,
+    59.2
+   ],
+   "tvChange": 0.62,
+   "exStables": [
+    67.14,
+    67.19
+   ],
+   "exStablesChange": 0.05,
+   "stableShare": [
+    12.76,
+    11.89
+   ],
+   "tvPointsFromStableShareAlone": 0.58,
+   "tvPointsFromBtcShareOfNonStables": 0.04
+  },
+  {
+   "from": "2026-10-04",
+   "to": "2026-11-22",
+   "tvBtcd": [
+    59.66,
+    59.2
+   ],
+   "tvChange": -0.47,
+   "exStables": [
+    65.46,
+    67.19
+   ],
+   "exStablesChange": 1.73,
+   "stableShare": [
+    8.86,
+    11.89
+   ],
+   "tvPointsFromStableShareAlone": -1.99,
+   "tvPointsFromBtcShareOfNonStables": 1.52
+  },
+  {
+   "from": "2026-11-01",
+   "to": "2026-11-22",
+   "tvBtcd": [
+    60.51,
+    59.2
+   ],
+   "tvChange": -1.31,
+   "exStables": [
+    66.98,
+    67.19
+   ],
+   "exStablesChange": 0.21,
+   "stableShare": [
+    9.67,
+    11.89
+   ],
+   "tvPointsFromStableShareAlone": -1.49,
+   "tvPointsFromBtcShareOfNonStables": 0.18
+  }
+ ],
+ "whatIf": {
+  "start": {
+   "week": "2026-11-22",
+   "tvBtcd": 59.2,
+   "exStables": 67.19,
+   "usdtd": 8.54,
+   "usdcd": 3.35
+  },
+  "rows": [
+   {
+    "usdtd": 8.5,
+    "stableShare": 11.83,
+    "tvBtcdIfBtcShareOfNonStablesUnchanged": 59.24,
+    "nonStableMarketChangePct": 0.6
+   },
+   {
+    "usdtd": 9.14,
+    "stableShare": 12.72,
+    "tvBtcdIfBtcShareOfNonStablesUnchanged": 58.64,
+    "nonStableMarketChangePct": -7.4
+   },
+   {
+    "usdtd": 9.28,
+    "stableShare": 12.92,
+    "tvBtcdIfBtcShareOfNonStablesUnchanged": 58.51,
+    "nonStableMarketChangePct": -9.0
+   },
+   {
+    "usdtd": 10.0,
+    "stableShare": 13.92,
+    "tvBtcdIfBtcShareOfNonStablesUnchanged": 57.84,
+    "nonStableMarketChangePct": -16.5
+   },
+   {
+    "usdtd": 11.0,
+    "stableShare": 15.31,
+    "tvBtcdIfBtcShareOfNonStablesUnchanged": 56.9,
+    "nonStableMarketChangePct": -25.3
+   },
+   {
+    "usdtd": 12.0,
+    "stableShare": 16.71,
+    "tvBtcdIfBtcShareOfNonStablesUnchanged": 55.97,
+    "nonStableMarketChangePct": -32.7
+   }
+  ],
+  "levelsToCompare": {
+   "round12FlatNeckline": 57.79,
+   "smallTopNeckline": 58.58
+  }
+ },
+ "btcdDownLegs": {
+  "rule": "zigzag on weekly TradingView BTC.D closes, reversal 5.0 pts, legs with a drop of 7.0+ pts starting Dec 2017 or later; alt-led = ETH/BTC up 20%+ over the leg and BTC/USD not down 15%+, else crash-led",
+  "legs": [
+   {
+    "start": "2017-12-10",
+    "end": "2018-01-14",
+    "weeks": 5,
+    "tvBtcd": [
+     67.39,
+     36.83
+    ],
+    "tvDrop": -30.56,
+    "exStablesDrop": -30.62,
+    "usdtdDuringLeg": 0.02,
+    "usdtdLevel": [
+     0.22,
+     0.24
+    ],
+    "usdtd8wBeforeStart": -0.06,
+    "usdtdAt52wHighWithin4wOfStart": false,
+    "btcusdDuringLegPct": -7.1,
+    "ethbtcDuringLegPct": 246.3,
+    "totalDuringLegPct": 64.0,
+    "usdtdMinMaxInLeg": [
+     0.2,
+     0.26
+    ],
+    "usdtdNewHighInLeg": false,
+    "kind": "alt-led"
+   },
+   {
+    "start": "2018-04-01",
+    "end": "2018-05-06",
+    "weeks": 5,
+    "tvBtcd": [
+     49.62,
+     39.86
+    ],
+    "tvDrop": -9.76,
+    "exStablesDrop": -10.03,
+    "usdtdDuringLeg": -0.43,
+    "usdtdLevel": [
+     0.98,
+     0.55
+    ],
+    "usdtd8wBeforeStart": 0.35,
+    "usdtdAt52wHighWithin4wOfStart": true,
+    "btcusdDuringLegPct": 41.2,
+    "ethbtcDuringLegPct": 47.9,
+    "totalDuringLegPct": 76.2,
+    "usdtdMinMaxInLeg": [
+     0.55,
+     0.98
+    ],
+    "usdtdNewHighInLeg": false,
+    "kind": "alt-led"
+   },
+   {
+    "start": "2019-09-08",
+    "end": "2020-09-13",
+    "weeks": 53,
+    "tvBtcd": [
+     71.7,
+     58.18
+    ],
+    "tvDrop": -13.52,
+    "exStablesDrop": -11.67,
+    "usdtdDuringLeg": 2.92,
+    "usdtdLevel": [
+     1.57,
+     4.48
+    ],
+    "usdtd8wBeforeStart": 0.1,
+    "usdtdAt52wHighWithin4wOfStart": true,
+    "btcusdDuringLegPct": -0.6,
+    "ethbtcDuringLegPct": 103.0,
+    "totalDuringLegPct": 26.2,
+    "usdtdMinMaxInLeg": [
+     1.57,
+     4.48
+    ],
+    "usdtdNewHighInLeg": true,
+    "kind": "alt-led"
+   },
+   {
+    "start": "2021-01-03",
+    "end": "2021-05-16",
+    "weeks": 19,
+    "tvBtcd": [
+     70.35,
+     40.82
+    ],
+    "tvDrop": -29.53,
+    "exStablesDrop": -30.2,
+    "usdtdDuringLeg": 0.3,
+    "usdtdLevel": [
+     2.44,
+     2.74
+    ],
+    "usdtd8wBeforeStart": -1.47,
+    "usdtdAt52wHighWithin4wOfStart": false,
+    "btcusdDuringLegPct": 40.3,
+    "ethbtcDuringLegPct": 160.6,
+    "totalDuringLegPct": 143.5,
+    "usdtdMinMaxInLeg": [
+     2.0,
+     2.79
+    ],
+    "usdtdNewHighInLeg": false,
+    "kind": "alt-led"
+   },
+   {
+    "start": "2021-06-27",
+    "end": "2021-09-12",
+    "weeks": 11,
+    "tvBtcd": [
+     47.64,
+     40.27
+    ],
+    "tvDrop": -7.37,
+    "exStablesDrop": -8.76,
+    "usdtdDuringLeg": -1.41,
+    "usdtdLevel": [
+     4.58,
+     3.18
+    ],
+    "usdtd8wBeforeStart": 2.18,
+    "usdtdAt52wHighWithin4wOfStart": true,
+    "btcusdDuringLegPct": 32.7,
+    "ethbtcDuringLegPct": 29.5,
+    "totalDuringLegPct": 57.6,
+    "usdtdMinMaxInLeg": [
+     2.82,
+     4.83
+    ],
+    "usdtdNewHighInLeg": true,
+    "kind": "alt-led"
+   },
+   {
+    "start": "2021-10-17",
+    "end": "2022-01-16",
+    "weeks": 13,
+    "tvBtcd": [
+     46.54,
+     39.36
+    ],
+    "tvDrop": -7.18,
+    "exStablesDrop": -6.67,
+    "usdtdDuringLeg": 1.01,
+    "usdtdLevel": [
+     2.77,
+     3.78
+    ],
+    "usdtd8wBeforeStart": -0.32,
+    "usdtdAt52wHighWithin4wOfStart": false,
+    "btcusdDuringLegPct": -30.0,
+    "ethbtcDuringLegPct": 24.4,
+    "totalDuringLegPct": -16.8,
+    "usdtdMinMaxInLeg": [
+     2.61,
+     3.99
+    ],
+    "usdtdNewHighInLeg": false,
+    "kind": "crash-led"
+   },
+   {
+    "start": "2022-06-12",
+    "end": "2022-09-04",
+    "weeks": 12,
+    "tvBtcd": [
+     48.03,
+     39.75
+    ],
+    "tvDrop": -8.28,
+    "exStablesDrop": -9.1,
+    "usdtdDuringLeg": 0.04,
+    "usdtdLevel": [
+     6.87,
+     6.91
+    ],
+    "usdtd8wBeforeStart": 2.33,
+    "usdtdAt52wHighWithin4wOfStart": true,
+    "btcusdDuringLegPct": -24.7,
+    "ethbtcDuringLegPct": 46.2,
+    "totalDuringLegPct": -8.8,
+    "usdtdMinMaxInLeg": [
+     5.83,
+     8.22
+    ],
+    "usdtdNewHighInLeg": true,
+    "kind": "crash-led"
+   },
+   {
+    "start": "2025-06-22",
+    "end": "2025-09-14",
+    "weeks": 12,
+    "tvBtcd": [
+     65.72,
+     57.79
+    ],
+    "tvDrop": -7.93,
+    "exStablesDrop": -9.19,
+    "usdtdDuringLeg": -0.82,
+    "usdtdLevel": [
+     5.1,
+     4.28
+    ],
+    "usdtd8wBeforeStart": 0.02,
+    "usdtdAt52wHighWithin4wOfStart": false,
+    "btcusdDuringLegPct": 14.2,
+    "ethbtcDuringLegPct": 80.9,
+    "totalDuringLegPct": 30.1,
+    "usdtdMinMaxInLeg": [
+     4.19,
+     5.1
+    ],
+    "usdtdNewHighInLeg": false,
+    "kind": "alt-led"
+   }
+  ]
+ },
+ "usdtPeaks": {
+  "rule": "zigzag on log weekly USDT.D, 30% reversals; peaks from Jun 2017",
+  "peaks": [
+   {
+    "week": "2017-07-16",
+    "usdtd": 0.5,
+    "tvBtcd": 54.14,
+    "tvBtcdChange13w": 4.98,
+    "exStablesChange13w": 4.87,
+    "tvBtcdChange26w": -17.31,
+    "exStablesChange26w": -17.49,
+    "tvBtcdChange52w": -8.18,
+    "exStablesChange52w": -7.92,
+    "nextAltLedLeg": {
+     "start": "2017-12-10",
+     "weeksAfterPeak": 21,
+     "drop": -30.56
+    }
+   },
+   {
+    "week": "2017-09-17",
+    "usdtd": 0.39,
+    "tvBtcd": 54.34,
+    "tvBtcdChange13w": 4.62,
+    "exStablesChange13w": 4.53,
+    "tvBtcdChange26w": -5.97,
+    "exStablesChange26w": -5.81,
+    "tvBtcdChange52w": 4.31,
+    "exStablesChange52w": 4.95,
+    "nextAltLedLeg": {
+     "start": "2017-12-10",
+     "weeksAfterPeak": 12,
+     "drop": -30.56
+    }
+   },
+   {
+    "week": "2018-04-01",
+    "usdtd": 0.98,
+    "tvBtcd": 49.62,
+    "tvBtcdChange13w": -4.06,
+    "exStablesChange13w": -4.03,
+    "tvBtcdChange26w": 4.03,
+    "exStablesChange26w": 4.27,
+    "tvBtcdChange52w": 3.57,
+    "exStablesChange52w": 3.98,
+    "nextAltLedLeg": {
+     "start": "2018-04-01",
+     "weeksAfterPeak": 0,
+     "drop": -9.76
+    }
+   },
+   {
+    "week": "2018-09-09",
+    "usdtd": 1.48,
+    "tvBtcd": 59.81,
+    "tvBtcdChange13w": -0.58,
+    "exStablesChange13w": -0.41,
+    "tvBtcdChange26w": -5.4,
+    "exStablesChange26w": -5.33,
+    "tvBtcdChange52w": 11.89,
+    "exStablesChange52w": 12.25,
+    "nextAltLedLeg": {
+     "start": "2019-09-08",
+     "weeksAfterPeak": 52,
+     "drop": -13.52
+    }
+   },
+   {
+    "week": "2018-12-16",
+    "usdtd": 1.95,
+    "tvBtcd": 59.17,
+    "tvBtcdChange13w": -5.36,
+    "exStablesChange13w": -5.6,
+    "tvBtcdChange26w": 0.11,
+    "exStablesChange26w": -0.21,
+    "tvBtcdChange52w": 9.29,
+    "exStablesChange52w": 9.82,
+    "nextAltLedLeg": {
+     "start": "2019-09-08",
+     "weeksAfterPeak": 38,
+     "drop": -13.52
+    }
+   },
+   {
+    "week": "2019-04-28",
+    "usdtd": 1.74,
+    "tvBtcd": 57.43,
+    "tvBtcdChange13w": 9.31,
+    "exStablesChange13w": 9.37,
+    "tvBtcdChange26w": 12.56,
+    "exStablesChange26w": 12.76,
+    "tvBtcdChange52w": 7.29,
+    "exStablesChange52w": 8.34,
+    "nextAltLedLeg": {
+     "start": "2019-09-08",
+     "weeksAfterPeak": 19,
+     "drop": -13.52
+    }
+   },
+   {
+    "week": "2019-11-24",
+    "usdtd": 2.24,
+    "tvBtcd": 68.12,
+    "tvBtcdChange13w": -4.28,
+    "exStablesChange13w": -4.85,
+    "tvBtcdChange26w": -1.47,
+    "exStablesChange26w": -0.46,
+    "tvBtcdChange52w": -3.37,
+    "exStablesChange52w": -2.38,
+    "nextAltLedLeg": {
+     "start": "2021-01-03",
+     "weeksAfterPeak": 58,
+     "drop": -29.53
+    }
+   },
+   {
+    "week": "2020-05-24",
+    "usdtd": 3.65,
+    "tvBtcd": 66.65,
+    "tvBtcdChange13w": -7.03,
+    "exStablesChange13w": -7.83,
+    "tvBtcdChange26w": -1.9,
+    "exStablesChange26w": -1.91,
+    "tvBtcdChange52w": -19.88,
+    "exStablesChange52w": -20.0,
+    "nextAltLedLeg": {
+     "start": "2021-01-03",
+     "weeksAfterPeak": 32,
+     "drop": -29.53
+    }
+   },
+   {
+    "week": "2020-10-04",
+    "usdtd": 4.69,
+    "tvBtcd": 59.37,
+    "tvBtcdChange13w": 10.98,
+    "exStablesChange13w": 9.67,
+    "tvBtcdChange26w": -1.52,
+    "exStablesChange26w": -3.26,
+    "tvBtcdChange52w": -17.92,
+    "exStablesChange52w": -19.46,
+    "nextAltLedLeg": {
+     "start": "2021-01-03",
+     "weeksAfterPeak": 13,
+     "drop": -29.53
+    }
+   },
+   {
+    "week": "2021-07-18",
+    "usdtd": 4.83,
+    "tvBtcd": 46.43,
+    "tvBtcdChange13w": 0.11,
+    "exStablesChange13w": -1.35,
+    "tvBtcdChange26w": -7.07,
+    "exStablesChange26w": -8.02,
+    "tvBtcdChange52w": -3.8,
+    "exStablesChange52w": -0.86,
+    "nextAltLedLeg": {
+     "start": "2025-06-22",
+     "weeksAfterPeak": 205,
+     "drop": -7.93
+    }
+   },
+   {
+    "week": "2022-06-19",
+    "usdtd": 8.22,
+    "tvBtcd": 44.46,
+    "tvBtcdChange13w": -3.0,
+    "exStablesChange13w": -4.11,
+    "tvBtcdChange26w": -2.54,
+    "exStablesChange26w": -3.03,
+    "tvBtcdChange52w": 5.2,
+    "exStablesChange52w": 3.66,
+    "nextAltLedLeg": {
+     "start": "2025-06-22",
+     "weeksAfterPeak": 157,
+     "drop": -7.93
+    }
+   },
+   {
+    "week": "2023-01-01",
+    "usdtd": 8.76,
+    "tvBtcd": 42.12,
+    "tvBtcdChange13w": 5.63,
+    "exStablesChange13w": 3.62,
+    "tvBtcdChange26w": 8.98,
+    "exStablesChange26w": 7.13,
+    "tvBtcdChange52w": 9.47,
+    "exStablesChange52w": 6.28,
+    "nextAltLedLeg": {
+     "start": "2025-06-22",
+     "weeksAfterPeak": 129,
+     "drop": -7.93
+    }
+   },
+   {
+    "week": "2024-09-08",
+    "usdtd": 6.21,
+    "tvBtcd": 56.92,
+    "tvBtcdChange13w": -1.56,
+    "exStablesChange13w": -3.65,
+    "tvBtcdChange26w": 4.36,
+    "exStablesChange26w": 4.48,
+    "tvBtcdChange52w": 1.54,
+    "exStablesChange52w": 0.54,
+    "nextAltLedLeg": {
+     "start": "2025-06-22",
+     "weeksAfterPeak": 41,
+     "drop": -7.93
+    }
+   },
+   {
+    "week": "2025-04-06",
+    "usdtd": 5.86,
+    "tvBtcd": 63.32,
+    "tvBtcdChange13w": 1.98,
+    "exStablesChange13w": 0.88,
+    "tvBtcdChange26w": -4.01,
+    "exStablesChange26w": -5.91,
+    "tvBtcdChange52w": -4.28,
+    "exStablesChange52w": -2.59,
+    "nextAltLedLeg": {
+     "start": "2025-06-22",
+     "weeksAfterPeak": 11,
+     "drop": -7.93
+    }
+   },
+   {
+    "week": "2026-06-28",
+    "usdtd": 9.14,
+    "tvBtcd": 58.58,
+    "tvBtcdChange13w": 0.55,
+    "exStablesChange13w": -2.16,
+    "tvBtcdChange26w": null,
+    "exStablesChange26w": null,
+    "tvBtcdChange52w": null,
+    "exStablesChange52w": null,
+    "nextAltLedLeg": null
+   }
+  ]
+ }
+}

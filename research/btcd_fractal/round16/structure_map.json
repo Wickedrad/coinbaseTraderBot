@@ -1,0 +1,2137 @@
+{
+ "dataThrough": "2026-11-21",
+ "anchors": {
+  "parent": [
+   "2016-06-19",
+   "2016-07-24",
+   "2016-11-20",
+   "2016-12-18",
+   "2017-02-26"
+  ],
+  "child": [
+   "2017-12-10",
+   "2018-01-14",
+   "2019-09-08",
+   "2021-05-16",
+   "2025-06-22"
+  ]
+ },
+ "stretches": [
+  {
+   "stretch": "waterfall",
+   "parentWeeks": 5.0,
+   "childWeeks": 5.0,
+   "pace": 1.0,
+   "BTC.D": [
+    0.967,
+    0.546
+   ],
+   "BTC": [
+    0.869,
+    0.929
+   ],
+   "alts": [
+    2.79,
+    3.186
+   ],
+   "alts (index steps out)": [
+    2.79,
+    3.186
+   ],
+   "whole market": [
+    0.907,
+    1.64
+   ],
+   "BTC.D pts": [
+    -3.21,
+    -30.56
+   ]
+  },
+  {
+   "stretch": "rise to the hump",
+   "parentWeeks": 17.0,
+   "childWeeks": 86.0,
+   "pace": 5.1,
+   "BTC.D": [
+    1.021,
+    1.947
+   ],
+   "BTC": [
+    1.099,
+    0.762
+   ],
+   "alts": [
+    0.631,
+    0.177
+   ],
+   "alts (index steps out)": [
+    0.5,
+    0.177
+   ],
+   "ETH/BTC": [
+    0.681,
+    0.175
+   ],
+   "whole market": [
+    1.088,
+    0.419
+   ],
+   "BTC.D pts": [
+    2.0,
+    34.87
+   ]
+  },
+  {
+   "stretch": "mid-structure fall",
+   "parentWeeks": 4.0,
+   "childWeeks": 88.0,
+   "pace": 22.0,
+   "BTC.D": [
+    0.979,
+    0.569
+   ],
+   "BTC": [
+    1.085,
+    4.466
+   ],
+   "alts": [
+    1.958,
+    17.187
+   ],
+   "alts (index steps out)": [
+    1.11,
+    17.187
+   ],
+   "ETH/BTC": [
+    0.764,
+    4.418
+   ],
+   "whole market": [
+    1.114,
+    8.186
+   ],
+   "BTC.D pts": [
+    -2.08,
+    -30.88
+   ]
+  },
+  {
+   "stretch": "plateau to the top",
+   "parentWeeks": 10.0,
+   "childWeeks": 214.0,
+   "pace": 21.4,
+   "BTC.D": [
+    1.009,
+    1.61
+   ],
+   "BTC": [
+    1.495,
+    2.175
+   ],
+   "alts": [
+    1.209,
+    0.699
+   ],
+   "alts (index steps out)": [
+    1.209,
+    0.699
+   ],
+   "ETH/BTC": [
+    1.239,
+    0.286
+   ],
+   "whole market": [
+    1.495,
+    1.435
+   ],
+   "BTC.D pts": [
+    0.85,
+    24.9
+   ]
+  }
+ ],
+ "features": [
+  {
+   "stretch": "waterfall",
+   "chart": "BTC.D",
+   "kind": "fall",
+   "parent": [
+    "2016-06-25",
+    "2016-07-19",
+    -3.5,
+    0.17,
+    0.86
+   ],
+   "child": [
+    "2017-12-10",
+    "2018-01-13",
+    -45.7,
+    0.0,
+    0.97
+   ],
+   "parentEndMappedToChild": "2018-01-09",
+   "weeksOff": 0.6
+  },
+  {
+   "stretch": "waterfall",
+   "chart": "BTC.D",
+   "kind": "rise",
+   "parent": [
+    "2016-07-13",
+    "2016-07-18",
+    1.0,
+    0.69,
+    0.83
+   ],
+   "child": [
+    "2018-01-03",
+    "2018-01-05",
+    8.6,
+    0.69,
+    0.74
+   ],
+   "parentEndMappedToChild": "2018-01-08",
+   "weeksOff": -0.4
+  },
+  {
+   "stretch": "waterfall",
+   "chart": "BTC",
+   "kind": "fall",
+   "parent": [
+    "2016-06-19",
+    "2016-06-22",
+    -21.0,
+    0.0,
+    0.09
+   ],
+   "child": [
+    "2017-12-16",
+    "2017-12-30",
+    -34.1,
+    0.17,
+    0.57
+   ],
+   "parentEndMappedToChild": "2017-12-13",
+   "weeksOff": 2.4
+  },
+  {
+   "stretch": "waterfall",
+   "chart": "BTC",
+   "kind": "rise",
+   "parent": [
+    "2016-06-22",
+    "2016-07-02",
+    16.8,
+    0.09,
+    0.37
+   ],
+   "child": [
+    "2017-12-30",
+    "2018-01-06",
+    35.7,
+    0.57,
+    0.77
+   ],
+   "parentEndMappedToChild": "2017-12-23",
+   "weeksOff": 2.0
+  },
+  {
+   "stretch": "waterfall",
+   "chart": "alts (index steps out)",
+   "kind": "fall",
+   "parent": [
+    "2016-07-13",
+    "2016-07-18",
+    -19.6,
+    0.69,
+    0.83
+   ],
+   "child": [
+    "2017-12-21",
+    "2017-12-22",
+    -15.4,
+    0.31,
+    0.34
+   ],
+   "parentEndMappedToChild": "2018-01-08",
+   "weeksOff": -2.4
+  },
+  {
+   "stretch": "waterfall",
+   "chart": "alts (index steps out)",
+   "kind": "rise",
+   "parent": [
+    "2016-06-25",
+    "2016-07-19",
+    246.7,
+    0.17,
+    0.86
+   ],
+   "child": [
+    "2017-12-10",
+    "2018-01-07",
+    241.8,
+    0.0,
+    0.8
+   ],
+   "parentEndMappedToChild": "2018-01-09",
+   "weeksOff": -0.3
+  },
+  {
+   "stretch": "waterfall",
+   "chart": "ETH/BTC",
+   "kind": "fall",
+   "parent": [
+    "2016-06-26",
+    "2016-07-06",
+    -29.1,
+    0.2,
+    0.49
+   ],
+   "child": [
+    "2017-12-13",
+    "2017-12-16",
+    -17.0,
+    0.09,
+    0.17
+   ],
+   "parentEndMappedToChild": "2017-12-27",
+   "weeksOff": -1.6
+  },
+  {
+   "stretch": "waterfall",
+   "chart": "ETH/BTC",
+   "kind": "rise",
+   "parent": [
+    "2016-07-06",
+    "2016-07-22",
+    44.9,
+    0.49,
+    0.94
+   ],
+   "child": [
+    "2017-12-10",
+    "2018-01-14",
+    246.3,
+    0.0,
+    1.0
+   ],
+   "parentEndMappedToChild": "2018-01-12",
+   "weeksOff": 0.3
+  },
+  {
+   "stretch": "rise to the hump",
+   "chart": "BTC.D",
+   "kind": "fall",
+   "parent": [
+    "2016-07-29",
+    "2016-09-05",
+    -1.0,
+    0.04,
+    0.36
+   ],
+   "child": [
+    "2018-03-29",
+    "2018-05-05",
+    -21.0,
+    0.12,
+    0.18
+   ],
+   "parentEndMappedToChild": "2018-08-20",
+   "weeksOff": -15.3
+  },
+  {
+   "stretch": "rise to the hump",
+   "chart": "BTC.D",
+   "kind": "rise",
+   "parent": [
+    "2016-07-24",
+    "2016-11-02",
+    2.2,
+    0.0,
+    0.85
+   ],
+   "child": [
+    "2018-01-14",
+    "2019-09-05",
+    97.7,
+    0.0,
+    1.0
+   ],
+   "parentEndMappedToChild": "2019-06-09",
+   "weeksOff": 12.6
+  },
+  {
+   "stretch": "rise to the hump",
+   "chart": "BTC",
+   "kind": "fall",
+   "parent": [
+    "2016-07-24",
+    "2016-08-02",
+    -18.4,
+    0.0,
+    0.08
+   ],
+   "child": [
+    "2018-01-14",
+    "2018-12-15",
+    -76.7,
+    0.0,
+    0.56
+   ],
+   "parentEndMappedToChild": "2018-03-01",
+   "weeksOff": 41.3
+  },
+  {
+   "stretch": "rise to the hump",
+   "chart": "BTC",
+   "kind": "rise",
+   "parent": [
+    "2016-08-02",
+    "2016-11-19",
+    39.0,
+    0.08,
+    0.99
+   ],
+   "child": [
+    "2018-12-15",
+    "2019-06-26",
+    306.4,
+    0.56,
+    0.88
+   ],
+   "parentEndMappedToChild": "2019-09-03",
+   "weeksOff": -9.9
+  },
+  {
+   "stretch": "rise to the hump",
+   "chart": "alts (index steps out)",
+   "kind": "fall",
+   "parent": [
+    "2016-07-24",
+    "2016-10-29",
+    -53.4,
+    0.0,
+    0.82
+   ],
+   "child": [
+    "2018-01-14",
+    "2018-12-15",
+    -90.8,
+    0.0,
+    0.56
+   ],
+   "parentEndMappedToChild": "2019-05-20",
+   "weeksOff": -22.3
+  },
+  {
+   "stretch": "rise to the hump",
+   "chart": "alts (index steps out)",
+   "kind": "rise",
+   "parent": [
+    "2016-08-25",
+    "2016-09-05",
+    33.4,
+    0.27,
+    0.36
+   ],
+   "child": [
+    "2018-12-15",
+    "2019-06-25",
+    229.6,
+    0.56,
+    0.88
+   ],
+   "parentEndMappedToChild": "2018-08-20",
+   "weeksOff": 44.1
+  },
+  {
+   "stretch": "rise to the hump",
+   "chart": "ETH/BTC",
+   "kind": "fall",
+   "parent": [
+    "2016-09-20",
+    "2016-11-18",
+    -46.7,
+    0.49,
+    0.98
+   ],
+   "child": [
+    "2018-02-01",
+    "2019-09-06",
+    -85.5,
+    0.03,
+    1.0
+   ],
+   "parentEndMappedToChild": "2019-08-29",
+   "weeksOff": 1.1
+  },
+  {
+   "stretch": "rise to the hump",
+   "chart": "ETH/BTC",
+   "kind": "rise",
+   "parent": [
+    "2016-08-02",
+    "2016-09-20",
+    41.0,
+    0.08,
+    0.49
+   ],
+   "child": [
+    "2018-03-29",
+    "2018-05-16",
+    56.6,
+    0.12,
+    0.2
+   ],
+   "parentEndMappedToChild": "2018-11-03",
+   "weeksOff": -24.4
+  },
+  {
+   "stretch": "mid-structure fall",
+   "chart": "BTC.D",
+   "kind": "fall",
+   "parent": [
+    "2016-12-02",
+    "2016-12-16",
+    -2.2,
+    0.43,
+    0.93
+   ],
+   "child": [
+    "2021-01-02",
+    "2021-05-14",
+    -43.9,
+    0.78,
+    1.0
+   ],
+   "parentEndMappedToChild": "2021-04-02",
+   "weeksOff": 6.0
+  },
+  {
+   "stretch": "mid-structure fall",
+   "chart": "BTC.D",
+   "kind": "rise",
+   "parent": [
+    "2016-11-27",
+    "2016-12-02",
+    0.3,
+    0.25,
+    0.43
+   ],
+   "child": [
+    "2020-09-01",
+    "2021-01-02",
+    25.9,
+    0.58,
+    0.78
+   ],
+   "parentEndMappedToChild": "2020-05-29",
+   "weeksOff": 31.1
+  },
+  {
+   "stretch": "mid-structure fall",
+   "chart": "BTC",
+   "kind": "fall",
+   "parent": [
+    "2016-11-22",
+    "2016-11-27",
+    -2.9,
+    0.07,
+    0.25
+   ],
+   "child": [
+    "2019-09-12",
+    "2020-03-12",
+    -53.5,
+    0.01,
+    0.3
+   ],
+   "parentEndMappedToChild": "2020-02-09",
+   "weeksOff": 4.6
+  },
+  {
+   "stretch": "mid-structure fall",
+   "chart": "BTC",
+   "kind": "rise",
+   "parent": [
+    "2016-11-20",
+    "2016-12-18",
+    8.5,
+    0.0,
+    1.0
+   ],
+   "child": [
+    "2020-03-12",
+    "2021-04-13",
+    1212.9,
+    0.3,
+    0.95
+   ],
+   "parentEndMappedToChild": "2021-05-16",
+   "weeksOff": -4.7
+  },
+  {
+   "stretch": "mid-structure fall",
+   "chart": "alts (index steps out)",
+   "kind": "fall",
+   "parent": [
+    "2016-11-27",
+    "2016-11-29",
+    -4.3,
+    0.25,
+    0.32
+   ],
+   "child": [
+    "2020-02-14",
+    "2020-03-12",
+    -61.4,
+    0.26,
+    0.3
+   ],
+   "parentEndMappedToChild": "2020-03-24",
+   "weeksOff": -1.7
+  },
+  {
+   "stretch": "mid-structure fall",
+   "chart": "alts (index steps out)",
+   "kind": "rise",
+   "parent": [
+    "2016-11-20",
+    "2016-12-07",
+    12.2,
+    0.0,
+    0.61
+   ],
+   "child": [
+    "2020-03-12",
+    "2021-05-14",
+    2960.3,
+    0.3,
+    1.0
+   ],
+   "parentEndMappedToChild": "2020-09-16",
+   "weeksOff": 34.3
+  },
+  {
+   "stretch": "mid-structure fall",
+   "chart": "ETH/BTC",
+   "kind": "fall",
+   "parent": [
+    "2016-11-23",
+    "2016-12-05",
+    -31.9,
+    0.11,
+    0.54
+   ],
+   "child": [
+    "2020-09-01",
+    "2020-12-26",
+    -39.7,
+    0.58,
+    0.77
+   ],
+   "parentEndMappedToChild": "2020-08-03",
+   "weeksOff": 20.7
+  },
+  {
+   "stretch": "mid-structure fall",
+   "chart": "ETH/BTC",
+   "kind": "rise",
+   "parent": [
+    "2016-12-05",
+    "2016-12-09",
+    21.2,
+    0.54,
+    0.68
+   ],
+   "child": [
+    "2019-09-12",
+    "2021-05-14",
+    371.4,
+    0.01,
+    1.0
+   ],
+   "parentEndMappedToChild": "2020-10-30",
+   "weeksOff": 28.0
+  },
+  {
+   "stretch": "plateau to the top",
+   "chart": "BTC.D",
+   "kind": "fall",
+   "parent": [
+    "2016-12-23",
+    "2017-01-11",
+    -1.4,
+    0.07,
+    0.34
+   ],
+   "child": [
+    "2021-07-30",
+    "2022-09-08",
+    -20.2,
+    0.05,
+    0.32
+   ],
+   "parentEndMappedToChild": "2022-10-12",
+   "weeksOff": -4.9
+  },
+  {
+   "stretch": "plateau to the top",
+   "chart": "BTC.D",
+   "kind": "rise",
+   "parent": [
+    "2017-01-11",
+    "2017-02-24",
+    1.4,
+    0.34,
+    0.97
+   ],
+   "child": [
+    "2022-09-08",
+    "2025-06-22",
+    68.5,
+    0.32,
+    1.0
+   ],
+   "parentEndMappedToChild": "2025-05-10",
+   "weeksOff": 6.1
+  },
+  {
+   "stretch": "plateau to the top",
+   "chart": "BTC",
+   "kind": "fall",
+   "parent": [
+    "2017-01-04",
+    "2017-01-11",
+    -30.2,
+    0.24,
+    0.34
+   ],
+   "child": [
+    "2021-11-08",
+    "2022-11-21",
+    -76.7,
+    0.12,
+    0.37
+   ],
+   "parentEndMappedToChild": "2022-10-12",
+   "weeksOff": 5.7
+  },
+  {
+   "stretch": "plateau to the top",
+   "chart": "BTC",
+   "kind": "rise",
+   "parent": [
+    "2017-01-11",
+    "2017-02-23",
+    52.6,
+    0.34,
+    0.96
+   ],
+   "child": [
+    "2022-11-21",
+    "2025-05-22",
+    608.8,
+    0.37,
+    0.98
+   ],
+   "parentEndMappedToChild": "2025-04-19",
+   "weeksOff": 4.7
+  },
+  {
+   "stretch": "plateau to the top",
+   "chart": "alts (index steps out)",
+   "kind": "fall",
+   "parent": [
+    "2017-01-04",
+    "2017-01-11",
+    -15.7,
+    0.24,
+    0.34
+   ],
+   "child": [
+    "2021-11-08",
+    "2022-12-19",
+    -78.6,
+    0.12,
+    0.39
+   ],
+   "parentEndMappedToChild": "2022-10-12",
+   "weeksOff": 9.7
+  },
+  {
+   "stretch": "plateau to the top",
+   "chart": "alts (index steps out)",
+   "kind": "rise",
+   "parent": [
+    "2016-12-22",
+    "2017-01-04",
+    37.1,
+    0.06,
+    0.24
+   ],
+   "child": [
+    "2022-12-19",
+    "2024-12-08",
+    341.1,
+    0.39,
+    0.87
+   ],
+   "parentEndMappedToChild": "2022-05-15",
+   "weeksOff": 134.0
+  },
+  {
+   "stretch": "plateau to the top",
+   "chart": "ETH/BTC",
+   "kind": "fall",
+   "parent": [
+    "2016-12-18",
+    "2016-12-28",
+    -23.0,
+    0.0,
+    0.14
+   ],
+   "child": [
+    "2021-12-08",
+    "2025-04-21",
+    -79.5,
+    0.14,
+    0.96
+   ],
+   "parentEndMappedToChild": "2021-12-16",
+   "weeksOff": 174.6
+  },
+  {
+   "stretch": "plateau to the top",
+   "chart": "ETH/BTC",
+   "kind": "rise",
+   "parent": [
+    "2016-12-28",
+    "2017-02-14",
+    67.5,
+    0.14,
+    0.83
+   ],
+   "child": [
+    "2022-06-16",
+    "2022-09-08",
+    61.7,
+    0.26,
+    0.32
+   ],
+   "parentEndMappedToChild": "2024-10-08",
+   "weeksOff": -108.7
+  }
+ ],
+ "followsOnMappedClock": {
+  "BTC.D": {
+   "detrended": {
+    "mapped": 0.677,
+    "shareAnyClockAsGood": 0.004,
+    "shareNearbyClockAsGood": 0.038
+   },
+   "weekly changes": {
+    "mapped": 0.538,
+    "shareAnyClockAsGood": 0.007,
+    "shareNearbyClockAsGood": 0.003
+   }
+  },
+  "BTC": {
+   "detrended": {
+    "mapped": 0.841,
+    "shareAnyClockAsGood": 0.006,
+    "shareNearbyClockAsGood": 0.116
+   },
+   "weekly changes": {
+    "mapped": 0.358,
+    "shareAnyClockAsGood": 0.071,
+    "shareNearbyClockAsGood": 0.372
+   }
+  },
+  "alts (index steps out)": {
+   "detrended": {
+    "mapped": 0.008,
+    "shareAnyClockAsGood": 0.315,
+    "shareNearbyClockAsGood": 0.113
+   },
+   "weekly changes": {
+    "mapped": 0.101,
+    "shareAnyClockAsGood": 0.29,
+    "shareNearbyClockAsGood": 0.085
+   }
+  },
+  "ETH/BTC": {
+   "detrended": {
+    "mapped": -0.32,
+    "shareAnyClockAsGood": 0.539,
+    "shareNearbyClockAsGood": 0.287
+   },
+   "weekly changes": {
+    "mapped": 0.004,
+    "shareAnyClockAsGood": 0.541,
+    "shareNearbyClockAsGood": 0.221
+   }
+  },
+  "whole market": {
+   "detrended": {
+    "mapped": 0.841,
+    "shareAnyClockAsGood": 0.011,
+    "shareNearbyClockAsGood": 0.177
+   },
+   "weekly changes": {
+    "mapped": 0.25,
+    "shareAnyClockAsGood": 0.162,
+    "shareNearbyClockAsGood": 0.349
+   }
+  }
+ },
+ "afterTop": {
+  "parent": {
+   "top": "2017-02-26",
+   "through": "2017-05-21",
+   "BTC at top": 1179.0,
+   "BTC high after top": [
+    "2017-05-21",
+    2017.5,
+    71.1
+   ],
+   "BTC biggest fall": [
+    "2017-03-03",
+    "2017-03-24",
+    -27.7
+   ],
+   "BTC.D low": [
+    "2017-05-17",
+    62.83,
+    0.655
+   ],
+   "ETH/BTC high": [
+    "2017-05-21",
+    0.0722,
+    5.82
+   ],
+   "alts high": [
+    "2017-05-17",
+    12.74
+   ],
+   "at BTC fall low": {
+    "BTC.D x": 0.942,
+    "ETH/BTC x": 3.78,
+    "alts x": 1.7,
+    "BTC.D pts": -5.57
+   },
+   "weeks top to BTC high": 12.0,
+   "weeks top to BTC fall low": 3.7
+  },
+  "child": {
+   "top": "2025-06-22",
+   "through": "2026-11-21",
+   "BTC at top": 101015.0,
+   "BTC high after top": [
+    "2025-10-06",
+    124728.0,
+    23.5
+   ],
+   "BTC biggest fall": [
+    "2025-10-06",
+    "2026-06-30",
+    -53.1
+   ],
+   "BTC.D low": [
+    "2025-09-13",
+    57.52,
+    0.875
+   ],
+   "ETH/BTC high": [
+    "2025-08-24",
+    0.0421,
+    1.91
+   ],
+   "alts high": [
+    "2025-10-06",
+    1.78
+   ],
+   "at BTC fall low": {
+    "BTC.D x": 0.989,
+    "ETH/BTC x": 0.71,
+    "alts x": 0.39,
+    "BTC.D pts": -0.67
+   },
+   "weeks top to BTC high": 15.1,
+   "weeks top to BTC fall low": 53.3
+  }
+ },
+ "parentDatesOnChildClock": {
+  "plateau pace": {
+   "2017-03-03": "2025-10-07",
+   "2017-03-10": "2026-03-06",
+   "2017-03-24": "2026-12-30",
+   "2017-04-02": "2027-07-11",
+   "2017-04-30": "2029-03-01",
+   "2017-05-21": "2030-05-25"
+  },
+  "8.3:1": {
+   "2017-03-03": "2025-08-02",
+   "2017-03-10": "2025-09-30",
+   "2017-03-24": "2026-01-24",
+   "2017-04-02": "2026-04-09",
+   "2017-04-30": "2026-11-27",
+   "2017-05-21": "2027-05-20"
+  },
+  "5.1:1": {
+   "2017-03-03": "2025-07-17",
+   "2017-03-10": "2025-08-22",
+   "2017-03-24": "2025-11-02",
+   "2017-04-02": "2025-12-18",
+   "2017-04-30": "2026-05-09",
+   "2017-05-21": "2026-08-24"
+  },
+  "1.0:1": {
+   "2017-03-03": "2025-06-27",
+   "2017-03-10": "2025-07-04",
+   "2017-03-24": "2025-07-18",
+   "2017-04-02": "2025-07-27",
+   "2017-04-30": "2025-08-24",
+   "2017-05-21": "2025-09-14"
+  }
+ },
+ "childDatesOnParentClock": {
+  "2025-09-14": "2017-03-02",
+  "2025-10-06": "2017-03-03",
+  "2026-11-21": "2017-03-22"
+ },
+ "followsOnMappedClockC2prime": {
+  "BTC.D": {
+   "mapped": 0.482,
+   "shareAnyClockAsGood": 0.025
+  },
+  "BTC": {
+   "mapped": 0.698,
+   "shareAnyClockAsGood": 0.158
+  },
+  "alts (index steps out)": {
+   "mapped": -0.193,
+   "shareAnyClockAsGood": 0.455
+  },
+  "ETH/BTC": {
+   "mapped": -0.618,
+   "shareAnyClockAsGood": 0.805
+  },
+  "whole market": {
+   "mapped": 0.741,
+   "shareAnyClockAsGood": 0.093
+  }
+ },
+ "btcdMagnification": {
+  "waterfall": 18.2,
+  "rise to the hump": 32.1,
+  "mid-structure fall": 26.1,
+  "plateau to the top": 53.4,
+  "top to BTC's high after it": 17.4
+ },
+ "todayByScaledLevel": {
+  "childRatioToTop": 0.9008,
+  "childLowRatioToTop": 0.8753,
+  "byMagnification": {
+   "17.4": {
+    "parentEquivalentRatio": 0.994,
+    "parentLevel": 95.39,
+    "firstParentDayAtOrBelow": "2017-03-03"
+   },
+   "18.2": {
+    "parentEquivalentRatio": 0.9943,
+    "parentLevel": 95.41,
+    "firstParentDayAtOrBelow": "2017-03-03"
+   },
+   "26.1": {
+    "parentEquivalentRatio": 0.996,
+    "parentLevel": 95.58,
+    "firstParentDayAtOrBelow": "2017-03-02"
+   },
+   "32.1": {
+    "parentEquivalentRatio": 0.9968,
+    "parentLevel": 95.65,
+    "firstParentDayAtOrBelow": "2017-03-02"
+   },
+   "53.4": {
+    "parentEquivalentRatio": 0.998,
+    "parentLevel": 95.78,
+    "firstParentDayAtOrBelow": "2017-03-01"
+   }
+  }
+ },
+ "firstLeg": {
+  "parent Feb 26 to Apr 1 2017 (before the Apr 2 index step)": {
+   "BTC.D": 0.929,
+   "ETH/BTC": 3.738,
+   "alts (index steps out)": 2.718,
+   "BTC": 0.919
+  },
+  "parent Feb 26 to Apr 2 2017 (as drawn)": {
+   "BTC.D": 0.872
+  },
+  "parent leg start": "ETH/BTC and BTC.D break on 2017-03-10/11, 7-8 days after BTC's high",
+  "child Jun 22 to Sep 13 2025": {
+   "BTC.D": 0.875,
+   "ETH/BTC": 1.823,
+   "alts (index steps out)": 1.762,
+   "BTC": 1.148
+  },
+  "child Jun 22 to Oct 6 2025": {
+   "BTC.D": 0.896,
+   "ETH/BTC": 1.702,
+   "alts (index steps out)": 1.783,
+   "BTC": 1.235
+  },
+  "child Jun 22 2025 to now": {
+   "BTC.D": 0.901,
+   "ETH/BTC": 1.265,
+   "alts (index steps out)": 0.711,
+   "BTC": 0.595
+  },
+  "parent Feb 26 to Mar 3 2017": {
+   "BTC.D": 0.994,
+   "ETH/BTC": 1.216,
+   "alts (index steps out)": 1.268,
+   "BTC": 1.09
+  }
+ },
+ "btcScaling": {
+  "plateauCrash": [
+   -30.2,
+   -76.7
+  ],
+  "logMagnification": 4.05,
+  "parentFirstDipMar3to10": -13.1,
+  "scaled": -43.4,
+  "parentFullMar3to24": -27.7,
+  "scaledFull": -73.1,
+  "scaledFullPrice": 33499,
+  "childSoFarCloseLow": -53.1,
+  "childNow": -51.8
+ },
+ "afterTopDayByDay": [
+  {
+   "parent": "2017-02-26",
+   "child": "2025-06-22",
+   "P BTC": 1.0,
+   "C BTC": 1.0,
+   "P BTC.D": 1.0,
+   "C BTC.D": 1.0,
+   "P ETH/BTC": 1.0,
+   "C ETH/BTC": 1.0,
+   "P alts (index steps out)": 1.0,
+   "C alts (index steps out)": 1.0
+  },
+  {
+   "parent": "2017-02-27",
+   "child": "2025-07-13",
+   "P BTC": 1.013,
+   "C BTC": 1.179,
+   "P BTC.D": 1.0,
+   "C BTC.D": 0.983,
+   "P ETH/BTC": 1.045,
+   "C ETH/BTC": 1.13,
+   "P alts (index steps out)": 1.004,
+   "C alts (index steps out)": 1.294
+  },
+  {
+   "parent": "2017-02-28",
+   "child": "2025-08-04",
+   "P BTC": 1.01,
+   "C BTC": 1.139,
+   "P BTC.D": 0.999,
+   "C BTC.D": 0.935,
+   "P ETH/BTC": 1.068,
+   "C ETH/BTC": 1.461,
+   "P alts (index steps out)": 1.035,
+   "C alts (index steps out)": 1.456
+  },
+  {
+   "parent": "2017-03-01",
+   "child": "2025-08-25",
+   "P BTC": 1.04,
+   "C BTC": 1.09,
+   "P BTC.D": 0.997,
+   "C BTC.D": 0.894,
+   "P ETH/BTC": 1.14,
+   "C ETH/BTC": 1.799,
+   "P alts (index steps out)": 1.119,
+   "C alts (index steps out)": 1.568
+  },
+  {
+   "parent": "2017-03-02",
+   "child": "2025-09-16",
+   "P BTC": 1.066,
+   "C BTC": 1.157,
+   "P BTC.D": 0.996,
+   "C BTC.D": 0.887,
+   "P ETH/BTC": 1.218,
+   "C ETH/BTC": 1.746,
+   "P alts (index steps out)": 1.188,
+   "C alts (index steps out)": 1.712
+  },
+  {
+   "parent": "2017-03-03",
+   "child": "2025-10-07",
+   "P BTC": 1.09,
+   "C BTC": 1.202,
+   "P BTC.D": 0.994,
+   "C BTC.D": 0.898,
+   "P ETH/BTC": 1.216,
+   "C ETH/BTC": 1.659,
+   "P alts (index steps out)": 1.268,
+   "C alts (index steps out)": 1.72
+  },
+  {
+   "parent": "2017-03-04",
+   "child": "2025-10-28",
+   "P BTC": 1.069,
+   "C BTC": 1.118,
+   "P BTC.D": 0.995,
+   "C BTC.D": 0.913,
+   "P ETH/BTC": 1.179,
+   "C ETH/BTC": 1.597,
+   "P alts (index steps out)": 1.202,
+   "C alts (index steps out)": 1.496
+  },
+  {
+   "parent": "2017-03-05",
+   "child": "2025-11-19",
+   "P BTC": 1.08,
+   "C BTC": 0.906,
+   "P BTC.D": 0.994,
+   "C BTC.D": 0.902,
+   "P ETH/BTC": 1.226,
+   "C ETH/BTC": 1.497,
+   "P alts (index steps out)": 1.239,
+   "C alts (index steps out)": 1.199
+  },
+  {
+   "parent": "2017-03-06",
+   "child": "2025-12-10",
+   "P BTC": 1.084,
+   "C BTC": 0.911,
+   "P BTC.D": 0.993,
+   "C BTC.D": 0.899,
+   "P ETH/BTC": 1.229,
+   "C ETH/BTC": 1.636,
+   "P alts (index steps out)": 1.284,
+   "C alts (index steps out)": 1.212
+  },
+  {
+   "parent": "2017-03-07",
+   "child": "2026-01-01",
+   "P BTC": 1.046,
+   "C BTC": 0.878,
+   "P BTC.D": 0.992,
+   "C BTC.D": 0.907,
+   "P ETH/BTC": 1.232,
+   "C ETH/BTC": 1.531,
+   "P alts (index steps out)": 1.265,
+   "C alts (index steps out)": 1.132
+  },
+  {
+   "parent": "2017-03-08",
+   "child": "2026-01-22",
+   "P BTC": 0.975,
+   "C BTC": 0.886,
+   "P BTC.D": 0.992,
+   "C BTC.D": 0.911,
+   "P ETH/BTC": 1.162,
+   "C ETH/BTC": 1.493,
+   "P alts (index steps out)": 1.174,
+   "C alts (index steps out)": 1.131
+  },
+  {
+   "parent": "2017-03-09",
+   "child": "2026-02-12",
+   "P BTC": 1.01,
+   "C BTC": 0.655,
+   "P BTC.D": 0.99,
+   "C BTC.D": 0.894,
+   "P ETH/BTC": 1.196,
+   "C ETH/BTC": 1.331,
+   "P alts (index steps out)": 1.269,
+   "C alts (index steps out)": 0.808
+  },
+  {
+   "parent": "2017-03-10",
+   "child": "2026-03-06",
+   "P BTC": 0.947,
+   "C BTC": 0.674,
+   "P BTC.D": 0.987,
+   "C BTC.D": 0.899,
+   "P ETH/BTC": 1.389,
+   "C ETH/BTC": 1.315,
+   "P alts (index steps out)": 1.247,
+   "C alts (index steps out)": 0.821
+  },
+  {
+   "parent": "2017-03-11",
+   "child": "2026-03-27",
+   "P BTC": 0.998,
+   "C BTC": 0.657,
+   "P BTC.D": 0.981,
+   "C BTC.D": 0.89,
+   "P ETH/BTC": 1.463,
+   "C ETH/BTC": 1.359,
+   "P alts (index steps out)": 1.503,
+   "C alts (index steps out)": 0.818
+  },
+  {
+   "parent": "2017-03-12",
+   "child": "2026-04-18",
+   "P BTC": 1.04,
+   "C BTC": 0.75,
+   "P BTC.D": 0.979,
+   "C BTC.D": 0.912,
+   "P ETH/BTC": 1.53,
+   "C ETH/BTC": 1.407,
+   "P alts (index steps out)": 1.606,
+   "C alts (index steps out)": 0.901
+  },
+  {
+   "parent": "2017-03-13",
+   "child": "2026-05-09",
+   "P BTC": 1.054,
+   "C BTC": 0.799,
+   "P BTC.D": 0.978,
+   "C BTC.D": 0.925,
+   "P ETH/BTC": 1.844,
+   "C ETH/BTC": 1.306,
+   "P alts (index steps out)": 1.65,
+   "C alts (index steps out)": 0.932
+  },
+  {
+   "parent": "2017-03-14",
+   "child": "2026-05-30",
+   "P BTC": 1.057,
+   "C BTC": 0.73,
+   "P BTC.D": 0.974,
+   "C BTC.D": 0.911,
+   "P ETH/BTC": 1.843,
+   "C ETH/BTC": 1.24,
+   "P alts (index steps out)": 1.775,
+   "C alts (index steps out)": 0.874
+  },
+  {
+   "parent": "2017-03-15",
+   "child": "2026-06-21",
+   "P BTC": 1.066,
+   "C BTC": 0.626,
+   "P BTC.D": 0.971,
+   "C BTC.D": 0.896,
+   "P ETH/BTC": 2.246,
+   "C ETH/BTC": 1.221,
+   "P alts (index steps out)": 1.886,
+   "C alts (index steps out)": 0.751
+  },
+  {
+   "parent": "2017-03-16",
+   "child": "2026-07-12",
+   "P BTC": 0.995,
+   "C BTC": 0.631,
+   "P BTC.D": 0.966,
+   "C BTC.D": 0.896,
+   "P ETH/BTC": 3.108,
+   "C ETH/BTC": 1.282,
+   "P alts (index steps out)": 1.887,
+   "C alts (index steps out)": 0.763
+  },
+  {
+   "parent": "2017-03-17",
+   "child": "2026-08-03",
+   "P BTC": 0.908,
+   "C BTC": 0.628,
+   "P BTC.D": 0.959,
+   "C BTC.D": 0.898,
+   "P ETH/BTC": 3.354,
+   "C ETH/BTC": 1.326,
+   "P alts (index steps out)": 1.895,
+   "C alts (index steps out)": 0.756
+  },
+  {
+   "parent": "2017-03-18",
+   "child": "2026-08-24",
+   "P BTC": 0.822,
+   "C BTC": 0.782,
+   "P BTC.D": 0.945,
+   "C BTC.D": 0.913,
+   "P ETH/BTC": 2.821,
+   "C ETH/BTC": 1.423,
+   "P alts (index steps out)": 2.026,
+   "C alts (index steps out)": 0.962
+  },
+  {
+   "parent": "2017-03-19",
+   "child": "2026-09-14",
+   "P BTC": 0.863,
+   "C BTC": 0.774,
+   "P BTC.D": 0.945,
+   "C BTC.D": 0.904,
+   "P ETH/BTC": 3.41,
+   "C ETH/BTC": 1.456,
+   "P alts (index steps out)": 2.101,
+   "C alts (index steps out)": 0.98
+  },
+  {
+   "parent": "2017-03-20",
+   "child": "2026-10-06",
+   "P BTC": 0.879,
+   "C BTC": 0.847,
+   "P BTC.D": 0.95,
+   "C BTC.D": 0.906,
+   "P ETH/BTC": 3.28,
+   "C ETH/BTC": 1.428,
+   "P alts (index steps out)": 2.033,
+   "C alts (index steps out)": 1.095
+  },
+  {
+   "parent": "2017-03-21",
+   "child": "2026-10-27",
+   "P BTC": 0.945,
+   "C BTC": 0.8,
+   "P BTC.D": 0.957,
+   "C BTC.D": 0.921,
+   "P ETH/BTC": 3.077,
+   "C ETH/BTC": 1.316,
+   "P alts (index steps out)": 1.996,
+   "C alts (index steps out)": 0.971
+  },
+  {
+   "parent": "2017-03-22",
+   "child": "2026-11-18",
+   "P BTC": 0.88,
+   "C BTC": 0.623,
+   "P BTC.D": 0.949,
+   "C BTC.D": 0.903,
+   "P ETH/BTC": 3.212,
+   "C ETH/BTC": 1.275,
+   "P alts (index steps out)": 2.069,
+   "C alts (index steps out)": 0.751
+  },
+  {
+   "parent": "2017-03-23",
+   "child": null,
+   "P BTC": 0.873,
+   "C BTC": null,
+   "P BTC.D": 0.941,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.372,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.248,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-03-24",
+   "child": null,
+   "P BTC": 0.788,
+   "C BTC": null,
+   "P BTC.D": 0.936,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.595,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.158,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-03-25",
+   "child": null,
+   "P BTC": 0.811,
+   "C BTC": null,
+   "P BTC.D": 0.943,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.248,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.047,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-03-26",
+   "child": null,
+   "P BTC": 0.814,
+   "C BTC": null,
+   "P BTC.D": 0.941,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.19,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.101,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-03-27",
+   "child": null,
+   "P BTC": 0.882,
+   "C BTC": null,
+   "P BTC.D": 0.949,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.771,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.067,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-03-28",
+   "child": null,
+   "P BTC": 0.885,
+   "C BTC": null,
+   "P BTC.D": 0.945,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.88,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.173,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-03-29",
+   "child": null,
+   "P BTC": 0.879,
+   "C BTC": null,
+   "P BTC.D": 0.944,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.073,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.182,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-03-30",
+   "child": null,
+   "P BTC": 0.877,
+   "C BTC": null,
+   "P BTC.D": 0.937,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.028,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.377,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-03-31",
+   "child": null,
+   "P BTC": 0.908,
+   "C BTC": null,
+   "P BTC.D": 0.93,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.705,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.665,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-01",
+   "child": null,
+   "P BTC": 0.919,
+   "C BTC": null,
+   "P BTC.D": 0.929,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.738,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.718,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-02",
+   "child": null,
+   "P BTC": 0.914,
+   "C BTC": null,
+   "P BTC.D": 0.872,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.533,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.718,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-03",
+   "child": null,
+   "P BTC": 0.971,
+   "C BTC": null,
+   "P BTC.D": 0.92,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.081,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 1.904,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-04",
+   "child": null,
+   "P BTC": 0.969,
+   "C BTC": null,
+   "P BTC.D": 0.909,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.131,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.107,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-05",
+   "child": null,
+   "P BTC": 0.962,
+   "C BTC": null,
+   "P BTC.D": 0.912,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.192,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.033,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-06",
+   "child": null,
+   "P BTC": 1.01,
+   "C BTC": null,
+   "P BTC.D": 0.924,
+   "C BTC.D": null,
+   "P ETH/BTC": 2.919,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 1.907,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-07",
+   "child": null,
+   "P BTC": 1.01,
+   "C BTC": null,
+   "P BTC.D": 0.918,
+   "C BTC.D": null,
+   "P ETH/BTC": 2.844,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.01,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-08",
+   "child": null,
+   "P BTC": 1.004,
+   "C BTC": null,
+   "P BTC.D": 0.918,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.018,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.005,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-09",
+   "child": null,
+   "P BTC": 1.023,
+   "C BTC": null,
+   "P BTC.D": 0.923,
+   "C BTC.D": null,
+   "P ETH/BTC": 2.91,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 1.96,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-10",
+   "child": null,
+   "P BTC": 1.026,
+   "C BTC": null,
+   "P BTC.D": 0.923,
+   "C BTC.D": null,
+   "P ETH/BTC": 2.912,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 1.952,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-11",
+   "child": null,
+   "P BTC": 1.034,
+   "C BTC": null,
+   "P BTC.D": 0.926,
+   "C BTC.D": null,
+   "P ETH/BTC": 2.876,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 1.913,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-12",
+   "child": null,
+   "P BTC": 1.028,
+   "C BTC": null,
+   "P BTC.D": 0.921,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.065,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.012,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-13",
+   "child": null,
+   "P BTC": 0.995,
+   "C BTC": null,
+   "P BTC.D": 0.915,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.43,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.04,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-14",
+   "child": null,
+   "P BTC": 0.993,
+   "C BTC": null,
+   "P BTC.D": 0.917,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.23,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.005,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-15",
+   "child": null,
+   "P BTC": 0.995,
+   "C BTC": null,
+   "P BTC.D": 0.913,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.355,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.075,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-16",
+   "child": null,
+   "P BTC": 0.986,
+   "C BTC": null,
+   "P BTC.D": 0.914,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.295,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.067,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-17",
+   "child": null,
+   "P BTC": 0.998,
+   "C BTC": null,
+   "P BTC.D": 0.912,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.223,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.143,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-18",
+   "child": null,
+   "P BTC": 1.02,
+   "C BTC": null,
+   "P BTC.D": 0.913,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.336,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.148,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-19",
+   "child": null,
+   "P BTC": 1.021,
+   "C BTC": null,
+   "P BTC.D": 0.918,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.171,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.062,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-20",
+   "child": null,
+   "P BTC": 1.047,
+   "C BTC": null,
+   "P BTC.D": 0.922,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.217,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.028,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-21",
+   "child": null,
+   "P BTC": 1.055,
+   "C BTC": null,
+   "P BTC.D": 0.917,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.12,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.145,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-22",
+   "child": null,
+   "P BTC": 1.046,
+   "C BTC": null,
+   "P BTC.D": 0.92,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.129,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.082,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-23",
+   "child": null,
+   "P BTC": 1.053,
+   "C BTC": null,
+   "P BTC.D": 0.919,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.162,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.094,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-24",
+   "child": null,
+   "P BTC": 1.063,
+   "C BTC": null,
+   "P BTC.D": 0.918,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.22,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.133,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-25",
+   "child": null,
+   "P BTC": 1.076,
+   "C BTC": null,
+   "P BTC.D": 0.919,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.154,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.151,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-26",
+   "child": null,
+   "P BTC": 1.092,
+   "C BTC": null,
+   "P BTC.D": 0.919,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.306,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.179,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-27",
+   "child": null,
+   "P BTC": 1.129,
+   "C BTC": null,
+   "P BTC.D": 0.913,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.8,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.391,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-28",
+   "child": null,
+   "P BTC": 1.129,
+   "C BTC": null,
+   "P BTC.D": 0.897,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.331,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 2.743,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-29",
+   "child": null,
+   "P BTC": 1.131,
+   "C BTC": null,
+   "P BTC.D": 0.879,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.168,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 3.175,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-04-30",
+   "child": null,
+   "P BTC": 1.145,
+   "C BTC": null,
+   "P BTC.D": 0.881,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.671,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 3.152,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-01",
+   "child": null,
+   "P BTC": 1.18,
+   "C BTC": null,
+   "P BTC.D": 0.89,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.27,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 3.111,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-02",
+   "child": null,
+   "P BTC": 1.228,
+   "C BTC": null,
+   "P BTC.D": 0.891,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.23,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 3.141,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-03",
+   "child": null,
+   "P BTC": 1.275,
+   "C BTC": null,
+   "P BTC.D": 0.883,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.285,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 3.47,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-04",
+   "child": null,
+   "P BTC": 1.304,
+   "C BTC": null,
+   "P BTC.D": 0.861,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.949,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 4.118,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-05",
+   "child": null,
+   "P BTC": 1.285,
+   "C BTC": null,
+   "P BTC.D": 0.846,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.773,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 4.538,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-06",
+   "child": null,
+   "P BTC": 1.321,
+   "C BTC": null,
+   "P BTC.D": 0.834,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.877,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 5.004,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-07",
+   "child": null,
+   "P BTC": 1.318,
+   "C BTC": null,
+   "P BTC.D": 0.792,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.685,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 5.004,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-08",
+   "child": null,
+   "P BTC": 1.399,
+   "C BTC": null,
+   "P BTC.D": 0.758,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.201,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 6.243,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-09",
+   "child": null,
+   "P BTC": 1.459,
+   "C BTC": null,
+   "P BTC.D": 0.797,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.061,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 6.243,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-10",
+   "child": null,
+   "P BTC": 1.503,
+   "C BTC": null,
+   "P BTC.D": 0.777,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.962,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 7.234,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-11",
+   "child": null,
+   "P BTC": 1.551,
+   "C BTC": null,
+   "P BTC.D": 0.784,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.865,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 7.156,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-12",
+   "child": null,
+   "P BTC": 1.435,
+   "C BTC": null,
+   "P BTC.D": 0.752,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.039,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 7.748,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-13",
+   "child": null,
+   "P BTC": 1.507,
+   "C BTC": null,
+   "P BTC.D": 0.76,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.977,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 7.849,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-14",
+   "child": null,
+   "P BTC": 1.513,
+   "C BTC": null,
+   "P BTC.D": 0.753,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.003,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 8.149,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-15",
+   "child": null,
+   "P BTC": 1.446,
+   "C BTC": null,
+   "P BTC.D": 0.715,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.201,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 9.44,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-16",
+   "child": null,
+   "P BTC": 1.442,
+   "C BTC": null,
+   "P BTC.D": 0.681,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.985,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 11.14,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-17",
+   "child": null,
+   "P BTC": 1.512,
+   "C BTC": null,
+   "P BTC.D": 0.655,
+   "C BTC.D": null,
+   "P ETH/BTC": 3.857,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 12.744,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-18",
+   "child": null,
+   "P BTC": 1.594,
+   "C BTC": null,
+   "P BTC.D": 0.671,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.079,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 12.433,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-19",
+   "child": null,
+   "P BTC": 1.661,
+   "C BTC": null,
+   "P BTC.D": 0.695,
+   "C BTC.D": null,
+   "P ETH/BTC": 5.118,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 11.679,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-20",
+   "child": null,
+   "P BTC": 1.708,
+   "C BTC": null,
+   "P BTC.D": 0.687,
+   "C BTC.D": null,
+   "P ETH/BTC": 4.829,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 12.545,
+   "C alts (index steps out)": null
+  },
+  {
+   "parent": "2017-05-21",
+   "child": null,
+   "P BTC": 1.711,
+   "C BTC": null,
+   "P BTC.D": 0.683,
+   "C BTC.D": null,
+   "P ETH/BTC": 5.821,
+   "C ETH/BTC": null,
+   "P alts (index steps out)": 12.672,
+   "C alts (index steps out)": null
+  }
+ ],
+ "legLateWeeks": 37.1
+}
