@@ -8,7 +8,7 @@ import {
   DEFAULT_DEPTH_SIM_PARAMS, DEPTH_PARAM_NAMES, DEPTH_PARAM_SPACE, DepthSim, readDepthModel, resolveDepthSimParams, type DepthModel, type DepthSimParams,
 } from '../research/history/depthSim';
 import { fillQuotes, depthSims } from '../research/goLiveTally';
-import { eventsHash, playAnchors, synthModel, synthRequoteDay } from './twinSweepSynth';
+import { eventsHash, PINNED_SIM_PARAMS, pinned, playAnchors, synthModel, synthRequoteDay } from './twinSweepSynth';
 import { tmpDir } from './helpers';
 
 const MIN = 60_000;
@@ -56,7 +56,9 @@ test('sizes go back to the measured shape and the best price flickers at the mea
   // Adds far outpacing cancels at the top used to drift the queue up to the cap; the pull keeps it near its draw.
   const flow = [0, 1, 2, 3, 4, 5].map((qi) => ({ offset: 0, qi, seconds: 1000, addPerSec: 2, cancelPerSec: 0.1, addSize: { n: 1, mean: 50, p10: 50, p50: 50, p90: 50 }, cancelSize: q }));
   const busy: DepthModel = { ...model, shape: [{ ...model.shape[0], topChangesPerMin: { n: 1, mean: 300, p10: 300, p50: 300, p90: 300 } }], flow };
-  const sim = new DepthSim(busy);
+  // the base constants are pinned (RUNBOOK 9.5): the flicker count below is the base constants' own arithmetic (flickBasePerSec is the floor under the measured
+  // 300 a minute: a shipped flickBasePerSec of 5 or more would make no flicker at all), so a promotion of a sweep's winners must not move this test
+  const sim = new DepthSim(pinned(busy));
   const ev = sim.play('W', t, 0.5, 0.52, t + 15_000, t + 30 * MIN, 0.51);
   const top = new Map<number, number>();
   for (const e of ev) if (e.k === 'book') for (const l of e.bids as Array<{ price: number; size: number }>) top.set(Math.round(l.price * 1000), l.size);
@@ -92,6 +94,7 @@ const CURRENT_DEFAULTS: DepthSimParams = {
 test('the base constants are the hand constants the fill-in ran with, and the parameter space holds every one of them and every default', () => {
   // adding a parameter means adding its neutral value to BASE_PARAMS, on purpose: the parity tests run the base file's behaviour through it
   assert.deepEqual(Object.keys(BASE_PARAMS).sort(), [...DEPTH_PARAM_NAMES].sort(), 'BASE_PARAMS names every parameter');
+  assert.deepEqual({ ...PINNED_SIM_PARAMS }, { ...BASE_PARAMS }, 'the constants the other tests pin their synthetic worlds to (tests/twinSweepSynth.ts) are the base commit\'s');
   assert.deepEqual(Object.keys(DEPTH_PARAM_SPACE).sort(), [...DEPTH_PARAM_NAMES].sort(), 'a bound for every parameter, and no other');
   for (const n of DEPTH_PARAM_NAMES) {
     const b = DEPTH_PARAM_SPACE[n], d = DEFAULT_DEPTH_SIM_PARAMS[n];
@@ -362,7 +365,9 @@ const stressModel = (o: { gap?: number; lives?: { n: number; unquotedShare: numb
 
 test('the stress path in the simulator: the first minute has the asset row, then each anchor reads the stress its past minutes give and the model\'s edges bucket it', () => {
   const t0 = 1_000_000 * MIN, T = 'KXBTC15M-26NOV11-STRESS', mids = [50, 50.5, 53, 53, 53, 53];
-  const sim = new DepthSim(stressModel());
+  // the base constants are pinned (RUNBOOK 9.5): the first book is the asset row's own 1000, and a promotion of a sweep's winners changes the shipped
+  // levelSizeMult, which scales every drawn level size (1000 would read 1400): this test is about WHICH row is drawn from
+  const sim = new DepthSim(pinned(stressModel()));
   const quotes = flatQuotes(T, t0, 6, (m) => mids[m]).filter((e) => e.k === 'book');
   const seen: string[] = [];
   for (const e of quotes) {
@@ -383,7 +388,8 @@ test('no look-ahead: change a contract\'s quotes from a minute stamp on, and eve
   const t0 = 1_000_000 * MIN, T = 'KXBTC15M-26NOV11-SHIFT', U = 'KXETH15M-26NOV11-SHIFT', stamp = t0 + 3 * MIN;
   const sameUntil = [50, 50.5, 53, 53, 53, 53], future = (m: number) => (m < 3 ? sameUntil[m] : 41 + 7 * (m % 2));
   // a model that trades, so there is something to differ: every row has a rate, a trade size and a gap share
-  const m = stressModel({ gap: 0.3 });
+  // (the base constants are pinned, RUNBOOK 9.5: "there is something before the stamp" counts the trades the base trade rate makes)
+  const m = pinned(stressModel({ gap: 0.3 }));
   m.byAsset!.BTC.shape.forEach((r) => { r.tradesPerMin = quant(60); r.tradeSize = quant(3, 6); });
   const day = (mid: (m: number) => number) => [...flatQuotes(T, t0, 6, mid), ...flatQuotes(U, t0, 6, sameUntil.length ? (mm) => sameUntil[mm] : () => 50)].sort((a, b) => a.t - b.t);
   const a = day((mm) => sameUntil[mm]), b = day(future);
@@ -408,6 +414,63 @@ test('no look-ahead: change a contract\'s quotes from a minute stamp on, and eve
   // the quote AT the stamp is already the future of every book before it, and the first book it feeds is the one at the stamp
   const at = (evs: Array<Record<string, any>>) => evs.filter((e) => e.t >= stamp && e.t < stamp + 15_000 && e.k === 'book' && e.ticker === T);
   assert.notDeepEqual(at(pa), at(pb));
+});
+
+import { CALIBRATION_KNOBS, CALIBRATION_SCHEMA, type AssetCalibration } from '../research/history/depthSim';
+
+test('no look-ahead with a CALIBRATED model (R2): with the five multipliers off 1 for BTC and ETH (each alone, and all together), change a contract\'s quotes from a minute stamp on and every book and trade before it is bit-identical, in play, in fillQuotes and for nextMid', () => {
+  // The calibration's knobs (topSizeMult, flickMult, and the three it multiplies onto the parameters) are NOT DepthSimParams, so the parameter
+  // test above ("no parameter can see the future", which iterates DepthSimParams) cannot reach them: this is the same shift, with a calibration in the model.
+  const t0 = 1_000_000 * MIN, T = 'KXBTC15M-26NOV11-CAL', U = 'KXETH15M-26NOV11-CAL', V = 'KXETH15M-26NOV11-CALSAME', stamp = t0 + 3 * MIN;
+  const head = [50, 50.5, 53];
+  const all: Record<string, AssetCalibration> = {
+    BTC: { tradeRateMult: 1.6, tradeSizeMult: 1.4, topSizeMult: 1.3, levelSizeMult: 2.1, flickMult: 1.7 },
+    ETH: { tradeRateMult: 0.6, tradeSizeMult: 0.7, topSizeMult: 0.8, levelSizeMult: 0.5, flickMult: 1.5 },
+  };
+  assert.ok(Object.values(all).every((c) => CALIBRATION_KNOBS.every((k) => c[k] !== 1)), 'all five knobs are off 1 for both assets');
+  const plain = stressModel({ gap: 0.3 });
+  // every row (the BTC rows, and the pooled row ETH reads) trades and flickers, so each knob has something to scale
+  for (const r of [...plain.shape, ...plain.byAsset!.BTC.shape]) { r.tradesPerMin = quant(60); r.tradeSize = quant(3, 6); r.topChangesPerMin = quant(250); r.levelFilledP90 = r.levelFilledP50.map((x) => Math.round(x * 1.5)); }
+  const withCal = (byAsset: Record<string, AssetCalibration>): DepthModel => ({ ...plain, schema: DEPTH_MODEL_SCHEMA, calibration: { schema: CALIBRATION_SCHEMA, fitDays: plain.days, iterations: 3, byAsset } });
+  const day = (futT: (m: number) => number, futU: (m: number) => number) => [
+    ...flatQuotes(T, t0, 6, (m) => (m < 3 ? head[m] : futT(m))), ...flatQuotes(U, t0, 6, (m) => (m < 3 ? head[m] : futU(m))), ...flatQuotes(V, t0, 6, () => 50),
+  ].sort((x, y) => x.t - y.t);
+  const a = day(() => 53, () => 53), b = day((m) => 41 + 7 * (m % 2), (m) => 60 - 9 * (m % 2));
+  assert.notDeepEqual(a, b);
+  const before = (evs: Array<Record<string, any>>, tk?: string) => evs.filter((e) => e.t < stamp && (tk === undefined || e.ticker === tk));
+  const only = (evs: Array<Record<string, any>>, tk: string) => evs.filter((e) => e.ticker === tk);
+  const hashOf = (m: DepthModel, tk: string) => eventsHash(only(playAnchors(DepthSim as never, a, m).out as Array<Record<string, any>>, tk));
+  const arms: Array<[string, Record<string, AssetCalibration>]> = [['all five together', all], ...CALIBRATION_KNOBS.map((k): [string, Record<string, AssetCalibration>] => [k, Object.fromEntries(Object.entries(all).map(([as, c]) => [as, { ...Object.fromEntries(CALIBRATION_KNOBS.map((x) => [x, 1])), [k]: c[k] } as AssetCalibration]))])];
+  for (const [label, byAsset] of arms) {
+    const m = withCal(byAsset);
+    // the knob(s) act on both assets (the check is not vacuous), and the sim says it played calibrated anchors
+    for (const tk of [T, U]) assert.notEqual(hashOf(m, tk), hashOf(plain, tk), `${label}: ${tk.slice(0, 5)} is played with its multipliers`);
+    // (1) DepthSim.play anchor by anchor, as the stream filler calls it, the next quote's mid passed along
+    const pa = playAnchors(DepthSim as never, a, m).out as Array<Record<string, any>>, pb = playAnchors(DepthSim as never, b, m).out as Array<Record<string, any>>;
+    for (const tk of [T, U]) {
+      assert.ok(before(pa, tk).length > 150, `${label}: there is something before the stamp (${tk.slice(0, 5)}: ${before(pa, tk).length} records)`);
+      assert.deepEqual(before(pa, tk), before(pb, tk), `${label}: play, ${tk.slice(0, 5)}: every record before the stamp is bit-identical`);
+      assert.notDeepEqual(only(pa, tk).filter((e) => e.t >= stamp), only(pb, tk).filter((e) => e.t >= stamp), `${label}: and its future differs (the shift is real)`);
+    }
+    if (label === 'all five together') for (const tk of [T, U]) assert.ok(before(pa, tk).filter((e) => e.k === 'trade').length > 5, `${tk.slice(0, 5)} trades before the stamp`);
+    assert.deepEqual(only(pa, V), only(pb, V), `${label}: a contract whose quotes did not change is unchanged throughout`);
+    // (2) the whole fill-in as the twin and the tally run it
+    const fa = fillQuotes(a, { how: 'depth' }, m) as Array<Record<string, any>>, fb = fillQuotes(b, { how: 'depth' }, m) as Array<Record<string, any>>;
+    for (const tk of [T, U]) assert.deepEqual(before(fa, tk), before(fb, tk), `${label}: fillQuotes, ${tk.slice(0, 5)}`);
+    assert.deepEqual(only(fa, V), only(fb, V));
+    assert.notDeepEqual(fa.filter((e) => e.t >= stamp), fb.filter((e) => e.t >= stamp), `${label}: the fillQuotes future differs`);
+  }
+  const sim = new DepthSim(withCal(all));
+  for (const e of a.filter((x) => x.k === 'book' && x.t < stamp)) sim.play(e.ticker!, e.t, e.bids![0].price, e.asks![0].price, e.t + 15_000, t0 + 6 * MIN);
+  assert.ok(sim.calibrated.anchors >= 20, `${sim.calibrated.anchors} anchors were played with a calibration`);
+  // (3) nextMid: the next quote's mid may not move a book before `until` (the look-ahead switch is off), whatever the multipliers; the quote after it does
+  const busy: DepthModel = { ...withCal(all), informed: { n: 9000, agree: 1 } };
+  for (const tk of [T, U]) {
+    const two = (mid: number, next?: number) => { const s = new DepthSim(busy); return [s.play(tk, t0, 0.5, 0.52, t0 + 15_000, t0 + 30 * MIN, next), s.play(tk, t0 + 15_000, mid - 0.01, mid + 0.01, t0 + 30_000, t0 + 30 * MIN)]; };
+    assert.deepEqual(two(0.3, 0.3)[0], two(0.7, 0.7)[0], `${tk.slice(0, 5)}: the first quote's events before until do not move with nextMid`);
+    assert.deepEqual(two(0.3, 0.3)[0], two(0.3)[0], `${tk.slice(0, 5)}: nor with no nextMid at all`);
+    assert.notDeepEqual(two(0.3)[1], two(0.7)[1], `${tk.slice(0, 5)}: and the quote that is the future does (the shift is real)`);
+  }
 });
 
 test('a model WITHOUT blocks, a model whose blocks are empty and a ticker with no block for its asset all play the very stream the pooled rows give; the same input twice is the same stream', () => {
@@ -517,7 +580,7 @@ test('the model file: a schema newer than this code, byAsset without schema 2, a
   assert.ok(f({ ...base, schema: 2 }));
   assert.equal(modelSchema(base), 0);
   assert.equal(f({ ...base, schema: DEPTH_MODEL_SCHEMA + 1 }), undefined, 'a model of a newer code: refit it');
-  assert.throws(() => new DepthSim({ ...base, schema: DEPTH_MODEL_SCHEMA + 1 }), /schema \d+ and this code reads up to schema 2/);
+  assert.throws(() => new DepthSim({ ...base, schema: DEPTH_MODEL_SCHEMA + 1 }), /schema \d+ and this code reads up to schema 3/);
   assert.equal(f({ ...base, byAsset: { BTC: { shape: base.shape, flow: [] } } }), undefined, 'blocks without schema 2');
   assert.throws(() => validateDepthModel({ ...base, schema: 1, byAsset: {} }), /need schema 2 or more/);
   assert.equal(f({ ...base, schema: 2, byAsset: { BTC: { shape: [{ ...base.shape[0], si: 1 }], flow: [] } } }), undefined, 'stress rows without the asset\'s edges');
@@ -526,7 +589,7 @@ test('the model file: a schema newer than this code, byAsset without schema 2, a
   assert.equal(f({ ...base, schema: 2, byAsset: { BTC: { shape: [{ ...base.shape[0], si: 1 }], flow: [], stress: { edges: [2, 1], n: 9 } } } }), undefined, 'descending edges');
   assert.ok(f({ ...base, schema: 2, byAsset: { BTC: { shape: [{ ...base.shape[0], si: 1 }, base.shape[0]], flow: [], stress: { edges: [0.2, 1], n: 900 } } } }));
   assert.throws(() => validateDepthModel({ schema: 1.5 } as never), /whole number/);
-  assert.equal(DEPTH_MODEL_SCHEMA, 2);
+  assert.equal(DEPTH_MODEL_SCHEMA, 3);
 });
 
 test('the study and the simulator bucket the same instants alike: the simulator, played on the quotes a recording\'s contracts had, draws from each stress bucket as often as the study sampled it', async () => {
@@ -673,7 +736,9 @@ test('from a recording to the twin: a model fitted on it (its lives included) pl
   assert.equal(real.length, 48);
   assert.ok(Math.abs(realMean - (1 - 12 / 61)) < 1e-9, `the recording's own quotedShare ${realMean}`);
   const fit = await depthStudy([file], '15m');
-  const model = { days: [day], ...fit } as unknown as DepthModel;
+  // the base constants are pinned in the model's own params block (RUNBOOK 9.5): "the rows alone play it far too low" is a size of the effect, and the effect
+  // is measured with the constants the fill-in was built with, not with whatever a later promotion ships
+  const model = pinned({ days: [day], ...fit } as unknown as DepthModel);
   validateDepthModel(model);
   assert.ok(Math.abs(model.byAsset!.BTC.lives!.unquotedShare - 11 / 60) < 1e-3 && model.byAsset!.BTC.lives!.leadSlots === 1, JSON.stringify(model.byAsset!.BTC.lives));
   const twin = (m: DepthModel) => {

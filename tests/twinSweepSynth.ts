@@ -4,7 +4,7 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import zlib from 'zlib';
-import type { DepthModel, ShapeCell } from '../research/history/depthSim';
+import type { DepthModel, DepthSimParams, ShapeCell } from '../research/history/depthSim';
 import type { Ev } from '../research/goLiveTally';
 
 export const MIN = 60_000;
@@ -75,6 +75,19 @@ export function synthModel(o: { trades?: number; topChanges?: number; days?: str
   for (let offset = 0; offset < 10; offset++) for (let qi = 0; qi < 6; qi++) flow.push({ offset, qi, seconds: 3600, addPerSec: 0.05, cancelPerSec: 0.04, addSize: quant(10, 40), cancelSize: quant(8, 30) });
   return { days: o.days ?? ['2026-11-11', '2026-11-12', '2026-11-15'], shape, flow, informed: { n: 5000, agree: 0.56 } };
 }
+
+/** The depth simulator's thirteen constants as the base commit had them, spelled out. FIXED FOREVER: do NOT edit it when promoting a sweep's
+ *  winners to the defaults (RUNBOOK 9.5). It is for the tests that play the simulator through a synthetic world and assert on what the world
+ *  gives back (a recovered multiplier, a flicker count, a share of the book): those answers are functions of the constants (how fast the
+ *  quote-change rate answers to flickMult depends on flickBasePerSec, the trade count on tradeRateMult ...), so a test that read the shipped
+ *  defaults would fail after a promotion for a reason that is no bug. They play `pinned(model)` instead. */
+export const PINNED_SIM_PARAMS: DepthSimParams = Object.freeze({
+  revertS: 10, revertTopS: 1, stepSd: 0.1, flickBasePerSec: 2.6, sweepPrints: 3, withinSd: 0.7, activitySd: 0.6, capMult: 4, flickBackMinMs: 20, flickBackSpanMs: 180,
+  tradeRateMult: 1, tradeSizeMult: 1, levelSizeMult: 1,
+}) as DepthSimParams;
+/** `model` with its OWN params block set to PINNED_SIM_PARAMS (layer 2 of the resolution order in research/history/depthSim.ts: it replaces the
+ *  code defaults, and a calibration block multiplies on top of it, so a calibrated model stays calibrated). A caller's params (layer 4) still win. */
+export const pinned = (model: DepthModel): DepthModel => ({ ...model, params: { ...PINNED_SIM_PARAMS } });
 
 /** sha256 of an event stream, number by number: a -0 is told from a 0 (JSON would print both as 0). */
 export function eventsHash(evs: readonly unknown[]): string {

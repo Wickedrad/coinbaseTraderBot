@@ -189,7 +189,7 @@ test('the CLI writes the model file with its schema, the days and the asset bloc
   assert.equal(asset.length, 2);
   assert.ok(asset.every((l) => l.length < 300));
   assert.ok(lines.findIndex((l) => l.includes('asset BTC')) < 6, 'the asset lines come first, where the sweep\'s head -5 keeps them');
-  assert.match(lines[0], /^\[twin\] depth model: 1 day\(s\): 2026-11-11\.\.2026-11-11, contracts: 15-minute only, schema 2$/);
+  assert.match(lines[0], /^\[twin\] depth model: 1 day\(s\): 2026-11-11\.\.2026-11-11, contracts: 15-minute only, schema 3$/);
   assert.ok(lines.length <= 70);
 });
 

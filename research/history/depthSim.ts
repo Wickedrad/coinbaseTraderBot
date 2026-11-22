@@ -43,6 +43,29 @@
 // quote (counted at its first play: the time of that quote from its open, plus the slot taken just before it) and S = 61,
 // p = max(0, (unquotedShare * S - L) / (S - L)), spread over the rows by their own gapShares (scale = p / the rows' mean gapShare, at most 1: the
 // draw is never above what the study measured), so the twin's expected total unquoted share is the real one, and never more.
+//
+// Per-asset LEVEL calibration (Nov 22, round R2; schema 3 of the model file). After R1 the asset scales were right but the twin still sat
+// below the real days, per asset, in the size of the book (depth10, the best level), the size of a trade, and the rates of quote changes
+// and trades. The fix is a first-moment calibration FITTED on the FIT days (research/history/depthCalibrate.ts, run by the workflow after
+// the depth fit): a model file may carry `calibration`, per asset five multipliers, all neutral at 1 (CALIBRATION_KNOBS):
+//   tradeRateMult  the trade rate;               tradeSizeMult  the trade sizes (median and 90th percentile alike);
+//   levelSizeMult  every level's drawn size and the cap (the existing knob);
+//   topSizeMult    the best level's size ON TOP of levelSizeMult (level 0 only: its size relative to the others);
+//   flickMult      the measured best-price change rate the flicker is made up to (the rate `topChangesPerMin` says, times flickMult,
+//                  less what the fill-in makes anyway, flickBasePerSec): a factor on the quote-change rate, not on flickBasePerSec,
+//                  because a larger flickBasePerSec would make LESS flicker.
+// The parameters a DepthSim plays a ticker with are resolved in this order, each layer over the one before (`DepthSim.paramsFor`, tested):
+//   1. the code defaults (DEFAULT_DEPTH_SIM_PARAMS);
+//   2. the model's own `params` block;
+//   3. the model's `calibration` block for the ticker's ASSET, MULTIPLIED onto the knobs in force after layer 2 (tradeRateMult, tradeSizeMult,
+//      levelSizeMult; topSizeMult and flickMult are calibration-only knobs, neutral 1, that no other layer sets);
+//   4. the caller's params (a sweep's best.json): a key the caller names REPLACES what layers 1-3 gave that knob, as a caller's params always did.
+//      A sweep's best.json names all of them, so it replaces the calibrated level, size and rate knobs for every asset: the fill stage says so
+//      (a WARNING) when both are present.
+// A model WITHOUT `calibration`, and a ticker whose asset has no block in it, play exactly as before (layers 1, 2 and 4 only; the event
+// stream is bit for bit the same, and the golden hashes of tests/depthSimWalk.test.ts hold). The multipliers are per ASSET and CONSTANT
+// within a run: no time, day, quote or any later quantity feeds them (they are numbers in the model file, fitted on other days), so
+// they add no look-ahead and no clock; the draws stay seeded by the contract and the quote's time.
 
 import fs from 'fs';
 import { assetFromSeries } from '../../bot/marketdata/seriesDiscovery';
@@ -78,6 +101,29 @@ export interface ShapeCell { ti: number; mi: number;
  *  NOT quoted (no book yet, an empty side, a crossed or locked book), and the mean slots before the first quote. The simulator nets
  *  its empty-side draw against it (see the header). Absent in an older model: the rows' own `gapShare` is drawn as measured. */
 export interface LifeStats { n: number; unquotedShare: number; leadSlots?: number }
+/** The knobs of a calibration block, per asset (see the header: what each scales). All neutral at 1. */
+export const CALIBRATION_KNOBS = ['tradeRateMult', 'tradeSizeMult', 'topSizeMult', 'levelSizeMult', 'flickMult'] as const;
+export type CalibrationKnob = (typeof CALIBRATION_KNOBS)[number];
+/** One asset's multipliers. */
+export type AssetCalibration = Record<CalibrationKnob, number>;
+/** The format of the `calibration` block (its own `schema`; the model file's schema says the block may be there at all). */
+export const CALIBRATION_SCHEMA = 1;
+/** The range every multiplier is clipped to: an algorithm setting of the calibration (a fit that wants more than 5x or less than a fifth of
+ *  the measured knob has hit something the knob cannot fix), not a tuned number. A file with a multiplier outside it is refused. */
+export const CALIBRATION_CLIP: Readonly<{ lo: number; hi: number }> = Object.freeze({ lo: 0.2, hi: 5 });
+export const clipMult = (x: number): number => Math.min(CALIBRATION_CLIP.hi, Math.max(CALIBRATION_CLIP.lo, x));
+/** The per-asset level calibration (research/history/depthCalibrate.ts): written next to the model's tables by the calibration stage, read here.
+ *  `fitDays`: the days it was fitted on (the model's own fit days); `iterations`: the fixed-point iterations it ran; `byAsset`: the multipliers of
+ *  each asset it had real and twin lives for. `residual` (optional, informational): per asset the last standardized gaps, twin minus real. */
+export interface DepthCalibration { schema: number; fitDays: string[]; iterations: number; byAsset: Record<string, AssetCalibration>; residual?: Record<string, Record<string, number>>;
+  /** The code the multipliers were fitted with (written by the calibration stage, checked by a reuse): the multipliers are a fit of THIS simulator, requote layer and
+   *  feature code on the FIT days, so a model reused (depth_model_run) under other code would carry numbers fitted to a different twin. */
+  code?: CalibrationCode }
+/** What a calibration is a fit of: the simulator's source (a hash of depthSim.ts with comments and whitespace out, so any change that can move its stream does), the
+ *  requote layer's version (REPLAY_VERSION) and the feature code's version (FEATURE_CODE_VERSION). Plain strings: this file only holds and validates them. */
+export interface CalibrationCode { sim: string; replay: string; featureCode: string }
+/** Neutral multipliers: a model played with these is the model played without a calibration. */
+export const NEUTRAL_CALIBRATION: Readonly<AssetCalibration> = Object.freeze({ tradeRateMult: 1, tradeSizeMult: 1, topSizeMult: 1, levelSizeMult: 1, flickMult: 1 });
 /** Fewest samples a shape row of an asset block needs before it feeds a book (the study's own filter: it writes no thinner row). */
 export const MIN_SHAPE_SAMPLES = 20;
 /** Most seconds a flow row of an asset block may hold and still be refused (the study writes only rows over this). */
@@ -164,6 +210,8 @@ export interface DepthModel { days: string[]; shape: ShapeCell[]; flow: FlowCell
   lives?: LifeStats;
   /** research/depthStudy.ts informed flow: the share of trades that took the side the mid went over the next minute. */
   informed?: { n: number; agree: number };
+  /** The per-asset level calibration of the fit days (schema 3; see the header and DepthCalibration). Absent: the model plays as measured. */
+  calibration?: DepthCalibration;
   /** Optional: depth simulator parameters this model should be played with (override the defaults; the caller's own win over
    *  these). Absent in every model research/depthStudy.ts writes; a sweep's best candidate can be put here. */
   params?: Partial<DepthSimParams> }
@@ -180,14 +228,34 @@ export function readDepthModel(file: string): DepthModel | undefined {
 /** The model file's schema (0 when the file names none: the pooled tables of before schema 2). */
 export const modelSchema = (m: { schema?: number }): number => m.schema ?? 0;
 
-/** Throws on a model file the simulator cannot read as it was meant: a schema newer than this code knows, `byAsset` without schema 2,
- *  rows without the keys they are looked up by, or stress rows without the asset's stress edges. A pooled-only model passes as it is. */
-export function validateDepthModel(m: Pick<DepthModel, 'schema' | 'byAsset' | 'lives'>): void {
+/** Throws on a calibration block the simulator cannot read as it was meant: not this block format, no fit days, no iterations count, a
+ *  multiplier missing, not a number or outside the clip range. (Which days it was fitted on is checked against the split by historyTwin.ts.) */
+export function validateCalibration(c: DepthCalibration): void {
+  if (typeof c !== 'object' || c === null || Array.isArray(c)) throw new Error('the depth model\'s calibration must be an object');
+  if (c.schema !== CALIBRATION_SCHEMA) throw new Error(`the depth model's calibration is block format ${String(c.schema)} and this code reads format ${CALIBRATION_SCHEMA}: fit it again with this code`);
+  if (!Array.isArray(c.fitDays) || !c.fitDays.length || !c.fitDays.every((d) => typeof d === 'string')) throw new Error('the depth model\'s calibration does not record the days it was fitted on');
+  if (!Number.isInteger(c.iterations) || c.iterations < 0) throw new Error(`the depth model's calibration must record a whole number of iterations from 0, got ${String(c.iterations)}`);
+  if (c.code !== undefined) for (const k of ['sim', 'replay', 'featureCode'] as const) if (typeof c.code?.[k] !== 'string' || !c.code[k]) throw new Error(`the depth model's calibration code stamp must name the ${k} (a non-empty string)`);
+  if (typeof c.byAsset !== 'object' || c.byAsset === null || Array.isArray(c.byAsset)) throw new Error('the depth model\'s calibration needs byAsset: an object of asset blocks');
+  for (const [a, b] of Object.entries(c.byAsset)) for (const k of CALIBRATION_KNOBS) {
+    const v = (b as Partial<AssetCalibration> | undefined)?.[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < CALIBRATION_CLIP.lo || v > CALIBRATION_CLIP.hi) throw new Error(`calibration.byAsset.${a}.${k} must be a number from ${CALIBRATION_CLIP.lo} to ${CALIBRATION_CLIP.hi}, got ${String(v)}`);
+  }
+}
+
+/** Throws on a model file the simulator cannot read as it was meant: a schema newer than this code knows, `byAsset` without schema 2, a
+ *  `calibration` without schema 3 or with a bad multiplier, rows without the keys they are looked up by, or stress rows without the asset's
+ *  stress edges. A pooled-only model passes as it is. */
+export function validateDepthModel(m: Pick<DepthModel, 'schema' | 'byAsset' | 'lives' | 'calibration'>): void {
   const sch = m.schema;
   const lives = (l: LifeStats | undefined, where: string) => { if (l !== undefined && !(Number.isFinite(l.unquotedShare) && l.unquotedShare >= 0 && l.unquotedShare <= 1 && Number.isFinite(l.n) && l.n >= 0)) throw new Error(`${where}: the unquoted share of a life must be a number from 0 to 1 over n lives`); };
   lives(m.lives, 'the depth model\'s lives');
   if (sch !== undefined && (!Number.isInteger(sch) || sch < 0)) throw new Error(`the depth model's schema must be a whole number from 0, got ${String(sch)}`);
   if (modelSchema(m) > DEPTH_MODEL_SCHEMA) throw new Error(`the depth model is schema ${sch} and this code reads up to schema ${DEPTH_MODEL_SCHEMA}: refit it with this code`);
+  if (m.calibration !== undefined) {
+    if (modelSchema(m) < 3) throw new Error(`the depth model has a calibration block but schema ${modelSchema(m)} (it needs schema 3 or more)`);
+    validateCalibration(m.calibration);
+  }
   if (m.byAsset === undefined) return;
   if (modelSchema(m) < 2) throw new Error(`the depth model has byAsset blocks but schema ${modelSchema(m)} (they need schema 2 or more)`);
   if (typeof m.byAsset !== 'object' || m.byAsset === null || Array.isArray(m.byAsset)) throw new Error('the depth model\'s byAsset must be an object of asset blocks');
@@ -336,6 +404,8 @@ export function resolveDepthSimParams(...layers: Array<Partial<DepthSimParams> |
   return out;
 }
 
+/** What `DepthSim.paramsFor` returns for a ticker. */
+export interface TickerPlay { params: DepthSimParams; topSizeMult: number; flickMult: number; asset?: string }
 /** One asset's rows, looked up by the cell keys (a thin row is never loaded: it backs off to the next row of the chain). */
 interface AssetRows { shape: Map<number, ShapeCell>; flow: Map<number, FlowCell>; edges?: readonly [number, number];
   /** The block's real unquoted share of a life and the mean empty-side share of its rows (see gapScale); absent: the rows as measured. */
@@ -365,11 +435,20 @@ export class DepthSim {
   private readonly gapScales = new Map<string, number>();
   /** The pooled rows' real unquoted share of a life and mean empty-side share (see gapScale). */
   private readonly pooledGap?: { unquoted: number; mean: number };
-  /** The parameters in force: the defaults, the model's own `params` block, then `params` (each over the one before). */
+  /** The parameters in force with NO calibration: the defaults, the model's own `params` block, then `params` (each over the one before).
+   *  A ticker whose asset the model's calibration names is played with `paramsFor(ticker)` instead (see the header's resolution order). */
   readonly params: DepthSimParams;
+  /** The model's calibration, by asset (empty: none), and what each ticker is played with (resolved once per ticker). */
+  private readonly cal = new Map<string, AssetCalibration>();
+  private readonly tickerPlay = new Map<string, TickerPlay>();
+  private readonly callerParams?: Partial<DepthSimParams>;
+  /** Anchors played with a calibrated asset's multipliers (a diagnostic, kept out of `stats`, which the golden tests hold exactly). */
+  readonly calibrated = { anchors: 0 };
 
   constructor(private readonly model: DepthModel, params?: Partial<DepthSimParams>) {
     validateDepthModel(model);
+    this.callerParams = params;
+    for (const [a, c] of Object.entries(model.calibration?.byAsset ?? {})) this.cal.set(a, c);
     for (const c of model.shape) this.shape.set(`${c.ti}|${c.mi}`, c);
     for (const f of model.flow) this.flow.set(`${f.offset}|${f.qi}`, f);
     for (const [a, b] of Object.entries(model.byAsset ?? {})) {
@@ -381,6 +460,24 @@ export class DepthSim {
     }
     if (model.lives) this.pooledGap = { unquoted: model.lives.unquotedShare, mean: meanGapShare(model.shape.filter((c) => c.samples >= MIN_SHAPE_SAMPLES)) };
     this.params = resolveDepthSimParams(model.params, params);
+  }
+
+  /** What a ticker is played with: the parameters in force (the header's resolution order: defaults, the model's params, the model's
+   *  calibration for the ticker's asset multiplied on, the caller's params), the best level's extra multiplier and the quote-change
+   *  rate's. `asset`: the calibration block it took (undefined: none, and then these are exactly `this.params`, 1 and 1). Constant for a
+   *  ticker, whatever the time or the quote: it is read from the model file once. */
+  paramsFor(ticker: string): TickerPlay {
+    let p = this.tickerPlay.get(ticker);
+    if (p) return p;
+    const asset = this.cal.size ? assetOfTicker(ticker, this.cal.keys()) : undefined, c = asset !== undefined ? this.cal.get(asset) : undefined;
+    if (!c) p = { params: this.params, topSizeMult: 1, flickMult: 1 };
+    else {
+      const base = resolveDepthSimParams(this.model.params);                                  // layers 1 and 2
+      const layer3: Partial<DepthSimParams> = { tradeRateMult: base.tradeRateMult * c.tradeRateMult, tradeSizeMult: base.tradeSizeMult * c.tradeSizeMult, levelSizeMult: base.levelSizeMult * c.levelSizeMult };
+      p = { params: resolveDepthSimParams(this.model.params, layer3, this.callerParams), topSizeMult: c.topSizeMult, flickMult: c.flickMult, asset };  // layers 3 and 4
+    }
+    this.tickerPlay.set(ticker, p);
+    return p;
   }
 
   /** The asset block of a ticker's asset, undefined when the model has none (the pooled rows then feed its books). */
@@ -462,11 +559,13 @@ export class DepthSim {
     if (z === undefined) { z = normal(rng(hashStr(ticker) ^ salt)); this.scale.set(k, z); }
     return z;
   }
-  private size(u: () => number, ticker: string, p50: number | null | undefined, p90: number | null | undefined): number {
+  /** A level's size: its measured median and 90th percentile, `P.levelSizeMult` on every level and `top` (the calibration's topSizeMult, 1
+   *  for every level but the best one, and for every uncalibrated ticker: x * 1 is x) on the best level only. */
+  private size(u: () => number, ticker: string, p50: number | null | undefined, p90: number | null | undefined, P: DepthSimParams, top = 1): number {
     if (!(p50 && p50 > 0)) return 1;
-    const sg = p90 && p90 > p50 ? Math.log(p90 / p50) / 1.2816 : 0, sw = Math.min(sg, this.params.withinSd), sc = Math.sqrt(Math.max(0, sg * sg - sw * sw));
+    const sg = p90 && p90 > p50 ? Math.log(p90 / p50) / 1.2816 : 0, sw = Math.min(sg, P.withinSd), sc = Math.sqrt(Math.max(0, sg * sg - sw * sw));
     const z = this.contractZ(ticker, 0x5bd1e995);
-    return Math.max(1, Math.round(p50 * this.params.levelSizeMult * Math.exp(sc * z + sw * normal(u))));
+    return Math.max(1, Math.round(p50 * P.levelSizeMult * top * Math.exp(sc * z + sw * normal(u))));
   }
 
   /** The book at an anchor quote (bid and ask in dollars) and its life until `until`: a full snapshot at `t`, then
@@ -475,7 +574,8 @@ export class DepthSim {
   play(ticker: string, t: number, bid: number, ask: number, until: number, close: number, nextMid?: number): DepthEv[] {
     const bB = Math.round(bid * PX), bA = Math.round(ask * PX);
     if (!(bB >= 1 && bA <= PX - 1 && bA > bB)) return [];
-    const P = this.params;
+    const { params: P, topSizeMult: topM, flickMult: flickM } = this.paramsFor(ticker);
+    if (P !== this.params) this.calibrated.anchors++;
     const u = rng(hashStr(ticker) ^ Math.floor(t / 1000));
     const ab = this.assetRows(ticker);
     const si = ab?.edges ? this.stressNow(ticker, t, bB, bA, ab.edges) : undefined;
@@ -520,7 +620,7 @@ export class DepthSim {
       for (let off = 0; off < DEPTH_LEVELS; off++) {
         const p = side === 'bid' ? best - off * tick : best + off * tick;
         if (p < 1 || p > PX - 1 || m.has(p)) continue;
-        if (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) m.set(p, this.size(u, ticker, cell.levelFilledP50[off], cell.levelFilledP90[off]));
+        if (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) m.set(p, this.size(u, ticker, cell.levelFilledP50[off], cell.levelFilledP90[off], P, off === 0 ? topM : 1));
       }
     }
     const levels = (side: Side): Level[] => [...b![side].entries()].sort((x, y) => (side === 'bid' ? y[0] - x[0] : x[0] - y[0])).map(([p, s]) => ({ price: p / PX, size: s }));
@@ -552,13 +652,13 @@ export class DepthSim {
     const target: Record<Side, number[]> = { bid: [], ask: [] };
     for (const side of ['bid', 'ask'] as Side[]) for (let off = 0; off < DEPTH_LEVELS; off++) {
       const p50 = cell.levelFilledP50[off], p90 = cell.levelFilledP90[off];
-      target[side][off] = p50 && (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) ? this.size(u, ticker, p50, p90) : 0;
+      target[side][off] = p50 && (off === 0 || u() < (cell.levelQuoted[off] ?? 0)) ? this.size(u, ticker, p50, p90, P, off === 0 ? topM : 1) : 0;
     }
     const pull = 1 - Math.exp(-1 / P.revertS), pullTop = 1 - Math.exp(-1 / P.revertTopS);
     // Flicker (Nov 2 twin: the real best price changes ~324 times a minute, the fill-in's 55): a best level pulled and put
     // back within the second, as the real books' makers do; a trade in that moment takes the next level.
     const realTops = cell.topChangesPerMin?.mean;
-    const flickPerSec = realTops !== undefined && Number.isFinite(realTops) ? Math.max(0, realTops / 60 - P.flickBasePerSec) / 2 : 0;
+    const flickPerSec = realTops !== undefined && Number.isFinite(realTops) ? Math.max(0, (realTops * flickM) / 60 - P.flickBasePerSec) / 2 : 0;
     // Trades a sweep printed come out of the interval's measured count (the real count includes them).
     let owe = prePrints;
     const tradeSz = () => lognormal(u, cell.tradeSize.p50, cell.tradeSize.p90, P.tradeSizeMult);
@@ -585,7 +685,7 @@ export class DepthSim {
         // The far side moves up behind the price (a down move: a new ask at the level just taken).
         const other: Side = side === 'bid' ? 'ask' : 'bid', om = b[other];
         if (side === 'bid') { refA = top; refB = top - tickAt(top); } else { refB = top; refA = top + tickAt(top); }
-        if (!om.has(top)) { const sz = this.size(u, ticker, cell.levelFilledP50[0], cell.levelFilledP90[0]); om.set(top, sz); out.push({ t: at, k: 'delta', ticker, side: other, price: top / PX, delta: sz, ts: at, sim: 1 }); }
+        if (!om.has(top)) { const sz = this.size(u, ticker, cell.levelFilledP50[0], cell.levelFilledP90[0], P, topM); om.set(top, sz); out.push({ t: at, k: 'delta', ticker, side: other, price: top / PX, delta: sz, ts: at, sim: 1 }); }
         for (const p of [...om.keys()]) if (ticksFrom(p, top) >= DEPTH_LEVELS) { const d = om.get(p)!; om.delete(p); out.push({ t: at, k: 'delta', ticker, side: other, price: p / PX, delta: -d, ts: at, sim: 1 }); }
       }
       // The second's trades and flickers in time order, each on the book as it stands then.
@@ -639,8 +739,8 @@ export class DepthSim {
           // per-second adds and cancels, netted, made a random walk of thousands a second that sat at the cap (Nov 4 twin).
           let next = q + (off === 0 ? pullTop : pull) * frac * (target[side][off] - q) + q * P.stepSd * Math.sqrt(frac) * normal(u);
           // The quote's own level, emptied by trades or cancels, is quoted again as often as the real books quote it.
-          if (off === 0 && q === 0 && u() < (cell.levelQuoted[0] ?? 1)) next = this.size(u, ticker, cell.levelFilledP50[0], cell.levelFilledP90[0]);
-          const cap = P.capMult * P.levelSizeMult * Math.max(1, cell.levelFilledP90[off] ?? cell.levelFilledP90[cell.levelFilledP90.length - 1] ?? 1);
+          if (off === 0 && q === 0 && u() < (cell.levelQuoted[0] ?? 1)) next = this.size(u, ticker, cell.levelFilledP50[0], cell.levelFilledP90[0], P, topM);
+          const cap = P.capMult * P.levelSizeMult * (off === 0 ? topM : 1) * Math.max(1, cell.levelFilledP90[off] ?? cell.levelFilledP90[cell.levelFilledP90.length - 1] ?? 1);
           next = Math.max(0, Math.min(cap, Math.round(next)));
           const d = next - q;
           if (d === 0) continue;

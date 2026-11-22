@@ -91,13 +91,16 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import zlib from 'zlib';
 import { OrderBook } from '../bot/marketdata/orderBook';
 import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles';
 import { gbdtLogit } from '../bot/model/trees';
 import { trainGbdt } from './gbdt';
-import { assetOfTicker, DEPTH_ASSETS, readDepthModel, resolveDepthSimParams, validateDepthModel, type DepthModel, type DepthSimParams } from './history/depthSim';
+import { assetOfTicker, DEPTH_ASSETS, readDepthModel, resolveDepthSimParams, validateDepthModel, type CalibrationCode, type DepthCalibration, type DepthModel, type DepthSimParams } from './history/depthSim';
+import { REPLAY_VERSION } from './history/historyReplay';
 import { DEPTH_MODEL_SCHEMA } from './history/depthModelVersion';
+import { calibrateDepthModel, CAL_HELD_IN_BUDGET_S, gapsOfAsset, heldInCheck, type CalRow } from './history/depthCalibrate';
 import {
   describeParams, eliteOf, ELITE_FRACTION, generationCandidates, mergeShards, parentsFrom, parseShard, rankResults, shardRange, SWEEP_VERSION, type SweepResult, type SweepShardFile,
 } from './history/depthParamSearch';
@@ -225,6 +228,12 @@ export function assertModelFitDays(modelFile: string, split: Pick<Split, 'fit' |
   assertDisjoint(days as string[], split.judge);
   const stray = (days as string[]).filter((d) => !split.fit.includes(d));
   if (stray.length) throw new Error(`the depth model was fitted on days outside the fit set: ${stray.join(', ')}`);
+  // The per-asset calibration (schema 3) is fitted from the same days: a block that names other days was not made from this model's fit.
+  const cal = parsed.calibration;
+  if (cal !== undefined) {
+    const cd = [...cal.fitDays].sort(), md = [...(days as string[])].sort();
+    if (cd.join(',') !== md.join(',')) throw new Error(`the depth model's calibration was fitted on ${cd.join(', ')}, not on the days the model was fitted on (${md.join(', ')})`);
+  }
 }
 
 const splitFile = (out: string) => path.join(out, 'split.json');
@@ -445,7 +454,6 @@ export function twinSource(dir: string, days: readonly string[], replayVersion: 
 
 async function stageTwinSource(): Promise<void> {
   const dir = arg('dir'), out = arg('out', 'data/twin'), days = parseDays(arg('days'), 'days');
-  const { REPLAY_VERSION } = await import('./history/historyReplay');
   const r = twinSource(dir, days, REPLAY_VERSION);
   fs.mkdirSync(out, { recursive: true });
   fs.writeFileSync(path.join(out, 'twin-source.json'), JSON.stringify({ replayVersion: REPLAY_VERSION, ...r }, null, 1));
@@ -780,10 +788,65 @@ export function realMetaDiff(had: RealMeta, now: RealMeta): Array<{ aspect: stri
   return out;
 }
 
-/** The sidecars of the real side, next to features-real.json. */
-function writeRealSidecars(out: string, meta: RealMeta, activity: Activity): void {
+/** The real FIT days' rows (round R2): what the per-asset calibration (research/history/depthCalibrate.ts) fits the twin to. One file beside the judged
+ *  real side, under the same real-meta.json key (its `fit` days and their prepped days' sha256): every real contract of each FIT day, built by the
+ *  same rowBuilder as the activity lines' fit-day rows, with no result labels (brierT5 is NaN there: a FIT row is a pure function of its day). */
+export const REAL_FIT_FILE = 'real-fit-features.json';
+/** The handoff of the calibration stage to the stages after it (a folder of the same job, data/calib): the FIT rows and the follow diagnostics those
+ *  days feed, under a key of the FIT days and their prepped days' sha256, so a later stage that needs the same rows does not parse the days again.
+ *  Never trusted past its key: a stage that finds a key that is not exactly its own parses the days itself. */
+export const REAL_FIT_FOLLOW_FILE = 'real-fit-follow.json';
+
+/** The sidecars of the real side, next to features-real.json. `fitText`: the real FIT rows (REAL_FIT_FILE) as JSON text. */
+function writeRealSidecars(out: string, meta: RealMeta, activity: Activity, fitText: string): void {
   fs.writeFileSync(path.join(out, 'real-meta.json'), JSON.stringify(meta, null, 1));
   fs.writeFileSync(path.join(out, 'real-activity.json'), JSON.stringify({ version: REAL_SIDE_VERSION, ...activity }, null, 1));
+  fs.writeFileSync(path.join(out, REAL_FIT_FILE), fitText);
+}
+
+type FollowArrays = Record<string, { m: number[]; x: number[] }>;
+export interface RealFitKey { fit: string[]; real15m: string; featureCode: string; shas: Record<string, string> }
+export const realFitKey = (fit: readonly string[], real15mDir: string): RealFitKey => ({ fit: [...fit], real15m: real15mTag(), featureCode: FEATURE_CODE_VERSION, shas: Object.fromEntries(fit.map((d) => [d, realDaySha(real15mDir, d)])) });
+/** Appends follow diagnostics (the m and x of each key) to `followDiag[src]`, in order (a loop: a day's arrays are too long to spread). */
+function mergeFollow(src: string, add: FollowArrays): void {
+  const g = (followDiag[src] ??= {});
+  for (const [k, v] of Object.entries(add)) { const t = (g[k] ??= { m: [], x: [] }); for (const a of v.m) t.m.push(a); for (const a of v.x) t.x.push(a); }
+}
+export interface RealFit { rows: Row[]; perDay: Map<string, Row[]>; follow: FollowArrays; reused: boolean }
+/** Rows read back from JSON: a feature that was NaN when the row was built (a FIT row has no result label, so its brierT5 is) is written as null; it is NaN again here,
+ *  so a row read from a kept file is the row the parse gives. */
+const reviveRows = (rows: Row[]): Row[] => rows.map((r) => (r.f.some((v) => v === null) ? { ...r, f: r.f.map((v) => (v === null ? NaN : v)) } : r));
+
+/** The real FIT days' rows: from the handoff folder when it holds exactly these days' rows under the key of THIS run (`fit` and their prepped days'
+ *  sha256, the real days tag and the feature code), else parsed from the cached real days in `realDir` (every contract of the day, no labels). Either
+ *  way the follow diagnostics those days feed are appended to `followDiag.real`, after what is there (the judged days'), as parsing them one after the
+ *  other always did. `skipMissing`: a day with no cached file is left out (the features stage always did) instead of refused (the fast run did, and the calibration, which
+ *  says so in `needs`). */
+export async function realFitRows(o: { fit: readonly string[]; realDir: string; handoff?: string; skipMissing?: boolean; needs?: string }): Promise<RealFit> {
+  const key = realFitKey(o.fit, o.realDir);
+  if (o.handoff && key.fit.length && Object.values(key.shas).every(Boolean)) {
+    try {
+      const fol = JSON.parse(fs.readFileSync(path.join(o.handoff, REAL_FIT_FOLLOW_FILE), 'utf8')), raw = JSON.parse(fs.readFileSync(path.join(o.handoff, REAL_FIT_FILE), 'utf8')) as Row[], rows = Array.isArray(raw) ? reviveRows(raw) : raw;
+      const counts: Record<string, number> = {}; for (const r of rows) counts[r.day] = (counts[r.day] ?? 0) + 1;
+      if (fol?.version === REAL_SIDE_VERSION && JSON.stringify(fol.key) === JSON.stringify(key) && typeof fol.follow === 'object' && fol.follow !== null && Array.isArray(rows) && JSON.stringify(fol.rowsPerDay) === JSON.stringify(Object.fromEntries(key.fit.map((d) => [d, counts[d] ?? 0]))) && Object.keys(counts).every((d) => key.fit.includes(d))) {
+        const perDay = new Map<string, Row[]>(); for (const d of key.fit) perDay.set(d, rows.filter((r) => r.day === d));
+        mergeFollow('real', fol.follow);
+        return { rows, perDay, follow: fol.follow, reused: true };
+      }
+    } catch { /* not a usable handoff: the days are parsed */ }
+  }
+  const perDay = new Map<string, Row[]>(), saved = followDiag.real;
+  delete followDiag.real;
+  let follow: FollowArrays = {};
+  try {
+    for (const d of o.fit) {
+      const f = dayFile(o.realDir, d);
+      if (!f) { if (o.skipMissing) continue; throw new Error(`${o.needs ?? 'the fast run'} needs the cached real FIT day ${d} in ${o.realDir}${o.needs ? '' : ' (its activity line)'}; dispatch prep_days=${d} first`); }
+      perDay.set(d, await dayRows(f, d, 'real', new Map()));
+    }
+  } finally { follow = followDiag.real ?? {}; if (saved) followDiag.real = saved; else delete followDiag.real; }
+  mergeFollow('real', follow);
+  return { rows: [...perDay.values()].flat(), perDay, follow, reused: false };
 }
 
 async function stageFeatures(): Promise<void> {
@@ -808,11 +871,17 @@ async function stageFeatures(): Promise<void> {
     // restricted real days, which hold the fit days too).
     const extra = src === 'real' ? arg('extra-days', '').split(',').filter((d) => d && !days.includes(d) && !CONFIRM_DAYS.includes(d)) : [];
     const perDay = perDayOf(rows), extraUsed: string[] = [];
-    for (const d of extra) { const f = dayFile(arg('extra-dir') || dir, d); if (f) { perDay.set(`${d} (not judged)`, await dayRows(f, d, src, results)); extraUsed.push(d); } }
+    let fitText = '[]';
+    if (extra.length) {
+      // the FIT days' rows: the calibration stage's handoff (--handoff) when it holds exactly these days, else parsed here (realFitRows)
+      const fr = await realFitRows({ fit: extra, realDir: arg('extra-dir') || dir, handoff: arg('handoff') || undefined, skipMissing: true });
+      for (const [d, rs] of fr.perDay) { perDay.set(`${d} (not judged)`, rs); extraUsed.push(d); }
+      fitText = JSON.stringify(fr.rows);
+    }
     const act = activityOf(src, perDay);
     for (const l of activityLines(src, act)) console.log(l);
     // The real side is kept beside its rows for the fast route (--real15m: the folder of the prepped real days, whose meta files hold their sha256).
-    if (src === 'real' && arg('real15m') && dirs.requote) writeRealSidecars(out, await realMetaFor({ judged: days, fit: extraUsed, real15mDir: arg('real15m'), twinDir: dirs.requote }), act);
+    if (src === 'real' && arg('real15m') && dirs.requote) writeRealSidecars(out, await realMetaFor({ judged: days, fit: extraUsed, real15mDir: arg('real15m'), twinDir: dirs.requote }), act, fitText);
   }
 }
 
@@ -994,8 +1063,12 @@ async function depthFillSetup(o: { how: string; model: string; splitFile: string
     if (loaded) assertDisjoint(loaded.fitDays, sp.judge);
   }
   if (o.how === 'depth') {
-    const { depthModelNote } = await import('./goLiveTally');
+    const { depthModelNote, depthCalibrationNote } = await import('./goLiveTally');
     say(depthModelNote(depth!));
+    // The per-asset calibration the model carries (research/history/depthCalibrate.ts), and what a sweep's parameters do to it (depthSim.ts header, layer 4).
+    const calNote = depthCalibrationNote(depth!);
+    if (calNote) say(calNote);
+    if (calNote && loaded) say('[twin] WARNING: the sweep\'s parameters (depth_params_run) name tradeRateMult, tradeSizeMult and levelSizeMult, so for every asset they REPLACE the calibration\'s multipliers for those three knobs; its topSizeMult and flickMult still apply (a sweep is not calibrated: RUNBOOK 4.2)');
     // Every depth fill-in says which parameters it used (the defaults are spelled out too).
     const used = resolveDepthSimParams(depth!.params, loaded?.params);
     const from = loaded ? `sweep best, generation ${loaded.gen}, loss ${loaded.loss}, fitted on FIT days only` : depth!.params ? "the model's own params block" : 'defaults, as in the code';
@@ -1070,10 +1143,17 @@ async function realDayOnePass(file: string, day: string, results: ReadonlyMap<st
 
 /** The real side of an earlier run, read from its twinlite files in `dir` and refused unless it was built for exactly `now` (the
  *  key of this run). Nothing is guessed: a run with no sidecars (made before the fast route, or on a confirm split) is refused. */
-export function loadRealSide(dir: string, now: RealMeta, run: string): { rowsText: string; rows: Row[]; paired: Paired[]; activity: Activity; meta: RealMeta } {
+export function loadRealSide(dir: string, now: RealMeta, run: string): { rowsText: string; rows: Row[]; paired: Paired[]; activity: Activity; meta: RealMeta; fitText: string; fitRows: Row[] } {
   const who = `real_features_run ${run}`, file = (n: string) => path.join(dir, n);
-  const missing = ['features-real.json', 'real-meta.json', 'real-activity.json', 'paired.json'].filter((n) => !fs.existsSync(file(n)));
-  if (missing.length) throw new Error(`${who} has no ${missing.join(', ')}: ${missing.some((n) => n.startsWith('real-')) ? 'it was made before the fast route kept its real side (or it read the confirm days), and an old run is never guessed at. Dispatch a dev run with this code (full, or fast without real_features_run) and use its run id' : 'its judged features are not complete on Drive'}`);
+  const missing = ['features-real.json', 'real-meta.json', 'real-activity.json', REAL_FIT_FILE, 'paired.json'].filter((n) => !fs.existsSync(file(n)));
+  if (missing.length) {
+    // the reason is read from the files other than the FIT rows first (an older real side lacks those too); a side that lacks only the FIT rows is one of an earlier round
+    const others = missing.filter((n) => n !== REAL_FIT_FILE);
+    const why = !others.length ? 'it was made before the per-asset calibration kept the real FIT rows (round R2), and an old run is never guessed at. Dispatch a dev run with this code (full, or fast without real_features_run) and use its run id'
+      : others.some((n) => n.startsWith('real-')) ? 'it was made before the fast route kept its real side (or it read the confirm days), and an old run is never guessed at. Dispatch a dev run with this code (full, or fast without real_features_run) and use its run id'
+        : 'its judged features are not complete on Drive';
+    throw new Error(`${who} has no ${missing.join(', ')}: ${why}`);
+  }
   const read = <T>(n: string): T => { try { return JSON.parse(fs.readFileSync(file(n), 'utf8')) as T; } catch { throw new Error(`${who}: ${n} is not readable JSON`); } };
   const had = read<RealMeta>('real-meta.json'), act = read<{ version?: number } & Activity>('real-activity.json');
   if (!Array.isArray(had?.judged) || !Array.isArray(had?.fit) || typeof had?.days !== 'object' || !Array.isArray(act?.follow) || !Array.isArray(act?.days)) throw new Error(`${who}: real-meta.json or real-activity.json is not what this code writes (an old or damaged copy); it is not reused. Leave real_features_run empty to parse the real days again`);
@@ -1083,10 +1163,15 @@ export function loadRealSide(dir: string, now: RealMeta, run: string): { rowsTex
   const rowsText = fs.readFileSync(file('features-real.json'), 'utf8'), rows = read<Row[]>('features-real.json'), all = read<Paired[]>('paired.json');
   const strays = [...new Set(rows.map((r) => r.day))].filter((d) => !now.judged.includes(d));
   if (strays.length) throw new Error(`${who}: features-real.json holds rows of day(s) that are not judged here: ${strays.join(', ')}`);
+  // the real FIT rows the calibration reads: exactly this run's fit days (real-meta.json's `fit`, compared above, says which days they were built for)
+  const fitText = fs.readFileSync(file(REAL_FIT_FILE), 'utf8'), fitRaw = read<Row[]>(REAL_FIT_FILE);
+  if (!Array.isArray(fitRaw)) throw new Error(`${who}: ${REAL_FIT_FILE} is not a list of rows`);
+  const fitRows = reviveRows(fitRaw), fitDays = [...new Set(fitRows.map((r) => r.day))], otherFit = fitDays.filter((d) => !now.fit.includes(d)), noFit = now.fit.filter((d) => !fitDays.includes(d));
+  if (otherFit.length || noFit.length) throw new Error(`${who}: ${REAL_FIT_FILE} holds rows of ${fitDays.join(', ') || 'no day'}, these fit days are ${now.fit.join(', ')}${otherFit.length ? ` (other fit days: ${otherFit.join(', ')})` : ''}${noFit.length ? ` (none for ${noFit.join(', ')})` : ''}. Leave real_features_run empty to parse the real days again`);
   const paired = now.judged.map((d) => all.find((p) => p.day === d));
   const lost = now.judged.filter((_, i) => !paired[i]);
   if (lost.length) throw new Error(`${who}: paired.json has no entry for ${lost.join(', ')}`);
-  return { rowsText, rows, paired: paired as Paired[], activity: { follow: act.follow, days: act.days }, meta: had };
+  return { rowsText, rows, paired: paired as Paired[], activity: { follow: act.follow, days: act.days }, meta: had, fitText, fitRows };
 }
 
 export interface FastOpts {
@@ -1099,6 +1184,8 @@ export interface FastOpts {
   modelFile: string; paramsFile?: string;
   /** The twinlite files of an earlier run (its real side), and its run id for the messages. */
   realCache?: string; realRun?: string;
+  /** The calibration stage's handoff folder (its FIT rows and follow diagnostics, REAL_FIT_FOLLOW_FILE): used only when its key is this run's. */
+  handoff?: string;
   log?: (line: string) => void;
 }
 
@@ -1137,7 +1224,7 @@ export async function fastRows(o: FastOpts): Promise<Array<[string, number]>> {
     const r = loadRealSide(o.realCache, now, o.realRun ?? '?');
     realRows = r.rows; paired = r.paired; activity = r.activity; realText = r.rowsText;
     for (const p of paired) say(matchLine(p.day, p));
-    writeRealSidecars(o.out, { ...now, reusedFrom: o.realRun }, activity);
+    writeRealSidecars(o.out, { ...now, reusedFrom: o.realRun }, activity, r.fitText);
   } else {
     realRows = []; paired = [];
     for (const day of o.days) {
@@ -1153,14 +1240,12 @@ export async function fastRows(o: FastOpts): Promise<Array<[string, number]>> {
     }
     // the fit days' own activity, printed beside the judged days' (not judged): the cached days themselves, as the features stage reads them
     const perDay = perDayOf(realRows);
-    for (const d of extra) {
-      const f = dayFile(o.realDir, d);
-      if (!f) throw new Error(`the fast run needs the cached real FIT day ${d} in ${o.realDir} (its activity line); dispatch prep_days=${d} first`);
-      perDay.set(`${d} (not judged)`, await dayRows(f, d, 'real', results));
-    }
+    // (the FIT days' rows: the calibration stage's handoff when it holds exactly these days, else parsed here)
+    const fr = await realFitRows({ fit: extra, realDir: o.realDir, handoff: o.handoff });
+    for (const [d, rs] of fr.perDay) perDay.set(`${d} (not judged)`, rs);
     activity = activityOf('real', perDay);
     realText = JSON.stringify(realRows);
-    writeRealSidecars(o.out, now, activity);
+    writeRealSidecars(o.out, now, activity, JSON.stringify(fr.rows));
   }
   fs.writeFileSync(path.join(o.out, 'paired.json'), JSON.stringify(paired, null, 1));
   fs.writeFileSync(path.join(o.out, 'features-real.json'), realText);
@@ -1220,13 +1305,191 @@ function stageDepthModelCheck(): void {
   console.log(checkDepthModelReuse(arg('depth-model'), split, { run: arg('run') || undefined, metaFile: arg('model-meta') || undefined }));
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Stage calibrate (round R2): the depth model's per-asset LEVEL calibration, fitted on the FIT days (research/history/depthCalibrate.ts).
+// It runs in both routes right after the depth fit and before the match/fill or the fast rows, because the confirm run's refit on FIT+DEV
+// must be calibrated by the same code. It reads the model's own days only (assertCalibrationDays), writes the `calibration` block into the
+// model file (atomically, in place: Drive then keeps the calibrated model, and a depth_model_run reuse carries it), and leaves the real FIT
+// rows and follow diagnostics it parsed in a handoff folder for the stages after it.
+
+/** The days a calibration may read: exactly the days the depth model was fitted on, every one of them a FIT day of the split. A judged day, a DEV day of a
+ *  dev split or a CONFIRM day refuses (before any file of a day is opened), as do a model whose days are not recorded and one fitted outside the fit set.
+ *  Returns the model's days. */
+export function assertCalibrationDays(modelFile: string, split: Pick<Split, 'name' | 'fit' | 'judge'>): string[] {
+  assertHeldOut(split);
+  assertDisjoint(split.fit, split.judge);
+  assertModelFitDays(modelFile, split);
+  const days = JSON.parse(fs.readFileSync(modelFile, 'utf8')).days as string[];
+  const bad = days.filter((d) => !split.fit.includes(d) || split.judge.includes(d) || (split.name !== 'confirm' && CONFIRM_DAYS.includes(d)));
+  if (bad.length) throw new Error(`the calibration reads FIT days only: ${bad.join(', ')} ${bad.length > 1 ? 'are' : 'is'} not a FIT day of the ${split.name} split`);
+  return [...days];
+}
+
+/** The real FIT rows of an earlier run's real side (real_features_run): refused unless its real-meta.json was built for these fit days, this real days tag,
+ *  the prepped days as they are now and this feature code, and its rows are exactly these days'. The judged part of its key is not this stage's business. */
+export function loadRealFitRows(dir: string, fit: readonly string[], real15mDir: string, run: string): Row[] {
+  const who = `real_features_run ${run}`, file = (n: string) => path.join(dir, n);
+  const missing = ['real-meta.json', REAL_FIT_FILE].filter((n) => !fs.existsSync(file(n)));
+  if (missing.length) throw new Error(`${who} has no ${missing.join(', ')}: it was made before the per-asset calibration kept the real FIT rows (round R2), and an old run is never guessed at. Dispatch a dev run with this code (full, or fast without real_features_run) and use its run id`);
+  const read = <T>(n: string): T => { try { return JSON.parse(fs.readFileSync(file(n), 'utf8')) as T; } catch { throw new Error(`${who}: ${n} is not readable JSON`); } };
+  const had = read<RealMeta>('real-meta.json'), rowsRaw = read<Row[]>(REAL_FIT_FILE), rows = Array.isArray(rowsRaw) ? reviveRows(rowsRaw) : rowsRaw;
+  if (!Array.isArray(had?.judged) || !Array.isArray(had?.fit) || typeof had?.days !== 'object' || !Array.isArray(rows)) throw new Error(`${who}: real-meta.json or ${REAL_FIT_FILE} is not what this code writes (an old or damaged copy); it is not reused. Leave real_features_run empty to parse the real days again`);
+  const now: RealMeta = { version: REAL_SIDE_VERSION, judged: had.judged, fit: [...fit], real15m: real15mTag(), featureCode: FEATURE_CODE_VERSION, days: { ...had.days, ...Object.fromEntries(fit.map((d) => [d, { real: realDaySha(real15mDir, d) }])) } };
+  const diff = realMetaDiff(had, now);
+  if (diff.length) throw new Error(`${who} was built for ${diff.map((d) => d.had).join('; ')}, not these (${diff.map((d) => d.now).join('; ')}): it differs in ${diff.map((d) => d.aspect).join(' / ')}. Leave real_features_run empty to parse the real days again`);
+  const days = [...new Set(rows.map((r) => r.day))], other = days.filter((d) => !fit.includes(d)), none = fit.filter((d) => !days.includes(d));
+  if (other.length || none.length) throw new Error(`${who}: ${REAL_FIT_FILE} holds rows of ${days.join(', ') || 'no day'}, these fit days are ${fit.join(', ')}${other.length ? ` (other fit days: ${other.join(', ')})` : ''}${none.length ? ` (none for ${none.join(', ')})` : ''}. Leave real_features_run empty to parse the real days again`);
+  return rows;
+}
+
+/** Leaves the real FIT rows and the follow diagnostics they feed in `dir`, under the key of these days (realFitRows reads them back, only when its own key is exactly this). */
+export function writeRealFitHandoff(dir: string, fit: readonly string[], real15mDir: string, fr: RealFit): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, REAL_FIT_FILE), JSON.stringify(fr.rows));
+  fs.writeFileSync(path.join(dir, REAL_FIT_FOLLOW_FILE), JSON.stringify({ version: REAL_SIDE_VERSION, key: realFitKey(fit, real15mDir), rowsPerDay: Object.fromEntries(fit.map((d) => [d, fr.perDay.get(d)?.length ?? 0])), follow: fr.follow }));
+}
+
+/** The code a calibration is a fit of (stamped into its block by the calibrate stage, checked when a model is reused): the simulator's source (research/history/depthSim.ts
+ *  with its comments and whitespace out, hashed: any edit that can move the fill-in's stream changes it, a doc edit does not), the requote layer's version (REPLAY_VERSION)
+ *  and the feature code's version (FEATURE_CODE_VERSION). The multipliers are a fit of THIS simulator, requote layer and feature code on the FIT days; reused under other
+ *  code they would be numbers fitted to a different twin, which no later line would flag. NOT seen by this stamp (so a change there bumps DEPTH_MODEL_SCHEMA in the same
+ *  commit, research/history/depthModelVersion.ts): the fill-in's driver in research/goLiveTally.ts (streamFiller, fillQuotes) and the depth study. */
+const DEPTH_SIM_FILE = fileURLToPath(new URL('./history/depthSim.ts', import.meta.url));
+export function calibrationCode(simFile: string = DEPTH_SIM_FILE): CalibrationCode {
+  const text = fs.readFileSync(simFile, 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ').replace(/\s+/g, ' ').trim();
+  return { sim: sha256Text(text).slice(0, 16), replay: String(REPLAY_VERSION), featureCode: FEATURE_CODE_VERSION };
+}
+
+/** The tickers a requote day's twin has: the contracts whose `market` record is in it (the same condition rowBuilder opens a contract life on, so these are exactly
+ *  the contracts the twin's FIT rows can hold). */
+export function twinTickersOf(evs: Iterable<Record<string, any>>): Set<string> {
+  const out = new Set<string>();
+  for (const e of evs) if (e.k === 'market' && e.ticker && is15m(e.series, e.ticker)) out.add(e.ticker);
+  return out;
+}
+
+/** The line that says which code a calibration is a fit of (names and hashes only). */
+export const codeStampNote = (c: CalibrationCode | undefined, head: string): string => (c ? `${head} simulator ${c.sim}, requote layer ${c.replay}, feature code ${c.featureCode}` : `${head} no code recorded`);
+
+/** The real FIT rows restricted to the contracts the twin has on the same day (round R2, fix round 1). The judge compares real and twin on the contracts the
+ *  twin has: the judged real rows are the real day restricted to the requote day's tickers (stageMatch's `keep`, realDayOnePass's restrictLine). A real FIT
+ *  day holds every 15-minute contract, including those with no Kalshi candle (the twin lacks them: `real 15m missing from the twin`), which are typically
+ *  quiet ones with thin books. Fitting the twin's means to those rows as well would pull it toward a population the judge never sees and leave a first-moment gap on
+ *  the judged days, the quantity the calibration exists to close. So the calibration sees the same population: a row stays only when its ticker is among the day's
+ *  `twinTickers`. (A contract listed only in the PREVIOUS day's requote file, one that opens at midnight, is a judged real row but has no twin row, so it is
+ *  not a comparable pair and is left out here too; it is under 1 percent of a day's lives.) `counts`: per asset, rows kept of rows read. */
+export function restrictFitRows(rows: readonly Row[], twinTickers: ReadonlyMap<string, ReadonlySet<string>>): { rows: Row[]; counts: Array<{ asset: string; kept: number; of: number }> } {
+  const kept = rows.filter((r) => twinTickers.get(r.day)?.has(r.ticker) === true);
+  const inAsset = (rs: readonly Row[], a: string) => rs.filter((r) => assetOfTicker(r.ticker, DEPTH_ASSETS) === a).length;
+  const counts = DEPTH_ASSETS.map((asset) => ({ asset, kept: inAsset(kept, asset), of: inAsset(rows, asset) })).filter((c) => c.of > 0);
+  return { rows: kept, counts };
+}
+
+export interface CalibrateStageOpts {
+  /** Where the handoff (the real FIT rows and follow diagnostics this stage parsed) is left for the stages after it. */
+  out: string;
+  modelFile: string; splitFile: string;
+  /** The cached real days (data/twin-real15m) and the requote FIT days (data/replay-fit). */
+  realDir: string; twinFitDir: string;
+  /** The real side of an earlier run (twinlite files) and its run id: the real FIT rows are read from it instead of parsed. */
+  realCache?: string; realRun?: string;
+  /** Seconds the held-in check may cost (0: not run). */
+  heldInBudgetS?: number;
+  /** Fewest real and twin lives an asset needs (tests only: the stage's CLI uses the algorithm's own, CAL_MIN_LIVES). */
+  minLives?: number;
+  log?: (line: string) => void;
+  now?: () => number;
+}
+
+/** The stage: calibrate the model file's depth model on its own FIT days and write the block into it. Returns the calibration. */
+export async function calibrateStage(o: CalibrateStageOpts): Promise<DepthCalibration> {
+  const say = o.log ?? ((l: string) => console.log(l)), now = o.now ?? hr;
+  const split = readSplit(o.splitFile);
+  if (!split) throw new Error(`no split in ${o.splitFile || '(no --split-file)'}`);
+  const days = assertCalibrationDays(o.modelFile, split);
+  const model = readDepthModel(o.modelFile);
+  if (!model) throw new Error(`${o.modelFile} is not a depth model`);
+  if (model.calibration) throw new Error('the depth model already carries a calibration: a model is calibrated once, right after it is fitted (a reused model keeps the one it has)');
+  const t0 = now();
+  // the real FIT rows: an earlier run's (real_features_run), else the cached real days parsed once (and left in the handoff folder)
+  let realRows: Row[];
+  if (o.realCache) realRows = loadRealFitRows(o.realCache, days, o.realDir, o.realRun ?? '?');
+  else {
+    const fr = await realFitRows({ fit: days, realDir: o.realDir, needs: 'the calibration' });
+    realRows = fr.rows;
+    writeRealFitHandoff(o.out, days, o.realDir, fr);
+  }
+  // the twin's FIT days: the requote days' records, read once (every pass of the fill-in plays them again)
+  const requote = new Map<string, Array<Record<string, any>>>();
+  for (const d of days) {
+    const f = dayFile(o.twinFitDir, d);
+    if (!f) throw new Error(`the calibration needs the requote day of FIT day ${d} in ${o.twinFitDir}`);
+    const evs: Array<Record<string, any>> = [];
+    for await (const e of events(f)) evs.push(e);
+    requote.set(d, evs);
+  }
+  // The judge's population: only the real contracts the twin has on the day (restrictFitRows says why). The handoff above keeps every real FIT row (the activity lines read it).
+  const fitRows = restrictFitRows(realRows, new Map([...requote].map(([d, evs]) => [d, twinTickersOf(evs)])));
+  for (const c of fitRows.counts) say(`[twin] calibration: asset ${c.asset} real FIT lives kept ${c.kept} of ${c.of} (contract in the twin)`);
+  if (realRows.length && !fitRows.rows.length) throw new Error(`the calibration: none of the ${realRows.length} real FIT lives is a contract the requote FIT days have (the requote days' tickers differ from the prepped real days')`);
+  realRows = fitRows.rows;
+  const fi = (k: (typeof FEATURES)[number]) => FEATURES.indexOf(k);
+  const cols = { top: fi('topSize'), depth10: fi('depth10'), tradeSize: fi('tradeSize'), qchg: fi('quoteChangesPerMin'), trades: fi('tradesPerMin'), quotedShare: fi('quotedShare') };
+  const twinRows = async (m: DepthModel, ds: readonly string[]): Promise<CalRow[]> => {
+    const rows: CalRow[] = [];
+    for (const d of ds) { const r = await filledDayRows(requote.get(d)!, d, 'depth', new Map(), m, undefined, { diag: false }); rows.push(...r.rows); }
+    return rows;
+  };
+  const input = { model, fitDays: days, realRows, twinRows, cols, code: calibrationCode(), log: say, now, heldInBudgetS: o.heldInBudgetS ?? CAL_HELD_IN_BUDGET_S, ...(o.minLives !== undefined ? { minLives: o.minLives } : {}) };
+  const res = await calibrateDepthModel(input);
+  await heldInCheck(input, res);
+  // the block goes into the model file in place (atomically: the file is read by every later step, and Drive keeps it)
+  const tmp = `${o.modelFile}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(res.model));
+  fs.renameSync(tmp, o.modelFile);
+  say(codeStampNote(res.calibration.code, '[twin] calibration: fitted by'));
+  say(`[twin] calibration: written into the depth model (schema ${DEPTH_MODEL_SCHEMA}); ${Math.round(now() - t0)} s`);
+  return res.calibration;
+}
+
+async function stageCalibrate(): Promise<void> {
+  await calibrateStage({
+    out: arg('out', 'data/calib'), modelFile: arg('depth-model'), splitFile: arg('split-file'), realDir: arg('real', 'data/twin-real15m'), twinFitDir: arg('twin-fit', 'data/replay-fit'),
+    realCache: arg('real-cache') || undefined, realRun: arg('real-run') || undefined, heldInBudgetS: arg('held-in-budget-s') ? Number(arg('held-in-budget-s')) : undefined,
+  });
+}
+
+/** A depth model an earlier run fitted (depth_model_run) must carry its calibration: a model fitted before the calibration ran, or one whose calibration
+ *  failed, plays as measured, and a reuse must never do that silently. Returns the line to print; throws the reason otherwise. */
+export function checkDepthModelCalibration(modelFile: string, split: Pick<Split, 'name' | 'fit' | 'judge'>, o: { run?: string; code?: CalibrationCode } = {}): string {
+  const who = `depth_model_run ${o.run ?? '?'}`;
+  const days = (() => { try { return assertCalibrationDays(modelFile, split); } catch (e) { throw new Error(`${who}: ${(e as Error).message}`); } })();
+  const m = readDepthModel(modelFile);
+  if (!m) throw new Error(`${who}: ${modelFile} is not a depth model`);
+  if (!m.calibration) throw new Error(`${who}: the model has no calibration block: it was fitted before the per-asset calibration ran, or its calibration failed, so it is not reused. Leave depth_model_run empty to fit and calibrate it again`);
+  // The multipliers are a fit of the simulator, requote layer and feature code they were fitted with: a model whose block was fitted by other code (or by code that did not say) is stale
+  const was = m.calibration.code, now = o.code ?? calibrationCode();
+  if (!was) throw new Error(`${who}: the model's calibration carries no code stamp (the simulator, requote layer and feature code it was fitted with are not recorded), so it cannot be told from a stale one and is not reused. Leave depth_model_run empty to fit and calibrate it again`);
+  const differs = ([['simulator', 'sim'], ['requote layer', 'replay'], ['feature code', 'featureCode']] as const).filter(([, k]) => was[k] !== now[k]);
+  if (differs.length) throw new Error(`${who}: the model's calibration was fitted by other code than this ref's: ${differs.map(([what, k]) => `${what} ${was[k]} then, ${now[k]} now`).join('; ')}. Its multipliers are a fit of that twin, not of this one, so the model is not reused. Leave depth_model_run empty to fit and calibrate it again (a change that moves the fill-in's stream must come with a refit)`);
+  return `[twin] depth model calibration carried by run ${o.run ?? '?'}: assets ${Object.keys(m.calibration.byAsset).join(' ')}, fitted on ${days.join(' ')}, ${m.calibration.iterations} iteration(s); no recalibration`;
+}
+
+function stageCalibrationCheck(): void {
+  const split = readSplit(arg('split-file'));
+  if (!split) throw new Error(`no split in ${arg('split-file') || '(no --split-file)'}`);
+  console.log(checkDepthModelCalibration(arg('depth-model'), split, { run: arg('run') || undefined }));
+  console.log(`${codeStampNote(readDepthModel(arg('depth-model'))?.calibration?.code, '[twin] depth model calibration was fitted by')} (this ref has the same: a calibration fitted by other code is refused)`);
+}
+
 async function stageFastRows(): Promise<void> {
   const out = arg('out', 'data/twin');
-  await fastRows({ out, realDir: arg('real', 'data/twin-real15m'), twinDir: arg('twin', 'data/replay-src'), days: arg('days').split(',').filter(Boolean), modelFile: arg('depth-model'), paramsFile: arg('depth-params') || undefined, realCache: arg('real-cache') || undefined, realRun: arg('real-run') || undefined });
+  await fastRows({ out, realDir: arg('real', 'data/twin-real15m'), twinDir: arg('twin', 'data/replay-src'), days: arg('days').split(',').filter(Boolean), modelFile: arg('depth-model'), paramsFile: arg('depth-params') || undefined, realCache: arg('real-cache') || undefined, realRun: arg('real-run') || undefined, handoff: arg('handoff') || undefined });
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Stage sweep: calibrate the depth simulator's constants on the FIT days only, with the judge as the objective.
+// Stage sweep: tune the depth simulator's 13 constants on the FIT days only, with the judge as the objective (a parameter search over an UNCALIBRATED model:
+// not the R2 per-asset calibration, which is stage calibrate; a sweep's params replace three of its multipliers when both meet, RUNBOOK 9).
 
 /** The days a sweep may read: the dev split's FIT days (all of them or at least two), never a DEV, CONFIRM or any other day. Any
  *  split name but dev is refused. Returns the days. */
@@ -1449,6 +1712,8 @@ const lookFromArgs = (): ConfirmLook | undefined => {
 };
 
 const fmtQ = (x: number) => (Number.isFinite(x) ? String(+x.toPrecision(3)) : 'na');
+/** The six features the per-asset level gaps are read on (round R2; rounds/R1.md's table): where each is in a row. */
+const GAP_FEATURES: Record<string, number> = Object.fromEntries((['depth10', 'tradeSize', 'quoteChangesPerMin', 'topSize', 'tradesPerMin', 'quotedShare'] as const).map((k) => [k, FEATURES.indexOf(k)]));
 
 export async function stageVerdict(out = arg('out', 'data/twin'), look: ConfirmLook | undefined = lookFromArgs()): Promise<Record<string, any>> {
   const split = readSplit(splitFile(out));
@@ -1510,12 +1775,19 @@ export async function stageVerdict(out = arg('out', 'data/twin'), look: ConfirmL
     console.log(`[twin] ${src}: by regime: ${Object.entries(regimes).map(([g, x]) => `${g} AUC ${x.auc ?? 'n/a'} (${x.real}/${x.twin}; worst ${x.top})`).join('; ')}`);
     // By asset (REPORT ONLY, never in the checks): the lives and medians of what the depth model's per-asset rows set (trades a minute, depth10
     // and trade size, the last two as the log1p values the features hold), real against twin, and the all-feature AUC within the asset.
+    const gapByAsset: Record<string, { real: number; twin: number; gaps: Record<string, number | null> }> = {};
     for (const asset of DEPTH_ASSETS) {
       const rr = real.filter((r) => assetOfTicker(r.ticker) === asset), tt = tw.filter((r) => assetOfTicker(r.ticker) === asset);
       if (!rr.length && !tt.length) continue;
       const m = (rs: Row[], name: (typeof FEATURES)[number]) => (rs.length ? +med(rs.map((r) => r.f[FEATURES.indexOf(name)])).toFixed(3) : 'n/a');
       const au = rr.length > 20 && tt.length > 20 ? discriminate(rr, tt, all).toFixed(3) : 'n/a';
       console.log(`[twin] ${src} by asset ${asset}: lives ${rr.length} real/${tt.length} twin; medians real/twin tradesPerMin ${m(rr, 'tradesPerMin')}/${m(tt, 'tradesPerMin')}, depth10 ${m(rr, 'depth10')}/${m(tt, 'depth10')}, tradeSize ${m(rr, 'tradeSize')}/${m(tt, 'tradeSize')}; AUC ${au} (report only)`);
+      // The mean gaps the linear adversary reads (round R2, REPORT ONLY): twin mean minus real mean of the six level features, in the real within-asset sd.
+      if (rr.length && tt.length) {
+        const g = gapsOfAsset(rr, tt, GAP_FEATURES);
+        gapByAsset[asset] = { real: g.real, twin: g.twin, gaps: Object.fromEntries(Object.entries(g.gaps).map(([k, v]) => [k, Number.isFinite(v) ? +v.toFixed(3) : null])) };
+        console.log(`[twin] ${src} gap by asset ${asset} (twin minus real, in real within-asset sd; report only): ${Object.entries(g.gaps).map(([k, v]) => `${k} ${Number.isFinite(v) ? v.toFixed(2) : 'na'}`).join(', ')}`);
+      }
     }
     // The diagnostics block: per feature the real and twin p10/p50/p90 (all rows, then within each regime), the pairs whose
     // correlation differs most, and the AUC of each judged day (the same folds as the headline AUC).
@@ -1524,7 +1796,7 @@ export async function stageVerdict(out = arg('out', 'data/twin'), look: ConfirmL
     const quant = Object.fromEntries(FEATURES.map((name, j) => [name, Object.fromEntries(groups.map((g) => [g, { real: quantiles3(of(real, g), j), twin: quantiles3(of(tw, g), j) }]))]));
     const gaps = topCorrDiffs(real, tw, 10);
     const perDay = discriminatePerDay(real, tw, all);
-    report.twins[src] = { auc: +a.toFixed(3), stress: +stress.toFixed(3), aucByDay: perDay.byDay.map((d) => ({ ...d, auc: d.auc === null ? null : +d.auc.toFixed(3) })), features: each, regimes, quantiles: quant, corrGaps: gaps.map((g) => ({ ...g, real: +g.real.toFixed(3), twin: +g.twin.toFixed(3), diff: +g.diff.toFixed(3) })), outcome: o, checks, pass };
+    report.twins[src] = { auc: +a.toFixed(3), stress: +stress.toFixed(3), aucByDay: perDay.byDay.map((d) => ({ ...d, auc: d.auc === null ? null : +d.auc.toFixed(3) })), features: each, regimes, quantiles: quant, corrGaps: gaps.map((g) => ({ ...g, real: +g.real.toFixed(3), twin: +g.twin.toFixed(3), diff: +g.diff.toFixed(3) })), gapByAsset, outcome: o, checks, pass };
     console.log(`[twin] ${src}: adversary AUC ${a.toFixed(3)} (0.5 = can't tell; pass <= 0.60) over ${real.length} real / ${tw.length} twin contract lives`);
     console.log(`[twin] ${src}: gives it away most: ${each.slice(0, 5).map((e) => `${e.name} ${e.auc} (real median ${e.real}, twin median ${e.twin})`).join('; ')}`);
     console.log(`[twin] ${src}: every feature (AUC, real median/twin median): ${each.map((e) => `${e.name} ${e.auc} ${e.real}/${e.twin}`).join('; ')}`);
@@ -1557,6 +1829,8 @@ export async function historyTwinMain(): Promise<void> {
   if (stage === 'fill') return stageFill();
   if (stage === 'fastrows') return stageFastRows();
   if (stage === 'depth-model-check') return stageDepthModelCheck();
+  if (stage === 'calibrate') return stageCalibrate();
+  if (stage === 'calibration-check') return stageCalibrationCheck();
   if (stage === 'sweep') return stageSweep();
   if (stage === 'sweep-collect') return stageSweepCollect();
   if (stage === 'verdict') { await stageVerdict(); return; }

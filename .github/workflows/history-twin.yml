@@ -52,6 +52,17 @@
 #      run id) takes the real side's rows, paired mechanics and activity lines from that run's Drive copy instead of parsing the real days,
 #      and depth_model_run takes that run's depth model instead of the fit; each is refused unless it was built for exactly these days,
 #      prepped real days, requote days and code (the stage says which differs). Both are fast only; the full route is unchanged.
+#  10. THE PER-ASSET CALIBRATION (round R2; RUNBOOK 4.2). Right after the depth model is fitted (both routes, the confirm refit included), the
+#      calibrate stage (research/historyTwin.ts --stage calibrate, research/history/depthCalibrate.ts) fits five neutral-1 multipliers per
+#      asset (trade rate and size, level size, best-level size, quote-change rate) so that the twin's means on the FIT days meet the real FIT
+#      days', K <= 5 damped fixed-point iterations of the fill-in over the FIT days' requote days (data/replay-fit, never data/replay-src: a FIT
+#      day there would change which real contracts a judged day keeps), prints '[twin] calibration:' lines and a held-in leave-one-fit-day-out
+#      check, and writes the `calibration` block into the model file (schema 3). It reads the model's own days only. A fast run with depth_model_run
+#      fits nothing: the model carries its calibration, and a model without one is refused. The calibration is a fit of the simulator it was fitted
+#      with, so its block is stamped with the code (a hash of depthSim.ts without comments, REPLAY_VERSION, FEATURE_CODE_VERSION) and a reused model
+#      whose stamp is not this ref's, or has none, is refused (calibration-check). It fits to the real FIT lives whose contract the requote FIT day
+#      has (the judge's population; the stage prints `real FIT lives kept a of b`). The real FIT rows are kept beside the judged real side
+#      (real-fit-features.json, under real-meta.json's key; every contract, unrestricted); real_features_run refuses a run that lacks them or has other fit days.
 # The older routes (a Replay fidelity run's cached copy, a server copy slot) are gone from this file; commit 3be29e0 has them.
 #
 # No server access at all. This repository is public: jobs print counts, cents, $ and AUCs only; recordings never go to
@@ -63,7 +74,7 @@ on:
   # A new workflow can't be dispatched until it is on main: while on its branch, a push of its own files runs it.
   push:
     branches: [claude/project-thread-lq48hg, claude/project-thread-qj4n4v]
-    paths: ['.github/workflows/history-twin.yml', 'research/historyTwin.ts', 'research/history/depthSim.ts']
+    paths: ['.github/workflows/history-twin.yml', 'research/historyTwin.ts', 'research/history/depthSim.ts', 'research/history/depthCalibrate.ts']
   workflow_dispatch:
     inputs:
       prep_days:
@@ -116,7 +127,7 @@ on:
         required: false
         default: ''
       sweep_gen:
-        description: 'SWEEP ONLY: calibrate the depth simulator on the FIT days only (2026-11-11,2026-11-12,2026-11-15; never a DEV or CONFIRM day). The generation: 0 = the defaults plus a Latin hypercube of the parameter space; 1 and later = a cross-entropy step around the elite of sweep_parents_run. Exclusive with prep_days and reverdict_run; nothing else runs.'
+        description: 'SWEEP ONLY: tune the depth simulator''s dynamic constants on the FIT days only (2026-11-11,2026-11-12,2026-11-15; never a DEV or CONFIRM day). A parameter search with the judge as the objective, played over an UNCALIBRATED depth model (the per-asset calibration of round R2 is a different step: RUNBOOK 4.2, 9). The generation: 0 = the defaults plus a Latin hypercube of the parameter space; 1 and later = a cross-entropy step around the elite of sweep_parents_run. Exclusive with prep_days and reverdict_run; nothing else runs.'
         required: false
         default: ''
       sweep_candidates:
@@ -136,7 +147,7 @@ on:
         type: boolean
         default: false
       depth_params_run:
-        description: 'A normal dev or custom dispatch: the run id of a sweep whose best.json params go into the depth fill-in (the run logs every parameter it used). Not for split=confirm: promote the params to the code defaults first'
+        description: 'A normal dev or custom dispatch: the run id of a sweep whose best.json params go into the depth fill-in (the run logs every parameter it used). Not for split=confirm: promote the params to the code defaults first. The params REPLACE the model''s calibrated tradeRateMult, tradeSizeMult and levelSizeMult for every asset (a WARNING is printed; RUNBOOK 4.2, 9): the verdict is a hybrid no sweep scored (the sweep tuned them over an UNCALIBRATED model; the calibration''s topSizeMult and flickMult still apply), not the calibrated twin''s, and is not comparable with a plain R2 verdict'
         required: false
         default: ''
       fast:
@@ -144,11 +155,11 @@ on:
         type: boolean
         default: false
       real_features_run:
-        description: 'fast only: the run id of an earlier dev or custom run (full or fast) whose real side (judged real rows, paired mechanics, activity lines) is reused instead of parsing the real days. Refused unless it was built for exactly these days, real days, requote days and feature code'
+        description: 'fast only: the run id of an earlier dev or custom run (full or fast) whose real side (judged real rows, paired mechanics, activity lines) is reused instead of parsing the real days. Refused unless it was built for exactly these days, real days, requote days and feature code, and it kept its real FIT rows (real-fit-features.json: a run of before round R2 has none)'
         required: false
         default: ''
       depth_model_run:
-        description: 'fast only: the run id of an earlier build whose depth model (Drive simulated/history-twin/RUN/models) is used instead of the fit. Refused unless it records exactly these fit days and the current study version'
+        description: 'fast only: the run id of an earlier build whose depth model (Drive simulated/history-twin/RUN/models) is used instead of the fit. Refused unless it records exactly these fit days, the current study version and its per-asset calibration (the model carries it: it is not fitted again), and that calibration was fitted by this ref''s code (simulator source, requote layer, feature code: a stale one is refused)'
         required: false
         default: ''
 
@@ -663,7 +674,7 @@ jobs:
           source .github/scripts/twin-lib.sh
           [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "real_features_run must be a run id (digits only)"
           mkdir -p data/real-cache
-          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/real-cache --include features-real.json --include real-meta.json --include real-activity.json --include paired.json || rc=$?
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/real-cache --include features-real.json --include real-meta.json --include real-activity.json --include real-fit-features.json --include paired.json || rc=$?
           [ "$rc" -ne 3 ] || twin_fail "real_features_run $RUN: no judged features on Drive (simulated/history-twin/$RUN/twinlite): is it the run id of a build that finished its Drive step?"
           [ "$rc" -eq 0 ] || twin_fail "real_features_run $RUN: reading simulated/history-twin/$RUN/twinlite on Drive failed (rclone exit $rc)"
           echo "[twin] real side of run $RUN read from Drive: $(ls data/real-cache | wc -l) file(s)" | tee -a "$RUNNER_TEMP/build.log"
@@ -695,6 +706,92 @@ jobs:
           [ "$rc" -eq 0 ] || twin_fail "depth_params_run $RUN: reading simulated/history-twin-sweep/$RUN on Drive failed (rclone exit $rc)"
           [ -s data/sweep/best.json ] || twin_fail "depth_params_run $RUN: no best.json in simulated/history-twin-sweep/$RUN (the sweep's collect job did not finish)"
           echo "[twin] depth params from sweep run $RUN (best.json read from Drive)" | tee -a "$RUNNER_TEMP/build.log"
+      # THE PER-ASSET CALIBRATION (round R2; RUNBOOK 4.2). Wherever the depth model was fitted in THIS job (every full run, the confirm refit on FIT+DEV
+      # included, and a fast run without depth_model_run) it is calibrated right after the fit, on the FIT days only: first their requote days (Drive's
+      # simulated/kalshi-replay-200d while its manifest is REPLAY_VERSION, else regenerated, as for the judged days), kept in data/replay-fit and NOT in
+      # data/replay-src (the match stage keeps the tickers of the day before a judged day that sit in replay-src: a FIT day there would change which real
+      # contracts a judged day keeps), then the calibrate stage. All of it runs before the confirm look is numbered, so a failure here burns no number.
+      - name: The requote FIT days for the calibration (Drive, else regenerated)
+        id: fitsrc
+        if: ${{ steps.split.outputs.fast != 'true' || inputs.depth_model_run == '' }}
+        env:
+          FIT: ${{ steps.split.outputs.fit }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          D=data/replay-fit-drive; mkdir -p "$D" data/replay-fit data/calib
+          ARGS=(--include replay-manifest.json)
+          for d in ${FIT//,/ }; do ARGS+=(--include "md-$d.jsonl.gz"); done
+          rc=0; bash deploy/drive_lab.sh get simulated/kalshi-replay-200d "$D" "${ARGS[@]}" || rc=$?
+          { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || twin_fail "reading simulated/kalshi-replay-200d on Drive failed (rclone exit $rc)"
+          node --import tsx research/historyTwin.ts --stage twin-source --dir "$D" --days "$FIT" --out data/calib 2>&1 | sed -E 's/^\[twin\] requote source:/[twin] calibration: requote FIT days:/' | tee -a "$RUNNER_TEMP/build.log"
+          for d in $(tr ',' ' ' < data/calib/drive-days.txt); do cp "$D/md-$d.jsonl.gz" data/replay-fit/; done
+          echo "regen=$(cat data/calib/regen-days.txt)" >> "$GITHUB_OUTPUT"
+      - name: Restore the Kalshi history and its replay (to regenerate FIT days)
+        if: ${{ steps.fitsrc.outputs.regen != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/history
+            data/history-replay
+          key: kalshi-replay-fit-${{ github.run_id }}
+          restore-keys: kalshi-replay-
+      - name: Regenerate the requote FIT days Drive lacks (Binance + Kalshi public history, the deep history's own pipeline)
+        if: ${{ steps.fitsrc.outputs.regen != '' }}
+        env:
+          REGEN: ${{ steps.fitsrc.outputs.regen }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          FIRST=$(printf '%s\n' ${REGEN//,/ } | sort | head -1)
+          BACK=$(( ( $(date -u +%s) - $(date -u -d "$FIRST" +%s) ) / 86400 + 2 ))
+          node --import tsx research/kalshiReplayData.ts --history data/history --out data/history-replay --days "$BACK" --budget-min 120 2>&1 | tee -a "$RUNNER_TEMP/build.log" \
+            | grep -vE '^\[kalshi-replay-data\] (binance|kalshi|replay): .*(skipp|already|listing|page)' | tail -20
+          for d in ${REGEN//,/ }; do
+            [ -s "data/history-replay/md-$d.jsonl.gz" ] || twin_fail "the regenerated replay has no FIT day $d (Binance + Kalshi public history did not cover it within the 120-minute budget)"
+            cp "data/history-replay/md-$d.jsonl.gz" data/replay-fit/
+          done
+          echo "[twin] calibration: requote FIT days regenerated: $(echo "${REGEN//,/ }" | wc -w) day(s)" | tee -a "$RUNNER_TEMP/build.log"
+      - name: Save the Kalshi history and its replay (FIT days)
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && steps.fitsrc.outputs.regen != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/history
+            data/history-replay
+          key: kalshi-replay-fit-${{ github.run_id }}
+      # The calibration itself: one stage, the model file rewritten in place with its `calibration` block. Its whole output goes to a file first; a failure
+      # keeps the (uncalibrated) model as depth_model.uncalibrated.json, so the folder this run keeps on Drive holds no model that a later depth_model_run
+      # could reuse without its calibration (the reuse step below refuses one anyway).
+      - name: The depth model's per-asset calibration (fitted on the FIT days only)
+        if: ${{ steps.split.outputs.fast != 'true' || inputs.depth_model_run == '' }}
+        env:
+          FAST: ${{ steps.split.outputs.fast }}
+          REAL_FEATURES_RUN: ${{ inputs.real_features_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          CAL_T0=$(date +%s)
+          RC=(); [ -z "${REAL_FEATURES_RUN:-}" ] || RC=(--real-cache data/real-cache --real-run "$REAL_FEATURES_RUN")
+          mkdir -p data/calib
+          rc=0; node --import tsx research/historyTwin.ts --stage calibrate --depth-model data/models/depth_model.json --split-file data/twin/split.json --real data/twin-real15m --twin-fit data/replay-fit --out data/calib "${RC[@]}" > "$RUNNER_TEMP/calibrate.log" 2>&1 || rc=$?
+          grep -E '^\[twin\]|Error' "$RUNNER_TEMP/calibrate.log" | cut -c1-400 | tee -a "$RUNNER_TEMP/build.log" || true
+          if [ "$rc" -ne 0 ]; then
+            [ ! -f data/models/depth_model.json ] || mv data/models/depth_model.json data/models/depth_model.uncalibrated.json
+            twin_fail "the per-asset calibration failed (exit $rc); last lines: $(tail -4 "$RUNNER_TEMP/calibrate.log" | cut -c1-200 | tr '\n' '|'). The depth model is kept as depth_model.uncalibrated.json, never as a model to reuse"
+          fi
+          if [ "${FAST:-}" = true ]; then echo "[twin] fast: calibration $(( $(date +%s) - CAL_T0 )) s" | tee -a "$RUNNER_TEMP/build.log"; fi
+      # A reused model (depth_model_run) is not calibrated again: it carries its calibration, which is checked here (its days, its block, and the code stamp of the
+      # block against this ref's: a calibration fitted by other simulator source, requote layer or feature code is refused): a model with none is refused.
+      - name: The reused depth model's calibration (carried by the model; checked, not refitted)
+        if: ${{ steps.split.outputs.fast == 'true' && inputs.depth_model_run != '' }}
+        env:
+          RUN: ${{ inputs.depth_model_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "depth_model_run must be a run id (digits only)"
+          node --import tsx research/historyTwin.ts --stage calibration-check --depth-model data/models/depth_model.json --split-file data/twin/split.json --run "$RUN" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
       # A confirm look is numbered (the looks already logged on Drive + 1) and logged there, copy only, JUST BEFORE the confirm
       # days are read (the match stage): a build that fails earlier (a missing day, the depth fit) burns no number. A failure
       # after this step still used its number: write it in the round file as "look #n, no verdict read". The note is required
@@ -742,6 +839,8 @@ jobs:
           echo "[twin] features from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
           # The fit days' own activity, printed beside the judged days' (not judged), except on a confirm split.
           EXTRA=(); [ "$SPLIT" = confirm ] || EXTRA=(--extra-days "$FIT" --extra-dir data/twin-real15m --real15m data/twin-real15m)
+          # the real FIT rows the calibration stage already parsed (used only when they were made for exactly these days)
+          [ "$SPLIT" = confirm ] || [ ! -d data/calib ] || EXTRA+=(--handoff data/calib)
           node --import tsx research/historyTwin.ts --stage features --dirs "$DIRS" --days "$JUDGE" "${EXTRA[@]}" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
           # sizes of the restricted real days are a function of the real book volume: not printed on a confirm split
           [ "$SPLIT" = confirm ] || du -sh $T/* | cat
@@ -761,15 +860,18 @@ jobs:
           T=data/twin
           DP=(); [ -z "${DEPTH_PARAMS_RUN:-}" ] || DP=(--depth-params data/sweep/best.json)
           RC=(); [ -z "${REAL_FEATURES_RUN:-}" ] || RC=(--real-cache data/real-cache --real-run "$REAL_FEATURES_RUN")
+          # the real FIT rows the calibration stage already parsed (used only when they were made for exactly these days)
+          HO=(); [ ! -d data/calib ] || HO=(--handoff data/calib)
           echo "[twin] fast rows from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
-          node --import tsx research/historyTwin.ts --stage fastrows --real data/twin-real15m --twin data/replay-src --days "$JUDGE" --depth-model data/models/depth_model.json --out $T "${DP[@]}" "${RC[@]}" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
+          node --import tsx research/historyTwin.ts --stage fastrows --real data/twin-real15m --twin data/replay-src --days "$JUDGE" --depth-model data/models/depth_model.json --out $T "${DP[@]}" "${RC[@]}" "${HO[@]}" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
       # The judged part alone (paired mechanics + per-contract features + the split, small) for the verdict.
-      # The real side's sidecars (real-meta.json, real-activity.json) are there on runs that read no confirm day: a later fast run reuses them.
+      # The real side's sidecars (real-meta.json, real-activity.json, real-fit-features.json: the real FIT rows the calibration fits to) are there on runs that
+      # read no confirm day: a later fast run reuses them.
       - name: Keep the judged features
         run: |
           set -euo pipefail
           mkdir -p data/twinlite && cp data/twin/paired.json data/twin/features-*.json data/twin/split.json data/twin/twin-source.json data/twinlite/
-          for f in real-meta.json real-activity.json; do [ ! -f "data/twin/$f" ] || cp "data/twin/$f" data/twinlite/; done
+          for f in real-meta.json real-activity.json real-fit-features.json; do [ ! -f "data/twin/$f" ] || cp "data/twin/$f" data/twinlite/; done
           du -sh data/twinlite | cat
       - uses: actions/cache/save@v4
         with:
@@ -809,7 +911,7 @@ jobs:
         run: |
           L="$RUNNER_TEMP/build.log"; ALL="$RUNNER_TEMP/twin-lines.txt"
           grep -E '^\[(twin|kalshi-replay-data)\]' "$L" 2>/dev/null | cut -c1-300 > "$ALL" || true
-          FRAME='^\[twin\] (ERROR|WARNING|split|real 15|requote source|requote days|depth model fitted|depth model schema|depth model: asset|depth model reused|real side|fast|decision model|CONFIRM|no cached|matched|confirm split)'
+          FRAME='^\[twin\] (ERROR|WARNING|split|real 15|requote source|requote days|depth model fitted|depth model schema|depth model: asset|depth model calibration|depth model reused|real side|fast|decision model|CONFIRM|no cached|matched|confirm split|calibration)'
           {
             echo "History twin build, run ${{ github.run_id }} (${{ job.status }}), on commit ${GITHUB_SHA:0:8}"; echo; echo '```'
             [ -s "$ALL" ] || echo "(no [twin] lines: the build failed before its first logging step (checkout or dependency install); the reason is an annotation of the run: gh run view ${{ github.run_id }})"

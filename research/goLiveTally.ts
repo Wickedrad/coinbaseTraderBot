@@ -214,6 +214,16 @@ export function depthModelNote(depth: DepthModel): string {
     : `[twin] WARNING: the depth model is pooled only (schema ${modelSchema(depth)}): no asset or stress rows, every book comes from the pooled rows (the depth study on this ref may be an old copy)`;
 }
 
+/** The `[twin]` line that says which per-asset calibration (research/history/depthCalibrate.ts, schema 3) a fill-in plays: the multipliers of each asset
+ *  and the FIT days and iterations it was fitted with; undefined for a model without one (it plays as measured). Numbers and names only. */
+export function depthCalibrationNote(depth: DepthModel): string | undefined {
+  const c = depth.calibration;
+  if (!c) return undefined;
+  const r = (x: number) => String(+x.toFixed(2));
+  const assets = Object.entries(c.byAsset).map(([a, m]) => `${a} (top ${r(m.topSizeMult)} level ${r(m.levelSizeMult)} size ${r(m.tradeSizeMult)} trades ${r(m.tradeRateMult)} flick ${r(m.flickMult)})`);
+  return `[twin] depth model calibration: ${assets.join(', ') || 'no asset'}; fitted on the FIT days ${c.fitDays.join(' ')}, ${c.iterations} iteration(s)`;
+}
+
 /** Which rows fed a simulator's books, as plain numbers (DepthSim.picks and DepthSim.unblocked): quarter-minutes drawn from the asset's stress-0/1/2 row, from
  *  its row over all stress, from a pooled row it backed off to, and from the pooled rows because the model had no block for the asset. */
 export interface DepthPicks { stress: number[]; asset: number; pooled: number; unblocked: number }
