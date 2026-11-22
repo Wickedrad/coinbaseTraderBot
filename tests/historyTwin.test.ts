@@ -1924,7 +1924,7 @@ test('real_features_run is refused, with what differs, unless it was built for e
   // each aspect of the key, one at a time
   await refused(withMeta('judged', (m) => { m.judged = ['2026-11-13']; }), head('judged days 2026-11-13', 'judged days 2026-11-13,2026-11-14', 'judged days'));
   await refused(withMeta('fit', (m) => { m.fit = ['2026-11-11']; }), head('fit days 2026-11-11', 'fit days 2026-11-11,2026-11-12', 'fit days'));
-  await refused(withMeta('tag', (m) => { m.real15m = 'r15m-0|exclude=DOGE'; }), head('real days tag r15m-0\\|exclude=DOGE', `real days tag ${real15mTag().replace('|', '\\|')}`, 'real days tag'));
+  await refused(withMeta('tag', (m) => { m.real15m = 'r15m-0|exclude=DOGE'; }), head('real days tag r15m-0\\|exclude=DOGE', `real days tag ${real15mTag().split('|').join('\\|')}`, 'real days tag'));
   await refused(withMeta('code', (m) => { m.featureCode = 'f0'; }), head('feature code f0', `feature code ${FEATURE_CODE_VERSION}`, 'feature code'));
   await refused(withMeta('format', (m) => { m.version = 99; }), head('real-meta\\.json format 99', 'format 1', 'sidecar format'));
   // the days themselves: a prepped real day made again (its meta's sha256 is another), a requote day made again, a sha that was never recorded
@@ -2010,7 +2010,7 @@ test('depth_model_run: a model an earlier run fitted is reused only when it reco
   thr(() => line(put('nodays', { days: [] }), meta), /does not record the days it was fitted on/);
   // the real days' tag it was fitted from, and an unreadable model
   fs.writeFileSync(path.join(dir, 'old-meta.json'), JSON.stringify({ real15m: 'r15m-0|exclude=DOGE' }));
-  thr(() => line(put('tag', {}), path.join(dir, 'old-meta.json')), new RegExp(`^depth_model_run 321: the model was fitted from real days tagged r15m-0\\|exclude=DOGE, these are tagged ${real15mTag().replace('|', '\\|')}`));
+  thr(() => line(put('tag', {}), path.join(dir, 'old-meta.json')), new RegExp(`^depth_model_run 321: the model was fitted from real days tagged r15m-0\\|exclude=DOGE, these are tagged ${real15mTag().split('|').join('\\|')}`));
   fs.writeFileSync(path.join(dir, 'bad.json'), 'not json'); thr(() => line(path.join(dir, 'bad.json'), meta), /^depth_model_run 321: .*bad\.json is not readable JSON/);
   // the stage the workflow runs
   const sp = path.join(dir, 'split.json'); fs.writeFileSync(sp, JSON.stringify({ name: 'custom', fit: FAST_FIT, judge: FAST_JUDGE, warm: [] }));
