@@ -101,6 +101,7 @@ May 16, 2021). The dilation is dynamic and the parent's top is today, not Jun 22
   and rolled over; the child's June to September 2025 drop is 46 times that dip and it has not
   pushed back up (59.2 against 65.72).
 - Past falls took 5, 12, 5, 19 and 12 weeks (about 11 on average), in line with Steven's three months.
+  (Superseded: only the two 5-week falls, July 2016 and 2017-18, are waterfalls; see the timing section below.)
 - The dates taken from the plateau's fixed pace after the top do not apply on these anchors.
 
 ## Correction: the child's hump is the whole 2018 to 2021 hump (Nov 21, 2026, 10:00 PM EST / Nov 22, 03:00 UTC)
@@ -152,14 +153,21 @@ is now (the zone since June 2025), no more push up, the dilation moves.
 
 ## Timing of the waterfall: what was in place each time (Nov 21, 2026, 11:30 PM EST / Nov 22, 04:30 UTC)
 
-`waterfall_starts.py` lists BTC, USDT.D and ETH/BTC around the three actual waterfall events
-(parent July 2016, parent 2017 after its top, child 2017-18) and the same readings today. No clock
-is used. On Steven's word the 2021 fall (the mid-structure fall) and the Jun-Sep 2025 drop (inside
-the top) are not waterfalls and are left out.
+Corrected Nov 22, 2026, 8:22 AM EST / 13:22 UTC on Steven's word: there are only two waterfalls in
+2016-18. Read with his Nov 2 note they are the mid-July 2016 waterfall (parent) and the 2017-18
+waterfall (child). The first version counted the 2017 fall after the parent's top as a third.
 
-- BTC was at its 52-week high on weekly closes in all three, after +85%, +62% and +248% over the
-  prior 13 weeks. Today it is 38% below its 52-week high and -22% over 13 weeks.
-- ETH/BTC gave no early warning: +1% over the 13 weeks before the 2017 waterfall, -59% and at its
-  26-week low before 2017-18; then x3.41 and x1.86 within three weeks of the BTC.D high.
-- USDT.D was under half a percent of the market in all three, so it has no record here.
-- The three ran 5, 12 and 5 weeks. Three episodes: a description, not a rule.
+`waterfall_starts.py` lists BTC, USDT.D and ETH/BTC around the two waterfalls, around the 2017 fall
+after the parent's top (what the parent did next; not counted as a waterfall) and the same readings
+today. No clock is used. On Steven's word the 2021 fall (the mid-structure fall) and the Jun-Sep
+2025 drop (inside the top) are not waterfalls and are left out.
+
+- BTC was at its 52-week high on weekly closes at the start of both waterfalls, after +85% and +248%
+  over the prior 13 weeks, and also at the start of the 2017 fall after the top (+62%). Today it is
+  38% below its 52-week high and -22% over 13 weeks.
+- ETH/BTC gave no early warning: no data before the July 2016 waterfall; -59% and at its 26-week low
+  before 2017-18, then x1.86 within three weeks of the BTC.D high. Before the 2017 fall after the
+  top it was +1% over 13 weeks, then x3.41 within three weeks.
+- USDT.D was under half a percent of the market each time, so it has no record here.
+- Both waterfalls ran 5 weeks; the 2017 fall after the top ran 12. Two waterfalls and one more fall:
+  a description, not a rule, and all of it from 2016-18 (round 17: not a template for today).

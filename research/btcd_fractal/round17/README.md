@@ -4,6 +4,11 @@ Asked Nov 21, 2026, 11:26 PM EST / Nov 22, 04:26 UTC. TradingView BTC.D, recorde
 Parent = Jun 19 2016 to Feb 26 2017 (36 weeks). Child = Dec 10 2017 to today (467 weeks). Weekly closes (weeks ending Sunday).
 The plan (PLAN.md) was written and attacked by two critics before any test was run.
 
+Corrected Nov 22, 2026, 8:22 AM EST / 13:22 UTC on Steven's word: there are only two waterfalls in 2016-18. Read with
+his Nov 2 note they are the mid-July 2016 waterfall (parent) and the 2017-18 waterfall (child), the matched pair of the
+time map. The first version counted the 2017 fall after the parent's top as a third waterfall. It is now listed apart,
+as what the parent did next, and every waterfall count below is on two.
+
 ## Answer
 
 A pattern can be seen, but it is not a clock, and it gives no date. Nothing below is a timing call or a stand-down.
@@ -19,8 +24,9 @@ A pattern can be seen, but it is not a clock, and it gives no date. Nothing belo
    stretches). It is a statement about position, not a clock, so no date can be read from it. No volatility,
    market-size or direction-change clock passed. On five stretches "later in the structure" and "later in a market that
    has grown quieter over the years" cannot be told apart.
-4. All three waterfalls on record ran at one speed, but all three are from 2016-18, in the same volatile market. How
-   fast or how long a waterfall would run in today's quiet market is untested, so the old speed is not a template.
+4. The two waterfalls (July 2016 and 2017-18) ran at one speed and took five weeks each, but both are from 2016-18,
+   in the same volatile market. How fast or how long a waterfall would run in today's quiet market is untested, so the
+   old speed is not a template.
 5. Run forward week by week with nothing supplied from hindsight, the model gives no usable reading today. With the
    amplitude fixed from hindsight it has read "the child is on the parent's top" since July 2023: it cannot tell an
    early top from a late one, so it cannot time the top.
@@ -68,8 +74,8 @@ What the table shows:
 | leg | weeks | move (logit) | speed (logit a week) | fastest 4 weeks | market value at the start |
 |---|---|---|---|---|---|
 | July 2016 waterfall (parent) | 5 | -1.138 | -0.228 | -1.011 | $12.1bn |
-| 2017 waterfall after the parent's top | 12 | -2.526 | -0.210 | -1.403 | $19.9bn |
 | 2017-18 waterfall (child) | 5 | -1.266 | -0.253 | -1.166 | $379bn |
+| not counted as a waterfall: 2017 fall after the parent's top (Feb 26 to May 21 2017) | 12 | -2.526 | -0.210 | -1.403 | $19.9bn |
 | not a waterfall: 2021 fall, sharp part (Jan 3 to May 16 2021) | 19 | -1.236 | -0.065 | -0.469 | |
 | not a waterfall: Jun to Sep 2025 drop | 12 | -0.337 | -0.028 | -0.209 | |
 | parent rise after the July 2016 waterfall | 17 | | +0.033 | | |
@@ -77,26 +83,28 @@ What the table shows:
 | child rise 2018 to 2019 | 86 | | +0.017 | | |
 | child rise to the Jun 22 2025 high | 132 | | +0.008 | | |
 
-- The three waterfalls: BTC lost 19% to 22% a week against everything else, in markets of $12bn, $20bn and $379bn. The
-  child's waterfall took the parent's five weeks. (The 2017 waterfall includes three index-step days; with them taken
-  out it is -2.02 logit, -0.168 a week.)
-- All three are from one era, June 2016 to January 2018, when BTC.D's daily volatility was 0.03 to 0.06. The child's
-  waterfall began under seven months after the parent's last one ended (May 21 to Dec 10 2017). So "the waterfall was
-  not stretched" may mean no more than "it happened in the same market". The market grew 31 times between the first
-  and the third, but volatility, the thing that sets how fast the chart moves, stayed high.
-- There has been no waterfall in the quiet market since. Whether one would run at 0.2 logit a week, or last 5 to 12
-  weeks, is untested. A real waterfall now could be slower than all three, so the old speed must not be used to judge
+- The two waterfalls: BTC lost 20% and 22% a week against everything else, in markets of $12bn and $379bn. The
+  child's waterfall took the parent's five weeks and was 1.11 times its size.
+- The 2017 fall after the parent's top is not counted as a waterfall (Steven). It is the leg the parent drew next, so
+  it stays in the table: BTC lost 19% a week for 12 weeks in a market of $20bn. It includes three index-step days; with
+  them taken out it is -2.02 logit, -0.168 a week.
+- Both waterfalls are from one era, June 2016 to January 2018, when BTC.D's daily volatility was 0.03 to 0.06. The
+  child's waterfall began 72 weeks after the parent's ended (Jul 24 2016 to Dec 10 2017). So "the waterfall was not
+  stretched" may mean no more than "it happened in the same market". The market grew 31 times between the two, but
+  volatility, the thing that sets how fast the chart moves, stayed high.
+- There has been no waterfall in the quiet market since. Whether one would run at 0.2 logit a week, or last five
+  weeks, is untested. A real waterfall now could be slower than both, so the old speed must not be used to judge
   whether one has started.
 - The 2021 fall ran at about a quarter of the waterfall speed and the 2025 drop at about an eighth. That fits keeping
-  them off the waterfall list. The 2021 fall began from volatility like the 2017 waterfall's (0.031 against 0.028) and
-  was still three times slower, so starting volatility alone does not make a waterfall; the 2025 drop began from a much
-  quieter market (0.013).
+  them off the waterfall list. The 2021 fall began from volatility like that at the start of the 2017 fall after the
+  top (0.031 against 0.028) and was still three times slower, so starting volatility alone does not set the speed; the
+  2025 drop began from a much quieter market (0.013).
 - Every 4-week fall of 0.5 logit or more on record (BTC down 39% against the rest in four weeks) ended between May 2014
   and Jan 14 2018. There are seven; none since. The largest since is -0.469 (2021). The 0.5 cut-off was picked after
   seeing the data.
 - The stretch is not spread evenly: rises ran 2 to 5 times slower in the child than in the parent, the mid-structure
   fall and the consolidation took about 20 times longer, and the one waterfall the child has had was not slower.
-- Limit: three events, one of them in the child, and its pace of 1.0 comes straight from the anchors.
+- Limit: two waterfalls, one in the parent and one in the child, and the pace of 1.0 comes straight from the anchors.
 
 BTC.D's own daily movement has shrunk over the years (median 13-week volatility of daily logit changes, index-step days
 out): 0.048 in 2016, 0.050 in 2017, 0.030 in 2018, 0.020 in 2019, 0.019 in 2020, 0.031 in 2021, 0.015 in 2022, 0.011 in
@@ -110,19 +118,22 @@ description, not a signal:
 | start | volatility | BTC.D move |
 |---|---|---|
 | July 2016 waterfall | 0.048 | +0.088 |
-| 2017 waterfall after the top | 0.028 | +0.273 |
 | 2017-18 waterfall | 0.064 | +0.582 |
+| not counted as a waterfall: 2017 fall after the parent's top | 0.028 | +0.273 |
 | not a waterfall: 2021 fall from the Sep 2019 high | 0.028 | +0.593 |
 | not a waterfall: 2021 fall, sharp part | 0.031 | +0.485 |
 | not a waterfall: Jun to Sep 2025 drop | 0.013 | +0.171 |
 | today (Nov 21 2026) | 0.0084 | -0.018 |
 
-- Each waterfall began with BTC.D volatile and rising. That is not a trigger and carries no information on timing:
-  the thresholds are simply the lowest of the three starts (picked after the fact), 82 of the 652 weeks since June 2014
-  had the state (13%), and the 2021 fall began from it as well.
-- The state has not been present since Aug 15 2021, and today's volatility is in the lowest 3% of all weeks since June
-  2014 (the lowest was 0.0073 on Sep 6 2026). But every waterfall on record predates 2018, when BTC.D was more volatile
-  all the time. So this says the market is different now. It does not say a waterfall is far off.
+- Both waterfalls began with BTC.D volatile (0.048 and 0.064) and not falling. That is not a trigger and carries no
+  information on timing: the thresholds are simply the lower of the two starts (picked after the fact), on two events.
+  88 of the 652 weeks since June 2014 were that volatile (13%), and 15 of them had BTC.D rising as much as well.
+- The 2017 fall after the parent's top, the 2021 fall and the 2025 drop all began from a quieter market than either
+  waterfall (0.028, 0.031, 0.013).
+- No week has been that volatile since Mar 11 2018 (volatile and rising: Dec 17 2017), and today's volatility is in
+  the lowest 3% of all weeks since June 2014 (the lowest was 0.0073 on Sep 6 2026). But both waterfalls predate 2018,
+  when BTC.D was more volatile all the time. So this says the market is different now. It does not say a waterfall is
+  far off.
 
 ## 4. No clock sets the pace (m4_laws.py)
 
@@ -269,8 +280,9 @@ BTC.D map, and the share of 1,000 nearby maps (inner anchors moved up to a year)
   the next fall runs at the old waterfall speed or slower is open, so the thing to watch is the fall itself, by the
   tell already set in round 16 (a weekly BTC.D close under 57.79 with ETH/BTC rising and BTC.D without stablecoins
   falling), not a speed.
-- "Roughly three months once it starts" matches the 2017 waterfall (12 weeks); the other two took 5. None of the three
-  happened in a market as quiet as today's, so the record can neither confirm nor refute it.
+- The two waterfalls took five weeks each. "Roughly three months once it starts" matches the 2017 fall after the
+  parent's top (12 weeks), which is the leg the map points to next. None of these happened in a market as quiet as
+  today's, so the record can neither confirm nor refute it.
 - BTC.D today is flat and close to its quietest on record. That makes today unlike the start of each past waterfall,
   and equally unlike the whole era they happened in. It is not evidence that a waterfall is far off.
 - The five-signal reading is 4.8% for a 5-point fall starting within 26 weeks, above the 1.96% act line at 50 to 1.
@@ -279,9 +291,9 @@ BTC.D map, and the share of 1,000 nearby maps (inner anchors moved up to a year)
 
 ## Limits
 
-- Five stretches and three waterfalls, all picked by eye. Every pace, the plateau, the rising-pace result and the
+- Five stretches and two waterfalls, all picked by eye. Every pace, the plateau, the rising-pace result and the
   cross-reference rest on those anchors. Every test above is a description of that record.
-- All three waterfalls are from 2016-18. Nothing here says how a waterfall behaves in today's quieter market.
+- Both waterfalls are from 2016-18. Nothing here says how a waterfall behaves in today's quieter market.
 - The parent's mid-structure fall is one index-step day, so the automatic alignment partly aligns to a data event.
 - The real-time run refits the alignment, but the choice of parent was made with hindsight; no forecast was scored
   (earlier rounds found no forecast skill).

@@ -2,7 +2,8 @@
 """Round 16: what was in place when each waterfall in BTC.D began, and the same readings today.
 
 Asked Nov 21, 2026, 11:11 PM EST / Nov 22, 04:11 UTC: timing of the waterfall. No clock is used here;
-the script only lists BTC, USDT.D and ETH/BTC around the three waterfall events on record (weekly closes).
+the script only lists BTC, USDT.D and ETH/BTC around the two waterfall events on record and around the 2017 fall
+after the parent's top (weekly closes).
 Run: python3 waterfall_starts.py [data_dir]
 """
 import json, sys
@@ -18,8 +19,11 @@ W = lambda s: s.resample("W-SUN").last()
 wbd, web, wut, wbtc = W(bd), W(eb), W(ut), W(btc)
 # Steven, Nov 21, 2026, 11:18 PM EST / Nov 22, 04:18 UTC: only the actual waterfall events count. The 2021 fall is the
 # mid-structure fall and the Jun-Sep 2025 drop sits inside the top, so neither is listed with them.
-FALLS = {"parent July 2016 waterfall": ("2016-06-19", "2016-07-24"), "parent 2017 waterfall (after the top)": ("2017-02-26", "2017-05-21"),
-         "child 2017-18 waterfall": ("2017-12-10", "2018-01-14")}
+# Steven, Nov 22, 2026, 8:22 AM EST / 13:22 UTC: there are only two waterfalls in 2016-18. Read with his Nov 2 note
+# they are the mid-July 2016 waterfall and the 2017-18 waterfall. The 2017 fall after the parent's top is kept in
+# the listing as what the parent did next, and is not counted as a waterfall.
+FALLS = {"parent July 2016 waterfall": ("2016-06-19", "2016-07-24"), "child 2017-18 waterfall": ("2017-12-10", "2018-01-14"),
+         "parent 2017 fall after the top (not counted as a waterfall)": ("2017-02-26", "2017-05-21")}
 out = {"dataThrough": str(bd.index[-1].date()), "falls": [], "now": {}}
 for name, (t, e) in FALLS.items():
     t, e = pd.Timestamp(t), pd.Timestamp(e)

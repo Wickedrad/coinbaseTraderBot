@@ -23,26 +23,6 @@
   },
   {
    "kind": "waterfall",
-   "era": "parent",
-   "leg": "2017 waterfall after the parent's top",
-   "from": "2017-02-26",
-   "to": "2017-05-21",
-   "weeks": 12.0,
-   "btcd": [
-    95.96,
-    65.53
-   ],
-   "moveLogit": -2.526,
-   "moveLogitStepsOut": -2.02,
-   "speedLogitPerWeek": -0.2105,
-   "speedStepsOut": -0.1683,
-   "fastest4WeeksLogit": -1.403,
-   "biggestWeekLogit": -0.599,
-   "btcVsRestMultiple": 0.08,
-   "marketValueAtStartBn": 19.9
-  },
-  {
-   "kind": "waterfall",
    "era": "child",
    "leg": "2017-18 waterfall",
    "from": "2017-12-10",
@@ -60,6 +40,26 @@
    "biggestWeekLogit": -0.457,
    "btcVsRestMultiple": 0.282,
    "marketValueAtStartBn": 379.1
+  },
+  {
+   "kind": "after the top",
+   "era": "parent",
+   "leg": "2017 fall after the parent's top (not counted as a waterfall)",
+   "from": "2017-02-26",
+   "to": "2017-05-21",
+   "weeks": 12.0,
+   "btcd": [
+    95.96,
+    65.53
+   ],
+   "moveLogit": -2.526,
+   "moveLogitStepsOut": -2.02,
+   "speedLogitPerWeek": -0.2105,
+   "speedStepsOut": -0.1683,
+   "fastest4WeeksLogit": -1.403,
+   "biggestWeekLogit": -0.599,
+   "btcVsRestMultiple": 0.08,
+   "marketValueAtStartBn": 19.9
   },
   {
    "kind": "other fall",
@@ -287,13 +287,6 @@
    "move13wLogit": 0.088
   },
   {
-   "waterfall": "2017 waterfall after the parent's top",
-   "start": "2017-02-26",
-   "volPerDay13w": 0.028,
-   "volPerDay26w": 0.0351,
-   "move13wLogit": 0.273
-  },
-  {
    "waterfall": "2017-18 waterfall",
    "start": "2017-12-10",
    "volPerDay13w": 0.0643,
@@ -309,6 +302,12 @@
   }
  ],
  "otherFallsBeganFrom": [
+  {
+   "fall": "2017 fall after the parent's top",
+   "start": "2017-02-26",
+   "volPerDay13w": 0.028,
+   "move13wLogit": 0.273
+  },
   {
    "fall": "2021 fall, from the Sep 2019 high",
    "start": "2019-09-08",
@@ -331,10 +330,10 @@
  "volatileStateBaseRate": {
   "since": "2014-06-01",
   "weeks": 652,
-  "weeksAsVolatileAsTheQuietestWaterfallStart": 225,
-  "lastSuchWeek": "2021-08-15",
-  "weeksVolatileAndRising": 82,
-  "lastVolatileAndRisingWeek": "2021-08-15",
+  "weeksAsVolatileAsTheQuietestWaterfallStart": 88,
+  "lastSuchWeek": "2018-03-11",
+  "weeksVolatileAndRising": 15,
+  "lastVolatileAndRisingWeek": "2017-12-17",
   "todayVolRankShare": 0.031,
   "lowestVol": [
    "2026-09-06",

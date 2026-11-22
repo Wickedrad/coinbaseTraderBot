@@ -2,8 +2,9 @@
 """Round 17 M6 (description): how fast each leg of BTC.D ran, in logit per week, parent and child.
 
 logit BTC.D = log(BTC value / value of everything else), so -0.25 logit in a week means BTC lost 22% against
-everything else that week. Legs are the settled structures plus the three actual waterfall events (the only
-waterfalls, by Steven's rule), the 2021 fall and the Jun-Sep 2025 drop (listed apart, not as waterfalls).
+everything else that week. Legs are the settled structures plus the two actual waterfall events (the only
+waterfalls, by Steven's rule: the mid-July 2016 waterfall and the 2017-18 waterfall). Listed apart and never counted
+as waterfalls: the fall after the parent's top in 2017 (what the parent did next), the 2021 fall and the Jun-Sep 2025 drop.
 Run: python3 m6_leg_speeds.py
 """
 import json
@@ -14,8 +15,8 @@ d = c.btcd(); dl = c.lbtcd(); dls = c.lbtcd(True); w = c.weekly(dl); ws = c.week
 tot = c.load("TOTAL")
 LEGS = [  # kind, era, name, start, end (weekly closes)
     ("waterfall", "parent", "July 2016 waterfall", "2016-06-19", "2016-07-24"),
-    ("waterfall", "parent", "2017 waterfall after the parent's top", "2017-02-26", "2017-05-21"),
     ("waterfall", "child", "2017-18 waterfall", "2017-12-10", "2018-01-14"),
+    ("after the top", "parent", "2017 fall after the parent's top (not counted as a waterfall)", "2017-02-26", "2017-05-21"),
     ("other fall", "parent", "mid-structure fall (index step Dec 16 2016)", "2016-11-20", "2016-12-18"),
     ("other fall", "child", "2021 fall (mid-structure), whole stretch from the Sep 2019 high", "2019-09-08", "2021-05-16"),
     ("other fall", "child", "2021 fall, sharp part from the Jan 3 2021 high", "2021-01-03", "2021-05-16"),
@@ -40,7 +41,7 @@ for kind, era, name, a, b in LEGS:
          "btcVsRestMultiple": round(float(np.exp(seg.iloc[-1] - seg.iloc[0])), 3),
          "marketValueAtStartBn": round(float(tot.asof(a)) / 1e9, 1)}
     rows.append(r); print({k: r[k] for k in ("kind", "era", "leg", "weeks", "btcd", "moveLogit", "moveLogitStepsOut", "speedLogitPerWeek", "speedStepsOut", "fastest4WeeksLogit", "biggestWeekLogit", "marketValueAtStartBn")})
-# every 4-week fall of BTC.D on record, to see how rare waterfall speed is outside the three waterfalls
+# every 4-week fall of BTC.D on record, to see how rare waterfall speed is outside the two waterfalls
 d4 = w.diff(4).dropna()
 thr = -0.5
 hits = d4[d4 <= thr]
@@ -65,8 +66,9 @@ print("last 4 weeks", now4, "last 13 weeks", now13, "child weekly changes since 
 # is "volatile and rising" special to the waterfalls? The same two readings at the start of the other falls, and how common the state is
 wv = dls.diff().rolling(91).std().resample("W-SUN").last(); mv = ws.diff(13)
 others = [{"fall": n, "start": a, "volPerDay13w": round(float(wv.asof(pd.Timestamp(a))), 4), "move13wLogit": round(float(mv.asof(pd.Timestamp(a))), 3)}
-          for n, a in (("2021 fall, from the Sep 2019 high", "2019-09-08"), ("2021 fall, sharp part", "2021-01-03"), ("Jun-Sep 2025 drop", "2025-06-22"))]
-lo_v = min(b["volPerDay13w"] for b in before[:3]); lo_m = min(b["move13wLogit"] for b in before[:3])
+          for n, a in (("2017 fall after the parent's top", "2017-02-26"), ("2021 fall, from the Sep 2019 high", "2019-09-08"), ("2021 fall, sharp part", "2021-01-03"), ("Jun-Sep 2025 drop", "2025-06-22"))]
+wf = before[:-1]   # the waterfalls only (the last entry is today)
+lo_v = min(b["volPerDay13w"] for b in wf); lo_m = min(b["move13wLogit"] for b in wf)
 rec = wv["2014-06-01":]; state = ((wv >= lo_v) & (mv >= lo_m))["2014-06-01":]
 base = {"since": "2014-06-01", "weeks": int(len(rec)), "weeksAsVolatileAsTheQuietestWaterfallStart": int((rec >= lo_v).sum()), "lastSuchWeek": str(rec[rec >= lo_v].index[-1].date()),
         "weeksVolatileAndRising": int(state.sum()), "lastVolatileAndRisingWeek": str(state[state].index[-1].date()),

@@ -69,26 +69,37 @@ def fig_time_map():
 
 def fig_leg_speeds():
     L = json.load(open(c.HERE / "m6_leg_speeds.json"))
-    pick = {"July 2016 waterfall": "July 2016 waterfall (parent)", "2017 waterfall after the parent's top": "2017 waterfall after the top (parent)", "2017-18 waterfall": "2017-18 waterfall (child)",
-            "2021 fall, sharp part from the Jan 3 2021 high": "2021 fall, Jan to May (child, not a waterfall)", "Jun-Sep 2025 drop (inside the top)": "Jun to Sep 2025 drop (child, inside the top)",
-            "rise after the July 2016 waterfall": "rise after the July 2016 waterfall (parent)", "rise to the top": "rise to the top, Jan to Feb 2017 (parent)",
-            "rise after the 2017-18 waterfall": "rise 2018 to 2019 (child)", "rise to the Jun 22 2025 high": "rise 2023 to Jun 2025 (child)"}
-    rows = [(pick[r["leg"]], abs(r["speedLogitPerWeek"]), r["era"], r["weeks"]) for r in L["legs"] if r["leg"] in pick]
-    rows.insert(5, ("last 4 weeks to Nov 21 2026 (child)", abs(L["last4w"]) / 4, "child", 4))
-    fig, ax = plt.subplots(figsize=(10, 5.4)); style(ax, "x")
-    y = np.arange(len(rows))[::-1].astype(float); y[:3] += 0.9; y[3:6] += 0.45
-    for (name, v, era, wks), yy in zip(rows, y):
-        ax.barh(yy, v, height=0.62, color=PAR if era == "parent" else CHI)
-        ax.annotate(f"{v:.3f}  ({np.expm1(-v) * 100:+.0f}% a week for BTC against the rest, {wks:.0f} weeks)" if yy > y[6] else f"{v:.3f}  ({wks:.0f} weeks)", (v, yy), xytext=(5, 0), textcoords="offset points", va="center", color=INK2, fontsize=8.5)
-    ax.set_yticks(y); ax.set_yticklabels([r[0] for r in rows], color=INK, fontsize=8.8)
-    for txt, yy in (("the three waterfalls", y[0] + 0.55), ("other falls", y[3] + 0.55), ("rises", y[6] + 0.55)):
-        ax.annotate(txt, (0, yy), xytext=(2, 0), textcoords="offset points", color=MUTED, fontsize=8.5, fontweight="bold", va="center")
+    legs = {r["leg"]: r for r in L["legs"]}
+    # Steven, Nov 22 2026: only two waterfalls in 2016-18 (the mid-July 2016 waterfall and the 2017-18 waterfall).
+    groups = [("the two waterfalls", [("July 2016 waterfall", "July 2016 waterfall (parent)"), ("2017-18 waterfall", "2017-18 waterfall (child)")]),
+              ("after the parent's top (not counted as a waterfall)", [("2017 fall after the parent's top (not counted as a waterfall)", "2017 fall after the top, Feb to May (parent)")]),
+              ("other falls", [("2021 fall, sharp part from the Jan 3 2021 high", "2021 fall, Jan to May (child)"), ("Jun-Sep 2025 drop (inside the top)", "Jun to Sep 2025 drop (child, inside the top)"),
+                               (None, "last 4 weeks to Nov 21 2026 (child)")]),
+              ("rises", [("rise after the July 2016 waterfall", "rise after the July 2016 waterfall (parent)"), ("rise to the top", "rise to the top, Jan to Feb 2017 (parent)"),
+                         ("rise after the 2017-18 waterfall", "rise 2018 to 2019 (child)"), ("rise to the Jun 22 2025 high", "rise 2023 to Jun 2025 (child)")])]
+    fig, ax = plt.subplots(figsize=(10, 6.1)); style(ax, "x")
+    yy, ticks, labels = 0.0, [], []
+    for title, items in groups:
+        ax.annotate(title, (0, yy), xytext=(2, 0), textcoords="offset points", color=MUTED, fontsize=8.5, fontweight="bold", va="center")
+        yy -= 0.72
+        for key, label in items:
+            if key is None:
+                v, era, wks = abs(L["last4w"]) / 4, "child", 4
+            else:
+                r = legs[key]; v, era, wks = abs(r["speedLogitPerWeek"]), r["era"], r["weeks"]
+            ax.barh(yy, v, height=0.62, color=PAR if era == "parent" else CHI)
+            note = f"{v:.3f}  ({wks:.0f} weeks)" if title == "rises" else f"{v:.3f}  ({np.expm1(-v) * 100:+.0f}% a week for BTC against the rest, {wks:.0f} weeks)"
+            ax.annotate(note, (v, yy), xytext=(5, 0), textcoords="offset points", va="center", color=INK2, fontsize=8.5)
+            ticks.append(yy); labels.append(label); yy -= 1.0
+        yy -= 0.35
+    ax.set_yticks(ticks); ax.set_yticklabels(labels, color=INK, fontsize=8.8); ax.set_ylim(yy + 0.6, 0.55)
     ax.set_xlim(0, 0.44); ax.set_xlabel("speed of the leg: change in log(BTC value / value of everything else) per week, size only")
     ax.plot([], [], color=PAR, lw=6, label="parent (2016-17)"); ax.plot([], [], color=CHI, lw=6, label="child (2017-now)")
     ax.legend(loc="lower right", frameon=False, fontsize=8.5)
-    ax.set_title("The three waterfalls, all in 2016-18, ran at one speed (0.21 to 0.25 a week). No leg since January 2018 has come close", loc="left", fontsize=10.5, color=INK)
-    fig.text(0.125, -0.02, "All three waterfalls happened in the volatile market of 2016-18. A waterfall in today's much quieter market has not been observed,\n"
-             "so the old speed is a record of the past, not a template for the next one.", color=MUTED, fontsize=8, va="top")
+    ax.set_title("The two waterfalls, both in 2016-18, ran at one speed for five weeks each. No leg since January 2018 has come close", loc="left", fontsize=10.5, color=INK)
+    fig.text(0.125, -0.02, "Both waterfalls, and the 2017 fall after the parent's top, happened in the volatile market of 2016-18. A waterfall in today's much quieter\n"
+             "market has not been observed, so the old speed is a record of the past, not a template for the next one.\n"
+             "The 2017 fall after the top includes three index-step days; with them taken out it ran at 0.168 a week.", color=MUTED, fontsize=8, va="top")
     fig.savefig(c.HERE / "leg_speeds.png", dpi=170, bbox_inches="tight"); plt.close(fig)
 
 
