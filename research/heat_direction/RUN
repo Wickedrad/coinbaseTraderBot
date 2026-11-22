@@ -1,2 +1,2 @@
-stage=ladarb
-# round 5a, third pass: do trades print through the displayed bid or ask while a ladder looks crossed (a live book cannot allow that)
+stage=famsurvey
+# round 5b: survey of non-crypto hourly and daily series with standard (zero maker) fees, public endpoints, read only

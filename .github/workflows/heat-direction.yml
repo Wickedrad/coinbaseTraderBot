@@ -983,6 +983,22 @@ jobs:
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/hrpockets" out/hrpockets
 
+  # Round 5b (read only, public endpoints): which other Kalshi series are hourly or daily and pay no maker fee. A list, no data kept.
+  famsurvey:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'famsurvey')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: The series Kalshi lists, by category and frequency, and the shortest-lived ones with standard fees
+        run: |
+          set -o pipefail
+          python3 python/subminute/series_survey.py --snapshot bot/kalshi/feeScheduleSnapshot.json 2>&1 | tail -6 | cut -c1-24000
+
   # Round 5a (recorded days only): static arbitrage inside one hourly ladder (a higher strike's YES bid above a lower strike's YES ask) on the hourly grids, after both taker fees. Aggregates only.
   ladarb:
     needs: test
