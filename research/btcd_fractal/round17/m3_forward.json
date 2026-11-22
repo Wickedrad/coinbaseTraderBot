@@ -1,0 +1,745 @@
+{
+ "through": "2026-11-21",
+ "everyWeeks": 13,
+ "rows": [
+  {
+   "week": "2019-01-06",
+   "amplitudeFree": {
+    "b": 1.5,
+    "gainPerWeek": 0.566,
+    "parentDay": [
+     "2016-12-07",
+     "2016-12-11",
+     "2016-12-15"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.318,
+    "parentDay": [
+     "2016-07-29",
+     "2016-07-30",
+     "2016-07-30"
+    ]
+   }
+  },
+  {
+   "week": "2019-04-07",
+   "amplitudeFree": {
+    "b": 3.0,
+    "gainPerWeek": 0.634,
+    "parentDay": [
+     "2016-08-06",
+     "2016-08-06",
+     "2016-08-08"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.467,
+    "parentDay": [
+     "2016-07-30",
+     "2016-07-31",
+     "2016-08-03"
+    ]
+   }
+  },
+  {
+   "week": "2019-07-07",
+   "amplitudeFree": {
+    "b": 3.0,
+    "gainPerWeek": 0.71,
+    "parentDay": [
+     "2016-08-11",
+     "2016-08-11",
+     "2016-08-12"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.487,
+    "parentDay": [
+     "2016-08-11",
+     "2016-08-12",
+     "2016-08-12"
+    ]
+   }
+  },
+  {
+   "week": "2019-10-06",
+   "amplitudeFree": {
+    "b": 3.0,
+    "gainPerWeek": 0.778,
+    "parentDay": [
+     "2016-10-08",
+     "2016-10-08",
+     "2016-10-08"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.621,
+    "parentDay": [
+     "2016-11-07",
+     "2016-11-27",
+     "2016-12-11"
+    ]
+   }
+  },
+  {
+   "week": "2020-01-05",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.95,
+    "parentDay": [
+     "2016-07-29",
+     "2016-07-29",
+     "2016-07-29"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.78,
+    "parentDay": [
+     "2016-11-08",
+     "2016-11-10",
+     "2016-11-17"
+    ]
+   }
+  },
+  {
+   "week": "2020-04-05",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.981,
+    "parentDay": [
+     "2016-07-30",
+     "2016-07-30",
+     "2016-07-30"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.675,
+    "parentDay": [
+     "2016-10-17",
+     "2016-10-18",
+     "2016-10-22"
+    ]
+   }
+  },
+  {
+   "week": "2020-07-05",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 1.004,
+    "parentDay": [
+     "2016-07-30",
+     "2016-07-30",
+     "2016-07-30"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.763,
+    "parentDay": [
+     "2016-10-20",
+     "2016-10-21",
+     "2016-10-24"
+    ]
+   }
+  },
+  {
+   "week": "2020-10-04",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 1.02,
+    "parentDay": [
+     "2016-07-31",
+     "2016-07-31",
+     "2016-07-31"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.635,
+    "parentDay": [
+     "2016-10-10",
+     "2016-10-13",
+     "2016-10-13"
+    ]
+   }
+  },
+  {
+   "week": "2021-01-03",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.976,
+    "parentDay": [
+     "2016-08-01",
+     "2016-08-01",
+     "2016-08-02"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.66,
+    "parentDay": [
+     "2016-10-16",
+     "2016-10-17",
+     "2016-10-18"
+    ]
+   }
+  },
+  {
+   "week": "2021-04-04",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.955,
+    "parentDay": [
+     "2016-08-01",
+     "2016-08-02",
+     "2016-08-05"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.622,
+    "parentDay": [
+     "2016-08-14",
+     "2016-08-15",
+     "2016-08-19"
+    ]
+   }
+  },
+  {
+   "week": "2021-07-04",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.863,
+    "parentDay": [
+     "2016-09-05",
+     "2016-09-05",
+     "2016-09-05"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.424,
+    "parentDay": [
+     "2016-08-22",
+     "2016-09-05",
+     "2016-09-06"
+    ]
+   }
+  },
+  {
+   "week": "2021-10-03",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.897,
+    "parentDay": [
+     "2016-09-05",
+     "2016-09-05",
+     "2016-09-05"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.524,
+    "parentDay": [
+     "2017-01-12",
+     "2017-01-15",
+     "2017-01-30"
+    ]
+   }
+  },
+  {
+   "week": "2022-01-02",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.941,
+    "parentDay": [
+     "2016-09-05",
+     "2016-09-05",
+     "2016-09-05"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.63,
+    "parentDay": [
+     "2017-01-15",
+     "2017-01-16",
+     "2017-01-16"
+    ]
+   }
+  },
+  {
+   "week": "2022-04-03",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.919,
+    "parentDay": [
+     "2016-09-05",
+     "2016-09-05",
+     "2016-09-05"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.716,
+    "parentDay": [
+     "2017-01-15",
+     "2017-01-16",
+     "2017-01-18"
+    ]
+   }
+  },
+  {
+   "week": "2022-07-03",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.939,
+    "parentDay": [
+     "2016-09-05",
+     "2016-09-05",
+     "2016-09-05"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.777,
+    "parentDay": [
+     "2017-01-17",
+     "2017-01-18",
+     "2017-01-20"
+    ]
+   }
+  },
+  {
+   "week": "2022-10-02",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 0.994,
+    "parentDay": [
+     "2016-09-05",
+     "2016-09-05",
+     "2016-09-05"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.813,
+    "parentDay": [
+     "2017-01-15",
+     "2017-01-16",
+     "2017-01-16"
+    ]
+   }
+  },
+  {
+   "week": "2023-01-01",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 1.043,
+    "parentDay": [
+     "2016-09-05",
+     "2016-09-05",
+     "2016-09-05"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.865,
+    "parentDay": [
+     "2017-01-15",
+     "2017-01-16",
+     "2017-01-16"
+    ]
+   }
+  },
+  {
+   "week": "2023-04-02",
+   "amplitudeFree": {
+    "b": 2.0,
+    "gainPerWeek": 1.038,
+    "parentDay": [
+     "2017-02-02",
+     "2017-02-03",
+     "2017-02-04"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.885,
+    "parentDay": [
+     "2017-01-17",
+     "2017-01-21",
+     "2017-01-23"
+    ]
+   }
+  },
+  {
+   "week": "2023-07-02",
+   "amplitudeFree": {
+    "b": 2.3,
+    "gainPerWeek": 1.101,
+    "parentDay": [
+     "2017-02-21",
+     "2017-02-24",
+     "2017-02-25"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 1.101,
+    "parentDay": [
+     "2017-02-21",
+     "2017-02-24",
+     "2017-02-25"
+    ]
+   }
+  },
+  {
+   "week": "2023-10-01",
+   "amplitudeFree": {
+    "b": 2.0,
+    "gainPerWeek": 1.249,
+    "parentDay": [
+     "2017-02-23",
+     "2017-02-25",
+     "2017-02-27"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 1.157,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-26",
+     "2017-02-27"
+    ]
+   }
+  },
+  {
+   "week": "2023-12-31",
+   "amplitudeFree": {
+    "b": 2.3,
+    "gainPerWeek": 1.116,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 1.116,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  },
+  {
+   "week": "2024-03-31",
+   "amplitudeFree": {
+    "b": 2.0,
+    "gainPerWeek": 1.077,
+    "parentDay": [
+     "2017-02-21",
+     "2017-02-24",
+     "2017-02-25"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.917,
+    "parentDay": [
+     "2017-02-23",
+     "2017-02-26",
+     "2017-02-27"
+    ]
+   }
+  },
+  {
+   "week": "2024-06-30",
+   "amplitudeFree": {
+    "b": 2.0,
+    "gainPerWeek": 1.065,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.935,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  },
+  {
+   "week": "2024-09-29",
+   "amplitudeFree": {
+    "b": 3.0,
+    "gainPerWeek": 1.057,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.957,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  },
+  {
+   "week": "2024-12-29",
+   "amplitudeFree": {
+    "b": 3.0,
+    "gainPerWeek": 1.072,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.971,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  },
+  {
+   "week": "2025-03-30",
+   "amplitudeFree": {
+    "b": 3.0,
+    "gainPerWeek": 1.054,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.986,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  },
+  {
+   "week": "2025-06-29",
+   "amplitudeFree": {
+    "b": 3.5,
+    "gainPerWeek": 0.984,
+    "parentDay": [
+     "2016-09-16",
+     "2016-09-16",
+     "2016-09-16"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.885,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-25"
+    ]
+   }
+  },
+  {
+   "week": "2025-09-28",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 1.147,
+    "parentDay": [
+     "2016-09-20",
+     "2016-09-20",
+     "2016-09-20"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.881,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-25"
+    ]
+   }
+  },
+  {
+   "week": "2025-12-28",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 1.162,
+    "parentDay": [
+     "2016-09-20",
+     "2016-09-20",
+     "2016-09-22"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.901,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  },
+  {
+   "week": "2026-03-29",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 1.176,
+    "parentDay": [
+     "2016-09-20",
+     "2016-09-20",
+     "2016-09-20"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.922,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  },
+  {
+   "week": "2026-06-28",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 1.184,
+    "parentDay": [
+     "2016-09-20",
+     "2016-09-20",
+     "2016-09-23"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.939,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  },
+  {
+   "week": "2026-09-27",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 1.197,
+    "parentDay": [
+     "2016-09-20",
+     "2016-09-20",
+     "2016-09-22"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.959,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  },
+  {
+   "week": "2026-11-22",
+   "amplitudeFree": {
+    "b": 4.5,
+    "gainPerWeek": 1.204,
+    "parentDay": [
+     "2016-09-20",
+     "2016-09-20",
+     "2016-09-23"
+    ]
+   },
+   "amplitude2.3": {
+    "b": 2.3,
+    "gainPerWeek": 0.97,
+    "parentDay": [
+     "2017-02-24",
+     "2017-02-24",
+     "2017-02-24"
+    ]
+   }
+  }
+ ],
+ "firstReached": {
+  "amplitudeFree": {
+   "end of the July 2016 waterfall": {
+    "firstReached": "2019-01-06",
+    "reachedForGood": "2019-01-06"
+   },
+   "the high before the mid-structure fall": {
+    "firstReached": "2019-01-06",
+    "reachedForGood": null
+   },
+   "start of the grey box": {
+    "firstReached": "2023-04-02",
+    "reachedForGood": null
+   },
+   "end of the grey box": {
+    "firstReached": "2023-04-02",
+    "reachedForGood": null
+   },
+   "the parent's top (weekly close)": {
+    "firstReached": "2023-07-02",
+    "reachedForGood": null
+   }
+  },
+  "amplitude2.3": {
+   "end of the July 2016 waterfall": {
+    "firstReached": "2019-01-06",
+    "reachedForGood": "2019-01-06"
+   },
+   "the high before the mid-structure fall": {
+    "firstReached": "2019-10-06",
+    "reachedForGood": "2021-10-03"
+   },
+   "start of the grey box": {
+    "firstReached": "2021-10-03",
+    "reachedForGood": "2021-10-03"
+   },
+   "end of the grey box": {
+    "firstReached": "2021-10-03",
+    "reachedForGood": "2021-10-03"
+   },
+   "the parent's top (weekly close)": {
+    "firstReached": "2023-07-02",
+    "reachedForGood": "2023-07-02"
+   }
+  }
+ }
+}

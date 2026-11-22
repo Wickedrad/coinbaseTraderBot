@@ -1,0 +1,1691 @@
+{
+ "through": "2026-11-21",
+ "coverage": {
+  "BTC.D (logit)": "2014-04-01",
+  "BTC in USD": "2014-01-01",
+  "whole market value": "2014-03-01",
+  "alts without stablecoins (index steps out)": "2014-01-01",
+  "alts against BTC": "2014-01-01",
+  "ETH/BTC": "2016-06-25",
+  "OTHERS.D": "2014-03-01",
+  "XRP in USD": "2014-08-15",
+  "XRP/BTC": "2014-08-15",
+  "XLM in USD": "2015-09-30",
+  "XLM/BTC": "2015-09-30",
+  "DOGE in USD": "2014-01-23",
+  "DOGE/BTC": "2014-01-23",
+  "LTC in USD": "2014-01-01",
+  "LTC/BTC": "2014-01-01",
+  "US dollar index": "2014-01-02",
+  "S&P 500": "2016-07-01",
+  "US 10-year yield": "2014-01-01",
+  "US M2": "2014-01-31",
+  "USDT.D": "2015-03-08"
+ },
+ "stretches": {
+  "Jun 22 2025 high": [
+   {
+    "chart": "BTC.D (logit)",
+    "kind": "the map itself",
+    "parentMultiple": [
+     0.32,
+     1.746,
+     0.562,
+     0.958,
+     1.276
+    ],
+    "childMultiple": [
+     0.282,
+     4.346,
+     0.272,
+     0.999,
+     2.781
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "agreeCount": [
+     5,
+     5
+    ]
+   },
+   {
+    "chart": "BTC in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     0.869,
+     1.099,
+     1.085,
+     1.042,
+     1.435
+    ],
+    "childMultiple": [
+     0.929,
+     0.762,
+     4.466,
+     0.368,
+     5.91
+    ],
+    "sameDirection": [
+     true,
+     false,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     3,
+     5
+    ]
+   },
+   {
+    "chart": "whole market value",
+    "kind": "independent",
+    "parentMultiple": [
+     0.907,
+     1.088,
+     1.114,
+     1.053,
+     1.419
+    ],
+    "childMultiple": [
+     1.64,
+     0.419,
+     8.186,
+     0.378,
+     3.793
+    ],
+    "sameDirection": [
+     false,
+     false,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     2,
+     5
+    ]
+   },
+   {
+    "chart": "alts without stablecoins (index steps out)",
+    "kind": "independent",
+    "parentMultiple": [
+     2.79,
+     0.5,
+     1.11,
+     1.086,
+     1.114
+    ],
+    "childMultiple": [
+     3.186,
+     0.177,
+     17.187,
+     0.31,
+     2.254
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     4,
+     5
+    ]
+   },
+   {
+    "chart": "alts against BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     3.211,
+     0.455,
+     1.023,
+     1.042,
+     0.776
+    ],
+    "childMultiple": [
+     3.43,
+     0.232,
+     3.849,
+     0.843,
+     0.381
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     4,
+     5
+    ]
+   },
+   {
+    "chart": "ETH/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     null,
+     0.681,
+     0.764,
+     1.185,
+     1.046
+    ],
+    "childMultiple": [
+     3.463,
+     0.175,
+     4.418,
+     0.958,
+     0.299
+    ],
+    "sameDirection": [
+     null,
+     true,
+     false,
+     false,
+     false
+    ],
+    "agreeCount": [
+     1,
+     4
+    ]
+   },
+   {
+    "chart": "OTHERS.D",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     3.332,
+     0.443,
+     0.935,
+     1.095,
+     1.02
+    ],
+    "childMultiple": [
+     1.908,
+     0.476,
+     3.011,
+     0.703,
+     0.647
+    ],
+    "sameDirection": [
+     true,
+     true,
+     false,
+     false,
+     false
+    ],
+    "agreeCount": [
+     2,
+     5
+    ]
+   },
+   {
+    "chart": "XRP in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     0.929,
+     1.199,
+     0.875,
+     1.032,
+     0.829
+    ],
+    "childMultiple": [
+     7.844,
+     0.143,
+     5.516,
+     0.264,
+     5.281
+    ],
+    "sameDirection": [
+     false,
+     false,
+     false,
+     false,
+     false
+    ],
+    "agreeCount": [
+     0,
+     5
+    ]
+   },
+   {
+    "chart": "XRP/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     1.07,
+     1.091,
+     0.806,
+     0.99,
+     0.578
+    ],
+    "childMultiple": [
+     8.443,
+     0.188,
+     1.235,
+     0.716,
+     0.894
+    ],
+    "sameDirection": [
+     true,
+     false,
+     false,
+     true,
+     true
+    ],
+    "agreeCount": [
+     3,
+     5
+    ]
+   },
+   {
+    "chart": "XLM in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     1.25,
+     0.766,
+     1.656,
+     0.848,
+     0.772
+    ],
+    "childMultiple": [
+     5.393,
+     0.098,
+     11.673,
+     0.117,
+     2.728
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     true,
+     false
+    ],
+    "agreeCount": [
+     4,
+     5
+    ]
+   },
+   {
+    "chart": "XLM/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     1.439,
+     0.697,
+     1.527,
+     0.814,
+     0.538
+    ],
+    "childMultiple": [
+     5.805,
+     0.128,
+     2.614,
+     0.319,
+     0.462
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "agreeCount": [
+     5,
+     5
+    ]
+   },
+   {
+    "chart": "DOGE in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     0.739,
+     0.881,
+     1.006,
+     0.969,
+     0.976
+    ],
+    "childMultiple": [
+     4.415,
+     0.217,
+     207.101,
+     0.18,
+     1.63
+    ],
+    "sameDirection": [
+     false,
+     true,
+     true,
+     true,
+     false
+    ],
+    "agreeCount": [
+     3,
+     5
+    ]
+   },
+   {
+    "chart": "DOGE/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     0.851,
+     0.801,
+     0.927,
+     0.93,
+     0.68
+    ],
+    "childMultiple": [
+     4.753,
+     0.285,
+     46.375,
+     0.49,
+     0.276
+    ],
+    "sameDirection": [
+     false,
+     true,
+     false,
+     true,
+     true
+    ],
+    "agreeCount": [
+     3,
+     5
+    ]
+   },
+   {
+    "chart": "LTC in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     0.729,
+     0.956,
+     0.947,
+     1.065,
+     0.989
+    ],
+    "childMultiple": [
+     1.595,
+     0.296,
+     4.164,
+     0.26,
+     1.046
+    ],
+    "sameDirection": [
+     false,
+     true,
+     false,
+     false,
+     false
+    ],
+    "agreeCount": [
+     1,
+     5
+    ]
+   },
+   {
+    "chart": "LTC/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     0.839,
+     0.87,
+     0.873,
+     1.022,
+     0.69
+    ],
+    "childMultiple": [
+     1.717,
+     0.388,
+     0.932,
+     0.707,
+     0.177
+    ],
+    "sameDirection": [
+     false,
+     true,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     3,
+     5
+    ]
+   },
+   {
+    "chart": "US dollar index",
+    "kind": "macro",
+    "parentMultiple": [
+     1.039,
+     1.039,
+     1.021,
+     0.981,
+     1.0
+    ],
+    "childMultiple": [
+     0.969,
+     1.08,
+     0.917,
+     1.166,
+     0.935
+    ],
+    "sameDirection": [
+     false,
+     true,
+     false,
+     false,
+     true
+    ],
+    "agreeCount": [
+     2,
+     5
+    ]
+   },
+   {
+    "chart": "S&P 500",
+    "kind": "macro",
+    "parentMultiple": [
+     null,
+     1.003,
+     1.035,
+     1.007,
+     1.041
+    ],
+    "childMultiple": [
+     1.051,
+     1.069,
+     1.401,
+     0.943,
+     1.517
+    ],
+    "sameDirection": [
+     null,
+     true,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     3,
+     4
+    ]
+   },
+   {
+    "chart": "US 10-year yield",
+    "kind": "macro",
+    "parentMultiple": [
+     0.932,
+     1.496,
+     1.1,
+     0.924,
+     0.966
+    ],
+    "childMultiple": [
+     1.073,
+     0.645,
+     1.003,
+     2.171,
+     1.211
+    ],
+    "sameDirection": [
+     false,
+     false,
+     true,
+     false,
+     false
+    ],
+    "agreeCount": [
+     1,
+     5
+    ]
+   },
+   {
+    "chart": "US M2",
+    "kind": "macro",
+    "parentMultiple": [
+     1.004,
+     1.021,
+     1.007,
+     1.002,
+     1.006
+    ],
+    "childMultiple": [
+     1.003,
+     1.078,
+     1.347,
+     1.06,
+     1.02
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "agreeCount": [
+     5,
+     5
+    ]
+   }
+  ],
+  "today": [
+   {
+    "chart": "BTC.D (logit)",
+    "kind": "the map itself",
+    "parentMultiple": [
+     0.32,
+     1.746,
+     0.562,
+     0.958,
+     1.276
+    ],
+    "childMultiple": [
+     0.282,
+     4.346,
+     0.272,
+     0.999,
+     2.104
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "agreeCount": [
+     5,
+     5
+    ]
+   },
+   {
+    "chart": "BTC in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     0.869,
+     1.099,
+     1.085,
+     1.042,
+     1.435
+    ],
+    "childMultiple": [
+     0.929,
+     0.762,
+     4.466,
+     0.368,
+     3.515
+    ],
+    "sameDirection": [
+     true,
+     false,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     3,
+     5
+    ]
+   },
+   {
+    "chart": "whole market value",
+    "kind": "independent",
+    "parentMultiple": [
+     0.907,
+     1.088,
+     1.114,
+     1.053,
+     1.419
+    ],
+    "childMultiple": [
+     1.64,
+     0.419,
+     8.186,
+     0.378,
+     2.534
+    ],
+    "sameDirection": [
+     false,
+     false,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     2,
+     5
+    ]
+   },
+   {
+    "chart": "alts without stablecoins (index steps out)",
+    "kind": "independent",
+    "parentMultiple": [
+     2.79,
+     0.5,
+     1.11,
+     1.086,
+     1.114
+    ],
+    "childMultiple": [
+     3.186,
+     0.177,
+     17.187,
+     0.31,
+     1.603
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     4,
+     5
+    ]
+   },
+   {
+    "chart": "alts against BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     3.211,
+     0.455,
+     1.023,
+     1.042,
+     0.776
+    ],
+    "childMultiple": [
+     3.43,
+     0.232,
+     3.849,
+     0.843,
+     0.456
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     4,
+     5
+    ]
+   },
+   {
+    "chart": "ETH/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     null,
+     0.681,
+     0.764,
+     1.185,
+     1.046
+    ],
+    "childMultiple": [
+     3.463,
+     0.175,
+     4.418,
+     0.958,
+     0.379
+    ],
+    "sameDirection": [
+     null,
+     true,
+     false,
+     false,
+     false
+    ],
+    "agreeCount": [
+     1,
+     4
+    ]
+   },
+   {
+    "chart": "OTHERS.D",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     3.332,
+     0.443,
+     0.935,
+     1.095,
+     1.02
+    ],
+    "childMultiple": [
+     1.908,
+     0.476,
+     3.011,
+     0.703,
+     0.757
+    ],
+    "sameDirection": [
+     true,
+     true,
+     false,
+     false,
+     false
+    ],
+    "agreeCount": [
+     2,
+     5
+    ]
+   },
+   {
+    "chart": "XRP in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     0.929,
+     1.199,
+     0.875,
+     1.032,
+     0.829
+    ],
+    "childMultiple": [
+     7.844,
+     0.143,
+     5.516,
+     0.264,
+     2.442
+    ],
+    "sameDirection": [
+     false,
+     false,
+     false,
+     false,
+     false
+    ],
+    "agreeCount": [
+     0,
+     5
+    ]
+   },
+   {
+    "chart": "XRP/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     1.07,
+     1.091,
+     0.806,
+     0.99,
+     0.578
+    ],
+    "childMultiple": [
+     8.443,
+     0.188,
+     1.235,
+     0.716,
+     0.695
+    ],
+    "sameDirection": [
+     true,
+     false,
+     false,
+     true,
+     true
+    ],
+    "agreeCount": [
+     3,
+     5
+    ]
+   },
+   {
+    "chart": "XLM in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     1.25,
+     0.766,
+     1.656,
+     0.848,
+     0.772
+    ],
+    "childMultiple": [
+     5.393,
+     0.098,
+     11.673,
+     0.117,
+     1.538
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     true,
+     false
+    ],
+    "agreeCount": [
+     4,
+     5
+    ]
+   },
+   {
+    "chart": "XLM/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     1.439,
+     0.697,
+     1.527,
+     0.814,
+     0.538
+    ],
+    "childMultiple": [
+     5.805,
+     0.128,
+     2.614,
+     0.319,
+     0.437
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "agreeCount": [
+     5,
+     5
+    ]
+   },
+   {
+    "chart": "DOGE in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     0.739,
+     0.881,
+     1.006,
+     0.969,
+     0.976
+    ],
+    "childMultiple": [
+     4.415,
+     0.217,
+     207.101,
+     0.18,
+     0.595
+    ],
+    "sameDirection": [
+     false,
+     true,
+     true,
+     true,
+     true
+    ],
+    "agreeCount": [
+     4,
+     5
+    ]
+   },
+   {
+    "chart": "DOGE/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     0.851,
+     0.801,
+     0.927,
+     0.93,
+     0.68
+    ],
+    "childMultiple": [
+     4.753,
+     0.285,
+     46.375,
+     0.49,
+     0.169
+    ],
+    "sameDirection": [
+     false,
+     true,
+     false,
+     true,
+     true
+    ],
+    "agreeCount": [
+     3,
+     5
+    ]
+   },
+   {
+    "chart": "LTC in USD",
+    "kind": "independent",
+    "parentMultiple": [
+     0.729,
+     0.956,
+     0.947,
+     1.065,
+     0.989
+    ],
+    "childMultiple": [
+     1.595,
+     0.296,
+     4.164,
+     0.26,
+     0.519
+    ],
+    "sameDirection": [
+     false,
+     true,
+     false,
+     false,
+     true
+    ],
+    "agreeCount": [
+     2,
+     5
+    ]
+   },
+   {
+    "chart": "LTC/BTC",
+    "kind": "mirror of BTC.D",
+    "parentMultiple": [
+     0.839,
+     0.87,
+     0.873,
+     1.022,
+     0.69
+    ],
+    "childMultiple": [
+     1.717,
+     0.388,
+     0.932,
+     0.707,
+     0.148
+    ],
+    "sameDirection": [
+     false,
+     true,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     3,
+     5
+    ]
+   },
+   {
+    "chart": "US dollar index",
+    "kind": "macro",
+    "parentMultiple": [
+     1.039,
+     1.039,
+     1.021,
+     0.981,
+     1.0
+    ],
+    "childMultiple": [
+     0.969,
+     1.08,
+     0.917,
+     1.166,
+     0.988
+    ],
+    "sameDirection": [
+     false,
+     true,
+     false,
+     false,
+     true
+    ],
+    "agreeCount": [
+     2,
+     5
+    ]
+   },
+   {
+    "chart": "S&P 500",
+    "kind": "macro",
+    "parentMultiple": [
+     null,
+     1.003,
+     1.035,
+     1.007,
+     1.041
+    ],
+    "childMultiple": [
+     1.051,
+     1.069,
+     1.401,
+     0.943,
+     1.756
+    ],
+    "sameDirection": [
+     null,
+     true,
+     true,
+     false,
+     true
+    ],
+    "agreeCount": [
+     3,
+     4
+    ]
+   },
+   {
+    "chart": "US 10-year yield",
+    "kind": "macro",
+    "parentMultiple": [
+     0.932,
+     1.496,
+     1.1,
+     0.924,
+     0.966
+    ],
+    "childMultiple": [
+     1.073,
+     0.645,
+     1.003,
+     2.171,
+     1.381
+    ],
+    "sameDirection": [
+     false,
+     false,
+     true,
+     false,
+     false
+    ],
+    "agreeCount": [
+     1,
+     5
+    ]
+   },
+   {
+    "chart": "US M2",
+    "kind": "macro",
+    "parentMultiple": [
+     1.004,
+     1.021,
+     1.007,
+     1.002,
+     1.006
+    ],
+    "childMultiple": [
+     1.003,
+     1.078,
+     1.347,
+     1.06,
+     1.095
+    ],
+    "sameDirection": [
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "agreeCount": [
+     5,
+     5
+    ]
+   }
+  ]
+ },
+ "anchorsLevels": {
+  "BTC.D (logit)": {
+   "parent": [
+    61.84,
+    19.81,
+    34.58,
+    19.45,
+    18.64,
+    23.77
+   ],
+   "child": [
+    2.067,
+    0.583,
+    2.534,
+    0.6897,
+    0.6893,
+    1.45
+   ]
+  },
+  "BTC in USD": {
+   "parent": [
+    761.4,
+    661.5,
+    727.1,
+    788.7,
+    821.9,
+    1179.0
+   ],
+   "child": [
+    14690.0,
+    13650.0,
+    10400.0,
+    46440.0,
+    17090.0,
+    60080.0
+   ]
+  },
+  "whole market value": {
+   "parent": [
+    12130000000.0,
+    11000000000.0,
+    11970000000.0,
+    13330000000.0,
+    14040000000.0,
+    19940000000.0
+   ],
+   "child": [
+    379100000000.0,
+    621600000000.0,
+    260200000000.0,
+    2130000000000.0,
+    805700000000.0,
+    2042000000000.0
+   ]
+  },
+  "alts without stablecoins (index steps out)": {
+   "parent": [
+    5.014,
+    13.99,
+    6.994,
+    7.762,
+    8.426,
+    9.383
+   ],
+   "child": [
+    314.4,
+    1002.0,
+    177.0,
+    3042.0,
+    943.6,
+    1512.0
+   ]
+  },
+  "alts against BTC": {
+   "parent": [
+    0.006585,
+    0.02114,
+    0.009619,
+    0.009841,
+    0.01025,
+    0.007958
+   ],
+   "child": [
+    0.0214,
+    0.0734,
+    0.01702,
+    0.06549,
+    0.05521,
+    0.02517
+   ]
+  },
+  "ETH/BTC": {
+   "parent": [
+    null,
+    0.01925,
+    0.0131,
+    0.01001,
+    0.01186,
+    0.0124
+   ],
+   "child": [
+    0.02875,
+    0.09957,
+    0.01746,
+    0.07713,
+    0.07392,
+    0.02799
+   ]
+  },
+  "OTHERS.D": {
+   "parent": [
+    1.344,
+    4.476,
+    1.982,
+    1.854,
+    2.031,
+    2.071
+   ],
+   "child": [
+    5.603,
+    10.69,
+    5.085,
+    15.31,
+    10.77,
+    8.148
+   ]
+  },
+  "XRP in USD": {
+   "parent": [
+    0.006783,
+    0.006303,
+    0.007557,
+    0.00661,
+    0.00682,
+    0.005655
+   ],
+   "child": [
+    0.234,
+    1.835,
+    0.2623,
+    1.447,
+    0.3814,
+    0.9311
+   ]
+  },
+  "XRP/BTC": {
+   "parent": [
+    8.908e-06,
+    9.529e-06,
+    1.039e-05,
+    8.381e-06,
+    8.298e-06,
+    4.796e-06
+   ],
+   "child": [
+    1.593e-05,
+    0.0001345,
+    2.522e-05,
+    3.116e-05,
+    2.231e-05,
+    1.55e-05
+   ]
+  },
+  "XLM in USD": {
+   "parent": [
+    0.001827,
+    0.002284,
+    0.00175,
+    0.002898,
+    0.002458,
+    0.001898
+   ],
+   "child": [
+    0.1161,
+    0.626,
+    0.06118,
+    0.7141,
+    0.08379,
+    0.1289
+   ]
+  },
+  "XLM/BTC": {
+   "parent": [
+    2.4e-06,
+    3.452e-06,
+    2.407e-06,
+    3.675e-06,
+    2.99e-06,
+    1.61e-06
+   ],
+   "child": [
+    7.901e-06,
+    4.587e-05,
+    5.882e-06,
+    1.538e-05,
+    4.903e-06,
+    2.145e-06
+   ]
+  },
+  "DOGE in USD": {
+   "parent": [
+    0.0003341,
+    0.0002468,
+    0.0002174,
+    0.0002187,
+    0.0002119,
+    0.0002068
+   ],
+   "child": [
+    0.002587,
+    0.01142,
+    0.00248,
+    0.5137,
+    0.09268,
+    0.05512
+   ]
+  },
+  "DOGE/BTC": {
+   "parent": [
+    4.387e-07,
+    3.732e-07,
+    2.99e-07,
+    2.773e-07,
+    2.579e-07,
+    1.754e-07
+   ],
+   "child": [
+    1.761e-07,
+    8.368e-07,
+    2.385e-07,
+    1.106e-05,
+    5.423e-06,
+    9.175e-07
+   ]
+  },
+  "LTC in USD": {
+   "parent": [
+    5.583,
+    4.069,
+    3.891,
+    3.684,
+    3.924,
+    3.882
+   ],
+   "child": [
+    149.9,
+    239.1,
+    70.67,
+    294.3,
+    76.58,
+    39.72
+   ]
+  },
+  "LTC/BTC": {
+   "parent": [
+    0.007332,
+    0.006151,
+    0.005351,
+    0.004671,
+    0.004775,
+    0.003293
+   ],
+   "child": [
+    0.0102,
+    0.01752,
+    0.006795,
+    0.006336,
+    0.004481,
+    0.0006611
+   ]
+  },
+  "US dollar index": {
+   "parent": [
+    93.61,
+    97.29,
+    101.0,
+    103.1,
+    101.2,
+    101.1
+   ],
+   "child": [
+    93.87,
+    90.97,
+    98.28,
+    90.16,
+    105.1,
+    103.8
+   ]
+  },
+  "S&P 500": {
+   "parent": [
+    null,
+    2175.0,
+    2182.0,
+    2258.0,
+    2275.0,
+    2367.0
+   ],
+   "child": [
+    2652.0,
+    2786.0,
+    2979.0,
+    4174.0,
+    3934.0,
+    6910.0
+   ]
+  },
+  "US 10-year yield": {
+   "parent": [
+    1.691,
+    1.576,
+    2.357,
+    2.594,
+    2.397,
+    2.315
+   ],
+   "child": [
+    2.377,
+    2.55,
+    1.645,
+    1.651,
+    3.584,
+    4.95
+   ]
+  },
+  "US M2": {
+   "parent": [
+    12800000000000.0,
+    12850000000000.0,
+    13120000000000.0,
+    13210000000000.0,
+    13240000000000.0,
+    13320000000000.0
+   ],
+   "child": [
+    13850000000000.0,
+    13890000000000.0,
+    14970000000000.0,
+    20170000000000.0,
+    21390000000000.0,
+    23410000000000.0
+   ]
+  },
+  "USDT.D": {
+   "parent": [
+    0.04907,
+    0.06318,
+    0.05807,
+    0.05213,
+    0.1065,
+    0.1252
+   ],
+   "child": [
+    0.2152,
+    0.2381,
+    1.565,
+    2.739,
+    8.156,
+    8.544
+   ]
+  }
+ },
+ "followsMap": {
+  "Jun 22 2025 high": {
+   "BTC.D (logit)": {
+    "kind": "the map itself",
+    "matchOfWeeklyChanges": 0.52,
+    "shareOfNearbyMapsAsGood": 0.004
+   },
+   "BTC in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": 0.38,
+    "shareOfNearbyMapsAsGood": 0.17
+   },
+   "whole market value": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": 0.26,
+    "shareOfNearbyMapsAsGood": 0.183
+   },
+   "alts without stablecoins (index steps out)": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": 0.1,
+    "shareOfNearbyMapsAsGood": 0.076
+   },
+   "alts against BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.2,
+    "shareOfNearbyMapsAsGood": 0.147
+   },
+   "ETH/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.02,
+    "shareOfNearbyMapsAsGood": 0.169
+   },
+   "OTHERS.D": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.06,
+    "shareOfNearbyMapsAsGood": 0.277
+   },
+   "XRP in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": -0.02,
+    "shareOfNearbyMapsAsGood": 0.164
+   },
+   "XRP/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.33,
+    "shareOfNearbyMapsAsGood": 0.008
+   },
+   "XLM in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": 0.41,
+    "shareOfNearbyMapsAsGood": 0.127
+   },
+   "XLM/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.4,
+    "shareOfNearbyMapsAsGood": 0.077
+   },
+   "DOGE in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": -0.18,
+    "shareOfNearbyMapsAsGood": 0.939
+   },
+   "DOGE/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": -0.05,
+    "shareOfNearbyMapsAsGood": 0.655
+   },
+   "LTC in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": -0.32,
+    "shareOfNearbyMapsAsGood": 0.822
+   },
+   "LTC/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.1,
+    "shareOfNearbyMapsAsGood": 0.09
+   },
+   "US dollar index": {
+    "kind": "macro",
+    "matchOfWeeklyChanges": 0.01,
+    "shareOfNearbyMapsAsGood": 0.168
+   },
+   "S&P 500": {
+    "kind": "macro",
+    "matchOfWeeklyChanges": 0.09,
+    "shareOfNearbyMapsAsGood": 0.568
+   },
+   "US 10-year yield": {
+    "kind": "macro",
+    "matchOfWeeklyChanges": -0.03,
+    "shareOfNearbyMapsAsGood": 0.312
+   },
+   "US M2": {
+    "kind": "macro",
+    "matchOfWeeklyChanges": 0.35,
+    "shareOfNearbyMapsAsGood": 0.008
+   }
+  },
+  "today": {
+   "BTC.D (logit)": {
+    "kind": "the map itself",
+    "matchOfWeeklyChanges": 0.5,
+    "shareOfNearbyMapsAsGood": 0.006
+   },
+   "BTC in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": 0.24,
+    "shareOfNearbyMapsAsGood": 0.368
+   },
+   "whole market value": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": 0.17,
+    "shareOfNearbyMapsAsGood": 0.344
+   },
+   "alts without stablecoins (index steps out)": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": 0.09,
+    "shareOfNearbyMapsAsGood": 0.101
+   },
+   "alts against BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.19,
+    "shareOfNearbyMapsAsGood": 0.142
+   },
+   "ETH/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.06,
+    "shareOfNearbyMapsAsGood": 0.154
+   },
+   "OTHERS.D": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.08,
+    "shareOfNearbyMapsAsGood": 0.286
+   },
+   "XRP in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": 0.1,
+    "shareOfNearbyMapsAsGood": 0.077
+   },
+   "XRP/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.28,
+    "shareOfNearbyMapsAsGood": 0.095
+   },
+   "XLM in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": 0.44,
+    "shareOfNearbyMapsAsGood": 0.109
+   },
+   "XLM/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.34,
+    "shareOfNearbyMapsAsGood": 0.243
+   },
+   "DOGE in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": -0.2,
+    "shareOfNearbyMapsAsGood": 0.947
+   },
+   "DOGE/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": -0.11,
+    "shareOfNearbyMapsAsGood": 0.624
+   },
+   "LTC in USD": {
+    "kind": "independent",
+    "matchOfWeeklyChanges": -0.34,
+    "shareOfNearbyMapsAsGood": 0.859
+   },
+   "LTC/BTC": {
+    "kind": "mirror of BTC.D",
+    "matchOfWeeklyChanges": 0.02,
+    "shareOfNearbyMapsAsGood": 0.171
+   },
+   "US dollar index": {
+    "kind": "macro",
+    "matchOfWeeklyChanges": -0.05,
+    "shareOfNearbyMapsAsGood": 0.193
+   },
+   "S&P 500": {
+    "kind": "macro",
+    "matchOfWeeklyChanges": 0.06,
+    "shareOfNearbyMapsAsGood": 0.635
+   },
+   "US 10-year yield": {
+    "kind": "macro",
+    "matchOfWeeklyChanges": -0.04,
+    "shareOfNearbyMapsAsGood": 0.367
+   },
+   "US M2": {
+    "kind": "macro",
+    "matchOfWeeklyChanges": 0.37,
+    "shareOfNearbyMapsAsGood": 0.01
+   }
+  }
+ }
+}

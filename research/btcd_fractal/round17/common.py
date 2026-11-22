@@ -24,9 +24,9 @@ def child_anchors(top="today", cons=1):
 
 def load(n, col="c"):
     d = pd.read_csv(DATA / f"{n}_1d.csv")
-    d.index = pd.to_datetime(d.ts, unit="ms")
-    s = d[col].astype(float)
-    s = s[~s.index.duplicated()].sort_index()
+    d.index = pd.to_datetime(d.ts, unit="ms").dt.floor("D").values      # macro bars open mid-day; keep the calendar day
+    s = d[col].astype(float).sort_index()
+    s = s[~s.index.duplicated(keep="last")]
     return s[:THROUGH]
 
 

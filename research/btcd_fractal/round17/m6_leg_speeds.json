@@ -277,5 +277,83 @@
   ]
  },
  "last4w": -0.057,
- "last13w": -0.018
+ "last13w": -0.018,
+ "beforeEachWaterfall": [
+  {
+   "waterfall": "July 2016 waterfall",
+   "start": "2016-06-19",
+   "volPerDay13w": 0.0478,
+   "volPerDay26w": 0.048,
+   "move13wLogit": 0.088
+  },
+  {
+   "waterfall": "2017 waterfall after the parent's top",
+   "start": "2017-02-26",
+   "volPerDay13w": 0.028,
+   "volPerDay26w": 0.0351,
+   "move13wLogit": 0.273
+  },
+  {
+   "waterfall": "2017-18 waterfall",
+   "start": "2017-12-10",
+   "volPerDay13w": 0.0643,
+   "volPerDay26w": 0.0572,
+   "move13wLogit": 0.582
+  },
+  {
+   "waterfall": "today",
+   "start": "2026-11-21",
+   "volPerDay13w": 0.0084,
+   "volPerDay26w": 0.0084,
+   "move13wLogit": -0.018
+  }
+ ],
+ "otherFallsBeganFrom": [
+  {
+   "fall": "2021 fall, from the Sep 2019 high",
+   "start": "2019-09-08",
+   "volPerDay13w": 0.028,
+   "move13wLogit": 0.593
+  },
+  {
+   "fall": "2021 fall, sharp part",
+   "start": "2021-01-03",
+   "volPerDay13w": 0.031,
+   "move13wLogit": 0.485
+  },
+  {
+   "fall": "Jun-Sep 2025 drop",
+   "start": "2025-06-22",
+   "volPerDay13w": 0.0125,
+   "move13wLogit": 0.171
+  }
+ ],
+ "volatileStateBaseRate": {
+  "since": "2014-06-01",
+  "weeks": 652,
+  "weeksAsVolatileAsTheQuietestWaterfallStart": 225,
+  "lastSuchWeek": "2021-08-15",
+  "weeksVolatileAndRising": 82,
+  "lastVolatileAndRisingWeek": "2021-08-15",
+  "todayVolRankShare": 0.031,
+  "lowestVol": [
+   "2026-09-06",
+   0.0073
+  ],
+  "medianVolByYear": {
+   "2014": 0.0813,
+   "2015": 0.0286,
+   "2016": 0.0478,
+   "2017": 0.0498,
+   "2018": 0.0295,
+   "2019": 0.0202,
+   "2020": 0.0191,
+   "2021": 0.0313,
+   "2022": 0.015,
+   "2023": 0.0113,
+   "2024": 0.0144,
+   "2025": 0.0156,
+   "2026": 0.0087
+  }
+ }
 }

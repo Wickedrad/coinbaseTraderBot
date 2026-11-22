@@ -52,6 +52,26 @@ for t in hits.index:
         eps[-1].append(t)
 ep = [{"weeksEnding": [str(e[0].date()), str(e[-1].date())], "worst4w": round(float(d4[e[0]:e[-1]].min()), 3)} for e in eps]
 print("4-week falls of 0.5 logit or more (BTC down 39% against the rest in 4 weeks):", ep)
+# how much BTC.D was already moving before each waterfall began (daily logit changes, index-step days out), against today
+def tvol(t, weeks):
+    seg = dls[pd.Timestamp(t) - pd.Timedelta(weeks=weeks):pd.Timestamp(t)]
+    return round(float(seg.diff().dropna().std()), 4)
+before = [{"waterfall": n, "start": a, "volPerDay13w": tvol(a, 13), "volPerDay26w": tvol(a, 26), "move13wLogit": round(float(ws.asof(pd.Timestamp(a)) - ws.asof(pd.Timestamp(a) - pd.Timedelta(weeks=13))), 3)}
+          for k, e, n, a, b in LEGS if k == "waterfall"]
+before.append({"waterfall": "today", "start": str(c.THROUGH.date()), "volPerDay13w": tvol(c.THROUGH, 13), "volPerDay26w": tvol(c.THROUGH, 26), "move13wLogit": round(float(w.iloc[-1] - w.iloc[-14]), 3)})
+print("before each waterfall:", before)
 now4 = round(float(d4.iloc[-1]), 3); now13 = round(float(w.diff(13).iloc[-1]), 3)
 print("last 4 weeks", now4, "last 13 weeks", now13, "child weekly changes since 2023: sd", round(float(w["2023-01-01":].diff().std()), 4))
-(c.HERE / "m6_leg_speeds.json").write_text(json.dumps({"through": str(c.THROUGH.date()), "legs": rows, "fourWeekFalls": {"threshold": thr, "episodes": ep}, "last4w": now4, "last13w": now13}, indent=1))
+# is "volatile and rising" special to the waterfalls? The same two readings at the start of the other falls, and how common the state is
+wv = dls.diff().rolling(91).std().resample("W-SUN").last(); mv = ws.diff(13)
+others = [{"fall": n, "start": a, "volPerDay13w": round(float(wv.asof(pd.Timestamp(a))), 4), "move13wLogit": round(float(mv.asof(pd.Timestamp(a))), 3)}
+          for n, a in (("2021 fall, from the Sep 2019 high", "2019-09-08"), ("2021 fall, sharp part", "2021-01-03"), ("Jun-Sep 2025 drop", "2025-06-22"))]
+lo_v = min(b["volPerDay13w"] for b in before[:3]); lo_m = min(b["move13wLogit"] for b in before[:3])
+rec = wv["2014-06-01":]; state = ((wv >= lo_v) & (mv >= lo_m))["2014-06-01":]
+base = {"since": "2014-06-01", "weeks": int(len(rec)), "weeksAsVolatileAsTheQuietestWaterfallStart": int((rec >= lo_v).sum()), "lastSuchWeek": str(rec[rec >= lo_v].index[-1].date()),
+        "weeksVolatileAndRising": int(state.sum()), "lastVolatileAndRisingWeek": str(state[state].index[-1].date()),
+        "todayVolRankShare": round(float((rec <= rec.iloc[-1]).mean()), 3), "lowestVol": [str(rec.idxmin().date()), round(float(rec.min()), 4)],
+        "medianVolByYear": {int(k): round(float(v), 4) for k, v in rec.groupby(rec.index.year).median().items()}}
+print("other falls began from:", others); print("base rate:", base)
+(c.HERE / "m6_leg_speeds.json").write_text(json.dumps({"through": str(c.THROUGH.date()), "legs": rows, "fourWeekFalls": {"threshold": thr, "episodes": ep}, "last4w": now4, "last13w": now13,
+                                                        "beforeEachWaterfall": before, "otherFallsBeganFrom": others, "volatileStateBaseRate": base}, indent=1))
