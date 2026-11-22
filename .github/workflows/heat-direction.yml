@@ -1248,6 +1248,12 @@ jobs:
         run: |
           set -uo pipefail
           for s in $(echo "${{ matrix.series }}" | tr , ' '); do mkdir -p "data/history/kalshi/$s"; bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$s" "data/history/kalshi/$s" || echo "no $s on Drive"; echo "$s: $(ls data/history/kalshi/$s | grep -c jsonl) day file(s)"; done
+      - name: Resting-buy digest of the daily groups (the map of famdaily again, from the kept candles)
+        if: matrix.kind == 'daily'
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.fampockets --kind daily --hist ../data/history --assets "${{ matrix.assets }}" --out ../out/famd-${{ matrix.group }} 2>&1 | tail -10 | cut -c1-6000
       - name: Day types (build the first half of the days, check the next quarter, clean the last quarter; typed rules against label-shifted placebos)
         working-directory: python
         run: |

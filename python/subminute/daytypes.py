@@ -207,5 +207,8 @@ if __name__ == '__main__':
         w = load(a.hist, a.kind, [x.strip().upper() for x in a.assets.split(',')], a.series_fmt, log=lambda *x: None)
         r = run(w, a.out, shifts=a.shifts, log=lambda *x: None)
     print('HEATLOOP dt-summary ' + json.dumps({k: v for k, v in r.items() if k not in ('typed_rules', 'levels_all_rules')}, sort_keys=True, default=float), flush=True)
-    print('HEATLOOP dt-levels (net c per fill of the mean rule, by day type, day-cluster lower bound) ' + json.dumps(r['levels_all_rules'], sort_keys=True, default=float)[:9000], flush=True)
+    def cell(x):
+        return '-' if x is None else f"{x['net_c']:+.1f}c({x['days']}d,{x['fills']})"
+    lv = {k: ' | '.join(cell(v[b]) for b in ('build', 'check', 'clean')) for k, v in sorted(r['levels_all_rules'].items())}
+    print('HEATLOOP dt-levels (net c per fill of the mean rule, by day type: build | check | clean, days, fills) ' + json.dumps(lv, sort_keys=True), flush=True)
     print('HEATLOOP dt-typed ' + json.dumps(r['typed_rules'][:6], sort_keys=True, default=float)[:9000], flush=True)

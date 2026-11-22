@@ -1,2 +1,2 @@
-stage=famdaily,dtk15
-# round 5c: daily weather/Brent brackets (last 12 h, about 200 days) and day types on the BTC/ETH 15-minute candles (Steven, Nov 22 8:04 AM EST: type the days, keep an edge only for the type that holds)
+stage=dtread,dtk15
+# round 5c wave 2: day types with labels against the trailing 14 days on every kept data set (hourly, 15-minute families, daily weather, BTC/ETH 15-minute)
