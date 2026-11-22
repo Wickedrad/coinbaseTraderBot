@@ -694,7 +694,7 @@ jobs:
         run: |
           L="$RUNNER_TEMP/build.log"; ALL="$RUNNER_TEMP/twin-lines.txt"
           grep -E '^\[(twin|kalshi-replay-data)\]' "$L" 2>/dev/null | cut -c1-300 > "$ALL" || true
-          FRAME='^\[twin\] (ERROR|split|real 15|requote source|requote days|depth model fitted|decision model|CONFIRM|no cached|matched|confirm split)'
+          FRAME='^\[twin\] (ERROR|WARNING|split|real 15|requote source|requote days|depth model( fitted| schema|: asset| reused)|decision model|CONFIRM|no cached|matched|confirm split)'
           {
             echo "History twin build, run ${{ github.run_id }} (${{ job.status }}), on commit ${GITHUB_SHA:0:8}"; echo; echo '```'
             [ -s "$ALL" ] || echo "(no [twin] lines: the build failed before its first logging step (checkout or dependency install); the reason is an annotation of the run: gh run view ${{ github.run_id }})"

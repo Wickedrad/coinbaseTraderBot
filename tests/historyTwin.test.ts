@@ -14,10 +14,12 @@ import {
   CEM_SD_FLOOR, cemStep, clipParams, describeParams, eliteOf, eliteStats, fromSpace, generationCandidates, latinHypercube, mergeShards, parentsFrom, parseShard, rankResults, shardRange,
   SWEEP_VERSION, toSpace, type SweepShardFile,
 } from '../research/history/depthParamSearch';
-import { DEFAULT_DEPTH_SIM_PARAMS, DEPTH_PARAM_NAMES, DEPTH_PARAM_SPACE, readDepthModel, resolveDepthSimParams, type DepthSimParams } from '../research/history/depthSim';
-import { depthSims, fillDayFile } from '../research/goLiveTally';
+import { DEFAULT_DEPTH_SIM_PARAMS, DEPTH_PARAM_NAMES, DEPTH_PARAM_SPACE, readDepthModel, resolveDepthSimParams, type DepthModel, type DepthSimParams } from '../research/history/depthSim';
+import { depthModelNote, depthPicksNote, depthSims, fillDayFile, simulatorLine } from '../research/goLiveTally';
 import { synthModel, synthRequoteDay, writeEventsGz } from './twinSweepSynth';
 import { tmpDir } from './helpers';
+import { depthStudy } from '../research/depthStudy';
+import { synthRecording, writeRecording } from './depthStudySynth';
 
 const D0 = Date.UTC(2026, 9, 28);
 const MIN = 60_000;
@@ -252,6 +254,34 @@ test('the depth model must have been fitted on fit days only', () => {
   assert.throws(() => assertModelFitDays(f, split), /outside the fit set/);
   fs.writeFileSync(f, JSON.stringify({}));
   assert.throws(() => assertModelFitDays(f, split), /does not record/);
+});
+
+test('the per-asset blocks and the stress rows come out of the same fit: the fit-day check covers them, and a model file the simulator could not read is refused with it', async () => {
+  // a real study output (a synthetic recording of two assets of different scale) with the days the fit step records
+  const rec = path.join(tmpDir(), 'md-2026-11-11.jsonl.gz');
+  writeRecording(rec, synthRecording([{ name: 'BTC', size: 4000, trades: 30 }, { name: 'ETH', size: 200, trades: 3 }], { perClass: 3 }).events);
+  const fit = await depthStudy([rec], '15m');
+  const split = { fit: ['2026-11-11', '2026-11-12', '2026-11-15'], judge: ['2026-11-13', '2026-11-14'] };
+  const f = path.join(tmpDir(), 'depth_model.json');
+  const write = (m: unknown) => fs.writeFileSync(f, JSON.stringify(m));
+  const model = { days: ['2026-11-11', '2026-11-12'], ...fit };
+  assert.ok(model.byAsset.BTC.shape.some((r) => r.si !== undefined) && model.byAsset.BTC.stress, 'the study wrote stress rows and edges');
+  write(model); assertModelFitDays(f, split);
+  assert.ok(readDepthModel(f), 'and the model reads');
+  // a judged day among the days it was fitted on: refused, blocks or not
+  write({ ...model, days: ['2026-11-11', '2026-11-13'] });
+  assert.throws(() => assertModelFitDays(f, split), /overlap.*2026-11-13/);
+  write({ ...model, days: ['2026-11-11', '2026-11-18'] });
+  assert.throws(() => assertModelFitDays(f, split), /outside the fit set: 2026-11-18/);
+  write({ ...model, days: undefined });
+  assert.throws(() => assertModelFitDays(f, split), /does not record/);
+  // blocks the simulator cannot read as they were meant
+  const { schema: _s, ...noSchema } = model;
+  write(noSchema); assert.throws(() => assertModelFitDays(f, split), /need schema 2 or more/);
+  write({ ...model, schema: 3 }); assert.throws(() => assertModelFitDays(f, split), /refit it with this code/);
+  write({ ...model, byAsset: { ...model.byAsset, BTC: { ...model.byAsset.BTC, stress: undefined } } }); assert.throws(() => assertModelFitDays(f, split), /stress rows but no ascending stress edges/);
+  // an old pooled-only model (no schema, no blocks) is still a fit-day-checked model
+  write({ days: ['2026-11-11'], shape: fit.shape, flow: fit.flow }); assertModelFitDays(f, split);
 });
 
 test('the workflow spells out the same splits and the prep limits', () => {
@@ -1703,4 +1733,92 @@ test('depth_params_run: dev and custom dispatches only, a run id, best.json read
   assert.equal(without.length, 2); assert.ok(without.every((l) => !/--depth-params/.test(l)), 'no run, no flag');
   // the params are kept with the simulated twin on Drive (data/sweep is linked into it)
   assert.match(stepScript(y, 'Keep the simulated twin on Drive'), /\[ -d data\/sweep \] && ln -s "\$GITHUB_WORKSPACE\/data\/sweep" "\$S\/sweep"/);
+});
+
+test('the fill stage says which depth model it plays (schema and assets, or a WARNING for a pooled-only one) and which rows fed the books, and the build comment keeps both', async () => {
+  const work = tmpDir(), day = '2026-11-13', src = path.join(work, 'src');
+  fs.mkdirSync(src);
+  writeEventsGz(path.join(src, `md-${day}.jsonl.gz`), synthRequoteDay({ day, assets: ['BTC', 'ETH'], windows: 2, seed: 5 }));
+  const run = (name: string, model: object) => {
+    const f = path.join(work, `${name}.json`); fs.writeFileSync(f, JSON.stringify(model));
+    const r = spawnSync(process.execPath, ['--import', 'tsx', 'research/historyTwin.ts', '--stage', 'fill', '--src', src, '--dst', path.join(work, name), '--how', 'depth', '--depth-model', f], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout.split('\n').filter((l) => l.startsWith('[twin]'));
+  };
+  const picks = (lines: string[]) => /simulator: .*; books drawn from stress rows (\d+)\/(\d+)\/(\d+), asset rows (\d+), pooled rows (\d+) \((\d+) of an asset with no block\)$/.exec(lines.find((l) => /simulator: /.test(l))!)!.slice(1).map(Number);
+  // an old, pooled-only model (a study of before schema 2, or a stale study on the ref): the warning, and every book from the pooled rows
+  const pooled = synthModel();
+  const old = run('old', pooled);
+  assert.ok(old.includes('[twin] WARNING: the depth model is pooled only (schema 0): no asset or stress rows, every book comes from the pooled rows (the depth study on this ref may be an old copy)'), old.join('\n'));
+  assert.ok(!old.some((l) => /^\[twin\] depth model schema/.test(l)));
+  const [s0, s1, s2, a0, p0, u0] = picks(old);
+  assert.deepEqual([s0, s1, s2, a0], [0, 0, 0, 0]);
+  assert.ok(p0 > 100 && p0 === u0, 'all of them from pooled rows, none of them from an asset that had a block');
+  // a model with a BTC block: the schema line names it, BTC's books come from its rows, ETH's (no block) from the pooled rows
+  const blocked = run('blocked', { ...pooled, schema: 2, byAsset: { BTC: { shape: pooled.shape, flow: pooled.flow } } });
+  assert.ok(blocked.includes('[twin] depth model schema 2, assets BTC'), blocked.join('\n'));
+  assert.ok(!blocked.some((l) => /WARNING/.test(l)));
+  const [b0, b1, b2, ba, bp, bu] = picks(blocked);
+  assert.ok(ba > 50 && bu > 50 && bp === bu && b0 + b1 + b2 === 0, `${[b0, b1, b2, ba, bp, bu]}`);
+  assert.equal(ba + bu, p0, 'every anchor of the day is counted once, from an asset row or a pooled row');
+  // the in-stream route (the sweep's, and the fast run's) reports the same counts per day, for the one simulator its day used
+  const model = { ...pooled, schema: 2, byAsset: { BTC: { shape: pooled.shape, flow: pooled.flow } } } as unknown as DepthModel;
+  const day2 = await filledDayRows(synthRequoteDay({ day, assets: ['BTC', 'ETH'], windows: 2, seed: 5 }), day, 'depth', new Map(), model, undefined, { diag: false });
+  assert.deepEqual([day2.picks.stress, day2.picks.asset, day2.picks.pooled, day2.picks.unblocked], [[0, 0, 0], ba, 0, bu], 'filledDayRows says which rows fed the day');
+  assert.equal(depthPicksNote([day2.picks, day2.picks]), `books drawn from stress rows 0/0/0, asset rows ${2 * ba}, pooled rows ${2 * bu} (${2 * bu} of an asset with no block)`, 'and the note sums days');
+  // ... and the line the in-stream route prints is the one the file route printed, byte for byte: the same function builds both (a fast run's comment carries `books drawn from` too)
+  const fileLine = blocked.find((l) => / simulator: /.test(l))!;
+  assert.equal(simulatorLine(path.join(work, 'blocked'), [day2.sim], [day2.picks]), fileLine, 'the in-stream route\'s simulator line equals the file route\'s');
+  assert.equal(depthModelNote(model), blocked.find((l) => /^\[twin\] depth model schema/.test(l)), 'and so does the model line: one function says which model is played');
+  // the workflow's build comment keeps the framing lines first: the schema line and the warning are among them
+  const frame = new RegExp(/FRAME='([^']+)'/.exec(fs.readFileSync('.github/workflows/history-twin.yml', 'utf8'))![1]);
+  assert.ok(frame.test('[twin] depth model schema 2, assets BTC ETH SOL XRP') && frame.test(old.find((l) => /WARNING/.test(l))!) && frame.test('[twin] depth model: asset BTC: 9 samples'), 'the framing lines');
+  // a fast run that reuses a model fits nothing, so it has no asset lines: the line that names the run to read them in is a framing line too (and the fitted line of a run that fits)
+  assert.ok(frame.test('[twin] depth model reused from run 123456: fitted on 2026-11-11 2026-11-12 2026-11-15 (exactly the fit days), schema 2; real days tag r15m-1') && frame.test('[twin] depth model fitted on fit days only (checked against the split\'s 3 fit and 4 judged day(s))'), 'the reuse line and the fitted line');
+  assert.ok(!frame.test(old.find((l) => /simulator: /.test(l))!), 'the simulator line is a detail line, not a framing one');
+});
+
+test('every stage that plays the depth model for the judged days says which model and which rows (a fast run reads no asset lines: these two are its R1 signs)', () => {
+  // The fill stage (full route) and, where there is one, the stage `--stage fastrows` dispatches to (the in-stream route) must print the model line and the simulator line
+  // the RUNBOOK (3.0 check 1b, 3.2.1) tells the reader to look for. A route that built the days without them would read as a stale ref or give no sign of the model at all.
+  const src = fs.readFileSync('research/historyTwin.ts', 'utf8');
+  const stageFn = (stage: string) => { const m = new RegExp(`if \\(stage === '${stage}'\\) return (\\w+)\\(`).exec(src); return m ? m[1] : undefined; };
+  const body = (fn: string) => { const i = src.indexOf(`async function ${fn}(`); assert.ok(i >= 0, `${fn} exists`); const j = src.indexOf('\n}\n', i); return src.slice(i, j); };
+  const stages = ['fill', 'fastrows'].map((s) => [s, stageFn(s)] as const).filter(([, fn]) => fn);
+  assert.ok(stages.some(([s]) => s === 'fill'), 'the fill stage is dispatched');
+  for (const [s, fn] of stages) {
+    const b = body(fn!);
+    assert.match(b, /depthModelNote\(/, `stage ${s} prints depthModelNote(the model it plays)`);
+    assert.match(b, /simulatorLine\(/, `stage ${s} prints simulatorLine(...) with the days' picks, not its own copy of the line`);
+  }
+});
+
+test('the dev verdict reads the twin by asset (report only): lives and medians per asset, real against twin; the confirm verdict prints none of it, and the checks do not move', async () => {
+  // BTC is 10x busier and deeper than ETH in the real rows; the twin has one scale for both
+  const ix = (n: string) => FEATURES.indexOf(n as (typeof FEATURES)[number]);
+  const build = (src: string, scale: (a: string) => number, seed: number): Row[] => rows(src, 0, seed).map((r, i) => {
+    const a = i % 2 ? 'BTC' : 'ETH', f = [...r.f];
+    f[ix('tradesPerMin')] = 300 * scale(a) * (1 + 0.1 * f[ix('tradesPerMin')]); f[ix('depth10')] = 6 + Math.log(scale(a)) + 0.1 * f[ix('depth10')]; f[ix('tradeSize')] = 1 + 0.1 * f[ix('tradeSize')];
+    return { ...r, ticker: `KX${a}15M-26OCT${20 + (i % 3)}${String(i).padStart(4, '0')}`, f };
+  });
+  const real = build('real', (a) => (a === 'BTC' ? 10 : 1), 41), twin = build('twin', () => 3, 42);
+  const dir = (name: 'dev' | 'confirm') => { const out = verdictDir(name, () => twin); fs.writeFileSync(path.join(out, 'features-real.json'), JSON.stringify(real)); for (const s of ['requote', 'depth']) fs.writeFileSync(path.join(out, `features-${s}.json`), JSON.stringify(twin.map((x) => ({ ...x, src: s })))); return out; };
+  const dev = await verdictLines(dir('dev'));
+  for (const src of ['requote', 'depth']) {
+    const l = dev.lines.filter((x) => x.startsWith(`[twin] ${src} by asset `));
+    assert.equal(l.length, 2, 'BTC and ETH only: SOL and XRP have no lives');
+    const btc = l.find((x) => x.includes('by asset BTC'))!, eth = l.find((x) => x.includes('by asset ETH'))!;
+    const re = /^\[twin\] \w+ by asset (BTC|ETH): lives 150 real\/150 twin; medians real\/twin tradesPerMin ([\d.]+)\/([\d.]+), depth10 ([\d.]+)\/([\d.]+), tradeSize ([\d.]+)\/([\d.]+); AUC [01]\.\d{3} \(report only\)$/;
+    const [, , bt, bw, bd, bdw] = re.exec(btc)!.map(Number), [, , et, ew] = re.exec(eth)!.map(Number);
+    assert.ok(bt > 2500 && bt < 3500 && bw > 800 && bw < 1000, `BTC real ${bt}, twin ${bw}: 3,000 against the twin's 900`);
+    assert.ok(et > 250 && et < 350 && ew > 800 && ew < 1000, `ETH real ${et}, twin ${ew}`);
+    assert.ok(bd > bdw && bd - 6 > 2 && Math.abs(bdw - (6 + Math.log(3))) < 0.2, `depth10 (log1p): BTC real ${bd}, twin ${bdw}`);
+    assert.ok(btc.length < 300 && !/KX[A-Z]|\$/.test(btc), 'short, counts and numbers only');
+    assert.ok(dev.lines.findIndex((x) => x === btc) > dev.lines.findIndex((x) => x.startsWith(`[twin] ${src}: by regime`)), 'after the by-regime line');
+  }
+  // report only: the checks and the AUC are those of the same rows without the asset lines (the headline AUC is computed over every row)
+  assert.deepEqual(Object.keys(dev.report.twins.depth.checks), ['indistinguishable', 'noBias', 'errorWithinNoise', 'sameActivity']);
+  assert.ok(dev.report.twins.depth.auc > 0.9);
+  const conf = await verdictLines(dir('confirm'), { n: 1, note: 'a look' });
+  assert.ok(!conf.lines.some((l) => /by asset|tradesPerMin|depth10/.test(l)), 'blind: no per-asset line on a confirm verdict');
 });

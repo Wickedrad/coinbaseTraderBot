@@ -14,9 +14,40 @@
 //     filled at no cost: the Oct 27-30 check had depth at +$880 against the real quotes' -$4.51.
 // Every draw is seeded by the contract and the anchor's time, so a day plays out the same wherever it is replayed (the
 // GitHub runners and the Windows trainer, which bundles this file).
+//
+// Per asset, and by a causal stress state (Nov 22, round R1; schema 2 of the model file, research/history/depthModelVersion.ts):
+// the four assets are not one market (the real days: BTC trades ~3,000 a minute, ETH/SOL/XRP 190-300; BTC's books are ~10x deeper),
+// and inside one asset the real books carry one state factor: a contract that is moving NOW has a wide, thin book and small
+// trades. So a model file also carries `byAsset`: per asset, the same shape and flow rows, keyed by asset, and by a stress bucket
+// of 0 calm, 1 normal, 2 active. The chain of rows a contract's book is drawn from (written down, tested):
+//   (asset, stress) row  ->  (asset) row  ->  pooled row (then the pooled table's own nearest cell).
+// A row that is missing or thin (shape: under MIN_SHAPE_SAMPLES samples, flow: MIN_FLOW_SECONDS or fewer seconds: the study's own
+// filters) is never used: the contract backs off to the next row of the chain. A ticker whose asset the model has no block for
+// uses the pooled rows, and a model WITHOUT `byAsset` plays exactly as it always did (bit for bit; the golden hashes hold).
+// The stress of a contract at time t is the mean absolute change of its MINUTE mid (the quote at the minute stamps, cents) over
+// its last STRESS_MINUTES completed minutes (`minuteStress` below: the one definition the study and the simulator share), bucketed
+// with the model's own edges for that asset. It reads only quotes stamped at or before t, so no book at time t sees a later quote.
+//
+// What `play` actually reads of a model (Nov 22, R1 fix round 1): from the chosen SHAPE row only levelQuoted, levelFilledP50 and P90,
+// tradesPerMin.mean, tradeSize p50 and p90, takerYesShare, topChangesPerMin.mean and gapShare (byMove and the model's `informed` block
+// only behind USE_NEXT_MOVE, which is off). The FLOW rows (pooled, per asset and per stress: `flow`, `byAsset.*.flow`, `flowRow`), the
+// `informed` block, the rows' spread and wall fields and `fit` are written by the study and backed off here, but NOT played: a change that
+// is meant to make one asset's twin different has to change the shape-row fields above, or make `play` read `flowRow`.
+//
+// The empty side (schema 2, `gapShare`) is netted against the twin's own unquoted lead. The requote layer quotes a contract for the first time a
+// minute after its open (its first candle ends then), so 5 of the twin's 61 15 s slots are unquoted before any draw is made, which is
+// about the mean real unquoted mass already (real quotedShare p10/p50/p90 0.85/0.915/0.966): a draw of the real empty-side share on top of
+// it counts that time twice and pushes the twin's quotedShare below the real one. The study therefore also records, per asset and pooled,
+// the real mean UNQUOTED share of a whole life (`lives.unquotedShare`: the lead before the first quote plus every empty or crossed
+// instant, over all slots), and the simulator draws only what is missing: with L the slots the contract is unquoted before its first
+// quote (counted at its first play: the time of that quote from its open, plus the slot taken just before it) and S = 61,
+// p = max(0, (unquotedShare * S - L) / (S - L)), spread over the rows by their own gapShares (scale = p / the rows' mean gapShare, at most 1: the
+// draw is never above what the study measured), so the twin's expected total unquoted share is the real one, and never more.
 
 import fs from 'fs';
+import { assetFromSeries } from '../../bot/marketdata/seriesDiscovery';
 import { hashStr } from './historyReplay';
+import { DEPTH_MODEL_SCHEMA } from './depthModelVersion';
 
 export const DEPTH_LEVELS = 10;
 /** Prices in tenths of a cent: Kalshi quotes in tenths below 10 cents and above 90 cents, whole cents between. */
@@ -25,6 +56,8 @@ export const tickAt = (px: number) => (px < 100 || px > 900 ? 1 : 10);
 /** Ticks between a price and the best price on its side (both in tenths of a cent). */
 export const ticksFrom = (px: number, best: number) => Math.round(Math.abs(px - best) / tickAt(best));
 const MIN = 60_000;
+/** The time between the replay's quotes (research/history/historyReplay.ts requotes every quarter-minute; research/goLiveTally.ts ANCHOR_MS). */
+const ANCHOR_MS = 15_000;
 /** The study's buckets (research/depthStudy.ts): minutes to close, mid in cents, queue size in contracts. */
 const TAU_EDGES = [1, 3, 6, 10, 15, 60, Infinity];
 const MID_EDGES = [10, 25, 40, 60, 75, 90, 101];
@@ -34,14 +67,101 @@ const bucket = (edges: number[], x: number) => { const i = edges.findIndex((e) =
 type Quant = { n: number; mean: number; p10: number; p50: number; p90: number };
 /** The trade flow over a quarter-minute by where the mid went (research/depthStudy.ts byMove: down, flat, up). */
 export interface MoveFlow { segs: number; tradesPerSec: number; takerYesShare: number | null }
-export interface ShapeCell { ti: number; mi: number; samples: number; levelQuoted: number[]; levelFilledP50: number[]; levelFilledP90: number[]; tradesPerMin: Quant; tradeSize: Quant; takerYesShare: number | null; byMove?: MoveFlow[]; topChangesPerMin?: Quant }
+export interface ShapeCell { ti: number; mi: number;
+  /** The stress bucket of an asset block's row (0 calm, 1 normal, 2 active); absent: the asset's row over every stress (and the pooled rows). */
+  si?: number;
+  samples: number; levelQuoted: number[]; levelFilledP50: number[]; levelFilledP90: number[]; tradesPerMin: Quant; tradeSize: Quant; takerYesShare: number | null; byMove?: MoveFlow[]; topChangesPerMin?: Quant;
+  /** The share of 15 s instants (after the contract was first quoted) at which the book had an empty side or was crossed or locked: the
+   *  simulator leaves one side of the book empty at the end of that share of its quarter-minutes. Absent in an older model: never. */
+  gapShare?: number }
+/** What the study measured of whole contract lives (open to close, in the judge's 15 s slots): the mean share of a life's slots that were
+ *  NOT quoted (no book yet, an empty side, a crossed or locked book), and the mean slots before the first quote. The simulator nets
+ *  its empty-side draw against it (see the header). Absent in an older model: the rows' own `gapShare` is drawn as measured. */
+export interface LifeStats { n: number; unquotedShare: number; leadSlots?: number }
+/** Fewest samples a shape row of an asset block needs before it feeds a book (the study's own filter: it writes no thinner row). */
+export const MIN_SHAPE_SAMPLES = 20;
+/** Most seconds a flow row of an asset block may hold and still be refused (the study writes only rows over this). */
+export const MIN_FLOW_SECONDS = 60;
 /** Fewest quarter-minutes a cell's flow by move needs before it is used (else the cell's flow over all moves). */
 export const MOVE_MIN_SEGS = 20;
 /** Where the mid goes: 0 down, 1 flat (within half a tick), 2 up. Mids in cents (as research/depthStudy.ts moveOf). */
 export const moveOf = (from: number, to: number): 0 | 1 | 2 => { const half = from < 10 || from > 90 ? 0.05 : 0.5, d = to - from; return d < -half ? 0 : d > half ? 2 : 1; };
-export interface FlowCell { offset: number; qi: number; seconds: number; addPerSec: number; cancelPerSec: number; addSize: Quant; cancelSize: Quant }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The causal stress state: how much a contract is moving right now, from what its history already shows.
+
+/** The assets a ticker is read as when the model names none of its own (the four 15-minute series the twin replays). */
+export const DEPTH_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'] as const;
+/** A contract's asset from its ticker (KXBTC15M-26NOV11..., KXETHD-...): the bot's own series helper (bot/marketdata/seriesDiscovery.ts
+ *  assetFromSeries) on the ticker's series, over `assets`; undefined for an asset not among them (its books use the pooled rows). */
+export const assetOfTicker = (ticker: string, assets: Iterable<string> = DEPTH_ASSETS): string | undefined => assetFromSeries(ticker.split('-')[0], assets);
+
+/** Completed minutes the stress averages over. The definition (no quantity from minute m or later reaches a book before minute m ends):
+ *  a contract's MINUTE mid M[k] is the mid of its quote stamped at minute k (cents; the requote layer reproduces the real one to
+ *  0.03-0.05c); at a time t in minute m the minutes completed are m-1, m-2 and m-3, and the stress is the mean of |M[k] - M[k-1]|
+ *  for k = m, m-1, m-2 whose two mids exist: the quote stamped m*MIN is at or before t, so it is history. With no such pair (a
+ *  contract in its first minute, or with gaps) there is no stress and the asset's own row is used. One number, because the real
+ *  within-asset factor is "moving now" (spread, quote changes, mid moves, trades up; sizes down) and the minute mid is what the
+ *  requote day and the recording both carry the same way. */
+export const STRESS_MINUTES = 3;
+/** The minute mid in cents from a quote's bid and ask in tenths of a cent (integers: the study and the simulator get bit-identical mids). */
+export const minuteMidCents = (bidTenths: number, askTenths: number): number => (bidTenths + askTenths) / 20;
+/** The stress at minute `minute` (see STRESS_MINUTES); `midAt(k)` is the minute mid at stamp k, undefined when there is none. Rounded to
+ *  1e-6 so a stress that sits on an edge is on it for the study and for the simulator alike. */
+export function minuteStress(midAt: (minute: number) => number | undefined, minute: number): number | undefined {
+  let sum = 0, n = 0;
+  for (let k = minute; k > minute - STRESS_MINUTES; k--) {
+    const a = midAt(k), b = midAt(k - 1);
+    if (a !== undefined && b !== undefined) { sum += Math.abs(a - b); n++; }
+  }
+  return n ? Math.round((sum / n) * 1e6) / 1e6 : undefined;
+}
+/** The grid the study accumulates stress on and cuts its terciles at (cents): bin f holds a stress up to STRESS_GRID[f] (above the last
+ *  value, bin STRESS_GRID.length). The stored edges are values of this grid, so the study's buckets and the simulator's are the same. */
+export const STRESS_GRID = [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 7.5, 10, 15, 25] as const;
+export function stressBin(v: number): number { for (let f = 0; f < STRESS_GRID.length; f++) if (v <= STRESS_GRID[f]) return f; return STRESS_GRID.length; }
+/** The bucket of a stress for an asset's edges: calm (0) up to the first edge, normal (1) up to the second, active (2) above. */
+export const stressBucket = (edges: readonly [number, number], v: number): 0 | 1 | 2 => (v <= edges[0] ? 0 : v <= edges[1] ? 1 : 2);
+
+/** The life of a contract the judge's quotedShare counts over: a 15-minute contract, one slot every ANCHOR_MS from its open to its close,
+ *  both ends in (61 slots). The twin replays 15-minute contracts only. */
+export const LIFE_MS = 15 * MIN;
+export const LIFE_SLOTS = LIFE_MS / ANCHOR_MS + 1;
+/** The share of the rows' `gapShare` the simulator draws for a contract (0 to 1), so that its expected unquoted slots are the real ones and
+ *  no more: `unquotedShare` is the real mean unquoted share of a life, `meanGap` the rows' mean empty-side share (after the first quote),
+ *  `leadSlots` the slots the contract is unquoted before its first quote. The draw p = max(0, (unquotedShare * S - L) / (S - L)) is the
+ *  per-slot share that, over the S - L slots after the first quote, makes up what the real unquoted mass has beyond the lead the twin
+ *  already has; it is carried by the rows as a scale of their own shares, never above 1 (a real lead longer than the twin's is not made up
+ *  with more empty sides than the study measured). No `unquotedShare`, or rows with no share: 1, the rows as measured. */
+export function gapScale(unquotedShare: number | undefined, meanGap: number, leadSlots: number): number {
+  if (unquotedShare === undefined || !(meanGap > 0)) return 1;
+  const L = Math.min(LIFE_SLOTS - 1, Math.max(1, leadSlots));
+  const p = Math.max(0, (unquotedShare * LIFE_SLOTS - L) / (LIFE_SLOTS - L));
+  return Math.min(1, p / meanGap);
+}
+/** The mean empty-side share of rows, weighted by the instants each stands for (its samples over one minus its share: the study's share is
+ *  of the instants after the first quote, and its samples are those left after the empty ones). */
+export function meanGapShare(rows: Iterable<{ samples: number; gapShare?: number }>): number {
+  let w = 0, g = 0;
+  for (const r of rows) { const x = r.gapShare ?? 0, n = r.samples / Math.max(1e-6, 1 - Math.min(x, 0.999)); w += n; g += n * x; }
+  return w > 0 ? g / w : 0;
+}
+export interface FlowCell { offset: number; qi: number; si?: number; seconds: number; addPerSec: number; cancelPerSec: number; addSize: Quant; cancelSize: Quant }
+/** One asset's rows of the model: the shape and flow rows of research/depthStudy.ts, each keyed by (the study's cell) and a stress bucket
+ *  `si` (rows without `si` are the asset's own over all stress), and the stress edges the study cut the asset's buckets at. */
+export interface AssetBlock { shape: ShapeCell[]; flow: FlowCell[];
+  /** The asset's stress terciles over the FIT samples: a stress up to edges[0] (cents) is bucket 0, up to edges[1] bucket 1, else 2. */
+  stress?: { edges: [number, number]; n: number };
+  /** The asset's real unquoted share of a life (see LifeStats). */
+  lives?: LifeStats }
 /** research/depthStudy.ts's --out: the depth model. */
 export interface DepthModel { days: string[]; shape: ShapeCell[]; flow: FlowCell[];
+  /** The schema of the file (research/history/depthModelVersion.ts); absent: 0, the pooled tables only. */
+  schema?: number;
+  /** Per asset (BTC, ETH, SOL, XRP): the shape and flow rows by asset and stress, written next to the pooled `shape` and `flow` above. */
+  byAsset?: Record<string, AssetBlock>;
+  /** The real unquoted share of a life over every asset (see LifeStats): what the pooled rows' empty-side draw is netted against. */
+  lives?: LifeStats;
   /** research/depthStudy.ts informed flow: the share of trades that took the side the mid went over the next minute. */
   informed?: { n: number; agree: number };
   /** Optional: depth simulator parameters this model should be played with (override the defaults; the caller's own win over
@@ -51,8 +171,41 @@ export interface DepthModel { days: string[]; shape: ShapeCell[]; flow: FlowCell
 export function readDepthModel(file: string): DepthModel | undefined {
   try {
     const m = JSON.parse(fs.readFileSync(file, 'utf8')) as DepthModel;
-    return Array.isArray(m.shape) && m.shape.length && Array.isArray(m.flow) && m.shape.every((c) => Number.isInteger(c.ti) && Array.isArray(c.levelQuoted)) ? m : undefined;
+    if (!(Array.isArray(m.shape) && m.shape.length && Array.isArray(m.flow) && m.shape.every((c) => Number.isInteger(c.ti) && Array.isArray(c.levelQuoted)))) return undefined;
+    validateDepthModel(m);
+    return m;
   } catch { return undefined; }
+}
+
+/** The model file's schema (0 when the file names none: the pooled tables of before schema 2). */
+export const modelSchema = (m: { schema?: number }): number => m.schema ?? 0;
+
+/** Throws on a model file the simulator cannot read as it was meant: a schema newer than this code knows, `byAsset` without schema 2,
+ *  rows without the keys they are looked up by, or stress rows without the asset's stress edges. A pooled-only model passes as it is. */
+export function validateDepthModel(m: Pick<DepthModel, 'schema' | 'byAsset' | 'lives'>): void {
+  const sch = m.schema;
+  const lives = (l: LifeStats | undefined, where: string) => { if (l !== undefined && !(Number.isFinite(l.unquotedShare) && l.unquotedShare >= 0 && l.unquotedShare <= 1 && Number.isFinite(l.n) && l.n >= 0)) throw new Error(`${where}: the unquoted share of a life must be a number from 0 to 1 over n lives`); };
+  lives(m.lives, 'the depth model\'s lives');
+  if (sch !== undefined && (!Number.isInteger(sch) || sch < 0)) throw new Error(`the depth model's schema must be a whole number from 0, got ${String(sch)}`);
+  if (modelSchema(m) > DEPTH_MODEL_SCHEMA) throw new Error(`the depth model is schema ${sch} and this code reads up to schema ${DEPTH_MODEL_SCHEMA}: refit it with this code`);
+  if (m.byAsset === undefined) return;
+  if (modelSchema(m) < 2) throw new Error(`the depth model has byAsset blocks but schema ${modelSchema(m)} (they need schema 2 or more)`);
+  if (typeof m.byAsset !== 'object' || m.byAsset === null || Array.isArray(m.byAsset)) throw new Error('the depth model\'s byAsset must be an object of asset blocks');
+  for (const [a, b] of Object.entries(m.byAsset)) {
+    if (!Array.isArray(b?.shape) || !Array.isArray(b?.flow)) throw new Error(`byAsset.${a} needs shape and flow lists`);
+    lives(b.lives, `byAsset.${a}.lives`);
+    let stressed = false;
+    for (const c of b.shape) {
+      if (!Number.isInteger(c.ti) || !Number.isInteger(c.mi) || !Array.isArray(c.levelQuoted)) throw new Error(`byAsset.${a}: a shape row without its ti, mi and levels`);
+      if (c.si !== undefined) { if (![0, 1, 2].includes(c.si)) throw new Error(`byAsset.${a}: a shape row's stress bucket must be 0, 1 or 2, got ${String(c.si)}`); stressed = true; }
+    }
+    for (const f of b.flow) {
+      if (!Number.isInteger(f.offset) || !Number.isInteger(f.qi)) throw new Error(`byAsset.${a}: a flow row without its offset and queue bucket`);
+      if (f.si !== undefined) { if (![0, 1, 2].includes(f.si)) throw new Error(`byAsset.${a}: a flow row's stress bucket must be 0, 1 or 2, got ${String(f.si)}`); stressed = true; }
+    }
+    const e = b.stress?.edges;
+    if (stressed && !(Array.isArray(e) && e.length === 2 && e.every(Number.isFinite) && e[0] <= e[1])) throw new Error(`byAsset.${a} has stress rows but no ascending stress edges`);
+  }
 }
 
 /** A seeded uniform draw (the same generator as historyReplay's normals). */
@@ -183,40 +336,120 @@ export function resolveDepthSimParams(...layers: Array<Partial<DepthSimParams> |
   return out;
 }
 
+/** One asset's rows, looked up by the cell keys (a thin row is never loaded: it backs off to the next row of the chain). */
+interface AssetRows { shape: Map<number, ShapeCell>; flow: Map<number, FlowCell>; edges?: readonly [number, number];
+  /** The block's real unquoted share of a life and the mean empty-side share of its rows (see gapScale); absent: the rows as measured. */
+  gap?: { unquoted: number; mean: number } }
+/** Cell keys of an asset block: tau bucket, mid bucket and stress bucket (-1: the asset's row over all stress); offset, queue bucket and stress. */
+const shapeKey = (ti: number, mi: number, si: number) => (ti * 8 + mi) * 4 + (si + 1);
+const flowKey = (off: number, qi: number, si: number) => (off * 8 + qi) * 4 + (si + 1);
+
 export class DepthSim {
   /** What the fill-in emitted (a run's diagnostics): seconds simulated, trades (sweep prints among them), flickers. */
   readonly stats = { seconds: 0, trades: 0, sweepPrints: 0, flickers: 0 };
+  /** Which row of the chain fed each quarter-minute's book (a diagnostic: the asset and stress rows, then the pooled ones; `stress[i]`:
+   *  anchors drawn from the stress-i row, `asset`: from the asset's row over all stress, `pooled`: from the pooled rows). Kept out of
+   *  `stats`, which the golden tests hold exactly. */
+  readonly picks = { stress: [0, 0, 0], asset: 0, pooled: 0 };
+  /** Anchors of tickers whose asset the model has no block for (their books came from the pooled rows, which `picks` does not count). */
+  readonly unblocked = { anchors: 0 };
   private readonly shape = new Map<string, ShapeCell>();
   private readonly flow = new Map<string, FlowCell>();
   private readonly books = new Map<string, SimBook>();
+  /** The model's asset blocks, by asset; a ticker's block by ticker (null: the model has none for its asset). */
+  private readonly assets = new Map<string, AssetRows>();
+  private readonly blockOf = new Map<string, AssetRows | null>();
+  /** Per contract: the minute mids (cents, by minute) the stress reads, kept for the last few minutes only. */
+  private readonly minuteMids = new Map<string, Map<number, number>>();
+  /** Per contract: the share of the rows' empty-side draw it plays (gapScale), set at its first quote from the slots it was unquoted before it. */
+  private readonly gapScales = new Map<string, number>();
+  /** The pooled rows' real unquoted share of a life and mean empty-side share (see gapScale). */
+  private readonly pooledGap?: { unquoted: number; mean: number };
   /** The parameters in force: the defaults, the model's own `params` block, then `params` (each over the one before). */
   readonly params: DepthSimParams;
 
   constructor(private readonly model: DepthModel, params?: Partial<DepthSimParams>) {
+    validateDepthModel(model);
     for (const c of model.shape) this.shape.set(`${c.ti}|${c.mi}`, c);
     for (const f of model.flow) this.flow.set(`${f.offset}|${f.qi}`, f);
+    for (const [a, b] of Object.entries(model.byAsset ?? {})) {
+      const rows: AssetRows = { shape: new Map(), flow: new Map(), ...(b.stress ? { edges: b.stress.edges } : {}) };
+      for (const c of b.shape) if (c.samples >= MIN_SHAPE_SAMPLES) rows.shape.set(shapeKey(c.ti, c.mi, c.si ?? -1), c);
+      if (b.lives) rows.gap = { unquoted: b.lives.unquotedShare, mean: meanGapShare([...rows.shape.values()].filter((c) => c.si === undefined)) };
+      for (const f of b.flow) if (f.seconds > MIN_FLOW_SECONDS) rows.flow.set(flowKey(f.offset, f.qi, f.si ?? -1), f);
+      this.assets.set(a, rows);
+    }
+    if (model.lives) this.pooledGap = { unquoted: model.lives.unquotedShare, mean: meanGapShare(model.shape.filter((c) => c.samples >= MIN_SHAPE_SAMPLES)) };
     this.params = resolveDepthSimParams(model.params, params);
   }
 
-  /** The shape cell for a contract's state: its own bucket when measured, else the nearest mid at the same minutes to
-   *  close, else the nearest minutes to close. */
-  private cell(tau: number, mid: number): ShapeCell {
-    const ti = bucket(TAU_EDGES, Math.max(0, tau)), mi = bucket(MID_EDGES, mid);
-    const own = this.shape.get(`${ti}|${mi}`);
-    if (own) return own;
-    let best: ShapeCell | undefined, bd = Infinity;
-    for (const c of this.model.shape) { const d = 3 * Math.abs(c.ti - ti) + Math.abs(c.mi - mi); if (d < bd || (d === bd && best && c.samples > best.samples)) { bd = d; best = c; } }
-    return best!;
+  /** The asset block of a ticker's asset, undefined when the model has none (the pooled rows then feed its books). */
+  private assetRows(ticker: string): AssetRows | undefined {
+    let b = this.blockOf.get(ticker);
+    if (b === undefined) { const a = this.assets.size ? assetOfTicker(ticker, this.assets.keys()) : undefined; b = a !== undefined ? this.assets.get(a) ?? null : null; this.blockOf.set(ticker, b); }
+    return b ?? undefined;
   }
 
-  private rates(off: number, q: number): FlowCell | undefined {
-    const qi = bucket(Q_EDGES, q);
+  /** The shape row for a contract's state, by the chain (asset, stress) -> (asset) -> pooled: its own bucket when measured, else the
+   *  nearest mid at the same minutes to close, else the nearest minutes to close (the pooled rows' own fallback). `si`: the contract's
+   *  stress bucket (undefined: none yet, the asset's row is used). `from` says which row of the chain answered. */
+  private pick(tau: number, mid: number, ab?: AssetRows, si?: number): { cell: ShapeCell; from: 'stress' | 'asset' | 'pooled' } {
+    const ti = bucket(TAU_EDGES, Math.max(0, tau)), mi = bucket(MID_EDGES, mid);
+    if (ab) {
+      const s = si !== undefined ? ab.shape.get(shapeKey(ti, mi, si)) : undefined;
+      if (s) return { cell: s, from: 'stress' };
+      const a = ab.shape.get(shapeKey(ti, mi, -1));
+      if (a) return { cell: a, from: 'asset' };
+    }
+    const own = this.shape.get(`${ti}|${mi}`);
+    if (own) return { cell: own, from: 'pooled' };
+    let best: ShapeCell | undefined, bd = Infinity;
+    for (const c of this.model.shape) { const d = 3 * Math.abs(c.ti - ti) + Math.abs(c.mi - mi); if (d < bd || (d === bd && best && c.samples > best.samples)) { bd = d; best = c; } }
+    return { cell: best!, from: 'pooled' };
+  }
+  /** The row a quarter-minute's book is drawn from, counted in `picks` when the ticker has an asset block (the diagnostic of which rows fed the day). */
+  private cell(tau: number, mid: number, ab?: AssetRows, si?: number): ShapeCell {
+    const { cell, from } = this.pick(tau, mid, ab, si);
+    if (ab) { if (from === 'stress') this.picks.stress[si!]++; else this.picks[from]++; } else this.unblocked.anchors++;
+    return cell;
+  }
+
+  /** The flow row at a distance from the best price and a queue size, by the chain (asset, stress) -> (asset) -> pooled, an exact queue
+   *  bucket first; the pooled table then takes the nearest queue bucket as it always did. (The fill-in plays the shape rows' own flow
+   *  today; the flow rows are what a queue-reactive play would read, and what the study measures per asset and stress.) */
+  flowRow(ticker: string, off: number, q: number, si?: number): FlowCell | undefined {
+    const qi = bucket(Q_EDGES, q), ab = this.assetRows(ticker);
+    if (ab) {
+      const s = si !== undefined ? ab.flow.get(flowKey(off, qi, si)) : undefined;
+      if (s) return s;
+      const a = ab.flow.get(flowKey(off, qi, -1));
+      if (a) return a;
+    }
     for (let k = 0; k < Q_EDGES.length; k++) { const f = this.flow.get(`${off}|${qi + k}`) ?? this.flow.get(`${off}|${qi - k}`); if (f) return f; }
     return undefined;
   }
 
+  /** The shape row (and which of the chain answered) a contract's quote of this mid, minutes to close and stress bucket would be drawn from, as
+   *  `play` draws it (for tests and diagnostics; it counts nothing). */
+  shapeRow(ticker: string, tau: number, mid: number, si?: number): ShapeCell & { from: 'stress' | 'asset' | 'pooled' } {
+    const { cell, from } = this.pick(tau, mid, this.assetRows(ticker), si);
+    return { ...cell, from };
+  }
+
+  /** The contract's stress bucket at `t` for an asset's edges: its minute mids up to the quote stamped at or before `t` (that of minute
+   *  m = t's own minute is recorded when it is played, at the stamp). Undefined: no stress yet (the asset's row). Also records the quote
+   *  when it is a minute stamp. */
+  private stressNow(ticker: string, t: number, bB: number, bA: number, edges: readonly [number, number]): 0 | 1 | 2 | undefined {
+    const m = Math.floor(t / MIN);
+    let mm = this.minuteMids.get(ticker);
+    if (!mm) this.minuteMids.set(ticker, (mm = new Map()));
+    if (t % MIN === 0) { mm.set(m, minuteMidCents(bB, bA)); mm.delete(m - STRESS_MINUTES - 2); }
+    const v = minuteStress((k) => mm!.get(k), m);
+    return v === undefined ? undefined : stressBucket(edges, v);
+  }
+
   /** Drop a contract's book (settled). */
-  forget(ticker: string): void { this.books.delete(ticker); for (const k of [...this.scale.keys()]) if (k.startsWith(`${ticker}|`)) this.scale.delete(k); }
+  forget(ticker: string): void { this.books.delete(ticker); this.minuteMids.delete(ticker); this.gapScales.delete(ticker); for (const k of [...this.scale.keys()]) if (k.startsWith(`${ticker}|`)) this.scale.delete(k); }
 
   /** Each contract's own depth (Nov 4 twin): the measured sizes' spread (90th percentile ~20x the median) is mostly
    *  between contracts and hours, not second to second. Drawn iid each time, every contract's mean size came out ~15x the
@@ -244,7 +477,16 @@ export class DepthSim {
     if (!(bB >= 1 && bA <= PX - 1 && bA > bB)) return [];
     const P = this.params;
     const u = rng(hashStr(ticker) ^ Math.floor(t / 1000));
-    const cell = this.cell((close - t) / MIN, (bB + bA) / 20);
+    const ab = this.assetRows(ticker);
+    const si = ab?.edges ? this.stressNow(ticker, t, bB, bA, ab.edges) : undefined;
+    const cell = this.cell((close - t) / MIN, (bB + bA) / 20, ab, si);
+    // The share of the empty-side draw this contract plays: set once, at its first quote (see gapScale).
+    let gs = this.gapScales.get(ticker);
+    if (gs === undefined) {
+      const g = ab?.gap ?? this.pooledGap;
+      gs = g ? gapScale(g.unquoted, g.mean, Math.round((t - (close - LIFE_MS)) / ANCHOR_MS) + 1) : 1;
+      this.gapScales.set(ticker, gs);
+    }
     let b = this.books.get(ticker);
     if (!b) this.books.set(ticker, (b = { bid: new Map(), ask: new Map() }));
     // The move to this quote (Nov 4): the levels it moved through are taken at the quote's own time, a few trade-sized
@@ -406,6 +648,18 @@ export class DepthSim {
           out.push({ t: at, k: 'delta', ticker, side, price: p / PX, delta: d, ts: at, sim: 1 });
         }
       }
+    }
+    // An instant with an empty side (schema 2, `gapShare`: the real books have one at that share of their 15 s instants, mostly at
+    // the price's extremes, where the side with no one behind it empties): the side the price is running out of is left empty in
+    // the last millisecond of the quarter-minute, so the instant that follows sees a one-sided book; the next quote draws it again.
+    // Drawn last, from the anchor's own seed, and only where the row has a share: a model without one is untouched. The row's share is scaled
+    // by the contract's `gapScale` (netted against the unquoted lead the twin already has: see the header), so a share that does not make up a
+    // shortfall draws nothing.
+    const gap = cell.gapShare ? cell.gapShare * gs : 0;
+    if (gap > 0 && until > t && until % ANCHOR_MS === 0 && u() < gap) {
+      const side: Side = (bB + bA) / 20 >= 50 ? 'ask' : 'bid', m = b[side], at = until - 1;
+      for (const [p, size] of [...m.entries()].sort((x, y) => (side === 'bid' ? y[0] - x[0] : x[0] - y[0]))) out.push({ t: at, k: 'delta', ticker, side, price: p / PX, delta: -size, ts: at, sim: 1 });
+      m.clear();
     }
     return out;
   }
