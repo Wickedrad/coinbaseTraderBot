@@ -1,2 +1,2 @@
 stage=ladarb
-# round 5a: static arbitrage inside one hourly ladder (recorded days Nov 11-20, hourly grids on Drive)
+# round 5a, second pass: are the crossed ladders real? staleness of the two books, trades on the legs, take L seconds late, fresh-only arm

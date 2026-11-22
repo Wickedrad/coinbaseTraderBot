@@ -51,6 +51,39 @@ class LadderArb(unittest.TestCase):
         r = LA.scan_hour(q['bid'], q['ask'], s['bsz'], s['asz'])
         self.assertEqual(int(r['two'].sum()), 0)
 
+    def test_ages(self):
+        q, s = book(2)
+        q['bid'][0], q['ask'][0], s['bsz'][0], s['asz'][0] = 0.40, 0.50, 20, 20
+        q['bid'][1], q['ask'][1], s['bsz'][1], s['asz'][1] = 0.30, 0.35, 20, 20
+        q['bid'][1, 100:] = 0.31                              # market 1 changes once, at second 100
+        ag = LA.ages(q['bid'], q['ask'], s['bsz'], s['asz'])
+        self.assertEqual(int(ag[0, 3599]), 3599)
+        self.assertEqual(int(ag[1, 99]), 99)
+        self.assertEqual(int(ag[1, 100]), 0)
+        self.assertEqual(int(ag[1, 150]), 50)
+
+    def test_fresh_crossing_counts_in_the_fresh_arm(self):
+        m = 2
+        q, s = book(m)
+        for i, (b, a) in enumerate(((0.40, 0.50), (0.30, 0.35))):
+            q['bid'][i], q['ask'][i], s['bsz'][i], s['asz'][i] = b, a, 20, 20
+        q['ask'][0, 300:] = 0.45                                # both books move at 300 and the crossing opens (0.60 > 0.45)
+        q['bid'][1, 300:303] = 0.60
+        q['ask'][1, 300:303] = 0.65
+        with tempfile.TemporaryDirectory() as d:
+            np.savez_compressed(os.path.join(d, 'grid-2026-11-11.npz'), **{'BTC__tickers': np.array(['A', 'B']), 'BTC__strike': np.array([100.0, 110.0]),
+                                                                           'BTC__open_ms': np.zeros(m, np.int64) + 3_600_000, 'BTC__bid': q['bid'], 'BTC__ask': q['ask'],
+                                                                           'BTC__bsz': s['bsz'], 'BTC__asz': s['asz'],
+                                                                           'BTC__tr_w': np.array([0, 1], np.int32), 'BTC__tr_ms': np.array([301_000, 5_000], np.int32),
+                                                                           'BTC__tr_c': np.array([3.0, 7.0], np.float32)})
+            e = LA.run(d, os.path.join(d, 'o'), coins=('BTC',))['coins']['BTC']
+            self.assertEqual(e['episodes_with_a_trade_on_a_leg'], 1)         # the trade at second 301 is inside the episode (300-302); the one at second 5 is not
+            self.assertEqual(e['contracts_on_the_legs_during_episodes'], 3.0)
+            f = e['same_but_only_episodes_whose_books_were_fresh_at_the_start']
+            self.assertEqual(f['0']['taken'], 1)
+            self.assertEqual(f['1']['taken'], 1)
+            self.assertEqual(f['5']['taken'], 0)
+
     def test_day_stats_and_run(self):
         m = 3
         ticks = np.array([f'T{i}' for i in range(m)])
@@ -69,7 +102,12 @@ class LadderArb(unittest.TestCase):
             self.assertEqual(e['crossed_seconds'], 3)
             self.assertEqual(e['episodes'], 1)
             self.assertEqual(e['same_market_crossed_seconds'], 0)
-            self.assertEqual(e['episodes_with_a_next_second'], 1)
+            self.assertEqual(e['take_L_seconds_after_the_first_crossed_second']['0']['taken'], 1)
+            self.assertEqual(e['take_L_seconds_after_the_first_crossed_second']['1']['taken'], 1)
+            self.assertEqual(e['take_L_seconds_after_the_first_crossed_second']['5']['taken'], 0)      # the crossing lasts 3 s
+            self.assertEqual(e['duration_s']['max'], 3.0)
+            self.assertEqual(e['same_but_only_episodes_whose_books_were_fresh_at_the_start']['0']['taken'], 0)   # the lower strike's book had not changed for 200 s
+            self.assertEqual(e['crossed_seconds_by_age_of_older_book']['gt120'], 3)
             self.assertTrue(os.path.exists(os.path.join(out, 'ladder_arb.json')))
 
 

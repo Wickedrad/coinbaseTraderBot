@@ -27,12 +27,25 @@ from allpairs import fees as KF
 STAKE = 10.0
 BUCKETS = (('lt60', 0, 60), ('60_600', 60, 600), ('ge600', 600, 3601))      # seconds before the close
 GAP_BINS = (0.0, 0.01, 0.02, 0.03, 0.05, 0.10, 1.01)                         # crossing size in dollars per contract
+AGE_BINS = (('le2', 0, 2), ('3_5', 3, 5), ('6_30', 6, 30), ('31_120', 31, 120), ('gt120', 121, 10 ** 9))   # seconds since the older of the two quoting books last changed
+LATENCY = (0, 1, 5, 30)                                                      # seconds between the first crossed second of an episode and the trade
 
 
 def _runs(mask):
     """Start indices of the runs of True in a 1-d bool array."""
     m = np.asarray(mask, bool)
     return np.flatnonzero(m & ~np.concatenate(([False], m[:-1])))
+
+
+def ages(bid, ask, bsz, asz):
+    """Seconds since each market's book (best bid, best ask, both sizes) last changed, per market and second (a market that never changes in the hour counts from the start)."""
+    m, W = bid.shape
+    ch = np.zeros((m, W), bool)
+    for x in (bid, ask, bsz, asz):
+        y = np.nan_to_num(x, nan=-1.0)
+        ch[:, 1:] |= y[:, 1:] != y[:, :-1]
+    last = np.maximum.accumulate(np.where(ch, np.arange(W)[None, :], 0), axis=1)
+    return np.arange(W)[None, :] - last
 
 
 def scan_hour(bid, ask, bsz, asz, stake: float = STAKE) -> dict:
@@ -66,7 +79,9 @@ def scan_hour(bid, ask, bsz, asz, stake: float = STAKE) -> dict:
         n = np.where(crossed, np.maximum(np.minimum(size, np.floor(stake / cost)), 1.0), 0.0)
     fee = np.where(crossed, KF.taker_fee(n, np.where(crossed, pa, 0.5)) + KF.taker_fee(n, np.where(crossed, 1.0 - pb, 0.5)), 0.0)
     net = np.where(crossed, n * best - fee, np.nan)
-    return {'best_gap': np.where(two, best, np.nan), 'two': two, 'crossed': crossed, 'size': size, 'n': n, 'fee': fee, 'net': net, 'pair': (bi, bj)}
+    ag = ages(bid, ask, bsz, asz)
+    return {'best_gap': np.where(two, best, np.nan), 'two': two, 'crossed': crossed, 'size': size, 'n': n, 'fee': fee, 'net': net, 'pair': (bi, bj),
+            'age': np.maximum(ag[bi, ar], ag[bj, ar]), 'ask_i': pa, 'bid_j': pb}
 
 
 def _gap_hist(gaps):
@@ -84,9 +99,27 @@ def day_stats(z, coin: str, day_ms: int, stake: float = STAKE) -> dict:
     bid, ask = np.asarray(z[f'{coin}__bid'], float), np.asarray(z[f'{coin}__ask'], float)
     bsz, asz = np.asarray(z[f'{coin}__bsz'], float), np.asarray(z[f'{coin}__asz'], float)
     W = bid.shape[1]
+    tw = np.asarray(z[f'{coin}__tr_w'], np.int64) if f'{coin}__tr_w' in z.files else np.zeros(0, np.int64)
+    tms = np.asarray(z[f'{coin}__tr_ms'], np.int64) if f'{coin}__tr_ms' in z.files else np.zeros(0, np.int64)
+    tcn = np.asarray(z[f'{coin}__tr_c'], float) if f'{coin}__tr_c' in z.files else np.zeros(0)
+    t_order = np.argsort(tw, kind='stable')
+    tw, tms, tcn = tw[t_order], tms[t_order], tcn[t_order]
+    t_cut = np.searchsorted(tw, np.arange(len(tickers) + 1))
+
+    def trades_on(win_rows, s0, s1):
+        """(trades, contracts) on the given windows between second s0 (inclusive) and s1 (exclusive)."""
+        n = c = 0.0
+        for w in win_rows:
+            a, b = t_cut[w], t_cut[w + 1]
+            m = (tms[a:b] >= s0 * 1000) & (tms[a:b] < s1 * 1000)
+            n += float(m.sum())
+            c += float(tcn[a:b][m].sum())
+        return n, c
     tot = {'hours': 0, 'ladder_hours_ge2': 0, 'two_secs': 0, 'same_market_crossed_secs': 0, 'crossed_secs': 0, 'crossed_gross': 0.0, 'crossed_sizes': [],
-           'net_pos_secs': 0, 'episodes': 0, 'episode_net': 0.0, 'episode_net_lat1': 0.0, 'episodes_pos_lat1': 0, 'gaps': [], 'by_bucket': {b[0]: {'two': 0, 'crossed': 0, 'net_pos': 0} for b in BUCKETS},
-           'best_net': 0.0, 'persist_secs': 0}
+           'net_pos_secs': 0, 'episodes': 0, 'episode_net': 0.0, 'gaps': [], 'by_bucket': {b[0]: {'two': 0, 'crossed': 0, 'net_pos': 0} for b in BUCKETS},
+           'age_secs': {a[0]: 0 for a in AGE_BINS}, 'age_net_pos': {a[0]: 0 for a in AGE_BINS},
+           'lat': {str(L): {'taken': 0, 'net': 0.0, 'pos': 0} for L in LATENCY}, 'lat_fresh': {str(L): {'taken': 0, 'net': 0.0, 'pos': 0} for L in LATENCY},
+           'durations': [], 'examples': [], 'ep_with_a_trade': 0, 'ep_trades': 0.0, 'ep_contracts': 0.0, 'quoted_ms': 0, 'stale_ms': 0}
     for o in np.unique(open_ms):
         rows = np.flatnonzero(open_ms == o)
         rows = rows[np.isfinite(strike[rows])]
@@ -105,6 +138,10 @@ def day_stats(z, coin: str, day_ms: int, stake: float = STAKE) -> dict:
         tot['ladder_hours_ge2'] += 1
         tot['same_market_crossed_secs'] += int((np.isfinite(b) & np.isfinite(a) & (b >= a - 1e-9) & (bs >= 1) & (as_ >= 1)).sum())
         r = scan_hour(b, a, bs, as_, stake)
+        ag_all = ages(b, a, bs, as_)
+        quoted = (np.isfinite(b) & (bs >= 1)) | (np.isfinite(a) & (as_ >= 1))
+        tot['quoted_ms'] += int(quoted.sum())
+        tot['stale_ms'] += int((quoted & (ag_all > 120)).sum())
         tot['two_secs'] += int(r['two'].sum())
         cr = r['crossed']
         tot['crossed_secs'] += int(cr.sum())
@@ -120,15 +157,39 @@ def day_stats(z, coin: str, day_ms: int, stake: float = STAKE) -> dict:
             tot['by_bucket'][name]['two'] += int((r['two'] & sel).sum())
             tot['by_bucket'][name]['crossed'] += int((cr & sel).sum())
             tot['by_bucket'][name]['net_pos'] += int((pos & sel).sum())
-        # episodes: runs of crossed seconds; take each once at its first second (no latency) or at the quotes one second later (latency 1, the same pair or any)
+        for name, lo, hi in AGE_BINS:
+            sel = (r['age'] >= lo) & (r['age'] <= hi)
+            tot['age_secs'][name] += int((cr & sel).sum())
+            tot['age_net_pos'][name] += int((pos & sel).sum())
+        # episodes: runs of crossed seconds; take each once, L seconds after its first crossed second, at that second's quotes, if it is still crossed
+        # (the same pair or any); the 'fresh' arm takes only episodes whose two books had both changed within 2 s of the first crossed second
         for s in _runs(cr):
             tot['episodes'] += 1
             tot['episode_net'] += float(r['net'][s])
-            s1 = s + 1
-            if s1 < W and cr[s1]:
-                tot['persist_secs'] += 1
-                tot['episode_net_lat1'] += float(r['net'][s1])
-                tot['episodes_pos_lat1'] += int(r['net'][s1] > 0)
+            e = s
+            while e + 1 < W and cr[e + 1]:
+                e += 1
+            tot['durations'].append(e - s + 1)
+            legs = sorted(set(r['pair'][0][s:e + 1].tolist()) | set(r['pair'][1][s:e + 1].tolist()))
+            n_tr, n_ct = trades_on([int(rows[x]) for x in legs], s, e + 1)
+            tot['ep_with_a_trade'] += int(n_tr > 0)
+            tot['ep_trades'] += n_tr
+            tot['ep_contracts'] += n_ct
+            fresh = r['age'][s] <= 2
+            for L in LATENCY:
+                t = s + L
+                if t < W and cr[t]:
+                    for key, ok in (('lat', True), ('lat_fresh', fresh)):
+                        if ok:
+                            d = tot[key][str(L)]
+                            d['taken'] += 1
+                            d['net'] += float(r['net'][t])
+                            d['pos'] += int(r['net'][t] > 0)
+            if len(tot['examples']) < 4 and e - s + 1 >= 60:
+                mid = s + (e - s) // 2
+                tot['examples'].append({'start_s': int(s), 'seconds': int(e - s + 1), 'strikes_apart': float(strike[rows][r['pair'][1][mid]] - strike[rows][r['pair'][0][mid]]),
+                                        'ask_i_c': [round(float(r['ask_i'][t]) * 100) for t in (s, mid, e)], 'bid_j_c': [round(float(r['bid_j'][t]) * 100) for t in (s, mid, e)],
+                                        'size': [float(r['size'][t]) for t in (s, mid, e)], 'trades_on_the_legs': n_tr, 'contracts_on_the_legs': n_ct, 'age_s': [int(r['age'][t]) for t in (s, mid, e)], 'ladder_markets': int(len(rows))})
     return tot
 
 
@@ -165,17 +226,33 @@ def run(grids_dir: str, out_dir: str, coins=('BTC', 'ETH', 'SOL', 'XRP'), stake:
         gaps = np.array([g for d in days.values() for g in d['gaps']], float)
         sizes = np.array([g for d in days.values() for g in d['crossed_sizes']], float)
         hours_rec = 24.0 * len(days)
+        du = np.array([x for d in days.values() for x in d['durations']], float)
+        dur = {'median': float(np.median(du)), 'p90': float(np.percentile(du, 90)), 'max': float(du.max())} if len(du) else {}
+
+        def delay(key):
+            out = {}
+            for L in LATENCY:
+                k = str(L)
+                taken = sum(d[key][k]['taken'] for d in days.values())
+                net = sum(d[key][k]['net'] for d in days.values())
+                out[k] = {'taken': taken, 'positive': sum(d[key][k]['pos'] for d in days.values()), 'net_dollars': net, 'mean_net_dollars': (net / taken) if taken else None,
+                          'dollars_per_hour': net / hours_rec, 'day_ci': _ci([d[key][k]['net'] for d in days.values()])}
+            return out
         entry = {'days': sorted(days), 'hours_with_a_ladder': tot('hours'), 'ladders_with_two_strikes': tot('ladder_hours_ge2'), 'two_quote_seconds': tot('two_secs'),
                  'same_market_crossed_seconds': tot('same_market_crossed_secs'), 'crossed_seconds': tot('crossed_secs'),
                  'crossed_share_of_two_quote_seconds': (tot('crossed_secs') / tot('two_secs')) if tot('two_secs') else None,
                  'gap_hist_seconds': _gap_hist(gaps) if len(gaps) else {}, 'gap_median_c': float(np.median(gaps) * 100) if len(gaps) else None,
                  'gap_max_c': float(gaps.max() * 100) if len(gaps) else None, 'size_median_contracts': float(np.median(sizes)) if len(sizes) else None,
                  'gross_locked_dollars': tot('crossed_gross'), 'seconds_net_positive_after_taker_fees': tot('net_pos_secs'),
-                 'episodes': tot('episodes'), 'episodes_with_a_next_second': tot('persist_secs'), 'episodes_positive_after_one_second': tot('episodes_pos_lat1'),
+                 'episodes': tot('episodes'), 'duration_s': dur, 'episodes_with_a_trade_on_a_leg': tot('ep_with_a_trade'), 'trades_on_the_legs_during_episodes': tot('ep_trades'),
+                 'contracts_on_the_legs_during_episodes': tot('ep_contracts'),
+                 'quoted_market_seconds': tot('quoted_ms'), 'share_of_quoted_market_seconds_unchanged_over_120s': (tot('stale_ms') / tot('quoted_ms')) if tot('quoted_ms') else None,
+                 'by_day_share_unchanged_over_120s': {k: (d['stale_ms'] / d['quoted_ms']) if d['quoted_ms'] else None for k, d in sorted(days.items())},
                  'by_close_bucket': {b[0]: {k: sum(d['by_bucket'][b[0]][k] for d in days.values()) for k in ('two', 'crossed', 'net_pos')} for b in BUCKETS},
-                 'episode_net_dollars_no_latency': tot('episode_net'), 'episode_net_dollars_one_second_latency': tot('episode_net_lat1'),
-                 'dollars_per_hour_no_latency': tot('episode_net') / hours_rec, 'dollars_per_hour_one_second_latency': tot('episode_net_lat1') / hours_rec,
-                 'day_net_no_latency': _ci([d['episode_net'] for d in days.values()]), 'day_net_one_second_latency': _ci([d['episode_net_lat1'] for d in days.values()]),
+                 'crossed_seconds_by_age_of_older_book': {a_[0]: sum(d['age_secs'][a_[0]] for d in days.values()) for a_ in AGE_BINS},
+                 'net_positive_seconds_by_age_of_older_book': {a_[0]: sum(d['age_net_pos'][a_[0]] for d in days.values()) for a_ in AGE_BINS},
+                 'take_L_seconds_after_the_first_crossed_second': delay('lat'), 'same_but_only_episodes_whose_books_were_fresh_at_the_start': delay('lat_fresh'),
+                 'examples_of_long_episodes': [x for d in days.values() for x in d['examples']][:6],
                  'by_day_crossed_seconds': {k: d['crossed_secs'] for k, d in sorted(days.items())}}
         res['coins'][c] = entry
     os.makedirs(out_dir, exist_ok=True)
