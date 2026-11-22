@@ -70,7 +70,21 @@ def read_gz(path: str):
 
 
 if __name__ == '__main__':
-    r = inventory(read_gz(sys.argv[1]))
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument('path')
+    ap.add_argument('--match', default=r'(BTC|ETH|SOL|XRP|DOGE)', help='series whose name matches are printed one by one, the rest are only counted')
+    ap.add_argument('--samples', default='KXBTCD,KXBTC,KXETHD', help='series whose first market line is printed')
+    a = ap.parse_args()
+    r = inventory(read_gz(a.path))
     print('HEATLOOP mdinv-kinds ' + json.dumps(r['kinds'], sort_keys=True), flush=True)
+    pat = re.compile(a.match)
+    others = {k: v for k, v in r['series'].items() if not pat.search(k)}
+    print('HEATLOOP mdinv-others ' + json.dumps({'series': len(others), 'lines': sum(sum(v['lines_by_kind'].values()) for v in others.values()),
+                                                 'with_book_lines': sum(1 for v in others.values() if v['lines_by_kind'].get('book') or v['lines_by_kind'].get('delta')),
+                                                 'with_trades': sum(1 for v in others.values() if v['lines_by_kind'].get('trade'))}, sort_keys=True), flush=True)
+    keep = set(a.samples.split(','))
     for ser, v in r['series'].items():
-        print('HEATLOOP mdinv-series ' + json.dumps({'series': ser, **v}, sort_keys=True, default=str)[:2500], flush=True)
+        if pat.search(ser):
+            v = {**v, 'sample_market_line': (v['sample_market_line'] or '')[:500] if ser in keep else None}
+            print('HEATLOOP mdinv-series ' + json.dumps({'series': ser, **v}, sort_keys=True, default=str)[:1500], flush=True)

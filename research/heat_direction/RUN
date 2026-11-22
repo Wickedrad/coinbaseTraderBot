@@ -1,3 +1,3 @@
 stage=dsmdcoin,dsmdinv
 days=2026-11-18
-# Round 4 on recorded days (Nov 22 2026): (a) the lag and maker questions coin by coin, SOL and XRP on their own, and a pick on three coins judged on the fourth; (b) which series (hourly ladders and brackets) the recording of one day holds. Recorded days only.
+# Round 4 rerun with compact output (the first run's inventory was cut by a head pipe, the coin tables were long). Recorded days only.

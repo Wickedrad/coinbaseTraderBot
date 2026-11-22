@@ -919,7 +919,7 @@ jobs:
         run: |
           set -o pipefail
           bl=$(sed -nE 's/^buildlast=([0-9-]+)[[:space:]]*$/\1/p' ../research/heat_direction/RUN | tail -1); bl=${bl:-2026-11-16}
-          python3 -W ignore -m subminute.coins --grids ../data/grids --build-last "$bl" --out ../out/coins 2>&1 | tail -14 | cut -c1-9000
+          python3 -W ignore -m subminute.coins --grids ../data/grids --build-last "$bl" --out ../out/coins 2>&1 | tail -3 | cut -c1-14000
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/coins" out/coins
 
@@ -951,7 +951,7 @@ jobs:
         working-directory: python
         run: |
           set -o pipefail
-          python3 -W ignore -m subminute.inventory "../data/rec/md-${{ steps.day.outputs.day }}.jsonl.gz" 2>&1 | cut -c1-2500 | head -90
+          python3 -W ignore -m subminute.inventory "../data/rec/md-${{ steps.day.outputs.day }}.jsonl.gz" 2>&1 | cut -c1-1600
 
   # Round 2 format peek (recorded day, read only): what the lifecycle, market and the other recorded kinds look like, so the reducer reads settlements and the fast
   # spot feed correctly. Prints a few market-data lines and key counts only.

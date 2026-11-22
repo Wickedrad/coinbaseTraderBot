@@ -139,6 +139,36 @@ def transfer(acc_pick: dict, acc_judge: dict, splits: list, queue: str, min_pick
     return out
 
 
+def digest(r: dict) -> dict:
+    """The few numbers worth reading from a full result, per coin and per transfer (the full tables are in coins.json)."""
+    out = {'days': len(r['days']), 'build_days': r['build_days'], 'check_days': r['check_days'], 'lag': {}, 'maker': {}, 'transfer': {}}
+    for c, v in r['lag'].items():
+        if not v.get('windows'):
+            out['lag'][c] = {'windows': 0}
+            continue
+        d = {'windows': v['windows'], 'r2_check_1e4_best': v['information_r2_check_1e4']['best'][:1], 'r2_check_1e4_median': v['information_r2_check_1e4']['median'],
+             'alignment_r2_1e4': v['alignment_r2_1e4']}
+        for label in ('sold', 'held'):
+            a = v[label]['all_cells_check']
+            b = v[label]['best_on_build']
+            d[label] = {'cells': a['cells'], 'follow_mean_c': a['follow_mean_c'], 'flip_mean_c': a['flip_mean_c'], 'follow_positive': a['follow_positive'],
+                        'best_build_c': None if b is None else b['follow_build']['net_c'], 'best_check_c': None if b is None else b['follow_check']['net_c'],
+                        'best_check_ci': None if b is None else [b['follow_check']['lo_c'], b['follow_check']['hi_c']], 'best_cell': None if b is None else b['cell']}
+        out['lag'][c] = d
+    for c, v in r['maker'].items():
+        out['maker'][c] = {}
+        for q, m in v.items():
+            b = m['best_on_build'][0] if m['best_on_build'] else None
+            out['maker'][c][q] = {'no_selection_all_days': m['all_days_no_selection'], 'no_selection_check': m['check_days_no_selection'],
+                                  'best_build_c': None if b is None else b['build']['net_per_fill_c'], 'best_check_c': None if b is None else b['check']['net_per_fill_c'],
+                                  'best_check_ci': None if b is None else [b['check']['lo_c'], b['check']['hi_c']], 'best_fills_check': None if b is None else b['check']['fills'],
+                                  'best_rule': None if b is None else b['rule']}
+    for q, t in r['transfer'].items():
+        out['transfer'][q] = {k: {'used': v['splits_used'], 'pick_judged_c': v.get('pick_on_judged_c', {}).get('mean'), 'share_positive': v.get('pick_on_judged_c', {}).get('share_positive'),
+                                  'all_rules_c': v.get('all_rules_on_judged_c'), 'pick_picking_c': v.get('pick_on_picking_c')} for k, v in t.items()}
+    return out
+
+
 def run(grids_dir: str, build_last: str, out_dir: str, coins=COINS) -> dict:
     names, preps = load(grids_dir, coins)
     n = len(names)
@@ -178,9 +208,4 @@ if __name__ == '__main__':
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     r = run(a.grids, a.build_last, a.out)
-    for c in COINS:
-        print(f'HEATLOOP mdcoin-lag-{c} ' + json.dumps({'days': len(r['days']), **r['lag'][c]}, sort_keys=True, default=float)[:9000], flush=True)
-    for c in COINS:
-        print(f'HEATLOOP mdcoin-maker-{c} ' + json.dumps(r['maker'][c], sort_keys=True, default=float)[:9000], flush=True)
-    for q in MK.QUEUE:
-        print(f'HEATLOOP mdcoin-transfer-{q} ' + json.dumps(r['transfer'][q], sort_keys=True, default=float)[:9000], flush=True)
+    print('HEATLOOP mdcoin-digest ' + json.dumps(digest(r), sort_keys=True, default=float)[:14000], flush=True)
