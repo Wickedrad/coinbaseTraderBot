@@ -751,7 +751,7 @@ jobs:
         working-directory: python
         run: |
           set -o pipefail
-          python3 -W ignore -m subminute.pockets --k15 ../data/k15 --grids ../data/grids --out ../out/pockets 2>&1 | tail -8 | cut -c1-15000
+          python3 -W ignore -m subminute.pockets --k15 ../data/k15 --grids ../data/grids --out ../out/pockets 2>&1 | tail -12 | cut -c1-15000
       - name: Keep the pocket tables on Drive
         if: contains(needs.test.outputs.stage, 'dspocket')
         run: bash deploy/drive_lab.sh put "models/subminute/pockets" out/pockets

@@ -181,7 +181,17 @@ def search(w, split_day: int, clean_day: int, top: int = 30) -> dict:
         if ck is not None and ck[2] >= MIN_CHECK_FILLS and ck[0] > 0:
             surv.append((ck[0], cell))
     surv.sort(key=lambda t: -t[0])
-    return {'summary': summary, 'top_by_build': top_rows, 'survivors': [cell for _, cell in surv], 'acc': acc, 'have': have, 'build': build, 'check': check}
+    ref = []
+    for sd in SIDES:                                          # the whole map at the longest rest, all coins and hours: where the sign is, build against check
+        for bk in BUCKETS:
+            for pl in PLACE:
+                A = acc.get(((sd, bk, pl, max(CANCEL)), 'ALL', 'ALL'))
+                if A is None:
+                    continue
+                b, k = cell_stats(A, build, have), cell_stats(A, check, have)
+                ref.append([sd, bk[0], pl[0], b['thru']['net_c'], b['thru']['fills'], b['gross_if_all_filled_c'], k['thru']['net_c'], k['thru']['lo_c'], k['thru']['hi_c'],
+                            k['thru']['fills'], k['gross_if_all_filled_c'], k['thru']['dollars_per_hour']])
+    return {'map': ref, 'summary': summary, 'top_by_build': top_rows, 'survivors': [cell for _, cell in surv], 'acc': acc, 'have': have, 'build': build, 'check': check}
 
 
 def exact_clean(grids_dir: str, cells: list, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> list:
@@ -258,7 +268,8 @@ if __name__ == '__main__':
     ap.add_argument('--n-clean', type=int, default=30)
     a = ap.parse_args()
     r = run(a.k15, a.grids, a.out, a.first, a.last, a.split, a.clean, a.top, a.n_clean)
-    print('HEATLOOP mdpocket-summary ' + json.dumps({k: v for k, v in r.items() if k not in ('top_by_build', 'clean')}, sort_keys=True, default=float), flush=True)
+    print('HEATLOOP mdpocket-summary ' + json.dumps({k: v for k, v in r.items() if k not in ('top_by_build', 'clean', 'map')}, sort_keys=True, default=float), flush=True)
+    print('HEATLOOP mdpocket-map [side, bucket lo, place from minute, build net c, build fills, build gross if all filled c, check net c, lo, hi, check fills, check gross c, check $/h] ' + json.dumps(r['map'], default=float), flush=True)
     print('HEATLOOP mdpocket-top ' + json.dumps(r['top_by_build'][:12], sort_keys=True, default=float)[:14000], flush=True)
     for i in range(0, len(r['clean']), 8):
         print(f'HEATLOOP mdpocket-clean{i // 8} ' + json.dumps(r['clean'][i:i + 8], sort_keys=True, default=float)[:14000], flush=True)

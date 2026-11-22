@@ -1,2 +1,2 @@
 stage=dspocket
-# Round 3 on recorded days: resting-buy pockets scored on Kalshi candles Apr 13-Jul 31 (BTC, ETH), judged Aug 1-Oct 31, best replayed on the full-depth days Nov 11-20 (all four coins). Recorded days only.
+# Round 3 on recorded days, second pass: the same scan plus the whole map of side x price bucket x placement at the longest rest (build against check), to see whether the NO-favourite pocket of Nov 11-16 shows in the 202 earlier days. Recorded days only.
