@@ -1,2 +1,2 @@
 stage=hrcoin
-# Round 4b on recorded days (Nov 22 2026): hourly lag and maker rules coin by coin on the ten recorded hourly grids (Nov 11-20; build Nov 11-16, check Nov 17-20), with the leave-one-coin-out and 210-split day hold-outs. Recorded days only.
+# Round 4b on recorded days (Nov 22 2026): the hourly maker result on BTC picked on the six build days and read on the four check days is the first positive one in the atlas, so the same ten recorded hourly grids are run again with the round-2 hold-out inside each coin (every way of holding out 4 of the 10 days), the day-by-day table of the most picked rule, the stress-fee arm, and the no-selection means by side, price bucket and placement. Recorded days only.

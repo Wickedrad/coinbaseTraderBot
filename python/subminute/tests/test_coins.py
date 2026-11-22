@@ -50,6 +50,23 @@ class CoinsTest(unittest.TestCase):
         self.assertAlmostEqual(t['pick_on_judged_c']['mean'], -5.0)
         self.assertLess(t['pick_minus_all_rules_c']['mean'], 0)
 
+    def test_within_coin_picks_on_other_days_and_reads_the_by_day_table(self):
+        rl = [r for r in MK.rules() if r[4] == 'opt'][:20]
+        good = rl[0]
+        acc = acc_of(rl, good, 0.04, -0.02)
+        t = CN.within(acc, 6, 'opt', k=2)
+        self.assertEqual(t['splits_used'], 15)
+        self.assertAlmostEqual(t['pick_on_judged_c']['mean'], 4.0)
+        self.assertEqual(t['most_picked_by_day']['fills'], [80] * 6)
+        self.assertEqual(t['most_picked_by_day']['net_per_fill_c'], [4.0] * 6)
+
+    def test_by_key_groups_rules_by_side(self):
+        rl = [r for r in MK.rules() if r[4] == 'opt']
+        acc = acc_of(rl, rl[0], 0.0, -0.02, fills=200)
+        g = CN.by_key(acc, set(range(6)), 'opt', 0)
+        self.assertEqual(sorted(g), ['no', 'yes'])
+        self.assertAlmostEqual(g['no']['net_per_fill_c'], -2.0)
+
     def test_floor_is_the_mean_of_all_rules(self):
         rl = [r for r in MK.rules() if r[4] == 'pess'][:10]
         acc = acc_of(rl, rl[0], 0.10, -0.01)

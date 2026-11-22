@@ -929,7 +929,7 @@ jobs:
         run: |
           set -o pipefail
           bl=$(sed -nE 's/^buildlast=([0-9-]+)[[:space:]]*$/\1/p' ../research/heat_direction/RUN | tail -1); bl=${bl:-2026-11-16}
-          python3 -W ignore -m subminute.hourly --grids ../data/hgrids --build-last "$bl" --out ../out/hourly 2>&1 | tail -3 | cut -c1-14000
+          python3 -W ignore -m subminute.hourly --grids ../data/hgrids --build-last "$bl" --out ../out/hourly 2>&1 | tail -3 | cut -c1-24000
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/hourly" out/hourly
 
@@ -1022,7 +1022,7 @@ jobs:
         run: |
           set -o pipefail
           bl=$(sed -nE 's/^buildlast=([0-9-]+)[[:space:]]*$/\1/p' ../research/heat_direction/RUN | tail -1); bl=${bl:-2026-11-16}
-          python3 -W ignore -m subminute.coins --grids ../data/grids --build-last "$bl" --out ../out/coins 2>&1 | tail -3 | cut -c1-14000
+          python3 -W ignore -m subminute.coins --grids ../data/grids --build-last "$bl" --out ../out/coins 2>&1 | tail -3 | cut -c1-24000
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/coins" out/coins
 

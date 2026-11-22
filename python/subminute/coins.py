@@ -139,6 +139,39 @@ def transfer(acc_pick: dict, acc_judge: dict, splits: list, queue: str, min_pick
     return out
 
 
+def by_key(acc: dict, sel: set, queue: str, idx: int, min_fills: int = 100) -> dict:
+    """No selection, grouped: the mean net per fill (c) of the rules that share one value of a rule key (idx 0 side, 1 price bucket, 2 placement, 3 cancel), over the
+    days in `sel`. Says whether a gain sits in one side (a market that drifted) or in how the order is placed."""
+    groups = {}
+    for r, days in acc.items():
+        if r[4] != queue:
+            continue
+        m, _, f, _, _ = MK._ratio(days, 2, 1, sel)
+        if m is not None and f >= min_fills:
+            groups.setdefault(str(r[idx]), []).append(m)
+    return {k: {'rules': len(v), 'net_per_fill_c': MK._c(float(np.mean(v)))} for k, v in sorted(groups.items())}
+
+
+def day_rows(days: dict, n: int) -> dict:
+    """One rule, day by day: fills, net per fill (c), and the average price of a fill."""
+    fills = [int(days[d][1]) if d in days else 0 for d in range(n)]
+    net = [None if d not in days or days[d][1] == 0 else MK._c(days[d][2] / days[d][1]) for d in range(n)]
+    tot = sum(fills)
+    return {'fills': fills, 'net_per_fill_c': net, 'avg_price': None if tot == 0 else round(sum(days[d][5] for d in days) / tot, 3)}
+
+
+def within(acc_c: dict, n: int, queue: str, k: int = 4) -> dict:
+    """The round-2 test on one coin: every way of holding out k of the n recorded days, the rule picked on the other days of the same coin and read on the held-out
+    days; with the day-by-day table of the most picked rule."""
+    t = transfer(acc_c, acc_c, day_splits(n, k), queue)
+    top = t.get('most_picked') or []
+    if top:
+        r = tuple(top[0]['rule'][key] for key in KEYS)
+        if r in acc_c:
+            t['most_picked_by_day'] = day_rows(acc_c[r], n)
+    return t
+
+
 def digest(r: dict) -> dict:
     """The few numbers worth reading from a full result, per coin and per transfer (the full tables are in coins.json)."""
     out = {'days': len(r['days']), 'build_days': r['build_days'], 'check_days': r['check_days'], 'lag': {}, 'maker': {}, 'transfer': {}}
@@ -162,10 +195,21 @@ def digest(r: dict) -> dict:
             out['maker'][c][q] = {'no_selection_all_days': m['all_days_no_selection'], 'no_selection_check': m['check_days_no_selection'],
                                   'best_build_c': None if b is None else b['build']['net_per_fill_c'], 'best_check_c': None if b is None else b['check']['net_per_fill_c'],
                                   'best_check_ci': None if b is None else [b['check']['lo_c'], b['check']['hi_c']], 'best_fills_check': None if b is None else b['check']['fills'],
-                                  'best_rule': None if b is None else b['rule']}
+                                  'best_rule': None if b is None else b['rule'],
+                                  'best_build_fills': None if b is None else b['build']['fills'], 'best_build_pos_days': None if b is None else b['build']['pos_days'],
+                                  'best_check_detail': None if b is None else {k: b['check'][k] for k in ('orders', 'fills', 'fill_rate', 'stress_fee_c', 'if_all_filled_c', 'days', 'pos_days', 'per_order_c')}}
     for q, t in r['transfer'].items():
         out['transfer'][q] = {k: {'used': v['splits_used'], 'pick_judged_c': v.get('pick_on_judged_c', {}).get('mean'), 'share_positive': v.get('pick_on_judged_c', {}).get('share_positive'),
                                   'all_rules_c': v.get('all_rules_on_judged_c'), 'pick_picking_c': v.get('pick_on_picking_c')} for k, v in t.items()}
+    for q, w in r.get('within', {}).items():
+        out.setdefault('within', {})[q] = {}
+        for c, t in w.items():
+            j = t.get('pick_on_judged_c', {})
+            out['within'][q][c] = {'used': t.get('splits_used'), 'pick_judged_c': j.get('mean'), 'median': j.get('median'), 'p10': j.get('p10'), 'p90': j.get('p90'),
+                                   'share_positive': j.get('share_positive'), 'all_rules_c': t.get('all_rules_on_judged_c'), 'pick_picking_c': t.get('pick_on_picking_c'),
+                                   'most_picked': (t.get('most_picked') or [None])[0], 'by_day': t.get('most_picked_by_day')}
+    if 'structure' in r:
+        out['structure'] = r['structure']
     return out
 
 
@@ -196,6 +240,8 @@ def run(grids_dir: str, build_last: str, out_dir: str, coins=COINS) -> dict:
         t['SOL+XRP_to_BTC+ETH_all_days'] = transfer(small, big, [(allset, allset)], q, min_pick=100)
         t['BTC+ETH_to_SOL+XRP_held_out_days'] = transfer(big, small, ds, q)
         res['transfer'][q] = t
+        res.setdefault('within', {})[q] = {c: within(acc[c], n, q) for c in coins}
+    res['structure'] = {q: {c: {name: by_key(acc[c], allset, q, i) for i, name in ((0, 'side'), (1, 'bucket'), (2, 'place'))} for c in coins} for q in MK.QUEUE}
     os.makedirs(out_dir, exist_ok=True)
     json.dump(res, open(os.path.join(out_dir, 'coins.json'), 'w'), indent=1, sort_keys=True, default=float)
     return res
@@ -208,4 +254,4 @@ if __name__ == '__main__':
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     r = run(a.grids, a.build_last, a.out)
-    print('HEATLOOP mdcoin-digest ' + json.dumps(digest(r), sort_keys=True, default=float)[:14000], flush=True)
+    print('HEATLOOP mdcoin-digest ' + json.dumps(digest(r), sort_keys=True, default=float)[:24000], flush=True)

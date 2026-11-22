@@ -52,4 +52,4 @@ if __name__ == '__main__':
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     r = run(a.grids, a.build_last, a.out)
-    print('HEATLOOP hrcoin-digest ' + json.dumps(CN.digest(r), sort_keys=True, default=float)[:14000], flush=True)
+    print('HEATLOOP hrcoin-digest ' + json.dumps(CN.digest(r), sort_keys=True, default=float)[:24000], flush=True)
