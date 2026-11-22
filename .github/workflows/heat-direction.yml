@@ -933,6 +933,55 @@ jobs:
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/hourly" out/hourly
 
+  # Round 4b (recorded days only): the hourly ladders' resting buys on Kalshi's own 1-minute candles (Drive raw/kalshi-history, KXBTCD and KXETHD, Apr 13 to Nov 6):
+  # rules scored Apr 13 to Jul 31, judged Aug 1 to Oct 31, read on Nov 1 to 6, and the best replayed on the full-depth days Nov 11 to 20 (hourly grids from hrgrid).
+  # subminute/hrpockets.py (pockets.py pointed at 60-minute windows). Read only; nothing is ordered; aggregates only.
+  hrpocket:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'hrpocket')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Where the hourly candles are on Drive
+        run: rclone lsf "gdrive:kalshi-bot-archive/raw/kalshi-history" --max-depth 2 --dirs-only | head -30
+      - name: Hourly candles (BTC and ETH, close days 2026-04-13 to 2026-11-06, read only)
+        run: |
+          set -uo pipefail
+          for A in BTC ETH; do
+            S="KX${A}D"; D="data/hist/kalshi/$S"; mkdir -p "$D"
+            for P in "raw/kalshi-history/kalshi/$S" "raw/kalshi-history/$S"; do
+              if bash deploy/drive_lab.sh get "$P" "$D" --include "/2026-04-1[3-9].jsonl" --include "/2026-04-[23][0-9].jsonl" --include "/2026-0[5-9]-[0-3][0-9].jsonl" \
+                   --include "/2026-1[01]-[0-3][0-9].jsonl"; then echo "$S from $P"; break; fi
+            done
+            echo "$S: $(ls "$D" | wc -l) day files, $(du -sh "$D" | cut -f1)"
+          done
+      - name: What the files hold (first and last day, one market line cut short)
+        run: |
+          for A in BTC ETH; do D="data/hist/kalshi/KX${A}D"; ls "$D" | head -1; ls "$D" | tail -1; done
+          f=$(ls data/hist/kalshi/KXBTCD/2026-07-1*.jsonl 2>/dev/null | head -1)
+          [ -z "$f" ] || { echo "$f lines: $(wc -l < "$f")"; head -c 600 "$f" | tr -d '\n'; echo; }
+      - name: The hourly grids of the full-depth days (Drive models/subminute/hgrids, from hrgrid)
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/subminute/hgrids" data/hgrids || { echo "::error::no hourly grids on Drive (run hrgrid first)"; exit 1; }
+          ls data/hgrids | wc -l
+      - name: Pockets of resting buys on the hourly ladders (build 2026-04-13 to 2026-07-31, check 2026-08-01 to 2026-10-31, clean 2026-11-01 to 06, replay 2026-11-11 to 20)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.hrpockets --hist ../data/hist --grids ../data/hgrids --out ../out/hrpockets 2>&1 | tail -12 | cut -c1-15000
+      - name: Keep the tables on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/hrpockets" out/hrpockets
+
   # Round 2, step 2 (recorded days only): the 1-second grids from Drive (models/subminute/grids) judged for lag: does the index move over the last L seconds
   # pay against the book's quote a moment later, net of both taker fees, on check days that picked nothing? The build days pick the cell, the check days judge it.
   dsmdlag:

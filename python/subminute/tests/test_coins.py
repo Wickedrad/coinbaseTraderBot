@@ -88,6 +88,19 @@ class CoinsTest(unittest.TestCase):
             HR.restore(old)
         self.assertEqual((LG.WIN, MK.WIN, LG.RANGES, LG.INFO_HI, MK.PLACE, MK.CANCEL, len(MK.rules())), before)
 
+    def test_hourly_pockets_settings_apply_and_are_put_back(self):
+        from subminute import hrpockets as HP
+        from subminute import pockets as PK
+        before = (PK.PLACE, PK.CANCEL, MK.WIN, MK.PLACE, MK.CANCEL)
+        old = HP.configure()
+        try:
+            self.assertEqual(PK.PLACE[-1], (30, 50))
+            self.assertEqual(PK.CANCEL, (40, 55, 59))
+            self.assertEqual(MK.WIN, 3600)
+        finally:
+            HP.restore(old)
+        self.assertEqual((PK.PLACE, PK.CANCEL, MK.WIN, MK.PLACE, MK.CANCEL), before)
+
     def test_inventory_counts_series(self):
         lines = [b'{"t":1,"k":"market","ticker":"KXETHD-26NOV2210-T3000","series":"KXETHD","openTime":0,"closeTime":3600000}\n',
                  b'{"t":2,"k":"book","ticker":"KXETHD-26NOV2210-T3000","bids":[],"asks":[]}\n',

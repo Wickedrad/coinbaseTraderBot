@@ -240,10 +240,11 @@ def exact_clean(grids_dir: str, cells: list, assets=('BTC', 'ETH', 'SOL', 'XRP')
     return out
 
 
-def run(k15: str, grids: str, out_dir: str, first: str, last: str, split: str, clean: str, top: int = 30, n_clean: int = 30, assets=('BTC', 'ETH')) -> dict:
+def run(k15: str, grids: str, out_dir: str, first: str, last: str, split: str, clean: str, top: int = 30, n_clean: int = 30, assets=('BTC', 'ETH'), n: int = 15,
+        series_fmt: str = 'KX{asset}15M') -> dict:
     from allpairs import data as KD
     lo_ms, hi_ms = _day(first) * 86_400_000, (_day(last) + 1) * 86_400_000
-    w = KD.load_kalshi(k15, list(assets), from_ms=lo_ms, to_ms=hi_ms)
+    w = KD.load_kalshi(k15, list(assets), n=n, series_fmt=series_fmt, from_ms=lo_ms, to_ms=hi_ms)
     res = search(w, _day(split), _day(clean), top)
     surv = res.pop('survivors')
     for k in ('acc', 'have', 'build', 'check'):
