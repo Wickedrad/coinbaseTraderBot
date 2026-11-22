@@ -1,2 +1,2 @@
-stage=famsurvey
-# round 5b second try: parallel, time budget, only finance-like categories (the first run hit its 30 minute limit with no output)
+stage=famcandles
+# round 5b: candles of the other 15-minute families (4 groups in parallel), then the resting-buy map in three time blocks

@@ -999,6 +999,71 @@ jobs:
           set -o pipefail
           python3 python/subminute/series_survey.py --snapshot bot/kalshi/feeScheduleSnapshot.json 2>&1 | tail -6 | cut -c1-24000
 
+  # Round 5b (recorded days only, public endpoints, read only): Kalshi's own 1-minute candles of the other 15-minute families that pay no maker fee (the survey above),
+  # about 47 days each, kept on Drive (raw/oracle-history/kalshi/KX<A>15M), then the resting-buy map of pockets.py on them in three time blocks (fampockets.py).
+  famcandles:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'famcandles')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: oilmetalsgas
+            series: KXWTI15M,KXSILVER15M,KXNATGAS15M
+            assets: WTI,SILVER,NATGAS
+          - group: fx
+            series: KXEURUSD15M,KXUSDJPY15M,KXGBPUSD15M,KXAUDUSD15M
+            assets: EURUSD,USDJPY,GBPUSD,AUDUSD
+          - group: altcoins
+            series: KXNEAR15M,KXHYPE15M,KXZEC15M
+            assets: NEAR,HYPE,ZEC
+          - group: brentplatinumrates
+            series: KXBRENT15M,KXPLATINUM15M,KX30YRRATE15M,KX5YRRATE15M
+            assets: BRENT,PLATINUM,30YRRATE,5YRRATE
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Restore dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: tennis-ta-deps-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci --no-audit --no-fund --silent --ignore-scripts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: Candles of the newest settled markets (public API, 10 requests a second, at most 4,500 markets a series)
+        run: |
+          set -uo pipefail
+          timeout 90m node --import tsx research/history/kalshiHistory.ts --series "${{ matrix.series }}" --days 60 --max-markets 4500 --out data/history/kalshi --budget-min 85 2>&1 | tail -10 | cut -c1-600 || true
+          for s in $(echo "${{ matrix.series }}" | tr , ' '); do echo "$s: $(ls data/history/kalshi/$s 2>/dev/null | grep -c jsonl) day file(s), $(du -sh data/history/kalshi/$s 2>/dev/null | cut -f1), first $(ls data/history/kalshi/$s 2>/dev/null | grep jsonl | head -1) last $(ls data/history/kalshi/$s 2>/dev/null | grep jsonl | tail -1)"; done
+      - name: What one market line holds (cut short)
+        run: |
+          for s in $(echo "${{ matrix.series }}" | tr , ' '); do f=$(ls data/history/kalshi/$s/*.jsonl 2>/dev/null | tail -2 | head -1 || true); if [ -n "$f" ]; then echo "$s $(basename "$f") lines $(wc -l < "$f")"; head -c 420 "$f" | tr -d '\n'; echo; fi; done
+      - name: Keep the candles on Drive
+        run: |
+          set -uo pipefail
+          for s in $(echo "${{ matrix.series }}" | tr , ' '); do [ -d "data/history/kalshi/$s" ] && bash deploy/drive_lab.sh put "raw/oracle-history/kalshi/$s" "data/history/kalshi/$s" || echo "no $s to keep"; done
+      - name: Resting-buy map (build the first half of the days, check the next quarter, clean the last quarter; no maker fee)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.fampockets --hist ../data/history --assets "${{ matrix.assets }}" --out ../out/fam-${{ matrix.group }} 2>&1 | tail -12 | cut -c1-30000
+      - name: Keep the tables on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/fampockets/${{ matrix.group }}" out/fam-${{ matrix.group }}
+
   # Round 5a (recorded days only): static arbitrage inside one hourly ladder (a higher strike's YES bid above a lower strike's YES ask) on the hourly grids, after both taker fees. Aggregates only.
   ladarb:
     needs: test
