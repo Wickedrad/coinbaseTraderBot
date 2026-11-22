@@ -181,6 +181,9 @@ jobs:
           pip install -q --disable-pip-version-check numba 2>&1 | tail -2 || true
           R=research/btcd_fractal/out14/july2016; mkdir -p "$R"
           python3 research/btcd_fractal/study14_july2016.py --data research/btcd_fractal/data --out "$R" --placebos 200 --wf-placebos 40 2>&1 | tee "$R/study14.log" | tail -40 | cut -c1-500
+      - name: "Round 17 coin prices (Coin Metrics daily PriceUSD for XRP, XLM, DOGE, LTC, ETH)"
+        if: ${{ env.ROUND == '17data' }}
+        run: python3 research/btcd_fractal/round17/fetch_coins.py --out research/btcd_fractal/data 2>&1 | tail -12
       - name: Refresh the forecast object on the latest data (weekly)
         if: ${{ env.ROUND == 'refresh' }}
         run: |
