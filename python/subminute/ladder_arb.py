@@ -102,8 +102,10 @@ def day_stats(z, coin: str, day_ms: int, stake: float = STAKE) -> dict:
     tw = np.asarray(z[f'{coin}__tr_w'], np.int64) if f'{coin}__tr_w' in z.files else np.zeros(0, np.int64)
     tms = np.asarray(z[f'{coin}__tr_ms'], np.int64) if f'{coin}__tr_ms' in z.files else np.zeros(0, np.int64)
     tcn = np.asarray(z[f'{coin}__tr_c'], float) if f'{coin}__tr_c' in z.files else np.zeros(0)
+    tpr = np.round(np.asarray(z[f'{coin}__tr_p'], float), 3) if f'{coin}__tr_p' in z.files else np.zeros(0)
+    tsd = np.asarray(z[f'{coin}__tr_side'], np.int64) if f'{coin}__tr_side' in z.files else np.zeros(0, np.int64)
     t_order = np.argsort(tw, kind='stable')
-    tw, tms, tcn = tw[t_order], tms[t_order], tcn[t_order]
+    tw, tms, tcn, tpr, tsd = tw[t_order], tms[t_order], tcn[t_order], tpr[t_order], tsd[t_order]
     t_cut = np.searchsorted(tw, np.arange(len(tickers) + 1))
 
     def trades_on(win_rows, s0, s1):
@@ -115,11 +117,21 @@ def day_stats(z, coin: str, day_ms: int, stake: float = STAKE) -> dict:
             n += float(m.sum())
             c += float(tcn[a:b][m].sum())
         return n, c
+    def through(win, s0, s1, price, bid_side):
+        """Contracts that traded THROUGH a displayed quote while it was displayed: a taker who sells YES (side -1) at a price below the displayed best bid, or a taker who buys
+        YES (side +1) at a price above the displayed best ask. Price-time priority makes both impossible against a live book, so any such volume says the book was not live."""
+        a, b = t_cut[win], t_cut[win + 1]
+        m = (tms[a:b] >= s0 * 1000) & (tms[a:b] < s1 * 1000)
+        if bid_side:
+            m &= (tsd[a:b] == -1) & (tpr[a:b] < price - 0.0049)
+        else:
+            m &= (tsd[a:b] == 1) & (tpr[a:b] > price + 0.0049)
+        return float(tcn[a:b][m].sum())
     tot = {'hours': 0, 'ladder_hours_ge2': 0, 'two_secs': 0, 'same_market_crossed_secs': 0, 'crossed_secs': 0, 'crossed_gross': 0.0, 'crossed_sizes': [],
            'net_pos_secs': 0, 'episodes': 0, 'episode_net': 0.0, 'gaps': [], 'by_bucket': {b[0]: {'two': 0, 'crossed': 0, 'net_pos': 0} for b in BUCKETS},
            'age_secs': {a[0]: 0 for a in AGE_BINS}, 'age_net_pos': {a[0]: 0 for a in AGE_BINS},
            'lat': {str(L): {'taken': 0, 'net': 0.0, 'pos': 0} for L in LATENCY}, 'lat_fresh': {str(L): {'taken': 0, 'net': 0.0, 'pos': 0} for L in LATENCY},
-           'durations': [], 'examples': [], 'ep_with_a_trade': 0, 'ep_trades': 0.0, 'ep_contracts': 0.0, 'quoted_ms': 0, 'stale_ms': 0}
+           'durations': [], 'examples': [], 'ep_with_a_trade': 0, 'ep_checked_through': 0, 'ep_through': 0, 'ep_through_contracts': 0.0, 'ep_trades': 0.0, 'ep_contracts': 0.0, 'quoted_ms': 0, 'stale_ms': 0}
     for o in np.unique(open_ms):
         rows = np.flatnonzero(open_ms == o)
         rows = rows[np.isfinite(strike[rows])]
@@ -172,6 +184,20 @@ def day_stats(z, coin: str, day_ms: int, stake: float = STAKE) -> dict:
             tot['durations'].append(e - s + 1)
             legs = sorted(set(r['pair'][0][s:e + 1].tolist()) | set(r['pair'][1][s:e + 1].tolist()))
             n_tr, n_ct = trades_on([int(rows[x]) for x in legs], s, e + 1)
+            # trades through the quotes of the pair that is crossed at the middle of the episode, over the stretch where that pair and both quotes are unchanged
+            mid = s + (e - s) // 2
+            pi_, pj_ = int(r['pair'][0][mid]), int(r['pair'][1][mid])
+            same = (r['pair'][0] == pi_) & (r['pair'][1] == pj_) & (r['bid_j'] == r['bid_j'][mid]) & (r['ask_i'] == r['ask_i'][mid]) & cr
+            t0 = mid
+            while t0 - 1 >= s and same[t0 - 1]:
+                t0 -= 1
+            t1 = mid
+            while t1 + 1 <= e and same[t1 + 1]:
+                t1 += 1
+            thr = through(int(rows[pj_]), t0, t1 + 1, float(r['bid_j'][mid]), True) + through(int(rows[pi_]), t0, t1 + 1, float(r['ask_i'][mid]), False)
+            tot['ep_checked_through'] += 1
+            tot['ep_through'] += int(thr > 0)
+            tot['ep_through_contracts'] += thr
             tot['ep_with_a_trade'] += int(n_tr > 0)
             tot['ep_trades'] += n_tr
             tot['ep_contracts'] += n_ct
@@ -189,7 +215,7 @@ def day_stats(z, coin: str, day_ms: int, stake: float = STAKE) -> dict:
                 mid = s + (e - s) // 2
                 tot['examples'].append({'start_s': int(s), 'seconds': int(e - s + 1), 'strikes_apart': float(strike[rows][r['pair'][1][mid]] - strike[rows][r['pair'][0][mid]]),
                                         'ask_i_c': [round(float(r['ask_i'][t]) * 100) for t in (s, mid, e)], 'bid_j_c': [round(float(r['bid_j'][t]) * 100) for t in (s, mid, e)],
-                                        'size': [float(r['size'][t]) for t in (s, mid, e)], 'trades_on_the_legs': n_tr, 'contracts_on_the_legs': n_ct, 'age_s': [int(r['age'][t]) for t in (s, mid, e)], 'ladder_markets': int(len(rows))})
+                                        'size': [float(r['size'][t]) for t in (s, mid, e)], 'trades_on_the_legs': n_tr, 'contracts_on_the_legs': n_ct, 'contracts_through_the_displayed_quote': thr, 'unchanged_stretch_s': int(t1 - t0 + 1), 'age_s': [int(r['age'][t]) for t in (s, mid, e)], 'ladder_markets': int(len(rows))})
     return tot
 
 
@@ -244,7 +270,8 @@ def run(grids_dir: str, out_dir: str, coins=('BTC', 'ETH', 'SOL', 'XRP'), stake:
                  'gap_hist_seconds': _gap_hist(gaps) if len(gaps) else {}, 'gap_median_c': float(np.median(gaps) * 100) if len(gaps) else None,
                  'gap_max_c': float(gaps.max() * 100) if len(gaps) else None, 'size_median_contracts': float(np.median(sizes)) if len(sizes) else None,
                  'gross_locked_dollars': tot('crossed_gross'), 'seconds_net_positive_after_taker_fees': tot('net_pos_secs'),
-                 'episodes': tot('episodes'), 'duration_s': dur, 'episodes_with_a_trade_on_a_leg': tot('ep_with_a_trade'), 'trades_on_the_legs_during_episodes': tot('ep_trades'),
+                 'episodes': tot('episodes'), 'duration_s': dur, 'episodes_with_a_trade_on_a_leg': tot('ep_with_a_trade'), 'episodes_checked_for_trades_through_the_quote': tot('ep_checked_through'),
+                 'episodes_with_trades_through_the_displayed_quote': tot('ep_through'), 'contracts_through_the_displayed_quote': tot('ep_through_contracts'), 'trades_on_the_legs_during_episodes': tot('ep_trades'),
                  'contracts_on_the_legs_during_episodes': tot('ep_contracts'),
                  'quoted_market_seconds': tot('quoted_ms'), 'share_of_quoted_market_seconds_unchanged_over_120s': (tot('stale_ms') / tot('quoted_ms')) if tot('quoted_ms') else None,
                  'by_day_share_unchanged_over_120s': {k: (d['stale_ms'] / d['quoted_ms']) if d['quoted_ms'] else None for k, d in sorted(days.items())},

@@ -74,11 +74,15 @@ class LadderArb(unittest.TestCase):
             np.savez_compressed(os.path.join(d, 'grid-2026-11-11.npz'), **{'BTC__tickers': np.array(['A', 'B']), 'BTC__strike': np.array([100.0, 110.0]),
                                                                            'BTC__open_ms': np.zeros(m, np.int64) + 3_600_000, 'BTC__bid': q['bid'], 'BTC__ask': q['ask'],
                                                                            'BTC__bsz': s['bsz'], 'BTC__asz': s['asz'],
-                                                                           'BTC__tr_w': np.array([0, 1], np.int32), 'BTC__tr_ms': np.array([301_000, 5_000], np.int32),
-                                                                           'BTC__tr_c': np.array([3.0, 7.0], np.float32)})
+                                                                           'BTC__tr_w': np.array([0, 1, 1], np.int32), 'BTC__tr_ms': np.array([301_000, 5_000, 301_500], np.int32),
+                                                                           'BTC__tr_c': np.array([3.0, 7.0, 5.0], np.float32), 'BTC__tr_p': np.array([0.45, 0.50, 0.40], np.float32),
+                                                                           'BTC__tr_side': np.array([1, -1, -1], np.int8)})
             e = LA.run(d, os.path.join(d, 'o'), coins=('BTC',))['coins']['BTC']
             self.assertEqual(e['episodes_with_a_trade_on_a_leg'], 1)         # the trade at second 301 is inside the episode (300-302); the one at second 5 is not
-            self.assertEqual(e['contracts_on_the_legs_during_episodes'], 3.0)
+            self.assertEqual(e['contracts_on_the_legs_during_episodes'], 8.0)
+            # the taker who sold YES at 0.40 while 0.60 was the displayed bid went through the quote; the buy at 0.45 against the displayed 0.45 ask did not
+            self.assertEqual(e['episodes_with_trades_through_the_displayed_quote'], 1)
+            self.assertEqual(e['contracts_through_the_displayed_quote'], 5.0)
             f = e['same_but_only_episodes_whose_books_were_fresh_at_the_start']
             self.assertEqual(f['0']['taken'], 1)
             self.assertEqual(f['1']['taken'], 1)
