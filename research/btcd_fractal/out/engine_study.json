@@ -3762,10 +3762,10 @@
       }
     },
     "d90": {
-      "n": 367,
-      "maeEngine": 6.1,
-      "maeFlat": 3.27,
-      "directionHit": 0.452,
+      "n": 368,
+      "maeEngine": 6.09,
+      "maeFlat": 3.26,
+      "directionHit": 0.454,
       "byFit": {
         "high": {
           "n": 0,
