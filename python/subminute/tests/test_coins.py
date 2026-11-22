@@ -58,6 +58,19 @@ class CoinsTest(unittest.TestCase):
         self.assertAlmostEqual(f['net_per_fill_c'], (10.0 + 9 * -1.0) / 10)
         self.assertEqual(f['rules_above_zero'], 1)
 
+    def test_hourly_settings_apply_and_are_put_back(self):
+        from subminute import hourly as HR
+        from subminute import lag as LG
+        before = (LG.WIN, MK.WIN, LG.RANGES, LG.INFO_HI, MK.PLACE, MK.CANCEL, len(MK.rules()))
+        old = HR.configure()
+        try:
+            self.assertEqual((LG.WIN, MK.WIN, LG.INFO_HI), (3600, 3600, 3540))
+            self.assertEqual(MK.rules()[0][2], (60, 600))
+            self.assertEqual(len(MK.rules()), 360)
+        finally:
+            HR.restore(old)
+        self.assertEqual((LG.WIN, MK.WIN, LG.RANGES, LG.INFO_HI, MK.PLACE, MK.CANCEL, len(MK.rules())), before)
+
     def test_inventory_counts_series(self):
         lines = [b'{"t":1,"k":"market","ticker":"KXETHD-26NOV2210-T3000","series":"KXETHD","openTime":0,"closeTime":3600000}\n',
                  b'{"t":2,"k":"book","ticker":"KXETHD-26NOV2210-T3000","bids":[],"asks":[]}\n',

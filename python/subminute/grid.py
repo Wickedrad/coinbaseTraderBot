@@ -22,6 +22,7 @@ SEC = 1000
 WIN = 900                                      # seconds in a 15-minute window
 DAY = 86400
 SERIES = re.compile(r'^KX(BTC|ETH|SOL|XRP)15M$')
+HOURLY = dict(series=re.compile(r'^KX(BTC|ETH|SOL|XRP)D$'), win=3600, tags=(b'BTCD-', b'ETHD-', b'SOLD-', b'XRPD-'), max_life_ms=3900 * 1000)   # the hourly ladders: P(coin >= strike) at the top of the hour
 KINDS = (b'book', b'delta', b'trade', b'market', b'result', b'lifecycle', b'index', b'spot', b'perp')
 BOOKISH = (b'book', b'delta', b'trade', b'result', b'lifecycle')
 
@@ -80,10 +81,18 @@ class Book:
                 self.ba, self.asks.get(self.ba, 0.0) if self.ba is not None else 0.0)
 
 
-def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
-    """lines: an iterable of bytes lines of one recorded UTC day starting at `day_ms`. Returns the grids (see module doc) and a counts summary."""
+def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP'), series=None, win: int = None, tags=None, max_life_ms: int = None) -> dict:
+    """lines: an iterable of bytes lines of one recorded UTC day starting at `day_ms`. Returns the grids (see module doc) and a counts summary.
+    The defaults read the 15-minute series. series (a compiled regex with the asset in group 1), win (seconds a market is read for before its close), tags (bytes that a
+    market-data line of those series carries in its first 200 bytes) and max_life_ms (skip a market listed for longer than this, from its open to its close) read
+    another family, e.g. HOURLY below."""
+    series = SERIES if series is None else series
+    win = WIN if win is None else win
+    tags = (b'15M-',) if tags is None else tags
+    prefilter = win != WIN                                   # a family with many unregistered markets: skip a line whose ticker the bot never registered
+    known = set()
     loads = _loads()
-    meta, books, win = {}, {}, {}
+    meta, books, wins = {}, {}, {}
     idx_val = {a: np.full(DAY, np.nan) for a in assets}
     idx_n = {a: np.zeros(DAY, np.int32) for a in assets}
     idx_lag = {a: np.full(DAY, np.nan) for a in assets}
@@ -100,8 +109,15 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
         all_kinds[k] = all_kinds.get(k, 0) + 1
         if k not in KINDS:
             continue
-        if k in BOOKISH and b'15M-' not in line[:200]:       # other series and other markets: no need to parse
-            continue
+        if k in BOOKISH:
+            head = line[:200]
+            if not any(t in head for t in tags):             # other series and other markets: no need to parse
+                continue
+            if prefilter:
+                i = head.find(b'"ticker":"')
+                j = head.find(b'"', i + 10) if i >= 0 else -1
+                if j < 0 or head[i + 10:j] not in known:
+                    continue
         ks = k.decode()
         counts[ks] = counts.get(ks, 0) + 1
         if ks not in first:
@@ -146,9 +162,11 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
                         perp_last[a][sec] = float(e['last']) / float(cs)
             continue
         if ks == 'market':
-            m = SERIES.match(str(e.get('series') or ''))
-            if m and m.group(1) in assets and e.get('closeTime') and e.get('openTime') is not None:
-                meta[e['ticker']] = {'asset': m.group(1), 'open': int(e['closeTime']) - WIN * SEC, 'close': int(e['closeTime']), 'strike': e.get('strike')}
+            m = series.match(str(e.get('series') or ''))
+            if m and m.group(1) in assets and e.get('closeTime') and e.get('openTime') is not None \
+                    and (max_life_ms is None or int(e['closeTime']) - int(e['openTime']) <= max_life_ms):
+                meta[e['ticker']] = {'asset': m.group(1), 'open': int(e['closeTime']) - win * SEC, 'close': int(e['closeTime']), 'strike': e.get('strike')}
+                known.add(e['ticker'].encode())
             continue
         tk = e.get('ticker')
         mt = meta.get(tk)
@@ -161,12 +179,12 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
         if ks == 'result':
             mt['result'] = 1.0 if e.get('result') == 'yes' else 0.0 if e.get('result') == 'no' else None
             continue
-        w = win.get(tk)
+        w = wins.get(tk)
         if w is None:
-            w = win[tk] = {'bid': np.full(WIN, np.nan), 'ask': np.full(WIN, np.nan), 'bsz': np.zeros(WIN), 'asz': np.zeros(WIN),
-                           'ty': np.zeros(WIN), 'tn': np.zeros(WIN), 'seen': np.zeros(WIN, bool), 'pre': None, 'tr': []}
+            w = wins[tk] = {'bid': np.full(win, np.nan), 'ask': np.full(win, np.nan), 'bsz': np.zeros(win), 'asz': np.zeros(win),
+                            'ty': np.zeros(win), 'tn': np.zeros(win), 'seen': np.zeros(win, bool), 'pre': None, 'tr': []}
         s = (t - mt['open']) // SEC
-        if not 0 <= s < WIN:
+        if not 0 <= s < win:
             if ks in ('book', 'delta'):                      # keep the book current even outside the window
                 b = books.setdefault(tk, Book())
                 if ks == 'book':
@@ -198,19 +216,19 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
     out = {'counts': counts, 'all_kinds': {k.decode(): v for k, v in sorted(all_kinds.items())}, 'index_src': dict(sorted(src.items())), 'first': first,
            'assets': list(assets)}
     for a in assets:
-        tickers = sorted((tk for tk, m in meta.items() if m['asset'] == a and tk in win and win[tk]['seen'].any()), key=lambda x: meta[x]['open'])
+        tickers = sorted((tk for tk, m in meta.items() if m['asset'] == a and tk in wins and wins[tk]['seen'].any()), key=lambda x: meta[x]['open'])
         n = len(tickers)
-        g = {k: np.full((n, WIN), np.nan) for k in ('bid', 'ask')}
-        g.update({k: np.zeros((n, WIN)) for k in ('bsz', 'asz', 'ty', 'tn')})
+        g = {k: np.full((n, win), np.nan) for k in ('bid', 'ask')}
+        g.update({k: np.zeros((n, win)) for k in ('bsz', 'asz', 'ty', 'tn')})
         for i, tk in enumerate(tickers):
-            w = win[tk]
+            w = wins[tk]
             seen = w['seen']
             pre = w['pre']
             for key, pi in (('bid', 0), ('bsz', 1), ('ask', 2), ('asz', 3)):
                 arr = w[key].copy()
                 # an unseen second keeps the book of the second before it; the first seconds keep the book as the window opened
                 last = None if pre is None else (np.nan if pre[pi] is None else pre[pi])
-                for s in range(WIN):
+                for s in range(win):
                     if seen[s]:
                         last = arr[s]
                     elif last is not None:
@@ -219,7 +237,7 @@ def reduce_day(lines, day_ms: int, assets=('BTC', 'ETH', 'SOL', 'XRP')) -> dict:
                     arr[~np.isfinite(arr)] = 0.0
                 g[key][i] = arr
             g['ty'][i], g['tn'][i] = w['ty'], w['tn']
-        trs = [(i, *r) for i, tk in enumerate(tickers) for r in win[tk]['tr']]
+        trs = [(i, *r) for i, tk in enumerate(tickers) for r in wins[tk]['tr']]
         tr = np.array(trs, dtype=np.float64).reshape(-1, 5)
         out[a] = {'tr_w': tr[:, 0].astype(np.int32), 'tr_ms': tr[:, 1].astype(np.int32), 'tr_p': tr[:, 2].astype(np.float32), 'tr_c': tr[:, 3].astype(np.float32),
                   'tr_side': tr[:, 4].astype(np.int8), 'tickers': tickers, 'open_ms': np.array([meta[x]['open'] for x in tickers], np.int64),
@@ -265,6 +283,7 @@ if __name__ == '__main__':
     import datetime as dt
     path, day, dest = sys.argv[1], sys.argv[2], sys.argv[3]
     day_ms = int(dt.datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
-    out = reduce_day(read_gz(path), day_ms)
+    hourly = len(sys.argv) > 4 and sys.argv[4] == 'hourly'
+    out = reduce_day(read_gz(path), day_ms, **(HOURLY if hourly else {}))
     save(out, dest)
-    print('HEATLOOP md ' + json.dumps({'day': day, 'part': 'grid', **summary(out), 'all_kinds': out['all_kinds'], 'index_src': out['index_src'], 'first': out['first']}, sort_keys=True, default=float), flush=True)
+    print('HEATLOOP md ' + json.dumps({'day': day, 'part': 'hgrid' if hourly else 'grid', **summary(out), 'all_kinds': out['all_kinds'], 'index_src': out['index_src'], 'first': out['first']}, sort_keys=True, default=float), flush=True)

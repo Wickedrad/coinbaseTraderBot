@@ -31,6 +31,7 @@ LS = (1, 2, 3, 5, 10, 20, 30)
 ZS = (1.5, 2.0, 3.0)
 HS = (2, 5, 10, 30)
 RANGES = ((60, 300), (300, 600), (600, 840))      # the book of a window is only known from about 40 seconds in
+INFO_HI = 840                                  # last second (exclusive, before the horizon is added) the information fit reads
 SOURCES = ('idx', 'spot', 'perp_mid')              # Kalshi's settlement index, the fast spot feed, the perpetual's mid
 DELAYS = (1, 2, 3)
 PMIN, PMAX = 0.05, 0.95
@@ -187,7 +188,7 @@ def judge(acc: dict, build: set, check: set, top: int = 6) -> dict:
 def information(preps: list, build: set, check: set, d: int = 1, back: bool = False) -> dict:
     """Slope of the quote's later mid move (back=True: its move over the same L seconds before, the alignment check) on the source's move, per mid bucket,
     fitted on build days; R^2 against zero on check days."""
-    S = np.arange(60, 840 - max(HS) - d, 5)
+    S = np.arange(60, INFO_HI - max(HS) - d, 5)
     out = {}
     srcs = sorted({k[0] for _, pr in preps for k in pr['z']})
     for src in srcs:

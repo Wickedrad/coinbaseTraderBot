@@ -59,6 +59,32 @@ class GridTest(unittest.TestCase):
         self.assertAlmostEqual(b['perp_mid'][s], 100002.0, places=3)       # 10.0002 per contract of 0.0001 coin
         self.assertAlmostEqual(b['perp_last'][s], 100002.0, places=3)
 
+    def test_hourly_ladder_is_read_with_its_own_window(self):
+        close = OPEN + 3600_000
+        def lines():
+            yield L(OPEN + 1000, 'delta', ticker='KXETHD-26NOV1720-T3000', side='bid', price=0.30, delta=9, ts=OPEN)          # before the market line was seen: not kept
+            yield L(OPEN + 40_000, 'market', ticker='KXETHD-26NOV1720-T3000', series='KXETHD', asset='ETH', openTime=OPEN, closeTime=close, strike=3000.0, kind='greater')
+            yield L(OPEN + 40_000, 'market', ticker='KXETHD-26NOV1721-T3000', series='KXETHD', asset='ETH', openTime=OPEN - 86_400_000, closeTime=close + 3600_000, strike=3000.0)
+            yield L(OPEN + 50_000, 'book', ticker='KXETHD-26NOV1720-T3000', bids=[{'price': 0.40, 'size': 10}], asks=[{'price': 0.44, 'size': 6}], ts=OPEN + 50_000)
+            yield L(OPEN + 50_000, 'book', ticker='KXETHD-26NOV1719-T2000', bids=[{'price': 0.90, 'size': 10}], asks=[{'price': 0.95, 'size': 6}], ts=OPEN + 50_000)   # a market nobody registered
+            yield L(OPEN + 1800_000, 'trade', ticker='KXETHD-26NOV1720-T3000', price=0.44, count=2, takerSide='yes', ts=OPEN + 1800_000)
+            yield L(OPEN + 2400_000, 'delta', ticker='KXETHD-26NOV1720-T3000', side='bid', price=0.41, delta=5, ts=OPEN + 2400_000)
+            yield L(close + 900, 'lifecycle', ticker='KXETHD-26NOV1720-T3000', event='determined', result='no', ts=close + 900)
+            yield L(OPEN + 2000, 'index', asset='ETH', value=3001.0, ts=OPEN + 1900, src='x')
+        o = G.reduce_day(lines(), DAY0, assets=('BTC', 'ETH'), **G.HOURLY)
+        e = o['ETH']
+        self.assertEqual(e['tickers'], ['KXETHD-26NOV1720-T3000'])
+        self.assertEqual(e['bid'].shape, (1, 3600))
+        self.assertEqual(e['result'][0], 0.0)
+        s = (OPEN + 50_000 - (close - 3600_000)) // 1000
+        self.assertAlmostEqual(e['bid'][0, s], 0.40)
+        self.assertAlmostEqual(e['ask'][0, s], 0.44)
+        self.assertAlmostEqual(e['bid'][0, 2400], 0.41)
+        self.assertTrue(np.isnan(e['bid'][0, 10]))                                   # nothing known 10 seconds in
+        self.assertEqual(len(e['tr_p']), 1)
+        self.assertEqual(int(e['tr_ms'][0]), 1800_000)
+        self.assertEqual(o['BTC']['bid'].shape, (0, 3600))
+
     def test_book_as_the_window_opens(self):
         def lines():
             yield L(OPEN - 9000, 'market', ticker='KXETH15M-Y', series='KXETH15M', asset='ETH', openTime=OPEN - 600_000, closeTime=CLOSE, strike=3000.0)
