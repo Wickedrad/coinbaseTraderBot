@@ -44,6 +44,27 @@ def _row(sd, bk, pl, st):
     return [sd, bk[0], pl[0], b['net_c'], b['fills'], k['net_c'], k['lo_c'], k['hi_c'], k['fills'], st['check']['gross_if_all_filled_c'], c['net_c'], c['lo_c'], c['hi_c'], c['fills']]
 
 
+def digest(rows, min_fills: int = 150) -> dict:
+    """One scope's map in a few numbers: rows are [side, bucket lo, place from, build net, build fills, check net, check lo, check hi, check fills, check gross, clean net, clean lo, clean hi, clean fills]."""
+    def wmean(sel, vi, fi):
+        d = [(r[vi], r[fi]) for r in sel if r[vi] is not None and r[fi]]
+        n = sum(f for _, f in d)
+        return None if n == 0 else round(sum(v * f for v, f in d) / n, 3)
+    out = {'rows': len(rows)}
+    for sd in PK.SIDES:
+        sel = [r for r in rows if r[0] == sd]
+        out[sd] = {'build_net_c': wmean(sel, 3, 4), 'check_net_c': wmean(sel, 5, 8), 'clean_net_c': wmean(sel, 10, 13), 'check_fills': int(sum(r[8] for r in sel)), 'clean_fills': int(sum(r[13] for r in sel))}
+    ok = [r for r in rows if r[8] >= min_fills and r[13] >= min_fills]
+    out['rows_with_fills'] = len(ok)
+    out['check_positive'] = sum(1 for r in ok if r[5] is not None and r[5] > 0)
+    out['check_lo_above_zero'] = [r for r in ok if r[6] is not None and r[6] > 0]
+    out['clean_lo_above_zero'] = [r for r in ok if r[11] is not None and r[11] > 0]
+    out['positive_in_all_three_blocks'] = [r for r in ok if r[3] is not None and r[3] > 0 and r[5] is not None and r[5] > 0 and r[10] is not None and r[10] > 0]
+    out['best_check'] = sorted(ok, key=lambda r: -(r[5] if r[5] is not None else -99))[:3]
+    out['best_clean'] = sorted(ok, key=lambda r: -(r[10] if r[10] is not None else -99))[:3]
+    return out
+
+
 def run(hist: str, series_fmt: str, assets, out_dir: str, build_frac: float = 0.5, clean_frac: float = 0.25, top: int = 10, log=print) -> dict:
     from allpairs import data as KD
     assets = [a for a in assets if a]
@@ -107,10 +128,13 @@ if __name__ == '__main__':
     ap.add_argument('--assets', required=True, help='comma-separated, e.g. WTI,SILVER,NATGAS')
     ap.add_argument('--out', required=True)
     ap.add_argument('--top', type=int, default=10)
+    ap.add_argument('--maps', action='store_true', help='print every scope\'s whole map (long); the digest is always printed')
     a = ap.parse_args()
     r = run(a.hist, a.series_fmt, [x.strip().upper() for x in a.assets.split(',')], a.out, top=a.top, log=lambda *x: None)
     print('HEATLOOP famp-summary ' + json.dumps({k: v for k, v in r.items() if k not in ('maps', 'top_survivors', 'passes')}, sort_keys=True, default=float), flush=True)
     print('HEATLOOP famp-cols [side, bucket lo, place from minute, build net c, build fills, check net c, check lo, check hi, check fills, check gross if all filled c, clean net c, clean lo, clean hi, clean fills]', flush=True)
     for scope, rows in r['maps'].items():
-        print(f'HEATLOOP famp-map {scope} ' + json.dumps(rows, default=float), flush=True)
+        print(f'HEATLOOP famp-digest {scope} ' + json.dumps(digest(rows), sort_keys=True, default=float), flush=True)
+        if a.maps:
+            print(f'HEATLOOP famp-map {scope} ' + json.dumps(rows, default=float), flush=True)
     print('HEATLOOP famp-top ' + json.dumps(r['top_survivors'][:6], sort_keys=True, default=float)[:12000], flush=True)

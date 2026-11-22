@@ -1064,6 +1064,48 @@ jobs:
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/fampockets/${{ matrix.group }}" out/fam-${{ matrix.group }}
 
+  # Round 5b read-out (no fetch): the candles that famcandles kept on Drive, read again by fampockets.py with a compact digest per asset instead of the whole map.
+  famread:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'famread')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: oilmetalsgas
+            series: KXWTI15M,KXSILVER15M,KXNATGAS15M
+            assets: WTI,SILVER,NATGAS
+          - group: fx
+            series: KXEURUSD15M,KXUSDJPY15M,KXGBPUSD15M,KXAUDUSD15M
+            assets: EURUSD,USDJPY,GBPUSD,AUDUSD
+          - group: altcoins
+            series: KXNEAR15M,KXHYPE15M,KXZEC15M
+            assets: NEAR,HYPE,ZEC
+          - group: brentplatinumrates
+            series: KXBRENT15M,KXPLATINUM15M,KX30YRRATE15M,KX5YRRATE15M
+            assets: BRENT,PLATINUM,30YRRATE,5YRRATE
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The candles of the group from Drive (raw/oracle-history/kalshi)
+        run: |
+          set -uo pipefail
+          for s in $(echo "${{ matrix.series }}" | tr , ' '); do mkdir -p "data/history/kalshi/$s"; bash deploy/drive_lab.sh get "raw/oracle-history/kalshi/$s" "data/history/kalshi/$s" || echo "no $s on Drive"; echo "$s: $(ls data/history/kalshi/$s | grep -c jsonl) day file(s)"; done
+      - name: Resting-buy digest (build the first half of the days, check the next quarter, clean the last quarter; no maker fee)
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.fampockets --hist ../data/history --assets "${{ matrix.assets }}" --out ../out/fam-${{ matrix.group }} 2>&1 | tail -8 | cut -c1-12000
+
   # Round 5a (recorded days only): static arbitrage inside one hourly ladder (a higher strike's YES bid above a lower strike's YES ask) on the hourly grids, after both taker fees. Aggregates only.
   ladarb:
     needs: test

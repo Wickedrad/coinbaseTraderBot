@@ -59,6 +59,16 @@ class FamPocketsTest(unittest.TestCase):
                     self.assertEqual(row[4], 0)
             self.assertEqual(r['pass_count'], 0)
 
+    def test_digest_counts_blocks_and_flags(self):
+        rows = [['yes', 0.5, 1, 1.0, 200, 2.0, 0.5, 3.5, 200, 3.0, 1.5, -1.0, 4.0, 180],      # positive in all three, check lower bound above zero
+                ['no', 0.5, 1, -1.0, 200, 2.0, -0.5, 4.5, 200, 3.0, 1.5, -1.0, 4.0, 180],       # build negative
+                ['yes', 0.6, 3, 1.0, 50, 9.0, 8.0, 10.0, 20, 9.0, 9.0, 8.0, 10.0, 10]]           # too few fills: left out
+        d = FP.digest(rows)
+        self.assertEqual((d['rows'], d['rows_with_fills'], d['check_positive']), (3, 2, 2))
+        self.assertEqual(len(d['check_lo_above_zero']), 1)
+        self.assertEqual(len(d['positive_in_all_three_blocks']), 1)
+        self.assertAlmostEqual(d['yes']['check_net_c'], (2.0 * 200 + 9.0 * 20) / 220, places=3)
+
     def test_too_few_days_is_an_error(self):
         with tempfile.TemporaryDirectory() as t:
             write(t, ['AAA'], 5)
