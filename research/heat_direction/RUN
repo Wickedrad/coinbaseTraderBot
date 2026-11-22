@@ -1,2 +1,2 @@
-stage=hrpocket
-# Round 4b on recorded days (Nov 22 2026), second start: the first start found Kalshi's hourly candles at raw/oracle-history/kalshi/KXBTCD (206 day files, Apr 13 on) and not under raw/kalshi-history (56 days, Sep 13 on); the job now reads the former. Same question: on the ten full-depth days the hourly BTC ladder's resting NO buys earn and YES buys lose, so do the 206 days of Kalshi's own 1-minute candles (build Apr 13 to Jul 31, check Aug 1 to Oct 31, clean Nov 1 to 6, replay Nov 11 to 20) keep the NO-side premium or was it ten days of drift. Recorded days only.
+stage=ladarb
+# round 5a: static arbitrage inside one hourly ladder (recorded days Nov 11-20, hourly grids on Drive)

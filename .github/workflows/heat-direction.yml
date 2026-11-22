@@ -983,6 +983,35 @@ jobs:
       - name: Keep the tables on Drive
         run: bash deploy/drive_lab.sh put "models/subminute/hrpockets" out/hrpockets
 
+  # Round 5a (recorded days only): static arbitrage inside one hourly ladder (a higher strike's YES bid above a lower strike's YES ask) on the hourly grids, after both taker fees. Aggregates only.
+  ladarb:
+    needs: test
+    if: contains(needs.test.outputs.stage, 'ladarb')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q numpy==2.5.5
+      - name: Drive setup
+        uses: ./.github/actions/drive-setup
+        with:
+          rclone_conf: ${{ secrets.RCLONE_CONF }}
+      - name: The hourly grids
+        run: |
+          set -euo pipefail
+          bash deploy/drive_lab.sh get "models/subminute/hgrids" data/hgrids || { echo "::error::no hourly grids on Drive (run hrgrid first)"; exit 1; }
+          ls data/hgrids | head -3
+      - name: Crossed ladders and what is left after the taker fees
+        working-directory: python
+        run: |
+          set -o pipefail
+          python3 -W ignore -m subminute.ladder_arb --grids ../data/hgrids --out ../out/ladarb 2>&1 | tail -3 | cut -c1-24000
+      - name: Keep the tables on Drive
+        run: bash deploy/drive_lab.sh put "models/subminute/ladarb" out/ladarb
+
   # Round 2, step 2 (recorded days only): the 1-second grids from Drive (models/subminute/grids) judged for lag: does the index move over the last L seconds
   # pay against the book's quote a moment later, net of both taker fees, on check days that picked nothing? The build days pick the cell, the check days judge it.
   dsmdlag:
