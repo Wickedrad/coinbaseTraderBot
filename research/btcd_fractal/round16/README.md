@@ -102,3 +102,30 @@ May 16, 2021). The dilation is dynamic and the parent's top is today, not Jun 22
   pushed back up (59.2 against 65.72).
 - Past falls took 5, 12, 5, 19 and 12 weeks (about 11 on average), in line with Steven's three months.
 - The dates taken from the plateau's fixed pace after the top do not apply on these anchors.
+
+## Correction: the child's hump is the whole 2018 to 2021 hump (Nov 21, 2026, 10:00 PM EST / Nov 22, 03:00 UTC)
+
+Steven's second correction: the grey box on the parent is right (low Dec 18 2016, high Dec 25, low
+Jan 15 2017), but its match in the child is the whole hump from the bottom of the 2017-18 waterfall
+(Jan 14 2018) through the Sep 8 2019 high to the 2021 fall (low May 16 2021), not only the 2020-21
+part. He also rules out one more push up in BTC dominance (it would break the head and shoulders).
+`hump_2018_2021.py` reruns the map; `charts.py` draws `structures_hump_2018_2021.png`.
+
+- Pace: fall into the hump's low 1.2 child weeks per parent week, hump up 86, hump down 29 (whole
+  hump 43.5), rise to the top 48.0 to today (35.7 to the Jun 22 2025 high). The first addendum's
+  pairing ran 13.2, 16.0, 6.3, 48.0 over the same ground.
+- At the hump's pace six parent weeks after May 16 2021 land on about May 17 2026, two weeks after
+  the right shoulder's weekly close (60.92, May 3 2026). One parent day is 6.2 child weeks, so this
+  says "this zone", not a date.
+- BTC.D size of the child's move against the parent's (logs): 28, 75, 51, 34 (43 to the 2025 high).
+- Inside the hump: the sag gives back 39% of the rise in the parent and 31% in the child; the last
+  bounce recovers 22% of the sag in the parent (0.09 point) and 91% in the child; the fall is 126%
+  of the rise in the parent and 85% in the child.
+- The parent's top came back to the hump's high (96.09 on Feb 24 2017 against 96.10); the child's
+  Jun 22 2025 high regained 85% of the hump's fall (65.72 against 71.70); today 66%.
+- Not fitting: BTC's price runs the other way inside the hump (parent +13% then -8%, child -24%
+  then x4.5); ETH/BTC agrees in direction. The BTC.D weekly-change match (0.58, 0.6% of 1,000
+  nearby clocks as good) is largely built in by the anchors; the level match is nil (0.04).
+- Open: this pairing puts the 2017-18 waterfall against the Dec 16 2016 index step. Carried back
+  one structure (not Steven's wording) the July 2016 waterfall sits against Feb 26 to Aug 27 2017.
+- Everything from the 2021 fall low onward is as in the addendum above.
