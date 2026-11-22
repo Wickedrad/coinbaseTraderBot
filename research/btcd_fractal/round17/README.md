@@ -9,15 +9,16 @@ The plan (PLAN.md) was written and attacked by two critics before any test was r
 A pattern can be seen, but it is not a clock, and it gives no date. Nothing below is a timing call or a stand-down.
 
 1. Every pace below is measured on the settled, hand-picked anchors. An alignment that is given no anchors agrees with
-   them on the late legs (end of the consolidation, today on the parent's top) and not on the early ones, and it fits
-   look-alike windows as well as it fits the real parent (23rd of 75 same-length BTC.D windows; section 5). The map
-   rests on the anchors, not on a statistical match.
+   them on the end of the consolidation and finds that today is not past the parent's top (that the child ends on the
+   top or past it is imposed on the fit). It does not agree on the early legs, and it fits look-alike windows as well as
+   it fits the real parent (23rd of 75 overlapping same-length BTC.D windows; section 5). The map rests on the anchors,
+   not on a statistical match.
 2. On those anchors the pace was 1 in the waterfall, 5 in the rise after it, then about 21 for three stretches in a
    row if the top is the June 2025 high (34 on the last one if the top is today). A jump, then a plateau.
 3. One description passed the planned test: the pace rises along the structure (consistent with, on five hand-picked
    stretches). It is a statement about position, not a clock, so no date can be read from it. No volatility,
    market-size or direction-change clock passed. On five stretches "later in the structure" and "later in a market that
-   moves less each year" cannot be told apart.
+   has grown quieter over the years" cannot be told apart.
 4. All three waterfalls on record ran at one speed, but all three are from 2016-18, in the same volatile market. How
    fast or how long a waterfall would run in today's quiet market is untested, so the old speed is not a template.
 5. Run forward week by week with nothing supplied from hindsight, the model gives no usable reading today. With the
@@ -99,9 +100,9 @@ What the table shows:
 
 BTC.D's own daily movement has shrunk over the years (median 13-week volatility of daily logit changes, index-step days
 out): 0.048 in 2016, 0.050 in 2017, 0.030 in 2018, 0.020 in 2019, 0.019 in 2020, 0.031 in 2021, 0.015 in 2022, 0.011 in
-2023, 0.014 in 2024, 0.016 in 2025, 0.009 in 2026. This is the plain description of the stretch: the chart moves less per
-day, so a structure takes longer to draw. It is a description, not a tested law (section 4 tests the volatility clock and
-it fails on length).
+2023, 0.014 in 2024, 0.016 in 2025, 0.009 in 2026. So the chart has moved less per day over the years, with rises in
+2021 and in 2024-25. That describes the stretch. It is not a tested law: section 4 tests the volatility clock and it
+fails on length, and the one waterfall the child has had did not take longer.
 
 State at the start of each fall (13 weeks before: daily volatility; BTC.D's own move in logit). After-the-fact
 description, not a signal:
@@ -154,7 +155,7 @@ leaving one stretch out and predicting it from the other four. Error is in log u
   no better than S&P 500 volatility, which has nothing to do with BTC.D. They do not pass.
 - Market size does not even order the stretches ($379bn, $622bn, $260bn, $2,130bn, $806bn at the five starts).
 - Verdict: no clock passes, so no date is read off. The pace rose along the structure; on five stretches that cannot be
-  told apart from "the market got quieter every year".
+  told apart from "the market got quieter over the years".
 
 ## 5. The fractal run forward, and an alignment with no anchors given (m2_align.py, m3_forward.py, time_map.png)
 
@@ -187,7 +188,7 @@ Run forward in real time (refit every 13 weeks from Jan 2019 on data to that wee
 - In July 2023 BTC.D was near 50%. It then rose to 65.72 and went sideways near 59 to 61. The real-time reading said
   "top" through all of it, because each refit lines the child's highest level so far up with the parent's top. So the
   run-forward cannot tell an early top from a late one. It recognised each fall only after the fall was complete, and it
-  read "top" two years before the high.
+  read "top" two years before the June 2025 high.
 
 Look-alike test for the automatic alignment (m2_null.py, 884 fits on the GitHub runner). Score = log-likelihood gain
 per week over a flat fit, last week on the parent's top, best amplitude on the grid. The real parent scores 1.070.
@@ -206,9 +207,12 @@ per week over a flat fit, last week on the parent's top, best amplitude on the g
 | every same-length BTC.D window to Dec 2017, right way up | 75 | 0.97 | 31% (the true window ranks 23rd of 75) |
 
 - In each of the seven placebo sources the best window fits the child better than the real parent does (7 of 7).
-- The real child beats every phase-randomised copy of itself, so it is not noise: it has a few large, clean swings. But
-  a random walk built from the child's own weekly changes fits the parent as well, and a flexible time map lays the
-  child's swings on a third to a half of other BTC.D windows as well as on the real parent.
+- Of the other 74 BTC.D windows, 22 fit the child as well as the real parent or better. All but one of them start
+  between July 2014 and June 2015; the windows start two weeks apart and overlap, so those amount to one other stretch
+  of history. The last one starts two weeks after the parent.
+- The real child beats every phase-randomised copy of itself, but 72.5% of random walks built from the child's own
+  weekly changes fit the parent as well or better (median 1.30 against 1.07). So the test does not separate the child
+  from a random walk with the same weekly moves.
 - So the blind alignment does not single out this parent. It neither confirms nor refutes the pairing: the map rests on
   the hand-picked anchors, not on a statistical match.
 
@@ -237,8 +241,8 @@ BTC.D map, and the share of 1,000 nearby maps (inner anchors moved up to a year)
 | LTC/BTC | 3 of 5 | 0.10, 0.09 / 0.02, 0.17 |
 | US dollar index | 2 of 5 | 0.01, 0.17 / -0.05, 0.19 |
 | S&P 500 | 3 of 4 | 0.09, 0.57 / 0.06, 0.64 |
-| US 10-year yield | 1 of 5 | -0.03, 0.31 / -0.04, 0.37 |
-| US M2 | 5 of 5 (it always rises) | 0.35, 0.008 / 0.37, 0.010 (a monthly series; not read as a finding) |
+| US 10-year yield | 1 of 5 | -0.03, 0.32 / -0.04, 0.37 |
+| US M2 | 5 of 5 (it always rises) | 0.35, 0.008 / 0.37, 0.010 (an artifact of monthly steps, see below) |
 
 - BTC.D's own row is true by construction: the anchors were placed on BTC.D's turning points, so moving them makes
   BTC.D fit worse almost automatically. It only shows the test works. The finding is the negative one: no other chart
@@ -249,6 +253,10 @@ BTC.D map, and the share of 1,000 nearby maps (inner anchors moved up to a year)
 - XRP in USD: 0 of 5, but its parent-era moves were small (between -17% and +20% in each of the five stretches) while
   the child's were multiples (x7.8, x0.14, x5.5, x0.26, x2.4). XRP was close to flat while the parent drew its
   structure, so the direction count is mostly noise, not an opposite pattern.
+- US M2 scores 0.008 and 0.010, but that is an artifact. M2 is published monthly, so in the daily file 28 of the
+  parent's 36 weekly changes are zero and the score depends on where the month-end steps fall. With M2 interpolated
+  between its monthly values the match is -0.40 and -0.37 on the two readings, and 60% and 56% of nearby maps
+  do as well.
 - BTC's price does not carry over. In the consolidation the parent's BTC rose 4% and the child's fell 63% (the 2022
   bear market); in the rise after the waterfall the parent's BTC rose 10% and the child's fell 24%.
 - Dollar, stocks, yields: no agreement beyond chance. The structure is BTC.D's own.
@@ -277,6 +285,9 @@ BTC.D map, and the share of 1,000 nearby maps (inner anchors moved up to a year)
 - The parent's mid-structure fall is one index-step day, so the automatic alignment partly aligns to a data event.
 - The real-time run refits the alignment, but the choice of parent was made with hindsight; no forecast was scored
   (earlier rounds found no forecast skill).
+- One planned test was not run: the week-level test of pace against each clock, compared with child surrogates (plan
+  M4 ii, revision 7). It needs a week-by-week pace from the automatic alignment, and that alignment did not pass its
+  look-alike test and is not pinned down in the flat parts.
 - The literature summaries are from memory; only the existence of each reference was checked.
 
 ## Files

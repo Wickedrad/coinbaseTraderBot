@@ -75,6 +75,13 @@ for top in c.C_TOPS:
             res[k] = None; continue
         nul = np.array([score(s, c.P, x) for x in near])
         res[k] = {"kind": kind, "matchOfWeeklyChanges": round(obs, 2), "shareOfNearbyMapsAsGood": round(float(np.nanmean(nul >= obs)), 3)}
+    # US M2 is published monthly: in the daily file most weekly changes are zero, so its score depends on where the
+    # month-end steps fall. The same test with M2 interpolated between its monthly values, on the same nearby maps:
+    m2raw = c.load("M2"); m2lin = np.exp(np.log(m2raw).reindex(idx.union(m2raw.index)).interpolate(method="time").reindex(idx))
+    obs = score(m2lin, c.P, B); nul = np.array([score(m2lin, c.P, x) for x in near])
+    g = pd.date_range(c.P[0], c.P[-1], freq="7D"); dp = np.diff(np.log(S["US M2"][0].reindex(g).values))
+    res["US M2"]["interpolatedBetweenMonthlyValues"] = {"matchOfWeeklyChanges": round(obs, 2), "shareOfNearbyMapsAsGood": round(float(np.nanmean(nul >= obs)), 3),
+                                                        "parentWeeklyChangesThatAreZero": [int((dp == 0).sum()), int(len(dp))]}
     out["followsMap"][top] = res
     print("== follows the BTC.D map, top =", top)
     for k, r_ in res.items():

@@ -522,16 +522,16 @@
     "kind": "macro",
     "parentMultiple": [
      0.932,
-     1.496,
-     1.1,
+     1.5,
+     1.097,
      0.924,
-     0.966
+     0.962
     ],
     "childMultiple": [
-     1.073,
-     0.645,
+     1.07,
+     0.646,
      1.003,
-     2.171,
+     2.17,
      1.211
     ],
     "sameDirection": [
@@ -1075,17 +1075,17 @@
     "kind": "macro",
     "parentMultiple": [
      0.932,
-     1.496,
-     1.1,
+     1.5,
+     1.097,
      0.924,
-     0.966
+     0.962
     ],
     "childMultiple": [
-     1.073,
-     0.645,
+     1.07,
+     0.646,
      1.003,
-     2.171,
-     1.381
+     2.17,
+     1.38
     ],
     "sameDirection": [
      false,
@@ -1439,19 +1439,19 @@
   },
   "US 10-year yield": {
    "parent": [
-    1.691,
+    1.69,
     1.576,
-    2.357,
+    2.363,
     2.594,
-    2.397,
-    2.315
+    2.396,
+    2.305
    ],
    "child": [
-    2.377,
-    2.55,
-    1.645,
-    1.651,
-    3.584,
+    2.383,
+    2.551,
+    1.647,
+    1.652,
+    3.586,
     4.95
    ]
   },
@@ -1582,12 +1582,20 @@
    "US 10-year yield": {
     "kind": "macro",
     "matchOfWeeklyChanges": -0.03,
-    "shareOfNearbyMapsAsGood": 0.312
+    "shareOfNearbyMapsAsGood": 0.317
    },
    "US M2": {
     "kind": "macro",
     "matchOfWeeklyChanges": 0.35,
-    "shareOfNearbyMapsAsGood": 0.008
+    "shareOfNearbyMapsAsGood": 0.008,
+    "interpolatedBetweenMonthlyValues": {
+     "matchOfWeeklyChanges": -0.4,
+     "shareOfNearbyMapsAsGood": 0.596,
+     "parentWeeklyChangesThatAreZero": [
+      28,
+      36
+     ]
+    }
    }
   },
   "today": {
@@ -1679,12 +1687,20 @@
    "US 10-year yield": {
     "kind": "macro",
     "matchOfWeeklyChanges": -0.04,
-    "shareOfNearbyMapsAsGood": 0.367
+    "shareOfNearbyMapsAsGood": 0.369
    },
    "US M2": {
     "kind": "macro",
     "matchOfWeeklyChanges": 0.37,
-    "shareOfNearbyMapsAsGood": 0.01
+    "shareOfNearbyMapsAsGood": 0.01,
+    "interpolatedBetweenMonthlyValues": {
+     "matchOfWeeklyChanges": -0.37,
+     "shareOfNearbyMapsAsGood": 0.559,
+     "parentWeeklyChangesThatAreZero": [
+      28,
+      36
+     ]
+    }
    }
   }
  }
