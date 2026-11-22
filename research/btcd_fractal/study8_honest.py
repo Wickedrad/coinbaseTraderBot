@@ -55,7 +55,7 @@ BUCKET_NAMES = {"m2_yoy": ["m2<0", "m2 0-5%", "m2>5%"], "btc_dd_ath": ["btc>35%d
 VOL_COL = "btcd_vol13w"
 PRIOR_A, PRIOR_B = 1.0, 3.0                                          # Beta(1,3): mean 0.25 = the base rate
 MIN_EP = 2                                                           # cells with fewer training episodes merge into M2 bucket
-TODAY = pd.Timestamp("2026-11-02")
+TODAY = None                                                         # set in main() to the data's last daily bar (was pinned to 2026-11-02, so the weekly refresh logged asOf 2026-11-01 every week)
 EP_BIG = "2020-10-18..2021-05-09"                                    # the Oct 2020 - May 2021 episode in fall5_26w
 EP_2025 = "2025-04-06..2025-07-13"
 JUN2025_PEAK = 65.7
@@ -624,6 +624,8 @@ def main():
 
     # ---- data (weekly, Sunday close); labels from complete bars only; evaluation on the common forecast rows
     D = C.load_daily(a.data)
+    global TODAY
+    TODAY = D.index[-1]                                              # the data's last daily bar, as in study9_checks; weeks after it are provisional
     P_full = C.panel(D, "W")
     X_full, _ = C.features(P_full, "W")
     dd_harness = X_full["btc_dd_ath"].copy()
