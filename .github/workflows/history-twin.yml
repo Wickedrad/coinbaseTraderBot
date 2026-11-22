@@ -42,8 +42,16 @@
 #      naming the incomplete shards, unless THAT dispatch carried sweep_partial=true (there is no way to re-collect a finished
 #      run as partial); a red shard job is re-run with gh run rerun RUN --failed (same run id), a green shard that stopped at its
 #      budget is not helped by a re-run. The DEV verdict of the best candidate is read by a normal split=dev dispatch with
-#      depth_params_run=RUN, which puts best.json's params into the depth fill-in and logs every parameter it used. A sweep,
+#      depth_params_run=RUN (add fast=true for the 1 h route of item 9; the collect comment prints both commands), which puts best.json's params into the depth fill-in and logs every parameter it used. A sweep,
 #      a prep, a build and a confirm run share one concurrency group: heavy runs never overlap.
+#   9. THE FAST DEV RUN (fast=true; RUNBOOK 3.2.1). Every optimizer round is judged by a dev run, so its wall time is the loop's limit (the
+#      full route took 4 h 16 min: the filled days are written as gzip and read back, each real day is parsed four times). With fast=true
+#      (split dev or custom only; REFUSED on confirm, with backtests and with lag_arms) the build job builds the requote, depth AND real rows
+#      in one stage (research/historyTwin.ts --stage fastrows: the depth side in-stream, no filled day), writes the same judged files and
+#      prints the same [twin] lines, so the verdict job is unchanged, plus a '[twin] fast: STEP N s' line per step. real_features_run (a prior
+#      run id) takes the real side's rows, paired mechanics and activity lines from that run's Drive copy instead of parsing the real days,
+#      and depth_model_run takes that run's depth model instead of the fit; each is refused unless it was built for exactly these days,
+#      prepped real days, requote days and code (the stage says which differs). Both are fast only; the full route is unchanged.
 # The older routes (a Replay fidelity run's cached copy, a server copy slot) are gone from this file; commit 3be29e0 has them.
 #
 # No server access at all. This repository is public: jobs print counts, cents, $ and AUCs only; recordings never go to
@@ -129,6 +137,18 @@ on:
         default: false
       depth_params_run:
         description: 'A normal dev or custom dispatch: the run id of a sweep whose best.json params go into the depth fill-in (the run logs every parameter it used). Not for split=confirm: promote the params to the code defaults first'
+        required: false
+        default: ''
+      fast:
+        description: 'FAST dev run (split dev or custom only; refused with split=confirm, backtests and lag_arms): the requote, depth and real rows are built in one stage with no filled day written (RUNBOOK 3.2.1). Same files and [twin] lines as the full run, plus [twin] fast: lines with the seconds of each step'
+        type: boolean
+        default: false
+      real_features_run:
+        description: 'fast only: the run id of an earlier dev or custom run (full or fast) whose real side (judged real rows, paired mechanics, activity lines) is reused instead of parsing the real days. Refused unless it was built for exactly these days, real days, requote days and feature code'
+        required: false
+        default: ''
+      depth_model_run:
+        description: 'fast only: the run id of an earlier build whose depth model (Drive simulated/history-twin/RUN/models) is used instead of the fit. Refused unless it records exactly these fit days and the current study version'
         required: false
         default: ''
 
@@ -340,8 +360,11 @@ jobs:
       days: ${{ steps.split.outputs.judge }}
       split: ${{ steps.split.outputs.name }}
       look: ${{ steps.look.outputs.n }}
+      fast: ${{ steps.split.outputs.fast }}
     steps:
       - uses: actions/checkout@v5
+      - name: The job's clock (the fast run prints the seconds of each step)
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
@@ -371,6 +394,10 @@ jobs:
           BACKTESTS: ${{ inputs.backtests }}
           MODEL_DRIVE: ${{ inputs.model_drive }}
           DEPTH_PARAMS_RUN: ${{ inputs.depth_params_run }}
+          FAST: ${{ inputs.fast }}
+          REAL_FEATURES_RUN: ${{ inputs.real_features_run }}
+          DEPTH_MODEL_RUN: ${{ inputs.depth_model_run }}
+          LAG_ARMS: ${{ inputs.lag_arms }}
         run: |
           set -euo pipefail
           source .github/scripts/twin-lib.sh
@@ -392,6 +419,18 @@ jobs:
           # A sweep's params go into dev and custom dispatches only: the confirm run uses the code defaults (promote the winners through a reviewed change first).
           [ -z "${DEPTH_PARAMS_RUN:-}" ] || [ "$SPLIT" != confirm ] || twin_fail "depth_params_run is for dev and custom dispatches: split=confirm uses the code defaults, so promote the sweep's params to the defaults through a reviewed code change first"
           [ -z "${DEPTH_PARAMS_RUN:-}" ] || [[ "$DEPTH_PARAMS_RUN" =~ ^[0-9]+$ ]] || twin_fail "depth_params_run must be a run id (digits only)"
+          # The fast dev run (RUNBOOK 3.2.1): dev and custom only (the confirm route stays the audited full one); it writes no filled day, so it has no
+          # backtest legs and no lag arms; its two reuse inputs are fast only and are run ids before they can reach a Drive path.
+          [ "${FAST:-}" = true ] || FAST=false
+          if [ "$FAST" = true ]; then
+            [ "$SPLIT" != confirm ] || twin_fail "fast=true is for split dev or custom only: the confirm split stays on the audited full path (leave fast off for split=confirm)"
+            [ "${BACKTESTS:-}" != true ] || twin_fail "fast=true cannot run the backtest legs (it writes no filled day for them to read): leave backtests off, or leave fast off"
+            [ "${LAG_ARMS:-}" != true ] || twin_fail "fast=true does not build the lag arms: leave lag_arms off, or leave fast off"
+          else
+            [ -z "${REAL_FEATURES_RUN:-}" ] && [ -z "${DEPTH_MODEL_RUN:-}" ] || twin_fail "real_features_run and depth_model_run are for fast=true runs only: set fast=true, or leave them empty"
+          fi
+          [ -z "${REAL_FEATURES_RUN:-}" ] || [[ "$REAL_FEATURES_RUN" =~ ^[0-9]+$ ]] || twin_fail "real_features_run must be a run id (digits only)"
+          [ -z "${DEPTH_MODEL_RUN:-}" ] || [[ "$DEPTH_MODEL_RUN" =~ ^[0-9]+$ ]] || twin_fail "depth_model_run must be a run id (digits only)"
           [ -n "$FIT" ] && [ -n "$JUDGE" ] || twin_fail "split $SPLIT needs fit days and judged days (custom: fit_days and judge_days)"
           for d in ${FIT//,/ } ${JUDGE//,/ } ${WARM_IN//,/ }; do
             [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [ "$(date -u -d "$d" +%F 2>/dev/null)" = "$d" ] || twin_fail "'$d' is not a YYYY-MM-DD day"
@@ -431,8 +470,13 @@ jobs:
               done
             fi
           fi
-          { echo "name=$SPLIT"; echo "fit=$FIT"; echo "judge=$JUDGE"; echo "warm=$WARM"; } >> "$GITHUB_OUTPUT"
+          { echo "name=$SPLIT"; echo "fit=$FIT"; echo "judge=$JUDGE"; echo "warm=$WARM"; echo "fast=$FAST"; } >> "$GITHUB_OUTPUT"
           echo "[twin] split input $SPLIT: $(echo "${FIT//,/ }" | wc -w) fit day(s), $(echo "${JUDGE//,/ }" | wc -w) judged day(s), warm-up for backtests: ${WARM:-none}" | tee -a "$RUNNER_TEMP/build.log"
+          if [ "$FAST" = true ]; then
+            R="built from the real days"; [ -z "${REAL_FEATURES_RUN:-}" ] || R="reused from run $REAL_FEATURES_RUN"
+            M="fitted here"; [ -z "${DEPTH_MODEL_RUN:-}" ] || M="reused from run $DEPTH_MODEL_RUN"
+            echo "[twin] fast run: no filled day is written; real rows $R, depth model $M" | tee -a "$RUNNER_TEMP/build.log"
+          fi
       - name: Drive setup
         id: drive
         uses: ./.github/actions/drive-setup
@@ -562,11 +606,14 @@ jobs:
       # The depth model is fitted on the FIT days only (the cached, restricted real days), 15-minute contracts only; the
       # fill stage then asserts the model's own record of its days against the split.
       - name: The depth model, fitted on the FIT days only
+        if: ${{ steps.split.outputs.fast != 'true' || inputs.depth_model_run == '' }}
         env:
           FIT: ${{ steps.split.outputs.fit }}
+          FAST: ${{ steps.split.outputs.fast }}
         run: |
           set -euo pipefail
           source .github/scripts/twin-lib.sh
+          FIT_T0=$(date +%s)
           mkdir -p data/fit data/models
           for d in ${FIT//,/ }; do ln -sf "$GITHUB_WORKSPACE/data/twin-real15m/md-$d.jsonl.gz" data/fit/; done
           # The whole output goes to a file first: a failed fit (no 15-minute contract on a fit day, out of memory, a bad day list)
@@ -576,6 +623,50 @@ jobs:
           if [ "$rc" -ne 0 ] || [ ! -s data/models/depth_model.json ]; then
             twin_fail "depth fit failed (exit $rc) on the fit days $FIT; last lines: $(tail -8 "$RUNNER_TEMP/depth.log" | cut -c1-200 | tr '\n' '|'). Check the fit days' 15-minute contract counts in their '[twin] prep DAY' lines"
           fi
+          if [ "${FAST:-}" = true ]; then
+            echo "[twin] fast: set-up $(( FIT_T0 - ${JOB_START:-$FIT_T0} )) s" | tee -a "$RUNNER_TEMP/build.log"
+            echo "[twin] fast: depth model fitted $(( $(date +%s) - FIT_T0 )) s" | tee -a "$RUNNER_TEMP/build.log"
+          fi
+      # A depth model an earlier run fitted (fast only): copy-only Drive read of that run's models folder, then the stage refuses it unless it
+      # records exactly these fit days and the current study version (DEPTH_MODEL_SCHEMA); the real-meta.json of that run, when it has one, also
+      # says which real days' tag it was fitted from. The run id is digits only before it reaches the path.
+      - name: The depth model, reused from an earlier run (depth_model_run)
+        if: ${{ steps.split.outputs.fast == 'true' && inputs.depth_model_run != '' }}
+        env:
+          RUN: ${{ inputs.depth_model_run }}
+          FAST: ${{ steps.split.outputs.fast }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "depth_model_run must be a run id (digits only)"
+          REUSE_T0=$(date +%s)
+          mkdir -p data/models data/model-src data/model-meta
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/models" data/model-src --include depth_model.json || rc=$?
+          [ "$rc" -ne 3 ] || twin_fail "depth_model_run $RUN: no depth model on Drive (simulated/history-twin/$RUN/models): is it the run id of a build that finished its Drive step?"
+          [ "$rc" -eq 0 ] || twin_fail "depth_model_run $RUN: reading simulated/history-twin/$RUN/models on Drive failed (rclone exit $rc)"
+          [ -s data/model-src/depth_model.json ] || twin_fail "depth_model_run $RUN: no depth_model.json in simulated/history-twin/$RUN/models"
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/model-meta --include real-meta.json || rc=$?
+          { [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; } || twin_fail "depth_model_run $RUN: reading simulated/history-twin/$RUN/twinlite on Drive failed (rclone exit $rc)"
+          META=(); [ ! -s data/model-meta/real-meta.json ] || META=(--model-meta data/model-meta/real-meta.json)
+          node --import tsx research/historyTwin.ts --stage depth-model-check --depth-model data/model-src/depth_model.json --split-file data/twin/split.json --run "$RUN" "${META[@]}" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
+          cp data/model-src/depth_model.json data/models/depth_model.json
+          echo "[twin] fast: set-up $(( REUSE_T0 - ${JOB_START:-$REUSE_T0} )) s" | tee -a "$RUNNER_TEMP/build.log"
+          echo "[twin] fast: depth model reused $(( $(date +%s) - REUSE_T0 )) s" | tee -a "$RUNNER_TEMP/build.log"
+      # The real side of an earlier run (fast only): copy-only Drive read of its twinlite files. The fast stage refuses them unless they were built
+      # for exactly these days, prepped real days, requote days and feature code, and says so for an old run that kept no real-meta.json.
+      - name: The real side of an earlier run (real_features_run)
+        if: ${{ steps.split.outputs.fast == 'true' && inputs.real_features_run != '' }}
+        env:
+          RUN: ${{ inputs.real_features_run }}
+        run: |
+          set -euo pipefail
+          source .github/scripts/twin-lib.sh
+          [[ "$RUN" =~ ^[0-9]+$ ]] || twin_fail "real_features_run must be a run id (digits only)"
+          mkdir -p data/real-cache
+          rc=0; bash deploy/drive_lab.sh get "simulated/history-twin/$RUN/twinlite" data/real-cache --include features-real.json --include real-meta.json --include real-activity.json --include paired.json || rc=$?
+          [ "$rc" -ne 3 ] || twin_fail "real_features_run $RUN: no judged features on Drive (simulated/history-twin/$RUN/twinlite): is it the run id of a build that finished its Drive step?"
+          [ "$rc" -eq 0 ] || twin_fail "real_features_run $RUN: reading simulated/history-twin/$RUN/twinlite on Drive failed (rclone exit $rc)"
+          echo "[twin] real side of run $RUN read from Drive: $(ls data/real-cache | wc -l) file(s)" | tee -a "$RUNNER_TEMP/build.log"
       - name: The decision model for the backtests (Drive models/)
         if: ${{ inputs.backtests }}
         env:
@@ -625,6 +716,7 @@ jobs:
           fi
           echo "n=$N" >> "$GITHUB_OUTPUT"
       - name: Match, fill in, and describe every contract both ways
+        if: ${{ steps.split.outputs.fast != 'true' }}
         env:
           SPLIT: ${{ steps.split.outputs.name }}
           FIT: ${{ steps.split.outputs.fit }}
@@ -649,13 +741,36 @@ jobs:
           fi
           echo "[twin] features from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
           # The fit days' own activity, printed beside the judged days' (not judged), except on a confirm split.
-          EXTRA=(); [ "$SPLIT" = confirm ] || EXTRA=(--extra-days "$FIT" --extra-dir data/twin-real15m)
+          EXTRA=(); [ "$SPLIT" = confirm ] || EXTRA=(--extra-days "$FIT" --extra-dir data/twin-real15m --real15m data/twin-real15m)
           node --import tsx research/historyTwin.ts --stage features --dirs "$DIRS" --days "$JUDGE" "${EXTRA[@]}" --out $T 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
           # sizes of the restricted real days are a function of the real book volume: not printed on a confirm split
           [ "$SPLIT" = confirm ] || du -sh $T/* | cat
+      # The fast dev run: the requote, depth and real rows in ONE stage, no filled day written or read back (research/historyTwin.ts fastrows;
+      # RUNBOOK 3.2.1). It writes the files the step above leaves for 'Keep the judged features' and the verdict job, and prints the same
+      # [twin] lines plus '[twin] fast: STEP N s'. With real_features_run the real side comes from that run's files (the step before the
+      # depth model), refused unless it was built for exactly these days, real days, requote days and code. Dev and custom splits only
+      # (the split step refuses it on confirm), so no confirm day is read here.
+      - name: Fast rows (requote, depth and real rows in one stage; fast only)
+        if: ${{ steps.split.outputs.fast == 'true' }}
+        env:
+          JUDGE: ${{ steps.split.outputs.judge }}
+          DEPTH_PARAMS_RUN: ${{ inputs.depth_params_run }}
+          REAL_FEATURES_RUN: ${{ inputs.real_features_run }}
+        run: |
+          set -euo pipefail
+          T=data/twin
+          DP=(); [ -z "${DEPTH_PARAMS_RUN:-}" ] || DP=(--depth-params data/sweep/best.json)
+          RC=(); [ -z "${REAL_FEATURES_RUN:-}" ] || RC=(--real-cache data/real-cache --real-run "$REAL_FEATURES_RUN")
+          echo "[twin] fast rows from $(date -u +%H:%M) UTC" | tee -a "$RUNNER_TEMP/build.log"
+          node --import tsx research/historyTwin.ts --stage fastrows --real data/twin-real15m --twin data/replay-src --days "$JUDGE" --depth-model data/models/depth_model.json --out $T "${DP[@]}" "${RC[@]}" 2>&1 | tee -a "$RUNNER_TEMP/build.log" | grep -E '^\[twin\]|Error'
       # The judged part alone (paired mechanics + per-contract features + the split, small) for the verdict.
+      # The real side's sidecars (real-meta.json, real-activity.json) are there on runs that read no confirm day: a later fast run reuses them.
       - name: Keep the judged features
-        run: mkdir -p data/twinlite && cp data/twin/paired.json data/twin/features-*.json data/twin/split.json data/twin/twin-source.json data/twinlite/ && du -sh data/twinlite | cat
+        run: |
+          set -euo pipefail
+          mkdir -p data/twinlite && cp data/twin/paired.json data/twin/features-*.json data/twin/split.json data/twin/twin-source.json data/twinlite/
+          for f in real-meta.json real-activity.json; do [ ! -f "data/twin/$f" ] || cp "data/twin/$f" data/twinlite/; done
+          du -sh data/twinlite | cat
       - uses: actions/cache/save@v4
         with:
           path: data/twinlite
@@ -694,7 +809,7 @@ jobs:
         run: |
           L="$RUNNER_TEMP/build.log"; ALL="$RUNNER_TEMP/twin-lines.txt"
           grep -E '^\[(twin|kalshi-replay-data)\]' "$L" 2>/dev/null | cut -c1-300 > "$ALL" || true
-          FRAME='^\[twin\] (ERROR|split|real 15|requote source|requote days|depth model fitted|decision model|CONFIRM|no cached|matched|confirm split)'
+          FRAME='^\[twin\] (ERROR|split|real 15|requote source|requote days|depth model fitted|depth model reused|real side|fast|decision model|CONFIRM|no cached|matched|confirm split)'
           {
             echo "History twin build, run ${{ github.run_id }} (${{ job.status }}), on commit ${GITHUB_SHA:0:8}"; echo; echo '```'
             [ -s "$ALL" ] || echo "(no [twin] lines: the build failed before its first logging step (checkout or dependency install); the reason is an annotation of the run: gh run view ${{ github.run_id }})"
@@ -883,10 +998,12 @@ jobs:
           BT_RESULT: ${{ needs.backtest.result }}
           JUDGED: ${{ needs.build.outputs.days }}
           SPLIT: ${{ needs.build.outputs.split }}
+          FAST: ${{ needs.build.outputs.fast }}
         run: |
           set -euo pipefail
           source .github/scripts/twin-lib.sh
           export TWIN_LOG="$RUNNER_TEMP/verdict.log"
+          VERDICT_T0=$(date +%s)
           if [ "$BACKTESTS" = true ]; then
             rc=0
             python3 - "$RUNNER_TEMP/in" data/twin "$SPLIT" "$JUDGED" "$RUNNER_TEMP/legs.txt" <<'PY' | tee -a "$TWIN_LOG" || rc=$?
@@ -910,6 +1027,7 @@ jobs:
           fi
           LOOK=(); [ -z "$LOOK_NOTE" ] || LOOK=(--confirm-look "$LOOK_N" --confirm-look-note "$LOOK_NOTE")
           node --import tsx research/historyTwin.ts --stage verdict --out data/twin "${LOOK[@]}" 2>&1 | tee -a "$RUNNER_TEMP/verdict.log" | grep -E '^\[twin\]|Error'
+          [ "${FAST:-}" != true ] || echo "[twin] fast: verdict $(( $(date +%s) - VERDICT_T0 )) s" | tee -a "$RUNNER_TEMP/verdict.log"
           python3 - <<'PY' | tee -a "$RUNNER_TEMP/verdict.log"
           import json
           r = json.load(open('data/twin/verdict.json'))
@@ -1279,7 +1397,10 @@ jobs:
             bash deploy/drive_lab.sh put "simulated/history-twin-sweep/$RUN" "$O" --include best.json --include elite.json --include results.json || echo "[twin] ERROR: keeping best.json and elite.json on Drive failed"  >> "$TWIN_LOG"
             { echo "[twin] kept on Drive: simulated/history-twin-sweep/$RUN/{best,elite,results}.json (shard jobs: $SWEEP_RESULT)"
               echo "[twin] NEXT GENERATION: gh workflow run history-twin.yml -R $REPO --ref $REF -f sweep_gen=$((GEN + 1)) -f sweep_parents_run=$RUN -f sweep_candidates=$PER -f sweep_shards=$SHARDS"
-              echo "[twin] DEV VERDICT of this generation's best: gh workflow run history-twin.yml -R $REPO --ref $REF -f split=dev -f depth_params_run=$RUN"; } >> "$TWIN_LOG"
+              echo "[twin] DEV VERDICT of this generation's best: gh workflow run history-twin.yml -R $REPO --ref $REF -f split=dev -f depth_params_run=$RUN"
+              # The same verdict on the fast route (RUNBOOK 3.2.1: about 1 h, not 4 h 16 min). depth_params_run is THIS sweep's run id; real_features_run and
+              # depth_model_run are BUILD run ids (an earlier dev or custom run of this code), both optional: the first fast run leaves them out.
+              echo "[twin] DEV VERDICT, fast (RUNBOOK 3.2.1, about 1 h): gh workflow run history-twin.yml -R $REPO --ref $REF -f split=dev -f fast=true -f depth_params_run=$RUN [-f real_features_run=BUILD_RUN -f depth_model_run=BUILD_RUN]"; } >> "$TWIN_LOG"
           else
             echo "[twin] ERROR: the sweep was not collected (shard jobs: $SWEEP_RESULT); nothing was kept as best.json or elite.json"  >> "$TWIN_LOG"
             # A generation that is not whole: what to do, with this run's id. A red shard job re-runs under the same run id; a green job that

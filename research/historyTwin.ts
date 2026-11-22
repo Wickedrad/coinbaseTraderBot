@@ -64,6 +64,8 @@
 //   ... --stage sweep --fit-days A,B,C --twin-requote data/replay-src --real data/twin-real15m --depth-model data/models/depth_model.json --gen 0 --shard 0/7 --candidates 10 [--parents elite.json] --out data/sweep
 //   ... --stage sweep-collect --dir DIR --gen 0 --shards 7 --candidates 10 --out OUT [--partial]   (merges the shards: best.json, elite.json, results.json)
 //   ... --stage fill ... [--depth-params best.json]   (a sweep's best candidate: the fill-in then logs every parameter it used)
+//   ... --stage fastrows --real data/twin-real15m --twin data/replay-src --days C,D --depth-model data/models/depth_model.json [--depth-params best.json] [--real-cache DIR --real-run RUN] --out data/twin
+//   ... --stage depth-model-check --depth-model FILE --split-file data/twin/split.json [--run RUN] [--model-meta real-meta.json]   (a depth model an earlier run fitted: reusable or not)
 //
 // THE SWEEP (Nov 22). The depth simulator's dynamic constants (research/history/depthSim.ts DepthSimParams) are set by a machine
 // optimizer instead of by hand: each candidate is the fill-in with one set of parameters, judged by the SAME judge on the FIT days
@@ -74,6 +76,15 @@
 // depthParamSearch.ts; seeded, no clock). The sweep reads FIT days only (resolveSweepFit refuses anything but the dev split's FIT
 // days, a DEV day or a CONFIRM day); the DEV verdict of the best candidate is read by a normal split=dev dispatch with
 // depth_params_run, and the winning numbers become the new defaults only through a reviewed code change.
+//
+// THE FAST DEV RUN (Nov 22; workflow input fast, RUNBOOK 3.2.1). An iteration of the optimizer is one dev run, so its wall time is the
+// loop's limit; the full route took 4 h 16 min (writes each filled day as gzip, reads it back, parses each real day four times and the
+// fit days once more). `--stage fastrows` builds the same files without those: the requote rows, the depth rows in-stream (the fill-in's
+// records go straight into the features code), the real rows and the paired mechanics in one pass over each real day, or, from a real
+// side an earlier run kept (real_features_run), from its files, refused unless they were built for exactly these days, prepped real
+// days, requote days and FEATURE_CODE_VERSION. A depth model an earlier run fitted is reused (depth_model_run) only when it records
+// exactly the fit days and this version of the study (DEPTH_MODEL_SCHEMA). The confirm route stays the audited full one: a fast run
+// is refused on a split that reads a confirm day. The rows, paired.json and the printed lines are the full route's, number for number.
 //
 // Prints counts, cents, $ and AUCs only (the repository is public).
 
@@ -86,6 +97,7 @@ import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles
 import { gbdtLogit } from '../bot/model/trees';
 import { trainGbdt } from './gbdt';
 import { readDepthModel, resolveDepthSimParams, type DepthModel, type DepthSimParams } from './history/depthSim';
+import { DEPTH_MODEL_SCHEMA } from './history/depthModelVersion';
 import {
   describeParams, eliteOf, ELITE_FRACTION, generationCandidates, mergeShards, parentsFrom, parseShard, rankResults, shardRange, SWEEP_VERSION, type SweepResult, type SweepShardFile,
 } from './history/depthParamSearch';
@@ -444,35 +456,42 @@ async function stageTwinSource(): Promise<void> {
 
 export interface Paired { day: string; realContracts: number; twinContracts: number; both: number; onlyReal15m: number; onlyTwin: number; quoteN: number; quoteMaeC: number; quoteBiasC: number; spreadRealC: number; spreadTwinC: number; indexN: number; indexMaeBps: number; indexBiasBps: number; results: number; resultsAgree: number }
 
+/** One line of a real day as the restricted day keeps it ('\n' ended), or undefined when the line is dropped: a line naming a
+ *  ticker outside `keep` goes; a line listing several tickers keeps only the kept ones (and goes when none is left). The
+ *  ticker is read straight off the line (no parse): only the rare lines listing several tickers are parsed. */
+const TICKER_RE = /"ticker":"([^"]+)"/;
+export function restrictLine(line: string, keep: ReadonlySet<string>): string | undefined {
+  const m = TICKER_RE.exec(line);
+  if (m && !keep.has(m[1])) return undefined;
+  if (line.includes('"tickers"')) {
+    let e: Record<string, any>;
+    try { e = JSON.parse(line); } catch { return undefined; }
+    if (e.ticker && !keep.has(e.ticker)) return undefined;
+    if (Array.isArray(e.tickers)) { e.tickers = e.tickers.filter((t: string) => keep.has(t)); if (!e.tickers.length) return undefined; return JSON.stringify(e) + '\n'; }
+  }
+  return line + '\n';
+}
+
 /** The real day with every contract the twin lacks taken out (its market, book, delta, trade, result records; alive
  *  marks keep only the twin's tickers). */
-const TICKER_RE = /"ticker":"([^"]+)"/;
 async function restrictDay(src: string, dst: string, keep: Set<string>): Promise<void> {
   async function* lines(): AsyncGenerator<string> {
     for await (const line of recordingLines(src)) {
       if (!line) continue;
-      // The ticker read straight off the line (no parse): only the rare lines listing several tickers are parsed.
-      const m = TICKER_RE.exec(line);
-      if (m && !keep.has(m[1])) continue;
-      if (line.includes('"tickers"')) {
-        let e: Record<string, any>;
-        try { e = JSON.parse(line); } catch { continue; }
-        if (e.ticker && !keep.has(e.ticker)) continue;
-        if (Array.isArray(e.tickers)) { e.tickers = e.tickers.filter((t: string) => keep.has(t)); if (!e.tickers.length) continue; yield JSON.stringify(e) + '\n'; continue; }
-      }
-      yield line + '\n';
+      const r = restrictLine(line, keep);
+      if (r !== undefined) yield r;
     }
   }
   await writeGz(dst, lines());
 }
 
-/** Per contract both ways at each minute mark: the twin's candle quote against the real book there; per asset the
- *  index at each 15 s print; the results. */
-async function pairDay(day: string, realFile: string, twinFile: string, realT: Map<string, string>, twinT: Map<string, string>): Promise<Paired> {
-  const both = [...twinT.keys()].filter((t) => realT.has(t));
-  const bothSet = new Set(both);
-  // The real side: book mid and spread at each minute mark, index at each 15 s slot.
-  const realQ = new Map<string, { mid: number; spread: number }>(), realIx = new Map<string, number>(), realRes = new Map<string, string>();
+/** What the real side of the paired mechanics reads off a (restricted) real day: the book's mid and spread at each minute mark
+ *  per contract, the index at each 15 s slot per asset, and the results. Fed record by record (`push`), so the file route
+ *  (pairDay, a pass over the restricted file) and the fast route (one pass over the real day that also builds the rows)
+ *  go through the same code. `want`: only these tickers' books are kept (the contracts both sides have). */
+interface PairSide { push: (e: Record<string, any>) => void; q: Map<string, { mid: number; spread: number }>; ix: Map<string, number>; res: Map<string, string> }
+function pairSide(want?: ReadonlySet<string>): PairSide {
+  const q = new Map<string, { mid: number; spread: number }>(), ix = new Map<string, number>(), res = new Map<string, string>();
   const books = new Map<string, OrderBook>(), lastIx = new Map<string, number>();
   let mark = -1;
   const reach = (t: number) => {
@@ -480,20 +499,29 @@ async function pairDay(day: string, realFile: string, twinFile: string, realT: M
     if (mark < 0) { mark = s; return; }
     for (; mark < s; mark++) {
       const at = (mark + 1) * SLOT;
-      for (const [a, v] of lastIx) realIx.set(`${a}|${at}`, v);
+      for (const [a, v] of lastIx) ix.set(`${a}|${at}`, v);
       if (at % MIN === 0) for (const [tk, b] of books) {
         const bb = b.bestBid()?.price, ba = b.bestAsk()?.price;
-        if (bb !== undefined && ba !== undefined && ba > bb) realQ.set(`${tk}|${at}`, { mid: (bb + ba) / 2, spread: ba - bb });
+        if (bb !== undefined && ba !== undefined && ba > bb) q.set(`${tk}|${at}`, { mid: (bb + ba) / 2, spread: ba - bb });
       }
     }
   };
-  for await (const e of events(realFile)) {
+  const push = (e: Record<string, any>): void => {
     reach(e.t);
-    if (e.k === 'book' && bothSet.has(e.ticker)) { const b = books.get(e.ticker) ?? new OrderBook(e.ticker); books.set(e.ticker, b); b.applySnapshot({ bids: e.bids ?? [], asks: e.asks ?? [] }, e.t); }
-    else if (e.k === 'delta' && bothSet.has(e.ticker)) { const b = books.get(e.ticker) ?? new OrderBook(e.ticker); books.set(e.ticker, b); b.applyDelta(e.side, e.price, e.delta, e.t); }
+    if (e.k === 'book' && (!want || want.has(e.ticker))) { const b = books.get(e.ticker) ?? new OrderBook(e.ticker); books.set(e.ticker, b); b.applySnapshot({ bids: e.bids ?? [], asks: e.asks ?? [] }, e.t); }
+    else if (e.k === 'delta' && (!want || want.has(e.ticker))) { const b = books.get(e.ticker) ?? new OrderBook(e.ticker); books.set(e.ticker, b); b.applyDelta(e.side, e.price, e.delta, e.t); }
     else if (e.k === 'index' && e.asset && e.value > 0) lastIx.set(e.asset, e.value);
-    else if (e.k === 'result' && e.ticker && e.result) realRes.set(e.ticker, String(e.result));
-  }
+    else if (e.k === 'result' && e.ticker && e.result) res.set(e.ticker, String(e.result));
+  };
+  return { push, q, ix, res };
+}
+
+/** The twin's side of the paired mechanics, against what the real side read: the twin's minute quote against the real
+ *  book's mid, the twin's index against the real index, the results. */
+async function pairFinish(day: string, real: PairSide, realT: Map<string, string>, twinFile: string, twinT: Map<string, string>): Promise<Paired> {
+  const both = [...twinT.keys()].filter((t) => realT.has(t));
+  const bothSet = new Set(both);
+  const realQ = real.q, realIx = real.ix, realRes = real.res;
   const p: Paired = { day, realContracts: realT.size, twinContracts: twinT.size, both: both.length, onlyReal15m: [...realT].filter(([t, s]) => is15m(s, t) && !twinT.has(t)).length, onlyTwin: [...twinT.keys()].filter((t) => !realT.has(t)).length, quoteN: 0, quoteMaeC: 0, quoteBiasC: 0, spreadRealC: 0, spreadTwinC: 0, indexN: 0, indexMaeBps: 0, indexBiasBps: 0, results: 0, resultsAgree: 0 };
   for await (const e of events(twinFile)) {
     if (e.k === 'book' && bothSet.has(e.ticker) && e.t % MIN === 0 && e.bids?.[0] && e.asks?.[0]) {
@@ -515,6 +543,18 @@ async function pairDay(day: string, realFile: string, twinFile: string, realT: M
   if (p.indexN) { p.indexMaeBps /= p.indexN; p.indexBiasBps /= p.indexN; }
   return p;
 }
+
+/** Per contract both ways at each minute mark: the twin's candle quote against the real book there; per asset the
+ *  index at each 15 s print; the results. */
+async function pairDay(day: string, realFile: string, twinFile: string, realT: Map<string, string>, twinT: Map<string, string>): Promise<Paired> {
+  const bothSet = new Set([...twinT.keys()].filter((t) => realT.has(t)));
+  const side = pairSide(bothSet);
+  for await (const e of events(realFile)) side.push(e);
+  return pairFinish(day, side, realT, twinFile, twinT);
+}
+
+/** The per-day line the match stage prints (dev and custom only), also printed from a cached paired.json by the fast route. */
+export const matchLine = (day: string, p: Paired): string => `[twin] ${day}: contracts real ${p.realContracts} / twin ${p.twinContracts} / both ${p.both} (real 15m missing from the twin ${p.onlyReal15m}, twin-only ${p.onlyTwin}); minute quote vs real mid: ${p.quoteN} pts, off ${p.quoteMaeC.toFixed(2)}c (bias ${p.quoteBiasC.toFixed(2)}c), spread real ${p.spreadRealC.toFixed(2)}c twin ${p.spreadTwinC.toFixed(2)}c; index ${p.indexN} pts off ${p.indexMaeBps.toFixed(1)} bps (bias ${p.indexBiasBps.toFixed(1)}); results agree ${p.resultsAgree}/${p.results}`;
 
 async function stageMatch(): Promise<void> {
   const realDir = arg('real', 'data/recordings'), twinDir = arg('twin', 'data/history-replay'), out = arg('out', 'data/twin');
@@ -542,7 +582,7 @@ async function stageMatch(): Promise<void> {
     // Paired on the restricted day (the twin's contracts only): the same records for those contracts, far fewer lines.
     const p = await pairDay(day, path.join(out, 'real', `md-${day}.jsonl.gz`), tf, realT, twinT);
     paired.push(p);
-    if (!quiet) console.log(`[twin] ${day}: contracts real ${p.realContracts} / twin ${p.twinContracts} / both ${p.both} (real 15m missing from the twin ${p.onlyReal15m}, twin-only ${p.onlyTwin}); minute quote vs real mid: ${p.quoteN} pts, off ${p.quoteMaeC.toFixed(2)}c (bias ${p.quoteBiasC.toFixed(2)}c), spread real ${p.spreadRealC.toFixed(2)}c twin ${p.spreadTwinC.toFixed(2)}c; index ${p.indexN} pts off ${p.indexMaeBps.toFixed(1)} bps (bias ${p.indexBiasBps.toFixed(1)}); results agree ${p.resultsAgree}/${p.results}`);
+    if (!quiet) console.log(matchLine(day, p));
   }
   // A confirm split reads no mechanics per day (nothing there to tune on): counts only.
   if (quiet) { const j = paired.filter((p) => days.includes(p.day)); console.log(`[twin] matched ${j.length} of ${days.length} judged day(s): ${j.reduce((a, p) => a + p.both, 0)} contracts in both, ${j.reduce((a, p) => a + p.onlyReal15m, 0)} real 15m missing from the twin, ${j.reduce((a, p) => a + p.onlyTwin, 0)} twin-only; results agree ${j.reduce((a, p) => a + p.resultsAgree, 0)}/${j.reduce((a, p) => a + p.results, 0)}`); }
@@ -556,6 +596,12 @@ async function stageMatch(): Promise<void> {
 // Stage features: one row per contract life, what the bot sees, sampled at the 15 s prints both sources share.
 
 export const FEATURES = ['spreadC', 'topSize', 'depth10', 'quotedShare', 'quoteChangesPerMin', 'midMoveSd', 'minuteJumpShare', 'followIx', 'followIxLag', 'tradesPerMin', 'tradeSize', 'ixMoveBps', 'brierT5'] as const;
+/** The version of the code that turns a real day into contract-life rows and paired mechanics: MIN, SLOT, logit, is15m, corr,
+ *  rowBuilder (and the OrderBook it reads), FEATURES, and the paired mechanics (tickersOf, restrictLine, pairSide, pairFinish). A
+ *  real side cached by an earlier run (the fast route's real_features_run) is reused only when it was made by this version. Bump it
+ *  in the same commit as any change to that code: tests/historyTwin.test.ts holds the hash of that source text per version, so a
+ *  change that is not followed by a bump fails there. */
+export const FEATURE_CODE_VERSION = 'f1';
 export type Row = { day: string; ticker: string; src: string; f: number[] };
 
 const corr = (a: number[], b: number[]) => {
@@ -649,6 +695,93 @@ async function resultsOf(dir: string, days: string[]): Promise<Map<string, strin
   return r;
 }
 
+// The per-day activity of a source's rows and the follow diagnostics, as lines. The numbers are built once (activityOf) and printed
+// by one function (activityLines), so the real side of an earlier run (the fast route's real-activity.json, the same numbers the
+// lines print) prints exactly as the features stage does.
+
+/** The columns of the per-day activity line (feature names; the means are over the day's lives, topSize, depth10 and tradeSize log1p). */
+const ACT_KEYS = ['tradesPerMin', 'tradeSize', 'topSize', 'depth10', 'quoteChangesPerMin', 'followIx', 'spreadC'] as const;
+export interface FollowStat { key: string; moves: number; corr: number; sd: number; zeroPct: number }
+/** `means`: the ACT_KEYS means, already rounded to the 2 places the line prints (a NaN mean prints 'NaN'). */
+export interface DayActivity { label: string; lives: number; means: string[] }
+export interface Activity { follow: FollowStat[]; days: DayActivity[] }
+
+const perDayOf = (rows: readonly Row[]): Map<string, Row[]> => { const m = new Map<string, Row[]>(); for (const r of rows) m.set(r.day, [...(m.get(r.day) ?? []), r]); return m; };
+
+/** Follow diagnostics of `src` (so far: followDiag) and the per-day means of `perDay`. */
+function activityOf(src: string, perDay: ReadonlyMap<string, readonly Row[]>): Activity {
+  const fi = (k: string) => FEATURES.indexOf(k as (typeof FEATURES)[number]);
+  const sdv = (xs: number[]) => { const mu = xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length); return Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / Math.max(1, xs.length)); };
+  const follow = Object.entries(followDiag[src] ?? {}).map(([key, g]) => ({ key, moves: g.m.length, corr: corr(g.m, g.x), sd: sdv(g.m), zeroPct: (g.m.filter((v) => v === 0).length / Math.max(1, g.m.length)) * 100 }));
+  const days = [...perDay].map(([label, rs]) => ({ label, lives: rs.length, means: ACT_KEYS.map((k) => (rs.length ? rs.reduce((a, r) => a + (Number.isFinite(r.f[fi(k)]) ? r.f[fi(k)] : 0), 0) / rs.length : NaN).toFixed(2)) }));
+  return { follow, days };
+}
+
+/** The lines the features stage prints for one source's activity (dev and custom only; the confirm split prints none). */
+export function activityLines(src: string, a: Activity): string[] {
+  return [
+    ...a.follow.map((f) => `[twin] ${src} follow ${f.key}: ${f.moves} moves, corr ${f.corr.toFixed(3)}, mid move sd ${f.sd.toFixed(3)}, zero moves ${f.zeroPct.toFixed(0)}%`),
+    ...a.days.map((d) => `[twin] ${src} ${d.label}: ${d.lives} lives, trades/min ${d.means[0]}, tradeSize ${d.means[1]}, topSize ${d.means[2]}, depth10 ${d.means[3]}, quote changes/min ${d.means[4]}, followIx ${d.means[5]}, spread ${d.means[6]}c`),
+  ];
+}
+
+// The real side of a run, kept beside its judged features (twinlite/) so a later fast run can reuse it instead of parsing the real
+// days again: real-meta.json (what it was built for: the cache key), real-activity.json (the activity lines of the real judged and
+// fit days) and, with features-real.json and paired.json, everything the real side contributes to the verdict. Written by a run that
+// reads no confirm day (a blind run keeps no per-day numbers), in the full route's features stage and in the fast route.
+
+/** The format of real-meta.json and real-activity.json. */
+export const REAL_SIDE_VERSION = 1;
+export interface RealMeta {
+  version: number;
+  /** The judged days, in order (the rows and paired.json cover exactly these), and the fit days whose activity lines are kept. */
+  judged: string[]; fit: string[];
+  /** The real days' cache tag (real15mTag: the prep's keep rules and the REPLAY_EXCLUDE pattern) and the feature code's version. */
+  real15m: string; featureCode: string;
+  /** Per day: the sha256 of the prepped real day (its meta.json) and, for a judged day, of the requote day the real contracts were
+   *  restricted to and the pairs were made against (its ticker list decides which real contracts are rows). '' = not known. */
+  days: Record<string, { real: string; twin?: string }>;
+  /** Informational: the run this was copied from when the real side was reused. Not part of the key. */
+  reusedFrom?: string;
+}
+
+const sha256Text = (s: string | Buffer) => crypto.createHash('sha256').update(s).digest('hex');
+/** The sha256 a prepped real day's meta.json records ('' when the file or the field is not there). */
+function realDaySha(real15mDir: string, day: string): string {
+  try { const m = JSON.parse(fs.readFileSync(path.join(real15mDir, `meta-${day}.json`), 'utf8')) as Partial<Real15mMeta>; return typeof m.sha256 === 'string' ? m.sha256 : ''; } catch { return ''; }
+}
+
+/** The key of the real side as this run sees it. */
+export async function realMetaFor(o: { judged: readonly string[]; fit: readonly string[]; real15mDir: string; twinDir: string }): Promise<RealMeta> {
+  const days: RealMeta['days'] = {};
+  for (const d of o.fit) days[d] = { real: realDaySha(o.real15mDir, d) };
+  for (const d of o.judged) { const f = dayFile(o.twinDir, d); days[d] = { real: realDaySha(o.real15mDir, d), twin: f ? await sha256File(f) : '' }; }
+  return { version: REAL_SIDE_VERSION, judged: [...o.judged], fit: [...o.fit], real15m: real15mTag(), featureCode: FEATURE_CODE_VERSION, days };
+}
+
+/** What differs between the key a cached real side was built for and the key of this run (empty: it can be reused): each aspect with
+ *  what the cached side had and what this run has. A sha that is not known on either side never matches. */
+export function realMetaDiff(had: RealMeta, now: RealMeta): Array<{ aspect: string; had: string; now: string }> {
+  const out: Array<{ aspect: string; had: string; now: string }> = [];
+  if (had.version !== now.version) out.push({ aspect: 'sidecar format', had: `real-meta.json format ${had.version}`, now: `format ${now.version}` });
+  if (had.judged.join(',') !== now.judged.join(',')) out.push({ aspect: 'judged days', had: `judged days ${had.judged.join(',')}`, now: `judged days ${now.judged.join(',')}` });
+  if (had.fit.join(',') !== now.fit.join(',')) out.push({ aspect: 'fit days', had: `fit days ${had.fit.join(',')}`, now: `fit days ${now.fit.join(',')}` });
+  if (had.real15m !== now.real15m) out.push({ aspect: 'real days tag', had: `real days tag ${had.real15m}`, now: `real days tag ${now.real15m}` });
+  if (had.featureCode !== now.featureCode) out.push({ aspect: 'feature code', had: `feature code ${had.featureCode}`, now: `feature code ${now.featureCode}` });
+  const sha = (a: string | undefined, b: string | undefined) => !!a && a === b;
+  const badReal = [...new Set([...now.fit, ...now.judged])].filter((d) => !sha(had.days?.[d]?.real, now.days[d]?.real));
+  if (badReal.length) out.push({ aspect: 'prepped real days', had: `prepped real day(s) ${badReal.join(',')} as they were then`, now: 'those days as they are now (sha256 differs or is not recorded)' });
+  const badTwin = now.judged.filter((d) => !sha(had.days?.[d]?.twin, now.days[d]?.twin));
+  if (badTwin.length) out.push({ aspect: 'requote days', had: `requote day(s) ${badTwin.join(',')} as they were then`, now: 'those days as they are now (sha256 differs or is not recorded)' });
+  return out;
+}
+
+/** The sidecars of the real side, next to features-real.json. */
+function writeRealSidecars(out: string, meta: RealMeta, activity: Activity): void {
+  fs.writeFileSync(path.join(out, 'real-meta.json'), JSON.stringify(meta, null, 1));
+  fs.writeFileSync(path.join(out, 'real-activity.json'), JSON.stringify({ version: REAL_SIDE_VERSION, ...activity }, null, 1));
+}
+
 async function stageFeatures(): Promise<void> {
   const out = arg('out', 'data/twin');
   const days = arg('days').split(',').filter(Boolean);
@@ -670,18 +803,12 @@ async function stageFeatures(): Promise<void> {
     // the compared days a minute), the activity features' means. --extra-dir: where those extra days are (the cached
     // restricted real days, which hold the fit days too).
     const extra = src === 'real' ? arg('extra-days', '').split(',').filter((d) => d && !days.includes(d) && !CONFIRM_DAYS.includes(d)) : [];
-    const perDay = new Map<string, Row[]>();
-    for (const r of rows) perDay.set(r.day, [...(perDay.get(r.day) ?? []), r]);
-    for (const d of extra) { const f = dayFile(arg('extra-dir') || dir, d); if (f) perDay.set(`${d} (not judged)`, await dayRows(f, d, src, results)); }
-    const fi = (k: string) => FEATURES.indexOf(k as (typeof FEATURES)[number]);
-    for (const [k, g] of Object.entries(followDiag[src] ?? {})) {
-      const sdv = (xs: number[]) => { const mu = xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length); return Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / Math.max(1, xs.length)); };
-      console.log(`[twin] ${src} follow ${k}: ${g.m.length} moves, corr ${corr(g.m, g.x).toFixed(3)}, mid move sd ${sdv(g.m).toFixed(3)}, zero moves ${(g.m.filter((v) => v === 0).length / Math.max(1, g.m.length) * 100).toFixed(0)}%`);
-    }
-    for (const [d, rs] of perDay) {
-      const m = (k: string) => (rs.length ? rs.reduce((a, r) => a + (Number.isFinite(r.f[fi(k)]) ? r.f[fi(k)] : 0), 0) / rs.length : NaN).toFixed(2);
-      console.log(`[twin] ${src} ${d}: ${rs.length} lives, trades/min ${m('tradesPerMin')}, tradeSize ${m('tradeSize')}, topSize ${m('topSize')}, depth10 ${m('depth10')}, quote changes/min ${m('quoteChangesPerMin')}, followIx ${m('followIx')}, spread ${m('spreadC')}c`);
-    }
+    const perDay = perDayOf(rows), extraUsed: string[] = [];
+    for (const d of extra) { const f = dayFile(arg('extra-dir') || dir, d); if (f) { perDay.set(`${d} (not judged)`, await dayRows(f, d, src, results)); extraUsed.push(d); } }
+    const act = activityOf(src, perDay);
+    for (const l of activityLines(src, act)) console.log(l);
+    // The real side is kept beside its rows for the fast route (--real15m: the folder of the prepped real days, whose meta files hold their sha256).
+    if (src === 'real' && arg('real15m') && dirs.requote) writeRealSidecars(out, await realMetaFor({ judged: days, fit: extraUsed, real15mDir: arg('real15m'), twinDir: dirs.requote }), act);
   }
 }
 
@@ -840,39 +967,54 @@ async function stageBacktest(): Promise<void> {
   fs.writeFileSync(path.join(out, `windows-${name}.json`), JSON.stringify([...w.entries()]));
 }
 
-/** The twin's days through the tally's fill-in (research/goLiveTally.ts fillDayFile), as the deep history plays them. */
-async function stageFill(): Promise<void> {
-  const { fillDayFile, depthSims } = await import('./goLiveTally');
-  const src = arg('src'), dst = arg('dst'), how = arg('how', 'depth') as 'depth' | 'worst' | 'hold' | 'requote';
-  const depth = arg('depth-model') ? readDepthModel(arg('depth-model')) : undefined;
-  if (how === 'depth' && !depth) throw new Error('the depth fill-in needs --depth-model');
+type LoadedDepthParams = ReturnType<typeof loadDepthParamsFile>;
+
+/** Everything the depth fill-in checks and logs before it starts, for the file route (stageFill) and the fast route (fastRows): the
+ *  model must be there, a sweep's parameters (--depth-params) must be a valid best.json, with a split on record the model must
+ *  have been fitted on fit days only and the sweep's days must not be judged ones, and the parameters the fill-in will use are
+ *  logged. `say` gets each line as it happens. */
+function depthFillSetup(o: { how: string; model: string; splitFile: string; params: string }, say: (line: string) => void): { depth: DepthModel | undefined; loaded: LoadedDepthParams | undefined } {
+  const depth = o.model ? readDepthModel(o.model) : undefined;
+  if (o.how === 'depth' && !depth) throw new Error('the depth fill-in needs --depth-model');
   // A sweep's best candidate (--depth-params): its parameters go into the fill-in over the defaults and the model's own block.
-  const loaded = arg('depth-params') ? loadDepthParamsFile(arg('depth-params')) : undefined;
+  const loaded = o.params ? loadDepthParamsFile(o.params) : undefined;
   // With a split on record the model must have been fitted on fit days only.
-  if (how === 'depth' && arg('split-file')) {
-    const sp = readSplit(arg('split-file'));
-    if (!sp) throw new Error(`no split in ${arg('split-file')}`);
+  if (o.how === 'depth' && o.splitFile) {
+    const sp = readSplit(o.splitFile);
+    if (!sp) throw new Error(`no split in ${o.splitFile}`);
     assertHeldOut(sp);
-    assertModelFitDays(arg('depth-model'), sp);
-    console.log(`[twin] depth model fitted on fit days only (checked against the split's ${sp.fit.length} fit and ${sp.judge.length} judged day(s))`);
+    assertModelFitDays(o.model, sp);
+    say(`[twin] depth model fitted on fit days only (checked against the split's ${sp.fit.length} fit and ${sp.judge.length} judged day(s))`);
     if (loaded && sp.name === 'confirm') throw new Error('depth_params_run is for dev and custom dispatches: the confirm run uses the code defaults, so promote the sweep\'s params to the defaults through a reviewed code change first');
     // The sweep fitted these params on its FIT days: a split that judges one of them would judge on the days the params were tuned on.
     if (loaded) assertDisjoint(loaded.fitDays, sp.judge);
   }
-  if (how === 'depth') {
+  if (o.how === 'depth') {
     // Every depth fill-in says which parameters it used (the defaults are spelled out too).
     const used = resolveDepthSimParams(depth!.params, loaded?.params);
     const from = loaded ? `sweep best, generation ${loaded.gen}, loss ${loaded.loss}, fitted on FIT days only` : depth!.params ? "the model's own params block" : 'defaults, as in the code';
-    console.log(`[twin] depth simulator parameters (${from}): ${describeParams(used)}`);
+    say(`[twin] depth simulator parameters (${from}): ${describeParams(used)}`);
   }
+  return { depth, loaded };
+}
+
+/** What a set of fill-ins made, as the one summary line (counts per contract-minute; the file route sums the process's simulators,
+ *  the fast route the activity each in-stream day reports). */
+function simulatorLine(dst: string, t: SimActivity): string {
+  const perMin = (n: number) => (t.seconds ? ((60 * n) / t.seconds).toFixed(1) : '0');
+  return `[twin] ${dst} simulator: ${Math.round(t.seconds / 60)} contract-minutes, trades ${perMin(t.trades)}/min (sweep prints ${perMin(t.sweepPrints)}), flickers ${perMin(t.flickers)}/min`;
+}
+const sumSim = (xs: readonly SimActivity[]): SimActivity => xs.reduce((a, x) => ({ seconds: a.seconds + x.seconds, trades: a.trades + x.trades, sweepPrints: a.sweepPrints + x.sweepPrints, flickers: a.flickers + x.flickers }), { seconds: 0, trades: 0, sweepPrints: 0, flickers: 0 });
+
+/** The twin's days through the tally's fill-in (research/goLiveTally.ts fillDayFile), as the deep history plays them. */
+async function stageFill(): Promise<void> {
+  const { fillDayFile, depthSims } = await import('./goLiveTally');
+  const src = arg('src'), dst = arg('dst'), how = arg('how', 'depth') as 'depth' | 'worst' | 'hold' | 'requote';
+  const { depth, loaded } = depthFillSetup({ how, model: arg('depth-model'), splitFile: arg('split-file'), params: arg('depth-params') }, (l) => console.log(l));
   fs.mkdirSync(dst, { recursive: true });
   for (const f of fs.readdirSync(src).filter((x) => x.startsWith('md-'))) await fillDayFile(path.join(src, f), path.join(dst, f), { how }, depth, loaded?.params);
   console.log(`[twin] ${how} fill-in written for ${fs.readdirSync(dst).length} day(s)`);
-  if (depthSims.length) {
-    const t = depthSims.reduce((a, x) => ({ seconds: a.seconds + x.stats.seconds, trades: a.trades + x.stats.trades, sweepPrints: a.sweepPrints + x.stats.sweepPrints, flickers: a.flickers + x.stats.flickers }), { seconds: 0, trades: 0, sweepPrints: 0, flickers: 0 });
-    const perMin = (n: number) => (t.seconds ? ((60 * n) / t.seconds).toFixed(1) : '0');
-    console.log(`[twin] ${arg('dst')} simulator: ${Math.round(t.seconds / 60)} contract-minutes, trades ${perMin(t.trades)}/min (sweep prints ${perMin(t.sweepPrints)}), flickers ${perMin(t.flickers)}/min`);
-  }
+  if (depthSims.length) console.log(simulatorLine(arg('dst'), sumSim(depthSims.map((x) => x.stats))));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -899,6 +1041,189 @@ export async function filledDayRows(input: Iterable<Record<string, any>> | Async
     for (const x of f.end()) emit(x);
   } finally { depthSims.splice(at, 1); } // a sweep builds thousands of days: the global list must not keep each simulator
   return { rows: b.finish(), events, sim: { ...sim.stats } };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The fast dev run (workflow input fast; RUNBOOK 3.2.1). The full route writes the filled days and reads them back, parses each real
+// day four times (tickersOf, restrictDay, pairDay, dayRows) and parses the fit days again for their activity lines. This builds the
+// same files in one stage: the requote rows from the requote days, the depth rows IN-STREAM (the fill-in's records go straight into
+// the features code, filledDayRows, honouring --depth-params exactly as the file route does), and the real rows and paired mechanics
+// in ONE pass over each real day (restrictLine, the same restriction the match stage writes, then rowBuilder and pairSide on the
+// records) - or, with a real side kept by an earlier run (real_features_run), none: the cached rows and activity lines are read
+// and refused unless they were built for exactly these days, real days, requote days and feature code. It writes features-real/
+// requote/depth.json, paired.json, requote/ and the sidecars the full route's features stage also writes, and prints the lines the
+// match, fill and features stages print; a test holds the files and the lines equal to the full route's, number for number.
+
+/** One real day in ONE pass: its rows (the contracts the twin has), its tickers (every market record) and the real side of the
+ *  paired mechanics. `keep`: the tickers the restricted day keeps (the twin's and the day before's); `want`: the twin's. */
+async function realDayOnePass(file: string, day: string, results: ReadonlyMap<string, string>, keep: ReadonlySet<string>, want: ReadonlySet<string>): Promise<{ rows: Row[]; realT: Map<string, string>; side: PairSide }> {
+  const rb = rowBuilder(day, 'real', results), side = pairSide(want), realT = new Map<string, string>();
+  for await (const line of recordingLines(file)) {
+    if (!line) continue;
+    if (line.includes('"k":"market"')) { try { const e = JSON.parse(line); if (e.k === 'market' && e.ticker) realT.set(e.ticker, e.series ?? ''); } catch { /* a cut line */ } }
+    const kept = restrictLine(line, keep);
+    if (kept === undefined) continue;
+    let e: Record<string, any>;
+    try { e = JSON.parse(kept); } catch { continue; /* a cut line */ }
+    rb.push(e); side.push(e);
+  }
+  return { rows: rb.finish(), realT, side };
+}
+
+/** The real side of an earlier run, read from its twinlite files in `dir` and refused unless it was built for exactly `now` (the
+ *  key of this run). Nothing is guessed: a run with no sidecars (made before the fast route, or on a confirm split) is refused. */
+export function loadRealSide(dir: string, now: RealMeta, run: string): { rowsText: string; rows: Row[]; paired: Paired[]; activity: Activity; meta: RealMeta } {
+  const who = `real_features_run ${run}`, file = (n: string) => path.join(dir, n);
+  const missing = ['features-real.json', 'real-meta.json', 'real-activity.json', 'paired.json'].filter((n) => !fs.existsSync(file(n)));
+  if (missing.length) throw new Error(`${who} has no ${missing.join(', ')}: ${missing.some((n) => n.startsWith('real-')) ? 'it was made before the fast route kept its real side (or it read the confirm days), and an old run is never guessed at. Dispatch a dev run with this code (full, or fast without real_features_run) and use its run id' : 'its judged features are not complete on Drive'}`);
+  const read = <T>(n: string): T => { try { return JSON.parse(fs.readFileSync(file(n), 'utf8')) as T; } catch { throw new Error(`${who}: ${n} is not readable JSON`); } };
+  const had = read<RealMeta>('real-meta.json'), act = read<{ version?: number } & Activity>('real-activity.json');
+  if (!Array.isArray(had?.judged) || !Array.isArray(had?.fit) || typeof had?.days !== 'object' || !Array.isArray(act?.follow) || !Array.isArray(act?.days)) throw new Error(`${who}: real-meta.json or real-activity.json is not what this code writes (an old or damaged copy); it is not reused. Leave real_features_run empty to parse the real days again`);
+  const diff = realMetaDiff(had, now);
+  if (act.version !== REAL_SIDE_VERSION && !diff.some((d) => d.aspect === 'sidecar format')) diff.push({ aspect: 'sidecar format', had: `real-activity.json format ${act.version}`, now: `format ${REAL_SIDE_VERSION}` });
+  if (diff.length) throw new Error(`${who} was built for ${diff.map((d) => d.had).join('; ')}, not these (${diff.map((d) => d.now).join('; ')}): it differs in ${diff.map((d) => d.aspect).join(' / ')}. Leave real_features_run empty to parse the real days again`);
+  const rowsText = fs.readFileSync(file('features-real.json'), 'utf8'), rows = read<Row[]>('features-real.json'), all = read<Paired[]>('paired.json');
+  const strays = [...new Set(rows.map((r) => r.day))].filter((d) => !now.judged.includes(d));
+  if (strays.length) throw new Error(`${who}: features-real.json holds rows of day(s) that are not judged here: ${strays.join(', ')}`);
+  const paired = now.judged.map((d) => all.find((p) => p.day === d));
+  const lost = now.judged.filter((_, i) => !paired[i]);
+  if (lost.length) throw new Error(`${who}: paired.json has no entry for ${lost.join(', ')}`);
+  return { rowsText, rows, paired: paired as Paired[], activity: { follow: act.follow, days: act.days }, meta: had };
+}
+
+export interface FastOpts {
+  /** Where split.json is read and the files are written (data/twin). */
+  out: string;
+  /** The cached real days (md-DAY.jsonl.gz and meta-DAY.json: data/twin-real15m), the requote days (data/replay-src). */
+  realDir: string; twinDir: string;
+  /** The judged days (the split's). */
+  days: string[];
+  modelFile: string; paramsFile?: string;
+  /** The twinlite files of an earlier run (its real side), and its run id for the messages. */
+  realCache?: string; realRun?: string;
+  log?: (line: string) => void;
+}
+
+/** The fast route. Returns the seconds each step took (the `[twin] fast: ...` lines say the same). */
+export async function fastRows(o: FastOpts): Promise<Array<[string, number]>> {
+  const say = o.log ?? ((l: string) => console.log(l)), times: Array<[string, number]> = [];
+  const lap = (name: string, t0: number) => { const sec = Math.round(hr() - t0); times.push([name, sec]); say(`[twin] fast: ${name} ${sec} s`); };
+  const split = readSplit(splitFile(o.out));
+  if (!split) throw new Error(`no split in ${splitFile(o.out)}: --stage split first`);
+  assertDisjoint(split.fit, split.judge); assertHeldOut(split, o.days);
+  if (isBlind(split, [...o.days, ...split.fit])) throw new Error('fast=true is for dev and custom splits only: a run that reads a confirm day stays on the audited full path');
+  if (o.days.join(',') !== split.judge.join(',')) throw new Error(`the fast rows are for the split's judged days (${split.judge.join(',')}), got ${o.days.join(',') || 'none'}`);
+  for (const k of Object.keys(followDiag)) delete followDiag[k]; // the diagnostics of THIS build only
+  // What the depth side needs is checked first, before the long part (its lines are printed in the full route's order, after the match lines).
+  const setup: string[] = [];
+  const { depth, loaded } = depthFillSetup({ how: 'depth', model: o.modelFile, splitFile: splitFile(o.out), params: o.paramsFile ?? '' }, (l) => setup.push(l));
+  const results = await resultsOf(o.twinDir, o.days);
+  const outDir = (x: string) => path.join(o.out, x);
+  fs.mkdirSync(outDir('requote'), { recursive: true });
+  const twin = new Map<string, string>(), left: string[] = [];
+  for (const day of o.days) {
+    const rf = o.realCache ? 'cached' : dayFile(o.realDir, day), tf = dayFile(o.twinDir, day);
+    if (!rf || !tf) { say(`[twin] ${day}: ${rf ? '' : 'no real recording '}${tf ? '' : 'no history twin'}; left out`); left.push(day); continue; }
+    twin.set(day, tf);
+    fs.copyFileSync(tf, path.join(outDir('requote'), path.basename(tf)));
+  }
+  if (left.length) throw new Error(`judged day(s) without a real recording or a twin: ${left.join(', ')}`);
+  const extra = split.fit.filter((d) => !o.days.includes(d) && !CONFIRM_DAYS.includes(d));
+  const now = await realMetaFor({ judged: o.days, fit: extra, real15mDir: o.realDir, twinDir: o.twinDir });
+
+  // 1. the real side: reused from an earlier run, or built in one pass over each real day
+  const t1 = hr();
+  let realRows: Row[], paired: Paired[], activity: Activity, realText: string;
+  if (o.realCache) {
+    const r = loadRealSide(o.realCache, now, o.realRun ?? '?');
+    realRows = r.rows; paired = r.paired; activity = r.activity; realText = r.rowsText;
+    for (const p of paired) say(matchLine(p.day, p));
+    writeRealSidecars(o.out, { ...now, reusedFrom: o.realRun }, activity);
+  } else {
+    realRows = []; paired = [];
+    for (const day of o.days) {
+      const rf = dayFile(o.realDir, day)!, tf = twin.get(day)!;
+      const twinT = await tickersOf(tf), keep = new Set(twinT.keys());
+      const prev = dayFile(o.twinDir, new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10));
+      if (prev) for (const t of (await tickersOf(prev)).keys()) keep.add(t);
+      const one = await realDayOnePass(rf, day, results, keep, new Set(twinT.keys()));
+      realRows.push(...one.rows);
+      const p = await pairFinish(day, one.side, one.realT, tf, twinT);
+      paired.push(p);
+      say(matchLine(day, p));
+    }
+    // the fit days' own activity, printed beside the judged days' (not judged): the cached days themselves, as the features stage reads them
+    const perDay = perDayOf(realRows);
+    for (const d of extra) {
+      const f = dayFile(o.realDir, d);
+      if (!f) throw new Error(`the fast run needs the cached real FIT day ${d} in ${o.realDir} (its activity line); dispatch prep_days=${d} first`);
+      perDay.set(`${d} (not judged)`, await dayRows(f, d, 'real', results));
+    }
+    activity = activityOf('real', perDay);
+    realText = JSON.stringify(realRows);
+    writeRealSidecars(o.out, now, activity);
+  }
+  fs.writeFileSync(path.join(o.out, 'paired.json'), JSON.stringify(paired, null, 1));
+  fs.writeFileSync(path.join(o.out, 'features-real.json'), realText);
+  lap(o.realCache ? 'real rows reused' : 'real rows built', t1);
+  for (const l of setup) say(l); // the depth model and parameters lines, where the fill stage prints them (after the match lines)
+
+  // 2. the requote rows, from the requote days
+  const t2 = hr(), requoteRows: Row[] = [];
+  for (const d of o.days) { const f = dayFile(outDir('requote'), d); if (f) requoteRows.push(...(await dayRows(f, d, 'requote', results))); }
+  lap('requote rows', t2);
+
+  // 3. the depth rows, in-stream: the fill-in's records go straight into the features code, no filled day is written
+  const t3 = hr(), depthRows: Row[] = [], sims: SimActivity[] = [];
+  for (const d of o.days) { const r = await filledDayRows(events(twin.get(d)!), d, 'depth', results, depth!, loaded?.params); depthRows.push(...r.rows); sims.push(r.sim); }
+  say(`[twin] depth fill-in: ${o.days.length} day(s) built in-stream (no filled day is written)`);
+  say(simulatorLine(`${o.out}/depth`, sumSim(sims)));
+  lap('depth rows', t3);
+
+  // the features lines, in the order of the features stage: real, requote, depth
+  for (const [src, rows] of [['real', realRows], ['requote', requoteRows], ['depth', depthRows]] as Array<[string, Row[]]>) {
+    if (src !== 'real') fs.writeFileSync(path.join(o.out, `features-${src}.json`), JSON.stringify(rows));
+    say(`[twin] features ${src}: ${rows.length} contract lives over ${o.days.length} day(s)`);
+    for (const l of activityLines(src, src === 'real' ? activity : activityOf(src, perDayOf(rows)))) say(l);
+  }
+  return times;
+}
+
+/** A depth model an earlier run fitted (workflow input depth_model_run), reused only when it is the model this run would fit: it
+ *  records exactly these fit days (assertModelFitDays: fit days only, none judged), and it was written by this version of the
+ *  study (`schema`, a model with none reads as 0, against DEPTH_MODEL_SCHEMA), and, when the earlier run's real-meta.json is at
+ *  hand (`metaFile`), from real days of this tag. Returns the line to print; throws the reason otherwise. */
+export function checkDepthModelReuse(modelFile: string, split: Pick<Split, 'fit' | 'judge'>, o: { run?: string; metaFile?: string } = {}): string {
+  const who = `depth_model_run ${o.run ?? '?'}`;
+  let m: Record<string, any>;
+  try { m = JSON.parse(fs.readFileSync(modelFile, 'utf8')); } catch { throw new Error(`${who}: ${modelFile} is not readable JSON`); }
+  const schema = typeof m.schema === 'number' ? m.schema : 0;
+  if (schema !== DEPTH_MODEL_SCHEMA) throw new Error(`${who}: the model has schema ${schema}${m.schema === undefined ? ' (none recorded)' : ''}, this code reads schema ${DEPTH_MODEL_SCHEMA}: the depth study or the simulator changed since it was fitted, so it is not reused. Leave depth_model_run empty to fit it again`);
+  try { assertModelFitDays(modelFile, split); } catch (e) { throw new Error(`${who}: ${(e as Error).message}`); }
+  const days = [...(m.days as string[])].sort(), fit = [...split.fit].sort();
+  if (days.join(',') !== fit.join(',')) throw new Error(`${who}: the model was fitted on ${days.join(', ')}, not exactly the fit days ${fit.join(', ')}. Leave depth_model_run empty to fit it again`);
+  let tag = `; no real-meta.json beside it, so the real days' tag it was fitted from is not recorded`;
+  if (o.metaFile) {
+    let had: string | undefined;
+    try { had = JSON.parse(fs.readFileSync(o.metaFile, 'utf8')).real15m; } catch { /* unreadable: treated as not recorded */ }
+    if (typeof had === 'string') {
+      if (had !== real15mTag()) throw new Error(`${who}: the model was fitted from real days tagged ${had}, these are tagged ${real15mTag()} (the prep's keep rules or REPLAY_EXCLUDE changed). Leave depth_model_run empty to fit it again`);
+      tag = `; real days tag ${had}`;
+    }
+  }
+  return `[twin] depth model reused from run ${o.run ?? '?'}: fitted on ${days.join(' ')} (exactly the fit days), schema ${schema}${tag}`;
+}
+
+function stageDepthModelCheck(): void {
+  const split = readSplit(arg('split-file'));
+  if (!split) throw new Error(`no split in ${arg('split-file') || '(no --split-file)'}`);
+  assertHeldOut(split);
+  console.log(checkDepthModelReuse(arg('depth-model'), split, { run: arg('run') || undefined, metaFile: arg('model-meta') || undefined }));
+}
+
+async function stageFastRows(): Promise<void> {
+  const out = arg('out', 'data/twin');
+  await fastRows({ out, realDir: arg('real', 'data/twin-real15m'), twinDir: arg('twin', 'data/replay-src'), days: arg('days').split(',').filter(Boolean), modelFile: arg('depth-model'), paramsFile: arg('depth-params') || undefined, realCache: arg('real-cache') || undefined, realRun: arg('real-run') || undefined });
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1222,6 +1547,8 @@ export async function historyTwinMain(): Promise<void> {
   if (stage === 'features') return stageFeatures();
   if (stage === 'backtest') return stageBacktest();
   if (stage === 'fill') return stageFill();
+  if (stage === 'fastrows') return stageFastRows();
+  if (stage === 'depth-model-check') return stageDepthModelCheck();
   if (stage === 'sweep') return stageSweep();
   if (stage === 'sweep-collect') return stageSweepCollect();
   if (stage === 'verdict') { await stageVerdict(); return; }

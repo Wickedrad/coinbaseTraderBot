@@ -6,9 +6,9 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import crypto from 'crypto';
 import {
-  assertDisjoint, assertModelFitDays, assertHeldOut, auc, CONFIRM_DAYS, checkReal15m, collectSweep, corrMatrix, dayRows, discriminate, discriminatePerDay, FEATURES, filledDayRows, followDiag, isBlind,
+  assertDisjoint, assertModelFitDays, assertHeldOut, auc, CONFIRM_DAYS, checkDepthModelReuse, checkReal15m, collectSweep, corrMatrix, dayRows, discriminate, discriminatePerDay, FEATURE_CODE_VERSION, FEATURES, fastRows, filledDayRows, followDiag, isBlind, loadRealSide,
   judgeSweepRows, loadDepthParamsFile, MIN_CUSTOM_JUDGED_DAYS, MIN_DAY_LIVES, MIN_SWEEP_LIVES, outcome, parseDays, parseFailedSteps, prepDay, prepReport, prepStatus, quantile, quantiles3, real15mError, real15mTag,
-  REAL15M_VERSION, resolveSplit, resolveSweepFit, rowBuilder, runSweep, type Row, SPLITS, stageVerdict, stressAuc, sweepShardName, topCorrDiffs, twinSource, type SweepCollected,
+  REAL15M_VERSION, realMetaDiff, resolveSplit, resolveSweepFit, restrictLine, rowBuilder, runSweep, type Row, SPLITS, stageVerdict, stressAuc, sweepShardName, topCorrDiffs, twinSource, type SweepCollected,
 } from '../research/historyTwin';
 import {
   CEM_SD_FLOOR, cemStep, clipParams, describeParams, eliteOf, eliteStats, fromSpace, generationCandidates, latinHypercube, mergeShards, parentsFrom, parseShard, rankResults, shardRange,
@@ -16,6 +16,7 @@ import {
 } from '../research/history/depthParamSearch';
 import { DEFAULT_DEPTH_SIM_PARAMS, DEPTH_PARAM_NAMES, DEPTH_PARAM_SPACE, readDepthModel, resolveDepthSimParams, type DepthSimParams } from '../research/history/depthSim';
 import { depthSims, fillDayFile } from '../research/goLiveTally';
+import { DEPTH_MODEL_SCHEMA } from '../research/history/depthModelVersion';
 import { synthModel, synthRequoteDay, writeEventsGz } from './twinSweepSynth';
 import { tmpDir } from './helpers';
 
@@ -857,7 +858,7 @@ echo "kept on Drive: $2 (Total size: 3.400 KiB (3482 Byte))"
 });
 
 /** The verdict job's Verdict step, run for real with a stub node: windows files from the legs, the job result, the split. */
-function verdictStep(opts: { split: string; backtests?: boolean; result?: string; judged?: string[]; have?: Record<string, string[]>; parts?: number }) {
+function verdictStep(opts: { split: string; backtests?: boolean; result?: string; judged?: string[]; have?: Record<string, string[]>; parts?: number; fast?: string }) {
   const y = wf(), { ws, bin, tmp } = stepWs();
   const judged = opts.judged ?? ['2026-11-13', '2026-11-14', '2026-11-16'];
   const have = opts.have ?? { real: judged, placebo: judged, requote: judged, depth: judged };
@@ -868,7 +869,7 @@ function verdictStep(opts: { split: string; backtests?: boolean; result?: string
   fs.mkdirSync(path.join(tmp, 'in'), { recursive: true });
   const mark = path.join(tmp, 'node-called');
   fs.writeFileSync(path.join(bin, 'node'), `#!/usr/bin/env bash\ntouch "${mark}"\nmkdir -p data/twin; echo '{"paired":[]}' > data/twin/verdict.json\nls data/twin/windows-*.json 2>/dev/null | wc -l | sed 's/^ */[twin] stub verdict saw windows files: /'\necho "[twin] depth: adversary AUC 0.55"\n`, { mode: 0o755 });
-  const r = bash(stepScript(y, 'Verdict'), { PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: tmp, LOOK_N: '', LOOK_NOTE: '', BACKTESTS: opts.backtests === false ? 'false' : 'true', BT_RESULT: opts.result ?? 'success', JUDGED: judged.join(','), SPLIT: opts.split }, ws);
+  const r = bash(stepScript(y, 'Verdict'), { PATH: `${bin}:${process.env.PATH}`, RUNNER_TEMP: tmp, LOOK_N: '', LOOK_NOTE: '', BACKTESTS: opts.backtests === false ? 'false' : 'true', BT_RESULT: opts.result ?? 'success', JUDGED: judged.join(','), SPLIT: opts.split, ...(opts.fast === undefined ? {} : { FAST: opts.fast }) }, ws);
   const log = fs.existsSync(path.join(tmp, 'verdict.log')) ? fs.readFileSync(path.join(tmp, 'verdict.log'), 'utf8') : '';
   return { r, log, nodeCalled: fs.existsSync(mark), ws, tmp, out: `${r.stdout}${r.stderr}` };
 }
@@ -1622,9 +1623,13 @@ test('sweep-collect: merges the shards from Drive, keeps best.json, elite.json a
   assert.match(log, /^\[twin\] kept on Drive: simulated\/history-twin-sweep\/55\/\{best,elite,results\}\.json \(shard jobs: success\)$/m);
   assert.match(log, /^\[twin\] NEXT GENERATION: gh workflow run history-twin\.yml -R o\/r --ref main -f sweep_gen=1 -f sweep_parents_run=55 -f sweep_candidates=3 -f sweep_shards=2$/m);
   assert.match(log, /^\[twin\] DEV VERDICT of this generation's best: gh workflow run history-twin\.yml -R o\/r --ref main -f split=dev -f depth_params_run=55$/m);
+  // the same verdict on the fast route (H3 fix round 1: a model copies the printed command, so the hand-off must offer the 1 h path): depth_params_run is this SWEEP's id, the two reuse inputs are build run ids and optional
+  assert.match(log, /^\[twin\] DEV VERDICT, fast \(RUNBOOK 3\.2\.1, about 1 h\): gh workflow run history-twin\.yml -R o\/r --ref main -f split=dev -f fast=true -f depth_params_run=55 \[-f real_features_run=BUILD_RUN -f depth_model_run=BUILD_RUN\]$/m);
+  assert.equal([...log.matchAll(/^\[twin\] DEV VERDICT/gm)].length, 2, 'the plain line stays and one fast line follows it');
   const c = fs.readFileSync(sent, 'utf8');
   assert.match(c, /^History twin sweep, generation 0, run 55 \(shard jobs: success, collect: done\), on commit 01234567\n\n```\n\[twin\] sweep g0:/); assert.match(c, /```\n$/);
   assert.ok(!/KX[A-Z]|\$[0-9]/.test(c), 'the comment holds numbers and parameter names only');
+  assert.match(c, /^\[twin\] DEV VERDICT, fast \(RUNBOOK 3\.2\.1, about 1 h\): .* -f fast=true -f depth_params_run=55 /m, 'the comment carries the fast verdict command too');
   // what it kept is what the fill-in reads
   assert.deepEqual(readJson(path.join(runDir, 'best.json')), readJson(path.join(fx.collected, 'best.json')));
   assert.doesNotThrow(() => loadDepthParamsFile(path.join(runDir, 'best.json')));
@@ -1704,3 +1709,446 @@ test('depth_params_run: dev and custom dispatches only, a run id, best.json read
   // the params are kept with the simulated twin on Drive (data/sweep is linked into it)
   assert.match(stepScript(y, 'Keep the simulated twin on Drive'), /\[ -d data\/sweep \] && ln -s "\$GITHUB_WORKSPACE\/data\/sweep" "\$S\/sweep"/);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// The fast dev run (H3: workflow input fast, real_features_run, depth_model_run; RUNBOOK 3.2.1). Synthetic days only
+// (tests/twinSweepSynth.ts): the stage `fastrows` is run in its own process on the same days as the full route's three stages
+// (match, fill, features) and the files and the [twin] lines are held equal, number for number.
+// ---- H3 begin ----
+
+const FAST_FIT = ['2026-11-11', '2026-11-12'], FAST_JUDGE = ['2026-11-13', '2026-11-14'];
+const twinCli = (...a: string[]) => spawnSync(process.execPath, ['--import', 'tsx', 'research/historyTwin.ts', ...a], { encoding: 'utf8' });
+const okCli = (...a: string[]): string => { const r = twinCli(...a); assert.equal(r.status, 0, `--stage ${a[1]}: ${r.stdout}${r.stderr}`); return r.stdout; };
+const sha256Of = (f: string) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+const tw = (s: string) => s.split('\n').filter((l) => l.startsWith('[twin]'));
+
+interface FastWorld { root: string; real: string; twin: string; modelFile: string }
+/** The real days are depth fill-ins of a day of three assets (a contract the twin does not hold, another seed: the real side is not
+ *  the twin), each with the meta file the prep leaves (its sha256); the requote days (the twin) hold BTC and ETH on the judged days. */
+async function fastWorld(): Promise<FastWorld> {
+  const root = tmpDir(), real = path.join(root, 'real15m'), twin = path.join(root, 'replay-src');
+  for (const d of [real, twin]) fs.mkdirSync(d);
+  const modelFile = path.join(root, 'depth_model.json');
+  fs.writeFileSync(modelFile, JSON.stringify({ ...synthModel({ days: FAST_FIT }), schema: DEPTH_MODEL_SCHEMA }));
+  const lib = readDepthModel(modelFile)!;
+  for (const [i, d] of [...FAST_FIT, ...FAST_JUDGE].entries()) {
+    const raw = path.join(root, `raw-${d}.jsonl.gz`), f = path.join(real, `md-${d}.jsonl.gz`);
+    writeEventsGz(raw, synthRequoteDay({ day: d, assets: ['BTC', 'ETH', 'SOL'], windows: 4, seed: 40 + i }));
+    await fillDayFile(raw, f, { how: 'depth' }, lib);
+    fs.writeFileSync(path.join(real, `meta-${d}.json`), JSON.stringify({ day: d, version: real15mTag(), sha256: sha256Of(f) }));
+    if (FAST_JUDGE.includes(d)) writeEventsGz(path.join(twin, `md-${d}.jsonl.gz`), synthRequoteDay({ day: d, assets: ['BTC', 'ETH'], windows: 4, seed: 3 + i }));
+  }
+  return { root, real, twin, modelFile };
+}
+const splitArgs = (out: string, fit = FAST_FIT, judge = FAST_JUDGE) => ['--stage', 'split', '--split', 'custom', '--fit-days', fit.join(','), '--judge-days', judge.join(','), '--warm-days', '', '--out', out];
+/** The full route: split, match, fill, features (the workflow's step, with the same arguments). Returns the [twin] lines of match, fill and features. */
+function fullRoute(w: FastWorld, out: string, paramsFile?: string): string[] {
+  fs.mkdirSync(out, { recursive: true });
+  const J = FAST_JUDGE.join(',');
+  okCli(...splitArgs(out));
+  return [
+    ...tw(okCli('--stage', 'match', '--real', w.real, '--twin', w.twin, '--days', J, '--warm-days', '', '--out', out)),
+    ...tw(okCli('--stage', 'fill', '--src', `${out}/requote`, '--dst', `${out}/depth`, '--how', 'depth', '--depth-model', w.modelFile, '--split-file', `${out}/split.json`, ...(paramsFile ? ['--depth-params', paramsFile] : []))),
+    ...tw(okCli('--stage', 'features', '--dirs', `real=${out}/real,requote=${out}/requote,depth=${out}/depth`, '--days', J, '--extra-days', FAST_FIT.join(','), '--extra-dir', w.real, '--real15m', w.real, '--out', out)),
+  ];
+}
+const fastArgs = (w: FastWorld, out: string, ...more: string[]) => ['--stage', 'fastrows', '--real', w.real, '--twin', w.twin, '--days', FAST_JUDGE.join(','), '--depth-model', w.modelFile, '--out', out, ...more];
+function fastRoute(w: FastWorld, out: string, ...more: string[]): string[] {
+  fs.mkdirSync(out, { recursive: true });
+  okCli(...splitArgs(out));
+  return tw(okCli(...fastArgs(w, out, ...more)));
+}
+const READ = ['features-real.json', 'features-requote.json', 'features-depth.json', 'paired.json', 'split.json', 'real-meta.json', 'real-activity.json'];
+const FAST_ONLY = /^\[twin\] (fast: |depth fill-in: \d+ day\(s\) built in-stream)/;
+/** The full route's own lines that say a file was written (the fast route writes no filled day), and the directory in a line. */
+const FILL_WRITTEN = /^\[twin\] depth fill-in written for \d+ day\(s\)$/;
+const sameLines = (full: string[], fast: string[], fullOut: string, fastOut: string) => {
+  const norm = (l: string, out: string) => l.split(out).join('OUT');
+  assert.deepEqual(fast.filter((l) => !FAST_ONLY.test(l)).map((l) => norm(l, fastOut)), full.filter((l) => !FILL_WRITTEN.test(l)).map((l) => norm(l, fullOut)));
+};
+
+const bestFileOf = (dir: string, params: Partial<DepthSimParams>) => {
+  const f = path.join(dir, 'best.json');
+  fs.writeFileSync(f, JSON.stringify({ kind: 'sweep-best', version: SWEEP_VERSION, split: 'dev', fitDays: FIT_DAYS, gen: 0, index: 2, loss: 0.9, params }));
+  return f;
+};
+
+test('fastrows gives the full route\'s files and [twin] lines, number for number, with and without a sweep\'s --depth-params, and writes no filled day', async () => {
+  const w = await fastWorld();
+  const best = bestFileOf(w.root, generationCandidates(0, 6)[2]);
+  const seen: Record<string, Row[]> = {};
+  for (const [label, params] of [['defaults', undefined], ['a sweep best.json', best]] as Array<[string, string | undefined]>) {
+    const full = path.join(w.root, `full-${label.length}`), fast = path.join(w.root, `fast-${label.length}`), more = params ? ['--depth-params', params] : [];
+    const fullLines = fullRoute(w, full, params), fastLines = fastRoute(w, fast, ...more);
+    for (const f of READ) assert.ok(fs.existsSync(path.join(fast, f)), `${label}: ${f} is written`);
+    for (const f of READ) assert.equal(fs.readFileSync(path.join(fast, f), 'utf8'), fs.readFileSync(path.join(full, f), 'utf8'), `${label}: ${f} has the same bytes as the full route's`);
+    assert.deepEqual(fs.readdirSync(path.join(fast, 'requote')), fs.readdirSync(path.join(full, 'requote')));
+    for (const f of fs.readdirSync(path.join(full, 'requote'))) assert.equal(sha256Of(path.join(fast, 'requote', f)), sha256Of(path.join(full, 'requote', f)));
+    assert.ok(!fs.existsSync(path.join(fast, 'depth')) && !fs.existsSync(path.join(fast, 'real')), `${label}: no filled day and no restricted real day is written`);
+    sameLines(fullLines, fastLines, full, fast);
+    // not vacuous: every source has lives on both judged days, the real side is not the twin, and the real side holds contracts the twin does not
+    const rows = (f: string): Row[] => JSON.parse(fs.readFileSync(path.join(fast, f), 'utf8'));
+    for (const s of ['real', 'requote', 'depth']) { const r = rows(`features-${s}.json`); assert.ok(r.length >= 12, `${label}: ${s} has ${r.length} lives`); for (const d of FAST_JUDGE) assert.ok(r.some((x) => x.day === d), `${s} ${d}`); }
+    const paired = JSON.parse(fs.readFileSync(path.join(fast, 'paired.json'), 'utf8'));
+    assert.ok(paired.length === 2 && paired.every((p: any) => p.both >= 8 && p.onlyReal15m >= 4), `${label}: paired ${JSON.stringify(paired.map((p: any) => [p.both, p.onlyReal15m]))}`);
+    assert.notDeepEqual(rows('features-real.json').map((r) => r.f), rows('features-depth.json').map((r) => r.f));
+    // the lines the verdict job and the report read: the match lines, the model and parameters, the simulator, features per source, the activity and follow lines
+    for (const re of [/^\[twin\] 2026-11-13: /, /^\[twin\] depth model fitted on fit days only/, /^\[twin\] depth simulator parameters \(/, /\/depth simulator: /, /^\[twin\] features real: /, /^\[twin\] features depth: /, /^\[twin\] real 2026-11-12 \(not judged\): /, /^\[twin\] real follow /, /^\[twin\] depth 2026-11-14: /]) assert.ok(fastLines.some((l) => re.test(l)), `${label}: a line ${re}`);
+    // the fast lines: a step each, in seconds
+    const fl = fastLines.filter((l) => /^\[twin\] fast: /.test(l));
+    assert.deepEqual(fl.map((l) => l.replace(/ \d+ s$/, '')), ['[twin] fast: real rows built', '[twin] fast: requote rows', '[twin] fast: depth rows']);
+    assert.ok(fl.every((l) => / \d+ s$/.test(l)));
+    seen[label] = rows('features-depth.json');
+  }
+  // the sweep's parameters are honoured by the in-stream route as by the file route (equal files above), and they move the rows
+  assert.notDeepEqual(seen['a sweep best.json'], seen.defaults);
+  // and a split that judges a day the sweep fitted on refuses them in the fast route too, as the fill stage does
+  const bad = path.join(w.root, 'bad'); fs.mkdirSync(bad);
+  okCli(...splitArgs(bad, FAST_FIT, ['2026-11-13', '2026-11-15']));
+  const r = twinCli(...fastArgs(w, bad, '--depth-params', best).map((a) => (a === FAST_JUDGE.join(',') ? '2026-11-13,2026-11-15' : a)));
+  assert.notEqual(r.status, 0); assert.match(r.stderr, /^\[twin\] ERROR: .*overlap.*2026-11-15/m);
+});
+
+// The feature code's version. FEATURE_CODE_VERSION is part of the key of a cached real side (real-meta.json): a real side built by other
+// feature code is refused. This holds the version to the code: the normalised text (no comments, one space) of everything a real day's rows
+// and paired mechanics go through, hashed, per version. An edit to that code that is not followed by a bump (and a new line here) fails.
+const FEATURE_CODE_PINS: Record<string, string> = { f1: 'ff43690a4994481b' };
+function featureCodeHash(): string {
+  const src = fs.readFileSync(path.join(ROOT, 'research/historyTwin.ts'), 'utf8');
+  const between = (a: string, b: string) => { const i = src.indexOf(a), j = src.indexOf(b, i + a.length); assert.ok(i >= 0 && j > i, `the feature code region ${a} .. ${b} is not found: rename it here too`); return src.slice(i, j); };
+  const regions = [
+    between('const MIN = 60_000, SLOT = 15_000;', 'const dayFile ='), between('async function* events(', 'async function writeGz('), between('async function tickersOf(', '// The split: FIT days'),
+    between('export interface Paired {', '/** The per-day line the match stage prints'), between('export const FEATURES = [', 'async function resultsOf('),
+    fs.readFileSync(path.join(ROOT, 'bot/marketdata/orderBook.ts'), 'utf8'),
+  ];
+  const norm = (t: string) => t.replace(/export const FEATURE_CODE_VERSION = '[^']*';/, '').replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ').replace(/\s+/g, ' ').trim();
+  return crypto.createHash('sha256').update(regions.map(norm).join('\n#\n')).digest('hex').slice(0, 16);
+}
+test('FEATURE_CODE_VERSION is tied to the feature code: an edit to rowBuilder, the paired mechanics or the order book must come with a bump', () => {
+  assert.match(FEATURE_CODE_VERSION, /^[a-z0-9]+$/);
+  const h = featureCodeHash();
+  assert.equal(FEATURE_CODE_PINS[FEATURE_CODE_VERSION], h, `the feature code now hashes to ${h}, version ${FEATURE_CODE_VERSION} was pinned to ${FEATURE_CODE_PINS[FEATURE_CODE_VERSION]}: if the change alters a real day's rows or paired mechanics, bump FEATURE_CODE_VERSION in research/historyTwin.ts (every cached real side is then refused) and pin the new version here with this hash; if it does not, say so in the commit and pin the same version to the new hash`);
+  assert.equal(new Set(Object.values(FEATURE_CODE_PINS)).size, Object.keys(FEATURE_CODE_PINS).length, 'two versions never share a hash');
+});
+
+test('restrictLine keeps what the restricted day keeps: a kept ticker, no ticker; drops the others, and thins a list of tickers', () => {
+  const keep = new Set(['A', 'B']);
+  assert.equal(restrictLine('{"t":1,"k":"book","ticker":"A"}', keep), '{"t":1,"k":"book","ticker":"A"}\n');
+  assert.equal(restrictLine('{"t":1,"k":"book","ticker":"C"}', keep), undefined);
+  assert.equal(restrictLine('{"t":1,"k":"index","asset":"BTC","value":5}', keep), '{"t":1,"k":"index","asset":"BTC","value":5}\n');
+  assert.equal(restrictLine('{"t":1,"k":"alive","tickers":["A","C","B"]}', keep), '{"t":1,"k":"alive","tickers":["A","B"]}\n');
+  assert.equal(restrictLine('{"t":1,"k":"alive","tickers":["C"]}', keep), undefined);
+  assert.equal(restrictLine('{"t":1,"k":"alive","tickers":["A"', keep), undefined, 'a cut line that lists tickers is dropped');
+});
+
+const copyFiles = (from: string, to: string, names: string[]) => { fs.mkdirSync(to, { recursive: true }); for (const n of names) fs.copyFileSync(path.join(from, n), path.join(to, n)); };
+const REAL_SIDE = ['features-real.json', 'paired.json', 'real-meta.json', 'real-activity.json'];
+const metaFilesOnly = (w: FastWorld, name: string) => { const d = path.join(w.root, name); fs.mkdirSync(d); copyFiles(w.real, d, fs.readdirSync(w.real).filter((f) => f.startsWith('meta-'))); return d; };
+const readJ = (f: string) => JSON.parse(fs.readFileSync(f, 'utf8'));
+/** fastRows in this process: the lines it prints, and the files it writes in `out` (its split.json made by the split stage). */
+async function fastHere(w: FastWorld, out: string, realCache: string | undefined, o: { realDir?: string; twinDir?: string } = {}): Promise<string[]> {
+  const lines: string[] = [];
+  await fastRows({ out, realDir: o.realDir ?? w.real, twinDir: o.twinDir ?? w.twin, days: FAST_JUDGE, modelFile: w.modelFile, realCache, realRun: realCache ? '4242' : undefined, log: (l) => lines.push(l) });
+  return lines;
+}
+
+test('real_features_run: a real side kept by an earlier run is reused with the real days gone, gives the fresh build\'s files and lines, and chains', async () => {
+  const w = await fastWorld(), full = path.join(w.root, 'full'), fullLines = fullRoute(w, full);
+  // what "Keep the judged features" leaves of a run: made by the FULL route's features stage (--real15m), read by the fast route
+  const cache = path.join(w.root, 'cache'); copyFiles(full, cache, REAL_SIDE);
+  const meta = readJ(path.join(cache, 'real-meta.json')) as RealMetaT;
+  assert.deepEqual([meta.judged, meta.fit, meta.real15m, meta.featureCode], [FAST_JUDGE, FAST_FIT, real15mTag(), FEATURE_CODE_VERSION]);
+  assert.ok(FAST_JUDGE.every((d) => meta.days[d].real === sha256Of(path.join(w.real, `md-${d}.jsonl.gz`)) && meta.days[d].twin === sha256Of(path.join(w.twin, `md-${d}.jsonl.gz`))) && FAST_FIT.every((d) => meta.days[d].real.length === 64));
+  const act = readJ(path.join(cache, 'real-activity.json'));
+  assert.ok(act.days.some((d: any) => d.label === '2026-11-12 (not judged)') && act.days.some((d: any) => d.label === '2026-11-13') && act.follow.length > 0, 'the activity of the judged days and the fit days, and the follow diagnostics');
+  const out = path.join(w.root, 'reuse'); fs.mkdirSync(out); okCli(...splitArgs(out));
+  const lines = await fastHere(w, out, cache, { realDir: metaFilesOnly(w, 'real-meta-only') }); // the real recordings are not there: nothing reads them
+  for (const f of ['features-real.json', 'features-requote.json', 'features-depth.json', 'paired.json', 'split.json', 'real-activity.json']) assert.equal(fs.readFileSync(path.join(out, f), 'utf8'), fs.readFileSync(path.join(full, f), 'utf8'), `${f} equals the full route's, bytes`);
+  const kept = readJ(path.join(out, 'real-meta.json')); assert.equal(kept.reusedFrom, '4242'); delete kept.reusedFrom; assert.deepEqual(kept, meta);
+  sameLines(fullLines, lines, full, out);
+  assert.deepEqual(lines.filter((l) => /^\[twin\] fast: /.test(l)).map((l) => l.replace(/ \d+ s$/, '')), ['[twin] fast: real rows reused', '[twin] fast: requote rows', '[twin] fast: depth rows']);
+  // the reused side can itself be reused (the sidecars of a reusing run are the files of the next one)
+  const cache2 = path.join(w.root, 'cache2'); copyFiles(out, cache2, REAL_SIDE);
+  const out2 = path.join(w.root, 'reuse2'); fs.mkdirSync(out2); okCli(...splitArgs(out2));
+  await fastHere(w, out2, cache2, { realDir: metaFilesOnly(w, 'real-meta-only2') });
+  assert.equal(fs.readFileSync(path.join(out2, 'features-real.json'), 'utf8'), fs.readFileSync(path.join(full, 'features-real.json'), 'utf8'));
+  // the stage, in its own process: the same files, and the log says reused
+  const cli = path.join(w.root, 'reuse-cli'); fs.mkdirSync(cli); okCli(...splitArgs(cli));
+  const r = tw(okCli(...fastArgs({ ...w, real: metaFilesOnly(w, 'real-meta-only3') }, cli, '--real-cache', cache, '--real-run', '4242')));
+  assert.ok(r.some((l) => /^\[twin\] fast: real rows reused \d+ s$/.test(l)));
+  assert.equal(fs.readFileSync(path.join(cli, 'features-depth.json'), 'utf8'), fs.readFileSync(path.join(full, 'features-depth.json'), 'utf8'));
+});
+
+type RealMetaT = { version: number; judged: string[]; fit: string[]; real15m: string; featureCode: string; days: Record<string, { real: string; twin?: string }>; reusedFrom?: string };
+
+test('real_features_run is refused, with what differs, unless it was built for exactly these judged days, fit days, real days tag, feature code, prepped real days and requote days', async () => {
+  const w = await fastWorld(), full = path.join(w.root, 'full'); fullRoute(w, full);
+  const cache = path.join(w.root, 'cache'); copyFiles(full, cache, REAL_SIDE);
+  const meta = readJ(path.join(cache, 'real-meta.json')) as RealMetaT;
+  const out = path.join(w.root, 'out'); fs.mkdirSync(out); okCli(...splitArgs(out));
+  const withMeta = (name: string, edit: (m: RealMetaT) => void) => { const d = path.join(w.root, name); copyFiles(cache, d, REAL_SIDE); const m = structuredClone(meta); edit(m); fs.writeFileSync(path.join(d, 'real-meta.json'), JSON.stringify(m)); return d; };
+  const refused = async (cacheDir: string, re: RegExp, o: { realDir?: string; twinDir?: string } = {}) => {
+    await assert.rejects(fastHere(w, out, cacheDir, { realDir: metaFilesOnly(w, `bare-${fs.readdirSync(w.root).length}`), ...o }), (e: Error) => { assert.match(e.message, re); return true; });
+  };
+  const head = (had: string, now: string, what: string) => new RegExp(`^real_features_run 4242 was built for ${had}, not these \\(${now}\\): it differs in ${what}\\. Leave real_features_run empty to parse the real days again$`);
+  // each aspect of the key, one at a time
+  await refused(withMeta('judged', (m) => { m.judged = ['2026-11-13']; }), head('judged days 2026-11-13', 'judged days 2026-11-13,2026-11-14', 'judged days'));
+  await refused(withMeta('fit', (m) => { m.fit = ['2026-11-11']; }), head('fit days 2026-11-11', 'fit days 2026-11-11,2026-11-12', 'fit days'));
+  await refused(withMeta('tag', (m) => { m.real15m = 'r15m-0|exclude=DOGE'; }), head('real days tag r15m-0\\|exclude=DOGE', `real days tag ${real15mTag().replace('|', '\\|')}`, 'real days tag'));
+  await refused(withMeta('code', (m) => { m.featureCode = 'f0'; }), head('feature code f0', `feature code ${FEATURE_CODE_VERSION}`, 'feature code'));
+  await refused(withMeta('format', (m) => { m.version = 99; }), head('real-meta\\.json format 99', 'format 1', 'sidecar format'));
+  // the days themselves: a prepped real day made again (its meta's sha256 is another), a requote day made again, a sha that was never recorded
+  const other = path.join(w.root, 'real-other'); fs.mkdirSync(other); copyFiles(w.real, other, fs.readdirSync(w.real).filter((f) => f.startsWith('meta-')));
+  fs.writeFileSync(path.join(other, 'meta-2026-11-14.json'), JSON.stringify({ ...readJ(path.join(w.real, 'meta-2026-11-14.json')), sha256: 'a'.repeat(64) }));
+  await refused(cache, /^real_features_run 4242 was built for prepped real day\(s\) 2026-11-14 as they were then, not these \(those days as they are now \(sha256 differs or is not recorded\)\): it differs in prepped real days\./, { realDir: other });
+  const twinOther = path.join(w.root, 'twin-other'); fs.mkdirSync(twinOther);
+  writeEventsGz(path.join(twinOther, 'md-2026-11-13.jsonl.gz'), synthRequoteDay({ day: '2026-11-13', assets: ['BTC', 'ETH'], windows: 4, seed: 99 }));
+  fs.copyFileSync(path.join(w.twin, 'md-2026-11-14.jsonl.gz'), path.join(twinOther, 'md-2026-11-14.jsonl.gz'));
+  await refused(cache, /^real_features_run 4242 was built for requote day\(s\) 2026-11-13 as they were then, not these .*: it differs in requote days\./, { twinDir: twinOther });
+  await refused(withMeta('nosha', (m) => { m.days = {}; }), /it differs in prepped real days \/ requote days\./);
+  await refused(withMeta('nosha2', (m) => { for (const d of Object.keys(m.days)) m.days[d].real = ''; }), /it differs in prepped real days\./);
+  // several at once are all named
+  await refused(withMeta('many', (m) => { m.featureCode = 'f0'; m.judged = ['2026-11-14']; }), /^real_features_run 4242 was built for judged days 2026-11-14; feature code f0, not these \(judged days 2026-11-13,2026-11-14; feature code f1\): it differs in judged days \/ feature code\./);
+  // an old run (no sidecar), a copy that is not complete, and damaged copies are refused, not guessed
+  const old = path.join(w.root, 'old'); copyFiles(cache, old, ['features-real.json', 'paired.json']);
+  await refused(old, /^real_features_run 4242 has no real-meta\.json, real-activity\.json: it was made before the fast route kept its real side \(or it read the confirm days\), and an old run is never guessed at\. Dispatch a dev run with this code/);
+  const nofeat = path.join(w.root, 'nofeat'); copyFiles(cache, nofeat, ['real-meta.json', 'real-activity.json', 'paired.json']);
+  await refused(nofeat, /^real_features_run 4242 has no features-real\.json: its judged features are not complete on Drive/);
+  const junk = path.join(w.root, 'junk'); copyFiles(cache, junk, REAL_SIDE); fs.writeFileSync(path.join(junk, 'real-activity.json'), '{not json');
+  await refused(junk, /^real_features_run 4242: real-activity\.json is not readable JSON/);
+  const shape = path.join(w.root, 'shape'); copyFiles(cache, shape, REAL_SIDE); fs.writeFileSync(path.join(shape, 'real-meta.json'), JSON.stringify({ version: 1 }));
+  await refused(shape, /^real_features_run 4242: real-meta\.json or real-activity\.json is not what this code writes/);
+  const stray = path.join(w.root, 'stray'); copyFiles(cache, stray, REAL_SIDE); fs.writeFileSync(path.join(stray, 'features-real.json'), JSON.stringify([...readJ(path.join(cache, 'features-real.json')), { day: '2026-11-12', ticker: 'X', src: 'real', f: [] }]));
+  await refused(stray, /^real_features_run 4242: features-real\.json holds rows of day\(s\) that are not judged here: 2026-11-12/);
+  const nopair = path.join(w.root, 'nopair'); copyFiles(cache, nopair, REAL_SIDE); fs.writeFileSync(path.join(nopair, 'paired.json'), JSON.stringify(readJ(path.join(cache, 'paired.json')).slice(1)));
+  await refused(nopair, /^real_features_run 4242: paired\.json has no entry for 2026-11-13/);
+  // refused before anything of the real side is written: the out folder holds no features-real.json of a refused run
+  assert.ok(!fs.existsSync(path.join(out, 'features-real.json')), 'a refused cache leaves no real rows behind');
+  // the stage: one [twin] ERROR line, a failed exit
+  const stale = withMeta('stale-cli', (m) => { m.featureCode = 'f0'; });
+  const r = twinCli(...fastArgs({ ...w, real: metaFilesOnly(w, 'bare-cli') }, out, '--real-cache', stale, '--real-run', '4242'));
+  assert.notEqual(r.status, 0); assert.match(r.stderr, new RegExp(`^\\[twin\\] ERROR: real_features_run 4242 was built for feature code f0, not these \\(feature code ${FEATURE_CODE_VERSION}\\)`, 'm'));
+  // realMetaDiff on its own: equal keys differ in nothing; a reusedFrom note is not part of the key
+  assert.deepEqual(realMetaDiff(meta, { ...structuredClone(meta), reusedFrom: '9' } as never), []);
+  assert.throws(() => loadRealSide(cache, { ...meta, judged: [] } as never, '7'), /real_features_run 7 was built for judged days 2026-11-13,2026-11-14, not these \(judged days \)/);
+});
+
+test('fast is for dev and custom splits only: a split that reads a confirm day, a day list that is not the split\'s judged days, and a missing split are refused', async () => {
+  const w = await fastWorld(), out = path.join(w.root, 'out'); fs.mkdirSync(out);
+  const run = (days: string[]) => fastRows({ out, realDir: w.real, twinDir: w.twin, days, modelFile: w.modelFile, log: () => {} });
+  await assert.rejects(run(FAST_JUDGE), /no split in .*split\.json: --stage split first/);
+  fs.writeFileSync(path.join(out, 'split.json'), JSON.stringify({ name: 'confirm', fit: [...SPLITS.confirm.fit], judge: [...SPLITS.confirm.judge], warm: [] }));
+  await assert.rejects(run([...SPLITS.confirm.judge]), /fast=true is for dev and custom splits only: a run that reads a confirm day stays on the audited full path/);
+  fs.writeFileSync(path.join(out, 'split.json'), JSON.stringify({ name: 'custom', fit: FAST_FIT, judge: ['2026-11-13', '2026-11-18'], warm: [] }));
+  await assert.rejects(run(['2026-11-13', '2026-11-18']), /the confirm days \(2026-11-18\) are read only through split=confirm with a confirm_look_note/, 'a custom split that names a confirm day is the held-out rule\'s refusal');
+  fs.writeFileSync(path.join(out, 'split.json'), JSON.stringify({ name: 'custom', fit: FAST_FIT, judge: FAST_JUDGE, warm: [] }));
+  await assert.rejects(run(['2026-11-13', '2026-11-18']), /confirm day/i);
+  await assert.rejects(run(['2026-11-13']), /the fast rows are for the split's judged days \(2026-11-13,2026-11-14\), got 2026-11-13/);
+  // a fit day that overlaps a judged day, and a judged day with no recording
+  fs.writeFileSync(path.join(out, 'split.json'), JSON.stringify({ name: 'custom', fit: [...FAST_FIT, '2026-11-13'], judge: FAST_JUDGE, warm: [] }));
+  await assert.rejects(run(FAST_JUDGE), /overlap.*2026-11-13/);
+  fs.writeFileSync(path.join(out, 'split.json'), JSON.stringify({ name: 'custom', fit: FAST_FIT, judge: FAST_JUDGE, warm: [] }));
+  const gone = path.join(w.root, 'twin-one'); fs.mkdirSync(gone); fs.copyFileSync(path.join(w.twin, 'md-2026-11-13.jsonl.gz'), path.join(gone, 'md-2026-11-13.jsonl.gz'));
+  await assert.rejects(fastRows({ out, realDir: w.real, twinDir: gone, days: FAST_JUDGE, modelFile: w.modelFile, log: () => {} }), /judged day\(s\) without a real recording or a twin: 2026-11-14/);
+  // a model fitted on a judged day is refused as the fill stage refuses it (the fit-days assert is the one the fast route runs first)
+  const leaky = path.join(w.root, 'leaky.json'); fs.writeFileSync(leaky, JSON.stringify(synthModel({ days: [...FAST_FIT, '2026-11-14'] })));
+  await assert.rejects(fastRows({ out, realDir: w.real, twinDir: w.twin, days: FAST_JUDGE, modelFile: leaky, log: () => {} }), /overlap.*2026-11-14/);
+  // a fit day with no cached real recording stops the build when its activity line is asked for (the full route skips it silently; the fast one says so)
+  const noFit = path.join(w.root, 'real-nofit'); fs.mkdirSync(noFit); copyFiles(w.real, noFit, fs.readdirSync(w.real).filter((f) => !f.includes('2026-11-12')));
+  await assert.rejects(fastRows({ out, realDir: noFit, twinDir: w.twin, days: FAST_JUDGE, modelFile: w.modelFile, log: () => {} }), /the fast run needs the cached real FIT day 2026-11-12 in .*dispatch prep_days=2026-11-12 first/);
+});
+
+test('depth_model_run: a model an earlier run fitted is reused only when it records exactly these fit days, the current study version and, if known, these real days\' tag', () => {
+  const dir = tmpDir(), split = { fit: FAST_FIT, judge: FAST_JUDGE };
+  const thr = (fn: () => unknown, re: RegExp) => assert.throws(fn, (e: Error) => { assert.match(e.message, re); return true; });
+  const put = (name: string, o: Record<string, unknown>) => { const f = path.join(dir, `${name}.json`); fs.writeFileSync(f, JSON.stringify({ ...synthModel({ days: FAST_FIT }), schema: DEPTH_MODEL_SCHEMA, ...o })); return f; };
+  const meta = path.join(dir, 'real-meta.json'); fs.writeFileSync(meta, JSON.stringify({ real15m: real15mTag() }));
+  const line = (f: string, m?: string) => checkDepthModelReuse(f, split, { run: '321', metaFile: m });
+  assert.equal(line(put('ok', {}), meta), `[twin] depth model reused from run 321: fitted on 2026-11-11 2026-11-12 (exactly the fit days), schema ${DEPTH_MODEL_SCHEMA}; real days tag ${real15mTag()}`);
+  assert.match(line(put('ok2', {})), /schema \d+; no real-meta\.json beside it, so the real days' tag it was fitted from is not recorded$/);
+  fs.writeFileSync(path.join(dir, 'junk-meta.json'), '{no'); assert.match(line(put('ok3', {}), path.join(dir, 'junk-meta.json')), /not recorded$/, 'an unreadable meta is "not recorded", not a refusal');
+  assert.match(line(put('order', { days: [...FAST_FIT].reverse() }), meta), /^\[twin\] depth model reused from run 321: fitted on 2026-11-11 2026-11-12 \(exactly/, 'the order of the days does not matter');
+  // the study's version: no schema reads as 0, another number, a number written as text
+  const noSchema = path.join(dir, 'noschema.json'); fs.writeFileSync(noSchema, JSON.stringify(synthModel({ days: FAST_FIT })));
+  thr(() => line(noSchema, meta), new RegExp(`^depth_model_run 321: the model has schema 0 \\(none recorded\\), this code reads schema ${DEPTH_MODEL_SCHEMA}: the depth study or the simulator changed since it was fitted, so it is not reused\\. Leave depth_model_run empty to fit it again$`));
+  thr(() => line(put('next', { schema: DEPTH_MODEL_SCHEMA + 1 }), meta), new RegExp(`the model has schema ${DEPTH_MODEL_SCHEMA + 1}, this code reads schema ${DEPTH_MODEL_SCHEMA}`));
+  thr(() => line(put('text', { schema: String(DEPTH_MODEL_SCHEMA) }), meta), /the model has schema 0/);
+  // the days: fewer (a subset), more (a day outside the fit days), a judged day, none recorded
+  thr(() => line(put('subset', { days: ['2026-11-11'] }), meta), /^depth_model_run 321: the model was fitted on 2026-11-11, not exactly the fit days 2026-11-11, 2026-11-12\./);
+  thr(() => line(put('extra', { days: [...FAST_FIT, '2026-11-15'] }), meta), /^depth_model_run 321: the depth model was fitted on days outside the fit set: 2026-11-15/);
+  thr(() => line(put('judged', { days: [...FAST_FIT, '2026-11-13'] }), meta), /^depth_model_run 321: .*overlap.*2026-11-13/);
+  thr(() => line(put('nodays', { days: [] }), meta), /does not record the days it was fitted on/);
+  // the real days' tag it was fitted from, and an unreadable model
+  fs.writeFileSync(path.join(dir, 'old-meta.json'), JSON.stringify({ real15m: 'r15m-0|exclude=DOGE' }));
+  thr(() => line(put('tag', {}), path.join(dir, 'old-meta.json')), new RegExp(`^depth_model_run 321: the model was fitted from real days tagged r15m-0\\|exclude=DOGE, these are tagged ${real15mTag().replace('|', '\\|')}`));
+  fs.writeFileSync(path.join(dir, 'bad.json'), 'not json'); thr(() => line(path.join(dir, 'bad.json'), meta), /^depth_model_run 321: .*bad\.json is not readable JSON/);
+  // the stage the workflow runs
+  const sp = path.join(dir, 'split.json'); fs.writeFileSync(sp, JSON.stringify({ name: 'custom', fit: FAST_FIT, judge: FAST_JUDGE, warm: [] }));
+  const ok = twinCli('--stage', 'depth-model-check', '--depth-model', put('cli', {}), '--split-file', sp, '--run', '321', '--model-meta', meta);
+  assert.equal(ok.status, 0, ok.stderr); assert.match(ok.stdout, /^\[twin\] depth model reused from run 321: fitted on 2026-11-11 2026-11-12 \(exactly the fit days\)/);
+  const bad = twinCli('--stage', 'depth-model-check', '--depth-model', noSchema, '--split-file', sp, '--run', '321');
+  assert.notEqual(bad.status, 0); assert.match(bad.stderr, /^\[twin\] ERROR: depth_model_run 321: the model has schema 0 \(none recorded\)/m);
+  fs.writeFileSync(sp, JSON.stringify({ name: 'confirm', fit: [...SPLITS.confirm.fit], judge: [...SPLITS.confirm.judge], warm: [] }));
+  assert.equal(twinCli('--stage', 'depth-model-check', '--depth-model', put('cli2', { days: [...SPLITS.confirm.fit] }), '--split-file', sp, '--run', '321').status, 0, 'a confirm split\'s own check is the same one (the workflow refuses fast on confirm before it gets here)');
+});
+
+// The workflow side of the fast run: the split step's refusals, which step runs when, and the new steps run with a stubbed Drive and node.
+
+test('the split step: fast is for dev and custom only, never with the backtests or the lag arms, and the two reuse inputs are fast only and run ids', () => {
+  const custom = { SPLIT: 'custom', FIT_IN: '2026-11-11,2026-11-12', JUDGE_IN: '2026-11-13,2026-11-14' };
+  const refused = (env: Record<string, string>, re: RegExp) => { const r = splitStep(env); assert.equal(r.ok, false, JSON.stringify(env)); assert.match(r.text, re); };
+  // accepted: dev and custom, each with and without the reuse inputs; the output the later steps read says fast
+  for (const base of [{ SPLIT: 'dev' }, custom]) {
+    const plain = splitStep({ ...base, FAST: 'true' });
+    assert.equal(plain.ok, true, plain.text); assert.equal(plain.out.fast, 'true'); assert.match(plain.text, /^\[twin\] fast run: no filled day is written; real rows built from the real days, depth model fitted here$/m);
+    const both = splitStep({ ...base, FAST: 'true', REAL_FEATURES_RUN: '12', DEPTH_MODEL_RUN: '34', DEPTH_PARAMS_RUN: '56' });
+    assert.equal(both.ok, true, both.text); assert.match(both.text, /^\[twin\] fast run: no filled day is written; real rows reused from run 12, depth model reused from run 34$/m);
+    const one = splitStep({ ...base, FAST: 'true', DEPTH_MODEL_RUN: '34' }); assert.match(one.text, /real rows built from the real days, depth model reused from run 34$/m);
+    assert.equal(splitStep({ ...base, FAST: 'false' }).out.fast, 'false'); assert.equal(splitStep(base).out.fast, 'false', 'a push (no inputs): not fast');
+    assert.ok(!/fast run/.test(splitStep(base).text), 'the full route says nothing of the fast one');
+  }
+  // refused
+  refused({ SPLIT: 'confirm', NOTE: 'a look', FAST: 'true' }, /::error::fast=true is for split dev or custom only: the confirm split stays on the audited full path \(leave fast off for split=confirm\)/);
+  refused({ SPLIT: 'dev', FAST: 'true', BACKTESTS: 'true', MODEL_DRIVE: 'm1' }, /::error::fast=true cannot run the backtest legs \(it writes no filled day for them to read\)/);
+  refused({ SPLIT: 'dev', FAST: 'true', LAG_ARMS: 'true' }, /::error::fast=true does not build the lag arms/);
+  refused({ SPLIT: 'dev', REAL_FEATURES_RUN: '12' }, /::error::real_features_run and depth_model_run are for fast=true runs only: set fast=true, or leave them empty/);
+  refused({ SPLIT: 'dev', DEPTH_MODEL_RUN: '12' }, /::error::real_features_run and depth_model_run are for fast=true runs only/);
+  refused({ SPLIT: 'confirm', NOTE: 'a look', DEPTH_MODEL_RUN: '12' }, /for fast=true runs only/);
+  for (const bad of ['abc', '5;rm', '-1', '5 6', '../x', '1e3']) {
+    refused({ SPLIT: 'dev', FAST: 'true', REAL_FEATURES_RUN: bad }, /::error::real_features_run must be a run id \(digits only\)/);
+    refused({ SPLIT: 'dev', FAST: 'true', DEPTH_MODEL_RUN: bad }, /::error::depth_model_run must be a run id \(digits only\)/);
+  }
+  // the full route's own refusals are untouched
+  assert.equal(splitStep({ SPLIT: 'confirm', NOTE: 'a look' }).ok, true); assert.equal(splitStep({ SPLIT: 'dev', BACKTESTS: 'true', MODEL_DRIVE: 'm1', LAG_ARMS: 'true' }).ok, true, 'backtests and lag arms stay available on the full route');
+});
+
+test('the workflow wires the fast run: inputs, which step runs for each input, one heavy group, at most 7 wide, and the verdict job is unchanged but for a timing line', { skip: hasYaml ? false : 'python3 with PyYAML is not installed here' }, () => {
+  const r = spawnSync('python3', ['-I', '-c', 'import yaml,json,sys; print(json.dumps(yaml.safe_load(open(sys.argv[1]))))', path.join(ROOT, '.github/workflows/history-twin.yml')], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const d = JSON.parse(r.stdout), on = d.true ?? d.on, jobs = d.jobs as Record<string, any>, ins = on.workflow_dispatch.inputs;
+  assert.equal(ins.fast.type, 'boolean'); assert.equal(ins.fast.default, false);
+  for (const k of ['real_features_run', 'depth_model_run']) { assert.equal(ins[k].default, ''); assert.equal(ins[k].required, false); assert.match(ins[k].description, /^fast only/); }
+  assert.ok(Object.keys(ins).length <= 25, `${Object.keys(ins).length} inputs (GitHub allows 25)`);
+  assert.match(d.concurrency.group, /'heavy'/); assert.equal(d.concurrency['cancel-in-progress'], false);
+  for (const [n, j] of Object.entries(jobs) as Array<[string, any]>) if (j.strategy) assert.ok(j.strategy['max-parallel'] <= 7, `${n} runs at most 7 at once`);
+  assert.equal(jobs.build.outputs.fast, '${{ steps.split.outputs.fast }}');
+  const steps = jobs.build.steps as Array<{ name?: string; if?: string; env?: Record<string, string>; id?: string }>;
+  const named = (re: RegExp) => { const m = steps.filter((x) => re.test(x.name ?? '')); assert.equal(m.length, 1, `one step ${re}: ${m.length}`); return m[0]; };
+  assert.equal(new Set(steps.map((x) => x.name ?? '').filter(Boolean)).size, steps.filter((x) => x.name).length, 'step names are unique in the build job');
+  const fit = named(/^The depth model, fitted/), reuse = named(/^The depth model, reused/), realSide = named(/^The real side of an earlier run/), match = named(/^Match, fill in/), fastRowsStep = named(/^Fast rows/), keep = named(/^Keep the judged features/);
+  // every expression is `a OP 'x' [&&|| ...]` over the split step's fast output and the inputs: evaluate it for every dispatch
+  const evalIf = (e: string | undefined, fastOut: string, v: Record<string, string>): boolean => {
+    if (e === undefined) return true;
+    const m = /^\$\{\{ (.*) \}\}$/.exec(e); assert.ok(m, `an if of the ${'${{ }}'} form: ${e}`);
+    const js = m![1].replace(/steps\.split\.outputs\.fast/g, JSON.stringify(fastOut)).replace(/inputs\.([a-z_]+)/g, (_, k) => { assert.ok(k in ins, `input ${k} exists`); return JSON.stringify(v[k] ?? ''); });
+    assert.ok(/^[\s"'!=&|a-z0-9_.-]+$/i.test(js), `only comparisons: ${js}`);
+    return new Function(`return (${js});`)() as boolean;
+  };
+  for (const fast of ['true', 'false']) for (const model of ['', '55']) for (const real of ['', '66']) {
+    if (fast !== 'true' && (model || real)) continue; // the split step refuses these
+    const v = { depth_model_run: model, real_features_run: real }, on_ = (s: { if?: string }) => evalIf(s.if, fast, v);
+    assert.equal(on_(fit) !== on_(reuse), true, `fast ${fast}, model run '${model}': exactly one of the fit and the reuse runs`);
+    assert.equal(on_(reuse), fast === 'true' && model !== ''); assert.equal(on_(fit), !(fast === 'true' && model !== ''));
+    assert.equal(on_(realSide), fast === 'true' && real !== '', `the real side is read from Drive only for fast with real_features_run (${fast}, '${real}')`);
+    assert.equal(on_(match) !== on_(fastRowsStep), true, 'the full route or the fast rows, never both and never neither'); assert.equal(on_(fastRowsStep), fast === 'true');
+    assert.equal(on_(keep), true, 'the judged files are kept either way');
+  }
+  // a push has no inputs at all: the empty string, and the full route
+  assert.equal(evalIf(match.if, 'false', {}), true); assert.equal(evalIf(fit.if, 'false', {}), true); assert.equal(evalIf(reuse.if, 'false', {}), false);
+  // the order: the model and the real side before the rows, the rows after the match step's place, the keep step after both routes
+  const at = (x: object) => steps.indexOf(x as never);
+  assert.ok(at(fit) < at(reuse) && at(reuse) < at(fastRowsStep) && at(realSide) < at(fastRowsStep) && at(match) < at(fastRowsStep) && at(fastRowsStep) < at(keep));
+  // the same job set, as before
+  assert.deepEqual(Object.keys(jobs), ['prep-plan', 'prep', 'prep-report', 'build', 'backtest', 'verdict', 'reverdict', 'sweep-plan', 'sweep', 'sweep-collect']);
+  assert.equal(jobs.verdict.steps.find((x: any) => x.name === 'Verdict').env.FAST, '${{ needs.build.outputs.fast }}');
+  // the fast run's own Drive steps read only: no put, no delete, no sync, no move
+  for (const st of [reuse, realSide]) { const text = stepScript(wf(), st.name!); assert.ok(/drive_lab\.sh get /.test(text) && !/drive_lab\.sh (put|delete|purge|sync|move)|rclone (sync|delete|purge|move|deletefile)/.test(text), st.name); }
+  // the commit comment keeps the new framing lines
+  assert.match(stepScript(wf(), 'Report (commit comment; RUNBOOK'), /FRAME='[^']*depth model reused\|real side\|fast/);
+});
+
+test('the depth model reuse step: copy-only Drive reads of that run, the stage\'s check before the model is used, timing lines; a bad run id never reaches a path', () => {
+  const y = wf(), { ws, bin, tmp } = stageWs(), drive = tmpDir(), calls = path.join(tmp, 'calls.txt');
+  const step = stepScript(y, 'The depth model, reused from an earlier run');
+  fs.writeFileSync(path.join(ws, 'data/twin/split.json'), JSON.stringify({ name: 'custom', fit: FAST_FIT, judge: FAST_JUDGE, warm: [] }));
+  const model = (o: object) => { const d = path.join(drive, 'simulated/history-twin/55/models'); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'depth_model.json'), JSON.stringify({ ...synthModel({ days: FAST_FIT }), schema: DEPTH_MODEL_SCHEMA, ...o })); };
+  const metaOnDrive = (tag?: string) => { const d = path.join(drive, 'simulated/history-twin/55/twinlite'); fs.rmSync(d, { recursive: true, force: true }); if (tag) { fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'real-meta.json'), JSON.stringify({ real15m: tag })); } };
+  const run = (id: string) => { for (const f of [calls, path.join(tmp, 'build.log')]) fs.rmSync(f, { force: true }); fs.rmSync(path.join(ws, 'data/models'), { recursive: true, force: true }); fs.rmSync(path.join(ws, 'data/model-src'), { recursive: true, force: true }); fs.rmSync(path.join(ws, 'data/model-meta'), { recursive: true, force: true });
+    const r = bash(step, { PATH: `${bin}:${process.env.PATH}`, RUN: id, FAST: 'true', JOB_START: String(Math.floor(Date.now() / 1000) - 300), RUNNER_TEMP: tmp, STUB_DRIVE: drive, STUB_CALLS: calls }, ws);
+    const log = fs.existsSync(path.join(tmp, 'build.log')) ? fs.readFileSync(path.join(tmp, 'build.log'), 'utf8') : '', c = fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '';
+    return { r, log, calls: c, out: `${r.stdout}${r.stderr}`, model: fs.existsSync(path.join(ws, 'data/models/depth_model.json')) }; };
+  // an id that is not digits: no Drive call at all
+  for (const bad of ['abc', '5;rm -rf x', '../55', '']) { const r = run(bad); assert.notEqual(r.r.status, 0, bad); assert.match(r.log, /^\[twin\] ERROR: depth_model_run must be a run id \(digits only\)$/m); assert.equal(r.calls, '', `no Drive call for "${bad}"`); }
+  // nothing on Drive for that run
+  const none = run('56'); assert.notEqual(none.r.status, 0); assert.match(none.log, /^\[twin\] ERROR: depth_model_run 56: no depth model on Drive \(simulated\/history-twin\/56\/models\)/m); assert.ok(!none.model);
+  // a model of another study version, or fitted on other days: refused by the check, never copied to where the run reads its model
+  model({ schema: DEPTH_MODEL_SCHEMA + 1 }); metaOnDrive(real15mTag());
+  const old = run('55'); assert.notEqual(old.r.status, 0); assert.match(old.log, /^\[twin\] ERROR: depth_model_run 55: the model has schema \d+, this code reads schema \d+/m); assert.ok(!old.model, 'a refused model is not copied'); assert.ok(!/fast: depth model reused/.test(old.log));
+  model({ days: ['2026-11-11'] }); assert.match(run('55').log, /^\[twin\] ERROR: depth_model_run 55: the model was fitted on 2026-11-11, not exactly the fit days/m);
+  model({ days: [...FAST_FIT, '2026-11-13'] }); const leak = run('55'); assert.notEqual(leak.r.status, 0); assert.match(leak.log, /^\[twin\] ERROR: depth_model_run 55: .*overlap.*2026-11-13/m); assert.ok(!leak.model);
+  model({}); metaOnDrive('r15m-0|exclude=DOGE'); const tag = run('55'); assert.notEqual(tag.r.status, 0); assert.match(tag.log, /^\[twin\] ERROR: depth_model_run 55: the model was fitted from real days tagged r15m-0\|exclude=DOGE/m);
+  // a good one: the check line, the model in place, the two timing lines (set-up = the seconds since the job began)
+  metaOnDrive(real15mTag()); const ok = run('55');
+  assert.equal(ok.r.status, 0, ok.out); assert.ok(ok.model);
+  assert.equal(fs.readFileSync(path.join(ws, 'data/models/depth_model.json'), 'utf8'), fs.readFileSync(path.join(drive, 'simulated/history-twin/55/models/depth_model.json'), 'utf8'));
+  assert.match(ok.log, new RegExp(`^\\[twin\\] depth model reused from run 55: fitted on 2026-11-11 2026-11-12 \\(exactly the fit days\\), schema ${DEPTH_MODEL_SCHEMA}; real days tag r15m-1\\|exclude=DOGE$`, 'm'));
+  const setup = /^\[twin\] fast: set-up (\d+) s$/m.exec(ok.log); assert.ok(setup && +setup[1] >= 299 && +setup[1] <= 330, `set-up ${setup?.[1]}`); assert.match(ok.log, /^\[twin\] fast: depth model reused \d+ s$/m);
+  // no real-meta.json on that run: the model is still checked (days, schema), and the line says the tag is not recorded
+  metaOnDrive(); assert.match(run('55').log, /schema \d+; no real-meta\.json beside it, so the real days' tag it was fitted from is not recorded$/m);
+  // Drive is only read, only that run's folders, only the files named
+  const lines = ok.calls.split('\n').filter(Boolean);
+  assert.deepEqual(lines.map((l) => l.split(' ').slice(0, 2).join(' ')), ['get simulated/history-twin/55/models', 'get simulated/history-twin/55/twinlite']);
+  assert.ok(lines.every((l) => / --include (depth_model|real-meta)\.json$/.test(l)));
+});
+
+test('the real side step: copy-only read of that run\'s twinlite files into data/real-cache; a bad id or a run with nothing there stops it with a reason', () => {
+  const y = wf(), { ws, bin, tmp } = stageWs(), drive = tmpDir(), calls = path.join(tmp, 'calls.txt'), step = stepScript(y, 'The real side of an earlier run');
+  const run = (id: string) => { for (const f of [calls, path.join(tmp, 'build.log')]) fs.rmSync(f, { force: true }); fs.rmSync(path.join(ws, 'data/real-cache'), { recursive: true, force: true });
+    const r = bash(step, { PATH: `${bin}:${process.env.PATH}`, RUN: id, RUNNER_TEMP: tmp, STUB_DRIVE: drive, STUB_CALLS: calls }, ws);
+    return { r, log: fs.existsSync(path.join(tmp, 'build.log')) ? fs.readFileSync(path.join(tmp, 'build.log'), 'utf8') : '', calls: fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '' }; };
+  for (const bad of ['abc', '1 2', '../1', '']) { const r = run(bad); assert.notEqual(r.r.status, 0); assert.match(r.log, /^\[twin\] ERROR: real_features_run must be a run id \(digits only\)$/m); assert.equal(r.calls, ''); }
+  const none = run('77'); assert.notEqual(none.r.status, 0); assert.match(none.log, /^\[twin\] ERROR: real_features_run 77: no judged features on Drive \(simulated\/history-twin\/77\/twinlite\)/m);
+  const d = path.join(drive, 'simulated/history-twin/77/twinlite'); fs.mkdirSync(d, { recursive: true });
+  for (const f of REAL_SIDE) fs.writeFileSync(path.join(d, f), '[]');
+  const ok = run('77'); assert.equal(ok.r.status, 0, `${ok.r.stdout}${ok.r.stderr}`);
+  assert.deepEqual(fs.readdirSync(path.join(ws, 'data/real-cache')).sort(), [...REAL_SIDE].sort());
+  assert.match(ok.log, /^\[twin\] real side of run 77 read from Drive: 4 file\(s\)$/m);
+  assert.equal(ok.calls.trim(), 'get simulated/history-twin/77/twinlite data/real-cache --include features-real.json --include real-meta.json --include real-activity.json --include paired.json');
+});
+
+test('the fast rows step passes the model, the sweep\'s params and the reused real side on to the stage, and only when they were asked for', () => {
+  const y = wf(), wsn = stageWs(), args = path.join(wsn.tmp, 'a.txt'), step = stepScript(y, 'Fast rows');
+  fs.writeFileSync(path.join(wsn.bin, 'node'), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$STUB_ARGS"\necho "[twin] stub fast"\n', { mode: 0o755 });
+  const run = (env: Record<string, string>) => { fs.rmSync(args, { force: true }); const r = bash(step, { PATH: `${wsn.bin}:${process.env.PATH}`, JUDGE: FAST_JUDGE.join(','), DEPTH_PARAMS_RUN: '', REAL_FEATURES_RUN: '', RUNNER_TEMP: wsn.tmp, STUB_ARGS: args, ...env }, wsn.ws); assert.equal(r.status, 0, `${r.stdout}${r.stderr}`); return fs.readFileSync(args, 'utf8').trim().split('\n'); };
+  const base = `--import tsx research/historyTwin.ts --stage fastrows --real data/twin-real15m --twin data/replay-src --days ${FAST_JUDGE.join(',')} --depth-model data/models/depth_model.json --out data/twin`;
+  assert.deepEqual(run({}), [base]);
+  assert.deepEqual(run({ DEPTH_PARAMS_RUN: '55' }), [`${base} --depth-params data/sweep/best.json`]);
+  assert.deepEqual(run({ REAL_FEATURES_RUN: '66' }), [`${base} --real-cache data/real-cache --real-run 66`]);
+  assert.deepEqual(run({ DEPTH_PARAMS_RUN: '55', REAL_FEATURES_RUN: '66' }), [`${base} --depth-params data/sweep/best.json --real-cache data/real-cache --real-run 66`]);
+  // the lines of the stage reach the log the report reads
+  assert.match(fs.readFileSync(path.join(wsn.tmp, 'build.log'), 'utf8'), /\[twin\] fast rows from \d\d:\d\d UTC\n\[twin\] stub fast/);
+});
+
+test('the judged files kept for the verdict job include the real side\'s sidecars when there are any; the fit step and the verdict print their seconds on a fast run only', () => {
+  const y = wf(), { ws } = stageWs(), keep = stepScript(y, 'Keep the judged features');
+  const put = (names: string[]) => { fs.rmSync(path.join(ws, 'data/twin'), { recursive: true, force: true }); fs.rmSync(path.join(ws, 'data/twinlite'), { recursive: true, force: true }); fs.mkdirSync(path.join(ws, 'data/twin'), { recursive: true }); for (const n of names) fs.writeFileSync(path.join(ws, 'data/twin', n), '{}'); const r = bash(keep, {}, ws); return { r, kept: fs.existsSync(path.join(ws, 'data/twinlite')) ? fs.readdirSync(path.join(ws, 'data/twinlite')).sort() : [] }; };
+  const core = ['paired.json', 'features-real.json', 'features-requote.json', 'features-depth.json', 'split.json', 'twin-source.json'];
+  const withSide = put([...core, 'real-meta.json', 'real-activity.json', 'verdict-junk.txt']); assert.equal(withSide.r.status, 0, withSide.r.stderr);
+  assert.deepEqual(withSide.kept, [...core, 'real-meta.json', 'real-activity.json'].sort());
+  const blind = put(core); assert.equal(blind.r.status, 0, blind.r.stderr); assert.deepEqual(blind.kept, [...core].sort(), 'a confirm run writes no sidecar and keeps none');
+  // the fit step: its seconds on a fast run, nothing on the full route
+  const work = tmpDir(), bin = path.join(work, 'bin'), fws = path.join(work, 'ws'), tmp = path.join(work, 'tmp');
+  fs.mkdirSync(bin); fs.mkdirSync(tmp); fs.mkdirSync(path.join(fws, 'data/twin-real15m'), { recursive: true }); fs.mkdirSync(path.join(fws, '.github/scripts'), { recursive: true }); fs.copyFileSync(path.join(ROOT, '.github/scripts/twin-lib.sh'), path.join(fws, '.github/scripts/twin-lib.sh'));
+  fs.writeFileSync(path.join(bin, 'node'), '#!/usr/bin/env bash\nmkdir -p data/models; echo \'{"days":[]}\' > data/models/depth_model.json\necho "[depth] 3 day(s): a..b"\n', { mode: 0o755 });
+  const fit = (env: Record<string, string>) => { fs.rmSync(path.join(tmp, 'build.log'), { force: true }); const r = bash(stepScript(y, 'The depth model, fitted'), { PATH: `${bin}:${process.env.PATH}`, FIT: '2026-11-11,2026-11-12', RUNNER_TEMP: tmp, GITHUB_WORKSPACE: fws, ...env }, fws); assert.equal(r.status, 0, r.stderr); return fs.readFileSync(path.join(tmp, 'build.log'), 'utf8'); };
+  const fast = fit({ FAST: 'true', JOB_START: String(Math.floor(Date.now() / 1000) - 120) });
+  const su = /^\[twin\] fast: set-up (\d+) s$/m.exec(fast); assert.ok(su && +su[1] >= 119 && +su[1] <= 150, `set-up ${su?.[1]}`); assert.match(fast, /^\[twin\] fast: depth model fitted \d+ s$/m);
+  assert.ok(!/fast: /.test(fit({ FAST: 'false' })) && !/fast: /.test(fit({})), 'the full route prints no fast line');
+  assert.match(fit({ FAST: 'true' }), /^\[twin\] fast: set-up 0 s$/m, 'no job clock (an old runner): zero, never a failure');
+  // the verdict job: one more line, on a fast run only, after the stage's own lines
+  const v = verdictStep({ split: 'dev', backtests: false, result: 'skipped', have: {}, fast: 'true' }); assert.equal(v.r.status, 0, v.out);
+  assert.match(v.log, /\[twin\] depth: adversary AUC 0\.55\n\[twin\] fast: verdict \d+ s\n/);
+  for (const f of ['false', '']) assert.ok(!/fast: verdict/.test(verdictStep({ split: 'dev', backtests: false, result: 'skipped', have: {}, fast: f }).log), `FAST='${f}'`);
+  assert.ok(!/fast: verdict/.test(verdictStep({ split: 'dev', backtests: false, result: 'skipped', have: {} }).log), 'no FAST variable at all');
+});
+// ---- H3 end ----
