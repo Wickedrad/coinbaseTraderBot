@@ -1,7 +1,7 @@
-// The depth model's format and study version: ONE number, read by whoever writes a depth model and by whoever reuses one.
-//
-// research/depthStudy.ts records it in every model it fits (`schema`); research/historyTwin.ts reuses a model that an earlier
-// run fitted (workflow input depth_model_run) only when the file's `schema` (a model with no `schema` reads as 0) is exactly
-// this number, so a change to the study or to what the simulator reads from the model (bump this number in the same commit)
-// makes every older model refuse itself instead of being played with new code. Tests import the constant; none spells its value.
-export const DEPTH_MODEL_SCHEMA = 1;
+// The depth model file's schema number (research/depthStudy.ts writes it, research/history/depthSim.ts reads it, a cached model is
+// reused only when it equals this). A model file without `schema` is schema 0 (the pooled four-asset tables of Nov 5 to Nov 22).
+//   2  per-asset blocks (`byAsset`: shape and flow rows keyed by asset, and by a causal stress bucket inside the asset), the stress
+//      edges per asset, the share of 15 s instants at which a book had an empty side (`gapShare`) and the real unquoted share of a whole
+//      contract life (`lives`, per asset and pooled: what the empty-side draw is netted against)
+// Bump it whenever the study's tables or the simulator's reading of them change in a way an older model file cannot feed.
+export const DEPTH_MODEL_SCHEMA = 2;

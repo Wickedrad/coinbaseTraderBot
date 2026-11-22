@@ -96,12 +96,12 @@ import { OrderBook } from '../bot/marketdata/orderBook';
 import { recordingFiles, recordingLines } from '../bot/marketdata/recordingFiles';
 import { gbdtLogit } from '../bot/model/trees';
 import { trainGbdt } from './gbdt';
-import { readDepthModel, resolveDepthSimParams, type DepthModel, type DepthSimParams } from './history/depthSim';
+import { assetOfTicker, DEPTH_ASSETS, readDepthModel, resolveDepthSimParams, validateDepthModel, type DepthModel, type DepthSimParams } from './history/depthSim';
 import { DEPTH_MODEL_SCHEMA } from './history/depthModelVersion';
 import {
   describeParams, eliteOf, ELITE_FRACTION, generationCandidates, mergeShards, parentsFrom, parseShard, rankResults, shardRange, SWEEP_VERSION, type SweepResult, type SweepShardFile,
 } from './history/depthParamSearch';
-import type { Ev } from './goLiveTally';
+import type { DepthPicks, Ev } from './goLiveTally';
 
 const MIN = 60_000, SLOT = 15_000;
 const logit = (p: number) => { const q = Math.min(0.995, Math.max(0.005, p)); return Math.log(q / (1 - q)); };
@@ -216,7 +216,11 @@ export function resolveSplit(name: string, fitIn = '', judgeIn = '', warmIn = ''
 
 /** The depth model must have been fitted on fit days only (depthStudy writes the days it read into its output). */
 export function assertModelFitDays(modelFile: string, split: Pick<Split, 'fit' | 'judge'>): void {
-  const days: unknown = JSON.parse(fs.readFileSync(modelFile, 'utf8')).days;
+  const parsed = JSON.parse(fs.readFileSync(modelFile, 'utf8'));
+  // The per-asset blocks and their stress rows come out of the same fit as the pooled tables, so `days` covers them; a file whose blocks
+  // the simulator could not read as they were meant (a schema it does not know, stress rows without edges) is refused here, before any day is played.
+  validateDepthModel(parsed);
+  const days: unknown = parsed.days;
   if (!Array.isArray(days) || !days.length) throw new Error(`${modelFile} does not record the days it was fitted on`);
   assertDisjoint(days as string[], split.judge);
   const stray = (days as string[]).filter((d) => !split.fit.includes(d));
@@ -973,7 +977,7 @@ type LoadedDepthParams = ReturnType<typeof loadDepthParamsFile>;
  *  model must be there, a sweep's parameters (--depth-params) must be a valid best.json, with a split on record the model must
  *  have been fitted on fit days only and the sweep's days must not be judged ones, and the parameters the fill-in will use are
  *  logged. `say` gets each line as it happens. */
-function depthFillSetup(o: { how: string; model: string; splitFile: string; params: string }, say: (line: string) => void): { depth: DepthModel | undefined; loaded: LoadedDepthParams | undefined } {
+async function depthFillSetup(o: { how: string; model: string; splitFile: string; params: string }, say: (line: string) => void): Promise<{ depth: DepthModel | undefined; loaded: LoadedDepthParams | undefined }> {
   const depth = o.model ? readDepthModel(o.model) : undefined;
   if (o.how === 'depth' && !depth) throw new Error('the depth fill-in needs --depth-model');
   // A sweep's best candidate (--depth-params): its parameters go into the fill-in over the defaults and the model's own block.
@@ -990,6 +994,8 @@ function depthFillSetup(o: { how: string; model: string; splitFile: string; para
     if (loaded) assertDisjoint(loaded.fitDays, sp.judge);
   }
   if (o.how === 'depth') {
+    const { depthModelNote } = await import('./goLiveTally');
+    say(depthModelNote(depth!));
     // Every depth fill-in says which parameters it used (the defaults are spelled out too).
     const used = resolveDepthSimParams(depth!.params, loaded?.params);
     const from = loaded ? `sweep best, generation ${loaded.gen}, loss ${loaded.loss}, fitted on FIT days only` : depth!.params ? "the model's own params block" : 'defaults, as in the code';
@@ -998,23 +1004,15 @@ function depthFillSetup(o: { how: string; model: string; splitFile: string; para
   return { depth, loaded };
 }
 
-/** What a set of fill-ins made, as the one summary line (counts per contract-minute; the file route sums the process's simulators,
- *  the fast route the activity each in-stream day reports). */
-function simulatorLine(dst: string, t: SimActivity): string {
-  const perMin = (n: number) => (t.seconds ? ((60 * n) / t.seconds).toFixed(1) : '0');
-  return `[twin] ${dst} simulator: ${Math.round(t.seconds / 60)} contract-minutes, trades ${perMin(t.trades)}/min (sweep prints ${perMin(t.sweepPrints)}), flickers ${perMin(t.flickers)}/min`;
-}
-const sumSim = (xs: readonly SimActivity[]): SimActivity => xs.reduce((a, x) => ({ seconds: a.seconds + x.seconds, trades: a.trades + x.trades, sweepPrints: a.sweepPrints + x.sweepPrints, flickers: a.flickers + x.flickers }), { seconds: 0, trades: 0, sweepPrints: 0, flickers: 0 });
-
 /** The twin's days through the tally's fill-in (research/goLiveTally.ts fillDayFile), as the deep history plays them. */
 async function stageFill(): Promise<void> {
-  const { fillDayFile, depthSims } = await import('./goLiveTally');
+  const { fillDayFile, depthSims, picksOf, simulatorLine } = await import('./goLiveTally');
   const src = arg('src'), dst = arg('dst'), how = arg('how', 'depth') as 'depth' | 'worst' | 'hold' | 'requote';
-  const { depth, loaded } = depthFillSetup({ how, model: arg('depth-model'), splitFile: arg('split-file'), params: arg('depth-params') }, (l) => console.log(l));
+  const { depth, loaded } = await depthFillSetup({ how, model: arg('depth-model'), splitFile: arg('split-file'), params: arg('depth-params') }, (l) => console.log(l));
   fs.mkdirSync(dst, { recursive: true });
   for (const f of fs.readdirSync(src).filter((x) => x.startsWith('md-'))) await fillDayFile(path.join(src, f), path.join(dst, f), { how }, depth, loaded?.params);
   console.log(`[twin] ${how} fill-in written for ${fs.readdirSync(dst).length} day(s)`);
-  if (depthSims.length) console.log(simulatorLine(arg('dst'), sumSim(depthSims.map((x) => x.stats))));
+  if (depthSims.length) console.log(simulatorLine(arg('dst'), depthSims.map((x) => x.stats), depthSims.map(picksOf)));
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1027,8 +1025,8 @@ export interface SimActivity { seconds: number; trades: number; sweepPrints: num
  *  (research/goLiveTally.ts streamFiller, with `params` over the defaults and the model's own block) and every record it emits goes
  *  into the features code as it comes (rowBuilder), so nothing is written. The rows are exactly those of fillDayFile followed by
  *  dayRows on its file (a test holds it). `events`: how many records the fill-in emitted; `sink` (tests): each one as it is emitted. */
-export async function filledDayRows(input: Iterable<Record<string, any>> | AsyncIterable<Record<string, any>>, day: string, src: string, results: ReadonlyMap<string, string>, depth: DepthModel, params?: Partial<DepthSimParams>, o: { keep?: ReadonlySet<string>; diag?: boolean; sink?: (e: Record<string, any>) => void } = {}): Promise<{ rows: Row[]; events: number; sim: SimActivity }> {
-  const { streamFiller, depthSims } = await import('./goLiveTally');
+export async function filledDayRows(input: Iterable<Record<string, any>> | AsyncIterable<Record<string, any>>, day: string, src: string, results: ReadonlyMap<string, string>, depth: DepthModel, params?: Partial<DepthSimParams>, o: { keep?: ReadonlySet<string>; diag?: boolean; sink?: (e: Record<string, any>) => void } = {}): Promise<{ rows: Row[]; events: number; sim: SimActivity; picks: DepthPicks }> {
+  const { streamFiller, depthSims, picksOf } = await import('./goLiveTally');
   const at = depthSims.length;
   const f = streamFiller({ how: 'depth' }, depth, params);
   const sim = depthSims[at];
@@ -1040,7 +1038,7 @@ export async function filledDayRows(input: Iterable<Record<string, any>> | Async
     if (Symbol.asyncIterator in input) for await (const e of input as AsyncIterable<Record<string, any>>) feed(e); else for (const e of input as Iterable<Record<string, any>>) feed(e);
     for (const x of f.end()) emit(x);
   } finally { depthSims.splice(at, 1); } // a sweep builds thousands of days: the global list must not keep each simulator
-  return { rows: b.finish(), events, sim: { ...sim.stats } };
+  return { rows: b.finish(), events, sim: { ...sim.stats }, picks: picksOf(sim) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1116,7 +1114,8 @@ export async function fastRows(o: FastOpts): Promise<Array<[string, number]>> {
   for (const k of Object.keys(followDiag)) delete followDiag[k]; // the diagnostics of THIS build only
   // What the depth side needs is checked first, before the long part (its lines are printed in the full route's order, after the match lines).
   const setup: string[] = [];
-  const { depth, loaded } = depthFillSetup({ how: 'depth', model: o.modelFile, splitFile: splitFile(o.out), params: o.paramsFile ?? '' }, (l) => setup.push(l));
+  const { simulatorLine } = await import('./goLiveTally');
+  const { depth, loaded } = await depthFillSetup({ how: 'depth', model: o.modelFile, splitFile: splitFile(o.out), params: o.paramsFile ?? '' }, (l) => setup.push(l));
   const results = await resultsOf(o.twinDir, o.days);
   const outDir = (x: string) => path.join(o.out, x);
   fs.mkdirSync(outDir('requote'), { recursive: true });
@@ -1174,10 +1173,10 @@ export async function fastRows(o: FastOpts): Promise<Array<[string, number]>> {
   lap('requote rows', t2);
 
   // 3. the depth rows, in-stream: the fill-in's records go straight into the features code, no filled day is written
-  const t3 = hr(), depthRows: Row[] = [], sims: SimActivity[] = [];
-  for (const d of o.days) { const r = await filledDayRows(events(twin.get(d)!), d, 'depth', results, depth!, loaded?.params); depthRows.push(...r.rows); sims.push(r.sim); }
+  const t3 = hr(), depthRows: Row[] = [], sims: SimActivity[] = [], picks: DepthPicks[] = [];
+  for (const d of o.days) { const r = await filledDayRows(events(twin.get(d)!), d, 'depth', results, depth!, loaded?.params); depthRows.push(...r.rows); sims.push(r.sim); picks.push(r.picks); }
   say(`[twin] depth fill-in: ${o.days.length} day(s) built in-stream (no filled day is written)`);
-  say(simulatorLine(`${o.out}/depth`, sumSim(sims)));
+  say(simulatorLine(`${o.out}/depth`, sims, picks));
   lap('depth rows', t3);
 
   // the features lines, in the order of the features stage: real, requote, depth
@@ -1509,6 +1508,15 @@ export async function stageVerdict(out = arg('out', 'data/twin'), look: ConfirmL
       return [g, { real: rr.length, twin: tt.length, auc: rr.length > 20 && tt.length > 20 ? +discriminate(rr, tt, all).toFixed(3) : null, top: top ? `${top.name} ${top.auc.toFixed(3)}` : '' }];
     }));
     console.log(`[twin] ${src}: by regime: ${Object.entries(regimes).map(([g, x]) => `${g} AUC ${x.auc ?? 'n/a'} (${x.real}/${x.twin}; worst ${x.top})`).join('; ')}`);
+    // By asset (REPORT ONLY, never in the checks): the lives and medians of what the depth model's per-asset rows set (trades a minute, depth10
+    // and trade size, the last two as the log1p values the features hold), real against twin, and the all-feature AUC within the asset.
+    for (const asset of DEPTH_ASSETS) {
+      const rr = real.filter((r) => assetOfTicker(r.ticker) === asset), tt = tw.filter((r) => assetOfTicker(r.ticker) === asset);
+      if (!rr.length && !tt.length) continue;
+      const m = (rs: Row[], name: (typeof FEATURES)[number]) => (rs.length ? +med(rs.map((r) => r.f[FEATURES.indexOf(name)])).toFixed(3) : 'n/a');
+      const au = rr.length > 20 && tt.length > 20 ? discriminate(rr, tt, all).toFixed(3) : 'n/a';
+      console.log(`[twin] ${src} by asset ${asset}: lives ${rr.length} real/${tt.length} twin; medians real/twin tradesPerMin ${m(rr, 'tradesPerMin')}/${m(tt, 'tradesPerMin')}, depth10 ${m(rr, 'depth10')}/${m(tt, 'depth10')}, tradeSize ${m(rr, 'tradeSize')}/${m(tt, 'tradeSize')}; AUC ${au} (report only)`);
+    }
     // The diagnostics block: per feature the real and twin p10/p50/p90 (all rows, then within each regime), the pairs whose
     // correlation differs most, and the AUC of each judged day (the same folds as the headline AUC).
     const groups = ['all', 'calm', 'normal', 'volatile'] as const;
